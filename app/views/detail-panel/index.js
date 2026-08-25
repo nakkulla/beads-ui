@@ -108,6 +108,14 @@ export function createDetailPanel(mount_element, options) {
   let session_defaults = {};
   /** @type {{ claude: { accounts: any[], active: any }|null, codex: { accounts: any[], active: any }|null }} */
   let exec_account_catalog = { claude: null, codex: null };
+  /**
+   * The repo's `bd kv` account default layer, read beside the catalog on the
+   * same request seq. Only its `usable` values change a label; a failed read
+   * stays null and the panel keeps its current-login wording (UI-d3cb §6.2).
+   *
+   * @type {import('./exec-accounts.js').WorkspaceAccountsLayer|null}
+   */
+  let workspace_accounts = null;
   /** @type {string|null} */
   let exec_account_catalog_loaded_for = null;
   let exec_account_catalog_request_seq = 0;
@@ -131,8 +139,26 @@ export function createDetailPanel(mount_element, options) {
 
   function resetExecAccountCatalog() {
     exec_account_catalog = { claude: null, codex: null };
+    workspace_accounts = null;
     exec_account_catalog_loaded_for = null;
     exec_account_catalog_request_seq += 1;
+  }
+
+  /**
+   * @returns {Promise<import('./exec-accounts.js').WorkspaceAccountsLayer|null>}
+   */
+  async function fetchWorkspaceAccounts() {
+    if (!transport) {
+      return null;
+    }
+    try {
+      const res = /** @type {any} */ (
+        await Promise.resolve(transport('get-workspace-accounts', {}))
+      );
+      return res && typeof res.state === 'string' ? res : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -175,14 +201,16 @@ export function createDetailPanel(mount_element, options) {
   async function loadExecAccountCatalog(id) {
     exec_account_catalog_loaded_for = id;
     const seq = ++exec_account_catalog_request_seq;
-    const [claude, codex] = await Promise.all([
+    const [claude, codex, defaults] = await Promise.all([
       fetchExecAccountProvider('/api/claude-usage'),
-      fetchExecAccountProvider('/api/codex-usage')
+      fetchExecAccountProvider('/api/codex-usage'),
+      fetchWorkspaceAccounts()
     ]);
     if (seq !== exec_account_catalog_request_seq || id !== current_id) {
       return;
     }
     exec_account_catalog = { claude, codex };
+    workspace_accounts = defaults;
     doRender();
   }
 
@@ -1896,6 +1924,7 @@ export function createDetailPanel(mount_element, options) {
           ${execAccountsTemplate({
             md: effective.metadata,
             catalog: exec_account_catalog,
+            workspace_defaults: workspace_accounts,
             handlers: { onExecChange }
           })}
           ${propsTemplate(status, priority_val)} ${timesTemplate(data)}

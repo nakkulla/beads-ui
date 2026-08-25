@@ -576,7 +576,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -658,6 +658,9 @@ function setup(opts) {
     store,
     makeRunner: opts.makeRunner || runner.factory,
     accountCatalog: opts.accountCatalog,
+    // Absent by default: an unwired kv channel leaves the repo account layer
+    // ABSENT, which is what every test that never stores a default expects.
+    kvGet: opts.kvGet,
     resolveCswapPath: opts.resolveCswapPath,
     prepareCodexAccountHome: opts.prepareCodexAccountHome,
     codexAccountHomeDir: opts.codexAccountHomeDir,
@@ -3858,6 +3861,174 @@ describe('scheduler launch account pins', () => {
   });
 });
 
+describe('scheduler workspace account defaults (UI-d3cb §5)', () => {
+  /**
+   * A `bd kv` reader standing in for one repo's stored account defaults.
+   *
+   * @param {Record<string, unknown>|undefined} value
+   */
+  function kvLayer(value) {
+    return vi.fn(async () => ({ ok: true, value }));
+  }
+
+  test('applies the repo default when the issue pins nothing', async () => {
+    const deps = accountDeps();
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      kvGet: kvLayer({
+        schema: 1,
+        claude_account: 'repo@example.com',
+        codex_account: 'repo-codex'
+      }),
+      ...deps
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      claude_account: 'repo@example.com',
+      env: { CODEX_HOME: '/state/codex-homes/repo-codex' }
+    });
+    expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+      claude_account: 'repo@example.com',
+      codex_account: 'repo-codex'
+    });
+  });
+
+  test('prefers the issue pin over the repo default', async () => {
+    const deps = accountDeps();
+    const env = setup({
+      config: { B1: { claude_account: 'pinned@example.com' } },
+      slots: 1,
+      kvGet: kvLayer({
+        schema: 1,
+        claude_account: 'repo@example.com',
+        codex_account: 'repo-codex'
+      }),
+      ...deps
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+      claude_account: 'pinned@example.com',
+      codex_account: 'repo-codex'
+    });
+  });
+
+  test('injects no account env when neither layer names one', async () => {
+    const deps = accountDeps();
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      kvGet: kvLayer(undefined),
+      ...deps
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(deps.accountCatalog.resolveClaude).not.toHaveBeenCalled();
+    expect(deps.accountCatalog.resolveCodex).not.toHaveBeenCalled();
+    expect(env.runner.settingsFor('B1')).not.toHaveProperty('claude_account');
+    expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+      claude_account: null,
+      codex_account: null
+    });
+  });
+
+  test('names the repo default as the source of an unresolvable account', async () => {
+    const deps = accountDeps();
+    deps.accountCatalog.resolveClaude.mockResolvedValue({
+      ok: false,
+      reason: 'claude_account_unknown'
+    });
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      kvGet: kvLayer({ schema: 1, claude_account: 'repo@example.com' }),
+      ...deps
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+      status: 'failed',
+      cause: 'claude_account_unknown',
+      cause_detail: {
+        reason: 'workspace_default:claude_account=repo@example.com',
+        command: null
+      }
+    });
+  });
+
+  test('leaves an issue-pinned failure without a source detail', async () => {
+    const deps = accountDeps();
+    deps.accountCatalog.resolveClaude.mockResolvedValue({
+      ok: false,
+      reason: 'claude_account_unknown'
+    });
+    const env = setup({
+      config: { B1: { claude_account: 'pinned@example.com' } },
+      slots: 1,
+      kvGet: kvLayer({ schema: 1, claude_account: 'repo@example.com' }),
+      ...deps
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).attempts['B1-1000-1'].cause_detail).toBe(
+      null
+    );
+  });
+
+  test('refuses the dispatch when the repo account layer is unusable', async () => {
+    const deps = accountDeps();
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      kvGet: vi.fn(async () => ({
+        ok: true,
+        value: undefined,
+        warning: 'kv_value_unparsable'
+      })),
+      ...deps
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).admission['B1'].reason).toBe(
+      'workspace_accounts_unavailable'
+    );
+  });
+
+  test('refuses the dispatch when the repo kv read fails', async () => {
+    const deps = accountDeps();
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      kvGet: vi.fn(async () => ({ ok: false, error: 'db locked' })),
+      ...deps
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).admission['B1'].reason).toBe(
+      'workspace_accounts_unavailable'
+    );
+  });
+});
+
 describe('scheduler resume (spec §1)', () => {
   /**
    * Seed a terminal attempt directly into the store (no dispatch), so a resume
@@ -4088,6 +4259,76 @@ describe('scheduler resume (spec §1)', () => {
     ).toMatchObject({
       claude_account: 'current@example.com',
       codex_account: 'current-codex'
+    });
+  });
+
+  test('refuses a continuation whose repo account default moved', async () => {
+    const deps = accountDeps();
+    let read = 0;
+    const env = setup({
+      config: { B1: { status: 'open' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      kvGet: vi.fn(async () => {
+        read += 1;
+        return {
+          ok: true,
+          value: {
+            schema: 1,
+            claude_account:
+              read === 1 ? 'first@example.com' : 'second@example.com'
+          }
+        };
+      }),
+      ...deps
+    });
+    seedAttempt(
+      env.store,
+      'account-drift',
+      resumablePrior({ base_drift: { skipped: 'test' } })
+    );
+
+    const result = await env.scheduler.resume(WS, 'account-drift', {
+      continuation: 'prior_session'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('continuation_settings_changed');
+  });
+
+  test('allows a continuation whose pin outranks the moved repo default', async () => {
+    const deps = accountDeps();
+    let read = 0;
+    const env = setup({
+      config: { B1: { status: 'open', claude_account: 'pinned@example.com' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      kvGet: vi.fn(async () => {
+        read += 1;
+        return {
+          ok: true,
+          value: {
+            schema: 1,
+            claude_account:
+              read === 1 ? 'first@example.com' : 'second@example.com'
+          }
+        };
+      }),
+      ...deps
+    });
+    seedAttempt(
+      env.store,
+      'account-pinned',
+      resumablePrior({ base_drift: { skipped: 'test' } })
+    );
+
+    const result = await env.scheduler.resume(WS, 'account-pinned', {
+      continuation: 'prior_session'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      claude_account: 'pinned@example.com'
     });
   });
 

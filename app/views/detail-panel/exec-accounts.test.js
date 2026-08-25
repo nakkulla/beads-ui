@@ -6,13 +6,20 @@ import { execAccountsTemplate } from './exec-accounts.js';
  * @param {Record<string, any>} [metadata]
  * @param {Record<string, any>} [catalog]
  * @param {{ onExecChange: (key: string, value: string) => void }} [handlers]
+ * @param {Record<string, any>|null} [workspace_defaults]
  */
-function mountTemplate(metadata = {}, catalog = {}, handlers) {
+function mountTemplate(
+  metadata = {},
+  catalog = {},
+  handlers,
+  workspace_defaults
+) {
   const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
   render(
     execAccountsTemplate({
       md: metadata,
       catalog: /** @type {any} */ (catalog),
+      workspace_defaults: /** @type {any} */ (workspace_defaults ?? null),
       handlers: handlers || { onExecChange: vi.fn() }
     }),
     mount
@@ -180,5 +187,128 @@ describe('views/detail-panel/exec-accounts', () => {
       'claude_account',
       'next@example.com'
     );
+  });
+});
+
+describe('views/detail-panel/exec-accounts workspace defaults (UI-d3cb §6.2)', () => {
+  const CATALOG = {
+    claude: {
+      accounts: [
+        {
+          key: 'repo@example.com',
+          email: 'repo@example.com',
+          alias: 'team',
+          active: false,
+          status: 'ok'
+        },
+        {
+          key: 'active@example.com',
+          email: 'active@example.com',
+          active: true,
+          status: 'ok'
+        }
+      ],
+      active: null
+    },
+    codex: {
+      accounts: [
+        {
+          key: 'current-key',
+          email: 'current@example.com',
+          plan: 'pro',
+          active: true,
+          status: 'ok'
+        }
+      ],
+      active: null
+    }
+  };
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  test('names the repo default in the inherit option', () => {
+    const mount = mountTemplate({}, CATALOG, undefined, {
+      state: 'usable',
+      values: { claude_account: 'repo@example.com' },
+      warnings: []
+    });
+
+    expect(optionLabels(selectFor(mount, 'claude_account'))[0]).toBe(
+      '레포 기본값 사용(repo@example.com (team))'
+    );
+  });
+
+  test('shows a repo default the catalog does not carry as its stored value', () => {
+    const mount = mountTemplate({}, CATALOG, undefined, {
+      state: 'usable',
+      values: { codex_account: 'retired-key' },
+      warnings: []
+    });
+
+    expect(optionLabels(selectFor(mount, 'codex_account'))[0]).toBe(
+      '레포 기본값 사용(retired-key)'
+    );
+  });
+
+  test('keeps the active-login label for a provider with no repo default', () => {
+    const mount = mountTemplate({}, CATALOG, undefined, {
+      state: 'usable',
+      values: { claude_account: 'repo@example.com' },
+      warnings: []
+    });
+
+    expect(optionLabels(selectFor(mount, 'codex_account'))[0]).toBe(
+      '기본값 사용 — 현재 로그인(current@example.com · pro)'
+    );
+  });
+
+  test('keeps the active-login label on an absent layer', () => {
+    const mount = mountTemplate({}, CATALOG, undefined, {
+      state: 'absent',
+      values: {},
+      warnings: []
+    });
+
+    expect(optionLabels(selectFor(mount, 'claude_account'))[0]).toBe(
+      '기본값 사용 — 현재 로그인(active@example.com)'
+    );
+  });
+
+  test('keeps the active-login label on an unusable layer and shows no warning', () => {
+    const mount = mountTemplate({}, CATALOG, undefined, {
+      state: 'unusable',
+      values: { claude_account: 'repo@example.com' },
+      warnings: ['invalid_value:codex_account']
+    });
+
+    expect(optionLabels(selectFor(mount, 'claude_account'))[0]).toBe(
+      '기본값 사용 — 현재 로그인(active@example.com)'
+    );
+    expect(mount.textContent).not.toContain('invalid_value');
+  });
+
+  test('keeps the active-login label when the request itself failed', () => {
+    const mount = mountTemplate({}, CATALOG, undefined, null);
+
+    expect(optionLabels(selectFor(mount, 'claude_account'))[0]).toBe(
+      '기본값 사용 — 현재 로그인(active@example.com)'
+    );
+  });
+
+  test('leaves an explicit pin selected over the repo default', () => {
+    const mount = mountTemplate(
+      { claude_account: 'active@example.com' },
+      CATALOG,
+      undefined,
+      {
+        state: 'usable',
+        values: { claude_account: 'repo@example.com' },
+        warnings: []
+      }
+    );
+
+    expect(selectFor(mount, 'claude_account').value).toBe('active@example.com');
   });
 });

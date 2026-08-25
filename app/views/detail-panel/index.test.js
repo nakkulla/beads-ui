@@ -551,12 +551,16 @@ describe('views/detail-panel', () => {
       mount.querySelector('[data-edit="title-cancel"]')
     ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
-    // Opening an issue fetches its comments (UI-ucq6 §변경 3) and the
-    // workspace session defaults (spec §E), so the claim is that cancel sent no
-    // MUTATION — not that the panel stayed silent.
+    // Opening an issue fetches its comments (UI-ucq6 §변경 3), the workspace
+    // session defaults (spec §E), and the repo account defaults (UI-d3cb §6.2),
+    // so the claim is that cancel sent no MUTATION — not that the panel stayed
+    // silent.
     expect(
       transport.mock.calls.filter(
-        (c) => c[0] !== 'get-comments' && c[0] !== 'get-session-defaults'
+        (c) =>
+          c[0] !== 'get-comments' &&
+          c[0] !== 'get-session-defaults' &&
+          c[0] !== 'get-workspace-accounts'
       )
     ).toEqual([]);
     expect(

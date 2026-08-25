@@ -51,6 +51,10 @@ import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
+import {
+  WORKSPACE_ACCOUNTS_KV_KEY,
+  normalizeWorkspaceAccounts
+} from '../workspace-accounts.js';
 import { observeBaseDrift } from './base-drift.js';
 import {
   observeClaudeEffort as defaultObserveClaudeEffort,
@@ -355,6 +359,13 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * The sole authority for workspace preset resolution. It snapshots the selected
  * preset before launch state changes, so the scheduler never reads mutable
  * preset/default state itself.
+ * @property {(workspace: string, key: string) => Promise<import('../bd.js').KvGetResult>} [kvGet]
+ * Workspace-addressed `bd kv` reader (UI-d3cb §5.1). The account default layer
+ * lives in kv, which the preset coordinator's synchronous workspace resolution
+ * cannot reach, so every dispatch resolution reads it through this dep. Absent
+ * wiring leaves the layer ABSENT rather than refusing: an unwired channel is
+ * not one of §5.2's four `unusable` cases, and no repo default can be stored
+ * without it either.
  * @property {(runner_name: string) => { name: string, spawn: (bead: any, workspace: string, settings: any) => RunnerHandle }} makeRunner
  * @property {{ resolveClaude: (email: string) => Promise<any>, resolveCodex: (key: string) => Promise<any> }} [accountCatalog]
  * @property {() => string|null} [resolveCswapPath]
@@ -616,6 +627,64 @@ export function laneOccupiedByOther(occupancy, lane_id, lineage_id) {
     return false;
   }
   return [...occupants].some((lineage) => lineage !== lineage_id);
+}
+
+/**
+ * Where each provider's effective account came from. Carried beside `accounts`
+ * rather than inside it (UI-d3cb §5.1) because the continuation digest hashes
+ * `accounts`, and the same account spends the same tokens whether an issue pin
+ * or a repo default named it.
+ *
+ * @typedef {{ claude: 'bead'|'workspace_default'|null, codex: 'bead'|'workspace_default'|null }} AccountSources
+ */
+
+/**
+ * Settle one provider: issue pin > repo default > current active login.
+ *
+ * @param {unknown} pinned - The Bead snapshot's account metadata value.
+ * @param {string|undefined} workspace_default
+ * @returns {{ value: string|null, source: 'bead'|'workspace_default'|null }}
+ */
+function effectiveAccount(pinned, workspace_default) {
+  // `typeof` rather than a truthiness test, so the pin layer keeps exactly the
+  // acceptance it had before this key gained a layer beneath it.
+  if (typeof pinned === 'string') {
+    return { value: pinned, source: 'bead' };
+  }
+  if (typeof workspace_default === 'string') {
+    return { value: workspace_default, source: 'workspace_default' };
+  }
+  return { value: null, source: null };
+}
+
+/**
+ * The operator-actionable specifics behind a closed-vocabulary account refusal.
+ *
+ * The refusal reasons themselves are NOT widened per source (§5.2); the detail
+ * is what answers "fix the issue, or fix the repo settings?". Order matters:
+ * the Codex HOME preparation detail names a failing path and keeps precedence,
+ * and a failure traced to an issue pin stays detail-free exactly as before.
+ *
+ * @param {{ reason: string, detail?: unknown, home_dir?: string|null, provider?: 'claude'|'codex' }} failure
+ * @param {{ claude: string|null, codex: string|null }} accounts
+ * @param {AccountSources} account_sources
+ * @returns {{ reason: string, command: string|null }|null}
+ */
+function launchAccountRefusalDetail(failure, accounts, account_sources) {
+  if (typeof failure.detail === 'string') {
+    return { reason: failure.detail, command: failure.home_dir ?? null };
+  }
+  const provider = failure.provider;
+  if (
+    provider !== undefined &&
+    account_sources[provider] === 'workspace_default'
+  ) {
+    return {
+      reason: `workspace_default:${provider}_account=${accounts[provider]}`,
+      command: null
+    };
+  }
+  return null;
 }
 
 /**
@@ -1562,15 +1631,46 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Read the repo's `bd kv` account default layer, once per launch decision.
+   *
+   * Deliberately UNCACHED (§5.1): a stale cache would decide which account's
+   * tokens a launch spends, which is worth far more than one `bd kv get`.
+   *
+   * @param {string} workspace
+   * @returns {Promise<import('../workspace-accounts.js').WorkspaceAccountsLayer>}
+   */
+  async function readWorkspaceAccountsLayer(workspace) {
+    if (typeof deps.kvGet !== 'function') {
+      return { state: 'absent', values: {}, warnings: [] };
+    }
+    try {
+      return normalizeWorkspaceAccounts(
+        await deps.kvGet(workspace, WORKSPACE_ACCOUNTS_KV_KEY)
+      );
+    } catch {
+      return { state: 'unusable', values: {}, warnings: ['kv_read_failed'] };
+    }
+  }
+
+  /**
    * Resolve the effective values through the coordinator's one immutable
    * dispatch snapshot. A missing coordinator is a fail-closed wiring error;
    * the scheduler must never reconstruct defaults from the queue itself.
    *
+   * The EFFECTIVE accounts are settled here rather than at launch (§5.1), so
+   * the continuation decision token's existing `accounts` digest already covers
+   * a repo default that moved after the user chose a continuation.
+   *
    * @param {string} workspace
    * @param {BeadSnapshot} bead_snapshot
-   * @returns {{ ok: true, preset_id: string|null, preset_revision: number|null, settings: Readonly<Record<string, string>>, exec: any, accounts: { claude: string|null, codex: string|null } }|{ ok: false, reason: string }}
+   * @param {import('../workspace-accounts.js').WorkspaceAccountsLayer} [workspace_accounts]
+   * @returns {{ ok: true, preset_id: string|null, preset_revision: number|null, settings: Readonly<Record<string, string>>, exec: any, accounts: { claude: string|null, codex: string|null }, account_sources: AccountSources }|{ ok: false, reason: string }}
    */
-  function resolveDispatchSettings(workspace, bead_snapshot) {
+  function resolveDispatchSettings(
+    workspace,
+    bead_snapshot,
+    workspace_accounts
+  ) {
     if (
       !deps.execPresetCoordinator ||
       typeof deps.execPresetCoordinator.resolveForDispatch !== 'function'
@@ -1580,6 +1680,17 @@ export function createScheduler(deps) {
         reason: 'default_exec_preset_resolution_unavailable'
       };
     }
+    const layer = workspace_accounts ?? {
+      state: /** @type {const} */ ('absent'),
+      values: {},
+      warnings: []
+    };
+    // Knowing a repo default EXISTS without knowing what it says is worse than
+    // having none: degrading it to "no default" silently spends whichever
+    // account happens to be logged in (§5.2).
+    if (layer.state === 'unusable') {
+      return { ok: false, reason: 'workspace_accounts_unavailable' };
+    }
     try {
       const resolved = deps.execPresetCoordinator.resolveForDispatch(
         workspace,
@@ -1588,18 +1699,18 @@ export function createScheduler(deps) {
       if (!resolved.ok) {
         return resolved;
       }
+      const claude = effectiveAccount(
+        bead_snapshot.claude_account,
+        layer.values.claude_account
+      );
+      const codex = effectiveAccount(
+        bead_snapshot.codex_account,
+        layer.values.codex_account
+      );
       return {
         ...resolved,
-        accounts: {
-          claude:
-            typeof bead_snapshot.claude_account === 'string'
-              ? bead_snapshot.claude_account
-              : null,
-          codex:
-            typeof bead_snapshot.codex_account === 'string'
-              ? bead_snapshot.codex_account
-              : null
-        }
+        accounts: { claude: claude.value, codex: codex.value },
+        account_sources: { claude: claude.source, codex: codex.source }
       };
     } catch {
       return { ok: false, reason: 'default_exec_preset_resolution_failed' };
@@ -1607,7 +1718,13 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Resolve pins and prepare launch-only account settings without fallback.
+   * Prepare launch-only account settings for the ALREADY SETTLED effective
+   * accounts. This reads no kv: the issue-pin/repo-default precedence is
+   * decided in {@link resolveDispatchSettings} (§5.1), so this step only
+   * resolves the catalog, the `cswap` path, and the `CODEX_HOME` mirror.
+   *
+   * A failure names the `provider` it belongs to so the refusal detail can say
+   * whether the issue or the repo settings need fixing (§5.2).
    *
    * @param {{ claude: string|null, codex: string|null }} accounts
    * @param {string} runner_name
@@ -1617,20 +1734,28 @@ export function createScheduler(deps) {
     const applied = { claude_account: null, codex_account: null };
     if (accounts.claude !== null && runner_name === 'claude') {
       if (!deps.accountCatalog) {
-        return { ok: false, reason: 'claude_account_list_unavailable' };
+        return {
+          ok: false,
+          reason: 'claude_account_list_unavailable',
+          provider: 'claude'
+        };
       }
       let claude;
       try {
         claude = await deps.accountCatalog.resolveClaude(accounts.claude);
       } catch {
-        return { ok: false, reason: 'claude_account_list_unavailable' };
+        return {
+          ok: false,
+          reason: 'claude_account_list_unavailable',
+          provider: 'claude'
+        };
       }
       if (!claude.ok) {
-        return claude;
+        return { ...claude, provider: 'claude' };
       }
       const cswap_path = (deps.resolveCswapPath || defaultResolveCswapPath)();
       if (!cswap_path) {
-        return { ok: false, reason: 'cswap_unavailable' };
+        return { ok: false, reason: 'cswap_unavailable', provider: 'claude' };
       }
       applied.claude_account = accounts.claude;
       applied.cswap_path = cswap_path;
@@ -1638,16 +1763,24 @@ export function createScheduler(deps) {
 
     if (accounts.codex !== null) {
       if (!deps.accountCatalog) {
-        return { ok: false, reason: 'codex_account_list_unavailable' };
+        return {
+          ok: false,
+          reason: 'codex_account_list_unavailable',
+          provider: 'codex'
+        };
       }
       let codex;
       try {
         codex = await deps.accountCatalog.resolveCodex(accounts.codex);
       } catch {
-        return { ok: false, reason: 'codex_account_list_unavailable' };
+        return {
+          ok: false,
+          reason: 'codex_account_list_unavailable',
+          provider: 'codex'
+        };
       }
       if (!codex.ok) {
-        return codex;
+        return { ...codex, provider: 'codex' };
       }
       const home_dir = deps.homeDir || os.homedir();
       const process_codex_root = process.env.CODEX_HOME;
@@ -1684,7 +1817,7 @@ export function createScheduler(deps) {
         // §4.3 requires the failing path to be visible: the seven launch
         // reasons are a closed vocabulary, so the operator-actionable detail
         // rides alongside it rather than widening that vocabulary.
-        return { ...prepared, home_dir: account_home_dir };
+        return { ...prepared, home_dir: account_home_dir, provider: 'codex' };
       }
       applied.codex_account = accounts.codex;
       applied.env = { CODEX_HOME: prepared.home_dir };
@@ -4362,7 +4495,11 @@ export function createScheduler(deps) {
       // Capture the preset/reference + effective values once, before any launch
       // state mutation. The coordinator's snapshot is the only default source;
       // all later stamp/provenance work consumes this immutable result.
-      const resolved_exec = resolveDispatchSettings(workspace, snap);
+      const resolved_exec = resolveDispatchSettings(
+        workspace,
+        snap,
+        await readWorkspaceAccountsLayer(workspace)
+      );
       if (!resolved_exec.ok) {
         reservation.release();
         refuseDispatch(workspace, bead_id, resolved_exec.reason);
@@ -4762,6 +4899,7 @@ export function createScheduler(deps) {
         effort: exec.orchestration_effort ?? null,
         speed: exec.orchestration_speed ?? 'default',
         accounts: resolved_exec.accounts,
+        account_sources: resolved_exec.account_sources,
         quickfix_lane,
         prior_wf: prior,
         stamped_keys,
@@ -5162,6 +5300,7 @@ export function createScheduler(deps) {
    *   effort: string|null,
    *   speed: string,
    *   accounts: { claude: string|null, codex: string|null },
+   *   account_sources?: AccountSources,
    *   prior_wf: string|null,
    *   stamped_keys: string[],
    *   wt_path: string,
@@ -5192,6 +5331,7 @@ export function createScheduler(deps) {
       effort,
       speed,
       accounts = { claude: null, codex: null },
+      account_sources = { claude: null, codex: null },
       prior_wf,
       wt_path,
       spawnBead,
@@ -5328,12 +5468,7 @@ export function createScheduler(deps) {
         input,
         account_settings.reason,
         false,
-        typeof account_settings.detail === 'string'
-          ? {
-              reason: account_settings.detail,
-              command: account_settings.home_dir ?? null
-            }
-          : null
+        launchAccountRefusalDetail(account_settings, accounts, account_sources)
       );
       return { ok: false, reason: account_settings.reason };
     }
@@ -6184,7 +6319,11 @@ export function createScheduler(deps) {
     let preset_id;
     /** @type {number|null} */
     let preset_revision;
-    const resolved_exec = resolveDispatchSettings(workspace, snap);
+    const resolved_exec = resolveDispatchSettings(
+      workspace,
+      snap,
+      await readWorkspaceAccountsLayer(workspace)
+    );
     if (!resolved_exec.ok) {
       return { ok: false, reason: resolved_exec.reason };
     }
@@ -6359,6 +6498,7 @@ export function createScheduler(deps) {
       effort: launch_effort,
       speed: launch_speed,
       accounts: resolved_exec.accounts,
+      account_sources: resolved_exec.account_sources,
       prior_wf: prior,
       stamped_keys,
       wt_path:
@@ -6419,7 +6559,11 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'bd_snapshot_failed' };
       }
     }
-    const resolved = resolveDispatchSettings(workspace, bead_snapshot);
+    const resolved = resolveDispatchSettings(
+      workspace,
+      bead_snapshot,
+      await readWorkspaceAccountsLayer(workspace)
+    );
     if (!resolved.ok) {
       return { ok: false, reason: resolved.reason };
     }
@@ -6576,6 +6720,7 @@ export function createScheduler(deps) {
       launch_speed,
       exec_values,
       accounts: resolved.accounts,
+      account_sources: resolved.account_sources,
       exec_restore_values,
       stamped_keys,
       decision_token,
@@ -6723,6 +6868,7 @@ export function createScheduler(deps) {
       launch_speed,
       exec_values,
       accounts,
+      account_sources,
       exec_restore_values,
       stamped_keys,
       preset_id,
@@ -6951,6 +7097,7 @@ export function createScheduler(deps) {
       effort: launch_effort,
       speed: launch_speed,
       accounts,
+      account_sources,
       prior_wf,
       stamped_keys,
       wt_path,
@@ -7315,6 +7462,8 @@ export function createScheduler(deps) {
     let exec_values;
     /** @type {{ claude: string|null, codex: string|null }} */
     let accounts;
+    /** @type {AccountSources} */
+    let account_sources;
     /** @type {string|null} */
     let preset_id;
     /** @type {number|null} */
@@ -7369,6 +7518,7 @@ export function createScheduler(deps) {
       stamped_keys = continuation.stamped_keys;
       exec_values = continuation.exec_values;
       accounts = continuation.accounts;
+      account_sources = continuation.account_sources;
       exec_restore_values = continuation.exec_restore_values;
       preset_id = continuation.preset_id;
       preset_revision = continuation.preset_revision;
@@ -7389,7 +7539,11 @@ export function createScheduler(deps) {
       if (repair_snap.repo !== repo) {
         return { ok: false, reason: 'repair_repo_mismatch' };
       }
-      const resolved_exec = resolveDispatchSettings(workspace, repair_snap);
+      const resolved_exec = resolveDispatchSettings(
+        workspace,
+        repair_snap,
+        await readWorkspaceAccountsLayer(workspace)
+      );
       if (!resolved_exec.ok) {
         return { ok: false, reason: resolved_exec.reason };
       }
@@ -7406,6 +7560,7 @@ export function createScheduler(deps) {
       stamped_keys = exec.stamped_keys;
       exec_values = execValuesFor(exec);
       accounts = resolved_exec.accounts;
+      account_sources = resolved_exec.account_sources;
       const restore_capture = await captureExecRestoreValues(
         bead_id,
         stamped_keys
@@ -7602,6 +7757,7 @@ export function createScheduler(deps) {
       effort: launch_effort,
       speed: launch_speed,
       accounts,
+      account_sources,
       prior_wf,
       stamped_keys,
       wt_path,

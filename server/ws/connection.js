@@ -59,7 +59,9 @@ import {
 import { scheduleListRefresh, setRefreshDebounceMs } from './refresh.js';
 import {
   handleGetSessionDefaults,
-  handleSetSessionDefaults
+  handleGetWorkspaceAccounts,
+  handleSetSessionDefaults,
+  handleSetWorkspaceAccounts
 } from './session-defaults-handlers.js';
 import {
   handleSubscribeList,
@@ -436,6 +438,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'set-session-defaults':
       await handleSetSessionDefaults(ws, req);
+      return;
+    case 'get-workspace-accounts':
+      await handleGetWorkspaceAccounts(ws, req);
+      return;
+    case 'set-workspace-accounts':
+      await handleSetWorkspaceAccounts(ws, req);
       return;
     case 'update-workflow-meta':
       await handleUpdateWorkflowMeta(ws, req);
