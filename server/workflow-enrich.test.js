@@ -341,7 +341,7 @@ describe('execution metadata display projection', () => {
     expect(parseResolverReceipt(null)).toBeNull();
   });
 
-  test('surfaces the resolver chip for a closed conflict-resolved bead', () => {
+  test('surfaces the resolver receipt for a closed conflict-resolved bead', () => {
     const prior = 'd'.repeat(40);
     const result = 'e'.repeat(40);
 
@@ -357,14 +357,15 @@ describe('execution metadata display projection', () => {
       null
     );
 
-    expect(workflow.chips.resolver).toEqual({
+    expect(workflow.resolver).toEqual({
       attempt: 'UI-1-1787-1',
       prior_sha: prior,
       sha: result
     });
+    expect(workflow.chips).not.toHaveProperty('resolver');
   });
 
-  test('leaves the resolver chip empty for an ordinary impl review', () => {
+  test('leaves the resolver receipt empty for an ordinary impl review', () => {
     const workflow = enrichIssueWorkflow(
       {
         id: 'UI-1',
@@ -375,7 +376,7 @@ describe('execution metadata display projection', () => {
       null
     );
 
-    expect(workflow.chips.resolver).toBeNull();
+    expect(workflow.resolver).toBeNull();
   });
 });
 

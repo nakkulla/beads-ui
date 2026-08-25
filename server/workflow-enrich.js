@@ -992,10 +992,11 @@ function mergeStage(md, status) {
  * pinned metadata or the deriveRoute fallback (display distinguishes the
  * two — a derived value must not read as a settled pin).
  * @property {{ spec: WorkflowStage, plan?: WorkflowStage, impl: WorkflowStage, pr: WorkflowStage, merge: WorkflowStage, close?: WorkflowStage }} stages
- * @property {{ route: 'quick_fix'|'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null, planned_execution: PlannedExecution|null, exec_receipt: ExecReceipt|null, impl_entry: { actor: string, sha: string }|null, resolver: ResolverReceipt|null }} chips
+ * @property {{ route: 'quick_fix'|'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null, planned_execution: PlannedExecution|null, exec_receipt: ExecReceipt|null, impl_entry: { actor: string, sha: string }|null }} chips
  * @property {PlannedExecution|null} planned_execution
  * @property {ExecReceipt|null} exec_receipt
  * @property {{ actor: string, sha: string }|null} impl_entry
+ * @property {ResolverReceipt|null} resolver
  */
 
 /**
@@ -1031,8 +1032,9 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
   const exec_receipt = parseExecReceipt(md.exec_receipt);
   const impl_entry = parseImplEntry(md.impl_entry);
   // A conflict-resolution session is the only writer of this receipt form, so
-  // its presence is the whole fact the chip reports: this head did not reach
-  // the merge gate on the reviewed delta alone.
+  // its presence is the whole fact the detail panel reports beside the raw
+  // receipt: this head did not reach the merge gate on the reviewed delta
+  // alone.
   const resolver = parseResolverReceipt(md.impl_review);
   // Explicit only when the metadata pin itself is a valid enum value — any
   // fallback (absence, invalid value, plan_path inference) is 'derived'.
@@ -1070,6 +1072,7 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
     planned_execution,
     exec_receipt,
     impl_entry,
+    resolver,
     chips: {
       route,
       route_source,
@@ -1077,8 +1080,7 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
       pr: md.pr_url ? { number: parsePrNumber(md.pr_url) } : null,
       planned_execution,
       exec_receipt,
-      impl_entry,
-      resolver
+      impl_entry
     }
   };
 }

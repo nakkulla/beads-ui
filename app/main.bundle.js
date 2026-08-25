@@ -85,10 +85,6 @@ var If=Object.create;var Ta=Object.defineProperty;var Pf=Object.getOwnPropertyDe
         class="ctl-chip ctl-chip--impl-entry"
         title=${`impl_entry ${i.actor}@${i.sha}`}
         >${`impl ${i.actor} \xB7 ${i.sha.slice(0,7)}`}</span
-      >`)}if(r.resolver){let i=r.resolver;s.push(l`<span
-        class="ctl-chip ctl-chip--resolver"
-        title=${`impl_review resolver-self:${i.attempt} \xB7 ${i.prior_sha.slice(0,7)} \u2192 ${i.sha.slice(0,7)}`}
-        >⚑ 충돌 해소</span
       >`)}for(let i of Sc(e.labels,n))s.push(l`<span class="ctl-chip ctl-chip--label">${i}</span>`);return e.from_id&&Kn(n,"from")&&s.push(l`<button
         type="button"
         class="ctl-chip ctl-chip--from"
@@ -1049,6 +1045,14 @@ ${i}</pre
             <span class="detail-kv__k">impl_review</span>
             <span class="detail-kv__v"
               >${A.impl_review||"\uC5C6\uC74C"}${x?" \xB7 stale":""}</span
+            >
+          </div>`:""}
+      ${u.resolver?l`<div class="detail-kv">
+            <span class="detail-kv__k">↳ 충돌 해소</span>
+            <span
+              class="detail-kv__v detail-kv__v--resolver detail-kv__v--wrap"
+              title=${`resolver-self:${u.resolver.attempt} \xB7 ${u.resolver.prior_sha} \u2192 ${u.resolver.sha}`}
+              >${`${u.resolver.prior_sha.slice(0,7)} \u2192 ${u.resolver.sha.slice(0,7)}`}</span
             >
           </div>`:""}
       ${u.planned_execution?l`<div class="detail-kv">

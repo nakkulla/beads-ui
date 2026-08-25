@@ -36,7 +36,6 @@ import { stepperTemplate } from './stepper.js';
  * @property {{ kind: 'delegated'|'main', reason: string | null } | null} [planned_execution]
  * @property {ExecReceipt | null} [exec_receipt]
  * @property {{ actor: string, sha: string } | null} [impl_entry]
- * @property {{ attempt: string, prior_sha: string, sha: string } | null} [resolver]
  */
 
 /**
@@ -330,8 +329,8 @@ function compactExecutionChip(exec_receipt) {
 }
 
 /**
- * Card chips row: route · ⚡fast_track · PR #n · ⚑ conflict resolution ·
- * labels · ↩ provenance · blocked reason. The PR chip is present only when a pr_url produced one
+ * Card chips row: route · ⚡fast_track · PR #n · labels · ↩ provenance ·
+ * blocked reason. The PR chip is present only when a pr_url produced one
  * server-side, keeping it in agreement with the stepper PR cell. Labels render
  * by default and the display policy only subtracts; each derived chip family
  * can be switched off independently via `policy.chips`.
@@ -392,16 +391,6 @@ function chipsTemplate(issue, ctx) {
         class="ctl-chip ctl-chip--impl-entry"
         title=${`impl_entry ${entry.actor}@${entry.sha}`}
         >${`impl ${entry.actor} · ${entry.sha.slice(0, 7)}`}</span
-      >`
-    );
-  }
-  if (chips.resolver) {
-    const resolver = chips.resolver;
-    items.push(
-      html`<span
-        class="ctl-chip ctl-chip--resolver"
-        title=${`impl_review resolver-self:${resolver.attempt} · ${resolver.prior_sha.slice(0, 7)} → ${resolver.sha.slice(0, 7)}`}
-        >⚑ 충돌 해소</span
       >`
     );
   }
