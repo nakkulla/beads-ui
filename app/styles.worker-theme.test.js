@@ -265,6 +265,14 @@ describe('worker console styles', () => {
     expect(headerRule).toContain('min-width: 0');
   });
 
+  test('keeps wrapped running tile controls pinned to the right', () => {
+    const actionsRule =
+      workerBlock.match(/(?:^|\n)\.rtile__hd-actions\s*{([^}]*)}/)?.[1] || '';
+
+    expect(actionsRule).toContain('margin-left: auto');
+    expect(actionsRule).toContain('flex: 0 0 auto');
+  });
+
   test('wraps running tile metadata in narrow lanes', () => {
     const metaRule =
       workerBlock.match(/(?:^|\n)\.rtile__meta\s*{([^}]*)}/)?.[1] || '';

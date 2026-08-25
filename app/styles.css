@@ -3973,8 +3973,18 @@ html[data-theme='dark'] {
   overflow-wrap: anywhere;
 }
 
-.rtile__elapsed {
+/* 경과시간과 조작 버튼은 한 덩어리로 헤더 오른쪽에 붙는다: 타일이 좁아
+   줄바꿈이 일어나도 [▤ 세션]·[⏸]·[폐기]가 쪼개지거나 왼쪽으로 떨어지지
+   않고, 통째로 다음 줄 오른쪽에 그대로 남는다. */
+.rtile__hd-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  flex: 0 0 auto;
   margin-left: auto;
+}
+
+.rtile__elapsed {
   font-size: var(--fs-chip-lg);
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;

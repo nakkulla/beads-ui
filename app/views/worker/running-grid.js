@@ -470,15 +470,23 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const session_receipt = session
     ? tile.workflow?.chips?.exec_receipt || null
     : null;
-  const session_meta = session_receipt
-    ? html`<div class="rtile__meta">
-        <span
-          class="ctl-chip ctl-chip--exec-receipt"
-          title=${`exec_receipt ${formatExecReceipt(session_receipt)}`}
-          >${`${session_receipt.kind}:${execReceiptActor(session_receipt)}`}</span
-        >
-      </div>`
+  // route 칩은 헤더가 아니라 meta 줄이 싣는다: 헤더 한 줄은 ID·경과·조작
+  // 버튼이 이미 채우고 있어서, 분류 사실인 route가 거기 끼면 좁은 타일에서
+  // 조작 버튼이 통째로 다음 줄로 밀린다.
+  const route_chip = routeChipTemplate(tile.workflow);
+  const session_receipt_chip = session_receipt
+    ? html`<span
+        class="ctl-chip ctl-chip--exec-receipt"
+        title=${`exec_receipt ${formatExecReceipt(session_receipt)}`}
+        >${`${session_receipt.kind}:${execReceiptActor(session_receipt)}`}</span
+      >`
     : '';
+  const session_meta =
+    route_chip || session_receipt_chip
+      ? html`<div class="rtile__meta">
+          ${route_chip}${session_receipt_chip}
+        </div>`
+      : '';
   // 세션 타일의 수정 시각은 활동 줄이 "갱신 n 전"으로 이미 말한다 (§6) —
   // 같은 사실을 두 줄로 쓰지 않는다.
   const times_el = session ? '' : timesMeta(tile);
@@ -507,72 +515,72 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         aria-hidden="true"
       ></span>
       <span class="rtile__id" title="클릭하면 ID 복사">${tile.bead_id}</span>
-      ${priorityBadgeTemplate(tile.priority)}${routeChipTemplate(
-        tile.workflow
-      )}${monitor_head}${lineage
+      ${priorityBadgeTemplate(tile.priority)}${monitor_head}${lineage
         ? html`<span class="rtile__resumed" title=${lineage}>↻</span>`
         : ''}
-      ${session
-        ? html`${typeof tile.started_at === 'number'
-              ? html`<span class="rtile__elapsed">${elapsed}</span>`
-              : ''}<span
-              class="rtile__session-badge"
-              title="Worker가 아닌 세션이 in_progress로 잡은 이슈"
-              >세션</span
-            >`
-        : html`<span class="rtile__elapsed">${elapsed}</span>`}
-      ${session
-        ? ''
-        : failed
-          ? html`<button
-                type="button"
-                class="rtile__resume"
-                ?disabled=${tile.resume_eligible === false}
-                title=${tile.resume_eligible === false
-                  ? tile.resume_reason || '이어하기 불가'
-                  : '같은 세션으로 이어서 진행'}
-                aria-label="이어하기"
-              >
-                ↻ 이어하기
-              </button>
-              ${discard_button}
-              <button
-                type="button"
-                class="rtile__dismiss"
-                title="실패 알림 닫기 — 레인에는 남습니다"
-                aria-label="실패 기록 닫기"
-              >
-                ✕
-              </button>`
-          : html`<button
-                type="button"
-                class="rtile__session"
-                title="라이브 세션 열기"
-                aria-label="라이브 세션 열기"
-              >
-                ▤ 세션
-              </button>
-              ${paused
-                ? html`<button
-                    type="button"
-                    class="rtile__resume"
-                    title="같은 세션으로 이어서 재개"
-                    aria-label="재개"
-                  >
-                    ▶
-                  </button>`
-                : html`<button
-                    type="button"
-                    class="rtile__pause"
-                    ?disabled=${tile.can_pause === false}
-                    title=${tile.can_pause === false
-                      ? '세션 ID 기록 전 — 일시정지 불가'
-                      : '일시정지 (같은 세션으로 재개 가능)'}
-                    aria-label="일시정지"
-                  >
-                    ⏸
-                  </button>`}
-              ${discard_button}`}
+      <div class="rtile__hd-actions">
+        ${session
+          ? html`${typeof tile.started_at === 'number'
+                ? html`<span class="rtile__elapsed">${elapsed}</span>`
+                : ''}<span
+                class="rtile__session-badge"
+                title="Worker가 아닌 세션이 in_progress로 잡은 이슈"
+                >세션</span
+              >`
+          : html`<span class="rtile__elapsed">${elapsed}</span>`}
+        ${session
+          ? ''
+          : failed
+            ? html`<button
+                  type="button"
+                  class="rtile__resume"
+                  ?disabled=${tile.resume_eligible === false}
+                  title=${tile.resume_eligible === false
+                    ? tile.resume_reason || '이어하기 불가'
+                    : '같은 세션으로 이어서 진행'}
+                  aria-label="이어하기"
+                >
+                  ↻ 이어하기
+                </button>
+                ${discard_button}
+                <button
+                  type="button"
+                  class="rtile__dismiss"
+                  title="실패 알림 닫기 — 레인에는 남습니다"
+                  aria-label="실패 기록 닫기"
+                >
+                  ✕
+                </button>`
+            : html`<button
+                  type="button"
+                  class="rtile__session"
+                  title="라이브 세션 열기"
+                  aria-label="라이브 세션 열기"
+                >
+                  ▤ 세션
+                </button>
+                ${paused
+                  ? html`<button
+                      type="button"
+                      class="rtile__resume"
+                      title="같은 세션으로 이어서 재개"
+                      aria-label="재개"
+                    >
+                      ▶
+                    </button>`
+                  : html`<button
+                      type="button"
+                      class="rtile__pause"
+                      ?disabled=${tile.can_pause === false}
+                      title=${tile.can_pause === false
+                        ? '세션 ID 기록 전 — 일시정지 불가'
+                        : '일시정지 (같은 세션으로 재개 가능)'}
+                      aria-label="일시정지"
+                    >
+                      ⏸
+                    </button>`}
+                ${discard_button}`}
+      </div>
     </div>
     <div class="rtile__title">${tile.title}</div>
     ${monitor_body}${tile.rollup
@@ -597,13 +605,14 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       : ''}
     ${session
       ? session_meta
-      : exec_chips ||
+      : route_chip ||
+          exec_chips ||
           provider_badges.length > 0 ||
           usage_label ||
           conflict_badge ||
           base_badge
         ? html`<div class="rtile__meta">
-            ${conflict_badge
+            ${route_chip}${conflict_badge
               ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
               : ''}
             ${base_badge

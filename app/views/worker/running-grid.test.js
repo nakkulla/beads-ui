@@ -534,7 +534,7 @@ describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', 
     expect(tile).not.toContain('rtile__legs');
     expect(tile).not.toContain('stepper');
     expect(tile).toMatchInlineSnapshot(
-      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span> <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> <div class="rtile__title">실행 중</div>       <div aria-hidden="true" class="rtile__accent"></div> </div>"`
+      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span> <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions"> <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> </div> <div class="rtile__title">실행 중</div>       <div aria-hidden="true" class="rtile__accent"></div> </div>"`
     );
   });
 
@@ -739,17 +739,13 @@ describe('session tile (UI-yrzu §6)', () => {
     expect(tile.querySelector('.rtile__dismiss')).toBeNull();
   });
 
-  test('draws the route chip after the id', () => {
-    const head = /** @type {HTMLElement} */ (
-      renderSession({ workflow: /** @type {any} */ (WORKFLOW) }).querySelector(
-        '.rtile__hd'
-      )
-    );
-    const order = Array.from(head.children).map((child) => child.className);
+  test('draws the route chip in the meta row, not the header', () => {
+    const tile = renderSession({ workflow: /** @type {any} */ (WORKFLOW) });
 
-    expect(order.indexOf('ctl-chip ctl-chip--route')).toBe(
-      order.indexOf('rtile__id') + 1
-    );
+    expect(tile.querySelector('.rtile__hd .ctl-chip--route')).toBeNull();
+    expect(
+      tile.querySelector('.rtile__meta .ctl-chip--route')?.textContent
+    ).toBe('spec_backed');
   });
 
   test('keeps the elapsed clock while a start time is known', () => {
@@ -815,8 +811,17 @@ describe('session tile (UI-yrzu §6)', () => {
     );
   });
 
-  test('omits the meta row when the workflow carries no exec_receipt', () => {
+  test('keeps the meta row for the route chip alone', () => {
     const tile = renderSession({ workflow: /** @type {any} */ (WORKFLOW) });
+
+    expect(
+      tile.querySelector('.rtile__meta .ctl-chip--exec-receipt')
+    ).toBeNull();
+    expect(tile.querySelector('.rtile__meta .ctl-chip--route')).not.toBeNull();
+  });
+
+  test('omits the meta row when the tile carries no workflow', () => {
+    const tile = renderSession();
 
     expect(tile.querySelector('.rtile__meta')).toBeNull();
   });
@@ -849,6 +854,25 @@ describe('session tile (UI-yrzu §6)', () => {
     expect(tile.querySelector('.rtile__id')?.getAttribute('title')).toBe(
       '클릭하면 ID 복사'
     );
+  });
+});
+
+describe('worker running tile header actions', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  test('keeps the clock and every control inside one header action group', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([tileInput({ can_pause: true })]), mount);
+
+    const actions = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__hd-actions')
+    );
+    expect(actions.querySelector('.rtile__elapsed')).not.toBeNull();
+    expect(actions.querySelector('.rtile__session')).not.toBeNull();
+    expect(actions.querySelector('.rtile__pause')).not.toBeNull();
   });
 });
 
