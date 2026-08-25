@@ -325,9 +325,28 @@ export function codexSpec(catalog_entry, options = {}) {
     buildArgv(bead, _workspace, settings) {
       const s = settings || {};
       const model_id = resolveModelId(entry, s.model);
+      // Fork branch (UI-p206 §4): `fork` inherits the named thread's context
+      // onto a NEW thread id, leaving the original rollout file untouched. It
+      // is a MODIFIER of the resume branch — without a thread id there is
+      // nothing to fork, so the flag alone leaves the fresh argv exactly as it
+      // was.
+      //
+      // MEASURED 2026-08-26 (§8's required experiment), codex-cli 0.148.0:
+      // `codex exec fork 01a03b2f-266d-… --json -m gpt-5.6-luna` announced a
+      // DIFFERENT thread_id (01a03b2f-58e2-…) on the `thread.started` line that
+      // `extractSessionId` reads, and still answered the token the base thread
+      // had been told to remember. The base rollout file was byte-identical
+      // before and after. `fork` also takes `-m` in the same position `resume`
+      // does, which is why the model/effort/service_tier assembly below needs no
+      // branch of its own.
       /** @type {string[]} */
       const args = s.resume_session_id
-        ? ['exec', 'resume', String(s.resume_session_id), '--json']
+        ? [
+            'exec',
+            s.fork_session ? 'fork' : 'resume',
+            String(s.resume_session_id),
+            '--json'
+          ]
         : ['exec', '--json'];
       if (model_id) {
         args.push('-m', model_id);

@@ -761,6 +761,68 @@ describe('runner/claude resume argv (spec §1.4)', () => {
   });
 });
 
+describe('runner/claude fork argv (UI-p206 §4)', () => {
+  test('adds --fork-session directly after the resumed session id', () => {
+    const spec = claudeSpec();
+
+    const built = spec.buildArgv(BEAD, WS, {
+      model: 'opus',
+      resume_session_id: 'sid-xyz',
+      fork_session: true
+    });
+
+    const i = built.args.indexOf('--resume');
+    expect(built.args[i + 1]).toBe('sid-xyz');
+    expect(built.args[i + 2]).toBe('--fork-session');
+  });
+
+  test('leaves the plain resume argv untouched when fork_session is false', () => {
+    const spec = claudeSpec();
+
+    const forkless = spec.buildArgv(BEAD, WS, {
+      model: 'opus',
+      resume_session_id: 'sid-xyz',
+      fork_session: false
+    });
+
+    expect(forkless.args).toEqual(
+      spec.buildArgv(BEAD, WS, { model: 'opus', resume_session_id: 'sid-xyz' })
+        .args
+    );
+  });
+
+  test('resolves the same model id on the fork and resume branches', () => {
+    const spec = claudeSpec();
+
+    const forked = spec.buildArgv(BEAD, WS, {
+      model: 'opus',
+      resume_session_id: 'sid-xyz',
+      fork_session: true
+    });
+    const resumed = spec.buildArgv(BEAD, WS, {
+      model: 'opus',
+      resume_session_id: 'sid-xyz'
+    });
+
+    expect(forked.args[forked.args.indexOf('--model') + 1]).toBe(
+      resumed.args[resumed.args.indexOf('--model') + 1]
+    );
+  });
+
+  test('ignores fork_session when no session id is being resumed', () => {
+    const spec = claudeSpec();
+
+    const built = spec.buildArgv(BEAD, WS, {
+      model: 'opus',
+      fork_session: true
+    });
+
+    expect(built.args).toEqual(
+      spec.buildArgv(BEAD, WS, { model: 'opus' }).args
+    );
+  });
+});
+
 /**
  * The `--append-system-prompt` value carried by an argv (UI-rxp3 §2).
  *

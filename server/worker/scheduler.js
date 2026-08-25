@@ -81,6 +81,7 @@ import { repairSessionPrompt } from './repair-session-adapter.js';
 import { liftDelegation } from './runner/claude.js';
 import { RUNNERS } from './runner/index.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
+import { qualifySessionFork } from './session-ref.js';
 import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths.js';
 import * as default_usage_receipts from './usage-receipts.js';
 
@@ -421,6 +422,10 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * `undefined`, any present value reaches the judge unflattened.
  * @property {unknown} [quick_fix_review] - Raw quick_fix self-review receipt
  * metadata, under the same presence rule.
+ * @property {unknown} [session_ref] - Raw `session_ref` contract value naming
+ * the interactive sessions that worked this bead (UI-p206 §5.1). The fork
+ * qualification's only input; same presence rule, so a malformed value reaches
+ * it as present-and-invalid.
  * @property {string[]} [deps] - Direct `blocks` blocker ids (UI-04vo §3) —
  * the lane-ordering edge source. Consumers intersect these with the current
  * queue membership.
@@ -5447,6 +5452,7 @@ export function createScheduler(deps) {
    *   title?: string|null,
    *   launch_kind?: 'dispatch'|'stale_work_continue'|'resume'|'conflict'|'disposition'|'completion_repair',
    *   resume_session_id?: string|null,
+   *   fork_session?: boolean,
    *   verify_worktree?: boolean,
    *   disposition?: string|null,
    *   quickfix_lane?: boolean,
@@ -5561,6 +5567,13 @@ export function createScheduler(deps) {
     // prior claude session id / codex thread id.
     if (resume_session_id) {
       settings.resume_session_id = resume_session_id;
+    }
+    // Fork argv (UI-p206 §4). Carried ONLY on an explicit `true`, so every
+    // caller that never heard of forking keeps the plain resume it has always
+    // had. The adapters ignore it without a session to fork, but this path
+    // never produces that pair anyway.
+    if (input.fork_session === true) {
+      settings.fork_session = true;
     }
     // The output files the child inherits as stdout/stderr (UI-o2yt §3.1). The
     // session log is keyed by the WORKSPACE, not the worktree the session runs
@@ -6478,6 +6491,31 @@ export function createScheduler(deps) {
     exec_values = execValuesFor(exec);
     preset_id = resolved_exec.preset_id;
     preset_revision = resolved_exec.preset_revision;
+    // The first observed conflict on an external row (UI-p206 §5.2). The bead
+    // was implemented by an interactive session whose judgments — which review
+    // points were taken and which were refused, and why — never all reach the
+    // spec document, so resolving the conflict without that context loses them.
+    // The qualification runs against the runner THIS dispatch resolved to, not
+    // the one that wrote the ref, because a claude session cannot be forked by
+    // codex or the reverse.
+    //
+    // A refusal is a normal fallback rather than a failure: it produces exactly
+    // today's fresh dispatch, so it is logged and the dispatch continues.
+    const fork_qualified = qualifySessionFork(
+      { session_ref: snap.session_ref },
+      runner_name,
+      { home_dir: deps.homeDir }
+    );
+    if (!fork_qualified.ok) {
+      log(
+        'external conflict for %s opens a fresh session (%s)',
+        bead_id,
+        fork_qualified.reason
+      );
+    }
+    const forked_from_session_id = fork_qualified.ok
+      ? fork_qualified.session_id
+      : null;
     const restore_capture = await captureExecRestoreValues(
       bead_id,
       stamped_keys
@@ -6565,6 +6603,11 @@ export function createScheduler(deps) {
         exec_restore_values,
         conflict_resolution: true,
         external_conflict: true,
+        // Written HERE rather than at the init event (UI-p206 §5.3): the id
+        // being forked FROM is already decided at dispatch, while the id the
+        // session announces is a new one. Recording the pair is what keeps the
+        // relationship readable without excavating the queue JSON.
+        forked_from_session_id,
         started_at: prerecord_started_at,
         status: 'running',
         pid: null
@@ -6643,9 +6686,13 @@ export function createScheduler(deps) {
           ? deps.worktree.pathFor(repo, bead_id)
           : '',
       launch_kind: 'conflict',
-      // A FRESH session, not a resume: an external row carries no session id to
-      // continue, and the prompt is self-contained.
-      resume_session_id: null,
+      // A FORK of the bead's own interactive session when one qualified, else
+      // the fresh session this path has always opened. The two values move
+      // together on purpose (UI-p206 §4): `resume_session_id` WITHOUT
+      // `fork_session` would be a plain resume, which appends to the user's
+      // transcript, and that is the one combination this design forbids.
+      resume_session_id: forked_from_session_id,
+      ...(forked_from_session_id !== null ? { fork_session: true } : {}),
       spawnBead: { id: bead_id, prompt: conflictPrompt(bead_id, base) }
     });
     if (!launched.ok) {

@@ -289,6 +289,13 @@ export function createLiveBd(config) {
       const quick_fix_review = Object.hasOwn(md, 'quick_fix_review')
         ? md.quick_fix_review
         : undefined;
+      // The interactive session that implemented this bead (UI-p206 §5.1). Same
+      // presence rule: the fork qualification has to see a malformed value as
+      // present-and-invalid so it rejects with a reason instead of reading as a
+      // bead that never named a session.
+      const session_ref = Object.hasOwn(md, 'session_ref')
+        ? md.session_ref
+        : undefined;
 
       const resolved = await config.resolveBase();
 
@@ -372,6 +379,7 @@ export function createLiveBd(config) {
         last_checked_sha,
         issue_type,
         quick_fix_review,
+        session_ref,
         deps: blocks_blockers,
         blocked_by: blocks_blockers
       };

@@ -152,6 +152,13 @@
  * `already_resumed` guard scans attempts for a child carrying this so a failed
  * attempt is resumed at most once — a scan-derived judgment that survives cold
  * reload.
+ * @property {string|null} forked_from_session_id - The provider session id this
+ * attempt was FORKED from at dispatch (UI-p206 §6); null for every attempt that
+ * forked nothing. A fork is issued a new session id, so `session_id` — extracted
+ * from the session's own init event — never matches the one it inherited
+ * context from, and without this field the relationship is unrecoverable from
+ * the record. Distinct from `resumed_from`, which names a prior ATTEMPT rather
+ * than a session and implies the same transcript continued.
  * @property {'session'|'fresh'|null} continuation_mode - Whether this child
  * reused the provider session or started a replacement session. Null keeps
  * legacy history neutral.
@@ -2345,6 +2352,11 @@ export function makeAttempt(fields) {
       ? clone(fields.continuation_action)
       : null,
     resumed_from: fields.resumed_from ?? null,
+    forked_from_session_id:
+      typeof fields.forked_from_session_id === 'string' &&
+      fields.forked_from_session_id.length > 0
+        ? fields.forked_from_session_id
+        : null,
     conflict_resolution: fields.conflict_resolution === true,
     quickfix_lane: fields.quickfix_lane === true,
     quickfix_landing: isRecord(fields.quickfix_landing)

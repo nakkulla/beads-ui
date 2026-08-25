@@ -567,6 +567,23 @@ export function claudeSpec(options = {}) {
       // resumed run inherits the interrupted session's context.
       if (s.resume_session_id) {
         args.push('--resume', String(s.resume_session_id));
+        // Fork branch (UI-p206 §4): inherit the named session's context but
+        // branch onto a NEW session id, so the transcript this resumes from is
+        // never appended to. It is a MODIFIER of the resume branch, not a mode
+        // of its own — `fork_session` without a session to fork means nothing,
+        // and is therefore ignored rather than turned into a fresh-session flag.
+        //
+        // MEASURED 2026-08-26 (§8's required experiment), claude 2.1.246 under
+        // this exact headless argv: `--resume 93e77430-… --fork-session`
+        // announced a DIFFERENT session_id (596e4dc9-…) on the `system`/`init`
+        // line that `extractSessionId` reads, and still answered the token the
+        // base session had been told to remember — so context is inherited on
+        // the new id. The base transcript file was byte-identical before and
+        // after (same length, mtime and sha256) and the forked run wrote its own
+        // separate file.
+        if (s.fork_session) {
+          args.push('--fork-session');
+        }
       }
       const model_id = resolveModelId(entry, s.model);
       if (model_id) {

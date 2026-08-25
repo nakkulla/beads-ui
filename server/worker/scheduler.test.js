@@ -494,6 +494,7 @@ function makeFakeBd(config) {
         description: c.description ?? null,
         issue_type: c.issue_type,
         quick_fix_review: c.quick_fix_review,
+        session_ref: c.session_ref,
         deps: c.deps ?? []
       };
     },
@@ -5443,7 +5444,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
    * An external bead as bd really holds it: `resolved`, hence blocked and not
    * ready — the two verdicts this dispatch must NOT consult.
    *
-   * @param {{ bead?: Record<string, any>, registry?: boolean, defaults?: Record<string, string>, store?: any, execPresetCoordinator?: any, notify?: any }} [over]
+   * @param {{ bead?: Record<string, any>, registry?: boolean, defaults?: Record<string, string>, store?: any, execPresetCoordinator?: any, notify?: any, homeDir?: string }} [over]
    */
   function extEnv(over = {}) {
     const env = setup({
@@ -5460,6 +5461,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
       store: over.store,
       slots: 1,
       notify: over.notify,
+      homeDir: over.homeDir,
       execPresetCoordinator: over.execPresetCoordinator,
       externalPrs: over.registry === false ? undefined : { X1: EXT_ROW }
     });
@@ -5604,6 +5606,87 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     expect(env.runner.settingsFor('X1').resume_session_id).toBe(undefined);
     expect(env.runner.cwdFor('X1')).toBe('/wt/X1');
     expect(env.worktree.add).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A REAL claude transcript under a temp home, because the fork qualification
+   * resolves the file through the actual filesystem and compares against this
+   * machine's own hostname.
+   *
+   * @param {string} session_id
+   * @returns {string} The home directory to hand the scheduler.
+   */
+  function seedClaudeTranscript(session_id) {
+    const home_dir = path.join(tmp_state, 'fork-home');
+    const project_dir = path.join(home_dir, '.claude', 'projects', '-repo');
+    fs.mkdirSync(project_dir, { recursive: true });
+    fs.writeFileSync(path.join(project_dir, `${session_id}.jsonl`), '{}\n');
+    return home_dir;
+  }
+
+  test('forks the bead own interactive session for the first conflict', async () => {
+    const session_id = 'c8206fbe-source';
+    const env = extEnv({
+      homeDir: seedClaudeTranscript(session_id),
+      bead: { session_ref: `claude:${session_id}@${os.hostname()}` }
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(res.ok).toBe(true);
+    expect(env.runner.settingsFor('X1')).toMatchObject({
+      resume_session_id: session_id,
+      fork_session: true
+    });
+    expect(
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)]
+        .forked_from_session_id
+    ).toBe(session_id);
+  });
+
+  test('keeps the fresh dispatch when the named session is not on this host', async () => {
+    const env = extEnv({
+      bead: { session_ref: 'claude:c8206fbe-source@some-other-box' }
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(res.ok).toBe(true);
+    expect(env.runner.settingsFor('X1')).not.toHaveProperty(
+      'resume_session_id'
+    );
+    expect(env.runner.settingsFor('X1')).not.toHaveProperty('fork_session');
+    expect(
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)]
+        .forked_from_session_id
+    ).toBe(null);
+  });
+
+  test('routes a second conflict to the attempt relaunch instead of a fork', async () => {
+    const session_id = 'c8206fbe-source';
+    const env = extEnv({
+      homeDir: seedClaudeTranscript(session_id),
+      bead: { session_ref: `claude:${session_id}@${os.hostname()}` }
+    });
+    seedRunningAttempt(env.store, {
+      status: 'done',
+      repo: '/repo',
+      target_base: 'main',
+      runner: 'claude',
+      model: 'opus',
+      session_id: 'worker-session-1',
+      external_conflict: true,
+      finished_at: 50
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
+
+    expect(res.ok).toBe(true);
+    const attempt =
+      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
+    expect(attempt.resumed_from).toBe('prev-1');
+    expect(attempt.forked_from_session_id).toBe(null);
+    expect(env.runner.settingsFor('X1')).not.toHaveProperty('fork_session');
   });
 
   test('records the attempt as an external conflict resolution', async () => {

@@ -280,6 +280,72 @@ export function sessionResumeCommand(entry) {
 }
 
 /**
+ * Verdict of the fork qualification (UI-p206 §3): the session to fork, or the
+ * reason this bead gets today's fresh dispatch instead.
+ *
+ * @typedef {{ ok: true, provider: 'claude'|'codex', session_id: string }
+ *   | { ok: false, reason: 'no_session_ref'|'unsafe_session_id'|'provider_mismatch'|'not_local' }} SessionForkQualification
+ */
+
+/**
+ * Whether the bead's CURRENT `session_ref` item may be forked to open the first
+ * EXTERNAL conflict-resolution session (UI-p206 §3).
+ *
+ * Only the LAST valid item is a candidate: an earlier one is a session this
+ * bead has already moved on from, so inheriting its context would be inheriting
+ * a superseded understanding of the work.
+ *
+ * The four rejection reasons are judged IN THIS ORDER, and `unsafe_session_id`
+ * comes before `not_local` on purpose: `resolveSessionFile` folds a narrow-
+ * grammar failure into `locality: 'missing'`, so leaving it to that call would
+ * merge two different facts — "the id is not usable as an argument" and "no
+ * transcript is here" — into one reason. The unsafe check is also WIDER than
+ * `isSafeSessionId` alone: that grammar admits a leading `-`, which both CLIs
+ * would read as an option rather than a session id. `sessionResumeCommand`
+ * refuses it for exactly the same reason, and this argv path has the same
+ * exposure.
+ *
+ * The original session's liveness is deliberately NOT judged. A fork writes
+ * nothing to the original transcript (§1.2), so there is nothing to be safe
+ * from, and a transcript mtime cannot tell an idle open session from a closed
+ * one anyway.
+ *
+ * @param {Record<string, unknown>|null|undefined} metadata
+ * @param {string} runner_name - The runner this dispatch resolved to
+ * (`resolved.exec.runner`); a different CLI cannot fork this session at all.
+ * @param {{ home_dir?: string, hostname?: string, fs?: Pick<typeof fs, 'readdirSync' | 'statSync'>, now?: () => number }} [options]
+ * @returns {SessionForkQualification}
+ */
+export function qualifySessionFork(metadata, runner_name, options = {}) {
+  const entries = parseSessionRef(
+    metadata && typeof metadata === 'object' ? metadata.session_ref : null
+  );
+  const current = entries[entries.length - 1];
+  if (current === undefined) {
+    return { ok: false, reason: 'no_session_ref' };
+  }
+  if (
+    !isSafeSessionId(current.session_id) ||
+    current.session_id.startsWith('-')
+  ) {
+    return { ok: false, reason: 'unsafe_session_id' };
+  }
+  if (current.provider !== runner_name) {
+    return { ok: false, reason: 'provider_mismatch' };
+  }
+  // `local` already means BOTH the host label matched and the transcript file
+  // was found, so no separate existence probe follows.
+  if (resolveSessionFile(current, options).locality !== 'local') {
+    return { ok: false, reason: 'not_local' };
+  }
+  return {
+    ok: true,
+    provider: current.provider,
+    session_id: current.session_id
+  };
+}
+
+/**
  * Project one bead's metadata bag onto the display items (§3.3).
  *
  * The transcript PATH is deliberately not carried: it is a fact about this
