@@ -138,7 +138,7 @@
       "metadata": {
         "route": "quick_fix"
       },
-      "description": "## 출처/배경\u2028## 기대 효과\n- 관측 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+      "description": "## 출처/배경 ## 기대 효과\n- 관측 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
     },
     "expect": {
       "state": "unreviewed",
@@ -152,7 +152,7 @@
       "metadata": {
         "route": "quick_fix"
       },
-      "description": "## 출처/배경\u0085## 기대 효과\n- 관측 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+      "description": "## 출처/배경## 기대 효과\n- 관측 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
     },
     "expect": {
       "state": "unreviewed",
@@ -180,7 +180,7 @@
       "metadata": {
         "route": "quick_fix"
       },
-      "description": "## 출처/배경\u00a0\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+      "description": "## 출처/배경 \n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
     },
     "expect": {
       "state": "unreviewed",
@@ -311,6 +311,48 @@
     "expect": {
       "state": "unreviewed",
       "missing": ["scope:empty_declaration"]
+    }
+  },
+  {
+    "name": "NBSP가 앞선 scope heading은 선언이 아니다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n ## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["scope:undeclared"]
+    }
+  },
+  {
+    "name": "U+2028을 담은 scope 항목도 한 줄로 수집된다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/a b/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "NBSP가 앞선 h1 줄은 scope 절을 닫지 않는다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n # 산문\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
     }
   },
   {

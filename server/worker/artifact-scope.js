@@ -58,6 +58,14 @@ export function parseArtifactScope(content) {
 }
 
 /**
+ * Contract trim (`quick_fix_handoff.text_model.trim: ascii_space_tab_only`).
+ * `String.trim()` also eats NBSP, U+2028 and U+FEFF, so a heading line the
+ * contract keeps as body would be read as a `## scope` declaration here and not
+ * by the checker that owns the predicate.
+ */
+const ASCII_TRIM_RE = /^[ \t]+|[ \t]+$/g;
+
+/**
  * Parse the repo-relative path prefixes a bead's DESCRIPTION declares under a
  * `## scope` section (UI-f1qy §3). The declaration place for a bead with no
  * document artifact — in practice quick_fix.
@@ -65,6 +73,11 @@ export function parseArtifactScope(content) {
  * Three states, unlike {@link parseArtifactScope}: `null` (no section — 미선언,
  * 판정 불가) must stay distinguishable from `[]` (a section that declared
  * nothing), because only the latter is a read fact the UI reveals.
+ *
+ * 줄 모델은 계약(`description_scope` + `quick_fix_handoff.text_model`)이
+ * 소유한다: 줄 경계는 `\r\n`/`\n`뿐이고 U+2028·U+0085·U+000B는 본문 문자이며,
+ * 트림은 ASCII 스페이스·탭만이다. 이 저장소는 그 계약의 소비자이므로
+ * 판정이 dotfiles checker와 갈리면 안 된다 (UI-r7or §7).
  *
  * @param {unknown} description
  * @returns {string[]|null}
@@ -74,7 +87,9 @@ export function parseDescriptionScope(description) {
     return null;
   }
   const lines = description.split(/\r?\n/);
-  const start = lines.findIndex((line) => line.trim() === '## scope');
+  const start = lines.findIndex(
+    (line) => line.replace(ASCII_TRIM_RE, '') === '## scope'
+  );
   if (start < 0) {
     return null;
   }
@@ -85,10 +100,13 @@ export function parseDescriptionScope(description) {
   for (const line of lines.slice(start + 1)) {
     // 다음 heading(레벨 무관)이 구역의 끝이다 — 두 번째 `## scope`도 여기서
     // 끊기므로 첫 매치 하나만 읽힌다.
-    if (line.trim().startsWith('#')) {
+    if (line.replace(ASCII_TRIM_RE, '').startsWith('#')) {
       break;
     }
-    const match = /^\s*-\s(.*)$/.exec(line);
+    // `[\s\S]`는 계약의 `item_line_regex`가 쓰는 `.`을 옮긴 것이다 — 파이썬의
+    // `.`은 `\n`만 제외하지만 JS의 `.`은 U+2028·U+2029까지 제외해서, 그 문자를
+    // 담은 항목 하나가 통째로 수집되지 않았다.
+    const match = /^\s*-\s([\s\S]*)$/.exec(line);
     if (!match) {
       continue;
     }

@@ -146,6 +146,30 @@ describe('description scope section (UI-f1qy §3)', () => {
     expect(scope).toEqual(['src/a]b/']);
   });
 
+  test('does not recognize a heading a non-ASCII blank precedes', () => {
+    const description = [' ## scope', '- server/worker/'].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toBeNull();
+  });
+
+  test('does not close the section on a heading a non-ASCII blank precedes', () => {
+    const description = ['## scope', ' # 산문', '- server/worker/'].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toEqual(['server/worker/']);
+  });
+
+  test('collects an item carrying a non-newline line separator whole', () => {
+    const description = ['## scope', '- server/a b/'].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toEqual(['server/a b/']);
+  });
+
   test('stops collecting at the next heading of any level', () => {
     const description = [
       '## scope',
