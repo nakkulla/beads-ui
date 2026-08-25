@@ -5,7 +5,8 @@ import { html, render } from 'lit-html';
 import {
   DEFAULT_CLOSED_RANGE,
   closedRangeSince,
-  isClosedRange
+  isClosedRange,
+  normalizeDoneRange
 } from './data/closed-range.js';
 import { createDisplayPolicyStore } from './data/display-policy-store.js';
 import { createExecPresetStore } from './data/exec-preset-store.js';
@@ -561,12 +562,15 @@ export function bootstrap(root_element) {
       // ignore storage errors
     }
 
-    /** @type {import('./data/closed-range.js').ClosedRange} */
-    let worker_done_range = DEFAULT_CLOSED_RANGE;
+    // The 완료 레인 period is a two-value vocabulary (UI-qbbg §5): the snapshot
+    // carries at most seven days of done rows, so a stored `30d`/`all` is read
+    // as `7d` and the Worker `closed-issues` `since` below follows it.
+    /** @type {import('./data/closed-range.js').DoneRange} */
+    let worker_done_range = 'today';
     try {
       const raw = window.localStorage.getItem(WORKER_DONE_RANGE_KEY);
-      if (isClosedRange(raw)) {
-        worker_done_range = raw;
+      if (raw !== null) {
+        worker_done_range = normalizeDoneRange(raw);
       }
     } catch {
       // ignore storage errors
@@ -697,10 +701,11 @@ export function bootstrap(root_element) {
      * @param {string} range
      */
     async function setWorkerDoneRange(range) {
-      if (!isClosedRange(range) || range === worker_done_range) {
+      const next = normalizeDoneRange(range);
+      if (next === worker_done_range) {
         return;
       }
-      worker_done_range = range;
+      worker_done_range = next;
       const unsub = worker_unsubs.get(WORKER_CLOSED_CLIENT_ID);
       if (!unsub) {
         return;

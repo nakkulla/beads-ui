@@ -27,6 +27,40 @@ export const CLOSED_RANGE_OPTIONS = [
 ];
 
 /**
+ * The 완료 레인's period vocabulary (UI-qbbg §5) — a strict subset of
+ * {@link ClosedRange}, because the WS snapshot now carries at most seven days
+ * of done rows and a period the data cannot answer would draw an empty lane
+ * that looks like a loss.
+ *
+ * @typedef {'today'|'7d'} DoneRange
+ */
+
+/**
+ * Ordered period options for the 완료 레인 dropdown. Deliberately NOT
+ * {@link CLOSED_RANGE_OPTIONS}, which the Board Closed column owns and which
+ * keeps its own `30d`/`all` (its data comes from a `closed-issues`
+ * subscription, not from the retained snapshot).
+ *
+ * @type {ReadonlyArray<{ value: DoneRange, label: string }>}
+ */
+export const DONE_RANGE_OPTIONS = [
+  { value: 'today', label: '오늘' },
+  { value: '7d', label: '최근 7일' }
+];
+
+/**
+ * Read any stored 완료 레인 period as one of the two supported ones. A stored
+ * `30d`/`all` widens to `7d` on READ only — it is not written back, so the
+ * value stays whatever the person last chose.
+ *
+ * @param {unknown} value
+ * @returns {DoneRange}
+ */
+export function normalizeDoneRange(value) {
+  return value === 'today' ? 'today' : '7d';
+}
+
+/**
  * @param {unknown} value
  * @returns {value is ClosedRange}
  */

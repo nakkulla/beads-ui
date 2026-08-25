@@ -697,7 +697,7 @@ describe('monitor 완료 기간 select (UI-qrfo §7)', () => {
   });
 
   test('restores the persisted period on a fresh mount', async () => {
-    window.localStorage.setItem('bdui.monitor.done-range', '30d');
+    window.localStorage.setItem('bdui.monitor.done-range', '7d');
     window.location.hash = '#/monitor';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
@@ -711,11 +711,11 @@ describe('monitor 완료 기간 select (UI-qrfo §7)', () => {
       monitor_root.querySelector('.mon-done-range')
     );
 
-    expect(select.value).toBe('30d');
+    expect(select.value).toBe('7d');
   });
 
   test('names the selected period in the 완료 lane title', async () => {
-    window.localStorage.setItem('bdui.monitor.done-range', '30d');
+    window.localStorage.setItem('bdui.monitor.done-range', '7d');
     window.location.hash = '#/monitor';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
@@ -730,7 +730,7 @@ describe('monitor 완료 기간 select (UI-qrfo §7)', () => {
       monitor_root
         .querySelector('#monitor-done .worker-pane__title')
         ?.textContent?.trim()
-    ).toContain('완료·최근 30일');
+    ).toContain('완료·최근 7일');
   });
 });
 

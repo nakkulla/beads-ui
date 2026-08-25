@@ -421,10 +421,10 @@ describe('views/monitor lane header controls (UI-eey2 §3)', () => {
     const select = /** @type {HTMLSelectElement} */ (
       el(mount, '.mon-done-range')
     );
-    select.value = 'all';
+    select.value = '7d';
     select.dispatchEvent(new Event('change', { bubbles: true }));
 
-    expect(window.localStorage.getItem('bdui.monitor.done-range')).toBe('all');
+    expect(window.localStorage.getItem('bdui.monitor.done-range')).toBe('7d');
   });
 
   test('shows blocked candidates by default and persists the toggle', () => {

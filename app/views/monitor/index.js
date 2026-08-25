@@ -20,10 +20,9 @@
  */
 import { html, render } from 'lit-html';
 import {
-  CLOSED_RANGE_OPTIONS,
-  DEFAULT_CLOSED_RANGE,
+  DONE_RANGE_OPTIONS,
   closedRangeSince,
-  isClosedRange
+  normalizeDoneRange
 } from '../../data/closed-range.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
@@ -219,19 +218,21 @@ function saveSections(sections) {
 }
 
 /**
- * @returns {import('../../data/closed-range.js').ClosedRange}
+ * @returns {import('../../data/closed-range.js').DoneRange}
  */
 function loadDoneRange() {
   try {
+    // An ABSENT key keeps the 오늘 default; only a value someone actually chose
+    // is normalized, which is how a stored `30d`/`all` reads as `7d`.
     const raw = window.localStorage.getItem(DONE_RANGE_KEY);
-    return isClosedRange(raw) ? raw : DEFAULT_CLOSED_RANGE;
+    return raw === null ? 'today' : normalizeDoneRange(raw);
   } catch {
-    return DEFAULT_CLOSED_RANGE;
+    return 'today';
   }
 }
 
 /**
- * @param {import('../../data/closed-range.js').ClosedRange} range
+ * @param {import('../../data/closed-range.js').DoneRange} range
  */
 function saveDoneRange(range) {
   try {
@@ -347,7 +348,7 @@ export function createMonitorView(mount_element, options) {
     ((/** @type {string} */ message) =>
       typeof globalThis.confirm !== 'function' || globalThis.confirm(message));
 
-  /** @type {import('../../data/closed-range.js').ClosedRange} */
+  /** @type {import('../../data/closed-range.js').DoneRange} */
   let done_range = loadDoneRange();
   /** @type {'started'|'repo'} */
   let running_sort = loadRunningSort();
@@ -405,7 +406,7 @@ export function createMonitorView(mount_element, options) {
    * @returns {string}
    */
   function doneRangeLabel() {
-    const opt = CLOSED_RANGE_OPTIONS.find((o) => o.value === done_range);
+    const opt = DONE_RANGE_OPTIONS.find((o) => o.value === done_range);
     return opt ? opt.label : '';
   }
 
@@ -1958,7 +1959,7 @@ export function createMonitorView(mount_element, options) {
         title="완료 기간"
         .value=${done_range}
       >
-        ${CLOSED_RANGE_OPTIONS.map(
+        ${DONE_RANGE_OPTIONS.map(
           (o) =>
             html`<option value=${o.value} ?selected=${done_range === o.value}>
               ${o.label}
@@ -3464,9 +3465,7 @@ export function createMonitorView(mount_element, options) {
       target.closest('.mon-done-range')
     );
     if (range_select) {
-      done_range = isClosedRange(range_select.value)
-        ? range_select.value
-        : DEFAULT_CLOSED_RANGE;
+      done_range = normalizeDoneRange(range_select.value);
       saveDoneRange(done_range);
       doRender();
     }

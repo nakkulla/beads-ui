@@ -2,8 +2,10 @@ import { describe, expect, test } from 'vitest';
 import {
   CLOSED_RANGE_OPTIONS,
   DEFAULT_CLOSED_RANGE,
+  DONE_RANGE_OPTIONS,
   closedRangeSince,
-  isClosedRange
+  isClosedRange,
+  normalizeDoneRange
 } from './closed-range.js';
 
 const DAY_MS = 864e5;
@@ -62,5 +64,32 @@ describe('isClosedRange and constants', () => {
       '30d',
       'all'
     ]);
+  });
+});
+
+describe('normalizeDoneRange', () => {
+  test("keeps 'today' as the narrow period", () => {
+    expect(normalizeDoneRange('today')).toBe('today');
+  });
+
+  test("keeps '7d'", () => {
+    expect(normalizeDoneRange('7d')).toBe('7d');
+  });
+
+  test("widens a stored '30d' to '7d'", () => {
+    expect(normalizeDoneRange('30d')).toBe('7d');
+  });
+
+  test("widens a stored 'all' to '7d'", () => {
+    expect(normalizeDoneRange('all')).toBe('7d');
+  });
+
+  test("reads an unknown or absent value as '7d'", () => {
+    expect(normalizeDoneRange('week')).toBe('7d');
+    expect(normalizeDoneRange(null)).toBe('7d');
+  });
+
+  test('done options offer exactly the two supported periods in order', () => {
+    expect(DONE_RANGE_OPTIONS.map((o) => o.value)).toEqual(['today', '7d']);
   });
 });
