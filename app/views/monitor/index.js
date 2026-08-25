@@ -1137,7 +1137,9 @@ export function createMonitorView(mount_element, options) {
     push(lanes.running, 'running');
     push(lanes.pr_wait, 'pr_wait');
     push(lanes.queue, 'queue');
-    push(lanes.runnable, 'runnable');
+    // 필터 이전 목록이다 (§6.1): `차단됨`·`스펙`·`의존 있음` 토글은 보기를 좁힐
+    // 뿐 의존을 걸 수 있는 이슈를 줄이지 않는다.
+    push(lanes.runnable_all, 'runnable');
     return issues;
   }
 
@@ -2564,16 +2566,23 @@ export function createMonitorView(mount_element, options) {
           op.root_dir,
           revisions.get(op.root_dir) ?? revisionOfRoot(op.root_dir, bead_id)
         );
-        if (res && res.queue && typeof res.queue.revision === 'number') {
+        // 전송 래퍼는 큐 op 오류를 `[]`로 삼키므로 (`app/main.js`), 응답 모양을
+        // 직접 본다. 실패를 성공으로 넘기면 뒤 op만 적용된 부분 상태가 남고
+        // §5.5의 "실패하면 남은 op를 보내지 않는다"가 무너진다.
+        if (!res || typeof res.applied !== 'boolean') {
+          showToast('큐 요청이 실패했습니다', 'error');
+          return false;
+        }
+        if (res.queue && typeof res.queue.revision === 'number') {
           revisions.set(op.root_dir, res.queue.revision);
         }
-        if (res && res.conflict) {
+        if (res.conflict) {
           showToast('큐가 바뀌었습니다 — 다시 시도해 주세요', 'error');
           return false;
         }
         // 입장 거부는 CAS 충돌이 아니라 `applied:false`로 온다 (§7) — 조용히
         // 성공으로 넘기면 앞선 의존 op만 남은 상태가 설명 없이 보인다.
-        if (res && res.applied === false) {
+        if (res.applied === false) {
           showToast(
             res.admission_reason
               ? `큐 적재 거부: ${res.admission_reason}`
@@ -2800,11 +2809,22 @@ export function createMonitorView(mount_element, options) {
         doRender();
         return;
       }
-      await applyDrop(drag, {
-        kind: 'chain',
-        lane_id,
-        marker_index: lane.rows.length
-      });
+      // `연결 n 끝에`는 좌표가 아니라 **끝**이라는 뜻이다 (§5.4). 충돌 재계획은
+      // 최신 `cross_lanes` 위에서 다시 서므로 끝 인덱스도 그때 다시 센다.
+      await runPlanned(
+        (model) =>
+          planDrop(
+            drag,
+            {
+              kind: 'chain',
+              lane_id,
+              marker_index: (model.cross_lanes.get(lane_id)?.entries ?? [])
+                .length
+            },
+            model
+          ),
+        bead_id
+      );
       return;
     }
     if (choice.startsWith('serial:')) {

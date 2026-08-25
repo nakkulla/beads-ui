@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createMonitorView } from './index.js';
+import { MONITOR_CANDIDATE_FILTER_KEY, createMonitorView } from './index.js';
 
 const NOW = 1_700_000_000_000;
 const WS_A = '/tmp/example/repo-a';
@@ -2201,6 +2201,113 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
     expect(confirmFn).not.toHaveBeenCalled();
     expect(sent.map((m) => m.type)).toEqual(['monitor-lane-remove']);
   });
+
+  // 전송 래퍼는 큐 op 오류를 `[]`로 삼킨다 (`app/main.js`). 그것을 성공으로
+  // 읽으면 앞 op가 실패했는데도 뒤 op가 나가 부분 상태가 남는다 (§5.5·§7).
+  test('stops the remaining queue ops when one comes back without a reply', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-1', title: '첫', spec_id: 'docs/a.md' },
+            { bead_id: 'A-2', title: '둘', spec_id: 'docs/b.md' }
+          ]
+        })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([
+        {
+          status: 'draft',
+          entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }]
+        }
+      ]),
+      transport: async (type) => {
+        if (type === 'monitor-lane-confirm') {
+          return { revision: 2 };
+        }
+        if (type === 'worker-queue-place') {
+          return [];
+        }
+        return null;
+      }
+    });
+
+    view.load();
+    click(mount, '.mon2-clane__confirm');
+    await flushMicrotasks();
+
+    expect(sent.map((m) => m.type)).toEqual([
+      'monitor-lane-confirm',
+      'dep-add',
+      'worker-queue-place'
+    ]);
+  });
+
+  // `연결 n 끝에`는 좌표가 아니라 **끝**이다 (§5.4). 충돌 재계획이 최초 행 수를
+  // 재사용하면 그 사이 늘어난 레인의 새 마지막 행 **앞**에 끼워 넣는다.
+  test('recounts the lane tail when the place menu choice is re-planned', async () => {
+    let lane_calls = 0;
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({ runnable: [{ bead_id: 'A-9', title: 'cand' }] }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1' }, { bead_id: 'B-2' }]
+        })
+      ],
+      workspaces_state: [
+        state(),
+        state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })
+      ],
+      cross_lanes: crossLanes([
+        { status: 'draft', entries: [{ bead_id: 'B-1', root_dir: WS_B }] }
+      ]),
+      transport: async (type) => {
+        if (type !== 'monitor-lane-update') {
+          return null;
+        }
+        lane_calls += 1;
+        if (lane_calls === 1) {
+          throw {
+            code: 'conflict',
+            message: 'revision mismatch',
+            details: {
+              cross_lanes: {
+                revision: 9,
+                lanes: [
+                  {
+                    id: 'cl_1',
+                    status: 'draft',
+                    created_at: '2026-08-25T00:00:00.000Z',
+                    entries: [
+                      { bead_id: 'B-1', root_dir: WS_B },
+                      { bead_id: 'B-2', root_dir: WS_B }
+                    ]
+                  }
+                ]
+              }
+            }
+          };
+        }
+        return { revision: 10 };
+      }
+    });
+
+    view.load();
+    click(mount, '#monitor-runnable .worker-card__place');
+    click(mount, '.worker-card__place-lane[data-lane="lane:cl_1"]');
+    await flushMicrotasks();
+
+    expect(
+      sent
+        .filter((m) => m.type === 'monitor-lane-update')
+        .map((m) => m.payload.entries.map((/** @type {any} */ e) => e.bead_id))
+    ).toEqual([
+      ['B-1', 'A-9'],
+      ['B-1', 'B-2', 'A-9']
+    ]);
+  });
 });
 
 describe('monitor 의존성 패널 (UI-j92s §6.1)', () => {
@@ -2240,6 +2347,39 @@ describe('monitor 의존성 패널 (UI-j92s §6.1)', () => {
 
     expect(mount.querySelectorAll('.mon-deppanel')).toHaveLength(1);
     expect(el(mount, '.mon-deppanel').getAttribute('data-bead-id')).toBe('A-9');
+  });
+
+  // 후보 모집단은 스냅샷 전체다 (§6.1). 실행가능 필터는 보기를 좁힐 뿐이므로,
+  // 지금 숨겨진 카드에도 의존을 걸 수 있어야 한다.
+  test('offers a runnable the candidate filter is currently hiding', () => {
+    window.localStorage.setItem(
+      MONITOR_CANDIDATE_FILTER_KEY,
+      JSON.stringify({ show_blocked: true, spec: 'without' })
+    );
+    const { mount, view } = panelSetup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-9', title: '가운데', spec_id: 'docs/a.md' },
+            { bead_id: 'A-7', title: '스펙 없음' }
+          ],
+          bead_titles: { 'A-9': '가운데' }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(
+      mount,
+      '#monitor-runnable .worker-card[data-bead-id="A-7"] .worker-card__dep'
+    );
+
+    expect(
+      Array.from(mount.querySelectorAll('.mon-deppanel__cand')).map((node) =>
+        node.getAttribute('data-dep-cand')
+      )
+    ).toContain('A-9');
   });
 
   test('closes the panel on Escape', () => {

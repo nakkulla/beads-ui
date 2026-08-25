@@ -280,6 +280,9 @@ const DONE_KIND_LABELS = {
 /**
  * @typedef {Object} MonitorLanes
  * @property {MonitorItem[]} runnable - Filter/sort 적용 후의 평면 목록.
+ * @property {MonitorItem[]} runnable_all - Filter 이전의 실행가능 목록. 의존성
+ * 패널의 후보 모집단은 여기서 나온다 (UI-j92s §6.1): 필터는 보기를 좁힐 뿐
+ * 의존을 걸 수 있는 이슈를 줄이지 않는다.
  * @property {{ blocked: number, spec: number, deps: number }} runnable_hidden -
  * 필터가 감춘 실행가능 카드 수. `deps`는 `의존 있음` 토글이 감춘 몫이다
  * (UI-j92s §6.3).
@@ -1755,6 +1758,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   /** @type {MonitorLanes} */
   const model = {
     runnable,
+    runnable_all: runnable,
     runnable_hidden: { blocked: 0, spec: 0, deps: 0 },
     runnable_sections: [],
     runnable_flat: candidate_sort === 'updated_flat',
@@ -1969,6 +1973,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 실행가능 필터·정렬은 마지막이다: 파생값(의존 칩·체인)은 필터와 무관하게
   // 전 레포 사실에서 나와야 한다.
   const before = model.runnable.length;
+  // 필터가 감춘 카드도 의존 상대로는 살아 있다 (UI-j92s §6.1) — 후보 모집단은
+  // 필터 이전 목록에서 나온다.
+  model.runnable_all = model.runnable.slice();
   let visible = model.runnable;
   if (!candidate_filter.show_blocked) {
     visible = visible.filter((item) => item.blocked !== true);

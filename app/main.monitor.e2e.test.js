@@ -17,6 +17,8 @@ vi.mock('./ws.js', () => {
   const conn_handlers = new Set();
   /** @type {Array<{ type: string, payload: any }>} */
   const sent = [];
+  /** @type {Map<string, any>} */
+  const fail_once = new Map();
   const singleton = {
     /**
      * @param {string} type
@@ -24,6 +26,11 @@ vi.mock('./ws.js', () => {
      */
     async send(type, payload) {
       sent.push({ type, payload });
+      if (fail_once.has(type)) {
+        const error = fail_once.get(type);
+        fail_once.delete(type);
+        throw error;
+      }
       if (type === 'list-workspaces') {
         return { workspaces: [], current: null, hidden: [] };
       }
@@ -58,6 +65,7 @@ vi.mock('./ws.js', () => {
     },
     _reset() {
       sent.length = 0;
+      fail_once.clear();
       conn_handlers.clear();
       for (const key of Object.keys(handlers)) {
         delete handlers[key];
@@ -65,6 +73,13 @@ vi.mock('./ws.js', () => {
     },
     _clearSent() {
       sent.length = 0;
+    },
+    /**
+     * @param {string} type
+     * @param {any} error
+     */
+    _failOnce(type, error) {
+      fail_once.set(type, error);
     },
     /**
      * @param {(s: 'connecting'|'open'|'closed'|'reconnecting') => void} fn
@@ -413,6 +428,128 @@ describe('monitor 실행가능 → 연결 레인 드롭 (UI-j92s §5.5)', () => 
       a: 'UI-cand',
       b: 'B-tail',
       root_dir: '/tmp/ws-a'
+    });
+  });
+
+  // 레인 op의 `conflict`는 실제 전송 래퍼를 통과해야 뷰에 닿는다 (§5.5). 그
+  // 오류가 `[]`로 삼켜지면 재계획 경로가 통째로 죽고, 옛 entries가 그대로 다시
+  // 나가거나 아무 일도 일어나지 않는다. 재계획은 사용자가 고른 드롭 좌표는
+  // 그대로 두고 그 위의 최신 멤버만 다시 읽는다 — 좌표는 §5.5가 재계산하라고
+  // 열거한 것(고정 행·타 레인 소속·사이클·dep·큐)에 들어 있지 않다.
+  test('re-plans on the conflict reply cross_lanes and retries once', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: [
+        {
+          root_dir: '/tmp/ws-a',
+          name: 'ws-a',
+          revision: 3,
+          queue: [],
+          serial_lanes: [],
+          pr_wait: [],
+          done: [],
+          runnable: [
+            { bead_id: 'UI-cand', title: '후보', spec_id: 'docs/a.md' }
+          ],
+          attempts: {},
+          bead_titles: {},
+          bead_blocked_by: {},
+          pr_observations: {}
+        },
+        {
+          root_dir: '/tmp/ws-b',
+          name: 'ws-b',
+          revision: 1,
+          queue: [{ bead_id: 'B-tail', added_at: NOW }],
+          serial_lanes: [],
+          pr_wait: [],
+          done: [],
+          runnable: [],
+          attempts: {},
+          bead_titles: { 'B-tail': '후속' },
+          bead_blocked_by: {},
+          pr_observations: {}
+        }
+      ],
+      workspaces_state: [
+        { root_dir: '/tmp/ws-a', name: 'ws-a', revision: 3, slots: 1 },
+        { root_dir: '/tmp/ws-b', name: 'ws-b', revision: 1, slots: 1 }
+      ],
+      cross_lanes: {
+        revision: 5,
+        lanes: [
+          {
+            id: 'cl_1',
+            status: 'draft',
+            created_at: '2026-08-25T00:00:00.000Z',
+            entries: [{ bead_id: 'B-tail', root_dir: '/tmp/ws-b' }]
+          }
+        ]
+      }
+    });
+    await flush();
+
+    const monitor_root = /** @type {HTMLElement} */ (
+      document.getElementById('monitor-root')
+    );
+    const card = /** @type {HTMLElement} */ (
+      monitor_root.querySelector(
+        '#monitor-runnable .worker-card[data-bead-id="UI-cand"]'
+      )
+    );
+    const lane = /** @type {HTMLElement} */ (
+      monitor_root.querySelector('[data-drop="chain"]')
+    );
+    client._clearSent();
+    client._failOnce('monitor-lane-update', {
+      code: 'conflict',
+      message: '레인이 다른 곳에서 바뀌었습니다',
+      details: {
+        cross_lanes: {
+          revision: 9,
+          lanes: [
+            {
+              id: 'cl_1',
+              status: 'draft',
+              created_at: '2026-08-25T00:00:00.000Z',
+              entries: [
+                { bead_id: 'B-tail', root_dir: '/tmp/ws-b' },
+                { bead_id: 'B-late', root_dir: '/tmp/ws-b' }
+              ]
+            }
+          ]
+        }
+      }
+    });
+    card.dispatchEvent(
+      new Event('dragstart', { bubbles: true, cancelable: true })
+    );
+    lane.dispatchEvent(new Event('drop', { bubbles: true, cancelable: true }));
+    await flush();
+
+    const lane_ops = client
+      ._sent()
+      .filter((/** @type {any} */ m) => m.type === 'monitor-lane-update');
+
+    expect(lane_ops).toHaveLength(2);
+    expect(lane_ops[0].payload.expected_revision).toEqual(5);
+    expect(lane_ops[1].payload).toEqual({
+      lane_id: 'cl_1',
+      entries: [
+        { bead_id: 'B-tail', root_dir: '/tmp/ws-b' },
+        { bead_id: 'UI-cand', root_dir: '/tmp/ws-a' },
+        { bead_id: 'B-late', root_dir: '/tmp/ws-b' }
+      ],
+      expected_revision: 9
     });
   });
 
