@@ -362,10 +362,9 @@ export function createMonitorView(mount_element, options) {
   /**
    * 지금 열려 있는 겹침 팝오버 (UI-qm12 §5.3). 상대 id만 기억한다 — 버튼 판정은
    * 클릭 시점의 최신 모델로 다시 하므로, 팝오버가 열린 사이 스냅샷이 바뀌어도
-   * 낡은 결론을 실행하지 않는다. `counterpart_id: null`은 `+n` 칩이 연 전체
-   * 목록이다.
+   * 낡은 결론을 실행하지 않는다.
    *
-   * @type {{ bead_id: string, counterpart_id: string|null }|null}
+   * @type {{ bead_id: string, counterpart_id: string }|null}
    */
   let open_overlap = null;
 
@@ -852,10 +851,7 @@ export function createMonitorView(mount_element, options) {
       return null;
     }
     const counterpart_id = open_overlap.counterpart_id;
-    const chips =
-      counterpart_id === null
-        ? overlaps
-        : overlaps.filter((chip) => chip.id === counterpart_id);
+    const chips = overlaps.filter((chip) => chip.id === counterpart_id);
     if (chips.length === 0) {
       return null;
     }
@@ -2576,11 +2572,7 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('mon-overlap__chip')) {
-      // `+n` 칩은 상대 전부를 한 팝오버에 보인다 (§5.3).
-      const counterpart_id =
-        button.getAttribute('data-overlap-all') === 'true'
-          ? null
-          : button.getAttribute('data-overlap-id') || '';
+      const counterpart_id = button.getAttribute('data-overlap-id') || '';
       const same =
         !!open_overlap &&
         open_overlap.bead_id === bead_id &&

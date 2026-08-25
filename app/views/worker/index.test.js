@@ -11792,9 +11792,9 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
     expect(rd1.querySelector('.mon-overlap__chip')?.textContent).toContain(
       'W-1'
     );
-    expect(w1.querySelector('.mon-overlap__chip')?.textContent).toContain(
-      '후보'
-    );
+    expect(
+      w1.querySelector('.mon-overlap__chip')?.getAttribute('aria-label')
+    ).toContain('후보');
   });
 
   test('a 후보 chip offers placing the candidate into the counterpart serial lane', async () => {
