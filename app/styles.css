@@ -4374,6 +4374,25 @@ html[data-theme='dark'] {
   border-color: var(--border-route);
 }
 
+/* 재개 명령 복사 (UI-4xzk §6.2): 세션 ID 복사 버튼과 같은 톤 — 둘 다 클립보드로
+   무언가를 옮기는 같은 종류의 조작이고, 전문은 title이 싣는다. */
+.sv__resume-cmd {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sv__resume-cmd:hover {
+  color: var(--text-primary);
+  border-color: var(--border-route);
+}
+
 /* 현재 단계 칩 (UI-dixx 변경 3). 세션이 스스로 말한 단계(phase/gate 라인, 선언한
    task)는 파란 칩으로 단정하고, 도구 활동에서 추정한 단계는 `~` 접두와 노란
    톤으로 추정임을 드러낸다 — 추정을 사실처럼 보이게 하는 것이 더 나쁘다. */
@@ -4573,6 +4592,44 @@ html[data-theme='dark'] {
   font-family: var(--font-sans);
   font-size: var(--fs-caption);
   font-style: normal;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 사람이 친 입력 줄 (UI-4xzk §5.4). 배경만으로 세션 출력과 구분한다 — 주의를
+   요구하는 상태가 아니므로 경고색을 쓰지 않고, 새 토큰도 만들지 않는다. */
+.sv__line--user {
+  margin: var(--sp-4) 0;
+  padding: var(--sp-4) var(--sp-8);
+  border-left: 2px solid var(--border-route);
+  border-radius: var(--r-4);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: var(--fs-chip-lg);
+  cursor: pointer;
+}
+
+.sv__line--user:hover {
+  color: var(--text-primary);
+}
+
+.sv__user-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 사람 입력은 마크다운이 아니라 명령문일 수 있으므로 원문 그대로 흘린다. */
+.sv__user-expand {
+  margin: var(--sp-4) 0 0;
+  padding: var(--sp-6) var(--sp-8);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-4);
+  background: var(--bg-drawer);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -7693,10 +7750,34 @@ html[data-theme='dark'] {
   line-height: 1.35;
 }
 
+/* 세션 정체 칩 (UI-4xzk §6.4). route 칩과 같은 톤의 중립 계열이고, 좁은 타일에서
+   `<provider> · <sid8>`이 다른 칩을 밀어내지 않도록 줄이 넘치면 잘린다 —
+   전체 좌표는 title이 싣는다. */
+.rtile .ctl-chip--sref {
+  flex: 0 0 auto;
+  margin: 0;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.35;
+}
+
 /* 세션이 잡은 이슈의 타일 (UI-yrzu §6): 좌측 액센트만 route 칩과 같은 중립
    계열로 구분한다 — 주의를 요구하는 상태가 아니므로 경고색을 쓰지 않는다. */
 .rtile--session {
   border-left: 2px solid var(--border-route);
+}
+
+/* 세션 타일의 `▤ 세션`은 Worker 타일과 같은 자리·같은 버튼이고, 열 수 없는
+   세션(다른 머신·파일 없음)일 때만 눌리지 않는다 (UI-4xzk §6.4). */
+.rtile--session .rtile__session:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.rtile--session .rtile__session:disabled:hover {
+  color: var(--text-muted);
 }
 
 /* 세션 점은 반만 찬 원이다 (§6의 `◐`). Worker의 `●`와 색만 다르면 흑백·색각
@@ -7919,6 +8000,17 @@ html[data-theme='dark'] {
   border-color: var(--border-tile-run);
 }
 
+/* 열 수 없는 세션 행 (UI-4xzk §6.5): 행은 남는다 — 그 세션이 존재한다는 사실은
+   참이고, 왜 열 수 없는지는 title이 말한다. */
+.detail-session:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.detail-session:disabled:hover {
+  border-color: var(--border-card);
+}
+
 .detail-session--running .detail-session__glyph {
   color: var(--accent-success);
 }
@@ -8009,6 +8101,25 @@ html[data-theme='dark'] {
 .detail-session__resume:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* 터미널에 붙여 넣을 재개 명령 복사 (UI-4xzk §6.5). `↻ 이어하기`와 다른 조작이라
+   같은 크기·같은 자리를 쓰되 테두리를 중립 계열로 낮춘다 — 서버에 무언가를
+   시키는 버튼이 아니다. */
+.detail-session__resume-cmd {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-6);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+
+.detail-session__resume-cmd:hover {
+  color: var(--text-primary);
+  border-color: var(--border-route);
 }
 
 /* 세션 행의 토큰 배지 (UI-d7pw §2.2). 레인의 .worker-usage와 같은 톤 —

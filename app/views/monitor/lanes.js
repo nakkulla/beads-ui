@@ -154,7 +154,8 @@ const DONE_KIND_LABELS = {
  *   labels?: string[],
  *   overlap_chips?: OverlapChip[],
  *   scope_state?: 'declared'|'missing',
- *   cross_lane_chip?: CrossLaneChip
+ *   cross_lane_chip?: CrossLaneChip,
+ *   session_refs?: import('../../../server/worker/session-ref.js').SessionRefView[]
  * }} MonitorItem
  */
 
@@ -1209,6 +1210,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
         usage: null,
         legs: [],
         last_activity: null,
+        // 세션 정체·transcript 좌표 (UI-4xzk §6.4). 서버가 같은 스캔에서
+        // 투영하며, 키가 없거나 전 항목이 malformed면 빈 배열이다.
+        session_refs: Array.isArray(entry.session_refs)
+          ? entry.session_refs
+          : [],
         badges: [],
         alert: false
       });

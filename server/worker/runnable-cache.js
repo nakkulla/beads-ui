@@ -24,6 +24,9 @@
  * NON-PERSISTED, like `title-cache.js`/`pr-observations.js`: process memory and
  * the wire only.
  */
+/**
+ * @import { SessionRefView } from './session-ref.js'
+ */
 import path from 'node:path';
 import {
   isWorkerIneligible,
@@ -42,6 +45,7 @@ import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
 import { parseDescriptionScope } from './artifact-scope.js';
 import { ACCOUNT_KEYS, BEAD_APPLY_KEYS } from './exec-enums.js';
+import { sessionRefViews } from './session-ref.js';
 
 const log = debug('worker:runnable-cache');
 
@@ -151,6 +155,10 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan', 'quick_fix']);
  * this row, or null when the enrich could not be computed.
  * @property {boolean} blocked - Membership in `ready_explain.blocked`.
  * @property {string[]} blocked_by - Direct `blocks` blocker ids.
+ * @property {SessionRefView[]} session_refs - `metadata.session_ref` projected
+ * for display (UI-4xzk §4.1), read from THIS scan's row so the bucket still
+ * costs no extra `bd` process. Empty when the key is absent, every item is
+ * malformed, or the projection failed.
  */
 
 /**
@@ -418,8 +426,26 @@ function qualifySession(row, blocked_by = null, enrich = undefined) {
     started_at: sessionStamp(row.started_at),
     workflow: enrich ? enrich(row) : null,
     blocked: blocked_by !== null,
-    blocked_by: blocked_by || []
+    blocked_by: blocked_by || [],
+    session_refs: sessionRefsOf(meta)
   };
+}
+
+/**
+ * Project one row's `session_ref` metadata, swallowing a projection failure to
+ * an empty list — the same convention `workflow: null` follows, because a
+ * filesystem fault while locating a transcript must not drop the whole row.
+ *
+ * @param {Record<string, unknown>} meta
+ * @returns {SessionRefView[]}
+ */
+function sessionRefsOf(meta) {
+  try {
+    return sessionRefViews(meta);
+  } catch (err) {
+    log('session_ref projection failed: %o', err);
+    return [];
+  }
 }
 
 /**

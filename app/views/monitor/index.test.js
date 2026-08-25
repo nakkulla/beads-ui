@@ -2819,6 +2819,107 @@ describe('views/monitor 세션 타일 (UI-yrzu §6·§9)', () => {
   });
 });
 
+describe('views/monitor 세션 타일 drawer (UI-4xzk §6.4)', () => {
+  const VIEW = {
+    index: 0,
+    provider: 'claude',
+    session_id: 'a1b2c3d4-5e6f',
+    host: 'mac-studio',
+    current: true,
+    locality: 'local',
+    last_event_at: NOW - 30_000,
+    resume_command: "claude --resume 'a1b2c3d4-5e6f'"
+  };
+
+  /**
+   * @param {any[]} session_refs
+   */
+  function sessionWorkspaces(session_refs) {
+    return [
+      workspace({
+        session_active: [
+          {
+            bead_id: 'A-7',
+            title: '세션이 잡은 이슈',
+            status: 'in_progress',
+            route: 'spec_backed',
+            spec_id: '',
+            labels: [],
+            created_at: null,
+            updated_at: NOW - 120_000,
+            started_at: NOW - 4000,
+            workflow: null,
+            blocked: false,
+            blocked_by: [],
+            session_refs
+          }
+        ]
+      })
+    ];
+  }
+
+  test('subscribes to the session transcript instead of an attempt log', () => {
+    const { mount, view, sent } = setup({
+      workspaces: sessionWorkspaces([VIEW]),
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.rtile__session');
+
+    expect(
+      sent.find((s) => s.type === 'subscribe-session-log')?.payload
+    ).toMatchObject({
+      attempt_id: 'session:claude:a1b2c3d4-5e6f',
+      session_ref: {
+        bead_id: 'A-7',
+        provider: 'claude',
+        session_id: 'a1b2c3d4-5e6f'
+      },
+      root_dir: WS_A
+    });
+  });
+
+  test('opens the session drawer with a running status and its own label', () => {
+    const { mount, view } = setup({
+      workspaces: sessionWorkspaces([VIEW]),
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.rtile__session');
+
+    expect(el(mount, '.sv__id')?.textContent?.trim()).toBe('claude · a1b2c3d4');
+    expect(el(mount, '.sv__live')).toBeTruthy();
+    expect(el(mount, '.sv__resume-cmd')?.getAttribute('title')).toBe(
+      "claude --resume 'a1b2c3d4-5e6f'"
+    );
+  });
+
+  test('leaves the session tile unselected — it owns no attempt to highlight', () => {
+    const { mount, view } = setup({
+      workspaces: sessionWorkspaces([VIEW]),
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.rtile__session');
+
+    expect(el(mount, '#monitor-running .rtile--sel')).toBeNull();
+  });
+
+  test('renders no session button for an issue with no parseable session_ref', () => {
+    const { mount, view } = setup({
+      workspaces: sessionWorkspaces([]),
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(el(mount, '#monitor-running .rtile__session')).toBeNull();
+  });
+});
+
 describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)', () => {
   /**
    * @param {string[]} [scope]

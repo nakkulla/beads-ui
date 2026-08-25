@@ -338,3 +338,115 @@ describe('claude system progress lines (UI-bau6)', () => {
     expect(first[0].text).toBe('생각 중… 37 토큰');
   });
 });
+
+describe('사람 입력 턴 (UI-4xzk §5.3)', () => {
+  test('returns a user line for a claude user turn carrying a string', () => {
+    const lines = parseTranscript([
+      { type: 'user', message: { content: '테스트를 먼저 붙여 줘' } }
+    ]);
+
+    expect(lines).toEqual([{ kind: 'user', text: '테스트를 먼저 붙여 줘' }]);
+  });
+
+  test('joins the text blocks of a claude user turn', () => {
+    const lines = parseTranscript([
+      {
+        type: 'user',
+        message: {
+          content: [
+            { type: 'text', text: '스펙 §6.4를 보고' },
+            { type: 'text', text: '칩 자리를 맞춰 줘' }
+          ]
+        }
+      }
+    ]);
+
+    expect(lines).toEqual([
+      { kind: 'user', text: '스펙 §6.4를 보고\n칩 자리를 맞춰 줘' }
+    ]);
+  });
+
+  test('strips injected system-reminder blocks from the human text', () => {
+    const lines = parseTranscript([
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<system-reminder>\ncontext\n</system-reminder>빌드해 줘'
+            }
+          ]
+        }
+      }
+    ]);
+
+    expect(lines).toEqual([{ kind: 'user', text: '빌드해 줘' }]);
+  });
+
+  test('omits a user turn whose text is empty once the reminder is stripped', () => {
+    const lines = parseTranscript([
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '  <system-reminder>only context</system-reminder>  '
+            }
+          ]
+        }
+      }
+    ]);
+
+    expect(lines).toEqual([]);
+  });
+
+  test('leaves a tool_result-only user turn exactly as it was', () => {
+    const lines = parseTranscript([
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 't1',
+              name: 'Read',
+              input: { file_path: '/repo/a.js' }
+            }
+          ]
+        }
+      },
+      {
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 't1', content: 'ok\nmore' }
+          ]
+        }
+      }
+    ]);
+
+    expect(lines.map((line) => line.kind)).toEqual(['tool']);
+    expect(lines[0].result).toBe('ok');
+  });
+
+  test('returns a user line for the codex user_message extension item', () => {
+    const lines = parseTranscript([
+      {
+        type: 'item.completed',
+        item: { type: 'user_message', text: '재개 명령도 붙여 줘' }
+      }
+    ]);
+
+    expect(lines).toEqual([{ kind: 'user', text: '재개 명령도 붙여 줘' }]);
+  });
+
+  test('omits a codex user_message with no text', () => {
+    const lines = parseTranscript([
+      { type: 'item.completed', item: { type: 'user_message', text: '   ' } }
+    ]);
+
+    expect(lines).toEqual([]);
+  });
+});

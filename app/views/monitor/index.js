@@ -28,6 +28,7 @@ import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { debug } from '../../utils/logging.js';
 import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
+import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import {
   candidateCard,
@@ -1776,7 +1777,11 @@ export function createMonitorView(mount_element, options) {
                 // 받는다 — Worker 타일에 실으면 없던 시각 메타 줄이 생긴다.
                 kind: item.kind,
                 ...(item.kind === 'session'
-                  ? { updated_at: item.updated_at }
+                  ? {
+                      updated_at: item.updated_at,
+                      // 세션 정체·transcript 좌표 (UI-4xzk §6.4).
+                      session_refs: item.session_refs || []
+                    }
                   : {}),
                 workflow: /** @type {any} */ (item.workflow || null),
                 resumed_from: item.resumed_from ?? null,
@@ -3155,6 +3160,21 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('rtile__session')) {
+      if (item && item.kind === 'session') {
+        // 세션 타일에는 하이라이트할 attempt가 없으므로 `selected_attempt`도
+        // 건드리지 않는다 (UI-4xzk §6.4). 드로어 키는 `session:<provider>:<sid>`다.
+        const current = (item.session_refs || []).find(
+          (view) => view && view.current === true
+        );
+        if (current) {
+          drawer_overlay_el.hidden = false;
+          drawer.open(
+            sessionRefDrawerInput(current, bead_id, 'in_progress', root_dir)
+          );
+          doRender();
+        }
+        return;
+      }
       selected_attempt = attempt_id;
       if (attempt_id && item) {
         drawer_overlay_el.hidden = false;

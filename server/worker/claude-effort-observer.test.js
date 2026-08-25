@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   claudeSessionFilePath,
   claudeSubagentFilePath,
+  findClaudeSessionFile,
   observeClaudeEffort,
   observeClaudeSubagentEffort
 } from './claude-effort-observer.js';
@@ -106,5 +107,67 @@ describe('Claude effort observer', () => {
 
     expect(result).toBe(null);
     expect(readFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('findClaudeSessionFile', () => {
+  test('returns the first project directory holding the session file', () => {
+    const readdirSync = vi.fn(() => ['-repo-a', '-repo-b', '-repo-c']);
+    const statSync = vi.fn((/** @type {string} */ file) => {
+      if (file !== '/home/test/.claude/projects/-repo-b/session-1.jsonl') {
+        throw new Error('ENOENT');
+      }
+      return { mtimeMs: 10 };
+    });
+
+    const result = findClaudeSessionFile('session-1', {
+      home_dir: '/home/test',
+      fs: /** @type {any} */ ({ readdirSync, statSync })
+    });
+
+    expect(result).toBe('/home/test/.claude/projects/-repo-b/session-1.jsonl');
+    expect(readdirSync).toHaveBeenCalledWith('/home/test/.claude/projects');
+  });
+
+  test('returns null when no project directory holds the session file', () => {
+    const readdirSync = vi.fn(() => ['-repo-a', '-repo-b']);
+    const statSync = vi.fn(() => {
+      throw new Error('ENOENT');
+    });
+
+    const result = findClaudeSessionFile('missing', {
+      home_dir: '/home/test',
+      fs: /** @type {any} */ ({ readdirSync, statSync })
+    });
+
+    expect(result).toBe(null);
+    expect(statSync).toHaveBeenCalledTimes(2);
+  });
+
+  test('returns null when the projects directory cannot be listed', () => {
+    const readdirSync = vi.fn(() => {
+      throw new Error('EACCES');
+    });
+    const statSync = vi.fn();
+
+    const result = findClaudeSessionFile('session-1', {
+      home_dir: '/home/test',
+      fs: /** @type {any} */ ({ readdirSync, statSync })
+    });
+
+    expect(result).toBe(null);
+    expect(statSync).not.toHaveBeenCalled();
+  });
+
+  test('returns null for an empty session id', () => {
+    const readdirSync = vi.fn(() => ['-repo-a']);
+
+    const result = findClaudeSessionFile('', {
+      home_dir: '/home/test',
+      fs: /** @type {any} */ ({ readdirSync, statSync: vi.fn() })
+    });
+
+    expect(result).toBe(null);
+    expect(readdirSync).not.toHaveBeenCalled();
   });
 });

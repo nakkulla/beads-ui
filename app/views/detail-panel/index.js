@@ -4,6 +4,7 @@ import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js'
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
+import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import {
   providerUsageBadges,
@@ -30,6 +31,10 @@ import {
 import { createMdViewer } from './md-viewer.js';
 import { sessionHistoryTemplate } from './session-history.js';
 import { taskPromptTemplate } from './task-prompt.js';
+
+/**
+ * @import { SessionRefView } from '../../../server/worker/session-ref.js'
+ */
 
 /**
  * Allowed status values (mirrors UPDATE_STATUS_ALLOWED in
@@ -482,6 +487,92 @@ export function createDetailPanel(mount_element, options) {
     }
   }
 
+  // 세션 이력의 `session_ref` 행 (UI-4xzk §6.5). 키가 없는 이슈는 요청 자체가
+  // 없고, 실패·빈 응답은 행 없음이다.
+  /** @type {SessionRefView[]} */
+  let session_refs = [];
+  /** @type {string|null} */
+  let session_refs_loaded_for = null;
+  // Guards a late reply from an issue (or workspace) the reader has already left.
+  let session_refs_request_seq = 0;
+
+  /**
+   * The cache key: workspace, bead, and the RAW contract value. The workspace
+   * is in it for the same reason the prompt cache carries it — the same bead id
+   * in another repo is another bead — and the raw value is, because a session
+   * that just claimed the issue appends to it and the rows must follow.
+   *
+   * @param {string} id
+   * @param {string} raw
+   * @returns {string}
+   */
+  function sessionRefsCacheKey(id, raw) {
+    const workspace =
+      (options.getWorkspacePath && options.getWorkspacePath()) || '';
+    return `${workspace}::${id}::${raw}`;
+  }
+
+  function resetSessionRefs() {
+    session_refs = [];
+    session_refs_loaded_for = null;
+    session_refs_request_seq += 1;
+  }
+
+  /**
+   * @param {string} id
+   * @param {string} key
+   */
+  async function fetchSessionRefs(id, key) {
+    if (!transport) {
+      return;
+    }
+    const seq = ++session_refs_request_seq;
+    /** @type {any} */
+    let res;
+    try {
+      res = await Promise.resolve(
+        transport('get-session-refs', { bead_id: id })
+      );
+    } catch {
+      res = null;
+    }
+    if (seq !== session_refs_request_seq || key !== session_refs_loaded_for) {
+      return;
+    }
+    session_refs = res && Array.isArray(res.sessions) ? res.sessions : [];
+    doRender();
+  }
+
+  /**
+   * Request the bead's sessions once per (workspace, bead, contract value). A
+   * bead without the key never reaches the server at all.
+   */
+  function syncSessionRefs() {
+    if (!transport || !current_id) {
+      return;
+    }
+    const metadata = current && current.metadata;
+    const raw =
+      metadata &&
+      typeof metadata === 'object' &&
+      typeof metadata.session_ref === 'string'
+        ? metadata.session_ref
+        : null;
+    if (raw === null) {
+      resetSessionRefs();
+      return;
+    }
+    const key = sessionRefsCacheKey(current_id, raw);
+    if (session_refs_loaded_for === key) {
+      return;
+    }
+    // The previous key's rows describe another bead, workspace or session list;
+    // they go before the new reply lands, not after.
+    session_refs = [];
+    session_refs_loaded_for = key;
+    void fetchSessionRefs(current_id, key);
+  }
+
   function toggleTaskPrompt() {
     prompt_expanded = !prompt_expanded;
     if (
@@ -706,11 +797,29 @@ export function createDetailPanel(mount_element, options) {
     }
   }
 
+  /**
+   * Open one interactive session's transcript (UI-4xzk §6.5). The workspace is
+   * the connection's own — the detail panel only ever shows the bead it is
+   * subscribed to — so no `root_dir` rides along.
+   *
+   * @param {SessionRefView} view
+   */
+  function openSessionRef(view) {
+    if (!view || !current_id) {
+      return;
+    }
+    transcript_drawer.open(
+      sessionRefDrawerInput(view, current_id, current && current.status)
+    );
+  }
+
   const session_handlers = {
     onOpen: openTranscript,
     onOpenDelegation: openDelegationTranscript,
     onResume: resumeAttempt,
-    onToggleUsage: toggleUsageDetail
+    onToggleUsage: toggleUsageDetail,
+    onOpenSessionRef: openSessionRef,
+    onCopyResumeCommand: copyText
   };
 
   /**
@@ -969,6 +1078,7 @@ export function createDetailPanel(mount_element, options) {
       current = found || snap[0] || current;
     }
     syncComments();
+    syncSessionRefs();
     doRender();
   }
 
@@ -1970,10 +2080,12 @@ export function createDetailPanel(mount_element, options) {
             },
             { onToggle: toggleTaskPrompt }
           )}
-          ${sessionHistoryTemplate(attemptsForBead(), session_handlers, {
-            total: total_usage,
-            expanded: usage_expanded
-          })}
+          ${sessionHistoryTemplate(
+            attemptsForBead(),
+            session_handlers,
+            { total: total_usage, expanded: usage_expanded },
+            session_refs
+          )}
         </div>
       </div>
     `;
@@ -1996,6 +2108,7 @@ export function createDetailPanel(mount_element, options) {
         resetEditors();
         resetComments();
         resetTaskPrompt();
+        resetSessionRefs();
         resetExecAccountCatalog();
       }
       current_id = id;
@@ -2017,6 +2130,7 @@ export function createDetailPanel(mount_element, options) {
       resetEditors();
       resetComments();
       resetTaskPrompt();
+      resetSessionRefs();
       resetExecAccountCatalog();
       md_viewer.close();
       transcript_drawer.close();
@@ -2054,6 +2168,7 @@ export function createDetailPanel(mount_element, options) {
       skipped_orchestration_keys = [];
       resetComments();
       resetTaskPrompt();
+      resetSessionRefs();
       render(html``, mount_element);
     }
   };

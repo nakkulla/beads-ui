@@ -25,11 +25,16 @@
  *     'error', …}}`,
  *     `{type:'turn.completed'}`, `{type:'turn.failed', error}`, `{type:'error'}`.
  *     `thread.started`/`turn.started` dropped.
+ *   - beads-ui extension (UI-4xzk §5.2): `{type:'item.completed',
+ *     item:{type:'user_message', text}}` — the shape
+ *     `server/worker/session-ref-transcript.js` projects a codex rollout's
+ *     `event_msg`/`user_message` onto, because the runner's own `--json` stream
+ *     has no human-input item.
  *   - codex delegation monitor: `{schema:'codex-delegation-monitor-v1', event}`
  *     projected onto the same existing line kinds.
  *
  * Line kinds (order-preserving): `assistant` · `thinking` · `tool` · `gate` ·
- * `phase` · `result` · `error` · `blocker`. Assistant text that matches a
+ * `phase` · `result` · `error` · `blocker` · `user`. Assistant text that matches a
  * gate-receipt or a Phase-heading pattern is reclassified into `gate`/`phase` so
  * the drawer can highlight it per the mockup (`✓ spec 게이트 — codex APPROVE`,
  * `Phase 2/4 …`).
@@ -39,8 +44,8 @@
  * A parsed display line.
  *
  * @typedef {Object} DisplayLine
- * @property {'assistant'|'thinking'|'tool'|'gate'|'phase'|'result'|'error'|'blocker'} kind
- * @property {string} [text] - Assistant/error/result/blocker body.
+ * @property {'assistant'|'thinking'|'tool'|'gate'|'phase'|'result'|'error'|'blocker'|'user'} kind
+ * @property {string} [text] - Assistant/error/result/blocker/user body.
  * @property {boolean} [success] - Result verdict (kind='result').
  * @property {string} [tool] - Tool name (kind='tool').
  * @property {string} [icon] - Display glyph (kind='tool').
@@ -267,6 +272,43 @@ function thinkingLine(text) {
 }
 
 /**
+ * Injected context the harness wraps around a human turn. It is not what the
+ * person wrote, so it never reaches the drawer.
+ */
+const SYSTEM_REMINDER_RE = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+
+/**
+ * The human-input line of a Claude `user` record (UI-4xzk §5.3), or null when
+ * the record carries no typed text — which is every user record an unattended
+ * Worker run writes, since those hold `tool_result` blocks only.
+ *
+ * Text blocks are joined by newline rather than concatenated: a pasted block
+ * and a typed one arrive as separate blocks, and gluing them would invent a
+ * sentence neither side wrote.
+ *
+ * @param {unknown} content - `message.content`.
+ * @returns {DisplayLine | null}
+ */
+function userLine(content) {
+  /** @type {string} */
+  let text;
+  if (typeof content === 'string') {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .filter(
+        (c) => isObject(c) && c.type === 'text' && typeof c.text === 'string'
+      )
+      .map((c) => String(c.text))
+      .join('\n');
+  } else {
+    return null;
+  }
+  const stripped = text.replace(SYSTEM_REMINDER_RE, '').trim();
+  return stripped.length > 0 ? { kind: 'user', text: stripped } : null;
+}
+
+/**
  * Reclassify an assistant text block into a gate/phase line, or return an
  * assistant line. Multi-line text is only pattern-tested against its first
  * non-empty line so a long prose block is never mis-tagged.
@@ -382,8 +424,9 @@ function parseClaude(raw, toolsById) {
     return parent_tool_use_id ? tagDelegated(out, parent_tool_use_id) : out;
   }
   if (raw.type === 'user') {
-    // A user turn only carries tool_result blocks in unattended runs; pair each
-    // to its tool line rather than emitting a line of its own.
+    // An UNATTENDED run's user turn only carries tool_result blocks, which pair
+    // to their tool line rather than becoming a line; an interactive session's
+    // (UI-4xzk §5.3) also carries what the human typed, and that IS a line.
     const msg = /** @type {any} */ (raw.message);
     const content = msg && Array.isArray(msg.content) ? msg.content : [];
     for (const c of content) {
@@ -399,7 +442,8 @@ function parseClaude(raw, toolsById) {
         }
       }
     }
-    return [];
+    const line = userLine(msg && msg.content);
+    return line ? [line] : [];
   }
   if (raw.type === 'result') {
     const success = raw.is_error === false && raw.subtype === 'success';
@@ -485,6 +529,13 @@ function parseCodex(raw) {
     const item = /** @type {any} */ (raw.item);
     if (item.type === 'agent_message' && typeof item.text === 'string') {
       return [classifyText(item.text)];
+    }
+    if (item.type === 'user_message') {
+      // beads-ui extension item (UI-4xzk §5.2): the server adapter's projection
+      // of a codex rollout's human turn. Never classified — a person typing a
+      // Phase heading is not the session declaring one.
+      const user = userLine(item.text);
+      return user ? [user] : [];
     }
     if (item.type === 'reasoning') {
       // No local codex fixture carries this shape; a differing payload keeps the

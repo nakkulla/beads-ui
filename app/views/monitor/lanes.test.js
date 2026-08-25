@@ -1793,6 +1793,73 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
   });
 });
 
+describe('monitor 세션 정체 (UI-4xzk §6.4)', () => {
+  const VIEW = {
+    index: 0,
+    provider: 'claude',
+    session_id: 'a1b2c3d4-5e6f',
+    host: 'mac-studio',
+    current: true,
+    locality: 'local',
+    last_event_at: 1_700_000_000_000,
+    resume_command: "claude --resume 'a1b2c3d4-5e6f'"
+  };
+
+  /**
+   * @param {Partial<Record<string, any>>} [patch]
+   */
+  function sessionActive(patch = {}) {
+    return {
+      bead_id: 'A-1',
+      title: 'title A-1',
+      status: 'in_progress',
+      route: 'spec_backed',
+      spec_id: '',
+      labels: [],
+      created_at: null,
+      updated_at: 2000,
+      started_at: 1000,
+      workflow: null,
+      blocked: false,
+      blocked_by: [],
+      ...patch
+    };
+  }
+
+  test('carries the server session_refs onto the running item', () => {
+    const lanes = buildLanes(
+      [
+        workspace({ session_active: [sessionActive({ session_refs: [VIEW] })] })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].session_refs).toEqual([VIEW]);
+  });
+
+  test('falls back to an empty list when the key is absent', () => {
+    const lanes = buildLanes(
+      [workspace({ session_active: [sessionActive()] })],
+      [state()]
+    );
+
+    expect(lanes.running[0].session_refs).toEqual([]);
+  });
+
+  test('falls back to an empty list for a non-array session_refs', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          session_active: [sessionActive({ session_refs: 'claude:x@host' })]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].session_refs).toEqual([]);
+  });
+});
+
 describe('monitor 대기 행 route 재료 (UI-yrzu §5)', () => {
   const WORKFLOW = {
     route: 'quick_fix',

@@ -90,9 +90,18 @@ import {
 } from '../worker/resolution-ladder.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
+import { createTailReader } from '../worker/runner/tail-reader.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { activeLaneLineages } from '../worker/scheduler.js';
 import { scopeCache } from '../worker/scope-cache.js';
+import { createSessionRefTranscript } from '../worker/session-ref-transcript.js';
+import {
+  isSafeSessionId,
+  parseSessionRef,
+  readSessionSnapshot,
+  resolveSessionFile,
+  sessionRefViews
+} from '../worker/session-ref.js';
 import { readDeclaredBase } from '../worker/target-base.js';
 import {
   normalizeUsageLegs,
@@ -103,7 +112,8 @@ import {
   emitSessionLogSnapshot,
   getConnWorkspace,
   log,
-  pushSnapshotIfChanged
+  pushSnapshotIfChanged,
+  runBdJsonProjectedInWorkspace
 } from './context.js';
 import { sessionExcludedBeadIds } from './lane-membership.js';
 import { trimQueueProjection } from './snapshot-retention.js';
@@ -2350,8 +2360,221 @@ export function detachSessionLog(ws) {
 }
 
 /**
+ * One bead's metadata bag, read through the projected bd JSON owner.
+ *
+ * Every failure — an unusable workspace, a missing bead, a shape refusal — is
+ * the SAME answer here (`null`), because the only consumer draws nothing in all
+ * of them (UI-4xzk §4.2).
+ *
+ * @param {WebSocket} ws
+ * @param {string} key - Target workspace root; empty means the connection's.
+ * @param {string} bead_id
+ * @returns {Promise<Record<string, unknown>|null>}
+ */
+async function beadMetadataOf(ws, key, bead_id) {
+  /** @type {any} */
+  let shown;
+  try {
+    shown = await runBdJsonProjectedInWorkspace(
+      ws,
+      'show',
+      ['show', bead_id, '--json'],
+      { ...(key ? { cwd: key } : {}), expected_id: bead_id }
+    );
+  } catch (err) {
+    log('session_ref read threw for %s: %o', bead_id, err);
+    return null;
+  }
+  if (shown.ok !== true) {
+    log('session_ref read failed for %s: %s', bead_id, shown.error?.code);
+    return null;
+  }
+  const metadata = shown.data && shown.data.metadata;
+  return metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+    ? /** @type {Record<string, unknown>} */ (metadata)
+    : null;
+}
+
+/**
+ * Validate the `session_ref` variant of a `subscribe-session-log` payload.
+ *
+ * `attempt_id` is not a free label here: it is the client store's key for the
+ * drawer, so it must be exactly `session:<provider>:<session_id>` — the same
+ * convention the parallel analyzer follows when it puts a `job_id` in that slot.
+ *
+ * @param {unknown} raw
+ * @param {string} attempt_id
+ * @param {boolean} has_launch_id
+ * @returns {{ bead_id: string, provider: 'claude'|'codex', session_id: string }|null}
+ */
+function normalizeSessionRefRequest(raw, attempt_id, has_launch_id) {
+  if (has_launch_id || !raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null;
+  }
+  const value = /** @type {Record<string, unknown>} */ (raw);
+  const bead_id = typeof value.bead_id === 'string' ? value.bead_id : '';
+  const provider = value.provider;
+  const session_id =
+    typeof value.session_id === 'string' ? value.session_id : '';
+  if (
+    bead_id.length === 0 ||
+    (provider !== 'claude' && provider !== 'codex') ||
+    !isSafeSessionId(session_id)
+  ) {
+    return null;
+  }
+  if (attempt_id !== `session:${provider}:${session_id}`) {
+    return null;
+  }
+  return { bead_id, provider, session_id };
+}
+
+/**
+ * Open one `session_ref` session's transcript: authorize, snapshot, follow.
+ *
+ * The server opens NO file whose `(provider, session_id)` the bead's own
+ * `session_ref` does not name (§4.3). An unnamed pair is answered with the same
+ * empty snapshot an unauthorized delegation gets — fail-quiet, and no
+ * filesystem access at all, so the reply cannot report a file's existence.
+ *
+ * @param {WebSocket} ws
+ * @param {{ key: string, client_id: string, attempt_id: string, session_ref: { bead_id: string, provider: 'claude'|'codex', session_id: string } }} input
+ */
+async function followSessionRefLog(ws, input) {
+  const { attempt_id, client_id, key, session_ref } = input;
+  // Unlike every other branch of this handler, authorization here needs a `bd`
+  // process, so the subscription only becomes real after an await. Unsubscribe,
+  // connection close and same-client re-subscribe all cancel by walking the
+  // REGISTERED entries, so a placeholder goes in first: without it those three
+  // find nothing, and the reader created afterwards would never be stopped —
+  // one leaked tail reader per cancelled open, and duplicate appends when the
+  // same client reopens during the window.
+  let cancelled = false;
+  /** @type {{ ws: WebSocket, client_id: string, attempt_id: string, off: () => void }} */
+  const sub = {
+    ws,
+    client_id,
+    attempt_id,
+    off: () => {
+      cancelled = true;
+    }
+  };
+  SESSION_LOG_SUBS.add(sub);
+  const metadata = await beadMetadataOf(ws, key, session_ref.bead_id);
+  if (cancelled || !SESSION_LOG_SUBS.has(sub)) {
+    return;
+  }
+  /**
+   * Every fail-quiet exit registers nothing, so the placeholder goes with it —
+   * a leftover entry would answer a later `unsubscribe-session-log` with
+   * `unsubscribed: true` for a subscription that never existed.
+   */
+  const giveUp = () => {
+    SESSION_LOG_SUBS.delete(sub);
+    emitSessionLogSnapshot(ws, client_id, attempt_id, [], null);
+  };
+  const entry = parseSessionRef(metadata?.session_ref).find(
+    (item) =>
+      item.provider === session_ref.provider &&
+      item.session_id === session_ref.session_id
+  );
+  if (entry === undefined) {
+    giveUp();
+    return;
+  }
+  const located = resolveSessionFile(entry);
+  if (located.locality !== 'local' || located.file === null) {
+    giveUp();
+    return;
+  }
+  const snapshot = readSessionSnapshot(located.file);
+  if (snapshot === null) {
+    giveUp();
+    return;
+  }
+  // ONE adapter for the whole subscription: a codex tool call below the
+  // snapshot boundary is the only thing that can name the command of an output
+  // that arrives as a live append.
+  const adapter = createSessionRefTranscript(entry.provider);
+  /** @type {unknown[]} */
+  const lines = [];
+  for (const line of snapshot.text.split('\n')) {
+    lines.push(...adapter.project(line));
+  }
+  emitSessionLogSnapshot(
+    ws,
+    client_id,
+    attempt_id,
+    lines,
+    located.last_event_at
+  );
+  const reader = createTailReader({
+    file: located.file,
+    start_offset: snapshot.boundary,
+    onLine: (line) => {
+      for (const event of adapter.project(line)) {
+        emitSessionLogAppend(ws, client_id, attempt_id, event);
+      }
+    }
+  });
+  sub.off = reader.stop;
+  reader.start();
+  log(
+    'subscribe-session-log %s attempt=%s mode=session_ref',
+    client_id,
+    attempt_id
+  );
+}
+
+/**
+ * Handle `get-session-refs`. Payload: `{ bead_id, root_dir? }`.
+ *
+ * Answers the issue detail panel's 세션 이력 rows. Bead `status` is deliberately
+ * NOT carried: the panel already holds it, and two sources of the same fact can
+ * disagree (UI-4xzk §4.2).
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleGetSessionRefs(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  const bead_id = typeof p.bead_id === 'string' ? p.bead_id : '';
+  if (bead_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = targetWorkspaceOf(ws, req.payload);
+  if (key === null) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload.root_dir must be an absolute path in the available workspace list'
+        )
+      )
+    );
+    return;
+  }
+  const metadata = await beadMetadataOf(ws, key, bead_id);
+  /** @type {unknown[]} */
+  let sessions = [];
+  try {
+    sessions = sessionRefViews(metadata);
+  } catch (err) {
+    log('session_ref projection failed for %s: %o', bead_id, err);
+    sessions = [];
+  }
+  ws.send(JSON.stringify(makeOk(req, { bead_id, sessions })));
+}
+
+/**
  * Handle `subscribe-session-log`. Payload:
- * `{ id: client_id, attempt_id, launch_id?, root_dir? }`.
+ * `{ id: client_id, attempt_id, launch_id?, session_ref?, root_dir? }`.
  *
  * Emits a SNAPSHOT of the persisted raw stream, then registers a live-append
  * listener on the shared runtime session-log. A Done/Failed attempt simply
@@ -2365,16 +2588,22 @@ export function detachSessionLog(ws) {
  * other targeted op; absence keeps the connection workspace. The subscription
  * registry is keyed by client id, so no key collides.
  *
+ * `session_ref` (UI-4xzk §4.3) opens an INTERACTIVE session's own transcript
+ * instead of an attempt's: there is no attempt, no runtime broker and no
+ * `last_activity` overlay, so it reads the file directly and follows it with a
+ * tail reader. It is mutually exclusive with `launch_id`.
+ *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export function handleSubscribeSessionLog(ws, req) {
+export async function handleSubscribeSessionLog(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
   const client_id = typeof p.id === 'string' ? p.id : '';
   const attempt_id = typeof p.attempt_id === 'string' ? p.attempt_id : '';
   const has_launch_id = p.launch_id !== undefined;
   const launch_id =
     has_launch_id && typeof p.launch_id === 'string' ? p.launch_id : '';
+  const has_session_ref = p.session_ref !== undefined;
   if (
     client_id.length === 0 ||
     attempt_id.length === 0 ||
@@ -2393,6 +2622,21 @@ export function handleSubscribeSessionLog(ws, req) {
     );
     return;
   }
+  const session_ref = has_session_ref
+    ? normalizeSessionRefRequest(p.session_ref, attempt_id, has_launch_id)
+    : null;
+  if (has_session_ref && session_ref === null) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload.session_ref requires { bead_id, provider: claude|codex, session_id } with attempt_id "session:<provider>:<session_id>" and no launch_id'
+        )
+      )
+    );
+    return;
+  }
   const key = targetWorkspaceOf(ws, req.payload);
   if (key === null) {
     ws.send(
@@ -2406,7 +2650,6 @@ export function handleSubscribeSessionLog(ws, req) {
     );
     return;
   }
-  const runtime = getWorkerRuntime();
 
   // Drop any prior subscription for the same (ws, client_id) so re-open is idempotent.
   for (const sub of SESSION_LOG_SUBS) {
@@ -2429,6 +2672,18 @@ export function handleSubscribeSessionLog(ws, req) {
       })
     )
   );
+
+  if (session_ref !== null) {
+    await followSessionRefLog(ws, {
+      key,
+      client_id,
+      attempt_id,
+      session_ref
+    });
+    return;
+  }
+
+  const runtime = getWorkerRuntime();
 
   if (has_launch_id) {
     let attempt = null;
