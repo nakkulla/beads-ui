@@ -4,6 +4,9 @@ scope:
   - server/worker/cross-lanes-store.js
   - server/ws/monitor-handlers.js
   - server/ws/connection.js
+  - server/ws/context.js
+  - app/main.js
+  - app/data/monitor-pipeline-store.js
   - app/views/monitor/lanes.js
   - app/views/monitor/drop-plan.js
   - app/views/monitor/index.js
@@ -133,6 +136,8 @@ mutator) }`.
   막지 않는다: 재배포 직후 캐시 콜드 구간에서 서버가 오판해 레인을 훼손하지
   않기 위해서다.
 - 성공 시 `schedulePush()`.
+- `conflict` 응답에는 최신 `cross_lanes` 전체(`{ revision, lanes }`)를 담는다 —
+  클라이언트가 최신 레인 위에서 계획을 다시 세우기 위해서다(§5.5).
 - 오류 코드: `bad_request`, `not_found`(lane_id), `conflict`(revision),
   `conflict_membership`, `conflict_empty_lane`, `state_unreadable`.
 
@@ -146,6 +151,17 @@ cross_lanes: { revision: number, lanes: Lane[] } | null   // null = 저장소 �
 
 `bead_blocked_by`는 그대로 싣는다. `app/protocol.md` "Monitor pipeline channel"
 절에 위 필드와 op 4개를 기록한다.
+
+전달 경로는 세 파일을 함께 바꾼다 — 현재 셋 다 `workspaces`·`workspaces_state`만
+싣고 보관한다:
+
+- `server/ws/context.js emitMonitorPipelineSnapshot(ws, workspaces,
+  workspaces_state, cross_lanes)`: 같은 envelope에 `cross_lanes`를 싣는다.
+- `app/main.js`: 수신 시 `monitor_pipeline_store.set(p.workspaces,
+  p.workspaces_state, p.cross_lanes)`.
+- `app/data/monitor-pipeline-store.js`: `cross_lanes` 보관과 `crossLanes()` 조회
+  추가(키가 없는 구서버 스냅샷은 `null`과 구분해 `undefined` → 빈 목록으로 그리고
+  레인 op는 비활성).
 
 ### 4.5 제거
 
@@ -163,8 +179,8 @@ cross_lanes: { revision: number, lanes: Lane[] } | null   // null = 저장소 �
 - draft: `draft` 배지 · `확정` 버튼(멤버 2개 이상일 때만 활성) · `✕`(즉시 삭제,
   확인 없음 — dep가 없으니 되돌릴 게 없다).
 - confirmed: `확정` 배지 · `✕`. 삭제는 확인 1회(`의존 N개를 함께 제거합니다`)
-  뒤 `monitor-lane-remove` → 인접 쌍마다 `dep-remove entries[i+1] ← entries[i]`
-  (현재 `bead_blocked_by`에 있는 것만).
+  뒤 인접 쌍마다 `dep-remove entries[i+1] ← entries[i]`(현재 `bead_blocked_by`에
+  있는 것만) → `monitor-lane-remove`(§5.5 순서).
 - 멤버 전원이 완료면 `모두 완료` 배지. 자동 삭제는 하지 않는다(재배포 직후
   상태 미확정 구간의 오삭제 방지).
 - `재적용` 버튼: §5.2 어긋남이 하나라도 있을 때만 보인다.
@@ -183,8 +199,9 @@ cross_lanes: { revision: number, lanes: Lane[] } | null   // null = 저장소 �
 - 어긋남 칩(confirmed만): 인접 쌍 `(i, i+1)`에서 `bead_blocked_by[entries[i+1]]`
   에 `entries[i]`가 없으면 `i+1` 행에 `⚠ 의존 없음`. 큐·실행중·PR 대기·완료
   어디에도 없는 멤버는 위치 칩 `미적재`가 어긋남을 겸한다.
-- `재적용` = 빠진 인접 dep `dep-add` + `미적재` 멤버를 각자 레포 병렬 큐 끝에
-  `worker-queue-place`. 순서는 dep 먼저.
+- `재적용` = 빠진 인접 dep `dep-add` + `미적재` 멤버를 레인 순서대로 각자 레포
+  병렬 큐 끝에 `worker-queue-place`(index 규칙은 §5.4 확정 행과 같다). 순서는 dep
+  먼저.
 - 행 클릭 = `openRow`(현행).
 
 ### 5.2a 다른 영역과의 관계
@@ -219,9 +236,9 @@ cross_lanes: { revision: number, lanes: Lane[] } | null   // null = 저장소 �
 
 | 상황 | 레인 op | dep/큐 op |
 |---|---|---|
-| draft 레인에 드롭(원천 무관) | `update` (마커 위치에 삽입) | 없음. candidate 원천도 적재하지 않는다 |
+| draft 레인에 드롭(원천 무관) | `update` (마커 위치에 삽입) | 원천이 confirmed 레인 행이면 그 레인의 이어 붙이기(`dep-remove`/`dep-add`)만; 그 밖에는 없음. candidate 원천도 적재하지 않는다 |
 | draft 안 재배열 / 행 `✕` | `update` | 없음 |
-| `확정` | `confirm` | 인접 쌍마다 `dep-add entries[i+1] ← entries[i]`(이미 있으면 생략; 임시 그래프 사이클 검사, 사이클이면 전체 거부하고 `confirm`도 보내지 않음) → 큐·실행중·PR 대기·완료 어디에도 없는 멤버를 각자 레포 병렬 큐 끝에 `place` |
+| `확정` | `confirm` | 인접 쌍마다 `dep-add entries[i+1] ← entries[i]`(이미 있으면 생략; 임시 그래프 사이클 검사, 사이클이면 전체 거부하고 `confirm`도 보내지 않음) → 큐·실행중·PR 대기·완료 어디에도 없는 멤버를 레인 순서대로 각자 레포 병렬 큐 끝에 `place`; index는 `parallel_raw_length[root_dir] + 그 계획에서 앞서 잡은 같은 레포 place 수` |
 | confirmed 레인에 드롭 | `update` | 원천 `chain`이면 먼저 이어 붙이기 → 현행 삽입 규칙(`up`/`down`) → candidate 원천이면 자기 레포 병렬 끝 `place` |
 | confirmed 안 재배열 | `update` | 이어 붙이기 → 삽입 규칙(현행; 같은 자리면 op 없음) |
 | confirmed 행 `✕` / 다른 대상으로 드래그 | `update`(제거) | 이어 붙이기 → 대상별 큐 op는 현행 표(candidate 대상 `remove`, parallel 대상 없음, repo-serial 대상 `place`) |
@@ -234,13 +251,21 @@ cross_lanes: { revision: number, lanes: Lane[] } | null   // null = 저장소 �
 
 ### 5.5 전송 순서와 실패
 
-뷰는 **레인 op → dep op → 큐 op** 순서로 보낸다.
+뷰는 **`dep-remove` → 레인 op → `dep-add` → 큐 op** 순서로 보낸다. 제거를 레인
+op보다 앞에 두는 이유: 재정렬·행 제거·레인 삭제 뒤에는 옛 인접 관계를 알 수 없어
+남은 옛 의존을 나중에 지울 수 없지만, 제거가 먼저 실패하면 아무것도 바뀌지 않고,
+레인 op가 실패하면 빠진 dep가 `⚠ 의존 없음`으로 드러나 `재적용`이 되돌린다.
 
-- 레인 op는 `cross_lanes.revision`으로 CAS, `conflict`면 최신 revision으로 1회
-  재시도(현행 `sendCas` 방식). 재시도도 실패하면 토스트 `레인이 다른 곳에서
-  바뀌었습니다`, 이후 op는 보내지 않는다.
-- 레인 op 성공 뒤 dep·큐 op가 실패하면 중단·토스트(현행 §5.4). 그 결과는 다음
-  스냅샷에서 어긋남 칩으로 드러나고 `재적용`이 복구 경로다. 트랜잭션은 없다.
+- 레인 op는 `cross_lanes.revision`으로 CAS. `conflict`면 응답에 실린 최신
+  `cross_lanes`로 **계획 전체를 다시 세운다** — 고정 행·타 레인 소속·사이클 검사와
+  dep·큐 op까지 재계산 — 그리고 1회만 재시도한다. 이미 보낸 `dep-remove`는
+  재계산에서 "이미 없음"으로 반영된다. 재시도도 실패하면 토스트 `레인이 다른
+  곳에서 바뀌었습니다`, 이후 op는 보내지 않는다. 옛 entries 기준의 계획을 새
+  revision으로 그대로 재전송하는 일은 없다.
+- 레인 op 성공 뒤 `dep-add`·큐 op가 실패하면 중단·토스트(현행 §5.4). 그 결과는
+  다음 스냅샷에서 어긋남 칩으로 드러나고 `재적용`이 복구 경로다. 트랜잭션은 없다.
+- 같은 레포 큐 op가 한 계획에 여럿이면 순차 전송하고, 각 성공 응답의 `revision`을
+  다음 같은-레포 큐 op의 `expected_revision`으로 넘긴다.
 
 ## 6. 의존성 패널·칩·필터·배치 메뉴
 
@@ -254,7 +279,9 @@ cross_lanes: { revision: number, lanes: Lane[] } | null   // null = 저장소 �
 패널 구조:
 
 1. 현재 의존 줄: `🔒 선행 <id>` 칩들(`bead_blocked_by[id]`)과 `→ 후속 <id>`
-   칩들(역방향 맵). 각 칩 `✕` → `dep-remove`. 열린 이슈만 그린다.
+   칩들(역방향 맵). 각 칩 `✕` → `dep-remove`: 선행 칩은 `dep-remove <this> ←
+   <pred>`를 this의 레포로, 후속 칩은 `dep-remove <succ> ← <this>`를 **succ의
+   레포**로 보낸다(현행 규칙: `root_dir`는 blockee 소유 레포). 열린 이슈만 그린다.
 2. 방향 세그먼트: `← 앞에 (선행 추가)` / `→ 뒤에 (후속 추가)`. 기본 `← 앞에`.
 3. 검색창(ID·제목 부분 일치, 대소문자 무시) + 후보 목록(레포 배지 · ID · 제목).
 4. 항목 클릭 = `dep-add` 1건. 선행 추가: `dep-add <this> ← <cand>`(root_dir =
@@ -333,15 +360,24 @@ beads-ui 직렬
   중복 `bead_id` 정규화.
 - `server/ws/monitor-handlers.cross-lanes.test.js`: op 4개 응답·`schedulePush`
   호출, `conflict_membership`, `conflict_empty_lane`, `confirm` 멤버 부족
-  `bad_request`, `state_unreadable`, 스냅샷 `cross_lanes` 투영.
+  `bad_request`, `state_unreadable`, 스냅샷 `cross_lanes` 투영, `conflict` 응답의
+  최신 `cross_lanes` 동봉, 같은 레인 동시 update/confirm/remove.
+- `server/ws/context` 직렬화 + `app/data/monitor-pipeline-store.test.js` +
+  `app/main.monitor.e2e.test.js`: `cross_lanes`가 envelope → 스토어 → 렌더까지
+  전달되고, 키 없는 구서버 스냅샷에서 레인 op가 비활성인 것.
 - `app/views/monitor/lanes.test.js`: 파생 체인 테스트 13건 제거 → 저장 레인
   투영(번호·위치 칩·고정 행·`⚠ 의존 없음`·`모두 완료`·`외부`), 후속 역방향 맵,
   `의존 있음` 필터, 연결 레인 행에 route·겹침·선행 칩 없음.
 - `app/views/monitor/drop-plan.test.js`: draft/confirmed 대상 표 각 행, 고정 행
-  앞 거부, 타 레인 소속 거부, 확정 op 열(생략·사이클 거부·미적재만 place), 삭제
-  dep-remove 열, 결과 `lane_ops`/`ops` 순서.
+  앞 거부, 타 레인 소속 거부, 확정 op 열(생략·사이클 거부·미적재만 place, 같은
+  레포 미적재 여럿의 index 순서), 삭제 dep-remove 열, 결과 순서
+  `dep-remove → lane → dep-add → queue`.
+- `app/views/monitor/index.test.js`: `conflict` 뒤 최신 `cross_lanes`로 재계획 후
+  1회 재시도(옛 entries 재전송 없음), 각 단계 실패가 `재적용`으로 수렴하는 것,
+  같은 레포 큐 op 순차 전송과 revision 전달.
 - `app/views/monitor/dep-candidates.test.js`: 방향별 제외, 사이클 disabled,
   정렬, 검색 일치.
+- 의존성 패널 칩 `✕`: 선행/후속 각각의 `dep-remove` 방향과 `root_dir`(교차 레포).
 - `app/views/worker/lanes.test.js`: 배치 메뉴 그룹 렌더(연결 그룹 유무).
 - protocol 문서 검사 스크립트가 있으면 `cross_lanes`·op 4개 반영.
 
@@ -354,8 +390,10 @@ Worker 탭 직렬 레인 의미와 Worker 스케줄러, UI-fz4f 미확정 blocke
 ## 10. 구현 unit 후보 (advisory)
 
 1. `server`: `state-paths` 경로 + `cross-lanes-store` + 모니터 op 4개 + 스냅샷
-   `cross_lanes` + `app/protocol.md`.
+   `cross_lanes`(`context.js` envelope) + `app/protocol.md`.
 2. `app/views/monitor/lanes.js`·`drop-plan.js`·`dep-candidates.js`: 파생 제거,
    저장 레인 투영, 드래그 표, 확정/삭제 op 열, 후보 규칙.
-3. `app/views/monitor/index.js`·`app/views/worker/lanes.js`·`app/styles.css`:
-   레인 pane 조작, 의존성 패널, 칩, 필터, 배치 메뉴.
+3. `app/main.js`·`app/data/monitor-pipeline-store.js`·
+   `app/views/monitor/index.js`·`app/views/worker/lanes.js`·`app/styles.css`:
+   `cross_lanes` 수신·보관, 레인 pane 조작, 전송 순서·충돌 재계획, 의존성 패널,
+   칩, 필터, 배치 메뉴.
