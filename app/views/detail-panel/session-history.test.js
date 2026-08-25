@@ -917,6 +917,52 @@ describe('session-history claude subagent rows (UI-2mpn §6.1)', () => {
     expect(host.querySelectorAll('.detail-session__leg').length).toBe(1);
   });
 
+  // UI-1663 §6.2: this view is NOT changed by that spec. The row below is the
+  // proof that the parser and store fixes alone reach the screen — a completed
+  // background leg carries a total-only receipt and must render exactly like a
+  // four-field one.
+  test('renders a background subagent row from a total-only receipt', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [subagent('done')],
+          usage_legs: [receipt({ usage: { total_tokens: 219570 } })]
+        }
+      ])
+    );
+
+    expect(host.querySelector('.detail-session__leg-glyph')?.textContent).toBe(
+      '✓'
+    );
+    expect(host.querySelector('.detail-session__leg-sid')?.textContent).toBe(
+      'agt_9f3c'
+    );
+    expect(
+      host.querySelector('.detail-session__leg-time')?.textContent?.trim()
+        ?.length
+    ).toBeGreaterThan(0);
+    expect(host.querySelector('.detail-session__usage')?.textContent).toContain(
+      'Claude τ 219.6k'
+    );
+  });
+
+  test('discloses the missing breakdown on the total-only row badge', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [subagent('done')],
+          usage_legs: [receipt({ usage: { total_tokens: 219570 } })]
+        }
+      ])
+    );
+
+    expect(
+      host.querySelector('.detail-session__usage')?.getAttribute('title')
+    ).toBe('총 219,570\n분해 없음 — 총량만 보고됨');
+  });
+
   test('hides the usage-only receipt of a tool-typed subagent', () => {
     const host = mount(
       sessionHistoryTemplate([

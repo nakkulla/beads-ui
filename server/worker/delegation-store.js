@@ -30,7 +30,12 @@ const log = debug('worker:delegation-store');
  * One attempt's live subagent state: the sessions keyed by launch id (the
  * parent's `Agent` `tool_use.id`) and the terminal receipts they produced.
  *
- * @typedef {{ sessions: Map<string, DelegationSession>, legs: UsageLeg[] }} AttemptDelegations
+ * `closed_by` records which terminal receipt closed each launch, and lives OUT
+ * of the session record on purpose (§5.2): `delegation-monitor.js`
+ * `isClaudeSession` validates the session key set EXACTLY, so an extra key would
+ * make `normalizeDelegationSessions` drop the very row this change repairs.
+ *
+ * @typedef {{ sessions: Map<string, DelegationSession>, legs: UsageLeg[], closed_by: Map<string, 'tool_result'|'notification'> }} AttemptDelegations
  */
 
 /**
@@ -101,10 +106,48 @@ export function createDelegationStore() {
     const lane = laneFor(workspace);
     let entry = lane.get(attempt_id);
     if (!entry) {
-      entry = { sessions: new Map(), legs: [] };
+      entry = { sessions: new Map(), legs: [], closed_by: new Map() };
       lane.set(attempt_id, entry);
     }
     return entry;
+  }
+
+  /**
+   * Record one launch's receipt, REPLACING the earlier one in place when the
+   * same launch is closed twice (§5.2). A four-field `tool_result` arriving
+   * after a total-only notification is an accuracy upgrade, not a second
+   * subagent, so its row must stay where it was.
+   *
+   * @param {AttemptDelegations} entry
+   * @param {UsageLeg} leg
+   */
+  function recordLeg(entry, leg) {
+    const index = entry.legs.findIndex(
+      (existing) => existing.receipt_id === leg.receipt_id
+    );
+    if (index >= 0) {
+      entry.legs[index] = leg;
+      return;
+    }
+    entry.legs.push(leg);
+  }
+
+  /**
+   * Drop the receipt a launch left earlier, if any (§5.2 + §7). A close that
+   * reports no usage at all leaves NO receipt, and an accepted `tool_result`
+   * that supersedes a total-only notification must not leave that notification's
+   * numbers and time behind under a session the `tool_result` now dates.
+   *
+   * @param {AttemptDelegations} entry
+   * @param {string} receipt_id
+   */
+  function dropLeg(entry, receipt_id) {
+    const index = entry.legs.findIndex(
+      (existing) => existing.receipt_id === receipt_id
+    );
+    if (index >= 0) {
+      entry.legs.splice(index, 1);
+    }
   }
 
   /**
@@ -121,33 +164,63 @@ export function createDelegationStore() {
     const failed =
       lifted.is_error === true ||
       (lifted.result_status !== null && lifted.result_status !== 'completed');
+    // §5.2: a `task_notification` carries no `timestamp` of its own, so the
+    // close falls back to the last activity the stream DID date — still a value
+    // read off a line, so live and replay stay identical.
+    const completed_at = lifted.at ?? session.last_event_at;
     session.status = failed ? 'failed' : 'done';
-    session.completed_at = lifted.at;
-    session.last_event_at = lifted.at;
+    session.completed_at = completed_at;
+    session.last_event_at = completed_at;
+    entry.closed_by.set(session.launch_id, lifted.source);
     if (lifted.agent_type !== null) {
       session.agent_type = lifted.agent_type;
     }
     if (lifted.model !== null) {
       session.model = lifted.model;
     }
-    if (!lifted.usage) {
+    /** @type {{ input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens: number }|{ total_tokens: number }|null} */
+    let usage = null;
+    if (lifted.usage) {
+      const total =
+        lifted.usage.input_tokens +
+        lifted.usage.output_tokens +
+        lifted.usage.cache_read_input_tokens +
+        lifted.usage.cache_creation_input_tokens;
+      // Only a four-field receipt has something to disagree WITH; a total-only
+      // one is the single number it reports.
+      if (lifted.total_tokens !== null && lifted.total_tokens !== total) {
+        log(
+          'subagent totalTokens disagrees with its usage fields for launch %s',
+          session.launch_id
+        );
+      }
+      usage = {
+        input_tokens: lifted.usage.input_tokens,
+        output_tokens: lifted.usage.output_tokens,
+        cache_read_input_tokens: lifted.usage.cache_read_input_tokens,
+        cache_creation_input_tokens: lifted.usage.cache_creation_input_tokens,
+        // The parent stream reports no reasoning breakdown for a subagent, and
+        // the field is not part of a Claude headline anyway.
+        reasoning_output_tokens: 0
+      };
+    } else if (
+      Number.isInteger(lifted.total_tokens) &&
+      /** @type {number} */ (lifted.total_tokens) >= 0
+    ) {
+      // §5.3: a backgrounded leg has no four-field breakdown anywhere — not in
+      // the parent stream and not in the subagent transcript (§2.4) — so the
+      // total it DID report is the whole receipt rather than four invented
+      // zeros.
+      usage = { total_tokens: /** @type {number} */ (lifted.total_tokens) };
+    }
+    if (!usage) {
       // §7: a missing or malformed `tool_use_result` still ends the session; it
       // just leaves no receipt. The warning names the launch, never the payload.
+      dropLeg(entry, session.launch_id);
       log('subagent receipt missing for launch %s', session.launch_id);
       return;
     }
-    const total =
-      lifted.usage.input_tokens +
-      lifted.usage.output_tokens +
-      lifted.usage.cache_read_input_tokens +
-      lifted.usage.cache_creation_input_tokens;
-    if (lifted.total_tokens !== null && lifted.total_tokens !== total) {
-      log(
-        'subagent totalTokens disagrees with its usage fields for launch %s',
-        session.launch_id
-      );
-    }
-    entry.legs.push({
+    recordLeg(entry, {
       receipt_id: session.launch_id,
       provider: 'claude',
       role: 'subagent',
@@ -156,17 +229,12 @@ export function createDelegationStore() {
       model: session.model,
       session_id: session.launch_id,
       turn_id: session.launch_id,
-      effort: null,
-      usage: {
-        input_tokens: lifted.usage.input_tokens,
-        output_tokens: lifted.usage.output_tokens,
-        cache_read_input_tokens: lifted.usage.cache_read_input_tokens,
-        cache_creation_input_tokens: lifted.usage.cache_creation_input_tokens,
-        // The parent stream reports no reasoning breakdown for a subagent, and
-        // the field is not part of a Claude headline anyway.
-        reasoning_output_tokens: 0
-      },
-      completed_at: lifted.at
+      // An effort observed off the subagent's own JSONL was already pinned on
+      // the session, so a replacing receipt keeps it instead of dropping back
+      // to null.
+      effort: session.effort,
+      usage,
+      completed_at: completed_at
     });
   }
 
@@ -230,10 +298,34 @@ export function createDelegationStore() {
         }
         return changed;
       }
+      if (lifted.kind === 'launch_ack') {
+        // §5.2: a launch acknowledgement is not a termination. It advances the
+        // activity clock and nothing else — the status stays `running`, and no
+        // new key is written onto the session record.
+        if (
+          !existing ||
+          lifted.at === null ||
+          existing.last_event_at === lifted.at
+        ) {
+          return false;
+        }
+        existing.last_event_at = lifted.at;
+        return true;
+      }
       // An `end` for a launch that never started is another tool's
       // `tool_result`: the parser cannot tell them apart, and this is where
-      // that judgement is made (§5.1).
-      if (!existing || existing.status !== 'running') {
+      // that judgement is made (§5.1). A `local_bash` `task_notification` is
+      // dropped by the same rule.
+      if (!existing) {
+        return false;
+      }
+      // Accuracy-first upgrade (§5.2): a four-field `tool_result` always wins,
+      // even over a session a notification already closed, while a notification
+      // never overwrites the four-field close that beat it there.
+      if (
+        lifted.source === 'notification' &&
+        entry.closed_by.get(lifted.launch_id) === 'tool_result'
+      ) {
         return false;
       }
       closeSession(entry, existing, lifted);

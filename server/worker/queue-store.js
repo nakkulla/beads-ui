@@ -303,7 +303,10 @@
  * @property {string} turn_id
  * @property {string|null} model
  * @property {string|null} effort
- * @property {{ input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens: number }} usage
+ * @property {{ input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens: number }|{ total_tokens: number }} usage - The
+ * total-only alternative is a Claude subagent's alone (UI-1663 §5.3): a
+ * backgrounded leg is only ever reported as one number, and no four-field
+ * reconstruction exists for it.
  * @property {string|number|null} completed_at
  */
 /**

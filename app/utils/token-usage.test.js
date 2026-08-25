@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   formatUsageTotal,
   formatUsageTotalWithCost,
+  providerUsageTooltip,
   sumAttemptUsage,
   usageTooltip
 } from './token-usage.js';
@@ -672,5 +673,93 @@ describe('claude subagent legs (UI-2mpn §5.5)', () => {
     const projected = sumAttemptUsage(attempts, 'UI-1');
 
     expect(projected?.providers.claude?.subtotal).toBe(1340);
+  });
+});
+
+describe('total-only subagent legs (UI-1663 §6.1)', () => {
+  const FOUR_FIELD_BREAKDOWN = {
+    input_tokens: 1,
+    output_tokens: 2,
+    cache_read_input_tokens: 3,
+    cache_creation_input_tokens: 4
+  };
+
+  /**
+   * @returns {Record<string, any>}
+   */
+  function attemptWithBackgroundSubagent() {
+    return {
+      outer: {
+        attempt_id: 'outer',
+        bead_id: 'UI-1',
+        runner: 'claude',
+        usage: { ...FOUR_FIELD_BREAKDOWN },
+        usage_legs: [
+          {
+            receipt_id: 'toolu_01AgentBGBGBGBGBGBGBG',
+            provider: 'claude',
+            role: 'subagent',
+            agent_type: 'Explore',
+            agent_id: 'agt_7d21ba90ff',
+            model: 'claude-sonnet-4-5-20250929',
+            session_id: 'toolu_01AgentBGBGBGBGBGBGBG',
+            turn_id: 'toolu_01AgentBGBGBGBGBGBGBG',
+            effort: null,
+            usage: { total_tokens: 219570 },
+            completed_at: 3000
+          }
+        ]
+      }
+    };
+  }
+
+  test('takes total_tokens as the subtotal of a total-only leg', () => {
+    const projected = sumAttemptUsage(attemptWithBackgroundSubagent(), 'UI-1');
+
+    expect(projected?.roles.subagent?.claude?.legs[0].subtotal).toBe(219570);
+  });
+
+  test('adds a total-only leg to the Claude headline', () => {
+    const projected = sumAttemptUsage(attemptWithBackgroundSubagent(), 'UI-1');
+
+    expect(projected?.providers.claude?.subtotal).toBe(219580);
+  });
+
+  test('leaves the four-field breakdown untouched by a total-only leg', () => {
+    const projected = sumAttemptUsage(attemptWithBackgroundSubagent(), 'UI-1');
+
+    expect(projected?.providers.claude?.breakdown).toEqual(
+      FOUR_FIELD_BREAKDOWN
+    );
+  });
+
+  test('states that a total-only record reports no breakdown', () => {
+    const tooltip = providerUsageTooltip('claude', {
+      subtotal: 219570,
+      breakdown: { total_tokens: 219570 }
+    });
+
+    expect(tooltip).toBe('총 219,570\n분해 없음 — 총량만 보고됨');
+  });
+
+  test('omits the zeroed fields and the formula from a total-only tooltip', () => {
+    const tooltip = providerUsageTooltip('claude', {
+      subtotal: 219570,
+      breakdown: { total_tokens: 219570 }
+    });
+
+    expect(tooltip).not.toContain('입력 0');
+    expect(tooltip).not.toContain('Claude subtotal =');
+  });
+
+  test('keeps the four-field tooltip unchanged', () => {
+    const tooltip = providerUsageTooltip('claude', {
+      subtotal: 10,
+      breakdown: { ...FOUR_FIELD_BREAKDOWN }
+    });
+
+    expect(tooltip).toBe(
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 10\n입력 1 · 출력 2 · 캐시읽기 3 · 캐시생성 4'
+    );
   });
 });

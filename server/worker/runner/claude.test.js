@@ -20,8 +20,13 @@ const SUBAGENT_FIXTURE = fileURLToPath(
   new URL('../__fixtures__/claude-subagent.jsonl', import.meta.url)
 );
 
+const BACKGROUND_FIXTURE = fileURLToPath(
+  new URL('../__fixtures__/claude-subagent-background.jsonl', import.meta.url)
+);
+
 const LAUNCH_A = 'toolu_01AgentAAAAAAAAAAAAAAAA';
 const LAUNCH_B = 'toolu_01AgentBBBBBBBBBBBBBBBB';
+const LAUNCH_BACKGROUND = 'toolu_01AgentBGBGBGBGBGBGBG';
 const SHELL_TOOL_ID = 'toolu_01ShellCCCCCCCCCCCCCCCC';
 
 /**
@@ -48,6 +53,49 @@ function subagentFixtureLines() {
  */
 function toolsFixtureLines() {
   return jsonlLines(TOOLS_FIXTURE);
+}
+
+/**
+ * @returns {any[]}
+ */
+function backgroundFixtureLines() {
+  return jsonlLines(BACKGROUND_FIXTURE);
+}
+
+/**
+ * The fixture's `task_notification` line.
+ *
+ * @returns {any}
+ */
+function notificationLine() {
+  return backgroundFixtureLines().find(
+    (line) => line.subtype === 'task_notification'
+  );
+}
+
+/**
+ * The immediate parent `tool_result` a backgrounded `Agent` launch receives.
+ *
+ * @param {Record<string, unknown>} result
+ * @returns {any}
+ */
+function asyncLaunchLine(result) {
+  return {
+    type: 'user',
+    parent_tool_use_id: null,
+    timestamp: '2026-08-25T02:51:40.000Z',
+    message: {
+      role: 'user',
+      content: [
+        {
+          tool_use_id: LAUNCH_BACKGROUND,
+          type: 'tool_result',
+          content: 'Agent started in the background.'
+        }
+      ]
+    },
+    tool_use_result: result
+  };
 }
 
 /**
@@ -1013,6 +1061,7 @@ describe('runner/claude liftDelegation (UI-2mpn §5.1)', () => {
 
     expect(lifted).toEqual({
       kind: 'end',
+      source: 'tool_result',
       launch_id: LAUNCH_A,
       is_error: false,
       result_status: 'completed',
@@ -1086,6 +1135,77 @@ describe('runner/claude liftDelegation (UI-2mpn §5.1)', () => {
       .map((lifted) => /** @type {any} */ (lifted).kind);
 
     expect(kinds).toEqual(['end', 'end']);
+  });
+
+  test('returns a launch_ack for an async_launched tool_result', () => {
+    const raw = asyncLaunchLine({ status: 'async_launched' });
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toEqual({
+      kind: 'launch_ack',
+      launch_id: LAUNCH_BACKGROUND,
+      at: Date.parse('2026-08-25T02:51:40.000Z')
+    });
+  });
+
+  test('returns a launch_ack for an isAsync result carrying no status', () => {
+    const raw = asyncLaunchLine({ isAsync: true });
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toMatchObject({
+      kind: 'launch_ack',
+      launch_id: LAUNCH_BACKGROUND
+    });
+  });
+
+  test('lifts an undated notification end naming the agent id', () => {
+    const raw = backgroundFixtureLines().find(
+      (line) => line.subtype === 'task_notification'
+    );
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toEqual({
+      kind: 'end',
+      source: 'notification',
+      launch_id: LAUNCH_BACKGROUND,
+      is_error: false,
+      result_status: 'completed',
+      agent_id: 'agt_7d21ba90ff',
+      agent_type: null,
+      model: null,
+      usage: null,
+      total_tokens: 219570,
+      at: null
+    });
+  });
+
+  test('lifts a null total from a notification reporting no usage', () => {
+    const raw = { ...notificationLine(), usage: undefined };
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toMatchObject({ kind: 'end', total_tokens: null });
+  });
+
+  test('returns null for a task_notification with no tool_use_id', () => {
+    const raw = { ...notificationLine(), tool_use_id: '' };
+
+    expect(liftDelegation(raw)).toBe(null);
+  });
+
+  test('returns null for a task_updated line', () => {
+    const raw = {
+      type: 'system',
+      subtype: 'task_updated',
+      task_id: 'agt_7d21ba90ff',
+      patch: { status: 'completed', end_time: 1787626311813 },
+      uuid: 'u-updated'
+    };
+
+    expect(liftDelegation(raw)).toBe(null);
   });
 
   test('returns null for a non-object line', () => {

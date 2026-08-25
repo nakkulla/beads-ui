@@ -166,11 +166,18 @@ const SUBAGENT_USAGE_FIELDS = [
 ];
 
 /**
- * One subagent signal read off ONE line (UI-2mpn §5.1).
+ * One subagent signal read off ONE line (UI-2mpn §5.1, UI-1663 §5.1).
+ *
+ * `launch_ack` is NOT a termination: a backgrounded `Agent` call is answered
+ * with an immediate `tool_result`, and the only reason to lift it at all is to
+ * keep it from being read as the `end` it looks like. `end` names which receipt
+ * it came from, because the two carry different accuracy (four fields versus a
+ * total) and the store settles that with a source-aware upgrade rule (§5.2).
  *
  * @typedef {{ kind: 'start', launch_id: string, agent_type: string|null, model_alias: string|null, at: number|null }
  *   | { kind: 'progress', launch_id: string, model: string|null, proves_session: boolean, at: number|null }
- *   | { kind: 'end', launch_id: string, is_error: boolean, result_status: string|null, agent_id: string|null, agent_type: string|null, model: string|null, usage: { input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number }|null, total_tokens: number|null, at: number|null }} DelegationSignal
+ *   | { kind: 'launch_ack', launch_id: string, at: number|null }
+ *   | { kind: 'end', source: 'tool_result'|'notification', launch_id: string, is_error: boolean, result_status: string|null, agent_id: string|null, agent_type: string|null, model: string|null, usage: { input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number }|null, total_tokens: number|null, at: number|null }} DelegationSignal
  */
 
 /**
@@ -245,6 +252,41 @@ export function liftDelegation(raw) {
     return null;
   }
   const at = epochOf(raw.timestamp);
+  // The ONLY termination a backgrounded subagent leaves in the parent stream,
+  // and the one a synchronous subagent leaves FIRST (§2.5). It stays stateless
+  // because the line carries both ids at once: `tool_use_id` is the launch id
+  // and `task_id` is the `agentId` a synchronous receipt would report (§2.7).
+  // `task_updated` cannot do that — it has no `tool_use_id` (§2.6) — so it is
+  // not read here.
+  if (raw.type === 'system' && raw.subtype === 'task_notification') {
+    const launch_id = nonEmpty(raw.tool_use_id);
+    if (!launch_id) {
+      return null;
+    }
+    const notified_usage =
+      raw.usage && typeof raw.usage === 'object' ? raw.usage : {};
+    return {
+      kind: 'end',
+      source: 'notification',
+      launch_id,
+      is_error: false,
+      result_status: nonEmpty(raw.status),
+      agent_id: nonEmpty(raw.task_id),
+      agent_type: null,
+      model: null,
+      // §2.1: the notification reports `{ total_tokens, tool_uses,
+      // duration_ms }` — a total, never the four-field breakdown.
+      usage: null,
+      total_tokens:
+        Number.isInteger(notified_usage.total_tokens) &&
+        notified_usage.total_tokens >= 0
+          ? notified_usage.total_tokens
+          : null,
+      // §2.1: the line carries no `timestamp`, and the receive clock would make
+      // the live tail and the replay disagree about the same line.
+      at: null
+    };
+  }
   const parent_tool_use_id = nonEmpty(raw.parent_tool_use_id);
   if (parent_tool_use_id) {
     if (
@@ -317,8 +359,15 @@ export function liftDelegation(raw) {
         raw.tool_use_result && typeof raw.tool_use_result === 'object'
           ? raw.tool_use_result
           : {};
+      // A `run_in_background: true` launch is acknowledged IMMEDIATELY with a
+      // `tool_result` (§1.1). Reading it as an end closes the session before
+      // the subagent has done anything, so it is lifted as its own signal.
+      if (result.isAsync === true || result.status === 'async_launched') {
+        return { kind: 'launch_ack', launch_id, at };
+      }
       return {
         kind: 'end',
+        source: 'tool_result',
         launch_id,
         is_error: block.is_error === true,
         result_status: nonEmpty(result.status),

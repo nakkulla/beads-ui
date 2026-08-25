@@ -34,12 +34,46 @@ function progress(over = {}) {
 }
 
 /**
- * @param {Partial<{ is_error: boolean, result_status: string|null, agent_id: string|null, agent_type: string|null, model: string|null, usage: any, total_tokens: number|null, at: number|null }>} [over]
+ * @param {Partial<{ at: number|null }>} [over]
+ * @returns {any}
+ */
+function launchAck(over = {}) {
+  return {
+    kind: 'launch_ack',
+    launch_id: LAUNCH,
+    at: over.at === undefined ? 1500 : over.at
+  };
+}
+
+/**
+ * The end a `task_notification` lifts (UI-1663 §5.1): a total, no breakdown, no
+ * timestamp of its own.
+ *
+ * @param {Partial<{ result_status: string|null, total_tokens: number|null }>} [over]
+ * @returns {any}
+ */
+function notification(over = {}) {
+  return end({
+    source: 'notification',
+    result_status:
+      over.result_status === undefined ? 'completed' : over.result_status,
+    agent_id: 'agt_7d21ba90ff',
+    agent_type: null,
+    model: null,
+    usage: null,
+    total_tokens: over.total_tokens === undefined ? 219570 : over.total_tokens,
+    at: null
+  });
+}
+
+/**
+ * @param {Partial<{ source: 'tool_result'|'notification', is_error: boolean, result_status: string|null, agent_id: string|null, agent_type: string|null, model: string|null, usage: any, total_tokens: number|null, at: number|null }>} [over]
  * @returns {any}
  */
 function end(over = {}) {
   return {
     kind: 'end',
+    source: over.source ?? 'tool_result',
     launch_id: LAUNCH,
     is_error: over.is_error ?? false,
     result_status:
@@ -264,7 +298,9 @@ describe('worker/delegation-store (UI-2mpn §5.2)', () => {
 
     store.apply(WS, ATTEMPT, end({ total_tokens: 7 }));
 
-    expect(store.get(WS, ATTEMPT).legs[0].usage.input_tokens).toBe(30);
+    expect(store.get(WS, ATTEMPT).legs[0].usage).toMatchObject({
+      input_tokens: 30
+    });
   });
 
   test('pins an observed effort on the closed session and its receipt', () => {
@@ -296,6 +332,138 @@ describe('worker/delegation-store (UI-2mpn §5.2)', () => {
 
     expect(changed).toBe(false);
     expect(store.get(WS, ATTEMPT)).toEqual({ sessions: [], legs: [] });
+  });
+
+  test('leaves a launch_ack session running and advances its activity time', () => {
+    const store = createDelegationStore();
+    store.apply(WS, ATTEMPT, start());
+
+    const changed = store.apply(WS, ATTEMPT, launchAck());
+
+    expect(changed).toBe(true);
+    const entry = store.get(WS, ATTEMPT);
+    expect(entry.sessions[0]).toEqual({
+      launch_id: LAUNCH,
+      provider: 'claude',
+      role: 'subagent',
+      agent_type: 'general-purpose',
+      model: 'sonnet',
+      effort: null,
+      session_id: LAUNCH,
+      turn_id: LAUNCH,
+      status: 'running',
+      started_at: 1000,
+      completed_at: null,
+      last_event_at: 1500
+    });
+    expect(entry.legs).toEqual([]);
+  });
+
+  test('ignores a launch_ack for a launch it never saw start', () => {
+    const store = createDelegationStore();
+
+    expect(store.apply(WS, ATTEMPT, launchAck())).toBe(false);
+    expect(store.get(WS, ATTEMPT).sessions).toEqual([]);
+  });
+
+  test('closes a background session as done with a total-only receipt', () => {
+    const store = createDelegationStore();
+    store.apply(WS, ATTEMPT, start());
+    store.apply(WS, ATTEMPT, progress({ at: 2000 }));
+
+    store.apply(WS, ATTEMPT, notification());
+
+    const entry = store.get(WS, ATTEMPT);
+    expect(entry.sessions[0].status).toBe('done');
+    expect(entry.legs).toEqual([
+      {
+        receipt_id: LAUNCH,
+        provider: 'claude',
+        role: 'subagent',
+        agent_type: 'general-purpose',
+        agent_id: 'agt_7d21ba90ff',
+        model: 'claude-sonnet-4-5-20250929',
+        session_id: LAUNCH,
+        turn_id: LAUNCH,
+        effort: null,
+        usage: { total_tokens: 219570 },
+        completed_at: 2000
+      }
+    ]);
+  });
+
+  test('falls back to last_event_at when the closing line carries no time', () => {
+    const store = createDelegationStore();
+    store.apply(WS, ATTEMPT, start());
+    store.apply(WS, ATTEMPT, progress({ at: 2400 }));
+
+    store.apply(WS, ATTEMPT, notification());
+
+    expect(store.get(WS, ATTEMPT).sessions[0].completed_at).toBe(2400);
+  });
+
+  test('closes a session as failed on a non-completed notification status', () => {
+    const store = createDelegationStore();
+    store.apply(WS, ATTEMPT, start());
+
+    store.apply(WS, ATTEMPT, notification({ result_status: 'killed' }));
+
+    expect(store.get(WS, ATTEMPT).sessions[0].status).toBe('failed');
+  });
+
+  test('writes no receipt for a notification reporting no total', () => {
+    const store = createDelegationStore();
+    store.apply(WS, ATTEMPT, start());
+
+    store.apply(WS, ATTEMPT, notification({ total_tokens: null }));
+
+    const entry = store.get(WS, ATTEMPT);
+    expect(entry.legs).toEqual([]);
+    expect(entry.sessions[0].status).toBe('done');
+  });
+
+  test('replaces a total-only receipt with the four-field tool_result', () => {
+    const store = createDelegationStore();
+    store.apply(WS, ATTEMPT, start());
+    store.apply(WS, ATTEMPT, notification());
+
+    store.apply(WS, ATTEMPT, end());
+
+    const entry = store.get(WS, ATTEMPT);
+    expect(entry.legs).toHaveLength(1);
+    expect(entry.legs[0].usage).toEqual({
+      input_tokens: 30,
+      output_tokens: 200,
+      cache_read_input_tokens: 1000,
+      cache_creation_input_tokens: 100,
+      reasoning_output_tokens: 0
+    });
+    expect(entry.sessions[0].completed_at).toBe(3000);
+  });
+
+  test('drops the total-only receipt when the tool_result reports no usage', () => {
+    const store = createDelegationStore();
+    store.apply(WS, ATTEMPT, start());
+    store.apply(WS, ATTEMPT, notification());
+
+    store.apply(WS, ATTEMPT, end({ usage: null, total_tokens: null }));
+
+    const entry = store.get(WS, ATTEMPT);
+    expect(entry.legs).toEqual([]);
+    expect(entry.sessions[0].completed_at).toBe(3000);
+  });
+
+  test('ignores a late notification for a four-field closed session', () => {
+    const store = createDelegationStore();
+    store.apply(WS, ATTEMPT, start());
+    store.apply(WS, ATTEMPT, end());
+
+    const changed = store.apply(WS, ATTEMPT, notification());
+
+    expect(changed).toBe(false);
+    const entry = store.get(WS, ATTEMPT);
+    expect(entry.legs[0].usage).toMatchObject({ input_tokens: 30 });
+    expect(entry.sessions[0].completed_at).toBe(3000);
   });
 
   test('ignores a second end for an already closed session', () => {
