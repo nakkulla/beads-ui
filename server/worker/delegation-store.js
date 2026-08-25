@@ -133,6 +133,24 @@ export function createDelegationStore() {
   }
 
   /**
+   * Drop the receipt a launch left earlier, if any (§5.2 + §7). A close that
+   * reports no usage at all leaves NO receipt, and an accepted `tool_result`
+   * that supersedes a total-only notification must not leave that notification's
+   * numbers and time behind under a session the `tool_result` now dates.
+   *
+   * @param {AttemptDelegations} entry
+   * @param {string} receipt_id
+   */
+  function dropLeg(entry, receipt_id) {
+    const index = entry.legs.findIndex(
+      (existing) => existing.receipt_id === receipt_id
+    );
+    if (index >= 0) {
+      entry.legs.splice(index, 1);
+    }
+  }
+
+  /**
    * Fold one `end` signal into the session it closes, and write its receipt.
    *
    * @param {AttemptDelegations} entry
@@ -198,6 +216,7 @@ export function createDelegationStore() {
     if (!usage) {
       // §7: a missing or malformed `tool_use_result` still ends the session; it
       // just leaves no receipt. The warning names the launch, never the payload.
+      dropLeg(entry, session.launch_id);
       log('subagent receipt missing for launch %s', session.launch_id);
       return;
     }

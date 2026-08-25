@@ -441,6 +441,18 @@ describe('worker/delegation-store (UI-2mpn §5.2)', () => {
     expect(entry.sessions[0].completed_at).toBe(3000);
   });
 
+  test('drops the total-only receipt when the tool_result reports no usage', () => {
+    const store = createDelegationStore();
+    store.apply(WS, ATTEMPT, start());
+    store.apply(WS, ATTEMPT, notification());
+
+    store.apply(WS, ATTEMPT, end({ usage: null, total_tokens: null }));
+
+    const entry = store.get(WS, ATTEMPT);
+    expect(entry.legs).toEqual([]);
+    expect(entry.sessions[0].completed_at).toBe(3000);
+  });
+
   test('ignores a late notification for a four-field closed session', () => {
     const store = createDelegationStore();
     store.apply(WS, ATTEMPT, start());
