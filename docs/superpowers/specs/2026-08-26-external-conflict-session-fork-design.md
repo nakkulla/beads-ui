@@ -95,6 +95,12 @@ runner 이름, 출력은 `{ ok: true, provider, session_id }` 또는 사유가 �
 실패를 `locality: 'missing'`으로 접어 두 사유가 한 값으로 합쳐지기 때문이다.
 판정 함수가 `isSafeSessionId`를 직접 먼저 호출해 그 경우를 분리한다.
 
+`unsafe_session_id` 판정은 `isSafeSessionId`만으로 끝나지 않는다. 그 좁은
+문법(`/^[A-Za-z0-9._-]+$/`)은 **선행 `-`를 통과시키고**, 그런 id는 양쪽 CLI가
+옵션으로 읽는다. 기존 `sessionResumeCommand`가 `startsWith('-')`를 따로 거부하는
+이유가 그것이므로, 이 판정도 같은 검사를 함께 적용한다: `isSafeSessionId`가
+거짓이거나 id가 `-`로 시작하면 `unsafe_session_id`다.
+
 원 세션의 생존 여부는 판정하지 않는다. §1.2의 이유로 fork는 원 세션에 아무것도
 쓰지 않으며, transcript mtime으로 "열려 있음"을 추정하는 것은 대기 중인 세션과
 활성 세션을 구분하지 못한다.
@@ -116,6 +122,12 @@ runner 이름, 출력은 `{ ok: true, provider, session_id }` 또는 사유가 �
 `fork_session`만 참인 조합은 어댑터가 무시한다(fork는 재개의 변형이지 독립
 모드가 아니다).
 
+반대 조합 — `resume_session_id`는 있는데 `fork_session`이 거짓 — 은 어댑터의
+기존 plain resume이며, **이 설계는 그 조합을 만들지 않는다.** §5의 첫-충돌
+분기는 두 값을 항상 함께 넘기거나 둘 다 넘기지 않는다. plain resume은 Worker가
+자기 세션을 이어가는 기존 경로(§9 비범위)의 것이고, `session_ref`가 가리키는
+사용자 세션에 적용하면 §1.2가 배제한 transcript 오염이 그대로 일어난다.
+
 ## 5. dispatch 연결
 
 1. `attach.js`의 `snapshotBead`에 `session_ref`를 다른 metadata 키와 같은 present
@@ -124,8 +136,11 @@ runner 이름, 출력은 `{ ok: true, provider, session_id }` 또는 사유가 �
 2. `dispatchExternalConflict`의 첫-충돌 분기에서, `resolved_exec` 해석 뒤에 §3
    판정을 호출한다. 통과하면 `launchSession`에 `resume_session_id: <session_id>`와
    `fork_session: true`를 넘기고, 거절되면 지금과 동일하게
-   `resume_session_id: null`로 간다.
-3. 거절 사유는 `log()`로 남긴다. 자격 미달은 실패가 아니라 정상 폴백이므로
+   `resume_session_id: null`·`fork_session` 없음으로 간다(§4의 반대 조합 금지).
+3. 같은 분기에서 attempt를 prerecord할 때 §6의 `forked_from_session_id`를 함께
+   쓴다. 자격 통과면 §3이 돌려준 원 세션 id, 거절이면 `null`이다. 이 값은
+   dispatch 시점에 이미 확정돼 있으므로 세션이 뭘 announce하든 기다리지 않는다.
+4. 거절 사유는 `log()`로 남긴다. 자격 미달은 실패가 아니라 정상 폴백이므로
    dispatch 결과에는 영향을 주지 않는다.
 
 두 번째 이후 충돌 경로(`lastExternalConflictAttemptOf` → `relaunchFromAttempt`)는
@@ -139,7 +154,10 @@ session id를 발급하므로 `attempt.session_id`(init 이벤트에서 추출�
 세션 id가 다른 값이 되고, 둘의 관계가 남지 않으면 이번 조사처럼 큐 JSON을 직접
 파야만 무엇을 이어받았는지 알 수 있다.
 
-`queue-store.js`의 attempt 생성 지점에서 다른 선택 필드와 같은 방식으로 정규화한다.
+`queue-store.js`의 attempt 생성 지점에서 다른 선택 필드와 같은 방식으로 정규화하고,
+**값을 실제로 싣는 것은 §5.3의 prerecord**다. 정규화만 있고 기록 단계가 없으면
+구현이 언제나 `null`을 저장해도 아무 검사에 걸리지 않으므로, §8은 두 갈래(자격
+통과 시 원 id, 거절 시 `null`)를 모두 검증한다.
 
 **Worker 카드 표시는 이 설계의 범위가 아니다.** 카드 슬롯 배정은
 `docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md` §5.1이
@@ -155,15 +173,18 @@ fork dispatch가 실패했을 때 fresh로 자동 재시도하지 않는다. §3
 
 단위 테스트:
 
-- `session-ref.test.js` — §3 판정의 통과 1건과 거절 4건(사유별). 기존 fixture
-  방식(주입된 `fs`/`hostname`/`home_dir`)을 그대로 쓴다.
+- `session-ref.test.js` — §3 판정의 통과 1건과 거절 4건(사유별). 선행 `-`로
+  시작하는 id가 `unsafe_session_id`로 거절되는 것을 별도 케이스로 둔다. 기존
+  fixture 방식(주입된 `fs`/`hostname`/`home_dir`)을 그대로 쓴다.
 - `runner/claude.test.js`, `runner/codex.test.js` — `fork_session` 참일 때의 argv,
-  거짓일 때 기존 argv가 불변인 것, 그리고 모델 인자가 양쪽 분기에서 동일하게
-  붙는 것.
+  거짓일 때 기존 argv가 불변인 것, 모델 인자가 양쪽 분기에서 동일하게 붙는 것,
+  그리고 `resume_session_id` 없이 `fork_session`만 참인 조합이 기존 fresh argv와
+  완전히 같은 것(§4).
 - `scheduler.test.js` — 첫 EXTERNAL 충돌에서 자격 통과 시 `launchSession`이
-  `resume_session_id` + `fork_session: true`로 호출되는 것, 자격 거절 시 기존
-  fresh 인자 그대로인 것, 그리고 두 번째 충돌이 여전히 `relaunchFromAttempt`로
-  가는 것.
+  `resume_session_id` + `fork_session: true`로 호출되고 attempt의
+  `forked_from_session_id`가 원 세션 id인 것, 자격 거절 시 기존 fresh 인자 그대로에
+  `forked_from_session_id`가 `null`인 것, 그리고 두 번째 충돌이 여전히
+  `relaunchFromAttempt`로 가는 것.
 
 실측(구현 중 1회, 결과를 코드 주석에 남긴다 — `claude.js`의 "MEASURED 2026-08-06"
 선례):
@@ -173,8 +194,13 @@ fork dispatch가 실패했을 때 fresh로 자동 재시도하지 않는다. §3
 - `codex exec fork <sid> --json`이 `thread.started`에 **새** thread id를 announce하는지
   (`codex.js`의 `extractThreadId`가 그 값을 잡는다).
 
-두 실측 중 하나라도 기대와 다르면 해당 provider의 fork 분기를 넣지 않고 그 사실을
-Bead에 남긴다.
+두 실측 중 하나라도 기대와 다르면 **그 provider의 구현을 그대로 진행하지 않고
+설계를 재검토한다.** 해당 provider를 §3 판정에서 항상 거절하도록 두면(= 기존
+fresh dispatch) 안전하게 멈출 수 있고, 그 사실과 실측 결과를 Bead에 남긴다.
+
+이때 절대로 하지 않는 것: fork 분기만 빼고 `resume_session_id`는 그대로 넘기는
+처리. 그러면 어댑터의 기존 plain resume이 돌아 §1.2가 배제한 원 transcript 오염이
+그대로 일어난다. fork가 성립하지 않는 provider에게 남는 선택지는 fresh뿐이다.
 
 전체 게이트: `npm run tsc`, `npm test`, `npm run lint`.
 
