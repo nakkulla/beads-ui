@@ -1468,6 +1468,65 @@ describe('views/monitor session drawer (UI-eey2 §7)', () => {
     });
     expect(el(mount, '.mon2-drawer')?.children.length).toBeGreaterThan(0);
   });
+
+  test('opens the drawer in the same overlay modal the Worker tab uses', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: NOW - 100,
+              session_id: 's'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.rtile__session');
+
+    const overlay = /** @type {HTMLElement} */ (
+      el(mount, '.worker-drawer-overlay')
+    );
+    expect(overlay.hidden).toBe(false);
+    expect(el(overlay, '.worker-drawer-overlay__backdrop')).toBeTruthy();
+    expect(
+      el(mount, '.mon2-drawer')?.classList.contains('worker-drawer-host')
+    ).toBe(true);
+  });
+
+  test('hides the overlay again when the drawer closes', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: NOW - 100,
+              session_id: 's'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.rtile__session');
+    click(mount, '.sv__close');
+
+    const overlay = /** @type {HTMLElement} */ (
+      el(mount, '.worker-drawer-overlay')
+    );
+    expect(overlay.hidden).toBe(true);
+  });
 });
 
 describe('views/monitor dependency editing (UI-2gi1 §6.5, UI-e6hw §5)', () => {

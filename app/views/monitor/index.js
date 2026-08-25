@@ -396,9 +396,21 @@ export function createMonitorView(mount_element, options) {
   const console_el = document.createElement('div');
   console_el.className = 'mon';
   mount_element.appendChild(console_el);
+  // 전사 드로어는 Worker 탭과 같은 오버레이 모달 계약을 쓴다: 같은 rtile이 여는
+  // 같은 뷰어이므로 폭·backdrop·높이 상한이 탭마다 달라질 이유가 없다. 인라인
+  // 블록이던 시절에는 `.mon2-drawer`에 규칙이 하나도 없어 화면 전체 폭으로
+  // 늘어났다. backdrop을 별도 형제로 두는 것이 핵심이다 — 드로어의 바깥 클릭
+  // 닫기는 마운트 요소 바깥을 눌렀는지로 판정하므로, 오버레이 자체를 마운트로
+  // 쓰면 backdrop 클릭이 '안쪽'이 되어 닫히지 않는다.
+  const drawer_overlay_el = document.createElement('div');
+  drawer_overlay_el.className = 'worker-drawer-overlay';
+  drawer_overlay_el.hidden = true;
+  const drawer_backdrop_el = document.createElement('div');
+  drawer_backdrop_el.className = 'worker-drawer-overlay__backdrop';
   const drawer_el = document.createElement('div');
-  drawer_el.className = 'mon2-drawer';
-  mount_element.appendChild(drawer_el);
+  drawer_el.className = 'worker-drawer-host mon2-drawer';
+  drawer_overlay_el.append(drawer_backdrop_el, drawer_el);
+  mount_element.appendChild(drawer_overlay_el);
 
   /** @type {MonitorLanes} */
   let lanes = buildLanes(null, null);
@@ -424,6 +436,7 @@ export function createMonitorView(mount_element, options) {
     sessionLogStore: options.sessionLogStore,
     onClose: () => {
       selected_attempt = null;
+      drawer_overlay_el.hidden = true;
       doRender();
     }
   });
@@ -2608,6 +2621,7 @@ export function createMonitorView(mount_element, options) {
     if (cls.contains('rtile__session')) {
       selected_attempt = attempt_id;
       if (attempt_id && item) {
+        drawer_overlay_el.hidden = false;
         drawer.open({
           attempt_id,
           root_dir,
@@ -2732,7 +2746,7 @@ export function createMonitorView(mount_element, options) {
     if (!target || typeof target.closest !== 'function') {
       return;
     }
-    if (target.closest('dialog') || target.closest('.mon2-drawer')) {
+    if (target.closest('dialog') || target.closest('.worker-drawer-overlay')) {
       return;
     }
     if (target.closest('a')) {
@@ -2999,6 +3013,7 @@ export function createMonitorView(mount_element, options) {
         unsubscribe_pipeline = null;
       }
       drawer.destroy();
+      drawer_overlay_el.hidden = true;
       deck?.destroy();
       deck = null;
       mount_element.removeEventListener('click', onClick);
