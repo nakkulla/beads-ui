@@ -281,6 +281,24 @@ describe('worker console styles', () => {
     expect(metaRule).toContain('min-width: 0');
   });
 
+  test('wraps the shared coordinate chip row in narrow lanes', () => {
+    const chipsRule =
+      workerBlock.match(/(?:^|\n)\.worker-chips\s*{([^}]*)}/)?.[1] || '';
+
+    expect(chipsRule).toContain('flex-wrap: wrap');
+    expect(chipsRule).toContain('min-width: 0');
+  });
+
+  // 후보 카드 헤더가 route 칩을 잃으면서 그 칩 묶음도 사라졌다 (UI-251y §3.2):
+  // 남겨두면 self-review 칩 유무에 따라 비었다 찼다 하는 빈 자리가 된다.
+  test('the candidate header chip cluster and its coordinate rules are gone', () => {
+    expect(CSS).not.toContain('.worker-card__wfchips');
+    expect(CSS).not.toContain('.worker-card__head .ctl-chip--route');
+    expect(CSS).not.toContain('.worker-card__head .ctl-chip--from');
+    expect(CSS).not.toContain('.worker-card__head .worker-card__repo');
+    expect(CSS).not.toContain('.worker-mini__exec');
+  });
+
   test('gives the waiting column the same lane width as the other lanes', () => {
     const waitRule =
       workerBlock.match(/(?:^|\n)\.worker-wait\s*{([^}]*)}/)?.[1] || '';

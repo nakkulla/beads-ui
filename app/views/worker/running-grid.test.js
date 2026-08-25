@@ -582,16 +582,25 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
     }
   };
 
-  test('adds the repo badge and serial lane chip to the header', () => {
-    const tile = shape(
+  test('adds the repo badge and serial lane chip to the meta row', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
       runningTile(tileInput(), 5000, null, {
         monitor: /** @type {any} */ (monitor)
-      })
+      }),
+      mount
     );
+    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
 
-    expect(tile).toContain('rtile__repo');
-    expect(tile).toContain('repo-a');
-    expect(tile).toContain('rtile__lane');
+    expect(tile.querySelector('.rtile__meta .rtile__repo')?.textContent).toBe(
+      'repo-a'
+    );
+    expect(tile.querySelector('.rtile__meta .rtile__lane')?.textContent).toBe(
+      's1'
+    );
+    expect(tile.querySelector('.rtile__hd .rtile__repo')).toBeNull();
+    expect(tile.querySelector('.rtile__hd .rtile__lane')).toBeNull();
   });
 
   test('adds the last activity and its age without a stepper', () => {
@@ -827,10 +836,21 @@ describe('session tile (UI-yrzu §6)', () => {
     expect(tile.querySelector('.rtile__meta .ctl-chip--route')).not.toBeNull();
   });
 
-  test('omits the meta row when the tile carries no workflow', () => {
-    const tile = renderSession();
+  test('omits the meta row when the tile carries no slot 5 material', () => {
+    const tile = renderSession({}, null);
 
     expect(tile.querySelector('.rtile__meta')).toBeNull();
+  });
+
+  // 좌표 칩(레포 · 레인)도 슬롯 5다 (UI-251y §3.1): 오버레이가 그것만 실어도
+  // 줄은 선다.
+  test('keeps the meta row for the monitor coordinate chip alone', () => {
+    const tile = renderSession();
+
+    expect(tile.querySelector('.rtile__meta .rtile__repo')?.textContent).toBe(
+      'repo-a'
+    );
+    expect(tile.querySelector('.rtile__hd .rtile__repo')).toBeNull();
   });
 
   test('renders neither delegation chips nor a token line', () => {
@@ -880,6 +900,125 @@ describe('worker running tile header actions', () => {
     expect(actions.querySelector('.rtile__elapsed')).not.toBeNull();
     expect(actions.querySelector('.rtile__session')).not.toBeNull();
     expect(actions.querySelector('.rtile__pause')).not.toBeNull();
+  });
+});
+
+/**
+ * 실행중 타일 배치 문법 (UI-251y §3.1): 정체성 줄은 ID·상태 뱃지·조작만
+ * 상대하고, 좌표 칩·route·exec·usage는 제목 아래 `.rtile__meta` 하나에 모인다.
+ */
+describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
+  const MONITOR = {
+    repo: 'repo-a',
+    root_dir: '/tmp/repo-a',
+    serial_lane_id: /** @type {const} */ ('s2')
+  };
+
+  /**
+   * @param {Partial<import('./running-grid.js').RunningTile>} [patch]
+   * @param {any} [monitor]
+   * @returns {HTMLElement}
+   */
+  function renderTile(patch = {}, monitor = null) {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(runningTile(tileInput(patch), 5000, null, { monitor }), mount);
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  test('orders the meta row repo, lane, route, exec then usage', () => {
+    const tile = renderTile(
+      {
+        workflow: /** @type {any} */ ({
+          chips: { route: 'spec_backed', route_source: 'explicit' }
+        }),
+        exec_chips: /** @type {any} */ ({
+          orchestration: { text: 'o', title: 'ot' },
+          worker: { text: 'w', title: 'wt' }
+        }),
+        usage: /** @type {any} */ ({
+          input_tokens: 1000,
+          output_tokens: 500,
+          total_tokens: 1500,
+          cost_usd: 0.42
+        })
+      },
+      MONITOR
+    );
+    const meta = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__meta')
+    );
+
+    expect(Array.from(meta.children, (child) => child.className)).toEqual([
+      'worker-card__repo rtile__repo',
+      'rtile__lane',
+      'ctl-chip ctl-chip--route',
+      'exec-chip exec-chip--orch',
+      'exec-chip exec-chip--worker',
+      'worker-usage'
+    ]);
+  });
+
+  // 빈 줄 판정은 좌표·exec만 세지 않는다 (§3.5): usage만 있는 타일에서 지금
+  // 보이는 정보가 사라지면 안 된다.
+  test('keeps the meta row for usage alone', () => {
+    const tile = renderTile({
+      usage: /** @type {any} */ ({
+        input_tokens: 1000,
+        output_tokens: 500,
+        total_tokens: 1500,
+        cost_usd: 0.42
+      })
+    });
+
+    expect(tile.querySelector('.rtile__meta')).not.toBeNull();
+    expect(tile.querySelector('.rtile__meta .worker-usage')).not.toBeNull();
+  });
+
+  test('draws the 충돌 해소 badge in the header, not the meta row', () => {
+    const tile = renderTile(
+      { conflict_resolution: true, exec_chips: null },
+      MONITOR
+    );
+
+    expect(
+      tile.querySelector('.rtile__hd .worker-mini__badge')?.textContent
+    ).toBe('충돌 해소');
+    expect(tile.querySelector('.rtile__meta .worker-mini__badge')).toBeNull();
+  });
+
+  test('draws the paused resolution badge in the header too', () => {
+    const tile = renderTile({ conflict_resolution: true, paused: true });
+
+    expect(
+      tile.querySelector('.rtile__hd .worker-mini__badge')?.textContent
+    ).toBe('충돌 해소 일시정지');
+  });
+
+  test('draws the base exception badge in the header, not the meta row', () => {
+    const tile = renderTile({ base_exception: 'base: release-1' });
+
+    expect(
+      tile.querySelector('.rtile__hd .worker-mini__badge')?.textContent
+    ).toBe('base: release-1');
+    expect(tile.querySelector('.rtile__meta')).toBeNull();
+  });
+
+  test('keeps every coordinate chip out of the header', () => {
+    const tile = renderTile(
+      {
+        workflow: /** @type {any} */ ({
+          chips: { route: 'spec_backed', route_source: 'explicit' }
+        })
+      },
+      MONITOR
+    );
+    const head = /** @type {HTMLElement} */ (tile.querySelector('.rtile__hd'));
+
+    expect(head.querySelector('.rtile__repo')).toBeNull();
+    expect(head.querySelector('.rtile__lane')).toBeNull();
+    expect(head.querySelector('.ctl-chip--route')).toBeNull();
+    expect(head.querySelector('.worker-usage')).toBeNull();
   });
 });
 

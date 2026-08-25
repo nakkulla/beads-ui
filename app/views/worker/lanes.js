@@ -1166,7 +1166,7 @@ export function miniRow(item) {
   const id_el = html`<span class="worker-mini__id" title="클릭하면 ID 복사"
     >${item.id}</span
   >`;
-  // route 칩은 ID 다음, 제목 앞이다 (UI-yrzu §7.2) — 완료 행만 제외한다: 끝난
+  // route 칩은 좌표 칩 줄이 싣는다 (UI-251y §2) — 완료 행만 제외한다: 끝난
   // 일의 route는 더 이상 어떤 결정도 바꾸지 않는다.
   const route_el = item.lane === 'done' ? '' : routeChipTemplate(item.workflow);
   // 출처 칩도 완료 행에서는 빠진다 — route 칩과 같은 이유다. 끝난 일에서 남는
@@ -1382,17 +1382,25 @@ export function miniRow(item) {
         </button>`
     : '';
   // 실행 설정 칩은 대기 행만 얻는다 (§4): PR 대기 행은 이미 실행이 끝났고
-  // 완료 행은 2줄 변형이라 실을 자리가 없다. 칩이 하나도 없으면 줄 자체를 그리지
-  // 않는다 — 빈 div는 카드에 여백만 남긴다.
-  const exec_el =
+  // 완료 행은 2줄 변형이라 실을 자리가 없다.
+  const has_exec_chips = !!(
     item.lane !== 'pr_wait' &&
     !item.done &&
     item.exec_chips &&
     (item.exec_chips.orchestration || item.exec_chips.worker)
-      ? html`<div class="worker-mini__exec">
-          ${execChipsTemplate(item.exec_chips, {
-            pin: item.exec_chips_pinned === true
-          })}
+  );
+  // 슬롯 5 줄 (UI-251y §2·§3.5): 좌표 칩 → exec 칩 → usage 하나를 공유한다.
+  // 판정은 그 줄의 재료 전부로 한다 — 좌표·exec만 세면 usage만 있는 행에서
+  // 지금 보이는 정보가 사라진다. 재료가 하나도 없으면 줄 자체를 그리지 않는다
+  // (빈 div는 행에 여백만 남긴다).
+  const chips_el =
+    repo_el || route_el || from_el || has_exec_chips || usage_el
+      ? html`<div class="worker-chips">
+          ${repo_el}${route_el}${from_el}${has_exec_chips
+            ? execChipsTemplate(item.exec_chips, {
+                pin: item.exec_chips_pinned === true
+              })
+            : ''}${usage_el}
         </div>`
       : '';
   const deps_el = dependencyChipsTemplate(item.dependency_chips, {
@@ -1400,7 +1408,6 @@ export function miniRow(item) {
   });
   const receipt_el = discardReceiptTemplate(item);
   const has_foot = !!(
-    usage_label ||
     merging ||
     item.merge_action ||
     item.cancel_action ||
@@ -1450,12 +1457,12 @@ export function miniRow(item) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${grip}${seq_el}${repo_el}${id_el}${pri_el}${route_el}${from_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
+              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
             </div>
             <div class="worker-mini__body">${title_el}${stale_details}</div>
-            ${deps_el}${exec_el}${has_foot
+            ${deps_el}${chips_el}${has_foot
               ? html`<div class="worker-mini__foot">
-                  ${usage_el}${merge_step_el}
+                  ${merge_step_el}
                   <span class="worker-mini__actions"
                     >${merge_el}${cancel_el}${timeline_el}${discard_el}${revise_els}${stale_els}</span
                   >
@@ -1467,9 +1474,9 @@ export function miniRow(item) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${seq_el}${repo_el}${id_el}${pri_el}${route_el}${from_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
+              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
             </div>
-            ${deps_el}${exec_el}${receipt_el} ${timesMeta(item)}`}
+            ${deps_el}${chips_el}${receipt_el} ${timesMeta(item)}`}
   </div>`;
 }
 
@@ -1577,6 +1584,20 @@ export function candidateCard(item, place_menu = null, options = {}) {
   const deps_el = dependencyChipsTemplate(item.dependency_chips, {
     lane: item.lane
   });
+  // 좌표 칩은 정체성 줄이 아니라 슬롯 5 줄이다 (UI-251y §2·§3.2): 헤더에 서면
+  // 폭에 따라 조작 버튼을 다음 줄로 밀어내 사용자가 버튼을 찾는 자리가
+  // 달라진다. 순서는 레포 → route → from → exec 칩 하나다.
+  const repo_el = item.workspace_name
+    ? html`<span class="worker-card__repo" title=${item.root_dir || ''}
+        >${item.workspace_name}</span
+      >`
+    : '';
+  const route_el = routeChipTemplate(workflow);
+  const from_el = fromChipTemplate(item.from_id);
+  const has_exec_chips = !!(
+    item.exec_chips &&
+    (item.exec_chips.orchestration || item.exec_chips.worker)
+  );
   return html`<div
     class="worker-card${draggable
       ? ''
@@ -1591,25 +1612,15 @@ export function candidateCard(item, place_menu = null, options = {}) {
       ${draggable
         ? html`<span class="worker-card__grip" aria-hidden="true">⠿</span>`
         : ''}
-      ${item.workspace_name
-        ? html`<span class="worker-card__repo" title=${item.root_dir || ''}
-            >${item.workspace_name}</span
-          >`
-        : ''}
       <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span
-      >${priorityBadgeTemplate(item.priority)}${fromChipTemplate(item.from_id)}
+      >${priorityBadgeTemplate(item.priority)}
       ${worker_ineligible
         ? html`<span
             class="ctl-chip ctl-chip--label worker-card__ineligible"
             title="worker-ineligible label이 붙어 워커 실행 대상이 아닙니다"
             >worker-ineligible</span
           >`
-        : ''}
-      <span class="worker-card__wfchips"
-        >${routeChipTemplate(workflow)}${quickFixReviewChipTemplate(
-          workflow
-        )}</span
-      >
+        : ''}${quickFixReviewChipTemplate(workflow)}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow
@@ -1617,10 +1628,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
           onOpenDoc: options.onOpenDoc
         })
       : ''}${deps_el}
-    ${item.exec_chips &&
-    (item.exec_chips.orchestration || item.exec_chips.worker)
-      ? html`<div class="worker-mini__exec">
-          ${execChipsTemplate(item.exec_chips, {
+    ${repo_el || route_el || from_el || has_exec_chips
+      ? html`<div class="worker-chips">
+          ${repo_el}${route_el}${from_el}${execChipsTemplate(item.exec_chips, {
             pin: options.exec_chips_mode === 'pinned_only'
           })}
         </div>`

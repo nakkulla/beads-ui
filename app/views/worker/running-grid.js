@@ -292,14 +292,16 @@ export function bannersTemplate(state) {
  */
 
 /**
- * Monitor-only header pieces of a running tile (UI-eey2 §7): 레포 배지 ·
- * 직렬 레인 칩.
+ * Monitor-only 좌표 칩 of a running tile (UI-eey2 §7): 레포 배지 · 직렬 레인
+ * 칩. 두 칩은 슬롯 5(좌표·실행 사실)이므로 헤더가 아니라 `.rtile__meta`가
+ * 싣는다 (UI-251y §3.1). 재료가 없으면 빈 문자열이다 — 호출 자리가 이 값의
+ * 유무로 줄을 그릴지 판정하므로 빈 조각을 돌려주면 빈 줄이 남는다.
  *
  * @param {MonitorTileOverlay|null} monitor
  * @returns {import('lit-html').TemplateResult|''}
  */
-function monitorTileHead(monitor) {
-  if (!monitor) {
+function monitorTileChips(monitor) {
+  if (!monitor || (!monitor.repo && !monitor.serial_lane_id)) {
     return '';
   }
   return html`${monitor.repo
@@ -458,7 +460,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const landing = tile.landing;
   const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
   const monitor = options.monitor || null;
-  const monitor_head = monitorTileHead(monitor);
+  const monitor_chips = monitorTileChips(monitor);
   const monitor_body = monitorTileBody(
     monitor,
     now,
@@ -471,9 +473,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const session_receipt = session
     ? tile.workflow?.chips?.exec_receipt || null
     : null;
-  // route 칩은 헤더가 아니라 meta 줄이 싣는다: 헤더 한 줄은 ID·경과·조작
-  // 버튼이 이미 채우고 있어서, 분류 사실인 route가 거기 끼면 좁은 타일에서
-  // 조작 버튼이 통째로 다음 줄로 밀린다.
+  // route 칩은 헤더가 아니라 meta 줄이 싣는다: 분류 사실은 슬롯 5고, 헤더에
+  // 끼면 좁은 타일에서 조작 버튼이 통째로 다음 줄로 밀린다 (UI-251y §2).
   const route_chip = routeChipTemplate(tile.workflow);
   const session_receipt_chip = session_receipt
     ? html`<span
@@ -483,11 +484,23 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       >`
     : '';
   const session_meta =
-    route_chip || session_receipt_chip
+    monitor_chips || route_chip || session_receipt_chip
       ? html`<div class="rtile__meta">
-          ${route_chip}${session_receipt_chip}
+          ${monitor_chips}${route_chip}${session_receipt_chip}
         </div>`
       : '';
+  // 상태 뱃지는 슬롯 1이다 (UI-251y §3.1): 다른 카드가 이미 정체성 줄에서
+  // 말하는 종류의 사실이라 타일만 제목 아래에 두면 같은 사실이 두 자리에서
+  // 읽힌다. 둘 다 드물게만 서므로 헤더 폭에 상시 부담을 주지 않는다.
+  const status_badges = html`${conflict_badge
+    ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
+    : ''}${base_badge
+    ? html`<span
+        class="worker-mini__badge"
+        title="이 세션의 target base가 워크스페이스 선언 base와 다릅니다"
+        >${base_badge}</span
+      >`
+    : ''}`;
   // 세션 타일의 수정 시각은 활동 줄이 "갱신 n 전"으로 이미 말한다 (§6) —
   // 같은 사실을 두 줄로 쓰지 않는다.
   const times_el = session ? '' : timesMeta(tile);
@@ -516,9 +529,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         aria-hidden="true"
       ></span>
       <span class="rtile__id" title="클릭하면 ID 복사">${tile.bead_id}</span>
-      ${priorityBadgeTemplate(tile.priority)}${monitor_head}${lineage
+      ${priorityBadgeTemplate(tile.priority)}${lineage
         ? html`<span class="rtile__resumed" title=${lineage}>↻</span>`
-        : ''}
+        : ''}${status_badges}
       <div class="rtile__hd-actions">
         ${session
           ? html`${typeof tile.started_at === 'number'
@@ -606,24 +619,13 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       : ''}
     ${session
       ? session_meta
-      : route_chip ||
+      : monitor_chips ||
+          route_chip ||
           exec_chips ||
           provider_badges.length > 0 ||
-          usage_label ||
-          conflict_badge ||
-          base_badge
+          usage_label
         ? html`<div class="rtile__meta">
-            ${route_chip}${conflict_badge
-              ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
-              : ''}
-            ${base_badge
-              ? html`<span
-                  class="worker-mini__badge"
-                  title="이 세션의 target base가 워크스페이스 선언 base와 다릅니다"
-                  >${base_badge}</span
-                >`
-              : ''}
-            ${execChipsTemplate(tile.exec_chips)}
+            ${monitor_chips}${route_chip}${execChipsTemplate(tile.exec_chips)}
             ${provider_badges.length > 0
               ? provider_badges.map(
                   (badge) =>
