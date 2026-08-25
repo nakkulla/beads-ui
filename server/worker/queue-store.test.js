@@ -2124,6 +2124,33 @@ describe('worker/queue-store retired policy axis (worker-phase2 §2/§9)', () =>
     expect(att.release_rejected).toBe('base_not_advanced');
     expect(att.verify_cmd_result).toEqual({ ok: false, reason: 'x', exit: 1 });
   });
+
+  test('preserves a base_drift artifact_pushed array through load save and reload', () => {
+    const drift = {
+      pinned: 'a'.repeat(40),
+      observed: 'b'.repeat(40),
+      landed: false,
+      pushed: [],
+      artifact_pushed: ['c'.repeat(40)]
+    };
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-artifact', bead_id: 'UI-7ufi' }
+    });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.attempts['att-artifact'].base_drift = drift;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+    const first_store = createQueueStore();
+
+    first_store.setSlots(WS, {
+      expected_revision: first_store.snapshot(WS).revision,
+      slots: 3
+    });
+    const reloaded = createQueueStore().snapshot(WS).attempts['att-artifact'];
+
+    expect(reloaded.base_drift).toEqual(drift);
+  });
 });
 
 describe('worker/queue-store orchestration defaults (spec §C.5)', () => {

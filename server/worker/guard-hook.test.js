@@ -143,6 +143,91 @@ describe('guard-hook install', () => {
   });
 });
 
+describe('guard-hook docs-only exemption (UI-7ufi §2.1)', () => {
+  /**
+   * @param {string} [target_base]
+   */
+  function render(target_base = 'main') {
+    return renderHookScript({
+      repo: '/repo',
+      target_base,
+      attempt_id: ATTEMPT,
+      push_log: '/tmp/pushes.jsonl'
+    });
+  }
+
+  test('judges the delta by a docs/ path prefix', () => {
+    const script = render();
+
+    expect(script).toContain('docs/*) ;;');
+  });
+
+  test('reads the delta with renames, replace refs and submodule elision off', () => {
+    // All three flags are load-bearing counterexample defenses, not style:
+    // without them a rename out of `server/`, a local `refs/replace/*` swap, or
+    // `diff.ignoreSubmodules=all` hiding a gitlink reads as docs-only. Their
+    // absence would be a silent widening of the exemption.
+    const script = render();
+
+    expect(script).toContain(
+      'git --no-replace-objects diff --no-renames --ignore-submodules=none --name-only "$2" "$1"'
+    );
+  });
+
+  test('proves the fast-forward with merge-base --is-ancestor', () => {
+    const script = render();
+
+    expect(script).toContain(
+      'git --no-replace-objects merge-base --is-ancestor "$2" "$1"'
+    );
+  });
+
+  test('records an exempted push with the value the detection layer reads', () => {
+    const script = render();
+
+    expect(script).toContain('"exempt":"docs_only"');
+  });
+
+  test('names every refusal reason the message contract declares', () => {
+    const script = render();
+
+    for (const reason of [
+      'deletion',
+      'new_ref',
+      'not_fast_forward',
+      'paths',
+      'git_error'
+    ]) {
+      expect(script).toContain(`guard_reason=${reason}`);
+    }
+    expect(script).toContain('bdui guard: docs-only exemption not met:');
+  });
+
+  test('keeps the refusal line byte-for-byte alongside the new reason line', () => {
+    const script = render('ilsun/dev');
+
+    expect(script).toContain(
+      'bdui guard: refusing push to $remote_ref in $mine — attempt $guard_attempt must not land on its own base (local ref: $local_ref)'
+    );
+  });
+
+  test('keeps the baked subjects single-quoted with the judgment in place', () => {
+    // The exemption added shell code around the literals; the quoting that
+    // keeps a ref name from becoming syntax must survive it.
+    const script = renderHookScript({
+      repo: "/re'po",
+      target_base: "dev'; rm -rf /; echo '",
+      attempt_id: ATTEMPT,
+      push_log: '/tmp/pushes.jsonl'
+    });
+
+    expect(script).toContain(`guard_repo='/re'\\''po'`);
+    expect(script).toContain(
+      `guard_ref='refs/heads/dev'\\''; rm -rf /; echo '\\'''`
+    );
+  });
+});
+
 describe('guard-hook push log (UI-1xcd §4.1)', () => {
   test('install initializes an EMPTY push log beside the hook', () => {
     const result = install({

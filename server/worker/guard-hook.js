@@ -96,6 +96,17 @@ function shellLiteral(value) {
  * A push judged FOREIGN by step 1 is never recorded: it exits before the loop,
  * and logging it would hand the detection layer someone else's push.
  *
+ * ONE structural exemption sits inside that judgment (UI-7ufi §2.1): a
+ * fast-forward whose whole delta lives under `docs/` passes and is recorded with
+ * `"exempt":"docs_only"`. Without it the workflow contract's only artifact
+ * publication path — `land-reviewed-artifact.py`, which pushes a detached
+ * candidate straight at the base — is unreachable from inside a Worker attempt,
+ * so a spec the Worker itself reviewed can never be revised. The exemption is
+ * cut on the RESULT TREE rather than the commit shape, and nothing a session can
+ * write (env, allowlist file, commit message) takes part in it. Because a base
+ * line's verdict now belongs in its record, base lines are judged and then
+ * recorded; every other line is recorded exactly as before.
+ *
  * @param {{ repo: string, target_base: string, attempt_id: string, push_log: string }} input
  * @returns {string}
  */
@@ -129,6 +140,115 @@ guard_record() {
   } 2>/dev/null || :
 }
 
+# The same line plus the verdict that let it through (UI-7ufi §2.3). Only an
+# EXEMPTED base line takes this shape; every other line keeps the one above,
+# byte for byte, because the detection layer reads both.
+guard_record_exempt() {
+  {
+    printf '{"local_ref":"%s","local_oid":"%s","remote_ref":"%s","remote_oid":"%s","exempt":"docs_only"}\\n' \\
+      "$(guard_json "$1")" "$(guard_json "$2")" "$(guard_json "$3")" "$(guard_json "$4")" \\
+      >> "$guard_push_log"
+  } 2>/dev/null || :
+}
+
+# An all-zero oid: git's "no commit" on one side of a ref update. An empty
+# field reads as zero too — absent evidence must not become an exemption.
+guard_is_zero() {
+  case "$1" in
+    '') return 0 ;;
+    *[!0]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# The docs-only base-push exemption (UI-7ufi §2.1), which exists so the workflow
+# contract's only artifact publication path — a detached candidate pushed
+# straight at the base by land-reviewed-artifact.py — can complete inside a
+# Worker attempt. Nothing a session can set feeds the judgment: the materials are
+# the oids git put on stdin and the output of two read-only git commands.
+#
+# Both judgment commands carry --no-replace-objects because local
+# refs/replace/* rewrites what a local diff READS but not what the push
+# TRANSMITS: without it, a code-bearing commit swapped for a docs-only one would
+# be judged on the swap while the original reached the remote. --no-renames is
+# mandatory for the mirror reason: rename detection prints only the NEW path, so
+# server/x.js -> docs/x.js would read as docs-only while deleting a source
+# file. --ignore-submodules=none closes the third: diff.ignoreSubmodules=all is
+# session-writable repo config, and under it a gitlink change outside docs/ is
+# simply absent from --name-only, so a docs file plus a moved submodule pointer
+# would read as docs-only while the tree change reached the base.
+#
+# All three defeat the same shape of attack — local state that changes what the
+# judgment READS without changing what the push TRANSMITS — so the judgment is
+# pinned to explicit flags rather than to whatever the repo config says.
+#
+# Conditions are asked in order and the FIRST failure is the reported reason.
+guard_docs_only() {
+  guard_reason=git_error
+  guard_bad_path=''
+  guard_count=0
+  if guard_is_zero "$1"; then
+    guard_reason=deletion
+    return 1
+  fi
+  if guard_is_zero "$2"; then
+    guard_reason=new_ref
+    return 1
+  fi
+  # Every git call here reads /dev/null: the loop's stdin is the ref list git
+  # handed the hook, and a child that consumed it would silently drop refs.
+  git --no-replace-objects merge-base --is-ancestor "$2" "$1" >/dev/null 2>&1 </dev/null
+  guard_rc=$?
+  # Exit 1 is the command's NEGATIVE ANSWER, not a failed observation; anything
+  # above it means the question could not be asked.
+  if [ "$guard_rc" -eq 1 ]; then
+    guard_reason=not_fast_forward
+    return 1
+  fi
+  if [ "$guard_rc" -ne 0 ]; then
+    guard_reason=git_error
+    return 1
+  fi
+  guard_delta=$(git --no-replace-objects diff --no-renames --ignore-submodules=none --name-only "$2" "$1" 2>/dev/null </dev/null)
+  guard_rc=$?
+  if [ "$guard_rc" -ne 0 ]; then
+    guard_reason=git_error
+    return 1
+  fi
+  # An empty delta is not an exemption: a publication with nothing to publish is
+  # not a shape the land script produces.
+  if [ -z "$guard_delta" ]; then
+    guard_reason=paths
+    return 1
+  fi
+  # Split on newline with globbing OFF, so a path holding a shell metacharacter
+  # stays one field and is never expanded against the worktree. A path git chose
+  # to quote ("docs/…) starts with a quote, fails the prefix test, and is
+  # refused — deliberately fail-closed rather than turning core.quotePath off.
+  guard_ifs=$IFS
+  set -f
+  IFS='
+'
+  for guard_path in $guard_delta; do
+    guard_count=$((guard_count + 1))
+    case "$guard_path" in
+      docs/*) ;;
+      *)
+        guard_bad_path=$guard_path
+        break
+        ;;
+    esac
+  done
+  IFS=$guard_ifs
+  set +f
+  if [ -n "$guard_bad_path" ]; then
+    guard_reason=paths
+    return 1
+  fi
+  guard_reason=''
+  return 0
+}
+
 # 1) Is this push happening in the attempt's OWN repository? core.hooksPath is
 #    injected process-wide, so every repository the session pushes from lands
 #    here; only this one is judged.
@@ -144,11 +264,26 @@ mine=$(CDPATH= cd -- "$mine" 2>/dev/null && pwd -P) || exit 0
 status=0
 while read -r local_ref local_oid remote_ref remote_oid; do
   [ -n "$remote_ref" ] || continue
-  guard_record "$local_ref" "$local_oid" "$remote_ref" "$remote_oid"
-  if [ "$remote_ref" = "$guard_ref" ]; then
-    printf '%s\\n' "bdui guard: refusing push to $remote_ref in $mine — attempt $guard_attempt must not land on its own base (local ref: $local_ref)" >&2
-    status=1
+  if [ "$remote_ref" != "$guard_ref" ]; then
+    guard_record "$local_ref" "$local_oid" "$remote_ref" "$remote_oid"
+    continue
   fi
+  # A base-destined line is JUDGED and then recorded, so the record can carry
+  # the verdict (UI-7ufi §2.3). The judgment spends read-only git commands, so
+  # the reordering adds no side effect to lose if the record fails.
+  if guard_docs_only "$local_oid" "$remote_oid"; then
+    guard_record_exempt "$local_ref" "$local_oid" "$remote_ref" "$remote_oid"
+    printf '%s\\n' "bdui guard: passing docs-only push to $remote_ref in $mine (attempt $guard_attempt, $guard_count path(s))" >&2
+    continue
+  fi
+  guard_record "$local_ref" "$local_oid" "$remote_ref" "$remote_oid"
+  guard_detail=$guard_reason
+  if [ "$guard_reason" = paths ] && [ -n "$guard_bad_path" ]; then
+    guard_detail="$guard_reason ($guard_bad_path)"
+  fi
+  printf '%s\\n' "bdui guard: refusing push to $remote_ref in $mine — attempt $guard_attempt must not land on its own base (local ref: $local_ref)" >&2
+  printf '%s\\n' "bdui guard: docs-only exemption not met: $guard_detail" >&2
+  status=1
 done
 exit $status
 `;

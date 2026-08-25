@@ -68,7 +68,7 @@
  * launch, or null when no Codex pin was applied.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
- * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], pushed?: string[], inherited?: string[], skipped?: string, error?: string }|null} base_drift -
+ * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], pushed?: string[], artifact_pushed?: string[], inherited?: string[], skipped?: string, error?: string }|null} base_drift -
  * The POST-HOC base observation (UI-8mvc §3, rebuilt UI-1xcd §4), written at
  * every termination path: the pinned `base_oid`, the remote tip re-resolved
  * after the session ended, and — from the attempt's OWN pre-push record —
@@ -76,6 +76,9 @@
  * `pushed` holds the base-destined oids the hook recorded (present as `[]` when
  * the record was readable and held none); `shas` narrows that to the ones
  * reachable from the observed tip, which is a violation's whole evidence.
+ * `artifact_pushed` holds the base-destined oids the hook let through under its
+ * docs-only exemption (UI-7ufi §2.4): published on purpose, so never landing
+ * candidates and never evidence of a violation.
  * `skipped` records an attempt the invariant does not apply to (a disposition,
  * or an external-conflict dispatch with no pinned base) and `error` the
  * observation step that could not be completed — including `push_log_absent`,
