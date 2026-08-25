@@ -3,6 +3,7 @@ scope:
   - server/worker/runner/claude.js
   - server/worker/delegation-store.js
   - server/worker/usage-receipts.js
+  - server/worker/queue-store.js
   - app/utils/token-usage.js
   - app/views/detail-panel/session-history.js
 ---
@@ -15,8 +16,8 @@ scope:
   문서는 그 구조를 **재사용**하며, UI-2mpn 전제 5(관측된 `Agent` 호출이 전부
   `run_in_background:false`)가 깨진 자리만 확장한다.
 - 사용자 결정(2026-08-25): ① 백그라운드 leg의 토큰은 `task_notification.usage.total_tokens`를
-  leg 총량으로 채택하고 Claude 합계에 표식 없이 포함한다(4필드 분해는 없으므로
-  브레이크다운에서만 "분해 없음"으로 밝힌다), ② 이미 잘못 저장된 과거 attempt는
+  leg 총량으로 채택하고 Claude 합계에 표식 없이 포함한다(4필드 분해가 없다는 사실은
+  그 leg 배지의 hover tooltip에서만 밝힌다 — §6.1), ② 이미 잘못 저장된 과거 attempt는
   소급 정정하지 않는다, ③ 종료 신호 채택은 **정확도 우선 업그레이드** 규칙을 쓴다.
 
 ## 1. 문제
@@ -71,12 +72,12 @@ scope:
 6. `system/task_updated`는 `patch.status`(`completed`/`failed`/`killed`)와
    `patch.end_time`(epoch ms)을 싣지만 `tool_use_id`가 **없다**. `task_id`만으로는
    무상태 파서가 launch id를 알 수 없다.
-6a. `task_id`는 곧 `tool_use_result.agentId`다(관측 91/91 일치). 따라서
+7. `task_id`는 곧 `tool_use_result.agentId`다(관측 91/91 일치). 따라서
    `task_notification`은 `tool_use_id`(= launch id)와 `agent_id`를 한 줄에서 모두
    제공한다.
-7. `task_updated.end_time`(1787626311813)과 같은 launch의 마지막 `progress` 줄
+8. `task_updated.end_time`(1787626311813)과 같은 launch의 마지막 `progress` 줄
    `timestamp`(`2026-08-25T02:51:51.767Z`)의 차이는 **46ms**였다.
-8. durable 오염 범위는 작다. `queue.json`의 172개 attempt 중 Claude leg 상태는
+9. durable 오염 범위는 작다. `queue.json`의 172개 attempt 중 Claude leg 상태는
    `done` 17, `interrupted` 2, `failed` 2로, 잘못 저장된 것은 4 leg뿐이다.
 
 ## 3. 목표
@@ -110,14 +111,15 @@ launch id 매핑이나 이전 상태 의존 판단은 하지 않는다. `task_no
 
 | 신호 | 원천 | 반환 |
 | --- | --- | --- |
-| 런치 확인 (신규) | `parent_tool_use_id` 없는 `user`의 `tool_result`이고 같은 줄 `tool_use_result.isAsync === true` 또는 `status === 'async_launched'` | `{ kind:'launch_ack', launch_id, agent_id, agent_type, model, at }` |
+| 런치 확인 (신규) | `parent_tool_use_id` 없는 `user`의 `tool_result`이고 같은 줄 `tool_use_result.isAsync === true` 또는 `status === 'async_launched'` | `{ kind:'launch_ack', launch_id, at }` |
 | 종료 (기존) | 위 조건에 해당하지 않는 `tool_result` + `tool_use_result` | 기존 `end` + `source:'tool_result'` |
 | 종료 (신규) | `type==='system' && subtype==='task_notification'`이고 `tool_use_id`가 비어 있지 않음 | `{ kind:'end', source:'notification', launch_id: tool_use_id, is_error:false, result_status: status, agent_id: task_id, agent_type:null, model:null, usage:null, total_tokens: usage.total_tokens (정수 ≥0일 때, 아니면 null), at:null }` |
 
-- `launch_ack`는 종료가 아니다. 상태를 바꾸지 않는다.
-- `notification`이 `agent_id`를 싣기 때문에(전제 6a) `launch_ack`가 스트림에 실리지
-  않은 백그라운드 leg도 `agent_id`를 얻는다. `launch_ack`는 그 값을 더 이른 시점에
-  확정할 뿐이며, 둘 다 같은 값을 준다.
+- `launch_ack`는 종료가 아니다. 상태를 바꾸지 않는다. 이 신호의 유일한 목적은
+  `async_launched` `tool_result`가 `end`로 오해되지 않게 하는 것이므로 식별자와
+  시각만 싣는다. `agent_type`은 `start`가, `model`은 `start`/`progress`가 이미
+  확정하고, `agent_id`는 종료 시 `notification`이 싣는다(전제 7) — `launch_ack`가
+  스트림에 실리지 않는 백그라운드 leg도 같은 경로로 `agent_id`를 얻는다.
 - `task_notification` 줄에는 `timestamp`가 없으므로 `at`은 항상 `null`이다(전제 1).
   수신 시각을 대신 쓰지 않는다 — 라이브와 재생이 같은 값을 내야 한다.
 - `notification`의 `result_status`는 그대로 싣는다. `local_agent`에서 `completed`
@@ -131,14 +133,23 @@ launch id 매핑이나 이전 상태 의존 판단은 하지 않는다. `task_no
 
 상태는 전부 store가 소유한다(UI-2mpn §5.2).
 
-**`launch_ack`**: 세션의 `agent_id`·`agent_type`·`model`을 확정하고 `last_event_at`을
-갱신한다. `status`는 `running`으로 유지한다. 시작을 본 적 없는 launch id면 버린다.
+**`launch_ack`**: `last_event_at`만 갱신한다. `status`는 `running`으로 유지하고
+세션 레코드에 새 필드를 쓰지 않는다. 시작을 본 적 없는 launch id면 버린다.
 
-**`end` — 정확도 우선 업그레이드(결정 ③)**: 세션은 어떤 종료 영수증으로 닫혔는지를
-기억한다(`closed_by: 'tool_result' | 'notification' | null`). 이 값은 store의
-in-memory 상태이며 durable 세션 레코드에 나가지 않는다 — `queue-store`의
-`DelegationSession` 스키마와 `isDelegationSession`의 키 검증은 바뀌지 않는다. 재생
-경로는 같은 줄을 같은 순서로 다시 먹이므로 `closed_by`도 그대로 복원된다.
+**`end` — 정확도 우선 업그레이드(결정 ③)**: 어떤 종료 영수증으로 닫혔는지를
+`closed_by: 'tool_result' | 'notification'`로 기억한다.
+
+이 값은 **세션 레코드 밖**, store가 attempt별로 들고 있는 별도 in-memory 맵
+(`launch_id → closed_by`)에 둔다. 세션 객체에 필드로 얹으면 안 된다:
+`delegation-monitor.js`의 `isClaudeSession`은 `hasExactKeys(value, CLAUDE_SESSION_KEYS)`
+로 키 집합을 **정확히** 검사하고, 그 집합에는 `closed_by`도 `agent_id`도 없다. 알려지지
+않은 키가 하나라도 붙으면 `normalizeDelegationSessions`가 그 행을 통째로 버려서, 고치려던
+행이 화면에서 사라진다. 같은 이유로 `agent_id`는 세션이 아니라 leg receipt에만 싣는다
+(`isUsageLeg`는 Claude leg의 `agent_id`를 허용한다).
+
+따라서 `queue-store`의 `DelegationSession` 스키마와 `isDelegationSession`의 키 검증은
+바뀌지 않는다. 재생 경로는 같은 줄을 같은 순서로 다시 먹이므로 `closed_by` 맵도 그대로
+복원된다.
 
 - `source:'tool_result'`: 항상 채택한다. 세션이 `notification`으로 이미 닫혀 있어도
   상태·시각·영수증을 4필드 값으로 교체하고 `closed_by='tool_result'`로 확정한다.
@@ -156,7 +167,7 @@ in-memory 상태이며 durable 세션 레코드에 나가지 않는다 — `queu
 `async_launched`는 §5.1에서 이미 `end`가 아니므로 이 판정에 도달하지 않는다.
 
 **`completed_at`**: `lifted.at ?? session.last_event_at`. `notification`은 `at`이
-`null`이므로 마지막 관측 활동 시각으로 떨어지며, 전제 7에서 그 오차는 46ms였다.
+`null`이므로 마지막 관측 활동 시각으로 떨어지며, 전제 8에서 그 오차는 46ms였다.
 `last_event_at`도 줄에서 읽은 값이므로 라이브·재생 동일성은 유지된다. 둘 다 없으면
 `null`로 남기고, 그 경우 세션 이력의 시간 칸은 비운다.
 
@@ -193,19 +204,26 @@ in-memory 상태이며 durable 세션 레코드에 나가지 않는다 — `queu
   `SUM_FIELDS` 합이다. 두 값이 동시에 존재하는 레코드는 §5.3이 만들지 않는다.
 - **provider 합계**: total-only leg의 subtotal을 Claude provider 합계와 `subagent`
   역할 합계에 표식 없이 더한다(결정 ①). 배지 문구는 바뀌지 않는다.
-- **breakdown**: total-only leg는 4필드 누적에 기여하지 않는다. 상위 브레이크다운의
-  입력/출력/캐시 행은 4필드 leg만 합산하므로, 브레이크다운 합과 헤드라인 subtotal이
-  어긋날 수 있다. 이 어긋남은 §6.2가 화면에서 밝힌다.
+- **tooltip**: `providerUsageTooltip`은 지금 `numeric(usage.input_tokens)` 식으로
+  없는 필드를 0으로 찍고 `Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성`이라는
+  공식 줄을 붙인다. total-only 레코드가 그대로 지나가면 `총 219,570`과
+  `입력 0 · 출력 0 · 캐시읽기 0 · 캐시생성 0`이 한 tooltip에 함께 떠서 스스로 모순된다.
+  total-only 레코드일 때는 4필드 나열과 공식 줄 대신 `분해 없음 — 총량만 보고됨`
+  한 줄을 쓴다. 4필드 레코드의 tooltip은 바뀌지 않는다.
 
 ### 6.2 `app/views/detail-panel/session-history.js`
 
-- `[τ 자세히]` 브레이크다운에서 total-only leg는 입력/출력/캐시읽기 3행 대신
-  `분해 없음` 한 줄로 표시한다. 4필드 leg의 표시는 바뀌지 않는다.
-- total-only leg가 섞인 브레이크다운에는 4필드 행 합과 헤드라인이 다를 수 있음을
-  같은 자리에서 밝힌다(`일부 leg는 총량만 보고됨`).
-- 행 자체(`상태 글리프`, short id, 시각, 토큰 칼럼)는 수정하지 않는다. §5.1이
-  `notification`에서 `agent_id`를 싣고 §5.2가 leg receipt를 남기는 것만으로
-  `shortIdOf`가 `agent_id`로 정상화되고 시각·토큰 칸이 채워진다.
+이 파일은 **수정하지 않는다**. total-only leg가 화면에 닿는 자리는 leg 행의 τ 배지
+하나이고, 그 배지의 라벨과 tooltip은 `staticLegTemplate`/leg 행이 `token-usage.js`의
+`providerUsageBadges`에 위임해 만든다. 따라서 §6.1의 subtotal 분기와 tooltip 분기만으로
+표시가 정정된다.
+
+`[τ 자세히]`(`usageDetail(a.usage, …)`)는 부모 attempt 자신의 usage만 렌더하며 leg를
+포함한 적이 없다. total-only leg는 그 화면에 흘러들지 않으므로 손대지 않는다.
+
+행 자체(상태 글리프, short id, 시각, 토큰 칼럼)의 마크업도 그대로다. §5.1이
+`notification`에서 `agent_id`를 싣고 §5.2가 leg receipt를 남기는 것만으로
+`shortIdOf`가 `agent_id`로 정상화되고 시각·토큰 칸이 채워진다.
 
 ## 7. 오류·호환 처리
 
@@ -238,6 +256,10 @@ in-memory 상태이며 durable 세션 레코드에 나가지 않는다 — `queu
 - `server/worker/delegation-replay.test.js`
   - 새 fixture `__fixtures__/claude-subagent-background.jsonl`(런치 → progress →
     `task_notification`)의 재생 결과가 라이브 경로와 같다.
+  - 같은 fixture의 재생 결과가 `status==='done'`, total-only 영수증 1건,
+    `agent_id === task_id`, `completed_at === 마지막 progress 줄의 timestamp`임을
+    **각각** 단언한다. 동일성 비교만으로는 변경 전에도 양쪽이 똑같이 `failed`·영수증
+    없음으로 통과하는 vacuous RED가 되므로, 이 단언들이 RED를 성립시킨다.
 - `server/worker/usage-receipts.test.js`
   - `{ total_tokens }` usage의 Claude subagent leg가 유효하고 형태가 보존된다.
   - 같은 형태의 Codex leg는 거부된다.
@@ -245,18 +267,39 @@ in-memory 상태이며 durable 세션 레코드에 나가지 않는다 — `queu
 - `app/utils/token-usage.test.js`
   - total-only leg의 subtotal이 `total_tokens`이고 Claude 합계에 포함된다.
   - total-only leg가 4필드 브레이크다운을 오염시키지 않는다.
+  - total-only 레코드의 tooltip이 `분해 없음 — 총량만 보고됨`이고 4필드 0 나열과
+    공식 줄을 포함하지 않는다.
+  - 4필드 레코드의 tooltip이 바뀌지 않는다.
 - `app/views/detail-panel/session-history.test.js`
-  - total-only leg의 브레이크다운이 `분해 없음`으로 렌더된다.
-  - 백그라운드 leg 행이 `✓`, `agent_id` short id, 시각, 토큰과 함께 렌더된다.
+  - 백그라운드 leg 행이 `✓`, `agent_id` short id, 시각, 토큰 배지와 함께 렌더된다
+    (이 파일은 수정하지 않으므로 §5–§6 변경이 행에 도달하는지 확인하는 회귀 테스트다).
 
 ## 9. 검증
 
+**머지 전 (이 PR 안에서 끝난다)**
+
 - `npm run tsc`, `npm test`, `npm run lint`, `npm run prettier:write`
 - 프런트엔드 편집이 있으므로 `npm run build` 후 `app/main.bundle.js`와
-  `app/main.bundle.js.map`을 포함한다.
-- 머지 후 `bdui-shared restart`로 배포하고, 프로세스 경로·포트·HTTP 응답을 확인한다.
-- 배포 후 백그라운드 서브에이전트를 쓴 새 attempt의 세션 이력에서 `✓`·시각·토큰이
-  나오는지 실제 화면으로 확인한다. 과거 attempt는 결정 ②에 따라 바뀌지 않는다.
+  `app/main.bundle.js.map`을 커밋에 포함한다.
+
+**머지 후 (선언된 `[deploy]` 운송이 담당한다)**
+
+핀된 previous target base의 `repo-ops/config.toml`은 `[deploy]`를 선언하며
+(`script = "repo-ops/script/deploy"`, `timeout_ms = 600000`), 그 스크립트가 이 저장소의
+머지 후 런타임 반영 전체 — 공유 detached 워크트리 `.worktrees/.repo-ops-deploy` 정렬,
+빌드, 서버 restart, 프로세스 경로·리스닝 포트·HTTP 응답 검증 — 를 운송한다. 이 spec은
+그 절차를 새로 정의하지 않고 선언된 운송에 결속한다. 따라서 PR Delivery 뒤에 유실되는
+필수 작업이 없다.
+
+**운영자 인계 잔여**
+
+배포 후 백그라운드 서브에이전트를 쓴 새 attempt의 세션 이력에서 `✓`·시각·토큰이
+나오는지 눈으로 확인하는 일은, 배포가 끝난 결과를 사후에 보는 통상적 시각 확인이다.
+완료 보고의 잔여 항목으로 운영자에게 인계하며, close 전 대화형 확인을 요구하지 않는다.
+과거 attempt는 결정 ②에 따라 바뀌지 않는다.
+
+따라서 승인 범위 안에서 settled transport로 넘길 수 없는 **interactive-only 잔여는
+없다**. `worker-ineligible` 라벨은 붙이지 않는다.
 
 ## 10. 구현 unit 후보
 
