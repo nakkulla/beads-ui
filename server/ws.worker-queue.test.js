@@ -1514,7 +1514,9 @@ describe('ws worker REVISE disposition (UI-hs11 §3.2)', () => {
     expect(replyFor(sock, 'm1').ok).toBe(false);
   });
 
-  test('fans a fresh snapshot out even when the disposition was refused', async () => {
+  // 거부된 처분도 fanout을 타지만, 구독자가 이미 같은 큐를 들고 있으면 프레임은
+  // 나가지 않는다(UI-d509 dedup) — 회신의 `queue`가 현재 상태를 전달한다.
+  test('does not re-send the unchanged queue when the disposition was refused', async () => {
     registerDisposition({
       fix: async () => ({ ok: false, reason: 'not_parked' })
     });
@@ -1527,7 +1529,11 @@ describe('ws worker REVISE disposition (UI-hs11 §3.2)', () => {
       expected_revision: 0
     });
 
-    expect(queueSnapshots(sock).length).toBe(1);
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      ok: false,
+      reason: 'not_parked'
+    });
+    expect(queueSnapshots(sock)).toHaveLength(0);
   });
 
   test('a queue with nothing parked carries an empty observation map', async () => {
@@ -1607,7 +1613,7 @@ describe('ws worker cleanup retry', () => {
     expect(queueSnapshots(sock)[0].revision).toBe(current_revision);
   });
 
-  test('fails closed and fans out when no attachment is registered', async () => {
+  test('fails closed with the current queue when no attachment is registered', async () => {
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
     sock.sent = [];
@@ -1626,7 +1632,8 @@ describe('ws worker cleanup retry', () => {
       reason: 'no_attachment',
       queue: { revision: 0 }
     });
-    expect(queueSnapshots(sock)).toHaveLength(1);
+    // The subscriber already holds revision 0; the fanout is deduplicated.
+    expect(queueSnapshots(sock)).toHaveLength(0);
   });
 
   test('fails closed when the attachment action is unavailable', async () => {
@@ -1652,7 +1659,7 @@ describe('ws worker cleanup retry', () => {
     });
   });
 
-  test('collapses a thrown action and still fans out the latest queue', async () => {
+  test('collapses a thrown action and replies with the latest queue', async () => {
     registerCleanupRetry(async () => {
       throw new Error('boom');
     });
@@ -1671,7 +1678,7 @@ describe('ws worker cleanup retry', () => {
       reason: 'error',
       queue: { revision: 0 }
     });
-    expect(queueSnapshots(sock)).toHaveLength(1);
+    expect(queueSnapshots(sock)).toHaveLength(0);
   });
 
   test('rejects an empty bead id', async () => {

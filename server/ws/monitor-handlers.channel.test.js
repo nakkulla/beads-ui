@@ -186,11 +186,35 @@ describe('monitor-pipeline subscription (UI-nprg)', () => {
     const ws = fakeWs();
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
 
+    snapshots[WS_A] = { queue: [], pr_wait: [], done: [], revision: 2 };
     refresh_listener?.(WS_A);
     refresh_listener?.(WS_A);
     vi.advanceTimersByTime(250);
 
     // Two events inside one window coalesce into a single extra push.
+    expect(ws.snapshots()).toHaveLength(2);
+  });
+
+  // 재push 대부분은 바이트 동일한 본문이다(UI-d509): 봉투 id만 다른 1.5 MB를
+  // 매초 다시 보내면 클라이언트는 아무것도 안 바뀐 파싱을 반복한다.
+  test('drops a re-push whose body did not change', () => {
+    const ws = fakeWs();
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+
+    refresh_listener?.(WS_A);
+    vi.advanceTimersByTime(250);
+    refresh_listener?.(WS_A);
+    vi.advanceTimersByTime(250);
+
+    expect(ws.snapshots()).toHaveLength(1);
+  });
+
+  test('pushes a re-subscribe even when the body did not change', () => {
+    const ws = fakeWs();
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+
     expect(ws.snapshots()).toHaveLength(2);
   });
 
@@ -250,6 +274,13 @@ describe('monitor-pipeline subscription (UI-nprg)', () => {
     invalidations = [];
     const pushed_before = ws.snapshots().length;
 
+    // A heartbeat changes what the lanes show, never the revision.
+    snapshots[WS_A] = {
+      queue: [{ bead_id: 'A-2', added_at: 2 }],
+      pr_wait: [],
+      done: [],
+      revision: 3
+    };
     emitQueueChanged(WS_A);
     vi.advanceTimersByTime(250);
 

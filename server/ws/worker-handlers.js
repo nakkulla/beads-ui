@@ -4,7 +4,7 @@
  * A `worker-queue` subscription is per-workspace: on subscribe the client
  * receives a snapshot of the queue; on any queue mutation the whole queue is
  * pushed as a fresh snapshot to every subscriber of that workspace. This reuses
- * the same server-push envelope machinery as issue lists ({@link emitWorkerQueueSnapshot})
+ * the same server-push envelope machinery as issue lists ({@link pushSnapshotIfChanged})
  * so Worker data and issue data flow through one unified push protocol.
  *
  * Concurrency: every mutation carries an `expected_revision`; the queue store
@@ -101,9 +101,9 @@ import {
 import {
   emitSessionLogAppend,
   emitSessionLogSnapshot,
-  emitWorkerQueueSnapshot,
   getConnWorkspace,
-  log
+  log,
+  pushSnapshotIfChanged
 } from './context.js';
 import { sessionExcludedBeadIds } from './lane-membership.js';
 import { targetWorkspaceOf } from './workspace-target.js';
@@ -129,7 +129,7 @@ function queueStore() {
  * the set of `{ ws, client_id }` pairs currently subscribed to that workspace's
  * queue.
  *
- * @type {Map<string, Set<{ ws: WebSocket, client_id: string }>>}
+ * @type {Map<string, Set<{ ws: WebSocket, client_id: string, last_body?: string }>>}
  */
 const SUBSCRIBERS = new Map();
 
@@ -2255,9 +2255,12 @@ export function onWorkerSnapshotRefresh(listener) {
  * @param {Record<string, unknown>} queue
  */
 export function fanout(workspace_key, queue) {
-  const decorated = decorateQueue(workspace_key, queue);
+  const body_json = JSON.stringify({
+    root_dir: workspace_key,
+    queue: decorateQueue(workspace_key, queue)
+  });
   for (const sub of subscribersFor(workspace_key)) {
-    emitWorkerQueueSnapshot(sub.ws, sub.client_id, workspace_key, decorated);
+    pushSnapshotIfChanged(sub, 'worker-queue-snapshot', body_json);
   }
   for (const listener of SNAPSHOT_REFRESH_LISTENERS) {
     try {
@@ -2748,14 +2751,17 @@ export function handleSubscribeWorkerQueue(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
-  subscribersFor(key).add({ ws, client_id });
+  const sub = { ws, client_id };
+  subscribersFor(key).add(sub);
   log('subscribe-worker-queue %s ws=%s', client_id, key);
   ws.send(JSON.stringify(makeOk(req, { id: client_id })));
-  emitWorkerQueueSnapshot(
-    ws,
-    client_id,
-    key,
-    decorateQueue(key, queueStore().snapshot(key))
+  pushSnapshotIfChanged(
+    sub,
+    'worker-queue-snapshot',
+    JSON.stringify({
+      root_dir: key,
+      queue: decorateQueue(key, queueStore().snapshot(key))
+    })
   );
   // 세션 레인의 "on subscribe" 스캔 (UI-0a2m): 스냅샷의 `session_active`는
   // fill 없는 peek이므로, 콜드 캐시를 채우는 트리거는 구독이 소유한다. 완료는
