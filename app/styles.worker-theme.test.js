@@ -309,6 +309,30 @@ describe('worker console styles', () => {
     expect(waitRule).toContain('flex: 1');
   });
 
+  // 좁은 창에서 대기 열 카드가 옆 레인 아래로 겹쳐 보이던 원인: 껍데기만
+  // `min-width: 0`이라 다른 레인보다 더 줄어드는데, 안의 pane은 자기 220px
+  // 하한을 지키므로 열 밖으로 삐져나갔다. 하한은 열이 소유하고 pane은 열을
+  // 따른다 — 그래야 최소 폭 합이 창을 넘을 때 host의 가로 스크롤이 받는다.
+  test('floors the waiting column at the lane min-width and lets its panes follow', () => {
+    const waitRule =
+      workerBlock.match(/(?:^|\n)\.worker-wait\s*{([^}]*)}/)?.[1] || '';
+    const paneRule =
+      workerBlock.match(/(?:^|\n)\.worker-pane\s*{([^}]*)}/)?.[1] || '';
+    const waitPaneRule =
+      workerBlock.match(
+        /(?:^|\n)\.worker-wait > \.worker-pane\s*{([^}]*)}/
+      )?.[1] || '';
+    const hostRule =
+      workerBlock.match(/(?:^|\n)\.worker-lanes-host\s*{([^}]*)}/)?.[1] || '';
+
+    const lane_floor = paneRule.match(/min-width:\s*(\d+px)/)?.[1];
+
+    expect(lane_floor).toBe('220px');
+    expect(waitRule).toContain(`min-width: ${lane_floor}`);
+    expect(waitPaneRule).toContain('min-width: 0');
+    expect(hostRule).toContain('overflow-x: auto');
+  });
+
   test('keeps running tile metadata readable when it has a long token', () => {
     const chipRule =
       workerBlock.match(/(?:^|\n)\.exec-chip\s*{([^}]*)}/)?.[1] || '';

@@ -5690,7 +5690,12 @@ html[data-theme='dark'] {
   flex: 1;
   flex-direction: column;
   gap: var(--sp-6);
-  min-width: 0;
+  /* 가로 하한은 `.worker-pane`과 같은 220px이어야 한다. `min-width: 0`이면 이
+     껍데기만 다른 레인보다 더 줄어드는데, 안의 pane들은 자기 220px 하한을
+     지키므로 대기 열 밖으로 삐져나와 옆 레인의 불투명한 배경 아래로 들어간다 —
+     좁은 창에서 카드가 겹쳐 보이던 원인. 하한을 맞추면 다섯 레인의 최소 폭 합이
+     창을 넘고, 그때는 `.worker-lanes-host`의 가로 스크롤이 대신 받는다. */
+  min-width: 220px;
   min-height: 0;
   overflow-y: auto;
 }
@@ -5705,6 +5710,9 @@ html[data-theme='dark'] {
 .worker-wait > .worker-pane {
   flex: 0 1 auto;
   min-height: 72px;
+  /* 가로 하한은 이제 대기 열이 소유한다. 여기서 220px을 다시 걸면 세로 스크롤바가
+     생겼을 때 그 폭만큼 pane이 열 밖으로 다시 삐져나온다. */
+  min-width: 0;
 }
 
 .worker-lane__badge {
