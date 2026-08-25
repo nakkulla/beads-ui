@@ -324,11 +324,15 @@ function monitorTileChips(monitor) {
 const FORWARDER_AGENT_TYPES = new Set(['codex-runner']);
 
 /**
- * Monitor-only body of a running tile (UI-eey2 §7): 최근 활동 · 위임 칩 ·
- * 의존 칩. 실행중 타일은 stepper를 그리지 않는다 — 활동 줄과 위임 칩이 이미
- * 진행을 말하고, stepper는 높이만 차지했다. 끝난 위임은 `위임 완료 n` 한
- * 칩으로 접고 목록은 툴팁으로 물러난다 ("기본은 접고 중요한 것만", 스펙 §2).
- * 재료가 없는 줄은 통째로 생략한다.
+ * Monitor-only 진행 줄 of a running tile (UI-eey2 §7): 최근 활동 · 위임 칩.
+ * 실행중 타일은 stepper를 그리지 않는다 — 활동 줄과 위임 칩이 이미 진행을
+ * 말하고, stepper는 높이만 차지했다. 끝난 위임은 `위임 완료 n` 한 칩으로 접고
+ * 목록은 툴팁으로 물러난다 ("기본은 접고 중요한 것만", 스펙 §2). 재료가 없는
+ * 줄은 통째로 생략한다.
+ *
+ * 의존 칩은 슬롯 4라 이 함수가 싣지 않는다 (UI-251y §2). 자식 롤업과 landing
+ * 진행도 같은 슬롯 3이고 이 줄 뒤에 오므로, 의존 칩을 여기 붙이면 슬롯 4가
+ * 슬롯 3보다 앞선다.
  *
  * 세션 타일은 전사도 위임 로그도 없다 (UI-yrzu §6): 활동 줄이 답할 수 있는
  * 유일한 사실이 bead의 마지막 갱신 시각이고, 위임 칩은 그릴 근거가 없다.
@@ -363,9 +367,6 @@ function monitorTileBody(monitor, now, paused, session = null) {
   );
   const live_legs = legs.filter((leg) => leg && leg.state === 'live');
   const ended_legs = legs.filter((leg) => leg && leg.state !== 'live');
-  const deps = dependencyChipsTemplate(monitor.dependency_chips, {
-    lane: 'running'
-  });
   const session_age = session
     ? formatRelativeTime(session.updated_at, now)
     : '';
@@ -405,7 +406,7 @@ function monitorTileBody(monitor, now, paused, session = null) {
             >`
           : ''}
       </div>`
-    : ''}${deps}`;
+    : ''}`;
 }
 
 /**
@@ -461,6 +462,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
   const monitor = options.monitor || null;
   const monitor_chips = monitorTileChips(monitor);
+  // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 자식 롤업·landing
+  // 진행이 모두 슬롯 3이므로 그 뒤에 선다.
+  const monitor_deps = monitor
+    ? dependencyChipsTemplate(monitor.dependency_chips, { lane: 'running' })
+    : '';
   const monitor_body = monitorTileBody(
     monitor,
     now,
@@ -617,6 +623,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           >
         </div>`
       : ''}
+    ${monitor_deps}
     ${session
       ? session_meta
       : monitor_chips ||
@@ -642,7 +649,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 : ''}
           </div>`
         : ''}
-    ${times_el} ${discardReceiptTemplate(tile)}
+    ${discardReceiptTemplate(tile)} ${times_el}
     <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일).
          quick_fix landing의 실제 진행은 위의 별도 진행 줄이 소유한다.
          일시정지된 타일은 살아있지 않으므로 액센트도 없다. -->

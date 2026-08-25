@@ -534,7 +534,7 @@ describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', 
     expect(tile).not.toContain('rtile__legs');
     expect(tile).not.toContain('stepper');
     expect(tile).toMatchInlineSnapshot(
-      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span> <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions"> <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> </div> <div class="rtile__title">실행 중</div>       <div aria-hidden="true" class="rtile__accent"></div> </div>"`
+      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span> <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions"> <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div> </div>"`
     );
   });
 
@@ -1002,6 +1002,86 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
       tile.querySelector('.rtile__hd .worker-mini__badge')?.textContent
     ).toBe('base: release-1');
     expect(tile.querySelector('.rtile__meta')).toBeNull();
+  });
+
+  // 슬롯 3(진행)은 활동·위임 줄 하나가 아니다 — 자식 롤업과 landing 진행도
+  // 같은 슬롯이므로 의존 칩은 그 셋 모두의 뒤에 선다 (§2).
+  test('draws the dependency chips after every progress line', () => {
+    const tile = renderTile(
+      {
+        rollup: /** @type {any} */ ({
+          total: 2,
+          count: 1,
+          current: { id: 'UI-t1.2', title: 'T2' },
+          children: [
+            { id: 'UI-t1.1', title: 'T1', status: 'closed' },
+            { id: 'UI-t1.2', title: 'T2', status: 'in_progress' }
+          ]
+        }),
+        landing: /** @type {any} */ ({
+          step: 'deploy',
+          label: '배포 중',
+          index: 4,
+          total: 7,
+          percent: 57,
+          active: true,
+          failed: false
+        })
+      },
+      {
+        ...MONITOR,
+        last_activity: { text: '파일 편집 중', at: 4000 },
+        dependency_chips: {
+          predecessors: [],
+          overlaps: [
+            {
+              id: 'UI-t9',
+              location_label: '대기',
+              prefixes: ['app/views/worker/']
+            }
+          ]
+        }
+      }
+    );
+    const order = Array.from(tile.children, (child) => child.className);
+
+    expect(order.indexOf('worker-deps')).toBeGreaterThan(
+      order.indexOf('rtile__activity')
+    );
+    expect(order.indexOf('worker-deps')).toBeGreaterThan(
+      order.indexOf('board-card__roll')
+    );
+    expect(order.indexOf('worker-deps')).toBeGreaterThan(
+      order.indexOf('rtile__landing')
+    );
+    expect(order.indexOf('worker-deps')).toBeLessThan(
+      order.indexOf('rtile__meta')
+    );
+  });
+
+  // 폐기 영수증은 슬롯 6(액션 foot)이고 생성·수정 시각은 슬롯 7이다 (§5.1).
+  test('draws the discard receipt before the times meta line', () => {
+    const tile = renderTile({
+      created_at: 1000,
+      updated_at: 4000,
+      discard: /** @type {any} */ ({
+        progress: '폐기 진행 중',
+        error: null,
+        operation: {
+          kind: 'discard',
+          operation_id: 'op-1',
+          backup: null,
+          original_pr: null,
+          revert_pr: null
+        }
+      })
+    });
+    const order = Array.from(tile.children, (child) => child.className);
+
+    expect(order.indexOf('worker-discard-receipt')).toBeGreaterThan(-1);
+    expect(order.indexOf('worker-discard-receipt')).toBeLessThan(
+      order.indexOf('worker-mini__meta')
+    );
   });
 
   test('keeps every coordinate chip out of the header', () => {
