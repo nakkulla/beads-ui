@@ -1253,9 +1253,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
         gate.tier === 'merged';
       const external_cleanup =
         external && !!cleanup && !!gate && gate.tier === 'merged';
+      // An undetermined review verdict (probe error, unreadable Bead) is
+      // re-taken by the next observation; nobody acts on it, so it neither
+      // alerts nor — via its empty gate_badge — draws a badge.
       const gate_alert =
         !!gate &&
-        ['closed_unmerged', 'review', 'undecidable'].includes(gate.tier);
+        ['closed_unmerged', 'review', 'undecidable'].includes(gate.tier) &&
+        gate.reason !== 'review_receipt_undetermined';
       const discard = discardProjection(discard_operations, bead_id, {
         external,
         merge_active: active || merge_step?.step === 'merge',

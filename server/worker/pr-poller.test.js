@@ -295,7 +295,7 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     });
   });
 
-  test('records a receipt as stale when no git runner is wired', async () => {
+  test('records a receipt as undetermined when no git runner is wired', async () => {
     const { poller, observations } = makePoller({
       readIssue: movedReceiptIssue
     });
@@ -303,12 +303,30 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     await poller.tick();
 
     expect(observations.get('/ws', 'UI-1')?.review_receipt).toEqual({
-      state: 'stale',
+      state: 'undetermined',
       head_sha: SHA
     });
   });
 
-  test('records an unreadable review source as invalid', async () => {
+  test('records an unprovable ancestry as undetermined, not stale', async () => {
+    const { poller, observations } = makePoller({
+      readIssue: movedReceiptIssue,
+      gitRun: async (/** @type {string[]} */ args) => ({
+        code: args[0] === 'rev-parse' ? 128 : 0,
+        stdout: '',
+        stderr: ''
+      })
+    });
+
+    await poller.tick();
+
+    expect(observations.get('/ws', 'UI-1')?.review_receipt).toEqual({
+      state: 'undetermined',
+      head_sha: SHA
+    });
+  });
+
+  test('records an unreadable review source as undetermined', async () => {
     const { poller, observations } = makePoller({
       readIssue: async () => {
         throw new Error('bd unavailable');
@@ -318,7 +336,7 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     await poller.tick();
 
     expect(observations.get('/ws', 'UI-1')?.review_receipt?.state).toBe(
-      'invalid'
+      'undetermined'
     );
   });
 

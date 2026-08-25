@@ -1064,7 +1064,7 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
 
     expect(result).toMatchObject({
       ok: false,
-      reason: 'review_receipt_stale'
+      reason: 'review_receipt_undetermined'
     });
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });

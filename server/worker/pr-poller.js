@@ -426,8 +426,12 @@ export function createPrPoller(deps) {
       }
     }
 
+    // A Bead this pass could not read is `undetermined`, not `invalid`:
+    // `invalid` is what the record itself says (route off the enum), while an
+    // unreadable record says nothing and the next pass re-reads it. Both hold
+    // the gate; only the first is a fact worth a badge.
     /** @type {import('./merge-gate.js').CurrentState} */
-    let review_receipt_state = 'invalid';
+    let review_receipt_state = 'undetermined';
     if (typeof deps.readIssue === 'function') {
       try {
         const issue = await deps.readIssue(bead_id);
@@ -437,7 +441,7 @@ export function createPrPoller(deps) {
           probeAncestry
         );
       } catch {
-        review_receipt_state = 'invalid';
+        review_receipt_state = 'undetermined';
       }
     }
     deps.observations.record(workspace, bead_id, {

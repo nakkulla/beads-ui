@@ -1236,13 +1236,16 @@ export function prStatusBadge(input) {
   ) {
     // Head movement alone no longer lands here: the receipt is ancestry-bound,
     // so a base-sync merge or a queue base update keeps reading current
-    // (UI-vzyh §2). What is left is abnormal — no receipt at all, a receipt the
-    // observed head does not descend from (rewritten history, branch reset), or
-    // an ancestry probe the gate could not complete and fails closed on.
+    // (UI-vzyh §2). What is left is abnormal — no receipt at all, or a receipt
+    // the observed head does not descend from (rewritten history, branch
+    // reset). An ancestry probe the gate could not complete is
+    // `review_receipt_undetermined` and deliberately NOT here: the next
+    // observation re-takes it and nobody has anything to do, so it draws no
+    // badge at all (UI-32he).
     return badge('최종 변경 리뷰 필요', {
       title:
         input.gate.reason === 'review_receipt_stale'
-          ? '리뷰 영수증이 현재 head의 조상이 아니거나 조상 확인에 실패했습니다 — 히스토리 재작성·브랜치 리셋 복구 경로로, 관측된 최종 head 전체를 다시 리뷰합니다'
+          ? '리뷰 영수증이 현재 head의 조상이 아닙니다 — 히스토리 재작성·브랜치 리셋 복구 경로로, 관측된 최종 head 전체를 다시 리뷰합니다'
           : '리뷰 영수증이 없습니다 — 관측된 최종 head 전체를 리뷰해야 머지할 수 있습니다',
       alert: true
     });
@@ -1526,6 +1529,7 @@ function prWaitRow(
       gate?.reason === 'base_behind' ||
       gate?.reason === 'review_receipt_missing' ||
       gate?.reason === 'review_receipt_stale' ||
+      gate?.reason === 'review_receipt_undetermined' ||
       cleanup_retry ||
       external_cleanup);
   // An external conflict WITHOUT a worktree has nowhere to run: the dispatch
@@ -1682,6 +1686,10 @@ function prWaitRow(
         gate?.reason === 'base_behind' ||
         gate?.reason === 'review_receipt_missing' ||
         gate?.reason === 'review_receipt_stale' ||
+        // Undetermined is clickable for the same reason stale is: the click
+        // path re-takes the verdict live, and a probe error there routes to
+        // the observed-head review. The row shows no badge for it (UI-32he).
+        gate?.reason === 'review_receipt_undetermined' ||
         cleanup_retry ||
         external_cleanup ||
         reclick_continuable ||
@@ -1734,15 +1742,17 @@ function prWaitRow(
                             ? '리뷰 영수증 없음 — 자동 리뷰 세션 후 승인되면 머지합니다'
                             : gate?.reason === 'review_receipt_stale'
                               ? 'head 재작성됨(영수증이 현재 head의 조상이 아님) — 자동 재리뷰 세션 후 승인되면 머지합니다'
-                              : gate?.reason === 'spec_id_missing'
-                                ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
-                                : enabled
-                                  ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
-                                  : gate && gate.tier === 'merged'
-                                    ? // Already merged with no cleanup failure recorded: the cleanup
-                                      // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                                      '머지됨 — 머지 후 정리 진행 중'
-                                    : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+                              : gate?.reason === 'review_receipt_undetermined'
+                                ? '리뷰 영수증 판정 미결 — 다음 관측에서 다시 판정합니다. 지금 머지하면 관측된 head를 다시 판정합니다'
+                                : gate?.reason === 'spec_id_missing'
+                                  ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
+                                  : enabled
+                                    ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
+                                    : gate && gate.tier === 'merged'
+                                      ? // Already merged with no cleanup failure recorded: the cleanup
+                                        // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                                        '머지됨 — 머지 후 정리 진행 중'
+                                      : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 

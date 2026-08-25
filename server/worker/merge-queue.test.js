@@ -2697,6 +2697,47 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 
+  test('routes an undetermined review verdict through head review like a stale one', async () => {
+    const store = seedManual(['UI-1']);
+    let approved = false;
+    const ensureApproved = vi.fn(async () => {
+      approved = true;
+      return { state: 'approved', reason: null };
+    });
+    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
+      landMerge(store, bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const mq = driver(store, {
+      merge,
+      probeMergeability: async () =>
+        approved
+          ? {
+              ok: true,
+              kind: 'clean',
+              reason: null,
+              head_sha: MOVED_HEAD,
+              base_ref: 'main',
+              external: false
+            }
+          : {
+              ok: false,
+              kind: 'blocked',
+              reason: 'review_receipt_undetermined',
+              head_sha: MOVED_HEAD,
+              base_ref: 'main',
+              external: false
+            },
+      headReview: { ensureApproved }
+    });
+
+    await mq.kick();
+
+    expect(ensureApproved).toHaveBeenCalled();
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
   test('never spends a head review on an absent spec_id refusal', async () => {
     const store = seedManual(['UI-1']);
     const ensureApproved = vi.fn();

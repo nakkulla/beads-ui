@@ -3873,6 +3873,26 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(button.title).toBe(title);
   });
 
+  test('draws no badge for an undetermined review verdict and keeps 머지 clickable', () => {
+    const { mount } = mountWith(
+      queueWithGate({
+        enabled: false,
+        tier: 'review',
+        gate_badge: '',
+        base_badge: '최신',
+        reason: 'review_receipt_undetermined'
+      })
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(mount.querySelector('.worker-mini__badge')).toBeNull();
+    expect(button.disabled).toBe(false);
+    expect(button.textContent?.trim()).toBe('머지');
+    expect(button.title).toContain('판정 미결');
+  });
+
   test.each([
     ['review_receipt_invalid', '리뷰 기록 오류'],
     ['mergeability_unknown', '상태 확인 실패'],
@@ -9607,7 +9627,23 @@ describe('prStatusBadge priority (UI-vkk8 §3)', () => {
     });
 
     expect(result?.label).toBe('최종 변경 리뷰 필요');
-    expect(result?.title).toContain('조상이 아니');
+    expect(result?.title).toContain('조상이 아닙니다');
+  });
+
+  test('draws no badge for an undetermined review verdict', () => {
+    const result = prStatusBadge({
+      gate: { reason: 'review_receipt_undetermined' }
+    });
+
+    expect(result).toBe(null);
+  });
+
+  test('keeps the stale wording to history, not to probe failure', () => {
+    const result = prStatusBadge({
+      gate: { reason: 'review_receipt_stale' }
+    });
+
+    expect(result?.title).not.toContain('확인에 실패');
   });
 
   test('explains a missing receipt without the ancestry wording', () => {

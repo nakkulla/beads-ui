@@ -137,6 +137,20 @@ describe('worker/merge-gate — no-CI eligibility', () => {
     });
   });
 
+  test('holds an undetermined review verdict with an empty badge', () => {
+    const gate = evaluateMergeGate(
+      entryOf(),
+      inputOf({ review_receipt_state: 'undetermined' })
+    );
+
+    expect(gate).toMatchObject({
+      enabled: false,
+      tier: 'review',
+      gate_badge: '',
+      reason: 'review_receipt_undetermined'
+    });
+  });
+
   test('rejects an absent native spec_id under its own reason', () => {
     const gate = evaluateMergeGate(
       entryOf(),
@@ -425,17 +439,17 @@ describe('worker/merge-gate — shared review receipt state', () => {
     expect(state).toBe('stale');
   });
 
-  test('fails closed at the gate when the ancestry probe errors', async () => {
+  test('reports an erroring ancestry probe as undetermined, not stale', async () => {
     const state = await reviewReceiptState(
       issueOf({ impl_review: `codex@${OLD_SHA}` }),
       SHA,
       probeError
     );
 
-    expect(state).toBe('stale');
+    expect(state).toBe('undetermined');
   });
 
-  test('fails closed when the ancestry probe throws', async () => {
+  test('reports a throwing ancestry probe as undetermined', async () => {
     const state = await reviewReceiptState(
       issueOf({ impl_review: `codex@${OLD_SHA}` }),
       SHA,
@@ -444,16 +458,16 @@ describe('worker/merge-gate — shared review receipt state', () => {
       )
     );
 
-    expect(state).toBe('stale');
+    expect(state).toBe('undetermined');
   });
 
-  test('fails closed when no ancestry probe is wired', async () => {
+  test('reports an absent ancestry probe as undetermined', async () => {
     const state = await reviewReceiptState(
       issueOf({ impl_review: `codex@${OLD_SHA}` }),
       SHA
     );
 
-    expect(state).toBe('stale');
+    expect(state).toBe('undetermined');
   });
 
   test('answers a quick_fix route without probing ancestry', async () => {

@@ -518,6 +518,65 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
   });
 });
 
+describe('monitor PR 대기 — 리뷰 판정 미결 (UI-32he)', () => {
+  test('draws neither a badge nor an alert for an undetermined review verdict', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+          pr_observations: {
+            'A-1': {
+              pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
+              gate: {
+                enabled: false,
+                tier: 'review',
+                gate_badge: '',
+                base_badge: '최신',
+                reason: 'review_receipt_undetermined'
+              }
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0]).toMatchObject({
+      id: 'A-1',
+      badges: [],
+      alert: false
+    });
+  });
+
+  test('still alerts on a stale review verdict', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+          pr_observations: {
+            'A-1': {
+              pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
+              gate: {
+                enabled: false,
+                tier: 'review',
+                gate_badge: '리뷰 확인 필요',
+                base_badge: '최신',
+                reason: 'review_receipt_stale'
+              }
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0]).toMatchObject({
+      badges: ['리뷰 확인 필요'],
+      alert: true
+    });
+  });
+});
+
 describe('monitor 세션 타일 — head review·repair (UI-hk74 §7)', () => {
   test('draws a running head review as its own session tile', () => {
     const lanes = buildLanes(

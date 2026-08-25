@@ -25,7 +25,15 @@
  * can only be repaired by writing Bead metadata, so the manual-merge
  * continuation must never spend a review on it (UI-yqw9 incident).
  *
- * @typedef {'current'|'missing'|'stale'|'invalid'|'spec_id_missing'} CurrentState
+ * `undetermined` is the verdict the gate could NOT reach — the ancestry probe
+ * errored, was absent, or (poller-side) the Bead could not be read this pass.
+ * It is deliberately NOT folded into `stale`: both hold the merge, but only
+ * `stale` is a fact about the branch (rewritten history, reset) that a person
+ * must act on. An undetermined verdict is re-taken by the next observation, so
+ * display fails quiet on it while the gate still fails closed (the contract's
+ * "fails closed stale at merge and fails quiet undetermined in display").
+ *
+ * @typedef {'current'|'missing'|'stale'|'invalid'|'spec_id_missing'|'undetermined'} CurrentState
  */
 
 /**
@@ -200,9 +208,10 @@ export function createAncestryProbe(deps) {
  * The `impl_review` receipt is ancestry-bound (UI-vzyh §2): equality and
  * ancestry are both `current`, so head movement alone — a base-sync merge, a
  * queue-owned `base_update` — never makes it stale. `non_ancestor` (rewritten
- * history) and `probe_error` are both `stale`, which is the gate's fail-closed
- * side: refusing is recoverable through the manual continuation's observed-head
- * review, while passing on an unproven ancestry is not.
+ * history) is `stale`; `probe_error`, a throwing probe, and an absent probe are
+ * `undetermined`. The gate refuses on both — refusing is recoverable through
+ * the manual continuation's observed-head review, while passing on an unproven
+ * ancestry is not — but only `stale` is a fact the display may alert on.
  *
  * @param {Record<string, any>|null|undefined} issue
  * @param {string} head_sha
@@ -248,16 +257,19 @@ export async function reviewReceiptState(issue, head_sha, probeAncestry) {
     return 'current';
   }
   if (typeof probeAncestry !== 'function') {
-    return 'stale';
+    return 'undetermined';
   }
   /** @type {AncestryState} */
   let ancestry;
   try {
     ancestry = await probeAncestry(receipt_sha, head);
   } catch {
-    return 'stale';
+    return 'undetermined';
   }
-  return ancestry === 'equal' || ancestry === 'ancestor' ? 'current' : 'stale';
+  if (ancestry === 'equal' || ancestry === 'ancestor') {
+    return 'current';
+  }
+  return ancestry === 'non_ancestor' ? 'stale' : 'undetermined';
 }
 
 /**
@@ -394,6 +406,18 @@ export function evaluateMergeGate(entry, input) {
       GATE_BADGES.spec_id,
       base_badge,
       'spec_id_missing'
+    );
+  }
+  if (input.review_receipt_state === 'undetermined') {
+    // Same hold as below, but with an EMPTY badge: nobody has anything to do
+    // about a verdict the next observation re-takes, so the lanes draw
+    // nothing for it (fail-quiet in display, fail-closed at the gate).
+    return verdict(
+      false,
+      'review',
+      '',
+      base_badge,
+      'review_receipt_undetermined'
     );
   }
   if (input.review_receipt_state !== 'current') {

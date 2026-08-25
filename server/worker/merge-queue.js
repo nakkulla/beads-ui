@@ -1793,13 +1793,17 @@ export function createMergeQueue(deps) {
       if (
         action === 'refused' &&
         (result.reason === 'review_receipt_stale' ||
-          result.reason === 'review_receipt_missing') &&
+          result.reason === 'review_receipt_missing' ||
+          result.reason === 'review_receipt_undetermined') &&
         manualContinuation(bead_id) &&
         typeof deps.headReview?.ensureApproved === 'function'
       ) {
         // Manual continuation (UI-58w8 §2): a queue-owned head mutation left
         // the receipt stale, so the head-review machine re-acquires a CURRENT
-        // review instead of this being a terminal refusal.
+        // review instead of this being a terminal refusal. An undetermined
+        // ancestry (probe error at merge time) takes the same path — the
+        // contract routes a merge-gate probe_error to a review of the observed
+        // head, and only the display stays quiet on it.
         const review = await ensureHeadReview(bead_id, bead_id, {
           head_sha: result.head_sha || '',
           base_ref: result.base_ref || null,
