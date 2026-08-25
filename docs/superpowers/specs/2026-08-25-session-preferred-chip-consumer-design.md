@@ -1,9 +1,12 @@
 ---
 scope:
   - app/utils/session-preferred.js
+  - app/utils/session-preferred.test.js
   - app/utils/worker-eligibility.js
   - app/views/worker/index.js
+  - app/views/worker/index.test.js
   - app/views/worker/lanes.js
+  - app/views/worker/lanes.test.js
   - app/styles.css
   - app/protocol.md
 ---
@@ -189,7 +192,36 @@ runnable 판정에서 행을 제외하지 않는 advisory이고, 짝 metadata
 
 ## 6. 검증
 
-### 6.1 `app/views/worker/lanes.test.js`
+front-matter `scope:`는 이 설계가 **서술하는** 경로의 freshness 감시 목록이지 변경
+파일 목록이 아니다. `app/utils/worker-eligibility.js`가 거기 있는 이유는 §2가 "왜 그
+파일 안이 아닌가"를 그 파일의 현재 소비자 집합에 기대어 논증하기 때문이고, 이 변경이
+그 파일을 고친다는 뜻이 아니다 — 무변경은 수용 기준 7이 검사한다. 빌드 산출물
+(`app/main.bundle.js`·`.map`)은 설계가 서술하는 코드가 아니므로 감시 목록에 넣지
+않고, §6.5가 PR 포함을 요구한다.
+
+### 6.1 `app/utils/session-preferred.test.js` (새 파일)
+
+술어를 직접 부른다. 투영·카드 테스트는 `sessionPreferredReason`만 간접 실행하므로,
+Bead 요구가 이름을 지정한 `isSessionPreferred`가 따로 잘못돼도 통과한다. 계약의
+판정 표를 그대로 옮긴 표면 테스트가 그 구멍을 막는다.
+
+`isSessionPreferred(labels, metadata)`에 대해:
+
+- 라벨 + `exclusive_machine` → true
+- 라벨만 있고 `session_preferred_reason` 없음 → false
+- 라벨 + enum 밖 사유(`'other'`) → false
+- 사유만 있고 라벨 없음 → false, 던지지 않음
+- 비배열 `labels`(`'session-preferred'`) → false
+- `metadata`가 `undefined` → false, 던지지 않음
+- `metadata`가 비객체(`'exclusive_machine'`, `42`) → false, 던지지 않음
+- 비문자열 라벨 항목이 섞인 배열(`[7, null, 'session-preferred']`) + 유효 사유 → true
+
+`sessionPreferredReason`에 대해:
+
+- 유효 부착 → `'exclusive_machine'`
+- 위의 모든 무효 조합 → `''`
+
+### 6.2 `app/views/worker/lanes.test.js`
 
 `candidateCard` 직접 렌더.
 
@@ -197,10 +229,14 @@ runnable 판정에서 행을 제외하지 않는 advisory이고, 짝 metadata
 - 사유 없는 행(`session_preferred: false`)은 칩을 그리지 않는다
 - `worker_ineligible`과 동시 부착 시 `worker-ineligible` 칩만 그리고 `세션 권장`
   칩은 없다
-- 유효 부착 카드의 `draggable`이 `true`로 남고 `대기로 ↴` 버튼이 활성이며
-  `worker-card--ineligible` 클래스가 붙지 않는다
+- 유효 부착 카드의 `draggable`이 `true`로 남고 `worker-card--ineligible` 클래스가
+  붙지 않는다
+- 유효 부착 카드에 **자기 id와 일치하는 `place_menu`**를 넘기면 레인 선택 메뉴가
+  그대로 렌더된다 — §4.3이 불변이라고 선언한 것을 실제로 검사하는 유일한 케이스다
+- 유효 부착 카드의 `대기로 ↴` 버튼이 `disabled`가 아니고 `title`이 부착 전과 같은
+  `대기 큐 맨 뒤에 추가`다
 
-### 6.2 `app/views/worker/index.test.js`
+### 6.3 `app/views/worker/index.test.js`
 
 마운트된 뷰로 투영 경로.
 
@@ -211,15 +247,16 @@ runnable 판정에서 행을 제외하지 않는 advisory이고, 짝 metadata
   `worker-ineligible` 칩만 그린다
 - 비배열 `labels`, `metadata` 부재에서 던지지 않고 칩 없이 그린다
 
-### 6.3 회귀
+### 6.4 회귀
 
 `worker-ineligible candidates (UI-8881)` describe 블록과 lanes.test.js의
 `worker-ineligible` 케이스가 **무변경**으로 통과한다.
 
-### 6.4 저장소 기본 bundle
+### 6.5 저장소 기본 bundle
 
 `npm run tsc` · `npm test` · `npm run lint` · `npm run prettier:write` ·
-`npm run build`(번들 산출물 포함).
+`npm run build`. 프런트엔드 소스를 고쳤으므로 PR은 갱신된 `app/main.bundle.js`와
+`app/main.bundle.js.map`을 포함한다.
 
 ## 7. 비목표
 
@@ -239,12 +276,19 @@ runnable 판정에서 행을 제외하지 않는 advisory이고, 짝 metadata
 ## 수용 기준
 
 1. `isSessionPreferred(labels, metadata)`가 라벨 존재 **and** enum 내 사유일 때만
-   true이고, 무효 부착·`metadata` 부재·비배열 `labels`에서 던지지 않고 false다.
-2. 후보 투영이 `session_preferred` · `session_preferred_reason`을 싣고,
+   true이고, §6.1의 무효 조합 전부에서 던지지 않고 false다 — `metadata` 부재와
+   비객체 `metadata`를 각각 별도 케이스로 검사한다.
+2. `sessionPreferredReason`이 유효 부착에서 사유 문자열을, 무효 조합 전부에서 `''`을
+   돌려준다.
+3. 후보 투영이 `session_preferred` · `session_preferred_reason`을 싣고,
    `worker_ineligible`이 true인 행에서는 `session_preferred`가 항상 false다.
-3. 유효 부착 후보 카드가 `세션 권장` 칩과 계약 문구 툴팁을 1번 정체성 줄에 그리고,
-   `draggable`·`대기로 ↴`·`place_menu`가 부착 전과 동일하다.
-4. `worker-ineligible` 동시 부착 카드가 `worker-ineligible` 표현만 그린다.
-5. `app/protocol.md`가 라벨 이름·advisory 성격·우선순위를 한 줄로 적는다.
-6. `git diff --name-only`에 `server/` 경로가 없다.
-7. §6.4 bundle이 green이고, §6.3 회귀 테스트가 무변경으로 통과한다.
+4. 유효 부착 후보 카드가 `세션 권장` 칩과 계약 문구 툴팁을 1번 정체성 줄에 그리고,
+   `draggable`·`대기로 ↴` 버튼의 `disabled`/`title`·`place_menu` 렌더가 부착 전과
+   동일하다(§6.2가 셋을 각각 assert한다).
+5. `worker-ineligible` 동시 부착 카드가 `worker-ineligible` 표현만 그린다.
+6. `app/protocol.md`가 라벨 이름·advisory 성격·우선순위를 한 줄로 적는다.
+7. `git diff --name-only`가 `server/` 경로를 하나도 담지 않고,
+   `app/utils/worker-eligibility.js`도 담지 않는다. 후자가 함께 필요한 이유는 그
+   파일이 `runnable-cache`·`scheduler`·`title-cache`가 import하는 서버 진입점이라,
+   `server/`만 검사하면 admission 불변을 증명하지 못하기 때문이다.
+8. §6.5 bundle이 green이고, §6.4 회귀 테스트가 무변경으로 통과한다.
