@@ -287,7 +287,8 @@ export function bannersTemplate(state) {
  * @property {Array<{ label: string, state: 'live'|'done'|'failed', agent_type?: string|null }>} [legs] -
  * Delegation legs; only the unfinished ones are spelled out.
  * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
- * `→ 후속` chips (§5.1); the running tile shows no 선행 (it already started).
+ * 겹침·연결 레인 칩 (§5.1). 실행중 타일에는 blocked 칩이 서지 않는다 — 이미
+ * 출발했으므로 막힌 것이 없다.
  */
 
 /**
@@ -322,7 +323,7 @@ const FORWARDER_AGENT_TYPES = new Set(['codex-runner']);
 
 /**
  * Monitor-only body of a running tile (UI-eey2 §7): 최근 활동 · 위임 칩 ·
- * 후속 칩. 실행중 타일은 stepper를 그리지 않는다 — 활동 줄과 위임 칩이 이미
+ * 의존 칩. 실행중 타일은 stepper를 그리지 않는다 — 활동 줄과 위임 칩이 이미
  * 진행을 말하고, stepper는 높이만 차지했다. 끝난 위임은 `위임 완료 n` 한
  * 칩으로 접고 목록은 툴팁으로 물러난다 ("기본은 접고 중요한 것만", 스펙 §2).
  * 재료가 없는 줄은 통째로 생략한다.
@@ -412,7 +413,7 @@ function monitorTileBody(monitor, now, paused, session = null) {
  * something else. The drawer's tile keeps its `.rtile--sel` ring.
  *
  * `options.monitor` adds the monitor tab's extra lines (UI-eey2 §7) —
- * 레포 배지 · 활동 · 위임/후속 칩. Omitted — every Worker call —
+ * 레포 배지 · 활동 · 위임/의존 칩. Omitted — every Worker call —
  * renders exactly as before. Exported since UI-eey2 so the monitor renders the
  * SAME tile rather than a second one that drifts.
  *

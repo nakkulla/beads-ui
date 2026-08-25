@@ -1714,8 +1714,8 @@ describe('views/monitor session drawer (UI-eey2 §7)', () => {
 });
 
 describe('views/monitor dependency editing (UI-2gi1 §6.5, UI-e6hw §5)', () => {
-  test('releases a predecessor from its chip ✕', async () => {
-    const { mount, view, sent } = setup({
+  test('draws no release button on the card chip itself', () => {
+    const { mount, view } = setup({
       workspaces: [
         workspace({
           runnable: [{ bead_id: 'A-2', title: 'blocked', blocked_by: ['A-0'] }]
@@ -1725,13 +1725,9 @@ describe('views/monitor dependency editing (UI-2gi1 §6.5, UI-e6hw §5)', () => 
     });
 
     view.load();
-    click(mount, '#monitor-runnable .worker-dep__remove');
-    await flushMicrotasks();
 
-    expect(sent[0]).toEqual({
-      type: 'dep-remove',
-      payload: { a: 'A-2', b: 'A-0', root_dir: WS_A }
-    });
+    expect(el(mount, '#monitor-runnable .worker-dep--pred')).not.toBeNull();
+    expect(mount.querySelector('.worker-dep__remove')).toBeNull();
   });
 
   test('sends one drop in the dep-remove → lane → dep-add → queue order', async () => {
@@ -2477,18 +2473,17 @@ describe('monitor 의존성 패널 (UI-j92s §6.1)', () => {
     });
   });
 
-  test('releases a successor in the successor own repo', async () => {
-    const { mount, view, sent } = panelSetup();
+  test('lists only the issues that block this row', () => {
+    const { mount, view } = panelSetup();
 
     view.load();
     click(mount, '#monitor-runnable .worker-card__dep');
-    click(mount, '.mon-deppanel__chip--succ .mon-deppanel__unlink');
-    await flushMicrotasks();
 
-    expect(sent[0]).toEqual({
-      type: 'dep-remove',
-      payload: { a: 'B-1', b: 'A-9', root_dir: WS_B }
-    });
+    expect(
+      Array.from(mount.querySelectorAll('.mon-deppanel__chip-label')).map(
+        (node) => node.textContent?.trim()
+      )
+    ).toEqual(['⛓ A-1']);
   });
 
   test('adds a predecessor with this row repo as the root', async () => {
@@ -2505,19 +2500,13 @@ describe('monitor 의존성 패널 (UI-j92s §6.1)', () => {
     });
   });
 
-  test('adds a successor with the candidate repo as the root', async () => {
-    const { mount, view, sent } = panelSetup();
+  test('offers no direction choice at all', () => {
+    const { mount, view } = panelSetup();
 
     view.load();
     click(mount, '#monitor-runnable .worker-card__dep');
-    click(mount, '.mon-deppanel__seg[data-dep-direction="successor"]');
-    click(mount, '.mon-deppanel__cand[data-dep-cand="B-2"]');
-    await flushMicrotasks();
 
-    expect(sent[0]).toEqual({
-      type: 'dep-add',
-      payload: { a: 'B-2', b: 'A-9', root_dir: WS_B }
-    });
+    expect(mount.querySelector('.mon-deppanel__seg')).toBeNull();
   });
 
   test('keeps the panel open after a dependency edit', async () => {
@@ -2553,11 +2542,13 @@ describe('monitor 의존성 패널 (UI-j92s §6.1)', () => {
     const { mount, view } = panelSetup();
 
     view.load();
-    click(mount, '#monitor-runnable .worker-card__dep');
-    click(mount, '.mon-deppanel__seg[data-dep-direction="successor"]');
+    click(
+      mount,
+      '#monitor-runnable .worker-card[data-bead-id="A-9"] .worker-card__dep'
+    );
 
     const cycle = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.mon-deppanel__cand[data-dep-cand="A-1"]')
+      mount.querySelector('.mon-deppanel__cand[data-dep-cand="B-1"]')
     );
     expect(cycle.disabled).toBe(true);
     expect(cycle.textContent).toContain('사이클');
@@ -2585,16 +2576,59 @@ describe('monitor 의존성 패널 (UI-j92s §6.1)', () => {
     expect(el(mount, '#monitor-running .mon-dep__btn')).toBeNull();
   });
 
-  test('opens the panel from a 후속 chip of the same row', () => {
-    const { mount, view } = panelSetup();
+  test('opens the panel from the blocked chip of the same row', () => {
+    // 실행가능 행은 자기 `blocked_by`를 스스로 싣는다 (UI-yrzu §5) — 레포 장식만
+    // 있는 공용 fixture로는 카드에 blocked 칩이 서지 않는다.
+    const { mount, view } = panelSetup({
+      workspaces: [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-9',
+              title: '가운데',
+              spec_id: 'docs/a.md',
+              blocked_by: ['A-1']
+            }
+          ],
+          queue: [{ bead_id: 'A-1' }],
+          bead_titles: { 'A-1': '선행' },
+          bead_blocked_by: { 'A-9': ['A-1'] }
+        })
+      ],
+      workspaces_state: [state()]
+    });
 
     view.load();
-    click(mount, '#monitor-runnable .worker-dep--succ .worker-dep__open');
+    click(mount, '#monitor-runnable .worker-dep--pred .worker-dep__open');
 
     expect(el(mount, '.mon-deppanel').getAttribute('data-bead-id')).toBe('A-9');
-    expect(
-      el(mount, '.mon-deppanel__seg[data-dep-direction="successor"]').className
-    ).toContain('is-active');
+  });
+
+  test('asks before releasing a dependency', async () => {
+    const confirmFn = vi.fn(() => true);
+    const { mount, view, sent } = panelSetup({ confirm: confirmFn });
+
+    view.load();
+    click(mount, '#monitor-runnable .worker-card__dep');
+    click(mount, '.mon-deppanel__unlink');
+    await flushMicrotasks();
+
+    expect(confirmFn).toHaveBeenCalledWith('A-1가 A-9를 막는 연결을 끊을까요?');
+    expect(sent[0]).toEqual({
+      type: 'dep-remove',
+      payload: { a: 'A-9', b: 'A-1', root_dir: WS_A }
+    });
+  });
+
+  test('sends nothing when the release is declined', async () => {
+    const { mount, view, sent } = panelSetup({ confirm: () => false });
+
+    view.load();
+    click(mount, '#monitor-runnable .worker-card__dep');
+    click(mount, '.mon-deppanel__unlink');
+    await flushMicrotasks();
+
+    expect(sent).toEqual([]);
   });
 });
 

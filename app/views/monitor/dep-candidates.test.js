@@ -44,7 +44,7 @@ describe('depCandidates — 모집단 (UI-j92s §6.1)', () => {
       })
     ]);
 
-    const candidates = depCandidates('A-1', 'predecessor', model);
+    const candidates = depCandidates('A-1', model);
 
     expect(candidates.map((candidate) => candidate.bead_id)).toEqual(['B-1']);
   });
@@ -52,7 +52,7 @@ describe('depCandidates — 모집단 (UI-j92s §6.1)', () => {
   test('excludes the issue the panel belongs to', () => {
     const model = candidateModel([issue('A-1'), issue('A-2')]);
 
-    const candidates = depCandidates('A-1', 'predecessor', model);
+    const candidates = depCandidates('A-1', model);
 
     expect(candidates.map((candidate) => candidate.bead_id)).toEqual(['A-2']);
   });
@@ -63,7 +63,7 @@ describe('depCandidates — 모집단 (UI-j92s §6.1)', () => {
       issue('A-2', { lane: 'done' })
     ]);
 
-    const candidates = depCandidates('A-1', 'predecessor', model);
+    const candidates = depCandidates('A-1', model);
 
     expect(candidates).toEqual([]);
   });
@@ -74,7 +74,7 @@ describe('depCandidates — 모집단 (UI-j92s §6.1)', () => {
       issue('B-1', { root_dir: WS_B, workspace_name: 'repo-b' })
     ]);
 
-    const candidates = depCandidates('A-1', 'predecessor', model);
+    const candidates = depCandidates('A-1', model);
 
     expect([
       candidates[0].workspace_name,
@@ -84,73 +84,40 @@ describe('depCandidates — 모집단 (UI-j92s §6.1)', () => {
   });
 });
 
-describe('depCandidates — 방향별 제외 (UI-j92s §6.1)', () => {
-  test('excludes a predecessor that is already linked', () => {
+describe('depCandidates — 제외 (UI-j92s §6.1)', () => {
+  test('excludes a blocker that is already linked', () => {
     const model = candidateModel(
       [issue('A-1'), issue('A-2'), issue('A-3')],
       [['A-1', ['A-2']]]
     );
 
-    const candidates = depCandidates('A-1', 'predecessor', model);
+    const candidates = depCandidates('A-1', model);
 
     expect(candidates.map((candidate) => candidate.bead_id)).toEqual(['A-3']);
   });
 
-  test('excludes a successor that is already linked', () => {
-    const model = candidateModel(
-      [issue('A-1'), issue('A-2'), issue('A-3')],
-      [['A-2', ['A-1']]]
-    );
-
-    const candidates = depCandidates('A-1', 'successor', model);
-
-    expect(candidates.map((candidate) => candidate.bead_id)).toEqual(['A-3']);
-  });
-
-  test('allows a running candidate when adding a predecessor', () => {
+  // 이미 출발한 이슈도 이 이슈를 막을 수 있다 — 막는 쪽의 진행 상태는 간선의
+  // 성립과 무관하다.
+  test('allows a running candidate', () => {
     const model = candidateModel([
       issue('A-1'),
       issue('A-2', { lane: 'running' })
     ]);
 
-    const candidates = depCandidates('A-1', 'predecessor', model);
+    const candidates = depCandidates('A-1', model);
 
     expect(candidates.map((candidate) => candidate.bead_id)).toEqual(['A-2']);
   });
 
-  test('allows a PR 대기 candidate when adding a predecessor', () => {
+  test('allows a PR 대기 candidate', () => {
     const model = candidateModel([
       issue('A-1'),
       issue('A-2', { lane: 'pr_wait' })
     ]);
 
-    const candidates = depCandidates('A-1', 'predecessor', model);
+    const candidates = depCandidates('A-1', model);
 
     expect(candidates.map((candidate) => candidate.bead_id)).toEqual(['A-2']);
-  });
-
-  test('excludes a running candidate when adding a successor', () => {
-    const model = candidateModel([
-      issue('A-1'),
-      issue('A-2', { lane: 'running' }),
-      issue('A-3')
-    ]);
-
-    const candidates = depCandidates('A-1', 'successor', model);
-
-    expect(candidates.map((candidate) => candidate.bead_id)).toEqual(['A-3']);
-  });
-
-  test('excludes a PR 대기 candidate when adding a successor', () => {
-    const model = candidateModel([
-      issue('A-1'),
-      issue('A-2', { lane: 'pr_wait' }),
-      issue('A-3')
-    ]);
-
-    const candidates = depCandidates('A-1', 'successor', model);
-
-    expect(candidates.map((candidate) => candidate.bead_id)).toEqual(['A-3']);
   });
 });
 
@@ -161,21 +128,7 @@ describe('depCandidates — 사이클 (UI-j92s §6.1)', () => {
       [['A-2', ['A-1']]]
     );
 
-    const candidates = depCandidates('A-1', 'predecessor', model);
-
-    expect([candidates[0].disabled, candidates[0].reason]).toEqual([
-      true,
-      '사이클'
-    ]);
-  });
-
-  test('disables a successor that would close a cycle', () => {
-    const model = candidateModel(
-      [issue('A-1'), issue('A-2')],
-      [['A-1', ['A-2']]]
-    );
-
-    const candidates = depCandidates('A-1', 'successor', model);
+    const candidates = depCandidates('A-1', model);
 
     expect([candidates[0].disabled, candidates[0].reason]).toEqual([
       true,
@@ -192,7 +145,7 @@ describe('depCandidates — 사이클 (UI-j92s §6.1)', () => {
       ]
     );
 
-    const candidates = depCandidates('A-1', 'predecessor', model);
+    const candidates = depCandidates('A-1', model);
 
     expect(
       candidates.map((candidate) => [candidate.bead_id, candidate.disabled])
@@ -205,7 +158,7 @@ describe('depCandidates — 사이클 (UI-j92s §6.1)', () => {
   test('keeps an allowed candidate enabled with no reason', () => {
     const model = candidateModel([issue('A-1'), issue('A-2')]);
 
-    const candidates = depCandidates('A-1', 'predecessor', model);
+    const candidates = depCandidates('A-1', model);
 
     expect(candidates[0].disabled).toBe(false);
     expect(Object.hasOwn(candidates[0], 'reason')).toBe(false);
@@ -220,7 +173,7 @@ describe('depCandidates — 정렬 (UI-j92s §6.1)', () => {
       issue('A-9')
     ]);
 
-    const candidates = depCandidates('A-5', 'predecessor', model);
+    const candidates = depCandidates('A-5', model);
 
     expect(candidates.map((candidate) => candidate.bead_id)).toEqual([
       'A-9',
@@ -236,7 +189,7 @@ describe('depCandidates — 정렬 (UI-j92s §6.1)', () => {
       issue('A-2')
     ]);
 
-    const candidates = depCandidates('A-1', 'predecessor', model);
+    const candidates = depCandidates('A-1', model);
 
     expect(candidates.map((candidate) => candidate.bead_id)).toEqual([
       'A-2',
@@ -249,7 +202,7 @@ describe('depCandidates — 정렬 (UI-j92s §6.1)', () => {
 describe('filterDepCandidates — 검색 (UI-j92s §6.1)', () => {
   test('matches a substring of the id', () => {
     const model = candidateModel([issue('A-1'), issue('A-2'), issue('B-11')]);
-    const candidates = depCandidates('A-1', 'predecessor', model);
+    const candidates = depCandidates('A-1', model);
 
     const found = filterDepCandidates(candidates, '-2');
 
@@ -262,7 +215,7 @@ describe('filterDepCandidates — 검색 (UI-j92s §6.1)', () => {
       issue('A-2', { title: '레인 Refactor' }),
       issue('A-3')
     ]);
-    const candidates = depCandidates('A-1', 'predecessor', model);
+    const candidates = depCandidates('A-1', model);
 
     const found = filterDepCandidates(candidates, 'refactor');
 
@@ -271,7 +224,7 @@ describe('filterDepCandidates — 검색 (UI-j92s §6.1)', () => {
 
   test('returns every candidate for an empty query', () => {
     const model = candidateModel([issue('A-1'), issue('A-2'), issue('A-3')]);
-    const candidates = depCandidates('A-1', 'predecessor', model);
+    const candidates = depCandidates('A-1', model);
 
     const found = filterDepCandidates(candidates, '   ');
 

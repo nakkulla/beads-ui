@@ -58,14 +58,6 @@ import {
  */
 
 /**
- * 모니터가 붙이는 레포 배지 하나가 더 붙은 의존 칩 (UI-j92s §6.2). 칩 모양은
- * Worker 템플릿이 소유하므로 기본형은 거기서 오고, 레포 간 관계는 모니터에만
- * 있는 두 번째 축이라 여기서만 실린다.
- *
- * @typedef {DependencyChip & { badge?: string }} MonitorDependencyChip
- */
-
-/**
  * Lower bound on a repo's concurrency cap, mirroring the server's `MIN_SLOTS`
  * (`server/worker/queue-store.js`). The server rejects an out-of-bound value
  * rather than clamping it, so the input carries the bound.
@@ -96,20 +88,18 @@ export const SPEC_FILTER_OPTIONS = [
 ];
 
 /**
- * @typedef {{ show_blocked: boolean, spec: 'all'|'with'|'without', with_deps: boolean }} CandidateFilter
+ * @typedef {{ show_blocked: boolean, spec: 'all'|'with'|'without' }} CandidateFilter
  */
 
 /**
  * 모니터의 blocked 기본값은 **표시**다 (Worker는 숨김, 사용자 결정 2026-08-24):
- * 레포 간 계획을 세우려면 막힌 후보가 보여야 한다. `with_deps`는 기본 꺼짐이다
- * (UI-j92s §6.3) — 의존이 없는 후보를 숨기는 것은 사용자가 고르는 좁힘이다.
+ * 레포 간 계획을 세우려면 막힌 후보가 보여야 한다.
  *
  * @type {CandidateFilter}
  */
 export const CANDIDATE_FILTER_DEFAULT = {
   show_blocked: true,
-  spec: 'all',
-  with_deps: false
+  spec: 'all'
 };
 
 /**
@@ -283,9 +273,9 @@ const DONE_KIND_LABELS = {
  * @property {MonitorItem[]} runnable_all - Filter 이전의 실행가능 목록. 의존성
  * 패널의 후보 모집단은 여기서 나온다 (UI-j92s §6.1): 필터는 보기를 좁힐 뿐
  * 의존을 걸 수 있는 이슈를 줄이지 않는다.
- * @property {{ blocked: number, spec: number, deps: number }} runnable_hidden -
- * 필터가 감춘 실행가능 카드 수. `deps`는 `의존 있음` 토글이 감춘 몫이다
- * (UI-j92s §6.3).
+ * @property {{ blocked: number, spec: number }} runnable_hidden - `blocked`는
+ * `blocked` 토글이, `spec`은 spec 필터가 각각 걸러 낸 카드 수다. 필터 바가 이
+ * 수를 자기 토글 옆에 적어 좁힌 대가를 드러낸다.
  * @property {MonitorRunnableSection[]} runnable_sections - `updated_flat`에서는
  * 빈 배열이다 (섹션 자체를 만들지 않는다).
  * @property {boolean} runnable_flat
@@ -515,7 +505,10 @@ function formatOrDrop(pinned, base) {
 }
 
 /**
- * One 선행 chip (UI-eey2 §5.1) — 방향을 이름으로 말한다.
+ * One blocked chip — Board 카드와 같은 한 벌이다 (`board/card.js` `blockedChips`).
+ * 칩이 서 있다는 사실 자체가 "이 이슈는 저것 때문에 못 나간다"이므로 방향어를
+ * 다시 적지 않고, blocker가 지금 어느 레인에 있는지는 카드가 아니라 툴팁이
+ * 말한다 — 카드 위에서 `(실행가능)`은 이 이슈의 상태로 오독됐다.
  *
  * @param {import('./blockers.js').BlockerDisplay} blocker
  * @returns {DependencyChip}
@@ -523,33 +516,8 @@ function formatOrDrop(pinned, base) {
 function predecessorChip(blocker) {
   return {
     id: blocker.id,
-    label: `🔒 선행 ${blocker.id} (${blocker.location_label})`,
-    title: `이 이슈는 ${blocker.id}가 close될 때까지 출발하지 않는다`
-  };
-}
-
-/**
- * One 후속 chip (UI-eey2 §5.1, UI-j92s §6.2). 어느 레인에도 없는 후속은 알 수
- * 없으므로 생략하고, 이미 완료된 후속도 그리지 않는다 — 열린 이슈만 방향을
- * 말한다. 상대가 다른 레포면 칩 안에 레포 배지를 싣는다.
- *
- * @param {string} successor_id
- * @param {string} owner_root_dir - 칩을 다는 쪽(this)의 레포.
- * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
- * @returns {MonitorDependencyChip|null}
- */
-function successorChip(successor_id, owner_root_dir, locations) {
-  const location = locations.get(successor_id);
-  if (!location || location.state === 'done') {
-    return null;
-  }
-  return {
-    id: successor_id,
-    label: `→ 후속 ${successor_id} (${blockerLocationLabel(location)})`,
-    title: `이 이슈가 close되면 ${successor_id}가 자기 레포 큐에서 출발한다`,
-    ...(location.root_dir && location.root_dir !== owner_root_dir
-      ? { badge: location.workspace_name || location.root_dir }
-      : {})
+    label: `⛓ blocked: ${blocker.id}`,
+    title: `이 이슈는 ${blocker.id}가 close될 때까지 출발하지 않는다 (${blocker.location_label})`
   };
 }
 
@@ -1759,7 +1727,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const model = {
     runnable,
     runnable_all: runnable,
-    runnable_hidden: { blocked: 0, spec: 0, deps: 0 },
+    runnable_hidden: { blocked: 0, spec: 0 },
     runnable_sections: [],
     runnable_flat: candidate_sort === 'updated_flat',
     queue,
@@ -1791,21 +1759,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
   }
 
-  /** @type {Map<string, string[]>} */
-  const successors_by_bead = new Map();
-  for (const [blockee, blockers] of blocked_by_map) {
-    for (const blocker of blockers) {
-      const bucket = successors_by_bead.get(blocker);
-      if (bucket) {
-        if (!bucket.includes(blockee)) {
-          bucket.push(blockee);
-        }
-      } else {
-        successors_by_bead.set(blocker, [blockee]);
-      }
-    }
-  }
-
   for (const item of [...model.queue, ...model.runnable]) {
     if (!Object.hasOwn(item, 'blocked_by')) {
       continue;
@@ -1825,38 +1778,29 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
   }
 
+  // 카드는 blocked만 말한다: 역방향(후속) 칩은 걷어냈다 — 이미 출발한 이슈에게
+  // "네가 누굴 막는다"를 알려도 그 이슈가 할 일이 없고, 막힌 쪽 카드에 같은
+  // 사실이 blocked 칩으로 이미 서 있다. 후속 관계 자체는 의존성 패널이 그린다.
   for (const item of [
     ...model.queue,
     ...model.runnable,
     ...model.running,
     ...model.pr_wait
   ]) {
-    /** @type {MonitorDependencyChip[]} */
+    /** @type {DependencyChip[]} */
     const predecessors =
       item.lane === 'running' || item.lane === 'pr_wait'
         ? []
         : (item.blockers || []).map(predecessorChip);
-    /** @type {MonitorDependencyChip[]} */
-    const successors = [];
-    for (const successor_id of successors_by_bead.get(item.id) || []) {
-      const chip = successorChip(successor_id, item.root_dir, locations);
-      if (chip) {
-        successors.push(chip);
-      }
-    }
     const warnings =
       item.lane === 'running' || item.lane === 'pr_wait'
         ? []
         : item.blocker_warnings || [];
-    if (
-      predecessors.length === 0 &&
-      successors.length === 0 &&
-      warnings.length === 0
-    ) {
+    if (predecessors.length === 0 && warnings.length === 0) {
       continue;
     }
     /** @type {DependencyChips} */
-    const chips = { predecessors, successors, warnings };
+    const chips = { predecessors, warnings };
     item.dependency_chips = chips;
   }
 
@@ -1986,25 +1930,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
   } else if (candidate_filter.spec === 'without') {
     visible = visible.filter((item) => !item.spec_id);
   }
-  const after_spec = visible.length;
-  if (candidate_filter.with_deps) {
-    // 열린 선행 또는 열린 후속이 하나라도 있는 카드만 (UI-j92s §6.3). 두 칩
-    // 목록이 이미 "열린 것만"을 뜻하므로 판정 원천을 새로 만들지 않는다.
-    visible = visible.filter((item) => {
-      const chips = item.dependency_chips;
-      if (!chips) {
-        return false;
-      }
-      return (
-        (chips.predecessors || []).length > 0 ||
-        (chips.successors || []).length > 0
-      );
-    });
-  }
   model.runnable_hidden = {
     blocked: before - after_blocked,
-    spec: after_blocked - after_spec,
-    deps: after_spec - visible.length
+    spec: after_blocked - visible.length
   };
 
   /**

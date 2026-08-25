@@ -2,9 +2,9 @@
  * 의존성 패널의 후보 규칙 (UI-j92s §6.1).
  *
  * 실행가능 카드 위에 카드를 떨어뜨려 의존을 만드는 경로는 없어졌다 (사용자 결정
- * 2026-08-25 §3.4). 대신 방향을 먼저 고르고 후보를 고르는데, 두 방향은 대칭이
- * 아니다: **선행**은 이미 진행 중인 이슈여도 정상이지만, **후속**으로 진행 중인
- * 이슈를 고르면 이미 출발한 일에 새 선행을 붙이는 모순이 된다.
+ * 2026-08-25 §3.4). 패널이 묻는 것은 한 방향뿐이다 — "이 이슈를 무엇이 막는가".
+ * 반대 방향은 상대 이슈의 카드에서 같은 문장으로 걸린다: 한 사실을 두 어휘로
+ * 말하지 않아야 어느 카드에서 무엇을 만지는지가 흔들리지 않는다.
  *
  * 순수 함수만 내보낸다 — 후보 목록은 스냅샷 하나에서 나오는 파생값이고, 검색은
  * 그 목록 위의 필터일 뿐이다.
@@ -41,34 +41,20 @@ import { isBlockedBy } from './drop-plan.js';
  * @typedef {DepCandidateIssue & { disabled: boolean, reason?: string }} DepCandidate
  */
 
-/**
- * `← 앞에 (선행 추가)` / `→ 뒤에 (후속 추가)` (§6.1).
- *
- * @typedef {'predecessor'|'successor'} DepDirection
- */
-
 /** 사이클을 닫는 후보의 비활성 사유 (§6.1). */
 const REASON_CYCLE = '사이클';
 
 /**
- * 진행 중이라 후속으로 삼을 수 없는 레인 (§6.1).
- *
- * @type {ReadonlyArray<DepCandidateIssue['lane']>}
- */
-const IN_FLIGHT_LANES = ['running', 'pr_wait'];
-
-/**
- * The candidates for ONE direction of ONE row's dependency panel (§6.1).
+ * The candidates that could block ONE row (§6.1) — 이 행의 새 blocker 후보다.
  *
  * 정렬은 같은 레포 먼저, 그 다음 ID 오름차순이다: 레포 간 의존은 예외이고 대개는
  * 자기 레포 안에서 고르기 때문이다.
  *
  * @param {string} this_id - 패널을 연 행의 bead.
- * @param {DepDirection} direction
  * @param {DepCandidateModel} model
  * @returns {DepCandidate[]}
  */
-export function depCandidates(this_id, direction, model) {
+export function depCandidates(this_id, model) {
   /** @type {Map<string, DepCandidateIssue>} */
   const by_id = new Map();
   for (const issue of model.issues) {
@@ -92,22 +78,12 @@ export function depCandidates(this_id, direction, model) {
     if (issue.bead_id === this_id || issue.lane === 'done') {
       continue;
     }
-    if (direction === 'successor' && IN_FLIGHT_LANES.includes(issue.lane)) {
+    if (blockers_of_this.includes(issue.bead_id)) {
       continue;
     }
-    const linked =
-      direction === 'predecessor'
-        ? blockers_of_this.includes(issue.bead_id)
-        : (model.blocked_by_map.get(issue.bead_id) || []).includes(this_id);
-    if (linked) {
-      continue;
-    }
-    // 선행 추가는 `this ← cand`, 후속 추가는 `cand ← this`다. 각각의 반대
-    // 방향이 이미 (전이적으로) 성립하면 그 간선은 사이클을 닫는다.
-    const cycle =
-      direction === 'predecessor'
-        ? isBlockedBy(model.blocked_by_map, issue.bead_id, this_id)
-        : isBlockedBy(model.blocked_by_map, this_id, issue.bead_id);
+    // 새 간선은 `this ← cand`다. 반대 방향이 이미 (전이적으로) 성립하면 그
+    // 간선은 사이클을 닫는다.
+    const cycle = isBlockedBy(model.blocked_by_map, issue.bead_id, this_id);
     candidates.push({
       ...issue,
       disabled: cycle,

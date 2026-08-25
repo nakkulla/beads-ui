@@ -571,7 +571,14 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
       { label: 'review-consult · codex', state: /** @type {const} */ ('done') }
     ],
     dependency_chips: {
-      successors: [{ id: 'UI-s', label: '→ 후속 UI-s (repo-b · 병렬 #1)' }]
+      overlaps: [
+        {
+          id: 'UI-o1',
+          title: '겹침 상대',
+          location_label: 'repo-b · 병렬 #1',
+          prefixes: ['app/']
+        }
+      ]
     }
   };
 
@@ -639,14 +646,14 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
     expect(tile).toContain('위임 완료 1');
   });
 
-  test('adds the reverse successor chip', () => {
+  test('adds the overlap chip', () => {
     const tile = shape(
       runningTile(tileInput(), 5000, null, {
         monitor: /** @type {any} */ (monitor)
       })
     );
 
-    expect(tile).toContain('→ 후속 UI-s (repo-b · 병렬 #1)');
+    expect(tile).toContain('⧉ UI-o1');
   });
 
   test('omits every line the overlay has no material for', () => {

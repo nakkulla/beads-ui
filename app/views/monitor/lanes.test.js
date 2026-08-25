@@ -395,7 +395,7 @@ describe('monitor 대기 repo sections (UI-eey2 §6)', () => {
 });
 
 describe('monitor dependency chips (UI-eey2 §5.1)', () => {
-  test('names the direction and the location on a 선행 chip', () => {
+  test('names only the blocker on a blocked chip', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -409,14 +409,29 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
 
     const row = lanes.queue.find((r) => r.id === 'A-2');
     expect(row?.dependency_chips?.predecessors?.[0].label).toBe(
-      '🔒 선행 A-1 (실행가능)'
-    );
-    expect(row?.dependency_chips?.predecessors?.[0].title).toBe(
-      '이 이슈는 A-1가 close될 때까지 출발하지 않는다'
+      '⛓ blocked: A-1'
     );
   });
 
-  test('derives the reverse 후속 chip on the blocker card', () => {
+  test('moves the blocker location into the chip tooltip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] },
+          runnable: [runnable('A-1')]
+        })
+      ],
+      [state()]
+    );
+
+    const row = lanes.queue.find((r) => r.id === 'A-2');
+    expect(row?.dependency_chips?.predecessors?.[0].title).toBe(
+      '이 이슈는 A-1가 close될 때까지 출발하지 않는다 (실행가능)'
+    );
+  });
+
+  test('draws no chip on the blocker card itself', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -429,30 +444,10 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
     );
 
     const blocker = lanes.runnable.find((r) => r.id === 'A-1');
-    expect(blocker?.dependency_chips?.successors?.[0].label).toBe(
-      '→ 후속 A-2 (repo-a · 병렬 #1)'
-    );
-    expect(blocker?.dependency_chips?.successors?.[0].title).toBe(
-      '이 이슈가 close되면 A-2가 자기 레포 큐에서 출발한다'
-    );
+    expect(blocker?.dependency_chips).toBe(undefined);
   });
 
-  test('omits a successor that is in no lane at all', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          runnable: [runnable('A-1')],
-          bead_blocked_by: { 'A-9': ['A-1'] }
-        })
-      ],
-      [state()]
-    );
-
-    const blocker = lanes.runnable.find((r) => r.id === 'A-1');
-    expect(blocker?.dependency_chips?.successors ?? []).toEqual([]);
-  });
-
-  test('gives a running tile successors but no 선행 chip', () => {
+  test('draws no chip on a running tile', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -471,9 +466,7 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
       [state()]
     );
 
-    const tile = lanes.running[0];
-    expect(tile.dependency_chips?.predecessors).toEqual([]);
-    expect(tile.dependency_chips?.successors?.[0].id).toBe('A-2');
+    expect(lanes.running[0].dependency_chips).toBe(undefined);
   });
 });
 
@@ -1457,102 +1450,6 @@ describe('monitor 연결 레인과 다른 영역 (UI-j92s §5.2a)', () => {
   });
 });
 
-describe('monitor 후속 칩 (UI-j92s §6.2)', () => {
-  test('badges a successor chip that lives in another repo', () => {
-    const lanes = buildLanes(
-      [
-        workspace({ runnable: [runnable('A-1')] }),
-        workspace({
-          root_dir: WS_B,
-          name: 'repo-b',
-          queue: [{ bead_id: 'B-1' }],
-          bead_blocked_by: { 'B-1': ['A-1'] }
-        })
-      ],
-      [state(), state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })]
-    );
-
-    const chip = lanes.runnable[0].dependency_chips?.successors?.[0];
-    expect(chip?.id).toBe('B-1');
-    expect(/** @type {any} */ (chip).badge).toBe('repo-b');
-  });
-
-  test('omits the repo badge when the successor is in the same repo', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          queue: [{ bead_id: 'A-2' }],
-          runnable: [runnable('A-1')],
-          bead_blocked_by: { 'A-2': ['A-1'] }
-        })
-      ],
-      [state()]
-    );
-
-    const chip = lanes.runnable[0].dependency_chips?.successors?.[0];
-    expect(/** @type {any} */ (chip).badge).toBe(undefined);
-  });
-
-  test('omits a successor that is already done', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          runnable: [runnable('A-1')],
-          done: [{ bead_id: 'A-2', added_at: 1 }],
-          bead_blocked_by: { 'A-2': ['A-1'] }
-        })
-      ],
-      [state()]
-    );
-
-    expect(lanes.runnable[0].dependency_chips?.successors ?? []).toEqual([]);
-  });
-});
-
-describe('monitor 의존 있음 필터 (UI-j92s §6.3)', () => {
-  const repo = workspace({
-    queue: [{ bead_id: 'A-9' }],
-    runnable: [
-      runnable('A-1', { spec_id: 'docs/a.md', blocked_by: ['A-9'] }),
-      runnable('A-2'),
-      runnable('A-3')
-    ],
-    bead_blocked_by: { 'A-9': ['A-2'] }
-  });
-
-  test('leaves the toggle off by default', () => {
-    expect(CANDIDATE_FILTER_DEFAULT.with_deps).toBe(false);
-  });
-
-  test('keeps only cards with an open predecessor or successor', () => {
-    const lanes = buildLanes([repo], [state()], {
-      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, with_deps: true }
-    });
-
-    expect(lanes.runnable.map((item) => item.id)).toEqual(['A-1', 'A-2']);
-  });
-
-  test('counts the cards the toggle hides', () => {
-    const lanes = buildLanes([repo], [state()], {
-      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, with_deps: true }
-    });
-
-    expect(lanes.runnable_hidden.deps).toBe(1);
-  });
-
-  test('ands the toggle with the spec filter', () => {
-    const lanes = buildLanes([repo], [state()], {
-      candidate_filter: {
-        ...CANDIDATE_FILTER_DEFAULT,
-        with_deps: true,
-        spec: 'with'
-      }
-    });
-
-    expect(lanes.runnable.map((item) => item.id)).toEqual(['A-1']);
-  });
-});
-
 describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
   /**
    * @param {string} id
@@ -1748,9 +1645,9 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
 
     const row = lanes.queue.find((r) => r.id === 'A-2');
     expect(row?.dependency_chips?.predecessors?.[0].label).toBe(
-      '🔒 선행 A-1 (실행중)'
+      '⛓ blocked: A-1'
     );
-    expect(lanes.running[0].dependency_chips?.successors?.[0].id).toBe('A-2');
+    expect(lanes.running[0].dependency_chips).toBe(undefined);
   });
 
   test('carries the session workflow snapshot onto the tile', () => {

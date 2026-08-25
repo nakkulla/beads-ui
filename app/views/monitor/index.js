@@ -59,7 +59,7 @@ import {
  * @import { CandidateFilter, MonitorChainLane, MonitorChainLaneRow, MonitorItem, MonitorLanes, MonitorOccupant, MonitorQueueGroup, MonitorSerialSublane } from './lanes.js'
  * @import { DependencyChips, OverlapPopover, OverlapPopoverRow } from '../worker/lanes.js'
  * @import { DropDrag, DropModel, DropPlan, DropTarget, LaneOp, Op } from './drop-plan.js'
- * @import { DepCandidateIssue, DepDirection } from './dep-candidates.js'
+ * @import { DepCandidateIssue } from './dep-candidates.js'
  */
 
 /** 겹침 팝오버의 배치 버튼 문구 (UI-qm12 §5.4). */
@@ -142,11 +142,7 @@ function loadCandidateFilter() {
           : CANDIDATE_FILTER_DEFAULT.show_blocked,
       spec: SPEC_FILTER_OPTIONS.some((o) => o.value === parsed.spec)
         ? parsed.spec
-        : 'all',
-      with_deps:
-        typeof parsed.with_deps === 'boolean'
-          ? parsed.with_deps
-          : CANDIDATE_FILTER_DEFAULT.with_deps
+        : 'all'
     };
   } catch {
     return { ...CANDIDATE_FILTER_DEFAULT };
@@ -162,8 +158,7 @@ function saveCandidateFilter(filter) {
       MONITOR_CANDIDATE_FILTER_KEY,
       JSON.stringify({
         show_blocked: filter.show_blocked,
-        spec: filter.spec,
-        with_deps: filter.with_deps
+        spec: filter.spec
       })
     );
   } catch {
@@ -383,11 +378,10 @@ export function createMonitorView(mount_element, options) {
   let open_overlap = null;
 
   /**
-   * 지금 열려 있는 의존성 패널 (UI-j92s §6.1). 한 번에 하나이며, 방향과 검색어는
-   * 패널이 열려 있는 동안만 사는 표시 상태다 — 다음 스냅샷이 1번 줄을 갱신해도
-   * 사용자가 고른 방향은 유지되어야 하므로 여기 둔다.
+   * 지금 열려 있는 의존성 패널 (UI-j92s §6.1). 한 번에 하나이며, 검색어는 패널이
+   * 열려 있는 동안만 사는 표시 상태다.
    *
-   * @type {{ bead_id: string, direction: DepDirection, query: string }|null}
+   * @type {{ bead_id: string, query: string }|null}
    */
   let dep_panel = null;
 
@@ -1159,8 +1153,9 @@ export function createMonitorView(mount_element, options) {
   /**
    * One inline 의존성 패널 (§6.1). 카드/행 아래에 열리고 한 번에 하나다.
    *
-   * `root_dir`은 언제나 **blockee**를 소유한 레포다: 서버가 그 root에서
-   * `bd dep add/remove a b`를 돌리기 때문에, 후속 방향에서는 상대의 레포가 된다.
+   * 패널이 묻는 것은 한 문장뿐이다 — "이 이슈를 무엇이 막는가". 반대 방향은
+   * 상대 이슈의 카드에서 같은 문장으로 걸므로, `root_dir`은 언제나 이 행을
+   * 소유한 레포다: 서버가 그 root에서 `bd dep add/remove a b`를 돌린다.
    *
    * @param {string} bead_id
    * @returns {import('lit-html').TemplateResult|''}
@@ -1176,17 +1171,11 @@ export function createMonitorView(mount_element, options) {
     for (const issue of issues) {
       open_by_id.set(issue.bead_id, issue);
     }
-    const predecessors = (graph.get(bead_id) || []).filter((id) =>
+    const blockers = (graph.get(bead_id) || []).filter((id) =>
       open_by_id.has(id)
     );
-    const successors = issues
-      .filter((issue) => (graph.get(issue.bead_id) || []).includes(bead_id))
-      .map((issue) => issue.bead_id);
     const candidates = filterDepCandidates(
-      depCandidates(bead_id, dep_panel.direction, {
-        issues,
-        blocked_by_map: graph
-      }),
+      depCandidates(bead_id, { issues, blocked_by_map: graph }),
       dep_panel.query
     );
     const own_root = lanes.owner_of[bead_id];
@@ -1196,66 +1185,27 @@ export function createMonitorView(mount_element, options) {
       role="dialog"
       aria-label="의존성"
     >
+      <div class="mon-deppanel__title">이 이슈를 막는 이슈</div>
       <div class="mon-deppanel__now">
-        ${predecessors.length === 0 && successors.length === 0
-          ? html`<span class="mon-deppanel__empty">연결된 의존 없음</span>`
+        ${blockers.length === 0
+          ? html`<span class="mon-deppanel__empty">막는 이슈 없음</span>`
           : ''}
-        ${predecessors.map(
+        ${blockers.map(
           (id) =>
             html`<span class="mon-deppanel__chip mon-deppanel__chip--pred"
-              ><span class="mon-deppanel__chip-label">🔒 선행 ${id}</span
+              ><span class="mon-deppanel__chip-label">⛓ ${id}</span
               ><button
                 type="button"
                 class="mon-deppanel__unlink"
                 data-dep-a=${bead_id}
                 data-dep-b=${id}
-                aria-label=${`선행 ${id} 연결 해제`}
-                title="선행 연결 해제"
+                aria-label=${`${id} 연결 해제`}
+                title="연결 해제"
               >
                 ✕
               </button></span
             >`
         )}
-        ${successors.map(
-          (id) =>
-            html`<span class="mon-deppanel__chip mon-deppanel__chip--succ"
-              ><span class="mon-deppanel__chip-label">→ 후속 ${id}</span
-              ><button
-                type="button"
-                class="mon-deppanel__unlink"
-                data-dep-a=${id}
-                data-dep-b=${bead_id}
-                aria-label=${`후속 ${id} 연결 해제`}
-                title="후속 연결 해제"
-              >
-                ✕
-              </button></span
-            >`
-        )}
-      </div>
-      <div class="mon-deppanel__dir" role="group" aria-label="의존 방향">
-        <button
-          type="button"
-          class="mon-deppanel__seg${dep_panel.direction === 'predecessor'
-            ? ' is-active'
-            : ''}"
-          data-dep-direction="predecessor"
-          aria-pressed=${dep_panel.direction === 'predecessor'
-            ? 'true'
-            : 'false'}
-        >
-          ← 앞에 (선행 추가)
-        </button>
-        <button
-          type="button"
-          class="mon-deppanel__seg${dep_panel.direction === 'successor'
-            ? ' is-active'
-            : ''}"
-          data-dep-direction="successor"
-          aria-pressed=${dep_panel.direction === 'successor' ? 'true' : 'false'}
-        >
-          → 뒤에 (후속 추가)
-        </button>
       </div>
       <input
         type="search"
@@ -1950,20 +1900,6 @@ export function createMonitorView(mount_element, options) {
             >`
           : ''}
       </div>
-      <label
-        class="worker-filter__tgl"
-        title="열린 선행 또는 열린 후속이 있는 카드만"
-      >
-        <input
-          type="checkbox"
-          class="mon-filter__deps"
-          .checked=${candidate_filter.with_deps}
-        />
-        의존
-        있음${lanes.runnable_hidden.deps > 0
-          ? ` ${lanes.runnable_hidden.deps}`
-          : ''}
-      </label>
     </div>`;
   }
 
@@ -2297,27 +2233,9 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * UI-2gi1 §6.5·§7: 의존 mutation은 낙관적 투영을 소유하지 않는다. 거부 사유는
-   * 서버 문장 그대로 토스트로 보이고, 다음 스냅샷이 실제 그래프를 그린다.
-   *
-   * @param {'dep-add'|'dep-remove'} type
-   * @param {string} bead_id
-   * @param {string} blocker_id
-   */
-  async function mutateDependency(type, bead_id, blocker_id) {
-    const { root_dir } = casOf(bead_id);
-    if (!bead_id || !blocker_id || blocker_id === bead_id) {
-      return;
-    }
-    try {
-      await send(type, { a: bead_id, b: blocker_id }, root_dir);
-    } catch (error) {
-      showToast(mutationErrorMessage(error), 'error');
-    }
-  }
-
-  /**
-   * One dependency edit from the 의존성 패널 (§6.1). `root_dir`은 언제나
+   * One dependency edit from the 의존성 패널 (§6.1) — 의존을 바꾸는 유일한 길이다.
+   * 낙관적 투영은 없다 (UI-2gi1 §6.5·§7): 거부 사유는 서버 문장 그대로 토스트로
+   * 보이고, 다음 스냅샷이 실제 그래프를 그린다. `root_dir`은 언제나
    * blockee(`a`)의 레포다 — 서버가 그 root에서 `bd dep add/remove a b`를 돌린다.
    * 패널은 열린 채 남고 다음 스냅샷이 현재 의존 줄을 갱신한다.
    *
@@ -2366,20 +2284,15 @@ export function createMonitorView(mount_element, options) {
    * 행을 열면 이전 것은 닫힌다.
    *
    * @param {string} bead_id
-   * @param {DepDirection} [direction]
    */
-  function toggleDepPanel(bead_id, direction) {
+  function toggleDepPanel(bead_id) {
     if (!bead_id || !hasDepPanelHost(bead_id)) {
       return;
     }
     dep_panel =
-      dep_panel && dep_panel.bead_id === bead_id && direction === undefined
+      dep_panel && dep_panel.bead_id === bead_id
         ? null
-        : {
-            bead_id,
-            direction: direction || 'predecessor',
-            query: ''
-          };
+        : { bead_id, query: '' };
     doRender();
   }
 
@@ -3159,14 +3072,6 @@ export function createMonitorView(mount_element, options) {
     const { item, root_dir, revision } = casOf(bead_id);
     const attempt_id = item?.attempt_id || '';
     const cls = button.classList;
-    if (cls.contains('worker-dep__remove')) {
-      void mutateDependency(
-        'dep-remove',
-        bead_id,
-        button.dataset.blockerId || ''
-      );
-      return;
-    }
     if (cls.contains('mon2-rowops__up') || cls.contains('mon2-rowops__down')) {
       void nudgeParallelRow(bead_id, cls.contains('mon2-rowops__up') ? -1 : 1);
       return;
@@ -3184,13 +3089,9 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('worker-dep__open')) {
-      // 칩 클릭 = 그 행의 의존성 패널 (§6.2). 칩이 말하는 방향으로 연다.
-      toggleDepPanel(
-        bead_id,
-        button.getAttribute('data-dep-direction') === 'successor'
-          ? 'successor'
-          : 'predecessor'
-      );
+      // 칩 클릭 = 그 행의 의존성 패널 (§6.2). 칩에는 해제 버튼이 없다 — 끊는
+      // 일은 패널 안에서 확인을 거쳐야 한다.
+      toggleDepPanel(bead_id);
       return;
     }
     if (cls.contains('mon-lane__chip')) {
@@ -3202,33 +3103,19 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('mon-deppanel__unlink')) {
-      void sendDepOp(
-        'dep-remove',
-        button.getAttribute('data-dep-a') || '',
-        button.getAttribute('data-dep-b') || ''
-      );
-      return;
-    }
-    if (cls.contains('mon-deppanel__seg')) {
-      if (dep_panel) {
-        dep_panel = {
-          ...dep_panel,
-          direction:
-            button.getAttribute('data-dep-direction') === 'successor'
-              ? 'successor'
-              : 'predecessor'
-        };
-        doRender();
+      // 해제는 되돌리기 수단이 없는 조작이고 칩은 좁다 — 한 번 묻는다.
+      const blockee = button.getAttribute('data-dep-a') || '';
+      const blocker = button.getAttribute('data-dep-b') || '';
+      if (confirmFn(`${blocker}가 ${blockee}를 막는 연결을 끊을까요?`)) {
+        void sendDepOp('dep-remove', blockee, blocker);
       }
       return;
     }
     if (cls.contains('mon-deppanel__cand')) {
       const candidate_id = button.getAttribute('data-dep-cand') || '';
       if (dep_panel && candidate_id) {
-        // 선행 추가는 `this ← cand`, 후속 추가는 `cand ← this`다 (§6.1 4번).
-        void (dep_panel.direction === 'predecessor'
-          ? sendDepOp('dep-add', dep_panel.bead_id, candidate_id)
-          : sendDepOp('dep-add', candidate_id, dep_panel.bead_id));
+        // 패널은 한 방향만 건다: 고른 후보가 이 행을 막는다 (§6.1 4번).
+        void sendDepOp('dep-add', dep_panel.bead_id, candidate_id);
       }
       return;
     }
@@ -3546,18 +3433,6 @@ export function createMonitorView(mount_element, options) {
       candidate_filter = {
         ...candidate_filter,
         show_blocked: blocked_toggle.checked
-      };
-      saveCandidateFilter(candidate_filter);
-      doRender();
-      return;
-    }
-    const deps_toggle = /** @type {HTMLInputElement|null} */ (
-      target.closest('.mon-filter__deps')
-    );
-    if (deps_toggle) {
-      candidate_filter = {
-        ...candidate_filter,
-        with_deps: deps_toggle.checked
       };
       saveCandidateFilter(candidate_filter);
       doRender();
