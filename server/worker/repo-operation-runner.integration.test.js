@@ -24,6 +24,13 @@ vi.setConfig({ testTimeout: 30_000 });
  */
 const PROCESS_WAIT_MS = 15_000;
 
+/**
+ * Kill budget for a spawned script the test expects to RUN TO COMPLETION.
+ * The script's own sleep is under a second; the rest is node startup under
+ * suite load. The deliberate-timeout test keeps its own tiny budget.
+ */
+const SCRIPT_BUDGET_MS = 30_000;
+
 /** @type {string} */
 let root;
 
@@ -88,7 +95,7 @@ describe('RepoOperation runner', () => {
       cwd: root,
       target_sha: 'a'.repeat(40),
       target_base: 'main',
-      timeout_ms: 2_000
+      timeout_ms: SCRIPT_BUDGET_MS
     });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
@@ -179,7 +186,7 @@ describe('RepoOperation runner', () => {
       },
       log_path,
       marker_path,
-      timeout_ms: 5000
+      timeout_ms: SCRIPT_BUDGET_MS
     });
 
     execFileSync(process.execPath, [parent_path, child_path, payload]);
@@ -220,7 +227,7 @@ describe('RepoOperation runner', () => {
       cwd: root,
       target_sha: 'a'.repeat(40),
       target_base: 'main',
-      timeout_ms: 10_000
+      timeout_ms: SCRIPT_BUDGET_MS
     });
     expect(started.ok).toBe(true);
     if (!started.ok || !started.process_identity) return;

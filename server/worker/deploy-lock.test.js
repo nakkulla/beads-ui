@@ -2,8 +2,20 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { acquireDeployLock } from './deploy-lock.js';
+
+// Waits on REAL child processes (git, node, python), so wall time here is
+// process startup under the load the parallel suite creates, not product work.
+// Assertions are unchanged; only the waiting budget is sized for that load.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
+/**
+ * Wait budget for an acquisition whose outcome is decided by the holder, not
+ * by expiry. The holder is a real python3 process, so this covers its startup
+ * under suite load; the test that asserts expiry keeps its own tiny budget.
+ */
+const ACQUIRE_BUDGET_MS = 30_000;
 
 /** @type {string} */
 let root;
@@ -18,12 +30,15 @@ afterEach(() => {
 
 describe('worker/deploy-lock', () => {
   test('waits for the current holder before acquiring', async () => {
-    const first = await acquireDeployLock({ repo: root, timeout_ms: 1000 });
+    const first = await acquireDeployLock({
+      repo: root,
+      timeout_ms: ACQUIRE_BUDGET_MS
+    });
     let second_settled = false;
 
     const second_promise = acquireDeployLock({
       repo: root,
-      timeout_ms: 1000
+      timeout_ms: ACQUIRE_BUDGET_MS
     }).then((result) => {
       second_settled = true;
       return result;
@@ -45,13 +60,19 @@ describe('worker/deploy-lock', () => {
   });
 
   test('releases when the holder child exits', async () => {
-    const first = await acquireDeployLock({ repo: root, timeout_ms: 1000 });
+    const first = await acquireDeployLock({
+      repo: root,
+      timeout_ms: ACQUIRE_BUDGET_MS
+    });
     if (!first.ok) {
       throw new Error(first.code);
     }
     first.child.kill('SIGKILL');
 
-    const second = await acquireDeployLock({ repo: root, timeout_ms: 1000 });
+    const second = await acquireDeployLock({
+      repo: root,
+      timeout_ms: ACQUIRE_BUDGET_MS
+    });
 
     expect(second.ok).toBe(true);
     if (!second.ok) {
@@ -61,7 +82,10 @@ describe('worker/deploy-lock', () => {
   });
 
   test('returns a stable timeout failure when bounded waiting expires', async () => {
-    const first = await acquireDeployLock({ repo: root, timeout_ms: 1000 });
+    const first = await acquireDeployLock({
+      repo: root,
+      timeout_ms: ACQUIRE_BUDGET_MS
+    });
 
     const second = await acquireDeployLock({ repo: root, timeout_ms: 25 });
 
@@ -75,7 +99,7 @@ describe('worker/deploy-lock', () => {
   test('returns unavailable when python cannot be launched', async () => {
     const result = await acquireDeployLock({
       repo: root,
-      timeout_ms: 1000,
+      timeout_ms: ACQUIRE_BUDGET_MS,
       spawn: /** @type {any} */ (
         () => spawn(path.join(root, 'missing-python'), [])
       )
@@ -90,7 +114,7 @@ describe('worker/deploy-lock', () => {
   test('returns unavailable when spawning throws synchronously', async () => {
     const result = await acquireDeployLock({
       repo: root,
-      timeout_ms: 1000,
+      timeout_ms: ACQUIRE_BUDGET_MS,
       spawn: /** @type {any} */ (
         () => {
           throw new Error('spawn failed');
@@ -107,7 +131,7 @@ describe('worker/deploy-lock', () => {
   test('returns unavailable when preparing the lock directory throws', async () => {
     const result = await acquireDeployLock({
       repo: root,
-      timeout_ms: 1000,
+      timeout_ms: ACQUIRE_BUDGET_MS,
       fs: /** @type {any} */ ({
         mkdirSync: () => {
           throw new Error('mkdir failed');

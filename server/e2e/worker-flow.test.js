@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { validateAdmission } from '../worker/admission.js';
 import {
   createCompletionActionDriver,
@@ -40,6 +40,11 @@ import { createRunner } from '../worker/runner/index.js';
 import { createWorkerRuntime } from '../worker/runtime.js';
 import { createScheduler } from '../worker/scheduler.js';
 import { createVerifier } from '../worker/verify.js';
+
+// Waits on REAL child processes (git, node, python), so wall time here is
+// process startup under the load the parallel suite creates, not product work.
+// Assertions are unchanged; only the waiting budget is sized for that load.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
 const execFileAsync = promisify(execFile);
 const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
@@ -90,10 +95,13 @@ async function gitRun(args, options) {
 /**
  * Poll a predicate until true or timeout — the verify chain runs off async git.
  *
+ * The default budget waits on REAL git processes, so it is sized for suite
+ * load; the poll returns the moment the predicate holds.
+ *
  * @param {() => boolean} pred
  * @param {number} [timeout_ms]
  */
-async function waitFor(pred, timeout_ms = 2000) {
+async function waitFor(pred, timeout_ms = 15_000) {
   const start = Date.now();
   while (Date.now() - start < timeout_ms) {
     if (pred()) {

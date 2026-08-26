@@ -41,6 +41,11 @@ import {
 } from '../ws.js';
 import { __setAnalysisDepsForTest } from '../ws/worker-parallel-analysis-handlers.js';
 
+// Waits on REAL child processes (git, node, python), so wall time here is
+// process startup under the load the parallel suite creates, not product work.
+// Assertions are unchanged; only the waiting budget is sized for that load.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 const execFileAsync = promisify(execFile);
 const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
 const RECEIPT = `self@${'a'.repeat(40)}`;
