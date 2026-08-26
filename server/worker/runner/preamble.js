@@ -132,7 +132,8 @@ export function guardContractDirective(options = {}) {
     );
   } else {
     lines.push(
-      '- hook 무력화 **쓰기** — `git push --no-verify`, `git -c core.hooksPath=…`, `git config core.hooksPath <값>` / `git config set|unset core.hooksPath` / `git config --unset core.hooksPath`, `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` 재정의.',
+      '- hook 무력화 **쓰기** — `git push --no-verify`, `git config core.hooksPath <값>` / `git config set|unset core.hooksPath` / `git config --unset core.hooksPath`.',
+      '- **1회성 재배치**(`git -c core.hooksPath=…`, `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(`go test` 등), 열거 밖 서브커맨드(`push`·`commit`·`diff`·`log`·`show`·`submodule` 등)가 모두 여기 든다.',
       '  - 대안: git 설정을 격리해야 하면 `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.',
       '  - 오답: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...`',
       '  - 정답: `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...`'
@@ -166,7 +167,8 @@ export function guardContractDirective(options = {}) {
   }
   lines.push(
     '- base 를 브랜치로 들이는 `git merge`(예: `git merge origin/main`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.',
-    '- hook 경로를 **읽는 것**(`git config --get core.hooksPath`, `git config get core.hooksPath`, `git config core.hooksPath`) — 위반이 아니다.'
+    '- hook 경로를 **읽는 것**(`git config --get core.hooksPath`, `git config get core.hooksPath`, `git config core.hooksPath`) — 위반이 아니다.',
+    '- git 명령 하나에만 붙는 **1회성** 재배치 — 뒤따르는 서브커맨드가 `status`·`rev-parse`·`ls-files`·`ls-tree`·`cat-file`(`--filters`/`--textconv` 제외)·`describe`·`shortlog`·`merge-base`·`for-each-ref`·`config` 열 가지 안에 있고, 재배치가 `core.hooksPath` 하나만 지정하며, 접두에 다른 환경변수 할당이 없으면 위반이 아니다. **다만 붙일 이유도 없다** — 이 명령들은 pre-push 를 타지 않는다.'
   );
   return lines.join('\n');
 }

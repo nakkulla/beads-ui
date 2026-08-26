@@ -379,6 +379,28 @@ const HOOKS_PATH_RE = /^core\.hookspath$/i;
 const GIT_CONFIG_ENV_RE = /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/;
 
 /**
+ * The two indexed halves of a `GIT_CONFIG_*` entry, capturing the index. Read
+ * only when deciding whether a prefix is EXEMPT (spec §1.1 (b)); whether it is a
+ * relocation SHAPE at all stays key-agnostic, decided by
+ * {@link GIT_CONFIG_ENV_RE} alone.
+ *
+ * The index matters because these variables are INHERITED: a prefix that names
+ * a `VALUE_n` without its own `KEY_n` does not describe the entry it writes, it
+ * repurposes whatever key the environment already had at that index.
+ *
+ * @type {RegExp}
+ */
+const GIT_CONFIG_KEY_RE = /^GIT_CONFIG_KEY_(\d+)$/;
+
+/**
+ * The VALUE half, whose index has to match a `core.hooksPath` KEY declared by
+ * the same prefix — see {@link prefixIsHooksPathOnly}.
+ *
+ * @type {RegExp}
+ */
+const GIT_CONFIG_VALUE_RE = /^GIT_CONFIG_VALUE_(\d+)$/;
+
+/**
  * A refspec destination that lands on the base branch.
  *
  * @type {RegExp}
@@ -1563,17 +1585,170 @@ function isConfigReadOnly(args) {
 }
 
 /**
- * Does this command DISABLE the pre-push hook the attempt installed? Four
- * shapes, all decided by argv POSITION (spec §4):
+ * The git subcommands a ONE-SHOT hooks-path relocation may decorate without
+ * being a violation (spec §1 condition (d)). A one-shot relocation applies to
+ * that command and its children only, so the kill's stated ground — "the NEXT
+ * push moves the remote base" — needs the decorated command to be able to reach
+ * a push at all. Two properties are required at once: the subcommand cannot run
+ * the attempt's `pre-push` hook, and its own job is not to run a program named
+ * by git configuration.
+ *
+ * Closed, and everything outside is a kill (fail-closed). The absentees fall in
+ * three groups: `submodule`/`subtree`/`rebase`/`pull`/`bisect` re-enter git,
+ * which inherits the relocation through `GIT_CONFIG_PARAMETERS` (measured);
+ * `commit`/`merge`/`checkout`/`am` run their own hooks; and
+ * `diff`/`show`/`log`/`blame`/`grep` exist to run the configured content
+ * helpers, which conditions (b) and (c) cannot close because a repository's own
+ * config already holds them. No subcommand at all is outside the list too.
+ *
+ * @type {Set<string>}
+ */
+const ONE_SHOT_SAFE_SUBCOMMANDS = new Set([
+  'status',
+  'rev-parse',
+  'ls-files',
+  'ls-tree',
+  'cat-file',
+  'describe',
+  'shortlog',
+  'merge-base',
+  'for-each-ref',
+  'config'
+]);
+
+/**
+ * The `cat-file` options whose whole job is to run the configured filter or
+ * textconv driver — the one enumerated subcommand that opens an execution
+ * channel behind a flag (spec §1.1).
+ *
+ * @type {Set<string>}
+ */
+const CAT_FILE_DRIVER_OPTIONS = new Set(['--filters', '--textconv']);
+
+/**
+ * The attached form of git's other leading config channel, `--config-env=<key>=
+ * <envvar>`. Kept as a constant because the scan slices the key off by its
+ * length.
+ *
+ * @type {string}
+ */
+const CONFIG_ENV_PREFIX = '--config-env=';
+
+/**
+ * Does the assignment prefix carry the relocation and NOTHING else (spec §1.1,
+ * conditions (b) and (c))? Every assignment has to be a `GIT_CONFIG_*` one and
+ * every `GIT_CONFIG_KEY_n` has to name `core.hooksPath`: a single
+ * `GIT_EXTERNAL_DIFF=…` or `GIT_CONFIG_KEY_0=diff.external` is a program the
+ * same command may run, and that program inherits the relocation, so it can
+ * push with the attempt's hook out of the way.
+ *
+ * This is not a second enumeration of dangerous keys — it runs the other way,
+ * allowing `core.hooksPath` alone, so a key git adds later cannot drift past it.
+ *
+ * An EMPTY prefix is true: the plain `git -c core.hooksPath=… status` shape
+ * carries no assignment and must not fail (c).
+ *
+ * @param {string[]} prefix - The tokens `normalizeArgv` dropped ahead of argv.
+ * @returns {boolean}
+ */
+function prefixIsHooksPathOnly(prefix) {
+  /** Indices this prefix declares a `core.hooksPath` KEY for. @type {Set<string>} */
+  const hooks_path_indices = new Set();
+  /** Indices this prefix writes a VALUE for. @type {Set<string>} */
+  const value_indices = new Set();
+  for (const word of prefix) {
+    if (!ASSIGNMENT_RE.test(word)) {
+      continue;
+    }
+    const { name, value } = splitAssignment(word);
+    if (!GIT_CONFIG_ENV_RE.test(name)) {
+      return false;
+    }
+    const key_match = GIT_CONFIG_KEY_RE.exec(name);
+    if (key_match !== null) {
+      if (!HOOKS_PATH_RE.test(value)) {
+        return false;
+      }
+      hooks_path_indices.add(key_match[1]);
+      continue;
+    }
+    const value_match = GIT_CONFIG_VALUE_RE.exec(name);
+    if (value_match !== null) {
+      value_indices.add(value_match[1]);
+    }
+  }
+  // A `VALUE_n` with no `KEY_n` of its own is the shape that reads innocent and
+  // is not: these variables are inherited, so it writes a value into whatever
+  // key the environment already holds at that index — a helper program under an
+  // inherited `core.fsmonitor`, say — while a lowered `GIT_CONFIG_COUNT` drops
+  // the attempt's own hooks-path entry. The prefix has to describe every entry
+  // it writes.
+  for (const index of value_indices) {
+    if (!hooks_path_indices.has(index)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Is this one-shot relocation exempt (spec §1 conditions (b), (c) and (d))?
+ * Condition (a) — the decorated command is `git` — is settled by the caller,
+ * which is where the non-git shape is already a kill.
+ *
+ * The exemption says only that the relocation SHAPE is not itself a violation.
+ * It does not skip the arms that follow, which is what makes `config` safe to
+ * enumerate: `git -c core.hooksPath=X config core.hooksPath Y` passes here and
+ * is then killed by the `config` WRITE arm.
+ *
+ * @param {string[]} prefix - The tokens `normalizeArgv` dropped ahead of argv.
+ * @param {boolean} inline_other_key - Did a leading `-c` or `--config-env` name
+ * a key that is not `core.hooksPath`?
+ * @param {string} subcommand - The git subcommand, `''` when there is none.
+ * @param {string[]} args - The tokens after the subcommand.
+ * @returns {boolean}
+ */
+function exemptOneShot(prefix, inline_other_key, subcommand, args) {
+  if (inline_other_key) {
+    return false;
+  }
+  if (!prefixIsHooksPathOnly(prefix)) {
+    return false;
+  }
+  if (!ONE_SHOT_SAFE_SUBCOMMANDS.has(subcommand)) {
+    return false;
+  }
+  if (subcommand === 'cat-file') {
+    return !args.some((token) => CAT_FILE_DRIVER_OPTIONS.has(token));
+  }
+  return true;
+}
+
+/**
+ * Does this command DISABLE the pre-push hook the attempt installed? The kill's
+ * ground is that the NEXT push then moves the remote base (measured, UI-8mvc),
+ * so the judgment splits on whether the relocation PERSISTS:
  *
  *   1. `git push --no-verify` — measured to move the remote base with the hook
  *      never running;
- *   2. `git -c core.hooksPath=…` — relocates the hooks for this one command;
- *   3. `git config … core.hooksPath …` — relocates them persistently, UNLESS
+ *   2. `git config … core.hooksPath …` — relocates them persistently, UNLESS
  *      the operation only reads the key ({@link isConfigReadOnly}, UI-1xcd §2);
- *   4. a `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` assignment ahead of the command —
- *      the very channel the hook is wired through, so redefining it is how the
- *      wiring is undone (and it applies to every repo the process touches).
+ *   3. a ONE-SHOT relocation — `git -c core.hooksPath=…`, or a
+ *      `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` assignment prefix — which applies to
+ *      that command and its children only. Its fact is collected and the verdict
+ *      deferred to the command it decorates ({@link exemptOneShot}, spec §1): a
+ *      relocation with no command at all persists in the process and is a kill,
+ *      one ahead of a non-git command reaches a child git (measured) and is a
+ *      kill, and one on a git command is a kill unless all of §1's four
+ *      conditions hold.
+ *
+ * The relaxation stands on an ALLOW-list because `-c` is exported as
+ * `GIT_CONFIG_PARAMETERS` and inherited by child git processes (measured), so a
+ * deny-list of subcommands would leave `git -c core.hooksPath=X submodule
+ * foreach 'git push …'` open.
+ *
+ * The arms COMPOSE: an exempt one-shot shape still faces the `push` and
+ * `config` arms below.
  *
  * `git push -n` is `--dry-run`, not `--no-verify`: it pushes nothing.
  *
@@ -1582,33 +1757,68 @@ function isConfigReadOnly(args) {
  * @returns {boolean}
  */
 function isHookBypass(argv, prefix) {
-  for (const word of prefix) {
-    if (
+  const env_relocation = prefix.some(
+    (word) =>
       ASSIGNMENT_RE.test(word) &&
       GIT_CONFIG_ENV_RE.test(splitAssignment(word).name)
-    ) {
-      return true;
-    }
+  );
+  // Judged BEFORE the empty-argv exit, and deliberately: a bare
+  // `GIT_CONFIG_COUNT=0` is a whole simple command with no argv at all, and
+  // that shape is the persistent one — it stays in the shell process.
+  if (env_relocation && argv.length === 0) {
+    return true;
   }
-  if (argv.length === 0 || basename(argv[0]).toLowerCase() !== 'git') {
+  if (argv.length === 0) {
     return false;
+  }
+  if (basename(argv[0]).toLowerCase() !== 'git') {
+    // `GIT_CONFIG_…=… go test ./...` — the child git inherits the assignment
+    // (2026-08-06 incident), so condition (a) fails and the shape is a kill.
+    return env_relocation;
   }
   const rest = argv.slice(1);
   let i = 0;
+  let inline_relocation = false;
+  let inline_other_key = false;
   while (i < rest.length && rest[i].startsWith('-')) {
     const token = rest[i];
-    const attached = token.startsWith('-c') && token.length > 2;
-    const separate = token === '-c' && i + 1 < rest.length;
-    if (
-      (attached && HOOKS_PATH_RE.test(configKeyOf(token.slice(2)))) ||
-      (separate && HOOKS_PATH_RE.test(configKeyOf(rest[i + 1])))
-    ) {
-      return true;
+    const attached_c = token.startsWith('-c') && token.length > 2;
+    const separate_c = token === '-c' && i + 1 < rest.length;
+    const attached_env = token.startsWith(CONFIG_ENV_PREFIX);
+    const separate_env = token === '--config-env' && i + 1 < rest.length;
+    /** @type {string|null} */
+    let override = null;
+    if (attached_c) {
+      override = token.slice(2);
+    } else if (attached_env) {
+      override = token.slice(CONFIG_ENV_PREFIX.length);
+    } else if (separate_c || separate_env) {
+      override = rest[i + 1];
+    }
+    if (override !== null) {
+      if (!HOOKS_PATH_RE.test(configKeyOf(override))) {
+        // `--config-env` is read HERE and only here. It names a config key the
+        // same way `-c` does, so a key set through it is a program this command
+        // may run and that program inherits the relocation — condition (b) is
+        // stated over the relocation, not over one flag. It deliberately does
+        // NOT set `inline_relocation`: the approved change narrows the two
+        // relocation shapes, and letting a third shape RAISE a violation that
+        // did not exist before would widen the kill instead.
+        inline_other_key = true;
+      } else if (attached_c || separate_c) {
+        inline_relocation = true;
+      }
     }
     i += GIT_VALUE_OPTIONS.has(token) ? 2 : 1;
   }
   const subcommand = i < rest.length ? rest[i] : '';
   const args = rest.slice(i + 1);
+  if (
+    (env_relocation || inline_relocation) &&
+    !exemptOneShot(prefix, inline_other_key, subcommand, args)
+  ) {
+    return true;
+  }
   if (subcommand === 'push') {
     // Everything after `--` is a refspec, not an option.
     const options = args.slice(

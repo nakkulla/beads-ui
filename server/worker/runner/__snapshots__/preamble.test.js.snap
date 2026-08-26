@@ -26,7 +26,8 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
   - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 사람의 클릭이다.
-- hook 무력화 **쓰기** — \`git push --no-verify\`, \`git -c core.hooksPath=…\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\` 재정의.
+- hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
+- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
   - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
   - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`
@@ -40,7 +41,8 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 ### 허용됨 — 오해하지 말 것
 
 - base 를 브랜치로 들이는 \`git merge\`(예: \`git merge origin/main\`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.
-- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다."
+- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다.
+- git 명령 하나에만 붙는 **1회성** 재배치 — 뒤따르는 서브커맨드가 \`status\`·\`rev-parse\`·\`ls-files\`·\`ls-tree\`·\`cat-file\`(\`--filters\`/\`--textconv\` 제외)·\`describe\`·\`shortlog\`·\`merge-base\`·\`for-each-ref\`·\`config\` 열 가지 안에 있고, 재배치가 \`core.hooksPath\` 하나만 지정하며, 접두에 다른 환경변수 할당이 없으면 위반이 아니다. **다만 붙일 이유도 없다** — 이 명령들은 pre-push 를 타지 않는다."
 `;
 
 exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled system prompt for 'diagnosis no-PR' 1`] = `
@@ -61,7 +63,8 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
   - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 사람의 클릭이다.
-- hook 무력화 **쓰기** — \`git push --no-verify\`, \`git -c core.hooksPath=…\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\` 재정의.
+- hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
+- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
   - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
   - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`
@@ -75,7 +78,8 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 ### 허용됨 — 오해하지 말 것
 
 - base 를 브랜치로 들이는 \`git merge\`(예: \`git merge origin/main\`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.
-- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다."
+- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다.
+- git 명령 하나에만 붙는 **1회성** 재배치 — 뒤따르는 서브커맨드가 \`status\`·\`rev-parse\`·\`ls-files\`·\`ls-tree\`·\`cat-file\`(\`--filters\`/\`--textconv\` 제외)·\`describe\`·\`shortlog\`·\`merge-base\`·\`for-each-ref\`·\`config\` 열 가지 안에 있고, 재배치가 \`core.hooksPath\` 하나만 지정하며, 접두에 다른 환경변수 할당이 없으면 위반이 아니다. **다만 붙일 이유도 없다** — 이 명령들은 pre-push 를 타지 않는다."
 `;
 
 exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled system prompt for 'disposition + fast_track ignores targ…' 1`] = `
@@ -111,7 +115,8 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 - 이 세션은 REVISE 처분 세션이다. resolved base 에 스펙 수정을 게시하는 것이 임무이므로 base 로의 \`git push\` 와 hook 무력화 판정이 **적용되지 않는다**. 그렇다고 hook 을 무력화할 이유는 없다 — 설치된 hook 자체가 없다.
 - base 를 브랜치로 들이는 \`git merge\`(예: \`git merge origin/main\`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.
-- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다."
+- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다.
+- git 명령 하나에만 붙는 **1회성** 재배치 — 뒤따르는 서브커맨드가 \`status\`·\`rev-parse\`·\`ls-files\`·\`ls-tree\`·\`cat-file\`(\`--filters\`/\`--textconv\` 제외)·\`describe\`·\`shortlog\`·\`merge-base\`·\`for-each-ref\`·\`config\` 열 가지 안에 있고, 재배치가 \`core.hooksPath\` 하나만 지정하며, 접두에 다른 환경변수 할당이 없으면 위반이 아니다. **다만 붙일 이유도 없다** — 이 명령들은 pre-push 를 타지 않는다."
 `;
 
 exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled system prompt for 'disposition + fast_track' 1`] = `
@@ -147,7 +152,8 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 - 이 세션은 REVISE 처분 세션이다. resolved base 에 스펙 수정을 게시하는 것이 임무이므로 base 로의 \`git push\` 와 hook 무력화 판정이 **적용되지 않는다**. 그렇다고 hook 을 무력화할 이유는 없다 — 설치된 hook 자체가 없다.
 - base 를 브랜치로 들이는 \`git merge\`(예: \`git merge origin/main\`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.
-- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다."
+- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다.
+- git 명령 하나에만 붙는 **1회성** 재배치 — 뒤따르는 서브커맨드가 \`status\`·\`rev-parse\`·\`ls-files\`·\`ls-tree\`·\`cat-file\`(\`--filters\`/\`--textconv\` 제외)·\`describe\`·\`shortlog\`·\`merge-base\`·\`for-each-ref\`·\`config\` 열 가지 안에 있고, 재배치가 \`core.hooksPath\` 하나만 지정하며, 접두에 다른 환경변수 할당이 없으면 위반이 아니다. **다만 붙일 이유도 없다** — 이 명령들은 pre-push 를 타지 않는다."
 `;
 
 exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled system prompt for 'disposition ignores target_base' 1`] = `
@@ -179,7 +185,8 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 - 이 세션은 REVISE 처분 세션이다. resolved base 에 스펙 수정을 게시하는 것이 임무이므로 base 로의 \`git push\` 와 hook 무력화 판정이 **적용되지 않는다**. 그렇다고 hook 을 무력화할 이유는 없다 — 설치된 hook 자체가 없다.
 - base 를 브랜치로 들이는 \`git merge\`(예: \`git merge origin/main\`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.
-- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다."
+- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다.
+- git 명령 하나에만 붙는 **1회성** 재배치 — 뒤따르는 서브커맨드가 \`status\`·\`rev-parse\`·\`ls-files\`·\`ls-tree\`·\`cat-file\`(\`--filters\`/\`--textconv\` 제외)·\`describe\`·\`shortlog\`·\`merge-base\`·\`for-each-ref\`·\`config\` 열 가지 안에 있고, 재배치가 \`core.hooksPath\` 하나만 지정하며, 접두에 다른 환경변수 할당이 없으면 위반이 아니다. **다만 붙일 이유도 없다** — 이 명령들은 pre-push 를 타지 않는다."
 `;
 
 exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled system prompt for 'disposition' 1`] = `
@@ -211,7 +218,8 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 - 이 세션은 REVISE 처분 세션이다. resolved base 에 스펙 수정을 게시하는 것이 임무이므로 base 로의 \`git push\` 와 hook 무력화 판정이 **적용되지 않는다**. 그렇다고 hook 을 무력화할 이유는 없다 — 설치된 hook 자체가 없다.
 - base 를 브랜치로 들이는 \`git merge\`(예: \`git merge origin/main\`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.
-- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다."
+- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다.
+- git 명령 하나에만 붙는 **1회성** 재배치 — 뒤따르는 서브커맨드가 \`status\`·\`rev-parse\`·\`ls-files\`·\`ls-tree\`·\`cat-file\`(\`--filters\`/\`--textconv\` 제외)·\`describe\`·\`shortlog\`·\`merge-base\`·\`for-each-ref\`·\`config\` 열 가지 안에 있고, 재배치가 \`core.hooksPath\` 하나만 지정하며, 접두에 다른 환경변수 할당이 없으면 위반이 아니다. **다만 붙일 이유도 없다** — 이 명령들은 pre-push 를 타지 않는다."
 `;
 
 exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled system prompt for 'fast_track + base (the worker dispatc…' 1`] = `
@@ -244,7 +252,8 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
   - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 사람의 클릭이다.
-- hook 무력화 **쓰기** — \`git push --no-verify\`, \`git -c core.hooksPath=…\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\` 재정의.
+- hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
+- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
   - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
   - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`
@@ -258,7 +267,8 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 ### 허용됨 — 오해하지 말 것
 
 - base 를 브랜치로 들이는 \`git merge\`(예: \`git merge origin/main\`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.
-- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다."
+- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다.
+- git 명령 하나에만 붙는 **1회성** 재배치 — 뒤따르는 서브커맨드가 \`status\`·\`rev-parse\`·\`ls-files\`·\`ls-tree\`·\`cat-file\`(\`--filters\`/\`--textconv\` 제외)·\`describe\`·\`shortlog\`·\`merge-base\`·\`for-each-ref\`·\`config\` 열 가지 안에 있고, 재배치가 \`core.hooksPath\` 하나만 지정하며, 접두에 다른 환경변수 할당이 없으면 위반이 아니다. **다만 붙일 이유도 없다** — 이 명령들은 pre-push 를 타지 않는다."
 `;
 
 exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled system prompt for 'fast_track' 1`] = `
@@ -287,7 +297,8 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
   - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 사람의 클릭이다.
-- hook 무력화 **쓰기** — \`git push --no-verify\`, \`git -c core.hooksPath=…\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\` 재정의.
+- hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
+- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
   - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
   - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`
@@ -301,7 +312,8 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 ### 허용됨 — 오해하지 말 것
 
 - base 를 브랜치로 들이는 \`git merge\`(예: \`git merge origin/main\`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.
-- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다."
+- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다.
+- git 명령 하나에만 붙는 **1회성** 재배치 — 뒤따르는 서브커맨드가 \`status\`·\`rev-parse\`·\`ls-files\`·\`ls-tree\`·\`cat-file\`(\`--filters\`/\`--textconv\` 제외)·\`describe\`·\`shortlog\`·\`merge-base\`·\`for-each-ref\`·\`config\` 열 가지 안에 있고, 재배치가 \`core.hooksPath\` 하나만 지정하며, 접두에 다른 환경변수 할당이 없으면 위반이 아니다. **다만 붙일 이유도 없다** — 이 명령들은 pre-push 를 타지 않는다."
 `;
 
 exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled system prompt for 'plain' 1`] = `
@@ -326,7 +338,8 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
   - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 사람의 클릭이다.
-- hook 무력화 **쓰기** — \`git push --no-verify\`, \`git -c core.hooksPath=…\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\` 재정의.
+- hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
+- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
   - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
   - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`
@@ -340,5 +353,6 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 ### 허용됨 — 오해하지 말 것
 
 - base 를 브랜치로 들이는 \`git merge\`(예: \`git merge origin/main\`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.
-- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다."
+- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다.
+- git 명령 하나에만 붙는 **1회성** 재배치 — 뒤따르는 서브커맨드가 \`status\`·\`rev-parse\`·\`ls-files\`·\`ls-tree\`·\`cat-file\`(\`--filters\`/\`--textconv\` 제외)·\`describe\`·\`shortlog\`·\`merge-base\`·\`for-each-ref\`·\`config\` 열 가지 안에 있고, 재배치가 \`core.hooksPath\` 하나만 지정하며, 접두에 다른 환경변수 할당이 없으면 위반이 아니다. **다만 붙일 이유도 없다** — 이 명령들은 pre-push 를 타지 않는다."
 `;

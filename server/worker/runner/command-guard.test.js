@@ -1129,6 +1129,212 @@ describe('command-guard excludes a hooks-path READ from the bypass', () => {
   });
 });
 
+describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
+  /** The ten subcommands that cannot reach the attempt's pre-push hook. */
+  const ENUMERATED = [
+    'status',
+    'rev-parse',
+    'ls-files',
+    'ls-tree',
+    'cat-file',
+    'describe',
+    'shortlog',
+    'merge-base',
+    'for-each-ref',
+    'config'
+  ];
+
+  // The 2026-08-26 `UI-jaua` incident, verbatim: a relocation pointing at the
+  // default hooks directory, on a command that runs no pre-push hook, killed
+  // the session 15 minutes into an implementation unit.
+  test('passes the observed incident command verbatim', () => {
+    const cmd =
+      'git add app/protocol.md server/worker/queue-store.js && git -c core.hooksPath=.git/hooks status --short';
+
+    expect(findMergeViolation(cmd, ON_MAIN)).toBeNull();
+  });
+
+  test('passes a `-c` relocation on every enumerated subcommand', () => {
+    for (const subcommand of ENUMERATED) {
+      expect(
+        findMergeViolation(
+          `git -c core.hooksPath=.git/hooks ${subcommand}`,
+          ON_MAIN
+        )
+      ).toBeNull();
+    }
+  });
+
+  test('kills a `-c` relocation on a subcommand outside the enumeration', () => {
+    for (const rest of [
+      'commit -m x',
+      'push origin UI-1',
+      'submodule foreach git push',
+      'diff --stat',
+      'log --oneline'
+    ]) {
+      expect(
+        findMergeViolation(`git -c core.hooksPath=/dev/null ${rest}`, ON_MAIN)
+          ?.kind
+      ).toBe('hook_bypass');
+    }
+  });
+
+  test('kills a `-c` relocation carrying no subcommand at all', () => {
+    const violation = findMergeViolation(
+      'git -c core.hooksPath=/dev/null',
+      ON_MAIN
+    );
+
+    expect(violation?.kind).toBe('hook_bypass');
+  });
+
+  test('passes a hooks-path GIT_CONFIG_* prefix on an enumerated subcommand', () => {
+    const cmd =
+      'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=.git/hooks git status --short';
+
+    expect(findMergeViolation(cmd, ON_MAIN)).toBeNull();
+  });
+
+  // The 2026-08-06 shape: `go test` spawns child git, which inherits the
+  // assignment, so condition (a) fails.
+  test('kills a hooks-path GIT_CONFIG_* prefix on a non-git command', () => {
+    const cmd =
+      'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0= go test ./...';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  test('kills a hooks-path assignment that decorates no command', () => {
+    const cmd = 'GIT_CONFIG_KEY_0=core.hooksPath; git status --short';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  test('kills a relocation whose `-c` also names another config key', () => {
+    const cmd =
+      'git -c core.hooksPath=/dev/null -c core.fsmonitor=/tmp/watch status';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  // `--config-env` is `-c`'s twin: it names a config key too, taking the value
+  // from an environment variable. Condition (b) is stated over the relocation,
+  // not over one flag, so reading only `-c` would leave this exempt — and
+  // `core.fsmonitor` runs during `status` and inherits the relocation.
+  test('kills a relocation whose `--config-env` names another config key', () => {
+    const cmd =
+      'git --config-env=core.fsmonitor=WATCH -c core.hooksPath=/dev/null status';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  test('kills the separate `--config-env` form naming another config key', () => {
+    const cmd =
+      'git --config-env core.fsmonitor=WATCH -c core.hooksPath=/dev/null status';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  // `--config-env` never RAISES a violation on its own: the approved change
+  // narrows the two relocation shapes, so a third shape must not widen the kill.
+  test('leaves a `--config-env` hooks-path override alone when no approved relocation is present', () => {
+    const cmd = 'git --config-env=core.hooksPath=HOOKS push origin UI-1';
+
+    expect(findMergeViolation(cmd, ON_MAIN)).toBeNull();
+  });
+
+  test('kills a GIT_CONFIG_KEY_* prefix naming a key other than the hooks path', () => {
+    const cmd =
+      'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=/tmp/x git status';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  // These variables are inherited. A prefix naming `VALUE_0` without its own
+  // `KEY_0` writes into whatever key the environment already holds there, and a
+  // lowered `GIT_CONFIG_COUNT` drops the attempt's own hooks-path entry — so the
+  // command can inject a helper and shed the guard at once while every token in
+  // it is a `GIT_CONFIG_*` one.
+  test('kills a relocation prefix writing a VALUE with no KEY of its own', () => {
+    const cmd = 'GIT_CONFIG_COUNT=1 GIT_CONFIG_VALUE_0=/tmp/helper git status';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  test('kills a prefix whose VALUE index has no matching hooks-path KEY', () => {
+    const cmd =
+      'GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=.git/hooks GIT_CONFIG_VALUE_1=/tmp/helper git status';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  test('kills a relocation whose prefix carries another assignment', () => {
+    const cmd =
+      'GIT_EXTERNAL_DIFF=/tmp/x GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=.git/hooks git status';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  test('passes a bare `cat-file` under a relocation', () => {
+    const cmd = 'git -c core.hooksPath=.git/hooks cat-file -p HEAD';
+
+    expect(findMergeViolation(cmd, ON_MAIN)).toBeNull();
+  });
+
+  test('kills `cat-file` options that run a configured driver', () => {
+    for (const option of ['--filters', '--textconv']) {
+      expect(
+        findMergeViolation(
+          `git -c core.hooksPath=.git/hooks cat-file ${option} HEAD:a`,
+          ON_MAIN
+        )?.kind
+      ).toBe('hook_bypass');
+    }
+  });
+
+  // Arm composition: the exemption says the relocation SHAPE is not a
+  // violation, and hands the same command to the `config` arm unchanged.
+  test('kills a relocation whose `config` writes the hooks path', () => {
+    const cmd = 'git -c core.hooksPath=X config core.hooksPath /tmp/y';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  test('passes a relocation whose `config` only reads the hooks path', () => {
+    const cmd = 'git -c core.hooksPath=X config --get core.hooksPath';
+
+    expect(findMergeViolation(cmd, ON_MAIN)).toBeNull();
+  });
+
+  // Control D — the child-push counterexample in `-c` shape: an enumerated
+  // subcommand cannot save a command that hands git's own config a pusher.
+  test('kills a `-c` helper that would push from inside the command', () => {
+    const cmd =
+      'git -c core.hooksPath=/dev/null -c diff.external="sh -c \'git push origin HEAD:main\'" diff';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  // Control E — the same counterexample in env-prefix shape, on a subcommand
+  // that IS enumerated.
+  test('kills an env-prefix helper that would push from inside the command', () => {
+    const cmd =
+      'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0="sh -c \'git push origin HEAD:main\'" git status';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  // The fallback stays stricter than the parsing path on purpose (spec §4):
+  // where command boundaries cannot be trusted, an exemption must not win.
+  test('kills an exempt shape the tokenizer refused', () => {
+    const cmd = 'f() { :; }; git -c core.hooksPath=.git/hooks status --short';
+
+    expect(tokenize(cmd)).toBeNull();
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+});
+
 describe('command-guard fallback keeps kill above the read exemption', () => {
   /**
    * @param {string} cmd
