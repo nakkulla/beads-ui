@@ -114,12 +114,16 @@ const MOVABLE_KINDS = ['parallel', 'serial', 'candidate'];
 
 /**
  * The name of a lane that has already departed — 문장이 그 레인의 사실을 말해야
- * 하므로, 실행 중과 PR 대기를 한 단어로 뭉뚱그리지 않는다.
+ * 하므로, 실행 중과 PR 대기를 한 단어로 뭉뚱그리지 않는다. Monitor 팝오버도
+ * 같은 사실에 같은 이름을 붙여야 하므로 (UI-2htv) 두 탭이 이 값 하나를
+ * 공유한다 — 레인 이름을 각자 쓰면 그것이 두 탭이 갈라진 원인이다.
  *
- * @param {LaneMember['kind']} kind
+ * @param {string} kind - 그 카드가 선 레인. Worker는 `LaneMember['kind']`를,
+ * Monitor는 `MonitorItem['lane']`을 싣는다. 두 어휘가 갈리는 값은 `pr_wait`
+ * 하나뿐이고 그 철자는 같다.
  * @returns {string}
  */
-function departedLabel(kind) {
+export function departedLabel(kind) {
   return kind === 'pr_wait' ? 'PR 대기' : '실행 중';
 }
 

@@ -37,6 +37,7 @@ import {
   miniRow,
   paneTemplate
 } from '../worker/lanes.js';
+import { departedLabel } from '../worker/queue-overlaps.js';
 import { runningTile } from '../worker/running-grid.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
@@ -760,8 +761,10 @@ export function createMonitorView(mount_element, options) {
 
   /**
    * The §5.4 decision table, verbatim. 어느 한쪽에 직렬 레인이 있으면 그 레인을
-   * 쓰고(1 op), 둘 다 없을 때만 빈 레인에 둘을 차례로 넣는다(2 op). 실행 중인
-   * 항목은 옮기지 않으므로 그 자리에는 버튼 대신 문장이 선다.
+   * 쓰고(1 op), 둘 다 없을 때만 빈 레인에 둘을 차례로 넣는다(2 op). 이미
+   * 출발한 항목(실행 중·PR 대기)은 옮기지 않으므로 그 자리에는 버튼 대신
+   * 문장이 선다 — 그 문장의 레인 이름은 Worker와 같은 `departedLabel`이
+   * 정한다 (UI-2htv).
    *
    * @param {string} me_id - 칩을 눌러 팝오버를 연 카드의 bead.
    * @param {string} counterpart_id - 겹치는 상대로 팝오버 행에 선 bead.
@@ -835,17 +838,20 @@ export function createMonitorView(mount_element, options) {
       };
     }
     if (!my_move && !other_move) {
-      return { kind: 'note', text: '둘 다 실행 중 — 순서를 만들 수 없습니다' };
+      return {
+        kind: 'note',
+        text: '둘 다 이미 출발 — 순서를 만들 수 없습니다'
+      };
     }
     if (!my_move) {
       return {
         kind: 'note',
-        text: '실행 중 — 순서를 만들려면 상대를 직렬 레인에 두세요'
+        text: `${departedLabel(me.lane)} — 순서를 만들려면 상대를 직렬 레인에 두세요`
       };
     }
     return {
       kind: 'note',
-      text: '실행 중 — 종료 후 출발하려면 직렬 레인에 두세요'
+      text: `${departedLabel(other.lane)} — 종료 후 출발하려면 직렬 레인에 두세요`
     };
   }
 

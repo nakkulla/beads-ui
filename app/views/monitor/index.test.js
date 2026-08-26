@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { workerPlacementPlan } from '../worker/queue-overlaps.js';
 import { MONITOR_CANDIDATE_FILTER_KEY, createMonitorView } from './index.js';
 
 const NOW = 1_700_000_000_000;
@@ -2945,6 +2946,27 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
   }
 
   /**
+   * A running head-review session on a bead that keeps its PR 대기 seat
+   * (UI-hk74 §7). 그 비점유 타일이 겹침 칩을 그리므로, PR 대기 카드가 팝오버의
+   * 주인이 되는 조합은 이 타일을 통해 도달한다.
+   *
+   * @param {string} id
+   * @returns {Record<string, any>}
+   */
+  function headReview(id) {
+    return {
+      [`r-${id}`]: {
+        attempt_id: `r-${id}`,
+        bead_id: id,
+        kind: 'head_review',
+        status: 'running',
+        origin: 'auto',
+        started_at: NOW - 1000
+      }
+    };
+  }
+
+  /**
    * @param {HTMLElement} mount
    * @param {string} bead_id
    * @returns {HTMLElement}
@@ -3275,7 +3297,7 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
 
     expect(
       popover.querySelector('.mon-overlap__note')?.textContent?.trim()
-    ).toBe('둘 다 실행 중 — 순서를 만들 수 없습니다');
+    ).toBe('둘 다 이미 출발 — 순서를 만들 수 없습니다');
   });
 
   test('asks the counterpart to take a serial lane while I am running', () => {
@@ -3318,6 +3340,115 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
     expect(
       popover.querySelector('.mon-overlap__note')?.textContent?.trim()
     ).toBe('실행 중 — 종료 후 출발하려면 직렬 레인에 두세요');
+  });
+
+  /**
+   * The same 화면 사실, Worker 탭 어휘로 (UI-2htv). 두 탭이 같은 조합에 같은
+   * 문장을 내는지는 문자열을 눈으로 맞춰서는 지킬 수 없으므로, Worker의
+   * 판정기를 직접 불러 비교한다.
+   *
+   * @param {string} me_id
+   * @param {string} counterpart_id
+   * @param {Array<{ id: string, kind: import('../worker/queue-overlaps.js').LaneMember['kind'], location_label: string }>} members
+   * @returns {string|null}
+   */
+  function workerNote(me_id, counterpart_id, members) {
+    const plan = workerPlacementPlan(me_id, counterpart_id, {
+      members_by_id: new Map(
+        members.map((entry) => [
+          entry.id,
+          { ...entry, title: entry.id, lane_id: null }
+        ])
+      ),
+      serial_raw_lengths: {},
+      serial_lane_count: 2,
+      occupied_lanes: new Set()
+    });
+    return plan.kind === 'note' ? plan.text : null;
+  }
+
+  test('names the PR 대기 lane when the popover owner keeps its PR 대기 seat', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          pr_wait: [{ bead_id: 'A-1' }],
+          attempts: headReview('A-1'),
+          serial_lane_count: 2,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const popover = openPopover(mount, 'A-1');
+    const note = popover
+      .querySelector('.mon-overlap__note')
+      ?.textContent?.trim();
+
+    expect(note).toBe('PR 대기 — 순서를 만들려면 상대를 직렬 레인에 두세요');
+    expect(note).toBe(
+      workerNote('A-1', 'A-2', [
+        { id: 'A-1', kind: 'pr_wait', location_label: 'PR 대기' },
+        { id: 'A-2', kind: 'parallel', location_label: '#1' }
+      ])
+    );
+  });
+
+  test('names the PR 대기 lane when the counterpart waits on a PR', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          pr_wait: [{ bead_id: 'A-1' }],
+          serial_lane_count: 2,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const popover = openPopover(mount, 'A-2');
+    const note = popover
+      .querySelector('.mon-overlap__note')
+      ?.textContent?.trim();
+
+    expect(note).toBe('PR 대기 — 종료 후 출발하려면 직렬 레인에 두세요');
+    expect(note).toBe(
+      workerNote('A-2', 'A-1', [
+        { id: 'A-2', kind: 'parallel', location_label: '#1' },
+        { id: 'A-1', kind: 'pr_wait', location_label: 'PR 대기' }
+      ])
+    );
+  });
+
+  test('says both already departed when one runs and one waits on a PR', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          attempts: running('A-1'),
+          pr_wait: [{ bead_id: 'A-2' }],
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const popover = openPopover(mount, 'A-1');
+    const note = popover
+      .querySelector('.mon-overlap__note')
+      ?.textContent?.trim();
+
+    expect(note).toBe('둘 다 이미 출발 — 순서를 만들 수 없습니다');
+    expect(note).toBe(
+      workerNote('A-1', 'A-2', [
+        { id: 'A-1', kind: 'running', location_label: '실행중' },
+        { id: 'A-2', kind: 'pr_wait', location_label: 'PR 대기' }
+      ])
+    );
   });
 });
 
