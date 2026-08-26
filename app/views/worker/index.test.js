@@ -12483,7 +12483,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
     );
   });
 
-  test('draws the blocked chip as display-only, never as an open button', () => {
+  test('draws a foreign blocker of unknown owner as display-only', () => {
     const mount = mountQueue(
       queueOf({
         queue: [{ bead_id: 'W-1', added_at: 1 }],
@@ -12607,6 +12607,153 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.rtile[data-bead-id="W-1"]')
     );
     expect(tile.querySelector('.worker-deps')).not.toBeNull();
+  });
+});
+
+describe('worker 탭 blocked 칩 열기 (UI-u6zf §5)', () => {
+  const CURRENT_WS = '/repos/worker';
+  const OTHER_WS = '/repos/beads-ui';
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} queue
+   * @param {{ gotoIssue: any, switchWorkspace?: any }} handlers
+   * @returns {HTMLElement}
+   */
+  function mountWithHandlers(queue, handlers) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn(),
+      getWorkspacePath: () => CURRENT_WS,
+      ...handlers
+    });
+    queueStore.set(queue);
+    return mount;
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} bead_id
+   * @returns {HTMLElement|null}
+   */
+  function chipOf(mount, bead_id) {
+    return mount.querySelector(
+      `.worker-mini[data-bead-id="${bead_id}"] .worker-dep__open`
+    );
+  }
+
+  test('draws an open button on a same-repo blocker', () => {
+    const mount = mountWithHandlers(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        bead_blocked_by: { 'W-1': ['W-9'] }
+      }),
+      { gotoIssue: vi.fn() }
+    );
+
+    expect(chipOf(mount, 'W-1')?.getAttribute('data-dep-id')).toBe('W-9');
+  });
+
+  test('opens a same-repo blocker without switching workspace', () => {
+    const gotoIssue = vi.fn();
+    const switchWorkspace = vi.fn(async () => {});
+    const mount = mountWithHandlers(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        bead_blocked_by: { 'W-1': ['W-9'] }
+      }),
+      { gotoIssue, switchWorkspace }
+    );
+
+    chipOf(mount, 'W-1')?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    expect(switchWorkspace).not.toHaveBeenCalled();
+    expect(gotoIssue.mock.calls).toEqual([['W-9']]);
+  });
+
+  test('switches the repo before opening a foreign blocker', async () => {
+    const gotoIssue = vi.fn();
+    const switchWorkspace = vi.fn(async () => {});
+    const mount = mountWithHandlers(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        bead_blocked_by: { 'W-1': ['UI-x'] },
+        blocker_workspaces: { 'UI-x': OTHER_WS }
+      }),
+      { gotoIssue, switchWorkspace }
+    );
+
+    chipOf(mount, 'W-1')?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    await flush();
+
+    expect(switchWorkspace.mock.calls).toEqual([[OTHER_WS]]);
+    expect(gotoIssue.mock.calls).toEqual([['UI-x']]);
+  });
+
+  test('does not open the issue when the workspace switch fails', async () => {
+    const gotoIssue = vi.fn();
+    const switchWorkspace = vi.fn(async () => {
+      throw new Error('switch boom');
+    });
+    const mount = mountWithHandlers(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        bead_blocked_by: { 'W-1': ['UI-x'] },
+        blocker_workspaces: { 'UI-x': OTHER_WS }
+      }),
+      { gotoIssue, switchWorkspace }
+    );
+
+    chipOf(mount, 'W-1')?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    await flush();
+
+    expect(gotoIssue).not.toHaveBeenCalled();
+  });
+
+  test('draws no button for a foreign blocker whose owner is unknown', () => {
+    const mount = mountWithHandlers(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        bead_blocked_by: { 'W-1': ['UI-x'] }
+      }),
+      { gotoIssue: vi.fn() }
+    );
+
+    expect(chipOf(mount, 'W-1')).toBeNull();
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="W-1"] .worker-dep--pred')
+        ?.textContent
+    ).toContain('⛓ blocked: UI-x');
+  });
+
+  test('never opens the card own issue on a chip click', () => {
+    const gotoIssue = vi.fn();
+    const mount = mountWithHandlers(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        bead_blocked_by: { 'W-1': ['W-9'] }
+      }),
+      { gotoIssue }
+    );
+
+    chipOf(mount, 'W-1')?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    expect(gotoIssue).not.toHaveBeenCalledWith('W-1');
   });
 });
 

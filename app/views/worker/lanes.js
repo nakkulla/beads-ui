@@ -653,6 +653,8 @@ export function execChipsTemplate(chips, options = {}) {
  * @property {boolean} [foreign] - blocker가 이 이슈와 다른 레포의 rig에 있다.
  * 문구는 같고 색만 갈라진다 — 기다린다는 사실이 아니라 그것을 여기서 닫을 수
  * 없다는 사실만 다르기 때문이다.
+ * @property {string} [root_dir] - blocker를 소유한 workspace. 같은 레포면 생략.
+ * @property {boolean} [openable] - 이 칩을 눌러 blocker 이슈를 열 수 있다.
  */
 
 /**
@@ -687,17 +689,15 @@ export function execChipsTemplate(chips, options = {}) {
 /**
  * @typedef {Object} DependencyChips
  * @property {DependencyChip[]} [predecessors] - `⛓ blocked: …`. 칩에 해제
- * 버튼은 없다: 끊는 일은 의존성 패널이 확인을 받고 처리한다.
+ * 버튼은 없다: 끊는 일은 의존성 패널이 확인을 받고 처리한다. 누를 수 있는지는
+ * 칩마다 갈린다 (`DependencyChip.openable`, UI-u6zf §5.1) — 같은 카드 안에서도
+ * 열 수 있는 blocker와 owner를 모르는 blocker가 섞이므로 묶음 플래그로는 그것을
+ * 표현할 수 없다. 그 값을 렌더러 인자가 아니라 투영이 싣는 이유는
+ * `candidateCard`·`miniRow`를 두 탭이 함께 부르기 때문이다 — 호출 인자로 가르면
+ * 같은 템플릿을 탭마다 다르게 부르는 자리가 새로 생긴다.
  * @property {OverlapChip[]} [overlaps] - `⧉ 겹침 …` (UI-qm12 §5.3).
  * @property {boolean} [scope_missing] - 선언 원천은 읽혔는데 scope 선언이
  * 비었다 — 겹침을 판정할 수 없다는 사실 자체를 드러낸다.
- * @property {boolean} [interactive] - 생략하면 `true`. `⛓ blocked` 칩을 누를 수
- * 있는지 하나만 가른다 (UI-anna §5.3a·§6): 모니터에서 그 클릭은 그 행의 의존성
- * 패널을 열지만 워커 탭에는 그 패널이 없어, 같은 마크업을 내보내면 눌러도 아무
- * 일도 하지 않는 버튼이 남는다. 라벨·툴팁·색·자리는 두 탭이 같다. 렌더러 인자가
- * 아니라 투영이 싣는 값인 이유는 `candidateCard`·`miniRow`를 두 탭이 함께
- * 부르기 때문이다 — 호출 인자로 가르면 같은 템플릿을 탭마다 다르게 부르는
- * 자리가 새로 생긴다.
  * @property {OverlapPopover} [popover] - 이 행에서 열려 있으면 칩 아래에 그리는
  * `mon-overlap__popover`.
  * @property {{ lane_id: string, label: string }} [cross_lane] - `연결 n` /
@@ -754,6 +754,10 @@ function overlapPopoverTemplate(popover) {
  * 레인 분기는 없다 (UI-anna §6): 세 칩 모두 재료가 실린 카드에 선다. 어느
  * 레인이 그 재료를 받는가는 투영이 정하고, 이 템플릿은 받은 것을 그린다.
  *
+ * blocked 칩은 `openable`인 것만 버튼이 된다 (UI-u6zf §5.1). 라벨·툴팁·색·자리는
+ * 두 경우가 같다 — 갈라지는 것은 누를 수 있는지뿐이고, 누를 수 없는 버튼은
+ * 만들지 않는다.
+ *
  * @param {DependencyChips|null|undefined} chips
  * @returns {import('lit-html').TemplateResult|''}
  */
@@ -765,7 +769,6 @@ export function dependencyChipsTemplate(chips) {
     ? chips.predecessors
     : [];
   const overlaps = Array.isArray(chips.overlaps) ? chips.overlaps : [];
-  const interactive = chips.interactive !== false;
   const scope_missing = chips.scope_missing === true;
   const popover = chips.popover || null;
   const cross_lane = chips.cross_lane || null;
@@ -793,11 +796,12 @@ export function dependencyChipsTemplate(chips) {
         html`<span
           class=${`worker-dep worker-dep--pred${chip.foreign ? ' worker-dep--foreign' : ''}`}
           title=${chip.title || ''}
-          >${interactive
+          >${chip.openable === true
             ? html`<button
                 type="button"
                 class="worker-dep__label worker-dep__open"
                 data-dep-id=${chip.id}
+                data-root-dir=${chip.root_dir || ''}
               >
                 ${chip.label}
               </button>`

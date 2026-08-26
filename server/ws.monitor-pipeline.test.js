@@ -175,8 +175,7 @@ describe('monitor pipeline done retention (UI-qbbg §4.6)', () => {
     return {
       workspaces: buildMonitorPipeline({
         ...seams,
-        snapshotFor: (key) => decorateQueue(key, raw),
-        foreignBlockerStatusFor: () => null
+        snapshotFor: (key) => decorateQueue(key, raw)
       }),
       state: buildMonitorWorkspacesState({
         ...seams,

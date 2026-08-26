@@ -1897,10 +1897,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
     ...model.running,
     ...model.pr_wait
   ]) {
+    // 모니터의 칩은 모두 누를 수 있다 (UI-u6zf §5.1): 그 클릭은 이 행의 의존성
+    // 패널을 열고, 패널은 의존을 실제로 끊는 유일한 진입로다 — 워커 탭이 칩마다
+    // 갈리는 것과 달리 여기서는 대상이 항상 이 행 자신이다.
     /** @type {DependencyChip[]} */
-    const predecessors = (item.blockers || []).map((blocker) =>
-      predecessorChip(item.id, blocker)
-    );
+    const predecessors = (item.blockers || []).map((blocker) => ({
+      ...predecessorChip(item.id, blocker),
+      openable: true
+    }));
     if (predecessors.length === 0) {
       continue;
     }

@@ -65,6 +65,10 @@ import {
 } from '../worker/delegation-monitor.js';
 import { projectExecutionDefaults } from '../worker/execution-defaults.js';
 import {
+  applyForeignBlockerCleanup,
+  onForeignBlockerResolved
+} from '../worker/foreign-blocker-status.js';
+import {
   evaluateMergeGate,
   observedReviewReceiptState
 } from '../worker/merge-gate.js';
@@ -885,6 +889,64 @@ export function recalibrateSerialLaneAfterDepAdd(
  */
 function beadBlockedByFor(workspace_key, queue) {
   return beadDecorationFor(workspace_key, queue, 'blockedByFor');
+}
+
+/** Whether {@link wireForeignBlockerFanout} has already registered. */
+let foreign_blocker_fanout_wired = false;
+
+/**
+ * Re-push the snapshot of every workspace whose blocked-by projection was
+ * WAITING on a cross-rig lookup (UI-u6zf §3.3·§3.4).
+ *
+ * The requester set is the whole point: the workspace that asked is the one
+ * holding the blocked bead, never the rig that owns the blocker. Waking the
+ * owner instead re-pushes a snapshot nothing changed in and leaves the stale
+ * chip standing exactly where the user is looking. Wired lazily for the same
+ * reason the title cache's fill is — at module load `fanout` has no runtime to
+ * read a snapshot from.
+ */
+function wireForeignBlockerFanout() {
+  if (foreign_blocker_fanout_wired) {
+    return;
+  }
+  foreign_blocker_fanout_wired = true;
+  onForeignBlockerResolved((requesters) => {
+    for (const workspace of requesters) {
+      try {
+        fanout(workspace, queueStore().snapshot(workspace));
+      } catch (err) {
+        log('foreign blocker fill fanout failed for %s: %o', workspace, err);
+      }
+    }
+  });
+}
+
+/**
+ * The blocked-by projection with CLOSED foreign blockers removed, plus the
+ * owning workspace of each survivor (UI-u6zf §3.2·§4).
+ *
+ * Applied HERE rather than in a consumer because the previous arrangement —
+ * cleanup as monitor post-processing — silently stopped covering the Worker tab
+ * the moment that tab grew its own blocked chip.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, string[]>} bead_blocked_by
+ * @returns {{ bead_blocked_by: Record<string, string[]>, blocker_workspaces: Record<string, string>|null }}
+ */
+function cleanForeignBlockers(workspace_key, bead_blocked_by) {
+  wireForeignBlockerFanout();
+  /** @type {Record<string, any>} */
+  const projected = { bead_blocked_by };
+  try {
+    applyForeignBlockerCleanup(projected, workspace_key);
+  } catch (err) {
+    log('foreign blocker cleanup failed for %s: %o', workspace_key, err);
+    return { bead_blocked_by, blocker_workspaces: null };
+  }
+  return {
+    bead_blocked_by: projected.bead_blocked_by,
+    blocker_workspaces: projected.blocker_workspaces || null
+  };
 }
 
 /**
@@ -2279,7 +2341,11 @@ export function decorateQueue(workspace_key, raw_queue) {
       orchestration: null
     };
   }
-  const bead_blocked_by = beadBlockedByFor(workspace_key, queue);
+  const cleaned = cleanForeignBlockers(
+    workspace_key,
+    beadBlockedByFor(workspace_key, queue)
+  );
+  const bead_blocked_by = cleaned.bead_blocked_by;
   const bead_scope = beadScopeFor(workspace_key, queue);
   return {
     ...queue,
@@ -2334,8 +2400,16 @@ export function decorateQueue(workspace_key, raw_queue) {
     // non-persisted contract as the decorations above.
     bead_scope,
     // Direct blocks blocker ids for the same beads (UI-04vo §3) — the
-    // wait-reason chip and lane topological corrections read from this.
+    // wait-reason chip and lane topological corrections read from this, and
+    // CLOSED cross-rig blockers are already gone from it (UI-u6zf §3.2).
     bead_blocked_by,
+    // Owning workspace of each SURVIVING cross-rig blocker (UI-u6zf §4), so a
+    // blocked chip can open the blocker in the rig that holds it. Its own key
+    // rather than a widened `bead_blocked_by`, on the same partiality contract
+    // as `bead_titles`/`bead_times`: a missing key is 모름, not "same repo".
+    ...(cleaned.blocker_workspaces
+      ? { blocker_workspaces: cleaned.blocker_workspaces }
+      : {}),
     // Per-serial-lane occupancy + topological correction, derived fresh from
     // this snapshot (UI-04vo §5). Never persisted.
     lane_states: laneStatesFor(overlaid, bead_blocked_by),
