@@ -764,12 +764,17 @@ import {
   readAttemptDelegationStreams
 } from './delegation-monitor.js';
 import { ORCHESTRATION_KEYS, execSettingEnums } from './exec-enums.js';
+import { orderLaneByBlocks } from './lane-order.js';
 import { queueFilePath } from './state-paths.js';
 import {
   consumeUsageReceiptFiles,
   normalizeUsageLegs,
   readAttemptUsageReceipts
 } from './usage-receipts.js';
+
+// 정렬 규칙은 하나다 (UI-jaua §4). 함수는 브라우저도 쓸 수 있게 `lane-order.js`가
+// 소유하고, 이 모듈은 기존 소비자를 위해 같은 이름으로 다시 내보낸다.
+export { orderLaneByBlocks };
 
 /**
  * Default concurrency cap when a queue carries no (or an unusable) `slots`
@@ -3130,82 +3135,6 @@ function clampIndex(index, length) {
     return length;
   }
   return Math.min(Math.floor(index), length);
-}
-
-/**
- * Stable topological correction of one serial lane's order under `blocks`
- * edges (UI-04vo §3). Pure and deterministic: recomputable from any snapshot,
- * never stored. The user order is preserved as far as the edges allow — the
- * next emitted bead is always the earliest user-ordered bead whose in-lane
- * blockers have all been emitted. Edges naming ids outside `order` carry no
- * ordering signal. A cycle disables correction entirely (fail-visible at the
- * caller): the input order returns unchanged with `cycle: true`.
- *
- * @param {string[]} order - User-ordered bead ids of one lane.
- * @param {{ blocker: string, blockee: string }[]} edges - Direct blocks edges.
- * @returns {{ order: string[], corrections: { bead_id: string, after: string }[], cycle: boolean }}
- */
-export function orderLaneByBlocks(order, edges) {
-  const index_of = new Map(order.map((id, index) => [id, index]));
-  /** @type {Map<string, Set<string>>} */
-  const blockers_of = new Map(order.map((id) => [id, new Set()]));
-  for (const edge of edges) {
-    if (
-      edge.blocker !== edge.blockee &&
-      index_of.has(edge.blocker) &&
-      index_of.has(edge.blockee)
-    ) {
-      /** @type {Set<string>} */ (blockers_of.get(edge.blockee)).add(
-        edge.blocker
-      );
-    }
-  }
-  const emitted = new Set();
-  /** @type {string[]} */
-  const sorted = [];
-  while (sorted.length < order.length) {
-    const next = order.find((id) => {
-      if (emitted.has(id)) {
-        return false;
-      }
-      for (const blocker of /** @type {Set<string>} */ (blockers_of.get(id))) {
-        if (!emitted.has(blocker)) {
-          return false;
-        }
-      }
-      return true;
-    });
-    if (next === undefined) {
-      return { order: [...order], corrections: [], cycle: true };
-    }
-    emitted.add(next);
-    sorted.push(next);
-  }
-  /** @type {{ bead_id: string, after: string }[]} */
-  const corrections = [];
-  const sorted_index = new Map(sorted.map((id, index) => [id, index]));
-  for (const id of sorted) {
-    let moved_after = null;
-    for (const blocker of /** @type {Set<string>} */ (blockers_of.get(id))) {
-      const was_before =
-        Number(index_of.get(id)) < Number(index_of.get(blocker));
-      const now_after =
-        Number(sorted_index.get(id)) > Number(sorted_index.get(blocker));
-      if (was_before && now_after) {
-        if (
-          moved_after === null ||
-          Number(sorted_index.get(blocker)) >
-            Number(sorted_index.get(moved_after))
-        ) {
-          moved_after = blocker;
-        }
-      }
-    }
-    if (moved_after !== null) {
-      corrections.push({ bead_id: id, after: moved_after });
-    }
-  }
-  return { order: sorted, corrections, cycle: false };
 }
 
 /**

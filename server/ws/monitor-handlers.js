@@ -1709,6 +1709,52 @@ function normalizeRequestEntries(raw, listRegistered) {
 }
 
 /**
+ * Stamp §7.1 stage-1 provenance on the entries a lane op is about to store.
+ *
+ * The rule is positional, not per-bead: an entry keeps its value only while the
+ * member RIGHT BEFORE it is unchanged, because that is exactly what the flag
+ * describes. Anything newly adjacent starts at `false` — the lane op is sent
+ * BEFORE the `dep-add` it implies, so at this moment nobody knows whether that
+ * dependency will be created. `monitor-lane-provenance` raises the pairs whose
+ * `dep-add` actually succeeded.
+ *
+ * The server owns the value on purpose. A client-supplied `true` would let a
+ * failed `dep-add` record ownership of a dependency the lane never made, and
+ * that is the class of bug UI-jaua §1.3 is about.
+ *
+ * @param {CrossLaneEntry[]} previous - The lane's stored entries.
+ * @param {CrossLaneEntry[]} next - The entries the request carries.
+ * @returns {CrossLaneEntry[]}
+ */
+function stampAdjacencyProvenance(previous, next) {
+  /** @type {Map<string, string|null>} */
+  const previous_before = new Map();
+  /** @type {Map<string, boolean|undefined>} */
+  const previous_value = new Map();
+  previous.forEach((entry, index) => {
+    previous_before.set(
+      entry.bead_id,
+      index > 0 ? previous[index - 1].bead_id : null
+    );
+    previous_value.set(entry.bead_id, entry.dep_created_by_lane);
+  });
+  return next.map((entry, index) => {
+    if (index === 0) {
+      return { bead_id: entry.bead_id, root_dir: entry.root_dir };
+    }
+    const unchanged =
+      previous_before.get(entry.bead_id) === next[index - 1].bead_id;
+    return {
+      bead_id: entry.bead_id,
+      root_dir: entry.root_dir,
+      dep_created_by_lane: unchanged
+        ? previous_value.get(entry.bead_id) === true
+        : false
+    };
+  });
+}
+
+/**
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  * @param {string} message
@@ -1737,7 +1783,7 @@ function sendLaneFailure(ws, req, result) {
 }
 
 /**
- * The store all four lane ops mutate, and the push they schedule on success.
+ * The store every lane op mutates, and the push they schedule on success.
  *
  * @param {LaneOpOptions} options
  */
@@ -1751,7 +1797,7 @@ function laneOpDeps(options) {
 }
 
 /**
- * Test seams for the four lane ops; each defaults to the live server source.
+ * Test seams for the lane ops; each defaults to the live server source.
  *
  * @typedef {Object} LaneOpOptions
  * @property {() => ReturnType<typeof sharedCrossLanesStore>} [crossLanesStore]
@@ -1812,7 +1858,7 @@ export function handleMonitorLaneCreate(ws, req, options = {}) {
       id: ctx.newLaneId(),
       status: 'draft',
       created_at: ctx.nowIso(),
-      entries: seed
+      entries: stampAdjacencyProvenance([], seed)
     };
     next.lanes.push(lane);
     return { ok: true, value: lane.id };
@@ -1868,7 +1914,7 @@ export function handleMonitorLaneUpdate(ws, req, options = {}) {
     if (!lane) {
       return { ok: false, code: 'not_found', message: '레인이 없습니다' };
     }
-    lane.entries = entries;
+    lane.entries = stampAdjacencyProvenance(lane.entries, entries);
     return { ok: true };
   });
   if (!result.ok) {
@@ -1963,6 +2009,72 @@ export function handleMonitorLaneRemove(ws, req, options = {}) {
       return { ok: false, code: 'not_found', message: '레인이 없습니다' };
     }
     next.lanes.splice(index, 1);
+    return { ok: true };
+  });
+  if (!result.ok) {
+    sendLaneFailure(ws, req, result);
+    return;
+  }
+  ws.send(
+    JSON.stringify(makeOk(req, { lane_id, revision: result.state.revision }))
+  );
+  onApplied();
+}
+
+/**
+ * Handle `monitor-lane-provenance`. Payload:
+ * `{ lane_id, pairs: Array<{ bead_id, value: true }>, expected_revision }`
+ * (UI-jaua §7.1 2단계).
+ *
+ * Raises `dep_created_by_lane` on the pairs whose `dep-add` SUCCEEDED —
+ * `pairs[].bead_id` is the LATER member of the pair (`entries[i+1]`), because
+ * the flag describes the edge to the entry right before it.
+ *
+ * Only `true` travels. Lowering a pair is the lane ops' job (a position whose
+ * neighbour changed restarts at `false`), so a client can never use this op to
+ * disown a dependency it did create. `entries[0]` and unknown bead ids are
+ * fail-quiet: the newest lane may have moved under the client, and the pairs
+ * that no longer apply are exactly the ones it must not write.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {LaneOpOptions} [options]
+ */
+export function handleMonitorLaneProvenance(ws, req, options = {}) {
+  const p = /** @type {any} */ (req.payload || {});
+  const lane_id = typeof p.lane_id === 'string' ? p.lane_id : '';
+  const expected_revision = laneExpectedRevision(p.expected_revision);
+  if (
+    lane_id.length === 0 ||
+    expected_revision === null ||
+    !Array.isArray(p.pairs)
+  ) {
+    sendLaneBadRequest(
+      ws,
+      req,
+      'payload requires { lane_id, pairs, expected_revision }'
+    );
+    return;
+  }
+  /** @type {Set<string>} */
+  const raised = new Set();
+  for (const item of p.pairs) {
+    const pair = /** @type {any} */ (item);
+    if (pair && typeof pair.bead_id === 'string' && pair.value === true) {
+      raised.add(pair.bead_id.trim());
+    }
+  }
+  const { store, onApplied } = laneOpDeps(options);
+  const result = store.mutate(expected_revision, (next) => {
+    const lane = next.lanes.find((candidate) => candidate.id === lane_id);
+    if (!lane) {
+      return { ok: false, code: 'not_found', message: '레인이 없습니다' };
+    }
+    lane.entries.forEach((entry, index) => {
+      if (index > 0 && raised.has(entry.bead_id)) {
+        entry.dep_created_by_lane = true;
+      }
+    });
     return { ok: true };
   });
   if (!result.ok) {

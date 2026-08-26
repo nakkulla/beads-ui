@@ -43,8 +43,12 @@ import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
 import { depCandidates, filterDepCandidates } from './dep-candidates.js';
 import {
+  adjacentProvenancePairs,
+  describeLaneRemoval,
+  laneProvenanceUpdates,
   planDrop,
   planLaneConfirm,
+  planLaneCorrection,
   planLaneCreate,
   planLaneReapply,
   planLaneRemove
@@ -2263,10 +2267,36 @@ export function createMonitorView(mount_element, options) {
     }
     try {
       await send(type, { a, b }, root_dir);
+      await recorrectSharedLane(type, a, b);
     } catch (error) {
       showToast(mutationErrorMessage(error), 'error');
     }
     doRender();
+  }
+
+  /**
+   * Re-run the §6 자동 교정 when the `⛓` 패널's `dep-add` changed a pair of
+   * members of the SAME 연결 레인 (§6.2) — 레포 직렬 레인이 UI-2gi1 §6.5에서
+   * 쓰는 재교정 트리거와 같은 성질이다. 방금 만든 엣지는 아직 스냅샷에 없으므로
+   * 델타로 얹어 넘긴다.
+   *
+   * @param {'dep-add'|'dep-remove'} type
+   * @param {string} a
+   * @param {string} b
+   */
+  async function recorrectSharedLane(type, a, b) {
+    if (type !== 'dep-add') {
+      return;
+    }
+    const lane = lanes.chain_lanes.find((entry) =>
+      entry.rows.some((row) => row.id === a)
+    );
+    if (!lane || !lane.rows.some((row) => row.id === b)) {
+      return;
+    }
+    await runPlanned((model) => planLaneCorrection(lane.lane_id, model), '', [
+      { type, a, b }
+    ]);
   }
 
   /**
@@ -2371,6 +2401,79 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * The two 완전성 원천 the 자동 교정 reads (UI-jaua §6.1). `blockedByMap()`은
+   * 빈 배열을 버리므로 "아직 모름"과 "blocker 없음"을 구별할 수 없다 — 교정은
+   * 그 구별 없이는 돌 수 없으므로 여기서 따로 만든다: **키가 있으면 확정**이고
+   * 빈 배열도 확정이다.
+   *
+   * @returns {{ snapshot: Map<string, string[]>, runnable: Map<string, string[]> }}
+   */
+  function settledBlockerSources() {
+    /** @type {Map<string, string[]>} */
+    const snapshot = new Map();
+    /** @type {Map<string, string[]>} */
+    const runnable = new Map();
+    const workspaces =
+      pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
+    /**
+     * @param {unknown} value
+     * @returns {string[]}
+     */
+    const idsOf = (value) =>
+      Array.isArray(value)
+        ? value.filter(
+            (/** @type {unknown} */ id) =>
+              typeof id === 'string' && id.length > 0
+          )
+        : [];
+    for (const workspace of Array.isArray(workspaces) ? workspaces : []) {
+      if (!workspace || typeof workspace !== 'object') {
+        continue;
+      }
+      const declared =
+        workspace.bead_blocked_by &&
+        typeof workspace.bead_blocked_by === 'object'
+          ? workspace.bead_blocked_by
+          : {};
+      for (const [bead_id, blockers] of Object.entries(declared)) {
+        if (Array.isArray(blockers)) {
+          snapshot.set(bead_id, idsOf(blockers));
+        }
+      }
+      for (const item of Array.isArray(workspace.runnable)
+        ? workspace.runnable
+        : []) {
+        if (
+          item &&
+          typeof item.bead_id === 'string' &&
+          Array.isArray(item.blocked_by)
+        ) {
+          runnable.set(item.bead_id, idsOf(item.blocked_by));
+        }
+      }
+    }
+    // 이 실행이 이미 보낸 dep op는 확정된 항목에만 접는다. 항목 자체가 없으면
+    // 다른 blocker를 여전히 모르므로 미확정 그대로 둔다 (§6.1).
+    for (const op of dep_delta) {
+      for (const source of [snapshot, runnable]) {
+        const blockers = source.get(op.a);
+        if (blockers === undefined) {
+          continue;
+        }
+        source.set(
+          op.a,
+          op.type === 'dep-remove'
+            ? blockers.filter((id) => id !== op.b)
+            : blockers.includes(op.b)
+              ? blockers
+              : [...blockers, op.b]
+        );
+      }
+    }
+    return { snapshot, runnable };
+  }
+
+  /**
    * The live blocks graph with this run's already-applied dep ops folded in
    * (§5.5). 재계획은 아직 도착하지 않은 스냅샷 대신 이 그래프 위에서 세운다 —
    * 그래야 이미 보낸 `dep-remove`가 "이미 없음"으로 반영되어 같은 op를 두 번
@@ -2400,9 +2503,25 @@ export function createMonitorView(mount_element, options) {
    *
    * @param {MonitorLanes} [source] - 계획을 세울 투영. 기본은 지금 그려진 화면이고,
    * 충돌 재계획은 최신 `cross_lanes`로 다시 투영한 모델을 넘긴다 (§5.5).
+   * @param {{ revision: number, lanes: Array<Record<string, any>> }|null} [raw_lanes]
+   * - 그 투영이 나온 스냅샷 원본 (UI-jaua §7.1 provenance 원천).
    * @returns {DropModel}
    */
-  function dropModel(source = lanes) {
+  function dropModel(source = lanes, raw_lanes = currentCrossLanes()) {
+    // provenance는 투영이 아니라 스냅샷 원본에서 읽는다 (UI-jaua §7.1): 행
+    // 투영은 표시 재료만 나르고, 삭제가 되돌릴 쌍은 저장된 값이 정한다.
+    /** @type {Map<string, Map<string, boolean>>} */
+    const provenance_of = new Map();
+    for (const lane of Array.isArray(raw_lanes?.lanes) ? raw_lanes.lanes : []) {
+      /** @type {Map<string, boolean>} */
+      const by_bead = new Map();
+      for (const entry of Array.isArray(lane?.entries) ? lane.entries : []) {
+        if (entry && typeof entry.bead_id === 'string') {
+          by_bead.set(entry.bead_id, entry.dep_created_by_lane === true);
+        }
+      }
+      provenance_of.set(typeof lane?.id === 'string' ? lane.id : '', by_bead);
+    }
     /** @type {Map<string, import('./drop-plan.js').LaneState>} */
     const cross_lanes = new Map();
     /** @type {Map<string, string>} */
@@ -2412,11 +2531,15 @@ export function createMonitorView(mount_element, options) {
     /** @type {Set<string>} */
     const placed_members = new Set();
     for (const lane of source.chain_lanes) {
+      const provenance = provenance_of.get(lane.lane_id);
       cross_lanes.set(lane.lane_id, {
         status: lane.status,
-        entries: lane.rows.map((row) => ({
+        entries: lane.rows.map((row, index) => ({
           bead_id: row.id,
-          root_dir: row.root_dir
+          root_dir: row.root_dir,
+          ...(index === 0
+            ? {}
+            : { dep_created_by_lane: provenance?.get(row.id) === true })
         }))
       });
       for (const row of lane.rows) {
@@ -2445,8 +2568,11 @@ export function createMonitorView(mount_element, options) {
         }
       }
     }
+    const settled = settledBlockerSources();
     return {
       blocked_by_map: blockedByMapWithDelta(),
+      snapshot_blocked_by: settled.snapshot,
+      runnable_blocked_by: settled.runnable,
       owner_of: new Map(Object.entries(source.owner_of)),
       cross_lanes,
       owner_lane_of,
@@ -2460,6 +2586,19 @@ export function createMonitorView(mount_element, options) {
       parallel_raw_length: new Map(Object.entries(source.parallel_raw_length)),
       queue_index_of
     };
+  }
+
+  /**
+   * The snapshot's raw `cross_lanes`, or `null` (구서버·저장소 읽기 실패).
+   *
+   * @returns {{ revision: number, lanes: Array<Record<string, any>> }|null}
+   */
+  function currentCrossLanes() {
+    const value =
+      pipelineStore && pipelineStore.crossLanes
+        ? pipelineStore.crossLanes()
+        : null;
+    return value ?? null;
   }
 
   /**
@@ -2492,6 +2631,25 @@ export function createMonitorView(mount_element, options) {
    * @returns {Promise<boolean>} 계획의 남은 단계를 이어도 되면 true.
    */
   async function sendOp(op, bead_id, revisions) {
+    if (op.type === 'worker-queue-disarm') {
+      // disarm 실패는 계획을 멈추지 않는다 (UI-jaua §7.2). 남은 arm은 §5.3 (2)의
+      // `▶ 진행 중 · 레인 없음` 칩으로 드러나 그 자리에서 해제할 수 있고, 여기서
+      // 멈추면 레인 삭제 자체가 되지 않는다 — 그쪽이 더 나쁘다.
+      try {
+        const res = await sendCas(
+          op.type,
+          op.payload,
+          op.root_dir,
+          revisions.get(op.root_dir) ?? revisionOfRoot(op.root_dir, bead_id)
+        );
+        if (res && res.queue && typeof res.queue.revision === 'number') {
+          revisions.set(op.root_dir, res.queue.revision);
+        }
+      } catch {
+        // 그 사실은 다음 스냅샷의 고아 arm 칩이 말한다 (fail-visible).
+      }
+      return true;
+    }
     try {
       if (
         op.type === 'worker-queue-place' ||
@@ -2606,6 +2764,8 @@ export function createMonitorView(mount_element, options) {
   async function sendPlan(plan, revision, bead_id) {
     /** @type {Map<string, number>} */
     const revisions = new Map();
+    /** @type {Op[]} */
+    const applied_adds = [];
     const before_lane = plan.ops.slice(0, plan.lane_op_index);
     const after_lane = plan.ops.slice(plan.lane_op_index);
     for (const op of before_lane) {
@@ -2633,8 +2793,73 @@ export function createMonitorView(mount_element, options) {
         return { done: true };
       }
       rememberDep(op);
+      if (op.type === 'dep-add') {
+        applied_adds.push(op);
+      }
+    }
+    // 성공한 `dep-add`만 provenance를 올린다 (UI-jaua §7.1 2단계). 실패한 쌍이
+    // `false`로 남는 쪽이 안전한 방향이고 `재적용`이 복구 경로다.
+    for (const update of laneProvenanceUpdates(
+      /** @type {any} */ (applied_adds)
+    )) {
+      next_revision = await sendLaneProvenance(update, next_revision);
     }
     return { done: true };
+  }
+
+  /**
+   * Stage 2 of the §7.1 provenance write: raise the pairs whose `dep-add` just
+   * succeeded. CAS 충돌이면 최신 레인 위에서 **여전히 인접인 쌍만** 남겨 1회
+   * 재시도하고, 그래도 실패하면 토스트 없이 넘어간다 — `false`로 남는 쪽이
+   * "지우지 않는다"는 안전한 방향이다.
+   *
+   * @param {{ lane_id: string, pairs: Array<{ bead_id: string, after: string }> }} update
+   * @param {number|null} revision
+   * @returns {Promise<number|null>}
+   */
+  async function sendLaneProvenance(update, revision) {
+    if (revision === null || !transport) {
+      return revision;
+    }
+    let pairs = update.pairs;
+    let next_revision = revision;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (pairs.length === 0) {
+        return next_revision;
+      }
+      try {
+        const res = await transport('monitor-lane-provenance', {
+          lane_id: update.lane_id,
+          pairs: pairs.map((pair) => ({ bead_id: pair.bead_id, value: true })),
+          expected_revision: next_revision
+        });
+        return res && typeof res.revision === 'number'
+          ? res.revision
+          : next_revision;
+      } catch (error) {
+        const value = /** @type {any} */ (error);
+        const fresh =
+          value && value.code === 'conflict'
+            ? value.details?.cross_lanes
+            : null;
+        if (
+          !fresh ||
+          typeof fresh.revision !== 'number' ||
+          !Array.isArray(fresh.lanes)
+        ) {
+          return next_revision;
+        }
+        const lane = fresh.lanes.find(
+          (/** @type {any} */ entry) => entry && entry.id === update.lane_id
+        );
+        pairs = adjacentProvenancePairs(
+          Array.isArray(lane?.entries) ? lane.entries : [],
+          pairs
+        );
+        next_revision = fresh.revision;
+      }
+    }
+    return next_revision;
   }
 
   /**
@@ -2645,12 +2870,15 @@ export function createMonitorView(mount_element, options) {
    *
    * @param {(model: DropModel) => DropPlan} planner
    * @param {string} bead_id - 큐 op의 CAS revision을 찾는 좌표.
+   * @param {Array<{ type: 'dep-add'|'dep-remove', a: string, b: string }>} [seed_delta]
+   * - 이 실행 전에 이미 서버에 적용된 dep op (UI-jaua §6.2 `⛓` 패널 재교정).
    */
-  async function runPlanned(planner, bead_id) {
-    dep_delta = [];
+  async function runPlanned(planner, bead_id, seed_delta = []) {
+    dep_delta = seed_delta;
     let source = lanes;
+    let raw_lanes = currentCrossLanes();
     for (let attempt = 0; ; attempt += 1) {
-      const plan = planner(dropModel(source));
+      const plan = planner(dropModel(source, raw_lanes));
       if ('refused' in plan) {
         showToast(plan.refused, 'error');
         break;
@@ -2664,6 +2892,7 @@ export function createMonitorView(mount_element, options) {
         break;
       }
       source = projectLanes(result.conflict);
+      raw_lanes = result.conflict;
     }
     dep_delta = [];
     doRender();
@@ -2692,18 +2921,12 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (kind === 'remove') {
-      const lane = lanes.chain_lanes.find((entry) => entry.lane_id === lane_id);
-      // draft는 만든 dep가 없으므로 되돌릴 것도 없다 — 확인 없이 즉시 (§5.1).
-      if (lane && !lane.draft) {
-        const removable = lane.rows.filter((row, index) => {
-          if (index === 0) {
-            return false;
-          }
-          return !row.mismatch;
-        }).length;
-        if (!confirmFn(`의존 ${removable}개를 함께 제거합니다`)) {
-          return;
-        }
+      // 문장은 계획이 소유한다 (UI-jaua §7.3): 어느 의존이 지워지고 어느 것이
+      // 남는지를 실제 provenance에서 읽어 그대로 보인다. draft는 만든 dep가
+      // 없으므로 `null`이고 확인 없이 즉시 지운다 (§5.1).
+      const message = describeLaneRemoval(lane_id, dropModel());
+      if (message !== null && !confirmFn(message)) {
+        return;
       }
       await runPlanned((model) => planLaneRemove(lane_id, model), '');
       return;

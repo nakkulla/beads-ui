@@ -38,6 +38,7 @@ import {
   handleMonitorAutoToggle,
   handleMonitorLaneConfirm,
   handleMonitorLaneCreate,
+  handleMonitorLaneProvenance,
   handleMonitorLaneRemove,
   handleMonitorLaneUpdate,
   handleSubscribeMonitorPipeline,
@@ -554,6 +555,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'monitor-lane-remove':
       handleMonitorLaneRemove(ws, req);
+      return;
+    case 'monitor-lane-provenance':
+      handleMonitorLaneProvenance(ws, req);
       return;
     case 'worker-queue-place':
       await handleWorkerQueuePlace(ws, req);

@@ -217,8 +217,18 @@ either side of a rig boundary; a closed predecessor never renders as `(완료)` 
 ```
 cross_lanes: { revision: number, lanes: Lane[] } | null
 Lane: { id: 'cl_<ulid>', status: 'draft'|'confirmed', created_at: ISO, entries: Entry[] }
-Entry: { bead_id: string, root_dir: string }
+Entry: { bead_id: string, root_dir: string, dep_created_by_lane?: boolean }
 ```
+
+`dep_created_by_lane` says whether THIS lane created the `blocks` edge between
+the entry and the one right before it (UI-jaua §7.1). `true` means that pair's
+`dep-add` SUCCEEDED, not that it was planned, so the value is written in two
+stages: a lane op stores `false` for a newly adjacent position and
+`monitor-lane-provenance` raises the pairs that actually landed. The server owns
+the value — a client-supplied `true` is ignored — and the flag is meaningless on
+`entries[0]`, where the store normalizes it away. Every deletion path reverts
+`true` pairs ONLY, so a lane stored before UI-jaua reads as `false` throughout
+and removes no dependency at all: no migration, converging to the safe side.
 
 A 연결 레인 is stored MEMBERSHIP, not a derived `blocks` component: `entries`
 order is the lane order and `bead_blocked_by` stays the execution truth,
@@ -231,7 +241,7 @@ in `lanes` and is never stored; `id` is server-issued and immutable. One
 absent altogether (older server). A `null` disables the lane ops client-side;
 the server refuses them with `state_unreadable` anyway.
 
-Four ops mutate it, all server-global (no `root_dir` — a lane spans repos) and
+Five ops mutate it, all server-global (no `root_dir` — a lane spans repos) and
 all CAS-guarded by an integer `expected_revision` taken from the snapshot.
 Success replies carry the new `{ revision }` and schedule the usual coalesced
 push.
@@ -249,7 +259,19 @@ push.
 - `monitor-lane-remove` → `{ lane_id, expected_revision }`; replies
   `{ lane_id, revision }`. The `dep-remove`s for a confirmed lane are the
   client's and go BEFORE this op: once the lane is gone nobody can tell which
-  adjacent pairs it owned.
+  adjacent pairs it owned. For the same reason the `worker-queue-disarm` of the
+  departing members also precedes it — the client sends `dep-remove` → `disarm`
+  → lane op (UI-jaua §7.2).
+- `monitor-lane-provenance` →
+  `{ lane_id, pairs: Array<{ bead_id, value: true }>, expected_revision }`;
+  replies `{ lane_id, revision }`. Stage 2 of the `dep_created_by_lane` write
+  (UI-jaua §7.1): it runs AFTER the `dep-add`s and raises only the pairs that
+  succeeded. `pairs[].bead_id` is the LATER member of the pair (`entries[i+1]`).
+  Only `true` travels — lowering a pair is the lane ops' job — and a pair naming
+  `entries[0]` or a bead the lane no longer holds is ignored without error. On a
+  `conflict` the client keeps just the pairs still adjacent on the returned
+  lanes, retries once, and then gives up silently: staying `false` is the safe
+  direction and `재적용` is the recovery path.
 
 The server validates FORMAT and workspace registration only. `Entry.root_dir`
 must be a registered workspace — HIDDEN ones included, since a hidden repo's

@@ -1,7 +1,12 @@
 import { describe, expect, test } from 'vitest';
 import {
+  adjacentProvenancePairs,
+  correctLaneOrder,
+  describeLaneRemoval,
+  laneProvenanceUpdates,
   planDrop,
   planLaneConfirm,
+  planLaneCorrection,
   planLaneCreate,
   planLaneReapply,
   planLaneRemove
@@ -15,11 +20,38 @@ const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
 
 /**
+ * A settled 원천 for every lane member (UI-jaua §6.1). 스냅샷 그래프에
+ * 항목이 없는 멤버는 빈 배열 = "blocker 없음"으로 확정한다. 미확정을 시험하는
+ * 테스트만 `snapshot_blocked_by`/`runnable_blocked_by`를 직접 넘긴다.
+ *
+ * @param {Map<string, LaneState>} cross_lanes
+ * @param {Map<string, string[]>} blocked_by_map
+ * @param {Map<string, string>} owner_of
+ * @returns {Map<string, string[]>}
+ */
+function settledSource(cross_lanes, blocked_by_map, owner_of) {
+  /** @type {Set<string>} */
+  const known = new Set([...blocked_by_map.keys(), ...owner_of.keys()]);
+  for (const lane of cross_lanes.values()) {
+    for (const entry of lane.entries) {
+      known.add(entry.bead_id);
+    }
+  }
+  /** @type {Map<string, string[]>} */
+  const settled = new Map();
+  for (const bead_id of known) {
+    settled.set(bead_id, blocked_by_map.get(bead_id) || []);
+  }
+  return settled;
+}
+
+/**
  * @param {Partial<DropModel>} [patch]
  * @returns {DropModel}
  */
 function dropModel(patch = {}) {
-  return {
+  /** @type {DropModel} */
+  const model = {
     blocked_by_map: new Map(),
     owner_of: new Map(),
     cross_lanes: new Map(),
@@ -31,13 +63,27 @@ function dropModel(patch = {}) {
     queue_index_of: new Map(),
     ...patch
   };
+  const settled = settledSource(
+    model.cross_lanes,
+    model.blocked_by_map,
+    model.owner_of
+  );
+  return {
+    ...model,
+    snapshot_blocked_by: patch.snapshot_blocked_by ?? settled,
+    runnable_blocked_by: patch.runnable_blocked_by ?? settled
+  };
 }
 
 /**
  * Build the 저장 레인 목록 and its 소속 역맵 together — 서버가 보장하는 "한
  * 버드는 레인 하나" 불변식을 픽스처가 깨지 않게 한 자리에서 짓는다 (§4.1).
  *
- * @param {Array<{ id: string, status?: 'draft'|'confirmed', entries: Array<[string, string?]> }>} spec
+ * 확정 레인의 `entries[i>0]`은 기본이 `dep_created_by_lane: true`다 — 그 레인이
+ * 확정하며 만든 의존이라는 뜻이고, 삭제가 되돌리는 대상도 그 쌍뿐이다
+ * (UI-jaua §7.1). 튜플 3번째 자리로 쌍마다 뒤집는다.
+ *
+ * @param {Array<{ id: string, status?: 'draft'|'confirmed', entries: Array<[string, string?, boolean?]> }>} spec
  * @returns {{ cross_lanes: Map<string, LaneState>, owner_lane_of: Map<string, string> }}
  */
 function laneStore(spec) {
@@ -46,9 +92,12 @@ function laneStore(spec) {
   /** @type {Map<string, string>} */
   const owner_lane_of = new Map();
   for (const lane of spec) {
-    const entries = lane.entries.map(([bead_id, root_dir]) => ({
+    const entries = lane.entries.map(([bead_id, root_dir, owned], index) => ({
       bead_id,
-      root_dir: root_dir || WS_A
+      root_dir: root_dir || WS_A,
+      ...(index > 0 && lane.status === 'confirmed'
+        ? { dep_created_by_lane: owned ?? true }
+        : {})
     }));
     cross_lanes.set(lane.id, { status: lane.status || 'draft', entries });
     for (const entry of entries) {
@@ -223,9 +272,14 @@ describe('planDrop — draft 대상 (UI-j92s §5.4)', () => {
       ops: [
         { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
         { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A },
-        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A }
+        {
+          type: 'worker-queue-disarm',
+          payload: { bead_ids: ['X'], lane_id: 'cl_s' },
+          root_dir: WS_A
+        },
+        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A, lane_id: 'cl_s' }
       ],
-      lane_op_index: 2
+      lane_op_index: 3
     });
   });
 
@@ -336,7 +390,9 @@ describe('planLaneConfirm — 확정 (UI-j92s §5.4)', () => {
       lane_ops: [
         { type: 'monitor-lane-confirm', payload: { lane_id: 'cl_d' } }
       ],
-      ops: [{ type: 'dep-add', a: 'D-2', b: 'D-1', root_dir: WS_B }],
+      ops: [
+        { type: 'dep-add', a: 'D-2', b: 'D-1', root_dir: WS_B, lane_id: 'cl_d' }
+      ],
       lane_op_index: 0
     });
   });
@@ -356,11 +412,13 @@ describe('planLaneConfirm — 확정 (UI-j92s §5.4)', () => {
     const plan = planLaneConfirm('cl_d', model);
 
     expect('ops' in plan && plan.ops).toEqual([
-      { type: 'dep-add', a: 'D-3', b: 'D-2', root_dir: WS_A }
+      { type: 'dep-add', a: 'D-3', b: 'D-2', root_dir: WS_A, lane_id: 'cl_d' }
     ]);
   });
 
-  test('refuses the whole plan and sends no confirm when the order closes a cycle', () => {
+  // UI-jaua §6.4: 교정이 먼저 돌므로 이 순서는 더 이상 사이클 거부로 끝나지
+  // 않는다. 기존 `blocks` 의존이 사용자가 놓은 순서를 이긴다 (§3.3).
+  test('reorders the lane to the existing blocks edge instead of refusing', () => {
     const model = dropModel({
       blocked_by_map: new Map([['D-1', ['D-2']]]),
       owner_of: new Map([
@@ -374,7 +432,28 @@ describe('planLaneConfirm — 확정 (UI-j92s §5.4)', () => {
     const plan = planLaneConfirm('cl_d', model);
 
     expect(plan).toEqual({
-      refused: '의존 사이클이 생깁니다 — D-2가 이미 D-1를 막고 있습니다'
+      lane_ops: [
+        {
+          type: 'monitor-lane-update',
+          payload: {
+            lane_id: 'cl_d',
+            entries: [
+              { bead_id: 'D-2', root_dir: WS_A },
+              { bead_id: 'D-1', root_dir: WS_A }
+            ]
+          }
+        },
+        { type: 'monitor-lane-confirm', payload: { lane_id: 'cl_d' } }
+      ],
+      ops: [],
+      lane_op_index: 0,
+      correction: {
+        lane_id: 'cl_d',
+        corrected: 1,
+        cycle: false,
+        held: false,
+        mismatched: []
+      }
     });
   });
 
@@ -492,7 +571,13 @@ describe('planDrop — confirmed 대상 (UI-j92s §5.4)', () => {
         }
       ],
       ops: [
-        { type: 'dep-add', a: 'A-9', b: 'C-2', root_dir: WS_A },
+        {
+          type: 'dep-add',
+          a: 'A-9',
+          b: 'C-2',
+          root_dir: WS_A,
+          lane_id: 'cl_c'
+        },
         {
           type: 'worker-queue-place',
           payload: { bead_id: 'A-9', index: 2 },
@@ -531,8 +616,14 @@ describe('planDrop — confirmed 대상 (UI-j92s §5.4)', () => {
       ],
       ops: [
         { type: 'dep-remove', a: 'C-2', b: 'C-1', root_dir: WS_A },
-        { type: 'dep-add', a: 'A-9', b: 'C-1', root_dir: WS_A },
-        { type: 'dep-add', a: 'C-2', b: 'A-9', root_dir: WS_A }
+        {
+          type: 'dep-add',
+          a: 'A-9',
+          b: 'C-1',
+          root_dir: WS_A,
+          lane_id: 'cl_c'
+        },
+        { type: 'dep-add', a: 'C-2', b: 'A-9', root_dir: WS_A, lane_id: 'cl_c' }
       ],
       lane_op_index: 1
     });
@@ -553,27 +644,19 @@ describe('planDrop — confirmed 대상 (UI-j92s §5.4)', () => {
       model
     );
 
+    // UI-jaua §6.2: 드롭 즉시 교정이 돌고, `X ← P`가 실재하므로 사용자가 놓은
+    // 자리는 그대로 되돌려진다. 옛 계약의 되감기·재삽입 op는 남지 않는다.
     expect(plan).toEqual({
-      lane_ops: [
-        {
-          type: 'monitor-lane-update',
-          payload: {
-            lane_id: 'cl_s',
-            entries: [
-              { bead_id: 'X', root_dir: WS_A },
-              { bead_id: 'P', root_dir: WS_A },
-              { bead_id: 'S', root_dir: WS_A }
-            ]
-          }
-        }
-      ],
-      ops: [
-        { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
-        { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A },
-        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A },
-        { type: 'dep-add', a: 'P', b: 'X', root_dir: WS_A }
-      ],
-      lane_op_index: 2
+      lane_ops: [],
+      ops: [],
+      lane_op_index: 0,
+      correction: {
+        lane_id: 'cl_s',
+        corrected: 1,
+        cycle: false,
+        held: false,
+        mismatched: []
+      }
     });
   });
 
@@ -646,14 +729,19 @@ describe('planDrop — confirmed 행 ✕ 와 다른 대상 (UI-j92s §5.4)', () 
       ops: [
         { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
         { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A },
-        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A },
+        {
+          type: 'worker-queue-disarm',
+          payload: { bead_ids: ['X'], lane_id: 'cl_s' },
+          root_dir: WS_A
+        },
+        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A, lane_id: 'cl_s' },
         {
           type: 'worker-queue-remove',
           payload: { bead_id: 'X' },
           root_dir: WS_A
         }
       ],
-      lane_op_index: 2
+      lane_op_index: 3
     });
   });
 
@@ -688,9 +776,14 @@ describe('planDrop — confirmed 행 ✕ 와 다른 대상 (UI-j92s §5.4)', () 
       ops: [
         { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
         { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A },
-        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A }
+        {
+          type: 'worker-queue-disarm',
+          payload: { bead_ids: ['X'], lane_id: 'cl_s' },
+          root_dir: WS_A
+        },
+        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A, lane_id: 'cl_s' }
       ],
-      lane_op_index: 2
+      lane_op_index: 3
     });
   });
 
@@ -809,7 +902,30 @@ describe('planDrop — 레인 거부 (UI-j92s §5.3·§5.4)', () => {
     });
   });
 
-  test('refuses a drop that would close a dependency cycle', () => {
+  // 레인 밖을 지나는 전이 의존은 교정이 볼 수 없다 (UI-jaua §6.1: 멤버가 아닌
+  // blocker는 그래프에서 제외). 그래서 사이클 거부는 여전히 살아 있는 경로다.
+  test('refuses a drop that would close a dependency cycle through a non-member', () => {
+    const model = confirmedTargetModel({
+      blocked_by_map: new Map([
+        ['C-2', ['M-1']],
+        ['M-1', ['A-9']]
+      ])
+    });
+
+    const plan = planDrop(
+      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
+      { kind: 'chain', lane_id: 'cl_c', marker_index: 2 },
+      model
+    );
+
+    expect(plan).toEqual({
+      refused: '의존 사이클이 생깁니다 — A-9가 이미 C-2를 막고 있습니다'
+    });
+  });
+
+  // 같은 재료가 레인 **안**에 있으면 교정이 이긴다 (§3.3·§6.4): 거부 대신 그
+  // 의존이 요구하는 자리로 카드를 옮긴다.
+  test('moves the dropped row ahead of the members it already blocks', () => {
     const model = confirmedTargetModel({
       blocked_by_map: new Map([
         ['C-2', ['C-1']],
@@ -823,8 +939,13 @@ describe('planDrop — 레인 거부 (UI-j92s §5.3·§5.4)', () => {
       model
     );
 
-    expect(plan).toEqual({
-      refused: '의존 사이클이 생깁니다 — A-9가 이미 C-2를 막고 있습니다'
+    expect('lane_ops' in plan && plan.lane_ops[0].payload).toEqual({
+      lane_id: 'cl_c',
+      entries: [
+        { bead_id: 'A-9', root_dir: WS_A },
+        { bead_id: 'C-1', root_dir: WS_B },
+        { bead_id: 'C-2', root_dir: WS_A }
+      ]
     });
   });
 
@@ -860,10 +981,11 @@ describe('planDrop — 전송 순서 (UI-j92s §5.5)', () => {
     expect('ops' in plan && plan.ops.map((op) => op.type)).toEqual([
       'dep-remove',
       'dep-remove',
+      'worker-queue-disarm',
       'dep-add',
       'worker-queue-remove'
     ]);
-    expect('lane_op_index' in plan && plan.lane_op_index).toBe(2);
+    expect('lane_op_index' in plan && plan.lane_op_index).toBe(3);
   });
 });
 
@@ -877,9 +999,14 @@ describe('planLaneRemove — 레인 삭제 (UI-j92s §5.1)', () => {
       lane_ops: [{ type: 'monitor-lane-remove', payload: { lane_id: 'cl_s' } }],
       ops: [
         { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
-        { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A }
+        { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A },
+        {
+          type: 'worker-queue-disarm',
+          payload: { bead_ids: ['P', 'X', 'S'], lane_id: 'cl_s' },
+          root_dir: WS_A
+        }
       ],
-      lane_op_index: 2
+      lane_op_index: 3
     });
   });
 
@@ -910,7 +1037,12 @@ describe('planLaneRemove — 레인 삭제 (UI-j92s §5.1)', () => {
     const plan = planLaneRemove('cl_s', model);
 
     expect('ops' in plan && plan.ops).toEqual([
-      { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A }
+      { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A },
+      {
+        type: 'worker-queue-disarm',
+        payload: { bead_ids: ['P', 'X', 'S'], lane_id: 'cl_s' },
+        root_dir: WS_A
+      }
     ]);
   });
 });
@@ -927,7 +1059,7 @@ describe('planLaneReapply — 재적용 (UI-j92s §5.2)', () => {
     expect(plan).toEqual({
       lane_ops: [],
       ops: [
-        { type: 'dep-add', a: 'S', b: 'X', root_dir: WS_A },
+        { type: 'dep-add', a: 'S', b: 'X', root_dir: WS_A, lane_id: 'cl_s' },
         {
           type: 'worker-queue-place',
           payload: { bead_id: 'S', index: 3 },
@@ -1147,5 +1279,429 @@ describe('planDrop — 레인 밖 대상 (UI-e6hw §5.2)', () => {
         root_dir: WS_A
       }
     ]);
+  });
+});
+
+describe('correctLaneOrder — 의존 자동 교정 (UI-jaua §6.1·§6.2)', () => {
+  test('reorders the whole draft lane to the blocks edges', () => {
+    const model = dropModel({
+      blocked_by_map: new Map([['D-1', ['D-3']]]),
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A],
+        ['D-3', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2'], ['D-3']] }])
+    });
+
+    const correction = correctLaneOrder(
+      /** @type {LaneState} */ (model.cross_lanes.get('cl_d')),
+      model
+    );
+
+    // 안정 topo: 막힌 D-1을 건너뛴 뒤 사용자 순서를 최대한 지킨다.
+    expect(correction.entries.map((entry) => entry.bead_id)).toEqual([
+      'D-2',
+      'D-3',
+      'D-1'
+    ]);
+  });
+
+  test('corrects only the range after the last fixed row of a confirmed lane', () => {
+    const model = confirmedSourceModel({
+      blocked_by_map: new Map([['P', ['S']]]),
+      fixed_members: new Set(['P'])
+    });
+
+    const correction = correctLaneOrder(
+      /** @type {LaneState} */ (model.cross_lanes.get('cl_s')),
+      model
+    );
+
+    expect(correction.entries.map((entry) => entry.bead_id)).toEqual([
+      'P',
+      'X',
+      'S'
+    ]);
+  });
+
+  test('flags a fixed row that disagrees with the deps instead of moving it', () => {
+    const model = confirmedSourceModel({
+      blocked_by_map: new Map([['P', ['S']]]),
+      fixed_members: new Set(['P'])
+    });
+
+    const correction = correctLaneOrder(
+      /** @type {LaneState} */ (model.cross_lanes.get('cl_s')),
+      model
+    );
+
+    expect(correction.mismatched).toEqual(['P']);
+  });
+
+  test('leaves the order unchanged and reports a cycle', () => {
+    const model = dropModel({
+      blocked_by_map: new Map([
+        ['D-1', ['D-2']],
+        ['D-2', ['D-1']]
+      ]),
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2']] }])
+    });
+
+    const correction = correctLaneOrder(
+      /** @type {LaneState} */ (model.cross_lanes.get('cl_d')),
+      model
+    );
+
+    expect(correction).toMatchObject({
+      cycle: true,
+      corrections: [],
+      entries: [{ bead_id: 'D-1' }, { bead_id: 'D-2' }]
+    });
+  });
+
+  test('reads an unplaced member blockers from the runnable projection', () => {
+    const model = dropModel({
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2']] }]),
+      placed_members: new Set(),
+      snapshot_blocked_by: new Map(),
+      runnable_blocked_by: new Map([
+        ['D-1', ['D-2']],
+        ['D-2', []]
+      ])
+    });
+
+    const correction = correctLaneOrder(
+      /** @type {LaneState} */ (model.cross_lanes.get('cl_d')),
+      model
+    );
+
+    expect(correction.entries.map((entry) => entry.bead_id)).toEqual([
+      'D-2',
+      'D-1'
+    ]);
+  });
+
+  test('holds the whole correction when one member has no entry in its source', () => {
+    const model = dropModel({
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2']] }]),
+      placed_members: new Set(['D-1', 'D-2']),
+      snapshot_blocked_by: new Map([['D-1', ['D-2']]]),
+      runnable_blocked_by: new Map()
+    });
+
+    const correction = correctLaneOrder(
+      /** @type {LaneState} */ (model.cross_lanes.get('cl_d')),
+      model
+    );
+
+    expect(correction).toMatchObject({
+      held: true,
+      entries: [{ bead_id: 'D-1' }, { bead_id: 'D-2' }]
+    });
+  });
+
+  test('treats an empty blocker array as settled', () => {
+    const model = dropModel({
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2']] }]),
+      placed_members: new Set(['D-1', 'D-2']),
+      snapshot_blocked_by: new Map([
+        ['D-1', ['D-2']],
+        ['D-2', []]
+      ]),
+      runnable_blocked_by: new Map()
+    });
+
+    const correction = correctLaneOrder(
+      /** @type {LaneState} */ (model.cross_lanes.get('cl_d')),
+      model
+    );
+
+    expect(correction).toMatchObject({
+      held: false,
+      entries: [{ bead_id: 'D-2' }, { bead_id: 'D-1' }]
+    });
+  });
+
+  test('disables 확정 while the correction input is unsettled', () => {
+    const model = dropModel({
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2']] }]),
+      placed_members: new Set(['D-1', 'D-2']),
+      snapshot_blocked_by: new Map(),
+      runnable_blocked_by: new Map()
+    });
+
+    const plan = planLaneConfirm('cl_d', model);
+
+    expect(plan).toEqual({ refused: '의존 자료 미확정 — 교정 보류' });
+  });
+
+  test('corrects on the next snapshot that fills the missing data', () => {
+    const settled = new Map([
+      ['D-1', ['D-2']],
+      ['D-2', []]
+    ]);
+    const model = dropModel({
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2']] }]),
+      placed_members: new Set(['D-1', 'D-2']),
+      snapshot_blocked_by: settled,
+      runnable_blocked_by: new Map()
+    });
+
+    const plan = planLaneCorrection('cl_d', model);
+
+    expect(plan).toMatchObject({
+      lane_ops: [
+        {
+          type: 'monitor-lane-update',
+          payload: {
+            lane_id: 'cl_d',
+            entries: [{ bead_id: 'D-2' }, { bead_id: 'D-1' }]
+          }
+        }
+      ]
+    });
+  });
+
+  test('reports the moved row count for the 자동 교정 badge', () => {
+    const model = dropModel({
+      blocked_by_map: new Map([['D-1', ['D-2']]]),
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2']] }])
+    });
+
+    const plan = planLaneCorrection('cl_d', model);
+
+    expect('correction' in plan && plan.correction).toMatchObject({
+      lane_id: 'cl_d',
+      corrected: 1
+    });
+  });
+});
+
+describe('삭제 provenance (UI-jaua §7.1·§7.2)', () => {
+  test('removes only the pairs the lane created when a lane is deleted', () => {
+    const model = confirmedSourceModel({
+      ...laneStore([
+        {
+          id: 'cl_s',
+          status: 'confirmed',
+          entries: [['P'], ['X', WS_A, true], ['S', WS_A, false]]
+        }
+      ])
+    });
+
+    const plan = planLaneRemove('cl_s', model);
+
+    expect(
+      'ops' in plan && plan.ops.filter((op) => op.type === 'dep-remove')
+    ).toEqual([{ type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A }]);
+  });
+
+  test('removes no dependency at all from a lane with no provenance field', () => {
+    const model = confirmedSourceModel({
+      cross_lanes: new Map([
+        [
+          'cl_s',
+          {
+            status: /** @type {const} */ ('confirmed'),
+            entries: [
+              { bead_id: 'P', root_dir: WS_A },
+              { bead_id: 'X', root_dir: WS_A },
+              { bead_id: 'S', root_dir: WS_A }
+            ]
+          }
+        ]
+      ])
+    });
+
+    const plan = planLaneRemove('cl_s', model);
+
+    expect(
+      'ops' in plan && plan.ops.some((op) => op.type === 'dep-remove')
+    ).toBe(false);
+  });
+
+  test('emits the disarm of the departing members between dep-remove and the lane op', () => {
+    const model = confirmedSourceModel();
+
+    const plan = planLaneRemove('cl_s', model);
+
+    expect('ops' in plan && plan.ops.map((op) => op.type)).toEqual([
+      'dep-remove',
+      'dep-remove',
+      'worker-queue-disarm'
+    ]);
+  });
+
+  test('points lane_op_index past the disarm so the lane op follows it', () => {
+    const model = confirmedSourceModel();
+
+    const plan = planLaneRemove('cl_s', model);
+
+    expect('lane_op_index' in plan && plan.lane_op_index).toBe(3);
+  });
+
+  test('removes only the lane-created side when a row is spliced out', () => {
+    const model = confirmedSourceModel({
+      ...laneStore([
+        {
+          id: 'cl_s',
+          status: 'confirmed',
+          entries: [['P'], ['X', WS_A, false], ['S', WS_A, true]]
+        }
+      ])
+    });
+
+    const plan = planDrop(
+      { kind: 'chain', bead_id: 'X', root_dir: WS_A, lane_id: 'cl_s' },
+      { kind: 'candidate' },
+      model
+    );
+
+    expect(
+      'ops' in plan && plan.ops.filter((op) => op.type === 'dep-remove')
+    ).toEqual([{ type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A }]);
+  });
+
+  test('marks the dep-add of a new adjacency with its lane', () => {
+    const model = confirmedTargetModel();
+
+    const plan = planDrop(
+      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
+      { kind: 'chain', lane_id: 'cl_c', marker_index: 2 },
+      model
+    );
+
+    expect(
+      'ops' in plan && plan.ops.filter((op) => op.type === 'dep-add')
+    ).toEqual([
+      { type: 'dep-add', a: 'A-9', b: 'C-2', root_dir: WS_A, lane_id: 'cl_c' }
+    ]);
+  });
+
+  test('leaves a pair whose dep-add was skipped out of the provenance update', () => {
+    const model = confirmedSourceModel();
+
+    const plan = planLaneReapply('cl_s', model);
+
+    expect(
+      'ops' in plan && laneProvenanceUpdates(/** @type {any} */ (plan.ops))
+    ).toEqual([]);
+  });
+
+  test('groups the succeeded pairs of one lane into one provenance update', () => {
+    const applied = [
+      { type: 'dep-add', a: 'X', b: 'P', root_dir: WS_A, lane_id: 'cl_s' },
+      { type: 'dep-add', a: 'S', b: 'X', root_dir: WS_A, lane_id: 'cl_s' },
+      { type: 'dep-add', a: 'Z', b: 'Y', root_dir: WS_A }
+    ];
+
+    const updates = laneProvenanceUpdates(/** @type {any} */ (applied));
+
+    expect(updates).toEqual([
+      {
+        lane_id: 'cl_s',
+        pairs: [
+          { bead_id: 'X', after: 'P' },
+          { bead_id: 'S', after: 'X' }
+        ]
+      }
+    ]);
+  });
+
+  test('drops a pair that is no longer adjacent on the newest lane', () => {
+    const entries = [
+      { bead_id: 'P', root_dir: WS_A },
+      { bead_id: 'Q', root_dir: WS_A },
+      { bead_id: 'X', root_dir: WS_A }
+    ];
+
+    const pairs = adjacentProvenancePairs(entries, [
+      { bead_id: 'X', after: 'P' },
+      { bead_id: 'Q', after: 'P' }
+    ]);
+
+    expect(pairs).toEqual([{ bead_id: 'Q', after: 'P' }]);
+  });
+});
+
+describe('describeLaneRemoval — 확인 대화 (UI-jaua §7.3)', () => {
+  test('lists the deps it removes and the deps it keeps', () => {
+    const model = confirmedSourceModel({
+      ...laneStore([
+        {
+          id: 'cl_s',
+          status: 'confirmed',
+          entries: [['P'], ['X', WS_A, true], ['S', WS_A, false]]
+        }
+      ])
+    });
+
+    const message = describeLaneRemoval('cl_s', model);
+
+    expect(message).toBe(
+      [
+        '연결 1을 지웁니다.',
+        '함께 제거할 의존:',
+        '  X ← P',
+        '그대로 두는 의존:',
+        '  S ← X (레인이 만들지 않음)'
+      ].join('\n')
+    );
+  });
+
+  test('says the dependencies stay when none of them is the lane own', () => {
+    const model = confirmedSourceModel({
+      ...laneStore([
+        {
+          id: 'cl_s',
+          status: 'confirmed',
+          entries: [['P'], ['X', WS_A, false], ['S', WS_A, false]]
+        }
+      ])
+    });
+
+    const message = describeLaneRemoval('cl_s', model);
+
+    expect(message).toBe('연결 1을 지웁니다.\n의존은 그대로 둡니다');
+  });
+
+  test('asks nothing before deleting a draft lane', () => {
+    const model = dropModel({
+      owner_of: new Map([['D-1', WS_A]]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2']] }])
+    });
+
+    const message = describeLaneRemoval('cl_d', model);
+
+    expect(message).toBeNull();
   });
 });

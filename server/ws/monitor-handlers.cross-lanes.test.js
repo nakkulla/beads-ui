@@ -66,6 +66,7 @@ const {
   __resetMonitorPipelineForTest,
   handleMonitorLaneConfirm,
   handleMonitorLaneCreate,
+  handleMonitorLaneProvenance,
   handleMonitorLaneRemove,
   handleMonitorLaneUpdate,
   handleSubscribeMonitorPipeline
@@ -230,7 +231,12 @@ describe('monitor-lane-create (UI-j92s §4.3)', () => {
         id: ws.reply().payload.lane_id,
         status: 'draft',
         created_at: expect.any(String),
-        entries: [entry('UI-1'), entry('UI-2', WS_B)]
+        // 새로 생긴 인접 자리는 `false`로 저장된다 (UI-jaua §7.1 1단계) —
+        // 이 시점에는 그 쌍의 `dep-add`가 성공할지 아무도 모른다.
+        entries: [
+          entry('UI-1'),
+          { ...entry('UI-2', WS_B), dep_created_by_lane: false }
+        ]
       }
     ]);
   });
@@ -342,7 +348,7 @@ describe('monitor-lane-update (UI-j92s §4.3)', () => {
 
     expect(store.read()?.lanes[0].entries).toEqual([
       entry('UI-2'),
-      entry('UI-3', WS_B)
+      { ...entry('UI-3', WS_B), dep_created_by_lane: false }
     ]);
   });
 
@@ -868,5 +874,216 @@ describe('cross_lanes snapshot projection (UI-j92s §4.4)', () => {
     emitMonitorPipelineSnapshot(/** @type {any} */ (ws), 'm1', []);
 
     expect(ws.frames[0].payload.cross_lanes).toBeNull();
+  });
+});
+
+describe('monitor-lane-provenance (UI-jaua §7.1)', () => {
+  test('raises only the named pairs to true', () => {
+    seed(1, [
+      lane({
+        entries: [
+          entry('UI-1'),
+          { ...entry('UI-2'), dep_created_by_lane: false },
+          { ...entry('UI-3'), dep_created_by_lane: false }
+        ]
+      })
+    ]);
+    const ws = fakeWs();
+
+    handleMonitorLaneProvenance(
+      /** @type {any} */ (ws),
+      request('monitor-lane-provenance', {
+        lane_id: 'cl_A',
+        pairs: [{ bead_id: 'UI-2', value: true }],
+        expected_revision: 1
+      }),
+      seams()
+    );
+
+    expect(
+      store.read()?.lanes[0].entries.map((e) => e.dep_created_by_lane)
+    ).toEqual([undefined, true, false]);
+  });
+
+  test('ignores a pair naming the first entry', () => {
+    seed(1, [
+      lane({
+        entries: [
+          entry('UI-1'),
+          { ...entry('UI-2'), dep_created_by_lane: false }
+        ]
+      })
+    ]);
+    const ws = fakeWs();
+
+    handleMonitorLaneProvenance(
+      /** @type {any} */ (ws),
+      request('monitor-lane-provenance', {
+        lane_id: 'cl_A',
+        pairs: [{ bead_id: 'UI-1', value: true }],
+        expected_revision: 1
+      }),
+      seams()
+    );
+
+    expect(
+      store.read()?.lanes[0].entries[0].dep_created_by_lane
+    ).toBeUndefined();
+  });
+
+  test('ignores a bead the lane no longer holds', () => {
+    seed(1, [
+      lane({
+        entries: [
+          entry('UI-1'),
+          { ...entry('UI-2'), dep_created_by_lane: false }
+        ]
+      })
+    ]);
+    const ws = fakeWs();
+
+    handleMonitorLaneProvenance(
+      /** @type {any} */ (ws),
+      request('monitor-lane-provenance', {
+        lane_id: 'cl_A',
+        pairs: [{ bead_id: 'UI-9', value: true }],
+        expected_revision: 1
+      }),
+      seams()
+    );
+
+    expect(ws.reply().payload).toMatchObject({ lane_id: 'cl_A', revision: 2 });
+  });
+
+  test('never lowers a pair through this op', () => {
+    seed(1, [
+      lane({
+        entries: [
+          entry('UI-1'),
+          { ...entry('UI-2'), dep_created_by_lane: true }
+        ]
+      })
+    ]);
+    const ws = fakeWs();
+
+    handleMonitorLaneProvenance(
+      /** @type {any} */ (ws),
+      request('monitor-lane-provenance', {
+        lane_id: 'cl_A',
+        pairs: [{ bead_id: 'UI-2', value: false }],
+        expected_revision: 1
+      }),
+      seams()
+    );
+
+    expect(store.read()?.lanes[0].entries[1].dep_created_by_lane).toBe(true);
+  });
+
+  test('answers conflict with the current lanes on a stale revision', () => {
+    seed(4, [lane({ entries: [entry('UI-1'), entry('UI-2')] })]);
+    const ws = fakeWs();
+
+    handleMonitorLaneProvenance(
+      /** @type {any} */ (ws),
+      request('monitor-lane-provenance', {
+        lane_id: 'cl_A',
+        pairs: [{ bead_id: 'UI-2', value: true }],
+        expected_revision: 1
+      }),
+      seams()
+    );
+
+    expect(ws.reply().error).toMatchObject({ code: 'conflict' });
+  });
+
+  test('rejects a payload with no pairs array', () => {
+    const ws = fakeWs();
+
+    handleMonitorLaneProvenance(
+      /** @type {any} */ (ws),
+      request('monitor-lane-provenance', {
+        lane_id: 'cl_A',
+        expected_revision: 0
+      }),
+      seams()
+    );
+
+    expect(ws.reply().error).toMatchObject({ code: 'bad_request' });
+  });
+});
+
+describe('레인 op의 provenance 1단계 (UI-jaua §7.1)', () => {
+  test('preserves the value of a position whose neighbour is unchanged', () => {
+    seed(1, [
+      lane({
+        entries: [
+          entry('UI-1'),
+          { ...entry('UI-2'), dep_created_by_lane: true },
+          { ...entry('UI-3'), dep_created_by_lane: true }
+        ]
+      })
+    ]);
+    const ws = fakeWs();
+
+    handleMonitorLaneUpdate(
+      /** @type {any} */ (ws),
+      request('monitor-lane-update', {
+        lane_id: 'cl_A',
+        entries: [entry('UI-1'), entry('UI-2'), entry('UI-3'), entry('UI-4')],
+        expected_revision: 1
+      }),
+      seams()
+    );
+
+    expect(
+      store.read()?.lanes[0].entries.map((e) => e.dep_created_by_lane)
+    ).toEqual([undefined, true, true, false]);
+  });
+
+  test('resets a position whose neighbour changed back to false', () => {
+    seed(1, [
+      lane({
+        entries: [
+          entry('UI-1'),
+          { ...entry('UI-2'), dep_created_by_lane: true },
+          { ...entry('UI-3'), dep_created_by_lane: true }
+        ]
+      })
+    ]);
+    const ws = fakeWs();
+
+    handleMonitorLaneUpdate(
+      /** @type {any} */ (ws),
+      request('monitor-lane-update', {
+        lane_id: 'cl_A',
+        entries: [entry('UI-1'), entry('UI-3'), entry('UI-2')],
+        expected_revision: 1
+      }),
+      seams()
+    );
+
+    expect(
+      store.read()?.lanes[0].entries.map((e) => e.dep_created_by_lane)
+    ).toEqual([undefined, false, false]);
+  });
+
+  test('never trusts a client-supplied true', () => {
+    seed(1, [lane({ entries: [entry('UI-1')] })]);
+    const ws = fakeWs();
+
+    handleMonitorLaneUpdate(
+      /** @type {any} */ (ws),
+      request('monitor-lane-update', {
+        lane_id: 'cl_A',
+        entries: [
+          entry('UI-1'),
+          { ...entry('UI-2'), dep_created_by_lane: true }
+        ],
+        expected_revision: 1
+      }),
+      seams()
+    );
+
+    expect(store.read()?.lanes[0].entries[1].dep_created_by_lane).toBe(false);
   });
 });

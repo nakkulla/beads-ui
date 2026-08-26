@@ -27,7 +27,8 @@ afterEach(() => {
  * @returns {Record<string, any>}
  */
 function workspace(patch = {}) {
-  return {
+  /** @type {Record<string, any>} */
+  const merged = {
     root_dir: WS_A,
     name: 'repo-a',
     revision: 1,
@@ -41,6 +42,14 @@ function workspace(patch = {}) {
     bead_titles: {},
     ...patch
   };
+  // 실행가능 행은 서버에서 언제나 `blocked_by`를 실어 온다 (빈 배열 포함,
+  // `runnable-cache.js` `qualify`). UI-jaua §6.1의 완전성 판정이 그 존재를
+  // 읽으므로 픽스처도 같은 모양이어야 한다 — 키가 없으면 "아직 모름"이다.
+  merged.runnable = merged.runnable.map((/** @type {any} */ item) => ({
+    blocked_by: [],
+    ...item
+  }));
+  return merged;
 }
 
 /**
@@ -64,7 +73,10 @@ function state(patch = {}) {
  * One `cross_lanes` snapshot (UI-j92s §4.1). 표시 번호는 배열 자리에서 나오므로
  * 기본 `id`도 그 자리를 따른다 — 테스트가 읽는 `연결 n`과 같은 수여야 한다.
  *
- * @param {Array<{ id?: string, status?: 'draft'|'confirmed', entries: Array<{ bead_id: string, root_dir?: string }> }>} lanes
+ * 확정 레인의 `entries[i>0]`은 기본이 `dep_created_by_lane: true`다 — 그 레인이
+ * 확정하며 만든 의존이고, 삭제가 되돌리는 대상도 그 쌍뿐이다 (UI-jaua §7.1).
+ *
+ * @param {Array<{ id?: string, status?: 'draft'|'confirmed', entries: Array<{ bead_id: string, root_dir?: string, dep_created_by_lane?: boolean }> }>} lanes
  * @param {number} [revision]
  * @returns {{ revision: number, lanes: Array<Record<string, any>> }}
  */
@@ -75,9 +87,14 @@ function crossLanes(lanes, revision = 1) {
       id: lane.id || `cl_${index + 1}`,
       status: lane.status || 'confirmed',
       created_at: '2026-08-25T00:00:00.000Z',
-      entries: lane.entries.map((entry) => ({
+      entries: lane.entries.map((entry, position) => ({
         bead_id: entry.bead_id,
-        root_dir: entry.root_dir || WS_A
+        root_dir: entry.root_dir || WS_A,
+        ...(position > 0 && (lane.status || 'confirmed') === 'confirmed'
+          ? {
+              dep_created_by_lane: entry.dep_created_by_lane ?? true
+            }
+          : {})
       }))
     }))
   };
@@ -1511,9 +1528,20 @@ describe('views/monitor drag and drop (UI-e6hw §5)', () => {
     click(mount, '.mon2-crow[data-bead-id="A-2"] .mon2-crow__detach');
     await flushMicrotasks();
 
+    // UI-jaua §7.2: 빠지는 멤버의 `disarm`이 `dep-remove` 뒤·레인 op 앞에 서고,
+    // 이어 붙인 쌍은 §7.1 2단계가 `true`로 올린다.
     expect(sent).toEqual([
       { type: 'dep-remove', payload: { a: 'A-2', b: 'A-1', root_dir: WS_A } },
       { type: 'dep-remove', payload: { a: 'A-3', b: 'A-2', root_dir: WS_A } },
+      {
+        type: 'worker-queue-disarm',
+        payload: {
+          bead_ids: ['A-2'],
+          lane_id: 'cl_1',
+          root_dir: WS_A,
+          expected_revision: 1
+        }
+      },
       {
         type: 'monitor-lane-update',
         payload: {
@@ -1525,7 +1553,15 @@ describe('views/monitor drag and drop (UI-e6hw §5)', () => {
           expected_revision: 1
         }
       },
-      { type: 'dep-add', payload: { a: 'A-3', b: 'A-1', root_dir: WS_A } }
+      { type: 'dep-add', payload: { a: 'A-3', b: 'A-1', root_dir: WS_A } },
+      {
+        type: 'monitor-lane-provenance',
+        payload: {
+          lane_id: 'cl_1',
+          pairs: [{ bead_id: 'A-3', value: true }],
+          expected_revision: 2
+        }
+      }
     ]);
   });
 
@@ -2132,7 +2168,9 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
       'monitor-lane-confirm',
       'dep-add',
       'worker-queue-place',
-      'worker-queue-place'
+      'worker-queue-place',
+      // UI-jaua §7.1 2단계: 성공한 `dep-add`의 쌍만 `true`로 올린다.
+      'monitor-lane-provenance'
     ]);
     expect(revisions).toEqual([1, 8]);
   });
@@ -2204,7 +2242,8 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
     expect(sent.map((m) => m.type)).toEqual([
       'dep-add',
       'worker-queue-place',
-      'worker-queue-place'
+      'worker-queue-place',
+      'monitor-lane-provenance'
     ]);
     expect(sent[0].payload).toEqual({ a: 'A-9', b: 'A-8', root_dir: WS_A });
   });
@@ -2231,9 +2270,13 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
     click(mount, '.mon2-clane__remove');
     await flushMicrotasks();
 
-    expect(confirmFn).toHaveBeenCalledWith('의존 1개를 함께 제거합니다');
+    // UI-jaua §7.3: 문장이 어느 의존을 지우고 어느 것을 두는지 말한다.
+    expect(confirmFn).toHaveBeenCalledWith(
+      '연결 1을 지웁니다.\n함께 제거할 의존:\n  A-9 ← A-8'
+    );
     expect(sent.map((m) => m.type)).toEqual([
       'dep-remove',
+      'worker-queue-disarm',
       'monitor-lane-remove'
     ]);
   });
