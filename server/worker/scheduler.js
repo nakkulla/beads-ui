@@ -655,6 +655,24 @@ function armedByLaneOf(q, bead_id) {
 }
 
 /**
+ * The cross lane ONE attempt was dispatched by (UI-jaua §5.1), or null. This is
+ * the binding §5.5 judges a failure with: an attempt that never carried an arm
+ * did not fail on a lane's behalf, whatever the queue looks like now.
+ *
+ * @param {{ attempts?: Record<string, { armed_by_lane?: string|null }> }} q
+ * @param {string} attempt_id
+ * @returns {string|null}
+ */
+function attemptArmedLane(q, attempt_id) {
+  const attempt = (q.attempts || {})[attempt_id];
+  return attempt &&
+    typeof attempt.armed_by_lane === 'string' &&
+    attempt.armed_by_lane.length > 0
+    ? attempt.armed_by_lane
+    : null;
+}
+
+/**
  * Per-lane active lineage occupancy (UI-04vo §2), rebuilt from durable state
  * on every read so a restart reproduces it without a schema field. A lane is
  * occupied by a lineage while any of these holds for an attempt carrying its
@@ -3122,12 +3140,22 @@ export function createScheduler(deps) {
       // The cross-lane arm is cleared for THIS row in THIS workspace only
       // (UI-jaua §5.5): the failed spot must not re-dispatch, the lane's other
       // repos are not this scheduler's to write, and the followers are already
-      // held by the bd dependency gate while this bead stays open. The
-      // `auto_advance` breaker below is a SEPARATE axis and an armed failure
-      // must not switch off the repo's own automation — so nothing here reads
-      // or writes it.
+      // held by the bd dependency gate while this bead stays open.
       deps.store.disarmEntry(workspace, { bead_id });
-      deps.store.haltAutoAdvanceForAttempt(workspace, { attempt_id });
+      // The two axes are exclusive. An ARMED failure must not touch the
+      // `auto_advance` circuit breaker (§5.5) — a lane member failing is no
+      // reason to switch off the repo's own automation, which nobody in this
+      // lane asked for and which would silently stop unrelated work. The
+      // judgment reads the ATTEMPT's own arm snapshot, the same binding §5.5
+      // uses to decide whether a failure belongs to a lane at all, so it does
+      // not depend on where the row sits when the session ends.
+      const failed_arm = attemptArmedLane(
+        deps.store.snapshot(workspace),
+        attempt_id
+      );
+      if (failed_arm === null) {
+        deps.store.haltAutoAdvanceForAttempt(workspace, { attempt_id });
+      }
     }
     // STRICTLY after the halt: reopening the bead makes it dispatchable again,
     // so a tick raised by a sibling attempt finishing concurrently must already

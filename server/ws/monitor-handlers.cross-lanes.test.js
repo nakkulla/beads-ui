@@ -894,7 +894,7 @@ describe('monitor-lane-provenance (UI-jaua §7.1)', () => {
       /** @type {any} */ (ws),
       request('monitor-lane-provenance', {
         lane_id: 'cl_A',
-        pairs: [{ bead_id: 'UI-2', value: true }],
+        pairs: [{ bead_id: 'UI-2', after: 'UI-1', value: true }],
         expected_revision: 1
       }),
       seams()
@@ -903,6 +903,59 @@ describe('monitor-lane-provenance (UI-jaua §7.1)', () => {
     expect(
       store.read()?.lanes[0].entries.map((e) => e.dep_created_by_lane)
     ).toEqual([undefined, true, false]);
+  });
+
+  test('ignores a pair whose after is no longer the entry before it', () => {
+    seed(1, [
+      lane({
+        entries: [
+          entry('UI-1'),
+          { ...entry('UI-2'), dep_created_by_lane: false },
+          { ...entry('UI-3'), dep_created_by_lane: false }
+        ]
+      })
+    ]);
+    const ws = fakeWs();
+
+    handleMonitorLaneProvenance(
+      /** @type {any} */ (ws),
+      request('monitor-lane-provenance', {
+        lane_id: 'cl_A',
+        pairs: [{ bead_id: 'UI-3', after: 'UI-1', value: true }],
+        expected_revision: 1
+      }),
+      seams()
+    );
+
+    expect(
+      store.read()?.lanes[0].entries.map((e) => e.dep_created_by_lane)
+    ).toEqual([undefined, false, false]);
+  });
+
+  test('ignores a pair that names no predecessor', () => {
+    seed(1, [
+      lane({
+        entries: [
+          entry('UI-1'),
+          { ...entry('UI-2'), dep_created_by_lane: false }
+        ]
+      })
+    ]);
+    const ws = fakeWs();
+
+    handleMonitorLaneProvenance(
+      /** @type {any} */ (ws),
+      request('monitor-lane-provenance', {
+        lane_id: 'cl_A',
+        pairs: [{ bead_id: 'UI-2', value: true }],
+        expected_revision: 1
+      }),
+      seams()
+    );
+
+    expect(
+      store.read()?.lanes[0].entries.map((e) => e.dep_created_by_lane)
+    ).toEqual([undefined, false]);
   });
 
   test('ignores a pair naming the first entry', () => {
@@ -920,7 +973,7 @@ describe('monitor-lane-provenance (UI-jaua §7.1)', () => {
       /** @type {any} */ (ws),
       request('monitor-lane-provenance', {
         lane_id: 'cl_A',
-        pairs: [{ bead_id: 'UI-1', value: true }],
+        pairs: [{ bead_id: 'UI-1', after: 'UI-0', value: true }],
         expected_revision: 1
       }),
       seams()
@@ -946,7 +999,7 @@ describe('monitor-lane-provenance (UI-jaua §7.1)', () => {
       /** @type {any} */ (ws),
       request('monitor-lane-provenance', {
         lane_id: 'cl_A',
-        pairs: [{ bead_id: 'UI-9', value: true }],
+        pairs: [{ bead_id: 'UI-9', after: 'UI-1', value: true }],
         expected_revision: 1
       }),
       seams()
@@ -970,7 +1023,7 @@ describe('monitor-lane-provenance (UI-jaua §7.1)', () => {
       /** @type {any} */ (ws),
       request('monitor-lane-provenance', {
         lane_id: 'cl_A',
-        pairs: [{ bead_id: 'UI-2', value: false }],
+        pairs: [{ bead_id: 'UI-2', after: 'UI-1', value: false }],
         expected_revision: 1
       }),
       seams()
@@ -987,7 +1040,7 @@ describe('monitor-lane-provenance (UI-jaua §7.1)', () => {
       /** @type {any} */ (ws),
       request('monitor-lane-provenance', {
         lane_id: 'cl_A',
-        pairs: [{ bead_id: 'UI-2', value: true }],
+        pairs: [{ bead_id: 'UI-2', after: 'UI-1', value: true }],
         expected_revision: 1
       }),
       seams()

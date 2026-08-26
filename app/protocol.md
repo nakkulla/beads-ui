@@ -263,15 +263,21 @@ push.
   departing members also precedes it — the client sends `dep-remove` → `disarm`
   → lane op (UI-jaua §7.2).
 - `monitor-lane-provenance` →
-  `{ lane_id, pairs: Array<{ bead_id, value: true }>, expected_revision }`;
+  `{ lane_id, pairs: Array<{ bead_id, after, value: true }>, expected_revision }`;
   replies `{ lane_id, revision }`. Stage 2 of the `dep_created_by_lane` write
   (UI-jaua §7.1): it runs AFTER the `dep-add`s and raises only the pairs that
-  succeeded. `pairs[].bead_id` is the LATER member of the pair (`entries[i+1]`).
-  Only `true` travels — lowering a pair is the lane ops' job — and a pair naming
-  `entries[0]` or a bead the lane no longer holds is ignored without error. On a
-  `conflict` the client keeps just the pairs still adjacent on the returned
-  lanes, retries once, and then gives up silently: staying `false` is the safe
-  direction and `재적용` is the recovery path.
+  succeeded. A pair names BOTH its members — `bead_id` is the later one
+  (`entries[i+1]`), `after` the earlier one — and the server raises it only
+  while `after` is still the entry immediately before `bead_id` in the stored
+  lane. A bare `bead_id` is refused: without the pair check, a reorder between
+  the lane op and this call would stamp lane ownership on an adjacency whose
+  `dep-add` never ran, which is the §1.3 accident re-entered through the field
+  that exists to prevent it. Only `true` travels — lowering a pair is the lane
+  ops' job — and a pair naming `entries[0]`, a bead the lane no longer holds, or
+  an adjacency that no longer exists is ignored without error. On a `conflict`
+  the client keeps just the pairs still adjacent on the returned lanes, retries
+  once, and then gives up silently: staying `false` is the safe direction and
+  `재적용` is the recovery path.
 
 The server validates FORMAT and workspace registration only. `Entry.root_dir`
 must be a registered workspace — HIDDEN ones included, since a hidden repo's

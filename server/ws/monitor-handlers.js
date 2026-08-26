@@ -2027,14 +2027,23 @@ export function handleMonitorLaneRemove(ws, req, options = {}) {
  * (UI-jaua §7.1 2단계).
  *
  * Raises `dep_created_by_lane` on the pairs whose `dep-add` SUCCEEDED —
- * `pairs[].bead_id` is the LATER member of the pair (`entries[i+1]`), because
- * the flag describes the edge to the entry right before it.
+ * `pairs[].bead_id` is the LATER member of the pair (`entries[i+1]`) and
+ * `pairs[].after` the earlier one, because the flag describes the edge between
+ * exactly those two.
+ *
+ * The claim is a PAIR, so the server checks the pair: a raise lands only when
+ * `after` is still the entry right before `bead_id` in the stored lane. A bare
+ * `bead_id` is refused. Without that check a reorder between the lane op and
+ * this call would stamp lane ownership on an adjacency whose `dep-add` never
+ * ran, and the lane `✕` would then delete a dependency the lane did not make —
+ * the UI-jaua §1.3 accident, re-entered through the field that exists to
+ * prevent it.
  *
  * Only `true` travels. Lowering a pair is the lane ops' job (a position whose
  * neighbour changed restarts at `false`), so a client can never use this op to
- * disown a dependency it did create. `entries[0]` and unknown bead ids are
- * fail-quiet: the newest lane may have moved under the client, and the pairs
- * that no longer apply are exactly the ones it must not write.
+ * disown a dependency it did create. `entries[0]`, unknown bead ids, and pairs
+ * that are no longer adjacent are fail-quiet: the newest lane may have moved
+ * under the client, and those are exactly the pairs it must not write.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -2056,12 +2065,18 @@ export function handleMonitorLaneProvenance(ws, req, options = {}) {
     );
     return;
   }
-  /** @type {Set<string>} */
-  const raised = new Set();
+  /** @type {Map<string, string>} */
+  const raised = new Map();
   for (const item of p.pairs) {
     const pair = /** @type {any} */ (item);
-    if (pair && typeof pair.bead_id === 'string' && pair.value === true) {
-      raised.add(pair.bead_id.trim());
+    if (
+      pair &&
+      typeof pair.bead_id === 'string' &&
+      typeof pair.after === 'string' &&
+      pair.after.trim().length > 0 &&
+      pair.value === true
+    ) {
+      raised.set(pair.bead_id.trim(), pair.after.trim());
     }
   }
   const { store, onApplied } = laneOpDeps(options);
@@ -2071,7 +2086,10 @@ export function handleMonitorLaneProvenance(ws, req, options = {}) {
       return { ok: false, code: 'not_found', message: '레인이 없습니다' };
     }
     lane.entries.forEach((entry, index) => {
-      if (index > 0 && raised.has(entry.bead_id)) {
+      if (
+        index > 0 &&
+        raised.get(entry.bead_id) === lane.entries[index - 1].bead_id
+      ) {
         entry.dep_created_by_lane = true;
       }
     });

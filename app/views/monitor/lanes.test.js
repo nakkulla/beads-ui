@@ -1882,6 +1882,19 @@ describe('monitor 연결 레인 발차 축 (UI-jaua §5.5·§5.6)', () => {
     ]);
   });
 
+  test('names the all-done lane with one 모두 완료 badge', () => {
+    const lanes = laneModel({
+      done: [
+        { bead_id: 'A-1', added_at: 1 },
+        { bead_id: 'A-2', added_at: 2 }
+      ]
+    });
+
+    const lane = lanes.chain_lanes[0];
+
+    expect(lane.badge).toBe('모두 완료');
+  });
+
   test('gives a draft lane no run axis', () => {
     const lanes = buildLanes(
       [workspace({ queue: [{ bead_id: 'A-1', armed_by_lane: 'cl_1' }] })],

@@ -3934,7 +3934,13 @@ export function createQueueStore(options = {}) {
         bead_ids.filter((id) => typeof id === 'string' && id.length > 0)
       );
       const result = applyMutation(workspace, expected_revision, (next) => {
-        for (const entry of next.queue) {
+        // Both lanes, symmetric with `disarm` — the arm rides the PR-wait
+        // transition (§5.1), so a member that was ALREADY waiting for its PR
+        // when the process restarted lives only there. Sweeping the parallel
+        // queue alone would clear the restart badge (below) while leaving that
+        // member unarmed forever, and its merge registration would never
+        // resume.
+        for (const entry of [...next.queue, ...next.pr_wait]) {
           if (targets.has(entry.bead_id)) {
             entry.armed_by_lane = lane_id;
           }
@@ -5914,8 +5920,18 @@ export function createQueueStore(options = {}) {
         // Re-plant the cross-lane arm from the ATTEMPT (UI-jaua §5.1): this
         // transition replaces the parallel row, so the arm would otherwise
         // vanish exactly when the merge registration needs to read it.
+        //
+        // EXCEPT for a lane this process's cold load disarmed (§5.4 재시작
+        // 복구). The attempt snapshot predates the restart, so re-planting it
+        // would restore an arm `load()` deliberately cleared and register a
+        // merge the restart was supposed to stop. The lane waits for the
+        // user's `▶ 진행`, which re-arms the row through {@link arm}.
         const armed_by_lane = next.attempts[attempt_id].armed_by_lane;
-        if (typeof armed_by_lane === 'string' && armed_by_lane.length > 0) {
+        if (
+          typeof armed_by_lane === 'string' &&
+          armed_by_lane.length > 0 &&
+          !disarmed_on_load.get(keyFor(workspace))?.has(armed_by_lane)
+        ) {
           entry.armed_by_lane = armed_by_lane;
         }
         next.pr_wait.push(entry);

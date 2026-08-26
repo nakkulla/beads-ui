@@ -743,9 +743,11 @@ function laneRunState(lane_id, status, rows, all_done, unlaunched, axis) {
     };
   }
   if (all_done) {
+    // 상태 배지는 하나다 (§5.5 표): 전원 완료 행의 헤더는 `모두 완료`이고,
+    // 그 옆에 `확정`을 함께 세우면 배타 상태 표가 두 배지로 갈라진다.
     return {
       state: 'all_done',
-      badge: '확정',
+      badge: '모두 완료',
       run_label: null,
       can_stop: false
     };

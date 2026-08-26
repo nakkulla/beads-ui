@@ -7328,7 +7328,8 @@ html[data-theme='dark'] {
   color: var(--stage-plan-on);
 }
 
-.mon2-clane__badge--done {
+.mon2-clane__badge--done,
+.mon2-clane__badge--all_done {
   border-color: var(--border-chip);
   color: var(--text-dim);
 }

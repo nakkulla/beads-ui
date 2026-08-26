@@ -8683,6 +8683,34 @@ describe('worker/queue-store — 연결 레인 arm 축 (UI-jaua §5.1)', () => {
     expect(store.snapshot(WS).pr_wait[0].armed_by_lane).toBe('cl_1');
   });
 
+  test('does not re-plant an arm this process disarmed at load', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 4,
+        queue: [{ bead_id: 'A', added_at: 1, armed_by_lane: 'cl_1' }],
+        attempts: {
+          'att-A': {
+            attempt_id: 'att-A',
+            bead_id: 'A',
+            armed_by_lane: 'cl_1',
+            status: 'running'
+          }
+        }
+      })
+    );
+    const store = createQueueStore();
+
+    store.moveToPrWait(WS, {
+      bead_id: 'A',
+      attempt_id: 'att-A',
+      patch: { status: 'done' }
+    });
+
+    expect(store.snapshot(WS).pr_wait[0].armed_by_lane).toBeUndefined();
+  });
+
   test('leaves an unarmed dispatch out of the pr_wait entry', () => {
     const store = createQueueStore();
     store.place(WS, { expected_revision: 0, bead_id: 'A' });
@@ -8747,6 +8775,26 @@ describe('worker/queue-store — 연결 레인 arm 축 (UI-jaua §5.1)', () => {
 
     expect(result.ok).toBe(false);
     expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('arms a PR-wait row the restart disarmed', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        pr_wait: [{ bead_id: 'B', added_at: 2, armed_by_lane: 'cl_1' }]
+      })
+    );
+    const store = createQueueStore();
+
+    const result = store.arm(WS, {
+      expected_revision: 3,
+      bead_ids: ['B'],
+      lane_id: 'cl_1'
+    });
+
+    expect(result.queue.pr_wait[0].armed_by_lane).toBe('cl_1');
   });
 
   test('clears armed_by_lane on both lanes at cold load and remembers the lane', () => {

@@ -1596,11 +1596,6 @@ export function createMonitorView(mount_element, options) {
         <span class="mon2-clane__badge mon2-clane__badge--${lane.state}"
           >${lane.badge}</span
         >
-        ${lane.all_done
-          ? html`<span class="mon2-clane__badge mon2-clane__badge--done"
-              >모두 완료</span
-            >`
-          : ''}
         ${corrected > 0
           ? html`<span
               class="mon2-clane__corrected"
@@ -3007,7 +3002,14 @@ export function createMonitorView(mount_element, options) {
       try {
         const res = await transport('monitor-lane-provenance', {
           lane_id: update.lane_id,
-          pairs: pairs.map((pair) => ({ bead_id: pair.bead_id, value: true })),
+          // `after`도 함께 싣는다: 서버는 그 쌍이 **지금도 인접인지** 확인한
+          // 뒤에만 올린다 (§7.1). bead_id만 보내면 stage 1과 stage 2 사이에
+          // 순서가 바뀌었을 때 성공한 적 없는 쌍을 레인 소유로 기록하게 된다.
+          pairs: pairs.map((pair) => ({
+            bead_id: pair.bead_id,
+            after: pair.after,
+            value: true
+          })),
           expected_revision: next_revision
         });
         return res && typeof res.revision === 'number'

@@ -14802,6 +14802,32 @@ describe('scheduler 연결 레인 발차 축 (UI-jaua §5.2)', () => {
     });
   });
 
+  test('leaves auto_advance on when an armed member fails', async () => {
+    const env = setup({ config: { A1: {} }, slots: 1 });
+    seedArmed(env.store, ['A1'], 'cl_1');
+    env.store.setAutoAdvance(WS, true);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('A1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).auto_advance).toBe(true);
+  });
+
+  test('halts auto_advance when an unarmed member fails', async () => {
+    const env = setup({ config: { A1: {} }, slots: 1 });
+    seedQueue(env.store, ['A1']);
+    env.store.setAutoAdvance(WS, true);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('A1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).auto_advance).toBe(false);
+  });
+
   test('leaves another workspace arm untouched when one member fails', async () => {
     const env = setup({ config: { A1: {} }, slots: 1 });
     seedArmed(env.store, ['A1'], 'cl_1');

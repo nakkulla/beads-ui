@@ -1564,7 +1564,7 @@ describe('views/monitor drag and drop (UI-e6hw §5)', () => {
         type: 'monitor-lane-provenance',
         payload: {
           lane_id: 'cl_1',
-          pairs: [{ bead_id: 'A-3', value: true }],
+          pairs: [{ bead_id: 'A-3', after: 'A-1', value: true }],
           expected_revision: 2
         }
       }
