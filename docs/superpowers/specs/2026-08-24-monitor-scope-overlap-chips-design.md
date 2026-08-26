@@ -128,10 +128,15 @@ scope:
   - `null` = 읽기 실패(`failed`: artifact 부재·git 오류·base 미해석) → 칩
     없음.
   - `artifacts`는 scope를 읽은 경로 목록(spec, plan 순; 툴팁용).
-- 대상 집합 = `beadWorkflowFor`와 같은 집합에서 PR 대기를 뺀 것(병렬 큐 ∪
-  직렬 레인 ∪ 실행 중). 각 bead에 대해 `scopeArtifactsFor`로 경로를 얻고
-  `scope_cache.peek`가 `hit`이면 항목을 쓴다. `miss`는 항목 생략,
-  `failed`는 `null`.
+- 대상 집합 = `beadWorkflowFor`와 같은 집합(병렬 큐 ∪ 직렬 레인 ∪ 실행 중 ∪
+  PR 대기) + 세션 항목(`session_active`). 각 bead에 대해 `scopeArtifactsFor`로
+  경로를 얻고 `scope_cache.peek`가 `hit`이면 항목을 쓴다. `miss`는 항목 생략,
+  `failed`는 `null`. 세션 항목은 레인 배열에 없으므로 자기 행의
+  `[spec_id, plan_path?]`를 §4.4와 같은 방식으로 읽는다.
+  **정정(UI-anna §3.1):** 원래는 "PR 대기를 뺀 것"이었다. PR 대기 카드도 다른
+  레인과 같은 슬롯 4 질문에 답해야 하므로 대상에 넣었고, 세션이 잡은 실행중
+  bead도 같은 이유로 재료를 받는다. 실행 중 판정은
+  `activeAttemptStates`(클라이언트가 그 레인을 그리는 판정)로 맞춘다.
 - 비영속. `app/protocol.md`의 큐 스냅샷 장식 단락에 `bead_scope` 계약(partial·
   fail-quiet·비영속·세 가지 값의 의미)을 추가한다.
 
@@ -150,8 +155,8 @@ scope:
 
 ### 4.5 비용
 
-- 레포당 (대기 + 실행 중 + 실행가능) bead 수만큼 `git cat-file` 1~2회, 5분에
-  한 번. `resolveBase`는 이미 캐시된다. 한 스냅샷 푸시가 늘리는 동기 작업은
+- 레포당 (대기 + 실행 중 + PR 대기 + 실행가능 + 세션 항목) bead 수만큼
+  `git cat-file` 1~2회, 5분에 한 번 (대상 집합 확대는 UI-anna §3.1). `resolveBase`는 이미 캐시된다. 한 스냅샷 푸시가 늘리는 동기 작업은
   Map 조회뿐이다.
 
 ## 5. 클라이언트 — 겹침 파생·칩·팝오버·1클릭 배치
@@ -167,9 +172,14 @@ scope:
 
 ### 5.2 투영 (`app/views/monitor/lanes.js`, `buildLanes`)
 
-- 레포별 비교 집합 = 그 레포의 실행 중 ∪ 병렬 큐 ∪ 직렬 레인 항목 ∪ 실행가능.
-  PR 대기 제외. 각 항목의 scope는 `bead_scope[id]?.scope`(runnable은
-  `entry.scope`).
+- 레포별 비교 집합 = 그 레포의 실행 중 ∪ 병렬 큐 ∪ 직렬 레인 항목 ∪ 실행가능
+  ∪ PR 대기 (PR 대기 포함은 UI-anna §4.4의 정정이다). 각 항목의 scope는
+  `bead_scope[id]?.scope`(runnable은 `entry.scope`).
+- **비교 단위는 카드가 아니라 bead다** (UI-anna §4.4). head review·repair 세션
+  타일은 `non_occupying`이라 그 bead가 PR 대기 레인에도 그대로 서 있어, 카드
+  단위로 비교하면 자기 자신과 겹친다는 칩이 서고 제3의 카드에는 같은 상대가 두
+  번 적힌다. 레포별 집합은 bead ID로 dedupe하고, 결과(`overlap_chips` ·
+  `scope_state`)는 그 ID의 모든 표시 카드에 복사한다.
 - 양쪽 모두 scope가 비어 있지 않은 쌍만 pairwise 비교한다. 겹치면 양쪽 항목에
   `overlap_chips.push({ id, title, location_label, prefixes })`. 위치 라벨은
   `blockerLocationLabel`이 만드는 값(`실행중`/`#n`/`s1 #n`/`실행가능`)을
@@ -197,7 +207,8 @@ scope:
   치수 그대로). 상대가 4개 이상이면 칩 3개 + `+n` 칩. 툴팁: 겹치는 경로를
   줄바꿈으로 나열.
 - `scope 없음` 칩: 클래스 `worker-dep worker-dep--muted`(회색), 툴팁
-  "겹침 판정 불가 — 스펙에 scope 선언 필요". 실행 중 행에는 붙이지 않는다.
+  "겹침 판정 불가 — 스펙에 scope 선언 필요". 레인 분기는 없다 — 실행 중 행과
+  PR 대기 행에도 붙는다 (UI-anna §6이 레인별 억제를 걷어냈다).
 - 모니터는 §5.2의 `overlap_chips`·`scope_state`를 `dependency_chips`에 합쳐
   `miniRow`에 넘긴다(`index.js`의 기존 `monitor.dependency_chips` 전달 경로).
   UI-e6hw의 연결 레인 행 렌더(`chainRow`)도 같은 `dependencyChipsTemplate`을
@@ -262,7 +273,7 @@ scope:
   `scopeArtifactsFor`가 스펙 없는 bead를 생략하고 plan이 있으면 둘 다 싣는다.
 - `server/worker/runnable-cache.test.js`: 항목에 `plan_path` 투영.
 - `server/ws/worker-handlers.test.js`: `bead_scope`가 §4.3 집합에 partial로
-  실림(hit 항목만, failed는 `null`, PR 대기 제외).
+  실림(hit 항목만, failed는 `null`, PR 대기와 세션 항목 포함 — UI-anna §3.1).
 - `server/ws/monitor-handlers.test.js`: runnable 항목에 `scope` additive 부착,
   miss면 필드 생략.
 - `app/utils/scope-overlap.test.js`: 이동한 순수 함수(기존
@@ -271,8 +282,8 @@ scope:
   `overlap_chips`와 위치 라벨; 빈 scope 쌍 미비교; `scope_state='missing'`;
   레포 간 미비교; `bead_scope` 없는 스냅샷에서 계산 생략; blocks 체인에 숨은
   병렬 멤버의 `MonitorChainLaneRow`에 칩 복사.
-- `app/views/worker/lanes.test.js`: 칩 순서·`+n` 접기·회색 칩·실행 중 행에
-  회색 칩 없음.
+- `app/views/worker/lanes.test.js`: 칩 순서·`+n` 접기·회색 칩(실행 중 행에도
+  선다 — UI-anna §6).
 - `app/views/monitor/index.test.js`: 팝오버 버튼 분기(§5.4 표의 모든 행 —
   같은 레인·상대 직렬 1 op·내 직렬 1 op·둘 다 없음 2 op·실행 중 세 문장),
   2 op 순서와 revision 전달, 첫 op 실패 시 중단, 빈 레인 없음 비활성,

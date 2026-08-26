@@ -145,7 +145,18 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan', 'quick_fix']);
  * @property {'in_progress'} status
  * @property {string} route - `metadata.route`, or `''` when unpinned.
  * @property {string} spec_id - Resolved spec path; `''` when absent or in
- * conflict.
+ * conflict. Also the SCOPE source pointer for this row (UI-anna §3.1): a
+ * session row has no admission semantics to blank it, so `RunnableItem`'s
+ * separate `scope_spec_id` has no counterpart here.
+ * @property {string|null} plan_path - `metadata.plan_path` when it is a
+ * non-empty string, in the same shape and for the same reason as
+ * `RunnableItem`'s (UI-qm12 §4.4): the session-held bead's declared scope is
+ * read from the SAME artifact set (`[spec_id, plan_path?]`) a queued bead's is,
+ * so 세션 착수 → 큐 적재 never changes the overlap verdict.
+ * @property {string[]} [scope] - The declared scope, attached ADDITIVELY from
+ * that artifact set on a scope-cache hit. Absent means 판정 불가 (not read yet,
+ * unreadable, or nothing declared), never "no scope" — the same reading as
+ * `RunnableItem.scope`.
  * @property {string[]} labels - Non-policy labels, same normalization as
  * `RunnableItem`.
  * @property {number|string|null} created_at
@@ -414,12 +425,15 @@ function qualifySession(row, blocked_by = null, enrich = undefined) {
   }
   const meta = metadataOf(row);
   const spec = resolveSpecId(row);
+  const plan_path =
+    typeof meta.plan_path === 'string' ? meta.plan_path.trim() : '';
   return {
     bead_id,
     title: typeof row.title === 'string' ? row.title : '',
     status: 'in_progress',
     route: typeof meta.route === 'string' ? meta.route : '',
     spec_id: spec.conflict ? '' : spec.path,
+    plan_path: plan_path.length > 0 ? plan_path : null,
     labels: workerLabels(row.labels),
     created_at: sessionStamp(row.created_at),
     updated_at: sessionStamp(row.updated_at),

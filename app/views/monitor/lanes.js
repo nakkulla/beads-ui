@@ -23,7 +23,6 @@ import {
   headReviewAttemptStates,
   isImplementationAttempt
 } from '../../utils/active-attempts.js';
-import { isForeignBlocker } from '../../utils/blocker-scope.js';
 import {
   formatAttemptOrchestrationChip,
   formatOrchestrationChip,
@@ -45,6 +44,9 @@ import {
   isPrWaitCleanupActive,
   prWaitProgress
 } from '../worker/pr-wait-progress.js';
+// 칩의 모양은 두 탭이 공유한다 (UI-anna §5.1): 워커 투영도 같은 함수를 불러
+// 같은 라벨·같은 툴팁 문장 틀을 낸다.
+import { predecessorChip } from '../worker/queue-blockers.js';
 import {
   blockerLocationLabel,
   buildBlockerLocationMap,
@@ -506,29 +508,6 @@ function formatOrDrop(pinned, base) {
 }
 
 /**
- * One blocked chip — Board 카드와 같은 한 벌이다 (`board/card.js` `blockedChips`).
- * 칩이 서 있다는 사실 자체가 "이 이슈는 저것 때문에 못 나간다"이므로 방향어를
- * 다시 적지 않고, blocker가 지금 어느 레인에 있는지는 카드가 아니라 툴팁이
- * 말한다 — 카드 위에서 `(실행가능)`은 이 이슈의 상태로 오독됐다.
- *
- * 타 레포 blocker는 같은 문구에 색만 갈라진다 (`foreign`): 기다린다는 사실은
- * 같고, 그것이 이 레포 밖에 있어 여기서 닫을 수 없다는 것만 다르다.
- *
- * @param {string} owner_id
- * @param {import('./blockers.js').BlockerDisplay} blocker
- * @returns {DependencyChip}
- */
-function predecessorChip(owner_id, blocker) {
-  const foreign = isForeignBlocker(owner_id, blocker.id);
-  return {
-    id: blocker.id,
-    label: `⛓ blocked: ${blocker.id}`,
-    title: `이 이슈는 ${blocker.id}가 close될 때까지 출발하지 않는다 (${blocker.location_label})`,
-    ...(foreign ? { foreign: true } : {})
-  };
-}
-
-/**
  * @param {string} bead_id
  * @param {Array<Record<string, any>>} states
  * @returns {string}
@@ -714,9 +693,22 @@ function declaredScopeOf(item, bead_scope_by_root, runnable_scope_by_bead) {
 }
 
 /**
- * Derive the 겹침 칩 (UI-qm12 §5.2): 레포별 (실행 중 ∪ 병렬 큐 ∪ 직렬 레인 ∪
- * 실행가능) 안에서 양쪽 모두 scope를 선언한 쌍만 비교한다. PR 대기·완료는
- * 비교 집합이 아니고 레포 간 비교는 정의되지 않는다 (scope는 레포 상대 경로다).
+ * @typedef {Object} ScopeBead
+ * @property {MonitorItem[]} cards - 이 bead가 지금 서 있는 **모든** 표시 카드.
+ * @property {string[]} scope
+ */
+
+/**
+ * Derive the 겹침 칩 (UI-qm12 §5.2, 대상 확대는 UI-anna §4.4): 레포별 (실행 중
+ * ∪ 병렬 큐 ∪ 직렬 레인 ∪ 실행가능 ∪ PR 대기) 안에서 양쪽 모두 scope를 선언한
+ * 쌍만 비교한다. 완료는 비교 집합이 아니고 레포 간 비교는 정의되지 않는다
+ * (scope는 레포 상대 경로다).
+ *
+ * 비교 단위는 카드가 아니라 **bead**다: head review·repair 세션 타일은
+ * `non_occupying`이라 그 bead가 PR 대기 레인에도 그대로 서 있고, 카드끼리
+ * 비교하면 자기 자신과 겹친다는 칩이 서고 제3의 카드에는 같은 상대가 두 번
+ * 적힌다. 그래서 레포별 집합은 bead ID로 dedupe하고, 판정 결과(`overlap_chips`
+ * · `scope_state`)는 그 ID의 모든 표시 카드에 복사한다.
  *
  * @param {MonitorLanes} model
  * @param {Map<string, Record<string, any>>} bead_scope_by_root
@@ -731,10 +723,21 @@ function applyScopeOverlaps(
   locations,
   states
 ) {
-  /** @type {Map<string, Array<{ item: MonitorItem, scope: string[] }>>} */
-  const declared_by_root = new Map();
-  for (const item of [...model.running, ...model.queue, ...model.runnable]) {
+  /** @type {Map<string, ScopeBead>} */
+  const bead_by_key = new Map();
+  for (const item of [
+    ...model.running,
+    ...model.queue,
+    ...model.runnable,
+    ...model.pr_wait
+  ]) {
     if (!bead_scope_by_root.has(item.root_dir)) {
+      continue;
+    }
+    const key = `${item.root_dir}\u0000${item.id}`;
+    const seen = bead_by_key.get(key);
+    if (seen) {
+      seen.cards.push(item);
       continue;
     }
     const { scope, state } = declaredScopeOf(
@@ -745,34 +748,51 @@ function applyScopeOverlaps(
     if (state !== undefined) {
       item.scope_state = state;
     }
-    if (scope.length === 0) {
+    bead_by_key.set(key, { cards: [item], scope });
+  }
+
+  /** @type {Map<string, ScopeBead[]>} */
+  const declared_by_root = new Map();
+  for (const bead of bead_by_key.values()) {
+    // 첫 카드가 판정을 받았으므로 같은 bead의 나머지 카드에 그대로 복사한다.
+    const state = bead.cards[0].scope_state;
+    if (state !== undefined) {
+      for (const card of bead.cards) {
+        card.scope_state = state;
+      }
+    }
+    if (bead.scope.length === 0) {
       continue;
     }
-    const bucket = declared_by_root.get(item.root_dir);
+    const root_dir = bead.cards[0].root_dir;
+    const bucket = declared_by_root.get(root_dir);
     if (bucket) {
-      bucket.push({ item, scope });
+      bucket.push(bead);
     } else {
-      declared_by_root.set(item.root_dir, [{ item, scope }]);
+      declared_by_root.set(root_dir, [bead]);
     }
   }
 
   /**
-   * @param {MonitorItem} item
-   * @param {MonitorItem} counterpart
+   * @param {ScopeBead} bead
+   * @param {ScopeBead} counterpart
    * @param {string[]} prefixes
    */
-  const pushChip = (item, counterpart, prefixes) => {
+  const pushChip = (bead, counterpart, prefixes) => {
+    const other = counterpart.cards[0];
     /** @type {OverlapChip} */
     const chip = {
-      id: counterpart.id,
-      title: counterpart.title,
-      location_label: chainRowLocationLabel(counterpart.id, locations, states),
+      id: other.id,
+      title: other.title,
+      location_label: chainRowLocationLabel(other.id, locations, states),
       prefixes
     };
-    if (item.overlap_chips) {
-      item.overlap_chips.push(chip);
-    } else {
-      item.overlap_chips = [chip];
+    for (const card of bead.cards) {
+      if (card.overlap_chips) {
+        card.overlap_chips.push(chip);
+      } else {
+        card.overlap_chips = [chip];
+      }
     }
   };
 
@@ -786,8 +806,8 @@ function applyScopeOverlaps(
         if (prefixes.length === 0) {
           continue;
         }
-        pushChip(entries[left].item, entries[right].item, prefixes);
-        pushChip(entries[right].item, entries[left].item, prefixes);
+        pushChip(entries[left], entries[right], prefixes);
+        pushChip(entries[right], entries[left], prefixes);
       }
     }
   }
@@ -1055,6 +1075,29 @@ export function buildLanes(workspaces, workspaces_state, options) {
         : {})
     });
 
+    /**
+     * One bead's blockers, read from the snapshot decoration (UI-anna §4.3).
+     * 대기 행과 같은 규칙이다: 키가 있으면 문자열만 걸러 배열로 싣고, 키가
+     * 없으면 필드를 만들지 않는다 — 부재는 "blocker 없음"이 아니라 "모른다"이고,
+     * 그 카드는 칩을 그리지 않는다(fail-quiet).
+     *
+     * @param {string} bead_id
+     * @returns {{ blocked_by?: string[] }}
+     */
+    const decoratedBlockedBy = (bead_id) => {
+      if (!Object.hasOwn(bead_blocked_by, bead_id)) {
+        return {};
+      }
+      return {
+        blocked_by: Array.isArray(bead_blocked_by[bead_id])
+          ? bead_blocked_by[bead_id].filter(
+              (/** @type {unknown} */ blocker_id) =>
+                typeof blocker_id === 'string' && blocker_id.length > 0
+            )
+          : []
+      };
+    };
+
     /** @type {Set<string>} */
     const claimed = new Set();
 
@@ -1063,6 +1106,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       running.push({
         ...base(bead_id),
         lane: 'running',
+        ...decoratedBlockedBy(bead_id),
         ...(serial_lane_by_bead.has(bead_id)
           ? { serial_lane_id: serial_lane_by_bead.get(bead_id) }
           : {}),
@@ -1116,6 +1160,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...base(bead_id),
         lane: 'running',
         kind: 'session',
+        // 이 타일은 `non_occupying`이라 PR 대기 점유자와 함께 보인다 (§4.3):
+        // 두 카드가 같은 bead의 같은 blocker를 말하는 것은 사실이 어긋나는
+        // 것이 아니라 같은 사실이 두 자리에 서는 것이다.
+        ...decoratedBlockedBy(bead_id),
         attempt_id: typeof a.attempt_id === 'string' ? a.attempt_id : '',
         run_state: /** @type {const} */ ('running'),
         status: 'running',
@@ -1277,6 +1325,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       pr_wait.push({
         ...base(bead_id),
         lane: 'pr_wait',
+        ...decoratedBlockedBy(bead_id),
         // 대기 행과 같은 route 칩 재료 (UI-yrzu §5·§7.2).
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
         pr_number: typeof pr.number === 'number' ? pr.number : null,
@@ -1391,13 +1440,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
             : 'notes의 REVISE finding을 스펙에 반영하는 처분 세션을 띄웁니다'
           : ''
       };
-      if (Object.hasOwn(bead_blocked_by, bead_id)) {
-        item.blocked_by = Array.isArray(bead_blocked_by[bead_id])
-          ? bead_blocked_by[bead_id].filter(
-              (/** @type {unknown} */ blocker_id) =>
-                typeof blocker_id === 'string' && blocker_id.length > 0
-            )
-          : [];
+      const decorated = decoratedBlockedBy(bead_id);
+      if (Object.hasOwn(decorated, 'blocked_by')) {
+        item.blocked_by = decorated.blocked_by;
       }
       return item;
     };
@@ -1775,7 +1820,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
   }
 
-  for (const item of [...model.queue, ...model.runnable]) {
+  // 네 레인이 같은 경로로 blocker를 읽는다 (UI-anna §4.2). `describeBlocker`와
+  // `buildBlockerLocationMap`은 실행중·PR 대기 위치를 이미 알고 있으므로 새
+  // 문자열을 발명하지 않는다.
+  for (const item of [
+    ...model.queue,
+    ...model.runnable,
+    ...model.running,
+    ...model.pr_wait
+  ]) {
     if (!Object.hasOwn(item, 'blocked_by')) {
       continue;
     }
@@ -1788,6 +1841,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 카드는 blocked만 말한다: 역방향(후속) 칩은 걷어냈다 — 이미 출발한 이슈에게
   // "네가 누굴 막는다"를 알려도 그 이슈가 할 일이 없고, 막힌 쪽 카드에 같은
   // 사실이 blocked 칩으로 이미 서 있다. 후속 관계 자체는 의존성 패널이 그린다.
+  //
+  // 레인 배제는 없다 (UI-anna §4.1): 실행중에서 이 칩은 워커 admission을
+  // 우회한 착수나 출발 뒤 추가된 간선을, PR 대기에서는 선행이 닫히기 전에
+  // 머지하려는 상황을 드러낸다. 재료가 없는 카드는 그냥 칩이 없다(fail-quiet).
   for (const item of [
     ...model.queue,
     ...model.runnable,
@@ -1795,12 +1852,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
     ...model.pr_wait
   ]) {
     /** @type {DependencyChip[]} */
-    const predecessors =
-      item.lane === 'running' || item.lane === 'pr_wait'
-        ? []
-        : (item.blockers || []).map((blocker) =>
-            predecessorChip(item.id, blocker)
-          );
+    const predecessors = (item.blockers || []).map((blocker) =>
+      predecessorChip(item.id, blocker)
+    );
     if (predecessors.length === 0) {
       continue;
     }

@@ -91,6 +91,7 @@ import {
   createParallelAnalysisDialog
 } from './parallel-analysis-dialog.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
+import { deriveWorkerBlockers } from './queue-blockers.js';
 import { deriveWorkerOverlaps, workerPlacementPlan } from './queue-overlaps.js';
 import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
@@ -526,7 +527,7 @@ function isPhaseChild(issue) {
 }
 
 /**
- * Lock chip (🔒 + blocker ids) for a blocked candidate. The server-synthesized
+ * The blocker ids of a blocked candidate. The server-synthesized
  * `blocked_info.blockers` (list-adapters `attachBlockedInfo`) is the primary
  * source — it names exactly the unresolved `blocks` predecessors. When the
  * whole `blocked_info` object is absent (older server), fall back to the
@@ -534,20 +535,24 @@ function isPhaseChild(issue) {
  * (`bd list` edge shape), keeping only `blocks`-type edges so related /
  * discovered-from links never render as a lock.
  *
+ * 후보 행은 큐에 없어 스냅샷 장식 `bead_blocked_by`에 들어오지 않으므로, 이
+ * 사다리가 후보 카드의 `⛓ blocked` 칩이 읽는 유일한 원천이다 (UI-anna §5.1) —
+ * 잠금 문장과 칩이 같은 목록을 말하도록 판정은 여기 하나뿐이다.
+ *
  * @param {any} issue
+ * @returns {string[]}
  */
-function blockedReason(issue) {
+function blockerIdsOf(issue) {
   const info = issue?.blocked_info;
   if (info && typeof info === 'object') {
-    const blockers = Array.isArray(info.blockers)
+    return Array.isArray(info.blockers)
       ? info.blockers.filter(
           (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
         )
       : [];
-    return blockers.length > 0 ? `🔒 ${blockers.join(', ')}` : '🔒 blocked';
   }
   const deps = Array.isArray(issue?.dependencies) ? issue.dependencies : [];
-  const ids = deps
+  return deps
     .map((/** @type {any} */ d) => {
       if (typeof d === 'string') {
         return d;
@@ -562,6 +567,15 @@ function blockedReason(issue) {
       return d.depends_on_id || d.id || '';
     })
     .filter(Boolean);
+}
+
+/**
+ * Lock chip (🔒 + blocker ids) for a blocked candidate.
+ *
+ * @param {any} issue
+ */
+function blockedReason(issue) {
+  const ids = blockerIdsOf(issue);
   return ids.length > 0 ? `🔒 ${ids.join(', ')}` : '🔒 blocked';
 }
 
@@ -1431,6 +1445,10 @@ export function prStatusBadge(input) {
  * (UI-58w8 §1). Read only to tell whether an AUTOMATIC enrolment still has a
  * driver behind it; it never gates a manual authority's continuation.
  * @param {{ merge_sha?: unknown, cleanup_cursor?: unknown, repo_operations?: unknown }} [progress_input]
+ * @param {import('./lanes.js').DependencyChips|null} [dependency_chips] - 의존·
+ * 겹침 칩 (UI-anna §5.3). PR 대기 행도 `⛓ blocked` · `⧉ 겹침` · `scope 없음`을
+ * 받는다 — 레인이 바뀌어도 "이 이슈가 지금 무엇과 부딪히나"는 같은 질문이다.
+ * 재료가 없으면 null이고 행은 그 줄을 그리지 않는다 (fail-quiet).
  * @returns {any}
  */
 function prWaitRow(
@@ -1450,7 +1468,8 @@ function prWaitRow(
   discard_operations = {},
   worker_serial = false,
   auto_merge_on = false,
-  progress_input = {}
+  progress_input = {},
+  dependency_chips = null
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const continuation_required =
@@ -1619,6 +1638,7 @@ function prWaitRow(
     done: true,
     lane: 'pr_wait',
     worker_serial,
+    ...(dependency_chips ? { dependency_chips } : {}),
     // Card tone, not an affordance (UI-w0hi §4): an external row came from
     // somewhere else, and the lane reads better when that is visible before the
     // 세션 badge is read.
@@ -1838,7 +1858,7 @@ export function createWorkerView(mount_element, options = {}) {
    * 마지막 렌더의 비교 집합·레인 사실 (UI-jbao). 팝오버의 배치 판정은 클릭
    * 시점의 최신 모델로 한다 — 스냅샷 갱신마다 buildModel이 다시 채운다.
    *
-   * @type {{ members_by_id: Map<string, import('./queue-overlaps.js').OverlapMember>, serial_raw_lengths: Record<string, number>, serial_lane_count: number, occupied_lanes: Set<string> }}
+   * @type {{ members_by_id: Map<string, import('./queue-overlaps.js').LaneMember>, serial_raw_lengths: Record<string, number>, serial_lane_count: number, occupied_lanes: Set<string> }}
    */
   let overlap_queue_facts = {
     members_by_id: new Map(),
@@ -3499,6 +3519,11 @@ export function createWorkerView(mount_element, options = {}) {
       return `⛔ ${reason}`;
     };
 
+    // 후보 행의 blocker 원천 (UI-anna §5.1): 후보는 큐에 없어 스냅샷 장식
+    // `bead_blocked_by`에 들어오지 않으므로, 잠금 문장이 읽는 그 사다리를 칩도
+    // 그대로 읽는다.
+    /** @type {Map<string, string[]>} */
+    const candidate_blocked_by = new Map();
     /** @type {any[]} */
     const candidate_rows = candidate_issues.map((/** @type {any} */ it) => {
       const spec = resolveSpecId(it);
@@ -3539,6 +3564,10 @@ export function createWorkerView(mount_element, options = {}) {
       const parts = [];
       if (is_blocked) {
         parts.push(blockedReason(it));
+        const blocker_ids = blockerIdsOf(it);
+        if (blocker_ids.length > 0) {
+          candidate_blocked_by.set(it.id, blocker_ids);
+        }
       }
       if (is_quick_fix && !has_description) {
         parts.push('missing_description');
@@ -3615,10 +3644,6 @@ export function createWorkerView(mount_element, options = {}) {
         const discard = projected_discard?.operation ? projected_discard : null;
         const worker_serial =
           waiting_lane && legacy_serial_by_id.get(e.bead_id) === true;
-        // 대기 사유 chip (UI-04vo §4): blocked로 스킵된 행에 직접 blocker를
-        // 보여준다. blocker 목록은 표시 전용이고 판정은 서버 스캔의 durable
-        // admission 기록이다.
-        const blockers = bead_blocked_by[e.bead_id] || [];
         const raw_admission =
           q.admission && typeof q.admission === 'object'
             ? q.admission[e.bead_id]
@@ -3632,14 +3657,12 @@ export function createWorkerView(mount_element, options = {}) {
         const admission_reason =
           waiting_lane && !stale_work ? admissionBadge(e.bead_id) : null;
         const reason_parts = waiting_lane ? [admission_reason] : [];
+        // `⏸ … 완료 대기 (blocks)` 뱃지는 걷어냈다 (UI-anna §5.4): blocker가
+        // 누구인지는 `⛓ blocked` 칩이, "서버 admission이 이 행을 not_ready로
+        // 스킵했다"는 같은 카드의 `⛔ not_ready (…)` reason이 말한다 — 같은
+        // blocker id를 한 카드에 두 번 적지 않는다.
         /** @type {string[]} */
-        const wait_badges =
-          waiting_lane &&
-          blockers.length > 0 &&
-          typeof raw_admission?.reason === 'string' &&
-          raw_admission.reason.startsWith('not_ready')
-            ? [`⏸ ${blockers.join(', ')} 완료 대기 (blocks)`]
-            : [];
+        const wait_badges = [];
         const recommended = waiting_lane
           ? recommendation_by_id.get(e.bead_id)
           : undefined;
@@ -3922,6 +3945,10 @@ export function createWorkerView(mount_element, options = {}) {
     const session_claimed = new Set(
       [...failed_running, ...active_running].map((tile) => tile.bead_id)
     );
+    // 세션 타일의 blocker 원천 (UI-anna §5.1): attempt가 없는 이 bead는 큐에도
+    // 없을 수 있어 스냅샷 장식만 읽으면 칩이 조용히 사라진다.
+    /** @type {Map<string, string[]>} */
+    const session_blocked_by = new Map();
     for (const entry of /** @type {any[]} */ (
       Array.isArray(q.session_active) ? q.session_active : []
     )) {
@@ -3934,6 +3961,14 @@ export function createWorkerView(mount_element, options = {}) {
         continue;
       }
       session_claimed.add(bead_id);
+      if (Array.isArray(entry.blocked_by)) {
+        const blocker_ids = entry.blocked_by.filter(
+          (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+        );
+        if (blocker_ids.length > 0) {
+          session_blocked_by.set(bead_id, blocker_ids);
+        }
+      }
       active_running.push({
         bead_id,
         attempt_id: null,
@@ -4365,10 +4400,11 @@ export function createWorkerView(mount_element, options = {}) {
       'queue'
     );
 
-    // 겹침 파생 (UI-jbao): 비교 집합은 서버가 `bead_scope`를 적재한 범위와
-    // 같은 (실행 중 ∪ 병렬 큐 ∪ 직렬 레인)이다. PR 대기 bead는 서버가 싣지
-    // 않으므로 조회가 조용히 비고(§5.2), `bead_scope` 없는 구서버 스냅샷은
-    // 전체가 fail-quiet다.
+    // 의존·겹침 파생 (UI-jbao, 레인 무관 통일은 UI-anna): 화면 사실 목록은
+    // 실행 중 ∪ PR 대기 ∪ 직렬 레인 ∪ 병렬 큐 ∪ 후보이고, 겹침 비교 집합이자
+    // blocked 칩의 위치 사전으로 함께 쓰인다 (§5.2) — 두 칩이 같은 목록에서
+    // 위치를 읽어야 라벨이 갈리지 않는다. `bead_scope` 없는 구서버 스냅샷은
+    // 겹침만 fail-quiet이고, blocked 칩은 자기 원천에서 그대로 선다.
     /** @type {Map<string, 's1'|'s2'|'s3'|'s4'|'s5'>} */
     const occupant_lane = new Map();
     /** @type {Set<string>} */
@@ -4391,13 +4427,13 @@ export function createWorkerView(mount_element, options = {}) {
         occupied_lanes.add(lane_id);
       }
     }
-    /** @type {import('./queue-overlaps.js').OverlapMember[]} */
-    const overlap_members = [];
+    /** @type {import('./queue-overlaps.js').LaneMember[]} */
+    const lane_members = [];
     for (const tile of running) {
       if (typeof tile.bead_id !== 'string') {
         continue;
       }
-      overlap_members.push({
+      lane_members.push({
         id: tile.bead_id,
         title: idToTitle.get(tile.bead_id) || tile.bead_id,
         location_label: '실행중',
@@ -4405,12 +4441,28 @@ export function createWorkerView(mount_element, options = {}) {
         lane_id: occupant_lane.get(tile.bead_id) ?? null
       });
     }
+    // PR 대기도 화면 사실이다 (UI-anna §5.2): 서버가 그 bead의 `bead_scope`를
+    // 실어 주므로 비교 집합에 들고, 위치 라벨은 `PR 대기`다. 이미 출발한 쪽이라
+    // 직렬 레인으로 옮길 수 없다 — 그 판정은 `workerPlacementPlan`이 한다.
+    for (const entry of pr_wait_entries) {
+      const bead_id = entry && entry.bead_id;
+      if (typeof bead_id !== 'string' || bead_id.length === 0) {
+        continue;
+      }
+      lane_members.push({
+        id: bead_id,
+        title: idToTitle.get(bead_id) || bead_id,
+        location_label: 'PR 대기',
+        kind: 'pr_wait',
+        lane_id: null
+      });
+    }
     for (const lane of serial_lanes) {
       for (const row of lane.rows) {
         if (row.ghost === true) {
           continue;
         }
-        overlap_members.push({
+        lane_members.push({
           id: row.id,
           title: row.title,
           location_label: `${lane.id} #${row.seq ?? ''}`.trim(),
@@ -4420,7 +4472,7 @@ export function createWorkerView(mount_element, options = {}) {
       }
     }
     waiting_rows.forEach((row, row_index) => {
-      overlap_members.push({
+      lane_members.push({
         id: row.id,
         title: row.title,
         location_label: `#${row_index + 1}`,
@@ -4432,7 +4484,7 @@ export function createWorkerView(mount_element, options = {}) {
     // 순간이므로 후보도 비교 집합이다. 필터로 숨긴 후보는 넣지 않는다 — 팝오버가
     // 가리키는 상대는 화면에 있어야 한다.
     for (const row of candidates) {
-      overlap_members.push({
+      lane_members.push({
         id: row.id,
         title: row.title,
         location_label: '후보',
@@ -4449,9 +4501,9 @@ export function createWorkerView(mount_element, options = {}) {
     }
     // 첫 등장이 이긴다 — 실행 중이 목록의 앞이므로, 실행 중 bead가 큐 항목으로
     // 남아 있어도 위치 판정은 실행 중이다 (파생의 dedupe 규칙과 같다).
-    /** @type {Map<string, import('./queue-overlaps.js').OverlapMember>} */
+    /** @type {Map<string, import('./queue-overlaps.js').LaneMember>} */
     const members_by_id = new Map();
-    for (const member of overlap_members) {
+    for (const member of lane_members) {
       if (!members_by_id.has(member.id)) {
         members_by_id.set(member.id, member);
       }
@@ -4462,39 +4514,80 @@ export function createWorkerView(mount_element, options = {}) {
       serial_lane_count,
       occupied_lanes
     };
-    const overlap_facts = deriveWorkerOverlaps(q.bead_scope, overlap_members);
-    /**
-     * @param {any} row
-     * @param {string} lane
-     */
-    const attachOverlaps = (row, lane) => {
-      const fact = overlap_facts.get(row.id);
-      if (!fact || (fact.overlaps.length === 0 && !fact.scope_missing)) {
-        return row;
+    const overlap_facts = deriveWorkerOverlaps(q.bead_scope, lane_members);
+    // blocked 칩의 세 원천을 하나로 정규화한다 (UI-anna §5.1). 같은 bead가 둘
+    // 이상에서 오면 큐 장식이 이긴다 — 서버가 스냅샷마다 다시 계산하는 값이다.
+    // 각 원천의 부재는 독립적으로 읽는다: `bead_blocked_by`가 없는 구서버
+    // 스냅샷에서도 후보 행은 여전히 `blocked_info`로 칩을 얻는다.
+    /** @type {Map<string, string[]>} */
+    const blockers_by_bead = new Map();
+    for (const [bead_id, ids] of session_blocked_by) {
+      blockers_by_bead.set(bead_id, ids);
+    }
+    for (const [bead_id, ids] of candidate_blocked_by) {
+      blockers_by_bead.set(bead_id, ids);
+    }
+    for (const [bead_id, ids] of Object.entries(bead_blocked_by)) {
+      if (!Array.isArray(ids)) {
+        continue;
       }
-      const popover = overlapPopoverFor(row.id, fact.overlaps);
-      row.dependency_chips = {
-        ...(row.dependency_chips || {}),
-        ...(fact.overlaps.length > 0 ? { overlaps: fact.overlaps } : {}),
-        ...(fact.scope_missing && lane !== 'running'
-          ? { scope_missing: true }
-          : {}),
+      const blocker_ids = ids.filter(
+        (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+      );
+      if (blocker_ids.length > 0) {
+        blockers_by_bead.set(bead_id, blocker_ids);
+      }
+    }
+    const blocker_chips = deriveWorkerBlockers(blockers_by_bead, lane_members);
+    /**
+     * One bead's 의존·겹침 칩 (UI-anna §5.3). `interactive: false`는 워커 탭에
+     * 의존성 패널이 없기 때문이다 (§5.3a) — 라벨·툴팁·색·자리는 모니터와 같고,
+     * 누를 수 있는지 하나만 다르다. 재료가 하나도 없으면 null이다.
+     *
+     * @param {string} bead_id
+     * @param {import('./lanes.js').DependencyChips|null} [existing]
+     * @returns {import('./lanes.js').DependencyChips|null}
+     */
+    const dependencyChipsFor = (bead_id, existing = null) => {
+      const fact = overlap_facts.get(bead_id);
+      const predecessors = blocker_chips.get(bead_id) || null;
+      const overlaps = fact && fact.overlaps.length > 0 ? fact.overlaps : null;
+      const scope_missing = !!fact && fact.scope_missing;
+      if (!predecessors && !overlaps && !scope_missing) {
+        return existing;
+      }
+      const popover = overlaps ? overlapPopoverFor(bead_id, overlaps) : null;
+      return {
+        ...(existing || {}),
+        interactive: false,
+        ...(predecessors ? { predecessors } : {}),
+        ...(overlaps ? { overlaps } : {}),
+        ...(scope_missing ? { scope_missing: true } : {}),
         ...(popover ? { popover } : {})
       };
+    };
+    /**
+     * @param {any} row
+     */
+    const attachChips = (row) => {
+      const chips = dependencyChipsFor(row.id, row.dependency_chips || null);
+      if (chips) {
+        row.dependency_chips = chips;
+      }
       return row;
     };
     for (const row of waiting_rows) {
-      attachOverlaps(row, 'queue');
+      attachChips(row);
     }
     for (const lane of serial_lanes) {
       for (const row of lane.rows) {
         if (row.ghost !== true) {
-          attachOverlaps(row, lane.id);
+          attachChips(row);
         }
       }
     }
     for (const row of candidates) {
-      attachOverlaps(row, 'candidate');
+      attachChips(row);
     }
     // 실행 타일이 "지금 무엇을 하고 있나"에 답하는 재료 (UI-eey2 §7·§9.3):
     // 최근 활동 한 줄 · 위임 칩 · 겹침 칩. 모니터 탭이 같은 타일 템플릿에
@@ -4515,8 +4608,7 @@ export function createWorkerView(mount_element, options = {}) {
         continue;
       }
       const session_tile = tile.kind === 'session';
-      const fact = overlap_facts.get(bead_id);
-      const overlaps = fact && fact.overlaps.length > 0 ? fact.overlaps : null;
+      const chips = dependencyChipsFor(bead_id);
       const attempt =
         typeof tile.attempt_id === 'string' && tile.attempt_id.length > 0
           ? attempt_by_id.get(tile.attempt_id)
@@ -4528,23 +4620,99 @@ export function createWorkerView(mount_element, options = {}) {
           ? attempt.last_activity
           : null;
       const legs = attempt && Array.isArray(attempt.legs) ? attempt.legs : [];
-      if (!overlaps && !last_activity && legs.length === 0 && !session_tile) {
+      // 오버레이를 만들 최소 조건에 blocked·`scope 없음`도 든다 (UI-anna §5.3):
+      // 그러지 않으면 겹침 없이 blocked만 있는 타일이 오버레이를 못 받아 칩이
+      // 통째로 사라진다.
+      if (!chips && !last_activity && legs.length === 0 && !session_tile) {
         continue;
       }
-      const popover = overlaps ? overlapPopoverFor(bead_id, overlaps) : null;
       running_overlays.set(bead_id, {
         ...(last_activity ? { last_activity } : {}),
         ...(legs.length > 0 ? { legs } : {}),
-        ...(overlaps
-          ? {
-              dependency_chips: {
-                overlaps,
-                ...(popover ? { popover } : {})
-              }
-            }
-          : {})
+        ...(chips ? { dependency_chips: chips } : {})
       });
     }
+
+    // PR 대기 행 (UI-anna §5.3): 의존·겹침 칩을 함께 실어 다른 레인의 행과
+    // 같은 슬롯 4를 그린다. 칩 파생이 이 행의 재료가 아니라 화면 사실 목록에서
+    // 나오므로 (§5.2) 여기서 행을 만든다.
+    const pr_wait_rows = pr_wait_entries
+      .map((/** @type {any} */ e) =>
+        prWaitRow(
+          e.bead_id,
+          idToTitle.get(e.bead_id) || e.bead_id,
+          pr_obs,
+          cleanup_failed[e.bead_id] || null,
+          sumAttemptUsage(q.attempts || {}, e.bead_id),
+          // The server's own progress wins; the local pending only covers the
+          // window before the first snapshot carrying it arrives.
+          pr_activity[e.bead_id] ||
+            (merge_pending.has(e.bead_id)
+              ? {
+                  activity: null,
+                  merge_progress: null,
+                  queueing: /** @type {const} */ ('merge')
+                }
+              : cleanup_pending.has(e.bead_id)
+                ? {
+                    activity: null,
+                    merge_progress: null,
+                    queueing: /** @type {const} */ ('cleanup')
+                  }
+                : null),
+          conflict_sessions.get(e.bead_id) || null,
+          // Overlaid by the server (UI-7agi §2) — absent on every durable row.
+          e.external === true,
+          {
+            position: merge_positions.get(e.bead_id) || 0,
+            active: merge_state.active === e.bead_id,
+            failure: merge_failures[e.bead_id] || null,
+            waiting:
+              merge_waiting?.bead_id === e.bead_id
+                ? merge_waiting.reason
+                : null,
+            resolution: merge_resolutions.get(e.bead_id),
+            continuation_action: merge_continuations.get(e.bead_id),
+            head_review: merge_head_reviews.get(e.bead_id) || null,
+            authority: merge_authorities.get(e.bead_id) || null
+          },
+          // Also overlay-only (UI-w0hi §3): a durable row has no field here and
+          // must keep the pre-existing behaviour, so absence reads as present.
+          e.wt_present !== false,
+          // 자동 모드가 꺼져 있으면 제외 기록은 이 행이 서 있는 이유가 아니다
+          // (UI-yk55 §3.4) — 기록이 지워지는 시점도 자동 스캔이므로, 꺼진
+          // 상태의 잔여 기록을 뱃지로 보이면 사실이 아닌 설명이 된다.
+          q.auto_merge === true ? autoSkipReason(e.bead_id) : null,
+          baseException(declared_base, prWaitTargetBase(e.bead_id)),
+          q.completion_status &&
+            typeof q.completion_status === 'object' &&
+            !Array.isArray(q.completion_status)
+            ? q.completion_status[e.bead_id] || null
+            : null,
+          q.discard_operations &&
+            typeof q.discard_operations === 'object' &&
+            !Array.isArray(q.discard_operations)
+            ? q.discard_operations
+            : {},
+          attempt_by_id.get(last_attempt_by_bead.get(e.bead_id) || '')
+            ?.worker_serial === true,
+          q.auto_merge === true,
+          {
+            merge_sha: e.merge_sha,
+            cleanup_cursor: e.cleanup_cursor,
+            repo_operations: Array.isArray(q.repo_operations)
+              ? q.repo_operations
+              : []
+          },
+          dependencyChipsFor(e.bead_id)
+        )
+      )
+      .map((/** @type {any} */ row) => ({
+        ...row,
+        workflow: bead_workflow[row.id] || null,
+        priority: idToPriority.get(row.id),
+        ...timesOf(row.id)
+      }));
 
     return {
       queue: q,
@@ -4569,82 +4737,7 @@ export function createWorkerView(mount_element, options = {}) {
       // PR 대기 is its own column (worker-phase2 §7): a bead there is NOT done —
       // the PR is open and waiting for the human merge click. 완료 carries only
       // what actually merged and finished cleanup.
-      pr_wait: pr_wait_entries
-        .map((/** @type {any} */ e) =>
-          prWaitRow(
-            e.bead_id,
-            idToTitle.get(e.bead_id) || e.bead_id,
-            pr_obs,
-            cleanup_failed[e.bead_id] || null,
-            sumAttemptUsage(q.attempts || {}, e.bead_id),
-            // The server's own progress wins; the local pending only covers the
-            // window before the first snapshot carrying it arrives.
-            pr_activity[e.bead_id] ||
-              (merge_pending.has(e.bead_id)
-                ? {
-                    activity: null,
-                    merge_progress: null,
-                    queueing: /** @type {const} */ ('merge')
-                  }
-                : cleanup_pending.has(e.bead_id)
-                  ? {
-                      activity: null,
-                      merge_progress: null,
-                      queueing: /** @type {const} */ ('cleanup')
-                    }
-                  : null),
-            conflict_sessions.get(e.bead_id) || null,
-            // Overlaid by the server (UI-7agi §2) — absent on every durable row.
-            e.external === true,
-            {
-              position: merge_positions.get(e.bead_id) || 0,
-              active: merge_state.active === e.bead_id,
-              failure: merge_failures[e.bead_id] || null,
-              waiting:
-                merge_waiting?.bead_id === e.bead_id
-                  ? merge_waiting.reason
-                  : null,
-              resolution: merge_resolutions.get(e.bead_id),
-              continuation_action: merge_continuations.get(e.bead_id),
-              head_review: merge_head_reviews.get(e.bead_id) || null,
-              authority: merge_authorities.get(e.bead_id) || null
-            },
-            // Also overlay-only (UI-w0hi §3): a durable row has no field here and
-            // must keep the pre-existing behaviour, so absence reads as present.
-            e.wt_present !== false,
-            // 자동 모드가 꺼져 있으면 제외 기록은 이 행이 서 있는 이유가 아니다
-            // (UI-yk55 §3.4) — 기록이 지워지는 시점도 자동 스캔이므로, 꺼진
-            // 상태의 잔여 기록을 뱃지로 보이면 사실이 아닌 설명이 된다.
-            q.auto_merge === true ? autoSkipReason(e.bead_id) : null,
-            baseException(declared_base, prWaitTargetBase(e.bead_id)),
-            q.completion_status &&
-              typeof q.completion_status === 'object' &&
-              !Array.isArray(q.completion_status)
-              ? q.completion_status[e.bead_id] || null
-              : null,
-            q.discard_operations &&
-              typeof q.discard_operations === 'object' &&
-              !Array.isArray(q.discard_operations)
-              ? q.discard_operations
-              : {},
-            attempt_by_id.get(last_attempt_by_bead.get(e.bead_id) || '')
-              ?.worker_serial === true,
-            q.auto_merge === true,
-            {
-              merge_sha: e.merge_sha,
-              cleanup_cursor: e.cleanup_cursor,
-              repo_operations: Array.isArray(q.repo_operations)
-                ? q.repo_operations
-                : []
-            }
-          )
-        )
-        .map((/** @type {any} */ row) => ({
-          ...row,
-          workflow: bead_workflow[row.id] || null,
-          priority: idToPriority.get(row.id),
-          ...timesOf(row.id)
-        })),
+      pr_wait: pr_wait_rows,
       merge_queue_length: merge_queue.length,
       merge_queue_running: merge_queue.length > 0,
       // 자동 편입이 지금 건너뛸 행 (UI-yk55 §3.2). 버튼의 N은 "켜면 들어갈 수"를

@@ -144,7 +144,7 @@ describe('decorateQueue bead_scope (UI-qm12 §4.3)', () => {
     });
   });
 
-  test('leaves the pr_wait bead out of the target set', async () => {
+  test('carries the declared scope of the pr_wait bead (UI-anna §3.1)', async () => {
     seedBead('UI-3', SPEC_C);
     const cache = scopeCacheOver({ [SPEC_C]: artifact(['server/']) });
     await cache.fill(WS, [SPEC_C]);
@@ -152,7 +152,30 @@ describe('decorateQueue bead_scope (UI-qm12 §4.3)', () => {
 
     const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
 
-    expect(Object.hasOwn(out.bead_scope, 'UI-3')).toBe(false);
+    expect(out.bead_scope['UI-3']).toEqual({
+      scope: ['server/'],
+      artifacts: [SPEC_C]
+    });
+  });
+
+  test('carries the declared scope of a paused running bead', async () => {
+    seedBead('UI-5', SPEC_C);
+    const cache = scopeCacheOver({ [SPEC_C]: artifact(['server/']) });
+    await cache.fill(WS, [SPEC_C]);
+    __setScopeCacheForTest(cache);
+    const queue = laneQueue();
+    /** @type {any} */ (queue).attempts['att-2'] = {
+      attempt_id: 'att-2',
+      bead_id: 'UI-5',
+      status: 'paused'
+    };
+
+    const out = /** @type {any} */ (decorateQueue(WS, queue));
+
+    expect(out.bead_scope['UI-5']).toEqual({
+      scope: ['server/'],
+      artifacts: [SPEC_C]
+    });
   });
 
   test('carries null for a bead whose artifacts cannot be read', async () => {
@@ -439,5 +462,147 @@ describe('decorateQueue bead_scope description fallback (UI-f1qy §4.3)', () => 
     const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
 
     expect(out.bead_scope).toEqual({});
+  });
+});
+
+describe('decorateQueue bead_scope 세션 항목 (UI-anna §3.1)', () => {
+  test('carries the declared scope of a session-held bead in no lane', async () => {
+    const cache = scopeCacheOver({ [SPEC_C]: artifact(['app/utils/']) });
+    await cache.fill(WS, [SPEC_C]);
+    __setScopeCacheForTest(cache);
+    vi.spyOn(
+      getWorkerRuntime().runnableCache,
+      'sessionActivePeek'
+    ).mockReturnValue([
+      /** @type {any} */ ({ bead_id: 'UI-8', spec_id: SPEC_C, plan_path: null })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-8']).toEqual({
+      scope: ['app/utils/'],
+      artifacts: [SPEC_C]
+    });
+  });
+
+  test('reads a session row from the same artifact set a queued bead would use', async () => {
+    const cache = scopeCacheOver({
+      [SPEC_C]: artifact(['app/']),
+      [SPEC_D]: artifact(['docs/'])
+    });
+    await cache.fill(WS, [SPEC_C, SPEC_D]);
+    __setScopeCacheForTest(cache);
+    vi.spyOn(
+      getWorkerRuntime().runnableCache,
+      'sessionActivePeek'
+    ).mockReturnValue([
+      /** @type {any} */ ({
+        bead_id: 'UI-8',
+        spec_id: SPEC_C,
+        plan_path: SPEC_D
+      })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-8'].artifacts).toEqual([SPEC_C, SPEC_D]);
+  });
+
+  test('judges the same bead alike whether a session or the queue holds it', async () => {
+    seedBead('UI-8', SPEC_C);
+    const cache = scopeCacheOver({ [SPEC_C]: artifact(['app/utils/']) });
+    await cache.fill(WS, [SPEC_C]);
+    __setScopeCacheForTest(cache);
+    vi.spyOn(
+      getWorkerRuntime().runnableCache,
+      'sessionActivePeek'
+    ).mockReturnValue([
+      /** @type {any} */ ({ bead_id: 'UI-8', spec_id: SPEC_C, plan_path: null })
+    ]);
+    const queued = laneQueue();
+    /** @type {any} */ (queued).queue.push({ bead_id: 'UI-8', added_at: 2 });
+
+    const as_session = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+    const as_queued = /** @type {any} */ (decorateQueue(WS, queued));
+
+    expect(as_session.bead_scope['UI-8']).toEqual(as_queued.bead_scope['UI-8']);
+  });
+
+  test('omits a session row that resolves no spec', () => {
+    __setScopeCacheForTest(scopeCacheOver({}));
+    vi.spyOn(
+      getWorkerRuntime().runnableCache,
+      'sessionActivePeek'
+    ).mockReturnValue([
+      /** @type {any} */ ({ bead_id: 'UI-8', spec_id: '', plan_path: null })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope).toEqual({});
+  });
+
+  test('keeps the lane readings when the session lookup throws', async () => {
+    seedBead('UI-1', SPEC_A);
+    const cache = scopeCacheOver({ [SPEC_A]: artifact(['server/']) });
+    await cache.fill(WS, [SPEC_A]);
+    __setScopeCacheForTest(cache);
+    vi.spyOn(
+      getWorkerRuntime().runnableCache,
+      'sessionActivePeek'
+    ).mockImplementation(() => {
+      throw new Error('session cache unavailable');
+    });
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-1']).toEqual({
+      scope: ['server/'],
+      artifacts: [SPEC_A]
+    });
+  });
+});
+
+describe('decorateQueue bead_blocked_by 실행중 레인 (UI-anna §3.2)', () => {
+  /**
+   * Seed a bead whose only fact is one open `blocks` predecessor.
+   *
+   * @param {string} bead_id
+   * @param {string} blocker_id
+   */
+  function seedBlocked(bead_id, blocker_id) {
+    getWorkerRuntime().titleCache.refreshFromIssue(WS, {
+      id: bead_id,
+      title: `${bead_id} 제목`,
+      dependencies: [{ id: blocker_id, dependency_type: 'blocks' }]
+    });
+  }
+
+  test('carries the blockers of a running bead that holds no queue entry', () => {
+    seedBlocked('UI-2', 'UI-7');
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_blocked_by['UI-2']).toEqual(['UI-7']);
+  });
+
+  test('carries the blockers of a bead whose only attempt is paused', () => {
+    seedBlocked('UI-5', 'UI-7');
+    const queue = laneQueue();
+    /** @type {any} */ (queue).attempts['att-2'] = {
+      attempt_id: 'att-2',
+      bead_id: 'UI-5',
+      status: 'paused'
+    };
+
+    const out = /** @type {any} */ (decorateQueue(WS, queue));
+
+    expect(out.bead_blocked_by['UI-5']).toEqual(['UI-7']);
+  });
+
+  test('leaves out a bead whose record has not been read', () => {
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(Object.hasOwn(out.bead_blocked_by, 'UI-2')).toBe(false);
   });
 });

@@ -2383,13 +2383,55 @@ describe('겹침 칩 (UI-qm12 §5.3)', () => {
     );
   });
 
-  test('never draws the muted chip on a running row', () => {
+  test('draws the muted chip on a running row too', () => {
     const deps = renderDeps(
       { overlaps: overlaps(1), scope_missing: true },
       'running'
     );
 
-    expect(deps.querySelector('.worker-dep--muted')).toBeNull();
+    expect(deps.querySelector('.worker-dep--muted')?.textContent).toContain(
+      'scope 없음'
+    );
+  });
+
+  test('draws the blocked chip as a button by default', () => {
+    const deps = renderDeps({
+      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }]
+    });
+
+    expect(
+      deps.querySelector('.worker-dep__open')?.getAttribute('data-dep-id')
+    ).toBe('UI-p');
+  });
+
+  test('draws a display-only blocked chip when the projection says so', () => {
+    const deps = renderDeps({
+      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }],
+      interactive: false
+    });
+
+    expect(deps.querySelector('.worker-dep__open')).toBeNull();
+  });
+
+  test('keeps label, tooltip and colour on a display-only blocked chip', () => {
+    const deps = renderDeps({
+      predecessors: [
+        {
+          id: 'UI-p',
+          label: '⛓ blocked: UI-p',
+          title: '이 이슈는 UI-p가 close될 때까지 출발하지 않는다 (#1)'
+        }
+      ],
+      interactive: false
+    });
+
+    const chip = /** @type {HTMLElement} */ (
+      deps.querySelector('.worker-dep--pred')
+    );
+    expect(chip.textContent?.trim()).toBe('⛓ blocked: UI-p');
+    expect(chip.getAttribute('title')).toBe(
+      '이 이슈는 UI-p가 close될 때까지 출발하지 않는다 (#1)'
+    );
   });
 
   test('draws the popover rows the projection hands it', () => {

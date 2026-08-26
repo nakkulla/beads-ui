@@ -29,7 +29,10 @@
  */
 import nodeFs from 'node:fs';
 import { makeError, makeOk } from '../../app/protocol.js';
-import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
+import {
+  activeAttemptStates,
+  isImplementationAttempt
+} from '../../app/utils/active-attempts.js';
 import {
   backupFreshWorkerStaleWork,
   checkWorkerQueueAdmission,
@@ -1018,14 +1021,42 @@ function beadWorkflowFor(workspace_key, queue) {
 }
 
 /**
- * The beads a LANE renders: `queue` ∪ `serial_lanes[].entries` ∪ RUNNING
- * implementation attempts, with `pr_wait` included only for the stepper.
+ * The beads the 실행중 레인 draws, by the SAME predicate the client draws it
+ * with (`app/utils/active-attempts.js` `activeAttemptStates`, UI-anna §3.2).
+ * A `status === 'running'` filter is NOT the same set: the client's 실행중
+ * tiles include a paused attempt and an unhandled failure, so copying that
+ * filter here would drop the decorations of exactly those tiles.
+ *
+ * Only `implementation` attempts confer occupancy (UI-hk74 §7) — that
+ * exclusion lives inside the shared predicate.
+ *
+ * @param {Record<string, unknown>} queue
+ * @returns {string[]}
+ */
+function runningLaneBeadIds(queue) {
+  /** @type {Map<string, number>} */
+  const done_at_by_bead = new Map();
+  const done_lane = Array.isArray(queue.done)
+    ? /** @type {any[]} */ (queue.done)
+    : [];
+  for (const entry of done_lane) {
+    if (
+      entry &&
+      typeof entry.bead_id === 'string' &&
+      typeof entry.added_at === 'number'
+    ) {
+      done_at_by_bead.set(entry.bead_id, entry.added_at);
+    }
+  }
+  const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
+  return [...activeAttemptStates(attempts, done_at_by_bead).winners.keys()];
+}
+
+/**
+ * The beads a LANE renders: `queue` ∪ `serial_lanes[].entries` ∪ the 실행중
+ * 레인 beads, with `pr_wait` included only when the caller asks for it.
  * `done` is never a member — a finished bead draws neither a stepper nor an
  * overlap chip.
- *
- * Only `implementation` attempts confer lane membership (UI-hk74 §7). A head
- * review or repair attempt runs against a bead whose PR is already open, so
- * counting it here would drag that bead back into the running lane it left.
  *
  * @param {Record<string, unknown>} queue
  * @param {boolean} include_pr_wait
@@ -1052,18 +1083,7 @@ function laneMemberIds(queue, include_pr_wait) {
       }
     }
   }
-  const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
-  for (const attempt of Object.values(attempts)) {
-    if (
-      attempt &&
-      attempt.status === 'running' &&
-      isImplementationAttempt(attempt) &&
-      typeof attempt.bead_id === 'string' &&
-      attempt.bead_id.length > 0
-    ) {
-      ids.push(attempt.bead_id);
-    }
-  }
+  ids.push(...runningLaneBeadIds(queue));
   return ids;
 }
 
@@ -1107,10 +1127,11 @@ function scopeCacheHandle() {
 }
 
 /**
- * The declared scope of every bead the WAITING, RUNNING and 후보 lanes render
- * (UI-qm12 §4.3, widened to 후보 by UI-f3ma). `pr_wait` is excluded: a bead
- * whose PR is open has stopped competing for the tree, so an overlap chip on it
- * would be noise.
+ * The declared scope of every bead the WAITING, RUNNING, PR 대기, 후보 and
+ * SESSION lanes render (UI-qm12 §4.3, widened to 후보 by UI-f3ma and to
+ * `pr_wait` + `session_active` by UI-anna §3.1) — the same set
+ * {@link beadWorkflowFor} decorates, plus the session-held beads that stand in
+ * no lane array at all.
  *
  * Three deliberately distinct values, none of which blocks the push:
  *   - NO ENTRY: not read yet (`miss`), or the bead declares no scope anywhere.
@@ -1145,7 +1166,7 @@ function beadScopeFor(workspace_key, queue) {
       out[bead_id] = null;
     }
   };
-  const ids = laneMemberIds(queue, false);
+  const ids = laneMemberIds(queue, true);
   try {
     const titles = titleCacheHandle();
     if (titles && ids.length > 0) {
@@ -1197,6 +1218,29 @@ function beadScopeFor(workspace_key, queue) {
   } catch (err) {
     log('runnable scope lookup failed for %s: %o', workspace_key, err);
   }
+  // 세션이 잡은 실행중 bead (UI-anna §3.1): attempt가 없어 레인 집합에 걸리지
+  // 않고 큐에도 없을 수 있다. 원천은 후보 행과 같은 아티팩트 집합
+  // (`[spec_id, plan_path?]`)이므로, 같은 bead가 세션 착수에서 큐 적재로
+  // 옮겨가도 겹침 판정이 달라지지 않는다.
+  try {
+    for (const item of sessionActiveRows(workspace_key, queue)) {
+      const bead_id = typeof item.bead_id === 'string' ? item.bead_id : '';
+      if (bead_id.length === 0 || bead_id in out) {
+        continue;
+      }
+      const spec_id = typeof item.spec_id === 'string' ? item.spec_id : '';
+      if (spec_id.length === 0) {
+        continue;
+      }
+      const plan_path =
+        typeof item.plan_path === 'string' && item.plan_path.length > 0
+          ? item.plan_path
+          : '';
+      readInto(bead_id, plan_path ? [spec_id, plan_path] : [spec_id]);
+    }
+  } catch (err) {
+    log('session scope lookup failed for %s: %o', workspace_key, err);
+  }
   return out;
 }
 
@@ -1225,6 +1269,14 @@ function runnableRows(workspace_key, queue) {
 }
 
 /**
+ * The four partial lane decorations (`titlesFor` · `timesFor` · `labelsFor` ·
+ * `blockedByFor`) share one id set: `queue` ∪ `pr_wait` ∪ `done` ∪ the serial
+ * lanes ∪ the 실행중 레인 beads (UI-anna §3.2). The running lane is in the set
+ * so a bead a SESSION started — one that stands in no lane array — still
+ * carries its blockers; a running bead that kept its queue entry was already
+ * covered. Every decoration here is additive, so a wider set only adds
+ * material and changes no existing verdict.
+ *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
  * @param {'titlesFor'|'timesFor'|'labelsFor'|'blockedByFor'} method
@@ -1254,6 +1306,7 @@ function beadDecorationFor(workspace_key, queue, method) {
       }
     }
   }
+  ids.push(...runningLaneBeadIds(queue));
   if (ids.length === 0) {
     return {};
   }
@@ -2225,10 +2278,10 @@ export function decorateQueue(workspace_key, raw_queue) {
     // serial lanes ∪ running attempts ∪ `pr_wait`, `done` excluded. Same
     // partial-cache contract as the three decorations above.
     bead_workflow: beadWorkflowFor(workspace_key, queue),
-    // Declared scope of the WAITING and RUNNING beads (UI-qm12 §4.3), from
-    // which the client derives the pairwise overlap chips. Same partial,
-    // fail-quiet, non-persisted contract as the decorations above; `pr_wait` is
-    // deliberately outside the set.
+    // Declared scope of the WAITING, RUNNING, PR 대기, 후보 and SESSION beads
+    // (UI-qm12 §4.3, target set widened by UI-anna §3.1), from which the client
+    // derives the pairwise overlap chips. Same partial, fail-quiet,
+    // non-persisted contract as the decorations above.
     bead_scope: beadScopeFor(workspace_key, queue),
     // Direct blocks blocker ids for the same beads (UI-04vo §3) — the
     // wait-reason chip and lane topological corrections read from this.

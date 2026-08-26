@@ -603,6 +603,56 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
     expect(tile.querySelector('.rtile__hd .rtile__lane')).toBeNull();
   });
 
+  test('draws blocked, 겹침 and scope 없음 chips on the tile (UI-anna §5.3)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(tileInput(), 5000, null, {
+        monitor: /** @type {any} */ ({
+          ...monitor,
+          dependency_chips: {
+            ...monitor.dependency_chips,
+            predecessors: [{ id: 'UI-p1', label: '⛓ blocked: UI-p1' }],
+            scope_missing: true
+          }
+        })
+      }),
+      mount
+    );
+    const deps = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile .worker-deps')
+    );
+
+    expect(deps.querySelector('.worker-dep--pred')?.textContent).toContain(
+      '⛓ blocked: UI-p1'
+    );
+    expect(deps.querySelector('.mon-overlap__chip')?.textContent).toContain(
+      'UI-o1'
+    );
+    expect(deps.querySelector('.worker-dep--muted')?.textContent).toContain(
+      'scope 없음'
+    );
+  });
+
+  test('draws a display-only blocked chip when the projection says so', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(tileInput(), 5000, null, {
+        monitor: /** @type {any} */ ({
+          ...monitor,
+          dependency_chips: {
+            interactive: false,
+            predecessors: [{ id: 'UI-p1', label: '⛓ blocked: UI-p1' }]
+          }
+        })
+      }),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile .worker-dep__open')).toBeNull();
+  });
+
   test('adds the last activity and its age without a stepper', () => {
     const tile = shape(
       runningTile(tileInput(), 5000, null, {

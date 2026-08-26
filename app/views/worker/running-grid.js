@@ -295,8 +295,9 @@ export function bannersTemplate(state) {
  * @property {Array<{ label: string, state: 'live'|'done'|'failed', agent_type?: string|null }>} [legs] -
  * Delegation legs; only the unfinished ones are spelled out.
  * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
- * 겹침·연결 레인 칩 (§5.1). 실행중 타일에는 blocked 칩이 서지 않는다 — 이미
- * 출발했으므로 막힌 것이 없다.
+ * 의존·겹침 칩 (§5.1). 실행중 타일도 `⛓ blocked` · `⧉ 겹침` · `scope 없음`을
+ * 모두 받는다 (UI-anna §4·§5.3): 이미 출발한 레인에서 blocked는 "선행이 아직
+ * 닫히지 않았다"를 말하고, 그것은 사용자가 보고 판단할 사실이다.
  */
 
 /**
@@ -529,7 +530,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 자식 롤업·landing
   // 진행이 모두 슬롯 3이므로 그 뒤에 선다.
   const monitor_deps = monitor
-    ? dependencyChipsTemplate(monitor.dependency_chips, { lane: 'running' })
+    ? dependencyChipsTemplate(monitor.dependency_chips)
     : '';
   const monitor_body = monitorTileBody(
     monitor,
