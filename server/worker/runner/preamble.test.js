@@ -401,6 +401,23 @@ describe('runner/preamble guard contract severity tiers (UI-rxp3 §1)', () => {
     expect(contract).toContain('위반이 아니다');
     expect(contract).toContain('git config set|unset');
   });
+
+  // UI-iw28 §5: enforcement stopped killing every one-shot relocation, so the
+  // notice must stop naming them unconditionally — a session told otherwise
+  // invents a workaround for a rule that is no longer there.
+  test('scopes the one-shot relocation kill to the command it decorates', () => {
+    expect(contract).toContain('**1회성 재배치**');
+    expect(contract).toContain('열거 밖인 것');
+  });
+
+  test('keeps the persistent config write in the kill tier', () => {
+    expect(contract).toContain('git config core.hooksPath <값>');
+  });
+
+  test('names an enumerated one-shot relocation as no violation', () => {
+    expect(contract).toContain('`status`·`rev-parse`');
+    expect(contract).toContain('붙일 이유도 없다');
+  });
 });
 
 describe('runner/preamble disposition guard variant (UI-rxp3 §1)', () => {
