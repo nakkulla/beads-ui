@@ -412,6 +412,29 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
 - `worker-queue-reorder` payload:
   `{ bead_id, lane?: 'parallel' | 's1'..'s5', to_index, expected_revision }` —
   reorders within one lane; cross-lane moves go through `worker-queue-place`.
+- `worker-queue-arm` payload: `{ bead_ids, lane_id, expected_revision }` — arms
+  this workspace's parallel rows for a Monitor cross lane (UI-jaua §5.1),
+  writing `armed_by_lane = lane_id` on each named row. An armed row is a
+  dispatch candidate even while `auto_advance` is OFF; the global toggle keeps
+  owning automatic candidacy, and the arm adds nothing else to the scan. Bead
+  ids absent from this queue are ignored without error — one `▶ 진행` sends the
+  whole lane membership to every repo the lane spans. `lane_id` is NOT validated
+  against the lane store (server-global `cross-lanes.json` is not a workspace
+  input). A successful arm kicks the live dispatch loop (`tick`), like
+  `worker-queue-place`.
+- `worker-queue-disarm` payload: `{ bead_ids?, lane_id?, expected_revision }` —
+  clears `armed_by_lane` on the named rows, or on every row this workspace armed
+  to `lane_id` when only the lane is given; at least one of the two is required.
+  Both the waiting rows and the `pr_wait` rows are swept, because the arm rides
+  that transition. Attempt snapshots are history and are never cleared. No
+  `tick`: disarming only removes candidates.
+- The `worker-queue-snapshot` carries `disarmed_on_load: string[]` — the cross
+  lanes whose arm THIS process's cold load cleared (UI-jaua §5.1), for the same
+  restart-safety reason `auto_advance` resets OFF. It is transient, never
+  written to `queue.json`, and a successful `worker-queue-arm` drops that lane
+  from it. A client unions the value over the workspaces it sees: disarmed in
+  any one repo means the lane was stopped by the restart. Consumers fail-quiet
+  on the key being absent (older server).
 - `worker-queue-toggle` payload: `{ on, expected_revision }` — persists the
   legacy independent `auto_advance` surface and, on turn-ON, kicks the live
   dispatch loop (`tick`).

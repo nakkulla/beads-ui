@@ -31,6 +31,12 @@
  * @property {boolean} [external] - Durable external origin: a promoted
  * externally-merged row keeps this after the registry overlay yields, so
  * failure-resume eligibility ([정리]) still classifies it as external.
+ * @property {string|null} [armed_by_lane] - Cross-lane id (`cl_*`) that armed
+ * this row for dispatch (UI-jaua §5.1). Written on PARALLEL waiting rows and
+ * carried onto the `pr_wait` row that replaces one; never on a serial-lane
+ * row, because a cross-lane member is loaded into the parallel queue. Absent
+ * means "this row is not part of a running cross lane", which is what every
+ * legacy `queue.json` and every restart resolves to.
  */
 /**
  * @typedef {Object} SerialLane
@@ -56,6 +62,10 @@
  * @property {string|null} session_id - Runner session identifier (claude
  * `session_id` / codex `thread_id`) captured from the stream's first event for
  * `--resume`/transcript tracking; null until the runner emits it (spec §2).
+ * @property {string|null} armed_by_lane - Cross-lane id this dispatch was
+ * armed by (UI-jaua §5.1), snapshotted like `base_oid`/`runner`/`model`. The
+ * `pr_wait` row is planted from it and the failure path is judged against it,
+ * so it must survive queue mutations; `disarm` never clears an attempt.
  * @property {string|null} model - Model snapshot.
  * @property {string|null} effort - Effort snapshot.
  * @property {string|null} observed_effort - Effort observed after launch from
@@ -404,6 +414,11 @@
  * @property {QueueEntry[]} pr_wait - Beads whose PR the server OBSERVED open,
  * waiting for a human merge click (worker-phase2 §4).
  * @property {QueueEntry[]} done - Completed today.
+ * @property {string[]} [disarmed_on_load] - TRANSIENT (UI-jaua §5.1): the
+ * cross-lane ids whose arm this process's cold load cleared. Never persisted
+ * and never in the cache — it is attached to exported snapshots only, because
+ * the value is recomputed at every start. It is what separates "a restart
+ * stopped this lane" from "this lane was never started".
  * @property {Record<string, Attempt>} attempts - Attempt records by attempt_id.
  * @property {Record<string, AdmissionRecord>} admission -
  * Auto-run admission observations by bead_id (badge display). Cleared only on a
@@ -1594,6 +1609,9 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'parallel',
   'pr_wait',
   'done',
+  // Transient by contract (UI-jaua §5.1). Listed so a value that somehow
+  // reached disk is DROPPED on load instead of round-tripping as opaque data.
+  'disarmed_on_load',
   'attempts',
   'admission',
   'cleanup_failed',
@@ -2001,6 +2019,12 @@ function normalizeEntry(entry) {
       typeof entry.serial_lane_id === 'string' &&
       serialLaneIndex(entry.serial_lane_id) !== null
         ? entry.serial_lane_id
+        : undefined,
+    // A blank or non-string value is ABSENT, not an arm: the scheduler's whole
+    // test is "a non-empty lane id", so an empty string must never reach it.
+    armed_by_lane:
+      typeof entry.armed_by_lane === 'string' && entry.armed_by_lane.length > 0
+        ? entry.armed_by_lane
         : undefined
   };
 }
@@ -2263,6 +2287,11 @@ export function makeAttempt(fields) {
     process_identity: normalizeProcessIdentity(fields.process_identity),
     control: normalizeAttemptControl(fields.control),
     runner: fields.runner ?? null,
+    armed_by_lane:
+      typeof fields.armed_by_lane === 'string' &&
+      fields.armed_by_lane.length > 0
+        ? fields.armed_by_lane
+        : null,
     session_id: fields.session_id ?? null,
     model: fields.model ?? null,
     effort: fields.effort ?? null,
@@ -3568,6 +3597,14 @@ export function createQueueStore(options = {}) {
   const cache = new Map();
   /** @type {Map<string, boolean>} */
   const auto_advance_at_shutdown = new Map();
+  /**
+   * Cross-lane ids this process's cold load disarmed, per workspace (UI-jaua
+   * §5.1). Process-lifetime only — it is deliberately NOT part of the cached
+   * queue, so no mutation can flush it to disk.
+   *
+   * @type {Map<string, Set<string>>}
+   */
+  const disarmed_on_load = new Map();
 
   /**
    * @param {string} workspace
@@ -3608,8 +3645,43 @@ export function createQueueStore(options = {}) {
     auto_advance_at_shutdown.set(key, persisted_auto_advance);
     // Restart safety defaults OFF; only the verified self-deploy path may restore it.
     q.auto_advance = false;
+    // Same reason, same place (UI-jaua §5.1): the server did not watch what
+    // happened while it was down, so no cross lane keeps dispatching across a
+    // restart. Both lanes are swept — the `pr_wait` row carries the arm that
+    // the merge registration reads. The cleared ids are remembered in memory so
+    // the lane can say WHY it stopped instead of looking never-started.
+    /** @type {Set<string>} */
+    const disarmed = new Set();
+    for (const entry of [...q.queue, ...q.pr_wait]) {
+      if (
+        typeof entry.armed_by_lane === 'string' &&
+        entry.armed_by_lane.length > 0
+      ) {
+        disarmed.add(entry.armed_by_lane);
+      }
+      delete entry.armed_by_lane;
+    }
+    disarmed_on_load.set(key, disarmed);
     cache.set(key, q);
     return q;
+  }
+
+  /**
+   * Clone a queue for a consumer OUTSIDE the store and attach the transient
+   * `disarmed_on_load` set (UI-jaua §5.1). Every exported snapshot goes through
+   * here; the cached queue never carries the field, so {@link persist} cannot
+   * write it.
+   *
+   * @param {string} workspace
+   * @param {Queue} q
+   * @returns {Queue}
+   */
+  function exportQueue(workspace, q) {
+    const out = clone(q);
+    out.disarmed_on_load = [
+      ...(disarmed_on_load.get(keyFor(workspace)) || new Set())
+    ];
+    return out;
   }
 
   /**
@@ -3639,16 +3711,16 @@ export function createQueueStore(options = {}) {
   function applyMutation(workspace, expected_revision, mutate) {
     const cur = ensureLoaded(workspace);
     if (expected_revision !== cur.revision) {
-      return { ok: false, conflict: true, queue: clone(cur) };
+      return { ok: false, conflict: true, queue: exportQueue(workspace, cur) };
     }
     const next = clone(cur);
     if (!mutate(next)) {
-      return { ok: false, conflict: false, queue: clone(cur) };
+      return { ok: false, conflict: false, queue: exportQueue(workspace, cur) };
     }
     next.revision = cur.revision + 1;
     persist(workspace, next);
     cache.set(keyFor(workspace), next);
-    return { ok: true, conflict: false, queue: clone(next) };
+    return { ok: true, conflict: false, queue: exportQueue(workspace, next) };
   }
 
   /**
@@ -3665,12 +3737,12 @@ export function createQueueStore(options = {}) {
     const cur = ensureLoaded(workspace);
     const next = clone(cur);
     if (!mutate(next)) {
-      return { ok: false, conflict: false, queue: clone(cur) };
+      return { ok: false, conflict: false, queue: exportQueue(workspace, cur) };
     }
     next.revision = cur.revision + 1;
     persist(workspace, next);
     cache.set(keyFor(workspace), next);
-    return { ok: true, conflict: false, queue: clone(next) };
+    return { ok: true, conflict: false, queue: exportQueue(workspace, next) };
   }
 
   /**
@@ -3782,7 +3854,7 @@ export function createQueueStore(options = {}) {
      * @returns {Queue}
      */
     load(workspace) {
-      return clone(ensureLoaded(workspace));
+      return exportQueue(workspace, ensureLoaded(workspace));
     },
 
     /**
@@ -3792,7 +3864,7 @@ export function createQueueStore(options = {}) {
      * @returns {Queue}
      */
     snapshot(workspace) {
-      return clone(ensureLoaded(workspace));
+      return exportQueue(workspace, ensureLoaded(workspace));
     },
 
     /**
@@ -3881,6 +3953,123 @@ export function createQueueStore(options = {}) {
         const [entry] = arr.splice(from, 1);
         arr.splice(clampIndex(to_index, arr.length), 0, entry);
         applyLaneBlocksOrder(next, lane, input.blocks_edges);
+        return true;
+      });
+    },
+
+    /**
+     * Arm parallel-queue rows for a cross lane (UI-jaua §5.1/§5.3). CAS-guarded
+     * like every other client op.
+     *
+     * Bead ids that are not in this workspace's parallel queue are IGNORED, not
+     * rejected: one `▶ 진행` fans out over the repos a lane spans, and each
+     * repo's op names the whole membership. Rejecting here would make a lane
+     * whose members are split across repos fail in every repo but one.
+     *
+     * The lane's existence is deliberately NOT validated — `cross-lanes.json`
+     * is server-global and this store is per-workspace (§5.3). A successful arm
+     * also drops the lane from {@link Queue.disarmed_on_load}: the user just
+     * answered the restart the flag was reporting.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, bead_ids: string[], lane_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    arm(workspace, input) {
+      const { expected_revision, bead_ids, lane_id } = input;
+      if (
+        typeof lane_id !== 'string' ||
+        lane_id.length === 0 ||
+        !Array.isArray(bead_ids)
+      ) {
+        return {
+          ok: false,
+          conflict: false,
+          queue: exportQueue(workspace, ensureLoaded(workspace))
+        };
+      }
+      const targets = new Set(
+        bead_ids.filter((id) => typeof id === 'string' && id.length > 0)
+      );
+      const result = applyMutation(workspace, expected_revision, (next) => {
+        for (const entry of next.queue) {
+          if (targets.has(entry.bead_id)) {
+            entry.armed_by_lane = lane_id;
+          }
+        }
+        return true;
+      });
+      if (result.ok) {
+        disarmed_on_load.get(keyFor(workspace))?.delete(lane_id);
+        return {
+          ...result,
+          queue: exportQueue(workspace, ensureLoaded(workspace))
+        };
+      }
+      return result;
+    },
+
+    /**
+     * Clear the cross-lane arm from rows of this workspace (UI-jaua §5.3).
+     * CAS-guarded. `bead_ids` names the rows; `lane_id` alone clears every row
+     * armed to that lane here. Both lanes are swept, because the arm rides the
+     * `pr_wait` row too (§5.1). Attempt snapshots are history and stay.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, bead_ids?: string[], lane_id?: string }} input
+     * @returns {QueueOpResult}
+     */
+    disarm(workspace, input) {
+      const { expected_revision, bead_ids, lane_id } = input;
+      const has_ids = Array.isArray(bead_ids);
+      const has_lane = typeof lane_id === 'string' && lane_id.length > 0;
+      if (!has_ids && !has_lane) {
+        return {
+          ok: false,
+          conflict: false,
+          queue: exportQueue(workspace, ensureLoaded(workspace))
+        };
+      }
+      const targets = has_ids
+        ? new Set(
+            /** @type {string[]} */ (bead_ids).filter(
+              (id) => typeof id === 'string' && id.length > 0
+            )
+          )
+        : null;
+      return applyMutation(workspace, expected_revision, (next) => {
+        for (const entry of [...next.queue, ...next.pr_wait]) {
+          const named = targets
+            ? targets.has(entry.bead_id)
+            : entry.armed_by_lane === lane_id;
+          if (named) {
+            delete entry.armed_by_lane;
+          }
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Disarm ONE waiting row after its session failed (UI-jaua §5.5).
+     * Scheduler-owned (no CAS), and scoped to the parallel queue of THIS
+     * workspace: the scheduler is a per-workspace writer, so it must not reach
+     * across repos to the lane's other members. It does not need to — the bd
+     * dependency gate already holds the followers back while the failed member
+     * stays open. No-op (no revision bump) when the row is not armed.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    disarmEntry(workspace, input) {
+      const { bead_id } = input;
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.queue.find((e) => e.bead_id === bead_id);
+        if (!entry || typeof entry.armed_by_lane !== 'string') {
+          return false;
+        }
+        delete entry.armed_by_lane;
         return true;
       });
     },
@@ -5779,6 +5968,13 @@ export function createQueueStore(options = {}) {
         const serial_lane_id = next.attempts[attempt_id].serial_lane_id;
         if (serialLaneIndex(serial_lane_id) !== null) {
           entry.serial_lane_id = serial_lane_id;
+        }
+        // Re-plant the cross-lane arm from the ATTEMPT (UI-jaua §5.1): this
+        // transition replaces the parallel row, so the arm would otherwise
+        // vanish exactly when the merge registration needs to read it.
+        const armed_by_lane = next.attempts[attempt_id].armed_by_lane;
+        if (typeof armed_by_lane === 'string' && armed_by_lane.length > 0) {
+          entry.armed_by_lane = armed_by_lane;
         }
         next.pr_wait.push(entry);
         return true;

@@ -8484,3 +8484,304 @@ describe('worker/queue-store — 자동 리뷰 enrolment (UI-hk74 §6)', () => {
     expect(entry?.head_review ?? null).toBe(null);
   });
 });
+
+describe('worker/queue-store — 연결 레인 arm 축 (UI-jaua §5.1)', () => {
+  test('arms only the named parallel entries for a lane', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+    store.place(WS, { expected_revision: 1, bead_id: 'B' });
+
+    const result = store.arm(WS, {
+      expected_revision: 2,
+      bead_ids: ['A'],
+      lane_id: 'cl_1'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.queue.map((e) => e.armed_by_lane)).toEqual([
+      'cl_1',
+      undefined
+    ]);
+  });
+
+  test('rejects an arm carrying a stale revision', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+
+    const result = store.arm(WS, {
+      expected_revision: 0,
+      bead_ids: ['A'],
+      lane_id: 'cl_1'
+    });
+
+    expect(result).toMatchObject({ ok: false, conflict: true });
+    expect(store.snapshot(WS).queue[0].armed_by_lane).toBeUndefined();
+  });
+
+  test('ignores bead ids absent from this queue without failing the op', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+
+    const result = store.arm(WS, {
+      expected_revision: 1,
+      bead_ids: ['A', 'ELSEWHERE'],
+      lane_id: 'cl_1'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.queue.map((e) => e.bead_id)).toEqual(['A']);
+  });
+
+  test('leaves serial lane entries unarmed', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'S', lane: 's1' });
+
+    const result = store.arm(WS, {
+      expected_revision: 1,
+      bead_ids: ['S'],
+      lane_id: 'cl_1'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(
+      result.queue.serial_lanes[0].entries[0].armed_by_lane
+    ).toBeUndefined();
+  });
+
+  test('disarms exactly the named entries', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+    store.place(WS, { expected_revision: 1, bead_id: 'B' });
+    store.arm(WS, {
+      expected_revision: 2,
+      bead_ids: ['A', 'B'],
+      lane_id: 'cl_1'
+    });
+
+    const result = store.disarm(WS, {
+      expected_revision: 3,
+      bead_ids: ['A']
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.queue.map((e) => e.armed_by_lane)).toEqual([
+      undefined,
+      'cl_1'
+    ]);
+  });
+
+  test('disarms every entry armed to one lane when only the lane is named', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+    store.place(WS, { expected_revision: 1, bead_id: 'B' });
+    store.arm(WS, { expected_revision: 2, bead_ids: ['A'], lane_id: 'cl_1' });
+    store.arm(WS, { expected_revision: 3, bead_ids: ['B'], lane_id: 'cl_2' });
+
+    const result = store.disarm(WS, {
+      expected_revision: 4,
+      lane_id: 'cl_1'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.queue.map((e) => e.armed_by_lane)).toEqual([
+      undefined,
+      'cl_2'
+    ]);
+  });
+
+  test('rejects a disarm carrying a stale revision', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+    store.arm(WS, { expected_revision: 1, bead_ids: ['A'], lane_id: 'cl_1' });
+
+    const result = store.disarm(WS, { expected_revision: 1, lane_id: 'cl_1' });
+
+    expect(result).toMatchObject({ ok: false, conflict: true });
+    expect(store.snapshot(WS).queue[0].armed_by_lane).toBe('cl_1');
+  });
+
+  test('carries the attempt arm snapshot onto the pr_wait entry', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+    store.arm(WS, { expected_revision: 1, bead_ids: ['A'], lane_id: 'cl_1' });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-A', bead_id: 'A', armed_by_lane: 'cl_1' }
+    });
+
+    store.moveToPrWait(WS, {
+      bead_id: 'A',
+      attempt_id: 'att-A',
+      patch: { status: 'done' }
+    });
+
+    expect(store.snapshot(WS).pr_wait[0].armed_by_lane).toBe('cl_1');
+  });
+
+  test('leaves an unarmed dispatch out of the pr_wait entry', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-A', bead_id: 'A' }
+    });
+
+    store.moveToPrWait(WS, {
+      bead_id: 'A',
+      attempt_id: 'att-A',
+      patch: { status: 'done' }
+    });
+
+    expect(store.snapshot(WS).pr_wait[0].armed_by_lane).toBeUndefined();
+  });
+
+  test('keeps the attempt arm snapshot when the entry is disarmed', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+    store.arm(WS, { expected_revision: 1, bead_ids: ['A'], lane_id: 'cl_1' });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-A', bead_id: 'A', armed_by_lane: 'cl_1' }
+    });
+
+    store.disarm(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      lane_id: 'cl_1'
+    });
+
+    expect(store.snapshot(WS).attempts['att-A'].armed_by_lane).toBe('cl_1');
+    expect(store.snapshot(WS).queue[0].armed_by_lane).toBeUndefined();
+  });
+
+  test('drops the failed row arm without touching auto_advance', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+    store.place(WS, { expected_revision: 1, bead_id: 'B' });
+    store.arm(WS, {
+      expected_revision: 2,
+      bead_ids: ['A', 'B'],
+      lane_id: 'cl_1'
+    });
+    store.setAutoAdvance(WS, true);
+
+    const result = store.disarmEntry(WS, { bead_id: 'A' });
+
+    expect(result.queue.queue.map((e) => e.armed_by_lane)).toEqual([
+      undefined,
+      'cl_1'
+    ]);
+    expect(result.queue.auto_advance).toBe(true);
+  });
+
+  test('no-ops disarmEntry on a row that carries no arm', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+    const before = store.snapshot(WS).revision;
+
+    const result = store.disarmEntry(WS, { bead_id: 'A' });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('clears armed_by_lane on both lanes at cold load and remembers the lane', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 7,
+        auto_advance: true,
+        queue: [{ bead_id: 'A', added_at: 1, armed_by_lane: 'cl_1' }],
+        pr_wait: [{ bead_id: 'B', added_at: 2, armed_by_lane: 'cl_2' }]
+      })
+    );
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.queue[0].armed_by_lane).toBeUndefined();
+    expect(loaded.pr_wait[0].armed_by_lane).toBeUndefined();
+    expect([...(loaded.disarmed_on_load || [])].sort()).toEqual([
+      'cl_1',
+      'cl_2'
+    ]);
+  });
+
+  test('never writes disarmed_on_load to disk', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 1,
+        queue: [{ bead_id: 'A', added_at: 1, armed_by_lane: 'cl_1' }]
+      })
+    );
+    const store = createQueueStore();
+
+    store.place(WS, { expected_revision: 1, bead_id: 'C' });
+
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    expect('disarmed_on_load' in raw).toBe(false);
+    expect(
+      raw.queue.every(
+        (/** @type {Record<string, unknown>} */ e) => !('armed_by_lane' in e)
+      )
+    ).toBe(true);
+  });
+
+  test('drops the lane from disarmed_on_load after a successful arm', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        queue: [
+          { bead_id: 'A', added_at: 1, armed_by_lane: 'cl_1' },
+          { bead_id: 'B', added_at: 2, armed_by_lane: 'cl_2' }
+        ]
+      })
+    );
+    const store = createQueueStore();
+
+    const result = store.arm(WS, {
+      expected_revision: 3,
+      bead_ids: ['A'],
+      lane_id: 'cl_1'
+    });
+
+    expect(result.queue.disarmed_on_load).toEqual(['cl_2']);
+  });
+
+  test('round-trips a legacy queue that has no arm fields', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 2,
+        queue: [{ bead_id: 'A', added_at: 1 }],
+        attempts: { legacy: { attempt_id: 'legacy', bead_id: 'A' } }
+      })
+    );
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.queue[0].armed_by_lane).toBeUndefined();
+    expect(loaded.attempts.legacy.armed_by_lane).toBeNull();
+    expect(loaded.disarmed_on_load).toEqual([]);
+  });
+
+  test('normalizes a blank stored arm to absent', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 1,
+        queue: [{ bead_id: 'A', added_at: 1, armed_by_lane: '' }]
+      })
+    );
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.queue[0].armed_by_lane).toBeUndefined();
+    expect(loaded.disarmed_on_load).toEqual([]);
+  });
+});

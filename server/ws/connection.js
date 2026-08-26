@@ -100,6 +100,8 @@ import {
   handleWorkerMergeQueueAddAll,
   handleWorkerMergeQueueRemove,
   handleWorkerPrDiscard,
+  handleWorkerQueueArm,
+  handleWorkerQueueDisarm,
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
@@ -558,6 +560,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-reorder':
       handleWorkerQueueReorder(ws, req);
+      return;
+    case 'worker-queue-arm':
+      handleWorkerQueueArm(ws, req);
+      return;
+    case 'worker-queue-disarm':
+      handleWorkerQueueDisarm(ws, req);
       return;
     case 'worker-queue-toggle':
       handleWorkerQueueToggle(ws, req);

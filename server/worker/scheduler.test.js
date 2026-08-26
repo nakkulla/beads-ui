@@ -14642,3 +14642,181 @@ describe('quick_fix self-review dispatch block (UI-r7or §6)', () => {
     );
   });
 });
+
+describe('scheduler 연결 레인 발차 축 (UI-jaua §5.2)', () => {
+  const OTHER_WS = '/tmp/example-workspace/project-b';
+
+  /**
+   * Place beads in the parallel lane and arm them for a cross lane, leaving
+   * `auto_advance` OFF — the state a lane's `▶ 진행` produces.
+   *
+   * @param {any} store
+   * @param {string[]} ids
+   * @param {string} lane_id
+   */
+  function seedArmed(store, ids, lane_id) {
+    let rev = store.snapshot(WS).revision;
+    for (const id of ids) {
+      rev = store.place(WS, { expected_revision: rev, bead_id: id }).queue
+        .revision;
+    }
+    store.arm(WS, {
+      expected_revision: rev,
+      bead_ids: ids,
+      lane_id
+    });
+  }
+
+  test('dispatches an armed entry while auto_advance is off', async () => {
+    const env = setup({ config: { A1: {} }, slots: 2 });
+    seedArmed(env.store, ['A1'], 'cl_1');
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A1']);
+    expect(env.store.snapshot(WS).auto_advance).toBe(false);
+  });
+
+  test('returns immediately when auto_advance is off and nothing is armed', async () => {
+    const env = setup({ config: { A1: {} }, slots: 2 });
+    let rev = env.store.snapshot(WS).revision;
+    env.store.place(WS, { expected_revision: rev, bead_id: 'A1' });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.bd.snapshotCounts()).toBe(0);
+  });
+
+  test('leaves unarmed entries out of the candidate set while auto_advance is off', async () => {
+    const env = setup({ config: { A1: {}, A2: {} }, slots: 2 });
+    seedArmed(env.store, ['A1'], 'cl_1');
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'A2'
+    });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A1']);
+  });
+
+  test('leaves serial lane heads out of the candidate set while auto_advance is off', async () => {
+    const env = setup({ config: { A1: {}, S1: {} }, slots: 2 });
+    seedArmed(env.store, ['A1'], 'cl_1');
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'S1',
+      lane: 's1'
+    });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A1']);
+  });
+
+  test('keeps the auto_advance candidate set unchanged by arms', async () => {
+    const env = setup({ config: { A1: {}, A2: {}, S1: {} }, slots: 5 });
+    seedArmed(env.store, ['A1'], 'cl_1');
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'A2'
+    });
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'S1',
+      lane: 's1'
+    });
+    env.store.setAutoAdvance(WS, true);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder.sort()).toEqual(['A1', 'A2', 'S1']);
+  });
+
+  test('skips a blocked armed entry and keeps scanning the armed rest', async () => {
+    const env = setup({
+      config: { A1: { blocked: true }, A2: {} },
+      slots: 2
+    });
+    seedArmed(env.store, ['A1', 'A2'], 'cl_1');
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A2']);
+    expect(env.store.snapshot(WS).admission.A1.reason).toMatch(/^not_ready:/);
+  });
+
+  test('snapshots the arming lane onto the dispatched attempt', async () => {
+    const env = setup({ config: { A1: {} }, slots: 1 });
+    seedArmed(env.store, ['A1'], 'cl_1');
+
+    await env.scheduler.tick(WS);
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt).toMatchObject({ bead_id: 'A1', armed_by_lane: 'cl_1' });
+  });
+
+  test('records no arm on an attempt dispatched by auto_advance alone', async () => {
+    const env = setup({ config: { A1: {} }, slots: 1 });
+    seedQueue(env.store, ['A1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.armed_by_lane).toBeNull();
+  });
+
+  test('clears the arm of the failed row without halting the repo', async () => {
+    const env = setup({ config: { A1: {}, A2: {} }, slots: 2 });
+    seedArmed(env.store, ['A1', 'A2'], 'cl_1');
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('A1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    const snapshot = env.store.snapshot(WS);
+    expect(
+      snapshot.queue.map((entry) => [entry.bead_id, entry.armed_by_lane])
+    ).toEqual([
+      ['A1', undefined],
+      ['A2', 'cl_1']
+    ]);
+    expect(snapshot.auto_advance).toBe(false);
+  });
+
+  test('keeps the failed attempt arm snapshot after the row is disarmed', async () => {
+    const env = setup({ config: { A1: {} }, slots: 1 });
+    seedArmed(env.store, ['A1'], 'cl_1');
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('A1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts[attempt_id]).toMatchObject({
+      status: 'failed',
+      armed_by_lane: 'cl_1'
+    });
+  });
+
+  test('leaves another workspace arm untouched when one member fails', async () => {
+    const env = setup({ config: { A1: {} }, slots: 1 });
+    seedArmed(env.store, ['A1'], 'cl_1');
+    env.store.place(OTHER_WS, { expected_revision: 0, bead_id: 'B1' });
+    env.store.arm(OTHER_WS, {
+      expected_revision: 1,
+      bead_ids: ['B1'],
+      lane_id: 'cl_1'
+    });
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('A1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(OTHER_WS).queue[0].armed_by_lane).toBe('cl_1');
+  });
+});

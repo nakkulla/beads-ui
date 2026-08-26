@@ -7,7 +7,9 @@
  * the effective cap to 1 without overwriting that stored preference. A blocked
  * / inadmissible entry is skipped to the next runnable one, never starving the
  * rest. `slots = 1` IS the retired serial lane. ⏸ (auto_advance off) lets
- * running sessions finish but starts no new ones.
+ * running sessions finish and starts no new ones EXCEPT the parallel rows a
+ * cross lane armed (UI-jaua §5.2): the global toggle owns automatic candidacy,
+ * a per-row arm outranks it, and the arm changes nothing else about the scan.
  *
  * Dispatch is fail-closed and contract-native:
  *   - RE-READ ready/blocked/deps/exec-settings from bd just before dispatch and
@@ -622,6 +624,34 @@ function waitingLaneOf(q, bead_id) {
     }
   }
   return null;
+}
+
+/**
+ * Whether a waiting row carries a cross-lane arm (UI-jaua §5.1). The scheduler
+ * asks only this — it never resolves the id, because the lane store is
+ * server-global and this module is per-workspace (§4).
+ *
+ * @param {{ armed_by_lane?: string|null }} entry
+ */
+function isArmedEntry(entry) {
+  return (
+    typeof entry.armed_by_lane === 'string' && entry.armed_by_lane.length > 0
+  );
+}
+
+/**
+ * The cross lane a bead's parallel row is armed by, for the dispatch snapshot
+ * (UI-jaua §5.1). Null when the row is unarmed or absent.
+ *
+ * @param {{ queue?: Array<{ bead_id: string, armed_by_lane?: string|null }> }} q
+ * @param {string} bead_id
+ * @returns {string|null}
+ */
+function armedByLaneOf(q, bead_id) {
+  const entry = (q.queue || []).find((row) => row.bead_id === bead_id);
+  return entry && isArmedEntry(entry)
+    ? /** @type {string} */ (entry.armed_by_lane)
+    : null;
 }
 
 /**
@@ -3089,6 +3119,14 @@ export function createScheduler(deps) {
       execRestoreValuesOf(workspace, attempt_id)
     );
     if (options.moot !== true) {
+      // The cross-lane arm is cleared for THIS row in THIS workspace only
+      // (UI-jaua §5.5): the failed spot must not re-dispatch, the lane's other
+      // repos are not this scheduler's to write, and the followers are already
+      // held by the bd dependency gate while this bead stays open. The
+      // `auto_advance` breaker below is a SEPARATE axis and an armed failure
+      // must not switch off the repo's own automation — so nothing here reads
+      // or writes it.
+      deps.store.disarmEntry(workspace, { bead_id });
       deps.store.haltAutoAdvanceForAttempt(workspace, { attempt_id });
     }
     // STRICTLY after the halt: reopening the bead makes it dispatchable again,
@@ -4568,10 +4606,13 @@ export function createScheduler(deps) {
       // dispatch moves the head-only judgment with it, and the recorded
       // `serial_lane_id` snapshot must match the lane the launch actually
       // consumed.
-      const serial_lane_id = waitingLaneOf(
-        deps.store.snapshot(workspace),
-        bead_id
-      );
+      const dispatch_snapshot = deps.store.snapshot(workspace);
+      const serial_lane_id = waitingLaneOf(dispatch_snapshot, bead_id);
+      // Same re-read, same reason (UI-jaua §5.1): the arm is snapshotted onto
+      // the attempt because the parallel row is replaced at the PR-wait
+      // transition, and the failure judgment needs to know which lane launched
+      // this attempt rather than which lane is armed now.
+      const armed_by_lane = armedByLaneOf(dispatch_snapshot, bead_id);
       const lane_input = {
         bead_id,
         lineage_id: bead_id,
@@ -4907,6 +4948,7 @@ export function createScheduler(deps) {
           spec_review_stale: !!adm.stale,
           quickfix_lane,
           serial_lane_id,
+          armed_by_lane,
           status: 'running',
           pid: null
         })
@@ -8128,7 +8170,12 @@ export function createScheduler(deps) {
    */
   async function runPass(workspace) {
     let q = deps.store.snapshot(workspace);
-    if (!q.auto_advance) {
+    // UI-jaua §5.2: `auto_advance` OFF no longer stops the pass — it NARROWS
+    // the candidate set to the parallel rows a cross lane armed. With the
+    // toggle ON the set is unchanged, arm or no arm. With it OFF and nothing
+    // armed there is no candidate at all, which is the old bail-out verbatim.
+    const armed_only = q.auto_advance !== true;
+    if (armed_only && !q.queue.some(isArmedEntry)) {
       return;
     }
     const paused_beads = leafPausedBeads(q);
@@ -8157,13 +8204,19 @@ export function createScheduler(deps) {
     // merges, is cleaned up, or is discarded.
     const lane_occupancy = activeLaneLineages(q);
     /** @type {Array<{ bead_id: string, serial_lane_id: string|null }>} */
-    const candidates = q.queue.map(
-      (/** @type {{ bead_id: string }} */ entry) => ({
+    const candidates = q.queue
+      .filter(
+        (/** @type {{ armed_by_lane?: string|null }} */ entry) =>
+          !armed_only || isArmedEntry(entry)
+      )
+      .map((/** @type {{ bead_id: string }} */ entry) => ({
         bead_id: entry.bead_id,
         serial_lane_id: /** @type {string|null} */ (null)
-      })
-    );
-    for (const lane of q.serial_lanes || []) {
+      }));
+    // A serial lane head is NEVER an armed-only candidate: the serial axis is
+    // what `auto_advance` owns, and a cross-lane member sits in the parallel
+    // queue (UI-jaua §5.2).
+    for (const lane of armed_only ? [] : q.serial_lanes || []) {
       const head = lane.entries[0];
       if (!head) {
         continue;
