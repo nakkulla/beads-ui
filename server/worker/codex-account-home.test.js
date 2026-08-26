@@ -6,11 +6,6 @@ import { promisify } from 'node:util';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { prepareCodexAccountHome } from './codex-account-home.js';
 
-// Waits on REAL child processes (git, node, python), so wall time here is
-// process startup under the load the parallel suite creates, not product work.
-// Assertions are unchanged; only the waiting budget is sized for that load.
-vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
-
 const execFileAsync = promisify(execFile);
 
 /** @type {string[]} */
@@ -175,19 +170,25 @@ describe('worker/codex-account-home', () => {
     ).toBe('private');
   });
 
-  test('rejects a mirror entry that is neither a file nor a directory', async () => {
-    const paths = await fixture();
-    await fs.mkdir(paths.home_dir);
-    await execFileAsync('mkfifo', [path.join(paths.home_dir, 'config.toml')]);
+  // The only row here that spawns a REAL process (mkfifo); the rest is
+  // filesystem work that keeps the default budget.
+  test(
+    'rejects a mirror entry that is neither a file nor a directory',
+    { timeout: 30_000 },
+    async () => {
+      const paths = await fixture();
+      await fs.mkdir(paths.home_dir);
+      await execFileAsync('mkfifo', [path.join(paths.home_dir, 'config.toml')]);
 
-    const result = await prepareCodexAccountHome(paths.input);
+      const result = await prepareCodexAccountHome(paths.input);
 
-    expect(result).toEqual({
-      ok: false,
-      reason: 'codex_home_prepare_failed',
-      detail: 'mirror_link_mismatch:config.toml'
-    });
-  });
+      expect(result).toEqual({
+        ok: false,
+        reason: 'codex_home_prepare_failed',
+        detail: 'mirror_link_mismatch:config.toml'
+      });
+    }
+  );
 
   test('accepts EEXIST from a concurrent mirror creator', async () => {
     const paths = await fixture();

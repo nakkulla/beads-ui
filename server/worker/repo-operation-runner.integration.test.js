@@ -28,8 +28,12 @@ const PROCESS_WAIT_MS = 15_000;
  * Kill budget for a spawned script the test expects to RUN TO COMPLETION.
  * The script's own sleep is under a second; the rest is node startup under
  * suite load. The deliberate-timeout test keeps its own tiny budget.
+ *
+ * Must stay below {@link PROCESS_WAIT_MS}: the child is detached, so a budget
+ * larger than the observation window would leave it writing into a directory
+ * afterEach has already removed.
  */
-const SCRIPT_BUDGET_MS = 30_000;
+const SCRIPT_BUDGET_MS = 10_000;
 
 /** @type {string} */
 let root;

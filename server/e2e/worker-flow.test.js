@@ -46,6 +46,12 @@ import { createVerifier } from '../worker/verify.js';
 // Assertions are unchanged; only the waiting budget is sized for that load.
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
+/** How long a predicate advanced by the REAL git chain may take under load. */
+const GIT_CHAIN_WAIT_MS = 15_000;
+
+/** How long a predicate that settles in memory may take. */
+const MEMORY_WAIT_MS = 2_000;
+
 const execFileAsync = promisify(execFile);
 const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
 
@@ -95,13 +101,14 @@ async function gitRun(args, options) {
 /**
  * Poll a predicate until true or timeout — the verify chain runs off async git.
  *
- * The default budget waits on REAL git processes, so it is sized for suite
- * load; the poll returns the moment the predicate holds.
+ * The default is {@link GIT_CHAIN_WAIT_MS} because every predicate here but one
+ * is advanced by that chain; a predicate that settles in memory passes its own
+ * short budget instead, so no assertion is given more room than it needs.
  *
  * @param {() => boolean} pred
  * @param {number} [timeout_ms]
  */
-async function waitFor(pred, timeout_ms = 15_000) {
+async function waitFor(pred, timeout_ms = GIT_CHAIN_WAIT_MS) {
   const start = Date.now();
   while (Date.now() - start < timeout_ms) {
     if (pred()) {
@@ -2008,7 +2015,7 @@ describe('worker e2e — runtime seam reflects the live scheduler', () => {
     expect(runtime.status(WS).running_count).toBe(1);
 
     finishers.forEach((f) => f());
-    await waitFor(() => scheduler.runningCount() === 0);
+    await waitFor(() => scheduler.runningCount() === 0, MEMORY_WAIT_MS);
     expect(runtime.status(WS).running_count).toBe(0);
   });
 });

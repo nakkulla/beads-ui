@@ -8,14 +8,23 @@ import { acquireDeployLock } from './deploy-lock.js';
 // Waits on REAL child processes (git, node, python), so wall time here is
 // process startup under the load the parallel suite creates, not product work.
 // Assertions are unchanged; only the waiting budget is sized for that load.
-vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+vi.setConfig({ testTimeout: 30_000 });
+
+/**
+ * Vitest's own default budget, restated because this file raises the file-level
+ * budget for the rows that spawn the real python3 holder. The rows below inject
+ * a fake spawn or fs and never wait on a process, so they keep that default.
+ */
+const PURE = { timeout: 5_000 };
 
 /**
  * Wait budget for an acquisition whose outcome is decided by the holder, not
  * by expiry. The holder is a real python3 process, so this covers its startup
  * under suite load; the test that asserts expiry keeps its own tiny budget.
+ * Kept below the file's test budget so two sequential acquisitions still
+ * finish, and fail, inside it.
  */
-const ACQUIRE_BUDGET_MS = 30_000;
+const ACQUIRE_BUDGET_MS = 10_000;
 
 /** @type {string} */
 let root;
@@ -96,7 +105,7 @@ describe('worker/deploy-lock', () => {
     await first.release();
   });
 
-  test('returns unavailable when python cannot be launched', async () => {
+  test('returns unavailable when python cannot be launched', PURE, async () => {
     const result = await acquireDeployLock({
       repo: root,
       timeout_ms: ACQUIRE_BUDGET_MS,
@@ -111,37 +120,45 @@ describe('worker/deploy-lock', () => {
     });
   });
 
-  test('returns unavailable when spawning throws synchronously', async () => {
-    const result = await acquireDeployLock({
-      repo: root,
-      timeout_ms: ACQUIRE_BUDGET_MS,
-      spawn: /** @type {any} */ (
-        () => {
-          throw new Error('spawn failed');
-        }
-      )
-    });
+  test(
+    'returns unavailable when spawning throws synchronously',
+    PURE,
+    async () => {
+      const result = await acquireDeployLock({
+        repo: root,
+        timeout_ms: ACQUIRE_BUDGET_MS,
+        spawn: /** @type {any} */ (
+          () => {
+            throw new Error('spawn failed');
+          }
+        )
+      });
 
-    expect(result).toEqual({
-      ok: false,
-      code: 'deploy_lock_unavailable'
-    });
-  });
+      expect(result).toEqual({
+        ok: false,
+        code: 'deploy_lock_unavailable'
+      });
+    }
+  );
 
-  test('returns unavailable when preparing the lock directory throws', async () => {
-    const result = await acquireDeployLock({
-      repo: root,
-      timeout_ms: ACQUIRE_BUDGET_MS,
-      fs: /** @type {any} */ ({
-        mkdirSync: () => {
-          throw new Error('mkdir failed');
-        }
-      })
-    });
+  test(
+    'returns unavailable when preparing the lock directory throws',
+    PURE,
+    async () => {
+      const result = await acquireDeployLock({
+        repo: root,
+        timeout_ms: ACQUIRE_BUDGET_MS,
+        fs: /** @type {any} */ ({
+          mkdirSync: () => {
+            throw new Error('mkdir failed');
+          }
+        })
+      });
 
-    expect(result).toEqual({
-      ok: false,
-      code: 'deploy_lock_unavailable'
-    });
-  });
+      expect(result).toEqual({
+        ok: false,
+        code: 'deploy_lock_unavailable'
+      });
+    }
+  );
 });
