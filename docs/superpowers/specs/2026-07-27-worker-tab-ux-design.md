@@ -28,7 +28,7 @@
 | 토큰 표시 형태 | 카드에 합계(입력+출력) 축약 표기 + 호버 툴팁 상세 |
 | 표시 범위 | 실행 중 타일(실시간) + PR 대기 + 완료 행 |
 | 집계 기준 | 마지막 attempt만 (이슈별 누적 합산 안 함) |
-| 정렬 옵션 | spec 우선(기본) / Board 순서 / 최신 생성순 |
+| 정렬 옵션 | spec 우선(기본) / Board 순서 / 최신 생성순 / 최신 수정순 |
 | 상태 세분화 | '확인중'(gh 관측)과 '로컬검증 실행 중' 구분 |
 | 머지 진행 | 단계명까지 표시, 스냅샷 경유(새로고침·다중 클라이언트 유지), 버튼 비활성화 |
 
@@ -74,14 +74,20 @@
 ## 2. 후보 카드 정렬 옵션 (클라이언트 전용)
 
 - 후보 페인 헤더(`후보 · Board 연동` 옆)에 정렬 `<select>` 추가:
-  `spec 우선`(기본) / `Board 순서` / `최신 생성순`.
+  `spec 우선`(기본) / `Board 순서` / `최신 생성순` / `최신 수정순`.
 - 선택은 localStorage `bdui.worker.candidate_sort`에 저장, 새로고침에도 유지.
   저장값이 없거나 미지의 값이면 기본값(`spec 우선`)으로 폴백.
+- 모드 어휘는 옵션 목록 하나가 소유한다. 저장값 복원과 select 변경 모두 같은
+  narrowing 함수를 거치므로, 모드를 추가할 때 검증 목록이 두 곳으로 갈라져
+  새 모드가 조용히 기본값으로 되돌아가는 일이 없다.
 - 정렬 규칙:
   - `spec 우선`: `hasSpec`(`metadata.spec_id`) 기준 안정 분할 — spec 있는 그룹
     위, 없는 그룹 아래, 각 그룹 내부는 현행 `cmpEffectiveRank` 순서 유지.
   - `Board 순서`: 현행 그대로(`cmpEffectiveRank`).
   - `최신 생성순`: `app/data/sort.js`의 기존 `created_at` desc comparator 재사용.
+  - `최신 수정순`: 같은 파일의 기존 `cmpUpdatedDesc`(`updated_at` desc, 동률은
+    id asc) 재사용. `updated_at`은 서버 `list-adapters`가 이미 숫자로 정규화해
+    보내며, 없는 행은 `0`으로 취급돼 맨 뒤로 간다(fail-quiet).
 - Ready+Blocked 병합 목록 전체에 동일 적용(현행 병합 방식 불변). 서버 변경 없음.
 
 ## 3. "확인중 / 로컬검증 실행 중" 상태
@@ -146,7 +152,9 @@
 - queue-store: `Attempt.usage` 영속화·재로드.
 - `decorateQueue()`: 라이브/영속 usage 및 `activity`·`merge_progress` 노출.
 - `buildModel()`: 실행 중 타일·PR 대기·완료 행 usage 매핑(마지막 attempt).
-- 정렬 3모드: spec 우선 분할 안정성, Board 순서 불변, 최신 생성순.
+- 정렬 4모드: spec 우선 분할 안정성, Board 순서 불변, 최신 생성순, 최신
+  수정순(`updated_at` 결측 행 후미 배치 포함). select 변경 경로와 저장값 복원
+  경로가 같은 모드 집합을 받는지도 함께 확인한다.
 - 배지 대체 규칙: unobserved+checking, verify_pending+verifying, 그 외 불변.
 - `merge_progress` 라이프사이클: 성공(단계 전이·해제), 실패(해제), DIRTY(해제).
 - fanout 스로틀: usage-only 변경 3초 병합, 종료 시 타이머 정리.

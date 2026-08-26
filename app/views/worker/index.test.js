@@ -250,7 +250,9 @@ async function flush() {
 
 /**
  * Ready A/C + Blocked B, all spec-eligible, with explicit created_at so the
- * merged candidate lane has a deterministic effective-rank order.
+ * merged candidate lane has a deterministic effective-rank order. `updated_at`
+ * is deliberately NOT in created order (A newest, then C, then B) so the
+ * `최신 수정순` mode is distinguishable from every other mode.
  */
 function seedMerged() {
   const stores = createTestIssueStores();
@@ -260,6 +262,7 @@ function seedMerged() {
       title: 'ready A',
       status: 'open',
       created_at: 100,
+      updated_at: 3000,
       metadata: { spec_id: 'S' }
     },
     {
@@ -267,6 +270,7 @@ function seedMerged() {
       title: 'ready C',
       status: 'open',
       created_at: 300,
+      updated_at: 2000,
       metadata: { spec_id: 'S' }
     }
   ]);
@@ -276,6 +280,7 @@ function seedMerged() {
       title: 'blocked B',
       status: 'open',
       created_at: 200,
+      updated_at: 1000,
       metadata: { spec_id: 'S' },
       dependencies: ['DEP-1']
     }
@@ -5682,6 +5687,34 @@ describe('candidate sort — projection (UI-raqh §2)', () => {
     expect(sorted.map((i) => i.id)).toEqual(['C', 'A']);
   });
 
+  test('orders by newest updated_at in updated mode', () => {
+    const list = [
+      { id: 'A', created_at: 100, updated_at: 3000, metadata: {} },
+      {
+        id: 'B',
+        created_at: 200,
+        updated_at: 1000,
+        metadata: { spec_id: 'S' }
+      },
+      { id: 'C', created_at: 300, updated_at: 2000, metadata: {} }
+    ];
+
+    const sorted = applyCandidateSort(list, 'updated', ORDER);
+
+    expect(sorted.map((i) => i.id)).toEqual(['A', 'C', 'B']);
+  });
+
+  test('sorts an issue without updated_at last in updated mode', () => {
+    const list = [
+      { id: 'A', created_at: 100, metadata: {} },
+      { id: 'B', created_at: 200, updated_at: 1000, metadata: {} }
+    ];
+
+    const sorted = applyCandidateSort(list, 'updated', ORDER);
+
+    expect(sorted.map((i) => i.id)).toEqual(['B', 'A']);
+  });
+
   test('falls back to spec mode for an unknown mode', () => {
     const list = [issue('A', 100, false), issue('B', 200, true)];
 
@@ -5734,7 +5767,8 @@ describe('candidate sort — view (UI-raqh §2)', () => {
     expect(Array.from(select.options).map((o) => o.value)).toEqual([
       'spec',
       'board',
-      'created'
+      'created',
+      'updated'
     ]);
   });
 
@@ -5759,6 +5793,18 @@ describe('candidate sort — view (UI-raqh §2)', () => {
     expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
   });
 
+  test('reorders the lane by updated_at in updated mode', () => {
+    const mount = mountMerged();
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort')
+    );
+
+    select.value = 'updated';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
+  });
+
   test('persists the selected mode', () => {
     const mount = mountMerged();
     const select = /** @type {HTMLSelectElement} */ (
@@ -5779,6 +5825,14 @@ describe('candidate sort — view (UI-raqh §2)', () => {
     const mount = mountMerged();
 
     expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
+  });
+
+  test('restores a persisted updated mode on mount', () => {
+    window.localStorage.setItem('bdui.worker.candidate_sort', 'updated');
+
+    const mount = mountMerged();
+
+    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
   });
 
   test('falls back to the default for an unknown stored mode', () => {

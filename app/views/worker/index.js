@@ -41,7 +41,8 @@ import {
 import { createListSelectors } from '../../data/list-selectors.js';
 import {
   cmpCreatedDescThenPriority,
-  cmpEffectiveRank
+  cmpEffectiveRank,
+  cmpUpdatedDesc
 } from '../../data/sort.js';
 import { isImplementationAttempt } from '../../utils/active-attempts.js';
 import { buildChildrenIndex, rollupFor } from '../../utils/child-rollup.js';
@@ -285,7 +286,7 @@ const SPEC_FILTER_OPTIONS = [
 const CANDIDATE_SORT_KEY = 'bdui.worker.candidate_sort';
 
 /**
- * @typedef {'spec'|'board'|'created'} CandidateSort
+ * @typedef {'spec'|'board'|'created'|'updated'} CandidateSort
  */
 
 /**
@@ -297,13 +298,29 @@ const CANDIDATE_SORT_KEY = 'bdui.worker.candidate_sort';
 const CANDIDATE_SORT_OPTIONS = [
   { value: 'spec', label: 'spec 우선' },
   { value: 'board', label: 'Board 순서' },
-  { value: 'created', label: '최신 생성순' }
+  { value: 'created', label: '최신 생성순' },
+  { value: 'updated', label: '최신 수정순' }
 ];
 
 /**
  * @type {CandidateSort}
  */
 const CANDIDATE_SORT_DEFAULT = 'spec';
+
+/**
+ * Narrow an arbitrary value to a known sort mode, falling back to the default.
+ * The option list is the ONLY place the mode vocabulary is written down: both
+ * the persisted value and the select's value are narrowed here, so adding a
+ * mode cannot leave a second hard-coded list silently rejecting it.
+ *
+ * @param {unknown} raw
+ * @returns {CandidateSort}
+ */
+function normalizeCandidateSort(raw) {
+  return CANDIDATE_SORT_OPTIONS.some((o) => o.value === raw)
+    ? /** @type {CandidateSort} */ (raw)
+    : CANDIDATE_SORT_DEFAULT;
+}
 
 /**
  * Read the persisted sort mode; anything unreadable or unknown falls back to
@@ -313,10 +330,9 @@ const CANDIDATE_SORT_DEFAULT = 'spec';
  */
 function loadCandidateSort() {
   try {
-    const raw = window.localStorage.getItem(CANDIDATE_SORT_KEY);
-    return raw === 'board' || raw === 'created' || raw === 'spec'
-      ? raw
-      : CANDIDATE_SORT_DEFAULT;
+    return normalizeCandidateSort(
+      window.localStorage.getItem(CANDIDATE_SORT_KEY)
+    );
   } catch {
     return CANDIDATE_SORT_DEFAULT;
   }
@@ -460,12 +476,15 @@ function stripPreview(rows) {
 /**
  * Order the merged candidate list for one sort mode (UI-raqh §2).
  *
- * `board` is the Board's own manual order and stays the reference: the other
- * two are derived FROM it rather than replacing it. `spec` is a stable
- * partition of that order — spec-carrying beads first, each group keeping its
- * Board sequence — so switching to it never scrambles a hand-placed lane, it
- * only lifts the dispatchable beads to the top. `created` is the one mode that
- * ignores the rank map entirely, which is the point of having it.
+ * `board` is the Board's own manual order and stays the reference: `spec` is
+ * derived FROM it rather than replacing it — a stable partition of that order,
+ * spec-carrying beads first, each group keeping its Board sequence — so
+ * switching to it never scrambles a hand-placed lane, it only lifts the
+ * dispatchable beads to the top. `created` and `updated` are the two modes that
+ * ignore the rank map entirely, which is the point of having them: `created`
+ * answers "what came in last", `updated` answers "what was touched last" and so
+ * follows a bead through spec writes, comments and status changes rather than
+ * freezing at intake.
  *
  * Returns a NEW array; the caller's list is left alone.
  *
@@ -478,6 +497,9 @@ export function applyCandidateSort(issues, mode, order) {
   const list = Array.isArray(issues) ? issues.slice() : [];
   if (mode === 'created') {
     return list.sort(cmpCreatedDescThenPriority);
+  }
+  if (mode === 'updated') {
+    return list.sort(cmpUpdatedDesc);
   }
   list.sort(cmpEffectiveRank(order));
   if (mode === 'board') {
@@ -5395,10 +5417,7 @@ export function createWorkerView(mount_element, options = {}) {
    * @param {CandidateSort} next
    */
   function setCandidateSort(next) {
-    candidate_sort =
-      next === 'board' || next === 'created' || next === 'spec'
-        ? next
-        : CANDIDATE_SORT_DEFAULT;
+    candidate_sort = normalizeCandidateSort(next);
     saveCandidateSort(candidate_sort);
     doRender();
   }
