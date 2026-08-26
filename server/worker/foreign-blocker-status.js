@@ -147,17 +147,20 @@ export function cachedIssuePrefixFor(root_dir) {
 export function prewarmIssuePrefix(root_dir, requester_root) {
   const key = path.resolve(root_dir);
   const current = issue_prefix_cache.get(key);
+  if (current && current.value !== null) {
+    // Answered, and a rig's prefix does not change under us. Nobody is waiting.
+    return;
+  }
   if (
-    (current && current.value !== null) ||
     current?.in_flight === true ||
     (current && current.retry_at > Date.now())
   ) {
-    if (current?.in_flight === true) {
-      // Still join the flight: the answer this requester is waiting for is the
-      // one already on the way, and dropping it here would leave that snapshot
-      // stale until something else happened to move it.
-      current.requesters = withRequester(current.requesters, requester_root);
-    }
+    // Unresolved — in flight, or backing off before the next attempt. Either
+    // way this caller is still waiting on an answer nobody has yet, so it joins
+    // the set instead of being forgotten: the attempt that finally succeeds is
+    // the one that must wake it (UI-u6zf §3.4). Dropping it here left the
+    // snapshot stale until something unrelated happened to move it.
+    current.requesters = withRequester(current.requesters, requester_root);
     return;
   }
   issue_prefix_cache.set(key, {
@@ -179,7 +182,9 @@ export function prewarmIssuePrefix(root_dir, requester_root) {
         retry_at:
           issue_prefix === null ? Date.now() + ISSUE_PREFIX_RETRY_MS : Infinity,
         in_flight: false,
-        requesters: new Set()
+        // Cleared only once the waiters have actually been told; an
+        // unresolved entry carries them into the next attempt.
+        requesters: issue_prefix === null ? requesters : new Set()
       });
       if (issue_prefix !== null) {
         notifyResolved(requesters);
@@ -190,7 +195,10 @@ export function prewarmIssuePrefix(root_dir, requester_root) {
         value: null,
         retry_at: Date.now() + ISSUE_PREFIX_RETRY_MS,
         in_flight: false,
-        requesters: new Set()
+        requesters: withRequester(
+          issue_prefix_cache.get(key)?.requesters,
+          undefined
+        )
       });
       log('issue prefix lookup failed for %s: %o', key, err);
     });
@@ -221,9 +229,13 @@ export function foreignBlockerStatusFor(bead_id, owner_root, requester_root) {
   const hit = foreign_blocker_status_cache.get(key);
   const now = Date.now();
   if (hit && (hit.in_flight || hit.until > now)) {
-    if (hit.in_flight) {
-      hit.requesters = withRequester(hit.requesters, requester_root);
-    }
+    // A caller that arrives while the answer is in flight, or while a failed
+    // lookup is backing off, is still waiting on something nobody knows yet —
+    // so it joins the set (UI-u6zf §3.3). It joins on a cached `open` too: that
+    // entry is what the next attempt updates, and the attempt that finally sees
+    // `closed` must wake everyone whose chip that closes, not only whichever
+    // workspace happened to trigger it.
+    hit.requesters = withRequester(hit.requesters, requester_root);
     return hit.status;
   }
   foreign_blocker_status_cache.set(key, {
@@ -253,7 +265,10 @@ export function foreignBlockerStatusFor(bead_id, owner_root, requester_root) {
           Date.now() +
           (status === null ? FOREIGN_STATUS_RETRY_MS : FOREIGN_STATUS_TTL_MS),
         in_flight: false,
-        requesters: new Set()
+        // Cleared only once the waiters have been told. Any other answer leaves
+        // them in place: their chip is still standing, and the attempt that
+        // eventually reads `closed` is the one that owes them the wake-up.
+        requesters: status === 'closed' ? new Set() : requesters
       });
       // Only `closed` wakes anyone: every other answer is what the screen is
       // already drawing.
@@ -266,7 +281,10 @@ export function foreignBlockerStatusFor(bead_id, owner_root, requester_root) {
         status: hit?.status ?? null,
         until: Date.now() + FOREIGN_STATUS_RETRY_MS,
         in_flight: false,
-        requesters: new Set()
+        requesters: withRequester(
+          foreign_blocker_status_cache.get(key)?.requesters,
+          undefined
+        )
       });
       log('foreign blocker lookup failed for %s: %o', bead_id, err);
     });

@@ -38,6 +38,23 @@ function captureResolved() {
 }
 
 /**
+ * Move the clock forward for cache-expiry cases without freezing it: the real
+ * time still advances underneath, so `vi.waitFor` keeps working.
+ *
+ * @returns {(ms: number) => void}
+ */
+function advanceableClock() {
+  const real_now = Date.now.bind(Date);
+  let offset = 0;
+
+  vi.spyOn(Date, 'now').mockImplementation(() => real_now() + offset);
+
+  return (ms) => {
+    offset += ms;
+  };
+}
+
+/**
  * Seams standing in for the live registry, prefix cache and status resolver.
  *
  * @param {{
@@ -377,6 +394,58 @@ describe('requester-aware wake-up (UI-u6zf §3.3)', () => {
       expect(seen).toEqual([[WS_A, '/repos/third'].sort()])
     );
   });
+
+  test('still wakes an earlier waiter when a later lookup finds the close', async () => {
+    const seen = captureResolved();
+    const advance = advanceableClock();
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: { id: 'dotfiles-1', status: 'open' }
+      })
+    );
+
+    foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A);
+    await vi.waitFor(() =>
+      expect(foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A)).toBe('open')
+    );
+    advance(6 * 60_000);
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: { id: 'dotfiles-1', status: 'closed' }
+      })
+    );
+    foreignBlockerStatusFor('dotfiles-1', WS_B, '/repos/third');
+
+    await vi.waitFor(() =>
+      expect(seen).toEqual([[WS_A, '/repos/third'].sort()])
+    );
+  });
+
+  test('keeps a waiter that arrived while a failed lookup was backing off', async () => {
+    const seen = captureResolved();
+    const advance = advanceableClock();
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({ ok: false })
+    );
+
+    foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A);
+    await vi.waitFor(() => expect(runBdJsonProjected).toHaveBeenCalledTimes(1));
+    foreignBlockerStatusFor('dotfiles-1', WS_B, '/repos/third');
+    advance(2 * 60_000);
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: { id: 'dotfiles-1', status: 'closed' }
+      })
+    );
+    foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A);
+
+    await vi.waitFor(() =>
+      expect(seen).toEqual([[WS_A, '/repos/third'].sort()])
+    );
+  });
 });
 
 describe('prefix prewarm ownership (UI-u6zf §3.4)', () => {
@@ -390,6 +459,27 @@ describe('prefix prewarm ownership (UI-u6zf §3.4)', () => {
 
     await vi.waitFor(() => expect(seen).toEqual([[WS_A]]));
     expect(cachedIssuePrefixFor(WS_B)).toBe('dotfiles');
+  });
+
+  test('keeps a waiter that joined while a failed prewarm was backing off', async () => {
+    const seen = captureResolved();
+    const advance = advanceableClock();
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({ ok: true, data: {} })
+    );
+
+    prewarmIssuePrefix(WS_B, WS_A);
+    await vi.waitFor(() => expect(cachedIssuePrefixFor(WS_B)).toBe(null));
+    prewarmIssuePrefix(WS_B, '/repos/third');
+    advance(10_000);
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({ ok: true, data: { issue_prefix: 'dotfiles' } })
+    );
+    prewarmIssuePrefix(WS_B, WS_A);
+
+    await vi.waitFor(() =>
+      expect(seen).toEqual([[WS_A, '/repos/third'].sort()])
+    );
   });
 
   test('wakes nobody when the rig declares no prefix', async () => {
