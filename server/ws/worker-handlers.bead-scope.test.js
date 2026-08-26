@@ -561,6 +561,36 @@ describe('decorateQueue bead_scope 세션 항목 (UI-anna §3.1)', () => {
       artifacts: [SPEC_A]
     });
   });
+
+  test('attaches the same scope to the session_active row itself', async () => {
+    const cache = scopeCacheOver({ [SPEC_C]: artifact(['app/utils/']) });
+    await cache.fill(WS, [SPEC_C]);
+    __setScopeCacheForTest(cache);
+    vi.spyOn(
+      getWorkerRuntime().runnableCache,
+      'sessionActivePeek'
+    ).mockReturnValue([
+      /** @type {any} */ ({ bead_id: 'UI-8', spec_id: SPEC_C, plan_path: null })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.session_active[0].scope).toEqual(out.bead_scope['UI-8'].scope);
+  });
+
+  test('leaves scope off a session_active row with no cache hit', () => {
+    __setScopeCacheForTest(scopeCacheOver({}));
+    vi.spyOn(
+      getWorkerRuntime().runnableCache,
+      'sessionActivePeek'
+    ).mockReturnValue([
+      /** @type {any} */ ({ bead_id: 'UI-8', spec_id: SPEC_C, plan_path: null })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(Object.hasOwn(out.session_active[0], 'scope')).toBe(false);
+  });
 });
 
 describe('decorateQueue bead_blocked_by 실행중 레인 (UI-anna §3.2)', () => {

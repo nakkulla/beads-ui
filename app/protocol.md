@@ -176,9 +176,15 @@ or in conflict, and `workflow` / `blocked` / `blocked_by` follow the same rules
 as the runnable rows below. `plan_path` (UI-anna §3.1) is `metadata.plan_path`
 or `null`, carried for the same reason a runnable row carries it: the bead's
 declared scope is read from the SAME artifact set (`[spec_id, plan_path?]`) as a
-queued bead's. Each row also carries `session_refs: SessionRefView[]` (UI-4xzk
-§4.1) — `metadata.session_ref` projected from the SAME scan, so the bucket still
-costs no extra `bd` process. One view is
+queued bead's. `scope: string[]` (UI-anna §3.1) is that declared scope, attached
+ADDITIVELY in the same shape and with the same reading as a runnable row's:
+present only on a scope-cache hit, and absent means 판정 불가 — not read yet,
+unreadable, or nothing declared — never "no scope". Its value is the one the
+same snapshot's `bead_scope[bead_id].scope` carries, so a bead moving 세션 착수
+→ 큐 적재 never changes the overlap verdict. Each row also carries
+`session_refs: SessionRefView[]` (UI-4xzk §4.1) — `metadata.session_ref`
+projected from the SAME scan, so the bucket still costs no extra `bd` process.
+One view is
 `{ index, provider: 'claude'|'codex', session_id, host, current, locality: 'local'|'remote'|'missing', last_event_at, resume_command }`:
 `index` is the position in the contract value (malformed items are dropped
 INDIVIDUALLY and the surviving indexes are unchanged), `current` marks the last

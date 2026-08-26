@@ -12297,6 +12297,16 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
     );
   });
 
+  test('lets an empty queue decoration override the 후보 ladder', () => {
+    presetCandidateFilter({ show_blocked: true });
+    const mount = mountQueue(queueOf({ bead_blocked_by: { 'BL-1': [] } }));
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="BL-1"]')
+    );
+    expect(card.querySelector('.worker-dep--pred')).toBe(null);
+  });
+
   test('names a waiting blocker by its lane position in the chip tooltip', () => {
     const mount = mountQueue(
       queueOf({

@@ -2055,6 +2055,32 @@ function sessionActiveRows(workspace_key, queue) {
 }
 
 /**
+ * Attach the declared scope to each `session_active` row (UI-anna §3.1), the
+ * same additive shape `withRunnableScope` gives a runnable row.
+ *
+ * The value is COPIED from the `bead_scope` decoration this same snapshot
+ * carries rather than peeked again: {@link beadScopeFor} already read those
+ * rows from `[spec_id, plan_path?]` at the pinned base, and one source is what
+ * makes 세션 착수 → 큐 적재 leave the overlap verdict alone. `null` (unreadable)
+ * and a missing entry both leave the field off — absence is 판정 불가, never
+ * "no scope".
+ *
+ * @param {Array<Record<string, unknown>>} rows
+ * @param {Record<string, { scope: string[], artifacts: string[] }|null>} bead_scope
+ * @returns {Array<Record<string, unknown>>}
+ */
+function withSessionScope(rows, bead_scope) {
+  return rows.map((row) => {
+    const bead_id = typeof row.bead_id === 'string' ? row.bead_id : '';
+    const entry = bead_id.length > 0 ? bead_scope[bead_id] : undefined;
+    if (!entry || !Array.isArray(entry.scope)) {
+      return row;
+    }
+    return { ...row, scope: entry.scope };
+  });
+}
+
+/**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
  *   - the pinned repository-operation declaration used by the merge gate,
  *   - `slots` (the live concurrency cap from the attachment), so the tab can
@@ -2231,6 +2257,7 @@ export function decorateQueue(workspace_key, raw_queue) {
     };
   }
   const bead_blocked_by = beadBlockedByFor(workspace_key, queue);
+  const bead_scope = beadScopeFor(workspace_key, queue);
   return {
     ...queue,
     // The manual-continuation capability (UI-58w8 §8): a read-only projection
@@ -2282,7 +2309,7 @@ export function decorateQueue(workspace_key, raw_queue) {
     // (UI-qm12 §4.3, target set widened by UI-anna §3.1), from which the client
     // derives the pairwise overlap chips. Same partial, fail-quiet,
     // non-persisted contract as the decorations above.
-    bead_scope: beadScopeFor(workspace_key, queue),
+    bead_scope,
     // Direct blocks blocker ids for the same beads (UI-04vo §3) — the
     // wait-reason chip and lane topological corrections read from this.
     bead_blocked_by,
@@ -2293,7 +2320,10 @@ export function decorateQueue(workspace_key, raw_queue) {
     // 버킷을 워커 채널 스냅샷도 싣는다 — 워커 탭 실행중 그리드가 같은 세션
     // 타일을 그린다. 제외 집합은 이 스냅샷의 레인·attempt에서 그 자리에서
     // 계산하므로 캐시가 낡아도 한 bead가 두 레인에 그려지지 않는다.
-    session_active: sessionActiveRows(workspace_key, queue),
+    session_active: withSessionScope(
+      sessionActiveRows(workspace_key, queue),
+      bead_scope
+    ),
     // Which waiting beads are parked awaiting a REVISE disposition (UI-hs11
     // §3.1). Non-persisted, partial and advisory — see the projection.
     revise_parked: reviseParkedFor(workspace_key, queue),

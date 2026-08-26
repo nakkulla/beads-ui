@@ -4531,12 +4531,15 @@ export function createWorkerView(mount_element, options = {}) {
       if (!Array.isArray(ids)) {
         continue;
       }
-      const blocker_ids = ids.filter(
-        (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+      // 빈 배열도 쓴다: 키가 있다는 것은 서버가 이 bead의 blocker를 실제로
+      // 계산했다는 뜻이므로, 빈 값은 "모른다"가 아니라 "없다"이고 낡은 후보·
+      // 세션 재료를 이겨야 한다. 키 자체의 부재만 fail-quiet다.
+      blockers_by_bead.set(
+        bead_id,
+        ids.filter(
+          (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+        )
       );
-      if (blocker_ids.length > 0) {
-        blockers_by_bead.set(bead_id, blocker_ids);
-      }
     }
     const blocker_chips = deriveWorkerBlockers(blockers_by_bead, lane_members);
     /**
