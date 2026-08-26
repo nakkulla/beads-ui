@@ -31,7 +31,7 @@
  * (`worker-pane--src`) precisely so it does not read as one of the four.
  */
 import { html, render } from 'lit-html';
-import { resolveSpecId } from '../../../server/spec-id.js';
+import { resolveSpecEvidence } from '../../../server/spec-id.js';
 import { createUnhandledFailurePredicate } from '../../../server/worker/attempt-failure.js';
 import {
   DONE_RANGE_OPTIONS,
@@ -142,10 +142,12 @@ const SERIAL_LANE_MAX = 5;
 
 /**
  * @param {any} issue
- * @returns {boolean} Whether the bead is queue-eligible (spec present, §5.4).
+ * @returns {boolean} Whether the bead is queue-eligible (spec PUBLISHED — a
+ * resolved spec path plus a format-valid `spec_review` receipt, §5.4 aligned
+ * onto the server's admission criterion by UI-vb7u §3).
  */
 function hasSpec(issue) {
-  return resolveSpecId(issue).path.length > 0;
+  return resolveSpecEvidence(issue).evidence === 'published';
 }
 
 /**
@@ -3535,8 +3537,8 @@ export function createWorkerView(mount_element, options = {}) {
     const candidate_blocked_by = new Map();
     /** @type {any[]} */
     const candidate_rows = candidate_issues.map((/** @type {any} */ it) => {
-      const spec = resolveSpecId(it);
-      const has_spec = spec.path.length > 0;
+      const spec = resolveSpecEvidence(it);
+      const has_spec = spec.evidence === 'published';
       const is_quick_fix =
         it.workflow?.route === 'quick_fix' ||
         (it.metadata && it.metadata.route === 'quick_fix');
@@ -3583,8 +3585,10 @@ export function createWorkerView(mount_element, options = {}) {
         parts.push('missing_description');
       } else if (!is_quick_fix && spec.conflict) {
         parts.push('spec_id_conflict');
-      } else if (!is_quick_fix && !has_spec) {
+      } else if (!is_quick_fix && spec.evidence === 'none') {
         parts.push('spec 없음');
+      } else if (!is_quick_fix && spec.evidence === 'draft') {
+        parts.push('spec 미발행(draft)');
       }
       const adm = admissionBadge(it.id);
       if (adm) {

@@ -73,23 +73,41 @@ function readMetadata(issue) {
 }
 
 /**
+ * Receipt-format validity for the spec evidence predicate (spec §2). The
+ * criterion is deliberately the SAME as `server/worker/admission.js`
+ * `ADMISSION_RECEIPT_RE` — `<reviewer>@<full-40-hex>`, `skipped@` included —
+ * but restated here because this module is bundled into the frontend and must
+ * not pull the server-only admission path into `app/`. Depth validity
+ * (reachability, ancestry) stays with admission and the stale probe.
+ */
+const SPEC_RECEIPT_RE = /^[A-Za-z0-9_.:-]+@[0-9a-fA-F]{40}$/;
+
+/**
  * Resolve the spec evidence class for display. Wraps {@link resolveSpecDraft}
- * with the single mapping from durable keys to evidence: publication evidence
- * (`spec_id`, native or metadata) is `published`, an authoring-time metadata
- * `spec_path` alone is `draft`, and neither is `none`. Consumers branch on
- * `evidence` instead of enumerating `source` values, so a later key-vocabulary
- * change stays inside this module.
+ * with the single mapping from durable keys to evidence (spec §2's complete
+ * partition, published-first): publication is a resolved `spec_id` path AND a
+ * format-valid `metadata.spec_review` receipt, so a `spec_id` whose receipt is
+ * absent or malformed is `draft`, as is a transitional `spec_path`-only row —
+ * `spec_path` is not a `spec_id`, so no receipt can publish it. Neither path is
+ * `none`. Consumers branch on `evidence` instead of enumerating `source`
+ * values, so a later key-vocabulary change stays inside this module.
  *
  * @param {unknown} issue
- * @returns {{ path: string, source: 'native'|'metadata'|'draft'|'none', conflict: boolean, evidence: 'published'|'draft'|'none' }}
+ * @returns {{ path: string, source: 'native'|'metadata'|'draft'|'none', conflict: boolean, evidence: 'published'|'draft'|'none', skipped: boolean }}
  */
 export function resolveSpecEvidence(issue) {
   const resolved = resolveSpecDraft(issue);
-  if (resolved.source === 'draft') {
-    return { ...resolved, evidence: 'draft' };
+  const receipt = normalize(readMetadata(issue).spec_review);
+  const receipt_valid = SPEC_RECEIPT_RE.test(receipt);
+  const skipped =
+    receipt_valid && receipt.slice(0, receipt.indexOf('@')) === 'skipped';
+  if (resolved.source === 'none') {
+    return { ...resolved, evidence: 'none', skipped };
   }
+  const published = resolved.source !== 'draft' && receipt_valid;
   return {
     ...resolved,
-    evidence: resolved.source === 'none' ? 'none' : 'published'
+    evidence: published ? 'published' : 'draft',
+    skipped
   };
 }

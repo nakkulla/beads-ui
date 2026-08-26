@@ -175,6 +175,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         title: '실행 대기 이슈',
         route: 'spec_backed',
         spec_id: 'docs/specs/thing.md',
+        published: true,
         scope_spec_id: 'docs/specs/thing.md',
         plan_path: null,
         spec_reviewer: 'codex',
@@ -188,6 +189,53 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         exec_pins: {}
       }
     ]);
+  });
+
+  test('projects published true for a spec_backed row with a valid receipt', async () => {
+    const cache = createRunnableCache({ runJson: fakeBd({ [WS_A]: [row()] }) });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out.map((item) => item.published)).toEqual([true]);
+  });
+
+  // 발행 판정은 route와 무관하다 (UI-vb7u §3): quick_fix 행의 `spec_id`는
+  // admission 의미상 비어 있으므로, 그 행이 실제로 발행된 spec을 들고 있어도
+  // `!!spec_id`로는 알 수 없다.
+  test('projects published true for a quick_fix row that carries a published spec', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            description: '## scope\n- app/x.js\n',
+            metadata: { route: 'quick_fix' }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out.map((item) => [item.published, item.spec_id])).toEqual([
+      [true, '']
+    ]);
+  });
+
+  test('projects published false for a spec path with no valid receipt', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            description: '## scope\n- app/x.js\n',
+            metadata: { route: 'quick_fix', spec_review: 'codex@abc' }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out.map((item) => item.published)).toEqual([false]);
   });
 
   test('projects blocked membership and direct blocker ids from ready explain', async () => {

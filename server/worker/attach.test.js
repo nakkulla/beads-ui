@@ -30,6 +30,24 @@ import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createWorkerRuntime } from './runtime.js';
 import { sessionLogPath } from './state-paths.js';
 
+// `beadFacts`는 attach가 repair 어댑터를 만들 때만 존재하는 클로저다. 실제
+// 구현으로 위임하는 mock으로 그 deps만 붙잡아 다른 스위트의 동작은 그대로 둔다.
+const repair_adapter_capture = vi.hoisted(() => ({
+  /** @type {any} */
+  deps: null
+}));
+
+vi.mock('./repair-session-adapter.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    createRepairSessionAdapter: (/** @type {any} */ deps) => {
+      repair_adapter_capture.deps = deps;
+      return actual.createRepairSessionAdapter(deps);
+    }
+  };
+});
+
 const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
 
 /**
@@ -2951,5 +2969,84 @@ describe('worker/attach title-cache readback wiring (UI-eey2 §9.2)', () => {
       WS,
       expect.objectContaining({ id: 'UI-1' })
     );
+  });
+});
+
+describe('beadFacts spec_id 판독 (UI-vb7u §3)', () => {
+  /**
+   * Build an attachment with NO injected `repairSession`, so attach builds the
+   * real adapter and the capture above sees its `beadFacts`.
+   *
+   * @param {any} bd
+   */
+  function beadFactsOf(bd) {
+    repair_adapter_capture.deps = null;
+    createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd,
+      worktree: fakeWorktree,
+      verify: okVerify,
+      admission: { validate: async () => ({ ok: true }) },
+      resolveBase: okBase('main'),
+      kvGet: noAccountDefaults,
+      gitRun: async () => ({ code: 1, stdout: '', stderr: '' }),
+      makeRunner: () => ({ name: 'claude', spawn: vi.fn() })
+    });
+    return repair_adapter_capture.deps.beadFacts;
+  }
+
+  // sweep 후 native-only Bead는 `metadata.spec_id`가 없다: 그 조회만 보면
+  // repair 세션의 `Test scope` 경로가 통째로 사라진다.
+  test('resolves a Test scope path for a native-only bead with no metadata spec_id', async () => {
+    const bd = {
+      ...fakeBd(),
+      readIssue: async () => ({
+        id: 'UI-1',
+        spec_id: 'docs/specs/native.md',
+        metadata: {}
+      })
+    };
+
+    const facts = await beadFactsOf(bd)('UI-1');
+
+    expect(facts.test_scope).toEqual({
+      path: 'docs/specs/native.md',
+      section: 'Test scope'
+    });
+  });
+
+  test('falls back to the metadata read when bd offers no readIssue', async () => {
+    const bd = {
+      ...fakeBd(),
+      async readMetadata(/** @type {string} */ _id, /** @type {string} */ k) {
+        return k === 'spec_id' ? 'docs/specs/legacy.md' : null;
+      }
+    };
+
+    const facts = await beadFactsOf(bd)('UI-1');
+
+    expect(facts.test_scope).toEqual({
+      path: 'docs/specs/legacy.md',
+      section: 'Test scope'
+    });
+  });
+
+  test('falls back to the metadata read when readIssue throws', async () => {
+    const bd = {
+      ...fakeBd(),
+      async readMetadata(/** @type {string} */ _id, /** @type {string} */ k) {
+        return k === 'spec_id' ? 'docs/specs/legacy.md' : null;
+      },
+      readIssue: async () => {
+        throw new Error('bd unavailable');
+      }
+    };
+
+    const facts = await beadFactsOf(bd)('UI-1');
+
+    expect(facts.test_scope).toEqual({
+      path: 'docs/specs/legacy.md',
+      section: 'Test scope'
+    });
   });
 });

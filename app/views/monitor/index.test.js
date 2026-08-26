@@ -477,7 +477,12 @@ describe('views/monitor lane header controls (UI-eey2 §3)', () => {
       workspaces: [
         workspace({
           runnable: [
-            { bead_id: 'A-1', title: 'a', spec_id: 'docs/a.md' },
+            {
+              bead_id: 'A-1',
+              title: 'a',
+              spec_id: 'docs/a.md',
+              published: true
+            },
             { bead_id: 'A-2', title: 'b' }
           ]
         })

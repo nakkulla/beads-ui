@@ -80,7 +80,9 @@ export const CANDIDATE_SORT_OPTIONS = [
 ];
 
 /**
- * spec 유무 세그먼트 (UI-eey2 §5). 판정은 runnable 투영의 `spec_id` 유무다.
+ * spec 유무 세그먼트 (UI-eey2 §5). 판정은 runnable 투영의 `published` 필드,
+ * 즉 spec 경로 + 유효한 `spec_review` receipt다 (UI-vb7u §3). 경로만 있고
+ * 리뷰가 아직 없는 행은 `spec 없음` 쪽에 선다.
  *
  * @type {ReadonlyArray<{ value: 'all'|'with'|'without', label: string }>}
  */
@@ -153,6 +155,7 @@ const DONE_KIND_LABELS = {
  *   blockers?: import('./blockers.js').BlockerDisplay[],
  *   done_kind?: string|null,
  *   spec_id?: string,
+ *   published?: boolean,
  *   labels?: string[],
  *   overlap_chips?: OverlapChip[],
  *   scope_state?: 'declared'|'missing',
@@ -1923,6 +1926,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
         status: typeof entry.status === 'string' ? entry.status : undefined,
         labels: Array.isArray(entry.labels) ? entry.labels : [],
         spec_id: typeof entry.spec_id === 'string' ? entry.spec_id : '',
+        // 발행 판정은 서버 투영이 소유한다 (UI-vb7u §3) — 레인은 재계산하지
+        // 않고 그 필드만 읽는다.
+        published: entry.published === true,
         // Phase 1이 `workflow`를 실어 주므로 실행가능 카드도 Worker와 같은
         // stepper를 그린다. 없으면 route 칩만 남는다 (fail-quiet).
         workflow: /** @type {any} */ (
@@ -2308,9 +2314,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
   }
   const after_blocked = visible.length;
   if (candidate_filter.spec === 'with') {
-    visible = visible.filter((item) => !!item.spec_id);
+    visible = visible.filter((item) => item.published === true);
   } else if (candidate_filter.spec === 'without') {
-    visible = visible.filter((item) => !item.spec_id);
+    visible = visible.filter((item) => item.published !== true);
   }
   model.runnable_hidden = {
     blocked: before - after_blocked,
@@ -2330,8 +2336,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
    * @param {MonitorItem} b
    */
   const bySpecThenUpdated = (a, b) => {
-    const a_spec = a.spec_id ? 0 : 1;
-    const b_spec = b.spec_id ? 0 : 1;
+    const a_spec = a.published === true ? 0 : 1;
+    const b_spec = b.published === true ? 0 : 1;
     return a_spec !== b_spec ? a_spec - b_spec : byUpdated(a, b);
   };
   const within = candidate_sort === 'repo_spec' ? bySpecThenUpdated : byUpdated;

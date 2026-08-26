@@ -1,5 +1,5 @@
 import { html } from 'lit-html';
-import { resolveSpecDraft } from '../../../server/spec-id.js';
+import { resolveSpecEvidence } from '../../../server/spec-id.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
@@ -33,21 +33,24 @@ function hasPlanAuthoringHistory(metadata) {
 /**
  * Collect artifact rows from native spec_id and workflow metadata. This view is
  * the only draft opt-in: a `spec_path` pinned at authoring time opens here
- * without ever counting as publication evidence elsewhere.
+ * without ever counting as publication evidence elsewhere. The draft badge
+ * follows the evidence partition (UI-vb7u §2), so a native `spec_id` still
+ * awaiting a valid `spec_review` receipt wears it too — publication, not path
+ * presence, is what clears the badge.
  *
  * @param {{ spec_id?: unknown, metadata?: Record<string, any> }} issue
  * @returns {ArtifactRow[]}
  */
 export function collectArtifacts(issue) {
   const md = (issue && issue.metadata) || {};
-  const spec = resolveSpecDraft(issue);
+  const spec = resolveSpecEvidence(issue);
   /** @type {ArtifactRow[]} */
   const rows = [];
   if (spec.path) {
     rows.push({
       kind: 'spec',
       path: spec.path,
-      missing_state: spec.source === 'draft' ? 'spec_draft' : null
+      missing_state: spec.evidence === 'draft' ? 'spec_draft' : null
     });
   }
   if (typeof md.plan_path === 'string' && md.plan_path.trim().length > 0) {

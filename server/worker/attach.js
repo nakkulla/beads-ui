@@ -642,6 +642,18 @@ export function createWorkerAttachment(workspace_root, options = {}) {
             metadata[key] = null;
           }
         }
+        // `spec_id`만 issue 전체에서 다시 판정한다 (UI-vb7u §3): native 이관
+        // 후 sweep된 Bead는 metadata에 그 키가 없어 repair 세션의 `Test scope`
+        // 경로가 통째로 사라진다. `readIssue`는 주입되는 `bd`에서 선택적
+        // 메서드이므로(부재·예외 모두), 위 metadata 판독값으로 되돌아간다.
+        if (typeof bd.readIssue === 'function') {
+          try {
+            metadata.spec_id =
+              resolveSpecId(await bd.readIssue(bead_id)).path || null;
+          } catch {
+            // metadata 폴백 유지
+          }
+        }
         const queue = runtime.queueStore.snapshot(keyFor(workspace_root));
         const row = (queue.pr_wait || []).find(
           (/** @type {any} */ entry) => entry.bead_id === bead_id

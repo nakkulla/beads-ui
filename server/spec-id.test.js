@@ -106,27 +106,64 @@ describe('resolveSpecDraft', () => {
   });
 });
 
+const RECEIPT = 'codex@' + 'a'.repeat(40);
+const SKIPPED_RECEIPT = 'skipped@' + 'b'.repeat(40);
+
 describe('resolveSpecEvidence', () => {
-  test('reports published for a spec_id with no draft pointer', () => {
-    const issue = { spec_id: 'docs/specs/published.md' };
+  test('reports published for a spec_id with a valid receipt', () => {
+    const issue = {
+      spec_id: 'docs/specs/published.md',
+      metadata: { spec_review: RECEIPT }
+    };
 
     expect(resolveSpecEvidence(issue)).toEqual({
       path: 'docs/specs/published.md',
       source: 'native',
       conflict: false,
-      evidence: 'published'
+      evidence: 'published',
+      skipped: false
     });
   });
 
-  test('reports published for a metadata-only spec_id', () => {
-    const issue = { metadata: { spec_id: 'docs/specs/legacy.md' } };
+  test('reports published for a metadata-only spec_id with a valid receipt', () => {
+    const issue = {
+      metadata: { spec_id: 'docs/specs/legacy.md', spec_review: RECEIPT }
+    };
 
     expect(resolveSpecEvidence(issue)).toEqual({
       path: 'docs/specs/legacy.md',
       source: 'metadata',
       conflict: false,
-      evidence: 'published'
+      evidence: 'published',
+      skipped: false
     });
+  });
+
+  test('reports draft for a spec_id whose receipt is absent', () => {
+    const issue = { spec_id: 'docs/specs/awaiting.md' };
+
+    expect(resolveSpecEvidence(issue)).toEqual({
+      path: 'docs/specs/awaiting.md',
+      source: 'native',
+      conflict: false,
+      evidence: 'draft',
+      skipped: false
+    });
+  });
+
+  test.each([
+    ['a short sha', 'codex@abc'],
+    ['a missing reviewer token', '@' + 'a'.repeat(40)],
+    ['a sha with a non-hex character', 'codex@' + 'z'.repeat(40)],
+    ['a bare reviewer token', 'codex'],
+    ['a blank receipt', '   ']
+  ])('reports draft for a spec_id whose receipt has %s', (_name, review) => {
+    const issue = {
+      spec_id: 'docs/specs/awaiting.md',
+      metadata: { spec_review: review }
+    };
+
+    expect(resolveSpecEvidence(issue).evidence).toEqual('draft');
   });
 
   test('reports draft with the draft path when only spec_path exists', () => {
@@ -136,48 +173,94 @@ describe('resolveSpecEvidence', () => {
       path: 'docs/specs/draft.md',
       source: 'draft',
       conflict: false,
-      evidence: 'draft'
+      evidence: 'draft',
+      skipped: false
+    });
+  });
+
+  test('keeps a spec_path-only row draft even under a valid receipt', () => {
+    const issue = {
+      metadata: { spec_path: 'docs/specs/draft.md', spec_review: RECEIPT }
+    };
+
+    expect(resolveSpecEvidence(issue)).toEqual({
+      path: 'docs/specs/draft.md',
+      source: 'draft',
+      conflict: false,
+      evidence: 'draft',
+      skipped: false
     });
   });
 
   test('prefers the published path when spec_id and spec_path differ', () => {
     const issue = {
       spec_id: 'docs/specs/published.md',
-      metadata: { spec_path: 'docs/specs/draft.md' }
+      metadata: { spec_path: 'docs/specs/draft.md', spec_review: RECEIPT }
     };
 
     expect(resolveSpecEvidence(issue)).toEqual({
       path: 'docs/specs/published.md',
       source: 'native',
       conflict: false,
-      evidence: 'published'
+      evidence: 'published',
+      skipped: false
     });
   });
 
   test.each([
     ['neither key', { metadata: { route: 'spec_backed' } }],
     ['blank spec_path', { metadata: { spec_path: '   ' } }],
+    ['a receipt with no path at all', { metadata: { spec_review: RECEIPT } }],
     ['missing issue', null]
   ])('reports none for %s', (_name, issue) => {
     expect(resolveSpecEvidence(issue)).toEqual({
       path: '',
       source: 'none',
       conflict: false,
-      evidence: 'none'
+      evidence: 'none',
+      skipped: expect.any(Boolean)
     });
   });
 
   test('carries the conflicting-dual flag through unchanged', () => {
     const issue = {
       spec_id: 'docs/specs/native.md',
-      metadata: { spec_id: 'docs/specs/legacy.md' }
+      metadata: { spec_id: 'docs/specs/legacy.md', spec_review: RECEIPT }
     };
 
     expect(resolveSpecEvidence(issue)).toEqual({
       path: 'docs/specs/native.md',
       source: 'native',
       conflict: true,
-      evidence: 'published'
+      evidence: 'published',
+      skipped: false
     });
+  });
+
+  test('flags skipped for a valid skipped@ receipt', () => {
+    const issue = {
+      spec_id: 'docs/specs/published.md',
+      metadata: { spec_review: SKIPPED_RECEIPT }
+    };
+
+    expect(resolveSpecEvidence(issue).skipped).toEqual(true);
+  });
+
+  test('leaves skipped false for a valid reviewer receipt', () => {
+    const issue = {
+      spec_id: 'docs/specs/published.md',
+      metadata: { spec_review: RECEIPT }
+    };
+
+    expect(resolveSpecEvidence(issue).skipped).toEqual(false);
+  });
+
+  test('leaves skipped false for a malformed skipped receipt', () => {
+    const issue = {
+      spec_id: 'docs/specs/published.md',
+      metadata: { spec_review: 'skipped@short' }
+    };
+
+    expect(resolveSpecEvidence(issue).skipped).toEqual(false);
   });
 });
