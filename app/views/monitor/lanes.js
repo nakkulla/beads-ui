@@ -157,6 +157,7 @@ const DONE_KIND_LABELS = {
  *   overlap_chips?: OverlapChip[],
  *   scope_state?: 'declared'|'missing',
  *   cross_lane_chip?: CrossLaneChip,
+ *   armed_lane_chip?: ArmedLaneChip,
  *   session_refs?: import('../../../server/worker/session-ref.js').SessionRefView[]
  * }} MonitorItem
  */
@@ -172,6 +173,22 @@ const DONE_KIND_LABELS = {
  * @property {number} number - 1부터. `label`과 같은 사실의 기계 판독형.
  * @property {'draft'|'confirmed'} status
  * @property {string} label
+ */
+
+/**
+ * `▶ 연결 n` / `▶ 진행 중 · 레인 없음` 칩 (UI-jaua §5.6·§5.3 (2)). 그 엔트리가
+ * armed일 때 병렬 대기 행·실행중 타일이 그린다. 자리는 카드 문법 §5.1 슬롯 4
+ * "의존·겹침"이다 — 그 표가 `연결 레인 칩`을 이미 그 슬롯에 배정했고, 이 칩이
+ * 답하는 질문도 "지금 갈 수 있나"다.
+ *
+ * `orphan`은 `armed_by_lane`이 스냅샷에 없는 레인을 가리키는 상태다. 스케줄러는
+ * 계속 발차하므로 숨기지 않고 드러내며(fail-visible), 그 자리에서 해제할 수 있게
+ * 칩이 해제 버튼을 함께 싣는다.
+ *
+ * @typedef {Object} ArmedLaneChip
+ * @property {string} lane_id
+ * @property {string} label
+ * @property {boolean} orphan
  */
 
 /**
@@ -240,8 +257,12 @@ const DONE_KIND_LABELS = {
  * @property {string} workspace_name - 행이 그리는 레포 배지 (§5.2). 등록·표시되지
  * 않는 레포면 빈 문자열이다.
  * @property {number} seq - 1부터. ①②③ 표시는 뷰가 소유한다.
- * @property {string} location_label - `● 실행중`/`PR 대기`/`완료`/`실행가능`/
- * `미적재`/`외부`/병렬 `#n`/직렬 `s1 #n` (`chainRowLocationLabel` 재사용).
+ * @property {string} location_label - "지금 막혀 있나"를 답하는 칩 (UI-jaua §8):
+ * `🔒 대기`/`대기`/`▶ 실행중`/`PR 대기`/`완료`/`실행가능`/`미적재`/`외부`/
+ * `위치 미확인`. 레포별 큐 순번은 라벨이 아니라 {@link location_title}이다 —
+ * 레인 순번 `①②` 옆의 `#n`이 전역 실행 순서로 오독됐다 (§1.4).
+ * @property {string} location_title - `beads-ui 병렬 #1` 같은 좌표 툴팁. 큐 밖
+ * 행에는 말할 좌표가 없으므로 빈 문자열이다 (fail-quiet).
  * @property {boolean} draggable - 고정 행이 아닌 행만 끌 수 있다 (§5.3).
  * @property {boolean} fixed - 실행중·PR 대기·완료 (§5.3). 이 행 앞에는 넣을 수
  * 없고, 이 행의 `✕`는 허용된다.
@@ -268,6 +289,20 @@ const DONE_KIND_LABELS = {
  * @property {boolean} can_confirm - draft이고 멤버가 2개 이상 (§5.1).
  * @property {boolean} has_mismatch - `재적용` 버튼의 조건 (§5.2): 어긋남 칩이나
  * `미적재` 멤버가 하나라도 있다.
+ * @property {'draft'|'confirmed'|'running'|'failed'|'restart'|'all_done'} state
+ * - 저장하지 않고 파생하는 레인 상태 (UI-jaua §5.5). 판정은 배타 우선순위로
+ * 위에서 아래로 한 번만 한다: 실패 > 재시작 > 진행 중 > 모두 완료/확정. draft
+ * 레인에는 발차 축이 없으므로 언제나 `draft`다.
+ * @property {string} badge - 헤더 상태 배지 (`draft`/`확정`/`▶ 진행 중`/
+ * `⛔ 실패`/`⏸ 재시작`). `모두 완료`는 {@link all_done}이 따로 그린다.
+ * @property {string|null} run_label - `▶ 진행`/`▶ 이어서 진행`/`▶ 다시 진행`,
+ * 그릴 것이 없으면 `null`. 미발차 멤버가 남아 있는 한 이 조작이 사라지지 않는
+ * 것이 §9 복구 경로의 성립 조건이다.
+ * @property {boolean} can_stop - Whether `⏸ 정지`가 선다 (진행 중일 때만).
+ * 이미 도는 세션과 이미 머지 큐에 든 항목은 그대로 간다 — 회수가 아니라 후보
+ * 축소다.
+ * @property {string[]} unlaunched - 완료·실행중·PR 대기·머지 대기 어디에도 없고
+ * 이 레인에 armed되지도 않은 멤버 (§5.5).
  */
 
 /**
@@ -577,6 +612,153 @@ function chainRowLocationLabel(bead_id, locations, states) {
 }
 
 /**
+ * The 연결 레인 행의 위치 칩 (UI-jaua §8). 답하는 질문이 "어디 있나"가 아니라
+ * **"지금 막혀 있나"**다: 레인 순번 `①②` 옆에 선 큐 순번 `#n`을 사용자가 전역
+ * 실행 순서로 읽었기 때문에(§1.4), 순번은 툴팁으로 내리고 라벨은 막힘 여부만
+ * 말한다.
+ *
+ * blocked 판정 재료는 스냅샷 `bead_blocked_by`뿐이다. 그 맵은 닫힌 blocker를
+ * 이미 뺀 뒤이므로(같은 rig는 `status`, foreign은 모니터의 prune) 항목이 비어
+ * 있지 않으면 아직 열린 blocker가 있다는 뜻이고, **키 자체가 없으면 모르는
+ * 것**이므로 순번 없는 `대기`로 수렴한다 (fail-quiet).
+ *
+ * @param {string} bead_id
+ * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
+ * @param {Array<Record<string, any>>} states
+ * @param {Map<string, string[]>} blocked_by_map
+ * @returns {{ label: string, title: string }}
+ */
+function chainRowLocation(bead_id, locations, states, blocked_by_map) {
+  const location = locations.get(bead_id);
+  if (!location) {
+    return { label: chainScopeLabel(bead_id, states), title: '' };
+  }
+  const queued =
+    typeof location.position === 'number' &&
+    (location.lane === 'parallel' || /^s[1-5]$/.test(location.lane));
+  if (queued) {
+    const blockers = blocked_by_map.get(bead_id);
+    const lane_name = location.lane === 'parallel' ? '병렬' : location.lane;
+    return {
+      label: blockers && blockers.length > 0 ? '🔒 대기' : '대기',
+      title: `${location.workspace_name || location.root_dir} ${lane_name} #${location.position}`
+    };
+  }
+  return {
+    label:
+      location.state === 'running'
+        ? '▶ 실행중'
+        : blockerLocationLabel(location),
+    title: ''
+  };
+}
+
+/**
+ * The `armed_by_lane` ONE attempt was dispatched with (UI-jaua §5.1), or `null`.
+ * 레코드를 값으로 훑는다 — 키가 attempt_id라는 관례에 실패 판정을 걸면, 그
+ * 관례가 어긋난 스냅샷에서 실패가 조용히 `▶ 진행 중`으로 읽힌다.
+ *
+ * @param {Record<string, any>} attempts
+ * @param {string} attempt_id
+ * @returns {string|null}
+ */
+function armedLaneOfAttempt(attempts, attempt_id) {
+  for (const attempt of Object.values(attempts || {})) {
+    if (
+      attempt &&
+      attempt.attempt_id === attempt_id &&
+      typeof attempt.armed_by_lane === 'string' &&
+      attempt.armed_by_lane.length > 0
+    ) {
+      return attempt.armed_by_lane;
+    }
+  }
+  return null;
+}
+
+/**
+ * 발차 축의 스냅샷 재료 (UI-jaua §5.5). 세 값 모두 workspace를 가로질러 모은
+ * 것이다 — 한 레인의 멤버가 여러 레포에 걸치므로 레인 상태는 레포 하나로
+ * 판정할 수 없다.
+ *
+ * @typedef {Object} LaneRunAxis
+ * @property {Map<string, string>} armed_by_bead - bead_id → 그 엔트리의
+ * `armed_by_lane` (병렬 대기·PR 대기 행).
+ * @property {Map<string, string>} failed_by_bead - bead_id → 그 버드의 마지막
+ * terminal 구현 attempt가 실어 온 `armed_by_lane`. 실패한 attempt만 들어온다.
+ * @property {Set<string>} disarmed_lanes - 보이는 workspace들의
+ * `disarmed_on_load` 합집합 (§5.1): 한 레포에서라도 해제됐으면 그 레인은
+ * 재시작이 멈춘 것이다.
+ */
+
+/**
+ * Derive ONE lane's 상태와 조작 (UI-jaua §5.5 두 표). 판정은 **배타
+ * 우선순위**로 위에서 아래로 한 번만 한다: 실패(1) > 재시작(2) > 진행 중(3) >
+ * 모두 완료·확정·draft(4). 상태가 한 곳에서만 나와야 배지와 버튼이 어긋나지
+ * 않는다.
+ *
+ * 실패는 attempt 스냅샷의 `armed_by_lane`에 결속된다 (§5.1). 이 결속이 없으면
+ * 그 실패가 이 레인의 발차에서 왔는지 사용자가 켠 `auto_advance`에서 왔는지
+ * 구별할 수 없고, 무관한 실패가 레인을 멈춘 것처럼 보인다.
+ *
+ * draft 레인에는 발차 축이 없다 — `진행`은 확정 레인의 조작이므로 draft는
+ * armed될 수 없고, 상태도 `draft` 하나다.
+ *
+ * @param {string} lane_id
+ * @param {'draft'|'confirmed'} status
+ * @param {MonitorChainLaneRow[]} rows
+ * @param {boolean} all_done
+ * @param {string[]} unlaunched
+ * @param {LaneRunAxis} axis
+ * @returns {{ state: MonitorChainLane['state'], badge: string, run_label: string|null, can_stop: boolean }}
+ */
+function laneRunState(lane_id, status, rows, all_done, unlaunched, axis) {
+  if (status === 'draft') {
+    return { state: 'draft', badge: 'draft', run_label: null, can_stop: false };
+  }
+  if (rows.some((row) => axis.failed_by_bead.get(row.id) === lane_id)) {
+    return {
+      state: 'failed',
+      badge: '⛔ 실패',
+      run_label: '▶ 다시 진행',
+      can_stop: false
+    };
+  }
+  if (axis.disarmed_lanes.has(lane_id)) {
+    return {
+      state: 'restart',
+      badge: '⏸ 재시작',
+      run_label: '▶ 진행',
+      can_stop: false
+    };
+  }
+  if (rows.some((row) => axis.armed_by_bead.get(row.id) === lane_id)) {
+    return {
+      state: 'running',
+      badge: '▶ 진행 중',
+      // 부분 성공으로 진행 중이 되어도 남은 멤버를 올릴 버튼은 사라지지 않는다
+      // (§9): 그 재클릭이 복구 경로다.
+      run_label: unlaunched.length > 0 ? '▶ 이어서 진행' : null,
+      can_stop: true
+    };
+  }
+  if (all_done) {
+    return {
+      state: 'all_done',
+      badge: '확정',
+      run_label: null,
+      can_stop: false
+    };
+  }
+  return {
+    state: 'confirmed',
+    badge: '확정',
+    run_label: '▶ 진행',
+    can_stop: false
+  };
+}
+
+/**
  * The 저장 연결 레인 투영 (UI-j92s §4.1·§5.1·§5.2·§5.3). 파생이 아니라 서버가
  * 보관한 멤버십이므로, 이 함수는 순서를 **계산하지 않고** 읽는다: `entries`
  * 순서가 곧 레인 순서이고 표시 번호는 배열 자리다.
@@ -590,6 +772,7 @@ function chainRowLocationLabel(bead_id, locations, states) {
  * @param {Array<Record<string, any>>} states
  * @param {Map<string, string>} title_by_bead
  * @param {Map<string, string>} name_by_root
+ * @param {LaneRunAxis} axis
  * @returns {MonitorChainLane[]}
  */
 function buildCrossLanes(
@@ -598,7 +781,8 @@ function buildCrossLanes(
   locations,
   states,
   title_by_bead,
-  name_by_root
+  name_by_root,
+  axis
 ) {
   /** @type {MonitorChainLane[]} */
   const projected = [];
@@ -632,6 +816,12 @@ function buildCrossLanes(
         typeof location.position === 'number'
           ? location.position - 1
           : null;
+      const location_chip = chainRowLocation(
+        bead_id,
+        locations,
+        states,
+        blocked_by_map
+      );
       const previous = rows.length > 0 ? rows[rows.length - 1].id : null;
       const mismatch =
         status === 'confirmed' &&
@@ -645,7 +835,8 @@ function buildCrossLanes(
           ? location.workspace_name
           : name_by_root.get(entry_root) || '',
         seq: position + 1,
-        location_label: chainRowLocationLabel(bead_id, locations, states),
+        location_label: location_chip.label,
+        location_title: location_chip.title,
         draggable: !fixed,
         fixed,
         done: state === 'done',
@@ -659,6 +850,21 @@ function buildCrossLanes(
     rows.forEach((row, seq) => {
       row.seq = seq + 1;
     });
+    const all_done = rows.length > 0 && rows.every((row) => row.done);
+    // 미발차 = 완료·실행중·PR 대기·머지 대기 어디에도 없고 이 레인에 armed되지도
+    // 않은 멤버 (§5.5). 고정 행이 그 네 자리를 모두 대표한다 — 머지 대기 항목은
+    // PR 대기 행이므로 고정이다.
+    const unlaunched = rows
+      .filter((row) => !row.fixed && axis.armed_by_bead.get(row.id) !== lane_id)
+      .map((row) => row.id);
+    const derived = laneRunState(
+      lane_id,
+      status,
+      rows,
+      all_done,
+      unlaunched,
+      axis
+    );
     projected.push({
       lane_id,
       status,
@@ -666,11 +872,13 @@ function buildCrossLanes(
       number: index + 1,
       label: `연결 ${index + 1} · 레포 간`,
       rows,
-      all_done: rows.length > 0 && rows.every((row) => row.done),
+      all_done,
       can_confirm: status === 'draft' && rows.length >= 2,
       has_mismatch:
         status === 'confirmed' &&
-        rows.some((row) => row.mismatch || row.unplaced)
+        rows.some((row) => row.mismatch || row.unplaced),
+      unlaunched,
+      ...derived
     });
   });
   return projected;
@@ -961,6 +1169,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const raw_queue_length_by_root = new Map();
   /** @type {Map<string, string[]>} */
   const blocked_by_map = new Map();
+  // 발차 축의 스냅샷 재료 (UI-jaua §5.5). 레인은 레포를 가로지르므로 세 값 모두
+  // 보이는 workspace 전부에서 모은다.
+  /** @type {Map<string, string>} */
+  const armed_by_bead = new Map();
+  /** @type {Map<string, string>} */
+  const failed_by_bead = new Map();
+  /** @type {Set<string>} */
+  const disarmed_lanes = new Set();
   // 선언 scope 사실 (UI-qm12 §5.2). 겹침은 레포 안에서만 정의되므로 레포별로
   // 모으고, 실행가능 항목의 scope는 큐 장식이 아니라 자기 행이 싣고 온다.
   /** @type {Map<string, Record<string, any>>} */
@@ -1026,6 +1242,30 @@ export function buildLanes(workspaces, workspaces_state, options) {
         .map((/** @type {any} */ e) => [e.bead_id, e])
     );
     const queue_lane = Array.isArray(workspace.queue) ? workspace.queue : [];
+    // arm은 병렬 대기 행에 쓰이고 PR 대기 행으로 옮겨 실린다 (§5.1) — 두 자리를
+    // 같이 읽어야 PR 대기에 닿은 멤버도 `▶ 진행 중`으로 남는다.
+    for (const entry of [
+      ...queue_lane,
+      ...(Array.isArray(workspace.pr_wait) ? workspace.pr_wait : [])
+    ]) {
+      if (
+        entry &&
+        typeof entry.bead_id === 'string' &&
+        typeof entry.armed_by_lane === 'string' &&
+        entry.armed_by_lane.length > 0
+      ) {
+        armed_by_bead.set(entry.bead_id, entry.armed_by_lane);
+      }
+    }
+    // 키가 없는 구서버는 아무 레인도 재시작으로 멈추지 않았다고 읽는다
+    // (fail-quiet): 없는 기능과 "해제된 레인 없음"은 여기서 같은 그림이다.
+    for (const lane_id of Array.isArray(workspace.disarmed_on_load)
+      ? workspace.disarmed_on_load
+      : []) {
+      if (typeof lane_id === 'string' && lane_id.length > 0) {
+        disarmed_lanes.add(lane_id);
+      }
+    }
     const serial_lanes = (
       Array.isArray(workspace.serial_lanes) ? workspace.serial_lanes : []
     ).filter(
@@ -1132,6 +1372,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
 
     for (const [bead_id, live] of activeByBead(attempts, done_at_by_bead)) {
       claimed.add(bead_id);
+      // 실패 판정은 **attempt 스냅샷**의 `armed_by_lane`에 결속된다 (§5.5): 지금
+      // 큐 행이 무엇으로 armed되어 있는지가 아니라 그 실행이 무엇으로 출발했는지가
+      // 질문이다. `activeByBead`가 이미 처리되지 않은 마지막 구현 실패만
+      // 남기므로(dismiss·완료 해소 제외) 여기 오는 것은 아직 서 있는 실패다.
+      const failed_arm =
+        live.run_state === 'failed'
+          ? armedLaneOfAttempt(attempts, live.attempt_id)
+          : null;
+      if (failed_arm !== null) {
+        failed_by_bead.set(bead_id, failed_arm);
+      }
       running.push({
         ...base(bead_id),
         lane: 'running',
@@ -1939,7 +2190,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
     locations,
     states,
     title_by_bead,
-    name_by_root
+    name_by_root,
+    { armed_by_bead, failed_by_bead, disarmed_lanes }
   );
 
   // 소속 칩은 실행가능 카드와 대기 행에만 붙는다 (§5.2a).
@@ -1978,6 +2230,25 @@ export function buildLanes(workspaces, workspaces_state, options) {
       };
     }
   }
+  // 발차 칩 (§5.6). 자리는 카드 문법 §5.1 슬롯 4 "의존·겹침"이며, 재료가 없는
+  // 카드에는 칩이 없다 (fail-quiet). 레인 번호는 스냅샷 순서에서 나오고, 그
+  // 순서에 없는 lane id는 고아 arm이므로 숨기지 않고 드러낸다 (§5.3 (2)).
+  /** @type {Map<string, number>} */
+  const lane_number_of = new Map(
+    model.chain_lanes.map((lane) => [lane.lane_id, lane.number])
+  );
+  for (const item of [...model.queue, ...model.running]) {
+    const lane_id = armed_by_bead.get(item.id);
+    if (typeof lane_id !== 'string' || lane_id.length === 0) {
+      continue;
+    }
+    const number = lane_number_of.get(lane_id);
+    item.armed_lane_chip =
+      number === undefined
+        ? { lane_id, label: '▶ 진행 중 · 레인 없음', orphan: true }
+        : { lane_id, label: `▶ 연결 ${number}`, orphan: false };
+  }
+
   /** @type {MonitorItem[]} */
   const parallel_rows = [];
   for (const items of queue_by_root.values()) {

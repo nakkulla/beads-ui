@@ -703,6 +703,12 @@ export function execChipsTemplate(chips, options = {}) {
  * @property {{ lane_id: string, label: string }} [cross_lane] - `연결 n` /
  * `연결 n (draft)` 소속 칩 (UI-j92s §5.2a). 숨기지 않는 저장 레인 멤버가 자기
  * 소속을 말하는 자리이고, 클릭은 그 레인으로 스크롤한다.
+ * @property {{ lane_id: string, label: string, orphan: boolean }} [armed_lane]
+ * - `▶ 연결 n` 발차 칩 (UI-jaua §5.6). 그 행이 연결 레인의 발차 축으로 돌고
+ * 있다는 사실이고, 소속 칩과 다른 질문에 답한다("이 레인 것이다"가 아니라 "지금
+ * 이 레인이 이것을 굴리고 있다"). `orphan`이면 라벨이
+ * `▶ 진행 중 · 레인 없음`이고 그 자리에 해제 버튼이 함께 선다 — 스케줄러는 계속
+ * 발차하므로 조용히 두지 않는다 (fail-visible, §5.3 (2)).
  */
 
 /**
@@ -769,11 +775,13 @@ export function dependencyChipsTemplate(chips) {
   const scope_missing = chips.scope_missing === true;
   const popover = chips.popover || null;
   const cross_lane = chips.cross_lane || null;
+  const armed_lane = chips.armed_lane || null;
   if (
     predecessors.length === 0 &&
     overlaps.length === 0 &&
     !scope_missing &&
-    !cross_lane
+    !cross_lane &&
+    !armed_lane
   ) {
     return '';
   }
@@ -787,6 +795,23 @@ export function dependencyChipsTemplate(chips) {
         >
           ${cross_lane.label}
         </button>`
+      : ''}
+    ${armed_lane
+      ? html`<span
+          class=${`worker-dep worker-dep--armed${armed_lane.orphan ? ' worker-dep--armed-orphan' : ''}`}
+          title=${armed_lane.orphan
+            ? '이 항목을 발차한 연결 레인이 없습니다 — 스케줄러는 계속 발차합니다'
+            : '연결 레인이 이 항목을 발차했습니다 — 레포 자동 진행과 무관합니다'}
+          >${armed_lane.orphan
+            ? html`${armed_lane.label}<button
+                  type="button"
+                  class="worker-dep__label mon2-arm__release"
+                  data-lane-id=${armed_lane.lane_id}
+                >
+                  해제
+                </button>`
+            : armed_lane.label}</span
+        >`
       : ''}
     ${predecessors.map(
       (chip) =>

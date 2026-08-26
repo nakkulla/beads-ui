@@ -4819,6 +4819,25 @@ export function createWorkerView(mount_element, options = {}) {
           >cap 초과</span
         >`
       : '';
+    // 자동 진행이 꺼졌는데 세션이 뜨는 이유를 화면이 말한다 (UI-jaua §5.6):
+    // 연결 레인이 병렬 대기 행을 발차하면 전역 토글과 무관하게 그 항목만 나간다.
+    // 켜져 있을 때는 후보 집합이 현행과 같으므로 할 말이 없다 (fail-quiet).
+    const armed_count = m.queue.auto_advance
+      ? 0
+      : (Array.isArray(m.queue.queue) ? m.queue.queue : []).filter(
+          (/** @type {any} */ entry) =>
+            entry &&
+            typeof entry.armed_by_lane === 'string' &&
+            entry.armed_by_lane.length > 0
+        ).length;
+    const armed_hint =
+      armed_count > 0
+        ? html`<span
+            class="worker-kpi__chip worker-kpi__chip--armed"
+            title="모니터 연결 레인이 발차한 대기 행입니다 — 이 레포의 자동 진행은 꺼진 채입니다"
+            >⏸ 자동 진행 꺼짐 · 연결 레인 ${armed_count}건 진행 중</span
+          >`
+        : '';
     // 세 카운트는 데스크톱 KPI 줄과 모바일 리본이 함께 쓴다 — 같은 수를 두 번
     // 정의하지 않기 위해 템플릿 하나로 둔다.
     const counts = html`<span class="worker-kpi__chip worker-kpi__chip--running"
@@ -4881,7 +4900,9 @@ export function createWorkerView(mount_element, options = {}) {
       // 화면이 줄어든다.
       return html`<div class="worker-ribbon">
           ${play} ${merge_all}
-          <div class="worker-kpi worker-kpi--ribbon">${overcap}${counts}</div>
+          <div class="worker-kpi worker-kpi--ribbon">
+            ${overcap}${armed_hint}${counts}
+          </div>
         </div>
         <div class="worker-ctrl worker-ctrl--mobile">
           <div class="worker-ctrl__ops">${settings}</div>
@@ -4893,7 +4914,7 @@ export function createWorkerView(mount_element, options = {}) {
     return html`<div class="worker-ctrl">
         <div class="worker-ctrl__ops">${play}${merge_all}${settings}</div>
         <div class="worker-kpi">
-          ${overcap}${counts}${base_chip}
+          ${overcap}${armed_hint}${counts}${base_chip}
           ${(Array.isArray(m.token_total)
             ? m.token_total
             : m.token_total

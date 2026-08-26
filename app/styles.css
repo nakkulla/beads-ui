@@ -2816,6 +2816,13 @@ html[data-theme='dark'] {
   font-weight: 700;
 }
 
+/* 자동 진행이 꺼졌는데 세션이 뜨는 이유 (UI-jaua §5.6). 경고가 아니라 설명이므로
+   danger를 쓰지 않는다 — 사용자가 켠 적 없는 축이 도는 것은 정상 동작이다. */
+.worker-kpi__chip--armed {
+  border-color: var(--border-warn);
+  color: var(--accent-warn);
+}
+
 /* KPI 숫자는 그 레인의 생애 단계 색을 쓴다 — 칩과 레인 스파인이 같은 색을 말해야
    툴바에서 읽은 수가 어느 레인의 수인지 다시 찾을 필요가 없다. */
 .worker-kpi__chip--running b {
@@ -7326,8 +7333,27 @@ html[data-theme='dark'] {
   color: var(--text-dim);
 }
 
+/* 발차 축의 세 상태 (UI-jaua §5.5). 배타 우선순위로 하나만 그려지므로 색도
+   서로 겹치지 않는다: 실패는 danger, 재시작은 warn, 진행 중은 merge 계열이다. */
+.mon2-clane__badge--running {
+  border-color: var(--stage-merge-dim);
+  color: var(--accent-success);
+}
+
+.mon2-clane__badge--failed {
+  border-color: var(--border-danger);
+  color: var(--accent-danger);
+}
+
+.mon2-clane__badge--restart {
+  border-color: var(--border-warn);
+  color: var(--accent-warn);
+}
+
 .mon2-clane__confirm,
 .mon2-clane__reapply,
+.mon2-clane__run,
+.mon2-clane__stop,
 .mon2-clane__remove {
   flex: 0 0 auto;
   padding: 0 var(--sp-5);
@@ -7346,8 +7372,17 @@ html[data-theme='dark'] {
   color: var(--text-muted);
 }
 
+/* 정지는 되돌릴 수 있는 조작이지만 진행과 같은 강조를 쓰지 않는다 — 나란히 선
+   두 버튼이 같은 색이면 어느 쪽이 지금 상태를 바꾸는지 읽히지 않는다. */
+.mon2-clane__stop {
+  border-color: var(--border-warn);
+  color: var(--accent-warn);
+}
+
 .mon2-clane__confirm:disabled,
 .mon2-clane__reapply:disabled,
+.mon2-clane__run:disabled,
+.mon2-clane__stop:disabled,
 .mon2-clane__remove:disabled {
   border-color: var(--border-chip);
   color: var(--text-dim);
@@ -7361,6 +7396,21 @@ html[data-theme='dark'] {
   padding: var(--sp-3) var(--sp-5);
   border: 1px dashed var(--border-warn);
   border-radius: var(--r-6);
+  color: var(--accent-warn);
+  font-size: var(--fs-caption);
+}
+
+/* 자동 교정의 결과 표시 (UI-jaua §6.3): 카드가 사용자가 놓은 자리와 다른 곳에
+   앉은 이유, 그리고 교정이 돌 수 없는 두 이유를 헤더가 말한다. */
+.mon2-clane__corrected {
+  flex: 0 0 auto;
+  color: var(--chip-route);
+  font-size: var(--fs-caption);
+}
+
+.mon2-clane__cycle,
+.mon2-clane__hold {
+  flex: 0 0 auto;
   color: var(--accent-warn);
   font-size: var(--fs-caption);
 }
@@ -7583,6 +7633,31 @@ html[data-theme='dark'] {
 
 .worker-dep--overlap:hover {
   background: color-mix(in srgb, var(--accent-warn) 24%, transparent);
+}
+
+/* 발차 칩 (UI-jaua §5.6): 소속 칩(`--lane`)과 다른 질문에 답하므로 색도 다르다 —
+   "이 레인 것이다"가 아니라 "지금 이 레인이 이것을 굴리고 있다"이다. 고아 arm은
+   그 사실이 위험이므로 warn으로 서고 해제 버튼을 안에 둔다 (§5.3 (2)). */
+.worker-dep--armed {
+  border-color: var(--stage-merge-dim);
+  color: var(--accent-success);
+}
+
+.worker-dep--armed-orphan {
+  border-color: var(--border-warn);
+  background: color-mix(in srgb, var(--accent-warn) 14%, transparent);
+  color: var(--accent-warn);
+}
+
+.mon2-arm__release {
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-warn);
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--accent-warn);
+  font: inherit;
+  font-size: var(--fs-caption);
+  cursor: pointer;
 }
 
 /* 판정 불가 — 색으로 경고하지 않는다. 겹치지 않는다는 뜻이 아니라 모른다는 뜻이다. */

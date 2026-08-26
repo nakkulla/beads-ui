@@ -2293,6 +2293,33 @@ describe('겹침 칩 (UI-qm12 §5.3)', () => {
     return /** @type {HTMLElement} */ (mount.querySelector('.worker-deps'));
   }
 
+  test('puts the 발차 칩 in the 의존·겹침 slot (UI-jaua §5.6)', () => {
+    const deps = renderDeps({
+      armed_lane: { lane_id: 'cl_1', label: '▶ 연결 1', orphan: false },
+      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }]
+    });
+
+    expect(
+      Array.from(deps.children).map((chip) => chip.className.split(' ')[1])
+    ).toEqual(['worker-dep--armed', 'worker-dep--pred']);
+  });
+
+  test('offers the release inside an orphan 발차 칩 (UI-jaua §5.3)', () => {
+    const deps = renderDeps({
+      armed_lane: {
+        lane_id: 'cl_gone',
+        label: '▶ 진행 중 · 레인 없음',
+        orphan: true
+      }
+    });
+
+    const chip = deps.querySelector('.worker-dep--armed-orphan');
+    expect([
+      chip?.textContent?.includes('▶ 진행 중 · 레인 없음'),
+      chip?.querySelector('.mon2-arm__release')?.getAttribute('data-lane-id')
+    ]).toEqual([true, 'cl_gone']);
+  });
+
   test('orders the chips blocked → 겹침', () => {
     const deps = renderDeps({
       predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }],
