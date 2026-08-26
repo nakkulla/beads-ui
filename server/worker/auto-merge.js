@@ -22,6 +22,15 @@
  *   judgment the click uses; the only thing this adds is the exclusion filter,
  *   which can only make the set SMALLER.
  *
+ * Since UI-jaua §5.4 the same pass carries a SECOND, toggle-independent step:
+ * a cross lane that the user started (`▶ 진행`) has to roll through merge, and
+ * this module is already the code that observes PR-wait entry. It registers
+ * those armed rows through `enqueueMergeManual` — item-level authority, which
+ * the global `auto_merge` toggle has never owned (UI-58w8 §1) — rather than
+ * growing a driver, an authority source, or a startup signal of its own. It
+ * still never calls `merge()`, and it still widens no eligibility: the gate
+ * re-judges every registered item at its turn exactly as before.
+ *
  * @import { Queue } from './queue-store.js'
  */
 import {
@@ -72,6 +81,31 @@ export function createAutoMerge(deps) {
   let rescan = false;
   /** @type {(() => void)|null} */
   let unsubscribe = null;
+
+  /**
+   * Fan the mutation out and wake the sequential driver — the two steps a bare
+   * store write does NOT do. Both enrolment paths use it, so a lane's
+   * registration reaches the driver by exactly the signal automatic enrolment
+   * already uses (UI-jaua §5.4 step 4: no new startup signal).
+   */
+  function wake() {
+    if (typeof deps.notifyChanged === 'function') {
+      try {
+        deps.notifyChanged(workspace);
+      } catch {
+        // A broken fanout must never break enrollment.
+      }
+    }
+    if (typeof deps.kick === 'function') {
+      try {
+        Promise.resolve(deps.kick()).catch((err) => {
+          log('auto-merge kick failed for %s: %o', workspace, err);
+        });
+      } catch (err) {
+        log('auto-merge kick threw for %s: %o', workspace, err);
+      }
+    }
+  }
 
   /**
    * Queue every eligible row that is not excluded, prune dead exclusions, fan
@@ -138,23 +172,97 @@ export function createAutoMerge(deps) {
         ? result.queue.merge_queue.length
         : before;
     if (result.ok) {
-      // Persist alone fans nothing out and wakes nobody — see the doc above.
-      if (typeof deps.notifyChanged === 'function') {
-        try {
-          deps.notifyChanged(workspace);
-        } catch {
-          // A broken fanout must never break enrollment.
-        }
+      wake();
+    }
+    return {
+      applied: result.ok,
+      conflict: result.conflict,
+      queued: Math.max(0, after - before),
+      queue: result.queue
+    };
+  }
+
+  /**
+   * Register the armed cross-lane members that have reached PR wait
+   * (UI-jaua §5.4). Runs on every pass REGARDLESS of `auto_merge`, because the
+   * authority it grants is item-level and the global toggle owns automatic
+   * enrolment only (UI-58w8 §1) — the same asymmetry the merge queue already
+   * relies on.
+   *
+   * The lane overlay is deliberately not used here. `overlaidPrWait` projects
+   * rows down to `{ bead_id, external }` and mixes in registry rows that have
+   * no durable entry at all; the arm lives on the DURABLE `pr_wait` row, which
+   * is also the only kind of row a lane can ever have armed.
+   *
+   * @returns {{ applied: boolean, conflict: boolean, queued: number, queue: Queue }}
+   */
+  function enrollArmed() {
+    const snapshot = /** @type {any} */ (deps.store.snapshot(workspace));
+    const pr_wait = Array.isArray(snapshot.pr_wait) ? snapshot.pr_wait : [];
+    const merge_queue = Array.isArray(snapshot.merge_queue)
+      ? snapshot.merge_queue
+      : [];
+    // Already carrying manual authority means the lane's ask is answered —
+    // by an earlier pass, by the user's own click, or by a promotion. An
+    // automatic or authority-less entry is still a candidate: registering it
+    // is what makes it survive `auto_merge` being switched off mid-lane.
+    /** @type {Set<string>} */
+    const held = new Set();
+    for (const entry of merge_queue) {
+      if (entry?.authority?.source === 'manual') {
+        held.add(entry.bead_id);
       }
-      if (typeof deps.kick === 'function') {
-        try {
-          Promise.resolve(deps.kick()).catch((err) => {
-            log('auto-merge kick failed for %s: %o', workspace, err);
-          });
-        } catch (err) {
-          log('auto-merge kick threw for %s: %o', workspace, err);
-        }
+    }
+    /** @type {Array<{ bead_id: string, external: boolean, head_sha: string, target_base: string|null, via: 'lane' }>} */
+    const entries = [];
+    for (const row of pr_wait) {
+      const bead_id = row?.bead_id;
+      if (typeof bead_id !== 'string' || bead_id.length === 0) {
+        continue;
       }
+      const armed_by_lane = row.armed_by_lane;
+      if (typeof armed_by_lane !== 'string' || armed_by_lane.length === 0) {
+        continue;
+      }
+      if (held.has(bead_id)) {
+        continue;
+      }
+      const head_sha = headSha(bead_id);
+      if (!head_sha) {
+        // The module's first rule (see `enroll`): an authority granted on an
+        // unread head is a merge on stale evidence. The row keeps its arm and
+        // the next observation tries again.
+        continue;
+      }
+      entries.push({
+        bead_id,
+        external: row.external === true,
+        head_sha,
+        target_base: baseRef(bead_id),
+        via: 'lane'
+      });
+    }
+    if (entries.length === 0) {
+      return {
+        applied: false,
+        conflict: false,
+        queued: 0,
+        queue: /** @type {Queue} */ (snapshot)
+      };
+    }
+    const before = merge_queue.length;
+    // An unreadable base is refused by the store's own rule, which is the same
+    // rule the click path relies on — no second copy of it lives here.
+    const result = deps.store.enqueueMergeManual(workspace, {
+      expected_revision: snapshot.revision,
+      entries
+    });
+    const after =
+      result.ok && Array.isArray(result.queue.merge_queue)
+        ? result.queue.merge_queue.length
+        : before;
+    if (result.ok) {
+      wake();
     }
     return {
       applied: result.ok,
@@ -180,14 +288,24 @@ export function createAutoMerge(deps) {
         rescan = false;
         /** @type {any} */
         const q = deps.store.snapshot(workspace);
+        // BEFORE the toggle test (UI-jaua §5.4): a started cross lane must
+        // reach merge in a repo whose `auto_merge` is off, which is the whole
+        // point of registering it as item-level authority.
+        const armed = enrollArmed();
         if (q.auto_merge !== true) {
-          return;
+          if (!armed.applied) {
+            return;
+          }
+          // A registration emitted the event this scan listens to; let the
+          // coalescing loop absorb it. The next pass finds the row already
+          // held by manual authority and applies nothing, which terminates.
+          continue;
         }
         const result = enroll();
         // Nothing enrolled and nothing pruned means no mutation and no emit, so
         // the loop that fed this one is over — that is what actually terminates
         // the recursion (§4.3).
-        if (!result.applied) {
+        if (!result.applied && !armed.applied) {
           return;
         }
       } while (rescan && !stopped);
@@ -201,6 +319,7 @@ export function createAutoMerge(deps) {
 
   return {
     enroll,
+    enrollArmed,
     scan,
 
     start() {

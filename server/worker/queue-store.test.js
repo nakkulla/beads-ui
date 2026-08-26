@@ -5458,6 +5458,71 @@ describe('worker/queue-store — manual merge continuation authority', () => {
     });
   });
 
+  test('records lane provenance on a manual authority', () => {
+    const store = manualStore();
+
+    const queued = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        {
+          bead_id: 'UI-1',
+          head_sha: 'a'.repeat(40),
+          target_base: 'main',
+          via: 'lane'
+        }
+      ]
+    });
+
+    expect(queued.queue.merge_queue[0].authority).toEqual({
+      id: 'authority-1',
+      source: 'manual',
+      granted_at: 123,
+      requested_head_sha: 'a'.repeat(40),
+      target_base: 'main',
+      via: 'lane'
+    });
+  });
+
+  test('keeps lane provenance across a reload', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        {
+          bead_id: 'UI-1',
+          head_sha: 'a'.repeat(40),
+          target_base: 'main',
+          via: 'lane'
+        }
+      ]
+    });
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(reloaded.merge_queue[0].authority?.via).toBe('lane');
+  });
+
+  test('omits via entirely for an authority granted by a click', () => {
+    const store = manualStore();
+    enqueueManual(store);
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(reloaded.merge_queue[0].authority).not.toHaveProperty('via');
+  });
+
+  test('drops an unrecognized via value on load', () => {
+    const store = manualStore();
+    enqueueManual(store);
+    const persisted = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    persisted.merge_queue[0].authority.via = 'not-a-lane';
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(persisted));
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(reloaded.merge_queue[0].authority).not.toHaveProperty('via');
+  });
+
   test('keeps manual authority when auto merge turns off', () => {
     const store = manualStore();
     store.enqueueMergeManual(WS, {

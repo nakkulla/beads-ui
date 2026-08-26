@@ -591,6 +591,11 @@
  * @property {number} granted_at
  * @property {string} requested_head_sha
  * @property {string} target_base
+ * @property {'lane'} [via] - PROVENANCE only (UI-jaua §5.4): which non-click
+ * path asked for this manual authority. `manual` stays the one source — the
+ * continuation judgment reads `source` and nothing else — so this field can
+ * never change whether an item proceeds. Absent means the ordinary click, which
+ * is what every legacy `queue.json` round-trips to.
  */
 /**
  * @typedef {Object} HeadReview
@@ -1791,13 +1796,21 @@ function normalizeMergeAuthority(value) {
   ) {
     return null;
   }
-  return {
+  /** @type {MergeAuthority} */
+  const authority = {
     id: value.id,
     source: value.source,
     granted_at: value.granted_at,
     requested_head_sha: value.requested_head_sha.toLowerCase(),
     target_base: value.target_base
   };
+  // Only the one defined provenance survives, and only by being SET: an
+  // unknown or missing `via` leaves the key absent rather than writing
+  // `null`, so a legacy authority round-trips byte-identical.
+  if (value.via === 'lane') {
+    authority.via = 'lane';
+  }
+  return authority;
 }
 
 /**
@@ -6737,8 +6750,14 @@ export function createQueueStore(options = {}) {
      *   the freshly observed head/base; every late result of the old attempt
      *   then fails its `authority_id` CAS and is a no-op.
      *
+     * `via` is provenance, not a new authority kind (UI-jaua §5.4): a lane's
+     * armed member registers through this same mutation with the same
+     * `manual` source, so every consumer of {@link MergeAuthority.source} —
+     * and `manualContinuation()` above all — behaves identically whether the
+     * authority came from a click or from `▶ 진행`.
+     *
      * @param {string} workspace
-     * @param {{ expected_revision: number, entries: Array<{ bead_id: string, head_sha?: string|null, target_base?: string|null, external?: boolean }> }} input
+     * @param {{ expected_revision: number, entries: Array<{ bead_id: string, head_sha?: string|null, target_base?: string|null, external?: boolean, via?: 'lane' }> }} input
      * @returns {QueueOpResult}
      */
     enqueueMergeManual(workspace, input) {
@@ -6767,6 +6786,7 @@ export function createQueueStore(options = {}) {
           if (!head_sha || !target_base) {
             continue;
           }
+          const via = entry.via === 'lane' ? entry.via : null;
           if (!enqueueMember(next, bead_id, entry.external === true)) {
             const lane_occupied =
               next.queue.some((item) => item.bead_id === bead_id) ||
@@ -6843,6 +6863,11 @@ export function createQueueStore(options = {}) {
               // began and would otherwise settle under that value, leaving the
               // history claiming automation owned a round a person asked for.
               promoteAttemptOrigins(next, existing.authority.id);
+              // The promotion's own provenance: this authority is now owned by
+              // whoever asked for it here, and a lane asking is not a click.
+              if (via !== null) {
+                existing.authority.via = via;
+              }
               changed += 1;
               continue;
             }
@@ -6851,7 +6876,8 @@ export function createQueueStore(options = {}) {
               source: 'manual',
               granted_at: now(),
               requested_head_sha: head_sha,
-              target_base
+              target_base,
+              ...(via === null ? {} : { via })
             };
             existing.head_review = null;
             changed += 1;
@@ -6866,7 +6892,8 @@ export function createQueueStore(options = {}) {
               source: 'manual',
               granted_at: now(),
               requested_head_sha: head_sha,
-              target_base
+              target_base,
+              ...(via === null ? {} : { via })
             },
             head_review: null
           });
