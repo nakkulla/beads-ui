@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { registerWorkspace } from '../registry-watcher.js';
 import {
   __registerWorkerAttachmentForTest,
@@ -14,6 +14,11 @@ import {
 } from '../worker/repo-ops-display.js';
 import { resolveRepoOps } from '../worker/repo-ops-resolver.js';
 import { repoOpsScriptHandler } from './repo-ops-script.js';
+
+// Waits on REAL child processes (git, node, python), so wall time here is
+// process startup under the load the parallel suite creates, not product work.
+// Assertions are unchanged; only the waiting budget is sized for that load.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
 /** @type {string} */
 let workspace;

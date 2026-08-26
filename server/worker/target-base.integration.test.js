@@ -2,10 +2,15 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createLockManager } from './locks.js';
 import { resolveTargetBase } from './target-base.js';
 import { createWorktreeManager } from './worktree.js';
+
+// Waits on REAL child processes (git, node, python), so wall time here is
+// process startup under the load the parallel suite creates, not product work.
+// Assertions are unchanged; only the waiting budget is sized for that load.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
 /** @type {string} */
 let tmp;

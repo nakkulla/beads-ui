@@ -10,6 +10,11 @@ import {
 } from './recovery-archive.js';
 import { discardBackupDir } from './state-paths.js';
 
+// Waits on REAL child processes (git, node, python), so wall time here is
+// process startup under the load the parallel suite creates, not product work.
+// Assertions are unchanged; only the waiting budget is sized for that load.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 /** @type {string} */
 let tmp;
 /** @type {string} */

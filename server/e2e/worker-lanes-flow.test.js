@@ -41,6 +41,18 @@ import {
 } from '../ws.js';
 import { __setAnalysisDepsForTest } from '../ws/worker-parallel-analysis-handlers.js';
 
+// Waits on REAL child processes (git, node, python), so wall time here is
+// process startup under the load the parallel suite creates, not product work.
+// Assertions are unchanged; only the waiting budget is sized for that load.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
+/**
+ * Vitest's own default budget, restated because this file raises the file-level
+ * budget for the suites that drive real git. The suites below are pure
+ * computation and are held to the unchanged default.
+ */
+const PURE = { timeout: 5_000 };
+
 const execFileAsync = promisify(execFile);
 const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
 const RECEIPT = `self@${'a'.repeat(40)}`;
@@ -573,7 +585,7 @@ describe('worker lanes e2e — WS 경계 통과 분석·제출 (UI-04vo seam K)'
   });
 });
 
-describe('worker lanes — 은퇴 심볼 부재 (UI-04vo Phase 9)', () => {
+describe('worker lanes — 은퇴 심볼 부재 (UI-04vo Phase 9)', PURE, () => {
   /**
    * Active runtime sources only: the legacy-drop entry in `normalizeQueue`'s
    * known-field list and the migration tests that prove the drop are the two

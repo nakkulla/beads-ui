@@ -12,7 +12,7 @@ import { createRepoOpsDeployWorktreeManager } from './worktree.js';
 // in parallel, tests here reach ~4s — against a 5s default that is a coin flip,
 // and the repo-ops verify gate is where the coin lands wrong. The assertions are
 // unchanged; only the budget is sized for the load the suite actually creates.
-vi.setConfig({ testTimeout: 30_000 });
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
 /** @type {string} */
 let root;
