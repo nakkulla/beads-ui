@@ -119,6 +119,16 @@ const MUTATIONS = [
     payload: { bead_id: 'UI-1', to_index: 0, expected_revision: 0 }
   },
   {
+    action: 'worker-queue-arm',
+    run: handlers.handleWorkerQueueArm,
+    payload: { bead_ids: ['UI-1'], lane_id: 'cl_1', expected_revision: 0 }
+  },
+  {
+    action: 'worker-queue-disarm',
+    run: handlers.handleWorkerQueueDisarm,
+    payload: { lane_id: 'cl_1', expected_revision: 0 }
+  },
+  {
     action: 'worker-queue-toggle',
     run: handlers.handleWorkerQueueToggle,
     payload: { on: true, expected_revision: 0 }

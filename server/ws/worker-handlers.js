@@ -3451,6 +3451,98 @@ export function handleWorkerQueueReorder(ws, req) {
 }
 
 /**
+ * Handle `worker-queue-arm`. Payload:
+ * `{ bead_ids: string[], lane_id, expected_revision }` (UI-jaua §5.3) — arms
+ * this workspace's parallel rows for a Monitor cross lane, so they dispatch
+ * while the repo's own `auto_advance` stays OFF.
+ *
+ * `lane_id` is NOT checked against the lane store: `cross-lanes.json` is
+ * server-global and a workspace handler must not depend on it (§5.3). Bead ids
+ * absent from this queue are fail-quiet, because one `▶ 진행` sends the whole
+ * lane membership to every repo it spans.
+ *
+ * A successful arm kicks the live dispatch loop exactly as `worker-queue-place`
+ * does — the arm is what makes a free slot fillable.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerQueueArm(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (
+    !Array.isArray(p.bead_ids) ||
+    typeof p.lane_id !== 'string' ||
+    p.lane_id.length === 0
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { bead_ids: string[], lane_id: string }'
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const result = queueStore().arm(key, {
+    expected_revision: revisionOf(p),
+    bead_ids: p.bead_ids,
+    lane_id: p.lane_id
+  });
+  replyMutation(ws, req, key, result);
+  if (result.ok) {
+    Promise.resolve(tickWorkerQueue(key)).catch((err) => {
+      log('worker tick after arm failed for %s: %o', key, err);
+    });
+  }
+}
+
+/**
+ * Handle `worker-queue-disarm`. Payload:
+ * `{ bead_ids?: string[], lane_id?, expected_revision }` (UI-jaua §5.3) —
+ * `bead_ids` clears exactly those rows, `lane_id` alone clears every row this
+ * workspace has armed to that lane. At least one of the two is required.
+ *
+ * No tick: disarming only REMOVES candidates, so the next ordinary pass is
+ * soon enough.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerQueueDisarm(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  const has_ids = Array.isArray(p.bead_ids);
+  const has_lane = typeof p.lane_id === 'string' && p.lane_id.length > 0;
+  if (!has_ids && !has_lane) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { bead_ids: string[] } or { lane_id: string }'
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const result = queueStore().disarm(key, {
+    expected_revision: revisionOf(p),
+    bead_ids: has_ids ? p.bead_ids : undefined,
+    lane_id: has_lane ? p.lane_id : undefined
+  });
+  replyMutation(ws, req, key, result);
+}
+
+/**
  * Handle `worker-queue-toggle`. Payload: `{ on: boolean, expected_revision }`.
  * Persists the `auto_advance` flag (CAS) and, on a successful turn-ON, kicks the
  * live dispatch loop with a fire-and-forget `tick` (error-captured). The tick is

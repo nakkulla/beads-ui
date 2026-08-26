@@ -147,6 +147,52 @@ describe('cross-lanes-store load', () => {
     ]);
   });
 
+  test('normalizes away the provenance flag of the first entry', () => {
+    writeFile({
+      revision: 1,
+      lanes: [
+        lane({
+          entries: [
+            {
+              bead_id: 'UI-1',
+              root_dir: '/abs/a',
+              dep_created_by_lane: true
+            },
+            { bead_id: 'UI-2', root_dir: '/abs/b', dep_created_by_lane: true }
+          ]
+        })
+      ]
+    });
+
+    const state = store().read();
+
+    expect(state?.lanes[0].entries).toEqual([
+      { bead_id: 'UI-1', root_dir: '/abs/a' },
+      { bead_id: 'UI-2', root_dir: '/abs/b', dep_created_by_lane: true }
+    ]);
+  });
+
+  test('drops a non-boolean provenance value instead of the entry', () => {
+    writeFile({
+      revision: 1,
+      lanes: [
+        lane({
+          entries: [
+            { bead_id: 'UI-1', root_dir: '/abs/a' },
+            { bead_id: 'UI-2', root_dir: '/abs/b', dep_created_by_lane: 'yes' }
+          ]
+        })
+      ]
+    });
+
+    const state = store().read();
+
+    expect(state?.lanes[0].entries[1]).toEqual({
+      bead_id: 'UI-2',
+      root_dir: '/abs/b'
+    });
+  });
+
   test('caches the load so a later file rewrite is not observed', () => {
     writeFile({ revision: 1, lanes: [] });
     const s = store();

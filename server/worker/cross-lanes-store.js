@@ -17,6 +17,14 @@
  * @typedef {Object} CrossLaneEntry
  * @property {string} bead_id
  * @property {string} root_dir - Resolved absolute workspace root.
+ * @property {boolean} [dep_created_by_lane] - Did THIS lane create the `blocks`
+ * edge between this entry and the one right before it (UI-jaua §7.1)? `true`
+ * means the pair's `dep-add` SUCCEEDED, not that it was planned — which is why
+ * it is written in two stages: the lane ops store `false` for a newly adjacent
+ * position and `monitor-lane-provenance` raises the succeeded pairs afterwards.
+ * Deletion reverts only `true` pairs, so an absent field (every lane written
+ * before UI-jaua) removes nothing at all — no migration, converging to the safe
+ * side.
  */
 /**
  * @typedef {Object} CrossLane
@@ -173,7 +181,17 @@ function normalizeState(raw) {
         continue;
       }
       owned_beads.add(bead_id);
-      entries.push({ bead_id, root_dir });
+      // `entries[0]`의 provenance는 의미가 없다 (앞 엔트리가 없다) — 여기서
+      // 항상 부재로 정규화해, 읽는 쪽마다 0번 자리를 따로 걸러내지 않게 한다.
+      const dep_created_by_lane =
+        entries.length > 0 && typeof raw_entry.dep_created_by_lane === 'boolean'
+          ? raw_entry.dep_created_by_lane
+          : undefined;
+      entries.push({
+        bead_id,
+        root_dir,
+        ...(dep_created_by_lane === undefined ? {} : { dep_created_by_lane })
+      });
     }
     lanes.push({ id, status, created_at, entries });
   }

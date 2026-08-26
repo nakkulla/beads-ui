@@ -27,7 +27,8 @@ afterEach(() => {
  * @returns {Record<string, any>}
  */
 function workspace(patch = {}) {
-  return {
+  /** @type {Record<string, any>} */
+  const merged = {
     root_dir: WS_A,
     name: 'repo-a',
     revision: 1,
@@ -41,6 +42,14 @@ function workspace(patch = {}) {
     bead_titles: {},
     ...patch
   };
+  // 실행가능 행은 서버에서 언제나 `blocked_by`를 실어 온다 (빈 배열 포함,
+  // `runnable-cache.js` `qualify`). UI-jaua §6.1의 완전성 판정이 그 존재를
+  // 읽으므로 픽스처도 같은 모양이어야 한다 — 키가 없으면 "아직 모름"이다.
+  merged.runnable = merged.runnable.map((/** @type {any} */ item) => ({
+    blocked_by: [],
+    ...item
+  }));
+  return merged;
 }
 
 /**
@@ -64,7 +73,10 @@ function state(patch = {}) {
  * One `cross_lanes` snapshot (UI-j92s §4.1). 표시 번호는 배열 자리에서 나오므로
  * 기본 `id`도 그 자리를 따른다 — 테스트가 읽는 `연결 n`과 같은 수여야 한다.
  *
- * @param {Array<{ id?: string, status?: 'draft'|'confirmed', entries: Array<{ bead_id: string, root_dir?: string }> }>} lanes
+ * 확정 레인의 `entries[i>0]`은 기본이 `dep_created_by_lane: true`다 — 그 레인이
+ * 확정하며 만든 의존이고, 삭제가 되돌리는 대상도 그 쌍뿐이다 (UI-jaua §7.1).
+ *
+ * @param {Array<{ id?: string, status?: 'draft'|'confirmed', entries: Array<{ bead_id: string, root_dir?: string, dep_created_by_lane?: boolean }> }>} lanes
  * @param {number} [revision]
  * @returns {{ revision: number, lanes: Array<Record<string, any>> }}
  */
@@ -75,9 +87,14 @@ function crossLanes(lanes, revision = 1) {
       id: lane.id || `cl_${index + 1}`,
       status: lane.status || 'confirmed',
       created_at: '2026-08-25T00:00:00.000Z',
-      entries: lane.entries.map((entry) => ({
+      entries: lane.entries.map((entry, position) => ({
         bead_id: entry.bead_id,
-        root_dir: entry.root_dir || WS_A
+        root_dir: entry.root_dir || WS_A,
+        ...(position > 0 && (lane.status || 'confirmed') === 'confirmed'
+          ? {
+              dep_created_by_lane: entry.dep_created_by_lane ?? true
+            }
+          : {})
       }))
     }))
   };
@@ -545,7 +562,7 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     ).toEqual(['A-1', 'B-1']);
   });
 
-  test('marks a running chain row with the bullet its location label earns', () => {
+  test('answers 지금 막혀 있나 in a chain row location chip', () => {
     const { mount, view } = setup({
       cross_lanes: crossLanes([
         { entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
@@ -569,11 +586,17 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
 
     view.load();
 
+    // UI-jaua §8: 큐 순번은 라벨이 아니라 툴팁이다 — `#n`이 레인 순번 옆에서
+    // 전역 실행 순서로 읽혔다.
     expect(
-      Array.from(mount.querySelectorAll('.mon2-crow__where')).map((w) =>
-        w.textContent?.trim()
-      )
-    ).toEqual(['● 실행중', '#1']);
+      Array.from(mount.querySelectorAll('.mon2-crow__where')).map((w) => [
+        w.textContent?.trim(),
+        w.getAttribute('title')
+      ])
+    ).toEqual([
+      ['▶ 실행중', ''],
+      ['🔒 대기', 'repo-a 병렬 #1']
+    ]);
   });
 
   test('opens the bead a chain row points at', () => {
@@ -1511,9 +1534,20 @@ describe('views/monitor drag and drop (UI-e6hw §5)', () => {
     click(mount, '.mon2-crow[data-bead-id="A-2"] .mon2-crow__detach');
     await flushMicrotasks();
 
+    // UI-jaua §7.2: 빠지는 멤버의 `disarm`이 `dep-remove` 뒤·레인 op 앞에 서고,
+    // 이어 붙인 쌍은 §7.1 2단계가 `true`로 올린다.
     expect(sent).toEqual([
       { type: 'dep-remove', payload: { a: 'A-2', b: 'A-1', root_dir: WS_A } },
       { type: 'dep-remove', payload: { a: 'A-3', b: 'A-2', root_dir: WS_A } },
+      {
+        type: 'worker-queue-disarm',
+        payload: {
+          bead_ids: ['A-2'],
+          lane_id: 'cl_1',
+          root_dir: WS_A,
+          expected_revision: 1
+        }
+      },
       {
         type: 'monitor-lane-update',
         payload: {
@@ -1525,7 +1559,15 @@ describe('views/monitor drag and drop (UI-e6hw §5)', () => {
           expected_revision: 1
         }
       },
-      { type: 'dep-add', payload: { a: 'A-3', b: 'A-1', root_dir: WS_A } }
+      { type: 'dep-add', payload: { a: 'A-3', b: 'A-1', root_dir: WS_A } },
+      {
+        type: 'monitor-lane-provenance',
+        payload: {
+          lane_id: 'cl_1',
+          pairs: [{ bead_id: 'A-3', after: 'A-1', value: true }],
+          expected_revision: 2
+        }
+      }
     ]);
   });
 
@@ -2132,7 +2174,9 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
       'monitor-lane-confirm',
       'dep-add',
       'worker-queue-place',
-      'worker-queue-place'
+      'worker-queue-place',
+      // UI-jaua §7.1 2단계: 성공한 `dep-add`의 쌍만 `true`로 올린다.
+      'monitor-lane-provenance'
     ]);
     expect(revisions).toEqual([1, 8]);
   });
@@ -2204,7 +2248,8 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
     expect(sent.map((m) => m.type)).toEqual([
       'dep-add',
       'worker-queue-place',
-      'worker-queue-place'
+      'worker-queue-place',
+      'monitor-lane-provenance'
     ]);
     expect(sent[0].payload).toEqual({ a: 'A-9', b: 'A-8', root_dir: WS_A });
   });
@@ -2231,9 +2276,13 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
     click(mount, '.mon2-clane__remove');
     await flushMicrotasks();
 
-    expect(confirmFn).toHaveBeenCalledWith('의존 1개를 함께 제거합니다');
+    // UI-jaua §7.3: 문장이 어느 의존을 지우고 어느 것을 두는지 말한다.
+    expect(confirmFn).toHaveBeenCalledWith(
+      '연결 1을 지웁니다.\n함께 제거할 의존:\n  A-9 ← A-8'
+    );
     expect(sent.map((m) => m.type)).toEqual([
       'dep-remove',
+      'worker-queue-disarm',
       'monitor-lane-remove'
     ]);
   });
@@ -2363,6 +2412,307 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
       ['B-1', 'A-9'],
       ['B-1', 'B-2', 'A-9']
     ]);
+  });
+});
+
+describe('monitor 연결 레인 진행·정지 (UI-jaua §5.5·§9)', () => {
+  test('places an unplaced member before arming its repo', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          runnable: [{ bead_id: 'A-2', title: '뒤' }]
+        })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([
+        { entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+      ]),
+      transport: async () => ({ applied: true, queue: { revision: 5 } })
+    });
+
+    view.load();
+    click(mount, '.mon2-clane__run');
+    await flushMicrotasks();
+
+    expect(sent.map((m) => m.type)).toEqual([
+      'worker-queue-place',
+      'worker-queue-arm'
+    ]);
+    expect(sent[1].payload).toEqual({
+      bead_ids: ['A-1', 'A-2'],
+      lane_id: 'cl_1',
+      root_dir: WS_A,
+      // 앞 op의 응답 revision이 다음 op의 CAS 값이다 (UI-j92s §5.5 규약).
+      expected_revision: 5
+    });
+  });
+
+  test('arms each member repo once', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({ queue: [{ bead_id: 'A-1' }] }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          revision: 4,
+          queue: [{ bead_id: 'B-1' }]
+        })
+      ],
+      workspaces_state: [
+        state(),
+        state({
+          root_dir: WS_B,
+          name: 'repo-b',
+          issue_prefix: 'B',
+          revision: 4
+        })
+      ],
+      cross_lanes: crossLanes([
+        { entries: [{ bead_id: 'A-1' }, { bead_id: 'B-1', root_dir: WS_B }] }
+      ]),
+      transport: async () => ({ applied: true, queue: { revision: 9 } })
+    });
+
+    view.load();
+    click(mount, '.mon2-clane__run');
+    await flushMicrotasks();
+
+    expect(sent.map((m) => [m.type, m.payload.root_dir])).toEqual([
+      ['worker-queue-arm', WS_A],
+      ['worker-queue-arm', WS_B]
+    ]);
+  });
+
+  test('stops at the repo that refused the arm and names the recovery', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({ queue: [{ bead_id: 'A-1' }] }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1' }]
+        })
+      ],
+      workspaces_state: [
+        state(),
+        state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })
+      ],
+      cross_lanes: crossLanes([
+        { entries: [{ bead_id: 'A-1' }, { bead_id: 'B-1', root_dir: WS_B }] }
+      ]),
+      transport: async (_type, payload) =>
+        payload.root_dir === WS_A
+          ? { applied: false, queue: { revision: 2 } }
+          : { applied: true, queue: { revision: 2 } }
+    });
+
+    view.load();
+    click(mount, '.mon2-clane__run');
+    await flushMicrotasks();
+
+    expect(sent.map((m) => m.payload.root_dir)).toEqual([WS_A]);
+    expect(
+      Array.from(document.querySelectorAll('.toast')).map(
+        (node) => node.textContent
+      )
+    ).toContain(
+      '일부 레포에서 진행을 켜지 못했습니다 — [▶ 이어서 진행]으로 다시 시도하세요'
+    );
+  });
+
+  test('keeps ▶ 이어서 진행 next to ⏸ 정지 while a member is unlaunched', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1', armed_by_lane: 'cl_1' }, { bead_id: 'A-2' }]
+        })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([
+        { entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+      ])
+    });
+
+    view.load();
+
+    expect([
+      el(mount, '.mon2-clane__badge')?.textContent?.trim(),
+      el(mount, '.mon2-clane__run')?.textContent?.trim(),
+      el(mount, '.mon2-clane__stop') !== null
+    ]).toEqual(['▶ 진행 중', '▶ 이어서 진행', true]);
+  });
+
+  test('⏸ 정지 disarms the lane in every member repo', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({ queue: [{ bead_id: 'A-1', armed_by_lane: 'cl_1' }] }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1', armed_by_lane: 'cl_1' }]
+        })
+      ],
+      workspaces_state: [
+        state(),
+        state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })
+      ],
+      cross_lanes: crossLanes([
+        { entries: [{ bead_id: 'A-1' }, { bead_id: 'B-1', root_dir: WS_B }] }
+      ]),
+      transport: async () => ({ applied: true, queue: { revision: 3 } })
+    });
+
+    view.load();
+    click(mount, '.mon2-clane__stop');
+    await flushMicrotasks();
+
+    expect(
+      sent.map((m) => [m.type, m.payload.lane_id, m.payload.root_dir])
+    ).toEqual([
+      ['worker-queue-disarm', 'cl_1', WS_A],
+      ['worker-queue-disarm', 'cl_1', WS_B]
+    ]);
+  });
+
+  test('disables 진행 while the lane store is unreadable', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      workspaces_state: [state()],
+      cross_lanes: null
+    });
+
+    view.load();
+
+    expect(el(mount, '.mon2-clane__run')).toBeNull();
+  });
+
+  test('releases an orphan arm from the row that reveals it', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({ queue: [{ bead_id: 'A-1', armed_by_lane: 'cl_gone' }] })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([]),
+      transport: async () => ({ applied: true, queue: { revision: 3 } })
+    });
+
+    view.load();
+    const chip = el(mount, '.worker-dep--armed-orphan');
+    click(mount, '.mon2-arm__release');
+    await flushMicrotasks();
+
+    expect(chip.textContent?.trim().startsWith('▶ 진행 중 · 레인 없음')).toBe(
+      true
+    );
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-disarm',
+        payload: {
+          bead_ids: ['A-1'],
+          lane_id: 'cl_gone',
+          root_dir: WS_A,
+          expected_revision: 1
+        }
+      }
+    ]);
+  });
+});
+
+describe('monitor 연결 레인 교정 표시 (UI-jaua §6.3)', () => {
+  test('disables 확정 with the hold reason while a member has no blocker material', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          runnable: [{ bead_id: 'A-1', title: '앞' }]
+        })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([
+        { status: 'draft', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+      ])
+    });
+
+    view.load();
+
+    expect([
+      /** @type {HTMLButtonElement} */ (el(mount, '.mon2-clane__confirm'))
+        .disabled,
+      el(mount, '.mon2-clane__hold')?.textContent?.trim()
+    ]).toEqual([true, '의존 자료 미확정 — 교정 보류']);
+  });
+
+  test('names the cycle that no order can satisfy', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-1': ['A-2'], 'A-2': ['A-1'] }
+        })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([
+        { status: 'draft', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+      ])
+    });
+
+    view.load();
+
+    expect(el(mount, '.mon2-clane__cycle')?.textContent?.trim()).toBe(
+      '⛔ 의존 사이클 — 자동 교정 불가'
+    );
+  });
+
+  test('reports how many rows the correction moved', async () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-1': [], 'A-2': ['A-1'] }
+        })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([
+        { entries: [{ bead_id: 'A-2' }, { bead_id: 'A-1' }] }
+      ]),
+      transport: async () => ({
+        applied: true,
+        revision: 4,
+        queue: { revision: 4 }
+      })
+    });
+
+    view.load();
+    click(mount, '.mon2-clane__reapply');
+    await flushMicrotasks();
+
+    expect(el(mount, '.mon2-clane__corrected')?.textContent?.trim()).toBe(
+      '의존에 맞춰 1건 자동 교정'
+    );
+  });
+
+  test('marks a fixed row the correction cannot move', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-1': ['A-2'], 'A-2': [] }
+        })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([
+        { entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+      ])
+    });
+
+    view.load();
+
+    expect(
+      Array.from(mount.querySelectorAll('.mon2-crow')).map((row) =>
+        row.textContent?.includes('⚠ 의존 순서와 다름')
+      )
+    ).toEqual([true, false]);
   });
 });
 

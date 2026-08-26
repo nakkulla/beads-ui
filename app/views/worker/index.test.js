@@ -1898,6 +1898,49 @@ describe('views/worker', () => {
     expect(tile.querySelector('.rtile__pause')).toBeNull();
   });
 
+  test('names the cross lane that dispatches while 자동 진행 is off (UI-jaua §5.6)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        auto_advance: false,
+        queue: [
+          { bead_id: 'S1', added_at: 0, armed_by_lane: 'cl_1' },
+          { bead_id: 'S2', added_at: 1 }
+        ]
+      })
+    );
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(
+      mount.querySelector('.worker-kpi__chip--armed')?.textContent?.trim()
+    ).toBe('⏸ 자동 진행 꺼짐 · 연결 레인 1건 진행 중');
+  });
+
+  test('says nothing about arms while 자동 진행 is on (UI-jaua §5.6)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        auto_advance: true,
+        queue: [{ bead_id: 'S1', added_at: 0, armed_by_lane: 'cl_1' }]
+      })
+    );
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(mount.querySelector('.worker-kpi__chip--armed')).toBeNull();
+  });
+
   test('a manual resume past the cap raises the cap badge (§2.3)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
