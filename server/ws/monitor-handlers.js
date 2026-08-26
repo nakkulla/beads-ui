@@ -22,7 +22,6 @@ import {
   activeBeadIds,
   isImplementationAttempt
 } from '../../app/utils/active-attempts.js';
-import { runBdJsonProjected } from '../bd.js';
 import { getConfig } from '../config.js';
 import { createPoller } from '../poller.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
@@ -40,6 +39,13 @@ import {
 } from '../worker/attach.js';
 import { sharedCrossLanesStore } from '../worker/cross-lanes-store.js';
 import { projectExecutionDefaults } from '../worker/execution-defaults.js';
+import {
+  __resetForeignBlockerCachesForTest,
+  cachedIssuePrefixFor,
+  onForeignBlockerResolved,
+  prewarmIssuePrefix,
+  visibleWorkspaceRoots
+} from '../worker/foreign-blocker-status.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
@@ -67,15 +73,6 @@ import {
  * than one full cross-repo scan per event.
  */
 const PUSH_DEBOUNCE_MS = 250;
-const ISSUE_PREFIX_RETRY_MS = 5_000;
-/**
- * Foreign blocker status cache TTLs (UI-eey2 §10). A closed foreign blocker
- * stays closed, so a long positive TTL is safe; a failed lookup retries sooner
- * because the usual cause (bd busy, rig unreadable) is transient.
- */
-const FOREIGN_STATUS_TTL_MS = 5 * 60_000;
-const FOREIGN_STATUS_RETRY_MS = 60_000;
-
 /**
  * Server-global subscriber set. No workspace key: a monitor subscription is one
  * per connection for the whole server.
@@ -93,6 +90,9 @@ let refresh_unsubscribe = null;
 /** @type {(() => void) | null} */
 let queue_changed_unsubscribe = null;
 
+/** @type {(() => void) | null} */
+let foreign_resolved_unsubscribe = null;
+
 /** @type {{ start: () => void, stop: () => void } | null} */
 let refresh_driver = null;
 
@@ -104,85 +104,6 @@ let refresh_driver = null;
  * @type {Map<string, number>}
  */
 const last_seen_revision = new Map();
-
-/**
- * Process-local config projection per workspace. Successes stay cached; a
- * failed or malformed lookup remains null but becomes retryable after a short
- * delay instead of spawning `bd` on every snapshot (UI-2gi1 §6.3).
- *
- * @type {Map<string, { value: string|null, retry_at: number, in_flight: boolean }>}
- */
-const issue_prefix_cache = new Map();
-
-/**
- * @param {unknown} value
- * @returns {string|null}
- */
-function issuePrefixFromConfig(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-  const prefix = /** @type {Record<string, unknown>} */ (value).issue_prefix;
-  if (typeof prefix !== 'string') {
-    return null;
-  }
-  const trimmed = prefix.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-/**
- * Synchronous cache-hit projection used by `buildMonitorWorkspacesState()`.
- *
- * @param {string} root_dir
- * @returns {string|null}
- */
-function cachedIssuePrefixFor(root_dir) {
-  return issue_prefix_cache.get(path.resolve(root_dir))?.value || null;
-}
-
-/**
- * Start at most one async `bd config list --json` lookup for a workspace.
- *
- * @param {string} root_dir
- */
-function prewarmIssuePrefix(root_dir) {
-  const key = path.resolve(root_dir);
-  const current = issue_prefix_cache.get(key);
-  if (
-    (current && current.value !== null) ||
-    current?.in_flight === true ||
-    (current && current.retry_at > Date.now())
-  ) {
-    return;
-  }
-  issue_prefix_cache.set(key, {
-    value: current?.value || null,
-    retry_at: current?.retry_at || 0,
-    in_flight: true
-  });
-  void runBdJsonProjected('config', ['config', 'list', '--json'], { cwd: key })
-    .then((result) => {
-      const issue_prefix =
-        result.ok === true ? issuePrefixFromConfig(result.data) : null;
-      issue_prefix_cache.set(key, {
-        value: issue_prefix,
-        retry_at:
-          issue_prefix === null ? Date.now() + ISSUE_PREFIX_RETRY_MS : Infinity,
-        in_flight: false
-      });
-      if (issue_prefix !== null) {
-        schedulePush();
-      }
-    })
-    .catch((err) => {
-      issue_prefix_cache.set(key, {
-        value: null,
-        retry_at: Date.now() + ISSUE_PREFIX_RETRY_MS,
-        in_flight: false
-      });
-      log('monitor: issue prefix lookup failed for %s: %o', key, err);
-    });
-}
 
 /**
  * How long a SUCCESSFUL per-repo session-defaults read stays fresh.
@@ -199,7 +120,7 @@ const SESSION_DEFAULTS_RETRY_MS = 60_000;
 /**
  * Process-local session-defaults projection per workspace (UI-eey2 §9.4).
  *
- * Same shape as {@link issue_prefix_cache} and for the same reason: the read is
+ * Same shape as the extracted prefix cache and for the same reason: the read is
  * ASYNC (`bd kv get`) while `workspaces_state` is built SYNCHRONOUSLY, so a
  * cold or expired entry ships the empty default and the fill's completion
  * schedules the push that carries the real one.
@@ -305,159 +226,6 @@ function prewarmVisibleIssuePrefixes() {
     prewarmIssuePrefix(root_dir);
     prewarmSessionDefaults(root_dir);
   }
-}
-
-/**
- * Process-local status cache for FOREIGN blockers (UI-eey2 §10): a `blocks`
- * dependency whose id belongs to another visible rig. `bd show` in the
- * dependant's rig carries no `status` for such an edge, so the title cache
- * cannot drop it when closed; the monitor — the one place that knows every
- * visible rig's prefix — resolves it with one `bd show` in the owning rig.
- * Display-only: a closed blocker is simply not a blocker, exactly as `bd ready`
- * already judges it. Never scheduling input.
- *
- * @type {Map<string, { status: string|null, until: number, in_flight: boolean }>}
- */
-const foreign_blocker_status_cache = new Map();
-
-/**
- * Rig prefix of a bead id — the part before the first `-` (same split as the
- * client's `classifyBlockerPrefix`).
- *
- * @param {string} bead_id
- */
-function prefixOfBeadId(bead_id) {
-  const split_at = bead_id.indexOf('-');
-  return split_at > 0 ? bead_id.slice(0, split_at) : bead_id;
-}
-
-/**
- * Cached status of a foreign blocker, kicking one async `bd show` in the owning
- * rig when the cache is cold or expired. `null` until known.
- *
- * @param {string} bead_id
- * @param {string} owner_root - Visible workspace whose prefix owns the id.
- * @returns {string|null}
- */
-function foreignBlockerStatusFor(bead_id, owner_root) {
-  const key = `${path.resolve(owner_root)}\u0000${bead_id}`;
-  const hit = foreign_blocker_status_cache.get(key);
-  const now = Date.now();
-  if (hit && (hit.in_flight || hit.until > now)) {
-    return hit.status;
-  }
-  foreign_blocker_status_cache.set(key, {
-    status: hit?.status ?? null,
-    until: hit?.until ?? 0,
-    in_flight: true
-  });
-  void runBdJsonProjected('show', ['show', bead_id, '--json'], {
-    cwd: path.resolve(owner_root),
-    expected_id: bead_id
-  })
-    .then((result) => {
-      const status =
-        result.ok === true &&
-        result.data &&
-        typeof (/** @type {any} */ (result.data).status) === 'string'
-          ? /** @type {any} */ (result.data).status
-          : null;
-      foreign_blocker_status_cache.set(key, {
-        status,
-        until:
-          Date.now() +
-          (status === null ? FOREIGN_STATUS_RETRY_MS : FOREIGN_STATUS_TTL_MS),
-        in_flight: false
-      });
-      if (status === 'closed') {
-        schedulePush();
-      }
-    })
-    .catch((err) => {
-      foreign_blocker_status_cache.set(key, {
-        status: hit?.status ?? null,
-        until: Date.now() + FOREIGN_STATUS_RETRY_MS,
-        in_flight: false
-      });
-      log('monitor: foreign blocker lookup failed for %s: %o', bead_id, err);
-    });
-  return hit?.status ?? null;
-}
-
-/**
- * Drop CLOSED foreign blockers from a workspace's `bead_blocked_by` projection
- * (UI-eey2 §10). Same-rig blockers are left alone — the title cache already
- * excluded the closed ones from that source. Unknown status keeps the id
- * (fail-visible until the lookup lands); an id whose prefix matches no other
- * visible rig is untouched.
- *
- * @param {Record<string, any>} projected - Mutated in place.
- * @param {string} root_dir
- * @param {string[]} roots - Every visible workspace root.
- * @param {(root_dir: string) => string|null} issuePrefixFor
- * @param {(bead_id: string, owner_root: string) => string|null} statusFor
- */
-function pruneClosedForeignBlockers(
-  projected,
-  root_dir,
-  roots,
-  issuePrefixFor,
-  statusFor
-) {
-  const map = projected.bead_blocked_by;
-  if (!map || typeof map !== 'object' || Array.isArray(map)) {
-    return;
-  }
-  /** @type {string|null} */
-  let self_prefix = null;
-  try {
-    self_prefix = issuePrefixFor(root_dir);
-  } catch {
-    self_prefix = null;
-  }
-  /** @type {Map<string, string>} */
-  const owner_by_prefix = new Map();
-  for (const other of roots) {
-    if (other === root_dir) {
-      continue;
-    }
-    /** @type {string|null} */
-    let prefix = null;
-    try {
-      prefix = issuePrefixFor(other);
-    } catch {
-      prefix = null;
-    }
-    if (typeof prefix === 'string' && prefix.length > 0) {
-      owner_by_prefix.set(prefix, other);
-    }
-  }
-  if (owner_by_prefix.size === 0) {
-    return;
-  }
-  /** @type {Record<string, unknown>} */
-  const out = {};
-  for (const [bead_id, blockers] of Object.entries(map)) {
-    if (!Array.isArray(blockers)) {
-      out[bead_id] = blockers;
-      continue;
-    }
-    out[bead_id] = blockers.filter((blocker) => {
-      if (typeof blocker !== 'string') {
-        return true;
-      }
-      const prefix = prefixOfBeadId(blocker);
-      if (self_prefix !== null && prefix === self_prefix) {
-        return true;
-      }
-      const owner_root = owner_by_prefix.get(prefix);
-      if (!owner_root) {
-        return true;
-      }
-      return statusFor(blocker, owner_root) !== 'closed';
-    });
-  }
-  projected.bead_blocked_by = out;
 }
 
 /**
@@ -573,14 +341,16 @@ function withRunnableScope(root_dir, runnable) {
  * The `done` lane ships in FULL (UI-qrfo §7): the period selector moved to the
  * client, and a client can only narrow a period it was given data for.
  *
+ * The closed-foreign-blocker cleanup is NOT here (UI-u6zf §3.2). It runs where
+ * the projection is built — `decorateQueue` — so every consumer gets it, and
+ * this aggregation simply receives an already-clean snapshot.
+ *
  * @param {{
  *   listWorkspaces?: () => Array<{ path: string }>,
  *   listHidden?: () => string[],
  *   snapshotFor?: (workspace_key: string) => Record<string, unknown>,
  *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
- *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
- *   issuePrefixFor?: (root_dir: string) => string|null,
- *   foreignBlockerStatusFor?: (bead_id: string, owner_root: string) => string|null
+ *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>
  * }} [options] - Test seams; each defaults to the live server source.
  * @returns {Array<Record<string, unknown>>}
  */
@@ -597,15 +367,11 @@ export function buildMonitorPipeline(options = {}) {
     options.sessionActiveFor ||
     ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
       getWorkerRuntime().runnableCache.sessionActiveFor(key, exclude_ids));
-  const issuePrefixFor = options.issuePrefixFor || cachedIssuePrefixFor;
-  const foreignStatusFor =
-    options.foreignBlockerStatusFor || foreignBlockerStatusFor;
 
   /** @type {Array<Record<string, unknown>>} */
   const out = [];
-  const roots = visibleWorkspaceRoots(options);
 
-  for (const root_dir of roots) {
+  for (const root_dir of visibleWorkspaceRoots(options)) {
     /** @type {Record<string, any>} */
     let decorated;
     try {
@@ -620,17 +386,6 @@ export function buildMonitorPipeline(options = {}) {
     const done = Array.isArray(decorated.done) ? decorated.done : [];
     /** @type {Record<string, any>} */
     const projected = { ...decorated, done };
-    try {
-      pruneClosedForeignBlockers(
-        projected,
-        root_dir,
-        roots,
-        issuePrefixFor,
-        foreignStatusFor
-      );
-    } catch (err) {
-      log('monitor: foreign blocker prune failed for %s: %o', root_dir, err);
-    }
     /** @type {Array<Record<string, unknown>>} */
     let runnable = [];
     try {
@@ -1114,6 +869,14 @@ function ensureRefreshWired() {
       log('monitor: runnable cache wiring failed: %o', err);
     }
   }
+  if (!foreign_resolved_unsubscribe) {
+    // 요청자 집합은 무시한다 (UI-u6zf §3.3): 한 스냅샷이 보이는 모든 workspace를
+    // 그리므로, 누가 그 조회를 유발했든 다시 그릴 것은 그 하나다. 워커 채널만
+    // 요청자별 fanout이 필요하다.
+    foreign_resolved_unsubscribe = onForeignBlockerResolved(() => {
+      schedulePush();
+    });
+  }
   if (refresh_unsubscribe) {
     return;
   }
@@ -1123,54 +886,6 @@ function ensureRefreshWired() {
     }
     schedulePush();
   });
-}
-
-/**
- * The visible workspace roots, straight from the registry minus the hidden set.
- *
- * The ONE place the monitor decides what "visible" means — both payload arrays
- * and every driver walk read it, so a repo can never be in one and out of the
- * other.
- *
- * @param {{ listWorkspaces?: () => Array<{ path: string }>, listHidden?: () => string[] }} [options]
- * @returns {string[]}
- */
-function visibleWorkspaceRoots(options = {}) {
-  const listWorkspaces = options.listWorkspaces || getAvailableWorkspaces;
-  const listHidden =
-    options.listHidden || (() => sharedVisibleWorkspacesStore().listHidden());
-  /** @type {Set<string>} */
-  let hidden = new Set();
-  try {
-    hidden = new Set(listHidden().map((p) => path.resolve(p)));
-  } catch (err) {
-    log('monitor: hidden set unreadable: %o', err);
-  }
-  /** @type {string[]} */
-  const out = [];
-  /** @type {Set<string>} */
-  const seen = new Set();
-  try {
-    for (const workspace of listWorkspaces()) {
-      // Resolved AFTER the empty check on purpose: `path.resolve('')` is the
-      // server's cwd, so resolving first would turn a blank registry entry into
-      // a workspace nobody registered.
-      const raw = String(workspace?.path || '');
-      if (raw.length === 0) {
-        continue;
-      }
-      const root_dir = path.resolve(raw);
-      if (hidden.has(root_dir) || seen.has(root_dir)) {
-        continue;
-      }
-      seen.add(root_dir);
-      out.push(root_dir);
-    }
-  } catch (err) {
-    log('monitor: workspace list unreadable: %o', err);
-    return [];
-  }
-  return out;
 }
 
 /**
@@ -1994,7 +1709,7 @@ export function detachMonitorPipeline(ws) {
  * channel arms on its first subscriber.
  */
 export function __resetMonitorPipelineForTest() {
-  foreign_blocker_status_cache.clear();
+  __resetForeignBlockerCachesForTest();
   SUBSCRIBERS.clear();
   if (push_timer !== null) {
     clearTimeout(push_timer);
@@ -2008,12 +1723,15 @@ export function __resetMonitorPipelineForTest() {
     queue_changed_unsubscribe();
     queue_changed_unsubscribe = null;
   }
+  if (foreign_resolved_unsubscribe) {
+    foreign_resolved_unsubscribe();
+    foreign_resolved_unsubscribe = null;
+  }
   if (refresh_driver) {
     refresh_driver.stop();
     refresh_driver = null;
   }
   last_seen_revision.clear();
-  issue_prefix_cache.clear();
   session_defaults_cache.clear();
   poll_interval_seconds = null;
 }

@@ -640,7 +640,9 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
       [state()]
     );
 
-    expect(lanes.pr_wait[0].dependency_chips?.interactive).toBe(undefined);
+    expect(lanes.pr_wait[0].dependency_chips?.predecessors?.[0].openable).toBe(
+      true
+    );
   });
 
   test('draws no chip on a PR 대기 row the snapshot names no blocker for', () => {

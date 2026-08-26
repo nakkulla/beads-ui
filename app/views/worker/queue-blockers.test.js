@@ -171,6 +171,45 @@ describe('두 탭의 blocked 칩이 같은 문장을 낸다 (UI-anna §5.1)', ()
   });
 });
 
+describe('deriveWorkerBlockers 칩 단위 openable (UI-u6zf §5.2)', () => {
+  const OWNER_WS = '/repos/dotfiles';
+
+  test('opens a same-repo blocker in the current workspace', () => {
+    const chip = deriveWorkerBlockers(new Map([['A-2', ['A-1']]]), []).get(
+      'A-2'
+    )?.[0];
+
+    expect(chip?.openable).toBe(true);
+    expect(chip?.root_dir).toBe(undefined);
+  });
+
+  test('carries the owning workspace of a foreign blocker', () => {
+    const chip = deriveWorkerBlockers(new Map([['A-2', ['B-1']]]), [], {
+      'B-1': OWNER_WS
+    }).get('A-2')?.[0];
+
+    expect(chip?.openable).toBe(true);
+    expect(chip?.root_dir).toBe(OWNER_WS);
+  });
+
+  test('leaves a foreign blocker of unknown owner display-only', () => {
+    const chip = deriveWorkerBlockers(new Map([['A-2', ['B-1']]]), []).get(
+      'A-2'
+    )?.[0];
+
+    expect(chip?.openable).toBe(undefined);
+    expect(chip?.root_dir).toBe(undefined);
+  });
+
+  test('splits openability chip by chip inside one bead', () => {
+    const chips = deriveWorkerBlockers(new Map([['A-2', ['A-1', 'B-1']]]), [], {
+      'B-9': OWNER_WS
+    }).get('A-2');
+
+    expect(chips?.map((chip) => chip.openable)).toEqual([true, undefined]);
+  });
+});
+
 describe('predecessorChip', () => {
   test('composes the label from the blocker id alone', () => {
     const chip = predecessorChip('A-2', { id: 'A-1', location_label: '#1' });

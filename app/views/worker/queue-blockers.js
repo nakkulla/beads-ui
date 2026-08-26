@@ -70,13 +70,24 @@ export function predecessorChip(owner_id, blocker) {
  * 같은 화면 사실에서 위치를 읽어야 위치 라벨이 갈리지 않는다. 첫 등장이
  * 이긴다 — 목록이 실행중을 앞에 싣는 것과 같은 dedupe 규칙이다.
  *
+ * 칩마다 열 수 있는지도 여기서 정한다 (UI-u6zf §5.2). 판정은 세 갈래다: 같은
+ * 레포 blocker는 현재 workspace에서 그냥 열리고, 타 레포 blocker는 서버가
+ * `blocker_workspaces`로 owner를 실어 준 것만 열리며, owner를 모르는 것은 표시
+ * 전용으로 남는다 — 누를 수 없는 대상에 버튼을 만들지 않는다.
+ *
  * 재료가 없으면 빈 결과다 (fail-quiet).
  *
  * @param {Map<string, string[]>} blockers_by_bead
  * @param {LaneMember[]} lane_members
+ * @param {Record<string, string>} [blocker_workspaces] - blocker id → 그것을
+ * 소유한 workspace root. 없는 키는 모름이고, 추론하지 않는다.
  * @returns {Map<string, DependencyChip[]>}
  */
-export function deriveWorkerBlockers(blockers_by_bead, lane_members) {
+export function deriveWorkerBlockers(
+  blockers_by_bead,
+  lane_members,
+  blocker_workspaces = {}
+) {
   /** @type {Map<string, DependencyChip[]>} */
   const chips_by_bead = new Map();
   /** @type {Map<string, string>} */
@@ -96,12 +107,18 @@ export function deriveWorkerBlockers(blockers_by_bead, lane_members) {
       if (typeof blocker_id !== 'string' || blocker_id.length === 0) {
         continue;
       }
-      chips.push(
-        predecessorChip(bead_id, {
-          id: blocker_id,
-          location_label: location_by_bead.get(blocker_id) || UNPLACED_LOCATION
-        })
-      );
+      const chip = predecessorChip(bead_id, {
+        id: blocker_id,
+        location_label: location_by_bead.get(blocker_id) || UNPLACED_LOCATION
+      });
+      const owner_root = blocker_workspaces[blocker_id];
+      if (chip.foreign !== true) {
+        chip.openable = true;
+      } else if (typeof owner_root === 'string' && owner_root.length > 0) {
+        chip.openable = true;
+        chip.root_dir = owner_root;
+      }
+      chips.push(chip);
     }
     if (chips.length > 0) {
       chips_by_bead.set(bead_id, chips);

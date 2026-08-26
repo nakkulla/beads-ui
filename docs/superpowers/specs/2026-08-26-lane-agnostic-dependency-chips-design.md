@@ -329,6 +329,22 @@ Worker의 blocked 칩은 **버튼이 아니라 표시 전용**으로 그린다. 
 실제로 존재하는 동작이다. 없는 패널을 여는 시늉을 하는 버튼이 오히려 사실과
 어긋난다.
 
+**정정(UI-u6zf).** Worker 탭에 의존성 패널이 없다는 사실은 그대로다. 그러나 그
+사실이 막는 것은 **패널을 여는 클릭**이지 칩의 모든 클릭이 아니었다. UI-u6zf
+(`2026-08-26-worker-blocked-chip-open-design.md`)가 그 경계를 다시 그었다:
+Worker의 blocked 칩 클릭은 **blocker 이슈 상세를 연다**(타 레포 blocker는
+`switchWorkspace` 뒤에 연다). 같은 카드의 출처 칩(`.ctl-chip--from`)이 이미
+`gotoIssue`로 그렇게 동작하고 있었으므로, 칩마다 클릭 가능 여부가 갈려 있던 쪽이
+오히려 통일되지 않은 상태였다. Monitor의 칩 클릭(`toggleDepPanel`)은 그대로다.
+
+이 절이 남기는 원칙은 하나다: **누를 수 없는 대상에 버튼을 만들지 않는다.** 그래서
+열 수 없는 blocker — 보이지 않는 workspace의 rig에 속해 owner를 모르는 blocker —
+만 표시 전용으로 남는다. 따라서 §6의 묶음 플래그 `DependencyChips.interactive`는
+칩 단위 `DependencyChip.openable`로 **대체된다**: 같은 카드 안에서도 열 수 있는
+blocker와 열 수 없는 blocker가 섞이므로 묶음 하나로는 그것을 표현할 수 없다.
+"렌더러 인자가 아니라 투영이 싣는 값"이라는 §6의 근거는 그대로 유효하고, 자리만
+칩으로 내려온다.
+
 ### 5.4 대기 행 뱃지 제거
 
 `⏸ <blockers> 완료 대기 (blocks)` 뱃지를 만드는 자리를 없앤다. 같은 조건에
