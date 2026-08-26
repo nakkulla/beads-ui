@@ -379,14 +379,26 @@ const HOOKS_PATH_RE = /^core\.hookspath$/i;
 const GIT_CONFIG_ENV_RE = /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/;
 
 /**
- * The environment name that carries the config KEY, whose value is the key a
- * `GIT_CONFIG_*` prefix names. Read only when deciding whether that prefix is
- * EXEMPT (spec §1.1 (b)); whether it is a relocation SHAPE at all stays
- * key-agnostic, decided by {@link GIT_CONFIG_ENV_RE} alone.
+ * The two indexed halves of a `GIT_CONFIG_*` entry, capturing the index. Read
+ * only when deciding whether a prefix is EXEMPT (spec §1.1 (b)); whether it is a
+ * relocation SHAPE at all stays key-agnostic, decided by
+ * {@link GIT_CONFIG_ENV_RE} alone.
+ *
+ * The index matters because these variables are INHERITED: a prefix that names
+ * a `VALUE_n` without its own `KEY_n` does not describe the entry it writes, it
+ * repurposes whatever key the environment already had at that index.
  *
  * @type {RegExp}
  */
-const GIT_CONFIG_KEY_RE = /^GIT_CONFIG_KEY_\d+$/;
+const GIT_CONFIG_KEY_RE = /^GIT_CONFIG_KEY_(\d+)$/;
+
+/**
+ * The VALUE half, whose index has to match a `core.hooksPath` KEY declared by
+ * the same prefix — see {@link prefixIsHooksPathOnly}.
+ *
+ * @type {RegExp}
+ */
+const GIT_CONFIG_VALUE_RE = /^GIT_CONFIG_VALUE_(\d+)$/;
 
 /**
  * A refspec destination that lands on the base branch.
@@ -1640,6 +1652,10 @@ const CONFIG_ENV_PREFIX = '--config-env=';
  * @returns {boolean}
  */
 function prefixIsHooksPathOnly(prefix) {
+  /** Indices this prefix declares a `core.hooksPath` KEY for. @type {Set<string>} */
+  const hooks_path_indices = new Set();
+  /** Indices this prefix writes a VALUE for. @type {Set<string>} */
+  const value_indices = new Set();
   for (const word of prefix) {
     if (!ASSIGNMENT_RE.test(word)) {
       continue;
@@ -1648,7 +1664,27 @@ function prefixIsHooksPathOnly(prefix) {
     if (!GIT_CONFIG_ENV_RE.test(name)) {
       return false;
     }
-    if (GIT_CONFIG_KEY_RE.test(name) && !HOOKS_PATH_RE.test(value)) {
+    const key_match = GIT_CONFIG_KEY_RE.exec(name);
+    if (key_match !== null) {
+      if (!HOOKS_PATH_RE.test(value)) {
+        return false;
+      }
+      hooks_path_indices.add(key_match[1]);
+      continue;
+    }
+    const value_match = GIT_CONFIG_VALUE_RE.exec(name);
+    if (value_match !== null) {
+      value_indices.add(value_match[1]);
+    }
+  }
+  // A `VALUE_n` with no `KEY_n` of its own is the shape that reads innocent and
+  // is not: these variables are inherited, so it writes a value into whatever
+  // key the environment already holds at that index — a helper program under an
+  // inherited `core.fsmonitor`, say — while a lowered `GIT_CONFIG_COUNT` drops
+  // the attempt's own hooks-path entry. The prefix has to describe every entry
+  // it writes.
+  for (const index of value_indices) {
+    if (!hooks_path_indices.has(index)) {
       return false;
     }
   }
@@ -1746,12 +1782,6 @@ function isHookBypass(argv, prefix) {
   let inline_other_key = false;
   while (i < rest.length && rest[i].startsWith('-')) {
     const token = rest[i];
-    // BOTH of git's leading one-shot config channels. `--config-env` is `-c`'s
-    // twin — it names a key just the same, only taking the value from an
-    // environment variable — and spec §1.1 (b) is stated over the relocation,
-    // not over one flag. Reading only `-c` would leave
-    // `git --config-env=core.fsmonitor=EV -c core.hooksPath=X status` exempt,
-    // and that program runs during `status` and inherits the relocation.
     const attached_c = token.startsWith('-c') && token.length > 2;
     const separate_c = token === '-c' && i + 1 < rest.length;
     const attached_env = token.startsWith(CONFIG_ENV_PREFIX);
@@ -1766,10 +1796,17 @@ function isHookBypass(argv, prefix) {
       override = rest[i + 1];
     }
     if (override !== null) {
-      if (HOOKS_PATH_RE.test(configKeyOf(override))) {
-        inline_relocation = true;
-      } else {
+      if (!HOOKS_PATH_RE.test(configKeyOf(override))) {
+        // `--config-env` is read HERE and only here. It names a config key the
+        // same way `-c` does, so a key set through it is a program this command
+        // may run and that program inherits the relocation — condition (b) is
+        // stated over the relocation, not over one flag. It deliberately does
+        // NOT set `inline_relocation`: the approved change narrows the two
+        // relocation shapes, and letting a third shape RAISE a violation that
+        // did not exist before would widen the kill instead.
         inline_other_key = true;
+      } else if (attached_c || separate_c) {
+        inline_relocation = true;
       }
     }
     i += GIT_VALUE_OPTIONS.has(token) ? 2 : 1;

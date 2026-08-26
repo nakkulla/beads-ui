@@ -1236,21 +1236,35 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('passes a relocation carried by `--config-env` alone', () => {
-    const cmd = 'git --config-env=core.hooksPath=HOOKS status --short';
-
-    expect(findMergeViolation(cmd, ON_MAIN)).toBeNull();
-  });
-
-  test('kills a `--config-env` relocation on a subcommand outside the enumeration', () => {
+  // `--config-env` never RAISES a violation on its own: the approved change
+  // narrows the two relocation shapes, so a third shape must not widen the kill.
+  test('leaves a `--config-env` hooks-path override alone when no approved relocation is present', () => {
     const cmd = 'git --config-env=core.hooksPath=HOOKS push origin UI-1';
 
-    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+    expect(findMergeViolation(cmd, ON_MAIN)).toBeNull();
   });
 
   test('kills a GIT_CONFIG_KEY_* prefix naming a key other than the hooks path', () => {
     const cmd =
       'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=/tmp/x git status';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  // These variables are inherited. A prefix naming `VALUE_0` without its own
+  // `KEY_0` writes into whatever key the environment already holds there, and a
+  // lowered `GIT_CONFIG_COUNT` drops the attempt's own hooks-path entry — so the
+  // command can inject a helper and shed the guard at once while every token in
+  // it is a `GIT_CONFIG_*` one.
+  test('kills a relocation prefix writing a VALUE with no KEY of its own', () => {
+    const cmd = 'GIT_CONFIG_COUNT=1 GIT_CONFIG_VALUE_0=/tmp/helper git status';
+
+    expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
+  });
+
+  test('kills a prefix whose VALUE index has no matching hooks-path KEY', () => {
+    const cmd =
+      'GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=.git/hooks GIT_CONFIG_VALUE_1=/tmp/helper git status';
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
