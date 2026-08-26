@@ -368,6 +368,39 @@ describe('monitor 대기 repo sections (UI-eey2 §6)', () => {
     expect(serial[0].items.map((item) => item.id)).toEqual(['A-2']);
   });
 
+  test('keeps a dismissed failure as one occupant row, not a second waiting row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_titles: { 'A-1': '점유 중인 작업' },
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+          ],
+          lane_states: { s1: { occupied_by: ['A-1'] } },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              started_at: 10,
+              finished_at: 20,
+              // ✕로 닫힌 실패: 실행중 레인에서는 빠지지만 레인 점유는 유지된다.
+              dismissed_at: 30
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const serial = lanes.queue_groups[0].sublanes.serial;
+
+    expect(serial[0].items.map((item) => item.id)).toEqual(['A-2']);
+    expect(serial[0].occupants).toEqual([
+      { id: 'A-1', title: '점유 중인 작업', badge: '실패 · 점유 유지' }
+    ]);
+  });
+
   test('omits the hint entirely when the only configured serial lane is empty', () => {
     const lanes = buildLanes(
       [workspace({ serial_lane_count: 1, queue: [{ bead_id: 'A-1' }] })],

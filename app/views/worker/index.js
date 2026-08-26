@@ -4348,9 +4348,20 @@ export function createWorkerView(mount_element, options = {}) {
             )
             .map((/** @type {any} */ c) => [c.bead_id, c.after])
         );
+        const occupied_by = Array.isArray(state.occupied_by)
+          ? state.occupied_by.filter(
+              (/** @type {any} */ id) => typeof id === 'string'
+            )
+          : [];
+        // 점유 lineage는 ghost 행이 이미 대표한다 — 같은 bead를 대기 행으로 또 그리면 한
+        // 레인 안에 같은 일감이 두 번 서게 된다. 실행중 타일 집합(`active_bead_ids`)만으로는
+        // 부족하다: 그 집합은 처리된 실패(✕ dismiss·supersede·done)을 빼지만 레인 점유는
+        // 그것들을 해제로 읽지 않기 때문이다 (`activeLaneLineages`).
+        const ghost_ids = new Set(occupied_by);
         const rows = toRows(
           lane.entries.filter(
-            (/** @type {any} */ e) => !active_bead_ids.has(e.bead_id)
+            (/** @type {any} */ e) =>
+              !active_bead_ids.has(e.bead_id) && !ghost_ids.has(e.bead_id)
           ),
           lane.id
         ).map((/** @type {any} */ row) =>
@@ -4364,11 +4375,6 @@ export function createWorkerView(mount_element, options = {}) {
               }
             : row
         );
-        const occupied_by = Array.isArray(state.occupied_by)
-          ? state.occupied_by.filter(
-              (/** @type {any} */ id) => typeof id === 'string'
-            )
-          : [];
         const ghost_rows = occupied_by.map((/** @type {string} */ bead_id) => ({
           id: bead_id,
           title: idToTitle.get(bead_id) || bead_id,

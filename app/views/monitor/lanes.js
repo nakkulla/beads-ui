@@ -309,6 +309,35 @@ const DONE_KIND_LABELS = {
  */
 
 /**
+ * Status of a bead's last implementation attempt, or null when it has none.
+ *
+ * 레인 점유는 실행중 레인보다 오래 산다 (`activeLaneLineages`): ✕로 닫힌 실패,
+ * supersede된 실패, 이미 완료로 정리된 실패는 실행중 타일에서 빠지지만 lineage는 레인을
+ * 계속 붙잡는다. 그 상태를 실행중 레인 목록에서만 읽으면 실패가 '실행 중'이 된다.
+ *
+ * head review·repair attempt는 제외한다 — 점유는 구현 attempt의 질문이다.
+ *
+ * @param {Record<string, any>} attempts
+ * @param {string} bead_id
+ * @returns {string|null}
+ */
+export function lastImplementationStatus(attempts, bead_id) {
+  /** @type {string|null} */
+  let status = null;
+  for (const attempt of Object.values(attempts || {})) {
+    if (
+      !attempt ||
+      attempt.bead_id !== bead_id ||
+      !isImplementationAttempt(attempt)
+    ) {
+      continue;
+    }
+    status = typeof attempt.status === 'string' ? attempt.status : null;
+  }
+  return status;
+}
+
+/**
  * Pick the newest attempt of a bead that has already ENDED.
  *
  * @param {Record<string, any>} attempts
@@ -1482,10 +1511,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const live = running.find(
         (item) => item.id === bead_id && item.root_dir === root_dir
       );
+      // 점유가 실행중 레인보다 오래 산다: ✕로 닫힌 실패는 타일에서 빠지지만 레인은 계속
+      // 붙잡는다. 레인 목록만 보면 그 실패를 '실행 중'이라고 부르게 되므로, 타일이 없을
+      // 때는 attempt 상태를 직접 읽는다 (Worker `occupantBadge`와 같은 원천).
+      const status = live
+        ? live.run_state
+        : lastImplementationStatus(attempts, bead_id);
       const badge =
-        live && live.run_state === 'failed'
+        status === 'failed' || status === 'orphaned'
           ? '실패 · 점유 유지'
-          : live && live.run_state === 'paused'
+          : status === 'paused'
             ? '일시정지 · 점유'
             : '실행 중 · 점유';
       return {
@@ -1505,9 +1540,26 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const id = /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (`s${lane_index + 1}`);
       const lane = serial_by_id.get(id);
       const entries = lane && Array.isArray(lane.entries) ? lane.entries : [];
+      const lane_state = objectOf(lane_states[id]);
+      const occupied_by = Array.isArray(lane_state.occupied_by)
+        ? lane_state.occupied_by.filter(
+            (/** @type {any} */ bead_id) => typeof bead_id === 'string'
+          )
+        : [];
+      // 점유 lineage는 ghost 점유 행이 대표한다 (Worker 탭과 같은 문법) — 대기 행으로 또
+      // 그리면 같은 일감이 한 레인에 두 번 선다. `claimed`가 실행중 레인만으로는 그것을
+      // 막지 못한다: 처리된 실패(✕ dismiss·supersede·done)는 실행중에서 빠지지만 레인
+      // 점유는 그것을 해제로 읽지 않는다. `claimed`에는 넣어야 그 bead가 뒤의 후보 레인으로
+      // 새어나가지 않는다.
+      const ghost_ids = new Set(occupied_by);
       /** @type {MonitorItem[]} */
       const items = [];
       for (let i = 0; i < entries.length; i++) {
+        const entry_bead_id = entries[i] && entries[i].bead_id;
+        if (typeof entry_bead_id === 'string' && ghost_ids.has(entry_bead_id)) {
+          claimed.add(entry_bead_id);
+          continue;
+        }
         const item = waitingItem(entries[i], id, i, entries.length);
         if (!item) {
           continue;
@@ -1515,12 +1567,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
         items.push(item);
         queue.push(item);
       }
-      const lane_state = objectOf(lane_states[id]);
-      const occupied_by = Array.isArray(lane_state.occupied_by)
-        ? lane_state.occupied_by.filter(
-            (/** @type {any} */ bead_id) => typeof bead_id === 'string'
-          )
-        : [];
       // 설정된 레인 수가 1이고 그마저 비었으면 힌트도 생략한다 (§6): 드롭
       // 타깃이 하나뿐인 병렬 pane과 구분할 것이 없다.
       if (

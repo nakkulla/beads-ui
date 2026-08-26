@@ -10658,6 +10658,61 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
     ).not.toBeNull();
   });
 
+  test('draws a held bead once when it is still the lane head', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    queueStore.set(
+      laneQueue({
+        attempts: {
+          x1: {
+            attempt_id: 'x1',
+            bead_id: 'X',
+            status: 'failed',
+            serial_lane_id: 's1',
+            finished_at: 10,
+            // ✕로 닫힌 실패: 실행중 타일에서는 빠지지만 레인 점유는 유지된다.
+            dismissed_at: 20
+          }
+        },
+        serial_lanes: [
+          {
+            id: 's1',
+            entries: [
+              { bead_id: 'X', added_at: 1 },
+              { bead_id: 'B', added_at: 2 }
+            ]
+          },
+          { id: 's2', entries: [] }
+        ],
+        lane_states: {
+          s1: {
+            occupied_by: ['X'],
+            order: ['X', 'B'],
+            corrections: [],
+            cycle: false
+          },
+          s2: { occupied_by: [], order: [], corrections: [], cycle: false }
+        }
+      })
+    );
+
+    const s1 = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-lane-s1')
+    );
+
+    expect(s1.querySelectorAll('[data-bead-id="X"]').length).toEqual(1);
+    expect(
+      s1.querySelector('.worker-mini--ghost[data-bead-id="X"]')
+    ).not.toBeNull();
+    expect(s1.querySelector('[data-bead-id="B"]')).not.toBeNull();
+  });
+
   test('renders the serial lane count dropdown and sends the mutation', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
