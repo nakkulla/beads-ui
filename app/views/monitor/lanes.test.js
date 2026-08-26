@@ -184,9 +184,18 @@ describe('monitor 실행가능 repo sections (UI-eey2 §5)', () => {
 describe('monitor 실행가능 filter and sort (UI-eey2 §5)', () => {
   const repo = workspace({
     runnable: [
-      runnable('A-1', { blocked: true, spec_id: 'docs/a.md', updated_at: 30 }),
-      runnable('A-2', { spec_id: '', updated_at: 50 }),
-      runnable('A-3', { spec_id: 'docs/c.md', updated_at: 10 })
+      runnable('A-1', {
+        blocked: true,
+        spec_id: 'docs/a.md',
+        published: true,
+        updated_at: 30
+      }),
+      runnable('A-2', { spec_id: '', published: false, updated_at: 50 }),
+      runnable('A-3', {
+        spec_id: 'docs/c.md',
+        published: true,
+        updated_at: 10
+      })
     ]
   });
 
@@ -212,7 +221,7 @@ describe('monitor 실행가능 filter and sort (UI-eey2 §5)', () => {
     expect(lanes.runnable_hidden.blocked).toBe(1);
   });
 
-  test('filters on the runnable projection spec_id', () => {
+  test('filters on the runnable projection published field', () => {
     const with_spec = buildLanes([repo], [state()], {
       candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, spec: 'with' }
     });
@@ -225,7 +234,7 @@ describe('monitor 실행가능 filter and sort (UI-eey2 §5)', () => {
     expect(without_spec.runnable_hidden.spec).toBe(2);
   });
 
-  test('sorts spec-bearing candidates first inside their repo section', () => {
+  test('sorts published candidates first inside their repo section', () => {
     const lanes = buildLanes([repo], [state()], {
       candidate_sort: 'repo_spec'
     });
@@ -234,6 +243,52 @@ describe('monitor 실행가능 filter and sort (UI-eey2 §5)', () => {
       'A-1',
       'A-3',
       'A-2'
+    ]);
+  });
+
+  // 발행 판정은 서버 투영이 소유한다 (UI-vb7u §3): spec 경로만 있고 리뷰가
+  // 아직 없는 행은 `spec 없음` 쪽이며, 레인은 그것을 재계산하지 않는다.
+  test('treats an unpublished spec path as spec-less in the filter', () => {
+    const unpublished = workspace({
+      runnable: [
+        runnable('A-9', { spec_id: 'docs/awaiting.md', published: false })
+      ]
+    });
+
+    const with_spec = buildLanes([unpublished], [state()], {
+      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, spec: 'with' }
+    });
+    const without_spec = buildLanes([unpublished], [state()], {
+      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, spec: 'without' }
+    });
+
+    expect(with_spec.runnable.map((r) => r.id)).toEqual([]);
+    expect(without_spec.runnable.map((r) => r.id)).toEqual(['A-9']);
+  });
+
+  test('sorts an unpublished spec path after a published one', () => {
+    const mixed = workspace({
+      runnable: [
+        runnable('A-8', {
+          spec_id: 'docs/awaiting.md',
+          published: false,
+          updated_at: 90
+        }),
+        runnable('A-7', {
+          spec_id: 'docs/published.md',
+          published: true,
+          updated_at: 10
+        })
+      ]
+    });
+
+    const lanes = buildLanes([mixed], [state()], {
+      candidate_sort: 'repo_spec'
+    });
+
+    expect(lanes.runnable_sections[0].items.map((r) => r.id)).toEqual([
+      'A-7',
+      'A-8'
     ]);
   });
 

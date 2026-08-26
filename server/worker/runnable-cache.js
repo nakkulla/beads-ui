@@ -34,7 +34,7 @@ import {
 } from '../../app/utils/worker-eligibility.js';
 import { isBdProtocolFailure } from '../bd-json.js';
 import { debug } from '../logging.js';
-import { resolveSpecId } from '../spec-id.js';
+import { resolveSpecEvidence, resolveSpecId } from '../spec-id.js';
 import {
   enrichIssueWorkflow,
   parsePlanApprovalReceipt,
@@ -93,6 +93,14 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan', 'quick_fix']);
  * semantics: a quick_fix row carries `''` even when a spec resolves, because a
  * quick_fix is admitted without one. NEVER read this to choose a scope source —
  * that is what `scope_spec_id` is for (UI-f1qy §4.4).
+ * @property {boolean} published - Whether this bead carries a PUBLISHED spec:
+ * a resolved spec path plus a format-valid `spec_review` receipt (2026-08-24
+ * spec-evidence consumer spec §2). Route-agnostic on purpose — that predicate
+ * carries no route condition, and `spec_id` above is blanked for a quick_fix
+ * row by admission semantics, so a consumer asking "does this bead have a
+ * published spec?" must read THIS field instead. Consequence: a quick_fix row
+ * that really does carry a published spec answers `true` here, where the
+ * monitor's older `!!spec_id` reading answered false.
  * @property {string} scope_spec_id - The resolved artifact path this row's
  * SCOPE is declared in, `''` when none resolves or the two spec surfaces
  * conflict. Decided for every route alike, so a quick_fix bead that does have a
@@ -356,12 +364,17 @@ function qualify(row, blocked_by = null, enrich = undefined) {
   // 문자열이라, 그것을 재사용하면 스펙이 실제로 해석되는 quick_fix bead가
   // 아티팩트-우선 규칙을 어기고 description으로 떨어진다.
   const scope_spec_id = spec.conflict ? '' : spec.path;
+  // 발행 여부도 route와 무관하게 판정한다 (UI-vb7u §2·§3): 위 `spec_id`는
+  // quick_fix 행에서 admission 의미상 비어 있으므로, "이 bead에 발행된 spec이
+  // 있는가"를 묻는 소비자가 그것을 읽으면 안 된다.
+  const published = resolveSpecEvidence(row).evidence === 'published';
   /** @type {RunnableItem} */
   const item = {
     bead_id,
     title: typeof row.title === 'string' ? row.title : '',
     route,
     spec_id,
+    published,
     scope_spec_id,
     plan_path: plan_path.length > 0 ? plan_path : null,
     spec_reviewer,

@@ -763,11 +763,16 @@ function makeStage(fill, glyph, stale, receipt) {
  * Compute the SPEC stage (2026-08-23 spec-draft-stage spec §2).
  *
  * Three display steps driven by the evidence class, never by the `source`
- * value: no document at all is `none`, an authoring-time draft whose document
- * exists (or cannot be checked) is `dim`, and publication evidence is `full` —
- * publication itself is the completed-stage fact, so a published spec without a
- * valid receipt fills without a glyph. A draft cell never carries a glyph and
- * never goes stale; the raw `spec_review` string still rides along on every row.
+ * value: no document at all is `none`, an unpublished spec whose document
+ * exists (or cannot be checked) is `dim`, and publication evidence is `full`.
+ * Publication now REQUIRES a format-valid receipt (2026-08-24 spec-evidence
+ * consumer spec §2), so the older "receipt-less `full`" branch is gone — a
+ * `spec_id` awaiting its review lands in the draft step instead. A `full` cell
+ * can still come out glyph-less, but only from a receipt whose reviewer token
+ * is outside {@link REVIEW_REVIEWER_TOKENS}: the receipt is what publishes, and
+ * naming its reviewer is a separate fact this view does not invent. A draft
+ * cell never carries a glyph and never goes stale; the raw `spec_review` string
+ * still rides along on every row.
  *
  * @param {{ path: string, evidence: 'published'|'draft'|'none' }} spec_evidence
  * @param {Record<string, any>} md
@@ -792,9 +797,6 @@ function specStage(spec_evidence, md, receipt, stale, workspace_root) {
       ...makeStage(exists === false ? 'none' : 'dim', null, false, raw),
       doc
     };
-  }
-  if (!receipt) {
-    return { ...makeStage('full', null, false, raw), doc };
   }
   return { ...makeStage('full', classifyGlyph(receipt), stale, raw), doc };
 }

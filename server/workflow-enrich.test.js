@@ -706,7 +706,7 @@ describe('enrichIssueWorkflow', () => {
   test('top-level-only spec_id fills the Board spec stage', () => {
     const wf = enrichIssueWorkflow({
       spec_id: ' docs/spec.md ',
-      metadata: { route: 'spec_backed' }
+      metadata: { route: 'spec_backed', spec_review: 'codex@' + 'a'.repeat(40) }
     });
 
     expect(wf.stages.spec.fill).toBe('full');
@@ -768,7 +768,7 @@ describe('enrichIssueWorkflow', () => {
     expect(wf.stages.spec.fill).toBe('none');
   });
 
-  test('fills a published spec with no receipt and no glyph', () => {
+  test('renders a spec_id with no receipt as the draft cell', () => {
     const dir = makeRepo();
     writeFile(dir, 'docs/spec.md', '# spec\n');
     commitAll(dir, 'add spec');
@@ -782,12 +782,82 @@ describe('enrichIssueWorkflow', () => {
     );
 
     expect(wf.stages.spec).toEqual({
-      fill: 'full',
+      fill: 'dim',
       glyph: null,
       stale: false,
       receipt: null,
+      doc: { path: 'docs/spec.md', missing_state: 'spec_draft' }
+    });
+  });
+
+  test('renders a spec_id with a malformed receipt as the draft cell', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/spec.md', '# spec\n');
+    commitAll(dir, 'add spec');
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'spec_backed',
+          spec_id: 'docs/spec.md',
+          spec_review: 'codex@abc'
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.spec).toMatchObject({
+      fill: 'dim',
+      glyph: null,
+      doc: { path: 'docs/spec.md', missing_state: 'spec_draft' }
+    });
+  });
+
+  test('fills a spec published by a valid receipt with the review glyph', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/spec.md', '# spec\n');
+    const sha = commitAll(dir, 'add spec');
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'spec_backed',
+          spec_id: 'docs/spec.md',
+          spec_review: 'codex@' + sha
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.spec).toEqual({
+      fill: 'full',
+      glyph: 'review',
+      stale: false,
+      receipt: 'codex@' + sha,
       doc: { path: 'docs/spec.md', missing_state: null }
     });
+  });
+
+  test('fills a spec published by a valid skipped receipt with the skip glyph', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/spec.md', '# spec\n');
+    const sha = commitAll(dir, 'add spec');
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'spec_backed',
+          spec_id: 'docs/spec.md',
+          spec_review: 'skipped@' + sha
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.spec).toMatchObject({ fill: 'full', glyph: 'skip' });
   });
 
   test('binds spec staleness to the published path, not the draft path', () => {
@@ -1671,12 +1741,24 @@ describe('stage doc projection (UI-ajkn §2)', () => {
   test('carries the published spec path with no missing_state', () => {
     const wf = enrichIssueWorkflow({
       spec_id: 'docs/spec.md',
-      metadata: { route: 'spec_backed' }
+      metadata: { route: 'spec_backed', spec_review: 'codex@' + 'a'.repeat(40) }
     });
 
     expect(wf.stages.spec.doc).toEqual({
       path: 'docs/spec.md',
       missing_state: null
+    });
+  });
+
+  test('carries the doc on an unpublished spec_id cell too', () => {
+    const wf = enrichIssueWorkflow({
+      spec_id: 'docs/spec.md',
+      metadata: { route: 'spec_backed' }
+    });
+
+    expect(wf.stages.spec.doc).toEqual({
+      path: 'docs/spec.md',
+      missing_state: 'spec_draft'
     });
   });
 
