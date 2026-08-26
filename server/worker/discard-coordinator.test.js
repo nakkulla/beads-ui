@@ -1836,7 +1836,7 @@ describe('worker discard coordinator unmerged lifecycle', () => {
 });
 
 /**
- * @param {{ in_flight?: boolean, residue?: 'worktree'|'branch', archive_failure?: boolean, local_ref_failure?: boolean }} [options]
+ * @param {{ in_flight?: boolean, residue?: 'worktree'|'branch', archive_failure?: boolean, local_ref_failure?: boolean, clean_resume?: boolean }} [options]
  */
 function setupStaleRecovery(options = {}) {
   const residue = options.residue || 'worktree';
@@ -1862,11 +1862,15 @@ function setupStaleRecovery(options = {}) {
       schema: 1,
       residue,
       state: 'unique',
-      cause: residue === 'worktree' ? 'dirty_unique' : 'ahead_not_contained',
+      cause: options.clean_resume
+        ? 'resume_available'
+        : residue === 'worktree'
+          ? 'dirty_unique'
+          : 'ahead_not_contained',
       summary: {
-        staged_count: 1,
-        unstaged_count: 1,
-        untracked_count: 1,
+        staged_count: options.clean_resume ? 0 : 1,
+        unstaged_count: options.clean_resume ? 0 : 1,
+        untracked_count: options.clean_resume ? 0 : 1,
         branch_ahead: residue === 'branch' ? 1 : 0,
         head_ahead: 0
       },
@@ -1927,21 +1931,40 @@ function setupStaleRecovery(options = {}) {
             };
       }
       return worktree_present
-        ? {
-            ok: false,
-            state: 'unique',
-            cause: 'dirty_unique',
-            owned: true,
-            removed: false,
-            identity,
-            summary: {
-              staged_count: 1,
-              unstaged_count: 1,
-              untracked_count: 1,
-              branch_ahead: 0,
-              head_ahead: 0
+        ? options.clean_resume
+          ? {
+              // A clean, base-contained worktree parked only by its resumable
+              // session: the admission promoted it to `unique`, the observation
+              // never can.
+              ok: true,
+              state: 'discardable',
+              cause: null,
+              owned: true,
+              removed: false,
+              identity,
+              summary: {
+                staged_count: 0,
+                unstaged_count: 0,
+                untracked_count: 0,
+                branch_ahead: 0,
+                head_ahead: 0
+              }
             }
-          }
+          : {
+              ok: false,
+              state: 'unique',
+              cause: 'dirty_unique',
+              owned: true,
+              removed: false,
+              identity,
+              summary: {
+                staged_count: 1,
+                unstaged_count: 1,
+                untracked_count: 1,
+                branch_ahead: 0,
+                head_ahead: 0
+              }
+            }
         : {
             ok: true,
             state: 'discardable',
@@ -2145,6 +2168,93 @@ describe('worker discard coordinator stale-work recovery', () => {
       backup: { path: '/state/branch-archive' },
       last_error: null
     });
+  });
+
+  test('backs up a clean worktree parked only by a resumable session', async () => {
+    const env = setupStaleRecovery({ clean_resume: true });
+
+    const result = await env.coordinator.backupFresh({
+      bead_id: 'UI-stale',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+    const queue = env.store.snapshot(workspace);
+
+    expect(result).toEqual({ ok: true, operation_id: 'stale-work-1' });
+    expect(env.calls).toEqual([
+      'archive:verified',
+      'cleanup:worktree',
+      'cleanup:local-ref',
+      'scheduler:tick'
+    ]);
+    expect(queue.discard_operations['stale-work-1']).toMatchObject({
+      kind: 'stale_work_backup_fresh',
+      phase: 'done'
+    });
+  });
+
+  test('refuses recovery when the residue identity moved under it', async () => {
+    const env = setupStaleRecovery({ clean_resume: true });
+    env.worktree.removeIfDiscardable.mockResolvedValueOnce({
+      ok: true,
+      state: 'discardable',
+      cause: null,
+      owned: true,
+      removed: false,
+      identity: { ...env.identity, status_digest: 'status-2' },
+      summary: {
+        staged_count: 0,
+        unstaged_count: 0,
+        untracked_count: 0,
+        branch_ahead: 0,
+        head_ahead: 0
+      }
+    });
+
+    const result = await env.coordinator.backupFresh({
+      bead_id: 'UI-stale',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      conflict: true,
+      reason: 'worktree_identity_changed'
+    });
+    expect(env.calls).toEqual([]);
+  });
+
+  test('refuses recovery when the residue can no longer be observed', async () => {
+    const env = setupStaleRecovery({ clean_resume: true });
+    env.worktree.removeIfDiscardable.mockResolvedValueOnce({
+      ok: false,
+      state: 'unknown',
+      cause: 'observe_failed',
+      owned: true,
+      removed: false,
+      identity: env.identity,
+      summary: {
+        staged_count: 0,
+        unstaged_count: 0,
+        untracked_count: 0,
+        branch_ahead: 0,
+        head_ahead: 0
+      }
+    });
+
+    const result = await env.coordinator.backupFresh({
+      bead_id: 'UI-stale',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      conflict: true,
+      reason: 'worktree_identity_changed'
+    });
+    expect(env.calls).toEqual([]);
   });
 
   test('starts recovery while dispatch refusal remains visible', async () => {

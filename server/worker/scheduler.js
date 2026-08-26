@@ -82,6 +82,7 @@ import { liftDelegation } from './runner/claude.js';
 import { RUNNERS } from './runner/index.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
 import { qualifySessionFork } from './session-ref.js';
+import { staleResidueIntact } from './stale-work.js';
 import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths.js';
 import * as default_usage_receipts from './usage-receipts.js';
 
@@ -1554,25 +1555,6 @@ export function createScheduler(deps) {
       ...capability,
       identity
     };
-  }
-
-  /**
-   * @param {StaleWorkIdentity} expected
-   * @param {StaleWorkIdentity} observed
-   */
-  function sameStaleIdentity(expected, observed) {
-    return [
-      'worktree_realpath',
-      'branch',
-      'head_sha',
-      'branch_head_sha',
-      'base_oid',
-      'status_digest'
-    ].every(
-      (key) =>
-        (expected[/** @type {keyof StaleWorkIdentity} */ (key)] ?? null) ===
-        (observed[/** @type {keyof StaleWorkIdentity} */ (key)] ?? null)
-    );
   }
 
   /**
@@ -4735,10 +4717,7 @@ export function createScheduler(deps) {
         }
         if (
           expected_identity.base_oid !== cut_base ||
-          observed.state !== 'unique' ||
-          observed.owned !== true ||
-          !observed.identity ||
-          !sameStaleIdentity(expected_identity, observed.identity) ||
+          !staleResidueIntact(expected_identity, observed) ||
           typeof expected_identity.worktree_realpath !== 'string' ||
           typeof expected_identity.branch !== 'string'
         ) {

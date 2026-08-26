@@ -11,6 +11,7 @@ import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { resolvePrRef } from './pr-poller.js';
 import { archiveDiscardSource } from './recovery-archive.js';
 import { createRevertBuilder } from './revert-builder.js';
+import { staleResidueIntact } from './stale-work.js';
 import { discardRevertWorktreeDir } from './state-paths.js';
 
 const DISCARDABLE_ATTEMPT_STATUSES = new Set([
@@ -44,21 +45,6 @@ export function createDiscardCoordinator(deps, options = {}) {
     return deps.store.snapshot(deps.workspace).discard_operations?.[
       operation_id
     ];
-  }
-
-  /**
-   * @param {Record<string, unknown>} expected
-   * @param {Record<string, unknown>} observed
-   */
-  function sameStaleIdentity(expected, observed) {
-    return [
-      'worktree_realpath',
-      'branch',
-      'head_sha',
-      'branch_head_sha',
-      'base_oid',
-      'status_digest'
-    ].every((key) => (expected[key] ?? null) === (observed[key] ?? null));
   }
 
   /**
@@ -1479,12 +1465,7 @@ export function createDiscardCoordinator(deps, options = {}) {
       status_digest: source.status_digest
     };
     if (source.residue === 'branch') {
-      if (
-        observed.state !== 'unique' ||
-        observed.owned !== true ||
-        !observed.identity ||
-        !sameStaleIdentity(expected, observed.identity)
-      ) {
+      if (!staleResidueIntact(expected, observed)) {
         return { ok: false, reason: 'worktree_identity_changed' };
       }
       return { ok: true };
@@ -1499,12 +1480,7 @@ export function createDiscardCoordinator(deps, options = {}) {
     if (worktree_already_removed) {
       return { ok: true };
     }
-    if (
-      observed.state !== 'unique' ||
-      observed.owned !== true ||
-      !observed.identity ||
-      !sameStaleIdentity(expected, observed.identity)
-    ) {
+    if (!staleResidueIntact(expected, observed)) {
       return { ok: false, reason: 'worktree_identity_changed' };
     }
     return { ok: true };
@@ -2255,12 +2231,7 @@ export function createDiscardCoordinator(deps, options = {}) {
     } catch {
       return { ok: false, conflict: false, reason: 'source_observe_failed' };
     }
-    if (
-      observed.state !== 'unique' ||
-      observed.owned !== true ||
-      !observed.identity ||
-      !sameStaleIdentity(stale_work.identity, observed.identity)
-    ) {
+    if (!staleResidueIntact(stale_work.identity, observed)) {
       return { ok: false, conflict: true, reason: 'worktree_identity_changed' };
     }
     const residue = stale_work.residue === 'branch' ? 'branch' : 'worktree';
