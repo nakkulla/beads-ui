@@ -20,7 +20,7 @@ import {
 // Waits on REAL child processes (git, node, python), so wall time here is
 // process startup under the load the parallel suite creates, not product work.
 // Assertions are unchanged; only the waiting budget is sized for that load.
-vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+vi.setConfig({ testTimeout: 30_000 });
 
 /**
  * Vitest's own default budget, restated because this file raises the file-level
