@@ -89,32 +89,66 @@ GIT_CONFIG_PARAMETERS='core.hooksPath'='/tmp/xx' 'alias.showenv'=''\!'env'
 `post-index-change`를 돌릴 수 있다. 그 hook은 가드가 설치한 것이 아니고, 저장소가 자기 hook을
 어떻게 쓰는지는 이 가드의 관할이 아니다.
 
-**면제 조건은 둘 다 성립할 때다:**
+**면제 조건은 넷이 모두 성립할 때다:**
 
 - (a) 재배치 뒤에 오는 명령이 `git`이다.
-- (b) 그 서브커맨드가 pre-push를 돌릴 수 없고 git 자식 프로세스를 낳지 않는다 — 아래
-  닫힌 열거 안에 있다.
+- (b) 재배치가 **`core.hooksPath` 하나만** 지정한다(§1.1).
+- (c) 접두에 그 재배치 말고 **다른 환경변수 할당이 없다**(§1.1).
+- (d) 그 서브커맨드가 pre-push를 돌릴 수 없고, git 설정으로 외부 프로그램을 실행하는 경로를
+  열지 않는다 — 아래 닫힌 열거 안에 있다.
 
-**`ONE_SHOT_SAFE_SUBCOMMANDS` (15종, 닫힌 열거):**
+#### §1.1 재배치의 순수성 — 같은 명령이 여는 헬퍼 경로를 닫는다
+
+git은 자기 설정으로 임의의 외부 프로그램을 실행한다. 그 프로그램은 git이 낳은 자식이므로
+`GIT_CONFIG_PARAMETERS`를 상속하고, 따라서 `git push`를 실행하면 attempt의 pre-push hook을
+**우회한다**. 측정으로 확인했다 — `GIT_EXTERNAL_DIFF=/usr/bin/env git -c core.hooksPath=/tmp/xx
+diff --no-index a b`는 그 헬퍼를 실제로 실행했고, 상속은 이 스펙 앞머리의
+`GIT_CONFIG_PARAMETERS` 측정과 같은 기전이다.
+
+그러므로 **같은 명령이 헬퍼 경로를 여는 두 형태를 면제에서 제외한다.**
+
+- (b) `-c`가 `core.hooksPath` 외의 키를 지정하면 kill이다. 열거 **안**의 서브커맨드여도
+  그렇다 — `git -c core.hooksPath=X -c core.fsmonitor=<명령> status`가 그 형태다. env 접두도 같다: `GIT_CONFIG_KEY_n`이
+  `core.hooksPath`가 아닌 키를 지정하면 kill이다 — `GIT_CONFIG_KEY_0=diff.external
+  GIT_CONFIG_VALUE_0=<명령> git status`는 두 번째 채널조차 필요 없는 직행로다.
+- (c) 접두에 `GIT_EXTERNAL_DIFF`·`GIT_PAGER`·`GIT_SSH_COMMAND` 같은 다른 할당이 있으면
+  kill이다. 면제는 접두가 재배치**만** 실을 때 성립한다.
+
+이것은 "위험한 config 키의 2차 열거"가 아니다. 반대 방향의 판정 — **`core.hooksPath`만
+허용하고 나머지 전부를 거부**하므로, git이 키를 추가해도 드리프트하지 않는다.
+
+**`ONE_SHOT_SAFE_SUBCOMMANDS` (10종, 닫힌 열거):**
 
 ```
-status  diff  log  show  rev-parse  ls-files  ls-tree  cat-file
-describe  blame  grep  shortlog  merge-base  for-each-ref  config
+status  rev-parse  ls-files  ls-tree  cat-file  describe
+shortlog  merge-base  for-each-ref  config
 ```
 
-목록 밖은 전부 kill이다(fail-closed). 빠진 것들의 이유는 두 갈래다 —
-`submodule`·`subtree`·`rebase`·`pull`·`bisect`는 git을 다시 부르므로 위 측정에 걸리고,
-`commit`·`merge`·`checkout`·`am`은 자기 hook을 돌린다. 서브커맨드가 아예 없는
-`git -c core.hooksPath=X` 역시 목록에 없으므로 kill이다.
+`cat-file`은 `--filters`·`--textconv`를 달면 제외된다 — 그 두 옵션이 하는 일이 설정된
+드라이버를 실행하는 것이다.
+
+목록 밖은 전부 kill이다(fail-closed). 빠진 것들의 이유는 세 갈래다 —
+`submodule`·`subtree`·`rebase`·`pull`·`bisect`는 git을 다시 부르므로 앞의 전파 측정에
+걸리고, `commit`·`merge`·`checkout`·`am`은 자기 hook을 돌리며,
+**`diff`·`show`·`log`·`blame`·`grep`은 본래 동작이 설정된 콘텐츠 헬퍼를 실행하는 것이다**
+(`diff.external`, `diff.<driver>.textconv`, `.gitattributes`가 할당한 filter driver).
+그 헬퍼는 (b)·(c)로 닫히지 않는다 — 저장소 설정에 이미 있으면 맨 명령으로도 돌기 때문이다.
+서브커맨드가 아예 없는 `git -c core.hooksPath=X` 역시 목록에 없으므로 kill이다.
+
+이 제외의 대가는 명시한다: `git -c core.hooksPath=… diff|log|show`는 여전히 세션을 죽인다.
+관측된 사고(`status`)는 닫히지만, 그 계열을 면제하려면 실행 채널이 없음을 명령 텍스트만으로
+증명해야 하고 그럴 방법이 없다.
 
 **두 shape는 같은 성질로 다룬다.** `-c`와 `VAR=… <명령>` 접두는 둘 다 그 한 명령(과 그
 자식)에만 적용된다 — 전자는 git의 `-c` 의미로, 후자는 셸의 할당 접두 의미로. 그러므로 같은
-술어로 판정한다. 다만 env 접두 판정은 **키에 무관한 현행 의미를 그대로 유지한다**:
-`GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` 자체가 hook이 연결된 통로이므로, 그 값이 어느 키를
-가리키든 재정의는 재정의다. 바뀌는 것은 그 재정의가 무엇을 수식하는지뿐이다. `GIT_CONFIG_COUNT=1 … git status`는 면제이고,
-`GIT_CONFIG_COUNT=1 … go test ./...`는 (a)에서 걸려 kill이다 — 2026-08-06 사고
+술어로 판정한다. `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath … git status`는
+면제이고, `GIT_CONFIG_COUNT=1 … go test ./...`는 (a)에서 걸려 kill이다 — 2026-08-06 사고
 (`2026-08-06-worker-preamble-system-prompt-design.md` 배경)가 그 형태였고, `go test`가
 git 자식을 낳으므로 판정이 바뀌지 않는다.
+
+env 접두의 **위반 판정 자체는 키에 무관한 현행 의미를 유지한다**: `GIT_CONFIG_COUNT`/`KEY_n`/
+`VALUE_n` 재정의는 그 값이 어느 키를 가리키든 재배치 shape다. 키를 보는 것은 그 shape를
+**면제할지**를 정할 때뿐이다((b)).
 
 **arm은 합성된다.** 1회성 면제는 "재배치 shape 자체로는 위반이 아니다"만 말하며, 같은
 명령에 대한 다른 arm의 판정을 건너뛰지 않는다. `config`이 열거에 있는 것은 이 합성 덕분에
@@ -134,7 +168,10 @@ git 자식을 낳으므로 판정이 바뀌지 않는다.
 | `git config core.hooksPath <값>` / `set` / `unset` / `--unset` | 지속된다 — 다음 push에 닿는다 |
 | 명령 없는 `GIT_CONFIG_*` 할당 (`export`, bare) | 프로세스에 남는다 |
 | `GIT_CONFIG_*=… <non-git>` | 자식 git이 상속한다(측정) |
-| `git -c core.hooksPath=X <열거 밖>` | pre-push를 돌리거나 git 자식을 낳을 수 있다 |
+| `git -c core.hooksPath=X <열거 밖>` | pre-push를 돌리거나 헬퍼를 실행한다 |
+| `git -c core.hooksPath=X -c <다른 키>=… <열거 안>` | (b) — 같은 명령이 헬퍼 채널을 연다 |
+| `GIT_CONFIG_KEY_n=<core.hooksPath 아닌 키> … git <열거 안>` | (b) — 같은 직행로 |
+| `GIT_EXTERNAL_DIFF=… GIT_CONFIG_*=… git <열거 안>` | (c) — 접두가 재배치만 싣지 않았다 |
 | `git push --no-verify` | 변경 없음 |
 
 ### §2 면제의 효과 — 위반이 아니다
@@ -144,7 +181,7 @@ git 자식을 낳으므로 판정이 바뀌지 않는다.
 
 근거는 UI-1xcd §2가 순수 읽기에 내린 처분과 같다 — 위반이 아닌 것을 가드가 기록하면 그 기록이
 다음 오판의 재료가 된다. 보드에 배너가 뜨고, 실패 사유를 읽는 사람이 무해한 명령을 사건으로
-읽는다. 무엇을 금지하는지는 §3의 고지가 맡는다.
+읽는다. 무엇을 금지하는지는 §5의 고지가 맡는다.
 
 ### §3 `isHookBypass()` 재배열
 
@@ -158,12 +195,32 @@ if (argv.length === 0) { return false; }
 const is_git = basename(argv[0]).toLowerCase() === 'git';
 if (env_relocation && !is_git) { return true; }             // GIT_CONFIG_… go test
 if (!is_git) { return false; }
-/* 선행 옵션 훑기 → c_relocation, subcommand, args (현행 루프 그대로) */
-if ((env_relocation || c_relocation) && !ONE_SHOT_SAFE_SUBCOMMANDS.has(subcommand)) {
+/* 선행 옵션 훑기 → c_relocation, c_other_key, subcommand, args (현행 루프 확장) */
+const one_shot = env_relocation || c_relocation;
+if (one_shot && !exemptOneShot(prefix, c_other_key, subcommand, args)) {
   return true;
 }
 /* 기존 push / config arm 을 이어서 판정 — §1 의 합성 */
 ```
+
+`exemptOneShot()`이 §1의 (b)·(c)·(d)를 한자리에서 판정한다:
+
+```js
+function exemptOneShot(prefix, c_other_key, subcommand, args) {
+  if (c_other_key) { return false; }                        // (b) -c 가 다른 키를 지정
+  if (!prefixIsHooksPathOnly(prefix)) { return false; }     // (b)(c) 접두가 재배치만
+  if (!ONE_SHOT_SAFE_SUBCOMMANDS.has(subcommand)) { return false; }   // (d)
+  if (subcommand === 'cat-file') {
+    return !args.some((t) => t === '--filters' || t === '--textconv');
+  }
+  return true;
+}
+```
+
+`prefixIsHooksPathOnly()`는 접두의 모든 할당이 `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`이고,
+모든 `KEY_n` 값이 `core.hooksPath`일 때만 참이다. 다른 이름의 할당이 하나라도 있으면
+거짓 — 그것이 (c)다. **빈 접두는 참이다**: 접두 없는 순수 `-c` 형태가 (c)에 걸려서는
+안 된다.
 
 명령 없는 할당을 `argv.length === 0` 탈출보다 **먼저** 보는 현행 순서를 지킨다. 그 자리의
 주석이 이유를 적어두었다 — bare `GIT_CONFIG_COUNT=0`은 argv가 없는 하나의 simple command다.
@@ -198,10 +255,12 @@ RED → GREEN을 적용할 seam은 아래로 한정한다. 모두 기존 파일�
 
 | seam | 파일 | 검증 대상 |
 | --- | --- | --- |
-| `-c` 1회성 면제 | `command-guard.test.js` | 열거 15종 통과, 목록 밖(`commit`·`push`·`submodule`) kill, 서브커맨드 없음 kill |
-| env 접두 1회성 면제 | `command-guard.test.js` | `GIT_CONFIG_…=… git status` 통과, `… go test ./...` kill, 명령 없는 할당 kill |
+| `-c` 1회성 면제 | `command-guard.test.js` | 열거 10종 통과, 목록 밖(`commit`·`push`·`submodule`·`diff`·`log`) kill, 서브커맨드 없음 kill |
+| env 접두 1회성 면제 | `command-guard.test.js` | `GIT_CONFIG_KEY_0=core.hooksPath … git status` 통과, `… go test ./...` kill, 명령 없는 할당 kill |
+| 재배치 순수성 (b) | `command-guard.test.js` | `-c core.hooksPath=X -c diff.external=… status` kill, `GIT_CONFIG_KEY_0=diff.external … git status` kill |
+| 재배치 순수성 (c) | `command-guard.test.js` | `GIT_EXTERNAL_DIFF=… GIT_CONFIG_…=… git status` kill |
+| `cat-file` 옵션 | `command-guard.test.js` | 맨 `cat-file` 통과, `--filters`/`--textconv` kill |
 | arm 합성 | `command-guard.test.js` | `-c … config core.hooksPath <값>` kill, `-c … config --get core.hooksPath` 통과 |
-| 폴백 불변 | `command-guard.test.js` | 토큰화 실패 입력은 면제 없이 kill |
 | 계약 문구 | `preamble.test.js` | 바뀐 고지를 고정 |
 
 **회귀 고정과 대조군** — 완화가 진짜 우회까지 놓치지 않는다는 것을 대조군이 맡는다.
@@ -213,6 +272,16 @@ RED → GREEN을 적용할 seam은 아래로 한정한다. 모두 기존 파일�
 3. **대조군 B**: `git config --global core.hooksPath /tmp/empty-hooks` → 양쪽 모두 **kill**.
 4. **대조군 C**: `GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/x git push origin UI-1`
    → 양쪽 모두 **kill**.
+5. **대조군 D — child-push 반례, `-c` shape**: `git -c core.hooksPath=/dev/null
+   -c diff.external='sh -c "git push origin HEAD:main"' diff` → 양쪽 모두 **kill**.
+6. **대조군 E — child-push 반례, env shape**: `GIT_CONFIG_COUNT=1
+   GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0='sh -c "git push origin HEAD:main"'
+   git status` → 양쪽 모두 **kill**.
+7. **폴백 불변**: 토큰화 실패 입력은 면제 없이 kill → 양쪽 모두 **kill**. 변경 전에도
+   `HOOK_BYPASS_STRICT_RE`가 통과시키므로 RED가 아니다 — seam이 아니라 대조군이다.
+
+5·6이 이 스펙의 blocking 리뷰 지적을 고정하는 자리다: 열거 안의 서브커맨드라도 같은 명령이
+헬퍼 채널을 열면 kill이어야 한다.
 
 ## 검증
 
@@ -234,17 +303,22 @@ terminal success에 도달하고 프로세스 경로·포트·HTTP 응답 검증
 
 ## 잔여 위험
 
-1. **의지를 가진 우회는 여전히 막지 못한다.** 열거 안의 명령에 다른 config 키를 함께 실어
-   무기화하는 경로가 있다 — `git -c core.hooksPath=X -c core.pager='…' log` 같은 형태다.
-   그러나 그런 세션은 애초에 `sh -c`로 무엇이든 할 수 있고, 가드는 이미 인터프리터 인자를
-   재귀 검사하는 부분 방어다. UI-1xcd 잔여 위험 2("훅 무력화는 여전히 클라이언트 측 방어다.
-   우회 불가능한 방어는 GitHub 브랜치 보호뿐이다")를 그대로 승계한다. **위험한 config 키의
-   2차 열거는 만들지 않는다** — 그 목록은 git이 키를 추가할 때마다 드리프트하고, 얻는 것보다
-   유지 비용이 크다.
+1. **저장소에 이미 설정된 프로그램 실행은 닫지 못한다.** §1.1의 (b)·(c)는 **같은 명령이 여는**
+   헬퍼 채널을 닫고, 열거 제외는 **본래 동작이 헬퍼를 실행하는** 서브커맨드를 닫는다. 남는
+   것은 저장소 설정에 이미 들어 있는 프로그램이다 — `core.fsmonitor`가 가리키는 프로그램이
+   `git status` 중에 돌고, 그 자식이 재배치를 상속한다. 이 경로는 이 변경이 만드는 것이
+   아니라 그 설정을 쓴 행위가 만드는 것이고, `core.hooksPath` 아닌 키의 `git config` 쓰기는
+   이 가드가 애초에 관할한다고 주장한 적이 없다. 경계를 여기 명시해 둔다. UI-1xcd 잔여 위험
+   2("훅 무력화는 여전히 클라이언트 측 방어다. 우회 불가능한 방어는 GitHub 브랜치 보호뿐이다")를
+   그대로 승계한다.
+   **위험한 config 키의 2차 열거는 만들지 않는다** — 그 목록은 git이 키를 추가할 때마다
+   드리프트한다. (b)가 반대 방향(`core.hooksPath`만 허용)인 이유가 그것이다.
 2. **열거는 사람이 관리한다.** git이 새 읽기 서브커맨드를 추가하거나 세션이 목록 밖 읽기
-   명령을 쓰면 오탐이 다시 난다. 증상은 과잉 차단(fail-closed)이지 미탐이 아니며, 같은
-   성질의 위험을 UI-1xcd 잔여 위험 5가 이미 안고 있다. 열거를 넓힐 때의 기준은 §1의 두
-   조건이고, 그 판단은 이 스펙을 갱신해서 한다.
+   명령을 쓰면 오탐이 다시 난다. `diff`·`log`·`show`·`blame`·`grep`이 목록 밖이므로 그
+   빈도는 낮지 않다. 증상은 과잉 차단(fail-closed)이지 미탐이 아니며, 같은 성질의 위험을
+   UI-1xcd 잔여 위험 5가 이미 안고 있다. 열거를 넓힐 때의 기준은 §1의 네 조건 —
+   특히 (d)의 "설정으로 외부 프로그램을 실행하는 경로를 열지 않는다" — 이고, 그 판단은 이
+   스펙을 갱신해서 한다.
 3. **폴백이 파싱 경로보다 엄격하다.** §4의 의도된 비대칭이다. 토큰화가 실패하는 복잡한 한
    줄에 무해한 1회성 재배치가 섞이면 여전히 kill이 난다. 관측되면 폴백 정규식이 아니라
    토큰화 실패의 원인을 먼저 본다 — 면제를 폴백으로 내리는 것은 UI-1xcd가 금지한 방향이다.
