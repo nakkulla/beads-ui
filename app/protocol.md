@@ -170,10 +170,18 @@ interactive SESSION holds: rows the shared `bd list --all` snapshot reports as
 `status: 'in_progress'` with no active worker attempt and no membership in
 `queue` ∪ serial lanes ∪ `pr_wait`. `done` membership does NOT remove a row — a
 bead a session reopened is being worked on now. Each row carries
-`{ bead_id, title, status: 'in_progress', route, spec_id, labels, created_at, updated_at, started_at, workflow, blocked, blocked_by }`.
+`{ bead_id, title, status: 'in_progress', route, spec_id, plan_path, labels, created_at, updated_at, started_at, workflow, blocked, blocked_by }`.
 `route` is `metadata.route` or `''` when unpinned, `spec_id` is `''` when absent
 or in conflict, and `workflow` / `blocked` / `blocked_by` follow the same rules
-as the runnable rows below. Each row also carries
+as the runnable rows below. `plan_path` (UI-anna §3.1) is `metadata.plan_path`
+or `null`, carried for the same reason a runnable row carries it: the bead's
+declared scope is read from the SAME artifact set (`[spec_id, plan_path?]`) as a
+queued bead's. `scope: string[]` (UI-anna §3.1) is that declared scope, attached
+ADDITIVELY in the same shape and with the same reading as a runnable row's:
+present only on a scope-cache hit, and absent means 판정 불가 — not read yet,
+unreadable, or nothing declared — never "no scope". Its value is the one the
+same snapshot's `bead_scope[bead_id].scope` carries, so a bead moving 세션 착수
+→ 큐 적재 never changes the overlap verdict. Each row also carries
 `session_refs: SessionRefView[]` (UI-4xzk §4.1) — `metadata.session_ref`
 projected from the SAME scan, so the bucket still costs no extra `bd` process.
 One view is
@@ -302,16 +310,21 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `bd update|close|dep` COMPLETING inside a running session's log.
 - `bead_scope: Record<bead_id, { scope: string[], artifacts: string[] }|null>`
   (UI-qm12 §4.3) is the DECLARED scope — the spec front-matter `scope:` read at
-  the workspace's pinned base — of the beads the waiting, running and 후보 lanes
-  render: `queue` ∪ `serial_lanes[].entries` ∪ RUNNING attempts ∪ the runnable
-  projection (UI-f3ma), the last so a candidate can be judged against the queue
-  BEFORE it is loaded into a lane. A runnable bead's artifact set comes from its
-  own `spec_id`/`plan_path` rather than the title cache, which has no record for
-  a bead that never entered a lane; it is the same artifact set either way, so
-  loading a candidate into a lane never changes its verdict. `pr_wait` and
-  `done` are outside the set. Non-persisted and PARTIAL on the same contract as
-  `bead_titles`, and fail-quiet at every level: nothing here can block or delay
-  a snapshot push. Three values, deliberately distinct:
+  the workspace's pinned base — of the beads the waiting, running, PR 대기, 후보
+  and 세션 lanes render: `queue` ∪ `serial_lanes[].entries` ∪ the 실행중 레인
+  beads ∪ `pr_wait` ∪ the runnable projection (UI-f3ma) ∪ `session_active`
+  (UI-anna §3.1). The candidate rows are in so one can be judged against the
+  queue BEFORE it is loaded into a lane; `pr_wait` and the session-held beads
+  are in because a card standing in either lane answers the same "무엇과
+  부딪히나" question every other card does. A runnable or session-held bead's
+  artifact set comes from its own `spec_id`/`plan_path` rather than the title
+  cache, which has no record for a bead that never entered a lane; it is the
+  same artifact set either way, so moving such a bead into a lane never changes
+  its verdict. The 실행중 레인 membership follows the client's own predicate
+  (`activeAttemptStates`), so a paused or unhandled-failed tile is in the set
+  too. `done` is the only lane outside it. Non-persisted and PARTIAL on the same
+  contract as `bead_titles`, and fail-quiet at every level: nothing here can
+  block or delay a snapshot push. Three values, deliberately distinct:
   - NO ENTRY — the scope has not been read yet, or the bead has no spec at all
     (quick_fix, unpublished). Draw nothing.
   - `{ scope: [], artifacts }` — every artifact (spec, and the plan when the
@@ -467,9 +480,12 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   dependency whose `status` is `closed` is dropped at the source, matching what
   `bd ready` already ignores; a foreign dependency carries no status on the edge
   and stays listed here, and the monitor aggregation drops it once the owning
-  rig reports it `closed`) and `lane_states` — per serial lane
-  `{ occupied_by, order, corrections, cycle }` derived fresh on every snapshot
-  from durable occupancy and blocks edges.
+  rig reports it `closed`). Its id set — shared with `bead_titles`, `bead_times`
+  and `bead_labels` — is `queue` ∪ `pr_wait` ∪ `done` ∪ the serial lanes ∪ the
+  실행중 레인 beads (UI-anna §3.2), the last so a bead a SESSION started, which
+  stands in no lane array, still carries its blockers. Also `lane_states` — per
+  serial lane `{ occupied_by, order, corrections, cycle }` derived fresh on
+  every snapshot from durable occupancy and blocks edges.
 - `worker-queue-remove` payload: `{ bead_id, expected_revision }`
 - `worker-attempt-pause` payload: `{ attempt_id }` — pauses (⏸) a running
   attempt while preserving its resumable state. Reply

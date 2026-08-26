@@ -495,7 +495,7 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
     expect(blocker?.dependency_chips).toBe(undefined);
   });
 
-  test('draws no chip on a running tile', () => {
+  test('draws no chip on a running tile the snapshot names no blocker for', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -515,6 +515,108 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
     );
 
     expect(lanes.running[0].dependency_chips).toBe(undefined);
+  });
+
+  test('draws a blocked chip on a running tile the snapshot names a blocker for', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_blocked_by: { 'A-1': ['A-9'] },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 1
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].dependency_chips?.predecessors?.[0].label).toBe(
+      '⛓ blocked: A-9'
+    );
+  });
+
+  test('draws a blocked chip on a paused running tile as well', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_blocked_by: { 'A-1': ['A-9'] },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'paused',
+              started_at: 1
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].dependency_chips?.predecessors?.[0].label).toBe(
+      '⛓ blocked: A-9'
+    );
+  });
+
+  test('draws a blocked chip on a PR 대기 row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          bead_blocked_by: { 'A-1': ['A-9'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0].dependency_chips?.predecessors?.[0].label).toBe(
+      '⛓ blocked: A-9'
+    );
+  });
+
+  test('names the blocker location of a PR 대기 row in the chip tooltip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          queue: [{ bead_id: 'A-9' }],
+          bead_blocked_by: { 'A-1': ['A-9'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0].dependency_chips?.predecessors?.[0].title).toBe(
+      '이 이슈는 A-9가 close될 때까지 출발하지 않는다 (repo-a · 병렬 #1)'
+    );
+  });
+
+  test('leaves the blocked chip clickable on the monitor', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          bead_blocked_by: { 'A-1': ['A-9'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0].dependency_chips?.interactive).toBe(undefined);
+  });
+
+  test('draws no chip on a PR 대기 row the snapshot names no blocker for', () => {
+    const lanes = buildLanes(
+      [workspace({ pr_wait: [{ bead_id: 'A-1' }], bead_blocked_by: {} })],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0].dependency_chips).toBe(undefined);
   });
 });
 
@@ -2152,6 +2254,149 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
       undefined,
       undefined
     ]);
+  });
+
+  test('gives a PR 대기 bead and a waiting bead each other as an overlap chip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          pr_wait: [{ bead_id: 'A-1' }],
+          bead_scope: {
+            'A-1': declared(['server/worker']),
+            'A-2': declared(['server/worker/queue-store.js'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0].overlap_chips?.[0].id).toBe('A-2');
+    expect(lanes.queue[0].overlap_chips?.[0].location_label).toBe('PR 대기');
+  });
+
+  test('marks a PR 대기 bead whose read declaration is empty as missing', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          bead_scope: { 'A-1': declared([]) }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0].scope_state).toBe('missing');
+  });
+
+  test('never gives a bead standing in two lanes itself as an overlap', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              kind: 'head_review',
+              status: 'running',
+              started_at: 1
+            }
+          },
+          bead_scope: { 'A-1': declared(['server/worker']) }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].id).toBe('A-1');
+    expect(lanes.running[0].overlap_chips).toBeUndefined();
+    expect(lanes.pr_wait[0].overlap_chips).toBeUndefined();
+  });
+
+  test('names a bead standing in two lanes once on a third card', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          pr_wait: [{ bead_id: 'A-1' }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              kind: 'head_review',
+              status: 'running',
+              started_at: 1
+            }
+          },
+          bead_scope: {
+            'A-1': declared(['server/worker']),
+            'A-2': declared(['server/worker/queue-store.js'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].overlap_chips?.map((chip) => chip.id)).toEqual([
+      'A-1'
+    ]);
+  });
+
+  test('copies the overlap verdict onto every card of the same bead', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          pr_wait: [{ bead_id: 'A-1' }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              kind: 'head_review',
+              status: 'running',
+              started_at: 1
+            }
+          },
+          bead_scope: {
+            'A-1': declared(['server/worker']),
+            'A-2': declared(['server/worker/queue-store.js'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].overlap_chips?.map((chip) => chip.id)).toEqual([
+      'A-2'
+    ]);
+    expect(lanes.pr_wait[0].overlap_chips?.map((chip) => chip.id)).toEqual([
+      'A-2'
+    ]);
+  });
+
+  test('copies the scope_state onto every card of the same bead', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              kind: 'head_review',
+              status: 'running',
+              started_at: 1
+            }
+          },
+          bead_scope: { 'A-1': declared([]) }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].scope_state).toBe('missing');
+    expect(lanes.pr_wait[0].scope_state).toBe('missing');
   });
 
   test('derives nothing from a snapshot without the bead_scope key', () => {

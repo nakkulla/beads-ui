@@ -2,8 +2,8 @@ import { describe, expect, test } from 'vitest';
 import { deriveWorkerOverlaps, workerPlacementPlan } from './queue-overlaps.js';
 
 /**
- * @param {Partial<import('./queue-overlaps.js').OverlapMember>} over
- * @returns {import('./queue-overlaps.js').OverlapMember}
+ * @param {Partial<import('./queue-overlaps.js').LaneMember>} over
+ * @returns {import('./queue-overlaps.js').LaneMember}
  */
 function member(over) {
   const id = over.id || 'A-1';
@@ -91,7 +91,7 @@ describe('deriveWorkerOverlaps', () => {
 
 describe('workerPlacementPlan', () => {
   /**
-   * @param {import('./queue-overlaps.js').OverlapMember[]} members
+   * @param {import('./queue-overlaps.js').LaneMember[]} members
    * @param {Partial<{ serial_raw_lengths: Record<string, number>, serial_lane_count: number, occupied_lanes: Set<string> }>} over
    */
   function factsOf(members, over = {}) {
@@ -170,7 +170,7 @@ describe('workerPlacementPlan', () => {
     expect(plan.kind).toBe('disabled');
   });
 
-  test('answers a note for two running beads', () => {
+  test('answers a note for two beads that already departed', () => {
     const plan = workerPlacementPlan(
       'A-1',
       'B-2',
@@ -182,7 +182,39 @@ describe('workerPlacementPlan', () => {
 
     expect(plan).toEqual({
       kind: 'note',
-      text: '둘 다 실행 중 — 순서를 만들 수 없습니다'
+      text: '둘 다 이미 출발 — 순서를 만들 수 없습니다'
+    });
+  });
+
+  test('refuses to move a PR 대기 counterpart', () => {
+    const plan = workerPlacementPlan(
+      'A-1',
+      'B-2',
+      factsOf([
+        member({ id: 'A-1' }),
+        member({ id: 'B-2', kind: 'pr_wait', location_label: 'PR 대기' })
+      ])
+    );
+
+    expect(plan).toEqual({
+      kind: 'note',
+      text: 'PR 대기 — 종료 후 출발하려면 직렬 레인에 두세요'
+    });
+  });
+
+  test('names its own lane when the PR 대기 bead owns the chip', () => {
+    const plan = workerPlacementPlan(
+      'A-1',
+      'B-2',
+      factsOf([
+        member({ id: 'A-1', kind: 'pr_wait', location_label: 'PR 대기' }),
+        member({ id: 'B-2' })
+      ])
+    );
+
+    expect(plan).toEqual({
+      kind: 'note',
+      text: 'PR 대기 — 순서를 만들려면 상대를 직렬 레인에 두세요'
     });
   });
 

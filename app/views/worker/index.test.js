@@ -10687,7 +10687,13 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
     expect(s2.textContent).toContain('순환');
   });
 
-  test('renders a blocks wait-reason chip for a blocked serial head', () => {
+  /**
+   * A blocked serial head: the server skipped it as `not_ready` and the
+   * snapshot names its blocker.
+   *
+   * @returns {HTMLElement}
+   */
+  function mountBlockedSerialHead() {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     createWorkerView(mount, {
@@ -10710,11 +10716,29 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
         }
       })
     );
-
-    const row = /** @type {HTMLElement} */ (
+    return /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="A"]')
     );
-    expect(row.textContent).toContain('⏸ UI-x 완료 대기');
+  }
+
+  test('names the blocker of a blocked serial head on a blocked chip', () => {
+    const row = mountBlockedSerialHead();
+
+    expect(row.querySelector('.worker-dep--pred')?.textContent).toContain(
+      '⛓ blocked: UI-x'
+    );
+  });
+
+  test('retires the 완료 대기 wait badge from the blocked row', () => {
+    const row = mountBlockedSerialHead();
+
+    expect(row.textContent).not.toContain('완료 대기');
+  });
+
+  test('keeps the not_ready admission reason on the blocked row', () => {
+    const row = mountBlockedSerialHead();
+
+    expect(row.textContent).toContain('⛔ not_ready');
   });
 
   test('retires the bulk selection and pr-wait-hold surfaces', () => {
@@ -11997,7 +12021,7 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
     expect(transport).toHaveBeenCalledTimes(1);
   });
 
-  test('draws the 겹침 chip on a running tile and no scope 없음 there', () => {
+  test('draws the 겹침 chip on a running tile and scope 없음 there too', () => {
     const mount = mountWithOverlaps(
       vi.fn(),
       overlapQueue({
@@ -12027,9 +12051,10 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
     );
 
     expect(tile).not.toBe(null);
-    // 실행 중 행은 `scope 없음`을 얻지 않는다 (§5.3) — 이미 출발한 이슈에게
-    // 선언을 요구하는 문장이기 때문이다.
-    expect(tile.querySelector('.worker-dep--muted')).toBe(null);
+    // 실행 중 타일도 `scope 없음`을 얻는다 (UI-anna §6): 레인별 억제를 없앴다.
+    expect(tile.querySelector('.worker-dep--muted')?.textContent).toContain(
+      'scope 없음'
+    );
     expect(s1.querySelector('.mon-overlap__chip')?.textContent).toContain(
       'W-2'
     );
@@ -12176,6 +12201,271 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
 
     expect(mount.querySelector('.worker-card[data-bead-id="BL-1"]')).toBe(null);
     expect(w1.querySelector('.mon-overlap__chip')).toBe(null);
+  });
+});
+
+describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} queue
+   * @param {any} [stores]
+   * @returns {HTMLElement}
+   */
+  function mountQueue(queue, stores = seedCandidates()) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: vi.fn()
+    });
+    queueStore.set(queue);
+    return mount;
+  }
+
+  /**
+   * A running attempt tile for `bead_id`.
+   *
+   * @param {string} bead_id
+   * @returns {any}
+   */
+  function runningAttempt(bead_id) {
+    return {
+      'att-1': {
+        attempt_id: 'att-1',
+        bead_id,
+        status: 'running',
+        runner: 'claude',
+        started_at: Date.now(),
+        session_id: 'sid-1'
+      }
+    };
+  }
+
+  test('draws a blocked chip on a waiting row from the queue decoration', () => {
+    const mount = mountQueue(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        bead_blocked_by: { 'W-1': ['UI-x'] }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"]')
+    );
+    expect(row.querySelector('.worker-dep--pred')?.textContent).toContain(
+      '⛓ blocked: UI-x'
+    );
+  });
+
+  test('draws a blocked chip on a 후보 card from its own blocked_info ladder', () => {
+    presetCandidateFilter({ show_blocked: true });
+    const mount = mountQueue(queueOf({}));
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="BL-1"]')
+    );
+    expect(card.querySelector('.worker-dep--pred')?.textContent).toContain(
+      '⛓ blocked: DEP-9'
+    );
+  });
+
+  test('draws a blocked chip on a session running tile from session_active', () => {
+    const mount = mountQueue(
+      queueOf({
+        session_active: [
+          {
+            bead_id: 'SS-1',
+            title: '세션이 잡은 이슈',
+            status: 'in_progress',
+            blocked: true,
+            blocked_by: ['UI-x']
+          }
+        ]
+      })
+    );
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="SS-1"]')
+    );
+    expect(tile.querySelector('.worker-dep--pred')?.textContent).toContain(
+      '⛓ blocked: UI-x'
+    );
+  });
+
+  test('lets an empty queue decoration override the 후보 ladder', () => {
+    presetCandidateFilter({ show_blocked: true });
+    const mount = mountQueue(queueOf({ bead_blocked_by: { 'BL-1': [] } }));
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="BL-1"]')
+    );
+    expect(card.querySelector('.worker-dep--pred')).toBe(null);
+  });
+
+  test('names a waiting blocker by its lane position in the chip tooltip', () => {
+    const mount = mountQueue(
+      queueOf({
+        queue: [
+          { bead_id: 'W-0', added_at: 1 },
+          { bead_id: 'W-1', added_at: 2 }
+        ],
+        bead_blocked_by: { 'W-1': ['W-0'] }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"]')
+    );
+    expect(row.querySelector('.worker-dep--pred')?.getAttribute('title')).toBe(
+      '이 이슈는 W-0가 close될 때까지 출발하지 않는다 (#1)'
+    );
+  });
+
+  test('folds a blocker this tab cannot see into 미적재', () => {
+    const mount = mountQueue(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        bead_blocked_by: { 'W-1': ['W-9'] }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"]')
+    );
+    expect(row.querySelector('.worker-dep--pred')?.getAttribute('title')).toBe(
+      '이 이슈는 W-9가 close될 때까지 출발하지 않는다 (미적재)'
+    );
+  });
+
+  test('draws the blocked chip as display-only, never as an open button', () => {
+    const mount = mountQueue(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        bead_blocked_by: { 'W-1': ['UI-x'] }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"]')
+    );
+    expect(row.querySelector('.worker-dep__open')).toBeNull();
+  });
+
+  test('draws a blocked chip on a running attempt tile', () => {
+    const mount = mountQueue(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        attempts: runningAttempt('W-1'),
+        bead_blocked_by: { 'W-1': ['UI-x'] }
+      })
+    );
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="W-1"]')
+    );
+    expect(tile.querySelector('.worker-dep--pred')?.textContent).toContain(
+      '⛓ blocked: UI-x'
+    );
+  });
+
+  test('draws no chip on a running tile the snapshot names no blocker for', () => {
+    const mount = mountQueue(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        attempts: runningAttempt('W-1'),
+        bead_blocked_by: {}
+      })
+    );
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="W-1"]')
+    );
+    expect(tile.querySelector('.worker-dep--pred')).toBeNull();
+  });
+
+  test('draws all three chips on a PR 대기 row', () => {
+    const mount = mountQueue(
+      queueOf({
+        pr_wait: [{ bead_id: 'P-1', added_at: 1 }],
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        bead_blocked_by: { 'P-1': ['UI-x'] },
+        bead_scope: {
+          'P-1': { scope: ['app/views'], artifacts: ['p1.md'] },
+          'W-1': { scope: ['app/views/worker/lanes.js'], artifacts: ['w1.md'] }
+        }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-pr-wait .worker-mini[data-bead-id="P-1"]'
+      )
+    );
+    expect(row.querySelector('.worker-dep--pred')?.textContent).toContain(
+      '⛓ blocked: UI-x'
+    );
+    expect(row.querySelector('.mon-overlap__chip')?.textContent).toContain(
+      'W-1'
+    );
+  });
+
+  test('draws the scope 없음 chip on a PR 대기 row', () => {
+    const mount = mountQueue(
+      queueOf({
+        pr_wait: [{ bead_id: 'P-1', added_at: 1 }],
+        bead_scope: { 'P-1': { scope: [], artifacts: ['p1.md'] } }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-pr-wait .worker-mini[data-bead-id="P-1"]'
+      )
+    );
+    expect(row.querySelector('.worker-dep--muted')?.textContent).toContain(
+      'scope 없음'
+    );
+  });
+
+  test('names a PR 대기 counterpart as PR 대기 on the waiting row 겹침 chip', () => {
+    const mount = mountQueue(
+      queueOf({
+        pr_wait: [{ bead_id: 'P-1', added_at: 1 }],
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        bead_scope: {
+          'P-1': { scope: ['app/views'], artifacts: ['p1.md'] },
+          'W-1': { scope: ['app/views/worker/lanes.js'], artifacts: ['w1.md'] }
+        }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-queue .worker-mini[data-bead-id="W-1"]')
+    );
+    expect(
+      row.querySelector('.mon-overlap__chip')?.getAttribute('aria-label')
+    ).toContain('PR 대기');
+  });
+
+  test('gives a running tile with only a blocker its overlay chip', () => {
+    const mount = mountQueue(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        attempts: runningAttempt('W-1'),
+        bead_blocked_by: { 'W-1': ['UI-x'] },
+        bead_scope: {}
+      })
+    );
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="W-1"]')
+    );
+    expect(tile.querySelector('.worker-deps')).not.toBeNull();
   });
 });
 

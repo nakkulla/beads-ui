@@ -157,15 +157,21 @@ blocked · 겹침 칩이 어느 레인에 서는지는 **이미 투영이 소유
 그 규칙을 건드리지 않는다.**
 
 - `app/views/monitor/lanes.js`가 `model.queue`(병렬 + 직렬 s1~s5 항목이 같은 객체로
-  들어간다)와 `model.runnable`에 `dependency_chips.predecessors`를 붙인다.
-  `running`·`pr_wait`은 빈 배열이다 — 이미 출발했으므로 막힌 것이 없다.
-- `applyScopeOverlaps`가 `running`·`queue`·`runnable`에 `⧉ 겹침`과 `scope 없음`을
-  붙인다.
+  들어간다) · `model.runnable` · `model.running` · `model.pr_wait`에
+  `dependency_chips.predecessors`를 붙인다.
+- `applyScopeOverlaps`가 그 네 레인에 `⧉ 겹침`과 `scope 없음`을 붙인다.
 
-따라서 레인별 표시는 이렇게 유지된다: 후보·대기는 `⛓ blocked` + `⧉ 겹침`,
-실행중은 `⧉ 겹침`만, PR 대기는 없음. 타 레포 blocker는 문구가 같고 색만 갈린다
-(`worker-dep--foreign`). 이 스펙이 정하는 것은 그 칩 줄이 **어느 자리에 서는가**
-뿐이다.
+따라서 레인별 표시 차이는 없다: 네 레인 모두 재료가 있으면 `⛓ blocked` ·
+`⧉ 겹침` · `scope 없음`을 슬롯 4에 함께 세운다. 타 레포 blocker는 문구가 같고
+색만 갈린다(`worker-dep--foreign`). 이 스펙이 정하는 것은 그 칩 줄이 **어느
+자리에 서는가**뿐이다.
+
+**정정(UI-anna).** 이 문단은 원래 "후보·대기는 `⛓ blocked` + `⧉ 겹침`, 실행중은
+`⧉ 겹침`만, PR 대기는 없음"이었다. 그 레인별 배제를 UI-anna
+(`2026-08-26-lane-agnostic-dependency-chips-design.md`)가 걷어냈고, 워커 탭의
+`⏸ … 완료 대기 (blocks)` 뱃지도 같은 칩으로 통일됐다. 이 절의 제목("투영은 바꾸지
+않는다")은 **이 스펙이 자기 범위에서** 투영을 건드리지 않았다는 사실이므로 그대로
+둔다 — 바뀐 것은 그 뒤에 온 스펙이다.
 
 ## 5. 프로젝트 지침 반영
 

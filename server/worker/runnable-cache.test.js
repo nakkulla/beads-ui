@@ -954,6 +954,7 @@ describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
         status: 'in_progress',
         route: 'spec_backed',
         spec_id: 'docs/specs/session.md',
+        plan_path: null,
         labels: ['frontend'],
         created_at: 1000,
         updated_at: 3000,
@@ -964,6 +965,34 @@ describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
         session_refs: []
       }
     ]);
+  });
+
+  // UI-anna §3.1: 세션 행의 scope 원천은 후보 행과 같은 아티팩트 집합이다.
+  test('carries the plan_path pinned by a session-held bead', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [
+          sessionRow({
+            spec_id: 'docs/specs/session.md',
+            metadata: { route: 'full_plan', plan_path: 'docs/plans/p.md' }
+          })
+        ]
+      })
+    });
+
+    const out = await warmSession(cache, WS_A);
+
+    expect(out[0].plan_path).toBe('docs/plans/p.md');
+  });
+
+  test('carries a null plan_path when the bead pins none', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [sessionRow()] })
+    });
+
+    const out = await warmSession(cache, WS_A);
+
+    expect(out[0].plan_path).toBeNull();
   });
 
   // §3: 세션은 Worker 자격과 무관하게 아무 이슈나 잡는다.

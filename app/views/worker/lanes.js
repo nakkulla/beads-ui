@@ -691,6 +691,13 @@ export function execChipsTemplate(chips, options = {}) {
  * @property {OverlapChip[]} [overlaps] - `⧉ 겹침 …` (UI-qm12 §5.3).
  * @property {boolean} [scope_missing] - 선언 원천은 읽혔는데 scope 선언이
  * 비었다 — 겹침을 판정할 수 없다는 사실 자체를 드러낸다.
+ * @property {boolean} [interactive] - 생략하면 `true`. `⛓ blocked` 칩을 누를 수
+ * 있는지 하나만 가른다 (UI-anna §5.3a·§6): 모니터에서 그 클릭은 그 행의 의존성
+ * 패널을 열지만 워커 탭에는 그 패널이 없어, 같은 마크업을 내보내면 눌러도 아무
+ * 일도 하지 않는 버튼이 남는다. 라벨·툴팁·색·자리는 두 탭이 같다. 렌더러 인자가
+ * 아니라 투영이 싣는 값인 이유는 `candidateCard`·`miniRow`를 두 탭이 함께
+ * 부르기 때문이다 — 호출 인자로 가르면 같은 템플릿을 탭마다 다르게 부르는
+ * 자리가 새로 생긴다.
  * @property {OverlapPopover} [popover] - 이 행에서 열려 있으면 칩 아래에 그리는
  * `mon-overlap__popover`.
  * @property {{ lane_id: string, label: string }} [cross_lane] - `연결 n` /
@@ -744,14 +751,13 @@ function overlapPopoverTemplate(popover) {
  * 하나만 말한다 — 역방향(후속) 칩은 걷어냈고, 그 관계는 의존성 패널이 그린다.
  * Drawn only when a projection supplies them, so Worker rows are unchanged.
  *
- * `lane`은 `scope 없음` 칩 하나를 위해서만 쓴다: 실행 중 행에는 붙이지 않는다
- * (§5.3) — 이미 출발한 이슈에게 선언을 요구하는 문장이기 때문이다.
+ * 레인 분기는 없다 (UI-anna §6): 세 칩 모두 재료가 실린 카드에 선다. 어느
+ * 레인이 그 재료를 받는가는 투영이 정하고, 이 템플릿은 받은 것을 그린다.
  *
  * @param {DependencyChips|null|undefined} chips
- * @param {{ lane?: string }} [options]
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function dependencyChipsTemplate(chips, options = {}) {
+export function dependencyChipsTemplate(chips) {
   if (!chips) {
     return '';
   }
@@ -759,8 +765,8 @@ export function dependencyChipsTemplate(chips, options = {}) {
     ? chips.predecessors
     : [];
   const overlaps = Array.isArray(chips.overlaps) ? chips.overlaps : [];
-  const scope_missing =
-    chips.scope_missing === true && options.lane !== 'running';
+  const interactive = chips.interactive !== false;
+  const scope_missing = chips.scope_missing === true;
   const popover = chips.popover || null;
   const cross_lane = chips.cross_lane || null;
   if (
@@ -787,13 +793,15 @@ export function dependencyChipsTemplate(chips, options = {}) {
         html`<span
           class=${`worker-dep worker-dep--pred${chip.foreign ? ' worker-dep--foreign' : ''}`}
           title=${chip.title || ''}
-          ><button
-            type="button"
-            class="worker-dep__label worker-dep__open"
-            data-dep-id=${chip.id}
-          >
-            ${chip.label}
-          </button></span
+          >${interactive
+            ? html`<button
+                type="button"
+                class="worker-dep__label worker-dep__open"
+                data-dep-id=${chip.id}
+              >
+                ${chip.label}
+              </button>`
+            : chip.label}</span
         >`
     )}${overlaps.map(
       (chip) =>
@@ -1409,9 +1417,7 @@ export function miniRow(item) {
             : ''}${usage_el}
         </div>`
       : '';
-  const deps_el = dependencyChipsTemplate(item.dependency_chips, {
-    lane: item.lane
-  });
+  const deps_el = dependencyChipsTemplate(item.dependency_chips);
   const receipt_el = discardReceiptTemplate(item);
   const has_foot = !!(
     merging ||
@@ -1603,9 +1609,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
     item.reason.split(' · ').includes('missing_description');
   const danger =
     typeof item.reason === 'string' && item.reason.startsWith('⛔');
-  const deps_el = dependencyChipsTemplate(item.dependency_chips, {
-    lane: item.lane
-  });
+  const deps_el = dependencyChipsTemplate(item.dependency_chips);
   // 좌표 칩은 정체성 줄이 아니라 슬롯 5 줄이다 (UI-251y §2·§3.2): 헤더에 서면
   // 폭에 따라 조작 버튼을 다음 줄로 밀어내 사용자가 버튼을 찾는 자리가
   // 달라진다. 순서는 레포 → route → from → exec 칩 하나다.

@@ -11,16 +11,20 @@
 import { overlapPrefixes } from '../../utils/scope-overlap.js';
 
 /**
- * One 비교 집합 항목: 후보·병렬 대기·직렬 레인·실행 중 어딘가에 서 있는 bead.
- * PR 대기·완료는 서버 적재 범위 밖이라 애초에 들어오지 않는다 (§5.2).
+ * One 화면 사실 항목: 후보·병렬 대기·직렬 레인·실행 중·PR 대기 어딘가에 서 있는
+ * bead. 겹침 비교 집합이자 blocked 칩의 위치 사전이므로 (UI-anna §5.2) 이름이
+ * 겹침 전용이 아니다 — 두 칩이 같은 목록에서 위치를 읽어야 라벨이 갈리지 않는다.
+ * 완료만 밖에 있다.
  *
- * @typedef {Object} OverlapMember
+ * @typedef {Object} LaneMember
  * @property {string} id
  * @property {string} title
- * @property {string} location_label - `실행중` · `#n` · `s1 #n` · `후보`.
- * @property {'parallel'|'serial'|'running'|'candidate'} kind - `candidate`는
- * 아직 큐에 없는 후보 행 (UI-f3ma): 배치 대상이라는 점에서 병렬 대기와 같고,
- * 위치만 다르다.
+ * @property {string} location_label - `실행중` · `#n` · `s1 #n` · `후보` ·
+ * `PR 대기`.
+ * @property {'parallel'|'serial'|'running'|'candidate'|'pr_wait'} kind -
+ * `candidate`는 아직 큐에 없는 후보 행 (UI-f3ma): 배치 대상이라는 점에서 병렬
+ * 대기와 같고, 위치만 다르다. `pr_wait`은 이미 출발한 쪽이라 실행 중과 같이
+ * 옮길 수 없다 (UI-anna §5.2).
  * @property {'s1'|'s2'|'s3'|'s4'|'s5'|null} lane_id - 직렬 행의 레인, 또는
  * 직렬 레인에서 출발한 실행 중 bead의 출발 레인. 그 외 null.
  */
@@ -31,7 +35,7 @@ import { overlapPrefixes } from '../../utils/scope-overlap.js';
  * `bead_scope`가 없는 구서버 스냅샷은 빈 결과다 (fail-quiet).
  *
  * @param {unknown} bead_scope
- * @param {OverlapMember[]} members
+ * @param {LaneMember[]} members
  * @returns {Map<string, { overlaps: OverlapChip[], scope_missing: boolean }>}
  */
 export function deriveWorkerOverlaps(bead_scope, members) {
@@ -41,7 +45,7 @@ export function deriveWorkerOverlaps(bead_scope, members) {
     return facts;
   }
   const record = /** @type {Record<string, any>} */ (bead_scope);
-  /** @type {Array<{ member: OverlapMember, scope: string[] }>} */
+  /** @type {Array<{ member: LaneMember, scope: string[] }>} */
   const declared = [];
   /** @type {Set<string>} */
   const seen = new Set();
@@ -100,13 +104,34 @@ export function deriveWorkerOverlaps(bead_scope, members) {
  */
 
 /**
+ * 옮길 수 있는 레인 (UI-anna §5.2). 화이트리스트인 이유는 실패 방향이다 —
+ * `kind !== 'running'` 같은 부정 판정은 새 `kind`가 생길 때마다 조용히
+ * "옮길 수 있다"로 기울고, 그것이 PR 대기 행에 배치 버튼을 세우는 길이다.
+ *
+ * @type {ReadonlyArray<LaneMember['kind']>}
+ */
+const MOVABLE_KINDS = ['parallel', 'serial', 'candidate'];
+
+/**
+ * The name of a lane that has already departed — 문장이 그 레인의 사실을 말해야
+ * 하므로, 실행 중과 PR 대기를 한 단어로 뭉뚱그리지 않는다.
+ *
+ * @param {LaneMember['kind']} kind
+ * @returns {string}
+ */
+function departedLabel(kind) {
+  return kind === 'pr_wait' ? 'PR 대기' : '실행 중';
+}
+
+/**
  * The §5.4 decision table, 워커 탭 판. 어느 한쪽에 직렬 레인이 있으면 그
  * 레인을 쓰고(1 op), 둘 다 없을 때만 빈 레인에 둘을 차례로 넣는다(2 op).
- * 실행 중인 항목은 옮기지 않으므로 그 자리에는 버튼 대신 문장이 선다.
+ * 이미 출발한 항목(실행 중·PR 대기)은 옮기지 않으므로 그 자리에는 버튼 대신
+ * 문장이 선다.
  *
  * @param {string} me_id - 칩을 눌러 팝오버를 연 카드의 bead.
  * @param {string} counterpart_id - 겹치는 상대로 팝오버 행에 선 bead.
- * @param {{ members_by_id: Map<string, OverlapMember>, serial_raw_lengths: Record<string, number>, serial_lane_count: number, occupied_lanes: Set<string> }} queue_facts
+ * @param {{ members_by_id: Map<string, LaneMember>, serial_raw_lengths: Record<string, number>, serial_lane_count: number, occupied_lanes: Set<string> }} queue_facts
  * @returns {WorkerPlacementPlan}
  */
 export function workerPlacementPlan(me_id, counterpart_id, queue_facts) {
@@ -120,8 +145,8 @@ export function workerPlacementPlan(me_id, counterpart_id, queue_facts) {
   if (my_lane !== null && my_lane === other_lane) {
     return { kind: 'note', text: '이미 같은 직렬 레인 — 순서가 있습니다' };
   }
-  const my_move = me.kind !== 'running';
-  const other_move = other.kind !== 'running';
+  const my_move = MOVABLE_KINDS.includes(me.kind);
+  const other_move = MOVABLE_KINDS.includes(other.kind);
   if (my_move && other_lane !== null) {
     return {
       kind: 'ops',
@@ -168,17 +193,17 @@ export function workerPlacementPlan(me_id, counterpart_id, queue_facts) {
     };
   }
   if (!my_move && !other_move) {
-    return { kind: 'note', text: '둘 다 실행 중 — 순서를 만들 수 없습니다' };
+    return { kind: 'note', text: '둘 다 이미 출발 — 순서를 만들 수 없습니다' };
   }
   if (!my_move) {
     return {
       kind: 'note',
-      text: '실행 중 — 순서를 만들려면 상대를 직렬 레인에 두세요'
+      text: `${departedLabel(me.kind)} — 순서를 만들려면 상대를 직렬 레인에 두세요`
     };
   }
   return {
     kind: 'note',
-    text: '실행 중 — 종료 후 출발하려면 직렬 레인에 두세요'
+    text: `${departedLabel(other.kind)} — 종료 후 출발하려면 직렬 레인에 두세요`
   };
 }
 
