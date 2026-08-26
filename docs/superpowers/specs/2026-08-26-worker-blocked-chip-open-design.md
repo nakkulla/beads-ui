@@ -3,11 +3,11 @@ scope:
   - server/ws/worker-handlers.js
   - server/ws/monitor-handlers.js
   - server/worker/foreign-blocker-status.js
-  - server/worker/title-cache.js
   - app/views/worker/lanes.js
   - app/views/worker/queue-blockers.js
   - app/views/worker/index.js
   - app/main.js
+  - docs/superpowers/specs/2026-08-26-lane-agnostic-dependency-chips-design.md
 ---
 
 # Worker blocked 칩 — 닫힌 타 레포 blocker 정리와 blocker 이슈 열기
@@ -172,7 +172,13 @@ workspace**다.
 
 - 정리를 적용할 때 owner를 찾지 못한 foreign 후보가 있으면, 보이는 workspace들의
   `prewarmIssuePrefix`를 건다.
-- prefix 조회가 끝나면 §3.3과 같은 경로로 그 workspace의 fanout을 깨운다.
+- **prefix 캐시도 §3.3과 똑같이 요청자를 기억한다.** 그 prewarm을 유발한
+  workspace — 즉 막힌 bead가 있는 workspace — 를 엔트리에 더하고, 조회가 끝나면
+  **요청자별** `fanout`을 부른다.
+- 깨우는 대상은 prefix를 조회당한 workspace가 아니다. `dotfiles`의 prefix를
+  알아내고 `dotfiles`의 fanout을 깨우면 `UI-06ku`가 있는 beads-ui 스냅샷은 그대로
+  남아 이 스펙이 고치려는 버그가 그대로 남는다. §3.3의 status 캐시와 같은
+  이유로 같은 규칙이다.
 - 그때까지 blocker는 남는다 — status 미상과 같은 fail-visible이다.
 
 ### 3.5 매 스냅샷 비용
@@ -299,7 +305,9 @@ blocker 이슈를 열고, 열 수 없는 blocker만 표시 전용으로 남는�
    - 보이는 어느 rig의 prefix에도 맞지 않는 id는 손대지 않는다
 2. 늦게 도착한 `closed` status가 **요청한 workspace**의 fanout을 깨운다
 3. prefix 캐시가 빈 상태(Monitor를 열지 않은 세션)에서도 정리가 결국 동작한다 —
-   prewarm이 걸리고, 완료가 fanout을 깨우고, 다음 스냅샷에서 blocker가 빠진다
+   prewarm이 걸리고, 완료가 **요청자 workspace**의 fanout을 깨우고, 다음
+   스냅샷에서 blocker가 빠진다. 깨어난 것이 prefix를 조회당한 owner workspace가
+   아니라 막힌 bead가 있는 workspace임을 명시적으로 검증한다
 4. foreign 후보가 없는 스냅샷은 `visibleWorkspaceRoots()`를 부르지 않는다
 5. `buildMonitorPipeline`이 후처리 없이도 같은 결과를 낸다 (회귀)
 6. `blocker_workspaces`가 타 레포 blocker에만 실리고, owner 미상이면 키가 없다
