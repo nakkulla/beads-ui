@@ -1569,6 +1569,9 @@ export function bootstrap(root_element) {
       uiOrderStore: ui_order_store,
       gotoIssue: (id) => store.setState({ selected_id: id }),
       getWorkspacePath: () => store.getState().workspace.current?.path,
+      // blocked 칩이 타 레포 blocker를 열 때 쓰는 전환 경로 (UI-u6zf §5.3) —
+      // 모니터에 넘기는 것과 같은 함수다.
+      switchWorkspace: (root_dir) => handleWorkspaceChange(root_dir),
       openDoc,
       doneRange: worker_done_range,
       onDoneRangeChange: (range) => {

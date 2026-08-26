@@ -1801,7 +1801,7 @@ function prWaitRow(
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, analysisStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), openDoc?: (doc: import('../board/stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, analysisStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../board/stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void }} [options]
  * @returns {{ load: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -1814,6 +1814,7 @@ export function createWorkerView(mount_element, options = {}) {
     uiOrderStore,
     gotoIssue,
     getWorkspacePath,
+    switchWorkspace,
     openDoc,
     doneRange,
     onDoneRangeChange
@@ -3357,13 +3358,23 @@ export function createWorkerView(mount_element, options = {}) {
       }
     }
 
-    // 직접 blocks blocker (UI-04vo §3) — 대기 사유 chip의 표시 전용 소스.
+    // 직접 blocks blocker (UI-04vo §3) — 대기 사유 chip의 소스. 닫힌 타 레포
+    // blocker는 서버가 이미 걷어낸 뒤다 (UI-u6zf §3.2).
     /** @type {Record<string, string[]>} */
     const bead_blocked_by =
       q.bead_blocked_by &&
       typeof q.bead_blocked_by === 'object' &&
       !Array.isArray(q.bead_blocked_by)
         ? q.bead_blocked_by
+        : {};
+    // 살아남은 타 레포 blocker의 owner workspace (UI-u6zf §4). 없는 키는
+    // 모름이므로 그 칩은 표시 전용으로 남는다 — 현재 레포로 추론하지 않는다.
+    /** @type {Record<string, string>} */
+    const blocker_workspaces =
+      q.blocker_workspaces &&
+      typeof q.blocker_workspaces === 'object' &&
+      !Array.isArray(q.blocker_workspaces)
+        ? q.blocker_workspaces
         : {};
 
     // 생성·수정 시각 (UI-d7pw §4.3). 후보/Ready/Blocked bead는 구독 이슈가
@@ -4546,11 +4557,16 @@ export function createWorkerView(mount_element, options = {}) {
         )
       );
     }
-    const blocker_chips = deriveWorkerBlockers(blockers_by_bead, lane_members);
+    const blocker_chips = deriveWorkerBlockers(
+      blockers_by_bead,
+      lane_members,
+      blocker_workspaces
+    );
     /**
-     * One bead's 의존·겹침 칩 (UI-anna §5.3). `interactive: false`는 워커 탭에
-     * 의존성 패널이 없기 때문이다 (§5.3a) — 라벨·툴팁·색·자리는 모니터와 같고,
-     * 누를 수 있는지 하나만 다르다. 재료가 하나도 없으면 null이다.
+     * One bead's 의존·겹침 칩 (UI-anna §5.3). 라벨·툴팁·색·자리는 모니터와
+     * 같다. 누를 수 있는지는 칩마다 갈리고 (UI-u6zf §5.2), 그 판정은
+     * `deriveWorkerBlockers`가 이미 끝냈다 — 여기서 다시 정하지 않는다. 재료가
+     * 하나도 없으면 null이다.
      *
      * @param {string} bead_id
      * @param {import('./lanes.js').DependencyChips|null} [existing]
@@ -4567,7 +4583,6 @@ export function createWorkerView(mount_element, options = {}) {
       const popover = overlaps ? overlapPopoverFor(bead_id, overlaps) : null;
       return {
         ...(existing || {}),
-        interactive: false,
         ...(predecessors ? { predecessors } : {}),
         ...(overlaps ? { overlaps } : {}),
         ...(scope_missing ? { scope_missing: true } : {}),
@@ -5754,6 +5769,40 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Open a blocked 칩's blocker (UI-u6zf §5.3).
+   *
+   * 타 레포 blocker는 workspace를 먼저 바꾼다. 상세 오버레이의 데이터는 연결의
+   * 현재 workspace를 기준으로 서버가 해석하므로 (§2.1), 전환 없이 열면 실행
+   * 설정·세션 목록 같은 workspace 종속 카드가 남의 이슈 옆에 그려진다. 모니터의
+   * `openRow()`와 같은 순서다.
+   *
+   * @param {string} dep_id
+   * @param {string} root_dir - blocker를 소유한 workspace. 같은 레포면 빈 값.
+   */
+  function openBlocker(dep_id, root_dir) {
+    if (dep_id.length === 0 || !gotoIssue) {
+      return;
+    }
+    const current = getWorkspacePath ? getWorkspacePath() : undefined;
+    if (
+      root_dir.length === 0 ||
+      !current ||
+      root_dir === current ||
+      !switchWorkspace
+    ) {
+      gotoIssue(dep_id);
+      return;
+    }
+    void Promise.resolve(switchWorkspace(root_dir))
+      .then(() => {
+        gotoIssue(dep_id);
+      })
+      .catch(() => {
+        showToast('레포 전환에 실패했습니다', 'error', 2400);
+      });
+  }
+
+  /**
    * @param {MouseEvent} ev
    */
   function onClick(ev) {
@@ -5763,6 +5812,18 @@ export function createWorkerView(mount_element, options = {}) {
     }
     // Clicks inside the analysis dialog are owned by its own handlers.
     if (target?.closest?.('#worker-parallel-analysis-dialog')) {
+      return;
+    }
+    // blocked 칩 (UI-u6zf §5.3): 카드 클릭(자기 이슈 열기)보다 먼저 잡고 거기서
+    // 멈춘다 — 출처 칩(`.ctl-chip--from`)이 같은 자리에서 하는 것과 같다.
+    const dep_chip = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-dep__open')
+    );
+    if (dep_chip) {
+      openBlocker(
+        dep_chip.getAttribute('data-dep-id') || '',
+        dep_chip.getAttribute('data-root-dir') || ''
+      );
       return;
     }
     // 겹침 칩·팝오버 (UI-jbao): 카드 클릭(상세 열기)보다 먼저 잡는다.

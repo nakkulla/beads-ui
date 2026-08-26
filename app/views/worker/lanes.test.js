@@ -2421,9 +2421,9 @@ describe('겹침 칩 (UI-qm12 §5.3)', () => {
     );
   });
 
-  test('draws the blocked chip as a button by default', () => {
+  test('draws an openable blocked chip as a button', () => {
     const deps = renderDeps({
-      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }]
+      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p', openable: true }]
     });
 
     expect(
@@ -2431,13 +2431,41 @@ describe('겹침 칩 (UI-qm12 §5.3)', () => {
     ).toBe('UI-p');
   });
 
-  test('draws a display-only blocked chip when the projection says so', () => {
+  test('carries the owning workspace on an openable chip', () => {
     const deps = renderDeps({
-      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }],
-      interactive: false
+      predecessors: [
+        {
+          id: 'dotfiles-p',
+          label: '⛓ blocked: dotfiles-p',
+          openable: true,
+          root_dir: '/repos/dotfiles'
+        }
+      ]
+    });
+
+    expect(
+      deps.querySelector('.worker-dep__open')?.getAttribute('data-root-dir')
+    ).toBe('/repos/dotfiles');
+  });
+
+  test('draws a display-only blocked chip when the chip is not openable', () => {
+    const deps = renderDeps({
+      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }]
     });
 
     expect(deps.querySelector('.worker-dep__open')).toBeNull();
+  });
+
+  test('splits openability chip by chip inside one card', () => {
+    const deps = renderDeps({
+      predecessors: [
+        { id: 'UI-p', label: '⛓ blocked: UI-p', openable: true },
+        { id: 'x-p', label: '⛓ blocked: x-p' }
+      ]
+    });
+
+    expect(deps.querySelectorAll('.worker-dep--pred').length).toBe(2);
+    expect(deps.querySelectorAll('.worker-dep__open').length).toBe(1);
   });
 
   test('keeps label, tooltip and colour on a display-only blocked chip', () => {
@@ -2448,8 +2476,7 @@ describe('겹침 칩 (UI-qm12 §5.3)', () => {
           label: '⛓ blocked: UI-p',
           title: '이 이슈는 UI-p가 close될 때까지 출발하지 않는다 (#1)'
         }
-      ],
-      interactive: false
+      ]
     });
 
     const chip = /** @type {HTMLElement} */ (

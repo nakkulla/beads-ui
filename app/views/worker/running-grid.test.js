@@ -634,7 +634,7 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
     );
   });
 
-  test('draws a display-only blocked chip when the projection says so', () => {
+  test('draws a display-only blocked chip when the chip is not openable', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(
@@ -642,7 +642,6 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
         monitor: /** @type {any} */ ({
           ...monitor,
           dependency_chips: {
-            interactive: false,
             predecessors: [{ id: 'UI-p1', label: '⛓ blocked: UI-p1' }]
           }
         })
@@ -651,6 +650,30 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
     );
 
     expect(mount.querySelector('.rtile .worker-dep__open')).toBeNull();
+  });
+
+  test('draws an open button on an openable blocked chip', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(tileInput(), 5000, null, {
+        monitor: /** @type {any} */ ({
+          ...monitor,
+          dependency_chips: {
+            predecessors: [
+              { id: 'UI-p1', label: '⛓ blocked: UI-p1', openable: true }
+            ]
+          }
+        })
+      }),
+      mount
+    );
+
+    expect(
+      mount
+        .querySelector('.rtile .worker-dep__open')
+        ?.getAttribute('data-dep-id')
+    ).toBe('UI-p1');
   });
 
   test('adds the last activity and its age without a stepper', () => {
