@@ -536,8 +536,7 @@ function isPhaseChild(issue) {
  * discovered-from links never render as a lock.
  *
  * 후보 행은 큐에 없어 스냅샷 장식 `bead_blocked_by`에 들어오지 않으므로, 이
- * 사다리가 후보 카드의 `⛓ blocked` 칩이 읽는 유일한 원천이다 (UI-anna §5.1) —
- * 잠금 문장과 칩이 같은 목록을 말하도록 판정은 여기 하나뿐이다.
+ * 사다리가 후보 카드의 `⛓ blocked` 칩이 읽는 유일한 원천이다 (UI-anna §5.1).
  *
  * @param {any} issue
  * @returns {string[]}
@@ -570,14 +569,13 @@ function blockerIdsOf(issue) {
 }
 
 /**
- * Lock chip (🔒 + blocker ids) for a blocked candidate.
- *
- * @param {any} issue
+ * 선행 id를 하나도 모르는 blocked 후보가 다는 잠금 문장. id를 아는 후보는 이
+ * 문장을 달지 않는다 — `⛓ blocked: <id>` 칩이 같은 id를 이미 적고, 문장과 칩이
+ * 한 카드에 같은 blocker id를 두 번 적지 않는 것이 UI-anna §2 결정 4다. 칩은
+ * id가 없으면 서지 않으므로(같은 스펙 §5.1 fail-quiet) 이 문장만이 "막혀 있으나
+ * 선행을 모른다"를 말한다.
  */
-function blockedReason(issue) {
-  const ids = blockerIdsOf(issue);
-  return ids.length > 0 ? `🔒 ${ids.join(', ')}` : '🔒 blocked';
-}
+const BLOCKED_WITHOUT_IDS = '🔒 blocked';
 
 /**
  * Poller activity replaces a gate badge ONLY where it changes what the badge
@@ -3563,10 +3561,11 @@ export function createWorkerView(mount_element, options = {}) {
       /** @type {string[]} */
       const parts = [];
       if (is_blocked) {
-        parts.push(blockedReason(it));
         const blocker_ids = blockerIdsOf(it);
         if (blocker_ids.length > 0) {
           candidate_blocked_by.set(it.id, blocker_ids);
+        } else {
+          parts.push(BLOCKED_WITHOUT_IDS);
         }
       }
       if (is_quick_fix && !has_description) {

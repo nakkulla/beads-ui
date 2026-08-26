@@ -446,12 +446,15 @@ describe('views/worker', () => {
     );
     expect(rd2.getAttribute('draggable')).toBe('false');
 
+    // blocker id가 있으면 칩만 그것을 적는다 (UI-tf6d): 잠금 문장은 같은 id를
+    // 두 번째로 적지 않는다.
     const bl1 = /** @type {HTMLElement} */ (
       cand.querySelector('.worker-card[data-bead-id="BL-1"]')
     );
-    expect(bl1.querySelector('.worker-card__reason')?.textContent).toContain(
-      '🔒 DEP-9'
+    expect(bl1.querySelector('.worker-dep--pred')?.textContent).toContain(
+      '⛓ blocked: DEP-9'
     );
+    expect(bl1.querySelector('.worker-card__reason')).toBeNull();
 
     const rd1 = /** @type {HTMLElement} */ (
       cand.querySelector('.worker-card[data-bead-id="RD-1"]')
@@ -484,7 +487,7 @@ describe('views/worker', () => {
     ).toBe('P2');
   });
 
-  test('blocked reason prefers server blocked_info blockers over dependency edges', () => {
+  test('blocked chip prefers server blocked_info blockers over dependency edges', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:blocked', [
       {
@@ -508,11 +511,47 @@ describe('views/worker', () => {
       transport: vi.fn()
     });
 
-    const reason = mount.querySelector(
-      '.worker-card[data-bead-id="BL-2"] .worker-card__reason'
-    )?.textContent;
-    expect(reason).toContain('🔒 DEP-7');
-    expect(reason).not.toContain('DEP-OLD');
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="BL-2"]')
+    );
+    const chips = Array.from(card.querySelectorAll('.worker-dep--pred'))
+      .map((el) => el.textContent || '')
+      .join(' ');
+    expect(chips).toContain('⛓ blocked: DEP-7');
+    expect(chips).not.toContain('DEP-OLD');
+  });
+
+  // UI-tf6d: UI-anna §2 결정 4는 "뱃지와 칩이 같은 blocker id를 한 카드에
+  // 두 번 적지 않는다"이다. 그 말은 id를 모를 때까지 칩이 대신해 준다는 뜻이
+  // 아니다 — 칩은 재료가 없으면 서지 않으므로(§5.1 fail-quiet), 그 경우에만
+  // 잠금 문장이 "막혔다"를 말하는 유일한 표시로 남는다.
+  test('keeps the id-less lock sentence when no blocker id is known', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:blocked', [
+      {
+        id: 'BL-3',
+        title: 'blocked without blocker ids',
+        status: 'open',
+        metadata: { spec_id: 'SPEC-4' },
+        blocked_info: { external: true, reason: null, blockers: [] }
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    presetCandidateFilter({ show_blocked: true });
+
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="BL-3"]')
+    );
+    expect(card.querySelector('.worker-dep--pred')).toBeNull();
+    expect(card.querySelector('.worker-card__reason')?.textContent).toContain(
+      '🔒 blocked'
+    );
   });
 
   // UI-8881 seam 1: the 08-10 enforcement spec dropped these rows entirely; the
