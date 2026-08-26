@@ -1219,10 +1219,13 @@ function beadScopeFor(workspace_key, queue) {
     log('runnable scope lookup failed for %s: %o', workspace_key, err);
   }
   // 세션이 잡은 실행중 bead (UI-anna §3.1): attempt가 없어 레인 집합에 걸리지
-  // 않고 큐에도 없을 수 있다. 원천은 후보 행과 같은 아티팩트 집합
-  // (`[spec_id, plan_path?]`)이므로, 같은 bead가 세션 착수에서 큐 적재로
-  // 옮겨가도 겹침 판정이 달라지지 않는다.
+  // 않고 큐에도 없을 수 있다. 원천 사다리는 후보 행과 같다 — 아티팩트 집합
+  // (`[spec_id, plan_path?]`)이 있으면 그쪽이 유일한 원천이고, 없으면
+  // description의 `## scope` 절이다 (UI-zw6j). 사다리가 같아야 같은 bead가 세션
+  // 착수에서 큐 적재로 옮겨가도 겹침 판정이 달라지지 않는다.
   try {
+    /** @type {string[]} */
+    const described_ids = [];
     for (const item of sessionActiveRows(workspace_key, queue)) {
       const bead_id = typeof item.bead_id === 'string' ? item.bead_id : '';
       if (bead_id.length === 0 || bead_id in out) {
@@ -1230,6 +1233,12 @@ function beadScopeFor(workspace_key, queue) {
       }
       const spec_id = typeof item.spec_id === 'string' ? item.spec_id : '';
       if (spec_id.length === 0) {
+        // 아티팩트 없는 세션 행의 description은 title 캐시가 읽는다: 세션 행은
+        // description을 싣지 않고, 후보 투영은 `open`만 담아 이 bead의 행을
+        // 아예 만들지 않는다. 파서와 입력이 후보 경로와 같으므로 판정도 같다.
+        // 아직 적재되지 않은 record는 NO ENTRY로 남고, 채워지면 그 fanout이
+        // 다음 스냅샷에 싣는다 — 아티팩트 경로의 `miss`와 같은 읽기다.
+        described_ids.push(bead_id);
         continue;
       }
       const plan_path =
@@ -1237,6 +1246,19 @@ function beadScopeFor(workspace_key, queue) {
           ? item.plan_path
           : '';
       readInto(bead_id, plan_path ? [spec_id, plan_path] : [spec_id]);
+    }
+    const titles = described_ids.length > 0 ? titleCacheHandle() : null;
+    if (titles) {
+      const described = titles.descriptionScopeFor(
+        workspace_key,
+        described_ids
+      );
+      for (const [bead_id, scope] of Object.entries(described)) {
+        if (bead_id in out) {
+          continue;
+        }
+        out[bead_id] = { scope, artifacts: [] };
+      }
     }
   } catch (err) {
     log('session scope lookup failed for %s: %o', workspace_key, err);
@@ -2060,7 +2082,8 @@ function sessionActiveRows(workspace_key, queue) {
  *
  * The value is COPIED from the `bead_scope` decoration this same snapshot
  * carries rather than peeked again: {@link beadScopeFor} already read those
- * rows from `[spec_id, plan_path?]` at the pinned base, and one source is what
+ * rows through the candidate ladder — `[spec_id, plan_path?]` at the pinned
+ * base, else the description's `## scope` section — and one ladder is what
  * makes 세션 착수 → 큐 적재 leave the overlap verdict alone. `null` (unreadable)
  * and a missing entry both leave the field off — absence is 판정 불가, never
  * "no scope".

@@ -174,14 +174,17 @@ bead a session reopened is being worked on now. Each row carries
 `route` is `metadata.route` or `''` when unpinned, `spec_id` is `''` when absent
 or in conflict, and `workflow` / `blocked` / `blocked_by` follow the same rules
 as the runnable rows below. `plan_path` (UI-anna §3.1) is `metadata.plan_path`
-or `null`, carried for the same reason a runnable row carries it: the bead's
-declared scope is read from the SAME artifact set (`[spec_id, plan_path?]`) as a
-queued bead's. `scope: string[]` (UI-anna §3.1) is that declared scope, attached
-ADDITIVELY in the same shape and with the same reading as a runnable row's:
-present only on a scope-cache hit, and absent means 판정 불가 — not read yet,
-unreadable, or nothing declared — never "no scope". Its value is the one the
-same snapshot's `bead_scope[bead_id].scope` carries, so a bead moving 세션 착수
-→ 큐 적재 never changes the overlap verdict. Each row also carries
+or `null`, carried for the same reason a runnable row carries it: when the bead
+resolves an artifact, its declared scope is read from the SAME artifact set
+(`[spec_id, plan_path?]`) as a queued bead's. `scope: string[]` (UI-anna §3.1)
+is that declared scope, attached ADDITIVELY in the same shape and with the same
+reading as a runnable row's: present only on a scope-cache hit or a description
+declaration, and absent means 판정 불가 — not read yet, unreadable, or nothing
+declared — never "no scope". The source LADDER is the runnable row's too
+(UI-zw6j): the artifact set when `spec_id` resolves one, otherwise the
+description's `## scope` section, which ships no artifacts. Its value is the one
+the same snapshot's `bead_scope[bead_id].scope` carries, so a bead moving 세션
+착수 → 큐 적재 never changes the overlap verdict. Each row also carries
 `session_refs: SessionRefView[]` (UI-4xzk §4.1) — `metadata.session_ref`
 projected from the SAME scan, so the bucket still costs no extra `bd` process.
 One view is
@@ -310,26 +313,35 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `bd update|close|dep` COMPLETING inside a running session's log.
 - `bead_scope: Record<bead_id, { scope: string[], artifacts: string[] }|null>`
   (UI-qm12 §4.3) is the DECLARED scope — the spec front-matter `scope:` read at
-  the workspace's pinned base — of the beads the waiting, running, PR 대기, 후보
-  and 세션 lanes render: `queue` ∪ `serial_lanes[].entries` ∪ the 실행중 레인
-  beads ∪ `pr_wait` ∪ the runnable projection (UI-f3ma) ∪ `session_active`
-  (UI-anna §3.1). The candidate rows are in so one can be judged against the
-  queue BEFORE it is loaded into a lane; `pr_wait` and the session-held beads
-  are in because a card standing in either lane answers the same "무엇과
-  부딪히나" question every other card does. A runnable or session-held bead's
-  artifact set comes from its own `spec_id`/`plan_path` rather than the title
-  cache, which has no record for a bead that never entered a lane; it is the
-  same artifact set either way, so moving such a bead into a lane never changes
-  its verdict. The 실행중 레인 membership follows the client's own predicate
+  the workspace's pinned base, or, for a bead that resolves no artifact, its
+  description's `## scope` section (UI-f1qy §4.3) — of the beads the waiting,
+  running, PR 대기, 후보 and 세션 lanes render: `queue` ∪
+  `serial_lanes[].entries` ∪ the 실행중 레인 beads ∪ `pr_wait` ∪ the runnable
+  projection (UI-f3ma) ∪ `session_active` (UI-anna §3.1). The candidate rows are
+  in so one can be judged against the queue BEFORE it is loaded into a lane;
+  `pr_wait` and the session-held beads are in because a card standing in either
+  lane answers the same "무엇과 부딪히나" question every other card does. A
+  runnable or session-held bead's artifact set comes from its own
+  `spec_id`/`plan_path` rather than the title cache, which has no record for a
+  bead that never entered a lane; it is the same artifact set either way, so
+  moving such a bead into a lane never changes its verdict. A bead that resolves
+  NO artifact falls back to its description's `## scope` section on either path
+  (UI-zw6j) — the runnable row carries the parsed section itself, and a session
+  row, which carries no description, is read through the title cache, so a
+  not-yet-filled record stays NO ENTRY until its fill fanout lands. Both parse
+  the same section of the same description, so the verdict is the same one
+  either way. The 실행중 레인 membership follows the client's own predicate
   (`activeAttemptStates`), so a paused or unhandled-failed tile is in the set
   too. `done` is the only lane outside it. Non-persisted and PARTIAL on the same
   contract as `bead_titles`, and fail-quiet at every level: nothing here can
   block or delay a snapshot push. Three values, deliberately distinct:
-  - NO ENTRY — the scope has not been read yet, or the bead has no spec at all
-    (quick_fix, unpublished). Draw nothing.
-  - `{ scope: [], artifacts }` — every artifact (spec, and the plan when the
-    bead pins one) was read successfully at the base and declared no valid scope
-    entry. This is 판정 불가 made visible, not "parallel is fine".
+  - NO ENTRY — the scope has not been read yet, or the bead declares one
+    nowhere: no artifact AND no `## scope` section in its description. Draw
+    nothing.
+  - `{ scope: [], artifacts }` — the one source was read successfully and
+    declared no valid scope entry: every artifact (spec, and the plan when the
+    bead pins one) at the base, or, with `artifacts: []`, the description's
+    `## scope` section. This is 판정 불가 made visible, not "parallel is fine".
   - `null` — the read FAILED (artifact absent at the base, git error, unresolved
     base). Draw nothing.
 

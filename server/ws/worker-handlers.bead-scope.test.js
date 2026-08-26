@@ -591,6 +591,58 @@ describe('decorateQueue bead_scope 세션 항목 (UI-anna §3.1)', () => {
 
     expect(Object.hasOwn(out.session_active[0], 'scope')).toBe(false);
   });
+
+  test('reads the description of a session row with no artifact', () => {
+    seedBead('UI-8', '', describedScope(['server/worker/']));
+    __setScopeCacheForTest(scopeCacheOver({}));
+    vi.spyOn(
+      getWorkerRuntime().runnableCache,
+      'sessionActivePeek'
+    ).mockReturnValue([
+      /** @type {any} */ ({ bead_id: 'UI-8', spec_id: '', plan_path: null })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-8']).toEqual({
+      scope: ['server/worker/'],
+      artifacts: []
+    });
+    expect(out.session_active[0].scope).toEqual(['server/worker/']);
+  });
+
+  test('judges a description-only bead alike whether a session or the queue holds it', () => {
+    seedBead('UI-8', '', describedScope(['server/worker/']));
+    __setScopeCacheForTest(scopeCacheOver({}));
+    vi.spyOn(
+      getWorkerRuntime().runnableCache,
+      'sessionActivePeek'
+    ).mockReturnValue([
+      /** @type {any} */ ({ bead_id: 'UI-8', spec_id: '', plan_path: null })
+    ]);
+    const queued = laneQueue();
+    /** @type {any} */ (queued).queue.push({ bead_id: 'UI-8', added_at: 2 });
+
+    const as_session = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+    const as_queued = /** @type {any} */ (decorateQueue(WS, queued));
+
+    expect(as_session.bead_scope['UI-8']).toEqual(as_queued.bead_scope['UI-8']);
+  });
+
+  test('leaves an artifact-bearing session row unread rather than reading its description', () => {
+    seedBead('UI-8', SPEC_C, describedScope(['app/views/']));
+    __setScopeCacheForTest(scopeCacheOver({ [SPEC_C]: artifact(['server/']) }));
+    vi.spyOn(
+      getWorkerRuntime().runnableCache,
+      'sessionActivePeek'
+    ).mockReturnValue([
+      /** @type {any} */ ({ bead_id: 'UI-8', spec_id: SPEC_C, plan_path: null })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(Object.hasOwn(out.bead_scope, 'UI-8')).toBe(false);
+  });
 });
 
 describe('decorateQueue bead_blocked_by 실행중 레인 (UI-anna §3.2)', () => {
