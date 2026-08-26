@@ -4714,6 +4714,53 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
     expect(text).toContain('gh pr merge 311 --squash');
   });
 
+  test('labels a guard kill detail 가드', () => {
+    const mount = mountWithAttempts({
+      f1: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        cause: 'loud_fail_blocker',
+        cause_detail: {
+          reason: 'merge_to_base_blocked',
+          command: 'gh pr merge 311 --squash'
+        }
+      }
+    });
+
+    const detail = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--failure .worker-banner__detail')
+    );
+
+    expect((detail.textContent || '').trim()).toMatch(/^가드:/);
+  });
+
+  test('labels a non-guard failure detail 원인', () => {
+    const mount = mountWithAttempts({
+      f1: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        cause: 'workflow_mode_record_failed',
+        cause_detail: {
+          reason: 'bd set-metadata failed for UI-ksp2',
+          command: 'bd update --set-metadata workflow_mode=fast_track'
+        }
+      }
+    });
+
+    const detail = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-banner--failure .worker-banner__detail')
+    );
+    const text = (detail.textContent || '').replace(/\s+/g, ' ').trim();
+
+    expect(text).toMatch(/^원인:/);
+    expect(text).not.toContain('가드:');
+    expect(text).toContain('bd set-metadata failed for UI-ksp2');
+  });
+
   test('shows only the reason when a blocker names no command', () => {
     const mount = mountWithAttempts({
       f1: {

@@ -98,9 +98,10 @@
  * @property {string|null} cause - Failure cause (failure banner reason).
  * @property {{ reason: string, command: string|null }|null} cause_detail -
  * What the fail-closed path actually caught, when the cause alone cannot say
- * it (UI-2o4z §2): the guard `reason` plus the simple command it matched
- * (`command` null for an interactive-question blocker). Only the
- * `loud_fail_blocker` cause carries one; every other failure leaves it null.
+ * it (UI-2o4z §2): the caught `reason` plus the simple command it matched
+ * (`command` null for an interactive-question blocker). Every fail-closed path
+ * that knows one records it — the `loud_fail_blocker` guard kill and, since
+ * UI-ogf9, the `workflow_mode` stamp failures; other causes leave it null.
  * @property {number|null} dismissed_at - Epoch ms a human closed (✕) this
  * failure's banner, declaring it handled. Null means "still unhandled", which
  * is one of the two ways the UI stops showing a failure banner (the other is

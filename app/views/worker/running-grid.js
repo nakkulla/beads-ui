@@ -105,7 +105,8 @@ import {
  * @property {{ reason: string, command: string|null }|null} [cause_detail] -
  * What the fail-closed path caught (UI-2o4z §2). `loud_fail_blocker` alone
  * cannot say WHICH command tripped WHICH guard, which is exactly the question
- * a false positive raises; absent/null on every other failure cause.
+ * a false positive raises; other fail-closed causes record one too (UI-ogf9),
+ * and a cause that records none leaves the line out (fail-quiet).
  * @property {string|null} [resume_attempt_id] - The banner's own (latest
  * unhandled failed) attempt — the ONLY ↻ target, never an older substitute
  * (§1), and the attempt ✕ dismisses.
@@ -153,18 +154,24 @@ function truncateDetail(text) {
 }
 
 /**
- * The guard/command line under a fail-closed failure banner. Text bindings, so
+ * The cause/command line under a fail-closed failure banner. Text bindings, so
  * lit-html escapes the command — it is session-authored input.
  *
+ * The label follows the failure cause, not the presence of a detail: only
+ * `loud_fail_blocker` is a guard kill, so every other fail-closed path that now
+ * carries a detail (UI-ogf9) reads `원인:` instead of being misnamed a guard.
+ *
  * @param {{ reason: string, command: string|null }|null|undefined} detail
+ * @param {string|null|undefined} cause
  * @returns {import('lit-html').TemplateResult|string}
  */
-function causeDetailLine(detail) {
+function causeDetailLine(detail, cause) {
   if (!detail || !detail.reason) {
     return '';
   }
+  const label = cause === 'loud_fail_blocker' ? '가드:' : '원인:';
   return html`<div class="worker-banner__detail">
-    가드:
+    ${label}
     ${detail.reason}${detail.command
       ? html` · <code>${truncateDetail(detail.command)}</code>`
       : ''}
@@ -276,7 +283,7 @@ export function bannersTemplate(state) {
                 ✕
               </button>`
             : ''}
-          ${causeDetailLine(state.failure.cause_detail)}
+          ${causeDetailLine(state.failure.cause_detail, state.failure.reason)}
           ${rawFailureBlock(state.failure.reason)}
           ${discardReceiptTemplate({ discard: state.failure.discard })}
         </div>`
