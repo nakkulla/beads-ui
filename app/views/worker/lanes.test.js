@@ -822,6 +822,31 @@ describe('session-preferred candidate card (UI-49mc)', () => {
     expect(chip.title).toBe(EXCLUSIVE_MACHINE_TITLE);
   });
 
+  test('draws the contract tooltip for each added enum reason', () => {
+    const reasons = [
+      [
+        'iterative_user_judgment',
+        '구현 중 사용자 판단 반복 개입 필요 — 문안·레이아웃·설계 미세조정'
+      ],
+      [
+        'visual_verification',
+        '렌더 결과 사람 확인 필요 — 스크린샷·목업·라이브 페이지'
+      ]
+    ];
+
+    const titles = reasons.map(([reason]) => {
+      const card = renderCandidate({
+        session_preferred: true,
+        session_preferred_reason: reason
+      });
+      return /** @type {HTMLElement} */ (
+        card.querySelector('.worker-card__session-preferred')
+      ).title;
+    });
+
+    expect(titles).toEqual(reasons.map(([, title]) => title));
+  });
+
   test('omits the chip for a candidate without a valid attachment', () => {
     const card = renderCandidate({ session_preferred: false });
 

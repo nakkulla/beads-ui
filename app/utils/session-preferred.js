@@ -1,7 +1,11 @@
 import { workerLabels } from './worker-eligibility.js';
 
 export const SESSION_PREFERRED_LABEL = 'session-preferred';
-export const SESSION_PREFERRED_REASONS = ['exclusive_machine'];
+export const SESSION_PREFERRED_REASONS = [
+  'exclusive_machine',
+  'iterative_user_judgment',
+  'visual_verification'
+];
 
 /**
  * The contract reason a Bead is better run in an interactive session, or `''`

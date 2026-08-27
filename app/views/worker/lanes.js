@@ -1628,7 +1628,10 @@ function placeMenuList(entries, bead_id) {
  * @type {Record<string, string>}
  */
 const SESSION_PREFERRED_TOOLTIP = {
-  exclusive_machine: '실행 중 머신 독점 필요 — 부하 하네스·timing 비교'
+  exclusive_machine: '실행 중 머신 독점 필요 — 부하 하네스·timing 비교',
+  iterative_user_judgment:
+    '구현 중 사용자 판단 반복 개입 필요 — 문안·레이아웃·설계 미세조정',
+  visual_verification: '렌더 결과 사람 확인 필요 — 스크린샷·목업·라이브 페이지'
 };
 
 /**
