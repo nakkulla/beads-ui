@@ -10097,7 +10097,25 @@ describe('prStatusBadge priority (UI-vkk8 §3)', () => {
       }
     });
 
-    expect(result).toMatchObject({ label: '영수증 확인 필요', alert: true });
+    expect(result).toMatchObject({
+      label: '영수증 확인 필요 · main_receipt_unbacked',
+      alert: true
+    });
+    expect(result?.title).toContain('main_receipt_unbacked');
+  });
+
+  test('carries only the first violation code in the label (UI-17mj §2.4)', () => {
+    const result = prStatusBadge({
+      receipt_check: {
+        ok: false,
+        probe_error: false,
+        codes: ['unit_plan_mismatch', 'main_receipt_unbacked'],
+        blocking_codes: ['unit_plan_mismatch', 'main_receipt_unbacked']
+      }
+    });
+
+    expect(result?.label).toBe('영수증 확인 필요 · unit_plan_mismatch');
+    expect(result?.title).toContain('unit_plan_mismatch');
     expect(result?.title).toContain('main_receipt_unbacked');
   });
 
@@ -14134,4 +14152,174 @@ describe('복잡 chip projection on the worker tab (UI-sbum §3)', () => {
       mount.querySelector('.worker-card[data-bead-id="REC"] .worker-card__rec')
     ).toBeNull();
   });
+});
+
+describe('PR 대기 뱃지 우선순위·영수증 라벨 (UI-17mj §2.4)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /** Reviews current, base clean: nothing above the receipt branch fires. */
+  const CLEAN_GATE = {
+    enabled: true,
+    tier: 'eligible',
+    gate_badge: '머지 가능',
+    base_badge: '최신',
+    reason: null
+  };
+
+  /**
+   * @param {{ gate?: any, receipt_check?: any, attempts?: Record<string, any> }} [over]
+   * @returns {HTMLElement}
+   */
+  function renderRow(over = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_observations: {
+          'RD-1': {
+            pr: {
+              number: 7,
+              url: 'https://github.com/o/r/pull/7',
+              state: 'OPEN',
+              head_sha: 'a'.repeat(40)
+            },
+            verify: null,
+            error: null,
+            observed_at: 1,
+            gate: over.gate || CLEAN_GATE,
+            receipt_check: over.receipt_check || null
+          }
+        },
+        attempts: over.attempts || {}
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  /**
+   * @param {'running'|'paused'} status
+   * @returns {Record<string, any>}
+   */
+  function resolutionSession(status) {
+    return {
+      c1: {
+        attempt_id: 'c1',
+        bead_id: 'RD-1',
+        status,
+        runner: 'claude',
+        model: 'opus',
+        session_id: 'sid-1',
+        started_at: Date.now() - 3000,
+        conflict_resolution: true
+      }
+    };
+  }
+
+  /**
+   * @param {string} reason
+   * @returns {any}
+   */
+  function receiptGate(reason) {
+    return {
+      enabled: false,
+      tier: 'blocked',
+      gate_badge: '리뷰 필요',
+      base_badge: '최신',
+      reason
+    };
+  }
+
+  const VIOLATION = {
+    ok: false,
+    probe_error: false,
+    codes: ['unit_plan_mismatch'],
+    blocking_codes: ['unit_plan_mismatch']
+  };
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {HTMLElement}
+   */
+  function row(mount) {
+    return /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {HTMLElement}
+   */
+  function badge(mount) {
+    return /** @type {HTMLElement} */ (
+      row(mount).querySelector('.worker-mini__badge')
+    );
+  }
+
+  test('names the first violation code in the receipt badge label', () => {
+    const mount = renderRow({ receipt_check: VIOLATION });
+
+    expect(badge(mount).textContent?.trim()).toBe(
+      '영수증 확인 필요 · unit_plan_mismatch'
+    );
+  });
+
+  test('keeps the full code list in the receipt badge tooltip', () => {
+    const mount = renderRow({
+      receipt_check: {
+        ok: false,
+        probe_error: false,
+        codes: ['unit_plan_mismatch', 'main_receipt_unbacked'],
+        blocking_codes: ['unit_plan_mismatch', 'main_receipt_unbacked']
+      }
+    });
+
+    const title = badge(mount).getAttribute('title') || '';
+
+    expect(title).toContain('unit_plan_mismatch');
+    expect(title).toContain('main_receipt_unbacked');
+  });
+
+  test.each(['review_receipt_missing', 'review_receipt_stale'])(
+    'draws 충돌 해소 중 over a %s gate that also carries a receipt violation',
+    (reason) => {
+      const mount = renderRow({
+        gate: receiptGate(reason),
+        receipt_check: VIOLATION,
+        attempts: resolutionSession('running')
+      });
+
+      expect(
+        row(mount)
+          .querySelector('.worker-mini__badge--activity')
+          ?.textContent?.trim()
+      ).toBe('충돌 해소 중');
+      expect(row(mount).textContent).not.toContain('최종 변경 리뷰 필요');
+      expect(row(mount).textContent).not.toContain('영수증 확인 필요');
+    }
+  );
+
+  test.each(['review_receipt_missing', 'review_receipt_stale'])(
+    'draws 충돌 해소 일시정지 over a %s gate that also carries a receipt violation',
+    (reason) => {
+      const mount = renderRow({
+        gate: receiptGate(reason),
+        receipt_check: VIOLATION,
+        attempts: resolutionSession('paused')
+      });
+
+      expect(badge(mount).textContent?.trim()).toBe('충돌 해소 일시정지');
+      expect(row(mount).textContent).not.toContain('최종 변경 리뷰 필요');
+      expect(row(mount).textContent).not.toContain('영수증 확인 필요');
+    }
+  );
 });
