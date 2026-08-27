@@ -6,7 +6,6 @@ scope:
   - server/worker/bd-metadata.js
   - server/ws/worker-handlers.js
   - app/views/worker/index.js
-  - app/views/worker/lanes.js
 ---
 
 # PR 대기 레인 external PR 행 정합 설계 (UI-17mj)
@@ -45,13 +44,26 @@ scope:
 
 ### 2.1 external 행의 세 번째 근거: merge_queue (원인 1)
 
-`overlaidPrWait(workspace_key, queue)`의 행 근거를 세 단계로 한다. 순서와 중복
-제거 규칙:
+external 행을 만드는 곳은 두 군데이며 **둘 다** 같은 세 번째 근거와 중복 제거
+규칙을 받는다:
+
+- `server/ws/worker-handlers.js withExternalPrWait(workspace_key, queue)` —
+  `decorateQueue`가 스냅샷의 `pr_wait`를 만들 때 쓰는 실제 화면 경로.
+- `server/worker/merge-candidates.js overlaidPrWait(workspace_key, queue)` —
+  bulk 큐 후보 판정용 사본.
+
+행 근거는 세 단계다:
 
 1. durable `queue.pr_wait` (기존, `external: entry.external === true`).
-2. registry `externalPrs.list()` (기존, `seen`에 있는 bead는 건너뜀).
-3. **`queue.merge_queue` 항목** — bead가 1·2에 없고 `seen`(= `queue`·`done` 레인
-   ∪ 1·2 방출분)에도 없으면 `{ bead_id, external: true }`를 방출한다.
+2. registry `externalPrs.list()` (기존, durable 집합에 있는 bead는 건너뜀).
+3. **`queue.merge_queue` 항목** — bead가 1·2에 없고 durable 집합(`queue`·`done`
+   레인 ∪ `pr_wait`)에도 없으면 `{ bead_id, external: true }`를 방출한다.
+
+`withExternalPrWait`에서는 3의 행도 registry 행과 같은 모양(`added_at`은 큐
+항목의 `authority.granted_at`, 없으면 null; `external: true`; `wt_present`는
+동일한 `workerWorktreeExists` 프로브)으로 만든다. registry가 비어 있어도 3을
+평가하므로, 현재의 `rows.length === 0` 조기 반환은 registry·큐 근거가 **모두**
+비었을 때로 바뀐다.
 
 근거: 충돌 해소 세션은 큐 authority에서만 dispatch되므로(`merge-queue.js`
 `action: 'conflict_resolution'`) 해소 중인 external bead는 항상 큐 항목을 가진다.
@@ -68,15 +80,21 @@ scope:
 `external-pr.js` `ExternalPrRow`에 `receipt_check: ReceiptCheckResult|null`을
 추가한다.
 
-- 스캔(`attach.js`)은 registry에 넣을 각 행에 대해 캐시 키
-  `(metadata.exec_receipt, metadata.unit_plan, metadata.verify_receipt)`를
-  계산한다. 기존 행의 키와 같으면 이전 `receipt_check`를 그대로 넘기고, 다르거나
-  기존 행이 없으면
+- `server/worker/bd-metadata.js scanRows()`가 이미 읽는 `row.metadata`에서
+  `receipt-check.js RECEIPT_METADATA_KEYS` 전체(`exec_receipt`, `impl_dispatch`,
+  `route`, `planned_execution`, `unit_plan`, `impl_entry`, `plan_approval`,
+  `workflow_mode_source`, `verify_receipt`)를 골라 `pr_rows` 항목에 `metadata`로
+  함께 넘긴다 — `checkReceipts`의 `main:*` 판정이 `impl_dispatch`·`route`·
+  `planned_execution`을 읽으므로 일부만 넘기면 정상 `main:*` 영수증을
+  `main_receipt_unbacked`로 오판한다.
+- 스캔(`attach.js`)은 registry에 넣을 각 행에 대해 캐시 키 `receipt_key` =
+  그 9개 키의 값을 키 순서대로 이은 JSON 문자열(부재는 null)을 계산한다. 기존
+  행의 `receipt_key`와 같으면 이전 `receipt_check`를 그대로 넘기고, 다르거나 기존
+  행이 없으면
   `checkReceipts({ metadata, baseline: null, lineage: null, defaults: receiptDefaultsFrom(loadExecutionDefaults()), head: null })`를
   실행한다. 입력 형태는 `scheduler.recordReceiptCheck`와 같다(`head: null`이라 git
-  프로브 없음, 스캔이 이미 든 메타데이터라 bd 추가 호출 없음). 이를 위해
-  `server/worker/bd-metadata.js scanRows()`가 이미 읽는 `row.metadata`에서 위 세
-  키를 골라 `pr_rows` 항목에 `metadata`로 함께 넘긴다.
+  프로브 없음, 스캔이 이미 든 메타데이터라 bd 추가 호출 없음). backing 필드
+  하나만 고쳐도 키가 바뀌므로 재검사된다.
 - `checkReceipts`가 throw하면 `receiptProbeError('check_threw')`를 기록하고
   로그만 남긴다. 스캔 자체는 실패하지 않는다.
 - `replace()`는 `added_at`과 같은 규칙으로 `receipt_check`를 보존한다: 호출자가
@@ -117,7 +135,8 @@ scope:
 ```
 bd scan (30s) ─► attach.js: protected 제외 → 행마다 캐시 키 비교 → checkReceipts
               ─► externalPrs.replace(rows{receipt_key, receipt_check})
-ws snapshot   ─► overlaidPrWait: pr_wait → registry → merge_queue ─► pr_wait rows
+ws snapshot   ─► withExternalPrWait (bulk 후보는 overlaidPrWait):
+                 pr_wait → registry → merge_queue ─► pr_wait rows
               ─► 관측 투영: external ? registry.receipt_check : attempt 기록
 client        ─► prWaitRow: conflict_badge > 리뷰/영수증/충돌 뱃지
               ─► `영수증 확인 필요 · <code>`
@@ -136,13 +155,20 @@ client        ─► prWaitRow: conflict_badge > 리뷰/영수증/충돌 뱃지
 
 ## 5. 테스트
 
-- `server/worker/merge-candidates.test.js`: 큐 항목만 있는 bead가 external 행으로
-  방출; `queue`/`done`에 있으면 방출 안 함; durable·registry가 같은 bead를 이미
-  방출했으면 중복 없음; `merge_queue`가 배열이 아니면 무시.
+- `server/ws/worker-handlers*.test.js`(`withExternalPrWait`): registry가 비어
+  있어도 큐 항목만 있는 bead가 external 행(`external: true`, `wt_present` 프로브)
+  으로 스냅샷 `pr_wait`에 유지; `queue`/`done`/`pr_wait`에 있으면 방출 안 함;
+  registry와 같은 bead면 중복 없음; 큐·registry 모두 비면 queue 객체 그대로.
+- `server/worker/merge-candidates.test.js`: `overlaidPrWait`에 같은 세 근거·중복
+  제거; `merge_queue`가 배열이 아니면 무시.
+- `server/worker/bd-metadata.test.js`: `scanRows`가 `RECEIPT_METADATA_KEYS` 전체를
+  `metadata`로 투영(부재 키는 생략).
 - `server/worker/external-pr.test.js`: `replace()`가 `receipt_check`·`receipt_key`를
   보존/갱신.
 - `server/worker/attach*.test.js`(스캔): 키 동일 시 `checkReceipts` 미호출, 키
-  변경 시 호출, throw 시 probe_error 기록, `metadata` 부재 시 null.
+  변경 시(backing 필드 `impl_dispatch` 하나만 바뀌어도) 호출, throw 시
+  probe_error 기록, `metadata` 부재 시 null; `route=quick_fix` + 정상
+  `main:quick_fix_default` 영수증이 `ok:true`로 관측됨(투영 누락 회귀).
 - `server/ws/worker-handlers*.test.js`: external 행은 registry 관측, durable 행은
   attempt 기록.
 - `app/views/worker/index.test.js`: 해소 세션 `running`/`paused` + 리뷰 영수증
@@ -150,13 +176,26 @@ client        ─► prWaitRow: conflict_badge > 리뷰/영수증/충돌 뱃지
   라벨.
 - 프론트 변경이므로 `npm run build` 산출물(`app/main.bundle.js`, `.map`) 포함.
 
+### 5.1 완료 조건
+
+- 소스·테스트·`app/main.bundle.js`·`app/main.bundle.js.map`을 **한 PR**에 담아
+  전달한다(`resolved` + `pr_url`).
+- 머지는 완료가 아니다. 머지 후 `repo-ops/config.toml`이 선언한 `[deploy]`
+  operation이 terminal success에 도달하고, 실행 SHA(`/healthz` `source_sha`가
+  머지 SHA)·프로세스 경로(`.worktrees/.repo-ops-deploy`)·리스닝 포트(tailnet
+  주소:3000)·HTTP 응답 확인까지 통과해야 완료다. Worker가 추적하는 PR 머지이므로
+  배포·정리·close는 Worker가 소유하고, 세션은 그 증거를 읽어 확인한다.
+- 배포 후 화면 확인(해소 세션 중 행 유지, 뱃지 순서)은 운영자 인계 항목이며
+  완료 보고서 잔여 줄로 남긴다.
+
 ## 6. 구현 unit 후보
 
 - `server-overlay`: `server/worker/merge-candidates.js`,
   `server/worker/external-pr.js`, `server/worker/attach.js`,
   `server/worker/bd-metadata.js`
-- `server-projection`: `server/ws/worker-handlers.js`
-- `client-badge`: `app/views/worker/index.js`, `app/views/worker/lanes.js`
+- `server-projection`: `server/ws/worker-handlers.js` (`withExternalPrWait`와
+  관측 투영)
+- `client-badge`: `app/views/worker/index.js`
 
 ## 7. 범위 밖
 
