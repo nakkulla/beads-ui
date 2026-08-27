@@ -111,6 +111,28 @@ export function computeDelta(prev, next) {
 }
 
 /**
+ * Decide whether a subscription's delta should watch dependency edges at all.
+ *
+ * Only the detail view renders edges, and only its adapter asks bd for
+ * `--include-dependents`. Ordinary list rows carry a `dependencies` array too
+ * (the workspace snapshot embeds it for provenance), so signing every
+ * subscription would turn an edge-only change into a board-wide upsert storm
+ * that no list actually redraws for. Gating on the key keeps every non-detail
+ * delta byte-for-byte the timestamp comparison it was before.
+ *
+ * The key is `keyOf`'s own output — `type` or `type?params` — so the type is
+ * the span before the first `?`.
+ *
+ * @param {string} key
+ * @returns {boolean}
+ */
+function tracksDepsSignature(key) {
+  const query_at = key.indexOf('?');
+  const type = query_at === -1 ? key : key.slice(0, query_at);
+  return type === 'issue-detail';
+}
+
+/**
  * Summarize an issue's dependency edges so a delta can see an edge-only change.
  *
  * `updated_at` moves with the issue's own fields, not with the edges attached
@@ -172,9 +194,11 @@ function edgeField(value) {
  * Normalize array of issue-like objects into an itemsById map.
  *
  * @param {Array<{ id: string, updated_at: number, closed_at?: number|null, dependencies?: unknown, dependents?: unknown }>} items
+ * @param {string} [key] - Subscription key; only an `issue-detail` key tracks edges.
  * @returns {Map<string, ItemMeta>}
  */
-export function toItemsMap(items) {
+export function toItemsMap(items, key = '') {
+  const track_deps = tracksDepsSignature(key);
   /** @type {Map<string, ItemMeta>} */
   const map = new Map();
   for (const it of items) {
@@ -193,7 +217,7 @@ export function toItemsMap(items) {
     map.set(it.id, {
       updated_at,
       closed_at,
-      deps_signature: depsSignature(it)
+      deps_signature: track_deps ? depsSignature(it) : ''
     });
   }
   return map;
@@ -349,7 +373,7 @@ export class SubscriptionRegistry {
    * @returns {{ added: string[], updated: string[], removed: string[] }}
    */
   applyItems(key, items) {
-    const next_map = toItemsMap(items);
+    const next_map = toItemsMap(items, key);
     return this.applyNextMap(key, next_map);
   }
 

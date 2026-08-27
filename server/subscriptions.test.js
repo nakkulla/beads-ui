@@ -178,37 +178,45 @@ describe('subscriptions registry', () => {
 });
 
 describe('subscription delta deps_signature', () => {
+  const DETAIL_KEY = keyOf({ type: 'issue-detail', params: { id: 'UI-1' } });
+
   test('computeDelta reports an update when a dependents id changes', () => {
-    const prev = toItemsMap([
-      {
-        id: 'UI-1',
-        updated_at: 10,
-        closed_at: null,
-        dependents: [
-          {
-            id: 'UI-2',
-            dependency_type: 'blocks',
-            status: 'open',
-            title: '후행 A'
-          }
-        ]
-      }
-    ]);
-    const next = toItemsMap([
-      {
-        id: 'UI-1',
-        updated_at: 10,
-        closed_at: null,
-        dependents: [
-          {
-            id: 'UI-3',
-            dependency_type: 'blocks',
-            status: 'open',
-            title: '후행 A'
-          }
-        ]
-      }
-    ]);
+    const prev = toItemsMap(
+      [
+        {
+          id: 'UI-1',
+          updated_at: 10,
+          closed_at: null,
+          dependents: [
+            {
+              id: 'UI-2',
+              dependency_type: 'blocks',
+              status: 'open',
+              title: '후행 A'
+            }
+          ]
+        }
+      ],
+      DETAIL_KEY
+    );
+    const next = toItemsMap(
+      [
+        {
+          id: 'UI-1',
+          updated_at: 10,
+          closed_at: null,
+          dependents: [
+            {
+              id: 'UI-3',
+              dependency_type: 'blocks',
+              status: 'open',
+              title: '후행 A'
+            }
+          ]
+        }
+      ],
+      DETAIL_KEY
+    );
 
     const d = computeDelta(prev, next);
 
@@ -216,36 +224,42 @@ describe('subscription delta deps_signature', () => {
   });
 
   test('computeDelta reports an update when a dependents status or title changes', () => {
-    const prev = toItemsMap([
-      {
-        id: 'UI-1',
-        updated_at: 10,
-        closed_at: null,
-        dependents: [
-          {
-            id: 'UI-2',
-            dependency_type: 'blocks',
-            status: 'open',
-            title: '후행 A'
-          }
-        ]
-      }
-    ]);
-    const next = toItemsMap([
-      {
-        id: 'UI-1',
-        updated_at: 10,
-        closed_at: null,
-        dependents: [
-          {
-            id: 'UI-2',
-            dependency_type: 'blocks',
-            status: 'closed',
-            title: '후행 B'
-          }
-        ]
-      }
-    ]);
+    const prev = toItemsMap(
+      [
+        {
+          id: 'UI-1',
+          updated_at: 10,
+          closed_at: null,
+          dependents: [
+            {
+              id: 'UI-2',
+              dependency_type: 'blocks',
+              status: 'open',
+              title: '후행 A'
+            }
+          ]
+        }
+      ],
+      DETAIL_KEY
+    );
+    const next = toItemsMap(
+      [
+        {
+          id: 'UI-1',
+          updated_at: 10,
+          closed_at: null,
+          dependents: [
+            {
+              id: 'UI-2',
+              dependency_type: 'blocks',
+              status: 'closed',
+              title: '후행 B'
+            }
+          ]
+        }
+      ],
+      DETAIL_KEY
+    );
 
     const d = computeDelta(prev, next);
 
@@ -253,36 +267,42 @@ describe('subscription delta deps_signature', () => {
   });
 
   test('computeDelta reports an update when a dependencies edge type changes', () => {
-    const prev = toItemsMap([
-      {
-        id: 'UI-1',
-        updated_at: 10,
-        closed_at: null,
-        dependencies: [
-          {
-            id: 'UI-9',
-            dependency_type: 'blocks',
-            status: 'open',
-            title: '선행'
-          }
-        ]
-      }
-    ]);
-    const next = toItemsMap([
-      {
-        id: 'UI-1',
-        updated_at: 10,
-        closed_at: null,
-        dependencies: [
-          {
-            id: 'UI-9',
-            dependency_type: 'related',
-            status: 'open',
-            title: '선행'
-          }
-        ]
-      }
-    ]);
+    const prev = toItemsMap(
+      [
+        {
+          id: 'UI-1',
+          updated_at: 10,
+          closed_at: null,
+          dependencies: [
+            {
+              id: 'UI-9',
+              dependency_type: 'blocks',
+              status: 'open',
+              title: '선행'
+            }
+          ]
+        }
+      ],
+      DETAIL_KEY
+    );
+    const next = toItemsMap(
+      [
+        {
+          id: 'UI-1',
+          updated_at: 10,
+          closed_at: null,
+          dependencies: [
+            {
+              id: 'UI-9',
+              dependency_type: 'related',
+              status: 'open',
+              title: '선행'
+            }
+          ]
+        }
+      ],
+      DETAIL_KEY
+    );
 
     const d = computeDelta(prev, next);
 
@@ -293,12 +313,14 @@ describe('subscription delta deps_signature', () => {
     const edges = [
       { id: 'UI-2', dependency_type: 'blocks', status: 'open', title: '후행 A' }
     ];
-    const prev = toItemsMap([
-      { id: 'UI-1', updated_at: 10, closed_at: null, dependents: edges }
-    ]);
-    const next = toItemsMap([
-      { id: 'UI-1', updated_at: 10, closed_at: null, dependents: edges }
-    ]);
+    const prev = toItemsMap(
+      [{ id: 'UI-1', updated_at: 10, closed_at: null, dependents: edges }],
+      DETAIL_KEY
+    );
+    const next = toItemsMap(
+      [{ id: 'UI-1', updated_at: 10, closed_at: null, dependents: edges }],
+      DETAIL_KEY
+    );
 
     const d = computeDelta(prev, next);
 
@@ -306,14 +328,20 @@ describe('subscription delta deps_signature', () => {
   });
 
   test('computeDelta keeps timestamp comparison for items without dependency fields', () => {
-    const prev = toItemsMap([
-      { id: 'A', updated_at: 1, closed_at: null },
-      { id: 'B', updated_at: 2, closed_at: null }
-    ]);
-    const next = toItemsMap([
-      { id: 'A', updated_at: 1, closed_at: null },
-      { id: 'B', updated_at: 5, closed_at: null }
-    ]);
+    const prev = toItemsMap(
+      [
+        { id: 'A', updated_at: 1, closed_at: null },
+        { id: 'B', updated_at: 2, closed_at: null }
+      ],
+      DETAIL_KEY
+    );
+    const next = toItemsMap(
+      [
+        { id: 'A', updated_at: 1, closed_at: null },
+        { id: 'B', updated_at: 5, closed_at: null }
+      ],
+      DETAIL_KEY
+    );
 
     const d = computeDelta(prev, next);
 
@@ -321,17 +349,99 @@ describe('subscription delta deps_signature', () => {
   });
 
   test('toItemsMap treats a malformed dependents value as no signature', () => {
-    const map = toItemsMap([
-      {
-        id: 'UI-1',
-        updated_at: 10,
-        closed_at: null,
-        dependents: /** @type {any} */ ('nope')
-      }
-    ]);
+    const map = toItemsMap(
+      [
+        {
+          id: 'UI-1',
+          updated_at: 10,
+          closed_at: null,
+          dependents: /** @type {any} */ ('nope')
+        }
+      ],
+      DETAIL_KEY
+    );
 
     const meta = map.get('UI-1');
 
     expect(meta && meta.deps_signature).toBe('');
+  });
+
+  test('applyItems ignores dependency edges on a non-detail subscription key', () => {
+    const reg = new SubscriptionRegistry();
+    const { key } = reg.ensure({ type: 'all-issues' });
+    reg.applyItems(key, [
+      {
+        id: 'UI-1',
+        updated_at: 10,
+        closed_at: null,
+        dependencies: [
+          {
+            id: 'UI-9',
+            dependency_type: 'blocks',
+            status: 'open',
+            title: '선행'
+          }
+        ]
+      }
+    ]);
+
+    const d = reg.applyItems(key, [
+      {
+        id: 'UI-1',
+        updated_at: 10,
+        closed_at: null,
+        dependencies: [
+          {
+            id: 'UI-8',
+            dependency_type: 'related',
+            status: 'closed',
+            title: '다른 선행'
+          }
+        ]
+      }
+    ]);
+
+    expect(d.updated).toEqual([]);
+  });
+
+  test('applyItems reports an update on an issue-detail key when edges change', () => {
+    const reg = new SubscriptionRegistry();
+    const { key } = reg.ensure({
+      type: 'issue-detail',
+      params: { id: 'UI-1' }
+    });
+    reg.applyItems(key, [
+      {
+        id: 'UI-1',
+        updated_at: 10,
+        closed_at: null,
+        dependents: [
+          {
+            id: 'UI-2',
+            dependency_type: 'blocks',
+            status: 'open',
+            title: '후행'
+          }
+        ]
+      }
+    ]);
+
+    const d = reg.applyItems(key, [
+      {
+        id: 'UI-1',
+        updated_at: 10,
+        closed_at: null,
+        dependents: [
+          {
+            id: 'UI-3',
+            dependency_type: 'blocks',
+            status: 'open',
+            title: '후행'
+          }
+        ]
+      }
+    ]);
+
+    expect(d.updated).toEqual(['UI-1']);
   });
 });
