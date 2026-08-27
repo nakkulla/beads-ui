@@ -247,6 +247,30 @@ describe('worker console styles', () => {
     expect(footRule).toContain('min-width: 0');
   });
 
+  // 후보 레인이 드래그 소스가 아니게 되면서 `[대기로 ↴]`가 유일한 배치 경로가
+  // 됐다 (UI-d13v §6) — 포인터 종류로 그것을 감추던 규칙은 남아 있으면 안 된다.
+  test('never hides the actions-only candidate foot', () => {
+    const rules =
+      CSS.match(/\.worker-card__foot--actions-only\s*{[^}]*}/g) || [];
+
+    expect(rules).toEqual([]);
+  });
+
+  test('gives the release chip its colour before the foreign override', () => {
+    const released = workerBlock.indexOf('.worker-dep--released');
+    const foreign = workerBlock.indexOf('.worker-dep--foreign');
+
+    expect(released).toBeGreaterThan(0);
+    expect(released).toBeLessThan(foreign);
+  });
+
+  test('colours the dependents chip with the route tokens', () => {
+    const rule =
+      CSS.match(/(?:^|\n)\.worker-dep--dependents\s*{([^}]*)}/)?.[1] || '';
+
+    expect(rule).toContain('var(--chip-route)');
+  });
+
   test('keeps a candidate reason readable beside or below its action', () => {
     const reasonRule =
       workerBlock.match(/(?:^|\n)\.worker-card__reason\s*{([^}]*)}/)?.[1] || '';

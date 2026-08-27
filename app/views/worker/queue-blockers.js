@@ -12,10 +12,11 @@
  * (`LaneMember`)에서 읽고, 그 목록에 없는 blocker는 `미적재`로 접는다 — 두
  * 탭의 괄호 안 위치가 같은 값이 되지 않는 경계는 UI-anna §5.1이 정한다.
  *
- * @import { DependencyChip } from './lanes.js'
+ * @import { DependencyChip, DependentsChip, ReleasedChip } from './lanes.js'
  * @import { LaneMember } from './queue-overlaps.js'
  */
 import { isForeignBlocker } from '../../utils/blocker-scope.js';
+import { formatTimestampLocal } from '../../utils/relative-time.js';
 
 /**
  * One blocker as the chip needs it. 모니터의
@@ -55,6 +56,104 @@ export function predecessorChip(owner_id, blocker) {
     label: `⛓ blocked: ${blocker.id}`,
     title: `이 이슈는 ${blocker.id}가 close될 때까지 출발하지 않는다 (${blocker.location_label})`,
     ...(foreign ? { foreign: true } : {})
+  };
+}
+
+/**
+ * 해제 칩이 서는 창 (UI-d13v §5.3). 정렬 키 `released`는 이 창과 무관하게
+ * `last_released_at`을 쓴다 — 오래 전에 풀린 이슈는 정렬로 여전히 잡히지만,
+ * 칩까지 계속 서면 `🔓 해제`가 "방금"이라는 뜻을 잃는다.
+ */
+const RELEASED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * One closed blocker as the 해제 칩 needs it (UI-d13v §3.3). 서버가
+ * `release_info.released_by`에 싣는 항목 모양 그대로다.
+ *
+ * @typedef {Object} ReleasedFact
+ * @property {string} id
+ * @property {number} closed_at
+ * @property {string} [root_dir] - owner workspace. 같은 레포이거나 owner를
+ * 모르면 없다.
+ */
+
+/**
+ * One `🔓 해제: X` 칩 (UI-d13v §5.3). `⛓ blocked`가 "왜 못 가나"에 답한다면
+ * 이 칩은 "왜 이제 갈 수 있나"에 답한다 — 같은 슬롯 4의 같은 질문 계열이라
+ * blocked 칩과 같은 파일에 두고, Monitor 투영도 나중에 같은 함수를 부른다.
+ *
+ * 7일 창은 여기서 닫힌다: 창 밖이거나 `closed_at`이 숫자가 아니면 `null`이다
+ * (fail-quiet). `openable` 규칙은 blocked 칩과 같다 (UI-u6zf §5.1) — 같은
+ * 레포는 그냥 열리고, 타 레포는 owner를 아는 것만 열린다.
+ *
+ * @param {string} owner_id - 이 칩이 서는 카드의 bead.
+ * @param {ReleasedFact} released
+ * @param {number} now - 7일 창을 재는 기준 시각. 모델 조립당 한 번 읽어
+ * 같은 화면의 카드가 같은 창을 본다.
+ * @returns {ReleasedChip|null}
+ */
+export function releasedChip(owner_id, released, now) {
+  const closed_at = released.closed_at;
+  if (typeof closed_at !== 'number' || !Number.isFinite(closed_at)) {
+    return null;
+  }
+  if (closed_at < now - RELEASED_WINDOW_MS) {
+    return null;
+  }
+  const foreign = isForeignBlocker(owner_id, released.id);
+  const root_dir =
+    typeof released.root_dir === 'string' ? released.root_dir : '';
+  /** @type {ReleasedChip} */
+  const chip = {
+    id: released.id,
+    label: `🔓 해제: ${released.id}`,
+    title: `${released.id}가 ${formatTimestampLocal(closed_at)}에 close되어 이 이슈가 풀렸다`,
+    ...(foreign ? { foreign: true } : {})
+  };
+  if (!foreign) {
+    chip.openable = true;
+  } else if (root_dir.length > 0) {
+    chip.openable = true;
+    chip.root_dir = root_dir;
+  }
+  return chip;
+}
+
+/**
+ * The server's `dependents_info` (UI-d13v §3.5). `count === 0`이면 서버가 키
+ * 자체를 싣지 않으므로, 여기 도달한 값은 언제나 1 이상이어야 한다.
+ *
+ * @typedef {Object} DependentsInfo
+ * @property {number} count
+ * @property {string[]} [ids] - 사전순 최대 5개.
+ */
+
+/**
+ * One `→ 후속 n` 칩 (UI-d13v §5.3): "왜 먼저 가야 하나"에 답한다. 누를 곳이
+ * 없다 — 후속 목록은 툴팁이 말하고, 편집은 이슈 상세의 의존성 절이 한다.
+ *
+ * 재료가 없으면 `null`이다 (fail-quiet).
+ *
+ * @param {DependentsInfo} info
+ * @returns {DependentsChip|null}
+ */
+export function dependentsChip(info) {
+  const count = info.count;
+  if (typeof count !== 'number' || !Number.isFinite(count) || count <= 0) {
+    return null;
+  }
+  const ids = Array.isArray(info.ids)
+    ? info.ids.filter(
+        (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+      )
+    : [];
+  const rest = count - ids.length;
+  const parts = [ids.join(', '), rest > 0 ? `외 ${rest}` : ''].filter(
+    (part) => part.length > 0
+  );
+  return {
+    count,
+    title: `이 이슈가 close되면 풀리는 이슈: ${parts.join(' ')}`
   };
 }
 

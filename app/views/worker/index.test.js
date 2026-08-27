@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createSessionLogStore } from '../../data/session-log-store.js';
-import { RANK_STEP } from '../../data/sort.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
-import { createUiOrderStore } from '../../data/ui-order-store.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import {
@@ -305,6 +303,34 @@ function candidateOrder(mount) {
 }
 
 /**
+ * The `[대기로 ↴]` button of one candidate card — 후보 레인에서 대기로 가는
+ * 유일한 경로다 (UI-d13v §6).
+ *
+ * @param {HTMLElement} mount
+ * @param {string} bead_id
+ * @returns {HTMLButtonElement}
+ */
+function placeButton(mount, bead_id) {
+  return /** @type {HTMLButtonElement} */ (
+    mount.querySelector(
+      `.worker-card[data-bead-id="${bead_id}"] .worker-card__place`
+    )
+  );
+}
+
+/**
+ * Click the `[대기로 ↴]` button of one candidate card.
+ *
+ * @param {HTMLElement} mount
+ * @param {string} bead_id
+ */
+function placeToQueue(mount, bead_id) {
+  placeButton(mount, bead_id).dispatchEvent(
+    new MouseEvent('click', { bubbles: true })
+  );
+}
+
+/**
  * Simulate dragging a candidate mini and dropping it ONTO another candidate
  * mini (so the drop's over-target is that row, not the pane).
  *
@@ -336,49 +362,6 @@ function dragOnto(mount, bead_id, onto_bead_id) {
   const onto = /** @type {HTMLElement} */ (
     mount.querySelector(
       `#worker-pane-candidate .worker-card[data-bead-id="${onto_bead_id}"]`
-    )
-  );
-  const drop = new Event('drop', { bubbles: true, cancelable: true });
-  Object.defineProperty(drop, 'dataTransfer', { value: dt });
-  onto.dispatchEvent(drop);
-}
-
-/**
- * Simulate dragging a row and dropping it ONTO an existing row of another
- * pane, so the drop's over-target is that row rather than the pane itself.
- *
- * @param {HTMLElement} mount
- * @param {string} bead_id
- * @param {string} pane_id
- * @param {string} onto_bead_id
- */
-function dragOntoRow(mount, bead_id, pane_id, onto_bead_id) {
-  let stored = '';
-  const dt = {
-    getData: () => stored,
-    /**
-     * @param {string} _t
-     * @param {string} v
-     */
-    setData: (_t, v) => {
-      stored = v;
-    },
-    effectAllowed: '',
-    dropEffect: ''
-  };
-  const src = /** @type {HTMLElement} */ (
-    mount.querySelector(
-      `.worker-mini[data-bead-id="${bead_id}"], .worker-card[data-bead-id="${bead_id}"]`
-    )
-  );
-  src.dispatchEvent(new Event('pointerdown', { bubbles: true }));
-  const ds = new Event('dragstart', { bubbles: true });
-  Object.defineProperty(ds, 'dataTransfer', { value: dt });
-  src.dispatchEvent(ds);
-
-  const onto = /** @type {HTMLElement} */ (
-    mount.querySelector(
-      `#${pane_id} .worker-mini[data-bead-id="${onto_bead_id}"]`
     )
   );
   const drop = new Event('drop', { bubbles: true, cancelable: true });
@@ -460,7 +443,7 @@ describe('views/worker', () => {
     expect(rd2.querySelector('.worker-card__reason')?.textContent).toContain(
       'spec 없음'
     );
-    expect(rd2.getAttribute('draggable')).toBe('false');
+    expect(placeButton(cand, 'RD-2').disabled).toBe(true);
 
     // blocker id가 있으면 칩만 그것을 적는다 (UI-tf6d): 잠금 문장은 같은 id를
     // 두 번째로 적지 않는다.
@@ -475,7 +458,8 @@ describe('views/worker', () => {
     const rd1 = /** @type {HTMLElement} */ (
       cand.querySelector('.worker-card[data-bead-id="RD-1"]')
     );
-    expect(rd1.getAttribute('draggable')).toBe('true');
+    expect(rd1.getAttribute('draggable')).toBe('false');
+    expect(placeButton(cand, 'RD-1').disabled).toBe(false);
   });
 
   // 사유는 두 갈래로 갈린다 (UI-vb7u §3): 경로가 아예 없으면 `spec 없음`,
@@ -668,12 +652,8 @@ describe('views/worker', () => {
     );
     expect(card).not.toBeNull();
     expect(card.classList.contains('worker-card--ineligible')).toBe(true);
-    expect(card.getAttribute('draggable')).toBe('false');
-    expect(
-      mount
-        .querySelector('.worker-card[data-bead-id="RD-1"]')
-        ?.getAttribute('draggable')
-    ).toBe('true');
+    expect(placeButton(mount, 'NO-WORKER').disabled).toBe(true);
+    expect(placeButton(mount, 'RD-1').disabled).toBe(false);
   });
 
   test('clicking a card ID copies the bead id and never opens the detail', async () => {
@@ -710,7 +690,7 @@ describe('views/worker', () => {
     expect(gotoIssue).toHaveBeenCalledWith('RD-1');
   });
 
-  test('dragging a candidate into the queue sends worker-queue-place with the current revision', async () => {
+  test('placing a candidate sends worker-queue-place with the current revision', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi
       .fn()
@@ -723,36 +703,12 @@ describe('views/worker', () => {
       transport
     });
 
-    drag(mount, 'RD-1', 'worker-pane-queue');
+    placeToQueue(mount, 'RD-1');
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-place', {
       bead_id: 'RD-1',
       expected_revision: 0
-    });
-  });
-
-  test('dropping a candidate onto an existing waiting row still sends no index', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    const transport = vi
-      .fn()
-      .mockResolvedValue(
-        reply(queueOf({ queue: [{ bead_id: 'QQ-1', added_at: 1 }] }))
-      );
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
-    });
-    queueStore.set(queueOf({ queue: [{ bead_id: 'QQ-1', added_at: 1 }] }));
-
-    dragOntoRow(mount, 'RD-1', 'worker-pane-queue', 'QQ-1');
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-queue-place', {
-      bead_id: 'RD-1',
-      expected_revision: 1
     });
   });
 
@@ -776,7 +732,7 @@ describe('views/worker', () => {
       transport
     });
 
-    drag(mount, 'RD-1', 'worker-pane-queue');
+    placeToQueue(mount, 'RD-1');
     await flush();
 
     expect(transport).toHaveBeenCalledTimes(2);
@@ -1237,13 +1193,9 @@ describe('views/worker', () => {
     );
 
     expect(cand.classList.contains('worker-pane--src')).toBe(true);
-    // Enqueueing has no other entry point, so the source pane must still hand
-    // out draggable rows.
-    expect(
-      cand
-        .querySelector('.worker-card[data-bead-id="RD-1"]')
-        ?.getAttribute('draggable')
-    ).toBe('true');
+    // 적재 진입점은 이제 `[대기로 ↴]` 하나다 (UI-d13v §6) — 소스 pane은 드래그
+    // 핸들이 아니라 그 버튼을 살아 있는 채로 내놓아야 한다.
+    expect(placeButton(cand, 'RD-1').disabled).toBe(false);
   });
 
   test('each column renders only its own members', () => {
@@ -2538,7 +2490,6 @@ describe('views/worker', () => {
     createWorkerView(mount, {
       issueStores: seedMerged(),
       queueStore: createWorkerQueueStore(),
-      uiOrderStore: createUiOrderStore(),
       transport: vi.fn()
     });
 
@@ -2548,78 +2499,61 @@ describe('views/worker', () => {
     expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
   });
 
-  test('leaves the candidate order alone when an explicit rank exists', () => {
+  test('renders every candidate card as a non-drag source', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const uiOrderStore = createUiOrderStore();
     presetCandidateFilter({ show_blocked: true });
-    // Board rank is no longer a candidate sort input (UI-d13v §4.1): a
-    // top-pinning rank on A changes nothing the chain decided.
-    uiOrderStore.set({ revision: 1, order: { A: -1e15 } });
     createWorkerView(mount, {
       issueStores: seedMerged(),
       queueStore: createWorkerQueueStore(),
-      uiOrderStore,
       transport: vi.fn()
     });
 
-    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
+    const cards = Array.from(
+      mount.querySelectorAll('#worker-pane-candidate .worker-card')
+    );
+
+    expect(cards.length).toBe(3);
+    expect(
+      cards.map((el) =>
+        /** @type {HTMLElement} */ (el).getAttribute('draggable')
+      )
+    ).toEqual(['false', 'false', 'false']);
   });
 
-  test('dragging a candidate onto another sends ui-order-set from the rendered neighbours', async () => {
+  test('sends nothing when a candidate is dropped onto another candidate', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const uiOrderStore = createUiOrderStore();
     presetCandidateFilter({ show_blocked: true });
-    // Ranks no longer decide what is DRAWN (the chain does: A, C, then blocked
-    // B) — they are still the coordinates a drop computes its new rank in.
-    uiOrderStore.set({
-      revision: 4,
-      order: { A: 0, B: RANK_STEP, C: 2 * RANK_STEP }
-    });
-    const transport = vi.fn().mockResolvedValue({
-      applied: true,
-      revision: 5,
-      order: { A: 0, B: RANK_STEP, C: -RANK_STEP }
-    });
+    const transport = vi.fn().mockResolvedValue({ applied: true });
     createWorkerView(mount, {
       issueStores: seedMerged(),
       queueStore: createWorkerQueueStore(),
-      uiOrderStore,
       transport
     });
 
-    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
-
-    // Drop C onto A (move C to the top). New rank = below(A=0) - STEP. The
-    // optimistic store apply is synchronous, but the lane keeps the chain order
-    // — rank is written, not read back (UI-d13v §4.1).
     dragOnto(mount, 'C', 'A');
-    expect(uiOrderStore.get()?.order.C).toBe(-RANK_STEP);
-    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
-
     await flush();
-    expect(transport).toHaveBeenCalledWith('ui-order-set', {
-      expected_revision: 4,
-      entries: [{ bead_id: 'C', rank: -RANK_STEP }]
-    });
+
+    expect(transport).not.toHaveBeenCalled();
+    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
   });
 
-  test('keeps the candidate lane order when an order-only push arrives', () => {
+  test('refuses the candidate pane as a drop target', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const uiOrderStore = createUiOrderStore();
     presetCandidateFilter({ show_blocked: true });
     createWorkerView(mount, {
       issueStores: seedMerged(),
       queueStore: createWorkerQueueStore(),
-      uiOrderStore,
       transport: vi.fn()
     });
+    const pane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate')
+    );
 
-    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
+    const over = new Event('dragover', { bubbles: true, cancelable: true });
+    pane.dispatchEvent(over);
 
-    // A server order snapshot arrives (no issue-store push): A pinned to top.
-    uiOrderStore.set({ revision: 2, order: { A: -1e15 } });
-
-    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
+    expect(over.defaultPrevented).toBe(false);
+    expect(pane.classList.contains('worker-pane--drag-over')).toBe(false);
   });
 
   test('running tile shows the current in_progress child in its rollup', () => {
@@ -3038,8 +2972,8 @@ describe('views/worker', () => {
     const conflict = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-card[data-bead-id="CONFLICT-1"]')
     );
-    expect(native.getAttribute('draggable')).toBe('true');
-    expect(conflict.getAttribute('draggable')).toBe('false');
+    expect(placeButton(native, 'NATIVE-1').disabled).toBe(false);
+    expect(placeButton(conflict, 'CONFLICT-1').disabled).toBe(true);
     expect(conflict.textContent).toContain('spec_id_conflict');
   });
 
@@ -3163,7 +3097,7 @@ describe('views/worker', () => {
     );
 
     expect(card.querySelector('.worker-card__reason')).toBeNull();
-    expect(card.getAttribute('draggable')).toBe('true');
+    expect(card.getAttribute('draggable')).toBe('false');
     expect(place.disabled).toBe(false);
     expect(place.title).toBe('대기 큐 맨 뒤에 추가');
     expect(card.textContent).not.toContain('워커 비대상');
@@ -3228,7 +3162,7 @@ describe('views/worker', () => {
       )
     );
 
-    expect(card.getAttribute('draggable')).toBe('true');
+    expect(placeButton(card, 'QF-1').disabled).toBe(false);
     expect(card.querySelector('.worker-card__reason')).toBeNull();
   });
 
@@ -5643,35 +5577,15 @@ describe('candidate display filter — view (UI-ki09)', () => {
     expect(mount.querySelectorAll('.worker-filter').length).toBe(1);
   });
 
-  test('keeps drag rank math on the unfiltered lane while blocked rows are hidden', async () => {
+  test('hides a blocked candidate without disturbing the chain order', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const uiOrderStore = createUiOrderStore();
-    uiOrderStore.set({
-      revision: 4,
-      order: { A: 0, B: RANK_STEP, C: 2 * RANK_STEP }
-    });
-    const transport = vi.fn().mockResolvedValue({
-      applied: true,
-      revision: 5,
-      order: {}
-    });
     createWorkerView(mount, {
       issueStores: seedMerged(),
       queueStore: createWorkerQueueStore(),
-      uiOrderStore,
-      transport
+      transport: vi.fn()
     });
 
-    // Blocked B sits between A and C but is hidden; dropping C onto A must
-    // still rank against the full merged list, exactly as if B were shown.
     expect(candidateOrder(mount)).toEqual(['A', 'C']);
-    dragOnto(mount, 'C', 'A');
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('ui-order-set', {
-      expected_revision: 4,
-      entries: [{ bead_id: 'C', rank: -RANK_STEP }]
-    });
   });
 });
 
@@ -6330,7 +6244,7 @@ describe('worker-ineligible candidates (UI-8881)', () => {
     window.localStorage.clear();
   });
 
-  test('keeps a label-less spec candidate draggable', () => {
+  test('keeps a label-less spec candidate placeable', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     createWorkerView(mount, {
@@ -6342,7 +6256,7 @@ describe('worker-ineligible candidates (UI-8881)', () => {
     const ok = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-card[data-bead-id="OK"]')
     );
-    expect(ok.getAttribute('draggable')).toBe('true');
+    expect(placeButton(mount, 'OK').disabled).toBe(false);
     expect(ok.classList.contains('worker-card--ineligible')).toBe(false);
   });
 
@@ -6358,7 +6272,7 @@ describe('worker-ineligible candidates (UI-8881)', () => {
     const inel = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-card[data-bead-id="INEL"]')
     );
-    expect(inel.getAttribute('draggable')).toBe('true');
+    expect(placeButton(mount, 'INEL').disabled).toBe(false);
     expect(inel.classList.contains('worker-card--ineligible')).toBe(false);
   });
 
@@ -6474,11 +6388,6 @@ describe('worker-ineligible candidates (UI-8881)', () => {
   });
 
   test('sorts an ineligible row with the shared candidate comparators', () => {
-    const uiOrderStore = createUiOrderStore();
-    uiOrderStore.set({
-      revision: 1,
-      order: { MID: 10, OK: 20, INEL: 30 }
-    });
     /** @type {Array<[string, string[]]>} */
     const cases = [
       ['spec', ['INEL', 'OK', 'MID']],
@@ -6496,7 +6405,6 @@ describe('worker-ineligible candidates (UI-8881)', () => {
       createWorkerView(mount, {
         issueStores: seedIneligible(),
         queueStore: createWorkerQueueStore(),
-        uiOrderStore,
         transport: vi.fn()
       });
 
@@ -6504,62 +6412,17 @@ describe('worker-ineligible candidates (UI-8881)', () => {
     }
   });
 
-  test('accepts an ineligible card as a reorder drop target', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const uiOrderStore = createUiOrderStore();
-    // 이 레인 순서(INEL, MID, OK)를 만드는 체인 — 드롭 좌표는 사용자가 본
-    // 이웃에서 계산되므로 렌더 순서를 고정해 둔다.
-    window.localStorage.setItem(
-      'bdui.worker.candidate_sort',
-      '{"chain":[{"key":"created","dir":"asc"}]}'
-    );
-    uiOrderStore.set({
-      revision: 4,
-      order: { INEL: 0, MID: RANK_STEP, OK: 2 * RANK_STEP }
-    });
-    const transport = vi.fn().mockResolvedValue({
-      applied: true,
-      revision: 5,
-      order: { INEL: 0, MID: RANK_STEP, OK: -RANK_STEP }
-    });
-    createWorkerView(mount, {
-      issueStores: seedIneligible(),
-      queueStore: createWorkerQueueStore(),
-      uiOrderStore,
-      transport
-    });
-
-    expect(candidateOrder(mount)).toEqual(['INEL', 'MID', 'OK']);
-
-    dragOnto(mount, 'OK', 'INEL');
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('ui-order-set', {
-      expected_revision: 4,
-      entries: [{ bead_id: 'OK', rank: -RANK_STEP }]
-    });
-    // 순서는 체인이 정한다 — 새 rank는 기록될 뿐 레인이 다시 읽지 않는다.
-    expect(candidateOrder(mount)).toEqual(['INEL', 'MID', 'OK']);
-  });
-
   test('sends no mutation when a drag starts on an ineligible card', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const uiOrderStore = createUiOrderStore();
-    // 이 레인 순서(INEL, MID, OK)를 만드는 체인 — 드롭 좌표는 사용자가 본
-    // 이웃에서 계산되므로 렌더 순서를 고정해 둔다.
+    // 이 레인 순서(INEL, MID, OK)를 만드는 체인.
     window.localStorage.setItem(
       'bdui.worker.candidate_sort',
       '{"chain":[{"key":"created","dir":"asc"}]}'
     );
-    uiOrderStore.set({
-      revision: 4,
-      order: { INEL: 0, MID: RANK_STEP, OK: 2 * RANK_STEP }
-    });
     const transport = vi.fn().mockResolvedValue({ applied: true });
     createWorkerView(mount, {
       issueStores: seedIneligible(),
       queueStore: createWorkerQueueStore(),
-      uiOrderStore,
       transport
     });
 
@@ -6655,7 +6518,11 @@ describe('session-preferred candidates (UI-49mc)', () => {
     const card = renderPreferred({ labels: [] });
 
     expect(card.querySelector('.worker-card__session-preferred')).toBeNull();
-    expect(card.getAttribute('draggable')).toBe('true');
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        card.querySelector('.worker-card__place')
+      ).disabled
+    ).toBe(false);
   });
 
   test('draws only the worker-ineligible treatment when both are attached', () => {
@@ -7714,7 +7581,7 @@ describe('mobile control-first layout (UI-58y2)', () => {
     ).toContain('ready with spec');
   });
 
-  test('appends to the queue when a candidate is dropped on a collapsed strip', async () => {
+  test('appends to the queue from the candidate button while the strip is collapsed', async () => {
     const transport = vi.fn().mockResolvedValue({ ok: true });
     collapseQueueLane();
     const mount = mountMobile(
@@ -7722,7 +7589,7 @@ describe('mobile control-first layout (UI-58y2)', () => {
       transport
     );
 
-    drag(mount, 'RD-1', 'worker-pane-queue');
+    placeToQueue(mount, 'RD-1');
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-place', {
@@ -13614,7 +13481,7 @@ describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
     });
   });
 
-  test('appends to the queue when a candidate is dropped on the collapsed strip', async () => {
+  test('appends to the queue from the candidate button while the strip is collapsed', async () => {
     window.localStorage.setItem(
       'beads-ui.worker.lane-collapsed',
       JSON.stringify({ lanes: { queue: true } })
@@ -13625,7 +13492,7 @@ describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
       transport
     );
 
-    drag(mount, 'RD-1', 'worker-pane-queue');
+    placeToQueue(mount, 'RD-1');
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-place', {
@@ -13635,12 +13502,12 @@ describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
   });
 
   test('marks the console as dragging while a row is held', () => {
-    const mount = mountDesktop();
+    const mount = mountDesktop({ queue: [{ bead_id: 'QQ-1', added_at: 1 }] });
     const console_el = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-console')
     );
     const row = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-card[data-bead-id="RD-1"]')
+      mount.querySelector('.worker-mini[data-bead-id="QQ-1"]')
     );
 
     row.dispatchEvent(new Event('pointerdown', { bubbles: true }));
@@ -13654,12 +13521,12 @@ describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
   });
 
   test('clears the dragging mark when the drag ends', () => {
-    const mount = mountDesktop();
+    const mount = mountDesktop({ queue: [{ bead_id: 'QQ-1', added_at: 1 }] });
     const console_el = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-console')
     );
     const row = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-card[data-bead-id="RD-1"]')
+      mount.querySelector('.worker-mini[data-bead-id="QQ-1"]')
     );
     row.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     const start = new Event('dragstart', { bubbles: true });
@@ -14004,4 +13871,244 @@ describe('PR 대기 뱃지 우선순위·영수증 라벨 (UI-17mj §2.4)', () =
       expect(row(mount).textContent).not.toContain('영수증 확인 필요');
     }
   );
+});
+
+describe('해제·후속 칩과 대기 행 ✕ (UI-d13v §5·§6)', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * One ready candidate carrying whatever decorations the case is about.
+   *
+   * @param {Record<string, any>} decorations
+   * @returns {ReturnType<typeof createTestIssueStores>}
+   */
+  function seedDecorated(decorations) {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'RD-1',
+        title: 'ready with spec',
+        status: 'open',
+        created_at: 100,
+        updated_at: 200,
+        metadata: { spec_id: 'SPEC-1', spec_review: RECEIPT },
+        ...decorations
+      }
+    ]);
+    return stores;
+  }
+
+  /**
+   * @param {Record<string, any>} decorations
+   * @param {any} [queue_over]
+   * @param {any} [transport]
+   * @returns {HTMLElement}
+   */
+  function mountDecorated(decorations, queue_over, transport) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf(queue_over || {}));
+    createWorkerView(mount, {
+      issueStores: seedDecorated(decorations),
+      queueStore,
+      transport: transport || vi.fn()
+    });
+    return mount;
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string[]}
+   */
+  function releasedLabels(mount) {
+    return Array.from(mount.querySelectorAll('.worker-dep--released')).map(
+      (el) => (el.textContent || '').replace(/\s+/g, ' ').trim()
+    );
+  }
+
+  test('draws a release chip for a blocker closed inside the seven-day window', () => {
+    const closed_at = Date.now() - DAY;
+
+    const mount = mountDecorated({
+      release_info: {
+        released_by: [{ id: 'RD-9', closed_at }],
+        last_released_at: closed_at
+      }
+    });
+
+    expect(releasedLabels(mount)).toEqual(['🔓 해제: RD-9']);
+  });
+
+  test('drops a release chip for a blocker closed before the window', () => {
+    const closed_at = Date.now() - 30 * DAY;
+
+    const mount = mountDecorated({
+      release_info: {
+        released_by: [{ id: 'RD-9', closed_at }],
+        last_released_at: closed_at
+      }
+    });
+
+    expect(releasedLabels(mount)).toEqual([]);
+  });
+
+  test('keeps at most two release chips and counts the rest on the last one', () => {
+    const now = Date.now();
+
+    const mount = mountDecorated({
+      release_info: {
+        released_by: [
+          { id: 'RD-7', closed_at: now - 3 * DAY },
+          { id: 'RD-8', closed_at: now - 2 * DAY },
+          { id: 'RD-9', closed_at: now - DAY }
+        ],
+        last_released_at: now - DAY
+      }
+    });
+
+    expect(releasedLabels(mount)).toEqual([
+      '🔓 해제: RD-9',
+      '🔓 해제: RD-8 외 1'
+    ]);
+  });
+
+  test('draws the dependents chip from the server count', () => {
+    const mount = mountDecorated({
+      dependents_info: { count: 3, ids: ['RD-2', 'RD-3'] }
+    });
+
+    const chip = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-dep--dependents')
+    );
+
+    expect(chip.textContent?.replace(/\s+/g, ' ').trim()).toBe('→ 후속 3');
+    expect(chip.title).toBe('이 이슈가 close되면 풀리는 이슈: RD-2, RD-3 외 1');
+  });
+
+  test('draws neither chip when the server sends no decoration', () => {
+    const mount = mountDecorated({});
+
+    expect(mount.querySelector('.worker-dep--released')).toBeNull();
+    expect(mount.querySelector('.worker-dep--dependents')).toBeNull();
+  });
+
+  test('leaves the two chips off a waiting row', () => {
+    const closed_at = Date.now() - DAY;
+
+    const mount = mountDecorated(
+      {
+        release_info: {
+          released_by: [{ id: 'RD-9', closed_at }],
+          last_released_at: closed_at
+        },
+        dependents_info: { count: 2, ids: ['RD-2'] }
+      },
+      { queue: [{ bead_id: 'RD-1', added_at: 1 }] }
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-queue .worker-mini[data-bead-id="RD-1"]'
+      )
+    );
+
+    expect(row.querySelector('.worker-dep--released')).toBeNull();
+    expect(row.querySelector('.worker-dep--dependents')).toBeNull();
+  });
+
+  test('renders the remove button on a waiting row', () => {
+    const mount = mountDecorated(
+      {},
+      { queue: [{ bead_id: 'QQ-1', added_at: 1 }] }
+    );
+
+    const button = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="QQ-1"] [data-action="queue-remove"]'
+      )
+    );
+
+    expect(button.getAttribute('aria-label')).toBe('대기에서 빼기');
+  });
+
+  test('sends worker-queue-remove when the remove button is clicked', async () => {
+    const transport = vi.fn().mockResolvedValue({ applied: true });
+    const mount = mountDecorated(
+      {},
+      { revision: 4, queue: [{ bead_id: 'QQ-1', added_at: 1 }] },
+      transport
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="QQ-1"] [data-action="queue-remove"]'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-remove', {
+      bead_id: 'QQ-1',
+      expected_revision: 4
+    });
+  });
+
+  test('renders the remove button on a serial lane row', () => {
+    const mount = mountDecorated(
+      {},
+      {
+        serial_lane_count: 1,
+        serial_lanes: [
+          { id: 's1', entries: [{ bead_id: 'SQ-1', added_at: 2 }] }
+        ],
+        lane_states: {
+          s1: { occupied_by: [], order: ['SQ-1'], corrections: [] }
+        }
+      }
+    );
+
+    expect(
+      mount.querySelector(
+        '.worker-mini[data-bead-id="SQ-1"] [data-action="queue-remove"]'
+      )
+    ).not.toBeNull();
+  });
+
+  test('leaves the remove button off a done row', () => {
+    expandDoneLane();
+
+    const mount = mountDecorated(
+      {},
+      { done: [{ bead_id: 'DN-1', added_at: 1 }] }
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="DN-1"]')
+    );
+
+    expect(row.querySelector('[data-action="queue-remove"]')).toBeNull();
+  });
+
+  test('leaves the remove button off a serial occupancy row', () => {
+    const mount = mountDecorated(
+      {},
+      {
+        serial_lane_count: 1,
+        serial_lanes: [{ id: 's1', entries: [] }],
+        lane_states: {
+          s1: { occupied_by: ['OC-1'], order: [], corrections: [] }
+        }
+      }
+    );
+
+    const ghost = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini--ghost[data-bead-id="OC-1"]')
+    );
+
+    expect(ghost.querySelector('[data-action="queue-remove"]')).toBeNull();
+  });
 });

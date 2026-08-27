@@ -667,6 +667,22 @@ export function execChipsTemplate(chips, options = {}) {
  */
 
 /**
+ * One `🔓 해제: X` 칩 (UI-d13v §5.2). 모양은 {@link DependencyChip}과 같다 —
+ * 같은 슬롯에 같은 치수로 서고, 갈라지는 것은 색과 문장뿐이다.
+ *
+ * @typedef {DependencyChip} ReleasedChip
+ */
+
+/**
+ * One `→ 후속 n` 칩 (UI-d13v §5.2). 라벨은 건수 하나로 정해지므로 투영이
+ * 문자열을 만들지 않고, 누를 곳도 없다 — 목록은 툴팁이 말한다.
+ *
+ * @typedef {Object} DependentsChip
+ * @property {number} count
+ * @property {string} title
+ */
+
+/**
  * One 겹침 상대 (UI-qm12 §5.2·§5.3). 선언 scope가 부딪히는 상대일 뿐, 순서를
  * 주장하지 않는다 — 배치는 사용자가 팝오버에서 한 번의 클릭으로 만든다.
  *
@@ -704,6 +720,10 @@ export function execChipsTemplate(chips, options = {}) {
  * 표현할 수 없다. 그 값을 렌더러 인자가 아니라 투영이 싣는 이유는
  * `candidateCard`·`miniRow`를 두 탭이 함께 부르기 때문이다 — 호출 인자로 가르면
  * 같은 템플릿을 탭마다 다르게 부르는 자리가 새로 생긴다.
+ * @property {ReleasedChip[]} [released] - `🔓 해제: …` (UI-d13v §5.2). blocked
+ * 칩 바로 다음에 서고 `openable` 규칙도 같다 — 같은 슬롯 4가 "왜 못 가나"와
+ * "왜 이제 갈 수 있나"를 나란히 답한다.
+ * @property {DependentsChip} [dependents] - `→ 후속 n` (UI-d13v §5.2).
  * @property {OverlapChip[]} [overlaps] - `⧉ 겹침 …` (UI-qm12 §5.3).
  * @property {boolean} [scope_missing] - 선언 원천은 읽혔는데 scope 선언이
  * 비었다 — 겹침을 판정할 수 없다는 사실 자체를 드러낸다.
@@ -762,8 +782,9 @@ function overlapPopoverTemplate(popover) {
 }
 
 /**
- * The blocked 칩 (UI-eey2 §5.1)과 겹침 칩 (UI-qm12 §5.3). 카드는 "내가 막혔나"
- * 하나만 말한다 — 역방향(후속) 칩은 걷어냈고, 그 관계는 의존성 패널이 그린다.
+ * The blocked 칩 (UI-eey2 §5.1) · 해제·후속 칩 (UI-d13v §5.2) · 겹침 칩
+ * (UI-qm12 §5.3). 슬롯 4는 "지금 갈 수 있나" 하나에 답하고, 세 칩은 그 질문의
+ * 세 각도다: 왜 못 가나 · 왜 이제 갈 수 있나 · 왜 먼저 가야 하나.
  * Drawn only when a projection supplies them, so Worker rows are unchanged.
  *
  * 레인 분기는 없다 (UI-anna §6): 세 칩 모두 재료가 실린 카드에 선다. 어느
@@ -783,6 +804,8 @@ export function dependencyChipsTemplate(chips) {
   const predecessors = Array.isArray(chips.predecessors)
     ? chips.predecessors
     : [];
+  const released = Array.isArray(chips.released) ? chips.released : [];
+  const dependents = chips.dependents || null;
   const overlaps = Array.isArray(chips.overlaps) ? chips.overlaps : [];
   const scope_missing = chips.scope_missing === true;
   const popover = chips.popover || null;
@@ -790,6 +813,8 @@ export function dependencyChipsTemplate(chips) {
   const armed_lane = chips.armed_lane || null;
   if (
     predecessors.length === 0 &&
+    released.length === 0 &&
+    !dependents &&
     overlaps.length === 0 &&
     !scope_missing &&
     !cross_lane &&
@@ -841,7 +866,29 @@ export function dependencyChipsTemplate(chips) {
               </button>`
             : chip.label}</span
         >`
-    )}${overlaps.map(
+    )}${released.map(
+      (chip) =>
+        html`<span
+          class=${`worker-dep worker-dep--released${chip.foreign ? ' worker-dep--foreign' : ''}`}
+          title=${chip.title || ''}
+          >${chip.openable === true
+            ? html`<button
+                type="button"
+                class="worker-dep__label worker-dep__open"
+                data-dep-id=${chip.id}
+                data-root-dir=${chip.root_dir || ''}
+              >
+                ${chip.label}
+              </button>`
+            : chip.label}</span
+        >`
+    )}${dependents
+      ? html`<span
+          class="worker-dep worker-dep--dependents"
+          title=${dependents.title}
+          >→ 후속 ${dependents.count}</span
+        >`
+      : ''}${overlaps.map(
       (chip) =>
         html`<button
           type="button"
@@ -1029,7 +1076,13 @@ export function priorityBadgeTemplate(priority) {
  * @property {string} title - Bead title (falls back to id).
  * @property {string} [reason] - Candidate reason chip (missing_description /
  * spec 없음 / 🔒 target).
- * @property {boolean} draggable - Whether this row can be dragged.
+ * @property {boolean} draggable - Whether this row can be dragged. 후보 카드는
+ * 언제나 `false`다 (UI-d13v §6): 후보 레인은 드래그 소스도 드롭 대상도 아니고,
+ * 이 값은 DOM `draggable` 속성과 `worker-card--static`/grip 판정에만 남는다.
+ * @property {boolean} [queue_placeable] - 후보 카드를 대기·직렬 레인에 넣을 수
+ * 있다 (UI-d13v §6). 배치 메뉴 열림·`[대기로 ↴]` 자격이 읽는 값이며, 예전에
+ * `draggable`이 지던 자격을 그대로 물려받는다 — 드래그가 사라져도 무엇을 막는지는
+ * 같아야 한다. 후보 카드 외의 행은 싣지 않는다.
  * @property {'candidate'|'queue'|'running'|'runnable'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5'} lane -
  * Owning lane. `running`/`runnable` exist only for the monitor tab, which mixes
  * every repo into five lanes (UI-qrfo §8); the Worker console never sets them.
@@ -1645,9 +1698,11 @@ const SESSION_PREFERRED_TOOLTIP = {
 /**
  * One candidate `.worker-card` (spec §2, mockup 변형 B). Richer than
  * {@link miniRow}: a route chip + the Board's route-driven stepper. It keeps
- * miniRow's drag contract (`draggable` / `data-bead-id` / `data-lane`) so the
- * drag controller treats it identically. An issue without `workflow` (inactive
- * workspace) renders without the chip/stepper and never throws.
+ * miniRow's row contract (`draggable` / `data-bead-id` / `data-lane`), but the
+ * Worker console's candidate projection pins `draggable` to false (UI-d13v §6)
+ * and hands placement eligibility over in `queue_placeable`. An issue without
+ * `workflow` (inactive workspace) renders without the chip/stepper and never
+ * throws.
  *
  * `exec_chips_mode` (UI-eey2 §5) says what this card's exec chips MEAN.
  * `always` — the Worker console's contract, unchanged — draws the resolved
@@ -1667,11 +1722,17 @@ const SESSION_PREFERRED_TOOLTIP = {
  */
 export function candidateCard(item, place_menu = null, options = {}) {
   // Observation-only rows (UI-8881) are refused here as well as by the
-  // projection, so the card cannot become draggable through a caller that
+  // projection, so the card cannot become placeable through a caller that
   // forgot the conjunction.
   const worker_ineligible = item.worker_ineligible === true;
   const draggable = item.draggable && !item.done && !worker_ineligible;
-  const menu_open = draggable && place_menu && place_menu.bead_id === item.id;
+  // 배치 자격은 드래그와 갈라졌다 (UI-d13v §6): 후보 카드는 드래그 소스가 아니게
+  // 됐지만 대기 적재는 남으므로, 그 자격을 `draggable`에서 읽으면 주 경로가 통째로
+  // 사라진다. 메뉴 열림과 `[대기로 ↴]`는 둘 다 이 값 하나를 읽는다.
+  const queue_placeable =
+    item.queue_placeable === true && !item.done && !worker_ineligible;
+  const menu_open =
+    queue_placeable && place_menu && place_menu.bead_id === item.id;
   // 계약상 `worker-ineligible`과 상호배타이므로 머리줄의 같은 자리 하나를 나눠
   // 쓴다 (UI-49mc §4.1). 우선순위는 투영이 이미 접었고, 이 라벨은 drag·적재·음영
   // 어디에도 입력되지 않는다.
@@ -1770,16 +1831,16 @@ export function candidateCard(item, place_menu = null, options = {}) {
                   >${item.reason}</span
                 >`
               : ''}
-            <!-- 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 드래그의 보완재이지 대체재가
-                 아니므로 자격 조건은 드래그와 완전히 같다 — spec 없는 후보만 막고,
-                 blocked-with-spec은 드래그와 마찬가지로 적재할 수 있다. 표시 조건
-                 (coarse pointer / 좁은 화면)은 CSS가 소유한다. -->
+            <!-- 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 후보 레인에서 대기로 가는
+                 유일한 경로다 (UI-d13v §6). 막는 것은 예전 드래그와 같다 — spec
+                 없는 후보만 막고, blocked-with-spec은 적재할 수 있다. 포인터
+                 종류로 감추지 않는다: 드래그라는 대체 경로가 없다. -->
             <button
               type="button"
               class="worker-card__place"
               data-bead-id=${item.id}
-              ?disabled=${!draggable}
-              title=${draggable
+              ?disabled=${!queue_placeable}
+              title=${queue_placeable
                 ? '대기 큐 맨 뒤에 추가'
                 : worker_ineligible
                   ? 'worker-ineligible label로 워커에서 실행할 수 없습니다'

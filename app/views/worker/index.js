@@ -71,7 +71,6 @@ import { watchMobile } from '../../utils/viewport.js';
 import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
 import { isWorkerSerial } from '../../utils/worker-serial.js';
 import { modelRunnerOf } from '../detail-panel/exec-settings.js';
-import { createReorderController } from '../reorder.js';
 import {
   CANDIDATE_SORT_PRESETS,
   SORT_KEY_OPTIONS,
@@ -100,7 +99,11 @@ import {
 } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
-import { deriveWorkerBlockers } from './queue-blockers.js';
+import {
+  dependentsChip,
+  deriveWorkerBlockers,
+  releasedChip
+} from './queue-blockers.js';
 import { deriveWorkerOverlaps, workerPlacementPlan } from './queue-overlaps.js';
 import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
@@ -385,6 +388,60 @@ function blockerIdsOf(issue) {
       return d.depends_on_id || d.id || '';
     })
     .filter(Boolean);
+}
+
+/**
+ * 한 후보 카드에 서는 `🔓 해제` 칩 수의 상한 (UI-d13v §5.3). 나머지는 마지막
+ * 칩 라벨 끝의 ` 외 n`이 센다 — 칩을 상한 없이 늘리면 슬롯 4 줄 하나가 카드를
+ * 삼킨다.
+ */
+const RELEASED_CHIP_MAX = 2;
+
+/**
+ * The 후보 행 `🔓 해제` 칩 (UI-d13v §5.3). 7일 창은 {@link releasedChip}이 닫고,
+ * 여기서는 `closed_at` desc 정렬과 상한만 정한다. 재료가 없거나 전부 창 밖이면
+ * `null`이다 (fail-quiet) — 서버가 `release_info`를 싣지 않는 구버전에서 칩이
+ * 그냥 서지 않는 것과 같은 결과다.
+ *
+ * @param {any} issue
+ * @param {number} now
+ * @returns {import('./lanes.js').ReleasedChip[]|null}
+ */
+function candidateReleasedChips(issue, now) {
+  const info = issue?.release_info;
+  const released_by =
+    info && typeof info === 'object' && Array.isArray(info.released_by)
+      ? info.released_by
+      : [];
+  const ordered = released_by
+    .filter(
+      (/** @type {any} */ entry) =>
+        entry && typeof entry === 'object' && typeof entry.id === 'string'
+    )
+    .slice()
+    .sort(
+      (/** @type {any} */ a, /** @type {any} */ b) =>
+        (typeof b.closed_at === 'number' ? b.closed_at : 0) -
+        (typeof a.closed_at === 'number' ? a.closed_at : 0)
+    );
+  /** @type {import('./lanes.js').ReleasedChip[]} */
+  const chips = [];
+  for (const entry of ordered) {
+    const chip = releasedChip(issue.id, entry, now);
+    if (chip) {
+      chips.push(chip);
+    }
+  }
+  if (chips.length === 0) {
+    return null;
+  }
+  const shown = chips.slice(0, RELEASED_CHIP_MAX);
+  const rest = chips.length - shown.length;
+  if (rest > 0) {
+    const last = shown[shown.length - 1];
+    shown[shown.length - 1] = { ...last, label: `${last.label} 외 ${rest}` };
+  }
+  return shown;
 }
 
 /**
@@ -1650,7 +1707,7 @@ function prWaitRow(
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../board/stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../board/stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void }} [options]
  * @returns {{ load: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -1659,7 +1716,6 @@ export function createWorkerView(mount_element, options = {}) {
     issueStores,
     queueStore,
     sessionLogStore,
-    uiOrderStore,
     gotoIssue,
     getWorkspacePath,
     switchWorkspace,
@@ -1667,25 +1723,12 @@ export function createWorkerView(mount_element, options = {}) {
     doneRange,
     onDoneRangeChange
   } = options;
-  // The shared ui-order store feeds list-selectors so an order-only push
-  // re-renders the candidate lane, and drives the same effective-rank sort the
-  // Board uses (spec §2/§4).
-  const selectors = issueStores
-    ? createListSelectors(issueStores, uiOrderStore)
-    : null;
-  const reorder = createReorderController({ transport, uiOrderStore });
+  // Worker 탭은 ui-order를 읽지 않는다 (UI-d13v §6): 후보 순서는 정렬 체인이
+  // 정하고 수동 rank는 Board 탭만 쓴다. 그래서 selectors도 order 인자 없이 만든다.
+  const selectors = issueStores ? createListSelectors(issueStores) : null;
 
   /** @type {{ bead_id: string, from_lane: string }|null} */
   let dragging = null;
-  /**
-   * Sorted raw candidate issues (Ready+Blocked merged, queued excluded), kept so
-   * a candidate→candidate drop computes its rank against exactly the rendered
-   * order (rows drop `created_at`, which the rank math needs). Refreshed on every
-   * `buildModel`.
-   *
-   * @type {any[]}
-   */
-  let candidate_issues = [];
   /**
    * Candidate pane display filter (UI-ki09), restored at view creation.
    *
@@ -3289,11 +3332,14 @@ export function createWorkerView(mount_element, options = {}) {
       seen.add(it.id);
       merged.push(it);
     }
-    // The chosen chain decides the RENDERED order, and `candidate_issues` must
-    // match it: a candidate→candidate drop computes its new rank from the
-    // neighbours the user actually saw (UI-raqh §4). Board rank is no longer an
-    // input — the chain is (UI-d13v §4.1).
-    candidate_issues = applyCandidateSort(merged, candidate_sort, blocked_ids);
+    // 정렬 체인이 렌더 순서를 정한다 (UI-d13v §4.1). Board rank도, 화면 순서에
+    // 기대는 드롭 계산도 더 이상 없다 — 후보 레인은 읽는 목록이다.
+    /** @type {any[]} */
+    const candidate_issues = applyCandidateSort(
+      merged,
+      candidate_sort,
+      blocked_ids
+    );
 
     // Admission observations recorded by the scheduler/place gate (§1) surface
     // as badges on candidate AND queued rows.
@@ -3333,6 +3379,9 @@ export function createWorkerView(mount_element, options = {}) {
     // 그대로 읽는다.
     /** @type {Map<string, string[]>} */
     const candidate_blocked_by = new Map();
+    // 해제 칩의 7일 창 기준 시각 (UI-d13v §5.3). 모델 조립당 한 번만 읽어 같은
+    // 렌더 안의 모든 카드가 같은 창을 본다.
+    const now = Date.now();
     /** @type {any[]} */
     const candidate_rows = candidate_issues.map((/** @type {any} */ it) => {
       const spec = resolveSpecEvidence(it);
@@ -3392,11 +3441,23 @@ export function createWorkerView(mount_element, options = {}) {
       if (adm) {
         parts.push(adm);
       }
+      // 해제·후속 칩은 후보 행만 얻는다 (UI-d13v §5.3): 대기·실행중·PR 대기 행은
+      // 이미 출발했거나 순서가 정해져 "왜 먼저 가야 하나"가 의미 없다. 서버가 두
+      // 장식을 싣지 않으면 재료가 없어 그냥 서지 않는다 (fail-quiet).
+      const released = candidateReleasedChips(it, now);
+      const dependents =
+        it.dependents_info && typeof it.dependents_info === 'object'
+          ? dependentsChip(it.dependents_info)
+          : null;
       return {
         id: it.id,
         title: it.title || it.id,
         reason: parts.join(' · '),
-        draggable: eligible,
+        // 후보 레인은 드래그 소스가 아니다 (UI-d13v §6). 자격은 `queue_placeable`이
+        // 그대로 물려받는다 — 드래그가 사라져도 무엇을 대기에 넣을 수 있는지는
+        // 같아야 하고, 그것을 읽는 곳은 `[대기로 ↴]`와 배치 메뉴다.
+        draggable: false,
+        queue_placeable: eligible,
         lane: 'candidate',
         created_at: it.created_at,
         updated_at: it.updated_at,
@@ -3423,12 +3484,19 @@ export function createWorkerView(mount_element, options = {}) {
         // 않는다.
         rec: beadRec(it.id),
         from_id: it.from_id || undefined,
-        priority: idToPriority.get(it.id)
+        priority: idToPriority.get(it.id),
+        ...(released || dependents
+          ? {
+              dependency_chips: {
+                ...(released ? { released } : {}),
+                ...(dependents ? { dependents } : {})
+              }
+            }
+          : {})
       };
     });
-    // DISPLAY-only projection: `candidate_issues` above stays the unfiltered
-    // merged list, so a candidate→candidate drop still computes its rank against
-    // the whole lane and hiding rows never changes the reorder result.
+    // DISPLAY-only projection (UI-ki09): 숨긴 행은 화면에서만 빠지고, 위
+    // `candidate_issues`는 걸러지지 않은 병합 목록 그대로다.
     const filtered = applyCandidateFilter(candidate_rows, candidate_filter);
     const candidates = filtered.visible;
 
@@ -4980,6 +5048,35 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The 대기·직렬 행 `✕` (UI-d13v §6): 후보 레인이 드롭 대상이 아니게 되면서
+   * 대기→후보 되돌리기가 잃은 경로를 대신한다. 자리는 Monitor가 UI-5ksp §4.6으로
+   * 같은 조각을 붙인 곳과 같다 — 행 1번 줄 조작 슬롯 끝이다.
+   *
+   * 이미 출발한 행에는 그리지 않는다: 판정은 드롭이 거부되던 것과 같은 조건
+   * (`done`이거나 draggable하지 않은 행 — 실행 중 attempt·폐기·stale 점유)이다.
+   *
+   * @param {any} item
+   * @returns {import('lit-html').TemplateResult|undefined}
+   */
+  function queueRowActions(item) {
+    if (item.draggable !== true || item.done === true) {
+      return undefined;
+    }
+    return html`<span class="worker-mini__rowops">
+      <button
+        type="button"
+        class="worker-mini__rowops-remove"
+        data-action="queue-remove"
+        data-bead-id=${item.id}
+        title="대기에서 빼기"
+        aria-label="대기에서 빼기"
+      >
+        ✕
+      </button>
+    </span>`;
+  }
+
+  /**
    * The 대기 pane body (UI-5ksp §4.2): 병렬 영역 하나 + 직렬 영역 하나를 한
    * pane 안에 담는다. 구조는 두 탭이 공유하는 `waitBody`가 소유하고, 여기서는
    * 행과 레인 재료만 만들어 슬롯으로 넘긴다.
@@ -4990,7 +5087,9 @@ export function createWorkerView(mount_element, options = {}) {
   function waitBodyTemplate(m) {
     return waitBody({
       parallel: {
-        rows: m.waiting.map((/** @type {any} */ it) => miniRow(it)),
+        rows: m.waiting.map((/** @type {any} */ it) =>
+          miniRow(it, { actions: queueRowActions(it) })
+        ),
         count: m.waiting.length,
         collapsed: collapse.isAreaCollapsed('parallel')
       },
@@ -4998,7 +5097,9 @@ export function createWorkerView(mount_element, options = {}) {
         lanes: m.serial_lanes.map((lane) => ({
           id: lane.id,
           title: `직렬 ${lane.index}`,
-          rows: lane.rows.map((/** @type {any} */ it) => miniRow(it)),
+          rows: lane.rows.map((/** @type {any} */ it) =>
+            miniRow(it, { actions: queueRowActions(it) })
+          ),
           // 점유 ghost 행도 `rows`의 구성원이므로 건수와 빈 판정을 한 재료로
           // 읽는다 — 점유 중인 레인은 비어 있지 않다.
           count: lane.rows.length,
@@ -5261,12 +5362,14 @@ export function createWorkerView(mount_element, options = {}) {
     if (!pane) {
       return;
     }
-    // Only the panes a drop actually mutates accept one — the candidate feed,
-    // the parallel waiting lane, and the serial lanes. 실행 중/PR 대기/완료 are
-    // observation columns — the server puts beads there — so they must not
-    // light up as drop targets and then silently swallow the drag.
+    // Only the panes a drop actually mutates accept one — the parallel waiting
+    // lane and the serial lanes. 후보 레인은 드롭 대상이 아니다 (UI-d13v §6):
+    // 순서를 만드는 것은 정렬 체인이고, 대기에서 후보로 되돌리는 것은 대기 행의
+    // `✕`다. 실행 중/PR 대기/완료 are observation columns — the server puts beads
+    // there — so they must not light up as drop targets and then silently
+    // swallow the drag.
     const lane = pane.dataset.lane || '';
-    if (lane !== 'candidate' && lane !== 'queue' && !/^s[1-5]$/.test(lane)) {
+    if (lane !== 'queue' && !/^s[1-5]$/.test(lane)) {
       return;
     }
     ev.preventDefault();
@@ -5292,40 +5395,6 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function onDragEnd() {
     console_el.classList.remove('is-dragging');
-  }
-
-  /**
-   * Candidate→candidate manual reorder (spec §4): build the lane's desired final
-   * order (dragged bead spliced at the target) from the merged candidate issues,
-   * then hand it to the shared reorder controller (optimistic rank apply +
-   * CAS-retry-once), mirroring the Board same-column path. The rank math needs
-   * the raw issues' `created_at`, so it reads {@link candidate_issues} rather than
-   * the projected rows.
-   *
-   * @param {string} bead_id
-   * @param {HTMLElement|null} over - The `.worker-card` under the cursor, if any.
-   */
-  function reorderCandidates(bead_id, over) {
-    const dragged = candidate_issues.find((it) => it.id === bead_id);
-    if (!dragged) {
-      return;
-    }
-    const without = candidate_issues.filter((it) => it.id !== bead_id);
-    let insert_index = without.length;
-    if (over) {
-      const over_id = over.dataset.beadId;
-      if (over_id === bead_id) {
-        // Dropped onto itself — no move.
-        return;
-      }
-      const j = without.findIndex((it) => it.id === over_id);
-      if (j >= 0) {
-        insert_index = j;
-      }
-    }
-    const final_list = without.slice();
-    final_list.splice(insert_index, 0, dragged);
-    void reorder.applyReorder(bead_id, final_list, insert_index);
   }
 
   /**
@@ -5388,18 +5457,6 @@ export function createWorkerView(mount_element, options = {}) {
       index = queueTailIndex();
     }
 
-    if (to_lane === 'candidate') {
-      // Candidate→candidate = manual reorder in the shared rank map (spec §4).
-      if (from_lane === 'candidate') {
-        reorderCandidates(bead_id, over);
-        return;
-      }
-      // Moving a waiting bead back to candidates removes it from the queue.
-      if (from_lane === 'queue' || /^s[1-5]$/.test(from_lane)) {
-        void removeBead(bead_id);
-      }
-      return;
-    }
     // 병렬(`queue`) ↔ 직렬(`s1`..`s5`) 공용 드롭 (UI-04vo §4): 같은 레인 안은
     // reorder, 레인이 다르면 place가 원 레인 제거 + 삽입을 한 번에 한다. ghost
     // 점유 행은 draggable=false라 여기 도달하지 않는다.
@@ -5977,6 +6034,18 @@ export function createWorkerView(mount_element, options = {}) {
       const value = spec_chip.dataset.spec;
       if (value === 'all' || value === 'with' || value === 'without') {
         setCandidateFilter({ ...candidate_filter, spec: value });
+      }
+      return;
+    }
+    // 대기 행의 `✕` (UI-d13v §6)도 행 기본 동작보다 먼저다 — 누른 것은 행이
+    // 아니라 그 행을 빼는 버튼이다.
+    const queueRemoveBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('[data-action="queue-remove"]')
+    );
+    if (queueRemoveBtn) {
+      const bead_id = queueRemoveBtn.dataset.beadId || '';
+      if (bead_id) {
+        void removeBead(bead_id);
       }
       return;
     }
