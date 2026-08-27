@@ -2085,6 +2085,87 @@ describe('RepoOperation coordinator', () => {
     expect(start).not.toHaveBeenCalled();
   });
 
+  test('settles a pinned target behind the last successful deploy as superseded', async () => {
+    const base_git = gitForBootstrap();
+    const gitRun = vi.fn(async (args) => {
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stdout: `${TARGET}\n`, stderr: '' };
+      }
+      if (args[0] === 'merge-base') {
+        // TARGET is an ancestor of APPROVED, never the other way round.
+        return args[2] === APPROVED && args[3] === TARGET
+          ? { code: 1, stdout: '', stderr: '' }
+          : { code: 0, stdout: '', stderr: '' };
+      }
+      return base_git(args);
+    });
+    const ensureAligned = vi.fn();
+    const start = vi.fn();
+    const { store, coordinator } = coordinatorFor({
+      gitRun,
+      deployWorktree: {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({
+          ok: true,
+          head: APPROVED,
+          clean: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy')
+        }),
+        ensureAligned,
+        verifyCovered: async () => ({ ok: true })
+      },
+      runner: {
+        start,
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'newer-deploy',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-newer', merged_sha: APPROVED }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: '5'.repeat(40)
+    });
+    const newer = store.snapshot(root).repo_operations['newer-deploy'];
+    store.startRepoOperation(root, {
+      operation_id: 'newer-deploy',
+      attempt_id: newer.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'newer.log'),
+      target_sha: APPROVED
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'newer-deploy',
+      attempt_id: newer.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+
+    // A zero-commit quick_fix landing pins the head it observed, which by now
+    // sits behind what the newer deploy already shipped.
+    const result = await coordinator.ensureDeploy({
+      target_base: 'main',
+      target_sha: TARGET,
+      subjects: [{ bead_id: 'UI-1', merged_sha: TARGET }],
+      bootstrap_provenance: {
+        approved_source_path: 'docs/spec.md',
+        approved_source_sha: APPROVED,
+        requested_by: 'operator',
+        requested_at: 1
+      }
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(result.code).toBeUndefined();
+    expect(ensureAligned).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
   test('settles a session-predeployed target as covered without spawning', async () => {
     const start = vi.fn();
     const ensureAligned = vi.fn();

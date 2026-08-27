@@ -295,25 +295,21 @@ describe('RepoOps deploy worktree', () => {
     });
   });
 
-  test('refuses a remote tip that rewinds behind the last successful deploy', async () => {
+  test('binds the fetched remote tip without judging it against local history', async () => {
     const manager = createRepoOpsDeployWorktreeManager({
       locks: createLockManager()
     });
     fs.writeFileSync(path.join(repo, 'README'), 'ahead\n');
     git(['add', '.'], repo);
     git(['commit', '-qm', 'ahead of remote'], repo);
-    const unpushed_sha = git(['rev-parse', 'HEAD'], repo).trim();
+    const remote_sha = git(['rev-parse', 'origin/main'], repo).trim();
 
     const result = await manager.ensure({
       repo,
       workspace: repo,
-      base: 'main',
-      last_successful_sha: unpushed_sha
+      base: 'main'
     });
 
-    expect(result).toMatchObject({
-      ok: false,
-      code: 'remote_history_not_monotonic'
-    });
+    expect(result).toMatchObject({ ok: true, target_sha: remote_sha });
   });
 });
