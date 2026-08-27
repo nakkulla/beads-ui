@@ -299,7 +299,6 @@ describe('worker/auto-advance-restore unresolved failures', () => {
         bead_id: 'UI-blocked',
         status: 'failed',
         finished_at: 120,
-        repair_operation_id: 'cleanup:UI-blocked',
         halted_auto_advance: false
       }
     });

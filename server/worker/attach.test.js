@@ -29,7 +29,11 @@ import {
 import { createQueueStore } from './queue-store.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createWorkerRuntime } from './runtime.js';
-import { sessionLogPath } from './state-paths.js';
+import {
+  queueFilePath,
+  sessionLogPath,
+  workspaceStateDir
+} from './state-paths.js';
 
 // 큐 deps는 attach 안에서만 조립된다. 같은 위임 mock으로 그 deps를 붙잡아,
 // 생산 조립이 seam을 실제로 연결하는지 본다(UI-p49g §4.1).
@@ -1028,6 +1032,109 @@ describe('worker/attach construction + live loop (F1)', () => {
       status: 'paused',
       control: { phase: 'done' }
     });
+  });
+
+  test('retires a persisted repair lane before anything else observes it', async () => {
+    // The legacy payload lives in a fixture on purpose: it is the one shape
+    // that must still name the retired keys, and the identifier gate in
+    // `repair-lane-retirement.test.js` allows exactly that file.
+    const legacy = JSON.parse(
+      fs.readFileSync(
+        path.join(FIXTURES, 'legacy-repair-lane-queue.json'),
+        'utf8'
+      )
+    );
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(legacy));
+    const runtime = createWorkerRuntime();
+    /** @type {string[]} */
+    const order = [];
+    /** @type {any} */
+    let seen_at_stop = null;
+    const sessionMonitors = {
+      start: vi.fn((/** @type {string} */ _ws, /** @type {any} */ a) => {
+        order.push(`monitor:${a.attempt_id}`);
+        return true;
+      }),
+      stop: vi.fn(),
+      stopAll: vi.fn()
+    };
+    const processController = {
+      capture: vi.fn(),
+      terminate: vi.fn(async () => {
+        order.push('stop');
+        // Read the FILE, not the store: the ordering claim is about what is
+        // still durable at the moment the kill goes out.
+        seen_at_stop = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+        return {
+          ok: true,
+          state: /** @type {const} */ ('gone'),
+          forced: false
+        };
+      }),
+      probe: vi.fn(() => ({ state: /** @type {const} */ ('gone') })),
+      signal: vi.fn()
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      processController,
+      sessionMonitors,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(
+      () =>
+        runtime.queueStore.snapshot(WS).completion_intents['UI-root']?.phase ===
+        'needs_human'
+    );
+
+    // Steps 1-2: the stop went out while the whole legacy record — the keys
+    // that identify this session — was still on disk, untouched.
+    expect(order).toEqual(['stop']);
+    expect(seen_at_stop.attempts['att-repair']).toEqual(
+      legacy.attempts['att-repair']
+    );
+    expect(seen_at_stop.completion_intents['UI-root']).toEqual(
+      legacy.completion_intents['UI-root']
+    );
+    // Step 2: the session reaches a terminal status.
+    const snap = runtime.queueStore.snapshot(WS);
+    expect(snap.attempts['att-repair']).toMatchObject({
+      status: 'failed',
+      cause: 'repair_lane_retired'
+    });
+    // Steps 3-4: the terminal reason, and a rewritten record whose EXACT shape
+    // is what proves the retired keys are gone.
+    expect(
+      JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8')).completion_intents[
+        'UI-root'
+      ]
+    ).toEqual({
+      target_base: 'main',
+      phase: 'needs_human',
+      subject: legacy.completion_intents['UI-root'].subject,
+      active_op: null,
+      auto_resolution: null,
+      paused_resolution: null,
+      terminal_reason: {
+        reason: 'repair_lane_retired',
+        stage: 'repairing',
+        failure_key: legacy.completion_intents['UI-root'].active_op.failure_key,
+        evidence: null,
+        log_path: '/logs/att-repair.log',
+        op_id: 'op-1',
+        comment_at: null,
+        at: expect.any(Number)
+      }
+    });
+    // The whole reason the stop comes first: no monitor may reattach to it.
+    expect(order).not.toContain('monitor:att-repair');
   });
 
   test('recovers discard fences before controls and resumes them after monitor replay', async () => {

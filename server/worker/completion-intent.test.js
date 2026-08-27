@@ -178,7 +178,6 @@ function mergeOperation(op_id = null) {
     kind: /** @type {const} */ ('merge_subject'),
     failure_key,
     attempt_id: null,
-    repair_bead_id: null,
     status: /** @type {const} */ ('prepared')
   };
 }
@@ -346,7 +345,7 @@ describe('worker/completion-intent decisions', () => {
       intent: intent({
         active_op: {
           op_id: 'op-1',
-          kind: 'resume_root',
+          kind: 'merge_subject',
           status: 'dispatched'
         }
       }),
@@ -373,7 +372,7 @@ describe('worker/completion-intent decisions', () => {
       intent: intent({
         active_op: {
           op_id: 'op-1',
-          kind: 'create_repair',
+          kind: 'retry_cleanup',
           status: 'prepared'
         }
       }),
@@ -905,7 +904,6 @@ describe('worker/completion-intent action driver', () => {
         kind: 'retry_cleanup',
         failure_key,
         attempt_id: null,
-        repair_bead_id: null,
         status: 'prepared'
       }
     });
@@ -1228,10 +1226,10 @@ describe('worker/completion-intent action driver', () => {
     const contradictory = seededCompletionStore();
     contradictory.prepareCompletionOp(DRIVER_WS, {
       root_bead_id: 'UI-root',
-      phase: 'repairing',
+      phase: 'cleaning',
       op: {
         ...mergeOperation('wrong-owner'),
-        kind: 'create_repair'
+        kind: 'retry_cleanup'
       }
     });
     contradictory.terminalizeCompletionIntent(DRIVER_WS, {
@@ -1576,7 +1574,6 @@ describe('worker/completion-intent auto-resolution decisions (UI-hk74 §4)', () 
       op: {
         completion_op_id: null,
         failure_key: null,
-        repair_bead_id: null,
         continuation: null,
         continuation_mismatch: null,
         operation_id: null,

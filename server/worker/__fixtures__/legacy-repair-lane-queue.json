@@ -1,0 +1,60 @@
+{
+  "revision": 3,
+  "attempts": {
+    "att-repair": {
+      "attempt_id": "att-repair",
+      "bead_id": "UI-root",
+      "status": "running",
+      "repo": "/repo",
+      "target_base": "main",
+      "base_oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "runner": "claude",
+      "pid": 4242,
+      "started_at": 1000,
+      "process_identity": { "pid": 4242, "pgid": 4242, "started_at": 1000 },
+      "log_path": "/logs/att-repair.log",
+      "completion_root_id": "UI-root",
+      "completion_op_id": "op-1",
+      "completion_mode": "resume_root",
+      "completion_failure_key": {
+        "stage": "merge_gate",
+        "reason": "verify_cmd_failed",
+        "subject_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "result_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  "completion_intents": {
+    "UI-root": {
+      "target_base": "main",
+      "phase": "repairing",
+      "subject": {
+        "role": "root",
+        "bead_id": "UI-root",
+        "pr_url": "https://github.com/o/r/pull/1",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "merged_sha": null
+      },
+      "repair_sessions_used": 1,
+      "repair_bead_ids": [],
+      "subject_stack": [],
+      "active_op": {
+        "op_id": "op-1",
+        "kind": "resume_root",
+        "failure_key": {
+          "stage": "merge_gate",
+          "reason": "verify_cmd_failed",
+          "subject_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "result_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "attempt_id": "att-repair",
+        "repair_bead_id": null,
+        "status": "dispatched"
+      },
+      "terminal_reason": null
+    }
+  }
+}

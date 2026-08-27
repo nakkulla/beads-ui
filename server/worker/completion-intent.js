@@ -735,7 +735,7 @@ function operationIdentity(root_bead_id, kind, failure_key) {
  * @param {{
  *   workspace: string,
  *   store: any,
- *   prActions: { completionGate: (bead_id: string, role?: 'root'|'repair') => Promise<any>, resumeCompletionCleanup?: (root_bead_id: string) => Promise<any> },
+ *   prActions: { completionGate: (bead_id: string, role?: 'root') => Promise<any>, resumeCompletionCleanup?: (root_bead_id: string) => Promise<any> },
  *   bd?: { comment?: (bead_id: string, text: string) => Promise<unknown> },
  *   notifyChanged?: (workspace: string) => void,
  *   kickMerge?: () => Promise<unknown>|unknown,
@@ -889,14 +889,11 @@ export function createCompletionActionDriver(deps) {
     ) {
       return false;
     }
-    // The completion subject is always the root PR now that the repair lane is
-    // retired, so a legacy merge operation may name no repair Bead at all.
     const active_failure = intent.active_op?.failure_key;
     if (
       intent.active_op !== null &&
       (intent.active_op?.kind !== 'merge_subject' ||
         intent.active_op.attempt_id !== null ||
-        intent.active_op.repair_bead_id !== null ||
         intent.active_op.status === 'consumed' ||
         active_failure?.stage !== 'merge_subject' ||
         active_failure.subject_sha !== intent.subject.head_sha ||
@@ -932,7 +929,6 @@ export function createCompletionActionDriver(deps) {
       kind: 'merge_subject',
       failure_key,
       attempt_id: null,
-      repair_bead_id: null,
       status: 'prepared'
     };
     let resolution_attempt_id = null;
@@ -1014,7 +1010,6 @@ export function createCompletionActionDriver(deps) {
           kind: 'retry_cleanup',
           failure_key,
           attempt_id: null,
-          repair_bead_id: null,
           status: 'prepared'
         }
       });
@@ -1230,7 +1225,6 @@ export function createCompletionActionDriver(deps) {
     return {
       completion_op_id: op?.op_id ?? null,
       failure_key: op?.failure_key ?? extras.failure_key ?? null,
-      repair_bead_id: op?.repair_bead_id ?? null,
       continuation: extras.continuation ?? null,
       continuation_mismatch:
         typeof extras.continuation_mismatch === 'string'
@@ -1964,7 +1958,6 @@ export function createCompletionActionDriver(deps) {
             kind: 'merge_subject',
             failure_key,
             attempt_id: null,
-            repair_bead_id: null,
             status: 'prepared'
           }
         });

@@ -88,11 +88,9 @@ describe('worker/queue-store', () => {
     const reloaded = createQueueStore().snapshot(WS).attempts.legacy;
 
     expect(legacy).toMatchObject({
-      repair_operation_id: null,
       halted_auto_advance: false
     });
     expect(reloaded).toMatchObject({
-      repair_operation_id: null,
       halted_auto_advance: false
     });
   });
@@ -101,22 +99,18 @@ describe('worker/queue-store', () => {
     const malformed = makeAttempt({
       attempt_id: 'malformed',
       bead_id: 'UI-malformed',
-      repair_operation_id: ' ',
       halted_auto_advance: /** @type {any} */ ('true')
     });
     const repair = makeAttempt({
       attempt_id: 'repair',
       bead_id: 'UI-repair',
-      repair_operation_id: 'cleanup:UI-repair',
       halted_auto_advance: true
     });
 
     expect(malformed).toMatchObject({
-      repair_operation_id: null,
       halted_auto_advance: false
     });
     expect(repair).toMatchObject({
-      repair_operation_id: 'cleanup:UI-repair',
       halted_auto_advance: true
     });
   });
@@ -128,8 +122,7 @@ describe('worker/queue-store', () => {
       attempt: {
         attempt_id: 'repair',
         bead_id: 'UI-repair',
-        status: 'failed',
-        repair_operation_id: 'cleanup:UI-repair'
+        status: 'failed'
       }
     });
     store.setAutoAdvance(WS, true);
@@ -257,56 +250,6 @@ describe('worker/queue-store', () => {
       }
     });
     return store;
-  }
-
-  /**
-   * @param {string} op_id
-   * @param {string} attempt_id
-   */
-  function resumeRepairOp(op_id, attempt_id) {
-    return {
-      op_id,
-      kind: /** @type {const} */ ('resume_root'),
-      failure_key: {
-        stage: 'merge_gate',
-        reason: 'verify_cmd_failed',
-        subject_sha: 'a'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        result_digest: 'c'.repeat(64)
-      },
-      attempt_id,
-      repair_bead_id: null,
-      status: /** @type {const} */ ('prepared')
-    };
-  }
-
-  /**
-   * @param {any} store
-   * @param {string} [attempt_id]
-   */
-  function beginPausedCompletionAttempt(store, attempt_id = 'att-repair-1') {
-    const op = resumeRepairOp('op-1', attempt_id);
-    const result = store.beginRepairOp(WS, {
-      root_bead_id: 'UI-root',
-      op,
-      attempt: {
-        attempt_id,
-        bead_id: 'UI-root',
-        repo: '/repo',
-        target_base: 'main',
-        base_oid: 'b'.repeat(40),
-        runner: 'codex',
-        status: 'paused',
-        completion_root_id: 'UI-root',
-        completion_op_id: op.op_id,
-        completion_mode: op.kind,
-        completion_failure_key: op.failure_key
-      }
-    });
-    if (!result.ok) {
-      throw new Error('completion attempt setup failed');
-    }
-    return op;
   }
 
   test('place persists and round-trips through a fresh store instance', () => {
@@ -567,9 +510,6 @@ describe('worker/queue-store', () => {
               base_sha,
               merged_sha: null
             },
-            repair_sessions_used: 0,
-            repair_bead_ids: [],
-            subject_stack: [],
             active_op: null,
             terminal_reason: null
           }
@@ -590,9 +530,6 @@ describe('worker/queue-store', () => {
         base_sha,
         merged_sha: null
       },
-      repair_sessions_used: 0,
-      repair_bead_ids: [],
-      subject_stack: [],
       active_op: null,
       auto_resolution: null,
       paused_resolution: null,
@@ -626,9 +563,6 @@ describe('worker/queue-store', () => {
               base_sha,
               merged_sha: null
             },
-            repair_sessions_used: 0,
-            repair_bead_ids: [],
-            subject_stack: [],
             active_op: null,
             terminal_reason: null
           }
@@ -636,20 +570,13 @@ describe('worker/queue-store', () => {
       })
     );
 
-    const store = createQueueStore();
-    const loaded = store.snapshot(WS);
-    const result = store.beginRepairOp(WS, {
-      root_bead_id: 'UI-root',
-      op: resumeRepairOp('legacy-anchor-repair', 'legacy-anchor-child'),
-      attempt: { attempt_id: 'legacy-anchor-child', bead_id: 'UI-root' }
-    });
+    const loaded = createQueueStore().snapshot(WS);
 
     expect(loaded.attempts['legacy-root']).toMatchObject({
       completion_root_id: 'UI-root',
       completion_op_id: null,
       worker_serial: false
     });
-    expect(result.ok).toBe(true);
   });
 
   test('keeps ambiguous legacy root attempts unanchored on cold load', () => {
@@ -684,9 +611,6 @@ describe('worker/queue-store', () => {
               base_sha,
               merged_sha: null
             },
-            repair_sessions_used: 0,
-            repair_bead_ids: [],
-            subject_stack: [],
             active_op: null,
             terminal_reason: null
           }
@@ -694,20 +618,13 @@ describe('worker/queue-store', () => {
       })
     );
 
-    const store = createQueueStore();
-    const loaded = store.snapshot(WS);
-    const result = store.beginRepairOp(WS, {
-      root_bead_id: 'UI-root',
-      op: resumeRepairOp('ambiguous-anchor-repair', 'ambiguous-anchor-child'),
-      attempt: { attempt_id: 'ambiguous-anchor-child', bead_id: 'UI-root' }
-    });
+    const loaded = createQueueStore().snapshot(WS);
 
     expect(loaded.attempts['legacy-root-a'].completion_root_id).toBe(null);
     expect(loaded.attempts['legacy-root-b'].completion_root_id).toBe(null);
-    expect(result.ok).toBe(false);
   });
 
-  test('loads a malformed completion intent as needs_human without resetting budget', () => {
+  test('loads a malformed completion intent as needs_human', () => {
     fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
     fs.writeFileSync(
       queueFilePath(WS),
@@ -717,9 +634,7 @@ describe('worker/queue-store', () => {
             target_base: 'main',
             phase: 'unknown',
             subject: { role: 'root', bead_id: 'UI-root' },
-            repair_sessions_used: 'bad',
-            repair_bead_ids: ['UI-repair'],
-            active_op: { kind: 'resume_root' },
+            active_op: { kind: 'merge_subject' },
             terminal_reason: null
           }
         }
@@ -730,8 +645,6 @@ describe('worker/queue-store', () => {
       createQueueStore().snapshot(WS).completion_intents['UI-root'];
 
     expect(intent.phase).toBe('needs_human');
-    expect(intent.repair_sessions_used).toBe(2);
-    expect(intent.repair_bead_ids).toEqual(['UI-repair']);
     expect(intent.active_op).toBe(null);
     expect(intent.terminal_reason).toMatchObject({
       reason: 'intent_state_invalid',
@@ -739,7 +652,7 @@ describe('worker/queue-store', () => {
     });
   });
 
-  test('loads a repair subject without return lineage as needs_human', () => {
+  test('loads a non-root completion subject as needs_human', () => {
     fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
     fs.writeFileSync(
       queueFilePath(WS),
@@ -756,8 +669,6 @@ describe('worker/queue-store', () => {
               base_sha: 'b'.repeat(40),
               merged_sha: null
             },
-            repair_sessions_used: 1,
-            repair_bead_ids: ['UI-repair'],
             active_op: null,
             terminal_reason: null
           }
@@ -770,7 +681,6 @@ describe('worker/queue-store', () => {
 
     expect(intent).toMatchObject({
       phase: 'needs_human',
-      repair_sessions_used: 1,
       terminal_reason: { reason: 'intent_state_invalid' }
     });
   });
@@ -819,8 +729,6 @@ describe('worker/queue-store', () => {
     ]);
     expect(result.queue.completion_intents['UI-root']).toMatchObject({
       phase: 'gating',
-      repair_sessions_used: 0,
-      repair_bead_ids: [],
       active_op: null
     });
   });
@@ -921,704 +829,6 @@ describe('worker/queue-store', () => {
     expect(result.queue.attempts['root-source'].completion_root_id).toBe(null);
   });
 
-  test('prerecords repair op, budget, and attempt in one revision', () => {
-    const store = createQueueStore();
-    store.appendAttempt(WS, {
-      expected_revision: 0,
-      attempt: {
-        attempt_id: 'att-root',
-        bead_id: 'UI-root',
-        target_base: 'main',
-        base_oid: 'b'.repeat(40)
-      }
-    });
-    store.moveToPrWait(WS, {
-      bead_id: 'UI-root',
-      attempt_id: 'att-root',
-      patch: { status: 'done', finished_at: 1 }
-    });
-    store.enqueueCompletionIntent(WS, {
-      root_bead_id: 'UI-root',
-      source_attempt_id: 'att-root',
-      target_base: 'main',
-      subject: {
-        role: 'root',
-        bead_id: 'UI-root',
-        pr_url: 'https://github.com/o/r/pull/1',
-        head_sha: 'a'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        merged_sha: null
-      }
-    });
-    const revision = store.snapshot(WS).revision;
-
-    const result = store.beginRepairOp(WS, {
-      root_bead_id: 'UI-root',
-      op: {
-        op_id: 'op-1',
-        kind: 'resume_root',
-        failure_key: {
-          stage: 'merge_gate',
-          reason: 'verify_cmd_failed',
-          subject_sha: 'a'.repeat(40),
-          base_sha: 'b'.repeat(40),
-          result_digest: 'c'.repeat(64)
-        },
-        attempt_id: 'att-repair-1',
-        repair_bead_id: null,
-        status: 'prepared'
-      },
-      attempt: {
-        attempt_id: 'att-repair-1',
-        bead_id: 'UI-root',
-        resumed_from: 'att-root'
-      }
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.queue.revision).toBe(revision + 1);
-    expect(result.queue.completion_intents['UI-root']).toMatchObject({
-      phase: 'repairing',
-      repair_sessions_used: 1,
-      active_op: { op_id: 'op-1', attempt_id: 'att-repair-1' }
-    });
-    expect(result.queue.attempts['att-repair-1']).toMatchObject({
-      attempt_id: 'att-repair-1',
-      bead_id: 'UI-root',
-      resumed_from: 'att-root'
-    });
-  });
-
-  test('transfers completion ownership while appending a resumed child', () => {
-    const store = storeWithCompletionIntent();
-    const op = beginPausedCompletionAttempt(store);
-    store.updateAttempt(WS, {
-      attempt_id: 'att-repair-1',
-      patch: { worker_serial: true }
-    });
-    const revision = store.snapshot(WS).revision;
-
-    const result = store.appendResumedCompletionAttempt(WS, {
-      expected_revision: revision,
-      source_attempt_id: 'att-repair-1',
-      attempt: {
-        attempt_id: 'att-repair-2',
-        bead_id: 'UI-root',
-        repo: '/repo',
-        target_base: 'main',
-        base_oid: 'b'.repeat(40),
-        runner: 'codex',
-        resumed_from: 'att-repair-1',
-        status: 'running'
-      }
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.queue.revision).toBe(revision + 1);
-    expect(result.queue.completion_intents['UI-root']).toMatchObject({
-      repair_sessions_used: 1,
-      active_op: { op_id: op.op_id, attempt_id: 'att-repair-2' }
-    });
-    expect(result.queue.attempts['att-repair-2']).toMatchObject({
-      completion_root_id: 'UI-root',
-      completion_op_id: op.op_id,
-      completion_mode: op.kind,
-      completion_failure_key: op.failure_key,
-      worker_serial: true
-    });
-  });
-
-  test('forces the completion root serial snapshot for a different repair bead', () => {
-    const store = storeWithCompletionIntent();
-    store.updateAttempt(WS, {
-      attempt_id: 'att-UI-root',
-      patch: { worker_serial: true }
-    });
-    // A later physical root record is not the completion source.
-    store.appendAttempt(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      attempt: {
-        attempt_id: 'root-admin-attempt',
-        bead_id: 'UI-root',
-        worker_serial: false,
-        status: 'done'
-      }
-    });
-    const failure_key = resumeRepairOp('unused', 'unused').failure_key;
-    store.prepareCompletionOp(WS, {
-      root_bead_id: 'UI-root',
-      phase: 'repairing',
-      op: {
-        op_id: 'create-child',
-        kind: 'create_repair',
-        failure_key,
-        attempt_id: null,
-        repair_bead_id: null,
-        status: 'prepared'
-      }
-    });
-    store.recordCompletionRepairBead(WS, {
-      root_bead_id: 'UI-root',
-      op_id: 'create-child',
-      repair_bead_id: 'UI-repair'
-    });
-    const op = {
-      op_id: 'dispatch-child',
-      kind: /** @type {const} */ ('dispatch_repair'),
-      failure_key,
-      attempt_id: 'repair-attempt',
-      repair_bead_id: 'UI-repair',
-      status: /** @type {const} */ ('prepared')
-    };
-
-    const result = store.beginRepairOp(WS, {
-      root_bead_id: 'UI-root',
-      op,
-      attempt: { attempt_id: 'repair-attempt', bead_id: 'UI-repair' }
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.queue.attempts['repair-attempt'].worker_serial).toBe(true);
-  });
-
-  test('inherits nonserial mode from the unique anchored source', () => {
-    const store = storeWithCompletionIntent();
-    store.updateAttempt(WS, {
-      attempt_id: 'att-UI-root',
-      patch: { worker_serial: false }
-    });
-
-    const result = store.beginRepairOp(WS, {
-      root_bead_id: 'UI-root',
-      op: resumeRepairOp('anchored-nonserial-op', 'anchored-nonserial-child'),
-      attempt: {
-        attempt_id: 'anchored-nonserial-child',
-        bead_id: 'UI-root'
-      }
-    });
-
-    expect(result.ok).toBe(true);
-    expect(
-      result.queue.attempts['anchored-nonserial-child'].worker_serial
-    ).toBe(false);
-  });
-
-  test('inherits serial mode from the unique anchored source', () => {
-    const store = storeWithCompletionIntent();
-    store.updateAttempt(WS, {
-      attempt_id: 'att-UI-root',
-      patch: { worker_serial: true }
-    });
-
-    const result = store.beginRepairOp(WS, {
-      root_bead_id: 'UI-root',
-      op: resumeRepairOp('anchored-serial-op', 'anchored-serial-child'),
-      attempt: {
-        attempt_id: 'anchored-serial-child',
-        bead_id: 'UI-root'
-      }
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.queue.attempts['anchored-serial-child'].worker_serial).toBe(
-      true
-    );
-  });
-
-  test('fails closed when a completion source anchor is absent', () => {
-    const store = storeWithCompletionIntent();
-    store.updateAttempt(WS, {
-      attempt_id: 'att-UI-root',
-      patch: { completion_root_id: null }
-    });
-
-    const result = store.beginRepairOp(WS, {
-      root_bead_id: 'UI-root',
-      op: resumeRepairOp('missing-anchor-op', 'missing-anchor-child'),
-      attempt: {
-        attempt_id: 'missing-anchor-child',
-        bead_id: 'UI-root'
-      }
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.queue.attempts['missing-anchor-child']).toBeUndefined();
-    expect(result.queue.completion_intents['UI-root'].active_op).toBe(null);
-  });
-
-  test('fails closed when completion source anchors are duplicated', () => {
-    const store = storeWithCompletionIntent();
-    store.updateAttempt(WS, {
-      attempt_id: 'att-UI-root',
-      patch: {
-        completion_root_id: 'UI-root',
-        completion_op_id: null,
-        worker_serial: false
-      }
-    });
-    store.appendAttempt(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      attempt: {
-        attempt_id: 'duplicate-anchor',
-        bead_id: 'UI-root',
-        completion_root_id: 'UI-root',
-        completion_op_id: null,
-        worker_serial: false,
-        status: 'done'
-      }
-    });
-
-    const result = store.beginRepairOp(WS, {
-      root_bead_id: 'UI-root',
-      op: resumeRepairOp('duplicate-anchor-op', 'duplicate-anchor-child'),
-      attempt: {
-        attempt_id: 'duplicate-anchor-child',
-        bead_id: 'UI-root'
-      }
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.queue.attempts['duplicate-anchor-child']).toBeUndefined();
-    expect(result.queue.completion_intents['UI-root'].active_op).toBe(null);
-  });
-
-  test('round-trips the anchored source before beginning repair', () => {
-    const store = createQueueStore();
-    store.appendAttempt(WS, {
-      expected_revision: 0,
-      attempt: {
-        attempt_id: 'older-serial',
-        bead_id: 'UI-root',
-        repo: '/repo',
-        target_base: 'main',
-        base_oid: 'b'.repeat(40),
-        worker_serial: true,
-        status: 'done'
-      }
-    });
-    store.appendAttempt(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      attempt: {
-        attempt_id: 'roundtrip-source',
-        bead_id: 'UI-root',
-        repo: '/repo',
-        target_base: 'main',
-        base_oid: 'b'.repeat(40),
-        worker_serial: false,
-        status: 'done'
-      }
-    });
-    store.moveToPrWait(WS, {
-      bead_id: 'UI-root',
-      attempt_id: 'roundtrip-source',
-      patch: { status: 'done', finished_at: 1 }
-    });
-    const created = store.enqueueCompletionIntent(WS, {
-      root_bead_id: 'UI-root',
-      source_attempt_id: 'roundtrip-source',
-      target_base: 'main',
-      subject: {
-        role: 'root',
-        bead_id: 'UI-root',
-        pr_url: 'https://github.com/o/r/pull/1',
-        head_sha: 'a'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        merged_sha: null
-      }
-    });
-    expect(created.ok).toBe(true);
-
-    const reloaded = createQueueStore();
-    expect(reloaded.snapshot(WS).attempts['roundtrip-source']).toMatchObject({
-      completion_root_id: 'UI-root',
-      completion_op_id: null
-    });
-    const result = reloaded.beginRepairOp(WS, {
-      root_bead_id: 'UI-root',
-      op: resumeRepairOp('roundtrip-op', 'roundtrip-child'),
-      attempt: {
-        attempt_id: 'roundtrip-child',
-        bead_id: 'UI-root'
-      }
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.queue.attempts['roundtrip-child'].worker_serial).toBe(false);
-  });
-
-  test('rejects a resumed completion child with mismatched lineage', () => {
-    const store = storeWithCompletionIntent();
-    beginPausedCompletionAttempt(store);
-    const revision = store.snapshot(WS).revision;
-
-    const result = store.appendResumedCompletionAttempt(WS, {
-      expected_revision: revision,
-      source_attempt_id: 'att-repair-1',
-      attempt: {
-        attempt_id: 'att-repair-2',
-        bead_id: 'UI-root',
-        repo: '/repo',
-        target_base: 'develop',
-        base_oid: 'b'.repeat(40),
-        runner: 'codex',
-        resumed_from: 'att-repair-1',
-        status: 'running'
-      }
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.queue.revision).toBe(revision);
-    expect(result.queue.attempts['att-repair-2']).toBeUndefined();
-    expect(
-      result.queue.completion_intents['UI-root'].active_op?.attempt_id
-    ).toBe('att-repair-1');
-  });
-
-  test('rejects a second child for one completion attempt', () => {
-    const store = storeWithCompletionIntent();
-    beginPausedCompletionAttempt(store);
-    store.appendAttempt(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      attempt: {
-        attempt_id: 'legacy-child',
-        bead_id: 'UI-root',
-        resumed_from: 'att-repair-1'
-      }
-    });
-    const revision = store.snapshot(WS).revision;
-
-    const result = store.appendResumedCompletionAttempt(WS, {
-      expected_revision: revision,
-      source_attempt_id: 'att-repair-1',
-      attempt: {
-        attempt_id: 'att-repair-2',
-        bead_id: 'UI-root',
-        repo: '/repo',
-        target_base: 'main',
-        base_oid: 'b'.repeat(40),
-        runner: 'codex',
-        resumed_from: 'att-repair-1',
-        status: 'running'
-      }
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.queue.revision).toBe(revision);
-    expect(result.queue.attempts['att-repair-2']).toBeUndefined();
-  });
-
-  test('rejects a stale completion transfer revision', () => {
-    const store = storeWithCompletionIntent();
-    beginPausedCompletionAttempt(store);
-    const revision = store.snapshot(WS).revision;
-
-    const result = store.appendResumedCompletionAttempt(WS, {
-      expected_revision: revision - 1,
-      source_attempt_id: 'att-repair-1',
-      attempt: {
-        attempt_id: 'att-repair-2',
-        bead_id: 'UI-root',
-        repo: '/repo',
-        target_base: 'main',
-        base_oid: 'b'.repeat(40),
-        runner: 'codex',
-        resumed_from: 'att-repair-1',
-        status: 'running'
-      }
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.conflict).toBe(true);
-    expect(result.queue.revision).toBe(revision);
-    expect(result.queue.attempts['att-repair-2']).toBeUndefined();
-  });
-
-  test('adopts a unique legacy completion descendant', () => {
-    const store = storeWithCompletionIntent();
-    const op = beginPausedCompletionAttempt(store);
-    store.appendAttempt(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      attempt: {
-        attempt_id: 'legacy-child',
-        bead_id: 'UI-root',
-        repo: '/repo',
-        target_base: 'main',
-        base_oid: 'b'.repeat(40),
-        runner: 'codex',
-        resumed_from: 'att-repair-1',
-        status: 'done'
-      }
-    });
-    const revision = store.snapshot(WS).revision;
-
-    const result = store.adoptLegacyCompletionAttempt(WS, {
-      root_bead_id: 'UI-root'
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.queue.revision).toBe(revision + 1);
-    expect(result.queue.completion_intents['UI-root']).toMatchObject({
-      repair_sessions_used: 1,
-      active_op: { op_id: op.op_id, attempt_id: 'legacy-child' }
-    });
-    expect(result.queue.attempts['legacy-child']).toMatchObject({
-      completion_root_id: 'UI-root',
-      completion_op_id: op.op_id,
-      completion_mode: op.kind,
-      completion_failure_key: op.failure_key
-    });
-  });
-
-  test('rejects a branched legacy completion lineage', () => {
-    const store = storeWithCompletionIntent();
-    beginPausedCompletionAttempt(store);
-    for (const attempt_id of ['legacy-a', 'legacy-b']) {
-      store.appendAttempt(WS, {
-        expected_revision: store.snapshot(WS).revision,
-        attempt: {
-          attempt_id,
-          bead_id: 'UI-root',
-          resumed_from: 'att-repair-1',
-          status: 'done'
-        }
-      });
-    }
-    const revision = store.snapshot(WS).revision;
-
-    const result = store.adoptLegacyCompletionAttempt(WS, {
-      root_bead_id: 'UI-root'
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.reason).toBe('legacy_lineage_ambiguous');
-    expect(result.queue.revision).toBe(revision);
-    expect(
-      result.queue.completion_intents['UI-root'].active_op?.attempt_id
-    ).toBe('att-repair-1');
-  });
-
-  test('rejects a cyclic legacy completion lineage', () => {
-    const store = storeWithCompletionIntent();
-    beginPausedCompletionAttempt(store);
-    store.appendAttempt(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      attempt: {
-        attempt_id: 'legacy-child',
-        bead_id: 'UI-root',
-        resumed_from: 'att-repair-1',
-        status: 'paused'
-      }
-    });
-    store.updateAttempt(WS, {
-      attempt_id: 'att-repair-1',
-      patch: { resumed_from: 'legacy-child' }
-    });
-    const revision = store.snapshot(WS).revision;
-
-    const result = store.adoptLegacyCompletionAttempt(WS, {
-      root_bead_id: 'UI-root'
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.reason).toBe('legacy_lineage_ambiguous');
-    expect(result.queue.revision).toBe(revision);
-  });
-
-  test('rejects a third repair session after two consumed operations', () => {
-    const store = storeWithCompletionIntent();
-    for (const n of [1, 2]) {
-      const attempt_id = `att-repair-${n}`;
-      const started = store.beginRepairOp(WS, {
-        root_bead_id: 'UI-root',
-        op: resumeRepairOp(`op-${n}`, attempt_id),
-        attempt: { attempt_id, bead_id: 'UI-root' }
-      });
-      expect(started.ok).toBe(true);
-      const consumed = store.advanceCompletionOp(WS, {
-        root_bead_id: 'UI-root',
-        op_id: `op-${n}`,
-        status: 'consumed',
-        next_phase: 'gating',
-        clear: true
-      });
-      expect(consumed.ok).toBe(true);
-    }
-    const revision = store.snapshot(WS).revision;
-
-    const rejected = store.beginRepairOp(WS, {
-      root_bead_id: 'UI-root',
-      op: resumeRepairOp('op-3', 'att-repair-3'),
-      attempt: { attempt_id: 'att-repair-3', bead_id: 'UI-root' }
-    });
-
-    expect(rejected.ok).toBe(false);
-    expect(rejected.queue.revision).toBe(revision);
-    expect(rejected.queue.completion_intents['UI-root']).toMatchObject({
-      phase: 'gating',
-      repair_sessions_used: 2,
-      active_op: null
-    });
-    expect(rejected.queue.attempts['att-repair-3']).toBeUndefined();
-  });
-
-  test('records repair child membership and refuses it a new root intent', () => {
-    const store = storeWithCompletionIntent();
-    const prepared = store.prepareCompletionOp(WS, {
-      root_bead_id: 'UI-root',
-      phase: 'repairing',
-      op: {
-        op_id: 'create-1',
-        kind: 'create_repair',
-        failure_key: {
-          stage: 'merge_gate',
-          reason: 'verify_cmd_failed',
-          subject_sha: 'a'.repeat(40),
-          base_sha: 'b'.repeat(40),
-          result_digest: 'c'.repeat(64)
-        },
-        attempt_id: null,
-        repair_bead_id: null,
-        status: 'prepared'
-      }
-    });
-    expect(prepared.ok).toBe(true);
-
-    const recorded = store.recordCompletionRepairBead(WS, {
-      root_bead_id: 'UI-root',
-      op_id: 'create-1',
-      repair_bead_id: 'UI-repair'
-    });
-    const rejected = store.enqueueCompletionIntent(WS, {
-      root_bead_id: 'UI-repair',
-      source_attempt_id: 'missing-repair-source',
-      target_base: 'main',
-      external: true,
-      subject: {
-        role: 'root',
-        bead_id: 'UI-repair',
-        pr_url: 'https://github.com/o/r/pull/2',
-        head_sha: 'd'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        merged_sha: null
-      }
-    });
-
-    expect(recorded.ok).toBe(true);
-    expect(recorded.queue.completion_intents['UI-root']).toMatchObject({
-      repair_bead_ids: ['UI-repair'],
-      subject_stack: [{ role: 'root', bead_id: 'UI-root' }],
-      active_op: { repair_bead_id: 'UI-repair', status: 'observed' }
-    });
-    expect(rejected.ok).toBe(false);
-    expect(rejected.queue.completion_intents['UI-repair']).toBeUndefined();
-  });
-
-  test('atomically replaces an observed create op with its repair attempt', () => {
-    const store = storeWithCompletionIntent();
-    const failure_key = resumeRepairOp('unused', 'unused').failure_key;
-    store.prepareCompletionOp(WS, {
-      root_bead_id: 'UI-root',
-      phase: 'repairing',
-      op: {
-        op_id: 'create-1',
-        kind: 'create_repair',
-        failure_key,
-        attempt_id: null,
-        repair_bead_id: null,
-        status: 'prepared'
-      }
-    });
-    store.recordCompletionRepairBead(WS, {
-      root_bead_id: 'UI-root',
-      op_id: 'create-1',
-      repair_bead_id: 'UI-repair'
-    });
-    const revision = store.snapshot(WS).revision;
-
-    const result = store.beginRepairOp(WS, {
-      root_bead_id: 'UI-root',
-      op: {
-        op_id: 'dispatch-1',
-        kind: 'dispatch_repair',
-        failure_key,
-        attempt_id: 'att-repair',
-        repair_bead_id: 'UI-repair',
-        status: 'prepared'
-      },
-      attempt: { attempt_id: 'att-repair', bead_id: 'UI-repair' }
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.queue.revision).toBe(revision + 1);
-    expect(result.queue.completion_intents['UI-root']).toMatchObject({
-      phase: 'repairing',
-      repair_sessions_used: 1,
-      active_op: {
-        op_id: 'dispatch-1',
-        kind: 'dispatch_repair',
-        repair_bead_id: 'UI-repair'
-      }
-    });
-    expect(result.queue.attempts['att-repair']).toMatchObject({
-      bead_id: 'UI-repair'
-    });
-  });
-
-  test('switches the current subject to a recorded repair child in one revision', () => {
-    const store = storeWithCompletionIntent();
-    store.prepareCompletionOp(WS, {
-      root_bead_id: 'UI-root',
-      phase: 'repairing',
-      op: {
-        op_id: 'create-1',
-        kind: 'create_repair',
-        failure_key: {
-          stage: 'merge_gate',
-          reason: 'verify_cmd_failed',
-          subject_sha: 'a'.repeat(40),
-          base_sha: 'b'.repeat(40),
-          result_digest: 'c'.repeat(64)
-        },
-        attempt_id: null,
-        repair_bead_id: null,
-        status: 'prepared'
-      }
-    });
-    store.recordCompletionRepairBead(WS, {
-      root_bead_id: 'UI-root',
-      op_id: 'create-1',
-      repair_bead_id: 'UI-repair'
-    });
-    store.advanceCompletionOp(WS, {
-      root_bead_id: 'UI-root',
-      op_id: 'create-1',
-      status: 'consumed',
-      next_phase: 'repairing',
-      clear: true
-    });
-    const revision = store.snapshot(WS).revision;
-
-    const result = store.setCompletionSubject(WS, {
-      root_bead_id: 'UI-root',
-      phase: 'waiting_repair_pr',
-      subject: {
-        role: 'repair',
-        bead_id: 'UI-repair',
-        pr_url: 'https://github.com/o/r/pull/2',
-        head_sha: 'd'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        merged_sha: null
-      }
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.queue.revision).toBe(revision + 1);
-    expect(result.queue.completion_intents['UI-root']).toMatchObject({
-      phase: 'waiting_repair_pr',
-      subject: { role: 'repair', bead_id: 'UI-repair' }
-    });
-  });
-
   test('pauses an idle completion intent and releases its queue position', () => {
     const store = storeWithCompletionIntent();
     const revision = store.snapshot(WS).revision;
@@ -1672,20 +882,8 @@ describe('worker/queue-store', () => {
     ]);
   });
 
-  test('re-enables a paused intent at a fresh queue position without resetting budget', () => {
+  test('re-enables a paused intent at a fresh queue position', () => {
     const store = storeWithCompletionIntent();
-    store.beginRepairOp(WS, {
-      root_bead_id: 'UI-root',
-      op: resumeRepairOp('op-1', 'att-repair-1'),
-      attempt: { attempt_id: 'att-repair-1', bead_id: 'UI-root' }
-    });
-    store.advanceCompletionOp(WS, {
-      root_bead_id: 'UI-root',
-      op_id: 'op-1',
-      status: 'consumed',
-      next_phase: 'gating',
-      clear: true
-    });
     store.pauseCompletionIntent(WS, { root_bead_id: 'UI-root' });
     store.appendAttempt(WS, {
       expected_revision: store.snapshot(WS).revision,
@@ -1737,68 +935,10 @@ describe('worker/queue-store', () => {
     });
     expect(result.queue.completion_intents['UI-root']).toMatchObject({
       phase: 'gating',
-      repair_sessions_used: 1,
       subject: {
         head_sha: 'a'.repeat(40),
         base_sha: 'b'.repeat(40)
       }
-    });
-  });
-
-  test('restores the prior subject and pops its durable lineage atomically', () => {
-    const store = storeWithCompletionIntent();
-    const failure_key = resumeRepairOp('unused', 'unused').failure_key;
-    store.prepareCompletionOp(WS, {
-      root_bead_id: 'UI-root',
-      phase: 'repairing',
-      op: {
-        op_id: 'create-1',
-        kind: 'create_repair',
-        failure_key,
-        attempt_id: null,
-        repair_bead_id: null,
-        status: 'prepared'
-      }
-    });
-    store.recordCompletionRepairBead(WS, {
-      root_bead_id: 'UI-root',
-      op_id: 'create-1',
-      repair_bead_id: 'UI-repair'
-    });
-    store.advanceCompletionOp(WS, {
-      root_bead_id: 'UI-root',
-      op_id: 'create-1',
-      status: 'consumed',
-      next_phase: 'gating',
-      subject: {
-        role: 'repair',
-        bead_id: 'UI-repair',
-        pr_url: 'https://github.com/o/r/pull/2',
-        head_sha: 'c'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        merged_sha: null
-      },
-      clear: true
-    });
-
-    const result = store.restoreCompletionSubject(WS, {
-      root_bead_id: 'UI-root',
-      phase: 'gating',
-      subject: {
-        role: 'root',
-        bead_id: 'UI-root',
-        pr_url: 'https://github.com/o/r/pull/1',
-        head_sha: 'd'.repeat(40),
-        base_sha: 'e'.repeat(40),
-        merged_sha: null
-      }
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.queue.completion_intents['UI-root']).toMatchObject({
-      phase: 'gating',
-      subject: { role: 'root', bead_id: 'UI-root' },
-      subject_stack: []
     });
   });
 
@@ -1847,7 +987,6 @@ describe('worker/queue-store', () => {
       kind: /** @type {const} */ ('merge_subject'),
       failure_key,
       attempt_id: null,
-      repair_bead_id: null,
       status: /** @type {const} */ ('prepared')
     };
     store.prepareCompletionOp(WS, {
@@ -5791,16 +4930,13 @@ describe('worker/queue-store — manual merge continuation authority', () => {
     ).toMatchObject({ resolution_rounds: 0, rebase_rounds: 0 });
   });
 
-  test('preserves completion operation and repair lineage during resume', () => {
+  test('preserves the completion operation during resume', () => {
     const store = terminalManualStore();
     const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
     const intent = raw.completion_intents['UI-1'];
-    intent.repair_sessions_used = 1;
-    intent.repair_bead_ids = ['UI-repair'];
-    intent.subject_stack = [{ ...intent.subject }];
     intent.active_op = {
-      op_id: 'resume-op',
-      kind: 'resume_root',
+      op_id: 'merge-op',
+      kind: 'merge_subject',
       failure_key: {
         stage: 'merge_gate',
         reason: 'verify_cmd_failed',
@@ -5808,8 +4944,7 @@ describe('worker/queue-store — manual merge continuation authority', () => {
         base_sha: 'b'.repeat(40),
         result_digest: 'c'.repeat(64)
       },
-      attempt_id: 'repair-attempt',
-      repair_bead_id: null,
+      attempt_id: null,
       status: 'prepared'
     };
     fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
@@ -5820,9 +4955,6 @@ describe('worker/queue-store — manual merge continuation authority', () => {
     const resumed = result.queue.completion_intents['UI-1'];
 
     expect(resumed.active_op).toEqual(before.active_op);
-    expect(resumed.repair_sessions_used).toBe(before.repair_sessions_used);
-    expect(resumed.repair_bead_ids).toEqual(before.repair_bead_ids);
-    expect(resumed.subject_stack).toEqual(before.subject_stack);
     expect(resumed.subject).toEqual(before.subject);
   });
 
@@ -8112,16 +7244,15 @@ describe('worker/queue-store completion auto-resolution (UI-hk74)', () => {
   function resolutionOf(patch = {}) {
     return {
       class: 'retry',
-      origin_reason: 'repair_dispatch_failed',
-      origin_stage: 'repair_dispatch',
-      return_phase: 'repairing',
+      origin_reason: 'cleanup_dispatch_failed',
+      origin_stage: 'post_merge_cleanup',
+      return_phase: 'cleaning',
       attempts: 1,
       next_at: 5_000,
       last_error: 'boom',
       op: {
         completion_op_id: 'completion-abc',
         failure_key: null,
-        repair_bead_id: 'UI-repair',
         continuation: {
           continuation: 'prior_session',
           decision_token: 'token-1'
@@ -8151,9 +7282,6 @@ describe('worker/queue-store completion auto-resolution (UI-hk74)', () => {
             target_base: 'main',
             phase: 'gating',
             subject: subjectOf(),
-            repair_sessions_used: 0,
-            repair_bead_ids: [],
-            subject_stack: [],
             active_op: null,
             auto_resolution: null,
             paused_resolution: null,
@@ -8167,8 +7295,8 @@ describe('worker/queue-store completion auto-resolution (UI-hk74)', () => {
   }
 
   const FAILURE_KEY = {
-    stage: 'repair_create',
-    reason: 'repair_bead_create_failed',
+    stage: 'post_merge_cleanup',
+    reason: 'cleanup_failed',
     subject_sha: HEAD_SHA,
     base_sha: BASE_SHA,
     result_digest: 'd'.repeat(64)
@@ -8182,13 +7310,12 @@ describe('worker/queue-store completion auto-resolution (UI-hk74)', () => {
 
     const prepared = store.prepareCompletionOp(WS, {
       root_bead_id: 'UI-root',
-      phase: 'repairing',
+      phase: 'cleaning',
       op: {
         op_id: 'completion-abc',
-        kind: 'create_repair',
+        kind: 'retry_cleanup',
         failure_key: FAILURE_KEY,
         attempt_id: null,
-        repair_bead_id: null,
         status: 'prepared'
       }
     });
@@ -8196,7 +7323,7 @@ describe('worker/queue-store completion auto-resolution (UI-hk74)', () => {
     expect(prepared.ok).toBe(true);
     expect(prepared.queue.completion_intents['UI-root']).toMatchObject({
       phase: 'retrying',
-      active_op: { kind: 'create_repair' }
+      active_op: { kind: 'retry_cleanup' }
     });
   });
 
@@ -8207,13 +7334,12 @@ describe('worker/queue-store completion auto-resolution (UI-hk74)', () => {
     });
     store.prepareCompletionOp(WS, {
       root_bead_id: 'UI-root',
-      phase: 'repairing',
+      phase: 'cleaning',
       op: {
         op_id: 'completion-abc',
-        kind: 'create_repair',
+        kind: 'retry_cleanup',
         failure_key: FAILURE_KEY,
         attempt_id: null,
-        repair_bead_id: null,
         status: 'prepared'
       }
     });
@@ -8236,7 +7362,6 @@ describe('worker/queue-store completion auto-resolution (UI-hk74)', () => {
         kind: 'retry_cleanup',
         failure_key: FAILURE_KEY,
         attempt_id: null,
-        repair_bead_id: null,
         status: 'prepared'
       }
     });
@@ -8262,10 +7387,9 @@ describe('worker/queue-store completion auto-resolution (UI-hk74)', () => {
       auto_resolution: resolutionOf(),
       active_op: {
         op_id: 'completion-abc',
-        kind: 'create_repair',
+        kind: 'retry_cleanup',
         failure_key: FAILURE_KEY,
         attempt_id: null,
-        repair_bead_id: null,
         status: 'prepared'
       }
     });
@@ -8289,10 +7413,9 @@ describe('worker/queue-store completion auto-resolution (UI-hk74)', () => {
       auto_resolution: resolutionOf(),
       active_op: {
         op_id: 'completion-live',
-        kind: 'dispatch_repair',
+        kind: 'merge_subject',
         failure_key: FAILURE_KEY,
-        attempt_id: 'attempt-1',
-        repair_bead_id: 'UI-repair',
+        attempt_id: null,
         status: 'dispatched'
       }
     });
@@ -8450,12 +7573,12 @@ describe('worker/queue-store completion auto-resolution (UI-hk74)', () => {
 
     const result = store.clearCompletionAutoResolution(WS, {
       root_bead_id: 'UI-root',
-      phase: 'repairing'
+      phase: 'cleaning'
     });
 
     expect(result.ok).toBe(true);
     expect(result.queue.completion_intents['UI-root']).toMatchObject({
-      phase: 'repairing',
+      phase: 'cleaning',
       auto_resolution: null
     });
   });
@@ -8567,7 +7690,6 @@ describe('worker/queue-store completion auto-resolution (UI-hk74)', () => {
         kind: 'retry_cleanup',
         failure_key,
         attempt_id: null,
-        repair_bead_id: null,
         status: 'dispatched'
       }
     });

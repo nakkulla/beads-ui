@@ -1754,6 +1754,116 @@ function recoverRunningAttempts(att, key) {
 }
 
 /**
+ * The identity a detached attempt's process control needs. Mirrors the readers
+ * in `scheduler.js` and `session-monitor.js`: a legacy record may only know its
+ * `pid`, and a session leader's `pgid` equals it.
+ *
+ * @param {any} attempt
+ * @returns {{ pid: number, pgid: number, started_at: number }|null}
+ */
+function attemptProcessIdentity(attempt) {
+  const identity = attempt?.process_identity;
+  if (
+    identity &&
+    Number.isInteger(identity.pid) &&
+    Number.isInteger(identity.pgid) &&
+    Number.isFinite(identity.started_at)
+  ) {
+    return identity;
+  }
+  if (
+    attempt &&
+    Number.isInteger(attempt.pid) &&
+    Number.isFinite(attempt.started_at)
+  ) {
+    return {
+      pid: attempt.pid,
+      pgid: attempt.pid,
+      started_at: attempt.started_at
+    };
+  }
+  return null;
+}
+
+/**
+ * Kill one repair session this server did not spawn. A session that outlived
+ * the restart is NOT in the scheduler's running map, so `scheduler.stop` cannot
+ * reach it — the verified process-group controller is the path that can.
+ *
+ * A record with no live process (no controller, no identity, or a pid the
+ * controller refuses to own) simply returns: the caller still terminalizes it.
+ *
+ * @param {ReturnType<typeof createWorkerAttachment>} att
+ * @param {string} key
+ * @param {string} attempt_id
+ */
+async function stopRetiredRepairSession(att, key, attempt_id) {
+  const attempt = att.runtime.queueStore.snapshot(key).attempts?.[attempt_id];
+  if (!attempt || attempt.status !== 'running') {
+    return;
+  }
+  try {
+    att.sessionMonitors?.stop(key, attempt_id);
+  } catch (err) {
+    log('repair-lane monitor stop failed for %s: %o', attempt_id, err);
+  }
+  const identity = attemptProcessIdentity(attempt);
+  if (!att.processController || !identity) {
+    return;
+  }
+  try {
+    await att.processController.terminate(identity);
+  } catch (err) {
+    log('repair-lane session stop failed for %s: %o', attempt_id, err);
+  }
+}
+
+/**
+ * Retire every persisted post-merge repair saga (UI-8w4t §2) FIRST, before any
+ * other startup pass can observe its records. The order is the whole point:
+ * the cold load withheld these intents with their `repair_*` keys intact, this
+ * pass kills the surviving session processes, and only then does the store
+ * write the attempt terminals, the `repair_lane_retired` reason, and the
+ * rewritten record that no longer has the keys. Dropping the keys first would
+ * leave a live repair session with nothing left to name it — and
+ * {@link recoverRunningAttempts}, which runs below, would reattach a monitor to
+ * exactly that process.
+ *
+ * The repair Beads the lane already created are left alone; a human closes
+ * them.
+ *
+ * @param {ReturnType<typeof createWorkerAttachment>} att
+ * @param {string} key
+ */
+async function retireRepairLanes(att, key) {
+  const store = att.runtime.queueStore;
+  let pending = [];
+  try {
+    pending = store.pendingRepairLaneRetirements(key);
+  } catch (err) {
+    log('repair-lane retirement plan failed for %s: %o', key, err);
+    return;
+  }
+  if (pending.length === 0) {
+    return;
+  }
+  for (const plan of pending) {
+    for (const attempt_id of plan.attempt_ids) {
+      await stopRetiredRepairSession(att, key, attempt_id);
+    }
+    try {
+      store.retireRepairLane(key, {
+        root_bead_id: plan.root_bead_id,
+        at: Date.now()
+      });
+    } catch (err) {
+      log('repair-lane retirement failed for %s: %o', plan.root_bead_id, err);
+    }
+  }
+  emitQueueChanged(key);
+}
+
+/**
  * Recover persisted control before any monitor or ordinary driver can observe
  * the same attempt. A recovery failure leaves the attachment constructed but
  * inert; starting reconcile/poll/merge after an ambiguous signal would let a
@@ -1764,6 +1874,7 @@ function recoverRunningAttempts(att, key) {
  * @param {boolean} start_pr_poller
  */
 async function startWorkerAttachment(att, key, start_pr_poller) {
+  await retireRepairLanes(att, key);
   try {
     await att.discardCoordinator.recoverFences();
   } catch (err) {

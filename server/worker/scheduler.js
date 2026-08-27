@@ -2270,9 +2270,8 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Persist a relaunch child. An explicit generic resume of a completion-owned
-   * ancestor uses the store's atomic ownership transfer; other relaunch kinds
-   * keep their existing ordinary append semantics.
+   * Persist a relaunch child. A completion-owned ancestor accepts none; other
+   * relaunch kinds keep their existing ordinary append semantics.
    *
    * @param {string} workspace
    * @param {any} prior
@@ -2300,29 +2299,18 @@ export function createScheduler(deps) {
     if (!completion_resume) {
       return prerecordAttempt(workspace, attempt, expected_revision);
     }
+    // The completion-owned resume chain belonged to the retired post-merge
+    // repair lane (UI-8w4t §2), and its store transfer went with it. A
+    // completion-owned ancestor therefore refuses a relaunch child — which is
+    // exactly what the store guard already answered for every non-repair
+    // record, since only a repair session ever carried an operation id.
     const completion_owned =
       prior.completion_root_id != null ||
       prior.completion_op_id != null ||
-      prior.completion_mode != null ||
       prior.completion_failure_key != null;
-    if (!completion_owned) {
-      return prerecordAttempt(workspace, attempt, expected_revision);
-    }
-    if (typeof deps.store.appendResumedCompletionAttempt !== 'function') {
-      return false;
-    }
-    try {
-      return (
-        deps.store.appendResumedCompletionAttempt(workspace, {
-          expected_revision:
-            expected_revision ?? deps.store.snapshot(workspace).revision,
-          source_attempt_id: prior.attempt_id,
-          attempt
-        }).ok === true
-      );
-    } catch {
-      return false;
-    }
+    return completion_owned
+      ? false
+      : prerecordAttempt(workspace, attempt, expected_revision);
   }
 
   /**
@@ -6069,7 +6057,6 @@ export function createScheduler(deps) {
       prompt,
       conflict_resolution: prior.conflict_resolution === true,
       completion_resume: true,
-      repair_operation_id: prior.repair_operation_id ?? null,
       continuation: continuation.continuation,
       decision_token: continuation.decision_token,
       bead_snapshot: snap
@@ -7065,7 +7052,6 @@ export function createScheduler(deps) {
         ? continuation_mode === 'session'
         : false,
       disposition_prompt: options.disposition ? prompt : null,
-      repair_operation_id: options.repair_operation_id ?? null,
       started_at: options.resolution_wait ? now() : null,
       status: 'running',
       pid: null

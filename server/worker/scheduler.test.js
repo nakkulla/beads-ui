@@ -1643,11 +1643,6 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
-    env.store.updateAttempt(WS, {
-      attempt_id,
-      patch: { repair_operation_id: 'cleanup:S1' }
-    });
-
     env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
     await flush();
     await flush();
@@ -1715,11 +1710,6 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
-    env.store.updateAttempt(WS, {
-      attempt_id,
-      patch: { repair_operation_id: 'cleanup:S1' }
-    });
-
     env.runner.finish('S1', {
       success: false,
       reason: 'blocker',
@@ -3683,7 +3673,6 @@ describe('scheduler resume (spec §1)', () => {
     expect(child).toMatchObject({
       completion_root_id: null,
       completion_op_id: null,
-      completion_mode: null,
       completion_failure_key: null
     });
     // Worktree reused — never re-created.
@@ -4066,8 +4055,7 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     });
     seedDoneAttempt(env.store, {
       completion_root_id: 'B1',
-      completion_op_id: 'consumed-repair-op',
-      completion_mode: 'resume_root',
+      completion_op_id: 'consumed-merge-op',
       completion_failure_key: COMPLETION_FAILURE
     });
     env.store.moveToPrWait(WS, {
@@ -4096,7 +4084,6 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
         kind: 'merge_subject',
         failure_key: COMPLETION_FAILURE,
         attempt_id: null,
-        repair_bead_id: null,
         status: 'prepared'
       }
     });
@@ -4111,7 +4098,6 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
       conflict_resolution: true,
       completion_root_id: null,
       completion_op_id: null,
-      completion_mode: null,
       completion_failure_key: null
     });
   });
