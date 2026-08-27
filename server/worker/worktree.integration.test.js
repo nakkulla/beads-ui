@@ -1627,3 +1627,140 @@ describe('worker/worktree (real git)', () => {
     expect(fs.existsSync(b.path)).toBe(true);
   });
 });
+
+describe('worker/worktree restore (real git)', () => {
+  /** @type {string} */
+  let origin;
+
+  /**
+   * Publish `UI-1` on an `origin` this repo can fetch from, then leave the
+   * local checkout the way a deleted worktree leaves it.
+   *
+   * @param {{ keep_local_branch?: boolean, diverge?: boolean }} [options]
+   */
+  function publishHeadBranch(options = {}) {
+    origin = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-wt-origin-'));
+    git(['init', '-q', '--bare'], origin);
+    git(['remote', 'add', 'origin', origin], repo);
+    git(['checkout', '-q', '-b', 'UI-1'], repo);
+    commit(repo, 'work.txt', 'resolved');
+    const published = headOf(repo);
+    git(['push', '-q', 'origin', 'UI-1'], repo);
+    git(['checkout', '-q', '-'], repo);
+    if (options.diverge) {
+      git(['checkout', '-q', 'UI-1'], repo);
+      commit(repo, 'work.txt', 'unpushed');
+      git(['checkout', '-q', '-'], repo);
+    } else if (!options.keep_local_branch) {
+      git(['branch', '-q', '-D', 'UI-1'], repo);
+    }
+    return published;
+  }
+
+  afterEach(() => {
+    try {
+      fs.rmSync(origin, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  test('checks out a tracking branch when only origin has the head', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const published = publishHeadBranch();
+
+    const restored = await wt.restore({
+      repo,
+      bead_id: 'UI-1',
+      head_ref: 'UI-1'
+    });
+
+    expect(restored).toEqual({
+      ok: true,
+      path: path.join(repo, '.worktrees', 'UI-1')
+    });
+    expect(headOf(path.join(repo, '.worktrees', 'UI-1'))).toBe(published);
+  });
+
+  test('reuses the local head branch when its tip already matches origin', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const published = publishHeadBranch({ keep_local_branch: true });
+
+    const restored = await wt.restore({
+      repo,
+      bead_id: 'UI-1',
+      head_ref: 'UI-1'
+    });
+
+    expect(restored.ok).toBe(true);
+    expect(headOf(path.join(repo, '.worktrees', 'UI-1'))).toBe(published);
+  });
+
+  test("refuses a head branch that is not the bead's own", async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    publishHeadBranch();
+
+    const restored = await wt.restore({
+      repo,
+      bead_id: 'UI-1',
+      head_ref: 'someone-elses-branch'
+    });
+
+    expect(restored).toEqual({
+      ok: false,
+      reason: 'worktree_restore_branch_mismatch'
+    });
+  });
+
+  test('refuses when the worktree path reappeared under the lock', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    publishHeadBranch({ keep_local_branch: true });
+    await wt.add({ repo, bead_id: 'UI-1', base: headOf(repo) });
+
+    const restored = await wt.restore({
+      repo,
+      bead_id: 'UI-1',
+      head_ref: 'UI-1'
+    });
+
+    expect(restored).toEqual({
+      ok: false,
+      reason: 'worktree_restore_path_exists'
+    });
+  });
+
+  test('refuses when origin does not carry the head branch', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    publishHeadBranch();
+    git(['push', '-q', 'origin', '--delete', 'UI-1'], repo);
+    git(['fetch', '-q', '--prune', 'origin'], repo);
+
+    const restored = await wt.restore({
+      repo,
+      bead_id: 'UI-1',
+      head_ref: 'UI-1'
+    });
+
+    expect(restored).toEqual({
+      ok: false,
+      reason: 'worktree_restore_branch_missing'
+    });
+  });
+
+  test('leaves an unpushed local head branch alone', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    publishHeadBranch({ diverge: true });
+
+    const restored = await wt.restore({
+      repo,
+      bead_id: 'UI-1',
+      head_ref: 'UI-1'
+    });
+
+    expect(restored).toEqual({
+      ok: false,
+      reason: 'worktree_restore_branch_diverged'
+    });
+    expect(fs.existsSync(path.join(repo, '.worktrees', 'UI-1'))).toBe(false);
+  });
+});

@@ -32,6 +32,7 @@ import {
   discardReceiptTemplate,
   execChipsTemplate,
   priorityBadgeTemplate,
+  recChipTemplate,
   routeChipTemplate,
   timesMeta
 } from './lanes.js';
@@ -96,6 +97,8 @@ import {
  * quick_fix landing progress projected by `prWaitProgress`; absent omits the
  * line (fail-quiet).
  * @property {any} [discard] - Shared durable discard UI projection.
+ * @property {import('../../utils/rec-settings.js').RecSettings|null} [rec] -
+ * 복잡 판정 (UI-sbum §3), 레인 행·후보 카드와 같은 칩·같은 툴팁. 표시 전용이다.
  */
 
 /**
@@ -562,6 +565,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // route 칩은 헤더가 아니라 meta 줄이 싣는다: 분류 사실은 슬롯 5고, 헤더에
   // 끼면 좁은 타일에서 조작 버튼이 통째로 다음 줄로 밀린다 (UI-251y §2).
   const route_chip = routeChipTemplate(tile.workflow);
+  const rec_chip = recChipTemplate(tile.rec);
   const session_receipt_chip = session_receipt
     ? html`<span
         class="ctl-chip ctl-chip--exec-receipt"
@@ -584,9 +588,13 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       >`
     : '';
   const session_meta =
-    monitor_chips || route_chip || session_ref_chip || session_receipt_chip
+    monitor_chips ||
+    route_chip ||
+    session_ref_chip ||
+    session_receipt_chip ||
+    rec_chip
       ? html`<div class="rtile__meta">
-          ${monitor_chips}${route_chip}${session_ref_chip}${session_receipt_chip}
+          ${monitor_chips}${route_chip}${session_ref_chip}${session_receipt_chip}${rec_chip}
         </div>`
       : '';
   // 상태 뱃지는 슬롯 1이다 (UI-251y §3.1): 다른 카드가 이미 정체성 줄에서
@@ -723,10 +731,13 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       : monitor_chips ||
           route_chip ||
           exec_chips ||
+          rec_chip ||
           provider_badges.length > 0 ||
           usage_label
         ? html`<div class="rtile__meta">
-            ${monitor_chips}${route_chip}${execChipsTemplate(tile.exec_chips)}
+            ${monitor_chips}${route_chip}${execChipsTemplate(
+              tile.exec_chips
+            )}${rec_chip}
             ${provider_badges.length > 0
               ? provider_badges.map(
                   (badge) =>

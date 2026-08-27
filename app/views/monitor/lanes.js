@@ -29,6 +29,7 @@ import {
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import { recSettings } from '../../utils/rec-settings.js';
 import { overlapPrefixes } from '../../utils/scope-overlap.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
 import {
@@ -1907,6 +1908,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
         entry.exec_pins,
         route
       );
+      // 복잡 판정 (UI-sbum §4): 추천은 `rec`, 권위 키는 `exec_pins`로 따로
+      // 오므로 판정 유틸에 둘을 나눠 넘긴다. Worker 카드와 같은 칩·같은 툴팁이고
+      // 클릭은 없다.
+      const rec = recSettings(entry.rec, entry.exec_pins);
       if (Array.isArray(entry.blocked_by) && entry.blocked_by.length > 0) {
         blocked_by_map.set(
           bead_id,
@@ -1950,6 +1955,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
           workflow || (route ? { route, chips: { route } } : null)
         ),
         ...(exec_chips ? { exec_chips } : {}),
+        ...(rec ? { rec } : {}),
         blocked: entry.blocked === true,
         ...(Array.isArray(entry.blocked_by)
           ? {

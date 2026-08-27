@@ -55,6 +55,7 @@ import {
 } from '../../utils/exec-settings-chip.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { debug } from '../../utils/logging.js';
+import { recSettings } from '../../utils/rec-settings.js';
 import {
   coerceTimestampMs,
   formatTimestampLocal
@@ -565,6 +566,8 @@ export function mergeFailureText(reason) {
       return 'PR 대기 상태 동기화 실패';
     case 'resolution_round_cap':
       return '충돌 해소 2회 초과';
+    case 'resolution_rebase_cap':
+      return '큐 재충돌 3회 초과';
     case 'resolution_timeout':
       return '충돌 해소 대기 시간 초과';
     case 'resolution_refused':
@@ -574,6 +577,18 @@ export function mergeFailureText(reason) {
     // needs to run in is, and that is the one thing this path cannot recreate.
     case 'worktree_missing':
       return '워크트리 없음 — 세션에서 해소 필요';
+    // The restore that now precedes that refusal (UI-p49g §5.1) names WHICH
+    // safety check stopped it, because each one asks for a different fix.
+    case 'worktree_restore_branch_mismatch':
+      return '워크트리 복원 실패 — 브랜치 이름 불일치';
+    case 'worktree_restore_path_exists':
+      return '워크트리 복원 실패 — 경로 이미 있음';
+    case 'worktree_restore_branch_missing':
+      return '워크트리 복원 실패 — origin에 브랜치 없음';
+    case 'worktree_restore_branch_diverged':
+      return '워크트리 복원 실패 — 로컬 브랜치가 origin과 다름';
+    case 'worktree_restore_failed':
+      return '워크트리 복원 실패';
     case 'merge_unconfirmed_timeout':
       return '머지 확인 시간 초과';
     case 'pr_closed_unmerged':
@@ -3156,6 +3171,29 @@ export function createWorkerView(mount_element, options = {}) {
       exec_chips_cache.set(bead_id, chips);
       return chips;
     }
+    /** @type {Map<string, import('../../utils/rec-settings.js').RecSettings|null>} */
+    const rec_cache = new Map();
+    /**
+     * `복잡` 판정 하나 (UI-sbum §3). `execRowsFor`와 같은 전체-metadata 경로를
+     * 읽으므로 서버 투영이 따로 필요 없다. 구독 집합(`issue_by_id`)에 없는
+     * bead는 metadata를 볼 수 없으므로 `null`이다 — 틀린 칩보다 없는 칩.
+     *
+     * @param {string} bead_id
+     * @returns {import('../../utils/rec-settings.js').RecSettings|null}
+     */
+    function beadRec(bead_id) {
+      if (rec_cache.has(bead_id)) {
+        return rec_cache.get(bead_id) ?? null;
+      }
+      const issue = issue_by_id.get(bead_id);
+      const metadata =
+        issue && issue.metadata && typeof issue.metadata === 'object'
+          ? issue.metadata
+          : null;
+      const rec = metadata ? recSettings(metadata) : null;
+      rec_cache.set(bead_id, rec);
+      return rec;
+    }
     /**
      * The running tile's child rollup, or null when the bead has no children —
      * an empty block would claim "0/0" where the truth is "not that kind of
@@ -3553,6 +3591,9 @@ export function createWorkerView(mount_element, options = {}) {
         // "이 설정으로 돌아간다"를 적재 전에 미리 본다
         // (worker-card-exec-chips §2.2).
         exec_chips: beadExecChips(it.id),
+        // 복잡 판정 (UI-sbum §3): 표시 전용이라 위 자격·필터 어디에도 들어가지
+        // 않는다.
+        rec: beadRec(it.id),
         from_id: it.from_id || undefined,
         priority: idToPriority.get(it.id)
       };
@@ -3683,6 +3724,9 @@ export function createWorkerView(mount_element, options = {}) {
           // 대기 행만 실행 설정 칩을 얻는다 (worker-card-exec-chips §2.2):
           // 완료 행은 이미 끝났으므로 "돌아갈 설정"이 없다.
           exec_chips: waiting_lane ? beadExecChips(e.bead_id) : null,
+          // 복잡 판정은 레인과 무관하다 (UI-sbum §3): 실행 설정 칩과 달리 "이
+          // 일이 복잡했나"는 끝난 뒤에도 같은 사실이다.
+          rec: beadRec(e.bead_id),
           // route 칩 재료 (UI-yrzu §7.2). 완료 행은 칩을 그리지 않는다.
           workflow: waiting_lane ? bead_workflow[e.bead_id] || null : null,
           // 완료 행만 PR 링크를 얻는다: route·출처와 달리 "그 일이 어느 PR로
@@ -3861,6 +3905,7 @@ export function createWorkerView(mount_element, options = {}) {
           rollup: runningRollup(a.bead_id),
           rollup_expanded: rollup_expanded_ids.has(a.bead_id),
           exec_chips: attemptExecChips(a),
+          rec: beadRec(a.bead_id),
           ...timesOf(a.bead_id)
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {
@@ -3898,6 +3943,7 @@ export function createWorkerView(mount_element, options = {}) {
             rollup: runningRollup(a.bead_id),
             rollup_expanded: rollup_expanded_ids.has(a.bead_id),
             exec_chips: attemptExecChips(a),
+            rec: beadRec(a.bead_id),
             ...timesOf(a.bead_id)
           });
           latest_failed = a;
@@ -3966,6 +4012,7 @@ export function createWorkerView(mount_element, options = {}) {
         base_exception: null,
         discard: null,
         exec_chips: null,
+        rec: beadRec(bead_id),
         usage: null,
         rollup: null,
         rollup_expanded: false

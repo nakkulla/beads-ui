@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { REC_REASONS } from '../../app/utils/rec-settings.js';
 import * as enums from './exec-enums.js';
 import {
   ACCOUNT_KEYS,
@@ -9,6 +10,8 @@ import {
   ORCHESTRATION_KEYS,
   PLAN_REVIEW_MODELS,
   PRESET_KV_KEYS,
+  REC_SIGNALS,
+  REC_VALUES,
   REVIEW_EFFORTS,
   REVIEW_STEP_MODELS,
   WORKSPACE_KV_KEYS,
@@ -383,5 +386,30 @@ describe('worker/exec-enums implementation target coherence', () => {
         { catalog, active_writer: true, controller_runtime: 'claude' }
       )
     ).toMatchObject({ ok: false, reason: 'provider_model_mismatch' });
+  });
+});
+
+describe('worker/exec-enums rec vocabularies (UI-sbum §2)', () => {
+  test('matches the client rec_reason enum exactly', () => {
+    expect(REC_SIGNALS).toEqual(REC_REASONS);
+  });
+
+  test('allows exactly one recommended value per key', () => {
+    expect(REC_VALUES).toEqual({
+      rec_orchestration_model: ['fable'],
+      rec_impl_runtime: ['claude']
+    });
+  });
+
+  test('keeps the recommendation keys out of every resolved key list', () => {
+    for (const key of Object.keys(REC_VALUES)) {
+      expect(BEAD_APPLY_KEYS).not.toContain(key);
+      expect(WORKSPACE_KV_KEYS).not.toContain(key);
+      expect(IMPL_PRESET_KEYS).not.toContain(key);
+      expect(EXEC_SETTING_KEYS).not.toContain(key);
+      expect(
+        Object.keys(execSettingEnums(resolveCatalog({ warn: () => {} })))
+      ).not.toContain(key);
+    }
   });
 });

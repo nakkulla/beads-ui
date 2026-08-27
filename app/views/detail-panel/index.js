@@ -1165,29 +1165,71 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
+   * Write one exec-setting key, optimistically first and authoritatively after
+   * the readback.
+   *
+   * Resolves only once the server's `bd show` reply has been adopted, and
+   * rejects — after restoring this key's prior draft value and toasting — when
+   * it does not arrive (UI-sbum §4). The 추천 적용 path needs that: it writes two
+   * keys in sequence and must not send the second one after the first failed.
+   * The editor call sites ignore the result, so their behaviour is unchanged.
+   *
    * @param {string} key
    * @param {string} value
+   * @returns {Promise<void>}
    */
-  function onExecChange(key, value) {
+  async function onExecChange(key, value) {
+    const had_previous = Object.hasOwn(exec_local, key);
+    const previous = exec_local[key];
     exec_local[key] = value;
     doRender();
     if (!transport || !current_id) {
       return;
     }
-    // THREE-STATE (spec §E): an explicit choice is a literal write and only the
-    // editor's `(기본)` — carried here as an empty value — deletes the key.
-    void Promise.resolve(
-      transport(
-        'update-exec-settings',
-        buildThreeStatePayload(
-          current_id,
-          key,
-          value.length === 0 ? null : value
+    try {
+      // THREE-STATE (spec §E): an explicit choice is a literal write and only
+      // the editor's `(기본)` — carried here as an empty value — deletes the key.
+      const res = await Promise.resolve(
+        transport(
+          'update-exec-settings',
+          buildThreeStatePayload(
+            current_id,
+            key,
+            value.length === 0 ? null : value
+          )
         )
-      )
-    ).catch(() => {
+      );
+      // Same readback contract as `onImplTargetChange`: the reply is a `bd show`
+      // issue (object or single-item array), and the production transport
+      // swallows rejections into `[]`, so anything else is a failure.
+      const issue = Array.isArray(res) ? res[0] : res;
+      if (!issue || typeof issue !== 'object' || !issue.id) {
+        throw new Error('exec settings readback failed');
+      }
+      current = issue;
+      delete exec_local[key];
+      doRender();
+    } catch (err) {
+      if (had_previous) {
+        exec_local[key] = previous;
+      } else {
+        delete exec_local[key];
+      }
+      doRender();
       showToast('실행 설정 변경 실패', 'error');
-    });
+      throw err;
+    }
+  }
+
+  /**
+   * Run one of the two exec handlers where the caller has nothing to do with
+   * the outcome. Both already restore their draft and toast, so the rejection
+   * must be absorbed here rather than escaping as an unhandled one.
+   *
+   * @param {Promise<void>} pending
+   */
+  function fireAndForgetExec(pending) {
+    void pending.catch(() => {});
   }
 
   /**
@@ -1195,10 +1237,15 @@ export function createDetailPanel(mount_element, options) {
    * Runtime changes cannot leave a mismatched exact model or effort in the
    * local draft, so incompatible values reset to auto before the one mutation.
    *
+   * Returns a promise that resolves once the readback is adopted and rejects
+   * when it is not (UI-sbum §4) — the same contract as `onExecChange`, so the
+   * 추천 적용 path can await both in order.
+   *
    * @param {string} key
    * @param {string} value
+   * @returns {Promise<void>}
    */
-  function onImplTargetChange(key, value) {
+  async function onImplTargetChange(key, value) {
     const data = current || {};
     const metadata =
       data.metadata && typeof data.metadata === 'object' ? data.metadata : {};
@@ -1237,7 +1284,7 @@ export function createDetailPanel(mount_element, options) {
     if (!transport || !current_id) {
       return;
     }
-    void Promise.resolve(
+    return Promise.resolve(
       transport('update-impl-target', {
         id: current_id,
         ...normalized,
@@ -1259,7 +1306,7 @@ export function createDetailPanel(mount_element, options) {
         }
         doRender();
       })
-      .catch(() => {
+      .catch((err) => {
         for (const target_key of [
           'impl_runtime',
           'impl_model',
@@ -1273,7 +1320,51 @@ export function createDetailPanel(mount_element, options) {
         }
         doRender();
         showToast('구현 target 변경 실패', 'error');
+        throw err;
       });
+  }
+
+  /**
+   * Apply the whole recommendation with one click (UI-sbum §4).
+   *
+   * ALL of it or none of the sequence: splitting a recommendation belongs to the
+   * pin editor below, so this path copies every recommended key onto its
+   * authority key in order and stops at the first refusal — leaving a half-write
+   * behind is honest, because the readback recomputes the chip as `diverged` and
+   * says so.
+   *
+   * The confirm appears only for a real overwrite: an untouched bead has nothing
+   * to lose, and an already-applied chip is disabled before it can be clicked.
+   *
+   * @param {{ orchestration_model: string, impl_runtime?: string }} rec
+   * @param {'unapplied'|'applied'|'diverged'} state
+   * @returns {Promise<void>}
+   */
+  async function onApplyRec(rec, state) {
+    if (!rec || typeof rec !== 'object') {
+      return;
+    }
+    if (
+      state === 'diverged' &&
+      !window.confirm(
+        '추천 실행 설정을 적용할까요? 현재 수동 설정을 덮어씁니다.'
+      )
+    ) {
+      return;
+    }
+    try {
+      await onExecChange('orchestration_model', rec.orchestration_model);
+    } catch {
+      // 이미 토스트로 알렸다. 첫 키가 실패하면 둘째 키는 보내지 않는다.
+      return;
+    }
+    if (typeof rec.impl_runtime === 'string' && rec.impl_runtime.length > 0) {
+      try {
+        await onImplTargetChange('impl_runtime', rec.impl_runtime);
+      } catch {
+        // 같은 이유로 조용히 끝낸다 — 실패 표시는 그 경로의 토스트가 소유한다.
+      }
+    }
   }
 
   /**
@@ -2339,7 +2430,7 @@ export function createDetailPanel(mount_element, options) {
             </button>
           </div>
           ${titleTemplate(title, total_usage)}
-          ${summaryHeaderTemplate(effective)}
+          ${summaryHeaderTemplate(effective, { onApplyRec })}
           ${effectiveSettingsCardTemplate(
             {
               metadata: effective.metadata,
@@ -2363,10 +2454,10 @@ export function createDetailPanel(mount_element, options) {
                   key === 'impl_model' ||
                   key === 'impl_effort'
                 ) {
-                  onImplTargetChange(key, value ?? '');
+                  fireAndForgetExec(onImplTargetChange(key, value ?? ''));
                   return;
                 }
-                onExecChange(key, value ?? '');
+                fireAndForgetExec(onExecChange(key, value ?? ''));
               },
               onPresetSelect: (id) => {
                 selected_preset_id = id;
@@ -2380,7 +2471,12 @@ export function createDetailPanel(mount_element, options) {
             md: effective.metadata,
             catalog: exec_account_catalog,
             workspace_defaults: workspace_accounts,
-            handlers: { onExecChange }
+            handlers: {
+              onExecChange: (
+                /** @type {string} */ key,
+                /** @type {string} */ value
+              ) => fireAndForgetExec(onExecChange(key, value))
+            }
           })}
           ${propsTemplate(status, priority_val)} ${timesTemplate(data)}
           ${descTemplate(description)}

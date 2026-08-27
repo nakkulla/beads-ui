@@ -125,8 +125,10 @@ describe('resolveSessionFile host comparison', () => {
     });
   });
 
-  test('reports remote and touches no filesystem when the host differs', () => {
-    const file_system = fakeFs({});
+  test('reports remote when the host differs and no transcript is here', () => {
+    const file_system = fakeFs({
+      dirs: { '/home/u/.claude/projects': ['-repo-a'] }
+    });
 
     const result = resolveSessionFile(
       { index: 0, provider: 'claude', session_id: 'sid', host: 'other-box' },
@@ -142,7 +144,30 @@ describe('resolveSessionFile host comparison', () => {
       file: null,
       last_event_at: null
     });
-    expect(file_system.readdirSync).not.toHaveBeenCalled();
+  });
+
+  // The kernel hostname a session records is not stable across network changes
+  // (UI-82jx): a transcript found in this home outranks a mismatched label.
+  test('reports local when the host differs but the transcript is here', () => {
+    const file_system = fakeFs({
+      dirs: { '/home/u/.claude/projects': ['-repo-a'] },
+      files: { '/home/u/.claude/projects/-repo-a/sid.jsonl': 1700 }
+    });
+
+    const result = resolveSessionFile(
+      { index: 0, provider: 'claude', session_id: 'sid', host: 'old-label' },
+      {
+        home_dir: '/home/u',
+        hostname: 'Mac',
+        fs: /** @type {any} */ (file_system)
+      }
+    );
+
+    expect(result).toEqual({
+      locality: 'local',
+      file: '/home/u/.claude/projects/-repo-a/sid.jsonl',
+      last_event_at: 1700
+    });
   });
 });
 
@@ -450,7 +475,9 @@ describe('qualifySessionFork (UI-p206 §3)', () => {
   });
 
   test('rejects not_local when the session belongs to another machine', () => {
-    const file_system = localClaudeFs('sid-new');
+    const file_system = fakeFs({
+      dirs: { '/home/u/.claude/projects': ['-repo-a'] }
+    });
 
     const result = qualifySessionFork(
       { session_ref: 'claude:sid-new@other-box' },
@@ -459,5 +486,23 @@ describe('qualifySessionFork (UI-p206 §3)', () => {
     );
 
     expect(result).toEqual({ ok: false, reason: 'not_local' });
+  });
+
+  // The recorded host label drifts with the kernel hostname (UI-82jx); the
+  // transcript sitting in this home is what makes the session forkable.
+  test('accepts a mismatched host label when the transcript is local', () => {
+    const file_system = localClaudeFs('sid-new');
+
+    const result = qualifySessionFork(
+      { session_ref: 'claude:sid-new@other-box' },
+      'claude',
+      optionsFor(file_system)
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      provider: 'claude',
+      session_id: 'sid-new'
+    });
   });
 });

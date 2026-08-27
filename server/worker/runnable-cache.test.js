@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { recSettings } from '../../app/utils/rec-settings.js';
 import { normalizeIssueList } from '../list-adapters.js';
 import {
   __resetQueueEventsForTest,
@@ -186,7 +187,8 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         created_at: null,
         updated_at: null,
         workflow: { route: 'spec_backed' },
-        exec_pins: {}
+        exec_pins: {},
+        rec: null
       }
     ]);
   });
@@ -970,6 +972,134 @@ describe('runnable cache workflow + exec_pins (UI-eey2 §9.1)', () => {
       impl_speed: 'fast',
       codex_account: 'work'
     });
+  });
+});
+
+describe('runnable cache rec projection (UI-sbum §2)', () => {
+  test('projects the recommended keys under their original names', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            metadata: {
+              rec_orchestration_model: 'fable',
+              rec_impl_runtime: 'claude',
+              rec_reason: 'contract_change+multi_repo'
+            }
+          })
+        ]
+      }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].rec).toEqual({
+      rec_orchestration_model: 'fable',
+      rec_impl_runtime: 'claude',
+      rec_reason: 'contract_change+multi_repo'
+    });
+  });
+
+  test('carries a null rec when no orchestration model is recommended', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [row({ metadata: { rec_impl_runtime: 'claude' } })]
+      }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].rec).toBeNull();
+  });
+
+  test('carries a null rec when the recommended model is outside the enum', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [row({ metadata: { rec_orchestration_model: 'opus' } })]
+      }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].rec).toBeNull();
+  });
+
+  test('drops a recommended runtime and reason tokens outside the enum', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            metadata: {
+              rec_orchestration_model: 'fable',
+              rec_impl_runtime: 'codex',
+              rec_reason: 'multi_phase+made_up'
+            }
+          })
+        ]
+      }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].rec).toEqual({
+      rec_orchestration_model: 'fable',
+      rec_reason: 'multi_phase'
+    });
+  });
+
+  test('keeps every rec_* key out of exec_pins', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            metadata: {
+              impl_runtime: 'codex',
+              rec_orchestration_model: 'fable',
+              rec_impl_runtime: 'claude',
+              rec_reason: 'claude_bound'
+            }
+          })
+        ]
+      }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].exec_pins).toEqual({ impl_runtime: 'codex' });
+    for (const key of Object.keys(out[0].exec_pins)) {
+      expect(key.startsWith('rec_')).toBe(false);
+    }
+  });
+
+  test('carries the orchestration pins so the monitor can judge applied', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            metadata: {
+              orchestration_model: 'fable',
+              impl_runtime: 'claude',
+              rec_orchestration_model: 'fable',
+              rec_impl_runtime: 'claude'
+            }
+          })
+        ]
+      }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].exec_pins).toEqual({
+      orchestration_model: 'fable',
+      impl_runtime: 'claude'
+    });
+    expect(recSettings(out[0].rec, out[0].exec_pins)?.state).toBe('applied');
   });
 });
 describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
