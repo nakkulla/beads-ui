@@ -16,6 +16,25 @@ export function requestWorkspaceSnapshot(root_dir, cause) {
 }
 
 /**
+ * Read the last successful snapshot of one workspace WITHOUT asking for a new
+ * one (UI-d13v §3.5).
+ *
+ * A cross-workspace reader — the follow-up count of a bead whose waiters live
+ * in another rig — must not drive that rig's refresh cadence: fanning a
+ * generation out per visible workspace multiplies every projection by the
+ * number of open repos for a number that tolerates being one cycle late. A
+ * workspace nobody has subscribed to therefore reads as `null`, and no
+ * coordinator is created for it.
+ *
+ * @param {string | undefined} root_dir
+ * @returns {import('./workspace-snapshot-coordinator.js').WorkspaceSnapshot | null}
+ */
+export function peekWorkspaceSnapshot(root_dir) {
+  const coordinator = COORDINATORS.get(workspaceKey(root_dir));
+  return coordinator ? coordinator.getSnapshot() : null;
+}
+
+/**
  * Record successful mutation evidence for one workspace without starting a
  * generation unless that workspace already has a pending retry.
  *

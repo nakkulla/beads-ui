@@ -4,6 +4,7 @@ import {
   __resetForeignBlockerCachesForTest,
   applyForeignBlockerCleanup,
   cachedIssuePrefixFor,
+  foreignBlockerClosedAtFor,
   foreignBlockerStatusFor,
   onForeignBlockerResolved,
   prewarmIssuePrefix
@@ -16,6 +17,7 @@ vi.mock('../bd.js', async (importOriginal) => {
 });
 
 const WS_A = '/repos/beads-ui';
+const CLOSED_AT_ISO = '2026-08-20T09:30:00.000Z';
 const WS_B = '/repos/dotfiles';
 
 /** @type {Array<() => void>} */
@@ -494,5 +496,87 @@ describe('prefix prewarm ownership (UI-u6zf §3.4)', () => {
     await Promise.resolve();
     expect(seen).toEqual([]);
     expect(cachedIssuePrefixFor(WS_B)).toBe(null);
+  });
+});
+
+describe('foreign blocker close time (UI-d13v §3.4)', () => {
+  test('reports no close time while the lookup has not landed', () => {
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: { id: 'dotfiles-1', status: 'closed', closed_at: CLOSED_AT_ISO }
+      })
+    );
+
+    const closed_at = foreignBlockerClosedAtFor('dotfiles-1', WS_B, WS_A);
+
+    expect(closed_at).toBe(null);
+  });
+
+  test('reports the close time once the owning rig answers closed', async () => {
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: { id: 'dotfiles-1', status: 'closed', closed_at: CLOSED_AT_ISO }
+      })
+    );
+
+    foreignBlockerClosedAtFor('dotfiles-1', WS_B, WS_A);
+
+    await vi.waitFor(() =>
+      expect(foreignBlockerClosedAtFor('dotfiles-1', WS_B, WS_A)).toBe(
+        Date.parse(CLOSED_AT_ISO)
+      )
+    );
+  });
+
+  test('reports no close time for a blocker that is still open', async () => {
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: { id: 'dotfiles-1', status: 'open', closed_at: null }
+      })
+    );
+
+    foreignBlockerClosedAtFor('dotfiles-1', WS_B, WS_A);
+
+    await vi.waitFor(() =>
+      expect(foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A)).toBe('open')
+    );
+    expect(foreignBlockerClosedAtFor('dotfiles-1', WS_B, WS_A)).toBe(null);
+  });
+
+  test('reports no close time when a closed blocker carries no timestamp', async () => {
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: { id: 'dotfiles-1', status: 'closed' }
+      })
+    );
+
+    foreignBlockerClosedAtFor('dotfiles-1', WS_B, WS_A);
+
+    await vi.waitFor(() =>
+      expect(foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A)).toBe('closed')
+    );
+    expect(foreignBlockerClosedAtFor('dotfiles-1', WS_B, WS_A)).toBe(null);
+  });
+
+  test('keeps the status reader signature it shares the lookup with', async () => {
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: { id: 'dotfiles-1', status: 'closed', closed_at: CLOSED_AT_ISO }
+      })
+    );
+
+    foreignBlockerClosedAtFor('dotfiles-1', WS_B, WS_A);
+
+    await vi.waitFor(() => expect(runBdJsonProjected).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(runBdJsonProjected).mock.calls[0][1]).toEqual([
+      'show',
+      'dotfiles-1',
+      '--json'
+    ]);
   });
 });

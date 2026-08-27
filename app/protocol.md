@@ -45,6 +45,29 @@ Read data flows through subscriptions, never one-shot list RPCs.
 The detail panel uses the same mechanism with a `detail:<id>` client id and an
 `issue-detail` spec.
 
+### `ready-issues` / `blocked-issues` partial decorations (UI-d13v §3.3/§3.5/§3.7)
+
+Items of these two types carry additive display decorations derived from the
+workspace snapshot. Every key is OPTIONAL: an absent key means "not known", so a
+consumer omits the chip and sorts the row last (fail-quiet). Board reads the
+same projections and simply ignores them.
+
+- `release_info?: { released_by: [{ id, closed_at, foreign, root_dir? }], last_released_at }`
+  — the CLOSED blockers this issue was waiting on, `closed_at` descending;
+  `last_released_at` is the first entry's `closed_at`. Open blockers stay with
+  `blocked_info`. A foreign entry appears only once the owning rig's cache
+  reports `closed` with a `closed_at`, and carries `root_dir` only when that
+  owner is known. An empty `released_by` carries no key.
+- `dependents_info?: { count, ids }` — OPEN issues waiting on this one, counted
+  over this workspace's snapshot plus whatever snapshot each other visible
+  workspace already had; `ids` is alphabetical, at most 5. `count === 0` carries
+  no key, so 0 and unknown are indistinguishable.
+- `decoration_rev: string` — stable serialization of the two keys above (`''`
+  when neither is present). NOT display material: it is the delta fingerprint
+  that lets an upsert reach the client when only a decoration moved, since
+  neither key touches the issue's own `updated_at`/`closed_at`. Other list types
+  carry no such key and compare as `''`.
+
 ## Issue mutations
 
 - `update-status` payload: `{ id, status }`

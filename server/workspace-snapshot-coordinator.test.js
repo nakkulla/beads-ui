@@ -705,3 +705,106 @@ describe('workspace snapshot coordinator', () => {
     }
   });
 });
+
+describe('workspace snapshot blocks indexes (UI-d13v §3.2)', () => {
+  test('indexes one blocks edge in both directions', async () => {
+    const runBdJson = createRunner(
+      successfulGeneration([
+        {
+          id: 'A',
+          dependencies: [{ issue_id: 'A', depends_on_id: 'B', type: 'blocks' }]
+        },
+        { id: 'B' }
+      ])
+    );
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: runBdJson
+    });
+
+    const result = await coordinator.request('cold-subscribe');
+
+    expect(result.ok && [...result.snapshot.blocks_out]).toEqual([
+      ['A', ['B']]
+    ]);
+    expect(result.ok && [...result.snapshot.blocks_in]).toEqual([['B', ['A']]]);
+  });
+
+  test('derives the same indexes from legacy dependency edges', async () => {
+    const edges = [
+      { issue_id: 'A', depends_on_id: 'B', type: 'blocks' },
+      { issue_id: 'C', depends_on_id: 'B', type: 'blocks' }
+    ];
+    const embedded_coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: createRunner(
+        successfulGeneration([
+          { id: 'A', dependencies: [edges[0]] },
+          { id: 'B' },
+          { id: 'C', dependencies: [edges[1]] }
+        ])
+      )
+    });
+    const legacy_coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: createRunner([
+        ...successfulGeneration([{ id: 'A' }, { id: 'B' }, { id: 'C' }]),
+        { code: 0, stdoutJson: edges }
+      ]),
+      dependency_mode: 'legacy-dependency-fallback'
+    });
+
+    const embedded = await embedded_coordinator.request('cold-subscribe');
+    const legacy = await legacy_coordinator.request('cold-subscribe');
+
+    expect(legacy.ok && [...legacy.snapshot.blocks_out]).toEqual(
+      embedded.ok ? [...embedded.snapshot.blocks_out] : null
+    );
+    expect(legacy.ok && [...legacy.snapshot.blocks_in]).toEqual(
+      embedded.ok ? [...embedded.snapshot.blocks_in] : null
+    );
+  });
+
+  test('omits a waiter no snapshot row carries from blocks_in', async () => {
+    const runBdJson = createRunner([
+      ...successfulGeneration([{ id: 'A' }, { id: 'B' }]),
+      {
+        code: 0,
+        stdoutJson: [
+          { issue_id: 'OTHER-1', depends_on_id: 'B', type: 'blocks' }
+        ]
+      }
+    ]);
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: runBdJson,
+      dependency_mode: 'legacy-dependency-fallback'
+    });
+
+    const result = await coordinator.request('cold-subscribe');
+
+    expect(result.ok && [...result.snapshot.blocks_in]).toEqual([]);
+    expect(result.ok && [...result.snapshot.blocks_out]).toEqual([
+      ['OTHER-1', ['B']]
+    ]);
+  });
+
+  test('ignores an edge type other than blocks', async () => {
+    const runBdJson = createRunner(
+      successfulGeneration([
+        {
+          id: 'A',
+          dependencies: [
+            { issue_id: 'A', depends_on_id: 'ROOT', type: 'discovered-from' },
+            { issue_id: 'A', depends_on_id: 'B', type: 'related' }
+          ]
+        },
+        { id: 'B' }
+      ])
+    );
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: runBdJson
+    });
+
+    const result = await coordinator.request('cold-subscribe');
+
+    expect(result.ok && [...result.snapshot.blocks_out]).toEqual([]);
+    expect(result.ok && [...result.snapshot.blocks_in]).toEqual([]);
+  });
+});

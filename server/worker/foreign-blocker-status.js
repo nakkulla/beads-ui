@@ -21,6 +21,7 @@
  */
 import path from 'node:path';
 import { runBdJsonProjected } from '../bd.js';
+import { normalizeIssueList } from '../list-adapters.js';
 import { debug } from '../logging.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
@@ -53,7 +54,11 @@ const issue_prefix_cache = new Map();
  * `bd show` in the OWNING rig, since that is the only place the edge carries a
  * status. Same `requesters` contract as the prefix cache.
  *
- * @type {Map<string, { status: string|null, until: number, in_flight: boolean, requesters: Set<string> }>}
+ * `closed_at` rides along so a CLOSED foreign blocker can also be reported as
+ * the moment a bead over here was released (UI-d13v §3.4); it stays null for
+ * every other answer.
+ *
+ * @type {Map<string, { status: string|null, closed_at: number|null, until: number, in_flight: boolean, requesters: Set<string> }>}
  */
 const foreign_blocker_status_cache = new Map();
 
@@ -225,7 +230,7 @@ export function prefixOfBeadId(bead_id) {
  * @returns {string|null}
  */
 export function foreignBlockerStatusFor(bead_id, owner_root, requester_root) {
-  const key = `${path.resolve(owner_root)}\u0000${bead_id}`;
+  const key = foreignStatusKey(bead_id, owner_root);
   const hit = foreign_blocker_status_cache.get(key);
   const now = Date.now();
   if (hit && (hit.in_flight || hit.until > now)) {
@@ -240,6 +245,7 @@ export function foreignBlockerStatusFor(bead_id, owner_root, requester_root) {
   }
   foreign_blocker_status_cache.set(key, {
     status: hit?.status ?? null,
+    closed_at: hit?.closed_at ?? null,
     until: hit?.until ?? 0,
     in_flight: true,
     requesters: withRequester(hit?.requesters, requester_root)
@@ -261,6 +267,7 @@ export function foreignBlockerStatusFor(bead_id, owner_root, requester_root) {
       );
       foreign_blocker_status_cache.set(key, {
         status,
+        closed_at: closedAtOfShow(result),
         until:
           Date.now() +
           (status === null ? FOREIGN_STATUS_RETRY_MS : FOREIGN_STATUS_TTL_MS),
@@ -279,6 +286,7 @@ export function foreignBlockerStatusFor(bead_id, owner_root, requester_root) {
     .catch((err) => {
       foreign_blocker_status_cache.set(key, {
         status: hit?.status ?? null,
+        closed_at: hit?.closed_at ?? null,
         until: Date.now() + FOREIGN_STATUS_RETRY_MS,
         in_flight: false,
         requesters: withRequester(
@@ -289,6 +297,60 @@ export function foreignBlockerStatusFor(bead_id, owner_root, requester_root) {
       log('foreign blocker lookup failed for %s: %o', bead_id, err);
     });
   return hit?.status ?? null;
+}
+
+/**
+ * When a CLOSED foreign blocker was closed, from the same cache entry and the
+ * same lookup schedule as {@link foreignBlockerStatusFor} (UI-d13v §3.4).
+ *
+ * `null` covers every "not known to be released" case — cache miss, still open,
+ * closed without a readable `closed_at` — because the caller must be able to
+ * tell "released at T" from "no idea", never turn silence into "not released".
+ *
+ * @param {string} bead_id
+ * @param {string} owner_root - Visible workspace whose prefix owns the id.
+ * @param {string} [requester_root] - The workspace whose snapshot is waiting.
+ * @returns {number|null}
+ */
+export function foreignBlockerClosedAtFor(bead_id, owner_root, requester_root) {
+  // Routed through the status reader so a cold or expired entry schedules the
+  // same single `bd show` and registers the same waiter.
+  const status = foreignBlockerStatusFor(bead_id, owner_root, requester_root);
+  if (status !== 'closed') {
+    return null;
+  }
+  const closed_at = foreign_blocker_status_cache.get(
+    foreignStatusKey(bead_id, owner_root)
+  )?.closed_at;
+  return typeof closed_at === 'number' ? closed_at : null;
+}
+
+/**
+ * @param {string} bead_id
+ * @param {string} owner_root
+ * @returns {string}
+ */
+function foreignStatusKey(bead_id, owner_root) {
+  return `${path.resolve(owner_root)}\u0000${bead_id}`;
+}
+
+/**
+ * Read `closed_at` off a `bd show` answer through the SAME normalization the
+ * snapshot rows get, so a foreign release timestamp and a same-rig one are the
+ * same kind of number.
+ *
+ * @param {unknown} result
+ * @returns {number|null}
+ */
+function closedAtOfShow(result) {
+  if (!result || typeof result !== 'object') {
+    return null;
+  }
+  const record = /** @type {{ ok?: unknown, data?: unknown }} */ (result);
+  if (record.ok !== true || !record.data || typeof record.data !== 'object') {
+    return null;
+  }
+  return normalizeIssueList([record.data])[0]?.closed_at ?? null;
 }
 
 /**

@@ -6,7 +6,7 @@
  *
  * Maintains per-subscription entries keyed by a stable string derived from
  * `{ type, params }`. Each entry stores:
- *  - `itemsById`: Map<string, { updated_at: number, closed_at: number|null, deps_signature: string }>
+ *  - `itemsById`: Map<string, { updated_at: number, closed_at: number|null, deps_signature: string, decoration_rev: string }>
  *  - `subscribers`: Set<WebSocket>
  *  - `lock`: Promise chain to serialize refresh/update operations per key
  *
@@ -22,7 +22,7 @@
  */
 
 /**
- * @typedef {{ updated_at: number, closed_at: number | null, deps_signature: string }} ItemMeta
+ * @typedef {{ updated_at: number, closed_at: number | null, deps_signature: string, decoration_rev: string }} ItemMeta
  */
 
 /**
@@ -97,7 +97,8 @@ export function computeDelta(prev, next) {
     if (
       p.updated_at !== meta.updated_at ||
       p.closed_at !== meta.closed_at ||
-      p.deps_signature !== meta.deps_signature
+      p.deps_signature !== meta.deps_signature ||
+      p.decoration_rev !== meta.decoration_rev
     ) {
       updated.push(id);
     }
@@ -193,7 +194,13 @@ function edgeField(value) {
 /**
  * Normalize array of issue-like objects into an itemsById map.
  *
- * @param {Array<{ id: string, updated_at: number, closed_at?: number|null, dependencies?: unknown, dependents?: unknown }>} items
+ * `decoration_rev` is the Ready/Blocked candidate decorations' own fingerprint
+ * (UI-d13v §3.7): a blocker closing or a follow-up appearing changes what the
+ * row says without moving its timestamps, so the delta must compare it too.
+ * Every other list type carries no such key and pins to `''`, which leaves
+ * their comparison exactly the timestamp one it was.
+ *
+ * @param {Array<{ id: string, updated_at: number, closed_at?: number|null, dependencies?: unknown, dependents?: unknown, decoration_rev?: unknown }>} items
  * @param {string} [key] - Subscription key; only an `issue-detail` key tracks edges.
  * @returns {Map<string, ItemMeta>}
  */
@@ -217,7 +224,9 @@ export function toItemsMap(items, key = '') {
     map.set(it.id, {
       updated_at,
       closed_at,
-      deps_signature: track_deps ? depsSignature(it) : ''
+      deps_signature: track_deps ? depsSignature(it) : '',
+      decoration_rev:
+        typeof it.decoration_rev === 'string' ? it.decoration_rev : ''
     });
   }
   return map;
@@ -369,7 +378,7 @@ export class SubscriptionRegistry {
    * Convenience: update items from an array of objects with id/updated_at/closed_at.
    *
    * @param {string} key
-   * @param {Array<{ id: string, updated_at: number, closed_at?: number|null, dependencies?: unknown, dependents?: unknown }>} items
+   * @param {Array<{ id: string, updated_at: number, closed_at?: number|null, dependencies?: unknown, dependents?: unknown, decoration_rev?: unknown }>} items
    * @returns {{ added: string[], updated: string[], removed: string[] }}
    */
   applyItems(key, items) {
