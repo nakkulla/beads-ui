@@ -1,6 +1,6 @@
 /**
  * Worker-screen operational settings: the read-only repo-operation declaration
- * (verify / deploy) and the `auto_repair` switch.
+ * (verify / deploy) and the pinned automation policy it runs under.
  *
  * These are OPERATIONAL controls, not preferences, so the spec keeps them
  * inline on the Worker screen rather than moving them into the unified settings
@@ -10,6 +10,30 @@
  * @typedef {{ get: () => any, set: (q: any) => void, subscribe?: (fn: () => void) => () => void }} QueueStore
  */
 import { html } from 'lit-html';
+import { showToast } from '../../utils/toast.js';
+
+/**
+ * What each refusal of 배포 실행 means, in the vocabulary the server sends
+ * (UI-s582 §3). An unknown reason travels through raw rather than being
+ * translated into a sentence nobody can trace back to it.
+ *
+ * @type {Record<string, string>}
+ */
+const DEPLOY_RUN_REFUSALS = {
+  deploy_not_declared: '선언 없음',
+  deploy_opted_out: '이 workspace에서 배포 실행이 꺼져 있음',
+  deploy_in_flight: '배포 진행 중',
+  target_unresolved: '대상 tip을 확정하지 못함',
+  remote_history_not_monotonic: '배포 워크트리와 원격 이력이 갈라짐'
+};
+
+/**
+ * Operation states that still hold the deploy lane. A record in any of them
+ * means the next click has nothing to start.
+ *
+ * @type {Set<string>}
+ */
+const DEPLOY_IN_FLIGHT_STATES = new Set(['queued', 'running', 'retry_pending']);
 
 /**
  * Build the Worker screen's repo-operation settings section.
@@ -118,6 +142,72 @@ export function createRepoOpsSettings(options) {
   }
 
   /**
+   * @returns {any[]} The snapshot's projected operation cards.
+   */
+  function currentOperations() {
+    const cards = currentQueue().repo_operations;
+    return Array.isArray(cards) ? cards : [];
+  }
+
+  /**
+   * The canonical repository this workspace's declaration was resolved against,
+   * as the SERVER names it (`workspace_info.repo_ops.repo_id`). Every 배포 실행
+   * click carries it so the server can refuse a click that came from a screen
+   * pointed at another repository; a snapshot that does not carry it leaves the
+   * button unclickable rather than sending a request that cannot be checked.
+   *
+   * @returns {string|null}
+   */
+  function currentRepoId() {
+    const repo_ops = currentWorkspaceInfo().repo_ops;
+    const repo_id =
+      repo_ops && typeof repo_ops === 'object' ? repo_ops.repo_id : null;
+    return typeof repo_id === 'string' && repo_id ? repo_id : null;
+  }
+
+  /**
+   * Whether a deploy for this repository is still in flight. Derived from the
+   * projected cards, which is the only place the client learns about lane
+   * occupancy — the button must not offer a click the server would refuse.
+   *
+   * @returns {boolean}
+   */
+  function deployInFlight() {
+    return currentOperations().some(
+      (card) =>
+        card &&
+        card.kind === 'deploy' &&
+        DEPLOY_IN_FLIGHT_STATES.has(card.state)
+    );
+  }
+
+  /**
+   * The 배포 실행 button (UI-s582 §3). Drawn only where there is something to
+   * run: a DECLARED deploy lane this workspace has not opted out of. It carries
+   * no target input — the server pins the fetched remote tip itself.
+   *
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function deployRunButton() {
+    const blocked = deployInFlight();
+    const unnamed = currentRepoId() === null;
+    return html`<button
+      type="button"
+      class="worker-repo-ops__deploy-run"
+      data-seam="repo-ops-deploy-run"
+      ?disabled=${blocked || unnamed}
+      title=${blocked
+        ? '배포 진행 중'
+        : unnamed
+          ? '저장소를 확인할 수 없음'
+          : '원격 base tip에서 배포 스크립트를 1회 실행합니다'}
+      @click=${() => void runDeploy()}
+    >
+      배포 실행
+    </button>`;
+  }
+
+  /**
    * @returns {{ verify: boolean, deploy: boolean }} This workspace's per-kind
    * opt-out from the declared operations. A snapshot without the key is a
    * workspace that runs both.
@@ -213,7 +303,7 @@ export function createRepoOpsSettings(options) {
               ${laneTimeoutBadge(repo_ops.deploy.timeout_ms)}
               ${deploy_skipped
                 ? badge('skipped', '이 workspace에서 건너뜀')
-                : ''}`
+                : deployRunButton()}`
             : html`선언 없음${badge('absent', '배포 없음')}`}</span
         >
         <span class="worker-repo-ops__lane-d"
@@ -280,36 +370,9 @@ export function createRepoOpsSettings(options) {
   }
 
   /**
-   * Send the INDEPENDENT `자동 해결` mutation (master spec §9.3). It carries only
-   * the queue revision and its own boolean: this switch never reads or writes
-   * 자동화 (`auto_advance`/`auto_merge`), and 자동화 never writes this one.
-   *
-   * @param {boolean} on
-   */
-  async function saveAutoRepair(on) {
-    if (!transport) {
-      return;
-    }
-    const res = await transport(
-      /** @type {any} */ ('worker-auto-repair-toggle'),
-      { on, expected_revision: currentRevision() }
-    );
-    adopt(res);
-    if (res && res.conflict) {
-      const retried = await transport(
-        /** @type {any} */ ('worker-auto-repair-toggle'),
-        { on, expected_revision: currentRevision() }
-      );
-      adopt(retried);
-    }
-    doRender();
-  }
-
-  /**
-   * Send the per-kind workspace opt-out (UI-lsti §4). Same CAS-and-retry shape
-   * as {@link saveAutoRepair}: the click that lost a race is re-applied once
-   * against the revision the server just returned, rather than silently
-   * dropping the user's decision.
+   * Send the per-kind workspace opt-out (UI-lsti §4). CAS-and-retry: the click
+   * that lost a race is re-applied once against the revision the server just
+   * returned, rather than silently dropping the user's decision.
    *
    * @param {'verify'|'deploy'} kind
    * @param {boolean} opted_out
@@ -334,7 +397,36 @@ export function createRepoOpsSettings(options) {
   }
 
   /**
-   * The three §10 lists. Their MEMBERSHIP comes entirely from the pinned policy
+   * Ask the server to run the declared deploy script once (UI-s582 §3). No
+   * revision guard: this is not an edit of the queue, and no target either —
+   * the server resolves the tip. A refusal is SHOWN, never swallowed: the whole
+   * point of the vocabulary is that the person learns which precondition
+   * stopped the run.
+   */
+  async function runDeploy() {
+    const repo_id = currentRepoId();
+    if (!transport || repo_id === null) {
+      return;
+    }
+    const res = await transport(
+      /** @type {any} */ ('worker-repo-operation-deploy-run'),
+      { repo_id }
+    );
+    adopt(res);
+    if (!res || res.ok !== true) {
+      const reason = res && typeof res.reason === 'string' ? res.reason : '';
+      const sentence = Object.hasOwn(DEPLOY_RUN_REFUSALS, reason)
+        ? DEPLOY_RUN_REFUSALS[reason]
+        : reason || '배포 실행을 시작하지 못했습니다';
+      showToast(`배포 실행 거부 — ${sentence}`, 'error');
+    } else {
+      showToast('배포 실행을 시작했습니다', 'success');
+    }
+    doRender();
+  }
+
+  /**
+   * The two §10 lists. Their MEMBERSHIP comes entirely from the pinned policy
    * the server projects — this map only says each contract token in Korean and
    * falls back to the token itself, so a contract that gains an entry shows up
    * here without anyone editing a sentence into the client.
@@ -350,23 +442,15 @@ export function createRepoOpsSettings(options) {
     exact_input_exit_zero_evidence_adoption: '동일 입력 성공 증거 인계',
     descendant_success_covers_ancestor_rows: '최신 SHA 성공이 이전 행 커버',
     owned_verify_candidate_cleanup: '검증 임시 체크아웃 정리',
-    script_retry: '스크립트 재시도',
-    auto_repair_session: '자동 해결 세션',
-    user_triggered_session: '사용자 해결 세션',
-    automatic: '자동',
-    user_action_only: '사용자 클릭',
-    script_identity_present: '스크립트가 있을 때만',
-    per_completion_chain: '완료 체인당',
-    unbounded: '횟수 제한 없음',
     bounded_single_script_retry_exceeded: '단일 스크립트 재시도 한도 초과',
+    repair_session_dispatch: '실패 해결 세션 자동 실행',
     baseline_failure_ignore: '기존 실패 무시',
     config_or_script_deletion_to_bypass_gate:
       '설정·스크립트 삭제로 게이트 우회',
     credential_entry: '자격증명 입력·출력',
     destructive_action: '파괴적 작업',
     history_rewrite: '히스토리 재작성',
-    agent_self_report_as_success: '세션 자기보고를 성공 처리',
-    unbounded_repair_session_retry: '무한 해결 세션 반복'
+    agent_self_report_as_success: '세션 자기보고를 성공 처리'
   };
 
   /**
@@ -390,164 +474,53 @@ export function createRepoOpsSettings(options) {
   }
 
   /**
-   * Render the ordered ladder from artifact fields. Unknown ids, triggers, and
-   * limit tokens stay visible verbatim instead of being dropped by the client.
+   * The pinned automation policy (schema 3): what the Worker does by itself and
+   * what it never does. There is no ladder surface any more — the one automatic
+   * step left (`script_retry`) is always on and shows its outcome on the failure
+   * card, so the reference the reader still needs here is the two §10 lists.
    *
-   * @param {Record<string, any>[]} entries
-   * @returns {import('lit-html').TemplateResult}
+   * @returns {import('lit-html').TemplateResult|string}
    */
-  function resolutionLadder(entries) {
-    return html`<div
-      class="worker-repo-ops__policy-group"
-      data-policy="resolution-ladder"
-    >
-      <div class="worker-repo-ops__policy-label">해결 사다리</div>
-      <ol class="worker-repo-ops__policy-list">
-        ${entries.map((entry) => {
-          /** @type {string[]} */
-          const details = [POLICY_TOKEN_LABELS[entry.trigger] || entry.trigger];
-          if (Number.isInteger(entry.attempts_per_operation_attempt)) {
-            details.push(
-              `operation당 ${entry.attempts_per_operation_attempt}회`
-            );
-          } else if (Number.isInteger(entry.attempts)) {
-            details.push(
-              `${POLICY_TOKEN_LABELS[entry.budget] || entry.budget} ${entry.attempts}회`
-            );
-          } else if (Number.isInteger(entry.sessions_per_user_action)) {
-            details.push(
-              `${entry.sessions_per_user_action}회`,
-              POLICY_TOKEN_LABELS[entry.user_actions] || entry.user_actions
-            );
-          }
-          if (entry.applies_when) {
-            details.push(
-              POLICY_TOKEN_LABELS[entry.applies_when] || entry.applies_when
-            );
-          }
-          return html`<li data-token=${entry.id}>
-            <strong>${POLICY_TOKEN_LABELS[entry.id] || entry.id}</strong>
-            <span>${details.filter(Boolean).join(' · ')}</span>
-          </li>`;
-        })}
-      </ol>
-    </div>`;
-  }
-
-  /**
-   * The `자동 해결` section: the durable toggle, the remaining automatic budget,
-   * the active repair session, and the three policy lists the backend sends.
-   *
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function autoRepairSection() {
+  function policySection() {
     const q = currentQueue();
-    const on = q.auto_repair !== false;
     const policy =
       q.repo_operation_policy && typeof q.repo_operation_policy === 'object'
         ? q.repo_operation_policy
         : null;
-    const operations = Array.isArray(q.repo_operations)
-      ? q.repo_operations
-      : [];
-    const active = operations.find(
-      (/** @type {any} */ card) => card.state === 'repairing'
-    );
-    // The remaining budget the reader cares about is the one closest to being
-    // spent: the smallest remaining count across the operations that still
-    // have a live repair chain.
-    const open_chains = operations.filter(
-      (/** @type {any} */ card) =>
-        card.state === 'failed' || card.state === 'repairing'
-    );
-    const remaining = open_chains.length
-      ? Math.min(
-          ...open_chains.map((/** @type {any} */ card) =>
-            typeof card.repair?.remaining === 'number'
-              ? card.repair.remaining
-              : 0
-          )
-        )
-      : (policy?.auto_repair?.resolution_ladder?.find(
-          (/** @type {any} */ entry) => entry.id === 'auto_repair_session'
-        )?.attempts ?? 1);
-    const ladder = Array.isArray(policy?.auto_repair?.resolution_ladder)
-      ? policy.auto_repair.resolution_ladder
-      : [];
+    if (!policy) {
+      return '';
+    }
     return html`<section
       class="worker-repo-ops__repair"
-      data-seam="auto-repair"
+      data-seam="repo-ops-policy"
     >
-      <p class="worker-repo-ops__vd-title">
-        자동 해결
-        <span class="worker-repo-ops__vd-ro"
-          >자동화(대기열·머지)와 독립된 스위치</span
-        >
-      </p>
-      <label class="worker-repo-ops__repair-toggle">
-        <input
-          type="checkbox"
-          class="worker-repo-ops__repair-input"
-          .checked=${on}
-          @change=${(/** @type {Event} */ ev) =>
-            void saveAutoRepair(
-              /** @type {HTMLInputElement} */ (ev.target).checked
-            )}
-        />
-        검증·배포 실패를 자동으로 해결 시도
-      </label>
-      <div class="worker-repo-ops__repair-state">
-        <span
-          class="worker-repo-ops__repair-value"
-          data-seam="auto-repair-value"
-          >${on ? '켜짐' : '꺼짐'}</span
-        >
-        <span
-          class="worker-repo-ops__repair-budget"
-          data-seam="auto-repair-budget"
-          >남은 자동 해결 ${remaining}회</span
-        >
-        <span
-          class="worker-repo-ops__repair-session"
-          data-seam="auto-repair-session"
-          >${active
-            ? `해결 세션 실행 중 · ${active.repair?.owner_bead || active.operation_id}`
-            : '실행 중인 해결 세션 없음'}</span
-        >
-      </div>
-      ${policy
-        ? html`<details
-            class="worker-repo-ops__policy"
-            data-seam="policy-lists"
+      <details class="worker-repo-ops__policy" data-seam="policy-lists">
+        <summary>
+          Worker 자동 처리 기준
+          <span class="worker-repo-ops__policy-count"
+            >자동 ${(policy.worker_automatic || []).length} · 금지
+            ${(policy.never_automatic || []).length}</span
           >
-            <summary>
-              Worker 자동 처리 기준
-              <span class="worker-repo-ops__policy-count"
-                >자동 ${(policy.worker_automatic || []).length} · 해결 사다리
-                ${ladder.length} · 금지
-                ${(policy.never_automatic || []).length}</span
-              >
-            </summary>
-            ${policyList(
-              'Worker가 자동 처리',
-              policy.worker_automatic || [],
-              'worker-automatic'
-            )}
-            ${policy.supported === false || policy.schema_version !== 2
-              ? html`<div
-                  class="worker-repo-ops__policy-group"
-                  data-policy="resolution-ladder"
-                >
-                  ${`계약 스키마 불일치 — 자동 해결이 정지되었습니다 (v${policy.schema_version})`}
-                </div>`
-              : resolutionLadder(ladder)}
-            ${policyList(
-              '자동으로 하지 않음',
-              policy.never_automatic || [],
-              'never-automatic'
-            )}
-          </details>`
-        : ''}
+        </summary>
+        ${policy.supported === false
+          ? html`<div
+              class="worker-repo-ops__policy-group"
+              data-policy="policy-schema"
+            >
+              ${`계약 스키마 불일치 — 자동 재시도가 정지되었습니다 (v${policy.schema_version})`}
+            </div>`
+          : ''}
+        ${policyList(
+          'Worker가 자동 처리',
+          policy.worker_automatic || [],
+          'worker-automatic'
+        )}
+        ${policyList(
+          '자동으로 하지 않음',
+          policy.never_automatic || [],
+          'never-automatic'
+        )}
+      </details>
     </section>`;
   }
 
@@ -557,9 +530,9 @@ export function createRepoOpsSettings(options) {
       // Operational reference, not a daily control — collapsed until needed.
       return html`<details class="worker-repo-ops-settings">
         <summary class="worker-repo-ops-settings__summary">
-          저장소 작업 · 검증/배포 선언 · 자동 해결
+          저장소 작업 · 검증/배포 선언
         </summary>
-        ${verifyDeploySection(currentWorkspaceInfo())} ${autoRepairSection()}
+        ${verifyDeploySection(currentWorkspaceInfo())} ${policySection()}
       </details>`;
     }
   };

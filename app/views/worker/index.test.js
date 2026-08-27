@@ -4831,24 +4831,42 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     );
   });
 
-  test('offers a timeline link instead of a locked merge action', () => {
+  test('offers 정리 재개 on a repo_operations stall (UI-j2f0)', () => {
     const { mount } = mountWith(
       mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 })
     );
 
     expect([
-      mount.querySelector('.worker-mini__merge'),
-      mount.querySelector('.worker-mini__timeline')?.textContent?.trim()
-    ]).toEqual([null, '저장소 작업 보기']);
+      mount.querySelector('.worker-mini__merge')?.textContent?.trim(),
+      mount.querySelector('.worker-mini__timeline')
+    ]).toEqual(['정리 재개', null]);
   });
 
-  test('opens the timeline from that link', () => {
+  test('resumes the cleanup from that button', async () => {
+    const transport = vi.fn(async () => ({ ok: true, retried: true }));
+    const { mount } = mountWith(
+      mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 }),
+      transport
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-cleanup-retry',
+      expect.objectContaining({ bead_id: 'RD-1' })
+    );
+  });
+
+  test('opens the timeline from the repo-ops strip', () => {
     const { mount } = mountWith(
       mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 })
     );
 
     /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini__timeline')
+      mount.querySelector('.worker-repo-strip')
     ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(mount.querySelector('.worker-repo-drawer')).not.toBeNull();
@@ -6940,7 +6958,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     expect(row.textContent).not.toContain('정리 5단계 중');
   });
 
-  test('renders an exact verify failure without removing the timeline action', () => {
+  test('names the failed script on the resume action of an exact verify failure', () => {
     const merge_sha = 'a'.repeat(40);
     const mount = mountRow(null, undefined, {
       gate: { enabled: false, tier: 'merged', gate_badge: '머지됨' },
@@ -6970,7 +6988,9 @@ describe('merge progress — view (UI-raqh §4)', () => {
     );
     expect(row.textContent?.replace(/\s+/g, '')).toContain('검증실패3/7');
     expect(row.querySelector('.merge-step--failed')).not.toBeNull();
-    expect(row.querySelector('.worker-mini__timeline')).not.toBeNull();
+    expect(row.querySelector('.worker-mini__merge')?.textContent?.trim()).toBe(
+      '검증 재시도 후 정리'
+    );
   });
 
   test('disables both actions while merging', () => {
@@ -11368,437 +11388,6 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
       mount.querySelector('.worker-mini[data-bead-id="A"]')
     );
     expect(row.querySelector('.worker-mini__serial--legacy')).not.toBeNull();
-  });
-});
-
-describe('worker 분석 버튼·추천 overlay (UI-04vo seam E/J)', () => {
-  beforeEach(() => {
-    document.body.innerHTML = '<div id="m"></div>';
-  });
-
-  /**
-   * @param {any} over
-   */
-  function analysisQueue(over = {}) {
-    return queueOf({
-      serial_lane_count: 2,
-      serial_lanes: [
-        { id: 's1', entries: [] },
-        { id: 's2', entries: [] }
-      ],
-      lane_states: {
-        s1: { occupied_by: [], order: [], corrections: [], cycle: false },
-        s2: { occupied_by: [], order: [], corrections: [], cycle: false }
-      },
-      ...over
-    });
-  }
-
-  /**
-   * @param {any} over
-   */
-  function analysisStoreOf(over = {}) {
-    const listeners = new Set();
-    let pending = false;
-    let state = {
-      settings: {
-        revision: 1,
-        runner: 'claude',
-        model: 'opus',
-        effort: 'high'
-      },
-      job: null,
-      last_good: {
-        identity_digest: 'd'.repeat(64),
-        at: 1000,
-        result: {
-          schema_version: 2,
-          snapshot_digest: 'd'.repeat(64),
-          issues: [],
-          groups: [
-            {
-              members: ['A', 'B'],
-              order: ['A', 'B'],
-              confidence: 'high',
-              categories: ['schema_or_migration'],
-              reason: '같은 스키마',
-              evidence: [],
-              eligible: true
-            }
-          ]
-        }
-      },
-      ...over
-    };
-    /** @type {() => void} */
-    const emit = () => {
-      for (const fn of listeners) {
-        fn();
-      }
-    };
-    return {
-      get: () => state,
-      /** @param {any} next */
-      set(next) {
-        state = next;
-        emit();
-      },
-      isPending: () => pending,
-      /** @param {boolean} next */
-      setPending(next) {
-        pending = next;
-        emit();
-      },
-      /** @param {() => void} fn */
-      subscribe(fn) {
-        listeners.add(fn);
-        return () => listeners.delete(fn);
-      }
-    };
-  }
-
-  /**
-   * One durable analyzer run record, as the snapshot pushes it.
-   *
-   * @param {any} [over]
-   */
-  function analysisRun(over = {}) {
-    return {
-      run_id: 'analysis-1000-1',
-      session_id: 'sess-12345678',
-      runner: 'claude',
-      model: 'opus',
-      effort: 'high',
-      target_ids: ['A'],
-      started_at: 1000,
-      ended_at: null,
-      outcome: 'success',
-      reason: null,
-      diagnostic: null,
-      prompt_saved: true,
-      ...over
-    };
-  }
-
-  test('renders the analysis button in the control bar', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      analysisStore: analysisStoreOf(),
-      transport: vi.fn()
-    });
-    queueStore.set(analysisQueue());
-
-    expect(mount.querySelector('.worker-analysis-btn')).not.toBeNull();
-  });
-
-  test('shows no progress badge on the analysis button while idle', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      analysisStore: analysisStoreOf(),
-      transport: vi.fn()
-    });
-    queueStore.set(analysisQueue());
-
-    const button = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-analysis-btn')
-    );
-    expect(button.textContent).not.toContain('분석 중');
-    expect(button.getAttribute('aria-busy')).toBe('false');
-    expect(button.classList.contains('worker-analysis-btn--running')).toBe(
-      false
-    );
-  });
-
-  test('badges the analysis button while this browser is preparing a run', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    const analysis = analysisStoreOf();
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      analysisStore: analysis,
-      transport: vi.fn()
-    });
-    queueStore.set(analysisQueue());
-
-    analysis.setPending(true);
-
-    const button = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-analysis-btn')
-    );
-    expect(button.textContent).toContain('준비 중');
-    expect(button.getAttribute('aria-busy')).toBe('true');
-    expect(button.classList.contains('worker-analysis-btn--running')).toBe(
-      true
-    );
-    expect(button.disabled).toBe(false);
-  });
-
-  test('badges the analysis button while a server job runs', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    const analysis = analysisStoreOf();
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      analysisStore: analysis,
-      transport: vi.fn()
-    });
-    queueStore.set(analysisQueue());
-
-    analysis.set({
-      ...analysis.get(),
-      job: {
-        job_id: 'job-1',
-        identity: 'i1',
-        runner: 'claude',
-        model: 'opus',
-        effort: 'high',
-        started_at: 1000
-      }
-    });
-
-    const button = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-analysis-btn')
-    );
-    expect(button.textContent).toContain('분석 중');
-    expect(button.getAttribute('aria-busy')).toBe('true');
-  });
-
-  test('drops the badge once the job and the preparation flag are gone', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    const analysis = analysisStoreOf();
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      analysisStore: analysis,
-      transport: vi.fn()
-    });
-    queueStore.set(analysisQueue());
-    analysis.setPending(true);
-
-    analysis.setPending(false);
-
-    const button = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-analysis-btn')
-    );
-    expect(button.textContent).not.toContain('준비 중');
-    expect(button.getAttribute('aria-busy')).toBe('false');
-  });
-
-  test('stops re-rendering the analysis badge after destroy', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    const analysis = analysisStoreOf();
-    const view = createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      analysisStore: analysis,
-      transport: vi.fn()
-    });
-    queueStore.set(analysisQueue());
-
-    view.destroy();
-    analysis.setPending(true);
-
-    const button = mount.querySelector('.worker-analysis-btn');
-    expect(button?.textContent).not.toContain('준비 중');
-    expect(button?.getAttribute('aria-busy')).toBe('false');
-  });
-
-  test('clicking the analysis button opens the dialog', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      analysisStore: analysisStoreOf(),
-      transport: vi.fn()
-    });
-    queueStore.set(analysisQueue());
-
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-analysis-btn')
-    ).click();
-
-    const dialog = /** @type {HTMLDialogElement} */ (
-      mount.querySelector('#worker-parallel-analysis-dialog')
-    );
-    expect(dialog.hasAttribute('open') || dialog.open).toBe(true);
-  });
-
-  test('opens the shared transcript drawer for an analysis run', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    const analysis = analysisStoreOf({ runs: [analysisRun()] });
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      analysisStore: analysis,
-      transport: vi.fn(async () => ({ qualified: [], excluded: [] }))
-    });
-    queueStore.set(analysisQueue());
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-analysis-btn')
-    ).click();
-    await Promise.resolve();
-
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.pa-run-row__monitor')
-    ).click();
-
-    expect(mount.querySelector('.sv__id')?.textContent).toContain(
-      'analysis-1000-1'
-    );
-    expect(
-      mount.querySelector('[data-seam="attempt-prompt-toggle"]')
-    ).toBeNull();
-  });
-
-  test('refreshes an open analysis drawer with a late session id', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    const analysis = analysisStoreOf({
-      runs: [analysisRun({ session_id: null })]
-    });
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      analysisStore: analysis,
-      transport: vi.fn(async () => ({ qualified: [], excluded: [] }))
-    });
-    queueStore.set(analysisQueue());
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-analysis-btn')
-    ).click();
-    await Promise.resolve();
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.pa-run-row__monitor')
-    ).click();
-
-    analysis.set({
-      ...analysis.get(),
-      runs: [analysisRun({ session_id: 'sess-abcdef12' })]
-    });
-
-    expect(mount.querySelector('.sv__session')?.getAttribute('title')).toBe(
-      'sess-abcdef12'
-    );
-  });
-
-  test('closes an open analysis drawer when the workspace snapshot clears', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    const analysis = analysisStoreOf({ runs: [analysisRun()] });
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      analysisStore: analysis,
-      transport: vi.fn(async () => ({ qualified: [], excluded: [] }))
-    });
-    queueStore.set(analysisQueue());
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-analysis-btn')
-    ).click();
-    await Promise.resolve();
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.pa-run-row__monitor')
-    ).click();
-
-    analysis.set({ ...analysis.get(), runs: [] });
-
-    expect(mount.querySelector('.sv__id')).toBeNull();
-  });
-
-  test('renders a serial recommendation chip on an eligible parallel row', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      analysisStore: analysisStoreOf(),
-      transport: vi.fn()
-    });
-    queueStore.set(
-      analysisQueue({
-        queue: [
-          { bead_id: 'A', added_at: 1 },
-          { bead_id: 'B', added_at: 2 }
-        ]
-      })
-    );
-
-    const row = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="A"]')
-    );
-    expect(row.textContent).toContain('✳ serial 권장');
-    expect(row.textContent).toContain('B');
-  });
-
-  test('renders no recommendation chip for an ineligible group', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    const analysis = analysisStoreOf();
-    analysis.get().last_good.result.groups[0].eligible = false;
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      analysisStore: analysis,
-      transport: vi.fn()
-    });
-    queueStore.set(analysisQueue({ queue: [{ bead_id: 'A', added_at: 1 }] }));
-
-    const row = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="A"]')
-    );
-    expect(row.textContent).not.toContain('serial 권장');
-  });
-
-  test('drops the recommendation chip once the group is already in a lane', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      analysisStore: analysisStoreOf(),
-      transport: vi.fn()
-    });
-    queueStore.set(
-      analysisQueue({
-        queue: [],
-        serial_lanes: [
-          {
-            id: 's1',
-            entries: [
-              { bead_id: 'A', added_at: 1 },
-              { bead_id: 'B', added_at: 2 }
-            ]
-          },
-          { id: 's2', entries: [] }
-        ],
-        lane_states: {
-          s1: {
-            occupied_by: [],
-            order: ['A', 'B'],
-            corrections: [],
-            cycle: false
-          },
-          s2: { occupied_by: [], order: [], corrections: [], cycle: false }
-        }
-      })
-    );
-
-    const row = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="A"]')
-    );
-    expect(row.textContent).not.toContain('serial 권장');
   });
 });
 

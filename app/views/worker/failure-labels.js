@@ -12,6 +12,7 @@
  * raw code inside its "세부" disclosure regardless, so the debugging path is
  * preserved even where a sentence exists.
  */
+import { formatElapsed } from './lanes.js';
 
 /**
  * Contract token → the human category word.
@@ -40,6 +41,8 @@ const FAILURE_SENTENCES = {
   verify_script_failure: '검증 스크립트가 실패했습니다.',
   deploy_script_failure: '배포 스크립트가 실패했습니다.',
   interrupted_without_terminal_exit: '작업이 종료 기록 없이 중단됐습니다.',
+  manual_target_missing:
+    '수동 배포 기록에 핀된 대상 SHA가 없어 실행하지 않았습니다.',
   // Cleanup step 1 (base 포함 확인). This step runs before any repo operation
   // exists, so a stop here produces no operation card and no failure_kind —
   // the cleanup record's raw reason is the ONLY thing that can say what
@@ -166,4 +169,198 @@ export function operationFailureText(kind, code) {
     return /** @type {string} */ (category || sentence);
   }
   return typeof code === 'string' ? code : '';
+}
+
+/**
+ * Failure codes that stop a repo operation BEFORE its script is invoked — the
+ * declaration read, the bounded fetch, the deploy-worktree ownership check, the
+ * wait for an unresolved sibling operation.
+ *
+ * They matter here because the 종료 원인 line describes a PROCESS that ran and
+ * died. No process existed for these, so `exit_code`/`signal` carry the wrapper's
+ * numbers rather than the script's, and printing them would answer a question
+ * nobody asked while implying a script failed. The existing cause sentence
+ * already says what stopped, so the line is omitted entirely (UI-s582 §2).
+ *
+ * @type {Set<string>}
+ */
+const PRE_SCRIPT_FAILURE_CODES = new Set(['repo_operation_timeout_unresolved']);
+
+/**
+ * Whether this failure happened before the script was invoked. The `repo_ops_`
+ * PREFIX is deliberate: every declaration/precondition token the coordinator can
+ * record shares it, so a token added later is excluded without a client change.
+ *
+ * @param {unknown} code
+ * @returns {boolean}
+ */
+function isPreScriptFailure(code) {
+  for (const segment of segmentsOf(code)) {
+    if (
+      PRE_SCRIPT_FAILURE_CODES.has(segment) ||
+      segment.startsWith('repo_ops_')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether this operation card ended by being interrupted rather than by exiting.
+ * Three fields say it and any one of them is enough: the raw `failure.code`, the
+ * server's `failure_kind` classification, and the `failure.interrupted` flag the
+ * projection always carries.
+ *
+ * @param {any} operation
+ * @param {any} failure
+ * @returns {boolean}
+ */
+function isInterrupted(operation, failure) {
+  return (
+    failure.code === 'interrupted' ||
+    failure.interrupted === true ||
+    operation.failure_kind === 'interrupted_without_terminal_exit' ||
+    failure.code === 'interrupted_without_terminal_exit'
+  );
+}
+
+/**
+ * The 종료 원인 line: HOW the operation's process ended (UI-s582 §2).
+ *
+ * The cause sentence above it names the failure category; this names the
+ * termination itself, which the category deliberately flattens — a `timeout` and
+ * an ordinary nonzero exit both classify as `verify_script_failure`, so without
+ * this line a reader cannot tell a script that failed from one that was cut off.
+ *
+ * Judgement order is timeout → interrupted → signal → exit_code, because the
+ * later fields are still populated by the earlier cases and would misdescribe
+ * them: a timeout carries `exit 124`, and an interruption carries whatever the
+ * wrapper last saw. Nothing usable means no line rather than a guess.
+ *
+ * `timeout_ms` is the LANE DECLARATION's limit (`repo_ops.<kind>.timeout_ms`),
+ * not a field of the card — a caller that does not have the declaration in hand
+ * omits it and the line says only that the limit was exceeded.
+ *
+ * @param {any} operation - One projected `repo_operations[]` card.
+ * @param {unknown} [timeout_ms] - The lane declaration's limit, when known.
+ * @returns {string}
+ */
+export function terminationText(operation, timeout_ms) {
+  if (!operation || typeof operation !== 'object') {
+    return '';
+  }
+  const failure = operation.failure;
+  if (!failure || typeof failure !== 'object') {
+    return '';
+  }
+  if (isPreScriptFailure(failure.code)) {
+    return '';
+  }
+  if (failure.code === 'timeout') {
+    const limit = Number(timeout_ms);
+    return Number.isFinite(limit) && limit > 0
+      ? `타임아웃 ${Math.round(limit / 1000)}초 초과`
+      : '타임아웃 초과';
+  }
+  if (isInterrupted(operation, failure)) {
+    return '종료 기록 없음 — 중단됨';
+  }
+  const elapsed =
+    typeof operation.elapsed_ms === 'number' &&
+    Number.isFinite(operation.elapsed_ms) &&
+    operation.elapsed_ms >= 0
+      ? ` · ${formatElapsed(operation.elapsed_ms)}`
+      : '';
+  if (typeof operation.signal === 'string' && operation.signal.length > 0) {
+    return `signal ${operation.signal}${elapsed}`;
+  }
+  if (Number.isInteger(operation.exit_code)) {
+    return `exit ${operation.exit_code}${elapsed}`;
+  }
+  return '';
+}
+
+/**
+ * Why `script_retry` could not run at all. Only `schema_unsupported` exists under
+ * the pinned schema 3; an unknown reason travels through raw, the same fallback
+ * every other token in this module gets.
+ *
+ * @type {Record<string, string>}
+ */
+const RETRY_BLOCKED_SENTENCES = {
+  schema_unsupported: '핀된 정책 스키마를 지원하지 않습니다.'
+};
+
+/**
+ * The 재시도 결과 line: what the ONE automatic step (`script_retry`) did
+ * (UI-s582 §2).
+ *
+ * `blocked_reason` is read FIRST and without comparing fingerprints: it means the
+ * step never ran, so there is no second failure to compare against and any
+ * fingerprint talk would be fiction. `absorbed` is the only outcome that belongs
+ * on a SUCCEEDED card — it is the record of a failure the retry erased, which is
+ * otherwise invisible.
+ *
+ * A `consumed` status with no `first_fingerprint` is treated as NO evidence
+ * rather than as a differing fingerprint: the server's normalizer reports
+ * `consumed` for a failed record that carries no retry object at all (the
+ * conservative "assume the one attempt is spent" default), and calling that a
+ * second, different failure would invent a run that never happened.
+ *
+ * @param {any} operation - One projected `repo_operations[]` card.
+ * @returns {string}
+ */
+export function retryOutcomeText(operation) {
+  if (!operation || typeof operation !== 'object') {
+    return '';
+  }
+  const retry = operation.retry;
+  if (!retry || typeof retry !== 'object') {
+    return '';
+  }
+  if (typeof retry.blocked_reason === 'string' && retry.blocked_reason) {
+    const sentence = Object.hasOwn(
+      RETRY_BLOCKED_SENTENCES,
+      retry.blocked_reason
+    )
+      ? RETRY_BLOCKED_SENTENCES[retry.blocked_reason]
+      : retry.blocked_reason;
+    return `자동 재시도 못 함 — ${sentence}`;
+  }
+  if (retry.status === 'absorbed') {
+    const absorbed =
+      retry.absorbed && typeof retry.absorbed === 'object'
+        ? retry.absorbed
+        : null;
+    const cause = failureText(absorbed?.first_failure?.code);
+    return cause
+      ? `자동 재시도로 해소됨 — 첫 실패: ${cause}`
+      : '자동 재시도로 해소됨';
+  }
+  // Everything below describes a failure. On a card that did not fail these
+  // statuses are the normalizer's defaults, not observations.
+  if (operation.state !== 'failed') {
+    return '';
+  }
+  if (retry.status === 'not_applicable') {
+    return '재시도 대상 아님 — 스크립트 실행 전 실패';
+  }
+  if (retry.status === 'consumed') {
+    const first =
+      typeof retry.first_fingerprint === 'string' && retry.first_fingerprint
+        ? retry.first_fingerprint
+        : null;
+    if (first === null) {
+      return '';
+    }
+    if (first === operation.failure?.fingerprint) {
+      return '자동 재시도 1회 — 같은 실패';
+    }
+    const cause = failureText(retry.first_failure?.code);
+    return cause
+      ? `자동 재시도 1회 — 다른 실패: ${cause}`
+      : '자동 재시도 1회 — 다른 실패';
+  }
+  return '';
 }

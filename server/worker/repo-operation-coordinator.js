@@ -11,11 +11,7 @@ import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { acquireDeployLock } from './deploy-lock.js';
-import { resolveRepairOwner } from './repair-session-adapter.js';
-import {
-  isRepairEligible,
-  repoOperationPolicySupported
-} from './repo-operation-policy.js';
+import { repoOperationPolicySupported } from './repo-operation-policy.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
 import {
@@ -28,9 +24,7 @@ import {
   resolveRepoOps
 } from './repo-ops-resolver.js';
 import {
-  normalizeResolutionSubjects,
   normalizeScriptRetry,
-  reproducedWithoutNewEvidence,
   resolutionAccess,
   scriptRetryApplicable,
   scriptRetryConsumptionKey
@@ -89,7 +83,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, repairSession?: { dispatch: (input: any) => Promise<{ ok: boolean, attempt_id?: string, session_id?: string|null, reason?: string }>, judge: (input: any) => Promise<{ verdict: string, evidence: string|null }> }, onRepairLaneAdvanced?: () => Promise<void>, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, policySupported?: () => boolean, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, policySupported?: () => boolean, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -150,7 +144,13 @@ export function createRepoOperationCoordinator(deps) {
    * subjects on the same target coalesce while a later fetched target queues a
    * successor instead of attaching itself to an older running operation.
    *
-   * @param {{ effective_base_sha: string, target_base: string, target_sha: string, script_mode: string, script_blob_sha: string }} input
+   * A MANUAL run additionally hashes its issued `manual_run_id` (UI-s582 §3.5):
+   * without it a second 배포 실행 on the same tip resolves to the SAME id and
+   * adopts the first run's terminal record instead of running again. The key is
+   * added only for a manual run, so every automatic identity is byte-identical
+   * to what it hashed before.
+   *
+   * @param {{ effective_base_sha: string, target_base: string, target_sha: string, script_mode: string, script_blob_sha: string, manual_run_id?: number|null }} input
    */
   function operationId(input) {
     return crypto
@@ -163,7 +163,10 @@ export function createRepoOperationCoordinator(deps) {
           target_sha: input.target_sha,
           effective_base_sha: input.effective_base_sha,
           script_mode: input.script_mode,
-          script_blob_sha: input.script_blob_sha
+          script_blob_sha: input.script_blob_sha,
+          ...(Number.isInteger(input.manual_run_id)
+            ? { manual_run_id: input.manual_run_id }
+            : {})
         })
       )
       .digest('hex')
@@ -221,23 +224,6 @@ export function createRepoOperationCoordinator(deps) {
       }
     }
     return null;
-  }
-
-  /**
-   * The deterministic repair owner (§9.3), delegated to the adapter so the
-   * settle path and the dispatch path can never disagree about it.
-   *
-   * @param {any} operation
-   */
-  async function ownerBead(operation) {
-    if (operation.subjects.length < 2) {
-      return undefined;
-    }
-    const owner = await resolveRepairOwner(
-      { gitRun: deps.gitRun, repo: deps.repo },
-      operation
-    );
-    return owner ?? undefined;
   }
 
   /**
@@ -565,7 +551,6 @@ export function createRepoOperationCoordinator(deps) {
     const current =
       deps.store.snapshot(workspace).repo_operations[operation_id] || operation;
     const log_digest = current.log_path ? fileSha256(current.log_path) : null;
-    const owner_bead = await ownerBead(current);
     const failure_record = {
       code: failure.code,
       fingerprint: failureFingerprint({
@@ -584,10 +569,8 @@ export function createRepoOperationCoordinator(deps) {
         ? { elapsed_ms: Number(failure.elapsed_ms) }
         : {})
     };
-    const queue = deps.store.snapshot(workspace);
     const access = resolutionAccess({
       policy_supported: policySupported(),
-      auto_repair: queue.auto_repair === true,
       subject: current
     });
     if (
@@ -602,18 +585,15 @@ export function createRepoOperationCoordinator(deps) {
         exit_code: failure.exit_code ?? null,
         signal: failure.signal ?? null,
         log_digest,
-        owner_bead,
         failure: failure_record
       });
       return 'retry_pending';
     }
     const blocked_reason =
-      current.state === 'running' && current.retry === null
-        ? !policySupported()
-          ? 'schema_unsupported'
-          : queue.auto_repair !== true
-            ? 'auto_repair_off'
-            : null
+      current.state === 'running' &&
+      current.retry === null &&
+      !policySupported()
+        ? 'schema_unsupported'
         : null;
     deps.store.settleRepoOperation(workspace, {
       operation_id,
@@ -621,11 +601,7 @@ export function createRepoOperationCoordinator(deps) {
       exit_code: failure.exit_code ?? null,
       signal: failure.signal ?? null,
       log_digest,
-      owner_bead,
       failure: failure_record,
-      ladder_stage: blocked_reason
-        ? 'user_triggered_session'
-        : 'auto_repair_session',
       retry_outcome:
         current.retry === null &&
         (blocked_reason !== null || !scriptRetryApplicable(current))
@@ -990,7 +966,6 @@ export function createRepoOperationCoordinator(deps) {
       if (!consumed_key) {
         deps.store.settleConsumedRepoOperationRetry(workspace, {
           operation_id,
-          owner_bead: await ownerBead(operation),
           blocked_reason: 'retry_identity_missing'
         });
         return { ok: false, code: 'repo_operation_retry_identity_missing' };
@@ -1020,8 +995,7 @@ export function createRepoOperationCoordinator(deps) {
     } catch {
       if (input.retry === true) {
         deps.store.settleConsumedRepoOperationRetry(workspace, {
-          operation_id,
-          owner_bead: await ownerBead(operation)
+          operation_id
         });
       }
       throw new Error('repo_operation_spawn_failed');
@@ -1029,8 +1003,7 @@ export function createRepoOperationCoordinator(deps) {
     if (!started.ok || !started.process_identity) {
       if (input.retry === true) {
         deps.store.settleConsumedRepoOperationRetry(workspace, {
-          operation_id,
-          owner_bead: await ownerBead(operation)
+          operation_id
         });
       } else {
         await settleFailure(workspace, operation, operation_id, {
@@ -1065,7 +1038,7 @@ export function createRepoOperationCoordinator(deps) {
    * @param {string} workspace
    * @param {string} operation_id
    * @param {any} operation
-   * @param {{ declaration: any, target_sha: string, retry?: boolean }} plan
+   * @param {{ declaration: any, target_sha: string, retry?: boolean, manual?: boolean }} plan
    */
   async function alignRecordedDeploy(workspace, operation_id, operation, plan) {
     const acquired = await deployLock({
@@ -1113,7 +1086,6 @@ export function createRepoOperationCoordinator(deps) {
         if (plan.retry === true) {
           deps.store.settleConsumedRepoOperationRetry(workspace, {
             operation_id,
-            owner_bead: await ownerBead(operation),
             blocked_reason: code
           });
         } else {
@@ -1151,7 +1123,6 @@ export function createRepoOperationCoordinator(deps) {
         if (plan.retry === true) {
           deps.store.settleConsumedRepoOperationRetry(workspace, {
             operation_id,
-            owner_bead: await ownerBead(operation),
             blocked_reason: code
           });
         } else {
@@ -1164,12 +1135,25 @@ export function createRepoOperationCoordinator(deps) {
           state.head === plan.target_sha
             ? 'ancestor'
             : await ancestryStatus(plan.target_sha, state.head);
-        if (target_status === 'ancestor') {
+        // A worktree HEAD that already contains the target ends an AUTOMATIC
+        // record: the delivery it exists for is provably on disk. A MANUAL run
+        // means the opposite — the person asked for this exact tip to be
+        // deployed AGAIN — so it aligns and runs instead of settling as
+        // covered/superseded (UI-s582 §3.4).
+        if (target_status === 'ancestor' && plan.manual !== true) {
+          // The record must name the SHA that is actually on disk: the
+          // coverage sweep below and `deploymentEvidence` both skip a success
+          // without `target_sha`, which left every session-predeployed target
+          // unable to cover the failed deploy it repaired (UI-j2f0).
           deps.store.settleRepoOperation(workspace, {
             operation_id,
             attempt_id: operation.attempt_id,
             exit_code: 0,
-            signal: null
+            signal: null,
+            target_sha: state.head,
+            ...(typeof state.path === 'string' && state.path
+              ? { deploy_worktree: state.path }
+              : {})
           });
           await sweepDescendantCoverage(workspace, operation_id);
           transition.reclaim(workspace, operation_id);
@@ -1181,22 +1165,23 @@ export function createRepoOperationCoordinator(deps) {
             superseded: state.head !== plan.target_sha
           };
         }
-        const head_status = await ancestryStatus(state.head, plan.target_sha);
-        if (head_status !== 'ancestor') {
-          const code =
-            target_status === 'not_ancestor' && head_status === 'not_ancestor'
-              ? 'remote_history_not_monotonic'
-              : 'repo_ops_ancestry_check_failed';
-          if (plan.retry === true) {
-            deps.store.settleConsumedRepoOperationRetry(workspace, {
-              operation_id,
-              owner_bead: await ownerBead(operation),
-              blocked_reason: code
-            });
-          } else {
-            await settleFailure(workspace, operation, operation_id, { code });
+        if (target_status !== 'ancestor') {
+          const head_status = await ancestryStatus(state.head, plan.target_sha);
+          if (head_status !== 'ancestor') {
+            const code =
+              target_status === 'not_ancestor' && head_status === 'not_ancestor'
+                ? 'remote_history_not_monotonic'
+                : 'repo_ops_ancestry_check_failed';
+            if (plan.retry === true) {
+              deps.store.settleConsumedRepoOperationRetry(workspace, {
+                operation_id,
+                blocked_reason: code
+              });
+            } else {
+              await settleFailure(workspace, operation, operation_id, { code });
+            }
+            return { ok: false, code, operation_id };
           }
-          return { ok: false, code, operation_id };
         }
       }
 
@@ -1210,7 +1195,6 @@ export function createRepoOperationCoordinator(deps) {
         if (plan.retry === true) {
           deps.store.settleConsumedRepoOperationRetry(workspace, {
             operation_id,
-            owner_bead: await ownerBead(operation),
             blocked_reason: code
           });
         } else {
@@ -1231,7 +1215,7 @@ export function createRepoOperationCoordinator(deps) {
    *
    * @param {string} workspace
    * @param {string} operation_id
-   * @param {{ declaration: any, classification: string, target_sha: string, retry?: boolean }} plan
+   * @param {{ declaration: any, classification: string, target_sha: string, retry?: boolean, manual?: boolean }} plan
    */
   async function launchRecorded(workspace, operation_id, plan) {
     const operation =
@@ -1274,7 +1258,6 @@ export function createRepoOperationCoordinator(deps) {
         if (plan.retry === true) {
           deps.store.settleConsumedRepoOperationRetry(workspace, {
             operation_id,
-            owner_bead: await ownerBead(operation),
             blocked_reason: 'repo_ops_transition_materialize_failed'
           });
         } else {
@@ -1365,10 +1348,20 @@ export function createRepoOperationCoordinator(deps) {
       };
     }
     const target_sha = bound.target_sha;
+    const manual = subject.source === 'manual';
+    // The ONE previous-base exception (UI-s582 §3.2), manual path only: policy
+    // and script come from the TIP being deployed rather than from the base the
+    // last success ran under. The tip is a commit that already landed on
+    // `<remote>/<base>`, so this is not an unreviewed script executing itself —
+    // and it is the only way a `[deploy]` activation landing (previous base has
+    // no declaration) can ever be run.
     /** @type {any} */
     const policy = await resolveEffective({
       repo: deps.repo,
-      previous_sha,
+      previous_sha:
+        manual || subject.policy_source === 'target_tip'
+          ? target_sha
+          : previous_sha,
       target_sha,
       kind: 'deploy',
       gitRun: deps.gitRun
@@ -1415,7 +1408,10 @@ export function createRepoOperationCoordinator(deps) {
       target_base: subject.target_base,
       target_sha,
       script_mode: declaration.mode,
-      script_blob_sha: declaration.blob_sha
+      script_blob_sha: declaration.blob_sha,
+      ...(manual && Number.isInteger(subject.manual_run_id)
+        ? { manual_run_id: subject.manual_run_id }
+        : {})
     });
     const existing =
       deps.store.snapshot(workspace).repo_operations[operation_id];
@@ -1446,6 +1442,19 @@ export function createRepoOperationCoordinator(deps) {
       script_path: declaration.script,
       script_mode: declaration.mode,
       script_blob_sha: declaration.blob_sha,
+      ...(manual
+        ? {
+            source: /** @type {const} */ ('manual'),
+            // The click-time tip, durable from the prerecord on: a manual
+            // record that waits behind another operation must still launch at
+            // the tip it was authorized against, not at whatever the remote
+            // has moved to by then (UI-s582 §3.5).
+            target_sha,
+            ...(Number.isInteger(subject.manual_run_id)
+              ? { manual_run_id: subject.manual_run_id }
+              : {})
+          }
+        : {}),
       bootstrap_provenance: subject.bootstrap_provenance || null
     });
     if (!prerecord.ok)
@@ -1471,11 +1480,253 @@ export function createRepoOperationCoordinator(deps) {
     const launched = await launchRecorded(workspace, operation_id, {
       declaration,
       classification: policy.classification,
-      target_sha
+      target_sha,
+      ...(manual ? { manual: true } : {})
     });
     return launched.ok
       ? { ...launched, timeout_ms: declaration.timeout_ms }
       : launched;
+  }
+
+  /**
+   * Reasons the 배포 실행 click can be refused (UI-s582 §3). Every one of them
+   * is a REFUSAL: no record is written, nothing is queued, and the client says
+   * exactly which precondition failed.
+   *
+   * @typedef {'deploy_not_declared'|'deploy_opted_out'|'deploy_in_flight'|'target_unresolved'|'remote_history_not_monotonic'} ManualDeployRefusal
+   */
+
+  /**
+   * Whether any deploy operation for this repo is still in flight.
+   *
+   * @param {Record<string, any>} operations
+   * @returns {boolean}
+   */
+  function deployInFlight(operations) {
+    for (const operation of Object.values(operations || {})) {
+      if (
+        operation &&
+        operation.repo_id === deps.repo &&
+        operation.kind === 'deploy' &&
+        (operation.state === 'queued' ||
+          operation.state === 'running' ||
+          operation.state === 'retry_pending')
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The newest deploy record that already stood for THIS exact target, so a new
+   * manual run can link it as its predecessor. Same repo, same base and same
+   * pinned SHA — a record for another target is not what this run replaces.
+   *
+   * @param {Record<string, any>} operations
+   * @param {{ target_base: string, target_sha: string }} target
+   * @returns {string|null}
+   */
+  function previousDeployFor(operations, target) {
+    /** @type {string|null} */
+    let latest_id = null;
+    /** @type {number} */
+    let latest_at = -1;
+    for (const [operation_id, operation] of Object.entries(operations || {})) {
+      if (
+        !operation ||
+        operation.repo_id !== deps.repo ||
+        operation.kind !== 'deploy' ||
+        operation.target_base !== target.target_base ||
+        operation.target_sha !== target.target_sha ||
+        operation.superseded_by
+      ) {
+        continue;
+      }
+      const at =
+        typeof operation.requested_at === 'number' ? operation.requested_at : 0;
+      if (at >= latest_at) {
+        latest_at = at;
+        latest_id = operation_id;
+      }
+    }
+    return latest_id;
+  }
+
+  /**
+   * The 배포 실행 click (UI-s582 §3): run the declared deploy script once, now,
+   * at the remote tip — the only entry a person has into the deploy lane.
+   *
+   * The target is NOT an input. It comes from the attachment's one base
+   * resolver, which pins remote, base and the fetched tip together, so nothing
+   * here assumes `origin` and a client cannot name a commit of its own.
+   *
+   * @returns {Promise<{ ok: true, operation_id: string }|{ ok: false, reason: ManualDeployRefusal }>}
+   */
+  async function runManualDeploy() {
+    if (typeof deps.resolveBase !== 'function') {
+      return { ok: false, reason: 'target_unresolved' };
+    }
+    /** @type {any} */
+    let resolved;
+    try {
+      resolved = await deps.resolveBase({ force: true });
+    } catch {
+      return { ok: false, reason: 'target_unresolved' };
+    }
+    if (
+      !resolved ||
+      resolved.ok !== true ||
+      typeof resolved.base !== 'string' ||
+      resolved.base.length === 0 ||
+      typeof resolved.base_oid !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(resolved.base_oid)
+    ) {
+      return { ok: false, reason: 'target_unresolved' };
+    }
+    const release = await deps.locks.repoOperationLock(deps.repo);
+    try {
+      return await runManualDeployLocked({
+        target_base: resolved.base,
+        target_sha: resolved.base_oid.toLowerCase()
+      });
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Guards, ancestry and enqueue for one manual run. Held under the SAME lock
+   * acquisition as the enqueue below it, so the in-flight guard and the record
+   * it protects cannot interleave with a second click.
+   *
+   * @param {{ target_base: string, target_sha: string }} pinned
+   * @returns {Promise<{ ok: true, operation_id: string }|{ ok: false, reason: ManualDeployRefusal }>}
+   */
+  async function runManualDeployLocked(pinned) {
+    /** @type {any} */
+    const policy = await resolveEffective({
+      repo: deps.repo,
+      previous_sha: pinned.target_sha,
+      target_sha: pinned.target_sha,
+      kind: 'deploy',
+      gitRun: deps.gitRun
+    });
+    // An unreadable declaration is not the same fact as an absent one, and the
+    // refusal vocabulary has no word for it. Fail closed on the target: what
+    // could not be read is a target this run cannot stand on.
+    if (!policy || !policy.policy || !policy.target) {
+      return { ok: false, reason: 'target_unresolved' };
+    }
+    const declaration = policy.policy.deploy;
+    if (!declaration || declaration.identity_invalid) {
+      return { ok: false, reason: 'deploy_not_declared' };
+    }
+    if (optOutOf().deploy) {
+      return { ok: false, reason: 'deploy_opted_out' };
+    }
+    if (deployInFlight(deps.store.snapshot(deps.workspace).repo_operations)) {
+      return { ok: false, reason: 'deploy_in_flight' };
+    }
+    const ancestry = await manualAncestryVerdict(pinned.target_sha);
+    if (ancestry !== 'allowed') {
+      return { ok: false, reason: ancestry };
+    }
+    const issued = deps.store.issueManualDeployRun(deps.workspace);
+    const manual_run_id = issued.ok
+      ? deps.store.snapshot(deps.workspace).manual_deploy_seq
+      : 0;
+    if (!Number.isInteger(manual_run_id) || manual_run_id <= 0) {
+      return { ok: false, reason: 'target_unresolved' };
+    }
+    const predecessor = previousDeployFor(
+      deps.store.snapshot(deps.workspace).repo_operations,
+      pinned
+    );
+    /** @type {any} */
+    const ensured = await ensureDeployLocked({
+      source: 'manual',
+      manual_run_id,
+      policy_source: 'target_tip',
+      target_base: pinned.target_base,
+      target_sha: pinned.target_sha,
+      subjects: [{ bead_id: 'manual', merged_sha: pinned.target_sha }]
+    });
+    // A record that exists is the answer, whatever the run then did with it:
+    // the script's own failure belongs on its card, not on the click.
+    if (typeof ensured.operation_id === 'string' && ensured.operation_id) {
+      if (predecessor && predecessor !== ensured.operation_id) {
+        deps.store.supersedeRepoOperation(deps.workspace, {
+          operation_id: predecessor,
+          successor_id: ensured.operation_id
+        });
+      }
+      return { ok: true, operation_id: ensured.operation_id };
+    }
+    // The opt-out is re-read after the async policy and containment checks, so
+    // a workspace that turned it on mid-flight lands here as an INERT result.
+    // It is a different fact from an undeclared lane and must keep its own
+    // word, so it is mapped before the generic inert reason.
+    if (ensured.opted_out === true) {
+      return { ok: false, reason: 'deploy_opted_out' };
+    }
+    return {
+      ok: false,
+      reason:
+        ensured.code === 'remote_history_not_monotonic'
+          ? 'remote_history_not_monotonic'
+          : ensured.inert === true
+            ? 'deploy_not_declared'
+            : 'target_unresolved'
+    };
+  }
+
+  /**
+   * Compare the deploy worktree HEAD with the pinned tip (UI-s582 §3.4). All
+   * three monotonic relations are ALLOWED — equal, HEAD already ahead, HEAD
+   * behind — because a manual run means redeploy, not "deliver if missing".
+   * Only genuinely divergent histories are refused, and a probe that cannot
+   * decide fails closed on the target.
+   *
+   * @param {string} target_sha
+   * @returns {Promise<'allowed'|'remote_history_not_monotonic'|'target_unresolved'>}
+   */
+  async function manualAncestryVerdict(target_sha) {
+    if (typeof deploy_worktree.readState !== 'function') {
+      return 'allowed';
+    }
+    /** @type {any} */
+    let state;
+    try {
+      state = await deploy_worktree.readState({ repo: deps.repo });
+    } catch {
+      return 'target_unresolved';
+    }
+    if (!state || state.ok !== true) {
+      return 'target_unresolved';
+    }
+    // No worktree yet (the pre-bootstrap state) — there is no HEAD to diverge
+    // from, so alignment creates it at the tip.
+    if (typeof state.head !== 'string' || state.head.length === 0) {
+      return 'allowed';
+    }
+    if (state.head === target_sha) {
+      return 'allowed';
+    }
+    const target_is_ancestor = await ancestryStatus(target_sha, state.head);
+    if (target_is_ancestor === 'unknown') {
+      return 'target_unresolved';
+    }
+    if (target_is_ancestor === 'ancestor') {
+      return 'allowed';
+    }
+    const head_is_ancestor = await ancestryStatus(state.head, target_sha);
+    if (head_is_ancestor === 'unknown') {
+      return 'target_unresolved';
+    }
+    return head_is_ancestor === 'ancestor'
+      ? 'allowed'
+      : 'remote_history_not_monotonic';
   }
 
   /**
@@ -1488,27 +1739,39 @@ export function createRepoOperationCoordinator(deps) {
    */
   async function launchQueued(workspace, operation_id, operation) {
     const retry = operation.state === 'retry_pending';
+    // A manual record keeps reading its policy — and now its TARGET — from the
+    // tip it was authorized against, on every relaunch: the previous base may
+    // still have no declaration at all.
+    const manual = operation.source === 'manual';
     // A retry re-runs the SAME command at the SAME target the first attempt
     // failed at (contract §3.2). Re-binding would resolve the remote's CURRENT
     // tip, so a base that moved between the two runs would leave the consumed
     // key pinned to the old SHA while the script executed against a new one —
-    // a different command wearing the first one's retry budget. The pinned SHA
-    // is authority here; its absence fails closed rather than falling back to a
-    // fresh bind.
+    // a different command wearing the first one's retry budget. A MANUAL record
+    // pins for the same reason one step earlier: the person authorized THIS
+    // tip, and a record queued behind another operation must not silently
+    // become a deploy of whatever landed since. The pinned SHA is authority in
+    // both cases; its absence fails closed rather than falling back to a fresh
+    // bind.
     /** @type {{ ok: boolean, code?: string, target_sha?: string }} */
-    const bound = retry
-      ? typeof operation.target_sha === 'string' && operation.target_sha
-        ? { ok: true, target_sha: operation.target_sha }
-        : { ok: false, code: 'repo_ops_retry_target_missing' }
-      : await deploy_worktree.bindTarget({
-          repo: deps.repo,
-          base: operation.target_base
-        });
+    const bound =
+      retry || manual
+        ? typeof operation.target_sha === 'string' && operation.target_sha
+          ? { ok: true, target_sha: operation.target_sha }
+          : {
+              ok: false,
+              code: retry
+                ? 'repo_ops_retry_target_missing'
+                : 'manual_target_missing'
+            }
+        : await deploy_worktree.bindTarget({
+            repo: deps.repo,
+            base: operation.target_base
+          });
     if (!bound.ok || typeof bound.target_sha !== 'string') {
       if (retry) {
         deps.store.settleConsumedRepoOperationRetry(workspace, {
           operation_id,
-          owner_bead: await ownerBead(operation),
           blocked_reason: bound.code || 'repo_ops_target_unresolved'
         });
       } else {
@@ -1521,7 +1784,7 @@ export function createRepoOperationCoordinator(deps) {
     /** @type {any} */
     const policy = await resolveEffective({
       repo: deps.repo,
-      previous_sha: operation.effective_base_sha,
+      previous_sha: manual ? bound.target_sha : operation.effective_base_sha,
       target_sha: bound.target_sha,
       kind: 'deploy',
       gitRun: deps.gitRun
@@ -1541,7 +1804,6 @@ export function createRepoOperationCoordinator(deps) {
       if (retry) {
         deps.store.settleConsumedRepoOperationRetry(workspace, {
           operation_id,
-          owner_bead: await ownerBead(operation),
           blocked_reason: 'repo_ops_policy_drift'
         });
       } else {
@@ -1555,7 +1817,8 @@ export function createRepoOperationCoordinator(deps) {
       declaration,
       classification: policy.classification,
       target_sha: bound.target_sha,
-      retry
+      retry,
+      ...(manual ? { manual: true } : {})
     });
   }
 
@@ -1577,7 +1840,6 @@ export function createRepoOperationCoordinator(deps) {
     ) {
       deps.store.settleConsumedRepoOperationRetry(workspace, {
         operation_id,
-        owner_bead: await ownerBead(operation),
         blocked_reason: 'verify_retry_input_missing'
       });
       return;
@@ -1599,7 +1861,6 @@ export function createRepoOperationCoordinator(deps) {
     ) {
       deps.store.settleConsumedRepoOperationRetry(workspace, {
         operation_id,
-        owner_bead: await ownerBead(operation),
         blocked_reason: 'repo_ops_policy_drift'
       });
       return;
@@ -1614,7 +1875,6 @@ export function createRepoOperationCoordinator(deps) {
     if (!script.ok || typeof script.path !== 'string') {
       deps.store.settleConsumedRepoOperationRetry(workspace, {
         operation_id,
-        owner_bead: await ownerBead(operation),
         blocked_reason: 'verify_script_materialize_failed'
       });
       return;
@@ -1911,7 +2171,6 @@ export function createRepoOperationCoordinator(deps) {
    */
   async function reconcile(workspace) {
     const release = await deps.locks.repoOperationLock(deps.repo);
-    let repair_lane_advanced = false;
     let auto_advance_restore_ready = false;
     try {
       try {
@@ -1919,7 +2178,7 @@ export function createRepoOperationCoordinator(deps) {
       } catch {
         // Candidate capture is fail-closed and must not block ordinary reconcile.
       }
-      repair_lane_advanced = await reconcileLocked(workspace);
+      await reconcileLocked(workspace);
       try {
         auto_advance_restore_ready =
           (await deps.autoAdvanceRestore?.afterReconcileLocked(workspace)) ===
@@ -1929,16 +2188,6 @@ export function createRepoOperationCoordinator(deps) {
       }
     } finally {
       release();
-    }
-    if (
-      repair_lane_advanced &&
-      typeof deps.onRepairLaneAdvanced === 'function'
-    ) {
-      try {
-        await deps.onRepairLaneAdvanced();
-      } catch {
-        // Reconciliation is durable; a later event can retry the handoff.
-      }
     }
     if (auto_advance_restore_ready) {
       try {
@@ -1951,7 +2200,6 @@ export function createRepoOperationCoordinator(deps) {
 
   /**
    * @param {string} workspace
-   * @returns {Promise<boolean>}
    */
   async function reconcileLocked(workspace) {
     if (!verify_coverage_swept.has(workspace)) {
@@ -1966,24 +2214,20 @@ export function createRepoOperationCoordinator(deps) {
         const current_queue = deps.store.snapshot(workspace);
         const access = resolutionAccess({
           policy_supported: policySupported(),
-          auto_repair: current_queue.auto_repair === true,
           subject: operation
         });
         if (!access.script_retry) {
           deps.store.settleConsumedRepoOperationRetry(workspace, {
             operation_id,
-            owner_bead: await ownerBead(operation),
-            ladder_stage: 'user_triggered_session',
-            blocked_reason: !policySupported()
-              ? 'schema_unsupported'
-              : 'auto_repair_off'
+            ...(policySupported()
+              ? {}
+              : { blocked_reason: 'schema_unsupported' })
           });
           continue;
         }
         if (normalizeScriptRetry(operation).status !== 'unconsumed') {
           deps.store.settleConsumedRepoOperationRetry(workspace, {
-            operation_id,
-            owner_bead: await ownerBead(operation)
+            operation_id
           });
           continue;
         }
@@ -2013,8 +2257,7 @@ export function createRepoOperationCoordinator(deps) {
         if (state.state === 'gone' || state.state === 'recycled') {
           if (operation.retry?.consumed_key) {
             deps.store.settleConsumedRepoOperationRetry(workspace, {
-              operation_id,
-              owner_bead: await ownerBead(operation)
+              operation_id
             });
             transition.reclaim(workspace, operation_id);
           } else {
@@ -2050,8 +2293,7 @@ export function createRepoOperationCoordinator(deps) {
       if (operation.state !== 'queued') continue;
       if (operation.retry?.consumed_key) {
         deps.store.settleConsumedRepoOperationRetry(workspace, {
-          operation_id,
-          owner_bead: await ownerBead(operation)
+          operation_id
         });
         continue;
       }
@@ -2120,7 +2362,7 @@ export function createRepoOperationCoordinator(deps) {
     try {
       names = fs.readdirSync(pending).filter((name) => name.endsWith('.json'));
     } catch {
-      return reconcileRepairsLocked(workspace);
+      return;
     }
     for (const name of names) {
       const file = path.join(pending, name);
@@ -2132,329 +2374,13 @@ export function createRepoOperationCoordinator(deps) {
         writeReceipt(file, { ok: false, code: 'bootstrap_provenance_invalid' });
       }
     }
-    return reconcileRepairsLocked(workspace);
   }
 
   /**
-   * The chain's spent automatic budget. It is the MAXIMUM across the chain's
-   * records, not a per-record value: a successor operation inherits `auto_used`
-   * precisely so a new record cannot present itself as an unspent chain.
-   *
-   * @param {Record<string, any>} operations
-   * @param {string} chain_id
-   */
-  function chainAutoUsed(operations, chain_id) {
-    let used = 0;
-    for (const operation of Object.values(operations)) {
-      if (operation.repair.chain_id === chain_id) {
-        used = Math.max(used, operation.repair.auto_used);
-      }
-    }
-    return used;
-  }
-
-  /**
-   * A chain closes on a terminal success of one of its operations (§9.3).
-   *
-   * @param {Record<string, any>} operations
-   * @param {string} chain_id
-   */
-  function chainClosed(operations, chain_id) {
-    return Object.values(operations).some(
-      (operation) =>
-        operation.repair.chain_id === chain_id &&
-        operation.state === 'succeeded'
-    );
-  }
-
-  /**
-   * Start one repair session for a terminal failure. Caller holds the
-   * repo-operation lock.
-   *
-   * `auto` is the contract-gated path: it requires the workspace flag, an
-   * eligible failure class, unspent chain budget, and evidence that this is not
-   * the same failure reproducing. `manual` is a human click — it skips the
-   * budget and the flag, but goes through the SAME coordinator dispatch so a
-   * new attempt is only ever created after repair evidence exists.
-   *
-   * @param {string} workspace
-   * @param {string} requested_subject_id - `op:<operation_id>`,
-   * `cleanup:<bead_id>`, or a bare operation id from a legacy caller.
-   * @param {'auto'|'manual'} mode
-   */
-  async function startRepairLocked(workspace, requested_subject_id, mode) {
-    const queue = deps.store.snapshot(workspace);
-    const operation_id = requested_subject_id.startsWith('op:')
-      ? requested_subject_id.slice('op:'.length)
-      : requested_subject_id;
-    const operation = queue.repo_operations[operation_id];
-    if (operation?.state === 'repairing') {
-      return { ok: true, operation_id, adopted: true };
-    }
-    if (operation?.state === 'failed' && operation.superseded_by) {
-      const chain_id = operation.repair.chain_id || operation_id;
-      return {
-        ok: false,
-        code: chainClosed(queue.repo_operations, chain_id)
-          ? 'repair_chain_closed'
-          : 'repo_operation_superseded'
-      };
-    }
-    if (operation?.state === 'failed') {
-      const chain_id = operation.repair.chain_id || operation_id;
-      if (chainClosed(queue.repo_operations, chain_id)) {
-        return { ok: false, code: 'repair_chain_closed' };
-      }
-    }
-    const normalized = normalizeResolutionSubjects(queue);
-    const subject_id = requested_subject_id.startsWith('cleanup:')
-      ? requested_subject_id
-      : `op:${operation_id}`;
-    const subject = normalized.find(
-      (candidate) => candidate.subject_id === subject_id
-    );
-    if (!subject) {
-      return operation
-        ? { ok: false, code: 'repo_operation_not_failed' }
-        : { ok: false, code: 'repo_operation_missing' };
-    }
-    if (subject.source === 'cleanup') {
-      return startCleanupRepairLocked(workspace, subject, mode);
-    }
-    const chain_id = operation.repair.chain_id || operation_id;
-    if (mode === 'auto') {
-      // The config disable is not advisory: an automatic dispatch asked for
-      // while the flag is off is REFUSED, never downgraded to a manual one.
-      if (queue.auto_repair !== true) {
-        deps.store.descendRepoOperationToUser(workspace, { operation_id });
-        return { ok: false, code: 'auto_repair_disabled' };
-      }
-      if (!policySupported()) {
-        deps.store.descendRepoOperationToUser(workspace, { operation_id });
-        return { ok: false, code: 'policy_schema_unsupported' };
-      }
-      if (!isRepairEligible(operation)) {
-        return { ok: false, code: 'repair_not_eligible' };
-      }
-      if (operation.dismissed) {
-        deps.store.descendRepoOperationToUser(workspace, { operation_id });
-        return { ok: false, code: 'repair_dismissed' };
-      }
-      if (
-        chainAutoUsed(queue.repo_operations, chain_id) >=
-        operation.repair.auto_budget
-      ) {
-        deps.store.descendRepoOperationToUser(workspace, { operation_id });
-        return { ok: false, code: 'repair_budget_exhausted' };
-      }
-      if (reproducedWithoutNewEvidence(queue.repo_operations, operation_id)) {
-        deps.store.descendRepoOperationToUser(workspace, { operation_id });
-        return { ok: false, code: 'repair_fingerprint_repeated' };
-      }
-    }
-    if (!deps.repairSession) {
-      return { ok: false, code: 'repair_session_unavailable' };
-    }
-    const owner_bead =
-      operation.repair.owner_bead ||
-      (await resolveRepairOwner(
-        { gitRun: deps.gitRun, repo: deps.repo },
-        operation
-      ));
-    // A bootstrap operation's only subject is the synthetic `bootstrap` marker,
-    // not a Bead a session can attach to. Refusing here — BEFORE the prerecord —
-    // is what keeps the chain's one automatic budget unspent: the prerecord
-    // spends it deliberately ahead of any session effect, and releasing a failed
-    // dispatch does not refund, so resolving an undispatchable owner would burn
-    // the budget on a repair that could never have run.
-    if (!owner_bead || owner_bead === 'bootstrap') {
-      return { ok: false, code: 'repair_owner_unresolved' };
-    }
-    const prerecorded = deps.store.startRepoOperationRepair(workspace, {
-      operation_id,
-      mode,
-      owner_bead
-    });
-    if (!prerecorded.ok) {
-      return { ok: false, code: 'repair_prerecord_failed' };
-    }
-    const dispatched = await deps.repairSession.dispatch({
-      workspace,
-      operation_id,
-      operation: deps.store.snapshot(workspace).repo_operations[operation_id],
-      mode,
-      owner_bead
-    });
-    if (!dispatched.ok || typeof dispatched.attempt_id !== 'string') {
-      deps.store.releaseRepoOperationRepair(workspace, { operation_id });
-      return { ok: false, code: dispatched.reason || 'repair_dispatch_failed' };
-    }
-    deps.store.bindRepoOperationRepairSession(workspace, {
-      operation_id,
-      attempt_id: dispatched.attempt_id,
-      session_id: dispatched.session_id ?? null
-    });
-    return {
-      ok: true,
-      operation_id,
-      mode,
-      attempt_id: dispatched.attempt_id,
-      session_id: dispatched.session_id ?? null
-    };
-  }
-
-  /**
-   * Dispatch the legacy cleanup surface through the same session Interface.
-   * The synthetic operation is packet input only; durable state remains beside
-   * the cleanup failure it describes.
-   *
-   * @param {string} workspace
-   * @param {any} subject
-   * @param {'auto'|'manual'} mode
-   */
-  async function startCleanupRepairLocked(workspace, subject, mode) {
-    const queue = deps.store.snapshot(workspace);
-    const failure = queue.cleanup_failed[subject.bead_id];
-    if (!failure) {
-      return { ok: false, code: 'repo_operation_missing' };
-    }
-    if (failure.repair?.mode) {
-      return { ok: true, operation_id: subject.subject_id, adopted: true };
-    }
-    if (mode === 'auto') {
-      if (queue.auto_repair !== true) {
-        return { ok: false, code: 'auto_repair_disabled' };
-      }
-      if (!policySupported()) {
-        return { ok: false, code: 'policy_schema_unsupported' };
-      }
-      if ((failure.repair?.auto_used || 0) >= 1) {
-        return { ok: false, code: 'repair_budget_exhausted' };
-      }
-    }
-    if (!deps.repairSession) {
-      return { ok: false, code: 'repair_session_unavailable' };
-    }
-    const row = queue.pr_wait.find(
-      (entry) => entry.bead_id === subject.bead_id
-    );
-    if (!row) {
-      return { ok: false, code: 'repair_owner_unresolved' };
-    }
-    const prerecorded = deps.store.startCleanupRepair(workspace, {
-      bead_id: subject.bead_id,
-      mode
-    });
-    if (!prerecorded.ok) {
-      return { ok: false, code: 'repair_prerecord_failed' };
-    }
-    const current = deps.store.snapshot(workspace);
-    const current_failure = current.cleanup_failed[subject.bead_id];
-    const current_repair = current_failure.repair;
-    // The prerecord above writes `repair`; its absence here means the durable
-    // write did not land, so the dispatch must not proceed on a record whose
-    // chain and budget were never stamped.
-    if (!current_repair) {
-      return { ok: false, code: 'repair_prerecord_failed' };
-    }
-    const code = current_failure.failure_code || current_failure.reason;
-    const synthetic_operation = {
-      kind: 'cleanup',
-      step: current_failure.step,
-      reason: current_failure.reason,
-      subjects: [
-        {
-          bead_id: subject.bead_id,
-          merged_sha: row.merge_sha || ''
-        }
-      ],
-      target_base: null,
-      target_sha: row.merge_sha || null,
-      target_tree: null,
-      effective_base_sha: null,
-      script_blob_sha: null,
-      script_mode: null,
-      attempt_id: subject.subject_id,
-      exit_code: null,
-      signal: null,
-      started_at: null,
-      finished_at: current_failure.at,
-      log_path: current_failure.log_path || null,
-      log_digest: null,
-      output_tail: current_failure.output_tail || '',
-      state: 'repairing',
-      failure: {
-        code,
-        fingerprint: failureFingerprint({ code }),
-        detail: current_failure.detail || current_failure.reason,
-        interrupted: false,
-        ...(current_failure.fetch_failure
-          ? { fetch_failure: current_failure.fetch_failure }
-          : {}),
-        ...(Number.isFinite(current_failure.elapsed_ms)
-          ? { elapsed_ms: current_failure.elapsed_ms }
-          : {})
-      },
-      retry: {
-        first_failure: null,
-        first_fingerprint: null,
-        consumed_key: null,
-        absorbed: null,
-        outcome: 'not_applicable',
-        blocked_reason: null
-      },
-      repair: {
-        chain_id: current_repair.chain_id,
-        auto_budget: 1,
-        auto_used: current_repair.auto_used,
-        ladder_stage: current_repair.ladder_stage
-      }
-    };
-    const dispatched = await deps.repairSession.dispatch({
-      workspace,
-      operation_id: subject.subject_id,
-      operation: synthetic_operation,
-      mode,
-      owner_bead: subject.bead_id
-    });
-    if (!dispatched.ok || typeof dispatched.attempt_id !== 'string') {
-      deps.store.releaseCleanupRepair(workspace, {
-        bead_id: subject.bead_id
-      });
-      return { ok: false, code: dispatched.reason || 'repair_dispatch_failed' };
-    }
-    deps.store.bindCleanupRepairSession(workspace, {
-      bead_id: subject.bead_id,
-      attempt_id: dispatched.attempt_id,
-      session_id: dispatched.session_id ?? null
-    });
-    return {
-      ok: true,
-      operation_id: subject.subject_id,
-      mode,
-      attempt_id: dispatched.attempt_id,
-      session_id: dispatched.session_id ?? null
-    };
-  }
-
-  /**
-   * @param {string} operation_id
-   * @param {'auto'|'manual'} [mode]
-   */
-  async function startRepair(operation_id, mode = 'manual') {
-    const release = await deps.locks.repoOperationLock(deps.repo);
-    try {
-      return await startRepairLocked(deps.workspace, operation_id, mode);
-    } finally {
-      release();
-    }
-  }
-
-  /**
-   * Acknowledge one failed row (UI-q0uy §4.6-2). Not a transition and not a
-   * repair: the record keeps its state and evidence, and the repair budget and
-   * chain are untouched. Under the repo-operation lock like every other write
-   * here, so it cannot race a launch that is about to move the same row.
+   * Acknowledge one failed row (UI-q0uy §4.6-2). Not a transition: the record
+   * keeps its state and its whole evidence trail. Under the repo-operation lock
+   * like every other write here, so it cannot race a launch that is about to
+   * move the same row.
    *
    * @param {string} operation_id
    */
@@ -2479,101 +2405,6 @@ export function createRepoOperationCoordinator(deps) {
     } finally {
       release();
     }
-  }
-
-  /**
-   * Reconcile the repair lane. Two passes, both driven by facts the coordinator
-   * can read for itself:
-   *
-   *   - a `repairing` record whose session is no longer running returns to
-   *     `failed`, because a session ENDING is not a repair. Nothing here reads
-   *     what the session said about itself.
-   *   - a `failed` record that passes every §9.3 gate gets its one automatic
-   *     dispatch. Turning `auto_repair` back ON therefore reconciles eligible
-   *     failures on the very next pass without any extra trigger.
-   *
-   * Caller holds the repo-operation lock.
-   *
-   * @param {string} workspace
-   * @returns {Promise<boolean>}
-   */
-  async function reconcileRepairsLocked(workspace) {
-    if (!deps.repairSession) {
-      return false;
-    }
-    for (const [operation_id, operation] of Object.entries(
-      deps.store.snapshot(workspace).repo_operations
-    )) {
-      if (operation.repo_id !== deps.repo) continue;
-      if (operation.state === 'repairing') {
-        const judged = await deps.repairSession.judge({
-          workspace,
-          operation_id
-        });
-        if (judged.verdict !== 'session_running') {
-          deps.store.releaseRepoOperationRepair(workspace, { operation_id });
-        }
-        continue;
-      }
-      if (operation.state !== 'failed') continue;
-      await startRepairLocked(workspace, operation_id, 'auto');
-    }
-    const queue = deps.store.snapshot(workspace);
-    for (const subject of normalizeResolutionSubjects(queue)) {
-      if (subject.source !== 'cleanup') {
-        continue;
-      }
-      if (subject.cleanup_failure.repair?.mode) {
-        const judged = await deps.repairSession.judge({
-          workspace,
-          operation_id: subject.subject_id
-        });
-        if (judged.verdict !== 'session_running') {
-          deps.store.releaseCleanupRepair(workspace, {
-            bead_id: subject.bead_id
-          });
-        }
-        continue;
-      }
-      await startRepairLocked(workspace, subject.subject_id, 'auto');
-    }
-
-    /** @type {string[]} */
-    const moot_attempt_ids = [];
-    const attempts = Object.values(
-      deps.store.snapshot(workspace).attempts || {}
-    );
-    for (const attempt of attempts) {
-      if (
-        !attempt ||
-        typeof attempt.repair_operation_id !== 'string' ||
-        attempt.status !== 'failed' ||
-        typeof attempt.dismissed_at === 'number' ||
-        attempt.cause === 'loud_fail_blocker'
-      ) {
-        continue;
-      }
-      let judged;
-      try {
-        judged = await deps.repairSession.judge({
-          workspace,
-          operation_id: attempt.repair_operation_id
-        });
-      } catch {
-        continue;
-      }
-      if (judged.verdict !== 'chain_closed') {
-        continue;
-      }
-      moot_attempt_ids.push(attempt.attempt_id);
-    }
-
-    if (moot_attempt_ids.length === 0) {
-      return false;
-    }
-    return deps.store.settleMootRepairFailures(workspace, {
-      attempt_ids: moot_attempt_ids
-    }).ok;
   }
 
   /**
@@ -2667,6 +2498,7 @@ export function createRepoOperationCoordinator(deps) {
 
   return {
     ensureDeploy,
+    runManualDeploy,
     ensureVerify,
     observe,
     verifyReceipt,
@@ -2676,7 +2508,6 @@ export function createRepoOperationCoordinator(deps) {
     deploymentEvidence,
     waitForDeployTerminal,
     reconcile,
-    startRepair,
     dismiss,
     refreshDisplay
   };

@@ -16,7 +16,12 @@
  */
 import { html, render } from 'lit-html';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
-import { failureText, operationFailureText } from './failure-labels.js';
+import {
+  failureText,
+  operationFailureText,
+  retryOutcomeText,
+  terminationText
+} from './failure-labels.js';
 import { formatClock, formatElapsed, shortSha } from './lanes.js';
 import { cleanupStepLabel, cleanupStepperView } from './merge-steps.js';
 
@@ -46,7 +51,6 @@ export const RECENT_LIMIT = 5;
  */
 const UNRESOLVED_STATES = new Set([
   'failed',
-  'repairing',
   'running',
   'queued',
   'retry_pending'
@@ -61,19 +65,6 @@ const UNRESOLVED_STATES = new Set([
 const OPERATION_KIND_LABELS = {
   verify: '머지 전 검증',
   deploy: '머지 후 배포'
-};
-
-/**
- * The repair button's wording per failure kind (master spec §9.2). Every button
- * names the failure it resolves — there is deliberately no generic 재시도.
- *
- * @type {Record<string, string>}
- */
-const RESOLVE_LABELS = {
-  verify_script_failure: '검증 실패 해결',
-  verify_script_failure_pre_merge: '검증 실패 해결 후 머지',
-  deploy_script_failure: '배포 실패 해결',
-  interrupted_without_terminal_exit: '중단된 작업 진단'
 };
 
 /**
@@ -212,8 +203,6 @@ function stateWordOf(event) {
       return '성공';
     case 'failed':
       return '실패';
-    case 'repairing':
-      return '자동 해결 중';
     case 'retry_pending':
       return '재시도 중';
     case 'running':
@@ -277,61 +266,86 @@ function explainTemplate(text, suffix = '', warn = false) {
 }
 
 /**
- * The repair/dismiss actions on a failed operation (§4.2). The budget subtitle
- * is not decoration: a repair session is a spent-once resource, and a button
- * that does not say so invites a second click that the coordinator will refuse.
+ * The declared timeout for the lane one operation belongs to. It is NOT on the
+ * operation card — a timeout is a property of the declaration, so it is read
+ * from the same `repo_ops` projection the settings card draws, matched to the
+ * operation's own `kind`. Absent when nothing declares that lane, which makes
+ * the termination line say `타임아웃 초과` without a number rather than invent
+ * one.
+ *
+ * @param {any} repo_ops - The snapshot's `workspace_info.repo_ops`.
+ * @param {any} operation
+ * @returns {number|undefined}
+ */
+function laneTimeoutMs(repo_ops, operation) {
+  if (!repo_ops || typeof repo_ops !== 'object') {
+    return undefined;
+  }
+  const lane = operation && operation.kind === 'verify' ? 'verify' : 'deploy';
+  const declaration = repo_ops[lane];
+  const timeout_ms =
+    declaration && typeof declaration === 'object'
+      ? declaration.timeout_ms
+      : undefined;
+  return typeof timeout_ms === 'number' && Number.isFinite(timeout_ms)
+    ? timeout_ms
+    : undefined;
+}
+
+/**
+ * The two derived lines under the cause sentence (UI-s582 §2): HOW the process
+ * ended, and what the one automatic `script_retry` did about it.
+ *
+ * Both are pure derivations of fields the card already carries, and both are
+ * omitted when the card cannot prove what they would say — an absent line is the
+ * honest rendering of an absent fact. The retry line is asked for on EVERY state
+ * because `absorbed` belongs on a succeeded card: it is the only trace left of a
+ * failure the retry erased.
+ *
+ * @param {any} operation
+ * @param {number} [timeout_ms] - The declared timeout of this operation's lane.
+ * @returns {TemplateResult|string}
+ */
+function operationWhyTemplate(operation, timeout_ms) {
+  const termination = terminationText(operation, timeout_ms);
+  const retry = retryOutcomeText(operation);
+  if (!termination && !retry) {
+    return '';
+  }
+  return html`<p class="worker-ev__why">
+    ${termination
+      ? html`<span class="worker-ev__why-line">${termination}</span>`
+      : ''}${retry
+      ? html`<span class="worker-ev__why-line">${retry}</span>`
+      : ''}
+  </p>`;
+}
+
+/**
+ * The dismiss action on a failed operation (§4.2). A failed script is now a
+ * terminal record: the only thing a reader can do to it is accept it, which
+ * takes the row out of the attention count without erasing the evidence.
  *
  * @param {any} operation
  * @returns {TemplateResult|string}
  */
 function operationActionsTemplate(operation) {
-  if (operation.state !== 'failed' || operation.superseded_by) {
+  if (
+    operation.state !== 'failed' ||
+    operation.superseded_by ||
+    operation.dismissed
+  ) {
     return '';
   }
-  const repair = operation.repair || {};
-  const remaining = typeof repair.remaining === 'number' ? repair.remaining : 0;
-  const resolve_key =
-    operation.failure_kind === 'verify_script_failure' &&
-    operation.verify_stage === 'pre_merge'
-      ? 'verify_script_failure_pre_merge'
-      : operation.failure_kind || '';
-  const spent = remaining <= 0;
   return html`<div class="worker-ev__acts">
     <button
       type="button"
-      class="worker-ev__btn worker-ev__btn--primary worker-repo-op__resolve"
+      class="worker-ev__btn worker-repo-op__dismiss"
       data-operation-id=${operation.operation_id}
-      data-failure-kind=${operation.failure_kind || ''}
-      title="해결 세션을 엽니다"
+      title="사람이 확인한 실패로 접수합니다 — 기록은 그대로 남고 해결 필요 집계에서만 빠집니다"
     >
-      ${Object.hasOwn(RESOLVE_LABELS, resolve_key)
-        ? RESOLVE_LABELS[resolve_key]
-        : '실패 해결 세션 시작'}
+      기록 닫기
     </button>
-    <span class="worker-ev__btn-sub"
-      >${spent
-        ? '자동 해결을 다 썼습니다 · 눌러서 해결 세션을 엽니다'
-        : `자동 해결 ${remaining}회가 남아 있습니다`}</span
-    >
-    ${repair.attempt_id
-      ? html`<button
-          type="button"
-          class="worker-ev__btn worker-repo-op__session"
-          data-attempt-id=${repair.attempt_id}
-        >
-          해결 세션 보기
-        </button>`
-      : ''}
-    ${operation.dismissed
-      ? ''
-      : html`<button
-          type="button"
-          class="worker-ev__btn worker-repo-op__dismiss"
-          data-operation-id=${operation.operation_id}
-          title="사람이 확인한 실패로 접수합니다 — 기록은 그대로 남고 해결 필요 집계에서만 빠집니다"
-        >
-          기록 닫기
-        </button>`}
   </div>`;
 }
 
@@ -339,9 +353,11 @@ function operationActionsTemplate(operation) {
  * One repo-operation event.
  *
  * @param {any} event
+ * @param {any} [repo_ops] - The snapshot's `workspace_info.repo_ops`, the only
+ * place a lane's declared timeout exists.
  * @returns {TemplateResult}
  */
-function operationEventTemplate(event) {
+function operationEventTemplate(event, repo_ops) {
   const operation = event.operation;
   const failed = operation.state === 'failed';
   const code = operation.failure ? operation.failure.code : '';
@@ -381,10 +397,18 @@ function operationEventTemplate(event) {
         ${operation.superseded_by
           ? html`<span class="worker-ev__st worker-ev__st--quiet">덮임</span>`
           : ''}
+        ${operation.source === 'manual'
+          ? html`<span
+              class="worker-ev__st worker-ev__st--manual"
+              title="사람이 배포 실행을 눌러 시작한 작업입니다"
+              >수동</span
+            >`
+          : ''}
       </div>
       ${failed
         ? explainTemplate(operationFailureText(operation.failure_kind, code))
         : ''}
+      ${operationWhyTemplate(operation, laneTimeoutMs(repo_ops, operation))}
       ${operationActionsTemplate(operation)}
       ${detailsTemplate([
         { term: '실패 코드', value: failed ? code : '' },
@@ -466,16 +490,6 @@ function cleanupEventTemplate(event) {
         >
           정리 재개${step_label ? ` — ${step_label} 단계부터` : ''}
         </button>
-        ${cleanup.repair_eligible
-          ? html`<button
-              type="button"
-              class="worker-ev__btn worker-ev__btn--primary worker-repo-op__resolve"
-              data-operation-id=${`cleanup:${cleanup.bead_id}`}
-              data-failure-kind=${cleanup.failure_code || cleanup.reason || ''}
-            >
-              실패 해결 세션 시작
-            </button>`
-          : ''}
       </div>
       ${detailsTemplate([
         { term: '실패 코드', value: cleanup.reason || '' },
@@ -490,7 +504,7 @@ function cleanupEventTemplate(event) {
 /**
  * The drawer body.
  *
- * @param {{ events: any[], repo: string, hidden?: number, expanded?: boolean }} model
+ * @param {{ events: any[], repo: string, hidden?: number, expanded?: boolean, repo_ops?: any }} model
  * @returns {TemplateResult}
  */
 export function repoOpsTimelineTemplate(model) {
@@ -516,7 +530,7 @@ export function repoOpsTimelineTemplate(model) {
           ${model.events.map((event) =>
             event.type === 'cleanup'
               ? cleanupEventTemplate(event)
-              : operationEventTemplate(event)
+              : operationEventTemplate(event, model.repo_ops)
           )}
         </ul>`}
     ${hidden > 0 || expanded
@@ -542,7 +556,7 @@ export function repoOpsTimelineTemplate(model) {
  * @param {{ onClose?: () => void }} [options]
  */
 export function createRepoOpsDrawer(mount_element, options = {}) {
-  /** @type {{ operations: any, cleanup_failures: any, repo: string, expanded: boolean }|null} */
+  /** @type {{ operations: any, cleanup_failures: any, repo: string, repo_ops: any, expanded: boolean }|null} */
   let model = null;
 
   function doRender() {
@@ -558,7 +572,8 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
         events: view.visible,
         hidden: view.hidden,
         expanded: model.expanded,
-        repo: model.repo
+        repo: model.repo,
+        repo_ops: model.repo_ops
       }),
       mount_element
     );
@@ -577,13 +592,14 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
   });
 
   /**
-   * @param {{ operations: any, cleanup_failures: any, repo?: string }} input
+   * @param {{ operations: any, cleanup_failures: any, repo?: string, repo_ops?: any }} input
    */
   function open(input) {
     model = {
       operations: input.operations,
       cleanup_failures: input.cleanup_failures,
       repo: input.repo || '',
+      repo_ops: input.repo_ops || null,
       expanded: false
     };
     doRender();
@@ -610,7 +626,7 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
      * state is the READER's, not the snapshot's: a queue push must never
      * collapse a timeline someone just opened.
      *
-     * @param {{ operations: any, cleanup_failures: any, repo?: string }} input
+     * @param {{ operations: any, cleanup_failures: any, repo?: string, repo_ops?: any }} input
      */
     refresh(input) {
       if (!model) {
@@ -620,6 +636,7 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
         operations: input.operations,
         cleanup_failures: input.cleanup_failures,
         repo: input.repo || '',
+        repo_ops: input.repo_ops || null,
         expanded: model.expanded
       };
       doRender();

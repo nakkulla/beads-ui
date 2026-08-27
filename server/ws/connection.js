@@ -92,7 +92,6 @@ import {
   handleWorkerAttemptPause,
   handleWorkerAttemptResume,
   handleWorkerAttemptStop,
-  handleWorkerAutoRepairToggle,
   handleWorkerAutomationToggle,
   handleWorkerCleanupRetry,
   handleWorkerDiscard,
@@ -110,8 +109,8 @@ import {
   handleWorkerQueueSetSerialLaneCount,
   handleWorkerQueueSetSlots,
   handleWorkerQueueToggle,
+  handleWorkerRepoOperationDeployRun,
   handleWorkerRepoOperationDismiss,
-  handleWorkerRepoOperationRepair,
   handleWorkerRepoOpsOptOutToggle,
   handleWorkerReviseApprove,
   handleWorkerReviseFix,
@@ -119,17 +118,6 @@ import {
   handleWorkerStaleWorkContinue,
   handleWorkerStaleWorkRecheck
 } from './worker-handlers.js';
-import {
-  handleParallelAnalysisCancel,
-  handleParallelAnalysisPrompt,
-  handleParallelAnalysisSettingsUpdate,
-  handleParallelAnalysisSnapshot,
-  handleParallelAnalysisStart,
-  handleParallelAnalysisSubmit,
-  handleParallelAnalysisTargets,
-  handleSubscribeParallelAnalysis,
-  handleUnsubscribeParallelAnalysis
-} from './worker-parallel-analysis-handlers.js';
 import {
   handleGetWorkspace,
   handleGitPullWorkspace,
@@ -577,50 +565,20 @@ export async function handleMessage(ws, data) {
     case 'worker-automation-toggle':
       handleWorkerAutomationToggle(ws, req);
       return;
-    case 'worker-auto-repair-toggle':
-      handleWorkerAutoRepairToggle(ws, req);
-      return;
     case 'worker-repo-ops-opt-out-toggle':
       handleWorkerRepoOpsOptOutToggle(ws, req);
       return;
-    case 'worker-repo-operation-repair':
-      await handleWorkerRepoOperationRepair(ws, req);
-      return;
     case 'worker-repo-operation-dismiss':
       await handleWorkerRepoOperationDismiss(ws, req);
+      return;
+    case 'worker-repo-operation-deploy-run':
+      await handleWorkerRepoOperationDeployRun(ws, req);
       return;
     case 'worker-queue-set-slots':
       handleWorkerQueueSetSlots(ws, req);
       return;
     case 'worker-queue-set-serial-lane-count':
       handleWorkerQueueSetSerialLaneCount(ws, req);
-      return;
-    case 'subscribe-worker-parallel-analysis':
-      handleSubscribeParallelAnalysis(ws, req);
-      return;
-    case 'unsubscribe-worker-parallel-analysis':
-      handleUnsubscribeParallelAnalysis(ws, req);
-      return;
-    case 'worker-parallel-analysis-snapshot':
-      handleParallelAnalysisSnapshot(ws, req);
-      return;
-    case 'worker-parallel-analysis-targets':
-      await handleParallelAnalysisTargets(ws, req);
-      return;
-    case 'worker-parallel-analysis-prompt':
-      handleParallelAnalysisPrompt(ws, req);
-      return;
-    case 'worker-parallel-analysis-start':
-      await handleParallelAnalysisStart(ws, req);
-      return;
-    case 'worker-parallel-analysis-cancel':
-      handleParallelAnalysisCancel(ws, req);
-      return;
-    case 'worker-parallel-analysis-settings-update':
-      handleParallelAnalysisSettingsUpdate(ws, req);
-      return;
-    case 'worker-parallel-analysis-submit':
-      await handleParallelAnalysisSubmit(ws, req);
       return;
     case 'worker-queue-set-orchestration-defaults':
       handleWorkerQueueSetOrchestrationDefaults(ws, req);

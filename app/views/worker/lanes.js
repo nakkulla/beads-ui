@@ -196,7 +196,7 @@ export function formatClock(at) {
  *
  * @param {any} operations - Projected `repo_operations` cards.
  * @param {any} cleanup_failures - Projected `cleanup_failed` entries.
- * @returns {{ deploy: { sha: string, at: number|null, elapsed_ms: number|null }|null, unresolved: number, repairing: boolean, badge: { tone: 'act'|'live'|'quiet', label: string } }|null}
+ * @returns {{ deploy: { sha: string, at: number|null, elapsed_ms: number|null }|null, unresolved: number, badge: { tone: 'act'|'quiet', label: string } }|null}
  */
 export function repoOpsStripModel(operations, cleanup_failures) {
   const cards = Array.isArray(operations) ? operations : [];
@@ -227,9 +227,6 @@ export function repoOpsStripModel(operations, cleanup_failures) {
       (/** @type {any} */ card) =>
         card.state === 'failed' && !card.dismissed && !card.superseded_by
     ).length + cleanup.length;
-  const repairing = cards.some(
-    (/** @type {any} */ card) => card.state === 'repairing'
-  );
   return {
     deploy: latest
       ? {
@@ -241,13 +238,10 @@ export function repoOpsStripModel(operations, cleanup_failures) {
         }
       : null,
     unresolved,
-    repairing,
     badge:
       unresolved > 0
         ? { tone: 'act', label: `해결 필요 ${unresolved}` }
-        : repairing
-          ? { tone: 'live', label: '자동 해결 중' }
-          : { tone: 'quiet', label: '모두 정상' }
+        : { tone: 'quiet', label: '모두 정상' }
   };
 }
 
@@ -1082,9 +1076,6 @@ export function priorityBadgeTemplate(priority) {
  * @property {boolean} [cancel_action] - Render [취소] INSTEAD of [머지]
  * (UI-5v7d §4): the row is already waiting its turn in the merge queue, so the
  * only thing left to click is giving that turn up.
- * @property {boolean} [timeline_action] - Render [저장소 작업 보기] (UI-q0uy
- * §4.4): the merge action is locked because a repo operation stopped, and the
- * timeline is where that reason and its resolve buttons actually live.
  * @property {boolean} [cancel_enabled] - Whether [취소] may be clicked; false on
  * the item the driver is actively merging.
  * @property {string} [cancel_title] - Tooltip for [취소].
@@ -1384,19 +1375,6 @@ export function miniRow(item, options = {}) {
         취소
       </button>`
     : '';
-  // 저장소 작업 단계에서 머지 액션이 잠긴 카드 (UI-q0uy §4.4). 잠금 사유를
-  // 여기서 다시 문장으로 쓰지 않고, 그 사유가 실제로 적혀 있는 타임라인으로
-  // 보낸다 — 같은 사실을 두 곳에 쓰면 한쪽은 반드시 낡는다.
-  const timeline_el = item.timeline_action
-    ? html`<button
-        type="button"
-        class="worker-mini__timeline"
-        data-bead-id=${item.id}
-        title="저장소 작업이 끝나지 않아 머지 액션이 잠겼습니다 — 타임라인에서 원인과 해결 버튼을 볼 수 있습니다"
-      >
-        저장소 작업 보기
-      </button>`
-    : '';
   const discard = item.discard;
   const discard_el =
     discard?.action || item.discard_action
@@ -1520,7 +1498,6 @@ export function miniRow(item, options = {}) {
     merging ||
     item.merge_action ||
     item.cancel_action ||
-    item.timeline_action ||
     item.discard_action ||
     discard?.operation ||
     item.revise_action ||
@@ -1560,7 +1537,7 @@ export function miniRow(item, options = {}) {
                 >`
               : ''}${badge_els}${merge_step_el}
             <span class="worker-mini__actions"
-              >${merge_el}${cancel_el}${timeline_el}${discard_el}</span
+              >${merge_el}${cancel_el}${discard_el}</span
             >
             ${timesMeta(item)}
           </div>`
@@ -1573,7 +1550,7 @@ export function miniRow(item, options = {}) {
               ? html`<div class="worker-mini__foot">
                   ${merge_step_el}
                   <span class="worker-mini__actions"
-                    >${merge_el}${cancel_el}${timeline_el}${discard_el}${revise_els}${stale_els}</span
+                    >${merge_el}${cancel_el}${discard_el}${revise_els}${stale_els}</span
                   >
                   ${discardReceiptTemplate(item)}
                 </div>`
@@ -1583,7 +1560,7 @@ export function miniRow(item, options = {}) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}${actions_el}
+              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}${actions_el}
             </div>
             ${deps_el}${chips_el}${receipt_el} ${timesMeta(item)}`}
   </div>`;

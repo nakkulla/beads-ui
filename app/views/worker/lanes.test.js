@@ -1154,24 +1154,6 @@ describe('repoOpsStripModel (UI-q0uy §4.1)', () => {
 
     expect(model?.badge).toEqual({ tone: 'quiet', label: '모두 정상' });
   });
-
-  test('reports a running repair session', () => {
-    const model = repoOpsStripModel([card({ state: 'repairing' })], []);
-
-    expect(model?.badge).toEqual({ tone: 'live', label: '자동 해결 중' });
-  });
-
-  test('lets 해결 필요 outrank a running repair session', () => {
-    const model = repoOpsStripModel(
-      [
-        card({ state: 'repairing' }),
-        card({ operation_id: 'op-2', state: 'failed' })
-      ],
-      []
-    );
-
-    expect(model?.badge.label).toBe('해결 필요 1');
-  });
 });
 
 describe('formatClock', () => {

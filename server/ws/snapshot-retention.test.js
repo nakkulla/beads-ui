@@ -314,7 +314,6 @@ describe('trimQueueProjection repo operations', () => {
           state: 'failed',
           failure: { code: 'verify_nonzero' }
         }),
-        'op-repairing': operation({ state: 'repairing' }),
         'op-dismissed': operation({
           state: 'failed',
           failure: { code: 'verify_nonzero' },
@@ -334,7 +333,6 @@ describe('trimQueueProjection repo operations', () => {
       [
         ...Object.keys(recentFillerOperations()),
         'op-failed',
-        'op-repairing',
         'op-subject',
         'op-successor'
       ].sort()

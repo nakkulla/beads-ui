@@ -43,7 +43,8 @@ vi.mock('../worker/attach.js', () => ({
   retryWorkerCleanup: () => Promise.resolve({ ok: true }),
   reviseApproveWorkerBead: () => Promise.resolve({ ok: true }),
   reviseFixWorkerBead: () => Promise.resolve({ ok: true }),
-  startWorkerRepoOperationRepair: () => Promise.resolve({ ok: true }),
+  startWorkerRepoOperationDeployRun: () => Promise.resolve({ ok: true }),
+  workerRepoId: () => null,
   stopWorkerHeadReviewAttempts: () => Promise.resolve(),
   /** @param {string} workspace_key */
   tickWorkerQueue: (workspace_key) => {

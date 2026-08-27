@@ -6,7 +6,7 @@
  * The pane owns the tab's whole state machine — session-defaults draft over a
  * server baseline, the UI-only orchestration runtime filter, the orchestration
  * draft over the queue snapshot, execution presets, and the automation section
- * (자동화 · 머지 · 자동 해결 · 동시 실행 · 직렬 레인).
+ * (자동화 · 머지 · 동시 실행 · 직렬 레인).
  *
  * `binding.root_dir` is the ONE axis that separates the two mounts:
  * - `null` — the connected workspace. Every payload is EXACTLY what the dialog
@@ -669,16 +669,14 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * @param {'auto_advance'|'auto_merge'|'auto_repair'} key
+   * @param {'auto_advance'|'auto_merge'} key
    * @param {boolean} on
    */
   async function onAutomationToggle(key, on) {
     const type =
       key === 'auto_advance'
         ? 'worker-automation-toggle'
-        : key === 'auto_merge'
-          ? 'worker-merge-auto-toggle'
-          : 'worker-auto-repair-toggle';
+        : 'worker-merge-auto-toggle';
     try {
       await sendQueueCas(type, { on });
     } catch (err) {
@@ -1194,7 +1192,7 @@ export function createExecutionPane(mount_element, binding) {
    * One automation on/off row (§4.4). The button carries the state so a reader
    * never has to infer it from a checkbox's rendering.
    *
-   * @param {'auto_advance'|'auto_merge'|'auto_repair'} key
+   * @param {'auto_advance'|'auto_merge'} key
    * @param {string} label
    * @param {string} hint
    * @param {boolean} on
@@ -1655,12 +1653,6 @@ export function createExecutionPane(mount_element, binding) {
                 '머지',
                 '자격이 생기는 PR을 계속 머지합니다',
                 queue?.auto_merge === true
-              )}
-              ${toggleRow(
-                'auto_repair',
-                '자동 해결',
-                '실패한 저장소 작업을 세션이 자동으로 복구합니다',
-                queue?.auto_repair === true
               )}
               ${stepperRow('slots', '동시 실행', slots, (next) =>
                 onSlotsChange(next)

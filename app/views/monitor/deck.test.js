@@ -60,7 +60,6 @@ function state(patch = {}) {
     serial_lane_count: 1,
     auto_advance: false,
     auto_merge: false,
-    auto_repair: false,
     orchestration_model: null,
     orchestration_effort: null,
     orchestration_speed: null,

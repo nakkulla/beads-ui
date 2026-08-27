@@ -202,7 +202,7 @@ function retainedOperationIds(raw, retained_beads) {
   const cleanup_failed = asRecord(raw.cleanup_failed);
   for (const [operation_id, operation] of entries) {
     if (
-      (operation.state === 'failed' || operation.state === 'repairing') &&
+      operation.state === 'failed' &&
       !operation.dismissed &&
       !operation.superseded_by
     ) {

@@ -354,7 +354,7 @@ describe('worker/repo-operation-migration', () => {
     });
   });
 
-  test('leaves the automatic repair budget untouched', async () => {
+  test('drops the retired repair keys from an existing operation record', async () => {
     const queue = fixture('legacy-cleanup-dotfiles.json');
     queue.auto_repair = true;
     queue.repo_operations = {
@@ -388,8 +388,9 @@ describe('worker/repo-operation-migration', () => {
     await migration.run();
 
     const after = store.snapshot(WS);
-    expect(after.repo_operations.op1.repair.auto_used).toBe(0);
-    expect(after.auto_repair).toBe(true);
+    expect(after.repo_operations.op1.state).toBe('failed');
+    expect(Object.hasOwn(after.repo_operations.op1, 'repair')).toBe(false);
+    expect(Object.hasOwn(after, 'auto_repair')).toBe(false);
   });
 
   test('stores the result and its schema version in one atomic write', async () => {

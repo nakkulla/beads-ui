@@ -26,7 +26,6 @@
  * @import { BeadSnapshot } from './scheduler.js'
  */
 import { execFileSync, spawn } from 'node:child_process';
-import nodeFs from 'node:fs';
 import path from 'node:path';
 import {
   isWorkerIneligible,
@@ -73,10 +72,6 @@ import {
   receiptProbeError
 } from './receipt-check.js';
 import { createRecoveryArchive } from './recovery-archive.js';
-import {
-  createRepairSessionAdapter,
-  testScopeOf
-} from './repair-session-adapter.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import { createRepoOperationMigration } from './repo-operation-migration.js';
 import {
@@ -451,7 +446,6 @@ export function defaultProbePid(pid) {
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
  *   processController?: ReturnType<typeof createProcessController>,
  *   sessionMonitors?: any,
- *   repairSession?: any,
  *   quickfixLanding?: ReturnType<typeof createQuickfixLanding>,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
@@ -616,89 +610,46 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           ...input
         })
     });
-  // The repair lane's session Interface (master spec §4.4). It is built BEFORE
-  // the scheduler and reaches it through a closure on purpose: the coordinator
-  // needs the adapter at construction, the adapter needs the scheduler only at
-  // dispatch time, and nothing here may become a second session runner.
-  const repairSession =
-    options.repairSession ||
-    createRepairSessionAdapter({
-      repo,
-      store: runtime.queueStore,
-      gitRun,
-      fs: nodeFs,
-      /**
-       * The review/PR and `Test scope` facts the packet carries. Observations
-       * only — the session is told what is true now, never what to conclude.
-       *
-       * @param {string} bead_id
-       */
-      async beadFacts(bead_id) {
-        /** @type {Record<string, string|null>} */
-        const metadata = {};
-        for (const key of [
-          'plan_path',
-          'spec_id',
-          'pr_url',
-          'spec_review',
-          'impl_review'
-        ]) {
-          try {
-            metadata[key] = await bd.readMetadata(bead_id, key);
-          } catch {
-            metadata[key] = null;
-          }
+  // The pre-restart auto-advance restore controller asks whether a boot-time
+  // deploy candidate reached terminal success even after a successor adopted
+  // its target (UI-s582 §1 retired the repair chain that used to answer this).
+  // A succeeded deploy for the SAME pinned target sha is that proof, read from
+  // the durable records only — nothing here reports on itself.
+  const deployTargetJudge = {
+    /**
+     * @param {{ workspace: string, operation_id: string }} input
+     */
+    async judge(input) {
+      const queue = runtime.queueStore.snapshot(input.workspace);
+      const operation = queue.repo_operations[input.operation_id];
+      if (!operation || typeof operation.target_sha !== 'string') {
+        return { verdict: 'unresolved', evidence: null };
+      }
+      for (const [candidate_id, candidate] of Object.entries(
+        queue.repo_operations
+      )) {
+        if (
+          candidate.kind === 'deploy' &&
+          candidate.state === 'succeeded' &&
+          candidate.target_sha === operation.target_sha
+        ) {
+          return { verdict: 'chain_closed', evidence: candidate_id };
         }
-        // `spec_id`만 issue 전체에서 다시 판정한다 (UI-vb7u §3): native 이관
-        // 후 sweep된 Bead는 metadata에 그 키가 없어 repair 세션의 `Test scope`
-        // 경로가 통째로 사라진다. `readIssue`는 주입되는 `bd`에서 선택적
-        // 메서드이므로(부재·예외 모두), 위 metadata 판독값으로 되돌아간다.
-        if (typeof bd.readIssue === 'function') {
-          try {
-            metadata.spec_id =
-              resolveSpecId(await bd.readIssue(bead_id)).path || null;
-          } catch {
-            // metadata 폴백 유지
-          }
-        }
-        const queue = runtime.queueStore.snapshot(keyFor(workspace_root));
-        const row = (queue.pr_wait || []).find(
-          (/** @type {any} */ entry) => entry.bead_id === bead_id
-        );
-        return {
-          test_scope: testScopeOf(metadata),
-          review: {
-            bead_id,
-            pr_url: metadata.pr_url ?? row?.pr_url ?? null,
-            merge_sha: row?.merge_sha ?? null,
-            head_ref: row?.head_ref ?? null,
-            spec_review: metadata.spec_review,
-            impl_review: metadata.impl_review
-          }
-        };
-      },
-      /**
-       * @param {any} input
-       */
-      dispatchSession: (input) =>
-        scheduler.dispatchRepoOperationRepair(keyFor(workspace_root), {
-          bead_id: input.bead_id,
-          operation_id: input.operation_id,
-          packet: input.packet
-        })
-    });
+      }
+      return { verdict: 'unresolved', evidence: null };
+    }
+  };
   const repoOperationCoordinator = createRepoOperationCoordinator({
     workspace: workspace_root,
     repo,
     store: runtime.queueStore,
     locks: runtime.locks,
+    // The manual 배포 실행 path pins its target through the SAME base resolver
+    // every other dispatch uses (UI-s582 §3.1) — remote, base and fetched tip
+    // in one resolution, so nothing there assumes `origin`.
+    resolveBase,
     gitRun,
-    repairSession,
-    autoAdvanceRestore: options.autoAdvanceRestore,
-    async onRepairLaneAdvanced() {
-      emitQueueChanged(keyFor(workspace_root));
-      await scheduler.tick(keyFor(workspace_root));
-    }
+    autoAdvanceRestore: options.autoAdvanceRestore
   });
   const quickfixLanding =
     options.quickfixLanding ||
@@ -847,7 +798,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         reviseDisposition?.release(bead_id);
       }
     },
-    repairSession,
     onCompletionAttemptSettled(input) {
       return completionIntent
         ? completionIntent.attemptSettled(input)
@@ -1730,13 +1680,13 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // still exists (UI-w0hi §3); the manager itself stays attachment-owned.
     worktree,
     admission,
-    repairSession,
+    deployTargetJudge,
     repoOperationCoordinator,
     repoOperationMigration,
     repo,
     resolveBase,
-    // Exposed so the analyzer can read PINNED blobs through the attachment's
-    // own runner rather than constructing a second git seam (UI-04vo §7).
+    // Exposed so pinned-blob readers use the attachment's own runner rather
+    // than constructing a second git seam.
     gitRun,
     workspace: workspace_root
   };
@@ -2016,7 +1966,7 @@ export function initWorkerRuntime(input) {
       store: att.runtime.queueStore,
       locks: att.runtime.locks,
       gitRun: att.gitRun,
-      repairSession: att.repairSession,
+      repairSession: att.deployTargetJudge,
       notifyChanged: (workspace) => emitQueueChanged(workspace),
       tick: (workspace) => att.scheduler.tick(workspace)
     });
@@ -2094,10 +2044,11 @@ export async function checkWorkerQueueAdmission(workspace_root, bead_id) {
 }
 
 /**
- * The read-only inputs the parallelism analyzer needs from a live attachment
- * (UI-04vo §6): the pinned-base resolver and the git runner it reads blobs
- * with. Null without an attachment — an inactive workspace has no base to pin,
- * and the analyzer must refuse rather than analyze an unpinned tree.
+ * The read-only inputs a pinned-base reader needs from a live attachment: the
+ * base resolver and the git runner it reads blobs with. Null without an
+ * attachment — an inactive workspace has no base to pin, and the caller must
+ * refuse rather than read an unpinned tree. The declared-scope cache behind the
+ * Monitor overlap chips is the surviving reader.
  *
  * @param {string} workspace_root
  * @returns {{ repo: string, resolveBase: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options?: any) => Promise<any> }|null}
@@ -2135,6 +2086,21 @@ export function workerSlots(workspace_root) {
   }
   const slots = att.runtime.queueStore.snapshot(key).slots;
   return typeof slots === 'number' ? slots : null;
+}
+
+/**
+ * The canonical repository path this workspace's attachment operates on, or
+ * null when none is registered (UI-s582 §3). Projected onto the snapshot so a
+ * client that has never seen an operation record can still NAME the repository
+ * it is acting on — the mismatch guard on 배포 실행 is worth nothing if the
+ * client is allowed to say nothing.
+ *
+ * @param {string} workspace_root
+ * @returns {string|null}
+ */
+export function workerRepoId(workspace_root) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  return att && typeof att.repo === 'string' && att.repo ? att.repo : null;
 }
 
 /**
@@ -2211,27 +2177,6 @@ export async function resumeWorkerAttempt(
 }
 
 /**
- * Start one repair session for a terminal RepoOperation failure. `manual` is
- * the click path — it produces repair evidence and only then lets the
- * coordinator create a new attempt, which is why there is no generic retry
- * anywhere on this surface.
- *
- * @param {string} workspace_root
- * @param {{ operation_id: string, mode?: 'auto'|'manual' }} input
- * @returns {Promise<{ ok: boolean, code?: string, operation_id?: string, attempt_id?: string, session_id?: string|null }>}
- */
-export async function startWorkerRepoOperationRepair(workspace_root, input) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  if (!att || !att.repoOperationCoordinator) {
-    return { ok: false, code: 'no_attachment' };
-  }
-  return att.repoOperationCoordinator.startRepair(
-    input.operation_id,
-    input.mode === 'auto' ? 'auto' : 'manual'
-  );
-}
-
-/**
  * Acknowledge one FAILED RepoOperation row (UI-q0uy §4.6-2). The row stays
  * failed and auditable; only the 해결 필요 tally and its action buttons drop it.
  *
@@ -2248,9 +2193,41 @@ export async function dismissWorkerRepoOperation(workspace_root, input) {
 }
 
 /**
- * Reconcile the RepoOperation lane now. Called right after `auto_repair` is
- * switched ON so eligible failures are picked up immediately (§9.3) instead of
- * waiting for the periodic pass.
+ * Run the declared deploy script once, right now, at the fetched remote tip
+ * (UI-s582 §3) — the 배포 실행 click. Inert without a registered attachment:
+ * there is no resolver to pin a target with, which is the same refusal as an
+ * unresolvable one.
+ *
+ * `repo_id` is the repository the CLIENT drew the button for, and it is
+ * REQUIRED: a click that cannot name its repository is a click from a screen
+ * whose state we cannot trust, so an absent, empty or mismatched value is
+ * refused rather than redirected onto whatever this workspace happens to own.
+ *
+ * @param {string} workspace_root
+ * @param {{ repo_id?: string|null }} [input]
+ * @returns {Promise<{ ok: boolean, operation_id?: string, reason?: string }>}
+ */
+export async function startWorkerRepoOperationDeployRun(
+  workspace_root,
+  input = {}
+) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.repoOperationCoordinator) {
+    return { ok: false, reason: 'target_unresolved' };
+  }
+  if (
+    typeof input.repo_id !== 'string' ||
+    input.repo_id.length === 0 ||
+    input.repo_id !== att.repo
+  ) {
+    return { ok: false, reason: 'target_unresolved' };
+  }
+  return att.repoOperationCoordinator.runManualDeploy();
+}
+
+/**
+ * Reconcile the RepoOperation lane now, instead of waiting for the periodic
+ * pass.
  *
  * @param {string} workspace_root
  * @returns {Promise<void>}

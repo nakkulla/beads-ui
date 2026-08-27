@@ -1,11 +1,6 @@
 import { mergeCardStepView } from './merge-steps.js';
 
-const ACTIVE_OPERATION_STATES = new Set([
-  'queued',
-  'running',
-  'retry_pending',
-  'repairing'
-]);
+const ACTIVE_OPERATION_STATES = new Set(['queued', 'running', 'retry_pending']);
 const TERMINAL_OPERATION_STATES = new Set(['failed', 'succeeded']);
 
 /** @type {Record<string, string>} */
@@ -13,7 +8,6 @@ const OPERATION_STATE_LABELS = {
   queued: '대기',
   running: '중',
   retry_pending: '재시도 대기',
-  repairing: '자동 해결 중',
   failed: '실패',
   succeeded: '완료 · 정리 재개 대기'
 };

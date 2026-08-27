@@ -15,7 +15,6 @@ import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createSubscriptionStore } from './data/subscriptions-store.js';
 import { createUiOrderStore } from './data/ui-order-store.js';
-import { createWorkerParallelAnalysisStore } from './data/worker-parallel-analysis-store.js';
 import { createWorkerQueueStore } from './data/worker-queue-store.js';
 import { createHashRouter } from './router.js';
 import { createStore } from './state.js';
@@ -134,7 +133,6 @@ const MONITOR_PIPELINE_CLIENT_ID = MONITOR_PIPELINE_KEY;
 
 /** Client id for the singleton per-workspace worker-queue subscription. */
 const WORKER_QUEUE_CLIENT_ID = 'worker:queue';
-const WORKER_ANALYSIS_CLIENT_ID = 'worker:parallel-analysis';
 
 /**
  * Client id for the singleton per-workspace UI-order subscription. This channel
@@ -252,7 +250,6 @@ export function bootstrap(root_element) {
     const subscriptions = createSubscriptionStore(tracked_send);
     const sub_issue_stores = createSubscriptionIssueStores();
     const worker_queue_store = createWorkerQueueStore();
-    const worker_analysis_store = createWorkerParallelAnalysisStore();
     const monitor_pipeline_store = createMonitorPipelineStore();
     const ui_order_store = createUiOrderStore();
     const display_policy_store = createDisplayPolicyStore();
@@ -838,19 +835,10 @@ export function bootstrap(root_element) {
       }).catch((err) => {
         log('subscribe-worker-queue failed: %o', err);
       });
-      void tracked_send('subscribe-worker-parallel-analysis', {
-        id: WORKER_ANALYSIS_CLIENT_ID
-      }).catch((err) => {
-        log('subscribe-worker-parallel-analysis failed: %o', err);
-      });
-      worker_queue_unsub = () => {
-        void tracked_send('unsubscribe-worker-parallel-analysis', {
-          id: WORKER_ANALYSIS_CLIENT_ID
-        });
-        return tracked_send('unsubscribe-worker-queue', {
+      worker_queue_unsub = () =>
+        tracked_send('unsubscribe-worker-queue', {
           id: WORKER_QUEUE_CLIENT_ID
         });
-      };
     }
 
     function clearWorkerQueueChannel() {
@@ -858,10 +846,6 @@ export function bootstrap(root_element) {
         void worker_queue_unsub().catch(() => {});
         worker_queue_unsub = null;
       }
-      // The analysis snapshot is workspace state; leaving the last workspace's
-      // result on screen after a switch would invite a submit against beads
-      // that are no longer there.
-      worker_analysis_store.clear();
     }
 
     // --- Monitor pipeline channel lifecycle (UI-nprg) ---
@@ -1377,35 +1361,6 @@ export function bootstrap(root_element) {
       }
     });
 
-    // The analysis channel rides the same workspace guard as the queue
-    // snapshot: a push addressed to another workspace is dropped once a
-    // workspace is actually selected.
-    client.on('worker-parallel-analysis-snapshot', (payload) => {
-      const p = /** @type {any} */ (payload);
-      if (!p) {
-        return;
-      }
-      const current_path = store.getState().workspace.current?.path;
-      if (
-        typeof current_path === 'string' &&
-        current_path.length > 0 &&
-        typeof p.root_dir === 'string' &&
-        p.root_dir !== current_path
-      ) {
-        return;
-      }
-      try {
-        worker_analysis_store.set({
-          settings: p.settings,
-          job: p.job ?? null,
-          runs: Array.isArray(p.runs) ? p.runs : [],
-          last_good: p.last_good ?? null
-        });
-      } catch {
-        // ignore
-      }
-    });
-
     const router = createHashRouter(store);
     router.start();
 
@@ -1580,7 +1535,6 @@ export function bootstrap(root_element) {
       transport,
       issueStores: sub_issue_stores,
       queueStore: worker_queue_store,
-      analysisStore: worker_analysis_store,
       sessionLogStore: session_log_store,
       uiOrderStore: ui_order_store,
       gotoIssue: (id) => store.setState({ selected_id: id }),

@@ -1,6 +1,6 @@
 /**
  * The pinned runtime copy of the dotfiles-owned RepoOperation policy artifact
- * (master spec §4.5 / §9.1 / §10).
+ * (master spec §4.5 / §9.1 / §10, reduced to `script_retry` by UI-s582 §5).
  *
  * beads-ui is a CONSUMER of that contract, never its author: every list this
  * module hands out — what the Worker does automatically, the resolution ladder,
@@ -47,10 +47,9 @@ export const REPO_OPERATION_POLICY_PROVENANCE_PATH = path.join(
  * @typedef {Object} RepoOperationPolicy
  * @property {number} schema_version
  * @property {string[]} worker_automatic
- * @property {{ default: boolean, scope: string, resolution_subject: string, resolution_ladder: Record<string, unknown>[], manual_human_fix: string }} auto_repair
- * @property {Record<string, string>} completion_chain
- * @property {string[]} repair_session_packet
- * @property {string} resolution_entry_surface
+ * @property {Record<string, unknown>[]} resolution_ladder
+ * @property {string} after_ladder
+ * @property {string} manual_human_fix
  * @property {string[]} never_automatic
  */
 
@@ -79,7 +78,7 @@ export function loadRepoOperationPolicy(deps = {}) {
     policy,
     provenance,
     digest,
-    supported: policy.schema_version === 2
+    supported: policy.schema_version === 3
   };
   if (!deps.fs) {
     cached = loaded;
@@ -89,30 +88,15 @@ export function loadRepoOperationPolicy(deps = {}) {
 
 /**
  * Whether the pinned artifact has the one schema this consumer understands.
- * Unknown schemas stop only automatic ladder steps; callers keep operation
- * execution and the user-triggered session surface alive.
+ * Unknown schemas stop only the automatic ladder step; callers keep operation
+ * execution alive and settle the failure terminally instead.
  */
 export function repoOperationPolicySupported() {
   return loadRepoOperationPolicy().supported;
 }
 
 /**
- * The prohibitions a repair session is dispatched under (§9.3 "session이 할 수
- * 없는 일"). They are the contract's `never_automatic` enum, so the packet and
- * the gates refuse exactly what the canonical artifact forbids.
- *
- * @returns {string[]}
- */
-export function repairSessionProhibitions() {
-  const { policy } = loadRepoOperationPolicy();
-  return Array.isArray(policy.never_automatic)
-    ? [...policy.never_automatic]
-    : [];
-}
-
-/**
- * Classify one settled failure for display and repair packets. Eligibility is a
- * separate all-terminal-failures decision; unknown codes remain verbatim so a
+ * Classify one settled failure for display. Unknown codes remain verbatim so a
  * new runner failure never falls into a hidden catch-all class.
  *
  * @param {{ kind: string, failure: { code: string, interrupted?: boolean }|null }} operation
@@ -135,26 +119,15 @@ export function classifyRepoOperationFailure(operation) {
 }
 
 /**
- * @param {{ kind?: string, state?: string, superseded_by?: string|null, failure: { code: string, interrupted?: boolean }|null }} operation
- */
-export function isRepairEligible(operation) {
-  return (
-    operation.state === 'failed' &&
-    !operation.superseded_by &&
-    typeof operation.failure?.code === 'string'
-  );
-}
-
-/**
- * The projection the protocol carries to the UI: the three §10 lists verbatim
- * from the pinned artifact plus the provenance that proves which artifact they
- * came from. The client renders these tokens; it never decides membership.
+ * The projection the protocol carries to the UI: the §10 lists verbatim from
+ * the pinned artifact plus the provenance that proves which artifact they came
+ * from. The client renders these tokens; it never decides membership.
  */
 export function projectRepoOperationPolicy() {
   const { policy, provenance, digest, supported } = loadRepoOperationPolicy();
   /** @type {Record<string, unknown>[]} */
-  const ladder = Array.isArray(policy.auto_repair?.resolution_ladder)
-    ? policy.auto_repair.resolution_ladder
+  const ladder = Array.isArray(policy.resolution_ladder)
+    ? policy.resolution_ladder
     : [];
   return {
     schema_version: policy.schema_version,
@@ -164,26 +137,19 @@ export function projectRepoOperationPolicy() {
     worker_automatic: Array.isArray(policy.worker_automatic)
       ? [...policy.worker_automatic]
       : [],
-    auto_repair: {
-      default: policy.auto_repair?.default === true,
-      scope: policy.auto_repair?.scope || '',
-      resolution_subject: policy.auto_repair?.resolution_subject || '',
-      resolution_ladder: ladder.map(
-        (entry) =>
-          /** @type {Record<string, unknown>} */ ({
-            ...entry,
-            ...(Array.isArray(entry.consumption_key)
-              ? { consumption_key: [...entry.consumption_key] }
-              : {})
-          })
-      ),
-      manual_human_fix: policy.auto_repair?.manual_human_fix || ''
-    },
-    completion_chain: { ...(policy.completion_chain || {}) },
-    repair_session_packet: Array.isArray(policy.repair_session_packet)
-      ? [...policy.repair_session_packet]
-      : [],
-    resolution_entry_surface: policy.resolution_entry_surface || '',
-    never_automatic: repairSessionProhibitions()
+    resolution_ladder: ladder.map(
+      (entry) =>
+        /** @type {Record<string, unknown>} */ ({
+          ...entry,
+          ...(Array.isArray(entry.consumption_key)
+            ? { consumption_key: [...entry.consumption_key] }
+            : {})
+        })
+    ),
+    after_ladder: policy.after_ladder || '',
+    manual_human_fix: policy.manual_human_fix || '',
+    never_automatic: Array.isArray(policy.never_automatic)
+      ? [...policy.never_automatic]
+      : []
   };
 }
