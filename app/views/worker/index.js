@@ -1616,9 +1616,6 @@ function prWaitRow(
         : repo_operations_action_blocked
           ? false
           : !queued || continuation_required || needs_reclick,
-    // 머지 액션이 저장소 작업 단계에서 잠긴 카드 (§4.4): 잠금 사유를 문장으로
-    // 반복하는 대신, 그 사유가 실제로 적혀 있는 타임라인으로 데려간다.
-    timeline_action: repo_operations_action_blocked,
     cancel_action: queued && !continuation_required,
     // 리뷰/수정 continuation 중에도 [취소]는 열려 있어야 한다 (UI-58w8 §1):
     // 그 클릭이 authority를 폐기해 늦게 끝난 reviewer/repair 결과를 no-op으로
@@ -5770,10 +5767,7 @@ export function createWorkerView(mount_element, options = {}) {
     if (target?.closest?.('.mon-overlap__popover')) {
       return;
     }
-    if (
-      target?.closest?.('.worker-repo-strip') ||
-      target?.closest?.('.worker-mini__timeline')
-    ) {
+    if (target?.closest?.('.worker-repo-strip')) {
       openRepoOpsDrawer();
       return;
     }

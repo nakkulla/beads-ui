@@ -4831,24 +4831,25 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     );
   });
 
-  test('offers a timeline link instead of a locked merge action', () => {
+  test('locks the merge action without a per-card timeline link (UI-imeh)', () => {
     const { mount } = mountWith(
       mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 })
     );
 
+    // 상단 저장소 작업 스트립이 유일한 드로어 진입점이다.
     expect([
       mount.querySelector('.worker-mini__merge'),
-      mount.querySelector('.worker-mini__timeline')?.textContent?.trim()
-    ]).toEqual([null, '저장소 작업 보기']);
+      mount.querySelector('.worker-mini__timeline')
+    ]).toEqual([null, null]);
   });
 
-  test('opens the timeline from that link', () => {
+  test('opens the timeline from the repo-ops strip', () => {
     const { mount } = mountWith(
       mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 })
     );
 
     /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini__timeline')
+      mount.querySelector('.worker-repo-strip')
     ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(mount.querySelector('.worker-repo-drawer')).not.toBeNull();
@@ -6970,7 +6971,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     );
     expect(row.textContent?.replace(/\s+/g, '')).toContain('검증실패3/7');
     expect(row.querySelector('.merge-step--failed')).not.toBeNull();
-    expect(row.querySelector('.worker-mini__timeline')).not.toBeNull();
+    expect(row.querySelector('.worker-mini__timeline')).toBeNull();
   });
 
   test('disables both actions while merging', () => {
