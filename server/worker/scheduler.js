@@ -464,7 +464,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   setStatus: (bead_id: string, status: string) => Promise<void>,
  *   readStatus: (bead_id: string) => Promise<string|null>
  * }} bd
- * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean }} worktree
+ * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean, restore?: (i: { repo: string, bead_id: string, head_ref: string }) => Promise<{ ok: boolean, reason?: string }> }} worktree
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
@@ -824,8 +824,8 @@ function launchAccountRefusalDetail(failure, accounts, account_sources) {
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
  *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
- *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
- *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchCompletionRepair: (workspace: string, input: { root_bead_id: string, op: any, log_path?: string|null, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean, continuation_mismatch?: any }>,
@@ -2237,7 +2237,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {any} attempt
-   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }} resolution_wait
+   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }} resolution_wait
    * @param {number} [expected_revision]
    */
   function prerecordResolutionAttempt(
@@ -2257,6 +2257,11 @@ export function createScheduler(deps) {
           queue_bead_id: resolution_wait.queue_bead_id,
           subject_bead_id: attempt.bead_id,
           wait_ms: resolution_wait.wait_ms,
+          // The queue's dispatch identity travels ON the wait record
+          // (UI-p49g §4.3); the store validates it before either half lands.
+          dispatch_head_sha: resolution_wait.dispatch_head_sha ?? '',
+          base_ref: resolution_wait.base_ref ?? '',
+          head_ref: resolution_wait.head_ref ?? '',
           attempt
         }).ok === true
       );
@@ -2274,7 +2279,7 @@ export function createScheduler(deps) {
    * @param {any} prior
    * @param {any} attempt
    * @param {boolean} completion_resume
-   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null} resolution_wait
+   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null} resolution_wait
    * @param {number} [expected_revision]
    */
   function prerecordRelaunchAttempt(
@@ -6126,6 +6131,46 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Put back the worktree a conflict resolution needs, ONCE, from the PR head
+   * branch on origin (UI-p49g §5.2).
+   *
+   * A conflict-resolution dispatch is the one place where a missing worktree
+   * is recoverable rather than terminal: the branch is published, so restoring
+   * it costs a fetch and destroys nothing. Without a head branch to restore
+   * from — or without the seam — the pre-existing `worktree_missing` refusal
+   * stands, and every refusal the restore itself makes keeps its own reason so
+   * the row says WHICH safety check stopped it.
+   *
+   * @param {string} repo
+   * @param {string} bead_id
+   * @param {string|null} head_ref
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string }>}
+   */
+  async function restoreWorktree(repo, bead_id, head_ref) {
+    if (
+      typeof head_ref !== 'string' ||
+      head_ref.length === 0 ||
+      typeof deps.worktree.restore !== 'function'
+    ) {
+      return { ok: false, reason: 'worktree_missing' };
+    }
+    /** @type {{ ok: boolean, reason?: string }} */
+    let restored = { ok: false, reason: 'worktree_restore_failed' };
+    try {
+      restored = await deps.worktree.restore({ repo, bead_id, head_ref });
+    } catch (err) {
+      log('worktree restore threw for %s: %o', bead_id, err);
+    }
+    if (restored.ok) {
+      return { ok: true };
+    }
+    return {
+      ok: false,
+      reason: restored.reason || 'worktree_restore_failed'
+    };
+  }
+
+  /**
    * Dispatch a CONFLICT-RESOLUTION session for a bead sitting in `pr_wait`
    * (worker-phase2 §6). It reuses the resume machinery wholesale rather than
    * building a second launcher: the same existing worktree, the same
@@ -6144,15 +6189,18 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} bead_id
-   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null} [resolution_wait]
+   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null} [resolution_wait]
    * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
+   * @param {string|null} [head_ref] - The PR head branch the caller OBSERVED.
+   * A deleted worktree is restored from it rather than refused (UI-p49g §5.2).
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
    */
   async function resolveConflict(
     workspace,
     bead_id,
     resolution_wait = null,
-    continuation = {}
+    continuation = {},
+    head_ref = null
   ) {
     if (
       resolution_wait &&
@@ -6203,7 +6251,10 @@ export function createScheduler(deps) {
         ? deps.worktree.exists(repo, bead_id)
         : true;
     if (!wt_present) {
-      return { ok: false, reason: 'worktree_missing' };
+      const restored = await restoreWorktree(repo, bead_id, head_ref);
+      if (!restored.ok) {
+        return { ok: false, reason: restored.reason };
+      }
     }
     const target_base =
       typeof source.target_base === 'string' ? source.target_base : 'main';
@@ -6323,8 +6374,10 @@ export function createScheduler(deps) {
    * @param {string} bead_id
    * @param {string} [target_base] - The base branch the CLICK observed on the
    * PR (pr-actions §2); empty/absent falls back to `main`.
-   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null} [resolution_wait]
+   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null} [resolution_wait]
    * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
+   * @param {string|null} [head_ref] - The PR head branch the caller OBSERVED.
+   * A deleted worktree is restored from it rather than refused (UI-p49g §5.2).
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchExternalConflict(
@@ -6332,7 +6385,8 @@ export function createScheduler(deps) {
     bead_id,
     target_base,
     resolution_wait = null,
-    continuation = {}
+    continuation = {},
+    head_ref = null
   ) {
     if (
       resolution_wait &&
@@ -6371,7 +6425,10 @@ export function createScheduler(deps) {
         ? deps.worktree.exists(repo, bead_id)
         : true;
     if (!wt_present) {
-      return { ok: false, reason: 'worktree_missing' };
+      const restored = await restoreWorktree(repo, bead_id, head_ref);
+      if (!restored.ok) {
+        return { ok: false, reason: restored.reason };
+      }
     }
 
     const base =

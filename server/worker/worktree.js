@@ -574,6 +574,7 @@ async function observeStatusDigest(run, fs, wt, identity) {
  *   pathFor: (repo: string, bead_id: string) => string,
  *   exists: (repo: string, bead_id: string) => boolean,
  *   add: (input: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>,
+ *   restore: (input: { repo: string, bead_id: string, head_ref: string }) => Promise<{ ok: true, path: string }|{ ok: false, reason: string }>,
  *   remove: (input: { repo: string, bead_id: string }) => Promise<{ code: number, stderr: string }>,
  *   observeOwnedByBead: (input: { repo: string, bead_id: string }) => Promise<{ ok: boolean, present: boolean, path: string|null, branch: string|null, head_sha: string|null, reason: string|null }>,
  *   removeByBranch: (input: { repo: string, branch: string, expected_path?: string|null, expected_head?: string|null, expected_base_oid?: string|null, expected_status_digest?: string|null }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
@@ -693,6 +694,108 @@ export function createWorktreeManager(deps) {
           branch,
           base_oid: rev.code === 0 ? rev.stdout.trim() : ''
         };
+      } finally {
+        release();
+      }
+    },
+
+    /**
+     * Re-create `.worktrees/<bead_id>` from the PR head branch that still
+     * lives on origin (UI-p49g §5.1).
+     *
+     * A resolution session cannot run without a worktree, and today a deleted
+     * one ends the item at a person. Nothing about that is destructive to
+     * recover from — the branch is published — so this puts the checkout back.
+     * What it must never do is silently take over work it did not publish,
+     * which is what the ordered refusals guard: a branch that is not this
+     * bead's, a path that appeared under the lock, a branch origin does not
+     * have, and a local branch whose tip is ahead of (or apart from) origin's.
+     *
+     * {@link createWorktreeManager}'s `add` is deliberately not reused: it
+     * creates with `-B`, which would RESET the branch to a base commit and
+     * throw away the very commits the PR is made of. `git worktree prune` is
+     * likewise not run — a stale registry entry makes step 5 fail, and
+     * `worktree_restore_failed` is a better answer than quietly clearing
+     * bookkeeping this function does not own.
+     *
+     * @param {{ repo: string, bead_id: string, head_ref: string }} input
+     * @returns {Promise<{ ok: true, path: string }|{ ok: false, reason: string }>}
+     */
+    async restore(input) {
+      const release = await locks.topologyLock(input.repo);
+      try {
+        const branch = branchForBead(input.bead_id);
+        if (branch !== input.head_ref) {
+          return {
+            ok: /** @type {const} */ (false),
+            reason: 'worktree_restore_branch_mismatch'
+          };
+        }
+        const wt = pathFor(input.repo, input.bead_id);
+        let present = false;
+        try {
+          present = fs.existsSync(wt);
+        } catch {
+          // An unreadable path is not an absent one; refuse rather than add
+          // over something that may be there.
+          present = true;
+        }
+        if (present) {
+          return {
+            ok: /** @type {const} */ (false),
+            reason: 'worktree_restore_path_exists'
+          };
+        }
+        const fetched = await run(
+          ['fetch', '--no-tags', 'origin', input.head_ref],
+          { cwd: input.repo }
+        );
+        const remote =
+          fetched.code === 0
+            ? await run(['rev-parse', '--verify', `origin/${input.head_ref}`], {
+                cwd: input.repo
+              })
+            : null;
+        if (!remote || remote.code !== 0) {
+          return {
+            ok: /** @type {const} */ (false),
+            reason: 'worktree_restore_branch_missing'
+          };
+        }
+        const local = await run(
+          ['rev-parse', '--verify', `refs/heads/${input.head_ref}`],
+          { cwd: input.repo }
+        );
+        const local_present = local.code === 0;
+        if (local_present && local.stdout.trim() !== remote.stdout.trim()) {
+          return {
+            ok: /** @type {const} */ (false),
+            reason: 'worktree_restore_branch_diverged'
+          };
+        }
+        const added = local_present
+          ? await run(['worktree', 'add', wt, input.head_ref], {
+              cwd: input.repo
+            })
+          : await run(
+              [
+                'worktree',
+                'add',
+                '--track',
+                '-b',
+                input.head_ref,
+                wt,
+                `origin/${input.head_ref}`
+              ],
+              { cwd: input.repo }
+            );
+        if (added.code !== 0) {
+          return {
+            ok: /** @type {const} */ (false),
+            reason: 'worktree_restore_failed'
+          };
+        }
+        return { ok: /** @type {const} */ (true), path: wt };
       } finally {
         release();
       }

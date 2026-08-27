@@ -15,6 +15,11 @@
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { buildOptionView } from '../../utils/execution-defaults.js';
+import {
+  REC_LABEL,
+  recSettings,
+  recTooltip
+} from '../../utils/rec-settings.js';
 import { formatExecReceipt, formatPlannedExecution } from '../board/card.js';
 import {
   AUTO_LITERAL,
@@ -488,13 +493,19 @@ function normalizeExecReceipt(value) {
 
 /**
  * The summary header: status, route, the gate stepper with receipt binding, the
- * PR link, and the `exec_receipt` chip. Display-only — the gate receipts have
- * no editing surface by design (spec 비-목표).
+ * PR link, the `exec_receipt` chip, and the 복잡 chip.
+ *
+ * Display-only except for that last one — the gate receipts have no editing
+ * surface by design (spec 비-목표), while the recommendation is the one thing
+ * here a person can act on, and this header is the ONLY place it is clickable
+ * (UI-sbum §3): a lane card's chip would be a mis-touch away from rewriting an
+ * execution pin the user never opened.
  *
  * @param {any} data - The bd issue payload.
+ * @param {{ onApplyRec?: (rec: { orchestration_model: string, impl_runtime?: string }, state: 'unapplied'|'applied'|'diverged') => unknown }} [handlers]
  * @returns {TemplateResult}
  */
-export function summaryHeaderTemplate(data) {
+export function summaryHeaderTemplate(data, handlers = {}) {
   const metadata =
     data && typeof data.metadata === 'object' && data.metadata
       ? data.metadata
@@ -526,6 +537,9 @@ export function summaryHeaderTemplate(data) {
   // field; naming it the same way here keeps one PR from reading as two.
   const pr_number = workflow.chips?.pr?.number;
   const pr_label = typeof pr_number === 'number' ? `PR #${pr_number}` : 'PR';
+  // 추천과 권위 키가 같은 bag에 있으므로 분리 인자를 쓰지 않는다 (UI-sbum §1).
+  const rec = recSettings(metadata);
+  const onApplyRec = handlers.onApplyRec;
   return html`<section class="detail-summary" data-seam="detail-summary">
     <div class="detail-summary__chips">
       <span class="detail-summary__chip detail-summary__chip--status"
@@ -570,6 +584,18 @@ export function summaryHeaderTemplate(data) {
                   >`
               : ''}</span
           >`
+        : ''}
+      ${rec
+        ? html`<button
+            type="button"
+            class="detail-summary__chip detail-summary__chip--rec"
+            data-state=${rec.state}
+            title=${recTooltip(rec)}
+            ?disabled=${rec.state === 'applied'}
+            @click=${() => onApplyRec?.(rec.rec, rec.state)}
+          >
+            ${REC_LABEL}
+          </button>`
         : ''}
     </div>
     <div

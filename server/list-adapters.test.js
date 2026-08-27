@@ -199,7 +199,7 @@ describe('list adapters for subscription types', () => {
       type: 'issue-detail',
       params: { id: 'UI-123' }
     });
-    expect(args).toEqual(['show', 'UI-123', '--json']);
+    expect(args).toEqual(['show', 'UI-123', '--include-dependents', '--json']);
   });
 
   test('fetchListForSubscription returns normalized items (Date.parse)', async () => {

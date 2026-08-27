@@ -13,6 +13,7 @@
  */
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
+import { REC_LABEL, recTooltip } from '../../utils/rec-settings.js';
 import {
   formatRelativeTime,
   formatTimestampLocal
@@ -954,6 +955,31 @@ export function fromChipTemplate(from_id) {
 }
 
 /**
+ * `복잡` chip (UI-sbum §3): the workflow judged this bead complex enough to
+ * recommend a different execution setting. DISPLAY-ONLY on every card — the one
+ * place a click applies it is the issue detail header, because a mis-touch on a
+ * lane card would rewrite an execution pin the user never opened.
+ *
+ * One chip, never a model or runtime name: the recommendation's WHY and whether
+ * it is applied live in the tooltip, which every surface shares so one judgement
+ * never reads two ways.
+ *
+ * @param {import('../../utils/rec-settings.js').RecSettings|null|undefined} rec
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function recChipTemplate(rec) {
+  if (!rec) {
+    return '';
+  }
+  return html`<span
+    class="ctl-chip ctl-chip--label worker-card__rec"
+    data-state=${rec.state}
+    title=${recTooltip(rec)}
+    >${REC_LABEL}</span
+  >`;
+}
+
+/**
  * The PR 링크 하나 — `#<n> ↗`. PR 대기 행·카드형 행·완료 행이 모두 이것을
  * 부르므로, "이 bead가 어느 PR인가"는 어느 레인에서 읽어도 같은 모양이다
  * (스펙 §5.1 슬롯 1). 번호나 URL 중 하나라도 없으면 빈 문자열이다
@@ -1106,6 +1132,10 @@ export function priorityBadgeTemplate(priority) {
  * 다시 판정하지 않고, 실행 자격·drag·적재는 건드리지 않는다.
  * @property {string} [session_preferred_reason] - 계약 enum 안의 사유. 칩 툴팁
  * 문구의 키이며, enum 밖 값은 투영에 도달하기 전에 걸러진다.
+ * @property {import('../../utils/rec-settings.js').RecSettings|null} [rec] -
+ * 복잡 판정 (UI-sbum §3): 워크플로가 이 bead에 다른 실행 설정을 추천했다는 사실
+ * 하나. 표시 전용이고 자격·drag·적재 어디에도 들어가지 않는다. `null`/생략은
+ * 추천 없음이다.
  * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
  * @property {number} [priority] - Bead 우선순위 0..4. 숫자가 아니면 배지를
  * 그리지 않는다.
@@ -1466,14 +1496,15 @@ export function miniRow(item, options = {}) {
   // 판정은 그 줄의 재료 전부로 한다 — 좌표·exec만 세면 usage만 있는 행에서
   // 지금 보이는 정보가 사라진다. 재료가 하나도 없으면 줄 자체를 그리지 않는다
   // (빈 div는 행에 여백만 남긴다).
+  const rec_el = recChipTemplate(item.rec);
   const chips_el =
-    repo_el || route_el || from_el || has_exec_chips || usage_el
+    repo_el || route_el || from_el || has_exec_chips || rec_el || usage_el
       ? html`<div class="worker-chips">
           ${repo_el}${route_el}${from_el}${has_exec_chips
             ? execChipsTemplate(item.exec_chips, {
                 pin: item.exec_chips_pinned === true
               })
-            : ''}${usage_el}
+            : ''}${rec_el}${usage_el}
         </div>`
       : '';
   const deps_el = dependencyChipsTemplate(item.dependency_chips);
@@ -1642,15 +1673,13 @@ const SESSION_PREFERRED_TOOLTIP = {
  * colour with the pin tooltip; the card never decides that itself, because only
  * the caller knows the repo's defaults.
  *
- * `dep_action` (UI-j92s §6.1) adds the `⛓ 의존성` button. 자리는 1번 줄
- * 오른쪽 끝(`.worker-card__head-actions`, 슬롯 1 조작)이지 foot이 아니다
- * (UI-5ksp §4.6): foot은 `대기로 ↴` 하나만 사는 곳이라 coarse pointer 전용
- * 접기 규칙을 그대로 쓰고, 상시 조작인 의존성 버튼은 그 규칙에 삼켜지지 않는
- * 자리에 선다. Worker 콘솔은 이 옵션을 넘기지 않으므로 렌더가 그대로다.
+ * 슬롯 1 조작(`.worker-card__head-actions`)은 지금 재료가 없어 그리지 않는다
+ * (UI-lx45 §5): UI-j92s가 그 자리에 두었던 `⛓ 의존성` 버튼은 편집이 이슈 상세
+ * `의존성` 절로 옮겨 가며 사라졌다.
  *
  * @param {MiniItem} item
  * @param {PlaceMenu|null} [place_menu]
- * @param {{ exec_chips_mode?: 'always'|'pinned_only', dep_action?: boolean, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} [options]
+ * @param {{ exec_chips_mode?: 'always'|'pinned_only', onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function candidateCard(item, place_menu = null, options = {}) {
@@ -1715,20 +1744,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
               title=${session_preferred_tooltip}
               >세션 권장</span
             >`
-          : ''}${quickFixReviewChipTemplate(workflow)}${options.dep_action ===
-      true
-        ? html`<span class="worker-card__head-actions"
-            ><button
-              type="button"
-              class="worker-card__dep mon-dep__btn"
-              data-bead-id=${item.id}
-              title="의존성"
-              aria-label="의존성"
-            >
-              ⛓
-            </button></span
-          >`
-        : ''}
+          : ''}${recChipTemplate(item.rec)}${quickFixReviewChipTemplate(
+        workflow
+      )}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow

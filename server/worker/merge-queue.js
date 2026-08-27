@@ -49,6 +49,19 @@
 export const RESOLUTION_ROUND_CAP = 2;
 
 /**
+ * How many QUEUE-CAUSED re-conflicts ONE queue item may absorb (UI-p49g §2).
+ *
+ * A resolution that merged the base tip it was dispatched on, and came back
+ * dirty only because a later merge moved that base, is not a session failure —
+ * so it does not spend {@link RESOLUTION_ROUND_CAP}. It still spends
+ * something: without a cap of its own, a busy lane could re-conflict the same
+ * item indefinitely and call a session every time.
+ *
+ * @type {number}
+ */
+export const RESOLUTION_REBASE_CAP = 3;
+
+/**
  * How long a dispatched resolution owns the queue turn before yielding it.
  * Neither the session nor the item terminates at this deadline.
  *
@@ -76,6 +89,8 @@ export const UNCONFIRMED_WAIT_MS = 30 * 60 * 1000;
  * @type {number}
  */
 const RESOLUTION_POLL_MS = 30 * 1000;
+
+const SHA40_RE = /^[0-9a-f]{40}$/i;
 
 /** @type {Set<string>} */
 const TERMINAL_ATTEMPT_STATUSES = new Set([
@@ -120,7 +135,8 @@ function snapshotFence(q) {
  *   store: ReturnType<typeof import('./queue-store.js').createQueueStore>,
  *   merge: (bead_id: string) => Promise<MergeClickResult>,
  *   probeMergeability?: (bead_id: string) => Promise<{ ok: boolean, kind: 'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked', reason: string|null, head_sha: string|null, base_ref: string|null, head_ref?: string|null, external: boolean, continuation?: 'verify' }>,
- *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean }, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }) => Promise<MergeClickResult>,
+ *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null, head_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha: string, base_ref: string, head_ref: string }, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }) => Promise<MergeClickResult>,
+ *   baseContained?: (bead_id: string, input: { base_ref: string, head_ref: string, head_sha: string }) => Promise<'contained'|'not_contained'|null>,
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
  *   headSha?: (bead_id: string) => string|null,
  *   isExternalRow?: (bead_id: string) => boolean,
@@ -140,6 +156,7 @@ function snapshotFence(q) {
  *   clearTimer?: (handle: any) => void,
  *   log?: (...args: any[]) => void,
  *   resolution_round_cap?: number,
+ *   rebase_round_cap?: number,
  *   resolution_wait_ms?: number,
  *   unconfirmed_poll_ms?: number,
  *   unconfirmed_wait_ms?: number
@@ -166,6 +183,7 @@ export function createMergeQueue(deps) {
   // network call: the driver adds no `gh` traffic of its own.
   const headSha = deps.headSha || (() => null);
   const round_cap = deps.resolution_round_cap ?? RESOLUTION_ROUND_CAP;
+  const rebase_cap = deps.rebase_round_cap ?? RESOLUTION_REBASE_CAP;
   const resolution_wait_ms = deps.resolution_wait_ms ?? RESOLUTION_WAIT_MS;
   const unconfirmed_poll_ms = deps.unconfirmed_poll_ms ?? UNCONFIRMED_POLL_MS;
   const unconfirmed_wait_ms = deps.unconfirmed_wait_ms ?? UNCONFIRMED_WAIT_MS;
@@ -738,20 +756,70 @@ export function createMergeQueue(deps) {
   }
 
   /**
+   * The dispatch identity a `resolution` record must carry (UI-p49g §3.1),
+   * read off whatever named the head/base pair this dispatch was taken on. A
+   * missing part stays missing: the store refuses the write rather than
+   * persist a binding that cannot be judged later.
+   *
+   * @param {{ head_sha?: string|null, base_ref?: string|null, head_ref?: string|null }} observed
+   * @returns {{ dispatch_head_sha: string, base_ref: string, head_ref: string }}
+   */
+  function dispatchIdentity(observed) {
+    return {
+      dispatch_head_sha: observed.head_sha || '',
+      // `conflictPrompt` defaults an absent base to `main`, so the record names
+      // the branch the session was actually told to merge.
+      base_ref: observed.base_ref || 'main',
+      head_ref: observed.head_ref || ''
+    };
+  }
+
+  /**
+   * The dispatch identity of a resolution the queue is ADOPTING rather than
+   * dispatching, read from the current mergeability observation.
+   *
+   * @param {string} subject_bead_id
+   * @returns {Promise<{ dispatch_head_sha: string, base_ref: string, head_ref: string }>}
+   */
+  async function observedIdentity(subject_bead_id) {
+    if (typeof deps.probeMergeability !== 'function') {
+      return dispatchIdentity({});
+    }
+    try {
+      const probe = await deps.probeMergeability(subject_bead_id);
+      return dispatchIdentity(probe.ok ? probe : {});
+    } catch (err) {
+      log(
+        'merge queue resolution identity probe failed for %s: %o',
+        subject_bead_id,
+        err
+      );
+      return dispatchIdentity({});
+    }
+  }
+
+  /**
    * Persist an exact attempt binding before the driver waits on it.
    *
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
    * @param {string} attempt_id
+   * @param {{ dispatch_head_sha: string, base_ref: string, head_ref: string }} identity
    */
-  function bindResolution(queue_bead_id, subject_bead_id, attempt_id) {
+  function bindResolution(
+    queue_bead_id,
+    subject_bead_id,
+    attempt_id,
+    identity
+  ) {
     let ok = false;
     try {
       ok = deps.store.bindResolutionWait(workspace, {
         bead_id: queue_bead_id,
         subject_bead_id,
         attempt_id,
-        wait_ms: resolution_wait_ms
+        wait_ms: resolution_wait_ms,
+        ...identity
       }).ok;
     } catch (err) {
       log('merge queue resolution bind failed for %s: %o', queue_bead_id, err);
@@ -773,8 +841,14 @@ export function createMergeQueue(deps) {
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
    * @param {string} attempt_id
+   * @param {{ dispatch_head_sha: string, base_ref: string, head_ref: string }} identity
    */
-  function ensureResolutionBound(queue_bead_id, subject_bead_id, attempt_id) {
+  function ensureResolutionBound(
+    queue_bead_id,
+    subject_bead_id,
+    attempt_id,
+    identity
+  ) {
     const resolution = queuedEntry(queue_bead_id)?.resolution;
     if (
       resolution &&
@@ -785,7 +859,12 @@ export function createMergeQueue(deps) {
       return true;
     }
     if (resolution === null) {
-      return bindResolution(queue_bead_id, subject_bead_id, attempt_id);
+      return bindResolution(
+        queue_bead_id,
+        subject_bead_id,
+        attempt_id,
+        identity
+      );
     }
     halted = true;
     notify();
@@ -924,7 +1003,16 @@ export function createMergeQueue(deps) {
           return { kind: 'failed' };
         }
         if (
-          !bindResolution(queue_bead_id, subject_bead_id, restored.attempt_id)
+          !bindResolution(
+            queue_bead_id,
+            subject_bead_id,
+            restored.attempt_id,
+            // The queue did not dispatch THIS session (a boot restore, or a
+            // resolver a click started on a queued row), so the identity has
+            // to be observed rather than remembered. Without it the record
+            // could not answer §4.2's question at all.
+            await observedIdentity(subject_bead_id)
+          )
         ) {
           return { kind: 'paused' };
         }
@@ -998,20 +1086,85 @@ export function createMergeQueue(deps) {
   }
 
   /**
+   * Which budget one finished resolution round spends (UI-p49g §4.2).
+   *
+   * The question is never "is it still dirty" alone — that is true both when
+   * the session failed and when the QUEUE re-conflicted a correct resolution
+   * by landing another PR on the base underneath it. Only the second is
+   * forgiven, and only on positive evidence: the session pushed a new head AND
+   * that head does not contain the base branch. Every unreadable ground —
+   * a failed re-probe, a missing dispatch identity, an unusable containment
+   * answer — charges the session, because wrongly forgiving calls sessions
+   * forever while wrongly charging only hands the item to a person.
+   *
+   * @param {any} probe
+   * @param {any} resolution
+   * @param {string} subject_bead_id
+   * @returns {Promise<'session'|'rebase'|'none'>}
+   */
+  async function resolutionCharge(probe, resolution, subject_bead_id) {
+    if (!probe.ok) {
+      return 'session';
+    }
+    if (probe.kind !== 'dirty') {
+      return 'none';
+    }
+    const dispatch_head_sha = resolution?.dispatch_head_sha;
+    const base_ref = resolution?.base_ref;
+    const head_ref = resolution?.head_ref;
+    if (
+      typeof probe.head_sha !== 'string' ||
+      !SHA40_RE.test(probe.head_sha) ||
+      typeof dispatch_head_sha !== 'string' ||
+      !SHA40_RE.test(dispatch_head_sha) ||
+      typeof base_ref !== 'string' ||
+      base_ref.length === 0 ||
+      typeof head_ref !== 'string' ||
+      head_ref.length === 0
+    ) {
+      return 'session';
+    }
+    if (probe.head_sha === dispatch_head_sha) {
+      // The session pushed nothing, so nothing it did can have been overtaken.
+      return 'session';
+    }
+    if (typeof deps.baseContained !== 'function') {
+      return 'session';
+    }
+    /** @type {'contained'|'not_contained'|null} */
+    let contained = null;
+    try {
+      contained = await deps.baseContained(subject_bead_id, {
+        base_ref,
+        head_ref,
+        head_sha: probe.head_sha
+      });
+    } catch (err) {
+      log(
+        'merge queue base containment probe failed for %s: %o',
+        subject_bead_id,
+        err
+      );
+      contained = null;
+    }
+    return contained === 'not_contained' ? 'rebase' : 'session';
+  }
+
+  /**
    * Clear one exact ready resolution record, charging it only when the latest
    * probe still needs another conflict-resolution round.
    *
    * @param {string} queue_bead_id
    * @param {string} attempt_id
-   * @param {boolean} consume_round
+   * @param {'session'|'rebase'|'none'} charge
    */
-  function consumeResolution(queue_bead_id, attempt_id, consume_round) {
+  function consumeResolution(queue_bead_id, attempt_id, charge) {
     let ok = false;
     try {
       ok = deps.store.consumeResolutionWait(workspace, {
         bead_id: queue_bead_id,
         attempt_id,
-        consume_round
+        charge
       }).ok;
     } catch (err) {
       log(
@@ -1162,7 +1315,7 @@ export function createMergeQueue(deps) {
     if (typeof deps.probeMergeability !== 'function') {
       if (
         ready_attempt_id &&
-        !consumeResolution(queue_bead_id, ready_attempt_id, true)
+        !consumeResolution(queue_bead_id, ready_attempt_id, 'session')
       ) {
         return null;
       }
@@ -1193,13 +1346,17 @@ export function createMergeQueue(deps) {
       return null;
     }
     const before = queuedEntry(queue_bead_id);
-    const consume_round =
-      ready_attempt_id !== null && probe.ok === true && probe.kind === 'dirty';
+    /** @type {'session'|'rebase'|'none'} */
+    const charge = ready_attempt_id
+      ? await resolutionCharge(probe, before?.resolution, subject_bead_id)
+      : 'none';
     const effective_rounds =
-      (before?.resolution_rounds ?? round_cap) + (consume_round ? 1 : 0);
+      (before?.resolution_rounds ?? round_cap) + (charge === 'session' ? 1 : 0);
+    const effective_rebase =
+      (before?.rebase_rounds ?? rebase_cap) + (charge === 'rebase' ? 1 : 0);
     if (
       ready_attempt_id &&
-      !consumeResolution(queue_bead_id, ready_attempt_id, consume_round)
+      !consumeResolution(queue_bead_id, ready_attempt_id, charge)
     ) {
       return null;
     }
@@ -1259,6 +1416,14 @@ export function createMergeQueue(deps) {
         head_sha: probe.head_sha || null
       };
     }
+    if (effective_rebase >= rebase_cap) {
+      return {
+        ok: false,
+        action: 'refused',
+        reason: 'resolution_rebase_cap',
+        head_sha: probe.head_sha || null
+      };
+    }
     if (
       typeof deps.dispatchConflict !== 'function' ||
       typeof probe.head_sha !== 'string' ||
@@ -1271,17 +1436,20 @@ export function createMergeQueue(deps) {
         head_sha: probe.head_sha || null
       };
     }
+    const identity = dispatchIdentity(probe);
     try {
       return await deps.dispatchConflict(
         subject_bead_id,
         {
           head_sha: probe.head_sha,
-          base_ref: probe.base_ref || null
+          base_ref: probe.base_ref || null,
+          head_ref: probe.head_ref || null
         },
         {
           queue_bead_id,
           wait_ms: resolution_wait_ms,
-          manual_authority: manualContinuation(queue_bead_id)
+          manual_authority: manualContinuation(queue_bead_id),
+          ...identity
         },
         continuationInput(queue_bead_id, subject_bead_id)
       );
@@ -1460,7 +1628,8 @@ export function createMergeQueue(deps) {
           !ensureResolutionBound(
             root_bead_id,
             subject_bead_id,
-            result.attempt_id
+            result.attempt_id,
+            dispatchIdentity(result)
           )
         ) {
           return;
@@ -1715,7 +1884,14 @@ export function createMergeQueue(deps) {
           failAndDequeue(bead_id, 'resolution_round_cap');
           return;
         }
-        if (!ensureResolutionBound(bead_id, bead_id, result.attempt_id)) {
+        if (
+          !ensureResolutionBound(
+            bead_id,
+            bead_id,
+            result.attempt_id,
+            dispatchIdentity(result)
+          )
+        ) {
           return;
         }
         continue;

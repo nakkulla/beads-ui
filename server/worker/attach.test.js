@@ -31,6 +31,24 @@ import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createWorkerRuntime } from './runtime.js';
 import { sessionLogPath } from './state-paths.js';
 
+// 큐 deps는 attach 안에서만 조립된다. 같은 위임 mock으로 그 deps를 붙잡아,
+// 생산 조립이 seam을 실제로 연결하는지 본다(UI-p49g §4.1).
+const merge_queue_capture = vi.hoisted(() => ({
+  /** @type {any} */
+  deps: null
+}));
+
+vi.mock('./merge-queue.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    createMergeQueue: (/** @type {any} */ deps) => {
+      merge_queue_capture.deps = deps;
+      return actual.createMergeQueue(deps);
+    }
+  };
+});
+
 const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
 
 /**
@@ -2489,6 +2507,16 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
       })
     });
   }
+
+  test('gives the merge driver a repo-backed base containment probe', async () => {
+    const runtime = createWorkerRuntime();
+    merge_queue_capture.deps = null;
+
+    attachWithExternalRow(runtime, 'X1');
+
+    // 연결을 빠뜨리면 모든 재충돌이 세션 라운드로 과금된다(UI-p49g §4.1).
+    expect(typeof merge_queue_capture.deps.baseContained).toBe('function');
+  });
 
   test('gives the merge driver a registry-backed isExternalRow', async () => {
     const runtime = createWorkerRuntime();

@@ -1786,16 +1786,15 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
     );
   }
 
-  test('draws the dependency button in the head action slot (UI-5ksp §4.6)', () => {
-    const card = depCard({ dep_action: true });
+  test('draws no dependency button and no head action slot (UI-lx45 §5)', () => {
+    const card = depCard();
 
-    expect(card).toContain(
-      '<span class="worker-card__head-actions"><button aria-label="의존성" class="worker-card__dep mon-dep__btn"'
-    );
+    expect(card).not.toContain('worker-card__dep');
+    expect(card).not.toContain('worker-card__head-actions');
   });
 
-  test('folds the foot of a card the dependency button alone would open', () => {
-    const card = depCard({ dep_action: true });
+  test('folds the foot of a card that carries no reason', () => {
+    const card = depCard();
 
     expect(card).toContain('worker-card__foot--actions-only');
   });
@@ -1811,18 +1810,11 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
           reason: 'spec 없음'
         }),
         null,
-        { dep_action: true }
+        {}
       )
     );
 
     expect(card).not.toContain('worker-card__foot--actions-only');
-  });
-
-  test('folds the foot of a card that has no dependency button', () => {
-    const card = depCard();
-
-    expect(card).not.toContain('worker-card__dep');
-    expect(card).toContain('worker-card__foot--actions-only');
   });
 
   test('marks exec chips as an issue pin in pinned_only mode', () => {
@@ -3216,5 +3208,93 @@ describe('nowPanel (UI-5ksp §4.7)', () => {
         .querySelector('.worker-now')
         ?.classList.contains('worker-pane--live')
     ).toBe(true);
+  });
+});
+
+describe('복잡 chip on the worker lane surfaces (UI-sbum §3)', () => {
+  /** @type {import('../../utils/rec-settings.js').RecSettings} */
+  const REC = {
+    reasons: ['contract_change', 'claude_bound'],
+    rec: { orchestration_model: 'fable', impl_runtime: 'claude' },
+    state: 'unapplied'
+  };
+  const REC_TITLE =
+    '복잡한 작업으로 판정됨\n사유: contract_change, claude_bound\n상태: 미적용';
+
+  test('draws the chip on a waiting row with the shared tooltip', () => {
+    const row = renderRow({ lane: 'queue', done: false, rec: REC });
+
+    const chip = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-card__rec')
+    );
+
+    expect(chip.textContent?.trim()).toBe('복잡');
+    expect(chip.title).toBe(REC_TITLE);
+  });
+
+  test('draws the chip on a candidate card with the same tooltip', () => {
+    const card = renderCandidate({ rec: REC });
+
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__rec')
+    );
+
+    expect(chip.textContent?.trim()).toBe('복잡');
+    expect(chip.title).toBe(REC_TITLE);
+  });
+
+  test('carries the recommendation state as a data attribute', () => {
+    const states = ['unapplied', 'applied', 'diverged'].map((state) => {
+      const card = renderCandidate({
+        rec: { ...REC, state: /** @type {any} */ (state) }
+      });
+      return /** @type {HTMLElement} */ (
+        card.querySelector('.worker-card__rec')
+      ).dataset.state;
+    });
+
+    expect(states).toEqual(['unapplied', 'applied', 'diverged']);
+  });
+
+  test('omits the chip when the bead has no recommendation', () => {
+    const row = renderRow({ lane: 'queue', done: false, rec: null });
+    const card = renderCandidate({ rec: null });
+
+    expect(row.querySelector('.worker-card__rec')).toBeNull();
+    expect(card.querySelector('.worker-card__rec')).toBeNull();
+  });
+
+  test('draws the chip line for a row whose only chip is the recommendation', () => {
+    const row = renderRow({ lane: 'queue', done: false, rec: REC });
+
+    expect(row.querySelector('.worker-chips')).not.toBeNull();
+  });
+
+  test('stays display-only: the card chip is not a button and has no click handler', () => {
+    const clicks = vi.fn();
+    mount.addEventListener('click', clicks);
+    const card = renderCandidate({ rec: REC });
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__rec')
+    );
+
+    chip.click();
+
+    expect(chip.tagName).toBe('SPAN');
+    expect(chip.getAttribute('data-bead-id')).toBeNull();
+    expect(clicks).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps the 세션 권장 chip beside it on the same candidate', () => {
+    const card = renderCandidate({
+      rec: REC,
+      session_preferred: true,
+      session_preferred_reason: 'exclusive_machine'
+    });
+
+    expect(
+      card.querySelector('.worker-card__session-preferred')
+    ).not.toBeNull();
+    expect(card.querySelector('.worker-card__rec')).not.toBeNull();
   });
 });

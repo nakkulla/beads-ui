@@ -10,6 +10,7 @@
  * 그 목록 위의 필터일 뿐이다.
  */
 import { isBlockedBy } from './drop-plan.js';
+import { buildLanes } from './lanes.js';
 
 /**
  * 후보 모집단 한 항목. `lane`은 모니터의 배타 레인 어휘 그대로다 — 같은 사실에
@@ -43,6 +44,119 @@ import { isBlockedBy } from './drop-plan.js';
 
 /** 사이클을 닫는 후보의 비활성 사유 (§6.1). */
 const REASON_CYCLE = '사이클';
+
+/**
+ * The live blocks graph of the aggregated snapshot (UI-lx45 §3.1). 두 원천을
+ * 같은 순서로 합친다: 레포별 `bead_blocked_by`가 먼저고, 자기 blocker를 스스로
+ * 들고 오는 실행가능·세션 행이 그 위를 덮는다 (UI-yrzu §5).
+ *
+ * 이 맵은 후보 필터가 아니라 사이클 판정의 원천이므로 `root_dir`로 좁히지
+ * 않는다 — 타 레포를 거쳐 닫히는 사이클도 사이클이다.
+ *
+ * @param {Array<Record<string, any>>|null|undefined} workspaces
+ * @returns {Map<string, string[]>}
+ */
+function blockedByMapOf(workspaces) {
+  /** @type {Map<string, string[]>} */
+  const graph = new Map();
+  /**
+   * @param {unknown} value
+   * @returns {string[]}
+   */
+  const idsOf = (value) =>
+    Array.isArray(value)
+      ? value.filter(
+          (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+        )
+      : [];
+  for (const workspace of Array.isArray(workspaces) ? workspaces : []) {
+    if (!workspace || typeof workspace !== 'object') {
+      continue;
+    }
+    const declared =
+      workspace.bead_blocked_by && typeof workspace.bead_blocked_by === 'object'
+        ? workspace.bead_blocked_by
+        : {};
+    for (const [bead_id, blockers] of Object.entries(declared)) {
+      if (Array.isArray(blockers)) {
+        graph.set(bead_id, idsOf(blockers));
+      }
+    }
+    for (const entry of [
+      ...(Array.isArray(workspace.runnable) ? workspace.runnable : []),
+      ...(Array.isArray(workspace.session_active)
+        ? workspace.session_active
+        : [])
+    ]) {
+      if (
+        entry &&
+        typeof entry.bead_id === 'string' &&
+        Array.isArray(entry.blocked_by) &&
+        entry.blocked_by.length > 0
+      ) {
+        graph.set(entry.bead_id, idsOf(entry.blocked_by));
+      }
+    }
+  }
+  return graph;
+}
+
+/**
+ * The candidate population every tab reads (UI-lx45 §3.1). 한 스냅샷에서 나오는
+ * 순수 파생값이다 — 상세 패널은 이 함수만 부르고 모니터 뷰의 내부 상태를
+ * 건드리지 않는다.
+ *
+ * 레인 순서는 `running → pr_wait → queue → runnable_all`이고 같은 ID가 여러
+ * 레인에 나타나면 처음 것만 남는다. 필터 이전 목록이다: `차단됨`·`스펙`·`의존
+ * 있음` 토글은 보기를 좁힐 뿐 의존을 걸 수 있는 이슈를 줄이지 않는다.
+ *
+ * @param {Array<Record<string, any>>|null|undefined} workspaces
+ * @param {Array<Record<string, any>>|null|undefined} workspaces_state
+ * @param {{ root_dir?: string }} [options] - `root_dir`은 `issues`만 좁힌다.
+ * @returns {DepCandidateModel}
+ */
+export function depCandidateModel(workspaces, workspaces_state, options) {
+  const lanes = buildLanes(workspaces, workspaces_state);
+  /** @type {DepCandidateIssue[]} */
+  const issues = [];
+  /** @type {Set<string>} */
+  const seen = new Set();
+  /**
+   * @param {Array<Record<string, any>>} items
+   * @param {DepCandidateIssue['lane']} lane
+   */
+  const push = (items, lane) => {
+    for (const item of items) {
+      if (seen.has(item.id)) {
+        continue;
+      }
+      seen.add(item.id);
+      issues.push({
+        bead_id: item.id,
+        root_dir: item.root_dir,
+        workspace_name: item.workspace_name,
+        title: item.title,
+        lane
+      });
+    }
+  };
+  push(lanes.running, 'running');
+  push(lanes.pr_wait, 'pr_wait');
+  push(lanes.queue, 'queue');
+  push(lanes.runnable_all, 'runnable');
+
+  const root_dir =
+    options && typeof options.root_dir === 'string' && options.root_dir.length
+      ? options.root_dir
+      : null;
+  return {
+    issues:
+      root_dir === null
+        ? issues
+        : issues.filter((issue) => issue.root_dir === root_dir),
+    blocked_by_map: blockedByMapOf(workspaces)
+  };
+}
 
 /**
  * The candidates that could block ONE row (§6.1) — 이 행의 새 blocker 후보다.

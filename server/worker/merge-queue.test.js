@@ -11,6 +11,9 @@ import { queueFilePath } from './state-paths.js';
 let tmp_state;
 const WS = '/tmp/example-workspace/merge-queue';
 
+/** The dispatch head every resolution binding in this file is taken on. */
+const RESOLUTION_DISPATCH_HEAD = 'd'.repeat(40);
+
 beforeEach(() => {
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-mq-'));
   process.env.XDG_STATE_HOME = tmp_state;
@@ -672,7 +675,10 @@ describe('worker/merge-queue — completion subject continuity', () => {
               ok: true,
               action: 'conflict_resolution',
               reason: null,
-              attempt_id: 'conflict-1'
+              attempt_id: 'conflict-1',
+              head_sha: RESOLUTION_DISPATCH_HEAD,
+              base_ref: 'main',
+              head_ref: 'feature-branch'
             };
           }
           return { ok: false, action: 'refused', reason: 'verify_cmd_failed' };
@@ -693,7 +699,12 @@ describe('worker/merge-queue — completion subject continuity', () => {
     expect(queue.attempts['conflict-1']).toMatchObject({ status: 'done' });
     expect(calls).toBe(2);
     expect(queue.merge_queue).toEqual([
-      { bead_id: 'UI-root', resolution_rounds: 1, resolution: null }
+      {
+        bead_id: 'UI-root',
+        resolution_rounds: 1,
+        rebase_rounds: 0,
+        resolution: null
+      }
     ]);
     expect(queue.completion_intents['UI-root'].repair_sessions_used).toBe(1);
   });
@@ -820,7 +831,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
               ok: true,
               action: 'conflict_resolution',
               reason: null,
-              attempt_id: 'res-1'
+              attempt_id: 'res-1',
+              head_sha: RESOLUTION_DISPATCH_HEAD,
+              base_ref: 'main',
+              head_ref: 'feature-branch'
             };
           }
           landMerge(store, bead_id);
@@ -892,7 +906,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
             ok: true,
             action: 'conflict_resolution',
             reason: null,
-            attempt_id: 'res-slow'
+            attempt_id: 'res-slow',
+            head_sha: RESOLUTION_DISPATCH_HEAD,
+            base_ref: 'main',
+            head_ref: 'feature-branch'
           };
         }
         landMerge(store, bead_id);
@@ -912,6 +929,7 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
       {
         bead_id: 'UI-1',
         resolution_rounds: 0,
+        rebase_rounds: 0,
         resolution: { attempt_id: 'res-slow', state: 'yielded' }
       }
     ]);
@@ -924,62 +942,249 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
     const reloaded = createQueueStore();
 
     expect(reloaded.snapshot(WS).merge_queue).toEqual([
-      { bead_id: 'UI-1', resolution_rounds: 1, resolution: null }
+      {
+        bead_id: 'UI-1',
+        resolution_rounds: 1,
+        rebase_rounds: 0,
+        resolution: null
+      }
     ]);
   });
 
-  test.each([
-    ['clean', false],
-    ['dirty', true]
-  ])(
-    'charges a completed round only when the latest probe is %s',
-    async (kind, consume_round) => {
-      const store = seed(['UI-1']);
-      store.toggleAutoMerge(WS, {
-        expected_revision: store.snapshot(WS).revision,
-        on: true
-      });
-      const finish = dispatchResolution(store, 'UI-1', 'res-charge');
-      store.bindResolutionWait(WS, {
-        bead_id: 'UI-1',
-        subject_bead_id: 'UI-1',
-        attempt_id: 'res-charge',
-        wait_ms: 100
-      });
-      finish();
-      store.settleResolutionWait(WS, {
-        bead_id: 'UI-1',
-        subject_bead_id: 'UI-1',
-        attempt_id: 'res-charge',
-        settled_at: 2,
-        active_bead_id: null
-      });
-      const consume = vi.spyOn(store, 'consumeResolutionWait');
-      const mq = driver(store, {
-        probeMergeability: async () => ({
-          ok: true,
-          kind,
-          reason: null,
-          head_sha: 'a'.repeat(40),
-          base_ref: 'main',
-          external: false
-        }),
-        dispatchConflict: async () => ({
-          ok: false,
-          action: 'conflict_resolution',
-          reason: 'worktree_missing'
-        })
-      });
+  /** The head the resolution session is pretended to have pushed. */
+  const PUSHED_HEAD = 'e'.repeat(40);
 
-      await mq.kick();
-
-      expect(consume).toHaveBeenCalledWith(WS, {
-        bead_id: 'UI-1',
-        attempt_id: 'res-charge',
-        consume_round
-      });
+  /**
+   * Drive ONE settled resolution through the charge judgment (spec §4.2) and
+   * hand back the spy on what the store was asked to charge.
+   *
+   * @param {{ probe: any, blank_identity?: boolean, baseContained?: any, rebase_round_cap?: number }} input
+   */
+  async function chargeCase(input) {
+    const store = seed(['UI-1']);
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    const finish = dispatchResolution(store, 'UI-1', 'res-charge');
+    store.bindResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-charge',
+      wait_ms: 100,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch'
+    });
+    finish();
+    store.settleResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-charge',
+      settled_at: 2,
+      active_bead_id: null
+    });
+    if (input.blank_identity) {
+      // Only a legacy record can carry an unidentified binding — the store
+      // refuses to write one — so this is how a pre-deploy wait looks.
+      const file = queueFilePath(WS);
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      for (const entry of raw.merge_queue) {
+        delete entry.resolution?.dispatch_head_sha;
+        delete entry.resolution?.base_ref;
+        delete entry.resolution?.head_ref;
+      }
+      fs.writeFileSync(file, JSON.stringify(raw));
+      store.__clearCacheForTest();
     }
-  );
+    const consume = vi.spyOn(store, 'consumeResolutionWait');
+    const mq = driver(store, {
+      probeMergeability: async () => input.probe,
+      ...(input.baseContained ? { baseContained: input.baseContained } : {}),
+      ...(input.rebase_round_cap === undefined
+        ? {}
+        : { rebase_round_cap: input.rebase_round_cap }),
+      dispatchConflict: async () => ({
+        ok: false,
+        action: 'conflict_resolution',
+        reason: 'worktree_missing'
+      })
+    });
+
+    await mq.kick();
+
+    return { store, mq, consume };
+  }
+
+  /**
+   * @param {'dirty'|'clean'} kind
+   * @param {string} head_sha
+   */
+  function probeOf(kind, head_sha) {
+    return {
+      ok: true,
+      kind,
+      reason: null,
+      head_sha,
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+      external: false
+    };
+  }
+
+  test('charges the session when the re-probe itself could not be read', async () => {
+    const { consume } = await chargeCase({
+      probe: { ok: false, kind: 'blocked', reason: 'probe_error' }
+    });
+
+    expect(consume).toHaveBeenCalledWith(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-charge',
+      charge: 'session'
+    });
+  });
+
+  test('charges nothing when the re-probe is no longer dirty', async () => {
+    const { consume } = await chargeCase({
+      probe: probeOf('clean', PUSHED_HEAD)
+    });
+
+    expect(consume).toHaveBeenCalledWith(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-charge',
+      charge: 'none'
+    });
+  });
+
+  test('charges the session when the binding names no dispatch identity', async () => {
+    const { consume } = await chargeCase({
+      probe: probeOf('dirty', PUSHED_HEAD),
+      blank_identity: true,
+      baseContained: async () => 'not_contained'
+    });
+
+    expect(consume).toHaveBeenCalledWith(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-charge',
+      charge: 'session'
+    });
+  });
+
+  test('charges the session when the head never moved off the dispatched one', async () => {
+    const { consume } = await chargeCase({
+      probe: probeOf('dirty', RESOLUTION_DISPATCH_HEAD),
+      baseContained: async () => 'not_contained'
+    });
+
+    expect(consume).toHaveBeenCalledWith(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-charge',
+      charge: 'session'
+    });
+  });
+
+  test('charges the rebase budget when the pushed head never saw the base', async () => {
+    const baseContained = vi.fn(async () => 'not_contained');
+
+    const { consume } = await chargeCase({
+      probe: probeOf('dirty', PUSHED_HEAD),
+      baseContained
+    });
+
+    expect(baseContained).toHaveBeenCalledWith('UI-1', {
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+      head_sha: PUSHED_HEAD
+    });
+    expect(consume).toHaveBeenCalledWith(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-charge',
+      charge: 'rebase'
+    });
+  });
+
+  test('charges the session when the pushed head already contains the base', async () => {
+    const { consume } = await chargeCase({
+      probe: probeOf('dirty', PUSHED_HEAD),
+      baseContained: async () => 'contained'
+    });
+
+    expect(consume).toHaveBeenCalledWith(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-charge',
+      charge: 'session'
+    });
+  });
+
+  test('charges the session when containment cannot be decided', async () => {
+    const { consume } = await chargeCase({
+      probe: probeOf('dirty', PUSHED_HEAD),
+      baseContained: async () => null
+    });
+
+    expect(consume).toHaveBeenCalledWith(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-charge',
+      charge: 'session'
+    });
+  });
+
+  test('charges the session when no containment seam is wired at all', async () => {
+    const { consume } = await chargeCase({
+      probe: probeOf('dirty', PUSHED_HEAD)
+    });
+
+    expect(consume).toHaveBeenCalledWith(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-charge',
+      charge: 'session'
+    });
+  });
+
+  test('skips the item once the rebase budget runs out', async () => {
+    const { store, mq } = await chargeCase({
+      probe: probeOf('dirty', PUSHED_HEAD),
+      baseContained: async () => 'not_contained',
+      rebase_round_cap: 1
+    });
+
+    expect(mq.state().failures['UI-1']).toBe('resolution_rebase_cap');
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(store.snapshot(WS).auto_merge_skips['UI-1']).toMatchObject({
+      reason: 'resolution_rebase_cap'
+    });
+  });
+
+  test('hands the dispatcher the observed head branch and dispatch identity', async () => {
+    const store = seed(['UI-1']);
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    const dispatchConflict = vi.fn(async () => ({
+      ok: false,
+      action: /** @type {const} */ ('conflict_resolution'),
+      reason: 'worktree_missing'
+    }));
+    const mq = driver(store, {
+      probeMergeability: async () => probeOf('dirty', PUSHED_HEAD),
+      dispatchConflict
+    });
+
+    await mq.kick();
+
+    expect(dispatchConflict).toHaveBeenCalledWith(
+      'UI-1',
+      { head_sha: PUSHED_HEAD, base_ref: 'main', head_ref: 'feature-branch' },
+      expect.objectContaining({
+        queue_bead_id: 'UI-1',
+        dispatch_head_sha: PUSHED_HEAD,
+        base_ref: 'main',
+        head_ref: 'feature-branch'
+      }),
+      undefined
+    );
+  });
 
   test('defers a queue-origin resolver until the worker session fence clears', async () => {
     const store = seed(['UI-1']);
@@ -1004,6 +1209,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
           };
         }
         store.appendResolutionAttempt(WS, {
+          dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+          base_ref: 'main',
+          head_ref: 'feature-branch',
+
           expected_revision: store.snapshot(WS).revision,
           queue_bead_id: resolution_wait.queue_bead_id,
           subject_bead_id: bead_id,
@@ -1021,7 +1230,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
           ok: true,
           action: /** @type {const} */ ('conflict_resolution'),
           reason: null,
-          attempt_id: 'res-serial'
+          attempt_id: 'res-serial',
+          head_sha: RESOLUTION_DISPATCH_HEAD,
+          base_ref: 'main',
+          head_ref: 'feature-branch'
         };
       }
     );
@@ -1107,7 +1319,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
               ok: true,
               action: 'conflict_resolution',
               reason: null,
-              attempt_id: 'res-1'
+              attempt_id: 'res-1',
+              head_sha: RESOLUTION_DISPATCH_HEAD,
+              base_ref: 'main',
+              head_ref: 'feature-branch'
             };
           }
           landMerge(store, bead_id);
@@ -1152,7 +1367,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
             ok: true,
             action: 'conflict_resolution',
             reason: null,
-            attempt_id: `res-${calls}`
+            attempt_id: `res-${calls}`,
+            head_sha: RESOLUTION_DISPATCH_HEAD,
+            base_ref: 'main',
+            head_ref: 'feature-branch'
           };
         }
       },
@@ -1279,7 +1497,18 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
           calls += 1;
           landMerge(store, bead_id);
           return { ok: true, action: 'merged', reason: null };
-        }
+        },
+        // Adopting a session the queue did not dispatch reads its identity
+        // from the current observation (UI-p49g §3.1).
+        probeMergeability: async () => ({
+          ok: true,
+          kind: 'clean',
+          reason: null,
+          head_sha: RESOLUTION_DISPATCH_HEAD,
+          base_ref: 'main',
+          head_ref: 'feature-branch',
+          external: false
+        })
       },
       () => end()
     );
@@ -1314,6 +1543,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
       ) => {
         effects.push(`dispatch:${bead_id}`);
         store.appendResolutionAttempt(WS, {
+          dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+          base_ref: 'main',
+          head_ref: 'feature-branch',
+
           expected_revision: store.snapshot(WS).revision,
           queue_bead_id: resolution_wait.queue_bead_id,
           subject_bead_id: bead_id,
@@ -1330,7 +1563,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
           ok: true,
           action: /** @type {const} */ ('conflict_resolution'),
           reason: null,
-          attempt_id: 'res-late'
+          attempt_id: 'res-late',
+          head_sha: RESOLUTION_DISPATCH_HEAD,
+          base_ref: 'main',
+          head_ref: 'feature-branch'
         };
       }
     );
@@ -1391,6 +1627,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
     const store = seed(['UI-1']);
     dispatchResolution(store, 'UI-1', 'res-restart');
     store.bindResolutionWait(WS, {
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+
       bead_id: 'UI-1',
       subject_bead_id: 'UI-1',
       attempt_id: 'res-restart',
@@ -1432,6 +1672,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
     const store = seed(['UI-1']);
     const finish = dispatchResolution(store, 'UI-1', 'res-1');
     store.bindResolutionWait(WS, {
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+
       bead_id: 'UI-1',
       subject_bead_id: 'UI-1',
       attempt_id: 'res-1',
@@ -1493,7 +1737,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
             ok: true,
             action: 'conflict_resolution',
             reason: null,
-            attempt_id: 'res-1'
+            attempt_id: 'res-1',
+            head_sha: RESOLUTION_DISPATCH_HEAD,
+            base_ref: 'main',
+            head_ref: 'feature-branch'
           };
         }
         return merge(bead_id);
@@ -1525,6 +1772,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
     const store = seed(['UI-1']);
     const finish = dispatchResolution(store, 'UI-1', 'res-1');
     store.bindResolutionWait(WS, {
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+
       bead_id: 'UI-1',
       subject_bead_id: 'UI-1',
       attempt_id: 'res-1',
@@ -1573,7 +1824,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
         ok: true,
         action: 'conflict_resolution',
         reason: null,
-        attempt_id: 'res-1'
+        attempt_id: 'res-1',
+        head_sha: RESOLUTION_DISPATCH_HEAD,
+        base_ref: 'main',
+        head_ref: 'feature-branch'
       };
     });
     const mq = driver(store, { merge });
@@ -1592,7 +1846,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
       ok: true,
       action: 'conflict_resolution',
       reason: null,
-      attempt_id: null
+      attempt_id: null,
+      head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch'
     }));
     const mq = driver(store, { merge });
 
@@ -1660,6 +1917,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
     const store = seed(['UI-1']);
     const finish = dispatchResolution(store, 'UI-1', 'res-1');
     store.bindResolutionWait(WS, {
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+
       bead_id: 'UI-1',
       subject_bead_id: 'UI-1',
       attempt_id: 'res-1',
@@ -2287,6 +2548,10 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     const store = seedManual(['UI-1']);
     const finish = dispatchResolution(store, 'UI-1', 'res-1');
     store.bindResolutionWait(WS, {
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+
       bead_id: 'UI-1',
       subject_bead_id: 'UI-1',
       attempt_id: 'res-1',
@@ -2657,6 +2922,10 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     const store = seedManual(['UI-1']);
     const finish = dispatchResolution(store, 'UI-1', 'res-1');
     store.bindResolutionWait(WS, {
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+
       bead_id: 'UI-1',
       subject_bead_id: 'UI-1',
       attempt_id: 'res-1',
@@ -2705,6 +2974,10 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     const store = seedManual(['UI-1']);
     const finishFirst = dispatchResolution(store, 'UI-1', 'res-1');
     store.bindResolutionWait(WS, {
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+
       bead_id: 'UI-1',
       subject_bead_id: 'UI-1',
       attempt_id: 'res-1',
@@ -2719,7 +2992,10 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
         ok: true,
         action: /** @type {const} */ ('conflict_resolution'),
         reason: null,
-        attempt_id: 'res-2'
+        attempt_id: 'res-2',
+        head_sha: RESOLUTION_DISPATCH_HEAD,
+        base_ref: 'main',
+        head_ref: 'feature-branch'
       };
     });
     /** @type {any[]} */

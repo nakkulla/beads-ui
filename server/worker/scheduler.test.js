@@ -27,6 +27,9 @@ import { createUsageStore } from './usage-store.js';
 
 const WS = '/tmp/example-workspace/project-a';
 
+/** The dispatch head every resolution binding in this file is taken on. */
+const RESOLUTION_DISPATCH_HEAD = 'd'.repeat(40);
+
 /** @type {string} */
 let tmp_state;
 
@@ -650,7 +653,12 @@ function setup(opts) {
     removeDetached: vi.fn(async () => ({ code: 0 })),
     pathFor: (/** @type {string} */ _repo, /** @type {string} */ bead_id) =>
       `/wt/${bead_id}`,
-    exists: vi.fn(() => true)
+    exists: vi.fn(() => true),
+    // The conflict-dispatch restore (UI-p49g §5.1). Succeeds by default; a test
+    // that needs a refusal or an absent seam swaps or deletes it.
+    restore: /** @type {any} */ (
+      vi.fn(async () => ({ ok: true, path: '/wt/B1' }))
+    )
   };
   const sessionLog = opts.sessionLog || { attach: vi.fn() };
   const usage = opts.usage === null ? undefined : createUsageStore();
@@ -5146,7 +5154,10 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
 
     const res = await env.scheduler.resolveConflict(WS, 'B1', {
       queue_bead_id: 'B1',
-      wait_ms: 100
+      wait_ms: 100,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'B1'
     });
 
     expect(res).toEqual({ ok: false, reason: 'worker_sessions_busy' });
@@ -5176,7 +5187,10 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
 
     const result = await env.scheduler.resolveConflict(WS, 'B1', {
       queue_bead_id: 'B1',
-      wait_ms: 100
+      wait_ms: 100,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'B1'
     });
 
     expect(result.ok).toBe(true);
@@ -5206,7 +5220,10 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
 
     const result = await env.scheduler.resolveConflict(WS, 'B1', {
       queue_bead_id: 'ROOT1',
-      wait_ms: 100
+      wait_ms: 100,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'B1'
     });
 
     expect(result).toEqual({ ok: false, reason: 'worker_sessions_busy' });
@@ -5237,6 +5254,9 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     const result = await env.scheduler.resolveConflict(WS, 'B1', {
       queue_bead_id: 'B1',
       wait_ms: 100,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'B1',
       manual_authority: true
     });
 
@@ -5253,7 +5273,7 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     );
   });
 
-  test('refuses worktree_missing when the bead worktree is gone', async () => {
+  test('refuses worktree_missing when no head branch names a restore', async () => {
     const env = setup({ config: {}, slots: 1 });
     env.worktree.exists.mockReturnValue(false);
     seedDoneAttempt(env.store);
@@ -5261,6 +5281,60 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect((await env.scheduler.resolveConflict(WS, 'B1')).reason).toBe(
       'worktree_missing'
     );
+    expect(env.worktree.restore).not.toHaveBeenCalled();
+  });
+
+  test('restores the missing worktree from the head branch, then dispatches', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.worktree.exists.mockReturnValue(false);
+    // A real restore puts the directory back, which is what the relaunch then
+    // finds; the stub reproduces that effect.
+    env.worktree.restore.mockImplementation(async () => {
+      env.worktree.exists.mockReturnValue(true);
+      return { ok: true, path: '/wt/B1' };
+    });
+    seedDoneAttempt(env.store);
+
+    const result = await env.scheduler.resolveConflict(
+      WS,
+      'B1',
+      null,
+      {},
+      'B1'
+    );
+
+    expect(result.ok).toBe(true);
+    expect(env.worktree.restore).toHaveBeenCalledTimes(1);
+    expect(env.worktree.restore).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'B1',
+      head_ref: 'B1'
+    });
+    expect(env.runner.spawnOrder).toEqual(['B1']);
+  });
+
+  test('carries the restore refusal reason instead of a bare worktree_missing', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.worktree.exists.mockReturnValue(false);
+    env.worktree.restore.mockResolvedValue({
+      ok: false,
+      reason: 'worktree_restore_branch_diverged'
+    });
+    seedDoneAttempt(env.store);
+
+    const result = await env.scheduler.resolveConflict(
+      WS,
+      'B1',
+      null,
+      {},
+      'B1'
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'worktree_restore_branch_diverged'
+    });
+    expect(env.runner.spawnOrder).toEqual([]);
   });
 
   test('a normal dispatch carries no resolution flag in its settings either', async () => {
@@ -5612,7 +5686,10 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
 
     const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main', {
       queue_bead_id: 'X1',
-      wait_ms: 100
+      wait_ms: 100,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'B1'
     });
 
     expect(res.ok).toBe(true);
@@ -5647,13 +5724,62 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     expect(env.store.snapshot(WS).attempts).toEqual({});
   });
 
-  test('refuses worktree_missing when the delivering worktree is gone', async () => {
+  test('refuses worktree_missing when no head branch names a restore', async () => {
     const env = extEnv();
     env.worktree.exists.mockReturnValue(false);
 
     const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
 
     expect(res).toEqual({ ok: false, reason: 'worktree_missing' });
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+  });
+
+  test('restores the delivering worktree from the head branch before dispatching', async () => {
+    const env = extEnv();
+    env.worktree.exists.mockReturnValue(false);
+    env.worktree.restore.mockImplementation(async () => {
+      env.worktree.exists.mockReturnValue(true);
+      return { ok: true, path: '/wt/X1' };
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(
+      WS,
+      'X1',
+      'main',
+      null,
+      {},
+      'X1'
+    );
+
+    expect(res.ok).toBe(true);
+    expect(env.worktree.restore).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'X1',
+      head_ref: 'X1'
+    });
+  });
+
+  test('carries the external restore refusal reason to the caller', async () => {
+    const env = extEnv();
+    env.worktree.exists.mockReturnValue(false);
+    env.worktree.restore.mockResolvedValue({
+      ok: false,
+      reason: 'worktree_restore_branch_missing'
+    });
+
+    const res = await env.scheduler.dispatchExternalConflict(
+      WS,
+      'X1',
+      'main',
+      null,
+      {},
+      'X1'
+    );
+
+    expect(res).toEqual({
+      ok: false,
+      reason: 'worktree_restore_branch_missing'
+    });
     expect(env.store.snapshot(WS).attempts).toEqual({});
   });
 
@@ -13002,7 +13128,10 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
 
     const res = await env.scheduler.resolveConflict(WS, 'B1', {
       queue_bead_id: 'B1',
-      wait_ms: 100
+      wait_ms: 100,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'B1'
     });
 
     expect(res.ok).toBe(true);
@@ -13013,7 +13142,10 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
       deadline_at: 1100,
       state: 'waiting',
       yielded_at: null,
-      settled_at: null
+      settled_at: null,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'B1'
     });
     expect(q.attempts[/** @type {string} */ (res.attempt_id)]).toMatchObject({
       bead_id: 'B1',
@@ -13046,7 +13178,10 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
     });
     const res = await env.scheduler.resolveConflict(WS, 'B1', {
       queue_bead_id: 'B1',
-      wait_ms: 100
+      wait_ms: 100,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'B1'
     });
     notifyQueueChanged.mockClear();
 

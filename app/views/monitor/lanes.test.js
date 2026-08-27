@@ -2882,3 +2882,67 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
     expect(lanes.runnable[0].scope_state).toBeUndefined();
   });
 });
+
+describe('monitor runnable rec projection (UI-sbum §4)', () => {
+  test('reads the recommendation against the row exec pins', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', {
+              rec: {
+                rec_orchestration_model: 'fable',
+                rec_impl_runtime: 'claude',
+                rec_reason: 'contract_change'
+              },
+              exec_pins: { orchestration_model: 'opus' }
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].rec).toEqual({
+      reasons: ['contract_change'],
+      rec: { orchestration_model: 'fable', impl_runtime: 'claude' },
+      state: 'diverged'
+    });
+  });
+
+  test('reads applied when the pins already carry the whole recommendation', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', {
+              rec: { rec_orchestration_model: 'fable' },
+              exec_pins: { orchestration_model: 'fable' }
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].rec?.state).toBe('applied');
+  });
+
+  test('leaves the field off a row with no recommendation', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1', { rec: null })] })],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].rec).toBeUndefined();
+  });
+
+  test('leaves the field off a legacy row from a server that sends no rec', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1')] })],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].rec).toBeUndefined();
+  });
+});

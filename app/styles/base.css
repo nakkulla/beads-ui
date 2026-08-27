@@ -89,6 +89,20 @@ body {
   color: var(--chip-label);
   border-color: var(--border-label);
 }
+/* 복잡 chip (UI-sbum §5): label 계열 하나를 강조 톤으로 빌려 쓴다 — 새 색
+   토큰은 만들지 않는다. 상태는 색이 아니라 채움/테두리가 말한다: 미적용은
+   테두리만, 적용됨은 옅게 채워 "이미 반영됨"을, 추천과 다름은 점선으로 "값이
+   갈렸음"을 각각 한 눈에 구분시킨다. */
+.ctl-chip--label.worker-card__rec {
+  color: var(--chip-ft);
+  border-color: var(--border-ft);
+}
+.ctl-chip--label.worker-card__rec[data-state='applied'] {
+  background: var(--border-ft);
+}
+.ctl-chip--label.worker-card__rec[data-state='diverged'] {
+  border-style: dashed;
+}
 .ctl-chip--from {
   color: var(--chip-from);
   border-color: var(--border-from);
@@ -1183,6 +1197,9 @@ body {
 }
 
 .detail-dep {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
   font-family: var(--font-mono);
   font-size: var(--fs-chip-lg);
   color: var(--text-id-mono);
@@ -1192,11 +1209,113 @@ body {
   background: none;
 }
 
-.detail-dep--link {
+.detail-dep__link {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+  padding: 0;
+}
+
+.detail-dep--link,
+.detail-dep--link .detail-dep__link {
   cursor: pointer;
 }
 .detail-dep--link:hover {
   border-color: var(--border-route);
+}
+
+/* 후행·나머지는 읽기 전용이다 — 편집할 수 있는 선행 칩만 본색을 쓴다
+   (UI-lx45 §4.1). 새 색 토큰 없이 기존 muted 토큰만으로 티어를 만든다. */
+.detail-dep--succ,
+.detail-dep--other {
+  color: var(--text-dim);
+  border-color: var(--border-panel);
+}
+
+.detail-dep__unlink {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 var(--sp-2);
+}
+.detail-dep__unlink:hover {
+  color: var(--accent-danger);
+}
+
+.detail-dep-add {
+  position: relative;
+  margin-top: var(--sp-4);
+}
+
+.detail-dep-add__input {
+  width: 100%;
+  font-family: var(--font-sans);
+  font-size: var(--fs-chip-lg);
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  padding: 1.5px var(--sp-7);
+}
+
+.detail-dep-add__list {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--sp-3);
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border-panel);
+  border-radius: var(--r-6);
+  background: var(--bg-card);
+}
+
+.detail-dep-add__cand {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  text-align: left;
+  font-size: var(--fs-small);
+  color: var(--text-secondary);
+  border: none;
+  background: none;
+  padding: var(--sp-3) var(--sp-7);
+  cursor: pointer;
+}
+.detail-dep-add__cand:hover:not(:disabled) {
+  background: var(--bg-candidate);
+}
+.detail-dep-add__cand:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.detail-dep-add__repo {
+  flex: none;
+  font-size: var(--fs-chip);
+  color: var(--text-dim);
+}
+
+.detail-dep-add__id {
+  flex: none;
+  font-family: var(--font-mono);
+  color: var(--text-id-mono);
+}
+
+.detail-dep-add__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-dep-add__empty {
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+  padding: var(--sp-3) var(--sp-7);
 }
 
 /* artifacts */

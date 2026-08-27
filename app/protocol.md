@@ -158,6 +158,14 @@ row's execution metadata pins only (the per-bead preset axes plus
 `claude_account`/`codex_account`); the rest of `metadata` never travels, so the
 whole backlog's metadata stays off the wire.
 
+Runnable rows also carry `rec: Record<string, string>|null` (UI-sbum §2) — the
+workflow's RECOMMENDED execution settings under their original `rec_*` key names
+(`rec_orchestration_model`, optional `rec_impl_runtime`, optional `rec_reason`),
+enum-checked by the server and `null` when `rec_orchestration_model` is absent
+or outside its enum. It is display-only: the worker never reads it, and it stays
+OUT of `exec_pins`, which means "the pins the worker applies" — a recommendation
+is not one until a person applies it.
+
 Runnable rows carry `plan_path: string|null` and, on a scope-cache hit only,
 `scope: string[]` (UI-qm12 §4.4). `scope` is read from the SAME artifact set as
 a queued bead's `bead_scope` entry (`[spec_id, plan_path?]`) at the pinned base,

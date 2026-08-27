@@ -29,6 +29,7 @@ import {
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import { recSettings } from '../../utils/rec-settings.js';
 import { overlapPrefixes } from '../../utils/scope-overlap.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
 import {
@@ -1907,6 +1908,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
         entry.exec_pins,
         route
       );
+      // 복잡 판정 (UI-sbum §4): 추천은 `rec`, 권위 키는 `exec_pins`로 따로
+      // 오므로 판정 유틸에 둘을 나눠 넘긴다. Worker 카드와 같은 칩·같은 툴팁이고
+      // 클릭은 없다.
+      const rec = recSettings(entry.rec, entry.exec_pins);
       if (Array.isArray(entry.blocked_by) && entry.blocked_by.length > 0) {
         blocked_by_map.set(
           bead_id,
@@ -1950,6 +1955,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
           workflow || (route ? { route, chips: { route } } : null)
         ),
         ...(exec_chips ? { exec_chips } : {}),
+        ...(rec ? { rec } : {}),
         blocked: entry.blocked === true,
         ...(Array.isArray(entry.blocked_by)
           ? {
@@ -2175,14 +2181,21 @@ export function buildLanes(workspaces, workspaces_state, options) {
     ...model.running,
     ...model.pr_wait
   ]) {
-    // 모니터의 칩은 모두 누를 수 있다 (UI-u6zf §5.1): 그 클릭은 이 행의 의존성
-    // 패널을 열고, 패널은 의존을 실제로 끊는 유일한 진입로다 — 워커 탭이 칩마다
-    // 갈리는 것과 달리 여기서는 대상이 항상 이 행 자신이다.
+    // 모니터의 칩은 모두 누를 수 있다 (UI-u6zf §5.1): 모니터는 보이는 레포를
+    // 모두 읽으므로 워커 탭과 달리 blocker의 위치를 언제나 안다. 그 클릭은
+    // blocker 이슈로 이동하고(UI-lx45 §5), 타 레포면 `root_dir`이 전환 대상을
+    // 말한다 — 위치를 모르는 blocker만 그 값 없이 현재 레포로 열린다.
     /** @type {DependencyChip[]} */
-    const predecessors = (item.blockers || []).map((blocker) => ({
-      ...predecessorChip(item.id, blocker),
-      openable: true
-    }));
+    const predecessors = (item.blockers || []).map((blocker) => {
+      const blocker_root = locations.get(blocker.id)?.root_dir;
+      return {
+        ...predecessorChip(item.id, blocker),
+        openable: true,
+        ...(typeof blocker_root === 'string' && blocker_root.length > 0
+          ? { root_dir: blocker_root }
+          : {})
+      };
+    });
     if (predecessors.length === 0) {
       continue;
     }

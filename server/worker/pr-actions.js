@@ -137,6 +137,20 @@ export const CLEANUP_STEPS = [
  */
 
 /**
+ * The merge driver's ownership of one dispatched resolution, plus the dispatch
+ * identity the queue records with it (UI-p49g §3.1). The identity fields are
+ * optional on the wire because a human click dispatches without a queue turn.
+ *
+ * @typedef {Object} ResolutionWaitInput
+ * @property {string} queue_bead_id
+ * @property {number} wait_ms
+ * @property {boolean} [manual_authority]
+ * @property {string} [dispatch_head_sha]
+ * @property {string} [base_ref]
+ * @property {string} [head_ref]
+ */
+
+/**
  * @typedef {Object} MergeabilityProbe
  * @property {boolean} ok
  * @property {'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked'} kind
@@ -164,6 +178,18 @@ export const CLEANUP_STEPS = [
  */
 function isConflicting(pr) {
   return pr.mergeable === 'CONFLICTING' || pr.merge_state_status === 'DIRTY';
+}
+
+/**
+ * One comparable commit id, or null when the value is not one.
+ *
+ * @param {unknown} sha
+ * @returns {string|null}
+ */
+function normalizeSha(sha) {
+  return typeof sha === 'string' && /^[0-9a-f]{40}$/i.test(sha)
+    ? sha.toLowerCase()
+    : null;
 }
 
 /**
@@ -207,7 +233,7 @@ function authoritativeMergeSha(pr) {
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, tick: (workspace: string) => Promise<void> },
+ *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, tick: (workspace: string) => Promise<void> },
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
@@ -2200,13 +2226,15 @@ export function createPrActions(deps) {
           return dispatchExternalResolution(
             bead_id,
             first.pr.head_sha,
-            first.pr.base_ref || ''
+            first.pr.base_ref || '',
+            first.pr.head_ref || null
           );
         }
         return dispatchResolution(
           bead_id,
           first.pr.head_sha,
-          first.pr.base_ref || ''
+          first.pr.base_ref || '',
+          first.pr.head_ref || null
         );
       }
       if (!first.verdict.enabled) {
@@ -2365,7 +2393,10 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {string} head_sha
    * @param {string} base_ref
-   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null} [resolution_wait]
+   * @param {string|null} head_ref - The PR head branch this dispatch observed.
+   * The scheduler restores a missing worktree from it (UI-p49g §5.2), so a
+   * null forfeits that restore and keeps the old `worktree_missing` refusal.
+   * @param {ResolutionWaitInput|null} [resolution_wait]
    * @param {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} [continuation]
    * @returns {Promise<MergeClickResult>}
    */
@@ -2373,6 +2404,7 @@ export function createPrActions(deps) {
     bead_id,
     head_sha,
     base_ref,
+    head_ref,
     resolution_wait = null,
     continuation
   ) {
@@ -2396,34 +2428,18 @@ export function createPrActions(deps) {
         bead_id,
         head_sha,
         base_ref,
+        head_ref,
         resolution_wait,
         continuation
       );
     }
-    let r;
-    if (resolution_wait && continuation) {
-      r = await deps.scheduler.resolveConflict(
-        workspace,
-        bead_id,
-        resolution_wait,
-        continuation
-      );
-    } else if (resolution_wait) {
-      r = await deps.scheduler.resolveConflict(
-        workspace,
-        bead_id,
-        resolution_wait
-      );
-    } else if (continuation) {
-      r = await deps.scheduler.resolveConflict(
-        workspace,
-        bead_id,
-        null,
-        continuation
-      );
-    } else {
-      r = await deps.scheduler.resolveConflict(workspace, bead_id);
-    }
+    const r = await deps.scheduler.resolveConflict(
+      workspace,
+      bead_id,
+      resolution_wait,
+      continuation || {},
+      head_ref
+    );
     notifyChanged(workspace);
     return {
       ok: !!r.ok,
@@ -2431,7 +2447,9 @@ export function createPrActions(deps) {
       reason: r.ok ? null : r.reason || 'resolution_refused',
       attempt_id: r.attempt_id || null,
       continuation_mismatch: r.continuation_mismatch || null,
-      head_sha
+      head_sha,
+      base_ref: base_ref || null,
+      head_ref
     };
   }
 
@@ -2444,7 +2462,9 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {string} head_sha
    * @param {string} base_ref - The base branch this click OBSERVED on the PR.
-   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null} [resolution_wait]
+   * @param {string|null} head_ref - The head branch this click OBSERVED, which
+   * the scheduler restores a missing worktree from (UI-p49g §5.2).
+   * @param {ResolutionWaitInput|null} [resolution_wait]
    * @param {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} [continuation]
    * @returns {Promise<MergeClickResult>}
    */
@@ -2452,41 +2472,19 @@ export function createPrActions(deps) {
     bead_id,
     head_sha,
     base_ref,
+    head_ref,
     resolution_wait = null,
     continuation
   ) {
     clearStep(bead_id);
-    let r;
-    if (resolution_wait && continuation) {
-      r = await deps.scheduler.dispatchExternalConflict(
-        workspace,
-        bead_id,
-        base_ref,
-        resolution_wait,
-        continuation
-      );
-    } else if (resolution_wait) {
-      r = await deps.scheduler.dispatchExternalConflict(
-        workspace,
-        bead_id,
-        base_ref,
-        resolution_wait
-      );
-    } else if (continuation) {
-      r = await deps.scheduler.dispatchExternalConflict(
-        workspace,
-        bead_id,
-        base_ref,
-        null,
-        continuation
-      );
-    } else {
-      r = await deps.scheduler.dispatchExternalConflict(
-        workspace,
-        bead_id,
-        base_ref
-      );
-    }
+    const r = await deps.scheduler.dispatchExternalConflict(
+      workspace,
+      bead_id,
+      base_ref,
+      resolution_wait,
+      continuation || {},
+      head_ref
+    );
     notifyChanged(workspace);
     return {
       ok: !!r.ok,
@@ -2494,8 +2492,65 @@ export function createPrActions(deps) {
       reason: r.ok ? null : r.reason || 'resolution_refused',
       attempt_id: r.attempt_id || null,
       continuation_mismatch: r.continuation_mismatch || null,
-      head_sha
+      head_sha,
+      base_ref: base_ref || null,
+      head_ref
     };
+  }
+
+  /**
+   * Whether a PR head already CONTAINS its base branch tip (UI-p49g §4.1).
+   *
+   * This is the evidence that separates a resolution the session got wrong
+   * from one the queue re-conflicted: a head that merged the current base and
+   * is still dirty is the session's failure, while a head that never saw the
+   * current base was overtaken by a merge that landed after it pushed.
+   *
+   * Timeless by construction — it asks about the base tip as it is NOW, not a
+   * snapshot taken at dispatch — so a late promotion cannot change the answer.
+   * Every unreadable step answers `null`, which the caller charges to the
+   * session; a head that moved again between the probe and this fetch is one
+   * such step, because the judgment would then be about a different commit.
+   *
+   * @param {string} bead_id - Named for the seam's shape; the repo is the
+   * workspace's, exactly like every other git command here.
+   * @param {{ base_ref: string, head_ref: string, head_sha: string }} input
+   * @returns {Promise<'contained'|'not_contained'|null>}
+   */
+  async function baseContained(bead_id, input) {
+    const { base_ref, head_ref, head_sha } = input;
+    if (!base_ref || !head_ref || !normalizeSha(head_sha)) {
+      return null;
+    }
+    return deps.worktree.withTopologyLock(repo, async () => {
+      const fetched = await deps.gitRun(
+        ['fetch', '--no-tags', 'origin', base_ref, head_ref],
+        { cwd: repo }
+      );
+      if (fetched.code !== 0) {
+        return null;
+      }
+      const head = await deps.gitRun(['rev-parse', `origin/${head_ref}`], {
+        cwd: repo
+      });
+      if (
+        head.code !== 0 ||
+        normalizeSha(head.stdout.trim()) !== normalizeSha(head_sha)
+      ) {
+        return null;
+      }
+      const ancestor = await deps.gitRun(
+        ['merge-base', '--is-ancestor', `origin/${base_ref}`, head_sha],
+        { cwd: repo }
+      );
+      if (ancestor.code === 0) {
+        return /** @type {const} */ ('contained');
+      }
+      if (ancestor.code === 1) {
+        return /** @type {const} */ ('not_contained');
+      }
+      return null;
+    });
   }
 
   /**
@@ -2504,8 +2559,8 @@ export function createPrActions(deps) {
    * newly non-conflicting PR returns without starting a resolver.
    *
    * @param {string} bead_id
-   * @param {{ head_sha: string, base_ref: string|null }} approved
-   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null} [resolution_wait]
+   * @param {{ head_sha: string, base_ref: string|null, head_ref?: string|null }} approved
+   * @param {ResolutionWaitInput|null} [resolution_wait]
    * @param {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} [continuation]
    * @returns {Promise<MergeClickResult>}
    */
@@ -2540,6 +2595,7 @@ export function createPrActions(deps) {
           bead_id,
           latest.head_sha || '',
           latest.base_ref || '',
+          approved.head_ref || latest.head_ref || null,
           resolution_wait,
           continuation
         );
@@ -2548,6 +2604,7 @@ export function createPrActions(deps) {
         bead_id,
         latest.head_sha || '',
         latest.base_ref || '',
+        approved.head_ref || latest.head_ref || null,
         resolution_wait,
         continuation
       );
@@ -3109,6 +3166,7 @@ export function createPrActions(deps) {
     probeMergeability,
     updateBase,
     dispatchConflict,
+    baseContained,
     discard,
     isInFlight: (/** @type {string} */ bead_id) => in_flight.has(bead_id),
     cleanupObservedMerge,

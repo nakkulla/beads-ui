@@ -126,6 +126,38 @@ export const BEAD_APPLY_KEYS = [
   'impl_speed'
 ];
 
+/**
+ * `rec_reason` signal vocabulary (UI-sbum §2) — the workflow contract's reasons
+ * a Bead was judged 복잡. Mirrored client-side as `REC_REASONS` in
+ * `app/utils/rec-settings.js`; the two runtimes share no module, so the equality
+ * is asserted from both test files instead.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const REC_SIGNALS = [
+  'contract_change',
+  'multi_repo',
+  'open_design_fork',
+  'multi_phase',
+  'claude_bound'
+];
+
+/**
+ * Allowed value per RECOMMENDATION key. Deliberately narrow: the workflow
+ * records a `rec_*` key only when the recommendation differs from the default,
+ * so a value outside this table is a malformed record, not a wider choice.
+ *
+ * These keys are advisory. They are absent from every list above on purpose —
+ * `BEAD_APPLY_KEYS`, `EXEC_SETTING_KEYS` and friends are what the worker
+ * RESOLVES, and a recommendation is never resolved, only displayed.
+ *
+ * @type {Record<string, ReadonlyArray<string>>}
+ */
+export const REC_VALUES = {
+  rec_orchestration_model: ['fable'],
+  rec_impl_runtime: ['claude']
+};
+
 /** Worker-only per-bead account pins, intentionally outside every preset axis. */
 export const ACCOUNT_KEYS = ['claude_account', 'codex_account'];
 
