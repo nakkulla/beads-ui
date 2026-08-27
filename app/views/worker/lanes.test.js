@@ -1580,6 +1580,43 @@ describe('카드 배치 문법 (UI-251y §2)', () => {
     expect(row.querySelector('.worker-chips')).toBeNull();
   });
 
+  test('draws the PR link on the two-line done row', () => {
+    const row = renderRow({
+      lane: 'done',
+      done: true,
+      pr_number: 213,
+      pr_url: 'https://github.com/o/r/pull/213'
+    });
+
+    const link = /** @type {HTMLAnchorElement} */ (
+      row.querySelector('.worker-mini__row1 .worker-mini__pr')
+    );
+    expect(link.getAttribute('href')).toBe('https://github.com/o/r/pull/213');
+    expect(link.textContent).toContain('#213');
+  });
+
+  test('draws the PR link on the three-line done row', () => {
+    const row = renderRow({
+      lane: 'done',
+      done: true,
+      done_layout: 'three_line',
+      pr_number: 213,
+      pr_url: 'https://github.com/o/r/pull/213'
+    });
+
+    const link = /** @type {HTMLAnchorElement} */ (
+      row.querySelector('.worker-mini__row1 .worker-mini__pr')
+    );
+    expect(link.getAttribute('href')).toBe('https://github.com/o/r/pull/213');
+    expect(link.textContent).toContain('#213');
+  });
+
+  test('omits the done row PR link when only the number is known', () => {
+    const row = renderRow({ lane: 'done', done: true, pr_number: 213 });
+
+    expect(row.querySelector('.worker-mini__pr')).toBeNull();
+  });
+
   test('leaves the three-line done row carrying its repo and usage as before', () => {
     const row = renderRow({
       ...COORD,

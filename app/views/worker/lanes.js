@@ -33,6 +33,19 @@ export function shortSha(sha) {
 }
 
 /**
+ * Both lanes label the chip `작업`, but they measure different spans. This is
+ * the only place on screen that tells a reader which span they are reading.
+ *
+ * @param {'attempt'|'session'|undefined} work_kind
+ * @returns {string}
+ */
+export function workTooltip(work_kind) {
+  return work_kind === 'session'
+    ? 'bead가 in_progress로 잡힌 뒤 닫히기까지의 경과'
+    : 'attempt 실행 시간 합산 (재개 세션 포함)';
+}
+
+/**
  * @param {unknown} elapsed_ms
  * @returns {string}
  */
@@ -947,6 +960,30 @@ export function fromChipTemplate(from_id) {
 }
 
 /**
+ * The PR 링크 하나 — `#<n> ↗`. PR 대기 행·카드형 행·완료 행이 모두 이것을
+ * 부르므로, "이 bead가 어느 PR인가"는 어느 레인에서 읽어도 같은 모양이다
+ * (스펙 §5.1 슬롯 1). 번호나 URL 중 하나라도 없으면 빈 문자열이다
+ * (fail-quiet) — 링크 없는 `#?`는 열 곳이 없어 아무 질문에도 답하지 않는다.
+ *
+ * @param {string|undefined} pr_url
+ * @param {number|null|undefined} pr_number
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function prLinkTemplate(pr_url, pr_number) {
+  if (!pr_url || typeof pr_number !== 'number') {
+    return '';
+  }
+  return html`<a
+    class="worker-mini__pr"
+    href=${pr_url}
+    target="_blank"
+    rel="noreferrer noopener"
+    title="PR 열기"
+    >#${pr_number} ↗</a
+  >`;
+}
+
+/**
  * The 우선순위 배지 하나 — Board 카드의 `P<n>`과 같은 문장, 같은 모양이다. 워커
  * 콘솔은 레인이 곧 순서라서 "먼저 볼 것"이 행 안에 적혀 있지 않으면 매번 Board로
  * 건너가 확인해야 했다. {@link routeChipTemplate}·{@link fromChipTemplate}과 같은
@@ -1041,8 +1078,10 @@ export function priorityBadgeTemplate(priority) {
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
  * @property {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} [usage] - Token usage
  * summed across the bead's attempts (UI-d7pw §1); absent/null renders nothing.
- * @property {number|null} [work_ms] - 완료 행의 attempt 실행 시간 합산;
- * absent/null renders nothing.
+ * @property {number|null} [work_ms] - 완료 행의 작업 시간; absent/null renders
+ * nothing. 무엇을 잰 값인지는 `work_kind`가 말한다.
+ * @property {'attempt'|'session'} [work_kind] - `work_ms`가 잰 구간. 기본은
+ * attempt 실행 시간 합산이고, 세션 작업 행만 `session`(in_progress~close 경과)이다.
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4).
  * @property {number} [done_at] - 완료 레인 진입 시각 = 완료 시각 (UI-rkly §3).
@@ -1106,7 +1145,7 @@ function doneThreeLineRow(item) {
           >`
         : ''}
       <span class="worker-mini__id" title="클릭하면 ID 복사">${item.id}</span>
-      ${done_at_label
+      ${prLinkTemplate(item.pr_url, item.pr_number)}${done_at_label
         ? html`<span
             class="worker-mini__done-at"
             title=${`완료 ${formatTimestampLocal(item.done_at)}`}
@@ -1142,7 +1181,7 @@ function doneThreeLineRow(item) {
       ${typeof item.work_ms === 'number'
         ? html`<span
             class="worker-mini__work"
-            title="attempt 실행 시간 합산 (재개 세션 포함)"
+            title=${workTooltip(item.work_kind)}
             >작업 ${formatElapsed(item.work_ms)}</span
           >`
         : ''}
@@ -1226,17 +1265,7 @@ export function miniRow(item, options = {}) {
   // 우선순위는 ID 바로 다음이다 — Board 카드와 같은 자리, 같은 문장.
   const pri_el = priorityBadgeTemplate(item.priority);
   const title_el = html`<span class="worker-mini__title">${item.title}</span>`;
-  const pr_el =
-    item.pr_url && item.pr_number
-      ? html`<a
-          class="worker-mini__pr"
-          href=${item.pr_url}
-          target="_blank"
-          rel="noreferrer noopener"
-          title="PR 열기"
-          >#${item.pr_number} ↗</a
-        >`
-      : '';
+  const pr_el = prLinkTemplate(item.pr_url, item.pr_number);
   const repair_pr_el =
     item.completion_repair_pr_url && item.completion_repair_pr_number
       ? html`<a
@@ -1483,7 +1512,7 @@ export function miniRow(item, options = {}) {
   >
     ${two_line
       ? html`<div class="worker-mini__row1">
-            ${repo_el}${id_el}${pri_el}${from_el}${title_el}${actions_el}
+            ${repo_el}${id_el}${pri_el}${from_el}${pr_el}${title_el}${actions_el}
           </div>
           <div class="worker-mini__row2">
             ${usage_el}${done_at_label
@@ -1495,7 +1524,7 @@ export function miniRow(item, options = {}) {
               : ''}${typeof item.work_ms === 'number'
               ? html`<span
                   class="worker-mini__work"
-                  title="attempt 실행 시간 합산 (재개 세션 포함)"
+                  title=${workTooltip(item.work_kind)}
                   >작업 ${formatElapsed(item.work_ms)}</span
                 >`
               : ''}${badge_els}${merge_step_el}

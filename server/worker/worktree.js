@@ -1887,7 +1887,7 @@ export function createRepoOpsDeployWorktreeManager(deps) {
    * Bound fetch of `origin/<base>` and immutable target pin. Retries exactly
    * once, and only after a fully-reclaimed pre-execution timeout (exit 124).
    *
-   * @param {{ repo: string, base: string, last_successful_sha?: string|null }} input
+   * @param {{ repo: string, base: string }} input
    * @returns {Promise<{ ok: boolean, code?: string, target_sha?: string, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }>}
    */
   async function bindTarget(input) {
@@ -1930,16 +1930,6 @@ export function createRepoOpsDeployWorktreeManager(deps) {
       target_result.code === 0 ? target_result.stdout.trim().toLowerCase() : '';
     if (!/^[0-9a-f]{40}$/.test(target_sha)) {
       return { ok: false, code: 'repo_ops_target_unresolved' };
-    }
-    if (input.last_successful_sha) {
-      const containment = await run(
-        ['merge-base', '--is-ancestor', input.last_successful_sha, target_sha],
-        { cwd: repo }
-      );
-      if (containment.code === 1)
-        return { ok: false, code: 'remote_history_not_monotonic' };
-      if (containment.code !== 0)
-        return { ok: false, code: 'repo_ops_ancestry_check_failed' };
     }
     return { ok: true, target_sha };
   }
@@ -2098,7 +2088,7 @@ export function createRepoOpsDeployWorktreeManager(deps) {
   }
 
   /**
-   * @param {{ repo: string, base: string, workspace?: string, last_successful_sha?: string|null }} input
+   * @param {{ repo: string, base: string, workspace?: string }} input
    * @returns {Promise<{ ok: boolean, code?: string, path?: string, target_sha?: string, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }>}
    */
   async function ensure(input) {

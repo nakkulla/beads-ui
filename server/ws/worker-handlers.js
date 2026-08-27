@@ -122,7 +122,7 @@ import {
   pushSnapshotIfChanged,
   runBdJsonProjectedInWorkspace
 } from './context.js';
-import { sessionExcludedBeadIds } from './lane-membership.js';
+import { laneBeadIds, sessionExcludedBeadIds } from './lane-membership.js';
 import { trimQueueProjection } from './snapshot-retention.js';
 import { targetWorkspaceOf } from './workspace-target.js';
 
@@ -1052,11 +1052,14 @@ function titleCacheHandle() {
 }
 
 /**
- * Stepper projections for every bead a LANE renders (UI-eey2 §9.2).
+ * Stepper projections for every bead a LANE renders (UI-eey2 §9.2), plus the
+ * `done` beads.
  *
- * The id set is deliberately not {@link beadDecorationFor}'s: it drops `done`
- * — a finished bead's stepper is not drawn — and adds the beads of RUNNING
- * attempts, which sit in no lane array at all while they execute.
+ * The id set adds the beads of RUNNING attempts, which sit in no lane array at
+ * all while they execute. `done` is in the set for ONE consumer field: the
+ * 완료 행's PR link reads `chips.pr` from here. A finished bead still draws no
+ * stepper and no route/from chip — that exclusion lives in the client renderer,
+ * not in this id set, because the projection is one object per bead.
  *
  * Partial on exactly the title cache's contract: a bead whose record has not
  * landed is absent and arrives on the snapshot the fill callback triggers.
@@ -1070,7 +1073,7 @@ function beadWorkflowFor(workspace_key, queue) {
   if (!cache) {
     return {};
   }
-  const ids = laneMemberIds(queue, true);
+  const ids = [...laneMemberIds(queue, true), ...laneBeadIds(queue, ['done'])];
   if (ids.length === 0) {
     return {};
   }
@@ -1118,7 +1121,8 @@ function runningLaneBeadIds(queue) {
  * The beads a LANE renders: `queue` ∪ `serial_lanes[].entries` ∪ the 실행중
  * 레인 beads, with `pr_wait` included only when the caller asks for it.
  * `done` is never a member — a finished bead draws neither a stepper nor an
- * overlap chip.
+ * overlap chip. The one decoration a done bead does carry (its PR link) adds
+ * the `done` lane on top of this set at its own call site.
  *
  * @param {Record<string, unknown>} queue
  * @param {boolean} include_pr_wait
@@ -2391,8 +2395,10 @@ export function decorateQueue(workspace_key, raw_queue) {
     // hits only: a missing key is intentionally unknown to the Phase 3 view.
     bead_labels: beadLabelsFor(workspace_key, queue),
     // Stepper projections for the LANE members (UI-eey2 §9.2) — `queue` ∪ the
-    // serial lanes ∪ running attempts ∪ `pr_wait`, `done` excluded. Same
-    // partial-cache contract as the three decorations above.
+    // serial lanes ∪ running attempts ∪ `pr_wait` ∪ `done`. Same
+    // partial-cache contract as the three decorations above. `done` rides here
+    // only so the 완료 행 can draw its PR link; the renderer keeps drawing no
+    // stepper for it.
     bead_workflow: beadWorkflowFor(workspace_key, queue),
     // Declared scope of the WAITING, RUNNING, PR 대기, 후보 and SESSION beads
     // (UI-qm12 §4.3, target set widened by UI-anna §3.1), from which the client

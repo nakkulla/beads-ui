@@ -149,7 +149,11 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   borrow or symlink another checkout's `node_modules`, because frontend source
   maps must remain checkout-path independent.
 - Run type checks: `npm run tsc`
-- Run tests: `npm test`
+- Run tests: `npm test`. 전체 스위트는 약 45초에 끝난다. 에이전트 세션에서는
+  `npx vitest run --reporter=dot`을 timeout 120초로 돌려라 — vitest fork-pool이
+  시작 직후 드물게 교착(CPU 0%, 출력 없음)하므로, 진행을 가리는 `| tail`과 긴
+  timeout은 "느림"과 "멈춤"을 10분 넘게 구분하지 못한다. 멈추면 죽이고 다시
+  돌린다.
 - Run eslint: `npm run lint`
 - Run prettier: `npm run prettier:write`
 - After frontend source edits, run `npm run build` and include the updated

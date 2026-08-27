@@ -4,7 +4,7 @@
  * triggers once per issues envelope to let views re-render.
  */
 /**
- * @typedef {{ id: string, title?: string, status?: 'open'|'in_progress'|'deferred'|'resolved'|'closed', priority?: number, issue_type?: string, created_at?: number | string, updated_at?: number, closed_at?: number, comment_count?: number, from_id?: string }} IssueLite
+ * @typedef {{ id: string, title?: string, status?: 'open'|'in_progress'|'deferred'|'resolved'|'closed', priority?: number, issue_type?: string, created_at?: number | string, updated_at?: number, started_at?: number | string, closed_at?: number, comment_count?: number, from_id?: string }} IssueLite
  */
 import {
   cmpClosedDesc,

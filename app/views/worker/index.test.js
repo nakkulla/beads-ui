@@ -5759,6 +5759,44 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     expect(tile.textContent?.trim()).toBe('Claude τ 14.1M');
   });
 
+  test('draws the PR link on a done row from bead_workflow', () => {
+    const mount = renderQueue(
+      queueOf({
+        done: [{ bead_id: 'RD-1', added_at: 1 }],
+        bead_workflow: {
+          'RD-1': {
+            route: 'quick_fix',
+            chips: {
+              route: 'quick_fix',
+              pr: { number: 213, url: 'https://github.com/o/r/pull/213' }
+            }
+          }
+        }
+      })
+    );
+
+    const link = /** @type {HTMLAnchorElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-mini__pr')
+    );
+    expect(link.getAttribute('href')).toBe('https://github.com/o/r/pull/213');
+    expect(link.textContent).toContain('#213');
+  });
+
+  test('leaves a done row without a PR link when the bead pinned no PR', () => {
+    const mount = renderQueue(
+      queueOf({
+        done: [{ bead_id: 'RD-1', added_at: 1 }],
+        bead_workflow: {
+          'RD-1': { route: 'quick_fix', chips: { route: 'quick_fix' } }
+        }
+      })
+    );
+
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-mini__pr')
+    ).toBeNull();
+  });
+
   test('puts the cost beside the tokens on a done row (UI-tq13 §6)', () => {
     const mount = renderQueue(
       queueOf({
@@ -10219,6 +10257,24 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
   }
 
   /**
+   * A transport whose `get-comments` always answers with one session report,
+   * so a test can vary the closed issue instead of the comment.
+   */
+  function sessionReportTransport() {
+    return vi.fn().mockResolvedValue([
+      {
+        id: 'comment-1',
+        text: [
+          '## 🤖 작업 보고서',
+          '> session · sid session-1 · 2026-08-12T00:00:00Z',
+          '',
+          '**결론** — 완료'
+        ].join('\n')
+      }
+    ]);
+  }
+
+  /**
    * @param {HTMLElement} mount
    * @returns {string[]}
    */
@@ -10376,6 +10432,60 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
     );
     expect(row.querySelector('.worker-usage')).toBe(null);
     expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  test('shows the claim-to-close elapsed time on a session row', async () => {
+    const now = Date.now();
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:closed', [
+      {
+        id: 'SESSION-TIMED',
+        title: '작업시간이 있는 세션 완료',
+        status: 'closed',
+        created_at: now - 600_000,
+        updated_at: now - 1_000,
+        started_at: now - 480_000,
+        closed_at: now - 60_000,
+        comment_count: 1
+      }
+    ]);
+
+    const mount = renderDone(queueOf(), stores, sessionReportTransport());
+    await flush();
+
+    const work = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="SESSION-TIMED"] .worker-mini__work'
+      )
+    );
+    expect(work.textContent).toContain('작업 7분 0초');
+    expect(work.getAttribute('title')).toBe(
+      'bead가 in_progress로 잡힌 뒤 닫히기까지의 경과'
+    );
+  });
+
+  test('omits the work chip when the session row has no started_at', async () => {
+    const now = Date.now();
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:closed', [
+      {
+        id: 'SESSION-UNTIMED',
+        title: 'started_at 없는 세션 완료',
+        status: 'closed',
+        updated_at: now - 1_000,
+        closed_at: now - 60_000,
+        comment_count: 1
+      }
+    ]);
+
+    const mount = renderDone(queueOf(), stores, sessionReportTransport());
+    await flush();
+
+    expect(
+      mount.querySelector(
+        '.worker-mini[data-bead-id="SESSION-UNTIMED"] .worker-mini__work'
+      )
+    ).toBe(null);
   });
 
   test('excludes worker, plain, and malformed closed comments', async () => {

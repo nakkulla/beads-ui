@@ -995,7 +995,7 @@ function mergeStage(md, status) {
  * pinned metadata or the deriveRoute fallback (display distinguishes the
  * two — a derived value must not read as a settled pin).
  * @property {{ spec: WorkflowStage, plan?: WorkflowStage, impl: WorkflowStage, pr: WorkflowStage, merge: WorkflowStage, close?: WorkflowStage }} stages
- * @property {{ route: 'quick_fix'|'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null, planned_execution: PlannedExecution|null, exec_receipt: ExecReceipt|null, impl_entry: { actor: string, sha: string }|null }} chips
+ * @property {{ route: 'quick_fix'|'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null, url: string } | null, planned_execution: PlannedExecution|null, exec_receipt: ExecReceipt|null, impl_entry: { actor: string, sha: string }|null }} chips
  * @property {PlannedExecution|null} planned_execution
  * @property {ExecReceipt|null} exec_receipt
  * @property {{ actor: string, sha: string }|null} impl_entry
@@ -1085,7 +1085,12 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
       route,
       route_source,
       fast_track: md.workflow_mode === 'fast_track',
-      pr: md.pr_url ? { number: parsePrNumber(md.pr_url) } : null,
+      // `url` rides beside the number so a row that draws the PR as a LINK
+      // (worker/monitor 완료 행) needs no second source: the board's static chip
+      // keeps reading `number` alone and is unchanged by the extra field.
+      pr: md.pr_url
+        ? { number: parsePrNumber(md.pr_url), url: md.pr_url }
+        : null,
       planned_execution,
       exec_receipt,
       impl_entry

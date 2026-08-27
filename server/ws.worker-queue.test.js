@@ -3732,7 +3732,7 @@ describe('ws worker-queue bead_workflow + running overlay (UI-eey2 §9.2/§9.3)'
     });
   }
 
-  test('carries a stepper for queue, serial, pr_wait and running beads only', () => {
+  test('carries a projection for queue, serial, pr_wait, running and done beads', () => {
     for (const bead_id of ['UI-q', 'UI-s', 'UI-p', 'UI-r', 'UI-d']) {
       seedWorkflow(bead_id, 'quick_fix');
     }
@@ -3743,7 +3743,9 @@ describe('ws worker-queue bead_workflow + running overlay (UI-eey2 §9.2/§9.3)'
         queue: [{ bead_id: 'UI-q', added_at: 1 }],
         serial_lanes: [{ id: 'lane-1', entries: [{ bead_id: 'UI-s' }] }],
         pr_wait: [{ bead_id: 'UI-p', added_at: 2 }],
-        done: [{ bead_id: 'UI-d', added_at: 3 }],
+        // 갓 끝난 완료 행이어야 retention 안에 남고, 완료 행의 PR 링크 재료가
+        // 여기 실린다.
+        done: [{ bead_id: 'UI-d', added_at: Date.now() }],
         attempts: {
           'att-1': {
             attempt_id: 'att-1',
@@ -3756,6 +3758,7 @@ describe('ws worker-queue bead_workflow + running overlay (UI-eey2 §9.2/§9.3)'
     );
 
     expect(Object.keys(snapshot.bead_workflow).sort()).toEqual([
+      'UI-d',
       'UI-p',
       'UI-q',
       'UI-r',
