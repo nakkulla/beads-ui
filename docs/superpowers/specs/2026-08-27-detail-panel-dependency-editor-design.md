@@ -65,11 +65,12 @@ export function depCandidateModel(workspaces, workspaces_state, options)
 
 ### 3.2 주입 (`app/main.js`)
 
-`createDetailPanel` 옵션에 둘을 더한다.
+`createDetailPanel` 옵션에 셋을 더한다.
 
 ```js
 depCandidates: () => DepCandidateModel | null,
-onDepChanged: ({ type, a, b }) => void
+onDepChanged: ({ type, a, b }) => void,
+subscribeCandidates: (cb: () => void) => () => void
 ```
 
 - `depCandidates`: `monitor_pipeline_store.get()`이 `null`이면 `null`. 아니면
@@ -78,6 +79,18 @@ onDepChanged: ({ type, a, b }) => void
   현재 워크스페이스 path가 없으면 `null`.
 - `onDepChanged`: `type === 'dep-add'`이고 Monitor view가 만들어져 있으면
   `monitor_view.recorrectSharedLane(type, a, b)`를 부른다. 그 외 no-op.
+- **집계 채널 생명주기**: 지금 `ensureMonitorPipelineChannel(state.view === 'monitor')`은
+  Monitor 탭에서만 `subscribe-monitor-pipeline`을 유지하고, 채널을 끊어도 store는 비워지지
+  않아 Board·Worker에서는 비었거나 오래된 snapshot이 남는다. 이 술어를 한 함수
+  `pipelineChannelWanted(state)` = `state.view === 'monitor' || state.selected_id != null`로
+  모아 네 호출 지점(`syncSubscriptionsToView`·재연결·워크스페이스 전환·상태 구독)이 모두
+  같은 값을 쓰게 한다. 상세가 열려 있는 동안은 어느 탭이든 채널이 살아 있고, 상세를 닫고
+  Monitor 탭도 아니면 끊는다. 채널이 아직 첫 snapshot을 받기 전이면 `get() === null`이라
+  §4.2의 `후보를 불러올 수 없음`이 잠깐 보였다가 snapshot 도착 시 렌더가 갱신된다. 상세
+  패널의 public API는 `load`·`clear`·`destroy`뿐이고 재렌더 경로가 없으므로, 옵션
+  `subscribeCandidates: (cb: () => void) => () => void`를 하나 더 받는다. `main.js`는 이를
+  `monitor_pipeline_store.subscribe`로 채우고, 상세 패널은 `load(id)`에서 구독해 콜백마다
+  `doRender()`하며 `clear`/`destroy`에서 해제한다.
 
 ### 3.3 op 전송 (상세 패널)
 
@@ -94,7 +107,10 @@ current_id`, `root_dir = getWorkspacePath()`.
 의존을 바꿀 수 없습니다` 토스트만 낸다.
 
 응답은 `bd show` 결과 issue이므로 `current`가 즉시 교체된다. 낙관적 갱신은 하지 않는다.
-성공 시 `onDepChanged({ type, a, b })`를 부른다.
+`onDepChanged({ type, a, b })`는 **edge가 저장된 경우마다 정확히 한 번** 부른다: 성공
+응답뿐 아니라 `bd_readback_failed`(쓰기는 반영됐고 확인 읽기만 실패)에도 부른다.
+`bd_error`·`bad_request`·transport 오류에는 부르지 않는다. 그래야 §6 자동 교정이 확인
+읽기 실패 때문에 영구히 빠지지 않는다.
 
 ### 3.4 후행 이슈 (`server/list-adapters.js`, `server/subscriptions.js`)
 
@@ -125,8 +141,12 @@ current_id`, `root_dir = getWorkspacePath()`.
 - `dependents` 중 `blocks`가 아닌 역방향 관계(`related`·`discovered-from`·`parent-child`)는
   표시하지 않는다 — 같은 edge가 `dependencies` 쪽에도 있어 중복되고, 역방향 의미가
   말머리로 정의돼 있지 않다.
-- 칩 본문 클릭은 지금처럼 `onNavigate(id)`. `title` 속성에 `status · title`(둘 다 있을 때),
-  없으면 생략.
+- 칩 본문 클릭은 `onNavigate(id, root_dir?)`. `root_dir`은 §3.2 후보 모델의 `issues`에서
+  같은 `bead_id`를 찾아 얻고, 없으면 생략한다(현재 워크스페이스로 간주). `main.js`의
+  `onNavigate`는 `root_dir`이 있고 현재 워크스페이스와 다르면 Worker `openBlocker`와 같은
+  순서(`switchWorkspace(root_dir)` 후 이동)를 쓴다. 이래야 Monitor에서 건 타 레포 선행 칩이
+  현재 워크스페이스에서 잘못된 이슈를 찾지 않는다. `title` 속성에 `status · title`(둘 다
+  있을 때), 없으면 생략.
 - `✕`는 `--pred` 칩 안의 별도 버튼(`detail-dep__unlink`, `data-dep-b`)이다. 클릭하면
   `confirm('<blocker>가 <blockee>를 막는 연결을 끊을까요?')`(Monitor와 같은 문구,
   `globalThis.confirm` 부재 시 통과) 후 `dep-remove`.
@@ -185,9 +205,11 @@ current_id`, `root_dir = getWorkspacePath()`.
 - `dep-add`/`dep-remove`의 `bd_error`·`bad_request`: 상세 패널 토스트(`의존 추가 실패` /
   `의존 해제 실패`), 상태 변경 없음, 입력값 유지.
 - `bd_readback_failed`: 쓰기는 이미 반영됐으므로 재전송하지 않는다. 토스트 문구는
-  `저장됐으나 확인 실패 — 곧 갱신됩니다`로 구분하고 다음 구독 갱신에 맡긴다.
-  `sendMutation`이 오류 코드를 구분하지 못하면 transport 오류 객체의 `code`를 읽는 최소
-  분기를 `sendMutation`에 더한다.
+  `저장됐으나 확인 실패 — 곧 갱신됩니다`로 구분하고 다음 구독 갱신에 맡기되,
+  `onDepChanged`는 §3.3대로 한 번 부른다. 현 `sendMutation`은 오류 코드를 구분하지
+  못하므로(모든 실패가 `false`) transport 오류 객체의 `code`를 읽어
+  `{ ok: false, saved: true }`를 돌려주는 최소 분기를 더하고, 의존성 op 호출부만 이 값을
+  본다.
 - `getWorkspacePath()` 부재: §3.3의 토스트, op 미전송.
 - `--include-dependents` 실패: 기존 `issue-detail` 오류 흐름(불완전 snapshot 없음).
 - `dependents`·`dependencies` 형식 이상: 빈 배열(fail-quiet). ID를 정규화할 수 없는 항목은
@@ -211,20 +233,29 @@ RED seam(현 구현에서 실패하고 변경 뒤 통과):
      confirm 거절 시 보내지 않는다.
    - 후보 클릭이 `dep-add`를 같은 payload 형태로 보내고 성공 시 `onDepChanged`를 부르며
      입력을 비운다.
+   - transport가 `code: 'bd_readback_failed'` 오류를 던지면 `onDepChanged`를 정확히 한 번
+     부르고 재전송하지 않으며, `bd_error`에는 부르지 않는다.
+   - 후보 모델에 `root_dir`이 있는 선행 칩 클릭이 `onNavigate(id, root_dir)`를 부른다.
    - 검색이 후보를 좁히고 사이클 후보가 `disabled`로 그려진다.
    - `depCandidates()`가 `null`이면 `후보를 불러올 수 없음`을 그린다.
    - `getWorkspacePath()`가 비면 op를 보내지 않고 토스트를 낸다.
    - `dependents`가 없는 payload에서 기존 선행 칩 렌더가 그대로다.
-3. `app/views/monitor/index.test.js`
+3. `app/main.js` 채널 생명주기 (`app/main.test.js` 또는 기존 main 구독 테스트 파일)
+   - Board·Worker 탭에서 `selected_id`가 설정되면 `subscribe-monitor-pipeline`이 나가고,
+     상세를 닫으면(`selected_id` 해제, Monitor 탭 아님) `unsubscribe-monitor-pipeline`이
+     나간다. Monitor 탭에서는 상세 개폐와 무관하게 유지된다.
+   - `onNavigate(id, root_dir)`에서 `root_dir`이 현재 워크스페이스와 다르면
+     `switchWorkspace`가 이동보다 먼저 불린다.
+4. `app/views/monitor/index.test.js`
    - 후보 카드·대기 행에 `.mon-dep__btn`이 없다.
    - blocked 칩(`.worker-dep__open`) 클릭이 편집 패널 대신 이동(`gotoIssue`, 타 레포면
      `switchWorkspace` 선행)한다.
    - 반환 객체의 `recorrectSharedLane('dep-add', a, b)`가 같은 chain lane 멤버일 때
      `planLaneCorrection` 경로를 재실행한다.
    - 기존 `monitor 의존성 패널 (UI-j92s §6.1)` describe는 삭제한다.
-4. `server/list-adapters.test.js` — `issue-detail`이 `show <id> --include-dependents --json`으로
+5. `server/list-adapters.test.js` — `issue-detail`이 `show <id> --include-dependents --json`으로
    매핑된다.
-5. `server/subscriptions.test.js` — 같은 `updated_at`에서 `dependents`/`dependencies`의
+6. `server/subscriptions.test.js` — 같은 `updated_at`에서 `dependents`/`dependencies`의
    id·type·status·title이 바뀌면 upsert가 발생하고, 두 필드가 없는 항목은 기존 비교 결과를
    유지한다.
 
@@ -242,7 +273,9 @@ Worker·Monitor에서 각각 상세를 열어 `의존성` 절(세 종류 칩·�
 ## 8. 수용 기준
 
 - 세 탭 어디서 열어도 상세 `의존성` 절에서 막는 이슈를 추가·해제할 수 있고, Board·Worker는
-  현재 레포 후보, Monitor는 가시 레포 전체 후보를 보인다.
+  현재 레포 후보, Monitor는 가시 레포 전체 후보를 보인다. 상세가 열려 있는 동안 집계 채널이
+  살아 있어 Board·Worker에서도 후보가 최신이다.
+- 타 레포 선행 칩 클릭은 그 레포로 전환한 뒤 이동한다.
 - 선행·후행·기타 edge가 한 절에서 말머리·색으로 구분되고, `✕`는 선행 `blocks`에만 있다.
 - 후행 `blocks` 이슈가 칩으로 보이며 edge만 바뀌어도 열린 상세가 갱신된다.
 - Monitor 카드·행에 ⛓ 버튼과 `mon-deppanel`이 없고, blocked 칩 클릭은 그 이슈로 이동한다.
@@ -258,7 +291,7 @@ Worker·Monitor에서 각각 상세를 열어 `의존성` 절(세 종류 칩·�
 
 1. `server-dependents` — `server/list-adapters.js`, `server/subscriptions.js`
 2. `detail-dep-editor` — `app/views/monitor/dep-candidates.js`, `app/views/detail-panel/index.js`,
-   `app/styles/base.css`, `app/main.js`
+   `app/styles/base.css`, `app/main.js`(주입·채널 생명주기·`onNavigate` root_dir)
 3. `monitor-remove` — `app/views/monitor/index.js`, `app/views/worker/lanes.js`,
    `app/styles.css`, 스펙 정정 문단
 
