@@ -12,6 +12,7 @@
  * rather than growing a second one.
  */
 import { html } from 'lit-html';
+import { ifDefined } from 'lit-html/directives/if-defined.js';
 import {
   formatRelativeTime,
   formatTimestampLocal
@@ -1192,10 +1193,16 @@ function doneThreeLineRow(item) {
  * 두 변형 모두 같은 `.worker-mini` 껍데기를 쓰므로 드래그 계약
  * (`data-bead-id`/`data-lane`)과 머지 진행 시각화는 변형과 무관하게 유지된다.
  *
+ * `options.actions` (UI-5ksp §4.6)는 행 1번 줄 조작 슬롯 끝에 서는 호출 측
+ * 조각이다 (Monitor의 ⛓ ↑ ↓ ✕). 행 밖 별도 줄이던 자리를 옮긴 것이므로 슬롯
+ * 표(UI-251y §5.1)의 "조작은 1번 줄 오른쪽 끝" 규칙을 그대로 따른다. 넘기지
+ * 않으면 렌더가 그대로다.
+ *
  * @param {MiniItem} item
+ * @param {{ actions?: import('lit-html').TemplateResult }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
-export function miniRow(item) {
+export function miniRow(item, options = {}) {
   if (item.lane === 'done' && item.done_layout === 'three_line') {
     return doneThreeLineRow(item);
   }
@@ -1471,6 +1478,7 @@ export function miniRow(item) {
       : '';
   const deps_el = dependencyChipsTemplate(item.dependency_chips);
   const receipt_el = discardReceiptTemplate(item);
+  const actions_el = options.actions ? options.actions : '';
   const has_foot = !!(
     merging ||
     item.merge_action ||
@@ -1498,7 +1506,7 @@ export function miniRow(item) {
   >
     ${two_line
       ? html`<div class="worker-mini__row1">
-            ${repo_el}${id_el}${pri_el}${from_el}${pr_el}${title_el}
+            ${repo_el}${id_el}${pri_el}${from_el}${pr_el}${title_el}${actions_el}
           </div>
           <div class="worker-mini__row2">
             ${usage_el}${done_at_label
@@ -1521,7 +1529,7 @@ export function miniRow(item) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
+              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${actions_el}
             </div>
             <div class="worker-mini__body">${title_el}${stale_details}</div>
             ${deps_el}${chips_el}${has_foot
@@ -1538,7 +1546,7 @@ export function miniRow(item) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
+              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}${actions_el}
             </div>
             ${deps_el}${chips_el}${receipt_el} ${timesMeta(item)}`}
   </div>`;
@@ -1614,7 +1622,10 @@ function placeMenuList(entries, bead_id) {
  * @type {Record<string, string>}
  */
 const SESSION_PREFERRED_TOOLTIP = {
-  exclusive_machine: '실행 중 머신 독점 필요 — 부하 하네스·timing 비교'
+  exclusive_machine: '실행 중 머신 독점 필요 — 부하 하네스·timing 비교',
+  iterative_user_judgment:
+    '구현 중 사용자 판단 반복 개입 필요 — 문안·레이아웃·설계 미세조정',
+  visual_verification: '렌더 결과 사람 확인 필요 — 스크린샷·목업·라이브 페이지'
 };
 
 /**
@@ -1631,11 +1642,11 @@ const SESSION_PREFERRED_TOOLTIP = {
  * colour with the pin tooltip; the card never decides that itself, because only
  * the caller knows the repo's defaults.
  *
- * `dep_action` (UI-j92s §6.1) adds the `⛓ 의존성` button next to `대기로 ↴`.
- * 조작 버튼 묶음은 카드가 소유하므로 여기서만 그릴 수 있고, Worker 콘솔은 이
- * 옵션을 넘기지 않으므로 렌더가 그대로다. 그 버튼이 서는 푸터는 접지 않는다:
- * 접기는 coarse pointer 전용 버튼 하나만 보고 만든 규칙이라, 상시 조작인
- * 의존성 버튼까지 데스크톱에서 함께 삼켰다.
+ * `dep_action` (UI-j92s §6.1) adds the `⛓ 의존성` button. 자리는 1번 줄
+ * 오른쪽 끝(`.worker-card__head-actions`, 슬롯 1 조작)이지 foot이 아니다
+ * (UI-5ksp §4.6): foot은 `대기로 ↴` 하나만 사는 곳이라 coarse pointer 전용
+ * 접기 규칙을 그대로 쓰고, 상시 조작인 의존성 버튼은 그 규칙에 삼켜지지 않는
+ * 자리에 선다. Worker 콘솔은 이 옵션을 넘기지 않으므로 렌더가 그대로다.
  *
  * @param {MiniItem} item
  * @param {PlaceMenu|null} [place_menu]
@@ -1704,7 +1715,20 @@ export function candidateCard(item, place_menu = null, options = {}) {
               title=${session_preferred_tooltip}
               >세션 권장</span
             >`
-          : ''}${quickFixReviewChipTemplate(workflow)}
+          : ''}${quickFixReviewChipTemplate(workflow)}${options.dep_action ===
+      true
+        ? html`<span class="worker-card__head-actions"
+            ><button
+              type="button"
+              class="worker-card__dep mon-dep__btn"
+              data-bead-id=${item.id}
+              title="의존성"
+              aria-label="의존성"
+            >
+              ⛓
+            </button></span
+          >`
+        : ''}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow
@@ -1720,7 +1744,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
         </div>`
       : ''}
     <div
-      class="worker-card__foot${item.reason || options.dep_action === true
+      class="worker-card__foot${item.reason
         ? ''
         : ' worker-card__foot--actions-only'}"
     >
@@ -1762,18 +1786,8 @@ export function candidateCard(item, place_menu = null, options = {}) {
                     ? 'description이 없어 대기 큐에 넣을 수 없습니다'
                     : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
             >
-              대기로 ↴</button
-            >${options.dep_action === true
-              ? html`<button
-                  type="button"
-                  class="worker-card__dep mon-dep__btn"
-                  data-bead-id=${item.id}
-                  title="의존성"
-                  aria-label="의존성"
-                >
-                  ⛓
-                </button>`
-              : ''}`}
+              대기로 ↴
+            </button>`}
     </div>
     ${timesMeta(item)}
   </div>`;
@@ -1782,21 +1796,26 @@ export function candidateCard(item, place_menu = null, options = {}) {
 /**
  * One lane pane. `body` overrides the row rendering for a column whose contents
  * are not mini rows (실행 중); `items` still supplies the header count so every
- * column counts its members the same way. `controls` is an optional strip under
- * the header (candidate display filters, UI-ki09) and `header_control` an
+ * column counts its members the same way — a pane whose rows live in its own
+ * `body` passes `count` instead (UI-5ksp §4.2). `controls` is an optional strip
+ * under the header (candidate display filters, UI-ki09) and `header_control` an
  * optional trailing element INSIDE it (the candidate sort select, UI-raqh §2) —
  * a pane that passes neither renders exactly as before.
  *
- * `collapsible` turns the header into the accordion toggle used by the mobile
- * layout (UI-58y2): a collapsed pane renders no body but keeps its `data-lane`,
- * so 후보→대기 still drops onto the strip. `live` marks the lane whose work is
- * actually running, which is the only lane whose header dot breathes.
+ * `collapsible` makes the header carry an accordion toggle (UI-58y2, 데스크톱
+ * 세로 띠는 UI-5ksp §4.4): 토글은 헤더 전체가 아니라 별도
+ * `.worker-pane__toggle` 버튼이고 `header_control`은 그 형제로 오른쪽에 선다.
+ * 그래서 펼친 상태에서 `<select>` 변경·버튼 클릭이 접힘을 건드리지 않는다.
+ * 접힌 pane은 `header_control`·`controls`·`body`를 그리지 않되 `data-lane`은
+ * 그대로 두므로 후보→대기 드롭이 띠 위에서도 성립한다. `live`는 실제로 일이
+ * 도는 레인 하나를 표시한다 — 헤더 점이 숨쉬는 유일한 레인이다.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: PlaceMenu|null, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: PlaceMenu|null, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
   const collapsed = !!pane.collapsible && !!pane.collapsed;
+  const count = typeof pane.count === 'number' ? pane.count : pane.items.length;
   const head_inner = html`<span
       class="worker-pane__dot worker-pane__dot--${pane.lane}"
       aria-hidden="true"
@@ -1805,28 +1824,31 @@ export function paneTemplate(pane) {
     ${collapsed && pane.preview
       ? html`<span class="worker-pane__preview">${pane.preview}</span>`
       : ''}
-    <span class="worker-pane__count">${pane.items.length}</span>`;
+    <span class="worker-pane__count">${count}</span>`;
   return html`<section
     class="worker-pane worker-pane--lane-${pane.lane}${pane.src
       ? ' worker-pane--src'
       : ''}${pane.live ? ' worker-pane--live' : ''}${pane.collapsible
       ? ' worker-pane--collapsible'
       : ''}${collapsed ? ' worker-pane--collapsed' : ''}"
-    id=${pane.id}
+    id=${ifDefined(pane.id || undefined)}
     data-lane=${pane.lane}
   >
     ${pane.collapsible
-      ? html`<button
-          type="button"
-          class="worker-pane__hd worker-pane__hd--toggle"
-          data-lane=${pane.lane}
-          aria-expanded=${collapsed ? 'false' : 'true'}
-        >
-          ${head_inner}
-          <span class="worker-pane__caret" aria-hidden="true"
-            >${collapsed ? '▸' : '▾'}</span
+      ? html`<header class="worker-pane__hd">
+          <button
+            type="button"
+            class="worker-pane__toggle"
+            data-lane=${pane.lane}
+            aria-expanded=${collapsed ? 'false' : 'true'}
           >
-        </button>`
+            <span class="worker-pane__caret" aria-hidden="true"
+              >${collapsed ? '▸' : '▾'}</span
+            >
+            ${head_inner}
+          </button>
+          ${collapsed || !pane.header_control ? '' : pane.header_control}
+        </header>`
       : html`<header class="worker-pane__hd">
           ${head_inner}${pane.header_control ? pane.header_control : ''}
         </header>`}
@@ -1848,5 +1870,215 @@ export function paneTemplate(pane) {
                       : miniRow(it)
                   )}
           </div>`}
+  </section>`;
+}
+
+/**
+ * 대기 본문의 드롭 좌표. 값이 문자열일 때만 속성이 붙는다 (§6) — Worker는 pane
+ * `data-lane`으로 드롭을 받으므로 이 묶음을 아예 넘기지 않는다.
+ *
+ * @typedef {{ drop?: string, root_dir?: string, lane_id?: string, lane_length?: string }} WaitDropAttrs
+ */
+
+/**
+ * @typedef {Object} WaitSerialLane
+ * @property {string} id - `s1`.. 또는 서버 lane id. pane `lane`·`data-lane`이 된다.
+ * @property {string} [pane_id] - pane 요소 `id`. 생략하면 `worker-pane-lane-<id>`;
+ * 빈 문자열이면 `id` 속성을 붙이지 않는다 — 레포마다 같은 `s1`을 가진 Monitor가
+ * 문서 안 중복 id를 만들지 않으려고 쓴다.
+ * @property {string} title - `직렬 1` · `dotfiles · 직렬 1`.
+ * @property {import('lit-html').TemplateResult[]} rows - 호출 측이 이미 그려
+ * 넘긴 행 목록 (`miniRow` 등). 본문은 구조만 소유하므로 행 렌더링에 관여하지
+ * 않는다.
+ * @property {number} count - 헤더가 쓰는 건수. `rows`와 다를 수 있다 (점유자).
+ * @property {boolean} empty - `rows`도 점유자도 없어 힌트 한 줄로 접히는 상태.
+ * @property {import('lit-html').TemplateResult|string} [badge] - 누가 잡고
+ * 있는지 말하는 점유 표시 (Worker 점유자 id). 재료가 없으면 그리지 않는다.
+ * @property {boolean} [held] - 점유 중이라 뱃지에 warn accent를 켤지 여부.
+ * @property {boolean} [cycle] - 순환 의존을 알리는 경고 줄(`worker-lane__cycle`)을
+ * 붙일지 여부.
+ * @property {import('lit-html').TemplateResult} [after] - pane 아래에 호출
+ * 측이 직접 그리는 조각 (Monitor 상호 정지 경고).
+ * @property {import('lit-html').TemplateResult} [header_control] - 점유 표시
+ * 오른쪽에 서는 탭 고유 컨트롤 (Monitor `Worker ↗`).
+ * @property {WaitDropAttrs} [drop] - `worker-wait__rows`에 실을 드롭 좌표.
+ */
+
+/**
+ * @typedef {Object} WaitBodyModel
+ * @property {{ rows: import('lit-html').TemplateResult[], count: number, collapsed: boolean, drop?: WaitDropAttrs }} parallel
+ * @property {{ lanes: WaitSerialLane[], collapsed: boolean, extra_panes?: import('lit-html').TemplateResult[], header_control?: import('lit-html').TemplateResult, notice?: import('lit-html').TemplateResult }} serial
+ */
+
+/**
+ * One 영역 접기 토글 (§4.2). 클릭 처리는 두 탭의 index.js가 `lane-collapse`
+ * 스토어로 위임한다 — 여기서는 좌표(`data-area`)와 상태(`aria-expanded`)만
+ * 싣는다.
+ *
+ * @param {'parallel'|'serial'} area
+ * @param {string} name
+ * @param {boolean} collapsed
+ * @returns {import('lit-html').TemplateResult}
+ */
+function areaToggle(area, name, collapsed) {
+  return html`<button
+      type="button"
+      class="worker-wait__area-toggle"
+      data-area=${area}
+      aria-expanded=${collapsed ? 'false' : 'true'}
+      aria-label=${`${name} ${collapsed ? '펼치기' : '접기'}`}
+    >
+      ${collapsed ? '▸' : '▾'}
+    </button>
+    <span class="worker-wait__area-name">${name}</span>`;
+}
+
+/**
+ * One 대기 본문 (UI-5ksp §4.2): 병렬 영역 하나 + 직렬 영역 하나. 본문은
+ * **구조**만 소유한다 — 행, 레포 배지, 연결 레인 pane, `+ 연결 레인` 버튼,
+ * 레포 간 상호 정지 경고는 호출 측이 만들어 슬롯으로 넘긴다. 재료가 없는
+ * 자리는 그리지 않는다(fail-quiet).
+ *
+ * @param {WaitBodyModel} model
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function waitBody(model) {
+  const parallel = model.parallel;
+  const serial = model.serial;
+  const parallel_drop = parallel.drop || {};
+  return html`<div class="worker-wait">
+    <section
+      class="worker-wait__area worker-wait__area--parallel${parallel.collapsed
+        ? ' is-collapsed'
+        : ''}"
+      data-area="parallel"
+    >
+      <header class="worker-wait__area-hd">
+        ${areaToggle('parallel', '병렬 영역', parallel.collapsed)}
+        <span class="worker-wait__area-count">${parallel.count}</span>
+      </header>
+      ${parallel.collapsed
+        ? ''
+        : html`<div
+            class="worker-wait__area-body"
+            data-drop=${ifDefined(parallel_drop.drop)}
+            data-root-dir=${ifDefined(parallel_drop.root_dir)}
+            data-lane-id=${ifDefined(parallel_drop.lane_id)}
+            data-lane-length=${ifDefined(parallel_drop.lane_length)}
+          >
+            ${parallel.rows.length === 0
+              ? html`<div class="worker-pane__empty">
+                  비어 있음 — 드래그로 배치
+                </div>`
+              : parallel.rows}
+          </div>`}
+    </section>
+    <section
+      class="worker-wait__area worker-wait__area--serial${serial.collapsed
+        ? ' is-collapsed'
+        : ''}"
+      data-area="serial"
+    >
+      <header class="worker-wait__area-hd">
+        ${areaToggle('serial', '직렬 영역', serial.collapsed)}
+        ${serial.header_control ? serial.header_control : ''}
+      </header>
+      ${serial.collapsed
+        ? ''
+        : html`<div class="worker-wait__area-body">
+            ${serial.notice ? serial.notice : ''}
+            ${serial.extra_panes ? serial.extra_panes : ''}
+            ${serial.lanes.map((lane) => serialLaneTemplate(lane))}
+          </div>`}
+    </section>
+  </div>`;
+}
+
+/**
+ * One 직렬 레인 wrapper (§4.2·§4.3): pane + 빈 레인 힌트 + 순환 경고 +
+ * 호출 측 `after`. pane/힌트의 표시 조건은 `app/styles.css` 한 곳이 소유한다.
+ *
+ * @param {WaitSerialLane} lane
+ * @returns {import('lit-html').TemplateResult}
+ */
+function serialLaneTemplate(lane) {
+  const drop = lane.drop || {};
+  const badge_el = lane.badge
+    ? html`<span
+        class="worker-lane__badge${lane.held
+          ? ' worker-lane__badge--held'
+          : ''}"
+        >${lane.badge}</span
+      >`
+    : '';
+  return html`<div
+    class="worker-wait__lane${lane.empty ? ' worker-wait__lane--empty' : ''}"
+  >
+    ${paneTemplate({
+      id:
+        typeof lane.pane_id === 'string'
+          ? lane.pane_id
+          : `worker-pane-lane-${lane.id}`,
+      lane: /** @type {any} */ (lane.id),
+      title: lane.title,
+      items: [],
+      count: lane.count,
+      empty: '비어 있음 — 행을 여기로 드래그',
+      header_control: html`${badge_el}${lane.header_control
+        ? lane.header_control
+        : ''}`,
+      body: html`<div
+        class="worker-wait__rows"
+        data-drop=${ifDefined(drop.drop)}
+        data-root-dir=${ifDefined(drop.root_dir)}
+        data-lane-id=${ifDefined(drop.lane_id)}
+        data-lane-length=${ifDefined(drop.lane_length)}
+      >
+        ${lane.rows.length === 0
+          ? html`<div class="worker-pane__empty">
+              비어 있음 — 행을 여기로 드래그
+            </div>`
+          : lane.rows}
+      </div>`
+    })}
+    ${lane.empty
+      ? html`<div class="worker-wait__hint">${lane.title} · 비어 있음</div>`
+      : ''}
+    ${lane.cycle
+      ? html`<div class="worker-lane__cycle">
+          ⚠ blocks 순환 감지 — 자동 정렬을 생략했습니다
+        </div>`
+      : ''}
+    ${lane.after ? lane.after : ''}
+  </div>`;
+}
+
+/**
+ * The 모바일 `지금` 패널 (UI-58y2 §모바일 2, 두 탭 공유는 UI-5ksp §4.7): 실행 중
+ * 타일과 PR 대기 행을 한 패널로 묶어 리본 바로 아래에 둔다. `count`가 0이면
+ * 패널 자체를 그리지 않는다 — 빈 관제 패널은 화면만 먹고 아무것도 말하지
+ * 않는다.
+ *
+ * @param {{ live?: boolean, running_body?: import('lit-html').TemplateResult|string, pr_wait_rows?: import('lit-html').TemplateResult[], count: number }} model
+ * @returns {import('lit-html').TemplateResult|string}
+ */
+export function nowPanel(model) {
+  if (!model.count) {
+    return '';
+  }
+  return html`<section
+    class="worker-now${model.live ? ' worker-pane--live' : ''}"
+    id="worker-now"
+  >
+    <header class="worker-now__hd">
+      <span
+        class="worker-pane__dot worker-pane__dot--running"
+        aria-hidden="true"
+      ></span>
+      <span class="worker-now__title">지금</span>
+      <span class="worker-now__count">${model.count}</span>
+    </header>
+    ${model.running_body ? model.running_body : ''}
+    ${model.pr_wait_rows ? model.pr_wait_rows : ''}
   </section>`;
 }

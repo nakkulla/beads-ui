@@ -5012,11 +5012,19 @@ html[data-theme='dark'] {
   min-height: 0;
 }
 
+/* 폭 하한과 등폭 몫은 최상위 다섯 레인만의 것이다 (§4.5). 중첩 pane이 이걸
+   물려받으면 바깥 대기 pane 밖으로 삐져나오고, 좁은 창에서 옆 레인 아래로
+   겹쳐 보인다 — 다섯 레인의 최소 폭 합이 창을 넘으면 `.worker-lanes-host`의
+   가로 스크롤이 대신 받는다. */
+.worker-lanes > .worker-pane {
+  flex: 1 1 0;
+  min-width: 220px;
+}
+
 .worker-pane {
   display: flex;
   flex: 1;
   flex-direction: column;
-  min-width: 220px;
   min-height: 0;
   padding: var(--sp-8);
   border: 1px solid var(--border-panel);
@@ -5026,9 +5034,9 @@ html[data-theme='dark'] {
 
 /* The candidate SOURCE pane (worker-phase2 §7): kept in front of the four
    lifecycle columns because it is the only way to enqueue a bead, but drawn
-   dashed and slightly narrower so it never reads as one of them. */
+   dashed so it never reads as one of them. 폭은 다섯 레인이 같다 (§4.5) —
+   좁게 만든 예외가 두 탭의 폭을 갈라 놓던 자리였다. */
 .worker-pane--src {
-  flex: 0.9;
   border: 1px dashed var(--border-chip);
   background: var(--bg-candidate);
 }
@@ -5165,15 +5173,24 @@ html[data-theme='dark'] {
 
 /* 접힌 레인 = 스트립 (UI-58y2 §모바일 3/5). 별도 컴포넌트가 아니라 헤더가
    토글이 된 같은 레인이므로 `data-lane`이 살아 있고 드롭 타깃도 유지된다. */
-/* 버튼 크롬만 지운다 — 색·크기·자간은 같은 요소에 함께 걸린 `.worker-pane__hd`가
-   그대로 소유하므로, 여기서 `inherit`을 쓰면 헤더 타이포가 되레 무너진다. */
-.worker-pane__hd--toggle {
-  width: 100%;
+/* 토글은 헤더 전체가 아니라 헤더 안의 버튼 하나다 (UI-5ksp §4.4) — 그래야
+   `header_control`(정렬 select·범위 선택)이 형제로 서고, 그 조작이 접힘을
+   건드리지 않는다. 버튼 크롬만 지우고 타이포는 부모 `.worker-pane__hd`에서
+   물려받는다. */
+.worker-pane__toggle {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
   padding: 0;
   border: none;
   background: transparent;
-  font-family: inherit;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
   text-align: left;
+  text-transform: inherit;
   cursor: pointer;
 }
 
@@ -5184,6 +5201,49 @@ html[data-theme='dark'] {
 
 .worker-pane--collapsed .worker-pane__hd {
   margin-bottom: 0;
+}
+
+/* 데스크톱 접힘 = 얇은 세로 띠 (§3-2·§4.4): 레인 색 스파인은 그대로 두고
+   제목만 세로로 세운다. 모바일 접힘은 가로 한 줄 그대로이므로 이 규칙은
+   `min-width: 641px` 가드 안에만 있다. */
+@media (min-width: 641px) {
+  /* 최상위 레인의 등폭·220px 하한(§4.5)을 이기려면 같은 자식 결합자가 필요하다 —
+     `.worker-pane--collapsed` 하나로는 특이도가 낮아 띠가 다시 벌어진다. */
+  .worker-lanes > .worker-pane--collapsed {
+    flex: 0 0 36px;
+    min-width: 0;
+    padding: var(--sp-6) 0;
+  }
+
+  .worker-pane--collapsed .worker-pane__hd {
+    justify-content: center;
+  }
+
+  .worker-pane--collapsed .worker-pane__toggle {
+    overflow: hidden;
+    justify-content: flex-start;
+    max-height: 100%;
+    writing-mode: vertical-rl;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .worker-pane--collapsed .worker-pane__caret {
+    display: none;
+  }
+
+  .worker-pane--collapsed .worker-pane__count {
+    flex: 0 0 auto;
+    margin-left: 0;
+  }
+}
+
+/* 탭 부가정보 칩 (§4.5): 제목 어휘는 두 탭이 같고, 탭이 다른 것(`슬롯 N`)은
+   `header_control` 슬롯이 싣는다. */
+.worker-pane__meta {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 .worker-pane__preview {
@@ -5257,38 +5317,122 @@ html[data-theme='dark'] {
   font-size: var(--fs-chip);
 }
 
-/* 직렬 레인 스택 (UI-04vo §4): 병렬 대기 pane 아래 레인 카드들을 세로로
-   쌓는 한 flex 컬럼. 이 껍데기는 `.worker-pane`이 아니므로 `flex: 1`을 직접
-   갖지 않으면 basis가 `auto`로 남아 내용 폭만큼 벌어진다 — 대기 열만 다른
-   레인보다 넓어 보이던 원인이라, 생애 레인들과 같은 등폭 몫을 명시한다. */
+/* 공유 대기 본문의 껍데기 (UI-5ksp §4.2): 이제 `.worker-pane__body` 안에 사는
+   두 영역의 세로 스택일 뿐이다. 폭 하한도 스크롤도 갖지 않는다 — 하한은
+   최상위 레인이, 스크롤은 pane 본문이 이미 소유한다. */
 .worker-wait {
   display: flex;
-  flex: 1;
   flex-direction: column;
   gap: var(--sp-6);
-  /* 가로 하한은 `.worker-pane`과 같은 220px이어야 한다. `min-width: 0`이면 이
-     껍데기만 다른 레인보다 더 줄어드는데, 안의 pane들은 자기 220px 하한을
-     지키므로 대기 열 밖으로 삐져나와 옆 레인의 불투명한 배경 아래로 들어간다 —
-     좁은 창에서 카드가 겹쳐 보이던 원인. 하한을 맞추면 다섯 레인의 최소 폭 합이
-     창을 넘고, 그때는 `.worker-lanes-host`의 가로 스크롤이 대신 받는다. */
-  min-width: 220px;
-  min-height: 0;
-  overflow-y: auto;
 }
 
-/* 대기 열 안의 높이 배분은 등분이 아니라 내용 기준이다 (`flex-basis: auto`):
-   병렬 대기와 각 직렬 레인이 자기 카드 수만큼 차지하고, 남는 세로는 비워 둔다.
-   `.worker-pane`의 `flex: 1`을 그대로 두면 비어 있는 직렬 레인이 병렬 대기와
-   같은 몫을 가져가, 카드가 쌓이는 쪽에만 내부 스크롤이 생긴다.
-   grow는 끄고 shrink만 남긴다: 합이 열보다 길어지면 내용이 많은 레인이 더 큰
-   몫을 유지한 채 함께 줄고(각 본문이 스크롤), 어떤 레인도 화면 밖으로 밀려나지
-   않는다. min-height는 그 축소의 하한 — 헤더와 한 줄은 항상 남는다. */
-.worker-wait > .worker-pane {
-  flex: 0 1 auto;
-  min-height: 72px;
-  /* 가로 하한은 이제 대기 열이 소유한다. 여기서 220px을 다시 걸면 세로 스크롤바가
-     생겼을 때 그 폭만큼 pane이 열 밖으로 다시 삐져나온다. */
+/* --- 공유 대기 본문 (UI-5ksp §4.2) -----------------------------------------
+   병렬 영역 하나 + 직렬 영역 하나. 값은 Monitor 대기 레인이 쓰던 영역·레인
+   규칙에서 그대로 옮겨 왔다 — 두 탭이 같은 본문을 쓰므로 클래스 이름만
+   `worker-wait__*`로 바뀐다. */
+.worker-wait__area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.worker-wait__area-hd {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  padding: var(--sp-3) 0;
+  background: var(--bg-app);
+  font-size: var(--fs-chip);
+}
+
+.worker-wait__area-toggle {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.worker-wait__area-toggle:hover {
+  color: var(--text-primary);
+}
+
+.worker-wait__area-name {
+  color: var(--text-secondary);
+}
+
+.worker-wait__area-count {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.worker-wait__area-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.worker-wait__area--serial > .worker-wait__area-body {
+  gap: var(--sp-6);
+}
+
+.worker-wait__lane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.worker-wait__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+/* 중첩 한 단계 = 토큰 한 단계 아래 (§4.5): 바깥 다섯 pane은 panel 토큰, 대기
+   본문 안의 직렬 pane과 연결 레인 pane은 card 토큰이다. 폭 하한도 여기서
+   풀린다 — 220px은 최상위 레인만의 것이고, 중첩 pane이 물려받으면 바깥 대기
+   pane 밖으로 삐져나온다.
+
+   Monitor 연결 레인(`.mon2-clane`)은 `.worker-pane`이 아니라 div이지만 같은
+   중첩 단계에 서므로 같은 토큰을 여기서 받는다 — 자기 테두리·모서리를 따로
+   선언하면 두 중첩 pane이 다른 톤으로 갈라진다 (UI-5ksp §4.5). */
+.worker-wait .worker-pane,
+.worker-wait .mon2-clane {
   min-width: 0;
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  background: var(--bg-card);
+}
+
+/* 빈 직렬 레인 (§4.3): 데스크톱은 pane을 그대로 둔 채 "비어 있음" 문구를
+   보여 드롭 타깃을 고정하고, ≤640px는 한 줄 힌트로 접었다가 드래그가
+   시작되면 pane으로 펼친다. 표시 조건은 여기 CSS 한 곳이 소유한다. */
+.worker-wait__hint {
+  display: none;
+  padding: var(--sp-2) var(--sp-6);
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+}
+
+@media (max-width: 640px) {
+  .worker-wait__lane--empty > .worker-pane {
+    display: none;
+  }
+
+  .worker-wait__lane--empty > .worker-wait__hint {
+    display: block;
+  }
+
+  .is-dragging .worker-wait__lane--empty > .worker-pane {
+    display: flex;
+  }
+
+  .is-dragging .worker-wait__lane--empty > .worker-wait__hint {
+    display: none;
+  }
 }
 
 .worker-lane__badge {
@@ -5909,6 +6053,15 @@ html[data-theme='dark'] {
   min-width: 0;
 }
 
+/* 슬롯 1 조작 (UI-5ksp §4.6): ⛓ 의존성 버튼은 1번 줄 오른쪽 끝이다. foot으로
+   내려가면 coarse pointer 전용 접기 규칙에 함께 삼켜진다. */
+.worker-card__head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-left: auto;
+}
+
 .worker-card__grip {
   color: var(--text-gripline);
   cursor: grab;
@@ -6231,11 +6384,11 @@ html[data-theme='dark'] {
    Worker 탭과 **같은** `.worker-lanes` flex다. 3열 grid·가로 스와이프 칸반은
    폐기했다 (같은 사실이 두 탭에서 다른 모양이 되던 원인). 다섯 레인은 같은
    폭이다 — 실행중만 넓히던 가중치는 카드가 레인마다 다른 폭으로 잘려 같은
-   카드가 다른 모양이 되던 원인이라 뺐다 (UI-thwe). */
-.mon2-lanes > .worker-pane {
-  flex: 1 1 0;
-  min-width: 0;
-}
+   카드가 다른 모양이 되던 원인이라 뺐다 (UI-thwe).
+
+   폭·하한 규칙은 이제 `.worker-lanes > .worker-pane` 하나가 두 탭에 같이
+   준다 (UI-5ksp §4.5) — Monitor만 `min-width: 0`으로 풀던 예외는 삭제했고,
+   최소 폭 합이 창을 넘으면 `.worker-lanes-host`의 가로 스크롤이 받는다. */
 
 /* --- 레포 데크 (§4) ------------------------------------------------------
    프로젝트 관리에서 고른 visible 레포를 **전부** 같은 타일로 세우는 signature
@@ -6540,7 +6693,6 @@ html[data-theme='dark'] {
 
 .mon2-sec__toggle,
 .mon2-sec__worker,
-.mon2-area__toggle,
 .mon2-newlane {
   border: none;
   background: transparent;
@@ -6551,7 +6703,6 @@ html[data-theme='dark'] {
 
 .mon2-sec__toggle:hover,
 .mon2-sec__worker:hover,
-.mon2-area__toggle:hover,
 .mon2-newlane:hover:not(:disabled) {
   color: var(--text-primary);
 }
@@ -6588,85 +6739,28 @@ html[data-theme='dark'] {
   position: relative;
 }
 
-/* 빈 직렬 레인 (§6): 평소엔 한 줄 힌트로 접히고, 드래그가 시작되면 드롭 타깃
-   pane으로 펼쳐진다. 표시 조건은 여기 CSS 한 곳이 소유한다. */
-.mon2-lane--empty > .worker-pane {
-  display: none;
-}
-
-.mon2-lane__hint {
-  padding: var(--sp-2) var(--sp-6);
-  color: var(--text-dim);
-  font-size: var(--fs-caption);
-}
-
-.is-dragging .mon2-lane--empty > .worker-pane {
-  display: flex;
-}
-
-.is-dragging .mon2-lane__hint {
-  display: none;
-}
-
-.mon2-lane__cycle,
-.mon2-lane__cross-wait {
-  padding: var(--sp-2) var(--sp-6);
-  color: var(--accent-warn);
-  font-size: var(--fs-caption);
-}
-
-.mon2-lane__badge {
-  color: var(--text-dim);
-  font-size: var(--fs-caption);
-}
-
-/* 점유자 id는 원래 자형을 지킨다 — 헤더의 uppercase가 `UI-yrzu`를 `UI-YRZU`로
-   바꾸면 다른 id처럼 읽힌다. */
-.mon2-lane__badge--held {
-  color: var(--text);
+/* 점유자 id는 원래 자형을 지킨다 — 레인 헤더의 uppercase가 `UI-yrzu`를
+   `UI-YRZU`로 바꾸면 다른 id처럼 읽힌다. Worker 배지는 상태 문구(`대기`·
+   `실행 중 · 점유`)라 이 규칙이 필요 없고, 여기만 id를 싣는다. */
+.mon2-lane__occupant {
   font-family: var(--font-mono);
   letter-spacing: 0;
   text-transform: none;
   white-space: nowrap;
 }
 
-/* --- 대기 레인 두 영역 (UI-e6hw §4) ---------------------------------------
-   레포 섹션은 사라졌다: 카드가 자기 레포를 이미 알고 있으므로 레포는 좌표가
-   아니라 배지다. 남은 좌표는 병렬 영역 하나와 직렬 영역 하나뿐이다. */
-.mon2-wait {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-6);
+/* 레포 간 상호 정지 경고 (UI-jaua): 공유 대기 본문의 `after` 슬롯이 그리는
+   Monitor 전용 cross-repo 사실이라 `mon2-` 이름으로 남는다. 빈 레인 힌트·순환
+   경고·점유 배지는 이제 공유 본문(`.worker-wait__*`·`.worker-lane__*`)의
+   것이다 (UI-5ksp §4.2). */
+.mon2-lane__cross-wait {
+  padding: var(--sp-2) var(--sp-6);
+  color: var(--accent-warn);
+  font-size: var(--fs-caption);
 }
 
-.mon2-area {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
-}
-
-.mon2-area__hd {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: var(--sp-5);
-  padding: var(--sp-3) 0;
-  background: var(--bg-app);
-  font-size: var(--fs-chip);
-}
-
-.mon2-area__name {
-  color: var(--text-secondary);
-}
-
-.mon2-area__count {
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-}
-
-/* `+ 연결 레인`은 빈 레인이 이미 있으면 잠긴다 — 빈 레인은 하나면 족하다. */
+/* `+ 연결 레인`은 빈 레인이 이미 있으면 잠긴다 — 빈 레인은 하나면 족하다.
+   자리는 공유 대기 본문 직렬 영역 헤더의 `header_control` 슬롯이다. */
 .mon2-newlane {
   margin-left: auto;
   padding: 0 var(--sp-5);
@@ -6679,30 +6773,13 @@ html[data-theme='dark'] {
   cursor: default;
 }
 
-.mon2-area__body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
-}
-
-.mon2-serial > .mon2-area__body {
-  gap: var(--sp-6);
-}
-
-/* 순번 `#n`은 자기 레포 큐 안의 순서다 (§4.1). Worker `miniRow`가 그리는 숫자에
-   `#`만 여기서 붙인다 — 두 탭이 공유하는 템플릿을 모니터 사실로 가르지 않는다. */
-.mon2-parallel .worker-mini__seq::before {
-  content: '#';
-}
-
 /* 연결 레인 (§4.2): blocks 의존이 만든 레포 간 순서. 레포 직렬 레인과 같은
-   pane 톤을 쓰되 이름으로 구분한다. */
+   pane 톤을 쓰되 이름으로 구분한다 — 테두리·모서리·배경은 공유 중첩 규칙
+   (`.worker-wait .mon2-clane`)이 준다. */
 .mon2-clane {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  border: 1px solid var(--border-card);
-  border-radius: var(--r-6);
   padding: var(--sp-5) var(--sp-6);
 }
 
@@ -6726,12 +6803,6 @@ html[data-theme='dark'] {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
-}
-
-.mon2-lane__rows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
 }
 
 .mon2-clane__hint {
@@ -6781,24 +6852,24 @@ html[data-theme='dark'] {
   border-radius: var(--r-6);
 }
 
-/* 행 조작 묶음 (§6, UI-j92s §6.1). 의존성 버튼과 연결 레인 행의 `✕`는 화면
-   폭과 무관한 조작이므로 늘 보인다; 자리 옮기기 `↑ ↓ ✕`만 드래그의 coarse
-   pointer 보완재로 남는다. */
-.mon2-rowops,
-.mon2-crow__detach {
+/* 접힌 세로 띠도 같은 드롭 타깃이다 (UI-5ksp §4.4). 본문을 그리지 않아
+   `[data-drop]`이 없으므로 강조는 pane 자신이 받는다. */
+.worker-pane--collapsed.is-drop-over {
+  outline: 1px solid var(--accent-success);
+  outline-offset: 2px;
+}
+
+/* 대기 행 조작 묶음 (UI-5ksp §4.6). 행 밖 별도 줄이던 Monitor 조작 묶음을 행
+   1번 줄 조작 슬롯으로 옮긴 것이라, 아래 줄을 위한 세로 여백은 없다. */
+.worker-mini__rowops {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
-}
-
-.mon2-rowops {
   justify-content: flex-end;
-  padding: 0 var(--sp-4) var(--sp-3);
+  margin-left: auto;
 }
 
-.mon2-rowops button,
-.mon2-crow__detach,
-.worker-card__dep {
+.worker-mini__rowops button {
   min-width: 28px;
   padding: var(--sp-2) var(--sp-4);
   border: 1px solid var(--border-chip);
@@ -6809,19 +6880,41 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
-.mon2-rowops__up,
-.mon2-rowops__down,
-.mon2-rowops__remove {
+/* 자리 옮기기만 드래그의 coarse pointer 보완재다 — 의존성 버튼은 화면 폭과
+   무관한 상시 조작이라 늘 보인다. */
+.worker-mini__rowops-up,
+.worker-mini__rowops-down,
+.worker-mini__rowops-remove {
   display: none;
 }
 
 @media (any-pointer: coarse), (max-width: 640px) {
-  .mon2-rowops__up,
-  .mon2-rowops__down,
-  .mon2-rowops__remove {
+  .worker-mini__rowops-up,
+  .worker-mini__rowops-down,
+  .worker-mini__rowops-remove {
     display: inline-flex;
     align-items: center;
   }
+}
+
+/* 연결 레인 행의 `✕`와 후보 카드의 ⛓은 화면 폭과 무관한 상시 조작이라 대기
+   행 조작 묶음과 같은 칩 톤만 나눠 쓴다. */
+.mon2-crow__detach {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.mon2-crow__detach,
+.worker-card__dep {
+  min-width: 28px;
+  padding: var(--sp-2) var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
 }
 
 /* 연결 레인 헤더의 상태 배지와 조작 (UI-j92s §5.1). 배지는 레인의 생애를,
@@ -7446,28 +7539,15 @@ html[data-theme='dark'] {
   color: var(--accent-success);
 }
 
-/* 모바일 (§3): Worker와 같은 세로 스택이되 관제 우선 순서로 둔다 — DOM은
-   데스크톱 생애주기 독해 순서 그대로이고 `order`만 바꾼다. */
+/* 모바일 (§3): Worker와 같은 세로 스택. 관제 우선 순서는 이제 DOM이 소유한다
+   (UI-5ksp §4.7) — 실행 중·PR 대기가 `지금` 패널로 합쳐지는 것은 restyle이
+   아니라 recombination이라 `order`로는 표현할 수 없었다. */
 @media (max-width: 640px) {
   /* Worker 모바일과 같은 문서 스크롤: 라우트 셸의 높이 고정·클리핑을 풀고 다섯
      레인이 내용만큼 늘어나 페이지와 함께 스크롤된다. 뷰포트 5등분은 폐기다. */
   #monitor-root.route.monitor {
     height: auto;
     padding: var(--sp-8);
-    overflow: visible;
-  }
-
-  .mon2-lanes {
-    flex-direction: column;
-  }
-
-  .mon2-lanes > .worker-pane {
-    flex: none;
-    min-width: 0;
-  }
-
-  .mon2-lanes .worker-pane__body {
-    max-height: none;
     overflow: visible;
   }
 
@@ -7493,26 +7573,6 @@ html[data-theme='dark'] {
   .mon2-deck__panel-body .settings-dialog__row {
     flex-direction: column;
     align-items: flex-start;
-  }
-
-  .mon2-lanes > .worker-pane--lane-running {
-    order: 0;
-  }
-
-  .mon2-lanes > .worker-pane--lane-queue {
-    order: 1;
-  }
-
-  .mon2-lanes > .worker-pane--lane-candidate {
-    order: 2;
-  }
-
-  .mon2-lanes > .worker-pane--lane-pr_wait {
-    order: 3;
-  }
-
-  .mon2-lanes > .worker-pane--lane-done {
-    order: 4;
   }
 }
 
@@ -8162,9 +8222,9 @@ button.detail-session__leg:focus-visible {
     align-items: stretch;
   }
 
+  /* 내부 스크롤 없음 (§4.7): 문서 스크롤 하나만 남긴다. */
   .worker-rungrid {
     grid-template-columns: 1fr;
-    max-height: 40vh;
   }
 
   /* 관제 우선 배치 (UI-58y2 §모바일): 뷰포트 5등분을 폐기하고 페이지 자연 세로
@@ -8241,8 +8301,11 @@ button.detail-session__leg:focus-visible {
     gap: var(--sp-8);
   }
 
+  /* 모바일 pane은 폭 하한도 등폭 몫도 갖지 않는다 (§4.7) — 두 탭이 이 한
+     규칙을 같이 쓰고, Monitor만의 `min-width: 0` 예외는 사라졌다. */
   .worker-lanes--mobile .worker-pane {
     flex: none;
+    min-width: 0;
   }
 
   /* 후보 보드가 화면의 주인 (§모바일 4): 내부 스크롤을 강제하지 않고 내용만큼

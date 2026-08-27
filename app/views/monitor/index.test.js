@@ -12,7 +12,21 @@ const active_views = [];
 
 beforeEach(() => {
   window.localStorage.clear();
+  expandDoneLane();
 });
+
+/**
+ * Expand the 완료 lane before mounting. 완료 is the one lane that starts
+ * collapsed (UI-5ksp §3-3) and a collapsed pane renders neither its body nor
+ * its header control, so every test that reads a done row says it wants the
+ * lane open.
+ */
+function expandDoneLane() {
+  window.localStorage.setItem(
+    'beads-ui.monitor.lane-collapsed',
+    JSON.stringify({ lanes: { done: false }, areas: {} })
+  );
+}
 
 afterEach(() => {
   while (active_views.length > 0) {
@@ -329,7 +343,7 @@ describe('views/monitor repo sections (UI-eey2 §5·§6)', () => {
 
     view.load();
 
-    const badge = el(mount, '.mon2-parallel .worker-mini__repo');
+    const badge = el(mount, '.worker-wait__area--parallel .worker-mini__repo');
     expect(badge.getAttribute('title')).toBe('repo-a · 자동화 켜짐');
     expect(el(mount, '#monitor-queue .mon2-sec__auto')).toBeNull();
   });
@@ -366,9 +380,9 @@ describe('views/monitor repo sections (UI-eey2 §5·§6)', () => {
 
     view.load();
 
-    expect(el(mount, '.mon2-lane--empty')).toBeTruthy();
-    expect(el(mount, '.mon2-lane__hint').textContent?.trim()).toBe(
-      'repo-a 직렬 2 비어 있음'
+    expect(el(mount, '.worker-wait__lane--empty')).toBeTruthy();
+    expect(el(mount, '.worker-wait__hint').textContent?.trim()).toBe(
+      'repo-a · 직렬 2 · 비어 있음'
     );
   });
 });
@@ -523,9 +537,9 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     view.load();
 
     expect(
-      Array.from(mount.querySelectorAll('#monitor-queue .mon2-area')).map((a) =>
-        a.getAttribute('data-area')
-      )
+      Array.from(
+        mount.querySelectorAll('#monitor-queue .worker-wait__area')
+      ).map((a) => a.getAttribute('data-area'))
     ).toEqual(['parallel', 'serial']);
     expect(el(mount, '#monitor-queue .mon2-sec')).toBeNull();
   });
@@ -541,11 +555,11 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
 
     // A-1과 B-1은 연결 레인이 가져갔다 — 카운트는 보이는 행 수다.
     expect(
-      Array.from(mount.querySelectorAll('.mon2-parallel .mon2-item')).map((r) =>
-        r.getAttribute('data-bead-id')
-      )
+      Array.from(
+        mount.querySelectorAll('.worker-wait__area--parallel .mon2-item')
+      ).map((r) => r.getAttribute('data-bead-id'))
     ).toEqual(['A-2']);
-    expect(el(mount, '.mon2-area__count').textContent?.trim()).toBe('1');
+    expect(el(mount, '.worker-wait__area-count').textContent?.trim()).toBe('1');
   });
 
   test('names each stored lane by its array position', () => {
@@ -641,18 +655,18 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
 
     view.load();
 
-    const badge = el(mount, '.mon2-lane .mon2-lane__badge');
+    const badge = el(mount, '.worker-wait__lane .worker-lane__badge');
     expect(badge.textContent?.trim()).toBe('A-1 점유');
-    const ghost = el(mount, '.mon2-lane .mon2-item--ghost');
+    const ghost = el(mount, '.worker-wait__lane .mon2-item--ghost');
     expect(ghost.getAttribute('data-bead-id')).toBe('A-1');
     expect(ghost.textContent).toContain('점유 중인 작업');
     expect(ghost.textContent).toContain('실행 중 · 점유');
     expect(ghost.hasAttribute('data-row-index')).toBe(false);
     expect(ghost.hasAttribute('data-queue-index')).toBe(false);
     expect(
-      Array.from(mount.querySelectorAll('.mon2-lane [data-queue-index]')).map(
-        (row) => row.getAttribute('data-bead-id')
-      )
+      Array.from(
+        mount.querySelectorAll('.worker-wait__lane [data-queue-index]')
+      ).map((row) => row.getAttribute('data-bead-id'))
     ).toEqual(['A-2']);
   });
 
@@ -669,7 +683,7 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     view.load();
 
     expect(
-      el(mount, '.mon2-lane .worker-pane__title').textContent?.trim()
+      el(mount, '.worker-wait__lane .worker-pane__title').textContent?.trim()
     ).toBe('repo-a · 직렬 1');
   });
 
@@ -710,14 +724,16 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     const { mount, view } = setup({ workspaces, workspaces_state });
 
     view.load();
-    click(mount, '.mon2-area__toggle[data-area="parallel"]');
+    click(mount, '.worker-wait__area-toggle[data-area="parallel"]');
 
-    expect(mount.querySelectorAll('.mon2-parallel .mon2-item')).toHaveLength(0);
+    expect(
+      mount.querySelectorAll('.worker-wait__area--parallel .mon2-item')
+    ).toHaveLength(0);
     expect(
       JSON.parse(
-        window.localStorage.getItem('beads-ui.monitor.sections') || '{}'
-      ).parallel
-    ).toBe(true);
+        window.localStorage.getItem('beads-ui.monitor.lane-collapsed') || '{}'
+      ).areas
+    ).toEqual({ parallel: true });
   });
 
   test('draws the unreadable line and disables lane ops when the store failed', () => {
@@ -1490,7 +1506,7 @@ describe('views/monitor drag and drop (UI-e6hw §5)', () => {
     const { mount, view, sent } = dragSetup();
 
     view.load();
-    click(mount, '.mon2-parallel .mon2-rowops__remove');
+    click(mount, '.worker-wait__area--parallel .worker-mini__rowops-remove');
     await flushMicrotasks();
 
     expect(sent[0]).toEqual({
@@ -1503,7 +1519,7 @@ describe('views/monitor drag and drop (UI-e6hw §5)', () => {
     const { mount, view, sent } = dragSetup();
 
     view.load();
-    click(mount, '.mon2-parallel .mon2-rowops__down');
+    click(mount, '.worker-wait__area--parallel .worker-mini__rowops-down');
     await flushMicrotasks();
 
     expect(sent[0]).toEqual({
@@ -3853,5 +3869,381 @@ describe('views/monitor candidate stepper doc cells (UI-ajkn §5)', () => {
 
     expect(mount.querySelector('#monitor-runnable .stp')).not.toBeNull();
     expect(mount.querySelector('#monitor-runnable .seg--doc')).toBeNull();
+  });
+});
+
+describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
+  const LANE_IDS = [
+    'monitor-runnable',
+    'monitor-queue',
+    'monitor-running',
+    'monitor-pr_wait',
+    'monitor-done'
+  ];
+
+  test('makes every one of the five lanes collapsible', () => {
+    const { mount, view } = setup();
+
+    view.load();
+
+    const toggles = LANE_IDS.map((id) =>
+      mount.querySelector(`#${id} > .worker-pane__hd > .worker-pane__toggle`)
+    );
+    expect(toggles.every((node) => node !== null)).toBe(true);
+  });
+
+  test('collapses only the 완료 lane on a first visit', () => {
+    window.localStorage.clear();
+    const { mount, view } = setup();
+
+    view.load();
+
+    const collapsed = LANE_IDS.filter((id) =>
+      /** @type {HTMLElement} */ (
+        mount.querySelector(`#${id}`)
+      ).classList.contains('worker-pane--collapsed')
+    );
+    expect(collapsed).toEqual(['monitor-done']);
+  });
+
+  test('folds one lane when its toggle is clicked', () => {
+    const { mount, view } = setup();
+
+    view.load();
+    click(mount, '#monitor-running .worker-pane__toggle');
+
+    const pane = el(mount, '#monitor-running');
+    expect(pane.classList.contains('worker-pane--collapsed')).toBe(true);
+    expect(pane.querySelector('.worker-pane__body')).toBeNull();
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('beads-ui.monitor.lane-collapsed') || '{}'
+      ).lanes.running
+    ).toBe(true);
+  });
+
+  test('names the five lanes with the vocabulary Worker uses', () => {
+    const { mount, view } = setup();
+
+    view.load();
+
+    const titles = Array.from(
+      mount.querySelectorAll(
+        '.worker-lanes > .worker-pane > .worker-pane__hd .worker-pane__title'
+      )
+    ).map((node) => (node.textContent || '').trim());
+    expect(titles).toEqual(['후보', '대기', '실행 중', 'PR 대기', '완료']);
+  });
+
+  test('draws the 후보 lane as a source pane', () => {
+    const { mount, view } = setup();
+
+    view.load();
+
+    expect(
+      el(mount, '#monitor-runnable').classList.contains('worker-pane--src')
+    ).toBe(true);
+  });
+
+  test('leaves the lane expanded when its header control changes', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ runnable: [{ bead_id: 'A-1', title: 'a' }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const select = /** @type {HTMLSelectElement} */ (
+      el(mount, '#monitor-runnable .mon-candidate-sort')
+    );
+    select.value = 'updated_flat';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(
+      el(mount, '#monitor-runnable').classList.contains(
+        'worker-pane--collapsed'
+      )
+    ).toBe(false);
+  });
+
+  test('puts the wait row ops inside the row first line', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const ops = el(mount, '.worker-mini__rowops');
+    expect(ops.closest('.worker-mini__line')).not.toBeNull();
+    expect(
+      Array.from(ops.querySelectorAll('button')).map((b) =>
+        (b.textContent || '').trim()
+      )
+    ).toEqual(['⛓', '↑', '↓', '✕']);
+  });
+
+  test('puts the candidate dependency button in the card head', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ runnable: [{ bead_id: 'A-1', title: 'a' }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const dep = el(mount, '#monitor-runnable .worker-card__dep');
+    expect(dep.closest('.worker-card__head-actions')).not.toBeNull();
+    expect(dep.closest('.worker-card__foot')).toBeNull();
+  });
+
+  test('keeps the cross-repo mutual-wait warning under its serial lane', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
+          bead_blocked_by: { 'A-1': ['B-1'] }
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'B-1' }] }],
+          bead_blocked_by: { 'B-1': ['A-1'] }
+        })
+      ],
+      workspaces_state: [
+        state(),
+        state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })
+      ]
+    });
+
+    view.load();
+
+    const warning = el(mount, '.mon2-lane__cross-wait');
+    expect(warning.closest('.worker-wait__lane')).not.toBeNull();
+    expect(warning.textContent).toContain('상호 정지');
+  });
+});
+
+describe('모니터 모바일 관제 우선 배치 (UI-5ksp §4.7)', () => {
+  /** @type {Array<(ev: any) => void>} */
+  let listeners = [];
+
+  beforeEach(() => {
+    listeners = [];
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      writable: true,
+      value: () => ({
+        matches: true,
+        media: '(max-width: 640px)',
+        /**
+         * @param {string} _type
+         * @param {(ev: any) => void} fn
+         */
+        addEventListener(_type, fn) {
+          listeners.push(fn);
+        },
+        removeEventListener() {}
+      })
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      writable: true,
+      value: undefined
+    });
+  });
+
+  const RUNNING = {
+    t1: {
+      attempt_id: 't1',
+      bead_id: 'A-5',
+      status: 'running',
+      started_at: NOW - 1000
+    }
+  };
+
+  test('stacks 지금 · 대기 · 후보 · 완료 in DOM order', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-1', title: 'cand' }],
+          queue: [{ bead_id: 'A-2' }],
+          pr_wait: [{ bead_id: 'A-3' }],
+          done: [{ bead_id: 'A-4', added_at: NOW }],
+          attempts: RUNNING
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('.worker-now, .worker-lanes > .worker-pane')
+      ).map((node) => node.id)
+    ).toEqual([
+      'worker-now',
+      'monitor-queue',
+      'monitor-runnable',
+      'monitor-done'
+    ]);
+  });
+
+  test('moves the running tiles and PR rows into the 지금 panel', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({ pr_wait: [{ bead_id: 'A-3' }], attempts: RUNNING })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const now_panel = el(mount, '#worker-now');
+    expect(
+      now_panel.querySelector('.rtile[data-bead-id="A-5"]')
+    ).not.toBeNull();
+    expect(
+      now_panel.querySelector('.worker-mini[data-bead-id="A-3"]')
+    ).not.toBeNull();
+    expect(el(mount, '#monitor-running')).toBeNull();
+    expect(el(mount, '#monitor-pr_wait')).toBeNull();
+  });
+});
+
+describe('접힌 레인 띠 드롭·행 조작 드래그 가드 (UI-5ksp REVISE)', () => {
+  /**
+   * Fold one lane before mounting. 접힌 pane은 본문을 그리지 않으므로
+   * `[data-drop]`도 없다 — 띠 드롭이 성립하는지 묻는 유일한 방법이다.
+   *
+   * @param {Record<string, boolean>} lanes
+   */
+  function collapseLanes(lanes) {
+    window.localStorage.setItem(
+      'beads-ui.monitor.lane-collapsed',
+      JSON.stringify({ lanes, areas: {} })
+    );
+  }
+
+  /**
+   * @param {Record<string, any>} [patch]
+   */
+  function dropSetup(patch = {}) {
+    return setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-9', title: 'cand' }],
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          ...patch
+        })
+      ],
+      workspaces_state: [state()]
+    });
+  }
+
+  test('places a candidate at the parallel tail when dropped on the collapsed 대기 strip', async () => {
+    collapseLanes({ queue: true, done: false });
+    const { mount, view, sent } = dropSetup();
+
+    view.load();
+    fireDrag(el(mount, '#monitor-runnable .worker-card'), 'dragstart');
+    const strip = el(mount, '#monitor-queue');
+    expect(strip.classList.contains('worker-pane--collapsed')).toBe(true);
+    expect(strip.querySelector('[data-drop]')).toBeNull();
+    const ev = fireDrag(strip, 'drop');
+    await flushMicrotasks();
+
+    expect(ev.defaultPrevented).toBe(true);
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-place',
+        payload: {
+          bead_id: 'A-9',
+          index: 2,
+          root_dir: WS_A,
+          expected_revision: 1
+        }
+      }
+    ]);
+  });
+
+  test('removes a queued row from the queue when dropped on the collapsed 후보 strip', async () => {
+    collapseLanes({ candidate: true, done: false });
+    const { mount, view, sent } = dropSetup();
+
+    view.load();
+    fireDrag(el(mount, '#monitor-queue .mon2-item .worker-mini'), 'dragstart');
+    const strip = el(mount, '#monitor-runnable');
+    expect(strip.classList.contains('worker-pane--collapsed')).toBe(true);
+    const ev = fireDrag(strip, 'drop');
+    await flushMicrotasks();
+
+    expect(ev.defaultPrevented).toBe(true);
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-remove',
+        payload: { bead_id: 'A-1', root_dir: WS_A, expected_revision: 1 }
+      }
+    ]);
+  });
+
+  test('matches the expanded 후보 pane when a queued row is dropped on it', async () => {
+    const { mount, view, sent } = dropSetup();
+
+    view.load();
+    fireDrag(el(mount, '#monitor-queue .mon2-item .worker-mini'), 'dragstart');
+    fireDrag(el(mount, '#monitor-runnable [data-drop="candidate"]'), 'drop');
+    await flushMicrotasks();
+
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-remove',
+        payload: { bead_id: 'A-1', root_dir: WS_A, expected_revision: 1 }
+      }
+    ]);
+  });
+
+  test('cancels a drag that started on a row operation button', () => {
+    const { mount, view } = dropSetup();
+
+    view.load();
+    const button = el(mount, '.worker-mini__rowops .mon-dep__btn');
+    const row = /** @type {HTMLElement} */ (button.closest('.worker-mini'));
+    button.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    const start = fireDrag(row, 'dragstart');
+
+    expect(start.defaultPrevented).toBe(true);
+    expect(el(mount, '.mon').classList.contains('is-dragging')).toBe(false);
+  });
+
+  test('still starts a drag pressed on the row body', () => {
+    const { mount, view } = dropSetup();
+
+    view.load();
+    const row = el(mount, '#monitor-queue .mon2-item .worker-mini');
+    row
+      .querySelector('.worker-mini__title')
+      ?.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    const start = fireDrag(row, 'dragstart');
+
+    expect(start.defaultPrevented).toBe(false);
+    expect(el(mount, '.mon').classList.contains('is-dragging')).toBe(true);
+  });
+
+  test('keeps the unreadable cross-lane notice when the wait lane is otherwise empty', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace()],
+      workspaces_state: [state()],
+      cross_lanes: null
+    });
+
+    view.load();
+
+    expect(el(mount, '.mon2-clane__unreadable').textContent?.trim()).toBe(
+      '연결 레인 저장소를 읽을 수 없음'
+    );
   });
 });

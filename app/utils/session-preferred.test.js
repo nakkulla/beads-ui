@@ -23,6 +23,26 @@ describe('isSessionPreferred (UI-49mc §6.1)', () => {
     expect(result).toBe(false);
   });
 
+  test('accepts the iterative_user_judgment reason', () => {
+    const labels = ['session-preferred'];
+
+    const result = isSessionPreferred(labels, {
+      session_preferred_reason: 'iterative_user_judgment'
+    });
+
+    expect(result).toBe(true);
+  });
+
+  test('accepts the visual_verification reason', () => {
+    const labels = ['session-preferred'];
+
+    const result = isSessionPreferred(labels, {
+      session_preferred_reason: 'visual_verification'
+    });
+
+    expect(result).toBe(true);
+  });
+
   test('rejects a reason outside the contract enum', () => {
     const labels = ['session-preferred'];
 
@@ -105,6 +125,26 @@ describe('sessionPreferredReason (UI-49mc §6.1)', () => {
     const result = sessionPreferredReason(labels, {});
 
     expect(result).toBe('');
+  });
+
+  test('returns the iterative_user_judgment reason', () => {
+    const labels = ['session-preferred'];
+
+    const result = sessionPreferredReason(labels, {
+      session_preferred_reason: 'iterative_user_judgment'
+    });
+
+    expect(result).toBe('iterative_user_judgment');
+  });
+
+  test('returns the visual_verification reason', () => {
+    const labels = ['session-preferred'];
+
+    const result = sessionPreferredReason(labels, {
+      session_preferred_reason: 'visual_verification'
+    });
+
+    expect(result).toBe('visual_verification');
   });
 
   test('returns an empty string for a reason outside the enum', () => {

@@ -154,6 +154,12 @@ beforeEach(() => {
   const client = /** @type {any} */ (createWsClient());
   client._reset();
   window.localStorage.clear();
+  // 완료 레인은 기본 접힘이고 (UI-5ksp §3-3) 접힌 pane은 본문도 header control도
+  // 그리지 않는다 — 완료 행이나 기간 select를 읽는 테스트는 레인을 먼저 편다.
+  window.localStorage.setItem(
+    'beads-ui.monitor.lane-collapsed',
+    JSON.stringify({ lanes: { done: false }, areas: {} })
+  );
 });
 
 /**
@@ -716,7 +722,7 @@ describe('monitor 완료 기간 select (UI-qrfo §7)', () => {
     expect(select.value).toBe('7d');
   });
 
-  test('names the selected period in the 완료 lane title', async () => {
+  test('names the selected period in the 완료 lane header control', async () => {
     window.localStorage.setItem('bdui.monitor.done-range', '7d');
     window.location.hash = '#/monitor';
     document.body.innerHTML = '<main id="app"></main>';
@@ -727,12 +733,19 @@ describe('monitor 완료 기간 select (UI-qrfo §7)', () => {
     const monitor_root = /** @type {HTMLElement} */ (
       document.getElementById('monitor-root')
     );
+    const select = /** @type {HTMLSelectElement} */ (
+      monitor_root.querySelector(
+        '#monitor-done .worker-pane__hd .mon-done-range'
+      )
+    );
 
+    // 제목 어휘는 두 탭 공통이고 (UI-5ksp §4.5) 기간은 header_control이 싣는다.
     expect(
       monitor_root
         .querySelector('#monitor-done .worker-pane__title')
         ?.textContent?.trim()
-    ).toContain('완료·최근 7일');
+    ).toBe('완료');
+    expect(select.value).toBe('7d');
   });
 });
 
