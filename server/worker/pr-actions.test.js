@@ -2814,6 +2814,44 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     });
   });
 
+  // The registry drops a bead while any attempt of its own runs — the queue's
+  // resolution / review / repair attempts included — and the queue re-observes
+  // the head before the next scan refills it (UI-w25i). The queue item keeps
+  // the row observable; bd still confirms it.
+  test('accepts a queue-held external bead the registry has dropped', async () => {
+    const store = createQueueStore();
+    const snapshot = store.snapshot.bind(store);
+    store.snapshot = (/** @type {string} */ ws) => ({
+      ...snapshot(ws),
+      merge_queue: /** @type {any} */ ([{ bead_id: EXTERNAL_BEAD }])
+    });
+    const env = makeActions(externalOptions({ store, external: {} }));
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r.action).toBe('merged');
+  });
+
+  test('still refuses a queue-held bead bd no longer reports resolved', async () => {
+    const store = createQueueStore();
+    const snapshot = store.snapshot.bind(store);
+    store.snapshot = (/** @type {string} */ ws) => ({
+      ...snapshot(ws),
+      merge_queue: /** @type {any} */ ([{ bead_id: EXTERNAL_BEAD }])
+    });
+    const env = makeActions(
+      externalOptions({
+        store,
+        external: {},
+        bdStatus: { [EXTERNAL_BEAD]: 'closed' }
+      })
+    );
+
+    const r = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(r).toEqual({ ok: false, action: 'refused', reason: 'not_resolved' });
+  });
+
   test('refuses when the click-time bd re-read fails', async () => {
     const env = makeActions(
       externalOptions({
