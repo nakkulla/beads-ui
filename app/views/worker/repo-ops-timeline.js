@@ -16,7 +16,12 @@
  */
 import { html, render } from 'lit-html';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
-import { failureText, operationFailureText } from './failure-labels.js';
+import {
+  failureText,
+  operationFailureText,
+  retryOutcomeText,
+  terminationText
+} from './failure-labels.js';
 import { formatClock, formatElapsed, shortSha } from './lanes.js';
 import { cleanupStepLabel, cleanupStepperView } from './merge-steps.js';
 
@@ -261,6 +266,34 @@ function explainTemplate(text, suffix = '', warn = false) {
 }
 
 /**
+ * The two derived lines under the cause sentence (UI-s582 §2): HOW the process
+ * ended, and what the one automatic `script_retry` did about it.
+ *
+ * Both are pure derivations of fields the card already carries, and both are
+ * omitted when the card cannot prove what they would say — an absent line is the
+ * honest rendering of an absent fact. The retry line is asked for on EVERY state
+ * because `absorbed` belongs on a succeeded card: it is the only trace left of a
+ * failure the retry erased.
+ *
+ * @param {any} operation
+ * @returns {TemplateResult|string}
+ */
+function operationWhyTemplate(operation) {
+  const termination = terminationText(operation);
+  const retry = retryOutcomeText(operation);
+  if (!termination && !retry) {
+    return '';
+  }
+  return html`<p class="worker-ev__why">
+    ${termination
+      ? html`<span class="worker-ev__why-line">${termination}</span>`
+      : ''}${retry
+      ? html`<span class="worker-ev__why-line">${retry}</span>`
+      : ''}
+  </p>`;
+}
+
+/**
  * The dismiss action on a failed operation (§4.2). A failed script is now a
  * terminal record: the only thing a reader can do to it is accept it, which
  * takes the row out of the attention count without erasing the evidence.
@@ -338,7 +371,7 @@ function operationEventTemplate(event) {
       ${failed
         ? explainTemplate(operationFailureText(operation.failure_kind, code))
         : ''}
-      ${operationActionsTemplate(operation)}
+      ${operationWhyTemplate(operation)} ${operationActionsTemplate(operation)}
       ${detailsTemplate([
         { term: '실패 코드', value: failed ? code : '' },
         {

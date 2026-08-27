@@ -4,7 +4,9 @@ import {
   failureSentence,
   failureText,
   isKnownFailure,
-  operationFailureText
+  operationFailureText,
+  retryOutcomeText,
+  terminationText
 } from './failure-labels.js';
 
 describe('failureCategory', () => {
@@ -173,5 +175,318 @@ describe('cleanup step-1 (base 포함 확인) codes', () => {
 
   test('maps every code the step can record', () => {
     expect(BASE_CODES.filter((code) => !isKnownFailure(code))).toEqual([]);
+  });
+});
+
+/**
+ * One `repo_operations[]` card in the SERVER's projected shape
+ * (`projectRepoOperations`, server/ws/worker-handlers.js): every key that
+ * projection emits, with the durable defaults a failed script run produces.
+ *
+ * The fixture matters more than usual here — the two derived lines read fields
+ * the projection is the only writer of, so a fixture invented from the design
+ * doc rather than from the projection could pass while the real card renders
+ * nothing.
+ *
+ * @param {Record<string, any>} [patch]
+ */
+function card(patch = {}) {
+  return {
+    operation_id: 'op-1',
+    kind: 'deploy',
+    repo_id: '/repo',
+    target_base: 'main',
+    target_sha: 'c'.repeat(40),
+    target_tree: 'd'.repeat(40),
+    effective_base_sha: 'b'.repeat(40),
+    script_path: 'repo-ops/script/deploy',
+    script_blob_sha: 'e'.repeat(40),
+    script_mode: '100755',
+    state: 'failed',
+    requested_at: 1000,
+    started_at: 1100,
+    finished_at: 43_100,
+    elapsed_ms: 42_000,
+    exit_code: 1,
+    signal: null,
+    log_path: '/logs/op-1.log',
+    log_digest: 'a'.repeat(64),
+    output_tail: 'deploy exited with 1',
+    subjects: [],
+    failure: {
+      code: 'script_failed',
+      fingerprint: 'f'.repeat(64),
+      detail: '',
+      interrupted: false
+    },
+    failure_kind: 'deploy_script_failure',
+    verify_stage: null,
+    retry: {
+      status: 'not_applicable',
+      first_fingerprint: 'f'.repeat(64),
+      blocked_reason: null,
+      absorbed: null
+    },
+    superseded_by: null,
+    dismissed: null,
+    ...patch
+  };
+}
+
+describe('terminationText (UI-s582 §2 종료 원인)', () => {
+  test('names a nonzero exit with its elapsed time', () => {
+    expect(terminationText(card())).toBe('exit 1 · 42.0초');
+  });
+
+  test('names the signal instead when the process was killed', () => {
+    expect(
+      terminationText(
+        card({ exit_code: null, signal: 'SIGKILL', elapsed_ms: 190_000 })
+      )
+    ).toBe('signal SIGKILL · 3분 10초');
+  });
+
+  test('names a timeout before the exit code the wrapper recorded', () => {
+    expect(
+      terminationText(
+        card({
+          exit_code: 124,
+          failure: {
+            code: 'timeout',
+            fingerprint: 'f'.repeat(64),
+            detail: '',
+            interrupted: false
+          }
+        })
+      )
+    ).toBe('타임아웃 초과');
+  });
+
+  test('carries the declared limit when the caller has the declaration', () => {
+    expect(
+      terminationText(
+        card({
+          exit_code: 124,
+          failure: {
+            code: 'timeout',
+            fingerprint: 'f'.repeat(64),
+            detail: '',
+            interrupted: false
+          }
+        }),
+        600_000
+      )
+    ).toBe('타임아웃 600초 초과');
+  });
+
+  test('names an interruption before any exit code', () => {
+    expect(
+      terminationText(
+        card({
+          exit_code: 1,
+          failure: {
+            code: 'interrupted',
+            fingerprint: 'f'.repeat(64),
+            detail: 'marker_missing',
+            interrupted: true
+          },
+          failure_kind: 'interrupted_without_terminal_exit'
+        })
+      )
+    ).toBe('종료 기록 없음 — 중단됨');
+  });
+
+  test('omits the line for a declaration-stage failure', () => {
+    expect(
+      terminationText(
+        card({
+          failure: {
+            code: 'repo_ops_fetch_failed',
+            fingerprint: 'f'.repeat(64),
+            detail: '',
+            interrupted: false
+          },
+          failure_kind: 'repo_ops_fetch_failed'
+        })
+      )
+    ).toBe('');
+  });
+
+  test('omits the line for an unresolved-sibling wait failure', () => {
+    expect(
+      terminationText(
+        card({
+          failure: {
+            code: 'repo_operation_timeout_unresolved',
+            fingerprint: 'f'.repeat(64),
+            detail: '',
+            interrupted: false
+          },
+          failure_kind: 'repo_operation_timeout_unresolved'
+        })
+      )
+    ).toBe('');
+  });
+
+  test('omits the line when no field says how the process ended', () => {
+    expect(terminationText(card({ exit_code: null, signal: null }))).toBe('');
+  });
+
+  test('omits the elapsed suffix when the card has no elapsed time', () => {
+    expect(terminationText(card({ elapsed_ms: null }))).toBe('exit 1');
+  });
+
+  test('renders nothing for a card that did not fail', () => {
+    expect(
+      terminationText(card({ state: 'succeeded', exit_code: 0, failure: null }))
+    ).toBe('');
+  });
+});
+
+describe('retryOutcomeText (UI-s582 §2 재시도 결과)', () => {
+  test('reads blocked_reason first, without comparing fingerprints', () => {
+    expect(
+      retryOutcomeText(
+        card({
+          retry: {
+            status: 'not_applicable',
+            first_fingerprint: 'a'.repeat(64),
+            blocked_reason: 'schema_unsupported',
+            absorbed: null
+          }
+        })
+      )
+    ).toBe('자동 재시도 못 함 — 핀된 정책 스키마를 지원하지 않습니다.');
+  });
+
+  test('falls back to the raw token for an unknown block reason', () => {
+    expect(
+      retryOutcomeText(
+        card({
+          retry: {
+            status: 'not_applicable',
+            first_fingerprint: null,
+            blocked_reason: 'a_future_reason',
+            absorbed: null
+          }
+        })
+      )
+    ).toBe('자동 재시도 못 함 — a_future_reason');
+  });
+
+  test('names an absorbed first failure on the succeeded card', () => {
+    expect(
+      retryOutcomeText(
+        card({
+          state: 'succeeded',
+          exit_code: 0,
+          failure: null,
+          failure_kind: null,
+          retry: {
+            status: 'absorbed',
+            first_fingerprint: 'a'.repeat(64),
+            blocked_reason: null,
+            absorbed: {
+              first_failure: {
+                code: 'deploy_script_failure',
+                fingerprint: 'a'.repeat(64),
+                detail: '',
+                interrupted: false
+              },
+              first_fingerprint: 'a'.repeat(64),
+              at: 40_000
+            }
+          }
+        })
+      )
+    ).toBe(
+      '자동 재시도로 해소됨 — 첫 실패: 배포 실패 — 배포 스크립트가 실패했습니다.'
+    );
+  });
+
+  test('reports a consumed retry that hit the same failure', () => {
+    expect(
+      retryOutcomeText(
+        card({
+          retry: {
+            status: 'consumed',
+            first_fingerprint: 'f'.repeat(64),
+            blocked_reason: null,
+            absorbed: null
+          }
+        })
+      )
+    ).toBe('자동 재시도 1회 — 같은 실패');
+  });
+
+  test('reports a consumed retry that hit a different failure', () => {
+    expect(
+      retryOutcomeText(
+        card({
+          retry: {
+            status: 'consumed',
+            first_fingerprint: 'a'.repeat(64),
+            blocked_reason: null,
+            absorbed: null
+          }
+        })
+      )
+    ).toBe('자동 재시도 1회 — 다른 실패');
+  });
+
+  test('says a failure was never a retry candidate', () => {
+    expect(retryOutcomeText(card())).toBe(
+      '재시도 대상 아님 — 스크립트 실행 전 실패'
+    );
+  });
+
+  test('says nothing on a plain success the normalizer calls not_applicable', () => {
+    expect(
+      retryOutcomeText(
+        card({
+          state: 'succeeded',
+          exit_code: 0,
+          failure: null,
+          failure_kind: null,
+          retry: {
+            status: 'not_applicable',
+            first_fingerprint: null,
+            blocked_reason: null,
+            absorbed: null
+          }
+        })
+      )
+    ).toBe('');
+  });
+
+  test('says nothing while the retry has not been used yet', () => {
+    expect(
+      retryOutcomeText(
+        card({
+          state: 'retry_pending',
+          retry: {
+            status: 'unconsumed',
+            first_fingerprint: 'f'.repeat(64),
+            blocked_reason: null,
+            absorbed: null
+          }
+        })
+      )
+    ).toBe('');
+  });
+
+  test('treats a consumed status with no first fingerprint as no evidence', () => {
+    expect(
+      retryOutcomeText(
+        card({
+          retry: {
+            status: 'consumed',
+            first_fingerprint: null,
+            blocked_reason: null,
+            absorbed: null
+          }
+        })
+      )
+    ).toBe('');
   });
 });
