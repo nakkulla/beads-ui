@@ -1731,6 +1731,10 @@ describe('worker/queue-store', () => {
       'UI-later',
       'UI-root'
     ]);
+    expect(result.queue.merge_queue[1]).toMatchObject({
+      resolution_rounds: 0,
+      rebase_rounds: 0
+    });
     expect(result.queue.completion_intents['UI-root']).toMatchObject({
       phase: 'gating',
       repair_sessions_used: 1,
@@ -5655,6 +5659,16 @@ describe('worker/queue-store — manual merge continuation authority', () => {
     expect(result.queue.completion_intents['UI-1'].phase).toBe('cleaning');
   });
 
+  test('stores a zero rebase budget on a manual merge entry', () => {
+    const store = terminalManualStore();
+
+    const result = enqueueManual(store);
+
+    expect(
+      result.queue.merge_queue.find((entry) => entry.bead_id === 'UI-1')
+    ).toMatchObject({ resolution_rounds: 0, rebase_rounds: 0 });
+  });
+
   test('preserves completion operation and repair lineage during resume', () => {
     const store = terminalManualStore();
     const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
@@ -8599,6 +8613,26 @@ describe('worker/queue-store — 자동 리뷰 enrolment (UI-hk74 §6)', () => {
       ...patch
     });
   }
+
+  test('stores a zero rebase budget on the enrolled queue entry', () => {
+    const store = enrolableStore();
+
+    const result = store.enrolAutoReview(WS, {
+      root_bead_id: 'UI-root',
+      resolution: autoReviewResolution(),
+      head_sha: HEAD,
+      target_base: 'main',
+      reviewer: 'unresolved',
+      effort: 'unresolved'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(
+      store
+        .snapshot(WS)
+        .merge_queue.find((entry) => entry.bead_id === 'UI-root')
+    ).toMatchObject({ resolution_rounds: 0, rebase_rounds: 0 });
+  });
 
   test('writes phase, authority, and journal in one revision', () => {
     const store = enrolableStore();

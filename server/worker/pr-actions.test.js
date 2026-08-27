@@ -1167,6 +1167,56 @@ describe('merge click — driver-approved latest probe (UI-yup9)', () => {
     );
   });
 
+  test('carries head_ref into the attempt-less fallback when no session is resumable', async () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'a1',
+        bead_id: BEAD,
+        repo: REPO,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'claude'
+      }
+    });
+    // A PR-bearing attempt that never captured a session id: the relaunch path
+    // has nothing to resume, so the resolver must fall through to the
+    // attempt-less dispatch with the observed head branch intact.
+    store.updateAttempt(WS, {
+      attempt_id: 'a1',
+      patch: {
+        finished_at: 10,
+        verify_result: /** @type {any} */ ({
+          ok: true,
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304
+        })
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: BEAD,
+      attempt_id: 'a1',
+      patch: { status: 'done' }
+    });
+    const h = makeActions({
+      store,
+      details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+    expect(h.scheduler.dispatchExternalConflict).toHaveBeenCalledWith(
+      WS,
+      BEAD,
+      'main',
+      null,
+      {},
+      BEAD
+    );
+  });
+
   test('dispatches one resolver for the exact re-probed DIRTY identity', async () => {
     const h = makeActions({
       details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
