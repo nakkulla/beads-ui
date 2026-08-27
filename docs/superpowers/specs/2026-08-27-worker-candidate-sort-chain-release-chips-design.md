@@ -4,6 +4,8 @@ scope:
   - server/workspace-snapshot-coordinator.js
   - server/workspace-snapshot-runtime.js
   - server/worker/foreign-blocker-status.js
+  - server/subscriptions.js
+  - server/ws/refresh.js
   - app/views/worker/index.js
   - app/views/worker/lanes.js
   - app/views/worker/queue-blockers.js
@@ -81,8 +83,8 @@ Ready·Blocked 투영의 각 이슈에 붙인다. `attachBlockedInfo`가 `blocke
 
 ```js
 release_info: {
-  released_by: [{ id, closed_at, foreign }],  // closed_at desc
-  last_released_at: number                     // released_by[0].closed_at
+  released_by: [{ id, closed_at, foreign, root_dir? }],  // closed_at desc
+  last_released_at: number                                // released_by[0].closed_at
 }
 ```
 
@@ -93,6 +95,12 @@ release_info: {
 - foreign id: `foreignBlockerStatusFor`의 캐시 항목에 `closed_at`을 추가 저장한다
   (§3.4). 캐시가 `closed`이고 `closed_at`이 있으면 `foreign: true`로 넣고, 캐시
   미도착·`open`·`closed_at` 없음이면 넣지 않는다 — "모름"이지 "해제 아님"이 아니다.
+  foreign 항목에는 owner workspace를 알 때만 `root_dir`을 싣는다 — 값은
+  `applyForeignBlockerCleanup`이 `blocker_workspaces`에 쓰는 것과 같은
+  prefix→root 맵(`cachedIssuePrefixFor`·`visibleWorkspaceRoots`)에서 온다.
+  `blocker_workspaces`는 **살아남은(열린)** foreign blocker만 싣기 때문에 닫힌
+  blocker의 owner를 거기서 읽을 수 없어, 항목 안에 직접 싣는다. owner를 모르면
+  키가 없고 클라이언트는 그 칩을 `openable`하지 않은 채로 그린다.
 - `released_by`가 비면 키 자체를 싣지 않는다.
 
 ### 3.4 foreign 캐시에 `closed_at` 추가 (`server/worker/foreign-blocker-status.js`)
@@ -118,7 +126,8 @@ dependents_info: { count: number, ids: string[] }  // 열린 후속만, ids는 �
   peek해서 그 스냅샷의 `blocks_in[issue.id]`를 같은 규칙으로 더한다. peek이
   `null`인 root의 후속은 세지 않고, 그 사실을 따로 표시하지 않는다. **새 스냅샷
   요청을 유발하지 않는다** — 다른 root의 갱신 주기는 그 root의 것이다.
-- `count === 0`이면 키를 싣지 않는다.
+- `count === 0`이면 키를 싣지 않는다. 따라서 소비자는 **0과 미상을 구분할 수
+  없다** — 둘 다 "키 없음"이다(§4.1 없음 처리).
 
 ### 3.6 바꾸지 않는 것
 
@@ -126,6 +135,32 @@ dependents_info: { count: number, ids: string[] }  // 열린 후속만, ids는 �
   닫힌 blocker를 다시 붙이는 것은 표시 재료이지 판정이 아니다.
 - Board 탭은 같은 `ready-issues`/`blocked-issues` 투영을 읽지만 새 키를 소비하지
   않는다. `app/protocol.md`에 두 키를 partial 장식으로 기록한다.
+
+### 3.7 갱신 전파 — 장식이 바뀌면 구독도 바뀌어야 한다
+
+두 장식은 **대상 이슈 자신의** `updated_at`/`closed_at`이 움직이지 않아도
+달라진다(선행이 닫힘, 후속이 생기거나 닫힘, foreign 조회 도착). 그런데 리스트
+구독의 delta 판정(`server/subscriptions.js` `computeDelta`·`toItemsMap`)은
+`updated_at`·`closed_at`·목록 포함 여부만 비교하므로, 그대로 두면 서버가 새
+장식을 계산해도 클라이언트에 upsert가 가지 않는다(`server/ws/refresh.js`
+`refreshAndPublish`는 `delta.added/updated`만 보낸다).
+
+- `list-adapters`의 Ready/Blocked 투영은 각 이슈에 `decoration_rev: string`을
+  붙인다 — `release_info`·`dependents_info`를 정렬된 키 순서로 직렬화한 안정
+  문자열(둘 다 없으면 `''`). 표시용이 아니라 delta 지문이다.
+- `subscriptions.js`의 `ItemMeta`에 `decoration_rev`를 더하고 `toItemsMap`이
+  `it.decoration_rev`(없으면 `''`)를 읽으며, `computeDelta`는 세 값 중 하나라도
+  다르면 `updated`로 친다. 다른 리스트 타입은 키가 없어 `''`로 고정이므로 판정이
+  바뀌지 않는다.
+- foreign 조회 도착: `server/ws/refresh.js`가 `onForeignBlockerResolved`를
+  구독해, 리스너가 받는 요청자 root마다 `scheduleListRefresh('foreign-blocker',
+  root)`를 부른다. 지금은 Worker 큐·Monitor 채널만 다시 그리고 리스트 구독은
+  듣지 않는다(UI-u6zf §3.3).
+- 다른 워크스페이스의 스냅샷 변화로 `dependents_info`가 바뀌는 경우는 이
+  워크스페이스의 **다음 refresh(watcher·poll·mutation)** 때 `decoration_rev`
+  차이로 잡힌다. 그 순간을 앞당기려고 다른 root의 스냅샷 갱신을 이 root의 리스트
+  refresh로 fanout하지는 않는다 — 보이는 워크스페이스 수만큼 refresh가 곱해지고,
+  후속 수는 그 지연을 감당할 수 있는 재료다.
 
 ## 4. 클라이언트 — 정렬 체인
 
@@ -143,14 +178,17 @@ dependents_info: { count: number, ids: string[] }  // 열린 후속만, ids는 �
 | 키 | 비교 값 | 기본 방향 | 없음 처리 |
 |---|---|---|---|
 | `priority` | `priority` | asc (0 위) | 맨 뒤 |
-| `dependents` | `dependents_info.count` | desc | 0 |
+| `dependents` | `dependents_info.count` | desc | 맨 뒤 (0과 미상 구분 불가, §3.5) |
 | `released` | `release_info.last_released_at` | desc | 맨 뒤 |
 | `spec` | `hasSpec` | desc (있음 위) | 없음 |
 | `created` | `created_at` | asc (오래 기다린 것 위) | 맨 뒤 |
 | `updated` | `updated_at` | desc | 맨 뒤 |
 
 - 방향은 키마다 기본값을 두되 step마다 뒤집을 수 있다. "없음 처리"는 방향과
-  무관하게 그 값이다 — 방향을 뒤집어도 재료 없는 행이 위로 올라오지 않는다.
+  무관하게 그 값이다 — 비교기는 방향을 적용하기 **전에** 재료 없는 행을 뒤로
+  보내므로, 방향을 뒤집어도 재료 없는 행이 위로 올라오지 않는다. `dependents`의
+  "맨 뒤"는 `dependents asc`에서도 후속이 있는 행(1 이상)이 먼저 오고 키 없는
+  행이 뒤에 온다는 뜻이다.
 - 체인 길이 1~3. 마지막에 암묵 tiebreak `created asc → id asc`가 붙는다.
 - `applyCandidateSort(issues, state)`는 `cmpChain(steps)`로 정렬한 뒤 **Blocked
   이슈를 안정 분할로 맨 아래**에 둔다. Blocked 판정은 지금과 같이 `blocked_ids`
@@ -245,10 +283,18 @@ dependents?: DependentsChip     // `→ 후속 n`
 
 ## 6. 클라이언트 — 후보 드래그 제거
 
-- 후보 카드 투영의 `draggable`을 `false`로 고정한다. `candidateCard`의 배치
-  메뉴 열림 조건(`menu_open = draggable && …`, `lanes.js`)은 `draggable`과
-  분리해 `!item.done && !worker_ineligible`로 바꾼다 — 메뉴는 드래그의 대체
-  수단이지 부속물이 아니다.
+- 후보 카드 투영의 `draggable`을 `false`로 고정한다. 지금 `candidateCard`
+  (`lanes.js`)는 `draggable`을 배치 자격으로도 쓴다 — 배치 메뉴 열림
+  (`menu_open = draggable && …`)과 `[대기로 ↴]` 버튼 렌더 분기가 모두 그 안에
+  있다. 그대로 끄면 정상 후보를 대기에 넣는 주 경로가 사라진다. 그래서
+  `CandidateItem`에 `queue_placeable: boolean`
+  (= `!item.done && !worker_ineligible`, 투영이 계산)을 더하고, 메뉴·`[대기로 ↴]`·
+  겹침 팝오버 1클릭 배치의 자격 판정은 전부 이 값을 읽는다. `draggable`은 DOM
+  `draggable` 속성과 `worker-card--static` 클래스 판정에만 남는다.
+- actions-only foot(`.worker-card__foot--actions-only`)은 지금 데스크톱에서
+  `display: none`이고 coarse pointer/640px 이하에서만 보인다 — 데스크톱에서는
+  드래그가 배치 수단이라는 전제였다. 그 전제가 사라지므로 이 규칙을 지워 foot이
+  포인터 종류와 무관하게 보이게 한다(사유가 있는 foot과 같은 표시).
 - `onDragOver`의 드롭 대상에서 `candidate`를 뺀다. `onDrop`의
   `to_lane === 'candidate'` 분기(`reorderCandidates` 호출과 `removeBead` 호출)를
   지운다. `reorderCandidates`, 후보용 `computeDropRank` 사용, `candidate_issues`가
@@ -286,7 +332,11 @@ dependents?: DependentsChip     // `→ 후속 n`
 - foreign 캐시 miss → `release_info`에 그 id 없음; `closed`+`closed_at` 도착 후
   실림.
 - 다른 워크스페이스 peek `null` → 그 root의 후속은 세지 않음; 스냅샷 있으면 합산.
-- `count === 0`·`released_by` 빈 경우 키 부재.
+- `count === 0`·`released_by` 빈 경우 키 부재; foreign `released_by` 항목의
+  `root_dir`은 owner를 알 때만.
+- `decoration_rev`: 장식만 바뀐 이슈가 `computeDelta`에서 `updated`로 잡힘;
+  장식 없는 리스트 타입의 delta는 변화 없음; `onForeignBlockerResolved`가
+  요청자 root의 리스트 refresh를 예약함.
 
 클라이언트 (`app/data/sort.test.js`, `app/views/worker/candidate-sort.test.js`,
 `queue-blockers.test.js`, `lanes.test.js`, `index.test.js`):
@@ -295,8 +345,12 @@ dependents?: DependentsChip     // `→ 후속 n`
   프리셋과 같은 체인의 `{preset}` 정규화.
 - Blocked 이슈가 어느 체인에서도 맨 아래.
 - `releasedChip` 7일 창·최대 2개·` 외 n`·foreign 색; `dependentsChip` 라벨·툴팁.
-- 후보 카드 `draggable="false"`이면서 배치 메뉴는 열림; `onDragOver`가
-  `candidate` 페인을 거부; 대기 행 `✕` 클릭이 `worker-queue-remove`를 보냄.
+- 후보 카드 `draggable="false"`이면서 `queue_placeable`이면 `[대기로 ↴]`가
+  그려지고 배치 메뉴가 열림, `worker_ineligible`이면 둘 다 없음; foot이
+  데스크톱 미디어에서도 보임(CSS 규칙 부재 확인); `onDragOver`가 `candidate`
+  페인을 거부; 대기 행 `✕` 클릭이 `worker-queue-remove`를 보냄.
+- `cmpChain` `dependents asc`에서 키 없는 행이 뒤로 감; foreign 해제 칩이
+  `root_dir` 있을 때만 `openable`.
 - Pre-handoff 번들(`npm run tsc`·`npx vitest run --reporter=dot`·`npm run lint`·
   `npm run prettier:write`·`npm run build`). 배포 후 후보 레인 스크린샷으로 체인
   편집 줄·두 칩·대기 행 `✕`를 확인한다.
