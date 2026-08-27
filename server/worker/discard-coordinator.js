@@ -2206,7 +2206,14 @@ export function createDiscardCoordinator(deps, options = {}) {
     } catch {
       return { ok: false, conflict: false, reason: 'base_observe_failed' };
     }
-    if (!resolved.ok || resolved.base_oid !== stale_work.identity.base_oid) {
+    // Only the base NAME is needed here (it labels the operation's
+    // `target_base`). The recorded `base_oid` is the residue's own identity:
+    // every later phase archives, re-observes, and removes against it, so a
+    // base that moved on since the admission was recorded changes nothing the
+    // backup depends on. Refusing on that drift left the card with no way
+    // out — the admission only refreshes on a dispatch retry, which an
+    // `auto_advance: false` workspace never runs (UI-avs8).
+    if (!resolved.ok) {
       return { ok: false, conflict: true, reason: 'base_identity_changed' };
     }
     const branch = stale_work.identity.branch;

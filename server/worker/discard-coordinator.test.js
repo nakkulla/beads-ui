@@ -1836,7 +1836,7 @@ describe('worker discard coordinator unmerged lifecycle', () => {
 });
 
 /**
- * @param {{ in_flight?: boolean, residue?: 'worktree'|'branch', archive_failure?: boolean, local_ref_failure?: boolean, clean_resume?: boolean }} [options]
+ * @param {{ in_flight?: boolean, residue?: 'worktree'|'branch', archive_failure?: boolean, local_ref_failure?: boolean, clean_resume?: boolean, base_moved?: boolean }} [options]
  */
 function setupStaleRecovery(options = {}) {
   const residue = options.residue || 'worktree';
@@ -2073,7 +2073,7 @@ function setupStaleRecovery(options = {}) {
     resolveBase: vi.fn(async () => ({
       ok: true,
       base: 'main',
-      base_oid: identity.base_oid
+      base_oid: options.base_moved ? 'c'.repeat(40) : identity.base_oid
     }))
   };
   const createCoordinator = () =>
@@ -2330,6 +2330,25 @@ describe('worker discard coordinator stale-work recovery', () => {
       reason: 'action_in_flight'
     });
     expect(env.archive.create).not.toHaveBeenCalled();
+  });
+
+  test('backs up worktree residue against its recorded base after the base moved', async () => {
+    const env = setupStaleRecovery({ base_moved: true });
+
+    const result = await env.coordinator.backupFresh({
+      bead_id: 'UI-stale',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toEqual({ ok: true, operation_id: 'stale-work-1' });
+    expect(env.worktree.removeByBranch).toHaveBeenCalledWith(
+      expect.objectContaining({ expected_base_oid: env.identity.base_oid })
+    );
+    expect(
+      env.store.snapshot(workspace).discard_operations['stale-work-1']
+        .source_snapshot
+    ).toMatchObject({ base_oid: env.identity.base_oid, target_base: 'main' });
   });
 
   test('preserves stale work when status changes after archive verification', async () => {
