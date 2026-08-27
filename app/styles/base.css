@@ -89,6 +89,20 @@ body {
   color: var(--chip-label);
   border-color: var(--border-label);
 }
+/* 복잡 chip (UI-sbum §5): label 계열 하나를 강조 톤으로 빌려 쓴다 — 새 색
+   토큰은 만들지 않는다. 상태는 색이 아니라 채움/테두리가 말한다: 미적용은
+   테두리만, 적용됨은 옅게 채워 "이미 반영됨"을, 추천과 다름은 점선으로 "값이
+   갈렸음"을 각각 한 눈에 구분시킨다. */
+.ctl-chip--label.worker-card__rec {
+  color: var(--chip-ft);
+  border-color: var(--border-ft);
+}
+.ctl-chip--label.worker-card__rec[data-state='applied'] {
+  background: var(--border-ft);
+}
+.ctl-chip--label.worker-card__rec[data-state='diverged'] {
+  border-style: dashed;
+}
 .ctl-chip--from {
   color: var(--chip-from);
   border-color: var(--border-from);

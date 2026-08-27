@@ -9743,6 +9743,31 @@ button.detail-session__leg:focus-visible {
   font-family: var(--font-mono, monospace);
 }
 
+/* 상세 헤더의 복잡 chip (UI-sbum §5): 유일하게 클릭되는 chip이라 `button`이지만
+   receipt chip과 같은 크기·같은 줄에 서야 하므로 브라우저 기본 버튼 모양을
+   지운다. 이미 적용된 추천은 누를 것이 없으므로 커서도 손가락이 아니다. */
+.detail-summary__chip--rec {
+  background: none;
+  font: inherit;
+  font-size: var(--fs-chip);
+  line-height: inherit;
+  color: var(--chip-ft);
+  border-color: var(--border-ft);
+  cursor: pointer;
+}
+
+.detail-summary__chip--rec[data-state='applied'] {
+  background: var(--border-ft);
+}
+
+.detail-summary__chip--rec[data-state='diverged'] {
+  border-style: dashed;
+}
+
+.detail-summary__chip--rec:disabled {
+  cursor: default;
+}
+
 .detail-summary__chip-effort {
   margin-left: var(--sp-4);
   padding-left: var(--sp-4);

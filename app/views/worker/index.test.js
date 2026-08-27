@@ -13973,3 +13973,165 @@ describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
     expect(console_el.classList.contains('is-dragging')).toBe(false);
   });
 });
+
+describe('복잡 chip projection on the worker tab (UI-sbum §3)', () => {
+  const REC_META = {
+    spec_id: 'S',
+    spec_review: RECEIPT,
+    rec_orchestration_model: 'fable',
+    rec_impl_runtime: 'claude',
+    rec_reason: 'contract_change'
+  };
+
+  /**
+   * Ready feed carrying one recommended candidate (`REC`) beside a plain one,
+   * so the absence case is asserted against the same render.
+   *
+   * @param {Partial<any>} [over] - Overrides merged into the recommended issue.
+   */
+  function seedRec(over = {}) {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'REC',
+        title: 'complex work',
+        status: 'open',
+        created_at: 100,
+        metadata: REC_META,
+        ...over
+      },
+      {
+        id: 'PLAIN',
+        title: 'plain work',
+        status: 'open',
+        created_at: 300,
+        metadata: { spec_id: 'S', spec_review: RECEIPT }
+      }
+    ]);
+    return stores;
+  }
+
+  /**
+   * @param {any} stores
+   * @param {any} [queueStore]
+   * @returns {HTMLElement}
+   */
+  function mountRec(stores, queueStore = createWorkerQueueStore()) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  test('draws the chip on the candidate card of a recommended bead', () => {
+    const mount = mountRec(seedRec());
+
+    const chip = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="REC"] .worker-card__rec')
+    );
+
+    expect(chip.textContent?.trim()).toBe('복잡');
+    expect(chip.title).toContain('사유: contract_change');
+    expect(chip.dataset.state).toBe('unapplied');
+  });
+
+  test('omits the chip on a candidate with no recommendation', () => {
+    const mount = mountRec(seedRec());
+
+    expect(
+      mount.querySelector(
+        '.worker-card[data-bead-id="PLAIN"] .worker-card__rec'
+      )
+    ).toBeNull();
+  });
+
+  test('reads the applied state from the bead own authority keys', () => {
+    const mount = mountRec(
+      seedRec({
+        metadata: {
+          ...REC_META,
+          orchestration_model: 'fable',
+          impl_runtime: 'claude'
+        }
+      })
+    );
+
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector(
+          '.worker-card[data-bead-id="REC"] .worker-card__rec'
+        )
+      ).dataset.state
+    ).toBe('applied');
+  });
+
+  test('draws the chip on the waiting row of the same bead', () => {
+    const queueStore = createWorkerQueueStore();
+    const mount = mountRec(seedRec(), queueStore);
+
+    queueStore.set(queueOf({ queue: [{ bead_id: 'REC', added_at: 1 }] }));
+
+    expect(
+      mount.querySelector(
+        '#worker-pane-queue .worker-mini[data-bead-id="REC"] .worker-card__rec'
+      )
+    ).not.toBeNull();
+  });
+
+  test('draws no chip for a queued bead outside the subscribed issue set', () => {
+    const queueStore = createWorkerQueueStore();
+    const mount = mountRec(seedRec(), queueStore);
+
+    queueStore.set(queueOf({ queue: [{ bead_id: 'UNSEEN', added_at: 1 }] }));
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-queue .worker-mini[data-bead-id="UNSEEN"]'
+      )
+    );
+    expect(row).not.toBeNull();
+    expect(row.querySelector('.worker-card__rec')).toBeNull();
+  });
+
+  test('draws the chip on the running attempt tile of the same bead', () => {
+    const queueStore = createWorkerQueueStore();
+    const mount = mountRec(seedRec(), queueStore);
+
+    queueStore.set(
+      queueOf({
+        attempts: {
+          'attempt-1': {
+            attempt_id: 'attempt-1',
+            bead_id: 'REC',
+            status: 'running',
+            runner: 'claude',
+            model: 'opus',
+            started_at: Date.now()
+          }
+        }
+      })
+    );
+
+    expect(
+      mount.querySelector('.rtile[data-bead-id="REC"] .worker-card__rec')
+    ).not.toBeNull();
+  });
+
+  test('renders a recommended bead whose metadata is missing without throwing', () => {
+    const mount = mountRec(
+      seedRec({ metadata: undefined, spec_id: 'S', spec_review: RECEIPT })
+    );
+
+    expect(
+      mount.querySelector('.worker-card[data-bead-id="REC"] .worker-card__rec')
+    ).toBeNull();
+  });
+});
