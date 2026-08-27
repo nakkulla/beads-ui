@@ -220,6 +220,14 @@ merge-step 게이지가 1번과 6번에 함께 적힌 것은 슬롯이 둘이라
   분류하는 좌표가 아니기 때문이다. 같은 판정으로 정체성 줄에 남긴
   `worker-ineligible`과 짝이다.
 
+**정정(UI-5ksp).** ⛓ 의존성 버튼은 슬롯 1 조작이다. UI-j92s가 `대기로 ↴`
+옆(foot)에 두었던 자리는 UI-5ksp가 옮겼다
+(`docs/superpowers/specs/2026-08-27-worker-monitor-lane-surface-unify-design.md`
+§4.6). 같은 판정으로 Monitor 대기 행의 `↑ ↓ ✕`도 행 밖 별도 줄에서 행 1번 줄
+조작 영역 끝으로 들어왔다 — foot은 `대기로 ↴` 하나만 사는 곳이라 coarse pointer
+전용 접기 규칙을 그대로 쓰고, 상시 조작인 의존성 버튼은 그 규칙에 삼켜지지 않는
+자리에 서야 한다.
+
 ### 5.2 `AGENTS.md`에 남길 규칙
 
 - 워커·모니터 카드(`candidateCard` · `miniRow` · `runningTile`)의 줄 순서는 §2

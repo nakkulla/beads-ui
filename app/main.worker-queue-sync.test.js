@@ -136,7 +136,10 @@ function queueSnapshotFor(root_dir) {
 
 /** @returns {number} Waiting-lane rows currently rendered. */
 function waitingRowCount() {
-  return document.querySelectorAll('#worker-pane-queue .worker-mini').length;
+  // 대기 pane은 직렬 레인까지 품는다 (UI-5ksp §4.2) — 병렬 영역만 센다.
+  return document.querySelectorAll(
+    '#worker-pane-queue .worker-wait__area--parallel .worker-mini'
+  ).length;
 }
 
 async function settle() {
@@ -193,7 +196,9 @@ describe('worker-queue snapshot workspace guard', () => {
 
     expect(waitingRowCount()).toBe(1);
     expect(
-      document.querySelector('#worker-pane-queue .worker-mini__serial')
+      document.querySelector(
+        '#worker-pane-queue .worker-wait__area--parallel .worker-mini__serial'
+      )
     ).toBeNull();
   });
 

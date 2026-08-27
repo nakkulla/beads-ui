@@ -388,6 +388,18 @@ function dragOntoRow(mount, bead_id, pane_id, onto_bead_id) {
 }
 
 /**
+ * Expand the 완료 lane before rendering. 완료 is the one lane that starts
+ * collapsed (UI-5ksp §3-3) and a collapsed pane renders no body, so every test
+ * that reads a done row has to say it wants the lane open.
+ */
+function expandDoneLane() {
+  window.localStorage.setItem(
+    'beads-ui.worker.lane-collapsed',
+    JSON.stringify({ lanes: { done: false }, areas: {} })
+  );
+}
+
+/**
  * Preseed the candidate display filter (UI-ki09). blocked rows are hidden by
  * default, so a test about blocked candidates asks for them explicitly.
  *
@@ -404,6 +416,7 @@ describe('views/worker', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
+    expandDoneLane();
   });
 
   test('renders a clear label for a completion wait needing attention', () => {
@@ -1203,16 +1216,12 @@ describe('views/worker', () => {
     });
 
     const titles = Array.from(
-      mount.querySelectorAll('.worker-lanes .worker-pane__title')
+      mount.querySelectorAll(
+        '.worker-lanes > .worker-pane > .worker-pane__hd .worker-pane__title'
+      )
     ).map((el) => (el.textContent || '').trim());
 
-    expect(titles).toEqual([
-      '후보 · Board 연동',
-      '병렬 대기',
-      '실행 중 · 슬롯 2',
-      'PR 대기',
-      '완료 · 오늘 0'
-    ]);
+    expect(titles).toEqual(['후보', '대기', '실행 중', 'PR 대기', '완료']);
   });
 
   test('keeps the candidate feed as a distinct source pane, not a fifth state', () => {
@@ -5650,6 +5659,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
+    expandDoneLane();
   });
 
   /**
@@ -7415,6 +7425,17 @@ describe('mobile control-first layout (UI-58y2)', () => {
     clearMatchMedia();
   });
 
+  /**
+   * Fold the 대기 lane before mounting. 대기 starts EXPANDED (UI-5ksp §3-3),
+   * so a test about the collapsed strip has to say so.
+   */
+  function collapseQueueLane() {
+    window.localStorage.setItem(
+      'beads-ui.worker.lane-collapsed',
+      JSON.stringify({ lanes: { queue: true } })
+    );
+  }
+
   const RUNNING_ATTEMPT = {
     a1: {
       attempt_id: 'a1',
@@ -7484,18 +7505,23 @@ describe('mobile control-first layout (UI-58y2)', () => {
     ).not.toBe(null);
   });
 
-  test('collapses 대기 and 완료 to strips on a first visit', () => {
+  test('collapses only 완료 on a first visit', () => {
     const mount = mountMobile();
 
+    const done_pane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-done')
+    );
     const queue_pane = /** @type {HTMLElement} */ (
       mount.querySelector('#worker-pane-queue')
     );
-    expect(queue_pane.classList.contains('worker-pane--collapsed')).toBe(true);
-    expect(queue_pane.querySelector('.worker-pane__body')).toBe(null);
-    expect(queue_pane.dataset.lane).toBe('queue');
+
+    expect(done_pane.classList.contains('worker-pane--collapsed')).toBe(true);
+    expect(done_pane.querySelector('.worker-pane__body')).toBe(null);
+    expect(done_pane.dataset.lane).toBe('done');
+    expect(queue_pane.classList.contains('worker-pane--collapsed')).toBe(false);
   });
 
-  test('omits waiting selection controls while the queue strip is collapsed', () => {
+  test('omits waiting selection controls on the mobile queue lane', () => {
     const mount = mountMobile({
       queue: [{ bead_id: 'RD-1', added_at: 1 }],
       bead_labels: { 'RD-1': ['worker-serial'] }
@@ -7509,18 +7535,18 @@ describe('mobile control-first layout (UI-58y2)', () => {
   });
 
   test('expands a strip when its header is tapped', () => {
-    const mount = mountMobile({ queue: [{ bead_id: 'RD-1', added_at: 1 }] });
+    const mount = mountMobile({ done: [{ bead_id: 'RD-1', added_at: 1 }] });
 
     /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-pane-queue .worker-pane__hd--toggle')
+      mount.querySelector('#worker-pane-done .worker-pane__toggle')
     ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
-    const queue_pane = /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-pane-queue')
+    const done_pane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-done')
     );
-    expect(queue_pane.classList.contains('worker-pane--collapsed')).toBe(false);
+    expect(done_pane.classList.contains('worker-pane--collapsed')).toBe(false);
     expect(
-      queue_pane.querySelector('.worker-mini[data-bead-id="RD-1"]')
+      done_pane.querySelector('.worker-mini[data-bead-id="RD-1"]')
     ).not.toBe(null);
   });
 
@@ -7528,14 +7554,14 @@ describe('mobile control-first layout (UI-58y2)', () => {
     const mount = mountMobile();
 
     /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-pane-done .worker-pane__hd--toggle')
+      mount.querySelector('#worker-pane-done .worker-pane__toggle')
     ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(
       JSON.parse(
         window.localStorage.getItem('beads-ui.worker.lane-collapsed') || '{}'
       )
-    ).toEqual({ queue: true, done: false });
+    ).toEqual({ lanes: { done: false }, areas: {} });
   });
 
   test('restores a stored collapse state on mount', () => {
@@ -7566,6 +7592,7 @@ describe('mobile control-first layout (UI-58y2)', () => {
   });
 
   test('previews the first waiting row on the collapsed strip', () => {
+    collapseQueueLane();
     const mount = mountMobile({ queue: [{ bead_id: 'RD-1', added_at: 1 }] });
 
     expect(
@@ -7576,6 +7603,7 @@ describe('mobile control-first layout (UI-58y2)', () => {
 
   test('appends to the queue when a candidate is dropped on a collapsed strip', async () => {
     const transport = vi.fn().mockResolvedValue({ ok: true });
+    collapseQueueLane();
     const mount = mountMobile(
       { queue: [{ bead_id: 'QQ-1', added_at: 1 }] },
       transport
@@ -7605,6 +7633,7 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
+    expandDoneLane();
   });
 
   /**
@@ -8510,6 +8539,7 @@ describe('worker view — server-decorated bead titles (UI-12k6)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
+    expandDoneLane();
   });
 
   /**
@@ -10203,6 +10233,7 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
+    expandDoneLane();
   });
 
   /**
@@ -10313,17 +10344,23 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
     expect(doneIds(mount)).toEqual(['LEGACY']);
   });
 
-  test('names the selected range in the lane header', () => {
+  test('names the selected range in the lane header control', () => {
     window.localStorage.setItem('bdui.worker.done-range', '7d');
 
     const mount = renderDone(queueOf({ done: [] }));
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector(
+        '#worker-pane-done .worker-pane__hd .worker-done-range'
+      )
+    );
 
     expect(
       mount.querySelector('#worker-pane-done .worker-pane__title')?.textContent
-    ).toContain('최근 7일');
+    ).toBe('완료');
+    expect(select.value).toBe('7d');
   });
 
-  test('renders the range select inside the pane controls strip', () => {
+  test('renders the range select in the pane header control', () => {
     const mount = renderDone(queueOf({ done: [] }));
 
     expect(
@@ -10680,6 +10717,7 @@ describe('레인 행 생성·수정 시각 (UI-d7pw §4)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
+    expandDoneLane();
   });
 
   /**
@@ -11146,7 +11184,7 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
     );
     expect(row_b.textContent).toContain('🔗 A 뒤');
     const s2 = /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-pane-lane-s2')
+      mount.querySelector('#worker-pane-lane-s2')?.closest('.worker-wait__lane')
     );
     expect(s2.textContent).toContain('순환');
   });
@@ -13579,6 +13617,7 @@ describe('worker view — head review 시도 이력 표시 (UI-hk74 §7)', () =>
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
+    expandDoneLane();
   });
 
   /**
@@ -13699,5 +13738,214 @@ describe('worker view — head review 시도 이력 표시 (UI-hk74 §7)', () =>
     });
 
     expect(mount.querySelector('.rtile[data-attempt-id="r1"]')).toBeNull();
+  });
+});
+
+describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} [over] - Queue snapshot overrides.
+   * @param {any} [transport]
+   * @returns {HTMLElement}
+   */
+  function mountDesktop(over, transport) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf(over || {}));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: transport || vi.fn()
+    });
+    return mount;
+  }
+
+  const LANE_IDS = [
+    'worker-pane-candidate',
+    'worker-pane-queue',
+    'worker-pane-running',
+    'worker-pane-pr-wait',
+    'worker-pane-done'
+  ];
+
+  test('makes every one of the five lanes collapsible', () => {
+    const mount = mountDesktop();
+
+    const toggles = LANE_IDS.map((id) =>
+      mount.querySelector(`#${id} > .worker-pane__hd > .worker-pane__toggle`)
+    );
+
+    expect(toggles.every((el) => el !== null)).toBe(true);
+  });
+
+  test('collapses only the 완료 lane on a first visit', () => {
+    const mount = mountDesktop();
+
+    const collapsed = LANE_IDS.filter((id) =>
+      /** @type {HTMLElement} */ (
+        mount.querySelector(`#${id}`)
+      ).classList.contains('worker-pane--collapsed')
+    );
+
+    expect(collapsed).toEqual(['worker-pane-done']);
+  });
+
+  test('folds one lane when its toggle is clicked', () => {
+    const mount = mountDesktop();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-running .worker-pane__toggle')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const pane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-running')
+    );
+    expect(pane.classList.contains('worker-pane--collapsed')).toBe(true);
+    expect(pane.querySelector('.worker-pane__body')).toBe(null);
+  });
+
+  test('carries the 슬롯 count as the running lane header control', () => {
+    const mount = mountDesktop();
+
+    const meta = mount.querySelector('#worker-pane-running .worker-pane__meta');
+
+    expect(meta?.textContent?.trim()).toBe('슬롯 2');
+  });
+
+  test('leaves the lane expanded when its header control changes', () => {
+    const mount = mountDesktop();
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort')
+    );
+
+    select.value = 'title';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('#worker-pane-candidate')
+      ).classList.contains('worker-pane--collapsed')
+    ).toBe(false);
+  });
+
+  test('puts the serial lanes inside the 대기 pane', () => {
+    const mount = mountDesktop({
+      serial_lane_count: 1,
+      serial_lanes: [{ id: 's1', entries: [] }],
+      lane_states: { s1: { occupied_by: [], order: [], corrections: [] } }
+    });
+
+    const lane = mount.querySelector('#worker-pane-lane-s1');
+
+    expect(lane?.closest('#worker-pane-queue')).not.toBe(null);
+  });
+
+  test('folds one 대기 본문 영역 when its toggle is clicked', () => {
+    const mount = mountDesktop();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-wait__area-toggle[data-area="serial"]')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('.worker-wait__area--serial')
+      ).classList.contains('is-collapsed')
+    ).toBe(true);
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('beads-ui.worker.lane-collapsed') || '{}'
+      ).areas
+    ).toEqual({ serial: true });
+  });
+
+  test('counts the drop index from the parallel rows alone', async () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountDesktop(
+      {
+        queue: [{ bead_id: 'QQ-1', added_at: 1 }],
+        serial_lane_count: 1,
+        serial_lanes: [
+          { id: 's1', entries: [{ bead_id: 'SQ-1', added_at: 2 }] }
+        ],
+        lane_states: {
+          s1: { occupied_by: [], order: ['SQ-1'], corrections: [] }
+        }
+      },
+      transport
+    );
+
+    drag(mount, 'QQ-1', 'worker-pane-queue');
+    await flush();
+
+    // 직렬 행(SQ-1)까지 셌다면 2가 됐을 것이다 — 세는 자리는 병렬 영역 하나다.
+    expect(transport).toHaveBeenCalledWith('worker-queue-reorder', {
+      bead_id: 'QQ-1',
+      to_index: 1,
+      expected_revision: 1
+    });
+  });
+
+  test('appends to the queue when a candidate is dropped on the collapsed strip', async () => {
+    window.localStorage.setItem(
+      'beads-ui.worker.lane-collapsed',
+      JSON.stringify({ lanes: { queue: true } })
+    );
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountDesktop(
+      { queue: [{ bead_id: 'QQ-1', added_at: 1 }] },
+      transport
+    );
+
+    drag(mount, 'RD-1', 'worker-pane-queue');
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-place', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+  });
+
+  test('marks the console as dragging while a row is held', () => {
+    const mount = mountDesktop();
+    const console_el = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-console')
+    );
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="RD-1"]')
+    );
+
+    row.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    const start = new Event('dragstart', { bubbles: true });
+    Object.defineProperty(start, 'dataTransfer', {
+      value: { setData: () => {}, effectAllowed: '' }
+    });
+    row.dispatchEvent(start);
+
+    expect(console_el.classList.contains('is-dragging')).toBe(true);
+  });
+
+  test('clears the dragging mark when the drag ends', () => {
+    const mount = mountDesktop();
+    const console_el = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-console')
+    );
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="RD-1"]')
+    );
+    row.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    const start = new Event('dragstart', { bubbles: true });
+    Object.defineProperty(start, 'dataTransfer', {
+      value: { setData: () => {}, effectAllowed: '' }
+    });
+    row.dispatchEvent(start);
+
+    row.dispatchEvent(new Event('dragend', { bubbles: true }));
+
+    expect(console_el.classList.contains('is-dragging')).toBe(false);
   });
 });

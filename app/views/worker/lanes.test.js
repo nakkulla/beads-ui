@@ -1,4 +1,4 @@
-import { render } from 'lit-html';
+import { html, render } from 'lit-html';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   candidateCard,
@@ -11,12 +11,14 @@ import {
   formatClock,
   formatElapsed,
   miniRow,
+  nowPanel,
   paneTemplate,
   quickFixReviewChipTemplate,
   repoOpsStripModel,
   routeChipTemplate,
   staleWorkProjection,
-  sumAttemptWorkMs
+  sumAttemptWorkMs,
+  waitBody
 } from './lanes.js';
 
 /** @type {HTMLElement} */
@@ -1739,7 +1741,7 @@ describe('worker templates are unchanged without the monitor options', () => {
     expect(card).not.toContain('exec-chip--pin');
     expect(card).not.toContain('worker-deps');
     expect(card).toMatchInlineSnapshot(
-      `"<div class="worker-card" data-bead-id="UI-a3" data-lane="candidate" draggable="true"> <div class="worker-card__head"> <span aria-hidden="true" class="worker-card__grip">⠿</span> <span class="worker-card__id" title="클릭하면 ID 복사">UI-a3</span>  </div> <div class="worker-card__title">후보 카드</div>  <div class="worker-chips"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div> <div class="worker-card__foot worker-card__foot--actions-only">   <button class="worker-card__place" data-bead-id="UI-a3" title="대기 큐 맨 뒤에 추가" type="button"> 대기로 ↴</button> </div>  </div>"`
+      `"<div class="worker-card" data-bead-id="UI-a3" data-lane="candidate" draggable="true"> <div class="worker-card__head"> <span aria-hidden="true" class="worker-card__grip">⠿</span> <span class="worker-card__id" title="클릭하면 ID 복사">UI-a3</span>  </div> <div class="worker-card__title">후보 카드</div>  <div class="worker-chips"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div> <div class="worker-card__foot worker-card__foot--actions-only">   <button class="worker-card__place" data-bead-id="UI-a3" title="대기 큐 맨 뒤에 추가" type="button"> 대기로 ↴ </button> </div>  </div>"`
     );
   });
 
@@ -1777,10 +1779,35 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
     );
   }
 
-  test('keeps the foot unfolded when it carries the dependency button', () => {
+  test('draws the dependency button in the head action slot (UI-5ksp §4.6)', () => {
     const card = depCard({ dep_action: true });
 
-    expect(card).toContain('worker-card__dep');
+    expect(card).toContain(
+      '<span class="worker-card__head-actions"><button aria-label="의존성" class="worker-card__dep mon-dep__btn"'
+    );
+  });
+
+  test('folds the foot of a card the dependency button alone would open', () => {
+    const card = depCard({ dep_action: true });
+
+    expect(card).toContain('worker-card__foot--actions-only');
+  });
+
+  test('unfolds the foot of a card that carries a reason', () => {
+    const card = shape(
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'UI-b0r',
+          title: '사유',
+          lane: 'candidate',
+          draggable: true,
+          reason: 'spec 없음'
+        }),
+        null,
+        { dep_action: true }
+      )
+    );
+
     expect(card).not.toContain('worker-card__foot--actions-only');
   });
 
@@ -2651,5 +2678,536 @@ describe('candidate card stepper doc cells (UI-ajkn §5)', () => {
     );
 
     expect(onOpenDoc).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('collapsible pane header (UI-5ksp §4.4)', () => {
+  /**
+   * @param {Record<string, any>} [extra]
+   * @returns {HTMLElement}
+   */
+  function renderPane(extra = {}) {
+    render(
+      paneTemplate(
+        /** @type {any} */ ({
+          id: 'worker-pane-done',
+          lane: 'done',
+          title: '완료',
+          items: [],
+          collapsible: true,
+          ...extra
+        })
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.worker-pane'));
+  }
+
+  test('renders the toggle as a button inside the header, not as the header', () => {
+    const pane = renderPane();
+
+    const toggle = pane.querySelector(
+      '.worker-pane__hd > .worker-pane__toggle'
+    );
+
+    expect(toggle?.tagName).toBe('BUTTON');
+    expect(toggle?.getAttribute('data-lane')).toBe('done');
+  });
+
+  test('reports the expanded state on the toggle', () => {
+    const pane = renderPane();
+
+    expect(
+      pane.querySelector('.worker-pane__toggle')?.getAttribute('aria-expanded')
+    ).toBe('true');
+  });
+
+  test('reports the collapsed state on the toggle', () => {
+    const pane = renderPane({ collapsed: true });
+
+    expect(
+      pane.querySelector('.worker-pane__toggle')?.getAttribute('aria-expanded')
+    ).toBe('false');
+  });
+
+  test('stands the header control beside the toggle rather than inside it', () => {
+    const pane = renderPane({
+      header_control: html`<select class="worker-done-range"></select>`
+    });
+
+    const control = pane.querySelector('.worker-done-range');
+
+    expect(control?.parentElement?.classList.contains('worker-pane__hd')).toBe(
+      true
+    );
+    expect(control?.closest('.worker-pane__toggle')).toBeNull();
+  });
+
+  test('drops the header control while the pane is collapsed', () => {
+    const pane = renderPane({
+      collapsed: true,
+      header_control: html`<select class="worker-done-range"></select>`
+    });
+
+    expect(pane.querySelector('.worker-done-range')).toBeNull();
+  });
+
+  test('draws neither controls nor body while the pane is collapsed', () => {
+    const pane = renderPane({
+      collapsed: true,
+      controls: html`<div class="worker-filter"></div>`,
+      body: html`<div class="worker-rungrid"></div>`
+    });
+
+    expect(pane.querySelector('.worker-filter')).toBeNull();
+    expect(pane.querySelector('.worker-pane__body')).toBeNull();
+  });
+
+  test('previews the first row only while collapsed', () => {
+    const pane = renderPane({ collapsed: true, preview: '첫 행' });
+
+    expect(pane.querySelector('.worker-pane__preview')?.textContent).toBe(
+      '첫 행'
+    );
+  });
+
+  test('counts the items when no count is handed in', () => {
+    const pane = renderPane({
+      items: [{ id: 'UI-c1', title: 'a', lane: 'done', done: true }]
+    });
+
+    expect(pane.querySelector('.worker-pane__count')?.textContent).toBe('1');
+  });
+
+  test('prefers the explicit count over the item length', () => {
+    const pane = renderPane({ items: [], count: 4 });
+
+    expect(pane.querySelector('.worker-pane__count')?.textContent).toBe('4');
+  });
+});
+
+describe('waitBody (UI-5ksp §4.2)', () => {
+  /**
+   * @param {Record<string, any>} [model]
+   * @returns {HTMLElement}
+   */
+  function renderWait(model = {}) {
+    render(
+      waitBody(
+        /** @type {any} */ ({
+          parallel: { rows: [], count: 0, collapsed: false },
+          serial: { lanes: [], collapsed: false },
+          ...model
+        })
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.worker-wait'));
+  }
+
+  /**
+   * @param {Record<string, any>} [lane]
+   */
+  function serialLane(lane = {}) {
+    return {
+      id: 's1',
+      title: '직렬 1',
+      rows: [],
+      count: 0,
+      empty: true,
+      ...lane
+    };
+  }
+
+  test('draws one parallel area and one serial area', () => {
+    const wait = renderWait();
+
+    expect(
+      wait
+        .querySelector('.worker-wait__area--parallel')
+        ?.getAttribute('data-area')
+    ).toBe('parallel');
+    expect(
+      wait
+        .querySelector('.worker-wait__area--serial')
+        ?.getAttribute('data-area')
+    ).toBe('serial');
+  });
+
+  test('marks a collapsed area and drops its body', () => {
+    const wait = renderWait({
+      parallel: { rows: [], count: 2, collapsed: true }
+    });
+
+    const area = /** @type {HTMLElement} */ (
+      wait.querySelector('.worker-wait__area--parallel')
+    );
+
+    expect(area.classList.contains('is-collapsed')).toBe(true);
+    expect(area.querySelector('.worker-wait__area-body')).toBeNull();
+  });
+
+  test('carries the area toggle state on its button', () => {
+    const wait = renderWait({
+      serial: { lanes: [], collapsed: true }
+    });
+
+    const toggle = wait.querySelector(
+      '.worker-wait__area--serial .worker-wait__area-hd button[data-area]'
+    );
+
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('counts the parallel rows in the area header', () => {
+    const wait = renderWait({
+      parallel: {
+        rows: [html`<div class="row"></div>`],
+        count: 7,
+        collapsed: false
+      }
+    });
+
+    expect(wait.querySelector('.worker-wait__area-count')?.textContent).toBe(
+      '7'
+    );
+  });
+
+  test('says the parallel area is empty when it has no rows', () => {
+    const wait = renderWait();
+
+    expect(
+      wait.querySelector('.worker-wait__area-body .worker-pane__empty')
+        ?.textContent
+    ).toContain('비어 있음 — 드래그로 배치');
+  });
+
+  test('omits the parallel drop attributes when no coordinates are handed in', () => {
+    const wait = renderWait();
+
+    const body = /** @type {HTMLElement} */ (
+      wait.querySelector('.worker-wait__area-body')
+    );
+
+    expect(body.hasAttribute('data-drop')).toBe(false);
+    expect(body.hasAttribute('data-root-dir')).toBe(false);
+  });
+
+  test('writes the parallel drop attributes the caller hands in', () => {
+    const wait = renderWait({
+      parallel: {
+        rows: [],
+        count: 0,
+        collapsed: false,
+        drop: { drop: 'parallel' }
+      }
+    });
+
+    expect(
+      wait.querySelector('.worker-wait__area-body')?.getAttribute('data-drop')
+    ).toBe('parallel');
+  });
+
+  test('renders each serial lane as a pane inside a lane wrapper', () => {
+    const wait = renderWait({
+      serial: {
+        lanes: [serialLane({ empty: false, count: 2 })],
+        collapsed: false
+      }
+    });
+
+    const pane = wait.querySelector('.worker-wait__lane > .worker-pane');
+
+    expect(pane?.id).toBe('worker-pane-lane-s1');
+    expect(pane?.getAttribute('data-lane')).toBe('s1');
+    expect(pane?.querySelector('.worker-pane__count')?.textContent).toBe('2');
+  });
+
+  test('marks an empty serial lane and gives it a one-line hint', () => {
+    const wait = renderWait({
+      serial: { lanes: [serialLane()], collapsed: false }
+    });
+
+    const lane = /** @type {HTMLElement} */ (
+      wait.querySelector('.worker-wait__lane')
+    );
+
+    expect(lane.classList.contains('worker-wait__lane--empty')).toBe(true);
+    expect(lane.querySelector('.worker-wait__hint')?.textContent).toBe(
+      '직렬 1 · 비어 있음'
+    );
+  });
+
+  test('draws no hint for a serial lane that has rows', () => {
+    const wait = renderWait({
+      serial: {
+        lanes: [
+          serialLane({
+            empty: false,
+            count: 1,
+            rows: [html`<div class="r"></div>`]
+          })
+        ],
+        collapsed: false
+      }
+    });
+
+    expect(wait.querySelector('.worker-wait__hint')).toBeNull();
+  });
+
+  test('says an empty serial pane takes dragged rows', () => {
+    const wait = renderWait({
+      serial: { lanes: [serialLane()], collapsed: false }
+    });
+
+    expect(
+      wait.querySelector('.worker-wait__rows .worker-pane__empty')?.textContent
+    ).toContain('비어 있음 — 행을 여기로 드래그');
+  });
+
+  test('writes the serial row drop attributes the caller hands in', () => {
+    const wait = renderWait({
+      serial: {
+        lanes: [
+          serialLane({
+            drop: {
+              drop: 'repo-serial',
+              root_dir: '/r',
+              lane_id: 'l1',
+              lane_length: '3'
+            }
+          })
+        ],
+        collapsed: false
+      }
+    });
+
+    const rows = /** @type {HTMLElement} */ (
+      wait.querySelector('.worker-wait__rows')
+    );
+
+    expect(rows.getAttribute('data-drop')).toBe('repo-serial');
+    expect(rows.getAttribute('data-root-dir')).toBe('/r');
+    expect(rows.getAttribute('data-lane-id')).toBe('l1');
+    expect(rows.getAttribute('data-lane-length')).toBe('3');
+  });
+
+  test('omits the serial row drop attributes when the caller hands in none', () => {
+    const wait = renderWait({
+      serial: { lanes: [serialLane()], collapsed: false }
+    });
+
+    const rows = /** @type {HTMLElement} */ (
+      wait.querySelector('.worker-wait__rows')
+    );
+
+    expect(rows.hasAttribute('data-lane-id')).toBe(false);
+    expect(rows.hasAttribute('data-lane-length')).toBe(false);
+  });
+
+  test('draws the occupancy badge in the pane header', () => {
+    const wait = renderWait({
+      serial: {
+        lanes: [serialLane({ badge: 'UI-a1', held: true })],
+        collapsed: false
+      }
+    });
+
+    const badge = wait.querySelector('.worker-lane__badge');
+
+    expect(badge?.textContent).toBe('UI-a1');
+    expect(badge?.classList.contains('worker-lane__badge--held')).toBe(true);
+  });
+
+  test('draws no badge for a lane that has none', () => {
+    const wait = renderWait({
+      serial: { lanes: [serialLane()], collapsed: false }
+    });
+
+    expect(wait.querySelector('.worker-lane__badge')).toBeNull();
+  });
+
+  test('stands the lane header control beside the badge', () => {
+    const wait = renderWait({
+      serial: {
+        lanes: [
+          serialLane({
+            badge: 'UI-a1',
+            header_control: html`<button class="mon2-sec__worker"></button>`
+          })
+        ],
+        collapsed: false
+      }
+    });
+
+    expect(
+      wait.querySelector('.worker-pane__hd .mon2-sec__worker')
+    ).not.toBeNull();
+  });
+
+  test('warns about a dependency cycle under the lane pane', () => {
+    const wait = renderWait({
+      serial: { lanes: [serialLane({ cycle: true })], collapsed: false }
+    });
+
+    expect(wait.querySelector('.worker-lane__cycle')?.textContent).toContain(
+      'blocks 순환 감지'
+    );
+  });
+
+  test('renders the after slot last inside the lane wrapper', () => {
+    const wait = renderWait({
+      serial: {
+        lanes: [
+          serialLane({ after: html`<div class="cross-wait">상호 정지</div>` })
+        ],
+        collapsed: false
+      }
+    });
+
+    const lane = /** @type {HTMLElement} */ (
+      wait.querySelector('.worker-wait__lane')
+    );
+
+    expect(lane.querySelector('.cross-wait')).not.toBeNull();
+    expect(lane.lastElementChild?.className).toBe('cross-wait');
+  });
+
+  test('puts the extra panes before the serial lanes', () => {
+    const wait = renderWait({
+      serial: {
+        lanes: [serialLane()],
+        collapsed: false,
+        extra_panes: [html`<div class="chain-lane"></div>`]
+      }
+    });
+
+    const body = /** @type {HTMLElement} */ (
+      wait.querySelector('.worker-wait__area--serial .worker-wait__area-body')
+    );
+    const marks = Array.from(body.children).map((el) => el.className);
+
+    expect(marks.indexOf('chain-lane')).toBeLessThan(
+      marks.findIndex((c) => c.startsWith('worker-wait__lane'))
+    );
+  });
+
+  test('draws the serial notice above everything in the area body', () => {
+    const wait = renderWait({
+      serial: {
+        lanes: [],
+        collapsed: false,
+        notice: html`<div class="unreadable">읽을 수 없음</div>`
+      }
+    });
+
+    const body = /** @type {HTMLElement} */ (
+      wait.querySelector('.worker-wait__area--serial .worker-wait__area-body')
+    );
+
+    expect(body.firstElementChild?.className).toBe('unreadable');
+  });
+
+  test('draws the serial header control in the area header', () => {
+    const wait = renderWait({
+      serial: {
+        lanes: [],
+        collapsed: false,
+        header_control: html`<button class="mon2-newlane"></button>`
+      }
+    });
+
+    expect(
+      wait.querySelector(
+        '.worker-wait__area--serial .worker-wait__area-hd .mon2-newlane'
+      )
+    ).not.toBeNull();
+  });
+});
+
+describe('miniRow row actions (UI-5ksp §4.6)', () => {
+  /**
+   * @param {Record<string, any>} item
+   * @param {Record<string, any>} [options]
+   * @returns {HTMLElement}
+   */
+  function renderWithActions(item, options = {}) {
+    render(
+      miniRow(/** @type {any} */ (item), /** @type {any} */ (options)),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.worker-mini'));
+  }
+
+  test('appends the actions to the end of a one-line row', () => {
+    const row = renderWithActions(
+      { id: 'UI-r1', title: '대기 행', lane: 'queue', draggable: true },
+      { actions: html`<span class="worker-mini__rowops">⛓</span>` }
+    );
+
+    const line = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__line')
+    );
+
+    expect(line.lastElementChild?.className).toBe('worker-mini__rowops');
+  });
+
+  test('appends the actions to the head of a card row', () => {
+    const row = renderWithActions(
+      { id: 'UI-r2', title: 'PR 대기 행', lane: 'pr_wait', draggable: true },
+      { actions: html`<span class="worker-mini__rowops">⛓</span>` }
+    );
+
+    const head = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__head')
+    );
+
+    expect(head.lastElementChild?.className).toBe('worker-mini__rowops');
+  });
+
+  test('renders the same DOM whether the options object is omitted or empty', () => {
+    const item = /** @type {any} */ ({
+      id: 'UI-r3',
+      title: '동일',
+      lane: 'queue',
+      draggable: true
+    });
+
+    expect(shape(miniRow(item, {}))).toBe(shape(miniRow(item)));
+  });
+});
+
+describe('nowPanel (UI-5ksp §4.7)', () => {
+  test('renders nothing when nothing is running or waiting', () => {
+    render(nowPanel({ count: 0 }), mount);
+
+    expect(mount.querySelector('.worker-now')).toBeNull();
+  });
+
+  test('draws the running body and the PR 대기 rows together', () => {
+    render(
+      nowPanel({
+        count: 3,
+        running_body: html`<div class="worker-rungrid"></div>`,
+        pr_wait_rows: [html`<div class="pr-row"></div>`]
+      }),
+      mount
+    );
+
+    const now = /** @type {HTMLElement} */ (mount.querySelector('#worker-now'));
+
+    expect(now.querySelector('.worker-rungrid')).not.toBeNull();
+    expect(now.querySelector('.pr-row')).not.toBeNull();
+    expect(now.querySelector('.worker-now__count')?.textContent).toBe('3');
+  });
+
+  test('marks the panel live when work is actually running', () => {
+    render(nowPanel({ count: 1, live: true }), mount);
+
+    expect(
+      mount
+        .querySelector('.worker-now')
+        ?.classList.contains('worker-pane--live')
+    ).toBe(true);
   });
 });
