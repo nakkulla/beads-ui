@@ -574,3 +574,31 @@ describe('worker/policy default catalog = runtime catalog (impl review finding 1
     }
   });
 });
+
+describe('worker/policy rec_* invariance (UI-sbum §6)', () => {
+  test('resolves identical settings with and without the recommendation keys', () => {
+    const bead = {
+      orchestration_model: 'sonnet',
+      impl_runtime: 'codex'
+    };
+
+    const without_rec = resolveExecSettings({ bead, defaults: {} });
+    const with_rec = resolveExecSettings({
+      bead: /** @type {any} */ ({
+        ...bead,
+        rec: { rec_orchestration_model: 'fable' },
+        rec_orchestration_model: 'fable',
+        rec_impl_runtime: 'claude',
+        rec_reason: 'contract_change+multi_repo'
+      }),
+      defaults: {}
+    });
+
+    expect(with_rec).toEqual(without_rec);
+    expect(/** @type {any} */ (with_rec).rec).toBe(undefined);
+    expect(/** @type {any} */ (with_rec).rec_orchestration_model).toBe(
+      undefined
+    );
+    expect(with_rec.stamped_keys).not.toContain('rec_orchestration_model');
+  });
+});
