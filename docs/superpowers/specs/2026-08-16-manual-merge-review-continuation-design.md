@@ -1,5 +1,18 @@
 # 수동 머지의 review·repair·merge 연속 실행 설계
 
+> **부분 은퇴 (UI-d7fy, 2026-08-28).** 이 문서가 설계한 head-review 큐 계층은
+> 제거됐다. `### 2. durable head review continuation`,
+> `### 3. automatic implementation reviewer`,
+> `### 4. bounded REVISE repair와 self-review`와 그에 딸린 `## UI projection`
+> 및 `## Test scope` 항목은 실행되지 않으며, §5의 `head_review.receipt` 입력과
+> §6의 reviewer/repair attempt 규칙도 함께 사라졌다. 머지 자격의 리뷰 판정은
+> 머지 게이트의 `impl_review` ancestry 하나뿐이고, 영수증 부재·비조상은 게이트
+> 보류로 남아 `[리뷰 후 머지]` 클릭이 유일한 출구다.
+> `### 1. per-item merge authority`와 §5의 나머지 재-게이트 규칙은 그대로
+> 유효하다. 제거 근거는
+> `docs/superpowers/specs/2026-08-27-head-review-layer-removal-design.md`
+> 이다.
+
 ## 문서 상태
 
 - owning Bead: `UI-58w8`
@@ -176,6 +189,10 @@ manual authority를 만들 수 있다.
 
 ### 2. durable head review continuation
 
+> **은퇴 (UI-d7fy).** 이 절은 실행되지 않는다 — 근거는
+> `docs/superpowers/specs/2026-08-27-head-review-layer-removal-design.md`
+> 이다.
+
 queue entry에 authority와 분리된 review journal을 둔다.
 
 ```text
@@ -215,6 +232,10 @@ recorded review/repair attempt와 맞지 않으면 채택하지 않는다.
 
 ### 3. automatic implementation reviewer
 
+> **은퇴 (UI-d7fy).** 이 절은 실행되지 않는다 — 근거는
+> `docs/superpowers/specs/2026-08-27-head-review-layer-removal-design.md`
+> 이다.
+
 reviewer selection은 current user override가 없는 background continuation이므로 다음 순서다.
 
 1. Bead `impl_review_model` / `impl_review_effort`
@@ -246,6 +267,10 @@ authority id, attempt id를 다시 비교한다.
 full re-gate를 실행한다.
 
 ### 4. bounded REVISE repair와 self-review
+
+> **은퇴 (UI-d7fy).** 이 절은 실행되지 않는다 — 근거는
+> `docs/superpowers/specs/2026-08-27-head-review-layer-removal-design.md`
+> 이다.
 
 `REVISE`이면 findings 전체와 canonical digest를 journal에 기록하고 `repair_rounds=1`,
 `state=revising`으로 prerecord한 뒤 한 writable repair-controller를 dispatch한다. prerecord가

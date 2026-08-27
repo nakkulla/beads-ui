@@ -1,5 +1,16 @@
 # Worker 머지 lane 정합: not_in_pr_wait 경쟁 수정과 카드 상태 표시 단순화
 
+> **부분 은퇴 (UI-d7fy, 2026-08-28).** `### 4. 재리뷰 정책 완화`가 설계한
+> head-review 완화 경로(`carry:` 승계, 해소 세션 self-review, 완화 결속 조건)와
+> `## 확정된 결정` 표의 재리뷰 두 행, §3 카드 상태 표의 `head_review` 항목은
+> head-review 큐 계층과 함께 제거됐다. 리뷰 판정은 머지 게이트의 `impl_review`
+> ancestry 하나이고, 영수증 부재·비조상은 게이트 보류로 남아
+> `[리뷰 후 머지]` 클릭이 유일한 출구다(그 버튼은 남았지만 자동 리뷰가 아니라
+> 기록된 세션의 리뷰 lineage를 돌린다). not_in_pr_wait 경쟁 수정과 카드 배지
+> 단순화 등 나머지 절은 그대로 유효하다. 제거 근거는
+> `docs/superpowers/specs/2026-08-27-head-review-layer-removal-design.md`
+> 이다.
+
 - Bead: UI-vkk8 (route: spec_backed)
 - 날짜: 2026-08-18
 - 상태: 사용자 설계 승인 완료 · spec gate REVISE 지적 5건 반영본
@@ -160,6 +171,10 @@ worker 행은 이 사유를 낼 수 없기 때문이다(`pr-actions.js:377`). �
   계속 확인할 수 있어야 한다.
 
 ### 4. 재리뷰 정책 완화 (dotfiles 계약 정정 동반)
+
+> **은퇴 (UI-d7fy).** 이 절은 실행되지 않는다 — 근거는
+> `docs/superpowers/specs/2026-08-27-head-review-layer-removal-design.md`
+> 이다.
 
 현행 workflow 계약(dotfiles `docs/contracts/workflow.{md,yaml}`)은 manual merge
 continuation에서 외부 리뷰어 dispatch만 허용하고 `self`/`skip` 선택을 터미널
