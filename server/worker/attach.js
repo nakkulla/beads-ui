@@ -51,7 +51,6 @@ import {
   createCompletionActionDriver,
   createCompletionIntentCoordinator
 } from './completion-intent.js';
-import { createCompletionRepairService } from './completion-repair.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
 import { createHeadReviewTransport } from './head-review-transport.js';
@@ -456,7 +455,6 @@ export function defaultProbePid(pid) {
  *   autoMerge?: any,
  *   completionIntent?: any,
  *   completionActionDriver?: any,
- *   completionRepair?: any,
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
  *   repoOperationMigration?: { run: () => Promise<any> },
@@ -1400,35 +1398,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       log
     });
 
-  const completionRepair =
-    options.completionRepair ||
-    createCompletionRepairService({
-      bd,
-      repo,
-      hasDurableVerify(input) {
-        const operations = Object.values(
-          runtime.queueStore.snapshot(keyFor(workspace_root)).repo_operations ||
-            {}
-        );
-        return operations.some((operation) => {
-          const row = /** @type {any} */ (operation);
-          return (
-            row.kind === 'verify' &&
-            row.effective_base_sha === input.base_sha?.toLowerCase() &&
-            Array.isArray(row.verify_head_shas) &&
-            row.verify_head_shas.includes(input.subject_sha?.toLowerCase()) &&
-            Array.isArray(row.subjects) &&
-            row.subjects.some(
-              (/** @type {any} */ subject) => subject?.bead_id === input.bead_id
-            )
-          );
-        });
-      },
-      resolveVerify,
-      runVerify: (/** @type {any} */ input) =>
-        runVerifyAtSha({ ...input, worktree, git: gitRun })
-    });
-
   /**
    * The automatic head-review dispatch (UI-hk74 §6). It goes through the SAME
    * `ensureApproved` a [머지] click does — the only differences are the
@@ -1543,8 +1512,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
       prActions,
-      completionRepair,
-      scheduler,
+      bd,
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
       kickMerge: () => mergeQueue.kick(),
       dispatchAutoReview: (/** @type {string} */ root_bead_id) =>
@@ -1670,7 +1638,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     completionIntent: resolvedCompletionIntent,
     completionActionDriver: resolvedCompletionActionDriver,
     beadsChanges,
-    completionRepair,
     refreshExternalPrs,
     reviseDisposition,
     sessionMonitors,

@@ -339,6 +339,41 @@ describe('trimQueueProjection repo operations', () => {
     );
   });
 
+  test('keeps a failed operation log path on the wire until it is dismissed', () => {
+    const log_path = '/state/repo-operation-logs/op-red.log';
+    const failed = {
+      'op-red': operation({
+        state: 'failed',
+        failure: { code: 'verify_nonzero' },
+        log_path
+      })
+    };
+    const raw = {
+      attempts: {},
+      repo_operations: { ...recentFillerOperations(), ...failed }
+    };
+    const dismissed_raw = {
+      attempts: {},
+      repo_operations: {
+        ...recentFillerOperations(),
+        'op-red': { ...failed['op-red'], dismissed: { at: NOW, by: 'human' } }
+      }
+    };
+
+    const trimmed = trimQueueProjection(raw, raw, NOW);
+    const after_dismiss = trimQueueProjection(
+      dismissed_raw,
+      dismissed_raw,
+      NOW
+    );
+
+    // The hand-off the completion terminal points a human at is this path, and
+    // nothing rewrites or prunes the file itself — dropping the record from the
+    // wire is the ONLY retention effect, and it waits for the dismissal.
+    expect(trimmed.repo_operations['op-red'].log_path).toBe(log_path);
+    expect(after_dismiss.repo_operations).not.toHaveProperty('op-red');
+  });
+
   test('keeps an operation a cleanup_failed bead is the subject of', () => {
     const raw = {
       cleanup_failed: { 'UI-stuck': { step: 'branch_cleanup' } },
@@ -360,7 +395,7 @@ describe('trimQueueProjection repo operations', () => {
       queue: [{ bead_id: 'UI-lane', added_at: NOW }],
       attempts: {
         a1: attempt('a1', 'UI-lane'),
-        a2: attempt('a2', 'UI-second', { repair_operation_id: 'op-2' }),
+        a2: attempt('a2', 'UI-second'),
         a3: attempt('a3', 'UI-third')
       },
       repo_operations: {
@@ -374,10 +409,12 @@ describe('trimQueueProjection repo operations', () => {
           ],
           repair: { attempt_id: 'a2' }
         }),
-        // Only reachable once UI-second is retained, through the attempt's
-        // backwards `repair_operation_id`; its own repair attempt then adds the
-        // third bead.
-        'op-2': operation({ repair: { attempt_id: 'a3' } })
+        // Only reachable once UI-second is retained, through that bead being a
+        // subject; its own repair attempt then adds the third bead.
+        'op-2': operation({
+          subjects: [{ bead_id: 'UI-second', merged_sha: 'b' }],
+          repair: { attempt_id: 'a3' }
+        })
       }
     };
 

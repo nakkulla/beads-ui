@@ -708,10 +708,22 @@
  * @property {CompletionFailureKey|null} failure_key
  * @property {string|null} evidence
  * @property {string|null} log_path
+ * @property {string|null} op_id - The RepoOperation this failure belongs to,
+ * or null when the stop happened before any operation ran (UI-8w4t §4).
+ * @property {number|null} comment_at - Epoch ms the Bead failure comment was
+ * claimed for this `(op_id, failure_key)`. Durable BEFORE the comment goes out,
+ * so a lost call is never rewritten and a re-click never duplicates it.
  * @property {number} at
  */
 /**
  * @typedef {CompletionTerminal & { resumed_at: number }} CompletionResumedTerminal
+ */
+/**
+ * What a CALLER hands {@link createQueueStore} — the two UI-8w4t fields are
+ * optional on the way in and always present on the durable record, so a writer
+ * with no operation and no comment claim does not have to say so twice.
+ *
+ * @typedef {Omit<CompletionTerminal, 'op_id'|'comment_at'> & { op_id?: string|null, comment_at?: number|null }} CompletionTerminalInput
  */
 /**
  * The durable inputs one automatic resolution attempt re-runs its original
@@ -1113,6 +1125,14 @@ function normalizeCompletionTerminal(value) {
       typeof value.log_path === 'string'
         ? value.log_path.slice(0, COMPLETION_LOG_PATH_MAX)
         : null,
+    op_id:
+      typeof value.op_id === 'string' && value.op_id.length > 0
+        ? value.op_id
+        : null,
+    comment_at:
+      typeof value.comment_at === 'number' && Number.isFinite(value.comment_at)
+        ? value.comment_at
+        : null,
     at: typeof value.at === 'number' && Number.isFinite(value.at) ? value.at : 0
   };
 }
@@ -1324,6 +1344,8 @@ function invalidCompletionIntent(root_bead_id, value) {
       failure_key: null,
       evidence: 'completion_intent_malformed',
       log_path: null,
+      op_id: null,
+      comment_at: null,
       at: 0
     }
   };
@@ -7547,7 +7569,7 @@ export function createQueueStore(options = {}) {
      * evidence a restart or human diagnosis still needs.
      *
      * @param {string} workspace
-     * @param {{ root_bead_id: string, terminal: CompletionTerminal }} input
+     * @param {{ root_bead_id: string, terminal: CompletionTerminalInput }} input
      * @returns {QueueOpResult}
      */
     terminalizeCompletionIntent(workspace, input) {

@@ -321,31 +321,6 @@ describe('runner/preamble PR base directive (worker-base-scope-alignment §4)', 
   });
 });
 
-describe('runner/preamble completion repair', () => {
-  test('injects pinned repair scope without weakening the existing guard', () => {
-    const out = applyPreamble('실패를 수정하라', {
-      target_base: 'main',
-      repair: {
-        mode: 'resume_root',
-        stage: 'merge_gate',
-        reason: 'verify_cmd_failed',
-        subject_sha: 'a'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        result_digest: 'c'.repeat(64),
-        log_path: '/state/verify.log'
-      }
-    }).system_prompt;
-
-    expect(out).toContain('## completion repair');
-    expect(out).toContain('resume_root');
-    expect(out).toContain('merge_gate/verify_cmd_failed');
-    expect(out).toContain('테스트를 삭제·skip·약화');
-    expect(out).toContain('credentials·권한·외부 서비스·전역 환경');
-    expect(out).toContain('feature branch push와 PR 제출까지만');
-    expect(out).toContain('## 가드 계약');
-  });
-});
-
 describe('runner/preamble guard contract severity tiers (UI-rxp3 §1)', () => {
   const contract = guardContractDirective();
 

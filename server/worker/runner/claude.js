@@ -617,11 +617,7 @@ export function claudeSpec(options = {}) {
         quickfix_lane: !!s.quickfix_lane,
         // The base the session must open its PR against
         // (worker-base-scope-alignment §4).
-        target_base: typeof s.target_base === 'string' ? s.target_base : null,
-        repair:
-          s.completion_repair && typeof s.completion_repair === 'object'
-            ? s.completion_repair
-            : undefined
+        target_base: typeof s.target_base === 'string' ? s.target_base : null
       });
       args.push('--append-system-prompt', system_prompt);
       args.push(task_prompt);

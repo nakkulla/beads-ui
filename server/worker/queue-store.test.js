@@ -5731,6 +5731,48 @@ describe('worker/queue-store — manual merge continuation authority', () => {
     });
   });
 
+  test('carries the operation id and comment claim through both terminals', () => {
+    const store = terminalManualStore();
+    store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-1',
+      terminal: {
+        reason: 'verify_red',
+        stage: 'coordinator',
+        failure_key: null,
+        evidence: null,
+        log_path: '/state/repo-operation-logs/op-9.log',
+        op_id: 'op-9',
+        comment_at: 4242,
+        at: 99
+      }
+    });
+
+    const resumed = enqueueManual(store).queue.completion_intents['UI-1'];
+    store.__clearCacheForTest();
+    const reloaded = store.snapshot(WS).completion_intents['UI-1'];
+
+    expect(resumed.resumed_terminal).toMatchObject({
+      op_id: 'op-9',
+      comment_at: 4242,
+      resumed_at: 123
+    });
+    expect(reloaded.resumed_terminal).toMatchObject({
+      op_id: 'op-9',
+      comment_at: 4242
+    });
+  });
+
+  test('defaults an operation-less terminal to a null op id and comment claim', () => {
+    const store = terminalManualStore();
+
+    const intent = store.snapshot(WS).completion_intents['UI-1'];
+
+    expect(intent.terminal_reason).toMatchObject({
+      op_id: null,
+      comment_at: null
+    });
+  });
+
   test('resumes a merged needs_human intent at cleaning', () => {
     const store = terminalManualStore('c'.repeat(40));
 

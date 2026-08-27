@@ -220,19 +220,6 @@ function retainedOperationIds(raw, retained_beads) {
       }
     }
   }
-  for (const attempt of Object.values(asRecord(raw.attempts))) {
-    if (
-      !isRecord(attempt) ||
-      typeof attempt.bead_id !== 'string' ||
-      !retained_beads.has(attempt.bead_id) ||
-      typeof attempt.repair_operation_id !== 'string'
-    ) {
-      continue;
-    }
-    if (attempt.repair_operation_id in operations) {
-      ids.add(attempt.repair_operation_id);
-    }
-  }
   // One step only (§4.4-4): a retained card's "superseded by" link must resolve,
   // but the chain behind it is history.
   for (const operation_id of [...ids]) {

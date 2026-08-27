@@ -35,9 +35,6 @@ function intent(patch = {}) {
       base_sha: 'b'.repeat(40),
       merged_sha: null
     },
-    repair_sessions_used: 0,
-    repair_bead_ids: [],
-    subject_stack: [],
     active_op: null,
     terminal_reason: null,
     ...patch
@@ -131,15 +128,23 @@ function actionDriver(store, overrides = {}) {
     prActions: {
       completionGate: vi.fn(async () => redGate())
     },
-    completionRepair: {
-      probeOwnership: vi.fn(async () => ({ state: 'pr_owned' })),
-      ensureLinkedBead: vi.fn(async () => ({ bead_id: 'UI-repair' }))
-    },
-    scheduler: {
-      dispatchCompletionRepair: vi.fn(async () => ({ ok: true }))
-    },
     ...overrides
   });
+}
+
+/**
+ * A `bd.comment` stand-in whose recorded calls stay typed as the adapter's
+ * `(bead_id, text)` pair.
+ *
+ * @param {() => void} [effect]
+ * @returns {(bead_id: string, text: string) => Promise<void>}
+ */
+function commentSpy(effect) {
+  return async () => {
+    if (effect) {
+      effect();
+    }
+  };
 }
 
 /**
@@ -200,44 +205,6 @@ function terminalizeResolutionTimeout(store) {
   });
 }
 
-/**
- * @param {ReturnType<typeof createQueueStore>} store
- */
-function linkRepairSubject(store) {
-  const failure_key = createCompletionFailureKey({
-    stage: 'merge_gate',
-    reason: 'verify_cmd_failed',
-    subject_sha: 'a'.repeat(40),
-    base_sha: 'b'.repeat(40),
-    evidence: { output_tail: 'regression' }
-  });
-  store.prepareCompletionOp(DRIVER_WS, {
-    root_bead_id: 'UI-root',
-    phase: 'repairing',
-    op: {
-      op_id: 'create-1',
-      kind: 'create_repair',
-      failure_key,
-      attempt_id: null,
-      repair_bead_id: null,
-      status: 'prepared'
-    }
-  });
-  store.recordCompletionRepairBead(DRIVER_WS, {
-    root_bead_id: 'UI-root',
-    op_id: 'create-1',
-    repair_bead_id: 'UI-repair'
-  });
-  store.advanceCompletionOp(DRIVER_WS, {
-    root_bead_id: 'UI-root',
-    op_id: 'create-1',
-    status: 'consumed',
-    next_phase: 'repairing',
-    clear: true
-  });
-  return failure_key;
-}
-
 describe('worker/completion-intent decisions', () => {
   test('creates the same SHA-bound key from equivalent bounded evidence', () => {
     const first = createCompletionFailureKey({
@@ -278,42 +245,13 @@ describe('worker/completion-intent decisions', () => {
   });
 
   test('routes a conflict through the existing conflict owner', () => {
-    const current = intent({ repair_sessions_used: 1 });
-
     const action = decideCompletionAction({
       auto_merge: true,
-      intent: current,
+      intent: intent(),
       fact: { state: 'conflict' }
     });
 
     expect(action).toEqual({ kind: 'merge_subject' });
-    expect(current.repair_sessions_used).toBe(1);
-  });
-
-  test('routes pinned ownership to same-root resume or linked repair creation', () => {
-    const resume = decideCompletionAction({
-      auto_merge: true,
-      intent: intent(),
-      fact: { state: 'pr_owned' }
-    });
-    const create = decideCompletionAction({
-      auto_merge: true,
-      intent: intent(),
-      fact: { state: 'base_owned' }
-    });
-
-    expect(resume).toEqual({ kind: 'resume_root' });
-    expect(create).toEqual({ kind: 'create_repair' });
-  });
-
-  test('routes a recorded repair child to session dispatch', () => {
-    const action = decideCompletionAction({
-      auto_merge: true,
-      intent: intent({ phase: 'repairing' }),
-      fact: { state: 'repair_created' }
-    });
-
-    expect(action).toEqual({ kind: 'dispatch_repair' });
   });
 
   test('enters cleanup after a merged root is authoritatively re-pinned', () => {
@@ -326,14 +264,65 @@ describe('worker/completion-intent decisions', () => {
     expect(action).toEqual({ kind: 'enter_cleanup' });
   });
 
-  test('leaves repairable cleanup with the resolution ladder owner', () => {
+  test('stops a repairable cleanup failure for a human with its cause', () => {
     const action = decideCompletionAction({
       auto_merge: true,
       intent: intent({ phase: 'cleaning' }),
-      fact: { state: 'cleanup_repairable' }
+      fact: {
+        state: 'cleanup_repairable',
+        evidence: { failure_code: 'deploy_script_failure' }
+      }
     });
 
-    expect(action).toBe(null);
+    expect(action).toEqual({
+      kind: 'needs_human',
+      reason: 'deploy_script_failure',
+      terminal: true
+    });
+  });
+
+  test('reads the cleanup cause from failure_code, reason, then failure_key', () => {
+    const cleaning = intent({ phase: 'cleaning' });
+    const of = (/** @type {any} */ fact) =>
+      decideCompletionAction({ auto_merge: true, intent: cleaning, fact })
+        ?.reason;
+
+    expect(
+      of({
+        state: 'cleanup_repairable',
+        evidence: { failure_code: 'deploy_script_failure', reason: 'raw' },
+        failure_key: { reason: 'keyed' }
+      })
+    ).toBe('deploy_script_failure');
+    expect(
+      of({
+        state: 'cleanup_repairable',
+        evidence: { reason: 'raw' },
+        failure_key: { reason: 'keyed' }
+      })
+    ).toBe('raw');
+    expect(
+      of({
+        state: 'cleanup_repairable',
+        evidence: {},
+        failure_key: { reason: 'keyed' }
+      })
+    ).toBe('keyed');
+    expect(of({ state: 'cleanup_repairable' })).toBe('cleanup_failed');
+  });
+
+  test('stops a post-merge verify red for a human instead of probing', () => {
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: intent(),
+      fact: { state: 'verify_red' }
+    });
+
+    expect(action).toEqual({
+      kind: 'needs_human',
+      reason: 'verify_red',
+      terminal: true
+    });
   });
 
   test('re-gates stale pinned evidence instead of consuming it', () => {
@@ -431,722 +420,181 @@ describe('worker/completion-intent action driver', () => {
     });
   });
 
-  test('keeps a repo-operation-owned verify intent active', async () => {
+  test('terminalizes a post-merge verify red without consulting the policy table', async () => {
     const store = seededCompletionStore();
-    const dispatchCompletionRepair = vi.fn();
-    const ensureLinkedBead = vi.fn();
-    const driver = actionDriver(store, {
-      completionRepair: {
-        probeOwnership: vi.fn(async () => ({ state: 'repo_operation' })),
-        ensureLinkedBead
-      },
-      scheduler: { dispatchCompletionRepair }
-    });
+    const comment = vi.fn(commentSpy(() => undefined));
+    const driver = actionDriver(store, { bd: { comment } });
     const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
 
-    await driver.observe('UI-root', current);
-    await driver.onAction('UI-root', { kind: 'probe' }, current);
-
-    expect(
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    ).toMatchObject({ phase: 'gating', active_op: null });
-    expect(dispatchCompletionRepair).not.toHaveBeenCalled();
-    expect(ensureLinkedBead).not.toHaveBeenCalled();
-  });
-
-  test('dispatches a PR-owned failure through the root resume path', async () => {
-    const store = seededCompletionStore();
-    const dispatchCompletionRepair = vi.fn(async () => ({ ok: true }));
-    const probeOwnership = vi.fn(async () => ({ state: 'pr_owned' }));
-    const driver = actionDriver(store, {
-      completionRepair: {
-        probeOwnership,
-        ensureLinkedBead: vi.fn()
-      },
-      scheduler: { dispatchCompletionRepair }
-    });
-    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
-
-    await driver.observe('UI-root', current);
-    await driver.onAction('UI-root', { kind: 'probe' }, current);
-
-    expect(probeOwnership).toHaveBeenCalledWith(
-      expect.objectContaining({
-        root_bead_id: 'UI-root',
-        source: 'verify'
-      })
-    );
-    expect(dispatchCompletionRepair).toHaveBeenCalledWith(
-      DRIVER_WS,
-      expect.objectContaining({
-        root_bead_id: 'UI-root',
-        op: expect.objectContaining({
-          kind: 'resume_root',
-          repair_bead_id: null,
-          op_id: expect.stringMatching(/^completion-[0-9a-f]{24}$/)
-        })
-      })
-    );
-  });
-
-  test('uses a fresh operation identity for a second no-head-change repair round', async () => {
-    const store = seededCompletionStore();
-    /** @type {any[]} */
-    const operations = [];
-    const dispatchCompletionRepair = vi.fn(async (_workspace, input) => {
-      operations.push(input.op);
-      const result = store.beginRepairOp(DRIVER_WS, {
-        root_bead_id: input.root_bead_id,
-        op: input.op,
-        attempt: {
-          attempt_id: input.op.attempt_id,
-          bead_id: 'UI-root',
-          status: 'running'
-        }
-      });
-      return { ok: result.ok };
-    });
-    const driver = actionDriver(store, {
-      scheduler: { dispatchCompletionRepair }
-    });
-
-    for (let round = 0; round < 2; round += 1) {
-      const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
-      await driver.observe('UI-root', current);
-      await driver.onAction('UI-root', { kind: 'resume_root' }, current);
-      const active =
-        store.snapshot(DRIVER_WS).completion_intents['UI-root'].active_op;
-      if (round === 0) {
-        if (!active) {
-          throw new Error('first repair operation missing');
-        }
-        store.advanceCompletionOp(DRIVER_WS, {
-          root_bead_id: 'UI-root',
-          op_id: active.op_id,
-          status: 'consumed',
-          next_phase: 'gating',
-          clear: true
-        });
-      }
-    }
-
-    expect(operations).toHaveLength(2);
-    expect(operations[0].op_id).not.toBe(operations[1].op_id);
-    expect(operations[0].attempt_id).not.toBe(operations[1].attempt_id);
-    expect(
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-        .repair_sessions_used
-    ).toBe(2);
-  });
-
-  test('resumes the current repair subject when its own PR is red', async () => {
-    const store = seededCompletionStore();
-    linkRepairSubject(store);
-    const repair_subject = {
-      role: /** @type {const} */ ('repair'),
-      bead_id: 'UI-repair',
-      pr_url: 'https://github.com/o/r/pull/2',
-      head_sha: 'c'.repeat(40),
-      base_sha: 'b'.repeat(40),
-      merged_sha: null
-    };
-    store.setCompletionSubject(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      phase: 'gating',
-      subject: repair_subject
-    });
-    const dispatchCompletionRepair = vi.fn(async () => ({ ok: true }));
-    const driver = actionDriver(store, {
-      prActions: {
-        completionGate: vi.fn(async () => redGate({ subject: repair_subject }))
-      },
-      scheduler: { dispatchCompletionRepair }
-    });
-    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
-
-    await driver.observe('UI-root', current);
-    await driver.onAction('UI-root', { kind: 'resume_root' }, current);
-
-    expect(dispatchCompletionRepair).toHaveBeenCalledWith(
-      DRIVER_WS,
-      expect.objectContaining({
-        op: expect.objectContaining({ kind: 'resume_root' })
-      })
-    );
-    expect(
-      store.snapshot(DRIVER_WS).completion_intents['UI-root'].phase
-    ).not.toBe('needs_human');
-  });
-
-  test('records a base-owned repair child without surrendering the root queue slot', async () => {
-    const store = seededCompletionStore();
-    const dispatchCompletionRepair = vi.fn(async () => ({ ok: true }));
-    const driver = actionDriver(store, {
-      completionRepair: {
-        probeOwnership: vi.fn(async () => ({ state: 'base_owned' })),
-        ensureLinkedBead: vi.fn(async () => ({ bead_id: 'UI-repair' }))
-      },
-      scheduler: { dispatchCompletionRepair }
-    });
-    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
-
-    await driver.observe('UI-root', current);
-    await driver.onAction('UI-root', { kind: 'probe' }, current);
-
-    const queue = store.snapshot(DRIVER_WS);
-    expect(queue.merge_queue).toEqual([
-      {
-        bead_id: 'UI-root',
-        resolution_rounds: 0,
-        rebase_rounds: 0,
-        resolution: null
-      }
-    ]);
-    expect(queue.completion_intents['UI-root']).toMatchObject({
-      phase: 'repairing',
-      repair_bead_ids: ['UI-repair'],
-      active_op: {
-        kind: 'create_repair',
-        repair_bead_id: 'UI-repair',
-        status: 'observed'
-      }
-    });
-    expect(dispatchCompletionRepair).toHaveBeenCalledWith(
-      DRIVER_WS,
-      expect.objectContaining({
-        root_bead_id: 'UI-root',
-        op: expect.objectContaining({
-          kind: 'dispatch_repair',
-          repair_bead_id: 'UI-repair'
-        })
-      })
-    );
-  });
-
-  test('adopts a settled repair attempt only for its exact failure identity', async () => {
-    const store = seededCompletionStore();
-    const failure_key = linkRepairSubject(store);
-    store.beginRepairOp(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      op: {
-        op_id: 'dispatch-1',
-        kind: 'dispatch_repair',
-        failure_key,
-        attempt_id: 'att-repair',
-        repair_bead_id: 'UI-repair',
-        status: 'prepared'
-      },
-      attempt: { attempt_id: 'att-repair', bead_id: 'UI-repair' }
-    });
-    const repair_subject = {
-      role: 'repair',
-      bead_id: 'UI-repair',
-      pr_url: 'https://github.com/o/r/pull/2',
-      head_sha: 'c'.repeat(40),
-      base_sha: 'b'.repeat(40),
-      merged_sha: null
-    };
-    const driver = actionDriver(store, {
-      prActions: {
-        completionGate: vi.fn(async () => redGate({ subject: repair_subject }))
-      }
-    });
-
-    await driver.onAttemptSettled({
-      root_bead_id: 'UI-root',
-      op_id: 'dispatch-1',
-      failure_key,
-      attempt: {
-        attempt_id: 'att-repair',
-        bead_id: 'UI-repair',
-        status: 'done'
-      }
-    });
-
-    expect(
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    ).toMatchObject({
-      phase: 'gating',
-      subject: repair_subject,
-      active_op: null,
-      repair_sessions_used: 1
-    });
-  });
-
-  test('ignores a stale repair settlement with a different digest', async () => {
-    const store = seededCompletionStore();
-    const failure_key = linkRepairSubject(store);
-    store.beginRepairOp(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      op: {
-        op_id: 'dispatch-1',
-        kind: 'dispatch_repair',
-        failure_key,
-        attempt_id: 'att-repair',
-        repair_bead_id: 'UI-repair',
-        status: 'prepared'
-      },
-      attempt: { attempt_id: 'att-repair', bead_id: 'UI-repair' }
-    });
-    const driver = actionDriver(store);
-
-    await driver.onAttemptSettled({
-      root_bead_id: 'UI-root',
-      op_id: 'dispatch-1',
-      failure_key: { ...failure_key, result_digest: 'f'.repeat(64) },
-      attempt: {
-        attempt_id: 'att-repair',
-        bead_id: 'UI-repair',
-        status: 'done'
-      }
-    });
-
-    expect(
-      store.snapshot(DRIVER_WS).completion_intents['UI-root'].active_op
-    ).toMatchObject({ op_id: 'dispatch-1' });
-  });
-
-  test('ignores a settlement from a different repair attempt identity', async () => {
-    const store = seededCompletionStore();
-    const failure_key = linkRepairSubject(store);
-    store.beginRepairOp(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      op: {
-        op_id: 'dispatch-1',
-        kind: 'dispatch_repair',
-        failure_key,
-        attempt_id: 'att-repair',
-        repair_bead_id: 'UI-repair',
-        status: 'prepared'
-      },
-      attempt: { attempt_id: 'att-repair', bead_id: 'UI-repair' }
-    });
-    const driver = actionDriver(store);
-
-    await driver.onAttemptSettled({
-      root_bead_id: 'UI-root',
-      op_id: 'dispatch-1',
-      failure_key,
-      attempt: {
-        attempt_id: 'another-attempt',
-        bead_id: 'UI-repair',
-        status: 'done'
-      }
-    });
-
-    expect(
-      store.snapshot(DRIVER_WS).completion_intents['UI-root'].active_op
-    ).toMatchObject({
-      op_id: 'dispatch-1',
-      attempt_id: 'att-repair'
-    });
-  });
-
-  test('reconciles a terminal repair attempt after restart', async () => {
-    const store = seededCompletionStore();
-    const failure_key = linkRepairSubject(store);
-    store.beginRepairOp(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      op: {
-        op_id: 'dispatch-restart',
-        kind: 'dispatch_repair',
-        failure_key,
-        attempt_id: 'att-restart',
-        repair_bead_id: 'UI-repair',
-        status: 'prepared'
-      },
-      attempt: { attempt_id: 'att-restart', bead_id: 'UI-repair' }
-    });
-    store.updateAttempt(DRIVER_WS, {
-      attempt_id: 'att-restart',
-      patch: { status: 'done', finished_at: 2 }
-    });
-    const repair_subject = {
-      role: 'repair',
-      bead_id: 'UI-repair',
-      pr_url: 'https://github.com/o/r/pull/2',
-      head_sha: 'c'.repeat(40),
-      base_sha: 'b'.repeat(40),
-      merged_sha: null
-    };
-    const driver = actionDriver(store, {
-      prActions: {
-        completionGate: vi.fn(async () =>
-          redGate({
-            subject: repair_subject,
-            verdict: { enabled: true, tier: 'ready', reason: null },
-            evidence: {}
-          })
-        )
-      }
-    });
-
-    await driver.onAction(
-      'UI-root',
-      { kind: 'reconcile_op' },
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    );
-
-    expect(
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    ).toMatchObject({
-      phase: 'gating',
-      subject: repair_subject,
-      active_op: null,
-      repair_sessions_used: 1
-    });
-  });
-
-  test('adopts a unique legacy terminal descendant with a fresh PR subject', async () => {
-    const store = seededCompletionStore();
-    const failure_key = createCompletionFailureKey({
-      stage: 'merge_gate',
-      reason: 'verify_cmd_failed',
-      subject_sha: 'a'.repeat(40),
-      base_sha: 'b'.repeat(40),
-      evidence: { output_tail: 'regression' }
-    });
-    store.beginRepairOp(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      op: {
-        op_id: 'legacy-resume',
-        kind: 'resume_root',
-        failure_key,
-        attempt_id: 'legacy-source',
-        repair_bead_id: null,
-        status: 'prepared'
-      },
-      attempt: {
-        attempt_id: 'legacy-source',
-        bead_id: 'UI-root',
-        status: 'paused',
-        completion_root_id: 'UI-root',
-        completion_op_id: 'legacy-resume',
-        completion_mode: 'resume_root',
-        completion_failure_key: failure_key
-      }
-    });
-    store.appendAttempt(DRIVER_WS, {
-      expected_revision: store.snapshot(DRIVER_WS).revision,
-      attempt: {
-        attempt_id: 'legacy-leaf',
-        bead_id: 'UI-root',
-        resumed_from: 'legacy-source',
-        status: 'done'
-      }
-    });
-    const fresh_subject = {
-      ...intent().subject,
-      head_sha: 'd'.repeat(40)
-    };
-    const completionGate = vi.fn(async () =>
-      redGate({
-        subject: fresh_subject,
-        verdict: { enabled: true, tier: 'ready', reason: null },
-        evidence: {}
-      })
-    );
-    const driver = actionDriver(store, {
-      prActions: { completionGate }
-    });
-
-    await driver.onAction(
-      'UI-root',
-      { kind: 'reconcile_op' },
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    );
-
-    expect(completionGate).toHaveBeenCalledWith('UI-root', 'root');
-    expect(
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    ).toMatchObject({
-      phase: 'gating',
-      subject: fresh_subject,
-      active_op: null,
-      repair_sessions_used: 1
-    });
-    expect(store.snapshot(DRIVER_WS).attempts['legacy-leaf']).toMatchObject({
-      completion_root_id: 'UI-root',
-      completion_op_id: 'legacy-resume',
-      completion_mode: 'resume_root',
-      completion_failure_key: failure_key
-    });
-  });
-
-  test('terminalizes an ambiguous legacy completion lineage', async () => {
-    const store = seededCompletionStore();
-    const failure_key = createCompletionFailureKey({
-      stage: 'merge_gate',
-      reason: 'verify_cmd_failed',
-      subject_sha: 'a'.repeat(40),
-      base_sha: 'b'.repeat(40),
-      evidence: { output_tail: 'regression' }
-    });
-    store.beginRepairOp(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      op: {
-        op_id: 'legacy-branch',
-        kind: 'resume_root',
-        failure_key,
-        attempt_id: 'legacy-source',
-        repair_bead_id: null,
-        status: 'prepared'
-      },
-      attempt: {
-        attempt_id: 'legacy-source',
-        bead_id: 'UI-root',
-        status: 'paused',
-        completion_root_id: 'UI-root',
-        completion_op_id: 'legacy-branch',
-        completion_mode: 'resume_root',
-        completion_failure_key: failure_key
-      }
-    });
-    for (const attempt_id of ['legacy-a', 'legacy-b']) {
-      store.appendAttempt(DRIVER_WS, {
-        expected_revision: store.snapshot(DRIVER_WS).revision,
-        attempt: {
-          attempt_id,
-          bead_id: 'UI-root',
-          resumed_from: 'legacy-source',
-          status: 'done'
-        }
-      });
-    }
-    const driver = actionDriver(store);
-
-    await driver.onAction(
-      'UI-root',
-      { kind: 'reconcile_op' },
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    );
-
-    expect(store.snapshot(DRIVER_WS)).toMatchObject({
-      merge_queue: [],
-      completion_intents: {
-        'UI-root': {
-          phase: 'needs_human',
-          repair_sessions_used: 1,
-          terminal_reason: {
-            reason: 'repair_resume_lineage_ambiguous',
-            stage: 'reconciliation',
-            evidence: 'legacy_lineage_ambiguous'
-          }
-        }
-      }
-    });
-  });
-
-  test('adopts a repair PR observed after its session settlement', async () => {
-    const store = seededCompletionStore();
-    const failure_key = linkRepairSubject(store);
-    store.beginRepairOp(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      op: {
-        op_id: 'dispatch-wait',
-        kind: 'dispatch_repair',
-        failure_key,
-        attempt_id: 'att-wait',
-        repair_bead_id: 'UI-repair',
-        status: 'prepared'
-      },
-      attempt: { attempt_id: 'att-wait', bead_id: 'UI-repair' }
-    });
-    const repair_subject = {
-      role: 'repair',
-      bead_id: 'UI-repair',
-      pr_url: 'https://github.com/o/r/pull/2',
-      head_sha: 'c'.repeat(40),
-      base_sha: 'b'.repeat(40),
-      merged_sha: null
-    };
-    const completionGate = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: false, reason: 'pr_ref_unknown' })
-      .mockResolvedValue(
-        redGate({
-          subject: repair_subject,
-          verdict: { enabled: true, tier: 'ready', reason: null },
-          evidence: {}
-        })
-      );
-    const driver = actionDriver(store, {
-      prActions: { completionGate }
-    });
-
-    await driver.onAttemptSettled({
-      root_bead_id: 'UI-root',
-      op_id: 'dispatch-wait',
-      failure_key,
-      attempt: {
-        attempt_id: 'att-wait',
-        bead_id: 'UI-repair',
-        status: 'done'
-      }
-    });
-    const waiting = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
-    const fact = await driver.observe('UI-root', waiting);
+    const fact = await driver.observe('UI-root', current);
     const action = decideCompletionAction({
       auto_merge: true,
-      intent: waiting,
+      intent: current,
       fact
     });
     if (!action) {
-      throw new Error('repair PR adoption action missing');
+      throw new Error('verify red action missing');
     }
-    await driver.onAction('UI-root', action, waiting);
+    await driver.onAction('UI-root', action, current);
+    await driver.commentsIdle();
 
-    expect(fact).toMatchObject({ state: 'repair_pr_open' });
+    // `verify_cmd_failed` is still a `retry` reason for the paths that own it,
+    // so a needs_human that went through the tables would have parked here.
     expect(
       store.snapshot(DRIVER_WS).completion_intents['UI-root']
     ).toMatchObject({
-      phase: 'gating',
-      subject: repair_subject,
-      active_op: null
+      phase: 'needs_human',
+      auto_resolution: null,
+      terminal_reason: {
+        reason: 'verify_red',
+        stage: 'coordinator',
+        log_path: '/state/verify.log',
+        op_id: 'verify',
+        comment_at: expect.any(Number)
+      }
     });
+    expect(comment).toHaveBeenCalledTimes(1);
+    expect(comment.mock.calls[0][1]).toContain(
+      '- 원인: verify_red — 머지 후 검증이 실패했습니다.'
+    );
   });
 
-  test('returns to the root gate after a repair child merges', async () => {
+  test('comments one failure once across a [머지] re-click', async () => {
     const store = seededCompletionStore();
-    linkRepairSubject(store);
-    store.setCompletionSubject(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      phase: 'merging',
-      subject: {
-        role: 'repair',
-        bead_id: 'UI-repair',
-        pr_url: 'https://github.com/o/r/pull/2',
-        head_sha: 'c'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        merged_sha: null
-      }
-    });
-    const root_subject = {
-      ...intent().subject,
-      head_sha: 'd'.repeat(40)
+    const comment = vi.fn(commentSpy(() => undefined));
+    const driver = actionDriver(store, { bd: { comment } });
+    const first = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.observe('UI-root', first);
+    const action = {
+      kind: /** @type {const} */ ('needs_human'),
+      reason: 'verify_red',
+      terminal: true
     };
-    const driver = actionDriver(store, {
-      prActions: {
-        completionGate: vi.fn(async () =>
-          redGate({
-            subject: root_subject,
-            verdict: { enabled: true, tier: 'ready', reason: null },
-            evidence: {}
-          })
-        )
-      }
-    });
-
-    await driver.onMergeResult('UI-root', 'UI-repair', {
-      ok: true,
-      action: 'merged'
-    });
-
-    const queue = store.snapshot(DRIVER_WS);
-    expect(queue.merge_queue).toEqual([
-      {
-        bead_id: 'UI-root',
-        resolution_rounds: 0,
-        rebase_rounds: 0,
-        resolution: null
-      }
-    ]);
-    expect(queue.completion_intents['UI-root']).toMatchObject({
-      phase: 'gating',
-      subject: root_subject
-    });
-  });
-
-  test('returns a nested repair to its prior repair subject', async () => {
-    const store = seededCompletionStore();
-    const first_failure = linkRepairSubject(store);
-    const first_subject = {
-      role: /** @type {const} */ ('repair'),
-      bead_id: 'UI-repair',
-      pr_url: 'https://github.com/o/r/pull/2',
-      head_sha: 'c'.repeat(40),
-      base_sha: 'b'.repeat(40),
-      merged_sha: null
-    };
-    store.setCompletionSubject(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      phase: 'gating',
-      subject: first_subject
-    });
-    store.prepareCompletionOp(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      phase: 'repairing',
-      op: {
-        op_id: 'create-2',
-        kind: 'create_repair',
-        failure_key: { ...first_failure, subject_sha: 'c'.repeat(40) },
-        attempt_id: null,
-        repair_bead_id: null,
-        status: 'prepared'
-      }
-    });
-    store.recordCompletionRepairBead(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      op_id: 'create-2',
-      repair_bead_id: 'UI-repair-2'
-    });
-    store.advanceCompletionOp(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      op_id: 'create-2',
-      status: 'consumed',
-      next_phase: 'repairing',
-      clear: true
-    });
-    store.setCompletionSubject(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      phase: 'merging',
-      subject: {
-        role: 'repair',
-        bead_id: 'UI-repair-2',
-        pr_url: 'https://github.com/o/r/pull/3',
-        head_sha: 'd'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        merged_sha: null
-      }
-    });
-    const driver = actionDriver(store, {
-      prActions: {
-        completionGate: vi.fn(async () =>
-          redGate({
-            subject: first_subject,
-            verdict: { enabled: true, tier: 'ready', reason: null },
-            evidence: {}
-          })
-        )
-      }
-    });
-
-    await driver.onMergeResult('UI-root', 'UI-repair', {
-      ok: true,
-      action: 'merged'
-    });
-
-    expect(
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    ).toMatchObject({
-      subject: { bead_id: 'UI-repair-2' },
-      subject_stack: [
-        { role: 'root', bead_id: 'UI-root' },
-        { role: 'repair', bead_id: 'UI-repair' }
+    await driver.onAction('UI-root', action, first);
+    // The re-click moves the terminal to `resumed_terminal`, which is where the
+    // second pass has to look for the claim it already made.
+    store.enqueueMergeManual(DRIVER_WS, {
+      expected_revision: store.snapshot(DRIVER_WS).revision,
+      entries: [
+        {
+          bead_id: 'UI-root',
+          head_sha: 'a'.repeat(40),
+          target_base: 'main'
+        }
       ]
     });
+    const resumed = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    await driver.observe('UI-root', resumed);
+    await driver.onAction('UI-root', action, resumed);
+    await driver.commentsIdle();
 
-    await driver.onMergeResult('UI-root', 'UI-repair-2', {
-      ok: true,
-      action: 'merged'
-    });
+    const settled = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    expect(comment).toHaveBeenCalledTimes(1);
+    expect(settled.phase).toBe('needs_human');
+    expect(settled.terminal_reason?.comment_at).toBe(
+      settled.resumed_terminal?.comment_at
+    );
+  });
 
+  test('comments a second, different operation-less failure', async () => {
+    const store = seededCompletionStore();
+    const comment = vi.fn(commentSpy(() => undefined));
+    const driver = actionDriver(store, { bd: { comment } });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    /**
+     * @param {string} reason
+     */
+    const stop = async (reason) => {
+      store.enqueueMergeManual(DRIVER_WS, {
+        expected_revision: store.snapshot(DRIVER_WS).revision,
+        entries: [
+          { bead_id: 'UI-root', head_sha: 'a'.repeat(40), target_base: 'main' }
+        ]
+      });
+      await driver.onAction(
+        'UI-root',
+        { kind: 'needs_human', reason, terminal: true },
+        current
+      );
+    };
+
+    await stop('root_cleanup_pin_failed');
+    await stop('reconciliation_ambiguous');
+    await driver.commentsIdle();
+
+    expect(comment).toHaveBeenCalledTimes(2);
+  });
+
+  test('keeps the terminal when the failure comment cannot be posted', async () => {
+    const store = seededCompletionStore();
+    const comment = vi.fn(
+      commentSpy(() => {
+        throw new Error('bd unavailable');
+      })
+    );
+    const log = vi.fn();
+    const driver = actionDriver(store, { bd: { comment }, log });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.observe('UI-root', current);
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'verify_red', terminal: true },
+      current
+    );
+    await driver.commentsIdle();
+
+    expect(comment).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalled();
     expect(
       store.snapshot(DRIVER_WS).completion_intents['UI-root']
     ).toMatchObject({
-      phase: 'gating',
-      subject: first_subject,
-      subject_stack: [{ role: 'root', bead_id: 'UI-root' }]
+      phase: 'needs_human',
+      terminal_reason: { reason: 'verify_red', comment_at: expect.any(Number) }
+    });
+  });
+
+  test('skips the failure comment when no bd adapter is injected', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, { bd: {} });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.observe('UI-root', current);
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'verify_red', terminal: true },
+      current
+    );
+    await driver.commentsIdle();
+
+    expect(store.snapshot(DRIVER_WS).completion_intents['UI-root'].phase).toBe(
+      'needs_human'
+    );
+  });
+
+  test('keeps a re-driven verify red terminal instead of retrying it', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store);
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    const fact = await driver.observe('UI-root', current);
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'verify_red', terminal: true },
+      current
+    );
+    const settled = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    const again = decideCompletionAction({
+      auto_merge: true,
+      intent: settled,
+      fact
+    });
+
+    expect(again).toBe(null);
+    expect(settled).toMatchObject({
+      phase: 'needs_human',
+      auto_resolution: null
     });
   });
 
@@ -1182,22 +630,21 @@ describe('worker/completion-intent action driver', () => {
     expect(kickMerge).toHaveBeenCalledTimes(1);
   });
 
-  test('does not create a linked repair for merged cleanup failure', async () => {
+  test('stops a merged-root cleanup failure with its log, op id and one comment', async () => {
     const store = seededCompletionStore();
     store.recordCleanupFailure(DRIVER_WS, {
       bead_id: 'UI-root',
       step: 'post_merge_verify',
       reason: 'verify_cmd_failed',
       output_tail: 'merged regression',
-      log_path: '/state/postmerge.log'
+      log_path: '/state/repo-operation-logs/op-77.log'
     });
     const merged_subject = {
       ...intent().subject,
       base_sha: 'c'.repeat(40),
       merged_sha: 'c'.repeat(40)
     };
-    const ensureLinkedBead = vi.fn(async () => ({ bead_id: 'UI-repair' }));
-    const dispatchCompletionRepair = vi.fn(async () => ({ ok: true }));
+    const comment = vi.fn(commentSpy(() => undefined));
     const driver = actionDriver(store, {
       prActions: {
         completionGate: vi.fn(async () =>
@@ -1209,11 +656,7 @@ describe('worker/completion-intent action driver', () => {
           })
         )
       },
-      completionRepair: {
-        probeOwnership: vi.fn(),
-        ensureLinkedBead
-      },
-      scheduler: { dispatchCompletionRepair }
+      bd: { comment }
     });
     await driver.onMergeResult('UI-root', 'UI-root', {
       ok: false,
@@ -1228,9 +671,15 @@ describe('worker/completion-intent action driver', () => {
       intent: cleaning,
       fact
     });
+    if (!action) {
+      throw new Error('cleanup action missing');
+    }
+    await driver.onAction('UI-root', action, cleaning);
+    await driver.commentsIdle();
 
     expect(fact).toMatchObject({
       state: 'cleanup_repairable',
+      op_id: 'op-77',
       failure_key: {
         stage: 'post_merge_verify',
         reason: 'verify_cmd_failed',
@@ -1238,16 +687,31 @@ describe('worker/completion-intent action driver', () => {
         base_sha: 'c'.repeat(40)
       }
     });
-    expect(action).toBe(null);
-    expect(ensureLinkedBead).not.toHaveBeenCalled();
-    expect(dispatchCompletionRepair).not.toHaveBeenCalled();
     expect(
       store.snapshot(DRIVER_WS).completion_intents['UI-root']
     ).toMatchObject({
-      phase: 'cleaning',
-      repair_sessions_used: 0,
-      active_op: null
+      phase: 'needs_human',
+      auto_resolution: null,
+      terminal_reason: {
+        reason: 'verify_cmd_failed',
+        op_id: 'op-77',
+        log_path: '/state/repo-operation-logs/op-77.log',
+        comment_at: expect.any(Number)
+      }
     });
+    expect(comment).toHaveBeenCalledTimes(1);
+    expect(comment.mock.calls[0][0]).toBe('UI-root');
+    expect(comment.mock.calls[0][1]).toBe(
+      [
+        '## 🤖 완료 실패 기록',
+        '- 단계: post_merge_verify',
+        '- 원인: verify_cmd_failed',
+        `- 대상: ${'c'.repeat(40)} (base main)`,
+        '- 로그: /state/repo-operation-logs/op-77.log',
+        '- 재시도: 없음',
+        '- 다음: [머지] 재클릭 · 설정 카드 배포 실행 · 코드 수정은 새 Bead'
+      ].join('\n')
+    );
   });
 
   test('moves an initially observed merged root from gating into cleaning', async () => {
@@ -1386,7 +850,7 @@ describe('worker/completion-intent action driver', () => {
     expect(notifyChanged).not.toHaveBeenCalled();
   });
 
-  test('leaves a cleanup failure on the unified resolution path', async () => {
+  test('stops a cleanup failure the ladder cannot resolve', async () => {
     const store = seededCompletionStore();
     store.setCompletionSubject(DRIVER_WS, {
       root_bead_id: 'UI-root',
@@ -1412,128 +876,10 @@ describe('worker/completion-intent action driver', () => {
       state: 'cleanup_repairable',
       failure_key: { stage: 'child_sweep', reason: 'bd_read_failed' }
     });
-    expect(action).toBe(null);
-  });
-
-  test('adopts a journaled create operation without duplicating its repair session', async () => {
-    const store = seededCompletionStore();
-    const failure_key = createCompletionFailureKey({
-      stage: 'merge_gate',
-      reason: 'verify_cmd_failed',
-      subject_sha: 'a'.repeat(40),
-      base_sha: 'b'.repeat(40),
-      evidence: { output_tail: 'regression' }
-    });
-    store.prepareCompletionOp(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      phase: 'repairing',
-      op: {
-        op_id: 'create-1',
-        kind: 'create_repair',
-        failure_key,
-        attempt_id: null,
-        repair_bead_id: null,
-        status: 'prepared'
-      }
-    });
-    const ensureLinkedBead = vi.fn(async () => ({ bead_id: 'UI-repair' }));
-    const dispatchCompletionRepair = vi.fn(async (_workspace, input) => {
-      const result = store.beginRepairOp(DRIVER_WS, {
-        root_bead_id: input.root_bead_id,
-        op: input.op,
-        attempt: {
-          attempt_id: input.op.attempt_id,
-          bead_id: input.op.repair_bead_id,
-          status: 'running'
-        }
-      });
-      return { ok: result.ok };
-    });
-    const driver = actionDriver(store, {
-      completionRepair: {
-        probeOwnership: vi.fn(),
-        ensureLinkedBead
-      },
-      scheduler: { dispatchCompletionRepair }
-    });
-
-    await driver.onAction(
-      'UI-root',
-      { kind: 'reconcile_op' },
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    );
-    await driver.onAction(
-      'UI-root',
-      { kind: 'reconcile_op' },
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    );
-
-    const queue = store.snapshot(DRIVER_WS);
-    expect(ensureLinkedBead).toHaveBeenCalledTimes(1);
-    expect(dispatchCompletionRepair).toHaveBeenCalledTimes(1);
-    expect(queue.completion_intents['UI-root']).toMatchObject({
-      repair_sessions_used: 1,
-      active_op: {
-        kind: 'dispatch_repair',
-        status: 'dispatched',
-        repair_bead_id: 'UI-repair'
-      }
-    });
-  });
-
-  test('replays root cleanup after the post-merge repair child lands', async () => {
-    const store = seededCompletionStore();
-    store.recordCleanupFailure(DRIVER_WS, {
-      bead_id: 'UI-root',
-      step: 'post_merge_verify',
-      reason: 'verify_cmd_failed'
-    });
-    linkRepairSubject(store);
-    store.setCompletionSubject(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      phase: 'merging',
-      subject: {
-        role: 'repair',
-        bead_id: 'UI-repair',
-        pr_url: 'https://github.com/o/r/pull/2',
-        head_sha: 'c'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        merged_sha: null
-      }
-    });
-    const root_subject = {
-      ...intent().subject,
-      base_sha: 'd'.repeat(40),
-      merged_sha: 'd'.repeat(40)
-    };
-    const resumeCompletionCleanup = vi.fn(async () => {
-      store.moveToDone(DRIVER_WS, { bead_id: 'UI-root' });
-      return { ok: true, step: null, reason: null };
-    });
-    const driver = actionDriver(store, {
-      prActions: {
-        completionGate: vi.fn(async () =>
-          redGate({
-            subject: root_subject,
-            verdict: { enabled: false, tier: 'merged', reason: null },
-            evidence: {}
-          })
-        ),
-        resumeCompletionCleanup
-      }
-    });
-
-    await driver.onMergeResult('UI-root', 'UI-repair', {
-      ok: true,
-      action: 'merged'
-    });
-
-    expect(resumeCompletionCleanup).toHaveBeenCalledWith('UI-root');
-    expect(store.snapshot(DRIVER_WS)).toMatchObject({
-      merge_queue: [],
-      completion_intents: {
-        'UI-root': { phase: 'completed', active_op: null }
-      }
+    expect(action).toEqual({
+      kind: 'needs_human',
+      reason: 'bd_read_failed',
+      terminal: true
     });
   });
 
@@ -1947,61 +1293,6 @@ describe('worker/completion-intent action driver', () => {
       terminal_reason: { reason: 'resolution_timeout' }
     });
   });
-
-  test('terminalizes a third repair request without creating another child', async () => {
-    const store = seededCompletionStore();
-    for (const n of [1, 2]) {
-      const failure_key = createCompletionFailureKey({
-        stage: 'merge_gate',
-        reason: 'verify_cmd_failed',
-        subject_sha: 'a'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        evidence: { output_tail: `red-${n}` }
-      });
-      store.beginRepairOp(DRIVER_WS, {
-        root_bead_id: 'UI-root',
-        op: {
-          op_id: `resume-${n}`,
-          kind: 'resume_root',
-          failure_key,
-          attempt_id: `repair-${n}`,
-          repair_bead_id: null,
-          status: 'prepared'
-        },
-        attempt: { attempt_id: `repair-${n}`, bead_id: 'UI-root' }
-      });
-      store.advanceCompletionOp(DRIVER_WS, {
-        root_bead_id: 'UI-root',
-        op_id: `resume-${n}`,
-        status: 'consumed',
-        next_phase: 'gating',
-        clear: true
-      });
-    }
-    const ensureLinkedBead = vi.fn();
-    const driver = actionDriver(store, {
-      completionRepair: {
-        probeOwnership: vi.fn(),
-        ensureLinkedBead
-      }
-    });
-    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
-    await driver.observe('UI-root', current);
-
-    await driver.onAction('UI-root', { kind: 'create_repair' }, current);
-
-    expect(ensureLinkedBead).not.toHaveBeenCalled();
-    expect(store.snapshot(DRIVER_WS)).toMatchObject({
-      merge_queue: [],
-      completion_intents: {
-        'UI-root': {
-          phase: 'needs_human',
-          repair_sessions_used: 2,
-          terminal_reason: { reason: 'repair_session_budget_exhausted' }
-        }
-      }
-    });
-  });
 });
 
 describe('worker/completion-intent lifecycle', () => {
@@ -2190,11 +1481,6 @@ describe('worker/completion-intent resolution policy (UI-hk74 §3)', () => {
     ['spec_id_missing', 'metadata_watch', 'waiting_metadata'],
     ['review_receipt_missing', 'auto_review', 'reviewing'],
     ['review_receipt_stale', 'auto_review', 'reviewing'],
-    ['repair_bead_create_failed', 'retry', 'retrying'],
-    ['repair_bead_readback_failed', 'retry', 'retrying'],
-    ['repair_bead_record_failed', 'retry', 'retrying'],
-    ['repair_dispatch_failed', 'retry', 'retrying'],
-    ['continuation_persist_failed', 'retry', 'retrying'],
     ['cleanup_prerecord_failed', 'retry', 'retrying'],
     ['cleanup_settlement_record_failed', 'retry', 'retrying'],
     ['completion_gate_spawn_failed', 'retry', 'retrying'],
@@ -2209,11 +1495,8 @@ describe('worker/completion-intent resolution policy (UI-hk74 §3)', () => {
   test.each([
     ['reconciliation_ambiguous'],
     ['resolution_lineage_ambiguous'],
-    ['repair_resume_lineage_ambiguous'],
-    ['repair_attempt_missing'],
     ['cleanup_journal_conflict'],
     ['cleanup_completion_unrecorded'],
-    ['repair_session_budget_exhausted'],
     ['intent_state_invalid'],
     ['ownership_undecidable']
   ])('keeps %s a human decision', (reason) => {
@@ -2235,36 +1518,6 @@ describe('worker/completion-intent resolution policy (UI-hk74 §3)', () => {
   });
 
   test.each([
-    [
-      'repair_bead_create_failed',
-      'repairing',
-      'create_repair',
-      'repair_bead_recorded'
-    ],
-    [
-      'repair_bead_readback_failed',
-      'repairing',
-      'create_repair',
-      'repair_bead_recorded'
-    ],
-    [
-      'repair_bead_record_failed',
-      'repairing',
-      'create_repair',
-      'repair_bead_recorded'
-    ],
-    [
-      'repair_dispatch_failed',
-      'repairing',
-      'dispatch_repair',
-      'repair_attempt_dispatched'
-    ],
-    [
-      'continuation_persist_failed',
-      'repairing',
-      'dispatch_repair',
-      'repair_attempt_dispatched'
-    ],
     [
       'completion_gate_spawn_failed',
       'gating',
@@ -2291,9 +1544,6 @@ describe('worker/completion-intent resolution policy (UI-hk74 §3)', () => {
   });
 
   test('names the durable inputs each retry family re-runs on', () => {
-    expect(COMPLETION_RETRY_POLICY.repair_dispatch_failed.inputs).toEqual([
-      'repair_bead_id'
-    ]);
     expect(COMPLETION_RETRY_POLICY.verify_cmd_failed.inputs).toEqual([
       'operation_id',
       'head_sha',
@@ -2317,16 +1567,16 @@ describe('worker/completion-intent auto-resolution decisions (UI-hk74 §4)', () 
   function retryResolution(patch = {}) {
     return {
       class: 'retry',
-      origin_reason: 'repair_dispatch_failed',
-      origin_stage: 'repair_dispatch',
-      return_phase: 'repairing',
+      origin_reason: 'verify_cmd_failed',
+      origin_stage: 'merge_gate',
+      return_phase: 'gating',
       attempts: 0,
       next_at: 1_000,
       last_error: null,
       op: {
         completion_op_id: null,
         failure_key: null,
-        repair_bead_id: 'UI-repair',
+        repair_bead_id: null,
         continuation: null,
         continuation_mismatch: null,
         operation_id: null,
@@ -2444,7 +1694,7 @@ describe('worker/completion-intent auto-resolution decisions (UI-hk74 §4)', () 
 
     expect(action).toEqual({
       kind: 'needs_human',
-      reason: 'retry_exhausted:repair_dispatch_failed'
+      reason: 'retry_exhausted:verify_cmd_failed'
     });
   });
 
@@ -2460,7 +1710,7 @@ describe('worker/completion-intent auto-resolution decisions (UI-hk74 §4)', () 
 
     expect(action).toEqual({
       kind: 'needs_human',
-      reason: 'retry_exhausted:repair_dispatch_failed'
+      reason: 'retry_exhausted:verify_cmd_failed'
     });
   });
 
@@ -3018,102 +2268,6 @@ describe('worker/completion-intent auto-resolution driver (UI-hk74 §4/§5)', ()
     });
   });
 
-  test('re-dispatches a repair on the repair Bead the record pinned', async () => {
-    const store = seededCompletionStore();
-    const ensureLinkedBead = vi.fn(async () => ({ bead_id: 'UI-other' }));
-    const dispatchCompletionRepair = vi.fn(async () => ({ ok: true }));
-    const driver = settleDriver(store, {
-      completionRepair: {
-        probeOwnership: vi.fn(async () => ({ state: 'base_owned' })),
-        ensureLinkedBead
-      },
-      scheduler: { dispatchCompletionRepair },
-      now: () => 10_000
-    });
-    const failure_key = createCompletionFailureKey({
-      stage: 'repair_create',
-      reason: 'repair_needed',
-      subject_sha: 'a'.repeat(40),
-      base_sha: 'b'.repeat(40),
-      evidence: {}
-    });
-    store.prepareCompletionOp(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      phase: 'repairing',
-      op: {
-        op_id: 'completion-create',
-        kind: 'create_repair',
-        failure_key,
-        attempt_id: null,
-        repair_bead_id: 'UI-repair',
-        status: 'prepared'
-      }
-    });
-    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
-
-    await driver.onAction(
-      'UI-root',
-      { kind: 'needs_human', reason: 'repair_dispatch_failed' },
-      current
-    );
-    await driver.onAction('UI-root', { kind: 'retry_failed_op' }, current);
-
-    expect(ensureLinkedBead).not.toHaveBeenCalled();
-    expect(dispatchCompletionRepair).toHaveBeenCalledWith(
-      DRIVER_WS,
-      expect.objectContaining({
-        op: expect.objectContaining({ repair_bead_id: 'UI-repair' })
-      })
-    );
-  });
-
-  test('holds retrying and the record until the re-run reads back', async () => {
-    const store = seededCompletionStore();
-    const dispatchCompletionRepair = vi.fn(async () => ({ ok: true }));
-    const driver = settleDriver(store, {
-      completionRepair: {
-        probeOwnership: vi.fn(async () => ({ state: 'base_owned' })),
-        ensureLinkedBead: vi.fn(async () => ({ bead_id: 'UI-repair' }))
-      },
-      scheduler: { dispatchCompletionRepair },
-      now: () => 10_000
-    });
-    const failure_key = createCompletionFailureKey({
-      stage: 'repair_create',
-      reason: 'repair_needed',
-      subject_sha: 'a'.repeat(40),
-      base_sha: 'b'.repeat(40),
-      evidence: {}
-    });
-    store.prepareCompletionOp(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      phase: 'repairing',
-      op: {
-        op_id: 'completion-create',
-        kind: 'create_repair',
-        failure_key,
-        attempt_id: null,
-        repair_bead_id: 'UI-repair',
-        status: 'prepared'
-      }
-    });
-    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
-
-    await driver.onAction(
-      'UI-root',
-      { kind: 'needs_human', reason: 'repair_dispatch_failed' },
-      current
-    );
-    await driver.onAction('UI-root', { kind: 'retry_failed_op' }, current);
-
-    expect(
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    ).toMatchObject({
-      phase: 'retrying',
-      auto_resolution: { class: 'retry', attempts: 1 }
-    });
-  });
-
   test('preserves the retry budget across a pause and resume', async () => {
     const store = seededCompletionStore();
     const completionGate = vi.fn(async () => ({
@@ -3229,36 +2383,5 @@ describe('worker/completion-intent auto-resolution driver (UI-hk74 §4/§5)', ()
     expect(
       store.snapshot(DRIVER_WS).completion_intents['UI-root']
     ).toMatchObject({ phase: 'gating', auto_resolution: null });
-  });
-
-  test('re-runs a failed repair dispatch on the same repair Bead', async () => {
-    const store = seededCompletionStore();
-    const dispatchCompletionRepair = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: false, reason: 'repair_dispatch_failed' })
-      .mockResolvedValue({ ok: true });
-    const driver = settleDriver(store, {
-      completionRepair: {
-        probeOwnership: vi.fn(async () => ({ state: 'pr_owned' })),
-        ensureLinkedBead: vi.fn(async () => ({ bead_id: 'UI-repair' }))
-      },
-      scheduler: { dispatchCompletionRepair },
-      prActions: { completionGate: vi.fn(async () => redGate()) },
-      now: () => 10_000
-    });
-    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
-    await driver.observe('UI-root', current);
-    await driver.onAction('UI-root', { kind: 'probe' }, current);
-
-    expect(
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    ).toMatchObject({
-      phase: 'retrying',
-      auto_resolution: { origin_reason: 'repair_dispatch_failed' }
-    });
-
-    await driver.onAction('UI-root', { kind: 'retry_failed_op' }, current);
-
-    expect(dispatchCompletionRepair).toHaveBeenCalledTimes(2);
   });
 });

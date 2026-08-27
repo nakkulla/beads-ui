@@ -7,6 +7,7 @@
  * before executing.
  */
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 import {
   UNRESOLVED_REVIEWER,
   UNRESOLVED_REVIEW_EFFORT
@@ -16,11 +17,11 @@ import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
   COMPLETION_RETRY_MAX
 } from './queue-store.js';
-import { repoOperationPolicySupported } from './repo-operation-policy.js';
 import { isCleanupResolutionFailure } from './resolution-ladder.js';
 
 const OUTPUT_TAIL_MAX = 4_000;
 const REASON_MAX = 500;
+const LOG_SUFFIX = '.log';
 const CONFLICT_RESOLUTION_FAILURES = new Set([
   'resolution_wait_invalid',
   'resolution_attempt_missing',
@@ -34,7 +35,7 @@ const CONFLICT_RESOLUTION_FAILURES = new Set([
 /**
  * Build the stable identity of one failure observed at pinned subject/base
  * SHAs. The digest input is bounded and normalized so line endings cannot
- * manufacture distinct repair operations for the same result.
+ * manufacture distinct completion operations for the same result.
  *
  * @param {{
  *   stage: string,
@@ -88,10 +89,6 @@ export const COMPLETION_FAILURE_POLICY = Object.freeze({
   spec_id_missing: 'metadata_watch',
   review_receipt_missing: 'auto_review',
   review_receipt_stale: 'auto_review',
-  repair_bead_create_failed: 'retry',
-  repair_bead_readback_failed: 'retry',
-  repair_bead_record_failed: 'retry',
-  repair_dispatch_failed: 'retry',
   continuation_persist_failed: 'retry',
   cleanup_prerecord_failed: 'retry',
   cleanup_settlement_record_failed: 'retry',
@@ -99,17 +96,13 @@ export const COMPLETION_FAILURE_POLICY = Object.freeze({
   verify_cmd_failed: 'retry',
   reconciliation_ambiguous: 'human',
   resolution_lineage_ambiguous: 'human',
-  repair_resume_lineage_ambiguous: 'human',
-  repair_attempt_missing: 'human',
   cleanup_journal_conflict: 'human',
   cleanup_completion_unrecorded: 'human',
-  repair_session_budget_exhausted: 'human',
-  intent_state_invalid: 'human',
-  ownership_undecidable: 'human'
+  intent_state_invalid: 'human'
 });
 
 /**
- * @typedef {'create_repair'|'dispatch_repair'|'gate'|'verify'|'retry_cleanup'} CompletionRetryEffect
+ * @typedef {'gate'|'verify'|'retry_cleanup'} CompletionRetryEffect
  */
 /**
  * @typedef {Object} CompletionRetryPolicy
@@ -123,48 +116,13 @@ export const COMPLETION_FAILURE_POLICY = Object.freeze({
  */
 /**
  * The §3 second table: what each retryable reason actually re-runs, on which
- * durable inputs, and what counts as success. Kept as data because the five
- * families differ in all three and a single "just try again" would either
- * duplicate a repair Bead or declare success on a spawn that never ran.
+ * durable inputs, and what counts as success. Kept as data because the
+ * families differ in all three and a single "just try again" would declare
+ * success on a spawn that never ran.
  *
  * @type {Readonly<Record<string, CompletionRetryPolicy>>}
  */
 export const COMPLETION_RETRY_POLICY = Object.freeze({
-  repair_bead_create_failed: {
-    return_phase: 'repairing',
-    effect: 'create_repair',
-    inputs: ['failure_key'],
-    optional_inputs: ['repair_bead_id'],
-    success: 'repair_bead_recorded'
-  },
-  repair_bead_readback_failed: {
-    return_phase: 'repairing',
-    effect: 'create_repair',
-    inputs: ['failure_key'],
-    optional_inputs: ['repair_bead_id'],
-    success: 'repair_bead_recorded'
-  },
-  repair_bead_record_failed: {
-    return_phase: 'repairing',
-    effect: 'create_repair',
-    inputs: ['failure_key'],
-    optional_inputs: ['repair_bead_id'],
-    success: 'repair_bead_recorded'
-  },
-  repair_dispatch_failed: {
-    return_phase: 'repairing',
-    effect: 'dispatch_repair',
-    inputs: ['repair_bead_id'],
-    optional_inputs: ['continuation'],
-    success: 'repair_attempt_dispatched'
-  },
-  continuation_persist_failed: {
-    return_phase: 'repairing',
-    effect: 'dispatch_repair',
-    inputs: ['repair_bead_id'],
-    optional_inputs: ['continuation'],
-    success: 'repair_attempt_dispatched'
-  },
   completion_gate_spawn_failed: {
     return_phase: 'gating',
     effect: 'gate',
@@ -236,16 +194,22 @@ export function classifyCompletionFailure(reason) {
 }
 
 /**
- * @typedef {'green'|'conflict'|'verify_red'|'pr_owned'|'base_owned'|'repair_created'|'cleanup_repairable'|'cleanup_pending'|'repair_pr_open'|'repair_pr_merged'|'completed'|'stale'|'undecidable'|'waiting'} CompletionFactState
+ * @typedef {'green'|'conflict'|'verify_red'|'cleanup_repairable'|'cleanup_pending'|'completed'|'stale'|'undecidable'|'waiting'} CompletionFactState
  */
 /**
  * @typedef {{ state: CompletionFactState, reason?: string }} CompletionFact
  */
 /**
- * @typedef {CompletionFact & { gated?: any, source?: string, failure_key?: any, evidence?: any }} ObservedCompletionFact
+ * @typedef {CompletionFact & { gated?: any, source?: string, failure_key?: any, evidence?: any, op_id?: string|null }} ObservedCompletionFact
  */
 /**
- * @typedef {{ kind: 'gate'|'probe'|'enter_cleanup'|'resume_intent'|'resume_root'|'create_repair'|'dispatch_repair'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'resume_metadata_check'|'dispatch_auto_review'|'retry_failed_op'|'pause'|'needs_human'|'complete', reason?: string }} CompletionAction
+ * `terminal` marks a `needs_human` the KERNEL itself judged terminal (UI-8w4t
+ * §1) rather than a refusal code handed up from the gate. Only the former
+ * bypasses the §3 policy tables; a gate refusal still classifies, because
+ * `receipt_unbacked`/`review_receipt_missing` are exactly how the surviving
+ * metadata-watch and automatic-review lanes are entered.
+ *
+ * @typedef {{ kind: 'gate'|'enter_cleanup'|'resume_intent'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'resume_metadata_check'|'dispatch_auto_review'|'retry_failed_op'|'pause'|'needs_human'|'complete', reason?: string, terminal?: boolean }} CompletionAction
  */
 
 /**
@@ -277,8 +241,8 @@ function decideAutoResolution(intent, head_review, now) {
     // "Live" is exactly "not the operation this record was opened on" (review
     // F1). `settleFailure` deliberately preserves the failing op, so treating
     // every `active_op` as live sent the retry straight back through the
-    // generic reconcile — which RE-RUNS the failing effect (`create_repair`
-    // re-creates, `retry_cleanup` replays) immediately, before `next_at` and
+    // generic reconcile — which RE-RUNS the failing effect (`retry_cleanup`
+    // replays) immediately, before `next_at` and
     // without spending an attempt. That is the bypass the ordering was
     // supposed to close. The retried op is retired by the same write that
     // spends the budget, so anything found here afterwards is genuinely new.
@@ -330,11 +294,36 @@ function decideAutoResolution(intent, head_review, now) {
 }
 
 /**
+ * The cause a terminal `needs_human` records for an observed failure (UI-8w4t
+ * §1). The order is what the RECORDS actually carry: a cleanup entry names its
+ * contract token in `failure_code`, falls back to its own raw `reason`, and
+ * only then to the reason the failure key was built from. Reading `failure.code`
+ * — the RepoOperation card's field — would have found nothing on any of them.
+ *
+ * @param {any} fact
+ * @returns {string}
+ */
+function completionFailureReason(fact) {
+  const evidence = fact?.evidence;
+  const candidates = [
+    evidence?.failure_code,
+    evidence?.reason,
+    fact?.failure_key?.reason
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.length > 0) {
+      return candidate;
+    }
+  }
+  return 'cleanup_failed';
+}
+
+/**
  * Decide one next action from an already-normalized durable intent and one
  * authoritative fact. The function is pure so reconciliation and live paths
  * share the same judgment.
  *
- * @param {{ auto_merge: boolean, intent: any, fact?: CompletionFact|null, head_review?: any, now?: number }} input
+ * @param {{ auto_merge: boolean, intent: any, fact?: ObservedCompletionFact|null, head_review?: any, now?: number }} input
  * @returns {CompletionAction|null}
  */
 export function decideCompletionAction(input) {
@@ -379,26 +368,18 @@ export function decideCompletionAction(input) {
   }
   if (intent.phase === 'cleaning') {
     if (fact.state === 'cleanup_repairable') {
-      // The RepoOperation resolution ladder owns cleanup failures. Wait for
-      // that durable subject instead of creating a second repair Bead.
-      return null;
+      // The one automatic step (`script_retry`) is already spent by the time a
+      // cleanup failure reaches here, and the failure card already carries the
+      // cause and the retry outcome. Waiting longer buys nothing, so the saga
+      // stops with the cause a human can act on (UI-8w4t §1).
+      return {
+        kind: 'needs_human',
+        reason: completionFailureReason(fact),
+        terminal: true
+      };
     }
     if (fact.state === 'cleanup_pending') {
       return { kind: 'retry_cleanup' };
-    }
-    return null;
-  }
-  if (intent.phase === 'waiting_repair_pr') {
-    if (fact.state === 'repair_pr_open') {
-      return { kind: 'gate' };
-    }
-    return fact.state === 'repair_pr_merged' || fact.state === 'stale'
-      ? { kind: 'gate' }
-      : null;
-  }
-  if (intent.phase === 'repairing') {
-    if (fact.state === 'repair_created') {
-      return { kind: 'dispatch_repair' };
     }
     return null;
   }
@@ -411,24 +392,14 @@ export function decideCompletionAction(input) {
   if (fact.state === 'cleanup_repairable' || fact.state === 'cleanup_pending') {
     return { kind: 'enter_cleanup' };
   }
-  if (
-    fact.state === 'green' ||
-    fact.state === 'conflict' ||
-    fact.state === 'repair_pr_merged'
-  ) {
+  if (fact.state === 'green' || fact.state === 'conflict') {
     return { kind: 'merge_subject' };
   }
   if (fact.state === 'verify_red') {
-    return { kind: 'probe' };
-  }
-  if (fact.state === 'pr_owned') {
-    return { kind: 'resume_root' };
-  }
-  if (fact.state === 'base_owned') {
-    return { kind: 'create_repair' };
-  }
-  if (fact.state === 'repair_created') {
-    return { kind: 'dispatch_repair' };
+    // Post-merge verification red is a code question, and code questions go
+    // through an ordinary Bead/PR (UI-8w4t §1). No ownership probe, no
+    // automatic session.
+    return { kind: 'needs_human', reason: 'verify_red', terminal: true };
   }
   return { kind: 'gate' };
 }
@@ -633,26 +604,117 @@ export function createCompletionIntentCoordinator(deps) {
   };
 }
 
-const REPAIR_SESSION_CAP = 2;
+/**
+ * The RepoOperation a preserved log belongs to. `repo-operation-runner` writes
+ * exactly one log per operation at `repoOperationLogDir(workspace)/<id>.log`,
+ * and that name is the only operation identity the verify observation and the
+ * `cleanup_failed` record both carry — neither keeps the id in a field of its
+ * own. A failure that stopped BEFORE any script ran has no log and therefore no
+ * operation, which is the null this returns.
+ *
+ * @param {unknown} log_path
+ * @returns {string|null}
+ */
+function operationIdFromLogPath(log_path) {
+  if (typeof log_path !== 'string' || log_path.length === 0) {
+    return null;
+  }
+  const name = path.basename(log_path);
+  return name.length > LOG_SUFFIX.length && name.endsWith(LOG_SUFFIX)
+    ? name.slice(0, -LOG_SUFFIX.length)
+    : null;
+}
 
 /**
+ * Cause sentences for the reasons this lane MINTS itself. Every other token
+ * travels as its raw code: the shared failure vocabulary is owned by the client
+ * (`app/views/worker/failure-labels.js`), which renders the same failure on the
+ * card, and copying it here would be a second source for one contract.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+const COMPLETION_REASON_SENTENCES = Object.freeze({
+  verify_red: '머지 후 검증이 실패했습니다.'
+});
+
+/**
+ * The 재시도 line of the failure comment: what the ONE automatic step
+ * (`script_retry`) did for this operation, read from the durable record.
+ *
+ * @param {any} operation
+ * @returns {string}
+ */
+function retryOutcomeText(operation) {
+  const retry = operation?.retry;
+  if (!retry || typeof retry !== 'object') {
+    return '없음';
+  }
+  if (typeof retry.blocked_reason === 'string' && retry.blocked_reason) {
+    return `자동 재시도 못 함 — ${retry.blocked_reason}`;
+  }
+  if (retry.outcome === 'absorbed') {
+    return '자동 재시도로 해소됨';
+  }
+  if (retry.outcome === 'not_applicable') {
+    return '재시도 대상 아님 — 스크립트 실행 전 실패';
+  }
+  return retry.outcome === 'consumed' ? '자동 재시도 1회' : '없음';
+}
+
+/**
+ * The failure hand-off comment (UI-8w4t §4). The log is POINTED at, never
+ * inlined: a verify log is large and can carry secrets, and the path is what a
+ * human opens anyway.
+ *
+ * @param {any} intent
+ * @param {any} queue
+ * @param {any} terminal
+ * @returns {string}
+ */
+export function completionFailureComment(intent, queue, terminal) {
+  const sentence = Object.hasOwn(COMPLETION_REASON_SENTENCES, terminal.reason)
+    ? COMPLETION_REASON_SENTENCES[terminal.reason]
+    : null;
+  const subject = intent?.subject || {};
+  const target_sha =
+    terminal.failure_key?.subject_sha ||
+    subject.merged_sha ||
+    subject.head_sha ||
+    '(없음)';
+  const target_base =
+    intent?.target_base || terminal.failure_key?.base_sha || '(없음)';
+  const operation =
+    typeof terminal.op_id === 'string'
+      ? queue?.repo_operations?.[terminal.op_id]
+      : null;
+  return [
+    '## 🤖 완료 실패 기록',
+    `- 단계: ${terminal.failure_key?.stage || terminal.stage}`,
+    `- 원인: ${terminal.reason}${sentence ? ` — ${sentence}` : ''}`,
+    `- 대상: ${target_sha} (base ${target_base})`,
+    `- 로그: ${terminal.log_path || '(없음)'}`,
+    `- 재시도: ${retryOutcomeText(operation)}`,
+    '- 다음: [머지] 재클릭 · 설정 카드 배포 실행 · 코드 수정은 새 Bead'
+  ].join('\n');
+}
+
+/**
+ * The stable identity of one completion operation. The retired repair round
+ * survives ONLY as the `null` placeholder in the digest input: the surviving
+ * kinds always passed `null`, so keeping the key keeps every operation id a
+ * live intent already journaled equal to the one recomputed after this change.
+ *
  * @param {string} root_bead_id
  * @param {string} kind
  * @param {any} failure_key
- * @param {number|null} [repair_round]
  */
-function operationIdentity(
-  root_bead_id,
-  kind,
-  failure_key,
-  repair_round = null
-) {
+function operationIdentity(root_bead_id, kind, failure_key) {
   const digest = createHash('sha256')
     .update(
       JSON.stringify({
         root_bead_id,
         kind,
-        repair_round,
+        repair_round: null,
         stage: failure_key.stage,
         reason: failure_key.reason,
         subject_sha: failure_key.subject_sha,
@@ -674,8 +736,7 @@ function operationIdentity(
  *   workspace: string,
  *   store: any,
  *   prActions: { completionGate: (bead_id: string, role?: 'root'|'repair') => Promise<any>, resumeCompletionCleanup?: (root_bead_id: string) => Promise<any> },
- *   completionRepair: { probeOwnership: (input: any) => Promise<any>, ensureLinkedBead: (input: any) => Promise<any> },
- *   scheduler: { dispatchCompletionRepair: (workspace: string, input: any) => Promise<any> },
+ *   bd?: { comment?: (bead_id: string, text: string) => Promise<unknown> },
  *   notifyChanged?: (workspace: string) => void,
  *   kickMerge?: () => Promise<unknown>|unknown,
  *   dispatchAutoReview?: (root_bead_id: string) => Promise<unknown>|unknown,
@@ -687,6 +748,14 @@ export function createCompletionActionDriver(deps) {
   const facts = new Map();
   const now = deps.now || (() => Date.now());
   const log = deps.log || (() => {});
+  /**
+   * Serialized best-effort Bead comments. Terminalization is synchronous and
+   * durable on its own; the chain only keeps two terminals from interleaving
+   * their comments and gives shutdown and tests one thing to wait on.
+   *
+   * @type {Promise<void>}
+   */
+  let comment_chain = Promise.resolve();
   /**
    * Roots whose metadata re-check is running. The check is driven by bd issue
    * events and by every reconciliation pass, both of which can arrive while a
@@ -734,120 +803,6 @@ export function createCompletionActionDriver(deps) {
       left.base_sha === right.base_sha &&
       left.result_digest === right.result_digest
     );
-  }
-
-  /**
-   * Finish or adopt one journaled linked-Bead creation, then hand its observed
-   * operation directly to the scheduler. The scheduler replaces the create op
-   * with its session op and attempt in one store mutation, leaving no
-   * create-consumed/dispatch-missing crash window.
-   *
-   * @param {string} root_bead_id
-   * @param {any} fact
-   */
-  async function continueCreateRepair(root_bead_id, fact) {
-    let current = deps.store.snapshot(deps.workspace).completion_intents?.[
-      root_bead_id
-    ];
-    let create_op = current?.active_op;
-    if (!current || create_op?.kind !== 'create_repair') {
-      settleFailure(
-        root_bead_id,
-        'repair_create_journal_missing',
-        'repair_create',
-        fact?.failure_key
-      );
-      return;
-    }
-    let linked =
-      typeof create_op.repair_bead_id === 'string'
-        ? { bead_id: create_op.repair_bead_id }
-        : null;
-    if (!linked) {
-      try {
-        linked = await deps.completionRepair.ensureLinkedBead({
-          root_bead_id,
-          op_id: create_op.op_id,
-          failure_key: create_op.failure_key
-        });
-      } catch (err) {
-        settleFailure(
-          root_bead_id,
-          'repair_bead_create_failed',
-          'repair_create',
-          create_op.failure_key,
-          String(err)
-        );
-        return;
-      }
-      if (
-        !linked ||
-        typeof linked.bead_id !== 'string' ||
-        linked.bead_id.length === 0
-      ) {
-        settleFailure(
-          root_bead_id,
-          'repair_bead_readback_failed',
-          'repair_create',
-          create_op.failure_key
-        );
-        return;
-      }
-    }
-    // Membership, not creation, is the §3 success condition for this family, so
-    // it is checked whether the Bead was just created or carried in from the
-    // retry record — a `repair_bead_record_failed` re-run has the id already and
-    // must still get it into the intent.
-    if (!current.repair_bead_ids.includes(linked.bead_id)) {
-      const recorded = deps.store.recordCompletionRepairBead(deps.workspace, {
-        root_bead_id,
-        op_id: create_op.op_id,
-        repair_bead_id: linked.bead_id
-      });
-      if (!recorded.ok) {
-        settleFailure(
-          root_bead_id,
-          'repair_bead_record_failed',
-          'repair_create',
-          create_op.failure_key
-        );
-        return;
-      }
-      notify();
-      current = recorded.queue.completion_intents[root_bead_id];
-      create_op = current.active_op;
-    }
-    const failure_key = create_op.failure_key;
-    const dispatch_op_id = operationIdentity(
-      root_bead_id,
-      'dispatch_repair',
-      failure_key,
-      current.repair_sessions_used + 1
-    );
-    const result = await deps.scheduler.dispatchCompletionRepair(
-      deps.workspace,
-      {
-        root_bead_id,
-        op: {
-          op_id: dispatch_op_id,
-          kind: 'dispatch_repair',
-          failure_key,
-          attempt_id: `${dispatch_op_id}-attempt`,
-          repair_bead_id: linked.bead_id,
-          status: 'prepared'
-        },
-        log_path: fact?.evidence?.log_path ?? null
-      }
-    );
-    if (!result.ok) {
-      settleFailure(
-        root_bead_id,
-        result.reason || 'repair_dispatch_failed',
-        'repair_dispatch',
-        failure_key,
-        fact?.evidence
-      );
-    }
   }
 
   /**
@@ -934,14 +889,14 @@ export function createCompletionActionDriver(deps) {
     ) {
       return false;
     }
-    const expected_repair =
-      intent.subject?.role === 'repair' ? intent.subject.bead_id : null;
+    // The completion subject is always the root PR now that the repair lane is
+    // retired, so a legacy merge operation may name no repair Bead at all.
     const active_failure = intent.active_op?.failure_key;
     if (
       intent.active_op !== null &&
       (intent.active_op?.kind !== 'merge_subject' ||
         intent.active_op.attempt_id !== null ||
-        intent.active_op.repair_bead_id !== expected_repair ||
+        intent.active_op.repair_bead_id !== null ||
         intent.active_op.status === 'consumed' ||
         active_failure?.stage !== 'merge_subject' ||
         active_failure.subject_sha !== intent.subject.head_sha ||
@@ -977,7 +932,7 @@ export function createCompletionActionDriver(deps) {
       kind: 'merge_subject',
       failure_key,
       attempt_id: null,
-      repair_bead_id: expected_repair,
+      repair_bead_id: null,
       status: 'prepared'
     };
     let resolution_attempt_id = null;
@@ -1125,22 +1080,29 @@ export function createCompletionActionDriver(deps) {
   }
 
   /**
-   * The `human` branch of {@link settleFailure} (UI-hk74 §4) — nothing else
-   * calls it. Reaching it means the §3 tables have no automatic answer for this
-   * reason, so `needs_human` again means what it says.
+   * The `human` branch of {@link settleFailure} (UI-hk74 §4) and the kernel's
+   * own terminal judgment (UI-8w4t §1). Reaching it means no automatic owner
+   * is left for this failure, so `needs_human` again means what it says.
+   *
+   * The Bead comment rides the SAME write (UI-8w4t §4): `comment_at` is durable
+   * before the call goes out, so a comment lost to a crash is never rewritten —
+   * zero comments is a gap the card already covers, a duplicate is not.
    *
    * @param {string} root_bead_id
    * @param {string} reason
    * @param {string} stage
    * @param {any} [failure_key]
    * @param {any} [evidence]
+   * @param {string|null} [op_id] - The RepoOperation this failure belongs to,
+   * when one ran at all.
    */
   function terminalize(
     root_bead_id,
     reason,
     stage,
     failure_key = null,
-    evidence = null
+    evidence = null,
+    op_id = null
   ) {
     const text =
       evidence === null
@@ -1148,19 +1110,107 @@ export function createCompletionActionDriver(deps) {
         : typeof evidence === 'string'
           ? evidence
           : JSON.stringify(evidence);
-    deps.store.terminalizeCompletionIntent(deps.workspace, {
+    const log_path =
+      typeof evidence?.log_path === 'string' ? evidence.log_path : null;
+    const resolved_op_id =
+      typeof op_id === 'string' && op_id.length > 0
+        ? op_id
+        : operationIdFromLogPath(log_path);
+    const queue = deps.store.snapshot(deps.workspace);
+    const intent = queue.completion_intents?.[root_bead_id] || null;
+    const commented_at = priorCommentAt(
+      intent,
+      resolved_op_id,
+      failure_key,
+      reason
+    );
+    const at = now();
+    const terminal = {
+      reason,
+      stage,
+      failure_key,
+      evidence: typeof text === 'string' ? text.slice(-4000) : null,
+      log_path,
+      op_id: resolved_op_id,
+      comment_at: commented_at === null ? at : commented_at,
+      at
+    };
+    const written = deps.store.terminalizeCompletionIntent(deps.workspace, {
       root_bead_id,
-      terminal: {
-        reason,
-        stage,
-        failure_key,
-        evidence: typeof text === 'string' ? text.slice(-4000) : null,
-        log_path:
-          typeof evidence?.log_path === 'string' ? evidence.log_path : null,
-        at: now()
-      }
+      terminal
     });
     notify();
+    if (written.ok && commented_at === null) {
+      postFailureComment(root_bead_id, intent, queue, terminal);
+    }
+  }
+
+  /**
+   * Whether this exact failure — same operation, same failure identity — was
+   * already commented on. Both terminals are read: a `[머지]` re-click moves the
+   * previous `terminal_reason` to `resumed_terminal`, and reading only the
+   * current one would comment the same failure again on every re-click.
+   *
+   * The reason joins the `(op_id, failure_key)` pair the spec names because a
+   * stop BEFORE any operation ran has neither of them: without it, the first
+   * such terminal would silently swallow the comment of every later one.
+   *
+   * @param {any} intent
+   * @param {string|null} op_id
+   * @param {any} failure_key
+   * @param {string} reason
+   * @returns {number|null}
+   */
+  function priorCommentAt(intent, op_id, failure_key, reason) {
+    for (const terminal of [
+      intent?.terminal_reason,
+      intent?.resumed_terminal
+    ]) {
+      if (!terminal || typeof terminal.comment_at !== 'number') {
+        continue;
+      }
+      if (
+        (terminal.op_id ?? null) !== (op_id ?? null) ||
+        terminal.reason !== reason
+      ) {
+        continue;
+      }
+      const both_absent = !terminal.failure_key && !failure_key;
+      if (both_absent || sameFailure(terminal.failure_key, failure_key)) {
+        return terminal.comment_at;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Hand the failure to the Bead a human will open (UI-8w4t §4). Best-effort by
+   * contract: the terminal is already durable, so a refused or absent `bd`
+   * adapter is a log line, never a blocked completion.
+   *
+   * @param {string} root_bead_id
+   * @param {any} intent
+   * @param {any} queue
+   * @param {any} terminal
+   */
+  function postFailureComment(root_bead_id, intent, queue, terminal) {
+    if (typeof deps.bd?.comment !== 'function') {
+      return;
+    }
+    const comment = deps.bd.comment;
+    const text = completionFailureComment(intent, queue, terminal);
+    comment_chain = comment_chain
+      .then(() => comment(root_bead_id, text))
+      .then(
+        () => undefined,
+        (err) => {
+          log(
+            'completion failure comment failed for %s: %o',
+            root_bead_id,
+            err
+          );
+        }
+      );
   }
 
   /**
@@ -1365,11 +1415,7 @@ export function createCompletionActionDriver(deps) {
     }
     const verdict = gated.verdict || {};
     if (verdict.tier === 'merged') {
-      return {
-        state:
-          gated.subject?.role === 'repair' ? 'repair_pr_merged' : 'completed',
-        gated
-      };
+      return { state: 'completed', gated };
     }
     if (verdict.enabled === true) {
       return { state: 'green', gated };
@@ -1392,6 +1438,7 @@ export function createCompletionActionDriver(deps) {
         source: 'verify',
         failure_key,
         evidence: verify,
+        op_id: operationIdFromLogPath(verify?.log_path),
         gated
       };
     }
@@ -1441,7 +1488,8 @@ export function createCompletionActionDriver(deps) {
         state: 'cleanup_repairable',
         source: 'verify',
         failure_key,
-        evidence: failure
+        evidence: failure,
+        op_id: operationIdFromLogPath(failure.log_path)
       };
     }
     return { state: 'cleanup_pending', reason: 'cleanup_incomplete' };
@@ -1468,37 +1516,25 @@ export function createCompletionActionDriver(deps) {
       facts.set(root_bead_id, fact);
       return fact;
     }
-    const waiting_repair = intent.phase === 'waiting_repair_pr';
-    const repair_bead_id = waiting_repair
-      ? intent.repair_bead_ids[intent.repair_bead_ids.length - 1]
-      : null;
-    const role =
-      waiting_repair || intent.subject?.role === 'repair' ? 'repair' : 'root';
-    const subject_bead_id = waiting_repair
-      ? repair_bead_id
-      : intent.subject.bead_id;
+    const subject_bead_id = intent.subject.bead_id;
     if (typeof subject_bead_id !== 'string' || subject_bead_id.length === 0) {
       const fact = {
         state: /** @type {const} */ ('undecidable'),
-        reason: 'repair_subject_missing'
+        reason: 'completion_subject_missing'
       };
       facts.set(root_bead_id, fact);
       return fact;
     }
     let gated;
     try {
-      gated = await deps.prActions.completionGate(subject_bead_id, role);
+      gated = await deps.prActions.completionGate(subject_bead_id, 'root');
     } catch (err) {
       log('completion gate failed for %s: %o', root_bead_id, err);
       gated = { ok: false, reason: 'completion_gate_spawn_failed' };
     }
     let fact = factFromGate(gated);
-    if (waiting_repair && gated.ok === true) {
-      fact = { state: 'repair_pr_open', gated };
-    }
     if (
       gated.ok === true &&
-      !waiting_repair &&
       (intent.subject.head_sha !== gated.subject.head_sha ||
         intent.subject.base_sha !== gated.subject.base_sha ||
         intent.subject.pr_url !== gated.subject.pr_url)
@@ -1507,7 +1543,6 @@ export function createCompletionActionDriver(deps) {
     }
     if (
       fact.state === 'completed' &&
-      intent.subject.role === 'root' &&
       !deps.store
         .snapshot(deps.workspace)
         .done.some((/** @type {any} */ entry) => entry.bead_id === root_bead_id)
@@ -1521,164 +1556,6 @@ export function createCompletionActionDriver(deps) {
     }
     facts.set(root_bead_id, fact);
     return fact;
-  }
-
-  /**
-   * @param {string} root_bead_id
-   * @param {'resume_root'|'create_repair'} kind
-   * @param {any} fact
-   * @param {{ repair_bead_id?: string|null, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: string }|null }|null} [pinned] - The
-   * §3 durable inputs a RETRY re-runs on. Absent on a first dispatch, which
-   * has nothing pinned yet and reads the live record instead.
-   */
-  async function startRepair(root_bead_id, kind, fact, pinned = null) {
-    const queue = deps.store.snapshot(deps.workspace);
-    const current = queue.completion_intents?.[root_bead_id];
-    const failure_key = fact?.failure_key;
-    if (!current || !failure_key) {
-      settleFailure(root_bead_id, 'repair_evidence_missing', 'repair_dispatch');
-      return;
-    }
-    // This is an AUTOMATIC dispatch, so it answers to the pinned policy's
-    // decoder guard. Without it a consumer that cannot read the pinned contract
-    // would still open sessions from this lane. The workspace `auto_repair`
-    // toggle is gone with the RepoOperation repair lane (UI-s582 §1), so this
-    // is the only remaining gate. It does not terminalize the intent — the
-    // failure stays exactly where it is, waiting for a re-pinned contract.
-    if (!repoOperationPolicySupported()) {
-      return;
-    }
-    if (current.repair_sessions_used >= REPAIR_SESSION_CAP) {
-      settleFailure(
-        root_bead_id,
-        'repair_session_budget_exhausted',
-        'repair_dispatch',
-        failure_key,
-        fact.evidence
-      );
-      return;
-    }
-    if (kind === 'resume_root') {
-      const op_id = operationIdentity(
-        root_bead_id,
-        kind,
-        failure_key,
-        current.repair_sessions_used + 1
-      );
-      const queue = deps.store.snapshot(deps.workspace);
-      const continuation_action = queue.merge_queue?.find(
-        (/** @type {any} */ entry) => entry.bead_id === root_bead_id
-      )?.continuation_action;
-      // A retry re-dispatches on the SAME continuation decision the failed run
-      // carried (§3): re-reading the live record would let a decision the user
-      // has since changed — or one the failure itself never persisted — silently
-      // become a different dispatch.
-      const continuation = pinned?.continuation
-        ? {
-            continuation: pinned.continuation.continuation,
-            decision_token: pinned.continuation.decision_token
-          }
-        : continuation_action?.subject_bead_id === current.subject.bead_id &&
-            (continuation_action.continuation === 'prior_session' ||
-              continuation_action.continuation === 'fresh_current') &&
-            continuation_action.decision_token
-          ? {
-              continuation: continuation_action.continuation,
-              decision_token: continuation_action.decision_token
-            }
-          : {};
-      const result = await deps.scheduler.dispatchCompletionRepair(
-        deps.workspace,
-        {
-          root_bead_id,
-          op: {
-            op_id,
-            kind,
-            failure_key,
-            attempt_id: `${op_id}-attempt`,
-            repair_bead_id: null,
-            status: 'prepared'
-          },
-          log_path: fact.evidence?.log_path ?? null,
-          ...continuation
-        }
-      );
-      if (result.continuation_mismatch) {
-        const persisted = deps.store.requireMergeContinuation(deps.workspace, {
-          bead_id: root_bead_id,
-          subject_bead_id: current.subject.bead_id,
-          mismatch: result.continuation_mismatch
-        });
-        if (!persisted.ok) {
-          settleFailure(
-            root_bead_id,
-            'continuation_persist_failed',
-            'repair_dispatch',
-            failure_key,
-            fact.evidence,
-            {
-              continuation: continuation.continuation ? continuation : null,
-              continuation_mismatch: String(result.continuation_mismatch)
-            }
-          );
-        }
-        notify();
-        return;
-      }
-      if (!result.ok) {
-        settleFailure(
-          root_bead_id,
-          result.reason || 'repair_dispatch_failed',
-          'repair_dispatch',
-          failure_key,
-          fact.evidence,
-          { continuation: continuation.continuation ? continuation : null }
-        );
-      } else if (continuation_action) {
-        deps.store.clearMergeContinuation(deps.workspace, {
-          bead_id: root_bead_id,
-          subject_bead_id: current.subject.bead_id
-        });
-        notify();
-      }
-      return;
-    }
-
-    const create_op_id = operationIdentity(
-      root_bead_id,
-      'create_repair',
-      failure_key,
-      current.repair_sessions_used + 1
-    );
-    const prepared = deps.store.prepareCompletionOp(deps.workspace, {
-      root_bead_id,
-      phase: 'repairing',
-      op: {
-        op_id: create_op_id,
-        kind: 'create_repair',
-        failure_key,
-        attempt_id: null,
-        // §3: a repair Bead already created by the failed run is carried into
-        // the re-run, so it reads back and records instead of creating a
-        // second linked Bead for the same failure.
-        repair_bead_id:
-          typeof pinned?.repair_bead_id === 'string'
-            ? pinned.repair_bead_id
-            : null,
-        status: 'prepared'
-      }
-    });
-    if (!prepared.ok) {
-      settleFailure(
-        root_bead_id,
-        'repair_create_prerecord_failed',
-        'repair_create',
-        failure_key
-      );
-      return;
-    }
-    notify();
-    await continueCreateRepair(root_bead_id, fact);
   }
 
   /**
@@ -1842,15 +1719,6 @@ export function createCompletionActionDriver(deps) {
     if (!after) {
       return false;
     }
-    if (policy.effect === 'create_repair') {
-      return (
-        after.repair_bead_ids.length > before.repair_bead_ids.length ||
-        after.active_op?.kind === 'dispatch_repair'
-      );
-    }
-    if (policy.effect === 'dispatch_repair') {
-      return typeof after.active_op?.attempt_id === 'string';
-    }
     if (policy.effect === 'retry_cleanup') {
       return (
         after.active_op?.kind === 'retry_cleanup' ||
@@ -1927,28 +1795,10 @@ export function createCompletionActionDriver(deps) {
     }
     notify();
     // Every re-run reads the §3 durable inputs, never a fresh observation: the
-    // record is what makes a retry after a restart repeat the SAME effect
-    // rather than open a second repair Bead or ask the continuation question
-    // again.
+    // record is what makes a retry after a restart repeat the SAME effect.
     const fact = { failure_key: resolution.op.failure_key, evidence: null };
-    const pinned = {
-      repair_bead_id: resolution.op.repair_bead_id,
-      continuation: resolution.op.continuation
-    };
     let gate_ok = false;
-    if (policy.effect === 'create_repair') {
-      await startRepair(root_bead_id, 'create_repair', fact, pinned);
-    } else if (policy.effect === 'dispatch_repair') {
-      // A repair Bead in the record means the create half already landed, so the
-      // re-run is the linked-repair dispatch; without one the failure belonged to
-      // the root's own resume.
-      await startRepair(
-        root_bead_id,
-        resolution.op.repair_bead_id ? 'create_repair' : 'resume_root',
-        fact,
-        pinned
-      );
-    } else if (policy.effect === 'retry_cleanup') {
+    if (policy.effect === 'retry_cleanup') {
       await startCleanupReplay(root_bead_id, fact);
     } else {
       gate_ok = await retryGate(root_bead_id, resolution.op);
@@ -1984,13 +1834,6 @@ export function createCompletionActionDriver(deps) {
       if (!current || !op) {
         return;
       }
-      if (op.kind === 'create_repair') {
-        await continueCreateRepair(root_bead_id, {
-          failure_key: op.failure_key,
-          evidence: fact.evidence
-        });
-        return;
-      }
       if (op.kind === 'merge_subject') {
         if (typeof deps.kickMerge === 'function') {
           await deps.kickMerge();
@@ -2001,66 +1844,6 @@ export function createCompletionActionDriver(deps) {
         await startCleanupReplay(root_bead_id, {
           failure_key: op.failure_key,
           evidence: fact.evidence
-        });
-        return;
-      }
-      if (op.kind === 'resume_root' || op.kind === 'dispatch_repair') {
-        let attempt = deps.store.snapshot(deps.workspace).attempts?.[
-          op.attempt_id
-        ];
-        if (!attempt) {
-          settleFailure(
-            root_bead_id,
-            'repair_attempt_missing',
-            'reconciliation',
-            op.failure_key
-          );
-          return;
-        }
-        if (attempt.status === 'paused') {
-          if (typeof deps.store.adoptLegacyCompletionAttempt === 'function') {
-            const adopted = deps.store.adoptLegacyCompletionAttempt(
-              deps.workspace,
-              { root_bead_id }
-            );
-            if (adopted.ok) {
-              attempt =
-                adopted.queue.attempts?.[
-                  adopted.queue.completion_intents?.[root_bead_id]?.active_op
-                    ?.attempt_id
-                ] || attempt;
-              notify();
-            } else if (
-              adopted.reason !== 'legacy_descendant_missing' &&
-              adopted.reason !== 'legacy_adoption_not_applicable'
-            ) {
-              settleFailure(
-                root_bead_id,
-                'repair_resume_lineage_ambiguous',
-                'reconciliation',
-                op.failure_key,
-                adopted.reason || 'legacy_lineage_ambiguous'
-              );
-              return;
-            }
-          }
-        }
-        if (attempt.status === 'running' || attempt.status === 'paused') {
-          if (op.status === 'prepared') {
-            deps.store.advanceCompletionOp(deps.workspace, {
-              root_bead_id,
-              op_id: op.op_id,
-              status: 'dispatched'
-            });
-            notify();
-          }
-          return;
-        }
-        await onAttemptSettled({
-          root_bead_id,
-          op_id: op.op_id,
-          failure_key: op.failure_key,
-          attempt
         });
         return;
       }
@@ -2138,37 +1921,6 @@ export function createCompletionActionDriver(deps) {
       notify();
       return;
     }
-    if (action.kind === 'probe') {
-      const ownership = await deps.completionRepair.probeOwnership({
-        root_bead_id,
-        source: fact.source,
-        failure_key: fact.failure_key
-      });
-      if (ownership.state === 'repo_operation') {
-        return;
-      }
-      if (ownership.state === 'pr_owned') {
-        await startRepair(root_bead_id, 'resume_root', fact);
-      } else if (ownership.state === 'base_owned') {
-        await startRepair(root_bead_id, 'create_repair', {
-          ...fact,
-          evidence: ownership.evidence || fact.evidence
-        });
-      } else {
-        settleFailure(
-          root_bead_id,
-          ownership.reason || 'ownership_undecidable',
-          'base_probe',
-          fact.failure_key,
-          ownership.evidence || fact.evidence
-        );
-      }
-      return;
-    }
-    if (action.kind === 'resume_root' || action.kind === 'create_repair') {
-      await startRepair(root_bead_id, action.kind, fact);
-      return;
-    }
     if (action.kind === 'merge_subject') {
       const subject = fact.gated?.subject || intent.subject;
       if (
@@ -2212,10 +1964,7 @@ export function createCompletionActionDriver(deps) {
             kind: 'merge_subject',
             failure_key,
             attempt_id: null,
-            repair_bead_id:
-              current.subject.role === 'repair'
-                ? current.subject.bead_id
-                : null,
+            repair_bead_id: null,
             status: 'prepared'
           }
         });
@@ -2288,9 +2037,25 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (action.kind === 'needs_human') {
+      const reason = action.reason || 'completion_needs_human';
+      if (action.terminal === true) {
+        // A kernel-judged terminal does NOT consult the §3 tables (UI-8w4t
+        // §1). A cleanup cause is often `verify_cmd_failed`, which the surviving
+        // retry policy would have parked in `retrying` and re-run automatically
+        // — the exact automation this lane exists to stop.
+        terminalize(
+          root_bead_id,
+          reason,
+          'coordinator',
+          fact.failure_key,
+          fact.evidence,
+          fact.op_id ?? null
+        );
+        return;
+      }
       settleFailure(
         root_bead_id,
-        action.reason || 'completion_needs_human',
+        reason,
         'coordinator',
         fact.failure_key,
         fact.evidence,
@@ -2317,34 +2082,28 @@ export function createCompletionActionDriver(deps) {
     ) {
       return;
     }
-    const bead_id = input.attempt?.bead_id;
-    const role = bead_id === input.root_bead_id ? 'root' : 'repair';
     let gated;
     try {
-      gated = await deps.prActions.completionGate(bead_id, role);
+      gated = await deps.prActions.completionGate(
+        input.attempt?.bead_id,
+        'root'
+      );
     } catch {
       gated = null;
     }
-    const is_repair = role === 'repair';
-    const next_phase =
-      queue.auto_merge === true
-        ? is_repair && gated?.ok !== true
-          ? 'waiting_repair_pr'
-          : 'gating'
-        : 'paused';
     const advanced = deps.store.advanceCompletionOp(deps.workspace, {
       root_bead_id: input.root_bead_id,
       op_id: input.op_id,
       status: 'consumed',
-      next_phase,
+      next_phase: queue.auto_merge === true ? 'gating' : 'paused',
       ...(gated?.ok === true ? { subject: gated.subject } : {}),
       clear: true
     });
     if (!advanced.ok) {
       settleFailure(
         input.root_bead_id,
-        'repair_settlement_record_failed',
-        'repair_settlement',
+        'completion_settlement_record_failed',
+        'completion_settlement',
         input.failure_key
       );
       return;
@@ -2444,84 +2203,13 @@ export function createCompletionActionDriver(deps) {
       notify();
       return;
     }
-    if (merged && result.ok === true && subject_bead_id !== root_bead_id) {
-      const prior_subject =
-        intent.subject_stack?.[intent.subject_stack.length - 1];
-      if (!prior_subject) {
-        settleFailure(
-          root_bead_id,
-          'repair_lineage_missing',
-          'subject_restore'
-        );
-        return;
-      }
-      let prior_gate;
-      try {
-        prior_gate = await deps.prActions.completionGate(
-          prior_subject.bead_id,
-          prior_subject.role
-        );
-      } catch {
-        prior_gate = null;
-      }
-      if (prior_gate?.ok === true) {
-        const cleanup_pending =
-          prior_gate.subject.role === 'root' &&
-          prior_gate.subject.merged_sha !== null;
-        const transitioned = deps.store.restoreCompletionSubject(
-          deps.workspace,
-          {
-            root_bead_id,
-            phase: cleanup_pending ? 'cleaning' : 'gating',
-            subject: prior_gate.subject
-          }
-        );
-        if (!transitioned.ok) {
-          settleFailure(
-            root_bead_id,
-            'subject_restore_record_failed',
-            'subject_restore'
-          );
-          return;
-        }
-        notify();
-        if (cleanup_pending) {
-          const fact = cleanupFact(
-            root_bead_id,
-            transitioned.queue.completion_intents[root_bead_id],
-            transitioned.queue
-          );
-          await startCleanupReplay(root_bead_id, fact);
-        }
-        return;
-      }
-      settleFailure(
-        root_bead_id,
-        prior_gate?.reason || 'subject_restore_failed',
-        'subject_restore'
-      );
-      return;
-    }
-    if (merged && subject_bead_id !== root_bead_id) {
-      settleFailure(
-        root_bead_id,
-        result?.reason || 'repair_cleanup_failed',
-        result?.cleanup_step || 'repair_cleanup',
-        null,
-        result
-      );
-      return;
-    }
     if (result?.reason === 'resolution_round_cap') {
       settleFailure(root_bead_id, result.reason, 'conflict_resolution');
       return;
     }
     let gated;
     try {
-      gated = await deps.prActions.completionGate(
-        subject_bead_id,
-        subject_bead_id === root_bead_id ? 'root' : 'repair'
-      );
+      gated = await deps.prActions.completionGate(subject_bead_id, 'root');
     } catch {
       gated = null;
     }
@@ -2579,6 +2267,14 @@ export function createCompletionActionDriver(deps) {
     adoptLegacyTimeout,
     onAttemptSettled,
     onIssuesChanged,
-    onMergeResult
+    onMergeResult,
+
+    /**
+     * Test and shutdown seam: wait for the best-effort failure comments this
+     * driver has already handed to `bd`.
+     */
+    commentsIdle() {
+      return comment_chain;
+    }
   };
 }

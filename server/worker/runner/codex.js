@@ -376,11 +376,7 @@ export function codexSpec(catalog_entry, options = {}) {
         pr_submit: !s.disposition && !s.quickfix_lane,
         disposition: !!s.disposition,
         quickfix_lane: !!s.quickfix_lane,
-        target_base: typeof s.target_base === 'string' ? s.target_base : null,
-        repair:
-          s.completion_repair && typeof s.completion_repair === 'object'
-            ? s.completion_repair
-            : undefined
+        target_base: typeof s.target_base === 'string' ? s.target_base : null
       });
       // codex has no `--append-system-prompt` equivalent, so the two channels
       // collapse into the one positional prompt. The pair still rides back out
