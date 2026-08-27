@@ -13,6 +13,7 @@
  */
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
+import { REC_LABEL, recTooltip } from '../../utils/rec-settings.js';
 import {
   formatRelativeTime,
   formatTimestampLocal
@@ -960,6 +961,31 @@ export function fromChipTemplate(from_id) {
 }
 
 /**
+ * `복잡` chip (UI-sbum §3): the workflow judged this bead complex enough to
+ * recommend a different execution setting. DISPLAY-ONLY on every card — the one
+ * place a click applies it is the issue detail header, because a mis-touch on a
+ * lane card would rewrite an execution pin the user never opened.
+ *
+ * One chip, never a model or runtime name: the recommendation's WHY and whether
+ * it is applied live in the tooltip, which every surface shares so one judgement
+ * never reads two ways.
+ *
+ * @param {import('../../utils/rec-settings.js').RecSettings|null|undefined} rec
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function recChipTemplate(rec) {
+  if (!rec) {
+    return '';
+  }
+  return html`<span
+    class="ctl-chip ctl-chip--label worker-card__rec"
+    data-state=${rec.state}
+    title=${recTooltip(rec)}
+    >${REC_LABEL}</span
+  >`;
+}
+
+/**
  * The PR 링크 하나 — `#<n> ↗`. PR 대기 행·카드형 행·완료 행이 모두 이것을
  * 부르므로, "이 bead가 어느 PR인가"는 어느 레인에서 읽어도 같은 모양이다
  * (스펙 §5.1 슬롯 1). 번호나 URL 중 하나라도 없으면 빈 문자열이다
@@ -1112,6 +1138,10 @@ export function priorityBadgeTemplate(priority) {
  * 다시 판정하지 않고, 실행 자격·drag·적재는 건드리지 않는다.
  * @property {string} [session_preferred_reason] - 계약 enum 안의 사유. 칩 툴팁
  * 문구의 키이며, enum 밖 값은 투영에 도달하기 전에 걸러진다.
+ * @property {import('../../utils/rec-settings.js').RecSettings|null} [rec] -
+ * 복잡 판정 (UI-sbum §3): 워크플로가 이 bead에 다른 실행 설정을 추천했다는 사실
+ * 하나. 표시 전용이고 자격·drag·적재 어디에도 들어가지 않는다. `null`/생략은
+ * 추천 없음이다.
  * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
  * @property {number} [priority] - Bead 우선순위 0..4. 숫자가 아니면 배지를
  * 그리지 않는다.
@@ -1472,14 +1502,15 @@ export function miniRow(item, options = {}) {
   // 판정은 그 줄의 재료 전부로 한다 — 좌표·exec만 세면 usage만 있는 행에서
   // 지금 보이는 정보가 사라진다. 재료가 하나도 없으면 줄 자체를 그리지 않는다
   // (빈 div는 행에 여백만 남긴다).
+  const rec_el = recChipTemplate(item.rec);
   const chips_el =
-    repo_el || route_el || from_el || has_exec_chips || usage_el
+    repo_el || route_el || from_el || has_exec_chips || rec_el || usage_el
       ? html`<div class="worker-chips">
           ${repo_el}${route_el}${from_el}${has_exec_chips
             ? execChipsTemplate(item.exec_chips, {
                 pin: item.exec_chips_pinned === true
               })
-            : ''}${usage_el}
+            : ''}${rec_el}${usage_el}
         </div>`
       : '';
   const deps_el = dependencyChipsTemplate(item.dependency_chips);
@@ -1721,8 +1752,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
               title=${session_preferred_tooltip}
               >세션 권장</span
             >`
-          : ''}${quickFixReviewChipTemplate(workflow)}${options.dep_action ===
-      true
+          : ''}${recChipTemplate(item.rec)}${quickFixReviewChipTemplate(
+        workflow
+      )}${options.dep_action === true
         ? html`<span class="worker-card__head-actions"
             ><button
               type="button"

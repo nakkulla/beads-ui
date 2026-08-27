@@ -3236,3 +3236,91 @@ describe('nowPanel (UI-5ksp §4.7)', () => {
     ).toBe(true);
   });
 });
+
+describe('복잡 chip on the worker lane surfaces (UI-sbum §3)', () => {
+  /** @type {import('../../utils/rec-settings.js').RecSettings} */
+  const REC = {
+    reasons: ['contract_change', 'claude_bound'],
+    rec: { orchestration_model: 'fable', impl_runtime: 'claude' },
+    state: 'unapplied'
+  };
+  const REC_TITLE =
+    '복잡한 작업으로 판정됨\n사유: contract_change, claude_bound\n상태: 미적용';
+
+  test('draws the chip on a waiting row with the shared tooltip', () => {
+    const row = renderRow({ lane: 'queue', done: false, rec: REC });
+
+    const chip = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-card__rec')
+    );
+
+    expect(chip.textContent?.trim()).toBe('복잡');
+    expect(chip.title).toBe(REC_TITLE);
+  });
+
+  test('draws the chip on a candidate card with the same tooltip', () => {
+    const card = renderCandidate({ rec: REC });
+
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__rec')
+    );
+
+    expect(chip.textContent?.trim()).toBe('복잡');
+    expect(chip.title).toBe(REC_TITLE);
+  });
+
+  test('carries the recommendation state as a data attribute', () => {
+    const states = ['unapplied', 'applied', 'diverged'].map((state) => {
+      const card = renderCandidate({
+        rec: { ...REC, state: /** @type {any} */ (state) }
+      });
+      return /** @type {HTMLElement} */ (
+        card.querySelector('.worker-card__rec')
+      ).dataset.state;
+    });
+
+    expect(states).toEqual(['unapplied', 'applied', 'diverged']);
+  });
+
+  test('omits the chip when the bead has no recommendation', () => {
+    const row = renderRow({ lane: 'queue', done: false, rec: null });
+    const card = renderCandidate({ rec: null });
+
+    expect(row.querySelector('.worker-card__rec')).toBeNull();
+    expect(card.querySelector('.worker-card__rec')).toBeNull();
+  });
+
+  test('draws the chip line for a row whose only chip is the recommendation', () => {
+    const row = renderRow({ lane: 'queue', done: false, rec: REC });
+
+    expect(row.querySelector('.worker-chips')).not.toBeNull();
+  });
+
+  test('stays display-only: the card chip is not a button and has no click handler', () => {
+    const clicks = vi.fn();
+    mount.addEventListener('click', clicks);
+    const card = renderCandidate({ rec: REC });
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__rec')
+    );
+
+    chip.click();
+
+    expect(chip.tagName).toBe('SPAN');
+    expect(chip.getAttribute('data-bead-id')).toBeNull();
+    expect(clicks).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps the 세션 권장 chip beside it on the same candidate', () => {
+    const card = renderCandidate({
+      rec: REC,
+      session_preferred: true,
+      session_preferred_reason: 'exclusive_machine'
+    });
+
+    expect(
+      card.querySelector('.worker-card__session-preferred')
+    ).not.toBeNull();
+    expect(card.querySelector('.worker-card__rec')).not.toBeNull();
+  });
+});

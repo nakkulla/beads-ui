@@ -1406,3 +1406,82 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
     );
   });
 });
+
+describe('복잡 chip on the running tile (UI-sbum §3)', () => {
+  /** @type {import('../../utils/rec-settings.js').RecSettings} */
+  const REC = {
+    reasons: ['multi_phase'],
+    rec: { orchestration_model: 'fable' },
+    state: 'diverged'
+  };
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Record<string, any>} tile
+   * @returns {HTMLElement}
+   */
+  function renderTile(tile) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(
+        /** @type {any} */ ({
+          bead_id: 'UI-1',
+          attempt_id: 'attempt-1',
+          title: 'running work',
+          runner: 'claude',
+          model: 'opus',
+          started_at: 1000,
+          ...tile
+        }),
+        2000
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  test('draws the chip in the attempt tile meta line', () => {
+    const tile = renderTile({ rec: REC });
+
+    const chip = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__meta .worker-card__rec')
+    );
+
+    expect(chip.textContent?.trim()).toBe('복잡');
+    expect(chip.title).toBe(
+      '복잡한 작업으로 판정됨\n사유: multi_phase\n상태: 추천과 다름'
+    );
+    expect(chip.dataset.state).toBe('diverged');
+  });
+
+  test('draws the chip in the session tile meta line', () => {
+    const tile = renderTile({
+      kind: 'session',
+      attempt_id: null,
+      runner: null,
+      model: null,
+      rec: REC
+    });
+
+    expect(tile.querySelector('.rtile__meta .worker-card__rec')).not.toBeNull();
+  });
+
+  test('omits the chip when the bead has no recommendation', () => {
+    const tile = renderTile({ rec: null });
+
+    expect(tile.querySelector('.worker-card__rec')).toBeNull();
+  });
+
+  test('stays display-only on the tile', () => {
+    const tile = renderTile({ rec: REC });
+
+    const chip = /** @type {HTMLElement} */ (
+      tile.querySelector('.worker-card__rec')
+    );
+
+    expect(chip.tagName).toBe('SPAN');
+  });
+});
