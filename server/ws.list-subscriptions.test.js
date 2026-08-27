@@ -395,6 +395,66 @@ describe('ws list subscriptions', () => {
     expect(Array.isArray(snapshot_envelope.payload.issues)).toBe(true);
   });
 
+  test('subscribe-list forwards issue-detail dependents to the client', async () => {
+    const sock = {
+      sent: /** @type {string[]} */ ([]),
+      readyState: 1,
+      OPEN: 1,
+      /** @param {string} msg */
+      send(msg) {
+        this.sent.push(String(msg));
+      }
+    };
+    /** @type {import('vitest').Mock} */ (
+      fetchListForSubscription
+    ).mockResolvedValueOnce({
+      ok: true,
+      items: [
+        {
+          id: 'UI-1',
+          updated_at: 1,
+          closed_at: null,
+          dependents: [
+            {
+              id: 'UI-2',
+              dependency_type: 'blocks',
+              status: 'open',
+              title: '후행'
+            }
+          ]
+        }
+      ]
+    });
+
+    await handleMessage(
+      /** @type {any} */ (sock),
+      Buffer.from(
+        JSON.stringify({
+          id: 'sub-detail-deps',
+          type: /** @type {any} */ ('subscribe-list'),
+          payload: {
+            id: 'detail:UI-2',
+            type: 'issue-detail',
+            params: { id: 'UI-1' }
+          }
+        })
+      )
+    );
+
+    const snapshot_envelope = sock.sent
+      .map((m) => {
+        try {
+          return JSON.parse(m);
+        } catch {
+          return null;
+        }
+      })
+      .find((o) => o && o.type === 'snapshot');
+    expect(snapshot_envelope.payload.issues[0].dependents).toEqual([
+      { id: 'UI-2', dependency_type: 'blocks', status: 'open', title: '후행' }
+    ]);
+  });
+
   test('subscribe-list issue-detail enforces id', async () => {
     const sock = {
       sent: /** @type {string[]} */ ([]),
