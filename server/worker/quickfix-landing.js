@@ -10,11 +10,12 @@
  *
  * No `pr_wait`, merge gate, or merge driver participates. This lane pushes the
  * base directly, then proves containment and settles the attempt itself. The
- * preserved worktree HEAD must equal the review receipt SHA exactly: ancestry
- * would accept an unreviewed commit B added after reviewed commit A. The
- * durable cursor is also a resume input, not display-only state: after branch
- * cleanup it replaces the legitimately absent worktree as the head binding,
- * and a `parent_close` record makes an already-closed bead a successful resume.
+ * landed head is the review receipt SHA, proven by containment in the fetched
+ * base; the preserved worktree is never a head witness, because the session
+ * lands through a detached candidate and leaves that worktree at the dispatch
+ * base (UI-fiei). The durable cursor is a resume input, not display-only
+ * state: it carries the head binding across restarts, and a `parent_close`
+ * record makes an already-closed bead a successful resume.
  * `premature_close` applies only without that Worker-owned close record and
  * outside the contract's no-change close: a session that refuted the Bead's
  * root-cause hypothesis closes it itself with `close_reason` `refuted: ...`
@@ -72,9 +73,6 @@ function isNoChangeClose(close_reason) {
  *   },
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   worktree: {
- *     pathFor: (repo: string, bead_id: string) => string,
- *     exists: (repo: string, bead_id: string) => boolean,
- *     removeByBranch: (input: { repo: string, branch: string, expected_head?: string|null }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *     removeIfDiscardable: (input: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
@@ -163,19 +161,25 @@ export function createQuickfixLanding(deps) {
    * no remote topic branch, so this cleanup deliberately performs no remote
    * branch deletion.
    *
+   * The worktree is judged against the fetched base that now contains the
+   * landed head, not against the head itself: its HEAD is the dispatch base,
+   * everything it holds is already on the base, and an absent worktree is
+   * nothing left to remove. Only unique work refuses (`unique`/`unknown`).
+   *
    * @param {string} bead_id
-   * @param {string} head_sha
+   * @param {string} base_sha
    * @returns {Promise<{ ok: true }|{ ok: false, reason: QuickfixLandingReason }>}
    */
-  async function cleanupBranch(bead_id, head_sha) {
+  async function cleanupBranch(bead_id, base_sha) {
     const branch = branchForBead(bead_id);
     try {
-      const removed = await deps.worktree.removeByBranch({
+      const removed = await deps.worktree.removeIfDiscardable({
         repo,
-        branch,
-        expected_head: head_sha
+        bead_id,
+        base: base_sha
       });
       if (!removed.ok) {
+        log('quick_fix worktree preserved for %s: %s', bead_id, removed.reason);
         return { ok: false, reason: 'worktree_remove_failed' };
       }
     } catch (err) {
@@ -401,24 +405,10 @@ export function createQuickfixLanding(deps) {
       return fail(attempt_id, 'head_mismatch', null, head_sha);
     }
 
-    if (!durable_cursor && !deps.worktree.exists(repo, bead_id)) {
-      return fail(attempt_id, 'head_mismatch', null, head_sha);
-    }
-    if (!durable_cursor) {
-      try {
-        const head = await deps.gitRun(['rev-parse', 'HEAD'], {
-          cwd: deps.worktree.pathFor(repo, bead_id)
-        });
-        // An ancestry check would accept unreviewed B after reviewed A. Landing
-        // therefore requires exact equality with the receipt-bound SHA.
-        if (head.code !== 0 || head.stdout.trim() !== head_sha) {
-          return fail(attempt_id, 'head_mismatch', null, head_sha);
-        }
-      } catch (err) {
-        log('quick_fix worktree HEAD read failed for %s: %o', bead_id, err);
-        return fail(attempt_id, 'head_mismatch', null, head_sha);
-      }
-    }
+    // The landed head is the receipt-bound SHA, not the owned worktree's HEAD:
+    // `land-quick-fix.py` pushes a detached candidate and never commits in
+    // that worktree, so its HEAD stays at the dispatch base (UI-fiei). The
+    // proof that the reviewed bytes landed is base containment below.
 
     markStep(attempt_id, 'base_containment', head_sha);
     const fetched = await fetchBase(target_base);
@@ -556,7 +546,7 @@ export function createQuickfixLanding(deps) {
     }
 
     markStep(attempt_id, 'branch_cleanup', head_sha);
-    const cleaned = await cleanupBranch(bead_id, head_sha);
+    const cleaned = await cleanupBranch(bead_id, fetched.sha);
     if (!cleaned.ok) {
       return fail(attempt_id, cleaned.reason, 'branch_cleanup', head_sha);
     }

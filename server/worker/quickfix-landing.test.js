@@ -249,18 +249,18 @@ test('rejects absent review receipt', async () => {
   });
 });
 
-test('accepts exact worktree HEAD', async () => {
+test('never reads the owned worktree HEAD to judge the landed head', async () => {
   const { landing, gitRun } = makeLanding({ worktreeHead: HEAD_SHA });
 
   const result = await settle(landing);
 
   expect(result).toEqual({ ok: true });
-  expect(gitRun).toHaveBeenCalledWith(['rev-parse', 'HEAD'], {
+  expect(gitRun).not.toHaveBeenCalledWith(['rev-parse', 'HEAD'], {
     cwd: `${REPO}/.worktrees/${BEAD}`
   });
 });
 
-test('rejects descendant worktree HEAD after reviewed commit', async () => {
+test('accepts a worktree left at the dispatch base when the receipt head is contained', async () => {
   const { landing, gitRun } = makeLanding({
     worktreeHead: 'b'.repeat(40),
     containmentCode: 0
@@ -268,22 +268,19 @@ test('rejects descendant worktree HEAD after reviewed commit', async () => {
 
   const result = await settle(landing);
 
-  expect(result).toEqual({ ok: false, reason: 'head_mismatch', step: null });
-  expect(gitRun).not.toHaveBeenCalledWith(
+  expect(result).toEqual({ ok: true });
+  expect(gitRun).toHaveBeenCalledWith(
     ['merge-base', '--is-ancestor', HEAD_SHA, FETCHED_SHA],
     { cwd: REPO }
   );
 });
 
-test('rejects missing worktree', async () => {
-  const { landing, gitRun } = makeLanding({ worktreeExists: false });
+test('accepts a missing worktree when the receipt head is contained', async () => {
+  const { landing } = makeLanding({ worktreeExists: false });
 
   const result = await settle(landing);
 
-  expect(result).toEqual({ ok: false, reason: 'head_mismatch', step: null });
-  expect(gitRun).not.toHaveBeenCalledWith(['rev-parse', 'HEAD'], {
-    cwd: `${REPO}/.worktrees/${BEAD}`
-  });
+  expect(result).toEqual({ ok: true });
 });
 
 test('accepts contained reviewed head', async () => {
@@ -384,9 +381,9 @@ test('cleans branch before closing parent', async () => {
   await settle(landing);
 
   expect(calls.indexOf('store:update:branch_cleanup:null')).toBeLessThan(
-    calls.indexOf('worktree:removeByBranch')
+    calls.indexOf('worktree:removeIfDiscardable')
   );
-  expect(calls.indexOf('worktree:removeByBranch')).toBeLessThan(
+  expect(calls.indexOf('worktree:removeIfDiscardable')).toBeLessThan(
     calls.indexOf('store:update:parent_close:null')
   );
   expect(calls.indexOf('store:update:parent_close:null')).toBeLessThan(
@@ -394,21 +391,22 @@ test('cleans branch before closing parent', async () => {
   );
 });
 
-test('binds worktree removal to reviewed head', async () => {
+test('removes the owned worktree against the fetched base that contains the head', async () => {
   const { landing, worktree } = makeLanding();
 
   await settle(landing);
 
-  expect(worktree.removeByBranch).toHaveBeenCalledWith({
+  expect(worktree.removeIfDiscardable).toHaveBeenCalledWith({
     repo: REPO,
-    branch: BEAD,
-    expected_head: HEAD_SHA
+    bead_id: BEAD,
+    base: FETCHED_SHA
   });
+  expect(worktree.removeByBranch).not.toHaveBeenCalled();
 });
 
-test('fails closed when worktree head identity changed', async () => {
+test('fails closed when the owned worktree holds unique work', async () => {
   const { landing } = makeLanding({
-    removeResult: { ok: false, removed: false, reason: 'identity_changed' }
+    discardResult: { ok: false, removed: false, reason: 'unique' }
   });
 
   const result = await settle(landing);
@@ -560,10 +558,10 @@ test('resumes branch cleanup without a worktree', async () => {
   expect(gitRun).not.toHaveBeenCalledWith(['rev-parse', 'HEAD'], {
     cwd: `${REPO}/.worktrees/${BEAD}`
   });
-  expect(worktree.removeByBranch).toHaveBeenCalledWith({
+  expect(worktree.removeIfDiscardable).toHaveBeenCalledWith({
     repo: REPO,
-    branch: BEAD,
-    expected_head: HEAD_SHA
+    bead_id: BEAD,
+    base: FETCHED_SHA
   });
 });
 

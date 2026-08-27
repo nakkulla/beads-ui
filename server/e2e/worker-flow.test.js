@@ -585,14 +585,13 @@ describe('worker e2e — worker-dispatched quick_fix lands without a PR', () => 
       },
       gitRun,
       // Landing-local for the same reason: the scheduler treats a present
-      // `removeIfDiscardable` as its residue-reclaim seam at dispatch.
+      // `removeIfDiscardable` as its residue-reclaim seam at dispatch. Landing
+      // cleanup removes the owned worktree through it against the fetched
+      // base (UI-fiei); the pushed fixture commit is on that base, so the
+      // real judgement would be `discardable`.
       worktree: {
         ...worktree,
-        removeIfDiscardable: async () => ({
-          ok: false,
-          removed: false,
-          reason: 'not_exercised'
-        })
+        removeIfDiscardable: async () => worktree.removeByBranch()
       },
       repoOperations: {
         hasConfig: async () => {
