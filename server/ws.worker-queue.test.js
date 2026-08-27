@@ -1914,6 +1914,7 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
       {
         bead_id: 'UI-1',
         resolution_rounds: 0,
+        rebase_rounds: 0,
         resolution: null,
         authority: {
           id: expect.any(String),
