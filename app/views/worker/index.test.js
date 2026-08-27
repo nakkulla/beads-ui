@@ -5749,6 +5749,44 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     expect(tile.textContent?.trim()).toBe('Claude τ 14.1M');
   });
 
+  test('draws the PR link on a done row from bead_workflow', () => {
+    const mount = renderQueue(
+      queueOf({
+        done: [{ bead_id: 'RD-1', added_at: 1 }],
+        bead_workflow: {
+          'RD-1': {
+            route: 'quick_fix',
+            chips: {
+              route: 'quick_fix',
+              pr: { number: 213, url: 'https://github.com/o/r/pull/213' }
+            }
+          }
+        }
+      })
+    );
+
+    const link = /** @type {HTMLAnchorElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-mini__pr')
+    );
+    expect(link.getAttribute('href')).toBe('https://github.com/o/r/pull/213');
+    expect(link.textContent).toContain('#213');
+  });
+
+  test('leaves a done row without a PR link when the bead pinned no PR', () => {
+    const mount = renderQueue(
+      queueOf({
+        done: [{ bead_id: 'RD-1', added_at: 1 }],
+        bead_workflow: {
+          'RD-1': { route: 'quick_fix', chips: { route: 'quick_fix' } }
+        }
+      })
+    );
+
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-mini__pr')
+    ).toBeNull();
+  });
+
   test('puts the cost beside the tokens on a done row (UI-tq13 §6)', () => {
     const mount = renderQueue(
       queueOf({

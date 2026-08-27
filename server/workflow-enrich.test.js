@@ -981,7 +981,10 @@ describe('enrichIssueWorkflow', () => {
     expect(wf.stages.pr.fill).toBe('full');
     expect(wf.stages.merge.fill).toBe('dim');
     expect(wf.chips.fast_track).toBe(true);
-    expect(wf.chips.pr).toEqual({ number: 42 });
+    expect(wf.chips.pr).toEqual({
+      number: 42,
+      url: 'https://github.com/o/r/pull/42'
+    });
   });
 
   test('route_source distinguishes an explicit pin from a derived fallback (§6)', () => {
@@ -1721,7 +1724,10 @@ describe('closed beads skip the staleness probes', () => {
     expect(wf.stages.spec.fill).toBe('full');
     expect(wf.stages.impl.glyph).toBe('skip');
     expect(wf.chips.route).toBe('spec_backed');
-    expect(wf.chips.pr).toEqual({ number: 42 });
+    expect(wf.chips.pr).toEqual({
+      number: 42,
+      url: 'https://github.com/o/r/pull/42'
+    });
   });
 
   test('leaves the status-less computeStale contract unchanged', () => {

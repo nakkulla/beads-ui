@@ -2447,6 +2447,46 @@ describe('monitor 대기 행 route 재료 (UI-yrzu §5)', () => {
   });
 });
 
+describe('monitor 완료 행 PR 링크', () => {
+  const PR_WORKFLOW = {
+    route: 'quick_fix',
+    chips: {
+      route: 'quick_fix',
+      pr: { number: 213, url: 'https://github.com/o/r/pull/213' }
+    }
+  };
+
+  test('fills the done row PR link from bead_workflow', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 1 }],
+          bead_workflow: { 'A-1': PR_WORKFLOW }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].pr_number).toBe(213);
+    expect(lanes.done[0].pr_url).toBe('https://github.com/o/r/pull/213');
+  });
+
+  test('leaves the done row without PR fields when the bead pinned no PR', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 1 }],
+          bead_workflow: { 'A-1': { route: 'quick_fix', chips: {} } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0]).not.toHaveProperty('pr_number');
+    expect(lanes.done[0]).not.toHaveProperty('pr_url');
+  });
+});
+
 describe('validTime (UI-yrzu §5)', () => {
   test('returns a finite number unchanged', () => {
     expect(validTime(1700000000000)).toBe(1700000000000);

@@ -1350,6 +1350,21 @@ export function buildLanes(workspaces, workspaces_state, options) {
     });
 
     /**
+     * The 완료 행's PR link material — Worker 탭 완료 행과 같은 판정이다. 두
+     * 값이 모두 있어야 링크가 되고, 하나라도 없으면 필드를 만들지 않는다
+     * (fail-quiet).
+     *
+     * @param {string} bead_id
+     * @returns {{ pr_number: number, pr_url: string }|{}}
+     */
+    const donePrFields = (bead_id) => {
+      const pr = bead_workflow[bead_id]?.chips?.pr;
+      return pr && typeof pr.number === 'number' && typeof pr.url === 'string'
+        ? { pr_number: pr.number, pr_url: pr.url }
+        : {};
+    };
+
+    /**
      * One bead's blockers, read from the snapshot decoration (UI-anna §4.3).
      * 대기 행과 같은 규칙이다: 키가 있으면 문자열만 걸러 배열로 싣고, 키가
      * 없으면 필드를 만들지 않는다 — 부재는 "blocker 없음"이 아니라 "모른다"이고,
@@ -1978,6 +1993,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
         done_at:
           typeof entry.added_at === 'number' ? entry.added_at : undefined,
         done_kind: kind,
+        // 완료 행의 PR 링크 (Worker 완료 행과 같은 재료·같은 모양): stepper와
+        // 같은 workflow projection에서 오고, 캐시 미스이거나 bead가 `pr_url`을
+        // 핀하지 않았으면 링크만 빠진다 (fail-quiet).
+        ...donePrFields(bead_id),
         // 완료 종류 배지 + 이 bead에 섞인 head review·repair 시도 (UI-hk74 §7).
         badges: [
           ...(kind && DONE_KIND_LABELS[kind] ? [DONE_KIND_LABELS[kind]] : []),

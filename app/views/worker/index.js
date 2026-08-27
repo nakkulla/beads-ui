@@ -3644,6 +3644,21 @@ export function createWorkerView(mount_element, options = {}) {
         : {};
 
     /**
+     * The 완료 행's PR link material. 재료는 stepper와 같은 workflow projection
+     * 이고, 캐시 미스이거나 bead가 `pr_url`을 핀하지 않았으면 필드 자체를 만들지
+     * 않는다 (fail-quiet) — 그 행은 링크 없이 지금 모양 그대로 그려진다.
+     *
+     * @param {string} bead_id
+     * @returns {{ pr_number: number, pr_url: string }|{}}
+     */
+    const prFieldsOf = (bead_id) => {
+      const pr = bead_workflow[bead_id]?.chips?.pr;
+      return pr && typeof pr.number === 'number' && typeof pr.url === 'string'
+        ? { pr_number: pr.number, pr_url: pr.url }
+        : {};
+    };
+
+    /**
      * @param {any[]} entries
      * @param {'queue'|'done'|'s1'|'s2'|'s3'|'s4'|'s5'} lane
      * @returns {any[]}
@@ -3737,6 +3752,9 @@ export function createWorkerView(mount_element, options = {}) {
           exec_chips: waiting_lane ? beadExecChips(e.bead_id) : null,
           // route 칩 재료 (UI-yrzu §7.2). 완료 행은 칩을 그리지 않는다.
           workflow: waiting_lane ? bead_workflow[e.bead_id] || null : null,
+          // 완료 행만 PR 링크를 얻는다: route·출처와 달리 "그 일이 어느 PR로
+          // 들어갔나"는 끝난 뒤에도 남는 질문이고, 대기 행은 아직 PR이 없다.
+          ...(lane === 'done' ? prFieldsOf(e.bead_id) : {}),
           from_id: idToFromId.get(e.bead_id) || undefined,
           priority: idToPriority.get(e.bead_id),
           ...timesOf(e.bead_id)
