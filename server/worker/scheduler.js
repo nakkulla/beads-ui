@@ -491,6 +491,11 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * ends with would fail it as `no_pr`; this dep judges the disposition's own
  * durable result instead. Absent wiring simply means no disposition can be
  * dispatched (the entry point refuses).
+ * @property {{ complete: (input: { workspace: string, attempt_id: string, bead_id: string, session_ok: boolean, reason?: string|null }) => Promise<{ ok: boolean, reason?: string }> }} [reviewSession]
+ * Completion verdict for a `[리뷰 후 머지]` attempt (UI-d7fy §5.4). The queue,
+ * not this engine, owns that lane: it re-observes the PR head, re-reads
+ * `impl_review`, and rebinds or holds the authority accordingly. Absent wiring
+ * means a review session simply settles with no queue effect.
  * @property {{ get: (workspace: string, bead_id: string) => import('./external-pr.js').ExternalPrRow|null }} [externalPrs]
  * The EXTERNAL PR registry (UI-7agi §1), read by {@link createScheduler}'s
  * `dispatchExternalConflict` to confirm the bead really is an external row
@@ -828,6 +833,7 @@ function launchAccountRefusalDetail(failure, accounts, account_sources) {
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   finalizeDiscardAttempt: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
@@ -3281,6 +3287,28 @@ export function createScheduler(deps) {
         patch: { exit: verdict.exit, ...usagePatch(workspace, attempt_id) }
       });
 
+      // A REVIEW SESSION takes its own completion path (UI-d7fy §5.4), ahead
+      // of every other branch including the base-drift settlement: it opens no
+      // PR, pushes only the PR head branch, and its verdict is a re-observation
+      // of the receipt against the FINAL head — none of which the branches
+      // below can express. Its authority binding is checked there, so a
+      // cancelled session's late exit writes nothing.
+      if (reviewSessionOf(workspace, attempt_id)) {
+        try {
+          await deps.reviewSession?.complete({
+            workspace,
+            attempt_id,
+            bead_id,
+            session_ok: verdict.success === true,
+            reason: verdict.reason ?? null
+          });
+        } catch (err) {
+          log('review session completion failed for %s: %o', attempt_id, err);
+        }
+        notifyChanged(workspace);
+        return;
+      }
+
       // The settlement step, ahead of EVERY completion branch (UI-8mvc §3).
       // Above the disposition split on purpose: that branch returns, so a call
       // placed after it could not even record why a disposition was excluded.
@@ -3494,6 +3522,23 @@ export function createScheduler(deps) {
       // next attempt writes under a new id, so a leftover tree cannot pollute a
       // later judgment (UI-8mvc §5).
       removeGuardHook(workspace, attempt_id);
+    }
+  }
+
+  /**
+   * Whether an attempt is a `[리뷰 후 머지]` session (UI-d7fy §5), read off the
+   * durable record so a restart makes the same call as the live path.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {boolean}
+   */
+  function reviewSessionOf(workspace, attempt_id) {
+    try {
+      const a = deps.store.snapshot(workspace).attempts[attempt_id];
+      return !!a && a.kind === 'review_session';
+    } catch {
+      return false;
     }
   }
 
@@ -3958,10 +4003,13 @@ export function createScheduler(deps) {
 
   /**
    * Whether the SCHEDULER is the lifecycle owner of a persisted attempt
-   * (UI-hk74 §7). A review session lives in the same history but is dispatched
-   * and settled by the merge queue's own lane. It never enters this engine's
-   * `running` set, so the reconcile fences below cannot vouch for it — and
-   * `isDeadAttempt` would read it as dead and orphan a live reviewer.
+   * (UI-hk74 §7). A review session runs through the same `launchSession` and is
+   * stoppable like any other, but its DISPATCH and its VERDICT belong to the
+   * merge queue's own lane (UI-d7fy §5.2/§5.4): the queue decides when one
+   * starts and what its exit means. So it is excluded from the two judgments
+   * that assume this engine decides — slot occupancy, and the reconcile pass,
+   * whose `isDeadAttempt` probe would orphan a review the queue is still
+   * waiting on across a restart.
    *
    * @param {any} attempt
    * @returns {boolean}
@@ -5382,7 +5430,7 @@ export function createScheduler(deps) {
    *   wt_path: string,
    *   spawnBead: any,
    *   title?: string|null,
-   *   launch_kind?: 'dispatch'|'stale_work_continue'|'resume'|'conflict'|'disposition',
+   *   launch_kind?: 'dispatch'|'stale_work_continue'|'resume'|'conflict'|'disposition'|'review',
    *   resume_session_id?: string|null,
    *   fork_session?: boolean,
    *   verify_worktree?: boolean,
@@ -7421,6 +7469,161 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Launch the `[리뷰 후 머지]` session for an attempt the click already
+   * registered (UI-d7fy §5.2).
+   *
+   * The attempt record is NOT created here: it was committed by the same CAS
+   * write that granted the authority, so this function only turns a `pending`
+   * record into a running process. That split is the whole point — a launch
+   * failure leaves a durable attempt to record `launch_failed` on, and a failed
+   * write leaves nothing to launch.
+   *
+   * The session runs in the bead's own worktree, which IS the PR head branch's
+   * checkout — the only place a `REVISE` fix may commit (§5.3). A worktree that
+   * post-merge cleanup or a manual removal took away is restored from the
+   * observed head ref, exactly as the conflict dispatch restores it.
+   *
+   * `resume_session_id` comes from the caller's §5.2 selection and is a PLAIN
+   * resume, not a fork: the contract says the recorded session continues, and
+   * the review lineage belongs in that session's own history.
+   *
+   * @param {string} workspace
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, head_ref?: string|null }} input
+   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+   */
+  async function dispatchReviewSession(workspace, input) {
+    const { bead_id, attempt_id } = input;
+    /**
+     * Every refusal leaves the attempt for the CALLER to terminalize (§5.2):
+     * the click's coordinator owns both the `launch_failed` record and the hold
+     * refresh that puts the button back, and splitting that across two writers
+     * is how the two would drift. This engine reports the reason and nothing
+     * else — releasing the claim is done at the two sites that took it, never
+     * here, because the `bead_running` refusal is precisely the case where the
+     * claim belongs to somebody else.
+     *
+     * @param {string} reason
+     * @returns {{ ok: false, reason: string }}
+     */
+    function refuseLaunch(reason) {
+      return { ok: /** @type {const} */ (false), reason };
+    }
+
+    const q = deps.store.snapshot(workspace);
+    const attempt = (q.attempts || {})[attempt_id];
+    if (
+      !attempt ||
+      attempt.bead_id !== bead_id ||
+      attempt.kind !== 'review_session' ||
+      attempt.status !== 'pending'
+    ) {
+      return { ok: false, reason: 'attempt_not_registered' };
+    }
+    if (discardActive(q, { bead_id })) {
+      return refuseLaunch('discard_in_progress');
+    }
+    if (claimed.has(bead_id)) {
+      return refuseLaunch('bead_running');
+    }
+    /** @type {BeadSnapshot} */
+    let snap;
+    try {
+      snap = await deps.bd.snapshotBead(bead_id);
+    } catch {
+      return refuseLaunch('bd_snapshot_failed');
+    }
+    const repo = snap.repo;
+    const base =
+      typeof attempt.target_base === 'string' && attempt.target_base.length > 0
+        ? attempt.target_base
+        : typeof snap.target_base === 'string' && snap.target_base.length > 0
+          ? snap.target_base
+          : 'main';
+    const wt_present =
+      typeof deps.worktree.exists === 'function'
+        ? deps.worktree.exists(repo, bead_id)
+        : true;
+    if (!wt_present) {
+      const restored = await restoreWorktree(
+        repo,
+        bead_id,
+        input.head_ref ?? null
+      );
+      if (!restored.ok) {
+        return refuseLaunch(restored.reason);
+      }
+    }
+    const resolved_exec = resolveDispatchSettings(
+      workspace,
+      snap,
+      await readWorkspaceAccountsLayer(workspace)
+    );
+    if (!resolved_exec.ok) {
+      return refuseLaunch(resolved_exec.reason);
+    }
+    const exec = resolved_exec.exec;
+    if (exec.invalid_reason) {
+      return refuseLaunch(exec.invalid_reason);
+    }
+    // A `--resume` is a claude-transcript operation, so a resumed review runs
+    // on claude whatever the bead's execution defaults resolved to. Reviewer
+    // model/effort are NOT decided here at all (§5.2): the session's own
+    // `review` skill ladder owns that choice.
+    const resume_session_id =
+      typeof input.resume_session_id === 'string' &&
+      input.resume_session_id.length > 0
+        ? input.resume_session_id
+        : null;
+    const runner_name = resume_session_id === null ? exec.runner : 'claude';
+    claimed.add(bead_id);
+    const started = deps.store.upsertReviewSessionAttempt(workspace, {
+      attempt_id,
+      patch: {
+        repo,
+        target_base: base,
+        runner: runner_name,
+        status: 'running',
+        started_at: now()
+      }
+    });
+    if (!started.ok) {
+      claimed.delete(bead_id);
+      return refuseLaunch('attempt_prerecord_failed');
+    }
+    notifyChanged(workspace);
+    const launched = await launchSession({
+      workspace,
+      attempt_id,
+      bead_id,
+      repo,
+      target_base: base,
+      base_oid: null,
+      runner_name,
+      model: exec.orchestration_model ?? null,
+      effort: exec.orchestration_effort ?? null,
+      speed: exec.orchestration_speed ?? 'default',
+      accounts: resolved_exec.accounts,
+      account_sources: resolved_exec.account_sources,
+      prior_wf: null,
+      stamped_keys: [],
+      wt_path:
+        typeof deps.worktree.pathFor === 'function'
+          ? deps.worktree.pathFor(repo, bead_id)
+          : repo,
+      launch_kind: 'review',
+      resume_session_id,
+      spawnBead: { id: bead_id, prompt: input.prompt }
+    });
+    if (!launched.ok) {
+      // `launchSession`'s own spawn-abort cleanup already released it; this is
+      // for the refusals it returns without reaching that path.
+      claimed.delete(bead_id);
+      return refuseLaunch(launched.reason || 'spawn_failed');
+    }
+    return { ok: true, attempt_id };
+  }
+
+  /**
    * Externally-initiated tick: reopens dispatch-refused beads for a fresh
    * attempt, then runs one dispatch pass.
    *
@@ -8267,6 +8470,7 @@ export function createScheduler(deps) {
     dispatchExternalConflict,
     queueConflictBlocked,
     dispatchReviseFix,
+    dispatchReviewSession,
     canDiscardAttempt,
     fenceDiscardAttempt,
     finalizeDiscardAttempt,

@@ -5248,6 +5248,114 @@ describe('worker/queue-store — manual merge continuation authority', () => {
     expect(store.snapshot(WS).merge_queue[0].authority?.source).toBe('manual');
   });
 
+  test('commits the review-session attempt in the authority write itself', () => {
+    const store = manualStore();
+    const before = store.snapshot(WS).revision;
+
+    const clicked = store.enqueueMergeManual(WS, {
+      expected_revision: before,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:1', session_source: 'resume' }
+    });
+
+    // ONE write (UI-d7fy §5.2): the authority and the attempt are one decision.
+    expect(clicked.ok).toBe(true);
+    expect(clicked.review_session_registered).toBe(true);
+    expect(store.snapshot(WS).revision).toBe(before + 1);
+    expect(store.snapshot(WS).attempts['review:1']).toMatchObject({
+      bead_id: 'UI-1',
+      kind: 'review_session',
+      origin: 'click',
+      status: 'pending',
+      authority_id: 'authority-1',
+      head_sha: 'a'.repeat(40),
+      continuation_mode: 'session'
+    });
+  });
+
+  test('registers no attempt when a review session is already in flight', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:1', session_source: 'resume' }
+    });
+
+    const again = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:2', session_source: 'fresh' }
+    });
+
+    expect(again.review_session_registered).toBe(false);
+    expect(store.snapshot(WS).attempts['review:2']).toBeUndefined();
+    expect(store.snapshot(WS).merge_queue[0].authority?.id).toBe('authority-1');
+  });
+
+  test('rebinds the authority to the final head when the receipt is current', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:1', session_source: 'resume' }
+    });
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: { reason: 'review_receipt_missing', head_sha: 'a'.repeat(40) },
+      at: 5
+    });
+
+    const settled = store.settleReviewSession(WS, {
+      attempt_id: 'review:1',
+      outcome: 'current',
+      final_head_sha: 'b'.repeat(40),
+      at: 900
+    });
+
+    expect(settled.ok).toBe(true);
+    expect(store.snapshot(WS).attempts['review:1']).toMatchObject({
+      status: 'done',
+      finished_at: 900
+    });
+    expect(store.snapshot(WS).merge_queue[0]).toMatchObject({
+      authority: { id: 'authority-1', requested_head_sha: 'b'.repeat(40) }
+    });
+    expect(store.snapshot(WS).merge_queue[0].hold).toBeUndefined();
+  });
+
+  test('writes nothing when the settle arrives after the authority is gone', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:1', session_source: 'resume' }
+    });
+    store.cancelMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-1'
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const settled = store.settleReviewSession(WS, {
+      attempt_id: 'review:1',
+      outcome: 'current',
+      final_head_sha: 'b'.repeat(40)
+    });
+
+    expect(settled).toMatchObject({ ok: false, reason: 'binding_gone' });
+    expect(store.snapshot(WS).revision).toBe(revision);
+  });
+
   test('persists authority and its gate hold across a cold reload', () => {
     const store = manualStore();
     store.enqueueMergeManual(WS, {

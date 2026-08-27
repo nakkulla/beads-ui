@@ -75,6 +75,10 @@ import {
   repoOpsDisplayFor
 } from './repo-ops-display.js';
 import { createRevertBuilder } from './revert-builder.js';
+import {
+  createReviewSession,
+  isReviewAfterMergeReason
+} from './review-session.js';
 import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
@@ -447,6 +451,7 @@ export function defaultProbePid(pid) {
  *   admission?: any,
  *   notify?: any,
  *   reviseDisposition?: any,
+ *   reviewSession?: any,
  *   mergeQueue?: any,
  *   autoMerge?: any,
  *   completionIntent?: any,
@@ -709,6 +714,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // without disposition wiring reports.
   /** @type {ReturnType<typeof createReviseDisposition>|null} */
   let reviseDisposition = null;
+  // Same late-bound indirection as the disposition dep above, and for the same
+  // reason: the coordinator needs the scheduler to dispatch, and the scheduler
+  // needs the coordinator's verdict when the session exits (UI-d7fy §5.4).
+  /** @type {ReturnType<typeof createReviewSession>|null} */
+  let reviewSession = null;
   /** @type {ReturnType<typeof createPrActions>|null} */
   let prActions = null;
   /** @type {ReturnType<typeof createCompletionIntentCoordinator>|null} */
@@ -790,6 +800,16 @@ export function createWorkerAttachment(workspace_root, options = {}) {
        */
       release(bead_id) {
         reviseDisposition?.release(bead_id);
+      }
+    },
+    reviewSession: {
+      /**
+       * @param {{ workspace: string, attempt_id: string, bead_id: string, session_ok: boolean, reason?: string|null }} input
+       */
+      complete(input) {
+        return reviewSession
+          ? reviewSession.complete(input)
+          : Promise.resolve({ ok: false, reason: 'no_review_session_dep' });
       }
     },
     onCompletionAttemptSettled(input) {
@@ -891,6 +911,25 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       scheduler,
       locks: runtime.locks,
       gitRun,
+      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
+    });
+
+  // The `[리뷰 후 머지]` click (UI-d7fy §5). It reads the SAME queue store the
+  // gate holds the row in and re-observes through the SAME `prActions` the
+  // click bound its authority with, so the verdict can never describe a
+  // different PR than the button did.
+  reviewSession =
+    options.reviewSession ||
+    createReviewSession({
+      workspace: keyFor(workspace_root),
+      store: runtime.queueStore,
+      bd: createBdMetadata({ cwd: workspace_root }),
+      scheduler,
+      observeReviewReceipt: (/** @type {string} */ bead_id) =>
+        prActions
+          ? prActions.observeReviewReceipt(bead_id)
+          : Promise.resolve({ ok: false, reason: 'no_attachment' }),
+      kick: () => kickWorkerMergeQueue(workspace_root),
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
     });
 
@@ -1471,6 +1510,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     beadsChanges,
     refreshExternalPrs,
     reviseDisposition,
+    reviewSession,
     sessionMonitors,
     processController,
     bd,
@@ -2325,6 +2365,24 @@ export async function enqueueWorkerManualMerge(workspace_root, input) {
       reason: 'pr_identity_unreadable',
       queue: store.snapshot(key)
     };
+  }
+  // `[리뷰 후 머지]` (UI-d7fy §5.1–§5.2). The gate reason THIS probe just took
+  // decides it, not the badge the person clicked: the same authority is granted
+  // either way, and the only difference is that a held row also gets a review
+  // session registered in the same write and dispatched after it.
+  if (att.reviewSession && isReviewAfterMergeReason(probe.reason)) {
+    return att.reviewSession.start({
+      bead_id: input.bead_id,
+      expected_revision: store.snapshot(key).revision,
+      probe: {
+        head_sha,
+        target_base,
+        head_ref: probe.head_ref ?? null,
+        pr_url: probe.pr_url ?? null,
+        external: probe.external === true,
+        reason: probe.reason
+      }
+    });
   }
   return store.enqueueMergeManual(key, {
     expected_revision: store.snapshot(key).revision,

@@ -97,6 +97,7 @@ import {
   paneTemplate,
   repoOpsStripTemplate,
   reviewSessionAttemptBadges,
+  reviewSessionRowState,
   staleWorkProjection,
   sumAttemptWorkMs,
   waitBody
@@ -487,6 +488,34 @@ export function activityBadge(gate_badge, activity) {
     }
   }
   return { label: gate_badge, live: false };
+}
+
+/**
+ * Korean text for a `[리뷰 후 머지]` session's termination reason (UI-d7fy §5.4).
+ *
+ * Three shapes end one: the receipt was re-judged and is still not current, the
+ * session process itself failed, and the launch never happened. All three
+ * re-enable the button, so the text says WHAT to expect from another click
+ * rather than only what went wrong. An unknown cause travels through verbatim —
+ * a server that grew one must not blank the reason.
+ *
+ * @param {string} cause
+ * @returns {string}
+ */
+export function reviewSessionFailureText(cause) {
+  if (cause === 'receipt_not_current') {
+    return '리뷰 후에도 영수증이 최종 head에 유효하지 않음';
+  }
+  if (cause === 'cancelled') {
+    return '리뷰 세션 취소됨';
+  }
+  if (cause.startsWith('launch_failed:')) {
+    return `리뷰 세션 시작 실패(${cause.slice('launch_failed:'.length)})`;
+  }
+  if (cause.startsWith('session_failed:')) {
+    return `리뷰 세션 비정상 종료(${cause.slice('session_failed:'.length)})`;
+  }
+  return `리뷰 세션 실패(${cause})`;
 }
 
 /**
@@ -989,11 +1018,12 @@ export function prStatusBadge(input) {
   // unqueued, failed, waiting on a continuation choice — because there the
   // reason is what the person clicks to fix.
   const receipt_codes = receiptWarningCodes(input.receipt_check);
+  // 리뷰 사유 둘은 여기서 빠졌다 (UI-d7fy §5): 큐는 리뷰어를 디스패치하지도
+  // 수리하지도 않으므로, 그 행은 "자동으로 처리 중"이 아니라 사람이 [리뷰 후
+  // 머지]를 누를 때까지 서 있는 보류다.
   const auto_handled =
     input.conflicting ||
     input.gate?.reason === 'base_behind' ||
-    input.gate?.reason === 'review_receipt_missing' ||
-    input.gate?.reason === 'review_receipt_stale' ||
     receipt_codes.length > 0;
   if (input.auto_pending && auto_handled) {
     return badge('확인 중', {
@@ -1019,13 +1049,28 @@ export function prStatusBadge(input) {
     // `review_receipt_undetermined` and deliberately NOT here: the next
     // observation re-takes it and nobody has anything to do, so it draws no
     // badge at all (UI-32he).
-    return badge('최종 변경 리뷰 필요', {
-      title:
-        input.gate.reason === 'review_receipt_stale'
-          ? '리뷰 영수증이 현재 head의 조상이 아닙니다 — 히스토리 재작성·브랜치 리셋 복구 경로로, 관측된 최종 head 전체를 다시 리뷰합니다'
-          : '리뷰 영수증이 없습니다 — 관측된 최종 head 전체를 리뷰해야 머지할 수 있습니다',
-      alert: true
-    });
+    const hold_title =
+      input.gate.reason === 'review_receipt_stale'
+        ? '리뷰 영수증이 현재 head의 조상이 아닙니다 — 히스토리 재작성·브랜치 리셋 복구 경로입니다. [리뷰 후 머지]가 이 보류의 출구입니다'
+        : '리뷰 영수증이 없습니다 — [리뷰 후 머지]가 이 보류의 출구입니다';
+    // §5.4의 종료 사유는 게이트 뱃지 옆 텍스트다. 실행 중인 세션이 우선한다 —
+    // 지난 실패는 이미 다시 눌린 뒤이므로 지금 무슨 일이 일어나는지가 답이다.
+    if (input.review_session?.active === true) {
+      return badge('최종 변경 리뷰 필요 · 리뷰 세션 실행 중', {
+        title: `${hold_title}\n리뷰 세션이 실행 중입니다 — 끝나면 영수증을 다시 판정합니다`,
+        live: true
+      });
+    }
+    if (input.review_session?.failure) {
+      return badge(
+        `최종 변경 리뷰 필요 · ${reviewSessionFailureText(input.review_session.failure)}`,
+        {
+          title: `${hold_title}\n직전 리뷰 세션 종료 사유: ${input.review_session.failure}`,
+          alert: true
+        }
+      );
+    }
+    return badge('최종 변경 리뷰 필요', { title: hold_title, alert: true });
   }
   if (input.gate?.reason === 'spec_id_missing') {
     // Not a review problem: only a Bead metadata write can repair it, so the
@@ -1180,6 +1225,9 @@ export function prStatusBadge(input) {
  * 겹침 칩 (UI-anna §5.3). PR 대기 행도 `⛓ blocked` · `⧉ 겹침` · `scope 없음`을
  * 받는다 — 레인이 바뀌어도 "이 이슈가 지금 무엇과 부딪히나"는 같은 질문이다.
  * 재료가 없으면 null이고 행은 그 줄을 그리지 않는다 (fail-quiet).
+ * @param {{ active: boolean, failure: string|null }} [review_session] - 이 행의
+ * `[리뷰 후 머지]` 세션 상태 (UI-d7fy §5.4). 실행 중이면 버튼이 잠기고, 마지막
+ * 세션의 종료 사유는 게이트 뱃지 옆 텍스트가 된다.
  * @returns {any}
  */
 function prWaitRow(
@@ -1200,7 +1248,8 @@ function prWaitRow(
   worker_serial = false,
   auto_merge_on = false,
   progress_input = {},
-  dependency_chips = null
+  dependency_chips = null,
+  review_session = { active: false, failure: null }
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const continuation_required =
@@ -1310,6 +1359,14 @@ function prWaitRow(
       gate?.reason === 'review_receipt_undetermined' ||
       cleanup_retry ||
       external_cleanup);
+  // 이 행이 [리뷰 후 머지]를 내는 행인가 (UI-d7fy §5.1). 게이트 사유 둘만
+  // 해당한다 — `review_receipt_undetermined`는 판정이 아니라 probe 오류라 다음
+  // 관측을 기다리고, `spec_id_missing`은 리뷰로 해소되지 않는다(UI-yqw9 사고
+  // 규칙). 이 행은 큐에 들어가 authority를 받은 뒤에도 버튼을 유지한다: 보류의
+  // 출구가 그 버튼뿐이고, 세션이 실패하면 다시 눌러야 하기 때문이다.
+  const review_after_merge =
+    gate?.reason === 'review_receipt_missing' ||
+    gate?.reason === 'review_receipt_stale';
   // An external conflict WITHOUT a worktree has nowhere to run: the dispatch
   // never recreates one (UI-w0hi 제외), so the button would refuse every time.
   // The badge reports the conflict; the user resolves it in their own session.
@@ -1354,6 +1411,7 @@ function prWaitRow(
     queued,
     queue_active,
     queue_position: merge_queue ? merge_queue.position : 0,
+    review_session,
     activity: conflict_badge ? null : (active && active.activity) || null
   });
   const rendered_status_badge =
@@ -1410,7 +1468,10 @@ function prWaitRow(
     merge_action:
       gate?.tier === 'merged' && !cleanup_retry && !external_cleanup
         ? false
-        : !queued || continuation_required || needs_reclick,
+        : !queued ||
+          continuation_required ||
+          needs_reclick ||
+          review_after_merge,
     cancel_action: queued && !continuation_required,
     // 잠겨야 하는 것은 되돌릴 수 없는 머지 효과뿐이다 (UI-d7fy §5.6).
     cancel_enabled: !queue_active && !(recovery && recovery.lock_actions),
@@ -1441,6 +1502,10 @@ function prWaitRow(
       !base_exception &&
       !(recovery && recovery.lock_actions) &&
       !external_conflict_unresolvable &&
+      // 리뷰 세션이 도는 동안은 잠근다 (UI-d7fy §5.2 per-Bead in-flight 가드):
+      // 두 번째 클릭은 서버에서도 no-op이므로, 버튼이 살아 있으면 아무 일도
+      // 하지 않는 클릭만 만든다.
+      review_session.active !== true &&
       // A re-click recovery stays clickable on a CLOSED gate on purpose
       // (UI-58w8 §1): stale receipt and BEHIND are exactly the gates the new
       // authority's continuation exists to carry, and the server re-observes
@@ -1515,21 +1580,24 @@ function prWaitRow(
                           ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
                           : gate?.reason === 'base_behind'
                             ? 'base를 자동 갱신한 뒤 머지합니다'
-                            : gate?.reason === 'review_receipt_missing'
-                              ? '리뷰 영수증 없음 — 자동 리뷰 세션 후 승인되면 머지합니다'
-                              : gate?.reason === 'review_receipt_stale'
-                                ? 'head 재작성됨(영수증이 현재 head의 조상이 아님) — 자동 재리뷰 세션 후 승인되면 머지합니다'
-                                : gate?.reason === 'review_receipt_undetermined'
-                                  ? '리뷰 영수증 판정 미결 — 다음 관측에서 다시 판정합니다. 지금 머지하면 관측된 head를 다시 판정합니다'
-                                  : gate?.reason === 'spec_id_missing'
-                                    ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
-                                    : enabled
-                                      ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
-                                      : gate && gate.tier === 'merged'
-                                        ? // Already merged with no cleanup failure recorded: the cleanup
-                                          // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                                          '머지됨 — 머지 후 정리 진행 중'
-                                        : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+                            : review_session.active === true
+                              ? '리뷰 세션 실행 중 — 끝나면 영수증을 다시 판정합니다'
+                              : gate?.reason === 'review_receipt_missing'
+                                ? '리뷰 영수증 없음 — 머지 게이트 보류입니다. 클릭하면 기록된 세션을 이어 리뷰만 수행시키고, 영수증이 최종 head에 유효해지면 큐가 머지합니다'
+                                : gate?.reason === 'review_receipt_stale'
+                                  ? 'head 재작성됨(영수증이 현재 head의 조상이 아님) — 머지 게이트 보류입니다. 클릭하면 기록된 세션을 이어 최종 head를 다시 리뷰시키고, 영수증이 유효해지면 큐가 머지합니다'
+                                  : gate?.reason ===
+                                      'review_receipt_undetermined'
+                                    ? '리뷰 영수증 판정 미결 — 다음 관측에서 다시 판정합니다. 지금 머지하면 관측된 head를 다시 판정합니다'
+                                    : gate?.reason === 'spec_id_missing'
+                                      ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
+                                      : enabled
+                                        ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
+                                        : gate && gate.tier === 'merged'
+                                          ? // Already merged with no cleanup failure recorded: the cleanup
+                                            // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                                            '머지됨 — 머지 후 정리 진행 중'
+                                          : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 
@@ -4462,7 +4530,8 @@ export function createWorkerView(mount_element, options = {}) {
               ? q.repo_operations
               : []
           },
-          dependencyChipsFor(e.bead_id)
+          dependencyChipsFor(e.bead_id),
+          reviewSessionRowState(q.attempts || {}, e.bead_id)
         )
       )
       .map((/** @type {any} */ row) => ({

@@ -4030,16 +4030,141 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     }
   });
 
+  const REVIEW_HOLD_GATE = {
+    enabled: false,
+    tier: 'review',
+    gate_badge: '리뷰 확인 필요',
+    base_badge: '최신',
+    reason: 'review_receipt_missing'
+  };
+
+  test.each([
+    [
+      'spec_id_missing',
+      {
+        enabled: false,
+        tier: 'review',
+        gate_badge: '스펙 ID 누락',
+        base_badge: '최신',
+        reason: 'spec_id_missing'
+      }
+    ],
+    [
+      'review_receipt_undetermined',
+      {
+        enabled: false,
+        tier: 'review',
+        gate_badge: '',
+        base_badge: '최신',
+        reason: 'review_receipt_undetermined'
+      }
+    ]
+  ])('offers no [리뷰 후 머지] on %s (UI-d7fy §5.1)', (_reason, gate) => {
+    const { mount } = mountWith(queueWithGate(gate));
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(button.textContent?.trim()).not.toBe('리뷰 후 머지');
+  });
+
+  test('keeps [리뷰 후 머지] on the row the click already queued (UI-d7fy §5.1)', () => {
+    const { mount } = mountWith(
+      queueWithGate(REVIEW_HOLD_GATE, {
+        merge_queue: [
+          {
+            bead_id: 'RD-1',
+            authority: { id: 'authority-1', source: 'manual' },
+            hold: {
+              reason: 'review_receipt_missing',
+              head_sha: 'a'.repeat(40),
+              since: 5
+            }
+          }
+        ]
+      })
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(button.textContent?.trim()).toBe('리뷰 후 머지');
+    expect(button.disabled).toBe(false);
+  });
+
+  test('locks the button while its review session runs (UI-d7fy §5.2)', () => {
+    const { mount } = mountWith(
+      queueWithGate(REVIEW_HOLD_GATE, {
+        merge_queue: [
+          {
+            bead_id: 'RD-1',
+            authority: { id: 'authority-1', source: 'manual' }
+          }
+        ],
+        attempts: {
+          'review:1': {
+            attempt_id: 'review:1',
+            bead_id: 'RD-1',
+            kind: 'review_session',
+            status: 'running'
+          }
+        }
+      })
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe(
+      '리뷰 세션 실행 중 — 끝나면 영수증을 다시 판정합니다'
+    );
+    expect(mount.textContent).toContain(
+      '최종 변경 리뷰 필요 · 리뷰 세션 실행 중'
+    );
+  });
+
+  test('re-enables the button and states why the last review ended (UI-d7fy §5.4)', () => {
+    const { mount } = mountWith(
+      queueWithGate(REVIEW_HOLD_GATE, {
+        merge_queue: [
+          {
+            bead_id: 'RD-1',
+            authority: { id: 'authority-1', source: 'manual' }
+          }
+        ],
+        attempts: {
+          'review:1': {
+            attempt_id: 'review:1',
+            bead_id: 'RD-1',
+            kind: 'review_session',
+            status: 'failed',
+            cause: 'receipt_not_current',
+            finished_at: 9
+          }
+        }
+      })
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(button.disabled).toBe(false);
+    expect(mount.textContent).toContain(
+      '최종 변경 리뷰 필요 · 리뷰 후에도 영수증이 최종 head에 유효하지 않음'
+    );
+  });
+
   test.each([
     [
       'review_receipt_missing',
       '리뷰 후 머지',
-      '리뷰 영수증 없음 — 자동 리뷰 세션 후 승인되면 머지합니다'
+      '리뷰 영수증 없음 — 머지 게이트 보류입니다. 클릭하면 기록된 세션을 이어 리뷰만 수행시키고, 영수증이 최종 head에 유효해지면 큐가 머지합니다'
     ],
     [
       'review_receipt_stale',
       '리뷰 후 머지',
-      'head 재작성됨(영수증이 현재 head의 조상이 아님) — 자동 재리뷰 세션 후 승인되면 머지합니다'
+      'head 재작성됨(영수증이 현재 head의 조상이 아님) — 머지 게이트 보류입니다. 클릭하면 기록된 세션을 이어 최종 head를 다시 리뷰시키고, 영수증이 유효해지면 큐가 머지합니다'
     ],
     ['base_behind', 'base 갱신 후 머지', 'base를 자동 갱신한 뒤 머지합니다']
   ])('enables the manual continuation for %s', (reason, label, title) => {
@@ -10004,14 +10129,14 @@ describe('prStatusBadge priority (UI-vkk8 §3)', () => {
     expect(result?.title).toContain('main_receipt_unbacked');
   });
 
-  test('shows 확인 중 for a queued row whose review receipt the queue will fetch (UI-kxhf)', () => {
+  test('keeps the review hold on a queued row instead of 확인 중 (UI-d7fy §5)', () => {
     const result = prStatusBadge({
       auto_pending: true,
       queued: true,
       gate: { reason: 'review_receipt_missing' }
     });
 
-    expect(result).toMatchObject({ label: '확인 중', live: true });
+    expect(result).toMatchObject({ label: '최종 변경 리뷰 필요', alert: true });
   });
 
   test('shows 확인 중 for a queued row whose receipt warning the queue re-checks (UI-kxhf)', () => {

@@ -99,9 +99,12 @@
  * and kept in the shape only so a legacy record round-trips.
  * @property {string|null} repo - Target repo root (the reconcile's observation
  * scope: a dead attempt's PR is looked for in THIS repo).
- * @property {string|null} status - Attempt lifecycle: running/done/failed/
- * orphaned/paused/stopped/discarded. `paused` is resumable; `stopped` is legacy
- * history; `discarded` is the unified archive-backed terminal action.
+ * @property {string|null} status - Attempt lifecycle: pending/running/done/
+ * failed/orphaned/paused/stopped/discarded. `paused` is resumable; `stopped` is
+ * legacy history; `discarded` is the unified archive-backed terminal action.
+ * `pending` is a `review_session` registered by the `[리뷰 후 머지]` CAS write
+ * whose session has not spawned yet (UI-d7fy §5.2); the four states that lane
+ * ever holds are `pending`/`running`/`done`/`failed`.
  * @property {string|null} workflow_mode_prior - workflow_mode value snapshotted before launch (null=was unset).
  * @property {string|null} target_base - Merge target base at dispatch.
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
@@ -6434,14 +6437,83 @@ export function createQueueStore(options = {}) {
      * and `manualContinuation()` above all — behaves identically whether the
      * authority came from a click or from `▶ 진행`.
      *
+     * `review_session` is the `[리뷰 후 머지]` click (UI-d7fy §5.2). It rides
+     * the SAME CAS mutation as the authority it belongs to, because the two
+     * facts are one decision: an authority granted without its attempt would
+     * leave a held row nobody is reviewing, and an attempt registered without
+     * its authority would review a head the queue never promised to merge. A
+     * failed write therefore dispatches nothing at all — the caller launches
+     * only after `review_session_registered` comes back true.
+     *
      * @param {string} workspace
-     * @param {{ expected_revision: number, entries: Array<{ bead_id: string, head_sha?: string|null, target_base?: string|null, external?: boolean, via?: 'lane' }> }} input
-     * @returns {QueueOpResult}
+     * @param {{ expected_revision: number, entries: Array<{ bead_id: string, head_sha?: string|null, target_base?: string|null, external?: boolean, via?: 'lane' }>, review_session?: { attempt_id: string, session_source?: string|null }|null }} input
+     * @returns {QueueOpResult & { review_session_registered?: boolean }}
      */
     enqueueMergeManual(workspace, input) {
       const { expected_revision, entries } = input;
+      const review_session =
+        isRecord(input.review_session) &&
+        typeof input.review_session.attempt_id === 'string' &&
+        input.review_session.attempt_id.length > 0
+          ? input.review_session
+          : null;
       /** @type {string|null} */
       let reason = null;
+      let review_session_registered = false;
+      /** @type {Map<string, { authority_id: string, head_sha: string }>} */
+      const granted = new Map();
+      /**
+       * Register the click's `review_session` attempt inside the SAME mutation.
+       *
+       * Refuses — without failing the authority write — when the Bead already
+       * has an unsettled review session (§5.2 per-Bead in-flight guard: the
+       * second click reuses the authority and dispatches nothing), when the
+       * attempt id is already taken, or when this click granted no authority to
+       * bind to.
+       *
+       * @param {Queue} next
+       * @param {{ attempt_id: string, session_source?: string|null }} click
+       * @param {Map<string, { authority_id: string, head_sha: string }>} authorities
+       * @returns {boolean}
+       */
+      function registerReviewSessionAttempt(next, click, authorities) {
+        if (authorities.size !== 1) {
+          reason = 'review_session_authority_ambiguous';
+          return false;
+        }
+        const [bead_id, authority] = [...authorities.entries()][0];
+        if (Object.hasOwn(next.attempts, click.attempt_id)) {
+          reason = 'review_session_attempt_exists';
+          return false;
+        }
+        for (const attempt of Object.values(next.attempts)) {
+          if (
+            attempt.kind === 'review_session' &&
+            attempt.bead_id === bead_id &&
+            !TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status))
+          ) {
+            reason = 'review_session_in_flight';
+            return false;
+          }
+        }
+        next.attempts[click.attempt_id] = makeAttempt({
+          attempt_id: click.attempt_id,
+          bead_id,
+          kind: 'review_session',
+          origin: 'click',
+          status: 'pending',
+          authority_id: authority.authority_id,
+          head_sha: authority.head_sha,
+          // How the click resolved §5.2's session selection, recorded on the
+          // EXISTING continuation field rather than a new one: `session` is the
+          // resumed `claude:` entry, `fresh` the substitute. `session_id` stays
+          // null until the launched runner announces its own.
+          continuation_mode:
+            click.session_source === 'resume' ? 'session' : 'fresh'
+        });
+        review_session_registered = true;
+        return true;
+      }
       const result = applyMutation(workspace, expected_revision, (next) => {
         if (!Array.isArray(entries) || entries.length === 0) {
           return false;
@@ -6513,6 +6585,10 @@ export function createQueueStore(options = {}) {
             // promotes it to a fresh manual authority, exactly like a legacy
             // slot (UI-58w8 §1).
             if (existing.authority && existing.authority.source === 'manual') {
+              granted.set(bead_id, {
+                authority_id: existing.authority.id,
+                head_sha
+              });
               continue;
             }
             existing.authority = {
@@ -6523,6 +6599,10 @@ export function createQueueStore(options = {}) {
               target_base,
               ...(via === null ? {} : { via })
             };
+            granted.set(bead_id, {
+              authority_id: existing.authority.id,
+              head_sha
+            });
             // A fresh authority is a fresh judgment: whatever the gate was
             // holding the old one on is re-decided from this head (UI-d7fy
             // §3.3), and a stale reason must not outlive the authority it was
@@ -6531,13 +6611,14 @@ export function createQueueStore(options = {}) {
             changed += 1;
             continue;
           }
+          const authority_id = randomUUID();
           insertRunnableMergeEntry(next, {
             bead_id,
             resolution_rounds: 0,
             rebase_rounds: 0,
             resolution: null,
             authority: {
-              id: randomUUID(),
+              id: authority_id,
               source: 'manual',
               granted_at: now(),
               requested_head_sha: head_sha,
@@ -6545,11 +6626,124 @@ export function createQueueStore(options = {}) {
               ...(via === null ? {} : { via })
             }
           });
+          granted.set(bead_id, { authority_id, head_sha });
           changed += 1;
+        }
+        if (review_session !== null) {
+          changed += registerReviewSessionAttempt(next, review_session, granted)
+            ? 1
+            : 0;
         }
         return changed > 0;
       });
-      return reason === null || result.ok ? result : { ...result, reason };
+      if (!result.ok) {
+        review_session_registered = false;
+      }
+      const decorated =
+        reason === null || result.ok ? result : { ...result, reason };
+      return review_session === null
+        ? decorated
+        : { ...decorated, review_session_registered };
+    },
+
+    /**
+     * The `[리뷰 후 머지]` session's completion verdict (UI-d7fy §5.4), as ONE
+     * write.
+     *
+     * The BINDING is checked first and fails the whole write: an attempt that
+     * was cancelled (§5.6) or an authority that was reissued under it means
+     * this session no longer speaks for anything, and a late result must write
+     * nothing at all — not even its own failure.
+     *
+     * `current` rebinds the authority to the FINAL observed head, carrying over
+     * everything the manual click grants at that head (the `receipt_unbacked`
+     * waiver above all): a REVISE fix push moves the head, and an authority
+     * left on the click head would lose the waiver and hold the row forever.
+     * Anything else terminalizes the attempt and refreshes the hold so the
+     * button comes back with the reason beside it.
+     *
+     * `from: 'launch'` is the ONE case that may write over an already-terminal
+     * attempt: a spawn abort records its own cause deep inside the launcher, and
+     * without the relabel the click's canonical `launch_failed` state — the one
+     * the row's button and reason text are defined against — would never be
+     * reached. The authority binding above still guards it, so a cancelled
+     * attempt (whose entry is gone) stays untouchable.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, outcome: 'current'|'failed', final_head_sha?: string|null, cause?: string|null, hold_reason?: string|null, from?: 'launch'|'completion', at?: number }} input
+     * @returns {QueueOpResult & { reason?: string }}
+     */
+    settleReviewSession(workspace, input) {
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const attempt = next.attempts[input.attempt_id];
+        const relabelable =
+          input.from === 'launch' &&
+          input.outcome === 'failed' &&
+          attempt?.status === 'failed' &&
+          attempt.cause !== 'cancelled';
+        if (
+          !attempt ||
+          attempt.kind !== 'review_session' ||
+          (!relabelable &&
+            TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status)))
+        ) {
+          reason = 'binding_gone';
+          return false;
+        }
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === attempt.bead_id
+        );
+        if (
+          !entry ||
+          !entry.authority ||
+          entry.authority.id !== attempt.authority_id
+        ) {
+          reason = 'binding_gone';
+          return false;
+        }
+        const at =
+          typeof input.at === 'number' && Number.isFinite(input.at)
+            ? input.at
+            : now();
+        attempt.control = null;
+        attempt.finished_at = at;
+        if (input.outcome === 'current') {
+          attempt.status = 'done';
+          attempt.cause = null;
+          if (isSha(input.final_head_sha)) {
+            entry.authority.requested_head_sha = String(
+              input.final_head_sha
+            ).toLowerCase();
+          }
+          delete entry.hold;
+          return true;
+        }
+        attempt.status = 'failed';
+        attempt.cause =
+          typeof input.cause === 'string' && input.cause.length > 0
+            ? input.cause
+            : 'receipt_not_current';
+        const prior = entry.hold ?? null;
+        // A caller with no verdict of its own (a session that died before it
+        // could be judged) leaves the hold exactly as the gate last stated it;
+        // only a fresh judgment replaces the reason.
+        const hold_reason =
+          typeof input.hold_reason === 'string' && input.hold_reason.length > 0
+            ? input.hold_reason
+            : (prior?.reason ?? 'review_receipt_missing');
+        const head_sha = isSha(input.final_head_sha)
+          ? String(input.final_head_sha).toLowerCase()
+          : (entry.authority.requested_head_sha ?? '');
+        entry.hold = {
+          reason: hold_reason,
+          head_sha,
+          since: prior && prior.reason === hold_reason ? prior.since : at
+        };
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
     },
 
     /**

@@ -2110,6 +2110,10 @@ export function createPrActions(deps) {
       head_sha: observed.pr.head_sha,
       base_ref: observed.pr.base_ref || null,
       head_ref: observed.pr.head_ref || null,
+      // Carried for the `[리뷰 후 머지]` prompt (UI-d7fy §5.3): the session is
+      // told which PR it is reviewing from the same observation the authority
+      // binds to, never from a cached badge.
+      pr_url: observed.pr.url || null,
       external: is_external
     };
     if (observed.pr.state === 'MERGED') {
@@ -2136,6 +2140,61 @@ export function createPrActions(deps) {
       };
     }
     return { ok: true, kind: 'clean', ...common };
+  }
+
+  /**
+   * Re-observe the PR head and re-judge the review receipt against it — the
+   * `[리뷰 후 머지]` completion verdict's only input (UI-d7fy §5.4).
+   *
+   * DELIBERATELY NARROWER than {@link probeMergeability}: the whole gate would
+   * answer a different question, because mergeability and base freshness are
+   * judged AHEAD of the receipt and would mask a receipt that is now current
+   * behind a `base_behind` this click never promised to resolve. The subject
+   * here is the review lineage alone.
+   *
+   * The head is the FINAL observed one, not the head the click bound: a
+   * `REVISE` fix pushes to the PR head branch and moves it.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: true, head_sha: string, head_ref: string|null, state: import('./merge-gate.js').CurrentState }|{ ok: false, reason: string }>}
+   */
+  async function observeReviewReceipt(bead_id) {
+    const q = deps.store.snapshot(workspace);
+    const member = await laneMembership(q, bead_id);
+    if (!member.ok) {
+      return { ok: /** @type {const} */ (false), reason: member.reason };
+    }
+    const ref = resolvePrRef(
+      q,
+      bead_id,
+      member.external === true
+        ? { pr_url: member.pr_url, pr_number: parsePrNumber(member.pr_url) }
+        : null
+    );
+    if (!ref) {
+      return {
+        ok: /** @type {const} */ (false),
+        reason: 'pr_ref_unknown'
+      };
+    }
+    const observed = await observeNow(bead_id, ref.number);
+    if ('error' in observed) {
+      return { ok: /** @type {const} */ (false), reason: observed.error };
+    }
+    const head_sha = normalizeSha(observed.pr.head_sha);
+    if (head_sha === null) {
+      return {
+        ok: /** @type {const} */ (false),
+        reason: 'pr_identity_unreadable'
+      };
+    }
+    const { review_receipt_state } = await readGateAuthority(bead_id, head_sha);
+    return {
+      ok: /** @type {const} */ (true),
+      head_sha,
+      head_ref: observed.pr.head_ref || null,
+      state: review_receipt_state
+    };
   }
 
   /**
@@ -3183,6 +3242,7 @@ export function createPrActions(deps) {
   return {
     merge,
     probeMergeability,
+    observeReviewReceipt,
     updateBase,
     dispatchConflict,
     baseContained,

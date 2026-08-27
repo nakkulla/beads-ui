@@ -111,6 +111,52 @@ export function reviewSessionAttemptBadges(attempts, bead_id) {
 }
 
 /**
+ * `[리뷰 후 머지]` 세션의 행 상태 — 한 bead 기준 (UI-d7fy §5.4).
+ *
+ * PR 대기 행이 두 가지를 물어본다: 지금 리뷰 세션이 도는가(그러면 버튼을 잠근다),
+ * 그리고 마지막 세션이 왜 끝났는가(그러면 게이트 뱃지 옆에 사유를 적는다).
+ * 진행 중인 세션이 하나라도 있으면 그것이 답이고, 없으면 가장 최근에 끝난 실패가
+ * 답이다 — 성공한 세션은 authority 재결속으로 이미 보류를 걷어냈으므로 남길 말이
+ * 없다. 모양이 어긋난 입력은 조용히 무시한다(fail-quiet).
+ *
+ * @param {unknown} attempts - 큐 스냅샷의 attempt_id → attempt record 맵.
+ * @param {string} bead_id
+ * @returns {{ active: boolean, failure: string|null }}
+ */
+export function reviewSessionRowState(attempts, bead_id) {
+  if (typeof attempts !== 'object' || attempts === null) {
+    return { active: false, failure: null };
+  }
+  let active = false;
+  /** @type {string|null} */
+  let failure = null;
+  let failure_at = -1;
+  for (const attempt of Object.values(attempts)) {
+    if (typeof attempt !== 'object' || attempt === null) {
+      continue;
+    }
+    const a = /** @type {Record<string, unknown>} */ (attempt);
+    if (a.bead_id !== bead_id || a.kind !== 'review_session') {
+      continue;
+    }
+    if (a.status === 'pending' || a.status === 'running') {
+      active = true;
+      continue;
+    }
+    if (a.status !== 'failed') {
+      continue;
+    }
+    const at = typeof a.finished_at === 'number' ? a.finished_at : 0;
+    if (at >= failure_at) {
+      failure_at = at;
+      failure =
+        typeof a.cause === 'string' && a.cause.length > 0 ? a.cause : null;
+    }
+  }
+  return active ? { active: true, failure: null } : { active: false, failure };
+}
+
+/**
  * Resume 체인 포함 attempt별 실행 벽시계 시간의 합 — 완료 레인 행의 "작업
  * 시간"으로 쓴다. `attempts`는 큐 스냅샷의 attempt_id → attempt record 맵이며,
  * 모양이 어긋난 입력은 조용히 무시한다(fail-quiet).
