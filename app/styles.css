@@ -7385,16 +7385,12 @@ html[data-theme='dark'] {
   }
 }
 
-/* 연결 레인 행의 `✕`와 후보 카드의 ⛓은 화면 폭과 무관한 상시 조작이라 대기
-   행 조작 묶음과 같은 칩 톤만 나눠 쓴다. */
+/* 연결 레인 행의 `✕`는 화면 폭과 무관한 상시 조작이라 대기 행 조작 묶음과 같은
+   칩 톤만 나눠 쓴다. 같은 규칙을 쓰던 후보 카드의 ⛓은 UI-lx45에서 사라졌다. */
 .mon2-crow__detach {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
-}
-
-.mon2-crow__detach,
-.worker-card__dep {
   min-width: 28px;
   padding: var(--sp-2) var(--sp-4);
   border: 1px solid var(--border-chip);
@@ -7520,144 +7516,6 @@ html[data-theme='dark'] {
    없다는 사실을 손잡이 대신 색으로만 말한다. */
 .mon2-crow--fixed {
   color: var(--text-dim);
-}
-
-/* 의존성 패널 (UI-j92s §6.1·§6.5): 카드 폭 전체를 쓰는 인라인 블록이고,
-   후보 목록만 스크롤한다 — 패널 전체가 스크롤되면 방향 세그먼트가 화면 밖으로
-   나간다. */
-.mon-deppanel {
-  display: flex;
-  flex: 1 1 100%;
-  flex-direction: column;
-  gap: var(--sp-4);
-  width: 100%;
-  margin-top: var(--sp-4);
-  padding: var(--sp-5) var(--sp-6);
-  border: 1px solid var(--border-card);
-  border-radius: var(--r-6);
-  background: var(--bg-card);
-  font-size: var(--fs-chip);
-}
-
-/* 패널이 묻는 한 문장 (§6.1): 방향 세그먼트를 걷어낸 자리에 무엇을 고르는지가
-   글자로 선다. */
-.mon-deppanel__title {
-  color: var(--text-muted);
-  font-size: var(--fs-caption);
-}
-
-.mon-deppanel__now {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-4);
-}
-
-.mon-deppanel__chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: 1px var(--sp-5);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  font-size: var(--fs-caption);
-}
-
-.mon-deppanel__chip--pred {
-  border-color: var(--border-blocked-dep);
-  color: var(--chip-blocked-dep);
-}
-
-.mon-deppanel__unlink {
-  border: none;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0.7;
-}
-
-.mon-deppanel__unlink:hover {
-  opacity: 1;
-}
-
-.mon-deppanel__search {
-  width: 100%;
-  padding: var(--sp-2) var(--sp-5);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  background: transparent;
-  color: var(--text-primary);
-  font: inherit;
-  font-size: var(--fs-caption);
-}
-
-.mon-deppanel__list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  overflow-y: auto;
-  max-height: 40vh;
-}
-
-.mon-deppanel__cand {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-4);
-  width: 100%;
-  padding: var(--sp-2) var(--sp-5);
-  border: 1px solid transparent;
-  border-radius: var(--r-5);
-  background: transparent;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: var(--fs-caption);
-  text-align: left;
-  cursor: pointer;
-}
-
-.mon-deppanel__cand:hover {
-  border-color: var(--border-chip);
-  color: var(--text-primary);
-}
-
-.mon-deppanel__cand.is-disabled {
-  color: var(--text-dim);
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.mon-deppanel__cand-repo {
-  flex: 0 0 auto;
-  color: var(--text-dim);
-}
-
-.mon-deppanel__cand-id {
-  flex: 0 0 auto;
-  font-family: var(--font-mono);
-}
-
-.mon-deppanel__cand-title {
-  flex: 1 1 8ch;
-  overflow: hidden;
-  min-width: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mon-deppanel__cand-reason {
-  flex: 0 0 auto;
-  color: var(--accent-warn);
-}
-
-.mon-deppanel__empty {
-  color: var(--text-dim);
-  font-size: var(--fs-caption);
-}
-
-.mon-deppanel__warn {
-  color: var(--accent-warn);
-  font-size: var(--fs-caption);
 }
 
 /* 의존 칩 (§5.1): 두 방향을 색이 아니라 **이름**으로 가르되, 색도 서로 다르게

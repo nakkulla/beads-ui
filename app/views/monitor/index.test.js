@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { workerPlacementPlan } from '../worker/queue-overlaps.js';
-import { MONITOR_CANDIDATE_FILTER_KEY, createMonitorView } from './index.js';
+import { createMonitorView } from './index.js';
 
 const NOW = 1_700_000_000_000;
 const WS_A = '/tmp/example/repo-a';
@@ -2737,233 +2737,40 @@ describe('monitor 연결 레인 교정 표시 (UI-jaua §6.3)', () => {
   });
 });
 
-describe('monitor 의존성 패널 (UI-j92s §6.1)', () => {
-  const workspaces = [
-    workspace({
-      runnable: [{ bead_id: 'A-9', title: '가운데', spec_id: 'docs/a.md' }],
-      queue: [{ bead_id: 'A-1' }],
-      bead_titles: { 'A-1': '선행' },
-      bead_blocked_by: { 'A-9': ['A-1'] }
-    }),
-    workspace({
-      root_dir: WS_B,
-      name: 'repo-b',
-      queue: [{ bead_id: 'B-1' }, { bead_id: 'B-2' }],
-      bead_titles: { 'B-1': '후속', 'B-2': '남남' },
-      bead_blocked_by: { 'B-1': ['A-9'] }
-    })
-  ];
-  const workspaces_state = [
-    state(),
-    state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })
-  ];
-
-  /**
-   * @param {Partial<Parameters<typeof setup>[0]>} [patch]
-   * @returns {ReturnType<typeof setup>}
-   */
-  function panelSetup(patch = {}) {
-    return setup({ workspaces, workspaces_state, ...patch });
-  }
-
-  test('opens one panel under the row whose ⛓ was clicked', () => {
-    const { mount, view } = panelSetup();
-
-    view.load();
-    click(mount, '#monitor-runnable .worker-card__dep');
-
-    expect(mount.querySelectorAll('.mon-deppanel')).toHaveLength(1);
-    expect(el(mount, '.mon-deppanel').getAttribute('data-bead-id')).toBe('A-9');
-  });
-
-  // 후보 모집단은 스냅샷 전체다 (§6.1). 실행가능 필터는 보기를 좁힐 뿐이므로,
-  // 지금 숨겨진 카드에도 의존을 걸 수 있어야 한다.
-  test('offers a runnable the candidate filter is currently hiding', () => {
-    window.localStorage.setItem(
-      MONITOR_CANDIDATE_FILTER_KEY,
-      JSON.stringify({ show_blocked: true, spec: 'without' })
-    );
-    const { mount, view } = panelSetup({
+describe('monitor 의존성 편집 이관 (UI-lx45 §5)', () => {
+  test('draws no ⛓ button on a candidate card', () => {
+    const { mount, view } = setup({
       workspaces: [
-        workspace({
-          runnable: [
-            { bead_id: 'A-9', title: '가운데', spec_id: 'docs/a.md' },
-            { bead_id: 'A-7', title: '스펙 없음' }
-          ],
-          bead_titles: { 'A-9': '가운데' }
-        })
+        workspace({ runnable: [{ bead_id: 'A-9', title: '가운데' }] })
       ],
       workspaces_state: [state()]
     });
 
     view.load();
-    click(
-      mount,
-      '#monitor-runnable .worker-card[data-bead-id="A-7"] .worker-card__dep'
-    );
 
-    expect(
-      Array.from(mount.querySelectorAll('.mon-deppanel__cand')).map((node) =>
-        node.getAttribute('data-dep-cand')
-      )
-    ).toContain('A-9');
+    expect(el(mount, '#monitor-runnable .worker-card')).not.toBeNull();
+    expect(mount.querySelector('.mon-dep__btn')).toBeNull();
+    expect(mount.querySelector('.worker-card__head-actions')).toBeNull();
   });
 
-  test('closes the panel on Escape', () => {
-    const { mount, view } = panelSetup();
-
-    view.load();
-    click(mount, '#monitor-runnable .worker-card__dep');
-    document.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
-    );
-
-    expect(el(mount, '.mon-deppanel')).toBeNull();
-  });
-
-  test('closes the panel on an outside click', () => {
-    const { mount, view } = panelSetup();
-
-    view.load();
-    click(mount, '#monitor-runnable .worker-card__dep');
-    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    expect(el(mount, '.mon-deppanel')).toBeNull();
-  });
-
-  test('releases a predecessor in this row own repo', async () => {
-    const { mount, view, sent } = panelSetup();
-
-    view.load();
-    click(mount, '#monitor-runnable .worker-card__dep');
-    click(mount, '.mon-deppanel__chip--pred .mon-deppanel__unlink');
-    await flushMicrotasks();
-
-    expect(sent[0]).toEqual({
-      type: 'dep-remove',
-      payload: { a: 'A-9', b: 'A-1', root_dir: WS_A }
+  test('draws no ⛓ button on a wait row', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      workspaces_state: [state()]
     });
-  });
-
-  test('lists only the issues that block this row', () => {
-    const { mount, view } = panelSetup();
 
     view.load();
-    click(mount, '#monitor-runnable .worker-card__dep');
 
-    expect(
-      Array.from(mount.querySelectorAll('.mon-deppanel__chip-label')).map(
-        (node) => node.textContent?.trim()
-      )
-    ).toEqual(['⛓ A-1']);
+    expect(el(mount, '.worker-mini__rowops')).not.toBeNull();
+    expect(mount.querySelector('.mon-dep__btn')).toBeNull();
   });
 
-  test('adds a predecessor with this row repo as the root', async () => {
-    const { mount, view, sent } = panelSetup();
-
-    view.load();
-    click(mount, '#monitor-runnable .worker-card__dep');
-    click(mount, '.mon-deppanel__cand[data-dep-cand="B-2"]');
-    await flushMicrotasks();
-
-    expect(sent[0]).toEqual({
-      type: 'dep-add',
-      payload: { a: 'A-9', b: 'B-2', root_dir: WS_A }
-    });
-  });
-
-  test('offers no direction choice at all', () => {
-    const { mount, view } = panelSetup();
-
-    view.load();
-    click(mount, '#monitor-runnable .worker-card__dep');
-
-    expect(mount.querySelector('.mon-deppanel__seg')).toBeNull();
-  });
-
-  test('keeps the panel open after a dependency edit', async () => {
-    const { mount, view } = panelSetup();
-
-    view.load();
-    click(mount, '#monitor-runnable .worker-card__dep');
-    click(mount, '.mon-deppanel__cand[data-dep-cand="B-2"]');
-    await flushMicrotasks();
-
-    expect(el(mount, '.mon-deppanel')).not.toBeNull();
-  });
-
-  test('narrows the candidate list from the search box', async () => {
-    const { mount, view } = panelSetup();
-
-    view.load();
-    click(mount, '#monitor-runnable .worker-card__dep');
-    const search = /** @type {HTMLInputElement} */ (
-      el(mount, '.mon-deppanel__search')
-    );
-    search.value = 'B-2';
-    search.dispatchEvent(new Event('input', { bubbles: true }));
-
-    expect(
-      Array.from(mount.querySelectorAll('.mon-deppanel__cand')).map((node) =>
-        node.getAttribute('data-dep-cand')
-      )
-    ).toEqual(['B-2']);
-  });
-
-  test('greys a candidate that would close a cycle', () => {
-    const { mount, view } = panelSetup();
-
-    view.load();
-    click(
-      mount,
-      '#monitor-runnable .worker-card[data-bead-id="A-9"] .worker-card__dep'
-    );
-
-    const cycle = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.mon-deppanel__cand[data-dep-cand="B-1"]')
-    );
-    expect(cycle.disabled).toBe(true);
-    expect(cycle.textContent).toContain('사이클');
-  });
-
-  test('draws no ⛓ button on a running tile', () => {
+  test('opens no inline panel anywhere', () => {
     const { mount, view } = setup({
       workspaces: [
         workspace({
-          attempts: {
-            t1: {
-              attempt_id: 't1',
-              bead_id: 'A-1',
-              status: 'running',
-              started_at: NOW - 1000
-            }
-          }
-        })
-      ],
-      workspaces_state: [state()]
-    });
-
-    view.load();
-
-    expect(el(mount, '#monitor-running .mon-dep__btn')).toBeNull();
-  });
-
-  test('opens the panel from the blocked chip of the same row', () => {
-    // 실행가능 행은 자기 `blocked_by`를 스스로 싣는다 (UI-yrzu §5) — 레포 장식만
-    // 있는 공용 fixture로는 카드에 blocked 칩이 서지 않는다.
-    const { mount, view } = panelSetup({
-      workspaces: [
-        workspace({
-          runnable: [
-            {
-              bead_id: 'A-9',
-              title: '가운데',
-              spec_id: 'docs/a.md',
-              blocked_by: ['A-1']
-            }
-          ],
+          runnable: [{ bead_id: 'A-9', title: '가운데', blocked_by: ['A-1'] }],
           queue: [{ bead_id: 'A-1' }],
-          bead_titles: { 'A-1': '선행' },
           bead_blocked_by: { 'A-9': ['A-1'] }
         })
       ],
@@ -2973,31 +2780,105 @@ describe('monitor 의존성 패널 (UI-j92s §6.1)', () => {
     view.load();
     click(mount, '#monitor-runnable .worker-dep--pred .worker-dep__open');
 
-    expect(el(mount, '.mon-deppanel').getAttribute('data-bead-id')).toBe('A-9');
+    expect(mount.querySelector('.mon-deppanel')).toBeNull();
   });
 
-  test('asks before releasing a dependency', async () => {
-    const confirmFn = vi.fn(() => true);
-    const { mount, view, sent } = panelSetup({ confirm: confirmFn });
+  test('goes straight to a blocker of this repo from its blocked chip', () => {
+    // 실행가능 행은 자기 `blocked_by`를 스스로 싣는다 (UI-yrzu §5) — 레포 장식만
+    // 있는 픽스처로는 카드에 blocked 칩이 서지 않는다.
+    const { mount, view, gotoIssue, switchWorkspace } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-9', title: '가운데', blocked_by: ['A-1'] }],
+          queue: [{ bead_id: 'A-1' }],
+          bead_titles: { 'A-1': '선행' }
+        })
+      ],
+      workspaces_state: [state()]
+    });
 
     view.load();
-    click(mount, '#monitor-runnable .worker-card__dep');
-    click(mount, '.mon-deppanel__unlink');
+    click(mount, '#monitor-runnable .worker-dep--pred .worker-dep__open');
+
+    expect(gotoIssue).toHaveBeenCalledWith('A-1');
+    expect(switchWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('switches the repo before opening a blocker of another one', async () => {
+    const { mount, view, gotoIssue, switchWorkspace } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-9', title: '가운데', blocked_by: ['B-1'] }]
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1' }],
+          bead_titles: { 'B-1': '남의 선행' }
+        })
+      ],
+      workspaces_state: [
+        state(),
+        state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })
+      ]
+    });
+
+    view.load();
+    click(mount, '#monitor-runnable .worker-dep--pred .worker-dep__open');
+
+    expect(switchWorkspace).toHaveBeenCalledWith(WS_B);
+    expect(gotoIssue).not.toHaveBeenCalled();
+
     await flushMicrotasks();
 
-    expect(confirmFn).toHaveBeenCalledWith('A-1가 A-9를 막는 연결을 끊을까요?');
-    expect(sent[0]).toEqual({
-      type: 'dep-remove',
-      payload: { a: 'A-9', b: 'A-1', root_dir: WS_A }
-    });
+    expect(gotoIssue).toHaveBeenCalledWith('B-1');
   });
 
-  test('sends nothing when the release is declined', async () => {
-    const { mount, view, sent } = panelSetup({ confirm: () => false });
+  test('re-runs the lane correction for a new edge inside one chain lane', async () => {
+    const { view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-1': [], 'A-2': [] }
+        })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([
+        { entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+      ]),
+      transport: async () => ({
+        applied: true,
+        revision: 4,
+        queue: { revision: 4 }
+      })
+    });
 
     view.load();
-    click(mount, '#monitor-runnable .worker-card__dep');
-    click(mount, '.mon-deppanel__unlink');
+    await view.recorrectSharedLane('dep-add', 'A-1', 'A-2');
+    await flushMicrotasks();
+
+    expect(sent.map((m) => m.type)).toContain('monitor-lane-update');
+    expect(
+      /** @type {any} */ (
+        sent.find((m) => m.type === 'monitor-lane-update')
+      ).payload.entries.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['A-2', 'A-1']);
+  });
+
+  test('leaves the lanes alone for an edge whose ends share no chain lane', async () => {
+    const { view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-1': [], 'A-2': [] }
+        })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([{ entries: [{ bead_id: 'A-1' }] }])
+    });
+
+    view.load();
+    await view.recorrectSharedLane('dep-add', 'A-1', 'A-2');
     await flushMicrotasks();
 
     expect(sent).toEqual([]);
@@ -3979,20 +3860,7 @@ describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
       Array.from(ops.querySelectorAll('button')).map((b) =>
         (b.textContent || '').trim()
       )
-    ).toEqual(['⛓', '↑', '↓', '✕']);
-  });
-
-  test('puts the candidate dependency button in the card head', () => {
-    const { mount, view } = setup({
-      workspaces: [workspace({ runnable: [{ bead_id: 'A-1', title: 'a' }] })],
-      workspaces_state: [state()]
-    });
-
-    view.load();
-
-    const dep = el(mount, '#monitor-runnable .worker-card__dep');
-    expect(dep.closest('.worker-card__head-actions')).not.toBeNull();
-    expect(dep.closest('.worker-card__foot')).toBeNull();
+    ).toEqual(['↑', '↓', '✕']);
   });
 
   test('keeps the cross-repo mutual-wait warning under its serial lane', () => {
@@ -4210,7 +4078,7 @@ describe('접힌 레인 띠 드롭·행 조작 드래그 가드 (UI-5ksp REVISE)
     const { mount, view } = dropSetup();
 
     view.load();
-    const button = el(mount, '.worker-mini__rowops .mon-dep__btn');
+    const button = el(mount, '.worker-mini__rowops .worker-mini__rowops-up');
     const row = /** @type {HTMLElement} */ (button.closest('.worker-mini'));
     button.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     const start = fireDrag(row, 'dragstart');

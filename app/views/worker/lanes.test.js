@@ -1804,16 +1804,15 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
     );
   }
 
-  test('draws the dependency button in the head action slot (UI-5ksp §4.6)', () => {
-    const card = depCard({ dep_action: true });
+  test('draws no dependency button and no head action slot (UI-lx45 §5)', () => {
+    const card = depCard();
 
-    expect(card).toContain(
-      '<span class="worker-card__head-actions"><button aria-label="의존성" class="worker-card__dep mon-dep__btn"'
-    );
+    expect(card).not.toContain('worker-card__dep');
+    expect(card).not.toContain('worker-card__head-actions');
   });
 
-  test('folds the foot of a card the dependency button alone would open', () => {
-    const card = depCard({ dep_action: true });
+  test('folds the foot of a card that carries no reason', () => {
+    const card = depCard();
 
     expect(card).toContain('worker-card__foot--actions-only');
   });
@@ -1829,18 +1828,11 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
           reason: 'spec 없음'
         }),
         null,
-        { dep_action: true }
+        {}
       )
     );
 
     expect(card).not.toContain('worker-card__foot--actions-only');
-  });
-
-  test('folds the foot of a card that has no dependency button', () => {
-    const card = depCard();
-
-    expect(card).not.toContain('worker-card__dep');
-    expect(card).toContain('worker-card__foot--actions-only');
   });
 
   test('marks exec chips as an issue pin in pinned_only mode', () => {
