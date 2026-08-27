@@ -48,8 +48,11 @@ beads-ui는 이 계약의 소비자다. 현재 코드는 옛 표현을 네 곳�
 ### 2.1 Board — chip 소스와 blocked 컬럼
 
 - **chip**: `chipsTemplate`(모든 컬럼 공통)이 `issue.metadata.awaiting_user`를 읽어
-  `⏸ 사용자 리뷰 필요: <값>` chip을 그린다. 값은 `string`이고 trim 후 비어 있지
-  않을 때만(fail-quiet); 값 어휘는 검증하지 않는다(계약이 소유). 표시 토글은
+  `⏸ 사용자 리뷰 필요: <값>` chip을 그린다. 읽기는 fail-quiet 좁히기 순서를
+  지킨다: `issue.metadata`가 non-null 객체가 아니면(부재·`null`·원시값) chip 없이
+  정상 렌더, 값이 `string`이고 trim 후 비어 있지 않을 때만 chip. 값 어휘는 검증하지
+  않는다(계약이 소유). 테스트는 metadata 부재·`null`·문자열인 입력에서 예외 없이
+  chip 없이 렌더되는 케이스를 포함한다. 표시 토글은
   기존 `blocked` chip 키를 그대로 쓴다 — 저장 정책(`display-policy-store.js
   CHIP_KEYS`)의 키를 바꾸면 사용자 저장값이 깨지므로 키는 유지하고 두 설정
   다이얼로그의 라벨만 `'blocked·사용자 리뷰 필요 칩'`으로 바꾼다. CSS 클래스는
@@ -74,15 +77,19 @@ beads-ui는 이 계약의 소비자다. 현재 코드는 옛 표현을 네 곳�
   다음에 `Object.hasOwn(bead, 'awaiting_user')`이면
   `{ ok: false, reason: 'awaiting_user' }`. 값 형식은 보지 않는다 — 키 존재
   자체가 fail-closed(계약: "키 부재 = 결정 산출물 존재"). `snapshotBead`
-  (`attach.js`)는 다른 admission 입력과 같은 presence rule로
-  `awaiting_user`를 전달한다(`Object.hasOwn(md, ...) ? md.awaiting_user : undefined`).
+  (`attach.js`)는 `awaiting_user`를 **키가 있을 때만** 조건부 spread로 스냅샷에
+  넣는다(`...(Object.hasOwn(md, 'awaiting_user') ? { awaiting_user: md.awaiting_user } : {})`)
+  — 다른 입력처럼 `undefined`를 항상 채우면 `Object.hasOwn(bead, ...)`이 모든
+  Bead에서 참이 되어 admission이 전부 거부되므로, 스냅샷 테스트는 키 부재 시
+  own-property가 없음을 단언한다.
   `runPass`와 dispatch 재검사 모두 `checkAdmission`을 지나므로 별도 분기는 없다.
   처분 세션 디스패치(`dispatchReviseFix`)는 `relaunchFromAttempt` 경로라
   admission을 지나지 않으며 계속 동작한다.
 - **후보 레인**(`app/views/worker/index.js`): UI-8881의 관측 원칙을 따른다 —
   숨기지 않고 `draggable=false`·place 버튼 비활성, reason 파트에
-  `사용자 리뷰 필요: <값>`을 넣는다. 판정은 `Object.hasOwn(it.metadata,
-  'awaiting_user')`(서버와 같은 presence rule). 이미 큐에 있는 행은 서버가
+  `사용자 리뷰 필요: <값>`을 넣는다. 판정은 `it.metadata`가 non-null 객체일 때만
+  `Object.hasOwn(it.metadata, 'awaiting_user')`(서버와 같은 presence rule);
+  metadata가 부재·`null`·원시값이면 판정 false로 정상 렌더한다(fail-quiet). 이미 큐에 있는 행은 서버가
   `⛔ awaiting_user` skip 뱃지로 답한다(기존 `admissionBadge` 포맷, 라벨 맵 없음).
   `lanes.js`의 place 버튼 title 분기에 `awaiting_user` 사유 문구를 추가한다.
 - `worker-ineligible` 라벨은 쓰지 않는다(영구 처분 라벨 vs 일시 상태).
@@ -95,8 +102,13 @@ beads-ui는 이 계약의 소비자다. 현재 코드는 옛 표현을 네 곳�
 - `revise-disposition.js`:
   - `approve` 쓰기: `{ set: { spec_review }, unset: ['awaiting_user'], append_notes }`
     — `status` 필드 없음.
-  - `readBack`: `blocked_reason` → `awaiting_user`.
-  - `complete`/`approve` 판정: `awaiting_user` 부재 **그리고** `status === 'open'`.
+  - `readBack`: `blocked_reason` 값 대신 **존재 여부**
+    `awaiting_user_present: Object.hasOwn(md, 'awaiting_user')`를 반환한다. 값
+    비교(`!= null`)로 바꾸면 키가 남아 있으나 값이 `null`·빈 문자열인 상태를 해제
+    성공으로 오판하고, 그 뒤 admission은 같은 Bead를 계속 거부한다.
+  - `complete`/`approve` 판정: `awaiting_user_present === false` **그리고**
+    `status === 'open'`. 테스트는 키가 `null`·`''`·비문자열로 남은 readback을
+    `still_blocked`로 거부하는 케이스를 포함한다.
     `open` 정확 검사는 기존 수용 기준(일반 레인이 재디스패치하려면 `open`이어야
     하고, `resolved`/`closed`는 작업 유실)이며 계약 변경과 무관하게 유지한다.
     파킹은 상태를 바꾸지 않으므로 `open`에서 파킹된 Bead는 그대로 `open`이다.
@@ -131,11 +143,11 @@ beads-ui는 이 계약의 소비자다. 현재 코드는 옛 표현을 네 곳�
     fail-quiet, `blocked` 토글 off 시 미표시.
   - `server/worker/admission.test.js`: `awaiting_user` 존재(정상값·빈값·비문자열)
     → `reason: 'awaiting_user'`.
-  - `server/worker/attach.test.js`: `snapshotBead`가 `awaiting_user`를 presence
-    rule로 전달.
+  - `server/worker/attach.test.js`: `snapshotBead`가 키 존재 시에만
+    `awaiting_user` own-property를 갖고, 부재 시 own-property가 없음.
   - `server/worker/revise-parked.test.js` / `revise-disposition.test.js`:
     fixture를 `status: 'open'` + `awaiting_user`로, approve 페이로드에 `status`
-    없음, readback 판정.
+    없음, readback 존재 판정(`null`/빈값 잔존 → `still_blocked`).
   - `app/views/worker/index.test.js`: 후보 행 `draggable=false` + reason.
 - `npm run tsc` · `npx vitest run --reporter=dot` · `npm run lint` ·
   `npm run prettier:write` · `npm run build`.
