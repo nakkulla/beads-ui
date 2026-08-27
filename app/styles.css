@@ -5906,6 +5906,43 @@ html[data-theme='dark'] {
   color: var(--text-primary);
 }
 
+/* 정렬 체인 편집 줄 (UI-d13v §4.4) — 헤더 select 바로 아래 한 줄. 크기 체계는
+   `.worker-sort`와 같지만 여기서는 조작이 주인공이므로 테두리를 늘 보여 준다.
+   `@media` 분기가 없는 것은 의도다: 데스크톱·모바일이 같은 마크업이다. */
+.worker-sort-chain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  margin-bottom: var(--sp-6);
+}
+
+.worker-sort-chain__step {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.worker-sort-chain__key,
+.worker-sort-chain__dir {
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--fs-chip);
+  letter-spacing: normal;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.worker-sort-chain__key:hover,
+.worker-sort-chain__dir:hover {
+  color: var(--text-primary);
+}
+
 /* Token usage (UI-raqh §1) — the LOWEST rung of the row's hierarchy: it is
    read when someone goes looking for it, never something that competes with a
    gate badge or an action. Dim, monospaced, tabular so a column of rows lines
@@ -6132,14 +6169,11 @@ html[data-theme='dark'] {
   min-width: 0;
 }
 
-/* 이유 배지가 없는 카드의 푸터에는 [대기로 ↴]만 남는데, 그 버튼은 coarse
-   pointer/좁은 화면 전용이다 — 데스크톱에서는 푸터째 접어 빈 줄을 남기지
-   않는다. [⛓ 의존성]이 함께 선 푸터에는 이 클래스가 붙지 않는다 (템플릿이
-   판정): 접기가 pointer와 무관한 그 버튼까지 삼켜, 실행가능 카드에서만
-   의존성 진입점이 통째로 사라졌었다 (UI-j92s §6.1). */
-.worker-card__foot--actions-only {
-  display: none;
-}
+/* 이유 없는 카드의 푸터를 데스크톱에서 접던 규칙은 없다 (UI-d13v §6): 그것은
+   "데스크톱에서는 드래그가 배치 수단"이라는 전제 위에 있었고, 후보 레인이
+   드래그 소스가 아니게 되면서 [대기로 ↴]가 유일한 배치 경로가 됐다. 포인터
+   종류로 유일한 경로를 감추지 않는다 — 클래스는 남지만 표시는 사유가 있는
+   푸터와 같다. */
 
 .worker-card__reason {
   flex: 1 1 auto;
@@ -6353,12 +6387,6 @@ html[data-theme='dark'] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-@media (any-pointer: coarse), (max-width: 640px) {
-  .worker-card__foot--actions-only {
-    display: flex;
-  }
 }
 
 /* 클릭 어포던스 (UI-k59y §4): 기준은 드래그 가능 여부가 아니라 "클릭하면 상세가
@@ -6881,17 +6909,22 @@ html[data-theme='dark'] {
 }
 
 /* 자리 옮기기만 드래그의 coarse pointer 보완재다 — 의존성 버튼은 화면 폭과
-   무관한 상시 조작이라 늘 보인다. */
+   무관한 상시 조작이라 늘 보인다. `✕`도 상시다 (UI-d13v §6): 후보 레인이 드롭
+   대상이 아니게 되면서 대기→후보 되돌리기의 유일한 경로가 됐으므로 포인터
+   종류로 감추지 않는다. */
 .worker-mini__rowops-up,
-.worker-mini__rowops-down,
-.worker-mini__rowops-remove {
+.worker-mini__rowops-down {
   display: none;
+}
+
+.worker-mini__rowops-remove {
+  display: inline-flex;
+  align-items: center;
 }
 
 @media (any-pointer: coarse), (max-width: 640px) {
   .worker-mini__rowops-up,
-  .worker-mini__rowops-down,
-  .worker-mini__rowops-remove {
+  .worker-mini__rowops-down {
     display: inline-flex;
     align-items: center;
   }
@@ -7056,6 +7089,14 @@ html[data-theme='dark'] {
   color: var(--chip-blocked-dep);
 }
 
+/* 해제 칩 (UI-d13v §5.2): 막힘이 풀렸다는 사실이므로 blocked의 반대 색인
+   success로 선다. `--foreign` 앞에 두어야 타 레포 해제 칩이 blocked와 같은
+   규칙으로 색만 갈라진다 — 뒤에 두면 foreign을 덮는다. */
+.worker-dep--released {
+  border-color: var(--border-tile-run);
+  color: var(--accent-success);
+}
+
 /* 타 레포 blocker도 Board 카드(`.ctl-chip--blocked-foreign`)와 같은 토큰을 쓴다 —
    문구는 그대로 두고 색만 갈라 이 레포 밖을 기다린다는 사실을 말한다. */
 .worker-dep--foreign {
@@ -7122,6 +7163,13 @@ html[data-theme='dark'] {
   font: inherit;
   font-size: var(--fs-caption);
   cursor: pointer;
+}
+
+/* 후속 칩 (UI-d13v §5.2): 내가 푸는 쪽이므로 route 칩과 같은 파랑 계열이다.
+   누를 곳이 없어 커서도 바꾸지 않는다 — 목록은 툴팁이 말한다. */
+.worker-dep--dependents {
+  border-color: var(--border-route);
+  color: var(--chip-route);
 }
 
 /* 판정 불가 — 색으로 경고하지 않는다. 겹치지 않는다는 뜻이 아니라 모른다는 뜻이다. */

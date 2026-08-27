@@ -11,6 +11,11 @@ import {
   fetchListForSubscription,
   mapSubscriptionToBdArgs
 } from './list-adapters.js';
+import {
+  cachedIssuePrefixFor,
+  foreignBlockerClosedAtFor,
+  visibleWorkspaceRoots
+} from './worker/foreign-blocker-status.js';
 import { enrichIssuesWorkflow } from './workflow-enrich.js';
 import { createWorkspaceSnapshotCoordinator } from './workspace-snapshot-coordinator.js';
 import {
@@ -22,6 +27,16 @@ vi.mock('./bd.js', () => ({ runBdJsonProjected: vi.fn() }));
 vi.mock('./workflow-enrich.js', () => ({
   enrichIssuesWorkflow: vi.fn((items) => items)
 }));
+vi.mock('./worker/foreign-blocker-status.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    cachedIssuePrefixFor: vi.fn(() => null),
+    foreignBlockerClosedAtFor: vi.fn(() => null),
+    visibleWorkspaceRoots: vi.fn(() => [])
+  };
+});
 
 /**
  * Infer which command family produced a transport-shaped fixture.
@@ -1151,5 +1166,425 @@ describe('from_id provenance derivation', () => {
     await fetchListForSubscription({ type: 'all-issues' });
 
     expect(runBdJsonProjected).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ready/blocked candidate decorations (UI-d13v §3.3·§3.5·§3.7)', () => {
+  const WS_MAIN = '/repos/main';
+  const WS_PEER = '/repos/peer';
+  const OLD_CLOSE_ISO = '2026-08-10T00:00:00.000Z';
+  const NEW_CLOSE_ISO = '2026-08-20T00:00:00.000Z';
+
+  beforeEach(() => {
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockReset();
+    __resetWorkspaceSnapshotRuntimeForTest();
+    vi.mocked(visibleWorkspaceRoots).mockReturnValue([WS_MAIN]);
+    vi.mocked(cachedIssuePrefixFor).mockReturnValue(null);
+    vi.mocked(foreignBlockerClosedAtFor).mockReset();
+    vi.mocked(foreignBlockerClosedAtFor).mockReturnValue(null);
+  });
+
+  /**
+   * @param {string} issue_id
+   * @param {string} depends_on_id
+   */
+  function blocksEdge(issue_id, depends_on_id) {
+    return { issue_id, depends_on_id, type: 'blocks' };
+  }
+
+  /**
+   * Serve one raw generation per workspace root, so a projection in one
+   * workspace can peek what another one already fetched.
+   *
+   * @param {Record<string, { all: Array<Record<string, unknown>>, ready?: string[], blocked?: string[] }>} by_workspace
+   */
+  function mockWorkspaces(by_workspace) {
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (command_family, args, options) => {
+      if (args[0] === 'version') {
+        return supportedVersion();
+      }
+      const cwd = String(options?.cwd ?? '');
+      const workspace = by_workspace[cwd];
+      if (!workspace) {
+        throw new Error(`unexpected workspace: ${cwd}`);
+      }
+      if (args[0] === 'list') {
+        return asProjectedResponse({ code: 0, stdoutJson: workspace.all });
+      }
+      if (args[0] === 'ready') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: {
+            ready: (workspace.ready || []).map((id) => ({ id })),
+            blocked: (workspace.blocked || []).map((id) => ({
+              id,
+              blocked_by: []
+            }))
+          }
+        });
+      }
+      throw new Error(`unexpected command: ${args.join(' ')}`);
+    });
+  }
+
+  /**
+   * @param {string} root_dir
+   * @param {'ready-issues'|'blocked-issues'} type
+   */
+  async function projectIn(root_dir, type = 'ready-issues') {
+    const result = await fetchListForSubscription(
+      { type },
+      { cwd: root_dir, workspace_snapshot: true }
+    );
+    if (!result.ok) {
+      throw new Error(`projection failed: ${result.error.message}`);
+    }
+    return result.items;
+  }
+
+  test('carries a closed same-repo blocker with its close time', async () => {
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          {
+            id: 'UI-1',
+            status: 'open',
+            dependencies: [blocksEdge('UI-1', 'UI-9')]
+          },
+          { id: 'UI-9', status: 'closed', closed_at: NEW_CLOSE_ISO }
+        ],
+        ready: ['UI-1']
+      }
+    });
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(items[0].release_info).toEqual({
+      released_by: [
+        { id: 'UI-9', closed_at: Date.parse(NEW_CLOSE_ISO), foreign: false }
+      ],
+      last_released_at: Date.parse(NEW_CLOSE_ISO)
+    });
+  });
+
+  test('leaves an open blocker to blocked_info', async () => {
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          {
+            id: 'UI-1',
+            status: 'open',
+            dependencies: [blocksEdge('UI-1', 'UI-9')]
+          },
+          { id: 'UI-9', status: 'open' }
+        ],
+        ready: ['UI-1']
+      }
+    });
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(Object.hasOwn(items[0], 'release_info')).toBe(false);
+  });
+
+  test('orders released blockers newest close first', async () => {
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          {
+            id: 'UI-1',
+            status: 'open',
+            dependencies: [
+              blocksEdge('UI-1', 'UI-8'),
+              blocksEdge('UI-1', 'UI-9')
+            ]
+          },
+          { id: 'UI-8', status: 'closed', closed_at: OLD_CLOSE_ISO },
+          { id: 'UI-9', status: 'closed', closed_at: NEW_CLOSE_ISO }
+        ],
+        ready: ['UI-1']
+      }
+    });
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(
+      /** @type {any} */ (items[0].release_info).released_by.map(
+        (/** @type {any} */ entry) => entry.id
+      )
+    ).toEqual(['UI-9', 'UI-8']);
+  });
+
+  test('counts only open follow-ups and caps the ids at five', async () => {
+    const waiters = ['UI-2', 'UI-3', 'UI-4', 'UI-5', 'UI-6', 'UI-7'].map(
+      (id) => ({
+        id,
+        status: 'open',
+        dependencies: [blocksEdge(id, 'UI-1')]
+      })
+    );
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          { id: 'UI-1', status: 'open' },
+          ...waiters,
+          {
+            id: 'UI-8',
+            status: 'closed',
+            closed_at: OLD_CLOSE_ISO,
+            dependencies: [blocksEdge('UI-8', 'UI-1')]
+          }
+        ],
+        ready: ['UI-1']
+      }
+    });
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(items[0].dependents_info).toEqual({
+      count: 6,
+      ids: ['UI-2', 'UI-3', 'UI-4', 'UI-5', 'UI-6']
+    });
+  });
+
+  test('omits dependents_info when every follow-up is closed', async () => {
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          { id: 'UI-1', status: 'open' },
+          {
+            id: 'UI-2',
+            status: 'closed',
+            closed_at: OLD_CLOSE_ISO,
+            dependencies: [blocksEdge('UI-2', 'UI-1')]
+          }
+        ],
+        ready: ['UI-1']
+      }
+    });
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(Object.hasOwn(items[0], 'dependents_info')).toBe(false);
+  });
+
+  test('adds the follow-ups another workspace already snapshotted', async () => {
+    vi.mocked(visibleWorkspaceRoots).mockReturnValue([WS_MAIN, WS_PEER]);
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          { id: 'UI-1', status: 'open' },
+          {
+            id: 'UI-2',
+            status: 'open',
+            dependencies: [blocksEdge('UI-2', 'UI-1')]
+          }
+        ],
+        ready: ['UI-1']
+      },
+      [WS_PEER]: {
+        all: [
+          {
+            id: 'dotfiles-5',
+            status: 'open',
+            dependencies: [blocksEdge('dotfiles-5', 'UI-1')]
+          }
+        ],
+        ready: ['dotfiles-5']
+      }
+    });
+    await projectIn(WS_PEER);
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(items[0].dependents_info).toEqual({
+      count: 2,
+      ids: ['UI-2', 'dotfiles-5']
+    });
+  });
+
+  test('never asks a workspace it has no snapshot of for one', async () => {
+    vi.mocked(visibleWorkspaceRoots).mockReturnValue([WS_MAIN, WS_PEER]);
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          { id: 'UI-1', status: 'open' },
+          {
+            id: 'UI-2',
+            status: 'open',
+            dependencies: [blocksEdge('UI-2', 'UI-1')]
+          }
+        ],
+        ready: ['UI-1']
+      }
+    });
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(items[0].dependents_info).toEqual({ count: 1, ids: ['UI-2'] });
+    expect(
+      /** @type {import('vitest').Mock} */ (runBdJsonProjected).mock.calls.some(
+        ([, , options]) => options?.cwd === WS_PEER
+      )
+    ).toBe(false);
+  });
+
+  test('carries a foreign release with the owning workspace', async () => {
+    vi.mocked(visibleWorkspaceRoots).mockReturnValue([WS_MAIN, WS_PEER]);
+    vi.mocked(cachedIssuePrefixFor).mockImplementation((root_dir) =>
+      root_dir === WS_PEER ? 'dotfiles' : 'UI'
+    );
+    vi.mocked(foreignBlockerClosedAtFor).mockReturnValue(
+      Date.parse(NEW_CLOSE_ISO)
+    );
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          {
+            id: 'UI-1',
+            status: 'open',
+            dependencies: [blocksEdge('UI-1', 'dotfiles-9')]
+          }
+        ],
+        ready: ['UI-1']
+      }
+    });
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(items[0].release_info).toEqual({
+      released_by: [
+        {
+          id: 'dotfiles-9',
+          closed_at: Date.parse(NEW_CLOSE_ISO),
+          foreign: true,
+          root_dir: WS_PEER
+        }
+      ],
+      last_released_at: Date.parse(NEW_CLOSE_ISO)
+    });
+    expect(foreignBlockerClosedAtFor).toHaveBeenCalledWith(
+      'dotfiles-9',
+      WS_PEER,
+      WS_MAIN
+    );
+  });
+
+  test('omits a foreign blocker whose lookup has not landed', async () => {
+    vi.mocked(visibleWorkspaceRoots).mockReturnValue([WS_MAIN, WS_PEER]);
+    vi.mocked(cachedIssuePrefixFor).mockImplementation((root_dir) =>
+      root_dir === WS_PEER ? 'dotfiles' : 'UI'
+    );
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          {
+            id: 'UI-1',
+            status: 'open',
+            dependencies: [blocksEdge('UI-1', 'dotfiles-9')]
+          }
+        ],
+        ready: ['UI-1']
+      }
+    });
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(Object.hasOwn(items[0], 'release_info')).toBe(false);
+  });
+
+  test('omits a foreign blocker no visible rig prefix owns', async () => {
+    vi.mocked(visibleWorkspaceRoots).mockReturnValue([WS_MAIN, WS_PEER]);
+    vi.mocked(cachedIssuePrefixFor).mockImplementation((root_dir) =>
+      root_dir === WS_MAIN ? 'UI' : null
+    );
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          {
+            id: 'UI-1',
+            status: 'open',
+            dependencies: [blocksEdge('UI-1', 'dotfiles-9')]
+          }
+        ],
+        ready: ['UI-1']
+      }
+    });
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(Object.hasOwn(items[0], 'release_info')).toBe(false);
+    expect(foreignBlockerClosedAtFor).not.toHaveBeenCalled();
+  });
+
+  test('decorates the blocked projection with the same keys', async () => {
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          {
+            id: 'UI-1',
+            status: 'open',
+            dependencies: [blocksEdge('UI-1', 'UI-9')]
+          },
+          { id: 'UI-9', status: 'closed', closed_at: NEW_CLOSE_ISO },
+          {
+            id: 'UI-2',
+            status: 'open',
+            dependencies: [blocksEdge('UI-2', 'UI-1')]
+          }
+        ],
+        blocked: ['UI-1']
+      }
+    });
+
+    const items = await projectIn(WS_MAIN, 'blocked-issues');
+
+    expect(items[0]).toMatchObject({
+      id: 'UI-1',
+      release_info: { last_released_at: Date.parse(NEW_CLOSE_ISO) },
+      dependents_info: { count: 1, ids: ['UI-2'] }
+    });
+  });
+
+  test('fingerprints both decorations in decoration_rev', async () => {
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          {
+            id: 'UI-1',
+            status: 'open',
+            dependencies: [blocksEdge('UI-1', 'UI-9')]
+          },
+          { id: 'UI-9', status: 'closed', closed_at: NEW_CLOSE_ISO },
+          {
+            id: 'UI-2',
+            status: 'open',
+            dependencies: [blocksEdge('UI-2', 'UI-1')]
+          }
+        ],
+        ready: ['UI-1']
+      }
+    });
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(items[0].decoration_rev).toBe(
+      [
+        'dependents_info=1:UI-2',
+        `release_info=UI-9:${Date.parse(NEW_CLOSE_ISO)}:0:`
+      ].join('\u001e')
+    );
+  });
+
+  test('carries an empty decoration_rev when neither decoration applies', async () => {
+    mockWorkspaces({
+      [WS_MAIN]: { all: [{ id: 'UI-1', status: 'open' }], ready: ['UI-1'] }
+    });
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(items[0].decoration_rev).toBe('');
   });
 });

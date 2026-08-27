@@ -2,6 +2,7 @@
  * Shared sort comparators for issues lists.
  * Centralizes sorting so views and stores stay consistent.
  */
+import { resolveSpecEvidence } from '../../server/spec-id.js';
 
 /**
  * @typedef {{ id: string, title?: string, status?: 'open'|'in_progress'|'deferred'|'resolved'|'closed', priority?: number, issue_type?: string, created_at?: number | string, updated_at?: number, closed_at?: number, from_id?: string }} IssueLite
@@ -122,6 +123,184 @@ export function cmpClosedDesc(a, b) {
   const ida = a?.id;
   const idb = b?.id;
   return ida < idb ? -1 : ida > idb ? 1 : 0;
+}
+
+/**
+ * One atomic ordering key of a candidate sort chain (UI-d13v §4.1).
+ *
+ * @typedef {'priority'|'dependents'|'released'|'spec'|'created'|'updated'} SortKey
+ */
+
+/**
+ * @typedef {{ key: SortKey, dir: 'asc'|'desc' }} SortStep
+ */
+
+/**
+ * The issue shape a chain step reads. The two decoration keys are PARTIAL
+ * (server §3.3·§3.5): an absent one means "모름", never "0".
+ *
+ * @typedef {IssueLite & { release_info?: { last_released_at?: number } | null, dependents_info?: { count?: number } | null }} ChainSortable
+ */
+
+/**
+ * Default direction per key (UI-d13v §4.1 표). This record is the ONLY place the
+ * key vocabulary is written down — the chain editor reads it for its option list
+ * and for the direction a freshly picked key starts at, and {@link cmpChain}
+ * validates against it, so a new key cannot leave a second list silently
+ * rejecting it.
+ *
+ * @type {Readonly<Record<SortKey, 'asc'|'desc'>>}
+ */
+export const SORT_KEY_DEFAULT_DIR = Object.freeze({
+  priority: /** @type {'asc'} */ ('asc'),
+  dependents: /** @type {'desc'} */ ('desc'),
+  released: /** @type {'desc'} */ ('desc'),
+  spec: /** @type {'desc'} */ ('desc'),
+  created: /** @type {'asc'} */ ('asc'),
+  updated: /** @type {'desc'} */ ('desc')
+});
+
+/**
+ * @param {unknown} value
+ * @returns {value is SortKey}
+ */
+export function isSortKey(value) {
+  return (
+    typeof value === 'string' &&
+    Object.prototype.hasOwnProperty.call(SORT_KEY_DEFAULT_DIR, value)
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is SortStep}
+ */
+export function isSortStep(value) {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const step = /** @type {Record<string, unknown>} */ (value);
+  return isSortKey(step.key) && (step.dir === 'asc' || step.dir === 'desc');
+}
+
+/**
+ * A timestamp as epoch ms, or `null` when the field is absent/unparseable —
+ * unlike {@link toSortableTimestamp}, which collapses "없음" onto epoch 0 and so
+ * cannot express the missing-last rule.
+ *
+ * @param {number | string | undefined | null} timestamp_value
+ * @returns {number | null}
+ */
+function toOptionalTimestamp(timestamp_value) {
+  if (typeof timestamp_value === 'number') {
+    return Number.isFinite(timestamp_value) ? timestamp_value : null;
+  }
+  if (typeof timestamp_value === 'string') {
+    const parsed_ms = Date.parse(timestamp_value);
+    return Number.isFinite(parsed_ms) ? parsed_ms : null;
+  }
+  return null;
+}
+
+/**
+ * The number one key compares for one issue, or `null` when the material is
+ * absent. Booleans map to 0/1 so a single ascending compare serves every key
+ * (`spec` desc therefore reads as "spec 있음 위", UI-d13v §4.1).
+ *
+ * @param {ChainSortable} issue
+ * @param {SortKey} key
+ * @returns {number | null}
+ */
+function chainValue(issue, key) {
+  switch (key) {
+    case 'priority': {
+      const priority = issue.priority;
+      return typeof priority === 'number' && Number.isFinite(priority)
+        ? priority
+        : null;
+    }
+    case 'dependents': {
+      const count = issue.dependents_info ? issue.dependents_info.count : null;
+      return typeof count === 'number' && Number.isFinite(count) ? count : null;
+    }
+    case 'released': {
+      const at = issue.release_info
+        ? issue.release_info.last_released_at
+        : null;
+      return typeof at === 'number' && Number.isFinite(at) ? at : null;
+    }
+    case 'spec': {
+      return resolveSpecEvidence(issue).evidence === 'published' ? 1 : 0;
+    }
+    case 'created': {
+      return toOptionalTimestamp(issue.created_at);
+    }
+    case 'updated': {
+      return toOptionalTimestamp(issue.updated_at);
+    }
+    default: {
+      return null;
+    }
+  }
+}
+
+/**
+ * Compare two issues on ONE step. The missing-material rule is applied BEFORE
+ * the direction (UI-d13v §4.1): a row without the key always sinks, so flipping
+ * a step to `asc` never floats "모름" to the top — `dependents asc` still reads
+ * as "후속이 있는 행부터, 키 없는 행은 뒤".
+ *
+ * @param {ChainSortable} a
+ * @param {ChainSortable} b
+ * @param {SortStep} step
+ * @returns {number}
+ */
+function cmpStep(a, b, step) {
+  const va = chainValue(a, step.key);
+  const vb = chainValue(b, step.key);
+  if (va === null || vb === null) {
+    if (va === vb) {
+      return 0;
+    }
+    return va === null ? 1 : -1;
+  }
+  if (va === vb) {
+    return 0;
+  }
+  const ascending = va < vb ? -1 : 1;
+  return step.dir === 'desc' ? -ascending : ascending;
+}
+
+/**
+ * Build the comparator for a sort chain (UI-d13v §4.1): each step decides, and
+ * a tie falls through to the next one. After the chain an IMPLICIT
+ * `created asc → id asc` tiebreak runs, so the order is total and stable no
+ * matter which keys the user picked.
+ *
+ * Unknown steps are dropped rather than throwing — a chain restored from
+ * storage is narrowed by its own module, and a stray step here must not take
+ * the lane down with it.
+ *
+ * @param {SortStep[]} steps
+ * @returns {(a: ChainSortable, b: ChainSortable) => number}
+ */
+export function cmpChain(steps) {
+  const chain = Array.isArray(steps) ? steps.filter(isSortStep) : [];
+  return (a, b) => {
+    for (const step of chain) {
+      const decided = cmpStep(a, b, step);
+      if (decided !== 0) {
+        return decided;
+      }
+    }
+    const by_created = cmpStep(a, b, { key: 'created', dir: 'asc' });
+    if (by_created !== 0) {
+      return by_created;
+    }
+    const ida = a.id;
+    const idb = b.id;
+    return ida < idb ? -1 : ida > idb ? 1 : 0;
+  };
 }
 
 /**

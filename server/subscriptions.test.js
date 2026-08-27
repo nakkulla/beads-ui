@@ -445,3 +445,67 @@ describe('subscription delta deps_signature', () => {
     expect(d.updated).toEqual(['UI-1']);
   });
 });
+
+describe('subscription delta decoration_rev (UI-d13v §3.7)', () => {
+  const READY_KEY = keyOf({ type: 'ready-issues' });
+
+  test('computeDelta reports an update when only the decoration changes', () => {
+    const prev = toItemsMap(
+      [{ id: 'UI-1', updated_at: 10, closed_at: null, decoration_rev: '' }],
+      READY_KEY
+    );
+    const next = toItemsMap(
+      [
+        {
+          id: 'UI-1',
+          updated_at: 10,
+          closed_at: null,
+          decoration_rev: 'release_info=UI-2:5:0:'
+        }
+      ],
+      READY_KEY
+    );
+
+    const d = computeDelta(prev, next);
+
+    expect(d.updated).toEqual(['UI-1']);
+  });
+
+  test('computeDelta reports no update when the decoration is unchanged', () => {
+    const item = {
+      id: 'UI-1',
+      updated_at: 10,
+      closed_at: null,
+      decoration_rev: 'dependents_info=2:UI-3,UI-4'
+    };
+    const prev = toItemsMap([item], READY_KEY);
+    const next = toItemsMap([{ ...item }], READY_KEY);
+
+    const d = computeDelta(prev, next);
+
+    expect(d.updated).toEqual([]);
+  });
+
+  test('computeDelta keeps timestamp comparison for a list type with no decoration', () => {
+    const prev = toItemsMap(
+      [{ id: 'A', updated_at: 1, closed_at: null }],
+      keyOf({ type: 'all-issues' })
+    );
+    const next = toItemsMap(
+      [{ id: 'A', updated_at: 1, closed_at: null }],
+      keyOf({ type: 'all-issues' })
+    );
+
+    const d = computeDelta(prev, next);
+
+    expect(d).toEqual({ added: [], updated: [], removed: [] });
+  });
+
+  test('toItemsMap reads an absent decoration_rev as the empty fingerprint', () => {
+    const map = toItemsMap([{ id: 'A', updated_at: 1, closed_at: null }]);
+
+    const meta = map.get('A');
+
+    expect(meta?.decoration_rev).toBe('');
+  });
+});

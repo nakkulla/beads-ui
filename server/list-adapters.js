@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { isBdProtocolFailure } from './bd-json.js';
 import { runBdJsonProjected } from './bd.js';
 import {
@@ -5,8 +6,21 @@ import {
   closedIssuesSince
 } from './closed-issues-filter.js';
 import { debug } from './logging.js';
+import {
+  cachedIssuePrefixFor,
+  foreignBlockerClosedAtFor,
+  prefixOfBeadId,
+  visibleWorkspaceRoots
+} from './worker/foreign-blocker-status.js';
 import { enrichIssuesWorkflow } from './workflow-enrich.js';
-import { requestWorkspaceSnapshot } from './workspace-snapshot-runtime.js';
+import {
+  peekWorkspaceSnapshot,
+  requestWorkspaceSnapshot
+} from './workspace-snapshot-runtime.js';
+
+/**
+ * @import { WorkspaceSnapshot } from './workspace-snapshot-coordinator.js'
+ */
 
 const log = debug('list-adapters');
 const DEPENDENCY_BLOCKED_ARGS = [
@@ -18,6 +32,10 @@ const DEPENDENCY_BLOCKED_ARGS = [
 ];
 const DEFAULT_LIST_LIMIT = 50;
 const SNAPSHOT_LIST_LIMIT = 1000;
+/** Follow-up ids carried with `dependents_info` (UI-d13v §3.5). */
+const DEPENDENTS_ID_LIMIT = 5;
+/** Field separator of the `decoration_rev` delta fingerprint (UI-d13v §3.7). */
+const DECORATION_FIELD_SEPARATOR = '\u001e';
 
 /**
  * Build concrete `bd` CLI args for a subscription type + params.
@@ -264,13 +282,13 @@ function projectWorkspaceSnapshot(spec, snapshot, options) {
     }
     case 'ready-issues': {
       items = limitSnapshotItems(
-        projectReadyIssues(snapshot),
+        projectReadyIssues(snapshot, options.cwd),
         SNAPSHOT_LIST_LIMIT
       );
       break;
     }
     case 'blocked-issues': {
-      items = projectBlockedIssues(snapshot);
+      items = projectBlockedIssues(snapshot, options.cwd);
       break;
     }
     case 'in-progress-issues': {
@@ -329,10 +347,11 @@ function limitSnapshotItems(items, limit) {
 }
 
 /**
- * @param {import('./workspace-snapshot-coordinator.js').WorkspaceSnapshot} snapshot
+ * @param {WorkspaceSnapshot} snapshot
+ * @param {string | undefined} root_dir
  * @returns {NormalizedIssue[]}
  */
-function projectReadyIssues(snapshot) {
+function projectReadyIssues(snapshot, root_dir) {
   /** @type {NormalizedIssue[]} */
   const items = [];
   for (const ready_item of snapshot.ready_explain.ready) {
@@ -342,14 +361,15 @@ function projectReadyIssues(snapshot) {
       items.push(mergeSnapshotIssue(stored, ready_item));
     }
   }
-  return items;
+  return attachCandidateDecorations(items, snapshot, root_dir);
 }
 
 /**
- * @param {import('./workspace-snapshot-coordinator.js').WorkspaceSnapshot} snapshot
+ * @param {WorkspaceSnapshot} snapshot
+ * @param {string | undefined} root_dir
  * @returns {NormalizedIssue[]}
  */
-function projectBlockedIssues(snapshot) {
+function projectBlockedIssues(snapshot, root_dir) {
   const stored_items = limitSnapshotItems(
     projectByStatus(snapshot, 'blocked'),
     SNAPSHOT_LIST_LIMIT
@@ -367,16 +387,300 @@ function projectBlockedIssues(snapshot) {
     dependency_items,
     SNAPSHOT_LIST_LIMIT
   );
-  return attachBlockedInfo(
-    /** @type {any} */ (
-      mergeIssueLists(
-        /** @type {any} */ (stored_items),
-        /** @type {any} */ (capped_dependency_items)
-      )
+  return attachCandidateDecorations(
+    attachBlockedInfo(
+      /** @type {any} */ (
+        mergeIssueLists(
+          /** @type {any} */ (stored_items),
+          /** @type {any} */ (capped_dependency_items)
+        )
+      ),
+      /** @type {any} */ (stored_items),
+      /** @type {any} */ (capped_dependency_items)
     ),
-    /** @type {any} */ (stored_items),
-    /** @type {any} */ (capped_dependency_items)
+    snapshot,
+    root_dir
   );
+}
+
+/**
+ * @typedef {{ id: string, closed_at: number, foreign: boolean, root_dir?: string }} ReleasedBlocker
+ * @typedef {{ released_by: ReleasedBlocker[], last_released_at: number }} ReleaseInfo
+ * @typedef {{ count: number, ids: string[] }} DependentsInfo
+ * @typedef {{ snapshot: WorkspaceSnapshot, root_dir: string, self_prefix: string | null, owner_by_prefix: Map<string, string>, peer_snapshots: WorkspaceSnapshot[] }} DecorationContext
+ */
+
+/**
+ * Attach the candidate-lane decorations to a Ready/Blocked projection
+ * (UI-d13v §3.3·§3.5·§3.7).
+ *
+ * Same place and same idiom as {@link attachBlockedInfo}: display material
+ * derived from the generation that was already fetched, never an admission
+ * input. `blocked_info` answers "why can it not go"; these two answer "why can
+ * it go NOW" and "why should it go FIRST", which is exactly what disappears
+ * from the screen the moment a blocker closes.
+ *
+ * Every key is optional on purpose — an absent key means "not known", so a
+ * consumer that cannot tell 0 from unknown must read both as unknown.
+ *
+ * @param {NormalizedIssue[]} items
+ * @param {WorkspaceSnapshot} snapshot
+ * @param {string | undefined} root_dir
+ * @returns {NormalizedIssue[]}
+ */
+function attachCandidateDecorations(items, snapshot, root_dir) {
+  if (items.length === 0) {
+    return items;
+  }
+  const context = createDecorationContext(snapshot, root_dir);
+  return items.map((item) => {
+    const release_info = releaseInfoFor(item.id, context);
+    const dependents_info = dependentsInfoFor(item.id, context);
+    return {
+      ...item,
+      ...(release_info === null ? {} : { release_info }),
+      ...(dependents_info === null ? {} : { dependents_info }),
+      decoration_rev: decorationRev(release_info, dependents_info)
+    };
+  });
+}
+
+/**
+ * Collect the per-generation materials both decorations share, so the visible
+ * workspace list and the cross-workspace peeks cost one pass per projection
+ * rather than one per issue.
+ *
+ * @param {WorkspaceSnapshot} snapshot
+ * @param {string | undefined} root_dir
+ * @returns {DecorationContext}
+ */
+function createDecorationContext(snapshot, root_dir) {
+  const self_root =
+    typeof root_dir === 'string' && root_dir.length > 0 ? root_dir : '';
+  const self_resolved = self_root.length > 0 ? path.resolve(self_root) : '';
+  /** @type {string[]} */
+  let roots = [];
+  try {
+    roots = visibleWorkspaceRoots();
+  } catch (err) {
+    log('visible workspace roots unreadable for decorations: %o', err);
+  }
+  /** @type {Map<string, string>} */
+  const owner_by_prefix = new Map();
+  /** @type {WorkspaceSnapshot[]} */
+  const peer_snapshots = [];
+  for (const other_root of roots) {
+    if (other_root === self_resolved) {
+      continue;
+    }
+    // The SAME prefix map `applyForeignBlockerCleanup` writes
+    // `blocker_workspaces` from, so a released foreign blocker and a surviving
+    // one name the same owning root.
+    const prefix = cachedIssuePrefixFor(other_root);
+    if (typeof prefix === 'string' && prefix.length > 0) {
+      owner_by_prefix.set(prefix, other_root);
+    }
+    const peer = peekWorkspaceSnapshot(other_root);
+    if (peer !== null) {
+      peer_snapshots.push(peer);
+    }
+  }
+  return {
+    snapshot,
+    root_dir: self_root,
+    self_prefix:
+      self_resolved.length > 0 ? cachedIssuePrefixFor(self_resolved) : null,
+    owner_by_prefix,
+    peer_snapshots
+  };
+}
+
+/**
+ * The CLOSED blockers this issue was waiting on, newest close first
+ * (UI-d13v §3.3).
+ *
+ * An OPEN blocker is deliberately absent: that one is still `blocked_info`'s to
+ * report. `released_by` empty means the key is not carried at all.
+ *
+ * @param {string} issue_id
+ * @param {DecorationContext} context
+ * @returns {ReleaseInfo | null}
+ */
+function releaseInfoFor(issue_id, context) {
+  const blocker_ids = blocksIndexOf(context.snapshot, 'blocks_out').get(
+    issue_id
+  );
+  if (!blocker_ids || blocker_ids.length === 0) {
+    return null;
+  }
+  /** @type {ReleasedBlocker[]} */
+  const released_by = [];
+  for (const blocker_id of blocker_ids) {
+    const stored = context.snapshot.id_index.get(blocker_id);
+    if (stored) {
+      if (stored.status === 'closed' && typeof stored.closed_at === 'number') {
+        released_by.push({
+          id: blocker_id,
+          closed_at: stored.closed_at,
+          foreign: false
+        });
+      }
+      continue;
+    }
+    const foreign_entry = foreignReleasedBlocker(blocker_id, context);
+    if (foreign_entry !== null) {
+      released_by.push(foreign_entry);
+    }
+  }
+  if (released_by.length === 0) {
+    return null;
+  }
+  released_by.sort(byClosedAtDescThenId);
+  return { released_by, last_released_at: released_by[0].closed_at };
+}
+
+/**
+ * A blocker that lives in another visible rig, reported only once that rig's
+ * cache says CLOSED and carries a `closed_at`.
+ *
+ * A cache miss, an `open` answer and a close with no readable timestamp all
+ * read the same way here — the id is left out, because "not known yet" must
+ * never be drawn as "not released". The owning root is what makes the lookup
+ * possible at all, so it is also what `root_dir` reports; an id no visible rig
+ * owns has no entry to carry the key on.
+ *
+ * @param {string} blocker_id
+ * @param {DecorationContext} context
+ * @returns {ReleasedBlocker | null}
+ */
+function foreignReleasedBlocker(blocker_id, context) {
+  const prefix = prefixOfBeadId(blocker_id);
+  if (context.self_prefix !== null && prefix === context.self_prefix) {
+    // This rig's own id that the generation does not carry — unknown, and
+    // asking another rig for it would answer about a different bead.
+    return null;
+  }
+  const owner_root = context.owner_by_prefix.get(prefix);
+  if (owner_root === undefined) {
+    return null;
+  }
+  const closed_at = foreignBlockerClosedAtFor(
+    blocker_id,
+    owner_root,
+    context.root_dir
+  );
+  if (typeof closed_at !== 'number') {
+    return null;
+  }
+  return { id: blocker_id, closed_at, foreign: true, root_dir: owner_root };
+}
+
+/**
+ * How many OPEN issues are waiting on this one (UI-d13v §3.5).
+ *
+ * Counted across this generation plus the last snapshot every OTHER visible
+ * workspace happened to have — peeked, never requested, because a follow-up
+ * count is worth one refresh cycle of lag and not a fanout multiplied by the
+ * number of open repos. A workspace with no snapshot yet contributes nothing
+ * and says so nowhere: the count is a lower bound by construction.
+ *
+ * `count === 0` carries no key, so 0 and unknown are the same answer.
+ *
+ * @param {string} issue_id
+ * @param {DecorationContext} context
+ * @returns {DependentsInfo | null}
+ */
+function dependentsInfoFor(issue_id, context) {
+  /** @type {Set<string>} */
+  const open_ids = new Set();
+  collectOpenDependents(context.snapshot, issue_id, open_ids);
+  for (const peer of context.peer_snapshots) {
+    collectOpenDependents(peer, issue_id, open_ids);
+  }
+  if (open_ids.size === 0) {
+    return null;
+  }
+  return {
+    count: open_ids.size,
+    ids: [...open_ids].sort().slice(0, DEPENDENTS_ID_LIMIT)
+  };
+}
+
+/**
+ * @param {WorkspaceSnapshot} snapshot
+ * @param {string} issue_id
+ * @param {Set<string>} out
+ */
+function collectOpenDependents(snapshot, issue_id, out) {
+  const waiter_ids = blocksIndexOf(snapshot, 'blocks_in').get(issue_id);
+  if (!waiter_ids) {
+    return;
+  }
+  for (const waiter_id of waiter_ids) {
+    const stored = snapshot.id_index.get(waiter_id);
+    if (stored && stored.status !== 'closed') {
+      out.add(waiter_id);
+    }
+  }
+}
+
+/**
+ * Read one derived index off a snapshot, tolerating a generation built before
+ * the index existed.
+ *
+ * @param {WorkspaceSnapshot} snapshot
+ * @param {'blocks_out'|'blocks_in'} name
+ * @returns {Map<string, string[]>}
+ */
+function blocksIndexOf(snapshot, name) {
+  const index = snapshot[name];
+  return index instanceof Map ? index : new Map();
+}
+
+/**
+ * @param {ReleasedBlocker} a
+ * @param {ReleasedBlocker} b
+ * @returns {number}
+ */
+function byClosedAtDescThenId(a, b) {
+  if (a.closed_at !== b.closed_at) {
+    return b.closed_at - a.closed_at;
+  }
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/**
+ * Fingerprint of the two decorations for the subscription delta (UI-d13v §3.7).
+ *
+ * Neither decoration moves the issue's own `updated_at`/`closed_at` — a blocker
+ * closing, a follow-up appearing, a foreign lookup landing all change what this
+ * row should say while the row itself stands still — so without this string the
+ * delta would compute "unchanged" and no upsert would ever reach the client.
+ * Not display material: keys are serialized in sorted order purely so equal
+ * decorations produce equal strings.
+ *
+ * @param {ReleaseInfo | null} release_info
+ * @param {DependentsInfo | null} dependents_info
+ * @returns {string}
+ */
+function decorationRev(release_info, dependents_info) {
+  /** @type {string[]} */
+  const fields = [];
+  if (dependents_info !== null) {
+    fields.push(
+      `dependents_info=${dependents_info.count}:${dependents_info.ids.join(',')}`
+    );
+  }
+  if (release_info !== null) {
+    const released = release_info.released_by
+      .map(
+        (entry) =>
+          `${entry.id}:${entry.closed_at}:${entry.foreign ? 1 : 0}:${entry.root_dir ?? ''}`
+      )
+      .join(',');
+    fields.push(`release_info=${released}`);
+  }
+  return fields.join(DECORATION_FIELD_SEPARATOR);
 }
 
 /**

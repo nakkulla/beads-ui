@@ -3,6 +3,7 @@
  */
 import { fetchListForSubscription } from '../list-adapters.js';
 import { keyOf } from '../subscriptions.js';
+import { onForeignBlockerResolved } from '../worker/foreign-blocker-status.js';
 import { signalWorkspaceSnapshotMutation } from '../workspace-snapshot-runtime.js';
 import {
   applyClosedIssuesFilter,
@@ -230,6 +231,37 @@ export function scheduleListRefresh(cause = 'watcher', root_dir = undefined) {
   }, REFRESH_DEBOUNCE_MS);
   REFRESH_TIMER.unref?.();
 }
+
+/**
+ * Re-run the list subscriptions of every workspace that was WAITING on a
+ * cross-rig lookup (UI-d13v §3.7).
+ *
+ * The Ready/Blocked decorations read the foreign blocker cache, so a lookup
+ * landing on `closed` is a change to what those rows say — and until now only
+ * the Worker queue and the Monitor channel listened (UI-u6zf §3.3), leaving the
+ * list subscriptions showing the pre-lookup answer until something unrelated
+ * moved them. The requester set is the workspace holding the blocked bead, never
+ * the rig that owns the blocker.
+ *
+ * @param {Set<string>} requesters
+ * @param {(cause: string, root_dir: string) => void} [schedule] - Seam; the live scheduler by default.
+ */
+export function refreshForeignBlockerRequesters(
+  requesters,
+  schedule = scheduleListRefresh
+) {
+  for (const root_dir of requesters) {
+    try {
+      schedule('foreign-blocker', root_dir);
+    } catch (err) {
+      log('foreign blocker list refresh failed for %s: %o', root_dir, err);
+    }
+  }
+}
+
+onForeignBlockerResolved((requesters) => {
+  refreshForeignBlockerRequesters(requesters);
+});
 
 /**
  * Run a refresh in the background for a subscription spec in a workspace.

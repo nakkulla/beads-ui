@@ -104,6 +104,49 @@ describe('workerPlacementPlan', () => {
     };
   }
 
+  test('refuses to plan for a candidate that is not queue_placeable (UI-d13v §6)', () => {
+    const plan = workerPlacementPlan(
+      'A-1',
+      'B-2',
+      factsOf([
+        member({ id: 'A-1', kind: 'candidate', queue_placeable: false }),
+        member({ id: 'B-2', kind: 'serial', lane_id: 's1' })
+      ])
+    );
+
+    expect(plan).toEqual({
+      kind: 'disabled',
+      title:
+        'A-1는 대기 큐에 넣을 수 없습니다 (spec 없음 또는 worker-ineligible)'
+    });
+  });
+
+  test('makes no two-op plan when the counterpart candidate is not queue_placeable', () => {
+    const plan = workerPlacementPlan(
+      'A-1',
+      'B-2',
+      factsOf([
+        member({ id: 'A-1', kind: 'candidate', queue_placeable: true }),
+        member({ id: 'B-2', kind: 'candidate' })
+      ])
+    );
+
+    expect(plan.kind).toBe('disabled');
+  });
+
+  test('plans for a queue_placeable candidate', () => {
+    const plan = workerPlacementPlan(
+      'A-1',
+      'B-2',
+      factsOf([
+        member({ id: 'A-1', kind: 'candidate', queue_placeable: true }),
+        member({ id: 'B-2', kind: 'serial', lane_id: 's1' })
+      ])
+    );
+
+    expect(plan.kind).toBe('ops');
+  });
+
   test('appends me to the counterpart serial lane end with one op', () => {
     const plan = workerPlacementPlan(
       'A-1',

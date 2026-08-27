@@ -57,6 +57,7 @@ function renderCandidate(item, place_menu = null) {
         id: 'UI-qf',
         title: 'quick fix',
         draggable: true,
+        queue_placeable: true,
         lane: 'candidate',
         reason: '',
         workflow: {
@@ -502,6 +503,7 @@ describe('candidate card', () => {
   test('disables a description-less quick_fix candidate with its honest reason', () => {
     const card = renderCandidate({
       draggable: false,
+      queue_placeable: false,
       reason: 'missing_description'
     });
     const place = /** @type {HTMLButtonElement} */ (
@@ -636,7 +638,7 @@ describe('candidate card', () => {
 
   test('keeps lane choices closed when the candidate loses eligibility', () => {
     const card = renderCandidate(
-      { draggable: false, reason: 'spec 없음' },
+      { draggable: false, queue_placeable: false, reason: 'spec 없음' },
       {
         bead_id: 'UI-qf',
         lanes: [{ id: 'parallel', label: '병렬', count: 3 }]
@@ -1736,6 +1738,7 @@ describe('worker templates are unchanged without the monitor options', () => {
           title: '후보 카드',
           lane: 'candidate',
           draggable: true,
+          queue_placeable: true,
           exec_chips: {
             orchestration: { text: 'o', title: 'ot' },
             worker: { text: 'w', title: 'wt' }
@@ -2702,6 +2705,28 @@ describe('collapsible pane header (UI-5ksp §4.4)', () => {
     return /** @type {HTMLElement} */ (mount.querySelector('.worker-pane'));
   }
 
+  test('renders header_row as the pane child right after the header', () => {
+    const pane = renderPane({
+      header_row: html`<div class="probe-row"></div>`
+    });
+
+    const children = Array.from(pane.children).filter(
+      (el) => el.nodeType === 1
+    );
+
+    expect(children[0].classList.contains('worker-pane__hd')).toBe(true);
+    expect(children[1].classList.contains('probe-row')).toBe(true);
+  });
+
+  test('drops header_row on a collapsed pane', () => {
+    const pane = renderPane({
+      collapsed: true,
+      header_row: html`<div class="probe-row"></div>`
+    });
+
+    expect(pane.querySelector('.probe-row')).toBe(null);
+  });
+
   test('renders the toggle as a button inside the header, not as the header', () => {
     const pane = renderPane();
 
@@ -3121,6 +3146,195 @@ describe('waitBody (UI-5ksp §4.2)', () => {
         '.worker-wait__area--serial .worker-wait__area-hd .mon2-newlane'
       )
     ).not.toBeNull();
+  });
+});
+
+describe('해제·후속 칩 (UI-d13v §5.2)', () => {
+  /**
+   * @param {Partial<import('./lanes.js').DependencyChips>} chips
+   * @returns {HTMLElement}
+   */
+  function renderChips(chips) {
+    render(
+      miniRow(
+        /** @type {any} */ ({
+          id: 'UI-me',
+          title: '칩',
+          lane: 'queue',
+          draggable: false,
+          dependency_chips: chips
+        })
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.worker-deps'));
+  }
+
+  test('draws a release chip with its own variant class', () => {
+    const deps = renderChips({
+      released: [{ id: 'UI-r', label: '🔓 해제: UI-r', title: '풀렸다' }]
+    });
+
+    const chip = /** @type {HTMLElement} */ (
+      deps.querySelector('.worker-dep--released')
+    );
+
+    expect(chip.textContent?.trim()).toBe('🔓 해제: UI-r');
+    expect(chip.title).toBe('풀렸다');
+  });
+
+  test('colours a foreign release with the foreign class as well', () => {
+    const deps = renderChips({
+      released: [
+        { id: 'B-9', label: '🔓 해제: B-9', title: '풀렸다', foreign: true }
+      ]
+    });
+
+    const chip = /** @type {HTMLElement} */ (
+      deps.querySelector('.worker-dep--released')
+    );
+
+    expect(chip.classList.contains('worker-dep--foreign')).toBe(true);
+  });
+
+  test('turns an openable release chip into a button carrying its owner', () => {
+    const deps = renderChips({
+      released: [
+        {
+          id: 'B-9',
+          label: '🔓 해제: B-9',
+          foreign: true,
+          openable: true,
+          root_dir: '/repo/b'
+        }
+      ]
+    });
+
+    const button = /** @type {HTMLElement} */ (
+      deps.querySelector('.worker-dep--released .worker-dep__open')
+    );
+
+    expect(button.dataset.depId).toBe('B-9');
+    expect(button.dataset.rootDir).toBe('/repo/b');
+  });
+
+  test('leaves an unopenable release chip without a button', () => {
+    const deps = renderChips({
+      released: [{ id: 'B-9', label: '🔓 해제: B-9', foreign: true }]
+    });
+
+    expect(deps.querySelector('.worker-dep--released button')).toBeNull();
+  });
+
+  test('composes the dependents label from the count alone', () => {
+    const deps = renderChips({
+      dependents: { count: 4, title: '이 이슈가 close되면 풀리는 이슈: UI-a' }
+    });
+
+    const chip = /** @type {HTMLElement} */ (
+      deps.querySelector('.worker-dep--dependents')
+    );
+
+    expect(chip.textContent?.replace(/\s+/g, ' ').trim()).toBe('→ 후속 4');
+    expect(chip.title).toBe('이 이슈가 close되면 풀리는 이슈: UI-a');
+  });
+
+  test('gives the dependents chip nothing to click', () => {
+    const deps = renderChips({ dependents: { count: 2, title: '후속' } });
+
+    expect(deps.querySelector('.worker-dep--dependents button')).toBeNull();
+  });
+
+  test('orders the slot-4 line blocked → released → dependents → overlap', () => {
+    const deps = renderChips({
+      overlaps: [
+        {
+          id: 'UI-o',
+          title: '상대',
+          location_label: '#1',
+          prefixes: ['server/worker']
+        }
+      ],
+      dependents: { count: 1, title: '후속' },
+      released: [{ id: 'UI-r', label: '🔓 해제: UI-r' }],
+      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }]
+    });
+
+    expect(
+      Array.from(deps.children).map((chip) => chip.className.split(' ')[1])
+    ).toEqual([
+      'worker-dep--pred',
+      'worker-dep--released',
+      'worker-dep--dependents',
+      'worker-dep--overlap'
+    ]);
+  });
+
+  test('draws no chip line when neither release nor dependents is supplied', () => {
+    render(
+      miniRow(
+        /** @type {any} */ ({
+          id: 'UI-none',
+          title: '재료 없음',
+          lane: 'queue',
+          draggable: false,
+          dependency_chips: {}
+        })
+      ),
+      mount
+    );
+
+    expect(mount.querySelector('.worker-deps')).toBeNull();
+  });
+});
+
+describe('후보 카드 배치 자격 (UI-d13v §6)', () => {
+  test('renders a placeable candidate that is not a drag source', () => {
+    const card = renderCandidate({ draggable: false, queue_placeable: true });
+
+    expect(card.getAttribute('draggable')).toBe('false');
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        card.querySelector('.worker-card__place')
+      ).disabled
+    ).toBe(false);
+  });
+
+  test('opens the lane menu of a placeable candidate that cannot be dragged', () => {
+    const card = renderCandidate(
+      { draggable: false, queue_placeable: true },
+      { bead_id: 'UI-qf', lanes: [{ id: 'parallel', label: '병렬', count: 3 }] }
+    );
+
+    expect(card.querySelector('.worker-card__place-menu')).not.toBeNull();
+  });
+
+  test('refuses both the button and the menu for an ineligible candidate', () => {
+    const card = renderCandidate(
+      {
+        draggable: false,
+        queue_placeable: true,
+        worker_ineligible: true
+      },
+      { bead_id: 'UI-qf', lanes: [{ id: 'parallel', label: '병렬', count: 3 }] }
+    );
+
+    expect(card.querySelector('.worker-card__place-menu')).toBeNull();
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        card.querySelector('.worker-card__place')
+      ).disabled
+    ).toBe(true);
+  });
+
+  test('refuses the button when the projection withholds queue_placeable', () => {
+    const card = renderCandidate({ draggable: true, queue_placeable: false });
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        card.querySelector('.worker-card__place')
+      ).disabled
+    ).toBe(true);
   });
 });
 

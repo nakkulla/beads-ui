@@ -32,6 +32,8 @@ const log = debug('workspace-snapshot');
  * @property {'embedded-dependencies'|'legacy-dependency-fallback'} command_mode
  * @property {number} command_count
  * @property {Record<string, unknown>[]} dependency_edges
+ * @property {Map<string, string[]>} blocks_out - issue → the blocker ids it depends on.
+ * @property {Map<string, string[]>} blocks_in - issue → the snapshot issues waiting on it.
  */
 
 /**
@@ -408,6 +410,12 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
         return fencedResult(state.snapshot);
       }
 
+      const blocks_index = buildBlocksIndex(
+        all,
+        id_index,
+        resolved_dependency_mode,
+        dependency_edges
+      );
       /** @type {WorkspaceSnapshot} */
       const snapshot = {
         generation: state.generation + 1,
@@ -420,7 +428,9 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
           all.length > 0
             ? 3
             : 2,
-        dependency_edges
+        dependency_edges,
+        blocks_out: blocks_index.blocks_out,
+        blocks_in: blocks_index.blocks_in
       };
       state.generation = snapshot.generation;
       state.snapshot = snapshot;
@@ -679,6 +689,122 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
   }
 
   return { request, signalMutation, getSnapshot, getState, waitForIdle };
+}
+
+/**
+ * Derive the two `blocks` adjacency indexes once per generation (UI-d13v §3.2).
+ *
+ * Both dependency modes carry the SAME edge shape — embedded mode hangs it off
+ * each issue as `dependencies`, the legacy fallback returns the identical
+ * records from `bd dep list` — so one walk covers both and the projections
+ * never re-scan the edges themselves.
+ *
+ * `blocks_in` is keyed by the blocker and holds only waiters this snapshot
+ * knows: an issue in another rig waiting on this one lives in that rig's DB and
+ * is invisible from here (UI-d13v §3.5 reads those through a peek instead).
+ *
+ * @param {NormalizedIssue[]} all
+ * @param {Map<string, NormalizedIssue>} id_index
+ * @param {'embedded-dependencies'|'legacy-dependency-fallback'} command_mode
+ * @param {Record<string, unknown>[]} dependency_edges
+ * @returns {{ blocks_out: Map<string, string[]>, blocks_in: Map<string, string[]> }}
+ */
+function buildBlocksIndex(all, id_index, command_mode, dependency_edges) {
+  /** @type {Map<string, string[]>} */
+  const blocks_out = new Map();
+  /** @type {Map<string, string[]>} */
+  const blocks_in = new Map();
+  const edges =
+    command_mode === 'embedded-dependencies'
+      ? embeddedBlocksEdges(all)
+      : legacyBlocksEdges(dependency_edges);
+  for (const [issue_id, depends_on_id] of edges) {
+    appendUnique(blocks_out, issue_id, depends_on_id);
+    if (id_index.has(issue_id)) {
+      appendUnique(blocks_in, depends_on_id, issue_id);
+    }
+  }
+  return { blocks_out, blocks_in };
+}
+
+/**
+ * @param {NormalizedIssue[]} all
+ * @returns {Array<[string, string]>}
+ */
+function embeddedBlocksEdges(all) {
+  /** @type {Array<[string, string]>} */
+  const edges = [];
+  for (const issue of all) {
+    if (!Array.isArray(issue.dependencies)) {
+      continue;
+    }
+    for (const edge of issue.dependencies) {
+      // The embedded record repeats its owner as `issue_id`; a build that omits
+      // it still names the issue the array hangs off.
+      const pair = blocksEdgePair(edge, issue.id);
+      if (pair !== null) {
+        edges.push(pair);
+      }
+    }
+  }
+  return edges;
+}
+
+/**
+ * @param {Record<string, unknown>[]} dependency_edges
+ * @returns {Array<[string, string]>}
+ */
+function legacyBlocksEdges(dependency_edges) {
+  /** @type {Array<[string, string]>} */
+  const edges = [];
+  for (const edge of dependency_edges) {
+    const pair = blocksEdgePair(edge, null);
+    if (pair !== null) {
+      edges.push(pair);
+    }
+  }
+  return edges;
+}
+
+/**
+ * @param {unknown} edge
+ * @param {string | null} owner_id - Issue the edge hangs off, when known.
+ * @returns {[string, string] | null}
+ */
+function blocksEdgePair(edge, owner_id) {
+  if (!isRecord(edge) || edge.type !== 'blocks') {
+    return null;
+  }
+  const issue_id = nonEmptyString(edge.issue_id) ?? owner_id;
+  const depends_on_id = nonEmptyString(edge.depends_on_id);
+  if (issue_id === null || depends_on_id === null) {
+    return null;
+  }
+  return [issue_id, depends_on_id];
+}
+
+/**
+ * @param {Map<string, string[]>} index
+ * @param {string} key
+ * @param {string} value
+ */
+function appendUnique(index, key, value) {
+  const current = index.get(key);
+  if (!current) {
+    index.set(key, [value]);
+    return;
+  }
+  if (!current.includes(value)) {
+    current.push(value);
+  }
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 /**

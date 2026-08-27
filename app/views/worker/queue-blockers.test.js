@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'vitest';
+import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { buildLanes } from '../monitor/lanes.js';
-import { deriveWorkerBlockers, predecessorChip } from './queue-blockers.js';
+import {
+  dependentsChip,
+  deriveWorkerBlockers,
+  predecessorChip,
+  releasedChip
+} from './queue-blockers.js';
 
 /**
  * @param {Partial<import('./queue-overlaps.js').LaneMember>} over
@@ -226,5 +232,112 @@ describe('predecessorChip', () => {
     expect(chip.title).toBe(
       '이 이슈는 A-1가 close될 때까지 출발하지 않는다 (PR 대기)'
     );
+  });
+});
+
+describe('releasedChip (UI-d13v §5.3)', () => {
+  const NOW = 1_700_000_000_000;
+  const DAY = 24 * 60 * 60 * 1000;
+
+  test('names the closed blocker on the chip label', () => {
+    const chip = releasedChip('A-2', { id: 'A-1', closed_at: NOW - DAY }, NOW);
+
+    expect(chip?.label).toBe('🔓 해제: A-1');
+  });
+
+  test('puts the close time in the tooltip', () => {
+    const closed_at = NOW - DAY;
+
+    const chip = releasedChip('A-2', { id: 'A-1', closed_at }, NOW);
+
+    expect(chip?.title).toBe(
+      `A-1가 ${formatTimestampLocal(closed_at)}에 close되어 이 이슈가 풀렸다`
+    );
+  });
+
+  test('keeps a release from exactly seven days ago', () => {
+    const chip = releasedChip(
+      'A-2',
+      { id: 'A-1', closed_at: NOW - 7 * DAY },
+      NOW
+    );
+
+    expect(chip).not.toBeNull();
+  });
+
+  test('drops a release older than seven days', () => {
+    const chip = releasedChip(
+      'A-2',
+      { id: 'A-1', closed_at: NOW - 8 * DAY },
+      NOW
+    );
+
+    expect(chip).toBeNull();
+  });
+
+  test('drops an entry without a numeric close time', () => {
+    const chip = releasedChip(
+      'A-2',
+      /** @type {any} */ ({ id: 'A-1', closed_at: 'yesterday' }),
+      NOW
+    );
+
+    expect(chip).toBeNull();
+  });
+
+  test('marks a blocker from another rig as foreign', () => {
+    const chip = releasedChip('A-2', { id: 'B-9', closed_at: NOW }, NOW);
+
+    expect(chip?.foreign).toBe(true);
+  });
+
+  test('opens a same-repo release without a root_dir', () => {
+    const chip = releasedChip('A-2', { id: 'A-1', closed_at: NOW }, NOW);
+
+    expect(chip?.openable).toBe(true);
+    expect(chip?.root_dir).toBeUndefined();
+  });
+
+  test('opens a foreign release only with its owner workspace', () => {
+    const chip = releasedChip(
+      'A-2',
+      { id: 'B-9', closed_at: NOW, root_dir: '/repo/b' },
+      NOW
+    );
+
+    expect(chip?.openable).toBe(true);
+    expect(chip?.root_dir).toBe('/repo/b');
+  });
+
+  test('leaves a foreign release without an owner unopenable', () => {
+    const chip = releasedChip('A-2', { id: 'B-9', closed_at: NOW }, NOW);
+
+    expect(chip?.openable).toBeUndefined();
+  });
+});
+
+describe('dependentsChip (UI-d13v §5.3)', () => {
+  test('carries the count the label renders', () => {
+    const chip = dependentsChip({ count: 3, ids: ['A-2', 'A-3', 'A-4'] });
+
+    expect(chip?.count).toBe(3);
+  });
+
+  test('lists the served ids in the tooltip', () => {
+    const chip = dependentsChip({ count: 2, ids: ['A-2', 'A-3'] });
+
+    expect(chip?.title).toBe('이 이슈가 close되면 풀리는 이슈: A-2, A-3');
+  });
+
+  test('counts the ids the server could not list', () => {
+    const chip = dependentsChip({ count: 7, ids: ['A-2', 'A-3'] });
+
+    expect(chip?.title).toBe('이 이슈가 close되면 풀리는 이슈: A-2, A-3 외 5');
+  });
+
+  test('draws nothing for a zero count', () => {
+    const chip = dependentsChip({ count: 0, ids: [] });
+
+    expect(chip).toBeNull();
   });
 });

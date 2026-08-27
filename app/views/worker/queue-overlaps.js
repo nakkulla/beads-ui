@@ -27,6 +27,9 @@ import { overlapPrefixes } from '../../utils/scope-overlap.js';
  * 옮길 수 없다 (UI-anna §5.2).
  * @property {'s1'|'s2'|'s3'|'s4'|'s5'|null} lane_id - 직렬 행의 레인, 또는
  * 직렬 레인에서 출발한 실행 중 bead의 출발 레인. 그 외 null.
+ * @property {boolean} [queue_placeable] - `candidate`만 싣는다 (UI-d13v §6):
+ * 카드의 `[대기로 ↴]`·배치 메뉴와 같은 자격이다. 팝오버 1클릭 배치가 이 값을
+ * 읽지 않으면 비활성 버튼을 팝오버로 우회하게 된다. 없거나 false면 옮길 수 없다.
  */
 
 /**
@@ -113,6 +116,22 @@ export function deriveWorkerOverlaps(bead_scope, members) {
 const MOVABLE_KINDS = ['parallel', 'serial', 'candidate'];
 
 /**
+ * Whether the popover may move this member. 후보는 레인만으로 부족하다 — 카드의
+ * `[대기로 ↴]`가 막는 후보(spec 없음·worker-ineligible)를 팝오버가 넣으면
+ * 같은 서버 거절을 다른 문으로 만나고, 2 op 계획에서는 상대만 먼저 옮겨져
+ * 부분 적용이 남는다.
+ *
+ * @param {LaneMember} member
+ * @returns {boolean}
+ */
+function isMovable(member) {
+  if (!MOVABLE_KINDS.includes(member.kind)) {
+    return false;
+  }
+  return member.kind !== 'candidate' || member.queue_placeable === true;
+}
+
+/**
  * The name of a lane that has already departed — 문장이 그 레인의 사실을 말해야
  * 하므로, 실행 중과 PR 대기를 한 단어로 뭉뚱그리지 않는다. Monitor 팝오버도
  * 같은 사실에 같은 이름을 붙여야 하므로 (UI-2htv) 두 탭이 이 값 하나를
@@ -149,8 +168,22 @@ export function workerPlacementPlan(me_id, counterpart_id, queue_facts) {
   if (my_lane !== null && my_lane === other_lane) {
     return { kind: 'note', text: '이미 같은 직렬 레인 — 순서가 있습니다' };
   }
-  const my_move = MOVABLE_KINDS.includes(me.kind);
-  const other_move = MOVABLE_KINDS.includes(other.kind);
+  const my_move = isMovable(me);
+  const other_move = isMovable(other);
+  // 자격 없는 후보가 끼면 계획을 만들지 않는다 — 어느 쪽이든 서버가 거절할
+  // op를 팝오버가 요청하지 않는다.
+  if (me.kind === 'candidate' && !my_move) {
+    return {
+      kind: 'disabled',
+      title: `${me_id}는 대기 큐에 넣을 수 없습니다 (spec 없음 또는 worker-ineligible)`
+    };
+  }
+  if (other.kind === 'candidate' && !other_move) {
+    return {
+      kind: 'disabled',
+      title: `${counterpart_id}는 대기 큐에 넣을 수 없습니다 (spec 없음 또는 worker-ineligible)`
+    };
+  }
   if (my_move && other_lane !== null) {
     return {
       kind: 'ops',

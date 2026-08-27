@@ -1940,6 +1940,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
         title: entry.title || titles[bead_id] || bead_id,
         lane: 'runnable',
         draggable: true,
+        // 모니터 실행가능 카드는 드래그와 배치를 둘 다 유지한다 (UI-d13v §6은
+        // Worker 후보 레인만 바꾼다) — 공유 렌더러가 배치 자격을 이 키에서 읽으므로
+        // `draggable`과 같은 값을 명시한다.
+        queue_placeable: true,
         reason: admissionBadge(admission, bead_id),
         created_at: entry.created_at ?? undefined,
         updated_at: entry.updated_at ?? undefined,
