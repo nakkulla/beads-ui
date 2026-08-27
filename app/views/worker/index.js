@@ -62,6 +62,7 @@ import {
 import { parseReport } from '../../utils/report-marker.js';
 import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
 import { sessionPreferredReason } from '../../utils/session-preferred.js';
+import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import {
   SUM_FIELDS,
@@ -3996,6 +3997,11 @@ export function createWorkerView(mount_element, options = {}) {
           coerceTimestampMs(entry.updated_at),
         updated_at: coerceTimestampMs(entry.updated_at),
         workflow: entry.workflow || null,
+        // 세션 정체·transcript 좌표 (UI-4xzk §6.4) — 모니터 세션 타일과 같은
+        // 재료를 넘겨야 같은 렌더러가 같은 `▤ 세션` 버튼을 그린다.
+        session_refs: Array.isArray(entry.session_refs)
+          ? entry.session_refs
+          : [],
         priority: idToPriority.get(bead_id),
         runner: null,
         model: null,
@@ -5709,6 +5715,31 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Open the shared transcript drawer for a session-held bead (UI-4xzk §6.4).
+   * The tile carries no attempt, so `selected_attempt` is left alone — there
+   * is nothing to highlight — and the drawer key is the session ref's own.
+   *
+   * @param {string} bead_id
+   */
+  function openDrawerForSessionRef(bead_id) {
+    const q = currentQueue();
+    const entry = (
+      Array.isArray(q.session_active) ? q.session_active : []
+    ).find((/** @type {any} */ row) => row && row.bead_id === bead_id);
+    const current = (
+      entry && Array.isArray(entry.session_refs) ? entry.session_refs : []
+    ).find((/** @type {any} */ view) => view && view.current === true);
+    if (!current) {
+      return;
+    }
+    repo_ops_drawer.close();
+    repo_ops_drawer_el.hidden = true;
+    drawer_overlay_el.hidden = false;
+    drawer.open(sessionRefDrawerInput(current, bead_id, 'in_progress'));
+    doRender();
+  }
+
+  /**
    * Open the shared transcript drawer for an analyzer run. Analysis runs have
    * no queue attempt record, so the dialog supplies the display-only meta and
    * this seam only binds the run id to the existing session-log protocol.
@@ -6199,6 +6230,13 @@ export function createWorkerView(mount_element, options = {}) {
       const att = tile?.dataset?.attemptId;
       if (att) {
         openDrawerForAttempt(att);
+        return;
+      }
+      // 세션 타일 (UI-4xzk §6.4): attempt가 없으므로 `session:<provider>:<sid>`
+      // 키로 그 세션의 transcript를 연다 — 모니터 탭과 같은 분기다.
+      const session_bead = tile?.dataset?.beadId;
+      if (session_bead) {
+        openDrawerForSessionRef(session_bead);
       }
       return;
     }

@@ -1536,6 +1536,90 @@ describe('views/worker', () => {
     expect(last.querySelector('.rtile__session-badge')).not.toBeNull();
   });
 
+  test('draws [▤ 세션] on a session tile that carries a current session_ref', () => {
+    const mount = mountAttemptTiles({
+      session_active: [
+        {
+          bead_id: 'UI-sess',
+          title: '세션 작업',
+          status: 'in_progress',
+          session_refs: [
+            {
+              index: 0,
+              provider: 'claude',
+              session_id: 'a1b2c3d4-5e6f',
+              host: 'mac',
+              current: true,
+              locality: 'local',
+              last_event_at: Date.now() - 30_000,
+              resume_command: "claude --resume 'a1b2c3d4-5e6f'"
+            }
+          ]
+        }
+      ]
+    });
+
+    const button = mount.querySelector(
+      '.rtile[data-bead-id="UI-sess"] .rtile__session'
+    );
+
+    expect(button).not.toBeNull();
+    expect(/** @type {HTMLButtonElement} */ (button).disabled).toBe(false);
+  });
+
+  test('opens the session transcript from a session tile like the monitor does', () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountAttemptTiles(
+      {
+        session_active: [
+          {
+            bead_id: 'UI-sess',
+            title: '세션 작업',
+            status: 'in_progress',
+            session_refs: [
+              {
+                index: 0,
+                provider: 'claude',
+                session_id: 'a1b2c3d4-5e6f',
+                host: 'mac',
+                current: true,
+                locality: 'local',
+                last_event_at: Date.now() - 30_000,
+                resume_command: "claude --resume 'a1b2c3d4-5e6f'"
+              }
+            ]
+          }
+        ]
+      },
+      transport
+    );
+
+    const button = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="UI-sess"] .rtile__session')
+    );
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(transport).toHaveBeenCalledWith(
+      'subscribe-session-log',
+      expect.objectContaining({
+        attempt_id: 'session:claude:a1b2c3d4-5e6f',
+        session_ref: {
+          bead_id: 'UI-sess',
+          provider: 'claude',
+          session_id: 'a1b2c3d4-5e6f'
+        }
+      })
+    );
+    expect(mount.querySelector('.sv__id')?.textContent?.trim()).toBe(
+      'claude · a1b2c3d4'
+    );
+    expect(
+      mount
+        .querySelector('.rtile[data-bead-id="UI-sess"]')
+        ?.classList.contains('rtile--sel')
+    ).toBe(false);
+  });
+
   test('skips a session row whose bead an attempt tile already draws', () => {
     const mount = mountAttemptTiles({
       attempts: {
