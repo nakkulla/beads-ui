@@ -279,12 +279,14 @@
  * attempt before spawn.
  * @property {CompletionFailureKey|null} completion_failure_key - SHA-bound
  * failure identity the session was asked to repair.
- * @property {'implementation'|'head_review'|'head_repair'} kind - Which lane
- * produced this attempt (UI-hk74 §7). Head review and its bounded repair used
- * to live only in `head-review-attempts/*.json`, invisible to the attempt
- * history, the token totals, and the monitor. Legacy records normalize to
- * `implementation`, which is what every attempt written before this field was
- * added actually is.
+ * @property {'implementation'|'review_session'} kind - Which lane produced
+ * this attempt (UI-d7fy §5.5). A `review_session` is the `[리뷰 후 머지]`
+ * click's session: real work a person must be able to see, but not the bead's
+ * own implementation run, so it never holds the bead's 실행중 slot. Legacy
+ * records carry no `kind` and are implementation runs by definition; a kind
+ * this enum no longer names is a RETIRED lane and normalizes to a terminal
+ * `retired_kind` record (§3.8) rather than silently becoming an
+ * implementation attempt that would occupy a lane forever.
  * @property {'click'|'auto'|null} origin - Whether a human click or the
  * automatic resolution lane asked for this attempt. Null on an ordinary
  * implementation attempt, which answers to neither.
@@ -295,8 +297,8 @@
  * @property {string|null} authority_id - Merge authority this attempt was
  * dispatched under, so a late result can fail its CAS against a replaced one.
  * @property {string|null} head_sha - Head the review was bound to.
- * @property {string|null} log_path - `head-review-attempts/<id>.log.jsonl` the
- * session log view reads. The transcript is NOT copied into the queue.
+ * @property {string|null} log_path - The session log file the log view reads.
+ * The transcript is NOT copied into the queue.
  */
 /**
  * One completed nested provider receipt. Two providers share the shape and no
@@ -593,7 +595,10 @@
  * binding between this queue item and one exact conflict-resolution attempt.
  * @property {{ subject_bead_id: string, mismatch: Record<string, unknown>, continuation: 'prior_session'|'fresh_current'|null, decision_token: Record<string, unknown>|null }|null} [continuation_action]
  * @property {MergeAuthority|null} [authority]
- * @property {HeadReview|null} [head_review]
+ * @property {MergeHold|null} [hold] - Why the merge gate is holding this item
+ * (UI-d7fy §3.3). A hold is NOT a failure: the authority stays, the item keeps
+ * its slot, nothing is dequeued or terminalized, and every `kick()` re-runs the
+ * gate on it. Absent on an item the gate has never held.
  * A cross-runner resolver decision that must survive restart.
  */
 /**
@@ -610,24 +615,17 @@
  * is what every legacy `queue.json` round-trips to.
  */
 /**
- * @typedef {Object} HeadReview
- * @property {string} authority_id
- * @property {string} head_sha
- * @property {'pending'|'reviewing'|'revising'|'approved'|'failed'} state
- * @property {string} reviewer
- * @property {string} effort
- * @property {'bead'|'harness'|null} reviewer_source - Which layer of the
- * contract's manual-continuation ladder produced {@link HeadReview.reviewer}
- * (UI-hk74 §6). Null while the journal is prerecorded and the ladder has not
- * been read yet.
- * @property {string|null} review_attempt_id
- * @property {string|null} findings_digest
- * @property {string|null} repair_attempt_id
- * @property {0|1} repair_rounds
- * @property {null|'existing_current'|'external_review'|'bounded_repair'} approval_source
- * @property {string|null} receipt
- * @property {string|null} failure_reason
- * @property {number} updated_at
+ * One merge-gate hold (UI-d7fy §3.3).
+ *
+ * @typedef {Object} MergeHold
+ * @property {string} reason - The gate verdict holding the item, verbatim
+ * (`review_receipt_missing` / `review_receipt_stale` /
+ * `review_receipt_undetermined`).
+ * @property {string} head_sha - The head the verdict was taken on, or `''`
+ * when the refusal carried none.
+ * @property {number} since - When THIS reason started holding the item. A
+ * refresh that reports the same reason keeps the original timestamp; a
+ * different reason restarts it.
  */
 /**
  * @typedef {'waiting'|'yielded'|'ready'} ResolutionWaitState
@@ -780,6 +778,9 @@
  * @property {Queue} queue - Current snapshot (new on success, unchanged else).
  * @property {string} [reason] - Why a non-conflict rejection happened, for the
  * ops that distinguish causes; absent when there is nothing to distinguish.
+ * @property {string[]} [cancelled_attempt_ids] - Sessions the same write
+ * settled, for the caller that still owes their processes a stop (UI-d7fy
+ * §5.6).
  */
 import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
@@ -893,7 +894,7 @@ export const COMPLETION_VERIFY_SUPPRESSED_PHASES = new Set([
 ]);
 
 /** @type {NonNullable<Attempt['kind']>[]} */
-const ATTEMPT_KINDS = ['implementation', 'head_review', 'head_repair'];
+const ATTEMPT_KINDS = ['implementation', 'review_session'];
 
 /** @type {CompletionOperation['kind'][]} */
 const COMPLETION_OP_KINDS = ['merge_subject', 'retry_cleanup'];
@@ -1867,8 +1868,7 @@ function resolutionDispatchIdentity(input) {
 
 /** Queue-owned runtime capability projected by health and Worker snapshots. */
 export const MANUAL_MERGE_CONTINUATION = Object.freeze({
-  schema_version: 1,
-  head_review_projection: true
+  schema_version: 2
 });
 
 /**
@@ -1909,76 +1909,65 @@ function normalizeMergeAuthority(value) {
 
 /**
  * @param {unknown} value
- * @param {MergeAuthority|null} authority
- * @returns {HeadReview|null}
+ * @returns {MergeHold|null}
  */
-function normalizeHeadReview(value, authority) {
-  if (!authority || !isRecord(value)) {
-    return null;
-  }
-  const state = value.state;
-  const approval_source = value.approval_source;
+function normalizeMergeHold(value) {
   if (
-    value.authority_id !== authority.id ||
+    !isRecord(value) ||
+    typeof value.reason !== 'string' ||
+    value.reason.length === 0 ||
     typeof value.head_sha !== 'string' ||
-    !SHA40_RE.test(value.head_sha) ||
-    !['pending', 'reviewing', 'revising', 'approved', 'failed'].includes(
-      String(state)
-    ) ||
-    typeof value.reviewer !== 'string' ||
-    value.reviewer.length === 0 ||
-    typeof value.effort !== 'string' ||
-    value.effort.length === 0 ||
-    (value.repair_rounds !== 0 && value.repair_rounds !== 1) ||
-    ![null, 'existing_current', 'external_review', 'bounded_repair'].includes(
-      /** @type {any} */ (approval_source)
-    ) ||
-    typeof value.updated_at !== 'number' ||
-    !Number.isFinite(value.updated_at)
-  ) {
-    return null;
-  }
-  const reviewer_source = value.reviewer_source ?? null;
-  if (
-    reviewer_source !== null &&
-    reviewer_source !== 'bead' &&
-    reviewer_source !== 'harness'
-  ) {
-    return null;
-  }
-  const nullable = [
-    'review_attempt_id',
-    'findings_digest',
-    'repair_attempt_id'
-  ];
-  if (
-    nullable.some(
-      (key) => value[key] !== null && typeof value[key] !== 'string'
-    ) ||
-    (value.receipt !== null && typeof value.receipt !== 'string') ||
-    (value.failure_reason !== null && typeof value.failure_reason !== 'string')
+    typeof value.since !== 'number' ||
+    !Number.isFinite(value.since)
   ) {
     return null;
   }
   return {
-    authority_id: authority.id,
+    reason: value.reason,
     head_sha: value.head_sha.toLowerCase(),
-    state: /** @type {HeadReview['state']} */ (state),
-    reviewer: value.reviewer,
-    effort: value.effort,
-    reviewer_source: /** @type {HeadReview['reviewer_source']} */ (
-      reviewer_source
-    ),
-    review_attempt_id: /** @type {string|null} */ (value.review_attempt_id),
-    findings_digest: /** @type {string|null} */ (value.findings_digest),
-    repair_attempt_id: /** @type {string|null} */ (value.repair_attempt_id),
-    repair_rounds: /** @type {0|1} */ (value.repair_rounds),
-    approval_source: /** @type {HeadReview['approval_source']} */ (
-      approval_source
-    ),
-    receipt: value.receipt,
-    failure_reason: value.failure_reason,
-    updated_at: value.updated_at
+    since: value.since
+  };
+}
+
+/**
+ * The states a retired `head_review` journal was in when its authority still
+ * had somewhere to go (UI-d7fy §3.8). An entry loaded in one of them keeps its
+ * authority and becomes a gate hold; `approved`/`failed` simply lose the field
+ * and are re-judged by the gate.
+ *
+ * @type {Set<string>}
+ */
+const RETIRED_REVIEW_HOLD_STATES = new Set([
+  'pending',
+  'reviewing',
+  'revising'
+]);
+
+/**
+ * The hold a legacy `entry.head_review` migrates to (UI-d7fy §3.8). The field
+ * itself is READ AND DISCARDED — never an error, never written back.
+ *
+ * @param {unknown} value
+ * @param {MergeAuthority|null} authority
+ * @returns {MergeHold|null}
+ */
+function retiredReviewHold(value, authority) {
+  if (
+    !authority ||
+    !isRecord(value) ||
+    !RETIRED_REVIEW_HOLD_STATES.has(String(value.state))
+  ) {
+    return null;
+  }
+  return {
+    // The placeholder §3.8 names: the next `kick()` re-runs the gate and
+    // replaces it with the reason that actually holds this head.
+    reason: 'review_receipt_missing',
+    head_sha:
+      typeof value.head_sha === 'string' && SHA40_RE.test(value.head_sha)
+        ? value.head_sha.toLowerCase()
+        : authority.requested_head_sha,
+    since: Date.now()
   };
 }
 
@@ -2009,7 +1998,11 @@ function normalizeMergeQueue(arr) {
       raw.continuation_action
     );
     const authority = normalizeMergeAuthority(raw.authority);
-    const head_review = normalizeHeadReview(raw.head_review, authority);
+    // A legacy `head_review` journal is read for its migration verdict only
+    // (UI-d7fy §3.4/§3.8) and never round-trips.
+    const hold =
+      normalizeMergeHold(raw.hold) ??
+      retiredReviewHold(raw.head_review, authority);
     out.push({
       bead_id: raw.bead_id,
       resolution_rounds:
@@ -2026,7 +2019,8 @@ function normalizeMergeQueue(arr) {
           : 0,
       resolution: normalizeResolutionWait(raw.resolution),
       ...(continuation_action === null ? {} : { continuation_action }),
-      ...(authority === null ? {} : { authority, head_review })
+      ...(authority === null ? {} : { authority }),
+      ...(hold === null ? {} : { hold })
     });
   }
   return out;
@@ -2581,6 +2575,86 @@ function migrateLegacyStopped(value) {
 }
 
 /**
+ * Terminalize an attempt of a RETIRED lane on load (UI-d7fy §3.8).
+ *
+ * `makeAttempt` maps a kind the enum no longer names onto `implementation`,
+ * which is the one reading that must never happen: a still-`running`
+ * `head_review` record would come back as the bead's own implementation run
+ * and hold its 실행중 slot forever. So the unknown kind is answered where it is
+ * read — the record reaches the terminal `retired_kind` its lane's removal
+ * makes it. A record that already settled keeps the history it settled with;
+ * only its kind is answered.
+ *
+ * The process the running record names is the CALLER's to stop, and it is
+ * still nameable afterwards: `pid`/`process_identity` survive this migration
+ * untouched. {@link createQueueStore.pendingRetiredKindAttempts} is what hands
+ * the caller that list.
+ *
+ * @param {Record<string, unknown>} value
+ * @param {number} at
+ * @returns {Record<string, unknown>}
+ */
+function migrateRetiredKind(value, at) {
+  const kind = value.kind;
+  if (
+    typeof kind !== 'string' ||
+    kind.length === 0 ||
+    ATTEMPT_KINDS.includes(/** @type {any} */ (kind))
+  ) {
+    return value;
+  }
+  if (TERMINAL_ATTEMPT_STATUSES.has(String(value.status))) {
+    return { ...value, kind: 'implementation' };
+  }
+  return {
+    ...value,
+    kind: 'implementation',
+    status: 'failed',
+    cause: 'retired_kind',
+    control: null,
+    finished_at: typeof value.finished_at === 'number' ? value.finished_at : at
+  };
+}
+
+/**
+ * The still-running attempts of a retired lane, read from the RAW record at
+ * cold load (UI-d7fy §3.8). Held in memory only: the terminalization is part
+ * of normalization, so nothing here has to be replayed — this list exists
+ * solely to tell the caller which processes to stop.
+ *
+ * @typedef {Object} RetiredKindAttempt
+ * @property {string} attempt_id
+ * @property {string} bead_id
+ * @property {string} kind - The retired kind the record carried.
+ */
+
+/**
+ * @param {unknown} parsed - The raw parsed queue file.
+ * @returns {RetiredKindAttempt[]}
+ */
+function planRetiredKindAttempts(parsed) {
+  /** @type {RetiredKindAttempt[]} */
+  const out = [];
+  if (!isRecord(parsed) || !isRecord(parsed.attempts)) {
+    return out;
+  }
+  for (const [attempt_id, raw] of Object.entries(parsed.attempts)) {
+    if (
+      !isRecord(raw) ||
+      typeof raw.bead_id !== 'string' ||
+      typeof raw.kind !== 'string' ||
+      raw.kind.length === 0 ||
+      ATTEMPT_KINDS.includes(/** @type {any} */ (raw.kind)) ||
+      raw.status !== 'running'
+    ) {
+      continue;
+    }
+    out.push({ attempt_id, bead_id: raw.bead_id, kind: raw.kind });
+  }
+  return out;
+}
+
+/**
  * @param {unknown} value
  * @returns {RepoOperation['failure']}
  */
@@ -3034,7 +3108,7 @@ function normalizeQueue(raw) {
       if (isRecord(value) && typeof value.bead_id === 'string') {
         q.attempts[key] = makeAttempt(
           /** @type {Partial<Attempt> & { attempt_id: string, bead_id: string }} */ ({
-            ...migrateLegacyStopped(value),
+            ...migrateRetiredKind(migrateLegacyStopped(value), Date.now()),
             attempt_id: key,
             bead_id: value.bead_id
           })
@@ -3539,7 +3613,7 @@ export function createQueueStore(options = {}) {
    *
    * @param {unknown} head_sha
    * @param {unknown} target_base
-   * @returns {{ authority: MergeAuthority, head_review: null }|{}}
+   * @returns {{ authority: MergeAuthority }|{}}
    */
   function automaticAuthorityFields(head_sha, target_base) {
     if (
@@ -3557,31 +3631,8 @@ export function createQueueStore(options = {}) {
         granted_at: now(),
         requested_head_sha: head_sha.toLowerCase(),
         target_base
-      },
-      head_review: null
-    };
-  }
-
-  /**
-   * Re-stamp every UNSETTLED head-review/repair attempt of one authority as
-   * human-asked (UI-hk74 §6). Monotonic on purpose: `click` outranks `auto`
-   * and never returns, because the click that produced it is durable while the
-   * transport's in-memory packet still carries the old value.
-   *
-   * @param {Queue} next
-   * @param {string} authority_id
-   */
-  function promoteAttemptOrigins(next, authority_id) {
-    for (const attempt of Object.values(next.attempts)) {
-      if (
-        (attempt.kind === 'head_review' || attempt.kind === 'head_repair') &&
-        attempt.authority_id === authority_id &&
-        attempt.origin === 'auto' &&
-        !TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status))
-      ) {
-        attempt.origin = 'click';
       }
-    }
+    };
   }
 
   /** @type {Map<string, Queue>} */
@@ -3594,6 +3645,15 @@ export function createQueueStore(options = {}) {
    * @type {Map<string, RepairLaneRetirement[]>}
    */
   const repair_lane_retirements = new Map();
+  /**
+   * Retired-lane attempts this process's cold load terminalized, per workspace
+   * (UI-d7fy §3.8). In memory only: the durable half already happened in
+   * normalization, so this is just the list of processes the caller still owes
+   * a stop.
+   *
+   * @type {Map<string, RetiredKindAttempt[]>}
+   */
+  const retired_kind_attempts = new Map();
   /** @type {Map<string, boolean>} */
   const auto_advance_at_shutdown = new Map();
   /**
@@ -3631,6 +3691,8 @@ export function createQueueStore(options = {}) {
     let persisted_auto_advance = false;
     /** @type {RepairLaneRetirement[]} */
     let retirements = [];
+    /** @type {RetiredKindAttempt[]} */
+    let retired_kinds = [];
     try {
       const raw = fs.readFileSync(filePathFor(workspace), 'utf8');
       const parsed = JSON.parse(raw);
@@ -3640,12 +3702,15 @@ export function createQueueStore(options = {}) {
         !Array.isArray(parsed) &&
         /** @type {any} */ (parsed).auto_advance === true;
       retirements = planRepairLaneRetirements(parsed);
+      retired_kinds = planRetiredKindAttempts(parsed);
       q = normalizeQueue(parsed);
     } catch {
       q = emptyQueue();
       retirements = [];
+      retired_kinds = [];
     }
     repair_lane_retirements.set(key, retirements);
+    retired_kind_attempts.set(key, retired_kinds);
     auto_advance_at_shutdown.set(key, persisted_auto_advance);
     // Restart safety defaults OFF; only the verified self-deploy path may restore it.
     q.auto_advance = false;
@@ -4957,8 +5022,8 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Prerecord, adopt, or settle ONE head review / head repair attempt
-     * (UI-hk74 §7). The three moments share this method because they are the
+     * Prerecord, adopt, or settle ONE `review_session` attempt (UI-d7fy §5).
+     * The three moments share this method because they are the
      * same idempotent write from different points in the same lifecycle, and
      * because {@link appendAttempt} is the wrong tool here: it replaces the
      * record wholesale, so a restart adopting a marker would reset a session
@@ -4970,7 +5035,7 @@ export function createQueueStore(options = {}) {
      * @param {{ attempt_id: string, patch: Partial<Attempt> }} input
      * @returns {QueueOpResult}
      */
-    upsertHeadReviewAttempt(workspace, input) {
+    upsertReviewSessionAttempt(workspace, input) {
       const { attempt_id, patch } = input;
       /** @type {string|null} */
       let reason = null;
@@ -4980,28 +5045,21 @@ export function createQueueStore(options = {}) {
           attempt_id.length === 0 ||
           !isRecord(patch)
         ) {
-          reason = 'head_review_attempt_invalid';
+          reason = 'review_session_attempt_invalid';
           return false;
         }
         const current = next.attempts[attempt_id];
         if (current && TERMINAL_ATTEMPT_STATUSES.has(String(current.status))) {
-          reason = 'head_review_attempt_terminal';
+          reason = 'review_session_attempt_terminal';
           return false;
         }
         const merged = { ...(current || {}), ...patch, attempt_id };
-        // `origin` is monotonic (UI-hk74 §6): once a [머지] click promoted the
-        // authority, the transport's later settle patches still carry the
-        // `auto` value its packet captured at dispatch, and letting one land
-        // would erase the promotion this record exists to show.
-        if (current?.origin === 'click') {
-          merged.origin = 'click';
-        }
         if (
           typeof merged.bead_id !== 'string' ||
           merged.bead_id.length === 0 ||
-          (merged.kind !== 'head_review' && merged.kind !== 'head_repair')
+          merged.kind !== 'review_session'
         ) {
-          reason = 'head_review_attempt_invalid';
+          reason = 'review_session_attempt_invalid';
           return false;
         }
         next.attempts[attempt_id] = makeAttempt(
@@ -6450,45 +6508,11 @@ export function createQueueStore(options = {}) {
           }
           const existing = next.merge_queue.find((e) => e.bead_id === bead_id);
           if (existing) {
-            const review = existing.head_review ?? null;
-            // Only a duplicate click on the SAME nonterminal MANUAL authority
-            // reuses it. An automatic enrolment is not the user's click — the
-            // click promotes it to a fresh manual authority, exactly like a
-            // legacy or failed slot (UI-58w8 §1).
-            if (
-              existing.authority &&
-              existing.authority.source === 'manual' &&
-              !(review !== null && review.state === 'failed')
-            ) {
-              continue;
-            }
-            if (
-              existing.authority &&
-              existing.authority.source === 'automatic' &&
-              review !== null &&
-              review.authority_id === existing.authority.id &&
-              review.state !== 'failed'
-            ) {
-              // The automatic review lane (UI-hk74 §6): a click on a row whose
-              // journal is already running PROMOTES that authority in place
-              // instead of minting a new one. Replacing the id would orphan the
-              // running reviewer — its every CAS would fail as late — and buy a
-              // duplicate dispatch for the same head, which is the lineage risk
-              // the journal exists to prevent. Only the source changes, so the
-              // attempt's recorded origin becomes `click`.
-              existing.authority.source = 'manual';
-              existing.authority.granted_at = now();
-              // …and it becomes `click` HERE, in the promoting mutation. The
-              // running attempt captured `origin: 'auto'` when its dispatch
-              // began and would otherwise settle under that value, leaving the
-              // history claiming automation owned a round a person asked for.
-              promoteAttemptOrigins(next, existing.authority.id);
-              // The promotion's own provenance: this authority is now owned by
-              // whoever asked for it here, and a lane asking is not a click.
-              if (via !== null) {
-                existing.authority.via = via;
-              }
-              changed += 1;
+            // Only a duplicate click on the SAME MANUAL authority reuses it.
+            // An automatic enrolment is not the user's click — the click
+            // promotes it to a fresh manual authority, exactly like a legacy
+            // slot (UI-58w8 §1).
+            if (existing.authority && existing.authority.source === 'manual') {
               continue;
             }
             existing.authority = {
@@ -6499,7 +6523,11 @@ export function createQueueStore(options = {}) {
               target_base,
               ...(via === null ? {} : { via })
             };
-            existing.head_review = null;
+            // A fresh authority is a fresh judgment: whatever the gate was
+            // holding the old one on is re-decided from this head (UI-d7fy
+            // §3.3), and a stale reason must not outlive the authority it was
+            // taken against.
+            delete existing.hold;
             changed += 1;
             continue;
           }
@@ -6515,8 +6543,7 @@ export function createQueueStore(options = {}) {
               requested_head_sha: head_sha,
               target_base,
               ...(via === null ? {} : { via })
-            },
-            head_review: null
+            }
           });
           changed += 1;
         }
@@ -6526,195 +6553,55 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Prerecord one head-bound review journal BEFORE any reviewer dispatch
-     * (UI-58w8 §2/§6). Driver-owned, no CAS. Refuses a journal for the same
-     * head twice (restart adoption reads the existing journal instead) and a
-     * terminal `failed` journal (only a re-click's new authority reopens it).
-     * A repair budget already consumed under this authority carries over —
-     * `repair_rounds` never resets within one authority.
+     * Record or refresh one merge-gate hold, or release it (UI-d7fy §3.3).
+     *
+     * A hold is not a failure and not a dequeue: the item keeps its slot and
+     * its authority, and every `kick()` re-runs the gate on it. `since` belongs
+     * to the REASON, not to the item — a refresh reporting the same reason
+     * keeps the moment that reason started, so the card can say how long this
+     * particular hold has stood.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, authority_id: string, head_sha: string, reviewer: string, effort: string, reviewer_source?: 'bead'|'harness'|null }} input
+     * @param {{ bead_id: string, hold: { reason: string, head_sha: string|null }|null, at: number }} input
      * @returns {QueueOpResult}
      */
-    beginHeadReview(workspace, input) {
+    setMergeHold(workspace, input) {
       return applyUnconditional(workspace, (next) => {
-        const entry = next.merge_queue.find((e) => e.bead_id === input.bead_id);
-        if (
-          !entry ||
-          !entry.authority ||
-          entry.authority.id !== input.authority_id ||
-          typeof input.head_sha !== 'string' ||
-          !SHA40_RE.test(input.head_sha) ||
-          typeof input.reviewer !== 'string' ||
-          input.reviewer.length === 0 ||
-          typeof input.effort !== 'string' ||
-          input.effort.length === 0
-        ) {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === input.bead_id
+        );
+        if (!entry) {
           return false;
         }
-        const head_sha = input.head_sha.toLowerCase();
-        const review = entry.head_review ?? null;
-        if (review !== null) {
-          if (review.head_sha === head_sha || review.state === 'failed') {
+        const prior = entry.hold ?? null;
+        if (input.hold === null) {
+          if (!prior) {
             return false;
           }
+          delete entry.hold;
+          return true;
         }
-        entry.head_review = {
-          authority_id: entry.authority.id,
+        const reason = input.hold.reason;
+        const head_sha =
+          typeof input.hold.head_sha === 'string'
+            ? input.hold.head_sha.toLowerCase()
+            : '';
+        if (typeof reason !== 'string' || reason.length === 0) {
+          return false;
+        }
+        if (prior && prior.reason === reason && prior.head_sha === head_sha) {
+          return false;
+        }
+        entry.hold = {
+          reason,
           head_sha,
-          state: 'pending',
-          reviewer: input.reviewer,
-          effort: input.effort,
-          reviewer_source:
-            input.reviewer_source === 'bead' ||
-            input.reviewer_source === 'harness'
-              ? input.reviewer_source
-              : null,
-          review_attempt_id: null,
-          findings_digest: null,
-          repair_attempt_id: null,
-          repair_rounds: review === null ? 0 : review.repair_rounds,
-          approval_source: null,
-          receipt: null,
-          failure_reason: null,
-          updated_at: now()
+          since:
+            prior && prior.reason === reason
+              ? prior.since
+              : typeof input.at === 'number' && Number.isFinite(input.at)
+                ? input.at
+                : now()
         };
-        return true;
-      });
-    },
-
-    /**
-     * Open one head-review journal ALREADY settled, in a single persist.
-     *
-     * The no-dispatch approvals decide everything they need BEFORE any journal
-     * exists: the enqueue-time `existing_current` binding (UI-58w8 §2) reuses a
-     * receipt that is already current for the head the click pinned, and no
-     * reviewer is ever asked for anything. Routing that through
-     * {@link beginHeadReview} spent two persists and two fanouts to pass
-     * through a `pending` slot no attempt ever occupies — and a row that says a
-     * review is pending while none will run is simply wrong. §6's prerecord
-     * obligation binds review/repair DISPATCH, which this path never reaches,
-     * and §2 asks for the `approved` journal itself, not for a `pending` one
-     * first.
-     *
-     * Refuses exactly what {@link beginHeadReview} refuses — a journal for a
-     * head that already has one (the caller adopts that journal instead) and a
-     * terminal `failed` journal — so a concurrent pass can never lose its slot
-     * to this write.
-     *
-     * @param {string} workspace
-     * @param {{ bead_id: string, authority_id: string, head_sha: string, reviewer: string, effort: string, approval_source: 'existing_current'|'external_review'|'bounded_repair', receipt: string }} input
-     * @returns {QueueOpResult}
-     */
-    openApprovedHeadReview(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const entry = next.merge_queue.find((e) => e.bead_id === input.bead_id);
-        if (
-          !entry ||
-          !entry.authority ||
-          entry.authority.id !== input.authority_id ||
-          typeof input.head_sha !== 'string' ||
-          !SHA40_RE.test(input.head_sha) ||
-          typeof input.reviewer !== 'string' ||
-          input.reviewer.length === 0 ||
-          typeof input.effort !== 'string' ||
-          input.effort.length === 0 ||
-          typeof input.receipt !== 'string' ||
-          input.receipt.length === 0
-        ) {
-          return false;
-        }
-        const head_sha = input.head_sha.toLowerCase();
-        const review = entry.head_review ?? null;
-        if (review !== null) {
-          if (review.head_sha === head_sha || review.state === 'failed') {
-            return false;
-          }
-        }
-        const candidate = {
-          authority_id: entry.authority.id,
-          head_sha,
-          state: 'approved',
-          reviewer: input.reviewer,
-          effort: input.effort,
-          reviewer_source: null,
-          review_attempt_id: null,
-          findings_digest: null,
-          repair_attempt_id: null,
-          repair_rounds: review === null ? 0 : review.repair_rounds,
-          approval_source: input.approval_source,
-          receipt: input.receipt,
-          failure_reason: null,
-          updated_at: now()
-        };
-        const normalized = normalizeHeadReview(candidate, entry.authority);
-        if (normalized === null) {
-          return false;
-        }
-        entry.head_review = normalized;
-        return true;
-      });
-    },
-
-    /**
-     * Transition one head-review journal under a triple CAS: exact authority
-     * id, exact journal head, exact current state. Everything a cancelled or
-     * superseded attempt reports late fails this CAS and is a no-op — that is
-     * the property that makes stop-success irrelevant to merge safety.
-     *
-     * The patched journal is re-validated through the same normalizer the
-     * cold-load path uses, so no transition can persist a shape a restart
-     * would silently drop.
-     *
-     * @param {string} workspace
-     * @param {{ bead_id: string, authority_id: string, head_sha: string, expected_state: 'pending'|'reviewing'|'revising'|'approved'|'failed', patch: Record<string, unknown> }} input
-     * @returns {QueueOpResult}
-     */
-    setHeadReviewState(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const entry = next.merge_queue.find((e) => e.bead_id === input.bead_id);
-        const review = entry ? (entry.head_review ?? null) : null;
-        if (
-          !entry ||
-          !entry.authority ||
-          review === null ||
-          entry.authority.id !== input.authority_id ||
-          review.authority_id !== input.authority_id ||
-          typeof input.head_sha !== 'string' ||
-          review.head_sha !== input.head_sha.toLowerCase() ||
-          review.state !== input.expected_state ||
-          !isRecord(input.patch)
-        ) {
-          return false;
-        }
-        const allowed = [
-          'state',
-          'head_sha',
-          'reviewer',
-          'effort',
-          'reviewer_source',
-          'review_attempt_id',
-          'findings_digest',
-          'repair_attempt_id',
-          'repair_rounds',
-          'approval_source',
-          'receipt',
-          'failure_reason'
-        ];
-        /** @type {Record<string, unknown>} */
-        const candidate = { ...review };
-        for (const key of allowed) {
-          if (Object.hasOwn(input.patch, key)) {
-            candidate[key] = input.patch[key];
-          }
-        }
-        candidate.updated_at = now();
-        const normalized = normalizeHeadReview(candidate, entry.authority);
-        if (normalized === null) {
-          return false;
-        }
-        entry.head_review = normalized;
         return true;
       });
     },
@@ -6894,6 +6781,41 @@ export function createQueueStore(options = {}) {
     pendingRepairLaneRetirements(workspace) {
       ensureLoaded(workspace);
       return clone(repair_lane_retirements.get(keyFor(workspace)) || []);
+    },
+
+    /**
+     * The retired-lane attempts this process's cold load found still `running`
+     * (UI-d7fy §3.8). Their records are ALREADY terminal in the loaded
+     * snapshot — normalization owns that half — so this list answers one
+     * question only: which processes does the caller still owe a stop? The
+     * identifying fields (`pid`, `process_identity`) survive the migration, so
+     * reading this after the terminalization loses nothing.
+     *
+     * @param {string} workspace
+     * @returns {RetiredKindAttempt[]}
+     */
+    pendingRetiredKindAttempts(workspace) {
+      ensureLoaded(workspace);
+      return clone(retired_kind_attempts.get(keyFor(workspace)) || []);
+    },
+
+    /**
+     * Persist the §3.8 migration and empty its pending list. The attempts are
+     * terminal in memory the moment the file is read; this is what writes that
+     * back to disk once, after the caller has stopped the processes.
+     *
+     * @param {string} workspace
+     * @returns {QueueOpResult}
+     */
+    commitRetiredKindAttempts(workspace) {
+      const key = keyFor(workspace);
+      const result = applyUnconditional(workspace, () => {
+        return (retired_kind_attempts.get(key) || []).length > 0;
+      });
+      if (result.ok) {
+        retired_kind_attempts.set(key, []);
+      }
+      return result;
     },
 
     /**
@@ -7136,99 +7058,6 @@ export function createQueueStore(options = {}) {
           intent,
           COMPLETION_AUTO_RESOLUTION_PHASE[normalized.class]
         );
-      });
-    },
-
-    /**
-     * Enrol one root into the AUTOMATIC head-review lane (UI-hk74 §6): the
-     * `reviewing` phase, the merge-queue authority, and the prerecorded
-     * `pending` journal in ONE revision.
-     *
-     * The three writes are inseparable because reconcile reads a `reviewing`
-     * intent without a journal as `auto_review_journal_missing` and stops for a
-     * human. Splitting them would make that fail-closed rule fire on a crash
-     * window rather than on real evidence, so a partial enrolment must leave
-     * NOTHING behind and the caller must stop instead of dispatching.
-     *
-     * An entry that already carries an authority keeps it — a manual authority
-     * outranks automation and is never demoted here.
-     *
-     * @param {string} workspace
-     * @param {{ root_bead_id: string, resolution: CompletionAutoResolution, head_sha: string, target_base: string, reviewer: string, effort: string }} input
-     * @returns {QueueOpResult}
-     */
-    enrolAutoReview(workspace, input) {
-      const { root_bead_id, resolution, reviewer, effort } = input;
-      return applyUnconditional(workspace, (next) => {
-        const intent = next.completion_intents[root_bead_id];
-        const normalized = normalizeCompletionAutoResolution(resolution);
-        const head_sha =
-          typeof input.head_sha === 'string' && SHA40_RE.test(input.head_sha)
-            ? input.head_sha.toLowerCase()
-            : null;
-        const target_base =
-          typeof input.target_base === 'string' && input.target_base.length > 0
-            ? input.target_base
-            : null;
-        if (
-          !intent ||
-          !normalized ||
-          normalized.class !== 'auto_review' ||
-          head_sha === null ||
-          target_base === null ||
-          typeof reviewer !== 'string' ||
-          reviewer.length === 0 ||
-          typeof effort !== 'string' ||
-          effort.length === 0 ||
-          intent.phase === 'needs_human' ||
-          intent.phase === 'completed' ||
-          intent.phase === 'paused'
-        ) {
-          return false;
-        }
-        if (!next.merge_queue.some((item) => item.bead_id === root_bead_id)) {
-          if (!enqueueMember(next, root_bead_id, false)) {
-            return false;
-          }
-          insertRunnableMergeEntry(next, {
-            bead_id: root_bead_id,
-            resolution_rounds: 0,
-            rebase_rounds: 0,
-            resolution: null,
-            ...automaticAuthorityFields(head_sha, target_base)
-          });
-        }
-        const entry = next.merge_queue.find(
-          (item) => item.bead_id === root_bead_id
-        );
-        if (!entry) {
-          return false;
-        }
-        if (!entry.authority) {
-          Object.assign(entry, automaticAuthorityFields(head_sha, target_base));
-        }
-        if (!entry.authority || (entry.head_review ?? null) !== null) {
-          return false;
-        }
-        entry.head_review = {
-          authority_id: entry.authority.id,
-          head_sha,
-          state: 'pending',
-          reviewer,
-          effort,
-          reviewer_source: null,
-          review_attempt_id: null,
-          findings_digest: null,
-          repair_attempt_id: null,
-          repair_rounds: 0,
-          approval_source: null,
-          receipt: null,
-          failure_reason: null,
-          updated_at: now()
-        };
-        intent.auto_resolution = normalized;
-        intent.paused_resolution = null;
-        return applyCompletionPhase(intent, 'reviewing');
       });
     },
 
@@ -7945,7 +7774,9 @@ export function createQueueStore(options = {}) {
      */
     cancelMerge(workspace, input) {
       const { expected_revision, bead_id, all, keep } = input;
-      return applyMutation(workspace, expected_revision, (next) => {
+      /** @type {string[]} */
+      let cancelled_attempt_ids = [];
+      const result = applyMutation(workspace, expected_revision, (next) => {
         const doomed = all
           ? next.merge_queue
               .map((e) => e.bead_id)
@@ -7960,8 +7791,34 @@ export function createQueueStore(options = {}) {
         next.merge_queue = next.merge_queue.filter(
           (e) => !doomed.includes(e.bead_id)
         );
+        // The cancel's ONE write (UI-d7fy §5.6): the authority reclaim (the
+        // entry leaving), and every unsettled review session that authority
+        // dispatched, settle together. The process stop is the caller's and
+        // comes AFTER — a late session result then fails its binding check and
+        // writes nothing, whether or not the process died on time.
+        /** @type {string[]} */
+        const cancelled = [];
+        const at = now();
+        for (const attempt of Object.values(next.attempts)) {
+          if (
+            attempt.kind !== 'review_session' ||
+            !doomed.includes(attempt.bead_id) ||
+            TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status))
+          ) {
+            continue;
+          }
+          attempt.status = 'failed';
+          attempt.cause = 'cancelled';
+          attempt.control = null;
+          attempt.finished_at = at;
+          cancelled.push(attempt.attempt_id);
+        }
+        cancelled_attempt_ids = cancelled;
         return true;
       });
+      return result.ok
+        ? { ...result, cancelled_attempt_ids }
+        : { ...result, cancelled_attempt_ids: [] };
     },
 
     /**
@@ -7991,6 +7848,7 @@ export function createQueueStore(options = {}) {
     __clearCacheForTest() {
       cache.clear();
       repair_lane_retirements.clear();
+      retired_kind_attempts.clear();
     }
   };
 }

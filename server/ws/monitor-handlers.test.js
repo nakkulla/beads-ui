@@ -657,7 +657,7 @@ describe('buildMonitorPipeline empty-workspace omission (UI-nprg)', () => {
               attempt_id: 'r1',
               bead_id: 'A-1',
               status: 'running',
-              kind: 'head_review',
+              kind: 'review_session',
               origin: 'auto'
             }
           }

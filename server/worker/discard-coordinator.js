@@ -183,9 +183,9 @@ export function createDiscardCoordinator(deps, options = {}) {
   async function captureSource(bead_id, attempt_id) {
     const queue = deps.store.snapshot(deps.workspace);
     // The discard source is the bead's own IMPLEMENTATION lineage (UI-hk74 §7):
-    // a head-review or head-repair attempt runs against a PR this bead already
-    // opened, so letting one take the "last attempt" slot would point the
-    // rollback at the reviewer's session instead of the work being discarded.
+    // a review session runs against a PR this bead already opened, so letting
+    // one take the "last attempt" slot would point the rollback at the
+    // reviewer's session instead of the work being discarded.
     const attempts = Object.values(queue.attempts || {}).filter(
       (attempt) =>
         /** @type {any} */ (attempt)?.bead_id === bead_id &&

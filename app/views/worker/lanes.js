@@ -76,53 +76,38 @@ export function formatElapsed(elapsed_ms) {
 }
 
 /**
- * Head review·repair 시도를 한 bead의 완료 행 배지로 요약한다 (UI-hk74 §7).
+ * `review_session` 시도를 한 bead의 완료 행 배지로 요약한다 (UI-d7fy §5.5).
  *
- * 이 시도들은 이제 일반 attempt와 같은 이력 표면에 있다 — 토큰 합계와 작업
- * 시간은 `bead_id`만 보므로 이미 함께 세어진다. 배지는 그 합계 안에 무엇이
- * 섞여 있는지, 그리고 그것이 사람의 클릭이었는지 자동 dispatch였는지를
- * 구분하는 유일한 표시다. 모양이 어긋난 입력은 조용히 무시한다(fail-quiet).
+ * 이 시도들은 일반 attempt와 같은 이력 표면에 있다 — 토큰 합계와 작업 시간은
+ * `bead_id`만 보므로 이미 함께 세어진다. 배지는 그 합계 안에 무엇이 섞여
+ * 있는지를 구분하는 유일한 표시다. 모양이 어긋난 입력은 조용히
+ * 무시한다(fail-quiet).
  *
  * @param {unknown} attempts - 큐 스냅샷의 attempt_id → attempt record 맵.
  * @param {string} bead_id
  * @returns {string[]}
  */
-export function headReviewAttemptBadges(attempts, bead_id) {
+export function reviewSessionAttemptBadges(attempts, bead_id) {
   if (typeof attempts !== 'object' || attempts === null) {
     return [];
   }
-  /** @type {Map<string, boolean>} */
-  const auto_by_kind = new Map();
+  let seen = false;
+  let auto = false;
   for (const attempt of Object.values(attempts)) {
     if (typeof attempt !== 'object' || attempt === null) {
       continue;
     }
     const a = /** @type {Record<string, unknown>} */ (attempt);
-    if (a.bead_id !== bead_id) {
+    if (a.bead_id !== bead_id || a.kind !== 'review_session') {
       continue;
     }
-    if (a.kind !== 'head_review' && a.kind !== 'head_repair') {
-      continue;
-    }
-    const kind = /** @type {string} */ (a.kind);
-    auto_by_kind.set(
-      kind,
-      (auto_by_kind.get(kind) ?? false) || a.origin === 'auto'
-    );
+    seen = true;
+    auto = auto || a.origin === 'auto';
   }
-  /** @type {string[]} */
-  const badges = [];
-  for (const [kind, label] of [
-    ['head_review', '리뷰'],
-    ['head_repair', '수리']
-  ]) {
-    const auto = auto_by_kind.get(kind);
-    if (auto === undefined) {
-      continue;
-    }
-    badges.push(auto ? `${label} · 자동` : label);
+  if (!seen) {
+    return [];
   }
-  return badges;
+  return [auto ? '리뷰 · 자동' : '리뷰'];
 }
 
 /**

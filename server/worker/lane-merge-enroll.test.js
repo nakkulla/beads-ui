@@ -258,13 +258,6 @@ describe('worker/auto-merge — 레인 머지 등록 (UI-jaua §5.4)', () => {
       on: true
     });
     const automatic = store.snapshot(WS).merge_queue[0].authority;
-    store.beginHeadReview(WS, {
-      bead_id: 'UI-1',
-      authority_id: automatic.id,
-      head_sha: HEAD,
-      reviewer: 'claude',
-      effort: 'high'
-    });
     const { auto } = pass(store);
 
     auto.scan();
@@ -272,14 +265,10 @@ describe('worker/auto-merge — 레인 머지 등록 (UI-jaua §5.4)', () => {
     const merge_queue = store.snapshot(WS).merge_queue;
     expect(merge_queue).toHaveLength(1);
     expect(merge_queue[0].authority).toMatchObject({
-      id: automatic.id,
       source: 'manual',
       via: 'lane'
     });
-    expect(merge_queue[0].head_review).toMatchObject({
-      authority_id: automatic.id,
-      state: 'pending'
-    });
+    expect(merge_queue[0].authority.id).not.toEqual(automatic.id);
   });
 
   test('reuses an authority a click already granted', () => {

@@ -217,7 +217,7 @@ describe('lane membership excludes head review attempts (UI-hk74 §7)', () => {
               attempt_id: 'r1',
               bead_id: 'A-1',
               status: 'running',
-              kind: 'head_review',
+              kind: 'review_session',
               origin: 'auto'
             }
           }

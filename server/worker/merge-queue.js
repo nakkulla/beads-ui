@@ -141,10 +141,6 @@ function snapshotFence(q) {
  *   headSha?: (bead_id: string) => string|null,
  *   isExternalRow?: (bead_id: string) => boolean,
  *   conflictDispatchBlocked?: (queue_bead_id: string, subject_bead_id: string) => boolean,
- *   headReview?: {
- *     captureStartingApproval?: (queue_bead_id: string, subject_bead_id: string) => Promise<{ actor: string, head_sha: string, raw: string }|null>,
- *     ensureApproved: (queue_bead_id: string, subject_bead_id: string, observed: { head_sha: string, base_ref: string|null, head_ref?: string|null, mutation?: string|null, mutation_result_sha?: string|null, starting_approval?: { actor: string, head_sha: string, raw: string }|null }) => Promise<{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }>
- *   },
  *   updateBase?: (bead_id: string) => Promise<{ ok: boolean, reason: string|null, result_head_sha: string|null }>,
  *   onCompletionResult?: (root_bead_id: string, subject_bead_id: string, result: MergeClickResult) => Promise<void>|void,
  *   prepare?: () => Promise<unknown>,
@@ -218,6 +214,17 @@ export function createMergeQueue(deps) {
   let prepared = false;
   /** @type {string|null} */
   let active = null;
+  /**
+   * Items this drain pass has already put on a gate hold (UI-d7fy §3.3).
+   *
+   * A held item stays at its place in the durable queue, so without a
+   * per-pass memory `headEntry` would hand it straight back and the loop would
+   * re-gate the same head forever. Emptied at the top of every pass, because
+   * "every `kick()` re-judges a held item" is the contract the hold rests on.
+   *
+   * @type {Set<string>}
+   */
+  const held_this_pass = new Set();
   /** @type {Map<string, string>} */
   const failures = new Map();
   /** @type {(() => void)|null} */
@@ -270,10 +277,11 @@ export function createMergeQueue(deps) {
       lane.find(
         (/** @type {any} */ entry) =>
           entry.resolution?.state !== 'yielded' &&
-          // A terminal head-review failure waits for a human re-click
-          // (UI-58w8 §1) — driving it again would spin the drain, and
-          // dequeuing it would erase the failure the user must see.
-          entry.head_review?.state !== 'failed'
+          // A gate hold does NOT stop the drain (UI-d7fy §3.3): the item keeps
+          // its slot and its authority, and everything behind it keeps
+          // merging. It is skipped for the REST OF THIS PASS only — the set is
+          // emptied at every `kick()`, which is what re-runs the gate on it.
+          !held_this_pass.has(entry.bead_id)
       ) || null
     );
   }
@@ -614,6 +622,71 @@ export function createMergeQueue(deps) {
   function fail(bead_id, reason) {
     failures.set(bead_id, reason);
     log('merge queue: %s skipped (%s)', bead_id, reason);
+  }
+
+  /**
+   * The gate verdicts that HOLD an item instead of ending it (UI-d7fy §3.3).
+   *
+   * All three say the same thing — this head has no review the gate can stand
+   * on — and none of them is decided by anything the queue owns, so none of
+   * them is a failure of this item's turn. The exit is the `[리뷰 후 머지]`
+   * click (§5), not a dequeue and not a terminal `needs_human`.
+   *
+   * @type {Set<string>}
+   */
+  const HOLD_REASONS = new Set([
+    'review_receipt_missing',
+    'review_receipt_stale',
+    'review_receipt_undetermined'
+  ]);
+
+  /**
+   * Put one item on a gate hold and take it out of THIS pass.
+   *
+   * @param {string} bead_id
+   * @param {string} reason
+   * @param {string|null|undefined} head_sha
+   */
+  function holdEntry(bead_id, reason, head_sha) {
+    held_this_pass.add(bead_id);
+    try {
+      // The store writes only when the reason or head actually changed, so a
+      // held item that is re-judged to the same verdict costs no revision and
+      // no fanout.
+      if (
+        deps.store.setMergeHold(workspace, {
+          bead_id,
+          hold: { reason, head_sha: head_sha || '' },
+          at: now()
+        }).ok
+      ) {
+        notify();
+      }
+    } catch (err) {
+      log('merge queue hold write failed for %s: %o', bead_id, err);
+    }
+    log('merge queue: %s held (%s)', bead_id, reason);
+  }
+
+  /**
+   * Release a hold the gate no longer justifies.
+   *
+   * @param {string} bead_id
+   */
+  function releaseHold(bead_id) {
+    if (!queuedEntry(bead_id)?.hold) {
+      return;
+    }
+    try {
+      if (
+        deps.store.setMergeHold(workspace, { bead_id, hold: null, at: now() })
+          .ok
+      ) {
+        notify();
+      }
+    } catch (err) {
+      log('merge queue hold release failed for %s: %o', bead_id, err);
+    }
   }
 
   /**
@@ -1255,54 +1328,18 @@ export function createMergeQueue(deps) {
   }
 
   /**
-   * Route one manual item through the head-review machine and shape its
-   * non-approved outcome as a driver-level result (UI-58w8 §2).
-   *
-   * @param {string} queue_bead_id
-   * @param {string} subject_bead_id
-   * @param {{ head_sha: string, base_ref: string|null, head_ref?: string|null, mutation: string|null, mutation_result_sha: string|null, starting_approval: { actor: string, head_sha: string, raw: string }|null }} observed
-   * @returns {Promise<{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }>}
-   */
-  async function ensureHeadReview(queue_bead_id, subject_bead_id, observed) {
-    // A vouched mutation vouches for exactly ONE binding: the caller clears it
-    // right after this call, so a later external push cannot inherit the
-    // resolver's or the base update's provenance.
-
-    /** @type {{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }} */
-    let review = { state: 'failed', reason: 'head_review_error' };
-    try {
-      review = await /** @type {NonNullable<typeof deps.headReview>} */ (
-        deps.headReview
-      ).ensureApproved(queue_bead_id, subject_bead_id, observed);
-    } catch (err) {
-      log('merge queue head review threw for %s: %o', queue_bead_id, err);
-    }
-    return review;
-  }
-
-  /**
    * Re-probe before every effect. A ready resolution is charged exactly once
    * after the probe and before the selected merge/update/resolver action.
    *
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
    * @param {string|null} ready_attempt_id
-   * @param {{ mutation: string|null, result_head_sha: string|null, starting_approval: { actor: string, head_sha: string, raw: string }|null }} [vouched] - The queue-owned mutation
-   * evidence this drain can vouch for (`resolver:<attempt>` / `base_update`).
-   * A HOLDER, not a value: whichever site binds it consumes it, so one
-   * resolver push or base update vouches for exactly one head-review binding
-   * and never for a later external push.
    * @returns {Promise<MergeClickResult|null>}
    */
   async function runLatestMerge(
     queue_bead_id,
     subject_bead_id,
-    ready_attempt_id,
-    vouched = {
-      mutation: null,
-      result_head_sha: null,
-      starting_approval: null
-    }
+    ready_attempt_id
   ) {
     if (
       ready_attempt_id &&
@@ -1371,41 +1408,10 @@ export function createMergeQueue(deps) {
       };
     }
     if (probe.kind !== 'dirty') {
-      // A manual item never merges on a bare metadata receipt (UI-58w8 §5):
-      // even a CLEAN gate must first bind an approved head-review journal to
-      // the exact authority/head, so the review machine runs BEFORE the merge
-      // — for a current receipt this is the `existing_current` binding, for a
-      // moved head the automatic reviewer.
-      if (
-        probe.kind === 'clean' &&
-        manualContinuation(queue_bead_id) &&
-        // A completion root runs its OWN gating saga
-        // (`processCompletionItem`), and that loop has no disposition for a
-        // head-review result. The two machines stay separate.
-        completionIntent(queue_bead_id) === null &&
-        typeof deps.headReview?.ensureApproved === 'function'
-      ) {
-        const review = await ensureHeadReview(queue_bead_id, subject_bead_id, {
-          head_sha: probe.head_sha || '',
-          base_ref: probe.base_ref || null,
-          head_ref: probe.head_ref || null,
-          mutation: vouched.mutation,
-          mutation_result_sha: vouched.result_head_sha,
-          starting_approval: vouched.starting_approval
-        });
-        vouched.mutation = null;
-        vouched.result_head_sha = null;
-        vouched.starting_approval = null;
-        if (review.state !== 'approved') {
-          return {
-            ok: false,
-            action: 'head_review',
-            reason: review.reason || review.state,
-            review_state: review.state,
-            head_sha: probe.head_sha || null
-          };
-        }
-      }
+      // The merge gate is the ONE review judgment (UI-d7fy §2/§4): `runMerge`
+      // re-runs it against a fresh pin, and a verdict it refuses on comes back
+      // as a `refused` reason this item is HELD on — never a second, narrower
+      // freshness rule of the queue's own.
       return runMerge(subject_bead_id);
     }
     if (effective_rounds >= round_cap) {
@@ -1730,30 +1736,6 @@ export function createMergeQueue(deps) {
       }
     }
 
-    // Queue-owned mutation evidence THIS drain can vouch for (UI-58w8 §2):
-    // a consumed ready resolution or the driver's own base update. It never
-    // survives a restart on purpose — an unprovable move fails closed.
-    /** @type {{ actor: string, head_sha: string, raw: string }|null} */
-    let starting_approval = null;
-    if (
-      manualContinuation(bead_id) &&
-      typeof deps.headReview?.captureStartingApproval === 'function'
-    ) {
-      try {
-        starting_approval = await deps.headReview.captureStartingApproval(
-          bead_id,
-          bead_id
-        );
-      } catch (err) {
-        log('merge queue approval snapshot failed for %s: %o', bead_id, err);
-      }
-    }
-    /** @type {{ mutation: string|null, result_head_sha: string|null, starting_approval: { actor: string, head_sha: string, raw: string }|null }} */
-    const vouched = {
-      mutation: null,
-      result_head_sha: null,
-      starting_approval
-    };
     // The base update is attempted at most once per turn, so a PR that stays
     // BEHIND cannot loop the driver against the GitHub API.
     let base_update_attempted = false;
@@ -1780,18 +1762,14 @@ export function createMergeQueue(deps) {
       ) {
         return;
       }
-      if (resolution.kind === 'ready' && resolution.attempt_id) {
-        // Resolver attempts currently expose no authoritative pushed head.
-        // Rebind both voucher fields together so a prior mutation's SHA cannot
-        // survive; the null result forces full-final-head review (UI-vkk8 §4).
-        vouched.mutation = `resolver:${resolution.attempt_id}`;
-        vouched.result_head_sha = null;
-      }
+      // A `ready` resolution goes straight back to re-observation (UI-d7fy
+      // §3.3): the resolver's own commit is judged by the same ancestry rule
+      // as any other commit, so there is no queue-owned mutation voucher to
+      // carry and no `resolver-self:` receipt to demand.
       const result = await runLatestMerge(
         bead_id,
         bead_id,
-        resolution.kind === 'ready' ? resolution.attempt_id || null : null,
-        vouched
+        resolution.kind === 'ready' ? resolution.attempt_id || null : null
       );
       if (!result) {
         return;
@@ -1801,6 +1779,17 @@ export function createMergeQueue(deps) {
         return;
       }
       const action = result ? result.action : null;
+
+      // The gate's review verdicts HOLD (UI-d7fy §3.3): authority stays, the
+      // item keeps its slot, nothing is dequeued or terminalized, and the rest
+      // of the queue keeps draining behind it. Any other verdict means the
+      // gate is no longer holding on a review, so a stale hold is released
+      // before this turn decides anything else.
+      if (action === 'refused' && HOLD_REASONS.has(String(result.reason))) {
+        holdEntry(bead_id, String(result.reason), result.head_sha);
+        return;
+      }
+      releaseHold(bead_id);
 
       if (action === 'cleanup_pending') {
         deps.store.dequeueMerge(workspace, bead_id);
@@ -1942,77 +1931,6 @@ export function createMergeQueue(deps) {
         return;
       }
 
-      if (
-        action === 'refused' &&
-        (result.reason === 'review_receipt_stale' ||
-          result.reason === 'review_receipt_missing' ||
-          result.reason === 'review_receipt_undetermined') &&
-        manualContinuation(bead_id) &&
-        typeof deps.headReview?.ensureApproved === 'function'
-      ) {
-        // Manual continuation (UI-58w8 §2): a queue-owned head mutation left
-        // the receipt stale, so the head-review machine re-acquires a CURRENT
-        // review instead of this being a terminal refusal. An undetermined
-        // ancestry (probe error at merge time) takes the same path — the
-        // contract routes a merge-gate probe_error to a review of the observed
-        // head, and only the display stays quiet on it.
-        const review = await ensureHeadReview(bead_id, bead_id, {
-          head_sha: result.head_sha || '',
-          base_ref: result.base_ref || null,
-          head_ref: result.head_ref || null,
-          mutation: vouched.mutation,
-          mutation_result_sha: vouched.result_head_sha,
-          starting_approval: vouched.starting_approval
-        });
-        vouched.mutation = null;
-        vouched.result_head_sha = null;
-        vouched.starting_approval = null;
-        if (review.state === 'approved') {
-          notify();
-          continue;
-        }
-        if (review.state === 'failed') {
-          // Terminal needs-human: the item KEEPS its queue slot and its
-          // journal — a re-click issues the fresh authority that may retry.
-          // The drain ENDS rather than returning to the same head: a failed
-          // journal that did not persist would otherwise be re-driven in a
-          // tight loop, which is the one thing a terminal state must not do.
-          fail(bead_id, review.reason || 'head_review_failed');
-          halted = true;
-          notify();
-          return;
-        }
-        if (review.state === 'halted') {
-          halted = true;
-          halted_on_head = bead_id;
-          notify();
-          return;
-        }
-        // 'gone': cancelled or superseded under us — nothing left to drive.
-        return;
-      }
-
-      if (action === 'head_review') {
-        const review_state = /** @type {any} */ (result).review_state;
-        if (review_state === 'approved') {
-          notify();
-          continue;
-        }
-        if (review_state === 'failed') {
-          fail(bead_id, result.reason || 'head_review_failed');
-          halted = true;
-          notify();
-          return;
-        }
-        if (review_state === 'halted') {
-          halted = true;
-          halted_on_head = bead_id;
-          notify();
-          return;
-        }
-        return;
-      }
-
       if (action === 'refused' && result.reason === 'snapshot_unreadable') {
         halted = true;
         halted_on_snapshot =
@@ -2128,6 +2046,9 @@ export function createMergeQueue(deps) {
         }
         drain_requested = false;
         halted = false;
+        // Every kick re-judges every held item (UI-d7fy §3.3): the skip list
+        // is a property of ONE pass, never of the item.
+        held_this_pass.clear();
         halted_on_head = null;
         halted_on_completion = null;
         halted_on_snapshot = null;

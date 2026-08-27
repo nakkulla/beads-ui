@@ -389,8 +389,7 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
           granted_at: expect.any(Number),
           requested_head_sha: HEAD,
           target_base: 'main'
-        },
-        head_review: null
+        }
       }
     ]);
     expect(queue.completion_intents['UI-1']).toMatchObject({

@@ -44,13 +44,14 @@ const EXEC_RECEIPT_RE = /^(delegated|main):([^@\n]+)@([0-9a-fA-F]{40})$/;
 const IMPL_ENTRY_RE = /^(user)@([0-9a-fA-F]{40})$/;
 
 /**
- * The contract's resolver self-review receipt, written into `impl_review` when
- * a queue-owned conflict-resolution session re-vouched for the head it pushed
- * (`resolver-self:<attempt>:<prior-head>@<result-head>`). The merge gate's own
- * parser (`server/worker/head-review.js`) owns the fail-closed judgment; this
- * one exists only so display can tell that form apart from an ordinary
- * `<reviewer>@<sha>` receipt, which {@link RECEIPT_RE} would otherwise swallow
- * whole into its reviewer token.
+ * The contract's RETIRED resolver self-review receipt, written into
+ * `impl_review` when a queue-owned conflict-resolution session re-vouched for
+ * the head it pushed (`resolver-self:<attempt>:<prior-head>@<result-head>`).
+ * Nothing writes this form any more (UI-d7fy §3.6) — a resolution commit is
+ * judged by the same ancestry rule as any other. It stays a HISTORICAL READ,
+ * exactly like `carry:`: display must be able to tell an old receipt of this
+ * shape apart from an ordinary `<reviewer>@<sha>` one, which {@link RECEIPT_RE}
+ * would otherwise swallow whole into its reviewer token.
  */
 const RESOLVER_RECEIPT_RE =
   /^resolver-self:([A-Za-z0-9][A-Za-z0-9._-]*):([0-9a-f]{40})@([0-9a-f]{40})$/i;
@@ -180,7 +181,7 @@ export function parseExecReceipt(value) {
 
 /**
  * @typedef {Object} ResolverReceipt
- * @property {string} attempt - The head-review attempt id that resolved.
+ * @property {string} attempt - The resolution attempt id that wrote it.
  * @property {string} prior_sha - Head the carried approval was bound to.
  * @property {string} sha - Head the resolution produced and self-reviewed.
  */

@@ -1893,8 +1893,7 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
           granted_at: expect.any(Number),
           requested_head_sha: 'f'.repeat(40),
           target_base: 'main'
-        },
-        head_review: null
+        }
       }
     ]);
     expect(kick).toHaveBeenCalled();
@@ -2495,7 +2494,7 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     expect(store.snapshot('').merge_queue.length).toBe(1);
   });
 
-  test('cancels an item held by a running head review (UI-58w8 §1)', async () => {
+  test('cancels an item held by a running review session (UI-d7fy §5.6)', async () => {
     parkInPrWait('UI-1');
     registerDriver({ active: 'UI-1' });
     const sock = fakeSocket();
@@ -2506,19 +2505,15 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
       expected_revision: store.snapshot('').revision
     });
     const authority_id = store.snapshot('').merge_queue[0].authority?.id || '';
-    store.beginHeadReview('', {
-      bead_id: 'UI-1',
-      authority_id,
-      head_sha: 'f'.repeat(40),
-      reviewer: 'codex',
-      effort: 'xhigh'
-    });
-    store.setHeadReviewState('', {
-      bead_id: 'UI-1',
-      authority_id,
-      head_sha: 'f'.repeat(40),
-      expected_state: 'pending',
-      patch: { state: 'reviewing', review_attempt_id: 'review:x' }
+    store.upsertReviewSessionAttempt('', {
+      attempt_id: 'review:x',
+      patch: {
+        bead_id: 'UI-1',
+        kind: 'review_session',
+        status: 'running',
+        authority_id,
+        head_sha: 'f'.repeat(40)
+      }
     });
 
     await send(sock, 'm2', 'worker-merge-queue-remove', {
@@ -2527,9 +2522,14 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     });
 
     // The driver holds the item while the reviewer is out, but cancelling IS
-    // how the authority is discarded — only the merge effect itself locks it.
+    // how the authority is reclaimed — only the merge effect itself locks it.
     expect(replyFor(sock, 'm2').payload.applied).toBe(true);
     expect(store.snapshot('').merge_queue).toEqual([]);
+    // …and the same write settled the session (§5.6), before any process stop.
+    expect(store.snapshot('').attempts['review:x']).toMatchObject({
+      status: 'failed',
+      cause: 'cancelled'
+    });
   });
 
   test('add-all leaves out an EXTERNAL conflicting row even on a green gate', async () => {

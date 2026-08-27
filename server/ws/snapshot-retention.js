@@ -9,13 +9,13 @@
  * from raw) would then expose.
  *
  * Retention is per BEAD, all-or-nothing: the three view surfaces that read
- * terminal attempts (token totals, `done_kind` / head-review badges, the detail
+ * terminal attempts (token totals, `done_kind` / 리뷰 badges, the detail
  * panel's session history) all group by bead, so a partially retained bead is
  * the only shape that can render a wrong number.
  */
 import {
   activeAttemptStates,
-  headReviewAttemptStates
+  reviewSessionAttemptStates
 } from '../../app/utils/active-attempts.js';
 import {
   doneAtByBead,
@@ -135,7 +135,7 @@ function seedRetainedBeadIds(raw, now) {
   for (const bead_id of active.winners.keys()) {
     ids.add(bead_id);
   }
-  for (const bead_id of headReviewAttemptStates(attempts).keys()) {
+  for (const bead_id of reviewSessionAttemptStates(attempts).keys()) {
     ids.add(bead_id);
   }
   for (const attempt of Object.values(attempts)) {

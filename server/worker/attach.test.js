@@ -2978,7 +2978,7 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
 });
 
 describe('worker/attach base-update result wiring (UI-vzyh §2)', () => {
-  test('passes no vouched mutation for a base update', async () => {
+  test('takes the moved head straight back to the merge gate', async () => {
     const original_head = 'a'.repeat(40);
     const result_head = 'b'.repeat(40);
     const raced_head = 'c'.repeat(40);
@@ -3018,10 +3018,6 @@ describe('worker/attach base-update result wiring (UI-vzyh §2)', () => {
       state: 'ok',
       data: result_head
     }));
-    const ensureApproved = vi.fn(async () => ({
-      state: /** @type {const} */ ('failed'),
-      reason: 'external_review_required'
-    }));
     const att = createWorkerAttachment(WS, {
       runtime,
       bd: {
@@ -3045,15 +3041,7 @@ describe('worker/attach base-update result wiring (UI-vzyh §2)', () => {
         updateBranch,
         mergeSquash: vi.fn(),
         closePr: vi.fn()
-      }),
-      headReview: {
-        captureStartingApproval: async () => ({
-          actor: 'codex',
-          head_sha: original_head,
-          raw: `codex@${original_head}`
-        }),
-        ensureApproved
-      }
+      })
     });
     runtime.queueStore.appendAttempt(WS, {
       expected_revision: runtime.queueStore.snapshot(WS).revision,
@@ -3089,19 +3077,15 @@ describe('worker/attach base-update result wiring (UI-vzyh §2)', () => {
     await att.mergeQueue.kick();
 
     expect(updateBranch).toHaveBeenCalledWith(WS, 304);
-    // The retired carry stamp was the only consumer of the mutation result SHA
-    // (UI-vzyh §2): ancestry keeps the receipt current across the moved head,
-    // so head review sees the raced observation unvouched and reviews it.
-    expect(ensureApproved).toHaveBeenCalledWith(
-      'UI-1',
-      'UI-1',
-      expect.objectContaining({
-        head_sha: raced_head,
-        mutation: null,
-        mutation_result_sha: null
-      })
-    );
-    expect(runtime.queueStore.snapshot(WS).merge_queue).toHaveLength(1);
+    // The queue-owned base update is the ONLY mutation left here (UI-d7fy
+    // §3.3): the raced head is re-observed and judged by the merge gate's own
+    // ancestry rule, with no second freshness layer of the queue's to satisfy
+    // and no carry stamp to vouch for the move.
+    expect(updateBranch).toHaveBeenCalledTimes(1);
+    const entry = runtime.queueStore.snapshot(WS).merge_queue;
+    expect(entry).toHaveLength(1);
+    expect(entry[0].authority?.source).toBe('manual');
+    expect(entry[0].hold).toBeUndefined();
   });
 });
 

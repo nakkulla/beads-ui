@@ -139,14 +139,14 @@ describe('activeBeadIds', () => {
   });
 });
 
-describe('head review attempts (UI-hk74 §7)', () => {
-  test('leaves a running head review out of the running slot', () => {
+describe('review session attempts (UI-d7fy §5.5)', () => {
+  test('leaves a running review session out of the running slot', () => {
     const attempts = attemptsOf([
       {
         attempt_id: 'r1',
         bead_id: 'UI-1',
         status: 'running',
-        kind: 'head_review'
+        kind: 'review_session'
       }
     ]);
 
@@ -155,13 +155,13 @@ describe('head review attempts (UI-hk74 §7)', () => {
     expect(winners.has('UI-1')).toBe(false);
   });
 
-  test('leaves a running head review out of the counted bead ids', () => {
+  test('leaves a running review session out of the counted bead ids', () => {
     const attempts = attemptsOf([
       {
         attempt_id: 'p1',
         bead_id: 'UI-1',
         status: 'running',
-        kind: 'head_repair'
+        kind: 'review_session'
       },
       { attempt_id: 'a1', bead_id: 'UI-2', status: 'running' }
     ]);
@@ -178,7 +178,7 @@ describe('head review attempts (UI-hk74 §7)', () => {
         attempt_id: 'r1',
         bead_id: 'UI-1',
         status: 'done',
-        kind: 'head_review'
+        kind: 'review_session'
       }
     ]);
 

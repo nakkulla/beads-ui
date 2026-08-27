@@ -21,13 +21,13 @@
 const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
 
 /**
- * Whether an attempt is the bead's own implementation run rather than one of
- * the head-review lane's attempts (UI-hk74 §7).
+ * Whether an attempt is the bead's own implementation run rather than a review
+ * session (UI-d7fy §5.5).
  *
- * This is an OCCUPANCY test, not a visibility one. `head_review` / `head_repair`
- * attempts belong on every history surface — 완료 레인, 토큰 합계, 세션 타일 —
- * but they run against a bead whose PR is already open, so letting one hold the
- * bead's 실행중 slot would redraw a card the person already sent to PR 대기.
+ * This is an OCCUPANCY test, not a visibility one. A `review_session` attempt
+ * belongs on every history surface — 완료 레인, 토큰 합계, 세션 타일 — but it
+ * runs against a bead whose PR is already open, so letting one hold the bead's
+ * 실행중 slot would redraw a card the person already sent to PR 대기.
  * Legacy records carry no `kind` and are implementation runs by definition.
  *
  * @param {unknown} attempt
@@ -41,15 +41,14 @@ export function isImplementationAttempt(attempt) {
 }
 
 /**
- * @typedef {Object} HeadReviewAttemptState
+ * @typedef {Object} ReviewSessionAttemptState
  * @property {any} attempt
- * @property {'head_review'|'head_repair'} kind
  * @property {'click'|'auto'|null} origin
  * @property {number|null} started_at
  */
 /**
- * The head-review lane's still-running attempts, folded onto their beads
- * (UI-hk74 §7).
+ * The review-session lane's still-running attempts, folded onto their beads
+ * (UI-d7fy §5.5).
  *
  * Deliberately SEPARATE from {@link activeAttemptStates}: occupancy is an
  * implementation-attempt question and stays exactly as it was, while these
@@ -60,18 +59,18 @@ export function isImplementationAttempt(attempt) {
  * already reports it.
  *
  * @param {Record<string, any>} attempts
- * @returns {Map<string, HeadReviewAttemptState>}
+ * @returns {Map<string, ReviewSessionAttemptState>}
  */
-export function headReviewAttemptStates(attempts) {
+export function reviewSessionAttemptStates(attempts) {
   const values = /** @type {any[]} */ (Object.values(attempts || {}));
-  /** @type {Map<string, HeadReviewAttemptState>} */
+  /** @type {Map<string, ReviewSessionAttemptState>} */
   const winners = new Map();
   for (const a of values) {
     if (
       !a ||
       typeof a.bead_id !== 'string' ||
       a.bead_id.length === 0 ||
-      (a.kind !== 'head_review' && a.kind !== 'head_repair') ||
+      a.kind !== 'review_session' ||
       a.status !== 'running'
     ) {
       continue;
@@ -83,7 +82,6 @@ export function headReviewAttemptStates(attempts) {
     }
     winners.set(a.bead_id, {
       attempt: a,
-      kind: a.kind,
       origin: a.origin === 'click' || a.origin === 'auto' ? a.origin : null,
       started_at
     });
@@ -119,7 +117,7 @@ export function activeAttemptStates(attempts, done_at_by_bead) {
     if (typeof a.resumed_from === 'string' && a.resumed_from.length > 0) {
       resumed_from_ids.add(a.resumed_from);
     }
-    // "이 bead의 마지막 시도"는 구현 시도들 사이에서만 뜻이 있다: head review가
+    // "이 bead의 마지막 시도"는 구현 시도들 사이에서만 뜻이 있다: 리뷰 세션이
     // 뒤에 끼면 처리되지 않은 구현 실패가 조용히 마지막 자리를 잃는다.
     if (isImplementationAttempt(a)) {
       last_attempt_by_bead.set(a.bead_id, a.attempt_id);

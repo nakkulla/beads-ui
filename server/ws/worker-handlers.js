@@ -51,7 +51,7 @@ import {
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
   startWorkerRepoOperationDeployRun,
-  stopWorkerHeadReviewAttempts,
+  stopWorkerAttempt,
   tickWorkerQueue,
   workerMergeEffectInFlight,
   workerMergeQueueState,
@@ -3097,8 +3097,9 @@ export function handleGetBeadPrompt(ws, req) {
   }
   const key = workspaceKeyOf(ws);
   const attempts = Object.values(queueStore().snapshot(key).attempts).filter(
-    // The panel asks what the bead's own dispatch was told to do; a head-review
-    // prompt is a different question the same bead id would answer (UI-hk74 §7).
+    // The panel asks what the bead's own dispatch was told to do; a review
+    // session's prompt is a different question the same bead id would answer
+    // (UI-hk74 §7).
     (/** @type {any} */ a) =>
       a && a.bead_id === bead_id && isImplementationAttempt(a)
   );
@@ -4465,21 +4466,22 @@ export function handleWorkerMergeQueueRemove(ws, req) {
     return;
   }
   // Only an actual merge EFFECT in flight (the GitHub API window) locks the
-  // item. The head-review continuation phases stay cancellable (UI-58w8 §1):
-  // the cancel is what discards the authority, and every late review/repair
-  // result then fails its journal CAS.
-  const entry_journal = /** @type {any} */ (
-    queueStore().snapshot(key)
-  ).merge_queue?.find(
-    (/** @type {any} */ e) => e?.bead_id === p.bead_id
-  )?.head_review;
-  const continuation_phase =
-    !!entry_journal &&
-    ['pending', 'reviewing', 'revising'].includes(entry_journal.state);
+  // item (UI-d7fy §5.6). A running review session does NOT — reviewing is not
+  // merging, and the cancel is exactly what reclaims the authority that
+  // session was dispatched under, so refusing it would leave the one lever
+  // that stops it unusable.
+  const review_session_running = Object.values(
+    /** @type {any} */ (queueStore().snapshot(key)).attempts || {}
+  ).some(
+    (/** @type {any} */ a) =>
+      a?.bead_id === p.bead_id &&
+      a.kind === 'review_session' &&
+      (a.status === 'running' || a.status === 'pending')
+  );
   if (
     state &&
     state.active === p.bead_id &&
-    (!continuation_phase || workerMergeEffectInFlight(key, p.bead_id))
+    (!review_session_running || workerMergeEffectInFlight(key, p.bead_id))
   ) {
     ws.send(
       JSON.stringify(
@@ -4514,13 +4516,11 @@ export function handleWorkerMergeQueueRemove(ws, req) {
   );
   if (result.ok) {
     fanout(key, /** @type {any} */ (result.queue));
-    if (continuation_phase) {
-      // Best-effort stop request to the recorded attempts — never a safety
-      // input, the CAS above already made their late results no-ops.
-      stopWorkerHeadReviewAttempts(key, {
-        review_attempt_id: entry_journal.review_attempt_id ?? null,
-        repair_attempt_id: entry_journal.repair_attempt_id ?? null
-      });
+    // Best-effort, and deliberately AFTER the write (UI-d7fy §5.6): the CAS
+    // above already settled these attempts and reclaimed their authority, so a
+    // session that outlives the stop and finishes writes nothing.
+    for (const attempt_id of result.cancelled_attempt_ids || []) {
+      void Promise.resolve(stopWorkerAttempt(key, attempt_id)).catch(() => {});
     }
   }
 }

@@ -2451,11 +2451,9 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     });
   });
 
-  test('routes a manual review-stale refusal through head review and merges after approval', async () => {
+  test('holds a review-stale item and merges when the next kick is eligible', async () => {
     const store = seedManual(['UI-1']);
-    /** @type {any[]} */
-    const ensure_calls = [];
-    let approved = false;
+    let current = false;
     const merge = vi.fn(async (/** @type {string} */ bead_id) => {
       landMerge(store, bead_id);
       return { ok: true, action: 'merged', reason: null };
@@ -2463,7 +2461,7 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     const mq = driver(store, {
       merge,
       probeMergeability: async () =>
-        approved
+        current
           ? {
               ok: true,
               kind: 'clean',
@@ -2479,79 +2477,55 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
               head_sha: MOVED_HEAD,
               base_ref: 'main',
               external: false
-            },
-      headReview: {
-        ensureApproved: async (
-          /** @type {string} */ queue_bead_id,
-          /** @type {string} */ subject_bead_id,
-          /** @type {any} */ observed
-        ) => {
-          ensure_calls.push({ queue_bead_id, subject_bead_id, observed });
-          approved = true;
-          return { state: 'approved', reason: null };
-        }
-      }
+            }
     });
 
     await mq.kick();
 
-    // Two bindings, one merge: the stale refusal routes into head review, and
-    // the CLEAN gate that follows still binds the approved journal before the
-    // merge — a manual item never merges on a bare metadata receipt.
-    expect(ensure_calls).toHaveLength(2);
-    expect(ensure_calls[0]).toMatchObject({
-      queue_bead_id: 'UI-1',
-      subject_bead_id: 'UI-1',
-      observed: { head_sha: MOVED_HEAD, base_ref: 'main' }
+    // Held, not ended (UI-d7fy §3.3): the slot, the authority, and the reason
+    // all survive, and nothing merged.
+    const held = store.snapshot(WS).merge_queue[0];
+    expect(merge).not.toHaveBeenCalled();
+    expect(held.authority?.source).toBe('manual');
+    expect(held.hold).toMatchObject({
+      reason: 'review_receipt_stale',
+      head_sha: MOVED_HEAD
     });
+
+    // The receipt arrives; the very next kick re-runs the gate on the held
+    // item, clears the hold, and merges.
+    current = true;
+    await mq.kick();
+
     expect(merge).toHaveBeenCalledTimes(1);
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 
-  test('routes an undetermined review verdict through head review like a stale one', async () => {
+  test('holds an undetermined review verdict like a stale one', async () => {
     const store = seedManual(['UI-1']);
-    let approved = false;
-    const ensureApproved = vi.fn(async () => {
-      approved = true;
-      return { state: 'approved', reason: null };
-    });
-    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
-      landMerge(store, bead_id);
-      return { ok: true, action: 'merged', reason: null };
-    });
+    const merge = vi.fn();
     const mq = driver(store, {
       merge,
-      probeMergeability: async () =>
-        approved
-          ? {
-              ok: true,
-              kind: 'clean',
-              reason: null,
-              head_sha: MOVED_HEAD,
-              base_ref: 'main',
-              external: false
-            }
-          : {
-              ok: false,
-              kind: 'blocked',
-              reason: 'review_receipt_undetermined',
-              head_sha: MOVED_HEAD,
-              base_ref: 'main',
-              external: false
-            },
-      headReview: { ensureApproved }
+      probeMergeability: async () => ({
+        ok: false,
+        kind: 'blocked',
+        reason: 'review_receipt_undetermined',
+        head_sha: MOVED_HEAD,
+        base_ref: 'main',
+        external: false
+      })
     });
 
     await mq.kick();
 
-    expect(ensureApproved).toHaveBeenCalled();
-    expect(merge).toHaveBeenCalledTimes(1);
-    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(merge).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue[0].hold?.reason).toBe(
+      'review_receipt_undetermined'
+    );
   });
 
-  test('never spends a head review on an absent spec_id refusal', async () => {
+  test('does not hold on an absent spec_id refusal', async () => {
     const store = seedManual(['UI-1']);
-    const ensureApproved = vi.fn();
     const merge = vi.fn();
     const mq = driver(store, {
       merge,
@@ -2559,122 +2533,36 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
         ok: false,
         kind: 'blocked',
         reason: 'spec_id_missing',
-        head_sha: MANUAL_HEAD,
+        head_sha: MOVED_HEAD,
         base_ref: 'main',
         external: false
-      }),
-      headReview: { ensureApproved }
+      })
     });
 
     await mq.kick();
 
-    // A review cannot write Bead metadata, so dispatching one here would burn
-    // a reviewer round without ever unblocking the item (UI-yqw9).
-    expect(ensureApproved).not.toHaveBeenCalled();
+    // Only the review verdicts hold (UI-d7fy §3.3). `spec_id_missing` is not
+    // resolved by a review, so it keeps the pre-existing terminal disposition.
     expect(merge).not.toHaveBeenCalled();
-    expect(mq.state().failures['UI-1']).toBe('spec_id_missing');
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 
-  test('binds the head-review journal before merging an already CLEAN manual item', async () => {
-    const store = seedManual(['UI-1']);
-    /** @type {any[]} */
-    const ensure_calls = [];
-    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
-      landMerge(store, bead_id);
-      return { ok: true, action: 'merged', reason: null };
-    });
-    const mq = driver(store, {
-      merge,
-      probeMergeability: async () => ({
-        ok: true,
-        kind: 'clean',
-        reason: null,
-        head_sha: MANUAL_HEAD,
-        base_ref: 'main',
-        head_ref: 'UI-1',
-        external: false
-      }),
-      headReview: {
-        ensureApproved: async (
-          /** @type {string} */ queue_bead_id,
-          /** @type {string} */ subject_bead_id,
-          /** @type {any} */ observed
-        ) => {
-          ensure_calls.push({ queue_bead_id, subject_bead_id, observed });
-          return { state: 'approved', reason: null };
-        }
-      }
-    });
-
-    await mq.kick();
-
-    expect(ensure_calls).toHaveLength(1);
-    expect(merge).toHaveBeenCalledTimes(1);
-  });
-
-  test('does not merge a CLEAN manual item whose journal binding fails', async () => {
-    const store = seedManual(['UI-1']);
-    const merge = vi.fn();
-    const mq = driver(store, {
-      merge,
-      probeMergeability: async () => ({
-        ok: true,
-        kind: 'clean',
-        reason: null,
-        head_sha: MANUAL_HEAD,
-        base_ref: 'main',
-        external: false
-      }),
-      headReview: {
-        ensureApproved: async () => ({
-          state: 'failed',
-          reason: 'receipt_readback_mismatch'
-        })
-      }
-    });
-
-    await mq.kick();
-
-    expect(merge).not.toHaveBeenCalled();
-    expect(store.snapshot(WS).merge_queue).toHaveLength(1);
-    expect(mq.state().failures['UI-1']).toBe('receipt_readback_mismatch');
-  });
-
-  test('updates a BEHIND manual item without vouching the moved head', async () => {
+  test('updates a BEHIND manual item once and merges the moved head', async () => {
     const store = seedManual(['UI-1']);
     let updated = false;
-    /** @type {any[]} */
-    const ensure_calls = [];
     const updateBase = vi.fn(async () => {
       updated = true;
-      return {
-        ok: true,
-        reason: null,
-        result_head_sha: MOVED_HEAD
-      };
+      return { ok: true, reason: null, result_head_sha: MOVED_HEAD };
     });
     const merge = vi.fn(async (/** @type {string} */ bead_id) => {
       landMerge(store, bead_id);
       return { ok: true, action: 'merged', reason: null };
     });
-    let reviewed = false;
     const mq = driver(store, {
       merge,
       updateBase,
-      probeMergeability: async () => {
-        if (!updated) {
-          return {
-            ok: false,
-            kind: 'blocked',
-            reason: 'base_behind',
-            head_sha: MANUAL_HEAD,
-            base_ref: 'main',
-            head_ref: 'UI-1',
-            external: false
-          };
-        }
-        return reviewed
+      probeMergeability: async () =>
+        updated
           ? {
               ok: true,
               kind: 'clean',
@@ -2687,42 +2575,24 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
           : {
               ok: false,
               kind: 'blocked',
-              reason: 'review_receipt_stale',
-              head_sha: MOVED_HEAD,
+              reason: 'base_behind',
+              head_sha: MANUAL_HEAD,
               base_ref: 'main',
               head_ref: 'UI-1',
               external: false
-            };
-      },
-      headReview: {
-        ensureApproved: async (
-          /** @type {string} */ queue_bead_id,
-          /** @type {string} */ subject_bead_id,
-          /** @type {any} */ observed
-        ) => {
-          ensure_calls.push({ queue_bead_id, subject_bead_id, observed });
-          reviewed = true;
-          return { state: 'approved', reason: null };
-        }
-      }
+            }
     });
 
     await mq.kick();
 
+    // The one-shot alignment is unchanged (UI-d7fy §3.3): ancestry keeps the
+    // prior receipt current across the moved head, so nothing else is asked of
+    // the item before it merges.
     expect(updateBase).toHaveBeenCalledTimes(1);
-    // The base update no longer carries a vouched mutation (UI-vzyh §2):
-    // ancestry keeps the receipt current, so a `review_receipt_stale` that
-    // still shows up afterwards is the abnormal case and gets a full review of
-    // the observed head, not a carry stamp.
-    expect(ensure_calls[0].observed).toMatchObject({
-      head_sha: MOVED_HEAD,
-      mutation: null,
-      mutation_result_sha: null
-    });
     expect(merge).toHaveBeenCalledTimes(1);
   });
 
-  test('vouches for a resolver push as the queue-owned mutation', async () => {
+  test('sends a ready resolution straight back to re-observation', async () => {
     const store = seedManual(['UI-1']);
     const finish = dispatchResolution(store, 'UI-1', 'res-1');
     store.bindResolutionWait(WS, {
@@ -2736,8 +2606,6 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
       wait_ms: 100
     });
     finish();
-    /** @type {any[]} */
-    const ensure_calls = [];
     const merge = vi.fn(async (/** @type {string} */ bead_id) => {
       landMerge(store, bead_id);
       return { ok: true, action: 'merged', reason: null };
@@ -2752,29 +2620,19 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
         base_ref: 'main',
         head_ref: 'UI-1',
         external: false
-      }),
-      headReview: {
-        ensureApproved: async (
-          /** @type {string} */ _q,
-          /** @type {string} */ _s,
-          /** @type {any} */ observed
-        ) => {
-          ensure_calls.push(observed);
-          return { state: 'approved', reason: null };
-        }
-      }
+      })
     });
 
     await mq.kick();
 
-    expect(ensure_calls[0]).toMatchObject({
-      mutation: 'resolver:res-1',
-      mutation_result_sha: null
-    });
+    // A queue-owned resolution asks for no receipt of its own (UI-d7fy §2):
+    // the original `impl_review` is an ancestor of the resolved head, so the
+    // gate the re-observation runs is the whole judgment.
     expect(merge).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 
-  test('clears the result binding across consecutive resolver rounds', async () => {
+  test('merges the head a second resolver round produced', async () => {
     const store = seedManual(['UI-1']);
     const finishFirst = dispatchResolution(store, 'UI-1', 'res-1');
     store.bindResolutionWait(WS, {
@@ -2802,8 +2660,6 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
         head_ref: 'feature-branch'
       };
     });
-    /** @type {any[]} */
-    const ensure_calls = [];
     const merge = vi.fn(async (/** @type {string} */ bead_id) => {
       landMerge(store, bead_id);
       return { ok: true, action: 'merged', reason: null };
@@ -2822,27 +2678,12 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
           head_ref: 'UI-1',
           external: false
         };
-      },
-      headReview: {
-        ensureApproved: async (
-          /** @type {string} */ _q,
-          /** @type {string} */ _s,
-          /** @type {any} */ observed
-        ) => {
-          ensure_calls.push(observed);
-          return { state: 'approved', reason: null };
-        }
       }
     });
 
     await mq.kick();
 
     expect(dispatchConflict).toHaveBeenCalledTimes(1);
-    expect(ensure_calls[0]).toMatchObject({
-      head_sha: 'c'.repeat(40),
-      mutation: 'resolver:res-2',
-      mutation_result_sha: null
-    });
     expect(merge).toHaveBeenCalledTimes(1);
   });
 
@@ -2873,8 +2714,6 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
         merged_sha: null
       }
     });
-    /** @type {any[]} */
-    const ensure_calls = [];
     const merge = vi.fn(async () => ({
       ok: true,
       action: 'merged',
@@ -2890,20 +2729,13 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
         base_ref: 'main',
         external: false
       }),
-      headReview: {
-        ensureApproved: async (/** @type {any} */ input) => {
-          ensure_calls.push(input);
-          return { state: 'approved', reason: null };
-        }
-      },
       onCompletionResult: async () => {}
     });
 
     await mq.kick();
 
-    // The completion saga owns its own gating and has no disposition for a
-    // head-review result — the two machines must not interleave.
-    expect(ensure_calls).toEqual([]);
+    // The completion saga owns its own gating; the queue does not layer a
+    // second judgment on top of it.
     expect(merge).toHaveBeenCalledTimes(1);
   });
 
@@ -2931,56 +2763,52 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 
-  test('keeps a manual item queued with its failure when head review fails', async () => {
-    const store = seedManual(['UI-1']);
-    const merge = vi.fn();
+  test('skips a held item and keeps draining the ones behind it', async () => {
+    const store = seedManual(['UI-1', 'UI-2']);
+    /** @type {string[]} */
+    const merged = [];
+    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
+      landMerge(store, bead_id);
+      merged.push(bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
     const mq = driver(store, {
       merge,
-      probeMergeability: async () => ({
-        ok: false,
-        kind: 'blocked',
-        reason: 'review_receipt_stale',
-        head_sha: MOVED_HEAD,
-        base_ref: 'main',
-        external: false
-      }),
-      headReview: {
-        ensureApproved: async () => {
-          const authority_id =
-            store.snapshot(WS).merge_queue[0].authority?.id || '';
-          store.beginHeadReview(WS, {
-            bead_id: 'UI-1',
-            authority_id,
-            head_sha: MOVED_HEAD,
-            reviewer: 'codex',
-            effort: 'xhigh'
-          });
-          store.setHeadReviewState(WS, {
-            bead_id: 'UI-1',
-            authority_id,
-            head_sha: MOVED_HEAD,
-            expected_state: 'pending',
-            patch: { state: 'failed', failure_reason: 'transport_unavailable' }
-          });
-          return { state: 'failed', reason: 'transport_unavailable' };
-        }
-      }
+      probeMergeability: async (/** @type {string} */ bead_id) =>
+        bead_id === 'UI-1'
+          ? {
+              ok: false,
+              kind: 'blocked',
+              reason: 'review_receipt_missing',
+              head_sha: MOVED_HEAD,
+              base_ref: 'main',
+              external: false
+            }
+          : {
+              ok: true,
+              kind: 'clean',
+              reason: null,
+              head_sha: MOVED_HEAD,
+              base_ref: 'main',
+              external: false
+            }
     });
 
     await mq.kick();
-    // A second pass must not re-drive the failed item — only a fresh click may.
-    await mq.kick();
 
-    expect(merge).not.toHaveBeenCalled();
-    expect(store.snapshot(WS).merge_queue).toHaveLength(1);
-    expect(store.snapshot(WS).merge_queue[0].head_review?.state).toBe('failed');
-    expect(mq.state().failures['UI-1']).toBe('transport_unavailable');
+    // A hold is not `halted_on_head` (UI-d7fy §3.3): the held item is skipped
+    // for the rest of the pass and everything behind it still merges.
+    expect(merged).toEqual(['UI-2']);
+    expect(store.snapshot(WS).merge_queue.map((e) => e.bead_id)).toEqual([
+      'UI-1'
+    ]);
+    expect(store.snapshot(WS).merge_queue[0].hold?.reason).toBe(
+      'review_receipt_missing'
+    );
   });
 
-  test('does not route a legacy authority-less entry through head review', async () => {
+  test('holds a legacy authority-less entry on the same review verdict', async () => {
     const store = seed(['UI-1']);
-    /** @type {any[]} */
-    const ensure_calls = [];
     const merge = vi.fn();
     const mq = driver(store, {
       merge,
@@ -2991,20 +2819,18 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
         head_sha: MOVED_HEAD,
         base_ref: 'main',
         external: false
-      }),
-      headReview: {
-        ensureApproved: async (/** @type {any} */ input) => {
-          ensure_calls.push(input);
-          return { state: 'approved', reason: null };
-        }
-      }
+      })
     });
 
     await mq.kick();
 
-    expect(ensure_calls).toEqual([]);
+    // The hold is a property of the GATE VERDICT, not of the authority
+    // (UI-d7fy §3.3): a legacy row is held with the same reason and the same
+    // [취소] exit rather than dropped without one.
     expect(merge).not.toHaveBeenCalled();
-    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(store.snapshot(WS).merge_queue[0].hold?.reason).toBe(
+      'review_receipt_stale'
+    );
   });
 });
 

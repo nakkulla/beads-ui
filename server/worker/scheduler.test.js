@@ -4125,37 +4125,18 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect(prompt).toContain('PR 머지는 절대 수행하지 마라');
   });
 
-  test('instructs the exact-delta self-review the merge requires', async () => {
+  test('does not ask the resolver session to review or write a receipt', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedDoneAttempt(env.store);
 
     await env.scheduler.resolveConflict(WS, 'B1');
 
-    // Without it the resolved PR strands at `resolver_self_review_not_approved`
-    // and no external reviewer is dispatched to rescue it (UI-vzyh §2).
+    // The resolver session resolves and pushes; the merge gate's `impl_review`
+    // ancestry rule is the ONE review judgment (UI-d7fy §3.6).
     const prompt = env.runner.spawnedBead('B1').prompt;
-    expect(prompt).toContain('exact delta');
-    expect(prompt).toContain('self-review');
-    expect(prompt).toContain('머지의 필수조건');
-  });
-
-  test('names the attempt id and the exact resolver-self receipt write', async () => {
-    const env = setup({ config: {}, slots: 1 });
-    seedDoneAttempt(env.store);
-
-    const result = await env.scheduler.resolveConflict(WS, 'B1');
-
-    // The queue reads `impl_review=resolver-self:<attempt>:<prior>@<result>`
-    // back from bd metadata; a session told only to "leave a verdict" wrote a
-    // comment instead and its PR fell to an external review (UI-hm55).
-    const prompt = env.runner.spawnedBead('B1').prompt;
-    expect(result.ok).toBe(true);
-    expect(prompt).toContain(`attempt id: ${result.attempt_id}`);
-    expect(prompt).toContain(
-      `bd update B1 --set-metadata impl_review=resolver-self:${result.attempt_id}:`
-    );
-    expect(prompt).toContain('bd show B1 --json');
-    expect(prompt).toContain('git rev-parse HEAD');
+    expect(prompt).not.toContain('resolver-self');
+    expect(prompt).not.toContain('self-review');
+    expect(prompt).not.toContain('impl_review');
   });
 
   test('instructs recording the resolution as a bd comment on the bead', async () => {
@@ -8449,13 +8430,13 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     ]);
   });
 
-  test('leaves a running head review attempt out of the orphan sweep', async () => {
+  test('leaves a running review session attempt out of the orphan sweep', async () => {
     const env = reconcileEnv({ alive: true, started_at: 1000 });
-    env.store.upsertHeadReviewAttempt(WS, {
+    env.store.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review:authority-1:aaa',
       patch: {
         bead_id: 'UI-1',
-        kind: 'head_review',
+        kind: 'review_session',
         status: 'running',
         pid: null,
         started_at: 1000,
@@ -8470,7 +8451,7 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     ).toBe('running');
   });
 
-  test('leaves a live head review attempt out of the occupied slot count', () => {
+  test('leaves a live review session attempt out of the occupied slot count', () => {
     const env = reconcileEnv(
       { alive: true, started_at: 1000 },
       { 'UI-1': {} },
@@ -8478,11 +8459,11 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
         slots: 1
       }
     );
-    env.store.upsertHeadReviewAttempt(WS, {
+    env.store.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review:authority-1:aaa',
       patch: {
         bead_id: 'UI-1',
-        kind: 'head_review',
+        kind: 'review_session',
         status: 'running',
         pid: 4242,
         started_at: 1000,

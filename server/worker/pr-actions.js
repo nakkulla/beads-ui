@@ -114,7 +114,7 @@ export const CLEANUP_STEPS = [
 /**
  * @typedef {Object} MergeClickResult
  * @property {boolean} ok - Whether the click accomplished what it set out to.
- * @property {'merged'|'updated_and_merged'|'already_merged'|'cleanup_pending'|'merge_unconfirmed'|'conflict_resolution'|'verify_blocked'|'head_review'|'refused'} action
+ * @property {'merged'|'updated_and_merged'|'already_merged'|'cleanup_pending'|'merge_unconfirmed'|'conflict_resolution'|'verify_blocked'|'refused'} action
  * What the click actually DID — never just "succeeded": a dispatched conflict
  * resolution is a legitimate outcome that merged nothing, and
  * `cleanup_pending` is a landed merge whose RepoOperation has not reached a
@@ -131,8 +131,6 @@ export const CLEANUP_STEPS = [
  * @property {string|null} [base_ref] - The base the decision was taken on,
  * when the refusal came from a mergeability probe that observed one.
  * @property {string|null} [head_ref] - The PR head ref the probe observed.
- * @property {'failed'|'gone'|'halted'} [review_state] - The head-review
- * machine's non-approved outcome, when `action` is `head_review`.
  * @property {Record<string, unknown>|null} [continuation_mismatch]
  */
 
@@ -438,7 +436,7 @@ export function createPrActions(deps) {
     }
     // The registry drops a bead for as long as ANY non-terminal attempt of its
     // own runs (`externalProtectedBeadIds`, UI-b8n8) — and the queue's own
-    // resolution / head-review / repair attempts are attempts too. Right after
+    // resolution and review-session attempts are attempts too. Right after
     // one of them ends, the queue re-observes the head before the next scan
     // has refilled the registry, so the row it is driving read as
     // `not_in_pr_wait` (`repair_head_unobservable`, UI-w25i). The queue item
@@ -636,7 +634,7 @@ export function createPrActions(deps) {
         !attempt ||
         attempt.bead_id !== bead_id ||
         attempt.external_conflict === true ||
-        // A head-review attempt carries no `receipt_baseline` (UI-hk74 §7), so
+        // A review session carries no `receipt_baseline` (UI-hk74 §7), so
         // letting one win "latest" would answer `null` here and skip every
         // baseline-dependent forgery check the receipt gate exists to run.
         !isImplementationAttempt(attempt)

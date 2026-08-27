@@ -3958,11 +3958,10 @@ export function createScheduler(deps) {
 
   /**
    * Whether the SCHEDULER is the lifecycle owner of a persisted attempt
-   * (UI-hk74 §7). Head review and repair attempts live in the same history but
-   * are dispatched, adopted, and settled by the head-review transport against
-   * its own durable markers. They never enter this engine's `running` set, so
-   * the reconcile fences below cannot vouch for them — and `isDeadAttempt`
-   * would read every one of them as dead and orphan a live reviewer.
+   * (UI-hk74 §7). A review session lives in the same history but is dispatched
+   * and settled by the merge queue's own lane. It never enters this engine's
+   * `running` set, so the reconcile fences below cannot vouch for it — and
+   * `isDeadAttempt` would read it as dead and orphan a live reviewer.
    *
    * @param {any} attempt
    * @returns {boolean}
@@ -6087,19 +6086,13 @@ export function createScheduler(deps) {
    * the intent judgment, and that narrative is what the human merge click
    * reviews.
    *
-   * The exact-delta self-review is stated because it is now a MERGE
-   * PRECONDITION, not advice (UI-vzyh §2): a resolver mutation overrides the
-   * ancestry rule, and `head-review.js` refuses the merge with
-   * `resolver_self_review_not_approved` unless this session reviewed its own
-   * prior→result delta and the queue recorded the APPROVE. No external
-   * reviewer is dispatched for it, so a session that skips it strands its own
-   * PR.
-   *
-   * The receipt is spelled out with its exact key, shape, and THIS attempt's id
-   * (UI-hm55): the queue reads `impl_review=resolver-self:<attempt>:<prior>@
-   * <result>` back from bd metadata (`head-review.js`), and a session told only
-   * to "leave a verdict" wrote a comment instead — which the queue cannot
-   * read, so it fell back to an external review the contract never asked for.
+   * The session does NOT review anything (UI-d7fy §3.6). The queue's one
+   * review judgment is the merge gate's `impl_review` ancestry rule, and a
+   * resolution commit is judged by it exactly like any other commit: the
+   * original receipt is an ancestor of the resolved head, `[verify]` runs the
+   * repo's own checks on the merge candidate, and the retired `resolver-self:`
+   * receipt demanded a second, narrower proof that stranded PRs no rule
+   * actually needed.
    *
    * @param {string} bead_id
    * @param {string} target_base
@@ -6110,12 +6103,9 @@ export function createScheduler(deps) {
     const base = target_base || 'main';
     return [
       `네 PR이 base(${base})와 충돌한다(bead ${bead_id}, 이 해소 attempt id: ${attempt_id}).`,
-      '시작하기 전에 `git rev-parse HEAD`로 해소 전 head(40자)를 기록해 둬라 — 아래 영수증의 prior가 된다.',
       `같은 워크트리에서 origin을 fetch한 뒤 \`git merge origin/${base}\`로 base를 이 브랜치에 머지해 충돌을 해소하라.`,
       'rebase와 force-push는 금지다 — merge-into-branch만 사용한다.',
       '충돌은 양쪽 변경의 의도가 모두 보존되도록 해소하고, 레포의 테스트/검증을 돌려 통과시킨 뒤 브랜치에 push하라.',
-      'push 전에 해소 전 head부터 해소 후 head까지의 exact delta를 네가 직접 self-review하고 verdict를 남겨라 — 이 self-review는 머지의 필수조건이고 외부 리뷰어는 디스패치되지 않는다.',
-      `verdict가 APPROVE면 push 후 반드시 \`bd update ${bead_id} --set-metadata impl_review=resolver-self:${attempt_id}:<해소 전 head 40자>@<해소 후 head 40자>\`로 영수증을 쓰고 \`bd show ${bead_id} --json\`으로 readback하라 — 큐는 이 메타데이터 값만 self-review 증거로 읽는다. 댓글이나 본문 verdict는 증거가 아니며, 영수증이 없으면 외부 리뷰어가 대신 돌고 네 self-review는 무효가 된다. REVISE면 영수증을 쓰지 말고 사유를 남기고 끝내라.`,
       `push 후 \`bd comment ${bead_id}\`로 해소 내역을 기록하라 — 충돌 난 파일과 각각을 어떤 방식으로(어느 쪽을 살렸는지, 어떻게 양쪽 의도를 합쳤는지) 해소했는지 간결히.`,
       'PR 머지는 절대 수행하지 마라 — 머지는 사람이 버튼으로 한다.'
     ].join(' ');

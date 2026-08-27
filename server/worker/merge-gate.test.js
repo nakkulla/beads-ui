@@ -429,6 +429,20 @@ describe('worker/merge-gate — shared review receipt state', () => {
     expect(state).toBe('current');
   });
 
+  test('accepts the head a queue-owned resolution pushed on its ancestry alone', async () => {
+    // UI-d7fy §2: the retired head-review layer demanded a `resolver-self:`
+    // receipt for a resolution head and refused it as `mutation_unproven`
+    // without one. There is one rule now — the original `impl_review` is an
+    // ancestor of the resolved head, so it is current.
+    const state = await reviewReceiptState(
+      issueOf({ impl_review: `codex@${OLD_SHA}` }),
+      SHA,
+      ancestor
+    );
+
+    expect(state).toBe('current');
+  });
+
   test('marks a receipt the observed head does not descend from stale', async () => {
     const state = await reviewReceiptState(
       issueOf({ impl_review: `codex@${OLD_SHA}` }),

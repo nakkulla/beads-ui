@@ -755,7 +755,7 @@ describe('worker/session-log subagent last_event_at (UI-2mpn §6.4)', () => {
 
 describe('worker/session-log — recorded attempt log path (UI-hk74 §7)', () => {
   /**
-   * A transcript written where the head-review transport puts it: beside the
+   * A transcript written outside `sessions/`: beside the
    * attempt's own marker, not under `sessions/`.
    *
    * @param {string} file
@@ -772,7 +772,7 @@ describe('worker/session-log — recorded attempt log path (UI-hk74 §7)', () =>
   test('reads an attempt from the log path its record names', () => {
     const recorded = path.join(
       tmp_state,
-      'head-review-attempts',
+      'review-sessions',
       'review_a.log.jsonl'
     );
     writeRecordedLog(recorded, [{ type: 'assistant', seq: 1 }]);
@@ -788,7 +788,7 @@ describe('worker/session-log — recorded attempt log path (UI-hk74 §7)', () =>
   test('reports the recorded log mtime as the attempt last event time', () => {
     const recorded = path.join(
       tmp_state,
-      'head-review-attempts',
+      'review-sessions',
       'review_b.log.jsonl'
     );
     writeRecordedLog(recorded, [{ type: 'assistant' }]);
@@ -840,11 +840,7 @@ describe('worker/session-log — recorded attempt log path (UI-hk74 §7)', () =>
   });
 
   test('leaves the spawn-side path resolution attempt-agnostic', () => {
-    const recorded = path.join(
-      tmp_state,
-      'head-review-attempts',
-      'x.log.jsonl'
-    );
+    const recorded = path.join(tmp_state, 'review-sessions', 'x.log.jsonl');
     const log = createSessionLog({ attemptLogPath: () => recorded });
 
     expect(log.pathFor(WS, 'att-1')).toBe(sessionLogPath(WS, 'att-1'));
