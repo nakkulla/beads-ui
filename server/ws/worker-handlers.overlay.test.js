@@ -27,7 +27,9 @@ function externalRow(bead_id) {
     bead_id,
     pr_url: 'https://github.com/o/r/pull/7',
     pr_number: 7,
-    added_at: 1000
+    added_at: 1000,
+    receipt_key: null,
+    receipt_check: null
   };
 }
 

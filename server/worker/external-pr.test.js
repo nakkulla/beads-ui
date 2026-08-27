@@ -4,8 +4,20 @@
  */
 import { describe, expect, test } from 'vitest';
 import { createExternalPrStore } from './external-pr.js';
+import { receiptProbeError } from './receipt-check.js';
 
 const WS = '/tmp/example-workspace/project-ext';
+
+/** @type {import('./receipt-check.js').ReceiptCheckResult} */
+const OK_CHECK = {
+  ok: true,
+  violations: [],
+  checks: {},
+  probe_error: false
+};
+
+/** @type {import('./receipt-check.js').ReceiptCheckResult} */
+const PROBE_CHECK = receiptProbeError('check_threw');
 
 describe('worker/external-pr', () => {
   test('returns an empty list for an unseen workspace', () => {
@@ -26,7 +38,9 @@ describe('worker/external-pr', () => {
         bead_id: 'UI-1',
         pr_url: 'https://github.com/o/r/pull/7',
         pr_number: 7,
-        added_at: 100
+        added_at: 100,
+        receipt_key: null,
+        receipt_check: null
       }
     ]);
   });
@@ -106,6 +120,133 @@ describe('worker/external-pr', () => {
 
     expect(store.drop(WS, 'UI-9')).toBe(false);
     expect(store.list(WS).map((r) => r.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('starts a new row with no receipt observation at all', () => {
+    const store = createExternalPrStore();
+
+    store.replace(WS, [{ bead_id: 'UI-1', pr_url: 'u', pr_number: 1 }]);
+
+    expect(store.get(WS, 'UI-1')).toMatchObject({
+      receipt_key: null,
+      receipt_check: null
+    });
+  });
+
+  test('preserves the receipt observation when the scan passes undefined', () => {
+    const store = createExternalPrStore();
+    store.replace(WS, [
+      {
+        bead_id: 'UI-1',
+        pr_url: 'u',
+        pr_number: 1,
+        receipt_key: '["a"]',
+        receipt_check: OK_CHECK
+      }
+    ]);
+
+    store.replace(WS, [{ bead_id: 'UI-1', pr_url: 'u', pr_number: 1 }]);
+
+    expect(store.get(WS, 'UI-1')).toMatchObject({
+      receipt_key: '["a"]',
+      receipt_check: OK_CHECK
+    });
+  });
+
+  test('preserves receipt_check while the scan re-states an unchanged key', () => {
+    const store = createExternalPrStore();
+    store.replace(WS, [
+      {
+        bead_id: 'UI-1',
+        pr_url: 'u',
+        pr_number: 1,
+        receipt_key: '["a"]',
+        receipt_check: OK_CHECK
+      }
+    ]);
+
+    store.replace(WS, [
+      { bead_id: 'UI-1', pr_url: 'u', pr_number: 1, receipt_key: '["a"]' }
+    ]);
+
+    expect(store.get(WS, 'UI-1')?.receipt_check).toEqual(OK_CHECK);
+  });
+
+  test('replaces the receipt observation when the scan passes a new one', () => {
+    const store = createExternalPrStore();
+    store.replace(WS, [
+      {
+        bead_id: 'UI-1',
+        pr_url: 'u',
+        pr_number: 1,
+        receipt_key: '["a"]',
+        receipt_check: OK_CHECK
+      }
+    ]);
+
+    store.replace(WS, [
+      {
+        bead_id: 'UI-1',
+        pr_url: 'u',
+        pr_number: 1,
+        receipt_key: '["b"]',
+        receipt_check: PROBE_CHECK
+      }
+    ]);
+
+    expect(store.get(WS, 'UI-1')).toMatchObject({
+      receipt_key: '["b"]',
+      receipt_check: PROBE_CHECK
+    });
+  });
+
+  test('clears the receipt observation when the scan passes an explicit null', () => {
+    const store = createExternalPrStore();
+    store.replace(WS, [
+      {
+        bead_id: 'UI-1',
+        pr_url: 'u',
+        pr_number: 1,
+        receipt_key: '["a"]',
+        receipt_check: OK_CHECK
+      }
+    ]);
+
+    store.replace(WS, [
+      {
+        bead_id: 'UI-1',
+        pr_url: 'u',
+        pr_number: 1,
+        receipt_key: null,
+        receipt_check: null
+      }
+    ]);
+
+    expect(store.get(WS, 'UI-1')).toMatchObject({
+      receipt_key: null,
+      receipt_check: null
+    });
+  });
+
+  test('does not resurrect the receipt observation of a dropped row', () => {
+    const store = createExternalPrStore();
+    store.replace(WS, [
+      {
+        bead_id: 'UI-1',
+        pr_url: 'u',
+        pr_number: 1,
+        receipt_key: '["a"]',
+        receipt_check: OK_CHECK
+      }
+    ]);
+    store.replace(WS, []);
+
+    store.replace(WS, [{ bead_id: 'UI-1', pr_url: 'u', pr_number: 1 }]);
+
+    expect(store.get(WS, 'UI-1')).toMatchObject({
+      receipt_key: null,
+      receipt_check: null
+    });
   });
 
   test('clear drops every workspace', () => {

@@ -54,6 +54,7 @@ import {
 } from './completion-intent.js';
 import { createCompletionRepairService } from './completion-repair.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
+import { loadExecutionDefaults } from './execution-defaults.js';
 import { createHeadReviewTransport } from './head-review-transport.js';
 import { autoReviewHeadDrifted, createHeadReview } from './head-review.js';
 import { observedHeadSha } from './merge-candidates.js';
@@ -65,6 +66,12 @@ import { createPrPoller } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import { createQuickfixLanding } from './quickfix-landing.js';
+import {
+  RECEIPT_METADATA_KEYS,
+  checkReceipts,
+  receiptDefaultsFrom,
+  receiptProbeError
+} from './receipt-check.js';
 import { createRecoveryArchive } from './recovery-archive.js';
 import {
   createRepairSessionAdapter,
@@ -1018,6 +1025,81 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   let external_scan_generation = 0;
 
   /**
+   * The beads the worker itself is running, which the external scan must never
+   * register (UI-b8n8). `null` means the set could not be read at all — the
+   * caller treats that as fail-closed, not as an empty set.
+   *
+   * @returns {Set<string>|null}
+   */
+  function externalProtectedIds() {
+    try {
+      return scheduler.externalProtectedBeadIds(keyFor(workspace_root));
+    } catch (err) {
+      log(
+        'external protection set unreadable for %s: %o',
+        keyFor(workspace_root),
+        err
+      );
+      return null;
+    }
+  }
+
+  /**
+   * The receipt fields ONE scanned external row carries into the registry
+   * (UI-17mj §2.2).
+   *
+   * An external bead has no worker attempt, so nothing ever recorded a
+   * `receipt_check` for it — the badge only appeared once a conflict-resolution
+   * attempt happened to finish, and then kept showing that attempt's verdict
+   * even after the metadata was corrected. The scan is the observation that has
+   * always been missing, and it is cheap: `head: null` means no git probe, and
+   * the metadata came along with the scan the poller already made.
+   *
+   * `receipt_key` is what keeps it cheap ACROSS ticks — a re-check happens only
+   * when one of the nine backing keys actually changed, so a steady lane costs
+   * one string compare per row per tick.
+   *
+   * DISPLAY ONLY. The merge gate re-checks live on the click, and never reads
+   * this.
+   *
+   * @param {import('./bd-metadata.js').ExternalPrScanRow} row
+   * @returns {Promise<{ receipt_key: string|null, receipt_check?: import('./receipt-check.js').ReceiptCheckResult|null }>}
+   */
+  async function observedReceiptFor(row) {
+    const metadata =
+      row.metadata && typeof row.metadata === 'object' ? row.metadata : null;
+    if (!metadata) {
+      // The legacy `scanBeads` shape carries no metadata at all. Nothing was
+      // observed, so nothing is claimed.
+      return { receipt_key: null, receipt_check: null };
+    }
+    const receipt_key = JSON.stringify(
+      RECEIPT_METADATA_KEYS.map((key) => metadata[key] ?? null)
+    );
+    const prior = runtime.externalPrs.get(keyFor(workspace_root), row.bead_id);
+    if (prior && prior.receipt_key === receipt_key) {
+      // Unchanged backing: `undefined` tells the registry to carry the previous
+      // observation over rather than blank it.
+      return { receipt_key };
+    }
+    try {
+      return {
+        receipt_key,
+        receipt_check: await checkReceipts({
+          metadata,
+          baseline: null,
+          lineage: null,
+          defaults: receiptDefaultsFrom(loadExecutionDefaults()),
+          head: null
+        })
+      };
+    } catch (err) {
+      log('external receipt check threw for %s: %o', row.bead_id, err);
+      return { receipt_key, receipt_check: receiptProbeError('check_threw') };
+    }
+  }
+
+  /**
    * Re-derive the workspace's EXTERNAL PR rows from bd (UI-7agi §1): every
    * `resolved` bead still carrying a `metadata.pr_url`. Memory only — nothing
    * is written into `queue.json`, because none of these beads ran here.
@@ -1048,7 +1130,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
    *
    * The judgment is a SYNCHRONOUS read of the queue snapshot, for the same
    * reason `sweepClosedQueue` is synchronous: nothing can dispatch between the
-   * exclusion and the registration.
+   * exclusion and the registration. The receipt observation (UI-17mj §2.2) is
+   * the one awaited step inside the pass, so the protection set is read a
+   * SECOND time after it — the deciding read is the one with no await left
+   * between itself and `replace`.
    *
    * Overlapping calls are ordered by generation, not by completion. The poller
    * releases its own re-entrancy fence only AFTER this await, and the manual
@@ -1075,19 +1160,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     if (fresh === false) {
       return;
     }
-    /** @type {Set<string>|null} */
-    let protected_ids = null;
-    try {
-      protected_ids = scheduler.externalProtectedBeadIds(
-        keyFor(workspace_root)
-      );
-    } catch (err) {
-      log(
-        'external protection set unreadable for %s: %o',
-        keyFor(workspace_root),
-        err
-      );
-    }
+    const protected_ids = externalProtectedIds();
     if (protected_ids === null) {
       // Fail-closed: with no protection set the exclusion cannot be decided, and
       // registering the whole scan is exactly the unsafe side. The previous rows
@@ -1100,9 +1173,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     } else {
       /** @type {string[]} */
       const excluded = [];
-      /** @type {{ bead_id: string, pr_url: string, pr_number: number|null }[]} */
+      /** @type {{ bead_id: string, pr_url: string, pr_number: number|null, receipt_key?: string|null, receipt_check?: import('./receipt-check.js').ReceiptCheckResult|null }[]} */
       const rows = [];
-      for (const row of /** @type {{ bead_id: string, pr_url: string }[]} */ (
+      for (const row of /** @type {import('./bd-metadata.js').ExternalPrScanRow[]} */ (
         pr_rows
       )) {
         if (protected_ids.has(row.bead_id)) {
@@ -1112,19 +1185,48 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         rows.push({
           bead_id: row.bead_id,
           pr_url: row.pr_url,
-          pr_number: parsePrNumber(row.pr_url)
+          pr_number: parsePrNumber(row.pr_url),
+          ...(await observedReceiptFor(row))
         });
       }
-      if (excluded.length > 0) {
-        // Normal operation, not an anomaly — logged only so the lane's absence
-        // is explainable.
-        log(
-          'external scan skipped worker-owned beads for %s: %s',
-          keyFor(workspace_root),
-          excluded.join(', ')
-        );
+      if (generation !== external_scan_generation) {
+        // The receipt observations above are awaited, so a newer scan can have
+        // overtaken this one meanwhile. The generation fence has to be re-read
+        // AFTER them for the same reason it exists at all: an older scan may
+        // never publish its rows, and it may not run the sweep below off them
+        // either.
+        return;
       }
-      runtime.externalPrs.replace(keyFor(workspace_root), rows);
+      // The exclusion is re-decided here, against a set read with NOTHING
+      // awaited between it and the replace. The observations above are the only
+      // awaits in this pass, but they are enough for a dispatch to land
+      // meanwhile, and registering a bead the worker just claimed is exactly
+      // the accident UI-b8n8 closed.
+      const owned_now = externalProtectedIds();
+      if (owned_now === null) {
+        log(
+          'external registry left stale for %s (no protection set)',
+          keyFor(workspace_root)
+        );
+      } else {
+        const registered = rows.filter((row) => {
+          if (!owned_now.has(row.bead_id)) {
+            return true;
+          }
+          excluded.push(row.bead_id);
+          return false;
+        });
+        if (excluded.length > 0) {
+          // Normal operation, not an anomaly — logged only so the lane's
+          // absence is explainable.
+          log(
+            'external scan skipped worker-owned beads for %s: %s',
+            keyFor(workspace_root),
+            excluded.join(', ')
+          );
+        }
+        runtime.externalPrs.replace(keyFor(workspace_root), registered);
+      }
     }
     try {
       scheduler.sweepClosedQueue(keyFor(workspace_root), statuses);

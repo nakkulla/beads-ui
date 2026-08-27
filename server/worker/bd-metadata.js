@@ -21,6 +21,23 @@
  */
 import { requireBdJsonCapabilityForWorkspace } from '../bd-effect-gate.js';
 import { runBd, runBdJsonProjected } from '../bd.js';
+import { RECEIPT_METADATA_KEYS } from './receipt-check.js';
+
+/**
+ * One `resolved` bead the whole-list scan found a `metadata.pr_url` on.
+ *
+ * `metadata` is the projection of the bead's metadata onto
+ * `RECEIPT_METADATA_KEYS` — the WHOLE set, not just the receipt itself
+ * (UI-17mj §2.2). `checkReceipts` judges a `main:*` receipt against
+ * `impl_dispatch`, `route` and `planned_execution`, so a partial projection
+ * would turn a perfectly backed receipt into `main_receipt_unbacked`.
+ *
+ * @typedef {Object} ExternalPrScanRow
+ * @property {string} bead_id
+ * @property {string} pr_url
+ * @property {Record<string, string>} metadata - Only the present receipt keys;
+ * an absent key is OMITTED rather than carried as null.
+ */
 
 /**
  * @param {{
@@ -44,7 +61,7 @@ import { runBd, runBdJsonProjected } from '../bd.js';
  *   createIssue: (input: { id: string, title: string, description: string, type: string, priority: number, dependency?: string }) => Promise<void>,
  *   updateFields: (bead_id: string, input: { set?: Record<string, string>, unset?: string[], status?: string, append_notes?: string }) => Promise<void>,
  *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>,
- *   scanBeads: () => Promise<{ pr_rows: { bead_id: string, pr_url: string }[], statuses: Record<string, string>, generation?: number, fresh?: boolean }>
+ *   scanBeads: () => Promise<{ pr_rows: ExternalPrScanRow[], statuses: Record<string, string>, generation?: number, fresh?: boolean }>
  * }}
  */
 export function createBdMetadata(deps = {}) {
@@ -502,7 +519,7 @@ export function createBdMetadata(deps = {}) {
      * silently empty the lane every time bd is unavailable. The sweep depends on
      * the same throw — an unread status must move nothing.
      *
-     * @returns {Promise<{ pr_rows: { bead_id: string, pr_url: string }[], statuses: Record<string, string>, generation?: number, fresh?: boolean }>}
+     * @returns {Promise<{ pr_rows: ExternalPrScanRow[], statuses: Record<string, string>, generation?: number, fresh?: boolean }>}
      */
     async scanBeads() {
       if (requestSnapshot) {
@@ -544,10 +561,10 @@ export function createBdMetadata(deps = {}) {
  * whole-workspace generation.
  *
  * @param {unknown[]} rows
- * @returns {{ pr_rows: { bead_id: string, pr_url: string }[], statuses: Record<string, string> }}
+ * @returns {{ pr_rows: ExternalPrScanRow[], statuses: Record<string, string> }}
  */
 function scanRows(rows) {
-  /** @type {{ bead_id: string, pr_url: string }[]} */
+  /** @type {ExternalPrScanRow[]} */
   const pr_rows = [];
   /** @type {Record<string, string>} */
   const statuses = {};
@@ -573,7 +590,37 @@ function scanRows(rows) {
     if (typeof pr_url !== 'string' || pr_url.length === 0) {
       continue;
     }
-    pr_rows.push({ bead_id: row.id, pr_url });
+    pr_rows.push({
+      bead_id: row.id,
+      pr_url,
+      metadata: receiptMetadataOf(md)
+    });
   }
   return { pr_rows, statuses };
+}
+
+/**
+ * The receipt-relevant slice of one bead's metadata (UI-17mj §2.2).
+ *
+ * Absent keys are omitted, not nulled: the scan's cache key already encodes
+ * absence, and `checkReceipts` reads "the key is missing" off the absence of
+ * the property.
+ *
+ * @param {unknown} metadata
+ * @returns {Record<string, string>}
+ */
+function receiptMetadataOf(metadata) {
+  /** @type {Record<string, string>} */
+  const projected = {};
+  if (!metadata || typeof metadata !== 'object') {
+    return projected;
+  }
+  const source = /** @type {Record<string, unknown>} */ (metadata);
+  for (const key of RECEIPT_METADATA_KEYS) {
+    const value = source[key];
+    if (typeof value === 'string') {
+      projected[key] = value;
+    }
+  }
+  return projected;
 }
