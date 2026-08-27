@@ -17,33 +17,23 @@ describe('views/detail-panel/artifacts', () => {
     });
   });
 
-  test('keeps metadata-only spec_id as a compatibility fallback', () => {
-    expect(
-      collectArtifacts({
-        metadata: { spec_id: ' docs/specs/legacy.md ', spec_review: RECEIPT }
-      })[0]
-    ).toEqual({
-      kind: 'spec',
-      path: 'docs/specs/legacy.md',
-      missing_state: null
+  test('adds no spec row for a retired metadata-only spec_id', () => {
+    const rows = collectArtifacts({
+      metadata: { spec_id: ' docs/specs/legacy.md ', spec_review: RECEIPT }
     });
+
+    expect(rows).toEqual([]);
   });
 
-  test('marks a metadata spec_path without spec_id as a draft', () => {
+  test('adds no spec row for a retired metadata spec_path', () => {
     const rows = collectArtifacts({
       metadata: { spec_path: ' docs/specs/draft.md ' }
     });
 
-    expect(rows).toEqual([
-      {
-        kind: 'spec',
-        path: 'docs/specs/draft.md',
-        missing_state: 'spec_draft'
-      }
-    ]);
+    expect(rows).toEqual([]);
   });
 
-  test('keeps only the published row when spec_id and spec_path disagree', () => {
+  test('ignores a retired spec_path beside a published spec_id', () => {
     const rows = collectArtifacts({
       spec_id: 'docs/specs/published.md',
       metadata: { spec_path: 'docs/specs/draft.md', spec_review: RECEIPT }
@@ -79,7 +69,7 @@ describe('views/detail-panel/artifacts', () => {
     expect(rows[0].missing_state).toEqual('spec_draft');
   });
 
-  test('adds no spec row when neither spec_id nor spec_path exists', () => {
+  test('adds no spec row when spec_id is absent', () => {
     const rows = collectArtifacts({ metadata: { route: 'quick_fix' } });
 
     expect(rows).toEqual([]);

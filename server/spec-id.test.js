@@ -1,9 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import {
-  resolveSpecDraft,
-  resolveSpecEvidence,
-  resolveSpecId
-} from './spec-id.js';
+import { resolveSpecEvidence, resolveSpecId } from './spec-id.js';
 
 describe('resolveSpecId', () => {
   test.each([
@@ -13,25 +9,22 @@ describe('resolveSpecId', () => {
       { path: 'docs/specs/native.md', source: 'native', conflict: false }
     ],
     [
-      'metadata only',
+      'retired metadata spec_id only',
       { metadata: { spec_id: ' docs/specs/legacy.md ' } },
-      { path: 'docs/specs/legacy.md', source: 'metadata', conflict: false }
+      { path: '', source: 'none', conflict: false }
     ],
     [
-      'equal dual',
-      {
-        spec_id: ' docs/specs/same.md ',
-        metadata: { spec_id: 'docs/specs/same.md' }
-      },
-      { path: 'docs/specs/same.md', source: 'native', conflict: false }
+      'retired metadata spec_path only',
+      { metadata: { spec_path: 'docs/specs/draft.md' } },
+      { path: '', source: 'none', conflict: false }
     ],
     [
-      'conflicting dual',
+      'differing native and retired metadata spec_id',
       {
         spec_id: 'docs/specs/native.md',
         metadata: { spec_id: 'docs/specs/legacy.md' }
       },
-      { path: 'docs/specs/native.md', source: 'native', conflict: true }
+      { path: 'docs/specs/native.md', source: 'native', conflict: false }
     ],
     [
       'blank and non-string',
@@ -41,68 +34,6 @@ describe('resolveSpecId', () => {
     ['missing issue', null, { path: '', source: 'none', conflict: false }]
   ])('%s', (_name, issue, expected) => {
     expect(resolveSpecId(issue)).toEqual(expected);
-  });
-});
-
-describe('resolveSpecDraft', () => {
-  test('resolves a metadata spec_path as a draft when no spec_id exists', () => {
-    const issue = { metadata: { spec_path: ' docs/specs/draft.md ' } };
-
-    expect(resolveSpecDraft(issue)).toEqual({
-      path: 'docs/specs/draft.md',
-      source: 'draft',
-      conflict: false
-    });
-  });
-
-  test('lets a published spec_id win over a differing spec_path', () => {
-    const issue = {
-      spec_id: 'docs/specs/published.md',
-      metadata: { spec_path: 'docs/specs/draft.md' }
-    };
-
-    expect(resolveSpecDraft(issue)).toEqual({
-      path: 'docs/specs/published.md',
-      source: 'native',
-      conflict: false
-    });
-  });
-
-  test('lets a metadata spec_id win over a differing spec_path', () => {
-    const issue = {
-      metadata: {
-        spec_id: 'docs/specs/published.md',
-        spec_path: 'docs/specs/draft.md'
-      }
-    };
-
-    expect(resolveSpecDraft(issue)).toEqual({
-      path: 'docs/specs/published.md',
-      source: 'metadata',
-      conflict: false
-    });
-  });
-
-  test.each([
-    ['blank spec_path', { metadata: { spec_path: '   ' } }],
-    ['non-string spec_path', { metadata: { spec_path: 42 } }],
-    ['missing issue', null]
-  ])('reports none for %s', (_name, issue) => {
-    expect(resolveSpecDraft(issue)).toEqual({
-      path: '',
-      source: 'none',
-      conflict: false
-    });
-  });
-
-  test('keeps resolveSpecId blind to spec_path', () => {
-    const issue = { metadata: { spec_path: 'docs/specs/draft.md' } };
-
-    expect(resolveSpecId(issue)).toEqual({
-      path: '',
-      source: 'none',
-      conflict: false
-    });
   });
 });
 
@@ -125,16 +56,16 @@ describe('resolveSpecEvidence', () => {
     });
   });
 
-  test('reports published for a metadata-only spec_id with a valid receipt', () => {
+  test('reports none for a retired metadata-only spec_id even under a valid receipt', () => {
     const issue = {
       metadata: { spec_id: 'docs/specs/legacy.md', spec_review: RECEIPT }
     };
 
     expect(resolveSpecEvidence(issue)).toEqual({
-      path: 'docs/specs/legacy.md',
-      source: 'metadata',
+      path: '',
+      source: 'none',
       conflict: false,
-      evidence: 'published',
+      evidence: 'none',
       skipped: false
     });
   });
@@ -166,33 +97,21 @@ describe('resolveSpecEvidence', () => {
     expect(resolveSpecEvidence(issue).evidence).toEqual('draft');
   });
 
-  test('reports draft with the draft path when only spec_path exists', () => {
-    const issue = { metadata: { spec_path: ' docs/specs/draft.md ' } };
-
-    expect(resolveSpecEvidence(issue)).toEqual({
-      path: 'docs/specs/draft.md',
-      source: 'draft',
-      conflict: false,
-      evidence: 'draft',
-      skipped: false
-    });
-  });
-
-  test('keeps a spec_path-only row draft even under a valid receipt', () => {
+  test('reports none for a retired spec_path-only row even under a valid receipt', () => {
     const issue = {
       metadata: { spec_path: 'docs/specs/draft.md', spec_review: RECEIPT }
     };
 
     expect(resolveSpecEvidence(issue)).toEqual({
-      path: 'docs/specs/draft.md',
-      source: 'draft',
+      path: '',
+      source: 'none',
       conflict: false,
-      evidence: 'draft',
+      evidence: 'none',
       skipped: false
     });
   });
 
-  test('prefers the published path when spec_id and spec_path differ', () => {
+  test('ignores a retired spec_path beside a published spec_id', () => {
     const issue = {
       spec_id: 'docs/specs/published.md',
       metadata: { spec_path: 'docs/specs/draft.md', spec_review: RECEIPT }
@@ -208,8 +127,8 @@ describe('resolveSpecEvidence', () => {
   });
 
   test.each([
-    ['neither key', { metadata: { route: 'spec_backed' } }],
-    ['blank spec_path', { metadata: { spec_path: '   ' } }],
+    ['no spec_id', { metadata: { route: 'spec_backed' } }],
+    ['retired spec_path only', { metadata: { spec_path: 'docs/draft.md' } }],
     ['a receipt with no path at all', { metadata: { spec_review: RECEIPT } }],
     ['missing issue', null]
   ])('reports none for %s', (_name, issue) => {
@@ -222,7 +141,7 @@ describe('resolveSpecEvidence', () => {
     });
   });
 
-  test('carries the conflicting-dual flag through unchanged', () => {
+  test('never flags conflict for a differing retired metadata spec_id', () => {
     const issue = {
       spec_id: 'docs/specs/native.md',
       metadata: { spec_id: 'docs/specs/legacy.md', spec_review: RECEIPT }
@@ -231,7 +150,7 @@ describe('resolveSpecEvidence', () => {
     expect(resolveSpecEvidence(issue)).toEqual({
       path: 'docs/specs/native.md',
       source: 'native',
-      conflict: true,
+      conflict: false,
       evidence: 'published',
       skipped: false
     });

@@ -1349,7 +1349,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.labels).toEqual(['worker-ineligible', 'frontend']);
   });
 
-  test('snapshotBead resolves native spec_id and carries a dual-value conflict', async () => {
+  test('snapshotBead resolves native spec_id and ignores a differing metadata spec_id', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {
         return {
@@ -1378,7 +1378,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     const snap = await bd.snapshotBead('UI-1');
 
     expect(snap.spec_id).toBe('docs/native.md');
-    expect(snap.spec_id_conflict).toBe(true);
+    expect(snap.spec_id_conflict).toBe(false);
   });
 
   test('snapshotBead unwraps the single-item-array show shape (live bd) — metadata must not be lost', async () => {
@@ -1390,9 +1390,9 @@ describe('worker/attach createLiveBd bd show parsing', () => {
             {
               id: 'UI-1',
               status: 'open',
+              spec_id: 'docs/spec.md',
               metadata: {
                 route: 'spec_backed',
-                spec_id: 'docs/spec.md',
                 spec_review: 'codex@' + 'a'.repeat(40),
                 plan_path: 42,
                 plan_approval: null,

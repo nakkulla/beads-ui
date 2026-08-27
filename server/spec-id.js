@@ -1,31 +1,23 @@
 /**
- * Resolve the canonical spec path from a Beads issue during native-field
- * migration. Native `issue.spec_id` wins; metadata is read-only compatibility.
+ * Resolve the canonical spec path from a Beads issue. Native `issue.spec_id`
+ * is the single key: the transitional `metadata.spec_id` dual-read retired with
+ * the 2026-08-24 spec-key sweep (dotfiles-23wd), so a row without the native
+ * field has no spec. `conflict` stays in the shape for Worker-side consumers
+ * (`spec_id_conflict` projections) and is always `false` now that only one
+ * key is read.
  *
  * @param {unknown} issue
- * @returns {{ path: string, source: 'native'|'metadata'|'none', conflict: boolean }}
+ * @returns {{ path: string, source: 'native'|'none', conflict: false }}
  */
 export function resolveSpecId(issue) {
   const row =
     issue && typeof issue === 'object'
       ? /** @type {Record<string, unknown>} */ (issue)
       : {};
-  const metadata =
-    row.metadata && typeof row.metadata === 'object'
-      ? /** @type {Record<string, unknown>} */ (row.metadata)
-      : {};
   const native = normalize(row.spec_id);
-  const legacy = normalize(metadata.spec_id);
 
   if (native) {
-    return {
-      path: native,
-      source: 'native',
-      conflict: legacy.length > 0 && legacy !== native
-    };
-  }
-  if (legacy) {
-    return { path: legacy, source: 'metadata', conflict: false };
+    return { path: native, source: 'native', conflict: false };
   }
   return { path: '', source: 'none', conflict: false };
 }
@@ -35,27 +27,6 @@ export function resolveSpecId(issue) {
  */
 function normalize(value) {
   return typeof value === 'string' ? value.trim() : '';
-}
-
-/**
- * Resolve the spec path for display, opting in to the authoring-time draft
- * pointer. Publication evidence still wins: metadata `spec_path` answers only
- * when `resolveSpecId` finds nothing, and then as `source: 'draft'`. Gate logic
- * keeps calling `resolveSpecId` so a draft never reads as a published spec.
- *
- * @param {unknown} issue
- * @returns {{ path: string, source: 'native'|'metadata'|'draft'|'none', conflict: boolean }}
- */
-export function resolveSpecDraft(issue) {
-  const published = resolveSpecId(issue);
-  if (published.path) {
-    return published;
-  }
-  const draft = normalize(readMetadata(issue).spec_path);
-  if (draft) {
-    return { path: draft, source: 'draft', conflict: false };
-  }
-  return published;
 }
 
 /**
@@ -83,20 +54,20 @@ function readMetadata(issue) {
 const SPEC_RECEIPT_RE = /^[A-Za-z0-9_.:-]+@[0-9a-fA-F]{40}$/;
 
 /**
- * Resolve the spec evidence class for display. Wraps {@link resolveSpecDraft}
+ * Resolve the spec evidence class for display. Wraps {@link resolveSpecId}
  * with the single mapping from durable keys to evidence (spec §2's complete
- * partition, published-first): publication is a resolved `spec_id` path AND a
- * format-valid `metadata.spec_review` receipt, so a `spec_id` whose receipt is
- * absent or malformed is `draft`, as is a transitional `spec_path`-only row —
- * `spec_path` is not a `spec_id`, so no receipt can publish it. Neither path is
- * `none`. Consumers branch on `evidence` instead of enumerating `source`
- * values, so a later key-vocabulary change stays inside this module.
+ * partition, published-first): publication is a native `spec_id` AND a
+ * format-valid `metadata.spec_review` receipt; a `spec_id` whose receipt is
+ * absent or malformed is `draft`; no `spec_id` is `none`. The authoring-time
+ * `metadata.spec_path` pointer is no longer read — the sweep retired it with
+ * `metadata.spec_id`. Consumers branch on `evidence` instead of enumerating
+ * `source` values, so a later key-vocabulary change stays inside this module.
  *
  * @param {unknown} issue
- * @returns {{ path: string, source: 'native'|'metadata'|'draft'|'none', conflict: boolean, evidence: 'published'|'draft'|'none', skipped: boolean }}
+ * @returns {{ path: string, source: 'native'|'none', conflict: false, evidence: 'published'|'draft'|'none', skipped: boolean }}
  */
 export function resolveSpecEvidence(issue) {
-  const resolved = resolveSpecDraft(issue);
+  const resolved = resolveSpecId(issue);
   const receipt = normalize(readMetadata(issue).spec_review);
   const receipt_valid = SPEC_RECEIPT_RE.test(receipt);
   const skipped =
@@ -104,10 +75,9 @@ export function resolveSpecEvidence(issue) {
   if (resolved.source === 'none') {
     return { ...resolved, evidence: 'none', skipped };
   }
-  const published = resolved.source !== 'draft' && receipt_valid;
   return {
     ...resolved,
-    evidence: published ? 'published' : 'draft',
+    evidence: receipt_valid ? 'published' : 'draft',
     skipped
   };
 }

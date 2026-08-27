@@ -77,9 +77,9 @@ describe('workspace snapshot Phase 3 consumer reuse', () => {
         status: 'open',
         title: '실행 가능',
         dependencies: [],
+        spec_id: 'docs/spec.md',
         metadata: {
           route: 'spec_backed',
-          spec_id: 'docs/spec.md',
           spec_review: RECEIPT
         }
       },

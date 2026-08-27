@@ -803,7 +803,7 @@ describe('scope artifacts projection (UI-qm12 §4.2)', () => {
     expect(out).toEqual({});
   });
 
-  test('omits a bead whose native and metadata spec paths disagree', () => {
+  test('ignores a differing metadata spec_id and projects the native path', () => {
     const cache = createTitleCache({ enrichWorkflow: () => null });
     cache.refreshFromIssue('/ws', {
       id: 'UI-1',
@@ -814,7 +814,7 @@ describe('scope artifacts projection (UI-qm12 §4.2)', () => {
 
     const out = cache.scopeArtifactsFor('/ws', ['UI-1']);
 
-    expect(out).toEqual({});
+    expect(out).toEqual({ 'UI-1': ['docs/specs/native.md'] });
   });
 
   test('ignores a non-string plan path', () => {
