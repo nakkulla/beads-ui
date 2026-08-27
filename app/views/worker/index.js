@@ -1244,15 +1244,18 @@ export function prStatusBadge(input) {
       alert: true
     });
   }
-  if (receiptWarningCodes(input.receipt_check).length > 0) {
+  const receipt_codes = receiptWarningCodes(input.receipt_check);
+  if (receipt_codes.length > 0) {
     // The recorded completion-time observation (UI-bu6d §7). The gate's own
     // live re-check runs on the click, so this badge EXPLAINS a refusal rather
     // than causing one. Fail-quiet by convention: no record and no probe error
     // ever reaches here, so an unobserved attempt shows nothing at all.
-    return badge('영수증 확인 필요', {
-      title: `성립하지 않는 실행 영수증 — ${receiptWarningCodes(
-        input.receipt_check
-      ).join(', ')}`,
+    //
+    // The first code rides in the LABEL (UI-17mj §2.4): with the reason only in
+    // the tooltip, the card alone never said what to repair, and the repair is
+    // a metadata write nobody guesses. The tooltip still carries every code.
+    return badge(`영수증 확인 필요 · ${receipt_codes[0]}`, {
+      title: `성립하지 않는 실행 영수증 — ${receipt_codes.join(', ')}`,
       alert: true
     });
   }

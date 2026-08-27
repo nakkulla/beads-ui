@@ -49,6 +49,29 @@ vi.mock('./merge-queue.js', async (importOriginal) => {
   };
 });
 
+// The external scan's receipt observation (UI-17mj §2.2) runs the REAL check —
+// this wrapper only records that it ran, so a test can tell a cached row from a
+// re-checked one, and can make the check throw.
+const receipt_check_capture = vi.hoisted(() => ({
+  /** @type {any[]} */
+  calls: [],
+  throws: false
+}));
+
+vi.mock('./receipt-check.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    checkReceipts: async (/** @type {any} */ input) => {
+      receipt_check_capture.calls.push(input);
+      if (receipt_check_capture.throws) {
+        throw new Error('receipt check exploded');
+      }
+      return actual.checkReceipts(input);
+    }
+  };
+});
+
 const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
 
 /**
@@ -2280,6 +2303,22 @@ describe('worker/attach external scan excludes worker-owned beads (UI-b8n8)', ()
     expect(runtime.externalPrs.list(WS).map((r) => r.bead_id)).toEqual(['X1']);
   });
 
+  test('skips a bead the worker claimed while the scan was observing receipts', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachScanning(runtime, ['S1']);
+    // The receipt observation is awaited, so a dispatch can land between the
+    // first exclusion and the registration. The DECIDING read is the second.
+    const owned = vi
+      .spyOn(att.scheduler, 'externalProtectedBeadIds')
+      .mockImplementationOnce(() => new Set())
+      .mockImplementation(() => new Set(['S1']));
+
+    await att.refreshExternalPrs();
+
+    expect(owned).toHaveBeenCalledTimes(2);
+    expect(runtime.externalPrs.list(WS)).toEqual([]);
+  });
+
   test('keeps the previous rows when the protection set cannot be read', async () => {
     const runtime = createWorkerRuntime();
     const att = attachScanning(runtime, ['X1']);
@@ -2324,6 +2363,138 @@ describe('worker/attach external scan excludes worker-owned beads (UI-b8n8)', ()
     expect(runtime.queueStore.snapshot(WS).done.map((e) => e.bead_id)).toEqual([
       'S1'
     ]);
+  });
+});
+
+describe('worker/attach external scan receipt observation (UI-17mj §2.2)', () => {
+  const PR_URL = 'https://github.com/o/r/pull/9';
+  const QUICK_FIX_RECEIPT = `main:quick_fix_default@${'a'.repeat(40)}`;
+
+  beforeEach(() => {
+    receipt_check_capture.calls = [];
+    receipt_check_capture.throws = false;
+  });
+
+  /**
+   * An attachment whose scan reports ONE external row, with whatever receipt
+   * metadata the current `metadata` holder carries.
+   *
+   * @param {any} runtime
+   * @param {{ value: Record<string, string>|undefined }} metadata
+   */
+  function attachScanningMetadata(runtime, metadata) {
+    return createWorkerAttachment(WS, {
+      runtime,
+      bd: {
+        ...fakeBd(),
+        scanBeads: async () => ({
+          pr_rows: [
+            {
+              bead_id: 'X1',
+              pr_url: PR_URL,
+              ...(metadata.value === undefined
+                ? {}
+                : { metadata: metadata.value })
+            }
+          ],
+          statuses: { X1: 'resolved' }
+        })
+      },
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+  }
+
+  test('observes a backed quick_fix receipt as ok', async () => {
+    const runtime = createWorkerRuntime();
+    // The whole receipt projection matters: `main:*` rests on `route`, so a scan
+    // that forwarded only `exec_receipt` would call this bead unbacked.
+    const att = attachScanningMetadata(runtime, {
+      value: { route: 'quick_fix', exec_receipt: QUICK_FIX_RECEIPT }
+    });
+
+    await att.refreshExternalPrs();
+
+    expect(runtime.externalPrs.get(WS, 'X1')?.receipt_check).toMatchObject({
+      ok: true,
+      probe_error: false
+    });
+  });
+
+  test('skips the check while every backing key is unchanged', async () => {
+    const runtime = createWorkerRuntime();
+    const metadata = {
+      value: { route: 'quick_fix', exec_receipt: QUICK_FIX_RECEIPT }
+    };
+    const att = attachScanningMetadata(runtime, metadata);
+    await att.refreshExternalPrs();
+
+    await att.refreshExternalPrs();
+
+    expect(receipt_check_capture.calls.length).toBe(1);
+    expect(runtime.externalPrs.get(WS, 'X1')?.receipt_check).toMatchObject({
+      ok: true
+    });
+  });
+
+  test('re-checks when one backing key changes', async () => {
+    const runtime = createWorkerRuntime();
+    /** @type {{ value: Record<string, string>|undefined }} */
+    const metadata = {
+      value: { route: 'quick_fix', exec_receipt: QUICK_FIX_RECEIPT }
+    };
+    const att = attachScanningMetadata(runtime, metadata);
+    await att.refreshExternalPrs();
+
+    metadata.value = {
+      route: 'quick_fix',
+      exec_receipt: QUICK_FIX_RECEIPT,
+      impl_dispatch: 'main'
+    };
+    await att.refreshExternalPrs();
+
+    expect(receipt_check_capture.calls.length).toBe(2);
+  });
+
+  test('records a probe error when the check throws', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachScanningMetadata(runtime, {
+      value: { route: 'quick_fix', exec_receipt: QUICK_FIX_RECEIPT }
+    });
+    receipt_check_capture.throws = true;
+
+    await att.refreshExternalPrs();
+
+    expect(runtime.externalPrs.get(WS, 'X1')?.receipt_check).toMatchObject({
+      probe_error: true,
+      checks: { probe_error_detail: 'check_threw' }
+    });
+  });
+
+  test('registers the row even when the check throws', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachScanningMetadata(runtime, {
+      value: { route: 'quick_fix', exec_receipt: QUICK_FIX_RECEIPT }
+    });
+    receipt_check_capture.throws = true;
+
+    await att.refreshExternalPrs();
+
+    expect(runtime.externalPrs.list(WS).map((r) => r.bead_id)).toEqual(['X1']);
+  });
+
+  test('claims nothing for a scan that carries no metadata at all', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachScanningMetadata(runtime, { value: undefined });
+
+    await att.refreshExternalPrs();
+
+    expect(receipt_check_capture.calls.length).toBe(0);
+    expect(runtime.externalPrs.get(WS, 'X1')).toMatchObject({
+      receipt_key: null,
+      receipt_check: null
+    });
   });
 });
 

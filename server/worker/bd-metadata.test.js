@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import { normalizeBdIssue, normalizeBdIssueList } from '../bd-json.js';
 import { createBdMetadata as createBdMetadataModule } from './bd-metadata.js';
+import { RECEIPT_METADATA_KEYS } from './receipt-check.js';
 
 /**
  * Adapt a transport-shaped `bd --json` fake to the projected runner contract.
@@ -444,8 +445,66 @@ describe('worker/bd-metadata scanBeads (UI-7agi §1, UI-m6bg)', () => {
     const { pr_rows } = await createBdMetadata({ runJson }).scanBeads();
 
     expect(pr_rows).toEqual([
-      { bead_id: 'UI-1', pr_url: 'https://github.com/o/r/pull/7' }
+      { bead_id: 'UI-1', pr_url: 'https://github.com/o/r/pull/7', metadata: {} }
     ]);
+  });
+
+  test('projects every receipt metadata key onto the scanned row', async () => {
+    const metadata = Object.fromEntries([
+      ['pr_url', 'https://github.com/o/r/pull/7'],
+      ...RECEIPT_METADATA_KEYS.map((key) => [key, `v-${key}`])
+    ]);
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: [{ id: 'UI-1', status: 'resolved', metadata }]
+    }));
+
+    const { pr_rows } = await createBdMetadata({ runJson }).scanBeads();
+
+    expect(pr_rows[0].metadata).toEqual(
+      Object.fromEntries(RECEIPT_METADATA_KEYS.map((key) => [key, `v-${key}`]))
+    );
+  });
+
+  test('omits a receipt key the bead does not carry', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: [
+        {
+          id: 'UI-1',
+          status: 'resolved',
+          metadata: {
+            pr_url: 'https://github.com/o/r/pull/7',
+            route: 'quick_fix'
+          }
+        }
+      ]
+    }));
+
+    const { pr_rows } = await createBdMetadata({ runJson }).scanBeads();
+
+    expect(pr_rows[0].metadata).toEqual({ route: 'quick_fix' });
+  });
+
+  test('drops a receipt key whose value is not a string', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: [
+        {
+          id: 'UI-1',
+          status: 'resolved',
+          metadata: {
+            pr_url: 'https://github.com/o/r/pull/7',
+            route: 7,
+            unit_plan: 'server-overlay'
+          }
+        }
+      ]
+    }));
+
+    const { pr_rows } = await createBdMetadata({ runJson }).scanBeads();
+
+    expect(pr_rows[0].metadata).toEqual({ unit_plan: 'server-overlay' });
   });
 
   test('maps every row status, including the non-resolved ones', async () => {

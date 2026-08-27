@@ -20,13 +20,14 @@ function verifyPolicy(declaration_state) {
 }
 
 /**
- * @param {{ pr_wait?: any[], queue?: any[], done?: any[] }} lanes
+ * @param {{ pr_wait?: any[], queue?: any[], done?: any[], merge_queue?: any }} lanes
  */
 function queueOf(lanes) {
   return {
     pr_wait: lanes.pr_wait || [],
     queue: lanes.queue || [],
-    done: lanes.done || []
+    done: lanes.done || [],
+    merge_queue: lanes.merge_queue === undefined ? [] : lanes.merge_queue
   };
 }
 
@@ -94,6 +95,97 @@ describe('worker/merge-candidates — overlaidPrWait', () => {
     expect(
       overlaidPrWait(WS, queueOf({ done: [{ bead_id: 'UI-1' }] }))
     ).toEqual([{ bead_id: 'UI-9', external: true }]);
+  });
+
+  // UI-17mj §2.1 — the scan drops a bead the worker is running, so a
+  // conflict-resolution session used to erase its own row from the lane. The
+  // queue item is the evidence that outlives that window.
+  test('emits a merge_queue bead the registry no longer carries', () => {
+    registry([]);
+
+    expect(
+      overlaidPrWait(WS, queueOf({ merge_queue: [{ bead_id: 'UI-7' }] }))
+    ).toEqual([{ bead_id: 'UI-7', external: true }]);
+  });
+
+  test('yields a merge_queue bead to the durable pr_wait entry', () => {
+    registry([]);
+
+    expect(
+      overlaidPrWait(
+        WS,
+        queueOf({
+          pr_wait: [{ bead_id: 'UI-7' }],
+          merge_queue: [{ bead_id: 'UI-7' }]
+        })
+      )
+    ).toEqual([{ bead_id: 'UI-7', external: false }]);
+  });
+
+  test('yields a merge_queue bead already sitting in the waiting queue', () => {
+    registry([]);
+
+    expect(
+      overlaidPrWait(
+        WS,
+        queueOf({
+          queue: [{ bead_id: 'UI-7' }],
+          merge_queue: [{ bead_id: 'UI-7' }]
+        })
+      )
+    ).toEqual([]);
+  });
+
+  test('yields a merge_queue bead already sitting in done', () => {
+    registry([]);
+
+    expect(
+      overlaidPrWait(
+        WS,
+        queueOf({
+          done: [{ bead_id: 'UI-7' }],
+          merge_queue: [{ bead_id: 'UI-7' }]
+        })
+      )
+    ).toEqual([]);
+  });
+
+  test('emits one row for a bead the registry and the merge queue both hold', () => {
+    registry(['UI-7']);
+
+    expect(
+      overlaidPrWait(WS, queueOf({ merge_queue: [{ bead_id: 'UI-7' }] }))
+    ).toEqual([{ bead_id: 'UI-7', external: true }]);
+  });
+
+  test('emits one row for a bead listed twice in the merge queue', () => {
+    registry([]);
+
+    expect(
+      overlaidPrWait(
+        WS,
+        queueOf({ merge_queue: [{ bead_id: 'UI-7' }, { bead_id: 'UI-7' }] })
+      )
+    ).toEqual([{ bead_id: 'UI-7', external: true }]);
+  });
+
+  test('ignores a merge_queue entry with no bead id', () => {
+    registry([]);
+
+    expect(
+      overlaidPrWait(
+        WS,
+        queueOf({ merge_queue: [{ bead_id: '' }, { note: 'x' }, null] })
+      )
+    ).toEqual([]);
+  });
+
+  test('ignores a merge_queue that is not an array', () => {
+    registry([]);
+
+    expect(
+      overlaidPrWait(WS, queueOf({ merge_queue: { bead_id: 'UI-7' } }))
+    ).toEqual([]);
   });
 
   test('emits a pr_wait entry even when another lane also holds it', () => {

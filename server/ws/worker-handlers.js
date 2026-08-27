@@ -467,6 +467,18 @@ function publicDiscardOperations(value) {
  * conflict-resolution click has anywhere to run. Durable rows carry nothing new
  * — their own attempt already answers it.
  *
+ * THREE sources feed a row, in order (UI-17mj §2.1): durable `pr_wait`, the
+ * registry, and finally `queue.merge_queue`. The third exists because the scan
+ * that fills the registry EXCLUDES a bead the worker is currently running
+ * (`externalProtectedBeadIds`, UI-b8n8) — so a conflict-resolution session,
+ * which is only ever dispatched from the queue's own authority, drops the bead
+ * out of the registry for as long as it runs, and the row used to vanish from
+ * the lane mid-resolution while a worker-owned row would merely have gained a
+ * badge. The queue item is the evidence that survives that window: it is
+ * cleared on resolution, merge or cancel, by which time the next scan has
+ * refilled the registry, so the row never blinks. The exclusion itself is
+ * untouched — UI-b8n8's guard against re-adopting a running bead still holds.
+ *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
  * @returns {Record<string, unknown>}
@@ -479,7 +491,12 @@ export function withExternalPrWait(workspace_key, queue) {
   } catch {
     rows = [];
   }
-  if (rows.length === 0) {
+  const merge_queue = Array.isArray(queue.merge_queue)
+    ? /** @type {any[]} */ (queue.merge_queue)
+    : [];
+  // Both synthetic sources empty — nothing to overlay, so the caller keeps the
+  // exact snapshot object it passed in.
+  if (rows.length === 0 && merge_queue.length === 0) {
     return queue;
   }
   const lane = Array.isArray(queue.pr_wait)
@@ -488,25 +505,52 @@ export function withExternalPrWait(workspace_key, queue) {
   const done_lane = Array.isArray(queue.done)
     ? /** @type {any[]} */ (queue.done)
     : [];
-  const durable = new Set([...lane, ...done_lane].map((e) => e && e.bead_id));
-  const overlay = rows
-    .filter((row) => !durable.has(row.bead_id))
-    .map((row) => {
-      let wt_present = false;
-      try {
-        wt_present = workerWorktreeExists(workspace_key, row.bead_id);
-      } catch {
-        // Fail-quiet, like every other decoration here: an unreadable repo
-        // renders a disabled button with a reason, never a guessed `true`.
-        wt_present = false;
-      }
-      return {
-        bead_id: row.bead_id,
-        added_at: row.added_at,
-        external: true,
-        wt_present
-      };
+  const queue_lane = Array.isArray(queue.queue)
+    ? /** @type {any[]} */ (queue.queue)
+    : [];
+  const durable = new Set(
+    [...lane, ...done_lane, ...queue_lane].map((e) => e && e.bead_id)
+  );
+  /** @type {Set<string>} */
+  const emitted = new Set();
+  /** @type {Array<{ bead_id: string, added_at: number|null, external: true, wt_present: boolean }>} */
+  const overlay = [];
+  for (const row of rows) {
+    if (durable.has(row.bead_id) || emitted.has(row.bead_id)) {
+      continue;
+    }
+    emitted.add(row.bead_id);
+    overlay.push({
+      bead_id: row.bead_id,
+      added_at: row.added_at,
+      external: true,
+      wt_present: externalWorktreePresent(workspace_key, row.bead_id)
     });
+  }
+  for (const entry of merge_queue) {
+    const bead_id = entry && entry.bead_id;
+    if (
+      typeof bead_id !== 'string' ||
+      bead_id.length === 0 ||
+      durable.has(bead_id) ||
+      emitted.has(bead_id)
+    ) {
+      continue;
+    }
+    emitted.add(bead_id);
+    const granted_at = entry.authority && entry.authority.granted_at;
+    overlay.push({
+      bead_id,
+      // The queue item carries no `added_at` of its own; the authority's grant
+      // is the only time it can honestly report.
+      added_at:
+        typeof granted_at === 'number' && Number.isFinite(granted_at)
+          ? granted_at
+          : null,
+      external: true,
+      wt_present: externalWorktreePresent(workspace_key, bead_id)
+    });
+  }
   if (overlay.length === 0) {
     return queue;
   }
@@ -514,12 +558,35 @@ export function withExternalPrWait(workspace_key, queue) {
 }
 
 /**
+ * The `wt_present` probe every synthesized external row carries (UI-w0hi §3).
+ *
+ * @param {string} workspace_key
+ * @param {string} bead_id
+ * @returns {boolean}
+ */
+function externalWorktreePresent(workspace_key, bead_id) {
+  try {
+    return workerWorktreeExists(workspace_key, bead_id);
+  } catch {
+    // Fail-quiet, like every other decoration here: an unreadable repo renders
+    // a disabled button with a reason, never a guessed `true`.
+    return false;
+  }
+}
+
+/**
  * The receipt warning a bead's latest checked attempt recorded (UI-bu6d §7).
  *
+ * DURABLE ROWS ONLY since UI-17mj §2.3: an external row has no attempt of its
+ * own, and the one it may acquire — a conflict-resolution session — leaves a
+ * terminal `receipt_check` behind that outlives the metadata fix it complained
+ * about. {@link externalReceiptWarningFor} reads the scan's current observation
+ * for those rows instead.
+ *
  * FAIL-QUIET by convention: an attempt with no `receipt_check` — a legacy
- * record, an externally opened PR, an attempt whose bd read failed — summarizes
- * to null and the row shows nothing. This projection creates no authority; the
- * gate's own re-check does.
+ * record, an attempt whose bd read failed — summarizes to null and the row
+ * shows nothing. This projection creates no authority; the gate's own re-check
+ * does.
  *
  * @param {Record<string, unknown>} queue
  * @param {string} bead_id
@@ -561,6 +628,36 @@ function receiptWarningFor(queue, bead_id) {
 }
 
 /**
+ * The receipt warning the EXTERNAL registry row carries (UI-17mj §2.3).
+ *
+ * An external bead never ran under the worker, so the attempt record
+ * {@link receiptWarningFor} reads is either absent or — after a
+ * conflict-resolution session — a stale verdict that survives the metadata fix
+ * it reported. The scan re-observes the row's receipts on every tick, so the
+ * registry value is the one that changes back to clean when the metadata does.
+ *
+ * Null whenever the registry has nothing to say: a row synthesized from the
+ * merge queue alone (§2.1) is external but unscanned, and fail-quiet means no
+ * badge rather than a resurrected attempt verdict.
+ *
+ * @param {string} workspace_key
+ * @param {string} bead_id
+ * @returns {ReturnType<typeof summarizeReceiptCheck>}
+ */
+function externalReceiptWarningFor(workspace_key, bead_id) {
+  /** @type {import('../worker/external-pr.js').ExternalPrRow|null} */
+  let row = null;
+  try {
+    row = getWorkerRuntime().externalPrs.get(workspace_key, bead_id);
+  } catch {
+    row = null;
+  }
+  return row && row.receipt_check
+    ? summarizeReceiptCheck(row.receipt_check)
+    : null;
+}
+
+/**
  * Project the PR observation cache onto the beads currently in `pr_wait`, each
  * with its evaluated merge gate (worker-phase2 §4/§5).
  *
@@ -569,6 +666,10 @@ function receiptWarningFor(queue, bead_id) {
  * `worker-queue-snapshot` push rather than a new message type. A bead the
  * poller has not reached yet simply has no entry, and the gate reports that as
  * "관측 대기" (disabled), never as a passing signal.
+ *
+ * `receipt_check` has TWO sources (UI-17mj §2.3), chosen per row: an external
+ * row reports the scan's current observation, a durable one its implementation
+ * attempt's record. Same field on the wire, so the client keeps one badge.
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
@@ -613,7 +714,10 @@ function prObservationsFor(workspace_key, queue, verify_policy) {
         // this projection only CARRIES the recorded warning below.
         receipt_state: { state: 'undecidable', codes: [] }
       }),
-      receipt_check: receiptWarningFor(queue, bead_id)
+      receipt_check:
+        entry.external === true
+          ? externalReceiptWarningFor(workspace_key, bead_id)
+          : receiptWarningFor(queue, bead_id)
     };
   }
   return out;

@@ -514,8 +514,11 @@ function makeActions(options = {}) {
     },
     bd,
     external: {
+      // The fixtures below carry only the fields the merge path reads; the
+      // registry's display-only receipt observation (UI-17mj §2.2) is not one
+      // of them.
       get: (/** @type {string} */ _ws, /** @type {string} */ bead_id) =>
-        (options.external || {})[bead_id] || null,
+        /** @type {any} */ ((options.external || {})[bead_id] || null),
       drop: external_drop
     },
     worktree,

@@ -28,6 +28,13 @@ import path from 'node:path';
  * unparseable (the lane then renders the ordinary `pr_ref_unknown` state —
  * fail-quiet, never a guessed number).
  * @property {number} added_at - Epoch ms the row was FIRST seen.
+ * @property {string|null} receipt_key - The cache key the scan compares to
+ * decide whether the receipt observation below is still the one this bead's
+ * metadata implies (UI-17mj §2.2). `null` when the scan carried no metadata.
+ * @property {import('./receipt-check.js').ReceiptCheckResult|null}
+ * receipt_check - The DISPLAY-ONLY receipt observation the scan made for an
+ * external bead, which has no worker attempt to have recorded one. The merge
+ * gate never reads it — the click path re-checks live.
  */
 
 /**
@@ -68,8 +75,14 @@ export function createExternalPrStore(options = {}) {
      * `pr_url`, or was closed must DISAPPEAR, and only a full replace can
      * express that.
      *
+     * `added_at`, `receipt_key` and `receipt_check` are the three fields a
+     * replace may CARRY OVER instead of overwriting: a caller that passes
+     * `undefined` for one is saying "I did not observe this", and the prior
+     * value stands (null on a brand-new row). Passing any other value —
+     * including null — replaces it.
+     *
      * @param {string} workspace
-     * @param {{ bead_id: string, pr_url: string, pr_number: number|null }[]} rows
+     * @param {{ bead_id: string, pr_url: string, pr_number: number|null, receipt_key?: string|null, receipt_check?: import('./receipt-check.js').ReceiptCheckResult|null }[]} rows
      * @returns {ExternalPrRow[]}
      */
     replace(workspace, rows) {
@@ -88,7 +101,19 @@ export function createExternalPrStore(options = {}) {
             typeof row.pr_number === 'number' && Number.isFinite(row.pr_number)
               ? row.pr_number
               : null,
-          added_at: prior ? prior.added_at : now()
+          added_at: prior ? prior.added_at : now(),
+          receipt_key:
+            row.receipt_key === undefined
+              ? prior
+                ? prior.receipt_key
+                : null
+              : row.receipt_key,
+          receipt_check:
+            row.receipt_check === undefined
+              ? prior
+                ? prior.receipt_check
+                : null
+              : row.receipt_check
         });
       }
       by_workspace.set(path.resolve(String(workspace || '')), next);

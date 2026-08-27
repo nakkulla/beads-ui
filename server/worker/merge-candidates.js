@@ -85,6 +85,15 @@ export function hasConflictSession(queue, bead_id) {
  * which live only in the in-memory registry (UI-7agi §2) and therefore cannot be
  * read out of `queue.json` at all.
  *
+ * THREE sources feed a row, in order (UI-17mj §2.1): durable `pr_wait`, the
+ * registry, and finally `queue.merge_queue`. The third exists because the scan
+ * EXCLUDES a bead the worker is currently running (`externalProtectedBeadIds`,
+ * UI-b8n8) — so a conflict-resolution session, which is dispatched from the
+ * queue's own authority, drops out of the registry for as long as it runs and
+ * its row used to vanish from the lane mid-resolution. The queue item is the
+ * evidence that survives that window, and it is cleared on resolution, merge or
+ * cancel — by which time the next scan has refilled the registry.
+ *
  * Only the two fields the judgment needs are synthesized here — the ws layer's
  * own overlay additionally carries display state (`wt_present`), which no
  * eligibility rule reads.
@@ -150,6 +159,21 @@ export function overlaidPrWait(workspace_key, queue) {
     }
     seen.add(row.bead_id);
     out.push({ bead_id: row.bead_id, external: true });
+  }
+  const merge_queue = Array.isArray(queue.merge_queue)
+    ? /** @type {any[]} */ (queue.merge_queue)
+    : [];
+  for (const entry of merge_queue) {
+    const bead_id = entry && entry.bead_id;
+    if (
+      typeof bead_id !== 'string' ||
+      bead_id.length === 0 ||
+      seen.has(bead_id)
+    ) {
+      continue;
+    }
+    seen.add(bead_id);
+    out.push({ bead_id, external: true });
   }
   return out;
 }
