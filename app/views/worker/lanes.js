@@ -24,6 +24,7 @@ import {
   usageTooltip
 } from '../../utils/token-usage.js';
 import { stepperTemplate } from '../board/stepper.js';
+import { logPathTemplate } from './log-path.js';
 
 /**
  * @param {unknown} sha
@@ -1103,6 +1104,9 @@ export function priorityBadgeTemplate(priority) {
  * @property {string} [pr_url] - Observed PR URL; renders the `#N ↗` link.
  * @property {string|null} [completion_badge] - Root completion status badge.
  * @property {string} [completion_title] - Bounded completion evidence tooltip.
+ * @property {string|null} [log_path] - 완료 실패가 남긴 로그 파일의 절대 경로
+ * (UI-8w4t §4). 슬롯 5 (좌표·실행 사실)에 `<code>` + 복사 버튼으로 서고, 실행 전
+ * 실패라 로그가 없으면 요소 자체가 없다.
  * @property {string[]} [badges] - Gate / base-state badges (worker-phase2 §5).
  * @property {string|null} [live_badge] - Which of {@link MiniItem.badges}
  * reports live server activity rather than a settled state (UI-raqh §3); it is
@@ -1521,14 +1525,25 @@ export function miniRow(item, options = {}) {
   // 지금 보이는 정보가 사라진다. 재료가 하나도 없으면 줄 자체를 그리지 않는다
   // (빈 div는 행에 여백만 남긴다).
   const rec_el = recChipTemplate(item.rec);
+  // 실패 로그 경로도 슬롯 5다 (UI-251y §5.1 정정, UI-8w4t §4): "어느 경로의
+  // 것인가"는 이 줄이 답하는 질문이고, 복사 버튼은 값에 붙은 어포던스일 뿐
+  // 카드의 처분을 바꾸지 않는다. 타임라인 `세부`와 같은 템플릿·같은 토스트를
+  // 쓰므로 두 표면이 같은 값을 다르게 다루지 않는다. 재료가 없으면 없다.
+  const log_path_el = logPathTemplate(item.log_path);
   const chips_el =
-    repo_el || route_el || from_el || has_exec_chips || rec_el || usage_el
+    repo_el ||
+    route_el ||
+    from_el ||
+    has_exec_chips ||
+    rec_el ||
+    usage_el ||
+    log_path_el
       ? html`<div class="worker-chips">
           ${repo_el}${route_el}${from_el}${has_exec_chips
             ? execChipsTemplate(item.exec_chips, {
                 pin: item.exec_chips_pinned === true
               })
-            : ''}${rec_el}${usage_el}
+            : ''}${rec_el}${usage_el}${log_path_el}
         </div>`
       : '';
   const deps_el = dependencyChipsTemplate(item.dependency_chips);

@@ -217,6 +217,47 @@ describe('queue-store repair-lane retirement (UI-8w4t §2)', () => {
     ).toBe(5_000);
   });
 
+  test('keeps the legacy record on disk through an unrelated queue write', () => {
+    writeLegacyRepairQueue('repairing');
+    const store = createQueueStore();
+
+    store.toggleAutoAdvance(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    expect(raw.completion_intents['UI-root']).toMatchObject({
+      phase: 'repairing',
+      active_op: { attempt_id: 'att-repair' }
+    });
+  });
+
+  test('still plans the retirement after an unrelated queue write', () => {
+    writeLegacyRepairQueue('repairing');
+    const store = createQueueStore();
+    store.toggleAutoAdvance(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+
+    const pending = createQueueStore().pendingRepairLaneRetirements(WS);
+
+    expect(pending.map((plan) => plan.root_bead_id)).toEqual(['UI-root']);
+  });
+
+  test('leaves the withheld record out of the in-memory snapshot anyway', () => {
+    writeLegacyRepairQueue('repairing');
+    const store = createQueueStore();
+
+    store.toggleAutoAdvance(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+
+    expect(store.snapshot(WS).completion_intents).toEqual({});
+  });
+
   test('replans from disk when a restart lost the retirement write', () => {
     writeLegacyRepairQueue('repairing');
     createQueueStore().retireRepairLane(WS, {

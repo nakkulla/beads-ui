@@ -1562,6 +1562,15 @@ function prWaitRow(
         ? status_badge.label
         : null,
     completion_title: status_badge?.title || '',
+    // 종단한 완료 실패가 남긴 로그 경로 (UI-8w4t §4). `needs_human` 카드에만
+    // 싣는다 — 진행 중인 완료의 로그는 아직 실패를 설명하지 않는다. 값이 없으면
+    // (실행 전 실패) 필드 자체를 넘기지 않아 행이 요소를 그리지 않는다. 위
+    // 툴팁 `세부`는 raw를 계속 싣는다.
+    ...(completion?.phase === 'needs_human' &&
+    typeof completion.log_path === 'string' &&
+    completion.log_path.length > 0
+      ? { log_path: completion.log_path }
+      : {}),
     badges: rendered_status_badge ? [rendered_status_badge] : [],
     // Which badge (if any) reports live server activity rather than a settled
     // state — the row draws that one with the breathing dot and no colour
@@ -6280,6 +6289,12 @@ export function createWorkerView(mount_element, options = {}) {
     );
     if (mini) {
       const id = mini.dataset.beadId;
+      // 로그 경로 복사 버튼은 자기 클릭만 소비한다 (UI-8w4t §4). 타임라인에서는
+      // 드로어가 클릭을 먼저 가로채므로 문제가 없었지만, 행 안에서는 그대로 두면
+      // 복사 한 번에 이슈 상세까지 열린다. 복사 자체는 버튼의 자기 핸들러 몫이다.
+      if (target?.closest?.('[data-seam="log-path-copy"]')) {
+        return;
+      }
       // The ID element copies the bead id (Board onCopyId convention) and must
       // never also open the detail panel.
       if (target?.closest?.('.worker-mini__id, .worker-card__id')) {

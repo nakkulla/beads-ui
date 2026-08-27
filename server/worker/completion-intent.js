@@ -8,6 +8,10 @@
  */
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+// The one shared cause vocabulary (UI-8w4t §4): a dependency-free leaf both
+// this comment and the client card read, so one failure never gets two
+// sentences. `attach.js` already imports `app/utils` the same way.
+import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
 import {
   UNRESOLVED_REVIEWER,
   UNRESOLVED_REVIEW_EFFORT
@@ -626,16 +630,50 @@ function operationIdFromLogPath(log_path) {
 }
 
 /**
- * Cause sentences for the reasons this lane MINTS itself. Every other token
- * travels as its raw code: the shared failure vocabulary is owned by the client
- * (`app/views/worker/failure-labels.js`), which renders the same failure on the
- * card, and copying it here would be a second source for one contract.
+ * Internal stage token → the three public stage words the comment format fixes
+ * (UI-8w4t §4). The internal tokens are coordinates of THIS server's saga
+ * (`merge_gate`, the cleanup cursor steps); the comment is read by a person who
+ * only needs to know which of the three things failed.
+ *
+ * `repo_operations` folds into `cleanup` because it IS a cleanup-cursor step
+ * (AGENTS.md 정리 cursor); which repo operation ran inside it is what the 원인
+ * line below says.
+ *
+ * A token in none of the three travels through RAW (`merge_subject`,
+ * `coordinator`, `state`, and anything a later contract adds): losing the
+ * coordinate is worse than stepping outside the format, and the raw token is
+ * still greppable in this server's own records.
  *
  * @type {Readonly<Record<string, string>>}
  */
-const COMPLETION_REASON_SENTENCES = Object.freeze({
-  verify_red: '머지 후 검증이 실패했습니다.'
+const PUBLIC_FAILURE_STAGES = Object.freeze({
+  merge_gate: 'verify',
+  post_merge_verify: 'verify',
+  verify: 'verify',
+  deploy: 'deploy',
+  deployment_request: 'deploy',
+  post_merge_cleanup: 'cleanup',
+  base_containment: 'cleanup',
+  base_sync: 'cleanup',
+  repo_operations: 'cleanup',
+  child_sweep: 'cleanup',
+  branch_cleanup: 'cleanup',
+  parent_close: 'cleanup',
+  cleanup: 'cleanup'
 });
+
+/**
+ * The public stage word for one terminal, or the raw token when it maps to none.
+ *
+ * @param {any} terminal
+ * @returns {string}
+ */
+function publicFailureStage(terminal) {
+  const token = terminal.failure_key?.stage || terminal.stage;
+  return Object.hasOwn(PUBLIC_FAILURE_STAGES, token)
+    ? PUBLIC_FAILURE_STAGES[token]
+    : token;
+}
 
 /**
  * The 재시도 line of the failure comment: what the ONE automatic step
@@ -672,8 +710,8 @@ function retryOutcomeText(operation) {
  * @returns {string}
  */
 export function completionFailureComment(intent, queue, terminal) {
-  const sentence = Object.hasOwn(COMPLETION_REASON_SENTENCES, terminal.reason)
-    ? COMPLETION_REASON_SENTENCES[terminal.reason]
+  const sentence = Object.hasOwn(FAILURE_SENTENCES, terminal.reason)
+    ? FAILURE_SENTENCES[terminal.reason]
     : null;
   const subject = intent?.subject || {};
   const target_sha =
@@ -689,7 +727,7 @@ export function completionFailureComment(intent, queue, terminal) {
       : null;
   return [
     '## 🤖 완료 실패 기록',
-    `- 단계: ${terminal.failure_key?.stage || terminal.stage}`,
+    `- 단계: ${publicFailureStage(terminal)}`,
     `- 원인: ${terminal.reason}${sentence ? ` — ${sentence}` : ''}`,
     `- 대상: ${target_sha} (base ${target_base})`,
     `- 로그: ${terminal.log_path || '(없음)'}`,

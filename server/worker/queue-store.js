@@ -1363,6 +1363,12 @@ const RETIRED_REPAIR_PHASES = new Set(['repairing', 'waiting_repair_pr']);
  * @property {CompletionIntent} intent - The retired record, already free of
  * every `repair_*`/`subject_stack`/`completion_mode` key, awaiting its
  * terminal timestamp.
+ * @property {unknown} raw_intent - The record EXACTLY as the cold load read it
+ * from disk. Withholding the intent keeps it out of the in-memory snapshot,
+ * but every ordinary queue write persists that snapshot — so without this the
+ * first unrelated write would erase the only keys naming the session, and a
+ * crash after it would leave a live repair process nothing could identify.
+ * {@link persist} re-inserts it until the retirement write replaces it.
  */
 
 /**
@@ -1432,7 +1438,8 @@ function planRepairLaneRetirements(parsed) {
         typeof active_op?.op_id === 'string' && active_op.op_id.length > 0
           ? active_op.op_id
           : null,
-      intent: { ...base, terminal_reason: null }
+      intent: { ...base, terminal_reason: null },
+      raw_intent: value
     });
   }
   return out;
@@ -3691,8 +3698,49 @@ export function createQueueStore(options = {}) {
     const file = filePathFor(workspace);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(q, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify(serializable(workspace, q), null, 2));
     fs.renameSync(tmp, file);
+  }
+
+  /**
+   * The payload {@link persist} writes: the queue, plus every still-withheld
+   * repair-lane record exactly as it was read (UI-8w4t §2).
+   *
+   * The §2 order says the session dies BEFORE the keys that name it are
+   * dropped. The withheld records are absent from the in-memory snapshot, so
+   * any unrelated write between cold load and retirement would drop them from
+   * DISK first and break that order. Merging here — at serialization only —
+   * keeps the snapshot clean while the file keeps naming the live session.
+   *
+   * Merged ONLY when the root has no record in `q` yet: {@link retireRepairLane}
+   * writes the terminal record and empties its pending entry AFTERWARDS, so an
+   * unconditional merge would overwrite the retirement with the very record it
+   * just retired and replan it forever. A root the queue has re-created (a
+   * human re-clicked [머지]) is likewise the newer truth.
+   *
+   * @param {string} workspace
+   * @param {Queue} q
+   * @returns {unknown}
+   */
+  function serializable(workspace, q) {
+    const pending = repair_lane_retirements.get(keyFor(workspace)) || [];
+    if (pending.length === 0) {
+      return q;
+    }
+    /** @type {Record<string, unknown>} */
+    const intents = { ...q.completion_intents };
+    let merged = false;
+    for (const plan of pending) {
+      if (
+        plan.raw_intent === undefined ||
+        Object.hasOwn(intents, plan.root_bead_id)
+      ) {
+        continue;
+      }
+      intents[plan.root_bead_id] = plan.raw_intent;
+      merged = true;
+    }
+    return merged ? { ...q, completion_intents: intents } : q;
   }
 
   /**

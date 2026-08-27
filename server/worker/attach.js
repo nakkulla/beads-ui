@@ -1786,21 +1786,29 @@ function attemptProcessIdentity(attempt) {
 }
 
 /**
- * Kill one repair session this server did not spawn. A session that outlived
- * the restart is NOT in the scheduler's running map, so `scheduler.stop` cannot
- * reach it — the verified process-group controller is the path that can.
+ * Kill one repair session this server did not spawn, and say whether the kill
+ * is CONFIRMED. A session that outlived the restart is NOT in the scheduler's
+ * running map, so `scheduler.stop` cannot reach it — the verified process-group
+ * controller is the path that can.
  *
- * A record with no live process (no controller, no identity, or a pid the
- * controller refuses to own) simply returns: the caller still terminalizes it.
+ * Confirmed means "no live process of this attempt is left": an attempt that is
+ * not `running`, a record with no controller or no process identity (§2: 살아
+ * 있는 PID가 없으면 종단만 기록), or a `terminate` that reports `ok`.
+ *
+ * NOT confirmed means the pid may still be running — `terminate` refused
+ * (`{ ok: false }`) or threw. The caller must then leave the record alone: the
+ * retirement writes a terminal status and drops the keys that name the process,
+ * so recording it over a live session would strand that session unidentifiable.
  *
  * @param {ReturnType<typeof createWorkerAttachment>} att
  * @param {string} key
  * @param {string} attempt_id
+ * @returns {Promise<boolean>} Whether the stop is confirmed.
  */
 async function stopRetiredRepairSession(att, key, attempt_id) {
   const attempt = att.runtime.queueStore.snapshot(key).attempts?.[attempt_id];
   if (!attempt || attempt.status !== 'running') {
-    return;
+    return true;
   }
   try {
     att.sessionMonitors?.stop(key, attempt_id);
@@ -1809,12 +1817,22 @@ async function stopRetiredRepairSession(att, key, attempt_id) {
   }
   const identity = attemptProcessIdentity(attempt);
   if (!att.processController || !identity) {
-    return;
+    return true;
   }
   try {
-    await att.processController.terminate(identity);
+    const stopped = await att.processController.terminate(identity);
+    if (stopped?.ok === true) {
+      return true;
+    }
+    log(
+      'repair-lane session stop refused for %s: %o',
+      attempt_id,
+      stopped ?? null
+    );
+    return false;
   } catch (err) {
     log('repair-lane session stop failed for %s: %o', attempt_id, err);
+    return false;
   }
 }
 
@@ -1848,8 +1866,22 @@ async function retireRepairLanes(att, key) {
     return;
   }
   for (const plan of pending) {
+    let stopped = true;
     for (const attempt_id of plan.attempt_ids) {
-      await stopRetiredRepairSession(att, key, attempt_id);
+      // Every attempt, not until the first refusal: a root may own more than
+      // one session, and the ones that CAN be stopped should be.
+      stopped =
+        (await stopRetiredRepairSession(att, key, attempt_id)) && stopped;
+    }
+    if (!stopped) {
+      // Ordering over progress (§2). The record keeps its phase and its keys,
+      // so the next startup replans this root from disk and tries again; the
+      // alternative is a terminal record whose process is still running.
+      log(
+        'repair-lane retirement deferred for %s: session still alive',
+        plan.root_bead_id
+      );
+      continue;
     }
     try {
       store.retireRepairLane(key, {

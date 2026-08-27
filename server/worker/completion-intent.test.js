@@ -8,6 +8,7 @@ import {
   COMPLETION_RETRY_DELAYS_MS,
   COMPLETION_RETRY_POLICY,
   classifyCompletionFailure,
+  completionFailureComment,
   createCompletionActionDriver,
   createCompletionFailureKey,
   createCompletionIntentCoordinator,
@@ -703,8 +704,8 @@ describe('worker/completion-intent action driver', () => {
     expect(comment.mock.calls[0][1]).toBe(
       [
         '## 🤖 완료 실패 기록',
-        '- 단계: post_merge_verify',
-        '- 원인: verify_cmd_failed',
+        '- 단계: verify',
+        '- 원인: verify_cmd_failed — 머지 후 검증 명령이 실패했습니다.',
         `- 대상: ${'c'.repeat(40)} (base main)`,
         '- 로그: /state/repo-operation-logs/op-77.log',
         '- 재시도: 없음',
@@ -2380,5 +2381,74 @@ describe('worker/completion-intent auto-resolution driver (UI-hk74 §4/§5)', ()
     expect(
       store.snapshot(DRIVER_WS).completion_intents['UI-root']
     ).toMatchObject({ phase: 'gating', auto_resolution: null });
+  });
+});
+
+describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
+  /**
+   * @param {Record<string, unknown>} patch
+   * @returns {string[]}
+   */
+  function commentLines(patch) {
+    return completionFailureComment(
+      intent(),
+      { repo_operations: {} },
+      {
+        reason: 'cleanup_incomplete',
+        stage: 'coordinator',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        op_id: null,
+        comment_at: null,
+        at: 1,
+        ...patch
+      }
+    ).split('\n');
+  }
+
+  test('says verify for the stages a post-merge verification fails in', () => {
+    expect(commentLines({ failure_key: { stage: 'merge_gate' } })[1]).toBe(
+      '- 단계: verify'
+    );
+    expect(
+      commentLines({ failure_key: { stage: 'post_merge_verify' } })[1]
+    ).toBe('- 단계: verify');
+  });
+
+  test('says deploy for a deployment stage', () => {
+    expect(commentLines({ failure_key: { stage: 'deploy' } })[1]).toBe(
+      '- 단계: deploy'
+    );
+  });
+
+  test('says cleanup for the cleanup cursor steps', () => {
+    expect(
+      commentLines({ failure_key: { stage: 'post_merge_cleanup' } })[1]
+    ).toBe('- 단계: cleanup');
+    expect(commentLines({ failure_key: { stage: 'branch_cleanup' } })[1]).toBe(
+      '- 단계: cleanup'
+    );
+  });
+
+  test('carries an unmapped stage token through raw', () => {
+    expect(commentLines({ failure_key: { stage: 'merge_subject' } })[1]).toBe(
+      '- 단계: merge_subject'
+    );
+    expect(commentLines({ stage: 'coordinator' })[1]).toBe(
+      '- 단계: coordinator'
+    );
+  });
+
+  test('explains a cleanup failure code with the shared sentence', () => {
+    expect(commentLines({ reason: 'base_ff_diverged' })[2]).toBe(
+      '- 원인: base_ff_diverged — 로컬 base 브랜치가 원격과 갈라져 fast-forward로 정렬할 수 없습니다.'
+    );
+  });
+
+  test('carries a code it has no sentence for alone', () => {
+    expect(commentLines({ reason: 'cleanup_incomplete' })[2]).toBe(
+      '- 원인: cleanup_incomplete'
+    );
   });
 });

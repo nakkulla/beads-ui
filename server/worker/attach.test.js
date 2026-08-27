@@ -1137,6 +1137,67 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(order).not.toContain('monitor:att-repair');
   });
 
+  test('leaves the repair record whole when the session refuses to die', async () => {
+    const legacy = JSON.parse(
+      fs.readFileSync(
+        path.join(FIXTURES, 'legacy-repair-lane-queue.json'),
+        'utf8'
+      )
+    );
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(legacy));
+    const runtime = createWorkerRuntime();
+    const sessionMonitors = {
+      start: vi.fn(() => true),
+      stop: vi.fn(),
+      stopAll: vi.fn()
+    };
+    const processController = {
+      capture: vi.fn(),
+      // The pid is still owned: SIGTERM went out and the process is alive.
+      terminate: vi.fn(async () => ({
+        ok: false,
+        state: /** @type {const} */ ('owned'),
+        reason: 'still_running'
+      })),
+      probe: vi.fn(() => ({ state: /** @type {const} */ ('owned') })),
+      signal: vi.fn()
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      processController,
+      sessionMonitors,
+      probePid: () => ({ alive: true, started_at: 1000 })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => processController.terminate.mock.calls.length === 1);
+    await waitFor(() => runtime.queueStore.snapshot(WS).revision > 0);
+
+    // The attempt keeps its status: terminalizing it would claim a stop that
+    // did not happen.
+    expect(
+      runtime.queueStore.snapshot(WS).attempts['att-repair']
+    ).toMatchObject({ status: 'running' });
+    expect(
+      runtime.queueStore.snapshot(WS).attempts['att-repair'].cause
+    ).toBeNull();
+    // Still withheld, so nothing downstream sees a half-retired saga…
+    expect(runtime.queueStore.snapshot(WS).completion_intents).toEqual({});
+    // …and the keys that name the live session are still on disk, which is what
+    // lets the next startup try again.
+    expect(
+      JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8')).completion_intents[
+        'UI-root'
+      ]
+    ).toEqual(legacy.completion_intents['UI-root']);
+  });
+
   test('recovers discard fences before controls and resumes them after monitor replay', async () => {
     const runtime = createWorkerRuntime();
     seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');

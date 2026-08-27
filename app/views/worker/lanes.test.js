@@ -3512,3 +3512,45 @@ describe('복잡 chip on the worker lane surfaces (UI-sbum §3)', () => {
     expect(card.querySelector('.worker-card__rec')).not.toBeNull();
   });
 });
+
+describe('완료 실패 로그 경로 (UI-8w4t §4)', () => {
+  test('renders the log path and its copy control on slot 5', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      log_path: '/state/bdui/repo/logs/op-1.log'
+    });
+
+    expect(
+      row.querySelector('.worker-chips .worker-ev__path')?.textContent
+    ).toBe('/state/bdui/repo/logs/op-1.log');
+    expect(
+      row.querySelector('.worker-chips [data-seam="log-path-copy"]')
+    ).not.toBeNull();
+  });
+
+  test('draws nothing when the failure left no log behind', () => {
+    const row = renderRow({ lane: 'pr_wait', done: false });
+
+    expect(row.querySelector('.worker-ev__path')).toBeNull();
+    expect(row.querySelector('[data-seam="log-path-copy"]')).toBeNull();
+  });
+
+  test('puts the absolute path on the clipboard when the control is clicked', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      log_path: '/state/bdui/repo/logs/op-1.log'
+    });
+
+    /** @type {HTMLButtonElement} */ (
+      row.querySelector('.worker-ev__copy')
+    ).click();
+    await Promise.resolve();
+
+    expect(writeText).toHaveBeenCalledWith('/state/bdui/repo/logs/op-1.log');
+    vi.unstubAllGlobals();
+  });
+});

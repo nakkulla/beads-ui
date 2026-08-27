@@ -9001,6 +9001,98 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     expect(badge.title).toContain('verify · 머지 후 검증이 실패했습니다.');
   });
 
+  test('offers the failure log path for copying on the needs_human card (UI-8w4t §4)', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        completion_status: {
+          'RD-1': {
+            root_bead_id: 'RD-1',
+            phase: 'needs_human',
+            subject_role: 'root',
+            subject_bead_id: 'RD-1',
+            active_attempt_id: null,
+            failure_stage: 'verify',
+            failure_reason: 'verify_cmd_failed',
+            log_path: '/state/verify.log',
+            terminal_reason: 'verify_red'
+          }
+        }
+      })
+    );
+
+    const row = rowOf(mount, 'RD-1');
+    expect(row.querySelector('.worker-ev__path')?.textContent).toBe(
+      '/state/verify.log'
+    );
+    expect(row.querySelector('[data-seam="log-path-copy"]')).not.toBe(null);
+  });
+
+  test('does not open the issue detail when the log path is copied', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const gotoIssue = vi.fn();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    });
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      laneOf(['RD-1'], {
+        completion_status: {
+          'RD-1': {
+            root_bead_id: 'RD-1',
+            phase: 'needs_human',
+            subject_role: 'root',
+            subject_bead_id: 'RD-1',
+            active_attempt_id: null,
+            failure_stage: 'verify',
+            failure_reason: 'verify_cmd_failed',
+            log_path: '/state/verify.log',
+            terminal_reason: 'verify_red'
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn(),
+      gotoIssue
+    });
+
+    /** @type {HTMLElement} */ (
+      rowOf(mount, 'RD-1').querySelector('[data-seam="log-path-copy"]')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(writeText).toHaveBeenCalledWith('/state/verify.log');
+    expect(gotoIssue).not.toHaveBeenCalled();
+  });
+
+  test('omits the log control when the failure stopped before a log existed', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        completion_status: {
+          'RD-1': {
+            root_bead_id: 'RD-1',
+            phase: 'needs_human',
+            subject_role: 'root',
+            subject_bead_id: 'RD-1',
+            active_attempt_id: null,
+            failure_stage: 'cleanup',
+            failure_reason: 'repo_operations_unavailable',
+            log_path: null,
+            terminal_reason: 'repo_operations_unavailable'
+          }
+        }
+      })
+    );
+
+    const row = rowOf(mount, 'RD-1');
+    expect(row.querySelector('.worker-ev__path')).toBe(null);
+    expect(row.querySelector('[data-seam="log-path-copy"]')).toBe(null);
+  });
+
   test('says a retired repair lane handed the failure over (UI-8w4t §3)', () => {
     const { mount } = mountLane(
       laneOf(['RD-1'], {

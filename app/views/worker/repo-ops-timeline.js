@@ -15,9 +15,7 @@
  * @import { TemplateResult } from 'lit-html'
  */
 import { html, render } from 'lit-html';
-import { copyToClipboard } from '../../utils/clipboard.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
-import { showToast } from '../../utils/toast.js';
 import {
   failureText,
   operationFailureText,
@@ -25,6 +23,9 @@ import {
   terminationText
 } from './failure-labels.js';
 import { formatClock, formatElapsed, shortSha } from './lanes.js';
+// One template for the log path, shared with the Worker row's completion card
+// (UI-8w4t §4) so both surfaces offer the same affordance and the same toast.
+import { logPathTemplate } from './log-path.js';
 import { cleanupStepLabel, cleanupStepperView } from './merge-steps.js';
 
 /**
@@ -215,49 +216,6 @@ function stateWordOf(event) {
 }
 
 /**
- * Put one absolute path on the clipboard. Board's `복사됨`/`복사 실패` toast
- * convention, because that is the only feedback a copy can honestly give.
- *
- * @param {string} value
- */
-async function copyPath(value) {
-  const copied = await copyToClipboard(value);
-  showToast(
-    copied ? '복사됨' : '복사 실패',
-    copied ? 'success' : 'error',
-    1200
-  );
-}
-
-/**
- * A path value plus the control that moves it somewhere useful (UI-8w4t §4).
- * The log a failure left behind is read in a terminal, not here, so the path is
- * only worth showing if it can be carried out of the browser.
- *
- * The control is bound to the value, never drawn on its own: a card whose
- * failure happened BEFORE the RepoOperation started has no log file, and a
- * copy button for a path that does not exist is worse than no button.
- *
- * @param {string} value
- * @returns {TemplateResult}
- */
-function pathValueTemplate(value) {
-  return html`<span class="worker-ev__copyline"
-    ><code class="worker-ev__path">${value}</code
-    ><button
-      type="button"
-      class="worker-ev__copy"
-      data-seam="log-path-copy"
-      title="로그 경로 복사"
-      aria-label=${`로그 경로 복사: ${value}`}
-      @click=${() => void copyPath(value)}
-    >
-      ⧉
-    </button></span
-  >`;
-}
-
-/**
  * The `세부` disclosure: everything a body line deliberately does not say —
  * including the RAW failure code, which is the reason this block always exists
  * on a failing event.
@@ -282,7 +240,7 @@ function detailsTemplate(rows) {
     <dl class="worker-ev__kv">
       ${kept.map((row) => {
         const value =
-          row.copy === true ? pathValueTemplate(row.value) : row.value;
+          row.copy === true ? logPathTemplate(row.value) : row.value;
         return html`<div>
           <dt>${row.term}</dt>
           <dd>${value}</dd>
