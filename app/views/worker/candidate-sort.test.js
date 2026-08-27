@@ -189,10 +189,11 @@ describe('candidate sort storage (UI-d13v §4.3)', () => {
 describe('applyCandidateSort (UI-d13v §4.1)', () => {
   test('puts a published spec ahead of a draft one under the spec preset', () => {
     const list = [
-      issue('draft', { created_at: 100, metadata: { spec_id: 'docs/a.md' } }),
+      issue('draft', { created_at: 100, spec_id: 'docs/a.md', metadata: {} }),
       issue('published', {
         created_at: 200,
-        metadata: { spec_id: 'docs/b.md', spec_review: RECEIPT }
+        spec_id: 'docs/b.md',
+        metadata: { spec_review: RECEIPT }
       })
     ];
 
@@ -202,10 +203,10 @@ describe('applyCandidateSort (UI-d13v §4.1)', () => {
   });
 
   test('orders the longest-waiting first inside the spec group', () => {
-    const meta = { spec_id: 'docs/a.md', spec_review: RECEIPT };
+    const meta = { spec_review: RECEIPT };
     const list = [
-      issue('new', { created_at: 300, metadata: meta }),
-      issue('old', { created_at: 100, metadata: meta })
+      issue('new', { created_at: 300, spec_id: 'docs/a.md', metadata: meta }),
+      issue('old', { created_at: 100, spec_id: 'docs/a.md', metadata: meta })
     ];
 
     const sorted = applyCandidateSort(list, { preset: 'spec' });

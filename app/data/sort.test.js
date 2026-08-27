@@ -342,9 +342,10 @@ describe('cmpChain (UI-d13v §4.1)', () => {
 
   test('puts a published spec first on a spec desc step', () => {
     const items = [
-      row('draft', { metadata: { spec_id: 'docs/a.md' } }),
+      row('draft', { spec_id: 'docs/a.md', metadata: {} }),
       row('published', {
-        metadata: { spec_id: 'docs/b.md', spec_review: RECEIPT }
+        spec_id: 'docs/b.md',
+        metadata: { spec_review: RECEIPT }
       })
     ];
 

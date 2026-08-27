@@ -5112,6 +5112,25 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect(prompt).toContain('머지의 필수조건');
   });
 
+  test('names the attempt id and the exact resolver-self receipt write', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store);
+
+    const result = await env.scheduler.resolveConflict(WS, 'B1');
+
+    // The queue reads `impl_review=resolver-self:<attempt>:<prior>@<result>`
+    // back from bd metadata; a session told only to "leave a verdict" wrote a
+    // comment instead and its PR fell to an external review (UI-hm55).
+    const prompt = env.runner.spawnedBead('B1').prompt;
+    expect(result.ok).toBe(true);
+    expect(prompt).toContain(`attempt id: ${result.attempt_id}`);
+    expect(prompt).toContain(
+      `bd update B1 --set-metadata impl_review=resolver-self:${result.attempt_id}:`
+    );
+    expect(prompt).toContain('bd show B1 --json');
+    expect(prompt).toContain('git rev-parse HEAD');
+  });
+
   test('instructs recording the resolution as a bd comment on the bead', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedDoneAttempt(env.store);

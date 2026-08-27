@@ -394,11 +394,10 @@ describe('execution metadata display projection', PURE, () => {
 });
 
 describe('computeStale — spec_review', () => {
-  test('a follow-up commit touching the spec doc marks spec_stale', () => {
+  test('reports spec_stale false from metadata alone after the spec doc moved', () => {
     const dir = makeRepo();
     writeFile(dir, 'docs/spec.md', '# spec v1\n');
     const sha = commitAll(dir, 'add spec');
-    // Follow-up commit that modifies the spec doc itself.
     writeFile(dir, 'docs/spec.md', '# spec v1\nmore\n');
     commitAll(dir, 'revise spec');
 
@@ -406,7 +405,8 @@ describe('computeStale — spec_review', () => {
       { spec_id: 'docs/spec.md', spec_review: 'codex@' + sha },
       dir
     );
-    expect(spec_stale).toBe(true);
+
+    expect(spec_stale).toBe(false);
   });
 
   test('a commit touching an unrelated path does not mark spec_stale', () => {
@@ -424,18 +424,22 @@ describe('computeStale — spec_review', () => {
     expect(spec_stale).toBe(false);
   });
 
-  test('a skip spec receipt is stale like any other (no exemption)', () => {
+  test('a skip spec review goes stale on a follow-up commit (no exemption)', () => {
     const dir = makeRepo();
     writeFile(dir, 'docs/spec.md', '# spec v1\n');
     const sha = commitAll(dir, 'add spec');
     writeFile(dir, 'docs/spec.md', '# spec v1\nchanged\n');
     commitAll(dir, 'revise spec');
 
-    const { spec_stale } = computeStale(
-      { spec_id: 'docs/spec.md', spec_review: 'skipped@' + sha },
+    const wf = enrichIssueWorkflow(
+      {
+        spec_id: 'docs/spec.md',
+        status: 'in_progress',
+        metadata: { route: 'spec_backed', spec_review: 'skipped@' + sha }
+      },
       dir
     );
-    expect(spec_stale).toBe(true);
+    expect(wf.stages.spec.stale).toBe(true);
   });
 
   test('uses a valid last_checked_sha cursor for spec freshness', () => {
@@ -712,60 +716,21 @@ describe('enrichIssueWorkflow', () => {
     expect(wf.stages.spec.fill).toBe('full');
   });
 
-  test('dims the spec stage for a draft-only spec_path with no workspace', () => {
+  test('empties the spec stage for a legacy spec_path with no native spec_id', () => {
     const draft = enrichIssueWorkflow({
       metadata: { route: 'spec_backed', spec_path: 'docs/specs/draft.md' }
     });
     const bare = enrichIssueWorkflow({ metadata: { route: 'spec_backed' } });
 
     expect(draft.stages.spec).toEqual({
-      fill: 'dim',
+      fill: 'none',
       glyph: null,
       stale: false,
-      receipt: null,
-      doc: { path: 'docs/specs/draft.md', missing_state: 'spec_draft' }
+      receipt: null
     });
     expect(draft.stages.impl).toEqual(bare.stages.impl);
     expect(draft.stages.pr).toEqual(bare.stages.pr);
     expect(draft.stages.merge).toEqual(bare.stages.merge);
-  });
-
-  test('dims the spec stage when the draft document exists in the workspace', () => {
-    const dir = makeRepo();
-    writeFile(dir, 'docs/specs/draft.md', '# draft\n');
-    commitAll(dir, 'add draft');
-
-    const wf = enrichIssueWorkflow(
-      {
-        status: 'open',
-        metadata: { route: 'spec_backed', spec_path: 'docs/specs/draft.md' }
-      },
-      dir
-    );
-
-    expect(wf.stages.spec).toEqual({
-      fill: 'dim',
-      glyph: null,
-      stale: false,
-      receipt: null,
-      doc: { path: 'docs/specs/draft.md', missing_state: 'spec_draft' }
-    });
-  });
-
-  test('empties the spec stage when the draft document is proven absent', () => {
-    const dir = makeRepo();
-    writeFile(dir, 'docs/other.md', '# other\n');
-    commitAll(dir, 'add other');
-
-    const wf = enrichIssueWorkflow(
-      {
-        status: 'open',
-        metadata: { route: 'spec_backed', spec_path: 'docs/specs/draft.md' }
-      },
-      dir
-    );
-
-    expect(wf.stages.spec.fill).toBe('none');
   });
 
   test('renders a spec_id with no receipt as the draft cell', () => {
@@ -775,8 +740,9 @@ describe('enrichIssueWorkflow', () => {
 
     const wf = enrichIssueWorkflow(
       {
+        spec_id: 'docs/spec.md',
         status: 'in_progress',
-        metadata: { route: 'spec_backed', spec_id: 'docs/spec.md' }
+        metadata: { route: 'spec_backed' }
       },
       dir
     );
@@ -797,10 +763,10 @@ describe('enrichIssueWorkflow', () => {
 
     const wf = enrichIssueWorkflow(
       {
+        spec_id: 'docs/spec.md',
         status: 'in_progress',
         metadata: {
           route: 'spec_backed',
-          spec_id: 'docs/spec.md',
           spec_review: 'codex@abc'
         }
       },
@@ -821,10 +787,10 @@ describe('enrichIssueWorkflow', () => {
 
     const wf = enrichIssueWorkflow(
       {
+        spec_id: 'docs/spec.md',
         status: 'in_progress',
         metadata: {
           route: 'spec_backed',
-          spec_id: 'docs/spec.md',
           spec_review: 'codex@' + sha
         }
       },
@@ -847,10 +813,10 @@ describe('enrichIssueWorkflow', () => {
 
     const wf = enrichIssueWorkflow(
       {
+        spec_id: 'docs/spec.md',
         status: 'in_progress',
         metadata: {
           route: 'spec_backed',
-          spec_id: 'docs/spec.md',
           spec_review: 'skipped@' + sha
         }
       },
@@ -860,20 +826,19 @@ describe('enrichIssueWorkflow', () => {
     expect(wf.stages.spec).toMatchObject({ fill: 'full', glyph: 'skip' });
   });
 
-  test('binds spec staleness to the published path, not the draft path', () => {
+  test('binds spec staleness to the published path', () => {
     const dir = makeRepo();
     writeFile(dir, 'docs/published.md', '# published\n');
-    writeFile(dir, 'docs/draft.md', '# draft\n');
+    writeFile(dir, 'docs/other.md', '# other\n');
     const sha = commitAll(dir, 'add specs');
-    writeFile(dir, 'docs/draft.md', '# draft\nedit\n');
-    commitAll(dir, 'revise draft only');
+    writeFile(dir, 'docs/other.md', '# other\nedit\n');
+    commitAll(dir, 'revise unrelated file only');
 
     const issue = {
+      spec_id: 'docs/published.md',
       status: 'in_progress',
       metadata: {
         route: 'spec_backed',
-        spec_id: 'docs/published.md',
-        spec_path: 'docs/draft.md',
         spec_review: 'codex@' + sha
       }
     };
@@ -889,7 +854,7 @@ describe('enrichIssueWorkflow', () => {
     expect(enrichIssueWorkflow(issue, dir).stages.spec.stale).toBe(true);
   });
 
-  test('keeps a draft spec stage dim when an off-contract spec_review exists', () => {
+  test('empties a spec_path-only stage even when an off-contract spec_review exists', () => {
     const raw = 'codex@' + 'a'.repeat(40);
 
     const wf = enrichIssueWorkflow({
@@ -902,11 +867,10 @@ describe('enrichIssueWorkflow', () => {
     });
 
     expect(wf.stages.spec).toEqual({
-      fill: 'dim',
+      fill: 'none',
       glyph: null,
       stale: false,
-      receipt: raw,
-      doc: { path: 'docs/specs/draft.md', missing_state: 'spec_draft' }
+      receipt: raw
     });
   });
 
@@ -943,10 +907,10 @@ describe('enrichIssueWorkflow', () => {
 
     const wf = enrichIssueWorkflow(
       {
+        spec_id: 'docs/spec.md',
         status: 'in_progress',
         metadata: {
           route: 'spec_backed',
-          spec_id: 'docs/spec.md',
           spec_review: 'codex@' + sha
         }
       },
@@ -1609,10 +1573,10 @@ describe('closed beads skip the staleness probes', () => {
 
     const wf = enrichIssueWorkflow(
       {
+        spec_id: 'docs/spec.md',
         status: 'closed',
         metadata: {
           route: 'spec_backed',
-          spec_id: 'docs/spec.md',
           spec_review: 'codex@' + sha
         }
       },
@@ -1667,10 +1631,10 @@ describe('closed beads skip the staleness probes', () => {
 
     const spec_wf = enrichIssueWorkflow(
       {
+        spec_id: 'docs/spec.md',
         status: 'resolved',
         metadata: {
           route: 'spec_backed',
-          spec_id: 'docs/spec.md',
           spec_review: 'codex@' + spec_sha
         }
       },
@@ -1708,10 +1672,10 @@ describe('closed beads skip the staleness probes', () => {
     const wf = enrichIssueWorkflow(
       {
         id: 'UI-1',
+        spec_id: 'docs/spec.md',
         status: 'closed',
         metadata: {
           route: 'spec_backed',
-          spec_id: 'docs/spec.md',
           spec_review: 'codex@' + sha,
           impl_review: 'skipped@' + sha,
           pr_url: 'https://github.com/o/r/pull/42'
@@ -1732,14 +1696,15 @@ describe('closed beads skip the staleness probes', () => {
 
   test('leaves the status-less computeStale contract unchanged', () => {
     const dir = makeRepo();
-    const sha = specMovedAfterReceipt(dir);
+    const sha = beadBranchRewritten(dir);
 
-    const { spec_stale } = computeStale(
-      { spec_id: 'docs/spec.md', spec_review: 'codex@' + sha },
-      dir
+    const { impl_stale } = computeStale(
+      { impl_review: 'codex@' + sha },
+      dir,
+      'UI-1'
     );
 
-    expect(spec_stale).toBe(true);
+    expect(impl_stale).toBe(true);
   });
 });
 
@@ -1768,15 +1733,13 @@ describe('stage doc projection (UI-ajkn §2)', () => {
     });
   });
 
-  test('marks a draft-only spec path as spec_draft', () => {
+  test('omits doc for a legacy spec_path with no native spec_id', () => {
     const wf = enrichIssueWorkflow({
       metadata: { route: 'spec_backed', spec_path: 'docs/specs/draft.md' }
     });
 
-    expect(wf.stages.spec.doc).toEqual({
-      path: 'docs/specs/draft.md',
-      missing_state: 'spec_draft'
-    });
+    expect(wf.stages.spec.fill).toBe('none');
+    expect(wf.stages.spec.doc).toBeUndefined();
   });
 
   test('carries a draft path even when the document is proven absent', () => {
@@ -1786,8 +1749,9 @@ describe('stage doc projection (UI-ajkn §2)', () => {
 
     const wf = enrichIssueWorkflow(
       {
+        spec_id: 'docs/specs/draft.md',
         status: 'open',
-        metadata: { route: 'spec_backed', spec_path: 'docs/specs/draft.md' }
+        metadata: { route: 'spec_backed' }
       },
       dir
     );

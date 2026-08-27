@@ -386,6 +386,17 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Whether the sequential merge queue currently holds an item for this bead.
+   *
+   * @param {Queue} q
+   * @param {string} bead_id
+   */
+  function inMergeQueue(q, bead_id) {
+    const items = Array.isArray(q.merge_queue) ? q.merge_queue : [];
+    return items.some((e) => e && e.bead_id === bead_id);
+  }
+
+  /**
    * @param {Queue} q
    * @param {string} bead_id
    */
@@ -425,7 +436,17 @@ export function createPrActions(deps) {
     if (inPrWait(q, bead_id)) {
       return { ok: true, external: false };
     }
-    if (!external || !external.get(workspace, bead_id)) {
+    // The registry drops a bead for as long as ANY non-terminal attempt of its
+    // own runs (`externalProtectedBeadIds`, UI-b8n8) — and the queue's own
+    // resolution / head-review / repair attempts are attempts too. Right after
+    // one of them ends, the queue re-observes the head before the next scan
+    // has refilled the registry, so the row it is driving read as
+    // `not_in_pr_wait` (`repair_head_unobservable`, UI-w25i). The queue item
+    // is the evidence that survives that window; bd still confirms the row
+    // below exactly as for a registry hit, so nothing is admitted on the
+    // queue's word alone.
+    const in_registry = !!external && !!external.get(workspace, bead_id);
+    if (!in_registry && !inMergeQueue(q, bead_id)) {
       return { ok: false, reason: 'not_in_pr_wait' };
     }
     if (typeof deps.bd.readIssue !== 'function') {

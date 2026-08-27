@@ -31,12 +31,11 @@ function hasPlanAuthoringHistory(metadata) {
 }
 
 /**
- * Collect artifact rows from native spec_id and workflow metadata. This view is
- * the only draft opt-in: a `spec_path` pinned at authoring time opens here
- * without ever counting as publication evidence elsewhere. The draft badge
- * follows the evidence partition (UI-vb7u §2), so a native `spec_id` still
- * awaiting a valid `spec_review` receipt wears it too — publication, not path
- * presence, is what clears the badge.
+ * Collect artifact rows from native spec_id and workflow metadata. The draft
+ * badge follows the evidence partition (UI-vb7u §2): a native `spec_id` still
+ * awaiting a valid `spec_review` receipt wears it — publication, not path
+ * presence, is what clears the badge. The retired `metadata.spec_path`
+ * pointer is not read (UI-o0rx).
  *
  * @param {{ spec_id?: unknown, metadata?: Record<string, any> }} issue
  * @returns {ArtifactRow[]}

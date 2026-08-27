@@ -510,7 +510,7 @@ describe('worker/head-review-transport — review runs', () => {
   test('carries the prior receipt and approved spec into the packet', async () => {
     const { t, calls, issue } = transport();
     issue.metadata.impl_review = `codex@${HEAD}`;
-    issue.metadata.spec_id = 'docs/spec.md';
+    issue.spec_id = 'docs/spec.md';
 
     await t.runReview(reviewPacket());
 

@@ -592,9 +592,9 @@ export function implFreshness(workspace_root, receipt_sha, bead_id) {
  * @param {string | null} head - precomputed HEAD (avoids re-shelling per issue)
  * @param {string | undefined | null} bead_id - issue id (impl branch name)
  * @param {string | null} status - issue status, or null to always probe
- * @param {string} [published_spec_path] - Canonical native-first published spec
- * path. Only publication evidence takes part in the stale probe; an
- * authoring-time draft path never does.
+ * @param {string} [published_spec_path] - Native `spec_id` path. Metadata
+ * alone carries no spec key anymore, so the metadata-only entry point never
+ * probes spec staleness.
  * @returns {{ spec_stale: boolean, impl_stale: boolean, spec_receipt: ParsedReceipt | null, impl_receipt: ParsedReceipt | null }}
  */
 function computeStaleWithHead(
@@ -603,7 +603,7 @@ function computeStaleWithHead(
   head,
   bead_id,
   status,
-  published_spec_path = resolveSpecId({ metadata: md }).path
+  published_spec_path = ''
 ) {
   const spec_receipt = parseReceipt(md.spec_review);
   const impl_receipt = parseReceipt(md.impl_review);
@@ -648,7 +648,10 @@ function staleProbesApply(status) {
 }
 
 /**
- * Compute `spec_stale` / `impl_stale` for one issue's metadata.
+ * Compute `spec_stale` / `impl_stale` for one issue's metadata. The spec probe
+ * needs the native `spec_id`, which metadata no longer carries, so this entry
+ * point reports `spec_stale: false`; {@link enrichIssueWorkflow} is the path
+ * that probes spec freshness.
  *
  * @param {Record<string, any> | null | undefined} metadata
  * @param {string | undefined | null} workspace_root

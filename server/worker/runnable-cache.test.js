@@ -27,10 +27,10 @@ function row(patch = {}) {
     id: 'UI-1',
     title: '실행 대기 이슈',
     status: 'open',
+    spec_id: 'docs/specs/thing.md',
     ...rest,
     metadata: {
       route: 'spec_backed',
-      spec_id: 'docs/specs/thing.md',
       spec_review: RECEIPT,
       ...metadata
     }
@@ -327,32 +327,21 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     expect(out[0]).toMatchObject({ blocked: false, blocked_by: [] });
   });
 
-  test('accepts native-only and equal dual spec_id but rejects conflicting dual', async () => {
-    const native = row({
-      id: 'UI-native',
-      spec_id: ' docs/specs/native.md ',
-      metadata: { spec_id: undefined }
-    });
-    const equal = row({
-      id: 'UI-equal',
-      spec_id: 'docs/specs/same.md',
-      metadata: { spec_id: ' docs/specs/same.md ' }
-    });
-    const conflict = row({
-      id: 'UI-conflict',
-      spec_id: 'docs/specs/native.md',
-      metadata: { spec_id: 'docs/specs/legacy.md' }
-    });
+  test('keeps the native spec_id when metadata.spec_id differs', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [native, equal, conflict] })
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            spec_id: 'docs/specs/native.md',
+            metadata: { spec_id: 'docs/specs/legacy.md' }
+          })
+        ]
+      })
     });
 
     const out = await warm(cache, WS_A);
 
-    expect(out.map((item) => [item.bead_id, item.spec_id])).toEqual([
-      ['UI-native', 'docs/specs/native.md'],
-      ['UI-equal', 'docs/specs/same.md']
-    ]);
+    expect(out[0].spec_id).toBe('docs/specs/native.md');
   });
 
   test('excludes a worker-ineligible bead from runnable candidates', async () => {
@@ -492,7 +481,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('rejects a bead with no spec_id', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row({ metadata: { spec_id: '' } })] })
+      runJson: fakeBd({ [WS_A]: [row({ spec_id: '' })] })
     });
 
     const out = await warm(cache, WS_A);
@@ -1393,7 +1382,8 @@ describe('runnable scope source (UI-f1qy §4.4)', () => {
           row({
             id: 'UI-quick',
             description: '빠른 수정\n\n## scope\n- server/worker/',
-            metadata: { route: 'quick_fix', spec_id: '', spec_review: '' }
+            spec_id: '',
+            metadata: { route: 'quick_fix', spec_review: '' }
           })
         ]
       })
@@ -1412,7 +1402,8 @@ describe('runnable scope source (UI-f1qy §4.4)', () => {
           row({
             id: 'UI-quick',
             description: '선언 없는 빠른 수정',
-            metadata: { route: 'quick_fix', spec_id: '', spec_review: '' }
+            spec_id: '',
+            metadata: { route: 'quick_fix', spec_review: '' }
           })
         ]
       })
@@ -1446,13 +1437,13 @@ describe('runnable scope source (UI-f1qy §4.4)', () => {
     expect(Object.hasOwn(out[0], 'description_scope')).toBe(false);
   });
 
-  test('falls back to the description when the two spec surfaces conflict', async () => {
+  test('resolves scope from the native spec_id even when metadata.spec_id differs', async () => {
     const cache = createRunnableCache({
       runJson: fakeBd({
         [WS_A]: [
           row({
             id: 'UI-quick',
-            description: '## scope\n- app/views/',
+            description: '빠른 수정',
             spec_id: 'docs/specs/native.md',
             metadata: {
               route: 'quick_fix',
@@ -1466,8 +1457,7 @@ describe('runnable scope source (UI-f1qy §4.4)', () => {
 
     const out = await warm(cache, WS_A);
 
-    expect(out[0].scope_spec_id).toBe('');
-    expect(out[0].description_scope).toEqual(['app/views/']);
+    expect(out[0].scope_spec_id).toBe('docs/specs/native.md');
   });
 
   test('leaves the admission spec_id untouched for both routes', async () => {
