@@ -1539,14 +1539,13 @@ export function createCompletionActionDriver(deps) {
       settleFailure(root_bead_id, 'repair_evidence_missing', 'repair_dispatch');
       return;
     }
-    // This is an AUTOMATIC dispatch, so it answers to the same two gates the
-    // RepoOperation ladder answers to: the workspace `auto_repair` toggle and
-    // the pinned policy's decoder guard. Without them a workspace that turned
-    // automation off, or a consumer that cannot read the pinned contract, would
-    // still open sessions from this lane. Neither gate terminalizes the intent —
-    // the failure stays exactly where it is, waiting for the toggle to come back
-    // on or for a user-triggered resolution.
-    if (queue.auto_repair !== true || !repoOperationPolicySupported()) {
+    // This is an AUTOMATIC dispatch, so it answers to the pinned policy's
+    // decoder guard. Without it a consumer that cannot read the pinned contract
+    // would still open sessions from this lane. The workspace `auto_repair`
+    // toggle is gone with the RepoOperation repair lane (UI-s582 §1), so this
+    // is the only remaining gate. It does not terminalize the intent — the
+    // failure stays exactly where it is, waiting for a re-pinned contract.
+    if (!repoOperationPolicySupported()) {
       return;
     }
     if (current.repair_sessions_used >= REPAIR_SESSION_CAP) {

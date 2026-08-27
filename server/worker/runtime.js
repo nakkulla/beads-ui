@@ -15,7 +15,6 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { isAnalyzerEffortValid } from '../../app/data/analyzer-efforts.js';
 import { kvGetJson, kvSetJson } from '../bd.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
 import { createActivityStore } from './activity-store.js';
@@ -24,14 +23,10 @@ import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { createExternalPrStore } from './external-pr.js';
 import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
-import { ANALYZER_RUNNERS } from './parallel-analysis-runner.js';
-import { createParallelAnalysisRunsStore } from './parallel-analysis-runs.js';
-import { createParallelAnalysisStore } from './parallel-analysis-store.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { MANUAL_MERGE_CONTINUATION, createQueueStore } from './queue-store.js';
 import { createReviseParkedStore } from './revise-parked.js';
 import { createRunnableCache } from './runnable-cache.js';
-import { runtimeCatalog } from './runner/index.js';
 import { createSessionLog } from './session-log.js';
 import { workspaceSlug, workspaceStateDir } from './state-paths.js';
 import { createTitleCache } from './title-cache.js';
@@ -52,51 +47,9 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createRunnableCache>} runnableCache
  * @property {ReturnType<typeof createReviseParkedStore>} reviseParked
  * @property {ReturnType<typeof createSessionLog>} sessionLog
- * @property {ReturnType<typeof createParallelAnalysisStore>} parallelAnalysis
- * @property {ReturnType<typeof createParallelAnalysisRunsStore>} parallelAnalysisRuns
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: typeof MANUAL_MERGE_CONTINUATION }} status
  */
-
-/**
- * Whether one analyzer selection is executable against `catalog` (UI-yqw9 §2).
- *
- * Three conditions, no fallback: the runner has a tool-free transport, the
- * catalog carries the model under that runner, and the effort is in the
- * vocabulary {@link isAnalyzerEffortValid} derives — the model's own list when
- * it has one, else the runner's. The runner-wide list alone would admit
- * `sol` + `minimal`, which the CLI refuses.
- *
- * @param {any} catalog
- * @param {{ runner: string, model: string, effort: string }} selection
- * @returns {boolean}
- */
-export function analyzerSelectionValid(catalog, selection) {
-  if (!ANALYZER_RUNNERS.has(selection.runner)) {
-    return false;
-  }
-  return isAnalyzerEffortValid(catalog, selection);
-}
-
-/**
- * The same judgement against the PROCESS catalog. Exported because the settings
- * write and the analysis start must use one function: a selection stored when
- * the catalog offered it can stop being executable after a config edit or a
- * restart, and start re-checks it before any snapshot, bundle, or spawn
- * (UI-yqw9 §2.1).
- *
- * @param {{ runner: string, model: string, effort: string }} selection
- * @returns {boolean}
- */
-export function validateAnalyzerSelection(selection) {
-  let catalog;
-  try {
-    catalog = runtimeCatalog();
-  } catch {
-    return false;
-  }
-  return analyzerSelectionValid(catalog, selection);
-}
 
 /**
  * Build a fresh Worker runtime.
@@ -209,18 +162,6 @@ export function createWorkerRuntime() {
         : null;
     }
   });
-  // Process-wide parallelism-analysis store (UI-04vo §9): server-global
-  // settings, the per-workspace last-good cache, and the single-flight job
-  // registry. Process memory is what makes single-flight true across every
-  // connection, and what makes an on-disk job marker an orphan after a restart.
-  const parallelAnalysis = createParallelAnalysisStore({
-    // Only a selection the catalog offers AND a tool-free analyzer can execute
-    // may be stored (UI-04vo §7). Without this the settings could name a model
-    // the runner would refuse at spawn time, and the cache identity would
-    // describe a run that can never happen.
-    validateSelection: validateAnalyzerSelection
-  });
-  const parallelAnalysisRuns = createParallelAnalysisRunsStore();
   /** @type {() => number} */
   let runningCount = () => 0;
 
@@ -238,8 +179,6 @@ export function createWorkerRuntime() {
     runnableCache,
     reviseParked,
     sessionLog,
-    parallelAnalysis,
-    parallelAnalysisRuns,
     /**
      * @param {() => number} fn
      */

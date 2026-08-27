@@ -904,7 +904,6 @@ describe('workspaces_state control fields (UI-eey2 §9.4)', () => {
           slots: 3,
           auto_advance: true,
           auto_merge: true,
-          auto_repair: false,
           serial_lane_count: 2,
           orchestration_model: 'sol',
           orchestration_effort: 'high',
@@ -922,7 +921,6 @@ describe('workspaces_state control fields (UI-eey2 §9.4)', () => {
       slots: 3,
       auto_advance: true,
       auto_merge: true,
-      auto_repair: false,
       serial_lane_count: 2,
       orchestration_model: 'sol',
       orchestration_effort: 'high',
@@ -933,7 +931,7 @@ describe('workspaces_state control fields (UI-eey2 §9.4)', () => {
     expect(out[0]).toHaveProperty('execution_defaults');
   });
 
-  test('reads a legacy queue as one serial lane with auto_repair on', () => {
+  test('reads a legacy queue as one serial lane', () => {
     const out = buildState({
       workspaces: [WS_A],
       queues: { [WS_A]: snapshot() }
@@ -941,7 +939,6 @@ describe('workspaces_state control fields (UI-eey2 §9.4)', () => {
 
     expect(out[0]).toMatchObject({
       serial_lane_count: 1,
-      auto_repair: true,
       orchestration_model: null,
       orchestration_effort: null,
       orchestration_speed: null,

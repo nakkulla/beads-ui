@@ -1415,63 +1415,6 @@ describe('worker/completion-intent action driver', () => {
     expect(action).toBe(null);
   });
 
-  test('opens no automatic repair session while auto_repair is off', async () => {
-    const store = seededCompletionStore();
-    store.setCompletionSubject(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      phase: 'cleaning',
-      subject: { ...intent().subject, merged_sha: 'c'.repeat(40) }
-    });
-    store.recordCleanupFailure(DRIVER_WS, {
-      bead_id: 'UI-root',
-      step: 'child_sweep',
-      reason: 'bd_read_failed'
-    });
-    store.toggleAutoRepair(DRIVER_WS, {
-      expected_revision: store.snapshot(DRIVER_WS).revision,
-      on: false
-    });
-    const dispatchCompletionRepair = vi.fn(async () => ({ ok: true }));
-    const driver = actionDriver(store, {
-      scheduler: { dispatchCompletionRepair }
-    });
-    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
-
-    await driver.observe('UI-root', current);
-    await driver.onAction('UI-root', { kind: 'create_repair' }, current);
-
-    expect(dispatchCompletionRepair).not.toHaveBeenCalled();
-  });
-
-  test('leaves the intent untouched when the toggle blocks the dispatch', async () => {
-    const store = seededCompletionStore();
-    store.setCompletionSubject(DRIVER_WS, {
-      root_bead_id: 'UI-root',
-      phase: 'cleaning',
-      subject: { ...intent().subject, merged_sha: 'c'.repeat(40) }
-    });
-    store.recordCleanupFailure(DRIVER_WS, {
-      bead_id: 'UI-root',
-      step: 'child_sweep',
-      reason: 'bd_read_failed'
-    });
-    store.toggleAutoRepair(DRIVER_WS, {
-      expected_revision: store.snapshot(DRIVER_WS).revision,
-      on: false
-    });
-    const driver = actionDriver(store);
-    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
-
-    await driver.observe('UI-root', current);
-    await driver.onAction('UI-root', { kind: 'create_repair' }, current);
-
-    const after = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
-    expect([after.terminal_reason, after.repair_sessions_used]).toEqual([
-      null,
-      0
-    ]);
-  });
-
   test('adopts a journaled create operation without duplicating its repair session', async () => {
     const store = seededCompletionStore();
     const failure_key = createCompletionFailureKey({

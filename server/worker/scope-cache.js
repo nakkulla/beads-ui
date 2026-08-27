@@ -20,7 +20,7 @@
 import path from 'node:path';
 import { debug } from '../logging.js';
 import { workerAnalysisContext } from './attach.js';
-import { scopeAtBase } from './parallel-analysis-targets.js';
+import { scopeAtBase } from './scope-at-base.js';
 
 const log = debug('worker:scope-cache');
 

@@ -65,7 +65,6 @@ function queueRow(patch = {}) {
     serial_lane_count: 1,
     auto_advance: false,
     auto_merge: false,
-    auto_repair: false,
     runner_catalog: CATALOG,
     execution_defaults: EXECUTION_DEFAULTS,
     orchestration_model: null,
@@ -236,8 +235,6 @@ describe('createExecutionPane bound to another repo', () => {
     await settle();
     el(root, '[data-automation="auto_merge"]').click();
     await settle();
-    el(root, '[data-automation="auto_repair"]').click();
-    await settle();
     el(
       root,
       '[data-stepper="slots"] button[aria-label="동시 실행 증가"]'
@@ -253,7 +250,6 @@ describe('createExecutionPane bound to another repo', () => {
       'worker-queue-set-orchestration-defaults',
       'worker-automation-toggle',
       'worker-merge-auto-toggle',
-      'worker-auto-repair-toggle',
       'worker-queue-set-slots',
       'worker-queue-set-serial-lane-count'
     ]) {
@@ -366,7 +362,7 @@ describe('createExecutionPane bound to another repo', () => {
 describe('createExecutionPane automation section', () => {
   test('renders each switch from the bound queue snapshot', async () => {
     const { root, pane } = mount({
-      queue: queueRow({ auto_advance: true, auto_repair: true })
+      queue: queueRow({ auto_advance: true })
     });
 
     await pane.load();
@@ -377,9 +373,6 @@ describe('createExecutionPane automation section', () => {
     expect(
       el(root, '[data-automation="auto_merge"]').getAttribute('aria-pressed')
     ).toBe('false');
-    expect(
-      el(root, '[data-automation="auto_repair"]').getAttribute('aria-pressed')
-    ).toBe('true');
   });
 
   test('renders the concurrency and serial-lane counts of that repo', async () => {

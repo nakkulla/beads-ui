@@ -16,6 +16,7 @@ import {
   createWorkerAttachment,
   initWorkerRuntime,
   retryWorkerCleanup,
+  startWorkerRepoOperationDeployRun,
   stopWorkerAttempt,
   tickWorkerQueue
 } from './attach.js';
@@ -29,24 +30,6 @@ import { createQueueStore } from './queue-store.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createWorkerRuntime } from './runtime.js';
 import { sessionLogPath } from './state-paths.js';
-
-// `beadFacts`는 attach가 repair 어댑터를 만들 때만 존재하는 클로저다. 실제
-// 구현으로 위임하는 mock으로 그 deps만 붙잡아 다른 스위트의 동작은 그대로 둔다.
-const repair_adapter_capture = vi.hoisted(() => ({
-  /** @type {any} */
-  deps: null
-}));
-
-vi.mock('./repair-session-adapter.js', async (importOriginal) => {
-  const actual = /** @type {any} */ (await importOriginal());
-  return {
-    ...actual,
-    createRepairSessionAdapter: (/** @type {any} */ deps) => {
-      repair_adapter_capture.deps = deps;
-      return actual.createRepairSessionAdapter(deps);
-    }
-  };
-});
 
 // 큐 deps는 attach 안에서만 조립된다. 같은 위임 mock으로 그 deps를 붙잡아,
 // 생산 조립이 seam을 실제로 연결하는지 본다(UI-p49g §4.1).
@@ -445,7 +428,6 @@ describe('worker/attach construction + live loop (F1)', () => {
       }
     });
     const repairSession = {
-      dispatch: vi.fn(),
       judge: vi.fn(async () => ({ verdict: 'unresolved', evidence: null }))
     };
     const att = createWorkerAttachment(WS, {
@@ -461,7 +443,6 @@ describe('worker/attach construction + live loop (F1)', () => {
           ? { code: 0, stdout: `${root_sha}\n`, stderr: '' }
           : { code: 1, stdout: '', stderr: '' },
       makeRunner: () => ({ name: 'codex', spawn }),
-      repairSession,
       autoAdvanceRestore: controller
     });
     controller.register({
@@ -490,63 +471,6 @@ describe('worker/attach construction + live loop (F1)', () => {
     }
 
     expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(true);
-    expect(spawn).toHaveBeenCalledTimes(1);
-    expect(spawn.mock.calls[0][0].id).toBe('UI-next');
-  });
-
-  test('hands a late moot repair to scheduler dispatch after reconciliation', async () => {
-    const runtime = createWorkerRuntime();
-    const spawn = vi.fn((/** @type {any} */ _bead) => ({
-      bead_id: _bead.id,
-      pid: 4321,
-      process_identity: { pid: 4321, pgid: 4321, started_at: 1 },
-      kill: vi.fn(),
-      events: new EventEmitter(),
-      done: new Promise(() => {})
-    }));
-    const att = createWorkerAttachment(WS, {
-      runtime,
-      bd: fakeBd({ 'UI-next': { status: 'open' } }),
-      worktree: fakeWorktree,
-      verify: okVerify,
-      admission: { validate: async () => ({ ok: true }) },
-      resolveBase: okBase('main'),
-      kvGet: noAccountDefaults,
-      gitRun: async () => ({ code: 1, stdout: '', stderr: '' }),
-      makeRunner: () => ({ name: 'claude', spawn }),
-      repairSession: {
-        dispatch: vi.fn(),
-        judge: vi.fn(async () => ({
-          verdict: 'chain_closed',
-          evidence: null
-        }))
-      }
-    });
-    const store = runtime.queueStore;
-    store.appendAttempt(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      attempt: {
-        attempt_id: 'repair-failure',
-        bead_id: 'UI-repair',
-        repo: WS,
-        status: 'failed',
-        finished_at: 10,
-        repair_operation_id: 'cleanup:UI-repair',
-        halted_auto_advance: true
-      }
-    });
-    store.place(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      bead_id: 'UI-next'
-    });
-
-    await att.repoOperationCoordinator.reconcile(WS);
-
-    expect(store.snapshot(WS).auto_advance).toBe(true);
-    expect(store.snapshot(WS).attempts['repair-failure'].dismissed_at).not.toBe(
-      null
-    );
-    expect(store.snapshot(WS).admission).toEqual({});
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(spawn.mock.calls[0][0].id).toBe('UI-next');
   });
@@ -923,6 +847,72 @@ describe('worker/attach construction + live loop (F1)', () => {
 
   test('stopWorkerAttempt returns false when no attachment is registered', async () => {
     expect(await stopWorkerAttempt(WS, 'att-9')).toBe(false);
+  });
+
+  test('startWorkerRepoOperationDeployRun delegates to the coordinator', async () => {
+    const runManualDeploy = vi.fn(async () => ({
+      ok: true,
+      operation_id: 'op-manual-1'
+    }));
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({
+        repo: '/repo',
+        repoOperationCoordinator: { runManualDeploy }
+      })
+    );
+
+    expect(
+      await startWorkerRepoOperationDeployRun(WS, { repo_id: '/repo' })
+    ).toEqual({ ok: true, operation_id: 'op-manual-1' });
+    expect(runManualDeploy).toHaveBeenCalledOnce();
+  });
+
+  test('startWorkerRepoOperationDeployRun refuses a repo the workspace does not own', async () => {
+    const runManualDeploy = vi.fn(async () => ({ ok: true }));
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({
+        repo: '/repo',
+        repoOperationCoordinator: { runManualDeploy }
+      })
+    );
+
+    expect(
+      await startWorkerRepoOperationDeployRun(WS, { repo_id: '/other-repo' })
+    ).toEqual({ ok: false, reason: 'target_unresolved' });
+    expect(runManualDeploy).not.toHaveBeenCalled();
+  });
+
+  test('startWorkerRepoOperationDeployRun refuses a click that names no repo', async () => {
+    const runManualDeploy = vi.fn(async () => ({ ok: true }));
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({
+        repo: '/repo',
+        repoOperationCoordinator: { runManualDeploy }
+      })
+    );
+
+    expect(
+      await Promise.all([
+        startWorkerRepoOperationDeployRun(WS, {}),
+        startWorkerRepoOperationDeployRun(WS, { repo_id: '' }),
+        startWorkerRepoOperationDeployRun(WS, { repo_id: null })
+      ])
+    ).toEqual([
+      { ok: false, reason: 'target_unresolved' },
+      { ok: false, reason: 'target_unresolved' },
+      { ok: false, reason: 'target_unresolved' }
+    ]);
+    expect(runManualDeploy).not.toHaveBeenCalled();
+  });
+
+  test('startWorkerRepoOperationDeployRun is inert without an attachment', async () => {
+    expect(await startWorkerRepoOperationDeployRun(WS, {})).toEqual({
+      ok: false,
+      reason: 'target_unresolved'
+    });
   });
 
   test('initWorkerRuntime reconciles the attempts a prior run left running', async () => {
@@ -2997,84 +2987,5 @@ describe('worker/attach title-cache readback wiring (UI-eey2 §9.2)', () => {
       WS,
       expect.objectContaining({ id: 'UI-1' })
     );
-  });
-});
-
-describe('beadFacts spec_id 판독 (UI-vb7u §3)', () => {
-  /**
-   * Build an attachment with NO injected `repairSession`, so attach builds the
-   * real adapter and the capture above sees its `beadFacts`.
-   *
-   * @param {any} bd
-   */
-  function beadFactsOf(bd) {
-    repair_adapter_capture.deps = null;
-    createWorkerAttachment(WS, {
-      runtime: createWorkerRuntime(),
-      bd,
-      worktree: fakeWorktree,
-      verify: okVerify,
-      admission: { validate: async () => ({ ok: true }) },
-      resolveBase: okBase('main'),
-      kvGet: noAccountDefaults,
-      gitRun: async () => ({ code: 1, stdout: '', stderr: '' }),
-      makeRunner: () => ({ name: 'claude', spawn: vi.fn() })
-    });
-    return repair_adapter_capture.deps.beadFacts;
-  }
-
-  // sweep 후 native-only Bead는 `metadata.spec_id`가 없다: 그 조회만 보면
-  // repair 세션의 `Test scope` 경로가 통째로 사라진다.
-  test('resolves a Test scope path for a native-only bead with no metadata spec_id', async () => {
-    const bd = {
-      ...fakeBd(),
-      readIssue: async () => ({
-        id: 'UI-1',
-        spec_id: 'docs/specs/native.md',
-        metadata: {}
-      })
-    };
-
-    const facts = await beadFactsOf(bd)('UI-1');
-
-    expect(facts.test_scope).toEqual({
-      path: 'docs/specs/native.md',
-      section: 'Test scope'
-    });
-  });
-
-  test('falls back to the metadata read when bd offers no readIssue', async () => {
-    const bd = {
-      ...fakeBd(),
-      async readMetadata(/** @type {string} */ _id, /** @type {string} */ k) {
-        return k === 'spec_id' ? 'docs/specs/legacy.md' : null;
-      }
-    };
-
-    const facts = await beadFactsOf(bd)('UI-1');
-
-    expect(facts.test_scope).toEqual({
-      path: 'docs/specs/legacy.md',
-      section: 'Test scope'
-    });
-  });
-
-  test('falls back to the metadata read when readIssue throws', async () => {
-    const bd = {
-      ...fakeBd(),
-      async readMetadata(/** @type {string} */ _id, /** @type {string} */ k) {
-        return k === 'spec_id' ? 'docs/specs/legacy.md' : null;
-      },
-      readIssue: async () => {
-        throw new Error('bd unavailable');
-      }
-    };
-
-    const facts = await beadFactsOf(bd)('UI-1');
-
-    expect(facts.test_scope).toEqual({
-      path: 'docs/specs/legacy.md',
-      section: 'Test scope'
-    });
   });
 });

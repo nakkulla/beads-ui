@@ -196,7 +196,7 @@ export function formatClock(at) {
  *
  * @param {any} operations - Projected `repo_operations` cards.
  * @param {any} cleanup_failures - Projected `cleanup_failed` entries.
- * @returns {{ deploy: { sha: string, at: number|null, elapsed_ms: number|null }|null, unresolved: number, repairing: boolean, badge: { tone: 'act'|'live'|'quiet', label: string } }|null}
+ * @returns {{ deploy: { sha: string, at: number|null, elapsed_ms: number|null }|null, unresolved: number, badge: { tone: 'act'|'quiet', label: string } }|null}
  */
 export function repoOpsStripModel(operations, cleanup_failures) {
   const cards = Array.isArray(operations) ? operations : [];
@@ -227,9 +227,6 @@ export function repoOpsStripModel(operations, cleanup_failures) {
       (/** @type {any} */ card) =>
         card.state === 'failed' && !card.dismissed && !card.superseded_by
     ).length + cleanup.length;
-  const repairing = cards.some(
-    (/** @type {any} */ card) => card.state === 'repairing'
-  );
   return {
     deploy: latest
       ? {
@@ -241,13 +238,10 @@ export function repoOpsStripModel(operations, cleanup_failures) {
         }
       : null,
     unresolved,
-    repairing,
     badge:
       unresolved > 0
         ? { tone: 'act', label: `해결 필요 ${unresolved}` }
-        : repairing
-          ? { tone: 'live', label: '자동 해결 중' }
-          : { tone: 'quiet', label: '모두 정상' }
+        : { tone: 'quiet', label: '모두 정상' }
   };
 }
 

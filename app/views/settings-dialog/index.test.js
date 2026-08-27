@@ -684,7 +684,7 @@ describe('createSettingsDialog execution tab orchestration', () => {
       root.querySelectorAll('#settings-pane-execution [data-automation]')
     ).map((button) => button.getAttribute('data-automation'));
 
-    expect(toggles).toEqual(['auto_advance', 'auto_merge', 'auto_repair']);
+    expect(toggles).toEqual(['auto_advance', 'auto_merge']);
     expect(transport).toHaveBeenCalledWith('get-session-defaults', {});
   });
 

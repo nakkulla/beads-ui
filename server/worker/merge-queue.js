@@ -101,26 +101,17 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
 ]);
 
 /**
+ * Fail closed on a queue snapshot this process cannot read (UI-s582 §1: the
+ * repair-state half of the old fence is gone with the repair path, but a store
+ * read that THREW must still stop the driver — merging against an unknown
+ * snapshot is the one thing worse than not merging).
+ *
  * @param {any} q
  * @returns {{ active: boolean, reason: string|null }}
  */
-function repairFence(q) {
+function snapshotFence(q) {
   if (q === null) {
     return { active: true, reason: 'snapshot_unreadable' };
-  }
-  const repo_operations =
-    q && typeof q.repo_operations === 'object' ? q.repo_operations : {};
-  for (const [operation_id, operation] of Object.entries(repo_operations)) {
-    if (operation?.state === 'repairing') {
-      return { active: true, reason: `repo_operation:${operation_id}` };
-    }
-  }
-  const cleanup_failed =
-    q && typeof q.cleanup_failed === 'object' ? q.cleanup_failed : {};
-  for (const [bead_id, failure] of Object.entries(cleanup_failed)) {
-    if (failure?.repair?.mode) {
-      return { active: true, reason: `cleanup:${bead_id}` };
-    }
   }
   return { active: false, reason: null };
 }
@@ -221,7 +212,7 @@ export function createMergeQueue(deps) {
   /** @type {{ bead_id: string, phase: string }|null} */
   let halted_on_completion = null;
   /** @type {string|null} */
-  let halted_on_repair = null;
+  let halted_on_snapshot = null;
   /** @type {{ queue_bead_id: string, subject_bead_id: string }|null} */
   let halted_on_conflict = null;
   let prepared = false;
@@ -1252,8 +1243,8 @@ export function createMergeQueue(deps) {
    * @returns {Promise<MergeClickResult>}
    */
   async function runMerge(bead_id) {
-    if (repairFence(snapshot()).active) {
-      return { ok: false, action: 'refused', reason: 'repair_in_flight' };
+    if (snapshotFence(snapshot()).active) {
+      return { ok: false, action: 'refused', reason: 'snapshot_unreadable' };
     }
     try {
       return await deps.merge(bead_id);
@@ -1675,9 +1666,10 @@ export function createMergeQueue(deps) {
       ) {
         continue;
       }
-      if (action === 'refused' && result.reason === 'repair_in_flight') {
+      if (action === 'refused' && result.reason === 'snapshot_unreadable') {
         halted = true;
-        halted_on_repair = repairFence(snapshot()).reason || 'repair_in_flight';
+        halted_on_snapshot =
+          snapshotFence(snapshot()).reason || 'snapshot_unreadable';
         notify();
         return;
       }
@@ -1692,12 +1684,12 @@ export function createMergeQueue(deps) {
    * @param {string} bead_id
    */
   async function processItem(bead_id) {
-    const fence = repairFence(snapshot());
+    const fence = snapshotFence(snapshot());
     if (fence.active) {
       halted = true;
-      halted_on_repair = fence.reason;
+      halted_on_snapshot = fence.reason;
       log(
-        'merge queue: %s halted — repair in flight (%s)',
+        'merge queue: %s halted — queue snapshot unreadable (%s)',
         bead_id,
         fence.reason
       );
@@ -2037,9 +2029,10 @@ export function createMergeQueue(deps) {
         return;
       }
 
-      if (action === 'refused' && result.reason === 'repair_in_flight') {
+      if (action === 'refused' && result.reason === 'snapshot_unreadable') {
         halted = true;
-        halted_on_repair = repairFence(snapshot()).reason || 'repair_in_flight';
+        halted_on_snapshot =
+          snapshotFence(snapshot()).reason || 'snapshot_unreadable';
         notify();
         return;
       }
@@ -2153,7 +2146,7 @@ export function createMergeQueue(deps) {
         halted = false;
         halted_on_head = null;
         halted_on_completion = null;
-        halted_on_repair = null;
+        halted_on_snapshot = null;
         // A queue resumed after a restart can hold EXTERNAL rows, and those
         // exist only in the in-memory registry the ws overlay reads — empty
         // until something scans bd. Without this, a restored external head
@@ -2248,8 +2241,8 @@ export function createMergeQueue(deps) {
               void requestDrain();
             }
           }
-          if (halted_on_repair && !repairFence(snapshot()).active) {
-            halted_on_repair = null;
+          if (halted_on_snapshot && !snapshotFence(snapshot()).active) {
+            halted_on_snapshot = null;
             void requestDrain();
           }
           if (halted_on_conflict) {
@@ -2271,7 +2264,7 @@ export function createMergeQueue(deps) {
       stopped = true;
       started = false;
       drain_requested = false;
-      halted_on_repair = null;
+      halted_on_snapshot = null;
       halted_on_conflict = null;
       if (unsubscribe) {
         try {

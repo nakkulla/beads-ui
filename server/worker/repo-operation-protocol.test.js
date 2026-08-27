@@ -36,15 +36,6 @@ function failedDeployOperation(patch = {}) {
       detail: 'token=supersecretvalue',
       interrupted: false
     },
-    repair: {
-      chain_id: 'op-1',
-      owner_bead: 'UI-a',
-      auto_budget: 1,
-      auto_used: 1,
-      ladder_stage: 'user_triggered_session',
-      session_id: 'sess-9',
-      attempt_id: 'att-9'
-    },
     superseded_by: null,
     bootstrap_provenance: null,
     ...patch
@@ -61,43 +52,11 @@ function decorateWith(operations = {}) {
     pr_wait: [],
     done: [],
     attempts: { 'att-9': { attempt_id: 'att-9', status: 'running' } },
-    auto_repair: true,
     repo_operations: operations
   });
 }
 
 describe('RepoOperation protocol projection', () => {
-  test('carries the durable auto_repair value', () => {
-    const decorated = decorateWith();
-
-    expect(decorated.auto_repair).toBe(true);
-  });
-
-  test('reads an absent auto_repair key as on', () => {
-    const decorated = decorateQueue('/workspace', {
-      revision: 1,
-      queue: [],
-      pr_wait: [],
-      done: [],
-      attempts: {}
-    });
-
-    expect(decorated.auto_repair).toBe(true);
-  });
-
-  test('carries a stored auto_repair off', () => {
-    const decorated = decorateQueue('/workspace', {
-      revision: 1,
-      queue: [],
-      pr_wait: [],
-      done: [],
-      attempts: {},
-      auto_repair: false
-    });
-
-    expect(decorated.auto_repair).toBe(false);
-  });
-
   test('projects operations as an ordered card list', () => {
     const decorated = decorateWith({ 'op-1': failedDeployOperation() });
 
@@ -180,52 +139,104 @@ describe('RepoOperation protocol projection', () => {
 
     const card = /** @type {any[]} */ (decorated.repo_operations)[0];
 
-    expect([card.failure_kind, card.repair_eligible]).toEqual([
-      'deploy_script_failure',
-      true
-    ]);
+    expect(card.failure_kind).toBe('deploy_script_failure');
   });
 
-  test('projects a superseded failure as ineligible for repair', () => {
-    const decorated = decorateWith({
-      'op-1': failedDeployOperation({ superseded_by: 'op-2' })
-    });
-
-    const card = /** @type {any[]} */ (decorated.repo_operations)[0];
-
-    expect(card.repair_eligible).toBe(false);
-  });
-
-  test('links the repair session and its live attempt status', () => {
+  test('carries no repair surface on the card', () => {
     const decorated = decorateWith({ 'op-1': failedDeployOperation() });
 
     const card = /** @type {any[]} */ (decorated.repo_operations)[0];
 
     expect([
-      card.repair.session_id,
-      card.repair.attempt_id,
-      card.repair.attempt_status
-    ]).toEqual(['sess-9', 'att-9', 'running']);
+      Object.hasOwn(card, 'repair'),
+      Object.hasOwn(card, 'repair_eligible')
+    ]).toEqual([false, false]);
   });
 
-  test('reports the remaining automatic budget for the chain', () => {
+  test('projects the script retry status the record carries', () => {
     const decorated = decorateWith({ 'op-1': failedDeployOperation() });
 
     const card = /** @type {any[]} */ (decorated.repo_operations)[0];
 
-    expect(card.repair.remaining).toBe(0);
+    expect(card.retry).toEqual({
+      status: 'consumed',
+      first_fingerprint: null,
+      first_failure: null,
+      blocked_reason: null,
+      absorbed: null
+    });
   });
 
-  test('projects the three policy lists from the pinned contract', () => {
+  test('projects the first attempt failure the retry record kept', () => {
+    const decorated = decorateWith({
+      'op-1': failedDeployOperation({
+        retry: {
+          first_failure: {
+            code: 'timeout',
+            fingerprint: 'cd'.repeat(32),
+            detail: 'token=supersecretvalue',
+            interrupted: false
+          },
+          first_fingerprint: 'cd'.repeat(32),
+          first_failed_at: 1500,
+          consumed_key: ['op-1:1', 'c'.repeat(40), 'e'.repeat(40)],
+          absorbed: null,
+          outcome: 'consumed',
+          blocked_reason: null
+        }
+      })
+    });
+
+    const card = /** @type {any[]} */ (decorated.repo_operations)[0];
+
+    expect(card.retry.first_failure).toEqual({
+      code: 'timeout',
+      fingerprint: 'cd'.repeat(32),
+      detail: '[redacted]',
+      interrupted: false
+    });
+  });
+
+  test('names the canonical repository on the declaration projection', () => {
+    const decorated = decorateWith();
+
+    const info = /** @type {any} */ (decorated.workspace_info);
+
+    // No attachment is registered in this suite, so the canonical repo is
+    // UNKNOWN — projected as null rather than guessed from a card.
+    expect(Object.hasOwn(info.repo_ops, 'repo_id')).toBe(true);
+    expect(info.repo_ops.repo_id).toBeNull();
+  });
+
+  test('projects the request provenance of the operation', () => {
+    const decorated = decorateWith({
+      'op-1': failedDeployOperation(),
+      'op-2': failedDeployOperation({
+        requested_at: 2000,
+        source: 'manual',
+        manual_run_id: 3
+      })
+    });
+
+    const cards = /** @type {any[]} */ (decorated.repo_operations);
+
+    expect(cards.map((card) => [card.operation_id, card.source])).toEqual([
+      ['op-2', 'manual'],
+      ['op-1', 'automatic']
+    ]);
+  });
+
+  test('projects the policy lists from the pinned contract', () => {
     const decorated = decorateWith();
 
     const policy = /** @type {any} */ (decorated.repo_operation_policy);
 
     expect([
+      policy.schema_version,
       policy.worker_automatic.length,
-      policy.auto_repair.resolution_ladder.length,
+      policy.resolution_ladder.map((/** @type {any} */ step) => step.id),
       policy.never_automatic.length
-    ]).toEqual([7, 3, 8]);
+    ]).toEqual([3, 7, ['script_retry'], 8]);
   });
 
   test('names the dotfiles commit the policy copy is pinned to', () => {
@@ -234,7 +245,7 @@ describe('RepoOperation protocol projection', () => {
     const policy = /** @type {any} */ (decorated.repo_operation_policy);
 
     expect(policy.source_commit).toBe(
-      '739fb757a965622372b1cd152e4af26237587c8e'
+      '3c27264271c86b1bc07bc9eb293881068aca9776'
     );
   });
 

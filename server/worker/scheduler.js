@@ -79,7 +79,6 @@ import {
   receiptLineageForAttempt,
   receiptProbeError
 } from './receipt-check.js';
-import { repairSessionPrompt } from './repair-session-adapter.js';
 import { liftDelegation } from './runner/claude.js';
 import { RUNNERS } from './runner/index.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
@@ -492,9 +491,6 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * ends with would fail it as `no_pr`; this dep judges the disposition's own
  * durable result instead. Absent wiring simply means no disposition can be
  * dispatched (the entry point refuses).
- * @property {{ judge: (input: { workspace: string, operation_id: string }) => Promise<{ verdict: string, evidence?: string|null }> }} [repairSession]
- * Existing repair-target observation used to neutralize only failures whose
- * target is already durably complete. Absent or throwing wiring fails closed.
  * @property {{ get: (workspace: string, bead_id: string) => import('./external-pr.js').ExternalPrRow|null }} [externalPrs]
  * The EXTERNAL PR registry (UI-7agi §1), read by {@link createScheduler}'s
  * `dispatchExternalConflict` to confirm the bead really is an external row
@@ -833,7 +829,6 @@ function launchAccountRefusalDetail(failure, accounts, account_sources) {
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchCompletionRepair: (workspace: string, input: { root_bead_id: string, op: any, log_path?: string|null, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean, continuation_mismatch?: any }>,
- *   dispatchRepoOperationRepair: (workspace: string, input: { bead_id: string, operation_id: string, packet: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, session_id?: string|null }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   finalizeDiscardAttempt: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
@@ -3336,24 +3331,6 @@ export function createScheduler(deps) {
       }
 
       if (!verdict.success) {
-        let moot = false;
-        const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
-        if (
-          !verdict.blocked &&
-          typeof attempt?.repair_operation_id === 'string' &&
-          deps.repairSession &&
-          typeof deps.repairSession.judge === 'function'
-        ) {
-          try {
-            const judged = await deps.repairSession.judge({
-              workspace,
-              operation_id: attempt.repair_operation_id
-            });
-            moot = judged.verdict === 'chain_closed';
-          } catch (err) {
-            log('repair target judgment failed for %s: %o', attempt_id, err);
-          }
-        }
         await failAttempt(
           workspace,
           attempt_id,
@@ -3364,8 +3341,7 @@ export function createScheduler(deps) {
             : `session_failed:${verdict.reason}`,
           verdict.blocked
             ? blockerCauseDetail(verdict.blocked_detail)
-            : undefined,
-          { moot }
+            : undefined
         );
         notifyChanged(workspace);
         await tick(workspace);
@@ -5350,90 +5326,6 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Dispatch one RepoOperation repair session (master spec §4.4). This is the
-   * `RepairSessionAdapter`'s only door into the scheduler, and it deliberately
-   * adds NO session machinery: it resolves the owner Bead's own latest attempt
-   * and hands it to the existing relaunch path with the adapter's packet as the
-   * prompt. Every launch, log, and monitor concern therefore stays exactly
-   * where it already lived.
-   *
-   * It refuses rather than improvises: no attempt lineage, a worktree that is
-   * not provably the Bead's, or a session already running on that Bead all end
-   * as a manual state instead of a second dispatch path.
-   *
-   * @param {string} workspace
-   * @param {{ bead_id: string, operation_id: string, packet: any }} input
-   */
-  async function dispatchRepoOperationRepair(workspace, input) {
-    if (
-      !input ||
-      typeof input.bead_id !== 'string' ||
-      input.bead_id.length === 0 ||
-      typeof input.operation_id !== 'string' ||
-      input.operation_id.length === 0 ||
-      !input.packet ||
-      typeof input.packet !== 'object'
-    ) {
-      return { ok: false, reason: 'repair_packet_invalid' };
-    }
-    if (claimed.has(input.bead_id)) {
-      return { ok: false, reason: 'bead_running' };
-    }
-    const attempts = Object.values(
-      deps.store.snapshot(workspace).attempts || {}
-    );
-    if (
-      attempts.some(
-        (attempt) =>
-          attempt?.bead_id === input.bead_id && attempt.status === 'running'
-      )
-    ) {
-      return { ok: false, reason: 'bead_running' };
-    }
-    const resumed_from = new Set(
-      attempts.map((attempt) => attempt?.resumed_from).filter(Boolean)
-    );
-    const lineage = attempts
-      .filter(
-        (attempt) =>
-          attempt?.bead_id === input.bead_id &&
-          // The relaunch source is the owner Bead's own implementation lineage
-          // (UI-hk74 §7): a head-review attempt has no worktree of its own to
-          // prove ownership of, and resuming from one would repair nothing.
-          isImplementationAttempt(attempt) &&
-          !resumed_from.has(attempt.attempt_id)
-      )
-      .sort(
-        (left, right) =>
-          (right.started_at || 0) - (left.started_at || 0) ||
-          right.attempt_id.localeCompare(left.attempt_id)
-      );
-    const prior = lineage[0];
-    if (!prior || typeof prior.repo !== 'string' || prior.repo.length === 0) {
-      return { ok: false, reason: 'repair_attempt_source_missing' };
-    }
-    const owned = await proveOwnedWorktree(prior.repo, input.bead_id);
-    if (!owned.ok) {
-      return { ok: false, reason: owned.reason };
-    }
-    let snap;
-    try {
-      snap = await deps.bd.snapshotBead(input.bead_id);
-    } catch {
-      return { ok: false, reason: 'bd_snapshot_failed' };
-    }
-    const launched = await relaunchFromAttempt(workspace, prior, {
-      prompt: repairSessionPrompt(input.packet),
-      bead_snapshot: snap,
-      cwd: owned.path,
-      repair_operation_id: input.operation_id
-    });
-    return launched.ok
-      ? { ok: true, attempt_id: launched.attempt_id, session_id: null }
-      : launched;
-  }
-
-  /**
    * Notify the completion coordinator after the normal scheduler settlement
    * has written the attempt's observed session/PR result.
    *
@@ -7100,36 +6992,17 @@ export function createScheduler(deps) {
     bead_id,
     options
   ) {
-    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
     let target_resolved = null;
-    if (typeof attempt?.repair_operation_id === 'string') {
-      if (
-        !deps.repairSession ||
-        typeof deps.repairSession.judge !== 'function'
-      ) {
-        return 'worktree_missing';
-      }
-      try {
-        const judged = await deps.repairSession.judge({
-          workspace,
-          operation_id: attempt.repair_operation_id
-        });
-        target_resolved = judged.verdict === 'chain_closed';
-      } catch {
-        return 'worktree_missing';
-      }
-    } else {
-      try {
-        const snapshot = await deps.bd.snapshotBead(bead_id);
-        target_resolved = snapshot.status === 'closed';
-      } catch {
-        return 'worktree_missing';
-      }
+    try {
+      const snapshot = await deps.bd.snapshotBead(bead_id);
+      target_resolved = snapshot.status === 'closed';
+    } catch {
+      return 'worktree_missing';
     }
     if (target_resolved) {
       return 'repair_target_resolved';
     }
-    if (options.repair_operation_id || options.disposition) {
+    if (options.disposition) {
       return 'fresh';
     }
     return 'worktree_missing';
@@ -9027,7 +8900,6 @@ export function createScheduler(deps) {
     queueConflictBlocked,
     dispatchReviseFix,
     dispatchCompletionRepair,
-    dispatchRepoOperationRepair,
     canDiscardAttempt,
     fenceDiscardAttempt,
     finalizeDiscardAttempt,

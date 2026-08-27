@@ -1,14 +1,10 @@
 import { describe, expect, test } from 'vitest';
+import { classifyRepoOperationFailure } from './repo-operation-policy.js';
 import {
-  classifyRepoOperationFailure,
-  isRepairEligible
-} from './repo-operation-policy.js';
-import {
-  normalizeResolutionSubjects,
   normalizeScriptRetry,
-  reproducedWithoutNewEvidence,
   resolutionAccess,
-  scriptIdentity
+  scriptIdentity,
+  scriptRetryConsumptionKey
 } from './resolution-ladder.js';
 
 /**
@@ -36,15 +32,6 @@ function failedOperation(patch = {}) {
       detail: '',
       interrupted: false
     },
-    repair: {
-      chain_id: 'op-1',
-      owner_bead: 'UI-a',
-      auto_budget: 1,
-      auto_used: 0,
-      ladder_stage: 'auto_repair_session',
-      session_id: null,
-      attempt_id: null
-    },
     retry: null,
     superseded_by: null,
     dismissed: null,
@@ -52,31 +39,25 @@ function failedOperation(patch = {}) {
   };
 }
 
-describe('resolution ladder failure classification', () => {
+describe('repo operation failure classification', () => {
   test.each([
     ['script_failed', 'deploy_script_failure'],
     ['timeout', 'deploy_script_failure'],
     ['verify_candidate_mismatch', 'verify_candidate_mismatch'],
     ['base_fetch_failed', 'base_fetch_failed'],
     ['repo_ops_worktree_unowned', 'repo_ops_worktree_unowned']
-  ])(
-    'keeps %s repair-eligible without classifying it as other',
-    (code, kind) => {
-      const operation = failedOperation({
-        failure: {
-          code,
-          fingerprint: 'f'.repeat(64),
-          detail: '',
-          interrupted: false
-        }
-      });
+  ])('classifies %s as %s without a catch-all', (code, kind) => {
+    const operation = failedOperation({
+      failure: {
+        code,
+        fingerprint: 'f'.repeat(64),
+        detail: '',
+        interrupted: false
+      }
+    });
 
-      expect([
-        isRepairEligible(operation),
-        classifyRepoOperationFailure(operation)
-      ]).toEqual([true, kind]);
-    }
-  );
+    expect(classifyRepoOperationFailure(operation)).toBe(kind);
+  });
 });
 
 describe('script retry identity and legacy normalization', () => {
@@ -131,6 +112,19 @@ describe('script retry identity and legacy normalization', () => {
     expect(scriptIdentity(operation)).toBe(`${'d'.repeat(40)}:100755`);
   });
 
+  test('binds the consumption key to attempt, target and script identity', () => {
+    const operation = failedOperation({
+      started_at: 10,
+      log_path: '/logs/op.log'
+    });
+
+    expect(scriptRetryConsumptionKey(operation)).toEqual([
+      'attempt-1',
+      'c'.repeat(40),
+      `${'d'.repeat(40)}:100755`
+    ]);
+  });
+
   test.each([
     ['failed', undefined, 'consumed'],
     ['succeeded', undefined, 'not_applicable'],
@@ -147,152 +141,56 @@ describe('script retry identity and legacy normalization', () => {
   });
 });
 
-describe('resolution subject normalization', () => {
-  test('promotes a cleanup cursor failure without an operation subject', () => {
-    const subjects = normalizeResolutionSubjects({
-      pr_wait: [{ bead_id: 'UI-a', cleanup_cursor: 'repo_operations' }],
-      repo_operations: {},
-      cleanup_failed: {
-        'UI-a': { step: 'repo_operations', reason: 'verify_cmd_failed', at: 1 }
-      }
-    });
-
-    expect(subjects).toEqual([
-      expect.objectContaining({
-        subject_id: 'cleanup:UI-a',
-        owner_bead: 'UI-a',
-        stage: 'auto_repair_session'
-      })
-    ]);
-  });
-
-  test('does not duplicate a cleanup subject bound to an operation', () => {
-    const subjects = normalizeResolutionSubjects({
-      pr_wait: [{ bead_id: 'UI-a', cleanup_cursor: 'repo_operations' }],
-      repo_operations: { 'op-1': failedOperation() },
-      cleanup_failed: {
-        'UI-a': { step: 'repo_operations', reason: 'verify_cmd_failed', at: 1 }
-      }
-    });
-
-    expect(subjects.map((subject) => subject.subject_id)).toEqual(['op:op-1']);
-  });
-
-  test('keeps claiming the bead while its operation is repairing', () => {
-    const subjects = normalizeResolutionSubjects({
-      pr_wait: [{ bead_id: 'UI-a', cleanup_cursor: 'repo_operations' }],
-      repo_operations: { 'op-1': failedOperation({ state: 'repairing' }) },
-      cleanup_failed: {
-        'UI-a': { step: 'repo_operations', reason: 'verify_cmd_failed', at: 1 }
-      }
-    });
-
-    expect(subjects).toEqual([]);
-  });
-
-  test('yields a cleanup row the completion-intent lane is repairing', () => {
-    const subjects = normalizeResolutionSubjects({
-      pr_wait: [{ bead_id: 'UI-a', cleanup_cursor: 'repo_operations' }],
-      repo_operations: {},
-      completion_intents: { 'UI-a': { phase: 'repairing' } },
-      cleanup_failed: {
-        'UI-a': { step: 'repo_operations', reason: 'verify_cmd_failed', at: 1 }
-      }
-    });
-
-    expect(subjects).toEqual([]);
-  });
-
-  test('promotes a cleanup row once that lane is no longer repairing it', () => {
-    const subjects = normalizeResolutionSubjects({
-      pr_wait: [{ bead_id: 'UI-a', cleanup_cursor: 'repo_operations' }],
-      repo_operations: {},
-      completion_intents: { 'UI-a': { phase: 'cleaning' } },
-      cleanup_failed: {
-        'UI-a': { step: 'repo_operations', reason: 'verify_cmd_failed', at: 1 }
-      }
-    });
-
-    expect(subjects.map((subject) => subject.subject_id)).toEqual([
-      'cleanup:UI-a'
-    ]);
-  });
-});
-
-describe('automatic and user-triggered access', () => {
-  test('stops automatic steps but keeps user-triggered access when dismissed', () => {
+describe('script retry access', () => {
+  test('opens the one automatic step for a running invocation', () => {
     const access = resolutionAccess({
       policy_supported: true,
-      auto_repair: true,
-      subject: failedOperation({ dismissed: { at: 1, by: 'user' } })
+      subject: failedOperation({
+        state: 'running',
+        started_at: 10,
+        log_path: '/logs/op.log',
+        failure: null
+      })
     });
 
-    expect(access).toEqual({
-      script_retry: false,
-      auto_repair_session: false,
-      user_triggered_session: true
-    });
+    expect(access).toEqual({ script_retry: true });
   });
 
-  test('stops automatic steps but keeps user-triggered access for schema v1', () => {
+  test('stops the automatic step when the pinned schema is unsupported', () => {
     const access = resolutionAccess({
       policy_supported: false,
-      auto_repair: true,
-      subject: failedOperation()
+      subject: failedOperation({
+        state: 'running',
+        started_at: 10,
+        log_path: '/logs/op.log',
+        failure: null
+      })
     });
 
-    expect(access).toEqual({
-      script_retry: false,
-      auto_repair_session: false,
-      user_triggered_session: true
+    expect(access).toEqual({ script_retry: false });
+  });
+
+  test('stops the automatic step on a dismissed record', () => {
+    const access = resolutionAccess({
+      policy_supported: true,
+      subject: failedOperation({
+        state: 'running',
+        started_at: 10,
+        log_path: '/logs/op.log',
+        failure: null,
+        dismissed: { at: 1, by: 'user' }
+      })
     });
-  });
-});
 
-describe('chain-bound fingerprint guard', () => {
-  test('does not suppress the first automatic session in a different chain', () => {
-    const operations = {
-      prior: failedOperation({
-        repair: {
-          ...failedOperation().repair,
-          chain_id: 'chain-a',
-          auto_used: 1,
-          ladder_stage: 'user_triggered_session'
-        }
-      }),
-      current: failedOperation({
-        repair: {
-          ...failedOperation().repair,
-          chain_id: 'chain-b',
-          auto_used: 0,
-          ladder_stage: 'auto_repair_session'
-        }
-      })
-    };
-
-    expect(reproducedWithoutNewEvidence(operations, 'current')).toBe(false);
+    expect(access).toEqual({ script_retry: false });
   });
 
-  test('descends after the same chain already consumed its automatic session', () => {
-    const operations = {
-      prior: failedOperation({
-        repair: {
-          ...failedOperation().repair,
-          chain_id: 'chain-a',
-          auto_used: 1,
-          ladder_stage: 'user_triggered_session'
-        }
-      }),
-      current: failedOperation({
-        repair: {
-          ...failedOperation().repair,
-          chain_id: 'chain-a',
-          auto_used: 1,
-          ladder_stage: 'auto_repair_session'
-        }
-      })
-    };
+  test('stops the automatic step on a terminal record', () => {
+    const access = resolutionAccess({
+      policy_supported: true,
+      subject: failedOperation({ started_at: 10, log_path: '/logs/op.log' })
+    });
 
-    expect(reproducedWithoutNewEvidence(operations, 'current')).toBe(true);
+    expect(access).toEqual({ script_retry: false });
   });
 });
