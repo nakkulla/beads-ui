@@ -46,7 +46,6 @@ export const RECENT_LIMIT = 5;
  */
 const UNRESOLVED_STATES = new Set([
   'failed',
-  'repairing',
   'running',
   'queued',
   'retry_pending'
@@ -61,19 +60,6 @@ const UNRESOLVED_STATES = new Set([
 const OPERATION_KIND_LABELS = {
   verify: '머지 전 검증',
   deploy: '머지 후 배포'
-};
-
-/**
- * The repair button's wording per failure kind (master spec §9.2). Every button
- * names the failure it resolves — there is deliberately no generic 재시도.
- *
- * @type {Record<string, string>}
- */
-const RESOLVE_LABELS = {
-  verify_script_failure: '검증 실패 해결',
-  verify_script_failure_pre_merge: '검증 실패 해결 후 머지',
-  deploy_script_failure: '배포 실패 해결',
-  interrupted_without_terminal_exit: '중단된 작업 진단'
 };
 
 /**
@@ -212,8 +198,6 @@ function stateWordOf(event) {
       return '성공';
     case 'failed':
       return '실패';
-    case 'repairing':
-      return '자동 해결 중';
     case 'retry_pending':
       return '재시도 중';
     case 'running':
@@ -277,61 +261,30 @@ function explainTemplate(text, suffix = '', warn = false) {
 }
 
 /**
- * The repair/dismiss actions on a failed operation (§4.2). The budget subtitle
- * is not decoration: a repair session is a spent-once resource, and a button
- * that does not say so invites a second click that the coordinator will refuse.
+ * The dismiss action on a failed operation (§4.2). A failed script is now a
+ * terminal record: the only thing a reader can do to it is accept it, which
+ * takes the row out of the attention count without erasing the evidence.
  *
  * @param {any} operation
  * @returns {TemplateResult|string}
  */
 function operationActionsTemplate(operation) {
-  if (operation.state !== 'failed' || operation.superseded_by) {
+  if (
+    operation.state !== 'failed' ||
+    operation.superseded_by ||
+    operation.dismissed
+  ) {
     return '';
   }
-  const repair = operation.repair || {};
-  const remaining = typeof repair.remaining === 'number' ? repair.remaining : 0;
-  const resolve_key =
-    operation.failure_kind === 'verify_script_failure' &&
-    operation.verify_stage === 'pre_merge'
-      ? 'verify_script_failure_pre_merge'
-      : operation.failure_kind || '';
-  const spent = remaining <= 0;
   return html`<div class="worker-ev__acts">
     <button
       type="button"
-      class="worker-ev__btn worker-ev__btn--primary worker-repo-op__resolve"
+      class="worker-ev__btn worker-repo-op__dismiss"
       data-operation-id=${operation.operation_id}
-      data-failure-kind=${operation.failure_kind || ''}
-      title="해결 세션을 엽니다"
+      title="사람이 확인한 실패로 접수합니다 — 기록은 그대로 남고 해결 필요 집계에서만 빠집니다"
     >
-      ${Object.hasOwn(RESOLVE_LABELS, resolve_key)
-        ? RESOLVE_LABELS[resolve_key]
-        : '실패 해결 세션 시작'}
+      기록 닫기
     </button>
-    <span class="worker-ev__btn-sub"
-      >${spent
-        ? '자동 해결을 다 썼습니다 · 눌러서 해결 세션을 엽니다'
-        : `자동 해결 ${remaining}회가 남아 있습니다`}</span
-    >
-    ${repair.attempt_id
-      ? html`<button
-          type="button"
-          class="worker-ev__btn worker-repo-op__session"
-          data-attempt-id=${repair.attempt_id}
-        >
-          해결 세션 보기
-        </button>`
-      : ''}
-    ${operation.dismissed
-      ? ''
-      : html`<button
-          type="button"
-          class="worker-ev__btn worker-repo-op__dismiss"
-          data-operation-id=${operation.operation_id}
-          title="사람이 확인한 실패로 접수합니다 — 기록은 그대로 남고 해결 필요 집계에서만 빠집니다"
-        >
-          기록 닫기
-        </button>`}
   </div>`;
 }
 
@@ -466,16 +419,6 @@ function cleanupEventTemplate(event) {
         >
           정리 재개${step_label ? ` — ${step_label} 단계부터` : ''}
         </button>
-        ${cleanup.repair_eligible
-          ? html`<button
-              type="button"
-              class="worker-ev__btn worker-ev__btn--primary worker-repo-op__resolve"
-              data-operation-id=${`cleanup:${cleanup.bead_id}`}
-              data-failure-kind=${cleanup.failure_code || cleanup.reason || ''}
-            >
-              실패 해결 세션 시작
-            </button>`
-          : ''}
       </div>
       ${detailsTemplate([
         { term: '실패 코드', value: cleanup.reason || '' },

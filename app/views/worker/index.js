@@ -87,10 +87,6 @@ import {
   sumAttemptWorkMs
 } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
-import {
-  analysisRunDrawerMeta,
-  createParallelAnalysisDialog
-} from './parallel-analysis-dialog.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
 import { deriveWorkerBlockers } from './queue-blockers.js';
 import { deriveWorkerOverlaps, workerPlacementPlan } from './queue-overlaps.js';
@@ -1804,7 +1800,7 @@ function prWaitRow(
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, analysisStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../board/stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../board/stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void }} [options]
  * @returns {{ load: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -1812,7 +1808,6 @@ export function createWorkerView(mount_element, options = {}) {
     transport,
     issueStores,
     queueStore,
-    analysisStore,
     sessionLogStore,
     uiOrderStore,
     gotoIssue,
@@ -2084,15 +2079,12 @@ export function createWorkerView(mount_element, options = {}) {
 
   /** @type {string|null} Currently open attempt (for the tile ring). */
   let selected_attempt = null;
-  /** @type {string|null} Run id of an analyzer transcript open in the drawer. */
-  let selected_analysis_run = null;
 
   const drawer = createTranscriptDrawer(drawer_el, {
     transport,
     sessionLogStore,
     onClose: () => {
       selected_attempt = null;
-      selected_analysis_run = null;
       drawer_overlay_el.hidden = true;
       doRender();
     }
@@ -2119,7 +2111,7 @@ export function createWorkerView(mount_element, options = {}) {
     : '';
 
   // Operational repo-op controls stay INLINE on the Worker screen (spec 비-목표):
-  // the verify/deploy declaration and the `auto_repair` switch are not
+  // the verify/deploy declaration and the pinned automation policy are not
   // preferences, so they did not move into the unified settings dialog.
   const repo_ops_settings = createRepoOpsSettings({
     queueStore,
@@ -2129,19 +2121,6 @@ export function createWorkerView(mount_element, options = {}) {
       void repo_ops_script_viewer.open(input, trigger_element);
     }
   });
-
-  // 병렬성 분석 다이얼로그 (UI-04vo §9). Absent `analysisStore` (older wiring)
-  // simply never opens — the control-bar button stays out of the bar.
-  const parallel_analysis_dialog = analysisStore
-    ? createParallelAnalysisDialog(console_el, {
-        queueStore,
-        analysisStore,
-        transport,
-        getWorkspacePath,
-        onOpenTranscript: (run_id, meta) =>
-          openDrawerForAnalysisRun(run_id, meta)
-      })
-    : null;
 
   /**
    * @returns {any} Current queue snapshot (or an empty shape).
@@ -2838,30 +2817,6 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Ask the coordinator to resolve ONE failed operation. Deliberately not a
-   * retry: the server dispatches a repair session and only creates a new
-   * attempt once that session produced evidence.
-   *
-   * @param {string} operation_id
-   */
-  async function resolveRepoOperation(operation_id) {
-    if (!transport || !operation_id) {
-      return;
-    }
-    const res = await transport('worker-repo-operation-repair', {
-      operation_id
-    });
-    adopt(res);
-    if (res && res.ok === false) {
-      showToast(`해결 세션 거부: ${res.reason || ''}`, 'error', 3000);
-      return;
-    }
-    if (res && res.ok === true) {
-      showToast('해결 세션을 띄웠습니다', 'success', 2400);
-    }
-  }
-
-  /**
    * Acknowledge ONE failed operation — the 기록 닫기 click (§4.6-2). Not a retry
    * and not a state transition: the row keeps its failure and its evidence, and
    * only the 해결 필요 tally and its action buttons let it go.
@@ -3328,39 +3283,6 @@ export function createWorkerView(mount_element, options = {}) {
         legacy_serial_by_id.set(issue.id, isWorkerSerial(labels));
       }
     }
-    // 분석 추천 overlay (UI-04vo §4). last-good 결과에서 파생하고, 서버가
-    // 찍어 준 `eligible` 그룹만 chip을 얻는다 — 이 화면은 자격을 다시 계산하지
-    // 않는다. 이미 한 직렬 레인에 함께 있는 그룹은 추천할 것이 없으므로 뺀다.
-    /** @type {Map<string, string[]>} */
-    const recommendation_by_id = new Map();
-    const analysis_groups = analysisStore?.get()?.last_good?.result?.groups;
-    for (const group of Array.isArray(analysis_groups) ? analysis_groups : []) {
-      if (group?.eligible !== true || !Array.isArray(group.members)) {
-        continue;
-      }
-      const lanes_of = group.members.map((/** @type {string} */ bead_id) => {
-        const lane = (Array.isArray(q.serial_lanes) ? q.serial_lanes : []).find(
-          (/** @type {any} */ entry_lane) =>
-            entry_lane.entries.some(
-              (/** @type {any} */ e) => e.bead_id === bead_id
-            )
-        );
-        return lane ? lane.id : null;
-      });
-      const settled =
-        lanes_of.every((/** @type {string|null} */ lane) => lane !== null) &&
-        new Set(lanes_of).size === 1;
-      if (settled) {
-        continue;
-      }
-      for (const bead_id of group.members) {
-        recommendation_by_id.set(
-          bead_id,
-          group.members.filter((/** @type {string} */ id) => id !== bead_id)
-        );
-      }
-    }
-
     // 직접 blocks blocker (UI-04vo §3) — 대기 사유 chip의 소스. 닫힌 타 레포
     // blocker는 서버가 이미 걷어낸 뒤다 (UI-u6zf §3.2).
     /** @type {Record<string, string[]>} */
@@ -3412,7 +3334,7 @@ export function createWorkerView(mount_element, options = {}) {
     // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
     // but the pr-finish sequence stopped part-way, so a human has to finish it.
     // Nothing retries automatically, which is exactly why this has a banner.
-    /** @type {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, subject_id?: string, repair_eligible?: boolean, repair?: Record<string, unknown> }>} */
+    /** @type {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number }>} */
     const cleanup_failed = q.cleanup_failed || {};
     const cleanup_failures = Object.entries(cleanup_failed).map(
       ([bead_id, rec]) => ({
@@ -3439,20 +3361,12 @@ export function createWorkerView(mount_element, options = {}) {
           rec.retry_count > 0
             ? rec.retry_count
             : 0,
-        // The resolution-subject overlay the server puts on a cursor-stopping
-        // row. Carried through VERBATIM: the client never decides which row is
-        // a subject, so a row the server did not overlay renders no resolve
-        // entry rather than one the coordinator would refuse.
+        // The durable failure token, carried through VERBATIM for the 세부
+        // disclosure; the client never reclassifies it.
         failure_code:
           rec && typeof rec.failure_code === 'string'
             ? rec.failure_code
-            : undefined,
-        subject_id:
-          rec && typeof rec.subject_id === 'string'
-            ? rec.subject_id
-            : undefined,
-        repair_eligible: Boolean(rec && rec.repair_eligible),
-        repair: rec && rec.repair ? rec.repair : undefined
+            : undefined
       })
     );
     const queue_entries = /** @type {any[]} */ (q.queue || []);
@@ -3693,12 +3607,6 @@ export function createWorkerView(mount_element, options = {}) {
         // blocker id를 한 카드에 두 번 적지 않는다.
         /** @type {string[]} */
         const wait_badges = [];
-        const recommended = waiting_lane
-          ? recommendation_by_id.get(e.bead_id)
-          : undefined;
-        if (recommended && recommended.length > 0) {
-          wait_badges.push(`✳ serial 권장 · ${recommended.join(', ')}와`);
-        }
         return {
           id: e.bead_id,
           title: idToTitle.get(e.bead_id) || e.bead_id,
@@ -4814,41 +4722,9 @@ export function createWorkerView(mount_element, options = {}) {
       token_total,
       cleanup_failures,
       // The RepoOperation lane's cards (master spec §10) — already projected by
-      // the server, including which failure kind each resolve button names.
+      // the server, including the failure kind each card names.
       repo_operations: Array.isArray(q.repo_operations) ? q.repo_operations : []
     };
-  }
-
-  /**
-   * The control-bar analysis button (UI-yqw9 §4.4).
-   *
-   * It carries the progress badge because the dialog can be closed while a run
-   * continues — without it, closing the dialog erases every trace that an
-   * analysis is alive. The badge never disables the button: the point of the
-   * indicator is to make the reader able to OPEN the dialog and watch.
-   * Elapsed time deliberately stays in the dialog, so the control bar is not
-   * re-rendered once a second.
-   *
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function analysisButtonTemplate() {
-    const analysis = analysisStore?.get();
-    const running = !!analysis?.job;
-    const preparing = !running && analysisStore?.isPending?.() === true;
-    const badge = running ? '분석 중' : preparing ? '준비 중' : '';
-    return html`<button
-      type="button"
-      class=${badge
-        ? 'worker-analysis-btn worker-analysis-btn--running'
-        : 'worker-analysis-btn'}
-      aria-busy=${badge ? 'true' : 'false'}
-      title="대기 이슈의 병렬 실행 가능성을 분석해 직렬 그룹을 제안합니다 (클릭할 때만 실행)"
-    >
-      ✳ 병렬성
-      분석${badge
-        ? html`<span class="worker-analysis-btn__badge">${badge}</span>`
-        : ''}
-    </button>`;
   }
 
   /**
@@ -4939,8 +4815,7 @@ export function createWorkerView(mount_element, options = {}) {
               </option>`
           )}
         </select>
-      </label>
-      ${analysisStore ? analysisButtonTemplate() : ''} `;
+      </label> `;
     const banners = bannersTemplate({ failure: m.failure });
     // 정리 멈춤은 더 이상 배너가 아니라 타임라인의 한 항목이다 (§4.2) — 스트립의
     // 해결 필요 배지가 부르고, 클릭이 그 자리로 데려간다.
@@ -5736,7 +5611,6 @@ export function createWorkerView(mount_element, options = {}) {
     const q = currentQueue();
     const a = q.attempts ? q.attempts[attempt_id] : null;
     selected_attempt = attempt_id;
-    selected_analysis_run = null;
     repo_ops_drawer.close();
     repo_ops_drawer_el.hidden = true;
     drawer_overlay_el.hidden = false;
@@ -5770,27 +5644,6 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Open the shared transcript drawer for an analyzer run. Analysis runs have
-   * no queue attempt record, so the dialog supplies the display-only meta and
-   * this seam only binds the run id to the existing session-log protocol.
-   *
-   * @param {string} run_id
-   * @param {import('./transcript-drawer.js').DrawerMeta} meta
-   */
-  function openDrawerForAnalysisRun(run_id, meta) {
-    selected_attempt = null;
-    selected_analysis_run = run_id;
-    repo_ops_drawer.close();
-    repo_ops_drawer_el.hidden = true;
-    drawer_overlay_el.hidden = false;
-    // The analyzer's prompt lives on the analysis channel, not on
-    // `get-attempt-prompt`, so the attempt toggle would answer for the wrong
-    // store; the dialog owns the [프롬프트] surface for a run.
-    drawer.open({ attempt_id: run_id, meta, hide_prompt: true });
-    doRender();
-  }
-
-  /**
    * Late-arrival meta refresh (spec §2): the session id lands on the stream's
    * first event AFTER the drawer may already be open, and drawer meta is copied
    * once at open() — so on every queue snapshot push, re-feed the open attempt's
@@ -5803,20 +5656,6 @@ export function createWorkerView(mount_element, options = {}) {
     // closed drawer must not pay for it on every push.
     if (repo_ops_drawer.isOpen()) {
       repo_ops_drawer.refresh(repoOpsDrawerInput());
-    }
-    if (selected_analysis_run) {
-      // Analysis runs live in the analysis snapshot, not the queue: the session
-      // id lands after open() just as it does for an attempt, and a run that
-      // vanished means the store was cleared (workspace switch).
-      const run = (analysisStore?.get()?.runs || []).find(
-        (/** @type {any} */ item) => item.run_id === selected_analysis_run
-      );
-      if (run) {
-        drawer.updateMeta(analysisRunDrawerMeta(run));
-      } else {
-        drawer.close();
-      }
-      return;
     }
     if (!selected_attempt) {
       return;
@@ -5873,10 +5712,6 @@ export function createWorkerView(mount_element, options = {}) {
   function onClick(ev) {
     const target = /** @type {HTMLElement} */ (ev.target);
     if (target?.closest?.('.worker-mini__serial, .worker-mini__grip')) {
-      return;
-    }
-    // Clicks inside the analysis dialog are owned by its own handlers.
-    if (target?.closest?.('#worker-parallel-analysis-dialog')) {
       return;
     }
     // blocked 칩 (UI-u6zf §5.3): 카드 클릭(자기 이슈 열기)보다 먼저 잡고 거기서
@@ -5936,32 +5771,11 @@ export function createWorkerView(mount_element, options = {}) {
     if (target?.closest?.('.mon-overlap__popover')) {
       return;
     }
-    if (target?.closest?.('.worker-analysis-btn')) {
-      parallel_analysis_dialog?.open();
-      return;
-    }
     if (
       target?.closest?.('.worker-repo-strip') ||
       target?.closest?.('.worker-mini__timeline')
     ) {
       openRepoOpsDrawer();
-      return;
-    }
-    const repoOpSession = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-repo-op__session')
-    );
-    if (repoOpSession) {
-      const attempt_id = repoOpSession.dataset.attemptId;
-      if (attempt_id) {
-        openDrawerForAttempt(attempt_id);
-      }
-      return;
-    }
-    const repoOpResolve = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-repo-op__resolve')
-    );
-    if (repoOpResolve) {
-      void resolveRepoOperation(repoOpResolve.dataset.operationId || '');
       return;
     }
     const repoOpDismiss = /** @type {HTMLElement|null} */ (
@@ -6451,19 +6265,6 @@ export function createWorkerView(mount_element, options = {}) {
       })
     );
   }
-  // 분석 진행 표시 (UI-yqw9 §4.4): the control-bar button reads both the
-  // server's job and this browser's preparation flag, so the view must
-  // re-render on either transition. The unsubscribe rides the same list every
-  // other live source uses, so a destroyed view stops re-rendering.
-  if (analysisStore && typeof analysisStore.subscribe === 'function') {
-    unsubscribers.push(
-      analysisStore.subscribe(() => {
-        refreshOpenDrawerMeta();
-        doRender();
-      })
-    );
-  }
-
   doRender();
 
   return {
@@ -6508,11 +6309,6 @@ export function createWorkerView(mount_element, options = {}) {
         /* ignore */
       }
       drawer_overlay_el.hidden = true;
-      try {
-        parallel_analysis_dialog?.destroy();
-      } catch {
-        /* ignore */
-      }
       try {
         repo_ops_script_viewer.destroy();
       } catch {

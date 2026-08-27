@@ -132,25 +132,13 @@ describe('timelineEvents', () => {
     );
   });
 
-  test('offers a resolve entry on an eligible cleanup row', () => {
-    const mount = document.createElement('div');
-    const events = timelineEvents([], [cleanup({ repair_eligible: true })]);
-
-    render(repoOpsTimelineTemplate({ events, repo: '/repo' }), mount);
-
-    expect(
-      mount
-        .querySelector('.worker-repo-op__resolve')
-        ?.getAttribute('data-operation-id')
-    ).toBe('cleanup:UI-a');
-  });
-
-  test('omits the resolve entry on a cleanup row the server did not mark eligible', () => {
+  test('never offers a resolve entry on a stopped cleanup row', () => {
     const mount = document.createElement('div');
     const events = timelineEvents([], [cleanup()]);
 
     render(repoOpsTimelineTemplate({ events, repo: '/repo' }), mount);
 
+    expect(mount.querySelector('.worker-cleanup__resume')).not.toBeNull();
     expect(mount.querySelector('.worker-repo-op__resolve')).toBeNull();
   });
 });

@@ -276,7 +276,7 @@ describe('worker/merge-queue — sequencing', () => {
 });
 
 describe('worker/merge-queue — 스냅샷 fail-closed', () => {
-  test('fails closed when the repair snapshot is unreadable', async () => {
+  test('fails closed when the queue snapshot is unreadable', async () => {
     const store = seed(['UI-1']);
     const originalSnapshot = store.snapshot.bind(store);
     let snapshot_calls = 0;

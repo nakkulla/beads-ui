@@ -9,8 +9,6 @@ import {
   discardBackupRootDir,
   execPresetsFilePath,
   guardHookDir,
-  parallelAnalysisRunDir,
-  parallelAnalysisRunsPath,
   sessionLogPath,
   usageReceiptInboxDir,
   workspaceSlug,
@@ -130,16 +128,5 @@ describe('codexAccountHomeDir', () => {
       )
     );
     expect(path.basename(result)).not.toMatch(/[+/=]/);
-  });
-});
-
-describe('parallelAnalysisRunsPath', () => {
-  test('derives the history file and prompt directory in workspace state', () => {
-    expect(parallelAnalysisRunsPath(WS)).toBe(
-      path.join(workspaceStateDir(WS), 'parallel-analysis-runs.json')
-    );
-    expect(parallelAnalysisRunDir(WS)).toBe(
-      path.join(workspaceStateDir(WS), 'analysis-runs')
-    );
   });
 });

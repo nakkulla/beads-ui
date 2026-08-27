@@ -631,13 +631,12 @@ export function buildMonitorWorkspacesState(options = {}) {
       revision: typeof queue.revision === 'number' ? queue.revision : 0,
       runner_catalog,
       // A legacy queue with no key is in the state the default describes: one
-      // serial lane, auto-repair on. Both are read the same way the Worker
-      // snapshot reads them, so a repo panel and the Worker tab agree.
+      // serial lane. It is read the same way the Worker snapshot reads it, so a
+      // repo panel and the Worker tab agree.
       serial_lane_count:
         typeof queue.serial_lane_count === 'number'
           ? queue.serial_lane_count
           : 1,
-      auto_repair: queue.auto_repair !== false,
       orchestration_model:
         typeof queue.orchestration_model === 'string'
           ? queue.orchestration_model

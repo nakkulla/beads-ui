@@ -60,16 +60,11 @@ function operationCard(patch = {}) {
     },
     failure_kind: 'deploy_script_failure',
     verify_stage: null,
-    repair_eligible: true,
-    repair: {
-      chain_id: 'op-1',
-      owner_bead: 'UI-a',
-      auto_budget: 1,
-      auto_used: 1,
-      remaining: 0,
-      session_id: 'sess-1',
-      attempt_id: 'att-1',
-      attempt_status: 'running'
+    retry: {
+      status: 'consumed',
+      first_fingerprint: 'f'.repeat(64),
+      blocked_reason: null,
+      absorbed: false
     },
     superseded_by: null,
     ...patch
@@ -77,7 +72,7 @@ function operationCard(patch = {}) {
 }
 
 const POLICY = {
-  schema_version: 2,
+  schema_version: 3,
   supported: true,
   source_commit: '739fb757a965622372b1cd152e4af26237587c8e',
   digest: '08811eb9bc5b0f88f0994be2a273457b9b23efdeed14a0bc9ee29e27210475cd',
@@ -90,40 +85,26 @@ const POLICY = {
     'descendant_success_covers_ancestor_rows',
     'owned_verify_candidate_cleanup'
   ],
-  auto_repair: {
-    default: true,
-    scope: 'all_terminal_failures',
-    resolution_ladder: [
-      {
-        id: 'script_retry',
-        trigger: 'automatic',
-        applies_when: 'script_identity_present',
-        attempts_per_operation_attempt: 1
-      },
-      {
-        id: 'auto_repair_session',
-        trigger: 'automatic',
-        attempts: 1,
-        budget: 'per_completion_chain'
-      },
-      {
-        id: 'user_triggered_session',
-        trigger: 'user_action_only',
-        sessions_per_user_action: 1,
-        user_actions: 'unbounded'
-      }
-    ]
-  },
-  completion_chain: {},
+  resolution_ladder: [
+    {
+      id: 'script_retry',
+      trigger: 'automatic',
+      applies_when: 'script_identity_present',
+      attempts_per_operation_attempt: 1
+    }
+  ],
+  after_ladder:
+    'terminal_failed_with_recorded_cause_then_user_manual_rerun_only',
+  manual_human_fix: 'absent',
   never_automatic: [
     'bounded_single_script_retry_exceeded',
+    'repair_session_dispatch',
     'baseline_failure_ignore',
     'config_or_script_deletion_to_bypass_gate',
     'credential_entry',
     'destructive_action',
     'history_rewrite',
-    'agent_self_report_as_success',
-    'unbounded_repair_session_retry'
+    'agent_self_report_as_success'
   ]
 };
 
@@ -135,7 +116,6 @@ function queueOf(over = {}) {
     revision: 3,
     auto_advance: false,
     auto_merge: false,
-    auto_repair: true,
     slots: 2,
     queue: [],
     pr_wait: [],
@@ -253,16 +233,6 @@ describe('저장소 작업 상태 스트립 (UI-q0uy §4.1)', () => {
 
     expect(mount.querySelector('.worker-repo-strip__badge')?.textContent).toBe(
       '모두 정상'
-    );
-  });
-
-  test('says a repair session is running', () => {
-    const { mount } = mountWorker({
-      repo_operations: [operationCard({ state: 'repairing' })]
-    });
-
-    expect(mount.querySelector('.worker-repo-strip__badge')?.textContent).toBe(
-      '자동 해결 중'
     );
   });
 
@@ -429,70 +399,17 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
     ).toContain('1분 30초');
   });
 
-  test('names the deploy failure on its resolve button', () => {
-    const { mount } = mountWorker({
-      repo_operations: [
-        operationCard({
-          repair: { ...operationCard().repair, remaining: 1, auto_used: 0 }
-        })
-      ]
-    });
+  test('leaves 기록 닫기 as the only action on a failed card', () => {
+    const { mount } = mountWorker({ repo_operations: [operationCard()] });
 
+    const labels = Array.from(
+      openTimeline(mount).querySelectorAll('.worker-ev__acts button')
+    ).map((button) => button.textContent?.trim());
+
+    expect(labels).toEqual(['기록 닫기']);
     expect(
-      openTimeline(mount)
-        .querySelector('.worker-repo-op__resolve')
-        ?.textContent?.trim()
-    ).toBe('배포 실패 해결');
-  });
-
-  test('names a pre-merge verify failure on its resolve button', () => {
-    const { mount } = mountWorker({
-      repo_operations: [
-        operationCard({
-          kind: 'verify',
-          failure_kind: 'verify_script_failure',
-          verify_stage: 'pre_merge'
-        })
-      ]
-    });
-
-    expect(
-      openTimeline(mount)
-        .querySelector('.worker-repo-op__resolve')
-        ?.textContent?.trim()
-    ).toBe('검증 실패 해결 후 머지');
-  });
-
-  test('names a post-merge verify failure on its resolve button', () => {
-    const { mount } = mountWorker({
-      repo_operations: [
-        operationCard({
-          kind: 'verify',
-          failure_kind: 'verify_script_failure',
-          verify_stage: 'post_merge'
-        })
-      ]
-    });
-
-    expect(
-      openTimeline(mount)
-        .querySelector('.worker-repo-op__resolve')
-        ?.textContent?.trim()
-    ).toBe('검증 실패 해결');
-  });
-
-  test('names an interrupted operation on its resolve button', () => {
-    const { mount } = mountWorker({
-      repo_operations: [
-        operationCard({ failure_kind: 'interrupted_without_terminal_exit' })
-      ]
-    });
-
-    expect(
-      openTimeline(mount)
-        .querySelector('.worker-repo-op__resolve')
-        ?.textContent?.trim()
-    ).toBe('중단된 작업 진단');
+      openTimeline(mount).querySelector('.worker-repo-op__resolve')
+    ).toBeNull();
   });
 
   test('offers no generic retry control', () => {
@@ -503,74 +420,6 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
     ).map((button) => button.textContent?.trim());
 
     expect(labels).not.toContain('재시도');
-  });
-
-  test('shows the remaining automatic session count', () => {
-    const { mount } = mountWorker({
-      repo_operations: [
-        operationCard({
-          repair: { ...operationCard().repair, auto_used: 0, remaining: 1 }
-        })
-      ]
-    });
-
-    expect(
-      openTimeline(mount).querySelector('.worker-ev__btn-sub')?.textContent
-    ).toBe('자동 해결 1회가 남아 있습니다');
-  });
-
-  test('does not disable the resolve button once the budget is spent', () => {
-    const { mount } = mountWorker({ repo_operations: [operationCard()] });
-
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        openTimeline(mount).querySelector('.worker-repo-op__resolve')
-      ).disabled
-    ).toBe(false);
-  });
-
-  test('keeps the resolve button active after the automatic budget is spent', () => {
-    const { mount } = mountWorker({ repo_operations: [operationCard()] });
-    const timeline = openTimeline(mount);
-    const button = /** @type {HTMLButtonElement} */ (
-      timeline.querySelector('.worker-repo-op__resolve')
-    );
-
-    expect(button.disabled).toBe(false);
-    expect(timeline.textContent).toContain(
-      '자동 해결을 다 썼습니다 · 눌러서 해결 세션을 엽니다'
-    );
-    expect(timeline.textContent).not.toContain('수동으로 해결');
-  });
-
-  test('links the repair session attempt', () => {
-    const { mount } = mountWorker({ repo_operations: [operationCard()] });
-
-    expect(
-      /** @type {HTMLElement} */ (
-        openTimeline(mount).querySelector('.worker-repo-op__session')
-      ).dataset.attemptId
-    ).toBe('att-1');
-  });
-
-  test('shows an automatically repairing operation as such', () => {
-    const { mount } = mountWorker({
-      repo_operations: [operationCard({ state: 'repairing' })]
-    });
-
-    expect(
-      openTimeline(mount).querySelector('.worker-ev__st')?.textContent
-    ).toBe('자동 해결 중');
-  });
-
-  test('offers no action buttons while a repair is running', () => {
-    const { mount } = mountWorker({
-      repo_operations: [operationCard({ state: 'repairing' })]
-    });
-
-    expect(
-      openTimeline(mount).querySelector('.worker-repo-op__resolve')
-    ).toBeNull();
   });
 
   test('offers no action buttons on an acknowledged failure', () => {
@@ -595,20 +444,6 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
     ).toContain('접수됨');
   });
 
-  test('keeps a resolve button beside the acknowledged chip', () => {
-    const { mount } = mountWorker({
-      repo_operations: [operationCard({ dismissed: { at: 5, by: 'user' } })]
-    });
-    const timeline = openTimeline(mount);
-
-    expect(
-      Array.from(timeline.querySelectorAll('.worker-ev__st')).map(
-        (element) => element.textContent
-      )
-    ).toContain('접수됨');
-    expect(timeline.querySelector('.worker-repo-op__resolve')).not.toBeNull();
-  });
-
   test('marks a superseded failure as 덮임 without action buttons', () => {
     const { mount } = mountWorker({
       repo_operations: [operationCard({ superseded_by: 'op-2' })]
@@ -620,31 +455,8 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
         (element) => element.textContent
       )
     ).toEqual(['실패', '덮임']);
-    expect(timeline.querySelector('.worker-repo-op__resolve')).toBeNull();
     expect(timeline.querySelector('.worker-repo-op__dismiss')).toBeNull();
     expect(timeline.querySelector('.worker-ev__details')).not.toBeNull();
-  });
-
-  test('sends the resolve click through the coordinator mutation', () => {
-    const transport = vi.fn(async () => ({ ok: true, queue: queueOf() }));
-    const { mount } = mountWorker(
-      {
-        repo_operations: [
-          operationCard({
-            repair: { ...operationCard().repair, auto_used: 0, remaining: 1 }
-          })
-        ]
-      },
-      transport
-    );
-
-    /** @type {HTMLElement} */ (
-      openTimeline(mount).querySelector('.worker-repo-op__resolve')
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    expect(transport).toHaveBeenCalledWith('worker-repo-operation-repair', {
-      operation_id: 'op-1'
-    });
   });
 
   test('sends the dismiss click as its own mutation', () => {
@@ -676,23 +488,20 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
     ).toEqual(['cleanup_stalled', 'failed']);
   });
 
-  test('renders cleanup resume and resolve actions together', () => {
+  test('leaves 정리 재개 as the only action on a stopped cleanup', () => {
     const { mount } = mountWorker({
       cleanup_failed: {
         'UI-cleanup': {
           step: 'repo_operations',
           reason: 'verify_cmd_failed',
-          at: 5000,
-          subject_id: 'cleanup:UI-cleanup',
-          repair_eligible: true,
-          repair: { remaining: 0, auto_budget: 1, auto_used: 1 }
+          at: 5000
         }
       }
     });
     const timeline = openTimeline(mount);
 
     expect(timeline.querySelector('.worker-cleanup__resume')).not.toBeNull();
-    expect(timeline.querySelector('.worker-repo-op__resolve')).not.toBeNull();
+    expect(timeline.querySelector('.worker-repo-op__resolve')).toBeNull();
   });
 
   test('renders retry pending with its dedicated chip', () => {
@@ -756,116 +565,7 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
   });
 });
 
-describe('자동 해결 workspace setting', () => {
-  test('shows the current auto_repair value', () => {
-    const { mount } = mountWorker();
-
-    const dialog = openSettings(mount);
-
-    expect(
-      dialog.querySelector('[data-seam="auto-repair-value"]')?.textContent
-    ).toBe('켜짐');
-  });
-
-  test('defaults the toggle on', () => {
-    const { mount } = mountWorker();
-
-    const dialog = openSettings(mount);
-
-    expect(
-      /** @type {HTMLInputElement} */ (
-        dialog.querySelector('.worker-repo-ops__repair-input')
-      ).checked
-    ).toBe(true);
-  });
-
-  test('reflects a durable off', () => {
-    const { mount } = mountWorker({ auto_repair: false });
-
-    const dialog = openSettings(mount);
-
-    expect(
-      dialog.querySelector('[data-seam="auto-repair-value"]')?.textContent
-    ).toBe('꺼짐');
-  });
-
-  test('sends its own mutation without touching the automation toggles', () => {
-    const transport = vi.fn(async () => ({ ok: true, queue: queueOf() }));
-    const { mount } = mountWorker({}, transport);
-    const dialog = openSettings(mount);
-
-    const input = /** @type {HTMLInputElement} */ (
-      dialog.querySelector('.worker-repo-ops__repair-input')
-    );
-    input.checked = false;
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-
-    expect(transport).toHaveBeenCalledWith('worker-auto-repair-toggle', {
-      on: false,
-      expected_revision: 3
-    });
-  });
-
-  test('leaves auto_advance untouched when the repair axis is toggled', () => {
-    const transport = vi.fn(async () => ({ ok: true, queue: queueOf() }));
-    const { mount, queueStore } = mountWorker({}, transport);
-    const dialog = openSettings(mount);
-
-    const input = /** @type {HTMLInputElement} */ (
-      dialog.querySelector('.worker-repo-ops__repair-input')
-    );
-    input.checked = false;
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-
-    expect(/** @type {any} */ (queueStore.get()).auto_advance).toBe(false);
-  });
-
-  test('does not change auto_repair when the automation toggle is clicked', () => {
-    const transport = vi.fn(async () => ({ ok: true, queue: queueOf() }));
-    const { mount, queueStore } = mountWorker({}, transport);
-
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-play')
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    expect([
-      /** @type {any} */ (queueStore.get()).auto_repair,
-      /** @type {any[]} */ (transport.mock.calls)[0]?.[0]
-    ]).toEqual([true, 'worker-automation-toggle']);
-  });
-
-  test('shows the remaining automatic budget', () => {
-    const { mount } = mountWorker({ repo_operations: [operationCard()] });
-
-    const dialog = openSettings(mount);
-
-    expect(
-      dialog.querySelector('[data-seam="auto-repair-budget"]')?.textContent
-    ).toBe('남은 자동 해결 0회');
-  });
-
-  test('names the active repair session', () => {
-    const { mount } = mountWorker({
-      repo_operations: [operationCard({ state: 'repairing' })]
-    });
-
-    const dialog = openSettings(mount);
-
-    expect(
-      dialog.querySelector('[data-seam="auto-repair-session"]')?.textContent
-    ).toBe('해결 세션 실행 중 · UI-a');
-  });
-
-  test('says so when no repair session is running', () => {
-    const { mount } = mountWorker();
-
-    const dialog = openSettings(mount);
-
-    expect(
-      dialog.querySelector('[data-seam="auto-repair-session"]')?.textContent
-    ).toBe('실행 중인 해결 세션 없음');
-  });
-
+describe('저장소 작업 자동 처리 기준 (UI-s582 §1)', () => {
   test('renders every worker-automatic entry the backend sent', () => {
     const { mount } = mountWorker();
 
@@ -888,63 +588,35 @@ describe('자동 해결 workspace setting', () => {
     ).toBeNull();
   });
 
-  test('renders the three resolution ladder stages in contract order', () => {
+  test('drops the retired 자동 해결 toggle and 해결 사다리 surfaces', () => {
+    const { mount } = mountWorker();
+
+    const dialog = openSettings(mount);
+
+    expect(dialog.querySelector('.worker-repo-ops__repair-input')).toBeNull();
+    expect(dialog.querySelector('[data-seam="auto-repair-value"]')).toBeNull();
+    expect(dialog.querySelector('[data-seam="auto-repair-budget"]')).toBeNull();
+    expect(
+      dialog.querySelector('[data-seam="auto-repair-session"]')
+    ).toBeNull();
+    expect(
+      dialog.querySelector('[data-policy="resolution-ladder"]')
+    ).toBeNull();
+    expect(dialog.textContent).not.toContain('해결 사다리');
+  });
+
+  test('says so when the pinned contract schema is not the one this build reads', () => {
     const { mount } = mountWorker({
       repo_operation_policy: {
         ...POLICY,
         schema_version: 2,
-        supported: true,
-        auto_repair: {
-          default: true,
-          scope: 'all_terminal_failures',
-          resolution_ladder: [
-            {
-              id: 'script_retry',
-              trigger: 'automatic',
-              applies_when: 'script_identity_present',
-              attempts_per_operation_attempt: 1
-            },
-            {
-              id: 'auto_repair_session',
-              trigger: 'automatic',
-              attempts: 1,
-              budget: 'per_completion_chain'
-            },
-            {
-              id: 'user_triggered_session',
-              trigger: 'user_action_only',
-              sessions_per_user_action: 1,
-              user_actions: 'unbounded'
-            }
-          ]
-        }
-      }
-    });
-    const dialog = openSettings(mount);
-
-    expect(
-      Array.from(
-        dialog.querySelectorAll('[data-policy="resolution-ladder"] li')
-      ).map((item) => /** @type {HTMLElement} */ (item).dataset.token)
-    ).toEqual([
-      'script_retry',
-      'auto_repair_session',
-      'user_triggered_session'
-    ]);
-  });
-
-  test('replaces the ladder with a schema mismatch guard', () => {
-    const { mount } = mountWorker({
-      repo_operation_policy: {
-        ...POLICY,
-        schema_version: 1,
         supported: false
       }
     });
     const dialog = openSettings(mount);
 
     expect(dialog.textContent).toContain(
-      '계약 스키마 불일치 — 자동 해결이 정지되었습니다 (v1)'
+      '계약 스키마 불일치 — 자동 재시도가 정지되었습니다 (v2)'
     );
   });
 
@@ -958,24 +630,6 @@ describe('자동 해결 workspace setting', () => {
         '[data-policy="never-automatic"] .worker-repo-ops__policy-list li'
       )
     ).toHaveLength(8);
-  });
-
-  test('keeps each ladder item bound to its contract token', () => {
-    const { mount } = mountWorker();
-
-    const dialog = openSettings(mount);
-
-    expect(
-      Array.from(
-        dialog.querySelectorAll(
-          '[data-policy="resolution-ladder"] .worker-repo-ops__policy-list li'
-        )
-      ).map((item) => /** @type {HTMLElement} */ (item).dataset.token)
-    ).toEqual([
-      'script_retry',
-      'auto_repair_session',
-      'user_triggered_session'
-    ]);
   });
 
   test('renders an unknown contract token verbatim rather than dropping it', () => {
@@ -997,19 +651,7 @@ describe('자동 해결 workspace setting', () => {
     ).toBe('a_future_contract_entry');
   });
 
-  test('names the ordered resolution ladder', () => {
-    const { mount } = mountWorker();
-
-    const dialog = openSettings(mount);
-
-    expect(
-      dialog.querySelector(
-        '[data-policy="resolution-ladder"] .worker-repo-ops__policy-label'
-      )?.textContent
-    ).toBe('해결 사다리');
-  });
-
-  test('collapses the three policy lists by default', () => {
+  test('collapses the policy lists by default', () => {
     const { mount } = mountWorker();
 
     const dialog = openSettings(mount);
@@ -1021,7 +663,7 @@ describe('자동 해결 workspace setting', () => {
     ).toBe(false);
   });
 
-  test('summarizes the three list sizes on the collapsed summary', () => {
+  test('summarizes the two list sizes on the collapsed summary', () => {
     const { mount } = mountWorker();
 
     const dialog = openSettings(mount);
@@ -1031,7 +673,7 @@ describe('자동 해결 workspace setting', () => {
         .querySelector('.worker-repo-ops__policy-count')
         ?.textContent?.replace(/\s+/g, ' ')
         .trim()
-    ).toBe('자동 7 · 해결 사다리 3 · 금지 8');
+    ).toBe('자동 7 · 금지 8');
   });
 
   test('omits the policy lists when the backend sent none', () => {

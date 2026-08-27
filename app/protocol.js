@@ -9,7 +9,7 @@
  * - Server can also send unsolicited events (e.g., subscription `snapshot`).
  */
 
-/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'update-assignee'|'dep-add'|'dep-remove'|'update-exec-settings'|'update-impl-target'|'get-session-defaults'|'set-session-defaults'|'get-workspace-accounts'|'set-workspace-accounts'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-automation-toggle'|'worker-auto-repair-toggle'|'worker-repo-ops-opt-out-toggle'|'worker-repo-operation-repair'|'worker-repo-operation-dismiss'|'worker-queue-set-slots'|'worker-queue-set-serial-lane-count'|'subscribe-worker-parallel-analysis'|'unsubscribe-worker-parallel-analysis'|'worker-parallel-analysis-snapshot'|'worker-parallel-analysis-targets'|'worker-parallel-analysis-prompt'|'worker-parallel-analysis-start'|'worker-parallel-analysis-cancel'|'worker-parallel-analysis-settings-update'|'worker-parallel-analysis-submit'|'worker-queue-set-orchestration-defaults'|'worker-queue-remove'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-attempt-dismiss'|'worker-cleanup-retry'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-discard'|'worker-stale-work-continue'|'worker-stale-work-backup-fresh'|'worker-stale-work-recheck'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-ui-order'|'unsubscribe-ui-order'|'ui-order-set'|'ui-order-snapshot'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'get-attempt-prompt'|'get-bead-prompt'|'get-session-refs'|'get-worker-system-prompt'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'|'monitor-auto-toggle'|'monitor-lane-create'|'monitor-lane-update'|'monitor-lane-confirm'|'monitor-lane-remove'|'subscribe-impl-presets'|'unsubscribe-impl-presets'|'impl-presets-snapshot'|'impl-preset-create'|'impl-preset-update'|'impl-preset-delete'|'apply-impl-preset'|'apply-impl-preset-global'} MessageType */
+/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'update-assignee'|'dep-add'|'dep-remove'|'update-exec-settings'|'update-impl-target'|'get-session-defaults'|'set-session-defaults'|'get-workspace-accounts'|'set-workspace-accounts'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-automation-toggle'|'worker-repo-ops-opt-out-toggle'|'worker-repo-operation-dismiss'|'worker-queue-set-slots'|'worker-queue-set-serial-lane-count'|'worker-queue-set-orchestration-defaults'|'worker-queue-remove'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-attempt-dismiss'|'worker-cleanup-retry'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-discard'|'worker-stale-work-continue'|'worker-stale-work-backup-fresh'|'worker-stale-work-recheck'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-ui-order'|'unsubscribe-ui-order'|'ui-order-set'|'ui-order-snapshot'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'get-attempt-prompt'|'get-bead-prompt'|'get-session-refs'|'get-worker-system-prompt'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'|'monitor-auto-toggle'|'monitor-lane-create'|'monitor-lane-update'|'monitor-lane-confirm'|'monitor-lane-remove'|'subscribe-impl-presets'|'unsubscribe-impl-presets'|'impl-presets-snapshot'|'impl-preset-create'|'impl-preset-update'|'impl-preset-delete'|'apply-impl-preset'|'apply-impl-preset-global'} MessageType */
 
 /**
  * @typedef {Object} RequestEnvelope
@@ -84,20 +84,10 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'worker-queue-reorder',
   'worker-queue-toggle',
   'worker-automation-toggle',
-  // The INDEPENDENT RepoOperation repair axis (master spec §9.3). Separate from
-  // `worker-automation-toggle` on purpose: `auto_advance`/`auto_merge` decide
-  // whether work starts and merges, `auto_repair` decides whether a terminal
-  // verify/deploy failure may buy its one automatic repair session. Neither
-  // toggle reads or writes the other's value.
-  'worker-auto-repair-toggle',
   // Per-kind workspace opt-out from the repository's DECLARED verify/deploy
   // operations (UI-lsti §3). Not a config edit: the declaration and every other
   // workspace are untouched, and only NEW operations in THIS workspace stop.
   'worker-repo-ops-opt-out-toggle',
-  // Per-failure-kind resolve click for one RepoOperation (master spec §10).
-  // NOT a retry: it dispatches a repair session through the coordinator, and a
-  // new attempt exists only once that session produced evidence.
-  'worker-repo-operation-repair',
   // 「기록 닫기」 for one FAILED RepoOperation row (UI-q0uy §4.6-2). Marks it
   // acknowledged; the row stays failed and auditable, and only the 해결 필요
   // tally and its action buttons drop it.
@@ -107,17 +97,6 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   // Fixed serial-lane count (1..5; CAS-guarded, UI-04vo §1). Replaces the
   // retired merge-serial slot-hold toggle — serial lanes carry that meaning now.
   'worker-queue-set-serial-lane-count',
-  // Read-only parallelism-analysis channel (UI-04vo §5/§9). The analyzer runs
-  // only on an explicit start; submit converges through one queue CAS.
-  'subscribe-worker-parallel-analysis',
-  'unsubscribe-worker-parallel-analysis',
-  'worker-parallel-analysis-snapshot',
-  'worker-parallel-analysis-targets',
-  'worker-parallel-analysis-prompt',
-  'worker-parallel-analysis-start',
-  'worker-parallel-analysis-cancel',
-  'worker-parallel-analysis-settings-update',
-  'worker-parallel-analysis-submit',
   // Workspace orchestration defaults stored as VALUES (spec §C.5). Replaces
   // the retired `worker-queue-set-default-exec-preset` preset reference.
   'worker-queue-set-orchestration-defaults',

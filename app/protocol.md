@@ -105,14 +105,13 @@ not add a WebSocket op. `monitor-pipeline-snapshot` carries
 `workspaces_state` row:
 `{ root_dir, name, issue_prefix: string|null, auto_advance, auto_merge, slots, revision, runner_catalog }`
 plus, since UI-eey2 §9.4, the repo-panel control fields:
-`{ serial_lane_count, auto_repair, orchestration_model, orchestration_effort, orchestration_speed, execution_defaults, session_defaults, session_defaults_warnings, counts }`.
+`{ serial_lane_count, orchestration_model, orchestration_effort, orchestration_speed, execution_defaults, session_defaults, session_defaults_warnings, counts }`.
 `issue_prefix` comes from that workspace's bd config cache; missing, malformed,
 or temporarily unreadable config is `null`.
 
-- `serial_lane_count` / `auto_repair` / the three `orchestration_*` values are
-  that workspace's own queue state. A legacy queue with no key reads as one
-  serial lane, auto-repair ON, and null orchestration pins — the state such a
-  workspace is actually in.
+- `serial_lane_count` and the three `orchestration_*` values are that
+  workspace's own queue state. A legacy queue with no key reads as one serial
+  lane and null orchestration pins — the state such a workspace is actually in.
 - `execution_defaults` is the same read-only projection the worker snapshot
   carries (see below), repeated here so a repo panel can resolve chips for a
   workspace it holds no worker subscription to.
@@ -469,66 +468,39 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
 - `worker-automation-toggle` payload: `{ on, expected_revision }` — atomically
   aligns `auto_advance` and `auto_merge`; OFF also clears ordinary waiting merge
   entries while preserving active and resolution-bound work.
-- `worker-auto-repair-toggle` payload: `{ on, expected_revision }` — the
-  INDEPENDENT RepoOperation repair axis (master spec §9.3). It neither reads nor
-  writes `auto_advance`/`auto_merge`, and neither of those writes it. OFF blocks
-  NEW automatic repair dispatch only: a repair session already running is never
-  stopped by this mutation. ON reconciles eligible failed operations immediately
-  rather than waiting for the periodic pass. Reply carries the authoritative
-  `queue` like every other CAS mutation.
-- `worker-repo-operation-repair` payload: `{ operation_id }` — the per-failure
-  resolve click (master spec §10). Not a retry: the server dispatches a repair
-  session through the coordinator, and a NEW attempt exists only after that
-  session produced evidence. Reply `{ ok, reason?, attempt_id, queue }`;
-  `reason` is the coordinator's refusal code (`repo_operation_not_failed`,
-  `repair_chain_closed`, `repair_session_unavailable`,
-  `repair_owner_unresolved`, a scheduler reason such as
-  `worktree_missing`/`bead_running`, …).
-- The `worker-queue-snapshot` carries `auto_repair: boolean` — the durable value
-  of that axis; an absent key on a legacy queue reads as ON.
 - The `worker-queue-snapshot` carries `repo_operation_policy` — the projection
   of the PINNED contract copy `generated/contracts/repo-operation-policy.json`
   (an exact byte copy of the dotfiles artifact, with its source commit and
   digest in the sibling provenance file). Shape:
-  `{ schema_version, supported: boolean, source_commit, digest, worker_automatic: string[], auto_repair: { default, scope, resolution_subject, resolution_ladder: Record<string,unknown>[], manual_human_fix }, completion_chain: Record<string,string>, repair_session_packet: string[], resolution_entry_surface, never_automatic: string[] }`.
+  `{ schema_version, supported: boolean, source_commit, digest, worker_automatic: string[], resolution_ladder: Record<string,unknown>[], after_ladder: string, manual_human_fix: string, never_automatic: string[] }`.
   The lists and the ladder are the contract vocabulary VERBATIM: membership is
   decided by the contract alone, never by server or client code. A client
   renders each token through a display dictionary and MUST fall back to the raw
   token, so a contract that gains an entry shows up without a client change.
   `supported` is the consumer decoder guard: it is `false` whenever
-  `schema_version` is anything other than `2`, and a client MUST then render the
-  schema-mismatch notice instead of the ladder. `supported: false` stops the
-  AUTOMATIC ladder steps only — the user-triggered resolution entry stays
-  available, which is why a failed card keeps its resolve button either way.
+  `schema_version` is anything other than `3`. Under schema 3 the ladder holds
+  exactly one AUTOMATIC step (`script_retry`); there is no repair-session step
+  and no user-triggered resolution entry, so `after_ladder` is the terminal
+  `failed` record and the only human path is a manual rerun. `supported: false`
+  stops that automatic step only — the operation still runs and still settles
+  terminally.
 - The `worker-queue-snapshot` carries `repo_operations` — the operation cards,
   newest `requested_at` first. Each card:
-  `{ operation_id, kind: 'verify'|'deploy', repo_id, target_base, target_sha, target_tree, effective_base_sha, script_path, script_blob_sha, script_mode, state: 'queued'|'running'|'succeeded'|'failed'|'repairing'|'retry_pending', requested_at, started_at, finished_at, elapsed_ms, exit_code, signal, log_path, log_digest, output_tail, subjects, failure, failure_kind, verify_stage, repair_eligible, repair: { chain_id, owner_bead, auto_budget, auto_used, remaining, session_id, attempt_id, attempt_status, ladder_stage }, retry: { status, first_fingerprint, blocked_reason, absorbed }, dismissed, superseded_by }`.
+  `{ operation_id, kind: 'verify'|'deploy', repo_id, target_base, target_sha, target_tree, effective_base_sha, script_path, script_blob_sha, script_mode, state: 'queued'|'running'|'succeeded'|'failed'|'retry_pending', requested_at, started_at, finished_at, elapsed_ms, exit_code, signal, log_path, log_digest, output_tail, subjects, failure, failure_kind, verify_stage, retry: { status, first_fingerprint, blocked_reason, absorbed }, dismissed, superseded_by }`.
   `output_tail` and `failure.detail` are SANITIZED (credential-shaped substrings
   redacted) and the tail is bounded — the full log stays behind `log_path`.
-  `failure_kind` is a DISPLAY token, not an eligibility verdict: it is
-  `verify_script_failure`, `deploy_script_failure`,
-  `interrupted_without_terminal_exit`, or — for every other failure — the raw
-  `failure.code`. There is no `other` token and no allowlist behind it; under
-  contract v2 every unresolved terminal failure is repair-eligible, so
-  `repair_eligible` is true for any failed card that is not superseded. The
-  token selects the card's resolve button wording, and a client MUST fall back
-  to a generic resolve label for an unknown token; there is deliberately no
-  generic retry affordance. `retry.status` reports the first ladder step's
-  outcome (`unconsumed`, `consumed`, `absorbed`, `not_applicable`) and
-  `repair.ladder_stage` the durable stage the subject has reached. `dismissed`
-  removes a row from the 해결 필요 tally and from the AUTOMATIC ladder steps
-  only — the resolve button stays. A record that cannot be read as a complete
-  operation is DROPPED rather than projected partially.
-- `cleanup_failed` rows that stop the cleanup cursor are OVERLAID at projection
-  time with `subject_id`, `repair_eligible: true`, and a `repair` object, so a
-  failure recorded on that surface has the same resolve entry as an operation
-  card. Before any repair is prerecorded that object carries only `auto_budget`
-  and `remaining`; `chain_id`, `auto_used`, `ladder_stage`, `attempt_id`, and
-  `session_id` appear once the coordinator prerecords a dispatch. A client MUST
-  therefore treat those fields as absent-until-dispatched. No durable state is
-  migrated. A bead that already owns a `failed` or `repairing` operation record
-  is NOT overlaid, because that record owns the bead's resolution and carries
-  the more specific failure facts.
+  `failure_kind` is a DISPLAY token: it is `verify_script_failure`,
+  `deploy_script_failure`, `interrupted_without_terminal_exit`, or — for every
+  other failure — the raw `failure.code`. There is no `other` token and no
+  allowlist behind it, and a client MUST render an unknown token verbatim. A
+  failed card carries no resolve affordance: the only automatic step is
+  `script_retry`, whose outcome `retry.status` reports (`unconsumed`,
+  `consumed`, `absorbed`, `not_applicable`) with `retry.blocked_reason`
+  (`schema_unsupported`) when it could not run at all, `retry.first_fingerprint`
+  for the failure it absorbed, and `retry.absorbed` when it did. `dismissed`
+  removes a row from the 해결 필요 tally only; the record keeps its failure and
+  its evidence. A record that cannot be read as a complete operation is DROPPED
+  rather than projected partially.
 - `worker-queue-set-slots` payload: `{ slots, expected_revision }` — the
   concurrency cap (lower bound 1).
 
@@ -627,72 +599,6 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
 Every queue mutation replies `{ applied, conflict, queue }`; a stale
 `expected_revision` yields `conflict:true` + the current queue for re-sync.
 
-## Parallelism-analysis channel (UI-04vo §5/§9)
-
-Per-workspace subscription for the read-only analyzer. The analyzer runs ONLY on
-an explicit start: queue placement, reorder, and auto-advance never call a
-model.
-
-- `subscribe-worker-parallel-analysis` / `unsubscribe-worker-parallel-analysis`
-  payload: `{ id }`.
-- `worker-parallel-analysis-snapshot` (push) payload:
-  `{ type, id, root_dir, settings: { revision, runner, model, effort }, job: { job_id, identity, session_id }|null, runs: AnalysisRun[], last_good: { identity_digest, at, result, target_ids }|null }`.
-  `result` is the VALIDATED schema-v3 result; each group carries the server's
-  `eligible` stamp, and no consumer recomputes that judgment. `job.job_id` IS
-  the run id, so the drawer subscribes through the existing
-  `subscribe-session-log` with that id in the `attempt_id` slot — the analyzer
-  needs no session-log message type of its own. `runs` is the durable history
-  (newest first, capped at 20) described below.
-- `worker-parallel-analysis-targets` payload: `{ root_dir }` — reply
-  `{ qualified: [{ id, title, route, spec_id, plan_path, lane, scope?, overlaps? }], excluded: [{ id, title, reason, lane }] }`.
-  The population is the server's ANALYZABLE UNIVERSE, not a lane listing:
-  `qualified` is exactly what a `target_ids`-less start would analyze, and
-  `excluded` is every other open Bead with its reason. `lane` is
-  `'parallel' | 's<n>' | null` (unplaced) and is display-only — an unplaced Bead
-  is deliberately included, because the candidate lane exists only on the Board.
-  When the pinned base can be resolved, `scope` is the sorted declared artifact
-  scope (an empty array means undeclared) and `overlaps` is the sorted list of
-  other qualified Bead ids with a server-computed pairwise overlap. Both fields
-  are advisory and display-only. Missing workspace context, an unresolved base,
-  or a git read error omits both fields and preserves the legacy reply instead
-  of failing the target panel.
-- `worker-parallel-analysis-prompt` payload: `{ root_dir, run_id }` — reply
-  `{ ok: true, prompt }` or `{ ok: false, reason: 'not_found' }`. The stored
-  bytes are the exact bytes written to the analyzer's stdin.
-- `worker-parallel-analysis-start` payload: `{ force?, target_ids? }` — reply
-  `{ applied, cached?, identity?, job_id?, reason?, detail? }`. An identical
-  identity (snapshot digest + runner/model/effort) is a cache hit that spawns
-  nothing; `force` re-runs while PRESERVING the previous last-good until a new
-  success. Omitting `target_ids` keeps the original meaning (the whole qualified
-  set). An array is re-judged server-side and must be ENTIRELY qualified: one
-  unqualified id refuses the whole request with `target_not_qualified` and the
-  offending ids in `detail`, rather than silently shrinking to the intersection.
-  An empty array replies `no_targets`. Cancel, timeout, a non-zero exit, and an
-  invalid/unvalidatable result all reply `applied:false` and leave the cache
-  untouched.
-- `worker-parallel-analysis-cancel` payload: `{ job_id }` — reply
-  `{ cancelled }`; kills the process group and keeps last-good.
-- `worker-parallel-analysis-settings-update` payload:
-  `{ expected_revision, runner, model, effort }` — CAS; only a selection that
-  passes the catalog+probe validation is stored.
-- Durable run history (`runs`): one record per start, newest first, capped at
-  20; a rotated-out record's own `analysis-<run_id>-prompt.txt` and
-  `sessions/<run_id>.jsonl` are deleted with it. Shape:
-  `{ run_id, session_id, runner, model, model_id, effort, target_ids, snapshot_digest, identity, started_at, ended_at, outcome, reason, diagnostic, prompt_saved }`
-  with `outcome` in `running|success|failure|cancelled|interrupted`. A `running`
-  record with no matching active job is settled to `interrupted`
-  (`reason: 'server_restart'`) when the history is READ — the previous process's
-  death is the only way that state can be observed.
-- `worker-parallel-analysis-submit` payload:
-  `{ snapshot_digest, group_index, lane, ordered_bead_ids, expected_revision }`
-  — the client's draft is an INPUT, never an authority. The server re-derives
-  the pinned snapshot, re-checks the digest, re-judges group eligibility with
-  the same function the validator stamped, verifies every id is a current,
-  inactive member of that group, and converges through ONE queue CAS with the
-  blocks correction as the final order. Reply
-  `{ applied, conflict, reason, queue }`; any refusal is all-or-nothing and
-  changes neither the queue, nor bd, nor the repository.
-
 ## Session-log (transcript) channel (spec §5.6)
 
 Streams a per-attempt raw runner event stream to the transcript viewer.
@@ -728,8 +634,7 @@ Streams a per-attempt raw runner event stream to the transcript viewer.
 
 - `launch_id`와 함께 오면 `bad_request`다(두 변형은 배타적이다).
 - `attempt_id`는 반드시 `session:<provider>:<session_id>`여야 한다 — 이 값이
-  클라이언트 store·drawer의 키이며, 병렬 분석기가 `job_id`를 같은 슬롯에 넣는
-  것과 같은 규약이다. 불일치는 `bad_request`.
+  클라이언트 store·drawer의 키다. 불일치는 `bad_request`.
 - `provider`는 `claude|codex` enum, `session_id`는 `^[A-Za-z0-9._-]+$`(경로
   구분자·`..`·셸 해석 문자 차단). 위반은 `bad_request`.
 - **인가**: 서버는 대상 workspace에서 `bd show <bead_id> --json`을 읽어
