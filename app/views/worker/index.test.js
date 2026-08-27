@@ -10124,6 +10124,54 @@ describe('prStatusBadge priority (UI-vkk8 §3)', () => {
     expect(result?.title).toContain('main_receipt_unbacked');
   });
 
+  test('shows 확인 중 for a queued row whose review receipt the queue will fetch (UI-kxhf)', () => {
+    const result = prStatusBadge({
+      auto_pending: true,
+      queued: true,
+      gate: { reason: 'review_receipt_missing' }
+    });
+
+    expect(result).toMatchObject({ label: '확인 중', live: true });
+  });
+
+  test('shows 확인 중 for a queued row whose receipt warning the queue re-checks (UI-kxhf)', () => {
+    const result = prStatusBadge({
+      auto_pending: true,
+      queued: true,
+      receipt_check: {
+        ok: false,
+        probe_error: false,
+        codes: ['unit_plan_mismatch'],
+        blocking_codes: ['unit_plan_mismatch']
+      }
+    });
+
+    expect(result?.label).toBe('확인 중');
+  });
+
+  test('keeps the review warning on an unqueued row (UI-kxhf)', () => {
+    const result = prStatusBadge({
+      auto_pending: false,
+      gate: { reason: 'review_receipt_missing' }
+    });
+
+    expect(result?.label).toBe('최종 변경 리뷰 필요');
+  });
+
+  test('never hides a warning on a queued row the queue gave up on (UI-kxhf)', () => {
+    const result = prStatusBadge({
+      auto_pending: false,
+      queued: true,
+      gate: { reason: 'review_receipt_missing' },
+      head_review: {
+        state: 'failed',
+        failure_reason: 'repair_head_unobservable'
+      }
+    });
+
+    expect(result?.label).not.toBe('확인 중');
+  });
+
   test('carries only the first violation code in the label (UI-17mj §2.4)', () => {
     const result = prStatusBadge({
       receipt_check: {

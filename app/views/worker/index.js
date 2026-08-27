@@ -1204,6 +1204,25 @@ export function prStatusBadge(input) {
       alert: true
     });
   }
+  // A queued row nobody has to touch (UI-kxhf): the driver re-observes it and
+  // dispatches the resolution / base update / head review itself, so the
+  // warnings below would only flash for the seconds between an observation
+  // and that dispatch. They stay for a row the queue is NOT going to act on —
+  // unqueued, failed, waiting on a continuation choice — because there the
+  // reason is what the person clicks to fix.
+  const receipt_codes = receiptWarningCodes(input.receipt_check);
+  const auto_handled =
+    input.conflicting ||
+    input.gate?.reason === 'base_behind' ||
+    input.gate?.reason === 'review_receipt_missing' ||
+    input.gate?.reason === 'review_receipt_stale' ||
+    receipt_codes.length > 0;
+  if (input.auto_pending && auto_handled) {
+    return badge('확인 중', {
+      title: '머지 큐가 자동으로 처리 중 — 다음 관측을 기다립니다',
+      live: true
+    });
+  }
   if (input.conflicting) {
     return badge('충돌 해결 필요', { alert: true });
   }
@@ -1244,7 +1263,6 @@ export function prStatusBadge(input) {
       alert: true
     });
   }
-  const receipt_codes = receiptWarningCodes(input.receipt_check);
   if (receipt_codes.length > 0) {
     // The recorded completion-time observation (UI-bu6d §7). The gate's own
     // live re-check runs on the click, so this badge EXPLAINS a refusal rather
@@ -1551,7 +1569,17 @@ function prWaitRow(
     merged: !!cleanup_failed || gate?.tier === 'merged'
   });
   const discard_blocks_merge = !!discard.operation;
+  // The queue will act on this row without a click (UI-kxhf): it is queued and
+  // nothing terminal or choice-bound stands in the way.
+  const auto_pending =
+    queued &&
+    !queue_failure &&
+    merge_queue?.head_review?.state !== 'failed' &&
+    !continuation_required &&
+    !cleanup_retry &&
+    !(recovery && recovery.lock_actions);
   const status_badge = prStatusBadge({
+    auto_pending,
     continuation_required,
     queueing,
     merge_step,
