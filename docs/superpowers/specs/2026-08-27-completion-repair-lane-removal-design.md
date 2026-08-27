@@ -6,7 +6,11 @@ scope:
   - server/worker/queue-store.js
   - server/worker/attach.js
   - server/worker/bd-metadata.js
+  - server/worker/runner/preamble.js
+  - server/worker/runner/claude.js
+  - server/worker/runner/codex.js
   - server/ws/worker-handlers.js
+  - server/ws/snapshot-retention.js
   - app/data/worker-queue-store.js
   - app/views/worker/index.js
   - app/views/worker/lanes.js
@@ -64,9 +68,14 @@ resume_metadata_check/retry_failed_op/pause/complete), script_retry, 수동 배�
   `create_repair`/`dispatch_repair` 항목 제거. `REPAIR_SESSION_CAP`,
   `operationIdentity`의 `repair_round` 인자 제거.
 - `createCompletionActionDriver`: `continueCreateRepair`, `startRepair`,
-  `resolveAutoResolution`의 repair 특례 제거. `needs_human` 종단은 기존
-  `terminal_reason` 기록(`reason`, `stage`, `failure_key`, `evidence`, `log_path`,
-  `at`)을 그대로 쓰되 `log_path`를 반드시 채운다(§4).
+  `resolveAutoResolution`의 repair 특례 제거.
+- **명시적 `needs_human`은 자동 정책을 우회한다.** 지금 `needs_human`도 `settleFailure`를
+  거치고, 유지되는 `verify_cmd_failed: 'retry'` 정책이 phase를 `retrying`으로 되돌려
+  자동 재시도될 수 있다. 변경: `decideCompletionAction`이 `needs_human`을 돌려주면
+  드라이버는 정책 표를 보지 않고 바로 `terminal_reason`을 저장한다(`auto_resolution`
+  없음). 원인은 `fact.evidence.failure_code ?? fact.evidence.reason ??
+  fact.failure_key.reason` 순으로 읽는다 — cleanup 기록은 `failure.code`가 아니라
+  `reason`/`failure_code`를 갖는다. `terminal_reason` 형식은 §4.
 - `CONFLICT_RESOLUTION_FAILURES`와 auto-review 분기는 변경 없음.
 
 ## 2. 삭제·정리 — 서버
@@ -86,12 +95,26 @@ resume_metadata_check/retry_failed_op/pause/complete), script_retry, 수동 배�
   `repair_sessions_used`/`repair_bead_ids`/`subject_stack`, `MAX_REPAIR_SESSIONS`,
   attempt의 `repair_operation_id`/`completion_mode` 제거. `head_repair` attempt kind는
   head-review 것이므로 유지.
-- **로드 시 정규화**(UI-s582의 `repairing → failed` 전례와 같은 지점): 영속된
-  completion intent의 phase가 `repairing`/`waiting_repair_pr`이면
-  `terminal_reason = { reason: 'repair_lane_retired', stage: <이전 phase>,
-  failure_key: <있으면>, evidence: null, log_path: <있으면>, at: <로드 시각> }`으로
-  `needs_human` 종단 상태로 바꾸고 `repair_*`/`subject_stack` 키는 버린다. 수리 Bead가
-  이미 만들어진 경우 그 Bead는 손대지 않는다(사람이 닫는다). 마이그레이션 파일 없음.
+- **재시작 안전 은퇴 순서**(단계 정규화만으로는 부족: 수리 세션 프로세스는 서버
+  재시작 뒤에도 살아 있고, attach는 시작 시 모든 `running` attempt를 다시 감시한다).
+  로드 정규화는 다음 순서로, 필드를 버리기 **전에** 활성 세션을 정리한다:
+  1. phase `repairing`/`waiting_repair_pr`인 intent마다 연결 필드(`active_op`,
+     `repair_operation_id`, `completion_mode`, `repair_bead_ids`)로 활성 attempt를
+     식별한다.
+  2. 그 attempt가 `running`이면 기존 프로세스 제어 경로(`stopWorkerAttempt`와 같은
+     정지 API)로 종료하고 attempt를 종단 상태(`failed`, reason
+     `repair_lane_retired`)로 영속화한다. 살아 있는 PID가 없으면 종단만 기록.
+  3. intent에 `terminal_reason = { reason: 'repair_lane_retired', stage: <이전
+     phase>, failure_key: <있으면>, evidence: null, log_path: <있으면>, op_id:
+     <있으면>, comment_at: null, at: <로드 시각> }`을 쓴다.
+  4. 그 다음에야 `repair_*`/`subject_stack`/`completion_mode` 키를 버린다.
+  수리 Bead가 이미 만들어진 경우 그 Bead는 손대지 않는다(사람이 닫는다).
+  마이그레이션 파일 없음. 테스트: 살아 있는 PID를 가진 `repairing` intent로 재시작 →
+  프로세스 종료·attempt 종단·terminal 기록·필드 제거 순서 확인.
+- 세션 안내문·러너 어댑터: `server/worker/runner/preamble.js`의 `completion_repair`
+  안내 블록, `runner/claude.js`·`runner/codex.js`의 `completion_repair`/
+  `repair_operation_id` 전달을 제거한다(충돌 해소·head-review 전달은 유지).
+  `server/ws/snapshot-retention.js`의 `repair_operation_id` 참조 제거.
 - `server/ws/worker-handlers.js` `completion_status` 투영: phase enum에서 두 값 제거,
   `current_repair`/`repair_session_cap`/`repair_sessions_used` 제거.
 
@@ -109,21 +132,31 @@ resume_metadata_check/retry_failed_op/pause/complete), script_retry, 수동 배�
 
 ## 4. 실패 인계 — 로그 경로·Bead comment·보존
 
+- **`terminal_reason` 형식 확장**: `CompletionTerminal`에 `op_id: string|null`과
+  `comment_at: number|null`을 추가하고 `normalizeCompletionTerminal`과
+  `normalizeCompletionResumedTerminal` **양쪽**이 보존한다(지금은 정규화에서
+  탈락). `op_id`는 verify/cleanup 증거의 operation ID를 fact → decide → settle까지
+  전달해 채운다; 실행 전 실패라 operation이 없으면 `null`.
 - **카드 `log_path` 노출**: `repo-ops-timeline.js`의 operation 카드 `세부`와
-  completion `needs_human` 카드에 `log_path` 절대 경로를 `<code>`로 렌더하고 복사
-  버튼을 붙인다(기존 SHA 복사 패턴 재사용). 투영에 `log_path`는 이미 있다.
-- **Bead comment 1건**: completion intent가 `needs_human`으로 종단되는 시점(드라이버의
-  `settleFailure`/종단 기록 직후)에 `deps.bd.comment(root_bead_id, text)`
-  (`bd-metadata.js` 기존 어댑터)로 다음 형식을 남긴다. 같은 `(op_id, failure_key)`에
-  대해 한 번만 — `terminal_reason`에 `comment_at` 시각을 기록해 재시작·재진입 시
-  중복을 막는다.
+  completion `needs_human` 카드에 `log_path`가 **있을 때만** 절대 경로를 `<code>`로
+  렌더하고 복사 버튼을 붙인다(기존 SHA 복사 패턴 재사용). 로그 파일은 RepoOperation이
+  실제 시작될 때 생기므로 `repo_operations_unavailable`, 설정 해석 실패, candidate
+  불일치, operation 생성 실패 같은 실행 전 cleanup 중단에는 경로가 없다 — 그 경우
+  복사 제어를 생략하고 comment에는 `(없음)`을 쓴다.
+- **Bead comment 1건**: `needs_human` 종단 저장과 **같은 원자적 쓰기**에서
+  `terminal_reason.comment_at`을 먼저 기록하고, 그 뒤 best-effort로
+  `deps.bd.comment(root_bead_id, text)`(`bd-metadata.js` 기존 어댑터)를 호출한다.
+  중복 판정은 `(op_id, failure_key)`를 현재 `terminal_reason`과 `resumed_terminal`
+  **둘 다**와 대조한다([머지] 재클릭 시 이전 terminal이 `resumed_terminal`로
+  이동하기 때문). 재시작 사이에 comment 호출이 유실돼도 재작성하지 않는다(0건은
+  카드가 보완, 중복은 금지). 형식:
 
   ```
   ## 🤖 완료 실패 기록
   - 단계: verify | deploy | cleanup
   - 원인: <failure.code> — <failure-labels 문장>
   - 대상: <target_sha> (base <target_base>)
-  - 로그: <log_path>
+  - 로그: <log_path> | (없음)
   - 재시도: <retryOutcomeText> | 없음
   - 다음: [머지] 재클릭 · 설정 카드 배포 실행 · 코드 수정은 새 Bead
   ```
@@ -158,13 +191,24 @@ resume_metadata_check/retry_failed_op/pause/complete), script_retry, 수동 배�
   케이스 유지), `completion-repair.test.js` 삭제, `scheduler.test.js` `completion repair
   dispatch` describe 삭제, `queue-store.test.js` repair 예산/기록 ~13건 삭제(RepoOperation
   `repairing→failed` 케이스는 UI-s582 것이므로 유지), `worker-handlers.completion-
-  projection.test.js` phase 열거 갱신, `index.test.js`/`lanes.test.js` 수정 PR 배지 삭제.
-- 신규 테스트: `verify_red`/`cleanup_repairable` → `needs_human`(reason·log_path 채움);
-  로드 정규화 `repairing`/`waiting_repair_pr` → `repair_lane_retired` 종단; Bead comment
-  1회성(같은 op_id·failure_key 재시도 시 재작성 안 함, comment 실패 시 종단 유지);
-  카드 `log_path` 렌더·복사; 실패 로그가 dismiss 전 sweep에서 살아남음.
+  projection.test.js` phase 열거 갱신, `index.test.js`/`lanes.test.js` 수정 PR 배지 삭제,
+  `server/worker/runner/claude.test.js`·`codex.test.js`·`preamble` 테스트,
+  `server/ws/snapshot-retention.test.js`, `server/e2e/worker-flow.test.js`,
+  `server/ws.worker-queue.test.js`, `server/worker/merge-queue.test.js`의 repair 케이스.
+- 신규 테스트: `verify_red`/`cleanup_repairable` → `needs_human`이 정책 표를 우회해 바로
+  종단(재구동 후에도 `auto_resolution` 없이 `needs_human`); 원인 소스 우선순위
+  (`failure_code`→`reason`→`failure_key.reason`); 실행 전 cleanup 실패(`log_path` 없음)
+  → 카드 복사 제어 생략·comment `(없음)`; 로드 정규화 `repairing`/`waiting_repair_pr` →
+  살아 있는 PID 종료·attempt 종단·`repair_lane_retired` 기록·필드 제거 순서; `op_id`·
+  `comment_at`이 두 terminal 정규화를 통과; Bead comment 1회성(`terminal_reason`과
+  `resumed_terminal` 대조, comment 실패 시 종단 유지); 카드 `log_path` 렌더·복사; 실패
+  로그가 dismiss 전 sweep에서 살아남음.
+- 은퇴 식별자 grep 게이트: `completion_repair|dispatchCompletionRepair|repair_bead|
+  repair_sessions_used|subject_stack|waiting_repair_pr|repair_operation_id|
+  completion_mode`가 `server/`·`app/` 소스·테스트에서 0건(의도된 legacy 로드 fixture
+  제외, 목록을 테스트에 명시).
 - 전체: `npx vitest run` green, `npm run tsc`, `npm run lint`, `npx prettier --check .`,
-  `npm run build`. 번들 grep `completion_repair|waiting_repair_pr|repair_bead` 0건.
+  `npm run build`. 번들 grep 동일 식별자 0건.
 
 ## 경계·후속
 
