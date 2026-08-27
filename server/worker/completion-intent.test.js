@@ -595,7 +595,12 @@ describe('worker/completion-intent action driver', () => {
 
     const queue = store.snapshot(DRIVER_WS);
     expect(queue.merge_queue).toEqual([
-      { bead_id: 'UI-root', resolution_rounds: 0, resolution: null }
+      {
+        bead_id: 'UI-root',
+        resolution_rounds: 0,
+        rebase_rounds: 0,
+        resolution: null
+      }
     ]);
     expect(queue.completion_intents['UI-root']).toMatchObject({
       phase: 'repairing',
@@ -1039,7 +1044,12 @@ describe('worker/completion-intent action driver', () => {
 
     const queue = store.snapshot(DRIVER_WS);
     expect(queue.merge_queue).toEqual([
-      { bead_id: 'UI-root', resolution_rounds: 0, resolution: null }
+      {
+        bead_id: 'UI-root',
+        resolution_rounds: 0,
+        rebase_rounds: 0,
+        resolution: null
+      }
     ]);
     expect(queue.completion_intents['UI-root']).toMatchObject({
       phase: 'gating',
@@ -1753,7 +1763,12 @@ describe('worker/completion-intent action driver', () => {
       expect(completionGate).toHaveBeenCalledTimes(1);
       expect(queue).toMatchObject({
         merge_queue: [
-          { bead_id: 'UI-root', resolution_rounds: 0, resolution: null }
+          {
+            bead_id: 'UI-root',
+            resolution_rounds: 0,
+            rebase_rounds: 0,
+            resolution: null
+          }
         ],
         completion_intents: {
           'UI-root': {
@@ -1808,6 +1823,7 @@ describe('worker/completion-intent action driver', () => {
       {
         bead_id: 'UI-root',
         resolution_rounds: 1,
+        rebase_rounds: 0,
         resolution: {
           attempt_id: 'legacy-resolution',
           subject_bead_id: 'UI-root',

@@ -132,6 +132,7 @@ function seedStore(options = {}) {
  *   repo?: string,
  *   gitFail?: (args: string[]) => boolean,
  *   gitResult?: (args: string[]) => number|null,
+ *   gitStdout?: (args: string[]) => string|undefined,
  *   gitBranch?: string,
  *   gitStatus?: string,
  *   gitHead?: string,
@@ -373,6 +374,11 @@ function makeActions(options = {}) {
     const forced_code = options.gitResult?.(args);
     if (typeof forced_code === 'number' && forced_code !== 0) {
       return { code: forced_code, stdout: '', stderr: 'boom' };
+    }
+    // What a specific read answers, for the probes whose VALUE is the verdict.
+    const forced_stdout = options.gitStdout?.(args);
+    if (typeof forced_stdout === 'string') {
+      return { code: 0, stdout: forced_stdout, stderr: '' };
     }
     if (options.gitFail && options.gitFail(args)) {
       return { code: 1, stdout: '', stderr: 'boom' };
@@ -779,7 +785,15 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
       action: 'conflict_resolution',
       attempt_id: 'a2'
     });
-    expect(h.scheduler.resolveConflict).toHaveBeenCalledWith(WS, BEAD);
+    // The observed head branch travels to the scheduler so a deleted
+    // worktree can be restored rather than refused (UI-p49g §5.2).
+    expect(h.scheduler.resolveConflict).toHaveBeenCalledWith(
+      WS,
+      BEAD,
+      null,
+      {},
+      BEAD
+    );
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });
 
@@ -1133,6 +1147,26 @@ describe('merge click — driver-approved latest probe (UI-yup9)', () => {
     expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
   });
 
+  test('prefers the head branch the driver approved over the re-probed one', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
+    });
+
+    await h.actions.dispatchConflict(BEAD, {
+      head_sha: 'sha-aaa',
+      base_ref: 'main',
+      head_ref: 'approved-branch'
+    });
+
+    expect(h.scheduler.resolveConflict).toHaveBeenCalledWith(
+      WS,
+      BEAD,
+      null,
+      {},
+      'approved-branch'
+    );
+  });
+
   test('dispatches one resolver for the exact re-probed DIRTY identity', async () => {
     const h = makeActions({
       details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
@@ -1157,7 +1191,9 @@ describe('merge click — driver-approved latest probe (UI-yup9)', () => {
     expect(h.scheduler.resolveConflict).toHaveBeenCalledWith(
       WS,
       BEAD,
-      resolution_wait
+      resolution_wait,
+      {},
+      BEAD
     );
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });
@@ -1208,7 +1244,9 @@ describe('merge click — driver-approved latest probe (UI-yup9)', () => {
       WS,
       BEAD,
       'main',
-      resolution_wait
+      resolution_wait,
+      {},
+      BEAD
     );
   });
 
@@ -2806,7 +2844,10 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     expect(env.scheduler.dispatchExternalConflict).toHaveBeenCalledWith(
       WS,
       EXTERNAL_BEAD,
-      'develop'
+      'develop',
+      null,
+      {},
+      BEAD
     );
   });
 
@@ -3717,5 +3758,83 @@ describe('worker/pr-actions — workspace repo-ops opt-out (UI-lsti §2)', () =>
     expect(env.store.snapshot(WS).done).toEqual(
       expect.arrayContaining([expect.objectContaining({ bead_id: BEAD })])
     );
+  });
+});
+
+describe('worker/pr-actions — base containment probe (UI-p49g §4.1)', () => {
+  /** The head the resolution session pushed, which the probe judges. */
+  const PUSHED_HEAD = 'e'.repeat(40);
+
+  test('refuses a verdict when the branches cannot be fetched', async () => {
+    const h = makeActions({
+      gitResult: (/** @type {string[]} */ args) => (args[0] === 'fetch' ? 1 : 0)
+    });
+
+    const result = await h.actions.baseContained(BEAD, {
+      base_ref: 'main',
+      head_ref: BEAD,
+      head_sha: PUSHED_HEAD
+    });
+
+    expect(result).toBe(null);
+  });
+
+  test('refuses a verdict when the head moved again before the fetch', async () => {
+    const h = makeActions({
+      gitStdout: (/** @type {string[]} */ args) =>
+        args[0] === 'rev-parse' && args[1] === `origin/${BEAD}`
+          ? `${'f'.repeat(40)}\n`
+          : undefined
+    });
+
+    const result = await h.actions.baseContained(BEAD, {
+      base_ref: 'main',
+      head_ref: BEAD,
+      head_sha: PUSHED_HEAD
+    });
+
+    expect(result).toBe(null);
+  });
+
+  test('reports the base as contained when the head is a descendant of it', async () => {
+    const h = makeActions({
+      gitStdout: (/** @type {string[]} */ args) =>
+        args[0] === 'rev-parse' && args[1] === `origin/${BEAD}`
+          ? `${PUSHED_HEAD}\n`
+          : undefined
+    });
+
+    const result = await h.actions.baseContained(BEAD, {
+      base_ref: 'main',
+      head_ref: BEAD,
+      head_sha: PUSHED_HEAD
+    });
+
+    expect(result).toBe('contained');
+    expect(h.git_argv).toContainEqual([
+      'merge-base',
+      '--is-ancestor',
+      'origin/main',
+      PUSHED_HEAD
+    ]);
+  });
+
+  test('reports the base as not contained when the ancestry check says no', async () => {
+    const h = makeActions({
+      gitStdout: (/** @type {string[]} */ args) =>
+        args[0] === 'rev-parse' && args[1] === `origin/${BEAD}`
+          ? `${PUSHED_HEAD}\n`
+          : undefined,
+      gitResult: (/** @type {string[]} */ args) =>
+        args[0] === 'merge-base' ? 1 : 0
+    });
+
+    const result = await h.actions.baseContained(BEAD, {
+      base_ref: 'main',
+      head_ref: BEAD,
+      head_sha: PUSHED_HEAD
+    });
+
+    expect(result).toBe('not_contained');
   });
 });

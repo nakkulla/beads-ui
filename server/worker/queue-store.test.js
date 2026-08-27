@@ -25,6 +25,9 @@ import { ensureUsageReceiptInbox } from './usage-receipts.js';
 let tmp_state;
 const WS = '/tmp/example-workspace/project-a';
 
+/** The dispatch head every resolution binding in this file is taken on. */
+const RESOLUTION_DISPATCH_HEAD = 'd'.repeat(40);
+
 beforeEach(() => {
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-queue-'));
   process.env.XDG_STATE_HOME = tmp_state;
@@ -807,7 +810,12 @@ describe('worker/queue-store', () => {
     expect(result.ok).toBe(true);
     expect(result.queue.revision).toBe(revision + 1);
     expect(result.queue.merge_queue).toEqual([
-      { bead_id: 'UI-root', resolution_rounds: 0, resolution: null }
+      {
+        bead_id: 'UI-root',
+        resolution_rounds: 0,
+        rebase_rounds: 0,
+        resolution: null
+      }
     ]);
     expect(result.queue.completion_intents['UI-root']).toMatchObject({
       phase: 'gating',
@@ -1655,7 +1663,12 @@ describe('worker/queue-store', () => {
     expect(result.queue.revision).toBe(revision + 1);
     expect(result.queue.completion_intents['UI-root'].phase).toBe(phase);
     expect(result.queue.merge_queue).toEqual([
-      { bead_id: 'UI-root', resolution_rounds: 0, resolution: null }
+      {
+        bead_id: 'UI-root',
+        resolution_rounds: 0,
+        rebase_rounds: 0,
+        resolution: null
+      }
     ]);
   });
 
@@ -1897,13 +1910,17 @@ describe('worker/queue-store', () => {
       {
         bead_id: 'UI-root',
         resolution_rounds: 1,
+        rebase_rounds: 0,
         resolution: {
           attempt_id: 'legacy-resolution',
           subject_bead_id: 'UI-root',
           deadline_at: 150,
           state: 'waiting',
           yielded_at: null,
-          settled_at: null
+          settled_at: null,
+          dispatch_head_sha: '',
+          base_ref: '',
+          head_ref: ''
         }
       }
     ]);
@@ -4699,7 +4716,12 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
 
     expect(r.ok).toBe(true);
     expect(r.queue.merge_queue).toEqual([
-      { bead_id: 'UI-1', resolution_rounds: 0, resolution: null }
+      {
+        bead_id: 'UI-1',
+        resolution_rounds: 0,
+        rebase_rounds: 0,
+        resolution: null
+      }
     ]);
   });
 
@@ -4845,7 +4867,12 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
     store.bumpResolutionRound(WS, 'UI-1');
 
     expect(createQueueStore().snapshot(WS).merge_queue).toEqual([
-      { bead_id: 'UI-1', resolution_rounds: 1, resolution: null }
+      {
+        bead_id: 'UI-1',
+        resolution_rounds: 1,
+        rebase_rounds: 0,
+        resolution: null
+      }
     ]);
   });
 
@@ -4886,7 +4913,12 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
     );
 
     expect(createQueueStore().snapshot(WS).merge_queue).toEqual([
-      { bead_id: 'UI-1', resolution_rounds: 0, resolution: null }
+      {
+        bead_id: 'UI-1',
+        resolution_rounds: 0,
+        rebase_rounds: 0,
+        resolution: null
+      }
     ]);
   });
 
@@ -4912,7 +4944,10 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
       deadline_at: 1_800_001,
       state: 'yielded',
       yielded_at: 1_800_002,
-      settled_at: null
+      settled_at: null,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch'
     };
     fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
     fs.writeFileSync(
@@ -4938,6 +4973,7 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
           {
             bead_id: 'UI-1',
             resolution_rounds: 1,
+            rebase_rounds: 0,
             resolution: { state: 'waiting', attempt_id: '' }
           }
         ]
@@ -4971,6 +5007,10 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
     });
 
     const result = store.bindResolutionWait(WS, {
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+
       bead_id: 'UI-1',
       subject_bead_id: 'UI-subject',
       attempt_id: 'res-1',
@@ -4982,13 +5022,17 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
       {
         bead_id: 'UI-1',
         resolution_rounds: 1,
+        rebase_rounds: 0,
         resolution: {
           attempt_id: 'res-1',
           subject_bead_id: 'UI-subject',
           deadline_at: 1_800_100,
           state: 'waiting',
           yielded_at: null,
-          settled_at: null
+          settled_at: null,
+          dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+          base_ref: 'main',
+          head_ref: 'feature-branch'
         }
       }
     ]);
@@ -5003,6 +5047,10 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
     const revision = store.snapshot(WS).revision;
 
     const result = store.appendResolutionAttempt(WS, {
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+
       expected_revision: revision,
       queue_bead_id: 'UI-root',
       subject_bead_id: 'UI-subject',
@@ -5028,7 +5076,10 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
       deadline_at: 150,
       state: 'waiting',
       yielded_at: null,
-      settled_at: null
+      settled_at: null,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch'
     });
   });
 
@@ -5062,6 +5113,10 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
 
     expect(() =>
       failing.bindResolutionWait(WS, {
+        dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+        base_ref: 'main',
+        head_ref: 'feature-branch',
+
         bead_id: 'UI-1',
         subject_bead_id: 'UI-1',
         attempt_id: 'res-1',
@@ -5090,6 +5145,10 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
       }
     });
     store.bindResolutionWait(WS, {
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+
       bead_id: 'UI-1',
       subject_bead_id: 'UI-1',
       attempt_id: 'res-1',
@@ -5141,6 +5200,10 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
         }
       });
       store.bindResolutionWait(WS, {
+        dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+        base_ref: 'main',
+        head_ref: 'feature-branch',
+
         bead_id,
         subject_bead_id: bead_id,
         attempt_id: `res-${bead_id}`,
@@ -5202,6 +5265,10 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
       }
     });
     store.bindResolutionWait(WS, {
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+
       bead_id: 'UI-1',
       subject_bead_id: 'UI-1',
       attempt_id: 'res-1',
@@ -5218,21 +5285,261 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
     const consumed = store.consumeResolutionWait(WS, {
       bead_id: 'UI-1',
       attempt_id: 'res-1',
-      consume_round: true
+      charge: 'session'
     });
     const duplicate = store.consumeResolutionWait(WS, {
       bead_id: 'UI-1',
       attempt_id: 'res-1',
-      consume_round: true
+      charge: 'session'
     });
 
     expect(consumed.queue.merge_queue[0]).toEqual({
       bead_id: 'UI-1',
       resolution_rounds: 1,
+      rebase_rounds: 0,
       resolution: null
     });
     expect(duplicate.ok).toBe(false);
     expect(duplicate.queue.revision).toBe(consumed.queue.revision);
+  });
+
+  /**
+   * A queue item whose ready resolution is waiting to be consumed.
+   *
+   * @param {{ rebase_rounds?: unknown }} [overrides] - Written straight into
+   * `queue.json`, so a field can be made absent or nonsense the way a legacy
+   * file or a missed creation point would leave it.
+   */
+  function storeWithReadyResolution(overrides = {}) {
+    const store = storeWithPrWait(['UI-1']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'res-1',
+        bead_id: 'UI-1',
+        status: 'done',
+        conflict_resolution: true,
+        started_at: 100
+      }
+    });
+    store.bindResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      wait_ms: 100,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: 'feature-branch'
+    });
+    store.settleResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      settled_at: 150,
+      active_bead_id: null
+    });
+    if (Object.hasOwn(overrides, 'rebase_rounds')) {
+      const file = queueFilePath(WS);
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      raw.merge_queue[0].rebase_rounds = overrides.rebase_rounds;
+      fs.writeFileSync(file, JSON.stringify(raw));
+      store.__clearCacheForTest();
+    }
+    return store;
+  }
+
+  test('charges the rebase budget without spending a resolution round', () => {
+    const store = storeWithReadyResolution();
+
+    const consumed = store.consumeResolutionWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      charge: 'rebase'
+    });
+
+    expect(consumed.queue.merge_queue[0]).toEqual({
+      bead_id: 'UI-1',
+      resolution_rounds: 0,
+      rebase_rounds: 1,
+      resolution: null
+    });
+  });
+
+  test('clears a ready resolution without charging either budget', () => {
+    const store = storeWithReadyResolution();
+
+    const consumed = store.consumeResolutionWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      charge: 'none'
+    });
+
+    expect(consumed.queue.merge_queue[0]).toEqual({
+      bead_id: 'UI-1',
+      resolution_rounds: 0,
+      rebase_rounds: 0,
+      resolution: null
+    });
+  });
+
+  test('refuses a charge it does not recognize, leaving the binding intact', () => {
+    const store = storeWithReadyResolution();
+
+    const consumed = store.consumeResolutionWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      charge: /** @type {any} */ ('rounds')
+    });
+
+    expect(consumed.ok).toBe(false);
+    expect(consumed.queue.merge_queue[0].resolution).toMatchObject({
+      attempt_id: 'res-1',
+      state: 'ready'
+    });
+  });
+
+  test('starts a rebase charge from zero when the stored count is unusable', () => {
+    const store = storeWithReadyResolution({ rebase_rounds: 'many' });
+
+    const consumed = store.consumeResolutionWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      charge: 'rebase'
+    });
+
+    expect(consumed.queue.merge_queue[0].rebase_rounds).toBe(1);
+  });
+
+  test('reads a legacy entry as zero rebase rounds and an unidentified wait', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        merge_queue: [
+          {
+            bead_id: 'UI-1',
+            resolution_rounds: 1,
+            resolution: {
+              attempt_id: 'res-1',
+              subject_bead_id: 'UI-1',
+              deadline_at: 100,
+              state: 'waiting',
+              yielded_at: null,
+              settled_at: null
+            }
+          }
+        ]
+      })
+    );
+
+    const [entry] = createQueueStore().snapshot(WS).merge_queue;
+
+    expect(entry.rebase_rounds).toBe(0);
+    expect(entry.resolution).toMatchObject({
+      dispatch_head_sha: '',
+      base_ref: '',
+      head_ref: ''
+    });
+  });
+
+  test('refuses a bind whose dispatch identity is incomplete', () => {
+    const store = storeWithPrWait(['UI-1']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'res-1',
+        bead_id: 'UI-1',
+        status: 'running',
+        conflict_resolution: true,
+        started_at: 100
+      }
+    });
+
+    const result = store.bindResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      wait_ms: 100,
+      dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+      base_ref: 'main',
+      head_ref: ''
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.queue.merge_queue[0].resolution).toBe(null);
+  });
+
+  test('refuses a prerecord whose dispatch head is not a commit id', () => {
+    const store = storeWithPrWait(['UI-1']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+
+    const result = store.appendResolutionAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      queue_bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      wait_ms: 100,
+      dispatch_head_sha: 'HEAD',
+      base_ref: 'main',
+      head_ref: 'feature-branch',
+      attempt: {
+        attempt_id: 'res-atomic',
+        bead_id: 'UI-1',
+        status: 'running',
+        conflict_resolution: true,
+        started_at: 50
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.queue.attempts['res-atomic']).toBeUndefined();
+    expect(result.queue.merge_queue[0].resolution).toBe(null);
+  });
+
+  test('gives a newly enqueued entry a zero rebase budget', () => {
+    const store = storeWithPrWait(['UI-1']);
+
+    const result = store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+
+    expect(result.queue.merge_queue).toEqual([
+      {
+        bead_id: 'UI-1',
+        resolution_rounds: 0,
+        rebase_rounds: 0,
+        resolution: null
+      }
+    ]);
+  });
+
+  test('pairs every queue-entry creation point with a zero rebase budget', () => {
+    // The two budgets are written together at eight literal sites (spec §3.2).
+    // Normalization and consumption both floor a missed one, so this is about
+    // the third guarantee: no creation point drifts apart from the others.
+    const source = fs.readFileSync(
+      new URL('./queue-store.js', import.meta.url),
+      'utf8'
+    );
+
+    const created = source.match(
+      /resolution_rounds: 0,\n\s*rebase_rounds: 0,/g
+    );
+
+    expect(source.match(/resolution_rounds: 0,/g)).toHaveLength(8);
+    expect(created).toHaveLength(8);
   });
 });
 
@@ -5758,7 +6065,12 @@ describe('worker/queue-store — merge queue lane coupling (UI-5v7d)', () => {
     });
 
     expect(store.snapshot(WS).merge_queue).toEqual([
-      { bead_id: 'UI-1', resolution_rounds: 1, resolution: null }
+      {
+        bead_id: 'UI-1',
+        resolution_rounds: 1,
+        rebase_rounds: 0,
+        resolution: null
+      }
     ]);
   });
 

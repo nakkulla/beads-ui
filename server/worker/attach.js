@@ -1259,8 +1259,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         prActions.probeMergeability(bead_id),
       dispatchConflict: (
         /** @type {string} */ bead_id,
-        /** @type {{ head_sha: string, base_ref: string|null }} */ approved,
-        /** @type {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }} */ resolution_wait,
+        /** @type {{ head_sha: string, base_ref: string|null, head_ref: string|null }} */ approved,
+        /** @type {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha: string, base_ref: string, head_ref: string }} */ resolution_wait,
         /** @type {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} */ continuation
       ) =>
         prActions.dispatchConflict(
@@ -1269,6 +1269,14 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           resolution_wait,
           continuation
         ),
+      // Whether a still-dirty head already contains its base tip (UI-p49g
+      // §4.1) — the evidence that separates a session's failed resolution from
+      // one the queue re-conflicted. The production queue picks its deps
+      // explicitly, so an unwired seam would charge EVERY re-conflict.
+      baseContained: (
+        /** @type {string} */ bead_id,
+        /** @type {{ base_ref: string, head_ref: string, head_sha: string }} */ input
+      ) => prActions.baseContained(bead_id, input),
       observePr: (/** @type {string} */ bead_id) => prActions.prState(bead_id),
       // The head an auto-merge exclusion is pinned to (UI-yk55 §3.3). A cache
       // read only — `observePr` returns `{state, error}` and cannot serve it.

@@ -77,6 +77,9 @@ let origin_dir;
  */
 let WS;
 
+/** The dispatch head every resolution binding in this file is taken on. */
+const RESOLUTION_DISPATCH_HEAD = 'd'.repeat(40);
+
 /**
  * @param {string[]} args
  * @param {{ cwd?: string }} options
@@ -925,6 +928,10 @@ describe('worker e2e — completion intent post-merge recovery', () => {
       dispatchConflict: async (bead_id, _approved, resolution_wait) => {
         effects.push(`dispatch:${bead_id}`);
         store.appendResolutionAttempt(WS, {
+          dispatch_head_sha: RESOLUTION_DISPATCH_HEAD,
+          base_ref: 'main',
+          head_ref: 'feature-branch',
+
           expected_revision: store.snapshot(WS).revision,
           queue_bead_id: resolution_wait.queue_bead_id,
           subject_bead_id: bead_id,
@@ -991,6 +998,7 @@ describe('worker e2e — completion intent post-merge recovery', () => {
       {
         bead_id: root_bead_id,
         resolution_rounds: 0,
+        rebase_rounds: 0,
         resolution: { state: 'yielded', attempt_id: 'resolution-long' }
       }
     ]);

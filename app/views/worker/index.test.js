@@ -10011,6 +10011,30 @@ describe('mergeFailureText (UI-5v7d §4)', () => {
     expect(mergeFailureText('brand_new_reason')).toBe('brand_new_reason');
   });
 
+  test('separates the queue-caused re-conflict budget from the session one', () => {
+    expect(mergeFailureText('resolution_rebase_cap')).toBe(
+      '큐 재충돌 3회 초과'
+    );
+  });
+
+  test('names which worktree-restore check refused', () => {
+    expect(mergeFailureText('worktree_restore_branch_mismatch')).toBe(
+      '워크트리 복원 실패 — 브랜치 이름 불일치'
+    );
+    expect(mergeFailureText('worktree_restore_path_exists')).toBe(
+      '워크트리 복원 실패 — 경로 이미 있음'
+    );
+    expect(mergeFailureText('worktree_restore_branch_missing')).toBe(
+      '워크트리 복원 실패 — origin에 브랜치 없음'
+    );
+    expect(mergeFailureText('worktree_restore_branch_diverged')).toBe(
+      '워크트리 복원 실패 — 로컬 브랜치가 origin과 다름'
+    );
+    expect(mergeFailureText('worktree_restore_failed')).toBe(
+      '워크트리 복원 실패'
+    );
+  });
+
   test('points a receipt hold at the manual [머지] click that lifts it', () => {
     const text = mergeFailureText('receipt_unbacked:probe_error');
 
