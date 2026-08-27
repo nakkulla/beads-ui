@@ -579,6 +579,11 @@
  * @property {number} resolution_rounds - How many conflict-resolution rounds
  * this item has already consumed. Persisted so the 2-round cap survives the
  * deploy restart a merge can trigger.
+ * @property {number} rebase_rounds - How many QUEUE-CAUSED re-conflicts this
+ * item has absorbed (UI-p49g §3.2). A session that resolved correctly against
+ * the base it was dispatched on is not charged a resolution round when a later
+ * merge moves that base under it; this counter bounds that forgiveness so the
+ * forgiven case cannot call sessions forever.
  * @property {ResolutionWait|InvalidResolutionWait|null} resolution - Durable
  * binding between this queue item and one exact conflict-resolution attempt.
  * @property {{ subject_bead_id: string, mismatch: Record<string, unknown>, continuation: 'prior_session'|'fresh_current'|null, decision_token: Record<string, unknown>|null }|null} [continuation_action]
@@ -630,6 +635,13 @@
  * @property {ResolutionWaitState} state
  * @property {number|null} yielded_at
  * @property {number|null} settled_at
+ * @property {string} dispatch_head_sha - The PR head the queue APPROVED and
+ * dispatched this resolution against (UI-p49g §3.1). Read back when the item
+ * returns dirty, to tell a session that pushed nothing from one whose push was
+ * overtaken by a base that moved. A legacy record reads `''`, which the charge
+ * judgment treats as unreadable and therefore chargeable.
+ * @property {string} base_ref - The PR base branch at dispatch.
+ * @property {string} head_ref - The PR head branch at dispatch.
  */
 /**
  * Canonical fail-closed marker for a persisted non-null resolution record that
@@ -1772,11 +1784,42 @@ function normalizeResolutionWait(value) {
     deadline_at,
     state,
     yielded_at,
-    settled_at
+    settled_at,
+    dispatch_head_sha:
+      typeof value.dispatch_head_sha === 'string'
+        ? value.dispatch_head_sha
+        : '',
+    base_ref: typeof value.base_ref === 'string' ? value.base_ref : '',
+    head_ref: typeof value.head_ref === 'string' ? value.head_ref : ''
   };
 }
 
 const SHA40_RE = /^[0-9a-f]{40}$/i;
+
+/**
+ * The dispatch identity BOTH `resolution` write paths must carry (UI-p49g
+ * §3.1): `bindResolutionWait` and `appendResolutionAttempt`. A binding that
+ * cannot name the exact head, base branch, and head branch it was dispatched
+ * against cannot be judged when the item comes back dirty, so the write is
+ * refused rather than persisted half-identified.
+ *
+ * @param {{ dispatch_head_sha?: unknown, base_ref?: unknown, head_ref?: unknown }} input
+ * @returns {{ dispatch_head_sha: string, base_ref: string, head_ref: string }|null}
+ */
+function resolutionDispatchIdentity(input) {
+  const { dispatch_head_sha, base_ref, head_ref } = input;
+  if (
+    typeof dispatch_head_sha !== 'string' ||
+    !SHA40_RE.test(dispatch_head_sha) ||
+    typeof base_ref !== 'string' ||
+    base_ref.length === 0 ||
+    typeof head_ref !== 'string' ||
+    head_ref.length === 0
+  ) {
+    return null;
+  }
+  return { dispatch_head_sha, base_ref, head_ref };
+}
 
 /** Queue-owned runtime capability projected by health and Worker snapshots. */
 export const MANUAL_MERGE_CONTINUATION = Object.freeze({
@@ -1930,6 +1973,12 @@ function normalizeMergeQueue(arr) {
         Number.isFinite(raw.resolution_rounds) &&
         raw.resolution_rounds > 0
           ? Math.floor(raw.resolution_rounds)
+          : 0,
+      rebase_rounds:
+        typeof raw.rebase_rounds === 'number' &&
+        Number.isFinite(raw.rebase_rounds) &&
+        raw.rebase_rounds > 0
+          ? Math.floor(raw.rebase_rounds)
           : 0,
       resolution: normalizeResolutionWait(raw.resolution),
       ...(continuation_action === null ? {} : { continuation_action }),
@@ -3337,6 +3386,7 @@ function resumeCompletionIntentRecord(next, root_bead_id) {
     insertRunnableMergeEntry(next, {
       bead_id: root_bead_id,
       resolution_rounds: 0,
+      rebase_rounds: 0,
       resolution: null
     });
   }
@@ -5164,7 +5214,7 @@ export function createQueueStore(options = {}) {
      * merge queue item before the resolver process can outlive the driver.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, queue_bead_id: string, subject_bead_id: string, wait_ms: number, attempt: Partial<Attempt> & { attempt_id: string, bead_id: string } }} input
+     * @param {{ expected_revision: number, queue_bead_id: string, subject_bead_id: string, wait_ms: number, dispatch_head_sha: string, base_ref: string, head_ref: string, attempt: Partial<Attempt> & { attempt_id: string, bead_id: string } }} input
      * @returns {QueueOpResult}
      */
     appendResolutionAttempt(workspace, input) {
@@ -5175,12 +5225,14 @@ export function createQueueStore(options = {}) {
         wait_ms,
         attempt
       } = input;
+      const identity = resolutionDispatchIdentity(input);
       return applyMutation(workspace, expected_revision, (next) => {
         const entry = next.merge_queue.find(
           (item) => item.bead_id === queue_bead_id
         );
         if (
           !entry ||
+          !identity ||
           entry.resolution !== null ||
           !attempt ||
           typeof attempt.attempt_id !== 'string' ||
@@ -5203,7 +5255,8 @@ export function createQueueStore(options = {}) {
           deadline_at: attempt.started_at + wait_ms,
           state: 'waiting',
           yielded_at: null,
-          settled_at: null
+          settled_at: null,
+          ...identity
         };
         return true;
       });
@@ -6673,6 +6726,7 @@ export function createQueueStore(options = {}) {
           insertRunnableMergeEntry(next, {
             bead_id,
             resolution_rounds: 0,
+            rebase_rounds: 0,
             resolution: null
           });
           added += 1;
@@ -6833,6 +6887,7 @@ export function createQueueStore(options = {}) {
           insertRunnableMergeEntry(next, {
             bead_id,
             resolution_rounds: 0,
+            rebase_rounds: 0,
             resolution: null,
             authority: {
               id: randomUUID(),
@@ -7204,6 +7259,7 @@ export function createQueueStore(options = {}) {
           insertRunnableMergeEntry(next, {
             bead_id: root_bead_id,
             resolution_rounds: 0,
+            rebase_rounds: 0,
             resolution: null
           });
         }
@@ -7605,6 +7661,7 @@ export function createQueueStore(options = {}) {
           insertRunnableMergeEntry(next, {
             bead_id: root_bead_id,
             resolution_rounds: 0,
+            rebase_rounds: 0,
             resolution: null,
             ...automaticAuthorityFields(head_sha, target_base)
           });
@@ -7876,6 +7933,7 @@ export function createQueueStore(options = {}) {
         insertRunnableMergeEntry(next, {
           bead_id: root_bead_id,
           resolution_rounds,
+          rebase_rounds: 0,
           resolution: attempt
             ? {
                 attempt_id: attempt.attempt_id,
@@ -7884,7 +7942,13 @@ export function createQueueStore(options = {}) {
                   /** @type {number} */ (attempt_started_at) + wait_ms,
                 state: 'waiting',
                 yielded_at: null,
-                settled_at: null
+                settled_at: null,
+                // A historical terminal carries no dispatch identity, so this
+                // adoption reads exactly like a legacy record: unreadable
+                // grounds, which the charge judgment bills to the session.
+                dispatch_head_sha: '',
+                base_ref: '',
+                head_ref: ''
               }
             : null
         });
@@ -7971,6 +8035,7 @@ export function createQueueStore(options = {}) {
                 insertRunnableMergeEntry(next, {
                   bead_id,
                   resolution_rounds: 0,
+                  rebase_rounds: 0,
                   resolution: null
                 });
                 changed += 1;
@@ -8007,6 +8072,7 @@ export function createQueueStore(options = {}) {
               insertRunnableMergeEntry(next, {
                 bead_id,
                 resolution_rounds: 0,
+                rebase_rounds: 0,
                 resolution: null,
                 ...automaticAuthorityFields(
                   entry.head_sha,
@@ -8040,6 +8106,7 @@ export function createQueueStore(options = {}) {
           insertRunnableMergeEntry(next, {
             bead_id,
             resolution_rounds: 0,
+            rebase_rounds: 0,
             resolution: null,
             ...automaticAuthorityFields(entry.head_sha, entry.target_base)
           });
@@ -8127,7 +8194,7 @@ export function createQueueStore(options = {}) {
      * already durable in the scheduler journal.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, subject_bead_id: string, attempt_id: string, wait_ms: number }} input
+     * @param {{ bead_id: string, subject_bead_id: string, attempt_id: string, wait_ms: number, dispatch_head_sha: string, base_ref: string, head_ref: string }} input
      * @returns {QueueOpResult}
      */
     bindResolutionWait(workspace, input) {
@@ -8136,8 +8203,10 @@ export function createQueueStore(options = {}) {
           (item) => item.bead_id === input.bead_id
         );
         const attempt = next.attempts[input.attempt_id];
+        const identity = resolutionDispatchIdentity(input);
         if (
           !entry ||
+          !identity ||
           entry.resolution != null ||
           typeof input.subject_bead_id !== 'string' ||
           input.subject_bead_id.length === 0 ||
@@ -8161,7 +8230,8 @@ export function createQueueStore(options = {}) {
           deadline_at: attempt.started_at + input.wait_ms,
           state: 'waiting',
           yielded_at: null,
-          settled_at: null
+          settled_at: null,
+          ...identity
         };
         return true;
       });
@@ -8275,11 +8345,16 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Consume one ready attempt identity, optionally charging its completed
-     * conflict round. A duplicate event finds no ready identity and is a no-op.
+     * Consume one ready attempt identity, charging the counter the driver's
+     * judgment named (UI-p49g §3.3). A duplicate event finds no ready identity
+     * and is a no-op.
+     *
+     * `session` counts a resolution the session itself failed to land;
+     * `rebase` counts one the QUEUE re-conflicted by moving the base under an
+     * already-correct resolution; `none` leaves both counters alone.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, attempt_id: string, consume_round: boolean }} input
+     * @param {{ bead_id: string, attempt_id: string, charge: 'session'|'rebase'|'none' }} input
      * @returns {QueueOpResult}
      */
     consumeResolutionWait(workspace, input) {
@@ -8292,12 +8367,24 @@ export function createQueueStore(options = {}) {
           !entry ||
           !resolution ||
           resolution.state !== 'ready' ||
-          resolution.attempt_id !== input.attempt_id
+          resolution.attempt_id !== input.attempt_id ||
+          (input.charge !== 'session' &&
+            input.charge !== 'rebase' &&
+            input.charge !== 'none')
         ) {
           return false;
         }
-        if (input.consume_round === true) {
-          entry.resolution_rounds += 1;
+        if (input.charge === 'session') {
+          entry.resolution_rounds = Number.isFinite(entry.resolution_rounds)
+            ? entry.resolution_rounds + 1
+            : 1;
+        }
+        if (input.charge === 'rebase') {
+          // Second line of defence for a creation point that forgot the field:
+          // a `NaN` budget would compare false against every cap forever.
+          entry.rebase_rounds = Number.isFinite(entry.rebase_rounds)
+            ? entry.rebase_rounds + 1
+            : 1;
         }
         entry.resolution = null;
         return true;

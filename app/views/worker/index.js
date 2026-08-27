@@ -566,6 +566,8 @@ export function mergeFailureText(reason) {
       return 'PR 대기 상태 동기화 실패';
     case 'resolution_round_cap':
       return '충돌 해소 2회 초과';
+    case 'resolution_rebase_cap':
+      return '큐 재충돌 3회 초과';
     case 'resolution_timeout':
       return '충돌 해소 대기 시간 초과';
     case 'resolution_refused':
@@ -575,6 +577,18 @@ export function mergeFailureText(reason) {
     // needs to run in is, and that is the one thing this path cannot recreate.
     case 'worktree_missing':
       return '워크트리 없음 — 세션에서 해소 필요';
+    // The restore that now precedes that refusal (UI-p49g §5.1) names WHICH
+    // safety check stopped it, because each one asks for a different fix.
+    case 'worktree_restore_branch_mismatch':
+      return '워크트리 복원 실패 — 브랜치 이름 불일치';
+    case 'worktree_restore_path_exists':
+      return '워크트리 복원 실패 — 경로 이미 있음';
+    case 'worktree_restore_branch_missing':
+      return '워크트리 복원 실패 — origin에 브랜치 없음';
+    case 'worktree_restore_branch_diverged':
+      return '워크트리 복원 실패 — 로컬 브랜치가 origin과 다름';
+    case 'worktree_restore_failed':
+      return '워크트리 복원 실패';
     case 'merge_unconfirmed_timeout':
       return '머지 확인 시간 초과';
     case 'pr_closed_unmerged':

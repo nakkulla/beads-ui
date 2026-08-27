@@ -381,6 +381,7 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
       {
         bead_id: 'UI-1',
         resolution_rounds: 0,
+        rebase_rounds: 0,
         resolution: null,
         authority: {
           id: expect.any(String),
