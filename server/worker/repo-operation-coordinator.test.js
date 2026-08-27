@@ -2011,6 +2011,86 @@ describe('RepoOperation coordinator', () => {
     expect(start).not.toHaveBeenCalled();
   });
 
+  test('records the on-disk head on a covered settle', async () => {
+    const { store, coordinator } = coordinatorFor({
+      deployLock: async () => ({ ok: true, release: vi.fn() }),
+      deployWorktree: {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({
+          ok: true,
+          head: TARGET,
+          clean: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy')
+        }),
+        ensureAligned: vi.fn(),
+        verifyCovered: async () => ({ ok: true })
+      }
+    });
+    spoolRequest(validRequest());
+
+    await coordinator.reconcile(root);
+
+    const [operation] = Object.values(store.snapshot(root).repo_operations);
+    expect([operation.target_sha, operation.deploy_worktree]).toEqual([
+      TARGET,
+      path.join(root, '.worktrees', '.repo-ops-deploy')
+    ]);
+  });
+
+  test('covers an older failed deploy from a session-predeployed descendant', async () => {
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitWithAncestry({}),
+      deployLock: async () => ({ ok: true, release: vi.fn() }),
+      deployWorktree: {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({
+          ok: true,
+          head: ADVANCED_HEAD,
+          clean: true
+        }),
+        ensureAligned: vi.fn(),
+        verifyCovered: async () => ({ ok: true })
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: '5'.repeat(40)
+    });
+    const failed = store.snapshot(root).repo_operations['failed-deploy'];
+    store.startRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      attempt_id: failed.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'failed.log'),
+      target_sha: HEAD
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      attempt_id: failed.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    spoolRequest(validRequest());
+
+    await coordinator.reconcile(root);
+
+    const operations = store.snapshot(root).repo_operations;
+    const [covered_id, covered] = /** @type {[string, any]} */ (
+      Object.entries(operations).find(([id]) => id !== 'failed-deploy')
+    );
+    expect([
+      covered.state,
+      covered.target_sha,
+      operations['failed-deploy'].superseded_by
+    ]).toEqual(['succeeded', ADVANCED_HEAD, covered_id]);
+  });
+
   test('rejects an unknown approved source without creating any record', async () => {
     const { store, coordinator } = coordinatorFor({
       gitRun: gitForBootstrap({ known_shas: [] })

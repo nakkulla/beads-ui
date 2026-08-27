@@ -4588,7 +4588,7 @@ export function createQueueStore(options = {}) {
      * a previously terminal record.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure?: RepoOperation['failure'], log_digest?: string|null, retry_outcome?: 'not_applicable'|'consumed', retry_blocked_reason?: string|null }} input
+     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure?: RepoOperation['failure'], log_digest?: string|null, retry_outcome?: 'not_applicable'|'consumed', retry_blocked_reason?: string|null, target_sha?: string, deploy_worktree?: string }} input
      * @returns {QueueOpResult}
      */
     settleRepoOperation(workspace, input) {
@@ -4606,6 +4606,18 @@ export function createQueueStore(options = {}) {
         operation.log_digest = input.log_digest ?? operation.log_digest;
         operation.finished_at = now();
         operation.process_identity = null;
+        // A settle that never went through `startRepoOperation` (the covered
+        // shortcut) carries the SHA it proved on disk here; without it the
+        // record stays `target_sha: null` and no coverage sweep can read it.
+        if (isSha(input.target_sha)) {
+          operation.target_sha = input.target_sha.toLowerCase();
+        }
+        if (
+          typeof input.deploy_worktree === 'string' &&
+          input.deploy_worktree.length > 0
+        ) {
+          operation.deploy_worktree = input.deploy_worktree;
+        }
         if (operation.exit_code === 0 && !operation.signal && !input.failure) {
           operation.state = 'succeeded';
           operation.failure = null;

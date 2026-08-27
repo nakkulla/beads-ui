@@ -4831,16 +4831,33 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     );
   });
 
-  test('locks the merge action without a per-card timeline link (UI-imeh)', () => {
+  test('offers 정리 재개 on a repo_operations stall (UI-j2f0)', () => {
     const { mount } = mountWith(
       mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 })
     );
 
-    // 상단 저장소 작업 스트립이 유일한 드로어 진입점이다.
     expect([
-      mount.querySelector('.worker-mini__merge'),
+      mount.querySelector('.worker-mini__merge')?.textContent?.trim(),
       mount.querySelector('.worker-mini__timeline')
-    ]).toEqual([null, null]);
+    ]).toEqual(['정리 재개', null]);
+  });
+
+  test('resumes the cleanup from that button', async () => {
+    const transport = vi.fn(async () => ({ ok: true, retried: true }));
+    const { mount } = mountWith(
+      mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 }),
+      transport
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-cleanup-retry',
+      expect.objectContaining({ bead_id: 'RD-1' })
+    );
   });
 
   test('opens the timeline from the repo-ops strip', () => {
@@ -6941,7 +6958,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     expect(row.textContent).not.toContain('정리 5단계 중');
   });
 
-  test('renders an exact verify failure without removing the timeline action', () => {
+  test('names the failed script on the resume action of an exact verify failure', () => {
     const merge_sha = 'a'.repeat(40);
     const mount = mountRow(null, undefined, {
       gate: { enabled: false, tier: 'merged', gate_badge: '머지됨' },
@@ -6971,7 +6988,9 @@ describe('merge progress — view (UI-raqh §4)', () => {
     );
     expect(row.textContent?.replace(/\s+/g, '')).toContain('검증실패3/7');
     expect(row.querySelector('.merge-step--failed')).not.toBeNull();
-    expect(row.querySelector('.worker-mini__timeline')).toBeNull();
+    expect(row.querySelector('.worker-mini__merge')?.textContent?.trim()).toBe(
+      '검증 재시도 후 정리'
+    );
   });
 
   test('disables both actions while merging', () => {

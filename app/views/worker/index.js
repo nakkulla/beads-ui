@@ -1496,13 +1496,30 @@ function prWaitRow(
   // An already-merged PR whose cleanup stopped: the click re-runs the cleanup
   // from the top. Nothing retries automatically (§6), so this button is the
   // human's way back in once they have fixed whatever stopped it.
+  // A repo_operations stall (verify/deploy script failed) is the same click:
+  // the server re-runs the cleanup from the top, which re-runs the failed
+  // script. Until UI-j2f0 the card hid the action for that step and left the
+  // person guessing which drawer button would move the row (UI-q0uy §4.4
+  // wanted the AI-repair ladder there; UI-s582 removed that ladder).
   const cleanup_retry =
     !!cleanup_failed &&
-    ['child_sweep', 'branch_cleanup', 'parent_close'].includes(
-      cleanup_failed.step
-    ) &&
+    [
+      'repo_operations',
+      'child_sweep',
+      'branch_cleanup',
+      'parent_close'
+    ].includes(cleanup_failed.step) &&
     !!gate &&
     gate.tier === 'merged';
+  // Which script stopped the cleanup, for the label: the projected failed
+  // operation names it; without one the generic resume label stands.
+  const stalled_script =
+    !!cleanup_failed &&
+    cleanup_failed.step === 'repo_operations' &&
+    merge_step?.failed === true &&
+    (merge_step.step === 'deploy' || merge_step.step === 'verify')
+      ? merge_step.step
+      : null;
   const external_cleanup =
     external && !!cleanup_failed && !!gate && gate.tier === 'merged';
   // A failed journal restores the action surface, but it cannot turn an
@@ -1531,10 +1548,6 @@ function prWaitRow(
     merged: !!cleanup_failed || gate?.tier === 'merged'
   });
   const discard_blocks_merge = !!discard.operation;
-  const repo_operations_action_blocked =
-    !cleanup_retry &&
-    !!cleanup_failed &&
-    cleanup_failed.step === 'repo_operations';
   const status_badge = prStatusBadge({
     continuation_required,
     queueing,
@@ -1613,9 +1626,7 @@ function prWaitRow(
     merge_action:
       gate?.tier === 'merged' && !cleanup_retry && !external_cleanup
         ? false
-        : repo_operations_action_blocked
-          ? false
-          : !queued || continuation_required || needs_reclick,
+        : !queued || continuation_required || needs_reclick,
     cancel_action: queued && !continuation_required,
     // 리뷰/수정 continuation 중에도 [취소]는 열려 있어야 한다 (UI-58w8 §1):
     // 그 클릭이 authority를 폐기해 늦게 끝난 reviewer/repair 결과를 no-op으로
@@ -1652,7 +1663,6 @@ function prWaitRow(
       !base_exception &&
       !(recovery && recovery.lock_actions) &&
       !external_conflict_unresolvable &&
-      !repo_operations_action_blocked &&
       // A re-click recovery stays clickable on a CLOSED gate on purpose
       // (UI-58w8 §1): stale receipt and BEHIND are exactly the gates the new
       // authority's continuation exists to carry, and the server re-observes
@@ -1686,7 +1696,11 @@ function prWaitRow(
     merge_label: continuation_required
       ? '이어하기 선택'
       : cleanup_retry || external_cleanup
-        ? '정리 재개'
+        ? stalled_script === 'deploy'
+          ? '배포 재시도 후 정리'
+          : stalled_script === 'verify'
+            ? '검증 재시도 후 정리'
+            : '정리 재개'
         : conflicting && !merge_step && !cleanup_retry
           ? '충돌 해소 후 머지'
           : gate?.reason === 'base_behind'
@@ -1707,35 +1721,37 @@ function prWaitRow(
           ? '요청을 보내는 중 — 서버 응답을 기다립니다'
           : merge_step
             ? `머지 진행 중 — ${merge_step.label}`
-            : external_cleanup
-              ? '머지 완료 — 클릭하면 실패한 정리를 재개합니다'
-              : external_conflict_unresolvable
-                ? '워크트리 없음 — 세션에서 직접 해소하세요'
-                : conflict_session === 'running'
-                  ? '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
-                  : conflict_session === 'paused'
-                    ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
-                    : cleanup_retry
-                      ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 재개합니다'
-                      : conflicting
-                        ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
-                        : gate?.reason === 'base_behind'
-                          ? 'base를 자동 갱신한 뒤 머지합니다'
-                          : gate?.reason === 'review_receipt_missing'
-                            ? '리뷰 영수증 없음 — 자동 리뷰 세션 후 승인되면 머지합니다'
-                            : gate?.reason === 'review_receipt_stale'
-                              ? 'head 재작성됨(영수증이 현재 head의 조상이 아님) — 자동 재리뷰 세션 후 승인되면 머지합니다'
-                              : gate?.reason === 'review_receipt_undetermined'
-                                ? '리뷰 영수증 판정 미결 — 다음 관측에서 다시 판정합니다. 지금 머지하면 관측된 head를 다시 판정합니다'
-                                : gate?.reason === 'spec_id_missing'
-                                  ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
-                                  : enabled
-                                    ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
-                                    : gate && gate.tier === 'merged'
-                                      ? // Already merged with no cleanup failure recorded: the cleanup
-                                        // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                                        '머지됨 — 머지 후 정리 진행 중'
-                                      : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+            : stalled_script
+              ? `머지 완료 — ${stalled_script === 'deploy' ? '배포' : '검증'} 스크립트가 실패해 정리가 멈췄습니다. 클릭하면 저장소 작업부터 정리를 다시 진행합니다`
+              : external_cleanup
+                ? '머지 완료 — 클릭하면 실패한 정리를 재개합니다'
+                : external_conflict_unresolvable
+                  ? '워크트리 없음 — 세션에서 직접 해소하세요'
+                  : conflict_session === 'running'
+                    ? '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
+                    : conflict_session === 'paused'
+                      ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
+                      : cleanup_retry
+                        ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 재개합니다'
+                        : conflicting
+                          ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
+                          : gate?.reason === 'base_behind'
+                            ? 'base를 자동 갱신한 뒤 머지합니다'
+                            : gate?.reason === 'review_receipt_missing'
+                              ? '리뷰 영수증 없음 — 자동 리뷰 세션 후 승인되면 머지합니다'
+                              : gate?.reason === 'review_receipt_stale'
+                                ? 'head 재작성됨(영수증이 현재 head의 조상이 아님) — 자동 재리뷰 세션 후 승인되면 머지합니다'
+                                : gate?.reason === 'review_receipt_undetermined'
+                                  ? '리뷰 영수증 판정 미결 — 다음 관측에서 다시 판정합니다. 지금 머지하면 관측된 head를 다시 판정합니다'
+                                  : gate?.reason === 'spec_id_missing'
+                                    ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
+                                    : enabled
+                                      ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
+                                      : gate && gate.tier === 'merged'
+                                        ? // Already merged with no cleanup failure recorded: the cleanup
+                                          // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                                          '머지됨 — 머지 후 정리 진행 중'
+                                        : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 

@@ -1141,11 +1141,19 @@ export function createRepoOperationCoordinator(deps) {
         // deployed AGAIN — so it aligns and runs instead of settling as
         // covered/superseded (UI-s582 §3.4).
         if (target_status === 'ancestor' && plan.manual !== true) {
+          // The record must name the SHA that is actually on disk: the
+          // coverage sweep below and `deploymentEvidence` both skip a success
+          // without `target_sha`, which left every session-predeployed target
+          // unable to cover the failed deploy it repaired (UI-j2f0).
           deps.store.settleRepoOperation(workspace, {
             operation_id,
             attempt_id: operation.attempt_id,
             exit_code: 0,
-            signal: null
+            signal: null,
+            target_sha: state.head,
+            ...(typeof state.path === 'string' && state.path
+              ? { deploy_worktree: state.path }
+              : {})
           });
           await sweepDescendantCoverage(workspace, operation_id);
           transition.reclaim(workspace, operation_id);
