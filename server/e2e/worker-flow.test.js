@@ -571,9 +571,26 @@ describe('worker e2e — worker-dispatched quick_fix lands without a PR', () => 
       workspace: WS,
       repo: repo_dir,
       store: runtime.queueStore,
-      bd,
+      // Landing-local: a `readIssue` on the shared fake would switch the
+      // scheduler's optional spec-path probe on for every test in this file.
+      bd: {
+        ...bd,
+        readIssue: async (/** @type {string} */ id) => ({
+          id,
+          status: await bd.readStatus(id)
+        })
+      },
       gitRun,
-      worktree,
+      // Landing-local for the same reason: the scheduler treats a present
+      // `removeIfDiscardable` as its residue-reclaim seam at dispatch.
+      worktree: {
+        ...worktree,
+        removeIfDiscardable: async () => ({
+          ok: false,
+          removed: false,
+          reason: 'not_exercised'
+        })
+      },
       repoOperations: {
         hasConfig: async () => {
           config_checks += 1;

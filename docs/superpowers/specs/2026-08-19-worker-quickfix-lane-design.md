@@ -135,7 +135,15 @@ worker-dispatched quick_fix 레인을 다음과 같이 정의한다:
    `closed`까지 간 경우는 mandatory review와 Worker 소유 deploy/close를
    우회한 것이므로 terminal failure(`premature_close`)다 — Worker는 Bead를
    되돌리거나 증거를 위조하지 않고 attempt를 실패로 기록하며, 해소는
-   user-triggered 단계다.
+   user-triggered 단계다. 예외는 계약의 no-change close(dotfiles
+   `workflow-state.yaml no_change_close`)뿐이다: 세션이 실제 재현으로 근본
+   원인 가설을 반증하고 `close_reason`을 계약 형식(`^refuted: \S`, 단일 행)으로
+   써서 직접 `closed`한 경우, 결속할 델타 head가 없으므로 2~5단계(head 결속·
+   containment·deploy·close)는 적용되지 않는다. Worker는 residue만 제거한다 —
+   `removeIfDiscardable`로 유일 커밋·작업 델타가 없을 때만 worktree와 로컬
+   브랜치를 걷어내고, 잃을 것이 있으면 `worktree_remove_failed`로 보존한다 —
+   그리고 attempt를 cursor `no_change_close`(`head_sha=null`)로 `done`에
+   정착시킨다. 형식에 맞지 않는 `close_reason`은 그대로 `premature_close`다.
 2. **head 결속**: 보존된 owned worktree의 `HEAD`가 `impl_review`의 40hex와
    **정확히 일치**해야 한다. worktree 부재·HEAD 불일치는 terminal failure
    (`head_mismatch`)다 — ancestor 검사만으로는 리뷰된 A 이후 미리뷰 B를 push한
@@ -227,7 +235,8 @@ Post-Merge Runtime Validation의 "Bead/PR 없는 quick_fix ref push는 관측 �
 - 신규 `quickfix-landing` 단위 테스트: 영수증 파싱(유효/`skipped@`/malformed),
   worktree HEAD 정확 일치와 불일치(리뷰 A 이후 미리뷰 B push 시나리오)·worktree
   부재, containment 판정, ensureDeploy 위임, close+cleanup 순서, 세션 직접
-  `closed`의 `premature_close` 거부, terminal failure 사유 4종
+  `closed`의 `premature_close` 거부(계약 `refuted:` no-change close는 residue
+  제거 후 `done` 정착·비형식 `close_reason`은 거부), terminal failure 사유 4종
   (`invalid_impl_review`/`head_mismatch`/`push_not_contained`/
   `premature_close`).
 - `scheduler` settlement 분기: quick_fix `resolved` → landing 진입, pr_wait

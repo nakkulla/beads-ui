@@ -198,10 +198,12 @@
  * observation, and the session uses it as the exemption basis for the three
  * base-push guard layers (pre-push hook install, base-drift observation, and
  * textual guard). Defaults false.
- * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|null, head_sha: string|null, reason: string|null }|null} quickfix_landing -
+ * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null }|null} quickfix_landing -
  * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
- * before the first cleanup step), `head_sha` is the 40hex bound by
- * `impl_review`, and `reason` records a landing failure. Its shape is directly
+ * before the first cleanup step) plus `no_change_close` for a contract
+ * refuted close settled without a delta head, `head_sha` is the 40hex bound by
+ * `impl_review` (null under `no_change_close`), and `reason` records a landing
+ * failure. Its shape is directly
  * consumable by the existing `prWaitProgress` projection.
  * @property {boolean} external_conflict - Whether this resolution attempt was
  * dispatched for an EXTERNAL PR row (UI-w0hi §1) — a bead a normal session

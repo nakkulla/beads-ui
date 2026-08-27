@@ -33,6 +33,7 @@ afterEach(() => {
  *
  * @param {{
  *   status?: string,
+ *   closeReason?: string,
  *   receipt?: string|null,
  *   worktreeExists?: boolean,
  *   worktreeHead?: string,
@@ -44,6 +45,7 @@ afterEach(() => {
  *   evidence?: any,
  *   repoOperations?: boolean,
  *   removeResult?: { ok: boolean, removed: boolean, reason: string|null },
+ *   discardResult?: { ok: boolean, removed: boolean, reason: string|null },
  *   branchDeleteCode?: number,
  *   branchVerifyCode?: number,
  *   landingProgress?: { cursor: string, head_sha: string|null, reason: string|null }
@@ -82,6 +84,12 @@ function makeLanding(options = {}) {
     readStatus: vi.fn(async () => {
       calls.push(`bd:readStatus:${bead_status}`);
       return bead_status;
+    }),
+    readIssue: vi.fn(async () => {
+      calls.push(`bd:readIssue:${bead_status}`);
+      return Object.hasOwn(options, 'closeReason')
+        ? { status: bead_status, close_reason: options.closeReason }
+        : { status: bead_status };
     }),
     setStatus: vi.fn(async (bead_id, status) => {
       calls.push(`bd:setStatus:${status}`);
@@ -136,6 +144,10 @@ function makeLanding(options = {}) {
     removeByBranch: vi.fn(async () => {
       calls.push('worktree:removeByBranch');
       return options.removeResult || { ok: true, removed: true, reason: null };
+    }),
+    removeIfDiscardable: vi.fn(async () => {
+      calls.push('worktree:removeIfDiscardable');
+      return options.discardResult || { ok: true, removed: true, reason: null };
     }),
     withTopologyLock: vi.fn(async (repo, fn) => {
       calls.push('topology:enter');
@@ -419,6 +431,100 @@ test('records premature close without rewriting Bead status', async () => {
     step: null
   });
   expect(bd.setStatus).not.toHaveBeenCalled();
+});
+
+test('settles a refuted no-change close by removing residue only', async () => {
+  const { landing, calls, bd, store, worktree, repoOperations } = makeLanding({
+    status: 'closed',
+    closeReason: 'refuted: 대상 파일이 base에서 이미 timeout을 선언한다'
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+  expect(worktree.removeIfDiscardable).toHaveBeenCalledWith({
+    repo: REPO,
+    bead_id: BEAD,
+    base: FETCHED_SHA
+  });
+  expect(store.moveToDone).toHaveBeenCalledWith(
+    WORKSPACE,
+    expect.objectContaining({
+      patch: expect.objectContaining({
+        quickfix_landing: {
+          cursor: 'no_change_close',
+          head_sha: null,
+          reason: null
+        }
+      })
+    })
+  );
+  expect(bd.readMetadata).not.toHaveBeenCalled();
+  expect(bd.setStatus).not.toHaveBeenCalled();
+  expect(repoOperations.ensureDeploy).not.toHaveBeenCalled();
+  expect(calls).not.toContain('worktree:removeByBranch');
+});
+
+test('rejects closed Bead whose close_reason is not the contract refuted form', async () => {
+  const { landing, worktree, store } = makeLanding({
+    status: 'closed',
+    closeReason: 'done: landed manually'
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'premature_close',
+    step: null
+  });
+  expect(worktree.removeIfDiscardable).not.toHaveBeenCalled();
+  expect(store.moveToDone).not.toHaveBeenCalled();
+});
+
+test('rejects multi-line refuted close_reason', async () => {
+  const { landing } = makeLanding({
+    status: 'closed',
+    closeReason: 'refuted: 첫 줄\n둘째 줄'
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: false, reason: 'premature_close', step: null });
+});
+
+test('preserves non-discardable residue on a refuted close', async () => {
+  const { landing, store } = makeLanding({
+    status: 'closed',
+    closeReason: 'refuted: 근거',
+    discardResult: { ok: false, removed: false, reason: 'unique' }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'worktree_remove_failed',
+    step: 'no_change_close'
+  });
+  expect(store.moveToDone).not.toHaveBeenCalled();
+});
+
+test('fails refuted close observably when base cannot be fetched', async () => {
+  const { landing, worktree } = makeLanding({
+    status: 'closed',
+    closeReason: 'refuted: 근거',
+    fetchCode: 1
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'containment_unobservable',
+    step: 'no_change_close'
+  });
+  expect(worktree.removeIfDiscardable).not.toHaveBeenCalled();
 });
 
 test('resumes completed parent close without rewriting Bead status', async () => {

@@ -15,7 +15,11 @@
  * durable cursor is also a resume input, not display-only state: after branch
  * cleanup it replaces the legitimately absent worktree as the head binding,
  * and a `parent_close` record makes an already-closed bead a successful resume.
- * `premature_close` applies only without that Worker-owned close record.
+ * `premature_close` applies only without that Worker-owned close record and
+ * outside the contract's no-change close: a session that refuted the Bead's
+ * root-cause hypothesis closes it itself with `close_reason` `refuted: ...`
+ * (`workflow-state.yaml no_change_close`), and the Worker then removes residue
+ * only — no push containment, review receipt, deployment, or close.
  *
  * @import { Attempt } from './queue-store.js'
  */
@@ -24,6 +28,22 @@ import { ADMISSION_RECEIPT_RE } from './admission.js';
 import { branchForBead } from './worktree.js';
 
 const log = debug('worker:quickfix-landing');
+
+// Consumed verbatim from dotfiles `workflow-state.yaml no_change_close`
+// (`close_reason.regex`, `lines: single_line_only`); not redefined here.
+const NO_CHANGE_CLOSE_REASON_RE = /^refuted: \S/;
+
+/**
+ * @param {unknown} close_reason
+ * @returns {boolean}
+ */
+function isNoChangeClose(close_reason) {
+  return (
+    typeof close_reason === 'string' &&
+    NO_CHANGE_CLOSE_REASON_RE.test(close_reason) &&
+    !/[\r\n]/.test(close_reason)
+  );
+}
 
 /**
  * The four contract failures named by design §11 are the central cases. The
@@ -45,6 +65,7 @@ const log = debug('worker:quickfix-landing');
  *     snapshot: (workspace: string) => unknown
  *   },
  *   bd: {
+ *     readIssue: (bead_id: string) => Promise<Record<string, any>>,
  *     readStatus: (bead_id: string) => Promise<string|null>,
  *     setStatus: (bead_id: string, status: string) => Promise<void>,
  *     readMetadata: (bead_id: string, key: string) => Promise<string|null>
@@ -54,6 +75,7 @@ const log = debug('worker:quickfix-landing');
  *     pathFor: (repo: string, bead_id: string) => string,
  *     exists: (repo: string, bead_id: string) => boolean,
  *     removeByBranch: (input: { repo: string, branch: string, expected_head?: string|null }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
+ *     removeIfDiscardable: (input: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   repoOperations: {
@@ -90,7 +112,7 @@ export function createQuickfixLanding(deps) {
   /**
    * @param {string} attempt_id
    * @param {QuickfixLandingReason|string} reason
-   * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|null} step
+   * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null} step
    * @param {string|null} head_sha
    * @returns {{ ok: false, reason: string, step: string|null }}
    */
@@ -219,6 +241,77 @@ export function createQuickfixLanding(deps) {
   }
 
   /**
+   * Settle a contract no-change close: the worktree, cut from base and holding
+   * no unique commit or working delta, is the only residue. Removal is
+   * fail-closed by construction — anything that would be lost stays, and the
+   * attempt records that instead of forcing.
+   *
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {string} target_base
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string, step: string|null }>}
+   */
+  async function settleNoChangeClose(attempt_id, bead_id, target_base) {
+    const fetched = await fetchBase(target_base);
+    if (!fetched.ok) {
+      return fail(
+        attempt_id,
+        'containment_unobservable',
+        'no_change_close',
+        null
+      );
+    }
+    let residue;
+    try {
+      residue = await deps.worktree.removeIfDiscardable({
+        repo,
+        bead_id,
+        base: fetched.sha
+      });
+    } catch (err) {
+      log(
+        'quick_fix no-change residue removal failed for %s: %o',
+        bead_id,
+        err
+      );
+      return fail(
+        attempt_id,
+        'worktree_remove_failed',
+        'no_change_close',
+        null
+      );
+    }
+    if (!residue.ok) {
+      log(
+        'quick_fix no-change residue preserved for %s: %s',
+        bead_id,
+        residue.reason
+      );
+      return fail(
+        attempt_id,
+        'worktree_remove_failed',
+        'no_change_close',
+        null
+      );
+    }
+    deps.store.moveToDone(workspace, {
+      bead_id,
+      attempt_id,
+      patch: {
+        status: 'done',
+        finished_at: now(),
+        quickfix_landing: {
+          cursor: 'no_change_close',
+          head_sha: null,
+          reason: null
+        }
+      }
+    });
+    notifyChanged(workspace);
+    return { ok: true };
+  }
+
+  /**
    * The durable landing cursor participates in resume judgment. A recorded
    * cleanup/close step can outlive its worktree, while the receipt must still
    * bind to the cursor's exact reviewed SHA. Only an unrecorded close is a
@@ -240,14 +333,17 @@ export function createQuickfixLanding(deps) {
       typeof durable_landing?.head_sha === 'string'
         ? durable_landing.head_sha
         : null;
-    /** @type {string|null} */
-    let status;
+    // One `bd show` supplies status and close_reason from the same moment, so
+    // the no-change judgment below cannot straddle a status change.
+    /** @type {Record<string, any>} */
+    let issue;
     try {
-      status = await deps.bd.readStatus(bead_id);
+      issue = await deps.bd.readIssue(bead_id);
     } catch (err) {
       log('quick_fix status readback failed for %s: %o', bead_id, err);
       return fail(attempt_id, 'not_resolved', null, null);
     }
+    const status = typeof issue.status === 'string' ? issue.status : null;
     if (
       status === 'closed' &&
       durable_cursor === 'parent_close' &&
@@ -271,7 +367,10 @@ export function createQuickfixLanding(deps) {
       return { ok: true };
     }
     if (status === 'closed') {
-      return fail(attempt_id, 'premature_close', null, null);
+      if (!isNoChangeClose(issue.close_reason)) {
+        return fail(attempt_id, 'premature_close', null, null);
+      }
+      return settleNoChangeClose(attempt_id, bead_id, target_base);
     }
     if (status !== 'resolved') {
       return fail(attempt_id, 'not_resolved', null, null);
