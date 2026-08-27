@@ -45,13 +45,11 @@ import {
   observeWorkerPrs,
   pauseWorkerAttempt,
   recheckWorkerStaleWork,
-  reconcileWorkerRepoOperations,
   refreshWorkerExternalPrs,
   resumeWorkerAttempt,
   retryWorkerCleanup,
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
-  startWorkerRepoOperationRepair,
   stopWorkerHeadReviewAttempts,
   tickWorkerQueue,
   workerMergeEffectInFlight,
@@ -72,6 +70,7 @@ import {
   evaluateMergeGate,
   observedReviewReceiptState
 } from '../worker/merge-gate.js';
+import { sanitizeOutput } from '../worker/output-sanitize.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
@@ -80,10 +79,8 @@ import {
   orderLaneByBlocks
 } from '../worker/queue-store.js';
 import { summarizeReceiptCheck } from '../worker/receipt-check.js';
-import { sanitizeOutput } from '../worker/repair-session-adapter.js';
 import {
   classifyRepoOperationFailure,
-  isRepairEligible,
   projectRepoOperationPolicy
 } from '../worker/repo-operation-policy.js';
 import {
@@ -91,10 +88,7 @@ import {
   repoOpsDisplayFor,
   repoOpsVerifyReceiptState
 } from '../worker/repo-ops-display.js';
-import {
-  normalizeResolutionSubjects,
-  normalizeScriptRetry
-} from '../worker/resolution-ladder.js';
+import { normalizeScriptRetry } from '../worker/resolution-ladder.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
 import { createTailReader } from '../worker/runner/tail-reader.js';
@@ -1995,38 +1989,31 @@ function operationOutputTail(log_path) {
  * Project the durable RepoOperation records as UI cards (master spec §10).
  *
  * Each card carries kind, target SHA/tree, script path and blob, elapsed time,
- * state, a sanitized output tail, the full log path, the exit code, and the
- * repair session link. It also carries `failure_kind` — the pinned contract's
- * classification — so the client can offer a resolve button PER FAILURE KIND
- * without deciding for itself what is eligible. There is deliberately no
- * generic retry affordance in this projection.
+ * state, a sanitized output tail, the full log path, and the exit code. It also
+ * carries `failure_kind` — the pinned contract's classification — so the client
+ * can NAME the failure without deciding for itself what it is. There is
+ * deliberately no retry or resolve affordance in this projection: after the one
+ * automatic `script_retry` a failure is terminal (UI-s582 §2).
  *
  * @param {unknown} operations
- * @param {unknown} attempts
  * @returns {Record<string, any>[]}
  */
-function projectRepoOperations(operations, attempts) {
+function projectRepoOperations(operations) {
   if (!operations || typeof operations !== 'object') {
     return [];
   }
-  const attempt_map =
-    attempts && typeof attempts === 'object'
-      ? /** @type {Record<string, any>} */ (attempts)
-      : {};
   /** @type {Record<string, any>[]} */
   const cards = [];
   for (const [operation_id, raw] of Object.entries(
     /** @type {Record<string, any>} */ (operations)
   )) {
-    if (!raw || typeof raw !== 'object' || !raw.repair) {
+    // `schema` is the durable record marker the store's normalizer writes; a
+    // row without it is unreadable and is dropped rather than half-projected.
+    if (!raw || typeof raw !== 'object' || raw.schema !== 1) {
       continue;
     }
-    const terminal_failure =
-      raw.state === 'failed' || raw.state === 'repairing';
+    const terminal_failure = raw.state === 'failed';
     const failure = raw.failure || null;
-    const repair_attempt = raw.repair.attempt_id
-      ? attempt_map[raw.repair.attempt_id]
-      : null;
     cards.push({
       operation_id,
       kind: raw.kind,
@@ -2080,19 +2067,6 @@ function projectRepoOperations(operations, attempts) {
               raw.target_sha !== raw.verify_head_sha
             ? 'post_merge'
             : 'pre_merge',
-      repair_eligible:
-        failure && !raw.superseded_by ? isRepairEligible(raw) : false,
-      repair: {
-        chain_id: raw.repair.chain_id,
-        owner_bead: raw.repair.owner_bead,
-        auto_budget: raw.repair.auto_budget,
-        auto_used: raw.repair.auto_used,
-        remaining: Math.max(0, raw.repair.auto_budget - raw.repair.auto_used),
-        session_id: raw.repair.session_id,
-        attempt_id: raw.repair.attempt_id,
-        attempt_status: repair_attempt ? repair_attempt.status : null,
-        ladder_stage: raw.repair.ladder_stage
-      },
       retry: {
         status: normalizeScriptRetry(raw).status,
         first_fingerprint: raw.retry?.first_fingerprint || null,
@@ -2224,12 +2198,11 @@ export function decorateQueue(workspace_key, raw_queue) {
   delete public_queue.completion_intents;
   delete public_queue.last_deploy;
   delete public_queue.reconcile;
-  // The RepoOperation lane's PUBLIC surface (master spec §4.5, §10): the durable
-  // `auto_repair` value, the operation cards, and the pinned policy projection.
-  // The raw records never travel — a card is a display projection with a bounded
-  // sanitized tail, and the policy is read from the pinned contract copy so no
-  // policy sentence is authored here.
-  public_queue.auto_repair = overlaid.auto_repair !== false;
+  // The RepoOperation lane's PUBLIC surface (master spec §4.5, §10): the
+  // operation cards and the pinned policy projection. The raw records never
+  // travel — a card is a display projection with a bounded sanitized tail, and
+  // the policy is read from the pinned contract copy so no policy sentence is
+  // authored here.
   // The workspace's per-kind opt-out from the DECLARED operations (UI-lsti §3).
   // A legacy queue with no key travels as both kinds running, which is the
   // state every such workspace is actually in.
@@ -2237,42 +2210,12 @@ export function decorateQueue(workspace_key, raw_queue) {
     verify: /** @type {any} */ (overlaid).repo_ops_opt_out?.verify === true,
     deploy: /** @type {any} */ (overlaid).repo_ops_opt_out?.deploy === true
   };
-  // Only the OPERATIONS are trimmed (UI-qbbg §4.3). The attempt map stays the
-  // untrimmed one: it is a server-side cross-reference for `repair.attempt_id`
-  // and nothing of it reaches the card beyond that attempt's status.
+  // Only the OPERATIONS are trimmed (UI-qbbg §4.3).
   public_queue.repo_operations = projectRepoOperations(
-    public_queue.repo_operations,
-    overlaid.attempts
+    public_queue.repo_operations
   );
   public_queue.repo_operation_policy = projectRepoOperationPolicy();
-  const resolution_subjects = normalizeResolutionSubjects(overlaid);
-  const cleanup_subjects = new Map(
-    resolution_subjects
-      .filter((subject) => subject.source === 'cleanup')
-      .map((subject) => [subject.bead_id, subject])
-  );
-  public_queue.cleanup_failed = Object.fromEntries(
-    Object.entries(overlaid.cleanup_failed || {}).map(([bead_id, failure]) => {
-      const subject = cleanup_subjects.get(bead_id);
-      if (!subject) {
-        return [bead_id, failure];
-      }
-      const repair = subject.repair || {};
-      return [
-        bead_id,
-        {
-          ...failure,
-          subject_id: subject.subject_id,
-          repair_eligible: true,
-          repair: {
-            ...repair,
-            auto_budget: 1,
-            remaining: Math.max(0, 1 - (repair.auto_used || 0))
-          }
-        }
-      ];
-    })
-  );
+  public_queue.cleanup_failed = overlaid.cleanup_failed || {};
   public_queue.discard_operations = publicDiscardOperations(
     overlaid.discard_operations
   );
@@ -3643,48 +3586,6 @@ export function handleWorkerAutomationToggle(ws, req) {
 }
 
 /**
- * Handle `worker-auto-repair-toggle`. Payload: `{ on: boolean, expected_revision }`.
- *
- * The INDEPENDENT repair axis (§9.3): it neither reads nor writes `auto_advance`
- * or `auto_merge`, and neither of those touches it. OFF blocks new dispatch only
- * — a running repair session is not stopped here or anywhere else. ON reconciles
- * eligible failed operations immediately rather than waiting for the periodic
- * pass, which is what makes the switch feel like a decision instead of a hint.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export function handleWorkerAutoRepairToggle(ws, req) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.on !== 'boolean') {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { on: boolean }')
-      )
-    );
-    return;
-  }
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
-  }
-  const result = queueStore().toggleAutoRepair(key, {
-    expected_revision: revisionOf(p),
-    on: p.on
-  });
-  replyMutation(ws, req, key, result);
-  if (result.ok && p.on === true) {
-    Promise.resolve(reconcileWorkerRepoOperations(key)).catch((err) => {
-      log(
-        'repo-operation reconcile after auto_repair ON failed for %s: %o',
-        key,
-        err
-      );
-    });
-  }
-}
-
-/**
  * Handle `worker-repo-ops-opt-out-toggle`. Payload:
  * `{ kind: 'verify'|'deploy', opted_out: boolean, expected_revision }`.
  *
@@ -3731,62 +3632,12 @@ export function handleWorkerRepoOpsOptOutToggle(ws, req) {
 }
 
 /**
- * Handle `worker-repo-operation-repair`. Payload: `{ operation_id: string }`.
- *
- * The per-failure-kind resolve click. It goes through the coordinator like the
- * automatic path does, so the new attempt is only ever created after a repair
- * session produced evidence — there is no command here that simply runs the
- * failed script again.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export async function handleWorkerRepoOperationRepair(ws, req) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.operation_id !== 'string' || p.operation_id.length === 0) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { operation_id }')
-      )
-    );
-    return;
-  }
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
-  }
-  /** @type {{ ok: boolean, code?: string, attempt_id?: string, session_id?: string|null }} */
-  let result;
-  try {
-    result = await startWorkerRepoOperationRepair(key, {
-      operation_id: p.operation_id,
-      mode: 'manual'
-    });
-  } catch (err) {
-    log('repo-operation repair failed for %s: %o', key, err);
-    result = { ok: false, code: 'repair_dispatch_failed' };
-  }
-  ws.send(
-    JSON.stringify(
-      makeOk(req, {
-        ok: result.ok === true,
-        reason:
-          result.ok === true ? undefined : result.code || 'repair_refused',
-        attempt_id: result.attempt_id ?? null,
-        queue: decorateQueue(key, queueStore().snapshot(key))
-      })
-    )
-  );
-  fanout(key, queueStore().snapshot(key));
-}
-
-/**
  * Handle `worker-repo-operation-dismiss`. Payload: `{ operation_id: string }`.
  *
- * The 「기록 닫기」 click (UI-q0uy §4.6-2). It is NOT a state transition and NOT
- * a repair: the row stays `failed` with its whole evidence trail, and only the
- * 해결 필요 tally and the timeline's action buttons stop counting it. A row that
- * is queued/running/repairing is refused as an invalid state.
+ * The 「기록 닫기」 click (UI-q0uy §4.6-2). It is NOT a state transition: the row
+ * stays `failed` with its whole evidence trail, and only the 해결 필요 tally
+ * stops counting it. A row that is queued or running is refused as an invalid
+ * state.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req

@@ -80,7 +80,7 @@ function gitForBootstrap(options = {}) {
 }
 
 /**
- * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, repairSession?: object, onRepairLaneAdvanced?: () => Promise<void>, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, locks?: ReturnType<typeof createLockManager>, policySupported?: () => boolean, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
+ * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, locks?: ReturnType<typeof createLockManager>, policySupported?: () => boolean, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
  */
 function coordinatorFor(overrides = {}) {
   const store = createQueueStore({
@@ -129,8 +129,6 @@ function coordinatorFor(overrides = {}) {
     ),
     deployLock: overrides.deployLock,
     verifyCheckout: /** @type {never} */ (overrides.verifyCheckout),
-    repairSession: /** @type {never} */ (overrides.repairSession),
-    onRepairLaneAdvanced: overrides.onRepairLaneAdvanced,
     autoAdvanceRestore: overrides.autoAdvanceRestore,
     policySupported: overrides.policySupported,
     now: overrides.now,
@@ -173,160 +171,6 @@ describe('repo operation auto-advance restore handoff', () => {
     await coordinator.reconcile(root);
 
     expect(order).toEqual(['before', 'after', 'restore']);
-  });
-});
-
-describe('repo operation late moot repair reconciliation', () => {
-  /**
-   * @param {any} store
-   * @param {string} attempt_id
-   * @param {Partial<import('./queue-store.js').Attempt>} [extra]
-   */
-  function appendFailedRepair(store, attempt_id, extra = {}) {
-    store.appendAttempt(root, {
-      expected_revision: store.snapshot(root).revision,
-      attempt: {
-        attempt_id,
-        bead_id: `UI-${attempt_id}`,
-        status: 'failed',
-        finished_at: 10,
-        repair_operation_id: `cleanup:UI-${attempt_id}`,
-        halted_auto_advance: true,
-        ...extra
-      }
-    });
-  }
-
-  test('dismisses a closed repair and hands the restored lane onward', async () => {
-    const onRepairLaneAdvanced = vi.fn(async () => {});
-    const { store, coordinator } = coordinatorFor({
-      storeNow: () => 100,
-      now: () => 100,
-      repairSession: {
-        dispatch: vi.fn(),
-        judge: vi.fn(async () => ({ verdict: 'chain_closed', evidence: null }))
-      },
-      onRepairLaneAdvanced
-    });
-    appendFailedRepair(store, 'att-1');
-
-    await coordinator.reconcile(root);
-
-    const snapshot = store.snapshot(root);
-    const durable_before_reload = JSON.parse(
-      fs.readFileSync(path.join(root, 'queue.json'), 'utf8')
-    );
-    const cold_store = createQueueStore({
-      filePathFor: (workspace) => path.join(workspace, 'queue.json')
-    });
-    const cold = cold_store.snapshot(root);
-    const durable_after_reload = JSON.parse(
-      fs.readFileSync(path.join(root, 'queue.json'), 'utf8')
-    );
-
-    expect(snapshot.attempts['att-1'].dismissed_at).toBe(100);
-    expect(snapshot.auto_advance).toBe(true);
-    expect(durable_before_reload.attempts['att-1'].dismissed_at).toBe(100);
-    expect(durable_before_reload.auto_advance).toBe(true);
-    expect(cold.attempts['att-1'].dismissed_at).toBe(100);
-    expect(cold.auto_advance).toBe(false);
-    expect(durable_after_reload.auto_advance).toBe(true);
-    expect(onRepairLaneAdvanced).toHaveBeenCalledTimes(1);
-  });
-
-  test('keeps auto advance halted while another failure is unhandled', async () => {
-    const { store, coordinator } = coordinatorFor({
-      repairSession: {
-        dispatch: vi.fn(),
-        judge: vi.fn(async () => ({ verdict: 'chain_closed', evidence: null }))
-      }
-    });
-    appendFailedRepair(store, 'att-1');
-    store.appendAttempt(root, {
-      expected_revision: store.snapshot(root).revision,
-      attempt: {
-        attempt_id: 'other',
-        bead_id: 'UI-other',
-        status: 'failed',
-        finished_at: 20
-      }
-    });
-
-    await coordinator.reconcile(root);
-
-    expect(store.snapshot(root).auto_advance).toBe(false);
-  });
-
-  test('ignores a superseded historical failure when restoring the lane', async () => {
-    const { store, coordinator } = coordinatorFor({
-      repairSession: {
-        dispatch: vi.fn(),
-        judge: vi.fn(async () => ({ verdict: 'chain_closed', evidence: null }))
-      }
-    });
-    store.appendAttempt(root, {
-      expected_revision: store.snapshot(root).revision,
-      attempt: {
-        attempt_id: 'old',
-        bead_id: 'UI-shared',
-        status: 'failed',
-        finished_at: 1
-      }
-    });
-    store.appendAttempt(root, {
-      expected_revision: store.snapshot(root).revision,
-      attempt: {
-        attempt_id: 'new',
-        bead_id: 'UI-shared',
-        status: 'done',
-        finished_at: 2
-      }
-    });
-    appendFailedRepair(store, 'att-1');
-
-    await coordinator.reconcile(root);
-
-    expect(store.snapshot(root).auto_advance).toBe(true);
-  });
-
-  test('dismisses a moot failure without restoring a user-paused lane', async () => {
-    const { store, coordinator } = coordinatorFor({
-      repairSession: {
-        dispatch: vi.fn(),
-        judge: vi.fn(async () => ({
-          verdict: 'chain_closed',
-          evidence: null
-        }))
-      }
-    });
-    appendFailedRepair(store, 'paused', { halted_auto_advance: false });
-
-    await coordinator.reconcile(root);
-
-    const snapshot = store.snapshot(root);
-    expect(snapshot.auto_advance).toBe(false);
-    expect(snapshot.attempts.paused.dismissed_at).not.toBeNull();
-  });
-
-  test('does not dismiss a blocker when its target is closed', async () => {
-    const judge = vi.fn(async () => ({
-      verdict: 'chain_closed',
-      evidence: null
-    }));
-    const { store, coordinator } = coordinatorFor({
-      repairSession: { dispatch: vi.fn(), judge }
-    });
-    appendFailedRepair(store, 'blocker', {
-      cause: 'loud_fail_blocker',
-      halted_auto_advance: false
-    });
-
-    await coordinator.reconcile(root);
-
-    const snapshot = store.snapshot(root);
-    expect(snapshot.auto_advance).toBe(false);
-    expect(snapshot.attempts.blocker.dismissed_at).toBeNull();
-    expect(judge).not.toHaveBeenCalled();
   });
 });
 
@@ -1448,7 +1292,7 @@ describe('RepoOperation coordinator', () => {
     ).toBe(null);
   });
 
-  test('keeps a late runner failure pending without changing repairing or covered rows', async () => {
+  test('keeps a late runner failure pending without changing covered rows', async () => {
     const runner = {
       start: () => ({ ok: false, code: 'unused' }),
       readMarker: () => ({ exit_code: 2, signal: null }),
@@ -1466,7 +1310,6 @@ describe('RepoOperation coordinator', () => {
     for (const operation_id of [
       'descendant-deploy',
       'late-failed',
-      'repairing-deploy',
       'covered-deploy'
     ]) {
       store.ensureRepoOperation(root, {
@@ -1496,7 +1339,7 @@ describe('RepoOperation coordinator', () => {
       exit_code: 0,
       signal: null
     });
-    for (const operation_id of ['repairing-deploy', 'covered-deploy']) {
+    for (const operation_id of ['covered-deploy']) {
       const operation = store.snapshot(root).repo_operations[operation_id];
       store.settleRepoOperation(root, {
         operation_id,
@@ -1505,10 +1348,6 @@ describe('RepoOperation coordinator', () => {
         signal: null
       });
     }
-    store.startRepoOperationRepair(root, {
-      operation_id: 'repairing-deploy',
-      mode: 'manual'
-    });
     store.supersedeRepoOperation(root, {
       operation_id: 'covered-deploy',
       successor_id: 'original-successor'
@@ -1521,63 +1360,9 @@ describe('RepoOperation coordinator', () => {
       state: 'retry_pending',
       superseded_by: null
     });
-    expect(operations['repairing-deploy']).toMatchObject({
-      state: 'repairing',
-      superseded_by: null
-    });
     expect(operations['covered-deploy'].superseded_by).toBe(
       'original-successor'
     );
-  });
-
-  test('refuses automatic and manual repair for a superseded failure', async () => {
-    const dispatch = vi.fn(async () => ({
-      ok: true,
-      attempt_id: 'att-1',
-      session_id: 'sess-1'
-    }));
-    const { store, coordinator } = coordinatorFor({
-      repairSession: {
-        dispatch,
-        judge: vi.fn(async () => ({ verdict: 'unresolved', evidence: null }))
-      }
-    });
-    store.ensureRepoOperation(root, {
-      operation_id: 'failed-deploy',
-      repo_id: root,
-      kind: 'deploy',
-      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
-      effective_base_sha: BASE,
-      target_base: 'main',
-      script_mode: '100755',
-      script_blob_sha: '5'.repeat(40)
-    });
-    const operation = store.snapshot(root).repo_operations['failed-deploy'];
-    store.settleRepoOperation(root, {
-      operation_id: 'failed-deploy',
-      attempt_id: operation.attempt_id,
-      exit_code: 1,
-      signal: null,
-      failure: {
-        code: 'script_failed',
-        fingerprint: 'f'.repeat(64),
-        detail: '',
-        interrupted: false
-      }
-    });
-    store.supersedeRepoOperation(root, {
-      operation_id: 'failed-deploy',
-      successor_id: 'descendant-deploy'
-    });
-
-    const automatic = await coordinator.startRepair('failed-deploy', 'auto');
-    const manual = await coordinator.startRepair('failed-deploy', 'manual');
-
-    expect([automatic.code, manual.code, dispatch.mock.calls.length]).toEqual([
-      'repo_operation_superseded',
-      'repo_operation_superseded',
-      0
-    ]);
   });
 
   test('coalesces uncovered subjects into one queued deploy target', async () => {
@@ -2511,6 +2296,60 @@ describe('RepoOperation coordinator', () => {
     expect(settled.failure?.fingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  test('grants the one script retry with no toggle and settles failed after it', async () => {
+    const runner = {
+      start: vi.fn(() => ({
+        ok: true,
+        process_identity: { pid: 2, pgid: 2, started_at: 2 },
+        log_path: path.join(root, 'operation.log')
+      })),
+      readMarker: () => ({ exit_code: 2, signal: null }),
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({ runner });
+    store.ensureRepoOperation(root, {
+      operation_id: 'op-1',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const attempt_id = store.snapshot(root).repo_operations['op-1'].attempt_id;
+    store.startRepoOperation(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'operation.log'),
+      target_sha: TARGET
+    });
+
+    // The queue carries no `auto_repair` key at all — the one automatic step
+    // is the pinned contract's, not a workspace setting.
+    expect(Object.hasOwn(store.snapshot(root), 'auto_repair')).toBe(false);
+
+    await coordinator.reconcile(root);
+
+    const pending = store.snapshot(root).repo_operations['op-1'];
+    expect(pending).toMatchObject({
+      state: 'retry_pending',
+      retry: { consumed_key: null, blocked_reason: null }
+    });
+    expect(Object.hasOwn(pending, 'repair')).toBe(false);
+
+    // Respawn (consumes the retry), then let the retry fail terminally too.
+    await coordinator.reconcile(root);
+    await coordinator.reconcile(root);
+
+    const settled = store.snapshot(root).repo_operations['op-1'];
+    expect(settled.state).toBe('failed');
+    expect(settled.retry?.consumed_key).not.toBeNull();
+    expect(runner.start).toHaveBeenCalledTimes(1);
+  });
+
   test('records retry pending before consuming the retry immediately before respawn', async () => {
     /** @type {string[]} */
     const order = [];
@@ -2880,57 +2719,43 @@ describe('RepoOperation coordinator', () => {
     expect(runner.start).not.toHaveBeenCalled();
   });
 
-  test.each([
-    ['auto_repair_off', false, true],
-    ['schema_unsupported', true, false]
-  ])(
-    'settles directly into the user stage when %s blocks automatic steps',
-    async (reason, auto_repair, supported) => {
-      const runner = {
-        start: vi.fn(),
-        readMarker: () => ({ exit_code: 2, signal: null }),
-        readLaunchMarker: () => null,
-        processController: { probe: () => ({ state: 'owned' }) }
-      };
-      const { store, coordinator } = coordinatorFor({
-        runner,
-        policySupported: () => supported
-      });
-      store.ensureRepoOperation(root, {
-        operation_id: 'op-1',
-        repo_id: root,
-        kind: 'deploy',
-        subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
-        effective_base_sha: TARGET,
-        target_base: 'main',
-        script_mode: '100755',
-        script_blob_sha: 'd'.repeat(40)
-      });
-      const attempt_id =
-        store.snapshot(root).repo_operations['op-1'].attempt_id;
-      store.startRepoOperation(root, {
-        operation_id: 'op-1',
-        attempt_id,
-        process_identity: { pid: 1, pgid: 1, started_at: 1 },
-        log_path: path.join(root, 'operation.log'),
-        target_sha: TARGET
-      });
-      if (!auto_repair) {
-        store.toggleAutoRepair(root, {
-          expected_revision: store.snapshot(root).revision,
-          on: false
-        });
-      }
+  test('settles into a terminal failure when schema_unsupported blocks the retry', async () => {
+    const runner = {
+      start: vi.fn(),
+      readMarker: () => ({ exit_code: 2, signal: null }),
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      policySupported: () => false
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'op-1',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const attempt_id = store.snapshot(root).repo_operations['op-1'].attempt_id;
+    store.startRepoOperation(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'operation.log'),
+      target_sha: TARGET
+    });
 
-      await coordinator.reconcile(root);
+    await coordinator.reconcile(root);
 
-      expect(store.snapshot(root).repo_operations['op-1']).toMatchObject({
-        state: 'failed',
-        repair: { ladder_stage: 'user_triggered_session' },
-        retry: { blocked_reason: reason }
-      });
-    }
-  );
+    expect(store.snapshot(root).repo_operations['op-1']).toMatchObject({
+      state: 'failed',
+      retry: { blocked_reason: 'schema_unsupported' }
+    });
+  });
 });
 
 describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () => {

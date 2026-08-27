@@ -81,41 +81,6 @@ describe('RepoOperation store', () => {
     ).toBeTruthy();
   });
 
-  it('settles with a valid requested owner and carries a repair chain to a successor', () => {
-    const workspace = mkdtempSync(
-      path.join(os.tmpdir(), 'repo-operation-store-')
-    );
-    const store = createQueueStore({
-      filePathFor: (root) => path.join(root, 'queue.json')
-    });
-    prerecord(store, workspace, 'from', 'UI-z');
-    prerecord(store, workspace, 'from', 'UI-a');
-    const attempt_id =
-      store.snapshot(workspace).repo_operations.from.attempt_id;
-    store.settleRepoOperation(workspace, {
-      operation_id: 'from',
-      attempt_id,
-      exit_code: 1,
-      signal: null,
-      owner_bead: 'UI-z'
-    });
-    prerecord(store, workspace, 'to');
-
-    const inherited = store.inheritRepoOperationChain(workspace, {
-      from_operation_id: 'from',
-      to_operation_id: 'to'
-    });
-    const queue = store.snapshot(workspace);
-    expect(inherited.ok).toBe(true);
-    expect(queue.repo_operations.to.repair).toMatchObject({
-      chain_id: 'from',
-      owner_bead: 'UI-z',
-      auto_budget: 1,
-      auto_used: 0
-    });
-    expect(queue.repo_operations.from.superseded_by).toBe('to');
-  });
-
   it('reapproves only a failed provenance-less operation with a fresh attempt', () => {
     const workspace = mkdtempSync(
       path.join(os.tmpdir(), 'repo-operation-store-')
@@ -176,7 +141,7 @@ describe('RepoOperation store', () => {
     ]).toEqual([true, 'failed', 'user']);
   });
 
-  it('leaves the repair budget untouched when a row is acknowledged', () => {
+  it('keeps the failed state and evidence when a row is acknowledged', () => {
     const workspace = mkdtempSync(
       path.join(os.tmpdir(), 'repo-operation-store-')
     );
@@ -197,7 +162,10 @@ describe('RepoOperation store', () => {
       operation_id: 'deploy-a'
     });
 
-    expect(result.queue.repo_operations['deploy-a'].repair.auto_used).toBe(0);
+    expect(result.queue.repo_operations['deploy-a'].state).toBe('failed');
+    expect(
+      Object.hasOwn(result.queue.repo_operations['deploy-a'], 'repair')
+    ).toBe(false);
   });
 
   it('refuses to acknowledge a row that is not failed', () => {

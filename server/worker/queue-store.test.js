@@ -3844,6 +3844,86 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     });
   });
 
+  test('normalizes a persisted repairing operation to failed on load', () => {
+    const store = createQueueStore();
+    store.ensureRepoOperation(WS, {
+      operation_id: 'deploy-repairing',
+      repo_id: WS,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-1', merged_sha: 'a'.repeat(40) }],
+      effective_base_sha: 'b'.repeat(40),
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'c'.repeat(40)
+    });
+    const attempt_id =
+      store.snapshot(WS).repo_operations['deploy-repairing'].attempt_id;
+    store.settleRepoOperation(WS, {
+      operation_id: 'deploy-repairing',
+      attempt_id,
+      exit_code: 1,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'f'.repeat(64),
+        detail: 'deploy failed',
+        interrupted: false
+      }
+    });
+    const queue_path = queueFilePath(WS);
+    const legacy = JSON.parse(fs.readFileSync(queue_path, 'utf8'));
+    legacy.auto_repair = false;
+    legacy.repo_operations['deploy-repairing'].state = 'repairing';
+    legacy.repo_operations['deploy-repairing'].repair = {
+      chain_id: 'deploy-repairing',
+      owner_bead: 'UI-1',
+      auto_budget: 1,
+      auto_used: 1,
+      session_id: 'sess-1',
+      attempt_id: 'att-1',
+      ladder_stage: 'auto_repair_session'
+    };
+    fs.writeFileSync(queue_path, JSON.stringify(legacy));
+
+    const reloaded = createQueueStore().snapshot(WS);
+    const operation = reloaded.repo_operations['deploy-repairing'];
+
+    expect(operation.state).toBe('failed');
+    expect(operation.failure).toMatchObject({ code: 'script_failed' });
+    expect(Object.hasOwn(operation, 'repair')).toBe(false);
+    expect(Object.hasOwn(reloaded, 'auto_repair')).toBe(false);
+  });
+
+  test('drops a persisted cleanup repair record on load', () => {
+    const store = createQueueStore();
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-cleanup',
+      step: 'base_containment',
+      reason: 'base_fetch_failed'
+    });
+    const queue_path = queueFilePath(WS);
+    const legacy = JSON.parse(fs.readFileSync(queue_path, 'utf8'));
+    legacy.cleanup_failed['UI-cleanup'].repair = {
+      chain_id: 'cleanup:UI-cleanup',
+      auto_used: 1,
+      attempt_id: 'att-1',
+      session_id: 'sess-1',
+      mode: 'auto',
+      ladder_stage: 'auto_repair_session'
+    };
+    fs.writeFileSync(queue_path, JSON.stringify(legacy));
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(reloaded.cleanup_failed['UI-cleanup']).toMatchObject({
+      step: 'base_containment',
+      reason: 'base_fetch_failed'
+    });
+    expect(Object.hasOwn(reloaded.cleanup_failed['UI-cleanup'], 'repair')).toBe(
+      false
+    );
+  });
+
   test('normalizes a legacy verify head into the binding set', () => {
     const initial_head_sha = 'a'.repeat(40);
     const store = createQueueStore();

@@ -591,7 +591,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -697,7 +697,6 @@ function setup(opts) {
     resolveBase: opts.resolveBase,
     notify: opts.notify,
     disposition: opts.disposition,
-    repairSession: opts.repairSession,
     // Absent by default: the external registry is a live-wiring dep, and a
     // scheduler built without it must refuse the external dispatch outright.
     externalPrs: opts.externalPrs
@@ -2590,48 +2589,8 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
 });
 
 describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker)', () => {
-  test('dismisses a moot repair failure without halting auto advance', async () => {
-    const repairSession = {
-      judge: vi.fn(async () => ({ verdict: 'chain_closed', evidence: null }))
-    };
-    const env = setup({
-      config: { S1: {}, S2: {} },
-      slots: 1,
-      repairSession
-    });
-    seedLanes(env.store, { parallel: ['S1'], s1: ['S2'] });
-    await env.scheduler.tick(WS);
-    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
-    env.store.dropFromQueue(WS, { bead_id: 'S1' });
-    env.store.updateAttempt(WS, {
-      attempt_id,
-      patch: { repair_operation_id: 'cleanup:S1' }
-    });
-
-    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
-    await flush();
-    await flush();
-
-    const snapshot = env.store.snapshot(WS);
-    expect(snapshot.auto_advance).toBe(true);
-    expect(snapshot.attempts[attempt_id]).toMatchObject({
-      status: 'failed',
-      cause: 'session_failed:subtype',
-      dismissed_at: 1000,
-      halted_auto_advance: false
-    });
-    expect(repairSession.judge).toHaveBeenCalledWith({
-      workspace: WS,
-      operation_id: 'cleanup:S1'
-    });
-    expect(env.runner.spawnOrder).toEqual(['S1', 'S2']);
-  });
-
-  test('halts an unresolved repair failure and records responsibility', async () => {
-    const repairSession = {
-      judge: vi.fn(async () => ({ verdict: 'unresolved', evidence: null }))
-    };
-    const env = setup({ config: { S1: {} }, slots: 1, repairSession });
+  test('halts a failed attempt bound to a repo operation and records responsibility', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
@@ -2702,11 +2661,8 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     });
   });
 
-  test('keeps a blocker visible when its repair target is closed', async () => {
-    const repairSession = {
-      judge: vi.fn(async () => ({ verdict: 'chain_closed', evidence: null }))
-    };
-    const env = setup({ config: { S1: {} }, slots: 1, repairSession });
+  test('keeps a blocker visible even when bound to a repo operation', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
@@ -2731,7 +2687,6 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
       dismissed_at: null,
       halted_auto_advance: true
     });
-    expect(repairSession.judge).not.toHaveBeenCalled();
   });
 
   test('failed session turns auto_advance OFF and leaves a banner-ready record', async () => {
@@ -4446,116 +4401,6 @@ describe('scheduler resume (spec §1)', () => {
     expect(result.ok).toBe(true);
     expect(env.runner.settingsFor('B1')).toMatchObject({
       claude_account: 'pinned@example.com'
-    });
-  });
-
-  test('binds a closed repo repair target and ends without a session', async () => {
-    const repairSession = {
-      judge: vi.fn(async () => ({ verdict: 'chain_closed', evidence: null }))
-    };
-    const env = setup({
-      config: { B1: { status: 'open' } },
-      slots: 1,
-      repairSession,
-      gitRun: ownedWorktreeGit()
-    });
-    env.worktree.exists.mockReturnValueOnce(true).mockReturnValueOnce(false);
-    seedAttempt(
-      env.store,
-      'r1',
-      resumablePrior({ base_drift: { skipped: 'test' } })
-    );
-
-    const result = await env.scheduler.dispatchRepoOperationRepair(WS, {
-      bead_id: 'B1',
-      operation_id: 'cleanup:B1',
-      packet: {}
-    });
-
-    const child = Object.values(env.store.snapshot(WS).attempts).at(-1);
-    expect(result).toEqual({
-      ok: false,
-      reason: 'repair_target_resolved'
-    });
-    expect(child).toMatchObject({
-      repair_operation_id: 'cleanup:B1',
-      status: 'failed',
-      dismissed_at: 1000
-    });
-    expect(env.runner.spawnOrder).toEqual([]);
-  });
-
-  test('resumes a repo repair from the implementation lineage leaf', async () => {
-    const repairSession = {
-      judge: vi.fn(async () => ({ verdict: 'unresolved', evidence: null }))
-    };
-    const env = setup({
-      config: { B1: { status: 'open' } },
-      slots: 1,
-      repairSession,
-      gitRun: ownedWorktreeGit()
-    });
-    env.worktree.exists.mockReturnValueOnce(true).mockReturnValueOnce(false);
-    seedAttempt(
-      env.store,
-      'r1',
-      resumablePrior({ base_drift: { skipped: 'test' } })
-    );
-    // A newer head review attempt with no repo of its own (UI-hk74 §7): taking
-    // the lineage leaf would answer `repair_attempt_source_missing`.
-    env.store.upsertHeadReviewAttempt(WS, {
-      attempt_id: 'review:authority-1:x',
-      patch: {
-        bead_id: 'B1',
-        kind: 'head_review',
-        status: 'done',
-        started_at: 9_999_999
-      }
-    });
-
-    const result = await env.scheduler.dispatchRepoOperationRepair(WS, {
-      bead_id: 'B1',
-      operation_id: 'cleanup:B1',
-      packet: {}
-    });
-
-    expect(result.ok).toBe(true);
-    expect(env.runner.cwdFor('B1')).toBe('/repo');
-  });
-
-  test('switches an unresolved repo repair to fresh in the shared checkout', async () => {
-    const repairSession = {
-      judge: vi.fn(async () => ({ verdict: 'unresolved', evidence: null }))
-    };
-    const env = setup({
-      config: { B1: { status: 'open' } },
-      slots: 1,
-      repairSession,
-      gitRun: ownedWorktreeGit()
-    });
-    env.worktree.exists.mockReturnValueOnce(true).mockReturnValueOnce(false);
-    seedAttempt(
-      env.store,
-      'r1',
-      resumablePrior({ base_drift: { skipped: 'test' } })
-    );
-
-    const result = await env.scheduler.dispatchRepoOperationRepair(WS, {
-      bead_id: 'B1',
-      operation_id: 'cleanup:B1',
-      packet: {}
-    });
-
-    const child =
-      env.store.snapshot(WS).attempts[
-        /** @type {string} */ (result.attempt_id)
-      ];
-    expect(result.ok).toBe(true);
-    expect(env.runner.cwdFor('B1')).toBe('/repo');
-    expect(env.runner.settingsFor('B1').resume_session_id).toBeUndefined();
-    expect(child).toMatchObject({
-      repair_operation_id: 'cleanup:B1',
-      continuation_mode: 'fresh'
     });
   });
 

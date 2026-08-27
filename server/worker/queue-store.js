@@ -428,7 +428,7 @@
  * the ONE non-blocking record (UI-dlim §3.4): the bead was ADMITTED with a
  * stale spec_review receipt, so the badge must not read as a refusal. Every
  * record without the flag is a refusal, exactly as before.
- * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean }, repair?: { chain_id: string, auto_used: number, attempt_id: string|null, session_id: string|null, mode: 'auto'|'manual'|null, ladder_stage: 'auto_repair_session'|'user_triggered_session' } }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
  * `resolved`, and nothing retries by itself — so the record that a human must
@@ -479,8 +479,6 @@
  * @property {Record<string, DiscardOperation>} discard_operations - Durable
  * discard sagas keyed by operation id. A missing legacy field normalizes to an
  * empty map; every non-done operation fences its bead from other drivers.
- * @property {boolean} auto_repair - Whether a terminal RepoOperation may ask
- * the later repair adapter to dispatch. This unit stores the setting only.
  * @property {{ verify: boolean, deploy: boolean }} repo_ops_opt_out - Per-kind
  * workspace opt-out from the repository's DECLARED verify/deploy operations
  * (UI-lsti §1). `true` makes this workspace treat that kind as undeclared when
@@ -534,7 +532,7 @@
  * display alongside the pinned blob. Null on records written before it existed.
  * @property {string} script_mode
  * @property {string} script_blob_sha
- * @property {'queued'|'running'|'succeeded'|'failed'|'repairing'|'retry_pending'} state
+ * @property {'queued'|'running'|'succeeded'|'failed'|'retry_pending'} state
  * @property {string} attempt_id
  * @property {number} requested_at
  * @property {number|null} started_at
@@ -545,13 +543,11 @@
  * @property {number|null} exit_code
  * @property {string|null} signal
  * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }|null} failure
- * @property {{ chain_id: string|null, owner_bead: string|null, auto_budget: number, auto_used: number, session_id: string|null, attempt_id: string|null, ladder_stage: 'script_retry'|'auto_repair_session'|'user_triggered_session' }} repair
  * @property {{ first_failure: RepoOperation['failure'], first_fingerprint: string|null, first_failed_at: number|null, consumed_key: [string, string, string]|null, absorbed: { first_failure: NonNullable<RepoOperation['failure']>, first_fingerprint: string, at: number }|null, outcome: 'pending'|'consumed'|'not_applicable'|'absorbed', blocked_reason: string|null }|null} retry
  * @property {string|null} superseded_by
  * @property {{ at: number, by: string }|null} dismissed - A human acknowledged
  * this failed row (UI-q0uy §4.6-2). NOT a state transition: the row stays
- * `failed` and auditable, and only the 해결 필요 tally and the timeline's action
- * buttons leave it out. Repair budget and chain are untouched.
+ * `failed` and auditable, and only the 해결 필요 tally leaves it out.
  * @property {{ approved_source_path: string, approved_source_sha: string, requested_by: string, requested_at: number }|null} bootstrap_provenance
  */
 /**
@@ -1637,6 +1633,9 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'worker_runner',
   'review_model',
   'ship_failure',
+  // Legacy-drop key: the workspace auto-repair toggle retired with the AI
+  // repair lane (UI-s582 §1). Listed so a stored value is DROPPED on load
+  // instead of round-tripping as opaque data.
   'auto_repair',
   'repo_ops_opt_out',
   'repo_operations',
@@ -1681,7 +1680,6 @@ function emptyQueue() {
     auto_merge_skips: {},
     completion_intents: {},
     discard_operations: {},
-    auto_repair: true,
     repo_ops_opt_out: { verify: false, deploy: false },
     repo_operations: {},
     repo_operation_migration: null
@@ -2647,7 +2645,6 @@ function normalizeRepoOperation(value) {
   if (subjects.length === 0) {
     return null;
   }
-  const repair_raw = isRecord(value.repair) ? value.repair : {};
   const provenance_raw = isRecord(value.bootstrap_provenance)
     ? value.bootstrap_provenance
     : null;
@@ -2674,20 +2671,29 @@ function normalizeRepoOperation(value) {
   // it to a session like any other unresolved failure.
   const malformed_retry_pending =
     value.state === 'retry_pending' && (retry === null || !retry.first_failure);
-  const state = malformed_retry_pending ? 'failed' : value.state;
+  // The AI repair lane is retired (UI-s582 §1). A record persisted while a
+  // repair session held it reads as the terminal failure it already was —
+  // `repairing` was never anything but a `failed` row with a session attached,
+  // and the session is gone.
+  const retired_repairing = value.state === 'repairing';
+  const state =
+    malformed_retry_pending || retired_repairing ? 'failed' : value.state;
   // A terminal record must carry a failure or the ladder cannot see it as an
   // unresolved subject. Prefer whatever the record already had, then the
   // preserved first failure, and only then a deterministic stand-in that names
   // the malformed state rather than inventing a cause.
-  const settled_failure = !malformed_retry_pending
-    ? failure
-    : failure ||
-      retry?.first_failure || {
-        code: 'retry_pending_malformed',
-        fingerprint: '',
-        detail: '',
-        interrupted: false
-      };
+  const settled_failure =
+    !malformed_retry_pending && !retired_repairing
+      ? failure
+      : failure ||
+        retry?.first_failure || {
+          code: malformed_retry_pending
+            ? 'retry_pending_malformed'
+            : 'repair_session_retired',
+          fingerprint: '',
+          detail: '',
+          interrupted: false
+        };
   return {
     schema: 1,
     repo_id: value.repo_id,
@@ -2738,33 +2744,6 @@ function normalizeRepoOperation(value) {
       : null,
     signal: typeof value.signal === 'string' ? value.signal : null,
     failure: settled_failure,
-    repair: {
-      chain_id:
-        typeof repair_raw.chain_id === 'string' ? repair_raw.chain_id : null,
-      owner_bead:
-        typeof repair_raw.owner_bead === 'string'
-          ? repair_raw.owner_bead
-          : null,
-      auto_budget: 1,
-      auto_used:
-        Number.isInteger(repair_raw.auto_used) &&
-        Number(repair_raw.auto_used) >= 0
-          ? Number(repair_raw.auto_used)
-          : 0,
-      session_id:
-        typeof repair_raw.session_id === 'string'
-          ? repair_raw.session_id
-          : null,
-      attempt_id:
-        typeof repair_raw.attempt_id === 'string'
-          ? repair_raw.attempt_id
-          : null,
-      ladder_stage:
-        repair_raw.ladder_stage === 'script_retry' ||
-        repair_raw.ladder_stage === 'user_triggered_session'
-          ? repair_raw.ladder_stage
-          : 'auto_repair_session'
-    },
     retry,
     superseded_by:
       typeof value.superseded_by === 'string' ? value.superseded_by : null,
@@ -3056,35 +3035,6 @@ function normalizeQueue(raw) {
             q.cleanup_failed[bead_id].diagnosis.malformed = true;
           }
         }
-        if (
-          isRecord(value.repair) &&
-          typeof value.repair.chain_id === 'string'
-        ) {
-          q.cleanup_failed[bead_id].repair = {
-            chain_id: value.repair.chain_id,
-            auto_used:
-              Number.isInteger(value.repair.auto_used) &&
-              Number(value.repair.auto_used) >= 0
-                ? Number(value.repair.auto_used)
-                : 0,
-            attempt_id:
-              typeof value.repair.attempt_id === 'string'
-                ? value.repair.attempt_id
-                : null,
-            session_id:
-              typeof value.repair.session_id === 'string'
-                ? value.repair.session_id
-                : null,
-            mode:
-              value.repair.mode === 'auto' || value.repair.mode === 'manual'
-                ? value.repair.mode
-                : null,
-            ladder_stage:
-              value.repair.ladder_stage === 'user_triggered_session'
-                ? 'user_triggered_session'
-                : 'auto_repair_session'
-          };
-        }
       }
     }
   }
@@ -3099,7 +3049,6 @@ function normalizeQueue(raw) {
   q.completion_intents = normalizeCompletionIntents(raw.completion_intents);
   recoverLegacyCompletionAnchors(q);
   q.discard_operations = normalizeDiscardOperations(raw.discard_operations);
-  q.auto_repair = raw.auto_repair !== false;
   // 부재·비객체·비불리언은 모두 '실행'으로 읽는다: opt-out은 사용자가 명시적으로
   // 켠 설정이며, 읽을 수 없는 값이 게이트를 건너뛰게 만들어서는 안 된다.
   q.repo_ops_opt_out = {
@@ -4238,25 +4187,9 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Persist the independent RepoOperation repair policy without dispatching
-     * any work.
-     *
-     * @param {string} workspace
-     * @param {{ expected_revision: number, on: boolean }} input
-     * @returns {QueueOpResult}
-     */
-    toggleAutoRepair(workspace, input) {
-      return applyMutation(workspace, input.expected_revision, (next) => {
-        next.auto_repair = input.on === true;
-        return true;
-      });
-    },
-
-    /**
      * Opt this workspace out of (or back into) one DECLARED repository
-     * operation kind (UI-lsti §1). The same CAS shape as
-     * {@link toggleAutoRepair}, and the same narrow authority: it stores a
-     * setting and nothing else. An unknown kind or a non-boolean value is
+     * operation kind (UI-lsti §1). A narrow authority: it stores a setting and
+     * nothing else. An unknown kind or a non-boolean value is
      * refused WITHOUT a write, so a malformed request never advances the
      * revision that other clients are racing against.
      *
@@ -4402,15 +4335,6 @@ export function createQueueStore(options = {}) {
           exit_code: null,
           signal: null,
           failure: null,
-          repair: {
-            chain_id: null,
-            owner_bead: null,
-            auto_budget: 1,
-            auto_used: 0,
-            session_id: null,
-            attempt_id: null,
-            ladder_stage: 'script_retry'
-          },
           retry: null,
           superseded_by: null,
           dismissed: null,
@@ -4459,7 +4383,7 @@ export function createQueueStore(options = {}) {
      * mutation immediately before the coordinator respawns.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure: NonNullable<RepoOperation['failure']>, log_digest?: string|null, owner_bead?: string }} input
+     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure: NonNullable<RepoOperation['failure']>, log_digest?: string|null }} input
      * @returns {QueueOpResult}
      */
     deferRepoOperationRetry(workspace, input) {
@@ -4488,23 +4412,14 @@ export function createQueueStore(options = {}) {
         operation.retry = {
           first_failure: { ...input.failure },
           first_fingerprint: input.failure.fingerprint,
-          // When the first attempt failed. The repair packet needs it to tell a
-          // session that the failure it sees is a reproduction, not a new one.
+          // When the first attempt failed, so the failure card can say the
+          // failure it shows is a reproduction rather than a new one.
           first_failed_at: now(),
           consumed_key: null,
           absorbed: null,
           outcome: 'pending',
           blocked_reason: null
         };
-        operation.repair.ladder_stage = 'script_retry';
-        if (
-          typeof input.owner_bead === 'string' &&
-          operation.subjects.some(
-            (subject) => subject.bead_id === input.owner_bead
-          )
-        ) {
-          operation.repair.owner_bead = input.owner_bead;
-        }
         return true;
       });
     },
@@ -4548,7 +4463,7 @@ export function createQueueStore(options = {}) {
      * rolled back.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, owner_bead?: string, ladder_stage?: 'auto_repair_session'|'user_triggered_session', blocked_reason?: string }} input
+     * @param {{ operation_id: string, blocked_reason?: string }} input
      * @returns {QueueOpResult}
      */
     settleConsumedRepoOperationRetry(workspace, input) {
@@ -4570,26 +4485,10 @@ export function createQueueStore(options = {}) {
         operation.failure = { ...retry.first_failure };
         operation.finished_at = now();
         operation.process_identity = null;
-        operation.repair.chain_id =
-          operation.repair.chain_id || input.operation_id;
-        operation.repair.ladder_stage =
-          input.ladder_stage || 'auto_repair_session';
         if (typeof input.blocked_reason === 'string') {
           retry.outcome = 'not_applicable';
           retry.blocked_reason = input.blocked_reason;
         }
-        const requested_owner = operation.subjects.some(
-          (subject) => subject.bead_id === input.owner_bead
-        )
-          ? input.owner_bead
-          : null;
-        operation.repair.owner_bead =
-          operation.repair.owner_bead ||
-          requested_owner ||
-          [...operation.subjects].sort((left, right) =>
-            left.bead_id.localeCompare(right.bead_id)
-          )[0]?.bead_id ||
-          null;
         return true;
       });
     },
@@ -4599,7 +4498,7 @@ export function createQueueStore(options = {}) {
      * a previously terminal record.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure?: RepoOperation['failure'], log_digest?: string|null, owner_bead?: string, ladder_stage?: 'auto_repair_session'|'user_triggered_session', retry_outcome?: 'not_applicable'|'consumed', retry_blocked_reason?: string|null }} input
+     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure?: RepoOperation['failure'], log_digest?: string|null, retry_outcome?: 'not_applicable'|'consumed', retry_blocked_reason?: string|null }} input
      * @returns {QueueOpResult}
      */
     settleRepoOperation(workspace, input) {
@@ -4640,22 +4539,6 @@ export function createQueueStore(options = {}) {
             detail: '',
             interrupted: false
           };
-          operation.repair.chain_id =
-            operation.repair.chain_id || input.operation_id;
-          operation.repair.ladder_stage =
-            input.ladder_stage || 'auto_repair_session';
-          const requested_owner = operation.subjects.some(
-            (subject) => subject.bead_id === input.owner_bead
-          )
-            ? input.owner_bead
-            : null;
-          operation.repair.owner_bead =
-            operation.repair.owner_bead ||
-            requested_owner ||
-            [...operation.subjects].sort((left, right) =>
-              left.bead_id.localeCompare(right.bead_id)
-            )[0]?.bead_id ||
-            null;
           if (input.retry_outcome) {
             operation.retry = {
               first_failure: operation.failure
@@ -4693,8 +4576,7 @@ export function createQueueStore(options = {}) {
         // is a new attempt of the same operation), so re-requesting it must
         // reopen the record even when the FIRST bootstrap run is what failed —
         // otherwise a bootstrap that trips a precondition can never be retried,
-        // because its exact input keeps adopting its own terminal failure and
-        // the repair lane cannot own a synthetic `bootstrap` subject.
+        // because its exact input keeps adopting its own terminal failure.
         if (!operation || operation.state !== 'failed') {
           return false;
         }
@@ -4706,35 +4588,6 @@ export function createQueueStore(options = {}) {
         operation.failure = null;
         operation.process_identity = null;
         operation.retry = null;
-        operation.repair.ladder_stage = 'script_retry';
-        return true;
-      });
-    },
-
-    /**
-     * Carry one repair chain into a newly prerecorded successor without giving
-     * it a fresh automatic-repair budget.
-     *
-     * @param {string} workspace
-     * @param {{ from_operation_id: string, to_operation_id: string }} input
-     * @returns {QueueOpResult}
-     */
-    inheritRepoOperationChain(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const from = next.repo_operations[input.from_operation_id];
-        const to = next.repo_operations[input.to_operation_id];
-        if (!from || !to) {
-          return false;
-        }
-        const chain_id = from.repair.chain_id || input.from_operation_id;
-        if (to.repair.chain_id && to.repair.chain_id !== chain_id) {
-          return false;
-        }
-        to.repair.chain_id = chain_id;
-        to.repair.owner_bead = from.repair.owner_bead;
-        to.repair.auto_used = from.repair.auto_used;
-        to.repair.ladder_stage = from.repair.ladder_stage;
-        from.superseded_by = input.to_operation_id;
         return true;
       });
     },
@@ -4800,201 +4653,10 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Prerecord ONE repair dispatch before any session effect. An automatic
-     * dispatch spends the chain budget HERE, so a later spawn refusal cannot
-     * buy a second automatic try (§9.3 `unbounded_repair_session_retry`).
-     *
-     * @param {string} workspace
-     * @param {{ operation_id: string, mode: 'auto'|'manual', owner_bead?: string|null }} input
-     * @returns {QueueOpResult}
-     */
-    startRepoOperationRepair(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const operation = next.repo_operations[input.operation_id];
-        if (!operation || operation.state !== 'failed') {
-          return false;
-        }
-        if (input.mode !== 'auto' && input.mode !== 'manual') {
-          return false;
-        }
-        if (
-          input.mode === 'auto' &&
-          operation.repair.auto_used >= operation.repair.auto_budget
-        ) {
-          return false;
-        }
-        operation.state = 'repairing';
-        operation.repair.chain_id =
-          operation.repair.chain_id || input.operation_id;
-        if (typeof input.owner_bead === 'string') {
-          operation.repair.owner_bead = input.owner_bead;
-        }
-        operation.repair.session_id = null;
-        operation.repair.attempt_id = null;
-        operation.repair.ladder_stage =
-          input.mode === 'auto'
-            ? 'auto_repair_session'
-            : 'user_triggered_session';
-        if (input.mode === 'auto') {
-          operation.repair.auto_used += 1;
-        }
-        return true;
-      });
-    },
-
-    /**
-     * Bind the dispatched session to the repairing record.
-     *
-     * @param {string} workspace
-     * @param {{ operation_id: string, attempt_id: string, session_id?: string|null }} input
-     * @returns {QueueOpResult}
-     */
-    bindRepoOperationRepairSession(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const operation = next.repo_operations[input.operation_id];
-        if (!operation || operation.state !== 'repairing') {
-          return false;
-        }
-        operation.repair.attempt_id = input.attempt_id;
-        operation.repair.session_id =
-          typeof input.session_id === 'string' ? input.session_id : null;
-        return true;
-      });
-    },
-
-    /**
-     * Return a repairing record to its terminal failure — the manual state.
-     * The spent budget is NOT refunded: the chain already had its automatic
-     * try, and refunding it is exactly the unbounded retry the contract bans.
-     *
-     * @param {string} workspace
-     * @param {{ operation_id: string }} input
-     * @returns {QueueOpResult}
-     */
-    releaseRepoOperationRepair(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const operation = next.repo_operations[input.operation_id];
-        if (!operation || operation.state !== 'repairing') {
-          return false;
-        }
-        operation.state = 'failed';
-        operation.repair.session_id = null;
-        operation.repair.attempt_id = null;
-        operation.repair.ladder_stage = 'user_triggered_session';
-        return true;
-      });
-    },
-
-    /**
-     * Durably descend a terminal operation to the user-triggered stage after an
-     * automatic guard or budget has been consumed.
-     *
-     * @param {string} workspace
-     * @param {{ operation_id: string }} input
-     * @returns {QueueOpResult}
-     */
-    descendRepoOperationToUser(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const operation = next.repo_operations[input.operation_id];
-        if (!operation || operation.state !== 'failed') {
-          return false;
-        }
-        operation.repair.ladder_stage = 'user_triggered_session';
-        return true;
-      });
-    },
-
-    /**
-     * Prerecord a repair dispatch for a cursor-stopping cleanup failure.
-     *
-     * @param {string} workspace
-     * @param {{ bead_id: string, mode: 'auto'|'manual' }} input
-     * @returns {QueueOpResult}
-     */
-    startCleanupRepair(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const failure = next.cleanup_failed[input.bead_id];
-        const row = next.pr_wait.find(
-          (entry) => entry.bead_id === input.bead_id
-        );
-        if (
-          !failure ||
-          !row ||
-          row.cleanup_cursor !== failure.step ||
-          (input.mode !== 'auto' && input.mode !== 'manual') ||
-          failure.repair?.mode
-        ) {
-          return false;
-        }
-        const repair = failure.repair || {
-          chain_id: `cleanup:${input.bead_id}`,
-          auto_used: 0,
-          attempt_id: null,
-          session_id: null,
-          mode: null,
-          ladder_stage: 'auto_repair_session'
-        };
-        if (input.mode === 'auto' && repair.auto_used >= 1) {
-          return false;
-        }
-        repair.mode = input.mode;
-        repair.attempt_id = null;
-        repair.session_id = null;
-        repair.ladder_stage =
-          input.mode === 'auto'
-            ? 'auto_repair_session'
-            : 'user_triggered_session';
-        if (input.mode === 'auto') {
-          repair.auto_used += 1;
-        }
-        failure.repair = repair;
-        return true;
-      });
-    },
-
-    /**
-     * @param {string} workspace
-     * @param {{ bead_id: string, attempt_id: string, session_id?: string|null }} input
-     * @returns {QueueOpResult}
-     */
-    bindCleanupRepairSession(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const repair = next.cleanup_failed[input.bead_id]?.repair;
-        if (!repair || !repair.mode) {
-          return false;
-        }
-        repair.attempt_id = input.attempt_id;
-        repair.session_id =
-          typeof input.session_id === 'string' ? input.session_id : null;
-        return true;
-      });
-    },
-
-    /**
-     * @param {string} workspace
-     * @param {{ bead_id: string }} input
-     * @returns {QueueOpResult}
-     */
-    releaseCleanupRepair(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const repair = next.cleanup_failed[input.bead_id]?.repair;
-        if (!repair || !repair.mode) {
-          return false;
-        }
-        repair.mode = null;
-        repair.attempt_id = null;
-        repair.session_id = null;
-        repair.ladder_stage = 'user_triggered_session';
-        return true;
-      });
-    },
-
-    /**
      * Mark a FAILED row as acknowledged by a human (UI-q0uy §4.6-2). The row
      * keeps its `failed` state and its whole evidence trail — this only takes it
-     * out of the 해결 필요 tally and hides its action buttons. A row that is
-     * queued/running/repairing is refused: acknowledging work that is still
-     * moving would hide a live failure path.
+     * out of the 해결 필요 tally. A row that is queued or running is refused:
+     * acknowledging work that is still moving would hide a live failure path.
      *
      * @param {string} workspace
      * @param {{ operation_id: string, by?: string }} input
@@ -6275,7 +5937,6 @@ export function createQueueStore(options = {}) {
           return false;
         }
         const diagnosis = next.cleanup_failed[bead_id]?.diagnosis;
-        const repair = next.cleanup_failed[bead_id]?.repair;
         next.cleanup_failed[bead_id] = {
           step: typeof step === 'string' ? step : '',
           reason,
@@ -6307,9 +5968,6 @@ export function createQueueStore(options = {}) {
         }
         if (diagnosis) {
           next.cleanup_failed[bead_id].diagnosis = diagnosis;
-        }
-        if (repair) {
-          next.cleanup_failed[bead_id].repair = repair;
         }
         return true;
       });
