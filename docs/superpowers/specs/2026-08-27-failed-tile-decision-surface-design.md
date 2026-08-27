@@ -5,7 +5,11 @@ scope:
   - app/views/worker/lanes.js
   - app/views/worker/failure-labels.js
   - app/views/monitor/index.js
+  - app/views/monitor/lanes.js
   - app/styles.css
+  - app/main.bundle.js
+  - app/main.bundle.js.map
+  - docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md
   - server/ws/worker-handlers.js
   - server/ws/connection.js
   - server/worker/discard-coordinator.js
@@ -49,7 +53,8 @@ close를 해야 했다(세션 인계 기록: dotfiles-u3xn notes).
 1. 실패는 알림이 아니라 **카드 상태**다. 배너를 없애고 실패 타일이 원인을 싣는다.
 2. 실패 타일은 사용자가 `↻ 이어하기`·`폐기`를 고르거나 Bead가 다른 attempt로 대체/`done`될
    때까지 남는다. `✕`(dismiss)는 없앤다.
-3. 방치된 실패 타일은 접이식 "실패 N" 묶음으로 숨기지 않고 접힌 한 줄 형태로 레인에 둔다.
+3. 실패 타일은 접이식 "실패 N" 묶음으로 숨기지 않는다. 미처리 실패 타일은 **모두** 기본적으로
+   닫힌 변형(§3.2 "닫힌 실패 타일")으로 그린다 — "오래 방치된" 것과 새 실패를 구분하지 않는다.
 4. 원인은 칩으로 짧게, 칩을 누르면 팝오버로 상세.
 
 ## 3. 표면 설계
@@ -59,8 +64,9 @@ close를 해야 했다(세션 인계 기록: dotfiles-u3xn notes).
 - `running-grid.js` `bannersTemplate`(240–291행)와 `causeDetailLine`·`rawFailureBlock`의 배너
   전용 사용, `index.js`의 `state.failure`/`latest_failed` 조립(3870·3976–3998행),
   `.worker-banner__resume/__discard/__dismiss` 클릭 라우팅(5936–5959행) 삭제.
-- `failureText`·`FAILURE_CATEGORIES`·`FAILURE_SENTENCES`(`app/views/worker/failure-labels.js`)는
-  타일 칩·팝오버가 그대로 재사용한다.
+- `app/views/worker/failure-labels.js`의 공개 함수 `failureCategory`·`failureSentence`·`failureText`를
+  타일 뱃지·팝오버가 재사용한다(내부 표 `FAILURE_CATEGORIES`·`FAILURE_SENTENCES`는 export되지 않으며
+  직접 인덱싱하지 않는다).
 
 ### 3.2 실패 타일 — 카드 문법 슬롯
 
@@ -75,16 +81,31 @@ close를 해야 했다(세션 인계 기록: dotfiles-u3xn notes).
 | `↻ 이어하기` · `폐기` | 1 조작 (오른쪽 끝) | 현행 유지 |
 | `✕` | — | **삭제** |
 
-뱃지 텍스트는 `FAILURE_CATEGORIES[cause]`(예 `착지 실패`, `세션 실패`, `검증 실패`)이고, 분류가
-없는 cause는 `실패`다. `.rtile__elapsed`의 `실패`/`중단됨` 라벨은 그대로 둔다(조작 영역의 상태
-라벨). 타일 폭이 좁아 뱃지가 wrap되는 것은 §2 규칙대로 허용한다(조작은 오른쪽 끝 유지).
+뱃지 텍스트는 `failure-labels.js`의 공개 함수 `failureCategory(cause)`로 얻는다(composite cause
+`quickfix_landing_failed:head_mismatch`처럼 `:` 뒤가 붙은 코드도 그 함수가 접두로 판정한다).
+이 스펙이 추가하는 category 토큰: `quickfix_landing_failed:*` → `착지 실패`, 세션 비정상 종료류
+(`runner_exit`·`session_*`) → `세션 실패`. 분류가 없는 cause는 `실패`다. `.rtile__elapsed`의
+`실패`/`중단됨` 라벨은 그대로 둔다(조작 영역의 상태 라벨). 타일 폭이 좁아 뱃지가 wrap되는 것은
+§2 규칙대로 허용한다(조작은 오른쪽 끝 유지).
+
+**닫힌 실패 타일.** 실패 변형은 카드 문법 §2의 1번 줄(정체성 + 뱃지 + 조작)과 2번 줄(제목)만
+그린다. 3번(진행·활동 줄·위임 칩·롤업)·4번(의존·겹침)·5번(좌표·실행 사실)·7번(시각)은 그리지
+않는다 — 그 재료는 §3.3 팝오버로 옮긴다. 이것이 사용자 결정 3의 "접힌 한 줄 형태"의 정의이며,
+열기/펼치기 상태는 없다(팝오버가 유일한 상세 표면). DOM은 `.rtile.rtile--failed.rtile--compact`,
+테스트는 이 변형에 `.rtile__meta`·`.worker-deps`·`.rtile__activity`가 없음을 단언한다.
 
 ### 3.3 상세 팝오버
 
 패턴은 겹침 팝오버(`app/views/worker/lanes.js` `overlapPopoverTemplate` 706–782행,
 `.mon-overlap__popover`, `app/styles.css` 7181–7200행)를 따른다. 데스크톱은 타일 아래 absolute,
 `(max-width: 640px)`에서는 타일 아래 in-flow 전폭 블록(`styles.css` 7278–7287행). 이 저장소는
-별도 시트 컴포넌트를 두지 않는다는 결정을 그대로 따른다. 열림 상태는 뷰 상태
+별도 시트 컴포넌트를 두지 않는다는 결정을 그대로 따른다.
+
+배치 기준: 겹침 팝오버의 absolute는 `.worker-deps { position: relative }`에 기대는데 `.rtile`·
+`.rtile__hd`에는 positioned ancestor가 없다. 따라서 팝오버 `.rtile__failure-pop`은 **`.rtile`의
+직접 자식**으로 두고 `.rtile { position: relative }`를 명시한다(`top: calc(100% + var(--sp-4))`
+기준이 타일). 640px 이하에서는 `position: static; width: 100%`로 타일 아래 흐름에 들어간다.
+테스트는 팝오버 노드가 `.rtile`의 직접 자식임을 단언하고, 스타일 검증은 §8의 스크린샷이 맡는다. 열림 상태는 뷰 상태
 `open_failure_detail: attempt_id|null` 하나이고, 바깥 클릭·다른 타일 뱃지 클릭·Esc로 닫힌다
 (`monitor/index.js` 3959행의 겹침 팝오버 닫기와 같은 라우팅).
 
@@ -92,7 +113,7 @@ close를 해야 했다(세션 인계 기록: dotfiles-u3xn notes).
 
 | 항목 | 출처 |
 |---|---|
-| 원인 문장 | `FAILURE_SENTENCES[cause]` 또는 `failureText(cause)` |
+| 원인 문장 | `failureSentence(cause)`, 없으면 `failureText(cause)` |
 | raw cause | `attempt.cause` (`<code>`) |
 | 가드/명령 | `attempt.cause_detail.reason`·`.command` |
 | 착지 단계 | `attempt.quickfix_landing.cursor`·`.head_sha`(7자)·`.reason` — quick_fix 착지 실패만 |
@@ -111,10 +132,15 @@ close를 해야 했다(세션 인계 기록: dotfiles-u3xn notes).
   (`index.js` 3812–3814·3854–3856행)은 `discardProjection`에 `merged` 힌트로 "이 attempt의 PR이
   머지됨"(`attempt.merge_sha` 존재 또는 관측 PR `state === 'MERGED'`)을 넘긴다. Monitor 핸들러
   (`monitor/index.js` 3644–3646행)도 같은 규칙.
-- **`폐기` 숨김**: `attempt.quickfix_lane === true`이고 `quickfix_landing !== null`(착지 단계
-  진입 후 실패)이면 `폐기`를 그리지 않는다. 그 작업은 이미 base에 착지돼 있고 서버 discard는
-  PR 없는 착지를 거부한다(`cleanup_failed_pr_not_merged`). 팝오버 하단에
-  `이미 base에 착지됨 — 이어하기로 배포·정리를 재개` 안내 한 줄.
+- **`폐기` 숨김**: `attempt.quickfix_lane === true`이고
+  `quickfix_landing.cursor ∈ {repo_operations, branch_cleanup, parent_close}`일 때만 `폐기`를
+  그리지 않는다. 그 cursor들은 `base_containment`(영수증 SHA ⊂ fetched base)를 **통과한 뒤**에만
+  기록되므로 착지의 증거다. `quickfix_landing`이 `null`이거나 `cursor`가 `null`
+  (`not_resolved`·`invalid_impl_review`·`head_mismatch` — 착지 판정 전 실패) 또는
+  `base_containment`(`push_not_contained`·`containment_unobservable`)이면 착지가 증명되지 않았으므로
+  `폐기`를 유지한다. 숨긴 경우 팝오버 하단에 `이미 base에 착지됨 — 이어하기로 배포·정리를 재개`
+  안내 한 줄. 서버 discard가 PR 없는 착지를 거부하는 사실(`cleanup_failed_pr_not_merged`)은 이
+  판정의 근거이지 조건이 아니다.
 - `✕` 제거: `.rtile__dismiss`(running-grid.js 653–676행)와 클릭 라우팅(`index.js` 6193–6201행,
   `monitor/index.js` 3636–3641행), `dismissAttempt()`(`index.js` 2313–2333행) 삭제.
 
@@ -126,16 +152,17 @@ close를 해야 했다(세션 인계 기록: dotfiles-u3xn notes).
 |---|---|---|
 | `↻ 이어하기` | child attempt가 부모를 supersede | 그대로 |
 | `done` 진입 | `resolved_by_done` | 그대로 |
-| `폐기` | attempt는 `failed` 그대로, `dismissed_at` 없음 → discard 후에도 unhandled로 남음(기존 결함) | discard 오퍼레이션이 `done`에 도달하면 `discard-coordinator`가 같은 CAS write에서 source attempt에 `dismissed_at`(의미: handled)를 찍는다 |
+| `폐기` | attempt는 폐기 진행 중 `discarded`로 바뀌지만 `dismissed_at`은 없음 → `createUnhandledFailurePredicate`가 status가 아니라 `dismissed_at`을 보는 경로에서 unhandled로 남음(기존 결함) | `queue-store.completeDiscardOperation`의 **기존 최종 mutation 안에서** `operation.attempt_id`가 가리키는 attempt에 `dismissed_at`을 idempotent하게 기록한다(이미 숫자면 유지). attempt status는 그 시점에 이미 `discarded`이므로 `failed|orphaned`만 받는 `dismissAttempt()`는 쓰지 않는다 — 별도 write도 아니다 |
 | `✕` | `dismissed_at` 스탬프 | 제거 |
 
 - 필드 `dismissed_at`는 이름을 바꾸지 않는다(저장 호환, `settleMootRepairFailures`·scheduler의
   moot 스탬프 그대로). 소비자(`createUnhandledFailurePredicate`, `activeAttemptStates`,
-  detail-panel session-history)는 변경 없음.
+  detail-panel session-history)는 변경 없음. `completeDiscardOperation` 스탬프는 `queue-store.test.js`에서
+  단일 persist·`discarded` 상태 유지·idempotent를 단언한다.
 - `worker-attempt-dismiss` RPC: 클라이언트 전송 제거, `app/protocol.js`의 타입 삭제,
   `server/ws/connection.js` 라우팅과 `server/ws/worker-handlers.js` `handleWorkerAttemptDismiss`
-  (4163–4206행) 삭제. `queue-store.dismissAttempt`(5197–5220행)는 discard-coordinator의 새
-  호출자가 쓰므로 유지한다.
+  (4163–4206행) 삭제. `queue-store.dismissAttempt`(5197–5220행)는 `settleMootRepairFailures`가 쓰므로
+  유지한다(UI 호출자는 사라진다).
 - 점유: `activeAttemptStates`는 이미 `dismissed_at`/supersede/done으로 판정하므로 그대로다.
   직렬 레인 `occupied_by`는 서버 레인 상태이며 이 스펙의 비목표(§7).
 
@@ -144,6 +171,16 @@ close를 해야 했다(세션 인계 기록: dotfiles-u3xn notes).
 `runningTile`을 공유하므로 뱃지·팝오버·조작 규칙은 Monitor 실행 중 타일에도 같이 적용된다.
 Monitor의 `.rtile__dismiss`·`.rtile__discard` 핸들러를 Worker와 같은 규칙으로 정정하고, 팝오버
 열림 상태는 Monitor 뷰에도 같은 이름으로 둔다.
+
+**투영.** 렌더러만 고쳐서는 Monitor에 아무것도 나타나지 않는다: `app/views/monitor/lanes.js`
+`activeByBead()`(~440–455행)가 attempt를 타일 모델로 옮기며 `cause`·`cause_detail`·`finished_at`·
+`observed_effort`·`halted_auto_advance`·`quickfix_lane`·`quickfix_landing`·`merge_sha`를 버린다.
+Worker(`index.js` `failed_running` 조립)와 Monitor(`activeByBead`) 둘 다 실패 타일에 다음을
+명시적으로 싣는다: `failure: { cause, cause_detail, finished_at, runner, model, effort,
+observed_effort, speed, attempt_id, usage, halted_auto_advance, quickfix_lane, quickfix_landing,
+resume_eligible, resume_reason, landed: boolean, confirmation: 'merged'|'unmerged' }`. `landed`는
+§3.4의 cursor 판정, `confirmation`은 `discardProjection`에 `merged` 힌트(`attempt.merge_sha` 존재
+또는 이 Bead의 관측 PR `state === 'MERGED'`)를 넘긴 결과다. `runningTile`은 `tile.failure`만 읽는다.
 
 ## 6. 카드 문법 스펙 정정
 
@@ -162,7 +199,9 @@ Monitor의 `.rtile__dismiss`·`.rtile__discard` 핸들러를 Worker와 같은 �
 
 ## 8. 테스트
 
-- `running-grid.test.js`: 실패 타일이 `⛔ <분류>` 뱃지를 그리고 `✕`를 그리지 않는다; `halted_auto_advance`에만 `자동 진행 꺼짐`; 착지 실패(`quickfix_lane && quickfix_landing`)에 `폐기` 없음; `data-confirmation`이 projection 값을 싣는다; 배너 템플릿 없음.
+- `running-grid.test.js`: 실패 타일이 `⛔ <분류>` 뱃지를 그리고 `✕`를 그리지 않는다; `halted_auto_advance`에만 `자동 진행 꺼짐`; `landed`(cursor `repo_operations|branch_cleanup|parent_close`)에만 `폐기` 없음, cursor `null`·`base_containment`에는 `폐기` 유지; `data-confirmation`이 `tile.failure.confirmation`을 싣는다; 닫힌 변형에 `.rtile__meta`·`.worker-deps`·`.rtile__activity` 없음; 팝오버가 `.rtile` 직접 자식; 배너 템플릿 없음.
+- `failure-labels.test.js`: `failureCategory('quickfix_landing_failed:head_mismatch') === '착지 실패'`, 알 수 없는 코드 → `실패`.
+- `monitor/lanes.test.js`: `activeByBead()`가 실패 attempt의 `failure` 투영(위 필드 전부)을 싣는다.
 - `worker/index.test.js`: `state.failure` 미조립; 뱃지 클릭으로 팝오버 열림/바깥 클릭 닫힘; 팝오버 재료 fail-quiet(cause_detail·quickfix_landing 없는 경우); `폐기` 클릭이 `confirmation`을 읽어 `discardBead`에 전달; dismiss 전송 없음.
 - `monitor/index.test.js`·`monitor/lanes.test.js`: 같은 규칙.
 - `server/worker/discard-coordinator.test.js`: 오퍼레이션 `done`에서 source attempt `dismissed_at` 스탬프(같은 write), 이미 찍혀 있으면 no-op.
@@ -172,9 +211,15 @@ Monitor의 `.rtile__dismiss`·`.rtile__discard` 핸들러를 Worker와 같은 �
 
 ## 구현 unit 후보
 
-- `surface`: §3.1–§3.3 배너 삭제·뱃지·팝오버·스타일 (`running-grid.js`, `index.js`, `styles.css`, `failure-labels.js`)
-- `actions`: §3.4·§4·§5 폐기 확인 모드·숨김·✕/RPC 제거·discard-done 스탬프·Monitor 정합 (`index.js`, `monitor/index.js`, `discard-coordinator.js`, `worker-handlers.js`, `connection.js`, `protocol.js`)
+- `tile`: §3–§5 전부 — 배너 삭제·뱃지·팝오버·스타일·`폐기` 확인/숨김·✕/RPC 제거·discard-done
+  스탬프·Worker/Monitor 투영 (`running-grid.js`, `worker/index.js`, `worker/lanes.js`,
+  `failure-labels.js`, `monitor/index.js`, `monitor/lanes.js`, `styles.css`, `discard-coordinator.js`,
+  `queue-store.js`, `worker-handlers.js`, `connection.js`, `protocol.js`). `worker/index.js`의
+  소유자는 이 unit 하나다.
 - `docs`: §6 카드 문법 스펙 정정
+
+프론트 소스가 바뀌므로 `npm run build` 산출물 `app/main.bundle.js`·`app/main.bundle.js.map`을
+같은 PR에 포함한다(배포 스크립트가 build 뒤 tracked-clean을 요구한다).
 
 ## 경계·후속
 
