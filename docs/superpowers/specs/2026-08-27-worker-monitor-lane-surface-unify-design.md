@@ -12,11 +12,11 @@ scope:
   - app/utils/viewport.test.js
   - app/main.monitor.e2e.test.js
   - app/main.worker-queue-sync.test.js
+  - app/main.closed-range.e2e.test.js
   - app/styles.css
   - app/styles.worker-theme.test.js
   - app/styles.monitor-theme.test.js
   - docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md
-  - AGENTS.md
   - app/main.bundle.js
   - app/main.bundle.js.map
 ---
@@ -68,8 +68,16 @@ buildLanes` ~1,290줄)의 단일화는 서버 스냅샷 두 종류의 필드 정
 - `paneTemplate`(`app/views/worker/lanes.js`)은 이미 `collapsible`·`collapsed`·
   `preview`를 받아 `.worker-pane--collapsed`와 `<button class="worker-pane__hd
   worker-pane__hd--toggle">`를 그린다. 데스크톱에서는 어느 탭도 이 옵션을 켜지 않는다.
-- Worker 드롭 처리는 `pane.classList.contains('worker-pane--collapsed')`를 이미
-  검사한다(`worker/index.js` ~5514). 접힌 pane은 드롭 타깃이 아니다.
+- Worker 드롭 처리는 접힌 대기 pane 위 드롭을 **허용**하고 인덱스를 큐 말미로 맞춘다
+  (`worker/index.js` ~5514, UI-58y2 §모바일 3: "스트립에 떨어뜨린 사람이 원한 것은
+  대기에 넣기"). 이 의미는 유지한다.
+- `paneTemplate`의 collapsible 분기는 `header_control`을 그리지 않는다(토글이 헤더
+  전체를 `<button>`으로 감싸기 때문). Worker가 완료 범위 선택을 `controls` 줄에 둔 이유가
+  이것이다(`worker/index.js` ~5081 주석).
+- Monitor 레포 직렬 레인은 `cycle` 외에 `cross_wait_peers`(레포 간 상호 정지 경고,
+  `.mon2-lane__cross-wait`, `monitor/index.js` ~1834)를 pane 아래에 그린다.
+- `app/main.closed-range.e2e.test.js`는 `#worker-pane-done .worker-done-range`를 직접
+  조회한다(~203). 완료 pane이 기본 접힘이 되면 이 테스트가 깨진다.
 - Monitor `serialLanePane`은 `paneTemplate`을 쓰되 `body`로 `.mon2-lane__rows`(드롭
   속성 `data-drop`·`data-root-dir`·`data-lane-id`·`data-lane-length`)를 넘긴다.
   Worker 드롭은 `.worker-pane`의 `data-lane`을 읽는다. 두 탭의 드롭 식별자는 다르고
@@ -145,6 +153,7 @@ buildLanes` ~1,290줄)의 단일화는 서버 스냅샷 두 종류의 필드 정
  *   badge?: TemplateResult|string,    // 점유 뱃지 (header_control 왼쪽)
  *   held?: boolean,                   // 점유 중 강조
  *   cycle?: boolean,                  // blocks 순환 경고 줄
+ *   after?: TemplateResult,           // pane 아래 호출 측 조각 (Monitor 상호 정지 경고)
  *   header_control?: TemplateResult,  // 뱃지 오른쪽 (Monitor `Worker ↗`)
  *   drop?: WaitDropAttrs              // 행 컨테이너 data-* (Monitor)
  * }} WaitSerialLane
@@ -179,13 +188,16 @@ DOM:
       ├ paneTemplate({ id, lane:id, title, items:[], header_control: badge+control,
       │                body: div.worker-wait__rows (+ drop data-*) rows | .worker-pane__empty })
       ├ div.worker-wait__hint      "<title> · 비어 있음"   (empty일 때만)
-      └ div.worker-lane__cycle     (cycle일 때만)
+      ├ div.worker-lane__cycle     (cycle일 때만)
+      └ after                      (Monitor `cross_wait_peers` 경고 — 호출 측이 그림)
 ```
 
 - 본문은 **구조**만 소유한다. 행 렌더링(`miniRow`, Monitor `parallelRow`/`serialRow`/
-  `occupantRow`), 레포 배지, 연결 레인 pane(`chainLanePane`), `+ 연결 레인` 버튼은 호출
-  측이 만들어 슬롯으로 넘긴다. Worker는 `extra_panes`·`header_control`·`notice`·`drop`
-  을 넘기지 않는다 — 재료가 없는 자리는 그리지 않는다.
+  `occupantRow`), 레포 배지, 연결 레인 pane(`chainLanePane`), `+ 연결 레인` 버튼, 레포 간
+  상호 정지 경고(`cross_wait_peers` → `after`)는 호출 측이 만들어 슬롯으로 넘긴다.
+  Worker는 `extra_panes`·`header_control`·`notice`·`drop`·`after`를 넘기지 않는다 —
+  재료가 없는 자리는 그리지 않는다. Monitor의 기존 상호 정지 경고는 이 `after` 슬롯으로
+  그대로 옮겨져 사라지지 않는다(테스트 §7).
 - `drop` 속성은 `ifDefined`로 있을 때만 붙는다. Worker 드롭은 pane `data-lane`, Monitor
   드롭은 행 컨테이너 `data-drop`/`data-root-dir`/`data-lane-id`/`data-lane-length`를
   지금처럼 읽는다. 드롭 식별자 통일은 2단계 범위다.
@@ -227,17 +239,29 @@ export function createLaneCollapse(storage_key, defaults = { lanes: { done: true
 - 하위 호환: 읽은 값에 `lanes` 키가 없고 최상위가 불리언 맵이면(`{ queue, done }`
   구형) 그것을 `lanes`로 승격한다. Monitor `beads-ui.monitor.sections`의 `parallel`·
   `serial` 불리언은 더 이상 읽지 않는다(레포 섹션 키는 그대로).
-- 다섯 pane 모두 `collapsible: true`. `paneTemplate`은 접혔을 때 `controls`·`body`를
-  그리지 않고 `header_control`도 그리지 않는다(세로 띠에 컨트롤이 들어갈 자리가 없다).
+- 다섯 pane 모두 `collapsible: true`. `paneTemplate`의 헤더 구조를 바꾼다: 토글은
+  헤더 전체가 아니라 **별도 `<button class="worker-pane__toggle" data-lane aria-expanded>`**
+  (caret + 점 + 제목 + 건수)이고, `header_control`(후보 정렬·실행 정렬·`슬롯 N`·완료 범위
+  등)은 그 **형제**로 헤더 오른쪽에 선다. 접혔을 때는 `header_control`·`controls`·
+  `body`를 그리지 않고, 펼쳤을 때 `header_control` 조작(`<select>` 변경·버튼 클릭)은
+  토글 버튼 밖에 있으므로 접힘 상태를 바꾸지 않는다(테스트 §7). 지금 Worker가 완료
+  범위를 `controls` 줄에 둔 이유(collapsible 헤더가 `header_control`을 못 그림)가
+  사라지므로 §4.5의 `header_control` 이관이 가능해진다.
 - 데스크톱 접힘(`@media (min-width: 641px)` `.worker-pane--collapsed`): `flex: 0 0
   36px; min-width: 0; padding: var(--sp-6) 0`. 헤더 버튼은 `writing-mode: vertical-rl`
   로 점 → 제목 → 건수 순, caret 숨김, 상단 2px 스파인 유지. 제목이 띠 높이를 넘으면
   ellipsis.
-- 모바일 접힘은 지금 마크업(가로 헤더 + `preview` + caret) 그대로.
-- 접힌 pane은 드롭 타깃이 아니다(기존 검사 유지). `대기로 ↴`·배치 메뉴는 대기 레인이
-  접혀 있어도 동작한다 — 적재 후 레인을 자동으로 펼치지 않는다.
-- 클릭 위임: `.worker-pane__hd--toggle[data-lane]` → `toggle(lane)`, `.worker-wait__area-hd
-  button[data-area]` → `toggleArea(area)`, 둘 다 저장 후 재렌더.
+- 모바일 접힘은 가로 방향 그대로(토글 버튼 한 줄 + `preview`), 세로 띠 규칙은
+  `min-width: 641px` 가드 안에만 있다.
+- 접힌 대기 pane 위 드롭은 **지금처럼 허용**되고 병렬 큐 말미에 적재된다(UI-58y2
+  §모바일 3 의미 유지, `worker/index.js` ~5514). 데스크톱 세로 띠도 같은 드롭 타깃이다
+  (`.worker-pane--drag-over` 강조 포함). 접힌 후보 pane 위 드롭도 지금 의미 그대로다(대기
+  행을 떨어뜨리면 큐에서 제거, 후보→후보는 행이 없어 재정렬할 것이 없다). 직렬 레인은
+  대기 pane 안에 있어 개별 접힘이 없다. `대기로 ↴`·배치 메뉴는
+  대기 레인이 접혀 있어도 동작한다 — 적재 후 레인을 자동으로 펼치지 않는다.
+- 클릭 위임: `.worker-pane__toggle[data-lane]` → `toggle(lane)`, `.worker-wait__area-hd
+  button[data-area]` → `toggleArea(area)`, 둘 다 저장 후 재렌더. 기존
+  `.worker-pane__hd--toggle` 셀렉터는 새 버튼 클래스로 바뀐다.
 
 ### 4.5 레인 폭·토큰·제목
 
@@ -245,6 +269,10 @@ export function createLaneCollapse(storage_key, defaults = { lanes: { done: true
   `--bg-panel`, `--r-8`). 대기 본문 안의 직렬 pane과 Monitor 연결 레인 pane은 card
   토큰(`--border-card`, `--bg-card`, `--r-6`). `.worker-wait .worker-pane` 규칙 하나가
   이를 소유하고 `.mon2-clane`의 개별 토큰 규칙은 여기에 흡수된다.
+- 폭 하한은 **최상위 pane에만**: `.worker-lanes > .worker-pane { min-width: 220px }`,
+  `.worker-wait .worker-pane { min-width: 0 }`. `.worker-wait > .worker-pane` 규칙을
+  지우면 중첩 pane이 전역 220px을 물려받아 바깥 대기 pane 안에서 넘치므로, 이 두 규칙을
+  스타일 테스트로 고정한다.
 - 제목 어휘는 두 탭 공통 `후보` · `대기` · `실행 중` · `PR 대기` · `완료`. 탭 부가정보는
   `header_control`로 옮긴다: Worker `슬롯 N` 칩(실행 중), 완료 범위 선택(`오늘`·`7일`…)
   은 두 탭 모두 `header_control`(지금 Worker는 `controls` 줄, Monitor는 header 오른쪽).
@@ -266,14 +294,16 @@ export function createLaneCollapse(storage_key, defaults = { lanes: { done: true
 - 레포 배지·연결 레인 칩·route·exec 칩은 이미 슬롯 5 fail-quiet라 변경 없다.
 - UI-251y 스펙 §5.1 슬롯 표에 정정 문단을 추가한다: "⛓ 의존성 버튼은 슬롯 1 조작이다.
   UI-j92s가 `대기로 ↴` 옆(foot)에 두었던 자리는 UI-5ksp가 옮겼다." `AGENTS.md` 카드
-  배치 문법 절은 결정만 싣고 있으므로 바뀌지 않는다.
+  배치 문법 절은 결정만 싣고 있으므로 바뀌지 않는다(scope에도 없다).
 
 ### 4.7 모바일
 
 - 두 탭이 같은 분기를 쓴다. 뷰포트 판정은 `app/utils/viewport.js`(신규)
   `MOBILE_QUERY = '(max-width: 640px)'`·`watchMobile(on_change) → unsubscribe`로
-  옮기고 Worker `watchViewport`를 대체한다. Monitor도 같은 watcher로 `is_mobile`을
-  갖는다(지금은 CSS `order`만으로 재배열).
+  옮기고 Worker `watchViewport`를 대체한다. 계약: 등록 시 현재 `matches`를 **동기적으로
+  한 번** 콜백하고 이후 변경만 전달한다; `matchMedia`가 없으면 최초 `false`를 전달하고
+  변경 구독은 하지 않는다. 그래서 첫 렌더부터 모바일 DOM이 된다. Monitor도 같은
+  watcher로 `is_mobile`을 갖는다(지금은 CSS `order`만으로 재배열).
 - 모바일 DOM 순서: `지금` → `대기` → `후보` → `완료`. `nowPanel({ live, running_body,
   pr_wait_rows, count })`를 `worker/lanes.js`가 export하고 Monitor가 import한다. Monitor
   `.mon2-lanes > .worker-pane--lane-* { order }` 규칙은 삭제한다.
@@ -289,7 +319,7 @@ export function createLaneCollapse(storage_key, defaults = { lanes: { done: true
 
 | 파일 | 변경 |
 |---|---|
-| `app/views/worker/lanes.js` | `waitBody`·`nowPanel` export 추가, `paneTemplate`에 `count` 옵션·접힘 시 `header_control` 생략, `candidateCard` foot 조건·`head-actions`, `miniRow(item, { actions })` |
+| `app/views/worker/lanes.js` | `waitBody`·`nowPanel` export 추가, `paneTemplate`에 `count` 옵션·별도 `.worker-pane__toggle` 버튼 + 형제 `header_control`·접힘 시 `header_control`/`controls`/`body` 생략, `candidateCard` foot 조건·`head-actions`, `miniRow(item, { actions })` |
 | `app/views/worker/lane-collapse.js` | 신규 `createLaneCollapse` |
 | `app/utils/viewport.js` | 신규 `MOBILE_QUERY`·`watchMobile` |
 | `app/views/worker/index.js` | `.worker-wait` 스택·`serialLaneTemplate`·`nowPanelTemplate`·`watchViewport`·`loadLaneCollapse/saveLaneCollapse` 제거 → `waitBody`·`nowPanel`·`createLaneCollapse`·`watchMobile` 사용, 다섯 pane `collapsible`, 제목·`header_control` 이관, 드래그 `is-dragging` |
@@ -309,9 +339,9 @@ pane(`mon2-clane*`)과 그 op, `blockers.js`·`dep-candidates.js`·`drop-plan.js
   건드리지 않는다.
 - 접힘 상태는 클라이언트 표시 상태다. `localStorage` 부재·파싱 실패는 기본값으로
   조용히 대체하고, 쓰기 실패는 무시한다(현행 `loadLaneCollapse` 규칙).
-- 드래그 중 접힌 pane 위 드롭은 무시된다(기존 검사). 사용자가 대기 레인을 접은 채
-  드래그를 시작하면 드롭할 곳이 없다 — 이때 레인을 자동으로 펼치지 않는다. 배치는
-  `대기로 ↴`로도 가능하므로 기능 손실이 아니다.
+- 접힌 대기 pane(세로 띠) 위 드롭은 병렬 큐 말미 적재다(§4.4). 직렬 레인이나 특정
+  위치에 넣고 싶으면 레인을 펼치거나 `대기로 ↴` 배치 메뉴를 쓴다 — 레인을 자동으로
+  펼치지 않는다.
 - `waitBody`의 드롭 속성은 값이 문자열일 때만 붙는다(`ifDefined`). Monitor의
   `data-lane-length`는 지금처럼 문자열로 넘긴다.
 
@@ -320,20 +350,27 @@ pane(`mon2-clane*`)과 그 op, `blockers.js`·`dep-candidates.js`·`drop-plan.js
 단위(vitest, 기존 파일 확장):
 
 - `lanes.test.js`: `waitBody`가 두 영역·직렬 pane·빈 레인 클래스·힌트·`extra_panes`
-  위치·`drop` 속성 유무를 그린다; `paneTemplate`이 `count`·접힘 시 `header_control`
-  생략·`aria-expanded`를 지킨다; `candidateCard` foot이 `dep_action`만으로 켜지지
+  위치·`after` 슬롯·`drop` 속성 유무를 그린다; `paneTemplate`이 `count`·별도 토글
+  버튼과 형제 `header_control`·접힘 시 `header_control`/`controls`/`body` 생략·
+  `aria-expanded`를 지킨다; `candidateCard` foot이 `dep_action`만으로 켜지지
   않고 ⛓가 `head-actions`에 선다; `miniRow` `actions`가 1번 줄 끝에 선다; `nowPanel`
   이 실행 grid와 PR 대기 행을 함께 그린다.
 - `lane-collapse.test.js`: 기본값 `done: true`, 토글·저장·구형 스키마 승격, 저장소
   오류 fail-quiet.
-- `viewport.test.js`: `matchMedia` 부재 시 데스크톱 고정, 변경 콜백·해제.
+- `viewport.test.js`: 등록 시 동기 초기 콜백, `matchMedia` 부재 시 최초 `false`·구독
+  없음, 변경 콜백·해제.
 - `worker/index.test.js`·`monitor/index.test.js`·`main.monitor.e2e.test.js`·
   `main.worker-queue-sync.test.js`: 다섯 pane `collapsible`, 완료 기본 접힘, 제목 어휘,
-  모바일 `지금` 순서, `is-dragging` 토글, Monitor 후보 `src`, 행 조작이 행 안에 있음.
+  모바일 `지금` 순서, `is-dragging` 토글, Monitor 후보 `src`, 행 조작이 행 안에 있음,
+  `header_control` 조작이 접힘을 바꾸지 않음, 접힌 대기 세로 띠 드롭이 큐 말미 적재,
+  Monitor 상호 정지 경고가 `after` 슬롯에 남아 있음.
+- `main.closed-range.e2e.test.js`: 완료 pane을 먼저 펼친 뒤 `.worker-done-range`를 조작
+  하도록 갱신(기본 접힘이면 컨트롤이 DOM에 없다).
 - `styles.worker-theme.test.js`·`styles.monitor-theme.test.js`: 삭제 규칙 부재
   (`.worker-now`, `.mon2-wait`, `.mon2-area`, `.mon2-lane`, `.mon2-rowops`, 모바일
   `order`, `.worker-wait > .worker-pane`), 추가 규칙 존재(`.worker-wait__*`, 세로 띠,
-  빈 레인 미디어쿼리), 레인 `flex: 1 1 0`·`min-width: 220px`, 중첩 card 토큰.
+  빈 레인 미디어쿼리), 최상위 레인 `flex: 1 1 0`·`min-width: 220px`, 중첩
+  `.worker-wait .worker-pane { min-width: 0 }`, 중첩 card 토큰.
 
 Pre-handoff: `npm run tsc` · `npm test` · `npm run lint` · `npm run prettier:write` ·
 `npm run build`(번들 포함).
