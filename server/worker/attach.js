@@ -1979,6 +1979,21 @@ export function workerSlots(workspace_root) {
 }
 
 /**
+ * The canonical repository path this workspace's attachment operates on, or
+ * null when none is registered (UI-s582 §3). Projected onto the snapshot so a
+ * client that has never seen an operation record can still NAME the repository
+ * it is acting on — the mismatch guard on 배포 실행 is worth nothing if the
+ * client is allowed to say nothing.
+ *
+ * @param {string} workspace_root
+ * @returns {string|null}
+ */
+export function workerRepoId(workspace_root) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  return att && typeof att.repo === 'string' && att.repo ? att.repo : null;
+}
+
+/**
  * Whether a bead's worktree still exists in the workspace's repo (UI-w0hi §3).
  *
  * READ-ONLY and fail-quiet: no attachment, no worktree manager, or a manager
@@ -2073,10 +2088,10 @@ export async function dismissWorkerRepoOperation(workspace_root, input) {
  * there is no resolver to pin a target with, which is the same refusal as an
  * unresolvable one.
  *
- * `repo_id` is the repository the CLIENT drew the button for. It is optional —
- * the authority is this attachment's repo either way — but when it is present
- * and names a different checkout the click is refused rather than redirected
- * onto a repository the person was not looking at.
+ * `repo_id` is the repository the CLIENT drew the button for, and it is
+ * REQUIRED: a click that cannot name its repository is a click from a screen
+ * whose state we cannot trust, so an absent, empty or mismatched value is
+ * refused rather than redirected onto whatever this workspace happens to own.
  *
  * @param {string} workspace_root
  * @param {{ repo_id?: string|null }} [input]
@@ -2091,8 +2106,8 @@ export async function startWorkerRepoOperationDeployRun(
     return { ok: false, reason: 'target_unresolved' };
   }
   if (
-    typeof input.repo_id === 'string' &&
-    input.repo_id.length > 0 &&
+    typeof input.repo_id !== 'string' ||
+    input.repo_id.length === 0 ||
     input.repo_id !== att.repo
   ) {
     return { ok: false, reason: 'target_unresolved' };

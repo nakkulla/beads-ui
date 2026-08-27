@@ -55,6 +55,7 @@ import {
   tickWorkerQueue,
   workerMergeEffectInFlight,
   workerMergeQueueState,
+  workerRepoId,
   workerSlots,
   workerWorktreeExists
 } from '../worker/attach.js';
@@ -2259,6 +2260,17 @@ export function decorateQueue(workspace_key, raw_queue) {
   };
   const repo_ops = repoOpsDisplayFor(workspace_key);
   const verify_policy = effectiveVerifyPolicy(repo_ops, queue);
+  // The canonical repository the attachment operates on (UI-s582 §3). It rides
+  // the declaration rather than a key of its own because every consumer that
+  // needs it — the 배포 실행 click — is already reading the declaration, and a
+  // workspace with no attachment projects `null` instead of guessing.
+  /** @type {string|null} */
+  let repo_id = null;
+  try {
+    repo_id = workerRepoId(workspace_key);
+  } catch {
+    repo_id = null;
+  }
   /** @type {number|null} */
   let slots = null;
   try {
@@ -2324,10 +2336,11 @@ export function decorateQueue(workspace_key, raw_queue) {
     // Attempts carry the LIVE usage tally while they run (UI-raqh §1); the
     // persisted `Attempt.usage` stands on its own once they end.
     attempts: attemptsWithUsage(queue, workspace_key),
-    // `repo_ops` is the pinned declaration consumed by verify and deploy.
+    // `repo_ops` is the pinned declaration consumed by verify and deploy, plus
+    // the canonical `repo_id` the attachment resolves it against.
     workspace_info: {
       slots,
-      repo_ops
+      repo_ops: { ...repo_ops, repo_id }
     },
     // Observed PR state + merge-gate verdict per `pr_wait` bead. Non-persisted
     // (worker-phase2 §4) — it exists only on the wire and in server memory.
@@ -3699,19 +3712,21 @@ export async function handleWorkerRepoOperationDismiss(ws, req) {
  *
  * The 배포 실행 click (UI-s582 §3). The target is NOT an input: the workspace's
  * base resolver pins remote, base and the fetched tip, and the declared script
- * is read from THAT tip. `repo_id` is the client naming the repository it drew
- * the button for; the authority is the registered attachment, so a value that
- * does not match this workspace's repo is refused rather than redirected.
+ * is read from THAT tip. `repo_id` is REQUIRED and is the client naming the
+ * repository it drew the button for — it rides the snapshot as
+ * `workspace_info.repo_ops.repo_id`. The authority is the registered
+ * attachment, so an absent, empty or non-matching value is refused rather than
+ * redirected onto a repository the person was not looking at.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
 export async function handleWorkerRepoOperationDeployRun(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
-  if (p.repo_id !== undefined && typeof p.repo_id !== 'string') {
+  if (typeof p.repo_id !== 'string' || p.repo_id.length === 0) {
     ws.send(
       JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { repo_id?: string }')
+        makeError(req, 'bad_request', 'payload requires { repo_id: string }')
       )
     );
     return;
@@ -3724,7 +3739,7 @@ export async function handleWorkerRepoOperationDeployRun(ws, req) {
   let result;
   try {
     result = await startWorkerRepoOperationDeployRun(key, {
-      repo_id: typeof p.repo_id === 'string' ? p.repo_id : null
+      repo_id: p.repo_id
     });
   } catch (err) {
     log('repo-operation deploy run failed for %s: %o', key, err);

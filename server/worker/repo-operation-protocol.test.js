@@ -197,6 +197,17 @@ describe('RepoOperation protocol projection', () => {
     });
   });
 
+  test('names the canonical repository on the declaration projection', () => {
+    const decorated = decorateWith();
+
+    const info = /** @type {any} */ (decorated.workspace_info);
+
+    // No attachment is registered in this suite, so the canonical repo is
+    // UNKNOWN — projected as null rather than guessed from a card.
+    expect(Object.hasOwn(info.repo_ops, 'repo_id')).toBe(true);
+    expect(info.repo_ops.repo_id).toBeNull();
+  });
+
   test('projects the request provenance of the operation', () => {
     const decorated = decorateWith({
       'op-1': failedDeployOperation(),

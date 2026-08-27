@@ -1437,6 +1437,11 @@ export function createRepoOperationCoordinator(deps) {
       ...(manual
         ? {
             source: /** @type {const} */ ('manual'),
+            // The click-time tip, durable from the prerecord on: a manual
+            // record that waits behind another operation must still launch at
+            // the tip it was authorized against, not at whatever the remote
+            // has moved to by then (UI-s582 §3.5).
+            target_sha,
             ...(Number.isInteger(subject.manual_run_id)
               ? { manual_run_id: subject.manual_run_id }
               : {})
@@ -1650,6 +1655,13 @@ export function createRepoOperationCoordinator(deps) {
       }
       return { ok: true, operation_id: ensured.operation_id };
     }
+    // The opt-out is re-read after the async policy and containment checks, so
+    // a workspace that turned it on mid-flight lands here as an INERT result.
+    // It is a different fact from an undeclared lane and must keep its own
+    // word, so it is mapped before the generic inert reason.
+    if (ensured.opted_out === true) {
+      return { ok: false, reason: 'deploy_opted_out' };
+    }
     return {
       ok: false,
       reason:
@@ -1719,22 +1731,35 @@ export function createRepoOperationCoordinator(deps) {
    */
   async function launchQueued(workspace, operation_id, operation) {
     const retry = operation.state === 'retry_pending';
+    // A manual record keeps reading its policy — and now its TARGET — from the
+    // tip it was authorized against, on every relaunch: the previous base may
+    // still have no declaration at all.
+    const manual = operation.source === 'manual';
     // A retry re-runs the SAME command at the SAME target the first attempt
     // failed at (contract §3.2). Re-binding would resolve the remote's CURRENT
     // tip, so a base that moved between the two runs would leave the consumed
     // key pinned to the old SHA while the script executed against a new one —
-    // a different command wearing the first one's retry budget. The pinned SHA
-    // is authority here; its absence fails closed rather than falling back to a
-    // fresh bind.
+    // a different command wearing the first one's retry budget. A MANUAL record
+    // pins for the same reason one step earlier: the person authorized THIS
+    // tip, and a record queued behind another operation must not silently
+    // become a deploy of whatever landed since. The pinned SHA is authority in
+    // both cases; its absence fails closed rather than falling back to a fresh
+    // bind.
     /** @type {{ ok: boolean, code?: string, target_sha?: string }} */
-    const bound = retry
-      ? typeof operation.target_sha === 'string' && operation.target_sha
-        ? { ok: true, target_sha: operation.target_sha }
-        : { ok: false, code: 'repo_ops_retry_target_missing' }
-      : await deploy_worktree.bindTarget({
-          repo: deps.repo,
-          base: operation.target_base
-        });
+    const bound =
+      retry || manual
+        ? typeof operation.target_sha === 'string' && operation.target_sha
+          ? { ok: true, target_sha: operation.target_sha }
+          : {
+              ok: false,
+              code: retry
+                ? 'repo_ops_retry_target_missing'
+                : 'manual_target_missing'
+            }
+        : await deploy_worktree.bindTarget({
+            repo: deps.repo,
+            base: operation.target_base
+          });
     if (!bound.ok || typeof bound.target_sha !== 'string') {
       if (retry) {
         deps.store.settleConsumedRepoOperationRetry(workspace, {
@@ -1748,9 +1773,6 @@ export function createRepoOperationCoordinator(deps) {
       }
       return;
     }
-    // A manual record keeps reading its policy from the tip it runs at, on
-    // every relaunch — the previous base may still have no declaration at all.
-    const manual = operation.source === 'manual';
     /** @type {any} */
     const policy = await resolveEffective({
       repo: deps.repo,

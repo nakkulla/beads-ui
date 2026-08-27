@@ -316,19 +316,22 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   queue (`revision`, `auto_advance`, `slots`, `serial_lanes[]`,
   `serial_lane_count`, `queue[]`, `pr_wait[]`, `done[]`, `attempts`,
   `admission`, `cleanup_failed`, `exec_defaults`) plus the server-decorated,
-  NON-persisted keys: `workspace_info: { slots, repo_ops }`, `runner_catalog`,
-  `execution_defaults`, `pr_observations` (per-`pr_wait` PR state + merge-gate
-  verdict, memory cache only), `bead_titles` (`Record<bead_id, title>` for the
-  `queue`/`pr_wait`/`done` beads, memory cache only), and `declared_base`.
-  `bead_titles` is PARTIAL: only titles already cached travel, a miss simply has
-  no entry and arrives in a later snapshot once the server's async lookup fills
-  it. Consumers fail-quiet on the whole key being absent (older server) and on a
-  missing entry — both fall back to displaying the bead id. `bead_labels` is
-  likewise a non-persisted partial `Record<bead_id, string[]>` for the same
-  `queue`/`pr_wait`/`done` beads. Its arrays are normalized from the same async
-  `bd show` fill as titles and times; no entry means label truth is unknown (not
-  an empty array), including when an older server omits the whole key. It is UI
-  projection only and never Worker scheduler authority.
+  NON-persisted keys: `workspace_info: { slots, repo_ops }` — where `repo_ops`
+  additionally carries `repo_id`, the canonical repository path the registered
+  attachment resolved the declaration against, `null` where no attachment is
+  registered —, `runner_catalog`, `execution_defaults`, `pr_observations`
+  (per-`pr_wait` PR state + merge-gate verdict, memory cache only),
+  `bead_titles` (`Record<bead_id, title>` for the `queue`/`pr_wait`/`done`
+  beads, memory cache only), and `declared_base`. `bead_titles` is PARTIAL: only
+  titles already cached travel, a miss simply has no entry and arrives in a
+  later snapshot once the server's async lookup fills it. Consumers fail-quiet
+  on the whole key being absent (older server) and on a missing entry — both
+  fall back to displaying the bead id. `bead_labels` is likewise a non-persisted
+  partial `Record<bead_id, string[]>` for the same `queue`/`pr_wait`/`done`
+  beads. Its arrays are normalized from the same async `bd show` fill as titles
+  and times; no entry means label truth is unknown (not an empty array),
+  including when an older server omits the whole key. It is UI projection only
+  and never Worker scheduler authority.
 - `bead_workflow: Record<bead_id, WorkflowSummary|null>` (UI-eey2 §9.2) is the
   stepper projection for the beads a LANE renders: `queue` ∪
   `serial_lanes[].entries` ∪ RUNNING attempts ∪ `pr_wait`. `done` is excluded —
@@ -511,9 +514,11 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   target SHA input and no `expected_revision`: the server pins remote, base and
   the fetched tip through the workspace's one base resolver (never assuming
   `origin`), and reads the `[deploy]` declaration and its script blob from THAT
-  tip — the single previous-base exception, manual path only. `repo_id` names
-  the repository the client drew the button for; a value that is not this
-  workspace's repo is refused rather than redirected. Reply:
+  tip — the single previous-base exception, manual path only. `repo_id` is
+  REQUIRED and names the repository the client drew the button for; it is read
+  from `workspace_info.repo_ops.repo_id`, and an absent, empty or non-matching
+  value is refused rather than redirected. A snapshot that carries no `repo_id`
+  leaves the button disabled instead of sending an uncheckable request. Reply:
   `{ ok: true, operation_id, queue }` or `{ ok: false, reason, queue }` with
   `reason` ∈ `deploy_not_declared` (no `[deploy]` at the tip) ·
   `deploy_opted_out` (this workspace's deploy opt-out is on) ·
@@ -528,7 +533,10 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   what the script then does lives on the operation card. Every click that gets
   past the guards creates a NEW operation — the identity hashes a server-issued
   monotonic `manual_run_id` — and links the previous record for the same target
-  through `superseded_by`.
+  through `superseded_by`. The tip is pinned onto the record at PRERECORD time:
+  a manual operation that waits behind another operation still launches at the
+  tip its click was authorized against, and a record that lost that SHA settles
+  `failed` with `manual_target_missing` rather than binding a newer one.
 - `worker-queue-set-slots` payload: `{ slots, expected_revision }` — the
   concurrency cap (lower bound 1).
 

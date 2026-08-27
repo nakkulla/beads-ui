@@ -4247,7 +4247,7 @@ export function createQueueStore(options = {}) {
      * record the coordinator must receive before it asks the runner to spawn.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
+     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_sha?: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
      * @returns {QueueOpResult}
      */
     ensureRepoOperation(workspace, input) {
@@ -4334,7 +4334,13 @@ export function createQueueStore(options = {}) {
           subjects,
           effective_base_sha: input.effective_base_sha.toLowerCase(),
           target_base: input.target_base,
-          target_sha: null,
+          // A target pinned at PRERECORD time (UI-s582 §3.5). The automatic
+          // lane leaves it null and binds at launch; a manual run cannot, since
+          // the tip it was authorized against is the tip it must deploy even if
+          // the record waits behind another operation while the remote moves.
+          target_sha: isSha(input.target_sha)
+            ? input.target_sha.toLowerCase()
+            : null,
           target_tree: isSha(input.target_tree)
             ? input.target_tree.toLowerCase()
             : null,

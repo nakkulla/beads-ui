@@ -3414,4 +3414,134 @@ describe('manual deploy run', () => {
       operations[String(second.operation_id)].state
     ]).toEqual([1, 2, second.operation_id, 'running']);
   });
+
+  test('launches a queued manual run at its pinned tip after the remote moved', async () => {
+    const start = vi.fn(async () => ({
+      ok: true,
+      process_identity: { pid: 3, pgid: 3, started_at: 1 },
+      log_path: path.join(root, 'manual.log')
+    }));
+    const { store, coordinator } = manualCoordinatorFor({
+      runner: {
+        start,
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      },
+      deployWorktree: {
+        // The remote tip has MOVED by the time the queued record launches.
+        bindTarget: async () => ({ ok: true, target_sha: ADVANCED_HEAD }),
+        readState: async () => ({ ok: true, head: null, clean: true }),
+        ensureAligned: async () => ({
+          ok: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy'),
+          target_sha: TARGET
+        }),
+        verifyCovered: async () => ({ ok: true }),
+        verifyAligned: async () => ({ ok: true })
+      }
+    });
+    // A running VERIFY holds the repo serial lane, so the manual record is
+    // prerecorded as queued instead of launching inside the click.
+    store.ensureRepoOperation(root, {
+      operation_id: 'running-verify',
+      repo_id: root,
+      kind: 'verify',
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: '5'.repeat(40)
+    });
+    const holding = store.snapshot(root).repo_operations['running-verify'];
+    store.startRepoOperation(root, {
+      operation_id: 'running-verify',
+      attempt_id: holding.attempt_id,
+      process_identity: { pid: 8, pgid: 8, started_at: 1 },
+      log_path: path.join(root, 'verify.log'),
+      target_sha: HEAD
+    });
+
+    const result = /** @type {any} */ (await coordinator.runManualDeploy());
+    const queued =
+      store.snapshot(root).repo_operations[String(result.operation_id)];
+    store.settleRepoOperation(root, {
+      operation_id: 'running-verify',
+      attempt_id: holding.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+    await coordinator.reconcile(root);
+
+    expect([queued.state, queued.target_sha]).toEqual(['queued', TARGET]);
+    expect(start).toHaveBeenCalledWith(
+      expect.objectContaining({ target_sha: TARGET })
+    );
+    expect(
+      store.snapshot(root).repo_operations[String(result.operation_id)]
+        .target_sha
+    ).toBe(TARGET);
+  });
+
+  test('fails a manual record closed when its pinned tip is gone', async () => {
+    const start = vi.fn();
+    const { store, coordinator } = manualCoordinatorFor({
+      runner: {
+        start,
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'manual-unpinned',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'manual', merged_sha: TARGET }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      source: 'manual',
+      manual_run_id: 1
+    });
+
+    await coordinator.reconcile(root);
+
+    const operation = store.snapshot(root).repo_operations['manual-unpinned'];
+    expect([operation.state, operation.failure?.code]).toEqual([
+      'failed',
+      'manual_target_missing'
+    ]);
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  test('says opted out when the opt-out lands mid-flight', async () => {
+    /** @type {any} */
+    let store_ref = null;
+    const base_git = gitForBootstrap();
+    const { store, coordinator } = manualCoordinatorFor({
+      // The subject-containment probe is the last await before the coordinator
+      // re-reads the opt-out, so flipping it there reproduces a workspace that
+      // turned the deploy lane off while the click was still resolving.
+      gitRun: /** @type {any} */ (
+        async (/** @type {string[]} */ args) => {
+          if (args[0] === 'merge-base' && store_ref) {
+            store_ref.setRepoOpsOptOut(root, {
+              expected_revision: store_ref.snapshot(root).revision,
+              kind: 'deploy',
+              opted_out: true
+            });
+          }
+          return base_git(args);
+        }
+      )
+    });
+    store_ref = store;
+
+    expect(await coordinator.runManualDeploy()).toEqual({
+      ok: false,
+      reason: 'deploy_opted_out'
+    });
+  });
 });

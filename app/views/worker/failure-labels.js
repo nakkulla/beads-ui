@@ -41,6 +41,8 @@ const FAILURE_SENTENCES = {
   verify_script_failure: '검증 스크립트가 실패했습니다.',
   deploy_script_failure: '배포 스크립트가 실패했습니다.',
   interrupted_without_terminal_exit: '작업이 종료 기록 없이 중단됐습니다.',
+  manual_target_missing:
+    '수동 배포 기록에 핀된 대상 SHA가 없어 실행하지 않았습니다.',
   // Cleanup step 1 (base 포함 확인). This step runs before any repo operation
   // exists, so a stop here produces no operation card and no failure_kind —
   // the cleanup record's raw reason is the ONLY thing that can say what

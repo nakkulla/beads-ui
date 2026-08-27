@@ -694,6 +694,7 @@ function repoOps(over = {}) {
     source_path: 'repo-ops/config.toml',
     base_ref: 'main',
     base_sha: 'a'.repeat(40),
+    repo_id: '/repo',
     verify: null,
     deploy: { script: 'repo-ops/script/deploy', timeout_ms: 600_000 },
     error_code: null,
@@ -1230,6 +1231,29 @@ describe('배포 실행 버튼 (UI-s582 §3)', () => {
     expect(runButton(mount)).toBeNull();
   });
 
+  test('disables the button when the snapshot cannot name the repository', () => {
+    const transport = vi.fn();
+    const { mount } = mountDeployLane(
+      {
+        workspace_info: {
+          verify_cmd: null,
+          repo_ops: repoOps({ repo_id: null })
+        }
+      },
+      transport
+    );
+
+    const button = runButton(mount);
+    expect([button?.disabled, button?.getAttribute('title')]).toEqual([
+      true,
+      '저장소를 확인할 수 없음'
+    ]);
+    /** @type {HTMLButtonElement} */ (button).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   test('disables the button while a deploy is in flight', () => {
     const { mount } = mountDeployLane({
       repo_operations: [
@@ -1250,12 +1274,7 @@ describe('배포 실행 버튼 (UI-s582 §3)', () => {
       operation_id: 'op-9',
       queue: queueOf()
     }));
-    const { mount } = mountDeployLane(
-      {
-        repo_operations: [operationCard({ state: 'succeeded', failure: null })]
-      },
-      transport
-    );
+    const { mount } = mountDeployLane({}, transport);
 
     /** @type {HTMLButtonElement} */ (runButton(mount)).dispatchEvent(
       new MouseEvent('click', { bubbles: true })

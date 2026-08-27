@@ -866,6 +866,30 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(runManualDeploy).not.toHaveBeenCalled();
   });
 
+  test('startWorkerRepoOperationDeployRun refuses a click that names no repo', async () => {
+    const runManualDeploy = vi.fn(async () => ({ ok: true }));
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({
+        repo: '/repo',
+        repoOperationCoordinator: { runManualDeploy }
+      })
+    );
+
+    expect(
+      await Promise.all([
+        startWorkerRepoOperationDeployRun(WS, {}),
+        startWorkerRepoOperationDeployRun(WS, { repo_id: '' }),
+        startWorkerRepoOperationDeployRun(WS, { repo_id: null })
+      ])
+    ).toEqual([
+      { ok: false, reason: 'target_unresolved' },
+      { ok: false, reason: 'target_unresolved' },
+      { ok: false, reason: 'target_unresolved' }
+    ]);
+    expect(runManualDeploy).not.toHaveBeenCalled();
+  });
+
   test('startWorkerRepoOperationDeployRun is inert without an attachment', async () => {
     expect(await startWorkerRepoOperationDeployRun(WS, {})).toEqual({
       ok: false,

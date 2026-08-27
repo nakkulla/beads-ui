@@ -150,6 +150,22 @@ export function createRepoOpsSettings(options) {
   }
 
   /**
+   * The canonical repository this workspace's declaration was resolved against,
+   * as the SERVER names it (`workspace_info.repo_ops.repo_id`). Every 배포 실행
+   * click carries it so the server can refuse a click that came from a screen
+   * pointed at another repository; a snapshot that does not carry it leaves the
+   * button unclickable rather than sending a request that cannot be checked.
+   *
+   * @returns {string|null}
+   */
+  function currentRepoId() {
+    const repo_ops = currentWorkspaceInfo().repo_ops;
+    const repo_id =
+      repo_ops && typeof repo_ops === 'object' ? repo_ops.repo_id : null;
+    return typeof repo_id === 'string' && repo_id ? repo_id : null;
+  }
+
+  /**
    * Whether a deploy for this repository is still in flight. Derived from the
    * projected cards, which is the only place the client learns about lane
    * occupancy — the button must not offer a click the server would refuse.
@@ -166,22 +182,6 @@ export function createRepoOpsSettings(options) {
   }
 
   /**
-   * The repository the button was drawn for, as the cards name it. Null when no
-   * operation has ever run here — the server's own attachment is the authority
-   * either way, and naming nothing is honest about knowing nothing.
-   *
-   * @returns {string|null}
-   */
-  function currentRepoId() {
-    for (const card of currentOperations()) {
-      if (card && typeof card.repo_id === 'string' && card.repo_id) {
-        return card.repo_id;
-      }
-    }
-    return null;
-  }
-
-  /**
    * The 배포 실행 button (UI-s582 §3). Drawn only where there is something to
    * run: a DECLARED deploy lane this workspace has not opted out of. It carries
    * no target input — the server pins the fetched remote tip itself.
@@ -190,14 +190,17 @@ export function createRepoOpsSettings(options) {
    */
   function deployRunButton() {
     const blocked = deployInFlight();
+    const unnamed = currentRepoId() === null;
     return html`<button
       type="button"
       class="worker-repo-ops__deploy-run"
       data-seam="repo-ops-deploy-run"
-      ?disabled=${blocked}
+      ?disabled=${blocked || unnamed}
       title=${blocked
         ? '배포 진행 중'
-        : '원격 base tip에서 배포 스크립트를 1회 실행합니다'}
+        : unnamed
+          ? '저장소를 확인할 수 없음'
+          : '원격 base tip에서 배포 스크립트를 1회 실행합니다'}
       @click=${() => void runDeploy()}
     >
       배포 실행
@@ -401,13 +404,13 @@ export function createRepoOpsSettings(options) {
    * stopped the run.
    */
   async function runDeploy() {
-    if (!transport) {
+    const repo_id = currentRepoId();
+    if (!transport || repo_id === null) {
       return;
     }
-    const repo_id = currentRepoId();
     const res = await transport(
       /** @type {any} */ ('worker-repo-operation-deploy-run'),
-      repo_id ? { repo_id } : {}
+      { repo_id }
     );
     adopt(res);
     if (!res || res.ok !== true) {
