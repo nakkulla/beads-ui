@@ -60,14 +60,15 @@ describe('monitor tab styles (UI-eey2)', () => {
     );
   });
 
-  test('stacks the mobile lanes in control-first order', () => {
+  test('leaves no CSS order rule behind for the mobile lane stack (UI-5ksp §4.7)', () => {
     const block = monitorBlock();
     const mq = block.slice(block.indexOf('@media (max-width: 640px)'));
 
-    expect(mq).toContain('.mon2-lanes > .worker-pane--lane-running');
-    expect(mq).toContain('order: 0');
-    expect(mq).toContain('.mon2-lanes > .worker-pane--lane-done');
-    expect(mq).toContain('order: 4');
+    // 관제 우선 순서는 이제 DOM이 소유한다 — `지금` 패널이 실행 중·PR 대기를
+    // 합치는 것은 restyle이 아니라 recombination이라 `order`로는 표현할 수 없다.
+    expect(mq).not.toContain('.mon2-lanes > .worker-pane--lane-running');
+    expect(mq).not.toContain('.mon2-lanes > .worker-pane--lane-done');
+    expect(mq).not.toContain('order: 4');
   });
 
   test('keeps the usage ribbon bars visible on a ≤640px viewport (§11.1)', () => {
@@ -115,16 +116,41 @@ describe('monitor tab styles (UI-eey2)', () => {
     expect(CSS).not.toContain('.mon2-sec__auto');
   });
 
-  test('styles the two wait-lane areas and both lane kinds (UI-e6hw §4)', () => {
+  test('keeps only the cross-repo wait-lane material in the monitor block (UI-5ksp §4.2)', () => {
     const block = monitorBlock();
 
-    expect(block).toContain('.mon2-wait');
-    expect(block).toContain('.mon2-area__hd');
-    expect(block).toContain('.mon2-parallel .worker-mini__seq::before');
+    // 대기 본문 구조는 두 탭이 공유하는 `.worker-wait__*`가 소유한다 — Monitor
+    // 블록에 남는 것은 cross-repo 사실(연결 레인·상호 정지 경고)뿐이다.
+    expect(block).toContain('.mon2-lane__cross-wait');
     expect(block).toContain('.mon2-clane__body');
     expect(block).toContain('.mon2-crow');
     expect(block).toContain('.mon2-newlane');
     expect(block).toMatch(/\[data-drop\]\.is-drop-over\s*{/);
+  });
+
+  test('leaves no rule behind for the monitor-only wait surfaces (UI-5ksp §4.2)', () => {
+    expect(CSS).not.toContain('.mon2-wait');
+    expect(CSS).not.toContain('.mon2-area');
+    expect(CSS).not.toContain('.mon2-rowops');
+    expect(CSS).not.toContain('.mon2-lane--empty');
+    expect(CSS).not.toContain('.mon2-lane__hint');
+    expect(CSS).not.toContain('.mon2-lane__rows');
+    expect(CSS).not.toContain('.mon2-lane__badge');
+    expect(CSS).not.toContain('.mon2-parallel');
+    expect(CSS).not.toContain('.mon2-serial');
+    // 데스크톱 등폭 예외만 사라진다 — 모바일의 `flex: none`은 Worker와 같은
+    // 세로 스택 규칙이므로 그대로 남는다.
+    expect(CSS).not.toMatch(/\.mon2-lanes > \.worker-pane\s*{\s*flex:\s*1 1 0/);
+  });
+
+  test('lets the shared lane rules own the monitor lane width (UI-5ksp §4.5)', () => {
+    // Monitor만 `min-width: 0`으로 풀던 예외가 사라졌으므로 최상위 레인의
+    // 등폭·220px 하한과 중첩 pane의 card 토큰이 두 탭에 같이 적용된다.
+    expect(CSS).toMatch(
+      /\.worker-lanes > \.worker-pane\s*{[^}]*min-width:\s*220px/
+    );
+    expect(CSS).toMatch(/\.worker-wait \.worker-pane\s*{[^}]*min-width:\s*0/);
+    expect(CSS).toContain('.worker-mini__rowops');
   });
 
   test('consumes design tokens only (no raw hex in the monitor block)', () => {

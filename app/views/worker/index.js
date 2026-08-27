@@ -5140,9 +5140,13 @@ export function createWorkerView(mount_element, options = {}) {
       header_control: doneRangeTemplate(),
       collapsible: true,
       collapsed: collapse.isCollapsed('done'),
-      preview: Array.isArray(m.token_total)
-        ? m.token_total.map((badge) => badge.label).join(' · ')
-        : m.token_total || stripPreview(m.done)
+      // preview는 모바일 가로 접힘 전용 — 데스크톱 세로 띠는 점·제목·건수만
+      // 싣는다 (§4.4).
+      preview: is_mobile
+        ? Array.isArray(m.token_total)
+          ? m.token_total.map((badge) => badge.label).join(' · ')
+          : m.token_total || stripPreview(m.done)
+        : undefined
     });
     if (is_mobile) {
       // 관제 우선 배치 (UI-58y2 §모바일, 두 탭 공유는 UI-5ksp §4.7): 지금 →

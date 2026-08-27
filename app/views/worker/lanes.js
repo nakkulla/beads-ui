@@ -1805,7 +1805,7 @@ export function paneTemplate(pane) {
       : ''}${pane.live ? ' worker-pane--live' : ''}${pane.collapsible
       ? ' worker-pane--collapsible'
       : ''}${collapsed ? ' worker-pane--collapsed' : ''}"
-    id=${pane.id}
+    id=${ifDefined(pane.id || undefined)}
     data-lane=${pane.lane}
   >
     ${pane.collapsible
@@ -1857,6 +1857,9 @@ export function paneTemplate(pane) {
 /**
  * @typedef {Object} WaitSerialLane
  * @property {string} id - `s1`.. 또는 서버 lane id. pane `lane`·`data-lane`이 된다.
+ * @property {string} [pane_id] - pane 요소 `id`. 생략하면 `worker-pane-lane-<id>`;
+ * 빈 문자열이면 `id` 속성을 붙이지 않는다 — 레포마다 같은 `s1`을 가진 Monitor가
+ * 문서 안 중복 id를 만들지 않으려고 쓴다.
  * @property {string} title - `직렬 1` · `dotfiles · 직렬 1`.
  * @property {import('lit-html').TemplateResult[]} rows - 호출 측이 이미 그려
  * 넘긴 행 목록 (`miniRow` 등). 본문은 구조만 소유하므로 행 렌더링에 관여하지
@@ -1986,7 +1989,10 @@ function serialLaneTemplate(lane) {
     class="worker-wait__lane${lane.empty ? ' worker-wait__lane--empty' : ''}"
   >
     ${paneTemplate({
-      id: `worker-pane-lane-${lane.id}`,
+      id:
+        typeof lane.pane_id === 'string'
+          ? lane.pane_id
+          : `worker-pane-lane-${lane.id}`,
       lane: /** @type {any} */ (lane.id),
       title: lane.title,
       items: [],

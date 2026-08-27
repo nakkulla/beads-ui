@@ -30,12 +30,16 @@ import { debug } from '../../utils/logging.js';
 import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
+import { watchMobile } from '../../utils/viewport.js';
+import { createLaneCollapse } from '../worker/lane-collapse.js';
 import {
   candidateCard,
   discardCompletionMessage,
   discardConfirmationMessage,
   miniRow,
-  paneTemplate
+  nowPanel,
+  paneTemplate,
+  waitBody
 } from '../worker/lanes.js';
 import { departedLabel } from '../worker/queue-overlaps.js';
 import { runningTile } from '../worker/running-grid.js';
@@ -306,9 +310,13 @@ const TICK_MS = 1_000;
  */
 
 /**
- * The five lanes in DOM order (§3). 생애주기 좌→우 독해 그대로 두고, 모바일의
- * 관제 우선 순서(실행중→대기→실행가능→PR→완료)는 CSS `order`가 소유한다 —
- * DOM을 두 번 재배열하면 탭 이동 순서가 화면 폭마다 달라진다.
+ * The five lanes in DOM order (§3). 데스크톱은 생애주기 좌→우 독해 그대로이고,
+ * 모바일은 `지금` 패널을 앞세운 관제 우선 조립을 **DOM에서** 만든다 (UI-5ksp
+ * §4.7) — CSS `order` 재배열은 폐기했다: 실행 중·PR 대기가 `지금`으로 합쳐지는
+ * 것은 restyle이 아니라 recombination이라 CSS가 표현할 수 없다.
+ *
+ * 제목 어휘는 Worker 탭과 같다 (§4.5). 탭 부가정보(완료 범위·정렬·일괄 머지)는
+ * 제목이 아니라 `header_control`이 싣는다.
  *
  * @type {ReadonlyArray<{ lane: 'runnable'|'queue'|'running'|'pr_wait'|'done', pane: 'candidate'|'queue'|'running'|'pr_wait'|'done', title: string, empty: string }>}
  */
@@ -316,14 +324,22 @@ const MONITOR_LANES = [
   {
     lane: 'runnable',
     pane: 'candidate',
-    title: '실행가능',
+    title: '후보',
     empty: '실행 자격을 갖춘 이슈 없음'
   },
   { lane: 'queue', pane: 'queue', title: '대기', empty: '표시할 레포 없음' },
-  { lane: 'running', pane: 'running', title: '실행중', empty: '실행 중 없음' },
+  { lane: 'running', pane: 'running', title: '실행 중', empty: '실행 중 없음' },
   { lane: 'pr_wait', pane: 'pr_wait', title: 'PR 대기', empty: 'PR 없음' },
   { lane: 'done', pane: 'done', title: '완료', empty: '완료 기록 없음' }
 ];
+
+/**
+ * 모바일 레인 순서 (§4.7): 실행 중·PR 대기는 `지금` 패널이 가져가므로 레인
+ * 목록에 남지 않는다.
+ *
+ * @type {ReadonlyArray<'queue'|'runnable'|'done'>}
+ */
+const MOBILE_LANE_ORDER = ['queue', 'runnable', 'done'];
 
 /** 연결 레인 순번 ①…⑳ (UI-e6hw §4.2). */
 const CIRCLED_NUMERALS = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
@@ -369,6 +385,19 @@ export function createMonitorView(mount_element, options) {
   let candidate_sort = loadCandidateSort();
   /** @type {Record<string, any>} */
   let sections_state = loadSections();
+  /**
+   * 레인·영역 접힘 (UI-5ksp §4.4). 레포 섹션은 계속 `sections_state`가
+   * 소유하지만, 다섯 레인과 대기 본문의 두 영역은 Worker 탭과 같은 스토어를
+   * 같은 규칙으로 쓴다 — 저장 키만 탭마다 다르다.
+   */
+  const collapse = createLaneCollapse('beads-ui.monitor.lane-collapsed');
+  /**
+   * 관제 우선 모바일 조립이 켜졌는지 (§4.7). `matchMedia`가 없는 런타임은
+   * 데스크톱 조립으로 남는다.
+   */
+  let is_mobile = false;
+  /** @type {null | (() => void)} */
+  let unsubscribe_viewport = null;
   /** @type {string|null} */
   let selected_attempt = null;
   /**
@@ -757,25 +786,24 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * Collapse state of the 대기 lane's two areas (§4). 레포별 섹션 키와 달리
-   * 영역은 전 레포 공통이므로 저장 키도 최상위에 둔다.
+   * Adopt a new collapse state for one lane (UI-5ksp §4.4): 스토어가 먼저
+   * 저장하고 그 다음에 다시 그리므로, 새로고침은 마지막 클릭이 만든 화면을
+   * 그대로 복원한다.
    *
-   * @param {'parallel'|'serial'} area
-   * @returns {boolean}
+   * @param {import('../worker/lane-collapse.js').LaneId} lane
    */
-  function areaCollapsed(area) {
-    return sections_state[area] === true;
+  function toggleLaneCollapse(lane) {
+    collapse.toggle(lane);
+    doRender();
   }
 
   /**
-   * @param {'parallel'|'serial'} area
+   * One 대기 본문 영역(병렬·직렬)도 같은 저장-후-재렌더 계약을 쓴다.
+   *
+   * @param {import('../worker/lane-collapse.js').AreaId} area
    */
-  function toggleArea(area) {
-    sections_state = {
-      ...sections_state,
-      [area]: sections_state[area] !== true
-    };
-    saveSections(sections_state);
+  function toggleWaitArea(area) {
+    collapse.toggleArea(area);
     doRender();
   }
 
@@ -1395,9 +1423,61 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * One 병렬 영역 row (§4.1). Worker `miniRow` 그대로이고, 드래그 좌표와 모바일
-   * 행 조작만 바깥 shell이 싣는다. 순번 `#n`의 `#`는 CSS가 붙인다 — Worker
-   * 템플릿은 두 탭이 공유한다.
+   * The 대기 행 조작 묶음 (UI-5ksp §4.6). 행 밖 별도 줄이던 자리를 `miniRow`의
+   * `actions` 슬롯 — 행 1번 줄 오른쪽 끝 — 으로 옮겼다. ⛓만 상시 조작이고
+   * `↑ ↓ ✕`는 드래그의 coarse pointer 보완재라 표시 조건은 CSS가 소유한다.
+   *
+   * @param {MonitorItem} item
+   * @param {boolean} [nudgeable] - true for 병렬 행 only: 직렬 레인의 순서는
+   * 의존이 소유하므로 한 칸 위·아래로 미는 버튼이 없다.
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function rowActions(item, nudgeable = false) {
+    return html`<span class="worker-mini__rowops">
+      <button
+        type="button"
+        class="mon-dep__btn"
+        data-bead-id=${item.id}
+        title="의존성"
+        aria-label="의존성"
+      >
+        ⛓
+      </button>
+      ${nudgeable
+        ? html`<button
+              type="button"
+              class="worker-mini__rowops-up"
+              data-bead-id=${item.id}
+              title="같은 레포 안에서 한 칸 위로"
+              aria-label="한 칸 위로"
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              class="worker-mini__rowops-down"
+              data-bead-id=${item.id}
+              title="같은 레포 안에서 한 칸 아래로"
+              aria-label="한 칸 아래로"
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              class="worker-mini__rowops-remove"
+              data-bead-id=${item.id}
+              title="대기에서 빼기"
+              aria-label="대기에서 빼기"
+            >
+              ✕
+            </button>`
+        : ''}
+    </span>`;
+  }
+
+  /**
+   * One 병렬 영역 row (§4.1). Worker `miniRow` 그대로이고, 드래그 좌표만 바깥
+   * shell이 싣는다.
    *
    * @param {MonitorItem} item
    * @param {number} row_index
@@ -1412,86 +1492,9 @@ export function createMonitorView(mount_element, options) {
       data-row-index=${row_index}
       data-queue-index=${String(item.queue_index ?? 0)}
     >
-      ${miniRow(withOverlaps(item))}
-      <span class="mon2-rowops">
-        <button
-          type="button"
-          class="mon-dep__btn"
-          data-bead-id=${item.id}
-          title="의존성"
-          aria-label="의존성"
-        >
-          ⛓
-        </button>
-        <button
-          type="button"
-          class="mon2-rowops__up"
-          data-bead-id=${item.id}
-          title="같은 레포 안에서 한 칸 위로"
-          aria-label="한 칸 위로"
-        >
-          ↑
-        </button>
-        <button
-          type="button"
-          class="mon2-rowops__down"
-          data-bead-id=${item.id}
-          title="같은 레포 안에서 한 칸 아래로"
-          aria-label="한 칸 아래로"
-        >
-          ↓
-        </button>
-        <button
-          type="button"
-          class="mon2-rowops__remove"
-          data-bead-id=${item.id}
-          title="대기에서 빼기"
-          aria-label="대기에서 빼기"
-        >
-          ✕
-        </button>
-      </span>
+      ${miniRow(withOverlaps(item), { actions: rowActions(item, true) })}
       ${depPanel(item.id)}
     </div>`;
-  }
-
-  /**
-   * The 병렬 영역 (§4.1): 모든 visible 레포의 병렬 큐를 한 목록으로. 섹션
-   * 헤더가 없으므로 레포 자동/수동 상태는 레포 배지 툴팁이 말한다.
-   *
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function parallelArea() {
-    const collapsed = areaCollapsed('parallel');
-    return html`<section
-      class="mon2-area mon2-parallel${collapsed ? ' is-collapsed' : ''}"
-      data-area="parallel"
-    >
-      <header class="mon2-area__hd">
-        <button
-          type="button"
-          class="mon2-area__toggle"
-          data-area="parallel"
-          aria-expanded=${collapsed ? 'false' : 'true'}
-          aria-label=${`병렬 영역 ${collapsed ? '펼치기' : '접기'}`}
-        >
-          ${collapsed ? '▸' : '▾'}
-        </button>
-        <span class="mon2-area__name">병렬 영역</span>
-        <span class="mon2-area__count">${lanes.parallel_rows.length}</span>
-      </header>
-      ${collapsed
-        ? ''
-        : html`<div class="mon2-area__body" data-drop="parallel">
-            ${lanes.parallel_rows.length === 0
-              ? html`<div class="worker-pane__empty">
-                  비어 있음 — 드래그로 배치
-                </div>`
-              : lanes.parallel_rows.map((item, index) =>
-                  parallelRow(item, index)
-                )}
-          </div>`}
-    </section>`;
   }
 
   /**
@@ -1712,18 +1715,7 @@ export function createMonitorView(mount_element, options) {
       data-row-index=${row_index}
       data-queue-index=${String(item.queue_index ?? 0)}
     >
-      ${miniRow(withOverlaps(item))}
-      <span class="mon2-rowops">
-        <button
-          type="button"
-          class="mon-dep__btn"
-          data-bead-id=${item.id}
-          title="의존성"
-          aria-label="의존성"
-        >
-          ⛓
-        </button>
-      </span>
+      ${miniRow(withOverlaps(item), { actions: rowActions(item) })}
       ${depPanel(item.id)}
     </div>`;
   }
@@ -1767,107 +1759,102 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * One 레포 직렬 레인 pane (§4.2). 비어 있는 레인은 한 줄 힌트로 접히고
-   * 드래그 중에만 드롭 타깃으로 펼쳐진다 (표시는 CSS 소유).
+   * One 레포 직렬 레인의 공유 대기 본문 모델 (UI-5ksp §4.2). 본문 구조는
+   * `waitBody`가 소유하므로 여기서는 재료만 만든다 — 행, 점유 배지, 레포
+   * `Worker ↗`, 드롭 좌표, 그리고 레포 간 상호 정지 경고(`after`)다. 그 경고는
+   * Monitor 전용 cross-repo 사실이라 공유 본문이 아니라 이 슬롯이 소유한다.
    *
    * @param {MonitorQueueGroup} group
    * @param {MonitorSerialSublane} lane
-   * @returns {import('lit-html').TemplateResult}
+   * @returns {import('../worker/lanes.js').WaitSerialLane}
    */
-  function serialLanePane(group, lane) {
-    return html`<div
-      class="mon2-lane${lane.empty ? ' mon2-lane--empty' : ''}"
-      data-root-dir=${group.root_dir}
-      data-lane-length=${String(lane.raw_length)}
-    >
-      ${paneTemplate({
-        id: '',
-        lane: /** @type {any} */ (lane.id),
-        title: `${group.name} · 직렬 ${lane.index + 1}`,
-        items: lane.items,
-        empty: '비어 있음 — 드래그로 배치',
-        body: html`<div
-          class="mon2-lane__rows"
-          data-drop="repo-serial"
-          data-root-dir=${group.root_dir}
-          data-lane-id=${lane.id}
-          data-lane-length=${String(lane.raw_length)}
-        >
-          ${lane.occupants.map((occupant) => occupantRow(occupant))}
-          ${lane.items.length > 0
-            ? lane.items.map((item, index) => serialRow(lane, item, index))
-            : lane.occupants.length > 0
-              ? ''
-              : html`<div class="worker-pane__empty">
-                  비어 있음 — 드래그로 배치
-                </div>`}
-        </div>`,
-        header_control: html`<span
-            class="mon2-lane__badge${lane.occupants.length > 0
-              ? ' mon2-lane__badge--held'
-              : ''}"
-            title=${lane.occupants.length > 0
-              ? lane.occupants
-                  .map((occupant) => `${occupant.id} — ${occupant.badge}`)
-                  .join('\n')
-              : ''}
-            >${occupancyLabel(lane.occupants)}</span
-          ><button
-            type="button"
-            class="mon2-sec__worker"
-            data-root-dir=${group.root_dir}
-            title="이 레포의 Worker 탭으로 이동"
-          >
-            Worker ↗
-          </button>`
-      })}
-      ${lane.empty
-        ? html`<div class="mon2-lane__hint">
-            ${group.name} 직렬 ${lane.index + 1} 비어 있음
-          </div>`
-        : ''}
-      ${lane.cycle
-        ? html`<div class="mon2-lane__cycle">
-            ⛔ 의존 사이클 — 자동 교정 불가
-          </div>`
-        : ''}
-      ${(lane.cross_wait_peers || []).map(
-        (peer) =>
-          html`<div class="mon2-lane__cross-wait">
-            ⚠ 상호 정지 — ${peer.workspace_name}·${peer.lane}과 교차 대기
-          </div>`
-      )}
-    </div>`;
+  function serialLaneModel(group, lane) {
+    const occupants = lane.occupants;
+    const cross_wait = lane.cross_wait_peers || [];
+    return {
+      id: lane.id,
+      // 레포마다 같은 `s1`이 있으므로 pane 요소 id는 붙이지 않는다.
+      pane_id: '',
+      title: `${group.name} · 직렬 ${lane.index + 1}`,
+      rows: [
+        ...occupants.map((occupant) => occupantRow(occupant)),
+        ...lane.items.map((item, index) => serialRow(lane, item, index))
+      ],
+      count: lane.items.length,
+      empty: lane.empty === true,
+      // 점유자가 없으면 배지 자체를 그리지 않는다 (fail-quiet, §4.2) — 툴팁은
+      // 배지가 실제로 말할 것이 있을 때만 붙는다.
+      ...(occupants.length > 0
+        ? {
+            badge: html`<span
+              class="mon2-lane__occupant"
+              title=${occupants
+                .map((occupant) => `${occupant.id} — ${occupant.badge}`)
+                .join('\n')}
+              >${occupancyLabel(occupants)}</span
+            >`,
+            held: true
+          }
+        : {}),
+      cycle: lane.cycle,
+      header_control: html`<button
+        type="button"
+        class="mon2-sec__worker"
+        data-root-dir=${group.root_dir}
+        title="이 레포의 Worker 탭으로 이동"
+      >
+        Worker ↗
+      </button>`,
+      ...(cross_wait.length > 0
+        ? {
+            after: html`${cross_wait.map(
+              (peer) =>
+                html`<div class="mon2-lane__cross-wait">
+                  ⚠ 상호 정지 — ${peer.workspace_name}·${peer.lane}과 교차 대기
+                </div>`
+            )}`
+          }
+        : {})
+    };
   }
 
   /**
-   * The 직렬 영역 (§4.2): 연결 레인(레포 무관)과 레포 직렬 레인을 **이름**
-   * 으로 구분해 함께 둔다. 레인 수 조절은 Worker 탭이 소유한다.
+   * The 대기 lane body (§4, 공유 본문은 UI-5ksp §4.2): 병렬 영역 하나 + 직렬
+   * 영역 하나. 레포 섹션은 없다 — 카드가 자기 레포를 이미 알고 있으므로 레포는
+   * 좌표가 아니라 배지다. 구조는 두 탭이 공유하는 `waitBody`가 소유하고, 여기서는
+   * cross-repo 재료(연결 레인 pane·`+ 연결 레인`·읽기 실패 안내)만 슬롯으로 넘긴다.
    *
    * @returns {import('lit-html').TemplateResult}
    */
-  function serialArea() {
-    const collapsed = areaCollapsed('serial');
+  function waitBodyTemplate() {
     const enabled = lanes.cross_lanes_revision !== null;
     const has_blank_lane = lanes.chain_lanes.some(
       (lane) => lane.draft && lane.rows.length === 0
     );
-    return html`<section
-      class="mon2-area mon2-serial${collapsed ? ' is-collapsed' : ''}"
-      data-area="serial"
-    >
-      <header class="mon2-area__hd">
-        <button
-          type="button"
-          class="mon2-area__toggle"
-          data-area="serial"
-          aria-expanded=${collapsed ? 'false' : 'true'}
-          aria-label=${`직렬 영역 ${collapsed ? '펼치기' : '접기'}`}
-        >
-          ${collapsed ? '▸' : '▾'}
-        </button>
-        <span class="mon2-area__name">직렬 영역</span>
-        <button
+    return waitBody({
+      parallel: {
+        rows: lanes.parallel_rows.map((item, index) =>
+          parallelRow(item, index)
+        ),
+        count: lanes.parallel_rows.length,
+        collapsed: collapse.isAreaCollapsed('parallel'),
+        drop: { drop: 'parallel' }
+      },
+      serial: {
+        lanes: lanes.queue_groups.flatMap((group) =>
+          group.sublanes.serial.map((lane) => ({
+            ...serialLaneModel(group, lane),
+            drop: {
+              drop: 'repo-serial',
+              root_dir: group.root_dir,
+              lane_id: lane.id,
+              lane_length: String(lane.raw_length)
+            }
+          }))
+        ),
+        collapsed: collapse.isAreaCollapsed('serial'),
+        extra_panes: lanes.chain_lanes.map((lane) => chainLanePane(lane)),
+        header_control: html`<button
           type="button"
           class="mon2-newlane"
           ?disabled=${has_blank_lane || !enabled}
@@ -1878,32 +1865,16 @@ export function createMonitorView(mount_element, options) {
               : '빈 연결 레인을 하나 만듭니다'}
         >
           + 연결 레인
-        </button>
-      </header>
-      ${collapsed
-        ? ''
-        : html`<div class="mon2-area__body">
-            ${lanes.cross_lanes_unreadable
-              ? html`<div class="mon2-clane__unreadable">
-                  연결 레인 저장소를 읽을 수 없음
-                </div>`
-              : ''}
-            ${lanes.chain_lanes.map((lane) => chainLanePane(lane))}
-            ${lanes.queue_groups.map((group) =>
-              group.sublanes.serial.map((lane) => serialLanePane(group, lane))
-            )}
-          </div>`}
-    </section>`;
-  }
-
-  /**
-   * The 대기 lane body (§4): 병렬 영역 하나 + 직렬 영역 하나. 레포 섹션은 없다 —
-   * 카드가 자기 레포를 이미 알고 있으므로 레포는 좌표가 아니라 배지다.
-   *
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function waitBody() {
-    return html`<div class="mon2-wait">${parallelArea()}${serialArea()}</div>`;
+        </button>`,
+        ...(lanes.cross_lanes_unreadable
+          ? {
+              notice: html`<div class="mon2-clane__unreadable">
+                연결 레인 저장소를 읽을 수 없음
+              </div>`
+            }
+          : {})
+      }
+    });
   }
 
   /**
@@ -1979,44 +1950,79 @@ export function createMonitorView(mount_element, options) {
       pr_wait: lanes.pr_wait,
       done: lanes.done
     };
+    /**
+     * @param {(typeof MONITOR_LANES)[number]} meta
+     * @returns {import('lit-html').TemplateResult}
+     */
+    const lanePane = (meta) => {
+      const items = by_lane[meta.lane];
+      const body =
+        meta.lane === 'runnable'
+          ? lanes.runnable_flat
+            ? items.length > 0
+              ? runnableBody()
+              : undefined
+            : lanes.runnable_sections.length > 0
+              ? runnableBody()
+              : undefined
+          : meta.lane === 'queue'
+            ? lanes.queue_groups.length > 0 ||
+              lanes.chain_lanes.length > 0 ||
+              lanes.parallel_rows.length > 0
+              ? waitBodyTemplate()
+              : undefined
+            : meta.lane === 'running'
+              ? runningBody(now)
+              : items.length > 0
+                ? html`${items.map((item) => miniRow(item))}`
+                : undefined;
+      return paneTemplate({
+        id: `monitor-${meta.lane}`,
+        lane: meta.pane,
+        title: meta.title,
+        items,
+        // 본문이 행을 소유하는 레인도 헤더 건수는 레인 구성원 수다 (§4.2).
+        count: items.length,
+        // 후보는 두 탭 모두 SOURCE pane이다 (§4.1): 이슈의 원천이지 생애 단계가
+        // 아니라는 말이 Monitor에서도 같은 뜻이다.
+        src: meta.lane === 'runnable',
+        empty: meta.empty,
+        body,
+        live: meta.lane === 'running' && items.length > 0,
+        collapsible: true,
+        collapsed: collapse.isCollapsed(meta.pane),
+        controls: meta.lane === 'runnable' ? candidateFilterStrip() : undefined,
+        header_control: laneHeaderControl(meta.lane, items.length)
+      });
+    };
+    if (is_mobile) {
+      // 관제 우선 배치 (§4.7, Worker 탭과 같은 분기): 지금 → 대기 → 후보 →
+      // 완료. 실행 중과 PR 대기는 `지금` 패널이 가져가므로 레인으로 다시 그리지
+      // 않는다 — 같은 bead가 두 곳에 보이는 것이 이 화면에서 가장 비싼 오해다.
+      const mobile_metas = MOBILE_LANE_ORDER.map((lane) =>
+        MONITOR_LANES.find((meta) => meta.lane === lane)
+      ).filter((meta) => meta !== undefined);
+      return html`<div class="mon2-deck"></div>
+        <div class="worker-lanes-host">
+          <div class="worker-lanes worker-lanes--mobile mon2-lanes">
+            ${nowPanel({
+              live: lanes.running.length > 0,
+              running_body: lanes.running.length > 0 ? runningBody(now) : '',
+              pr_wait_rows: lanes.pr_wait.map((item) => miniRow(item)),
+              count: lanes.running.length + lanes.pr_wait.length
+            })}
+            ${mobile_metas.map((meta) => lanePane(meta))}
+          </div>
+        </div>`;
+    }
+    // 레인 host는 Worker 탭과 같다 (§4.1): 다섯 레인의 최소 폭 합이 창을 넘으면
+    // 여기서 가로로 스크롤한다 — 라우트 셸은 `overflow: hidden`이라 host가 없으면
+    // 넘친 레인이 잘린다.
     return html`<div class="mon2-deck"></div>
-      <div class="worker-lanes mon2-lanes">
-        ${MONITOR_LANES.map((meta) => {
-          const items = by_lane[meta.lane];
-          const body =
-            meta.lane === 'runnable'
-              ? lanes.runnable_flat
-                ? items.length > 0
-                  ? runnableBody()
-                  : undefined
-                : lanes.runnable_sections.length > 0
-                  ? runnableBody()
-                  : undefined
-              : meta.lane === 'queue'
-                ? lanes.queue_groups.length > 0 ||
-                  lanes.chain_lanes.length > 0 ||
-                  lanes.parallel_rows.length > 0
-                  ? waitBody()
-                  : undefined
-                : meta.lane === 'running'
-                  ? runningBody(now)
-                  : items.length > 0
-                    ? html`${items.map((item) => miniRow(item))}`
-                    : undefined;
-          return paneTemplate({
-            id: `monitor-${meta.lane}`,
-            lane: meta.pane,
-            title:
-              meta.lane === 'done' ? `완료·${doneRangeLabel()}` : meta.title,
-            items,
-            empty: meta.empty,
-            body,
-            live: meta.lane === 'running' && items.length > 0,
-            controls:
-              meta.lane === 'runnable' ? candidateFilterStrip() : undefined,
-            header_control: laneHeaderControl(meta.lane, items.length)
-          });
-        })}
+      <div class="worker-lanes-host">
+        <div class="worker-lanes mon2-lanes">
+          ${MONITOR_LANES.map((meta) => lanePane(meta))}
+        </div>
       </div>`;
   }
 
@@ -2203,7 +2209,9 @@ export function createMonitorView(mount_element, options) {
       auto_by_root.set(group.root_dir, group.auto_advance);
     }
     for (const badge of Array.from(
-      console_el.querySelectorAll('.mon2-parallel .worker-mini__repo')
+      console_el.querySelectorAll(
+        '.worker-wait__area--parallel .worker-mini__repo'
+      )
     )) {
       const root_dir =
         badge.closest('.mon2-item')?.getAttribute('data-root-dir') || '';
@@ -3656,11 +3664,17 @@ export function createMonitorView(mount_element, options) {
     const { item, root_dir, revision } = casOf(bead_id);
     const attempt_id = item?.attempt_id || '';
     const cls = button.classList;
-    if (cls.contains('mon2-rowops__up') || cls.contains('mon2-rowops__down')) {
-      void nudgeParallelRow(bead_id, cls.contains('mon2-rowops__up') ? -1 : 1);
+    if (
+      cls.contains('worker-mini__rowops-up') ||
+      cls.contains('worker-mini__rowops-down')
+    ) {
+      void nudgeParallelRow(
+        bead_id,
+        cls.contains('worker-mini__rowops-up') ? -1 : 1
+      );
       return;
     }
-    if (cls.contains('mon2-rowops__remove')) {
+    if (cls.contains('worker-mini__rowops-remove')) {
       void sendCas('worker-queue-remove', { bead_id }, root_dir, revision);
       return;
     }
@@ -3938,12 +3952,32 @@ export function createMonitorView(mount_element, options) {
       return;
     }
 
+    // 레인 접기 (UI-5ksp §4.4). 토글은 헤더 안의 버튼 하나이므로 형제
+    // `header_control`(정렬 select·일괄 머지·완료 범위) 조작은 여기 오지 않는다.
+    const lane_toggle = /** @type {HTMLElement|null} */ (
+      target.closest('.worker-pane__toggle[data-lane]')
+    );
+    if (lane_toggle) {
+      ev.preventDefault();
+      const lane = lane_toggle.getAttribute('data-lane') || '';
+      if (
+        lane === 'candidate' ||
+        lane === 'queue' ||
+        lane === 'running' ||
+        lane === 'pr_wait' ||
+        lane === 'done'
+      ) {
+        toggleLaneCollapse(lane);
+      }
+      return;
+    }
+
     const area_toggle = /** @type {HTMLElement|null} */ (
-      target.closest('.mon2-area__toggle')
+      target.closest('.worker-wait__area-toggle[data-area]')
     );
     if (area_toggle) {
       ev.preventDefault();
-      toggleArea(
+      toggleWaitArea(
         /** @type {'parallel'|'serial'} */ (
           area_toggle.getAttribute('data-area') || 'parallel'
         )
@@ -4151,6 +4185,20 @@ export function createMonitorView(mount_element, options) {
   mount_element.addEventListener('drop', /** @type {any} */ (onDrop));
   mount_element.addEventListener('dragend', onDragEnd);
 
+  // 모바일 분기 추적 (§4.7). watcher는 등록 시 현재 값을 동기적으로 한 번
+  // 콜백하는데, 그 첫 콜백은 다시 그리면 안 된다 — 콘솔이 아직 조립되기 전이다.
+  {
+    let first = true;
+    unsubscribe_viewport = watchMobile((next) => {
+      is_mobile = next;
+      if (first) {
+        first = false;
+        return;
+      }
+      doRender();
+    });
+  }
+
   if (pipelineStore && typeof pipelineStore.subscribe === 'function') {
     unsubscribe_pipeline = pipelineStore.subscribe(() => {
       try {
@@ -4200,6 +4248,10 @@ export function createMonitorView(mount_element, options) {
       if (unsubscribe_pipeline) {
         unsubscribe_pipeline();
         unsubscribe_pipeline = null;
+      }
+      if (unsubscribe_viewport) {
+        unsubscribe_viewport();
+        unsubscribe_viewport = null;
       }
       drawer.destroy();
       drawer_overlay_el.hidden = true;
