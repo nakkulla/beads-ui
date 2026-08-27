@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { recSettings } from '../../app/utils/rec-settings.js';
 import { normalizeIssueList } from '../list-adapters.js';
 import {
   __resetQueueEventsForTest,
@@ -1073,6 +1074,32 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
     for (const key of Object.keys(out[0].exec_pins)) {
       expect(key.startsWith('rec_')).toBe(false);
     }
+  });
+
+  test('carries the orchestration pins so the monitor can judge applied', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            metadata: {
+              orchestration_model: 'fable',
+              impl_runtime: 'claude',
+              rec_orchestration_model: 'fable',
+              rec_impl_runtime: 'claude'
+            }
+          })
+        ]
+      }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].exec_pins).toEqual({
+      orchestration_model: 'fable',
+      impl_runtime: 'claude'
+    });
+    expect(recSettings(out[0].rec, out[0].exec_pins)?.state).toBe('applied');
   });
 });
 describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {

@@ -46,7 +46,7 @@ import { ADMISSION_RECEIPT_RE } from './admission.js';
 import { parseDescriptionScope } from './artifact-scope.js';
 import {
   ACCOUNT_KEYS,
-  BEAD_APPLY_KEYS,
+  IMPL_PRESET_KEYS,
   REC_SIGNALS,
   REC_VALUES
 } from './exec-enums.js';
@@ -193,13 +193,16 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan', 'quick_fix']);
  */
 
 /**
- * The metadata keys an execution chip may be resolved from: the per-bead preset
- * axes plus the two account pins. Anything else in `metadata` stays off the
- * wire.
+ * The metadata keys an execution chip may be resolved from: the full-profile
+ * preset axes (session keys AND the orchestration keys) plus the two account
+ * pins. Anything else in `metadata` stays off the wire. The orchestration keys
+ * ride along because the monitor lane compares `rec` against these pins
+ * (UI-sbum §1 `authority`): without `orchestration_model` here an applied
+ * recommendation would read as unapplied on that surface.
  *
  * @type {ReadonlyArray<string>}
  */
-const EXEC_PIN_KEYS = [...BEAD_APPLY_KEYS, ...ACCOUNT_KEYS];
+const EXEC_PIN_KEYS = [...IMPL_PRESET_KEYS, ...ACCOUNT_KEYS];
 
 /**
  * Project the execution pins of one row's metadata (UI-eey2 §9.1). Non-string
