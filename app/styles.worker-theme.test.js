@@ -470,6 +470,21 @@ describe('worker console styles', () => {
     expect(rule).toContain('margin-left: auto');
   });
 
+  test('shows the queue row ✕ without a pointer or width condition (UI-d13v §6)', () => {
+    const rule =
+      workerBlock.match(
+        /(?:^|\n)\.worker-mini__rowops-remove\s*{([^}]*)}/
+      )?.[1] || '';
+    const hidden_group =
+      workerBlock.match(
+        /(?:^|\n)\.worker-mini__rowops-up,\s*\n\s*\.worker-mini__rowops-down\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(rule).toContain('display: inline-flex');
+    expect(hidden_group).toContain('display: none');
+    expect(hidden_group).not.toContain('rowops-remove');
+  });
+
   test('keeps running tile metadata readable when it has a long token', () => {
     const chipRule =
       workerBlock.match(/(?:^|\n)\.exec-chip\s*{([^}]*)}/)?.[1] || '';

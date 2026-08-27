@@ -5,9 +5,12 @@
  * per-subscription issue stores as the Board tab (no separate candidate
  * storage). The single waiting queue + Done lanes are driven by the
  * `worker-queue` subscription (worker-phase2 §3 collapsed the serial/parallel
- * duality into ONE lane). Dragging a candidate into the queue issues a
+ * duality into ONE lane). Placing a candidate into the queue — the card's
+ * `[대기로 ↴]`, the place menu, or the overlap popover's one-click placement
+ * (the candidate lane is no longer a drag source, UI-d13v §6) — issues a
  * `worker-queue-place` mutation carrying the current queue revision; on a CAS
- * conflict the reply's current snapshot is adopted and the drag retried once.
+ * conflict the reply's current snapshot is adopted and the request retried
+ * once. A waiting/serial row's `✕` sends it back to the candidates.
  *
  * The ▶/⏸ controls flip `auto_advance`, and the slot editor sets the
  * concurrency cap (`worker-queue-set-slots`, same CAS discipline; lower bound
@@ -26,8 +29,8 @@
  *
  * The candidate pane is kept as a fifth, visually distinct SOURCE pane in front
  * of those four. It is not a fifth bead state — it is the Board feed a bead is
- * dragged OUT of, and dropping it would delete the only way to enqueue anything
- * (`worker-queue-place` has no other entry point). It stays dashed
+ * placed OUT of, ordered by the sort chain rather than the Board's manual rank
+ * (UI-d13v §4·§6; the Worker tab reads no ui-order). It stays dashed
  * (`worker-pane--src`) precisely so it does not read as one of the four.
  */
 import { html, render } from 'lit-html';
@@ -4413,7 +4416,8 @@ export function createWorkerView(mount_element, options = {}) {
         title: row.title,
         location_label: '후보',
         kind: 'candidate',
-        lane_id: null
+        lane_id: null,
+        queue_placeable: row.queue_placeable === true
       });
     }
     /** @type {Record<string, number>} */

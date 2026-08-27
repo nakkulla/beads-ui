@@ -6909,17 +6909,22 @@ html[data-theme='dark'] {
 }
 
 /* 자리 옮기기만 드래그의 coarse pointer 보완재다 — 의존성 버튼은 화면 폭과
-   무관한 상시 조작이라 늘 보인다. */
+   무관한 상시 조작이라 늘 보인다. `✕`도 상시다 (UI-d13v §6): 후보 레인이 드롭
+   대상이 아니게 되면서 대기→후보 되돌리기의 유일한 경로가 됐으므로 포인터
+   종류로 감추지 않는다. */
 .worker-mini__rowops-up,
-.worker-mini__rowops-down,
-.worker-mini__rowops-remove {
+.worker-mini__rowops-down {
   display: none;
+}
+
+.worker-mini__rowops-remove {
+  display: inline-flex;
+  align-items: center;
 }
 
 @media (any-pointer: coarse), (max-width: 640px) {
   .worker-mini__rowops-up,
-  .worker-mini__rowops-down,
-  .worker-mini__rowops-remove {
+  .worker-mini__rowops-down {
     display: inline-flex;
     align-items: center;
   }

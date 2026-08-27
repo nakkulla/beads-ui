@@ -100,8 +100,9 @@ same projections and simply ignores them.
 
 ## Manual UI-order channel (spec §2)
 
-Per-workspace persisted manual card ranking shared by the Board columns and the
-Worker candidate lane. CAS-guarded like the worker queue.
+Per-workspace persisted manual card ranking consumed by the Board columns only.
+The Worker candidate lane orders itself by its sort chain and neither reads nor
+writes this channel (UI-d13v §6). CAS-guarded like the worker queue.
 
 - `subscribe-ui-order` / `unsubscribe-ui-order` payload: `{ id: client_id }` —
   subscribe replies `ok` then pushes an initial snapshot.
