@@ -12,7 +12,14 @@ scope:
   - server/worker/repair-session-adapter.js
   - server/worker/repo-operation-policy.js
   - server/worker/attach.js
+  - server/worker/scheduler.js
+  - server/worker/queue-store.js
+  - server/worker/runtime.js
+  - server/worker/scope-cache.js
   - server/ws/worker-handlers.js
+  - server/ws/connection.js
+  - server/ws/worker-parallel-analysis-handlers.js
+  - app/main.js
   - server/worker/parallel-analysis-runner.js
   - server/worker/parallel-analysis-bundle.js
   - server/worker/parallel-analysis-runs.js
@@ -20,6 +27,7 @@ scope:
   - server/worker/parallel-analysis-targets.js
   - server/worker/parallel-analysis-validator.js
   - generated/contracts/repo-operation-policy.json
+  - generated/contracts/repo-operation-policy.provenance.json
 ---
 
 # Worker 저장소 작업 정리 — AI 수리 경로·병렬성 분석 제거, 수동 배포 실행 버튼 (UI-s582)
@@ -83,9 +91,16 @@ Worker 탭 저장소 작업 섹션은 검증/배포 스크립트 실패를 AI �
   계산을 제거한다.
 - `attach.js` `startWorkerRepoOperationRepair`, `worker-handlers.js`
   `handleWorkerRepoOperationRepair`/`handleWorkerAutoRepairToggle` 제거.
-- `queue.auto_repair` 키는 더 이상 읽거나 쓰지 않는다. 기존 저장값은 무시하며
-  마이그레이션은 하지 않는다. 저장된 `repairing` 상태의 operation은 로드 시
-  `failed`로 정규화한다(repair 세션은 이미 사라졌으므로 종단).
+- `scheduler.js`: `repairSessionPrompt` import와 수리 세션 디스패치 경로
+  (`scheduler.js:5421` 부근)를 제거한다. 충돌 해소 세션 디스패치는 별도 경로이며
+  건드리지 않는다.
+- `queue-store.js`: `auto_repair` 정규화·저장, `repair` 객체 기록,
+  `toggleAutoRepair`, `repairing` 상태 전이를 제거한다. **로드 시 정규화**는 이
+  모듈의 스냅샷 로드 지점에서 수행한다: 저장된 `state: 'repairing'` operation은
+  `failed`로, `repair` 객체와 `auto_repair` 키는 버린다. 마이그레이션 파일은 없다.
+- `sanitizeOutput`(출력 비밀값 제거)은 `worker-handlers.js:83`이
+  `repair-session-adapter.js`에서 가져온다. 삭제 전에 `server/worker/output-sanitize.js`로
+  옮기고 기존 테스트를 함께 옮긴다 — 비밀값 제거 동작은 그대로 유지한다.
 
 ### 유지
 충돌 해소 세션(`scheduler.resolveConflict`, `pr-actions.js`, `merge-queue.js`,
@@ -99,17 +114,27 @@ Worker 탭 저장소 작업 섹션은 검증/배포 스크립트 실패를 AI �
   `policy_supported && !dismissed && (running|retry_pending) && scriptRetryApplicable`
   로 줄인다. `retry_blocked_reason`에서 `auto_repair_off` 값이 사라지고
   `schema_unsupported`만 남는다.
-- 실패 카드(`repo-ops-timeline.js`)에 두 줄을 추가한다. 렌더 전용이며 서버 필드는
-  이미 존재한다(`failure.exit_code`, `failure.signal`, `failure.elapsed_ms`,
-  `failure.code`, `retry.first_failure`, `retry.absorbed`, `retry.status`).
-  - **종료 원인**: `exit 1 · 42s` / `signal SIGKILL · 3m 10s` /
-    `타임아웃 600s 초과`(`repo_operation_timeout_unresolved`) /
-    `종료 기록 없음 — 중단됨`(`interrupted`). 필드가 없으면 줄을 생략한다.
-  - **재시도 결과**: `자동 재시도 1회 — 같은 실패`(consumed, fingerprint 동일) /
-    `자동 재시도 1회 — 다른 실패: <원인>`(consumed, fingerprint 상이) /
-    `자동 재시도로 해소됨 — 첫 실패: <원인>`(absorbed, 성공 카드에 표시) /
-    `재시도 대상 아님 — 스크립트 실행 전 실패`(not_applicable). 문구는
-    `failure-labels.js`에 추가해 카드·스트립·세션 배너가 같은 어휘를 쓴다.
+- 실패 카드(`repo-ops-timeline.js`)에 두 줄을 추가한다. 렌더 전용이며 투영 카드
+  (`projectRepoOperations` 출력, `protocol.md` `repo_operations[]`)의 기존 필드만
+  쓴다: operation 최상위 `exit_code`, `signal`, `elapsed_ms`와 `failure.code`,
+  `retry.status`, `retry.blocked_reason`, `retry.first_fingerprint`,
+  `retry.absorbed`, `failure.fingerprint`.
+  - **종료 원인**: `exit 1 · 42s`(exit_code 있음) / `signal SIGKILL · 3m 10s` /
+    `타임아웃 <timeout_ms/1000>s 초과`(`failure.code === 'timeout'`) /
+    `종료 기록 없음 — 중단됨`(`failure.code === 'interrupted'` 또는
+    `interrupted_without_terminal_exit`). 선언/대기 단계 실패
+    (`repo_operation_timeout_unresolved`, `repo_ops_*`)는 스크립트가 돌지 않았으므로
+    기존 원인 문장만 쓰고 이 줄은 생략한다. 판정 순서: timeout → interrupted →
+    signal → exit_code; 아무 필드도 없으면 줄 생략.
+  - **재시도 결과**: 판정 순서는 `retry.blocked_reason` 우선이다.
+    `retry.blocked_reason`이 있으면 `자동 재시도 못 함 — <사유>`
+    (`schema_unsupported`; 실행 전에 막힌 경우로 fingerprint 비교를 하지 않는다);
+    `absorbed`면 `자동 재시도로 해소됨 — 첫 실패: <원인>`(성공 카드에 표시);
+    `consumed`이고 `failure.fingerprint === retry.first_fingerprint`면
+    `자동 재시도 1회 — 같은 실패`; `consumed`이고 다르면
+    `자동 재시도 1회 — 다른 실패: <원인>`; `not_applicable`이면
+    `재시도 대상 아님 — 스크립트 실행 전 실패`. 문구는 `failure-labels.js`에
+    추가해 카드·스트립·세션 배너가 같은 어휘를 쓴다.
 
 ## 3. 배포 실행 버튼
 
@@ -126,31 +151,49 @@ in-flight deploy(queued/running/retry_pending)가 있으면 비활성 + 툴팁
   `deploy_not_declared` · `deploy_opted_out` · `deploy_in_flight` ·
   `target_unresolved`(fetch 실패) · `remote_history_not_monotonic`.
 
-### 서버 (`attach.js` `startWorkerRepoOperationDeployRun` → coordinator `runManualDeploy(repo_id)`)
-1. `git fetch <remote>` 뒤 `origin/<base>` tip SHA를 핀한다(bounded fetch, 기존
-   deploy 경로와 같은 타임아웃).
+### 서버 (`attach.js` `startWorkerRepoOperationDeployRun` → coordinator `runManualDeploy()`)
+1. **대상 권한**: 등록된 attachment의 base resolver(`attach.js` `resolveBase` →
+   `target-base.js`)가 remote·base·fetched tip SHA를 한 번에 핀한다
+   (`resolveBase({ force: true })`, bounded fetch, 기존 deploy 경로와 같은 타임아웃).
+   `origin`을 가정하지 않는다. resolver 실패는 `target_unresolved`.
 2. 정책·스크립트는 **그 tip의** `repo-ops/config.toml`과 script blob에서 읽는다.
    이것이 previous-base 규칙의 유일한 예외이며, 수동 경로에만 적용된다. 근거: 이
-   tip은 이미 `origin/<base>`에 착지(리뷰·머지 완료)된 커밋이므로 "리뷰 안 된
+   tip은 이미 `<remote>/<base>`에 착지(리뷰·머지 완료)된 커밋이므로 "리뷰 안 된
    스크립트가 자신을 실행"하는 구멍이 아니다.
 3. 가드: 선언 없음 → `deploy_not_declared`; opt-out → `deploy_opted_out`; 같은 repo에
-   in-flight deploy → `deploy_in_flight`.
-4. monotonicity: deploy 워크트리 HEAD가 tip의 non-descendant면
-   `remote_history_not_monotonic`으로 거부. tip이 이미 HEAD의 ancestor/동일이어도
-   **`superseded` 단락을 건너뛰고 실행**한다 — 수동 실행은 재배포 의도이기 때문.
-5. `ensureDeploy(subject)`로 일반 deploy operation을 큐에 넣는다.
-   `subject = { source: 'manual', target_sha, target_base, policy_source: 'target_tip' }`.
+   queued/running/retry_pending deploy → `deploy_in_flight`.
+4. **ancestry**(repo-operation lock 안에서 deploy 워크트리 HEAD와 tip을 비교):
+   - HEAD == tip, tip이 HEAD의 조상(이미 배포된 tip), HEAD가 tip의 조상(정상 전진)
+     — 모두 **허용**. 수동 경로는 `superseded` 단락으로 끝내지 않고 tip으로 정렬한
+     뒤 실행한다(재배포 의도).
+   - 양쪽 모두 조상이 아님 → `remote_history_not_monotonic`으로 거부.
+   - ancestry 판정 자체가 실패(git 오류) → `target_unresolved`, fail-closed.
+5. **실행 식별자**: 자동 경로의 `operationId()`는 (repo, target_base, target_sha,
+   effective_base_sha, script) 해시라 같은 tip의 두 번째 수동 실행이 기존 종단
+   기록을 adopt해 버린다. 수동 실행은 `operationId()` 입력에
+   `manual_run_id`(서버가 lock 안에서 발급하는 단조 증가 시퀀스)를 추가해 **매 요청이
+   새 operation**이 된다. 이전 수동/자동 operation은 `superseded_by`로 연결한다.
+6. `ensureDeploy(subject)`로 큐에 넣는다.
+   `subject = { source: 'manual', manual_run_id, target_sha, target_base, policy_source: 'target_tip' }`.
    이후 lock·정렬·스크립트 실행·readback·script_retry·실패 표시는 자동 경로와 동일.
-6. operation 카드에 `수동` 배지를 붙인다(`source: 'manual'`).
+7. operation 카드에 `수동` 배지를 붙인다(`source: 'manual'`).
 
 ## 4. 병렬성 분석 제거
 
-- 삭제: `index.js`의 `.worker-analysis-btn`(✳ 병렬성)과 다이얼로그 wiring,
-  `analysisStore` 및 제안 오버레이/칩(`index.js` 3336-3345 부근),
-  `app/views/worker/parallel-analysis-dialog.js`, 서버 `parallel-analysis-runner.js`
-  · `parallel-analysis-bundle.js` · `parallel-analysis-runs.js` ·
-  `parallel-analysis-store.js` · `parallel-analysis-targets.js` ·
-  `parallel-analysis-validator.js`, 관련 프로토콜 메시지와 `protocol.md` 절, 테스트 7개.
+- 삭제(클라이언트): `index.js`의 `.worker-analysis-btn`(✳ 병렬성)과 다이얼로그
+  wiring, 제안 오버레이/칩(`index.js` 3336-3345 부근),
+  `app/views/worker/parallel-analysis-dialog.js`, **`app/main.js`의 `analysisStore`
+  생성·구독·Worker 뷰 주입**.
+- 삭제(서버): `parallel-analysis-runner.js` · `parallel-analysis-bundle.js` ·
+  `parallel-analysis-runs.js` · `parallel-analysis-store.js` ·
+  `parallel-analysis-targets.js` · `parallel-analysis-validator.js`,
+  **`server/ws/worker-parallel-analysis-handlers.js`와 그 테스트**,
+  **`server/ws/connection.js`의 분석 메시지 분기**, **`server/worker/runtime.js`의
+  분석 store/run 전역 상태**, 관련 프로토콜 메시지와 `protocol.md` 절, 테스트.
+- **선행 이동**: `scope-cache.js:23`이 `parallel-analysis-targets.js`의 `scopeAtBase`를
+  Monitor 겹침 칩 계산에 쓴다. `scopeAtBase`(와 그 테스트)를
+  `server/worker/scope-at-base.js`로 먼저 옮기고 `scope-cache.js` import를 바꾼 뒤
+  분석 모듈을 삭제한다. 이 순서를 지키지 않으면 유지 대상인 Monitor 칩이 깨진다.
 - `placeIntoSameSerialLane`은 scope 겹침 칩의 "같은 레인에 두기"
   (`.mon-overlap__place`) 호출자가 있으므로 유지한다. 분석 제안 오버레이에서 이
   함수로 이어지던 경로만 제거한다.
@@ -185,13 +228,28 @@ beads-ui는 `generated/contracts/repo-operation-policy.json`을 핀된 계약 �
   `script_retry`(1회) 뒤 종단 `failed`·수동 재실행으로 바꾼다.
 - `generated/contracts/repo-operation-policy.json` 재생성, 계약 checker와 테스트,
   스킬 alias 갱신(`docs/contracts/contract-maintenance.md` 절차).
+- beads-ui의 핀된 사본은 **JSON과 provenance를 원자적으로** 다시 핀한다:
+  `generated/contracts/repo-operation-policy.json` bytes와
+  `generated/contracts/repo-operation-policy.provenance.json`의 `source_commit`
+  (dotfiles-us9w 착지 SHA), `source_blob_sha`, `sha256`, `bytes`를 같은 커밋에서
+  갱신하고, `repo-operation-policy.test.js`의 `APPROVED_SOURCE_COMMIT`과 digest
+  고정값을 새 값으로 바꾼다.
 - beads-ui `repo-operation-policy.js`는 `schema_version: 3`을 읽고, 2는
-  `schema_unsupported`로 처리한다.
+  `schema_unsupported`로 처리한다. **착지 순서와 중단 안전성**: dotfiles-us9w가 먼저
+  착지하고, beads-ui PR은 새 사본을 핀한 상태로 착지한다. 만약 beads-ui가 schema 3
+  코드로 배포됐는데 핀된 사본이 아직 2라면 `policySupported()`가 false가 되어
+  script_retry는 `schema_unsupported`로 막히고 수동 배포 실행은 정책 없이 거부된다
+  (fail-closed) — 자동 deploy 자체는 정책 무관하게 계속 돈다. 반대로 사본만 3이고
+  코드가 2를 기대하는 상태는 같은 PR에서 함께 바뀌므로 발생하지 않는다.
 
 ## 구현 unit 후보
-- `ui-remove`: §1 UI·프로토콜 + §4 (app/views/worker, app/protocol.*)
-- `server-remove`: §1 서버 + §2 게이트 (server/worker/repo-operation-coordinator.js,
-  resolution-ladder.js, repair-session-adapter.js, attach.js, worker-handlers.js)
+- `ui-remove`: §1 UI·프로토콜 + §4 클라이언트 (app/views/worker, app/main.js,
+  app/protocol.*)
+- `server-remove`: §1 서버 + §2 게이트 + §4 서버 (server/worker/
+  repo-operation-coordinator.js, resolution-ladder.js, repair-session-adapter.js →
+  output-sanitize.js, scheduler.js, queue-store.js, runtime.js, scope-cache.js →
+  scope-at-base.js, server/ws/worker-handlers.js, connection.js,
+  worker-parallel-analysis-handlers.js)
 - `deploy-run`: §3 (server/worker/repo-operation-coordinator.js runManualDeploy,
   attach.js, worker-handlers.js, repo-ops-settings.js)
 - `failure-display`: §2 카드 표시 (repo-ops-timeline.js, failure-labels.js)
@@ -203,14 +261,21 @@ beads-ui는 `generated/contracts/repo-operation-policy.json`을 핀된 계약 �
   · `repo-operation-repair.test.js`(삭제) · `resolution-ladder.test.js` ·
   `repair-session-adapter.test.js`(삭제) · `repo-operation-policy.test.js` ·
   `repo-operation-protocol.test.js`, `parallel-analysis-*.test.js`(삭제).
+- 이동 후 유지 테스트: `output-sanitize`(구 `sanitizeOutput`), `scope-at-base`
+  (구 `scopeAtBase`), `queue-store.test.js`·`scheduler.test.js`의 수리 케이스 제거.
 - 신규 테스트:
-  - `worker-repo-operation-deploy-run` 핸들러: 가드 3종, tip 정책 읽기(previous-base
-    아님), ancestor tip에서도 실행, `source: 'manual'` 기록.
-  - 실패 카드 종료 원인/재시도 결과 줄 렌더(exit/signal/timeout/interrupted,
-    consumed 동일·상이/absorbed/not_applicable).
+  - `worker-repo-operation-deploy-run` 핸들러: 가드 3종, resolver로 핀한 tip의 정책
+    읽기(previous-base 아님), ancestry 세 허용 케이스·양방향 비조상 거부·판정 오류
+    `target_unresolved`, **같은 tip에서 연속 두 번 요청 시 두 operation 모두 실행**
+    (두 번째는 첫 번째 종료 후), `source: 'manual'`·`manual_run_id` 기록.
+  - 실패 카드 종료 원인/재시도 결과 줄 렌더: 서버 `projectRepoOperations` 실제 출력
+    형태로 exit/signal/`timeout`/interrupted, `blocked_reason` 우선, consumed
+    동일·상이/absorbed/not_applicable.
   - coordinator: `auto_repair` 없이 script_retry가 `retry_pending`으로 가고 1회 후
-    `failed`로 종단; 로드 시 `repairing` → `failed` 정규화.
-  - `repo-operation-policy.js`: schema 3 수용, 2 거부.
+    `failed`로 종단; queue-store 로드 시 `repairing` → `failed` 정규화, `repair`·
+    `auto_repair` 키 폐기.
+  - `repo-operation-policy.js`: schema 3 수용, 2 거부; provenance `source_commit`·
+    digest 고정값 일치.
 - 라이브: Mac Studio beads-ui 재배포 후 dotfiles 워크스페이스에서 배포 실행 1회 →
   operation 카드 `수동` 배지 + succeeded readback.
 
