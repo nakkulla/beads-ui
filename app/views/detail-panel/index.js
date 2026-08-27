@@ -1,4 +1,5 @@
 import { html, render } from 'lit-html';
+import { ifDefined } from 'lit-html/directives/if-defined.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
@@ -11,6 +12,10 @@ import {
   sumAttemptUsage
 } from '../../utils/token-usage.js';
 import { formatExecReceipt } from '../board/card.js';
+import {
+  depCandidates as depCandidatesOf,
+  filterDepCandidates
+} from '../monitor/dep-candidates.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
 import { commentsTemplate } from './comments.js';
@@ -34,6 +39,7 @@ import { taskPromptTemplate } from './task-prompt.js';
 
 /**
  * @import { SessionRefView } from '../../../server/worker/session-ref.js'
+ * @import { DepCandidate, DepCandidateModel } from '../monitor/dep-candidates.js'
  */
 
 /**
@@ -72,7 +78,16 @@ const PRIORITY_OPTIONS = [0, 1, 2, 3, 4];
  * @property {{ open: (doc_path: string, open_options?: any) => Promise<void>|void, close: () => void, destroy: () => void }} [mdViewer] - Shared
  * md viewer owned by the app shell. When given, the panel neither mounts nor
  * destroys one of its own (spec §4).
- * @property {(id: string) => void} [onNavigate] - Navigate to a dependency id.
+ * @property {(id: string, root_dir?: string) => void} [onNavigate] - Navigate to
+ * a dependency id. `root_dir` names the repo that owns it when the candidate
+ * model knows one; the shell switches workspace first (UI-lx45 §4.1).
+ * @property {() => DepCandidateModel | null} [depCandidates] - The 막는 이슈
+ * 후보 모집단 for this tab (UI-lx45 §3.2). `null` means the aggregated channel
+ * has no snapshot yet, which the section says out loud rather than guessing.
+ * @property {(change: { type: string, a: string, b: string }) => void} [onDepChanged] - Called
+ * exactly once per SAVED edge, including a failed readback (UI-lx45 §3.3).
+ * @property {(fn: () => void) => () => void} [subscribeCandidates] - Subscribe to
+ * the candidate snapshot; the panel re-renders on every callback.
  * @property {() => void} [onOpenExecPresets] - Close detail and open the
  * global execution-settings dialog.
  * @property {() => void} onClose - Invoked to request the overlay be closed.
@@ -133,6 +148,10 @@ export function createDetailPanel(mount_element, options) {
   let title_draft = '';
   let desc_draft = '';
   let label_draft = '';
+  // 의존성 절의 인라인 편집 상태 (UI-lx45 §4.2). 목록은 포커스가 들어왔거나
+  // 검색어가 남아 있을 때만 펴진다.
+  let dep_query = '';
+  let dep_list_open = false;
 
   function resetEditors() {
     editing_title = false;
@@ -140,6 +159,8 @@ export function createDetailPanel(mount_element, options) {
     title_draft = '';
     desc_draft = '';
     label_draft = '';
+    dep_query = '';
+    dep_list_open = false;
   }
 
   function resetExecAccountCatalog() {
@@ -1049,6 +1070,22 @@ export function createDetailPanel(mount_element, options) {
   }
   /** @type {null | (() => void)} */
   let unsubscribe_presets = null;
+  /**
+   * The aggregated candidate channel (UI-lx45 §3.2). 상세 패널의 public API는
+   * `load`·`clear`·`destroy`뿐이라 재렌더 경로가 따로 없다 — 첫 snapshot이
+   * 늦게 도착해도 화면이 `후보를 불러올 수 없음`에 멈추지 않도록 이 구독이
+   * 갱신을 나른다.
+   *
+   * @type {null | (() => void)}
+   */
+  let unsubscribe_candidates = null;
+
+  function releaseCandidates() {
+    if (unsubscribe_candidates) {
+      unsubscribe_candidates();
+      unsubscribe_candidates = null;
+    }
+  }
   if (execPresetStore && typeof execPresetStore.subscribe === 'function') {
     unsubscribe_presets = execPresetStore.subscribe(() => {
       if (current_id) {
@@ -1245,10 +1282,16 @@ export function createDetailPanel(mount_element, options) {
    * production transport swallows rejections into `[]`, so anything that is not
    * an issue object is treated as failure. Returns whether it succeeded.
    *
+   * `bd_readback_failed` is the one failure that is not a failure to write: the
+   * mutation landed and only the confirming read did (UI-lx45 §6). It comes back
+   * as `{ ok: false, saved: true }` so a caller that must react to the saved
+   * edge can, while every caller that only asks "did it succeed" still sees a
+   * value that is not `true`. Only the dependency ops read the object form.
+   *
    * @param {string} type
    * @param {Record<string, unknown>} payload
    * @param {string} fail_message
-   * @returns {Promise<boolean>}
+   * @returns {Promise<boolean | { ok: false, saved: true }>}
    */
   async function sendMutation(type, payload, fail_message) {
     if (!transport || !current_id) {
@@ -1266,7 +1309,15 @@ export function createDetailPanel(mount_element, options) {
       }
       showToast(fail_message, 'error');
       return false;
-    } catch {
+    } catch (err) {
+      if (
+        err &&
+        typeof err === 'object' &&
+        /** @type {any} */ (err).code === 'bd_readback_failed'
+      ) {
+        showToast('저장됐으나 확인 실패 — 곧 갱신됩니다', 'error');
+        return { ok: false, saved: true };
+      }
       showToast(fail_message, 'error');
       return false;
     }
@@ -1317,7 +1368,7 @@ export function createDetailPanel(mount_element, options) {
       { id: current_id, field: 'title', value },
       '제목 저장 실패'
     ).then((ok) => {
-      if (ok) {
+      if (ok === true) {
         editing_title = false;
         title_draft = '';
       }
@@ -1352,7 +1403,7 @@ export function createDetailPanel(mount_element, options) {
       { id: current_id, field: 'description', value },
       '설명 저장 실패'
     ).then((ok) => {
-      if (ok) {
+      if (ok === true) {
         editing_desc = false;
         desc_draft = '';
       }
@@ -1422,7 +1473,7 @@ export function createDetailPanel(mount_element, options) {
       { id: current_id, label },
       '라벨 추가 실패'
     ).then((ok) => {
-      if (ok) {
+      if (ok === true) {
         label_draft = '';
       }
       doRender();
@@ -1477,59 +1528,330 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
-   * Icon for a bd edge type. An unknown type renders the bare id rather than a
-   * misleading glyph.
+   * The bd edge type of one dependency entry.
    *
    * @param {any} edge
    * @returns {string}
    */
-  function edgeIcon(edge) {
-    const type =
-      edge && typeof edge === 'object'
-        ? String(edge.dependency_type || edge.type || '')
-        : '';
+  function edgeType(edge) {
+    return edge && typeof edge === 'object'
+      ? String(edge.dependency_type || edge.type || '')
+      : '';
+  }
+
+  /**
+   * The 말머리 of a `나머지` chip (UI-lx45 §4.1). 종류가 아이콘만으로는 구분되지
+   * 않으므로 아는 종류는 우리말 말머리를 함께 싣고, 모르는 종류는 아이콘을
+   * 지어내지 않고 그 type 문자열 그대로 붙인다.
+   *
+   * @param {string} type
+   * @returns {string}
+   */
+  function otherEdgePrefix(type) {
     switch (type) {
-      case 'blocks':
-        return '⛓';
       case 'discovered-from':
-        return '↩';
+        return '↩ 발견 ';
       case 'parent-child':
-        return '⌸';
+        return '⌸ 상위 ';
+      case 'related':
+        return '관련 ';
       default:
-        return '';
+        return type.length > 0 ? `${type} ` : '';
     }
   }
 
   /**
+   * `status · title` for a chip's tooltip. 둘 다 있을 때만 말한다 — 반쪽짜리
+   * 사실을 툴팁으로 주장하지 않는다.
+   *
+   * @param {any} edge
+   * @returns {string|undefined}
+   */
+  function edgeTitle(edge) {
+    if (!edge || typeof edge !== 'object') {
+      return undefined;
+    }
+    const status = typeof edge.status === 'string' ? edge.status : '';
+    const title = typeof edge.title === 'string' ? edge.title : '';
+    return status.length > 0 && title.length > 0
+      ? `${status} · ${title}`
+      : undefined;
+  }
+
+  /** @returns {string} */
+  function depWorkspacePath() {
+    return (
+      (options.getWorkspacePath && options.getWorkspacePath()) ||
+      ''
+    ).trim();
+  }
+
+  /** @returns {DepCandidateModel|null} */
+  function candidateModel() {
+    return options.depCandidates ? options.depCandidates() : null;
+  }
+
+  /**
+   * One dependency op (UI-lx45 §3.3). `a`는 언제나 이 이슈다 — 상세 패널이
+   * 편집하는 방향은 "이 이슈를 무엇이 막는가" 하나뿐이고, `root_dir`은 그
+   * 피차단 이슈의 레포이므로 활성 워크스페이스와 같다.
+   *
+   * @param {'dep-add'|'dep-remove'} type
+   * @param {string} b
+   * @param {string} fail_message
+   * @returns {Promise<void>}
+   */
+  async function sendDepOp(type, b, fail_message) {
+    const root_dir = depWorkspacePath();
+    const a = current_id;
+    if (!a) {
+      return;
+    }
+    if (root_dir.length === 0) {
+      showToast('레포를 알 수 없어 의존을 바꿀 수 없습니다', 'error');
+      return;
+    }
+    const result = await sendMutation(
+      type,
+      { a, b, view_id: a, root_dir },
+      fail_message
+    );
+    // 저장된 간선마다 정확히 한 번 (§3.3): 확인 읽기만 실패한 경우도 쓰기는
+    // 반영됐으므로 자동 교정이 이 사실을 놓치면 안 된다.
+    const saved =
+      result === true || (result !== false && result.saved === true);
+    if (saved && options.onDepChanged) {
+      options.onDepChanged({ type, a, b });
+    }
+    if (type === 'dep-add' && saved) {
+      dep_query = '';
+      dep_list_open = false;
+    }
+    doRender();
+  }
+
+  /**
+   * @param {string} blocker_id
+   */
+  function unlinkDep(blocker_id) {
+    if (!current_id) {
+      return;
+    }
+    const ask = globalThis.confirm;
+    if (
+      typeof ask === 'function' &&
+      !ask(`${blocker_id}가 ${current_id}를 막는 연결을 끊을까요?`)
+    ) {
+      return;
+    }
+    void sendDepOp('dep-remove', blocker_id, '의존 해제 실패');
+  }
+
+  /**
+   * @param {DepCandidate} candidate
+   */
+  function addDep(candidate) {
+    if (candidate.disabled) {
+      return;
+    }
+    void sendDepOp('dep-add', candidate.bead_id, '의존 추가 실패');
+  }
+
+  /**
+   * @param {Event} ev
+   */
+  function onDepInput(ev) {
+    dep_query = /** @type {HTMLInputElement} */ (ev.target).value;
+    dep_list_open = true;
+    doRender();
+  }
+
+  function onDepFocus() {
+    if (!dep_list_open) {
+      dep_list_open = true;
+      doRender();
+    }
+  }
+
+  /**
+   * @param {KeyboardEvent} ev
+   * @param {DepCandidate[]} shown
+   */
+  function onDepKeydown(ev, shown) {
+    if (ev.key === 'Escape') {
+      // 패널 자체의 Escape(닫기)보다 먼저 잡는다 — 라벨 입력과 같은 문법이다.
+      ev.stopPropagation();
+      dep_query = '';
+      dep_list_open = false;
+      doRender();
+      return;
+    }
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      if (shown.length === 1 && !shown[0].disabled) {
+        addDep(shown[0]);
+      }
+    }
+  }
+
+  /**
+   * @param {DepCandidate[]} shown
+   */
+  function depAddTemplate(shown) {
+    return html`<div class="detail-dep-add">
+      <input
+        class="detail-dep-add__input"
+        aria-label="막는 이슈 추가"
+        placeholder="막는 이슈 추가"
+        .value=${dep_query}
+        @focus=${onDepFocus}
+        @input=${onDepInput}
+        @keydown=${(/** @type {KeyboardEvent} */ ev) => onDepKeydown(ev, shown)}
+      />
+      ${dep_list_open || dep_query.length > 0
+        ? html`<div class="detail-dep-add__list">
+            ${shown.length === 0
+              ? html`<div class="detail-dep-add__empty">후보 없음</div>`
+              : shown.map(
+                  (candidate) =>
+                    html`<button
+                      type="button"
+                      class="detail-dep-add__cand"
+                      data-dep-cand=${candidate.bead_id}
+                      ?disabled=${candidate.disabled}
+                      title=${ifDefined(candidate.reason)}
+                      @click=${() => addDep(candidate)}
+                    >
+                      <span class="detail-dep-add__repo"
+                        >${candidate.workspace_name}</span
+                      >
+                      <span class="detail-dep-add__id"
+                        >${candidate.bead_id}</span
+                      >
+                      <span class="detail-dep-add__title"
+                        >${candidate.title}</span
+                      >
+                    </button>`
+                )}
+          </div>`
+        : ''}
+    </div>`;
+  }
+
+  /**
+   * One chip of the 의존성 절.
+   *
+   * @param {{ id: string, label: string, kind: 'pred'|'succ'|'other', title: string|undefined }} chip
+   * @param {Map<string, string>} root_by_id
+   */
+  function depChipTemplate(chip, root_by_id) {
+    const root_dir = root_by_id.get(chip.id);
+    const body = onNavigate
+      ? html`<button
+          type="button"
+          class="detail-dep__link"
+          title=${ifDefined(chip.title)}
+          @click=${() =>
+            root_dir === undefined
+              ? onNavigate(chip.id)
+              : onNavigate(chip.id, root_dir)}
+        >
+          ${chip.label}
+        </button>`
+      : html`<span class="detail-dep__link" title=${ifDefined(chip.title)}
+          >${chip.label}</span
+        >`;
+    return html`<span
+      class=${`detail-dep detail-dep--${chip.kind}${
+        onNavigate ? ' detail-dep--link' : ''
+      }`}
+      >${body}${chip.kind === 'pred'
+        ? html`<button
+            type="button"
+            class="detail-dep__unlink"
+            data-dep-b=${chip.id}
+            aria-label=${'의존 해제: ' + chip.id}
+            @click=${() => unlinkDep(chip.id)}
+          >
+            ✕
+          </button>`
+        : ''}</span
+    >`;
+  }
+
+  /**
+   * The 의존성 절 (UI-lx45 §4). 선행(`dependencies` 중 `blocks`)·후행
+   * (`dependents` 중 `blocks`)·나머지(`dependencies` 중 그 외)를 한 절에 두고,
+   * 종류는 말머리와 색 티어로 구분한다. 편집은 선행 한 방향뿐이다.
+   *
    * @param {any} data
    */
   function depsTemplate(data) {
-    const raw = Array.isArray(data.dependencies) ? data.dependencies : [];
-    const edges = raw
-      .map((/** @type {any} */ edge) => ({
-        id: edgeId(edge),
-        icon: edgeIcon(edge)
-      }))
-      .filter((/** @type {{ id: string }} */ e) => e.id.length > 0);
+    const deps = Array.isArray(data.dependencies) ? data.dependencies : [];
+    const dependents = Array.isArray(data.dependents) ? data.dependents : [];
+    /** @type {Array<{ id: string, label: string, kind: 'pred'|'succ'|'other', title: string|undefined }>} */
+    const chips = [];
+    for (const edge of deps) {
+      const id = edgeId(edge);
+      if (id.length > 0 && edgeType(edge) === 'blocks') {
+        chips.push({
+          id,
+          label: `⛓ 막는 ${id}`,
+          kind: 'pred',
+          title: edgeTitle(edge)
+        });
+      }
+    }
+    // 역방향 관계 중 `blocks`만 싣는다 (§4.1): 나머지는 같은 간선이
+    // `dependencies` 쪽에도 있어 중복되고, 역방향 말머리가 정의돼 있지 않다.
+    for (const edge of dependents) {
+      const id = edgeId(edge);
+      if (id.length > 0 && edgeType(edge) === 'blocks') {
+        chips.push({
+          id,
+          label: `⛓ 막히는 ${id}`,
+          kind: 'succ',
+          title: edgeTitle(edge)
+        });
+      }
+    }
+    for (const edge of deps) {
+      const id = edgeId(edge);
+      const type = edgeType(edge);
+      if (id.length > 0 && type !== 'blocks') {
+        chips.push({
+          id,
+          label: `${otherEdgePrefix(type)}${id}`,
+          kind: 'other',
+          title: edgeTitle(edge)
+        });
+      }
+    }
+
+    const model = candidateModel();
+    /** @type {Map<string, string>} */
+    const root_by_id = new Map();
+    if (model) {
+      for (const issue of model.issues) {
+        if (!root_by_id.has(issue.bead_id)) {
+          root_by_id.set(issue.bead_id, issue.root_dir);
+        }
+      }
+    }
+    const shown =
+      model && current_id
+        ? filterDepCandidates(depCandidatesOf(current_id, model), dep_query)
+        : [];
     return html`
       <div class="detail-section-label">의존성</div>
-      ${edges.length === 0
+      ${chips.length === 0
         ? html`<div class="detail-empty">의존성 없음</div>`
         : html`<div class="detail-deps">
-            ${edges.map((/** @type {{ id: string, icon: string }} */ edge) =>
-              onNavigate
-                ? html`<button
-                    type="button"
-                    class="detail-dep detail-dep--link"
-                    @click=${() => onNavigate(edge.id)}
-                  >
-                    ${edge.icon ? `${edge.icon} ` : ''}${edge.id}
-                  </button>`
-                : html`<span class="detail-dep"
-                    >${edge.icon ? `${edge.icon} ` : ''}${edge.id}</span
-                  >`
-            )}
+            ${chips.map((chip) => depChipTemplate(chip, root_by_id))}
           </div>`}
+      ${model === null
+        ? html`<div class="detail-empty">후보를 불러올 수 없음</div>`
+        : depAddTemplate(shown)}
     `;
   }
 
@@ -2113,6 +2435,13 @@ export function createDetailPanel(mount_element, options) {
       }
       current_id = id;
       current = null;
+      if (!unsubscribe_candidates && options.subscribeCandidates) {
+        unsubscribe_candidates = options.subscribeCandidates(() => {
+          if (current_id) {
+            doRender();
+          }
+        });
+      }
       refreshFromStore();
       void loadSessionDefaults();
       if (exec_account_catalog_loaded_for !== id) {
@@ -2132,6 +2461,7 @@ export function createDetailPanel(mount_element, options) {
       resetTaskPrompt();
       resetSessionRefs();
       resetExecAccountCatalog();
+      releaseCandidates();
       md_viewer.close();
       transcript_drawer.close();
       render(html``, mount_element);
@@ -2149,6 +2479,7 @@ export function createDetailPanel(mount_element, options) {
         unsubscribe_presets();
         unsubscribe_presets = null;
       }
+      releaseCandidates();
       document.removeEventListener('keydown', onKeydown);
       if (!injected_md_viewer) {
         md_viewer.destroy();

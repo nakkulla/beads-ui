@@ -1616,10 +1616,10 @@ describe('views/detail-panel dependency edge types', () => {
     );
   }
 
-  test('renders a chain icon for a blocks edge', () => {
+  test('renders the 막는 prefix for a blocks edge', () => {
     const mount = mountWithDeps([{ id: 'UI-0', dependency_type: 'blocks' }]);
 
-    expect(depTexts(mount)).toEqual(['⛓ UI-0']);
+    expect(depTexts(mount)).toEqual(['⛓ 막는 UI-0 ✕']);
   });
 
   test('renders a return icon for a discovered-from edge', () => {
@@ -1627,13 +1627,13 @@ describe('views/detail-panel dependency edge types', () => {
       { id: 'UI-0', dependency_type: 'discovered-from' }
     ]);
 
-    expect(depTexts(mount)).toEqual(['↩ UI-0']);
+    expect(depTexts(mount)).toEqual(['↩ 발견 UI-0']);
   });
 
-  test('renders the bare id for an unknown edge type', () => {
+  test('renders the bare type and id for an unknown edge type', () => {
     const mount = mountWithDeps([{ id: 'UI-0', dependency_type: 'mystery' }]);
 
-    expect(depTexts(mount)).toEqual(['UI-0']);
+    expect(depTexts(mount)).toEqual(['mystery UI-0']);
   });
 
   test('renders the bare id for a plain string edge', () => {
@@ -1642,13 +1642,13 @@ describe('views/detail-panel dependency edge types', () => {
     expect(depTexts(mount)).toEqual(['UI-0']);
   });
 
-  test('renders one row per edge, keeping their order', () => {
+  test('renders the 막는 group before the 나머지 group', () => {
     const mount = mountWithDeps([
       { id: 'UI-9', dependency_type: 'parent-child' },
       { id: 'UI-0', dependency_type: 'blocks' }
     ]);
 
-    expect(depTexts(mount)).toEqual(['⌸ UI-9', '⛓ UI-0']);
+    expect(depTexts(mount)).toEqual(['⛓ 막는 UI-0 ✕', '⌸ 상위 UI-9']);
   });
 
   test('reports no dependencies when the edge list is empty', () => {
@@ -2193,5 +2193,602 @@ describe('views/detail-panel session_ref rows (UI-4xzk §6.5)', () => {
     await Promise.resolve();
 
     expect(mount.querySelector('.detail-session__id')).toBeNull();
+  });
+});
+
+describe('views/detail-panel 의존성 절 편집기 (UI-lx45 §4)', () => {
+  const WS_A = '/tmp/example/repo-a';
+  const WS_B = '/tmp/example/repo-b';
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    for (const el of Array.from(document.querySelectorAll('.toast'))) {
+      el.remove();
+    }
+  });
+
+  /**
+   * @param {string} bead_id
+   * @param {Partial<{ root_dir: string, workspace_name: string, title: string, lane: string }>} [patch]
+   */
+  function candIssue(bead_id, patch = {}) {
+    return {
+      bead_id,
+      root_dir: WS_A,
+      workspace_name: 'repo-a',
+      title: `title ${bead_id}`,
+      lane: 'runnable',
+      ...patch
+    };
+  }
+
+  /**
+   * Panel over one seeded detail snapshot with the three dependency options.
+   *
+   * @param {any} issue
+   * @param {any} [opts]
+   */
+  function depPanel(issue, opts = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      transport: opts.transport,
+      getWorkspacePath: opts.getWorkspacePath || (() => WS_A),
+      depCandidates: opts.depCandidates,
+      onDepChanged: opts.onDepChanged,
+      subscribeCandidates: opts.subscribeCandidates,
+      onNavigate: opts.onNavigate,
+      onClose: vi.fn()
+    });
+    issueStores.register('detail:' + issue.id, {
+      type: 'issue-detail',
+      params: { id: issue.id }
+    });
+    issueStores.getStore('detail:' + issue.id)?.applyPush({
+      type: 'snapshot',
+      id: 'detail:' + issue.id,
+      revision: 1,
+      issues: /** @type {any} */ ([issue])
+    });
+    panel.load(issue.id);
+    return { mount, panel, issueStores };
+  }
+
+  /**
+   * The dependency ops one transport spy saw — the panel also fetches comments,
+   * session defaults and accounts through the same seam.
+   *
+   * @param {any} transport
+   * @returns {any[][]}
+   */
+  function depCalls(transport) {
+    return transport.mock.calls.filter((/** @type {any[]} */ call) =>
+      String(call[0]).startsWith('dep-')
+    );
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string[]}
+   */
+  function chipTexts(mount) {
+    return Array.from(mount.querySelectorAll('.detail-dep')).map((el) =>
+      String(el.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    );
+  }
+
+  test('orders the chips 막는 → 막히는 → 나머지 with their prefix', () => {
+    const { mount } = depPanel({
+      id: 'UI-1',
+      title: 't',
+      dependencies: [
+        { id: 'UI-rel', dependency_type: 'related' },
+        { id: 'UI-pred', dependency_type: 'blocks' },
+        { id: 'UI-disc', dependency_type: 'discovered-from' }
+      ],
+      dependents: [{ id: 'UI-succ', dependency_type: 'blocks' }]
+    });
+
+    expect(chipTexts(mount)).toEqual([
+      '⛓ 막는 UI-pred ✕',
+      '⛓ 막히는 UI-succ',
+      '관련 UI-rel',
+      '↩ 발견 UI-disc'
+    ]);
+  });
+
+  test('marks each chip kind with its own modifier class', () => {
+    const { mount } = depPanel({
+      id: 'UI-1',
+      title: 't',
+      dependencies: [
+        { id: 'UI-pred', dependency_type: 'blocks' },
+        { id: 'UI-par', dependency_type: 'parent-child' }
+      ],
+      dependents: [{ id: 'UI-succ', dependency_type: 'blocks' }]
+    });
+
+    expect(
+      Array.from(mount.querySelectorAll('.detail-dep')).map((el) =>
+        el.className.includes('detail-dep--pred')
+          ? 'pred'
+          : el.className.includes('detail-dep--succ')
+            ? 'succ'
+            : 'other'
+      )
+    ).toEqual(['pred', 'succ', 'other']);
+  });
+
+  test('renders the unlink button only on a 막는 chip', () => {
+    const { mount } = depPanel({
+      id: 'UI-1',
+      title: 't',
+      dependencies: [{ id: 'UI-pred', dependency_type: 'blocks' }],
+      dependents: [{ id: 'UI-succ', dependency_type: 'blocks' }]
+    });
+
+    expect(
+      Array.from(mount.querySelectorAll('.detail-dep__unlink')).map((el) =>
+        el.getAttribute('data-dep-b')
+      )
+    ).toEqual(['UI-pred']);
+  });
+
+  test('drops a reverse non-blocks dependent from the chips', () => {
+    const { mount } = depPanel({
+      id: 'UI-1',
+      title: 't',
+      dependencies: [],
+      dependents: [{ id: 'UI-rel', dependency_type: 'related' }]
+    });
+
+    expect(mount.textContent).toContain('의존성 없음');
+  });
+
+  test('keeps rendering the 막는 chips when the payload has no dependents', () => {
+    const { mount } = depPanel({
+      id: 'UI-1',
+      title: 't',
+      dependencies: [{ id: 'UI-0', dependency_type: 'blocks' }]
+    });
+
+    expect(chipTexts(mount)).toEqual(['⛓ 막는 UI-0 ✕']);
+  });
+
+  test('sends dep-remove with the current issue as a after a confirm', async () => {
+    const transport = vi.fn(async () => ({ id: 'UI-1', title: 't' }));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
+    const { mount } = depPanel(
+      {
+        id: 'UI-1',
+        title: 't',
+        dependencies: [{ id: 'UI-0', dependency_type: 'blocks' }]
+      },
+      { transport }
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep__unlink')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+
+    expect(globalThis.confirm).toHaveBeenCalledWith(
+      'UI-0가 UI-1를 막는 연결을 끊을까요?'
+    );
+    expect(transport).toHaveBeenCalledWith('dep-remove', {
+      a: 'UI-1',
+      b: 'UI-0',
+      view_id: 'UI-1',
+      root_dir: WS_A
+    });
+  });
+
+  test('sends nothing when the unlink confirm is declined', async () => {
+    const transport = vi.fn(async () => ({ id: 'UI-1', title: 't' }));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => false)
+    );
+    const { mount } = depPanel(
+      {
+        id: 'UI-1',
+        title: 't',
+        dependencies: [{ id: 'UI-0', dependency_type: 'blocks' }]
+      },
+      { transport }
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep__unlink')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+
+    expect(depCalls(transport)).toEqual([]);
+  });
+
+  test('navigates to a chip with the root_dir the candidate model knows', () => {
+    const onNavigate = vi.fn();
+    const { mount } = depPanel(
+      {
+        id: 'UI-1',
+        title: 't',
+        dependencies: [{ id: 'UI-0', dependency_type: 'blocks' }]
+      },
+      {
+        onNavigate,
+        depCandidates: () => ({
+          issues: [
+            candIssue('UI-0', { root_dir: WS_B, workspace_name: 'repo-b' })
+          ],
+          blocked_by_map: new Map()
+        })
+      }
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep__link')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(onNavigate).toHaveBeenCalledWith('UI-0', WS_B);
+  });
+
+  test('navigates without a root_dir when the candidate model has no such id', () => {
+    const onNavigate = vi.fn();
+    const { mount } = depPanel(
+      {
+        id: 'UI-1',
+        title: 't',
+        dependencies: [{ id: 'UI-0', dependency_type: 'blocks' }]
+      },
+      {
+        onNavigate,
+        depCandidates: () => ({ issues: [], blocked_by_map: new Map() })
+      }
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep__link')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(onNavigate).toHaveBeenCalledWith('UI-0');
+  });
+
+  test('reports the candidate list is unavailable when the model is null', () => {
+    const { mount } = depPanel(
+      { id: 'UI-1', title: 't', dependencies: [] },
+      { depCandidates: () => null }
+    );
+
+    expect(mount.textContent).toContain('후보를 불러올 수 없음');
+    expect(mount.querySelector('.detail-dep-add__input')).toBeNull();
+  });
+
+  test('opens the candidate list on input focus', () => {
+    const { mount } = depPanel(
+      { id: 'UI-1', title: 't', dependencies: [] },
+      {
+        depCandidates: () => ({
+          issues: [candIssue('UI-2'), candIssue('UI-3')],
+          blocked_by_map: new Map()
+        })
+      }
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    ).dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+
+    expect(
+      Array.from(mount.querySelectorAll('.detail-dep-add__cand')).map((el) =>
+        el.getAttribute('data-dep-cand')
+      )
+    ).toEqual(['UI-2', 'UI-3']);
+  });
+
+  test('narrows the candidate list by the typed query', () => {
+    const { mount } = depPanel(
+      { id: 'UI-1', title: 't', dependencies: [] },
+      {
+        depCandidates: () => ({
+          issues: [candIssue('UI-2'), candIssue('UI-33')],
+          blocked_by_map: new Map()
+        })
+      }
+    );
+
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+    input.value = '33';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(
+      Array.from(mount.querySelectorAll('.detail-dep-add__cand')).map((el) =>
+        el.getAttribute('data-dep-cand')
+      )
+    ).toEqual(['UI-33']);
+  });
+
+  test('disables a candidate that would close a cycle and names the reason', () => {
+    const { mount } = depPanel(
+      { id: 'UI-1', title: 't', dependencies: [] },
+      {
+        depCandidates: () => ({
+          issues: [candIssue('UI-2')],
+          blocked_by_map: new Map([['UI-2', ['UI-1']]])
+        })
+      }
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    ).dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+
+    const cand = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.detail-dep-add__cand')
+    );
+    expect([cand.disabled, cand.getAttribute('title')]).toEqual([
+      true,
+      '사이클'
+    ]);
+  });
+
+  test('reports an empty candidate list', () => {
+    const { mount } = depPanel(
+      { id: 'UI-1', title: 't', dependencies: [] },
+      {
+        depCandidates: () => ({ issues: [], blocked_by_map: new Map() })
+      }
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    ).dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+
+    expect(mount.textContent).toContain('후보 없음');
+  });
+
+  /**
+   * @param {any} opts
+   */
+  function addPanel(opts) {
+    return depPanel(
+      { id: 'UI-1', title: 't', dependencies: [] },
+      {
+        depCandidates: () => ({
+          issues: [candIssue('UI-2')],
+          blocked_by_map: new Map()
+        }),
+        ...opts
+      }
+    );
+  }
+
+  test('sends dep-add for a clicked candidate and clears the input', async () => {
+    const transport = vi.fn(async () => ({ id: 'UI-1', title: 't' }));
+    const onDepChanged = vi.fn();
+    const { mount } = addPanel({ transport, onDepChanged });
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+    input.value = 'UI-2';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep-add__cand')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('dep-add', {
+      a: 'UI-1',
+      b: 'UI-2',
+      view_id: 'UI-1',
+      root_dir: WS_A
+    });
+    expect(onDepChanged).toHaveBeenCalledWith({
+      type: 'dep-add',
+      a: 'UI-1',
+      b: 'UI-2'
+    });
+    expect(
+      /** @type {HTMLInputElement} */ (
+        mount.querySelector('.detail-dep-add__input')
+      ).value
+    ).toBe('');
+  });
+
+  test('adds the only matching candidate on Enter', async () => {
+    const transport = vi.fn(async () => ({ id: 'UI-1', title: 't' }));
+    const { mount } = addPanel({ transport });
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+    input.value = 'UI-2';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    ).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('dep-add', {
+      a: 'UI-1',
+      b: 'UI-2',
+      view_id: 'UI-1',
+      root_dir: WS_A
+    });
+  });
+
+  test('ignores Enter while more than one candidate matches', async () => {
+    const transport = vi.fn(async () => ({ id: 'UI-1', title: 't' }));
+    const { mount } = depPanel(
+      { id: 'UI-1', title: 't', dependencies: [] },
+      {
+        transport,
+        depCandidates: () => ({
+          issues: [candIssue('UI-2'), candIssue('UI-3')],
+          blocked_by_map: new Map()
+        })
+      }
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    ).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    await Promise.resolve();
+
+    expect(depCalls(transport)).toEqual([]);
+  });
+
+  test('clears the query and closes the list on Escape', () => {
+    const { mount } = addPanel({});
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+    input.value = 'UI-2';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    ).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+    );
+
+    expect(mount.querySelector('.detail-dep-add__list')).toBeNull();
+    expect(
+      /** @type {HTMLInputElement} */ (
+        mount.querySelector('.detail-dep-add__input')
+      ).value
+    ).toBe('');
+  });
+
+  test('calls onDepChanged once when the write lands but the readback fails', async () => {
+    const transport = vi.fn(async (/** @type {string} */ type) => {
+      if (type !== 'dep-add') {
+        return [];
+      }
+      const err = /** @type {any} */ (new Error('readback'));
+      err.code = 'bd_readback_failed';
+      throw err;
+    });
+    const onDepChanged = vi.fn();
+    const { mount } = addPanel({ transport, onDepChanged });
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    ).dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep-add__cand')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(depCalls(transport)).toHaveLength(1);
+    expect(onDepChanged).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '저장됐으나 확인 실패 — 곧 갱신됩니다'
+    );
+  });
+
+  test('leaves onDepChanged uncalled when the write itself fails', async () => {
+    const transport = vi.fn(async (/** @type {string} */ type) => {
+      if (type !== 'dep-add') {
+        return [];
+      }
+      const err = /** @type {any} */ (new Error('nope'));
+      err.code = 'bd_error';
+      throw err;
+    });
+    const onDepChanged = vi.fn();
+    const { mount } = addPanel({ transport, onDepChanged });
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    ).dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep-add__cand')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onDepChanged).not.toHaveBeenCalled();
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '의존 추가 실패'
+    );
+  });
+
+  test('sends no op and warns when the workspace path is unknown', async () => {
+    const transport = vi.fn(async () => ({ id: 'UI-1', title: 't' }));
+    const { mount } = addPanel({ transport, getWorkspacePath: () => '' });
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    ).dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-dep-add__cand')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+
+    expect(depCalls(transport)).toEqual([]);
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '레포를 알 수 없어 의존을 바꿀 수 없습니다'
+    );
+  });
+
+  test('subscribes the candidate store on load and releases it on clear', () => {
+    const unsubscribe = vi.fn();
+    const subscribeCandidates = vi.fn(() => unsubscribe);
+    const { panel } = addPanel({ subscribeCandidates });
+
+    expect(subscribeCandidates).toHaveBeenCalledTimes(1);
+
+    panel.clear();
+
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  test('resets the query when another issue is loaded', () => {
+    const { mount, panel, issueStores } = addPanel({});
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+    input.value = 'UI-2';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    issueStores.register('detail:UI-9', {
+      type: 'issue-detail',
+      params: { id: 'UI-9' }
+    });
+    issueStores.getStore('detail:UI-9')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-9',
+      revision: 1,
+      issues: /** @type {any} */ ([
+        { id: 'UI-9', title: 'other', dependencies: [] }
+      ])
+    });
+    panel.load('UI-9');
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        mount.querySelector('.detail-dep-add__input')
+      ).value
+    ).toBe('');
+    expect(mount.querySelector('.detail-dep-add__list')).toBeNull();
   });
 });
