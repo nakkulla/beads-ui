@@ -357,7 +357,6 @@ describe('subscribe-session-log session_ref authorization', () => {
 
   test('answers an empty snapshot for a session on another host', async () => {
     const socket = fakeSocket();
-    writeClaudeSessionFile('{"type":"assistant"}\n');
     bdShows({ session_ref: `claude:${SESSION_ID}@far-away-box` });
 
     await handleSubscribeSessionLog(
@@ -375,6 +374,31 @@ describe('subscribe-session-log session_ref authorization', () => {
 
     expect(pushOf(socket, 'session-log-snapshot').payload.lines).toEqual([]);
     expect(tail.readers).toHaveLength(0);
+  });
+
+  // The recorded host label drifts with the kernel hostname (UI-82jx): a
+  // transcript present in this home is served whatever label it carries.
+  test('serves the transcript when the host label differs but the file is here', async () => {
+    const socket = fakeSocket();
+    writeClaudeSessionFile('{"type":"assistant"}\n');
+    bdShows({ session_ref: `claude:${SESSION_ID}@far-away-box` });
+
+    await handleSubscribeSessionLog(
+      socket,
+      subscribeRequest({
+        id: 'c1',
+        attempt_id: ATTEMPT_SLOT,
+        session_ref: {
+          bead_id: 'UI-1',
+          provider: 'claude',
+          session_id: SESSION_ID
+        }
+      })
+    );
+
+    expect(pushOf(socket, 'session-log-snapshot').payload.lines).toEqual([
+      { type: 'assistant' }
+    ]);
   });
 });
 

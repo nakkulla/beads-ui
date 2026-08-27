@@ -206,10 +206,16 @@ export function resolveSessionFile(entry, options = {}) {
   if (!SAFE_SESSION_ID_RE.test(entry.session_id)) {
     return absent;
   }
+  // A differing host label is NOT proof the session lives elsewhere: macOS
+  // rewrites `kern.hostname` (what `os.hostname()` and a session's
+  // `socket.gethostname()` both report) on network changes — this machine went
+  // `isy-macstudioui-MacStudio-2` → `Mac` between one session's write and the
+  // next dispatch (UI-82jx), and the label mismatch alone refused a fork whose
+  // transcript sat right here. So a mismatch only downgrades the label from an
+  // answer to a hint: the transcript's presence in THIS home decides, and
+  // `remote` is what a mismatched label means when nothing is found.
   const hostname = options.hostname || os.hostname();
-  if (firstLabel(entry.host) !== firstLabel(hostname)) {
-    return { locality: 'remote', file: null, last_event_at: null };
-  }
+  const host_matches = firstLabel(entry.host) === firstLabel(hostname);
   const file_system = options.fs || fs;
   const home_dir = options.home_dir || os.homedir();
   /** @type {string|null} */
@@ -238,7 +244,9 @@ export function resolveSessionFile(entry, options = {}) {
           });
   }
   if (file === null) {
-    return absent;
+    return host_matches
+      ? absent
+      : { locality: 'remote', file: null, last_event_at: null };
   }
   /** @type {number|null} */
   let last_event_at = null;
@@ -333,8 +341,8 @@ export function qualifySessionFork(metadata, runner_name, options = {}) {
   if (current.provider !== runner_name) {
     return { ok: false, reason: 'provider_mismatch' };
   }
-  // `local` already means BOTH the host label matched and the transcript file
-  // was found, so no separate existence probe follows.
+  // `local` already means the transcript file was found in this home (the
+  // host label is only a hint there — UI-82jx), so no separate probe follows.
   if (resolveSessionFile(current, options).locality !== 'local') {
     return { ok: false, reason: 'not_local' };
   }
