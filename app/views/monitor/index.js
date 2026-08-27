@@ -1966,9 +1966,12 @@ export function createMonitorView(mount_element, options) {
               ? runnableBody()
               : undefined
           : meta.lane === 'queue'
-            ? lanes.queue_groups.length > 0 ||
+            ? // 연결 레인 저장소를 읽을 수 없다는 사실은 대기가 비어 있어도
+              // 말해야 한다 — 본문을 아예 그리지 않으면 그 안내가 사라진다.
+              lanes.queue_groups.length > 0 ||
               lanes.chain_lanes.length > 0 ||
-              lanes.parallel_rows.length > 0
+              lanes.parallel_rows.length > 0 ||
+              lanes.cross_lanes_unreadable
               ? waitBodyTemplate()
               : undefined
             : meta.lane === 'running'
@@ -3476,6 +3479,39 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * The collapsed 세로 띠 as a drop target (UI-5ksp §4.4). 접힌 pane은 본문을
+   * 그리지 않으므로 `[data-drop]`이 하나도 없다 — 그래도 띠는 같은 타깃이다:
+   * 띠에 떨어뜨린 사람이 원한 것은 "대기에 넣기"이지 "다음으로 실행"이 아니므로
+   * 병렬 큐 **말미**로 적재하고, 레인을 자동으로 펼치지 않는다. 후보 띠는 지금
+   * 의미 그대로 — 대기 행을 떨어뜨리면 큐에서 뺀다.
+   *
+   * @param {HTMLElement|null} node
+   * @returns {{ zone: HTMLElement, target: DropTarget }|null}
+   */
+  function collapsedDropTarget(node) {
+    const pane =
+      typeof node?.closest === 'function'
+        ? /** @type {HTMLElement|null} */ (
+            node.closest('.worker-pane--collapsed[data-lane]')
+          )
+        : null;
+    if (!pane) {
+      return null;
+    }
+    const lane = pane.getAttribute('data-lane');
+    if (lane === 'queue') {
+      return {
+        zone: pane,
+        target: { kind: 'parallel', marker_index: lanes.parallel_rows.length }
+      };
+    }
+    if (lane === 'candidate') {
+      return { zone: pane, target: { kind: 'candidate' } };
+    }
+    return null;
+  }
+
+  /**
    * The zone a drop may actually land on. 레포 직렬 레인만 `root_dir` 일치를
    * 요구한다 (§4.2) — 다른 레포 카드에는 드롭 표시조차 뜨지 않는다.
    *
@@ -3484,12 +3520,15 @@ export function createMonitorView(mount_element, options) {
    */
   function dropTarget(ev) {
     const node = /** @type {HTMLElement|null} */ (ev.target);
+    if (!dragging) {
+      return null;
+    }
     const zone =
       typeof node?.closest === 'function'
         ? /** @type {HTMLElement|null} */ (node.closest('[data-drop]'))
         : null;
-    if (!zone || !dragging) {
-      return null;
+    if (!zone) {
+      return collapsedDropTarget(node);
     }
     const kind = zone.getAttribute('data-drop');
     if (kind === 'candidate') {
@@ -3545,6 +3584,24 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * The last pointerdown target. `dragstart` retargets to the draggable
+   * ancestor (the row), so the press target is the only way to tell a row-body
+   * drag from one that started on an interactive child — and the 대기 행 조작
+   * (`⛓ ↑ ↓ ✕`)이 행 **안**으로 들어온 뒤로 (UI-5ksp §4.6) 그 구분이 없으면
+   * 버튼 위에서 손이 조금만 흔들려도 행 이동이 시작된다.
+   *
+   * @type {Element|null}
+   */
+  let press_target = null;
+
+  /**
+   * @param {PointerEvent} ev
+   */
+  function onPointerDown(ev) {
+    press_target = ev.target instanceof Element ? ev.target : null;
+  }
+
+  /**
    * @param {DragEvent} ev
    */
   function onDragStart(ev) {
@@ -3559,6 +3616,18 @@ export function createMonitorView(mount_element, options) {
       ? /** @type {HTMLElement|null} */ (handle.closest('[data-drag-kind]'))
       : null;
     if (!holder) {
+      return;
+    }
+    // 인터랙티브 자식에서 시작한 드래그는 행 이동이 아니라 오조작이다 — Worker
+    // 탭과 같은 판정으로 취소해 상태 없는 유령 드래그를 남기지 않는다.
+    if (
+      handle &&
+      press_target &&
+      handle.contains(press_target) &&
+      typeof (/** @type {Element} */ (press_target).closest) === 'function' &&
+      press_target.closest('input, button, a')
+    ) {
+      ev.preventDefault();
       return;
     }
     const bead_id = holder.getAttribute('data-bead-id') || '';
@@ -3614,6 +3683,9 @@ export function createMonitorView(mount_element, options) {
     const node = /** @type {HTMLElement|null} */ (ev.target);
     if (typeof node?.closest === 'function') {
       node.closest('[data-drop]')?.classList.remove('is-drop-over');
+      // 접힌 띠는 `[data-drop]`을 갖지 않으므로 (§4.4) 자기 이름으로 지운다 —
+      // 그러지 않으면 드래그가 끝날 때까지 윤곽선이 남는다.
+      node.closest('.worker-pane--collapsed')?.classList.remove('is-drop-over');
     }
   }
 
@@ -4177,6 +4249,10 @@ export function createMonitorView(mount_element, options) {
   mount_element.addEventListener('click', onClick);
   mount_element.addEventListener('change', onChange);
   mount_element.addEventListener('input', onInput);
+  mount_element.addEventListener(
+    'pointerdown',
+    /** @type {any} */ (onPointerDown)
+  );
   document.addEventListener('click', onDocumentClick);
   document.addEventListener('keydown', /** @type {any} */ (onDocumentKeyDown));
   mount_element.addEventListener('dragstart', /** @type {any} */ (onDragStart));
@@ -4260,6 +4336,10 @@ export function createMonitorView(mount_element, options) {
       mount_element.removeEventListener('click', onClick);
       mount_element.removeEventListener('change', onChange);
       mount_element.removeEventListener('input', onInput);
+      mount_element.removeEventListener(
+        'pointerdown',
+        /** @type {any} */ (onPointerDown)
+      );
       document.removeEventListener('click', onDocumentClick);
       document.removeEventListener(
         'keydown',

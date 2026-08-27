@@ -4113,3 +4113,137 @@ describe('모니터 모바일 관제 우선 배치 (UI-5ksp §4.7)', () => {
     expect(el(mount, '#monitor-pr_wait')).toBeNull();
   });
 });
+
+describe('접힌 레인 띠 드롭·행 조작 드래그 가드 (UI-5ksp REVISE)', () => {
+  /**
+   * Fold one lane before mounting. 접힌 pane은 본문을 그리지 않으므로
+   * `[data-drop]`도 없다 — 띠 드롭이 성립하는지 묻는 유일한 방법이다.
+   *
+   * @param {Record<string, boolean>} lanes
+   */
+  function collapseLanes(lanes) {
+    window.localStorage.setItem(
+      'beads-ui.monitor.lane-collapsed',
+      JSON.stringify({ lanes, areas: {} })
+    );
+  }
+
+  /**
+   * @param {Record<string, any>} [patch]
+   */
+  function dropSetup(patch = {}) {
+    return setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-9', title: 'cand' }],
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          ...patch
+        })
+      ],
+      workspaces_state: [state()]
+    });
+  }
+
+  test('places a candidate at the parallel tail when dropped on the collapsed 대기 strip', async () => {
+    collapseLanes({ queue: true, done: false });
+    const { mount, view, sent } = dropSetup();
+
+    view.load();
+    fireDrag(el(mount, '#monitor-runnable .worker-card'), 'dragstart');
+    const strip = el(mount, '#monitor-queue');
+    expect(strip.classList.contains('worker-pane--collapsed')).toBe(true);
+    expect(strip.querySelector('[data-drop]')).toBeNull();
+    const ev = fireDrag(strip, 'drop');
+    await flushMicrotasks();
+
+    expect(ev.defaultPrevented).toBe(true);
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-place',
+        payload: {
+          bead_id: 'A-9',
+          index: 2,
+          root_dir: WS_A,
+          expected_revision: 1
+        }
+      }
+    ]);
+  });
+
+  test('removes a queued row from the queue when dropped on the collapsed 후보 strip', async () => {
+    collapseLanes({ candidate: true, done: false });
+    const { mount, view, sent } = dropSetup();
+
+    view.load();
+    fireDrag(el(mount, '#monitor-queue .mon2-item .worker-mini'), 'dragstart');
+    const strip = el(mount, '#monitor-runnable');
+    expect(strip.classList.contains('worker-pane--collapsed')).toBe(true);
+    const ev = fireDrag(strip, 'drop');
+    await flushMicrotasks();
+
+    expect(ev.defaultPrevented).toBe(true);
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-remove',
+        payload: { bead_id: 'A-1', root_dir: WS_A, expected_revision: 1 }
+      }
+    ]);
+  });
+
+  test('matches the expanded 후보 pane when a queued row is dropped on it', async () => {
+    const { mount, view, sent } = dropSetup();
+
+    view.load();
+    fireDrag(el(mount, '#monitor-queue .mon2-item .worker-mini'), 'dragstart');
+    fireDrag(el(mount, '#monitor-runnable [data-drop="candidate"]'), 'drop');
+    await flushMicrotasks();
+
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-remove',
+        payload: { bead_id: 'A-1', root_dir: WS_A, expected_revision: 1 }
+      }
+    ]);
+  });
+
+  test('cancels a drag that started on a row operation button', () => {
+    const { mount, view } = dropSetup();
+
+    view.load();
+    const button = el(mount, '.worker-mini__rowops .mon-dep__btn');
+    const row = /** @type {HTMLElement} */ (button.closest('.worker-mini'));
+    button.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    const start = fireDrag(row, 'dragstart');
+
+    expect(start.defaultPrevented).toBe(true);
+    expect(el(mount, '.mon').classList.contains('is-dragging')).toBe(false);
+  });
+
+  test('still starts a drag pressed on the row body', () => {
+    const { mount, view } = dropSetup();
+
+    view.load();
+    const row = el(mount, '#monitor-queue .mon2-item .worker-mini');
+    row
+      .querySelector('.worker-mini__title')
+      ?.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    const start = fireDrag(row, 'dragstart');
+
+    expect(start.defaultPrevented).toBe(false);
+    expect(el(mount, '.mon').classList.contains('is-dragging')).toBe(true);
+  });
+
+  test('keeps the unreadable cross-lane notice when the wait lane is otherwise empty', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace()],
+      workspaces_state: [state()],
+      cross_lanes: null
+    });
+
+    view.load();
+
+    expect(el(mount, '.mon2-clane__unreadable').textContent?.trim()).toBe(
+      '연결 레인 저장소를 읽을 수 없음'
+    );
+  });
+});

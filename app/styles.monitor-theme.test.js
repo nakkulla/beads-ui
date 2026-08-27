@@ -55,8 +55,11 @@ describe('monitor tab styles (UI-eey2)', () => {
     const mq = block.slice(block.indexOf('@media (max-width: 640px)'));
 
     expect(mq).toMatch(/#monitor-root\.route\.monitor\s*{[^}]*height:\s*auto/);
-    expect(mq).toMatch(
-      /\.mon2-lanes \.worker-pane__body\s*{[^}]*overflow:\s*visible/
+    // 레인 스택 자체는 이제 Worker와 **같은** `.worker-lanes--mobile` 규칙이
+    // 소유한다 (UI-5ksp §4.7) — Monitor만의 모바일 레인 예외는 남지 않는다.
+    expect(mq).not.toContain('.mon2-lanes');
+    expect(CSS).toMatch(
+      /\.worker-lanes--mobile \.worker-pane__body\s*{[^}]*overflow:\s*visible/
     );
   });
 
@@ -149,8 +152,29 @@ describe('monitor tab styles (UI-eey2)', () => {
     expect(CSS).toMatch(
       /\.worker-lanes > \.worker-pane\s*{[^}]*min-width:\s*220px/
     );
-    expect(CSS).toMatch(/\.worker-wait \.worker-pane\s*{[^}]*min-width:\s*0/);
+    expect(CSS).toMatch(
+      /\.worker-wait \.worker-pane,[^{]*{[^}]*min-width:\s*0/
+    );
     expect(CSS).toContain('.worker-mini__rowops');
+  });
+
+  test('lets the chain lane pane take the shared nested card tokens (UI-5ksp §4.5)', () => {
+    const selectors =
+      CSS.match(/(?:^|\n)(\.worker-wait \.worker-pane,[^{]*){/)?.[1] || '';
+    const clane =
+      monitorBlock().match(/(?:^|\n)\.mon2-clane\s*{([^}]*)}/)?.[1] || '';
+
+    // 두 중첩 pane이 다른 톤으로 갈라지지 않도록 토큰은 공유 규칙 하나가 준다.
+    expect(selectors).toContain('.worker-wait .mon2-clane');
+    expect(clane).not.toContain('border:');
+    expect(clane).not.toContain('border-radius:');
+  });
+
+  test('highlights a collapsed lane strip as a drop target (UI-5ksp §4.4)', () => {
+    // 접힌 pane은 본문이 없어 `[data-drop]`을 못 그린다 — 강조는 pane 자신이 받는다.
+    expect(CSS).toMatch(
+      /\.worker-pane--collapsed\.is-drop-over\s*{[^}]*outline:/
+    );
   });
 
   test('consumes design tokens only (no raw hex in the monitor block)', () => {
