@@ -1801,7 +1801,10 @@ export function candidateCard(item, place_menu = null, options = {}) {
  * `body` passes `count` instead (UI-5ksp §4.2). `controls` is an optional strip
  * under the header (candidate display filters, UI-ki09) and `header_control` an
  * optional trailing element INSIDE it (the candidate sort select, UI-raqh §2) —
- * a pane that passes neither renders exactly as before.
+ * a pane that passes neither renders exactly as before. `header_row` is one full
+ * line directly BELOW the header, before `controls` (the candidate sort chain
+ * editor, UI-d13v §4.4): the header line is a nowrap flex row, so an element
+ * that needs its own width cannot ride inside it.
  *
  * `collapsible` makes the header carry an accordion toggle (UI-58y2, 데스크톱
  * 세로 띠는 UI-5ksp §4.4): 토글은 헤더 전체가 아니라 별도
@@ -1811,7 +1814,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
  * 그대로 두므로 후보→대기 드롭이 띠 위에서도 성립한다. `live`는 실제로 일이
  * 도는 레인 하나를 표시한다 — 헤더 점이 숨쉬는 유일한 레인이다.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: PlaceMenu|null, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: PlaceMenu|null, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -1855,7 +1858,9 @@ export function paneTemplate(pane) {
         </header>`}
     ${collapsed
       ? ''
-      : html`${pane.controls ? pane.controls : ''}
+      : html`${pane.header_row ? pane.header_row : ''}${pane.controls
+            ? pane.controls
+            : ''}
           <div class="worker-pane__body">
             ${pane.body
               ? pane.body

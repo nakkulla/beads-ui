@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import {
   RANK_STEP,
+  SORT_KEY_DEFAULT_DIR,
+  cmpChain,
   cmpChildOrder,
   cmpEffectiveRank,
   computeDropRank,
@@ -254,5 +256,166 @@ describe('UX v3 sort comparators', () => {
       { id: 'p1', priority: 1, created_at: 10 }
     ].sort(cmpPriorityThenCreatedDesc);
     expect(sorted.map((x) => x.id)).toEqual(['p1', 'none', 'p3']);
+  });
+});
+
+describe('cmpChain (UI-d13v §4.1)', () => {
+  const RECEIPT = 'codex@' + 'a'.repeat(40);
+
+  /**
+   * @param {string} id
+   * @param {Record<string, any>} over
+   */
+  function row(id, over = {}) {
+    return { id, ...over };
+  }
+
+  test('orders by priority ascending on a priority asc step', () => {
+    const items = [row('B', { priority: 2 }), row('A', { priority: 0 })];
+
+    const sorted = items
+      .slice()
+      .sort(cmpChain([{ key: 'priority', dir: 'asc' }]));
+
+    expect(sorted.map((x) => x.id)).toEqual(['A', 'B']);
+  });
+
+  test('flips the same key when the step direction is desc', () => {
+    const items = [row('A', { priority: 0 }), row('B', { priority: 2 })];
+
+    const sorted = items
+      .slice()
+      .sort(cmpChain([{ key: 'priority', dir: 'desc' }]));
+
+    expect(sorted.map((x) => x.id)).toEqual(['B', 'A']);
+  });
+
+  test('orders by dependents count descending', () => {
+    const items = [
+      row('few', { dependents_info: { count: 1 } }),
+      row('many', { dependents_info: { count: 4 } })
+    ];
+
+    const sorted = items
+      .slice()
+      .sort(cmpChain([{ key: 'dependents', dir: 'desc' }]));
+
+    expect(sorted.map((x) => x.id)).toEqual(['many', 'few']);
+  });
+
+  test('keeps a row without dependents_info last on a dependents asc step', () => {
+    const items = [
+      row('unknown', {}),
+      row('two', { dependents_info: { count: 2 } }),
+      row('one', { dependents_info: { count: 1 } })
+    ];
+
+    const sorted = items
+      .slice()
+      .sort(cmpChain([{ key: 'dependents', dir: 'asc' }]));
+
+    expect(sorted.map((x) => x.id)).toEqual(['one', 'two', 'unknown']);
+  });
+
+  test('keeps a row without release_info last on a released desc step', () => {
+    const items = [
+      row('unknown', {}),
+      row('released', { release_info: { last_released_at: 5 } })
+    ];
+
+    const sorted = items
+      .slice()
+      .sort(cmpChain([{ key: 'released', dir: 'desc' }]));
+
+    expect(sorted.map((x) => x.id)).toEqual(['released', 'unknown']);
+  });
+
+  test('keeps a row without priority last on a priority desc step', () => {
+    const items = [row('none', {}), row('p3', { priority: 3 })];
+
+    const sorted = items
+      .slice()
+      .sort(cmpChain([{ key: 'priority', dir: 'desc' }]));
+
+    expect(sorted.map((x) => x.id)).toEqual(['p3', 'none']);
+  });
+
+  test('puts a published spec first on a spec desc step', () => {
+    const items = [
+      row('draft', { metadata: { spec_id: 'docs/a.md' } }),
+      row('published', {
+        metadata: { spec_id: 'docs/b.md', spec_review: RECEIPT }
+      })
+    ];
+
+    const sorted = items.slice().sort(cmpChain([{ key: 'spec', dir: 'desc' }]));
+
+    expect(sorted.map((x) => x.id)).toEqual(['published', 'draft']);
+  });
+
+  test('falls through to the next step when the first ties', () => {
+    const items = [
+      row('late', { priority: 1, updated_at: 10 }),
+      row('recent', { priority: 1, updated_at: 90 })
+    ];
+
+    const sorted = items.slice().sort(
+      cmpChain([
+        { key: 'priority', dir: 'asc' },
+        { key: 'updated', dir: 'desc' }
+      ])
+    );
+
+    expect(sorted.map((x) => x.id)).toEqual(['recent', 'late']);
+  });
+
+  test('breaks a chain-wide tie by created ascending', () => {
+    const items = [
+      row('new', { priority: 1, created_at: 300 }),
+      row('old', { priority: 1, created_at: 100 })
+    ];
+
+    const sorted = items
+      .slice()
+      .sort(cmpChain([{ key: 'priority', dir: 'asc' }]));
+
+    expect(sorted.map((x) => x.id)).toEqual(['old', 'new']);
+  });
+
+  test('breaks an identical-created tie by id ascending', () => {
+    const items = [
+      row('B', { created_at: 100 }),
+      row('A', { created_at: 100 })
+    ];
+
+    const sorted = items
+      .slice()
+      .sort(cmpChain([{ key: 'updated', dir: 'desc' }]));
+
+    expect(sorted.map((x) => x.id)).toEqual(['A', 'B']);
+  });
+
+  test('ignores an unknown step instead of throwing', () => {
+    const items = [
+      row('B', { created_at: 200 }),
+      row('A', { created_at: 100 })
+    ];
+
+    const sorted = items
+      .slice()
+      .sort(cmpChain(/** @type {any} */ ([{ key: 'nonsense', dir: 'asc' }])));
+
+    expect(sorted.map((x) => x.id)).toEqual(['A', 'B']);
+  });
+
+  test('names a default direction for every key', () => {
+    expect(SORT_KEY_DEFAULT_DIR).toEqual({
+      priority: 'asc',
+      dependents: 'desc',
+      released: 'desc',
+      spec: 'desc',
+      created: 'asc',
+      updated: 'desc'
+    });
   });
 });

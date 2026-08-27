@@ -8,7 +8,6 @@ import { formatTimestampLocal } from '../../utils/relative-time.js';
 import {
   activityBadge,
   applyCandidateFilter,
-  applyCandidateSort,
   autoResolutionBadge,
   createWorkerView,
   headReviewFailureCategory,
@@ -2533,7 +2532,7 @@ describe('views/worker', () => {
     expect(sid.getAttribute('title')).toBe('sid-late99zz');
   });
 
-  test('candidate lane merges Ready+Blocked in effective-rank order (unranked newest-first)', () => {
+  test('candidate lane merges Ready+Blocked into one chain order, blocked last', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     presetCandidateFilter({ show_blocked: true });
     createWorkerView(mount, {
@@ -2543,16 +2542,18 @@ describe('views/worker', () => {
       transport: vi.fn()
     });
 
-    // No manual rank yet: merged Ready(A,C)+Blocked(B) sort by -created_at, so
-    // newest first — C(300), B(200), A(100). Blocked B interleaves with Ready.
-    expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
+    // Default preset `spec 우선` = [spec desc, created asc]: all three carry a
+    // published spec, so the oldest goes first — A(100), C(300) — and blocked B
+    // is the stable bottom group whatever the chain says (UI-d13v §4.1).
+    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
   });
 
-  test('an explicit rank lifts a candidate above unranked ones (ranked beats unranked)', () => {
+  test('leaves the candidate order alone when an explicit rank exists', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const uiOrderStore = createUiOrderStore();
     presetCandidateFilter({ show_blocked: true });
-    // A gets a very-negative rank → sorts to the very top; C,B stay newest-first.
+    // Board rank is no longer a candidate sort input (UI-d13v §4.1): a
+    // top-pinning rank on A changes nothing the chain decided.
     uiOrderStore.set({ revision: 1, order: { A: -1e15 } });
     createWorkerView(mount, {
       issueStores: seedMerged(),
@@ -2564,11 +2565,12 @@ describe('views/worker', () => {
     expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
   });
 
-  test('dragging a candidate onto another sends ui-order-set + applies optimistically', async () => {
+  test('dragging a candidate onto another sends ui-order-set from the rendered neighbours', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const uiOrderStore = createUiOrderStore();
     presetCandidateFilter({ show_blocked: true });
-    // Deterministic starting order A(0) < B(STEP) < C(2*STEP) → A, B, C.
+    // Ranks no longer decide what is DRAWN (the chain does: A, C, then blocked
+    // B) — they are still the coordinates a drop computes its new rank in.
     uiOrderStore.set({
       revision: 4,
       order: { A: 0, B: RANK_STEP, C: 2 * RANK_STEP }
@@ -2585,14 +2587,14 @@ describe('views/worker', () => {
       transport
     });
 
-    expect(candidateOrder(mount)).toEqual(['A', 'B', 'C']);
+    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
 
-    // Drop C onto A (move C to the top). New rank = below(A=0) - STEP.
-    // The optimistic store apply is synchronous (before the awaited transport),
-    // so the lane reorders before any server round-trip.
+    // Drop C onto A (move C to the top). New rank = below(A=0) - STEP. The
+    // optimistic store apply is synchronous, but the lane keeps the chain order
+    // — rank is written, not read back (UI-d13v §4.1).
     dragOnto(mount, 'C', 'A');
     expect(uiOrderStore.get()?.order.C).toBe(-RANK_STEP);
-    expect(candidateOrder(mount)).toEqual(['C', 'A', 'B']);
+    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
 
     await flush();
     expect(transport).toHaveBeenCalledWith('ui-order-set', {
@@ -2601,7 +2603,7 @@ describe('views/worker', () => {
     });
   });
 
-  test('an order-only push re-renders the candidate lane', () => {
+  test('keeps the candidate lane order when an order-only push arrives', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const uiOrderStore = createUiOrderStore();
     presetCandidateFilter({ show_blocked: true });
@@ -2612,7 +2614,7 @@ describe('views/worker', () => {
       transport: vi.fn()
     });
 
-    expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
+    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
 
     // A server order snapshot arrives (no issue-store push): A pinned to top.
     uiOrderStore.set({ revision: 2, order: { A: -1e15 } });
@@ -5980,125 +5982,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
   });
 });
 
-describe('candidate sort — projection (UI-raqh §2)', () => {
-  const ORDER = { A: 10, B: 20, C: 30 };
-
-  /**
-   * @param {string} id
-   * @param {number} created_at
-   * @param {boolean} has_spec
-   */
-  function issue(id, created_at, has_spec) {
-    return {
-      id,
-      created_at,
-      metadata: has_spec ? { spec_id: 'S', spec_review: RECEIPT } : {}
-    };
-  }
-
-  test('keeps the effective-rank order in board mode', () => {
-    const list = [issue('C', 300, true), issue('A', 100, false)];
-
-    const sorted = applyCandidateSort(list, 'board', ORDER);
-
-    expect(sorted.map((i) => i.id)).toEqual(['A', 'C']);
-  });
-
-  test('puts spec-carrying issues first in spec mode', () => {
-    const list = [issue('A', 100, false), issue('B', 200, true)];
-
-    const sorted = applyCandidateSort(list, 'spec', ORDER);
-
-    expect(sorted.map((i) => i.id)).toEqual(['B', 'A']);
-  });
-
-  test('keeps the effective-rank order inside each spec group', () => {
-    const list = [
-      issue('C', 300, true),
-      issue('B', 200, false),
-      issue('A', 100, true)
-    ];
-
-    const sorted = applyCandidateSort(list, 'spec', ORDER);
-
-    expect(sorted.map((i) => i.id)).toEqual(['A', 'C', 'B']);
-  });
-
-  test('orders by newest created_at in created mode', () => {
-    const list = [issue('A', 100, true), issue('C', 300, false)];
-
-    const sorted = applyCandidateSort(list, 'created', ORDER);
-
-    expect(sorted.map((i) => i.id)).toEqual(['C', 'A']);
-  });
-
-  test('orders by newest updated_at in updated mode', () => {
-    const list = [
-      { id: 'A', created_at: 100, updated_at: 3000, metadata: {} },
-      {
-        id: 'B',
-        created_at: 200,
-        updated_at: 1000,
-        metadata: { spec_id: 'S', spec_review: RECEIPT }
-      },
-      { id: 'C', created_at: 300, updated_at: 2000, metadata: {} }
-    ];
-
-    const sorted = applyCandidateSort(list, 'updated', ORDER);
-
-    expect(sorted.map((i) => i.id)).toEqual(['A', 'C', 'B']);
-  });
-
-  test('sorts an issue without updated_at last in updated mode', () => {
-    const list = [
-      { id: 'A', created_at: 100, metadata: {} },
-      { id: 'B', created_at: 200, updated_at: 1000, metadata: {} }
-    ];
-
-    const sorted = applyCandidateSort(list, 'updated', ORDER);
-
-    expect(sorted.map((i) => i.id)).toEqual(['B', 'A']);
-  });
-
-  // 파티션은 발행 기준이다 (UI-vb7u §3): 경로만 있고 리뷰가 없는 행은
-  // spec-우선 그룹에 들지 않는다.
-  test('partitions an unpublished spec path after a published one', () => {
-    const list = [
-      { id: 'A', created_at: 100, metadata: { spec_id: 'docs/awaiting.md' } },
-      {
-        id: 'B',
-        created_at: 200,
-        metadata: { spec_id: 'docs/published.md', spec_review: RECEIPT }
-      }
-    ];
-
-    const sorted = applyCandidateSort(list, 'spec', ORDER);
-
-    expect(sorted.map((i) => i.id)).toEqual(['B', 'A']);
-  });
-
-  test('falls back to spec mode for an unknown mode', () => {
-    const list = [issue('A', 100, false), issue('B', 200, true)];
-
-    const sorted = applyCandidateSort(
-      list,
-      /** @type {any} */ ('nonsense'),
-      ORDER
-    );
-
-    expect(sorted.map((i) => i.id)).toEqual(['B', 'A']);
-  });
-
-  test('leaves the input array untouched', () => {
-    const list = [issue('A', 100, false), issue('B', 200, true)];
-
-    applyCandidateSort(list, 'spec', ORDER);
-
-    expect(list.map((i) => i.id)).toEqual(['A', 'B']);
-  });
-});
-
-describe('candidate sort — view (UI-raqh §2)', () => {
+describe('candidate sort — view (UI-raqh §2, UI-d13v §4.4)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
@@ -6120,76 +6004,112 @@ describe('candidate sort — view (UI-raqh §2)', () => {
     return mount;
   }
 
-  test('renders the sort select in the candidate pane header', () => {
-    const mount = mountMerged();
-
-    const select = /** @type {HTMLSelectElement} */ (
+  /**
+   * @param {HTMLElement} mount
+   * @returns {HTMLSelectElement}
+   */
+  function sortSelect(mount) {
+    return /** @type {HTMLSelectElement} */ (
       mount.querySelector('#worker-pane-candidate .worker-sort')
     );
-    expect(Array.from(select.options).map((o) => o.value)).toEqual([
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {number} index
+   * @returns {HTMLSelectElement}
+   */
+  function chainSelect(mount, index) {
+    return /** @type {HTMLSelectElement} */ (
+      mount.querySelectorAll('#worker-pane-candidate .worker-sort-chain__key')[
+        index
+      ]
+    );
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} value
+   */
+  function chooseSort(mount, value) {
+    const select = sortSelect(mount);
+    select.value = value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {number} index
+   * @param {string} value
+   */
+  function chooseStep(mount, index, value) {
+    const select = chainSelect(mount, index);
+    select.value = value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  test('renders the four presets and 사용자 지정 in the pane header', () => {
+    const mount = mountMerged();
+
+    expect(Array.from(sortSelect(mount).options).map((o) => o.value)).toEqual([
       'spec',
-      'board',
+      'bottleneck',
       'created',
-      'updated'
+      'updated',
+      'custom'
     ]);
   });
 
   test('defaults to spec-first when nothing is stored', () => {
     const mount = mountMerged();
 
-    const select = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('#worker-pane-candidate .worker-sort')
-    );
-    expect(select.value).toBe('spec');
+    expect(sortSelect(mount).value).toBe('spec');
   });
 
-  test('reorders the lane when the mode changes', () => {
+  test('keeps blocked candidates at the bottom of the default preset', () => {
     const mount = mountMerged();
-    const select = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('#worker-pane-candidate .worker-sort')
-    );
-
-    select.value = 'created';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-
-    expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
-  });
-
-  test('reorders the lane by updated_at in updated mode', () => {
-    const mount = mountMerged();
-    const select = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('#worker-pane-candidate .worker-sort')
-    );
-
-    select.value = 'updated';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
 
     expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
   });
 
-  test('persists the selected mode', () => {
+  test('reorders the lane when the preset changes', () => {
     const mount = mountMerged();
-    const select = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('#worker-pane-candidate .worker-sort')
-    );
 
-    select.value = 'board';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
+    chooseSort(mount, 'created');
+
+    expect(candidateOrder(mount)).toEqual(['C', 'A', 'B']);
+  });
+
+  test('reorders the lane by updated_at under the updated preset', () => {
+    const mount = mountMerged();
+
+    chooseSort(mount, 'updated');
+
+    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
+  });
+
+  test('persists the selected preset as JSON', () => {
+    const mount = mountMerged();
+
+    chooseSort(mount, 'bottleneck');
 
     expect(window.localStorage.getItem('bdui.worker.candidate_sort')).toBe(
-      'board'
+      '{"preset":"bottleneck"}'
     );
   });
 
-  test('restores a persisted mode on mount', () => {
-    window.localStorage.setItem('bdui.worker.candidate_sort', 'created');
+  test('restores a persisted preset on mount', () => {
+    window.localStorage.setItem(
+      'bdui.worker.candidate_sort',
+      '{"preset":"created"}'
+    );
 
     const mount = mountMerged();
 
-    expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
+    expect(candidateOrder(mount)).toEqual(['C', 'A', 'B']);
   });
 
-  test('restores a persisted updated mode on mount', () => {
+  test('restores a legacy string preset on mount', () => {
     window.localStorage.setItem('bdui.worker.candidate_sort', 'updated');
 
     const mount = mountMerged();
@@ -6197,15 +6117,174 @@ describe('candidate sort — view (UI-raqh §2)', () => {
     expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
   });
 
-  test('falls back to the default for an unknown stored mode', () => {
+  test('falls back to the default for an unknown stored value', () => {
     window.localStorage.setItem('bdui.worker.candidate_sort', 'nonsense');
 
     const mount = mountMerged();
 
-    const select = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('#worker-pane-candidate .worker-sort')
+    expect(sortSelect(mount).value).toBe('spec');
+  });
+
+  test('folds the chain row away for a preset', () => {
+    const mount = mountMerged();
+
+    expect(
+      mount.querySelector('#worker-pane-candidate .worker-sort-chain')
+    ).toBe(null);
+  });
+
+  test('unfolds the chain row when 사용자 지정 is chosen', () => {
+    const mount = mountMerged();
+
+    chooseSort(mount, 'custom');
+
+    expect(
+      mount.querySelectorAll('#worker-pane-candidate .worker-sort-chain__key')
+        .length
+    ).toBe(3);
+  });
+
+  test('seeds the chain row from the running preset', () => {
+    const mount = mountMerged();
+
+    chooseSort(mount, 'custom');
+
+    expect([0, 1, 2].map((i) => chainSelect(mount, i).value)).toEqual([
+      'spec',
+      'created',
+      ''
+    ]);
+  });
+
+  test('leaves the lane order alone when 사용자 지정 is chosen', () => {
+    const mount = mountMerged();
+
+    chooseSort(mount, 'custom');
+
+    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
+  });
+
+  test('unfolds the chain row on mount for a persisted chain', () => {
+    window.localStorage.setItem(
+      'bdui.worker.candidate_sort',
+      '{"chain":[{"key":"updated","dir":"asc"}]}'
     );
-    expect(select.value).toBe('spec');
+
+    const mount = mountMerged();
+
+    expect(sortSelect(mount).value).toBe('custom');
+    expect(chainSelect(mount, 0).value).toBe('updated');
+  });
+
+  test('offers 없음 on the later steps only', () => {
+    const mount = mountMerged();
+
+    chooseSort(mount, 'custom');
+
+    expect(Array.from(chainSelect(mount, 0).options)[0].value).toBe('priority');
+    expect(Array.from(chainSelect(mount, 1).options)[0].value).toBe('');
+  });
+
+  test('reorders the lane when a chain step key changes', () => {
+    const mount = mountMerged();
+    chooseSort(mount, 'custom');
+
+    chooseStep(mount, 0, 'updated');
+
+    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
+  });
+
+  test('persists an edited chain as JSON', () => {
+    const mount = mountMerged();
+    chooseSort(mount, 'custom');
+
+    chooseStep(mount, 0, 'updated');
+
+    expect(window.localStorage.getItem('bdui.worker.candidate_sort')).toBe(
+      '{"chain":[{"key":"updated","dir":"desc"},{"key":"created","dir":"asc"}]}'
+    );
+  });
+
+  test('persists a chain no preset matches as a chain', () => {
+    const mount = mountMerged();
+    chooseSort(mount, 'custom');
+
+    chooseStep(mount, 0, 'released');
+
+    expect(window.localStorage.getItem('bdui.worker.candidate_sort')).toBe(
+      '{"chain":[{"key":"released","dir":"desc"},{"key":"created","dir":"asc"}]}'
+    );
+  });
+
+  test('truncates the chain when a later step is set to 없음', () => {
+    const mount = mountMerged();
+    chooseSort(mount, 'custom');
+
+    chooseStep(mount, 1, '');
+
+    expect(window.localStorage.getItem('bdui.worker.candidate_sort')).toBe(
+      '{"chain":[{"key":"spec","dir":"desc"}]}'
+    );
+  });
+
+  test('collapses a later step that repeats an earlier key', () => {
+    const mount = mountMerged();
+    chooseSort(mount, 'custom');
+
+    chooseStep(mount, 1, 'spec');
+
+    expect([0, 1].map((i) => chainSelect(mount, i).value)).toEqual([
+      'spec',
+      ''
+    ]);
+  });
+
+  test('flips a step direction from its toggle button', () => {
+    const mount = mountMerged();
+    chooseSort(mount, 'custom');
+
+    const toggle = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort-chain__dir')
+    );
+    toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(window.localStorage.getItem('bdui.worker.candidate_sort')).toBe(
+      '{"chain":[{"key":"spec","dir":"asc"},{"key":"created","dir":"asc"}]}'
+    );
+  });
+
+  test('labels a step toggle with its current direction', () => {
+    const mount = mountMerged();
+
+    chooseSort(mount, 'custom');
+
+    const toggle = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate .worker-sort-chain__dir')
+    );
+    expect(toggle.getAttribute('aria-label')).toBe('내림차순');
+    expect(toggle.textContent?.trim()).toBe('↓');
+  });
+
+  test('draws no direction toggle for a 없음 step', () => {
+    const mount = mountMerged();
+
+    chooseSort(mount, 'custom');
+
+    expect(
+      mount.querySelectorAll('#worker-pane-candidate .worker-sort-chain__dir')
+        .length
+    ).toBe(2);
+  });
+
+  test('folds the chain row when a preset is chosen again', () => {
+    const mount = mountMerged();
+    chooseSort(mount, 'custom');
+
+    chooseSort(mount, 'created');
+
+    expect(
+      mount.querySelector('#worker-pane-candidate .worker-sort-chain')
+    ).toBe(null);
   });
 });
 
@@ -6402,14 +6481,17 @@ describe('worker-ineligible candidates (UI-8881)', () => {
     });
     /** @type {Array<[string, string[]]>} */
     const cases = [
-      ['board', ['MID', 'OK', 'INEL']],
+      ['spec', ['INEL', 'OK', 'MID']],
       ['created', ['OK', 'MID', 'INEL']],
-      ['spec', ['OK', 'INEL', 'MID']]
+      ['bottleneck', ['INEL', 'MID', 'OK']]
     ];
 
-    for (const [mode, expected] of cases) {
+    for (const [preset, expected] of cases) {
       document.body.innerHTML = '<div id="ms"></div>';
-      window.localStorage.setItem('bdui.worker.candidate_sort', mode);
+      window.localStorage.setItem(
+        'bdui.worker.candidate_sort',
+        JSON.stringify({ preset })
+      );
       const mount = /** @type {HTMLElement} */ (document.getElementById('ms'));
       createWorkerView(mount, {
         issueStores: seedIneligible(),
@@ -6425,7 +6507,12 @@ describe('worker-ineligible candidates (UI-8881)', () => {
   test('accepts an ineligible card as a reorder drop target', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const uiOrderStore = createUiOrderStore();
-    window.localStorage.setItem('bdui.worker.candidate_sort', 'board');
+    // 이 레인 순서(INEL, MID, OK)를 만드는 체인 — 드롭 좌표는 사용자가 본
+    // 이웃에서 계산되므로 렌더 순서를 고정해 둔다.
+    window.localStorage.setItem(
+      'bdui.worker.candidate_sort',
+      '{"chain":[{"key":"created","dir":"asc"}]}'
+    );
     uiOrderStore.set({
       revision: 4,
       order: { INEL: 0, MID: RANK_STEP, OK: 2 * RANK_STEP }
@@ -6451,13 +6538,19 @@ describe('worker-ineligible candidates (UI-8881)', () => {
       expected_revision: 4,
       entries: [{ bead_id: 'OK', rank: -RANK_STEP }]
     });
-    expect(candidateOrder(mount)).toEqual(['OK', 'INEL', 'MID']);
+    // 순서는 체인이 정한다 — 새 rank는 기록될 뿐 레인이 다시 읽지 않는다.
+    expect(candidateOrder(mount)).toEqual(['INEL', 'MID', 'OK']);
   });
 
   test('sends no mutation when a drag starts on an ineligible card', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const uiOrderStore = createUiOrderStore();
-    window.localStorage.setItem('bdui.worker.candidate_sort', 'board');
+    // 이 레인 순서(INEL, MID, OK)를 만드는 체인 — 드롭 좌표는 사용자가 본
+    // 이웃에서 계산되므로 렌더 순서를 고정해 둔다.
+    window.localStorage.setItem(
+      'bdui.worker.candidate_sort',
+      '{"chain":[{"key":"created","dir":"asc"}]}'
+    );
     uiOrderStore.set({
       revision: 4,
       order: { INEL: 0, MID: RANK_STEP, OK: 2 * RANK_STEP }

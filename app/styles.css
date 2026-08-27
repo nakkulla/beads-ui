@@ -5906,6 +5906,43 @@ html[data-theme='dark'] {
   color: var(--text-primary);
 }
 
+/* 정렬 체인 편집 줄 (UI-d13v §4.4) — 헤더 select 바로 아래 한 줄. 크기 체계는
+   `.worker-sort`와 같지만 여기서는 조작이 주인공이므로 테두리를 늘 보여 준다.
+   `@media` 분기가 없는 것은 의도다: 데스크톱·모바일이 같은 마크업이다. */
+.worker-sort-chain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  margin-bottom: var(--sp-6);
+}
+
+.worker-sort-chain__step {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.worker-sort-chain__key,
+.worker-sort-chain__dir {
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--fs-chip);
+  letter-spacing: normal;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.worker-sort-chain__key:hover,
+.worker-sort-chain__dir:hover {
+  color: var(--text-primary);
+}
+
 /* Token usage (UI-raqh §1) — the LOWEST rung of the row's hierarchy: it is
    read when someone goes looking for it, never something that competes with a
    gate badge or an action. Dim, monospaced, tabular so a column of rows lines

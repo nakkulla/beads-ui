@@ -2702,6 +2702,28 @@ describe('collapsible pane header (UI-5ksp §4.4)', () => {
     return /** @type {HTMLElement} */ (mount.querySelector('.worker-pane'));
   }
 
+  test('renders header_row as the pane child right after the header', () => {
+    const pane = renderPane({
+      header_row: html`<div class="probe-row"></div>`
+    });
+
+    const children = Array.from(pane.children).filter(
+      (el) => el.nodeType === 1
+    );
+
+    expect(children[0].classList.contains('worker-pane__hd')).toBe(true);
+    expect(children[1].classList.contains('probe-row')).toBe(true);
+  });
+
+  test('drops header_row on a collapsed pane', () => {
+    const pane = renderPane({
+      collapsed: true,
+      header_row: html`<div class="probe-row"></div>`
+    });
+
+    expect(pane.querySelector('.probe-row')).toBe(null);
+  });
+
   test('renders the toggle as a button inside the header, not as the header', () => {
     const pane = renderPane();
 
