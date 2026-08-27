@@ -1812,7 +1812,7 @@ export function paneTemplate(pane) {
       ? html`<header class="worker-pane__hd">
           <button
             type="button"
-            class="worker-pane__toggle worker-pane__hd--toggle"
+            class="worker-pane__toggle"
             data-lane=${pane.lane}
             aria-expanded=${collapsed ? 'false' : 'true'}
           >

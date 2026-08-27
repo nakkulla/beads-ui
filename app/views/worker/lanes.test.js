@@ -2677,14 +2677,6 @@ describe('collapsible pane header (UI-5ksp §4.4)', () => {
     expect(toggle?.getAttribute('data-lane')).toBe('done');
   });
 
-  test('keeps the mobile toggle selector on the new button', () => {
-    const pane = renderPane();
-
-    expect(
-      pane.querySelector('.worker-pane__toggle.worker-pane__hd--toggle')
-    ).not.toBeNull();
-  });
-
   test('reports the expanded state on the toggle', () => {
     const pane = renderPane();
 

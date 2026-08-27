@@ -4975,11 +4975,19 @@ html[data-theme='dark'] {
   min-height: 0;
 }
 
+/* 폭 하한과 등폭 몫은 최상위 다섯 레인만의 것이다 (§4.5). 중첩 pane이 이걸
+   물려받으면 바깥 대기 pane 밖으로 삐져나오고, 좁은 창에서 옆 레인 아래로
+   겹쳐 보인다 — 다섯 레인의 최소 폭 합이 창을 넘으면 `.worker-lanes-host`의
+   가로 스크롤이 대신 받는다. */
+.worker-lanes > .worker-pane {
+  flex: 1 1 0;
+  min-width: 220px;
+}
+
 .worker-pane {
   display: flex;
   flex: 1;
   flex-direction: column;
-  min-width: 220px;
   min-height: 0;
   padding: var(--sp-8);
   border: 1px solid var(--border-panel);
@@ -4989,9 +4997,9 @@ html[data-theme='dark'] {
 
 /* The candidate SOURCE pane (worker-phase2 §7): kept in front of the four
    lifecycle columns because it is the only way to enqueue a bead, but drawn
-   dashed and slightly narrower so it never reads as one of them. */
+   dashed so it never reads as one of them. 폭은 다섯 레인이 같다 (§4.5) —
+   좁게 만든 예외가 두 탭의 폭을 갈라 놓던 자리였다. */
 .worker-pane--src {
-  flex: 0.9;
   border: 1px dashed var(--border-chip);
   background: var(--bg-candidate);
 }
@@ -5162,7 +5170,9 @@ html[data-theme='dark'] {
    제목만 세로로 세운다. 모바일 접힘은 가로 한 줄 그대로이므로 이 규칙은
    `min-width: 641px` 가드 안에만 있다. */
 @media (min-width: 641px) {
-  .worker-pane--collapsed {
+  /* 최상위 레인의 등폭·220px 하한(§4.5)을 이기려면 같은 자식 결합자가 필요하다 —
+     `.worker-pane--collapsed` 하나로는 특이도가 낮아 띠가 다시 벌어진다. */
+  .worker-lanes > .worker-pane--collapsed {
     flex: 0 0 36px;
     min-width: 0;
     padding: var(--sp-6) 0;
@@ -5189,6 +5199,14 @@ html[data-theme='dark'] {
     flex: 0 0 auto;
     margin-left: 0;
   }
+}
+
+/* 탭 부가정보 칩 (§4.5): 제목 어휘는 두 탭이 같고, 탭이 다른 것(`슬롯 N`)은
+   `header_control` 슬롯이 싣는다. */
+.worker-pane__meta {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 .worker-pane__preview {
@@ -5787,38 +5805,13 @@ html[data-theme='dark'] {
   font-size: var(--fs-small);
 }
 
-/* 직렬 레인 스택 (UI-04vo §4): 병렬 대기 pane 아래 레인 카드들을 세로로
-   쌓는 한 flex 컬럼. 이 껍데기는 `.worker-pane`이 아니므로 `flex: 1`을 직접
-   갖지 않으면 basis가 `auto`로 남아 내용 폭만큼 벌어진다 — 대기 열만 다른
-   레인보다 넓어 보이던 원인이라, 생애 레인들과 같은 등폭 몫을 명시한다. */
+/* 공유 대기 본문의 껍데기 (UI-5ksp §4.2): 이제 `.worker-pane__body` 안에 사는
+   두 영역의 세로 스택일 뿐이다. 폭 하한도 스크롤도 갖지 않는다 — 하한은
+   최상위 레인이, 스크롤은 pane 본문이 이미 소유한다. */
 .worker-wait {
   display: flex;
-  flex: 1;
   flex-direction: column;
   gap: var(--sp-6);
-  /* 가로 하한은 `.worker-pane`과 같은 220px이어야 한다. `min-width: 0`이면 이
-     껍데기만 다른 레인보다 더 줄어드는데, 안의 pane들은 자기 220px 하한을
-     지키므로 대기 열 밖으로 삐져나와 옆 레인의 불투명한 배경 아래로 들어간다 —
-     좁은 창에서 카드가 겹쳐 보이던 원인. 하한을 맞추면 다섯 레인의 최소 폭 합이
-     창을 넘고, 그때는 `.worker-lanes-host`의 가로 스크롤이 대신 받는다. */
-  min-width: 220px;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-/* 대기 열 안의 높이 배분은 등분이 아니라 내용 기준이다 (`flex-basis: auto`):
-   병렬 대기와 각 직렬 레인이 자기 카드 수만큼 차지하고, 남는 세로는 비워 둔다.
-   `.worker-pane`의 `flex: 1`을 그대로 두면 비어 있는 직렬 레인이 병렬 대기와
-   같은 몫을 가져가, 카드가 쌓이는 쪽에만 내부 스크롤이 생긴다.
-   grow는 끄고 shrink만 남긴다: 합이 열보다 길어지면 내용이 많은 레인이 더 큰
-   몫을 유지한 채 함께 줄고(각 본문이 스크롤), 어떤 레인도 화면 밖으로 밀려나지
-   않는다. min-height는 그 축소의 하한 — 헤더와 한 줄은 항상 남는다. */
-.worker-wait > .worker-pane {
-  flex: 0 1 auto;
-  min-height: 72px;
-  /* 가로 하한은 이제 대기 열이 소유한다. 여기서 220px을 다시 걸면 세로 스크롤바가
-     생겼을 때 그 폭만큼 pane이 열 밖으로 다시 삐져나온다. */
-  min-width: 0;
 }
 
 /* --- 공유 대기 본문 (UI-5ksp §4.2) -----------------------------------------
@@ -8843,9 +8836,9 @@ button.detail-session__leg:focus-visible {
     align-items: stretch;
   }
 
+  /* 내부 스크롤 없음 (§4.7): 문서 스크롤 하나만 남긴다. */
   .worker-rungrid {
     grid-template-columns: 1fr;
-    max-height: 40vh;
   }
 
   /* 관제 우선 배치 (UI-58y2 §모바일): 뷰포트 5등분을 폐기하고 페이지 자연 세로

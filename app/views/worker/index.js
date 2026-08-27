@@ -71,20 +71,24 @@ import {
   providerUsageBadges,
   sumAttemptUsage
 } from '../../utils/token-usage.js';
+import { watchMobile } from '../../utils/viewport.js';
 import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
 import { isWorkerSerial } from '../../utils/worker-serial.js';
 import { modelRunnerOf } from '../detail-panel/exec-settings.js';
 import { createReorderController } from '../reorder.js';
+import { createLaneCollapse } from './lane-collapse.js';
 import {
   discardCompletionMessage,
   discardConfirmationMessage,
   discardProjection,
   headReviewAttemptBadges,
   miniRow,
+  nowPanel,
   paneTemplate,
   repoOpsStripTemplate,
   staleWorkProjection,
-  sumAttemptWorkMs
+  sumAttemptWorkMs,
+  waitBody
 } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
 import {
@@ -384,79 +388,6 @@ function saveDoneRange(range) {
     window.localStorage.setItem(DONE_RANGE_KEY, range);
   } catch {
     /* ignore — a private-mode storage denial must not break the select */
-  }
-}
-
-/**
- * The viewport below which the Worker tab switches to the control-first mobile
- * composition (UI-58y2). It matches the `@media (max-width: 640px)` block in
- * `styles.css`: the layout is JS-composed (the "지금" panel is a RECOMBINATION of
- * lanes, not a restyle of them), so the same boundary has to exist in both.
- *
- * @type {string}
- */
-const MOBILE_QUERY = '(max-width: 640px)';
-
-/**
- * Which mobile lanes are collapsed to a one-line strip, persisted under this
- * localStorage key (`beads-ui.worker.*`, the tab's existing key pattern).
- *
- * @type {string}
- */
-const LANE_COLLAPSE_KEY = 'beads-ui.worker.lane-collapsed';
-
-/**
- * @typedef {{ queue: boolean, done: boolean }} LaneCollapse
- */
-
-/**
- * 대기·완료 both start collapsed: the whole point of the mobile layout is that
- * "지금" and 후보 own the screen, and these two are the lanes a phone reader
- * consults rather than works in.
- *
- * @type {LaneCollapse}
- */
-const LANE_COLLAPSE_DEFAULT = { queue: true, done: true };
-
-/**
- * Read the persisted collapse state. Anything unreadable falls back to the
- * default rather than throwing (same defence as the display filter).
- *
- * @returns {LaneCollapse}
- */
-function loadLaneCollapse() {
-  try {
-    const raw = window.localStorage.getItem(LANE_COLLAPSE_KEY);
-    if (!raw) {
-      return { ...LANE_COLLAPSE_DEFAULT };
-    }
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') {
-      return { ...LANE_COLLAPSE_DEFAULT };
-    }
-    return {
-      queue:
-        typeof parsed.queue === 'boolean'
-          ? parsed.queue
-          : LANE_COLLAPSE_DEFAULT.queue,
-      done:
-        typeof parsed.done === 'boolean'
-          ? parsed.done
-          : LANE_COLLAPSE_DEFAULT.done
-    };
-  } catch {
-    return { ...LANE_COLLAPSE_DEFAULT };
-  }
-}
-
-/**
- * @param {LaneCollapse} state
- */
-function saveLaneCollapse(state) {
-  try {
-    window.localStorage.setItem(LANE_COLLAPSE_KEY, JSON.stringify(state));
-  } catch {
-    /* ignore — a private-mode storage denial must not break the accordion */
   }
 }
 
@@ -1900,11 +1831,11 @@ export function createWorkerView(mount_element, options = {}) {
     return opt ? opt.label : '오늘';
   }
   /**
-   * Mobile lane collapse state (UI-58y2), restored at view creation.
-   *
-   * @type {LaneCollapse}
+   * Lane·area 접힘 상태 (UI-5ksp §4.4), 뷰 생성 시 복원된다. 저장 키는 모바일
+   * 접기가 쓰던 그대로다 — 구형 `{ queue, done }` 값은 스토어가 `lanes`로
+   * 승격하므로 이미 접어 둔 사람의 화면이 바뀌지 않는다.
    */
-  let lane_collapse = loadLaneCollapse();
+  const collapse = createLaneCollapse('beads-ui.worker.lane-collapsed');
   /**
    * Whether the control-first mobile composition is active (UI-58y2). A runtime
    * without `matchMedia` (jsdom, very old browsers) stays on the desktop
@@ -4967,50 +4898,6 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * The mobile "지금" panel (UI-58y2 §모바일 2): 실행 중 타일과 PR 대기 행을 한
-   * 패널로 묶어 리본 바로 아래에 둔다. 둘 다 0건이면 패널 자체를 렌더하지
-   * 않는다 — 빈 관제 패널은 화면만 먹고 아무것도 말하지 않는다. 별도 상태 없이
-   * 기존 타일/mini 템플릿을 재조합할 뿐이다.
-   *
-   * @param {ReturnType<typeof buildModel>} m
-   * @returns {import('lit-html').TemplateResult|string}
-   */
-  function nowPanelTemplate(m) {
-    if (m.running.length === 0 && m.pr_wait.length === 0) {
-      return '';
-    }
-    // 세션 타일은 라이브 attempt가 아니다 (UI-0a2m) — 초록 라이브 액센트는
-    // 실행 중인 Worker attempt에만 켠다.
-    const live = m.running.some(
-      (r) => r.kind !== 'session' && !r.paused && r.failed !== true
-    );
-    return html`<section
-      class="worker-now${live ? ' worker-pane--live' : ''}"
-      id="worker-now"
-    >
-      <header class="worker-now__hd">
-        <span
-          class="worker-pane__dot worker-pane__dot--running"
-          aria-hidden="true"
-        ></span>
-        <span class="worker-now__title">지금</span>
-        <span class="worker-now__count"
-          >${m.running.length + m.pr_wait.length}</span
-        >
-      </header>
-      ${m.running.length > 0
-        ? runningGridTemplate(
-            m.running,
-            Date.now(),
-            selected_attempt,
-            m.running_overlays
-          )
-        : ''}
-      ${m.pr_wait.map((it) => miniRow(it))}
-    </section>`;
-  }
-
-  /**
    * Candidate pane filter strip (UI-ki09). The pane header counts VISIBLE rows,
    * so each control carries the count it alone is hiding — "왜 안 보이지" has an
    * answer without opening anything.
@@ -5077,10 +4964,10 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * The 완료 pane period select (UI-d7pw §3.3). It lives in the pane's `controls`
-   * strip, NOT in `header_control`: the 완료 pane is `collapsible` on mobile and
-   * `paneTemplate` renders `header_control` only on the non-collapsible header
-   * branch, so putting it there would make the select vanish on phones.
+   * The 완료 pane period select (UI-d7pw §3.3). It rides in `header_control`
+   * (UI-5ksp §4.5): the toggle is its own button now, so a sibling control no
+   * longer disappears on the collapsible header branch and changing the select
+   * cannot fold the lane.
    *
    * @returns {import('lit-html').TemplateResult}
    */
@@ -5100,37 +4987,6 @@ export function createWorkerView(mount_element, options = {}) {
         )}
       </select>
     </div>`;
-  }
-
-  /**
-   * One serial lane card (UI-04vo §4): `직렬 N` header + 점유 배지, sequence
-   * rows (ghost occupant first), and an always-droppable body — an empty lane
-   * is a fixed drop target rather than nothing.
-   *
-   * @param {ReturnType<typeof buildModel>['serial_lanes'][number]} lane
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function serialLaneTemplate(lane) {
-    const badge = html`<span
-      class="worker-lane__badge${lane.occupied
-        ? ' worker-lane__badge--held'
-        : ''}"
-      >${lane.badge}</span
-    >`;
-    const cycle_warning = lane.cycle
-      ? html`<div class="worker-lane__cycle">
-          ⚠ blocks 순환 감지 — 자동 정렬을 생략했습니다
-        </div>`
-      : '';
-    return paneTemplate({
-      id: `worker-pane-lane-${lane.id}`,
-      lane: /** @type {any} */ (lane.id),
-      title: `직렬 ${lane.index}`,
-      items: lane.rows,
-      empty: '비어 있음 — 행을 여기로 드래그',
-      header_control: badge,
-      controls: /** @type {any} */ (cycle_warning)
-    });
   }
 
   /**
@@ -5192,6 +5048,67 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The 대기 pane body (UI-5ksp §4.2): 병렬 영역 하나 + 직렬 영역 하나를 한
+   * pane 안에 담는다. 구조는 두 탭이 공유하는 `waitBody`가 소유하고, 여기서는
+   * 행과 레인 재료만 만들어 슬롯으로 넘긴다.
+   *
+   * @param {ReturnType<typeof buildModel>} m
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function waitBodyTemplate(m) {
+    return waitBody({
+      parallel: {
+        rows: m.waiting.map((/** @type {any} */ it) => miniRow(it)),
+        count: m.waiting.length,
+        collapsed: collapse.isAreaCollapsed('parallel')
+      },
+      serial: {
+        lanes: m.serial_lanes.map((lane) => ({
+          id: lane.id,
+          title: `직렬 ${lane.index}`,
+          rows: lane.rows.map((/** @type {any} */ it) => miniRow(it)),
+          // 점유 ghost 행도 `rows`의 구성원이므로 건수와 빈 판정을 한 재료로
+          // 읽는다 — 점유 중인 레인은 비어 있지 않다.
+          count: lane.rows.length,
+          empty: lane.rows.length === 0,
+          badge: lane.badge,
+          held: lane.occupied,
+          cycle: lane.cycle
+        })),
+        collapsed: collapse.isAreaCollapsed('serial')
+      }
+    });
+  }
+
+  /**
+   * The 실행 중 타일 grid: 데스크톱 레인과 모바일 `지금` 패널이 같은 재료를 쓴다.
+   *
+   * @param {ReturnType<typeof buildModel>} m
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function runningBody(m) {
+    return runningGridTemplate(
+      m.running,
+      Date.now(),
+      selected_attempt,
+      m.running_overlays
+    );
+  }
+
+  /**
+   * Whether one real Worker attempt is running: 세션 타일은 라이브 attempt가
+   * 아니므로 (UI-0a2m) 초록 라이브 액센트에서 뺀다.
+   *
+   * @param {ReturnType<typeof buildModel>} m
+   */
+  function runningLive(m) {
+    return m.running.some(
+      (/** @type {any} */ r) =>
+        r.kind !== 'session' && !r.paused && r.failed !== true
+    );
+  }
+
+  /**
    * @param {ReturnType<typeof buildModel>} m
    * @returns {import('lit-html').TemplateResult}
    */
@@ -5199,12 +5116,14 @@ export function createWorkerView(mount_element, options = {}) {
     const candidate_pane = paneTemplate({
       id: 'worker-pane-candidate',
       lane: 'candidate',
-      title: '후보 · Board 연동',
+      title: '후보',
       items: m.candidates,
       src: true,
       empty: '후보 없음',
       header_control: candidateSortTemplate(),
       controls: candidateControlsTemplate(m),
+      collapsible: true,
+      collapsed: collapse.isCollapsed('candidate'),
       place_menu: currentPlaceMenu(m.candidates),
       // Worker candidates always belong to the selected workspace, so the
       // viewer keeps its default workspace.
@@ -5212,93 +5131,103 @@ export function createWorkerView(mount_element, options = {}) {
         ? (/** @type {Event} */ _ev, /** @type {any} */ doc) => openDoc(doc)
         : undefined
     });
+    const done_pane = paneTemplate({
+      id: 'worker-pane-done',
+      lane: 'done',
+      title: '완료',
+      items: m.done,
+      empty: `${doneRangeLabel()} 완료 없음`,
+      header_control: doneRangeTemplate(),
+      collapsible: true,
+      collapsed: collapse.isCollapsed('done'),
+      preview: Array.isArray(m.token_total)
+        ? m.token_total.map((badge) => badge.label).join(' · ')
+        : m.token_total || stripPreview(m.done)
+    });
     if (is_mobile) {
-      // 관제 우선 배치 (UI-58y2 §모바일): 지금 → 대기 → 후보 → 완료. 실행 중과
-      // PR 대기는 "지금" 패널이 가져가므로 레인으로 다시 그리지 않는다 — 같은
-      // bead가 두 곳에 보이는 것이 이 화면에서 가장 비싼 오해다.
+      // 관제 우선 배치 (UI-58y2 §모바일, 두 탭 공유는 UI-5ksp §4.7): 지금 →
+      // 대기 → 후보 → 완료. 실행 중과 PR 대기는 "지금" 패널이 가져가므로
+      // 레인으로 다시 그리지 않는다 — 같은 bead가 두 곳에 보이는 것이 이
+      // 화면에서 가장 비싼 오해다.
       return html`<div class="worker-lanes worker-lanes--mobile">
-        ${nowPanelTemplate(m)}
+        ${nowPanel({
+          live: runningLive(m),
+          running_body: m.running.length > 0 ? runningBody(m) : '',
+          pr_wait_rows: m.pr_wait.map((/** @type {any} */ it) => miniRow(it)),
+          count: m.running.length + m.pr_wait.length
+        })}
         ${paneTemplate({
           id: 'worker-pane-queue',
           lane: 'queue',
-          title: '병렬 대기',
+          title: '대기',
           items: m.waiting,
-          empty: '드래그 또는 [대기로 ↴]로 배치',
+          count: m.waiting.length,
           collapsible: true,
-          collapsed: lane_collapse.queue,
-          preview: stripPreview(m.waiting)
+          collapsed: collapse.isCollapsed('queue'),
+          preview: stripPreview(m.waiting),
+          body: waitBodyTemplate(m)
         })}
-        ${m.serial_lanes.map((lane) => serialLaneTemplate(lane))}
-        ${candidate_pane}
-        ${paneTemplate({
-          id: 'worker-pane-done',
-          lane: 'done',
-          title: '완료',
-          items: m.done,
-          empty: `${doneRangeLabel()} 완료 없음`,
-          controls: doneRangeTemplate(),
-          collapsible: true,
-          collapsed: lane_collapse.done,
-          preview: Array.isArray(m.token_total)
-            ? m.token_total.map((badge) => badge.label).join(' · ')
-            : m.token_total || stripPreview(m.done)
-        })}
+        ${candidate_pane} ${done_pane}
       </div>`;
     }
     return html`<div class="worker-lanes">
       ${candidate_pane}
-      <div class="worker-wait">
-        ${paneTemplate({
-          id: 'worker-pane-queue',
-          lane: 'queue',
-          title: '병렬 대기',
-          items: m.waiting,
-          empty: '드래그로 배치'
-        })}
-        ${m.serial_lanes.map((lane) => serialLaneTemplate(lane))}
-      </div>
+      ${paneTemplate({
+        id: 'worker-pane-queue',
+        lane: 'queue',
+        title: '대기',
+        items: m.waiting,
+        count: m.waiting.length,
+        collapsible: true,
+        collapsed: collapse.isCollapsed('queue'),
+        body: waitBodyTemplate(m)
+      })}
       ${paneTemplate({
         id: 'worker-pane-running',
         lane: 'running',
-        title: `실행 중 · 슬롯 ${m.slots}`,
+        title: '실행 중',
         items: m.running,
-        live: m.running.some(
-          (r) => r.kind !== 'session' && !r.paused && r.failed !== true
-        ),
-        body: runningGridTemplate(
-          m.running,
-          Date.now(),
-          selected_attempt,
-          m.running_overlays
-        )
+        // 슬롯 수는 제목이 아니라 탭 부가정보다 (§4.5) — 제목 어휘는 두 탭이
+        // 같고, 탭이 다른 것은 `header_control`이 싣는다.
+        header_control: html`<span class="worker-pane__meta"
+          >슬롯 ${m.slots}</span
+        >`,
+        live: runningLive(m),
+        collapsible: true,
+        collapsed: collapse.isCollapsed('running'),
+        body: runningBody(m)
       })}
       ${paneTemplate({
         id: 'worker-pane-pr-wait',
         lane: 'pr_wait',
         title: 'PR 대기',
         items: m.pr_wait,
-        empty: 'PR 대기 없음'
+        empty: 'PR 대기 없음',
+        collapsible: true,
+        collapsed: collapse.isCollapsed('pr_wait')
       })}
-      ${paneTemplate({
-        id: 'worker-pane-done',
-        lane: 'done',
-        title: `완료 · ${doneRangeLabel()} ${m.done.length}`,
-        items: m.done,
-        empty: `${doneRangeLabel()} 완료 없음`,
-        controls: doneRangeTemplate()
-      })}
+      ${done_pane}
     </div>`;
   }
 
   /**
-   * Adopt a new collapse state for one mobile lane: persist first, then
-   * re-render, so a reload shows exactly what the last tap produced.
+   * Adopt a new collapse state for one lane: the store persists first, then the
+   * view re-renders, so a reload shows exactly what the last click produced.
    *
-   * @param {'queue'|'done'} lane
+   * @param {import('./lane-collapse.js').LaneId} lane
    */
   function toggleLaneCollapse(lane) {
-    lane_collapse = { ...lane_collapse, [lane]: !lane_collapse[lane] };
-    saveLaneCollapse(lane_collapse);
+    collapse.toggle(lane);
+    doRender();
+  }
+
+  /**
+   * Same for one 대기 본문 영역 (병렬·직렬).
+   *
+   * @param {import('./lane-collapse.js').AreaId} area
+   */
+  function toggleWaitArea(area) {
+    collapse.toggleArea(area);
     doRender();
   }
 
@@ -5309,37 +5238,23 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Track the mobile breakpoint (UI-58y2). Registered as an unsubscriber like
-   * every other live source so a destroyed view stops re-rendering; a runtime
-   * with no `matchMedia` simply never registers one and stays desktop.
+   * Track the mobile breakpoint (UI-58y2, shared watcher UI-5ksp §4.7).
+   * Registered as an unsubscriber like every other live source so a destroyed
+   * view stops re-rendering. The watcher calls back synchronously on
+   * registration, and that first call must NOT re-render — the console has not
+   * been composed yet.
    */
   function watchViewport() {
-    if (typeof window.matchMedia !== 'function') {
-      return;
-    }
-    const mql = window.matchMedia(MOBILE_QUERY);
-    is_mobile = !!mql.matches;
-    /** @param {any} ev */
-    const onViewportChange = (ev) => {
-      const next = !!(ev && typeof ev.matches === 'boolean'
-        ? ev.matches
-        : mql.matches);
-      if (next === is_mobile) {
+    let first = true;
+    const stop = watchMobile((next) => {
+      is_mobile = next;
+      if (first) {
+        first = false;
         return;
       }
-      is_mobile = next;
       doRender();
-    };
-    if (typeof mql.addEventListener === 'function') {
-      mql.addEventListener('change', onViewportChange);
-      unsubscribers.push(() =>
-        mql.removeEventListener('change', onViewportChange)
-      );
-    } else if (typeof mql.addListener === 'function') {
-      // Safari < 14 and jsdom shims that only carry the legacy API.
-      mql.addListener(onViewportChange);
-      unsubscribers.push(() => mql.removeListener(onViewportChange));
-    }
+    });
+    unsubscribers.push(stop);
   }
 
   // --- Native drag/drop (no library), mirroring board.js conventions. ---
@@ -5386,6 +5301,9 @@ export function createWorkerView(mount_element, options = {}) {
     const bead_id = el.dataset.beadId || '';
     const from_lane = el.dataset.lane || '';
     dragging = { bead_id, from_lane };
+    // ≤640px에서 접혀 있던 빈 직렬 레인을 드롭 타깃으로 되살린다 (§4.3) —
+    // 표시 조건은 CSS 한 곳이 소유하고, 여기서는 "지금 드래그 중"만 말한다.
+    console_el.classList.add('is-dragging');
     try {
       ev.dataTransfer?.setData('text/plain', bead_id);
       if (ev.dataTransfer) {
@@ -5429,6 +5347,14 @@ export function createWorkerView(mount_element, options = {}) {
       /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-pane')
     );
     pane?.classList.remove('worker-pane--drag-over');
+  }
+
+  /**
+   * Drop이든 취소든 드래그가 끝나면 ≤640px의 빈 직렬 레인은 다시 힌트 한 줄로
+   * 접힌다 (§4.3).
+   */
+  function onDragEnd() {
+    console_el.classList.remove('is-dragging');
   }
 
   /**
@@ -5477,6 +5403,7 @@ export function createWorkerView(mount_element, options = {}) {
     }
     ev.preventDefault();
     pane.classList.remove('worker-pane--drag-over');
+    console_el.classList.remove('is-dragging');
     const to_lane = pane.dataset.lane || '';
     const bead_id =
       dragging?.bead_id || ev.dataTransfer?.getData('text/plain') || '';
@@ -5493,8 +5420,17 @@ export function createWorkerView(mount_element, options = {}) {
         '.worker-mini, .worker-card'
       )
     );
+    // 대기 pane은 병렬 행과 직렬 레인 pane을 함께 품으므로 (UI-5ksp §4.2)
+    // 인덱스를 pane 전체에서 세면 직렬 행까지 딸려 들어온다. 세는 자리는 그
+    // 드롭이 실제로 바꾸는 목록 하나다.
+    const row_host =
+      to_lane === 'queue'
+        ? pane.querySelector(
+            '.worker-wait__area--parallel > .worker-wait__area-body'
+          ) || pane
+        : pane;
     const minis = Array.from(
-      pane.querySelectorAll('.worker-mini, .worker-card')
+      row_host.querySelectorAll('.worker-mini, .worker-card')
     );
     let index = minis.length;
     if (over) {
@@ -5506,7 +5442,7 @@ export function createWorkerView(mount_element, options = {}) {
     // ghost 점유 행은 대기 entries의 구성원이 아니므로 서버 인덱스에서 뺀다.
     index = Math.max(
       0,
-      index - pane.querySelectorAll('.worker-mini--ghost').length
+      index - row_host.querySelectorAll('.worker-mini--ghost').length
     );
     // 접힌 스트립은 행을 하나도 그리지 않으므로 위 계산이 0(=큐 맨 앞)을 낸다.
     // 스트립에 떨어뜨린 사람이 원한 것은 "대기에 넣기"이지 "다음으로 실행"이
@@ -6014,14 +5950,32 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return;
     }
-    // 접힌 레인 스트립 ↔ 펼침 (UI-58y2 §모바일 3/5).
+    // 레인 접기 (UI-58y2 §모바일 3/5, 다섯 레인 확장은 UI-5ksp §4.4). 토글은
+    // 헤더 안의 버튼 하나이므로 형제 `header_control` 조작은 여기 오지 않는다.
     const lane_toggle = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-pane__hd--toggle')
+      target?.closest?.('.worker-pane__toggle[data-lane]')
     );
     if (lane_toggle) {
       const lane = lane_toggle.dataset.lane;
-      if (lane === 'queue' || lane === 'done') {
+      if (
+        lane === 'candidate' ||
+        lane === 'queue' ||
+        lane === 'running' ||
+        lane === 'pr_wait' ||
+        lane === 'done'
+      ) {
         toggleLaneCollapse(lane);
+      }
+      return;
+    }
+    // 대기 본문의 병렬·직렬 영역 접기 (UI-5ksp §4.2).
+    const area_toggle = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-wait__area-toggle[data-area]')
+    );
+    if (area_toggle) {
+      const area = area_toggle.dataset.area;
+      if (area === 'parallel' || area === 'serial') {
+        toggleWaitArea(area);
       }
       return;
     }
@@ -6345,6 +6299,7 @@ export function createWorkerView(mount_element, options = {}) {
   mount_element.addEventListener('dragstart', /** @type {any} */ (onDragStart));
   mount_element.addEventListener('dragover', /** @type {any} */ (onDragOver));
   mount_element.addEventListener('dragleave', /** @type {any} */ (onDragLeave));
+  mount_element.addEventListener('dragend', /** @type {any} */ (onDragEnd));
   mount_element.addEventListener('drop', /** @type {any} */ (onDrop));
   mount_element.addEventListener('click', /** @type {any} */ (onClick));
   mount_element.addEventListener('change', /** @type {any} */ (onChange));
@@ -6465,6 +6420,10 @@ export function createWorkerView(mount_element, options = {}) {
       mount_element.removeEventListener(
         'dragleave',
         /** @type {any} */ (onDragLeave)
+      );
+      mount_element.removeEventListener(
+        'dragend',
+        /** @type {any} */ (onDragEnd)
       );
       mount_element.removeEventListener('drop', /** @type {any} */ (onDrop));
       mount_element.removeEventListener('click', /** @type {any} */ (onClick));

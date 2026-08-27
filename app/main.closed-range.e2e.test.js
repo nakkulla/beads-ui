@@ -198,6 +198,13 @@ describe('closed-issues subscription period lifecycle', () => {
       since: closedRangeSince('today')
     });
 
+    // 완료 레인은 기본 접힘이다 (UI-5ksp §3-3): 접힌 pane은 `header_control`을
+    // 그리지 않으므로 범위 선택은 레인을 펼친 뒤에야 DOM에 있다.
+    /** @type {HTMLElement} */ (
+      document.querySelector('#worker-pane-done .worker-pane__toggle')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
     client._reset();
     const select = /** @type {HTMLSelectElement} */ (
       document.querySelector('#worker-pane-done .worker-done-range')
