@@ -2181,14 +2181,21 @@ export function buildLanes(workspaces, workspaces_state, options) {
     ...model.running,
     ...model.pr_wait
   ]) {
-    // 모니터의 칩은 모두 누를 수 있다 (UI-u6zf §5.1): 그 클릭은 이 행의 의존성
-    // 패널을 열고, 패널은 의존을 실제로 끊는 유일한 진입로다 — 워커 탭이 칩마다
-    // 갈리는 것과 달리 여기서는 대상이 항상 이 행 자신이다.
+    // 모니터의 칩은 모두 누를 수 있다 (UI-u6zf §5.1): 모니터는 보이는 레포를
+    // 모두 읽으므로 워커 탭과 달리 blocker의 위치를 언제나 안다. 그 클릭은
+    // blocker 이슈로 이동하고(UI-lx45 §5), 타 레포면 `root_dir`이 전환 대상을
+    // 말한다 — 위치를 모르는 blocker만 그 값 없이 현재 레포로 열린다.
     /** @type {DependencyChip[]} */
-    const predecessors = (item.blockers || []).map((blocker) => ({
-      ...predecessorChip(item.id, blocker),
-      openable: true
-    }));
+    const predecessors = (item.blockers || []).map((blocker) => {
+      const blocker_root = locations.get(blocker.id)?.root_dir;
+      return {
+        ...predecessorChip(item.id, blocker),
+        openable: true,
+        ...(typeof blocker_root === 'string' && blocker_root.length > 0
+          ? { root_dir: blocker_root }
+          : {})
+      };
+    });
     if (predecessors.length === 0) {
       continue;
     }

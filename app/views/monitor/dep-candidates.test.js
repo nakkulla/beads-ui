@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { depCandidates, filterDepCandidates } from './dep-candidates.js';
+import {
+  depCandidateModel,
+  depCandidates,
+  filterDepCandidates
+} from './dep-candidates.js';
 
 /**
  * @import { DepCandidateIssue, DepCandidateModel } from './dep-candidates.js'
@@ -229,5 +233,173 @@ describe('filterDepCandidates — 검색 (UI-j92s §6.1)', () => {
     const found = filterDepCandidates(candidates, '   ');
 
     expect(found.map((candidate) => candidate.bead_id)).toEqual(['A-2', 'A-3']);
+  });
+});
+
+describe('depCandidateModel — 후보 공급자 (UI-lx45 §3.1)', () => {
+  const NOW = 1_700_000_000_000;
+
+  test('collects running, PR 대기, queue and runnable issues with their lane', () => {
+    const workspaces = [
+      {
+        root_dir: WS_A,
+        name: 'repo-a',
+        queue: [{ bead_id: 'A-queue', added_at: NOW }],
+        pr_wait: [{ bead_id: 'A-pr', pr_url: 'https://example/pr/1' }],
+        runnable: [{ bead_id: 'A-run', title: '실행가능' }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'A-live',
+            status: 'running',
+            started_at: NOW - 30_000,
+            last_event_at: NOW - 2_000
+          }
+        },
+        bead_titles: { 'A-live': '실행중', 'A-queue': '대기', 'A-pr': 'PR' },
+        pr_observations: {}
+      }
+    ];
+
+    const model = depCandidateModel(workspaces, []);
+
+    expect(model.issues.map((issue) => [issue.bead_id, issue.lane])).toEqual([
+      ['A-live', 'running'],
+      ['A-pr', 'pr_wait'],
+      ['A-queue', 'queue'],
+      ['A-run', 'runnable']
+    ]);
+  });
+
+  test('keeps only the first occurrence of a duplicated id', () => {
+    const workspaces = [
+      {
+        root_dir: WS_A,
+        name: 'repo-a',
+        queue: [{ bead_id: 'A-dup', added_at: NOW }],
+        pr_wait: [],
+        runnable: [{ bead_id: 'A-dup', title: '실행가능' }],
+        attempts: {},
+        bead_titles: { 'A-dup': '대기' },
+        pr_observations: {}
+      }
+    ];
+
+    const model = depCandidateModel(workspaces, []);
+
+    expect(model.issues.map((issue) => [issue.bead_id, issue.lane])).toEqual([
+      ['A-dup', 'queue']
+    ]);
+  });
+
+  test('carries the repo badge and title onto each candidate issue', () => {
+    const workspaces = [
+      {
+        root_dir: WS_B,
+        name: 'repo-b',
+        queue: [],
+        pr_wait: [],
+        runnable: [{ bead_id: 'B-1', title: '레인 정합' }],
+        attempts: {},
+        bead_titles: {},
+        pr_observations: {}
+      }
+    ];
+
+    const model = depCandidateModel(workspaces, []);
+
+    expect([
+      model.issues[0].root_dir,
+      model.issues[0].workspace_name,
+      model.issues[0].title
+    ]).toEqual([WS_B, 'repo-b', '레인 정합']);
+  });
+
+  test('filters issues by the root_dir option', () => {
+    const workspaces = [
+      {
+        root_dir: WS_A,
+        name: 'repo-a',
+        queue: [],
+        pr_wait: [],
+        runnable: [{ bead_id: 'A-1', title: 'a' }],
+        attempts: {},
+        bead_titles: {},
+        pr_observations: {}
+      },
+      {
+        root_dir: WS_B,
+        name: 'repo-b',
+        queue: [],
+        pr_wait: [],
+        runnable: [{ bead_id: 'B-1', title: 'b' }],
+        attempts: {},
+        bead_titles: {},
+        pr_observations: {}
+      }
+    ];
+
+    const model = depCandidateModel(workspaces, [], { root_dir: WS_A });
+
+    expect(model.issues.map((issue) => issue.bead_id)).toEqual(['A-1']);
+  });
+
+  test('keeps every repo in blocked_by_map even when issues are filtered', () => {
+    const workspaces = [
+      {
+        root_dir: WS_A,
+        name: 'repo-a',
+        queue: [],
+        pr_wait: [],
+        runnable: [],
+        attempts: {},
+        bead_titles: {},
+        pr_observations: {},
+        bead_blocked_by: { 'A-1': ['B-1'] }
+      },
+      {
+        root_dir: WS_B,
+        name: 'repo-b',
+        queue: [],
+        pr_wait: [],
+        runnable: [],
+        attempts: {},
+        bead_titles: {},
+        pr_observations: {},
+        bead_blocked_by: { 'B-1': ['B-2'] }
+      }
+    ];
+
+    const model = depCandidateModel(workspaces, [], { root_dir: WS_A });
+
+    expect(Array.from(model.blocked_by_map.entries())).toEqual([
+      ['A-1', ['B-1']],
+      ['B-1', ['B-2']]
+    ]);
+  });
+
+  test('merges the blocked_by a runnable row carries itself', () => {
+    const workspaces = [
+      {
+        root_dir: WS_A,
+        name: 'repo-a',
+        queue: [],
+        pr_wait: [],
+        runnable: [{ bead_id: 'A-1', title: 'a', blocked_by: ['A-9'] }],
+        attempts: {},
+        bead_titles: {},
+        pr_observations: {}
+      }
+    ];
+
+    const model = depCandidateModel(workspaces, []);
+
+    expect(model.blocked_by_map.get('A-1')).toEqual(['A-9']);
+  });
+
+  test('returns empty collections for a missing snapshot', () => {
+    const model = depCandidateModel(null, null);
+
+    expect([model.issues, model.blocked_by_map.size]).toEqual([[], 0]);
   });
 });

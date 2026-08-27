@@ -100,7 +100,10 @@ export function mapSubscriptionToBdArgs(spec) {
       if (id.length === 0) {
         throw badRequest('Missing param: params.id');
       }
-      return ['show', id, '--json'];
+      // `--include-dependents` carries the reverse-direction edges the detail
+      // panel renders read-only; without it `bd show` answers `dependencies`
+      // only.
+      return ['show', id, '--include-dependents', '--json'];
     }
     default: {
       throw badRequest(`Unknown subscription type: ${t}`);

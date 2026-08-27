@@ -27,6 +27,12 @@ export interface Issue extends IssueRef {
 
 export interface DependencyRef {
   id: string;
+  /**
+   * The bd edge kind (`blocks`, `related`, `discovered-from`, `parent-child`).
+   * On a `dependents[]` entry, `blocks` means the issue that owns the list
+   * blocks this one (UI-lx45 §3.4).
+   */
+  dependency_type?: string;
   title?: string;
   status?: string;
   priority?: number;

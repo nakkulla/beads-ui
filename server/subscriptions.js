@@ -6,7 +6,7 @@
  *
  * Maintains per-subscription entries keyed by a stable string derived from
  * `{ type, params }`. Each entry stores:
- *  - `itemsById`: Map<string, { updated_at: number, closed_at: number|null }>
+ *  - `itemsById`: Map<string, { updated_at: number, closed_at: number|null, deps_signature: string }>
  *  - `subscribers`: Set<WebSocket>
  *  - `lock`: Promise chain to serialize refresh/update operations per key
  *
@@ -22,7 +22,7 @@
  */
 
 /**
- * @typedef {{ updated_at: number, closed_at: number | null }} ItemMeta
+ * @typedef {{ updated_at: number, closed_at: number | null, deps_signature: string }} ItemMeta
  */
 
 /**
@@ -33,6 +33,10 @@
  *   lock: Promise<void>
  * }} Entry
  */
+
+const DEPS_FIELD_SEPARATOR = '\u001f';
+const DEPS_EDGE_SEPARATOR = '\u001e';
+const DEPS_GROUP_SEPARATOR = '\u001d';
 
 /**
  * Create a new, empty entry object.
@@ -90,7 +94,11 @@ export function computeDelta(prev, next) {
       added.push(id);
       continue;
     }
-    if (p.updated_at !== meta.updated_at || p.closed_at !== meta.closed_at) {
+    if (
+      p.updated_at !== meta.updated_at ||
+      p.closed_at !== meta.closed_at ||
+      p.deps_signature !== meta.deps_signature
+    ) {
       updated.push(id);
     }
   }
@@ -103,12 +111,94 @@ export function computeDelta(prev, next) {
 }
 
 /**
+ * Decide whether a subscription's delta should watch dependency edges at all.
+ *
+ * Only the detail view renders edges, and only its adapter asks bd for
+ * `--include-dependents`. Ordinary list rows carry a `dependencies` array too
+ * (the workspace snapshot embeds it for provenance), so signing every
+ * subscription would turn an edge-only change into a board-wide upsert storm
+ * that no list actually redraws for. Gating on the key keeps every non-detail
+ * delta byte-for-byte the timestamp comparison it was before.
+ *
+ * The key is `keyOf`'s own output — `type` or `type?params` — so the type is
+ * the span before the first `?`.
+ *
+ * @param {string} key
+ * @returns {boolean}
+ */
+function tracksDepsSignature(key) {
+  const query_at = key.indexOf('?');
+  const type = query_at === -1 ? key : key.slice(0, query_at);
+  return type === 'issue-detail';
+}
+
+/**
+ * Summarize an issue's dependency edges so a delta can see an edge-only change.
+ *
+ * `updated_at` moves with the issue's own fields, not with the edges attached
+ * to it, so adding or dropping a dependency would leave an open detail
+ * subscription showing a stale dependency section. The signature closes that
+ * hole: two items with equal timestamps but different edges compare unequal.
+ *
+ * Missing or non-array fields read as no edges (fail-quiet), so an ordinary
+ * list row — which carries neither field — keeps an empty signature and
+ * therefore the exact previous timestamp-only comparison result.
+ *
+ * @param {{ dependencies?: unknown, dependents?: unknown }} item
+ * @returns {string}
+ */
+function depsSignature(item) {
+  const dependencies = edgeGroupSignature(item.dependencies);
+  const dependents = edgeGroupSignature(item.dependents);
+  if (dependencies.length === 0 && dependents.length === 0) {
+    return '';
+  }
+  return `${dependencies}${DEPS_GROUP_SEPARATOR}${dependents}`;
+}
+
+/**
+ * Join one edge array's identity fields in array order.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function edgeGroupSignature(value) {
+  if (!Array.isArray(value)) {
+    return '';
+  }
+  /** @type {string[]} */
+  const edges = [];
+  for (const edge of value) {
+    if (!edge || typeof edge !== 'object') {
+      continue;
+    }
+    const record = /** @type {Record<string, unknown>} */ (edge);
+    edges.push(
+      [record.id, record.dependency_type, record.status, record.title]
+        .map(edgeField)
+        .join(DEPS_FIELD_SEPARATOR)
+    );
+  }
+  return edges.join(DEPS_EDGE_SEPARATOR);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
+function edgeField(value) {
+  return value === null || value === undefined ? '' : String(value);
+}
+
+/**
  * Normalize array of issue-like objects into an itemsById map.
  *
- * @param {Array<{ id: string, updated_at: number, closed_at?: number|null }>} items
+ * @param {Array<{ id: string, updated_at: number, closed_at?: number|null, dependencies?: unknown, dependents?: unknown }>} items
+ * @param {string} [key] - Subscription key; only an `issue-detail` key tracks edges.
  * @returns {Map<string, ItemMeta>}
  */
-export function toItemsMap(items) {
+export function toItemsMap(items, key = '') {
+  const track_deps = tracksDepsSignature(key);
   /** @type {Map<string, ItemMeta>} */
   const map = new Map();
   for (const it of items) {
@@ -124,7 +214,11 @@ export function toItemsMap(items) {
       const n = Number(it.closed_at);
       closed_at = Number.isFinite(n) ? n : null;
     }
-    map.set(it.id, { updated_at, closed_at });
+    map.set(it.id, {
+      updated_at,
+      closed_at,
+      deps_signature: track_deps ? depsSignature(it) : ''
+    });
   }
   return map;
 }
@@ -275,11 +369,11 @@ export class SubscriptionRegistry {
    * Convenience: update items from an array of objects with id/updated_at/closed_at.
    *
    * @param {string} key
-   * @param {Array<{ id: string, updated_at: number, closed_at?: number|null }>} items
+   * @param {Array<{ id: string, updated_at: number, closed_at?: number|null, dependencies?: unknown, dependents?: unknown }>} items
    * @returns {{ added: string[], updated: string[], removed: string[] }}
    */
   applyItems(key, items) {
-    const next_map = toItemsMap(items);
+    const next_map = toItemsMap(items, key);
     return this.applyNextMap(key, next_map);
   }
 

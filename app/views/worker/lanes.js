@@ -1679,15 +1679,13 @@ const SESSION_PREFERRED_TOOLTIP = {
  * colour with the pin tooltip; the card never decides that itself, because only
  * the caller knows the repo's defaults.
  *
- * `dep_action` (UI-j92s §6.1) adds the `⛓ 의존성` button. 자리는 1번 줄
- * 오른쪽 끝(`.worker-card__head-actions`, 슬롯 1 조작)이지 foot이 아니다
- * (UI-5ksp §4.6): foot은 `대기로 ↴` 하나만 사는 곳이라 coarse pointer 전용
- * 접기 규칙을 그대로 쓰고, 상시 조작인 의존성 버튼은 그 규칙에 삼켜지지 않는
- * 자리에 선다. Worker 콘솔은 이 옵션을 넘기지 않으므로 렌더가 그대로다.
+ * 슬롯 1 조작(`.worker-card__head-actions`)은 지금 재료가 없어 그리지 않는다
+ * (UI-lx45 §5): UI-j92s가 그 자리에 두었던 `⛓ 의존성` 버튼은 편집이 이슈 상세
+ * `의존성` 절로 옮겨 가며 사라졌다.
  *
  * @param {MiniItem} item
  * @param {PlaceMenu|null} [place_menu]
- * @param {{ exec_chips_mode?: 'always'|'pinned_only', dep_action?: boolean, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} [options]
+ * @param {{ exec_chips_mode?: 'always'|'pinned_only', onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function candidateCard(item, place_menu = null, options = {}) {
@@ -1754,19 +1752,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
             >`
           : ''}${recChipTemplate(item.rec)}${quickFixReviewChipTemplate(
         workflow
-      )}${options.dep_action === true
-        ? html`<span class="worker-card__head-actions"
-            ><button
-              type="button"
-              class="worker-card__dep mon-dep__btn"
-              data-bead-id=${item.id}
-              title="의존성"
-              aria-label="의존성"
-            >
-              ⛓
-            </button></span
-          >`
-        : ''}
+      )}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow

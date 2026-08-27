@@ -291,6 +291,8 @@ export function createLaneCollapse(storage_key, defaults = { lanes: { done: true
   `miniRow(item, { actions })`의 새 옵션으로 행 1번 줄 조작 영역 끝에 들어간다. 클래스는
   `worker-mini__rowops`·`worker-mini__rowops-*`로 이관하고 이벤트 위임 셀렉터를 같이
   바꾼다.
+
+  정정(UI-lx45). UI-lx45가 이 버튼을 제거했다. 의존성 편집은 이슈 상세 `의존성` 절이다.
 - 레포 배지·연결 레인 칩·route·exec 칩은 이미 슬롯 5 fail-quiet라 변경 없다.
 - UI-251y 스펙 §5.1 슬롯 표에 정정 문단을 추가한다: "⛓ 의존성 버튼은 슬롯 1 조작이다.
   UI-j92s가 `대기로 ↴` 옆(foot)에 두었던 자리는 UI-5ksp가 옮겼다." `AGENTS.md` 카드

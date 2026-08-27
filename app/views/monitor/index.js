@@ -45,7 +45,6 @@ import { departedLabel } from '../worker/queue-overlaps.js';
 import { runningTile } from '../worker/running-grid.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
-import { depCandidates, filterDepCandidates } from './dep-candidates.js';
 import {
   HOLD_CORRECTION,
   adjacentProvenancePairs,
@@ -70,7 +69,6 @@ import {
  * @import { CandidateFilter, MonitorChainLane, MonitorChainLaneRow, MonitorItem, MonitorLanes, MonitorOccupant, MonitorQueueGroup, MonitorSerialSublane } from './lanes.js'
  * @import { DependencyChips, OverlapPopover, OverlapPopoverRow } from '../worker/lanes.js'
  * @import { DropDrag, DropModel, DropPlan, DropTarget, LaneOp, Op } from './drop-plan.js'
- * @import { DepCandidateIssue } from './dep-candidates.js'
  */
 
 /** 겹침 팝오버의 배치 버튼 문구 (UI-qm12 §5.4). */
@@ -417,14 +415,6 @@ export function createMonitorView(mount_element, options) {
    * @type {{ bead_id: string, counterpart_id: string }|null}
    */
   let open_overlap = null;
-
-  /**
-   * 지금 열려 있는 의존성 패널 (UI-j92s §6.1). 한 번에 하나이며, 검색어는 패널이
-   * 열려 있는 동안만 사는 표시 상태다.
-   *
-   * @type {{ bead_id: string, query: string }|null}
-   */
-  let dep_panel = null;
 
   /**
    * 한 계획을 보내는 동안 이미 적용된 dep op (§5.5). 충돌 뒤 재계획은 아직
@@ -1229,146 +1219,6 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * The 의존성 패널 후보 모집단 (§6.1): 보이는 모든 레포의 실행가능·대기(병렬·
-   * 직렬)·실행중·PR 대기. 완료 제외는 `depCandidates`가 소유하므로 여기서
-   * 미리 빼지 않는다.
-   *
-   * @returns {DepCandidateIssue[]}
-   */
-  function depIssues() {
-    /** @type {DepCandidateIssue[]} */
-    const issues = [];
-    /** @type {Set<string>} */
-    const seen = new Set();
-    /**
-     * @param {MonitorItem[]} items
-     * @param {DepCandidateIssue['lane']} lane
-     */
-    const push = (items, lane) => {
-      for (const item of items) {
-        if (seen.has(item.id)) {
-          continue;
-        }
-        seen.add(item.id);
-        issues.push({
-          bead_id: item.id,
-          root_dir: item.root_dir,
-          workspace_name: item.workspace_name,
-          title: item.title,
-          lane
-        });
-      }
-    };
-    push(lanes.running, 'running');
-    push(lanes.pr_wait, 'pr_wait');
-    push(lanes.queue, 'queue');
-    // 필터 이전 목록이다 (§6.1): `차단됨`·`스펙`·`의존 있음` 토글은 보기를 좁힐
-    // 뿐 의존을 걸 수 있는 이슈를 줄이지 않는다.
-    push(lanes.runnable_all, 'runnable');
-    return issues;
-  }
-
-  /**
-   * One inline 의존성 패널 (§6.1). 카드/행 아래에 열리고 한 번에 하나다.
-   *
-   * 패널이 묻는 것은 한 문장뿐이다 — "이 이슈를 무엇이 막는가". 반대 방향은
-   * 상대 이슈의 카드에서 같은 문장으로 걸므로, `root_dir`은 언제나 이 행을
-   * 소유한 레포다: 서버가 그 root에서 `bd dep add/remove a b`를 돌린다.
-   *
-   * @param {string} bead_id
-   * @returns {import('lit-html').TemplateResult|''}
-   */
-  function depPanel(bead_id) {
-    if (!dep_panel || dep_panel.bead_id !== bead_id) {
-      return '';
-    }
-    const graph = blockedByMap();
-    const issues = depIssues();
-    /** @type {Map<string, DepCandidateIssue>} */
-    const open_by_id = new Map();
-    for (const issue of issues) {
-      open_by_id.set(issue.bead_id, issue);
-    }
-    const blockers = (graph.get(bead_id) || []).filter((id) =>
-      open_by_id.has(id)
-    );
-    const candidates = filterDepCandidates(
-      depCandidates(bead_id, { issues, blocked_by_map: graph }),
-      dep_panel.query
-    );
-    const own_root = lanes.owner_of[bead_id];
-    return html`<div
-      class="mon-deppanel"
-      data-bead-id=${bead_id}
-      role="dialog"
-      aria-label="의존성"
-    >
-      <div class="mon-deppanel__title">이 이슈를 막는 이슈</div>
-      <div class="mon-deppanel__now">
-        ${blockers.length === 0
-          ? html`<span class="mon-deppanel__empty">막는 이슈 없음</span>`
-          : ''}
-        ${blockers.map(
-          (id) =>
-            html`<span class="mon-deppanel__chip mon-deppanel__chip--pred"
-              ><span class="mon-deppanel__chip-label">⛓ ${id}</span
-              ><button
-                type="button"
-                class="mon-deppanel__unlink"
-                data-dep-a=${bead_id}
-                data-dep-b=${id}
-                aria-label=${`${id} 연결 해제`}
-                title="연결 해제"
-              >
-                ✕
-              </button></span
-            >`
-        )}
-      </div>
-      <input
-        type="search"
-        class="mon-deppanel__search"
-        placeholder="ID·제목 검색"
-        aria-label="의존 후보 검색"
-        .value=${dep_panel.query}
-      />
-      <div class="mon-deppanel__list">
-        ${candidates.length === 0
-          ? html`<div class="mon-deppanel__empty">후보 없음</div>`
-          : candidates.map(
-              (candidate) =>
-                html`<button
-                  type="button"
-                  class="mon-deppanel__cand${candidate.disabled
-                    ? ' is-disabled'
-                    : ''}"
-                  data-dep-cand=${candidate.bead_id}
-                  ?disabled=${candidate.disabled}
-                  title=${candidate.reason || candidate.title}
-                >
-                  <span class="mon-deppanel__cand-repo"
-                    >${candidate.workspace_name}</span
-                  ><span class="mon-deppanel__cand-id"
-                    >${candidate.bead_id}</span
-                  ><span class="mon-deppanel__cand-title"
-                    >${candidate.title}</span
-                  >${candidate.reason
-                    ? html`<span class="mon-deppanel__cand-reason"
-                        >${candidate.reason}</span
-                      >`
-                    : ''}
-                </button>`
-            )}
-      </div>
-      ${own_root === undefined
-        ? html`<div class="mon-deppanel__warn">
-            이 이슈의 레포를 알 수 없어 의존을 바꿀 수 없습니다
-          </div>`
-        : ''}
-    </div>`;
-  }
-
-  /**
    * @param {MonitorItem} item
    * @returns {import('lit-html').TemplateResult}
    */
@@ -1377,12 +1227,11 @@ export function createMonitorView(mount_element, options) {
       item,
       html`${candidateCard(withOverlaps(item), placeMenuFor(item), {
         exec_chips_mode: 'pinned_only',
-        dep_action: true,
         onOpenDoc: openDoc
           ? (/** @type {Event} */ _ev, /** @type {any} */ doc) =>
               openDoc(doc, item.root_dir)
           : undefined
-      })}${depPanel(item.id)}`
+      })}`
     );
   }
 
@@ -1424,8 +1273,9 @@ export function createMonitorView(mount_element, options) {
 
   /**
    * The 대기 행 조작 묶음 (UI-5ksp §4.6). 행 밖 별도 줄이던 자리를 `miniRow`의
-   * `actions` 슬롯 — 행 1번 줄 오른쪽 끝 — 으로 옮겼다. ⛓만 상시 조작이고
-   * `↑ ↓ ✕`는 드래그의 coarse pointer 보완재라 표시 조건은 CSS가 소유한다.
+   * `actions` 슬롯 — 행 1번 줄 오른쪽 끝 — 으로 옮겼다. `↑ ↓ ✕`는 드래그의
+   * coarse pointer 보완재라 표시 조건은 CSS가 소유한다. 의존성 편집은 여기
+   * 있던 ⛓이 아니라 이슈 상세 `의존성` 절이다 (UI-lx45 §5).
    *
    * @param {MonitorItem} item
    * @param {boolean} [nudgeable] - true for 병렬 행 only: 직렬 레인의 순서는
@@ -1434,15 +1284,6 @@ export function createMonitorView(mount_element, options) {
    */
   function rowActions(item, nudgeable = false) {
     return html`<span class="worker-mini__rowops">
-      <button
-        type="button"
-        class="mon-dep__btn"
-        data-bead-id=${item.id}
-        title="의존성"
-        aria-label="의존성"
-      >
-        ⛓
-      </button>
       ${nudgeable
         ? html`<button
               type="button"
@@ -1493,7 +1334,6 @@ export function createMonitorView(mount_element, options) {
       data-queue-index=${String(item.queue_index ?? 0)}
     >
       ${miniRow(withOverlaps(item), { actions: rowActions(item, true) })}
-      ${depPanel(item.id)}
     </div>`;
   }
 
@@ -1716,7 +1556,6 @@ export function createMonitorView(mount_element, options) {
       data-queue-index=${String(item.queue_index ?? 0)}
     >
       ${miniRow(withOverlaps(item), { actions: rowActions(item) })}
-      ${depPanel(item.id)}
     </div>`;
   }
 
@@ -2404,36 +2243,11 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * One dependency edit from the 의존성 패널 (§6.1) — 의존을 바꾸는 유일한 길이다.
-   * 낙관적 투영은 없다 (UI-2gi1 §6.5·§7): 거부 사유는 서버 문장 그대로 토스트로
-   * 보이고, 다음 스냅샷이 실제 그래프를 그린다. `root_dir`은 언제나
-   * blockee(`a`)의 레포다 — 서버가 그 root에서 `bd dep add/remove a b`를 돌린다.
-   * 패널은 열린 채 남고 다음 스냅샷이 현재 의존 줄을 갱신한다.
-   *
-   * @param {'dep-add'|'dep-remove'} type
-   * @param {string} a - blockee.
-   * @param {string} b - blocker.
-   */
-  async function sendDepOp(type, a, b) {
-    const root_dir = lanes.owner_of[a];
-    if (typeof root_dir !== 'string' || root_dir.length === 0) {
-      showToast(`${a}의 레포를 알 수 없어 의존을 바꿀 수 없습니다`, 'error');
-      return;
-    }
-    try {
-      await send(type, { a, b }, root_dir);
-      await recorrectSharedLane(type, a, b);
-    } catch (error) {
-      showToast(mutationErrorMessage(error), 'error');
-    }
-    doRender();
-  }
-
-  /**
-   * Re-run the §6 자동 교정 when the `⛓` 패널's `dep-add` changed a pair of
-   * members of the SAME 연결 레인 (§6.2) — 레포 직렬 레인이 UI-2gi1 §6.5에서
-   * 쓰는 재교정 트리거와 같은 성질이다. 방금 만든 엣지는 아직 스냅샷에 없으므로
-   * 델타로 얹어 넘긴다.
+   * Re-run the §6 자동 교정 when a `dep-add` changed a pair of members of the
+   * SAME 연결 레인 (§6.2) — 레포 직렬 레인이 UI-2gi1 §6.5에서 쓰는 재교정
+   * 트리거와 같은 성질이다. 방금 만든 엣지는 아직 스냅샷에 없으므로 델타로
+   * 얹어 넘긴다. 이제 유일한 호출자는 이슈 상세의 의존성 편집기라서 반환
+   * 객체의 public 메서드로 선다 (UI-lx45 §5).
    *
    * @param {'dep-add'|'dep-remove'} type
    * @param {string} a
@@ -2452,45 +2266,6 @@ export function createMonitorView(mount_element, options) {
     await runPlanned((model) => planLaneCorrection(lane.lane_id, model), '', [
       { type, a, b }
     ]);
-  }
-
-  /**
-   * Whether a row that can HOLD the 의존성 패널 is drawn for this bead (§6.1):
-   * 실행가능 카드·병렬 대기 행·레포 직렬 행뿐이다. 칩은 실행중·PR 대기 타일에도
-   * 서므로, 그 칩의 클릭이 그릴 자리 없는 패널을 여는 일은 없어야 한다.
-   *
-   * @param {string} bead_id
-   * @returns {boolean}
-   */
-  function hasDepPanelHost(bead_id) {
-    if (lanes.runnable.some((item) => item.id === bead_id)) {
-      return true;
-    }
-    if (lanes.parallel_rows.some((item) => item.id === bead_id)) {
-      return true;
-    }
-    return lanes.queue_groups.some((group) =>
-      group.sublanes.serial.some((lane) =>
-        lane.items.some((item) => item.id === bead_id)
-      )
-    );
-  }
-
-  /**
-   * Open (or close) the 의존성 패널 of ONE row (§6.1). 한 번에 하나이므로 다른
-   * 행을 열면 이전 것은 닫힌다.
-   *
-   * @param {string} bead_id
-   */
-  function toggleDepPanel(bead_id) {
-    if (!bead_id || !hasDepPanelHost(bead_id)) {
-      return;
-    }
-    dep_panel =
-      dep_panel && dep_panel.bead_id === bead_id
-        ? null
-        : { bead_id, query: '' };
-    doRender();
   }
 
   // --- 드롭 계획 실행 (§5) ---
@@ -3754,14 +3529,14 @@ export function createMonitorView(mount_element, options) {
       void detachChainRow(bead_id);
       return;
     }
-    if (cls.contains('mon-dep__btn')) {
-      toggleDepPanel(bead_id);
-      return;
-    }
     if (cls.contains('worker-dep__open')) {
-      // 칩 클릭 = 그 행의 의존성 패널 (§6.2). 칩에는 해제 버튼이 없다 — 끊는
-      // 일은 패널 안에서 확인을 거쳐야 한다.
-      toggleDepPanel(bead_id);
+      // 칩 클릭 = 그 blocker 이슈로 이동 (UI-lx45 §5, Worker `openBlocker`와 같은
+      // 순서). 편집은 도착한 이슈의 상세 `의존성` 절이 소유한다 — 칩 자리에서는
+      // 끊지 않는다.
+      openRow(
+        button.getAttribute('data-dep-id') || '',
+        button.getAttribute('data-root-dir') || ''
+      );
       return;
     }
     if (cls.contains('mon2-arm__release')) {
@@ -3774,23 +3549,6 @@ export function createMonitorView(mount_element, options) {
         `.mon2-clane[data-lane-id="${lane_id}"]`
       );
       pane?.scrollIntoView({ block: 'nearest' });
-      return;
-    }
-    if (cls.contains('mon-deppanel__unlink')) {
-      // 해제는 되돌리기 수단이 없는 조작이고 칩은 좁다 — 한 번 묻는다.
-      const blockee = button.getAttribute('data-dep-a') || '';
-      const blocker = button.getAttribute('data-dep-b') || '';
-      if (confirmFn(`${blocker}가 ${blockee}를 막는 연결을 끊을까요?`)) {
-        void sendDepOp('dep-remove', blockee, blocker);
-      }
-      return;
-    }
-    if (cls.contains('mon-deppanel__cand')) {
-      const candidate_id = button.getAttribute('data-dep-cand') || '';
-      if (dep_panel && candidate_id) {
-        // 패널은 한 방향만 건다: 고른 후보가 이 행을 막는다 (§6.1 4번).
-        void sendDepOp('dep-add', dep_panel.bead_id, candidate_id);
-      }
       return;
     }
     if (cls.contains('mon-overlap__chip')) {
@@ -4202,13 +3960,6 @@ export function createMonitorView(mount_element, options) {
       open_overlap = null;
       changed = true;
     }
-    if (
-      dep_panel &&
-      !closest('.mon-deppanel, .mon-dep__btn, .worker-dep__open')
-    ) {
-      dep_panel = null;
-      changed = true;
-    }
     if (changed) {
       doRender();
     }
@@ -4218,37 +3969,15 @@ export function createMonitorView(mount_element, options) {
    * @param {KeyboardEvent} ev
    */
   function onDocumentKeyDown(ev) {
-    if (ev.key !== 'Escape' || (!open_overlap && !dep_panel)) {
+    if (ev.key !== 'Escape' || !open_overlap) {
       return;
     }
     open_overlap = null;
-    dep_panel = null;
-    doRender();
-  }
-
-  /**
-   * The 의존성 패널 검색창 (§6.1 3번). `change`는 blur에서만 오므로 타이핑을
-   * 따라가려면 `input`이어야 한다.
-   *
-   * @param {Event} ev
-   */
-  function onInput(ev) {
-    const target = /** @type {HTMLInputElement|null} */ (ev.target);
-    if (
-      !target ||
-      typeof target.closest !== 'function' ||
-      !target.closest('.mon-deppanel__search') ||
-      !dep_panel
-    ) {
-      return;
-    }
-    dep_panel = { ...dep_panel, query: target.value };
     doRender();
   }
 
   mount_element.addEventListener('click', onClick);
   mount_element.addEventListener('change', onChange);
-  mount_element.addEventListener('input', onInput);
   mount_element.addEventListener(
     'pointerdown',
     /** @type {any} */ (onPointerDown)
@@ -4302,6 +4031,7 @@ export function createMonitorView(mount_element, options) {
   }
 
   return {
+    recorrectSharedLane,
     load() {
       log('load');
       doRender();
@@ -4335,7 +4065,6 @@ export function createMonitorView(mount_element, options) {
       deck = null;
       mount_element.removeEventListener('click', onClick);
       mount_element.removeEventListener('change', onChange);
-      mount_element.removeEventListener('input', onInput);
       mount_element.removeEventListener(
         'pointerdown',
         /** @type {any} */ (onPointerDown)

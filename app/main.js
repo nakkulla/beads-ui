@@ -26,6 +26,7 @@ import { createBoardView } from './views/board/index.js';
 import { createDetailPanel } from './views/detail-panel/index.js';
 import { createMdViewer } from './views/detail-panel/md-viewer.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
+import { depCandidateModel } from './views/monitor/dep-candidates.js';
 import {
   MONITOR_PIPELINE_KEY,
   createMonitorView
@@ -539,7 +540,7 @@ export function bootstrap(root_element) {
       const state = store.getState();
       ensureBoardSubscriptions(state.view === 'board');
       ensureWorkerSubscriptions(state.view === 'worker');
-      ensureMonitorPipelineChannel(state.view === 'monitor');
+      ensureMonitorPipelineChannel(pipelineChannelWanted(state));
       ensureWorkerQueueChannel(
         state.view === 'board' ||
           state.view === 'worker' ||
@@ -868,6 +869,21 @@ export function bootstrap(root_element) {
     let monitor_pipeline_unsub = null;
 
     /**
+     * Does anything on screen need the aggregated pipeline right now?
+     *
+     * 두 소비자가 있다: 모니터 탭 자신과, 어느 탭에서 열렸든 상세 패널의 의존성
+     * 후보 목록(UI-lx45 §3.2). 네 호출 지점이 같은 술어를 읽어야 상세를 연 채
+     * 탭을 옮겨도 후보가 비거나 낡지 않는다 — 채널을 끊어도 store는 비워지지
+     * 않으므로, 술어가 갈리면 오래된 snapshot이 남는다.
+     *
+     * @param {{ view: 'board'|'worker'|'monitor', selected_id: string | null }} state
+     * @returns {boolean}
+     */
+    function pipelineChannelWanted(state) {
+      return state.view === 'monitor' || state.selected_id != null;
+    }
+
+    /**
      * The monitor's aggregated pipeline channel. Server-global: it is NOT
      * cleared on a workspace switch, because the aggregation already spans
      * every visible workspace — dropping it there would blank the tab and then
@@ -1033,7 +1049,7 @@ export function bootstrap(root_element) {
       const state = store.getState();
       ensureBoardSubscriptions(state.view === 'board');
       ensureWorkerSubscriptions(state.view === 'worker');
-      ensureMonitorPipelineChannel(state.view === 'monitor');
+      ensureMonitorPipelineChannel(pipelineChannelWanted(state));
       ensureWorkerQueueChannel(
         state.view === 'board' ||
           state.view === 'worker' ||
@@ -1071,7 +1087,7 @@ export function bootstrap(root_element) {
       const current_state = store.getState();
       ensureBoardSubscriptions(current_state.view === 'board');
       ensureWorkerSubscriptions(current_state.view === 'worker');
-      ensureMonitorPipelineChannel(current_state.view === 'monitor');
+      ensureMonitorPipelineChannel(pipelineChannelWanted(current_state));
       ensureWorkerQueueChannel(
         current_state.view === 'board' ||
           current_state.view === 'worker' ||
@@ -1608,14 +1624,64 @@ export function bootstrap(root_element) {
       sessionLogStore: session_log_store,
       getWorkspacePath: () => store.getState().workspace.current?.path,
       mdViewer: md_viewer,
-      onNavigate: (id) => {
-        // On the Worker view the router zeroes `selected_id`; keep the overlay
-        // navigation working there by setting the selection directly.
-        if (store.getState().view === 'worker') {
-          store.setState({ selected_id: id });
-        } else {
-          router.gotoIssue(id);
+      depCandidates: () => {
+        const workspaces = monitor_pipeline_store.get();
+        if (workspaces === null) {
+          return null;
         }
+        const workspaces_state = monitor_pipeline_store.getWorkspacesState();
+        const s = store.getState();
+        // 모니터는 가시 레포 전체, Board·Worker는 현재 레포만 (UI-lx45 §3.2).
+        if (s.view === 'monitor') {
+          return depCandidateModel(workspaces, workspaces_state);
+        }
+        const root_dir = s.workspace.current?.path;
+        if (!root_dir) {
+          return null;
+        }
+        return depCandidateModel(workspaces, workspaces_state, { root_dir });
+      },
+      subscribeCandidates: (fn) => monitor_pipeline_store.subscribe(fn),
+      onDepChanged: ({ type, a, b }) => {
+        // 같은 직렬 레인 멤버 사이의 새 간선은 자동 교정을 다시 돌려야 한다
+        // (UI-lx45 §6). 모니터 뷰가 그 메서드를 아직 내보내지 않으면 아무 일도
+        // 하지 않는다 — 교정은 뷰의 것이고 여기서 흉내 내지 않는다.
+        const view = /** @type {any} */ (monitor_view);
+        if (
+          type === 'dep-add' &&
+          view &&
+          typeof view.recorrectSharedLane === 'function'
+        ) {
+          view.recorrectSharedLane(type, a, b);
+        }
+      },
+      onNavigate: (id, root_dir) => {
+        const goto = () => {
+          // On the Worker view the router zeroes `selected_id`; keep the overlay
+          // navigation working there by setting the selection directly.
+          if (store.getState().view === 'worker') {
+            store.setState({ selected_id: id });
+          } else {
+            router.gotoIssue(id);
+          }
+        };
+        const current = store.getState().workspace.current?.path;
+        // 타 레포 칩은 전환이 먼저다 (UI-lx45 §4.1, Worker `openBlocker`와 같은
+        // 순서) — 아니면 현재 레포에서 없는 ID를 찾는다.
+        if (
+          typeof root_dir !== 'string' ||
+          root_dir.length === 0 ||
+          !current ||
+          root_dir === current
+        ) {
+          goto();
+          return;
+        }
+        void Promise.resolve(handleWorkspaceChange(root_dir))
+          .then(goto)
+          .catch(() => {
+            showToast('레포 전환에 실패했습니다', 'error', 2400);
+          });
       },
       onClose: () => {
         const s = store.getState();
@@ -1671,7 +1737,7 @@ export function bootstrap(root_element) {
       }
       ensureBoardSubscriptions(s.view === 'board');
       ensureWorkerSubscriptions(s.view === 'worker');
-      ensureMonitorPipelineChannel(s.view === 'monitor');
+      ensureMonitorPipelineChannel(pipelineChannelWanted(s));
       ensureWorkerQueueChannel(
         s.view === 'board' ||
           s.view === 'worker' ||

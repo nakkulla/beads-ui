@@ -928,3 +928,125 @@ describe('worker tab direct entry (UI-53es §2)', () => {
     expect(tile?.querySelector('.rtile__child')).toBe(null);
   });
 });
+
+describe('상세가 여는 집계 채널 생명주기 (UI-lx45 §3.2)', () => {
+  test('subscribes the pipeline when a detail opens on the board tab', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/board';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+    client._clearSent();
+
+    window.location.hash = '#/board?issue=UI-1';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await flush();
+
+    expect(sentTypes(client)).toContain('subscribe-monitor-pipeline');
+  });
+
+  test('unsubscribes the pipeline when the detail closes off the monitor tab', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/board?issue=UI-1';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+    client._clearSent();
+
+    window.location.hash = '#/board';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await flush();
+
+    expect(sentTypes(client)).toContain('unsubscribe-monitor-pipeline');
+  });
+
+  test('keeps the pipeline on the monitor tab when the detail closes', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor?issue=UI-1';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+    client._clearSent();
+
+    window.location.hash = '#/monitor';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await flush();
+
+    expect(sentTypes(client)).not.toContain('unsubscribe-monitor-pipeline');
+  });
+});
+
+describe('상세 의존성 칩의 타 레포 이동 (UI-lx45 §4.1)', () => {
+  // Monitor에서 열린 상세만 가시 레포 전체를 후보로 본다 (§3.2) — 타 레포
+  // 선행 칩의 `root_dir`이 나오는 자리도 거기다.
+  test('switches workspace before navigating to a chip from another repo', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor?issue=UI-1';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+    await flush();
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: [
+        {
+          root_dir: '/tmp/ws-b',
+          name: 'ws-b',
+          queue: [],
+          pr_wait: [],
+          runnable: [{ bead_id: 'UI-0', title: '타 레포 선행' }],
+          attempts: {},
+          bead_titles: {},
+          pr_observations: {}
+        }
+      ]
+    });
+    client._trigger('snapshot', {
+      type: 'snapshot',
+      id: 'detail:UI-1',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-1',
+          title: '상세',
+          dependencies: [{ id: 'UI-0', dependency_type: 'blocks' }]
+        }
+      ]
+    });
+    await flush();
+    client._trigger('workspace-changed', {
+      root_dir: '/tmp/ws-a',
+      db_path: '/tmp/ws-a/.beads/a.db'
+    });
+    client._clearSent();
+
+    const chip = /** @type {HTMLElement} */ (
+      document.querySelector(
+        '#detail-panel .detail-dep--pred .detail-dep__link'
+      )
+    );
+    chip.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    // 이동보다 전환이 먼저다 — 그렇지 않으면 현재 레포에서 없는 ID를 연다.
+    expect(
+      client
+        ._sent()
+        .filter((/** @type {any} */ m) => m.type === 'set-workspace')
+        .map((/** @type {any} */ m) => m.payload.path)
+    ).toEqual(['/tmp/ws-b']);
+    expect(window.location.hash).toBe('#/monitor?issue=UI-1');
+
+    await flush();
+
+    expect(window.location.hash).toBe('#/monitor?issue=UI-0');
+  });
+});
