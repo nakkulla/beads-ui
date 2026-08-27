@@ -8,7 +8,7 @@
  *
  * @import { BuildOptions } from 'esbuild'
  */
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { debug } from '../server/logging.js';
@@ -35,6 +35,36 @@ export function createBuildOptions(entry, outfile) {
 }
 
 /**
+ * Make the source map independent of WHERE the bundle was built.
+ *
+ * A detached worktree with no `node_modules` of its own resolves dependencies
+ * upward to the repository root, so esbuild records them as
+ * `../../../../node_modules/<pkg>/…`, while the deploy script's fresh
+ * `npm ci` inside the same tree records `../node_modules/<pkg>/…`. The two
+ * maps carry identical content and differ only in that prefix, and the
+ * tracked-clean check after deploy fails on the byte difference. Collapse
+ * every `(../)+node_modules/` run to the checkout-local `../node_modules/`
+ * shape so both builds emit the same bytes.
+ *
+ * @param {string} text - raw source map text as esbuild wrote it
+ * @returns {string}
+ */
+export function normalizeSourceMapText(text) {
+  return text.replace(/"(?:\.\.\/)+node_modules\//g, '"../node_modules/');
+}
+
+/**
+ * @param {string} map_path
+ */
+export function normalizeSourceMapFile(map_path) {
+  const before = readFileSync(map_path, 'utf8');
+  const after = normalizeSourceMapText(before);
+  if (after !== before) {
+    writeFileSync(map_path, after);
+  }
+}
+
+/**
  * Build frontend bundle to `app/main.bundle.js` using esbuild.
  */
 async function run() {
@@ -54,6 +84,7 @@ async function run() {
   try {
     const esbuild = await import('esbuild');
     await esbuild.build(options);
+    normalizeSourceMapFile(`${outfile}.map`);
     log('built %s', path.relative(repo_root, outfile));
   } catch (err) {
     log('bundle error %o', err);
