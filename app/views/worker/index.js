@@ -3736,7 +3736,9 @@ export function createWorkerView(mount_element, options = {}) {
             lane === 'done'
               ? sumAttemptUsage(q.attempts || {}, e.bead_id)
               : null,
-          // 완료 행만 attempt 작업시간을 싣는다; 세션 작업 행은 attempt가 없어 null.
+          // Worker 완료 행의 작업시간은 attempt 실행 벽시계 합이다. 세션 작업
+          // 행은 attempt가 없어 여기서는 null이고, bead의 in_progress~close
+          // 경과를 아래 세션 행 조립부가 따로 싣는다.
           work_ms:
             lane === 'done'
               ? sumAttemptWorkMs(q.attempts || {}, e.bead_id)
@@ -4255,6 +4257,12 @@ export function createWorkerView(mount_element, options = {}) {
           });
       }
       if (cached === 'session') {
+        // 세션 작업 행의 "작업" 시간은 bead가 in_progress를 잡은 순간부터
+        // 닫힌 순간까지다. Worker 행의 값(attempt 실행 벽시계 합)과 산식은
+        // 다르지만 라벨은 같은 `작업`으로 통일한다 — 완료 레인을 읽는 사람이
+        // 두 레인의 행을 같은 질문("이 일에 얼마나 걸렸나")으로 훑기 때문이다.
+        // `started_at`이 없는 구이슈는 조용히 생략한다 (fail-quiet).
+        const started_ms = coerceTimestampMs(issue.started_at);
         session_done_rows.push({
           id: issue.id,
           title: issue.title || issue.id,
@@ -4268,7 +4276,11 @@ export function createWorkerView(mount_element, options = {}) {
           badges: ['세션 작업'],
           alert: false,
           usage: null,
-          work_ms: null,
+          work_ms:
+            started_ms !== null && closed_at >= started_ms
+              ? closed_at - started_ms
+              : null,
+          work_kind: 'session',
           done_at: closed_at,
           created_at: issue.created_at,
           updated_at: issue.updated_at

@@ -32,6 +32,19 @@ export function shortSha(sha) {
 }
 
 /**
+ * Both lanes label the chip `작업`, but they measure different spans. This is
+ * the only place on screen that tells a reader which span they are reading.
+ *
+ * @param {'attempt'|'session'|undefined} work_kind
+ * @returns {string}
+ */
+export function workTooltip(work_kind) {
+  return work_kind === 'session'
+    ? 'bead가 in_progress로 잡힌 뒤 닫히기까지의 경과'
+    : 'attempt 실행 시간 합산 (재개 세션 포함)';
+}
+
+/**
  * @param {unknown} elapsed_ms
  * @returns {string}
  */
@@ -1064,8 +1077,10 @@ export function priorityBadgeTemplate(priority) {
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
  * @property {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} [usage] - Token usage
  * summed across the bead's attempts (UI-d7pw §1); absent/null renders nothing.
- * @property {number|null} [work_ms] - 완료 행의 attempt 실행 시간 합산;
- * absent/null renders nothing.
+ * @property {number|null} [work_ms] - 완료 행의 작업 시간; absent/null renders
+ * nothing. 무엇을 잰 값인지는 `work_kind`가 말한다.
+ * @property {'attempt'|'session'} [work_kind] - `work_ms`가 잰 구간. 기본은
+ * attempt 실행 시간 합산이고, 세션 작업 행만 `session`(in_progress~close 경과)이다.
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4).
  * @property {number} [done_at] - 완료 레인 진입 시각 = 완료 시각 (UI-rkly §3).
@@ -1165,7 +1180,7 @@ function doneThreeLineRow(item) {
       ${typeof item.work_ms === 'number'
         ? html`<span
             class="worker-mini__work"
-            title="attempt 실행 시간 합산 (재개 세션 포함)"
+            title=${workTooltip(item.work_kind)}
             >작업 ${formatElapsed(item.work_ms)}</span
           >`
         : ''}
@@ -1501,7 +1516,7 @@ export function miniRow(item) {
               : ''}${typeof item.work_ms === 'number'
               ? html`<span
                   class="worker-mini__work"
-                  title="attempt 실행 시간 합산 (재개 세션 포함)"
+                  title=${workTooltip(item.work_kind)}
                   >작업 ${formatElapsed(item.work_ms)}</span
                 >`
               : ''}${badge_els}${merge_step_el}
