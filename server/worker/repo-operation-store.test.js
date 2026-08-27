@@ -384,4 +384,59 @@ describe('RepoOperation store', () => {
       }
     );
   });
+
+  it('issues a monotonic manual deploy run number and persists it', () => {
+    const workspace = mkdtempSync(
+      path.join(os.tmpdir(), 'repo-operation-store-')
+    );
+    const store = createQueueStore({
+      filePathFor: (root) => path.join(root, 'queue.json')
+    });
+
+    const first = store.issueManualDeployRun(workspace);
+    const second = store.issueManualDeployRun(workspace);
+
+    expect([
+      first.ok,
+      first.queue.manual_deploy_seq,
+      second.queue.manual_deploy_seq
+    ]).toEqual([true, 1, 2]);
+    expect(
+      JSON.parse(readFileSync(path.join(workspace, 'queue.json'), 'utf8'))
+        .manual_deploy_seq
+    ).toBe(2);
+  });
+
+  it('persists the manual provenance of an operation and reloads it', () => {
+    const workspace = mkdtempSync(
+      path.join(os.tmpdir(), 'repo-operation-store-')
+    );
+    const store = createQueueStore({
+      filePathFor: (root) => path.join(root, 'queue.json')
+    });
+    store.ensureRepoOperation(workspace, {
+      operation_id: 'deploy-manual',
+      repo_id: 'repo-a',
+      kind: 'deploy',
+      subjects: [{ bead_id: 'manual', merged_sha: sha('a') }],
+      effective_base_sha: sha('b'),
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: sha('c'),
+      source: 'manual',
+      manual_run_id: 4
+    });
+    prerecord(store, workspace, 'deploy-auto');
+
+    const reloaded = createQueueStore({
+      filePathFor: (root) => path.join(root, 'queue.json')
+    }).snapshot(workspace);
+
+    expect([
+      reloaded.repo_operations['deploy-manual'].source,
+      reloaded.repo_operations['deploy-manual'].manual_run_id,
+      reloaded.repo_operations['deploy-auto'].source,
+      reloaded.repo_operations['deploy-auto'].manual_run_id
+    ]).toEqual(['manual', 4, 'automatic', null]);
+  });
 });

@@ -266,6 +266,33 @@ function explainTemplate(text, suffix = '', warn = false) {
 }
 
 /**
+ * The declared timeout for the lane one operation belongs to. It is NOT on the
+ * operation card — a timeout is a property of the declaration, so it is read
+ * from the same `repo_ops` projection the settings card draws, matched to the
+ * operation's own `kind`. Absent when nothing declares that lane, which makes
+ * the termination line say `타임아웃 초과` without a number rather than invent
+ * one.
+ *
+ * @param {any} repo_ops - The snapshot's `workspace_info.repo_ops`.
+ * @param {any} operation
+ * @returns {number|undefined}
+ */
+function laneTimeoutMs(repo_ops, operation) {
+  if (!repo_ops || typeof repo_ops !== 'object') {
+    return undefined;
+  }
+  const lane = operation && operation.kind === 'verify' ? 'verify' : 'deploy';
+  const declaration = repo_ops[lane];
+  const timeout_ms =
+    declaration && typeof declaration === 'object'
+      ? declaration.timeout_ms
+      : undefined;
+  return typeof timeout_ms === 'number' && Number.isFinite(timeout_ms)
+    ? timeout_ms
+    : undefined;
+}
+
+/**
  * The two derived lines under the cause sentence (UI-s582 §2): HOW the process
  * ended, and what the one automatic `script_retry` did about it.
  *
@@ -276,10 +303,11 @@ function explainTemplate(text, suffix = '', warn = false) {
  * failure the retry erased.
  *
  * @param {any} operation
+ * @param {number} [timeout_ms] - The declared timeout of this operation's lane.
  * @returns {TemplateResult|string}
  */
-function operationWhyTemplate(operation) {
-  const termination = terminationText(operation);
+function operationWhyTemplate(operation, timeout_ms) {
+  const termination = terminationText(operation, timeout_ms);
   const retry = retryOutcomeText(operation);
   if (!termination && !retry) {
     return '';
@@ -325,9 +353,11 @@ function operationActionsTemplate(operation) {
  * One repo-operation event.
  *
  * @param {any} event
+ * @param {any} [repo_ops] - The snapshot's `workspace_info.repo_ops`, the only
+ * place a lane's declared timeout exists.
  * @returns {TemplateResult}
  */
-function operationEventTemplate(event) {
+function operationEventTemplate(event, repo_ops) {
   const operation = event.operation;
   const failed = operation.state === 'failed';
   const code = operation.failure ? operation.failure.code : '';
@@ -367,11 +397,19 @@ function operationEventTemplate(event) {
         ${operation.superseded_by
           ? html`<span class="worker-ev__st worker-ev__st--quiet">덮임</span>`
           : ''}
+        ${operation.source === 'manual'
+          ? html`<span
+              class="worker-ev__st worker-ev__st--manual"
+              title="사람이 배포 실행을 눌러 시작한 작업입니다"
+              >수동</span
+            >`
+          : ''}
       </div>
       ${failed
         ? explainTemplate(operationFailureText(operation.failure_kind, code))
         : ''}
-      ${operationWhyTemplate(operation)} ${operationActionsTemplate(operation)}
+      ${operationWhyTemplate(operation, laneTimeoutMs(repo_ops, operation))}
+      ${operationActionsTemplate(operation)}
       ${detailsTemplate([
         { term: '실패 코드', value: failed ? code : '' },
         {
@@ -466,7 +504,7 @@ function cleanupEventTemplate(event) {
 /**
  * The drawer body.
  *
- * @param {{ events: any[], repo: string, hidden?: number, expanded?: boolean }} model
+ * @param {{ events: any[], repo: string, hidden?: number, expanded?: boolean, repo_ops?: any }} model
  * @returns {TemplateResult}
  */
 export function repoOpsTimelineTemplate(model) {
@@ -492,7 +530,7 @@ export function repoOpsTimelineTemplate(model) {
           ${model.events.map((event) =>
             event.type === 'cleanup'
               ? cleanupEventTemplate(event)
-              : operationEventTemplate(event)
+              : operationEventTemplate(event, model.repo_ops)
           )}
         </ul>`}
     ${hidden > 0 || expanded
@@ -518,7 +556,7 @@ export function repoOpsTimelineTemplate(model) {
  * @param {{ onClose?: () => void }} [options]
  */
 export function createRepoOpsDrawer(mount_element, options = {}) {
-  /** @type {{ operations: any, cleanup_failures: any, repo: string, expanded: boolean }|null} */
+  /** @type {{ operations: any, cleanup_failures: any, repo: string, repo_ops: any, expanded: boolean }|null} */
   let model = null;
 
   function doRender() {
@@ -534,7 +572,8 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
         events: view.visible,
         hidden: view.hidden,
         expanded: model.expanded,
-        repo: model.repo
+        repo: model.repo,
+        repo_ops: model.repo_ops
       }),
       mount_element
     );
@@ -553,13 +592,14 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
   });
 
   /**
-   * @param {{ operations: any, cleanup_failures: any, repo?: string }} input
+   * @param {{ operations: any, cleanup_failures: any, repo?: string, repo_ops?: any }} input
    */
   function open(input) {
     model = {
       operations: input.operations,
       cleanup_failures: input.cleanup_failures,
       repo: input.repo || '',
+      repo_ops: input.repo_ops || null,
       expanded: false
     };
     doRender();
@@ -586,7 +626,7 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
      * state is the READER's, not the snapshot's: a queue push must never
      * collapse a timeline someone just opened.
      *
-     * @param {{ operations: any, cleanup_failures: any, repo?: string }} input
+     * @param {{ operations: any, cleanup_failures: any, repo?: string, repo_ops?: any }} input
      */
     refresh(input) {
       if (!model) {
@@ -596,6 +636,7 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
         operations: input.operations,
         cleanup_failures: input.cleanup_failures,
         repo: input.repo || '',
+        repo_ops: input.repo_ops || null,
         expanded: model.expanded
       };
       doRender();

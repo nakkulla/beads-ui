@@ -109,6 +109,7 @@ import {
   handleWorkerQueueSetSerialLaneCount,
   handleWorkerQueueSetSlots,
   handleWorkerQueueToggle,
+  handleWorkerRepoOperationDeployRun,
   handleWorkerRepoOperationDismiss,
   handleWorkerRepoOpsOptOutToggle,
   handleWorkerReviseApprove,
@@ -569,6 +570,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-repo-operation-dismiss':
       await handleWorkerRepoOperationDismiss(ws, req);
+      return;
+    case 'worker-repo-operation-deploy-run':
+      await handleWorkerRepoOperationDeployRun(ws, req);
       return;
     case 'worker-queue-set-slots':
       handleWorkerQueueSetSlots(ws, req);

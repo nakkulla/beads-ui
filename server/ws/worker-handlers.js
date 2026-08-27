@@ -50,6 +50,7 @@ import {
   retryWorkerCleanup,
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
+  startWorkerRepoOperationDeployRun,
   stopWorkerHeadReviewAttempts,
   tickWorkerQueue,
   workerMergeEffectInFlight,
@@ -2070,10 +2071,24 @@ function projectRepoOperations(operations) {
       retry: {
         status: normalizeScriptRetry(raw).status,
         first_fingerprint: raw.retry?.first_fingerprint || null,
+        // The failure the FIRST attempt died of, so a consumed retry whose
+        // second failure differs can name what changed (UI-s582 §2). Sanitized
+        // exactly like the terminal failure it sits beside.
+        first_failure: raw.retry?.first_failure
+          ? {
+              code: raw.retry.first_failure.code,
+              fingerprint: raw.retry.first_failure.fingerprint,
+              detail: sanitizeOutput(raw.retry.first_failure.detail),
+              interrupted: raw.retry.first_failure.interrupted === true
+            }
+          : null,
         blocked_reason: raw.retry?.blocked_reason || null,
         absorbed: raw.retry?.absorbed || null
       },
       superseded_by: raw.superseded_by,
+      // Who asked for this operation (UI-s582 §3.7): `manual` is the 배포 실행
+      // click, everything else is the Worker's own work.
+      source: raw.source === 'manual' ? 'manual' : 'automatic',
       // A human acknowledged this failed row (UI-q0uy §4.6-2). Projected so the
       // client can drop it from the 해결 필요 tally without inventing its own
       // notion of "handled".
@@ -3672,6 +3687,56 @@ export async function handleWorkerRepoOperationDismiss(ws, req) {
         ok: result.ok === true,
         reason:
           result.ok === true ? undefined : result.code || 'dismiss_refused',
+        queue: decorateQueue(key, queueStore().snapshot(key))
+      })
+    )
+  );
+  fanout(key, queueStore().snapshot(key));
+}
+
+/**
+ * Handle `worker-repo-operation-deploy-run`. Payload: `{ repo_id }`.
+ *
+ * The 배포 실행 click (UI-s582 §3). The target is NOT an input: the workspace's
+ * base resolver pins remote, base and the fetched tip, and the declared script
+ * is read from THAT tip. `repo_id` is the client naming the repository it drew
+ * the button for; the authority is the registered attachment, so a value that
+ * does not match this workspace's repo is refused rather than redirected.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerRepoOperationDeployRun(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (p.repo_id !== undefined && typeof p.repo_id !== 'string') {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { repo_id?: string }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  /** @type {{ ok: boolean, operation_id?: string, reason?: string }} */
+  let result;
+  try {
+    result = await startWorkerRepoOperationDeployRun(key, {
+      repo_id: typeof p.repo_id === 'string' ? p.repo_id : null
+    });
+  } catch (err) {
+    log('repo-operation deploy run failed for %s: %o', key, err);
+    result = { ok: false, reason: 'target_unresolved' };
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        ok: result.ok === true,
+        ...(result.ok === true
+          ? { operation_id: result.operation_id || null }
+          : { reason: result.reason || 'target_unresolved' }),
         queue: decorateQueue(key, queueStore().snapshot(key))
       })
     )

@@ -161,9 +161,58 @@ describe('RepoOperation protocol projection', () => {
     expect(card.retry).toEqual({
       status: 'consumed',
       first_fingerprint: null,
+      first_failure: null,
       blocked_reason: null,
       absorbed: null
     });
+  });
+
+  test('projects the first attempt failure the retry record kept', () => {
+    const decorated = decorateWith({
+      'op-1': failedDeployOperation({
+        retry: {
+          first_failure: {
+            code: 'timeout',
+            fingerprint: 'cd'.repeat(32),
+            detail: 'token=supersecretvalue',
+            interrupted: false
+          },
+          first_fingerprint: 'cd'.repeat(32),
+          first_failed_at: 1500,
+          consumed_key: ['op-1:1', 'c'.repeat(40), 'e'.repeat(40)],
+          absorbed: null,
+          outcome: 'consumed',
+          blocked_reason: null
+        }
+      })
+    });
+
+    const card = /** @type {any[]} */ (decorated.repo_operations)[0];
+
+    expect(card.retry.first_failure).toEqual({
+      code: 'timeout',
+      fingerprint: 'cd'.repeat(32),
+      detail: '[redacted]',
+      interrupted: false
+    });
+  });
+
+  test('projects the request provenance of the operation', () => {
+    const decorated = decorateWith({
+      'op-1': failedDeployOperation(),
+      'op-2': failedDeployOperation({
+        requested_at: 2000,
+        source: 'manual',
+        manual_run_id: 3
+      })
+    });
+
+    const cards = /** @type {any[]} */ (decorated.repo_operations);
+
+    expect(cards.map((card) => [card.operation_id, card.source])).toEqual([
+      ['op-2', 'manual'],
+      ['op-1', 'automatic']
+    ]);
   });
 
   test('projects the policy lists from the pinned contract', () => {

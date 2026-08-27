@@ -450,9 +450,10 @@ describe('operation card 종료 원인 · 재시도 결과 (UI-s582 §2)', () =>
 
   /**
    * @param {Record<string, any>} operation_card
+   * @param {any} [repo_ops] - The lane declaration the drawer receives.
    * @returns {string[]}
    */
-  function whyLines(operation_card) {
+  function whyLines(operation_card, repo_ops) {
     const mount = document.createElement('div');
     const view = timelineView([operation_card], [], { expanded: false });
 
@@ -461,7 +462,8 @@ describe('operation card 종료 원인 · 재시도 결과 (UI-s582 §2)', () =>
         events: view.visible,
         hidden: view.hidden,
         expanded: false,
-        repo: '/repo'
+        repo: '/repo',
+        repo_ops
       }),
       mount
     );
@@ -578,6 +580,86 @@ describe('operation card 종료 원인 · 재시도 결과 (UI-s582 §2)', () =>
         })
       )[1]
     ).toBe('자동 재시도 1회 — 다른 실패');
+  });
+
+  test('names the first failure when the retry hit a different one', () => {
+    expect(
+      whyLines(
+        projected({
+          retry: {
+            status: 'consumed',
+            first_fingerprint: 'a'.repeat(64),
+            first_failure: {
+              code: 'deploy_script_failure',
+              fingerprint: 'a'.repeat(64),
+              detail: '',
+              interrupted: false
+            },
+            blocked_reason: null,
+            absorbed: null
+          }
+        })
+      )[1]
+    ).toBe(
+      '자동 재시도 1회 — 다른 실패: 배포 실패 — 배포 스크립트가 실패했습니다.'
+    );
+  });
+
+  test('names the declared lane timeout on a timed-out card', () => {
+    expect(
+      whyLines(
+        projected({
+          exit_code: null,
+          failure: {
+            code: 'timeout',
+            fingerprint: 'f'.repeat(64),
+            detail: '',
+            interrupted: false
+          },
+          failure_kind: 'timeout'
+        }),
+        { deploy: { script: 'repo-ops/script/deploy', timeout_ms: 600_000 } }
+      )[0]
+    ).toBe('타임아웃 600초 초과');
+  });
+
+  test('reads the verify lane timeout for a verify card', () => {
+    expect(
+      whyLines(
+        projected({
+          kind: 'verify',
+          exit_code: null,
+          failure: {
+            code: 'timeout',
+            fingerprint: 'f'.repeat(64),
+            detail: '',
+            interrupted: false
+          },
+          failure_kind: 'timeout'
+        }),
+        {
+          verify: { script: 'repo-ops/script/verify', timeout_ms: 300_000 },
+          deploy: { script: 'repo-ops/script/deploy', timeout_ms: 600_000 }
+        }
+      )[0]
+    ).toBe('타임아웃 300초 초과');
+  });
+
+  test('says only 타임아웃 초과 when no declaration reaches the drawer', () => {
+    expect(
+      whyLines(
+        projected({
+          exit_code: null,
+          failure: {
+            code: 'timeout',
+            fingerprint: 'f'.repeat(64),
+            detail: '',
+            interrupted: false
+          },
+          failure_kind: 'timeout'
+        })
+      )[0]
+    ).toBe('타임아웃 초과');
   });
 
   test('renders the absorbed first failure on the succeeded card', () => {

@@ -486,7 +486,7 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   terminally.
 - The `worker-queue-snapshot` carries `repo_operations` — the operation cards,
   newest `requested_at` first. Each card:
-  `{ operation_id, kind: 'verify'|'deploy', repo_id, target_base, target_sha, target_tree, effective_base_sha, script_path, script_blob_sha, script_mode, state: 'queued'|'running'|'succeeded'|'failed'|'retry_pending', requested_at, started_at, finished_at, elapsed_ms, exit_code, signal, log_path, log_digest, output_tail, subjects, failure, failure_kind, verify_stage, retry: { status, first_fingerprint, blocked_reason, absorbed }, dismissed, superseded_by }`.
+  `{ operation_id, kind: 'verify'|'deploy', repo_id, target_base, target_sha, target_tree, effective_base_sha, script_path, script_blob_sha, script_mode, state: 'queued'|'running'|'succeeded'|'failed'|'retry_pending', requested_at, started_at, finished_at, elapsed_ms, exit_code, signal, log_path, log_digest, output_tail, subjects, failure, failure_kind, verify_stage, retry: { status, first_fingerprint, first_failure, blocked_reason, absorbed }, source: 'automatic'|'manual', dismissed, superseded_by }`.
   `output_tail` and `failure.detail` are SANITIZED (credential-shaped substrings
   redacted) and the tail is bounded — the full log stays behind `log_path`.
   `failure_kind` is a DISPLAY token: it is `verify_script_failure`,
@@ -497,10 +497,38 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `script_retry`, whose outcome `retry.status` reports (`unconsumed`,
   `consumed`, `absorbed`, `not_applicable`) with `retry.blocked_reason`
   (`schema_unsupported`) when it could not run at all, `retry.first_fingerprint`
-  for the failure it absorbed, and `retry.absorbed` when it did. `dismissed`
-  removes a row from the 해결 필요 tally only; the record keeps its failure and
-  its evidence. A record that cannot be read as a complete operation is DROPPED
-  rather than projected partially.
+  for the failure it absorbed, and `retry.absorbed` when it did.
+  `retry.first_failure` is the FIRST attempt's failure record
+  (`{ code, fingerprint, detail, interrupted }`, `detail` sanitized like every
+  other one) — the only way a card whose retry produced a DIFFERENT failure can
+  name the one it started from. `source` is provenance, not state: `manual` is a
+  배포 실행 click, everything else is `automatic`. `dismissed` removes a row
+  from the 해결 필요 tally only; the record keeps its failure and its evidence.
+  A record that cannot be read as a complete operation is DROPPED rather than
+  projected partially.
+- `worker-repo-operation-deploy-run` payload: `{ repo_id }` — the 배포 실행
+  click (UI-s582 §3): run the DECLARED deploy script once, now. There is no
+  target SHA input and no `expected_revision`: the server pins remote, base and
+  the fetched tip through the workspace's one base resolver (never assuming
+  `origin`), and reads the `[deploy]` declaration and its script blob from THAT
+  tip — the single previous-base exception, manual path only. `repo_id` names
+  the repository the client drew the button for; a value that is not this
+  workspace's repo is refused rather than redirected. Reply:
+  `{ ok: true, operation_id, queue }` or `{ ok: false, reason, queue }` with
+  `reason` ∈ `deploy_not_declared` (no `[deploy]` at the tip) ·
+  `deploy_opted_out` (this workspace's deploy opt-out is on) ·
+  `deploy_in_flight` (a deploy for this repo is `queued`/`running`/
+  `retry_pending`) · `target_unresolved` (the base resolver, the declaration
+  read, or the ancestry probe could not decide — fail-closed) ·
+  `remote_history_not_monotonic` (the deploy worktree HEAD and the tip have
+  diverged). All three MONOTONIC relations between that HEAD and the tip are
+  allowed — equal, HEAD ahead, HEAD behind — because a manual run means
+  redeploy: an equal or already-contained tip aligns and RUNS instead of
+  settling as covered. `ok: true` means a record exists and the lane owns it;
+  what the script then does lives on the operation card. Every click that gets
+  past the guards creates a NEW operation — the identity hashes a server-issued
+  monotonic `manual_run_id` — and links the previous record for the same target
+  through `superseded_by`.
 - `worker-queue-set-slots` payload: `{ slots, expected_revision }` — the
   concurrency cap (lower bound 1).
 

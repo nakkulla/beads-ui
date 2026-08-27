@@ -5574,17 +5574,29 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * The two projections the timeline derives from (§4.2). Both already ride the
-   * queue snapshot — opening the drawer queries nothing.
+   * The projections the timeline derives from (§4.2). All of them already ride
+   * the queue snapshot — opening the drawer queries nothing. `repo_ops` is the
+   * declaration itself: a lane's `timeout_ms` is a property of the declaration,
+   * never of an operation card, so the 타임아웃 line can only name a number if
+   * the drawer receives it (UI-s582 §2).
    *
-   * @returns {{ operations: any, cleanup_failures: any, repo: string }}
+   * @returns {{ operations: any, cleanup_failures: any, repo: string, repo_ops: any }}
    */
   function repoOpsDrawerInput() {
     const model = buildModel();
+    const info = currentQueue().workspace_info;
+    const repo_ops =
+      info &&
+      typeof info === 'object' &&
+      info.repo_ops &&
+      typeof info.repo_ops === 'object'
+        ? info.repo_ops
+        : null;
     return {
       operations: model.repo_operations,
       cleanup_failures: model.cleanup_failures,
-      repo: (getWorkspacePath && getWorkspacePath()) || ''
+      repo: (getWorkspacePath && getWorkspacePath()) || '',
+      repo_ops
     };
   }
 

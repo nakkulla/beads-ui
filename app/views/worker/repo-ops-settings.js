@@ -10,6 +10,30 @@
  * @typedef {{ get: () => any, set: (q: any) => void, subscribe?: (fn: () => void) => () => void }} QueueStore
  */
 import { html } from 'lit-html';
+import { showToast } from '../../utils/toast.js';
+
+/**
+ * What each refusal of 배포 실행 means, in the vocabulary the server sends
+ * (UI-s582 §3). An unknown reason travels through raw rather than being
+ * translated into a sentence nobody can trace back to it.
+ *
+ * @type {Record<string, string>}
+ */
+const DEPLOY_RUN_REFUSALS = {
+  deploy_not_declared: '선언 없음',
+  deploy_opted_out: '이 workspace에서 배포 실행이 꺼져 있음',
+  deploy_in_flight: '배포 진행 중',
+  target_unresolved: '대상 tip을 확정하지 못함',
+  remote_history_not_monotonic: '배포 워크트리와 원격 이력이 갈라짐'
+};
+
+/**
+ * Operation states that still hold the deploy lane. A record in any of them
+ * means the next click has nothing to start.
+ *
+ * @type {Set<string>}
+ */
+const DEPLOY_IN_FLIGHT_STATES = new Set(['queued', 'running', 'retry_pending']);
 
 /**
  * Build the Worker screen's repo-operation settings section.
@@ -118,6 +142,69 @@ export function createRepoOpsSettings(options) {
   }
 
   /**
+   * @returns {any[]} The snapshot's projected operation cards.
+   */
+  function currentOperations() {
+    const cards = currentQueue().repo_operations;
+    return Array.isArray(cards) ? cards : [];
+  }
+
+  /**
+   * Whether a deploy for this repository is still in flight. Derived from the
+   * projected cards, which is the only place the client learns about lane
+   * occupancy — the button must not offer a click the server would refuse.
+   *
+   * @returns {boolean}
+   */
+  function deployInFlight() {
+    return currentOperations().some(
+      (card) =>
+        card &&
+        card.kind === 'deploy' &&
+        DEPLOY_IN_FLIGHT_STATES.has(card.state)
+    );
+  }
+
+  /**
+   * The repository the button was drawn for, as the cards name it. Null when no
+   * operation has ever run here — the server's own attachment is the authority
+   * either way, and naming nothing is honest about knowing nothing.
+   *
+   * @returns {string|null}
+   */
+  function currentRepoId() {
+    for (const card of currentOperations()) {
+      if (card && typeof card.repo_id === 'string' && card.repo_id) {
+        return card.repo_id;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The 배포 실행 button (UI-s582 §3). Drawn only where there is something to
+   * run: a DECLARED deploy lane this workspace has not opted out of. It carries
+   * no target input — the server pins the fetched remote tip itself.
+   *
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function deployRunButton() {
+    const blocked = deployInFlight();
+    return html`<button
+      type="button"
+      class="worker-repo-ops__deploy-run"
+      data-seam="repo-ops-deploy-run"
+      ?disabled=${blocked}
+      title=${blocked
+        ? '배포 진행 중'
+        : '원격 base tip에서 배포 스크립트를 1회 실행합니다'}
+      @click=${() => void runDeploy()}
+    >
+      배포 실행
+    </button>`;
+  }
+
+  /**
    * @returns {{ verify: boolean, deploy: boolean }} This workspace's per-kind
    * opt-out from the declared operations. A snapshot without the key is a
    * workspace that runs both.
@@ -213,7 +300,7 @@ export function createRepoOpsSettings(options) {
               ${laneTimeoutBadge(repo_ops.deploy.timeout_ms)}
               ${deploy_skipped
                 ? badge('skipped', '이 workspace에서 건너뜀')
-                : ''}`
+                : deployRunButton()}`
             : html`선언 없음${badge('absent', '배포 없음')}`}</span
         >
         <span class="worker-repo-ops__lane-d"
@@ -302,6 +389,35 @@ export function createRepoOpsSettings(options) {
         { kind, opted_out, expected_revision: currentRevision() }
       );
       adopt(retried);
+    }
+    doRender();
+  }
+
+  /**
+   * Ask the server to run the declared deploy script once (UI-s582 §3). No
+   * revision guard: this is not an edit of the queue, and no target either —
+   * the server resolves the tip. A refusal is SHOWN, never swallowed: the whole
+   * point of the vocabulary is that the person learns which precondition
+   * stopped the run.
+   */
+  async function runDeploy() {
+    if (!transport) {
+      return;
+    }
+    const repo_id = currentRepoId();
+    const res = await transport(
+      /** @type {any} */ ('worker-repo-operation-deploy-run'),
+      repo_id ? { repo_id } : {}
+    );
+    adopt(res);
+    if (!res || res.ok !== true) {
+      const reason = res && typeof res.reason === 'string' ? res.reason : '';
+      const sentence = Object.hasOwn(DEPLOY_RUN_REFUSALS, reason)
+        ? DEPLOY_RUN_REFUSALS[reason]
+        : reason || '배포 실행을 시작하지 못했습니다';
+      showToast(`배포 실행 거부 — ${sentence}`, 'error');
+    } else {
+      showToast('배포 실행을 시작했습니다', 'success');
     }
     doRender();
   }

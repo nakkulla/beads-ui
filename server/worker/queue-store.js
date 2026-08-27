@@ -488,6 +488,13 @@
  * actually in.
  * @property {Record<string, RepoOperation>} repo_operations - Worker-owned
  * one-shot repository operation journal.
+ * @property {number} manual_deploy_seq - Monotonic per-workspace counter of
+ * MANUAL deploy runs (UI-s582 §3.5). Its only consumer is the manual deploy
+ * operation identity: the automatic id hashes (repo, base, target, effective
+ * base, script), so a second 배포 실행 on the same tip would adopt the first
+ * run's terminal record. Issuing a fresh value inside the repo-operation lock
+ * makes every click a NEW operation. A legacy queue file has no key, which
+ * normalizes to 0.
  * @property {RepoOperationMigration|null} repo_operation_migration - The
  * one-shot legacy-state migration stamp. Absent (null) on every queue written
  * before the RepoOperation runtime, which is exactly what makes the migration
@@ -545,6 +552,12 @@
  * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }|null} failure
  * @property {{ first_failure: RepoOperation['failure'], first_fingerprint: string|null, first_failed_at: number|null, consumed_key: [string, string, string]|null, absorbed: { first_failure: NonNullable<RepoOperation['failure']>, first_fingerprint: string, at: number }|null, outcome: 'pending'|'consumed'|'not_applicable'|'absorbed', blocked_reason: string|null }|null} retry
  * @property {string|null} superseded_by
+ * @property {'automatic'|'manual'} source - Who asked for this operation. Every
+ * record the Worker creates by itself is `automatic`; `manual` is the 배포 실행
+ * click (UI-s582 §3). Legacy records normalize to `automatic`.
+ * @property {number|null} manual_run_id - The per-workspace sequence value this
+ * MANUAL run was issued, and part of its operation id. Null on every automatic
+ * record.
  * @property {{ at: number, by: string }|null} dismissed - A human acknowledged
  * this failed row (UI-q0uy §4.6-2). NOT a state transition: the row stays
  * `failed` and auditable, and only the 해결 필요 tally leaves it out.
@@ -1639,6 +1652,7 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'auto_repair',
   'repo_ops_opt_out',
   'repo_operations',
+  'manual_deploy_seq',
   'repo_operation_migration'
 ]);
 
@@ -1682,6 +1696,7 @@ function emptyQueue() {
     discard_operations: {},
     repo_ops_opt_out: { verify: false, deploy: false },
     repo_operations: {},
+    manual_deploy_seq: 0,
     repo_operation_migration: null
   };
 }
@@ -2747,6 +2762,13 @@ function normalizeRepoOperation(value) {
     retry,
     superseded_by:
       typeof value.superseded_by === 'string' ? value.superseded_by : null,
+    // Provenance of the request, not a state: only an exact `manual` marks the
+    // 배포 실행 click, so an unreadable value reads as the Worker's own work.
+    source: value.source === 'manual' ? 'manual' : 'automatic',
+    manual_run_id:
+      value.source === 'manual' && Number.isInteger(value.manual_run_id)
+        ? Number(value.manual_run_id)
+        : null,
     dismissed:
       isRecord(value.dismissed) &&
       typeof value.dismissed.at === 'number' &&
@@ -3069,6 +3091,13 @@ function normalizeQueue(raw) {
       }
     }
   }
+  // A counter that cannot be read restarts at 0. It only has to be monotonic
+  // WITHIN the live sequence of clicks it disambiguates, and a fresh record for
+  // an id that already exists is refused rather than silently adopted.
+  q.manual_deploy_seq =
+    Number.isInteger(raw.manual_deploy_seq) && Number(raw.manual_deploy_seq) > 0
+      ? Number(raw.manual_deploy_seq)
+      : 0;
   q.repo_operation_migration = normalizeRepoOperationMigration(
     raw.repo_operation_migration
   );
@@ -4218,7 +4247,7 @@ export function createQueueStore(options = {}) {
      * record the coordinator must receive before it asks the runner to spawn.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
+     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
      * @returns {QueueOpResult}
      */
     ensureRepoOperation(workspace, input) {
@@ -4337,6 +4366,11 @@ export function createQueueStore(options = {}) {
           failure: null,
           retry: null,
           superseded_by: null,
+          source: input.source === 'manual' ? 'manual' : 'automatic',
+          manual_run_id:
+            input.source === 'manual' && Number.isInteger(input.manual_run_id)
+              ? Number(input.manual_run_id)
+              : null,
           dismissed: null,
           bootstrap_provenance: input.bootstrap_provenance ?? null
         };
@@ -4672,6 +4706,24 @@ export function createQueueStore(options = {}) {
           at: now(),
           by: typeof input.by === 'string' && input.by ? input.by : 'user'
         };
+        return true;
+      });
+    },
+
+    /**
+     * Issue the next MANUAL deploy run number (UI-s582 §3.5). The caller holds
+     * the repo-operation lock, so the increment and the operation id derived
+     * from it cannot interleave with another click.
+     *
+     * @param {string} workspace
+     * @returns {QueueOpResult}
+     */
+    issueManualDeployRun(workspace) {
+      return applyUnconditional(workspace, (next) => {
+        next.manual_deploy_seq =
+          (Number.isInteger(next.manual_deploy_seq)
+            ? next.manual_deploy_seq
+            : 0) + 1;
         return true;
       });
     },

@@ -3071,6 +3071,29 @@ html[data-theme='dark'] {
   outline-offset: 2px;
 }
 
+/* 선언된 deploy 레인을 사람이 1회 실행시키는 버튼 (UI-s582 §3). */
+.worker-repo-ops__deploy-run {
+  padding: var(--sp-1) var(--sp-8);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-4);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: var(--fs-chip);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.worker-repo-ops__deploy-run:hover:not(:disabled),
+.worker-repo-ops__deploy-run:focus-visible:not(:disabled) {
+  border-color: var(--accent-child);
+  color: var(--accent-child);
+}
+
+.worker-repo-ops__deploy-run:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
 /* 고정 base의 검증·배포 blob만 보여주는 Worker 전용 코드 팝업. */
 .repo-ops-script-viewer {
   position: fixed;
@@ -3576,6 +3599,12 @@ html[data-theme='dark'] {
 .worker-ev__st--live,
 .worker-ev__st--quiet {
   color: var(--text-dim);
+}
+
+/* 사람이 배포 실행을 눌러 시작한 작업 (UI-s582 §3.7). */
+.worker-ev__st--manual {
+  background: color-mix(in srgb, var(--accent-child) 12%, transparent);
+  color: var(--accent-child);
 }
 
 .worker-ev__explain {

@@ -1188,3 +1188,161 @@ describe('workspace verify/deploy opt-out (UI-lsti §4)', () => {
     );
   });
 });
+
+describe('배포 실행 버튼 (UI-s582 §3)', () => {
+  /**
+   * @param {Record<string, any>} [over]
+   * @param {any} [transport]
+   */
+  function mountDeployLane(over = {}, transport = vi.fn()) {
+    return mountWorker(
+      { workspace_info: { verify_cmd: null, repo_ops: repoOps() }, ...over },
+      transport
+    );
+  }
+
+  /** @param {HTMLElement} mount */
+  function runButton(mount) {
+    return /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('[data-lane="deploy"] .worker-repo-ops__deploy-run')
+    );
+  }
+
+  test('offers the run button on a declared deploy lane', () => {
+    const { mount } = mountDeployLane();
+
+    expect(runButton(mount)?.textContent?.trim()).toBe('배포 실행');
+  });
+
+  test('draws no run button where nothing declares a deploy', () => {
+    const { mount } = mountDeployLane({
+      workspace_info: { verify_cmd: null, repo_ops: repoOps({ deploy: null }) }
+    });
+
+    expect(runButton(mount)).toBeNull();
+  });
+
+  test('draws no run button where this workspace opted out', () => {
+    const { mount } = mountDeployLane({
+      repo_ops_opt_out: { verify: false, deploy: true }
+    });
+
+    expect(runButton(mount)).toBeNull();
+  });
+
+  test('disables the button while a deploy is in flight', () => {
+    const { mount } = mountDeployLane({
+      repo_operations: [
+        operationCard({ state: 'running', failure: null, finished_at: null })
+      ]
+    });
+
+    const button = runButton(mount);
+    expect([button?.disabled, button?.getAttribute('title')]).toEqual([
+      true,
+      '배포 진행 중'
+    ]);
+  });
+
+  test('sends the click as its own message with no target input', () => {
+    const transport = vi.fn(async () => ({
+      ok: true,
+      operation_id: 'op-9',
+      queue: queueOf()
+    }));
+    const { mount } = mountDeployLane(
+      {
+        repo_operations: [operationCard({ state: 'succeeded', failure: null })]
+      },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (runButton(mount)).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    expect(transport).toHaveBeenCalledWith('worker-repo-operation-deploy-run', {
+      repo_id: '/repo'
+    });
+  });
+
+  test('says each refusal reason in the operator vocabulary', async () => {
+    /** @type {string[]} */
+    const said = [];
+    const refusals = [
+      ['deploy_not_declared', '선언 없음'],
+      ['deploy_opted_out', '이 workspace에서 배포 실행이 꺼져 있음'],
+      ['deploy_in_flight', '배포 진행 중'],
+      ['target_unresolved', '대상 tip을 확정하지 못함'],
+      ['remote_history_not_monotonic', '배포 워크트리와 원격 이력이 갈라짐']
+    ];
+    for (const [reason, sentence] of refusals) {
+      document.body.innerHTML = '<div id="m"></div>';
+      const transport = vi.fn(async () => ({
+        ok: false,
+        reason,
+        queue: queueOf()
+      }));
+      const { mount } = mountDeployLane({}, transport);
+
+      /** @type {HTMLButtonElement} */ (runButton(mount)).dispatchEvent(
+        new MouseEvent('click', { bubbles: true })
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const toast = document.querySelector('.toast');
+      said.push([toast?.textContent, sentence].join(' | '));
+    }
+
+    expect(said).toEqual(
+      refusals.map(
+        ([, sentence]) => `배포 실행 거부 — ${sentence} | ${sentence}`
+      )
+    );
+  });
+
+  test('marks a manual operation on its timeline card', () => {
+    const { mount } = mountWorker({
+      repo_operations: [operationCard({ source: 'manual' })]
+    });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__st--manual')?.textContent
+    ).toBe('수동');
+  });
+
+  test('leaves an automatic operation unbadged', () => {
+    const { mount } = mountWorker({
+      repo_operations: [operationCard({ source: 'automatic' })]
+    });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__st--manual')
+    ).toBeNull();
+  });
+
+  test('names the declared timeout on a timed-out deploy card', () => {
+    const { mount } = mountWorker({
+      workspace_info: { verify_cmd: null, repo_ops: repoOps() },
+      repo_operations: [
+        operationCard({
+          exit_code: null,
+          failure: {
+            code: 'timeout',
+            fingerprint: 'f'.repeat(64),
+            detail: '',
+            interrupted: false
+          },
+          failure_kind: 'timeout'
+        })
+      ]
+    });
+
+    expect(
+      Array.from(openTimeline(mount).querySelectorAll('.worker-ev__why-line'))
+        .map((line) => line.textContent)
+        .filter(Boolean)
+    ).toContain('타임아웃 600초 초과');
+  });
+});

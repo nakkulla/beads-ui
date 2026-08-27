@@ -16,6 +16,7 @@ import {
   createWorkerAttachment,
   initWorkerRuntime,
   retryWorkerCleanup,
+  startWorkerRepoOperationDeployRun,
   stopWorkerAttempt,
   tickWorkerQueue
 } from './attach.js';
@@ -828,6 +829,48 @@ describe('worker/attach construction + live loop (F1)', () => {
 
   test('stopWorkerAttempt returns false when no attachment is registered', async () => {
     expect(await stopWorkerAttempt(WS, 'att-9')).toBe(false);
+  });
+
+  test('startWorkerRepoOperationDeployRun delegates to the coordinator', async () => {
+    const runManualDeploy = vi.fn(async () => ({
+      ok: true,
+      operation_id: 'op-manual-1'
+    }));
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({
+        repo: '/repo',
+        repoOperationCoordinator: { runManualDeploy }
+      })
+    );
+
+    expect(
+      await startWorkerRepoOperationDeployRun(WS, { repo_id: '/repo' })
+    ).toEqual({ ok: true, operation_id: 'op-manual-1' });
+    expect(runManualDeploy).toHaveBeenCalledOnce();
+  });
+
+  test('startWorkerRepoOperationDeployRun refuses a repo the workspace does not own', async () => {
+    const runManualDeploy = vi.fn(async () => ({ ok: true }));
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({
+        repo: '/repo',
+        repoOperationCoordinator: { runManualDeploy }
+      })
+    );
+
+    expect(
+      await startWorkerRepoOperationDeployRun(WS, { repo_id: '/other-repo' })
+    ).toEqual({ ok: false, reason: 'target_unresolved' });
+    expect(runManualDeploy).not.toHaveBeenCalled();
+  });
+
+  test('startWorkerRepoOperationDeployRun is inert without an attachment', async () => {
+    expect(await startWorkerRepoOperationDeployRun(WS, {})).toEqual({
+      ok: false,
+      reason: 'target_unresolved'
+    });
   });
 
   test('initWorkerRuntime reconciles the attempts a prior run left running', async () => {

@@ -83,7 +83,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, policySupported?: () => boolean, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, policySupported?: () => boolean, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -144,7 +144,13 @@ export function createRepoOperationCoordinator(deps) {
    * subjects on the same target coalesce while a later fetched target queues a
    * successor instead of attaching itself to an older running operation.
    *
-   * @param {{ effective_base_sha: string, target_base: string, target_sha: string, script_mode: string, script_blob_sha: string }} input
+   * A MANUAL run additionally hashes its issued `manual_run_id` (UI-s582 §3.5):
+   * without it a second 배포 실행 on the same tip resolves to the SAME id and
+   * adopts the first run's terminal record instead of running again. The key is
+   * added only for a manual run, so every automatic identity is byte-identical
+   * to what it hashed before.
+   *
+   * @param {{ effective_base_sha: string, target_base: string, target_sha: string, script_mode: string, script_blob_sha: string, manual_run_id?: number|null }} input
    */
   function operationId(input) {
     return crypto
@@ -157,7 +163,10 @@ export function createRepoOperationCoordinator(deps) {
           target_sha: input.target_sha,
           effective_base_sha: input.effective_base_sha,
           script_mode: input.script_mode,
-          script_blob_sha: input.script_blob_sha
+          script_blob_sha: input.script_blob_sha,
+          ...(Number.isInteger(input.manual_run_id)
+            ? { manual_run_id: input.manual_run_id }
+            : {})
         })
       )
       .digest('hex')
@@ -1029,7 +1038,7 @@ export function createRepoOperationCoordinator(deps) {
    * @param {string} workspace
    * @param {string} operation_id
    * @param {any} operation
-   * @param {{ declaration: any, target_sha: string, retry?: boolean }} plan
+   * @param {{ declaration: any, target_sha: string, retry?: boolean, manual?: boolean }} plan
    */
   async function alignRecordedDeploy(workspace, operation_id, operation, plan) {
     const acquired = await deployLock({
@@ -1126,7 +1135,12 @@ export function createRepoOperationCoordinator(deps) {
           state.head === plan.target_sha
             ? 'ancestor'
             : await ancestryStatus(plan.target_sha, state.head);
-        if (target_status === 'ancestor') {
+        // A worktree HEAD that already contains the target ends an AUTOMATIC
+        // record: the delivery it exists for is provably on disk. A MANUAL run
+        // means the opposite — the person asked for this exact tip to be
+        // deployed AGAIN — so it aligns and runs instead of settling as
+        // covered/superseded (UI-s582 §3.4).
+        if (target_status === 'ancestor' && plan.manual !== true) {
           deps.store.settleRepoOperation(workspace, {
             operation_id,
             attempt_id: operation.attempt_id,
@@ -1143,21 +1157,23 @@ export function createRepoOperationCoordinator(deps) {
             superseded: state.head !== plan.target_sha
           };
         }
-        const head_status = await ancestryStatus(state.head, plan.target_sha);
-        if (head_status !== 'ancestor') {
-          const code =
-            target_status === 'not_ancestor' && head_status === 'not_ancestor'
-              ? 'remote_history_not_monotonic'
-              : 'repo_ops_ancestry_check_failed';
-          if (plan.retry === true) {
-            deps.store.settleConsumedRepoOperationRetry(workspace, {
-              operation_id,
-              blocked_reason: code
-            });
-          } else {
-            await settleFailure(workspace, operation, operation_id, { code });
+        if (target_status !== 'ancestor') {
+          const head_status = await ancestryStatus(state.head, plan.target_sha);
+          if (head_status !== 'ancestor') {
+            const code =
+              target_status === 'not_ancestor' && head_status === 'not_ancestor'
+                ? 'remote_history_not_monotonic'
+                : 'repo_ops_ancestry_check_failed';
+            if (plan.retry === true) {
+              deps.store.settleConsumedRepoOperationRetry(workspace, {
+                operation_id,
+                blocked_reason: code
+              });
+            } else {
+              await settleFailure(workspace, operation, operation_id, { code });
+            }
+            return { ok: false, code, operation_id };
           }
-          return { ok: false, code, operation_id };
         }
       }
 
@@ -1191,7 +1207,7 @@ export function createRepoOperationCoordinator(deps) {
    *
    * @param {string} workspace
    * @param {string} operation_id
-   * @param {{ declaration: any, classification: string, target_sha: string, retry?: boolean }} plan
+   * @param {{ declaration: any, classification: string, target_sha: string, retry?: boolean, manual?: boolean }} plan
    */
   async function launchRecorded(workspace, operation_id, plan) {
     const operation =
@@ -1324,10 +1340,20 @@ export function createRepoOperationCoordinator(deps) {
       };
     }
     const target_sha = bound.target_sha;
+    const manual = subject.source === 'manual';
+    // The ONE previous-base exception (UI-s582 §3.2), manual path only: policy
+    // and script come from the TIP being deployed rather than from the base the
+    // last success ran under. The tip is a commit that already landed on
+    // `<remote>/<base>`, so this is not an unreviewed script executing itself —
+    // and it is the only way a `[deploy]` activation landing (previous base has
+    // no declaration) can ever be run.
     /** @type {any} */
     const policy = await resolveEffective({
       repo: deps.repo,
-      previous_sha,
+      previous_sha:
+        manual || subject.policy_source === 'target_tip'
+          ? target_sha
+          : previous_sha,
       target_sha,
       kind: 'deploy',
       gitRun: deps.gitRun
@@ -1374,7 +1400,10 @@ export function createRepoOperationCoordinator(deps) {
       target_base: subject.target_base,
       target_sha,
       script_mode: declaration.mode,
-      script_blob_sha: declaration.blob_sha
+      script_blob_sha: declaration.blob_sha,
+      ...(manual && Number.isInteger(subject.manual_run_id)
+        ? { manual_run_id: subject.manual_run_id }
+        : {})
     });
     const existing =
       deps.store.snapshot(workspace).repo_operations[operation_id];
@@ -1405,6 +1434,14 @@ export function createRepoOperationCoordinator(deps) {
       script_path: declaration.script,
       script_mode: declaration.mode,
       script_blob_sha: declaration.blob_sha,
+      ...(manual
+        ? {
+            source: /** @type {const} */ ('manual'),
+            ...(Number.isInteger(subject.manual_run_id)
+              ? { manual_run_id: subject.manual_run_id }
+              : {})
+          }
+        : {}),
       bootstrap_provenance: subject.bootstrap_provenance || null
     });
     if (!prerecord.ok)
@@ -1430,11 +1467,246 @@ export function createRepoOperationCoordinator(deps) {
     const launched = await launchRecorded(workspace, operation_id, {
       declaration,
       classification: policy.classification,
-      target_sha
+      target_sha,
+      ...(manual ? { manual: true } : {})
     });
     return launched.ok
       ? { ...launched, timeout_ms: declaration.timeout_ms }
       : launched;
+  }
+
+  /**
+   * Reasons the 배포 실행 click can be refused (UI-s582 §3). Every one of them
+   * is a REFUSAL: no record is written, nothing is queued, and the client says
+   * exactly which precondition failed.
+   *
+   * @typedef {'deploy_not_declared'|'deploy_opted_out'|'deploy_in_flight'|'target_unresolved'|'remote_history_not_monotonic'} ManualDeployRefusal
+   */
+
+  /**
+   * Whether any deploy operation for this repo is still in flight.
+   *
+   * @param {Record<string, any>} operations
+   * @returns {boolean}
+   */
+  function deployInFlight(operations) {
+    for (const operation of Object.values(operations || {})) {
+      if (
+        operation &&
+        operation.repo_id === deps.repo &&
+        operation.kind === 'deploy' &&
+        (operation.state === 'queued' ||
+          operation.state === 'running' ||
+          operation.state === 'retry_pending')
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The newest deploy record that already stood for THIS exact target, so a new
+   * manual run can link it as its predecessor. Same repo, same base and same
+   * pinned SHA — a record for another target is not what this run replaces.
+   *
+   * @param {Record<string, any>} operations
+   * @param {{ target_base: string, target_sha: string }} target
+   * @returns {string|null}
+   */
+  function previousDeployFor(operations, target) {
+    /** @type {string|null} */
+    let latest_id = null;
+    /** @type {number} */
+    let latest_at = -1;
+    for (const [operation_id, operation] of Object.entries(operations || {})) {
+      if (
+        !operation ||
+        operation.repo_id !== deps.repo ||
+        operation.kind !== 'deploy' ||
+        operation.target_base !== target.target_base ||
+        operation.target_sha !== target.target_sha ||
+        operation.superseded_by
+      ) {
+        continue;
+      }
+      const at =
+        typeof operation.requested_at === 'number' ? operation.requested_at : 0;
+      if (at >= latest_at) {
+        latest_at = at;
+        latest_id = operation_id;
+      }
+    }
+    return latest_id;
+  }
+
+  /**
+   * The 배포 실행 click (UI-s582 §3): run the declared deploy script once, now,
+   * at the remote tip — the only entry a person has into the deploy lane.
+   *
+   * The target is NOT an input. It comes from the attachment's one base
+   * resolver, which pins remote, base and the fetched tip together, so nothing
+   * here assumes `origin` and a client cannot name a commit of its own.
+   *
+   * @returns {Promise<{ ok: true, operation_id: string }|{ ok: false, reason: ManualDeployRefusal }>}
+   */
+  async function runManualDeploy() {
+    if (typeof deps.resolveBase !== 'function') {
+      return { ok: false, reason: 'target_unresolved' };
+    }
+    /** @type {any} */
+    let resolved;
+    try {
+      resolved = await deps.resolveBase({ force: true });
+    } catch {
+      return { ok: false, reason: 'target_unresolved' };
+    }
+    if (
+      !resolved ||
+      resolved.ok !== true ||
+      typeof resolved.base !== 'string' ||
+      resolved.base.length === 0 ||
+      typeof resolved.base_oid !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(resolved.base_oid)
+    ) {
+      return { ok: false, reason: 'target_unresolved' };
+    }
+    const release = await deps.locks.repoOperationLock(deps.repo);
+    try {
+      return await runManualDeployLocked({
+        target_base: resolved.base,
+        target_sha: resolved.base_oid.toLowerCase()
+      });
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Guards, ancestry and enqueue for one manual run. Held under the SAME lock
+   * acquisition as the enqueue below it, so the in-flight guard and the record
+   * it protects cannot interleave with a second click.
+   *
+   * @param {{ target_base: string, target_sha: string }} pinned
+   * @returns {Promise<{ ok: true, operation_id: string }|{ ok: false, reason: ManualDeployRefusal }>}
+   */
+  async function runManualDeployLocked(pinned) {
+    /** @type {any} */
+    const policy = await resolveEffective({
+      repo: deps.repo,
+      previous_sha: pinned.target_sha,
+      target_sha: pinned.target_sha,
+      kind: 'deploy',
+      gitRun: deps.gitRun
+    });
+    // An unreadable declaration is not the same fact as an absent one, and the
+    // refusal vocabulary has no word for it. Fail closed on the target: what
+    // could not be read is a target this run cannot stand on.
+    if (!policy || !policy.policy || !policy.target) {
+      return { ok: false, reason: 'target_unresolved' };
+    }
+    const declaration = policy.policy.deploy;
+    if (!declaration || declaration.identity_invalid) {
+      return { ok: false, reason: 'deploy_not_declared' };
+    }
+    if (optOutOf().deploy) {
+      return { ok: false, reason: 'deploy_opted_out' };
+    }
+    if (deployInFlight(deps.store.snapshot(deps.workspace).repo_operations)) {
+      return { ok: false, reason: 'deploy_in_flight' };
+    }
+    const ancestry = await manualAncestryVerdict(pinned.target_sha);
+    if (ancestry !== 'allowed') {
+      return { ok: false, reason: ancestry };
+    }
+    const issued = deps.store.issueManualDeployRun(deps.workspace);
+    const manual_run_id = issued.ok
+      ? deps.store.snapshot(deps.workspace).manual_deploy_seq
+      : 0;
+    if (!Number.isInteger(manual_run_id) || manual_run_id <= 0) {
+      return { ok: false, reason: 'target_unresolved' };
+    }
+    const predecessor = previousDeployFor(
+      deps.store.snapshot(deps.workspace).repo_operations,
+      pinned
+    );
+    /** @type {any} */
+    const ensured = await ensureDeployLocked({
+      source: 'manual',
+      manual_run_id,
+      policy_source: 'target_tip',
+      target_base: pinned.target_base,
+      target_sha: pinned.target_sha,
+      subjects: [{ bead_id: 'manual', merged_sha: pinned.target_sha }]
+    });
+    // A record that exists is the answer, whatever the run then did with it:
+    // the script's own failure belongs on its card, not on the click.
+    if (typeof ensured.operation_id === 'string' && ensured.operation_id) {
+      if (predecessor && predecessor !== ensured.operation_id) {
+        deps.store.supersedeRepoOperation(deps.workspace, {
+          operation_id: predecessor,
+          successor_id: ensured.operation_id
+        });
+      }
+      return { ok: true, operation_id: ensured.operation_id };
+    }
+    return {
+      ok: false,
+      reason:
+        ensured.code === 'remote_history_not_monotonic'
+          ? 'remote_history_not_monotonic'
+          : ensured.inert === true
+            ? 'deploy_not_declared'
+            : 'target_unresolved'
+    };
+  }
+
+  /**
+   * Compare the deploy worktree HEAD with the pinned tip (UI-s582 §3.4). All
+   * three monotonic relations are ALLOWED — equal, HEAD already ahead, HEAD
+   * behind — because a manual run means redeploy, not "deliver if missing".
+   * Only genuinely divergent histories are refused, and a probe that cannot
+   * decide fails closed on the target.
+   *
+   * @param {string} target_sha
+   * @returns {Promise<'allowed'|'remote_history_not_monotonic'|'target_unresolved'>}
+   */
+  async function manualAncestryVerdict(target_sha) {
+    if (typeof deploy_worktree.readState !== 'function') {
+      return 'allowed';
+    }
+    /** @type {any} */
+    let state;
+    try {
+      state = await deploy_worktree.readState({ repo: deps.repo });
+    } catch {
+      return 'target_unresolved';
+    }
+    if (!state || state.ok !== true) {
+      return 'target_unresolved';
+    }
+    // No worktree yet (the pre-bootstrap state) — there is no HEAD to diverge
+    // from, so alignment creates it at the tip.
+    if (typeof state.head !== 'string' || state.head.length === 0) {
+      return 'allowed';
+    }
+    if (state.head === target_sha) {
+      return 'allowed';
+    }
+    const target_is_ancestor = await ancestryStatus(target_sha, state.head);
+    if (target_is_ancestor === 'unknown') {
+      return 'target_unresolved';
+    }
+    if (target_is_ancestor === 'ancestor') {
+      return 'allowed';
+    }
+    const head_is_ancestor = await ancestryStatus(state.head, target_sha);
+    if (head_is_ancestor === 'unknown') {
+      return 'target_unresolved';
+    }
+    return head_is_ancestor === 'ancestor'
+      ? 'allowed'
+      : 'remote_history_not_monotonic';
   }
 
   /**
@@ -1476,10 +1748,13 @@ export function createRepoOperationCoordinator(deps) {
       }
       return;
     }
+    // A manual record keeps reading its policy from the tip it runs at, on
+    // every relaunch — the previous base may still have no declaration at all.
+    const manual = operation.source === 'manual';
     /** @type {any} */
     const policy = await resolveEffective({
       repo: deps.repo,
-      previous_sha: operation.effective_base_sha,
+      previous_sha: manual ? bound.target_sha : operation.effective_base_sha,
       target_sha: bound.target_sha,
       kind: 'deploy',
       gitRun: deps.gitRun
@@ -1512,7 +1787,8 @@ export function createRepoOperationCoordinator(deps) {
       declaration,
       classification: policy.classification,
       target_sha: bound.target_sha,
-      retry
+      retry,
+      ...(manual ? { manual: true } : {})
     });
   }
 
@@ -2192,6 +2468,7 @@ export function createRepoOperationCoordinator(deps) {
 
   return {
     ensureDeploy,
+    runManualDeploy,
     ensureVerify,
     observe,
     verifyReceipt,

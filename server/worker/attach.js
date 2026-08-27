@@ -637,6 +637,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     repo,
     store: runtime.queueStore,
     locks: runtime.locks,
+    // The manual 배포 실행 path pins its target through the SAME base resolver
+    // every other dispatch uses (UI-s582 §3.1) — remote, base and fetched tip
+    // in one resolution, so nothing there assumes `origin`.
+    resolveBase,
     gitRun,
     autoAdvanceRestore: options.autoAdvanceRestore
   });
@@ -2061,6 +2065,39 @@ export async function dismissWorkerRepoOperation(workspace_root, input) {
     return { ok: false, code: 'no_attachment' };
   }
   return att.repoOperationCoordinator.dismiss(input.operation_id);
+}
+
+/**
+ * Run the declared deploy script once, right now, at the fetched remote tip
+ * (UI-s582 §3) — the 배포 실행 click. Inert without a registered attachment:
+ * there is no resolver to pin a target with, which is the same refusal as an
+ * unresolvable one.
+ *
+ * `repo_id` is the repository the CLIENT drew the button for. It is optional —
+ * the authority is this attachment's repo either way — but when it is present
+ * and names a different checkout the click is refused rather than redirected
+ * onto a repository the person was not looking at.
+ *
+ * @param {string} workspace_root
+ * @param {{ repo_id?: string|null }} [input]
+ * @returns {Promise<{ ok: boolean, operation_id?: string, reason?: string }>}
+ */
+export async function startWorkerRepoOperationDeployRun(
+  workspace_root,
+  input = {}
+) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.repoOperationCoordinator) {
+    return { ok: false, reason: 'target_unresolved' };
+  }
+  if (
+    typeof input.repo_id === 'string' &&
+    input.repo_id.length > 0 &&
+    input.repo_id !== att.repo
+  ) {
+    return { ok: false, reason: 'target_unresolved' };
+  }
+  return att.repoOperationCoordinator.runManualDeploy();
 }
 
 /**

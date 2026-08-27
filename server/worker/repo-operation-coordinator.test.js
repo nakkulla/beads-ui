@@ -80,7 +80,33 @@ function gitForBootstrap(options = {}) {
 }
 
 /**
- * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, locks?: ReturnType<typeof createLockManager>, policySupported?: () => boolean, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
+ * Wrap the bootstrap git fake with an explicit ancestry table. A pair absent
+ * from the table answers `ancestor`, which is what every existing deploy test
+ * already assumes.
+ *
+ * @param {Record<string, boolean|'error'>} pairs - `'<ancestor>-><descendant>'`.
+ * @param {{ known_shas?: string[], config?: string, script_mode?: string, script_blob_sha?: string }} [options]
+ */
+function gitWithAncestry(pairs, options = {}) {
+  const base_git = gitForBootstrap(options);
+  /**
+   * @param {string[]} args
+   */
+  return async (args) => {
+    if (args[0] === 'merge-base' && args[1] === '--is-ancestor') {
+      const key = `${args[2]}->${args[3]}`;
+      const answer = Object.hasOwn(pairs, key) ? pairs[key] : true;
+      if (answer === 'error') {
+        return { code: 128, stdout: '', stderr: 'ancestry probe failed' };
+      }
+      return { code: answer ? 0 : 1, stdout: '', stderr: '' };
+    }
+    return base_git(args);
+  };
+}
+
+/**
+ * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, locks?: ReturnType<typeof createLockManager>, policySupported?: () => boolean, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, resolveBase?: (options?: { force?: boolean }) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
  */
 function coordinatorFor(overrides = {}) {
   const store = createQueueStore({
@@ -128,6 +154,7 @@ function coordinatorFor(overrides = {}) {
       }
     ),
     deployLock: overrides.deployLock,
+    resolveBase: overrides.resolveBase,
     verifyCheckout: /** @type {never} */ (overrides.verifyCheckout),
     autoAdvanceRestore: overrides.autoAdvanceRestore,
     policySupported: overrides.policySupported,
@@ -3079,5 +3106,312 @@ describe('repo-operation-coordinator workspace opt-out (UI-lsti §2)', () => {
 
     expect(result.inert).toBeUndefined();
     expect(typeof result.operation_id).toBe('string');
+  });
+});
+
+describe('manual deploy run', () => {
+  const RESOLVED_BASE = {
+    ok: true,
+    base: 'main',
+    declared: true,
+    remote: 'upstream',
+    remote_ref: 'refs/remotes/upstream/main',
+    base_oid: TARGET,
+    local_only: false
+  };
+
+  /**
+   * @param {any} [overrides]
+   */
+  function manualCoordinatorFor(overrides = {}) {
+    return coordinatorFor({
+      resolveBase: async () => RESOLVED_BASE,
+      ...overrides
+    });
+  }
+
+  /**
+   * Seed one terminal deploy record so `latestSuccessfulDeploySha` has a
+   * previous base to offer. Its target is deliberately NOT the tip: the git
+   * fake only declares `[deploy]` at the tip, so a policy read that used this
+   * SHA would classify as bootstrap and refuse.
+   *
+   * @param {any} store
+   */
+  function seedPreviousSuccess(store) {
+    store.ensureRepoOperation(root, {
+      operation_id: 'previous-deploy',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: '5'.repeat(40)
+    });
+    const seeded = store.snapshot(root).repo_operations['previous-deploy'];
+    store.startRepoOperation(root, {
+      operation_id: 'previous-deploy',
+      attempt_id: seeded.attempt_id,
+      process_identity: { pid: 9, pgid: 9, started_at: 1 },
+      log_path: path.join(root, 'previous.log'),
+      target_sha: HEAD
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'previous-deploy',
+      attempt_id: seeded.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+  }
+
+  test('refuses when the fetched tip declares no deploy', async () => {
+    const { coordinator } = manualCoordinatorFor({
+      gitRun: gitForBootstrap({ config: 'base = "main"' })
+    });
+
+    expect(await coordinator.runManualDeploy()).toEqual({
+      ok: false,
+      reason: 'deploy_not_declared'
+    });
+  });
+
+  test('refuses when this workspace opted out of deploy', async () => {
+    const { store, coordinator } = manualCoordinatorFor();
+    store.setRepoOpsOptOut(root, {
+      expected_revision: store.snapshot(root).revision,
+      kind: 'deploy',
+      opted_out: true
+    });
+
+    expect(await coordinator.runManualDeploy()).toEqual({
+      ok: false,
+      reason: 'deploy_opted_out'
+    });
+  });
+
+  test('refuses while a deploy for this repo is still in flight', async () => {
+    const { store, coordinator } = manualCoordinatorFor();
+    store.ensureRepoOperation(root, {
+      operation_id: 'running-deploy',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: '5'.repeat(40)
+    });
+    const seeded = store.snapshot(root).repo_operations['running-deploy'];
+    store.startRepoOperation(root, {
+      operation_id: 'running-deploy',
+      attempt_id: seeded.attempt_id,
+      process_identity: { pid: 7, pgid: 7, started_at: 1 },
+      log_path: path.join(root, 'running.log'),
+      target_sha: TARGET
+    });
+
+    expect(await coordinator.runManualDeploy()).toEqual({
+      ok: false,
+      reason: 'deploy_in_flight'
+    });
+  });
+
+  test('refuses when the base resolver cannot pin a tip', async () => {
+    const { coordinator } = manualCoordinatorFor({
+      resolveBase: async () => ({
+        ok: false,
+        step: 'fetch',
+        base: 'main',
+        detail: 'network'
+      })
+    });
+
+    expect(await coordinator.runManualDeploy()).toEqual({
+      ok: false,
+      reason: 'target_unresolved'
+    });
+  });
+
+  test('reads policy and script from the fetched tip, not the previous base', async () => {
+    const { store, coordinator } = manualCoordinatorFor();
+    seedPreviousSuccess(store);
+
+    const result = /** @type {any} */ (await coordinator.runManualDeploy());
+
+    expect(result.ok).toBe(true);
+    const operation =
+      store.snapshot(root).repo_operations[String(result.operation_id)];
+    expect([
+      operation.state,
+      operation.script_blob_sha,
+      operation.effective_base_sha,
+      operation.target_sha
+    ]).toEqual(['running', 'd'.repeat(40), HEAD, TARGET]);
+  });
+
+  test('records the run as manual with its issued run id', async () => {
+    const { store, coordinator } = manualCoordinatorFor();
+
+    const result = /** @type {any} */ (await coordinator.runManualDeploy());
+
+    const operation =
+      store.snapshot(root).repo_operations[String(result.operation_id)];
+    expect([operation.source, operation.manual_run_id]).toEqual(['manual', 1]);
+  });
+
+  test('runs when the deploy worktree already sits exactly at the tip', async () => {
+    const { store, coordinator } = manualCoordinatorFor({
+      deployWorktree: {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({ ok: true, head: TARGET, clean: true }),
+        ensureAligned: async () => ({
+          ok: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy'),
+          target_sha: TARGET
+        }),
+        verifyCovered: async () => ({ ok: true }),
+        verifyAligned: async () => ({ ok: true })
+      }
+    });
+
+    const result = /** @type {any} */ (await coordinator.runManualDeploy());
+
+    expect(result.ok).toBe(true);
+    expect(
+      store.snapshot(root).repo_operations[String(result.operation_id)].state
+    ).toBe('running');
+  });
+
+  test('runs when the worktree head already contains the tip', async () => {
+    const { store, coordinator } = manualCoordinatorFor({
+      gitRun: gitWithAncestry({ [`${TARGET}->${ADVANCED_HEAD}`]: true }),
+      deployWorktree: {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({
+          ok: true,
+          head: ADVANCED_HEAD,
+          clean: true
+        }),
+        ensureAligned: async () => ({
+          ok: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy'),
+          target_sha: TARGET
+        }),
+        verifyCovered: async () => ({ ok: true }),
+        verifyAligned: async () => ({ ok: true })
+      }
+    });
+
+    const result = /** @type {any} */ (await coordinator.runManualDeploy());
+
+    expect(result.ok).toBe(true);
+    expect(
+      store.snapshot(root).repo_operations[String(result.operation_id)].state
+    ).toBe('running');
+  });
+
+  test('runs when the worktree head is behind the tip', async () => {
+    const { store, coordinator } = manualCoordinatorFor({
+      gitRun: gitWithAncestry({
+        [`${TARGET}->${BASE}`]: false,
+        [`${BASE}->${TARGET}`]: true
+      }),
+      deployWorktree: {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({ ok: true, head: BASE, clean: true }),
+        ensureAligned: async () => ({
+          ok: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy'),
+          target_sha: TARGET
+        }),
+        verifyCovered: async () => ({ ok: true }),
+        verifyAligned: async () => ({ ok: true })
+      }
+    });
+
+    const result = /** @type {any} */ (await coordinator.runManualDeploy());
+
+    expect(result.ok).toBe(true);
+    expect(
+      store.snapshot(root).repo_operations[String(result.operation_id)].state
+    ).toBe('running');
+  });
+
+  test('refuses when the worktree head and the tip have diverged', async () => {
+    const { store, coordinator } = manualCoordinatorFor({
+      gitRun: gitWithAncestry({
+        [`${TARGET}->${ADVANCED_HEAD}`]: false,
+        [`${ADVANCED_HEAD}->${TARGET}`]: false
+      }),
+      deployWorktree: {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({
+          ok: true,
+          head: ADVANCED_HEAD,
+          clean: true
+        }),
+        ensureAligned: async () => ({ ok: true, path: root }),
+        verifyCovered: async () => ({ ok: true }),
+        verifyAligned: async () => ({ ok: true })
+      }
+    });
+
+    const result = await coordinator.runManualDeploy();
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'remote_history_not_monotonic'
+    });
+    expect(Object.keys(store.snapshot(root).repo_operations)).toEqual([]);
+  });
+
+  test('fails closed on the target when the ancestry probe errors', async () => {
+    const { store, coordinator } = manualCoordinatorFor({
+      gitRun: gitWithAncestry({ [`${TARGET}->${ADVANCED_HEAD}`]: 'error' }),
+      deployWorktree: {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({
+          ok: true,
+          head: ADVANCED_HEAD,
+          clean: true
+        }),
+        ensureAligned: async () => ({ ok: true, path: root }),
+        verifyCovered: async () => ({ ok: true }),
+        verifyAligned: async () => ({ ok: true })
+      }
+    });
+
+    const result = await coordinator.runManualDeploy();
+
+    expect(result).toEqual({ ok: false, reason: 'target_unresolved' });
+    expect(Object.keys(store.snapshot(root).repo_operations)).toEqual([]);
+  });
+
+  test('makes every click at the same tip its own operation', async () => {
+    const { store, coordinator } = manualCoordinatorFor();
+
+    const first = /** @type {any} */ (await coordinator.runManualDeploy());
+    const while_running = await coordinator.runManualDeploy();
+    const settled =
+      store.snapshot(root).repo_operations[String(first.operation_id)];
+    store.settleRepoOperation(root, {
+      operation_id: String(first.operation_id),
+      attempt_id: settled.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+    const second = /** @type {any} */ (await coordinator.runManualDeploy());
+
+    expect(while_running).toEqual({ ok: false, reason: 'deploy_in_flight' });
+    expect(second.ok).toBe(true);
+    expect(second.operation_id).not.toBe(first.operation_id);
+    const operations = store.snapshot(root).repo_operations;
+    expect([
+      operations[String(first.operation_id)].manual_run_id,
+      operations[String(second.operation_id)].manual_run_id,
+      operations[String(first.operation_id)].superseded_by,
+      operations[String(second.operation_id)].state
+    ]).toEqual([1, 2, second.operation_id, 'running']);
   });
 });
