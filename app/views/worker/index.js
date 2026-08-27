@@ -86,6 +86,7 @@ import {
   saveCandidateSort,
   setChainStepKey
 } from './candidate-sort.js';
+import { failureSentence } from './failure-labels.js';
 import { createLaneCollapse } from './lane-collapse.js';
 import {
   discardCompletionMessage,
@@ -616,10 +617,9 @@ export function mergeQueueRefusalText(reason) {
  * Project a known nonterminal resolver wait reason; unknown values fail quiet.
  *
  * @param {unknown} reason
- * @param {{ repair_sessions_used?: number }|null} [completion]
  * @returns {string|null}
  */
-export function mergeWaitingText(reason, completion = null) {
+export function mergeWaitingText(reason) {
   if (reason === 'worker_sessions_busy') {
     return '해소 대기 — 실행 슬롯 대기 중';
   }
@@ -631,17 +631,8 @@ export function mergeWaitingText(reason, completion = null) {
     return null;
   }
   switch (phase) {
-    case 'gating': {
-      const repair_sessions_used = completion?.repair_sessions_used;
-      return typeof repair_sessions_used === 'number' &&
-        repair_sessions_used > 0
-        ? '수정 결과 재확인 중'
-        : '머지 조건 확인 중';
-    }
-    case 'repairing':
-      return '자동 수정 중';
-    case 'waiting_repair_pr':
-      return '수정 PR 대기 중';
+    case 'gating':
+      return '머지 조건 확인 중';
     case 'merging':
       return '머지 중';
     case 'cleaning':
@@ -922,44 +913,19 @@ function exhaustedOriginReason(terminal_reason) {
  * @param {import('../../data/worker-queue-store.js').CompletionStatus|null|undefined} completion
  * @param {{ label: string, details: string[], live: boolean }|null} [auto_resolution] - The
  * precomputed {@link autoResolutionBadge} for the same row.
- * @returns {{ badge: string, title: string, alert: boolean, lock_actions: boolean, repair_pr_url: string, repair_pr_number: number|null }|null}
+ * @returns {{ badge: string, title: string, alert: boolean, lock_actions: boolean }|null}
  */
 function completionView(completion, auto_resolution = null) {
   if (!completion || typeof completion !== 'object') {
     return null;
   }
-  const used = Number.isInteger(completion.repair_sessions_used)
-    ? Math.max(0, completion.repair_sessions_used)
-    : 0;
-  const cap = Number.isInteger(completion.repair_session_cap)
-    ? Math.max(0, completion.repair_session_cap)
-    : 0;
-  const repair =
-    completion.current_repair && typeof completion.current_repair === 'object'
-      ? completion.current_repair
-      : null;
-  const repair_number =
-    repair && typeof repair.pr_number === 'number' ? repair.pr_number : null;
   let badge = '';
   switch (completion.phase) {
     case 'gating':
-      badge = used > 0 ? '수정 결과 재확인 중' : '머지 조건 확인 중';
-      break;
-    case 'repairing':
-      badge = '자동 수정 중';
-      break;
-    case 'waiting_repair_pr':
-      badge = repair_number
-        ? `수정 PR #${repair_number} 대기 중`
-        : '수정 PR 대기 중';
+      badge = '머지 조건 확인 중';
       break;
     case 'merging':
-      badge =
-        completion.subject_role === 'repair'
-          ? repair_number
-            ? `수정 PR #${repair_number} 머지 중`
-            : '수정 PR 머지 중'
-          : '머지 중';
+      badge = '머지 중';
       break;
     case 'cleaning':
       badge = '마무리 중';
@@ -987,7 +953,7 @@ function completionView(completion, auto_resolution = null) {
   }
 
   /** @type {string[]} */
-  const details = [badge, `자동 수정 횟수 ${used}/${cap}`];
+  const details = [badge];
   if (completion.head_sha) {
     details.push(`head ${completion.head_sha}`);
   }
@@ -1005,14 +971,26 @@ function completionView(completion, auto_resolution = null) {
   if (exhausted_origin) {
     details.push(`원 사유: ${exhausted_origin}`);
   }
+  // needs_human 종단은 이제 자동 수리로 이어지지 않는다 (UI-8w4t §3), 그래서
+  // 이 줄이 사람에게 남는 유일한 설명이다: raw 종단 코드(`verify_red`)만으로는
+  // 무엇이 끝났는지 읽히지 않으므로 문장과 단계를 함께 싣는다. 문장을 모르는
+  // 코드는 아무 것도 더하지 않는다 — 위의 원인 줄이 raw 토큰을 이미 싣는다.
+  const terminal_sentence =
+    completion.phase === 'needs_human' && !exhausted_origin
+      ? failureSentence(completion.terminal_reason)
+      : null;
+  if (terminal_sentence) {
+    details.push(
+      completion.failure_stage
+        ? `${completion.failure_stage} · ${terminal_sentence}`
+        : terminal_sentence
+    );
+  }
   for (const line of auto_resolution ? auto_resolution.details : []) {
     details.push(line);
   }
   if (completion.active_attempt_id) {
     details.push(`attempt ${completion.active_attempt_id}`);
-  }
-  if (repair && typeof repair.bead_id === 'string') {
-    details.push(`repair ${repair.bead_id}`);
   }
   if (completion.evidence) {
     details.push(completion.evidence);
@@ -1028,10 +1006,7 @@ function completionView(completion, auto_resolution = null) {
     // [머지] 클릭은 세 자동 해소 phase에서도 살아 있어야 한다 (§9): 수동
     // authority가 자동 해소보다 우선하고, 그 클릭이 `auto_resolution`을 비우는
     // 유일한 경로다. 잠기는 것은 되돌릴 수 없는 진행 중 단계뿐이다.
-    lock_actions: !UNLOCKED_COMPLETION_PHASES.has(completion.phase),
-    repair_pr_url:
-      repair && typeof repair.pr_url === 'string' ? repair.pr_url : '',
-    repair_pr_number: repair_number
+    lock_actions: !UNLOCKED_COMPLETION_PHASES.has(completion.phase)
   };
 }
 
@@ -1390,8 +1365,7 @@ function prWaitRow(
   const queue_active = !!merge_queue && merge_queue.active === true;
   const queue_failure = (merge_queue && merge_queue.failure) || null;
   const queue_waiting = mergeWaitingText(
-    merge_queue ? merge_queue.waiting : null,
-    completion
+    merge_queue ? merge_queue.waiting : null
   );
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
@@ -1588,8 +1562,6 @@ function prWaitRow(
         ? status_badge.label
         : null,
     completion_title: status_badge?.title || '',
-    completion_repair_pr_url: recovery ? recovery.repair_pr_url : '',
-    completion_repair_pr_number: recovery ? recovery.repair_pr_number : null,
     badges: rendered_status_badge ? [rendered_status_badge] : [],
     // Which badge (if any) reports live server activity rather than a settled
     // state — the row draws that one with the breathing dot and no colour

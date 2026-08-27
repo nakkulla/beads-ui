@@ -1,5 +1,11 @@
 # 자동머지 completion intent — 실패 자동 복구·재검증·재개
 
+> **부분 은퇴 (UI-8w4t, 2026-08-27).** §4.4~4.7(소유권 probe · PR/base 소유
+> 수리 · post-merge 수리)은
+> post-merge 완료 자동 AI 수리 레인에 의존하므로 은퇴했다. 그 레인의 제거
+> 근거는 `docs/superpowers/specs/2026-08-27-completion-repair-lane-removal-design.md`
+> 이며, 나머지 절은 그대로 유효하다.
+
 - Bead: UI-x9tu
 - 날짜: 2026-08-11
 - route: `full_plan`
@@ -241,6 +247,10 @@ UI-7u3d의 flake retry까지 실패한 `verify_cmd_failed`를 대상으로 한�
 
 ### 4.4 CI red ownership probe
 
+> **은퇴 (UI-8w4t).** 이 절은 실행되지 않는다 — 근거는
+> `docs/superpowers/specs/2026-08-27-completion-repair-lane-removal-design.md`
+> 이다.
+
 CI가 merge tier를 소유하면 pinned base SHA의 GitHub check 결과로만 ownership을
 판정한다.
 
@@ -253,6 +263,10 @@ local verify가 따로 존재해도 CI-only failure의 base ownership을 대신 
 않는다. 서로 다른 signal을 같은 것으로 간주하는 fail-open을 막는다.
 
 ### 4.5 PR-owned repair
+
+> **은퇴 (UI-8w4t).** 이 절은 실행되지 않는다 — 근거는
+> `docs/superpowers/specs/2026-08-27-completion-repair-lane-removal-design.md`
+> 이다.
 
 1. scheduler가 attempt ID를 preallocate하고, `beginRepairOp`가
    `active_op=resume_root`, `repair_sessions_used + 1`, attempt prerecord를 같은
@@ -268,6 +282,10 @@ local verify가 따로 존재해도 CI-only failure의 base ownership을 대신 
    `needs_human`이다.
 
 ### 4.6 Base-owned linked repair
+
+> **은퇴 (UI-8w4t).** 이 절은 실행되지 않는다 — 근거는
+> `docs/superpowers/specs/2026-08-27-completion-repair-lane-removal-design.md`
+> 이다.
 
 1. `prepareCreateRepair`가 `create_repair` op를 먼저 기록한다. Bead 생성 자체는
    repair-session budget을 소비하지 않는다.
@@ -292,6 +310,10 @@ local verify가 따로 존재해도 CI-only failure의 base ownership을 대신 
    않는다. `repair_bead_ids`와 current subject membership이 그 판정의 SoT다.
 
 ### 4.7 Post-merge repair
+
+> **은퇴 (UI-8w4t).** 이 절은 실행되지 않는다 — 근거는
+> `docs/superpowers/specs/2026-08-27-completion-repair-lane-removal-design.md`
+> 이다.
 
 root PR이 landed된 뒤 `post_merge_verify` 또는 저장소-owned cleanup command가
 실패하면 원 branch를 다시 열지 않는다. merged base가 소유자이므로 fresh linked

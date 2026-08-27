@@ -1103,8 +1103,6 @@ export function priorityBadgeTemplate(priority) {
  * @property {string} [pr_url] - Observed PR URL; renders the `#N ↗` link.
  * @property {string|null} [completion_badge] - Root completion status badge.
  * @property {string} [completion_title] - Bounded completion evidence tooltip.
- * @property {number|null} [completion_repair_pr_number] - Linked repair PR.
- * @property {string} [completion_repair_pr_url] - Linked repair PR URL.
  * @property {string[]} [badges] - Gate / base-state badges (worker-phase2 §5).
  * @property {string|null} [live_badge] - Which of {@link MiniItem.badges}
  * reports live server activity rather than a settled state (UI-raqh §3); it is
@@ -1340,17 +1338,6 @@ export function miniRow(item, options = {}) {
   const pri_el = priorityBadgeTemplate(item.priority);
   const title_el = html`<span class="worker-mini__title">${item.title}</span>`;
   const pr_el = prLinkTemplate(item.pr_url, item.pr_number);
-  const repair_pr_el =
-    item.completion_repair_pr_url && item.completion_repair_pr_number
-      ? html`<a
-          class="worker-mini__pr worker-mini__repair-pr"
-          href=${item.completion_repair_pr_url}
-          target="_blank"
-          rel="noreferrer noopener"
-          title="repair PR 열기"
-          >repair #${item.completion_repair_pr_number} ↗</a
-        >`
-      : '';
   const badge_els = badges.map((b) =>
     b === item.live_badge
       ? // Live server activity (UI-raqh §3): neutral, never the warn colour —
@@ -1596,7 +1583,7 @@ export function miniRow(item, options = {}) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${actions_el}
+              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${badge_els}${serial_el}${reason_el}${actions_el}
             </div>
             <div class="worker-mini__body">${title_el}${stale_details}</div>
             ${deps_el}${chips_el}${has_foot
@@ -1613,7 +1600,7 @@ export function miniRow(item, options = {}) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}${actions_el}
+              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${badge_els}${serial_el}${reason_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}${actions_el}
             </div>
             ${deps_el}${chips_el}${receipt_el} ${timesMeta(item)}`}
   </div>`;

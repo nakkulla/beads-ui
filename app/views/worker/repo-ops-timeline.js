@@ -15,7 +15,9 @@
  * @import { TemplateResult } from 'lit-html'
  */
 import { html, render } from 'lit-html';
+import { copyToClipboard } from '../../utils/clipboard.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
+import { showToast } from '../../utils/toast.js';
 import {
   failureText,
   operationFailureText,
@@ -213,14 +215,61 @@ function stateWordOf(event) {
 }
 
 /**
+ * Put one absolute path on the clipboard. Board's `복사됨`/`복사 실패` toast
+ * convention, because that is the only feedback a copy can honestly give.
+ *
+ * @param {string} value
+ */
+async function copyPath(value) {
+  const copied = await copyToClipboard(value);
+  showToast(
+    copied ? '복사됨' : '복사 실패',
+    copied ? 'success' : 'error',
+    1200
+  );
+}
+
+/**
+ * A path value plus the control that moves it somewhere useful (UI-8w4t §4).
+ * The log a failure left behind is read in a terminal, not here, so the path is
+ * only worth showing if it can be carried out of the browser.
+ *
+ * The control is bound to the value, never drawn on its own: a card whose
+ * failure happened BEFORE the RepoOperation started has no log file, and a
+ * copy button for a path that does not exist is worse than no button.
+ *
+ * @param {string} value
+ * @returns {TemplateResult}
+ */
+function pathValueTemplate(value) {
+  return html`<span class="worker-ev__copyline"
+    ><code class="worker-ev__path">${value}</code
+    ><button
+      type="button"
+      class="worker-ev__copy"
+      data-seam="log-path-copy"
+      title="로그 경로 복사"
+      aria-label=${`로그 경로 복사: ${value}`}
+      @click=${() => void copyPath(value)}
+    >
+      ⧉
+    </button></span
+  >`;
+}
+
+/**
  * The `세부` disclosure: everything a body line deliberately does not say —
  * including the RAW failure code, which is the reason this block always exists
  * on a failing event.
  *
+ * A row may ask for `copy`, which renders its value as a `<code>` path with the
+ * copy control beside it. Rows with an empty value drop out first, so `copy`
+ * never produces a control with nothing behind it.
+ *
  * `open` is intentionally unbound, leaving it DOM state, so an expanded block
  * survives every snapshot re-render.
  *
- * @param {Array<{ term: string, value: string }>} rows
+ * @param {Array<{ term: string, value: string, copy?: boolean }>} rows
  * @returns {TemplateResult|string}
  */
 function detailsTemplate(rows) {
@@ -231,13 +280,14 @@ function detailsTemplate(rows) {
   return html`<details class="worker-ev__details">
     <summary>세부</summary>
     <dl class="worker-ev__kv">
-      ${kept.map(
-        (row) =>
-          html`<div>
-            <dt>${row.term}</dt>
-            <dd>${row.value}</dd>
-          </div>`
-      )}
+      ${kept.map((row) => {
+        const value =
+          row.copy === true ? pathValueTemplate(row.value) : row.value;
+        return html`<div>
+          <dt>${row.term}</dt>
+          <dd>${value}</dd>
+        </div>`;
+      })}
     </dl>
   </details>`;
 }
@@ -426,7 +476,7 @@ function operationEventTemplate(event, repo_ops) {
             .filter(Boolean)
             .join(' · ')
         },
-        { term: '로그', value: operation.log_path || '' },
+        { term: '로그', value: operation.log_path || '', copy: true },
         { term: '출력', value: operation.output_tail || '' }
       ])}
     </div>
@@ -494,7 +544,7 @@ function cleanupEventTemplate(event) {
       ${detailsTemplate([
         { term: '실패 코드', value: cleanup.reason || '' },
         { term: '진단', value: cleanup.detail || '' },
-        { term: '로그', value: cleanup.log_path || '' },
+        { term: '로그', value: cleanup.log_path || '', copy: true },
         { term: '출력', value: cleanup.output_tail || '' }
       ])}
     </div>

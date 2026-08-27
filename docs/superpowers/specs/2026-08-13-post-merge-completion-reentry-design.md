@@ -1,5 +1,12 @@
 # post-merge completion repair 자동 재진입 설계
 
+> **은퇴 (UI-8w4t, 2026-08-27).** 이 문서가 설계한 post-merge 완료 자동 AI
+> 수리 레인은 제거됐다. 소유권 probe, 수리 Bead 자동 생성, 수리 세션 디스패치,
+> 수리 예산과 `repairing`/`waiting_repair_pr` phase는 더 이상 존재하지 않으며,
+> 머지 뒤 실패는 원인을 기록한 `needs_human`으로 종단한다. 제거 근거는
+> `docs/superpowers/specs/2026-08-27-completion-repair-lane-removal-design.md`
+> 이며, 이 파일은 기록으로만 남는다.
+
 ## 배경
 
 `cleanupFact`는 머지 후 cleanup 실패의 `failure_key.subject_sha`를 `subject.merged_sha || subject.head_sha`로 기록한다. 그러나 `dispatchCompletionRepair`의 stale guard는 `subject.head_sha`만 비교한다. 따라서 PR head와 merge commit이 다른 정상 post-merge 실패도 `completion_subject_sha_stale`로 오판된다.

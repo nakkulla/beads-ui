@@ -1,5 +1,11 @@
 # UI-f17c: 이슈 완료와 repo-level 배포 복구를 분리하는 completion 설계
 
+> **부분 은퇴 (UI-8w4t, 2026-08-27).** `## 9. Repo-level recovery Bead와
+> session`(§9.1~9.3)은
+> post-merge 완료 자동 AI 수리 레인에 의존하므로 은퇴했다. 그 레인의 제거
+> 근거는 `docs/superpowers/specs/2026-08-27-completion-repair-lane-removal-design.md`
+> 이며, 나머지 절은 그대로 유효하다.
+
 - 작성일: 2026-08-12
 - owning Bead: `UI-f17c`
 - route: `full_plan`
@@ -234,6 +240,10 @@ Worker automatic retry는 terminal failed generation을 새 retry generation으�
 control operation이며 둘을 한 budget으로 섞지 않는다.
 
 ## 9. Repo-level recovery Bead와 session
+
+> **은퇴 (UI-8w4t).** 이 절은 실행되지 않는다 — 근거는
+> `docs/superpowers/specs/2026-08-27-completion-repair-lane-removal-design.md`
+> 이다.
 
 ### 9.1 identity와 creation
 

@@ -260,6 +260,14 @@ const GREP_ALLOWLIST = [
   'server/worker/repair-lane-retirement.test.js'
 ];
 
+/**
+ * Build outputs, not sources. The bundle is regenerated from `app/` on every
+ * build, so scanning it would report the same offender twice and, worse, make
+ * a stale bundle look like a source regression. The build's own grep is the
+ * check that it carries no retired identifier.
+ */
+const BUILD_OUTPUTS = ['app/main.bundle.js', 'app/main.bundle.js.map'];
+
 const LEGACY_REGION_FILE = 'server/worker/queue-store.js';
 const LEGACY_REGION_BEGIN = 'UI-8w4t legacy-read:begin';
 const LEGACY_REGION_END = 'UI-8w4t legacy-read:end';
@@ -287,36 +295,62 @@ function sourceFilesUnder(dir) {
   return out;
 }
 
-describe('retired repair-lane identifier gate (UI-8w4t §검증)', () => {
-  test('no server source or test names a retired identifier', () => {
-    const root = path.resolve(
-      path.dirname(new URL(import.meta.url).pathname),
-      '..',
-      '..'
-    );
-    /** @type {string[]} */
-    const offenders = [];
+const REPO_ROOT = path.resolve(
+  path.dirname(new URL(import.meta.url).pathname),
+  '..',
+  '..'
+);
 
-    for (const file of sourceFilesUnder(path.join(root, 'server'))) {
-      const rel = path.relative(root, file);
-      if (GREP_ALLOWLIST.includes(rel)) {
-        continue;
-      }
-      let text = fs.readFileSync(file, 'utf8');
-      if (rel === LEGACY_REGION_FILE) {
-        const begin = text.indexOf(LEGACY_REGION_BEGIN);
-        const end = text.indexOf(LEGACY_REGION_END);
-        expect(begin).toBeGreaterThan(-1);
-        expect(end).toBeGreaterThan(begin);
-        text = text.slice(0, begin) + text.slice(end);
-      }
-      for (const identifier of RETIRED_IDENTIFIERS) {
-        if (text.includes(identifier)) {
-          offenders.push(`${rel}: ${identifier}`);
-        }
+/**
+ * Every retired identifier one subtree still names, as `path: identifier`.
+ *
+ * `docs/` is deliberately NOT scanned: the retirement notices there have to
+ * name what was retired to be readable at all.
+ *
+ * @param {string} subtree - Repo-relative directory to scan.
+ * @returns {string[]}
+ */
+function retiredIdentifierOffenders(subtree) {
+  /** @type {string[]} */
+  const offenders = [];
+  for (const file of sourceFilesUnder(path.join(REPO_ROOT, subtree))) {
+    const rel = path.relative(REPO_ROOT, file);
+    if (GREP_ALLOWLIST.includes(rel) || BUILD_OUTPUTS.includes(rel)) {
+      continue;
+    }
+    let text = fs.readFileSync(file, 'utf8');
+    if (rel === LEGACY_REGION_FILE) {
+      const begin = text.indexOf(LEGACY_REGION_BEGIN);
+      const end = text.indexOf(LEGACY_REGION_END);
+      expect(begin).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(begin);
+      text = text.slice(0, begin) + text.slice(end);
+    }
+    for (const identifier of RETIRED_IDENTIFIERS) {
+      if (text.includes(identifier)) {
+        offenders.push(`${rel}: ${identifier}`);
       }
     }
+  }
+  return offenders;
+}
 
-    expect(offenders).toEqual([]);
+describe('retired repair-lane identifier gate (UI-8w4t §검증)', () => {
+  test('no server source or test names a retired identifier', () => {
+    expect(retiredIdentifierOffenders('server')).toEqual([]);
+  });
+
+  test('no client source or test names a retired identifier', () => {
+    expect(retiredIdentifierOffenders('app')).toEqual([]);
+  });
+
+  test('scans the client sources rather than silently finding nothing', () => {
+    const scanned = sourceFilesUnder(path.join(REPO_ROOT, 'app')).map((file) =>
+      path.relative(REPO_ROOT, file)
+    );
+
+    expect(scanned).toContain('app/views/worker/index.js');
+    expect(scanned).toContain('app/views/worker/lanes.js');
+    expect(scanned).toContain('app/data/worker-queue-store.js');
   });
 });

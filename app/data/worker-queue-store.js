@@ -10,15 +10,12 @@
  * @typedef {import('../../server/worker/queue-store.js').Queue} Queue
  * @typedef {Object} CompletionStatus
  * @property {string} root_bead_id
- * @property {'gating'|'repairing'|'waiting_repair_pr'|'merging'|'cleaning'|'waiting_metadata'|'reviewing'|'retrying'|'paused'|'needs_human'|'completed'} phase
- * @property {'root'|'repair'|null} subject_role
+ * @property {'gating'|'merging'|'cleaning'|'waiting_metadata'|'reviewing'|'retrying'|'paused'|'needs_human'|'completed'} phase
+ * @property {'root'|null} subject_role
  * @property {string|null} subject_bead_id
  * @property {string|null} [head_sha]
  * @property {string|null} [base_sha]
  * @property {string|null} [merged_sha]
- * @property {number} repair_sessions_used
- * @property {number} repair_session_cap
- * @property {{ bead_id: string, pr_url?: string|null, pr_number?: number|null }|null} current_repair
  * @property {string|null} active_attempt_id
  * @property {string|null} [failure_stage]
  * @property {string|null} [failure_reason]

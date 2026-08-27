@@ -57,7 +57,12 @@ const FAILURE_SENTENCES = {
   deployment_target_not_covering_merge:
     '배포 대상 base가 이 머지 커밋을 포함하지 않습니다.',
   deployment_candidate_ancestry_check_failed:
-    '배포 대상 base가 이 머지 커밋을 포함하는지 확인하지 못했습니다.'
+    '배포 대상 base가 이 머지 커밋을 포함하는지 확인하지 못했습니다.',
+  // 머지 뒤 완료 흐름이 스스로 내는 두 종단 코드 (UI-8w4t §3). 자동 AI 수리
+  // 레인이 사라진 뒤로 이 둘은 곧장 사람에게 오므로, 카드가 raw 토큰 대신
+  // 무슨 일이 있었는지를 말해야 한다.
+  verify_red: '머지 후 검증이 실패했습니다.',
+  repair_lane_retired: '자동 수리 레인이 은퇴해 사람 처리로 넘어왔습니다.'
 };
 
 /**

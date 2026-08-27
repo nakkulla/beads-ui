@@ -1,5 +1,11 @@
 # Completion resume lineage 복구 설계
 
+> **부분 은퇴 (UI-8w4t, 2026-08-27).** `## Design` §1~§3과 그에 딸린
+> `## Test scope` 항목은
+> post-merge 완료 자동 AI 수리 레인에 의존하므로 은퇴했다. 그 레인의 제거
+> 근거는 `docs/superpowers/specs/2026-08-27-completion-repair-lane-removal-design.md`
+> 이며, 나머지 절은 그대로 유효하다.
+
 ## Context
 
 `UI-x9tu`의 자동머지 completion intent는 repair session을 띄울 때
@@ -40,6 +46,11 @@ coordinator는 paused ancestor를 계속 in-flight로 본다. root merge queue h
 - 이미 수행된 외부 effect를 되돌리거나 remote history를 rewrite하지 않는다.
 
 ## Design
+
+> **은퇴 (UI-8w4t).** 여기서 말하는 completion-owned attempt는 전부 자동 수리
+> 세션이었다. 그 레인이 사라지면서 §1~§3은 실행되지 않는다 — 근거는
+> `docs/superpowers/specs/2026-08-27-completion-repair-lane-removal-design.md`
+> 이다.
 
 ### 1. Atomic completion ownership transfer
 
