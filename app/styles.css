@@ -3722,6 +3722,35 @@ html[data-theme='dark'] {
   white-space: pre-wrap;
 }
 
+/* 로그 경로는 세부의 다른 값과 달리 여기서 읽고 끝나는 값이 아니라 터미널로
+   옮겨져야 하는 값이다 (UI-8w4t §4) — 경로와 복사 제어를 한 줄에 둔다. */
+.worker-ev__copyline {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--sp-6);
+}
+
+.worker-ev__path {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+}
+
+.worker-ev__copy {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid var(--border-kv-row);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.worker-ev__copy:hover {
+  color: var(--text-secondary);
+}
+
 /* ==== 정리 스텝퍼 (UI-q0uy §4.4) ==== */
 .worker-stepper {
   display: flex;

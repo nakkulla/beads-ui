@@ -150,37 +150,21 @@ afterEach(() => {
 });
 
 describe('ws worker-queue channel', () => {
-  test('projects one bounded root completion status and hides its repair child rows', () => {
+  test('projects one bounded root completion status', () => {
     const root_bead_id = 'UI-root';
-    const repair_bead_id = 'UI-repair';
-    getWorkerRuntime().prObservations.record('', repair_bead_id, {
-      pr: {
-        number: 22,
-        url: 'https://github.com/o/r/pull/22',
-        state: 'OPEN',
-        mergeable: 'MERGEABLE',
-        merge_state_status: 'CLEAN',
-        head_ref: repair_bead_id,
-        head_sha: 'c'.repeat(40),
-        base_ref: 'main'
-      }
-    });
     const snapshot = /** @type {any} */ (
       decorateQueue('', {
         revision: 1,
         slots: 2,
-        queue: [{ bead_id: repair_bead_id, added_at: 0 }],
+        queue: [],
         attempts: {},
-        pr_wait: [
-          { bead_id: root_bead_id, added_at: 1 },
-          { bead_id: repair_bead_id, added_at: 2 }
-        ],
-        done: [{ bead_id: repair_bead_id, added_at: 3 }],
+        pr_wait: [{ bead_id: root_bead_id, added_at: 1 }],
+        done: [],
         cleanup_failed: {},
         completion_intents: {
           [root_bead_id]: {
             target_base: 'main',
-            phase: 'waiting_repair_pr',
+            phase: 'cleaning',
             subject: {
               role: 'root',
               bead_id: root_bead_id,
@@ -189,8 +173,6 @@ describe('ws worker-queue channel', () => {
               base_sha: 'b'.repeat(40),
               merged_sha: null
             },
-            repair_sessions_used: 1,
-            repair_bead_ids: [repair_bead_id],
             active_op: null,
             terminal_reason: null
           }
@@ -199,26 +181,17 @@ describe('ws worker-queue channel', () => {
     );
 
     expect(snapshot).not.toHaveProperty('completion_intents');
-    expect(snapshot.queue).toEqual([]);
     expect(
       snapshot.pr_wait.map((/** @type {any} */ entry) => entry.bead_id)
     ).toEqual([root_bead_id]);
-    expect(snapshot.done).toEqual([]);
     expect(snapshot.completion_status[root_bead_id]).toEqual({
       root_bead_id,
-      phase: 'waiting_repair_pr',
+      phase: 'cleaning',
       subject_role: 'root',
       subject_bead_id: root_bead_id,
       head_sha: 'a'.repeat(40),
       base_sha: 'b'.repeat(40),
       merged_sha: null,
-      repair_sessions_used: 1,
-      repair_session_cap: 2,
-      current_repair: {
-        bead_id: repair_bead_id,
-        pr_url: 'https://github.com/o/r/pull/22',
-        pr_number: 22
-      },
       active_attempt_id: null,
       failure_stage: null,
       failure_reason: null,
@@ -240,15 +213,13 @@ describe('ws worker-queue channel', () => {
         done: [],
         cleanup_failed: {},
         completion_intents: {
-          'UI-root': { phase: 'mystery', repair_sessions_used: 9 }
+          'UI-root': { phase: 'mystery' }
         }
       })
     );
 
     expect(snapshot.completion_status['UI-root']).toMatchObject({
       phase: 'needs_human',
-      repair_sessions_used: 2,
-      repair_session_cap: 2,
       terminal_reason: 'intent_state_invalid'
     });
     expect(snapshot.completion_status['UI-root']).toMatchObject({

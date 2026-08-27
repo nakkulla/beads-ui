@@ -1,5 +1,5 @@
 import { render } from 'lit-html';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import {
   createRepoOpsDrawer,
   repoOpsTimelineTemplate,
@@ -711,5 +711,100 @@ describe('operation card 종료 원인 · 재시도 결과 (UI-s582 §2)', () =>
         })
       )
     ).toEqual([]);
+  });
+});
+
+describe('카드 로그 경로 인계 (UI-8w4t §4)', () => {
+  /**
+   * @param {any[]} operations
+   * @param {any[]} cleanups
+   * @returns {HTMLElement}
+   */
+  function renderTimeline(operations, cleanups) {
+    const mount = document.createElement('div');
+    const view = timelineView(operations, cleanups, { expanded: false });
+
+    render(
+      repoOpsTimelineTemplate({
+        events: view.visible,
+        hidden: view.hidden,
+        expanded: false,
+        repo: '/repo'
+      }),
+      mount
+    );
+
+    return mount;
+  }
+
+  test('renders a failed operation log path as a copyable absolute path', () => {
+    const mount = renderTimeline(
+      [operation({ state: 'failed', log_path: '/state/logs/op-1.log' })],
+      []
+    );
+
+    const path_element = mount.querySelector('.worker-ev__path');
+    expect(path_element?.tagName).toBe('CODE');
+    expect(path_element?.textContent).toBe('/state/logs/op-1.log');
+    expect(mount.querySelector('.worker-ev__copy')).not.toBe(null);
+  });
+
+  test('renders a stopped cleanup log path as a copyable absolute path', () => {
+    const mount = renderTimeline(
+      [],
+      [cleanup({ reason: 'deploy_script_failure', log_path: '/state/c.log' })]
+    );
+
+    expect(mount.querySelector('.worker-ev__path')?.textContent).toBe(
+      '/state/c.log'
+    );
+    expect(mount.querySelector('.worker-ev__copy')).not.toBe(null);
+  });
+
+  test('omits the copy control when a cleanup stopped before any operation ran', () => {
+    const mount = renderTimeline(
+      [],
+      [cleanup({ reason: 'repo_operations_unavailable' })]
+    );
+
+    expect(mount.querySelector('.worker-ev__copy')).toBe(null);
+    expect(mount.querySelector('.worker-ev__path')).toBe(null);
+  });
+
+  test('omits the copy control on an operation with no log path', () => {
+    const mount = renderTimeline(
+      [operation({ state: 'failed', log_path: null })],
+      []
+    );
+
+    expect(mount.querySelector('.worker-ev__copy')).toBe(null);
+  });
+
+  test('puts the absolute path on the clipboard when the control is clicked', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    const mount = renderTimeline(
+      [operation({ state: 'failed', log_path: '/state/logs/op-1.log' })],
+      []
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-ev__copy')
+    ).click();
+    await Promise.resolve();
+
+    expect(writeText).toHaveBeenCalledWith('/state/logs/op-1.log');
+    vi.unstubAllGlobals();
+  });
+
+  test('names what the control copies for a screen reader', () => {
+    const mount = renderTimeline(
+      [operation({ state: 'failed', log_path: '/state/logs/op-1.log' })],
+      []
+    );
+
+    expect(
+      mount.querySelector('.worker-ev__copy')?.getAttribute('aria-label')
+    ).toBe('로그 경로 복사: /state/logs/op-1.log');
   });
 });

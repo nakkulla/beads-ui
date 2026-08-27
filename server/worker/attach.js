@@ -51,7 +51,6 @@ import {
   createCompletionActionDriver,
   createCompletionIntentCoordinator
 } from './completion-intent.js';
-import { createCompletionRepairService } from './completion-repair.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
 import { createHeadReviewTransport } from './head-review-transport.js';
@@ -456,7 +455,6 @@ export function defaultProbePid(pid) {
  *   autoMerge?: any,
  *   completionIntent?: any,
  *   completionActionDriver?: any,
- *   completionRepair?: any,
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
  *   repoOperationMigration?: { run: () => Promise<any> },
@@ -1400,35 +1398,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       log
     });
 
-  const completionRepair =
-    options.completionRepair ||
-    createCompletionRepairService({
-      bd,
-      repo,
-      hasDurableVerify(input) {
-        const operations = Object.values(
-          runtime.queueStore.snapshot(keyFor(workspace_root)).repo_operations ||
-            {}
-        );
-        return operations.some((operation) => {
-          const row = /** @type {any} */ (operation);
-          return (
-            row.kind === 'verify' &&
-            row.effective_base_sha === input.base_sha?.toLowerCase() &&
-            Array.isArray(row.verify_head_shas) &&
-            row.verify_head_shas.includes(input.subject_sha?.toLowerCase()) &&
-            Array.isArray(row.subjects) &&
-            row.subjects.some(
-              (/** @type {any} */ subject) => subject?.bead_id === input.bead_id
-            )
-          );
-        });
-      },
-      resolveVerify,
-      runVerify: (/** @type {any} */ input) =>
-        runVerifyAtSha({ ...input, worktree, git: gitRun })
-    });
-
   /**
    * The automatic head-review dispatch (UI-hk74 §6). It goes through the SAME
    * `ensureApproved` a [머지] click does — the only differences are the
@@ -1543,8 +1512,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
       prActions,
-      completionRepair,
-      scheduler,
+      bd,
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
       kickMerge: () => mergeQueue.kick(),
       dispatchAutoReview: (/** @type {string} */ root_bead_id) =>
@@ -1670,7 +1638,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     completionIntent: resolvedCompletionIntent,
     completionActionDriver: resolvedCompletionActionDriver,
     beadsChanges,
-    completionRepair,
     refreshExternalPrs,
     reviseDisposition,
     sessionMonitors,
@@ -1787,6 +1754,148 @@ function recoverRunningAttempts(att, key) {
 }
 
 /**
+ * The identity a detached attempt's process control needs. Mirrors the readers
+ * in `scheduler.js` and `session-monitor.js`: a legacy record may only know its
+ * `pid`, and a session leader's `pgid` equals it.
+ *
+ * @param {any} attempt
+ * @returns {{ pid: number, pgid: number, started_at: number }|null}
+ */
+function attemptProcessIdentity(attempt) {
+  const identity = attempt?.process_identity;
+  if (
+    identity &&
+    Number.isInteger(identity.pid) &&
+    Number.isInteger(identity.pgid) &&
+    Number.isFinite(identity.started_at)
+  ) {
+    return identity;
+  }
+  if (
+    attempt &&
+    Number.isInteger(attempt.pid) &&
+    Number.isFinite(attempt.started_at)
+  ) {
+    return {
+      pid: attempt.pid,
+      pgid: attempt.pid,
+      started_at: attempt.started_at
+    };
+  }
+  return null;
+}
+
+/**
+ * Kill one repair session this server did not spawn, and say whether the kill
+ * is CONFIRMED. A session that outlived the restart is NOT in the scheduler's
+ * running map, so `scheduler.stop` cannot reach it — the verified process-group
+ * controller is the path that can.
+ *
+ * Confirmed means "no live process of this attempt is left": an attempt that is
+ * not `running`, a record with no controller or no process identity (§2: 살아
+ * 있는 PID가 없으면 종단만 기록), or a `terminate` that reports `ok`.
+ *
+ * NOT confirmed means the pid may still be running — `terminate` refused
+ * (`{ ok: false }`) or threw. The caller must then leave the record alone: the
+ * retirement writes a terminal status and drops the keys that name the process,
+ * so recording it over a live session would strand that session unidentifiable.
+ *
+ * @param {ReturnType<typeof createWorkerAttachment>} att
+ * @param {string} key
+ * @param {string} attempt_id
+ * @returns {Promise<boolean>} Whether the stop is confirmed.
+ */
+async function stopRetiredRepairSession(att, key, attempt_id) {
+  const attempt = att.runtime.queueStore.snapshot(key).attempts?.[attempt_id];
+  if (!attempt || attempt.status !== 'running') {
+    return true;
+  }
+  try {
+    att.sessionMonitors?.stop(key, attempt_id);
+  } catch (err) {
+    log('repair-lane monitor stop failed for %s: %o', attempt_id, err);
+  }
+  const identity = attemptProcessIdentity(attempt);
+  if (!att.processController || !identity) {
+    return true;
+  }
+  try {
+    const stopped = await att.processController.terminate(identity);
+    if (stopped?.ok === true) {
+      return true;
+    }
+    log(
+      'repair-lane session stop refused for %s: %o',
+      attempt_id,
+      stopped ?? null
+    );
+    return false;
+  } catch (err) {
+    log('repair-lane session stop failed for %s: %o', attempt_id, err);
+    return false;
+  }
+}
+
+/**
+ * Retire every persisted post-merge repair saga (UI-8w4t §2) FIRST, before any
+ * other startup pass can observe its records. The order is the whole point:
+ * the cold load withheld these intents with their `repair_*` keys intact, this
+ * pass kills the surviving session processes, and only then does the store
+ * write the attempt terminals, the `repair_lane_retired` reason, and the
+ * rewritten record that no longer has the keys. Dropping the keys first would
+ * leave a live repair session with nothing left to name it — and
+ * {@link recoverRunningAttempts}, which runs below, would reattach a monitor to
+ * exactly that process.
+ *
+ * The repair Beads the lane already created are left alone; a human closes
+ * them.
+ *
+ * @param {ReturnType<typeof createWorkerAttachment>} att
+ * @param {string} key
+ */
+async function retireRepairLanes(att, key) {
+  const store = att.runtime.queueStore;
+  let pending = [];
+  try {
+    pending = store.pendingRepairLaneRetirements(key);
+  } catch (err) {
+    log('repair-lane retirement plan failed for %s: %o', key, err);
+    return;
+  }
+  if (pending.length === 0) {
+    return;
+  }
+  for (const plan of pending) {
+    let stopped = true;
+    for (const attempt_id of plan.attempt_ids) {
+      // Every attempt, not until the first refusal: a root may own more than
+      // one session, and the ones that CAN be stopped should be.
+      stopped =
+        (await stopRetiredRepairSession(att, key, attempt_id)) && stopped;
+    }
+    if (!stopped) {
+      // Ordering over progress (§2). The record keeps its phase and its keys,
+      // so the next startup replans this root from disk and tries again; the
+      // alternative is a terminal record whose process is still running.
+      log(
+        'repair-lane retirement deferred for %s: session still alive',
+        plan.root_bead_id
+      );
+      continue;
+    }
+    try {
+      store.retireRepairLane(key, {
+        root_bead_id: plan.root_bead_id,
+        at: Date.now()
+      });
+    } catch (err) {
+      log('repair-lane retirement failed for %s: %o', plan.root_bead_id, err);
+    }
+  }
+  emitQueueChanged(key);
+}
+
+/**
  * Recover persisted control before any monitor or ordinary driver can observe
  * the same attempt. A recovery failure leaves the attachment constructed but
  * inert; starting reconcile/poll/merge after an ambiguous signal would let a
@@ -1797,6 +1906,7 @@ function recoverRunningAttempts(att, key) {
  * @param {boolean} start_pr_poller
  */
 async function startWorkerAttachment(att, key, start_pr_poller) {
+  await retireRepairLanes(att, key);
   try {
     await att.discardCoordinator.recoverFences();
   } catch (err) {

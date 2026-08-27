@@ -1013,7 +1013,7 @@ export function createPrActions(deps) {
    * a PR, or starts cleanup.
    *
    * @param {string} bead_id
-   * @param {'root'|'repair'} [role]
+   * @param {'root'} [role]
    * @returns {Promise<any>}
    */
   async function completionGate(bead_id, role = 'root') {

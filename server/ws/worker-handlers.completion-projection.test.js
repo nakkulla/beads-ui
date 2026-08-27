@@ -61,9 +61,6 @@ function intentQueue(phase, auto_resolution, extra = {}) {
         target_base: 'main',
         phase,
         subject: { role: 'root', bead_id: ROOT },
-        repair_sessions_used: 0,
-        repair_bead_ids: [],
-        subject_stack: [],
         active_op: null,
         terminal_reason: null,
         auto_resolution,
@@ -97,6 +94,43 @@ describe('completion_status phase projection (UI-hk74 §4)', () => {
     expect(phases).toEqual(
       expect.arrayContaining(['waiting_metadata', 'reviewing', 'retrying'])
     );
+  });
+
+  test('names exactly the nine surviving phases', () => {
+    const phases = durableCompletionPhases();
+
+    expect(phases).toEqual([
+      'gating',
+      'merging',
+      'cleaning',
+      'waiting_metadata',
+      'reviewing',
+      'retrying',
+      'paused',
+      'needs_human',
+      'completed'
+    ]);
+  });
+
+  test('carries exactly the fields the card reads', () => {
+    const status = statusOf(intentQueue('cleaning', null));
+
+    expect(Object.keys(status).sort()).toEqual([
+      'active_attempt_id',
+      'auto_resolution',
+      'base_sha',
+      'evidence',
+      'failure_reason',
+      'failure_stage',
+      'head_sha',
+      'log_path',
+      'merged_sha',
+      'phase',
+      'root_bead_id',
+      'subject_bead_id',
+      'subject_role',
+      'terminal_reason'
+    ]);
   });
 
   test('still reports a malformed intent as terminal', () => {

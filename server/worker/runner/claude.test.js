@@ -879,26 +879,6 @@ describe('runner/claude system-prompt channel (UI-rxp3 §2)', () => {
     expect(built.args.at(-1)).toBe('이어하라');
   });
 
-  test('delivers completion repair evidence on the resumed system channel', () => {
-    const spec = claudeSpec();
-
-    const built = spec.buildArgv({ id: 'UI-1', prompt: '복구하라' }, '/repo', {
-      resume_session_id: 'sess-1',
-      target_base: 'main',
-      completion_repair: {
-        mode: 'resume_root',
-        stage: 'merge_gate',
-        reason: 'verify_cmd_failed',
-        subject_sha: 'a'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        result_digest: 'c'.repeat(64)
-      }
-    });
-
-    expect(systemPromptOf(built.args)).toContain('## completion repair');
-    expect(built.args.at(-1)).toBe('복구하라');
-  });
-
   test('exposes the assembled prompts alongside the argv they were built into', () => {
     const spec = claudeSpec();
 

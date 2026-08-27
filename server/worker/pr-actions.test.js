@@ -1460,7 +1460,6 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
           result_digest: 'c'.repeat(64)
         },
         attempt_id: null,
-        repair_bead_id: null,
         status: 'prepared'
       }
     });

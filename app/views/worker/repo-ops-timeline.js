@@ -23,6 +23,9 @@ import {
   terminationText
 } from './failure-labels.js';
 import { formatClock, formatElapsed, shortSha } from './lanes.js';
+// One template for the log path, shared with the Worker row's completion card
+// (UI-8w4t §4) so both surfaces offer the same affordance and the same toast.
+import { logPathTemplate } from './log-path.js';
 import { cleanupStepLabel, cleanupStepperView } from './merge-steps.js';
 
 /**
@@ -217,10 +220,14 @@ function stateWordOf(event) {
  * including the RAW failure code, which is the reason this block always exists
  * on a failing event.
  *
+ * A row may ask for `copy`, which renders its value as a `<code>` path with the
+ * copy control beside it. Rows with an empty value drop out first, so `copy`
+ * never produces a control with nothing behind it.
+ *
  * `open` is intentionally unbound, leaving it DOM state, so an expanded block
  * survives every snapshot re-render.
  *
- * @param {Array<{ term: string, value: string }>} rows
+ * @param {Array<{ term: string, value: string, copy?: boolean }>} rows
  * @returns {TemplateResult|string}
  */
 function detailsTemplate(rows) {
@@ -231,13 +238,14 @@ function detailsTemplate(rows) {
   return html`<details class="worker-ev__details">
     <summary>세부</summary>
     <dl class="worker-ev__kv">
-      ${kept.map(
-        (row) =>
-          html`<div>
-            <dt>${row.term}</dt>
-            <dd>${row.value}</dd>
-          </div>`
-      )}
+      ${kept.map((row) => {
+        const value =
+          row.copy === true ? logPathTemplate(row.value) : row.value;
+        return html`<div>
+          <dt>${row.term}</dt>
+          <dd>${value}</dd>
+        </div>`;
+      })}
     </dl>
   </details>`;
 }
@@ -426,7 +434,7 @@ function operationEventTemplate(event, repo_ops) {
             .filter(Boolean)
             .join(' · ')
         },
-        { term: '로그', value: operation.log_path || '' },
+        { term: '로그', value: operation.log_path || '', copy: true },
         { term: '출력', value: operation.output_tail || '' }
       ])}
     </div>
@@ -494,7 +502,7 @@ function cleanupEventTemplate(event) {
       ${detailsTemplate([
         { term: '실패 코드', value: cleanup.reason || '' },
         { term: '진단', value: cleanup.detail || '' },
-        { term: '로그', value: cleanup.log_path || '' },
+        { term: '로그', value: cleanup.log_path || '', copy: true },
         { term: '출력', value: cleanup.output_tail || '' }
       ])}
     </div>

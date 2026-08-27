@@ -490,3 +490,22 @@ describe('retryOutcomeText (UI-s582 §2 재시도 결과)', () => {
     ).toBe('');
   });
 });
+
+describe('post-merge 완료 종단 코드 (UI-8w4t §3)', () => {
+  test('says a post-merge verify red failed', () => {
+    expect(failureSentence('verify_red')).toBe('머지 후 검증이 실패했습니다.');
+  });
+
+  test('says a retired repair lane handed the failure to a person', () => {
+    expect(failureSentence('repair_lane_retired')).toBe(
+      '자동 수리 레인이 은퇴해 사람 처리로 넘어왔습니다.'
+    );
+  });
+
+  test('leaves an unknown completion terminal code as the raw token', () => {
+    expect(failureSentence('completion_future_code')).toBeNull();
+    expect(failureText('completion_future_code')).toBe(
+      'completion_future_code'
+    );
+  });
+});

@@ -1379,9 +1379,9 @@ export function createMergeQueue(deps) {
       if (
         probe.kind === 'clean' &&
         manualContinuation(queue_bead_id) &&
-        // A completion root runs its OWN gating saga with its own repair
-        // budget (`processCompletionItem`), and that loop has no disposition
-        // for a head-review result. The two machines stay separate.
+        // A completion root runs its OWN gating saga
+        // (`processCompletionItem`), and that loop has no disposition for a
+        // head-review result. The two machines stay separate.
         completionIntent(queue_bead_id) === null &&
         typeof deps.headReview?.ensureApproved === 'function'
       ) {
@@ -1496,9 +1496,8 @@ export function createMergeQueue(deps) {
   }
 
   /**
-   * Drive the current subject while preserving the root's public queue slot.
-   * Conflict rounds stay on the root queue entry, independent from the shared
-   * repair-session budget stored on the intent.
+   * Drive the root subject while preserving its public queue slot. Conflict
+   * rounds stay on the root queue entry.
    *
    * @param {string} root_bead_id
    * @param {any} intent
@@ -1518,21 +1517,6 @@ export function createMergeQueue(deps) {
         ok: false,
         action: 'refused',
         reason: 'completion_subject_invalid'
-      });
-      return;
-    }
-    const q = snapshot();
-    if (
-      intent.subject?.role === 'repair' &&
-      Array.isArray(q.done) &&
-      q.done.some(
-        (/** @type {any} */ entry) => entry.bead_id === subject_bead_id
-      )
-    ) {
-      await handoffCompletion(root_bead_id, subject_bead_id, {
-        ok: true,
-        action: 'already_merged',
-        reason: null
       });
       return;
     }

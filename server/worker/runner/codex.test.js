@@ -230,25 +230,6 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
     expect(built.task_prompt).toBe('작업하라');
   });
 
-  test('delivers completion repair evidence in the positional system prefix', () => {
-    const spec = codexSpec();
-
-    const built = spec.buildArgv({ id: 'UI-1', prompt: '복구하라' }, WS, {
-      target_base: 'main',
-      completion_repair: {
-        mode: 'dispatch_repair',
-        stage: 'post_merge_verify',
-        reason: 'verify_cmd_failed',
-        subject_sha: 'a'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        result_digest: 'c'.repeat(64)
-      }
-    });
-
-    expect(built.system_prompt).toContain('## completion repair');
-    expect(built.args.at(-1)).toContain('dispatch_repair');
-  });
-
   test('builds the default task prompt when the bead carries none', () => {
     const spec = codexSpec();
 
