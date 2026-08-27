@@ -5128,15 +5128,24 @@ html[data-theme='dark'] {
 
 /* 접힌 레인 = 스트립 (UI-58y2 §모바일 3/5). 별도 컴포넌트가 아니라 헤더가
    토글이 된 같은 레인이므로 `data-lane`이 살아 있고 드롭 타깃도 유지된다. */
-/* 버튼 크롬만 지운다 — 색·크기·자간은 같은 요소에 함께 걸린 `.worker-pane__hd`가
-   그대로 소유하므로, 여기서 `inherit`을 쓰면 헤더 타이포가 되레 무너진다. */
-.worker-pane__hd--toggle {
-  width: 100%;
+/* 토글은 헤더 전체가 아니라 헤더 안의 버튼 하나다 (UI-5ksp §4.4) — 그래야
+   `header_control`(정렬 select·범위 선택)이 형제로 서고, 그 조작이 접힘을
+   건드리지 않는다. 버튼 크롬만 지우고 타이포는 부모 `.worker-pane__hd`에서
+   물려받는다. */
+.worker-pane__toggle {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
   padding: 0;
   border: none;
   background: transparent;
-  font-family: inherit;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
   text-align: left;
+  text-transform: inherit;
   cursor: pointer;
 }
 
@@ -5147,6 +5156,39 @@ html[data-theme='dark'] {
 
 .worker-pane--collapsed .worker-pane__hd {
   margin-bottom: 0;
+}
+
+/* 데스크톱 접힘 = 얇은 세로 띠 (§3-2·§4.4): 레인 색 스파인은 그대로 두고
+   제목만 세로로 세운다. 모바일 접힘은 가로 한 줄 그대로이므로 이 규칙은
+   `min-width: 641px` 가드 안에만 있다. */
+@media (min-width: 641px) {
+  .worker-pane--collapsed {
+    flex: 0 0 36px;
+    min-width: 0;
+    padding: var(--sp-6) 0;
+  }
+
+  .worker-pane--collapsed .worker-pane__hd {
+    justify-content: center;
+  }
+
+  .worker-pane--collapsed .worker-pane__toggle {
+    overflow: hidden;
+    justify-content: flex-start;
+    max-height: 100%;
+    writing-mode: vertical-rl;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .worker-pane--collapsed .worker-pane__caret {
+    display: none;
+  }
+
+  .worker-pane--collapsed .worker-pane__count {
+    flex: 0 0 auto;
+    margin-left: 0;
+  }
 }
 
 .worker-pane__preview {
@@ -5779,6 +5821,110 @@ html[data-theme='dark'] {
   min-width: 0;
 }
 
+/* --- 공유 대기 본문 (UI-5ksp §4.2) -----------------------------------------
+   병렬 영역 하나 + 직렬 영역 하나. 값은 Monitor `.mon2-wait`/`.mon2-area*`/
+   `.mon2-lane*`에서 그대로 옮겨 왔다 — 두 탭이 같은 본문을 쓰므로 클래스
+   이름만 `worker-wait__*`로 바뀐다. */
+.worker-wait__area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.worker-wait__area-hd {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  padding: var(--sp-3) 0;
+  background: var(--bg-app);
+  font-size: var(--fs-chip);
+}
+
+.worker-wait__area-toggle {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.worker-wait__area-toggle:hover {
+  color: var(--text-primary);
+}
+
+.worker-wait__area-name {
+  color: var(--text-secondary);
+}
+
+.worker-wait__area-count {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.worker-wait__area-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.worker-wait__area--serial > .worker-wait__area-body {
+  gap: var(--sp-6);
+}
+
+.worker-wait__lane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.worker-wait__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+/* 중첩 한 단계 = 토큰 한 단계 아래 (§4.5): 바깥 다섯 pane은 panel 토큰, 대기
+   본문 안의 직렬 pane과 연결 레인 pane은 card 토큰이다. 폭 하한도 여기서
+   풀린다 — 220px은 최상위 레인만의 것이고, 중첩 pane이 물려받으면 바깥 대기
+   pane 밖으로 삐져나온다. */
+.worker-wait .worker-pane {
+  min-width: 0;
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  background: var(--bg-card);
+}
+
+/* 빈 직렬 레인 (§4.3): 데스크톱은 pane을 그대로 둔 채 "비어 있음" 문구를
+   보여 드롭 타깃을 고정하고, ≤640px는 한 줄 힌트로 접었다가 드래그가
+   시작되면 pane으로 펼친다. 표시 조건은 여기 CSS 한 곳이 소유한다. */
+.worker-wait__hint {
+  display: none;
+  padding: var(--sp-2) var(--sp-6);
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+}
+
+@media (max-width: 640px) {
+  .worker-wait__lane--empty > .worker-pane {
+    display: none;
+  }
+
+  .worker-wait__lane--empty > .worker-wait__hint {
+    display: block;
+  }
+
+  .is-dragging .worker-wait__lane--empty > .worker-pane {
+    display: flex;
+  }
+
+  .is-dragging .worker-wait__lane--empty > .worker-wait__hint {
+    display: none;
+  }
+}
+
 .worker-lane__badge {
   margin-left: auto;
   padding: 0 var(--sp-4);
@@ -6395,6 +6541,15 @@ html[data-theme='dark'] {
   align-items: center;
   gap: var(--sp-6);
   min-width: 0;
+}
+
+/* 슬롯 1 조작 (UI-5ksp §4.6): ⛓ 의존성 버튼은 1번 줄 오른쪽 끝이다. foot으로
+   내려가면 coarse pointer 전용 접기 규칙에 함께 삼켜진다. */
+.worker-card__head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-left: auto;
 }
 
 .worker-card__grip {
@@ -7272,6 +7427,44 @@ html[data-theme='dark'] {
 /* 행 조작 묶음 (§6, UI-j92s §6.1). 의존성 버튼과 연결 레인 행의 `✕`는 화면
    폭과 무관한 조작이므로 늘 보인다; 자리 옮기기 `↑ ↓ ✕`만 드래그의 coarse
    pointer 보완재로 남는다. */
+/* 대기 행 조작 묶음 (UI-5ksp §4.6). 행 밖 별도 줄이던 `.mon2-rowops`를 행
+   1번 줄 조작 슬롯으로 옮긴 것이라, 아래 줄을 위한 세로 여백은 없다. */
+.worker-mini__rowops {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.worker-mini__rowops button {
+  min-width: 28px;
+  padding: var(--sp-2) var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* 자리 옮기기만 드래그의 coarse pointer 보완재다 — 의존성 버튼은 화면 폭과
+   무관한 상시 조작이라 늘 보인다. */
+.worker-mini__rowops-up,
+.worker-mini__rowops-down,
+.worker-mini__rowops-remove {
+  display: none;
+}
+
+@media (any-pointer: coarse), (max-width: 640px) {
+  .worker-mini__rowops-up,
+  .worker-mini__rowops-down,
+  .worker-mini__rowops-remove {
+    display: inline-flex;
+    align-items: center;
+  }
+}
+
 .mon2-rowops,
 .mon2-crow__detach {
   display: inline-flex;

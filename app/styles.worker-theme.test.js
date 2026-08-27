@@ -333,6 +333,82 @@ describe('worker console styles', () => {
     expect(hostRule).toContain('overflow-x: auto');
   });
 
+  // 공유 대기 본문 (UI-5ksp §4.2·§4.3·§4.4·§4.6). 여기서 고정하는 것은 나중
+  // 단계가 지우면 안 되는 구조 규칙이다: 중첩 pane의 토큰과 폭 하한, 빈 레인의
+  // 뷰포트별 표시, 데스크톱 세로 띠.
+  test('gives the nested wait panes card tokens and no lane min-width', () => {
+    const nestedRule =
+      workerBlock.match(
+        /(?:^|\n)\.worker-wait \.worker-pane\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(nestedRule).toContain('min-width: 0');
+    expect(nestedRule).toContain('border: 1px solid var(--border-card)');
+    expect(nestedRule).toContain('background: var(--bg-card)');
+    expect(nestedRule).toContain('border-radius: var(--r-6)');
+  });
+
+  test('draws the wait body as two stacked areas', () => {
+    const areaRule =
+      workerBlock.match(/(?:^|\n)\.worker-wait__area\s*{([^}]*)}/)?.[1] || '';
+    const bodyRule =
+      workerBlock.match(/(?:^|\n)\.worker-wait__area-body\s*{([^}]*)}/)?.[1] ||
+      '';
+
+    expect(areaRule).toContain('flex-direction: column');
+    expect(bodyRule).toContain('flex-direction: column');
+  });
+
+  test('hides the empty-lane hint until the mobile breakpoint', () => {
+    const hintRule =
+      workerBlock.match(/(?:^|\n)\.worker-wait__hint\s*{([^}]*)}/)?.[1] || '';
+    const mq_start = CSS.indexOf(
+      '@media (max-width: 640px)',
+      CSS.indexOf('.worker-wait__hint')
+    );
+    const mq = CSS.slice(mq_start, mq_start + 700);
+
+    expect(hintRule).toContain('display: none');
+    expect(mq).toContain('.worker-wait__lane--empty > .worker-pane');
+    expect(mq).toContain('.worker-wait__lane--empty > .worker-wait__hint');
+    expect(mq).toContain('.is-dragging .worker-wait__lane--empty');
+  });
+
+  test('turns a collapsed desktop pane into a vertical strip', () => {
+    const mq_start = CSS.indexOf('@media (min-width: 641px) {', markerIndex);
+    const mq = CSS.slice(mq_start, CSS.indexOf('\n}\n', mq_start));
+
+    expect(mq).toContain('flex: 0 0 36px');
+    expect(mq).toContain('writing-mode: vertical-rl');
+    expect(mq).toContain('.worker-pane--collapsed .worker-pane__caret');
+  });
+
+  test('lets the pane toggle share its header with a control', () => {
+    const toggleRule =
+      workerBlock.match(/(?:^|\n)\.worker-pane__toggle\s*{([^}]*)}/)?.[1] || '';
+
+    expect(toggleRule).toContain('flex: 1 1 auto');
+    expect(toggleRule).toContain('min-width: 0');
+    expect(toggleRule).not.toContain('width: 100%');
+  });
+
+  test('pushes the card head actions to the end of the first line', () => {
+    const rule =
+      workerBlock.match(
+        /(?:^|\n)\.worker-card__head-actions\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(rule).toContain('margin-left: auto');
+  });
+
+  test('keeps the row action cluster inline with the row', () => {
+    const rule =
+      workerBlock.match(/(?:^|\n)\.worker-mini__rowops\s*{([^}]*)}/)?.[1] || '';
+
+    expect(rule).toContain('display: inline-flex');
+    expect(rule).toContain('margin-left: auto');
+  });
+
   test('keeps running tile metadata readable when it has a long token', () => {
     const chipRule =
       workerBlock.match(/(?:^|\n)\.exec-chip\s*{([^}]*)}/)?.[1] || '';
