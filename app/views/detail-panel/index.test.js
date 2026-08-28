@@ -735,15 +735,16 @@ describe('views/detail-panel', () => {
     ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     // Opening an issue fetches its comments (UI-ucq6 §변경 3), the workspace
-    // session defaults (spec §E), and the repo account defaults (UI-d3cb §6.2),
-    // so the claim is that cancel sent no MUTATION — not that the panel stayed
-    // silent.
+    // session defaults (spec §E), the repo account defaults (UI-d3cb §6.2) and
+    // the bead's Worker 이력 (record-timeline-retention §9), so the claim is
+    // that cancel sent no MUTATION — not that the panel stayed silent.
     expect(
       transport.mock.calls.filter(
         (c) =>
           c[0] !== 'get-comments' &&
           c[0] !== 'get-session-defaults' &&
-          c[0] !== 'get-workspace-accounts'
+          c[0] !== 'get-workspace-accounts' &&
+          c[0] !== 'get-bead-timeline'
       )
     ).toEqual([]);
     expect(
@@ -961,6 +962,68 @@ describe('views/detail-panel', () => {
     const drawer = document.querySelector('.session-log-root .sv');
     expect(drawer).not.toBeNull();
     expect(drawer?.querySelector('.sv__result--ok')).not.toBeNull();
+
+    panel.destroy();
+  });
+
+  test('session-history includes an attempt the queue no longer holds', async () => {
+    // §7: a transferred record is not in the client queue store at all, so the
+    // panel reads the union `get-bead-timeline` carries.
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: {
+          live: {
+            attempt_id: 'live',
+            bead_id: 'UI-1',
+            status: 'running',
+            started_at: 2000,
+            usage: { input_tokens: 10, output_tokens: 0 }
+          }
+        }
+      })
+    );
+    const transport = vi.fn(async (/** @type {string} */ type) =>
+      type === 'get-bead-timeline'
+        ? {
+            bead_id: 'UI-1',
+            events: [],
+            attempts: [
+              {
+                attempt_id: 'moved',
+                bead_id: 'UI-1',
+                status: 'done',
+                started_at: 1000,
+                usage: { input_tokens: 90, output_tokens: 0 }
+              }
+            ]
+          }
+        : { ok: true }
+    );
+
+    const panel = createDetailPanel(mount, {
+      queueStore,
+      transport,
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      mount.querySelector('.detail-session[data-attempt-id="moved"]')
+    ).not.toBeNull();
+    expect(
+      mount.querySelector('.detail-session[data-attempt-id="live"]')
+    ).not.toBeNull();
+    expect(mount.querySelector('.detail-usage-total')?.textContent).toContain(
+      '100'
+    );
 
     panel.destroy();
   });

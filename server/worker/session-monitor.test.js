@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createQueueStore } from './queue-store.js';
 import { createSessionLog } from './session-log.js';
 import { createSessionMonitors } from './session-monitor.js';
+import { beadSessionLogPath } from './state-paths.js';
 import { createUsageStore } from './usage-store.js';
 
 /** @type {string} */
@@ -594,5 +595,59 @@ describe('worker/session-monitor guard effect parity (guard-enforcement-layer-re
       command: 'gh pr merge 42 --squash'
     });
     expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
+  });
+});
+
+describe('worker/session-monitor — attempt log_path (record-timeline-retention §4)', () => {
+  test('persists the resolved log_path onto a record that stores none', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store);
+
+    env.monitors.start(WS, attempt);
+    env.monitors.stop(WS, 'att-1');
+
+    expect(env.store.snapshot(WS).attempts['att-1'].log_path).toBe(
+      env.session_log.pathFor(WS, 'att-1')
+    );
+  });
+
+  test('follows the log_path the record stores instead of the default', () => {
+    const env = setup();
+    const stored = path.join(tmp_state, 'elsewhere', 'att-1.jsonl');
+    const attempt = seedRunningAttempt(env.store, { log_path: stored });
+    fs.mkdirSync(path.dirname(stored), { recursive: true });
+    fs.writeFileSync(stored, '');
+    /** @type {any[]} */
+    const pushed = [];
+    env.session_log.subscribe((a) => pushed.push(a));
+
+    env.monitors.start(WS, attempt);
+    fs.appendFileSync(stored, assistantText('from the recorded path'));
+    env.monitors.stop(WS, 'att-1');
+
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0].event.message.content[0].text).toBe(
+      'from the recorded path'
+    );
+  });
+
+  test('keeps tailing the same inode after the log is renamed', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store);
+    sessionWrites(env.session_log, assistantText('before the move'));
+    const from = env.session_log.pathFor(WS, 'att-1');
+    const to = beadSessionLogPath(WS, 'UI-1', 'att-1');
+    /** @type {any[]} */
+    const pushed = [];
+    env.session_log.subscribe((a) => pushed.push(a));
+
+    startAtBoundary(env, attempt);
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.renameSync(from, to);
+    fs.appendFileSync(to, assistantText('after the move'));
+    env.monitors.stop(WS, 'att-1');
+
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0].event.message.content[0].text).toBe('after the move');
   });
 });

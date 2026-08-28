@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { activeAttemptStates } from '../../app/utils/active-attempts.js';
+import { createBeadTimeline } from './bead-timeline.js';
 import { ensureDelegationMonitorDir } from './delegation-monitor.js';
 import {
   GUARD_WARNINGS_CAP,
@@ -12,6 +13,7 @@ import {
   orderLaneByBlocks
 } from './queue-store.js';
 import {
+  attemptRecordPath,
   delegationMonitorDir,
   deployLogDir,
   queueFilePath,
@@ -2918,6 +2920,38 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
       step: 'child_sweep',
       reason: 'child_close_failed:UI-1.1'
     });
+  });
+
+  test('keeps a cleanup failure summary across a reload', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      summary: 'FAIL server/a.test.js'
+    });
+
+    expect(createQueueStore().load(WS).cleanup_failed['UI-1'].summary).toBe(
+      'FAIL server/a.test.js'
+    );
+  });
+
+  test('omits a cleanup failure summary the caller did not have', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      summary: null
+    });
+
+    expect(
+      createQueueStore().load(WS).cleanup_failed['UI-1']
+    ).not.toHaveProperty('summary');
   });
 
   test('round-trips raw historical diagnosis fields across a later cleanup failure write', () => {
@@ -8941,6 +8975,468 @@ describe('queue store atomic terminalize + hold (UI-5ym8 §7)', () => {
 
     expect(written.ok).toBe(false);
     expect(store.snapshot(WS).hold).toBe(null);
+  });
+});
+
+describe('worker/queue-store queue-hold timeline (record-timeline-retention §5)', () => {
+  /**
+   * @param {{ timeline?: any }} [overrides]
+   */
+  function holdStore(overrides = {}) {
+    const timeline =
+      overrides.timeline || createBeadTimeline({ workspace_root: WS });
+    return { store: createQueueStore({ timeline }), timeline };
+  }
+
+  /**
+   * @param {any} store
+   * @param {string} bead_id
+   * @param {number} at
+   * @param {string} [cause]
+   */
+  function envFailure(store, bead_id, at, cause = 'spawn_failed') {
+    return store.applyQueueHold(WS, {
+      event: {
+        kind: 'env_failure',
+        bead_id,
+        attempt_id: `${bead_id}-att`,
+        cause,
+        at
+      },
+      now: at
+    });
+  }
+
+  test('records the stop on the timeline of the bead it held', () => {
+    const { store, timeline } = holdStore();
+
+    envFailure(store, 'UI-held', 500);
+
+    expect(timeline.readTimeline('UI-held')).toMatchObject([
+      {
+        event_id: 'queue_hold:UI-held:env:500',
+        kind: 'queue_hold',
+        summary: '환경 보류: spawn_failed',
+        at: 500
+      }
+    ]);
+  });
+
+  test('records a user resume under the episode it released', () => {
+    const { store, timeline } = holdStore();
+    envFailure(store, 'UI-held', 500);
+
+    store.applyQueueHold(WS, { event: { kind: 'resume' }, now: 900 });
+
+    expect(timeline.readTimeline('UI-held')).toMatchObject([
+      { kind: 'queue_hold' },
+      {
+        event_id: 'queue_resume:UI-held:env:500',
+        kind: 'queue_resume',
+        summary: '사용자 재개',
+        at: 900
+      }
+    ]);
+  });
+
+  test('announces one standing hold once however many rungs it survives', () => {
+    const { store, timeline } = holdStore();
+
+    envFailure(store, 'UI-held', 500);
+    envFailure(store, 'UI-held', 600);
+    envFailure(store, 'UI-held', 700);
+
+    expect(
+      timeline
+        .readTimeline('UI-held')
+        .filter((/** @type {any} */ event) => event.kind === 'queue_hold')
+    ).toHaveLength(1);
+  });
+
+  test('applies the hold when no timeline is registered', () => {
+    const store = createQueueStore();
+
+    const applied = envFailure(store, 'UI-held', 500);
+
+    expect(applied.ok).toBe(true);
+    expect(store.snapshot(WS).hold).toMatchObject({ kind: 'env', since: 500 });
+  });
+
+  test('applies the hold when the timeline append fails', () => {
+    const { store } = holdStore({
+      timeline: {
+        append: () => ({ ok: false, reason: 'write_failed', detail: 'nope' }),
+        readTimeline: () => []
+      }
+    });
+
+    const applied = envFailure(store, 'UI-held', 500);
+
+    expect(applied.ok).toBe(true);
+    expect(store.snapshot(WS).hold).toMatchObject({ kind: 'env', since: 500 });
+  });
+});
+
+describe('worker/queue-store record transfer', () => {
+  /**
+   * @param {{ timeline?: any }} [overrides]
+   */
+  function storeWithTimeline(overrides = {}) {
+    const timeline =
+      overrides.timeline || createBeadTimeline({ workspace_root: WS });
+    return { store: createQueueStore({ timeline }), timeline };
+  }
+
+  /**
+   * @param {any} store
+   * @param {Partial<import('./queue-store.js').Attempt> & { attempt_id: string, bead_id: string }} attempt
+   */
+  function append(store, attempt) {
+    return store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt
+    });
+  }
+
+  test('keeps an undismissed failed attempt in the queue', () => {
+    const { store } = storeWithTimeline();
+
+    append(store, {
+      attempt_id: 'a-fail',
+      bead_id: 'UI-fail',
+      status: 'failed',
+      cause: 'session_failed'
+    });
+
+    expect(store.snapshot(WS).attempts['a-fail']).toBeDefined();
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-fail', 'a-fail'))).toBe(
+      false
+    );
+  });
+
+  test('keeps a parked attempt in the queue', () => {
+    const { store } = storeWithTimeline();
+
+    append(store, {
+      attempt_id: 'a-park',
+      bead_id: 'UI-park',
+      status: 'parked'
+    });
+
+    expect(store.snapshot(WS).attempts['a-park']).toBeDefined();
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-park', 'a-park'))).toBe(
+      false
+    );
+  });
+
+  test('keeps a retry_wait attempt in the queue', () => {
+    const { store } = storeWithTimeline();
+
+    append(store, {
+      attempt_id: 'a-retry',
+      bead_id: 'UI-retry',
+      status: 'retry_wait'
+    });
+
+    expect(store.snapshot(WS).attempts['a-retry']).toBeDefined();
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-retry', 'a-retry'))).toBe(
+      false
+    );
+  });
+
+  test('transfers a failed attempt once it is dismissed', () => {
+    const { store, timeline } = storeWithTimeline();
+    append(store, {
+      attempt_id: 'a-fail',
+      bead_id: 'UI-fail',
+      status: 'failed',
+      finished_at: 500,
+      cause_detail: { reason: 'session_failed', summary: 'API Error: 529' }
+    });
+
+    const dismissed = store.dismissAttempt(WS, {
+      attempt_id: 'a-fail',
+      expected_revision: store.snapshot(WS).revision
+    });
+
+    expect(dismissed.ok).toBe(true);
+    expect(store.snapshot(WS).attempts['a-fail']).toBeUndefined();
+    expect(
+      JSON.parse(
+        fs.readFileSync(attemptRecordPath(WS, 'UI-fail', 'a-fail'), 'utf8')
+      )
+    ).toMatchObject({ attempt_id: 'a-fail', status: 'failed' });
+    expect(timeline.readTimeline('UI-fail')).toMatchObject([
+      {
+        event_id: 'attempt_failed:a-fail:terminal',
+        at: 500,
+        kind: 'attempt_failed',
+        summary: '세션 실패 — API Error: 529'
+      }
+    ]);
+  });
+
+  test('keeps a done attempt whose completion saga still references its bead', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        attempts: {
+          'a-done': { attempt_id: 'a-done', bead_id: 'UI-saga', status: 'done' }
+        },
+        completion_intents: {
+          'UI-saga': {
+            target_base: 'main',
+            phase: 'gating',
+            subject: {
+              role: 'root',
+              bead_id: 'UI-saga',
+              pr_url: 'https://example.test/pr/1',
+              head_sha: 'a'.repeat(40),
+              base_sha: 'b'.repeat(40),
+              merged_sha: null
+            },
+            active_op: null,
+            terminal_reason: null
+          }
+        }
+      })
+    );
+    const { store } = storeWithTimeline();
+
+    store.setSlots(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      slots: 3
+    });
+
+    expect(store.snapshot(WS).attempts['a-done']).toBeDefined();
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-saga', 'a-done'))).toBe(
+      false
+    );
+  });
+
+  test('transfers a done attempt once its completion saga has finished', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        attempts: {
+          'a-done': {
+            attempt_id: 'a-done',
+            bead_id: 'UI-saga',
+            status: 'done',
+            finished_at: 700
+          }
+        },
+        completion_intents: {
+          'UI-saga': {
+            target_base: 'main',
+            phase: 'completed',
+            subject: {
+              role: 'root',
+              bead_id: 'UI-saga',
+              pr_url: 'https://example.test/pr/1',
+              head_sha: 'a'.repeat(40),
+              base_sha: 'b'.repeat(40),
+              merged_sha: 'c'.repeat(40)
+            },
+            active_op: null,
+            terminal_reason: null
+          }
+        }
+      })
+    );
+    const { store } = storeWithTimeline();
+
+    store.setSlots(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      slots: 3
+    });
+
+    expect(store.snapshot(WS).attempts['a-done']).toBeUndefined();
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-saga', 'a-done'))).toBe(
+      true
+    );
+  });
+
+  test('returns the union of live and transferred attempts for a bead', () => {
+    const { store } = storeWithTimeline();
+    append(store, {
+      attempt_id: 'a-old',
+      bead_id: 'UI-union',
+      status: 'done',
+      started_at: 100
+    });
+
+    append(store, {
+      attempt_id: 'a-new',
+      bead_id: 'UI-union',
+      status: 'running',
+      started_at: 200
+    });
+
+    expect(store.snapshot(WS).attempts['a-old']).toBeUndefined();
+    expect(
+      store.readAttemptsForBead(WS, 'UI-union').map((a) => a.attempt_id)
+    ).toEqual(['a-old', 'a-new']);
+  });
+
+  test('prefers the live record over a transferred one with the same id', () => {
+    const { store } = storeWithTimeline();
+    append(store, {
+      attempt_id: 'a-dup',
+      bead_id: 'UI-dup',
+      status: 'done',
+      started_at: 100
+    });
+
+    append(store, {
+      attempt_id: 'a-dup',
+      bead_id: 'UI-dup',
+      status: 'running',
+      started_at: 300
+    });
+
+    const union = store.readAttemptsForBead(WS, 'UI-dup');
+
+    expect(union).toHaveLength(1);
+    expect(union[0]).toMatchObject({ attempt_id: 'a-dup', status: 'running' });
+    expect(store.readAttempt(WS, 'UI-dup', 'a-dup')).toMatchObject({
+      status: 'running'
+    });
+  });
+
+  test('reads a transferred attempt that the queue no longer holds', () => {
+    const { store } = storeWithTimeline();
+
+    append(store, {
+      attempt_id: 'a-gone',
+      bead_id: 'UI-gone',
+      status: 'discarded',
+      log_path: '/tmp/session.jsonl'
+    });
+
+    expect(store.snapshot(WS).attempts['a-gone']).toBeUndefined();
+    expect(store.readAttempt(WS, 'UI-gone', 'a-gone')).toMatchObject({
+      attempt_id: 'a-gone',
+      status: 'discarded',
+      log_path: '/tmp/session.jsonl'
+    });
+    expect(store.readAttempt(WS, 'UI-gone', 'missing')).toBe(null);
+  });
+
+  test('keeps an unprocessed implementation failure when a review session of the same bead settles', () => {
+    const { store } = storeWithTimeline();
+    append(store, {
+      attempt_id: 'a-impl',
+      bead_id: 'UI-mixed',
+      status: 'failed',
+      cause: 'session_failed'
+    });
+
+    append(store, {
+      attempt_id: 'review:authority-1',
+      bead_id: 'UI-mixed',
+      kind: 'review_session',
+      status: 'done'
+    });
+
+    const attempts = store.snapshot(WS).attempts;
+    expect(attempts['a-impl']).toBeDefined();
+    expect(attempts['review:authority-1']).toBeDefined();
+  });
+
+  test('leaves a restarted process its running attempts after a transfer', () => {
+    const { store } = storeWithTimeline();
+    append(store, {
+      attempt_id: 'a-settled',
+      bead_id: 'UI-settled',
+      status: 'done',
+      started_at: 100
+    });
+    append(store, {
+      attempt_id: 'a-live',
+      bead_id: 'UI-live',
+      status: 'running',
+      started_at: 200,
+      pid: 4242,
+      process_identity: { pid: 4242, pgid: 4242, started_at: 200 }
+    });
+
+    const cold = createQueueStore();
+
+    expect(cold.snapshot(WS).attempts['a-live']).toMatchObject({
+      status: 'running',
+      pid: 4242
+    });
+    expect(cold.snapshot(WS).attempts['a-settled']).toBeUndefined();
+    expect(cold.readAttempt(WS, 'UI-settled', 'a-settled')).toMatchObject({
+      status: 'done'
+    });
+  });
+
+  test('withholds the transfer when the terminal timeline append fails', () => {
+    const { store } = storeWithTimeline({
+      timeline: {
+        append: () => ({
+          ok: false,
+          reason: 'write_failed',
+          detail: 'disk full'
+        }),
+        readTimeline: () => []
+      }
+    });
+
+    const appended = append(store, {
+      attempt_id: 'a-held',
+      bead_id: 'UI-held',
+      status: 'done'
+    });
+
+    expect(appended.ok).toBe(true);
+    expect(store.snapshot(WS).attempts['a-held']).toBeDefined();
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-held', 'a-held'))).toBe(
+      false
+    );
+  });
+
+  test('transfers a withheld attempt on the next pass once the timeline recovers', () => {
+    let fail_append = true;
+    const real = createBeadTimeline({ workspace_root: WS });
+    const { store } = storeWithTimeline({
+      timeline: {
+        /** @param {any} input */
+        append: (input) =>
+          fail_append
+            ? { ok: false, reason: 'write_failed', detail: 'disk full' }
+            : real.append(input),
+        /** @param {string} bead_id */
+        readTimeline: (bead_id) => real.readTimeline(bead_id)
+      }
+    });
+    append(store, { attempt_id: 'a-late', bead_id: 'UI-late', status: 'done' });
+
+    fail_append = false;
+    store.setSlots(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      slots: 3
+    });
+
+    expect(store.snapshot(WS).attempts['a-late']).toBeUndefined();
+    expect(real.readTimeline('UI-late')).toHaveLength(1);
+  });
+
+  test('never transfers when no timeline is registered for the workspace', () => {
+    const store = createQueueStore();
+
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'a-legacy', bead_id: 'UI-legacy', status: 'done' }
+    });
+
+    expect(store.snapshot(WS).attempts['a-legacy']).toBeDefined();
   });
 });
 

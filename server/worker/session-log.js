@@ -15,10 +15,178 @@
  */
 import { EventEmitter } from 'node:events';
 import nodeFs from 'node:fs';
+import zlib from 'node:zlib';
 import { createTranscriptReducer } from '../../app/utils/transcript-lines.js';
 import { readAttemptDelegationStreams } from './delegation-monitor.js';
 import { emitQueueChanged } from './queue-events.js';
-import { sessionLogPath } from './state-paths.js';
+import {
+  attemptRecordPath,
+  beadArchivePath,
+  beadSessionLogPath,
+  beadSessionStderrPath,
+  beadsRootDir,
+  sessionLogPath
+} from './state-paths.js';
+
+/**
+ * What the viewer shows when the read-resolution order finds no file at all
+ * (record-timeline-retention §4). Deletion is a POLICY outcome, not a fault, so
+ * it gets a sentence of its own rather than the empty transcript an unreadable
+ * file produces.
+ */
+export const EXPIRED_SESSION_LOG_NOTICE = '만료됨(180일 보존 정책)';
+
+/**
+ * Where one attempt's transcript can be read; `expired` when none of the
+ * locations holds it, and `unreadable` when one of them exists as far as the
+ * process can tell but could not be examined.
+ *
+ * `unreadable` carries the path that faulted, because the two answers are acted
+ * on differently: `expired` is the retention policy having done its job, and
+ * `unreadable` is a storage fault a human has to look at.
+ *
+ * @typedef {{ status: 'ok', path: string, gzipped: boolean }|{ status: 'unreadable', path: string, gzipped: boolean }|{ status: 'expired', path: null, gzipped: false }} SessionLogLocation
+ */
+
+/**
+ * The ONE read-resolution order (record-timeline-retention §4), shared by this
+ * module's readers and the ws session-log viewer so a drawer can never open a
+ * different file than the one the server treats as authoritative.
+ *
+ * Order, first hit wins:
+ *   1. the attempt record's STORED `log_path`, used verbatim — the record names
+ *      its own transcript and nothing derives a path when one is stored;
+ *   2. the bead-scoped default `beads/<bead>/sessions/<attempt>.jsonl`, which is
+ *      where a record with no stored path lives after the §4 layout;
+ *   3. the legacy flat `sessions/<attempt>.jsonl`, unmigrated history;
+ *   4. the gzip archive `beads/<bead>/archive/<attempt>.jsonl.gz` (§8.2), which
+ *      retention wrote WITHOUT touching `log_path` — this step is why that is
+ *      safe.
+ *
+ * Steps 2 and 4 need the bead: an attempt id is not required to embed one
+ * (`review:authority-…` does not), so without `bead_id` the ladder is the
+ * stored path and the legacy flat file only.
+ *
+ * @param {{ workspace: string, attempt_id: string, bead_id?: string|null, log_path?: string|null, fs?: typeof import('node:fs'), pathFor?: (workspace: string, attempt_id: string) => string }} input
+ * @returns {SessionLogLocation}
+ */
+export function resolveSessionLogRead(input) {
+  const fs = input.fs || nodeFs;
+  const legacyPathFor = input.pathFor || sessionLogPath;
+  const bead_id =
+    typeof input.bead_id === 'string' && input.bead_id.length > 0
+      ? input.bead_id
+      : null;
+  /** @type {Array<{ path: string, gzipped: boolean }>} */
+  const candidates = [];
+  if (typeof input.log_path === 'string' && input.log_path.length > 0) {
+    candidates.push({
+      path: input.log_path,
+      gzipped: input.log_path.endsWith('.gz')
+    });
+  }
+  if (bead_id !== null) {
+    candidates.push({
+      path: beadSessionLogPath(input.workspace, bead_id, input.attempt_id),
+      gzipped: false
+    });
+  }
+  candidates.push({
+    path: legacyPathFor(input.workspace, input.attempt_id),
+    gzipped: false
+  });
+  if (bead_id !== null) {
+    candidates.push({
+      path: beadArchivePath(input.workspace, bead_id, input.attempt_id),
+      gzipped: true
+    });
+  }
+  for (const candidate of candidates) {
+    try {
+      if (fs.statSync(candidate.path).isFile()) {
+        return {
+          status: 'ok',
+          path: candidate.path,
+          gzipped: candidate.gzipped
+        };
+      }
+    } catch (err) {
+      const code = /** @type {NodeJS.ErrnoException} */ (err)?.code;
+      // ONLY absence falls through. A permission or I/O fault says nothing
+      // about whether the transcript is there, and letting it walk to the end
+      // of the ladder would report a storage problem as a deletion the
+      // retention policy never performed — the one answer this ladder must not
+      // invent. The ORDER is unchanged: the fault stops at the candidate that
+      // raised it.
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        return {
+          status: 'unreadable',
+          path: candidate.path,
+          gzipped: candidate.gzipped
+        };
+      }
+    }
+  }
+  return { status: 'expired', path: null, gzipped: false };
+}
+
+/**
+ * The bead one TRANSFERRED attempt belongs to, or null when no bead directory
+ * claims it (§7).
+ *
+ * A consumer that holds only an attempt id — the ws viewer, whose client sends
+ * exactly that — cannot ask {@link resolveSessionLogRead} for the bead-scoped
+ * candidates without this. The bead is recovered from the RECORD TREE rather
+ * than from the id, because the id does not carry it: `beads/<bead>/attempts/`
+ * is scanned for a record, then the session/archive files, so an attempt whose
+ * record was written answers on the first probe.
+ *
+ * Fail-quiet: an unreadable tree is "unknown bead", which degrades the ladder
+ * to the legacy flat path rather than throwing on a read path.
+ *
+ * @param {string} workspace
+ * @param {string} attempt_id
+ * @param {{ fs?: typeof import('node:fs') }} [options]
+ * @returns {string|null}
+ */
+export function beadOfTransferredAttempt(workspace, attempt_id, options = {}) {
+  const fs = options.fs || nodeFs;
+  /** @type {string[]} */
+  let bead_ids;
+  try {
+    bead_ids = fs
+      .readdirSync(beadsRootDir(workspace), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    return null;
+  }
+  for (const bead_id of bead_ids) {
+    const probes = [
+      attemptRecordPath(workspace, bead_id, attempt_id),
+      beadSessionLogPath(workspace, bead_id, attempt_id),
+      beadArchivePath(workspace, bead_id, attempt_id)
+    ];
+    for (const probe of probes) {
+      try {
+        if (fs.statSync(probe).isFile()) {
+          return bead_id;
+        }
+      } catch {
+        // Not this bead.
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * What a reader may hand the resolution ladder about the attempt it is opening.
+ * Both fields are optional: a caller that holds the attempt RECORD passes them
+ * and skips every lookup, and one that holds only an id passes neither.
+ *
+ * @typedef {{ bead_id?: string|null, log_path?: string|null }} SessionLogReadOptions
+ */
 
 /**
  * Coalescing window for the `last_event_at` queue fanout (UI-53es §1). A log
@@ -199,17 +367,21 @@ function activityOf(line, at) {
  * wiring, plus `attemptLogPath`: the READ-side override (UI-hk74 §7), by which
  * an attempt whose durable record names its own transcript is read from THAT
  * file. It is deliberately not consulted by `pathFor`/`stderrPathFor`, which
- * are the write-side contract the scheduler hands to a spawn.
+ * are the write-side contract the scheduler hands to a spawn. The `pathFor`
+ * OPTION overrides the legacy flat derivation only; a bead-scoped write path is
+ * always `state-paths.js`'s, because the §4 layout is the same tree the
+ * timeline, the transferred records, and retention address.
  * @returns {{
- *   pathFor: (workspace: string, attempt_id: string) => string,
- *   stderrPathFor: (workspace: string, attempt_id: string) => string,
- *   readPathFor: (workspace: string, attempt_id: string) => string,
+ *   pathFor: (workspace: string, attempt_id: string, bead_id?: string|null) => string,
+ *   stderrPathFor: (workspace: string, attempt_id: string, bead_id?: string|null) => string,
+ *   readPathFor: (workspace: string, attempt_id: string, options?: SessionLogReadOptions) => string,
+ *   resolveLog: (workspace: string, attempt_id: string, options?: SessionLogReadOptions) => SessionLogLocation,
  *   publish: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void,
  *   attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void,
- *   read: (workspace: string, attempt_id: string, options?: { end_offset?: number }) => unknown[],
- *   readDelegation: (workspace: string, attempt_id: string, launch_id: string, known_session?: unknown) => { lines: unknown[], last_event_at: number|null, offset: number },
- *   lastEventAtOf: (workspace: string, attempt_id: string) => number|null,
- *   lineBoundaryOf: (workspace: string, attempt_id: string) => number|null,
+ *   read: (workspace: string, attempt_id: string, options?: { end_offset?: number } & SessionLogReadOptions) => unknown[],
+ *   readDelegation: (workspace: string, attempt_id: string, launch_id: string, known_session?: unknown, options?: SessionLogReadOptions) => { lines: unknown[], last_event_at: number|null, offset: number },
+ *   lastEventAtOf: (workspace: string, attempt_id: string, options?: SessionLogReadOptions) => number|null,
+ *   lineBoundaryOf: (workspace: string, attempt_id: string, options?: SessionLogReadOptions) => number|null,
  *   lastEventAt: (workspace: string, attempt_id: string, launch_id?: string) => number|null,
  *   lastActivity: (workspace: string, attempt_id: string) => LastActivity|null,
  *   subscribe: (fn: (a: SessionLogAppend) => void, launch_id?: string) => (() => void)
@@ -431,27 +603,27 @@ export function createSessionLog(options = {}) {
   }
 
   /**
-   * Which file a READER should open for one attempt (UI-hk74 §7).
+   * The `log_path` the attempt RECORD stores, or null when it stores none
+   * (record-timeline-retention §4). Used verbatim — a stored path is the
+   * authoritative answer and nothing derives one over it.
    *
-   * A session whose transcript is written somewhere other than `sessions/` —
-   * because something other than the scheduler spawned it and handed the
-   * runner that fd — records the path on its attempt. The attempt record
-   * POINTS at that file; nothing is ever copied, so this resolution is the
-   * whole of what makes the drawer open such a log.
-   *
-   * `pathFor` stays the fallback and keeps its exact meaning: an attempt whose
-   * record names no log — every implementation attempt, and every legacy record
-   * written before `kind` existed — resolves exactly as it did before.
+   * A caller that already holds the record passes `options.log_path`; the
+   * `attemptLogPath` hook is the lookup for one that holds only an id, and it
+   * carries the containment check that keeps durable state from becoming a
+   * file-read primitive (UI-hk74 §7).
    *
    * Fail-quiet: a resolver that throws or answers with anything but a non-empty
-   * string leaves the default in place, so a broken lookup degrades to the old
-   * behaviour rather than to an exception on a read path.
+   * string names no log, and the ladder's remaining candidates answer.
    *
    * @param {string} workspace
    * @param {string} attempt_id
-   * @returns {string}
+   * @param {SessionLogReadOptions} options
+   * @returns {string|null}
    */
-  function readPathFor(workspace, attempt_id) {
+  function storedLogPathOf(workspace, attempt_id, options) {
+    if (typeof options.log_path === 'string' && options.log_path.length > 0) {
+      return options.log_path;
+    }
     if (attemptLogPath) {
       try {
         const recorded = attemptLogPath(workspace, attempt_id);
@@ -459,10 +631,70 @@ export function createSessionLog(options = {}) {
           return recorded;
         }
       } catch {
-        // Fall through to the default below.
+        // Fall through: an unreadable record names no log.
       }
     }
-    return pathFor(workspace, attempt_id);
+    return null;
+  }
+
+  /**
+   * Where this attempt's transcript is, through the ONE ladder of
+   * {@link resolveSessionLogRead}.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {SessionLogReadOptions} [options]
+   * @returns {SessionLogLocation}
+   */
+  function resolveLog(workspace, attempt_id, options = {}) {
+    return resolveSessionLogRead({
+      fs,
+      pathFor,
+      workspace,
+      attempt_id,
+      bead_id: options.bead_id ?? null,
+      log_path: storedLogPathOf(workspace, attempt_id, options)
+    });
+  }
+
+  /**
+   * The bytes of a located log, decompressed when it is the gzip archive
+   * (§8.2). The archive is expanded HERE rather than handed to a client: a
+   * reader's contract is jsonl either way, and the compression is a storage
+   * detail of the retention policy.
+   *
+   * @param {SessionLogLocation} located
+   * @returns {Buffer|null}
+   */
+  function logBytes(located) {
+    if (located.status !== 'ok') {
+      return null;
+    }
+    try {
+      const bytes = fs.readFileSync(located.path);
+      return located.gzipped ? zlib.gunzipSync(bytes) : bytes;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Which file a READER should open for one attempt (UI-hk74 §7).
+   *
+   * Expired resolves to the default path rather than to null so every caller
+   * that only wants a name keeps the string contract it always had; the
+   * readers below ask {@link resolveLog} directly and can tell the two apart.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {SessionLogReadOptions} [options]
+   * @returns {string}
+   */
+  function readPathFor(workspace, attempt_id, options = {}) {
+    const located = resolveLog(workspace, attempt_id, options);
+    return located.status === 'ok'
+      ? located.path
+      : pathFor(workspace, attempt_id);
   }
 
   /**
@@ -509,17 +741,21 @@ export function createSessionLog(options = {}) {
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {string} launch_id
+   * @param {SessionLogReadOptions} [options]
    * @returns {{ lines: unknown[], last_event_at: number|null, offset: number }}
    */
-  function readDelegatedFromParent(workspace, attempt_id, launch_id) {
-    const file = readPathFor(workspace, attempt_id);
-    /** @type {Buffer} */
-    let bytes;
-    try {
-      bytes = fs.readFileSync(file);
-    } catch {
+  function readDelegatedFromParent(
+    workspace,
+    attempt_id,
+    launch_id,
+    options = {}
+  ) {
+    const located = resolveLog(workspace, attempt_id, options);
+    const bytes = logBytes(located);
+    if (bytes === null || located.status !== 'ok') {
       return { lines: [], last_event_at: null, offset: 0 };
     }
+    const file = located.path;
     /** @type {unknown[]} */
     const lines = [];
     for (const line of bytes.toString('utf8').split(/\r?\n/)) {
@@ -555,18 +791,43 @@ export function createSessionLog(options = {}) {
   }
 
   return {
-    // The WRITE-side contract: what the scheduler hands a spawn as
-    // `log_path`/`stderr_path`. Deliberately NOT attempt-aware — resolving it
-    // through a record that does not exist yet at spawn time would decide where
-    // a session writes from state the session itself is about to create.
-    pathFor,
-
     /**
+     * The WRITE-side contract: what the scheduler hands a spawn as `log_path`.
+     * Deliberately NOT attempt-aware — resolving it through a record that does
+     * not exist yet at spawn time would decide where a session writes from
+     * state the session itself is about to create.
+     *
+     * It IS bead-aware (record-timeline-retention §4). A caller that knows the
+     * bead gets the bead-scoped `beads/<bead>/sessions/<attempt>.jsonl`, so a
+     * session lands in the §4 layout FROM BIRTH: nothing has to rename a file a
+     * live child still holds an inherited fd to. A caller that does not know
+     * one — an attempt id carries no bead (`review:authority-…`) — keeps the
+     * legacy flat path, which stays a read candidate for every log written
+     * before this.
+     *
      * @param {string} workspace
      * @param {string} attempt_id
+     * @param {string|null} [bead_id]
+     * @returns {string}
      */
-    stderrPathFor(workspace, attempt_id) {
-      return stderrPathOf(pathFor(workspace, attempt_id));
+    pathFor(workspace, attempt_id, bead_id) {
+      return typeof bead_id === 'string' && bead_id.length > 0
+        ? beadSessionLogPath(workspace, bead_id, attempt_id)
+        : pathFor(workspace, attempt_id);
+    },
+
+    /**
+     * The stderr sidecar of {@link pathFor}, on the same bead-scoped/flat split.
+     *
+     * @param {string} workspace
+     * @param {string} attempt_id
+     * @param {string|null} [bead_id]
+     * @returns {string}
+     */
+    stderrPathFor(workspace, attempt_id, bead_id) {
+      return typeof bead_id === 'string' && bead_id.length > 0
+        ? beadSessionStderrPath(workspace, bead_id, attempt_id)
+        : stderrPathOf(pathFor(workspace, attempt_id));
     },
 
     /**
@@ -578,6 +839,13 @@ export function createSessionLog(options = {}) {
      * @param {string} attempt_id
      */
     readPathFor,
+
+    /**
+     * Where this attempt's transcript is — or that it has EXPIRED (§4). The ws
+     * session-log viewer reads it through this method so the drawer and the
+     * readers above resolve one file by one ladder.
+     */
+    resolveLog,
 
     /**
      * Broadcast one raw event to the live subscribers. The event is ALREADY on
@@ -665,11 +933,16 @@ export function createSessionLog(options = {}) {
      *
      * @param {string} workspace
      * @param {string} attempt_id
+     * @param {SessionLogReadOptions} [options]
      * @returns {number|null}
      */
-    lastEventAtOf(workspace, attempt_id) {
+    lastEventAtOf(workspace, attempt_id, options = {}) {
+      const located = resolveLog(workspace, attempt_id, options);
+      if (located.status !== 'ok') {
+        return null;
+      }
       try {
-        return fs.statSync(readPathFor(workspace, attempt_id)).mtimeMs;
+        return fs.statSync(located.path).mtimeMs;
       } catch {
         return null;
       }
@@ -690,15 +963,12 @@ export function createSessionLog(options = {}) {
      *
      * @param {string} workspace
      * @param {string} attempt_id
+     * @param {SessionLogReadOptions} [options]
      * @returns {number|null}
      */
-    lineBoundaryOf(workspace, attempt_id) {
-      try {
-        const raw = fs.readFileSync(readPathFor(workspace, attempt_id));
-        return raw.lastIndexOf(0x0a) + 1;
-      } catch {
-        return null;
-      }
+    lineBoundaryOf(workspace, attempt_id, options = {}) {
+      const raw = logBytes(resolveLog(workspace, attempt_id, options));
+      return raw === null ? null : raw.lastIndexOf(0x0a) + 1;
     },
 
     /**
@@ -742,22 +1012,20 @@ export function createSessionLog(options = {}) {
      *
      * @param {string} workspace
      * @param {string} attempt_id
-     * @param {{ end_offset?: number }} [options] - Stop at this byte offset
-     * (the handoff boundary above); the rest belongs to another reader.
+     * @param {{ end_offset?: number } & SessionLogReadOptions} [options] - Stop
+     * at this byte offset (the handoff boundary above); the rest belongs to
+     * another reader. `bead_id`/`log_path` steer the §4 resolution ladder.
      * @returns {unknown[]}
      */
     read(workspace, attempt_id, options = {}) {
-      const file = readPathFor(workspace, attempt_id);
-      let raw = '';
-      try {
-        const bytes = fs.readFileSync(file);
-        raw =
-          typeof options.end_offset === 'number'
-            ? bytes.subarray(0, options.end_offset).toString('utf8')
-            : bytes.toString('utf8');
-      } catch {
+      const bytes = logBytes(resolveLog(workspace, attempt_id, options));
+      if (bytes === null) {
         return [];
       }
+      const raw =
+        typeof options.end_offset === 'number'
+          ? bytes.subarray(0, options.end_offset).toString('utf8')
+          : bytes.toString('utf8');
       /** @type {unknown[]} */
       const out = [];
       for (const line of raw.split(/\r?\n/)) {
@@ -793,9 +1061,16 @@ export function createSessionLog(options = {}) {
      * @param {string} attempt_id
      * @param {string} launch_id
      * @param {unknown} [known_session]
+     * @param {SessionLogReadOptions} [options]
      * @returns {{ lines: unknown[], last_event_at: number|null, offset: number }}
      */
-    readDelegation(workspace, attempt_id, launch_id, known_session) {
+    readDelegation(
+      workspace,
+      attempt_id,
+      launch_id,
+      known_session,
+      options = {}
+    ) {
       const scanned = readAttemptDelegationStreams(workspace, attempt_id, {
         known_sessions: known_session ? [known_session] : undefined
       });
@@ -810,7 +1085,12 @@ export function createSessionLog(options = {}) {
         // of the PARENT log tagged with this launch id (UI-2mpn §6.3). The same
         // fallback answers an unknown Codex launch with an empty snapshot,
         // because no parent line carries its id either.
-        return readDelegatedFromParent(workspace, attempt_id, launch_id);
+        return readDelegatedFromParent(
+          workspace,
+          attempt_id,
+          launch_id,
+          options
+        );
       }
       return {
         lines: stream.events.map((entry) => entry.event),

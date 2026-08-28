@@ -39,6 +39,7 @@
  *
  * @import { MergeClickResult } from './pr-actions.js'
  */
+import { failureTokenSummary } from './failure-class.js';
 
 /**
  * How many conflict-resolution rounds ONE queue item may consume (spec §2).
@@ -128,6 +129,24 @@ function snapshotFence(q) {
  */
 
 /**
+ * The one line each `merge()` disposition puts on the bead's timeline
+ * (record-timeline-retention §5). Keyed by the SIX dispositions the header
+ * above already enumerates, so a new disposition shows up here as a missing
+ * label rather than as a silently absent event.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+const MERGE_STEP_LABELS = Object.freeze({
+  merged: 'squash 머지 완료',
+  updated_and_merged: 'base 동기화 후 squash 머지 완료',
+  already_merged: '이미 머지됨',
+  cleanup_pending: '머지 완료 · 정리 진행 중',
+  merge_unconfirmed: '머지 확인 대기',
+  conflict_resolution: '충돌 해소 세션 디스패치',
+  refused: '머지 보류'
+});
+
+/**
  * Build a workspace's merge driver.
  *
  * @param {{
@@ -148,6 +167,7 @@ function snapshotFence(q) {
  *   prepare?: () => Promise<unknown>,
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
  *   notifyChanged?: (workspace: string) => void,
+ *   timeline?: { append: (input: any) => unknown, readTimeline?: (bead_id: string, options?: any) => any[] },
  *   now?: () => number,
  *   setTimer?: (fn: () => void, ms: number) => any,
  *   setResolutionPollTimer?: (fn: () => void, ms: number) => any,
@@ -1533,19 +1553,131 @@ export function createMergeQueue(deps) {
   }
 
   /**
+   * The last merge-attempt number handed out per bead, in this process.
+   *
+   * @type {Map<string, number>}
+   */
+  const merge_attempt_seq = new Map();
+
+  /**
+   * The highest merge-attempt number this bead's timeline already carries.
+   *
+   * Read from the timeline rather than kept only in memory because the numbers
+   * are event ids: a restart that began again at 1 would hand a NEW attempt the
+   * id of a pre-restart one, and the reader — which dedupes by id — would drop
+   * one of the two.
+   *
+   * @param {string} bead_id
+   * @returns {number}
+   */
+  function recordedMergeAttempts(bead_id) {
+    const timeline = /** @type {any} */ (deps.timeline);
+    if (typeof timeline?.readTimeline !== 'function') {
+      return 0;
+    }
+    let highest = 0;
+    try {
+      for (const event of timeline.readTimeline(bead_id)) {
+        if (event?.kind !== 'merge_step') {
+          continue;
+        }
+        const seq =
+          String(event.event_id ?? '')
+            .split(':')
+            .pop() ?? '';
+        const parsed = /^m(\d+)$/.exec(seq);
+        if (parsed) {
+          highest = Math.max(highest, Number(parsed[1]));
+        }
+      }
+    } catch (err) {
+      log('merge attempt seq probe failed for %s: %o', bead_id, err);
+    }
+    return highest;
+  }
+
+  /**
+   * The identity of ONE merge attempt, assigned before the effect it names.
+   *
+   * @param {string} bead_id
+   * @returns {string}
+   */
+  function nextMergeAttemptSeq(bead_id) {
+    const prior = merge_attempt_seq.get(bead_id);
+    const next =
+      (prior === undefined ? recordedMergeAttempts(bead_id) : prior) + 1;
+    merge_attempt_seq.set(bead_id, next);
+    return `m${next}`;
+  }
+
+  /**
    * @param {string} bead_id
    * @returns {Promise<MergeClickResult>}
    */
   async function runMerge(bead_id) {
+    // BEFORE the effect: every exit below belongs to this one attempt, and an
+    // id minted after the fact could not tell a replay from a new try.
+    const attempt_seq = nextMergeAttemptSeq(bead_id);
     if (snapshotFence(snapshot()).active) {
-      return { ok: false, action: 'refused', reason: 'snapshot_unreadable' };
+      return recordMergeStep(bead_id, attempt_seq, {
+        ok: /** @type {const} */ (false),
+        action: /** @type {const} */ ('refused'),
+        reason: 'snapshot_unreadable'
+      });
     }
     try {
-      return await deps.merge(bead_id);
+      return recordMergeStep(bead_id, attempt_seq, await deps.merge(bead_id));
     } catch (err) {
       log('merge queue merge() threw for %s: %o', bead_id, err);
-      return { ok: false, action: 'refused', reason: 'merge_error' };
+      return recordMergeStep(bead_id, attempt_seq, {
+        ok: /** @type {const} */ (false),
+        action: /** @type {const} */ ('refused'),
+        reason: 'merge_error'
+      });
     }
+  }
+
+  /**
+   * Put one merge disposition on the bead's permanent history (§5) and hand the
+   * disposition straight back, so the single point every `merge()` outcome
+   * passes through stays a single expression at each of its three exits.
+   *
+   * The result of the append is ignored: a merge that happened must never be
+   * reported as refused because its history line was lost.
+   *
+   * @template {{ ok?: boolean, action?: string, reason?: string|null }} T
+   * @param {string} bead_id
+   * @param {string} attempt_seq - This merge attempt's id, from {@link
+   * nextMergeAttemptSeq}.
+   * @param {T} result
+   * @returns {T}
+   */
+  function recordMergeStep(bead_id, attempt_seq, result) {
+    if (!deps.timeline) {
+      return result;
+    }
+    const action = String(result?.action ?? '');
+    const label = MERGE_STEP_LABELS[action];
+    if (label === undefined) {
+      return result;
+    }
+    const reason = typeof result?.reason === 'string' ? result.reason : null;
+    deps.timeline.append({
+      bead_id,
+      kind: 'merge_step',
+      // The ATTEMPT is the identity, not the disposition: two attempts on the
+      // same bead reach `refused` for two different reasons — a snapshot the
+      // queue could not read, then a `merge()` that threw — and a disposition
+      // key would collapse them into one line and lose the first reason. The
+      // number is fixed before the effect, so a replay of the SAME attempt
+      // re-appends one id the reader dedupes.
+      seq: attempt_seq,
+      summary:
+        reason === null
+          ? `머지 큐 · ${label}`
+          : `머지 큐 · ${label} — ${failureTokenSummary(reason) ?? reason}`
+    });
+    return result;
   }
 
   /**

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createBeadTimeline } from './bead-timeline.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { install as guardHookInstall } from './guard-hook.js';
 import { resolveExecSettings } from './policy.js';
@@ -19,7 +20,10 @@ import {
   quickFixSelfReviewBlock,
   withQuickFixSelfReview
 } from './scheduler.js';
+import { createSessionLog } from './session-log.js';
 import {
+  beadSessionLogPath,
+  beadSessionStderrPath,
   delegationMonitorDir,
   guardHookDir,
   usageReceiptInboxDir
@@ -595,7 +599,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, now?: () => number }} opts
+ * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -731,6 +735,7 @@ function setup(opts) {
     notifyQueueChanged: opts.notifyQueueChanged,
     onCompletionAttemptSettled: opts.onCompletionAttemptSettled,
     reviewSession: opts.reviewSession,
+    timeline: opts.timeline,
     now: opts.now || (() => 1000)
   });
   // The concurrency cap lives in the STORE now (worker-phase2 §3), not in a
@@ -1826,7 +1831,9 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     expect(a.cause).toBe('loud_fail_blocker');
     expect(a.cause_detail).toEqual({
       reason: 'merge_to_base_blocked',
-      command: 'gh pr merge 311'
+      command: 'gh pr merge 311',
+      // The guard's own kill message, extracted once (UI-8wpb §6 row 3).
+      summary: 'landing on the base branch is never permitted: gh pr merge 311'
     });
   });
 
@@ -2472,6 +2479,48 @@ describe('scheduler policy axis removal (worker-phase2 §2)', () => {
     await env.scheduler.tick(WS);
 
     expect('conflict_resolution' in env.runner.settingsFor('S1')).toBe(false);
+  });
+
+  // record-timeline-retention §4: a session writes into its bead's directory
+  // FROM BIRTH, so nothing has to rename a live log into place later.
+  test('spawns a session against its bead-scoped session log', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      sessionLog: createSessionLog()
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    const settings = env.runner.settingsFor('S1');
+    expect(settings.log_path).toBe(
+      beadSessionLogPath(WS, 'S1', attempt.attempt_id)
+    );
+    expect(settings.stderr_path).toBe(
+      beadSessionStderrPath(WS, 'S1', attempt.attempt_id)
+    );
+  });
+
+  test('records the spawned session log path on the attempt', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      sessionLog: createSessionLog()
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(attempt.log_path).toBe(
+      beadSessionLogPath(WS, 'S1', attempt.attempt_id)
+    );
   });
 });
 
@@ -8452,6 +8501,34 @@ describe('scheduler already-finished verify verdict (UI-b8n8 §접근 B)', () =>
     const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
     expect(/** @type {any} */ (attempt.verify_result).pr_state).toBe('MERGED');
   });
+
+  test('records the ending exactly once on the transferred record', async () => {
+    // The store and the scheduler share ONE real timeline, which is what the
+    // runtime does: the `done` move makes the attempt transferable in the same
+    // write, and the transfer writes an ending for any attempt it finds none
+    // for (record-timeline-retention §5).
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    const store = createQueueStore({ timeline });
+    const env = setup({
+      store,
+      timeline,
+      config: { S1: {} },
+      slots: 1,
+      verify: verifyWith({ already_finished: true })
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const endings = timeline
+      .readTimeline('S1')
+      .filter((event) => event.kind === 'session_ended');
+    expect(endings).toHaveLength(1);
+    expect(endings[0].summary).toBe('성공 · PR 머지 확인됨');
+  });
 });
 
 describe('scheduler quick_fix landing settlement', () => {
@@ -9129,7 +9206,8 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(snap.attempts['att-1'].cause).toBe('loud_fail_blocker');
     expect(snap.attempts['att-1'].cause_detail).toEqual({
       reason: 'merge_to_base_blocked',
-      command: 'git merge main'
+      command: 'git merge main',
+      summary: 'landing on the base branch is never permitted: git merge main'
     });
     expect(snap.pr_wait).toEqual([]);
     // A breached prevention layer is SYSTEMIC (UI-5ym8 §3.4): the stop is
@@ -9740,7 +9818,8 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
     );
     expect(notify.attemptFailed.mock.calls[0][0].cause_detail).toEqual({
       reason: 'git_merge_guard',
-      command: 'git merge main'
+      command: 'git merge main',
+      summary: 'the session engine refused this command: git merge main'
     });
   });
 
@@ -14927,6 +15006,206 @@ describe('scheduler 실패 계층 회귀 (UI-5ym8 impl 리뷰)', () => {
     const snap = env.store.snapshot(WS);
     expect(snap.lineages).toEqual([]);
     expect(snap.hold).toBe(null);
+  });
+});
+
+describe('scheduler bead timeline (record-timeline-retention §5)', () => {
+  /**
+   * A timeline that records what it was asked to append, standing in for the
+   * one instance `attach.js` injects.
+   */
+  function recorder() {
+    /** @type {any[]} */
+    const events = [];
+    return {
+      events,
+      /** @param {any} input */
+      append: (input) => {
+        events.push(input);
+        return { ok: true };
+      },
+      readTimeline: () => []
+    };
+  }
+
+  /**
+   * @param {any[]} events
+   * @param {string} kind
+   */
+  function ofKind(events, kind) {
+    return events.filter((event) => event.kind === kind);
+  }
+
+  test('records the dispatch with its runner, exec and base', async () => {
+    const timeline = recorder();
+    const env = setup({
+      timeline,
+      config: { S1: { runner: 'claude', model: 'opus', effort: 'high' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    expect(ofKind(timeline.events, 'dispatched')).toMatchObject([
+      {
+        bead_id: 'S1',
+        attempt_id,
+        seq: 'dispatch',
+        summary: 'claude opus/high 디스패치 · base base-S1'
+      }
+    ]);
+  });
+
+  test('records a surviving guard warning at its position in the list', async () => {
+    const timeline = recorder();
+    const env = setup({ timeline, config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.eventsFor('A1').emit('event', {
+      kind: 'error',
+      reason: 'base_merge_blocked',
+      message: 'base merged into the branch, session continues: git merge x',
+      guard_warning: { reason: 'base_merge_blocked', command: 'git merge x' }
+    });
+
+    expect(ofKind(timeline.events, 'guard_warning')).toMatchObject([
+      {
+        bead_id: 'A1',
+        seq: 0,
+        summary:
+          '가드 경고 — base merged into the branch, session continues: git merge x',
+        detail: 'git merge x'
+      }
+    ]);
+  });
+
+  test('records a verified success as the session ending', async () => {
+    const timeline = recorder();
+    const env = setup({ timeline, config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(ofKind(timeline.events, 'session_ended')).toMatchObject([
+      {
+        bead_id: 'S1',
+        seq: 'ended',
+        summary: '성공 · PR https://github.com/o/r/pull/1'
+      }
+    ]);
+  });
+
+  test('records an individual failure with the classifier summary', async () => {
+    const timeline = recorder();
+    const env = setup({ timeline, config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    const failed = ofKind(timeline.events, 'attempt_failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({
+      bead_id: 'S1',
+      attempt_id,
+      seq: 'failed'
+    });
+    expect(failed[0].summary).toMatch(/^세션 실패 — /);
+  });
+
+  test('records a scheduled retry rung rather than an ending', async () => {
+    const timeline = recorder();
+    const env = setup({
+      timeline,
+      config: { S1: {} },
+      slots: 1,
+      verify: {
+        verifyPrSubmitted: vi.fn(async () => ({
+          ok: false,
+          reason: 'gh_observation_failed',
+          pr_url: null
+        }))
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(ofKind(timeline.events, 'attempt_retry')).toMatchObject([
+      { bead_id: 'S1', seq: 1 }
+    ]);
+    expect(ofKind(timeline.events, 'attempt_failed')).toEqual([]);
+  });
+
+  test('records a park as the session ending, not a failure', async () => {
+    const timeline = recorder();
+    const env = setup({
+      timeline,
+      config: { S1: {} },
+      slots: 1,
+      verify: {
+        verifyPrSubmitted: vi.fn(async () => ({
+          ok: false,
+          reason: 'no_pr',
+          pr_url: null,
+          bead_status: 'in_progress',
+          awaiting_user: '스펙 승인 대기'
+        }))
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(ofKind(timeline.events, 'session_ended')).toMatchObject([
+      { bead_id: 'S1', seq: 'parked', summary: '파킹 · 스펙 승인 대기' }
+    ]);
+    expect(ofKind(timeline.events, 'attempt_failed')).toEqual([]);
+  });
+
+  test('dispatches when no timeline is injected', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.status).toBe('running');
+  });
+
+  test('fails an attempt normally when the timeline append fails', async () => {
+    const env = setup({
+      timeline: {
+        append: () => ({ ok: false, reason: 'write_failed', detail: 'nope' }),
+        readTimeline: () => []
+      },
+      config: { S1: {} },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('failed');
   });
 });
 

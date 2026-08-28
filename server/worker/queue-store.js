@@ -456,7 +456,7 @@
  * the ONE non-blocking record (UI-dlim §3.4): the bead was ADMITTED with a
  * stale spec_review receipt, so the badge must not read as a refusal. Every
  * record without the flag is a refusal, exactly as before.
- * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, summary?: string, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
  * `resolved`, and nothing retries by itself — so the record that a human must
@@ -577,7 +577,10 @@
  * @property {string|null} log_digest
  * @property {number|null} exit_code
  * @property {string|null} signal
- * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }|null} failure
+ * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean, summary?: string, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }|null} failure
+ * `summary` is the one line the failing script printed (2026-08-28
+ * worker-record-timeline spec §6 row 2), extracted once by the coordinator;
+ * absent when the run left no readable output.
  * @property {{ first_failure: RepoOperation['failure'], first_fingerprint: string|null, first_failed_at: number|null, consumed_key: [string, string, string]|null, absorbed: { first_failure: NonNullable<RepoOperation['failure']>, first_fingerprint: string, at: number }|null, outcome: 'pending'|'consumed'|'not_applicable'|'absorbed', blocked_reason: string|null }|null} retry
  * @property {string|null} superseded_by
  * @property {'automatic'|'manual'} source - Who asked for this operation. Every
@@ -837,6 +840,7 @@
 import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { debug } from '../logging.js';
 import { createUnhandledFailurePredicate } from './attempt-failure.js';
 // The `needs_human` vocabulary is the KERNEL's (UI-5ym8 §7), so the store
 // consumes it rather than re-stating it. This is a module cycle —
@@ -849,6 +853,7 @@ import {
   normalizeDelegationSessions,
   readAttemptDelegationStreams
 } from './delegation-monitor.js';
+import { errorDetail } from './error-detail.js';
 import { ORCHESTRATION_KEYS, execSettingEnums } from './exec-enums.js';
 import { orderLaneByBlocks } from './lane-order.js';
 import {
@@ -856,12 +861,14 @@ import {
   normalizeHoldState,
   reduceQueueHold
 } from './queue-hold.js';
-import { queueFilePath } from './state-paths.js';
+import { attemptRecordPath, queueFilePath } from './state-paths.js';
 import {
   consumeUsageReceiptFiles,
   normalizeUsageLegs,
   readAttemptUsageReceipts
 } from './usage-receipts.js';
+
+const log = debug('worker:queue-store');
 
 // 정렬 규칙은 하나다 (UI-jaua §4). 함수는 브라우저도 쓸 수 있게 `lane-order.js`가
 // 소유하고, 이 모듈은 기존 소비자를 위해 같은 이름으로 다시 내보낸다.
@@ -2908,6 +2915,9 @@ function normalizeRepoOperationFailure(value) {
     fingerprint: typeof value.fingerprint === 'string' ? value.fingerprint : '',
     detail: typeof value.detail === 'string' ? value.detail : '',
     interrupted: value.interrupted === true,
+    ...(typeof value.summary === 'string' && value.summary.length > 0
+      ? { summary: value.summary }
+      : {}),
     ...(value.fetch_failure === 'timeout' || value.fetch_failure === 'nonzero'
       ? { fetch_failure: value.fetch_failure }
       : {}),
@@ -3398,6 +3408,9 @@ function normalizeQueue(raw) {
           at: typeof value.at === 'number' ? value.at : 0,
           detail: typeof value.detail === 'string' ? value.detail : null
         };
+        if (typeof value.summary === 'string' && value.summary.length > 0) {
+          q.cleanup_failed[bead_id].summary = value.summary;
+        }
         if (typeof value.output_tail === 'string') {
           q.cleanup_failed[bead_id].output_tail = value.output_tail;
         }
@@ -3877,11 +3890,202 @@ function completeIntentForDone(q, bead_id) {
 }
 
 /**
+ * Has this completion saga FINISHED — the `done`이 "saga 종료 후" transferable
+ * becomes true (§7)?
+ *
+ * The predicate is the intent's own record of its termination, not the presence
+ * of its key: {@link completeIntentForDone} is what ends a saga, and it writes
+ * `completed` with no `active_op` and no `terminal_reason`. The key itself
+ * survives that until the done-lane prune sweeps it days later, so holding on
+ * key presence would pin every finished bead's records for exactly as long.
+ *
+ * `needs_human` is NOT finished. That phase stops the saga on a question a
+ * human still has to answer, and answering it resumes the same intent — the
+ * records it names must still be in the queue when that happens.
+ *
+ * @param {CompletionIntent|undefined} intent
+ * @returns {boolean}
+ */
+function isFinishedCompletionIntent(intent) {
+  // The migration hands this the RAW file's intents, where a value may be
+  // anything at all; anything that is not a recognizable finished saga holds.
+  return isRecord(intent) && intent.phase === 'completed' && !intent.active_op;
+}
+
+/**
+ * Attempt statuses whose record is a PROCESSED terminal — the ones §7 moves out
+ * of `queue.json` into the bead's own directory.
+ *
+ * `failed` is deliberately absent: a failure is processed only once it carries a
+ * `dismissed_at`, which {@link isProcessedTerminalAttempt} checks separately. So
+ * are `paused`, `stopped` and `orphaned` — `paused` is resumable, and the other
+ * two are still judged on the board.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const PROCESSED_TERMINAL_STATUSES = Object.freeze(
+  new Set(['done', 'discarded', 'superseded'])
+);
+
+/**
+ * The timeline kinds that can carry an attempt's terminal fact (§5). Used both
+ * to WRITE the ordering guarantee's event and to recognize one a producer
+ * already wrote, so the transfer never records the same ending twice.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const TERMINAL_TIMELINE_KINDS = Object.freeze(
+  new Set(['session_ended', 'attempt_failed'])
+);
+
+/**
+ * @param {Attempt} attempt
+ * @returns {boolean} Whether this record is a processed terminal (§7).
+ */
+function isProcessedTerminalAttempt(attempt) {
+  if (attempt.status === 'failed') {
+    return typeof attempt.dismissed_at === 'number';
+  }
+  return PROCESSED_TERMINAL_STATUSES.has(String(attempt.status));
+}
+
+/**
+ * The bead ids whose attempt records must stay in `queue.json` WHOLE.
+ *
+ * Transfer is decided per bead rather than per attempt on purpose. Every
+ * judgment §7 protects — the unhandled-failure predicate
+ * ({@link createUnhandledFailurePredicate}), {@link settleMootRepairFailures},
+ * the restart reconcile, the review-session judgment — reads a bead's attempts
+ * as a SET and asks which of them is the bead's last one. Removing a subset can
+ * change that answer: transfer a bead's `done` record and an older failure of
+ * the same bead stops being superseded, which would resurrect a settled failure
+ * as an unhandled one that holds auto-advance closed. Keeping the bead's
+ * records together makes that impossible instead of merely unlikely.
+ *
+ * That grouping is NOT incidental, and it is not a step on the way to a
+ * per-attempt transfer. Making it per-attempt would mean converting every one
+ * of those judgments to {@link createQueueStore.readAttemptsForBead} — a
+ * redesign, not a narrowing — and until that happens, transferring a newer
+ * `done` while an older undismissed `failed` of the same bead stays behind is
+ * exactly how that failure becomes the bead's last attempt again. Do not
+ * "simplify" this to per-attempt without moving those readers first.
+ *
+ * A bead is held while it has any attempt that is NOT a processed terminal, and
+ * while it still sits in a lane that means work is in flight (`queue`, a serial
+ * lane, `pr_wait`, `merge_queue`), owns an UNFINISHED completion-saga intent,
+ * or has a discard operation still running. The `done` lane is NOT held: that
+ * is the settled archive, and holding it would keep every finished bead's
+ * history in the state file forever, which is the problem §7 exists to fix.
+ *
+ * @param {Queue} q
+ * @returns {Set<string>}
+ */
+function beadsWithLiveRecords(q) {
+  /** @type {Set<string>} */
+  const held = new Set();
+  for (const entry of q.queue) {
+    held.add(entry.bead_id);
+  }
+  for (const lane of q.serial_lanes) {
+    for (const entry of lane.entries) {
+      held.add(entry.bead_id);
+    }
+  }
+  for (const entry of q.pr_wait) {
+    held.add(entry.bead_id);
+  }
+  for (const entry of q.merge_queue) {
+    held.add(entry.bead_id);
+  }
+  for (const [bead_id, intent] of Object.entries(q.completion_intents)) {
+    if (!isFinishedCompletionIntent(intent)) {
+      held.add(bead_id);
+    }
+  }
+  for (const operation of Object.values(q.discard_operations)) {
+    if (operation.phase !== 'done') {
+      held.add(operation.bead_id);
+    }
+  }
+  for (const attempt of Object.values(q.attempts)) {
+    if (!isProcessedTerminalAttempt(attempt)) {
+      held.add(attempt.bead_id);
+    }
+  }
+  return held;
+}
+
+/**
+ * The attempts this pass may move out of `queue.json` (§7). No per-bead cap:
+ * a cap would evict by count, and the record it evicted first would be the
+ * oldest unprocessed failure — exactly the one a human still has to look at.
+ *
+ * Exported for `record-retention.js`: the one-time migration (§8.3 step 1)
+ * transfers exactly the same set out of the pre-split `queue.json`, and a
+ * second copy of this judgment would be free to drift from the live one.
+ *
+ * @param {Queue} q
+ * @returns {Attempt[]}
+ */
+export function transferableAttempts(q) {
+  const held = beadsWithLiveRecords(q);
+  return Object.values(q.attempts).filter(
+    (attempt) =>
+      isProcessedTerminalAttempt(attempt) && !held.has(attempt.bead_id)
+  );
+}
+
+/**
+ * The terminal timeline event that has to be durable BEFORE an attempt may
+ * leave the queue (§5).
+ *
+ * `discarded` and `superseded` are reported as `session_ended` rather than
+ * `user_action`/`attempt_retry`: this event answers "how did this attempt end",
+ * and the presence check that keeps the transfer from double-recording an
+ * ending has to be able to recognize it unambiguously. A `user_action` line can
+ * be any click.
+ *
+ * @param {Attempt} attempt
+ * @returns {{ kind: string, summary: string }}
+ */
+function terminalEventFor(attempt) {
+  if (attempt.status === 'failed') {
+    const summary =
+      (typeof attempt.cause_detail?.summary === 'string' &&
+      attempt.cause_detail.summary.trim().length > 0
+        ? attempt.cause_detail.summary.trim()
+        : null) ||
+      (typeof attempt.cause === 'string' && attempt.cause.length > 0
+        ? attempt.cause
+        : null);
+    return {
+      kind: 'attempt_failed',
+      summary: `세션 실패 — ${summary || '원인 미상'}`
+    };
+  }
+  if (attempt.status === 'discarded') {
+    return { kind: 'session_ended', summary: '세션 종료 — 폐기됨' };
+  }
+  if (attempt.status === 'superseded') {
+    return { kind: 'session_ended', summary: '세션 종료 — 재시도로 대체됨' };
+  }
+  return { kind: 'session_ended', summary: '세션 종료 — 완료' };
+}
+
+/**
  * Create a Worker queue store. A single instance is shared server-wide so all
  * connections (and thus all clients dragging concurrently) observe one coherent
  * in-memory revision, making the CAS authoritative in-process.
  *
- * @param {{ now?: () => number, randomUUID?: () => string, filePathFor?: (workspace: string) => string, fs?: typeof import('node:fs'), delegationStore?: ReturnType<typeof import('./delegation-store.js').createDelegationStore> }} [options]
+ * `timeline` is the workspace's bead timeline (record-timeline-retention §5).
+ * It is OPTIONAL, and a store without one never transfers a record out of
+ * `queue.json`: the ordering guarantee is "the terminal event is durable
+ * first", so with no writer there is nothing that could make it true. Because
+ * one store serves every workspace while a timeline belongs to exactly one,
+ * production registers per workspace through {@link useTimeline}; this option
+ * is the single-workspace shorthand.
+ *
+ * @param {{ now?: () => number, randomUUID?: () => string, filePathFor?: (workspace: string) => string, fs?: typeof import('node:fs'), delegationStore?: ReturnType<typeof import('./delegation-store.js').createDelegationStore>, timeline?: ReturnType<typeof import('./bead-timeline.js').createBeadTimeline> }} [options]
  */
 export function createQueueStore(options = {}) {
   const now = options.now || (() => Date.now());
@@ -3896,6 +4100,22 @@ export function createQueueStore(options = {}) {
    * @type {ReturnType<typeof import('./delegation-store.js').createDelegationStore>|null}
    */
   const delegation_store = options.delegationStore || null;
+
+  /**
+   * The fallback bead timeline for every workspace this store was not given a
+   * per-workspace one for. Null in production (the runtime builds one store for
+   * all workspaces, so a shared instance would write one workspace's history
+   * into another's directory); set only by a single-workspace caller.
+   *
+   * @type {ReturnType<typeof import('./bead-timeline.js').createBeadTimeline>|null}
+   */
+  const default_timeline = options.timeline || null;
+  /**
+   * Per-workspace timelines registered by that workspace's attachment.
+   *
+   * @type {Map<string, ReturnType<typeof import('./bead-timeline.js').createBeadTimeline>>}
+   */
+  const timelines = new Map();
 
   /**
    * Provenance fields for a row the automatic enroller queues. An automatic
@@ -4101,6 +4321,339 @@ export function createQueueStore(options = {}) {
   }
 
   /**
+   * The bead timeline that owns this workspace's history, or null when none was
+   * registered — in which case nothing is ever transferred (§5 ordering).
+   *
+   * @param {string} workspace
+   */
+  function timelineFor(workspace) {
+    return timelines.get(keyFor(workspace)) || default_timeline;
+  }
+
+  /**
+   * Append ONE event to a bead's permanent history through the workspace's
+   * registered writer (record-timeline-retention §5).
+   *
+   * The result is dropped on purpose: {@link transferProcessedAttempts} is the
+   * single caller §5 makes depend on a durable append, and it asks for its own.
+   * Everywhere else a lost history line must cost history and never a queue
+   * decision. A workspace with no writer, or an event with no bead, records
+   * nothing.
+   *
+   * @param {string} workspace
+   * @param {import('./bead-timeline.js').TimelineAppendInput} input
+   */
+  function appendTimeline(workspace, input) {
+    const timeline = timelineFor(workspace);
+    if (!timeline || String(input.bead_id ?? '').length === 0) {
+      return;
+    }
+    timeline.append(input);
+  }
+
+  /**
+   * Identity of one hold EPISODE. `since` is stamped when the hold opens and
+   * never moves while it stands, so the triple changes exactly when the queue
+   * takes a different stop — including the env→systemic promotion, which keeps
+   * `since` and changes `kind`.
+   *
+   * @param {import('./queue-hold.js').QueueHold|null} hold
+   * @returns {string|null}
+   */
+  function holdEpisodeOf(hold) {
+    return hold === null ? null : `${hold.kind}:${hold.since}`;
+  }
+
+  /**
+   * Put a queue stop and its release on the timelines of the beads it stopped
+   * (record-timeline-retention §5).
+   *
+   * This lives at the site that APPLIES the reducer's result, never inside the
+   * pure reducer, and it never reconstructs a past hold from `hold_history` —
+   * that list is live state trimmed to a 30-minute window, while the permanent
+   * history is the timeline's job.
+   *
+   * A standing hold is re-announced only for a bead it did not already name, so
+   * a hold that survives many settlements writes one line per bead rather than
+   * one per settlement.
+   *
+   * @param {string} workspace
+   * @param {import('./queue-hold.js').QueueHold|null} before
+   * @param {import('./queue-hold.js').QueueHold|null} after
+   * @param {import('./queue-hold.js').QueueHoldEvent} event
+   * @param {number} at
+   */
+  function recordHoldTransition(workspace, before, after, event, at) {
+    const was = holdEpisodeOf(before);
+    const is_now = holdEpisodeOf(after);
+    if (before !== null && is_now !== was) {
+      for (const bead_id of before.bead_ids) {
+        appendTimeline(workspace, {
+          bead_id,
+          kind: 'queue_resume',
+          // Names the episode that ENDED, so a replayed release re-appends one
+          // id the reader dedupes.
+          seq: /** @type {string} */ (was),
+          summary: event.kind === 'resume' ? '사용자 재개' : '자동 재개',
+          at
+        });
+      }
+    }
+    if (after === null) {
+      return;
+    }
+    const announced =
+      was === is_now && before !== null ? new Set(before.bead_ids) : new Set();
+    for (const bead_id of after.bead_ids) {
+      if (announced.has(bead_id)) {
+        continue;
+      }
+      appendTimeline(workspace, {
+        bead_id,
+        kind: 'queue_hold',
+        // The episode, not the moment: every bead this hold stops records the
+        // same stop once.
+        seq: /** @type {string} */ (is_now),
+        summary: `${after.kind === 'env' ? '환경' : '시스템'} 보류: ${after.cause}`,
+        at
+      });
+    }
+  }
+
+  /**
+   * The directory holding one bead's transferred attempt records. Derived from
+   * the record path so the `beads/<bead>/attempts/` layout is stated once, in
+   * `state-paths.js` (§4).
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {string}
+   */
+  function attemptRecordDir(workspace, bead_id) {
+    return path.dirname(attemptRecordPath(workspace, bead_id, 'probe'));
+  }
+
+  /**
+   * Make sure this attempt's terminal event is on the bead timeline, durably
+   * (§5). Returns false when it is not — the caller then leaves the attempt in
+   * the queue and the next pass tries again, so a lost append costs a delay
+   * rather than the bead's history.
+   *
+   * The timeline is READ first, once per bead per pass: a producer may already
+   * have recorded the ending, and re-recording it under this function's own
+   * `event_id` would show a human the same ending twice. Nothing else here is
+   * conditional on that read — a re-run after a failed record write appends the
+   * same `event_id`, which the reader dedupes.
+   *
+   * @param {ReturnType<typeof import('./bead-timeline.js').createBeadTimeline>} timeline
+   * @param {Attempt} attempt
+   * @param {Map<string, Set<string>>} recorded_by_bead - Per-pass memo.
+   * @returns {boolean}
+   */
+  function ensureTerminalTimelineEvent(timeline, attempt, recorded_by_bead) {
+    let recorded = recorded_by_bead.get(attempt.bead_id);
+    if (!recorded) {
+      recorded = new Set(
+        timeline
+          .readTimeline(attempt.bead_id)
+          .filter(
+            (event) =>
+              TERMINAL_TIMELINE_KINDS.has(event.kind) &&
+              typeof event.attempt_id === 'string'
+          )
+          .map((event) => String(event.attempt_id))
+      );
+      recorded_by_bead.set(attempt.bead_id, recorded);
+    }
+    if (recorded.has(attempt.attempt_id)) {
+      return true;
+    }
+    const terminal = terminalEventFor(attempt);
+    const appended = timeline.append({
+      bead_id: attempt.bead_id,
+      attempt_id: attempt.attempt_id,
+      kind: terminal.kind,
+      summary: terminal.summary,
+      // One ending per attempt, so the id is fixed rather than sequenced: a
+      // retry after a failed write re-appends the same line and the reader
+      // keeps one.
+      seq: 'terminal',
+      ...(typeof attempt.finished_at === 'number' && attempt.finished_at > 0
+        ? { at: attempt.finished_at }
+        : {}),
+      ...(typeof attempt.log_path === 'string' && attempt.log_path.length > 0
+        ? { log_path: attempt.log_path }
+        : {})
+    });
+    if (!appended.ok) {
+      return false;
+    }
+    recorded.add(attempt.attempt_id);
+    return true;
+  }
+
+  /**
+   * Write one transferred attempt record with the same atomicity {@link persist}
+   * uses — temp file, rename — plus a readback, because this write is what makes
+   * it safe to drop the record from `queue.json`. A failure is logged and
+   * reported, never thrown: the attempt simply stays in the queue.
+   *
+   * @param {string} workspace
+   * @param {Attempt} attempt
+   * @returns {boolean} Whether the record is readable on disk.
+   */
+  function writeAttemptRecord(workspace, attempt) {
+    const file = attemptRecordPath(
+      workspace,
+      attempt.bead_id,
+      attempt.attempt_id
+    );
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const tmp = `${file}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(attempt, null, 2));
+      fs.renameSync(tmp, file);
+      const readback = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (!isRecord(readback) || readback.attempt_id !== attempt.attempt_id) {
+        throw new Error('readback did not return the record just written');
+      }
+      return true;
+    } catch (err) {
+      log('attempt record write failed for %s: %s', file, errorDetail(err));
+      return false;
+    }
+  }
+
+  /**
+   * Move every processed-terminal attempt of a settled bead out of the queue
+   * being written (§7), mutating `next` in place.
+   *
+   * Runs INSIDE the mutation that is about to persist, so the reduced queue and
+   * the mutation reach disk in the same atomic write. A record whose event or
+   * whose file could not be written is left in `next.attempts` and retried on
+   * the next mutation — the queue keeps moving either way, which is the whole
+   * point of reporting append failures instead of throwing them.
+   *
+   * @param {string} workspace
+   * @param {Queue} next
+   */
+  function transferProcessedAttempts(workspace, next) {
+    const timeline = timelineFor(workspace);
+    if (!timeline) {
+      return;
+    }
+    const candidates = transferableAttempts(next);
+    if (candidates.length === 0) {
+      return;
+    }
+    // A withheld repair-lane saga (UI-8w4t §2) still names its attempts in the
+    // file `serializable` reconstructs, and its retirement is an ORDERED write
+    // that has to find them. They leave with everything else once
+    // {@link retireRepairLane} has emptied its plan.
+    /** @type {Set<string>} */
+    const withheld = new Set(
+      (repair_lane_retirements.get(keyFor(workspace)) || []).flatMap(
+        (plan) => plan.attempt_ids
+      )
+    );
+    /** @type {Map<string, Set<string>>} */
+    const recorded_by_bead = new Map();
+    for (const attempt of candidates) {
+      if (withheld.has(attempt.attempt_id)) {
+        continue;
+      }
+      if (!ensureTerminalTimelineEvent(timeline, attempt, recorded_by_bead)) {
+        continue;
+      }
+      if (!writeAttemptRecord(workspace, attempt)) {
+        continue;
+      }
+      delete next.attempts[attempt.attempt_id];
+    }
+  }
+
+  /**
+   * Read one transferred record. A missing or unreadable file is null, never a
+   * throw: the caller's question is "is there a record", and a corrupt file
+   * answers it the same way an absent one does.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   * @returns {Attempt|null}
+   */
+  function readTransferredAttempt(workspace, bead_id, attempt_id) {
+    const file = attemptRecordPath(workspace, bead_id, attempt_id);
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (
+        !isRecord(parsed) ||
+        typeof parsed.attempt_id !== 'string' ||
+        typeof parsed.bead_id !== 'string'
+      ) {
+        throw new Error('record is not an attempt');
+      }
+      return makeAttempt(
+        /** @type {Partial<Attempt> & { attempt_id: string, bead_id: string }} */ (
+          parsed
+        )
+      );
+    } catch (err) {
+      if (/** @type {NodeJS.ErrnoException} */ (err)?.code !== 'ENOENT') {
+        log('attempt record read failed for %s: %s', file, errorDetail(err));
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Every transferred record of one bead. A missing directory is an empty
+   * result — a bead has none before its first transfer — and unreadable files
+   * are skipped with a logged COUNT, the same fail-quiet posture the timeline
+   * reader takes toward a torn line.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {Attempt[]}
+   */
+  function readTransferredAttempts(workspace, bead_id) {
+    const dir = attemptRecordDir(workspace, bead_id);
+    /** @type {string[]} */
+    let names;
+    try {
+      names = fs.readdirSync(dir);
+    } catch (err) {
+      if (/** @type {NodeJS.ErrnoException} */ (err)?.code !== 'ENOENT') {
+        log('attempt record listing failed for %s: %s', dir, errorDetail(err));
+      }
+      return [];
+    }
+    /** @type {Attempt[]} */
+    const out = [];
+    let skipped = 0;
+    for (const name of names) {
+      // `.tmp` is the half-written half of the atomic write above.
+      if (!name.endsWith('.json')) {
+        continue;
+      }
+      const record = readTransferredAttempt(
+        workspace,
+        bead_id,
+        name.slice(0, -'.json'.length)
+      );
+      if (record) {
+        out.push(record);
+      } else {
+        skipped += 1;
+      }
+    }
+    if (skipped > 0) {
+      log('attempt records in %s: skipped %d unreadable file(s)', dir, skipped);
+    }
+    return out;
+  }
+
+  /**
    * Apply a CAS-guarded mutation. Builds the next state on a clone, persists it,
    * and only commits to the cache on a successful write — so a failed write
    * leaves both memory and disk at the prior revision (atomic op).
@@ -4120,6 +4673,7 @@ export function createQueueStore(options = {}) {
       return { ok: false, conflict: false, queue: exportQueue(workspace, cur) };
     }
     next.revision = cur.revision + 1;
+    transferProcessedAttempts(workspace, next);
     persist(workspace, next);
     cache.set(keyFor(workspace), next);
     return { ok: true, conflict: false, queue: exportQueue(workspace, next) };
@@ -4142,6 +4696,7 @@ export function createQueueStore(options = {}) {
       return { ok: false, conflict: false, queue: exportQueue(workspace, cur) };
     }
     next.revision = cur.revision + 1;
+    transferProcessedAttempts(workspace, next);
     persist(workspace, next);
     cache.set(keyFor(workspace), next);
     return { ok: true, conflict: false, queue: exportQueue(workspace, next) };
@@ -4156,12 +4711,14 @@ export function createQueueStore(options = {}) {
    * also stops the queue — folds the hold into its OWN write instead of
    * following it with a second one.
    *
+   * @param {string} workspace
    * @param {Queue} next - the in-flight clone being mutated.
    * @param {import('./queue-hold.js').QueueHoldEvent} event
    * @param {number} at
    * @returns {import('./queue-hold.js').QueueHoldResult}
    */
-  function applyHoldEvent(next, event, at) {
+  function applyHoldEvent(workspace, next, event, at) {
+    const before = next.hold;
     const outcome = reduceQueueHold(
       {
         hold: next.hold,
@@ -4174,6 +4731,7 @@ export function createQueueStore(options = {}) {
     next.hold = outcome.state.hold;
     next.lineages = outcome.state.lineages;
     next.hold_history = outcome.state.hold_history;
+    recordHoldTransition(workspace, before, next.hold, event, at);
     return outcome;
   }
 
@@ -4297,6 +4855,88 @@ export function createQueueStore(options = {}) {
      */
     snapshot(workspace) {
       return exportQueue(workspace, ensureLoaded(workspace));
+    },
+
+    /**
+     * Register the workspace's bead timeline (record-timeline-retention §5).
+     * One store serves every attached workspace while a timeline owns exactly
+     * one, so the attachment hands its instance in here rather than at
+     * construction. A workspace with no timeline registered keeps all of its
+     * attempt records in `queue.json`.
+     *
+     * @param {string} workspace
+     * @param {ReturnType<typeof import('./bead-timeline.js').createBeadTimeline>} timeline
+     */
+    useTimeline(workspace, timeline) {
+      timelines.set(keyFor(workspace), timeline);
+    },
+
+    /**
+     * Append ONE event to a bead's permanent history through the writer this
+     * workspace registered (record-timeline-retention §5).
+     *
+     * Exposed for the producers that hold no `deps` object of their own — the
+     * ws click handlers, which reach the store already and must NOT open the
+     * timeline file themselves: §5's single-writer rule says the handler ASKS
+     * the injected instance, and this is the ask. A workspace with no timeline
+     * registered records nothing.
+     *
+     * @param {string} workspace
+     * @param {import('./bead-timeline.js').TimelineAppendInput} input
+     */
+    recordTimelineEvent(workspace, input) {
+      appendTimeline(workspace, input);
+    },
+
+    /**
+     * One attempt record, wherever it now lives (§7).
+     *
+     * The LIVE queue is consulted first. The two locations are normally
+     * exclusive — a record is removed from the queue in the same write that
+     * makes its file durable — but a crash between the file write and that
+     * persist leaves both, and then the queue's copy is the newer truth, which
+     * is the same rule {@link readAttemptsForBead} dedupes by.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @param {string} attempt_id
+     * @returns {Attempt|null}
+     */
+    readAttempt(workspace, bead_id, attempt_id) {
+      const live = ensureLoaded(workspace).attempts[attempt_id];
+      if (live && live.bead_id === bead_id) {
+        return clone(live);
+      }
+      return readTransferredAttempt(workspace, bead_id, attempt_id);
+    },
+
+    /**
+     * Every attempt of one bead: the live queue's rows plus the transferred
+     * records, deduped by `attempt_id` with the live row winning. Oldest first,
+     * by the time the attempt started.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @returns {Attempt[]}
+     */
+    readAttemptsForBead(workspace, bead_id) {
+      /** @type {Map<string, Attempt>} */
+      const by_id = new Map();
+      for (const record of readTransferredAttempts(workspace, bead_id)) {
+        by_id.set(record.attempt_id, record);
+      }
+      for (const attempt of Object.values(ensureLoaded(workspace).attempts)) {
+        if (attempt.bead_id === bead_id) {
+          by_id.set(attempt.attempt_id, clone(attempt));
+        }
+      }
+      return [...by_id.values()].sort((left, right) => {
+        const left_at = left.started_at ?? left.finished_at ?? 0;
+        const right_at = right.started_at ?? right.finished_at ?? 0;
+        return (
+          left_at - right_at || left.attempt_id.localeCompare(right.attempt_id)
+        );
+      });
     },
 
     /**
@@ -6303,11 +6943,17 @@ export function createQueueStore(options = {}) {
      * `output_tail` carries the failing command's own trailing output when the
      * step ran one (UI-qult §1); omit it otherwise.
      *
+     * `summary` is the ONE line that says why the cleanup stopped (2026-08-28
+     * worker-record-timeline spec §6): the caller extracts it once, from the
+     * step's own output when it ran a command and from the failure token
+     * otherwise. Omit it when the call site has nothing to say — a summary is
+     * never synthesized from an unknown token.
+     *
      * `log_path` carries the absolute path to that command's full preserved
      * output (UI-0x54); omit it when the run left no complete log file.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, output_tail?: string|null, log_path?: string|null, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} input
+     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, summary?: string|null, output_tail?: string|null, log_path?: string|null, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} input
      * @returns {QueueOpResult}
      */
     recordCleanupFailure(workspace, input) {
@@ -6317,6 +6963,7 @@ export function createQueueStore(options = {}) {
         reason,
         bd_restore,
         detail,
+        summary,
         output_tail,
         log_path,
         failure_code,
@@ -6352,6 +6999,9 @@ export function createQueueStore(options = {}) {
           detail:
             typeof detail === 'string' && detail.length > 0 ? detail : null
         };
+        if (typeof summary === 'string' && summary.length > 0) {
+          next.cleanup_failed[bead_id].summary = summary;
+        }
         if (typeof output_tail === 'string' && output_tail.length > 0) {
           next.cleanup_failed[bead_id].output_tail = output_tail;
         }
@@ -6654,7 +7304,7 @@ export function createQueueStore(options = {}) {
       /** @type {import('./queue-hold.js').QueueHoldResult|null} */
       let outcome = null;
       const result = applyUnconditional(workspace, (next) => {
-        outcome = applyHoldEvent(next, input.event, at);
+        outcome = applyHoldEvent(workspace, next, input.event, at);
         return true;
       });
       const settled =
@@ -8099,7 +8749,7 @@ export function createQueueStore(options = {}) {
           (entry) => entry.bead_id !== root_bead_id
         );
         if (hold_event) {
-          applyHoldEvent(next, hold_event, at);
+          applyHoldEvent(workspace, next, hold_event, at);
         }
         return true;
       });

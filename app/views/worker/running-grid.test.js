@@ -1803,6 +1803,46 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
     );
   });
 
+  test('renders the timeline lines and the log path on a parked tile', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const tile = parkTile();
+    tile.failure.timeline = [
+      {
+        event_id: 'e2',
+        kind: 'session_ended',
+        summary: '파킹 · spec_review',
+        at: 2000
+      },
+      {
+        event_id: 'e1',
+        kind: 'dispatched',
+        summary: 'claude opus 디스패치',
+        at: 1000
+      }
+    ];
+    tile.failure.log_path = '/w/beads/UI-p1/sessions/attempt-p1.jsonl';
+
+    render(runningGridTemplate([tile]), mount);
+
+    const rows = Array.from(
+      mount.querySelectorAll('[data-seam="tile-timeline"] li')
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toContain('파킹 · spec_review');
+    expect(
+      mount.querySelector('[data-seam="tile-log-path"]')?.textContent
+    ).toContain('/w/beads/UI-p1/sessions/attempt-p1.jsonl');
+  });
+
+  test('draws no history block on a parked tile with no timeline', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([parkTile()]), mount);
+
+    expect(mount.querySelector('[data-seam="tile-timeline"]')).toBeNull();
+    expect(mount.querySelector('[data-seam="tile-log-path"]')).toBeNull();
+  });
+
   test('offers 재시도 and 폐기 in the parked action foot', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
@@ -1960,6 +2000,121 @@ describe('worker 실패 팝오버의 §6 재료 (UI-5ym8 §8)', () => {
     expect(mount.querySelector('.rtile__failure-pop')?.textContent).toContain(
       '자동 재시도 3회 — 같은 오류'
     );
+  });
+
+  test('renders the five most recent timeline lines newest first', () => {
+    const mount = mountOpenPopover({
+      timeline: [
+        {
+          event_id: 'e5',
+          kind: 'attempt_failed',
+          summary: '세션 실패 — 529',
+          at: 5000
+        },
+        {
+          event_id: 'e4',
+          kind: 'merge_step',
+          summary: '머지 큐 진입',
+          at: 4000
+        },
+        {
+          event_id: 'e3',
+          kind: 'guard_warning',
+          summary: 'base 동기화 머지',
+          at: 3000
+        },
+        {
+          event_id: 'e2',
+          kind: 'session_ended',
+          summary: '성공 · PR #231',
+          at: 2000
+        },
+        {
+          event_id: 'e1',
+          kind: 'dispatched',
+          summary: 'claude opus 디스패치',
+          at: 1000
+        }
+      ],
+      log_path: '/w/beads/UI-f1/sessions/attempt-f1.jsonl'
+    });
+
+    const rows = Array.from(
+      mount.querySelectorAll('[data-seam="tile-timeline"] li')
+    );
+
+    expect(rows).toHaveLength(5);
+    expect(rows[0].textContent).toContain('세션 실패 — 529');
+    expect(rows[4].textContent).toContain('claude opus 디스패치');
+  });
+
+  test('puts the log path after the timeline lines', () => {
+    const mount = mountOpenPopover({
+      timeline: [
+        { event_id: 'e1', kind: 'dispatched', summary: '디스패치', at: 1000 }
+      ],
+      log_path: '/w/beads/UI-f1/sessions/attempt-f1.jsonl'
+    });
+
+    const list = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-seam="tile-timeline"]')
+    );
+    const log = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-seam="tile-log-path"]')
+    );
+
+    expect(log.textContent).toContain(
+      '/w/beads/UI-f1/sessions/attempt-f1.jsonl'
+    );
+    expect(
+      list.compareDocumentPosition(log) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+  });
+
+  test('renders 만료됨 for a log the retention policy deleted', () => {
+    const mount = mountOpenPopover({
+      timeline: [
+        {
+          event_id: 'e1',
+          kind: 'attempt_failed',
+          summary: '세션 실패',
+          at: 1000
+        }
+      ],
+      log_expired: true
+    });
+
+    expect(
+      mount.querySelector('[data-seam="tile-log-path"]')?.textContent?.trim()
+    ).toBe('만료됨');
+  });
+
+  test('renders 읽기 실패 for a log the ladder could not read', () => {
+    const mount = mountOpenPopover({
+      timeline: [
+        {
+          event_id: 'e1',
+          kind: 'attempt_failed',
+          summary: '세션 실패',
+          at: 1000
+        }
+      ],
+      log_unreadable: true
+    });
+
+    expect(
+      mount.querySelector('[data-seam="tile-log-path"]')?.textContent?.trim()
+    ).toBe('읽기 실패');
+  });
+
+  test('draws no history rows for a failure with no timeline', () => {
+    const mount = mountOpenPopover({});
+
+    expect(mount.querySelector('[data-seam="tile-timeline"]')).toBeNull();
+    expect(mount.querySelector('[data-seam="tile-log-path"]')).toBeNull();
+    expect(
+      mount.querySelector('.rtile__failure-pop')?.textContent
+    ).not.toContain('이력');
   });
 
   test('omits the retry history row for a failure with no lineage', () => {

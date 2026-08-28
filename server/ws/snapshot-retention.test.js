@@ -495,3 +495,56 @@ describe('trimQueueProjection boundaries', () => {
     expect(raw).toEqual(before);
   });
 });
+
+describe('trimQueueProjection transferred-record top-up (record-timeline-retention §7)', () => {
+  test('adds a retained bead transferred attempts the queue no longer holds', () => {
+    const raw = {
+      queue: [{ bead_id: 'UI-in', added_at: NOW }],
+      attempts: { a2: attempt('a2', 'UI-in') }
+    };
+
+    const trimmed = trimQueueProjection(raw, raw, NOW, {
+      attemptsForBead: () => [attempt('a1', 'UI-in')]
+    });
+
+    expect(Object.keys(trimmed.attempts).sort()).toEqual(['a1', 'a2']);
+  });
+
+  test('keeps the live row when a transferred record repeats its attempt id', () => {
+    const raw = {
+      queue: [{ bead_id: 'UI-in', added_at: NOW }],
+      attempts: { a1: attempt('a1', 'UI-in', { status: 'running' }) }
+    };
+
+    const trimmed = trimQueueProjection(raw, raw, NOW, {
+      attemptsForBead: () => [attempt('a1', 'UI-in', { status: 'done' })]
+    });
+
+    expect(trimmed.attempts.a1.status).toBe('running');
+  });
+
+  test('does not retain a bead the raw snapshot no longer names', () => {
+    const raw = { attempts: {} };
+
+    const trimmed = trimQueueProjection(raw, raw, NOW, {
+      attemptsForBead: () => [attempt('a1', 'UI-gone')]
+    });
+
+    expect(trimmed.attempts).toEqual({});
+  });
+
+  test('ships the trimmed projection when the record reader throws', () => {
+    const raw = {
+      queue: [{ bead_id: 'UI-in', added_at: NOW }],
+      attempts: { a1: attempt('a1', 'UI-in') }
+    };
+
+    const trimmed = trimQueueProjection(raw, raw, NOW, {
+      attemptsForBead: () => {
+        throw new Error('record tree unreadable');
+      }
+    });
+
+    expect(Object.keys(trimmed.attempts)).toEqual(['a1']);
+  });
+});

@@ -32,6 +32,7 @@
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
+import { failureTokenSummary } from './failure-class.js';
 import { createAncestryProbe, reviewReceiptState } from './merge-gate.js';
 import { onQueueChanged } from './queue-events.js';
 import { COMPLETION_VERIFY_SUPPRESSED_PHASES } from './queue-store.js';
@@ -563,7 +564,12 @@ export function createPrPoller(deps) {
           deps.store.recordCleanupFailure?.(workspace, {
             bead_id,
             step: 'repo_operations',
-            reason: 'external_deployment_promote_failed'
+            reason: 'external_deployment_promote_failed',
+            // The observer holds no command output — it only watched one fail
+            // — so the token's own sentence is the only thing it can say
+            // (2026-08-28 worker-record-timeline spec §6 row 4). An unmapped
+            // token yields null and the record simply carries no summary.
+            summary: failureTokenSummary('external_deployment_promote_failed')
           });
           notifyChanged(workspace);
           return;
@@ -579,10 +585,12 @@ export function createPrPoller(deps) {
         result.reason !== 'action_in_flight' &&
         !deps.store.snapshot(workspace).cleanup_failed?.[bead_id]
       ) {
+        const reason = result.reason || 'cleanup_observer_failed';
         deps.store.recordCleanupFailure?.(workspace, {
           bead_id,
           step: result.step || 'repo_operations',
-          reason: result.reason || 'cleanup_observer_failed'
+          reason,
+          summary: failureTokenSummary(reason)
         });
       }
       notifyChanged(workspace);
@@ -591,7 +599,8 @@ export function createPrPoller(deps) {
         deps.store.recordCleanupFailure?.(workspace, {
           bead_id,
           step: 'repo_operations',
-          reason: 'cleanup_observer_failed'
+          reason: 'cleanup_observer_failed',
+          summary: failureTokenSummary('cleanup_observer_failed')
         });
       }
       log('post-merge cleanup failed for %s: %o', bead_id, err);

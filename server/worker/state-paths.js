@@ -382,3 +382,156 @@ export function repoOpsDeployWorktreeJournalPath(workspace_root) {
     'repo-ops-deploy-worktree.json'
   );
 }
+
+/**
+ * Sanitize one caller-supplied path segment for the bead-scoped record layout
+ * (record-timeline-retention §4).
+ *
+ * Uses the SAME `[^A-Za-z0-9._-]` → `_` mapping as the attempt-scoped helpers
+ * above, plus one extra guard the older helpers never needed: a segment that
+ * sanitizes to exactly `.` or `..` is replaced by the fallback. Bead and attempt
+ * ids reach these helpers from bd metadata and ws payloads, and `..` is the one
+ * value the character class alone leaves as a working parent-directory
+ * reference.
+ *
+ * @param {string} value
+ * @param {string} fallback - Used when `value` is empty or a dot segment.
+ * @returns {string}
+ */
+function safeSegment(value, fallback) {
+  const safe = String(value || '').replace(/[^A-Za-z0-9._-]/g, '_');
+  if (safe.length === 0 || safe === '.' || safe === '..') {
+    return fallback;
+  }
+  return safe;
+}
+
+/**
+ * Absolute root of the per-bead record tree (record-timeline-retention §4).
+ *
+ * @param {string} workspace_root
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/beads`.
+ */
+export function beadsRootDir(workspace_root) {
+  return path.join(workspaceStateDir(workspace_root), 'beads');
+}
+
+/**
+ * Absolute directory holding ONE bead's durable Worker records — timeline,
+ * transferred attempt records, session originals, and archives.
+ *
+ * `bead_id` is explicit at every bead-scoped call site on purpose: an attempt id
+ * is not required to embed its bead (`review:authority-…` does not), so the bead
+ * can never be recovered from the attempt id.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/beads/<bead_id>`.
+ */
+export function beadStateDir(workspace_root, bead_id) {
+  return path.join(beadsRootDir(workspace_root), safeSegment(bead_id, 'bead'));
+}
+
+/**
+ * Absolute path to one bead's append-only event timeline — the permanent SoT
+ * for that bead's Worker history (§5). Never pruned by retention.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {string} `.../beads/<bead_id>/events.jsonl`.
+ */
+export function beadTimelinePath(workspace_root, bead_id) {
+  return path.join(beadStateDir(workspace_root, bead_id), 'events.jsonl');
+}
+
+/**
+ * Absolute path to one transferred (processed-terminal) attempt record — the
+ * row `queue.json` no longer carries (§7).
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @param {string} attempt_id
+ * @returns {string} `.../beads/<bead_id>/attempts/<attempt_id>.json`.
+ */
+export function attemptRecordPath(workspace_root, bead_id, attempt_id) {
+  return path.join(
+    beadStateDir(workspace_root, bead_id),
+    'attempts',
+    `${safeSegment(attempt_id, 'attempt')}.json`
+  );
+}
+
+/**
+ * Absolute path to the bead-scoped session-log jsonl for one attempt — the
+ * destination the legacy flat {@link sessionLogPath} file is renamed to (§4).
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @param {string} attempt_id
+ * @returns {string} `.../beads/<bead_id>/sessions/<attempt_id>.jsonl`.
+ */
+export function beadSessionLogPath(workspace_root, bead_id, attempt_id) {
+  return path.join(
+    beadStateDir(workspace_root, bead_id),
+    'sessions',
+    `${safeSegment(attempt_id, 'attempt')}.jsonl`
+  );
+}
+
+/**
+ * The stderr sidecar of {@link beadSessionLogPath}: same directory, same
+ * attempt, `.stderr.log` — the bead-scoped twin of the flat sidecar
+ * `session-log.js` already derives.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @param {string} attempt_id
+ * @returns {string} `.../beads/<bead_id>/sessions/<attempt_id>.stderr.log`.
+ */
+export function beadSessionStderrPath(workspace_root, bead_id, attempt_id) {
+  return path.join(
+    beadStateDir(workspace_root, bead_id),
+    'sessions',
+    `${safeSegment(attempt_id, 'attempt')}.stderr.log`
+  );
+}
+
+/**
+ * Absolute path to the gzip archive of one attempt's session log (§8.2). The
+ * third and last candidate of the read-resolution order.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @param {string} attempt_id
+ * @returns {string} `.../beads/<bead_id>/archive/<attempt_id>.jsonl.gz`.
+ */
+export function beadArchivePath(workspace_root, bead_id, attempt_id) {
+  return path.join(
+    beadStateDir(workspace_root, bead_id),
+    'archive',
+    `${safeSegment(attempt_id, 'attempt')}.jsonl.gz`
+  );
+}
+
+/**
+ * Marker proving the one-time record migration (§8.3) completed. Lives INSIDE
+ * `beads/` so it cannot outlive the tree it describes.
+ *
+ * @param {string} workspace_root
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/beads/.migrated-v1`.
+ */
+export function recordMigrationMarkerPath(workspace_root) {
+  return path.join(beadsRootDir(workspace_root), '.migrated-v1');
+}
+
+/**
+ * Absolute path to the per-workspace retention policy `{archive_days,
+ * delete_days}` (§8.1). A file of its own rather than a `display-policy.json`
+ * field, because that store drops unknown fields when it normalizes.
+ *
+ * @param {string} workspace_root
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/retention-policy.json`.
+ */
+export function retentionPolicyPath(workspace_root) {
+  return path.join(workspaceStateDir(workspace_root), 'retention-policy.json');
+}

@@ -49,6 +49,7 @@ import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
+import { failureTokenSummary, scriptSummary } from './failure-class.js';
 import {
   createAncestryProbe,
   evaluateMergeGate,
@@ -2028,6 +2029,15 @@ export function createPrActions(deps) {
         reason,
         bd_restore,
         detail,
+        // The one line the card and the timeline quote (2026-08-28
+        // worker-record-timeline spec §6): the failing command's own output
+        // when this step ran one, its diagnostic text when it did not, and the
+        // token's sentence when the step printed nothing at all. Null when the
+        // token maps to no sentence either — a summary is never invented.
+        summary:
+          scriptSummary(output_tail) ??
+          scriptSummary(detail) ??
+          failureTokenSummary(reason),
         output_tail,
         log_path,
         ...failure_evidence

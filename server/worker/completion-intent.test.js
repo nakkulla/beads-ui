@@ -4,12 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { createBeadTimeline } from './bead-timeline.js';
 import {
   COMPLETION_RETRY_DELAYS_MS,
   COMPLETION_RETRY_POLICY,
   NEEDS_HUMAN_FAMILIES,
   classifyCompletionFailure,
   completionFailureComment,
+  completionFailureSummary,
   createCompletionActionDriver,
   createCompletionFailureKey,
   createCompletionIntentCoordinator,
@@ -48,6 +50,9 @@ function intent(patch = {}) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  // Only the timeline tests set it; deleting it unconditionally keeps a failed
+  // one from leaking a temp state root into the rest of the file.
+  delete process.env.XDG_STATE_HOME;
   for (const dir of tmp_dirs.splice(0)) {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -471,6 +476,115 @@ describe('worker/completion-intent action driver', () => {
     });
   });
 
+  test('records needs_human on the root bead timeline', async () => {
+    const store = seededCompletionStore();
+    /** @type {any[]} */
+    const events = [];
+    const driver = actionDriver(store, {
+      bd: { comment: vi.fn(commentSpy()) },
+      timeline: { append: (/** @type {any} */ input) => events.push(input) }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (!action) {
+      throw new Error('verify red action missing');
+    }
+    await driver.onAction('UI-root', action, current);
+
+    expect(events).toContainEqual({
+      bead_id: 'UI-root',
+      kind: 'needs_human',
+      seq: 'verify_red',
+      summary: '확인 필요 — verify_red'
+    });
+  });
+
+  test('reads one event back when the same wall is settled twice', async () => {
+    const store = seededCompletionStore();
+    const state_root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-ci-tl-'));
+    tmp_dirs.push(state_root);
+    process.env.XDG_STATE_HOME = state_root;
+    const timeline = createBeadTimeline({ workspace_root: DRIVER_WS });
+    const driver = actionDriver(store, {
+      bd: { comment: vi.fn(commentSpy()) },
+      timeline
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (!action) {
+      throw new Error('verify red action missing');
+    }
+
+    await driver.onAction('UI-root', action, current);
+    await driver.onAction('UI-root', action, current);
+
+    expect(
+      timeline
+        .readTimeline('UI-root')
+        .filter((event) => event.kind === 'needs_human')
+    ).toHaveLength(1);
+  });
+
+  test('terminalizes when no timeline is injected', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      bd: { comment: vi.fn(commentSpy()) }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (!action) {
+      throw new Error('verify red action missing');
+    }
+    await driver.onAction('UI-root', action, current);
+
+    expect(store.snapshot(DRIVER_WS).completion_intents['UI-root'].phase).toBe(
+      'needs_human'
+    );
+  });
+
+  test('terminalizes when the timeline append fails', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      bd: { comment: vi.fn(commentSpy()) },
+      timeline: {
+        append: () => ({ ok: false, reason: 'write_failed', detail: 'nope' })
+      }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (!action) {
+      throw new Error('verify red action missing');
+    }
+    await driver.onAction('UI-root', action, current);
+
+    expect(store.snapshot(DRIVER_WS).completion_intents['UI-root'].phase).toBe(
+      'needs_human'
+    );
+  });
+
   test('leaves the queue hold alone on a bead-local needs_human family', () => {
     const store = seededCompletionStore();
 
@@ -736,6 +850,9 @@ describe('worker/completion-intent action driver', () => {
         '## 🤖 완료 실패 기록',
         '- 단계: verify',
         '- 원인: cleanup_failed:verify_cmd_failed — 머지 후 검증 명령이 실패했습니다.',
+        // The failing run's own line, extracted from the evidence tail once
+        // (UI-8wpb §6 row 2).
+        '- 요약: merged regression',
         `- 대상: ${'c'.repeat(40)} (base main)`,
         '- 로그: /state/repo-operation-logs/op-77.log',
         '- 재시도: 없음',
@@ -2285,6 +2402,35 @@ describe('worker/completion-intent auto-resolution driver (UI-hk74 §4/§5)', ()
   });
 });
 
+describe('완료 실패 summary 추출 (UI-8wpb §6 row 2)', () => {
+  test('takes the failing line of the verify run output', () => {
+    const summary = completionFailureSummary({
+      output_tail: ['+ npm test', 'FAIL server/a.test.js', 'done'].join('\n')
+    });
+
+    expect(summary).toBe('FAIL server/a.test.js');
+  });
+
+  test('falls back to the last line of a run that announced nothing', () => {
+    const summary = completionFailureSummary({
+      output_tail: ['+ npm test', 'killed after 600s'].join('\n')
+    });
+
+    expect(summary).toBe('killed after 600s');
+  });
+
+  test('returns null when the failure ran no command', () => {
+    expect(completionFailureSummary(null)).toBeNull();
+    expect(completionFailureSummary({ log_path: '/x.log' })).toBeNull();
+  });
+
+  test('caps the summary at 200 characters', () => {
+    expect(
+      completionFailureSummary({ output_tail: `Error: ${'x'.repeat(300)}` })
+    ).toHaveLength(200);
+  });
+});
+
 describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
   /**
    * @param {Record<string, unknown>} patch
@@ -2307,6 +2453,12 @@ describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
       }
     ).split('\n');
   }
+
+  test('omits the summary line when the failure ran no command', () => {
+    expect(commentLines({}).some((line) => line.startsWith('- 요약:'))).toBe(
+      false
+    );
+  });
 
   test('says verify for the stages a post-merge verification fails in', () => {
     expect(commentLines({ failure_key: { stage: 'merge_gate' } })[1]).toBe(

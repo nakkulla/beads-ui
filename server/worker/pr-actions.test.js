@@ -1616,8 +1616,23 @@ describe('post-merge cleanup — what step 1 did to the LOCAL checkout', () => {
     expect(r).toMatchObject({ ok: false, cleanup_step: 'base_containment' });
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       step: 'base_containment',
-      reason: 'deployment_target_not_covering_merge'
+      reason: 'deployment_target_not_covering_merge',
+      // This step runs no command, so the token's own sentence is the summary
+      // the card and the timeline read (UI-8wpb §6 row 4).
+      summary: '배포 대상 base가 이 머지 커밋을 포함하지 않습니다.'
     });
+  });
+
+  test('records no cleanup summary for a step whose token maps to no sentence', async () => {
+    const h = makeActions({
+      bdFail: (/** @type {string} */ method) => method === 'setStatus'
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).not.toHaveProperty(
+      'summary'
+    );
   });
 
   test('still stops when the base cannot be fetched at all', async () => {

@@ -47,6 +47,7 @@ import { validateAdmission } from './admission.js';
 import { createAutoAdvanceRestoreController } from './auto-advance-restore.js';
 import { createAutoMerge } from './auto-merge.js';
 import { createBdMetadata } from './bd-metadata.js';
+import { createBeadTimeline } from './bead-timeline.js';
 import {
   createCompletionActionDriver,
   createCompletionIntentCoordinator
@@ -68,6 +69,10 @@ import {
   receiptDefaultsFrom,
   receiptProbeError
 } from './receipt-check.js';
+import {
+  __resetRecordMigrationPendingForTest,
+  createRecordRetention
+} from './record-retention.js';
 import { createRecoveryArchive } from './recovery-archive.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import { createRepoOperationMigration } from './repo-operation-migration.js';
@@ -107,6 +112,19 @@ const log = debug('worker:attach');
  * @type {number}
  */
 export const RECONCILE_INTERVAL_SECONDS = 60;
+
+/**
+ * How often the record-retention pass runs (record-timeline-retention §8.2).
+ *
+ * Daily, because both horizons are measured in DAYS: a shorter cadence would
+ * re-walk every bead directory to reach the same verdict, and a longer one
+ * would let the 30-day boundary drift by more than the resolution the policy
+ * is written in. The startup pass is what covers a server that was down when a
+ * bead crossed its horizon.
+ *
+ * @type {number}
+ */
+export const RECORD_RETENTION_INTERVAL_SECONDS = 24 * 60 * 60;
 
 /**
  * How long one target-base resolution stays good for the SCAN path
@@ -468,6 +486,8 @@ export function defaultProbePid(pid) {
  *   completionActionDriver?: any,
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
+ *   timeline?: ReturnType<typeof createBeadTimeline>,
+ *   recordRetention?: ReturnType<typeof createRecordRetention>,
  *   repoOperationMigration?: { run: () => Promise<any> },
  *   autoAdvanceRestore?: ReturnType<typeof createAutoAdvanceRestoreController>,
  *   getSubscriberCount?: () => number,
@@ -485,6 +505,18 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       runShell('git', args, opts));
   const gitRun = (/** @type {string[]} */ args, /** @type {any} */ opts = {}) =>
     baseGitRun(args, { ...opts, cwd: opts.cwd ?? repo });
+
+  // The workspace's ONE timeline writer (record-timeline-retention §5). Built
+  // here, beside the other attachment-owned collaborators, because the bead
+  // history it owns is per workspace and its single-writer guarantee only holds
+  // if nobody else constructs a second instance — producers (scheduler, merge
+  // queue, repo-operation coordinator, ws handlers) receive THIS one.
+  const timeline = options.timeline || createBeadTimeline({ workspace_root });
+  // The queue store is process-wide while a timeline is per workspace, so the
+  // attachment is what pairs them (record-timeline-retention §7): the store may
+  // only transfer a processed-terminal attempt out of `queue.json` once THIS
+  // workspace's terminal event is durable.
+  runtime.queueStore.useTimeline(workspace_root, timeline);
 
   // The ONE base resolution seam (worker-base-scope-alignment §1/§2). The base
   // has exactly one source — the target repo's `docs/agents/repo-ops.toml`
@@ -545,6 +577,36 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         runtime.titleCache.refreshFromIssue(workspace_root, issue);
       }
     });
+
+  // Record retention + the one-time record migration
+  // (record-timeline-retention §8). Constructed HERE, right after `bd`, because
+  // the sweep's "is this bead closed" question has exactly one answer seam
+  // (`bd.readStatus`) and this attachment already owns it.
+  //
+  // Constructing it is also what opens the health gate: `/healthz` reports
+  // not-ready from this point until `migrate()` runs in the startup sequence
+  // below.
+  const recordRetention =
+    options.recordRetention ||
+    createRecordRetention({
+      workspace_root,
+      timeline,
+      readStatus: (/** @type {string} */ bead_id) => bd.readStatus(bead_id)
+    });
+
+  // The daily retention pass. Like the reconciler this uses `createPoller` for
+  // its unref'd interval and double-start guard with a constant client count:
+  // retention is storage hygiene, not a view, so it must run on a server
+  // nobody is watching.
+  const recordRetentionPoller = createPoller({
+    intervalSeconds: RECORD_RETENTION_INTERVAL_SECONDS,
+    getClientCount: () => 1,
+    onTick: () => {
+      Promise.resolve(recordRetention.sweep()).catch((err) => {
+        log('record retention pass failed for %s: %o', workspace_root, err);
+      });
+    }
+  });
 
   // Workspace-scoped admission accessor (worker-autorun-policy §1): the
   // scheduler validates candidates/dispatches through `validate` (base
@@ -660,6 +722,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     repo,
     store: runtime.queueStore,
     locks: runtime.locks,
+    timeline,
     // The manual 배포 실행 path pins its target through the SAME base resolver
     // every other dispatch uses (UI-s582 §3.1) — remote, base and fetched tip
     // in one resolution, so nothing there assumes `origin`.
@@ -687,6 +750,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         // landing module has no workspace of its own.
         readPushLog: (/** @type {{ attempt_id: string }} */ input) =>
           readPushLog({ workspace: keyFor(workspace_root), ...input }),
+        // The workspace's ONE bead-history writer (§5), not a second instance.
+        timeline,
         notifyChanged: (/** @type {string} */ ws_key) =>
           emitQueueChanged(ws_key)
       })
@@ -776,6 +841,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
 
   const scheduler = createScheduler({
     store: runtime.queueStore,
+    // The workspace's ONE bead-history writer (record-timeline-retention §5) —
+    // the same instance the queue store was registered with above, never a
+    // second one.
+    timeline,
     execPresetCoordinator: runtime.execPresetCoordinator,
     // The account default layer lives in `bd kv`, which the preset
     // coordinator's synchronous workspace resolution cannot reach (UI-d3cb
@@ -1323,6 +1392,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     createMergeQueue({
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
+      timeline,
       merge: (/** @type {string} */ bead_id) =>
         prActions.merge(bead_id, { allow_conflict_resolution: false }),
       probeMergeability: (/** @type {string} */ bead_id) =>
@@ -1443,6 +1513,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     createCompletionActionDriver({
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
+      timeline,
       prActions,
       bd,
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
@@ -1619,6 +1690,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     deployTargetJudge,
     repoOperationCoordinator,
     repoOperationMigration,
+    recordRetention,
+    recordRetentionPoller,
+    timeline,
     repo,
     resolveBase,
     // Exposed so pinned-blob readers use the attachment's own runner rather
@@ -2037,6 +2111,29 @@ async function retireKindAttempts(att, key) {
  * @param {boolean} start_pr_poller
  */
 async function startWorkerAttachment(att, key, start_pr_poller) {
+  // FIRST, before anything can read `queue.json` (record-timeline-retention
+  // §8.3): the one-time record migration reduces that very file, so a reader
+  // that loaded it earlier would cache the pre-migration queue for the life of
+  // the process and then persist it back over the reduced one. It also lands
+  // ahead of the detached monitor reattach and both reconciles for the same
+  // reason — those are the first readers.
+  //
+  // FAIL-CLOSED: §8.3 puts the migration before every reader, so a pass that
+  // did not finish stops the startup sequence here. The workspace keeps the
+  // layout it already had and the next start retries; going on would start the
+  // very readers that cache a pre-migration `queue.json` and persist it back
+  // over the reduced one. The attachment stays constructed but inert, and the
+  // health gate stays not-ready.
+  try {
+    const migration = att.recordRetention?.migrate();
+    if (migration && migration.ok !== true) {
+      log('record migration did not finish for %s: %o', key, migration);
+      return;
+    }
+  } catch (err) {
+    log('record migration failed for %s: %o', key, err);
+    return;
+  }
   await retireRepairLanes(att, key);
   await retireKindAttempts(att, key);
   try {
@@ -2112,6 +2209,17 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     att.reconciler.start();
   } catch (err) {
     log('reconcile timer start failed for %s: %o', key, err);
+  }
+  // The startup retention pass and its daily timer (§8.2). Fire-and-forget:
+  // archiving a month-old transcript is never on the path of anything a client
+  // is waiting for, and a failed pass simply runs again tomorrow.
+  Promise.resolve(att.recordRetention?.sweep()).catch((err) => {
+    log('startup record retention pass failed for %s: %o', key, err);
+  });
+  try {
+    att.recordRetentionPoller?.start();
+  } catch (err) {
+    log('record retention timer start failed for %s: %o', key, err);
   }
   try {
     att.mergeQueue.start();
@@ -2398,6 +2506,33 @@ export async function stopWorkerReviewSessionProcess(
     keyFor(workspace_root),
     attempt_id
   );
+}
+
+/**
+ * Read one bead's permanent history (record-timeline-retention §5/§9), IF an
+ * attachment is registered.
+ *
+ * The timeline writer is per WORKSPACE and lives on the attachment, while the
+ * ws layer holds only a workspace key — so the registry is the seam, exactly as
+ * it is for every other per-workspace capability here. A workspace with no
+ * attachment (a ws-handler test, an inactive repo) has no history rather than
+ * an error: every §9 surface is fail-quiet and draws nothing on an empty list.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @param {{ limit?: number }} [options]
+ * @returns {import('./bead-timeline.js').TimelineEvent[]}
+ */
+export function readBeadTimeline(workspace_root, bead_id, options = {}) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || typeof bead_id !== 'string' || bead_id.length === 0) {
+    return [];
+  }
+  try {
+    return att.timeline.readTimeline(bead_id, options);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -2969,9 +3104,15 @@ export function __resetWorkerAttachmentsForTest() {
     } catch {
       /* ignore */
     }
+    try {
+      att.recordRetentionPoller?.stop();
+    } catch {
+      /* ignore */
+    }
   }
   ATTACHMENTS.clear();
   ATTACHMENT_STARTUPS.clear();
+  __resetRecordMigrationPendingForTest();
   auto_advance_restore_controller = null;
   unattachedAdmissionCheck = checkUnattachedWorkerAdmission;
 }

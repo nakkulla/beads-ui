@@ -37,6 +37,10 @@ import {
 import { createMdViewer } from './md-viewer.js';
 import { sessionHistoryTemplate } from './session-history.js';
 import { taskPromptTemplate } from './task-prompt.js';
+import {
+  WORKER_TIMELINE_PAGE,
+  workerTimelineTemplate
+} from './worker-timeline.js';
 
 /**
  * @import { SessionRefView } from '../../../server/worker/session-ref.js'
@@ -595,6 +599,103 @@ export function createDetailPanel(mount_element, options) {
     void fetchSessionRefs(current_id, key);
   }
 
+  // Worker 이력 섹션 (record-timeline-retention §9). 세션 로그와 달리 이 이력은
+  // `queue.json`이 아니라 bead의 영구 타임라인에 있으므로 여기서 물어야 한다.
+  /** @type {import('./worker-timeline.js').WorkerTimelineEvent[]} */
+  let worker_timeline = [];
+  /**
+   * The §7 attempt union of this bead. `queue.json`에서 이관된 레코드는
+   * 클라이언트 queue store에 없으므로, 세션 이력과 총 사용량은 큐 ∪ 이 목록으로
+   * 판정한다.
+   *
+   * @type {any[]}
+   */
+  let worker_attempts = [];
+  let worker_timeline_shown = WORKER_TIMELINE_PAGE;
+  /** @type {string|null} */
+  let worker_timeline_loaded_for = null;
+  // Guards a late reply from an issue (or workspace) the reader has already left.
+  let worker_timeline_request_seq = 0;
+
+  /**
+   * Workspace + bead, for the same reason the prompt cache carries both: the
+   * same bead id in another repo is another bead with another history.
+   *
+   * @param {string} id
+   * @returns {string}
+   */
+  function workerTimelineCacheKey(id) {
+    const workspace =
+      (options.getWorkspacePath && options.getWorkspacePath()) || '';
+    return `${workspace}::${id}`;
+  }
+
+  function resetWorkerTimeline() {
+    worker_timeline = [];
+    worker_attempts = [];
+    worker_timeline_shown = WORKER_TIMELINE_PAGE;
+    worker_timeline_loaded_for = null;
+    worker_timeline_request_seq += 1;
+  }
+
+  /**
+   * @param {string} id
+   * @param {string} key
+   */
+  async function fetchWorkerTimeline(id, key) {
+    if (!transport) {
+      return;
+    }
+    const seq = ++worker_timeline_request_seq;
+    /** @type {any} */
+    let res;
+    try {
+      res = await Promise.resolve(
+        transport('get-bead-timeline', { bead_id: id })
+      );
+    } catch {
+      res = null;
+    }
+    if (
+      seq !== worker_timeline_request_seq ||
+      key !== worker_timeline_loaded_for
+    ) {
+      return;
+    }
+    // A failure and an empty history are the same answer here: no section.
+    worker_timeline = res && Array.isArray(res.events) ? res.events : [];
+    worker_attempts = res && Array.isArray(res.attempts) ? res.attempts : [];
+    worker_timeline_shown = WORKER_TIMELINE_PAGE;
+    doRender();
+  }
+
+  /**
+   * Ask once per (workspace, bead). The reply is short and the section is the
+   * only place a finished attempt's history is readable at all, so it is
+   * fetched on open rather than behind a toggle.
+   */
+  function syncWorkerTimeline() {
+    if (!transport || !current_id) {
+      return;
+    }
+    const key = workerTimelineCacheKey(current_id);
+    if (worker_timeline_loaded_for === key) {
+      return;
+    }
+    // The previous key's lines belong to another bead; they go before the new
+    // reply lands, not after.
+    worker_timeline = [];
+    worker_attempts = [];
+    worker_timeline_shown = WORKER_TIMELINE_PAGE;
+    worker_timeline_loaded_for = key;
+    void fetchWorkerTimeline(current_id, key);
+  }
+
+  function revealMoreWorkerTimeline() {
+    worker_timeline_shown += WORKER_TIMELINE_PAGE;
+    doRender();
+  }
+
   function toggleTaskPrompt() {
     prompt_expanded = !prompt_expanded;
     if (
@@ -610,19 +711,44 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
-   * Attempts recorded for the current bead, newest first (from the client
-   * worker-queue store's `attempts` map).
+   * Every attempt record of this bead, `attempt_id` 기준 합집합 (§7).
+   *
+   * 큐 스냅샷만 읽으면 이관된 레코드가 통째로 빠진다 — 세션 이력과 총 사용량이
+   * 타임라인만 남고 사라지는 자리가 여기다. 같은 id가 양쪽에 있으면 큐 쪽이
+   * 이긴다: 살아 있는 행이 더 최신이다.
+   *
+   * @returns {Record<string, any>}
+   */
+  function attemptRecordsForBead() {
+    /** @type {Record<string, any>} */
+    const merged = {};
+    for (const a of worker_attempts) {
+      if (a && typeof a === 'object' && a.bead_id === current_id) {
+        merged[String(a.attempt_id)] = a;
+      }
+    }
+    const q = queueStore ? queueStore.get() : null;
+    for (const a of q && q.attempts ? Object.values(q.attempts) : []) {
+      const attempt = /** @type {any} */ (a);
+      if (attempt && attempt.bead_id === current_id) {
+        merged[String(attempt.attempt_id)] = attempt;
+      }
+    }
+    return merged;
+  }
+
+  /**
+   * Attempts recorded for the current bead, newest first — the queue store's
+   * live rows and the transferred records this bead's history request carried.
    *
    * @returns {import('./session-history.js').SessionAttempt[]}
    */
   function attemptsForBead() {
-    if (!queueStore || !current_id) {
+    if (!current_id) {
       return [];
     }
-    const q = queueStore.get();
-    const attempts = q && q.attempts ? Object.values(q.attempts) : [];
+    const attempts = Object.values(attemptRecordsForBead());
     return /** @type {any[]} */ (attempts)
-      .filter((a) => a && a.bead_id === current_id)
       .sort((a, b) => (b.started_at || 0) - (a.started_at || 0))
       .map((a) => ({
         attempt_id: a.attempt_id,
@@ -668,11 +794,10 @@ export function createDetailPanel(mount_element, options) {
    * @returns {import('../../utils/token-usage.js').UsageProjection|null}
    */
   function totalUsageForBead() {
-    if (!queueStore || !current_id) {
+    if (!current_id) {
       return null;
     }
-    const q = queueStore.get();
-    return sumAttemptUsage((q && q.attempts) || {}, current_id);
+    return sumAttemptUsage(attemptRecordsForBead(), current_id);
   }
 
   /**
@@ -1125,6 +1250,7 @@ export function createDetailPanel(mount_element, options) {
     }
     syncComments();
     syncSessionRefs();
+    syncWorkerTimeline();
     doRender();
   }
 
@@ -2501,6 +2627,10 @@ export function createDetailPanel(mount_element, options) {
             { total: total_usage, expanded: usage_expanded },
             session_refs
           )}
+          ${workerTimelineTemplate(
+            { events: worker_timeline, shown: worker_timeline_shown },
+            { onMore: revealMoreWorkerTimeline }
+          )}
         </div>
       </div>
     `;
@@ -2524,6 +2654,7 @@ export function createDetailPanel(mount_element, options) {
         resetComments();
         resetTaskPrompt();
         resetSessionRefs();
+        resetWorkerTimeline();
         resetExecAccountCatalog();
       }
       current_id = id;
@@ -2553,6 +2684,7 @@ export function createDetailPanel(mount_element, options) {
       resetComments();
       resetTaskPrompt();
       resetSessionRefs();
+      resetWorkerTimeline();
       resetExecAccountCatalog();
       releaseCandidates();
       md_viewer.close();
@@ -2594,6 +2726,7 @@ export function createDetailPanel(mount_element, options) {
       resetComments();
       resetTaskPrompt();
       resetSessionRefs();
+      resetWorkerTimeline();
       render(html``, mount_element);
     }
   };

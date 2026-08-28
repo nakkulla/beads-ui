@@ -382,6 +382,24 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   and times; no entry means label truth is unknown (not an empty array),
   including when an older server omits the whole key. It is UI projection only
   and never Worker scheduler authority.
+- `bead_timelines: Record<bead_id, { events: TimelineEvent[], log_path: string|null, log_expired: boolean, log_unreadable?: boolean }>`
+  (record-timeline-retention §9) is the 실패 팝오버·파킹 타일 material of the
+  beads whose card actually shows a failure or a park — an attempt in
+  `failed`/`orphaned`/`parked`. `events` is that bead's LAST FIVE timeline
+  lines, oldest first, each
+  `{ event_id, at, bead_id, kind, summary, attempt_id?, detail?, log_path? }`;
+  `log_path` is the §4 read-resolution order's resolved path, and `log_expired`
+  is `true` when that order found the transcript in NONE of its locations while
+  the record does name one — the 180-day retention policy deleted it, which the
+  tile renders as `만료됨`. `log_unreadable` is present and `true` when that
+  order hit a storage fault instead of an absence (a permission or I/O error on
+  a candidate); the tile renders that as `읽기 실패`, because a fault is not a
+  deletion. Non-persisted, computed per snapshot, and fail-quiet BY OMISSION: a
+  bead with no events and no log fact has no entry at all, and an older server
+  omits the whole key. It rides the snapshot rather than a request because ADR
+  14 makes `buildLanes` the only assembler of a card — a renderer that fetched
+  its own rows would be a second assembly path for the same tile. The WHOLE
+  timeline is a different question, answered by `get-bead-timeline`.
 - `bead_workflow: Record<bead_id, WorkflowSummary|null>` (UI-eey2 §9.2) is the
   stepper projection for the beads a LANE renders: `queue` ∪
   `serial_lanes[].entries` ∪ RUNNING attempts ∪ `pr_wait`. `done` is excluded —
@@ -711,11 +729,16 @@ Streams a per-attempt raw runner event stream to the transcript viewer.
   new event. A Done/Failed attempt is snapshot-only.
 - `unsubscribe-session-log` payload: `{ id: client_id }`.
 - `session-log-snapshot` (push) payload:
-  `{ id, attempt_id, launch_id?, lines:[…], last_event_at }` — the persisted raw
-  jsonl events plus the log file's mtime in epoch ms (`null` when the file
-  cannot be stat'd). The raw events carry no timestamp, so this is where the
-  drawer's "얼마 전에 움직였나" starts; live appends are stamped client-side on
-  receipt.
+  `{ id, attempt_id, launch_id?, lines:[…], last_event_at, expired?, notice? }`
+  — the persisted raw jsonl events plus the log file's mtime in epoch ms (`null`
+  when the file cannot be stat'd). The raw events carry no timestamp, so this is
+  where the drawer's "얼마 전에 움직였나" starts; live appends are stamped
+  client-side on receipt. `expired: true` + `notice: '만료됨(180일 보존 정책)'`
+  (record-timeline-retention §4) mark a transcript the read-resolution order
+  found in NONE of its locations for a SETTLED attempt — the retention policy
+  deleted it. Both keys are ABSENT otherwise: "정책이 지웠다"와 "아무것도 쓰지
+  않았다"는 다른 대답이므로 빈 `lines`로 겹쳐 말하지 않는다. A running attempt
+  whose file has not appeared yet is a one-poll race, never `expired`.
 - `session-log-append` (push) payload: `{ id, attempt_id, launch_id?, event }` —
   one raw event. Delegation 구독에서는 두 push payload 모두 요청한 `launch_id`를
   echo한다. 다른 workspace의 attempt, unknown launch, unauthorized launch는
@@ -779,6 +802,22 @@ own unless the payload names a validated `root_dir`.
   NEWEST attempt that recorded one. A bead that was never dispatched replies
   `{ missing: true, default_task_prompt }` — what the next dispatch would send,
   so the panel can preview it without holding a copy of the text.
+- `get-bead-timeline` payload: `{ bead_id, root_dir? }` — replies
+  `{ bead_id, events: TimelineEvent[], attempts: Attempt[] }` with the bead's
+  WHOLE Worker history, NEWEST FIRST (record-timeline-retention §9), for the
+  issue detail panel's `Worker 이력` 섹션. The five lines `bead_timelines` puts
+  on the queue snapshot answer the tile's question; this answers the page's, and
+  the page reveals the list progressively rather than the server paging it.
+  `attempts` is the §7 union of the live queue's rows and the bead's transferred
+  `attempts/<attempt_id>.json` records, deduped by `attempt_id` with the live
+  row winning: the panel's 세션 이력 and 총 사용량 are computed from that union
+  ∪ the client queue store, so a bead whose finished records already left
+  `queue.json` still shows its sessions and its cumulative usage. `root_dir`
+  follows the `get-attempt-prompt` convention (registry allow list; absent keeps
+  the connection workspace). An unknown bead, a workspace with no Worker
+  attachment, and a bead that was never dispatched all reply
+  `{ bead_id, events: [], attempts: [] }` rather than an error — the section
+  then renders nothing at all, not an empty state.
 - `get-session-refs` payload: `{ bead_id, root_dir? }` — replies
   `{ bead_id, sessions: SessionRefView[] }` with the same view shape and the
   same projection rules as `session_active[].session_refs` above. `root_dir`

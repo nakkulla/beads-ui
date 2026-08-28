@@ -69,7 +69,14 @@ import * as default_delegation_monitor from './delegation-monitor.js';
 import { errorDetail } from './error-detail.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
-import { RETRY_MAX, causeKey, classifyFailure } from './failure-class.js';
+import {
+  RETRY_MAX,
+  causeKey,
+  classifyFailure,
+  extractSummary,
+  guardKillMessage
+} from './failure-class.js';
+import { attemptFailureComment } from './failure-comment.js';
 import * as default_guard_hook from './guard-hook.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
@@ -257,8 +264,14 @@ const SESSION_EFFORT_RETRY_LIMIT = 3;
  * `cause_detail` (UI-2o4z §2). Undefined when the session left nothing to
  * record, so the patch keeps the field null instead of inventing one.
  *
+ * The guard's own kill message rides along as `summary` (2026-08-28
+ * worker-record-timeline spec §6 row 3). This is the ONE place it is extracted:
+ * every guard kill — the live engine's blocked verdict and the restart
+ * monitor's `guard_kill` evidence alike — reaches a durable record through
+ * here, so the failure tile and the timeline quote the same sentence.
+ *
  * @param {{ reason: string, command: string|null }|null|undefined} detail
- * @returns {{ reason: string, command: string|null }|undefined}
+ * @returns {{ reason: string, command: string|null, summary?: string }|undefined}
  */
 function blockerCauseDetail(detail) {
   if (!detail || typeof detail.reason !== 'string') {
@@ -268,7 +281,14 @@ function blockerCauseDetail(detail) {
     typeof detail.command === 'string'
       ? detail.command.slice(0, CAUSE_DETAIL_COMMAND_MAX)
       : null;
-  return { reason: detail.reason, command };
+  const summary = extractSummary(
+    guardKillMessage({ reason: detail.reason, command })
+  );
+  return {
+    reason: detail.reason,
+    command,
+    ...(summary === null ? {} : { summary })
+  };
 }
 
 /**
@@ -477,8 +497,12 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   unsetMetadata: (bead_id: string, key: string) => Promise<void>,
  *   readMetadata: (bead_id: string, key: string) => Promise<string|null>,
  *   setStatus: (bead_id: string, status: string) => Promise<void>,
- *   readStatus: (bead_id: string) => Promise<string|null>
+ *   readStatus: (bead_id: string) => Promise<string|null>,
+ *   comment?: (bead_id: string, text: string) => Promise<unknown>
  * }} bd
+ * `comment` is OPTIONAL because a scheduler built without it — every existing
+ * unit test — must settle failures identically and simply post nothing
+ * (record-timeline-retention §9).
  * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean, restore?: (i: { repo: string, bead_id: string, head_ref: string }) => Promise<{ ok: boolean, reason?: string }> }} worktree
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean, bead_status?: string|null, awaiting_user?: string|null }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
@@ -523,7 +547,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * attachment built without it (every hermetic test) refuses the dispatch as
  * `not_external` rather than launching against an unverified bead.
  * @property {{ existsSync: (path: string) => boolean }} [fs]
- * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, publish?: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void, pathFor?: (workspace: string, attempt_id: string) => string, stderrPathFor?: (workspace: string, attempt_id: string) => string }} sessionLog
+ * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, publish?: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void, pathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string, stderrPathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string }} sessionLog
  * The session-log broker. `pathFor`/`stderrPathFor` are what the spawn hands the
  * runner as its stdout/stderr files (UI-o2yt §3.1); a fake without them simply
  * leaves the engine on its stdout-pipe fallback, which is what fixture-driven
@@ -550,6 +574,11 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * Fail-quiet Claude session-file effort observer.
  * @property {(input: { session_id: string, started_at: number|null }) => string|null} [observeCodexEffort]
  * Fail-quiet Codex rollout-file effort observer.
+ * @property {ReturnType<typeof import('./bead-timeline.js').createBeadTimeline>} [timeline]
+ * The workspace's ONE bead-history writer (record-timeline-retention §5),
+ * injected by `attach.js`. Optional: an attachment without one — every existing
+ * unit test — records no history and behaves identically otherwise, because a
+ * timeline line is evidence and never an input to a queue decision.
  * @property {(workspace: string) => void} [notifyQueueChanged]
  * Fired after autonomous queue transitions (dispatch records, admission
  * refusals, session done/fail) so ws subscribers get a fresh snapshot without
@@ -822,10 +851,50 @@ function launchAccountRefusalDetail(failure, accounts, account_sources) {
 }
 
 /**
+ * The one line §5 shows for a scheduled retry rung.
+ *
+ * @param {number} attempts - Which rung of the ladder this is.
+ * @param {number|null} next_at - Epoch ms the rung is due, when known.
+ * @returns {string}
+ */
+function retrySummary(attempts, next_at) {
+  const when =
+    typeof next_at === 'number' && next_at > 0
+      ? ` \u00b7 \ub2e4\uc74c ${new Date(next_at).toTimeString().slice(0, 5)}`
+      : '';
+  return `\uc790\ub3d9 \uc7ac\uc2dc\ub3c4 ${attempts}/${RETRY_MAX}${when}`;
+}
+
+/**
+ * The one line the bead timeline shows for a dispatch (record-timeline-retention
+ * §5): who ran it, how, and from where.
+ *
+ * Assembled from the SAME values `launchSession` writes onto the attempt record,
+ * so the history and the record cannot disagree about which runner ran.
+ *
+ * @param {string} runner_name
+ * @param {string|null} model
+ * @param {string|null} effort
+ * @param {string|null} base_oid
+ * @returns {string}
+ */
+function dispatchSummary(runner_name, model, effort, base_oid) {
+  const exec = [model, effort]
+    .filter((part) => typeof part === 'string' && part.length > 0)
+    .join('/');
+  const base =
+    typeof base_oid === 'string' && base_oid.length > 0
+      ? ` \u00b7 base ${base_oid.slice(0, 7)}`
+      : '';
+  return `${runner_name}${exec.length > 0 ? ` ${exec}` : ''} \ub514\uc2a4\ud328\uce58${base}`;
+}
+
+/**
  * Build the auto-advance state machine over the queue store.
  *
  * @param {SchedulerDeps} deps
  * @returns {{
+ *   commentsIdle: () => Promise<void>,
  *   tick: (workspace: string) => Promise<void>,
  *   staleWorkContinue: (workspace: string, input: { bead_id: string, action_id: string, expected_revision: number }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, conflict?: boolean }>,
  *   staleWorkRecheck: (workspace: string, input: { bead_id: string, action_id: string, expected_revision: number }) => Promise<{ ok: boolean, reason?: string, state?: string, conflict?: boolean }>,
@@ -840,7 +909,7 @@ function launchAccountRefusalDetail(failure, accounts, account_sources) {
  *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
- *   finalizeDiscardAttempt: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
+ *   finalizeDiscardAttempt: (workspace: string, attempt_id: string, bead_id?: string|null) => Promise<{ ok: boolean, reason?: string }>,
  *   recoverControls: (workspace: string) => Promise<void>,
  *   onIssuesChanged: (workspace: string) => Promise<void>,
  *   resumeQueueHold: (workspace: string, input: { since?: number|null }) => Promise<{ ok: boolean, reason?: string }>,
@@ -874,6 +943,142 @@ export function createScheduler(deps) {
   let attempt_seq = 0;
   const makeAttemptId =
     deps.makeAttemptId || ((bead_id) => `${bead_id}-${now()}-${++attempt_seq}`);
+
+  /**
+   * Append one event to the bead's permanent history (record-timeline-retention
+   * §5), through the workspace's single injected writer.
+   *
+   * The result is deliberately dropped. §5 makes exactly one caller depend on a
+   * successful append — the queue store's attempt transfer, which does its own —
+   * and everywhere else a lost history line must cost history, never a queue
+   * decision. A producer with no bead id writes nothing rather than an event
+   * nobody could ever read back.
+   *
+   * @param {import('./bead-timeline.js').TimelineAppendInput} input
+   */
+  function appendTimeline(input) {
+    if (!deps.timeline || String(input.bead_id ?? '').length === 0) {
+      return;
+    }
+    deps.timeline.append(input);
+  }
+
+  /**
+   * Record how an attempt FAILED on the bead's permanent history (§5).
+   *
+   * The summary is the classifier's own `summary` — the identical string
+   * `settleFailureTier` writes into `cause_detail.summary` — because §6 makes
+   * that extraction happen once and everything else read it. Deriving a second
+   * sentence here is how the tile and the history would start disagreeing about
+   * the same failure.
+   *
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   * @param {import('./failure-class.js').FailureClassification} classification
+   * @param {number} at
+   */
+  function appendFailedEvent(bead_id, attempt_id, classification, at) {
+    appendTimeline({
+      bead_id,
+      attempt_id,
+      kind: 'attempt_failed',
+      // One ending per attempt, so the id is fixed rather than sequenced: a
+      // replayed settlement re-appends the same line and the reader keeps one.
+      seq: 'failed',
+      summary: `\uc138\uc158 \uc2e4\ud328 \u2014 ${classification.summary || classification.cause || '\uc6d0\uc778 \ubbf8\uc0c1'}`,
+      at
+    });
+  }
+
+  /**
+   * Attempts whose hand-off comment this process already posted.
+   *
+   * A comment is best-effort and NOT durable: a restart loses the set and the
+   * settlement it belonged to is long over, so nothing re-posts. That is the
+   * same trade the completion saga makes and for the same reason — zero
+   * comments is a gap the failure tile already covers, a duplicate is not.
+   *
+   * @type {Set<string>}
+   */
+  const commented_attempts = new Set();
+
+  /**
+   * Serialized best-effort `bd comment`s. The settlement itself is synchronous
+   * and durable; the chain only keeps two settlements from interleaving their
+   * `bd` invocations.
+   *
+   * @type {Promise<void>}
+   */
+  let comment_chain = Promise.resolve();
+
+  /**
+   * Post the §9 hand-off comment for a session that failed or parked.
+   *
+   * The `summary` and the log path are the record's OWN — the same string the
+   * timeline event and the failure tile read (§6: one extraction, one string) —
+   * so the comment can never describe the failure differently from the card.
+   *
+   * Fire-and-forget on purpose: the queue must not wait on `bd`, and a failed
+   * comment must not turn a settled attempt into a second failure.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {import('./failure-class.js').FailureClassification} classification
+   * @param {boolean} parked
+   */
+  function postAttemptFailureComment(
+    workspace,
+    attempt_id,
+    bead_id,
+    classification,
+    parked
+  ) {
+    if (
+      typeof deps.bd?.comment !== 'function' ||
+      bead_id.length === 0 ||
+      commented_attempts.has(attempt_id)
+    ) {
+      return;
+    }
+    commented_attempts.add(attempt_id);
+    const record = deps.store.snapshot(workspace).attempts?.[attempt_id] || {};
+    const text = attemptFailureComment({
+      parked,
+      cause: classification.cause,
+      summary: classification.summary,
+      log_path: typeof record.log_path === 'string' ? record.log_path : null
+    });
+    const post = deps.bd.comment;
+    comment_chain = comment_chain
+      .then(() => post(bead_id, text))
+      .then(() => undefined)
+      .catch((err) => {
+        log('attempt failure comment failed for %s: %o', bead_id, err);
+      });
+  }
+
+  /**
+   * Record a session that ended WITHOUT failing (§5): a success, or a park.
+   *
+   * `session_ended` is also the kind the queue store's transfer looks for by
+   * attempt id, so recording the real ending here is what stops the transfer
+   * from later adding a second, blander one for the same attempt.
+   *
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   * @param {string} summary
+   */
+  function appendSessionEnded(bead_id, attempt_id, summary) {
+    appendTimeline({
+      bead_id,
+      attempt_id,
+      kind: 'session_ended',
+      // One ending per attempt.
+      seq: 'ended',
+      summary
+    });
+  }
 
   /**
    * Live sessions keyed by attempt_id.
@@ -1364,6 +1569,27 @@ export function createScheduler(deps) {
     }
     receipt_recovery_cursor.set(workspace, (start + limit) % candidates.length);
     return changed;
+  }
+
+  /**
+   * One TRANSFERRED attempt record, or null (record-timeline-retention §7).
+   * Null also answers a store without the query API, which is what every test
+   * double that predates §7 is.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   * @returns {any}
+   */
+  function readTransferredAttempt(workspace, bead_id, attempt_id) {
+    if (typeof deps.store.readAttempt !== 'function') {
+      return null;
+    }
+    try {
+      return deps.store.readAttempt(workspace, bead_id, attempt_id);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -2409,8 +2635,12 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {{ reason: string, command: string|null }} detail
+   * @param {string|null} [message] - The engine's own `guardWarningMessage`
+   * sentence, carried through rather than rebuilt: spec §6 row 3 makes the
+   * guard's message the summary, and a second copy of it here is exactly how
+   * one warning starts reading as two different facts.
    */
-  function recordGuardWarning(workspace, attempt_id, detail) {
+  function recordGuardWarning(workspace, attempt_id, detail, message = null) {
     try {
       const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
       const prior = Array.isArray(attempt?.guard_warnings)
@@ -2428,6 +2658,21 @@ export function createScheduler(deps) {
             }
           ]
         }
+      });
+      appendTimeline({
+        bead_id: String(attempt?.bead_id ?? ''),
+        attempt_id,
+        kind: 'guard_warning',
+        // This warning's POSITION in the attempt's accumulated list. The list is
+        // rebuilt in the same order by the restart monitor's replay, so the same
+        // warning keeps the same index and the reader dedupes it.
+        seq: prior.length,
+        summary: `가드 경고 — ${
+          typeof message === 'string' && message.length > 0
+            ? message
+            : detail.reason
+        }`,
+        ...(detail.command === null ? {} : { detail: detail.command })
       });
     } catch (err) {
       log('guard-warning record failed for %s: %o', attempt_id, err);
@@ -3256,6 +3501,28 @@ export function createScheduler(deps) {
         repo,
         awaiting_user: options.awaiting_user ?? null
       });
+      // A park is how the session ENDED, not a failure (§3.1), so §5's ending
+      // kind is `session_ended`. Recording it here is also what keeps the
+      // queue-store transfer from later writing a second, blander ending for
+      // the same attempt: it recognizes this kind by attempt id.
+      appendTimeline({
+        bead_id,
+        attempt_id,
+        kind: 'session_ended',
+        // One ending per attempt, so the id is fixed rather than sequenced.
+        seq: 'parked',
+        summary: `파킹 · ${
+          options.awaiting_user ?? classification.summary ?? '사용자 확인 대기'
+        }`,
+        at
+      });
+      postAttemptFailureComment(
+        workspace,
+        attempt_id,
+        bead_id,
+        classification,
+        true
+      );
       fireDirectionInquiry(
         workspace,
         attempt_id,
@@ -3316,7 +3583,24 @@ export function createScheduler(deps) {
           });
         }
       }
-      if (!scheduled) {
+      if (scheduled) {
+        // The ladder rung, not an ending: this attempt is `retry_wait` and its
+        // ending arrives when the rung is superseded or exhausted.
+        appendTimeline({
+          bead_id,
+          attempt_id,
+          kind: 'attempt_retry',
+          // The rung INDEX. Each rung is a distinct fact and re-recording the
+          // same rung — a restart replaying this settlement — re-appends the
+          // same id.
+          seq: scheduled.attempts ?? 1,
+          summary: retrySummary(
+            scheduled.attempts ?? 1,
+            scheduled.next_at ?? null
+          ),
+          at
+        });
+      } else {
         // Only a TERMINAL env outcome is announced: a `retry_wait` rung is not
         // a failure the watcher can act on, and a three-rung outage would
         // otherwise push the same sentence four times.
@@ -3326,6 +3610,14 @@ export function createScheduler(deps) {
           repo,
           cause_detail: cause_detail ?? null
         });
+        appendFailedEvent(bead_id, attempt_id, classification, at);
+        postAttemptFailureComment(
+          workspace,
+          attempt_id,
+          bead_id,
+          classification,
+          false
+        );
       }
       armRetryTimer(workspace);
       return;
@@ -3359,6 +3651,19 @@ export function createScheduler(deps) {
       repo,
       cause_detail: cause_detail ?? null
     });
+    appendFailedEvent(bead_id, attempt_id, classification, at);
+    // A MOOT settlement is dismissed on arrival — its target is already gone —
+    // so there is no one to hand it off TO. Commenting on it would put a
+    // failure notice on a bead whose work already landed.
+    if (options.moot !== true) {
+      postAttemptFailureComment(
+        workspace,
+        attempt_id,
+        bead_id,
+        classification,
+        false
+      );
+    }
     if (tier === 'individual') {
       closeRetryLineage(workspace, bead_id);
     }
@@ -3792,6 +4097,14 @@ export function createScheduler(deps) {
           // would queue that finished work for a second run, so the attempt
           // terminates straight into `done`, in ONE persist like the lane move
           // below. No `prWaitEntered` push: the bead never enters the lane.
+          //
+          // The ending goes on the timeline BEFORE that mutation, not after:
+          // `moveToDone` completes the saga, which makes the attempt
+          // transferable in the same write, and the transfer records an ending
+          // of its own for any attempt it does not already find one for. Ahead
+          // of the write this detailed line IS what it finds; behind it, the
+          // reader gets the blander one first and this one second.
+          appendSessionEnded(bead_id, attempt_id, '성공 · PR 머지 확인됨');
           deps.store.moveToDone(workspace, {
             bead_id,
             attempt_id,
@@ -3808,6 +4121,11 @@ export function createScheduler(deps) {
           });
           // The bead DELIVERED, so its env lineage is over and an env hold with
           // no lineage left releases itself (spec §3.3).
+          appendSessionEnded(
+            bead_id,
+            attempt_id,
+            `성공 · PR ${vr.pr_url ?? '열림'}`
+          );
           closeRetryLineage(workspace, bead_id);
           notifyLifecycle('prWaitEntered', {
             bead_id,
@@ -5916,12 +6234,23 @@ export function createScheduler(deps) {
     // session log is keyed by the WORKSPACE, not the worktree the session runs
     // in, so the path is resolved here and handed down rather than derived
     // inside the engine.
+    //
+    // The bead is handed down with the attempt so the session writes into
+    // `beads/<bead>/sessions/` from birth (record-timeline-retention §4) rather
+    // than being renamed there once it is terminal — a move a live child's
+    // inherited fd makes hazardous. `settings.log_path` is then stored on the
+    // attempt record verbatim, and stays authoritative for every reader.
     if (typeof deps.sessionLog.pathFor === 'function') {
-      settings.log_path = deps.sessionLog.pathFor(workspace, attempt_id);
+      settings.log_path = deps.sessionLog.pathFor(
+        workspace,
+        attempt_id,
+        bead_id
+      );
       if (typeof deps.sessionLog.stderrPathFor === 'function') {
         settings.stderr_path = deps.sessionLog.stderrPathFor(
           workspace,
-          attempt_id
+          attempt_id,
+          bead_id
         );
       }
     }
@@ -6013,6 +6342,14 @@ export function createScheduler(deps) {
       attempt_id,
       patch: {
         ...(start_oid === null ? {} : { head_oid: start_oid }),
+        // The EXACT transcript path this spawn was handed
+        // (record-timeline-retention §4). Recorded here rather than derived by
+        // every reader, because it is the first candidate of the §4 read order
+        // and the only value a later move has to update.
+        ...(typeof settings.log_path === 'string' &&
+        settings.log_path.length > 0
+          ? { log_path: settings.log_path }
+          : {}),
         started_at,
         pid: handle.pid,
         process_identity: handle.process_identity ?? null,
@@ -6043,6 +6380,24 @@ export function createScheduler(deps) {
       speed,
       repo,
       kind: input.launch_kind ?? 'dispatch'
+    });
+
+    // The bead's permanent history (record-timeline-retention §5). Recorded at
+    // the ONE point every launch shape passes through — first dispatch, stale
+    // continue, resume, conflict, disposition, review — so there is no per-shape
+    // producer to keep in sync, exactly like the record write above.
+    appendTimeline({
+      bead_id,
+      attempt_id,
+      kind: 'dispatched',
+      // The launch SHAPE is what makes a second launch of the same attempt a
+      // different fact, and there is exactly one of each per attempt. A replay
+      // of the same launch therefore re-appends one id the reader dedupes.
+      seq: input.launch_kind ?? 'dispatch',
+      summary: dispatchSummary(runner_name, model, effort, base_oid),
+      ...(typeof settings.log_path === 'string' && settings.log_path.length > 0
+        ? { log_path: settings.log_path }
+        : {})
     });
 
     deps.store.clearAdmission(workspace, bead_id);
@@ -6206,7 +6561,12 @@ export function createScheduler(deps) {
       // that vanished with the process. Unconditional, unlike the usage arm
       // below: the record is evidence, not telemetry.
       if (ev && ev.guard_warning) {
-        recordGuardWarning(workspace, attempt_id, ev.guard_warning);
+        recordGuardWarning(
+          workspace,
+          attempt_id,
+          ev.guard_warning,
+          typeof ev.message === 'string' ? ev.message : null
+        );
       }
       const usage = ev && ev.usage;
       if (!usage_store || !usage) {
@@ -9203,14 +9563,29 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id
+   * @param {string|null} [bead_id] - The bead the discard names, which is the
+   * only way to reach a record §7 transferred out of `queue.json`.
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
-  async function finalizeDiscardAttempt(workspace, attempt_id) {
+  async function finalizeDiscardAttempt(workspace, attempt_id, bead_id = null) {
     if (!canDiscardAttempt(attempt_id)) {
       return { ok: false, reason: 'attempt_settling' };
     }
     const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
     if (!attempt) {
+      // The attempt may simply have been TRANSFERRED out of `queue.json`
+      // (record-timeline-retention §7) — which is the normal state of the
+      // settled bead a merged-PR revert discards. Nothing is left to settle:
+      // §7 holds a bead in the queue while ANY of its attempts is not a
+      // processed terminal, so a transferred record proves the session ended
+      // and its own terminal write already ran. The discard's real work is the
+      // PR and the branch, and this step must not block it.
+      if (
+        bead_id !== null &&
+        readTransferredAttempt(workspace, bead_id, attempt_id)
+      ) {
+        return { ok: true };
+      }
       return { ok: false, reason: 'attempt_not_found' };
     }
     const entry = running.get(attempt_id);
@@ -9436,6 +9811,13 @@ export function createScheduler(deps) {
   }
 
   return {
+    /**
+     * Test and shutdown seam: wait for the best-effort hand-off comments this
+     * scheduler has queued (record-timeline-retention §9).
+     */
+    commentsIdle() {
+      return comment_chain;
+    },
     tick,
     staleWorkContinue,
     staleWorkRecheck,

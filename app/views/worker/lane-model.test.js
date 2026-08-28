@@ -1283,6 +1283,105 @@ describe('monitor attempt folding', () => {
   });
 });
 
+describe('타임라인 투영 (record-timeline-retention §9)', () => {
+  /**
+   * @param {Record<string, any>} [bead_timelines]
+   */
+  function projectFailure(bead_timelines) {
+    return activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'failed',
+          cause: 'session_failed:is_error',
+          cause_detail: { summary: '세션 실패' }
+        }
+      },
+      new Map(),
+      bead_timelines ? { bead_timelines } : {}
+    );
+  }
+
+  test('turns the snapshot events around so the newest is first', () => {
+    const map = projectFailure({
+      'A-1': {
+        events: [
+          { event_id: 'e1', at: 1000, kind: 'dispatched', summary: '디스패치' },
+          {
+            event_id: 'e2',
+            at: 2000,
+            kind: 'attempt_failed',
+            summary: '세션 실패'
+          }
+        ],
+        log_path: '/w/log.jsonl',
+        log_expired: false
+      }
+    });
+
+    const failure = map.get('A-1')?.failure;
+
+    expect(
+      failure?.timeline?.map((/** @type {any} */ row) => row.event_id)
+    ).toEqual(['e2', 'e1']);
+    expect(failure?.log_path).toBe('/w/log.jsonl');
+  });
+
+  test('marks a log the retention policy deleted as expired', () => {
+    const map = projectFailure({
+      'A-1': { events: [], log_path: null, log_expired: true }
+    });
+
+    const failure = map.get('A-1')?.failure;
+
+    expect(failure?.log_expired).toBe(true);
+    expect(failure?.log_path).toBeUndefined();
+  });
+
+  test('marks a log the ladder could not read as unreadable', () => {
+    const map = projectFailure({
+      'A-1': {
+        events: [],
+        log_path: null,
+        log_expired: false,
+        log_unreadable: true
+      }
+    });
+
+    const failure = map.get('A-1')?.failure;
+
+    expect(failure?.log_unreadable).toBe(true);
+    expect(failure?.log_expired).toBeUndefined();
+  });
+
+  test('omits every history key for a bead with no snapshot entry', () => {
+    const failure = projectFailure().get('A-1')?.failure;
+
+    expect('timeline' in /** @type {any} */ (failure)).toBe(false);
+    expect('log_path' in /** @type {any} */ (failure)).toBe(false);
+    expect('log_expired' in /** @type {any} */ (failure)).toBe(false);
+  });
+
+  test('drops an event that carries no summary', () => {
+    const map = projectFailure({
+      'A-1': {
+        events: [
+          { event_id: 'e1', at: 1000, kind: 'dispatched', summary: '' },
+          {
+            event_id: 'e2',
+            at: 2000,
+            kind: 'attempt_failed',
+            summary: '세션 실패'
+          }
+        ]
+      }
+    });
+
+    expect(map.get('A-1')?.failure?.timeline).toHaveLength(1);
+  });
+});
+
 describe('monitor 대기 attempt 투영 (UI-5ym8 §3.1·§3.3·§6)', () => {
   test('projects a parked attempt as its own run state', () => {
     const map = activeByBead(

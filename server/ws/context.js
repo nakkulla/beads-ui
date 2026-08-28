@@ -12,6 +12,7 @@ import {
 } from '../bd.js';
 import { debug } from '../logging.js';
 import { SubscriptionRegistry } from '../subscriptions.js';
+import { EXPIRED_SESSION_LOG_NOTICE } from '../worker/session-log.js';
 
 // Re-exported so the existing `ws/context.js` import path keeps working for the
 // diff/emit callers and their tests; the filter itself lives in a leaf module.
@@ -633,6 +634,11 @@ export function emitDisplayPolicySnapshot(ws, client_id, policy) {
  * for "how long ago did this session last move". Null when unknown.
  * @param {string} [launch_id] - Delegated session identity. Omitted for the
  * main attempt log so legacy payload bytes remain unchanged.
+ * @param {{ expired?: boolean }} [options] - `expired` marks a transcript the
+ * §4 read-resolution order found in NONE of its three locations, which for a
+ * settled attempt means the 180-day retention policy deleted it. It travels as
+ * its own flag rather than as an empty `lines` array because "deleted by
+ * policy" and "wrote nothing" are different answers to the drawer's question.
  */
 export function emitSessionLogSnapshot(
   ws,
@@ -640,7 +646,8 @@ export function emitSessionLogSnapshot(
   attempt_id,
   lines,
   last_event_at = null,
-  launch_id
+  launch_id,
+  options = {}
 ) {
   const msg = JSON.stringify({
     id: `evt-${Date.now()}`,
@@ -654,7 +661,10 @@ export function emitSessionLogSnapshot(
         ? { launch_id }
         : {}),
       lines,
-      last_event_at
+      last_event_at,
+      ...(options.expired === true
+        ? { expired: true, notice: EXPIRED_SESSION_LOG_NOTICE }
+        : {})
     }
   });
   try {

@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
+import { createBeadTimeline } from './bead-timeline.js';
 import { createQueueStore } from './queue-store.js';
 import { createQuickfixLanding } from './quickfix-landing.js';
 
@@ -31,6 +32,9 @@ const FOREIGN_PINS = {
 const temp_dirs = [];
 
 afterEach(() => {
+  // Only the timeline tests set it; deleting it unconditionally keeps a failed
+  // one from leaking a temp state root into the rest of the file.
+  delete process.env.XDG_STATE_HOME;
   for (const dir of temp_dirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -61,6 +65,7 @@ afterEach(() => {
  *   acceptSkippedReceipt?: boolean,
  *   resolveWriteSticks?: boolean,
  *   readIssueThrows?: boolean,
+ *   timeline?: any,
  *   readMetadataThrows?: boolean,
  *   foreign?: {
  *     pins: Record<string, string>,
@@ -179,11 +184,14 @@ function makeLanding(options = {}) {
       return { ok: true };
     }),
     snapshot: vi.fn(() => ({
-      attempts: options.landingProgress
-        ? {
-            [ATTEMPT]: { quickfix_landing: options.landingProgress }
-          }
-        : {}
+      attempts: {
+        [ATTEMPT]: {
+          bead_id: BEAD,
+          ...(options.landingProgress
+            ? { quickfix_landing: options.landingProgress }
+            : {})
+        }
+      }
     }))
   };
   const bd = {
@@ -316,6 +324,7 @@ function makeLanding(options = {}) {
     repoOperations: options.repoOperations === false ? null : repoOperations,
     readPushLog,
     accept_skipped_receipt: options.acceptSkippedReceipt === true,
+    timeline: options.timeline,
     notifyChanged: () => calls.push('notify'),
     now: () => 1234
   });
@@ -344,6 +353,93 @@ function settle(landing) {
     target_base: 'main'
   });
 }
+
+/**
+ * A timeline that records what it was asked to append, standing in for the one
+ * instance `attach.js` injects (record-timeline-retention §5).
+ */
+function timelineRecorder() {
+  /** @type {any[]} */
+  const events = [];
+  return {
+    events,
+    append: (/** @type {any} */ input) => {
+      events.push(input);
+      return { ok: true };
+    }
+  };
+}
+
+test('records each landing step it reaches on the bead timeline', async () => {
+  const timeline = timelineRecorder();
+  const { landing } = makeLanding({ timeline });
+
+  await settle(landing);
+
+  expect(timeline.events.map((event) => event.seq)).toEqual([
+    'base_containment',
+    'repo_operations',
+    'branch_cleanup',
+    'parent_close'
+  ]);
+  expect(timeline.events[0]).toMatchObject({
+    bead_id: BEAD,
+    attempt_id: ATTEMPT,
+    kind: 'landing_step',
+    summary: '착지 단계: base 포함 확인'
+  });
+});
+
+test('names the step a landing failure stopped at', async () => {
+  const timeline = timelineRecorder();
+  const { landing } = makeLanding({ timeline, containmentCode: 1 });
+
+  await settle(landing);
+
+  expect(timeline.events.at(-1)).toMatchObject({
+    bead_id: BEAD,
+    kind: 'landing_step',
+    seq: 'base_containment:failed'
+  });
+  expect(timeline.events.at(-1).summary).toContain('착지 실패');
+});
+
+test('reads one event back when a restart replays the same landing', async () => {
+  const state_root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-qf-tl-'));
+  temp_dirs.push(state_root);
+  process.env.XDG_STATE_HOME = state_root;
+  const timeline = createBeadTimeline({ workspace_root: WORKSPACE });
+
+  await settle(makeLanding({ timeline }).landing);
+  await settle(makeLanding({ timeline }).landing);
+
+  expect(timeline.readTimeline(BEAD).map((event) => event.event_id)).toEqual([
+    `landing_step:${ATTEMPT}:base_containment`,
+    `landing_step:${ATTEMPT}:repo_operations`,
+    `landing_step:${ATTEMPT}:branch_cleanup`,
+    `landing_step:${ATTEMPT}:parent_close`
+  ]);
+});
+
+test('lands when no timeline is injected', async () => {
+  const { landing } = makeLanding();
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+});
+
+test('lands when the timeline append fails', async () => {
+  const { landing } = makeLanding({
+    timeline: {
+      append: () => ({ ok: false, reason: 'write_failed', detail: 'nope' })
+    }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+});
 
 test('parses valid review receipt and completes landing', async () => {
   const { landing, bd } = makeLanding();

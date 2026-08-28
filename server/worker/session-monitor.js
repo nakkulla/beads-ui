@@ -169,6 +169,41 @@ export function createSessionMonitors(deps) {
   }
 
   /**
+   * The file this attempt's transcript is being written to, and the record's
+   * own answer for it (record-timeline-retention §4).
+   *
+   * The STORED `log_path` wins verbatim. A record that names none — every
+   * attempt dispatched before this field was written — resolves to the
+   * spawn-side default and the path is then PERSISTED onto the record, so the
+   * value a later move has to update exists before anything moves. The write
+   * happens BEFORE the reader opens the file: `session-monitor` reconnecting is
+   * exactly the moment §4 requires the record to be accurate.
+   *
+   * Fail-quiet: a store that rejects the patch still gets a monitor, because a
+   * bookkeeping write must never cost a running session its guard.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   * @returns {string}
+   */
+  function logFileOf(workspace, attempt) {
+    const recorded = attempt?.log_path;
+    if (typeof recorded === 'string' && recorded.length > 0) {
+      return recorded;
+    }
+    const file = deps.sessionLog.pathFor(workspace, attempt.attempt_id);
+    try {
+      deps.store.updateAttempt(workspace, {
+        attempt_id: attempt.attempt_id,
+        patch: { log_path: file }
+      });
+    } catch (err) {
+      log('log_path persist failed for %s: %o', attempt.attempt_id, err);
+    }
+    return file;
+  }
+
+  /**
    * @param {any} attempt
    * @returns {{ pid: number, pgid: number, started_at: number }|null}
    */
@@ -502,7 +537,10 @@ export function createSessionMonitors(deps) {
         reader: null
       };
       entry.reader = createTailReader({
-        file: deps.sessionLog.pathFor(workspace, attempt_id),
+        // Opened ONCE, by name, and then read through that fd — which is why
+        // §4 may move a settled log with an atomic `rename` and the tail
+        // continues on the same inode.
+        file: logFileOf(workspace, attempt),
         fs,
         poll_ms: deps.poll_ms,
         // Reattach at the handoff boundary: the past belongs to the drawer

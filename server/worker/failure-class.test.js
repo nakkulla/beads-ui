@@ -7,7 +7,10 @@ import {
   claudeSummary,
   codexSummary,
   extractSummary,
-  matchEnvPattern
+  failureTokenSummary,
+  guardKillMessage,
+  matchEnvPattern,
+  scriptSummary
 } from './failure-class.js';
 
 /**
@@ -243,6 +246,150 @@ describe('worker failure summary extraction', () => {
       summary: 'fetch failed',
       tier: 'env'
     });
+  });
+});
+
+describe('worker script output summary', () => {
+  test('takes the first failure-announcing line', () => {
+    const output = ['running tests', 'FAIL server/a.test.js', 'done'].join(
+      '\n'
+    );
+
+    expect(scriptSummary(output)).toEqual('FAIL server/a.test.js');
+  });
+
+  test('matches a failure line that the runner indented', () => {
+    const output = ['ok', '    AssertionError: expected 1 to be 2'].join('\n');
+
+    expect(scriptSummary(output)).toEqual('AssertionError: expected 1 to be 2');
+  });
+
+  test('takes the first match when several lines announce a failure', () => {
+    const output = ['npm ERR! code ELIFECYCLE', 'Error: later'].join('\n');
+
+    expect(scriptSummary(output)).toEqual('npm ERR! code ELIFECYCLE');
+  });
+
+  test('falls back to the last non-empty line without a match', () => {
+    const output = ['step one', 'step two', '', '   '].join('\n');
+
+    expect(scriptSummary(output)).toEqual('step two');
+  });
+
+  test('returns null for output with no content', () => {
+    expect(scriptSummary('\n   \n')).toBeNull();
+  });
+
+  test('returns null for a non-string output', () => {
+    expect(scriptSummary(undefined)).toBeNull();
+  });
+
+  test('caps the script summary at 200 characters', () => {
+    expect(scriptSummary(`Error: ${'x'.repeat(300)}`)).toHaveLength(200);
+  });
+
+  test('caps a fallback last line at 200 characters', () => {
+    expect(scriptSummary('y'.repeat(300))).toHaveLength(200);
+  });
+});
+
+describe('worker guard kill summary', () => {
+  test('carries the base merge kill message verbatim', () => {
+    expect(
+      guardKillMessage({
+        reason: 'merge_to_base_blocked',
+        command: 'git merge origin/main'
+      })
+    ).toEqual(
+      'landing on the base branch is never permitted: git merge origin/main'
+    );
+  });
+
+  test('carries the hook bypass kill message verbatim', () => {
+    expect(
+      guardKillMessage({
+        reason: 'hook_bypass_blocked',
+        command: 'git push --no-verify'
+      })
+    ).toEqual(
+      'disabling the git hooks is never permitted: git push --no-verify'
+    );
+  });
+
+  test('names an unrecognized kind with the command it refused', () => {
+    expect(
+      guardKillMessage({ reason: 'new_kind', command: 'rm -rf /' })
+    ).toEqual('the session engine refused this command: rm -rf /');
+  });
+
+  test('reports the reason alone for a kill with no command', () => {
+    expect(
+      guardKillMessage({ reason: 'question_detected', command: null })
+    ).toEqual('question_detected');
+  });
+
+  test('classifies a guard kill with its message as the summary', () => {
+    const result = classifyFailure(
+      input({
+        cause: 'loud_fail_blocker',
+        cause_detail: {
+          reason: 'merge_to_base_blocked',
+          command: 'git merge origin/main',
+          summary: guardKillMessage({
+            reason: 'merge_to_base_blocked',
+            command: 'git merge origin/main'
+          })
+        }
+      })
+    );
+
+    expect({ tier: result.tier, summary: result.summary }).toEqual({
+      tier: 'systemic',
+      summary:
+        'landing on the base branch is never permitted: git merge origin/main'
+    });
+  });
+});
+
+describe('worker landing failure summary', () => {
+  test('says the sentence of a single-token failure', () => {
+    expect(failureTokenSummary('verify_red')).toEqual(
+      '머지 후 검증이 실패했습니다.'
+    );
+  });
+
+  test('appends the detail token to the sentence', () => {
+    expect(
+      failureTokenSummary('verify_failed:verify_cmd_failed:exit_1')
+    ).toEqual('머지 후 검증 명령이 실패했습니다. (exit_1)');
+  });
+
+  test('returns null for a token with no sentence', () => {
+    expect(failureTokenSummary('quickfix_landing_failed:threw')).toBeNull();
+  });
+
+  test('returns null for a non-string cause', () => {
+    expect(failureTokenSummary(null)).toBeNull();
+  });
+
+  test('classifies a merge failure with the token sentence as summary', () => {
+    const result = classifyFailure(input({ cause: 'cleanup_failed:branch' }));
+
+    expect({ tier: result.tier, summary: result.summary }).toEqual({
+      tier: 'systemic',
+      summary: '머지 후 정리가 끝나지 못했습니다. (branch)'
+    });
+  });
+
+  test('keeps the session summary ahead of the token sentence', () => {
+    const result = classifyFailure(
+      input({
+        cause: 'verify_red',
+        cause_detail: { summary: 'npm ERR! code ELIFECYCLE' }
+      })
+    );
+
+    expect(result.summary).toEqual('npm ERR! code ELIFECYCLE');
   });
 });
 

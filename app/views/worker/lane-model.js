@@ -464,7 +464,7 @@ export function latestTerminalAttempt(attempts, bead_id) {
  *
  * @param {Record<string, any>} attempts
  * @param {Map<string, number>} done_at_by_bead
- * @param {{ discard_operations?: Record<string, any>, observations?: Record<string, any> }} [input]
+ * @param {{ discard_operations?: Record<string, any>, observations?: Record<string, any>, bead_timelines?: Record<string, any> }} [input]
  * @returns {Map<string, any>}
  */
 export function activeByBead(attempts, done_at_by_bead, input = {}) {
@@ -511,7 +511,8 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
         ? failureProjection(a, {
             resume_eligible,
             resume_reason,
-            confirmation: discard.confirmation
+            confirmation: discard.confirmation,
+            history: input.bead_timelines?.[bead_id]
           })
         : null;
     map.set(bead_id, {
@@ -548,7 +549,8 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
               // 세션을 되살리면 사용자가 결정하기 전 자리로 돌아간다.
               resume_eligible: false,
               resume_reason: '세션 대기 — [재시도]가 새 attempt를 띄웁니다',
-              confirmation: discard.confirmation
+              confirmation: discard.confirmation,
+              history: input.bead_timelines?.[bead_id]
             })
           }
         : {}),
@@ -603,8 +605,15 @@ function liveAttemptFields(a, attempts, run_state) {
  * the ONE line the parked tile body and the failure popover's first row both
  * read, and records written before §6 simply have none (fail-quiet).
  *
+ * `timeline`/`log_path`/`log_expired`/`log_unreadable` come from the snapshot's `bead_timelines`
+ * decoration (record-timeline-retention §9), NOT from anything the renderer
+ * reads: ADR 14 makes this projection the only place a card's materials are
+ * assembled. The events arrive oldest first and are turned around here, because
+ * "무엇이 방금 일어났나" is the question the popover asks and the ordering
+ * decision belongs to the one assembler rather than to each surface.
+ *
  * @param {any} a
- * @param {{ resume_eligible: boolean, resume_reason: string|null, confirmation: 'merged'|'unmerged' }} ctx
+ * @param {{ resume_eligible: boolean, resume_reason: string|null, confirmation: 'merged'|'unmerged', history?: any }} ctx
  * @returns {import('./running-grid.js').FailureTile}
  */
 function failureProjection(a, ctx) {
@@ -639,7 +648,55 @@ function failureProjection(a, ctx) {
     resume_eligible: ctx.resume_eligible,
     resume_reason: ctx.resume_reason,
     landed: quickFixLanded(a),
-    confirmation: ctx.confirmation
+    confirmation: ctx.confirmation,
+    ...timelineFields(ctx.history)
+  };
+}
+
+/**
+ * The §9 history material of one bead, folded into the failure/park projection.
+ *
+ * Every key is OMITTED when its material is missing rather than carried as an
+ * empty value: the popover and the parked tile decide whether to draw a row by
+ * asking whether the key is there, and an empty array would make them draw an
+ * empty 이력 block for every bead whose timeline predates this spec.
+ *
+ * @param {any} history - One `bead_timelines` entry, or undefined.
+ * @returns {{ timeline?: import('./running-grid.js').TimelineRow[], log_path?: string, log_expired?: boolean, log_unreadable?: boolean }}
+ */
+function timelineFields(history) {
+  if (!history || typeof history !== 'object') {
+    return {};
+  }
+  const events = Array.isArray(history.events) ? history.events : [];
+  /** @type {import('./running-grid.js').TimelineRow[]} */
+  const rows = [];
+  for (const event of events) {
+    if (
+      !event ||
+      typeof event !== 'object' ||
+      typeof event.summary !== 'string' ||
+      event.summary.length === 0
+    ) {
+      continue;
+    }
+    rows.push({
+      event_id: typeof event.event_id === 'string' ? event.event_id : '',
+      kind: typeof event.kind === 'string' ? event.kind : '',
+      summary: event.summary,
+      at: typeof event.at === 'number' ? event.at : null
+    });
+  }
+  rows.reverse();
+  const log_path =
+    typeof history.log_path === 'string' && history.log_path.length > 0
+      ? history.log_path
+      : null;
+  return {
+    ...(rows.length > 0 ? { timeline: rows } : {}),
+    ...(log_path === null ? {} : { log_path }),
+    ...(history.log_expired === true ? { log_expired: true } : {}),
+    ...(history.log_unreadable === true ? { log_unreadable: true } : {})
   };
 }
 
@@ -1898,6 +1955,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const merge_state = objectOf(workspace.merge_queue_state);
     const cleanup_failed = objectOf(workspace.cleanup_failed);
     const discard_operations = objectOf(workspace.discard_operations);
+    // 실패·파킹 타일이 읽는 bead별 최근 이력 + 로그 경로
+    // (record-timeline-retention §9). ADR 14대로 재료는 여기서 실어 나르고
+    // 렌더러는 아무것도 읽지 않는다.
+    const bead_timelines = objectOf(workspace.bead_timelines);
     const bead_blocked_by = objectOf(workspace.bead_blocked_by);
     // 키 자체가 없는 구서버 스냅샷은 겹침 계산을 통째로 건너뛴다 (§5.2) —
     // 빈 객체와 "서버가 사실을 보내지 않는다"는 다른 말이다.
@@ -2214,7 +2275,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
 
     for (const [bead_id, live] of activeByBead(attempts, done_at_by_bead, {
       discard_operations,
-      observations
+      observations,
+      bead_timelines
     })) {
       claimed.add(bead_id);
       // 실패 판정은 **attempt 스냅샷**의 `armed_by_lane`에 결속된다 (§5.5): 지금

@@ -387,3 +387,72 @@ describe('worker queue hold snapshot projection (UI-5ym8 §4)', () => {
     expect(projected.hold_history).toBeUndefined();
   });
 });
+
+/**
+ * §5's `user_action` producer. The handler holds no `deps` object, so it asks
+ * the writer the workspace registered with the queue store — the same instance
+ * `attach.js` builds — instead of opening the timeline file itself.
+ *
+ * The registration is process-wide and has no unregister, so the order here is
+ * load-bearing: the unregistered case runs FIRST, and this block sits last in
+ * the file so nothing after it inherits a fake writer.
+ */
+describe('worker-parked-retry timeline (record-timeline-retention §5)', () => {
+  /**
+   * @param {(input: any) => any} append
+   */
+  function useTimeline(append) {
+    /** @type {any[]} */
+    const events = [];
+    getWorkerRuntime().queueStore.useTimeline(WS, {
+      /** @param {any} input */
+      append: (input) => {
+        events.push(input);
+        return append(input);
+      },
+      readTimeline: () => []
+    });
+    return events;
+  }
+
+  test('replies to the click when no timeline is registered', async () => {
+    const { reply } = await dispatch(
+      handlers.handleWorkerParkedRetry,
+      'worker-parked-retry',
+      { bead_id: 'UI-1', attempt_id: 'att-1' }
+    );
+
+    expect(reply.payload.ok).toBe(true);
+  });
+
+  test('records the click on the bead the tile named', async () => {
+    const events = useTimeline(() => ({ ok: true }));
+
+    await dispatch(handlers.handleWorkerParkedRetry, 'worker-parked-retry', {
+      bead_id: 'UI-1',
+      attempt_id: 'att-1'
+    });
+
+    const revision = getWorkerRuntime().queueStore.snapshot(WS).revision;
+    expect(events).toEqual([
+      {
+        bead_id: 'UI-1',
+        kind: 'user_action',
+        seq: `parked_retry:${revision}`,
+        summary: '[재시도] 클릭 · 파킹 해제'
+      }
+    ]);
+  });
+
+  test('replies to the click when the timeline append fails', async () => {
+    useTimeline(() => ({ ok: false, reason: 'write_failed', detail: 'nope' }));
+
+    const { reply } = await dispatch(
+      handlers.handleWorkerParkedRetry,
+      'worker-parked-retry',
+      { bead_id: 'UI-1', attempt_id: 'att-1' }
+    );
+
+    expect(reply.payload.ok).toBe(true);
+  });
+});

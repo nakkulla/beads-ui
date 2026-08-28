@@ -11,6 +11,7 @@ import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { acquireDeployLock } from './deploy-lock.js';
+import { scriptSummary } from './failure-class.js';
 import { repoOperationPolicySupported } from './repo-operation-policy.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
@@ -83,7 +84,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, policySupported?: () => boolean, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, policySupported?: () => boolean, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -207,6 +208,34 @@ export function createRepoOperationCoordinator(deps) {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * The two things a settled operation keeps from its run log: the digest that
+   * gives the failure its identity, and the one line that says why the script
+   * failed (2026-08-28 worker-record-timeline spec §6 row 2). Both come out of
+   * ONE read — the log is already read whole for the digest, so a second pass
+   * over the same bytes is the only cost.
+   *
+   * The summary search sees the WHOLE output, not a tail window. §6 asks for
+   * the FIRST line that announces a failure, and a script that fails early and
+   * then keeps printing — a `npm ci` that died before a long deploy log — puts
+   * that line outside any tail. Scanning from the front is also what makes the
+   * "last non-empty line" fallback mean what it says.
+   *
+   * @param {string} file
+   * @returns {{ digest: string|null, summary: string|null }}
+   */
+  function logEvidence(file) {
+    /** @type {Buffer} */
+    let raw;
+    try {
+      raw = fs.readFileSync(file);
+    } catch {
+      return { digest: null, summary: null };
+    }
+    const digest = crypto.createHash('sha256').update(raw).digest('hex');
+    return { digest, summary: scriptSummary(raw.toString('utf8')) };
   }
 
   /**
@@ -540,6 +569,59 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * Put one settled operation failure on the timeline of every bead the
+   * operation was carrying (record-timeline-retention §5).
+   *
+   * A deploy can coalesce several merges onto one target, so the operation has
+   * a LIST of subjects and each of those beads needs the failure in its own
+   * history — a bead whose deploy failed must not have to know which other
+   * beads shared the run to find that out.
+   *
+   * The summary is `logEvidence`'s already-extracted line (spec §6 row 2), the
+   * same string the durable failure record carries. The append result is
+   * ignored: a settled failure is settled whether or not its history line
+   * survived.
+   *
+   * @param {any} operation - The operation as it stands at settlement.
+   * @param {string} operation_id
+   * @param {{ code: string, exit_code?: number|null }} failure
+   * @param {string|null} summary
+   */
+  function recordOperationFailure(operation, operation_id, failure, summary) {
+    if (!deps.timeline) {
+      return;
+    }
+    const kind_label = operation?.kind === 'verify' ? '검증' : '배포';
+    const exit_code = failure.exit_code ?? null;
+    const line = [
+      `${failure.code}`,
+      ...(typeof exit_code === 'number' ? [`exit ${exit_code}`] : []),
+      ...(typeof summary === 'string' && summary.length > 0 ? [summary] : [])
+    ].join(' · ');
+    for (const subject of Array.isArray(operation?.subjects)
+      ? operation.subjects
+      : []) {
+      const bead_id = subject?.bead_id;
+      if (typeof bead_id !== 'string' || bead_id.length === 0) {
+        continue;
+      }
+      deps.timeline.append({
+        bead_id,
+        kind: 'operation_failed',
+        // The OPERATION id, which §5 names as the alternative to a sequence: an
+        // operation fails once, and a settlement replayed after a restart
+        // re-appends the same id for the same run.
+        seq: operation_id,
+        summary: `${kind_label} 실패 — ${line}`,
+        ...(typeof operation?.log_path === 'string' &&
+        operation.log_path.length > 0
+          ? { log_path: operation.log_path }
+          : {})
+      });
+    }
+  }
+
+  /**
    * Durable failure settlement with the master §5 fingerprint identity.
    *
    * @param {string} workspace
@@ -550,7 +632,10 @@ export function createRepoOperationCoordinator(deps) {
   async function settleFailure(workspace, operation, operation_id, failure) {
     const current =
       deps.store.snapshot(workspace).repo_operations[operation_id] || operation;
-    const log_digest = current.log_path ? fileSha256(current.log_path) : null;
+    const evidence = current.log_path
+      ? logEvidence(current.log_path)
+      : { digest: null, summary: null };
+    const log_digest = evidence.digest;
     const failure_record = {
       code: failure.code,
       fingerprint: failureFingerprint({
@@ -561,6 +646,7 @@ export function createRepoOperationCoordinator(deps) {
       }),
       detail: failure.detail ?? '',
       interrupted: failure.interrupted === true,
+      ...(evidence.summary === null ? {} : { summary: evidence.summary }),
       ...(failure.fetch_failure === 'timeout' ||
       failure.fetch_failure === 'nonzero'
         ? { fetch_failure: failure.fetch_failure }
@@ -609,6 +695,7 @@ export function createRepoOperationCoordinator(deps) {
           : undefined,
       retry_blocked_reason: blocked_reason
     });
+    recordOperationFailure(current, operation_id, failure, evidence.summary);
     await sweepDescendantCoverage(workspace, operation_id);
     transition.reclaim(workspace, operation_id);
     return 'failed';
