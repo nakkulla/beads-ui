@@ -3244,6 +3244,12 @@ function normalizeQueue(raw) {
       }
     }
   }
+  // Heal the lanes a landed lineage never released (UI-4jcn). A `done` member
+  // has merged and cleaned up, which is exactly the release condition, so any
+  // lane binding its settled attempts still carry is residue — from the writes
+  // that predate the release in `moveToDone`, or from a hand-edited file. Cheap
+  // and idempotent: a healed queue.json normalizes to itself.
+  releaseLandedLineageLanes(q, new Set(q.done.map((entry) => entry.bead_id)));
   // A legacy queue.json carrying the retired workspace-global `merge_policy` /
   // `drift_policy` simply has no destination field here, so the keys are DROPPED
   // on load without error (worker-phase2 §9).
@@ -3452,6 +3458,42 @@ function rebindLineageLane(q, bead_id, lane_id) {
       !LANE_RELEASING_ATTEMPT_STATUSES.has(String(attempt.status))
     ) {
       attempt.serial_lane_id = lane_id;
+    }
+  }
+}
+
+/**
+ * Release the serial lanes LANDED lineages still hold (UI-4jcn).
+ *
+ * The release conditions are merge-and-cleanup completion or discard
+ * (worker-lane-scheduling §2), but occupancy is rebuilt from attempt records
+ * and {@link LANE_RELEASING_ATTEMPT_STATUSES} is narrower than terminality on
+ * purpose: a `failed`/`orphaned` leaf keeps its lane until the lineage lands.
+ * Nothing lowered it when the landing itself never terminated that attempt —
+ * an externally merged PR, or a [머지] click on a bead whose last attempt
+ * failed — so the lane stayed occupied forever, because every later release
+ * event fires against work this bead no longer has.
+ *
+ * Reading the `done` lane inside occupancy is NOT the equivalent fix:
+ * `pruneDoneBefore` ages those rows out, and the occupancy would come back
+ * with them. The binding is cleared on the attempt instead, in the same
+ * persist as the lane move, so it survives pruning and restart alike.
+ *
+ * `running`/`paused` attempts keep their binding: a live process owns its lane
+ * whatever lane its bead now sits in. The attempt's own `status` is untouched —
+ * a failure that landed anyway stays a failure in the record.
+ *
+ * @param {Queue} q
+ * @param {Set<string>} bead_ids - The beads whose lineage has landed.
+ */
+function releaseLandedLineageLanes(q, bead_ids) {
+  for (const attempt of Object.values(q.attempts)) {
+    if (
+      bead_ids.has(attempt.bead_id) &&
+      (attempt.kind ?? 'implementation') === 'implementation' &&
+      TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status))
+    ) {
+      attempt.serial_lane_id = null;
     }
   }
 }
@@ -6561,6 +6603,10 @@ export function createQueueStore(options = {}) {
           );
         }
         removeFromLanes(next, bead_id);
+        // The lane move alone does not free the lane: occupancy lives on the
+        // attempt record, so a lineage that landed with a `failed` leaf would
+        // hold its serial lane forever (UI-4jcn).
+        releaseLandedLineageLanes(next, new Set([bead_id]));
         delete next.cleanup_failed[bead_id];
         const done_entry = source_entry
           ? normalizeEntry({ ...source_entry, added_at: now() })

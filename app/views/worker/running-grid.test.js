@@ -751,21 +751,19 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
           ...monitor,
           dependency_chips: {
             ...monitor.dependency_chips,
-            predecessors: [{ id: 'UI-p1', label: '⛓ blocked: UI-p1' }],
+            predecessors: [{ id: 'UI-p1', label: '⛓ UI-p1' }],
             scope_missing: true
           }
         })
       }),
       mount
     );
-    const deps = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile .worker-deps')
-    );
+    const deps = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
 
     expect(deps.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ blocked: UI-p1'
+      '⛓ UI-p1'
     );
-    expect(deps.querySelector('.mon-overlap__chip')?.textContent).toContain(
+    expect(deps.querySelector('.worker-dep--overlap')?.textContent).toContain(
       'UI-o1'
     );
     expect(deps.querySelector('.worker-dep--muted')?.textContent).toContain(
@@ -781,7 +779,7 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
         monitor: /** @type {any} */ ({
           ...monitor,
           dependency_chips: {
-            predecessors: [{ id: 'UI-p1', label: '⛓ blocked: UI-p1' }]
+            predecessors: [{ id: 'UI-p1', label: '⛓ UI-p1' }]
           }
         })
       }),
@@ -799,9 +797,7 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
         monitor: /** @type {any} */ ({
           ...monitor,
           dependency_chips: {
-            predecessors: [
-              { id: 'UI-p1', label: '⛓ blocked: UI-p1', openable: true }
-            ]
+            predecessors: [{ id: 'UI-p1', label: '⛓ UI-p1', openable: true }]
           }
         })
       }),
@@ -1257,18 +1253,11 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
     );
     const order = Array.from(tile.children, (child) => child.className);
 
-    expect(order.indexOf('worker-deps')).toBeGreaterThan(
-      order.indexOf('rtile__activity')
-    );
-    expect(order.indexOf('worker-deps')).toBeGreaterThan(
-      order.indexOf('board-card__roll')
-    );
-    expect(order.indexOf('worker-deps')).toBeGreaterThan(
-      order.indexOf('rtile__landing')
-    );
-    expect(order.indexOf('worker-deps')).toBeLessThan(
-      order.indexOf('rtile__meta')
-    );
+    const deps = order.indexOf('worker-deps worker-deps--secondary');
+    expect(deps).toBeGreaterThan(order.indexOf('rtile__activity'));
+    expect(deps).toBeGreaterThan(order.indexOf('board-card__roll'));
+    expect(deps).toBeGreaterThan(order.indexOf('rtile__landing'));
+    expect(deps).toBeLessThan(order.indexOf('rtile__meta'));
   });
 
   // 폐기 영수증은 슬롯 6(액션 foot)이고 생성·수정 시각은 슬롯 7이다 (§5.1).
@@ -1591,7 +1580,7 @@ describe('복잡 chip on the running tile (UI-sbum §3)', () => {
 
     expect(chip.textContent?.trim()).toBe('복잡');
     expect(chip.title).toBe(
-      '복잡한 작업으로 판정됨\n사유: multi_phase\n상태: 추천과 다름'
+      '복잡한 작업으로 판정됨\n사유: 여러 Phase 또는 병렬 쓰기 조정이 필요하다\n상태: 추천과 다름'
     );
     expect(chip.dataset.state).toBe('diverged');
   });
@@ -1614,14 +1603,30 @@ describe('복잡 chip on the running tile (UI-sbum §3)', () => {
     expect(tile.querySelector('.worker-card__rec')).toBeNull();
   });
 
-  test('stays display-only on the tile', () => {
+  test('turns the tile chip into a 판정 button as well (UI-8x90 §4.5)', () => {
     const tile = renderTile({ rec: REC });
 
     const chip = /** @type {HTMLElement} */ (
       tile.querySelector('.worker-card__rec')
     );
 
-    expect(chip.tagName).toBe('SPAN');
+    expect(chip.tagName).toBe('BUTTON');
+    expect(chip.dataset.chipKey).toBe('rec');
+  });
+
+  test('draws the 사유 popup inside the tile meta line', () => {
+    const tile = renderTile({
+      rec: REC,
+      chip_popover: {
+        chip_key: 'rec',
+        content: { title: '복잡한 작업으로 판정됨', lines: ['한 줄'] }
+      }
+    });
+
+    expect(tile.querySelector('.rtile__meta .chip-popover')).not.toBeNull();
+    expect(
+      tile.querySelector('.worker-card__rec')?.getAttribute('aria-expanded')
+    ).toBe('true');
   });
 });
 
@@ -1660,9 +1665,7 @@ describe('running grid reads the overlay material off the tile (UI-4tud §4.3)',
         [
           tileInput({
             dependency_chips: {
-              predecessors: [
-                { id: 'UI-9', label: '⛓ blocked: UI-9', title: '선행' }
-              ]
+              predecessors: [{ id: 'UI-9', label: '⛓ UI-9', title: '선행' }]
             }
           })
         ],
@@ -1671,7 +1674,7 @@ describe('running grid reads the overlay material off the tile (UI-4tud §4.3)',
       )
     );
 
-    expect(grid).toContain('⛓ blocked: UI-9');
+    expect(grid).toContain('⛓ UI-9');
   });
 
   test('draws no overlay lines for a tile carrying no overlay material', () => {
@@ -2102,5 +2105,138 @@ describe('worker 실패 팝오버의 §6 재료 (UI-5ym8 §8)', () => {
     expect(
       mount.querySelector('.rtile__failure-pop')?.textContent
     ).not.toContain('자동 재시도');
+  });
+});
+
+describe('worker failed tile resume button (UI-8h1x §3.3a)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * Render one failed quick_fix tile and hand back its resume button.
+   *
+   * @param {{ reason: string|null, resume_eligible?: boolean, resume_reason?: string|null }} landing
+   * @returns {HTMLButtonElement}
+   */
+  function renderResumeButton(landing) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-8h1x',
+          attempt_id: 'attempt-1',
+          title: 'landing failed',
+          runner: 'claude',
+          model: 'opus',
+          started_at: null,
+          failed: true,
+          status: 'failed',
+          status_label: '실패',
+          failure: {
+            cause: `quickfix_landing_failed:${landing.reason}`,
+            cause_detail: null,
+            finished_at: 4000,
+            runner: 'claude',
+            model: 'opus',
+            effort: 'high',
+            observed_effort: null,
+            speed: 'default',
+            attempt_id: 'attempt-1',
+            usage: null,
+            halted_auto_advance: false,
+            quickfix_lane: true,
+            quickfix_landing: {
+              cursor: 'base_containment',
+              reason: landing.reason
+            },
+            resume_eligible: landing.resume_eligible !== false,
+            resume_reason: landing.resume_reason ?? null,
+            landed: false,
+            confirmation: 'unmerged'
+          }
+        }
+      ]),
+      mount
+    );
+
+    return /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile__resume')
+    );
+  }
+
+  test('labels a settlement-natured failure as a settlement re-run', () => {
+    const resume = renderResumeButton({ reason: 'containment_unobservable' });
+
+    expect(resume.textContent?.trim()).toBe('↻ 정산 재개');
+    expect(resume.getAttribute('aria-label')).toBe('정산 재개');
+    expect(resume.title).toBe('착지 정산을 다시 실행');
+  });
+
+  test('labels a session-natured failure as a session continuation', () => {
+    const resume = renderResumeButton({ reason: 'push_not_contained' });
+
+    expect(resume.textContent?.trim()).toBe('↻ 이어하기');
+    expect(resume.getAttribute('aria-label')).toBe('이어하기');
+    expect(resume.title).toBe('같은 세션으로 이어서 진행');
+  });
+
+  test('labels a coordinator code the reason union does not name as settlement', () => {
+    const resume = renderResumeButton({
+      reason: 'remote_history_not_monotonic'
+    });
+
+    expect(resume.textContent?.trim()).toBe('↻ 정산 재개');
+    expect(resume.getAttribute('aria-label')).toBe('정산 재개');
+  });
+
+  test('carries the resume kind for the click delegation to read', () => {
+    const settlement = renderResumeButton({
+      reason: 'containment_unobservable'
+    });
+
+    expect(settlement.dataset.resumeKind).toBe('settlement');
+
+    const session = renderResumeButton({ reason: 'head_mismatch' });
+
+    expect(session.dataset.resumeKind).toBe('session');
+  });
+
+  test('follows the label in the disabled fallback title', () => {
+    const resume = renderResumeButton({
+      reason: 'containment_unobservable',
+      resume_eligible: false,
+      resume_reason: null
+    });
+
+    expect(resume.disabled).toBe(true);
+    expect(resume.title).toBe('정산 재개 불가');
+  });
+
+  test('keeps a recorded refusal reason as the disabled title', () => {
+    const resume = renderResumeButton({
+      reason: 'containment_unobservable',
+      resume_eligible: false,
+      resume_reason:
+        '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
+    });
+
+    expect(resume.title).toBe(
+      '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
+    );
+  });
+
+  test('keeps the class and the tile position unchanged across both kinds', () => {
+    const settlement = renderResumeButton({
+      reason: 'containment_unobservable'
+    });
+
+    expect(settlement.className).toBe('rtile__resume');
+    expect(settlement.closest('.rtile__hd-actions')).not.toBeNull();
+
+    const session = renderResumeButton({ reason: 'push_not_contained' });
+
+    expect(session.className).toBe('rtile__resume');
+    expect(session.closest('.rtile__hd-actions')).not.toBeNull();
   });
 });

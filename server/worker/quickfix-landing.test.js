@@ -19,6 +19,14 @@ const BEAD = 'UI-quick';
 const ATTEMPT = 'attempt-quick';
 const HEAD_SHA = 'a'.repeat(40);
 const FETCHED_SHA = 'f'.repeat(40);
+const FOREIGN_PATH = '/tmp/example-workspace/foreign-target';
+const FOREIGN_URL = 'git@github.com:example/foreign-target.git';
+const FOREIGN_TIP = 'b'.repeat(40);
+const FOREIGN_PINS = {
+  foreign_repo: FOREIGN_URL,
+  foreign_path: FOREIGN_PATH,
+  foreign_base: 'main'
+};
 
 /** @type {string[]} */
 const temp_dirs = [];
@@ -57,7 +65,16 @@ afterEach(() => {
  *   acceptSkippedReceipt?: boolean,
  *   resolveWriteSticks?: boolean,
  *   readIssueThrows?: boolean,
- *   timeline?: any
+ *   timeline?: any,
+ *   readMetadataThrows?: boolean,
+ *   foreign?: {
+ *     pins: Record<string, string>,
+ *     remotes?: Record<string, string>,
+ *     toplevelCode?: number,
+ *     fetchCode?: number,
+ *     containmentCode?: number,
+ *     configToml?: string|null
+ *   }
  * }} [options]
  */
 function makeLanding(options = {}) {
@@ -90,6 +107,68 @@ function makeLanding(options = {}) {
           calls.push('pushlog:read');
           return push_log;
         });
+
+  const foreign = options.foreign;
+  /**
+   * The pinned foreign checkout's git, keyed by cwd — the same fake never
+   * answers for both repositories, which is what proves the judgment moved.
+   *
+   * @param {string[]} args
+   */
+  function foreignGit(args) {
+    calls.push(`foreign-git:${args.join(' ')}`);
+    const remotes = foreign?.remotes || { upstream: FOREIGN_URL };
+    if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
+      return {
+        code: foreign?.toplevelCode ?? 0,
+        stdout: `${FOREIGN_PATH}\n`,
+        stderr: ''
+      };
+    }
+    if (args[0] === 'remote' && args.length === 1) {
+      return {
+        code: 0,
+        stdout: `${Object.keys(remotes).join('\n')}\n`,
+        stderr: ''
+      };
+    }
+    if (args[0] === 'remote' && args[1] === 'get-url') {
+      const url = remotes[args[2]];
+      return url
+        ? { code: 0, stdout: `${url}\n`, stderr: '' }
+        : { code: 2, stdout: '', stderr: 'no such remote' };
+    }
+    if (args[0] === 'fetch') {
+      return { code: foreign?.fetchCode ?? 0, stdout: '', stderr: '' };
+    }
+    if (args[0] === 'rev-parse' && args[1] === 'FETCH_HEAD') {
+      return { code: 0, stdout: `${FOREIGN_TIP}\n`, stderr: '' };
+    }
+    if (args[0] === 'merge-base') {
+      return { code: foreign?.containmentCode ?? 0, stdout: '', stderr: '' };
+    }
+    const toml = foreign?.configToml;
+    if (args[0] === 'show') {
+      return toml === null || toml === undefined
+        ? { code: 128, stdout: '', stderr: 'fatal: path does not exist' }
+        : { code: 0, stdout: toml, stderr: '' };
+    }
+    if (args[0] === 'ls-tree') {
+      // `ls-tree <sha> -- <path>`: the config blob is regular, scripts are
+      // executable — exactly what the resolver's identity check wants.
+      const wanted = args[args.length - 1];
+      if (toml === null || toml === undefined) {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      const mode = wanted === 'repo-ops/config.toml' ? '100644' : '100755';
+      return {
+        code: 0,
+        stdout: `${mode} blob ${'c'.repeat(40)}\t${wanted}\n`,
+        stderr: ''
+      };
+    }
+    throw new Error(`unexpected foreign git call: ${args.join(' ')}`);
+  }
 
   const store = {
     updateAttempt: vi.fn((workspace, input) => {
@@ -139,12 +218,22 @@ function makeLanding(options = {}) {
       }
       bead_status = status;
     }),
-    readMetadata: vi.fn(async () => {
-      calls.push('bd:readMetadata:impl_review');
-      return receipt ?? null;
+    readMetadata: vi.fn(async (bead_id, key) => {
+      if (options.readMetadataThrows && key === 'impl_review') {
+        calls.push('bd:readMetadata:threw');
+        throw new Error('bd unreachable');
+      }
+      calls.push(`bd:readMetadata:${key}`);
+      if (key === 'impl_review') {
+        return receipt ?? null;
+      }
+      return options.foreign?.pins[key] ?? null;
     })
   };
-  const gitRun = vi.fn(async (args) => {
+  const gitRun = vi.fn(async (args, run_options) => {
+    if (run_options?.cwd === FOREIGN_PATH) {
+      return foreignGit(args);
+    }
     calls.push(`git:${args.join(' ')}`);
     if (args[0] === 'fetch') {
       return { code: options.fetchCode ?? 0, stdout: '', stderr: '' };
@@ -179,6 +268,15 @@ function makeLanding(options = {}) {
         stdout: '',
         stderr: ''
       };
+    }
+    if (args[0] === 'check-ref-format') {
+      const name = args[1].slice('refs/heads/'.length);
+      const bad =
+        name.includes('..') ||
+        name.startsWith('.') ||
+        name.endsWith('.lock') ||
+        name.includes('/.');
+      return { code: bad ? 1 : 0, stdout: '', stderr: '' };
     }
     throw new Error(`unexpected git call: ${args.join(' ')}`);
   });
@@ -390,6 +488,36 @@ test('rejects absent review receipt', async () => {
     reason: 'invalid_impl_review',
     step: null
   });
+});
+
+test('records an impl_review read outage as bd_read_failed, not as a malformed receipt', async () => {
+  const { landing, store, calls } = makeLanding({ readMetadataThrows: true });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: false, reason: 'bd_read_failed', step: null });
+  expect(calls).toContain('store:update:null:bd_read_failed');
+  expect(store.updateAttempt).toHaveBeenCalledWith(WORKSPACE, {
+    attempt_id: ATTEMPT,
+    patch: {
+      quickfix_landing: {
+        cursor: null,
+        head_sha: null,
+        reason: 'bd_read_failed'
+      }
+    }
+  });
+});
+
+test('records an impl_review read outage on the evidence path as bd_read_failed', async () => {
+  const { landing } = makeLanding({
+    status: 'in_progress',
+    readMetadataThrows: true
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: false, reason: 'bd_read_failed', step: null });
 });
 
 test('accepts a skipped review receipt once the contract flag is on', async () => {
@@ -987,6 +1115,195 @@ test('records failure reason without moving attempt to done', async () => {
       }
     }
   });
+});
+
+test('judges a foreign landing in the pinned checkout, not the rig', async () => {
+  const { landing, calls } = makeLanding({ foreign: { pins: FOREIGN_PINS } });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+  expect(calls).toContain(`foreign-git:fetch --no-tags upstream main`);
+  expect(calls).toContain(
+    `foreign-git:merge-base --is-ancestor ${HEAD_SHA} ${FOREIGN_TIP}`
+  );
+  expect(calls.some((call) => call.startsWith('git:merge-base'))).toBe(false);
+  expect(calls).not.toContain('repoOperations:hasConfig');
+  expect(calls).toContain('worktree:removeIfDiscardable');
+  expect(calls).toContain('bd:setStatus:closed');
+});
+
+test('reports an unpinned foreign key by name instead of an unobservable containment', async () => {
+  const { landing } = makeLanding({
+    foreign: { pins: { foreign_repo: FOREIGN_URL, foreign_base: 'main' } }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'foreign_landing_unpinned:foreign_path',
+    step: 'base_containment'
+  });
+});
+
+test.each([
+  [
+    'relative path',
+    { ...FOREIGN_PINS, foreign_path: 'relative/dir' },
+    'foreign_path'
+  ],
+  [
+    'base with parent segment',
+    { ...FOREIGN_PINS, foreign_base: '../main' },
+    'foreign_base'
+  ],
+  [
+    'base with .lock suffix',
+    { ...FOREIGN_PINS, foreign_base: 'main.lock' },
+    'foreign_base'
+  ],
+  [
+    'base with whitespace',
+    { ...FOREIGN_PINS, foreign_base: 'ma in' },
+    'foreign_base'
+  ],
+  ['empty repo', { ...FOREIGN_PINS, foreign_repo: ' ' }, 'foreign_repo']
+])('rejects a malformed foreign pin: %s', async (description, pins, key) => {
+  const { landing } = makeLanding({ foreign: { pins } });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: `foreign_landing_unpinned:${key}`,
+    step: 'base_containment'
+  });
+});
+
+test('fails when no remote of the foreign checkout carries the pinned URL', async () => {
+  const { landing } = makeLanding({
+    foreign: {
+      pins: FOREIGN_PINS,
+      remotes: { origin: 'git@github.com:other/repo.git' }
+    }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'foreign_checkout_unavailable',
+    step: 'base_containment'
+  });
+});
+
+test('fails when the pinned foreign path is not a git checkout', async () => {
+  const { landing } = makeLanding({
+    foreign: { pins: FOREIGN_PINS, toplevelCode: 128 }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'foreign_checkout_unavailable',
+    step: 'base_containment'
+  });
+});
+
+test('reports push_not_contained from the foreign checkout', async () => {
+  const { landing } = makeLanding({
+    foreign: { pins: FOREIGN_PINS, containmentCode: 1 }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'push_not_contained',
+    step: 'base_containment'
+  });
+});
+
+test('fails closed when the foreign target declares a deploy handler', async () => {
+  const { landing, calls } = makeLanding({
+    foreign: {
+      pins: FOREIGN_PINS,
+      configToml:
+        '[verify]\nscript = "repo-ops/script/verify"\n\n[deploy] # declared\nscript = "repo-ops/script/deploy"\n'
+    }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'foreign_deploy_unsupported',
+    step: 'repo_operations'
+  });
+  expect(calls).not.toContain('bd:setStatus:closed');
+});
+
+test('treats a foreign config without [deploy] as undeclared', async () => {
+  const { landing } = makeLanding({
+    foreign: {
+      pins: FOREIGN_PINS,
+      configToml: '[verify]\nscript = "repo-ops/script/verify"\n'
+    }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+});
+
+test('reports an unparsable foreign config as invalid, never as undeclared', async () => {
+  const { landing } = makeLanding({
+    foreign: { pins: FOREIGN_PINS, configToml: '[deploy\nscript = 1' }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'repo_ops_config_invalid',
+    step: 'repo_operations'
+  });
+});
+
+test('expands a ~ foreign path against the home directory', async () => {
+  const { landing, gitRun } = makeLanding({
+    foreign: { pins: { ...FOREIGN_PINS, foreign_path: '~/foreign-target' } }
+  });
+  gitRun.mockImplementation(async (args, run_options) => {
+    if (run_options?.cwd === path.join(os.homedir(), 'foreign-target')) {
+      return args[0] === 'rev-parse' && args[1] === '--show-toplevel'
+        ? { code: 0, stdout: 'x\n', stderr: '' }
+        : args[0] === 'remote' && args.length === 1
+          ? { code: 0, stdout: 'origin\n', stderr: '' }
+          : args[0] === 'remote'
+            ? { code: 0, stdout: `${FOREIGN_URL}\n`, stderr: '' }
+            : args[0] === 'fetch'
+              ? { code: 0, stdout: '', stderr: '' }
+              : args[0] === 'rev-parse'
+                ? { code: 0, stdout: `${FOREIGN_TIP}\n`, stderr: '' }
+                : args[0] === 'show'
+                  ? { code: 128, stdout: '', stderr: 'does not exist' }
+                  : { code: 0, stdout: '', stderr: '' };
+    }
+    if (args[0] === 'fetch') {
+      return { code: 0, stdout: '', stderr: '' };
+    }
+    if (args[0] === 'rev-parse') {
+      return { code: 0, stdout: `${FETCHED_SHA}\n`, stderr: '' };
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
 });
 
 test('preserves quickfix fields through queue normalization', () => {

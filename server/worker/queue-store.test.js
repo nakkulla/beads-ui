@@ -6944,6 +6944,80 @@ describe('worker/queue-store — 레인 이동 시 lineage 재바인딩 (UI-04vo
     expect(moved.queue.attempts.a1.serial_lane_id).toBe('s1');
   });
 
+  test('releases the lane when a failed lineage lands in done', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'A',
+      lane: 's1'
+    }).queue.revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: {
+        attempt_id: 'a1',
+        bead_id: 'A',
+        status: 'failed',
+        serial_lane_id: 's1'
+      }
+    });
+
+    const moved = store.moveToDone(WS, { bead_id: 'A' });
+
+    expect(moved.ok).toBe(true);
+    expect(moved.queue.attempts.a1.serial_lane_id).toBeNull();
+    expect(moved.queue.attempts.a1.status).toBe('failed');
+  });
+
+  test('keeps a running attempt bound to its lane when its bead lands in done', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'A',
+      lane: 's1'
+    }).queue.revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: {
+        attempt_id: 'a1',
+        bead_id: 'A',
+        status: 'running',
+        serial_lane_id: 's1'
+      }
+    });
+
+    const moved = store.moveToDone(WS, { bead_id: 'A' });
+
+    expect(moved.queue.attempts.a1.serial_lane_id).toBe('s1');
+  });
+
+  test('heals a lane binding a landed lineage left behind on load', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'A',
+      lane: 's1'
+    }).queue.revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: {
+        attempt_id: 'a1',
+        bead_id: 'A',
+        status: 'failed',
+        serial_lane_id: 's1'
+      }
+    });
+    store.moveToDone(WS, { bead_id: 'A' });
+    // The residue every queue.json written before the release carries.
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.attempts.a1.serial_lane_id = 's1';
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.attempts.a1.serial_lane_id).toBeNull();
+    expect(loaded.done.map((e) => e.bead_id)).toEqual(['A']);
+  });
+
   test('place applies the blocks correction to the durable lane order', () => {
     const store = createQueueStore();
     const rev = store.place(WS, {

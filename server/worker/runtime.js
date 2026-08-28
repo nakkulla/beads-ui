@@ -15,14 +15,17 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { kvGetJson, kvSetJson } from '../bd.js';
+import { kvGetJson, kvSetJson, runBdJsonProjected } from '../bd.js';
+import { getConfig } from '../config.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
 import { createActivityStore } from './activity-store.js';
 import { createDelegationStore } from './delegation-store.js';
+import { createDirectionInquiry } from './direction-inquiry.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { createExternalPrStore } from './external-pr.js';
 import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
+import { createNotifier } from './notify.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { MANUAL_MERGE_CONTINUATION, createQueueStore } from './queue-store.js';
 import { createReviseParkedStore } from './revise-parked.js';
@@ -46,6 +49,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createTitleCache>} titleCache
  * @property {ReturnType<typeof createRunnableCache>} runnableCache
  * @property {ReturnType<typeof createReviseParkedStore>} reviseParked
+ * @property {ReturnType<typeof createDirectionInquiry>} directionInquiry
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: typeof MANUAL_MERGE_CONTINUATION }} status
@@ -107,6 +111,26 @@ export function createWorkerRuntime() {
   // and the two disposition handlers re-verify through the same instance so a
   // click and a badge can never disagree about which bead is parked.
   const reviseParked = createReviseParkedStore();
+  // Process-wide direction-conflict park trigger (UI-7uid §3.1). Process-wide
+  // rather than per-attachment because its duplicate guard is a tmux pane
+  // marker, which is one truth for the whole machine; the workspace it acts on
+  // rides each call. Its own notifier instance carries the `awaitingUser`
+  // transition — the title comes from the `bd show` the trigger already makes,
+  // so no title cache has to be bound to it.
+  const directionInquiry = createDirectionInquiry({
+    getConfig,
+    bd: {
+      readIssue: async (workspace, bead_id) => {
+        const result = await runBdJsonProjected(
+          'show',
+          ['show', bead_id, '--json'],
+          { cwd: workspace, expected_id: bead_id }
+        );
+        return result.ok === true ? result.data : null;
+      }
+    },
+    notifier: createNotifier({ getConfig })
+  });
   // Shared session-log broker: the scheduler's `attach` persists the raw stream
   // AND the ws `subscribe-session-log` handler follows live appends off the
   // same instance (spec §5.6).
@@ -178,6 +202,7 @@ export function createWorkerRuntime() {
     titleCache,
     runnableCache,
     reviseParked,
+    directionInquiry,
     sessionLog,
     /**
      * @param {() => number} fn

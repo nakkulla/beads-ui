@@ -1617,10 +1617,10 @@ describe('views/detail-panel dependency edge types', () => {
     );
   }
 
-  test('renders the 막는 prefix for a blocks edge', () => {
+  test('renders the chain glyph and id for a blocks edge', () => {
     const mount = mountWithDeps([{ id: 'UI-0', dependency_type: 'blocks' }]);
 
-    expect(depTexts(mount)).toEqual(['⛓ 막는 UI-0 ✕']);
+    expect(depTexts(mount)).toEqual(['⛓ UI-0 ✕']);
   });
 
   test('renders a return icon for a discovered-from edge', () => {
@@ -1628,7 +1628,7 @@ describe('views/detail-panel dependency edge types', () => {
       { id: 'UI-0', dependency_type: 'discovered-from' }
     ]);
 
-    expect(depTexts(mount)).toEqual(['↩ 발견 UI-0']);
+    expect(depTexts(mount)).toEqual(['↩ UI-0']);
   });
 
   test('renders the bare type and id for an unknown edge type', () => {
@@ -1643,13 +1643,13 @@ describe('views/detail-panel dependency edge types', () => {
     expect(depTexts(mount)).toEqual(['UI-0']);
   });
 
-  test('renders the 막는 group before the 나머지 group', () => {
+  test('renders the 선행 group before the 나머지 group', () => {
     const mount = mountWithDeps([
       { id: 'UI-9', dependency_type: 'parent-child' },
       { id: 'UI-0', dependency_type: 'blocks' }
     ]);
 
-    expect(depTexts(mount)).toEqual(['⛓ 막는 UI-0 ✕', '⌸ 상위 UI-9']);
+    expect(depTexts(mount)).toEqual(['⛓ UI-0 ✕', '⌸ UI-9']);
   });
 
   test('reports no dependencies when the edge list is empty', () => {
@@ -2285,7 +2285,7 @@ describe('views/detail-panel 의존성 절 편집기 (UI-lx45 §4)', () => {
     );
   }
 
-  test('orders the chips 막는 → 막히는 → 나머지 with their prefix', () => {
+  test('orders the chips 막는 → 막히는 → 나머지 with their glyph', () => {
     const { mount } = depPanel({
       id: 'UI-1',
       title: 't',
@@ -2298,11 +2298,34 @@ describe('views/detail-panel 의존성 절 편집기 (UI-lx45 §4)', () => {
     });
 
     expect(chipTexts(mount)).toEqual([
-      '⛓ 막는 UI-pred ✕',
-      '⛓ 막히는 UI-succ',
-      '관련 UI-rel',
-      '↩ 발견 UI-disc'
+      '⛓ UI-pred ✕',
+      '→ UI-succ',
+      '↔ UI-rel',
+      '↩ UI-disc'
     ]);
+  });
+
+  test('carries the relation word on the tooltip first line', () => {
+    const { mount } = depPanel({
+      id: 'UI-1',
+      title: 't',
+      dependencies: [
+        {
+          id: 'UI-pred',
+          dependency_type: 'blocks',
+          status: 'open',
+          title: 'p'
+        },
+        { id: 'UI-rel', dependency_type: 'related' }
+      ],
+      dependents: [{ id: 'UI-succ', dependency_type: 'blocks' }]
+    });
+
+    expect(
+      Array.from(mount.querySelectorAll('.detail-dep__link')).map((el) =>
+        String(el.getAttribute('title') || '').split('\n')
+      )
+    ).toEqual([['막는', 'open · p'], ['막히는'], ['관련']]);
   });
 
   test('marks each chip kind with its own modifier class', () => {
@@ -2360,7 +2383,7 @@ describe('views/detail-panel 의존성 절 편집기 (UI-lx45 §4)', () => {
       dependencies: [{ id: 'UI-0', dependency_type: 'blocks' }]
     });
 
-    expect(chipTexts(mount)).toEqual(['⛓ 막는 UI-0 ✕']);
+    expect(chipTexts(mount)).toEqual(['⛓ UI-0 ✕']);
   });
 
   test('sends dep-remove with the current issue as a after a confirm', async () => {
@@ -2791,5 +2814,91 @@ describe('views/detail-panel 의존성 절 편집기 (UI-lx45 §4)', () => {
       ).value
     ).toBe('');
     expect(mount.querySelector('.detail-dep-add__list')).toBeNull();
+  });
+});
+
+describe('views/detail-panel 헤더 복잡 chip (UI-8x90 §5.1)', () => {
+  const REC_META = {
+    rec_orchestration_model: 'fable',
+    rec_impl_runtime: 'claude',
+    rec_reason: 'contract_change'
+  };
+
+  /** The two mutations the removed 즉시 적용 path used to send. */
+  const REC_MUTATIONS = ['update-exec-settings', 'update-impl-target'];
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Record<string, unknown>} metadata
+   */
+  function recPanel(metadata) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const transport = vi.fn(async (/** @type {string} */ type) =>
+      type === 'get-session-defaults' ? { values: {}, warnings: [] } : []
+    );
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      transport,
+      onClose: vi.fn()
+    });
+    issueStores.register('detail:UI-1', {
+      type: 'issue-detail',
+      params: { id: 'UI-1' }
+    });
+    issueStores.getStore('detail:UI-1')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-1',
+      revision: 1,
+      issues: /** @type {any} */ ([{ id: 'UI-1', title: 't', metadata }])
+    });
+    panel.load('UI-1');
+    return { mount, panel, transport };
+  }
+
+  /** @param {HTMLElement} mount */
+  function recChip(mount) {
+    return /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.detail-summary__chip--rec')
+    );
+  }
+
+  test('writes no metadata when the chip is clicked', async () => {
+    const { mount, panel, transport } = recPanel(REC_META);
+
+    recChip(mount).click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      transport.mock.calls
+        .map((call) => String(call[0]))
+        .filter((type) => REC_MUTATIONS.includes(type))
+    ).toEqual([]);
+    panel.destroy();
+  });
+
+  test('opens the 사유 팝업 on the chip click', () => {
+    const { mount, panel } = recPanel(REC_META);
+
+    recChip(mount).click();
+
+    expect(mount.querySelector('.chip-popover')?.textContent).toContain(
+      '복잡한 작업으로 판정됨'
+    );
+    panel.destroy();
+  });
+
+  test('closes the 사유 팝업 on a second click of the same chip', () => {
+    const { mount, panel } = recPanel(REC_META);
+
+    recChip(mount).click();
+    recChip(mount).click();
+
+    expect(mount.querySelector('.chip-popover')).toBe(null);
+    panel.destroy();
   });
 });

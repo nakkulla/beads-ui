@@ -877,6 +877,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // of that judgment: a landing is proven by the attempt's own push record.
     gitRun,
     notify,
+    // The direction-conflict park trigger (UI-7uid §3.1). Process-wide, like
+    // every other runtime singleton: its duplicate guard is a tmux pane marker,
+    // which is one truth for the whole machine.
+    directionInquiry: runtime.directionInquiry,
     // The external-row evidence the attempt-less conflict dispatch stands on
     // (UI-w0hi §1) — the SAME registry the poller refreshes and the merge click
     // reads, so a dispatch can never disagree with the row that was clicked.

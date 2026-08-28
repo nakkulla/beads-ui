@@ -148,6 +148,10 @@ describe('main', () => {
       },
       poll_interval_seconds: 30,
       worker_notify: { enabled: false, cmd: ['discord'] },
+      worker_direction_inquiry: {
+        enabled: false,
+        tmux_session: 'bdui-inquiry'
+      },
       runner_overrides: {}
     });
 

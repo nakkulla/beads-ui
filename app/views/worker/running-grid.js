@@ -12,6 +12,7 @@
  */
 import { html } from 'lit-html';
 import { formatContinuationLineage } from '../../utils/attempt-display.js';
+import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
 import { formatRelativeTime } from '../../utils/relative-time.js';
 import { sessionRefLabel } from '../../utils/session-ref.js';
 import {
@@ -25,12 +26,14 @@ import {
   formatExecReceipt
 } from '../board/card.js';
 import { childRollupTemplate } from '../child-rollup.js';
+import { chipPopoverTemplate } from '../chip-popover.js';
 import {
   failureCategory,
   failureSentence,
   failureText
 } from './failure-labels.js';
 import {
+  crossLaneChipTemplate,
   dependencyChipsTemplate,
   discardReceiptTemplate,
   execChipsTemplate,
@@ -117,6 +120,8 @@ import { logPathTemplate } from './log-path.js';
  * 조립이 타일 밖 `Map`으로 같은 재료를 두 번 나르지 않는다.
  * @property {Array<{ label: string, state: 'live'|'done'|'failed', agent_type?: string|null }>} [legs] -
  * 위임 leg. 끝난 것은 접혀 한 칩이 된다.
+ * @property {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null} [chip_popover] -
+ * 이 타일에서 열려 있는 판정 칩 사유 팝업 (UI-8x90 §4.5). 슬롯 5 줄이 싣는다.
  * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
  * 의존·겹침 칩 (슬롯 4). 재료가 없으면 줄이 통째로 빠진다 (fail-quiet).
  */
@@ -496,6 +501,8 @@ function failurePopoverTemplate(failure, now) {
  * The attempt's last non-thinking transcript line (§9.3).
  * @property {Array<{ label: string, state: 'live'|'done'|'failed', agent_type?: string|null }>} [legs] -
  * Delegation legs; only the unfinished ones are spelled out.
+ * @property {{ lane_id: string, label: string }|null} [cross_lane_chip] -
+ * `연결 n` 소속 칩 (UI-8x90 §4.1): 슬롯 5 좌표 칩이므로 직렬 레인 칩 다음이다.
  * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
  * 의존·겹침 칩 (§5.1). 실행중 타일도 `⛓ blocked` · `⧉ 겹침` · `scope 없음`을
  * 모두 받는다 (UI-anna §4·§5.3): 이미 출발한 레인에서 blocked는 "선행이 아직
@@ -787,6 +794,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
   const monitor = options.monitor || null;
   const monitor_chips = monitorTileChips(monitor);
+  // 소속 칩은 좌표(레포·직렬 레인) 다음이다 (UI-8x90 §4.1). 재료가 없으면 빈
+  // 문자열이라 줄 판정에 영향이 없다.
+  const cross_lane_chip = crossLaneChipTemplate(monitor?.cross_lane_chip);
   // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 자식 롤업·landing
   // 진행이 모두 슬롯 3이므로 그 뒤에 선다.
   const monitor_deps = monitor
@@ -815,7 +825,13 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // route 칩은 헤더가 아니라 meta 줄이 싣는다: 분류 사실은 슬롯 5고, 헤더에
   // 끼면 좁은 타일에서 조작 버튼이 통째로 다음 줄로 밀린다 (UI-251y §2).
   const route_chip = routeChipTemplate(tile.workflow);
-  const rec_chip = recChipTemplate(tile.rec);
+  const rec_chip = recChipTemplate(
+    tile.rec,
+    tile.chip_popover?.chip_key === 'rec'
+  );
+  const chip_popover = tile.chip_popover
+    ? chipPopoverTemplate(tile.chip_popover.content)
+    : '';
   const session_receipt_chip = session_receipt
     ? html`<span
         class="ctl-chip ctl-chip--exec-receipt"
@@ -839,12 +855,13 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     : '';
   const session_meta =
     monitor_chips ||
+    cross_lane_chip ||
     route_chip ||
     session_ref_chip ||
     session_receipt_chip ||
     rec_chip
       ? html`<div class="rtile__meta">
-          ${monitor_chips}${route_chip}${session_ref_chip}${session_receipt_chip}${rec_chip}
+          ${monitor_chips}${cross_lane_chip}${route_chip}${session_ref_chip}${session_receipt_chip}${rec_chip}${chip_popover}
         </div>`
       : '';
   // 상태 뱃지는 슬롯 1이다 (UI-251y §3.1): 다른 카드가 이미 정체성 줄에서
@@ -891,6 +908,15 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 세션 타일의 수정 시각은 활동 줄이 "갱신 n 전"으로 이미 말한다 (§6) —
   // 같은 사실을 두 줄로 쓰지 않는다.
   const times_el = session ? '' : timesMeta(tile);
+  // 실패 타일의 재개 버튼이 무엇을 하는지는 착지 실패 사유가 정한다 (UI-8h1x
+  // §3.3a). 보이는 문구만 바꾸면 보조기술과 툴팁이 계속 "같은 세션"이라고 잘못
+  // 안내하므로 셋을 함께 분기한다.
+  const resume_kind = resumeKindOf(failure?.quickfix_landing);
+  const resume_label = resume_kind === 'settlement' ? '정산 재개' : '이어하기';
+  const resume_title =
+    resume_kind === 'settlement'
+      ? '착지 정산을 다시 실행'
+      : '같은 세션으로 이어서 진행';
   const discard_button =
     tile.discard?.action && !(failed && failure?.landed === true)
       ? html`<button
@@ -941,13 +967,14 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
             ? html`<button
                   type="button"
                   class="rtile__resume"
+                  data-resume-kind=${resume_kind}
                   ?disabled=${failure?.resume_eligible === false}
                   title=${failure?.resume_eligible === false
-                    ? failure.resume_reason || '이어하기 불가'
-                    : '같은 세션으로 이어서 진행'}
-                  aria-label="이어하기"
+                    ? failure.resume_reason || `${resume_label} 불가`
+                    : resume_title}
+                  aria-label=${resume_label}
                 >
-                  ↻ 이어하기
+                  ↻ ${resume_label}
                 </button>
                 ${discard_button}`
             : html`<button
@@ -1012,13 +1039,14 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
             ${session
               ? session_meta
               : monitor_chips ||
+                  cross_lane_chip ||
                   route_chip ||
                   exec_chips ||
                   rec_chip ||
                   provider_badges.length > 0 ||
                   usage_label
                 ? html`<div class="rtile__meta">
-                    ${monitor_chips}${route_chip}${execChipsTemplate(
+                    ${monitor_chips}${cross_lane_chip}${route_chip}${execChipsTemplate(
                       tile.exec_chips
                     )}${rec_chip}
                     ${provider_badges.length > 0
@@ -1036,7 +1064,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                             title=${usageTooltip(tile.usage)}
                             >${usage_label}</span
                           >`
-                        : ''}
+                        : ''}${chip_popover}
                   </div>`
                 : ''}
             ${discardReceiptTemplate(tile)} ${times_el}

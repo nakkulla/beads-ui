@@ -12,6 +12,7 @@ import {
   sumAttemptUsage
 } from '../../utils/token-usage.js';
 import { formatExecReceipt } from '../board/card.js';
+import { createChipPopover } from '../chip-popover.js';
 import {
   depCandidates as depCandidatesOf,
   filterDepCandidates
@@ -1195,6 +1196,14 @@ export function createDetailPanel(mount_element, options) {
   }
   document.addEventListener('keydown', onKeydown);
 
+  /**
+   * 헤더 `복잡` 칩의 사유 팝업 (UI-8x90 §5.1). 바깥 클릭·Esc 판정은 카드와 같은
+   * 모듈이 소유한다. 패널을 닫는 클릭은 오버레이 backdrop이 받으므로
+   * `.detail-summary` 안 클릭이 패널 닫힘으로 흐르지 않는 현행 규칙은 그대로다.
+   */
+  const chip_popover = createChipPopover(() => doRender());
+  chip_popover.attach();
+
   function refreshFromStore() {
     if (!current_id) {
       return;
@@ -1413,49 +1422,6 @@ export function createDetailPanel(mount_element, options) {
         showToast('구현 target 변경 실패', 'error');
         throw err;
       });
-  }
-
-  /**
-   * Apply the whole recommendation with one click (UI-sbum §4).
-   *
-   * ALL of it or none of the sequence: splitting a recommendation belongs to the
-   * pin editor below, so this path copies every recommended key onto its
-   * authority key in order and stops at the first refusal — leaving a half-write
-   * behind is honest, because the readback recomputes the chip as `diverged` and
-   * says so.
-   *
-   * The confirm appears only for a real overwrite: an untouched bead has nothing
-   * to lose, and an already-applied chip is disabled before it can be clicked.
-   *
-   * @param {{ orchestration_model: string, impl_runtime?: string }} rec
-   * @param {'unapplied'|'applied'|'diverged'} state
-   * @returns {Promise<void>}
-   */
-  async function onApplyRec(rec, state) {
-    if (!rec || typeof rec !== 'object') {
-      return;
-    }
-    if (
-      state === 'diverged' &&
-      !window.confirm(
-        '추천 실행 설정을 적용할까요? 현재 수동 설정을 덮어씁니다.'
-      )
-    ) {
-      return;
-    }
-    try {
-      await onExecChange('orchestration_model', rec.orchestration_model);
-    } catch {
-      // 이미 토스트로 알렸다. 첫 키가 실패하면 둘째 키는 보내지 않는다.
-      return;
-    }
-    if (typeof rec.impl_runtime === 'string' && rec.impl_runtime.length > 0) {
-      try {
-        await onImplTargetChange('impl_runtime', rec.impl_runtime);
-      } catch {
-        // 같은 이유로 조용히 끝낸다 — 실패 표시는 그 경로의 토스트가 소유한다.
-      }
-    }
   }
 
   /**
@@ -1722,24 +1688,49 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
-   * The 말머리 of a `나머지` chip (UI-lx45 §4.1). 종류가 아이콘만으로는 구분되지
-   * 않으므로 아는 종류는 우리말 말머리를 함께 싣고, 모르는 종류는 아이콘을
-   * 지어내지 않고 그 type 문자열 그대로 붙인다.
+   * The 글리프 and 관계명 of a `나머지` chip (UI-8x90 §3). 라벨은 글리프+ID뿐이고
+   * 관계명은 툴팁 첫 줄로 간다 — 같은 관계가 카드와 상세에서 같은 기호로 읽히는
+   * 것이 그 표의 목적이다. 모르는 종류는 기호를 지어내지 않고 그 type 문자열을
+   * 그대로 라벨에 쓰므로, 그 문자열이 곧 이 간선의 관계명이다.
    *
    * @param {string} type
-   * @returns {string}
+   * @returns {{ glyph: string, relation: string }}
    */
-  function otherEdgePrefix(type) {
+  function otherEdgeGrammar(type) {
     switch (type) {
       case 'discovered-from':
-        return '↩ 발견 ';
+        return { glyph: '↩ ', relation: '발견' };
       case 'parent-child':
-        return '⌸ 상위 ';
+        return { glyph: '⌸ ', relation: '상위' };
       case 'related':
-        return '관련 ';
+        return { glyph: '↔ ', relation: '관련' };
       default:
-        return type.length > 0 ? `${type} ` : '';
+        return type.length > 0
+          ? { glyph: `${type} `, relation: type }
+          : { glyph: '', relation: '' };
     }
+  }
+
+  /**
+   * One dependency chip's tooltip (UI-8x90 §3): 관계명 첫 줄, 그 다음에 아는
+   * 만큼의 `status · title`. 라벨에서 뺀 방향어가 여기로 왔으므로, 관계명이
+   * 없는 간선(type을 못 읽은 문자열 간선)만 예전처럼 나머지 한 줄이다.
+   *
+   * @param {string} relation
+   * @param {any} edge
+   * @returns {string|undefined}
+   */
+  function depTitle(relation, edge) {
+    const rest = edgeTitle(edge);
+    /** @type {string[]} */
+    const lines = [];
+    if (relation.length > 0) {
+      lines.push(relation);
+    }
+    if (rest) {
+      lines.push(rest);
+    }
+    return lines.length > 0 ? lines.join('\n') : undefined;
   }
 
   /**
@@ -1964,7 +1955,7 @@ export function createDetailPanel(mount_element, options) {
   /**
    * The 의존성 절 (UI-lx45 §4). 선행(`dependencies` 중 `blocks`)·후행
    * (`dependents` 중 `blocks`)·나머지(`dependencies` 중 그 외)를 한 절에 두고,
-   * 종류는 말머리와 색 티어로 구분한다. 편집은 선행 한 방향뿐이다.
+   * 종류는 글리프(UI-8x90 §3)와 색 티어로 구분한다. 편집은 선행 한 방향뿐이다.
    *
    * @param {any} data
    */
@@ -1978,9 +1969,9 @@ export function createDetailPanel(mount_element, options) {
       if (id.length > 0 && edgeType(edge) === 'blocks') {
         chips.push({
           id,
-          label: `⛓ 막는 ${id}`,
+          label: `⛓ ${id}`,
           kind: 'pred',
-          title: edgeTitle(edge)
+          title: depTitle('막는', edge)
         });
       }
     }
@@ -1991,9 +1982,9 @@ export function createDetailPanel(mount_element, options) {
       if (id.length > 0 && edgeType(edge) === 'blocks') {
         chips.push({
           id,
-          label: `⛓ 막히는 ${id}`,
+          label: `→ ${id}`,
           kind: 'succ',
-          title: edgeTitle(edge)
+          title: depTitle('막히는', edge)
         });
       }
     }
@@ -2001,11 +1992,12 @@ export function createDetailPanel(mount_element, options) {
       const id = edgeId(edge);
       const type = edgeType(edge);
       if (id.length > 0 && type !== 'blocks') {
+        const grammar = otherEdgeGrammar(type);
         chips.push({
           id,
-          label: `${otherEdgePrefix(type)}${id}`,
+          label: `${grammar.glyph}${id}`,
           kind: 'other',
-          title: edgeTitle(edge)
+          title: depTitle(grammar.relation, edge)
         });
       }
     }
@@ -2521,7 +2513,12 @@ export function createDetailPanel(mount_element, options) {
             </button>
           </div>
           ${titleTemplate(title, total_usage)}
-          ${summaryHeaderTemplate(effective, { onApplyRec })}
+          ${summaryHeaderTemplate(effective, {
+            onChipToggle: (chip_key) =>
+              chip_popover.toggle({ bead_id: id, chip_key }),
+            isChipOpen: (chip_key) =>
+              chip_popover.isOpen({ bead_id: id, chip_key })
+          })}
           ${effectiveSettingsCardTemplate(
             {
               metadata: effective.metadata,
@@ -2674,6 +2671,7 @@ export function createDetailPanel(mount_element, options) {
       }
       releaseCandidates();
       document.removeEventListener('keydown', onKeydown);
+      chip_popover.detach();
       if (!injected_md_viewer) {
         md_viewer.destroy();
         if (mv_mount && mv_mount.parentNode) {

@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { workerPlacementPlan } from '../worker/queue-overlaps.js';
 import { createMonitorView } from './index.js';
 
 const NOW = 1_700_000_000_000;
@@ -854,7 +853,7 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
 
     expect(el(mount, '.mon2-crow .ctl-chip--route')).toBeNull();
     expect(el(mount, '.mon2-crow .worker-dep--pred')).toBeNull();
-    expect(el(mount, '.mon2-crow .mon-overlap__chip')).toBeNull();
+    expect(el(mount, '.mon2-crow .worker-dep--overlap')).toBeNull();
   });
 });
 
@@ -2957,7 +2956,7 @@ describe('monitor 의존성 편집 이관 (UI-lx45 §5)', () => {
     });
 
     view.load();
-    click(mount, '#monitor-runnable .worker-dep--pred .worker-dep__open');
+    click(mount, '#monitor-runnable .worker-dep--pred.worker-dep__open');
 
     expect(mount.querySelector('.mon-deppanel')).toBeNull();
   });
@@ -2977,7 +2976,7 @@ describe('monitor 의존성 편집 이관 (UI-lx45 §5)', () => {
     });
 
     view.load();
-    click(mount, '#monitor-runnable .worker-dep--pred .worker-dep__open');
+    click(mount, '#monitor-runnable .worker-dep--pred.worker-dep__open');
 
     expect(gotoIssue).toHaveBeenCalledWith('A-1');
     expect(switchWorkspace).not.toHaveBeenCalled();
@@ -3003,7 +3002,7 @@ describe('monitor 의존성 편집 이관 (UI-lx45 §5)', () => {
     });
 
     view.load();
-    click(mount, '#monitor-runnable .worker-dep--pred .worker-dep__open');
+    click(mount, '#monitor-runnable .worker-dep--pred.worker-dep__open');
 
     expect(switchWorkspace).toHaveBeenCalledWith(WS_B);
     expect(gotoIssue).not.toHaveBeenCalled();
@@ -3352,7 +3351,7 @@ describe('views/monitor 세션 타일 drawer (UI-4xzk §6.4)', () => {
   });
 });
 
-describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)', () => {
+describe('monitor 겹침 칩 (UI-qm12 §5.3, 클릭은 UI-8x90 §4.3)', () => {
   /**
    * @param {string[]} [scope]
    * @returns {{ scope: string[], artifacts: string[] }}
@@ -3360,116 +3359,6 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
   function declared(scope = ['server/worker']) {
     return { scope, artifacts: ['docs/spec.md'] };
   }
-
-  /**
-   * @param {string} id
-   * @returns {Record<string, any>}
-   */
-  function running(id) {
-    return {
-      [`t-${id}`]: {
-        attempt_id: `t-${id}`,
-        bead_id: id,
-        status: 'running',
-        started_at: NOW - 1000
-      }
-    };
-  }
-
-  /**
-   * A running review session on a bead that keeps its PR 대기 seat
-   * (UI-hk74 §7). 그 비점유 타일이 겹침 칩을 그리므로, PR 대기 카드가 팝오버의
-   * 주인이 되는 조합은 이 타일을 통해 도달한다.
-   *
-   * @param {string} id
-   * @returns {Record<string, any>}
-   */
-  function reviewSession(id) {
-    return {
-      [`r-${id}`]: {
-        attempt_id: `r-${id}`,
-        bead_id: id,
-        kind: 'review_session',
-        status: 'running',
-        origin: 'auto',
-        started_at: NOW - 1000
-      }
-    };
-  }
-
-  /**
-   * @param {HTMLElement} mount
-   * @param {string} bead_id
-   * @returns {HTMLElement}
-   */
-  function openPopover(mount, bead_id) {
-    click(mount, `[data-bead-id="${bead_id}"] .mon-overlap__chip`);
-    return el(mount, `[data-bead-id="${bead_id}"] .mon-overlap__popover`);
-  }
-
-  test('opens a dialog popover naming the counterpart and the shared path', () => {
-    const { mount, view } = setup({
-      workspaces: [
-        workspace({
-          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
-          bead_titles: { 'A-2': '상대 제목' },
-          serial_lane_count: 2,
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
-        })
-      ],
-      workspaces_state: [state()]
-    });
-
-    view.load();
-    const popover = openPopover(mount, 'A-1');
-
-    expect(popover.getAttribute('role')).toBe('dialog');
-    expect(popover.querySelector('.mon-overlap__rid')?.textContent).toBe('A-2');
-    expect(popover.querySelector('.mon-overlap__rtitle')?.textContent).toBe(
-      '상대 제목'
-    );
-    expect(popover.querySelector('.mon-overlap__paths')?.textContent).toContain(
-      'server/worker'
-    );
-  });
-
-  test('closes the popover on an outside click', () => {
-    const { mount, view } = setup({
-      workspaces: [
-        workspace({
-          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
-          serial_lane_count: 2,
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
-        })
-      ],
-      workspaces_state: [state()]
-    });
-
-    view.load();
-    openPopover(mount, 'A-1');
-    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    expect(mount.querySelector('.mon-overlap__popover')).toBeNull();
-  });
-
-  test('closes the popover on Escape', () => {
-    const { mount, view } = setup({
-      workspaces: [
-        workspace({
-          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
-          serial_lane_count: 2,
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
-        })
-      ],
-      workspaces_state: [state()]
-    });
-
-    view.load();
-    openPopover(mount, 'A-1');
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-
-    expect(mount.querySelector('.mon-overlap__popover')).toBeNull();
-  });
 
   test('draws one chip per counterpart with no +n fold', () => {
     const { mount, view } = setup({
@@ -3499,19 +3388,16 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
 
     expect(
       Array.from(
-        mount.querySelectorAll('[data-bead-id="A-1"] .mon-overlap__chip')
-      ).map((chip) => chip.getAttribute('data-overlap-id'))
+        mount.querySelectorAll('[data-bead-id="A-1"] .worker-dep--overlap')
+      ).map((chip) => chip.getAttribute('data-dep-id'))
     ).toEqual(['A-2', 'A-3', 'A-4', 'A-5']);
   });
 
-  test('offers no button when both already share one serial lane', () => {
+  test('lists the shared paths in the chip tooltip', () => {
     const { mount, view } = setup({
       workspaces: [
         workspace({
-          serial_lanes: [
-            { id: 's1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
-          ],
-          serial_lane_count: 1,
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
           bead_scope: { 'A-1': declared(), 'A-2': declared() }
         })
       ],
@@ -3519,21 +3405,61 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
     });
 
     view.load();
-    const popover = openPopover(mount, 'A-1');
 
-    expect(popover.querySelector('.mon-overlap__place')).toBeNull();
     expect(
-      popover.querySelector('.mon-overlap__note')?.textContent?.trim()
-    ).toBe('이미 같은 직렬 레인 — 순서가 있습니다');
+      el(mount, '[data-bead-id="A-1"] .worker-dep--overlap')?.getAttribute(
+        'title'
+      )
+    ).toBe('겹침 · #2\nserver/worker');
   });
 
-  test('moves me to the counterpart serial lane in one op', async () => {
-    const { mount, view, sent } = setup({
+  test('opens a 후속 issue from the same button (UI-8x90 §4.3)', () => {
+    const { mount, view, gotoIssue } = setup({
       workspaces: [
         workspace({
           queue: [{ bead_id: 'A-1' }],
-          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-2' }] }],
-          serial_lane_count: 1,
+          bead_dependents: { 'A-1': { ids: ['A-8'] } }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '[data-bead-id="A-1"] .worker-dep--dependents');
+
+    expect(gotoIssue).toHaveBeenCalledWith('A-8');
+  });
+
+  test('switches the repo before opening a foreign 후속', async () => {
+    const { mount, view, gotoIssue, switchWorkspace } = setup({
+      workspaces: [
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1' }],
+          bead_dependents: { 'B-1': { ids: ['B-8'] } }
+        })
+      ],
+      workspaces_state: [
+        state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })
+      ]
+    });
+
+    view.load();
+    click(mount, '[data-bead-id="B-1"] .worker-dep--dependents');
+
+    expect(switchWorkspace).toHaveBeenCalledWith(WS_B);
+
+    await flushMicrotasks();
+
+    expect(gotoIssue).toHaveBeenCalledWith('B-8');
+  });
+
+  test('opens the counterpart issue on a chip click', () => {
+    const { mount, view, gotoIssue } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
           bead_scope: { 'A-1': declared(), 'A-2': declared() }
         })
       ],
@@ -3541,202 +3467,46 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
     });
 
     view.load();
-    openPopover(mount, 'A-1');
-    click(mount, '[data-bead-id="A-1"] .mon-overlap__place');
-    await flushMicrotasks();
+    click(mount, '[data-bead-id="A-1"] .worker-dep--overlap');
 
-    expect(sent).toEqual([
-      {
-        type: 'worker-queue-place',
-        payload: {
-          bead_id: 'A-1',
-          lane: 's1',
-          index: 1,
-          root_dir: WS_A,
-          expected_revision: 1
-        }
-      }
-    ]);
+    expect(gotoIssue).toHaveBeenCalledWith('A-2');
   });
 
-  test('moves the counterpart into my serial lane in one op', async () => {
-    const { mount, view, sent } = setup({
+  test('switches the repo before opening a counterpart of another one', async () => {
+    const { mount, view, gotoIssue, switchWorkspace } = setup({
       workspaces: [
         workspace({
           queue: [{ bead_id: 'A-1' }],
-          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-2' }] }],
-          serial_lane_count: 1,
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
-        })
-      ],
-      workspaces_state: [state()]
-    });
-
-    view.load();
-    openPopover(mount, 'A-2');
-    click(mount, '[data-bead-id="A-2"] .mon-overlap__place');
-    await flushMicrotasks();
-
-    expect(sent.map((message) => message.payload)).toEqual([
-      {
-        bead_id: 'A-1',
-        lane: 's1',
-        index: 1,
-        root_dir: WS_A,
-        expected_revision: 1
-      }
-    ]);
-  });
-
-  test('fills the first empty serial lane with two ops in counterpart-first order', async () => {
-    const { mount, view, sent } = setup({
-      workspaces: [
+          bead_scope: { 'A-1': declared() }
+        }),
         workspace({
-          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
-          serial_lane_count: 2,
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1' }, { bead_id: 'B-2' }],
+          bead_scope: { 'B-1': declared(), 'B-2': declared() }
         })
       ],
-      workspaces_state: [state()],
-      transport: async () => ({ applied: true, queue: { revision: 7 } })
+      workspaces_state: [
+        state(),
+        state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })
+      ]
     });
 
     view.load();
-    openPopover(mount, 'A-1');
-    click(mount, '[data-bead-id="A-1"] .mon-overlap__place');
+    click(mount, '[data-bead-id="B-1"] .worker-dep--overlap');
+
+    expect(switchWorkspace).toHaveBeenCalledWith(WS_B);
+
     await flushMicrotasks();
 
-    expect(sent.map((message) => message.payload)).toEqual([
-      {
-        bead_id: 'A-2',
-        lane: 's1',
-        index: 0,
-        root_dir: WS_A,
-        expected_revision: 1
-      },
-      {
-        bead_id: 'A-1',
-        lane: 's1',
-        index: 1,
-        root_dir: WS_A,
-        expected_revision: 7
-      }
-    ]);
+    expect(gotoIssue).toHaveBeenCalledWith('B-2');
   });
 
-  test('sends no second op and no retry when the first one conflicts', async () => {
-    const { mount, view, sent } = setup({
-      workspaces: [
-        workspace({
-          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
-          serial_lane_count: 2,
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
-        })
-      ],
-      workspaces_state: [state()],
-      transport: async () => ({ conflict: true })
-    });
-
-    view.load();
-    openPopover(mount, 'A-1');
-    click(mount, '[data-bead-id="A-1"] .mon-overlap__place');
-    await flushMicrotasks();
-
-    expect(sent.map((message) => message.payload.bead_id)).toEqual(['A-2']);
-  });
-
-  test('sends no second op when the first response is not applied', async () => {
-    const { mount, view, sent } = setup({
-      workspaces: [
-        workspace({
-          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
-          serial_lane_count: 2,
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
-        })
-      ],
-      workspaces_state: [state()],
-      transport: async () => null
-    });
-
-    view.load();
-    openPopover(mount, 'A-1');
-    click(mount, '[data-bead-id="A-1"] .mon-overlap__place');
-    await flushMicrotasks();
-
-    expect(sent.map((message) => message.payload.bead_id)).toEqual(['A-2']);
-  });
-
-  test('sends no second op when the first response carries no revision', async () => {
-    const { mount, view, sent } = setup({
-      workspaces: [
-        workspace({
-          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
-          serial_lane_count: 2,
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
-        })
-      ],
-      workspaces_state: [state()],
-      transport: async () => ({ applied: true, queue: {} })
-    });
-
-    view.load();
-    openPopover(mount, 'A-1');
-    click(mount, '[data-bead-id="A-1"] .mon-overlap__place');
-    await flushMicrotasks();
-
-    expect(sent.map((message) => message.payload.bead_id)).toEqual(['A-2']);
-  });
-
-  test('disables the button when no serial lane is empty', () => {
+  test('keeps no 팝오버 or 배치 markup on the card', () => {
     const { mount, view } = setup({
       workspaces: [
         workspace({
           queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
-          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-3' }] }],
-          serial_lane_count: 1,
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
-        })
-      ],
-      workspaces_state: [state()]
-    });
-
-    view.load();
-    const popover = openPopover(mount, 'A-1');
-    const button = /** @type {HTMLButtonElement} */ (
-      popover.querySelector('.mon-overlap__place')
-    );
-
-    expect(button.disabled).toBe(true);
-    expect(button.getAttribute('title')).toBe(
-      '빈 직렬 레인 없음 — Worker 탭에서 레인 수 조절'
-    );
-  });
-
-  test('says no order can be made while both are running', () => {
-    const { mount, view } = setup({
-      workspaces: [
-        workspace({
-          attempts: { ...running('A-1'), ...running('A-2') },
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
-        })
-      ],
-      workspaces_state: [state()]
-    });
-
-    view.load();
-    const popover = openPopover(mount, 'A-1');
-
-    expect(
-      popover.querySelector('.mon-overlap__note')?.textContent?.trim()
-    ).toBe('둘 다 이미 출발 — 순서를 만들 수 없습니다');
-  });
-
-  test('asks the counterpart to take a serial lane while I am running', () => {
-    const { mount, view } = setup({
-      workspaces: [
-        workspace({
-          queue: [{ bead_id: 'A-2' }],
-          attempts: running('A-1'),
           serial_lane_count: 2,
           bead_scope: { 'A-1': declared(), 'A-2': declared() }
         })
@@ -3745,141 +3515,76 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
     });
 
     view.load();
-    const popover = openPopover(mount, 'A-1');
+    click(mount, '[data-bead-id="A-1"] .worker-dep--overlap');
 
-    expect(
-      popover.querySelector('.mon-overlap__note')?.textContent?.trim()
-    ).toBe('실행 중 — 순서를 만들려면 상대를 직렬 레인에 두세요');
+    expect(mount.querySelector('.mon-overlap__popover')).toBeNull();
+    expect(mount.querySelector('.mon-overlap__place')).toBeNull();
   });
+});
 
-  test('tells a waiting row to take a serial lane while the counterpart runs', () => {
-    const { mount, view } = setup({
-      workspaces: [
-        workspace({
-          queue: [{ bead_id: 'A-2' }],
-          attempts: running('A-1'),
-          serial_lane_count: 2,
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
-        })
-      ],
-      workspaces_state: [state()]
-    });
-
-    view.load();
-    const popover = openPopover(mount, 'A-2');
-
-    expect(
-      popover.querySelector('.mon-overlap__note')?.textContent?.trim()
-    ).toBe('실행 중 — 종료 후 출발하려면 직렬 레인에 두세요');
-  });
-
+describe('monitor 판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
   /**
-   * The same 화면 사실, Worker 탭 어휘로 (UI-2htv). 두 탭이 같은 조합에 같은
-   * 문장을 내는지는 문자열을 눈으로 맞춰서는 지킬 수 없으므로, Worker의
-   * 판정기를 직접 불러 비교한다.
+   * A runnable row carrying the `복잡` judgement.
    *
-   * @param {string} me_id
-   * @param {string} counterpart_id
-   * @param {Array<{ id: string, kind: import('../worker/queue-overlaps.js').LaneMember['kind'], location_label: string }>} members
-   * @returns {string|null}
+   * @returns {ReturnType<typeof setup>}
    */
-  function workerNote(me_id, counterpart_id, members) {
-    const plan = workerPlacementPlan(me_id, counterpart_id, {
-      members_by_id: new Map(
-        members.map((entry) => [
-          entry.id,
-          { ...entry, title: entry.id, lane_id: null }
-        ])
-      ),
-      serial_raw_lengths: {},
-      serial_lane_count: 2,
-      occupied_lanes: new Set()
+  function judgementSetup() {
+    return setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-1',
+              title: '복잡 후보',
+              rec: {
+                rec_orchestration_model: 'fable',
+                rec_reason: 'multi_repo'
+              }
+            }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
     });
-    return plan.kind === 'note' ? plan.text : null;
   }
 
-  test('names the PR 대기 lane when the popover owner keeps its PR 대기 seat', () => {
-    const { mount, view } = setup({
-      workspaces: [
-        workspace({
-          queue: [{ bead_id: 'A-2' }],
-          pr_wait: [{ bead_id: 'A-1' }],
-          attempts: reviewSession('A-1'),
-          serial_lane_count: 2,
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
-        })
-      ],
-      workspaces_state: [state()]
-    });
+  test('opens the 사유 popup on a 복잡 chip click', () => {
+    const { mount, view } = judgementSetup();
 
     view.load();
-    const popover = openPopover(mount, 'A-1');
-    const note = popover
-      .querySelector('.mon-overlap__note')
-      ?.textContent?.trim();
+    click(mount, '.worker-card[data-bead-id="A-1"] .judgement-chip');
 
-    expect(note).toBe('PR 대기 — 순서를 만들려면 상대를 직렬 레인에 두세요');
-    expect(note).toBe(
-      workerNote('A-1', 'A-2', [
-        { id: 'A-1', kind: 'pr_wait', location_label: 'PR 대기' },
-        { id: 'A-2', kind: 'parallel', location_label: '#1' }
-      ])
+    expect(el(mount, '.chip-popover')?.getAttribute('role')).toBe('dialog');
+  });
+
+  test('writes the 사유 sentence rather than the signal code', () => {
+    const { mount, view } = judgementSetup();
+
+    view.load();
+    click(mount, '.worker-card[data-bead-id="A-1"] .judgement-chip');
+
+    expect(el(mount, '.chip-popover')?.textContent).toContain(
+      '둘 이상의 저장소에 작업 단위가 생긴다'
     );
   });
 
-  test('names the PR 대기 lane when the counterpart waits on a PR', () => {
-    const { mount, view } = setup({
-      workspaces: [
-        workspace({
-          queue: [{ bead_id: 'A-2' }],
-          pr_wait: [{ bead_id: 'A-1' }],
-          serial_lane_count: 2,
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
-        })
-      ],
-      workspaces_state: [state()]
-    });
+  test('does not open the issue detail on that click', () => {
+    const { mount, view, gotoIssue } = judgementSetup();
 
     view.load();
-    const popover = openPopover(mount, 'A-2');
-    const note = popover
-      .querySelector('.mon-overlap__note')
-      ?.textContent?.trim();
+    click(mount, '.worker-card[data-bead-id="A-1"] .judgement-chip');
 
-    expect(note).toBe('PR 대기 — 종료 후 출발하려면 직렬 레인에 두세요');
-    expect(note).toBe(
-      workerNote('A-2', 'A-1', [
-        { id: 'A-2', kind: 'parallel', location_label: '#1' },
-        { id: 'A-1', kind: 'pr_wait', location_label: 'PR 대기' }
-      ])
-    );
+    expect(gotoIssue).not.toHaveBeenCalled();
   });
 
-  test('says both already departed when one runs and one waits on a PR', () => {
-    const { mount, view } = setup({
-      workspaces: [
-        workspace({
-          attempts: running('A-1'),
-          pr_wait: [{ bead_id: 'A-2' }],
-          bead_scope: { 'A-1': declared(), 'A-2': declared() }
-        })
-      ],
-      workspaces_state: [state()]
-    });
-
+  test('closes the popup on Escape', () => {
+    const { mount, view } = judgementSetup();
     view.load();
-    const popover = openPopover(mount, 'A-1');
-    const note = popover
-      .querySelector('.mon-overlap__note')
-      ?.textContent?.trim();
+    click(mount, '.worker-card[data-bead-id="A-1"] .judgement-chip');
 
-    expect(note).toBe('둘 다 이미 출발 — 순서를 만들 수 없습니다');
-    expect(note).toBe(
-      workerNote('A-1', 'A-2', [
-        { id: 'A-1', kind: 'running', location_label: '실행중' },
-        { id: 'A-2', kind: 'pr_wait', location_label: 'PR 대기' }
-      ])
-    );
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(mount.querySelector('.chip-popover')).toBeNull();
   });
 });
 
@@ -4319,7 +4024,7 @@ describe('monitor PR 대기·완료 레인 겹침 칩 (UI-e9sg)', () => {
     view.load();
 
     expect(
-      el(mount, '#monitor-pr_wait [data-bead-id="A-1"] .mon-overlap__chip')
+      el(mount, '#monitor-pr_wait [data-bead-id="A-1"] .worker-dep--overlap')
         ?.textContent
     ).toContain('A-2');
   });
@@ -4343,8 +4048,8 @@ describe('monitor PR 대기·완료 레인 겹침 칩 (UI-e9sg)', () => {
     ).toContain('scope 없음');
   });
 
-  test('opens the overlap popover from a PR 대기 row chip', () => {
-    const { mount, view } = setup({
+  test('opens the counterpart issue from a PR 대기 row chip', () => {
+    const { mount, view, gotoIssue } = setup({
       workspaces: [
         workspace({
           pr_wait: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
@@ -4356,14 +4061,9 @@ describe('monitor PR 대기·완료 레인 겹침 칩 (UI-e9sg)', () => {
     });
 
     view.load();
-    click(mount, '#monitor-pr_wait [data-bead-id="A-1"] .mon-overlap__chip');
+    click(mount, '#monitor-pr_wait [data-bead-id="A-1"] .worker-dep--overlap');
 
-    expect(
-      el(
-        mount,
-        '#monitor-pr_wait [data-bead-id="A-1"] .mon-overlap__popover'
-      )?.getAttribute('role')
-    ).toBe('dialog');
+    expect(gotoIssue).toHaveBeenCalledWith('A-2');
   });
 
   test('leaves a 완료 row without overlap chips', () => {
@@ -4381,7 +4081,7 @@ describe('monitor PR 대기·완료 레인 겹침 칩 (UI-e9sg)', () => {
     view.load();
 
     expect(
-      el(mount, '#monitor-done [data-bead-id="A-1"] .mon-overlap__chip')
+      el(mount, '#monitor-done [data-bead-id="A-1"] .worker-dep--overlap')
     ).toBeNull();
   });
 });

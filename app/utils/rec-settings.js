@@ -32,6 +32,36 @@ export const REC_REASONS = [
 export const REC_LABEL = '복잡';
 
 /**
+ * One display sentence per `rec_reason` signal (UI-8x90 §4.6). The tooltip and
+ * the 사유 팝업 read the same map so one judgement never reads two ways. Signal
+ * MEANING is owned by the dotfiles rec-exec-settings spec; only the wording is
+ * decided here, and it still never names a model or a runtime.
+ *
+ * @type {Record<string, string>}
+ */
+export const REC_REASON_TEXT = {
+  contract_change: '계약 문서·checker·스킬 사본을 함께 바꿔야 한다',
+  multi_repo: '둘 이상의 저장소에 작업 단위가 생긴다',
+  open_design_fork: '실행 중에도 이어질 미해결 설계 분기가 있다',
+  multi_phase: '여러 Phase 또는 병렬 쓰기 조정이 필요하다',
+  claude_bound: 'Claude 세션 자산·의미론에 강하게 묶여 있다'
+};
+
+/**
+ * The 사유 sentences of one judgement, in metadata order (UI-8x90 §4.6). An
+ * unknown signal never reaches here — {@link recReasons} already dropped it.
+ *
+ * @param {RecSettings|null|undefined} rec
+ * @returns {string[]}
+ */
+export function recReasonSentences(rec) {
+  const reasons = rec && Array.isArray(rec.reasons) ? rec.reasons : [];
+  return reasons
+    .map((reason) => REC_REASON_TEXT[reason] || '')
+    .filter((text) => text.length > 0);
+}
+
+/**
  * Recommended value vocabulary per authority key. A value outside it is read as
  * absent, exactly like an out-of-enum `session_preferred_reason`.
  *
@@ -42,8 +72,12 @@ const REC_ENUMS = {
   impl_runtime: ['claude']
 };
 
-/** `state` → the word the tooltip uses for it. */
-const REC_STATE_TEXT = {
+/**
+ * `state` → the word the tooltip and the 사유 팝업 use for it (UI-8x90 §4.5).
+ *
+ * @type {Record<string, string>}
+ */
+export const REC_STATE_TEXT = {
   unapplied: '미적용',
   applied: '적용됨',
   diverged: '추천과 다름'
@@ -165,13 +199,12 @@ export function recTooltip(rec) {
   if (!rec || typeof rec !== 'object') {
     return '';
   }
-  const reasons = Array.isArray(rec.reasons) ? rec.reasons : [];
-  const state_text =
-    /** @type {Record<string, string>} */ (REC_STATE_TEXT)[rec.state] || '';
+  const sentences = recReasonSentences(rec);
+  const state_text = REC_STATE_TEXT[rec.state] || '';
   /** @type {string[]} */
   const lines = ['복잡한 작업으로 판정됨'];
-  if (reasons.length > 0) {
-    lines.push(`사유: ${reasons.join(', ')}`);
+  if (sentences.length > 0) {
+    lines.push(`사유: ${sentences.join(' · ')}`);
   }
   if (state_text.length > 0) {
     lines.push(`상태: ${state_text}`);

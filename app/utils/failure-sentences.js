@@ -54,6 +54,14 @@ export const FAILURE_SENTENCES = Object.freeze({
   retry_exhausted: '자동 재시도를 모두 쓰고도 같은 실패가 이어졌습니다.',
   conflict_unresolved: '충돌 해소가 끝나지 못했습니다.',
   internal_record_failed: 'Worker 내부 기록이 실패해 진행을 멈췄습니다.',
+  // UI-jf33: enclosed foreign landing — 착지가 rig가 아닌 다른 저장소에서
+  // 일어난 quick_fix. 판정 저장소를 고르지 못한 이유를 각각 이름한다.
+  foreign_landing_unpinned:
+    '다른 저장소 착지인데 foreign_repo·foreign_path·foreign_base 핀이 없거나 형식이 틀립니다.',
+  foreign_checkout_unavailable:
+    '핀된 대상 저장소 체크아웃이 없거나 foreign_repo와 같은 URL의 remote가 없습니다.',
+  foreign_deploy_unsupported:
+    '대상 저장소가 [deploy]를 선언해 Worker가 배포 증거를 만들 수 없습니다. 세션이 배포와 마감을 소유합니다.',
   // 레거시 — UI-8w4t 이전에 저장된 saga만 이 토큰을 이름한다. 지금은 로드 시
   // `internal_record_failed:migration:repair_lane_retired`로 접히므로 마지막
   // 구간이 이 문장을 이긴다. 남겨 두는 이유는 접기 이전에 쓰인 기록을 읽는

@@ -13,7 +13,12 @@
  */
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
-import { REC_LABEL, recTooltip } from '../../utils/rec-settings.js';
+import {
+  REC_LABEL,
+  REC_STATE_TEXT,
+  recReasonSentences,
+  recTooltip
+} from '../../utils/rec-settings.js';
 import {
   formatRelativeTime,
   formatTimestampLocal
@@ -24,6 +29,7 @@ import {
   usageTooltip
 } from '../../utils/token-usage.js';
 import { stepperTemplate } from '../board/stepper.js';
+import { chipPopoverTemplate } from '../chip-popover.js';
 import { logPathTemplate } from './log-path.js';
 
 /**
@@ -726,125 +732,118 @@ export function execChipsTemplate(chips, options = {}) {
  */
 
 /**
- * One `→ 후속 n` 칩 (UI-d13v §5.2). 라벨은 건수 하나로 정해지므로 투영이
- * 문자열을 만들지 않고, 누를 곳도 없다 — 목록은 툴팁이 말한다.
+ * One `→ <ID>` 칩 (UI-8x90 §3). 선행 칩과 같은 마크업·같은 클릭이므로 모양도
+ * {@link DependencyChip}과 같다 — 갈라지는 것은 색과 툴팁 첫 낱말뿐이다.
  *
- * @typedef {Object} DependentsChip
- * @property {number} count
- * @property {string} title
+ * @typedef {DependencyChip} DependentsChip
  */
 
 /**
  * One 겹침 상대 (UI-qm12 §5.2·§5.3). 선언 scope가 부딪히는 상대일 뿐, 순서를
- * 주장하지 않는다 — 배치는 사용자가 팝오버에서 한 번의 클릭으로 만든다.
+ * 주장하지 않는다 — 배치는 드래그와 `[대기로 ↴]` 배치 메뉴가 소유한다
+ * (UI-8x90 §9).
  *
  * @typedef {Object} OverlapChip
  * @property {string} id - 상대 bead.
  * @property {string} title
  * @property {string} location_label - `실행중` · `#n` · `s1 #n` · `실행가능`.
  * @property {string[]} prefixes - 두 선언이 부딪힌 자리 — 각 쌍에서 더 긴
- * prefix를 채택한 사전순 목록.
+ * prefix를 채택한 사전순 목록. 팝오버가 보여 주던 목록이고 지금은 툴팁 재료다.
+ * @property {string} [root_dir] - 상대를 소유한 workspace. 겹침은 레포 안에서만
+ * 정의되지만 그 레포가 지금 활성 workspace라는 보장은 없다 (Monitor).
  */
 
 /**
- * One 겹침 팝오버 행 (UI-qm12 §5.3·§5.4). `action`은 클릭 시점의 최신 모델로
- * 판정한 결과이고, 판정 규칙은 모니터가 소유한다 — 템플릿은 그 결론만 그린다.
+ * 슬롯 4 두 줄의 재료 (UI-8x90 §4.1). 상단(`--primary`)은 행동을 바꾸는 사실,
+ * 하단(`--secondary`)은 정보다. 두 줄은 각자 재료로 판정한다 (fail-quiet).
  *
- * @typedef {Object} OverlapPopoverRow
- * @property {string} id
- * @property {string} title
- * @property {string} location_label
- * @property {string[]} prefixes
- * @property {{ kind: 'place'|'disabled', label: string, title: string }|{ kind: 'note', text: string }} action
- */
-
-/**
- * @typedef {Object} OverlapPopover
- * @property {OverlapPopoverRow[]} rows
- */
-
-/**
  * @typedef {Object} DependencyChips
- * @property {DependencyChip[]} [predecessors] - `⛓ blocked: …`. 칩에 해제
+ * @property {DependencyChip[]} [predecessors] - `⛓ <ID>`. 칩에 해제
  * 버튼은 없다: 끊는 일은 의존성 패널이 확인을 받고 처리한다. 누를 수 있는지는
  * 칩마다 갈린다 (`DependencyChip.openable`, UI-u6zf §5.1) — 같은 카드 안에서도
  * 열 수 있는 blocker와 owner를 모르는 blocker가 섞이므로 묶음 플래그로는 그것을
  * 표현할 수 없다. 그 값을 렌더러 인자가 아니라 투영이 싣는 이유는
  * `candidateCard`·`miniRow`를 두 탭이 함께 부르기 때문이다 — 호출 인자로 가르면
  * 같은 템플릿을 탭마다 다르게 부르는 자리가 새로 생긴다.
- * @property {ReleasedChip[]} [released] - `🔓 해제: …` (UI-d13v §5.2). blocked
- * 칩 바로 다음에 서고 `openable` 규칙도 같다 — 같은 슬롯 4가 "왜 못 가나"와
- * "왜 이제 갈 수 있나"를 나란히 답한다.
- * @property {DependentsChip} [dependents] - `→ 후속 n` (UI-d13v §5.2).
- * @property {OverlapChip[]} [overlaps] - `⧉ 겹침 …` (UI-qm12 §5.3).
+ * @property {ReleasedChip[]} [released] - `🔓 <ID>` (UI-d13v §5.2). 하단 줄에
+ * 서고 `openable` 규칙은 선행 칩과 같다.
+ * @property {DependentsChip[]} [dependents] - `→ <ID>` (UI-8x90 §3). ID마다 칩
+ * 하나이며 상단 줄에서 선행 칩 다음에 선다.
+ * @property {OverlapChip[]} [overlaps] - `⧉ <ID>` (UI-qm12 §5.3).
  * @property {boolean} [scope_missing] - 선언 원천은 읽혔는데 scope 선언이
  * 비었다 — 겹침을 판정할 수 없다는 사실 자체를 드러낸다.
- * @property {OverlapPopover} [popover] - 이 행에서 열려 있으면 칩 아래에 그리는
- * `mon-overlap__popover`.
- * @property {{ lane_id: string, label: string }} [cross_lane] - `연결 n` /
- * `연결 n (draft)` 소속 칩 (UI-j92s §5.2a). 숨기지 않는 저장 레인 멤버가 자기
- * 소속을 말하는 자리이고, 클릭은 그 레인으로 스크롤한다.
  * @property {{ lane_id: string, label: string, orphan: boolean }} [armed_lane]
  * - `▶ 연결 n` 발차 칩 (UI-jaua §5.6). 그 행이 연결 레인의 발차 축으로 돌고
  * 있다는 사실이고, 소속 칩과 다른 질문에 답한다("이 레인 것이다"가 아니라 "지금
  * 이 레인이 이것을 굴리고 있다"). `orphan`이면 라벨이
  * `▶ 진행 중 · 레인 없음`이고 그 자리에 해제 버튼이 함께 선다 — 스케줄러는 계속
- * 발차하므로 조용히 두지 않는다 (fail-visible, §5.3 (2)).
+ * 발차하므로 조용히 두지 않는다 (fail-visible, §5.3 (2)). 발차는 행동 상태라
+ * 상단 줄 맨 앞이다 (UI-8x90 §4.1).
  */
 
 /**
- * The 겹침 팝오버 (UI-qm12 §5.3): 상대 id·제목·위치, 겹치는 경로, 그리고 순서를
- * 만드는 버튼 하나 또는 왜 만들 수 없는지 말하는 문장 하나. 겹침 칩은 상대
- * 수만큼 모두 그려지므로 한 팝오버에는 클릭한 상대 하나만 선다.
+ * One 열리는 칩 (UI-8x90 §4.2). 네 종(`⛓`·`→`·`🔓`·`⧉`)이 같은 마크업을 쓴다 —
+ * 클릭 의미가 하나("그 이슈의 상세")이므로 클릭 표면도 하나여야 한다. 열 수
+ * 없는 칩은 `<span>`이다: 누를 수 없는 버튼은 만들지 않는다 (UI-u6zf §5.1).
  *
- * @param {OverlapPopover} popover
+ * @param {DependencyChip} chip
+ * @param {string} kind - `pred` · `dependents` · `released` · `overlap`.
  * @returns {import('lit-html').TemplateResult}
  */
-function overlapPopoverTemplate(popover) {
-  return html`<div
-    class="mon-overlap__popover"
-    role="dialog"
-    aria-label="scope 겹침"
-  >
-    ${popover.rows.map(
-      (row) =>
-        html`<div class="mon-overlap__row">
-          <div class="mon-overlap__hd">
-            <span class="mon-overlap__rid">${row.id}</span>
-            <span class="mon-overlap__rtitle">${row.title}</span>
-            <span class="mon-overlap__rwhere">${row.location_label}</span>
-          </div>
-          <ul class="mon-overlap__paths">
-            ${row.prefixes.map((prefix) => html`<li>${prefix}</li>`)}
-          </ul>
-          ${row.action.kind === 'note'
-            ? html`<p class="mon-overlap__note">${row.action.text}</p>`
-            : html`<button
-                type="button"
-                class="mon-overlap__place"
-                data-counterpart-id=${row.id}
-                ?disabled=${row.action.kind === 'disabled'}
-                title=${row.action.title}
-              >
-                ${row.action.label}
-              </button>`}
-        </div>`
-    )}
-  </div>`;
+function openableChipTemplate(chip, kind) {
+  const cls = `worker-dep worker-dep--${kind}${chip.foreign ? ' worker-dep--foreign' : ''}`;
+  return chip.openable === true
+    ? html`<button
+        type="button"
+        class=${`${cls} worker-dep__open`}
+        data-dep-id=${chip.id}
+        data-root-dir=${chip.root_dir || ''}
+        title=${chip.title || ''}
+      >
+        ${chip.label}
+      </button>`
+    : html`<span class=${cls} title=${chip.title || ''}>${chip.label}</span>`;
 }
 
 /**
- * The blocked 칩 (UI-eey2 §5.1) · 해제·후속 칩 (UI-d13v §5.2) · 겹침 칩
- * (UI-qm12 §5.3). 슬롯 4는 "지금 갈 수 있나" 하나에 답하고, 세 칩은 그 질문의
- * 세 각도다: 왜 못 가나 · 왜 이제 갈 수 있나 · 왜 먼저 가야 하나.
- * Drawn only when a projection supplies them, so Worker rows are unchanged.
+ * The 겹침 칩 as an openable one (UI-8x90 §4.2). 겹침은 레포 안에서만 정의되므로
+ * 상대는 언제나 열 수 있고, 팝오버가 보여 주던 경로 목록은 툴팁으로 남는다.
  *
- * 레인 분기는 없다 (UI-anna §6): 세 칩 모두 재료가 실린 카드에 선다. 어느
- * 레인이 그 재료를 받는가는 투영이 정하고, 이 템플릿은 받은 것을 그린다.
+ * @param {OverlapChip} chip
+ * @returns {DependencyChip}
+ */
+function overlapAsChip(chip) {
+  return {
+    id: chip.id,
+    label: `⧉ ${chip.id}`,
+    title: [`겹침 · ${chip.location_label}`, ...chip.prefixes].join('\n'),
+    openable: true,
+    ...(chip.root_dir ? { root_dir: chip.root_dir } : {})
+  };
+}
+
+/**
+ * One chip group in ID 사전순 (UI-8x90 §4.1). 복사본을 정렬하므로 투영이 실어
+ * 준 배열은 그대로 남는다.
  *
- * blocked 칩은 `openable`인 것만 버튼이 된다 (UI-u6zf §5.1). 라벨·툴팁·색·자리는
- * 두 경우가 같다 — 갈라지는 것은 누를 수 있는지뿐이고, 누를 수 없는 버튼은
- * 만들지 않는다.
+ * @template {{ id: string }} T
+ * @param {T[]|undefined} chips
+ * @returns {T[]}
+ */
+function byId(chips) {
+  return Array.isArray(chips)
+    ? chips.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    : [];
+}
+
+/**
+ * The two lines of 슬롯 4 (UI-8x90 §4.1·§4.2). 상단은 "지금 갈 수 있나"를 바꾸는
+ * 사실(`▶ 연결` 발차 · `⛓` 선행 · `→` 후속), 하단은 판단 재료(`🔓` 해제 ·
+ * `⧉` 겹침 · `scope 없음`)다. 재료가 없는 줄은 그리지 않으며 두 줄은 서로를
+ * 기다리지 않는다.
+ *
+ * 레인 분기는 없다 (UI-anna §6): 모든 칩이 재료가 실린 카드에 선다. 어느 레인이
+ * 그 재료를 받는가는 투영이 정하고, 이 템플릿은 받은 것을 그린다.
  *
  * @param {DependencyChips|null|undefined} chips
  * @returns {import('lit-html').TemplateResult|''}
@@ -853,115 +852,82 @@ export function dependencyChipsTemplate(chips) {
   if (!chips) {
     return '';
   }
-  const predecessors = Array.isArray(chips.predecessors)
-    ? chips.predecessors
-    : [];
+  // 각 묶음 안은 ID 사전순이다 (UI-8x90 §4.1). 투영이 실어 주는 순서는 서버
+  // `blocked_by` 배열 순서·겹침 판정 순서라 카드마다 달라지므로, 같은 칩 집합이
+  // 언제나 같은 자리에 서도록 여기서 한 번 정렬한다. `released`만 예외로 그
+  // 스펙이 정한 `closed_at` 내림차순을 그대로 쓴다.
+  const predecessors = byId(chips.predecessors);
   const released = Array.isArray(chips.released) ? chips.released : [];
-  const dependents = chips.dependents || null;
-  const overlaps = Array.isArray(chips.overlaps) ? chips.overlaps : [];
+  const dependents = byId(chips.dependents);
+  const overlaps = byId(chips.overlaps);
   const scope_missing = chips.scope_missing === true;
-  const popover = chips.popover || null;
-  const cross_lane = chips.cross_lane || null;
   const armed_lane = chips.armed_lane || null;
-  if (
-    predecessors.length === 0 &&
-    released.length === 0 &&
-    !dependents &&
-    overlaps.length === 0 &&
-    !scope_missing &&
-    !cross_lane &&
-    !armed_lane
-  ) {
+  const has_primary =
+    !!armed_lane || predecessors.length > 0 || dependents.length > 0;
+  const has_secondary =
+    released.length > 0 || overlaps.length > 0 || scope_missing;
+  if (!has_primary && !has_secondary) {
     return '';
   }
-  return html`<div class="worker-deps">
-    ${cross_lane
-      ? html`<button
-          type="button"
-          class="worker-dep worker-dep--lane mon-lane__chip"
-          data-lane-id=${cross_lane.lane_id}
-          title="이 연결 레인으로 이동"
-        >
-          ${cross_lane.label}
-        </button>`
-      : ''}
-    ${armed_lane
-      ? html`<span
-          class=${`worker-dep worker-dep--armed${armed_lane.orphan ? ' worker-dep--armed-orphan' : ''}`}
-          title=${armed_lane.orphan
-            ? '이 항목을 발차한 연결 레인이 없습니다 — 스케줄러는 계속 발차합니다'
-            : '연결 레인이 이 항목을 발차했습니다 — 레포 자동 진행과 무관합니다'}
-          >${armed_lane.orphan
-            ? html`${armed_lane.label}<button
-                  type="button"
-                  class="worker-dep__label mon2-arm__release"
-                  data-lane-id=${armed_lane.lane_id}
-                >
-                  해제
-                </button>`
-            : armed_lane.label}</span
-        >`
-      : ''}
-    ${predecessors.map(
-      (chip) =>
-        html`<span
-          class=${`worker-dep worker-dep--pred${chip.foreign ? ' worker-dep--foreign' : ''}`}
-          title=${chip.title || ''}
-          >${chip.openable === true
-            ? html`<button
-                type="button"
-                class="worker-dep__label worker-dep__open"
-                data-dep-id=${chip.id}
-                data-root-dir=${chip.root_dir || ''}
-              >
-                ${chip.label}
-              </button>`
-            : chip.label}</span
-        >`
-    )}${released.map(
-      (chip) =>
-        html`<span
-          class=${`worker-dep worker-dep--released${chip.foreign ? ' worker-dep--foreign' : ''}`}
-          title=${chip.title || ''}
-          >${chip.openable === true
-            ? html`<button
-                type="button"
-                class="worker-dep__label worker-dep__open"
-                data-dep-id=${chip.id}
-                data-root-dir=${chip.root_dir || ''}
-              >
-                ${chip.label}
-              </button>`
-            : chip.label}</span
-        >`
-    )}${dependents
-      ? html`<span
-          class="worker-dep worker-dep--dependents"
-          title=${dependents.title}
-          >→ 후속 ${dependents.count}</span
-        >`
-      : ''}${overlaps.map(
-      (chip) =>
-        html`<button
-          type="button"
-          class="worker-dep worker-dep--overlap mon-overlap__chip"
-          data-overlap-id=${chip.id}
-          aria-label=${`scope 겹침 ${chip.id} (${chip.location_label})`}
-          title=${[
-            `겹침 ${chip.id} (${chip.location_label})`,
-            ...chip.prefixes
-          ].join('\n')}
-        >
-          ⧉ ${chip.id}
-        </button>`
-    )}${scope_missing
-      ? html`<span
-          class="worker-dep worker-dep--muted"
-          title="겹침 판정 불가 — 아티팩트가 있으면 스펙/플랜 front-matter, 없으면 description \`## scope\`에 선언 필요"
-          >scope 없음</span
-        >`
-      : ''}${popover ? overlapPopoverTemplate(popover) : ''}
-  </div>`;
+  return html`${has_primary
+    ? html`<div class="worker-deps worker-deps--primary">
+        ${armed_lane
+          ? html`<span
+              class=${`worker-dep worker-dep--armed${armed_lane.orphan ? ' worker-dep--armed-orphan' : ''}`}
+              title=${armed_lane.orphan
+                ? '이 항목을 발차한 연결 레인이 없습니다 — 스케줄러는 계속 발차합니다'
+                : '연결 레인이 이 항목을 발차했습니다 — 레포 자동 진행과 무관합니다'}
+              >${armed_lane.orphan
+                ? html`${armed_lane.label}<button
+                      type="button"
+                      class="worker-dep__label mon2-arm__release"
+                      data-lane-id=${armed_lane.lane_id}
+                    >
+                      해제
+                    </button>`
+                : armed_lane.label}</span
+            >`
+          : ''}${predecessors.map((chip) =>
+          openableChipTemplate(chip, 'pred')
+        )}${dependents.map((chip) => openableChipTemplate(chip, 'dependents'))}
+      </div>`
+    : ''}${has_secondary
+    ? html`<div class="worker-deps worker-deps--secondary">
+        ${released.map((chip) =>
+          openableChipTemplate(chip, 'released')
+        )}${overlaps.map((chip) =>
+          openableChipTemplate(overlapAsChip(chip), 'overlap')
+        )}${scope_missing
+          ? html`<span
+              class="worker-dep worker-dep--muted"
+              title="겹침 판정 불가 — 아티팩트가 있으면 스펙/플랜 front-matter, 없으면 description \`## scope\`에 선언 필요"
+              >scope 없음</span
+            >`
+          : ''}
+      </div>`
+    : ''}`;
+}
+
+/**
+ * The `연결 n` 소속 칩 (UI-j92s §5.2a, 자리는 UI-8x90 §4.1). "어느 레인 소속인가"는
+ * 레포·직렬 레인 칩과 같은 좌표이므로 슬롯 5 줄이 싣는다. 클릭은 그대로 그
+ * 레인으로의 스크롤이다. 재료가 없으면 빈 문자열이다 (fail-quiet).
+ *
+ * @param {{ lane_id: string, label: string }|null|undefined} chip
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function crossLaneChipTemplate(chip) {
+  if (!chip) {
+    return '';
+  }
+  return html`<button
+    type="button"
+    class="worker-dep worker-dep--lane mon-lane__chip"
+    data-lane-id=${chip.lane_id}
+    title="이 연결 레인으로 이동"
+  >
+    ${chip.label}
+  </button>`;
 }
 
 /**
@@ -1002,10 +968,15 @@ export function routeChipTemplate(workflow) {
  * 싣지 않으므로 넣으면 두 레인이 갈린다 (§5.4). 판정이 없거나 표시 대상이
  * 아니면 빈 문자열이다 (fail-quiet).
  *
+ * 칩은 버튼이다 (UI-8x90 §4.5): 클릭하면 판정 사유 팝업이 열린다. `title`
+ * 툴팁은 그대로 남는다 — 마우스 사용자는 팝업 없이도 읽는다.
+ *
  * @param {MiniItem['workflow']} workflow
+ * @param {boolean} [open] - 사유 팝업이 지금 이 카드에서 이 칩 아래에 펼쳐져
+ * 있는지. `aria-expanded`가 되는 값이다.
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function quickFixReviewChipTemplate(workflow) {
+export function quickFixReviewChipTemplate(workflow, open = false) {
   const review = workflow ? workflow.quick_fix_review : null;
   if (!review) {
     return '';
@@ -1021,11 +992,15 @@ export function quickFixReviewChipTemplate(workflow) {
       : 'quick_fix self-review 영수증이 지금 본문과 다릅니다',
     ...missing
   ].join('\n');
-  return html`<span
-    class="ctl-chip worker-card__qfr worker-card__qfr--${state}"
+  return html`<button
+    type="button"
+    class="ctl-chip judgement-chip worker-card__qfr worker-card__qfr--${state}"
+    data-chip-key="qfr"
+    aria-expanded=${open ? 'true' : 'false'}
     title=${title}
-    >${state === 'reviewed' ? '리뷰 ✓' : '리뷰 stale'}</span
-  >`;
+  >
+    ${state === 'reviewed' ? '리뷰 ✓' : '리뷰 stale'}
+  </button>`;
 }
 
 /**
@@ -1055,27 +1030,33 @@ export function fromChipTemplate(from_id) {
 
 /**
  * `복잡` chip (UI-sbum §3): the workflow judged this bead complex enough to
- * recommend a different execution setting. DISPLAY-ONLY on every card — the one
- * place a click applies it is the issue detail header, because a mis-touch on a
- * lane card would rewrite an execution pin the user never opened.
+ * recommend a different execution setting. 클릭은 어디서나 사유 팝업이고, 적용은
+ * 실행 설정 편집기에서 사용자가 수동으로 한다 (UI-8x90 §4.5) — 카드 위의 칩은
+ * 상태를 쓰지 않는다.
  *
  * One chip, never a model or runtime name: the recommendation's WHY and whether
  * it is applied live in the tooltip, which every surface shares so one judgement
  * never reads two ways.
  *
  * @param {import('../../utils/rec-settings.js').RecSettings|null|undefined} rec
+ * @param {boolean} [open] - 사유 팝업이 지금 이 카드에서 이 칩 아래에 펼쳐져
+ * 있는지. `aria-expanded`가 되는 값이다.
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function recChipTemplate(rec) {
+export function recChipTemplate(rec, open = false) {
   if (!rec) {
     return '';
   }
-  return html`<span
-    class="ctl-chip ctl-chip--label worker-card__rec"
+  return html`<button
+    type="button"
+    class="ctl-chip ctl-chip--label judgement-chip worker-card__rec"
+    data-chip-key="rec"
     data-state=${rec.state}
+    aria-expanded=${open ? 'true' : 'false'}
     title=${recTooltip(rec)}
-    >${REC_LABEL}</span
-  >`;
+  >
+    ${REC_LABEL}
+  </button>`;
 }
 
 /**
@@ -1216,8 +1197,15 @@ export function priorityBadgeTemplate(priority) {
  * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} [exec_chips] -
  * 실행 설정 칩 (worker-card-exec-chips §2.2): 대기 행과 후보 카드가 "이 설정으로
  * 돌아간다"를 적재 전에 미리 보여 준다. 완료 행·PR 대기 행은 싣지 않는다.
- * @property {DependencyChips|null} [dependency_chips] - 선행/후속 의존 칩
- * (UI-eey2 §5.1). Monitor-only; the Worker console never sets it.
+ * @property {DependencyChips|null} [dependency_chips] - 슬롯 4 두 줄의 의존·
+ * 정보 칩 (UI-eey2 §5.1, 두 줄은 UI-8x90 §4.1).
+ * @property {{ lane_id: string, label: string }|null} [cross_lane_chip] -
+ * `연결 n` 소속 칩 (UI-j92s §5.2a). 슬롯 5 재료이므로 다른 좌표 칩
+ * (`route`·`from_id`·`exec_chips`)과 같이 항목 최상위 필드다 (UI-8x90 §4.2).
+ * @property {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null} [chip_popover] -
+ * 이 카드에서 열려 있는 판정 칩 사유 팝업 (UI-8x90 §4.5). 열림 상태는 뷰가
+ * 소유하고 (`app/views/chip-popover.js`), 템플릿은 어느 칩 아래에 무엇을 그릴지만
+ * 읽는다.
  * @property {'three_line'} [done_layout] - 완료 행 변형 (UI-eey2 §8). The
  * monitor's done row carries a repo badge as well, which squeezes the two-line
  * variant's title down to a few characters, so the title moves onto its own
@@ -1575,7 +1563,9 @@ export function miniRow(item, options = {}) {
   // 판정은 그 줄의 재료 전부로 한다 — 좌표·exec만 세면 usage만 있는 행에서
   // 지금 보이는 정보가 사라진다. 재료가 하나도 없으면 줄 자체를 그리지 않는다
   // (빈 div는 행에 여백만 남긴다).
-  const rec_el = recChipTemplate(item.rec);
+  const rec_el = recChipTemplate(item.rec, chipOpen(item, 'rec'));
+  // 소속 칩은 슬롯 5의 좌표 칩이다 (UI-8x90 §4.1): 레포 다음, route 앞.
+  const cross_lane_el = crossLaneChipTemplate(item.cross_lane_chip);
   // 실패 로그 경로도 슬롯 5다 (UI-251y §5.1 정정, UI-8w4t §4): "어느 경로의
   // 것인가"는 이 줄이 답하는 질문이고, 복사 버튼은 값에 붙은 어포던스일 뿐
   // 카드의 처분을 바꾸지 않는다. 타임라인 `세부`와 같은 템플릿·같은 토스트를
@@ -1583,6 +1573,7 @@ export function miniRow(item, options = {}) {
   const log_path_el = logPathTemplate(item.log_path);
   const chips_el =
     repo_el ||
+    cross_lane_el ||
     route_el ||
     from_el ||
     has_exec_chips ||
@@ -1590,11 +1581,11 @@ export function miniRow(item, options = {}) {
     usage_el ||
     log_path_el
       ? html`<div class="worker-chips">
-          ${repo_el}${route_el}${from_el}${has_exec_chips
+          ${repo_el}${cross_lane_el}${route_el}${from_el}${has_exec_chips
             ? execChipsTemplate(item.exec_chips, {
                 pin: item.exec_chips_pinned === true
               })
-            : ''}${rec_el}${usage_el}${log_path_el}
+            : ''}${rec_el}${usage_el}${log_path_el}${judgementPopover(item)}
         </div>`
       : '';
   const deps_el = dependencyChipsTemplate(item.dependency_chips);
@@ -1749,6 +1740,134 @@ const SESSION_PREFERRED_TOOLTIP = {
 };
 
 /**
+ * The four 판정 칩 keys (UI-8x90 §4.5). `data-chip-key` carries them into the
+ * DOM so one click handler per tab covers every surface.
+ *
+ * @typedef {'rec'|'session_preferred'|'ineligible'|'qfr'} JudgementChipKey
+ */
+
+/**
+ * One 판정 칩's 사유 팝업 내용 (UI-8x90 §4.5 표). 두 탭과 이슈 상세가 같은
+ * 함수를 부르므로 같은 판정이 어디서나 같은 문장으로 읽힌다. 재료가 없으면
+ * `null`이고 그 칩에는 팝업이 열리지 않는다 (fail-quiet).
+ *
+ * @param {MiniItem} item
+ * @param {string} chip_key
+ * @returns {import('../chip-popover.js').ChipPopoverContent|null}
+ */
+export function judgementPopoverContent(item, chip_key) {
+  if (chip_key === 'rec') {
+    const rec = item.rec;
+    if (!rec) {
+      return null;
+    }
+    const state_text = REC_STATE_TEXT[rec.state] || '';
+    return {
+      title: '복잡한 작업으로 판정됨',
+      lines: [
+        ...recReasonSentences(rec),
+        ...(state_text.length > 0 ? [`상태: ${state_text}`] : []),
+        '적용은 이슈 상세의 실행 설정 편집기에서'
+      ]
+    };
+  }
+  if (chip_key === 'session_preferred') {
+    if (item.session_preferred !== true) {
+      return null;
+    }
+    const reason =
+      SESSION_PREFERRED_TOOLTIP[item.session_preferred_reason || ''] || '';
+    return {
+      title: '워커로 돌릴 수 있지만 세션이 낫다',
+      lines: reason.length > 0 ? [reason] : []
+    };
+  }
+  if (chip_key === 'ineligible') {
+    if (item.worker_ineligible !== true) {
+      return null;
+    }
+    return {
+      title: '워커 실행 대상이 아니다',
+      lines: [
+        'worker-ineligible 라벨이 붙어 있다 — 라벨은 이슈 상세의 라벨 절에서 뗀다'
+      ]
+    };
+  }
+  if (chip_key === 'qfr') {
+    const review = item.workflow ? item.workflow.quick_fix_review : null;
+    if (!review || (review.state !== 'reviewed' && review.state !== 'stale')) {
+      return null;
+    }
+    const missing = Array.isArray(review.missing) ? review.missing : [];
+    return {
+      title:
+        review.state === 'reviewed'
+          ? 'quick_fix self-review 영수증이 지금 본문과 일치합니다'
+          : 'quick_fix self-review 영수증이 지금 본문과 다릅니다',
+      lines: missing.length > 0 ? missing : ['빠진 항목 없음']
+    };
+  }
+  return null;
+}
+
+/**
+ * The four keys, in the order a card would read them (UI-8x90 §4.5). 한 카드에
+ * 두 팝업이 동시에 열리지 않으므로 첫 열림 하나만 찾으면 된다.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const JUDGEMENT_CHIP_KEYS = [
+  'rec',
+  'session_preferred',
+  'ineligible',
+  'qfr'
+];
+
+/**
+ * The 판정 팝업 material open on this card, or `null` (UI-8x90 §4.5). 두 탭이
+ * 같은 함수를 부르므로 열림 판정만 넘겨받는다 — 열림 상태는 뷰의
+ * `createChipPopover`가 소유한다.
+ *
+ * @param {MiniItem} item
+ * @param {(chip_key: string) => boolean} isOpen
+ * @returns {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null}
+ */
+export function judgementPopoverOf(item, isOpen) {
+  for (const chip_key of JUDGEMENT_CHIP_KEYS) {
+    if (!isOpen(chip_key)) {
+      continue;
+    }
+    const content = judgementPopoverContent(item, chip_key);
+    return content ? { chip_key, content } : null;
+  }
+  return null;
+}
+
+/**
+ * The 판정 팝업 open on one card, or an empty string (UI-8x90 §5). 위치는 그
+ * 칩이 선 줄이므로 호출 자리가 그 줄 안에 둔다.
+ *
+ * @param {MiniItem} item
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function judgementPopover(item) {
+  return item.chip_popover
+    ? chipPopoverTemplate(item.chip_popover.content)
+    : '';
+}
+
+/**
+ * Whether that 판정 칩 is the one open on this card (UI-8x90 §4.5).
+ *
+ * @param {MiniItem} item
+ * @param {string} chip_key
+ * @returns {boolean}
+ */
+function chipOpen(item, chip_key) {
+  return !!item.chip_popover && item.chip_popover.chip_key === chip_key;
+}
+
+/**
  * 사용자 결정 대기 파킹의 사유 파트 접두사 (UI-dqg9 §2.2). 투영(`worker/index.js`)이
  * 뒤에 계약 값을 붙여 `item.reason`에 싣고, 여기 place 버튼 title이 그 파트를
  * 접두사로 되읽는다 — `missing_description`과 같은 관용이되, 값이 가변이라
@@ -1820,6 +1939,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
         >${item.workspace_name}</span
       >`
     : '';
+  const cross_lane_el = crossLaneChipTemplate(item.cross_lane_chip);
   const route_el = routeChipTemplate(workflow);
   const from_el = fromChipTemplate(item.from_id);
   const has_exec_chips = !!(
@@ -1843,20 +1963,32 @@ export function candidateCard(item, place_menu = null, options = {}) {
       <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span
       >${priorityBadgeTemplate(item.priority)}
       ${worker_ineligible
-        ? html`<span
-            class="ctl-chip ctl-chip--label worker-card__ineligible"
+        ? html`<button
+            type="button"
+            class="ctl-chip ctl-chip--label judgement-chip worker-card__ineligible"
+            data-chip-key="ineligible"
+            aria-expanded=${chipOpen(item, 'ineligible') ? 'true' : 'false'}
             title="worker-ineligible label이 붙어 워커 실행 대상이 아닙니다"
-            >worker-ineligible</span
-          >`
+          >
+            worker-ineligible
+          </button>`
         : session_preferred
-          ? html`<span
-              class="ctl-chip ctl-chip--label worker-card__session-preferred"
+          ? html`<button
+              type="button"
+              class="ctl-chip ctl-chip--label judgement-chip worker-card__session-preferred"
+              data-chip-key="session_preferred"
+              aria-expanded=${chipOpen(item, 'session_preferred')
+                ? 'true'
+                : 'false'}
               title=${session_preferred_tooltip}
-              >세션 권장</span
-            >`
-          : ''}${recChipTemplate(item.rec)}${quickFixReviewChipTemplate(
-        workflow
-      )}
+            >
+              세션 권장
+            </button>`
+          : ''}${recChipTemplate(
+        item.rec,
+        chipOpen(item, 'rec')
+      )}${quickFixReviewChipTemplate(workflow, chipOpen(item, 'qfr'))}
+      ${judgementPopover(item)}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow
@@ -1864,11 +1996,14 @@ export function candidateCard(item, place_menu = null, options = {}) {
           onOpenDoc: options.onOpenDoc
         })
       : ''}${deps_el}
-    ${repo_el || route_el || from_el || has_exec_chips
+    ${repo_el || cross_lane_el || route_el || from_el || has_exec_chips
       ? html`<div class="worker-chips">
-          ${repo_el}${route_el}${from_el}${execChipsTemplate(item.exec_chips, {
-            pin: options.exec_chips_mode === 'pinned_only'
-          })}
+          ${repo_el}${cross_lane_el}${route_el}${from_el}${execChipsTemplate(
+            item.exec_chips,
+            {
+              pin: options.exec_chips_mode === 'pinned_only'
+            }
+          )}
         </div>`
       : ''}
     <div

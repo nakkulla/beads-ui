@@ -531,9 +531,7 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
     );
 
     const row = lanes.queue.find((r) => r.id === 'A-2');
-    expect(row?.dependency_chips?.predecessors?.[0].label).toBe(
-      '⛓ blocked: A-1'
-    );
+    expect(row?.dependency_chips?.predecessors?.[0].label).toBe('⛓ A-1');
   });
 
   test('moves the blocker location into the chip tooltip', () => {
@@ -550,7 +548,7 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
 
     const row = lanes.queue.find((r) => r.id === 'A-2');
     expect(row?.dependency_chips?.predecessors?.[0].title).toBe(
-      '이 이슈는 A-1가 close될 때까지 출발하지 않는다 (실행가능)'
+      '선행 — close될 때까지 출발하지 않는다 (실행가능)'
     );
   });
 
@@ -597,9 +595,7 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
     );
 
     const row = lanes.queue.find((r) => r.id === 'A-2');
-    expect(row?.dependency_chips?.predecessors?.[0].label).toBe(
-      '⛓ blocked: B-1'
-    );
+    expect(row?.dependency_chips?.predecessors?.[0].label).toBe('⛓ B-1');
   });
 
   test('draws no chip on the blocker card itself', () => {
@@ -659,7 +655,7 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
     );
 
     expect(lanes.running[0].dependency_chips?.predecessors?.[0].label).toBe(
-      '⛓ blocked: A-9'
+      '⛓ A-9'
     );
   });
 
@@ -682,7 +678,7 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
     );
 
     expect(lanes.running[0].dependency_chips?.predecessors?.[0].label).toBe(
-      '⛓ blocked: A-9'
+      '⛓ A-9'
     );
   });
 
@@ -698,7 +694,7 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
     );
 
     expect(lanes.pr_wait[0].dependency_chips?.predecessors?.[0].label).toBe(
-      '⛓ blocked: A-9'
+      '⛓ A-9'
     );
   });
 
@@ -715,7 +711,7 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
     );
 
     expect(lanes.pr_wait[0].dependency_chips?.predecessors?.[0].title).toBe(
-      '이 이슈는 A-9가 close될 때까지 출발하지 않는다 (repo-a · 병렬 #1)'
+      '선행 — close될 때까지 출발하지 않는다 (repo-a · 병렬 #1)'
     );
   });
 
@@ -2621,9 +2617,7 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
     );
 
     const row = lanes.queue.find((r) => r.id === 'A-2');
-    expect(row?.dependency_chips?.predecessors?.[0].label).toBe(
-      '⛓ blocked: A-1'
-    );
+    expect(row?.dependency_chips?.predecessors?.[0].label).toBe('⛓ A-1');
     expect(lanes.running[0].dependency_chips).toBe(undefined);
   });
 
@@ -2884,7 +2878,8 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
         id: 'A-2',
         title: 'A-2',
         location_label: '#1',
-        prefixes: ['server/worker/queue-store.js']
+        prefixes: ['server/worker/queue-store.js'],
+        root_dir: WS_A
       }
     ]);
     expect(lanes.queue[0].overlap_chips?.[0].location_label).toBe('실행중');
@@ -2926,7 +2921,8 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
       id: 'A-1',
       title: 'A-1',
       location_label: '#1',
-      prefixes: ['app/views/monitor/index.js']
+      prefixes: ['app/views/monitor/index.js'],
+      root_dir: WS_A
     });
     expect(lanes.queue[0].overlap_chips?.[0].location_label).toBe('실행가능');
   });
@@ -3872,7 +3868,7 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
 });
 
 describe('lane model candidate release chips (UI-d13v §5.3)', () => {
-  test('draws the released chips newest first with an overflow count', () => {
+  test('draws every released chip in the window, newest first', () => {
     const now = Date.now();
     const lanes = buildLanes(
       [
@@ -3895,8 +3891,9 @@ describe('lane model candidate release chips (UI-d13v §5.3)', () => {
 
     const released = lanes.runnable[0].dependency_chips?.released || [];
     expect(released.map((chip) => chip.label)).toEqual([
-      '🔓 해제: A-8',
-      '🔓 해제: A-9 외 1'
+      '🔓 A-8',
+      '🔓 A-9',
+      '🔓 A-7'
     ]);
   });
 
@@ -3921,13 +3918,13 @@ describe('lane model candidate release chips (UI-d13v §5.3)', () => {
     expect(lanes.runnable[0].dependency_chips).toBeUndefined();
   });
 
-  test('draws the dependents chip from the server decoration', () => {
+  test('draws one dependents chip per id the candidate row carries', () => {
     const lanes = buildLanes(
       [
         workspace({
           runnable: [
             runnable('A-1', {
-              dependents_info: { count: 3, ids: ['A-2', 'A-3'] }
+              dependents_info: { count: 2, ids: ['A-3', 'A-2'] }
             })
           ]
         })
@@ -3935,10 +3932,228 @@ describe('lane model candidate release chips (UI-d13v §5.3)', () => {
       [state()]
     );
 
-    expect(lanes.runnable[0].dependency_chips?.dependents).toEqual({
-      count: 3,
-      title: '이 이슈가 close되면 풀리는 이슈: A-2, A-3 외 1'
-    });
+    expect(
+      lanes.runnable[0].dependency_chips?.dependents?.map((chip) => chip.label)
+    ).toEqual(['→ A-2', '→ A-3']);
+  });
+
+  test('draws the dependents chips on all four lanes (UI-8x90 §4.4)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          pr_wait: [{ bead_id: 'A-4' }],
+          runnable: [runnable('A-3')],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-2',
+              status: 'running',
+              started_at: 10
+            }
+          },
+          bead_dependents: {
+            'A-1': { ids: ['A-8'] },
+            'A-2': { ids: ['A-8'] },
+            'A-3': { ids: ['A-8'] },
+            'A-4': { ids: ['A-8'] }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const labels = [
+      lanes.queue[0],
+      lanes.running[0],
+      lanes.runnable[0],
+      lanes.pr_wait[0]
+    ].map((item) => item.dependency_chips?.dependents?.[0]?.label);
+
+    expect(labels).toEqual(['→ A-8', '→ A-8', '→ A-8', '→ A-8']);
+  });
+
+  test('stands the dependents chip on a row with no predecessor', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_blocked_by: { 'A-1': [] },
+          bead_dependents: { 'A-1': { ids: ['A-8'] } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].dependency_chips?.predecessors).toBeUndefined();
+    expect(
+      lanes.queue[0].dependency_chips?.dependents?.map((chip) => chip.id)
+    ).toEqual(['A-8']);
+  });
+
+  test('unions the queue decoration with the candidate row material', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-1', { dependents_info: { ids: ['A-9'] } })],
+          bead_dependents: { 'A-1': { ids: ['A-8'] } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(
+      lanes.runnable[0].dependency_chips?.dependents?.map((chip) => chip.id)
+    ).toEqual(['A-8', 'A-9']);
+  });
+
+  test('keeps the candidate material when the decoration is empty', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-1', { dependents_info: { ids: ['A-9'] } })],
+          bead_dependents: { 'A-1': { ids: [] } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(
+      lanes.runnable[0].dependency_chips?.dependents?.map((chip) => chip.id)
+    ).toEqual(['A-9']);
+  });
+
+  test('prefers the owner the server named for a follow-up', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_dependents: {
+            'A-1': { ids: ['B-9'], root_dirs: { 'B-9': WS_B } }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const chip = lanes.queue[0].dependency_chips?.dependents?.[0];
+    expect(chip?.openable).toBe(true);
+    expect(chip?.root_dir).toBe(WS_B);
+  });
+
+  test('gives a same-repo follow-up outside every lane the card own repo', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_dependents: { 'A-1': { ids: ['A-8'] } }
+        })
+      ],
+      [state()]
+    );
+
+    const chip = lanes.queue[0].dependency_chips?.dependents?.[0];
+    expect(chip?.openable).toBe(true);
+    expect(chip?.root_dir).toBe(WS_A);
+  });
+
+  test('falls back to the location map for a foreign follow-up', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_dependents: { 'A-1': { ids: ['B-9'] } }
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-9' }]
+        })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })]
+    );
+
+    expect(lanes.queue[0].dependency_chips?.dependents?.[0].root_dir).toBe(
+      WS_B
+    );
+  });
+
+  test('leaves a foreign follow-up of unknown owner unopenable', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_dependents: { 'A-1': { ids: ['B-9'] } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(
+      lanes.queue[0].dependency_chips?.dependents?.[0].openable
+    ).toBeUndefined();
+  });
+
+  test('gives a same-repo blocker outside every lane the card own repo', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_blocked_by: { 'A-1': ['A-9'] }
+        })
+      ],
+      [state()]
+    );
+
+    const chip = lanes.queue[0].dependency_chips?.predecessors?.[0];
+    expect(chip?.openable).toBe(true);
+    expect(chip?.root_dir).toBe(WS_A);
+  });
+
+  test('leaves a foreign blocker of unknown owner unopenable', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_blocked_by: { 'A-1': ['B-9'] }
+        })
+      ],
+      [state()]
+    );
+
+    const chip = lanes.queue[0].dependency_chips?.predecessors?.[0];
+    expect(chip?.openable).toBeUndefined();
+    expect(chip?.root_dir).toBeUndefined();
+  });
+
+  test('falls back to the location map for a foreign blocker', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_blocked_by: { 'A-1': ['B-9'] }
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-9' }]
+        })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })]
+    );
+
+    expect(lanes.queue[0].dependency_chips?.predecessors?.[0].root_dir).toBe(
+      WS_B
+    );
+  });
+
+  test('draws no dependents chip without the queue decoration', () => {
+    const lanes = buildLanes(
+      [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      [state()]
+    );
+
+    expect(lanes.queue[0].dependency_chips).toBeUndefined();
   });
 
   test('draws no release chips when the row carries no material', () => {
@@ -3948,6 +4163,28 @@ describe('lane model candidate release chips (UI-d13v §5.3)', () => {
     );
 
     expect(lanes.runnable[0].dependency_chips).toBeUndefined();
+  });
+
+  test('carries the card own repo on a same-repo release chip', () => {
+    const now = Date.now();
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', {
+              release_info: {
+                released_by: [{ id: 'A-9', closed_at: now - 1000 }]
+              }
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    const chip = lanes.runnable[0].dependency_chips?.released?.[0];
+    expect(chip?.openable).toBe(true);
+    expect(chip?.root_dir).toBe(WS_A);
   });
 
   test('keeps the released chips when a predecessor chip is added', () => {
@@ -4276,5 +4513,93 @@ describe('lane model as_given candidate order (UI-4tud §4.3)', () => {
     );
 
     expect(lanes.runnable.map((row) => row.id)).toEqual(['A-1', 'A-2']);
+  });
+});
+
+describe('quick_fix 착지 재개 자격 (UI-8h1x §3.3b)', () => {
+  /**
+   * One failed quick_fix landing attempt that never recorded a session id.
+   *
+   * @param {string} reason
+   */
+  function sessionlessLandingFailure(reason) {
+    return {
+      t1: {
+        attempt_id: 't1',
+        bead_id: 'A-1',
+        status: 'failed',
+        finished_at: 123,
+        cause: `quickfix_landing_failed:${reason}`,
+        quickfix_lane: true,
+        quickfix_landing: {
+          cursor: 'base_containment',
+          head_sha: 'a'.repeat(40),
+          reason
+        }
+      }
+    };
+  }
+
+  test('resumes a settlement-natured failure that carries no session id', () => {
+    const map = activeByBead(
+      sessionlessLandingFailure('containment_unobservable'),
+      new Map()
+    );
+
+    expect(map.get('A-1')?.failure?.resume_eligible).toBe(true);
+    expect(map.get('A-1')?.failure?.resume_reason).toBeNull();
+  });
+
+  test('refuses a session-natured failure that carries no session id', () => {
+    const map = activeByBead(
+      sessionlessLandingFailure('push_not_contained'),
+      new Map()
+    );
+
+    expect(map.get('A-1')?.failure?.resume_eligible).toBe(false);
+    expect(map.get('A-1')?.failure?.resume_reason).toBe(
+      'session_id 없는 구 attempt — 이어하기 불가'
+    );
+  });
+
+  test('keeps refusing an already-resumed settlement failure', () => {
+    const attempts = sessionlessLandingFailure('containment_unobservable');
+
+    const map = activeByBead(
+      {
+        ...attempts,
+        t2: {
+          attempt_id: 't2',
+          bead_id: 'A-1',
+          status: 'failed',
+          finished_at: 456,
+          resumed_from: 't1'
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.failure?.attempt_id).toBe('t2');
+    expect(map.get('A-1')?.failure?.resume_eligible).toBe(false);
+  });
+
+  test('leaves an ordinary failure without a landing record on the session rule', () => {
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'failed',
+          finished_at: 123,
+          cause: 'session_failed:is_error'
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.failure?.resume_eligible).toBe(false);
+    expect(map.get('A-1')?.failure?.resume_reason).toBe(
+      'session_id 없는 구 attempt — 이어하기 불가'
+    );
   });
 });

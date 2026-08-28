@@ -50,6 +50,7 @@ import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
+import { resumeKindOf } from '../../app/utils/quickfix-resume-kind.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
@@ -529,6 +530,11 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * ends with would fail it as `no_pr`; this dep judges the disposition's own
  * durable result instead. Absent wiring simply means no disposition can be
  * dispatched (the entry point refuses).
+ * @property {{ onParkedAttempt: (input: { workspace: string, bead_id: string, attempt_id: string, repo: string|null, target_base: string|null, awaiting_user: string|null }) => Promise<void> }} [directionInquiry]
+ * Direction-conflict park trigger (UI-7uid §3.1). Called fire-and-forget right
+ * after a `parked` record whose attempt came from the stale re-review lane.
+ * Absent wiring simply means the park stays a park and the click disposition
+ * is the only way out.
  * @property {{ complete: (input: { workspace: string, attempt_id: string, bead_id: string, session_ok: boolean, reason?: string|null }) => Promise<{ ok: boolean, reason?: string }> }} [reviewSession]
  * Completion verdict for a `[리뷰 후 머지]` attempt (UI-d7fy §5.4). The queue,
  * not this engine, owns that lane: it re-observes the PR head, re-reads
@@ -3324,6 +3330,63 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Hand a fresh direction-conflict park to the inquiry trigger (UI-7uid §3.1).
+   *
+   * FIRE-AND-FORGET, on the same no-throw contract as {@link notifyLifecycle}:
+   * a queue transition must not wait on — or fail over — a session launch. No
+   * judgment is re-made here beyond the two facts the record carries that the
+   * park itself does not imply: this attempt was the STALE re-review lane, and
+   * it was not a disposition session (a `revise_fix` or review run gets no
+   * inquiry). The trigger owns everything after that.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {string|null} repo
+   * @param {string|null} awaiting_user
+   */
+  function fireDirectionInquiry(
+    workspace,
+    attempt_id,
+    bead_id,
+    repo,
+    awaiting_user
+  ) {
+    if (
+      !deps.directionInquiry ||
+      typeof deps.directionInquiry.onParkedAttempt !== 'function'
+    ) {
+      return;
+    }
+    try {
+      const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
+      if (!attempt || attempt.spec_review_stale !== true) {
+        return;
+      }
+      if (dispositionKindOf(workspace, attempt_id)) {
+        return;
+      }
+      void Promise.resolve(
+        deps.directionInquiry.onParkedAttempt({
+          workspace,
+          bead_id,
+          attempt_id,
+          repo,
+          target_base:
+            typeof attempt.target_base === 'string'
+              ? attempt.target_base
+              : null,
+          awaiting_user
+        })
+      ).catch((err) => {
+        log('direction inquiry trigger failed for %s: %o', bead_id, err);
+      });
+    } catch (err) {
+      log('direction inquiry trigger failed for %s: %o', bead_id, err);
+    }
+  }
+
+  /**
    * Merge the classifier's extracted `summary` into whatever the caller already
    * knew about the failure (2026-08-28 worker-failure-tiers spec §6). A caller
    * with no detail and no summary keeps `null`, so a detail-less cause still
@@ -3459,6 +3522,13 @@ export function createScheduler(deps) {
         bead_id,
         classification,
         true
+      );
+      fireDirectionInquiry(
+        workspace,
+        attempt_id,
+        bead_id,
+        repo,
+        options.awaiting_user ?? null
       );
       closeRetryLineage(workspace, bead_id);
       return;
@@ -6665,13 +6735,20 @@ export function createScheduler(deps) {
     }
     const bead_id = prior.bead_id;
     const repo = typeof prior.repo === 'string' ? prior.repo : '';
+    // Which resume a failed quick_fix landing gets is decided by the FAILURE
+    // REASON, never by the settlement cursor (UI-8h1x §3.2). The same cursor
+    // carries opposite-natured failures — `base_containment` holds both
+    // `push_not_contained` (the session still has work) and
+    // `containment_unobservable` (only the observation failed) — so the cursor
+    // was an approximation that broke on foreign landings. The cursor stays a
+    // durable progress record (progress display and the `head_sha` bind); it
+    // is simply out of the judgment.
     const quickfix_cleanup_resume =
       prior.status === 'failed' &&
       prior.quickfix_lane === true &&
       typeof prior.quickfix_landing?.reason === 'string' &&
       prior.quickfix_landing.reason.length > 0 &&
-      (prior.quickfix_landing.cursor === 'branch_cleanup' ||
-        prior.quickfix_landing.cursor === 'parent_close');
+      resumeKindOf(prior.quickfix_landing) === 'settlement';
     // worktree_missing: the bead worktree is gone (resume never recreates it).
     const wt_present =
       typeof deps.worktree.exists === 'function'

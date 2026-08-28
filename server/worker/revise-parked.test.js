@@ -68,6 +68,28 @@ describe('reviseParkedCandidates', () => {
     expect(reviseParkedCandidates(q)).toEqual([]);
   });
 
+  test('selects a bead whose latest leaf attempt parked stale (UI-7uid §3.1)', () => {
+    const q = parkedQueue();
+    q.attempts.a1.status = 'parked';
+
+    expect(reviseParkedCandidates(q).map((c) => c.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('ignores a parked attempt without the stale flag', () => {
+    const q = parkedQueue();
+    q.attempts.a1.status = 'parked';
+    q.attempts.a1.spec_review_stale = false;
+
+    expect(reviseParkedCandidates(q)).toEqual([]);
+  });
+
+  test('ignores a leaf attempt in any other status', () => {
+    const q = parkedQueue();
+    q.attempts.a1.status = 'running';
+
+    expect(reviseParkedCandidates(q)).toEqual([]);
+  });
+
   test('ignores an attempt that was already resumed', () => {
     const q = parkedQueue();
     q.attempts.a2 = {

@@ -34,6 +34,10 @@ import {
   isImplementationAttempt
 } from '../../app/utils/active-attempts.js';
 import {
+  createDecorationContext,
+  openDependentsWithOwners
+} from '../list-adapters.js';
+import {
   backupFreshWorkerStaleWork,
   checkWorkerQueueAdmission,
   continueWorkerStaleWork,
@@ -118,6 +122,7 @@ import {
   normalizeUsageLegs,
   readAttemptUsageReceipts
 } from '../worker/usage-receipts.js';
+import { peekWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import {
   emitSessionLogAppend,
   emitSessionLogSnapshot,
@@ -1576,6 +1581,78 @@ function beadScopeFor(workspace_key, queue) {
 }
 
 /**
+ * The open follow-ups of every bead a lane renders (UI-8x90 §6.2), so the `→`
+ * chip stands in ALL four lanes rather than only on the 후보 row whose board
+ * column happened to carry `dependents_info`.
+ *
+ * Same target set as {@link beadScopeFor} and the same material path as the
+ * candidate decoration — one {@link createDecorationContext} over this
+ * workspace's last snapshot plus the peers it can peek, never a fetch of its
+ * own.
+ *
+ * Partial by construction: a peer with no snapshot yet contributes nothing, so
+ * an EMPTY array means "none among the visible snapshots", not "none". That is
+ * why the client unions this with the candidate `dependents_info` instead of
+ * letting either source win. `null` — this workspace has no snapshot, or the
+ * context would not assemble — omits the key entirely, which is 모름.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, { ids: string[], root_dirs?: Record<string, string> }>|null}
+ */
+function beadDependentsFor(workspace_key, queue) {
+  /** @type {import('../list-adapters.js').DecorationContext} */
+  let context;
+  try {
+    const snapshot = peekWorkspaceSnapshot(workspace_key);
+    if (snapshot === null) {
+      return null;
+    }
+    context = createDecorationContext(snapshot, workspace_key);
+  } catch (err) {
+    log('bead dependents context failed for %s: %o', workspace_key, err);
+    return null;
+  }
+  /** @type {Record<string, { ids: string[], root_dirs?: Record<string, string> }>} */
+  const out = {};
+  for (const bead_id of dependentsTargetIds(workspace_key, queue)) {
+    if (bead_id in out) {
+      continue;
+    }
+    const { ids, root_dirs } = openDependentsWithOwners(bead_id, context);
+    const has_owners = Object.keys(root_dirs).length > 0;
+    out[bead_id] = has_owners ? { ids, root_dirs } : { ids };
+  }
+  return out;
+}
+
+/**
+ * The bead ids {@link beadDependentsFor} answers for: the lane members plus the
+ * two projections that stand in no lane array. Kept as its own reader so the
+ * set cannot drift from `bead_scope`'s, which is the only reason both
+ * decorations can be read as one target set on the client.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {string[]}
+ */
+function dependentsTargetIds(workspace_key, queue) {
+  const ids = laneMemberIds(queue, true);
+  for (const rows of [
+    runnableRows(workspace_key, queue),
+    sessionActiveRows(workspace_key, queue)
+  ]) {
+    for (const row of rows) {
+      const bead_id = typeof row.bead_id === 'string' ? row.bead_id : '';
+      if (bead_id.length > 0) {
+        ids.push(bead_id);
+      }
+    }
+  }
+  return ids;
+}
+
+/**
  * This workspace's 후보 rows for the scope decoration (UI-f3ma), minus the
  * beads already standing in a lane. Side-effect-free like
  * {@link sessionActiveRows}: the snapshot decoration must never trigger a
@@ -2535,6 +2612,7 @@ export function decorateQueue(workspace_key, raw_queue) {
   );
   const bead_blocked_by = cleaned.bead_blocked_by;
   const bead_scope = beadScopeFor(workspace_key, queue);
+  const bead_dependents = beadDependentsFor(workspace_key, queue);
   return {
     ...queue,
     // The manual-continuation capability (UI-58w8 §8): a read-only projection
@@ -2595,6 +2673,12 @@ export function decorateQueue(workspace_key, raw_queue) {
     // derives the pairwise overlap chips. Same partial, fail-quiet,
     // non-persisted contract as the decorations above.
     bead_scope,
+    // Open follow-ups of those same beads (UI-8x90 §6.2), from the workspace
+    // list snapshot rather than the queue. Non-persisted and partial in a
+    // second way the decorations above are not: an empty array is "none among
+    // the snapshots this process can see", so the client unions it with the
+    // 후보 행's `dependents_info` instead of letting one source erase the other.
+    ...(bead_dependents ? { bead_dependents } : {}),
     // Direct blocks blocker ids for the same beads (UI-04vo §3) — the
     // wait-reason chip and lane topological corrections read from this, and
     // CLOSED cross-rig blockers are already gone from it (UI-u6zf §3.2).

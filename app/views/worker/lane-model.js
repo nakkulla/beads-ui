@@ -23,12 +23,14 @@ import {
   isImplementationAttempt,
   reviewSessionAttemptStates
 } from '../../utils/active-attempts.js';
+import { isForeignBlocker } from '../../utils/blocker-scope.js';
 import {
   formatAttemptOrchestrationChip,
   formatOrchestrationChip,
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
 import { recSettings } from '../../utils/rec-settings.js';
 import { overlapPrefixes } from '../../utils/scope-overlap.js';
 import {
@@ -170,6 +172,7 @@ const DONE_KIND_LABELS = {
  *   spec_id?: string,
  *   published?: boolean,
  *   labels?: string[],
+ *   dependents_info?: import('./queue-blockers.js').DependentsInfo,
  *   overlap_chips?: OverlapChip[],
  *   scope_state?: 'declared'|'missing',
  *   cross_lane_chip?: CrossLaneChip,
@@ -478,15 +481,22 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
     const started_at = state.started_at;
     const has_session =
       typeof a.session_id === 'string' && a.session_id.length > 0;
+    // 정산 재개는 서버에서 세션 ID도 워크트리도 요구하지 않으므로 (UI-8h1x
+    // §3.2·§3.3b) `has_session`은 세션 재실행일 때만 조건이다. 반대로
+    // `resumed_from_ids` 검사는 세션 유무와 무관한 중복 방지라 두 경우 모두
+    // 유지한다.
+    const resume_kind = resumeKindOf(a.quickfix_landing);
+    const session_required = resume_kind === 'session';
     const resume_eligible =
       run_state !== 'running' &&
-      has_session &&
+      (has_session || !session_required) &&
       !resumed_from_ids.has(a.attempt_id);
-    const resume_reason = !has_session
-      ? 'session_id 없는 구 attempt — 이어하기 불가'
-      : resumed_from_ids.has(a.attempt_id)
-        ? '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
-        : null;
+    const resume_reason =
+      !has_session && session_required
+        ? 'session_id 없는 구 attempt — 이어하기 불가'
+        : resumed_from_ids.has(a.attempt_id)
+          ? '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
+          : null;
     const observed = objectOf(input.observations?.[bead_id]);
     const observed_pr = objectOf(observed.pr);
     const merged =
@@ -887,17 +897,10 @@ function formatOrDrop(pinned, base) {
 }
 
 /**
- * 한 후보 카드에 서는 `🔓 해제` 칩 수의 상한 (UI-d13v §5.3). 나머지는 마지막
- * 칩 라벨 끝의 ` 외 n`이 센다 — 칩을 상한 없이 늘리면 슬롯 4 줄 하나가 카드를
- * 삼킨다.
- */
-const RELEASED_CHIP_MAX = 2;
-
-/**
- * The 후보 행 `🔓 해제` 칩 (UI-d13v §5.3). 7일 창은 {@link releasedChip}이 닫고,
- * 여기서는 `closed_at` desc 정렬과 상한만 정한다. 재료가 없거나 전부 창 밖이면
- * `null`이다 (fail-quiet) — 서버가 `release_info`를 싣지 않는 스냅샷에서 칩이
- * 그냥 서지 않는 것과 같은 결과다.
+ * The `🔓 <ID>` 칩 한 벌 (UI-d13v §5.3, 상한 제거는 UI-8x90 §4.2). 7일 창은
+ * {@link releasedChip}이 닫고, 여기서는 `closed_at` desc 정렬만 정한다 — 칩 수를
+ * 제한하는 것은 그 창 하나뿐이다. 재료가 없거나 전부 창 밖이면 `null`이다
+ * (fail-quiet).
  *
  * @param {string} bead_id
  * @param {any} release_info
@@ -930,16 +933,7 @@ export function releasedChipsFor(bead_id, release_info, now) {
       chips.push(chip);
     }
   }
-  if (chips.length === 0) {
-    return null;
-  }
-  const shown = chips.slice(0, RELEASED_CHIP_MAX);
-  const rest = chips.length - shown.length;
-  if (rest > 0) {
-    const last = shown[shown.length - 1];
-    shown[shown.length - 1] = { ...last, label: `${last.label} 외 ${rest}` };
-  }
-  return shown;
+  return chips.length === 0 ? null : chips;
 }
 
 /**
@@ -1629,7 +1623,13 @@ function applyScopeOverlaps(
       id: other.id,
       title: other.title,
       location_label: chainRowLocationLabel(other.id, locations, states),
-      prefixes
+      prefixes,
+      // 겹침은 레포 안에서만 정의되지만 (UI-qm12 §5.2) 그 레포가 지금 활성
+      // workspace라는 보장은 없다 — 칩 클릭이 이슈 상세가 된 뒤로 (UI-8x90 §4.3)
+      // 소유 레포를 싣지 않으면 Monitor에서 현재 레포로 잘못 열린다.
+      ...(typeof other.root_dir === 'string' && other.root_dir.length > 0
+        ? { root_dir: other.root_dir }
+        : {})
     };
     for (const card of bead.cards) {
       if (card.overlap_chips) {
@@ -1655,6 +1655,99 @@ function applyScopeOverlaps(
       }
     }
   }
+}
+
+/**
+ * Where a dependency chip's click should land, and whether it may be a button
+ * at all (UI-8x90 §4.2·§4.4). One ladder for all four chip kinds: 모델이 아는
+ * 위치가 먼저고, 레인에 없는 같은 레포 상대는 카드 자신의 레포에 있으며, 셋 다
+ * 없는 — 소유 레포를 모르는 타 레포 — 상대는 누를 수 없다.
+ *
+ * `root_dir` 없이 여는 것은 "현재 활성 레포에서 이 ID를 연다"는 뜻이라, 모니터가
+ * 다른 레포를 보고 있으면 같은 ID의 남의 이슈를 연다. 같은 레포 상대에게만 그
+ * 생략이 안전하고, 거기서도 카드의 `root_dir`을 실을 수 있으면 싣는다.
+ *
+ * `locations`는 아직 없을 수 있다 — 해제 칩은 위치 사전이 만들어지기 전, 후보 행을
+ * 조립하는 자리에서 붙는다. 그 자리에서는 타 레포 owner를 서버 `release_info`가
+ * 이미 실어 왔으므로 사다리의 첫 칸만 비는 셈이다.
+ *
+ * @param {{ id: string, root_dir?: string }} card
+ * @param {string} other_id
+ * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} [locations]
+ * @returns {{ openable?: true, root_dir?: string }}
+ */
+function openTarget(card, other_id, locations) {
+  const located = locations ? locations.get(other_id)?.root_dir : undefined;
+  const same_repo = !isForeignBlocker(card.id, other_id);
+  const own = typeof card.root_dir === 'string' ? card.root_dir : '';
+  const root_dir =
+    typeof located === 'string' && located.length > 0
+      ? located
+      : same_repo && own.length > 0
+        ? own
+        : '';
+  if (root_dir.length > 0) {
+    return { openable: true, root_dir };
+  }
+  return same_repo ? { openable: true } : {};
+}
+
+/**
+ * The `→` 칩 재료 for one card (UI-8x90 §4.4): 큐 장식과 후보 행 장식의 합집합,
+ * 그리고 각 ID의 `root_dir` 결정.
+ *
+ * 두 원천을 합치는 이유는 재료의 성질이 다르기 때문이다 — `bead_dependents`의 빈
+ * 배열은 "보이는 스냅샷 안에는 없다"이고, `dependents_info`는 후보 행에만 실린다.
+ * 어느 쪽도 다른 쪽의 사실을 지우지 않는다.
+ *
+ * `root_dir`은 네 단계다: (1) 서버가 실어 준 owner; (2) 같은 레포 접두사면 **카드
+ * 자신의** `root_dir` — 레인에 없는 열린 후속은 `locations`에 없으므로, 이 단계가
+ * 없으면 다른 레포가 활성인 상태에서 현재 레포로 잘못 연다; (3) 그 외 타 레포는
+ * `locations`; (4) 셋 다 없으면 값이 없고 칩은 열리지 않는다.
+ *
+ * @param {{ ids: Set<string>, root_dirs: Record<string, string> }|undefined} decoration
+ * @param {import('./queue-blockers.js').DependentsInfo|undefined} info
+ * @param {LaneItem} item
+ * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} locations
+ * @returns {import('./queue-blockers.js').DependentsInfo}
+ */
+function unionDependents(decoration, info, item, locations) {
+  /** @type {Set<string>} */
+  const ids = new Set(decoration ? decoration.ids : []);
+  for (const id of info && Array.isArray(info.ids) ? info.ids : []) {
+    if (typeof id === 'string' && id.length > 0) {
+      ids.add(id);
+    }
+  }
+  if (ids.size === 0) {
+    return { ids: [] };
+  }
+  /** @type {Record<string, string>} */
+  const root_dirs = {};
+  const server_owners = {
+    ...(decoration ? decoration.root_dirs : {}),
+    ...(info && info.root_dirs && typeof info.root_dirs === 'object'
+      ? info.root_dirs
+      : {})
+  };
+  for (const id of ids) {
+    const owner = server_owners[id];
+    if (typeof owner === 'string' && owner.length > 0) {
+      root_dirs[id] = owner;
+      continue;
+    }
+    if (!isForeignBlocker(item.id, id)) {
+      if (item.root_dir.length > 0) {
+        root_dirs[id] = item.root_dir;
+      }
+      continue;
+    }
+    const located = locations.get(id)?.root_dir;
+    if (typeof located === 'string' && located.length > 0) {
+      root_dirs[id] = located;
+    }
+  }
+  return { ids: [...ids], root_dirs };
 }
 
 /**
@@ -1812,6 +1905,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const overlay_by_key = new Map();
   /** @type {Map<string, string[]>} */
   const blocked_by_map = new Map();
+  // 후속 칩의 큐 장식 재료 (UI-8x90 §6.2). `bead_blocked_by`와 달리 빈 배열이
+  // "없다"가 아니라 "보이는 스냅샷 안에는 없다"이므로, 부착은 후보 행의
+  // `dependents_info`와의 합집합으로만 한다 (§4.4).
+  /** @type {Map<string, { ids: Set<string>, root_dirs: Record<string, string> }>} */
+  const dependents_by_bead = new Map();
   // 발차 축의 스냅샷 재료 (UI-jaua §5.5). 레인은 레포를 가로지르므로 세 값 모두
   // 보이는 workspace 전부에서 모은다.
   /** @type {Map<string, string>} */
@@ -2058,6 +2156,29 @@ export function buildLanes(workspaces, workspaces_state, options) {
           );
         }
       }
+    }
+    for (const [bead_id, entry] of Object.entries(
+      objectOf(workspace.bead_dependents)
+    )) {
+      const ids = Array.isArray(/** @type {any} */ (entry)?.ids)
+        ? /** @type {any} */ (entry).ids
+        : [];
+      const owners = objectOf(/** @type {any} */ (entry)?.root_dirs);
+      const bucket = dependents_by_bead.get(bead_id) || {
+        ids: new Set(),
+        root_dirs: {}
+      };
+      for (const id of ids) {
+        if (typeof id === 'string' && id.length > 0) {
+          bucket.ids.add(id);
+        }
+      }
+      for (const [id, owner] of Object.entries(owners)) {
+        if (typeof owner === 'string' && owner.length > 0) {
+          bucket.root_dirs[id] = owner;
+        }
+      }
+      dependents_by_bead.set(bead_id, bucket);
     }
     for (const [bead_id, blockers] of Object.entries(bead_blocked_by)) {
       if (Array.isArray(blockers)) {
@@ -2780,14 +2901,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
       if (admission_badge) {
         reason_parts.push(admission_badge);
       }
-      // 해제·후속 칩은 후보 행만 얻는다 (UI-d13v §5.3): 대기·실행중·PR 대기 행은
-      // 이미 출발했거나 순서가 정해져 "왜 먼저 가야 하나"가 의미 없다. 재료가
-      // 없는 Monitor 행은 그냥 서지 않는다 (fail-quiet).
-      const released = releasedChipsFor(bead_id, entry.release_info, now);
-      const dependents =
-        entry.dependents_info && typeof entry.dependents_info === 'object'
-          ? dependentsChip(entry.dependents_info)
-          : null;
+      // 해제 칩은 후보 행만 얻는다 (UI-d13v §5.3): 대기·실행중·PR 대기 행은 이미
+      // 출발해 "왜 이제 갈 수 있나"가 의미 없다. 후속 칩은 반대로 네 레인 전부가
+      // 얻으므로 (UI-8x90 §4.4) 여기서는 재료만 실어 보내고 부착은 한 곳에서
+      // 한다. 재료가 없는 Monitor 행은 그냥 서지 않는다 (fail-quiet).
+      const released = releasedChipsFor(bead_id, entry.release_info, now)?.map(
+        (chip) => ({
+          ...chip,
+          ...openTarget({ id: bead_id, root_dir }, chip.id)
+        })
+      );
       runnable.push({
         ...base(bead_id),
         title: entry.title || titles[bead_id] || bead_id,
@@ -2806,13 +2929,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
                   : ''
             }
           : {}),
-        ...(released || dependents
-          ? {
-              dependency_chips: {
-                ...(released ? { released } : {}),
-                ...(dependents ? { dependents } : {})
-              }
-            }
+        ...(released ? { dependency_chips: { released } } : {}),
+        ...(entry.dependents_info && typeof entry.dependents_info === 'object'
+          ? { dependents_info: entry.dependents_info }
           : {}),
         reason: reason_parts.join(' · '),
         created_at: entry.created_at ?? undefined,
@@ -3180,23 +3299,35 @@ export function buildLanes(workspaces, workspaces_state, options) {
     // blocker 이슈로 이동하고(UI-lx45 §5), 타 레포면 `root_dir`이 전환 대상을
     // 말한다 — 위치를 모르는 blocker만 그 값 없이 현재 레포로 열린다.
     /** @type {DependencyChip[]} */
-    const predecessors = (item.blockers || []).map((blocker) => {
-      const blocker_root = locations.get(blocker.id)?.root_dir;
-      return {
-        ...predecessorChip(item.id, blocker),
-        openable: true,
-        ...(typeof blocker_root === 'string' && blocker_root.length > 0
-          ? { root_dir: blocker_root }
-          : {})
-      };
-    });
-    if (predecessors.length === 0) {
+    const predecessors = (item.blockers || []).map((blocker) => ({
+      ...predecessorChip(item.id, blocker),
+      ...openTarget(item, blocker.id, locations)
+    }));
+    // 후속 칩도 같은 루프에서 붙는다 (UI-8x90 §4.4). 재료는 두 원천의
+    // 합집합이다: 큐 장식 `bead_dependents`는 보이는 스냅샷 안의 것만 세고,
+    // 후보 행의 `dependents_info`는 그 행에만 실린다 — 어느 쪽의 빈 값도 다른
+    // 쪽의 사실을 지우지 않는다. 선행 칩과 각자 재료로 판정하므로 선행이 없다고
+    // 후속이 함께 사라지지 않는다.
+    const dependents = dependentsChip(
+      item.id,
+      unionDependents(
+        dependents_by_bead.get(item.id),
+        item.dependents_info,
+        item,
+        locations
+      )
+    );
+    if (predecessors.length === 0 && dependents.length === 0) {
       continue;
     }
-    // 후보 행이 이미 `released`·`dependents` 칩을 싣고 있을 수 있다 (UI-d13v
-    // §5.3) — 선행 칩이 그것을 지우면 같은 슬롯의 다른 질문이 조용히 사라진다.
+    // 후보 행이 이미 `released` 칩을 싣고 있을 수 있다 (UI-d13v §5.3) — 이 부착이
+    // 그것을 지우면 같은 슬롯의 다른 질문이 조용히 사라진다.
     /** @type {DependencyChips} */
-    const chips = { ...(item.dependency_chips || {}), predecessors };
+    const chips = {
+      ...(item.dependency_chips || {}),
+      ...(predecessors.length > 0 ? { predecessors } : {}),
+      ...(dependents.length > 0 ? { dependents } : {})
+    };
     item.dependency_chips = chips;
   }
 
