@@ -567,6 +567,12 @@ function admissionBadge(admission, bead_id) {
   if (!record) {
     return '';
   }
+  // 유일한 비-차단 관측이다 (UI-dlim §3.4): 그 bead는 admit돼 실행되므로 ⛔
+  // 거절 표시를 달아서는 안 되고, 디스패치가 세션에 요구하는 세션 내 재리뷰를
+  // 알릴 뿐이다.
+  if (record.stale === true) {
+    return '♻️ stale→재리뷰';
+  }
   const reason = typeof record.reason === 'string' ? record.reason : '';
   const sep = reason.indexOf(':');
   if (sep > 0 && sep < reason.length - 1) {
@@ -840,7 +846,7 @@ function overlayExecChips(state, metadata, enriched_route) {
  * @param {Map<string, any>} attempt_by_id
  * @returns {boolean}
  */
-function resolvesConflict(attempt, attempt_by_id) {
+export function resolvesConflict(attempt, attempt_by_id) {
   /** @type {Set<string>} */
   const seen = new Set();
   let cur = attempt;
@@ -1632,7 +1638,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
             : undefined
       }))
     );
-    // 이슈 필드 오버레이 (§4.1). 키가 없는 bead는 스냅샷 장식만으로 그린다.
+    // 이슈 필드 오버레이 (§4.1): `{ priority?, from_id?, metadata?, route?,
+    // rollup? }`. 키가 없는 bead는 스냅샷 장식만으로 그린다.
     for (const [bead_id, entry] of Object.entries(
       objectOf(workspace.bead_overlay)
     )) {
@@ -2495,6 +2502,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
         draggable: !observation_row,
         queue_placeable: eligible && !worker_ineligible,
         ...(worker_ineligible ? { worker_ineligible: true } : {}),
+        // 세션 권장 advisory (UI-49mc §3). 자격 판정에는 들어가지 않고, 재료를
+        // 싣지 않는 서버 `runnable` 행에는 키 자체가 없다 (fail-quiet).
+        ...(entry.session_preferred === true
+          ? {
+              session_preferred: true,
+              session_preferred_reason:
+                typeof entry.session_preferred_reason === 'string'
+                  ? entry.session_preferred_reason
+                  : ''
+            }
+          : {}),
         ...(released || dependents
           ? {
               dependency_chips: {
@@ -2634,7 +2652,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
         const chips = overlayExecChips(
           objectOf(state_by_root.get(item.root_dir)),
           metadata,
-          objectOf(item.workflow).route
+          // 오버레이가 이 bead의 route를 알면 그쪽이 원천이다 — 큐 스냅샷의
+          // `bead_workflow`는 레인 멤버에게만 실리고, 파생 route를 싣지 않는
+          // 구서버도 있다 (fail-quiet).
+          typeof overlay.route === 'string' && overlay.route.length > 0
+            ? overlay.route
+            : objectOf(item.workflow).route
         );
         if (chips) {
           item.exec_chips = chips;

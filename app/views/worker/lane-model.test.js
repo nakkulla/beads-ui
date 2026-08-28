@@ -3019,6 +3019,34 @@ const EXECUTION_DEFAULTS = {
   }
 };
 
+/**
+ * A projection whose implementation defaults are ROUTE-CONDITIONAL
+ * (`quick_fix → main`), so the resolved route is visible in the worker chip.
+ */
+const ROUTED_EXECUTION_DEFAULTS = {
+  supported: true,
+  schema_version: 1,
+  session: {
+    implementation: {
+      default: {
+        dispatch: 'delegated',
+        runtime: 'inherit',
+        model: 'auto',
+        effort: 'auto',
+        speed: 'default'
+      },
+      route_defaults: { quick_fix: { dispatch: 'main' } }
+    }
+  },
+  orchestration: {
+    runtime: 'claude',
+    model: 'sonnet',
+    model_id: 'claude-sonnet',
+    effort: null,
+    speed: null
+  }
+};
+
 const MERGE_SHA = 'a'.repeat(40);
 
 describe('lane model worker group values (UI-4tud §4.3)', () => {
@@ -3510,6 +3538,52 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
 
     expect(lanes.runnable[0].reason).toBe('⛔ not_ready');
   });
+
+  test('marks an admitted stale receipt as a re-review, not a refusal', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-1')],
+          admission: {
+            'A-1': { reason: 'spec_review_stale', at: 1, stale: true }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].reason).toBe('♻️ stale→재리뷰');
+  });
+
+  test('carries the session-preferred advisory onto the candidate row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', {
+              session_preferred: true,
+              session_preferred_reason: 'visual_verification'
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect([
+      lanes.runnable[0].session_preferred,
+      lanes.runnable[0].session_preferred_reason
+    ]).toEqual([true, 'visual_verification']);
+  });
+
+  test('leaves a row without the advisory carrying no session-preferred key', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1')] })],
+      [state()]
+    );
+
+    expect(Object.hasOwn(lanes.runnable[0], 'session_preferred')).toBe(false);
+  });
 });
 
 describe('lane model candidate release chips (UI-d13v §5.3)', () => {
@@ -3760,6 +3834,46 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
     );
 
     expect(lanes.running[0].exec_chips?.worker).toBeNull();
+  });
+
+  test('resolves the exec chips against the route the overlay names', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: { 'A-2': { metadata: {}, route: 'quick_fix' } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: ROUTED_EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {}
+        })
+      ]
+    );
+
+    expect(lanes.queue[0].exec_chips?.worker?.text).toBe('메인');
+  });
+
+  test('falls back to no route when the overlay names none', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: { 'A-2': { metadata: {} } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: ROUTED_EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {}
+        })
+      ]
+    );
+
+    expect(lanes.queue[0].exec_chips?.worker?.text).not.toBe('메인');
   });
 
   test('reads the repo execution defaults from the workspaces_state row', () => {
