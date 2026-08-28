@@ -10,6 +10,7 @@ import {
   execChipsTemplate,
   formatClock,
   formatElapsed,
+  judgementPopoverContent,
   miniRow,
   nowPanel,
   paneTemplate,
@@ -1506,15 +1507,17 @@ describe('카드 배치 문법 (UI-251y §2)', () => {
       done: false,
       draggable: true,
       dependency_chips: {
-        predecessors: [{ id: 'UI-b', label: '⛓ blocked: UI-b' }]
+        predecessors: [{ id: 'UI-b', label: '⛓ UI-b' }]
       },
       ...COORD
     });
 
     const markers = markersOf(row);
 
-    expect(markers.indexOf('worker-deps')).toBeGreaterThanOrEqual(0);
-    expect(markers.indexOf('worker-deps')).toBeLessThan(
+    expect(
+      markers.indexOf('worker-deps worker-deps--primary')
+    ).toBeGreaterThanOrEqual(0);
+    expect(markers.indexOf('worker-deps worker-deps--primary')).toBeLessThan(
       markers.indexOf('worker-chips')
     );
   });
@@ -1566,13 +1569,13 @@ describe('카드 배치 문법 (UI-251y §2)', () => {
   test('draws the dependency chips before the candidate coordinate row', () => {
     const card = renderCandidate({
       dependency_chips: /** @type {any} */ ({
-        predecessors: [{ id: 'UI-b', label: '⛓ blocked: UI-b' }]
+        predecessors: [{ id: 'UI-b', label: '⛓ UI-b' }]
       })
     });
 
     const markers = markersOf(card);
 
-    expect(markers.indexOf('worker-deps')).toBeLessThan(
+    expect(markers.indexOf('worker-deps worker-deps--primary')).toBeLessThan(
       markers.indexOf('worker-chips')
     );
   });
@@ -1751,7 +1754,7 @@ describe('worker templates are unchanged without the monitor options', () => {
     expect(card).not.toContain('exec-chip--pin');
     expect(card).not.toContain('worker-deps');
     expect(card).toMatchInlineSnapshot(
-      `"<div class="worker-card" data-bead-id="UI-a3" data-lane="candidate" draggable="true"> <div class="worker-card__head"> <span aria-hidden="true" class="worker-card__grip">⠿</span> <span class="worker-card__id" title="클릭하면 ID 복사">UI-a3</span>  </div> <div class="worker-card__title">후보 카드</div>  <div class="worker-chips"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div> <div class="worker-card__foot worker-card__foot--actions-only">   <button class="worker-card__place" data-bead-id="UI-a3" title="대기 큐 맨 뒤에 추가" type="button"> 대기로 ↴ </button> </div>  </div>"`
+      `"<div class="worker-card" data-bead-id="UI-a3" data-lane="candidate" draggable="true"> <div class="worker-card__head"> <span aria-hidden="true" class="worker-card__grip">⠿</span> <span class="worker-card__id" title="클릭하면 ID 복사">UI-a3</span>   </div> <div class="worker-card__title">후보 카드</div>  <div class="worker-chips"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div> <div class="worker-card__foot worker-card__foot--actions-only">   <button class="worker-card__place" data-bead-id="UI-a3" title="대기 큐 맨 뒤에 추가" type="button"> 대기로 ↴ </button> </div>  </div>"`
     );
   });
 
@@ -2324,289 +2327,6 @@ describe('waiting row route chip (UI-yrzu §7.2)', () => {
   });
 });
 
-describe('겹침 칩 (UI-qm12 §5.3)', () => {
-  /**
-   * @param {number} count
-   * @returns {import('./lanes.js').OverlapChip[]}
-   */
-  function overlaps(count) {
-    return Array.from({ length: count }, (_, index) => ({
-      id: `UI-o${index + 1}`,
-      title: `상대 ${index + 1}`,
-      location_label: '#1',
-      prefixes: ['server/worker']
-    }));
-  }
-
-  /**
-   * @param {Partial<import('./lanes.js').DependencyChips>} chips
-   * @param {string} [lane]
-   * @returns {HTMLElement}
-   */
-  function renderDeps(chips, lane = 'queue') {
-    render(
-      miniRow(
-        /** @type {any} */ ({
-          id: 'UI-me',
-          title: '겹침',
-          lane,
-          draggable: false,
-          dependency_chips: chips
-        })
-      ),
-      mount
-    );
-    return /** @type {HTMLElement} */ (mount.querySelector('.worker-deps'));
-  }
-
-  test('puts the 발차 칩 in the 의존·겹침 slot (UI-jaua §5.6)', () => {
-    const deps = renderDeps({
-      armed_lane: { lane_id: 'cl_1', label: '▶ 연결 1', orphan: false },
-      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }]
-    });
-
-    expect(
-      Array.from(deps.children).map((chip) => chip.className.split(' ')[1])
-    ).toEqual(['worker-dep--armed', 'worker-dep--pred']);
-  });
-
-  test('offers the release inside an orphan 발차 칩 (UI-jaua §5.3)', () => {
-    const deps = renderDeps({
-      armed_lane: {
-        lane_id: 'cl_gone',
-        label: '▶ 진행 중 · 레인 없음',
-        orphan: true
-      }
-    });
-
-    const chip = deps.querySelector('.worker-dep--armed-orphan');
-    expect([
-      chip?.textContent?.includes('▶ 진행 중 · 레인 없음'),
-      chip?.querySelector('.mon2-arm__release')?.getAttribute('data-lane-id')
-    ]).toEqual([true, 'cl_gone']);
-  });
-
-  test('orders the chips blocked → 겹침', () => {
-    const deps = renderDeps({
-      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }],
-      overlaps: overlaps(1)
-    });
-
-    expect(
-      Array.from(deps.children).map((chip) => chip.className.split(' ')[1])
-    ).toEqual(['worker-dep--pred', 'worker-dep--overlap']);
-  });
-
-  test('adds the foreign class to a blocked chip from another repo', () => {
-    const deps = renderDeps({
-      predecessors: [
-        {
-          id: 'dotfiles-j8e6',
-          label: '⛓ blocked: dotfiles-j8e6',
-          foreign: true
-        }
-      ]
-    });
-
-    expect(deps.querySelector('.worker-dep--pred')?.className).toContain(
-      'worker-dep--foreign'
-    );
-  });
-
-  test('leaves a same-repo blocked chip without the foreign class', () => {
-    const deps = renderDeps({
-      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }]
-    });
-
-    expect(deps.querySelector('.worker-dep--pred')?.className).not.toContain(
-      'worker-dep--foreign'
-    );
-  });
-
-  test('names only the counterpart id on the overlap chip', () => {
-    const deps = renderDeps({ overlaps: overlaps(1) });
-
-    expect(
-      deps.querySelector('.worker-dep--overlap')?.textContent?.trim()
-    ).toBe('⧉ UI-o1');
-  });
-
-  test('keeps the counterpart location in the chip aria-label', () => {
-    const deps = renderDeps({ overlaps: overlaps(1) });
-
-    expect(
-      deps.querySelector('.worker-dep--overlap')?.getAttribute('aria-label')
-    ).toBe('scope 겹침 UI-o1 (#1)');
-  });
-
-  test('lists the overlapping paths in the chip tooltip', () => {
-    const deps = renderDeps({
-      overlaps: [
-        {
-          id: 'UI-o1',
-          title: '상대',
-          location_label: '#1',
-          prefixes: ['app/views', 'server/worker']
-        }
-      ]
-    });
-
-    expect(
-      deps.querySelector('.worker-dep--overlap')?.getAttribute('title')
-    ).toBe('겹침 UI-o1 (#1)\napp/views\nserver/worker');
-  });
-
-  test('draws every counterpart chip without folding', () => {
-    const deps = renderDeps({ overlaps: overlaps(5) });
-
-    expect(
-      Array.from(deps.querySelectorAll('.mon-overlap__chip')).map((chip) =>
-        chip.textContent?.trim()
-      )
-    ).toEqual(['⧉ UI-o1', '⧉ UI-o2', '⧉ UI-o3', '⧉ UI-o4', '⧉ UI-o5']);
-  });
-
-  test('draws a muted chip when the read declaration is empty', () => {
-    const deps = renderDeps({ scope_missing: true });
-
-    expect(
-      deps.querySelector('.worker-dep--muted')?.getAttribute('title')
-    ).toBe(
-      '겹침 판정 불가 — 아티팩트가 있으면 스펙/플랜 front-matter, 없으면 description `## scope`에 선언 필요'
-    );
-  });
-
-  test('draws the muted chip on a running row too', () => {
-    const deps = renderDeps(
-      { overlaps: overlaps(1), scope_missing: true },
-      'running'
-    );
-
-    expect(deps.querySelector('.worker-dep--muted')?.textContent).toContain(
-      'scope 없음'
-    );
-  });
-
-  test('draws an openable blocked chip as a button', () => {
-    const deps = renderDeps({
-      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p', openable: true }]
-    });
-
-    expect(
-      deps.querySelector('.worker-dep__open')?.getAttribute('data-dep-id')
-    ).toBe('UI-p');
-  });
-
-  test('carries the owning workspace on an openable chip', () => {
-    const deps = renderDeps({
-      predecessors: [
-        {
-          id: 'dotfiles-p',
-          label: '⛓ blocked: dotfiles-p',
-          openable: true,
-          root_dir: '/repos/dotfiles'
-        }
-      ]
-    });
-
-    expect(
-      deps.querySelector('.worker-dep__open')?.getAttribute('data-root-dir')
-    ).toBe('/repos/dotfiles');
-  });
-
-  test('draws a display-only blocked chip when the chip is not openable', () => {
-    const deps = renderDeps({
-      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }]
-    });
-
-    expect(deps.querySelector('.worker-dep__open')).toBeNull();
-  });
-
-  test('splits openability chip by chip inside one card', () => {
-    const deps = renderDeps({
-      predecessors: [
-        { id: 'UI-p', label: '⛓ blocked: UI-p', openable: true },
-        { id: 'x-p', label: '⛓ blocked: x-p' }
-      ]
-    });
-
-    expect(deps.querySelectorAll('.worker-dep--pred').length).toBe(2);
-    expect(deps.querySelectorAll('.worker-dep__open').length).toBe(1);
-  });
-
-  test('keeps label, tooltip and colour on a display-only blocked chip', () => {
-    const deps = renderDeps({
-      predecessors: [
-        {
-          id: 'UI-p',
-          label: '⛓ blocked: UI-p',
-          title: '이 이슈는 UI-p가 close될 때까지 출발하지 않는다 (#1)'
-        }
-      ]
-    });
-
-    const chip = /** @type {HTMLElement} */ (
-      deps.querySelector('.worker-dep--pred')
-    );
-    expect(chip.textContent?.trim()).toBe('⛓ blocked: UI-p');
-    expect(chip.getAttribute('title')).toBe(
-      '이 이슈는 UI-p가 close될 때까지 출발하지 않는다 (#1)'
-    );
-  });
-
-  test('draws the popover rows the projection hands it', () => {
-    const deps = renderDeps({
-      overlaps: overlaps(1),
-      popover: {
-        rows: [
-          {
-            id: 'UI-o1',
-            title: '상대 1',
-            location_label: '#1',
-            prefixes: ['server/worker'],
-            action: {
-              kind: 'place',
-              label: '같은 직렬 레인으로',
-              title: 's1 끝에 넣습니다'
-            }
-          }
-        ]
-      }
-    });
-
-    const popover = deps.querySelector('.mon-overlap__popover');
-    expect(popover?.getAttribute('role')).toBe('dialog');
-    expect(
-      popover?.querySelector('.mon-overlap__place')?.textContent?.trim()
-    ).toBe('같은 직렬 레인으로');
-  });
-
-  test('draws a sentence instead of a button when no order can be made', () => {
-    const deps = renderDeps({
-      overlaps: overlaps(1),
-      popover: {
-        rows: [
-          {
-            id: 'UI-o1',
-            title: '상대 1',
-            location_label: '실행중',
-            prefixes: ['server/worker'],
-            action: {
-              kind: 'note',
-              text: '둘 다 실행 중 — 순서를 만들 수 없습니다'
-            }
-          }
-        ]
-      }
-    });
-
-    expect(deps.querySelector('.mon-overlap__place')).toBeNull();
-    expect(deps.querySelector('.mon-overlap__note')?.textContent?.trim()).toBe(
-      '둘 다 실행 중 — 순서를 만들 수 없습니다'
-    );
-  });
-});
-
 describe('candidate card stepper doc cells (UI-ajkn §5)', () => {
   const CANDIDATE = /** @type {any} */ ({
     id: 'UI-d1',
@@ -3149,7 +2869,7 @@ describe('waitBody (UI-5ksp §4.2)', () => {
   });
 });
 
-describe('해제·후속 칩 (UI-d13v §5.2)', () => {
+describe('슬롯 4 두 줄 (UI-8x90 §4.1)', () => {
   /**
    * @param {Partial<import('./lanes.js').DependencyChips>} chips
    * @returns {HTMLElement}
@@ -3167,86 +2887,55 @@ describe('해제·후속 칩 (UI-d13v §5.2)', () => {
       ),
       mount
     );
-    return /** @type {HTMLElement} */ (mount.querySelector('.worker-deps'));
+    return /** @type {HTMLElement} */ (mount.querySelector('.worker-mini'));
   }
 
-  test('draws a release chip with its own variant class', () => {
-    const deps = renderChips({
-      released: [{ id: 'UI-r', label: '🔓 해제: UI-r', title: '풀렸다' }]
-    });
-
-    const chip = /** @type {HTMLElement} */ (
-      deps.querySelector('.worker-dep--released')
+  /**
+   * @param {HTMLElement} row
+   * @param {'primary'|'secondary'} which
+   * @returns {HTMLElement}
+   */
+  function lineOf(row, which) {
+    return /** @type {HTMLElement} */ (
+      row.querySelector(`.worker-deps--${which}`)
     );
+  }
 
-    expect(chip.textContent?.trim()).toBe('🔓 해제: UI-r');
-    expect(chip.title).toBe('풀렸다');
-  });
+  /**
+   * @param {HTMLElement} line
+   * @returns {string[]}
+   */
+  function kindsOf(line) {
+    return Array.from(line.children, (chip) => chip.className.split(' ')[1]);
+  }
 
-  test('colours a foreign release with the foreign class as well', () => {
-    const deps = renderChips({
-      released: [
-        { id: 'B-9', label: '🔓 해제: B-9', title: '풀렸다', foreign: true }
-      ]
+  test('splits the slot into an 의존 line and an 정보 line', () => {
+    const row = renderChips({
+      predecessors: [{ id: 'UI-p', label: '⛓ UI-p' }],
+      released: [{ id: 'UI-r', label: '🔓 UI-r' }]
     });
 
-    const chip = /** @type {HTMLElement} */ (
-      deps.querySelector('.worker-dep--released')
-    );
-
-    expect(chip.classList.contains('worker-dep--foreign')).toBe(true);
+    expect(kindsOf(lineOf(row, 'primary'))).toEqual(['worker-dep--pred']);
+    expect(kindsOf(lineOf(row, 'secondary'))).toEqual(['worker-dep--released']);
   });
 
-  test('turns an openable release chip into a button carrying its owner', () => {
-    const deps = renderChips({
-      released: [
-        {
-          id: 'B-9',
-          label: '🔓 해제: B-9',
-          foreign: true,
-          openable: true,
-          root_dir: '/repo/b'
-        }
-      ]
+  test('orders the 의존 line 발차 → 선행 → 후속', () => {
+    const row = renderChips({
+      dependents: [{ id: 'UI-s', label: '→ UI-s' }],
+      predecessors: [{ id: 'UI-p', label: '⛓ UI-p' }],
+      armed_lane: { lane_id: 'cl_1', label: '▶ 연결 1', orphan: false }
     });
 
-    const button = /** @type {HTMLElement} */ (
-      deps.querySelector('.worker-dep--released .worker-dep__open')
-    );
-
-    expect(button.dataset.depId).toBe('B-9');
-    expect(button.dataset.rootDir).toBe('/repo/b');
+    expect(kindsOf(lineOf(row, 'primary'))).toEqual([
+      'worker-dep--armed',
+      'worker-dep--pred',
+      'worker-dep--dependents'
+    ]);
   });
 
-  test('leaves an unopenable release chip without a button', () => {
-    const deps = renderChips({
-      released: [{ id: 'B-9', label: '🔓 해제: B-9', foreign: true }]
-    });
-
-    expect(deps.querySelector('.worker-dep--released button')).toBeNull();
-  });
-
-  test('composes the dependents label from the count alone', () => {
-    const deps = renderChips({
-      dependents: { count: 4, title: '이 이슈가 close되면 풀리는 이슈: UI-a' }
-    });
-
-    const chip = /** @type {HTMLElement} */ (
-      deps.querySelector('.worker-dep--dependents')
-    );
-
-    expect(chip.textContent?.replace(/\s+/g, ' ').trim()).toBe('→ 후속 4');
-    expect(chip.title).toBe('이 이슈가 close되면 풀리는 이슈: UI-a');
-  });
-
-  test('gives the dependents chip nothing to click', () => {
-    const deps = renderChips({ dependents: { count: 2, title: '후속' } });
-
-    expect(deps.querySelector('.worker-dep--dependents button')).toBeNull();
-  });
-
-  test('orders the slot-4 line blocked → released → dependents → overlap', () => {
-    const deps = renderChips({
+  test('orders the 정보 line 해제 → 겹침 → scope 없음', () => {
+    const row = renderChips({
+      scope_missing: true,
       overlaps: [
         {
           id: 'UI-o',
@@ -3255,36 +2944,314 @@ describe('해제·후속 칩 (UI-d13v §5.2)', () => {
           prefixes: ['server/worker']
         }
       ],
-      dependents: { count: 1, title: '후속' },
-      released: [{ id: 'UI-r', label: '🔓 해제: UI-r' }],
-      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }]
+      released: [{ id: 'UI-r', label: '🔓 UI-r' }]
     });
 
-    expect(
-      Array.from(deps.children).map((chip) => chip.className.split(' ')[1])
-    ).toEqual([
-      'worker-dep--pred',
+    expect(kindsOf(lineOf(row, 'secondary'))).toEqual([
       'worker-dep--released',
-      'worker-dep--dependents',
-      'worker-dep--overlap'
+      'worker-dep--overlap',
+      'worker-dep--muted'
     ]);
   });
 
-  test('draws no chip line when neither release nor dependents is supplied', () => {
+  test('draws the 의존 line alone when only it has material', () => {
+    const row = renderChips({
+      predecessors: [{ id: 'UI-p', label: '⛓ UI-p' }]
+    });
+
+    expect(lineOf(row, 'secondary')).toBeNull();
+  });
+
+  test('draws the 정보 line alone when only it has material', () => {
+    const row = renderChips({ scope_missing: true });
+
+    expect(lineOf(row, 'primary')).toBeNull();
+  });
+
+  test('draws neither line without material', () => {
+    const row = renderChips({});
+
+    expect(row.querySelector('.worker-deps')).toBeNull();
+  });
+
+  test('offers the release inside an orphan 발차 칩 (UI-jaua §5.3)', () => {
+    const row = renderChips({
+      armed_lane: {
+        lane_id: 'cl_gone',
+        label: '▶ 진행 중 · 레인 없음',
+        orphan: true
+      }
+    });
+
+    const chip = row.querySelector('.worker-dep--armed-orphan');
+    expect([
+      chip?.textContent?.includes('▶ 진행 중 · 레인 없음'),
+      chip?.querySelector('.mon2-arm__release')?.getAttribute('data-lane-id')
+    ]).toEqual([true, 'cl_gone']);
+  });
+});
+
+describe('열리는 칩 네 종 (UI-8x90 §4.2·§4.3)', () => {
+  /**
+   * @param {Partial<import('./lanes.js').DependencyChips>} chips
+   * @param {string} [lane]
+   * @returns {HTMLElement}
+   */
+  function renderChips(chips, lane = 'queue') {
     render(
       miniRow(
         /** @type {any} */ ({
-          id: 'UI-none',
-          title: '재료 없음',
-          lane: 'queue',
+          id: 'UI-me',
+          title: '칩',
+          lane,
           draggable: false,
-          dependency_chips: {}
+          dependency_chips: chips
         })
       ),
       mount
     );
+    return /** @type {HTMLElement} */ (mount.querySelector('.worker-mini'));
+  }
 
-    expect(mount.querySelector('.worker-deps')).toBeNull();
+  /**
+   * @param {number} count
+   * @returns {import('./lanes.js').OverlapChip[]}
+   */
+  function overlaps(count) {
+    return Array.from({ length: count }, (_, index) => ({
+      id: `UI-o${index + 1}`,
+      title: `상대 ${index + 1}`,
+      location_label: '#1',
+      prefixes: ['server/worker']
+    }));
+  }
+
+  test('draws one 후속 chip per id with the glyph label', () => {
+    const row = renderChips({
+      dependents: [
+        { id: 'UI-s1', label: '→ UI-s1', openable: true },
+        { id: 'UI-s2', label: '→ UI-s2', openable: true }
+      ]
+    });
+
+    expect(
+      Array.from(row.querySelectorAll('.worker-dep--dependents'), (chip) =>
+        chip.textContent?.trim()
+      )
+    ).toEqual(['→ UI-s1', '→ UI-s2']);
+  });
+
+  test('makes an openable 후속 chip the same button as a 선행 one', () => {
+    const row = renderChips({
+      dependents: [
+        {
+          id: 'UI-s1',
+          label: '→ UI-s1',
+          openable: true,
+          root_dir: '/repo/b'
+        }
+      ]
+    });
+
+    const button = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-dep--dependents.worker-dep__open')
+    );
+
+    expect(button.tagName).toBe('BUTTON');
+    expect(button.dataset.depId).toBe('UI-s1');
+    expect(button.dataset.rootDir).toBe('/repo/b');
+  });
+
+  test('leaves an unopenable 후속 chip a span', () => {
+    const row = renderChips({
+      dependents: [{ id: 'B-9', label: '→ B-9', foreign: true }]
+    });
+
+    const chip = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-dep--dependents')
+    );
+
+    expect(chip.tagName).toBe('SPAN');
+    expect(row.querySelector('.worker-dep__open')).toBeNull();
+  });
+
+  test('makes the 겹침 chip an openable button', () => {
+    const row = renderChips({ overlaps: overlaps(1) });
+
+    const chip = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-dep--overlap')
+    );
+
+    expect(chip.tagName).toBe('BUTTON');
+    expect(chip.classList.contains('worker-dep__open')).toBe(true);
+    expect(chip.dataset.depId).toBe('UI-o1');
+    expect(chip.textContent?.trim()).toBe('⧉ UI-o1');
+  });
+
+  test('carries the counterpart repo on the 겹침 chip', () => {
+    const row = renderChips({
+      overlaps: [
+        {
+          id: 'UI-o1',
+          title: '상대',
+          location_label: '#1',
+          prefixes: ['server/worker'],
+          root_dir: '/repo/b'
+        }
+      ]
+    });
+
+    expect(
+      /** @type {HTMLElement} */ (row.querySelector('.worker-dep--overlap'))
+        .dataset.rootDir
+    ).toBe('/repo/b');
+  });
+
+  test('lists the overlapping paths under the 위치 line in the tooltip', () => {
+    const row = renderChips({
+      overlaps: [
+        {
+          id: 'UI-o1',
+          title: '상대',
+          location_label: '#1',
+          prefixes: ['app/views', 'server/worker']
+        }
+      ]
+    });
+
+    expect(
+      row.querySelector('.worker-dep--overlap')?.getAttribute('title')
+    ).toBe('겹침 · #1\napp/views\nserver/worker');
+  });
+
+  test('draws every counterpart chip without folding', () => {
+    const row = renderChips({ overlaps: overlaps(5) });
+
+    expect(
+      Array.from(row.querySelectorAll('.worker-dep--overlap'), (chip) =>
+        chip.textContent?.trim()
+      )
+    ).toEqual(['⧉ UI-o1', '⧉ UI-o2', '⧉ UI-o3', '⧉ UI-o4', '⧉ UI-o5']);
+  });
+
+  test('makes an openable 해제 chip a button carrying its owner', () => {
+    const row = renderChips({
+      released: [
+        {
+          id: 'B-9',
+          label: '🔓 B-9',
+          foreign: true,
+          openable: true,
+          root_dir: '/repo/b'
+        }
+      ]
+    });
+
+    const button = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-dep--released.worker-dep__open')
+    );
+
+    expect(button.dataset.depId).toBe('B-9');
+    expect(button.dataset.rootDir).toBe('/repo/b');
+  });
+
+  test('colours a foreign release with the foreign class as well', () => {
+    const row = renderChips({
+      released: [{ id: 'B-9', label: '🔓 B-9', title: '풀렸다', foreign: true }]
+    });
+
+    expect(row.querySelector('.worker-dep--released')?.className).toContain(
+      'worker-dep--foreign'
+    );
+  });
+
+  test('leaves an unopenable release chip a span', () => {
+    const row = renderChips({
+      released: [{ id: 'B-9', label: '🔓 B-9', foreign: true }]
+    });
+
+    expect(row.querySelector('.worker-dep--released')?.tagName).toBe('SPAN');
+  });
+
+  test('draws an openable blocked chip as a button', () => {
+    const row = renderChips({
+      predecessors: [{ id: 'UI-p', label: '⛓ UI-p', openable: true }]
+    });
+
+    expect(
+      row.querySelector('.worker-dep__open')?.getAttribute('data-dep-id')
+    ).toBe('UI-p');
+  });
+
+  test('splits openability chip by chip inside one card', () => {
+    const row = renderChips({
+      predecessors: [
+        { id: 'UI-p', label: '⛓ UI-p', openable: true },
+        { id: 'x-p', label: '⛓ x-p' }
+      ]
+    });
+
+    expect(row.querySelectorAll('.worker-dep--pred').length).toBe(2);
+    expect(row.querySelectorAll('.worker-dep__open').length).toBe(1);
+  });
+
+  test('keeps label, tooltip and colour on a display-only blocked chip', () => {
+    const row = renderChips({
+      predecessors: [
+        {
+          id: 'UI-p',
+          label: '⛓ UI-p',
+          title: '선행 — close될 때까지 출발하지 않는다 (#1)'
+        }
+      ]
+    });
+
+    const chip = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-dep--pred')
+    );
+    expect(chip.textContent?.trim()).toBe('⛓ UI-p');
+    expect(chip.getAttribute('title')).toBe(
+      '선행 — close될 때까지 출발하지 않는다 (#1)'
+    );
+  });
+
+  test('adds the foreign class to a blocked chip from another repo', () => {
+    const row = renderChips({
+      predecessors: [
+        { id: 'dotfiles-j8e6', label: '⛓ dotfiles-j8e6', foreign: true }
+      ]
+    });
+
+    expect(row.querySelector('.worker-dep--pred')?.className).toContain(
+      'worker-dep--foreign'
+    );
+  });
+
+  test('draws the muted chip on a running row too', () => {
+    const row = renderChips(
+      { overlaps: overlaps(1), scope_missing: true },
+      'running'
+    );
+
+    expect(row.querySelector('.worker-dep--muted')?.textContent).toContain(
+      'scope 없음'
+    );
+  });
+
+  test('names the declaration hint on the muted chip', () => {
+    const row = renderChips({ scope_missing: true });
+
+    expect(row.querySelector('.worker-dep--muted')?.getAttribute('title')).toBe(
+      '겹침 판정 불가 — 아티팩트가 있으면 스펙/플랜 front-matter, 없으면 description `## scope`에 선언 필요'
+    );
+  });
+
+  test('keeps no 겹침 팝오버 markup anywhere (UI-8x90 §4.3)', () => {
+    const row = renderChips({ overlaps: overlaps(2) });
+
+    expect(row.querySelector('.mon-overlap__popover')).toBeNull();
+    expect(row.querySelector('.mon-overlap__chip')).toBeNull();
+    expect(row.querySelector('.mon-overlap__place')).toBeNull();
   });
 });
 
@@ -3433,7 +3400,7 @@ describe('복잡 chip on the worker lane surfaces (UI-sbum §3)', () => {
     state: 'unapplied'
   };
   const REC_TITLE =
-    '복잡한 작업으로 판정됨\n사유: contract_change, claude_bound\n상태: 미적용';
+    '복잡한 작업으로 판정됨\n사유: 계약 문서·checker·스킬 사본을 함께 바꿔야 한다 · Claude 세션 자산·의미론에 강하게 묶여 있다\n상태: 미적용';
 
   test('draws the chip on a waiting row with the shared tooltip', () => {
     const row = renderRow({ lane: 'queue', done: false, rec: REC });
@@ -3484,19 +3451,16 @@ describe('복잡 chip on the worker lane surfaces (UI-sbum §3)', () => {
     expect(row.querySelector('.worker-chips')).not.toBeNull();
   });
 
-  test('stays display-only: the card chip is not a button and has no click handler', () => {
-    const clicks = vi.fn();
-    mount.addEventListener('click', clicks);
+  test('turns the chip into a 판정 button that opens a 사유 popup', () => {
     const card = renderCandidate({ rec: REC });
     const chip = /** @type {HTMLElement} */ (
       card.querySelector('.worker-card__rec')
     );
 
-    chip.click();
-
-    expect(chip.tagName).toBe('SPAN');
-    expect(chip.getAttribute('data-bead-id')).toBeNull();
-    expect(clicks).toHaveBeenCalledTimes(1);
+    expect(chip.tagName).toBe('BUTTON');
+    expect(chip.classList.contains('judgement-chip')).toBe(true);
+    expect(chip.dataset.chipKey).toBe('rec');
+    expect(chip.getAttribute('aria-expanded')).toBe('false');
   });
 
   test('keeps the 세션 권장 chip beside it on the same candidate', () => {
@@ -3510,6 +3474,231 @@ describe('복잡 chip on the worker lane surfaces (UI-sbum §3)', () => {
       card.querySelector('.worker-card__session-preferred')
     ).not.toBeNull();
     expect(card.querySelector('.worker-card__rec')).not.toBeNull();
+  });
+});
+
+describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
+  /** @type {import('../../utils/rec-settings.js').RecSettings} */
+  const REC = {
+    reasons: ['multi_phase'],
+    rec: { orchestration_model: 'fable' },
+    state: 'diverged'
+  };
+
+  const QFR = /** @type {any} */ ({
+    route: 'quick_fix',
+    quick_fix_review: { state: 'stale', missing: ['테스트'], digest: null }
+  });
+
+  test('makes the worker-ineligible chip a judgement button', () => {
+    const card = renderCandidate({ worker_ineligible: true });
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__ineligible')
+    );
+
+    expect(chip.tagName).toBe('BUTTON');
+    expect(chip.dataset.chipKey).toBe('ineligible');
+  });
+
+  test('makes the 세션 권장 chip a judgement button', () => {
+    const card = renderCandidate({
+      session_preferred: true,
+      session_preferred_reason: 'exclusive_machine'
+    });
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__session-preferred')
+    );
+
+    expect(chip.tagName).toBe('BUTTON');
+    expect(chip.dataset.chipKey).toBe('session_preferred');
+  });
+
+  test('makes the 리뷰 chip a judgement button', () => {
+    const card = renderCandidate({ workflow: QFR });
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__qfr')
+    );
+
+    expect(chip.tagName).toBe('BUTTON');
+    expect(chip.dataset.chipKey).toBe('qfr');
+  });
+
+  test('keeps the tooltip on a judgement chip', () => {
+    const card = renderCandidate({
+      session_preferred: true,
+      session_preferred_reason: 'visual_verification'
+    });
+
+    expect(
+      card
+        .querySelector('.worker-card__session-preferred')
+        ?.getAttribute('title')
+    ).toBe('렌더 결과 사람 확인 필요 — 스크린샷·목업·라이브 페이지');
+  });
+
+  test('draws the popup under the identity line of a candidate card', () => {
+    const card = renderCandidate({
+      rec: REC,
+      chip_popover: {
+        chip_key: 'rec',
+        content: { title: '복잡한 작업으로 판정됨', lines: ['한 줄'] }
+      }
+    });
+    const popover = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__head .chip-popover')
+    );
+
+    expect(popover.getAttribute('role')).toBe('dialog');
+    expect(
+      card.querySelector('.worker-card__rec')?.getAttribute('aria-expanded')
+    ).toBe('true');
+  });
+
+  test('draws the popup under the coordinate line of a waiting row', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      rec: REC,
+      chip_popover: {
+        chip_key: 'rec',
+        content: { title: '복잡한 작업으로 판정됨', lines: ['한 줄'] }
+      }
+    });
+
+    expect(row.querySelector('.worker-chips .chip-popover')).not.toBeNull();
+  });
+});
+
+describe('judgementPopoverContent (UI-8x90 §4.5)', () => {
+  test('names the 복잡 사유 sentences and the state', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-a',
+        rec: {
+          reasons: ['multi_phase'],
+          rec: { orchestration_model: 'fable' },
+          state: 'diverged'
+        }
+      }),
+      'rec'
+    );
+
+    expect(content).toEqual({
+      title: '복잡한 작업으로 판정됨',
+      lines: [
+        '여러 Phase 또는 병렬 쓰기 조정이 필요하다',
+        '상태: 추천과 다름',
+        '적용은 이슈 상세의 실행 설정 편집기에서'
+      ]
+    });
+  });
+
+  test('names the 세션 권장 reason in one line', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-a',
+        session_preferred: true,
+        session_preferred_reason: 'exclusive_machine'
+      }),
+      'session_preferred'
+    );
+
+    expect(content).toEqual({
+      title: '워커로 돌릴 수 있지만 세션이 낫다',
+      lines: ['실행 중 머신 독점 필요 — 부하 하네스·timing 비교']
+    });
+  });
+
+  test('says where the worker-ineligible label is removed', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({ id: 'UI-a', worker_ineligible: true }),
+      'ineligible'
+    );
+
+    expect(content).toEqual({
+      title: '워커 실행 대상이 아니다',
+      lines: [
+        'worker-ineligible 라벨이 붙어 있다 — 라벨은 이슈 상세의 라벨 절에서 뗀다'
+      ]
+    });
+  });
+
+  test('lists the missing review items', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-a',
+        workflow: {
+          quick_fix_review: { state: 'stale', missing: ['테스트', '문서'] }
+        }
+      }),
+      'qfr'
+    );
+
+    expect(content).toEqual({
+      title: 'quick_fix self-review 영수증이 지금 본문과 다릅니다',
+      lines: ['테스트', '문서']
+    });
+  });
+
+  test('says so when no review item is missing', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-a',
+        workflow: { quick_fix_review: { state: 'reviewed', missing: [] } }
+      }),
+      'qfr'
+    );
+
+    expect(content?.lines).toEqual(['빠진 항목 없음']);
+  });
+
+  test('answers null when the chip has no material', () => {
+    expect(
+      judgementPopoverContent(/** @type {any} */ ({ id: 'UI-a' }), 'rec')
+    ).toBeNull();
+  });
+});
+
+describe('연결 n 소속 칩의 자리 (UI-8x90 §4.1)', () => {
+  test('draws it on the coordinate line after the repo badge', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      workspace_name: 'repo-a',
+      cross_lane_chip: { lane_id: 'cl_1', label: '연결 1' }
+    });
+    const chips = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-chips')
+    );
+
+    expect(
+      Array.from(chips.children, (chip) => chip.className.split(' ')[0])
+    ).toEqual(['worker-mini__repo', 'worker-dep']);
+    expect(chips.querySelector('.mon-lane__chip')?.textContent?.trim()).toBe(
+      '연결 1'
+    );
+  });
+
+  test('keeps it out of the 의존 slot', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      cross_lane_chip: { lane_id: 'cl_1', label: '연결 1' }
+    });
+
+    expect(row.querySelector('.worker-deps')).toBeNull();
+  });
+
+  test('draws it on a candidate coordinate line too', () => {
+    const card = renderCandidate({
+      cross_lane_chip: { lane_id: 'cl_2', label: '연결 2 (draft)' }
+    });
+
+    expect(
+      card
+        .querySelector('.worker-chips .mon-lane__chip')
+        ?.getAttribute('data-lane-id')
+    ).toBe('cl_2');
   });
 });
 

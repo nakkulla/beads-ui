@@ -751,21 +751,19 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
           ...monitor,
           dependency_chips: {
             ...monitor.dependency_chips,
-            predecessors: [{ id: 'UI-p1', label: '⛓ blocked: UI-p1' }],
+            predecessors: [{ id: 'UI-p1', label: '⛓ UI-p1' }],
             scope_missing: true
           }
         })
       }),
       mount
     );
-    const deps = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile .worker-deps')
-    );
+    const deps = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
 
     expect(deps.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ blocked: UI-p1'
+      '⛓ UI-p1'
     );
-    expect(deps.querySelector('.mon-overlap__chip')?.textContent).toContain(
+    expect(deps.querySelector('.worker-dep--overlap')?.textContent).toContain(
       'UI-o1'
     );
     expect(deps.querySelector('.worker-dep--muted')?.textContent).toContain(
@@ -781,7 +779,7 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
         monitor: /** @type {any} */ ({
           ...monitor,
           dependency_chips: {
-            predecessors: [{ id: 'UI-p1', label: '⛓ blocked: UI-p1' }]
+            predecessors: [{ id: 'UI-p1', label: '⛓ UI-p1' }]
           }
         })
       }),
@@ -799,9 +797,7 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
         monitor: /** @type {any} */ ({
           ...monitor,
           dependency_chips: {
-            predecessors: [
-              { id: 'UI-p1', label: '⛓ blocked: UI-p1', openable: true }
-            ]
+            predecessors: [{ id: 'UI-p1', label: '⛓ UI-p1', openable: true }]
           }
         })
       }),
@@ -1257,18 +1253,11 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
     );
     const order = Array.from(tile.children, (child) => child.className);
 
-    expect(order.indexOf('worker-deps')).toBeGreaterThan(
-      order.indexOf('rtile__activity')
-    );
-    expect(order.indexOf('worker-deps')).toBeGreaterThan(
-      order.indexOf('board-card__roll')
-    );
-    expect(order.indexOf('worker-deps')).toBeGreaterThan(
-      order.indexOf('rtile__landing')
-    );
-    expect(order.indexOf('worker-deps')).toBeLessThan(
-      order.indexOf('rtile__meta')
-    );
+    const deps = order.indexOf('worker-deps worker-deps--secondary');
+    expect(deps).toBeGreaterThan(order.indexOf('rtile__activity'));
+    expect(deps).toBeGreaterThan(order.indexOf('board-card__roll'));
+    expect(deps).toBeGreaterThan(order.indexOf('rtile__landing'));
+    expect(deps).toBeLessThan(order.indexOf('rtile__meta'));
   });
 
   // 폐기 영수증은 슬롯 6(액션 foot)이고 생성·수정 시각은 슬롯 7이다 (§5.1).
@@ -1591,7 +1580,7 @@ describe('복잡 chip on the running tile (UI-sbum §3)', () => {
 
     expect(chip.textContent?.trim()).toBe('복잡');
     expect(chip.title).toBe(
-      '복잡한 작업으로 판정됨\n사유: multi_phase\n상태: 추천과 다름'
+      '복잡한 작업으로 판정됨\n사유: 여러 Phase 또는 병렬 쓰기 조정이 필요하다\n상태: 추천과 다름'
     );
     expect(chip.dataset.state).toBe('diverged');
   });
@@ -1614,14 +1603,30 @@ describe('복잡 chip on the running tile (UI-sbum §3)', () => {
     expect(tile.querySelector('.worker-card__rec')).toBeNull();
   });
 
-  test('stays display-only on the tile', () => {
+  test('turns the tile chip into a 판정 button as well (UI-8x90 §4.5)', () => {
     const tile = renderTile({ rec: REC });
 
     const chip = /** @type {HTMLElement} */ (
       tile.querySelector('.worker-card__rec')
     );
 
-    expect(chip.tagName).toBe('SPAN');
+    expect(chip.tagName).toBe('BUTTON');
+    expect(chip.dataset.chipKey).toBe('rec');
+  });
+
+  test('draws the 사유 popup inside the tile meta line', () => {
+    const tile = renderTile({
+      rec: REC,
+      chip_popover: {
+        chip_key: 'rec',
+        content: { title: '복잡한 작업으로 판정됨', lines: ['한 줄'] }
+      }
+    });
+
+    expect(tile.querySelector('.rtile__meta .chip-popover')).not.toBeNull();
+    expect(
+      tile.querySelector('.worker-card__rec')?.getAttribute('aria-expanded')
+    ).toBe('true');
   });
 });
 
@@ -1660,9 +1665,7 @@ describe('running grid reads the overlay material off the tile (UI-4tud §4.3)',
         [
           tileInput({
             dependency_chips: {
-              predecessors: [
-                { id: 'UI-9', label: '⛓ blocked: UI-9', title: '선행' }
-              ]
+              predecessors: [{ id: 'UI-9', label: '⛓ UI-9', title: '선행' }]
             }
           })
         ],
@@ -1671,7 +1674,7 @@ describe('running grid reads the overlay material off the tile (UI-4tud §4.3)',
       )
     );
 
-    expect(grid).toContain('⛓ blocked: UI-9');
+    expect(grid).toContain('⛓ UI-9');
   });
 
   test('draws no overlay lines for a tile carrying no overlay material', () => {

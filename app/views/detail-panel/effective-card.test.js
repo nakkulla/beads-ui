@@ -1100,7 +1100,7 @@ describe('detail header 복잡 chip (UI-sbum §4)', () => {
 
     expect(chip.textContent?.trim()).toBe('복잡');
     expect(chip.title).toBe(
-      '복잡한 작업으로 판정됨\n사유: contract_change, multi_repo\n상태: 미적용'
+      '복잡한 작업으로 판정됨\n사유: 계약 문서·checker·스킬 사본을 함께 바꿔야 한다 · 둘 이상의 저장소에 작업 단위가 생긴다\n상태: 미적용'
     );
     expect(chip.title).not.toContain('fable');
     expect(chip.dataset.state).toBe('unapplied');

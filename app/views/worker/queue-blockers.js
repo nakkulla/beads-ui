@@ -1,5 +1,6 @@
 /**
- * The `⛓ blocked` 칩 (UI-eey2 §5.1, 레인 무관 통일은 UI-anna §5.1).
+ * The `⛓ <ID>` 칩 (UI-eey2 §5.1, 레인 무관 통일은 UI-anna §5.1, 글리프+ID 라벨은
+ * UI-8x90 §3).
  *
  * 칩의 모양은 두 탭이 공유한다: 모니터 투영(`app/views/worker/lane-model.js`)과
  * 워커 투영(`app/views/worker/index.js`)이 같은 {@link predecessorChip}을
@@ -53,8 +54,8 @@ export function predecessorChip(owner_id, blocker) {
   const foreign = isForeignBlocker(owner_id, blocker.id);
   return {
     id: blocker.id,
-    label: `⛓ blocked: ${blocker.id}`,
-    title: `이 이슈는 ${blocker.id}가 close될 때까지 출발하지 않는다 (${blocker.location_label})`,
+    label: `⛓ ${blocker.id}`,
+    title: `선행 — close될 때까지 출발하지 않는다 (${blocker.location_label})`,
     ...(foreign ? { foreign: true } : {})
   };
 }
@@ -78,7 +79,7 @@ const RELEASED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
  */
 
 /**
- * One `🔓 해제: X` 칩 (UI-d13v §5.3). `⛓ blocked`가 "왜 못 가나"에 답한다면
+ * One `🔓 <ID>` 칩 (UI-d13v §5.3, 라벨은 UI-8x90 §3). `⛓`가 "왜 못 가나"에 답한다면
  * 이 칩은 "왜 이제 갈 수 있나"에 답한다 — 같은 슬롯 4의 같은 질문 계열이라
  * blocked 칩과 같은 파일에 두고, Monitor 투영도 나중에 같은 함수를 부른다.
  *
@@ -106,8 +107,8 @@ export function releasedChip(owner_id, released, now) {
   /** @type {ReleasedChip} */
   const chip = {
     id: released.id,
-    label: `🔓 해제: ${released.id}`,
-    title: `${released.id}가 ${formatTimestampLocal(closed_at)}에 close되어 이 이슈가 풀렸다`,
+    label: `🔓 ${released.id}`,
+    title: `해제 — ${formatTimestampLocal(closed_at)}에 close되어 이 이슈가 풀렸다`,
     ...(foreign ? { foreign: true } : {})
   };
   if (!foreign) {
@@ -120,41 +121,60 @@ export function releasedChip(owner_id, released, now) {
 }
 
 /**
- * The server's `dependents_info` (UI-d13v §3.5). `count === 0`이면 서버가 키
- * 자체를 싣지 않으므로, 여기 도달한 값은 언제나 1 이상이어야 한다.
+ * The 후속 재료 both sources hand in (UI-8x90 §4.4). `count` survives only for
+ * the 후보 정렬 체인; the chips read `ids`, and `root_dirs` names the workspace
+ * that owns an id — same meaning as `release_info.released_by[].root_dir`.
  *
  * @typedef {Object} DependentsInfo
- * @property {number} count
- * @property {string[]} [ids] - 사전순 최대 5개.
+ * @property {number} [count]
+ * @property {string[]} [ids] - Open follow-ups, 사전순.
+ * @property {Record<string, string>} [root_dirs]
  */
 
 /**
- * One `→ 후속 n` 칩 (UI-d13v §5.3): "왜 먼저 가야 하나"에 답한다. 누를 곳이
- * 없다 — 후속 목록은 툴팁이 말하고, 편집은 이슈 상세의 의존성 절이 한다.
+ * The `→ <ID>` 칩 한 벌 (UI-8x90 §3·§4.2): "내가 먼저 가야 풀리는 이슈". 선행
+ * 칩과 같은 마크업·같은 클릭이므로 라벨도 같은 문법 하나다 — 관계명은 툴팁 첫
+ * 줄이 말한다.
  *
- * 재료가 없으면 `null`이다 (fail-quiet).
+ * `openable` 규칙은 {@link releasedChip}과 같되 `root_dir`을 아는 id는 같은
+ * 레포라도 그 값을 싣는다: 레인에 없는 후속은 위치를 스스로 말하지 못하므로,
+ * 값이 빠지면 다른 레포가 활성인 상태에서 현재 레포로 잘못 열린다 (§4.4).
  *
+ * 재료가 없으면 빈 배열이다 (fail-quiet).
+ *
+ * @param {string} owner_id - 이 칩이 서는 카드의 bead.
  * @param {DependentsInfo} info
- * @returns {DependentsChip|null}
+ * @returns {DependentsChip[]}
  */
-export function dependentsChip(info) {
-  const count = info.count;
-  if (typeof count !== 'number' || !Number.isFinite(count) || count <= 0) {
-    return null;
-  }
+export function dependentsChip(owner_id, info) {
   const ids = Array.isArray(info.ids)
     ? info.ids.filter(
         (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
       )
     : [];
-  const rest = count - ids.length;
-  const parts = [ids.join(', '), rest > 0 ? `외 ${rest}` : ''].filter(
-    (part) => part.length > 0
-  );
-  return {
-    count,
-    title: `이 이슈가 close되면 풀리는 이슈: ${parts.join(' ')}`
-  };
+  const root_dirs =
+    info.root_dirs && typeof info.root_dirs === 'object' ? info.root_dirs : {};
+  /** @type {DependentsChip[]} */
+  const chips = [];
+  for (const id of [...new Set(ids)].sort()) {
+    const foreign = isForeignBlocker(owner_id, id);
+    const root_dir = typeof root_dirs[id] === 'string' ? root_dirs[id] : '';
+    /** @type {DependentsChip} */
+    const chip = {
+      id,
+      label: `→ ${id}`,
+      title: '후속 — 이 이슈가 close되면 풀린다',
+      ...(foreign ? { foreign: true } : {})
+    };
+    if (root_dir.length > 0) {
+      chip.openable = true;
+      chip.root_dir = root_dir;
+    } else if (!foreign) {
+      chip.openable = true;
+    }
+    chips.push(chip);
+  }
+  return chips;
 }
 
 /**

@@ -30,7 +30,7 @@ describe('deriveWorkerBlockers (UI-anna §5.1)', () => {
       member({ id: 'A-1' })
     ]);
 
-    expect(chips.get('A-2')?.[0].label).toBe('⛓ blocked: A-1');
+    expect(chips.get('A-2')?.[0].label).toBe('⛓ A-1');
   });
 
   test('reads the blocker location from the lane member list', () => {
@@ -39,7 +39,7 @@ describe('deriveWorkerBlockers (UI-anna §5.1)', () => {
     ]);
 
     expect(chips.get('A-2')?.[0].title).toBe(
-      '이 이슈는 A-1가 close될 때까지 출발하지 않는다 (실행중)'
+      '선행 — close될 때까지 출발하지 않는다 (실행중)'
     );
   });
 
@@ -49,7 +49,7 @@ describe('deriveWorkerBlockers (UI-anna §5.1)', () => {
     ]);
 
     expect(chips.get('A-2')?.[0].title).toBe(
-      '이 이슈는 A-9가 close될 때까지 출발하지 않는다 (미적재)'
+      '선행 — close될 때까지 출발하지 않는다 (미적재)'
     );
   });
 
@@ -220,7 +220,7 @@ describe('predecessorChip', () => {
   test('composes the label from the blocker id alone', () => {
     const chip = predecessorChip('A-2', { id: 'A-1', location_label: '#1' });
 
-    expect(chip.label).toBe('⛓ blocked: A-1');
+    expect(chip.label).toBe('⛓ A-1');
   });
 
   test('moves the location into the tooltip', () => {
@@ -229,9 +229,7 @@ describe('predecessorChip', () => {
       location_label: 'PR 대기'
     });
 
-    expect(chip.title).toBe(
-      '이 이슈는 A-1가 close될 때까지 출발하지 않는다 (PR 대기)'
-    );
+    expect(chip.title).toBe('선행 — close될 때까지 출발하지 않는다 (PR 대기)');
   });
 });
 
@@ -242,7 +240,7 @@ describe('releasedChip (UI-d13v §5.3)', () => {
   test('names the closed blocker on the chip label', () => {
     const chip = releasedChip('A-2', { id: 'A-1', closed_at: NOW - DAY }, NOW);
 
-    expect(chip?.label).toBe('🔓 해제: A-1');
+    expect(chip?.label).toBe('🔓 A-1');
   });
 
   test('puts the close time in the tooltip', () => {
@@ -251,7 +249,7 @@ describe('releasedChip (UI-d13v §5.3)', () => {
     const chip = releasedChip('A-2', { id: 'A-1', closed_at }, NOW);
 
     expect(chip?.title).toBe(
-      `A-1가 ${formatTimestampLocal(closed_at)}에 close되어 이 이슈가 풀렸다`
+      `해제 — ${formatTimestampLocal(closed_at)}에 close되어 이 이슈가 풀렸다`
     );
   });
 
@@ -316,28 +314,50 @@ describe('releasedChip (UI-d13v §5.3)', () => {
   });
 });
 
-describe('dependentsChip (UI-d13v §5.3)', () => {
-  test('carries the count the label renders', () => {
-    const chip = dependentsChip({ count: 3, ids: ['A-2', 'A-3', 'A-4'] });
+describe('dependentsChip (UI-8x90 §3·§4.4)', () => {
+  test('draws one chip per follow-up id', () => {
+    const chips = dependentsChip('A-1', { ids: ['A-3', 'A-2', 'A-4'] });
 
-    expect(chip?.count).toBe(3);
+    expect(chips.map((chip) => chip.label)).toEqual([
+      '→ A-2',
+      '→ A-3',
+      '→ A-4'
+    ]);
   });
 
-  test('lists the served ids in the tooltip', () => {
-    const chip = dependentsChip({ count: 2, ids: ['A-2', 'A-3'] });
+  test('names the relation in the tooltip rather than the label', () => {
+    const chips = dependentsChip('A-1', { ids: ['A-2'] });
 
-    expect(chip?.title).toBe('이 이슈가 close되면 풀리는 이슈: A-2, A-3');
+    expect(chips[0].title).toBe('후속 — 이 이슈가 close되면 풀린다');
   });
 
-  test('counts the ids the server could not list', () => {
-    const chip = dependentsChip({ count: 7, ids: ['A-2', 'A-3'] });
+  test('opens a same-repo follow-up in the current workspace', () => {
+    const chips = dependentsChip('A-1', { ids: ['A-2'] });
 
-    expect(chip?.title).toBe('이 이슈가 close되면 풀리는 이슈: A-2, A-3 외 5');
+    expect(chips[0].openable).toBe(true);
+    expect(chips[0].root_dir).toBeUndefined();
   });
 
-  test('draws nothing for a zero count', () => {
-    const chip = dependentsChip({ count: 0, ids: [] });
+  test('carries the owning workspace the server named', () => {
+    const chips = dependentsChip('A-1', {
+      ids: ['B-9'],
+      root_dirs: { 'B-9': '/repo/b' }
+    });
 
-    expect(chip).toBeNull();
+    expect(chips[0].openable).toBe(true);
+    expect(chips[0].root_dir).toBe('/repo/b');
+  });
+
+  test('leaves a foreign follow-up of unknown owner unopenable', () => {
+    const chips = dependentsChip('A-1', { ids: ['B-9'] });
+
+    expect(chips[0].openable).toBeUndefined();
+    expect(chips[0].foreign).toBe(true);
+  });
+
+  test('draws nothing without ids', () => {
+    const chips = dependentsChip('A-1', { count: 3 });
+
+    expect(chips).toEqual([]);
   });
 });
