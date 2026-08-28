@@ -12707,6 +12707,26 @@ describe('스케줄러 직렬 레인 뮤텍스 (UI-04vo seam B)', () => {
     expect(occupancy.size).toBe(0);
   });
 
+  test('frees the lane for the next head when a failed lineage lands in done', async () => {
+    const env = setup({ config: { A: {}, B: {} }, slots: 2 });
+    seedLanes(env.store, { s1: ['A', 'B'] });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'a1',
+        bead_id: 'A',
+        status: 'failed',
+        serial_lane_id: 's1'
+      }
+    });
+
+    env.store.moveToDone(WS, { bead_id: 'A' });
+
+    expect(activeLaneLineages(env.store.snapshot(WS)).size).toBe(0);
+    await env.scheduler.tick(WS);
+    expect([...env.runner.spawnOrder]).toEqual(['B']);
+  });
+
   test('dispatches lane heads and parallel entries concurrently within slots', async () => {
     const env = setup({
       config: { P1: {}, A: {}, B: {}, C: {} },
