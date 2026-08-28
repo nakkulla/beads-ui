@@ -9265,7 +9265,11 @@ button.detail-session__leg:focus-visible {
 /* ============================================================================
    이슈 상세 — 요약 헤더 + 유효 실행 설정 카드 (spec §E)
    ========================================================================== */
+/* `position`은 판정 칩 사유 팝업의 기준이다 (UI-8x90 §5.1): 팝업은 칩이 선 줄
+   바로 아래 절대 배치인데, 여기서 기준을 잡지 않으면 오버레이 패널 전체를
+   기준으로 삼아 상세 맨 아래에 그려진다. */
 .detail-summary {
+  position: relative;
   margin: var(--sp-8) 0 var(--sp-4);
 }
 
@@ -9308,9 +9312,9 @@ button.detail-session__leg:focus-visible {
   font-family: var(--font-mono, monospace);
 }
 
-/* 상세 헤더의 복잡 chip (UI-sbum §5): 유일하게 클릭되는 chip이라 `button`이지만
-   receipt chip과 같은 크기·같은 줄에 서야 하므로 브라우저 기본 버튼 모양을
-   지운다. 이미 적용된 추천은 누를 것이 없으므로 커서도 손가락이 아니다. */
+/* 상세 헤더의 복잡 chip (UI-8x90 §5.1): 클릭하면 사유 팝업이 열리는 판정 칩이라
+   `button`이지만, receipt chip과 같은 크기·같은 줄에 서야 하므로 브라우저 기본
+   버튼 모양과 `.judgement-chip`의 카드용 크기를 여기서 되돌린다. */
 .detail-summary__chip--rec {
   background: none;
   font: inherit;
@@ -9327,10 +9331,6 @@ button.detail-session__leg:focus-visible {
 
 .detail-summary__chip--rec[data-state='diverged'] {
   border-style: dashed;
-}
-
-.detail-summary__chip--rec:disabled {
-  cursor: default;
 }
 
 .detail-summary__chip-effort {

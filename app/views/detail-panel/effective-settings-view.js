@@ -21,6 +21,7 @@ import {
   recTooltip
 } from '../../utils/rec-settings.js';
 import { formatExecReceipt, formatPlannedExecution } from '../board/card.js';
+import { chipPopoverTemplate } from '../chip-popover.js';
 import {
   AUTO_LITERAL,
   IMPL_DISPATCHES,
@@ -34,6 +35,7 @@ import {
   implModelOptions,
   orchestrationModelOptions
 } from '../settings-dialog/session-model.js';
+import { judgementPopoverContent } from '../worker/lanes.js';
 import {
   EFFECTIVE_GROUPS,
   SETTING_LABELS,
@@ -495,14 +497,13 @@ function normalizeExecReceipt(value) {
  * The summary header: status, route, the gate stepper with receipt binding, the
  * PR link, the `exec_receipt` chip, and the 복잡 chip.
  *
- * Display-only except for that last one — the gate receipts have no editing
- * surface by design (spec 비-목표), while the recommendation is the one thing
- * here a person can act on, and this header is the ONLY place it is clickable
- * (UI-sbum §3): a lane card's chip would be a mis-touch away from rewriting an
- * execution pin the user never opened.
+ * Display-only, all of it. The 복잡 chip used to apply the whole recommendation
+ * on one click; it is now the same 판정 칩 the lane cards draw, and clicking it
+ * opens the 사유 팝업 (UI-8x90 §5.1). 적용은 아래 실행 설정 편집기가 소유한다 —
+ * 이 헤더는 어떤 metadata도 쓰지 않는다.
  *
  * @param {any} data - The bd issue payload.
- * @param {{ onApplyRec?: (rec: { orchestration_model: string, impl_runtime?: string }, state: 'unapplied'|'applied'|'diverged') => unknown }} [handlers]
+ * @param {{ onChipToggle?: (chip_key: string) => void, isChipOpen?: (chip_key: string) => boolean }} [handlers]
  * @returns {TemplateResult}
  */
 export function summaryHeaderTemplate(data, handlers = {}) {
@@ -539,7 +540,12 @@ export function summaryHeaderTemplate(data, handlers = {}) {
   const pr_label = typeof pr_number === 'number' ? `PR #${pr_number}` : 'PR';
   // 추천과 권위 키가 같은 bag에 있으므로 분리 인자를 쓰지 않는다 (UI-sbum §1).
   const rec = recSettings(metadata);
-  const onApplyRec = handlers.onApplyRec;
+  const rec_open = rec !== null && handlers.isChipOpen?.('rec') === true;
+  // 카드와 같은 문장을 쓴다 (§4.5). `judgementPopoverContent`가 `rec` 하나만
+  // 읽으므로 레인 항목 전체를 지어내지 않는다.
+  const rec_popover = rec_open
+    ? judgementPopoverContent(/** @type {any} */ ({ rec }), 'rec')
+    : null;
   return html`<section class="detail-summary" data-seam="detail-summary">
     <div class="detail-summary__chips">
       <span class="detail-summary__chip detail-summary__chip--status"
@@ -588,16 +594,18 @@ export function summaryHeaderTemplate(data, handlers = {}) {
       ${rec
         ? html`<button
             type="button"
-            class="detail-summary__chip detail-summary__chip--rec"
+            class="detail-summary__chip detail-summary__chip--rec judgement-chip"
+            data-chip-key="rec"
             data-state=${rec.state}
+            aria-expanded=${rec_open ? 'true' : 'false'}
             title=${recTooltip(rec)}
-            ?disabled=${rec.state === 'applied'}
-            @click=${() => onApplyRec?.(rec.rec, rec.state)}
+            @click=${() => handlers.onChipToggle?.('rec')}
           >
             ${REC_LABEL}
           </button>`
         : ''}
     </div>
+    ${rec_popover ? chipPopoverTemplate(rec_popover) : ''}
     <div
       class="detail-summary__gates"
       role="group"

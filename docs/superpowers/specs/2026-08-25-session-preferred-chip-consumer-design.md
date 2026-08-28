@@ -178,6 +178,15 @@ enum 밖 사유는 §2 술어가 이미 걸러 투영에서 `''`이 되므로 �
 색은 `ctl-chip--label`이 소유한다 — Board가 같은 라벨을 그리는 방식이고,
 `worker-ineligible` 칩이 이미 그 클래스를 쓴다. 새 token을 만들지 않는다.
 
+**정정(UI-8x90).** 이 절의 두 칩은 `<span>`이 아니라 `<button type="button"
+class="ctl-chip ctl-chip--label judgement-chip …" data-chip-key aria-expanded>`
+다. 클릭하면 그 칩이 선 줄 바로 아래에 사유 팝업이 열린다 — `세션 권장`은
+`data-chip-key="session_preferred"`에 §4.2 매핑의 그 한 줄을,
+`worker-ineligible`은 `data-chip-key="ineligible"`에 라벨을 떼는 자리를 안내한다.
+자리(1번 정체성 줄)·삼항 구조·머리줄 순서·툴팁 매핑·§4.3·§4.5는 그대로다. 사유가
+툴팁에만 있으면 포인터 없는 화면에서 읽을 방법이 없다는 것이 바뀐 이유다
+(`2026-08-28-chip-grammar-unify-design.md` §4.5).
+
 ## 5. `app/protocol.md`
 
 runnable 행 문단에 한 줄을 더한다: `session-preferred`는 `worker-ineligible`과 달리

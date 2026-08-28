@@ -133,9 +133,9 @@ current_id`, `root_dir = getWorkspacePath()`.
 
 | 종류 | 출처 | 표기 | modifier | 색 | `✕` |
 | --- | --- | --- | --- | --- | --- |
-| 막는 | `dependencies` 중 `blocks` | `⛓ 막는 <ID>` | `detail-dep--pred` | 본색(현 칩 색) | 있음 |
-| 막히는 | `dependents` 중 `blocks` | `⛓ 막히는 <ID>` | `detail-dep--succ` | 저채도 | 없음 |
-| 나머지 | `dependencies` 중 그 외 | `↩ 발견 <ID>` · `⌸ 상위 <ID>` · `관련 <ID>` · 그 외 type은 아이콘 없이 `<type> <ID>` | `detail-dep--other` | 저채도 | 없음 |
+| 막는 | `dependencies` 중 `blocks` | `⛓ <ID>` | `detail-dep--pred` | 본색(현 칩 색) | 있음 |
+| 막히는 | `dependents` 중 `blocks` | `→ <ID>` | `detail-dep--succ` | 저채도 | 없음 |
+| 나머지 | `dependencies` 중 그 외 | `↩ <ID>` · `⌸ <ID>` · `↔ <ID>` · 그 외 type은 글리프 없이 `<type> <ID>` | `detail-dep--other` | 저채도 | 없음 |
 
 - 순서: 막는 → 막히는 → 나머지. 각 그룹 안은 CLI 반환 순서.
 - `dependents` 중 `blocks`가 아닌 역방향 관계(`related`·`discovered-from`·`parent-child`)는
@@ -153,6 +153,14 @@ current_id`, `root_dir = getWorkspacePath()`.
 - 저채도 색은 `app/styles/base.css`의 `.detail-dep` 옆에 `--succ`·`--other` 규칙으로 두며
   기존 토큰(테두리·글자 muted 토큰)만 쓴다. 새 색 토큰은 만들지 않는다.
 - 칩이 하나도 없으면 기존 `의존성 없음`.
+
+**정정(UI-8x90).** 위 표의 `표기` 열은 카드와 상세가 공유하는 글리프 표를 따르도록
+고쳤다. 라벨은 `<글리프> <ID>`뿐이고, 관계명(`막는`·`막히는`·`발견`·`상위`·`관련`,
+모르는 type은 그 type 문자열)은 툴팁 **첫 줄**로 옮겨 그 아래에 기존
+`status · title` 줄이 붙는다. 바뀐 이유는 `⛓`가 상세에서만 양방향을 뜻해 카드와
+어긋났기 때문이다 — 내가 막는 쪽은 카드와 같은 `→`이고, `관련`은 양방향 소프트
+관계이므로 `↔`를 받았다. 순서·modifier·색 티어·`✕`·클릭 이동은 그대로다
+(`2026-08-28-chip-grammar-unify-design.md` §3).
 
 ### 4.2 추가 조작
 

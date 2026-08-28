@@ -119,8 +119,17 @@ release_info: {
 ### 3.5 `dependents_info`
 
 ```js
-dependents_info: { count: number, ids: string[] }  // 열린 후속만, ids는 사전순 최대 5
+dependents_info: { count: number, ids: string[], root_dirs?: Record<string, string> }
+// 열린 후속만, ids는 사전순 전량
 ```
+
+**정정(UI-8x90).** `ids`의 최대 5개 상한(`DEPENDENTS_ID_LIMIT`)은 없다 — 후속
+칩이 ID별로 서게 되면서 잘린 목록은 카드에 없는 칩을 만든다. 타 레포 후속의
+owner를 싣는 `root_dirs`가 더해졌고(같은 레포 id는 항목이 없다,
+`release_info.released_by[].root_dir`과 같은 의미), §3.7의 `decoration_rev`
+지문도 정렬된 `root_dirs` 항목을 함께 읽는다 — 후속 ID는 같은데 소유 레포만
+바뀐 경우에도 구독이 upsert돼야 칩의 `openable`이 갱신된다
+(`2026-08-28-chip-grammar-unify-design.md` §6.1).
 
 - 같은 레포: `blocks_in[issue.id]` 중 `id_index`에서 `status !== 'closed'`인 것.
 - 다른 워크스페이스: `server/workspace-snapshot-runtime.js`에 동기
@@ -260,6 +269,14 @@ dependents?: DependentsChip     // `→ 후속 n`
 - `DependentsChip = { count, title }` — `worker-dep worker-dep--dependents`,
   클릭 없음.
 
+**정정(UI-8x90).** 두 칩의 모양이 바뀌었다. `released`의 라벨은 `🔓 <ID>`,
+`dependents`는 `{count,title}` 객체 하나가 아니라 **ID별 배열**
+(`DependentsChip[]`)이고 라벨은 `→ <ID>`다. 관계명(`해제`·`후속`)은 툴팁 첫
+줄로 갔고, 두 칩 모두 `⛓`와 같은 `.worker-dep__open` 버튼이라 클릭하면 그
+이슈의 상세가 열린다(열 수 없는 칩만 `<span>`). 줄 안 순서와 슬롯은 UI-251y
+§5.1의 4a/4b 정정이 소유한다 — `→`는 `⛓`와 함께 상단, `🔓`는 `⧉`·`scope 없음`과
+함께 하단이다 (`2026-08-28-chip-grammar-unify-design.md` §3·§4.1·§4.2).
+
 ### 5.3 투영 (`app/views/worker/queue-blockers.js` · `index.js`)
 
 - `queue-blockers.js`에 `releasedChip(owner_id, released, now)`와
@@ -284,6 +301,20 @@ dependents?: DependentsChip     // `→ 후속 n`
   정해졌으므로 "왜 먼저"가 의미 없다. `candidateCard`·`miniRow`는 공유
   렌더러이므로 Monitor runnable 행에도 같은 칩이 설 수 있지만, Monitor 투영은 이
   스펙에서 재료를 싣지 않아 fail-quiet로 생략된다(§9).
+
+**정정(UI-8x90).** 세 가지가 바뀌었다.
+
+- `dependentsChip`은 개수 칩 하나가 아니라 ID마다 칩을 만들고, `root_dirs`로 각
+  칩의 `openable`·`root_dir`을 정한다. `→ 후속 <count>` 라벨과 툴팁의 ` 외 n`은
+  없다.
+- `releasedChip`의 `RELEASED_CHIP_MAX`(2)와 마지막 칩의 ` 외 n`도 없다. 칩 수를
+  제한하는 것은 7일 창 하나뿐이므로, 창 안의 해제가 3개면 칩도 3개다.
+- 두 칩은 후보 행 전용이 아니다. `→`는 `⛓`와 같은 범위 — 후보·대기·실행중·PR
+  대기, 두 탭 — 에 서고, 재료는 큐 장식 `bead_dependents`와 후보 행
+  `dependents_info`의 **합집합**이며 부착 자리는 `worker/lane-model.js`의
+  `buildLanes` 한 곳이다. "이미 출발한 행에는 왜 먼저가 의미 없다"는 판정은
+  뒤집혔다: 실행 중인 이슈가 무엇을 막고 있는지는 그 이슈를 지금 어떻게 다룰지를
+  바꾼다 (`2026-08-28-chip-grammar-unify-design.md` §2·§4.4·§6.2).
 
 ## 6. 클라이언트 — 후보 드래그 제거
 
@@ -332,7 +363,8 @@ dependents?: DependentsChip     // `→ 후속 n`
 - 닫힌 same-repo blocker → `release_info.released_by`에 `closed_at`과 함께 실림,
   열린 blocker는 실리지 않음.
 - legacy·embedded 두 모드에서 `blocks_out`/`blocks_in`이 같은 결과.
-- 역방향 카운트는 열린 후속만 세고, `ids`는 최대 5개 사전순.
+- 역방향 카운트는 열린 후속만 세고, `ids`는 사전순 전량이다(정정(UI-8x90):
+  원래는 "최대 5개 사전순"이었다).
 - foreign 캐시 miss → `release_info`에 그 id 없음; `closed`+`closed_at` 도착 후
   실림.
 - 다른 워크스페이스 peek `null` → 그 root의 후속은 세지 않음; 스냅샷 있으면 합산.
@@ -348,16 +380,25 @@ dependents?: DependentsChip     // `→ 후속 n`
 - 프리셋 4개의 체인, 옛 문자열 4종+미지 값 마이그레이션, 미지 step 폴백,
   프리셋과 같은 체인의 `{preset}` 정규화.
 - Blocked 이슈가 체인 위치대로 정렬됨(맨 아래 고정 없음, UI-8ham).
-- `releasedChip` 7일 창·최대 2개·` 외 n`·foreign 색; `dependentsChip` 라벨·툴팁.
+- `releasedChip` 7일 창·foreign 색; `dependentsChip` 라벨·툴팁.
 - 후보 카드 `draggable="false"`이면서 `queue_placeable`이면 `[대기로 ↴]`가
   그려지고 배치 메뉴가 열림, `worker_ineligible`이면 둘 다 없음; foot이
   데스크톱 미디어에서도 보임(CSS 규칙 부재 확인); `onDragOver`가 `candidate`
   페인을 거부; 대기 행 `✕` 클릭이 `worker-queue-remove`를 보냄.
 - `cmpChain` `dependents asc`에서 키 없는 행이 뒤로 감; foreign 해제 칩이
   `root_dir` 있을 때만 `openable`.
+
 - Pre-handoff 번들(`npm run tsc`·`npx vitest run --reporter=dot`·`npm run lint`·
   `npm run prettier:write`·`npm run build`). 배포 후 후보 레인 스크린샷으로 체인
   편집 줄·두 칩·대기 행 `✕`를 확인한다.
+
+**정정(UI-8x90).** 위 목록에서 폐기된 검증 항목: `ids` 최대 5개, `releasedChip`
+최대 2개와 ` 외 n`, `dependentsChip`의 `→ 후속 n` 라벨, 겹침 팝오버 1클릭 배치
+자격(`queue_placeable`이 그 경로에 쓰이던 부분). 대신 확인하는 것은 후속 전량과
+`root_dirs`, 7일 창 안 해제 3개 이상이 칩 3개 이상, 네 레인·두 탭의 `→` 칩,
+`.worker-dep__open` 클릭이 그 이슈 상세를 여는 것이다. 정렬 체인(§4)은 계속
+`dependents_info.count`를 읽으므로 그 검증 항목은 그대로이고, 후보 드래그
+제거(§6)의 검증도 그대로다 (`2026-08-28-chip-grammar-unify-design.md` §10).
 
 ## 9. 비목표
 

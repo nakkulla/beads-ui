@@ -1039,14 +1039,14 @@ describe('effective-settings card', () => {
   });
 });
 
-describe('detail header 복잡 chip (UI-sbum §4)', () => {
+describe('detail header 복잡 chip (UI-8x90 §5.1)', () => {
   const REC_META = {
     rec_orchestration_model: 'fable',
     rec_impl_runtime: 'claude',
     rec_reason: 'contract_change+multi_repo'
   };
 
-  /** The two mutations this path may send, told apart from the panel's reads. */
+  /** The two mutations the removed 즉시 적용 path used to send. */
   const REC_MUTATIONS = ['update-exec-settings', 'update-impl-target'];
 
   /**
@@ -1108,7 +1108,7 @@ describe('detail header 복잡 chip (UI-sbum §4)', () => {
     panel.destroy();
   });
 
-  test('disables the chip once the recommendation is already applied', async () => {
+  test('keeps the chip clickable once the recommendation is already applied', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount, {
       metadata: {
@@ -1122,7 +1122,7 @@ describe('detail header 복잡 chip (UI-sbum §4)', () => {
     const chip = /** @type {HTMLButtonElement} */ (recChip(mount));
 
     expect(chip.dataset.state).toBe('applied');
-    expect(chip.disabled).toBe(true);
+    expect(chip.disabled).toBe(false);
     panel.destroy();
   });
 
@@ -1146,7 +1146,7 @@ describe('detail header 복잡 chip (UI-sbum §4)', () => {
     panel.destroy();
   });
 
-  test('applies both recommended keys in order, without asking first', async () => {
+  test('writes no metadata when the chip is clicked', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const confirmed = vi.spyOn(window, 'confirm').mockReturnValue(true);
     const transport = readbackTransport({ ...REC_META });
@@ -1157,111 +1157,21 @@ describe('detail header 복잡 chip (UI-sbum §4)', () => {
     await settle();
     await settle();
 
-    expect(mutationsOf(transport)).toEqual([
-      'update-exec-settings',
-      'update-impl-target'
-    ]);
+    expect(mutationsOf(transport)).toEqual([]);
     expect(confirmed).not.toHaveBeenCalled();
     panel.destroy();
   });
 
-  test('sends the recommended values under their authority key names', async () => {
+  test('opens the 사유 팝업 in the panel on a chip click', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const transport = readbackTransport({ ...REC_META });
-    const { panel } = seed(mount, { metadata: REC_META, transport });
+    const { panel } = seed(mount, { metadata: REC_META });
     await settle();
 
     /** @type {HTMLButtonElement} */ (recChip(mount)).click();
-    await settle();
-    await settle();
 
-    const exec_call = transport.mock.calls.find(
-      (call) => call[0] === 'update-exec-settings'
+    expect(mount.querySelector('.chip-popover')?.textContent).toContain(
+      '적용은 이슈 상세의 실행 설정 편집기에서'
     );
-    const impl_call = transport.mock.calls.find(
-      (call) => call[0] === 'update-impl-target'
-    );
-    expect(exec_call?.[1]).toMatchObject({
-      id: 'UI-1',
-      key: 'orchestration_model',
-      value: 'fable'
-    });
-    expect(impl_call?.[1]).toMatchObject({
-      id: 'UI-1',
-      impl_runtime: 'claude'
-    });
-    panel.destroy();
-  });
-
-  test('sends nothing when the overwrite confirmation is declined', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const confirmed = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    const transport = readbackTransport({ ...REC_META });
-    const { panel } = seed(mount, {
-      metadata: { ...REC_META, orchestration_model: 'opus' },
-      transport
-    });
-    await settle();
-
-    /** @type {HTMLButtonElement} */ (recChip(mount)).click();
-    await settle();
-
-    expect(confirmed).toHaveBeenCalledWith(
-      '추천 실행 설정을 적용할까요? 현재 수동 설정을 덮어씁니다.'
-    );
-    expect(mutationsOf(transport)).toEqual([]);
-    panel.destroy();
-  });
-
-  test('holds back the second write when the first one fails', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const transport = vi.fn(async (/** @type {string} */ type) =>
-      type === 'get-session-defaults' ? { values: {}, warnings: [] } : []
-    );
-    const { panel } = seed(mount, { metadata: REC_META, transport });
-    await settle();
-
-    /** @type {HTMLButtonElement} */ (recChip(mount)).click();
-    await settle();
-    await settle();
-
-    expect(mutationsOf(transport)).toEqual(['update-exec-settings']);
-    panel.destroy();
-  });
-
-  test('restores the previous value when the exec write fails', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const transport = vi.fn(async (/** @type {string} */ type) =>
-      type === 'get-session-defaults' ? { values: {}, warnings: [] } : []
-    );
-    const { panel } = seed(mount, { metadata: REC_META, transport });
-    await settle();
-
-    /** @type {HTMLButtonElement} */ (recChip(mount)).click();
-    await settle();
-    await settle();
-
-    expect(recChip(mount)?.dataset.state).toBe('unapplied');
-    panel.destroy();
-  });
-
-  test('adopts the readback so the chip reads applied afterwards', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const transport = readbackTransport({
-      ...REC_META,
-      orchestration_model: 'fable',
-      impl_runtime: 'claude'
-    });
-    const { panel } = seed(mount, { metadata: REC_META, transport });
-    await settle();
-
-    /** @type {HTMLButtonElement} */ (recChip(mount)).click();
-    await settle();
-    await settle();
-
-    const chip = /** @type {HTMLButtonElement} */ (recChip(mount));
-    expect(chip.dataset.state).toBe('applied');
-    expect(chip.disabled).toBe(true);
     panel.destroy();
   });
 });
