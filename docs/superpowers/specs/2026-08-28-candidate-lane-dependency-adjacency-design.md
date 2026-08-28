@@ -1,5 +1,6 @@
 ---
 scope:
+  - docs/superpowers/specs/2026-08-27-worker-candidate-sort-chain-release-chips-design.md
   - app/views/worker/candidate-sort.js
   - app/views/worker/candidate-sort.test.js
   - app/views/worker/blocker-ids.js
@@ -42,12 +43,48 @@ UI-8ham의 "순서는 체인만이 정한다"는 이 범위에서 정정된다(�
 
 ## 3. 순서 규칙
 
-체인 정렬 결과를 `base`라 하자. 결과 배열을 다음과 같이 만든다.
+체인 정렬 결과를 `base`라 하자. 결과 배열은 **깊이 우선** 배치로 만든다 — 한
+줄기를 끝까지 따라간 뒤에 다음 가지로 넘어간다. 아래 의사코드가 순서의 유일한
+정의이고, §3.1~§3.3은 그것이 내는 결과를 읽는 설명이다.
 
-1. `base`를 앞에서부터 훑어, **선행이 모두 배치된** 첫 이슈를 결과에 넣는다.
-2. 하나를 넣은 직후, 그것을 선행으로 두는 후행 중 선행이 전부 채워진 것을
-   `base` 순서대로 바로 뒤에 이어 붙인다. 이 연쇄는 재귀적이다.
-3. 배치되지 않은 이슈가 남아 있으면 1로 돌아간다.
+```js
+// predsOf(item): item의 선행 id 중 base 안에 있는 것 (§4.2 1)
+// dependentsOf(id): id를 선행으로 두는 base의 행들, base 순서 (§4.2 2)
+function groupByDependency(base) {
+  const placed = new Set();
+  const out = [];
+
+  const place = (item) => {
+    placed.add(item.id);
+    out.push(item);
+    for (const next of dependentsOf(item.id)) {
+      if (
+        !placed.has(next.id) &&
+        predsOf(next).every((id) => placed.has(id))
+      ) {
+        place(next); // 즉시 재귀 — 줄기를 끊지 않는다
+      }
+    }
+  };
+
+  while (out.length < base.length) {
+    const ready = base.find(
+      (item) =>
+        !placed.has(item.id) && predsOf(item).every((id) => placed.has(id))
+    );
+    // ready가 없으면 남은 것끼리 서로를 기다리는 사이클이다 (§3.3).
+    place(ready ?? base.find((item) => !placed.has(item.id)));
+  }
+
+  return out;
+}
+```
+
+**왜 깊이 우선인가.** 한 선행이 후행 둘을 거느리면(`A→B`, `A→D`) 둘 다 A 바로
+뒤에 둘 수는 없다. 그때 무엇을 지킬지가 갈린다. 깊이 우선은 줄기의 연속성을
+지킨다 — `A→B`, `A→D`, `B→C`에서 `A, B, C, D`가 되어 `A-B-C` 한 줄기가 끊기지
+않는다. 너비 우선이라면 `A, B, D, C`가 되어 B와 C가 D로 갈라진다. 사용자가
+요청한 것은 한 줄기가 연속으로 보이는 것이므로 깊이 우선을 택한다.
 
 ### 3.1 두 기준 사례
 
@@ -61,7 +98,9 @@ UI-8ham의 "순서는 체인만이 정한다"는 이 범위에서 정정된다(�
 따로 정하지 않아도 §3의 규칙에서 나온다.
 
 - **다중 선행**: 선행이 *전부* 배치돼야 하므로, 후행은 가장 마지막 선행 뒤에 선다.
-- **다단 체인 A→B→C**: 연쇄가 재귀적이라 A, B, C가 연속으로 붙는다.
+- **다단 체인 A→B→C**: 즉시 재귀라 A, B, C가 연속으로 붙는다.
+- **분기**: 한 선행의 후행이 여럿이면 `base` 순서로 먼저 오는 줄기를 끝까지 따라간
+  뒤 다음 줄기로 넘어간다.
 - **선행이 후보 레인에 없을 때**(큐에 들어갔거나 닫혔거나 Phase child라 걸러졌을
   때): 그 선행은 §4.2의 교집합에서 빠지므로 후행은 체인 자리에 그대로 남는다.
 - **`blocks`가 아닌 edge**(`related`, `discovered-from`): 순서를 움직이지 않는다.
@@ -69,8 +108,9 @@ UI-8ham의 "순서는 체인만이 정한다"는 이 범위에서 정정된다(�
 
 ### 3.3 사이클
 
-서로를 기다려 아무도 배치되지 못하는 상태가 되면, 남은 것 중 `base` 첫 번째를
-선행 조건을 무시하고 배치한 뒤 §3을 계속한다(fail-quiet). 순서가 그 구간에서
+서로를 기다려 아무도 배치되지 못하는 상태가 되면 — §3 의사코드의 `ready`가
+`undefined`가 되는 자리 — 남은 것 중 `base` 첫 번째를 선행 조건을 무시하고
+배치하고 거기서 다시 연쇄를 돈다(fail-quiet). 순서가 그 구간에서
 의미를 잃을 뿐, 목록이 잘리거나 루프가 멈추지 않는다. bd가 `blocks` 사이클을
 막는지는 이 스펙이 판단하지 않는다 — 클라이언트 정렬은 어떤 입력에도 전체를
 반환해야 한다.
@@ -107,7 +147,8 @@ export function applyCandidateSort(issues, state) {
 1. `base`의 id 집합을 만들고, 각 행의 `blockerIdsOf`를 그 집합과 교집합해
    `preds`를 얻는다 — 후보 레인 밖의 선행은 여기서 사라진다.
 2. `preds`를 뒤집어 `dependents`(선행 id → 후행 행들, `base` 순서)를 만든다.
-3. §3의 훑기와 연쇄를 돌려 **새 배열**을 반환한다. 입력 배열은 변형하지 않는다.
+3. §3의 의사코드를 그대로 돌려 **새 배열**을 반환한다. 입력 배열은 변형하지
+   않는다.
 
 ### 4.3 규모
 
@@ -126,14 +167,17 @@ export function applyCandidateSort(issues, state) {
 | 선행은 자리를 지키고 후행이 그 밑으로 올라온다 | §3.1 2행 |
 | 선행이 둘이면 마지막 선행 뒤에 선다 | §3.2 다중 선행 |
 | A→B→C가 연속으로 배열된다 | §3.2 다단 체인 |
+| `A→B`·`A→D`·`B→C`가 `A, B, C, D`가 된다 | §3 깊이 우선 — 분기와 다단이 겹칠 때의 정확한 결과 |
 | 선행이 목록에 없으면 후행은 체인 자리에 남는다 | §3.2 큐에 들어간 선행 |
-| 사이클이 있어도 모든 이슈를 반환한다 | §3.3 fail-quiet |
+| `related`·`discovered-from` edge는 순서를 바꾸지 않는다 | §3.2 비-`blocks` edge |
+| 사이클이 있으면 남은 것 중 `base` 첫 행을 강제 배치하고 전체 순서를 낸다 | §3.3 fail-quiet — 반환 개수가 아니라 순서를 단언한다 |
 | `blocked_info`가 없으면 `dependencies`로 같은 순서를 낸다 | §4.1 사다리 2단 |
 | `spec` 프리셋에서도 후행이 선행 뒤로 붙는다 | §2-3 항상 적용 |
 | 입력 배열을 변형하지 않는다 | §4.2 기존 계약 |
 
 `blocker-ids.js`는 본문을 그대로 옮기는 추출이라 별도 테스트 파일을 만들지
-않는다 — 위 두 사다리 테스트가 새 모듈을 직접 태우고, 기존
+않는다 — 표의 대부분이 `blocked_info` 단을, `dependencies` 행이 나머지 단을
+태워 새 모듈을 직접 지나가고, 기존
 `app/views/worker/index.test.js`가 `⛓ blocked` 칩 경로를 그대로 커버한다.
 
 검증은 Pre-handoff 번들(`npm run tsc` · `npx vitest run --reporter=dot` ·
