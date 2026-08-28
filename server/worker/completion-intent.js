@@ -972,6 +972,7 @@ function operationIdentity(root_bead_id, kind, failure_key) {
  *   store: any,
  *   prActions: { completionGate: (bead_id: string, role?: 'root') => Promise<any>, resumeCompletionCleanup?: (root_bead_id: string) => Promise<any> },
  *   bd?: { comment?: (bead_id: string, text: string) => Promise<unknown> },
+ *   timeline?: { append: (input: any) => unknown },
  *   notifyChanged?: (workspace: string) => void,
  *   kickMerge?: () => Promise<unknown>|unknown,
  *   now?: () => number,
@@ -982,6 +983,27 @@ export function createCompletionActionDriver(deps) {
   const facts = new Map();
   const now = deps.now || (() => Date.now());
   const log = deps.log || (() => {});
+
+  /**
+   * Put one completion-saga fact on the root bead's permanent history
+   * (record-timeline-retention §5).
+   *
+   * The writer is the workspace's ONE instance, injected by `attach.js`; a
+   * driver built without it — every existing unit test — records nothing and
+   * behaves identically. The result is ignored, because the saga's next step
+   * must never depend on whether its history line survived.
+   *
+   * @param {string} bead_id
+   * @param {'merge_step'|'needs_human'} kind
+   * @param {string|number} seq
+   * @param {string} summary
+   */
+  function recordTimeline(bead_id, kind, seq, summary) {
+    if (!deps.timeline || typeof bead_id !== 'string' || bead_id.length === 0) {
+      return;
+    }
+    deps.timeline.append({ bead_id, kind, seq, summary });
+  }
   /**
    * Serialized best-effort Bead comments. Terminalization is synchronous and
    * durable on its own; the chain only keeps two terminals from interleaving
@@ -1392,6 +1414,16 @@ export function createCompletionActionDriver(deps) {
       hold_event,
       now: at
     });
+    // §5: the same folded reason the terminal and the `bd comment` carry, never
+    // a second sentence for the same fact.
+    recordTimeline(
+      root_bead_id,
+      'needs_human',
+      // The FOLDED family. One `확인 필요` per cause per bead: a re-settlement
+      // of the same wall is the same fact, and a different wall is a new line.
+      folded,
+      `확인 필요 — ${folded}`
+    );
     notify();
     if (written.ok && commented_at === null) {
       // Extracted from the evidence this terminal was settled on, not
@@ -2075,6 +2107,14 @@ export function createCompletionActionDriver(deps) {
           subject: fact.gated.subject
         });
         if (recorded.ok) {
+          recordTimeline(
+            root_bead_id,
+            'merge_step',
+            // The PHASE, per gated subject: a saga that re-gates the same
+            // subject records one line, a new subject records its own.
+            `gating:${fact.gated.subject.bead_id}`,
+            `머지 게이트 통과 · ${fact.gated.subject.bead_id}`
+          );
           notify();
         }
       }
@@ -2108,6 +2148,15 @@ export function createCompletionActionDriver(deps) {
         phase: 'cleaning',
         subject: fact.gated.subject
       });
+      if (cleaning.ok) {
+        recordTimeline(
+          root_bead_id,
+          'merge_step',
+          // The phase. One entry into cleanup per saga.
+          'cleaning',
+          '머지 후 정리 시작'
+        );
+      }
       if (!cleaning.ok) {
         settleFailure(
           root_bead_id,
@@ -2176,6 +2225,14 @@ export function createCompletionActionDriver(deps) {
           );
           return;
         }
+        recordTimeline(
+          root_bead_id,
+          'merge_step',
+          // The prepared operation's own id: one line per merge operation, and
+          // a replayed prepare re-appends the same id.
+          `merging:${op_id}`,
+          'squash 머지 시작'
+        );
         notify();
       }
       if (typeof deps.kickMerge === 'function') {

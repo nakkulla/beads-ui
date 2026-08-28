@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { createBeadTimeline } from './bead-timeline.js';
 import {
   COMPLETION_RETRY_DELAYS_MS,
   COMPLETION_RETRY_POLICY,
@@ -49,6 +50,9 @@ function intent(patch = {}) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  // Only the timeline tests set it; deleting it unconditionally keeps a failed
+  // one from leaking a temp state root into the rest of the file.
+  delete process.env.XDG_STATE_HOME;
   for (const dir of tmp_dirs.splice(0)) {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -470,6 +474,115 @@ describe('worker/completion-intent action driver', () => {
       cause: 'verify_red',
       bead_ids: ['UI-root']
     });
+  });
+
+  test('records needs_human on the root bead timeline', async () => {
+    const store = seededCompletionStore();
+    /** @type {any[]} */
+    const events = [];
+    const driver = actionDriver(store, {
+      bd: { comment: vi.fn(commentSpy()) },
+      timeline: { append: (/** @type {any} */ input) => events.push(input) }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (!action) {
+      throw new Error('verify red action missing');
+    }
+    await driver.onAction('UI-root', action, current);
+
+    expect(events).toContainEqual({
+      bead_id: 'UI-root',
+      kind: 'needs_human',
+      seq: 'verify_red',
+      summary: '확인 필요 — verify_red'
+    });
+  });
+
+  test('reads one event back when the same wall is settled twice', async () => {
+    const store = seededCompletionStore();
+    const state_root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-ci-tl-'));
+    tmp_dirs.push(state_root);
+    process.env.XDG_STATE_HOME = state_root;
+    const timeline = createBeadTimeline({ workspace_root: DRIVER_WS });
+    const driver = actionDriver(store, {
+      bd: { comment: vi.fn(commentSpy()) },
+      timeline
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (!action) {
+      throw new Error('verify red action missing');
+    }
+
+    await driver.onAction('UI-root', action, current);
+    await driver.onAction('UI-root', action, current);
+
+    expect(
+      timeline
+        .readTimeline('UI-root')
+        .filter((event) => event.kind === 'needs_human')
+    ).toHaveLength(1);
+  });
+
+  test('terminalizes when no timeline is injected', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      bd: { comment: vi.fn(commentSpy()) }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (!action) {
+      throw new Error('verify red action missing');
+    }
+    await driver.onAction('UI-root', action, current);
+
+    expect(store.snapshot(DRIVER_WS).completion_intents['UI-root'].phase).toBe(
+      'needs_human'
+    );
+  });
+
+  test('terminalizes when the timeline append fails', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      bd: { comment: vi.fn(commentSpy()) },
+      timeline: {
+        append: () => ({ ok: false, reason: 'write_failed', detail: 'nope' })
+      }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (!action) {
+      throw new Error('verify red action missing');
+    }
+    await driver.onAction('UI-root', action, current);
+
+    expect(store.snapshot(DRIVER_WS).completion_intents['UI-root'].phase).toBe(
+      'needs_human'
+    );
   });
 
   test('leaves the queue hold alone on a bead-local needs_human family', () => {

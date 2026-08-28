@@ -26,6 +26,7 @@
  */
 import { debug } from '../logging.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
+import { failureTokenSummary } from './failure-class.js';
 import { branchForBead } from './worktree.js';
 
 const log = debug('worker:quickfix-landing');
@@ -33,6 +34,22 @@ const log = debug('worker:quickfix-landing');
 // Consumed verbatim from dotfiles `workflow-state.yaml no_change_close`
 // (`close_reason.regex`, `lines: single_line_only`); not redefined here.
 const NO_CHANGE_CLOSE_REASON_RE = /^refuted: \S/;
+
+/**
+ * What each landing cursor is called on the bead's timeline
+ * (record-timeline-retention §5). The cursor names are the durable vocabulary
+ * the resume judgment already uses, so the history and the record cannot
+ * disagree about which step a landing reached.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+const LANDING_STEP_LABELS = Object.freeze({
+  base_containment: 'base 포함 확인',
+  repo_operations: '배포 실행',
+  branch_cleanup: '브랜치 정리',
+  parent_close: 'bead close',
+  no_change_close: '무변경 close'
+});
 
 /**
  * @param {unknown} close_reason
@@ -96,6 +113,7 @@ function isNoChangeClose(close_reason) {
  *     waitForDeployTerminal: (operation_id: string, input: any) => Promise<any>
  *   }|null,
  *   readPushLog?: (input: { attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string },
+ *   timeline?: { append: (input: any) => unknown },
  *   accept_skipped_receipt?: boolean,
  *   notifyChanged?: (workspace: string) => void,
  *   now?: () => number
@@ -136,6 +154,58 @@ export function createQuickfixLanding(deps) {
   }
 
   /**
+   * Put one landing step on the bead's permanent history
+   * (record-timeline-retention §5).
+   *
+   * The bead is read back off the attempt record rather than threaded through
+   * every step: `markStep` and `fail` are called from more than a dozen places,
+   * and a parameter added to all of them is a dozen chances to pass the wrong
+   * one. An attempt the store cannot name has no bead, so it records nothing.
+   *
+   * The result is ignored — history must never decide whether a landing
+   * continues — and the whole thing is wrapped, because a diagnostic may not
+   * end a settlement that broke no invariant.
+   *
+   * @param {string} attempt_id
+   * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null} step
+   * @param {string|null} reason - The failure token, or null for a step reached.
+   */
+  function recordLandingStep(attempt_id, step, reason) {
+    if (!deps.timeline) {
+      return;
+    }
+    try {
+      const snapshot = /** @type {any} */ (deps.store.snapshot(workspace));
+      const bead_id = snapshot?.attempts?.[attempt_id]?.bead_id;
+      if (typeof bead_id !== 'string' || bead_id.length === 0) {
+        return;
+      }
+      const label = step === null ? null : LANDING_STEP_LABELS[step];
+      deps.timeline.append({
+        bead_id,
+        attempt_id,
+        kind: 'landing_step',
+        // The STEP is the fact, so a resumed landing that re-runs a step
+        // re-appends the same id and the reader keeps one line. A failure is a
+        // different fact than reaching the step, hence the suffix.
+        seq: reason === null ? step : `${step ?? 'precondition'}:failed`,
+        summary:
+          reason === null
+            ? `착지 단계: ${label ?? step}`
+            : `착지 실패 — ${failureTokenSummary(reason) ?? reason}${
+                label === undefined || label === null ? '' : ` (${label})`
+              }`
+      });
+    } catch (err) {
+      log(
+        'quick_fix landing timeline record failed for %s: %o',
+        attempt_id,
+        err
+      );
+    }
+  }
+
+  /**
    * @param {string} attempt_id
    * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'} cursor
    * @param {string} head_sha
@@ -151,6 +221,7 @@ export function createQuickfixLanding(deps) {
         )
       }
     });
+    recordLandingStep(attempt_id, cursor, null);
     notifyChanged(workspace);
   }
 
@@ -172,6 +243,7 @@ export function createQuickfixLanding(deps) {
         )
       }
     });
+    recordLandingStep(attempt_id, step, reason);
     notifyChanged(workspace);
     return { ok: false, reason, step };
   }

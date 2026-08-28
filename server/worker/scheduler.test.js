@@ -598,7 +598,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, now?: () => number }} opts
+ * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -733,6 +733,7 @@ function setup(opts) {
     notifyQueueChanged: opts.notifyQueueChanged,
     onCompletionAttemptSettled: opts.onCompletionAttemptSettled,
     reviewSession: opts.reviewSession,
+    timeline: opts.timeline,
     now: opts.now || (() => 1000)
   });
   // The concurrency cap lives in the STORE now (worker-phase2 §3), not in a
@@ -14737,5 +14738,205 @@ describe('scheduler 실패 계층 회귀 (UI-5ym8 impl 리뷰)', () => {
     const snap = env.store.snapshot(WS);
     expect(snap.lineages).toEqual([]);
     expect(snap.hold).toBe(null);
+  });
+});
+
+describe('scheduler bead timeline (record-timeline-retention §5)', () => {
+  /**
+   * A timeline that records what it was asked to append, standing in for the
+   * one instance `attach.js` injects.
+   */
+  function recorder() {
+    /** @type {any[]} */
+    const events = [];
+    return {
+      events,
+      /** @param {any} input */
+      append: (input) => {
+        events.push(input);
+        return { ok: true };
+      },
+      readTimeline: () => []
+    };
+  }
+
+  /**
+   * @param {any[]} events
+   * @param {string} kind
+   */
+  function ofKind(events, kind) {
+    return events.filter((event) => event.kind === kind);
+  }
+
+  test('records the dispatch with its runner, exec and base', async () => {
+    const timeline = recorder();
+    const env = setup({
+      timeline,
+      config: { S1: { runner: 'claude', model: 'opus', effort: 'high' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    expect(ofKind(timeline.events, 'dispatched')).toMatchObject([
+      {
+        bead_id: 'S1',
+        attempt_id,
+        seq: 'dispatch',
+        summary: 'claude opus/high 디스패치 · base base-S1'
+      }
+    ]);
+  });
+
+  test('records a surviving guard warning at its position in the list', async () => {
+    const timeline = recorder();
+    const env = setup({ timeline, config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.eventsFor('A1').emit('event', {
+      kind: 'error',
+      reason: 'base_merge_blocked',
+      message: 'base merged into the branch, session continues: git merge x',
+      guard_warning: { reason: 'base_merge_blocked', command: 'git merge x' }
+    });
+
+    expect(ofKind(timeline.events, 'guard_warning')).toMatchObject([
+      {
+        bead_id: 'A1',
+        seq: 0,
+        summary:
+          '가드 경고 — base merged into the branch, session continues: git merge x',
+        detail: 'git merge x'
+      }
+    ]);
+  });
+
+  test('records a verified success as the session ending', async () => {
+    const timeline = recorder();
+    const env = setup({ timeline, config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(ofKind(timeline.events, 'session_ended')).toMatchObject([
+      {
+        bead_id: 'S1',
+        seq: 'ended',
+        summary: '성공 · PR https://github.com/o/r/pull/1'
+      }
+    ]);
+  });
+
+  test('records an individual failure with the classifier summary', async () => {
+    const timeline = recorder();
+    const env = setup({ timeline, config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    const failed = ofKind(timeline.events, 'attempt_failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({
+      bead_id: 'S1',
+      attempt_id,
+      seq: 'failed'
+    });
+    expect(failed[0].summary).toMatch(/^세션 실패 — /);
+  });
+
+  test('records a scheduled retry rung rather than an ending', async () => {
+    const timeline = recorder();
+    const env = setup({
+      timeline,
+      config: { S1: {} },
+      slots: 1,
+      verify: {
+        verifyPrSubmitted: vi.fn(async () => ({
+          ok: false,
+          reason: 'gh_observation_failed',
+          pr_url: null
+        }))
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(ofKind(timeline.events, 'attempt_retry')).toMatchObject([
+      { bead_id: 'S1', seq: 1 }
+    ]);
+    expect(ofKind(timeline.events, 'attempt_failed')).toEqual([]);
+  });
+
+  test('records a park as the session ending, not a failure', async () => {
+    const timeline = recorder();
+    const env = setup({
+      timeline,
+      config: { S1: {} },
+      slots: 1,
+      verify: {
+        verifyPrSubmitted: vi.fn(async () => ({
+          ok: false,
+          reason: 'no_pr',
+          pr_url: null,
+          bead_status: 'in_progress',
+          awaiting_user: '스펙 승인 대기'
+        }))
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(ofKind(timeline.events, 'session_ended')).toMatchObject([
+      { bead_id: 'S1', seq: 'parked', summary: '파킹 · 스펙 승인 대기' }
+    ]);
+    expect(ofKind(timeline.events, 'attempt_failed')).toEqual([]);
+  });
+
+  test('dispatches when no timeline is injected', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.status).toBe('running');
+  });
+
+  test('fails an attempt normally when the timeline append fails', async () => {
+    const env = setup({
+      timeline: {
+        append: () => ({ ok: false, reason: 'write_failed', detail: 'nope' }),
+        readTimeline: () => []
+      },
+      config: { S1: {} },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('failed');
   });
 });

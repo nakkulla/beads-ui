@@ -106,7 +106,7 @@ function gitWithAncestry(pairs, options = {}) {
 }
 
 /**
- * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, locks?: ReturnType<typeof createLockManager>, policySupported?: () => boolean, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, resolveBase?: (options?: { force?: boolean }) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
+ * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, locks?: ReturnType<typeof createLockManager>, policySupported?: () => boolean, timeline?: any, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, resolveBase?: (options?: { force?: boolean }) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
  */
 function coordinatorFor(overrides = {}) {
   const store = createQueueStore({
@@ -158,6 +158,7 @@ function coordinatorFor(overrides = {}) {
     verifyCheckout: /** @type {never} */ (overrides.verifyCheckout),
     autoAdvanceRestore: overrides.autoAdvanceRestore,
     policySupported: overrides.policySupported,
+    timeline: overrides.timeline,
     now: overrides.now,
     sleep: overrides.sleep
   });
@@ -3696,5 +3697,122 @@ describe('manual deploy run', () => {
       ok: false,
       reason: 'deploy_opted_out'
     });
+  });
+});
+
+describe('repo-operation bead timeline (record-timeline-retention §5)', () => {
+  /**
+   * A timeline that records what it was asked to append, standing in for the
+   * one instance `attach.js` injects.
+   */
+  function recorder() {
+    /** @type {any[]} */
+    const events = [];
+    return {
+      events,
+      /** @param {any} input */
+      append: (input) => {
+        events.push(input);
+        return { ok: true };
+      }
+    };
+  }
+
+  /**
+   * Seed one running deploy over `subjects` and let the runner report it dead
+   * with a nonzero exit, which is the coordinator's terminal failure path.
+   *
+   * @param {{ bead_id: string, merged_sha: string }[]} subjects
+   * @param {any} [timeline]
+   */
+  async function failOneDeploy(subjects, timeline) {
+    const { store, coordinator } = coordinatorFor({
+      timeline,
+      policySupported: () => false,
+      runner: {
+        start: () => ({ ok: false, code: 'unused' }),
+        readMarker: () => ({ exit_code: 2, signal: null }),
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'deploy-1',
+      repo_id: root,
+      kind: 'deploy',
+      subjects,
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: '5'.repeat(40)
+    });
+    const operation = store.snapshot(root).repo_operations['deploy-1'];
+    store.startRepoOperation(root, {
+      operation_id: 'deploy-1',
+      attempt_id: operation.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'deploy-1.log'),
+      target_sha: HEAD
+    });
+
+    await coordinator.reconcile(root);
+
+    return store;
+  }
+
+  test('records the failure on the timeline of the bead it deployed', async () => {
+    const timeline = recorder();
+
+    const store = await failOneDeploy(
+      [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      timeline
+    );
+
+    expect(store.snapshot(root).repo_operations['deploy-1'].state).toBe(
+      'failed'
+    );
+    expect(timeline.events).toMatchObject([
+      {
+        bead_id: 'UI-1',
+        kind: 'operation_failed',
+        seq: 'deploy-1'
+      }
+    ]);
+    expect(timeline.events[0].summary).toContain('배포 실패 —');
+  });
+
+  test('records the failure once per bead a coalesced deploy carried', async () => {
+    const timeline = recorder();
+
+    await failOneDeploy(
+      [
+        { bead_id: 'UI-1', merged_sha: HEAD },
+        { bead_id: 'UI-2', merged_sha: HEAD }
+      ],
+      timeline
+    );
+
+    expect(timeline.events.map((event) => event.bead_id)).toEqual([
+      'UI-1',
+      'UI-2'
+    ]);
+  });
+
+  test('settles the failure when no timeline is injected', async () => {
+    const store = await failOneDeploy([{ bead_id: 'UI-1', merged_sha: HEAD }]);
+
+    expect(store.snapshot(root).repo_operations['deploy-1'].state).toBe(
+      'failed'
+    );
+  });
+
+  test('settles the failure when the timeline append fails', async () => {
+    const store = await failOneDeploy([{ bead_id: 'UI-1', merged_sha: HEAD }], {
+      append: () => ({ ok: false, reason: 'write_failed', detail: 'nope' })
+    });
+
+    expect(store.snapshot(root).repo_operations['deploy-1'].state).toBe(
+      'failed'
+    );
   });
 });

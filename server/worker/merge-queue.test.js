@@ -129,6 +129,94 @@ function landMerge(queue_store, bead_id) {
   queue_store.moveToDone(WS, { bead_id, attempt_id: `att-${bead_id}` });
 }
 
+describe('worker/merge-queue — bead timeline (record-timeline-retention §5)', () => {
+  /**
+   * A timeline that records what it was asked to append, standing in for the
+   * one instance `attach.js` injects.
+   */
+  function recorder() {
+    /** @type {any[]} */
+    const events = [];
+    return { events, append: (/** @type {any} */ input) => events.push(input) };
+  }
+
+  test('records the merge disposition on the merged bead', async () => {
+    const store = seed(['UI-1']);
+    const timeline = recorder();
+    const mq = driver(store, {
+      timeline,
+      merge: async (/** @type {string} */ bead_id) => {
+        landMerge(store, bead_id);
+        return { ok: true, action: 'merged', reason: null };
+      }
+    });
+
+    await mq.kick();
+
+    expect(timeline.events).toEqual([
+      {
+        bead_id: 'UI-1',
+        kind: 'merge_step',
+        seq: 'merged',
+        summary: '머지 큐 · squash 머지 완료'
+      }
+    ]);
+  });
+
+  test('names a refusal with its failure sentence', async () => {
+    const store = seed(['UI-1']);
+    const timeline = recorder();
+    const mq = driver(store, {
+      timeline,
+      merge: async () => ({
+        ok: false,
+        action: 'refused',
+        reason: 'merge_error'
+      })
+    });
+
+    await mq.kick();
+
+    expect(timeline.events[0]).toMatchObject({
+      bead_id: 'UI-1',
+      kind: 'merge_step',
+      seq: 'refused'
+    });
+    expect(timeline.events[0].summary).toContain('머지 보류');
+  });
+
+  test('merges when no timeline is injected', async () => {
+    const store = seed(['UI-1']);
+    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
+      landMerge(store, bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const mq = driver(store, { merge });
+
+    await mq.kick();
+
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('merges when the timeline append fails', async () => {
+    const store = seed(['UI-1']);
+    const mq = driver(store, {
+      timeline: {
+        append: () => ({ ok: false, reason: 'write_failed', detail: 'nope' })
+      },
+      merge: async (/** @type {string} */ bead_id) => {
+        landMerge(store, bead_id);
+        return { ok: true, action: 'merged', reason: null };
+      }
+    });
+
+    await expect(mq.kick()).resolves.toBeUndefined();
+
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+});
+
 describe('worker/merge-queue — sequencing', () => {
   test('does not collect a quick_fix attempt naturally lacking pr_url and pr_wait', async () => {
     const store = createQueueStore();

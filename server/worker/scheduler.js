@@ -563,6 +563,11 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * Fail-quiet Claude session-file effort observer.
  * @property {(input: { session_id: string, started_at: number|null }) => string|null} [observeCodexEffort]
  * Fail-quiet Codex rollout-file effort observer.
+ * @property {ReturnType<typeof import('./bead-timeline.js').createBeadTimeline>} [timeline]
+ * The workspace's ONE bead-history writer (record-timeline-retention §5),
+ * injected by `attach.js`. Optional: an attachment without one — every existing
+ * unit test — records no history and behaves identically otherwise, because a
+ * timeline line is evidence and never an input to a queue decision.
  * @property {(workspace: string) => void} [notifyQueueChanged]
  * Fired after autonomous queue transitions (dispatch records, admission
  * refusals, session done/fail) so ws subscribers get a fresh snapshot without
@@ -835,6 +840,45 @@ function launchAccountRefusalDetail(failure, accounts, account_sources) {
 }
 
 /**
+ * The one line §5 shows for a scheduled retry rung.
+ *
+ * @param {number} attempts - Which rung of the ladder this is.
+ * @param {number|null} next_at - Epoch ms the rung is due, when known.
+ * @returns {string}
+ */
+function retrySummary(attempts, next_at) {
+  const when =
+    typeof next_at === 'number' && next_at > 0
+      ? ` \u00b7 \ub2e4\uc74c ${new Date(next_at).toTimeString().slice(0, 5)}`
+      : '';
+  return `\uc790\ub3d9 \uc7ac\uc2dc\ub3c4 ${attempts}/${RETRY_MAX}${when}`;
+}
+
+/**
+ * The one line the bead timeline shows for a dispatch (record-timeline-retention
+ * §5): who ran it, how, and from where.
+ *
+ * Assembled from the SAME values `launchSession` writes onto the attempt record,
+ * so the history and the record cannot disagree about which runner ran.
+ *
+ * @param {string} runner_name
+ * @param {string|null} model
+ * @param {string|null} effort
+ * @param {string|null} base_oid
+ * @returns {string}
+ */
+function dispatchSummary(runner_name, model, effort, base_oid) {
+  const exec = [model, effort]
+    .filter((part) => typeof part === 'string' && part.length > 0)
+    .join('/');
+  const base =
+    typeof base_oid === 'string' && base_oid.length > 0
+      ? ` \u00b7 base ${base_oid.slice(0, 7)}`
+      : '';
+  return `${runner_name}${exec.length > 0 ? ` ${exec}` : ''} \ub514\uc2a4\ud328\uce58${base}`;
+}
+
+/**
  * Build the auto-advance state machine over the queue store.
  *
  * @param {SchedulerDeps} deps
@@ -887,6 +931,74 @@ export function createScheduler(deps) {
   let attempt_seq = 0;
   const makeAttemptId =
     deps.makeAttemptId || ((bead_id) => `${bead_id}-${now()}-${++attempt_seq}`);
+
+  /**
+   * Append one event to the bead's permanent history (record-timeline-retention
+   * §5), through the workspace's single injected writer.
+   *
+   * The result is deliberately dropped. §5 makes exactly one caller depend on a
+   * successful append — the queue store's attempt transfer, which does its own —
+   * and everywhere else a lost history line must cost history, never a queue
+   * decision. A producer with no bead id writes nothing rather than an event
+   * nobody could ever read back.
+   *
+   * @param {import('./bead-timeline.js').TimelineAppendInput} input
+   */
+  function appendTimeline(input) {
+    if (!deps.timeline || String(input.bead_id ?? '').length === 0) {
+      return;
+    }
+    deps.timeline.append(input);
+  }
+
+  /**
+   * Record how an attempt FAILED on the bead's permanent history (§5).
+   *
+   * The summary is the classifier's own `summary` — the identical string
+   * `settleFailureTier` writes into `cause_detail.summary` — because §6 makes
+   * that extraction happen once and everything else read it. Deriving a second
+   * sentence here is how the tile and the history would start disagreeing about
+   * the same failure.
+   *
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   * @param {import('./failure-class.js').FailureClassification} classification
+   * @param {number} at
+   */
+  function appendFailedEvent(bead_id, attempt_id, classification, at) {
+    appendTimeline({
+      bead_id,
+      attempt_id,
+      kind: 'attempt_failed',
+      // One ending per attempt, so the id is fixed rather than sequenced: a
+      // replayed settlement re-appends the same line and the reader keeps one.
+      seq: 'failed',
+      summary: `\uc138\uc158 \uc2e4\ud328 \u2014 ${classification.summary || classification.cause || '\uc6d0\uc778 \ubbf8\uc0c1'}`,
+      at
+    });
+  }
+
+  /**
+   * Record a session that ended WITHOUT failing (§5): a success, or a park.
+   *
+   * `session_ended` is also the kind the queue store's transfer looks for by
+   * attempt id, so recording the real ending here is what stops the transfer
+   * from later adding a second, blander one for the same attempt.
+   *
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   * @param {string} summary
+   */
+  function appendSessionEnded(bead_id, attempt_id, summary) {
+    appendTimeline({
+      bead_id,
+      attempt_id,
+      kind: 'session_ended',
+      // One ending per attempt.
+      seq: 'ended',
+      summary
+    });
+  }
 
   /**
    * Live sessions keyed by attempt_id.
@@ -2443,8 +2555,12 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {{ reason: string, command: string|null }} detail
+   * @param {string|null} [message] - The engine's own `guardWarningMessage`
+   * sentence, carried through rather than rebuilt: spec §6 row 3 makes the
+   * guard's message the summary, and a second copy of it here is exactly how
+   * one warning starts reading as two different facts.
    */
-  function recordGuardWarning(workspace, attempt_id, detail) {
+  function recordGuardWarning(workspace, attempt_id, detail, message = null) {
     try {
       const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
       const prior = Array.isArray(attempt?.guard_warnings)
@@ -2462,6 +2578,21 @@ export function createScheduler(deps) {
             }
           ]
         }
+      });
+      appendTimeline({
+        bead_id: String(attempt?.bead_id ?? ''),
+        attempt_id,
+        kind: 'guard_warning',
+        // This warning's POSITION in the attempt's accumulated list. The list is
+        // rebuilt in the same order by the restart monitor's replay, so the same
+        // warning keeps the same index and the reader dedupes it.
+        seq: prior.length,
+        summary: `가드 경고 — ${
+          typeof message === 'string' && message.length > 0
+            ? message
+            : detail.reason
+        }`,
+        ...(detail.command === null ? {} : { detail: detail.command })
       });
     } catch (err) {
       log('guard-warning record failed for %s: %o', attempt_id, err);
@@ -3233,6 +3364,21 @@ export function createScheduler(deps) {
         repo,
         awaiting_user: options.awaiting_user ?? null
       });
+      // A park is how the session ENDED, not a failure (§3.1), so §5's ending
+      // kind is `session_ended`. Recording it here is also what keeps the
+      // queue-store transfer from later writing a second, blander ending for
+      // the same attempt: it recognizes this kind by attempt id.
+      appendTimeline({
+        bead_id,
+        attempt_id,
+        kind: 'session_ended',
+        // One ending per attempt, so the id is fixed rather than sequenced.
+        seq: 'parked',
+        summary: `파킹 · ${
+          options.awaiting_user ?? classification.summary ?? '사용자 확인 대기'
+        }`,
+        at
+      });
       closeRetryLineage(workspace, bead_id);
       return;
     }
@@ -3286,7 +3432,24 @@ export function createScheduler(deps) {
           });
         }
       }
-      if (!scheduled) {
+      if (scheduled) {
+        // The ladder rung, not an ending: this attempt is `retry_wait` and its
+        // ending arrives when the rung is superseded or exhausted.
+        appendTimeline({
+          bead_id,
+          attempt_id,
+          kind: 'attempt_retry',
+          // The rung INDEX. Each rung is a distinct fact and re-recording the
+          // same rung — a restart replaying this settlement — re-appends the
+          // same id.
+          seq: scheduled.attempts ?? 1,
+          summary: retrySummary(
+            scheduled.attempts ?? 1,
+            scheduled.next_at ?? null
+          ),
+          at
+        });
+      } else {
         // Only a TERMINAL env outcome is announced: a `retry_wait` rung is not
         // a failure the watcher can act on, and a three-rung outage would
         // otherwise push the same sentence four times.
@@ -3296,6 +3459,7 @@ export function createScheduler(deps) {
           repo,
           cause_detail: cause_detail ?? null
         });
+        appendFailedEvent(bead_id, attempt_id, classification, at);
       }
       armRetryTimer(workspace);
       return;
@@ -3329,6 +3493,7 @@ export function createScheduler(deps) {
       repo,
       cause_detail: cause_detail ?? null
     });
+    appendFailedEvent(bead_id, attempt_id, classification, at);
     if (tier === 'individual') {
       closeRetryLineage(workspace, bead_id);
     }
@@ -3767,6 +3932,7 @@ export function createScheduler(deps) {
             attempt_id,
             patch: { status: 'done', finished_at: now() }
           });
+          appendSessionEnded(bead_id, attempt_id, '성공 · PR 머지 확인됨');
           closeRetryLineage(workspace, bead_id);
         } else {
           // Attempt done + bead into `pr_wait` in ONE persist (§4): a split write
@@ -3778,6 +3944,11 @@ export function createScheduler(deps) {
           });
           // The bead DELIVERED, so its env lineage is over and an env hold with
           // no lineage left releases itself (spec §3.3).
+          appendSessionEnded(
+            bead_id,
+            attempt_id,
+            `성공 · PR ${vr.pr_url ?? '열림'}`
+          );
           closeRetryLineage(workspace, bead_id);
           notifyLifecycle('prWaitEntered', {
             bead_id,
@@ -6034,6 +6205,24 @@ export function createScheduler(deps) {
       kind: input.launch_kind ?? 'dispatch'
     });
 
+    // The bead's permanent history (record-timeline-retention §5). Recorded at
+    // the ONE point every launch shape passes through — first dispatch, stale
+    // continue, resume, conflict, disposition, review — so there is no per-shape
+    // producer to keep in sync, exactly like the record write above.
+    appendTimeline({
+      bead_id,
+      attempt_id,
+      kind: 'dispatched',
+      // The launch SHAPE is what makes a second launch of the same attempt a
+      // different fact, and there is exactly one of each per attempt. A replay
+      // of the same launch therefore re-appends one id the reader dedupes.
+      seq: input.launch_kind ?? 'dispatch',
+      summary: dispatchSummary(runner_name, model, effort, base_oid),
+      ...(typeof settings.log_path === 'string' && settings.log_path.length > 0
+        ? { log_path: settings.log_path }
+        : {})
+    });
+
     deps.store.clearAdmission(workspace, bead_id);
     deps.sessionLog.attach(workspace, attempt_id, handle.events);
     let init_cwd = wt_path;
@@ -6195,7 +6384,12 @@ export function createScheduler(deps) {
       // that vanished with the process. Unconditional, unlike the usage arm
       // below: the record is evidence, not telemetry.
       if (ev && ev.guard_warning) {
-        recordGuardWarning(workspace, attempt_id, ev.guard_warning);
+        recordGuardWarning(
+          workspace,
+          attempt_id,
+          ev.guard_warning,
+          typeof ev.message === 'string' ? ev.message : null
+        );
       }
       const usage = ev && ev.usage;
       if (!usage_store || !usage) {

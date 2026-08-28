@@ -143,6 +143,41 @@ function queueStore() {
 }
 
 /**
+ * Put one human click on the bead's permanent history
+ * (record-timeline-retention §5).
+ *
+ * The handler does NOT open the timeline file. §5's single-writer rule is that
+ * the ws handler ASKS the workspace's injected writer, and the queue store is
+ * where `attach.js` registered it — so this asks the store, and a workspace
+ * whose attachment registered none records nothing.
+ *
+ * The result is ignored and every throw is swallowed: a click's effect has
+ * already happened by the time it is announced here, and a lost history line
+ * must never turn a completed action into a failed one.
+ *
+ * @param {string} workspace
+ * @param {string} bead_id
+ * @param {string} action - Stable name of the click.
+ * @param {string} summary
+ */
+function recordUserAction(workspace, bead_id, action, summary) {
+  try {
+    queueStore().recordTimelineEvent(workspace, {
+      bead_id,
+      kind: 'user_action',
+      // The action plus the queue revision the click produced. The revision is
+      // the queue's own monotonic counter, so two identical clicks stay two
+      // events while a re-announcement of ONE click keeps one id — which a
+      // clock or a random value could not do.
+      seq: `${action}:${queueStore().snapshot(workspace).revision}`,
+      summary
+    });
+  } catch (err) {
+    log('user-action timeline record failed for %s: %o', bead_id, err);
+  }
+}
+
+/**
  * Per-workspace subscriber registry. Keyed by workspace root_dir; each value is
  * the set of `{ ws, client_id }` pairs currently subscribed to that workspace's
  * queue.
@@ -3958,6 +3993,7 @@ export async function handleWorkerParkedRetry(ws, req) {
     log('parked retry failed for %s: %o', key, err);
     result = { ok: false, reason: 'parked_retry_failed' };
   }
+  recordUserAction(key, p.bead_id, 'parked_retry', '[재시도] 클릭 · 파킹 해제');
   replyQueueHold(ws, req, key, result);
 }
 
@@ -4452,6 +4488,7 @@ export async function handleWorkerMergeQueueAdd(ws, req) {
     result.ok && Array.isArray(result.queue.merge_queue)
       ? result.queue.merge_queue.length
       : before;
+  recordUserAction(key, p.bead_id, 'merge_queue_add', '[머지] 클릭');
   replyMergeQueue(ws, req, key, result, {
     bead_id: p.bead_id,
     queued: Math.max(0, after - before),
@@ -4813,6 +4850,7 @@ export async function handleWorkerDiscard(ws, req) {
     log('worker-discard failed for %s/%s: %o', key, p.bead_id, err);
     result = { ok: false, reason: 'error' };
   }
+  recordUserAction(key, p.bead_id, 'discard', '[폐기] 클릭');
   const queue = /** @type {any} */ (queueStore().snapshot(key));
   const accepted = typeof result.operation_id === 'string';
   const operation = accepted
@@ -5139,6 +5177,7 @@ export async function handleWorkerCleanupRetry(ws, req) {
     log('worker cleanup retry failed for %s/%s: %o', key, p.bead_id, err);
     result = { ok: false, reason: 'error' };
   }
+  recordUserAction(key, p.bead_id, 'cleanup_retry', '[정리] 클릭');
   const latest = /** @type {any} */ (queueStore().snapshot(key));
   ws.send(
     JSON.stringify(

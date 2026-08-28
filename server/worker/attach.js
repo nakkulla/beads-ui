@@ -722,6 +722,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     repo,
     store: runtime.queueStore,
     locks: runtime.locks,
+    timeline,
     // The manual 배포 실행 path pins its target through the SAME base resolver
     // every other dispatch uses (UI-s582 §3.1) — remote, base and fetched tip
     // in one resolution, so nothing there assumes `origin`.
@@ -749,6 +750,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         // landing module has no workspace of its own.
         readPushLog: (/** @type {{ attempt_id: string }} */ input) =>
           readPushLog({ workspace: keyFor(workspace_root), ...input }),
+        // The workspace's ONE bead-history writer (§5), not a second instance.
+        timeline,
         notifyChanged: (/** @type {string} */ ws_key) =>
           emitQueueChanged(ws_key)
       })
@@ -838,6 +841,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
 
   const scheduler = createScheduler({
     store: runtime.queueStore,
+    // The workspace's ONE bead-history writer (record-timeline-retention §5) —
+    // the same instance the queue store was registered with above, never a
+    // second one.
+    timeline,
     execPresetCoordinator: runtime.execPresetCoordinator,
     // The account default layer lives in `bd kv`, which the preset
     // coordinator's synchronous workspace resolution cannot reach (UI-d3cb
@@ -1376,6 +1383,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     createMergeQueue({
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
+      timeline,
       merge: (/** @type {string} */ bead_id) =>
         prActions.merge(bead_id, { allow_conflict_resolution: false }),
       probeMergeability: (/** @type {string} */ bead_id) =>
@@ -1475,6 +1483,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     createCompletionActionDriver({
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
+      timeline,
       prActions,
       bd,
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),

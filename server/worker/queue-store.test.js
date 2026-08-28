@@ -8904,6 +8904,105 @@ describe('queue store atomic terminalize + hold (UI-5ym8 §7)', () => {
   });
 });
 
+describe('worker/queue-store queue-hold timeline (record-timeline-retention §5)', () => {
+  /**
+   * @param {{ timeline?: any }} [overrides]
+   */
+  function holdStore(overrides = {}) {
+    const timeline =
+      overrides.timeline || createBeadTimeline({ workspace_root: WS });
+    return { store: createQueueStore({ timeline }), timeline };
+  }
+
+  /**
+   * @param {any} store
+   * @param {string} bead_id
+   * @param {number} at
+   * @param {string} [cause]
+   */
+  function envFailure(store, bead_id, at, cause = 'spawn_failed') {
+    return store.applyQueueHold(WS, {
+      event: {
+        kind: 'env_failure',
+        bead_id,
+        attempt_id: `${bead_id}-att`,
+        cause,
+        at
+      },
+      now: at
+    });
+  }
+
+  test('records the stop on the timeline of the bead it held', () => {
+    const { store, timeline } = holdStore();
+
+    envFailure(store, 'UI-held', 500);
+
+    expect(timeline.readTimeline('UI-held')).toMatchObject([
+      {
+        event_id: 'queue_hold:UI-held:env:500',
+        kind: 'queue_hold',
+        summary: '환경 보류: spawn_failed',
+        at: 500
+      }
+    ]);
+  });
+
+  test('records a user resume under the episode it released', () => {
+    const { store, timeline } = holdStore();
+    envFailure(store, 'UI-held', 500);
+
+    store.applyQueueHold(WS, { event: { kind: 'resume' }, now: 900 });
+
+    expect(timeline.readTimeline('UI-held')).toMatchObject([
+      { kind: 'queue_hold' },
+      {
+        event_id: 'queue_resume:UI-held:env:500',
+        kind: 'queue_resume',
+        summary: '사용자 재개',
+        at: 900
+      }
+    ]);
+  });
+
+  test('announces one standing hold once however many rungs it survives', () => {
+    const { store, timeline } = holdStore();
+
+    envFailure(store, 'UI-held', 500);
+    envFailure(store, 'UI-held', 600);
+    envFailure(store, 'UI-held', 700);
+
+    expect(
+      timeline
+        .readTimeline('UI-held')
+        .filter((/** @type {any} */ event) => event.kind === 'queue_hold')
+    ).toHaveLength(1);
+  });
+
+  test('applies the hold when no timeline is registered', () => {
+    const store = createQueueStore();
+
+    const applied = envFailure(store, 'UI-held', 500);
+
+    expect(applied.ok).toBe(true);
+    expect(store.snapshot(WS).hold).toMatchObject({ kind: 'env', since: 500 });
+  });
+
+  test('applies the hold when the timeline append fails', () => {
+    const { store } = holdStore({
+      timeline: {
+        append: () => ({ ok: false, reason: 'write_failed', detail: 'nope' }),
+        readTimeline: () => []
+      }
+    });
+
+    const applied = envFailure(store, 'UI-held', 500);
+
+    expect(applied.ok).toBe(true);
+    expect(store.snapshot(WS).hold).toMatchObject({ kind: 'env', since: 500 });
+  });
+});
+
 describe('worker/queue-store record transfer', () => {
   /**
    * @param {{ timeline?: any }} [overrides]

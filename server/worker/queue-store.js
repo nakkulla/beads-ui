@@ -4133,6 +4133,96 @@ export function createQueueStore(options = {}) {
   }
 
   /**
+   * Append ONE event to a bead's permanent history through the workspace's
+   * registered writer (record-timeline-retention §5).
+   *
+   * The result is dropped on purpose: {@link transferProcessedAttempts} is the
+   * single caller §5 makes depend on a durable append, and it asks for its own.
+   * Everywhere else a lost history line must cost history and never a queue
+   * decision. A workspace with no writer, or an event with no bead, records
+   * nothing.
+   *
+   * @param {string} workspace
+   * @param {import('./bead-timeline.js').TimelineAppendInput} input
+   */
+  function appendTimeline(workspace, input) {
+    const timeline = timelineFor(workspace);
+    if (!timeline || String(input.bead_id ?? '').length === 0) {
+      return;
+    }
+    timeline.append(input);
+  }
+
+  /**
+   * Identity of one hold EPISODE. `since` is stamped when the hold opens and
+   * never moves while it stands, so the triple changes exactly when the queue
+   * takes a different stop — including the env→systemic promotion, which keeps
+   * `since` and changes `kind`.
+   *
+   * @param {import('./queue-hold.js').QueueHold|null} hold
+   * @returns {string|null}
+   */
+  function holdEpisodeOf(hold) {
+    return hold === null ? null : `${hold.kind}:${hold.since}`;
+  }
+
+  /**
+   * Put a queue stop and its release on the timelines of the beads it stopped
+   * (record-timeline-retention §5).
+   *
+   * This lives at the site that APPLIES the reducer's result, never inside the
+   * pure reducer, and it never reconstructs a past hold from `hold_history` —
+   * that list is live state trimmed to a 30-minute window, while the permanent
+   * history is the timeline's job.
+   *
+   * A standing hold is re-announced only for a bead it did not already name, so
+   * a hold that survives many settlements writes one line per bead rather than
+   * one per settlement.
+   *
+   * @param {string} workspace
+   * @param {import('./queue-hold.js').QueueHold|null} before
+   * @param {import('./queue-hold.js').QueueHold|null} after
+   * @param {import('./queue-hold.js').QueueHoldEvent} event
+   * @param {number} at
+   */
+  function recordHoldTransition(workspace, before, after, event, at) {
+    const was = holdEpisodeOf(before);
+    const is_now = holdEpisodeOf(after);
+    if (before !== null && is_now !== was) {
+      for (const bead_id of before.bead_ids) {
+        appendTimeline(workspace, {
+          bead_id,
+          kind: 'queue_resume',
+          // Names the episode that ENDED, so a replayed release re-appends one
+          // id the reader dedupes.
+          seq: /** @type {string} */ (was),
+          summary: event.kind === 'resume' ? '사용자 재개' : '자동 재개',
+          at
+        });
+      }
+    }
+    if (after === null) {
+      return;
+    }
+    const announced =
+      was === is_now && before !== null ? new Set(before.bead_ids) : new Set();
+    for (const bead_id of after.bead_ids) {
+      if (announced.has(bead_id)) {
+        continue;
+      }
+      appendTimeline(workspace, {
+        bead_id,
+        kind: 'queue_hold',
+        // The episode, not the moment: every bead this hold stops records the
+        // same stop once.
+        seq: /** @type {string} */ (is_now),
+        summary: `${after.kind === 'env' ? '환경' : '시스템'} 보류: ${after.cause}`,
+        at
+      });
+    }
+  }
+
+  /**
    * The directory holding one bead's transferred attempt records. Derived from
    * the record path so the `beads/<bead>/attempts/` layout is stated once, in
    * `state-paths.js` (§4).
@@ -4423,12 +4513,14 @@ export function createQueueStore(options = {}) {
    * also stops the queue — folds the hold into its OWN write instead of
    * following it with a second one.
    *
+   * @param {string} workspace
    * @param {Queue} next - the in-flight clone being mutated.
    * @param {import('./queue-hold.js').QueueHoldEvent} event
    * @param {number} at
    * @returns {import('./queue-hold.js').QueueHoldResult}
    */
-  function applyHoldEvent(next, event, at) {
+  function applyHoldEvent(workspace, next, event, at) {
+    const before = next.hold;
     const outcome = reduceQueueHold(
       {
         hold: next.hold,
@@ -4441,6 +4533,7 @@ export function createQueueStore(options = {}) {
     next.hold = outcome.state.hold;
     next.lineages = outcome.state.lineages;
     next.hold_history = outcome.state.hold_history;
+    recordHoldTransition(workspace, before, next.hold, event, at);
     return outcome;
   }
 
@@ -4578,6 +4671,23 @@ export function createQueueStore(options = {}) {
      */
     useTimeline(workspace, timeline) {
       timelines.set(keyFor(workspace), timeline);
+    },
+
+    /**
+     * Append ONE event to a bead's permanent history through the writer this
+     * workspace registered (record-timeline-retention §5).
+     *
+     * Exposed for the producers that hold no `deps` object of their own — the
+     * ws click handlers, which reach the store already and must NOT open the
+     * timeline file themselves: §5's single-writer rule says the handler ASKS
+     * the injected instance, and this is the ask. A workspace with no timeline
+     * registered records nothing.
+     *
+     * @param {string} workspace
+     * @param {import('./bead-timeline.js').TimelineAppendInput} input
+     */
+    recordTimelineEvent(workspace, input) {
+      appendTimeline(workspace, input);
     },
 
     /**
@@ -6992,7 +7102,7 @@ export function createQueueStore(options = {}) {
       /** @type {import('./queue-hold.js').QueueHoldResult|null} */
       let outcome = null;
       const result = applyUnconditional(workspace, (next) => {
-        outcome = applyHoldEvent(next, input.event, at);
+        outcome = applyHoldEvent(workspace, next, input.event, at);
         return true;
       });
       const settled =
@@ -8210,7 +8320,7 @@ export function createQueueStore(options = {}) {
           (entry) => entry.bead_id !== root_bead_id
         );
         if (hold_event) {
-          applyHoldEvent(next, hold_event, at);
+          applyHoldEvent(workspace, next, hold_event, at);
         }
         return true;
       });
