@@ -69,6 +69,10 @@ import {
   receiptDefaultsFrom,
   receiptProbeError
 } from './receipt-check.js';
+import {
+  __resetRecordMigrationPendingForTest,
+  createRecordRetention
+} from './record-retention.js';
 import { createRecoveryArchive } from './recovery-archive.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import { createRepoOperationMigration } from './repo-operation-migration.js';
@@ -108,6 +112,19 @@ const log = debug('worker:attach');
  * @type {number}
  */
 export const RECONCILE_INTERVAL_SECONDS = 60;
+
+/**
+ * How often the record-retention pass runs (record-timeline-retention §8.2).
+ *
+ * Daily, because both horizons are measured in DAYS: a shorter cadence would
+ * re-walk every bead directory to reach the same verdict, and a longer one
+ * would let the 30-day boundary drift by more than the resolution the policy
+ * is written in. The startup pass is what covers a server that was down when a
+ * bead crossed its horizon.
+ *
+ * @type {number}
+ */
+export const RECORD_RETENTION_INTERVAL_SECONDS = 24 * 60 * 60;
 
 /**
  * How long one target-base resolution stays good for the SCAN path
@@ -470,6 +487,7 @@ export function defaultProbePid(pid) {
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
  *   timeline?: ReturnType<typeof createBeadTimeline>,
+ *   recordRetention?: ReturnType<typeof createRecordRetention>,
  *   repoOperationMigration?: { run: () => Promise<any> },
  *   autoAdvanceRestore?: ReturnType<typeof createAutoAdvanceRestoreController>,
  *   getSubscriberCount?: () => number,
@@ -559,6 +577,36 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         runtime.titleCache.refreshFromIssue(workspace_root, issue);
       }
     });
+
+  // Record retention + the one-time record migration
+  // (record-timeline-retention §8). Constructed HERE, right after `bd`, because
+  // the sweep's "is this bead closed" question has exactly one answer seam
+  // (`bd.readStatus`) and this attachment already owns it.
+  //
+  // Constructing it is also what opens the health gate: `/healthz` reports
+  // not-ready from this point until `migrate()` runs in the startup sequence
+  // below.
+  const recordRetention =
+    options.recordRetention ||
+    createRecordRetention({
+      workspace_root,
+      timeline,
+      readStatus: (/** @type {string} */ bead_id) => bd.readStatus(bead_id)
+    });
+
+  // The daily retention pass. Like the reconciler this uses `createPoller` for
+  // its unref'd interval and double-start guard with a constant client count:
+  // retention is storage hygiene, not a view, so it must run on a server
+  // nobody is watching.
+  const recordRetentionPoller = createPoller({
+    intervalSeconds: RECORD_RETENTION_INTERVAL_SECONDS,
+    getClientCount: () => 1,
+    onTick: () => {
+      Promise.resolve(recordRetention.sweep()).catch((err) => {
+        log('record retention pass failed for %s: %o', workspace_root, err);
+      });
+    }
+  });
 
   // Workspace-scoped admission accessor (worker-autorun-policy §1): the
   // scheduler validates candidates/dispatches through `validate` (base
@@ -1603,6 +1651,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     deployTargetJudge,
     repoOperationCoordinator,
     repoOperationMigration,
+    recordRetention,
+    recordRetentionPoller,
     timeline,
     repo,
     resolveBase,
@@ -2022,6 +2072,21 @@ async function retireKindAttempts(att, key) {
  * @param {boolean} start_pr_poller
  */
 async function startWorkerAttachment(att, key, start_pr_poller) {
+  // FIRST, before anything can read `queue.json` (record-timeline-retention
+  // §8.3): the one-time record migration reduces that very file, so a reader
+  // that loaded it earlier would cache the pre-migration queue for the life of
+  // the process and then persist it back over the reduced one. It also lands
+  // ahead of the detached monitor reattach and both reconciles for the same
+  // reason — those are the first readers.
+  //
+  // Non-fatal: a migration that could not finish leaves the workspace in the
+  // layout it already had, which every read path still resolves, and the next
+  // start tries again. Its completion is what clears the health gate.
+  try {
+    att.recordRetention?.migrate();
+  } catch (err) {
+    log('record migration failed for %s: %o', key, err);
+  }
   await retireRepairLanes(att, key);
   await retireKindAttempts(att, key);
   try {
@@ -2097,6 +2162,17 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     att.reconciler.start();
   } catch (err) {
     log('reconcile timer start failed for %s: %o', key, err);
+  }
+  // The startup retention pass and its daily timer (§8.2). Fire-and-forget:
+  // archiving a month-old transcript is never on the path of anything a client
+  // is waiting for, and a failed pass simply runs again tomorrow.
+  Promise.resolve(att.recordRetention?.sweep()).catch((err) => {
+    log('startup record retention pass failed for %s: %o', key, err);
+  });
+  try {
+    att.recordRetentionPoller?.start();
+  } catch (err) {
+    log('record retention timer start failed for %s: %o', key, err);
   }
   try {
     att.mergeQueue.start();
@@ -2954,9 +3030,15 @@ export function __resetWorkerAttachmentsForTest() {
     } catch {
       /* ignore */
     }
+    try {
+      att.recordRetentionPoller?.stop();
+    } catch {
+      /* ignore */
+    }
   }
   ATTACHMENTS.clear();
   ATTACHMENT_STARTUPS.clear();
+  __resetRecordMigrationPendingForTest();
   auto_advance_restore_controller = null;
   unattachedAdmissionCheck = checkUnattachedWorkerAdmission;
 }

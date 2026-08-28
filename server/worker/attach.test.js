@@ -1034,6 +1034,45 @@ describe('worker/attach construction + live loop (F1)', () => {
     });
   });
 
+  test('runs the record migration before anything loads the queue file', async () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        attempts: {
+          'pre-1': { attempt_id: 'pre-1', bead_id: 'UI-1', status: 'done' }
+        }
+      })
+    );
+    const runtime = createWorkerRuntime();
+    // The stand-in reduces `queue.json` exactly the way the real §8.3 step 4
+    // does. If ANY startup step read the file first, the store would answer
+    // from the pre-migration cache and still carry `pre-1`.
+    const recordRetention = {
+      policy: () => ({ archive_days: 30, delete_days: 180 }),
+      migrate: vi.fn(() => {
+        fs.writeFileSync(queueFilePath(WS), JSON.stringify({ attempts: {} }));
+        return { ok: true, skipped: false, records: 1, moved: 0, events: 0 };
+      }),
+      sweep: vi.fn(async () => ({ archived: 0, deleted: 0, closed: 0 }))
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      recordRetention
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => recordRetention.sweep.mock.calls.length > 0);
+
+    expect(recordRetention.migrate).toHaveBeenCalledTimes(1);
+    expect(runtime.queueStore.snapshot(WS).attempts).toEqual({});
+  });
+
   test('retires a persisted repair lane before anything else observes it', async () => {
     // The legacy payload lives in a fixture on purpose: it is the one shape
     // that must still name the retired keys, and the identifier gate in

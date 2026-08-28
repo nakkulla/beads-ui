@@ -5,6 +5,7 @@ import {
 import { runBd, runBdJson } from './bd.js';
 import { resolveWorkspaceDatabase } from './db.js';
 import { MANUAL_MERGE_CONTINUATION } from './worker/queue-store.js';
+import { recordMigrationPending } from './worker/record-retention.js';
 import { getWorkerRuntime } from './worker/runtime.js';
 
 /**
@@ -100,6 +101,26 @@ export function defaultWorkerStatus(root_dir) {
 }
 
 /**
+ * Default record-layout probe (record-timeline-retention §8.3): false while a
+ * workspace's one-time record migration is still outstanding.
+ *
+ * The migration REDUCES `queue.json` and moves the session originals under
+ * `beads/`, so for its duration every durable record a client could ask for is
+ * mid-move. Reporting ready there would invite exactly the reads the fixed
+ * migration order exists to keep out.
+ *
+ * @param {string} root_dir
+ * @returns {boolean}
+ */
+export function defaultRecordsProbe(root_dir) {
+  try {
+    return !recordMigrationPending(root_dir);
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Default bd capability probe: the dual-mode producer observation for the
  * workspace, using the real bd runner.
  *
@@ -124,8 +145,12 @@ export async function defaultBdCapabilityProbe(root_dir) {
  * so an unhealthy protocol boundary turns it false and `/healthz` 503. The
  * typed detail is additive under `diagnostics.bd`.
  *
- * @param {{ root_dir?: string, bd_probe?: HealthProbe, db_probe?: HealthProbe, bd_capability_probe?: (root_dir: string) => Promise<{ ok: boolean, diagnostics: Record<string, unknown> }>, worker_status?: () => WorkerStatus, runtime_identity?: () => any }} [options]
- * @returns {Promise<{ ok: boolean, checks: { bd: boolean, db: boolean, worker: WorkerStatus }, runtime: any|null, diagnostics: { bd: Record<string, unknown> } }>}
+ * `checks.records` is the record-layout gate: a workspace whose one-time record
+ * migration has not finished is NOT ready, because the files a client would
+ * read are being moved out from under it.
+ *
+ * @param {{ root_dir?: string, bd_probe?: HealthProbe, db_probe?: HealthProbe, bd_capability_probe?: (root_dir: string) => Promise<{ ok: boolean, diagnostics: Record<string, unknown> }>, worker_status?: () => WorkerStatus, records_probe?: HealthProbe, runtime_identity?: () => any }} [options]
+ * @returns {Promise<{ ok: boolean, checks: { bd: boolean, db: boolean, records: boolean, worker: WorkerStatus }, runtime: any|null, diagnostics: { bd: Record<string, unknown> } }>}
  */
 export async function checkHealth(options = {}) {
   const root_dir = options.root_dir || process.cwd();
@@ -134,17 +159,21 @@ export async function checkHealth(options = {}) {
   const capability_probe =
     options.bd_capability_probe || defaultBdCapabilityProbe;
 
-  const [bd_alive, db, capability] = await Promise.all([
+  const records_probe =
+    options.records_probe || (() => defaultRecordsProbe(root_dir));
+
+  const [bd_alive, db, capability, records] = await Promise.all([
     runProbe(bd_probe),
     runProbe(db_probe),
-    runCapabilityProbe(capability_probe, root_dir)
+    runCapabilityProbe(capability_probe, root_dir),
+    runProbe(records_probe)
   ]);
 
   const worker = options.worker_status
     ? options.worker_status()
     : defaultWorkerStatus(root_dir);
   const bd = bd_alive && capability.ok;
-  const checks = { bd, db, worker };
+  const checks = { bd, db, records, worker };
   let runtime = null;
   try {
     runtime = options.runtime_identity ? options.runtime_identity() : null;
@@ -152,7 +181,7 @@ export async function checkHealth(options = {}) {
     runtime = null;
   }
   return {
-    ok: bd && db,
+    ok: bd && db && records,
     checks,
     runtime,
     diagnostics: { bd: capability.diagnostics }

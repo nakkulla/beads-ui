@@ -3822,10 +3822,14 @@ function beadsWithLiveRecords(q) {
  * a cap would evict by count, and the record it evicted first would be the
  * oldest unprocessed failure — exactly the one a human still has to look at.
  *
+ * Exported for `record-retention.js`: the one-time migration (§8.3 step 1)
+ * transfers exactly the same set out of the pre-split `queue.json`, and a
+ * second copy of this judgment would be free to drift from the live one.
+ *
  * @param {Queue} q
  * @returns {Attempt[]}
  */
-function transferableAttempts(q) {
+export function transferableAttempts(q) {
   const held = beadsWithLiveRecords(q);
   return Object.values(q.attempts).filter(
     (attempt) =>
