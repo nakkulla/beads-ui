@@ -69,10 +69,19 @@ import {
  * has no live elapsed clock (worker-phase1 §1.1/§2.1).
  * @property {boolean} [failed] - Unhandled failed/orphaned attempt. Failed
  * tiles stay visible for resume/discard actions and have no live controls.
+ * @property {boolean} [parked] - 사용자 결정을 기다리며 정상 종료한 attempt
+ * (UI-5ym8 §3.1). 실패가 아니므로 큐는 계속 가고, 타일은 `cause_detail.summary`
+ * 한 줄과 `재시도`·`폐기`만 싣는다.
+ * @property {boolean} [retry_wait] - 환경성 실패의 backoff를 기다리는 attempt
+ * (§3.3). 사람이 할 일이 없으므로 배지만 남고 조작은 없다.
  * @property {FailureTile|null} [failure] - Failed-tile decision material. The
- * renderer reads failure detail only through this explicit projection.
- * @property {'running'|'paused'|'failed'|'orphaned'} [status] - Raw attempt
- * status, used to distinguish failure from orphan interruption.
+ * renderer reads failure detail only through this explicit projection. A parked
+ * tile carries the SAME projection — the question it answers ("무엇이 이 시도를
+ * 끝냈나") is the same one.
+ * @property {RetryTile|null} [retry] - backoff 사실 (§6). `retry_wait` 타일의
+ * 배지 재료이며, 없으면 배지가 그려지지 않는다 (fail-quiet).
+ * @property {'running'|'paused'|'failed'|'orphaned'|'parked'|'retry_wait'} [status] - Raw
+ * attempt status, used to distinguish failure from orphan interruption.
  * @property {string} [status_label] - Terminal status label for a failed tile.
  * @property {boolean} [can_pause] - Running attempt whose session id is already
  * captured. Pausing before that would strand an unresumable attempt, so the ⏸
@@ -112,9 +121,27 @@ import {
  */
 
 /**
+ * One attempt's backoff record (UI-5ym8 §6). `attempts` counts the tries the
+ * lineage has spent INCLUDING this one, so `n/max` reads the way a person
+ * counts. `next_at` is absent when the retry is already due.
+ *
+ * @typedef {Object} RetryTile
+ * @property {string|null} cause
+ * @property {number} attempts
+ * @property {number} max
+ * @property {number|null} next_at
+ */
+
+/**
  * @typedef {Object} FailureTile
  * @property {string|null} cause
- * @property {{ reason?: string|null, command?: string|null }|null} cause_detail
+ * @property {{ reason?: string|null, command?: string|null, summary?: string|null }|null} cause_detail
+ * @property {string|null} [summary] - 세션의 마지막 오류/보고 한 줄 (UI-5ym8
+ * §6), `cause_detail`에서 끌어올린 값. 타일 본문과 팝오버 첫 줄이 같은 것을
+ * 읽는다. 옛 기록에는 없다 (fail-quiet).
+ * @property {string} [bead_id] - 이 시도가 속한 bead. `worker-parked-retry`가
+ * bead와 attempt를 함께 보내야 하므로 투영이 실어 나른다.
+ * @property {RetryTile|null} [retry] - 이 실패 앞에 있었던 backoff 이력 (§6).
  * @property {number|null} finished_at
  * @property {string|null} runner
  * @property {string|null} model
@@ -152,6 +179,49 @@ export function formatElapsed(ms) {
 }
 
 /**
+ * 세션이 남긴 한 줄의 표시 길이 (UI-5ym8 §6). 기록 쪽 규칙과 같은 200자다 —
+ * 서버가 이미 자른 값이 대부분이지만, 옛 기록과 다른 경로로 들어온 값까지
+ * 타일 높이를 좌우하게 두지 않는다.
+ */
+const SUMMARY_MAX = 200;
+
+/**
+ * @param {unknown} summary
+ * @returns {string}
+ */
+function summaryText(summary) {
+  if (typeof summary !== 'string' || summary.length === 0) {
+    return '';
+  }
+  return summary.length > SUMMARY_MAX
+    ? `${summary.slice(0, SUMMARY_MAX)}…`
+    : summary;
+}
+
+/**
+ * The 재시도 대기 badge: how many tries of how many, and when the next one is
+ * due (UI-5ym8 §8). Each half is dropped on its own when the record does not
+ * carry it, so an older or partial `retry` still says the one thing it knows.
+ *
+ * @param {RetryTile|null|undefined} retry
+ * @returns {string}
+ */
+function retryWaitBadgeText(retry) {
+  const count =
+    retry && retry.attempts > 0 && retry.max > 0
+      ? ` ${retry.attempts}/${retry.max}`
+      : '';
+  const next =
+    retry && typeof retry.next_at === 'number'
+      ? ` · ${new Date(retry.next_at).toLocaleTimeString('ko-KR', {
+          hour: '2-digit',
+          minute: '2-digit'
+        })}`
+      : '';
+  return `↻ 재시도 대기${count}${next}`;
+}
+
+/**
  * Failure detail shown from the cause badge. Every row is conditional so an
  * older attempt record never produces placeholder facts.
  *
@@ -165,6 +235,13 @@ function failurePopoverTemplate(failure, now) {
   }
   const cause_text =
     failureSentence(failure.cause) || failureText(failure.cause);
+  // 이 실패가 처음이 아니었다는 사실 (UI-5ym8 §8). 재시도 lineage는 같은 원인을
+  // 몇 번 다시 시도했는지만 말한다 — 다른 원인이었다면 그 attempt는 이 lineage에
+  // 속하지 않았을 것이므로, 문장은 "같은 오류"로 고정이다.
+  const retry_history =
+    failure.retry && failure.retry.attempts > 0
+      ? `자동 재시도 ${failure.retry.attempts}회 — 같은 오류`
+      : '';
   const detail = failure.cause_detail;
   const landing =
     failure.quickfix_lane && failure.quickfix_landing
@@ -207,10 +284,22 @@ function failurePopoverTemplate(failure, now) {
     aria-label="실패 상세"
   >
     <dl class="rtile__failure-kv">
+      ${failure.summary
+        ? html`<div>
+            <dt>보고</dt>
+            <dd>${failure.summary}</dd>
+          </div>`
+        : ''}
       ${cause_text
         ? html`<div>
             <dt>원인</dt>
             <dd>${cause_text}</dd>
+          </div>`
+        : ''}
+      ${retry_history
+        ? html`<div>
+            <dt>재시도 이력</dt>
+            <dd>${retry_history}</dd>
           </div>`
         : ''}
       ${failure.cause
@@ -484,6 +573,45 @@ function sessionOpenButton(current) {
 }
 
 /**
+ * The body of a tile that is WAITING rather than running (UI-5ym8 §8).
+ *
+ * A `retry_wait` tile has no body at all: its badge already says how many tries
+ * are left and when the next one fires, and there is nothing for a person to
+ * do — adding a line would only make the grid taller while the queue works.
+ *
+ * A `parked` tile has exactly two things to say: the one line the session left
+ * behind, and the two exits. The buttons sit in an action foot rather than in
+ * the header, because the header's right end already carries 상태 (카드 문법
+ * §5.1) and two more buttons there push it onto a second line at narrow widths.
+ *
+ * @param {boolean} parked
+ * @param {FailureTile|null} park - 대기 중인 attempt의 투영 (실패와 같은 모양).
+ * @param {import('lit-html').TemplateResult|''} discard_button - 실패 타일이 쓰는
+ * `.rtile__discard` 그대로. 같은 정리이므로 두 번째 조작을 만들지 않는다.
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function heldBodyTemplate(parked, park, discard_button) {
+  if (!parked) {
+    return '';
+  }
+  const summary = summaryText(park?.summary);
+  return html`${summary
+      ? html`<p class="rtile__held-summary">${summary}</p>`
+      : ''}
+    <div class="rtile__foot">
+      <button
+        type="button"
+        class="rtile__parked-retry"
+        title="이 bead를 새 attempt로 다시 디스패치합니다 (같은 세션을 잇지 않습니다)"
+        aria-label="재시도"
+      >
+        재시도
+      </button>
+      ${discard_button}
+    </div>`;
+}
+
+/**
  * One running-session tile. A click opens the bead detail like every other lane
  * surface (UI-k59y §3) — the live transcript is the tile's own [▤ 세션] button,
  * so the tile is not the one place on this board where the default click means
@@ -512,14 +640,29 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       : null;
   const failed = tile.failed === true;
   const failure = failed ? tile.failure || null : null;
+  // 파킹·backoff 대기는 실패가 아니다 (UI-5ym8 §2): 같은 투영을 읽지만 실패
+  // 뱃지도 팝오버도 얻지 않고, 큐가 계속 간다는 사실이 색으로도 보여야 한다.
+  const parked = tile.parked === true && !failed;
+  const retry_wait = tile.retry_wait === true && !failed && !parked;
+  const park = parked ? tile.failure || null : null;
+  const held = parked || retry_wait;
   const paused = !!tile.paused;
-  const elapsed = failed
-    ? tile.status_label || (tile.status === 'orphaned' ? '중단됨' : '실패')
-    : paused
-      ? '일시정지'
-      : typeof tile.started_at === 'number'
-        ? formatElapsed(now - tile.started_at)
-        : '—';
+  // 대기 중인 타일에 시계를 돌리면 멈춰 있는 것이 일하는 것처럼 읽힌다.
+  const elapsed =
+    failed || held
+      ? tile.status_label ||
+        (parked
+          ? '세션 대기'
+          : retry_wait
+            ? '재시도 대기'
+            : tile.status === 'orphaned'
+              ? '중단됨'
+              : '실패')
+      : paused
+        ? '일시정지'
+        : typeof tile.started_at === 'number'
+          ? formatElapsed(now - tile.started_at)
+          : '—';
   // 오케 칩이 종전 `formatAttemptTuple` 줄을 대신한다 (§4); 워커 칩만 있어도
   // meta 줄은 그려져야 하므로 표시 조건은 두 칩의 존재로 판정한다.
   const exec_chips =
@@ -620,6 +763,21 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           ? html`<span class="rtile__auto-halted">자동 진행 꺼짐</span>`
           : ''}`
     : '';
+  // 판정 칩 슬롯은 하나다 (카드 문법 §5.1): 실패 뱃지가 서는 그 자리에 파킹과
+  // backoff 대기가 선다. 셋은 배타적이므로 헤더 폭이 늘지 않는다.
+  const held_badge = parked
+    ? html`<span
+        class="rtile__held-badge"
+        title="세션이 사용자 결정을 기다리며 정상 종료했습니다 — 큐는 계속 갑니다"
+        >⏸ 세션 대기</span
+      >`
+    : retry_wait
+      ? html`<span
+          class="rtile__held-badge"
+          title="환경성 실패의 자동 재시도를 기다립니다 — 사람이 할 일은 없습니다"
+          >${retryWaitBadgeText(tile.retry)}</span
+        >`
+      : '';
   const status_badges = html`${conflict_badge
     ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
     : ''}${base_badge
@@ -628,7 +786,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         title="이 세션의 target base가 워크스페이스 선언 base와 다릅니다"
         >${base_badge}</span
       >`
-    : ''}${failure_badges}`;
+    : ''}${failure_badges}${held_badge}`;
   // 세션 타일의 수정 시각은 활동 줄이 "갱신 n 전"으로 이미 말한다 (§6) —
   // 같은 사실을 두 줄로 쓰지 않는다.
   const times_el = session ? '' : timesMeta(tile);
@@ -649,9 +807,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   return html`<div
     class="rtile${sel ? ' rtile--sel' : ''}${paused
       ? ' rtile--paused'
-      : ''}${failed ? ' rtile--failed rtile--compact' : ''}${session
-      ? ' rtile--session'
-      : ''}"
+      : ''}${failed ? ' rtile--failed rtile--compact' : ''}${held
+      ? ' rtile--held rtile--compact'
+      : ''}${parked ? ' rtile--parked' : ''}${retry_wait
+      ? ' rtile--retry-wait'
+      : ''}${session ? ' rtile--session' : ''}"
     data-bead-id=${tile.bead_id}
     data-attempt-id=${tile.attempt_id || ''}
   >
@@ -674,7 +834,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 >세션</span
               >`
           : html`<span class="rtile__elapsed">${elapsed}</span>`}
-        ${session
+        ${session || held
           ? ''
           : failed
             ? html`<button
@@ -721,66 +881,70 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       </div>
     </div>
     <div class="rtile__title">${tile.title}</div>
-    ${failed
-      ? ''
-      : html`${monitor_body}${tile.rollup
-            ? childRollupTemplate(tile.rollup, {
-                parent_id: tile.bead_id,
-                expanded: tile.rollup_expanded === true,
-                childChips: childExecChips
-              })
-            : ''}
-          ${landing
-            ? html`<div class="rtile__landing">
-                <span
-                  class="merge-step${landing.failed
-                    ? ' merge-step--failed'
-                    : ''}"
-                  style=${`--progress: ${landing.percent}%`}
-                  >${landing.label}${landing.index > 0
-                    ? html`<span class="merge-step__n"
-                        >${landing.index}/${landing.total}</span
-                      >`
-                    : ''}</span
-                >
-              </div>`
-            : ''}
-          ${monitor_deps}
-          ${session
-            ? session_meta
-            : monitor_chips ||
-                route_chip ||
-                exec_chips ||
-                rec_chip ||
-                provider_badges.length > 0 ||
-                usage_label
-              ? html`<div class="rtile__meta">
-                  ${monitor_chips}${route_chip}${execChipsTemplate(
-                    tile.exec_chips
-                  )}${rec_chip}
-                  ${provider_badges.length > 0
-                    ? provider_badges.map(
-                        (badge) =>
-                          html`<span class="worker-usage" title=${badge.tooltip}
-                            >${badge.label}</span
-                          >`
-                      )
-                    : usage_label
-                      ? html`<span
-                          class="worker-usage"
-                          title=${usageTooltip(tile.usage)}
-                          >${usage_label}</span
+    ${held
+      ? heldBodyTemplate(parked, park, discard_button)
+      : failed
+        ? ''
+        : html`${monitor_body}${tile.rollup
+              ? childRollupTemplate(tile.rollup, {
+                  parent_id: tile.bead_id,
+                  expanded: tile.rollup_expanded === true,
+                  childChips: childExecChips
+                })
+              : ''}
+            ${landing
+              ? html`<div class="rtile__landing">
+                  <span
+                    class="merge-step${landing.failed
+                      ? ' merge-step--failed'
+                      : ''}"
+                    style=${`--progress: ${landing.percent}%`}
+                    >${landing.label}${landing.index > 0
+                      ? html`<span class="merge-step__n"
+                          >${landing.index}/${landing.total}</span
                         >`
-                      : ''}
+                      : ''}</span
+                  >
                 </div>`
               : ''}
-          ${discardReceiptTemplate(tile)} ${times_el}
-          <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일).
+            ${monitor_deps}
+            ${session
+              ? session_meta
+              : monitor_chips ||
+                  route_chip ||
+                  exec_chips ||
+                  rec_chip ||
+                  provider_badges.length > 0 ||
+                  usage_label
+                ? html`<div class="rtile__meta">
+                    ${monitor_chips}${route_chip}${execChipsTemplate(
+                      tile.exec_chips
+                    )}${rec_chip}
+                    ${provider_badges.length > 0
+                      ? provider_badges.map(
+                          (badge) =>
+                            html`<span
+                              class="worker-usage"
+                              title=${badge.tooltip}
+                              >${badge.label}</span
+                            >`
+                        )
+                      : usage_label
+                        ? html`<span
+                            class="worker-usage"
+                            title=${usageTooltip(tile.usage)}
+                            >${usage_label}</span
+                          >`
+                        : ''}
+                  </div>`
+                : ''}
+            ${discardReceiptTemplate(tile)} ${times_el}
+            <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일).
          quick_fix landing의 실제 진행은 위의 별도 진행 줄이 소유한다.
          일시정지된 타일은 살아있지 않으므로 액센트도 없다. -->
-          ${failed || paused
-            ? ''
-            : html`<div class="rtile__accent" aria-hidden="true"></div>`}`}
+            ${failed || paused
+              ? ''
+              : html`<div class="rtile__accent" aria-hidden="true"></div>`}`}
     ${failurePopoverTemplate(failure, now)}
   </div>`;
 }
