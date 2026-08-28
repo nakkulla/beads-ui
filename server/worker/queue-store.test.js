@@ -9302,6 +9302,30 @@ describe('worker/queue-store — 자동 리뷰 dispatch claim (2026-08-28 auto-r
     });
   });
 
+  test('exhausts an active claim at the same head and writes nothing otherwise', () => {
+    const store = heldStore();
+    clickReviewSession(store, 'review:click');
+    const before = store.snapshot(WS).revision;
+
+    store.expireReviewDispatchClaim(WS, {
+      bead_id: 'UI-1',
+      head_sha: MOVED_HEAD
+    });
+    const untouched = store.snapshot(WS).merge_queue[0].review_dispatch;
+    store.expireReviewDispatchClaim(WS, {
+      bead_id: 'UI-1',
+      head_sha: CLAIM_HEAD
+    });
+
+    expect(untouched).toMatchObject({ state: 'active' });
+    expect(store.snapshot(WS).revision).toBe(before + 1);
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: CLAIM_HEAD,
+      attempt_id: 'review:click',
+      state: 'exhausted'
+    });
+  });
+
   test('deletes the claim when the receipt settles current', () => {
     const store = heldStore();
     clickReviewSession(store, 'review:click');

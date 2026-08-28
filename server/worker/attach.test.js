@@ -3220,8 +3220,9 @@ describe('worker/attach — review-session restart recovery (UI-d7fy §5)', () =
    * one `review_session` attempt bound to it.
    *
    * @param {Record<string, any>} attempt
+   * @param {Record<string, any>} [row] - Extra durable fields on the queued row.
    */
-  function seedReviewSessionQueue(attempt) {
+  function seedReviewSessionQueue(attempt, row = {}) {
     fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
     fs.writeFileSync(
       queueFilePath(WS),
@@ -3242,7 +3243,8 @@ describe('worker/attach — review-session restart recovery (UI-d7fy §5)', () =
               reason: 'review_receipt_missing',
               head_sha: 'a'.repeat(40),
               since: 10
-            }
+            },
+            ...row
           }
         ],
         attempts: {
@@ -3349,6 +3351,39 @@ describe('worker/attach — review-session restart recovery (UI-d7fy §5)', () =
     expect(runtime.queueStore.snapshot(WS).attempts['review:1']).toMatchObject({
       status: 'failed',
       cause: 'session_lost:process_gone'
+    });
+  });
+
+  test('exhausts the claim of an orphaned automatic attempt', async () => {
+    seedReviewSessionQueue(
+      { status: 'pending', origin: 'auto' },
+      {
+        review_dispatch: {
+          head_sha: 'a'.repeat(40),
+          attempt_id: 'review:1',
+          state: 'active',
+          at: 10
+        }
+      }
+    );
+    const { runtime } = attachWith({ state: 'gone' });
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(
+      () =>
+        runtime.queueStore.snapshot(WS).attempts['review:1'].status !==
+        'pending'
+    );
+
+    // The recovery supplies neither a final head nor a push verdict, and that
+    // omission IS the §5.2 fail-closed case: no automatic dispatch at any
+    // head, and the button is the exit.
+    expect(
+      runtime.queueStore.snapshot(WS).merge_queue[0].review_dispatch
+    ).toMatchObject({
+      head_sha: null,
+      attempt_id: 'review:1',
+      state: 'exhausted'
     });
   });
 

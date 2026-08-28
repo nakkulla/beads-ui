@@ -6917,7 +6917,10 @@ export function createQueueStore(options = {}) {
           ? requested
           : requested.filter(
               (entry) =>
-                !(typeof entry?.bead_id === 'string' && guarded.has(entry.bead_id))
+                !(
+                  typeof entry?.bead_id === 'string' &&
+                  guarded.has(entry.bead_id)
+                )
             );
       /**
        * Whether this Bead's most recent `[리뷰 후 머지]` session FAILED — the
@@ -7291,6 +7294,37 @@ export function createQueueStore(options = {}) {
         return true;
       });
       return reason === null ? result : { ...result, reason };
+    },
+
+    /**
+     * Correct a claim the records disagree about (2026-08-28
+     * auto-review-dispatch spec §4 4번): `active` on a head with no
+     * `review_session` attempt left to end it — what a restart recovery that
+     * never landed leaves behind. The claim moves to `exhausted` KEEPING its
+     * head, so the row reads as "this head spent its lineage" and the button
+     * stays its only exit. Anything else is left alone and writes nothing.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, head_sha: string }} input
+     * @returns {QueueOpResult}
+     */
+    expireReviewDispatchClaim(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === input.bead_id
+        );
+        const claim = entry?.review_dispatch ?? null;
+        if (
+          !entry ||
+          !claim ||
+          claim.state !== 'active' ||
+          claim.head_sha !== input.head_sha
+        ) {
+          return false;
+        }
+        entry.review_dispatch = { ...claim, state: 'exhausted', at: now() };
+        return true;
+      });
     },
 
     /**

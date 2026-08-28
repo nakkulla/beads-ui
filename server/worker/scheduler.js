@@ -7928,6 +7928,18 @@ export function createScheduler(deps) {
         : typeof snap.target_base === 'string' && snap.target_base.length > 0
           ? snap.target_base
           : 'main';
+    // PREVENTION LAYER (UI-8mvc §2), installed for a review session exactly as
+    // for an implementation one (2026-08-28 auto-review-dispatch spec §4.1).
+    // Two reasons: the completion verdict judges "did THIS session move the
+    // head" from the push log this produces (§5.2), and the review lineage's
+    // only permitted write is the PR head branch — a base ref push is
+    // contract-forbidden, and the hook is what refuses it. It goes in here,
+    // after the base resolution that supplies its subject and before the first
+    // state change (worktree, attempt record) — every early return below
+    // removes it again.
+    if (!installGuardHook({ workspace, attempt_id, repo, target_base: base })) {
+      return refuseLaunch('guard_hook_install_failed');
+    }
     const wt_present =
       typeof deps.worktree.exists === 'function'
         ? deps.worktree.exists(repo, bead_id)
@@ -7939,6 +7951,7 @@ export function createScheduler(deps) {
         input.head_ref ?? null
       );
       if (!restored.ok) {
+        removeGuardHook(workspace, attempt_id);
         return refuseLaunch(restored.reason);
       }
     }
@@ -7948,10 +7961,12 @@ export function createScheduler(deps) {
       await readWorkspaceAccountsLayer(workspace)
     );
     if (!resolved_exec.ok) {
+      removeGuardHook(workspace, attempt_id);
       return refuseLaunch(resolved_exec.reason);
     }
     const exec = resolved_exec.exec;
     if (exec.invalid_reason) {
+      removeGuardHook(workspace, attempt_id);
       return refuseLaunch(exec.invalid_reason);
     }
     // A `--resume` is a claude-transcript operation, so a resumed review runs
@@ -7977,6 +7992,7 @@ export function createScheduler(deps) {
     });
     if (!started.ok) {
       claimed.delete(bead_id);
+      removeGuardHook(workspace, attempt_id);
       return refuseLaunch('attempt_prerecord_failed');
     }
     notifyChanged(workspace);
@@ -8007,6 +8023,7 @@ export function createScheduler(deps) {
       // `launchSession`'s own spawn-abort cleanup already released it; this is
       // for the refusals it returns without reaching that path.
       claimed.delete(bead_id);
+      removeGuardHook(workspace, attempt_id);
       return refuseLaunch(launched.reason || 'spawn_failed');
     }
     return { ok: true, attempt_id };
