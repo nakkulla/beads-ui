@@ -9,6 +9,12 @@ const log = debug('config');
 const DEFAULT_POLL_INTERVAL_SECONDS = 30;
 /** Argv of the notification command when `[worker.notify]` pins none. */
 const DEFAULT_NOTIFY_CMD = ['discord'];
+/**
+ * The tmux session direction-inquiry windows are opened in when
+ * `[worker.direction_inquiry]` pins no name (UI-7uid §3.6). Its own session on
+ * purpose: an inquiry window must not be wedged into the user's work session.
+ */
+export const DEFAULT_INQUIRY_TMUX_SESSION = 'bdui-inquiry';
 const DEFAULT_WORKSPACE_CONFIG = {
   default_workspace: null,
   scan_roots: [],
@@ -125,6 +131,46 @@ function normalizeWorkerNotify(parsed) {
 }
 
 /**
+ * Normalize the `[worker.direction_inquiry]` section (UI-7uid §3.6) into
+ * `{ enabled, tmux_session }`.
+ *
+ * Whether a machine may start a direction-inquiry session is a CONFIG
+ * declaration, not a host test:
+ *
+ *   [worker.direction_inquiry]
+ *   enabled = true
+ *   # tmux_session = "bdui-inquiry"   # optional
+ *
+ * Same fail-quiet rules as `[worker.notify]`: an absent section or an `enabled`
+ * that is not exactly `true` yields disabled, so a host without the Discord
+ * bridge keeps the existing park-and-click behaviour by simply never opting in.
+ *
+ * @param {any} parsed
+ * @returns {{ enabled: boolean, tmux_session: string }}
+ */
+function normalizeDirectionInquiry(parsed) {
+  const disabled = {
+    enabled: false,
+    tmux_session: DEFAULT_INQUIRY_TMUX_SESSION
+  };
+  const section = parsed?.worker?.direction_inquiry;
+  if (!section || typeof section !== 'object' || Array.isArray(section)) {
+    return disabled;
+  }
+  if (/** @type {any} */ (section).enabled !== true) {
+    return disabled;
+  }
+  const name = /** @type {any} */ (section).tmux_session;
+  return {
+    enabled: true,
+    tmux_session:
+      typeof name === 'string' && name.trim().length > 0
+        ? name.trim()
+        : DEFAULT_INQUIRY_TMUX_SESSION
+  };
+}
+
+/**
  * Hand the raw `[runner]` section through untouched (worker-multi-provider-runner
  * §B). Validation and the deep merge onto the builtin catalog belong to
  * `server/worker/runner-catalog.js`, which is the only consumer and owns the
@@ -169,6 +215,7 @@ function normalizePollIntervalSeconds(value) {
  *   },
  *   poll_interval_seconds: number,
  *   worker_notify: { enabled: boolean, cmd: string[] },
+ *   worker_direction_inquiry: { enabled: boolean, tmux_session: string },
  *   runner_overrides: Record<string, unknown>
  * }}
  */
@@ -205,6 +252,7 @@ function readRuntimeConfig(config_path) {
         parsed?.poll_interval_seconds
       ),
       worker_notify: normalizeWorkerNotify(parsed),
+      worker_direction_inquiry: normalizeDirectionInquiry(parsed),
       runner_overrides: readRunnerOverrides(parsed)
     };
   } catch (error) {
@@ -226,6 +274,10 @@ function readRuntimeConfig(config_path) {
       },
       poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
       worker_notify: { enabled: false, cmd: DEFAULT_NOTIFY_CMD.slice() },
+      worker_direction_inquiry: {
+        enabled: false,
+        tmux_session: DEFAULT_INQUIRY_TMUX_SESSION
+      },
       runner_overrides: {}
     };
   }
@@ -256,6 +308,7 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *   },
  *   poll_interval_seconds: number,
  *   worker_notify: { enabled: boolean, cmd: string[] },
+ *   worker_direction_inquiry: { enabled: boolean, tmux_session: string },
  *   runner_overrides: Record<string, unknown>
  * }}
  */

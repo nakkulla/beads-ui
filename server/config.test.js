@@ -333,6 +333,90 @@ workspaces = ["/repo-a"]
   });
 });
 
+describe('[worker.direction_inquiry] section (UI-7uid §3.6)', () => {
+  test('reads an enabled section with the default tmux session', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.direction_inquiry]
+enabled = true
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_direction_inquiry).toEqual({
+      enabled: true,
+      tmux_session: 'bdui-inquiry'
+    });
+  });
+
+  test('reads an explicit tmux session name', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.direction_inquiry]
+enabled = true
+tmux_session = "inquiry-lane"
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_direction_inquiry).toEqual({
+      enabled: true,
+      tmux_session: 'inquiry-lane'
+    });
+  });
+
+  test('falls back to the default session on a non-string name', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.direction_inquiry]
+enabled = true
+tmux_session = 7
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_direction_inquiry).toEqual({
+      enabled: true,
+      tmux_session: 'bdui-inquiry'
+    });
+  });
+
+  test('disables when enabled is not exactly true', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.direction_inquiry]
+enabled = "yes"
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_direction_inquiry).toEqual({
+      enabled: false,
+      tmux_session: 'bdui-inquiry'
+    });
+  });
+
+  test('disables when the section is absent', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+workspaces = ["/repo-a"]
+`);
+
+    const config = getConfig();
+
+    expect(config.worker_direction_inquiry).toEqual({
+      enabled: false,
+      tmux_session: 'bdui-inquiry'
+    });
+  });
+
+  test('disables when the config file is missing', () => {
+    process.env.BDUI_CONFIG_PATH = missingConfigPath();
+
+    const config = getConfig();
+
+    expect(config.worker_direction_inquiry).toEqual({
+      enabled: false,
+      tmux_session: 'bdui-inquiry'
+    });
+  });
+});
+
 describe('obsolete [auth] section', () => {
   test('warns once and drops the section when [auth] is present', () => {
     process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
