@@ -295,6 +295,13 @@ exit·usage를 쓰지 않는다" 규칙과 그 테스트는 유지된다 — 이
 ## 경계·후속
 
 - 없음 — 다른 저장소·소유자로 갈라지는 작업이 없다.
+
+scope 겹침(`stale-rereview-inputs.py`, 2026-08-29):
+
+| Bead | 상태 | 겹치는 경로 | 관계 |
+| --- | --- | --- | --- |
+| UI-8jau (`2026-08-28-worker-prerequisite-wait-tier-design.md`) | in_progress | `scheduler.js`, `attach.js` | 같은 파일의 다른 절. 8jau는 `onSessionDone`의 구현 attempt 종결 판정·`settleFailureTier`·터미널 status 집합(`waiting` 추가)·`attach.js`의 `bd.readIssue` 주입을 만지고, 이 스펙은 `isSchedulerOwned`·`reconcile`의 dead 처분·`occupiedBeadIds`·`disposeDeadReviewSession`(신설)을 만진다. `onSessionDone`의 리뷰 분기는 8jau의 판정 삽입 위치(`recordReceiptCheck` 뒤) 앞에서 return하므로 서로 닿지 않는다. 새 `waiting` 상태는 terminal이며 `review_session`은 그 상태를 얻지 않는다. 먼저 착지하는 쪽이 base가 되고, 뒤쪽은 staleness re-review로 정합한다. 의존 엣지 없음 |
+| UI-e20c (`2026-08-29-queue-transfer-suffix-invariant-design.md`) | open | `scheduler.js` | 같은 파일의 다른 절. e20c는 이관 reader(`activeLaneLineages`·`latestImplementationAttempt`·`resumableResidueAttempts`·`resolveConflict`)를 읽기만 하고 `queue-store.js`의 이관 판정을 바꾼다. 이 스펙의 §1.3·§3.5(비terminal `review_session`의 `orphaned` 종단)는 e20c의 hold 규칙("bead에 미처리 attempt가 있으면 이관 불가")이 영구 hold로 굳는 원인 하나를 없애는 관계이며, e20c의 규칙 자체는 바꾸지 않는다. 의존 엣지 없음 |
 - 관찰: 재시작 뒤 취소(§5.6)는 `running` 핸들이 없어 살아남은 프로세스를 죽이지 못한다
   (`stopReviewSessionProcess`가 monitor만 멈춤) — 이 스펙 뒤에는 그 세션이 끝나면 3.5가
   `orphaned`로 닫으므로 기록은 정리되지만, 즉시 종료를 원하면
