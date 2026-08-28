@@ -54,9 +54,10 @@ beads-ui는 이 계약의 소비자다(AGENTS.md). 이 스펙은 새 계층을 �
 2. **claim 뒤의 dispatch 실패는 전부 `exhausted`다.** launch 거부·spawn 오류·환경성
    거부를 구분하지 않는다(계약 문구 그대로). 보류 유지, 사유 표시, `[리뷰 후 머지]`가
    출구.
-3. **착지 순서: UI-5ym8 머지 뒤.** UI-5ym8(in_progress)이 `queue-store.js`·`scheduler.js`를
-   함께 수정하므로 `blocks` 의존을 걸고 그 머지 base에서 구현한다. spec 리뷰는 지금
-   진행한다.
+3. **착지 순서: UI-5ym8 머지 뒤.** UI-5ym8이 `queue-store.js`·`scheduler.js`를 함께
+   수정하므로 `blocks` 의존을 걸고 그 머지 base에서 구현한다. spec 리뷰는 지금
+   진행한다. (2026-08-28 재리뷰: UI-5ym8은 `c02f321`로 착지해 `closed`이며 이 선행은
+   해소됐다.)
 
 UI-d7fy 결정 3("자동 dispatch 대신 버튼")은 계약 정정에 따라 이 스펙이 supersede한다.
 UI-d7fy §5의 버튼 자체·세션 범위·완료 판정·취소는 그대로다.
@@ -292,8 +293,9 @@ lineage로 본다.
 - `hold.auto_review_wait==='slot'`: 텍스트 `리뷰 세션 슬롯 대기`, title에 "실행 슬롯이
   비면 자동으로 리뷰 세션을 띄웁니다. 지금 클릭하면 즉시 띄웁니다".
 - `index.js` 버튼 활성 조건의 게이트 사유 목록에 `review_receipt_invalid`·
-  `review_receipt_undetermined`를 더하고, 877행 `review_receipt_invalid` 전용 뱃지와
-  1318행의 "undetermined 제외" 주석은 §4 1번에 맞춰 정리한다.
+  `review_receipt_undetermined`를 더하고, `prStatusBadge`의 `review_receipt_invalid`
+  전용 뱃지(879행)와 "undetermined 제외" 주석 셋(`prStatusBadge` 845행, `prWaitRow`의
+  `review_after_merge` 1158행·버튼 활성 조건 1320행)은 §4 1번에 맞춰 정리한다.
 
 카드 문법(AGENTS.md·스펙 §5.1 슬롯 표)상 이 텍스트는 모두 **진행 줄**의 게이트 뱃지 옆
 자리이며 새 칩·새 슬롯을 만들지 않는다. 자동 attempt의 `'리뷰 · 자동'` 배지는 이미
@@ -319,14 +321,17 @@ lineage로 본다.
 
 ### 8.1 스코프 겹침 (미종결 Bead·spec)
 
+상태는 2026-08-28 재리뷰(anchor `ac7c242`) 시점의 사실이다.
+
 | Bead | 상태 | 교차 경로 | 관계 |
 |---|---|---|---|
-| UI-5ym8 | in_progress | `queue-store.js`·`scheduler.js`·`attach.js`·`app/views/worker/` | **선행(`blocks`)**. 같은 파일의 다른 절(큐 `hold`/`lineages` reducer·attempt status vs 이 스펙의 merge_queue 행 claim). 이 스펙은 UI-5ym8 머지 base에서 구현한다(결정 3). |
-| UI-8wpb | open | `queue-store.js`·`scheduler.js`·`attach.js`·`app/views/worker/` | 같은 파일의 다른 절. UI-8wpb §7이 terminal attempt를 `attempts/<id>.json`으로 이관해도 이 스펙의 판정은 **비종결** attempt(in-flight 가드)와 행 수준 `review_dispatch`에만 의존하므로 영향이 없다. `reviewSessionRowState`의 "마지막 실패" 읽기는 UI-8wpb가 먼저 착지하면 그 합집합 reader(`readAttemptsForBead`)를 쓴다; 소진 표시 자체는 claim이 담당해 이관과 무관하다. |
+| UI-5ym8 | closed(`c02f321`) | `queue-store.js`·`scheduler.js`·`attach.js`·`app/views/worker/` | **선행(`blocks`) — 해소**. 같은 파일의 다른 절(큐 `hold`/`lineages` reducer·attempt status vs 이 스펙의 merge_queue 행 claim)로 착지했고, `merge_queue` 행의 `authority`/`hold`/`review_session` 경로는 손대지 않았다. `settleFailureTier`의 새 상태(`parked`·`retry_wait`·`superseded`)는 `review_session` attempt에 닿지 않는다 — `onSessionDone`이 리뷰 세션을 `failAttempt` 앞에서 `reviewSession.complete()`로 분기하고, 리뷰 launch 거부는 `finalizeLaunchRefusal`이 아니라 `review-session.js`의 `settle`로 간다. 따라서 §4 3번의 `pending|running` in-flight 가드는 그대로 성립한다. |
+| UI-8wpb | in_progress | `queue-store.js`·`scheduler.js`·`attach.js`·`app/views/worker/` | 같은 파일의 다른 절. UI-8wpb §7이 terminal attempt를 `attempts/<id>.json`으로 이관해도 이 스펙의 판정은 **비종결** attempt(in-flight 가드)와 행 수준 `review_dispatch`에만 의존하므로 영향이 없다. `reviewSessionRowState`의 "마지막 실패" 읽기는 UI-8wpb가 먼저 착지하면 그 합집합 reader(`readAttemptsForBead`)를 쓴다; 소진 표시 자체는 claim이 담당해 이관과 무관하다. |
 | UI-jr8v | deferred | `server/worker/`·`app/views/worker/` | 다른 절. UI-jr8v §6 러너 단위 `provider_hold` 게이트가 착지하면 자동 리뷰 dispatch도 그 게이트에 걸려 launch 거부 → 결정 2대로 `exhausted`. 공급자 장애 중 자동 1회를 소비하는 셈이지만 버튼이 출구로 남고, 자동 재개 정책은 UI-jr8v가 소유한다. |
-| UI-7uid | open | `scheduler.js` | 다른 함수(방향 질의 세션 기동 vs `dispatchReviewSession` 호출자). 방향 질의는 파킹된 구현 attempt에, 이 스펙은 pr_wait 행에 작동해 같은 Bead에서 동시에 성립하지 않는다. |
-| UI-q1y7 | open | `app/views/worker/index.js` | 다른 절(후보 레인 인접 배치 vs PR 대기 행 진행 줄 텍스트). |
-| UI-8x90 | open | `app/views/worker/index.js`·`lanes.js` | 다른 절. 이 스펙의 텍스트는 진행 줄 게이트 뱃지 옆 슬롯이며, UI-8x90이 먼저 착지하면 그 글리프+ID 라벨 문법을 따른다. |
+| UI-7uid | closed(`8b1e82e`) | `scheduler.js` | 다른 함수 — 확인됨. `fireDirectionInquiry`는 `settleFailureTier`의 `parked` 갈래에서만 발화하고, 이 스펙은 pr_wait 행의 `holdEntry`에 작동해 같은 Bead에서 동시에 성립하지 않는다. |
+| UI-q1y7 | closed(`7aba418`) | `app/views/worker/index.js` | 다른 절 — 확인됨(후보 레인 인접 배치 vs PR 대기 행 진행 줄 텍스트). |
+| UI-8x90 | closed(`3741fb1`) | `app/views/worker/index.js`·`lanes.js` | 다른 절 — 확인됨. 이 스펙의 텍스트가 앉는 자리(`prStatusBadge`의 게이트 뱃지 라벨·`title`, `prWaitRow`)는 그대로이며, 새 칩을 만들지 않으므로 글리프+ID 라벨 문법과 충돌하지 않는다. |
+| UI-8h1x | closed(`5bf9347`) | `scheduler.js`·`app/views/worker/` | 다른 절. quick_fix 착지 정산 재개 판정이며 `merge_queue` 행·리뷰 세션 경로와 교차하지 않는다. |
 | UI-ww5s | deferred(은퇴) | `merge-queue.js`·`queue-store.js`·`scheduler.js` | UI-d7fy가 폐기한 `resolver-self:` 경로의 spec. 이 스펙과 살아 있는 교차 없음(historical-read). |
 
 
@@ -380,9 +385,9 @@ lineage로 본다.
 
 ## 착지 순서
 
-UI-5ym8(in_progress) → **UI-qksl**. 라우터가 `bd dep add UI-qksl UI-5ym8 --type blocks`를
-걸고, 구현은 UI-5ym8 머지 base에서 시작한다. 이 스펙의 함수·필드 이름이 기준이며
-UI-5ym8이 옮긴 위치는 구현 시 다시 잡는다.
+UI-5ym8 → **UI-qksl**. `bd dep add UI-qksl UI-5ym8 --type blocks`는 걸려 있고,
+UI-5ym8은 `c02f321`로 착지해 `closed`다. 구현은 그 뒤의 base에서 시작한다. 이 스펙의
+함수·필드 이름이 기준이며 UI-5ym8이 옮긴 위치는 구현 시 다시 잡는다.
 
 ## 결정 (ADR 후보)
 
