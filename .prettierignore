@@ -12,3 +12,9 @@ app/main.bundle.js.map
 # Pinned byte-exact contract copies from dotfiles. Reformatting them would
 # break the digest the contract test pins, which is the point of the pin.
 generated/contracts/
+
+# ADR files and their generated index. `adr-index.py` owns README.md byte for
+# byte (unpadded table cells prettier would re-align), and its stdlib-only
+# frontmatter reader rejects the multi-line scalars prettier folds a long
+# `summary:` into. Formatting either one puts the two tools in a loop.
+docs/adr/

@@ -1,3 +1,12 @@
+---
+id: 1
+title: Push‑Only Lists (v2)
+status: superseded
+date: 2025-10-26
+summary: '리스트 뷰는 push 데이터만으로 렌더하고 list-issues·epic-status 같은 읽기 RPC를 제거한다'
+superseded_by: 2
+---
+
 # ADR 001 — Push‑Only Lists (v2)
 
 ```
