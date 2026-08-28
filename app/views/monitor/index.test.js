@@ -1199,7 +1199,9 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     view.load();
     click(mount, '.rtile__discard');
 
-    expect(confirmFn.mock.calls[0][0]).toContain('revert PR');
+    expect(confirmFn).toHaveBeenCalledWith(
+      expect.stringContaining('revert PR')
+    );
     expect(sent).toEqual([]);
   });
 

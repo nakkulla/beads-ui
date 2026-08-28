@@ -45,7 +45,10 @@ Worker 탭 후보 레인에서는 그것을 알아볼 수 없다.
 4. 서버는 후보 이슈 객체에 `release_info`·`dependents_info`를 additive·partial로
    싣는다. 같은 레포는 스냅샷에서 계산하고, foreign은 기존 캐시를 넓힌다. 없는
    키는 "모름"이며 클라이언트는 칩 생략·정렬 맨 뒤로 읽는다(fail-quiet).
-5. Blocked 이슈는 체인과 무관하게 항상 맨 아래 그룹이다(관측용, 현행 유지).
+5. ~~Blocked 이슈는 체인과 무관하게 항상 맨 아래 그룹이다(관측용, 현행 유지).~~
+   **UI-8ham에서 철회**: 순서는 체인만이 정한다. blocked인지는 `⛓ blocked` 칩이
+   말하고, 실행 자격은 `queue_placeable`과 서버 admission이 지키므로 순서가 그
+   사실을 두 번 표시할 이유가 없었다.
 
 ## 3. 서버
 
@@ -190,9 +193,10 @@ dependents_info: { count: number, ids: string[] }  // 열린 후속만, ids는 �
   "맨 뒤"는 `dependents asc`에서도 후속이 있는 행(1 이상)이 먼저 오고 키 없는
   행이 뒤에 온다는 뜻이다.
 - 체인 길이 1~3. 마지막에 암묵 tiebreak `created asc → id asc`가 붙는다.
-- `applyCandidateSort(issues, state)`는 `cmpChain(steps)`로 정렬한 뒤 **Blocked
-  이슈를 안정 분할로 맨 아래**에 둔다. Blocked 판정은 지금과 같이 `blocked_ids`
-  집합이다(호출 측이 넘긴다).
+- `applyCandidateSort(issues, state)`는 `cmpChain(steps)`로만 정렬한다
+  (UI-8ham). Blocked 이슈를 맨 아래로 내리던 안정 분할과 `blocked_ids` 인자는
+  없앴다 — `blocked_ids`는 호출 측에 행 사유(`⛓ blocked` 칩) 계산용으로만
+  남는다.
 - `cmpChain`은 `app/data/sort.js`에 두고, 기존 `cmpCreatedDescThenPriority`
   등과 같은 파일에서 테스트한다. `cmpEffectiveRank`는 Board 탭이 계속 쓰므로
   남긴다.
@@ -343,7 +347,7 @@ dependents?: DependentsChip     // `→ 후속 n`
 - `cmpChain` 키별 비교·방향 반전·"없음 처리"가 방향과 무관·암묵 tiebreak.
 - 프리셋 4개의 체인, 옛 문자열 4종+미지 값 마이그레이션, 미지 step 폴백,
   프리셋과 같은 체인의 `{preset}` 정규화.
-- Blocked 이슈가 어느 체인에서도 맨 아래.
+- Blocked 이슈가 체인 위치대로 정렬됨(맨 아래 고정 없음, UI-8ham).
 - `releasedChip` 7일 창·최대 2개·` 외 n`·foreign 색; `dependentsChip` 라벨·툴팁.
 - 후보 카드 `draggable="false"`이면서 `queue_placeable`이면 `[대기로 ↴]`가
   그려지고 배치 메뉴가 열림, `worker_ineligible`이면 둘 다 없음; foot이
