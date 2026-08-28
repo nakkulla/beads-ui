@@ -504,6 +504,26 @@ export function discardProjection(operations, bead_id, input = {}) {
 }
 
 /**
+ * Whether a quick-fix attempt has crossed base containment and reached a
+ * landing-owned cleanup step. Earlier or absent cursors do not prove landing.
+ *
+ * @param {Record<string, any>|null|undefined} attempt
+ * @returns {boolean}
+ */
+export function quickFixLanded(attempt) {
+  if (!attempt || attempt.quickfix_lane !== true) {
+    return false;
+  }
+  const landing = attempt.quickfix_landing;
+  if (!landing || typeof landing !== 'object') {
+    return false;
+  }
+  return ['repo_operations', 'branch_cleanup', 'parent_close'].includes(
+    landing.cursor
+  );
+}
+
+/**
  * Durable discard progress, error, archive, and PR receipts. This same
  * template is used by Worker rows, running tiles, and Monitor cards.
  *

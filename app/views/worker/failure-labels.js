@@ -29,7 +29,9 @@ const FAILURE_CATEGORIES = {
   verify_script_failure: '검증 실패',
   deploy_failed: '배포 실패',
   deploy_script_failure: '배포 실패',
-  interrupted_without_terminal_exit: '중단됨'
+  interrupted_without_terminal_exit: '중단됨',
+  quickfix_landing_failed: '착지 실패',
+  runner_exit: '세션 실패'
 };
 
 /**
@@ -48,20 +50,37 @@ function segmentsOf(code) {
 }
 
 /**
- * The category word for a failure code, or null when no segment maps to one.
+ * The mapped category word for a failure code, before the public fallback.
  *
  * @param {unknown} code
  * @returns {string|null}
  */
-export function failureCategory(code) {
+function mappedFailureCategory(code) {
   for (const segment of segmentsOf(code)) {
     // Own-property only: a token like `constructor` or `toString` would
     // otherwise match a prototype member and escape the raw-token fallback.
     if (Object.hasOwn(FAILURE_CATEGORIES, segment)) {
       return FAILURE_CATEGORIES[segment];
     }
+    if (segment.startsWith('session_')) {
+      return '세션 실패';
+    }
   }
   return null;
+}
+
+/**
+ * The category word for a failure code. A present but unclassified token is
+ * still a failure, while absent or malformed input stays quiet.
+ *
+ * @param {unknown} code
+ * @returns {string|null}
+ */
+export function failureCategory(code) {
+  if (segmentsOf(code).length === 0) {
+    return null;
+  }
+  return mappedFailureCategory(code) || '실패';
 }
 
 /**
@@ -92,7 +111,7 @@ export function failureSentence(code) {
  * @returns {string}
  */
 export function failureText(code) {
-  const category = failureCategory(code);
+  const category = mappedFailureCategory(code);
   const sentence = failureSentence(code);
   if (category && sentence) {
     return `${category} — ${sentence}`;
@@ -112,7 +131,7 @@ export function failureText(code) {
  * @returns {boolean}
  */
 export function isKnownFailure(code) {
-  return failureCategory(code) !== null || failureSentence(code) !== null;
+  return mappedFailureCategory(code) !== null || failureSentence(code) !== null;
 }
 
 /**
@@ -132,7 +151,7 @@ export function isKnownFailure(code) {
  * @returns {string}
  */
 export function operationFailureText(kind, code) {
-  const category = failureCategory(kind) ?? failureCategory(code);
+  const category = mappedFailureCategory(kind) ?? mappedFailureCategory(code);
   const sentence = failureSentence(code) ?? failureSentence(kind);
   if (category && sentence) {
     return `${category} — ${sentence}`;

@@ -955,6 +955,9 @@ describe('worker discard coordinator unmerged lifecycle', () => {
       backup: { path: '/state/archive' }
     });
     expect(env.store.snapshot(workspace).pr_wait).toEqual([]);
+    expect(env.store.snapshot(workspace).attempts['att-1']).toMatchObject({
+      dismissed_at: 100
+    });
     expect(env.scheduler.finalizeDiscardAttempt).toHaveBeenCalledWith(
       workspace,
       'att-1'

@@ -415,6 +415,8 @@ export function createMonitorView(mount_element, options) {
    * @type {{ bead_id: string, counterpart_id: string }|null}
    */
   let open_overlap = null;
+  /** @type {string|null} */
+  let open_failure_detail = null;
 
   /**
    * 한 계획을 보내는 동안 이미 적용된 dep op (§5.5). 충돌 뒤 재계획은 아직
@@ -1753,11 +1755,16 @@ export function createMonitorView(mount_element, options) {
                 failed: item.run_state === 'failed',
                 status: /** @type {any} */ (item.status),
                 status_label: item.run_state === 'failed' ? '실패' : undefined,
-                resume_eligible: item.can_resume !== false,
                 can_pause: item.can_pause !== false,
                 exec_chips: item.exec_chips || null,
                 usage: item.usage || null,
-                discard: item.discard
+                discard: item.discard,
+                failure: item.failure
+                  ? {
+                      ...item.failure,
+                      open: open_failure_detail === item.attempt_id
+                    }
+                  : null
               },
               now,
               selected_attempt,
@@ -3568,6 +3575,25 @@ export function createMonitorView(mount_element, options) {
       );
       return;
     }
+    if (cls.contains('rtile__failure-badge')) {
+      open_failure_detail =
+        open_failure_detail === attempt_id ? null : attempt_id;
+      doRender();
+      return;
+    }
+    if (cls.contains('rtile__attempt-copy')) {
+      const value = button.getAttribute('data-attempt-id') || '';
+      if (value) {
+        void copyToClipboard(value).then((ok) => {
+          showToast(
+            ok ? '복사됨' : '복사 실패',
+            ok ? 'success' : 'error',
+            1400
+          );
+        });
+      }
+      return;
+    }
     if (cls.contains('worker-card__place')) {
       // 좁은 화면/coarse pointer 전용 보완재 (§5): 어느 레인에 넣을지부터 묻는다.
       place_menu_bead = place_menu_bead === bead_id ? null : bead_id;
@@ -3634,17 +3660,10 @@ export function createMonitorView(mount_element, options) {
       });
       return;
     }
-    if (cls.contains('rtile__dismiss')) {
-      void sendCas(
-        'worker-attempt-dismiss',
-        { attempt_id },
-        root_dir,
-        revision
-      );
-      return;
-    }
     if (cls.contains('rtile__discard')) {
-      if (!confirmFn(discardConfirmationMessage(bead_id, 'unmerged'))) {
+      const confirmation =
+        button.dataset.confirmation === 'merged' ? 'merged' : 'unmerged';
+      if (!confirmFn(discardConfirmationMessage(bead_id, confirmation))) {
         return;
       }
       void discardBead(
@@ -3880,6 +3899,9 @@ export function createMonitorView(mount_element, options) {
       runRowAction(button, bead_id);
       return;
     }
+    if (target.closest('.rtile__failure-pop')) {
+      return;
+    }
     if (bead_id && !after_drag) {
       ev.preventDefault();
       // 연결 레인 행은 집계에 없는 노드까지 그리므로 자기 레포를 스스로 싣는다.
@@ -3960,6 +3982,13 @@ export function createMonitorView(mount_element, options) {
       open_overlap = null;
       changed = true;
     }
+    if (
+      open_failure_detail &&
+      !closest('.rtile__failure-pop, .rtile__failure-badge')
+    ) {
+      open_failure_detail = null;
+      changed = true;
+    }
     if (changed) {
       doRender();
     }
@@ -3969,10 +3998,14 @@ export function createMonitorView(mount_element, options) {
    * @param {KeyboardEvent} ev
    */
   function onDocumentKeyDown(ev) {
-    if (ev.key !== 'Escape' || !open_overlap) {
+    if (
+      ev.key !== 'Escape' ||
+      (!open_overlap && open_failure_detail === null)
+    ) {
       return;
     }
     open_overlap = null;
+    open_failure_detail = null;
     doRender();
   }
 

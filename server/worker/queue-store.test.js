@@ -1877,6 +1877,85 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
     ).toBe('done');
   });
 
+  test('stamps the source attempt while completing discard in one persist', () => {
+    let writes = 0;
+    const store = createQueueStore({
+      now: () => 1234,
+      fs: /** @type {any} */ ({
+        readFileSync: fs.readFileSync,
+        mkdirSync: fs.mkdirSync,
+        renameSync: fs.renameSync,
+        /**
+         * @param {string} file
+         * @param {string} data
+         */
+        writeFileSync(file, data) {
+          writes += 1;
+          fs.writeFileSync(file, data);
+        }
+      })
+    });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'att-1',
+        bead_id: 'UI-1',
+        status: 'discarded'
+      }
+    });
+    store.createDiscardOperation(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      operation: {
+        operation_id: 'discard-1',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        source_snapshot: { repo: '/repo' }
+      }
+    });
+    writes = 0;
+
+    const completed = store.completeDiscardOperation(WS, {
+      operation_id: 'discard-1',
+      expected_phase: 'requested'
+    });
+
+    expect(completed.queue.attempts['att-1']).toMatchObject({
+      status: 'discarded',
+      dismissed_at: 1234
+    });
+    expect(completed.queue.discard_operations['discard-1'].phase).toBe('done');
+    expect(writes).toBe(1);
+  });
+
+  test('preserves an existing discard-handled stamp', () => {
+    const store = createQueueStore({ now: () => 1234 });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'att-1',
+        bead_id: 'UI-1',
+        status: 'discarded',
+        dismissed_at: 777
+      }
+    });
+    store.createDiscardOperation(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      operation: {
+        operation_id: 'discard-1',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        source_snapshot: { repo: '/repo' }
+      }
+    });
+
+    const completed = store.completeDiscardOperation(WS, {
+      operation_id: 'discard-1',
+      expected_phase: 'requested'
+    });
+
+    expect(completed.queue.attempts['att-1'].dismissed_at).toBe(777);
+  });
+
   test('exec provenance survives appendAttempt/updateAttempt and a reload', () => {
     const store = createQueueStore();
     let rev = store.place(WS, {

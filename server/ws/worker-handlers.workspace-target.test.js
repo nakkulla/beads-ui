@@ -164,11 +164,6 @@ const MUTATIONS = [
     payload: { attempt_id: 'a1', expected_revision: 0 }
   },
   {
-    action: 'worker-attempt-dismiss',
-    run: handlers.handleWorkerAttemptDismiss,
-    payload: { attempt_id: 'a1', expected_revision: 0 }
-  },
-  {
     action: 'worker-merge-queue-add',
     run: handlers.handleWorkerMergeQueueAdd,
     payload: { bead_id: 'UI-1', expected_revision: 0 }

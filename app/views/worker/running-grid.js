@@ -1,11 +1,10 @@
 /**
- * Running grid + banner templates for the Worker console (spec §5.2, §5.6).
+ * Running grid templates for the Worker console (spec §5.2, §5.6).
  *
  * Phase 10: the running grid renders REAL attempt tiles derived from the queue
  * snapshot's `attempts` (status='running'), pushed via `worker-queue-snapshot`.
- * The banners area carries the Failed banner (derived from the latest
- * failed/orphaned attempt); the auto-advance state shows only in the ▶/⏸
- * toggle button. The transcript viewer (tile click →
+ * Failed/orphaned attempts render as compact decision tiles. The transcript
+ * viewer (tile click →
  * drawer) is Phase 11 — here the tile just surfaces attempt data.
  *
  * Grid: `repeat(auto-fill, minmax(215px,1fr))` with its own internal scroll
@@ -26,7 +25,11 @@ import {
   formatExecReceipt
 } from '../board/card.js';
 import { childRollupTemplate } from '../child-rollup.js';
-import { failureText } from './failure-labels.js';
+import {
+  failureCategory,
+  failureSentence,
+  failureText
+} from './failure-labels.js';
 import {
   dependencyChipsTemplate,
   discardReceiptTemplate,
@@ -65,12 +68,12 @@ import {
  * @property {boolean} [paused] - Leaf paused attempt: shows ▶ instead of ⏸ and
  * has no live elapsed clock (worker-phase1 §1.1/§2.1).
  * @property {boolean} [failed] - Unhandled failed/orphaned attempt. Failed
- * tiles stay visible for resume/dismiss actions and have no live controls.
+ * tiles stay visible for resume/discard actions and have no live controls.
+ * @property {FailureTile|null} [failure] - Failed-tile decision material. The
+ * renderer reads failure detail only through this explicit projection.
  * @property {'running'|'paused'|'failed'|'orphaned'} [status] - Raw attempt
  * status, used to distinguish failure from orphan interruption.
  * @property {string} [status_label] - Terminal status label for a failed tile.
- * @property {boolean} [resume_eligible] - Whether a failed attempt can resume.
- * @property {string|null} [resume_reason] - Why a failed attempt cannot resume.
  * @property {boolean} [can_pause] - Running attempt whose session id is already
  * captured. Pausing before that would strand an unresumable attempt, so the ⏸
  * button renders disabled until it lands (§2.1).
@@ -102,110 +105,26 @@ import {
  */
 
 /**
- * @typedef {Object} FailureBanner
- * @property {string} repo
- * @property {string} reason
- * @property {{ reason: string, command: string|null }|null} [cause_detail] -
- * What the fail-closed path caught (UI-2o4z §2). `loud_fail_blocker` alone
- * cannot say WHICH command tripped WHICH guard, which is exactly the question
- * a false positive raises; other fail-closed causes record one too (UI-ogf9),
- * and a cause that records none leaves the line out (fail-quiet).
- * @property {string|null} [resume_attempt_id] - The banner's own (latest
- * unhandled failed) attempt — the ONLY ↻ target, never an older substitute
- * (§1), and the attempt ✕ dismisses.
- * @property {boolean} [resume_eligible] - Whether that attempt can be resumed
- * (session_id present, not already resumed); ineligible renders disabled.
- * @property {string|null} [resume_reason] - Ineligibility reason for the
- * disabled button's title.
- * @property {string} bead_id - Bead targeted by the banner actions.
- * @property {any} discard - Shared durable discard UI projection.
+ * @typedef {Object} FailureTile
+ * @property {string|null} cause
+ * @property {{ reason?: string|null, command?: string|null }|null} cause_detail
+ * @property {number|null} finished_at
+ * @property {string|null} runner
+ * @property {string|null} model
+ * @property {string|null} effort
+ * @property {string|null} observed_effort
+ * @property {string|null} speed
+ * @property {string} attempt_id
+ * @property {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} usage
+ * @property {boolean} halted_auto_advance
+ * @property {boolean} quickfix_lane
+ * @property {{ cursor?: string|null, head_sha?: string|null, reason?: string|null }|null} quickfix_landing
+ * @property {boolean} resume_eligible
+ * @property {string|null} resume_reason
+ * @property {boolean} landed
+ * @property {'merged'|'unmerged'} confirmation
+ * @property {boolean} [open] - Ephemeral view state for this attempt's detail.
  */
-
-/**
- * @typedef {Object} CleanupFailure
- * @property {string} bead_id - The merged bead whose cleanup stopped.
- * @property {string} step - Which pr-finish step stopped (worker-phase2 §6).
- * @property {string} reason - Machine-readable cause.
- * @property {string|null} [detail] - The step's own diagnostic text (git stderr
- * etc., UI-2o4z §3); absent on records written before it was preserved.
- * @property {string} [output_tail] - The failing command's own trailing output
- * (UI-qult §1); absent when the step ran no command or printed nothing.
- * @property {string} [log_path] - Absolute path to that command's FULL
- * preserved output (UI-0x54), which the capped tail above cannot hold; absent
- * on a record whose run left no complete log file.
- * @property {number} [retry_count] - Durable retries actually consumed before
- * this failure. Zero/absent never renders retry wording.
- */
-
-/**
- * How much of a diagnostic string a banner shows before eliding it.
- *
- * @type {number}
- */
-const BANNER_DETAIL_MAX = 160;
-
-/**
- * Keep a diagnostic string to one banner line.
- *
- * @param {string} text
- * @returns {string}
- */
-function truncateDetail(text) {
-  return text.length > BANNER_DETAIL_MAX
-    ? `${text.slice(0, BANNER_DETAIL_MAX)}…`
-    : text;
-}
-
-/**
- * The cause/command line under a fail-closed failure banner. Text bindings, so
- * lit-html escapes the command — it is session-authored input.
- *
- * The label follows the failure cause, not the presence of a detail: only
- * `loud_fail_blocker` is a guard kill, so every other fail-closed path that now
- * carries a detail (UI-ogf9) reads `원인:` instead of being misnamed a guard.
- *
- * @param {{ reason: string, command: string|null }|null|undefined} detail
- * @param {string|null|undefined} cause
- * @returns {import('lit-html').TemplateResult|string}
- */
-function causeDetailLine(detail, cause) {
-  if (!detail || !detail.reason) {
-    return '';
-  }
-  const label = cause === 'loud_fail_blocker' ? '가드:' : '원인:';
-  return html`<div class="worker-banner__detail">
-    ${label}
-    ${detail.reason}${detail.command
-      ? html` · <code>${truncateDetail(detail.command)}</code>`
-      : ''}
-  </div>`;
-}
-
-/**
- * The banner's 세부 block: the RAW contract token behind the sentence above
- * (UI-q0uy §4.3). It exists on every mapped failure precisely because the body
- * no longer shows the code — the debugging path must not be translated away.
- *
- * `open` is deliberately NOT bound, which leaves it DOM state, so an expanded
- * block survives every queue-snapshot re-render.
- *
- * @param {string|null|undefined} code
- * @returns {import('lit-html').TemplateResult|string}
- */
-function rawFailureBlock(code) {
-  if (!code) {
-    return '';
-  }
-  return html`<details class="worker-banner__raw">
-    <summary>세부</summary>
-    <dl class="worker-banner__kv">
-      <div>
-        <dt>실패 코드</dt>
-        <dd>${code}</dd>
-      </div>
-    </dl>
-  </details>`;
-}
 
 /**
  * Format an elapsed duration (ms) as `MmSSs` / `SSs`. Exported so the monitor
@@ -226,70 +145,149 @@ export function formatElapsed(ms) {
 }
 
 /**
- * Banners area above the running grid.
+ * Failure detail shown from the cause badge. Every row is conditional so an
+ * older attempt record never produces placeholder facts.
  *
- * The stopped-cleanup banners moved into the repo-ops timeline (UI-q0uy §4.2),
- * which absorbs their whole content — stepper, cause, log path and output tail —
- * next to the button that resumes them. What is left here is the session-failure
- * banner, now speaking the shared failure vocabulary (§4.3) with the raw
- * contract token preserved in its 세부 disclosure.
- *
- * @param {{ failure?: FailureBanner|null }} state
- * @returns {import('lit-html').TemplateResult}
+ * @param {FailureTile|null} failure
+ * @param {number} now
+ * @returns {import('lit-html').TemplateResult|''}
  */
-export function bannersTemplate(state) {
-  const failure_text = state.failure ? failureText(state.failure.reason) : '';
-  return html`<div class="worker-banners">
-    ${state.failure
-      ? html`<div class="worker-banner worker-banner--failure" role="alert">
-          ⛔ ${state.failure.repo || 'repo'} 세션 실패 —
-          ${failure_text}${failure_text && !failure_text.endsWith('.')
-            ? '.'
-            : ''}
-          자동 진행을 껐습니다, 수동 ▶ 필요.
-          ${state.failure.resume_attempt_id
-            ? html`<button
+function failurePopoverTemplate(failure, now) {
+  if (!failure || failure.open !== true) {
+    return '';
+  }
+  const cause_text =
+    failureSentence(failure.cause) || failureText(failure.cause);
+  const detail = failure.cause_detail;
+  const landing =
+    failure.quickfix_lane && failure.quickfix_landing
+      ? failure.quickfix_landing
+      : null;
+  const landing_text = landing
+    ? [
+        landing.cursor || null,
+        typeof landing.head_sha === 'string'
+          ? landing.head_sha.slice(0, 7)
+          : null,
+        landing.reason || null
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : '';
+  const finished_text =
+    typeof failure.finished_at === 'number'
+      ? `${new Date(failure.finished_at).toLocaleString('ko-KR')} · ${formatRelativeTime(
+          failure.finished_at,
+          now
+        )}`
+      : '';
+  const execution_text = [
+    failure.runner,
+    failure.model,
+    failure.observed_effort ?? failure.effort,
+    failure.speed
+  ]
+    .filter((value) => typeof value === 'string' && value.length > 0)
+    .join(' · ');
+  const cost = failure.usage?.total_cost_usd;
+  const cost_text =
+    typeof cost === 'number' && Number.isFinite(cost)
+      ? `$${cost.toFixed(2)}`
+      : '';
+  return html`<div
+    class="rtile__failure-pop"
+    role="dialog"
+    aria-label="실패 상세"
+  >
+    <dl class="rtile__failure-kv">
+      ${cause_text
+        ? html`<div>
+            <dt>원인</dt>
+            <dd>${cause_text}</dd>
+          </div>`
+        : ''}
+      ${failure.cause
+        ? html`<div>
+            <dt>실패 코드</dt>
+            <dd><code>${failure.cause}</code></dd>
+          </div>`
+        : ''}
+      ${detail?.reason
+        ? html`<div>
+            <dt>가드/원인</dt>
+            <dd>${detail.reason}</dd>
+          </div>`
+        : ''}
+      ${detail?.command
+        ? html`<div>
+            <dt>명령</dt>
+            <dd><code>${detail.command}</code></dd>
+          </div>`
+        : ''}
+      ${landing_text
+        ? html`<div>
+            <dt>착지 단계</dt>
+            <dd>${landing_text}</dd>
+          </div>`
+        : ''}
+      ${finished_text
+        ? html`<div>
+            <dt>실패 시각</dt>
+            <dd>${finished_text}</dd>
+          </div>`
+        : ''}
+      ${execution_text
+        ? html`<div>
+            <dt>실행</dt>
+            <dd>${execution_text}</dd>
+          </div>`
+        : ''}
+      ${failure.attempt_id
+        ? html`<div>
+            <dt>attempt id</dt>
+            <dd>
+              <code>${failure.attempt_id}</code>
+              <button
                 type="button"
-                class="worker-banner__resume"
-                data-attempt-id=${state.failure.resume_attempt_id}
-                ?disabled=${!state.failure.resume_eligible}
-                title=${state.failure.resume_eligible
-                  ? '최근 실패 세션을 같은 워크트리에서 이어서 진행'
-                  : state.failure.resume_reason || '이어하기 불가'}
+                class="rtile__attempt-copy"
+                data-attempt-id=${failure.attempt_id}
+                title="attempt id 복사"
+                aria-label="attempt id 복사"
               >
-                ↻ 이어하기
-              </button>`
-            : ''}
-          ${state.failure.discard?.action
-            ? html`<button
-                type="button"
-                class="worker-banner__discard"
-                data-bead-id=${state.failure.bead_id}
-                data-attempt-id=${state.failure.resume_attempt_id || ''}
-                data-operation-id=${state.failure.discard.operation
-                  ?.operation_id || ''}
-                data-confirmation=${state.failure.discard.confirmation}
-                ?disabled=${!state.failure.discard.enabled}
-                title=${state.failure.discard.title}
-              >
-                ${state.failure.discard.label}
-              </button>`
-            : ''}
-          ${state.failure.resume_attempt_id
-            ? html`<button
-                type="button"
-                class="worker-banner__dismiss"
-                data-attempt-id=${state.failure.resume_attempt_id}
-                title="실패 알림 닫기 — 레인에는 남습니다"
-                aria-label="배너 닫기"
-              >
-                ✕
-              </button>`
-            : ''}
-          ${causeDetailLine(state.failure.cause_detail, state.failure.reason)}
-          ${rawFailureBlock(state.failure.reason)}
-          ${discardReceiptTemplate({ discard: state.failure.discard })}
-        </div>`
+                ⧉
+              </button>
+            </dd>
+          </div>`
+        : ''}
+      ${cost_text
+        ? html`<div>
+            <dt>비용</dt>
+            <dd>${cost_text}</dd>
+          </div>`
+        : ''}
+      <div>
+        <dt>재개</dt>
+        <dd>
+          ${failure.resume_eligible
+            ? '이어하기 가능'
+            : failure.resume_reason || '이어하기 불가'}
+        </dd>
+      </div>
+    </dl>
+    ${failure.attempt_id
+      ? html`<button
+          type="button"
+          class="rtile__session"
+          title="실패 세션 열기"
+          aria-label="실패 세션 열기"
+        >
+          ▤ 세션
+        </button>`
+      : ''}
+    ${failure.landed
+      ? html`<p class="rtile__failure-landed">
+          이미 base에 착지됨 — 이어하기로 배포·정리를 재개
+        </p>`
       : ''}
   </div>`;
 }
@@ -506,6 +504,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ? tile.session_refs.find((view) => view && view.current === true) || null
       : null;
   const failed = tile.failed === true;
+  const failure = failed ? tile.failure || null : null;
   const paused = !!tile.paused;
   const elapsed = failed
     ? tile.status_label || (tile.status === 'orphaned' ? '중단됨' : '실패')
@@ -600,6 +599,20 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 상태 뱃지는 슬롯 1이다 (UI-251y §3.1): 다른 카드가 이미 정체성 줄에서
   // 말하는 종류의 사실이라 타일만 제목 아래에 두면 같은 사실이 두 자리에서
   // 읽힌다. 둘 다 드물게만 서므로 헤더 폭에 상시 부담을 주지 않는다.
+  const failure_badges = failure
+    ? html`<button
+          type="button"
+          class="rtile__failure-badge"
+          data-attempt-id=${failure.attempt_id}
+          aria-expanded=${failure.open === true ? 'true' : 'false'}
+          aria-label="실패 상세"
+        >
+          ⛔ ${failureCategory(failure.cause) || '실패'}
+        </button>
+        ${failure.halted_auto_advance
+          ? html`<span class="rtile__auto-halted">자동 진행 꺼짐</span>`
+          : ''}`
+    : '';
   const status_badges = html`${conflict_badge
     ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
     : ''}${base_badge
@@ -608,26 +621,30 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         title="이 세션의 target base가 워크스페이스 선언 base와 다릅니다"
         >${base_badge}</span
       >`
-    : ''}`;
+    : ''}${failure_badges}`;
   // 세션 타일의 수정 시각은 활동 줄이 "갱신 n 전"으로 이미 말한다 (§6) —
   // 같은 사실을 두 줄로 쓰지 않는다.
   const times_el = session ? '' : timesMeta(tile);
-  const discard_button = tile.discard?.action
-    ? html`<button
-        type="button"
-        class="rtile__discard"
-        data-operation-id=${tile.discard.operation?.operation_id || ''}
-        ?disabled=${!tile.discard.enabled}
-        title=${tile.discard.title}
-        aria-label=${tile.discard.label}
-      >
-        ${tile.discard.label}
-      </button>`
-    : '';
+  const discard_button =
+    tile.discard?.action && !(failed && failure?.landed === true)
+      ? html`<button
+          type="button"
+          class="rtile__discard"
+          data-operation-id=${tile.discard.operation?.operation_id || ''}
+          data-confirmation=${failure?.confirmation || 'unmerged'}
+          ?disabled=${!tile.discard.enabled}
+          title=${tile.discard.title}
+          aria-label=${tile.discard.label}
+        >
+          ${tile.discard.label}
+        </button>`
+      : '';
   return html`<div
     class="rtile${sel ? ' rtile--sel' : ''}${paused
       ? ' rtile--paused'
-      : ''}${failed ? ' rtile--failed' : ''}${session ? ' rtile--session' : ''}"
+      : ''}${failed ? ' rtile--failed rtile--compact' : ''}${session
+      ? ' rtile--session'
+      : ''}"
     data-bead-id=${tile.bead_id}
     data-attempt-id=${tile.attempt_id || ''}
   >
@@ -656,23 +673,15 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
             ? html`<button
                   type="button"
                   class="rtile__resume"
-                  ?disabled=${tile.resume_eligible === false}
-                  title=${tile.resume_eligible === false
-                    ? tile.resume_reason || '이어하기 불가'
+                  ?disabled=${failure?.resume_eligible === false}
+                  title=${failure?.resume_eligible === false
+                    ? failure.resume_reason || '이어하기 불가'
                     : '같은 세션으로 이어서 진행'}
                   aria-label="이어하기"
                 >
                   ↻ 이어하기
                 </button>
-                ${discard_button}
-                <button
-                  type="button"
-                  class="rtile__dismiss"
-                  title="실패 알림 닫기 — 레인에는 남습니다"
-                  aria-label="실패 기록 닫기"
-                >
-                  ✕
-                </button>`
+                ${discard_button}`
             : html`<button
                   type="button"
                   class="rtile__session"
@@ -705,62 +714,67 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       </div>
     </div>
     <div class="rtile__title">${tile.title}</div>
-    ${monitor_body}${tile.rollup
-      ? childRollupTemplate(tile.rollup, {
-          parent_id: tile.bead_id,
-          expanded: tile.rollup_expanded === true,
-          childChips: childExecChips
-        })
-      : ''}
-    ${landing
-      ? html`<div class="rtile__landing">
-          <span
-            class="merge-step${landing.failed ? ' merge-step--failed' : ''}"
-            style=${`--progress: ${landing.percent}%`}
-            >${landing.label}${landing.index > 0
-              ? html`<span class="merge-step__n"
-                  >${landing.index}/${landing.total}</span
-                >`
-              : ''}</span
-          >
-        </div>`
-      : ''}
-    ${monitor_deps}
-    ${session
-      ? session_meta
-      : monitor_chips ||
-          route_chip ||
-          exec_chips ||
-          rec_chip ||
-          provider_badges.length > 0 ||
-          usage_label
-        ? html`<div class="rtile__meta">
-            ${monitor_chips}${route_chip}${execChipsTemplate(
-              tile.exec_chips
-            )}${rec_chip}
-            ${provider_badges.length > 0
-              ? provider_badges.map(
-                  (badge) =>
-                    html`<span class="worker-usage" title=${badge.tooltip}
-                      >${badge.label}</span
-                    >`
-                )
-              : usage_label
-                ? html`<span
-                    class="worker-usage"
-                    title=${usageTooltip(tile.usage)}
-                    >${usage_label}</span
-                  >`
-                : ''}
-          </div>`
-        : ''}
-    ${discardReceiptTemplate(tile)} ${times_el}
-    <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일).
+    ${failed
+      ? ''
+      : html`${monitor_body}${tile.rollup
+            ? childRollupTemplate(tile.rollup, {
+                parent_id: tile.bead_id,
+                expanded: tile.rollup_expanded === true,
+                childChips: childExecChips
+              })
+            : ''}
+          ${landing
+            ? html`<div class="rtile__landing">
+                <span
+                  class="merge-step${landing.failed
+                    ? ' merge-step--failed'
+                    : ''}"
+                  style=${`--progress: ${landing.percent}%`}
+                  >${landing.label}${landing.index > 0
+                    ? html`<span class="merge-step__n"
+                        >${landing.index}/${landing.total}</span
+                      >`
+                    : ''}</span
+                >
+              </div>`
+            : ''}
+          ${monitor_deps}
+          ${session
+            ? session_meta
+            : monitor_chips ||
+                route_chip ||
+                exec_chips ||
+                rec_chip ||
+                provider_badges.length > 0 ||
+                usage_label
+              ? html`<div class="rtile__meta">
+                  ${monitor_chips}${route_chip}${execChipsTemplate(
+                    tile.exec_chips
+                  )}${rec_chip}
+                  ${provider_badges.length > 0
+                    ? provider_badges.map(
+                        (badge) =>
+                          html`<span class="worker-usage" title=${badge.tooltip}
+                            >${badge.label}</span
+                          >`
+                      )
+                    : usage_label
+                      ? html`<span
+                          class="worker-usage"
+                          title=${usageTooltip(tile.usage)}
+                          >${usage_label}</span
+                        >`
+                      : ''}
+                </div>`
+              : ''}
+          ${discardReceiptTemplate(tile)} ${times_el}
+          <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일).
          quick_fix landing의 실제 진행은 위의 별도 진행 줄이 소유한다.
          일시정지된 타일은 살아있지 않으므로 액센트도 없다. -->
-    ${failed || paused
-      ? ''
-      : html`<div class="rtile__accent" aria-hidden="true"></div>`}
+          ${failed || paused
+            ? ''
+            : html`<div class="rtile__accent" aria-hidden="true"></div>`}`}
+    ${failurePopoverTemplate(failure, now)}
   </div>`;
 }
 
