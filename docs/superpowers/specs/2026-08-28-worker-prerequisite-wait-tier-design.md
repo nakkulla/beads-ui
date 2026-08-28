@@ -6,6 +6,7 @@ scope:
   - server/worker/queue-store.js
   - server/worker/foreign-blocker-status.js
   - server/worker/attach.js
+  - server/worker/discard-coordinator.js
   - app/utils/quickfix-resume-kind.js
   - app/views/worker/index.js
   - app/views/worker/lane-model.js
@@ -172,6 +173,15 @@ finished_at: at
   적는다: `held 판정 뱃지(⏸ 세션 대기 · ↻ 재시도 대기 · ⛓ 선행 대기)`. 자리 변경이 아니라
   이미 렌더되던 두 뱃지가 표에 없던 것을 함께 채우는 것이므로 UI-svh6가 4a에 남긴 것 같은
   별도 `정정` 문단은 두지 않는다.
+- **정정(rev5, 구현 리뷰 REVISE 반영).** 4a 의존 칩은 held 본문 **안에서** 그린다.
+  `runningTile`의 슬롯 4 칩(`monitor_deps`)은 held도 failed도 아닌 갈래에서만 emit되므로
+  held 본문을 타는 `waiting` 타일은 그 자리를 그냥 잃는다. 요약 줄과 `폐기` foot 사이에
+  같은 `dependencyChipsTemplate` 출력을 싣는다 — 카드 문법 §2의 줄 순서 그대로다.
+  `parked`·`retry_wait` 본문은 건드리지 않는다(그 둘에는 이 칩을 요구하는 스펙이 없다).
+- **정정(rev5).** foot `폐기`가 실제로 동작하려면 `server/worker/discard-coordinator.js`의
+  `DISCARDABLE_ATTEMPT_STATUSES`에 `waiting`이 있어야 한다. 없으면 `captureSource`가
+  `attempt_not_discardable`로 답해 이 타일의 **유일한** 조작이 죽는다. `parked`·`retry_wait`가
+  같은 집합에 없는 것은 이 스펙보다 앞선 결함이므로 여기서 고치지 않고 §8에 후속으로 남긴다.
 
 ### 5.3 `failure-labels.js`
 
@@ -218,6 +228,8 @@ parked·retry_wait와 같은 네 키 규칙(ADR 0014)으로 `waiting: item.run_s
   같은 값으로 싣는다.
 - `server/worker/queue-store.test.js`: `waiting` attempt는 `transferableAttempts`에 들지
   않는다(= `queue.json`에 남는다).
+- `server/worker/discard-coordinator.test.js`: `waiting` attempt가 폐기 가능하다
+  (`attempt_not_discardable` 아님).
 - `server/worker/quickfix-landing.test.js`: 기존 `push_log_absent` 케이스 불변(신호 없는 결말).
 - `app/views/worker/lane-model.test.js`: `waiting` held 투영 — `wait` 있음·`failure` 없음·
   `can_resume=false`·`⛓` 칩 합집합. `running-grid.test.js`: `선행 대기` 라벨, foot에 `재시도`
@@ -250,6 +262,10 @@ parked·retry_wait와 같은 네 키 규칙(ADR 0014)으로 `waiting: item.run_s
   쓰는 것은 즉시 조회 경로 하나이며, 캐시·TTL·정리 로직은 판정에 관여하지 않는다 — 헤더
   주석의 "Display only" 문장을 그 경계로 고쳐 쓴다.
 - 관찰: `waiting` attempt의 비용은 usage에 그대로 남는다(슬롯 5). 별도 집계는 하지 않는다.
+- 후속(defect): `discard-coordinator.js`의 `DISCARDABLE_ATTEMPT_STATUSES`에 `parked`·
+  `retry_wait`가 없어 그 두 held 타일의 `폐기` 버튼도 `attempt_not_discardable`로 실패한다.
+  이 집합은 held 계층(UI-5ym8)보다 앞선 #120에서 굳었고, 이 스펙이 리뷰한 적 없는 두 결말의
+  동작을 바꾸는 일이라 별도 Bead로 낸다.
 
 ## 결정 (ADR 후보)
 
