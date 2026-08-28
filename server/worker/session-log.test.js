@@ -2,9 +2,16 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createSessionLog } from './session-log.js';
-import { sessionLogPath } from './state-paths.js';
+import { beadOfTransferredAttempt, createSessionLog } from './session-log.js';
+import {
+  attemptRecordPath,
+  beadArchivePath,
+  beadSessionLogPath,
+  beadStateDir,
+  sessionLogPath
+} from './state-paths.js';
 
 const WS = '/tmp/example-workspace/project-a';
 /** @type {string} */
@@ -847,5 +854,125 @@ describe('worker/session-log — recorded attempt log path (UI-hk74 §7)', () =>
     expect(log.stderrPathFor(WS, 'att-1')).toBe(
       `${sessionLogPath(WS, 'att-1').replace(/\.jsonl$/, '')}.stderr.log`
     );
+  });
+});
+
+describe('worker/session-log — read resolution order (record-timeline-retention §4)', () => {
+  const BEAD = 'UI-1';
+
+  /**
+   * @param {string} file
+   * @param {unknown[]} events
+   */
+  function writeJsonl(file, events) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      events.map((event) => `${JSON.stringify(event)}\n`).join('')
+    );
+  }
+
+  /**
+   * @param {string} file
+   * @param {unknown[]} events
+   */
+  function writeGzipped(file, events) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      zlib.gzipSync(
+        Buffer.from(
+          events.map((event) => `${JSON.stringify(event)}\n`).join('')
+        )
+      )
+    );
+  }
+
+  test('reads the stored log_path ahead of every derived candidate', () => {
+    const stored = path.join(tmp_state, 'elsewhere', 'att-1.jsonl');
+    writeJsonl(stored, [{ type: 'stored' }]);
+    writeJsonl(beadSessionLogPath(WS, BEAD, 'att-1'), [{ type: 'bead' }]);
+    writeRunnerLine('att-1', { type: 'legacy' });
+    const log = createSessionLog();
+
+    const events = log.read(WS, 'att-1', { bead_id: BEAD, log_path: stored });
+
+    expect(events).toEqual([{ type: 'stored' }]);
+  });
+
+  test('reads the bead-scoped session log when the record stores no path', () => {
+    writeJsonl(beadSessionLogPath(WS, BEAD, 'att-1'), [{ type: 'bead' }]);
+    writeRunnerLine('att-1', { type: 'legacy' });
+    const log = createSessionLog();
+
+    const events = log.read(WS, 'att-1', { bead_id: BEAD });
+
+    expect(events).toEqual([{ type: 'bead' }]);
+  });
+
+  test('falls back to the legacy flat session log', () => {
+    writeRunnerLine('att-1', { type: 'legacy' });
+    const log = createSessionLog();
+
+    const events = log.read(WS, 'att-1', { bead_id: BEAD });
+
+    expect(events).toEqual([{ type: 'legacy' }]);
+  });
+
+  test('reads the gzip archive when it is the only surviving copy', () => {
+    writeGzipped(beadArchivePath(WS, BEAD, 'att-1'), [{ type: 'archived' }]);
+    const log = createSessionLog();
+
+    const events = log.read(WS, 'att-1', { bead_id: BEAD });
+
+    expect(events).toEqual([{ type: 'archived' }]);
+  });
+
+  test('resolves to expired when no location holds the transcript', () => {
+    const log = createSessionLog();
+
+    const located = log.resolveLog(WS, 'att-gone', { bead_id: BEAD });
+
+    expect(located).toEqual({ status: 'expired', path: null, gzipped: false });
+  });
+
+  test('names the gzip archive as a gzipped location', () => {
+    writeGzipped(beadArchivePath(WS, BEAD, 'att-1'), [{ type: 'archived' }]);
+    const log = createSessionLog();
+
+    const located = log.resolveLog(WS, 'att-1', { bead_id: BEAD });
+
+    expect(located).toEqual({
+      status: 'ok',
+      path: beadArchivePath(WS, BEAD, 'att-1'),
+      gzipped: true
+    });
+  });
+
+  test('omits the bead-scoped candidates when no bead is named', () => {
+    writeJsonl(beadSessionLogPath(WS, BEAD, 'att-1'), [{ type: 'bead' }]);
+    const log = createSessionLog();
+
+    const located = log.resolveLog(WS, 'att-1');
+
+    expect(located.status).toBe('expired');
+  });
+
+  test('finds the bead of a transferred attempt from its record', () => {
+    const record = attemptRecordPath(WS, BEAD, 'att-1');
+    fs.mkdirSync(path.dirname(record), { recursive: true });
+    fs.writeFileSync(record, JSON.stringify({ attempt_id: 'att-1' }));
+
+    const bead_id = beadOfTransferredAttempt(WS, 'att-1');
+
+    expect(bead_id).toBe(BEAD);
+  });
+
+  test('reports an unknown bead for an attempt no bead directory claims', () => {
+    fs.mkdirSync(beadStateDir(WS, BEAD), { recursive: true });
+
+    const bead_id = beadOfTransferredAttempt(WS, 'att-missing');
+
+    expect(bead_id).toBe(null);
   });
 });

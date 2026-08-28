@@ -853,7 +853,7 @@ function launchAccountRefusalDetail(failure, accounts, account_sources) {
  *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
- *   finalizeDiscardAttempt: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
+ *   finalizeDiscardAttempt: (workspace: string, attempt_id: string, bead_id?: string|null) => Promise<{ ok: boolean, reason?: string }>,
  *   recoverControls: (workspace: string) => Promise<void>,
  *   onIssuesChanged: (workspace: string) => Promise<void>,
  *   resumeQueueHold: (workspace: string, input: { since?: number|null }) => Promise<{ ok: boolean, reason?: string }>,
@@ -1377,6 +1377,27 @@ export function createScheduler(deps) {
     }
     receipt_recovery_cursor.set(workspace, (start + limit) % candidates.length);
     return changed;
+  }
+
+  /**
+   * One TRANSFERRED attempt record, or null (record-timeline-retention §7).
+   * Null also answers a store without the query API, which is what every test
+   * double that predates §7 is.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   * @returns {any}
+   */
+  function readTransferredAttempt(workspace, bead_id, attempt_id) {
+    if (typeof deps.store.readAttempt !== 'function') {
+      return null;
+    }
+    try {
+      return deps.store.readAttempt(workspace, bead_id, attempt_id);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -5962,6 +5983,14 @@ export function createScheduler(deps) {
       attempt_id,
       patch: {
         ...(start_oid === null ? {} : { head_oid: start_oid }),
+        // The EXACT transcript path this spawn was handed
+        // (record-timeline-retention §4). Recorded here rather than derived by
+        // every reader, because it is the first candidate of the §4 read order
+        // and the only value a later move has to update.
+        ...(typeof settings.log_path === 'string' &&
+        settings.log_path.length > 0
+          ? { log_path: settings.log_path }
+          : {}),
         started_at,
         pid: handle.pid,
         process_identity: handle.process_identity ?? null,
@@ -9117,14 +9146,29 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id
+   * @param {string|null} [bead_id] - The bead the discard names, which is the
+   * only way to reach a record §7 transferred out of `queue.json`.
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
-  async function finalizeDiscardAttempt(workspace, attempt_id) {
+  async function finalizeDiscardAttempt(workspace, attempt_id, bead_id = null) {
     if (!canDiscardAttempt(attempt_id)) {
       return { ok: false, reason: 'attempt_settling' };
     }
     const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
     if (!attempt) {
+      // The attempt may simply have been TRANSFERRED out of `queue.json`
+      // (record-timeline-retention §7) — which is the normal state of the
+      // settled bead a merged-PR revert discards. Nothing is left to settle:
+      // §7 holds a bead in the queue while ANY of its attempts is not a
+      // processed terminal, so a transferred record proves the session ended
+      // and its own terminal write already ran. The discard's real work is the
+      // PR and the branch, and this step must not block it.
+      if (
+        bead_id !== null &&
+        readTransferredAttempt(workspace, bead_id, attempt_id)
+      ) {
+        return { ok: true };
+      }
       return { ok: false, reason: 'attempt_not_found' };
     }
     const entry = running.get(attempt_id);

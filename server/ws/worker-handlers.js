@@ -100,6 +100,7 @@ import { createTailReader } from '../worker/runner/tail-reader.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { activeLaneLineages } from '../worker/scheduler.js';
 import { scopeCache } from '../worker/scope-cache.js';
+import { beadOfTransferredAttempt } from '../worker/session-log.js';
 import { createSessionRefTranscript } from '../worker/session-ref-transcript.js';
 import {
   isSafeSessionId,
@@ -2182,6 +2183,29 @@ function sessionActiveRows(workspace_key, queue) {
 }
 
 /**
+ * One bead's TRANSFERRED attempt records, or an empty list (§7).
+ *
+ * `readAttemptsForBead` returns the union of the live queue and the record
+ * tree; the live half is already in the projection, so only the ids the
+ * projection lacks survive the caller's dedupe.
+ *
+ * @param {string} workspace_key
+ * @param {string} bead_id
+ * @returns {any[]}
+ */
+function transferredAttemptsFor(workspace_key, bead_id) {
+  try {
+    const store = getWorkerRuntime().queueStore;
+    if (typeof store.readAttemptsForBead !== 'function') {
+      return [];
+    }
+    return store.readAttemptsForBead(workspace_key, bead_id);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Attach the declared scope to each `session_active` row (UI-anna §3.1), the
  * same additive shape `withRunnableScope` gives a runnable row.
  *
@@ -2252,7 +2276,19 @@ export function decorateQueue(workspace_key, raw_queue) {
   // input stays the full overlaid raw. A throwing rule ships the untrimmed
   // snapshot (§6): the payload size regresses, the display does not break.
   try {
-    const trimmed = trimQueueProjection(public_queue, overlaid);
+    const trimmed = trimQueueProjection(
+      public_queue,
+      overlaid,
+      Date.now(),
+      // The transferred records of the beads that stay on the wire (§7). Read
+      // here rather than inside the rule so the retention module keeps its
+      // no-I/O contract; a store without the query API (or one that throws)
+      // simply tops nothing up.
+      {
+        attemptsForBead: (bead_id) =>
+          transferredAttemptsFor(workspace_key, bead_id)
+      }
+    );
     public_queue.done = trimmed.done;
     public_queue.attempts = trimmed.attempts;
     public_queue.repo_operations = trimmed.repo_operations;
@@ -2769,6 +2805,47 @@ export async function handleGetSessionRefs(ws, req) {
 }
 
 /**
+ * One attempt record for the session-log viewer, wherever it now lives
+ * (record-timeline-retention §7).
+ *
+ * The LIVE queue answers first and answers for everything in flight. A
+ * PROCESSED-terminal attempt has left `queue.json` for
+ * `beads/<bead>/attempts/<attempt>.json`, and the client sends only an attempt
+ * id — which does not carry its bead — so the bead is recovered from the record
+ * tree before `readAttempt` is asked for the record.
+ *
+ * Fail-quiet at every step: an unreadable store or an unknown attempt is null,
+ * and the caller then resolves the log through the legacy candidates alone.
+ *
+ * @param {any} runtime
+ * @param {string} key - Resolved workspace key.
+ * @param {string} attempt_id
+ * @returns {any}
+ */
+function attemptRecordFor(runtime, key, attempt_id) {
+  try {
+    const live = runtime.queueStore.snapshot(key).attempts?.[attempt_id];
+    if (live) {
+      return live;
+    }
+  } catch {
+    return null;
+  }
+  if (typeof runtime.queueStore.readAttempt !== 'function') {
+    return null;
+  }
+  const bead_id = beadOfTransferredAttempt(key, attempt_id);
+  if (bead_id === null) {
+    return null;
+  }
+  try {
+    return runtime.queueStore.readAttempt(key, bead_id, attempt_id);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Handle `subscribe-session-log`. Payload:
  * `{ id: client_id, attempt_id, launch_id?, session_ref?, root_dir? }`.
  *
@@ -2880,14 +2957,18 @@ export async function handleSubscribeSessionLog(ws, req) {
   }
 
   const runtime = getWorkerRuntime();
+  // ONE record lookup for both branches (record-timeline-retention §7): the
+  // attempt may have been transferred out of `queue.json`, and its stored
+  // `log_path` — the first candidate of the §4 read order — lives only on that
+  // record.
+  const attempt = attemptRecordFor(runtime, key, attempt_id);
+  /** @type {import('../worker/session-log.js').SessionLogReadOptions} */
+  const read_options = {
+    bead_id: typeof attempt?.bead_id === 'string' ? attempt.bead_id : null,
+    log_path: typeof attempt?.log_path === 'string' ? attempt.log_path : null
+  };
 
   if (has_launch_id) {
-    let attempt = null;
-    try {
-      attempt = runtime.queueStore.snapshot(key).attempts?.[attempt_id] || null;
-    } catch {
-      attempt = null;
-    }
     const authorized =
       delegationSessionsForAttempt(key, attempt).find(
         (session) => session.launch_id === launch_id
@@ -2907,7 +2988,8 @@ export async function handleSubscribeSessionLog(ws, req) {
         key,
         attempt_id,
         launch_id,
-        authorized
+        authorized,
+        read_options
       );
     } catch {
       snapshot = { lines: [], last_event_at: null, offset: 0 };
@@ -2952,13 +3034,27 @@ export async function handleSubscribeSessionLog(ws, req) {
     return;
   }
 
-  const lines = runtime.sessionLog.read(key, attempt_id);
+  const located =
+    typeof runtime.sessionLog.resolveLog === 'function'
+      ? runtime.sessionLog.resolveLog(key, attempt_id, read_options)
+      : null;
+  // A RUNNING attempt whose file has not appeared yet is a one-poll race, not a
+  // deletion, so only a settled attempt may be reported expired. The live
+  // subscription is registered either way: a transcript that shows up after the
+  // snapshot still streams.
+  const expired =
+    located !== null &&
+    located.status === 'expired' &&
+    attempt?.status !== 'running';
+  const lines = runtime.sessionLog.read(key, attempt_id, read_options);
   emitSessionLogSnapshot(
     ws,
     client_id,
     attempt_id,
     lines,
-    runtime.sessionLog.lastEventAtOf(key, attempt_id)
+    runtime.sessionLog.lastEventAtOf(key, attempt_id, read_options),
+    undefined,
+    expired ? { expired: true } : {}
   );
 
   const off = runtime.sessionLog.subscribe((a) => {

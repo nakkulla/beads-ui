@@ -960,7 +960,8 @@ describe('worker discard coordinator unmerged lifecycle', () => {
     });
     expect(env.scheduler.finalizeDiscardAttempt).toHaveBeenCalledWith(
       workspace,
-      'att-1'
+      'att-1',
+      'UI-1'
     );
     expect(env.worktree.withTopologyLock).toHaveBeenCalledTimes(3);
   });

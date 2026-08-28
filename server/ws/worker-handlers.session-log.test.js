@@ -3,7 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ensureDelegationMonitorDir } from '../worker/delegation-monitor.js';
-import { delegationMonitorDir } from '../worker/state-paths.js';
+import {
+  attemptRecordPath,
+  delegationMonitorDir
+} from '../worker/state-paths.js';
 
 const WS = '/tmp/example-workspace/project-a';
 const WS_OTHER = '/tmp/example-workspace/project-b';
@@ -18,6 +21,14 @@ const state = vi.hoisted(() => ({
   /** @type {any[]} */
   listeners: [],
   read: vi.fn(() => []),
+  readAttempt: vi.fn(/** @returns {any} */ () => null),
+  resolveLog: vi.fn(
+    /** @returns {any} */ () => ({
+      status: 'ok',
+      path: '/tmp/example.jsonl',
+      gzipped: false
+    })
+  ),
   readDelegation: vi.fn(
     /** @returns {{ lines: unknown[], last_event_at: number|null, offset: number }} */ () => ({
       lines: [],
@@ -48,12 +59,15 @@ vi.mock('../worker/runtime.js', () => ({
           attempts:
             state.attempts_by_workspace[String(workspace_key)] || state.attempts
         };
-      }
+      },
+      readAttempt: state.readAttempt,
+      readAttemptsForBead: () => []
     },
     usageStore: { get: () => null },
     sessionLog: {
       read: state.read,
       readDelegation: state.readDelegation,
+      resolveLog: state.resolveLog,
       lastEventAt: () => null,
       lastEventAtOf: () => null,
       /**
@@ -137,6 +151,14 @@ afterEach(() => {
     last_event_at: null,
     offset: 0
   });
+  state.readAttempt.mockReset();
+  state.readAttempt.mockReturnValue(null);
+  state.resolveLog.mockReset();
+  state.resolveLog.mockReturnValue({
+    status: 'ok',
+    path: '/tmp/example.jsonl',
+    gzipped: false
+  });
 });
 
 describe('worker session-log delegation subscription', () => {
@@ -172,7 +194,8 @@ describe('worker session-log delegation subscription', () => {
       WS,
       'att-1',
       'launch-1',
-      expect.objectContaining({ launch_id: 'launch-1' })
+      expect.objectContaining({ launch_id: 'launch-1' }),
+      { bead_id: 'UI-1', log_path: null }
     );
     detachSessionLog(socket);
   });
@@ -248,7 +271,8 @@ describe('worker session-log delegation subscription', () => {
         expect.objectContaining({
           launch_id: 'launch-live',
           session_id: 'thread-live'
-        })
+        }),
+        { bead_id: 'UI-1', log_path: null }
       );
       detachSessionLog(socket);
     } finally {
@@ -395,7 +419,10 @@ describe('session-log + prompt ops target a root_dir (UI-eey2 §9.5)', () => {
       }
     });
 
-    expect(state.read).toHaveBeenCalledWith(WS_OTHER, 'att-9');
+    expect(state.read).toHaveBeenCalledWith(WS_OTHER, 'att-9', {
+      bead_id: 'UI-1',
+      log_path: null
+    });
     detachSessionLog(socket);
   });
 
@@ -408,7 +435,10 @@ describe('session-log + prompt ops target a root_dir (UI-eey2 §9.5)', () => {
       payload: { id: 'subscription-1', attempt_id: 'att-1' }
     });
 
-    expect(state.read).toHaveBeenCalledWith(WS, 'att-1');
+    expect(state.read).toHaveBeenCalledWith(WS, 'att-1', {
+      bead_id: null,
+      log_path: null
+    });
     detachSessionLog(socket);
   });
 
@@ -463,5 +493,81 @@ describe('session-log + prompt ops target a root_dir (UI-eey2 §9.5)', () => {
 
     expect(JSON.parse(socket.sent[0]).error.code).toBe('bad_request');
     expect(state.snapshot_calls).toEqual([]);
+  });
+});
+
+describe('session-log viewer read resolution (record-timeline-retention §4)', () => {
+  test('surfaces the retention notice for a settled attempt whose log expired', () => {
+    state.attempts = { 'att-1': attempt('done') };
+    state.resolveLog.mockReturnValue({
+      status: 'expired',
+      path: null,
+      gzipped: false
+    });
+    const socket = fakeSocket();
+
+    handleSubscribeSessionLog(socket, {
+      id: 'request-1',
+      type: 'subscribe-session-log',
+      payload: { id: 'subscription-1', attempt_id: 'att-1' }
+    });
+
+    expect(JSON.parse(socket.sent[1]).payload).toMatchObject({
+      expired: true,
+      notice: '만료됨(180일 보존 정책)'
+    });
+    detachSessionLog(socket);
+  });
+
+  test('leaves a running attempt unexpired while its log has not appeared', () => {
+    state.attempts = { 'att-1': attempt('running') };
+    state.resolveLog.mockReturnValue({
+      status: 'expired',
+      path: null,
+      gzipped: false
+    });
+    const socket = fakeSocket();
+
+    handleSubscribeSessionLog(socket, {
+      id: 'request-1',
+      type: 'subscribe-session-log',
+      payload: { id: 'subscription-1', attempt_id: 'att-1' }
+    });
+
+    expect(JSON.parse(socket.sent[1]).payload.expired).toBe(undefined);
+    detachSessionLog(socket);
+  });
+
+  test('reads a transferred attempt through the log_path its record stores', () => {
+    const tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-ws-xfer-'));
+    process.env.XDG_STATE_HOME = tmp_state;
+    try {
+      const record = attemptRecordPath(WS, 'UI-9', 'att-9');
+      fs.mkdirSync(path.dirname(record), { recursive: true });
+      fs.writeFileSync(record, JSON.stringify({ attempt_id: 'att-9' }));
+      state.attempts = {};
+      state.readAttempt.mockReturnValue({
+        attempt_id: 'att-9',
+        bead_id: 'UI-9',
+        status: 'done',
+        log_path: '/tmp/stored/att-9.jsonl'
+      });
+      const socket = fakeSocket();
+
+      handleSubscribeSessionLog(socket, {
+        id: 'request-1',
+        type: 'subscribe-session-log',
+        payload: { id: 'subscription-1', attempt_id: 'att-9' }
+      });
+
+      expect(state.read).toHaveBeenCalledWith(WS, 'att-9', {
+        bead_id: 'UI-9',
+        log_path: '/tmp/stored/att-9.jsonl'
+      });
+      detachSessionLog(socket);
+    } finally {
+      delete process.env.XDG_STATE_HOME;
+      fs.rmSync(tmp_state, { recursive: true, force: true });
+    }
   });
 });

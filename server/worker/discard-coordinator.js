@@ -176,6 +176,36 @@ export function createDiscardCoordinator(deps, options = {}) {
   }
 
   /**
+   * Every attempt of one bead, oldest first — the queue's own rows PLUS the
+   * records §7 moved to `beads/<bead>/attempts/` (record-timeline-retention).
+   *
+   * A bead settles before it is discarded far more often than not: the `done`
+   * lane is exactly where a merged PR is reverted from, and by then the bead's
+   * whole attempt set is processed-terminal and has left `queue.json`. Reading
+   * the queue alone would answer `attempt_not_found` for precisely the discards
+   * that matter most.
+   *
+   * The queue snapshot is the fallback for a store without the query API, so
+   * the existing test doubles keep working unchanged.
+   *
+   * @param {any} queue
+   * @param {string} bead_id
+   * @returns {any[]}
+   */
+  function beadAttempts(queue, bead_id) {
+    if (typeof deps.store.readAttemptsForBead === 'function') {
+      try {
+        return deps.store.readAttemptsForBead(deps.workspace, bead_id);
+      } catch {
+        // Fall through: an unreadable record tree still has a live queue.
+      }
+    }
+    return Object.values(queue.attempts || {}).filter(
+      (attempt) => /** @type {any} */ (attempt)?.bead_id === bead_id
+    );
+  }
+
+  /**
    * @param {string} bead_id
    * @param {string|null} attempt_id
    * @returns {Promise<{ ok: true, attempt: any, source_snapshot: Record<string, unknown> }|{ ok: false, reason: string }>}
@@ -186,10 +216,9 @@ export function createDiscardCoordinator(deps, options = {}) {
     // a review session runs against a PR this bead already opened, so letting
     // one take the "last attempt" slot would point the rollback at the
     // reviewer's session instead of the work being discarded.
-    const attempts = Object.values(queue.attempts || {}).filter(
-      (attempt) =>
-        /** @type {any} */ (attempt)?.bead_id === bead_id &&
-        isImplementationAttempt(attempt)
+    const bead_attempts = beadAttempts(queue, bead_id);
+    const attempts = bead_attempts.filter((attempt) =>
+      isImplementationAttempt(attempt)
     );
     const attempt = attempt_id
       ? attempts.find(
@@ -204,8 +233,11 @@ export function createDiscardCoordinator(deps, options = {}) {
     if (!DISCARDABLE_ATTEMPT_STATUSES.has(record.status)) {
       return { ok: false, reason: 'attempt_not_discardable' };
     }
+    // The successor may itself have been transferred (§7), so the bead's own
+    // records join the queue-wide scan: a resume this discard would strand is
+    // no less a successor for having settled.
     if (
-      Object.values(queue.attempts || {}).some(
+      [...Object.values(queue.attempts || {}), ...bead_attempts].some(
         (candidate) =>
           /** @type {any} */ (candidate).resumed_from === record.attempt_id
       )
@@ -530,7 +562,8 @@ export function createDiscardCoordinator(deps, options = {}) {
     if (operation.attempt_id) {
       const settled = await deps.scheduler.finalizeDiscardAttempt(
         deps.workspace,
-        operation.attempt_id
+        operation.attempt_id,
+        operation.bead_id
       );
       if (!settled.ok) {
         return { ok: false, reason: settled.reason || 'attempt_settle_failed' };

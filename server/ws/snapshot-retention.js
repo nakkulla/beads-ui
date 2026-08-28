@@ -311,9 +311,18 @@ function slimTerminalAttempt(attempt) {
  * @param {Record<string, any>} raw - Judgment input: the FULL overlaid
  * snapshot, which is what keeps the trimmed output self-consistent.
  * @param {number} [now]
+ * @param {{ attemptsForBead?: (bead_id: string) => any[] }} [options] - The
+ * TRANSFERRED-record reader (record-timeline-retention §7). Optional: without
+ * it this stays the pure function it has always been, and the wire carries only
+ * what `queue.json` still holds.
  * @returns {{ done: any[], attempts: Record<string, any>, repo_operations: Record<string, any> }}
  */
-export function trimQueueProjection(public_queue, raw, now = Date.now()) {
+export function trimQueueProjection(
+  public_queue,
+  raw,
+  now = Date.now(),
+  options = {}
+) {
   const projection = asRecord(public_queue);
   const source = asRecord(raw);
   const { beads, operations } = retainedSets(source, now);
@@ -345,6 +354,37 @@ export function trimQueueProjection(public_queue, raw, now = Date.now()) {
       beads.has(attempt.bead_id)
     ) {
       attempts[attempt_id] = slimTerminalAttempt(attempt);
+    }
+  }
+  // Top up each RETAINED bead with the attempts §7 moved out of `queue.json`
+  // (record-timeline-retention §7). Retention is per bead, all-or-nothing for
+  // the reason stated at the top of this file — token totals, `done_kind`
+  // badges and the session history all group by bead — and a transferred
+  // record is exactly the shape that would make a retained bead partial. The
+  // record is added, never used as a REASON to retain: `retainedSets` still
+  // judges on `raw` alone, so a bead whose every trace is processed and
+  // transferred leaves the wire as it should.
+  if (typeof options.attemptsForBead === 'function') {
+    for (const bead_id of beads) {
+      /** @type {any[]} */
+      let transferred = [];
+      try {
+        transferred = options.attemptsForBead(bead_id) || [];
+      } catch {
+        // Fail-quiet, same posture as the caller's own try/catch: an
+        // unreadable record tree costs a row, never the whole snapshot.
+        transferred = [];
+      }
+      for (const record of transferred) {
+        if (
+          !isRecord(record) ||
+          typeof record.attempt_id !== 'string' ||
+          Object.hasOwn(attempts, record.attempt_id)
+        ) {
+          continue;
+        }
+        attempts[record.attempt_id] = slimTerminalAttempt(record);
+      }
     }
   }
   /** @type {Record<string, any>} */
