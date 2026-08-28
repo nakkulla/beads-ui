@@ -1219,7 +1219,7 @@ describe('ready/blocked candidate decorations (UI-d13v §3.3·§3.5·§3.7)', ()
     ).toEqual(['UI-9', 'UI-8']);
   });
 
-  test('counts only open follow-ups and caps the ids at five', async () => {
+  test('carries every open follow-up id in sort order', async () => {
     const waiters = ['UI-2', 'UI-3', 'UI-4', 'UI-5', 'UI-6', 'UI-7'].map(
       (id) => ({
         id,
@@ -1247,7 +1247,7 @@ describe('ready/blocked candidate decorations (UI-d13v §3.3·§3.5·§3.7)', ()
 
     expect(items[0].dependents_info).toEqual({
       count: 6,
-      ids: ['UI-2', 'UI-3', 'UI-4', 'UI-5', 'UI-6']
+      ids: ['UI-2', 'UI-3', 'UI-4', 'UI-5', 'UI-6', 'UI-7']
     });
   });
 
@@ -1303,8 +1303,54 @@ describe('ready/blocked candidate decorations (UI-d13v §3.3·§3.5·§3.7)', ()
 
     expect(items[0].dependents_info).toEqual({
       count: 2,
-      ids: ['UI-2', 'dotfiles-5']
+      ids: ['UI-2', 'dotfiles-5'],
+      root_dirs: { 'dotfiles-5': WS_PEER }
     });
+  });
+
+  test('changes decoration_rev when only the owning repo changed', async () => {
+    vi.mocked(visibleWorkspaceRoots).mockReturnValue([WS_MAIN, WS_PEER]);
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          { id: 'UI-1', status: 'open' },
+          {
+            id: 'dotfiles-5',
+            status: 'open',
+            dependencies: [blocksEdge('dotfiles-5', 'UI-1')]
+          }
+        ],
+        ready: ['UI-1']
+      }
+    });
+    const same_repo = await projectIn(WS_MAIN);
+    __resetWorkspaceSnapshotRuntimeForTest();
+    mockWorkspaces({
+      [WS_MAIN]: { all: [{ id: 'UI-1', status: 'open' }], ready: ['UI-1'] },
+      [WS_PEER]: {
+        all: [
+          {
+            id: 'dotfiles-5',
+            status: 'open',
+            dependencies: [blocksEdge('dotfiles-5', 'UI-1')]
+          }
+        ],
+        ready: ['dotfiles-5']
+      }
+    });
+    await projectIn(WS_PEER);
+
+    const peer_owned = await projectIn(WS_MAIN);
+
+    expect(/** @type {any} */ (same_repo[0].dependents_info).ids).toEqual([
+      'dotfiles-5'
+    ]);
+    expect(peer_owned[0].dependents_info).toEqual({
+      count: 1,
+      ids: ['dotfiles-5'],
+      root_dirs: { 'dotfiles-5': WS_PEER }
+    });
+    expect(peer_owned[0].decoration_rev).not.toBe(same_repo[0].decoration_rev);
   });
 
   test('never asks a workspace it has no snapshot of for one', async () => {
@@ -1474,7 +1520,7 @@ describe('ready/blocked candidate decorations (UI-d13v §3.3·§3.5·§3.7)', ()
 
     expect(items[0].decoration_rev).toBe(
       [
-        'dependents_info=1:UI-2',
+        'dependents_info=1:UI-2:',
         `release_info=UI-9:${Date.parse(NEW_CLOSE_ISO)}:0:`
       ].join('\u001e')
     );
