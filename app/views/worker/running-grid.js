@@ -39,6 +39,7 @@ import {
   routeChipTemplate,
   timesMeta
 } from './lanes.js';
+import { logPathTemplate } from './log-path.js';
 
 /**
  * @import { SessionRefView } from '../../../server/worker/session-ref.js'
@@ -157,7 +158,25 @@ import {
  * @property {string|null} resume_reason
  * @property {boolean} landed
  * @property {'merged'|'unmerged'} confirmation
+ * @property {TimelineRow[]} [timeline] - 이 bead의 최근 이력, 최신순
+ * (record-timeline-retention §9). `lane-model.js`가 스냅샷의 `bead_timelines`
+ * 에서 실어 나른 것이며, 이력이 없는 bead는 키 자체가 없다 (fail-quiet).
+ * @property {string} [log_path] - §4 해석 순서가 실제로 찾아낸 위치이므로
+ * 아카이브(`.gz`)일 수도 있고, 기록된 값과 다를 수도 있다. 없으면 줄이 빠진다.
+ * @property {boolean} [log_expired] - 보존 정책이 로그를 지웠다 (§4). 경로가
+ * 없다는 것과 다른 대답이므로 자기 키를 갖는다.
  * @property {boolean} [open] - Ephemeral view state for this attempt's detail.
+ */
+
+/**
+ * One line of a bead's Worker history (record-timeline-retention §5), already
+ * projected: the renderer never sees a raw event, only what it draws.
+ *
+ * @typedef {Object} TimelineRow
+ * @property {string} event_id - lit-html의 반복 키.
+ * @property {string} kind
+ * @property {string} summary
+ * @property {number|null} at
  */
 
 /**
@@ -222,6 +241,76 @@ function retryWaitBadgeText(retry) {
 }
 
 /**
+ * The §9 history block: the bead's most recent timeline lines, newest first,
+ * with the log path LAST.
+ *
+ * Two surfaces draw it — the failure popover and the parked tile — so it is
+ * written once. The materials come entirely from the projection; this reads
+ * nothing and fetches nothing (ADR 14).
+ *
+ * Every part is conditional on its own material, so a bead with events but no
+ * log draws only the list, a bead whose log the retention policy deleted draws
+ * only 만료됨, and a bead with neither draws NOTHING — not an empty block.
+ *
+ * @param {FailureTile|null|undefined} tile
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function historyBlockTemplate(tile) {
+  if (!tile) {
+    return '';
+  }
+  const rows = Array.isArray(tile.timeline) ? tile.timeline : [];
+  const log_path = typeof tile.log_path === 'string' ? tile.log_path : '';
+  const expired = tile.log_expired === true;
+  if (rows.length === 0 && log_path.length === 0 && !expired) {
+    return '';
+  }
+  return html`${rows.length > 0
+    ? html`<ol class="rtile__history" data-seam="tile-timeline">
+        ${rows.map(
+          (row) =>
+            html`<li class="rtile__history-row">
+              ${historyTimeText(row.at)
+                ? html`<span class="rtile__history-at"
+                    >${historyTimeText(row.at)}</span
+                  >`
+                : ''}<span class="rtile__history-summary">${row.summary}</span>
+            </li>`
+        )}
+      </ol>`
+    : ''}${expired
+    ? html`<p
+        class="rtile__history-log"
+        data-seam="tile-log-path"
+        title="180일 보존 정책으로 삭제됨"
+      >
+        만료됨
+      </p>`
+    : log_path.length > 0
+      ? html`<p class="rtile__history-log" data-seam="tile-log-path">
+          ${logPathTemplate(log_path)}
+        </p>`
+      : ''}`;
+}
+
+/**
+ * `HH:MM` for one history line, or `''` when the event carries no time — an
+ * event written before the field existed still says what happened.
+ *
+ * @param {number|null|undefined} at
+ * @returns {string}
+ */
+function historyTimeText(at) {
+  if (typeof at !== 'number' || !Number.isFinite(at)) {
+    return '';
+  }
+  return new Date(at).toLocaleTimeString('ko-KR', {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+/**
  * Failure detail shown from the cause badge. Every row is conditional so an
  * older attempt record never produces placeholder facts.
  *
@@ -278,6 +367,9 @@ function failurePopoverTemplate(failure, now) {
     typeof cost === 'number' && Number.isFinite(cost)
       ? `$${cost.toFixed(2)}`
       : '';
+  // 최근 이력 5줄 + 로그 경로 (§9). 보고 바로 아래에 붙는다 — 그 한 줄이
+  // 무엇이 끝냈는지를 말하면 이 블록은 어떻게 거기까지 왔는지를 말한다.
+  const history = historyBlockTemplate(failure);
   return html`<div
     class="rtile__failure-pop"
     role="dialog"
@@ -288,6 +380,12 @@ function failurePopoverTemplate(failure, now) {
         ? html`<div>
             <dt>보고</dt>
             <dd>${failure.summary}</dd>
+          </div>`
+        : ''}
+      ${history
+        ? html`<div>
+            <dt>이력</dt>
+            <dd>${history}</dd>
           </div>`
         : ''}
       ${cause_text
@@ -595,9 +693,12 @@ function heldBodyTemplate(parked, park, discard_button) {
     return '';
   }
   const summary = summaryText(park?.summary);
+  // 파킹 타일도 같은 블록을 싣는다 (§9): 팝오버가 없는 타일이므로 이력이
+  // 보일 자리가 본문뿐이다.
+  const history = historyBlockTemplate(park);
   return html`${summary
       ? html`<p class="rtile__held-summary">${summary}</p>`
-      : ''}
+      : ''}${history}
     <div class="rtile__foot">
       <button
         type="button"

@@ -82,6 +82,7 @@ import {
   detachWorkerQueue,
   handleGetAttemptPrompt,
   handleGetBeadPrompt,
+  handleGetBeadTimeline,
   handleGetSessionRefs,
   handleGetWorkerSystemPrompt,
   handleSubscribeSessionLog,
@@ -674,6 +675,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'get-bead-prompt':
       handleGetBeadPrompt(ws, req);
+      return;
+    case 'get-bead-timeline':
+      handleGetBeadTimeline(ws, req);
       return;
     case 'get-worker-system-prompt':
       handleGetWorkerSystemPrompt(ws, req);

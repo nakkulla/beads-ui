@@ -75,6 +75,7 @@ import {
   extractSummary,
   guardKillMessage
 } from './failure-class.js';
+import { attemptFailureComment } from './failure-comment.js';
 import * as default_guard_hook from './guard-hook.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
@@ -495,8 +496,12 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   unsetMetadata: (bead_id: string, key: string) => Promise<void>,
  *   readMetadata: (bead_id: string, key: string) => Promise<string|null>,
  *   setStatus: (bead_id: string, status: string) => Promise<void>,
- *   readStatus: (bead_id: string) => Promise<string|null>
+ *   readStatus: (bead_id: string) => Promise<string|null>,
+ *   comment?: (bead_id: string, text: string) => Promise<unknown>
  * }} bd
+ * `comment` is OPTIONAL because a scheduler built without it — every existing
+ * unit test — must settle failures identically and simply post nothing
+ * (record-timeline-retention §9).
  * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean, restore?: (i: { repo: string, bead_id: string, head_ref: string }) => Promise<{ ok: boolean, reason?: string }> }} worktree
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean, bead_status?: string|null, awaiting_user?: string|null }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
@@ -883,6 +888,7 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *
  * @param {SchedulerDeps} deps
  * @returns {{
+ *   commentsIdle: () => Promise<void>,
  *   tick: (workspace: string) => Promise<void>,
  *   staleWorkContinue: (workspace: string, input: { bead_id: string, action_id: string, expected_revision: number }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, conflict?: boolean }>,
  *   staleWorkRecheck: (workspace: string, input: { bead_id: string, action_id: string, expected_revision: number }) => Promise<{ ok: boolean, reason?: string, state?: string, conflict?: boolean }>,
@@ -976,6 +982,74 @@ export function createScheduler(deps) {
       summary: `\uc138\uc158 \uc2e4\ud328 \u2014 ${classification.summary || classification.cause || '\uc6d0\uc778 \ubbf8\uc0c1'}`,
       at
     });
+  }
+
+  /**
+   * Attempts whose hand-off comment this process already posted.
+   *
+   * A comment is best-effort and NOT durable: a restart loses the set and the
+   * settlement it belonged to is long over, so nothing re-posts. That is the
+   * same trade the completion saga makes and for the same reason — zero
+   * comments is a gap the failure tile already covers, a duplicate is not.
+   *
+   * @type {Set<string>}
+   */
+  const commented_attempts = new Set();
+
+  /**
+   * Serialized best-effort `bd comment`s. The settlement itself is synchronous
+   * and durable; the chain only keeps two settlements from interleaving their
+   * `bd` invocations.
+   *
+   * @type {Promise<void>}
+   */
+  let comment_chain = Promise.resolve();
+
+  /**
+   * Post the §9 hand-off comment for a session that failed or parked.
+   *
+   * The `summary` and the log path are the record's OWN — the same string the
+   * timeline event and the failure tile read (§6: one extraction, one string) —
+   * so the comment can never describe the failure differently from the card.
+   *
+   * Fire-and-forget on purpose: the queue must not wait on `bd`, and a failed
+   * comment must not turn a settled attempt into a second failure.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {import('./failure-class.js').FailureClassification} classification
+   * @param {boolean} parked
+   */
+  function postAttemptFailureComment(
+    workspace,
+    attempt_id,
+    bead_id,
+    classification,
+    parked
+  ) {
+    if (
+      typeof deps.bd?.comment !== 'function' ||
+      bead_id.length === 0 ||
+      commented_attempts.has(attempt_id)
+    ) {
+      return;
+    }
+    commented_attempts.add(attempt_id);
+    const record = deps.store.snapshot(workspace).attempts?.[attempt_id] || {};
+    const text = attemptFailureComment({
+      parked,
+      cause: classification.cause,
+      summary: classification.summary,
+      log_path: typeof record.log_path === 'string' ? record.log_path : null
+    });
+    const post = deps.bd.comment;
+    comment_chain = comment_chain
+      .then(() => post(bead_id, text))
+      .then(() => undefined)
+      .catch((err) => {
+        log('attempt failure comment failed for %s: %o', bead_id, err);
+      });
   }
 
   /**
@@ -3379,6 +3453,13 @@ export function createScheduler(deps) {
         }`,
         at
       });
+      postAttemptFailureComment(
+        workspace,
+        attempt_id,
+        bead_id,
+        classification,
+        true
+      );
       closeRetryLineage(workspace, bead_id);
       return;
     }
@@ -3460,6 +3541,13 @@ export function createScheduler(deps) {
           cause_detail: cause_detail ?? null
         });
         appendFailedEvent(bead_id, attempt_id, classification, at);
+        postAttemptFailureComment(
+          workspace,
+          attempt_id,
+          bead_id,
+          classification,
+          false
+        );
       }
       armRetryTimer(workspace);
       return;
@@ -3494,6 +3582,18 @@ export function createScheduler(deps) {
       cause_detail: cause_detail ?? null
     });
     appendFailedEvent(bead_id, attempt_id, classification, at);
+    // A MOOT settlement is dismissed on arrival — its target is already gone —
+    // so there is no one to hand it off TO. Commenting on it would put a
+    // failure notice on a bead whose work already landed.
+    if (options.moot !== true) {
+      postAttemptFailureComment(
+        workspace,
+        attempt_id,
+        bead_id,
+        classification,
+        false
+      );
+    }
     if (tier === 'individual') {
       closeRetryLineage(workspace, bead_id);
     }
@@ -9599,6 +9699,13 @@ export function createScheduler(deps) {
   }
 
   return {
+    /**
+     * Test and shutdown seam: wait for the best-effort hand-off comments this
+     * scheduler has queued (record-timeline-retention §9).
+     */
+    commentsIdle() {
+      return comment_chain;
+    },
     tick,
     staleWorkContinue,
     staleWorkRecheck,

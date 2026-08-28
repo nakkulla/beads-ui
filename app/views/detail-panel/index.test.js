@@ -735,15 +735,16 @@ describe('views/detail-panel', () => {
     ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     // Opening an issue fetches its comments (UI-ucq6 §변경 3), the workspace
-    // session defaults (spec §E), and the repo account defaults (UI-d3cb §6.2),
-    // so the claim is that cancel sent no MUTATION — not that the panel stayed
-    // silent.
+    // session defaults (spec §E), the repo account defaults (UI-d3cb §6.2) and
+    // the bead's Worker 이력 (record-timeline-retention §9), so the claim is
+    // that cancel sent no MUTATION — not that the panel stayed silent.
     expect(
       transport.mock.calls.filter(
         (c) =>
           c[0] !== 'get-comments' &&
           c[0] !== 'get-session-defaults' &&
-          c[0] !== 'get-workspace-accounts'
+          c[0] !== 'get-workspace-accounts' &&
+          c[0] !== 'get-bead-timeline'
       )
     ).toEqual([]);
     expect(

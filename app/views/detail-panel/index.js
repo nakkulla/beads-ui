@@ -36,6 +36,10 @@ import {
 import { createMdViewer } from './md-viewer.js';
 import { sessionHistoryTemplate } from './session-history.js';
 import { taskPromptTemplate } from './task-prompt.js';
+import {
+  WORKER_TIMELINE_PAGE,
+  workerTimelineTemplate
+} from './worker-timeline.js';
 
 /**
  * @import { SessionRefView } from '../../../server/worker/session-ref.js'
@@ -594,6 +598,92 @@ export function createDetailPanel(mount_element, options) {
     void fetchSessionRefs(current_id, key);
   }
 
+  // Worker 이력 섹션 (record-timeline-retention §9). 세션 로그와 달리 이 이력은
+  // `queue.json`이 아니라 bead의 영구 타임라인에 있으므로 여기서 물어야 한다.
+  /** @type {import('./worker-timeline.js').WorkerTimelineEvent[]} */
+  let worker_timeline = [];
+  let worker_timeline_shown = WORKER_TIMELINE_PAGE;
+  /** @type {string|null} */
+  let worker_timeline_loaded_for = null;
+  // Guards a late reply from an issue (or workspace) the reader has already left.
+  let worker_timeline_request_seq = 0;
+
+  /**
+   * Workspace + bead, for the same reason the prompt cache carries both: the
+   * same bead id in another repo is another bead with another history.
+   *
+   * @param {string} id
+   * @returns {string}
+   */
+  function workerTimelineCacheKey(id) {
+    const workspace =
+      (options.getWorkspacePath && options.getWorkspacePath()) || '';
+    return `${workspace}::${id}`;
+  }
+
+  function resetWorkerTimeline() {
+    worker_timeline = [];
+    worker_timeline_shown = WORKER_TIMELINE_PAGE;
+    worker_timeline_loaded_for = null;
+    worker_timeline_request_seq += 1;
+  }
+
+  /**
+   * @param {string} id
+   * @param {string} key
+   */
+  async function fetchWorkerTimeline(id, key) {
+    if (!transport) {
+      return;
+    }
+    const seq = ++worker_timeline_request_seq;
+    /** @type {any} */
+    let res;
+    try {
+      res = await Promise.resolve(
+        transport('get-bead-timeline', { bead_id: id })
+      );
+    } catch {
+      res = null;
+    }
+    if (
+      seq !== worker_timeline_request_seq ||
+      key !== worker_timeline_loaded_for
+    ) {
+      return;
+    }
+    // A failure and an empty history are the same answer here: no section.
+    worker_timeline = res && Array.isArray(res.events) ? res.events : [];
+    worker_timeline_shown = WORKER_TIMELINE_PAGE;
+    doRender();
+  }
+
+  /**
+   * Ask once per (workspace, bead). The reply is short and the section is the
+   * only place a finished attempt's history is readable at all, so it is
+   * fetched on open rather than behind a toggle.
+   */
+  function syncWorkerTimeline() {
+    if (!transport || !current_id) {
+      return;
+    }
+    const key = workerTimelineCacheKey(current_id);
+    if (worker_timeline_loaded_for === key) {
+      return;
+    }
+    // The previous key's lines belong to another bead; they go before the new
+    // reply lands, not after.
+    worker_timeline = [];
+    worker_timeline_shown = WORKER_TIMELINE_PAGE;
+    worker_timeline_loaded_for = key;
+    void fetchWorkerTimeline(current_id, key);
+  }
+
+  function revealMoreWorkerTimeline() {
+    worker_timeline_shown += WORKER_TIMELINE_PAGE;
+    doRender();
+  }
+
   function toggleTaskPrompt() {
     prompt_expanded = !prompt_expanded;
     if (
@@ -1116,6 +1206,7 @@ export function createDetailPanel(mount_element, options) {
     }
     syncComments();
     syncSessionRefs();
+    syncWorkerTimeline();
     doRender();
   }
 
@@ -2504,6 +2595,10 @@ export function createDetailPanel(mount_element, options) {
             { total: total_usage, expanded: usage_expanded },
             session_refs
           )}
+          ${workerTimelineTemplate(
+            { events: worker_timeline, shown: worker_timeline_shown },
+            { onMore: revealMoreWorkerTimeline }
+          )}
         </div>
       </div>
     `;
@@ -2527,6 +2622,7 @@ export function createDetailPanel(mount_element, options) {
         resetComments();
         resetTaskPrompt();
         resetSessionRefs();
+        resetWorkerTimeline();
         resetExecAccountCatalog();
       }
       current_id = id;
@@ -2556,6 +2652,7 @@ export function createDetailPanel(mount_element, options) {
       resetComments();
       resetTaskPrompt();
       resetSessionRefs();
+      resetWorkerTimeline();
       resetExecAccountCatalog();
       releaseCandidates();
       md_viewer.close();
@@ -2596,6 +2693,7 @@ export function createDetailPanel(mount_element, options) {
       resetComments();
       resetTaskPrompt();
       resetSessionRefs();
+      resetWorkerTimeline();
       render(html``, mount_element);
     }
   };

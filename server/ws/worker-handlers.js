@@ -44,6 +44,7 @@ import {
   kickWorkerMergeQueue,
   observeWorkerPrs,
   pauseWorkerAttempt,
+  readBeadTimeline,
   recheckWorkerStaleWork,
   refreshWorkerExternalPrs,
   resumeWorkerAttempt,
@@ -100,7 +101,10 @@ import { createTailReader } from '../worker/runner/tail-reader.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { activeLaneLineages } from '../worker/scheduler.js';
 import { scopeCache } from '../worker/scope-cache.js';
-import { beadOfTransferredAttempt } from '../worker/session-log.js';
+import {
+  beadOfTransferredAttempt,
+  resolveSessionLogRead
+} from '../worker/session-log.js';
 import { createSessionRefTranscript } from '../worker/session-ref-transcript.js';
 import {
   isSafeSessionId,
@@ -895,6 +899,106 @@ function beadTitlesFor(workspace_key, queue) {
  */
 function beadTimesFor(workspace_key, queue) {
   return beadDecorationFor(workspace_key, queue, 'timesFor');
+}
+
+/**
+ * How many timeline lines the failure popover / parked tile show
+ * (record-timeline-retention §9). The tile answers "무엇이 이 시도를 끝냈나",
+ * not "이 bead의 전체 이력" — that question belongs to the issue detail page's
+ * 섹션, which fetches the whole thing on its own.
+ *
+ * @type {number}
+ */
+const TILE_TIMELINE_LIMIT = 5;
+
+/**
+ * Attempt statuses whose tile carries the failure/park projection
+ * (`running-grid.js`). Only those beads get timeline material on the snapshot:
+ * the popover is the only tile surface that shows it, and probing a log path
+ * for every bead in the queue would spend syscalls on cards that never ask.
+ *
+ * @type {Set<string>}
+ */
+const TIMELINE_TILE_STATUSES = new Set(['failed', 'orphaned', 'parked']);
+
+/**
+ * The §9 tile material of every bead whose card shows a failure or a park: the
+ * last few history lines plus the log the attempt left behind.
+ *
+ * Carried on the SNAPSHOT rather than fetched by the tile, because ADR 14 makes
+ * `buildLanes` the single assembler — a renderer that fetched its own rows
+ * would be a second assembly path for the same card. It is a decoration like
+ * `bead_titles`: non-persisted, partial, and fail-quiet. A bead with no events
+ * and no readable log is OMITTED entirely rather than shipped as an empty
+ * shell, so the client's own emptiness check is `key in map`.
+ *
+ * `log_expired` is the §4 read-resolution order's `expired` outcome — the
+ * retention policy deleted the transcript — which is a different answer from
+ * "this attempt recorded no path", and the tile says so with 만료됨.
+ *
+ * Exported for the §9 transport test, which fixes the omission rules; the
+ * snapshot builder is its only production caller.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, { events: import('../worker/bead-timeline.js').TimelineEvent[], log_path: string|null, log_expired: boolean }>}
+ */
+export function beadTimelinesFor(workspace_key, queue) {
+  const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
+  /** @type {Map<string, any>} */
+  const newest_by_bead = new Map();
+  for (const attempt of Object.values(attempts)) {
+    if (
+      !attempt ||
+      typeof attempt.bead_id !== 'string' ||
+      attempt.bead_id.length === 0 ||
+      !TIMELINE_TILE_STATUSES.has(attempt.status)
+    ) {
+      continue;
+    }
+    const prior = newest_by_bead.get(attempt.bead_id);
+    const at =
+      typeof attempt.finished_at === 'number' ? attempt.finished_at : 0;
+    const prior_at =
+      prior && typeof prior.finished_at === 'number' ? prior.finished_at : -1;
+    if (!prior || at >= prior_at) {
+      newest_by_bead.set(attempt.bead_id, attempt);
+    }
+  }
+
+  /** @type {Record<string, { events: import('../worker/bead-timeline.js').TimelineEvent[], log_path: string|null, log_expired: boolean }>} */
+  const out = {};
+  for (const [bead_id, attempt] of newest_by_bead) {
+    const events = readBeadTimeline(workspace_key, bead_id, {
+      limit: TILE_TIMELINE_LIMIT
+    });
+    /** @type {import('../worker/session-log.js').SessionLogLocation} */
+    let located;
+    try {
+      located = resolveSessionLogRead({
+        workspace: workspace_key,
+        attempt_id: String(attempt.attempt_id || ''),
+        bead_id,
+        log_path: typeof attempt.log_path === 'string' ? attempt.log_path : null
+      });
+    } catch {
+      located = { status: 'expired', path: null, gzipped: false };
+    }
+    // A record that never stored a path AND resolved to nothing is a failure
+    // that ran no session at all — there is no log fact to report, expired or
+    // otherwise, so the row is simply absent.
+    const stored =
+      typeof attempt.log_path === 'string' && attempt.log_path.length > 0
+        ? attempt.log_path
+        : null;
+    const log_expired = located.status === 'expired' && stored !== null;
+    const log_path = located.status === 'ok' ? located.path : null;
+    if (events.length === 0 && log_path === null && !log_expired) {
+      continue;
+    }
+    out[bead_id] = { events, log_path, log_expired };
+  }
+  return out;
 }
 
 /**
@@ -2475,6 +2579,11 @@ export function decorateQueue(workspace_key, raw_queue) {
     // Normalized labels for the same queue/pr_wait/done ids. Partial cache
     // hits only: a missing key is intentionally unknown to the Phase 3 view.
     bead_labels: beadLabelsFor(workspace_key, queue),
+    // 실패·파킹 타일이 읽는 최근 이력 5줄 + 로그 경로
+    // (record-timeline-retention §9). Non-persisted like the decorations
+    // above, and present only for the beads whose card actually shows a
+    // failure or a park.
+    bead_timelines: beadTimelinesFor(workspace_key, queue),
     // Stepper projections for the LANE members (UI-eey2 §9.2) — `queue` ∪ the
     // serial lanes ∪ running attempts ∪ `pr_wait` ∪ `done`. Same
     // partial-cache contract as the three decorations above. `done` rides here
@@ -3264,6 +3373,56 @@ export function handleGetBeadPrompt(ws, req) {
       })
     )
   );
+}
+
+/**
+ * Handle `get-bead-timeline`. Payload: `{ bead_id, root_dir? }`.
+ *
+ * The issue detail page's Worker 이력 섹션 (record-timeline-retention §9). The
+ * WHOLE timeline, newest first — the section's question is "이 bead에 무슨 일이
+ *있었나", which the 5 lines the failure tile carries cannot answer, and the
+ * events are short enough that paging them server-side would only add a cursor
+ * nobody needs. The section reveals them progressively on its own.
+ *
+ * An unknown bead, a workspace with no attachment, and a bead that has simply
+ * never been dispatched all reply `{ bead_id, events: [] }` rather than an
+ * error: the section draws nothing on an empty list, and three different
+ * silences would be three ways of saying the same "이력 없음".
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleGetBeadTimeline(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  const bead_id = typeof p.bead_id === 'string' ? p.bead_id : '';
+  if (bead_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  // Same optional `root_dir` contract as `get-session-refs`: absent keeps the
+  // connection's workspace, an unregistered path is refused rather than read.
+  const key = targetWorkspaceOf(ws, req.payload);
+  if (key === null) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload.root_dir must be an absolute path in the available workspace list'
+        )
+      )
+    );
+    return;
+  }
+  // `readTimeline` returns oldest first; the section reads newest first, and
+  // reversing HERE keeps the one ordering decision on the wire instead of in
+  // every consumer.
+  const events = readBeadTimeline(key, bead_id).slice().reverse();
+  ws.send(JSON.stringify(makeOk(req, { bead_id, events })));
 }
 
 /**

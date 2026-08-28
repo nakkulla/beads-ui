@@ -2471,6 +2471,33 @@ export async function stopWorkerReviewSessionProcess(
 }
 
 /**
+ * Read one bead's permanent history (record-timeline-retention §5/§9), IF an
+ * attachment is registered.
+ *
+ * The timeline writer is per WORKSPACE and lives on the attachment, while the
+ * ws layer holds only a workspace key — so the registry is the seam, exactly as
+ * it is for every other per-workspace capability here. A workspace with no
+ * attachment (a ws-handler test, an inactive repo) has no history rather than
+ * an error: every §9 surface is fail-quiet and draws nothing on an empty list.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @param {{ limit?: number }} [options]
+ * @returns {import('./bead-timeline.js').TimelineEvent[]}
+ */
+export function readBeadTimeline(workspace_root, bead_id, options = {}) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || typeof bead_id !== 'string' || bead_id.length === 0) {
+    return [];
+  }
+  try {
+    return att.timeline.readTimeline(bead_id, options);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Pause a running attempt (tile ⏸, worker-phase1 §2.1), IF an attachment is
  * registered. Inert (`{ ok: false, reason: 'no_attachment' }`) without one.
  *

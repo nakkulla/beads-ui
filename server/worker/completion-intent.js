@@ -13,6 +13,7 @@ import path from 'node:path';
 // sentences. `attach.js` already imports `app/utils` the same way.
 import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
 import { scriptSummary } from './failure-class.js';
+import { commentHeading, logRow, summaryRow } from './failure-comment.js';
 import { RESOLUTION_ROUND_CAP, RESOLUTION_WAIT_MS } from './merge-queue.js';
 import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
@@ -919,15 +920,16 @@ export function completionFailureComment(
     typeof terminal.op_id === 'string'
       ? queue?.repo_operations?.[terminal.op_id]
       : null;
+  // 헤딩·요약·로그 세 행은 `failure-comment.js`가 소유한다
+  // (record-timeline-retention §9): 세션 실패·파킹 댓글이 같은 형식을 써야
+  // 하므로, 형식은 한 곳에 있고 이 함수는 완료 saga 고유의 행만 더한다.
   return [
-    '## 🤖 완료 실패 기록',
+    commentHeading('완료 실패 기록'),
     `- 단계: ${publicFailureStage(terminal)}`,
     `- 원인: ${terminal.reason}${sentence ? ` — ${sentence}` : ''}`,
-    ...(typeof summary === 'string' && summary.length > 0
-      ? [`- 요약: ${summary}`]
-      : []),
+    ...summaryRow(summary),
     `- 대상: ${target_sha} (base ${target_base})`,
-    `- 로그: ${terminal.log_path || '(없음)'}`,
+    logRow(terminal.log_path),
     `- 재시도: ${retryOutcomeText(operation)}`,
     '- 다음: [머지] 재클릭 · 설정 카드 배포 실행 · 코드 수정은 새 Bead'
   ].join('\n');
