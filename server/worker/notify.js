@@ -50,7 +50,8 @@ const TITLE = {
   conflict: `${SENDER} 🚀 충돌 해결`,
   failed: `${SENDER} ❌ 실패`,
   pr_wait: `${SENDER} 📬 PR 제출`,
-  merged: `${SENDER} ✅ 머지 완료`
+  merged: `${SENDER} ✅ 머지 완료`,
+  awaiting_user: `${SENDER} ⏸️ 방향 질의`
 };
 
 /**
@@ -133,7 +134,8 @@ function headline(transition, bead_id, bead_title) {
  *   attemptStarted: (input: { bead_id: string, title?: string|null, runner?: string|null, model?: string|null, effort?: string|null, speed?: string|null, repo?: string|null, kind?: string|null }) => Promise<void>,
  *   attemptFailed: (input: { bead_id: string, cause: string, repo?: string|null, cause_detail?: { reason: string, command: string|null }|null }) => Promise<void>,
  *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
- *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>
+ *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
+ *   awaitingUser: (input: { bead_id: string, title?: string|null, awaiting_user?: string|null, stale_kind?: string|null, session?: string|null, reason?: string|null, tmux_session?: string|null, tmux_window?: string|null, bridge_active?: boolean, repo?: string|null }) => Promise<void>
  * }}
  */
 export function createNotifier(deps) {
@@ -272,6 +274,24 @@ export function createNotifier(deps) {
     return TITLE.started;
   }
 
+  /**
+   * The `질의 세션:` value (UI-7uid §3.5). One vocabulary, three outcomes: the
+   * session was started here, one was already running, or none was started and
+   * the reason says which of the refusals it was.
+   *
+   * @param {{ session?: string|null, reason?: string|null, tmux_session?: string|null, tmux_window?: string|null }} input
+   * @returns {string}
+   */
+  function inquirySessionLine(input) {
+    if (input.session === 'already_running') {
+      return '이미 실행 중';
+    }
+    if (input.session === 'launched') {
+      return `기동 — tmux ${text(input.tmux_session) ?? '?'}:${text(input.tmux_window) ?? '?'}`;
+    }
+    return `미기동 — ${text(input.reason) ?? 'unknown'}`;
+  }
+
   return {
     async attemptStarted(input) {
       try {
@@ -359,6 +379,55 @@ export function createNotifier(deps) {
         send(cmd, prBody(TITLE.pr_wait, input, bead_title));
       } catch (err) {
         log('prWaitEntered failed: %o', err);
+      }
+    },
+
+    // The park itself is announced whether or not an inquiry session came up
+    // (UI-7uid §3.5): a `worker_notify` that is on says the bead stopped and
+    // what is waiting on the user, and the session line is one of its fields —
+    // never its precondition.
+    async awaitingUser(input) {
+      try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        // The trigger already read the bead to fill the prompt, so the title
+        // rides the input; the lookup is only the fallback.
+        const bead_title =
+          text(input.title) ?? (await lookupTitle(input.bead_id));
+        const lines = [
+          headline(TITLE.awaiting_user, input.bead_id, bead_title)
+        ];
+        const stale_kind = text(input.stale_kind);
+        lines.push(
+          `파킹: ${text(input.awaiting_user) ?? 'unknown'}${
+            stale_kind ? ` (${stale_kind})` : ''
+          }`
+        );
+        lines.push(`질의 세션: ${inquirySessionLine(input)}`);
+        if (
+          input.session !== 'launched' &&
+          input.session !== 'already_running'
+        ) {
+          // The manual escape hatch stays the answer whenever no session came
+          // up, so the push names it instead of leaving a dead end.
+          lines.push('처분: Worker 탭 fix/approve');
+        }
+        lines.push(
+          `브리지: ${
+            input.bridge_active === true
+              ? '활성'
+              : '비활성 — 질문은 tmux에서 직접 답'
+          }`
+        );
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        send(cmd, lines.join('\n'));
+      } catch (err) {
+        log('awaitingUser failed: %o', err);
       }
     },
 

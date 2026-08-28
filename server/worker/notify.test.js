@@ -519,3 +519,121 @@ describe('worker/notify fail-quiet', () => {
     expect(log).toHaveBeenCalled();
   });
 });
+
+describe('worker/notify awaiting_user transition (UI-7uid §3.5)', () => {
+  test('names the launched inquiry session, its tmux window and the bridge', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.awaitingUser({
+      bead_id: 'UI-7uid',
+      title: '방향 질의 트리거',
+      awaiting_user: 'spec_review_stale:revise',
+      stale_kind: 'adr_conflict',
+      session: 'launched',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'UI-7uid',
+      bridge_active: true,
+      repo: '/Users/me/GitHub/beads-ui'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      [
+        '🤖 ⏸️ 방향 질의 — UI-7uid 방향 질의 트리거',
+        '파킹: spec_review_stale:revise (adr_conflict)',
+        '질의 세션: 기동 — tmux bdui-inquiry:UI-7uid',
+        '브리지: 활성',
+        '리포: beads-ui'
+      ].join('\n')
+    );
+  });
+
+  test('reports an inquiry session that was already running', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.awaitingUser({
+      bead_id: 'UI-7uid',
+      title: '방향 질의 트리거',
+      awaiting_user: 'plan_approval_stale:revise',
+      stale_kind: 'intent_conflict',
+      session: 'already_running',
+      bridge_active: false,
+      repo: '/r/beads-ui'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      [
+        '🤖 ⏸️ 방향 질의 — UI-7uid 방향 질의 트리거',
+        '파킹: plan_approval_stale:revise (intent_conflict)',
+        '질의 세션: 이미 실행 중',
+        '브리지: 비활성 — 질문은 tmux에서 직접 답',
+        '리포: beads-ui'
+      ].join('\n')
+    );
+  });
+
+  test('points at the click disposition when no session was launched', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.awaitingUser({
+      bead_id: 'UI-7uid',
+      title: '방향 질의 트리거',
+      awaiting_user: 'spec_review_stale:revise',
+      stale_kind: null,
+      session: 'not_launched',
+      reason: 'stale_kind_missing',
+      bridge_active: true,
+      repo: '/r/beads-ui'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      [
+        '🤖 ⏸️ 방향 질의 — UI-7uid 방향 질의 트리거',
+        '파킹: spec_review_stale:revise',
+        '질의 세션: 미기동 — stale_kind_missing',
+        '처분: Worker 탭 fix/approve',
+        '브리지: 활성',
+        '리포: beads-ui'
+      ].join('\n')
+    );
+  });
+
+  test('sends nothing when notifications are off', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(
+      { enabled: false, cmd: ['discord'] },
+      { spawnImpl: spawn.spawnImpl }
+    );
+
+    await notifier.awaitingUser({
+      bead_id: 'UI-7uid',
+      awaiting_user: 'spec_review_stale:revise',
+      session: 'launched',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'UI-7uid'
+    });
+
+    expect(spawn.calls).toHaveLength(0);
+  });
+
+  test('swallows a spawn that throws', async () => {
+    const log = vi.fn();
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: () => {
+        throw new Error('EACCES');
+      },
+      log
+    });
+
+    await expect(
+      notifier.awaitingUser({
+        bead_id: 'UI-7uid',
+        awaiting_user: 'spec_review_stale:revise',
+        session: 'already_running'
+      })
+    ).resolves.toBeUndefined();
+    expect(log).toHaveBeenCalled();
+  });
+});

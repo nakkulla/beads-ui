@@ -180,6 +180,12 @@ server.listen(config.port, config.host, async () => {
       getSubscriberCount: pollDemandFor,
       runtime_identity
     });
+    // The direction-inquiry environment premise, checked ONCE at startup
+    // (UI-7uid §3.7): whether this process can reach the user's tmux socket at
+    // all. Here rather than inside the runtime factory so that unit tests,
+    // which build the runtime freely, never spawn tmux. No-op when the feature
+    // is not enabled in config.
+    void getWorkerRuntime().directionInquiry.probeTmux();
   } catch (err) {
     log('worker runtime init failed: %o', err);
   }
