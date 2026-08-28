@@ -189,7 +189,20 @@ const quickfix_cleanup_resume =
 
 ## 5. 경계·후속
 
-후속 Bead 없음. 아래는 관찰이다.
+후속 Bead 없음.
+
+### 5.1 scope 겹침 (2026-08-28 관측)
+
+`stale-rereview-inputs.py UI-8h1x --json`이 보고한 in-flight 겹침 셋 모두 **같은 파일의 다른
+절**이며 이 설계의 전제가 아니다. 착지 순서 제약도 없다.
+
+| Bead | spec | 겹치는 경로 | 관계 |
+| --- | --- | --- | --- |
+| UI-qksl (open) | `2026-08-28-auto-review-dispatch-on-hold-design.md` | `server/worker/scheduler.js` · `app/views/worker/` | 다른 절 — 머지 큐의 `impl_review` 보류 시 리뷰 lineage dispatch를 다룬다. 이 설계는 quick_fix **착지 정산**의 재개이고 머지 큐를 지나지 않는다(base 직접 push). 두 판정은 입력도 호출 지점도 겹치지 않는다 |
+| UI-8wpb (in_progress) | `2026-08-28-worker-record-timeline-retention-design.md` | `server/worker/scheduler.js` · `app/views/worker/` | 다른 절 — Worker **기록 구조**(bead 타임라인·실패 요약·`queue.json` 보존)를 재편한다. 이 설계는 기록 형식을 바꾸지 않고 이미 있는 `quickfix_landing.reason`을 읽기만 하므로, 어느 쪽이 먼저 착지해도 다른 쪽이 읽는 필드가 사라지지 않는다 |
+| UI-8x90 (in_progress) | `2026-08-28-chip-grammar-unify-design.md` | `app/utils/` · `app/views/worker/` | 다른 요소 — **칩** 문법(의존·겹침 칩의 글리프+ID 라벨, 클릭 의미)을 통일한다. 이 설계가 건드리는 것은 액션 foot의 **버튼** 라벨 하나이고 칩이 아니다. AGENTS.md 카드 문법상 조작과 칩은 서로 다른 슬롯이며, 이 설계는 슬롯 표를 갱신하지 않는다 |
+
+### 5.2 관찰
 
 - 관찰: `[폐기]`의 `parent_reset`이 이미 마감된 Bead를 `open`으로 되돌리는 파괴성 — 이 설계가 안전한 출구를 주면 오조작 유인이 줄지만, `parent_reset` 자체의 확인 절차는 그대로다. 이 Bead의 수용 기준이 아니고, 되돌림이 정당한 경우(정말 폐기)가 있어 일률적으로 막을 수 없다.
 - 관찰: 관측된 커서 `None` 실패 5건은 사유가 모두 `session`이라 동작이 바뀌지 않는다. 다만 커서를 판정에서 뺀 결과 `bd_read_failed`처럼 커서 없이 `settlement`로 분류되는 사유도 정산 재개 대상이 된다 — 현행보다 넓어지는 유일한 지점이고, 그 사유들은 재개가 정답이므로 의도한 확장이다.
