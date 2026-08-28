@@ -2556,7 +2556,7 @@ describe('views/worker', () => {
     expect(sid.getAttribute('title')).toBe('sid-late99zz');
   });
 
-  test('candidate lane merges Ready+Blocked into one chain order, blocked last', () => {
+  test('candidate lane merges Ready+Blocked into one chain order', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     presetCandidateFilter({ show_blocked: true });
     createWorkerView(mount, {
@@ -2566,9 +2566,9 @@ describe('views/worker', () => {
     });
 
     // Default preset `spec 우선` = [spec desc, created asc]: all three carry a
-    // published spec, so the oldest goes first — A(100), C(300) — and blocked B
-    // is the stable bottom group whatever the chain says (UI-d13v §4.1).
-    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
+    // published spec, so the oldest goes first — A(100), B(200), C(300). Blocked
+    // B takes its chain position like any other row (UI-8ham).
+    expect(candidateOrder(mount)).toEqual(['A', 'B', 'C']);
   });
 
   test('renders every candidate card as a non-drag source', () => {
@@ -2606,7 +2606,7 @@ describe('views/worker', () => {
     await flush();
 
     expect(transport).not.toHaveBeenCalled();
-    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
+    expect(candidateOrder(mount)).toEqual(['A', 'B', 'C']);
   });
 
   test('refuses the candidate pane as a drop target', () => {
@@ -6184,10 +6184,10 @@ describe('candidate sort — view (UI-raqh §2, UI-d13v §4.4)', () => {
     expect(sortSelect(mount).value).toBe('spec');
   });
 
-  test('keeps blocked candidates at the bottom of the default preset', () => {
+  test('places a blocked candidate by the chain in the default preset', () => {
     const mount = mountMerged();
 
-    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
+    expect(candidateOrder(mount)).toEqual(['A', 'B', 'C']);
   });
 
   test('reorders the lane when the preset changes', () => {
@@ -6195,7 +6195,7 @@ describe('candidate sort — view (UI-raqh §2, UI-d13v §4.4)', () => {
 
     chooseSort(mount, 'created');
 
-    expect(candidateOrder(mount)).toEqual(['C', 'A', 'B']);
+    expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
   });
 
   test('reorders the lane by updated_at under the updated preset', () => {
@@ -6224,7 +6224,7 @@ describe('candidate sort — view (UI-raqh §2, UI-d13v §4.4)', () => {
 
     const mount = mountMerged();
 
-    expect(candidateOrder(mount)).toEqual(['C', 'A', 'B']);
+    expect(candidateOrder(mount)).toEqual(['C', 'B', 'A']);
   });
 
   test('restores a legacy string preset on mount', () => {
@@ -6279,7 +6279,7 @@ describe('candidate sort — view (UI-raqh §2, UI-d13v §4.4)', () => {
 
     chooseSort(mount, 'custom');
 
-    expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
+    expect(candidateOrder(mount)).toEqual(['A', 'B', 'C']);
   });
 
   test('unfolds the chain row on mount for a persisted chain', () => {

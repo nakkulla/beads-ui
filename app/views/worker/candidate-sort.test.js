@@ -225,52 +225,44 @@ describe('applyCandidateSort (UI-d13v §4.1)', () => {
     expect(sorted.map((i) => i.id)).toEqual(['touched', 'none']);
   });
 
-  test('keeps blocked issues at the bottom under the bottleneck preset', () => {
+  test('ranks a blocked issue by the chain under the bottleneck preset', () => {
     const list = [
       issue('blocked_p0', { priority: 0, created_at: 100 }),
       issue('ready_p3', { priority: 3, created_at: 200 })
     ];
 
-    const sorted = applyCandidateSort(
-      list,
-      { preset: 'bottleneck' },
-      new Set(['blocked_p0'])
-    );
+    const sorted = applyCandidateSort(list, { preset: 'bottleneck' });
 
-    expect(sorted.map((i) => i.id)).toEqual(['ready_p3', 'blocked_p0']);
+    expect(sorted.map((i) => i.id)).toEqual(['blocked_p0', 'ready_p3']);
   });
 
-  test('keeps blocked issues at the bottom under a custom chain', () => {
+  test('ranks a blocked issue by the chain under a custom chain', () => {
     const list = [
       issue('blocked_new', { created_at: 300 }),
       issue('ready_old', { created_at: 100 })
     ];
 
-    const sorted = applyCandidateSort(
-      list,
-      { chain: [{ key: 'created', dir: 'desc' }] },
-      new Set(['blocked_new'])
-    );
+    const sorted = applyCandidateSort(list, {
+      chain: [{ key: 'created', dir: 'desc' }]
+    });
 
-    expect(sorted.map((i) => i.id)).toEqual(['ready_old', 'blocked_new']);
+    expect(sorted.map((i) => i.id)).toEqual(['blocked_new', 'ready_old']);
   });
 
-  test('keeps the chain order inside the blocked group', () => {
+  test('interleaves blocked and ready issues by the chain alone', () => {
     const list = [
       issue('blocked_new', { created_at: 300 }),
       issue('blocked_old', { created_at: 100 }),
       issue('ready', { created_at: 200 })
     ];
 
-    const sorted = applyCandidateSort(
-      list,
-      { chain: [{ key: 'created', dir: 'desc' }] },
-      new Set(['blocked_new', 'blocked_old'])
-    );
+    const sorted = applyCandidateSort(list, {
+      chain: [{ key: 'created', dir: 'desc' }]
+    });
 
     expect(sorted.map((i) => i.id)).toEqual([
-      'ready',
       'blocked_new',
+      'ready',
       'blocked_old'
     ]);
   });

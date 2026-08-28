@@ -3226,9 +3226,9 @@ export function createWorkerView(mount_element, options = {}) {
 
     // Merge the raw Ready+Blocked issues (which carry created_at) FIRST, sort the
     // combined list with the chosen chain (UI-d13v §4.1), THEN exclude queued
-    // beads and project to candidate rows. Blocked ids are tracked twice over:
-    // the sort keeps them as a stable bottom group, and the row reason keeps the
-    // blocked/ready distinction after the merge collapses the two sources.
+    // beads and project to candidate rows. `blocked_ids` survives the merge only
+    // to keep the blocked/ready distinction in the row reason — it no longer
+    // moves anything in the order (UI-8ham).
     //
     // `worker-ineligible` is deliberately NOT an exclusion here (UI-8881):
     // the Worker tab observes candidates rather than listing only runnable
@@ -3248,14 +3248,11 @@ export function createWorkerView(mount_element, options = {}) {
       seen.add(it.id);
       merged.push(it);
     }
-    // 정렬 체인이 렌더 순서를 정한다 (UI-d13v §4.1). Board rank도, 화면 순서에
-    // 기대는 드롭 계산도 더 이상 없다 — 후보 레인은 읽는 목록이다.
+    // 정렬 체인만이 렌더 순서를 정한다 (UI-d13v §4.1, UI-8ham). Board rank도,
+    // blocked 하단 고정도, 화면 순서에 기대는 드롭 계산도 없다 — 후보 레인은 읽는
+    // 목록이고, blocked는 `⛓ blocked` 칩이 말한다.
     /** @type {any[]} */
-    const candidate_issues = applyCandidateSort(
-      merged,
-      candidate_sort,
-      blocked_ids
-    );
+    const candidate_issues = applyCandidateSort(merged, candidate_sort);
 
     // Admission observations recorded by the scheduler/place gate (§1) surface
     // as badges on candidate AND queued rows.

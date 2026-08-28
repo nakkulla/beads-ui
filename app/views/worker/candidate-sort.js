@@ -322,27 +322,19 @@ export function flipChainStepDir(chain, index) {
 /**
  * Order the merged candidate list (§4.1).
  *
- * The chain decides, then BLOCKED issues are moved to the bottom as a stable
- * partition — they are observation rows, so no chain may float one above a
- * candidate that can actually be dispatched. `blocked_ids` comes from the
- * caller because the merged list has already collapsed the ready/blocked
- * sources into one array.
+ * The chain alone decides. A blocked issue is NOT sunk to the bottom: the
+ * `⛓ blocked` chip already says it cannot start, and placement eligibility is
+ * carried by `queue_placeable` plus the server admission guard, so the order
+ * does not have to carry that fact a second time.
  *
  * Returns a NEW array; the caller's list is left alone.
  *
  * @param {any[]} issues
  * @param {CandidateSortState} state
- * @param {Set<string>} [blocked_ids]
  * @returns {any[]}
  */
-export function applyCandidateSort(issues, state, blocked_ids) {
+export function applyCandidateSort(issues, state) {
   const list = Array.isArray(issues) ? issues.slice() : [];
   list.sort(cmpChain(chainOf(state)));
-  if (!blocked_ids || blocked_ids.size === 0) {
-    return list;
-  }
-  return [
-    ...list.filter((it) => !blocked_ids.has(it.id)),
-    ...list.filter((it) => blocked_ids.has(it.id))
-  ];
+  return list;
 }
