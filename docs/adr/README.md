@@ -11,12 +11,12 @@
 | 0004 | [impl_review 신선도를 exact-head 대신 ancestry로 판정](0004-impl-review-ancestry-freshness.md) | 2026-08-27 | impl_review 영수증은 head와 같거나 그 조상이면 유효하며, head 이동만으로는 재리뷰를 걸지 않고 의미 충돌은 [verify]가 잡는다 |
 | 0015 | [30분은 queue-yield deadline이고 충돌 해소 fence는 슬롯 기반이다](0015-queue-yield-deadline-and-slot-based-conflict-fence.md) | 2026-08-19 | 30분은 실패 타임아웃이 아니라 머지 큐 턴을 양보하는 시점이며 충돌 해소 디스패치는 수동 권한 면제와 슬롯 여유로 판정한다 |
 | 0013 | [세션 기본값의 source of truth를 dotfiles kv로 이관](0013-session-defaults-owned-by-dotfiles-kv.md) | 2026-08-16 | 워크스페이스 세션 기본값은 dotfiles가 소유한 bd kv workflow_session_defaults 하나이고 beads-ui workspace 레이어는 소유권을 반납했다 |
+| 0011 | [auto_merge와 auto_advance는 별개의 스위치](0011-auto-merge-and-auto-advance-independent-toggles.md) | 2026-08-13 | 세션 자동 진행과 자동 머지를 한 스위치로 접지 않는다 — 자동화 클릭만 두 값을 원자적으로 맞추고 자동 머지는 그 뒤 독립 토글로 남는다 |
 | 0010 | [배포 실행은 Worker generic execution, 저장소 지식은 repo-ops 스크립트](0010-repo-operation-execution-ownership-split.md) | 2026-08-13 | Worker는 배포를 durable operation journal·전용 워크트리·프로세스 실행으로만 다루고, 저장소별 적용과 확인은 repo-ops [deploy] 스크립트가 소유한다 |
-| 0003 | [머지 자격 판정에서 GitHub checks·Actions를 입력에서 제거](0003-no-ci-merge-eligibility.md) | 2026-08-13 | 머지 자격은 PR/base/head identity·mergeability·리뷰 영수증·[verify] 영수증만으로 판정하고 GitHub checks는 보지 않는다 |
+| 0003 | [머지 자격 판정에서 GitHub checks·Actions를 입력에서 제거](0003-no-ci-merge-eligibility.md) | 2026-08-13 | 머지 자격은 저장소 안에서 관측되는 입력(PR/base/head identity·mergeability·리뷰 영수증·실행 영수증·[verify])만으로 판정하고 GitHub checks는 보지 않는다 |
 | 0008 | [데이터 계층은 bd CLI shell-out으로 고정](0008-bd-cli-shell-out-data-layer.md) | 2026-08-12 | 데이터 계층은 bd CLI shell-out(스냅샷 기본 2회 read, legacy fallback 3회)이며 DB 드라이버 직결·daemon·batch RPC는 채택하지 않는다 |
 | 0007 | [머지 금지 강제를 git 수준 예방과 사후 ref 불변식으로 이전](0007-git-level-merge-guard-enforcement.md) | 2026-07-30 | 머지 금지는 pre-push 훅 예방과 사후 ref 불변식이 강제하고 텍스트 판정은 추론성 판정을 경고로 강등하되 정확한 원격 변경 명령의 kill은 유지한다 |
-| 0011 | [auto_merge와 auto_advance는 별개의 스위치](0011-auto-merge-and-auto-advance-independent-toggles.md) | 2026-07-28 | 세션 자동 진행과 자동 머지를 한 스위치로 묶지 않는다 — 세션은 되돌릴 수 있고 머지는 되돌릴 수 없다 |
-| 0006 | [세션은 PR 배달까지, 머지는 Worker 단일 큐가 소유](0006-worker-owned-merge-queue.md) | 2026-07-28 | 세션은 PR 배달까지만 하고 머지는 Worker의 단일 순차 큐가 실행하며 완료는 MERGED 관측으로 판정한다 |
+| 0006 | [세션은 PR 배달까지, 머지는 Worker 단일 큐가 소유](0006-worker-owned-merge-queue.md) | 2026-07-28 | PR로 랜딩하는 작업에서 세션은 PR 배달까지만 하고 머지는 Worker의 단일 순차 큐가 실행하며 완료는 MERGED 관측으로 판정한다 |
 | 0012 | [워크플로 계약은 코드 내 field registry로 복제해 소비한다](0012-workflow-contract-consumed-via-code-field-registry.md) | 2026-05-05 | beads-ui는 dotfiles 계약 파일을 런타임에 읽지 않고 필요한 subset만 코드의 field registry로 복제한 소비자다 |
 | 0002 | [Per‑Subscription Stores and Full‑Issue Push (Breaking)](0002-per-subscription-stores-and-full-issue-push.md) | 2025-10-26 | 구독 하나당 스토어 하나를 두고 서버는 id 전용 델타 대신 전체 issue 페이로드를 push한다 |
 

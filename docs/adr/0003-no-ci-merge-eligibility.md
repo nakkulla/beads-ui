@@ -3,7 +3,7 @@ id: 3
 title: 머지 자격 판정에서 GitHub checks·Actions를 입력에서 제거
 status: accepted
 date: 2026-08-13
-summary: '머지 자격은 PR/base/head identity·mergeability·리뷰 영수증·[verify] 영수증만으로 판정하고 GitHub checks는 보지 않는다'
+summary: '머지 자격은 저장소 안에서 관측되는 입력(PR/base/head identity·mergeability·리뷰 영수증·실행 영수증·[verify])만으로 판정하고 GitHub checks는 보지 않는다'
 spec: docs/superpowers/specs/2026-08-13-worker-repo-operation-auto-repair-design.md
 bead: UI-vobi
 ---
@@ -24,9 +24,10 @@ bead: UI-vobi
 
 ## Decision
 
-머지 자격 판정의 입력은 네 가지뿐이다: fresh PR/base/head identity, clean
-mergeability, current workflow review 영수증, 그리고 `repo-ops/config.toml`의
-`[verify]` 영수증. checks·Actions·status rollup은 읽지 않는다.
+머지 자격 판정의 입력은 전부 저장소 안에서 관측된다: fresh PR/base/head
+identity, clean mergeability, current workflow review 영수증, 실행 영수증
+backing(`receipt_state`), 그리고 `repo-ops/config.toml`의 `[verify]` 영수증.
+GitHub에서 오는 입력은 하나도 없다 — checks·Actions·status rollup은 읽지 않는다.
 `.github/workflows/`는 비어 있고, 워크플로가 다시 생기면 테스트가 실패한다.
 
 `[verify]`는 base에 PR head를 squash-merge한 일회용 candidate 체크아웃에서 돌기

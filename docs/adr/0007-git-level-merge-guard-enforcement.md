@@ -25,10 +25,14 @@ bead: UI-8mvc
 
 강제층을 두 겹으로 나눈다.
 
-1. **예방**: attempt마다 `pre-push` 훅을 설치하고, attempt의 저장소와 target
-   base를 스크립트 안에 셸 **리터럴**로 굽는다(환경 변수는 세션이 덮어쓸 수 있어
-   판정이 아니다). 훅은 `GIT_CONFIG_COUNT`/`core.hooksPath`로 전달되어 세션이
-   건드리는 모든 저장소에 적용된다.
+1. **예방**: PR로 랜딩하는 attempt마다 `pre-push` 훅을 설치하고, attempt의
+   저장소와 target base를 스크립트 안에 셸 **리터럴**로 굽는다(환경 변수는
+   세션이 덮어쓸 수 있어 판정이 아니다). 훅은 `core.hooksPath`를 실은
+   `GIT_CONFIG_COUNT`로 전달되어 세션이 건드리는 모든 저장소에 적용된다.
+   종단 임무가 base push 자체인 lane — 리뷰를 마친 `quick_fix`와 disposition —
+   은 설치 대상에서 빠지고, 훅 자신도 델타 전체가 `docs/` 아래인 fast-forward는
+   통과시키고 기록만 남긴다. 예방층이 강제하는 것은 "base에 아무도 못 쓴다"가
+   아니라 "세션이 자기 작업을 스스로 머지하지 못한다"다.
 2. **사후 ref 불변식**: 실제로 움직인 ref를 사후에 확인한다.
 
 텍스트 판정은 남되 효과가 갈린다. 추론성 판정(base로 향하는 것처럼 보이는 push

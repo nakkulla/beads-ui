@@ -23,7 +23,10 @@ dotfiles의 계약 파일을 서버가 런타임에 읽거나, 필요한 부분�
 beads-ui 서버는 dotfiles 계약 파일을 런타임에 읽지 않는다. 표시와 편집에 필요한
 subset — 허용 키 목록, 값 enum, 영수증 정규식, route preset 조합 — 을 코드 안의
 registry로 명시하고, 그 registry가 source mapping·허용값·formatter·편집
-가능성·검증을 소유한다. 사용자 config 파일은 표시 allowlist만 담당한다.
+가능성·검증을 소유한다. 계약 표면이 넓어지면서 그 자리는 파일 하나가 아니라
+계약 축별 registry로 갈렸지만(현재 `server/worker/exec-enums.js`의 키·enum
+registry와 `server/workflow-enrich.js`의 영수증 판정), "코드가 계약 subset을
+명시하고 검증을 소유한다"는 규칙 자체는 그대로다.
 
 계약과의 동등성은 런타임 의존이 아니라 dotfiles 체커와 계약 파일을 직접 읽는
 cross-runtime 테스트로 확인한다. 계약 키가 관측되지 않으면 표시를
