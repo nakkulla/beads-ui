@@ -102,6 +102,13 @@ import {
  * @property {any} [discard] - Shared durable discard UI projection.
  * @property {import('../../utils/rec-settings.js').RecSettings|null} [rec] -
  * 복잡 판정 (UI-sbum §3), 레인 행·후보 카드와 같은 칩·같은 툴팁. 표시 전용이다.
+ * @property {{ at?: number|null, kind?: string, text?: string, tool?: string }|null} [last_activity] -
+ * 이 attempt의 마지막 비-thinking 전사 한 줄 (UI-4tud §4.3). 타일이 직접 싣는다 —
+ * 조립이 타일 밖 `Map`으로 같은 재료를 두 번 나르지 않는다.
+ * @property {Array<{ label: string, state: 'live'|'done'|'failed', agent_type?: string|null }>} [legs] -
+ * 위임 leg. 끝난 것은 접혀 한 칩이 된다.
+ * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
+ * 의존·겹침 칩 (슬롯 4). 재료가 없으면 줄이 통째로 빠진다 (fail-quiet).
  */
 
 /**
@@ -779,31 +786,57 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
 }
 
 /**
- * Running grid. Renders one tile per running attempt; empty message otherwise.
+ * The tile-overlay a Worker tile builds from its OWN fields (UI-4tud §4.3).
+ * 종전에는 조립이 타일 밖 `Map`으로 같은 재료를 두 번 날랐다 — 그 두 번째
+ * 경로가 없어지면서 판정만 여기로 옮겨 왔고 규칙은 그대로다.
  *
- * `overlays`는 Worker 탭이 자기 타일에 얹는 tile-overlay 재료다 (UI-jbao) —
- * 지금은 겹침 칩(`dependency_chips`)만 싣는다. 생략하면 종전과 동일하다.
+ * 세션 타일은 재료가 하나도 없어도 오버레이를 얻는다: 그래야 템플릿이 bead
+ * 갱신 시각으로 물러선 활동 줄을 그린다 (UI-yrzu §6).
+ *
+ * @param {RunningTile} tile
+ * @returns {MonitorTileOverlay|null}
+ */
+function tileOverlay(tile) {
+  const last_activity =
+    tile.last_activity && typeof tile.last_activity === 'object'
+      ? tile.last_activity
+      : null;
+  const legs = Array.isArray(tile.legs) ? tile.legs : [];
+  const chips = tile.dependency_chips || null;
+  if (
+    !last_activity &&
+    legs.length === 0 &&
+    !chips &&
+    tile.kind !== 'session'
+  ) {
+    return null;
+  }
+  return {
+    ...(last_activity ? { last_activity } : {}),
+    ...(legs.length > 0 ? { legs } : {}),
+    ...(chips ? { dependency_chips: chips } : {})
+  };
+}
+
+/**
+ * Running grid. Renders one tile per running attempt; empty message otherwise.
  *
  * @param {RunningTile[]} tiles
  * @param {number} [now]
  * @param {string|null} [selected_attempt]
- * @param {Map<string, MonitorTileOverlay>|null} [overlays]
  * @returns {import('lit-html').TemplateResult}
  */
 export function runningGridTemplate(
   tiles,
   now = Date.now(),
-  selected_attempt = null,
-  overlays = null
+  selected_attempt = null
 ) {
   const list = Array.isArray(tiles) ? tiles : [];
   return html`<div class="worker-rungrid" id="worker-rungrid">
     ${list.length === 0
       ? html`<div class="worker-rungrid__empty">실행 세션 없음</div>`
       : list.map((t) =>
-          runningTile(t, now, selected_attempt, {
-            monitor: overlays ? overlays.get(t.bead_id) || null : null
-          })
+          runningTile(t, now, selected_attempt, { monitor: tileOverlay(t) })
         )}
   </div>`;
 }

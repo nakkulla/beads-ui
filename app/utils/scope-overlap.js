@@ -7,7 +7,7 @@
  * `server/worker` and `server/worker-extra` do not.
  *
  * It lives under `app/utils/` rather than beside one consumer because both the
- * monitor 겹침 chips (`app/views/monitor/lanes.js`) and the Worker tab's
+ * monitor 겹침 chips (`app/views/worker/lane-model.js`) and the Worker tab's
  * (`app/views/worker/queue-overlaps.js`) derive from the same two functions.
  * One definition of "이 둘은 부딪힌다" — the same precedent as
  * `app/utils/transcript-lines.js`.

@@ -138,7 +138,7 @@ function isMovable(member) {
  * 공유한다 — 레인 이름을 각자 쓰면 그것이 두 탭이 갈라진 원인이다.
  *
  * @param {string} kind - 그 카드가 선 레인. Worker는 `LaneMember['kind']`를,
- * Monitor는 `MonitorItem['lane']`을 싣는다. 두 어휘가 갈리는 값은 `pr_wait`
+ * Monitor는 `LaneItem['lane']`을 싣는다. 두 어휘가 갈리는 값은 `pr_wait`
  * 하나뿐이고 그 철자는 같다.
  * @returns {string}
  */

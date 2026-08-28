@@ -1624,3 +1624,82 @@ describe('복잡 chip on the running tile (UI-sbum §3)', () => {
     expect(chip.tagName).toBe('SPAN');
   });
 });
+
+describe('running grid reads the overlay material off the tile (UI-4tud §4.3)', () => {
+  test('draws the activity line from the tile last_activity', () => {
+    const grid = shape(
+      runningGridTemplate(
+        [
+          tileInput({
+            last_activity: { at: 4000, kind: 'assistant', text: '패치 적용' }
+          })
+        ],
+        5000,
+        null
+      )
+    );
+
+    expect(grid).toContain('패치 적용');
+  });
+
+  test('draws the delegation chips from the tile legs', () => {
+    const grid = shape(
+      runningGridTemplate(
+        [tileInput({ legs: [{ label: 'codex', state: 'live' }] })],
+        5000,
+        null
+      )
+    );
+
+    expect(grid).toContain('위임 중 · codex');
+  });
+
+  test('draws the dependency chips from the tile', () => {
+    const grid = shape(
+      runningGridTemplate(
+        [
+          tileInput({
+            dependency_chips: {
+              predecessors: [
+                { id: 'UI-9', label: '⛓ blocked: UI-9', title: '선행' }
+              ]
+            }
+          })
+        ],
+        5000,
+        null
+      )
+    );
+
+    expect(grid).toContain('⛓ blocked: UI-9');
+  });
+
+  test('draws no overlay lines for a tile carrying no overlay material', () => {
+    const grid = shape(runningGridTemplate([tileInput()], 5000, null));
+
+    expect(grid).not.toContain('rtile__activity');
+  });
+
+  test('draws the session activity line for a session tile with no material', () => {
+    const grid = shape(
+      runningGridTemplate(
+        [
+          {
+            bead_id: 'UI-s1',
+            attempt_id: '',
+            kind: 'session',
+            title: '세션 작업',
+            runner: null,
+            model: null,
+            started_at: 1000,
+            updated_at: 2000
+          }
+        ],
+        5000,
+        null
+      )
+    );
+
+    expect(grid).toContain('rtile__activity--session');
+  });
+});

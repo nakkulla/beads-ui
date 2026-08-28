@@ -1,7 +1,7 @@
 /**
  * The `⛓ blocked` 칩 (UI-eey2 §5.1, 레인 무관 통일은 UI-anna §5.1).
  *
- * 칩의 모양은 두 탭이 공유한다: 모니터 투영(`app/views/monitor/lanes.js`)과
+ * 칩의 모양은 두 탭이 공유한다: 모니터 투영(`app/views/worker/lane-model.js`)과
  * 워커 투영(`app/views/worker/index.js`)이 같은 {@link predecessorChip}을
  * 불러 같은 라벨·같은 툴팁 문장 틀을 낸다 — 규칙을 복제하면 한쪽이 반드시
  * 낡는다. 겹침이 같은 문제를 같은 방법으로 풀었다 (`queue-overlaps.js`).

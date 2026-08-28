@@ -1,5 +1,5 @@
 /**
- * Monitor tab lane builder (UI-qrfo §8, UI-eey2 §3·§5–§8).
+ * Shared lane builder (Worker · Monitor) (UI-qrfo §8, UI-eey2 §3·§5–§8).
  *
  * The monitor no longer owns card templates. It projects every visible repo's
  * pipeline into WORKER item shapes and the Worker templates
@@ -31,24 +31,14 @@ import {
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { recSettings } from '../../utils/rec-settings.js';
 import { overlapPrefixes } from '../../utils/scope-overlap.js';
-import { sumAttemptUsage } from '../../utils/token-usage.js';
 import {
-  discardProjection,
-  quickFixLanded,
-  reviewSessionAttemptBadges,
-  sumAttemptWorkMs
-} from '../worker/lanes.js';
-import {
-  cleanupStalledReason,
-  cleanupStepLabel
-} from '../worker/merge-steps.js';
-import {
-  isPrWaitCleanupActive,
-  prWaitProgress
-} from '../worker/pr-wait-progress.js';
-// 칩의 모양은 두 탭이 공유한다 (UI-anna §5.1): 워커 투영도 같은 함수를 불러
-// 같은 라벨·같은 툴팁 문장 틀을 낸다.
-import { predecessorChip } from '../worker/queue-blockers.js';
+  SUM_FIELDS,
+  formatUsageTotalWithCost,
+  mergeUsageProjections,
+  providerUsageBadges,
+  sumAttemptUsage
+} from '../../utils/token-usage.js';
+import { modelRunnerOf } from '../detail-panel/exec-settings.js';
 import {
   blockerLocationLabel,
   buildBlockerLocationMap,
@@ -56,10 +46,25 @@ import {
   describeBlocker,
   detectSerialLaneHeadCycles,
   serialCycleKey
-} from './blockers.js';
+} from '../monitor/blockers.js';
+import {
+  discardProjection,
+  quickFixLanded,
+  reviewSessionAttemptBadges,
+  sumAttemptWorkMs
+} from './lanes.js';
+import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
+import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
+// 칩의 모양은 두 탭이 공유한다 (UI-anna §5.1): 워커 투영도 같은 함수를 불러
+// 같은 라벨·같은 툴팁 문장 틀을 낸다.
+import {
+  dependentsChip,
+  predecessorChip,
+  releasedChip
+} from './queue-blockers.js';
 
 /**
- * @import { DependencyChip, DependencyChips, MiniItem } from '../worker/lanes.js'
+ * @import { DependencyChip, DependencyChips, MiniItem } from './lanes.js'
  */
 
 /**
@@ -146,7 +151,11 @@ const DONE_KIND_LABELS = {
  *   resumed_from?: string|null,
  *   continuation_mode?: 'session'|'fresh'|null,
  *   continuation_mismatch?: any,
- *   failure?: import('../worker/running-grid.js').FailureTile|null,
+ *   failure?: import('./running-grid.js').FailureTile|null,
+ *   conflict_resolution?: boolean,
+ *   base_exception?: string|null,
+ *   rollup?: import('../../utils/child-rollup.js').ChildRollup|null,
+ *   landing?: { step: string, label: string, index: number, total: number, percent: number, active: boolean, failed: boolean },
  *   queue_position?: number,
  *   queue_index?: number,
  *   queue_length?: number,
@@ -155,7 +164,7 @@ const DONE_KIND_LABELS = {
  *   place_lanes?: Array<{ id: 's1'|'s2'|'s3'|'s4'|'s5', index: number, length: number, occupied_by: string[] }>,
  *   blocked?: boolean,
  *   blocked_by?: string[],
- *   blockers?: import('./blockers.js').BlockerDisplay[],
+ *   blockers?: import('../monitor/blockers.js').BlockerDisplay[],
  *   done_kind?: string|null,
  *   spec_id?: string,
  *   published?: boolean,
@@ -165,7 +174,7 @@ const DONE_KIND_LABELS = {
  *   cross_lane_chip?: CrossLaneChip,
  *   armed_lane_chip?: ArmedLaneChip,
  *   session_refs?: import('../../../server/worker/session-ref.js').SessionRefView[]
- * }} MonitorItem
+ * }} LaneItem
  */
 
 /**
@@ -202,7 +211,7 @@ const DONE_KIND_LABELS = {
  * 선언 scope를 읽지 않는다. 칩 모양은 Worker 템플릿이 소유하므로 형태도
  * 거기서 온다.
  *
- * @typedef {import('../worker/lanes.js').OverlapChip} OverlapChip
+ * @typedef {import('./lanes.js').OverlapChip} OverlapChip
  */
 
 /**
@@ -216,7 +225,7 @@ const DONE_KIND_LABELS = {
  * @typedef {Object} MonitorSerialSublane
  * @property {'s1'|'s2'|'s3'|'s4'|'s5'} id
  * @property {number} index
- * @property {MonitorItem[]} items
+ * @property {LaneItem[]} items
  * @property {string[]} occupied_by
  * @property {MonitorOccupant[]} occupants - `occupied_by`의 표시 투영 (Worker
  * 탭 ghost 행과 같은 형태). 제목은 실행중/PR 대기 항목에서 찾고, 없으면 id다.
@@ -230,7 +239,7 @@ const DONE_KIND_LABELS = {
  */
 
 /**
- * @typedef {Object} MonitorQueueGroup
+ * @typedef {Object} LaneQueueGroup
  * @property {string} root_dir
  * @property {string} name
  * @property {boolean} auto_advance
@@ -238,17 +247,46 @@ const DONE_KIND_LABELS = {
  * @property {number} slots
  * @property {number} revision
  * @property {Record<string, any>} runner_catalog
- * @property {MonitorItem[]} items
- * @property {{ parallel: MonitorItem[], serial: MonitorSerialSublane[] }} sublanes
+ * @property {LaneItem[]} items
+ * @property {{ parallel: LaneItem[], serial: MonitorSerialSublane[] }} sublanes
  * @property {number} serial_lane_count
  * @property {number} raw_queue_length - 병렬 큐 서버 배열의 entry 수 (§6).
+ * @property {number} live_count - 슬롯을 점유하는 실행 중 attempt 수 (UI-4tud
+ * §4.3). 세션 타일·일시정지·실패 타일은 세지 않는다.
+ * @property {boolean} over_cap - {@link live_count}가 {@link slots}를 넘었다.
+ * 수동 ▶가 의도적으로 넘길 수 있으므로 막지 않고 드러낸다.
+ * @property {LaneMergeQueue} merge - 순차 머지 큐의 위치·해소·이어하기·권한과
+ * 드라이버의 라이브 기억 (UI-5v7d). Monitor는 읽지 않는다.
+ * @property {string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null} token_total
+ * - 이 레포 완료 레인의 토큰 합계. 아무 행도 보고하지 않았으면 `null`이다.
+ * @property {Array<Record<string, any>>} cleanup_failures - durable 정리 실패
+ * 기록 (worker-phase2 §6).
+ * @property {string|null} declared_base - 워크스페이스가 선언한 base (UI-j6wa
+ * §3). 선언을 읽지 못했거나 구서버면 `null`이다 (fail-quiet).
+ * @property {Array<Record<string, any>>} repo_operations - 서버가 이미 투영한
+ * 저장소 작업 카드 (master spec §10). 그대로 지나간다.
+ */
+
+/**
+ * 한 레포의 순차 머지 큐 (UI-5v7d). 멤버십과 순서는 durable하고, 활성 항목과
+ * 스킵 사유는 드라이버의 라이브 기억이다.
+ *
+ * @typedef {Object} LaneMergeQueue
+ * @property {Map<string, number>} positions - bead_id → 1부터의 큐 순번.
+ * @property {Map<string, any>} resolutions - bead_id → 충돌 해소 투영.
+ * @property {Map<string, any>} continuations - bead_id → `continuation_action`.
+ * @property {Map<string, any>} authorities - bead_id → 머지 권한 기록.
+ * @property {{ active: string|null, failures: Record<string, string>, waiting: { bead_id: string, reason: string }|null }} state
+ * @property {string[]} auto_excluded - 자동 편입이 지금 건너뛸 PR 대기 행
+ * (UI-yk55 §3.2): 기록된 head가 지금 관측된 head와 같은 것만 센다.
+ * @property {boolean} running - Whether the queue holds at least one entry.
  */
 
 /**
  * @typedef {Object} MonitorRunnableSection
  * @property {string} root_dir
  * @property {string} name
- * @property {MonitorItem[]} items
+ * @property {LaneItem[]} items
  */
 
 /**
@@ -312,9 +350,9 @@ const DONE_KIND_LABELS = {
  */
 
 /**
- * @typedef {Object} MonitorLanes
- * @property {MonitorItem[]} runnable - Filter/sort 적용 후의 평면 목록.
- * @property {MonitorItem[]} runnable_all - Filter 이전의 실행가능 목록. 의존성
+ * @typedef {Object} LaneModel
+ * @property {LaneItem[]} runnable - Filter/sort 적용 후의 평면 목록.
+ * @property {LaneItem[]} runnable_all - Filter 이전의 실행가능 목록. 의존성
  * 패널의 후보 모집단은 여기서 나온다 (UI-j92s §6.1): 필터는 보기를 좁힐 뿐
  * 의존을 걸 수 있는 이슈를 줄이지 않는다.
  * @property {{ blocked: number, spec: number }} runnable_hidden - `blocked`는
@@ -323,14 +361,14 @@ const DONE_KIND_LABELS = {
  * @property {MonitorRunnableSection[]} runnable_sections - `updated_flat`에서는
  * 빈 배열이다 (섹션 자체를 만들지 않는다).
  * @property {boolean} runnable_flat
- * @property {MonitorItem[]} queue
- * @property {MonitorQueueGroup[]} queue_groups - 대기 레인의 레포 섹션. 큐가
+ * @property {LaneItem[]} queue
+ * @property {LaneQueueGroup[]} queue_groups - 대기 레인의 레포 섹션. 큐가
  * 비어 있어도 그 레포에 후보가 있으면 남는다 — 데스크톱의 유일한 적재 수단이
  * 드래그이므로 같은 레포 드롭 타깃이 있어야 한다 (§6).
- * @property {MonitorItem[]} running
- * @property {MonitorItem[]} pr_wait
- * @property {MonitorItem[]} done
- * @property {MonitorItem[]} parallel_rows - 병렬 통합 큐 (UI-e6hw §4.1): 모든
+ * @property {LaneItem[]} running
+ * @property {LaneItem[]} pr_wait
+ * @property {LaneItem[]} done
+ * @property {LaneItem[]} parallel_rows - 병렬 통합 큐 (UI-e6hw §4.1): 모든
  * visible 레포의 병렬 큐 행을 레포명 → 자기 레포 큐 순서로 이은 평면 목록.
  * **confirmed** 연결 레인에 들어 있는 버드는 빠진다 (UI-j92s §5.2a).
  * @property {MonitorChainLane[]} chain_lanes - 저장 연결 레인 (UI-j92s §4.1).
@@ -529,6 +567,12 @@ function admissionBadge(admission, bead_id) {
   if (!record) {
     return '';
   }
+  // 유일한 비-차단 관측이다 (UI-dlim §3.4): 그 bead는 admit돼 실행되므로 ⛔
+  // 거절 표시를 달아서는 안 되고, 디스패치가 세션에 요구하는 세션 내 재리뷰를
+  // 알릴 뿐이다.
+  if (record.stale === true) {
+    return '♻️ stale→재리뷰';
+  }
   const reason = typeof record.reason === 'string' ? record.reason : '';
   const sep = reason.indexOf(':');
   if (sep > 0 && sep < reason.length - 1) {
@@ -622,6 +666,296 @@ function formatOrDrop(pinned, base) {
 }
 
 /**
+ * 한 후보 카드에 서는 `🔓 해제` 칩 수의 상한 (UI-d13v §5.3). 나머지는 마지막
+ * 칩 라벨 끝의 ` 외 n`이 센다 — 칩을 상한 없이 늘리면 슬롯 4 줄 하나가 카드를
+ * 삼킨다.
+ */
+const RELEASED_CHIP_MAX = 2;
+
+/**
+ * The 후보 행 `🔓 해제` 칩 (UI-d13v §5.3). 7일 창은 {@link releasedChip}이 닫고,
+ * 여기서는 `closed_at` desc 정렬과 상한만 정한다. 재료가 없거나 전부 창 밖이면
+ * `null`이다 (fail-quiet) — 서버가 `release_info`를 싣지 않는 스냅샷에서 칩이
+ * 그냥 서지 않는 것과 같은 결과다.
+ *
+ * @param {string} bead_id
+ * @param {any} release_info
+ * @param {number} now
+ * @returns {import('./lanes.js').ReleasedChip[]|null}
+ */
+export function releasedChipsFor(bead_id, release_info, now) {
+  const released_by =
+    release_info &&
+    typeof release_info === 'object' &&
+    Array.isArray(release_info.released_by)
+      ? release_info.released_by
+      : [];
+  const ordered = released_by
+    .filter(
+      (/** @type {any} */ entry) =>
+        entry && typeof entry === 'object' && typeof entry.id === 'string'
+    )
+    .slice()
+    .sort(
+      (/** @type {any} */ a, /** @type {any} */ b) =>
+        (typeof b.closed_at === 'number' ? b.closed_at : 0) -
+        (typeof a.closed_at === 'number' ? a.closed_at : 0)
+    );
+  /** @type {import('./lanes.js').ReleasedChip[]} */
+  const chips = [];
+  for (const entry of ordered) {
+    const chip = releasedChip(bead_id, entry, now);
+    if (chip) {
+      chips.push(chip);
+    }
+  }
+  if (chips.length === 0) {
+    return null;
+  }
+  const shown = chips.slice(0, RELEASED_CHIP_MAX);
+  const rest = chips.length - shown.length;
+  if (rest > 0) {
+    const last = shown[shown.length - 1];
+    shown[shown.length - 1] = { ...last, label: `${last.label} 외 ${rest}` };
+  }
+  return shown;
+}
+
+/**
+ * The base-exception badge text for one attempt, or null when there is no
+ * exception to report (UI-j6wa §3).
+ *
+ * Both unknowns are fail-quiet rather than alarming: a `declared_base` of null
+ * means the server could not read the declaration, and a legacy attempt carries
+ * no `target_base` at all. Comparing against either would badge on ignorance,
+ * and this badge only ever means "this attempt targets something else".
+ *
+ * @param {string|null|undefined} declared_base
+ * @param {string|null|undefined} target_base
+ * @returns {string|null}
+ */
+export function baseException(declared_base, target_base) {
+  if (typeof declared_base !== 'string' || declared_base.length === 0) {
+    return null;
+  }
+  if (typeof target_base !== 'string' || target_base.length === 0) {
+    return null;
+  }
+  return target_base === declared_base ? null : `→ ${target_base}`;
+}
+
+/**
+ * The three workflow routes an execution resolution accepts
+ * (worker-card-exec-chips §2.2). Anything else — an unknown string, a missing
+ * key — resolves as no route.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const WORKFLOW_ROUTES = new Set(['quick_fix', 'spec_backed', 'full_plan']);
+
+/**
+ * @param {unknown} value
+ * @returns {value is string}
+ */
+function isWorkflowRoute(value) {
+  return typeof value === 'string' && WORKFLOW_ROUTES.has(value);
+}
+
+/**
+ * The 전역 실행 값 layer of a repo: the workspace's session defaults with the
+ * snapshot's orchestration triple on top (Worker `exec_global_values`).
+ *
+ * @param {Record<string, any>} state - The repo's `workspaces_state` row.
+ * @returns {Record<string, any>}
+ */
+function execGlobalValues(state) {
+  /** @type {Record<string, any>} */
+  const values = { ...objectOf(state.session_defaults) };
+  for (const key of [
+    'orchestration_model',
+    'orchestration_effort',
+    'orchestration_speed'
+  ]) {
+    const value = state[key];
+    if (typeof value === 'string') {
+      values[key] = value;
+    }
+  }
+  return values;
+}
+
+/**
+ * The 대기 행·후보 카드 exec chips of a bead whose issue `metadata` the caller
+ * knows: "what this bead WOULD run with" (Worker `beadExecChips`). Resolved
+ * twice on purpose — the controller runtime comes out of the orchestration
+ * model, which only the first resolution knows, and it is in turn an input to
+ * `impl_runtime: inherit`.
+ *
+ * @param {Record<string, any>} state - The repo's `workspaces_state` row.
+ * @param {Record<string, any>} metadata - The bead's issue metadata.
+ * @param {unknown} enriched_route - Server-enriched `workflow.route`, if known.
+ * @returns {import('../../utils/exec-settings-chip.js').ExecChips|null}
+ */
+function overlayExecChips(state, metadata, enriched_route) {
+  const runner_catalog = state.runner_catalog ?? null;
+  const probe = execRows(state, metadata, enriched_route, null);
+  if (!probe) {
+    return null;
+  }
+  const ctl = modelRunnerOf(
+    runner_catalog,
+    probe.orchestration_model.value ?? ''
+  );
+  const rows =
+    ctl === null
+      ? probe
+      : execRows(state, metadata, enriched_route, ctl) || probe;
+  const orchestration = formatOrchestrationChip(rows, runner_catalog);
+  const worker = formatWorkerChip(rows, ctl);
+  return orchestration || worker ? { orchestration, worker } : null;
+}
+
+/**
+ * One bead's resolved execution settings, the way the issue detail's
+ * effective-settings card resolves them (Worker `execRowsFor`). `route`는 서버
+ * 장식(`enriched_route`)이 먼저이고 핀 metadata가 다음이다 — `impl_dispatch`의
+ * route 기본값(`quick_fix → main`)이 Board 카드와 같은 답을 하도록.
+ *
+ * @param {Record<string, any>} state - The repo's `workspaces_state` row.
+ * @param {Record<string, any>} metadata - The bead's issue metadata.
+ * @param {unknown} enriched_route - Server-enriched `workflow.route`, if known.
+ * @param {string|null} controller_runtime
+ * @returns {Record<string, import('../../utils/execution-defaults.js').ExecutionValue>|null}
+ */
+function execRows(state, metadata, enriched_route, controller_runtime) {
+  const route = isWorkflowRoute(enriched_route)
+    ? enriched_route
+    : isWorkflowRoute(metadata.route)
+      ? metadata.route
+      : null;
+  try {
+    return resolveExecutionSettings({
+      pin: metadata,
+      global: execGlobalValues(state),
+      execution_defaults: state.execution_defaults ?? null,
+      runner_catalog: state.runner_catalog ?? null,
+      route,
+      controller_runtime
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The 실행 중 타일의 worker(구현 위임) 칩 (Worker `attemptExecChips`,
+ * worker-card-exec-chips §2.2). 그 attempt가 **기록한** runner가
+ * `impl_runtime: inherit`이 따를 controller이므로, 후보·대기 행처럼
+ * orchestration 모델에서 controller를 되유추하지 않고 그 값을 그대로 쓴다.
+ * 오버레이가 이 bead의 metadata를 모르면(구독 열 밖·Monitor 스냅샷) 칩이
+ * 서지 않는다 — 틀린 칩보다 없는 칩.
+ *
+ * @param {Record<string, any>} state - The repo's `workspaces_state` row.
+ * @param {Record<string, any>|null|undefined} overlay - The bead's `bead_overlay` entry.
+ * @param {string|null} controller_runtime - The attempt's own runner.
+ * @returns {import('../../utils/exec-settings-chip.js').ExecChip|null}
+ */
+function attemptWorkerChip(state, overlay, controller_runtime) {
+  if (!overlay || !Object.hasOwn(overlay, 'metadata')) {
+    return null;
+  }
+  return formatWorkerChip(
+    execRows(
+      state,
+      objectOf(overlay.metadata),
+      overlay.route,
+      controller_runtime
+    ),
+    controller_runtime
+  );
+}
+
+/**
+ * Whether this attempt is doing conflict-resolution work (UI-dxgz §1). The ▶
+ * resume path mints its child with `conflict_resolution: false`, so the flag is
+ * inherited through `resumed_from` — otherwise resuming a paused resolution
+ * makes the badge vanish.
+ *
+ * @param {any} attempt
+ * @param {Map<string, any>} attempt_by_id
+ * @returns {boolean}
+ */
+export function resolvesConflict(attempt, attempt_by_id) {
+  /** @type {Set<string>} */
+  const seen = new Set();
+  let cur = attempt;
+  while (cur && !seen.has(cur.attempt_id)) {
+    if (cur.conflict_resolution === true) {
+      return true;
+    }
+    seen.add(cur.attempt_id);
+    cur =
+      typeof cur.resumed_from === 'string' && cur.resumed_from.length > 0
+        ? attempt_by_id.get(cur.resumed_from) || null
+        : null;
+  }
+  return false;
+}
+
+/**
+ * The 완료 레인 토큰 KPI (UI-58y2 §툴바, UI-tq13 §5): 행이 이미 들고 있는
+ * usage의 합이라 새 데이터 소스가 없다. 보고된 0과 아예 보고되지 않은 usage는
+ * 다른 사실이므로, 아무 행도 보고하지 않았으면 `null`이다.
+ *
+ * @param {LaneItem[]} rows
+ * @returns {string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null}
+ */
+function doneTokenTotal(rows) {
+  /** @type {Record<string, number>} */
+  const token_sum = {};
+  for (const field of SUM_FIELDS) {
+    token_sum[field] = 0;
+  }
+  let token_reported = false;
+  // 비용은 합산 대상 전부가 보고했을 때만 붙인다 (UI-j6wa §2): 일부만 보고한
+  // 합계에 $를 붙이면 토큰과 돈이 서로 다른 모집단을 말한다.
+  let cost_sum = 0;
+  let summed_rows = 0;
+  let cost_rows = 0;
+  for (const row of rows) {
+    const usage = /** @type {any} */ (row.usage);
+    if (!usage || typeof usage !== 'object') {
+      continue;
+    }
+    let row_reported = false;
+    for (const field of SUM_FIELDS) {
+      if (Number.isFinite(usage[field])) {
+        token_sum[field] += usage[field];
+        token_reported = true;
+        row_reported = true;
+      }
+    }
+    if (row_reported) {
+      summed_rows += 1;
+      if (Number.isFinite(usage.total_cost_usd)) {
+        cost_sum += usage.total_cost_usd;
+        cost_rows += 1;
+      }
+    }
+  }
+  if (summed_rows > 0 && cost_rows === summed_rows) {
+    token_sum.total_cost_usd = cost_sum;
+  }
+  const projections = rows
+    .map((row) => /** @type {any} */ (row.usage))
+    .filter((usage) => usage && typeof usage === 'object' && usage.providers);
+  if (projections.length > 0) {
+    return providerUsageBadges(mergeUsageProjections(projections));
+  }
+  return token_reported ? formatUsageTotalWithCost(token_sum) : null;
+}
+
+/**
  * @param {string} bead_id
  * @param {Array<Record<string, any>>} states
  * @returns {string}
@@ -641,7 +975,7 @@ function chainScopeLabel(bead_id, states) {
  * 같은 사실에 새 문자열을 발명하지 않는다.
  *
  * @param {string} bead_id
- * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
+ * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} locations
  * @param {Array<Record<string, any>>} states
  * @returns {string}
  */
@@ -673,7 +1007,7 @@ function chainRowLocationLabel(bead_id, locations, states) {
  * 것**이므로 순번 없는 `대기`로 수렴한다 (fail-quiet).
  *
  * @param {string} bead_id
- * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
+ * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} locations
  * @param {Array<Record<string, any>>} states
  * @param {Map<string, string[]>} blocked_by_map
  * @returns {{ label: string, title: string }}
@@ -820,7 +1154,7 @@ function laneRunState(lane_id, status, rows, all_done, unlaunched, axis) {
  *
  * @param {Array<Record<string, any>>} lanes - 스냅샷 `cross_lanes.lanes`.
  * @param {Map<string, string[]>} blocked_by_map
- * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
+ * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} locations
  * @param {Array<Record<string, any>>} states
  * @param {Map<string, string>} title_by_bead
  * @param {Map<string, string>} name_by_root
@@ -945,7 +1279,7 @@ function buildCrossLanes(
  * 두 분기 모두 세 상태를 같은 뜻으로 읽는다: 값 없음 = 판정 불가, 빈 배열 =
  * 선언은 읽었는데 비었다(`missing`), 항목 n개 = `declared`.
  *
- * @param {MonitorItem} item
+ * @param {LaneItem} item
  * @param {Map<string, Record<string, any>>} bead_scope_by_root
  * @param {Map<string, string[]>} runnable_scope_by_bead
  * @returns {{ scope: string[], state: 'declared'|'missing'|undefined }}
@@ -983,7 +1317,7 @@ function declaredScopeOf(item, bead_scope_by_root, runnable_scope_by_bead) {
 
 /**
  * @typedef {Object} ScopeBead
- * @property {MonitorItem[]} cards - 이 bead가 지금 서 있는 **모든** 표시 카드.
+ * @property {LaneItem[]} cards - 이 bead가 지금 서 있는 **모든** 표시 카드.
  * @property {string[]} scope
  */
 
@@ -999,10 +1333,10 @@ function declaredScopeOf(item, bead_scope_by_root, runnable_scope_by_bead) {
  * 적힌다. 그래서 레포별 집합은 bead ID로 dedupe하고, 판정 결과(`overlap_chips`
  * · `scope_state`)는 그 ID의 모든 표시 카드에 복사한다.
  *
- * @param {MonitorLanes} model
+ * @param {LaneModel} model
  * @param {Map<string, Record<string, any>>} bead_scope_by_root
  * @param {Map<string, string[]>} runnable_scope_by_bead
- * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
+ * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} locations
  * @param {Array<Record<string, any>>} states
  */
 function applyScopeOverlaps(
@@ -1144,10 +1478,20 @@ function timeOf(value) {
  * `null` = 저장소 읽기 실패, `undefined` = 그 키를 모르는 구서버. 둘 다 빈 레인
  * 목록으로 그리지만 사용자에게 하는 말이 다르므로 모델에서 갈라 둔다.
  *
+ * `options.candidate_sort: 'as_given'`은 정렬을 이미 끝낸 호출자(Worker
+ * 어댑터)의 값이다 (UI-4tud §4.3): 입력 순서를 그대로 두고 섹션도 만들지 않는다.
+ * `options.candidate_hidden_counts: 'per_control'`은 후보 필터가 감춘 수를 Worker
+ * 규칙으로 센다 (UI-4tud §4.3): 두 필터에 모두 걸린 행은 어느 수에도 들어가지
+ * 않는다. 기본값 `'sequential'`은 현행 Monitor 규칙이다.
+ *
+ * `options.groups: 'all'`은 대기·직렬·후보가 모두 비어도 `workspaces_state` 행
+ * 하나당 그룹을 남긴다 — 실행 중·PR 대기·완료·저장소 작업만 있는 스냅샷에서도
+ * `slots`·`merge`·`repo_operations`가 살아 있어야 하기 때문이다.
+ *
  * @param {Array<Record<string, any>>|null|undefined} workspaces
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state]
- * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat', cross_lanes?: { revision: number, lanes: Array<Record<string, any>> }|null }} [options]
- * @returns {MonitorLanes}
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', candidate_hidden_counts?: 'sequential'|'per_control', groups?: 'nonempty'|'all', cross_lanes?: { revision: number, lanes: Array<Record<string, any>> }|null }} [options]
+ * @returns {LaneModel}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
   const list = Array.isArray(workspaces) ? workspaces : [];
@@ -1166,12 +1510,25 @@ export function buildLanes(workspaces, workspaces_state, options) {
       ? (options.cross_lanes ?? null)
       : undefined;
   const candidate_sort =
-    options &&
-    CANDIDATE_SORT_OPTIONS.some((o) => o.value === options.candidate_sort)
-      ? /** @type {'repo_spec'|'repo_updated'|'updated_flat'} */ (
-          options.candidate_sort
-        )
-      : 'repo_spec';
+    options && options.candidate_sort === 'as_given'
+      ? /** @type {const} */ ('as_given')
+      : options &&
+          CANDIDATE_SORT_OPTIONS.some((o) => o.value === options.candidate_sort)
+        ? /** @type {'repo_spec'|'repo_updated'|'updated_flat'} */ (
+            options.candidate_sort
+          )
+        : 'repo_spec';
+  const groups_mode = options && options.groups === 'all' ? 'all' : 'nonempty';
+  // 후보 필터가 감춘 수를 세는 규칙 (§4.3). 두 탭의 뜻이 달라 하나로 합칠 수
+  // 없다: Monitor는 순차(앞 필터가 겹친 행을 가져간다), Worker는 조작별(두
+  // 필터에 모두 걸린 행은 어느 수에도 없다).
+  const hidden_counts =
+    options && options.candidate_hidden_counts === 'per_control'
+      ? 'per_control'
+      : 'sequential';
+  // 해제 칩의 7일 창 기준 시각 (UI-d13v §5.3). 모델 조립당 한 번만 읽어 같은
+  // 렌더 안의 모든 카드가 같은 창을 본다.
+  const now = Date.now();
 
   /** @type {Map<string, Record<string, any>>} */
   const state_by_root = new Map();
@@ -1199,19 +1556,19 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
   }
 
-  /** @type {MonitorItem[]} */
+  /** @type {LaneItem[]} */
   const runnable = [];
-  /** @type {MonitorItem[]} */
+  /** @type {LaneItem[]} */
   const running = [];
-  /** @type {MonitorItem[]} */
+  /** @type {LaneItem[]} */
   const pr_wait = [];
-  /** @type {MonitorItem[]} */
+  /** @type {LaneItem[]} */
   const queue = [];
-  /** @type {MonitorItem[]} */
+  /** @type {LaneItem[]} */
   const done = [];
   /** @type {Array<{ id: string, root_dir: string, workspace_name: string }>} */
   const all_done_locations = [];
-  /** @type {Map<string, MonitorItem[]>} */
+  /** @type {Map<string, LaneItem[]>} */
   const queue_by_root = new Map();
   /** @type {Map<string, MonitorSerialSublane[]>} */
   const serial_by_root = new Map();
@@ -1219,6 +1576,19 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const serial_count_by_root = new Map();
   /** @type {Map<string, number>} */
   const raw_queue_length_by_root = new Map();
+  // Worker 전용 그룹 값 (UI-4tud §4.3). 재료가 워크스페이스별이므로 레포별로
+  // 모아 `queue_groups[i]`에 싣는다 — Monitor는 읽지 않는다.
+  /** @type {Map<string, LaneMergeQueue>} */
+  const merge_by_root = new Map();
+  /** @type {Map<string, Array<Record<string, any>>>} */
+  const cleanup_failures_by_root = new Map();
+  /** @type {Map<string, string|null>} */
+  const declared_base_by_root = new Map();
+  /** @type {Map<string, Array<Record<string, any>>>} */
+  const repo_operations_by_root = new Map();
+  // Board live store가 아는 이슈 필드 (§4.1): `${root_dir}\0${bead_id}` → 항목.
+  /** @type {Map<string, Record<string, any>>} */
+  const overlay_by_key = new Map();
   /** @type {Map<string, string[]>} */
   const blocked_by_map = new Map();
   // 발차 축의 스냅샷 재료 (UI-jaua §5.5). 레인은 레포를 가로지르므로 세 값 모두
@@ -1278,6 +1648,62 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const repo_operations = Array.isArray(workspace.repo_operations)
       ? workspace.repo_operations
       : [];
+    repo_operations_by_root.set(root_dir, repo_operations);
+    // 워크스페이스가 선언한 base (UI-j6wa §3). 서버 데코레이션이라 구버전
+    // 서버에서는 아예 없고, 선언을 읽지 못하면 null로 온다 — 둘 다 fail-quiet.
+    const declared_base =
+      typeof workspace.declared_base === 'string'
+        ? workspace.declared_base
+        : null;
+    declared_base_by_root.set(root_dir, declared_base);
+    cleanup_failures_by_root.set(
+      root_dir,
+      Object.entries(cleanup_failed).map(([bead_id, rec]) => ({
+        bead_id,
+        step: rec && rec.step ? rec.step : '',
+        reason: rec && rec.reason ? rec.reason : '',
+        // 언제 멈췄나 — 타임라인이 이 값으로 정렬한다 (§4.2). 값이 없는 기록은
+        // 위가 아니라 가장 오래된 끝으로 간다 (fail-quiet).
+        at: rec && typeof rec.at === 'number' ? rec.at : null,
+        detail: rec && typeof rec.detail === 'string' ? rec.detail : null,
+        output_tail:
+          rec && typeof rec.output_tail === 'string' && rec.output_tail
+            ? rec.output_tail
+            : undefined,
+        log_path:
+          rec && typeof rec.log_path === 'string' && rec.log_path
+            ? rec.log_path
+            : undefined,
+        retry_count:
+          rec &&
+          typeof rec.retry_count === 'number' &&
+          Number.isInteger(rec.retry_count) &&
+          rec.retry_count > 0
+            ? rec.retry_count
+            : 0,
+        // durable failure token은 그대로 나른다 — 클라이언트는 재분류하지 않는다.
+        failure_code:
+          rec && typeof rec.failure_code === 'string'
+            ? rec.failure_code
+            : undefined
+      }))
+    );
+    // 이슈 필드 오버레이 (§4.1): `{ priority?, from_id?, metadata?, route?,
+    // rollup? }`. 키가 없는 bead는 스냅샷 장식만으로 그린다.
+    for (const [bead_id, entry] of Object.entries(
+      objectOf(workspace.bead_overlay)
+    )) {
+      if (entry && typeof entry === 'object') {
+        overlay_by_key.set(`${root_dir}\u0000${bead_id}`, entry);
+      }
+    }
+    /** @type {Map<string, any>} */
+    const attempt_by_id = new Map();
+    for (const attempt of Object.values(attempts)) {
+      if (attempt && typeof attempt.attempt_id === 'string') {
+        attempt_by_id.set(attempt.attempt_id, attempt);
+      }
+    }
     const merge_queue = Array.isArray(workspace.merge_queue)
       ? workspace.merge_queue
       : [];
@@ -1293,6 +1719,69 @@ export function buildLanes(workspaces, workspaces_state, options) {
         .filter((/** @type {any} */ e) => e && typeof e.bead_id === 'string')
         .map((/** @type {any} */ e) => [e.bead_id, e])
     );
+    // 순차 머지 큐 (UI-5v7d, UI-4tud §4.3). 멤버십·순서는 durable하고, 활성
+    // 항목과 스킵 사유는 드라이버의 라이브 기억이다.
+    /** @type {Map<string, number>} */
+    const merge_positions = new Map();
+    /** @type {Map<string, any>} */
+    const merge_resolutions = new Map();
+    /** @type {Map<string, any>} */
+    const merge_continuations = new Map();
+    /** @type {Map<string, any>} */
+    const merge_authorities = new Map();
+    merge_queue.forEach((/** @type {any} */ entry, /** @type {number} */ i) => {
+      if (entry && typeof entry.bead_id === 'string') {
+        merge_positions.set(entry.bead_id, i + 1);
+        merge_resolutions.set(entry.bead_id, entry.resolution);
+        merge_continuations.set(
+          entry.bead_id,
+          entry.continuation_action || null
+        );
+        merge_authorities.set(entry.bead_id, entry.authority || null);
+      }
+    });
+    // durable 제외 기록 (UI-yk55 §3): 계약 키가 없는 구버전 스냅샷은 빈 맵이다.
+    const auto_merge_skips = objectOf(workspace.auto_merge_skips);
+    /**
+     * Whether a row's exclusion still holds (UI-yk55 §3.2): only when the
+     * recorded head is the one now observed. head가 움직였으면 다음 스캔이
+     * 기록을 지우고 다시 후보로 삼는다.
+     *
+     * @param {string} bead_id
+     * @returns {string|null}
+     */
+    const autoSkipReason = (bead_id) => {
+      const skip = auto_merge_skips[bead_id];
+      if (!skip) {
+        return null;
+      }
+      const head = objectOf(objectOf(observations[bead_id]).pr).head_sha;
+      return head && head === skip.head_sha ? skip.reason || '' : null;
+    };
+    merge_by_root.set(root_dir, {
+      positions: merge_positions,
+      resolutions: merge_resolutions,
+      continuations: merge_continuations,
+      authorities: merge_authorities,
+      state: {
+        active:
+          typeof merge_state.active === 'string' ? merge_state.active : null,
+        failures: objectOf(merge_state.failures),
+        waiting:
+          merge_state.waiting &&
+          typeof merge_state.waiting.bead_id === 'string' &&
+          typeof merge_state.waiting.reason === 'string'
+            ? merge_state.waiting
+            : null
+      },
+      auto_excluded: (Array.isArray(workspace.pr_wait) ? workspace.pr_wait : [])
+        .map((/** @type {any} */ entry) => entry && entry.bead_id)
+        .filter(
+          (/** @type {unknown} */ id) =>
+            typeof id === 'string' && autoSkipReason(id) !== null
+        ),
+      running: merge_queue.length > 0
+    });
     const queue_lane = Array.isArray(workspace.queue) ? workspace.queue : [];
     // arm은 병렬 대기 행에 쓰이고 PR 대기 행으로 옮겨 실린다 (§5.1) — 두 자리를
     // 같이 읽어야 PR 대기에 닿은 멤버도 `▶ 진행 중`으로 남는다.
@@ -1453,6 +1942,44 @@ export function buildLanes(workspaces, workspaces_state, options) {
       if (failed_arm !== null) {
         failed_by_bead.set(bead_id, failed_arm);
       }
+      // Worker 실행 중 타일 전용 필드 (UI-4tud §4.3). 재료가 없으면 키 자체를
+      // 만들지 않는다 (fail-quiet) — Monitor 타일 표시는 그대로다.
+      const attempt = attempt_by_id.get(live.attempt_id) || null;
+      const overlay = overlay_by_key.get(`${root_dir}\u0000${bead_id}`);
+      const rollup = overlay && overlay.rollup ? overlay.rollup : null;
+      const base_exception = baseException(
+        declared_base,
+        attempt ? attempt.target_base : null
+      );
+      const conflict_resolution = attempt
+        ? resolvesConflict(attempt, attempt_by_id)
+        : false;
+      // quick_fix 착지 진행 (`prWaitProgress`): 착지 중인 attempt만 그 줄을 얻고,
+      // 나머지 타일에는 키가 없다.
+      const quickfix_landing =
+        attempt &&
+        attempt.quickfix_lane === true &&
+        attempt.quickfix_landing &&
+        typeof attempt.quickfix_landing === 'object'
+          ? attempt.quickfix_landing
+          : null;
+      const landing_reason =
+        quickfix_landing &&
+        typeof quickfix_landing.reason === 'string' &&
+        quickfix_landing.reason.length > 0
+          ? quickfix_landing.reason
+          : null;
+      const landing = quickfix_landing
+        ? prWaitProgress({
+            bead_id,
+            merge_sha: quickfix_landing.head_sha,
+            cleanup_cursor: quickfix_landing.cursor,
+            cleanup_failed: landing_reason
+              ? { step: quickfix_landing.cursor, reason: landing_reason }
+              : null,
+            repo_operations
+          })
+        : null;
       running.push({
         ...base(bead_id),
         lane: 'running',
@@ -1482,7 +2009,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
         failure: live.failure || null,
         exec_chips: {
           orchestration: formatAttemptOrchestrationChip(live),
-          worker: null
+          // worker 칩은 그 attempt가 기록한 runner를 controller로 삼아 푼다
+          // (Worker `attemptExecChips`). 재료가 없는 스냅샷은 `null`이다.
+          worker: attemptWorkerChip(
+            objectOf(state),
+            overlay,
+            live.runner || null
+          )
         },
         discard: discardProjection(discard_operations, bead_id, {
           attempt_id: live.attempt_id,
@@ -1490,6 +2023,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
             live.failure?.confirmation === 'merged' ||
             objectOf(observations[bead_id]).pr?.state === 'MERGED'
         }),
+        ...(rollup ? { rollup } : {}),
+        ...(conflict_resolution ? { conflict_resolution: true } : {}),
+        ...(base_exception ? { base_exception } : {}),
+        ...(landing ? { landing } : {}),
         badges:
           live.run_state === 'paused'
             ? ['⏸ 일시정지']
@@ -1757,7 +2294,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
      * @param {'queue'|'s1'|'s2'|'s3'|'s4'|'s5'} lane
      * @param {number} queue_index
      * @param {number} queue_length
-     * @returns {MonitorItem|null}
+     * @returns {LaneItem|null}
      */
     const waitingItem = (entry, lane, queue_index, queue_length) => {
       const bead_id = entry && entry.bead_id;
@@ -1768,7 +2305,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const parked = revise_parked[bead_id];
       const projected_discard = discardProjection(discard_operations, bead_id);
       const discard = projected_discard.operation ? projected_discard : null;
-      /** @type {MonitorItem} */
+      /** @type {LaneItem} */
       const item = {
         ...base(bead_id),
         lane,
@@ -1876,7 +2413,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       // 점유는 그것을 해제로 읽지 않는다. `claimed`에는 넣어야 그 bead가 뒤의 후보 레인으로
       // 새어나가지 않는다.
       const ghost_ids = new Set(occupied_by);
-      /** @type {MonitorItem[]} */
+      /** @type {LaneItem[]} */
       const items = [];
       for (let i = 0; i < entries.length; i++) {
         const entry_bead_id = entries[i] && entries[i].bead_id;
@@ -1987,16 +2524,60 @@ export function buildLanes(workspaces, workspaces_state, options) {
           )
         );
       }
+      // 자격은 행이 실어 온다 (UI-4tud §4.1). 서버 `runnable`(Monitor)에는 두 키가
+      // 없고, 없으면 `eligible=true`·`worker_ineligible=false`로 읽는다 —
+      // 서버가 이미 자격 미달을 빼고 보내기 때문이다 (fail-quiet).
+      const eligible = entry.eligible !== false;
+      const worker_ineligible = entry.worker_ineligible === true;
+      // 후보 레인이 드래그 소스인지도 그 재료가 가른다 (UI-d13v §6): 관측용 행을
+      // 싣는 어댑터(`eligible`을 실어 오는 쪽)의 후보 레인은 드래그 소스가 아니고,
+      // 배치는 `queue_placeable`이 그대로 물려받는다. 그 키가 없는 Monitor 후보
+      // 카드는 지금처럼 드래그·배치를 둘 다 유지한다.
+      const observation_row = Object.hasOwn(entry, 'eligible');
+      /** @type {string[]} */
+      const reason_parts = [];
+      if (typeof entry.reason === 'string' && entry.reason.length > 0) {
+        reason_parts.push(entry.reason);
+      }
+      const admission_badge = admissionBadge(admission, bead_id);
+      if (admission_badge) {
+        reason_parts.push(admission_badge);
+      }
+      // 해제·후속 칩은 후보 행만 얻는다 (UI-d13v §5.3): 대기·실행중·PR 대기 행은
+      // 이미 출발했거나 순서가 정해져 "왜 먼저 가야 하나"가 의미 없다. 재료가
+      // 없는 Monitor 행은 그냥 서지 않는다 (fail-quiet).
+      const released = releasedChipsFor(bead_id, entry.release_info, now);
+      const dependents =
+        entry.dependents_info && typeof entry.dependents_info === 'object'
+          ? dependentsChip(entry.dependents_info)
+          : null;
       runnable.push({
         ...base(bead_id),
         title: entry.title || titles[bead_id] || bead_id,
         lane: 'runnable',
-        draggable: true,
-        // 모니터 실행가능 카드는 드래그와 배치를 둘 다 유지한다 (UI-d13v §6은
-        // Worker 후보 레인만 바꾼다) — 공유 렌더러가 배치 자격을 이 키에서 읽으므로
-        // `draggable`과 같은 값을 명시한다.
-        queue_placeable: true,
-        reason: admissionBadge(admission, bead_id),
+        draggable: !observation_row,
+        queue_placeable: eligible && !worker_ineligible,
+        ...(worker_ineligible ? { worker_ineligible: true } : {}),
+        // 세션 권장 advisory (UI-49mc §3). 자격 판정에는 들어가지 않고, 재료를
+        // 싣지 않는 서버 `runnable` 행에는 키 자체가 없다 (fail-quiet).
+        ...(entry.session_preferred === true
+          ? {
+              session_preferred: true,
+              session_preferred_reason:
+                typeof entry.session_preferred_reason === 'string'
+                  ? entry.session_preferred_reason
+                  : ''
+            }
+          : {}),
+        ...(released || dependents
+          ? {
+              dependency_chips: {
+                ...(released ? { released } : {}),
+                ...(dependents ? { dependents } : {})
+              }
+            }
+          : {}),
+        reason: reason_parts.join(' · '),
         created_at: entry.created_at ?? undefined,
         updated_at: entry.updated_at ?? undefined,
         status: typeof entry.status === 'string' ? entry.status : undefined,
@@ -2065,6 +2646,79 @@ export function buildLanes(workspaces, workspaces_state, options) {
           ...reviewSessionAttemptBadges(attempts, bead_id)
         ]
       });
+    }
+
+    // 세션이 끝낸 일 (UI-4tud §4.1·§4.3). 재료를 만드는 것은 호출자이고
+    // (`get-comments` 조회·캐시), 여기서는 완료 레인에 그대로 합쳐 아래에서
+    // `done_at` 내림차순으로 다시 정렬한다. 기간 필터는 호출자가 이미 걸었다.
+    for (const row of Array.isArray(workspace.session_done)
+      ? workspace.session_done
+      : []) {
+      const bead_id = row && (row.id || row.bead_id);
+      if (typeof bead_id !== 'string' || claimed.has(bead_id)) {
+        continue;
+      }
+      claimed.add(bead_id);
+      done.push({
+        ...base(bead_id),
+        ...row,
+        id: bead_id,
+        root_dir,
+        workspace_name,
+        expected_revision,
+        lane: 'done',
+        done: true
+      });
+    }
+  }
+
+  // Board live store가 아는 이슈 필드를 모든 레인 행에 덧씌운다 (§4.1) — 지금
+  // Worker의 `idToPriority`·`idToFromId`·`beadRec`·`beadExecChips`가 하는 일이다.
+  // `exec_chips`는 "무엇으로 돌아갈까"에 답하는 레인(후보·대기·직렬)만 얻는다:
+  // 실행 중 타일은 그 attempt의 기록값이 진실이고, PR 대기·완료 행은 돌아갈
+  // 설정이 없다.
+  if (overlay_by_key.size > 0) {
+    for (const item of [
+      ...runnable,
+      ...queue,
+      ...running,
+      ...pr_wait,
+      ...done
+    ]) {
+      const overlay = overlay_by_key.get(`${item.root_dir}\u0000${item.id}`);
+      if (!overlay) {
+        continue;
+      }
+      if (typeof overlay.priority === 'number') {
+        item.priority = overlay.priority;
+      }
+      if (typeof overlay.from_id === 'string' && overlay.from_id.length > 0) {
+        item.from_id = overlay.from_id;
+      }
+      if (!Object.hasOwn(overlay, 'metadata')) {
+        continue;
+      }
+      const metadata = objectOf(overlay.metadata);
+      item.rec = recSettings(metadata);
+      if (
+        item.lane === 'runnable' ||
+        item.lane.startsWith('s') ||
+        item.lane === 'queue'
+      ) {
+        const chips = overlayExecChips(
+          objectOf(state_by_root.get(item.root_dir)),
+          metadata,
+          // 오버레이가 이 bead의 route를 알면 그쪽이 원천이다 — 큐 스냅샷의
+          // `bead_workflow`는 레인 멤버에게만 실리고, 파생 route를 싣지 않는
+          // 구서버도 있다 (fail-quiet).
+          typeof overlay.route === 'string' && overlay.route.length > 0
+            ? overlay.route
+            : objectOf(item.workflow).route
+        );
+        if (chips) {
+          item.exec_chips = chips;
+        }
+      }
     }
   }
 
@@ -2136,7 +2790,38 @@ export function buildLanes(workspaces, workspaces_state, options) {
   /** @type {Set<string>} */
   const roots_with_candidates = new Set(runnable.map((item) => item.root_dir));
 
-  /** @type {MonitorQueueGroup[]} */
+  // 슬롯을 점유하는 실행 attempt 수 (§4.3). 세션 타일은 attempt가 아니므로
+  // (UI-0a2m) 세지 않고, 일시정지·실패 타일도 슬롯을 놓아 준 상태다.
+  /** @type {Map<string, number>} */
+  const live_by_root = new Map();
+  for (const item of running) {
+    if (item.kind === 'session' || item.run_state !== 'running') {
+      continue;
+    }
+    live_by_root.set(item.root_dir, (live_by_root.get(item.root_dir) || 0) + 1);
+  }
+  /** @type {Map<string, LaneItem[]>} */
+  const done_by_root = new Map();
+  for (const item of done) {
+    const bucket = done_by_root.get(item.root_dir);
+    if (bucket) {
+      bucket.push(item);
+    } else {
+      done_by_root.set(item.root_dir, [item]);
+    }
+  }
+  /** @type {LaneMergeQueue} */
+  const empty_merge = {
+    positions: new Map(),
+    resolutions: new Map(),
+    continuations: new Map(),
+    authorities: new Map(),
+    state: { active: null, failures: {}, waiting: null },
+    auto_excluded: [],
+    running: false
+  };
+
+  /** @type {LaneQueueGroup[]} */
   const queue_groups = [];
   for (const source of group_sources) {
     if (!source || typeof source.root_dir !== 'string') {
@@ -2149,18 +2834,33 @@ export function buildLanes(workspaces, workspaces_state, options) {
       serial.some(
         (lane) => lane.items.length > 0 || lane.occupied_by.length > 0
       );
-    if (!has_queue && !roots_with_candidates.has(source.root_dir)) {
+    // `all`은 대기가 비어도 그룹을 남긴다 (§4.3): 실행 중·PR 대기·완료·저장소
+    // 작업만 있는 스냅샷에서도 슬롯·머지 큐·저장소 작업이 살아 있어야 한다.
+    if (
+      groups_mode !== 'all' &&
+      !has_queue &&
+      !roots_with_candidates.has(source.root_dir)
+    ) {
       continue;
     }
+    const slots =
+      typeof source.slots === 'number' && source.slots >= MIN_SLOTS
+        ? source.slots
+        : MIN_SLOTS;
+    const live_count = live_by_root.get(source.root_dir) || 0;
     queue_groups.push({
+      live_count,
+      over_cap: live_count > slots,
+      merge: merge_by_root.get(source.root_dir) || empty_merge,
+      token_total: doneTokenTotal(done_by_root.get(source.root_dir) || []),
+      cleanup_failures: cleanup_failures_by_root.get(source.root_dir) || [],
+      declared_base: declared_base_by_root.get(source.root_dir) ?? null,
+      repo_operations: repo_operations_by_root.get(source.root_dir) || [],
       root_dir: source.root_dir,
       name: source.name || source.root_dir,
       auto_advance: source.auto_advance === true,
       auto_merge: source.auto_merge === true,
-      slots:
-        typeof source.slots === 'number' && source.slots >= MIN_SLOTS
-          ? source.slots
-          : MIN_SLOTS,
+      slots,
       revision: typeof source.revision === 'number' ? source.revision : 0,
       runner_catalog: objectOf(source.runner_catalog),
       items: parallel,
@@ -2170,13 +2870,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
     });
   }
 
-  /** @type {MonitorLanes} */
+  /** @type {LaneModel} */
   const model = {
     runnable,
     runnable_all: runnable,
     runnable_hidden: { blocked: 0, spec: 0 },
     runnable_sections: [],
-    runnable_flat: candidate_sort === 'updated_flat',
+    runnable_flat:
+      candidate_sort === 'updated_flat' || candidate_sort === 'as_given',
     queue,
     queue_groups,
     running,
@@ -2255,8 +2956,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
     if (predecessors.length === 0) {
       continue;
     }
+    // 후보 행이 이미 `released`·`dependents` 칩을 싣고 있을 수 있다 (UI-d13v
+    // §5.3) — 선행 칩이 그것을 지우면 같은 슬롯의 다른 질문이 조용히 사라진다.
     /** @type {DependencyChips} */
-    const chips = { predecessors };
+    const chips = { ...(item.dependency_chips || {}), predecessors };
     item.dependency_chips = chips;
   }
 
@@ -2295,7 +2998,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   );
 
   // 소속 칩은 실행가능 카드와 대기 행에만 붙는다 (§5.2a).
-  /** @type {Map<string, MonitorItem>} */
+  /** @type {Map<string, LaneItem>} */
   const item_by_bead = new Map();
   for (const item of [...model.queue, ...model.runnable]) {
     if (!item_by_bead.has(item.id)) {
@@ -2349,7 +3052,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         : { lane_id, label: `▶ 연결 ${number}`, orphan: false };
   }
 
-  /** @type {MonitorItem[]} */
+  /** @type {LaneItem[]} */
   const parallel_rows = [];
   for (const items of queue_by_root.values()) {
     for (const item of items) {
@@ -2397,31 +3100,60 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 필터 이전 목록에서 나온다.
   model.runnable_all = model.runnable.slice();
   let visible = model.runnable;
-  if (!candidate_filter.show_blocked) {
-    visible = visible.filter((item) => item.blocked !== true);
+  /** @param {LaneItem} item */
+  const blockedPass = (item) =>
+    candidate_filter.show_blocked || item.blocked !== true;
+  /** @param {LaneItem} item */
+  const specPass = (item) =>
+    candidate_filter.spec === 'all' ||
+    (candidate_filter.spec === 'with'
+      ? item.published === true
+      : item.published !== true);
+  if (hidden_counts === 'per_control') {
+    // Worker 규칙 (UI-ki09 `applyCandidateFilter`): 한 조작이 감춘 수는 "그
+    // 조작만 풀면 나타날 행"이다. 두 필터에 **모두** 걸린 행은 어느 수에도
+    // 들어가지 않는다 — 한쪽만 풀어도 그 행은 그대로 숨어 있으므로, 세면
+    // 지키지 못할 노출을 약속하게 된다.
+    /** @type {LaneItem[]} */
+    const kept = [];
+    let hidden_blocked = 0;
+    let hidden_spec = 0;
+    for (const item of visible) {
+      const by_blocked = blockedPass(item);
+      const by_spec = specPass(item);
+      if (by_blocked && by_spec) {
+        kept.push(item);
+      } else if (!by_blocked && by_spec) {
+        hidden_blocked += 1;
+      } else if (by_blocked && !by_spec) {
+        hidden_spec += 1;
+      }
+    }
+    visible = kept;
+    model.runnable_hidden = { blocked: hidden_blocked, spec: hidden_spec };
+  } else {
+    // Monitor 규칙: 두 필터를 차례로 적용하고 각 단계가 줄인 수를 센다 — 두
+    // 필터에 모두 걸린 행은 앞 단계인 `blocked`가 가져간다.
+    visible = visible.filter(blockedPass);
+    const after_blocked = visible.length;
+    visible = visible.filter(specPass);
+    model.runnable_hidden = {
+      blocked: before - after_blocked,
+      spec: after_blocked - visible.length
+    };
   }
-  const after_blocked = visible.length;
-  if (candidate_filter.spec === 'with') {
-    visible = visible.filter((item) => item.published === true);
-  } else if (candidate_filter.spec === 'without') {
-    visible = visible.filter((item) => item.published !== true);
-  }
-  model.runnable_hidden = {
-    blocked: before - after_blocked,
-    spec: after_blocked - visible.length
-  };
 
   /**
-   * @param {MonitorItem} a
-   * @param {MonitorItem} b
+   * @param {LaneItem} a
+   * @param {LaneItem} b
    */
   const byUpdated = (a, b) => {
     const diff = timeOf(b.updated_at) - timeOf(a.updated_at);
     return diff !== 0 ? diff : a.id.localeCompare(b.id);
   };
   /**
-   * @param {MonitorItem} a
-   * @param {MonitorItem} b
+   * @param {LaneItem} a
+   * @param {LaneItem} b
    */
   const bySpecThenUpdated = (a, b) => {
     const a_spec = a.published === true ? 0 : 1;
@@ -2430,11 +3162,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
   };
   const within = candidate_sort === 'repo_spec' ? bySpecThenUpdated : byUpdated;
 
-  if (candidate_sort === 'updated_flat') {
+  if (candidate_sort === 'as_given') {
+    // 정렬을 이미 끝낸 호출자의 값 (§4.3): 순서를 다시 정하지 않고 섹션도
+    // 만들지 않는다 — 필터만 걸린 입력 순서가 그대로 화면 순서다.
+    model.runnable = visible;
+    model.runnable_sections = [];
+  } else if (candidate_sort === 'updated_flat') {
     model.runnable = visible.slice().sort(byUpdated);
     model.runnable_sections = [];
   } else {
-    /** @type {Map<string, MonitorItem[]>} */
+    /** @type {Map<string, LaneItem[]>} */
     const by_root = new Map();
     for (const item of visible) {
       const bucket = by_root.get(item.root_dir);
@@ -2446,7 +3183,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
     /** @type {MonitorRunnableSection[]} */
     const sections = [];
-    /** @type {MonitorItem[]} */
+    /** @type {LaneItem[]} */
     const ordered = [];
     for (const source of group_sources) {
       if (!source || typeof source.root_dir !== 'string') {

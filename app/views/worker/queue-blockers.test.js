@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
-import { buildLanes } from '../monitor/lanes.js';
+import { buildLanes } from './lane-model.js';
 import {
   dependentsChip,
   deriveWorkerBlockers,
