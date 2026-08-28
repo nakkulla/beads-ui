@@ -86,8 +86,13 @@ beads-ui는 이 계약의 소비자다. 현재 코드는 옛 표현을 네 곳�
   처분 세션 디스패치(`dispatchReviseFix`)는 `relaunchFromAttempt` 경로라
   admission을 지나지 않으며 계속 동작한다.
 - **후보 레인**(`app/views/worker/index.js`): UI-8881의 관측 원칙을 따른다 —
-  숨기지 않고 `draggable=false`·place 버튼 비활성, reason 파트에
-  `사용자 리뷰 필요: <값>`을 넣는다. 판정은 `it.metadata`가 non-null 객체일 때만
+  숨기지 않고 적재만 막고, reason 파트에
+  `사용자 리뷰 필요: <값>`을 넣는다. 거부 자리는 `worker_ineligible`과 같다 —
+  투영의 `eligible` 논리곱에 "`awaiting_user` 없음"을 더해
+  `queue_placeable=false`로 만든다(`[대기로 ↴]`·배치 메뉴가 함께 비활성).
+  `draggable`은 쓰지 않는다: UI-d13v §6에서 후보 레인이 드래그 소스가 아니게
+  되며 상수 `false`가 됐고, 적재 자격은 `queue_placeable` 하나가 갖는다.
+  판정은 `it.metadata`가 non-null 객체일 때만
   `Object.hasOwn(it.metadata, 'awaiting_user')`(서버와 같은 presence rule);
   metadata가 부재·`null`·원시값이면 판정 false로 정상 렌더한다(fail-quiet). 이미 큐에 있는 행은 서버가
   `⛔ awaiting_user` skip 뱃지로 답한다(기존 `admissionBadge` 포맷, 라벨 맵 없음).
@@ -148,7 +153,7 @@ beads-ui는 이 계약의 소비자다. 현재 코드는 옛 표현을 네 곳�
   - `server/worker/revise-parked.test.js` / `revise-disposition.test.js`:
     fixture를 `status: 'open'` + `awaiting_user`로, approve 페이로드에 `status`
     없음, readback 존재 판정(`null`/빈값 잔존 → `still_blocked`).
-  - `app/views/worker/index.test.js`: 후보 행 `draggable=false` + reason.
+  - `app/views/worker/index.test.js`: 후보 행 `queue_placeable=false` + reason.
 - `npm run tsc` · `npx vitest run --reporter=dot` · `npm run lint` ·
   `npm run prettier:write` · `npm run build`.
 - 배포 후 live readback: `awaiting_user`를 가진 Bead가 자기 상태 컬럼에
