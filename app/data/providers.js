@@ -6,7 +6,7 @@ import { debug } from '../utils/logging.js';
 /**
  * Data layer: typed wrappers around the ws transport for mutations and
  * single-issue fetch. List reads have been removed in favor of push-only
- * stores and selectors (see docs/adr/001-push-only-lists.md).
+ * stores and selectors (see docs/adr/0001-push-only-lists.md).
  *
  * @param {(type: MessageType, payload?: unknown) => Promise<unknown>} transport - Request/response function.
  * @returns {{ updateIssue: (input: { id: string, title?: string, acceptance?: string, notes?: string, design?: string, status?: 'open'|'in_progress'|'deferred'|'resolved'|'closed', priority?: number, assignee?: string }) => Promise<unknown> }}
