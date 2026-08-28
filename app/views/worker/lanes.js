@@ -117,6 +117,17 @@ export function reviewSessionAttemptBadges(attempts, bead_id) {
 }
 
 /**
+ * `review_session` attempt를 띄운 트리거 — 계약 enum(`auto`·`click`) 밖의 값은
+ * 없는 것으로 읽는다(fail-quiet).
+ *
+ * @param {unknown} origin
+ * @returns {'auto'|'click'|null}
+ */
+function reviewSessionOrigin(origin) {
+  return origin === 'auto' || origin === 'click' ? origin : null;
+}
+
+/**
  * `[리뷰 후 머지]` 세션의 행 상태 — 한 bead 기준 (UI-d7fy §5.4).
  *
  * PR 대기 행이 두 가지를 물어본다: 지금 리뷰 세션이 도는가(그러면 버튼을 잠근다),
@@ -125,17 +136,26 @@ export function reviewSessionAttemptBadges(attempts, bead_id) {
  * 답이다 — 성공한 세션은 authority 재결속으로 이미 보류를 걷어냈으므로 남길 말이
  * 없다. 모양이 어긋난 입력은 조용히 무시한다(fail-quiet).
  *
+ * `origin`은 그 답을 낸 attempt를 누가 띄웠는가다 (UI-qksl §7): 큐가 head당 1회
+ * 자동 dispatch하므로, 실행 중·실패 어느 쪽이든 사람이 누른 세션과 기계가 띄운
+ * 세션이 같은 자리에 온다.
+ *
  * @param {unknown} attempts - 큐 스냅샷의 attempt_id → attempt record 맵.
  * @param {string} bead_id
- * @returns {{ active: boolean, failure: string|null }}
+ * @returns {{ active: boolean, failure: string|null, origin: 'auto'|'click'|null }}
  */
 export function reviewSessionRowState(attempts, bead_id) {
   if (typeof attempts !== 'object' || attempts === null) {
-    return { active: false, failure: null };
+    return { active: false, failure: null, origin: null };
   }
   let active = false;
+  /** @type {'auto'|'click'|null} */
+  let active_origin = null;
+  let active_at = -1;
   /** @type {string|null} */
   let failure = null;
+  /** @type {'auto'|'click'|null} */
+  let failure_origin = null;
   let failure_at = -1;
   for (const attempt of Object.values(attempts)) {
     if (typeof attempt !== 'object' || attempt === null) {
@@ -147,6 +167,11 @@ export function reviewSessionRowState(attempts, bead_id) {
     }
     if (a.status === 'pending' || a.status === 'running') {
       active = true;
+      const started_at = typeof a.started_at === 'number' ? a.started_at : 0;
+      if (started_at >= active_at) {
+        active_at = started_at;
+        active_origin = reviewSessionOrigin(a.origin);
+      }
       continue;
     }
     if (a.status !== 'failed') {
@@ -157,9 +182,12 @@ export function reviewSessionRowState(attempts, bead_id) {
       failure_at = at;
       failure =
         typeof a.cause === 'string' && a.cause.length > 0 ? a.cause : null;
+      failure_origin = reviewSessionOrigin(a.origin);
     }
   }
-  return active ? { active: true, failure: null } : { active: false, failure };
+  return active
+    ? { active: true, failure: null, origin: active_origin }
+    : { active: false, failure, origin: failure_origin };
 }
 
 /**

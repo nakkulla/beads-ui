@@ -741,8 +741,8 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
   });
 });
 
-describe('monitor PR 대기 — 리뷰 판정 미결 (UI-32he)', () => {
-  test('draws neither a badge nor an alert for an undetermined review verdict', () => {
+describe('monitor PR 대기 — 리뷰 판정 미결 (UI-32he, UI-qksl §4 1번이 넓힘)', () => {
+  test('alerts on an undetermined review verdict without a gate badge', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -767,7 +767,7 @@ describe('monitor PR 대기 — 리뷰 판정 미결 (UI-32he)', () => {
     expect(lanes.pr_wait[0]).toMatchObject({
       id: 'A-1',
       badges: [],
-      alert: false
+      alert: true
     });
   });
 
