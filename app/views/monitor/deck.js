@@ -39,7 +39,7 @@ import { iconGear, iconMerge, iconPause, iconPlay } from './icons.js';
 import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
 
 /**
- * @import { MonitorItem } from './lanes.js'
+ * @import { LaneItem } from '../worker/lane-model.js'
  */
 
 /**
@@ -128,7 +128,7 @@ export function deckExecChips(row) {
 /**
  * @typedef {Object} RepoDeckOptions
  * @property {() => Array<Record<string, any>>} workspacesState
- * @property {() => Array<Pick<MonitorItem, 'usage'>>} [doneItems] - 기간이 이미
+ * @property {() => Array<Pick<LaneItem, 'usage'>>} [doneItems] - 기간이 이미
  * 걸린 완료 아이템 (합계 줄의 `<기간> 완료 n`과 토큰).
  * @property {() => string} [rangeLabel]
  * @property {(type: any, payload?: unknown) => Promise<any>} [transport]

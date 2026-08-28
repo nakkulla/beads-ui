@@ -9,8 +9,8 @@
  * 순수 함수만 내보낸다 — 후보 목록은 스냅샷 하나에서 나오는 파생값이고, 검색은
  * 그 목록 위의 필터일 뿐이다.
  */
+import { buildLanes } from '../worker/lane-model.js';
 import { isBlockedBy } from './drop-plan.js';
-import { buildLanes } from './lanes.js';
 
 /**
  * 후보 모집단 한 항목. `lane`은 모니터의 배타 레인 어휘 그대로다 — 같은 사실에

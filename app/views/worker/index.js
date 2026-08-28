@@ -88,6 +88,7 @@ import {
 } from './candidate-sort.js';
 import { failureSentence } from './failure-labels.js';
 import { createLaneCollapse } from './lane-collapse.js';
+import { baseException, releasedChipsFor } from './lane-model.js';
 import {
   AWAITING_USER_REASON_PREFIX,
   discardCompletionMessage,
@@ -106,11 +107,7 @@ import {
 } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
-import {
-  dependentsChip,
-  deriveWorkerBlockers,
-  releasedChip
-} from './queue-blockers.js';
+import { dependentsChip, deriveWorkerBlockers } from './queue-blockers.js';
 import { deriveWorkerOverlaps, workerPlacementPlan } from './queue-overlaps.js';
 import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
@@ -398,60 +395,6 @@ function blockerIdsOf(issue) {
 }
 
 /**
- * 한 후보 카드에 서는 `🔓 해제` 칩 수의 상한 (UI-d13v §5.3). 나머지는 마지막
- * 칩 라벨 끝의 ` 외 n`이 센다 — 칩을 상한 없이 늘리면 슬롯 4 줄 하나가 카드를
- * 삼킨다.
- */
-const RELEASED_CHIP_MAX = 2;
-
-/**
- * The 후보 행 `🔓 해제` 칩 (UI-d13v §5.3). 7일 창은 {@link releasedChip}이 닫고,
- * 여기서는 `closed_at` desc 정렬과 상한만 정한다. 재료가 없거나 전부 창 밖이면
- * `null`이다 (fail-quiet) — 서버가 `release_info`를 싣지 않는 구버전에서 칩이
- * 그냥 서지 않는 것과 같은 결과다.
- *
- * @param {any} issue
- * @param {number} now
- * @returns {import('./lanes.js').ReleasedChip[]|null}
- */
-function candidateReleasedChips(issue, now) {
-  const info = issue?.release_info;
-  const released_by =
-    info && typeof info === 'object' && Array.isArray(info.released_by)
-      ? info.released_by
-      : [];
-  const ordered = released_by
-    .filter(
-      (/** @type {any} */ entry) =>
-        entry && typeof entry === 'object' && typeof entry.id === 'string'
-    )
-    .slice()
-    .sort(
-      (/** @type {any} */ a, /** @type {any} */ b) =>
-        (typeof b.closed_at === 'number' ? b.closed_at : 0) -
-        (typeof a.closed_at === 'number' ? a.closed_at : 0)
-    );
-  /** @type {import('./lanes.js').ReleasedChip[]} */
-  const chips = [];
-  for (const entry of ordered) {
-    const chip = releasedChip(issue.id, entry, now);
-    if (chip) {
-      chips.push(chip);
-    }
-  }
-  if (chips.length === 0) {
-    return null;
-  }
-  const shown = chips.slice(0, RELEASED_CHIP_MAX);
-  const rest = chips.length - shown.length;
-  if (rest > 0) {
-    const last = shown[shown.length - 1];
-    shown[shown.length - 1] = { ...last, label: `${last.label} 외 ${rest}` };
-  }
-  return shown;
-}
-
-/**
  * 선행 id를 하나도 모르는 blocked 후보가 다는 잠금 문장. id를 아는 후보는 이
  * 문장을 달지 않는다 — `⛓ blocked: <id>` 칩이 같은 id를 이미 적고, 문장과 칩이
  * 한 카드에 같은 blocker id를 두 번 적지 않는 것이 UI-anna §2 결정 4다. 칩은
@@ -671,29 +614,6 @@ function resolutionView(resolution) {
     default:
       return null;
   }
-}
-
-/**
- * The base-exception badge text for one attempt, or null when there is no
- * exception to report (UI-j6wa §3).
- *
- * Both unknowns are fail-quiet rather than alarming: a `declared_base` of null
- * means the server could not read the declaration, and a legacy attempt carries
- * no `target_base` at all. Comparing against either would badge on ignorance,
- * and this badge only ever means "this attempt targets something else".
- *
- * @param {string|null|undefined} declared_base
- * @param {string|null|undefined} target_base
- * @returns {string|null}
- */
-function baseException(declared_base, target_base) {
-  if (typeof declared_base !== 'string' || declared_base.length === 0) {
-    return null;
-  }
-  if (typeof target_base !== 'string' || target_base.length === 0) {
-    return null;
-  }
-  return target_base === declared_base ? null : `→ ${target_base}`;
 }
 
 /**
@@ -3337,7 +3257,7 @@ export function createWorkerView(mount_element, options = {}) {
       // 해제·후속 칩은 후보 행만 얻는다 (UI-d13v §5.3): 대기·실행중·PR 대기 행은
       // 이미 출발했거나 순서가 정해져 "왜 먼저 가야 하나"가 의미 없다. 서버가 두
       // 장식을 싣지 않으면 재료가 없어 그냥 서지 않는다 (fail-quiet).
-      const released = candidateReleasedChips(it, now);
+      const released = releasedChipsFor(it.id, it.release_info, now);
       const dependents =
         it.dependents_info && typeof it.dependents_info === 'object'
           ? dependentsChip(it.dependents_info)
@@ -5006,11 +4926,15 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {import('lit-html').TemplateResult}
    */
   function runningBody(m) {
+    // 오버레이 재료는 타일 자신이 싣는다 (UI-4tud §4.3). `buildModel`이 아직
+    // 두 번째 경로(`running_overlays`)를 만드는 동안은 여기서 합쳐 넘긴다.
     return runningGridTemplate(
-      m.running,
+      m.running.map((/** @type {any} */ tile) => {
+        const overlay = m.running_overlays.get(tile.bead_id);
+        return overlay ? { ...tile, ...overlay } : tile;
+      }),
       Date.now(),
-      selected_attempt,
-      m.running_overlays
+      selected_attempt
     );
   }
 

@@ -33,6 +33,12 @@ import { showToast } from '../../utils/toast.js';
 import { watchMobile } from '../../utils/viewport.js';
 import { createLaneCollapse } from '../worker/lane-collapse.js';
 import {
+  CANDIDATE_FILTER_DEFAULT,
+  CANDIDATE_SORT_OPTIONS,
+  SPEC_FILTER_OPTIONS,
+  buildLanes
+} from '../worker/lane-model.js';
+import {
   candidateCard,
   discardCompletionMessage,
   discardConfirmationMessage,
@@ -58,15 +64,9 @@ import {
   planLaneReapply,
   planLaneRemove
 } from './drop-plan.js';
-import {
-  CANDIDATE_FILTER_DEFAULT,
-  CANDIDATE_SORT_OPTIONS,
-  SPEC_FILTER_OPTIONS,
-  buildLanes
-} from './lanes.js';
 
 /**
- * @import { CandidateFilter, MonitorChainLane, MonitorChainLaneRow, MonitorItem, MonitorLanes, MonitorOccupant, MonitorQueueGroup, MonitorSerialSublane } from './lanes.js'
+ * @import { CandidateFilter, MonitorChainLane, MonitorChainLaneRow, LaneItem, LaneModel, MonitorOccupant, LaneQueueGroup, MonitorSerialSublane } from '../worker/lane-model.js'
  * @import { DependencyChips, OverlapPopover, OverlapPopoverRow } from '../worker/lanes.js'
  * @import { DropDrag, DropModel, DropPlan, DropTarget, LaneOp, Op } from './drop-plan.js'
  */
@@ -81,7 +81,7 @@ const CORRECTION_NOTICE_MS = 10000;
  * A bead's 직렬 레인 (UI-qm12 §5.4): 대기 중이면 그 레인, 실행 중이면 출발한
  * 레인. 병렬 큐·실행가능·병렬에서 출발한 실행 중은 레인이 없다.
  *
- * @param {MonitorItem} item
+ * @param {LaneItem} item
  * @returns {string|null}
  */
 function serialLaneOf(item) {
@@ -98,7 +98,7 @@ function serialLaneOf(item) {
  * Movable = 대기(병렬/직렬) 또는 실행가능 (UI-qm12 §5.4). 실행 중인 항목은
  * 옮기지 않는다 — 이미 워크트리를 잡고 있다.
  *
- * @param {MonitorItem} item
+ * @param {LaneItem} item
  */
 function isPlaceable(item) {
   return (
@@ -526,9 +526,9 @@ export function createMonitorView(mount_element, options) {
   drawer_overlay_el.append(drawer_backdrop_el, drawer_el);
   mount_element.appendChild(drawer_overlay_el);
 
-  /** @type {MonitorLanes} */
+  /** @type {LaneModel} */
   let lanes = buildLanes(null, null);
-  /** @type {Map<string, MonitorItem>} */
+  /** @type {Map<string, LaneItem>} */
   let item_by_bead = new Map();
 
   /**
@@ -949,7 +949,7 @@ export function createMonitorView(mount_element, options) {
 
   /**
    * @param {string} me_id
-   * @param {import('./lanes.js').OverlapChip} chip
+   * @param {import('../worker/lane-model.js').OverlapChip} chip
    * @returns {OverlapPopoverRow}
    */
   function overlapPopoverRow(me_id, chip) {
@@ -974,7 +974,7 @@ export function createMonitorView(mount_element, options) {
 
   /**
    * @param {string} bead_id
-   * @param {import('./lanes.js').OverlapChip[]} overlaps
+   * @param {import('../worker/lane-model.js').OverlapChip[]} overlaps
    * @returns {OverlapPopover|null}
    */
   function overlapPopoverFor(bead_id, overlaps) {
@@ -993,7 +993,7 @@ export function createMonitorView(mount_element, options) {
    * Merge the 겹침 파생값 into the dependency chips a card already carries
    * (§5.3) — 칩·팝오버 마크업은 한 벌이므로 전달 경로도 하나다.
    *
-   * @param {{ id: string, overlap_chips?: import('./lanes.js').OverlapChip[], scope_state?: 'declared'|'missing', cross_lane_chip?: import('./lanes.js').CrossLaneChip, armed_lane_chip?: import('./lanes.js').ArmedLaneChip, dependency_chips?: DependencyChips|null }} row
+   * @param {{ id: string, overlap_chips?: import('../worker/lane-model.js').OverlapChip[], scope_state?: 'declared'|'missing', cross_lane_chip?: import('../worker/lane-model.js').CrossLaneChip, armed_lane_chip?: import('../worker/lane-model.js').ArmedLaneChip, dependency_chips?: DependencyChips|null }} row
    * @returns {DependencyChips|null}
    */
   function chipsWithOverlaps(row) {
@@ -1033,8 +1033,8 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * @param {MonitorItem} item
-   * @returns {MonitorItem}
+   * @param {LaneItem} item
+   * @returns {LaneItem}
    */
   function withOverlaps(item) {
     const chips = chipsWithOverlaps(item);
@@ -1152,7 +1152,7 @@ export function createMonitorView(mount_element, options) {
    * One 실행가능 카드 shell. 드래그 원천 종류·레포·좌표를 DOM에 실어 드래그
    * 컨트롤러가 카드 템플릿을 몰라도 되게 한다 (§5).
    *
-   * @param {MonitorItem} item
+   * @param {LaneItem} item
    * @param {import('lit-html').TemplateResult} card
    * @returns {import('lit-html').TemplateResult}
    */
@@ -1173,7 +1173,7 @@ export function createMonitorView(mount_element, options) {
    * §5.4의 candidate → 대상 규칙을 끝 삽입으로 실행한다. 좌표는 배열 인덱스가
    * 아니라 서버가 발급한 `lane_id`다 — 목록은 스냅샷마다 순서가 바뀔 수 있다.
    *
-   * @param {MonitorItem} item
+   * @param {LaneItem} item
    * @returns {import('../worker/lanes.js').PlaceMenu|null}
    */
   function placeMenuFor(item) {
@@ -1221,7 +1221,7 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * @param {MonitorItem} item
+   * @param {LaneItem} item
    * @returns {import('lit-html').TemplateResult}
    */
   function candidateRow(item) {
@@ -1279,7 +1279,7 @@ export function createMonitorView(mount_element, options) {
    * coarse pointer 보완재라 표시 조건은 CSS가 소유한다. 의존성 편집은 여기
    * 있던 ⛓이 아니라 이슈 상세 `의존성` 절이다 (UI-lx45 §5).
    *
-   * @param {MonitorItem} item
+   * @param {LaneItem} item
    * @param {boolean} [nudgeable] - true for 병렬 행 only: 직렬 레인의 순서는
    * 의존이 소유하므로 한 칸 위·아래로 미는 버튼이 없다.
    * @returns {import('lit-html').TemplateResult}
@@ -1322,7 +1322,7 @@ export function createMonitorView(mount_element, options) {
    * One 병렬 영역 row (§4.1). Worker `miniRow` 그대로이고, 드래그 좌표만 바깥
    * shell이 싣는다.
    *
-   * @param {MonitorItem} item
+   * @param {LaneItem} item
    * @param {number} row_index
    * @returns {import('lit-html').TemplateResult}
    */
@@ -1543,7 +1543,7 @@ export function createMonitorView(mount_element, options) {
    * One 레포 직렬 레인 row (§4.2) — Worker 탭이 소유하는 s1..s5의 투영.
    *
    * @param {MonitorSerialSublane} lane
-   * @param {MonitorItem} item
+   * @param {LaneItem} item
    * @param {number} row_index
    * @returns {import('lit-html').TemplateResult}
    */
@@ -1605,7 +1605,7 @@ export function createMonitorView(mount_element, options) {
    * `Worker ↗`, 드롭 좌표, 그리고 레포 간 상호 정지 경고(`after`)다. 그 경고는
    * Monitor 전용 cross-repo 사실이라 공유 본문이 아니라 이 슬롯이 소유한다.
    *
-   * @param {MonitorQueueGroup} group
+   * @param {LaneQueueGroup} group
    * @param {MonitorSerialSublane} lane
    * @returns {import('../worker/lanes.js').WaitSerialLane}
    */
@@ -1788,7 +1788,7 @@ export function createMonitorView(mount_element, options) {
    * @returns {import('lit-html').TemplateResult}
    */
   function monitorTemplate(now) {
-    /** @type {Record<string, MonitorItem[]>} */
+    /** @type {Record<string, LaneItem[]>} */
     const by_lane = {
       runnable: lanes.runnable,
       queue: lanes.queue,
@@ -1823,7 +1823,10 @@ export function createMonitorView(mount_element, options) {
             : meta.lane === 'running'
               ? runningBody(now)
               : items.length > 0
-                ? html`${items.map((item) => miniRow(item))}`
+                ? // PR 대기·완료 레인 본문도 겹침 파생을 얹어 그린다 (UI-e9sg):
+                  // 투영이 계산한 `⧉ 겹침`·`scope 없음` 칩을 여기서 버리면 같은
+                  // 사실이 레인마다 다르게 보인다.
+                  html`${items.map((item) => miniRow(withOverlaps(item)))}`
                 : undefined;
       return paneTemplate({
         id: `monitor-${meta.lane}`,
@@ -1857,7 +1860,9 @@ export function createMonitorView(mount_element, options) {
             ${nowPanel({
               live: lanes.running.length > 0,
               running_body: lanes.running.length > 0 ? runningBody(now) : '',
-              pr_wait_rows: lanes.pr_wait.map((item) => miniRow(item)),
+              pr_wait_rows: lanes.pr_wait.map((item) =>
+                miniRow(withOverlaps(item))
+              ),
               count: lanes.running.length + lanes.pr_wait.length
             })}
             ${mobile_metas.map((meta) => lanePane(meta))}
@@ -1993,7 +1998,7 @@ export function createMonitorView(mount_element, options) {
    * 읽어 없는 기능을 고장으로 그린다 (§4.4).
    *
    * @param {{ revision: number, lanes: Array<Record<string, any>> }|null} [cross_lanes_override]
-   * @returns {MonitorLanes}
+   * @returns {LaneModel}
    */
   function projectLanes(cross_lanes_override) {
     const workspaces =
@@ -2211,7 +2216,7 @@ export function createMonitorView(mount_element, options) {
 
   /**
    * @param {string} bead_id
-   * @returns {{ item: MonitorItem|null, root_dir: string, revision: number }}
+   * @returns {{ item: LaneItem|null, root_dir: string, revision: number }}
    */
   function casOf(bead_id) {
     const item = item_by_bead.get(bead_id) || null;
@@ -2438,7 +2443,7 @@ export function createMonitorView(mount_element, options) {
    * `planDrop`/`planLane*`이 받는 모델 (§5.1·§5.4). 투영이 내보내는 평면 객체를
    * Map으로 바꾸고, 레인 멤버십·고정 행·적재 여부는 저장 레인 투영에서 읽는다.
    *
-   * @param {MonitorLanes} [source] - 계획을 세울 투영. 기본은 지금 그려진 화면이고,
+   * @param {LaneModel} [source] - 계획을 세울 투영. 기본은 지금 그려진 화면이고,
    * 충돌 재계획은 최신 `cross_lanes`로 다시 투영한 모델을 넘긴다 (§5.5).
    * @param {{ revision: number, lanes: Array<Record<string, any>> }|null} [raw_lanes]
    * - 그 투영이 나온 스냅샷 원본 (UI-jaua §7.1 provenance 원천).
@@ -3497,7 +3502,7 @@ export function createMonitorView(mount_element, options) {
   // --- 클릭 위임 ---
 
   /**
-   * @param {MonitorItem} item
+   * @param {LaneItem} item
    * @returns {import('../worker/transcript-drawer.js').DrawerMeta}
    */
   function drawerMeta(item) {

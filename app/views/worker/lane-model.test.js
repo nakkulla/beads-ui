@@ -6,7 +6,7 @@ import {
   buildLanes,
   latestTerminalAttempt,
   validTime
-} from './lanes.js';
+} from './lane-model.js';
 
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
@@ -3001,5 +3001,823 @@ describe('monitor runnable rec projection (UI-sbum §4)', () => {
     );
 
     expect(lanes.runnable[0].rec).toBeUndefined();
+  });
+});
+
+const EXECUTION_DEFAULTS = {
+  supported: true,
+  schema_version: 1,
+  source_commit: 'abc',
+  digest: 'd',
+  session: { impl_runtime: 'claude' },
+  orchestration: {
+    runtime: 'claude',
+    model: 'sonnet',
+    model_id: 'claude-sonnet',
+    effort: null,
+    speed: null
+  }
+};
+
+const MERGE_SHA = 'a'.repeat(40);
+
+describe('lane model worker group values (UI-4tud §4.3)', () => {
+  test('counts running attempts against the repo slot cap', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 10
+            },
+            t2: {
+              attempt_id: 't2',
+              bead_id: 'A-2',
+              status: 'running',
+              started_at: 20
+            }
+          }
+        })
+      ],
+      [state({ slots: 1 })],
+      { groups: 'all' }
+    );
+
+    expect([
+      lanes.queue_groups[0].live_count,
+      lanes.queue_groups[0].over_cap
+    ]).toEqual([2, true]);
+  });
+
+  test('leaves paused and failed tiles out of the live count', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: { attempt_id: 't1', bead_id: 'A-1', status: 'paused' },
+            t2: { attempt_id: 't2', bead_id: 'A-2', status: 'failed' }
+          }
+        })
+      ],
+      [state({ slots: 2 })],
+      { groups: 'all' }
+    );
+
+    expect([
+      lanes.queue_groups[0].live_count,
+      lanes.queue_groups[0].over_cap
+    ]).toEqual([0, false]);
+  });
+
+  test('carries the merge queue positions and driver state on the group', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          merge_queue: [
+            { bead_id: 'A-1', resolution: { state: 'ready' }, authority: 'ui' },
+            { bead_id: 'A-2', continuation_action: { continuation: null } }
+          ],
+          merge_queue_state: {
+            active: 'A-1',
+            failures: { 'A-2': 'boom' },
+            waiting: { bead_id: 'A-2', reason: '충돌 해소 대기' }
+          }
+        })
+      ],
+      [state()],
+      { groups: 'all' }
+    );
+
+    const merge = lanes.queue_groups[0].merge;
+    expect([
+      merge.positions.get('A-1'),
+      merge.positions.get('A-2'),
+      merge.resolutions.get('A-1'),
+      merge.authorities.get('A-1'),
+      merge.continuations.get('A-2'),
+      merge.state.active,
+      merge.state.failures,
+      merge.state.waiting,
+      merge.running
+    ]).toEqual([
+      1,
+      2,
+      { state: 'ready' },
+      'ui',
+      { continuation: null },
+      'A-1',
+      { 'A-2': 'boom' },
+      { bead_id: 'A-2', reason: '충돌 해소 대기' },
+      true
+    ]);
+  });
+
+  test('counts an auto-merge skip only while the recorded head still stands', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          auto_merge_skips: {
+            'A-1': { head_sha: 'h1', reason: 'verify_failed', at: 1 },
+            'A-2': { head_sha: 'old', reason: 'verify_failed', at: 1 }
+          },
+          pr_observations: {
+            'A-1': { pr: { head_sha: 'h1' } },
+            'A-2': { pr: { head_sha: 'h2' } }
+          }
+        })
+      ],
+      [state()],
+      { groups: 'all' }
+    );
+
+    expect(lanes.queue_groups[0].merge.auto_excluded).toEqual(['A-1']);
+  });
+
+  test('sums the completed lane usage into the group token total', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 5 }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'succeeded',
+              runner: 'claude',
+              usage: { input_tokens: 10, output_tokens: 20 }
+            }
+          }
+        })
+      ],
+      [state()],
+      { groups: 'all' }
+    );
+
+    expect(lanes.queue_groups[0].token_total).toEqual([
+      expect.objectContaining({ provider: 'claude', label: 'Claude τ 30' })
+    ]);
+  });
+
+  test('reports no token total when no completed row reported usage', () => {
+    const lanes = buildLanes([workspace()], [state()], { groups: 'all' });
+
+    expect(lanes.queue_groups[0].token_total).toBeNull();
+  });
+
+  test('projects the durable cleanup failures onto the group', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          cleanup_failed: {
+            'A-1': {
+              step: 'branch_cleanup',
+              reason: 'push rejected',
+              at: 42,
+              detail: 'detail',
+              retry_count: 2,
+              failure_code: 'push_rejected'
+            }
+          }
+        })
+      ],
+      [state()],
+      { groups: 'all' }
+    );
+
+    expect(lanes.queue_groups[0].cleanup_failures).toEqual([
+      {
+        bead_id: 'A-1',
+        step: 'branch_cleanup',
+        reason: 'push rejected',
+        at: 42,
+        detail: 'detail',
+        output_tail: undefined,
+        log_path: undefined,
+        retry_count: 2,
+        failure_code: 'push_rejected'
+      }
+    ]);
+  });
+
+  test('passes the declared base and repo operations through to the group', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          declared_base: 'main',
+          repo_operations: [{ operation_id: 'op-1', kind: 'deploy' }]
+        })
+      ],
+      [state()],
+      { groups: 'all' }
+    );
+
+    expect([
+      lanes.queue_groups[0].declared_base,
+      lanes.queue_groups[0].repo_operations
+    ]).toEqual(['main', [{ operation_id: 'op-1', kind: 'deploy' }]]);
+  });
+});
+
+describe('lane model group retention (UI-4tud §4.3)', () => {
+  const only_running = workspace({
+    attempts: {
+      t1: { attempt_id: 't1', bead_id: 'A-1', status: 'running', started_at: 1 }
+    }
+  });
+  const only_pr_wait = workspace({ pr_wait: [{ bead_id: 'A-1' }] });
+  const only_done = workspace({ done: [{ bead_id: 'A-1', added_at: 1 }] });
+  const only_repo_ops = workspace({
+    repo_operations: [{ operation_id: 'op-1', kind: 'deploy' }]
+  });
+
+  /** @type {Array<{ label: string, ws: Record<string, any> }>} */
+  const cases = [
+    { label: 'running', ws: only_running },
+    { label: 'pr_wait', ws: only_pr_wait },
+    { label: 'done', ws: only_done },
+    { label: 'repo_operations', ws: only_repo_ops }
+  ];
+  for (const { label, ws } of cases) {
+    test(`keeps one group per state row with groups all (${label} only)`, () => {
+      const lanes = buildLanes([ws], [state()], { groups: 'all' });
+
+      expect(lanes.queue_groups.map((group) => group.root_dir)).toEqual([WS_A]);
+    });
+
+    test(`drops the empty group by default (${label} only)`, () => {
+      const lanes = buildLanes([ws], [state()]);
+
+      expect(lanes.queue_groups).toEqual([]);
+    });
+  }
+});
+
+describe('lane model running tile worker fields (UI-4tud §4.3)', () => {
+  test('carries the failed tile discard, conflict, base and rollup facts', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          declared_base: 'main',
+          bead_overlay: {
+            'A-1': {
+              rollup: { total: 3, count: 1, current: null, children: [] }
+            }
+          },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              cause: 'verify_failed',
+              conflict_resolution: true,
+              target_base: 'release',
+              finished_at: 9
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const tile = lanes.running[0];
+    expect([
+      tile.conflict_resolution,
+      tile.base_exception,
+      tile.rollup,
+      !!tile.discard
+    ]).toEqual([
+      true,
+      '→ release',
+      { total: 3, count: 1, current: null, children: [] },
+      true
+    ]);
+  });
+
+  test('inherits conflict resolution through the resumed attempt chain', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t0: {
+              attempt_id: 't0',
+              bead_id: 'A-1',
+              status: 'paused',
+              conflict_resolution: true
+            },
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 5,
+              resumed_from: 't0'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].conflict_resolution).toBe(true);
+  });
+
+  test('projects the quick_fix landing progress onto the running tile', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 5,
+              quickfix_lane: true,
+              quickfix_landing: {
+                cursor: 'branch_cleanup',
+                head_sha: MERGE_SHA,
+                reason: null
+              }
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].landing).toEqual(
+      expect.objectContaining({ step: 'branch', active: true, failed: false })
+    );
+  });
+
+  test('omits the landing key on a tile with no landing material', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 5
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(Object.hasOwn(lanes.running[0], 'landing')).toBe(false);
+  });
+});
+
+describe('lane model session done rows (UI-4tud §4.3)', () => {
+  test('merges session rows into the completed lane by done_at desc', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [
+            { bead_id: 'A-1', added_at: 100 },
+            { bead_id: 'A-3', added_at: 900 }
+          ],
+          session_done: [
+            {
+              id: 'A-2',
+              title: '세션이 끝낸 일',
+              done_at: 500,
+              badges: ['세션 작업'],
+              work_kind: 'session'
+            }
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done.map((row) => row.id)).toEqual(['A-3', 'A-2', 'A-1']);
+  });
+
+  test('carries the session row badge and repo coordinate', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          session_done: [
+            { id: 'A-2', title: '세션', done_at: 5, badges: ['세션 작업'] }
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect([
+      lanes.done[0].badges,
+      lanes.done[0].root_dir,
+      lanes.done[0].lane
+    ]).toEqual([['세션 작업'], WS_A, 'done']);
+  });
+
+  test('drops a session row whose bead already stands in another lane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          session_done: [{ id: 'A-2', title: '세션', done_at: 5 }]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done).toEqual([]);
+  });
+});
+
+describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
+  test('places an eligible observation row without making it draggable', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1', { eligible: true })] })],
+      [state()]
+    );
+
+    expect([
+      lanes.runnable[0].draggable,
+      lanes.runnable[0].queue_placeable
+    ]).toEqual([false, true]);
+  });
+
+  test('refuses placement for a worker-ineligible observation row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', { eligible: true, worker_ineligible: true })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].queue_placeable).toBe(false);
+  });
+
+  test('refuses placement for an ineligible observation row', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1', { eligible: false })] })],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].queue_placeable).toBe(false);
+  });
+
+  test('keeps the server runnable row draggable and placeable', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1')] })],
+      [state()]
+    );
+
+    expect([
+      lanes.runnable[0].draggable,
+      lanes.runnable[0].queue_placeable
+    ]).toEqual([true, true]);
+  });
+
+  test('joins the row reason before the admission badge', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-1', { reason: 'spec 없음' })],
+          admission: { 'A-1': { reason: 'not_ready:A-9', at: 1 } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].reason).toBe('spec 없음 · ⛔ not_ready (A-9)');
+  });
+
+  test('keeps the admission badge alone when the row carries no reason', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-1')],
+          admission: { 'A-1': { reason: 'not_ready', at: 1 } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].reason).toBe('⛔ not_ready');
+  });
+});
+
+describe('lane model candidate release chips (UI-d13v §5.3)', () => {
+  test('draws the released chips newest first with an overflow count', () => {
+    const now = Date.now();
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', {
+              release_info: {
+                released_by: [
+                  { id: 'A-7', closed_at: now - 1000 },
+                  { id: 'A-8', closed_at: now - 10 },
+                  { id: 'A-9', closed_at: now - 500 }
+                ]
+              }
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    const released = lanes.runnable[0].dependency_chips?.released || [];
+    expect(released.map((chip) => chip.label)).toEqual([
+      '🔓 해제: A-8',
+      '🔓 해제: A-9 외 1'
+    ]);
+  });
+
+  test('drops a released fact that fell outside the seven day window', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', {
+              release_info: {
+                released_by: [
+                  { id: 'A-7', closed_at: Date.now() - 8 * 86400000 }
+                ]
+              }
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].dependency_chips).toBeUndefined();
+  });
+
+  test('draws the dependents chip from the server decoration', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', {
+              dependents_info: { count: 3, ids: ['A-2', 'A-3'] }
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].dependency_chips?.dependents).toEqual({
+      count: 3,
+      title: '이 이슈가 close되면 풀리는 이슈: A-2, A-3 외 1'
+    });
+  });
+
+  test('draws no release chips when the row carries no material', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1')] })],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].dependency_chips).toBeUndefined();
+  });
+
+  test('keeps the released chips when a predecessor chip is added', () => {
+    const now = Date.now();
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_blocked_by: { 'A-1': ['A-9'] },
+          runnable: [
+            runnable('A-1', {
+              blocked: true,
+              blocked_by: ['A-9'],
+              release_info: {
+                released_by: [{ id: 'A-7', closed_at: now - 10 }]
+              }
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    const chips = lanes.runnable[0].dependency_chips;
+    expect([chips?.released?.length, chips?.predecessors?.length]).toEqual([
+      1, 1
+    ]);
+  });
+});
+
+describe('lane model bead overlay (UI-4tud §4.1)', () => {
+  /**
+   * @returns {Record<string, any>}
+   */
+  function overlayWorkspace() {
+    return workspace({
+      queue: [{ bead_id: 'A-2' }],
+      serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-3' }] }],
+      serial_lane_count: 1,
+      pr_wait: [{ bead_id: 'A-4' }],
+      done: [{ bead_id: 'A-6', added_at: 5 }],
+      runnable: [runnable('A-5')],
+      attempts: {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'running',
+          started_at: 1
+        }
+      },
+      bead_overlay: {
+        'A-1': { priority: 0, from_id: 'A-100' },
+        'A-2': { priority: 1, from_id: 'A-100' },
+        'A-3': { priority: 2, from_id: 'A-100' },
+        'A-4': { priority: 3, from_id: 'A-100' },
+        'A-5': { priority: 4, from_id: 'A-100' },
+        'A-6': { priority: 1, from_id: 'A-100' }
+      }
+    });
+  }
+
+  test('overlays priority and origin on every lane row', () => {
+    const lanes = buildLanes([overlayWorkspace()], [state()]);
+
+    const rows = [
+      ...lanes.runnable,
+      ...lanes.queue,
+      ...lanes.running,
+      ...lanes.pr_wait,
+      ...lanes.done
+    ];
+    expect(
+      rows.map((row) => [row.id, row.priority, row.from_id]).sort()
+    ).toEqual(
+      [
+        ['A-1', 0, 'A-100'],
+        ['A-2', 1, 'A-100'],
+        ['A-3', 2, 'A-100'],
+        ['A-4', 3, 'A-100'],
+        ['A-5', 4, 'A-100'],
+        ['A-6', 1, 'A-100']
+      ].sort()
+    );
+  });
+
+  test('leaves a bead without an overlay key unchanged', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: { 'A-9': { priority: 0, from_id: 'A-100' } }
+        })
+      ],
+      [state()]
+    );
+
+    expect([lanes.queue[0].priority, lanes.queue[0].from_id]).toEqual([
+      undefined,
+      undefined
+    ]);
+  });
+
+  test('derives the rec chip from the overlay metadata', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: {
+            'A-2': {
+              metadata: {
+                rec_orchestration_model: 'fable',
+                rec_reason: 'cross_file'
+              }
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].rec?.rec).toEqual({ orchestration_model: 'fable' });
+  });
+
+  test('derives the waiting row exec chips from the overlay metadata', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: { 'A-2': { metadata: {} } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {}
+        })
+      ]
+    );
+
+    expect(lanes.queue[0].exec_chips?.orchestration?.text).toBe(
+      'claude-sonnet'
+    );
+  });
+
+  test('leaves the running tile attempt chips alone', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 1,
+              runner: 'claude',
+              model: 'sonnet'
+            }
+          },
+          bead_overlay: { 'A-1': { metadata: {} } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {}
+        })
+      ]
+    );
+
+    expect(lanes.running[0].exec_chips?.worker).toBeNull();
+  });
+
+  test('reads the repo execution defaults from the workspaces_state row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: { 'A-2': { metadata: {} } }
+        })
+      ],
+      [state({ runner_catalog: { runtimes: {} }, session_defaults: {} })]
+    );
+
+    expect(lanes.queue[0].exec_chips).toBeUndefined();
+  });
+});
+
+describe('lane model as_given candidate order (UI-4tud §4.3)', () => {
+  test('keeps the input order and draws no repo sections', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-3', { updated_at: 1 }),
+            runnable('A-1', { updated_at: 300 }),
+            runnable('A-2', { updated_at: 200 })
+          ]
+        })
+      ],
+      [state()],
+      { candidate_sort: 'as_given' }
+    );
+
+    expect([
+      lanes.runnable.map((row) => row.id),
+      lanes.runnable_sections,
+      lanes.runnable_flat
+    ]).toEqual([['A-3', 'A-1', 'A-2'], [], true]);
+  });
+
+  test('still applies the display filter to the given order', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-3', { blocked: true }),
+            runnable('A-1'),
+            runnable('A-2')
+          ]
+        })
+      ],
+      [state()],
+      {
+        candidate_sort: 'as_given',
+        candidate_filter: { show_blocked: false, spec: 'all' }
+      }
+    );
+
+    expect(lanes.runnable.map((row) => row.id)).toEqual(['A-1', 'A-2']);
   });
 });

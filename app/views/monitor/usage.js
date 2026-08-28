@@ -15,7 +15,7 @@ import {
 } from '../../utils/token-usage.js';
 
 /**
- * @import { MonitorItem } from './lanes.js'
+ * @import { LaneItem } from '../worker/lane-model.js'
  */
 
 /**
@@ -38,7 +38,7 @@ export function tokenTotalTooltip(range_label) {
  * 전부가 보고했을 때만 붙인다 — 일부만 보고한 합계에 `$`를 붙이면 토큰과 돈이
  * 서로 다른 모집단을 말하게 되고, 읽는 쪽에는 그 차이가 보이지 않는다.
  *
- * @param {Array<Pick<MonitorItem, 'usage'>>} done_items - period-filtered 완료
+ * @param {Array<Pick<LaneItem, 'usage'>>} done_items - period-filtered 완료
  * 아이템 (`buildLanes()`가 이미 각 항목에 `sumAttemptUsage()` 결과를 실어 둔다).
  * @returns {string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null}
  */

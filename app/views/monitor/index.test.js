@@ -4197,3 +4197,94 @@ describe('접힌 레인 띠 드롭·행 조작 드래그 가드 (UI-5ksp REVISE)
     );
   });
 });
+
+describe('monitor PR 대기·완료 레인 겹침 칩 (UI-e9sg)', () => {
+  /**
+   * @param {string[]} [scope]
+   * @returns {{ scope: string[], artifacts: string[] }}
+   */
+  function declared(scope = ['server/worker']) {
+    return { scope, artifacts: ['docs/spec.md'] };
+  }
+
+  test('draws the overlap chip on a PR 대기 row', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_titles: { 'A-2': '상대 제목' },
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      el(mount, '#monitor-pr_wait [data-bead-id="A-1"] .mon-overlap__chip')
+        ?.textContent
+    ).toContain('A-2');
+  });
+
+  test('draws the scope 없음 chip on a PR 대기 row', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          bead_scope: { 'A-1': { scope: [], artifacts: [] } }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      el(mount, '#monitor-pr_wait [data-bead-id="A-1"] .worker-dep--muted')
+        ?.textContent
+    ).toContain('scope 없음');
+  });
+
+  test('opens the overlap popover from a PR 대기 row chip', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_titles: { 'A-2': '상대 제목' },
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '#monitor-pr_wait [data-bead-id="A-1"] .mon-overlap__chip');
+
+    expect(
+      el(
+        mount,
+        '#monitor-pr_wait [data-bead-id="A-1"] .mon-overlap__popover'
+      )?.getAttribute('role')
+    ).toBe('dialog');
+  });
+
+  test('leaves a 완료 row without overlap chips', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: NOW - 10 }],
+          pr_wait: [{ bead_id: 'A-2' }],
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      el(mount, '#monitor-done [data-bead-id="A-1"] .mon-overlap__chip')
+    ).toBeNull();
+  });
+});
