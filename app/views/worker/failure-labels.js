@@ -31,7 +31,16 @@ const FAILURE_CATEGORIES = {
   deploy_script_failure: '배포 실패',
   interrupted_without_terminal_exit: '중단됨',
   quickfix_landing_failed: '착지 실패',
-  runner_exit: '세션 실패'
+  runner_exit: '세션 실패',
+  // UI-5ym8 §3: 파킹은 실패가 아니라 사람의 결정을 기다리는 결말이고, 세션이
+  // 미해소로 정상 종료한 것은 세션 자체의 실패와 다른 사실이다. 둘 다
+  // `session_` 접두 규칙이 '세션 실패'로 뭉뚱그리기 전에 자기 낱말을 얻는다.
+  session_parked: '세션 대기',
+  session_ended_unresolved: '세션 종료',
+  // 착지가 실패한 것이 아니라 착지를 증명할 push 기록·영수증이 모자란 것이다
+  // (§5). 합성 코드에서는 앞선 `quickfix_landing_failed`가 먼저 잡히므로 이
+  // 낱말은 토큰이 단독으로 올 때 쓰인다.
+  delivery_unproven: '착지 증거 부족'
 };
 
 /**

@@ -1230,6 +1230,103 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
       sent.some((message) => message.type === 'worker-attempt-dismiss')
     ).toBe(false);
   });
+
+  // 같은 렌더러를 쓰는 두 탭은 같은 사실을 같은 모양으로 그린다 (ADR 14):
+  // 파킹 투영이 빠지면 기다리는 세션이 모니터에서만 돌아가는 시계를 얻는다.
+  test('renders a parked attempt as a waiting tile, not a running one', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'parked',
+              started_at: NOW - 100,
+              cause: 'session_parked',
+              cause_detail: { summary: '사용자 결정 대기' }
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const tile = el(mount, '.rtile[data-attempt-id="t1"]');
+    expect(tile?.querySelector('.rtile__held-badge')?.textContent).toBe(
+      '⏸ 세션 대기'
+    );
+    expect(tile?.querySelector('.rtile__held-summary')?.textContent).toBe(
+      '사용자 결정 대기'
+    );
+    expect(tile?.querySelector('.rtile__elapsed')?.textContent).toBe(
+      '세션 대기'
+    );
+    expect(tile?.querySelector('.rtile__pause')).toBeNull();
+    expect(tile?.querySelector('.rtile__session')).toBeNull();
+  });
+
+  test('sends the parked retry from the monitor tile', () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'parked',
+              cause: 'session_parked',
+              cause_detail: { summary: '사용자 결정 대기' }
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.rtile__parked-retry');
+
+    expect(sent[0].type).toBe('worker-parked-retry');
+    expect(sent[0].payload).toMatchObject({
+      bead_id: 'A-1',
+      attempt_id: 't1'
+    });
+  });
+
+  test('badges a retry_wait attempt with its backoff counts', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'retry_wait',
+              started_at: NOW - 100,
+              retry: {
+                cause: 'session_failed:is_error',
+                attempts: 2,
+                max: 3,
+                next_at: null
+              }
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const tile = el(mount, '.rtile[data-attempt-id="t1"]');
+    expect(tile?.querySelector('.rtile__held-badge')?.textContent).toBe(
+      '↻ 재시도 대기 2/3'
+    );
+    expect(tile?.querySelector('.rtile__parked-retry')).toBeNull();
+  });
 });
 
 describe('views/monitor [대기로 ↴] lane menu (UI-e6hw §6)', () => {

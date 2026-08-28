@@ -48,7 +48,11 @@ afterEach(() => {
  *   discardResult?: { ok: boolean, removed: boolean, reason: string|null },
  *   branchDeleteCode?: number,
  *   branchVerifyCode?: number,
- *   landingProgress?: { cursor: string, head_sha: string|null, reason: string|null }
+ *   landingProgress?: { cursor: string, head_sha: string|null, reason: string|null },
+ *   pushLog?: { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string } | null,
+ *   acceptSkippedReceipt?: boolean,
+ *   resolveWriteSticks?: boolean,
+ *   readIssueThrows?: boolean
  * }} [options]
  */
 function makeLanding(options = {}) {
@@ -58,6 +62,29 @@ function makeLanding(options = {}) {
   const receipt = Object.hasOwn(options, 'receipt')
     ? options.receipt
     : `reviewer@${HEAD_SHA}`;
+  // The attempt's own pre-push record (guard-hook record mode). `null` stands
+  // for a landing wired without the dep at all, which must read exactly like a
+  // missing log rather than like an innocent one.
+  const push_log = Object.hasOwn(options, 'pushLog')
+    ? options.pushLog
+    : {
+        ok: /** @type {const} */ (true),
+        entries: [
+          {
+            local_ref: 'HEAD',
+            local_oid: HEAD_SHA,
+            remote_ref: 'refs/heads/main',
+            remote_oid: 'e'.repeat(40)
+          }
+        ]
+      };
+  const readPushLog =
+    push_log === null || push_log === undefined
+      ? undefined
+      : vi.fn(() => {
+          calls.push('pushlog:read');
+          return push_log;
+        });
 
   const store = {
     updateAttempt: vi.fn((workspace, input) => {
@@ -86,6 +113,10 @@ function makeLanding(options = {}) {
       return bead_status;
     }),
     readIssue: vi.fn(async () => {
+      if (options.readIssueThrows) {
+        calls.push('bd:readIssue:threw');
+        throw new Error('bd unreachable');
+      }
       calls.push(`bd:readIssue:${bead_status}`);
       return Object.hasOwn(options, 'closeReason')
         ? { status: bead_status, close_reason: options.closeReason }
@@ -93,6 +124,11 @@ function makeLanding(options = {}) {
     }),
     setStatus: vi.fn(async (bead_id, status) => {
       calls.push(`bd:setStatus:${status}`);
+      // `resolveWriteSticks: false` is the write that RETURNS but does not
+      // land — the readback is what catches it.
+      if (status === 'resolved' && options.resolveWriteSticks === false) {
+        return;
+      }
       bead_status = status;
     }),
     readMetadata: vi.fn(async () => {
@@ -180,11 +216,22 @@ function makeLanding(options = {}) {
     gitRun,
     worktree,
     repoOperations: options.repoOperations === false ? null : repoOperations,
+    readPushLog,
+    accept_skipped_receipt: options.acceptSkippedReceipt === true,
     notifyChanged: () => calls.push('notify'),
     now: () => 1234
   });
 
-  return { landing, calls, store, bd, gitRun, worktree, repoOperations };
+  return {
+    landing,
+    calls,
+    store,
+    bd,
+    gitRun,
+    worktree,
+    repoOperations,
+    readPushLog
+  };
 }
 
 /**
@@ -245,6 +292,229 @@ test('rejects absent review receipt', async () => {
   expect(result).toEqual({
     ok: false,
     reason: 'invalid_impl_review',
+    step: null
+  });
+});
+
+test('accepts a skipped review receipt once the contract flag is on', async () => {
+  const { landing } = makeLanding({
+    receipt: `skipped@${HEAD_SHA}`,
+    acceptSkippedReceipt: true
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+});
+
+test('reports an unreadable Bead as a read failure, not as an unresolved one', async () => {
+  const { landing } = makeLanding({ readIssueThrows: true });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: false, reason: 'bd_read_failed', step: null });
+});
+
+test('resolves an unresolved Bead from push evidence and completes landing', async () => {
+  const { landing, bd, store, calls } = makeLanding({ status: 'in_progress' });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+  expect(bd.setStatus).toHaveBeenCalledWith(BEAD, 'resolved');
+  expect(calls.indexOf('bd:setStatus:resolved')).toBeLessThan(
+    calls.indexOf('store:update:base_containment:null')
+  );
+  expect(store.updateAttempt).toHaveBeenCalledWith(WORKSPACE, {
+    attempt_id: ATTEMPT,
+    patch: {
+      quickfix_landing: {
+        cursor: null,
+        head_sha: HEAD_SHA,
+        reason: null,
+        resolved_by: 'worker:evidence'
+      }
+    }
+  });
+});
+
+test('keeps the evidence resolve on every later landing record', async () => {
+  const { landing, store } = makeLanding({ status: 'in_progress' });
+
+  await settle(landing);
+
+  expect(store.moveToDone).toHaveBeenCalledWith(WORKSPACE, {
+    bead_id: BEAD,
+    attempt_id: ATTEMPT,
+    patch: {
+      status: 'done',
+      finished_at: 1234,
+      quickfix_landing: {
+        cursor: 'parent_close',
+        head_sha: HEAD_SHA,
+        reason: null,
+        resolved_by: 'worker:evidence'
+      }
+    }
+  });
+});
+
+test('leaves the resolved path untouched by the evidence dep', async () => {
+  const { landing, readPushLog, store } = makeLanding();
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+  expect(readPushLog).not.toHaveBeenCalled();
+  expect(store.moveToDone).toHaveBeenCalledWith(
+    WORKSPACE,
+    expect.objectContaining({
+      patch: expect.objectContaining({
+        quickfix_landing: {
+          cursor: 'parent_close',
+          head_sha: HEAD_SHA,
+          reason: null
+        }
+      })
+    })
+  );
+});
+
+test.each([
+  [
+    'an absent log',
+    { pushLog: { ok: /** @type {const} */ (false), reason: 'absent' } }
+  ],
+  [
+    'a log with no base push',
+    { pushLog: { ok: /** @type {const} */ (true), entries: [] } }
+  ],
+  [
+    'a log holding only a topic push',
+    {
+      pushLog: {
+        ok: /** @type {const} */ (true),
+        entries: [
+          {
+            local_ref: 'HEAD',
+            local_oid: HEAD_SHA,
+            remote_ref: 'refs/heads/UI-quick',
+            remote_oid: '0'.repeat(40)
+          }
+        ]
+      }
+    }
+  ],
+  ['no push log dep at all', { pushLog: null }]
+])('reports delivery unproven for %s', async (description, over) => {
+  const { landing, bd } = makeLanding({ status: 'in_progress', ...over });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'delivery_unproven:push_log_absent',
+    step: null
+  });
+  expect(bd.setStatus).not.toHaveBeenCalled();
+});
+
+test('reports delivery unproven when the review receipt is absent', async () => {
+  const { landing, bd } = makeLanding({ status: 'in_progress', receipt: null });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'delivery_unproven:impl_review_missing',
+    step: null
+  });
+  expect(bd.setStatus).not.toHaveBeenCalled();
+});
+
+test('reports delivery unproven when the receipt does not bind the pushed head', async () => {
+  const { landing, bd } = makeLanding({
+    status: 'in_progress',
+    receipt: `reviewer@${'b'.repeat(40)}`
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'delivery_unproven:impl_review_sha_mismatch',
+    step: null
+  });
+  expect(bd.setStatus).not.toHaveBeenCalled();
+});
+
+test('binds the receipt to the LAST base push of the attempt', async () => {
+  const { landing } = makeLanding({
+    status: 'in_progress',
+    pushLog: {
+      ok: true,
+      entries: [
+        {
+          local_ref: 'HEAD',
+          local_oid: 'c'.repeat(40),
+          remote_ref: 'refs/heads/main',
+          remote_oid: 'e'.repeat(40)
+        },
+        {
+          local_ref: 'HEAD',
+          local_oid: HEAD_SHA,
+          remote_ref: 'refs/heads/main',
+          remote_oid: 'c'.repeat(40)
+        }
+      ]
+    }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+});
+
+test('rejects a skipped receipt on the evidence path while the flag is off', async () => {
+  const { landing, bd } = makeLanding({
+    status: 'in_progress',
+    receipt: `skipped@${HEAD_SHA}`
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'invalid_impl_review',
+    step: null
+  });
+  expect(bd.setStatus).not.toHaveBeenCalled();
+});
+
+test('accepts a skipped receipt on the evidence path once the flag is on', async () => {
+  const { landing, bd } = makeLanding({
+    status: 'in_progress',
+    receipt: `skipped@${HEAD_SHA}`,
+    acceptSkippedReceipt: true
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+  expect(bd.setStatus).toHaveBeenCalledWith(BEAD, 'resolved');
+});
+
+test('reports a record failure when the Worker resolve does not read back', async () => {
+  const { landing } = makeLanding({
+    status: 'in_progress',
+    resolveWriteSticks: false
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'bd_record_failed',
     step: null
   });
 });

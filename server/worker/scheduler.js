@@ -68,7 +68,9 @@ import * as default_delegation_monitor from './delegation-monitor.js';
 import { errorDetail } from './error-detail.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
+import { RETRY_MAX, causeKey, classifyFailure } from './failure-class.js';
 import * as default_guard_hook from './guard-hook.js';
+import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
 import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import {
@@ -233,7 +235,15 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
   'failed',
   'orphaned',
   'stopped',
-  'discarded'
+  'discarded',
+  // 2026-08-28 worker-failure-tiers spec §6. All three END an attempt: a
+  // `parked` session exited 0, a `retry_wait` rung is waiting for a NEW attempt
+  // rather than running, and `superseded` is a rung the retry already replaced.
+  // Leaving them outside this set would make the bead read as still-active and
+  // fence its own retry and resume out of every dispatch.
+  'parked',
+  'retry_wait',
+  'superseded'
 ]);
 
 /** Maximum terminal receipt inboxes inspected per reconciliation pass. */
@@ -469,7 +479,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   readStatus: (bead_id: string) => Promise<string|null>
  * }} bd
  * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean, restore?: (i: { repo: string, bead_id: string, head_ref: string }) => Promise<{ ok: boolean, reason?: string }> }} worktree
- * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean }> }} verify
+ * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean, bead_status?: string|null, awaiting_user?: string|null }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
  * @property {{ settle: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<{ ok: boolean, reason?: string, step?: string|null }> }} [quickfixLanding]
@@ -544,13 +554,14 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {{
  *   attemptStarted: (i: any) => void,
  *   attemptFailed: (i: any) => void,
+ *   attemptParked?: (i: any) => void,
  *   prWaitEntered: (i: any) => void
  * }} [notify]
  * Outward attempt-lifecycle push (UI-2yoq, notify.js). Optional: absent wiring
  * (every dispatch-only test) simply pushes nothing, exactly like a machine that
  * left `[worker.notify]` off.
  * @property {{
- *   install: (i: { workspace: string, attempt_id: string, repo: string, target_base: string }) => { ok: boolean, dir?: string, hook_path?: string, reason?: string },
+ *   install: (i: { workspace: string, attempt_id: string, repo: string, target_base: string, mode?: 'guard'|'record' }) => { ok: boolean, dir?: string, hook_path?: string, reason?: string },
  *   envFor: (i: { workspace: string, attempt_id: string }) => Record<string, string>,
  *   remove: (i: { workspace: string, attempt_id: string }) => boolean,
  *   readPushLog?: (i: { workspace: string, attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string }
@@ -656,24 +667,6 @@ function armedByLaneOf(q, bead_id) {
   const entry = (q.queue || []).find((row) => row.bead_id === bead_id);
   return entry && isArmedEntry(entry)
     ? /** @type {string} */ (entry.armed_by_lane)
-    : null;
-}
-
-/**
- * The cross lane ONE attempt was dispatched by (UI-jaua §5.1), or null. This is
- * the binding §5.5 judges a failure with: an attempt that never carried an arm
- * did not fail on a lane's behalf, whatever the queue looks like now.
- *
- * @param {{ attempts?: Record<string, { armed_by_lane?: string|null }> }} q
- * @param {string} attempt_id
- * @returns {string|null}
- */
-function attemptArmedLane(q, attempt_id) {
-  const attempt = (q.attempts || {})[attempt_id];
-  return attempt &&
-    typeof attempt.armed_by_lane === 'string' &&
-    attempt.armed_by_lane.length > 0
-    ? attempt.armed_by_lane
     : null;
 }
 
@@ -843,6 +836,10 @@ function launchAccountRefusalDetail(failure, accounts, account_sources) {
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   finalizeDiscardAttempt: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
  *   recoverControls: (workspace: string) => Promise<void>,
+ *   onIssuesChanged: (workspace: string) => Promise<void>,
+ *   resumeQueueHold: (workspace: string, input: { since?: number|null }) => Promise<{ ok: boolean, reason?: string }>,
+ *   retryQueueHoldNow: (workspace: string, input: { since?: number|null }) => Promise<{ ok: boolean, reason?: string }>,
+ *   retryParked: (workspace: string, input: { bead_id: string, attempt_id: string }) => Promise<{ ok: boolean, reason?: string }>,
  *   reconcile: (workspace: string) => Promise<void>,
  *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
  *   activeBeadIds: (workspace: string) => Set<string>,
@@ -1001,11 +998,15 @@ export function createScheduler(deps) {
    * contract; this guard exists so a broken injected fake still cannot turn a
    * notification into a queue-transition failure.
    *
-   * @param {'attemptStarted'|'attemptFailed'|'prWaitEntered'} event
+   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'prWaitEntered'} event
    * @param {any} input
    */
   function notifyLifecycle(event, input) {
-    if (!deps.notify) {
+    // A notifier that does not implement an event is a NO-OP, not an error: the
+    // lifecycle vocabulary grows (`attemptParked`, 2026-08-28 spec §3.1) faster
+    // than every injected fake does, and a missing method must not turn a queue
+    // transition into a logged exception.
+    if (!deps.notify || typeof deps.notify[event] !== 'function') {
       return;
     }
     try {
@@ -2333,7 +2334,11 @@ export function createScheduler(deps) {
    * to a failed install is a visible refusal, and a throw out of the dispatch
    * would abort with nothing on screen.
    *
-   * @param {{ workspace: string, attempt_id: string, repo: string, target_base: string }} input
+   * @param {{ workspace: string, attempt_id: string, repo: string, target_base: string, mode?: 'guard'|'record' }} input
+   * `mode:'record'` renders the base branch as "record and pass" instead of
+   * "reject" (2026-08-28 worker-failure-tiers spec §5): the quick_fix lane's
+   * terminal duty IS a base push, so it needs the push LOG the ordinary hook
+   * produces without the refusal that would block its own landing.
    * @returns {boolean} Whether the hook is in place.
    */
   function installGuardHook(input) {
@@ -3074,23 +3079,239 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Finalize a failed attempt: mark Failed, revert workflow_mode + exec stamps,
-   * and turn auto_advance OFF.
+   * Merge the classifier's extracted `summary` into whatever the caller already
+   * knew about the failure (2026-08-28 worker-failure-tiers spec §6). A caller
+   * with no detail and no summary keeps `null`, so a detail-less cause still
+   * round-trips as one.
    *
-   * The auto_advance halt IS the failure behaviour now (worker-phase2 §2). With
-   * sessions unable to touch the base, a failure's blast radius is one worktree,
-   * so there is nothing to fence off per-repo — stopping the queue and letting
-   * the banner render off this terminal record covers what the breaker covered.
+   * @param {any} cause_detail
+   * @param {string|null} summary
+   * @param {Record<string, unknown>} [extra]
+   * @returns {Record<string, unknown>|null}
+   */
+  function mergeCauseDetail(cause_detail, summary, extra) {
+    const base =
+      cause_detail && typeof cause_detail === 'object' ? cause_detail : null;
+    if (base === null && summary === null && !extra) {
+      return null;
+    }
+    return {
+      ...(base ?? {}),
+      ...(summary === null ? {} : { summary }),
+      ...(extra ?? {})
+    };
+  }
+
+  /**
+   * The origin of the env retry lineage THIS attempt belongs to: a retried
+   * attempt carries its ancestor's id, a first failure is its own origin.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {string}
+   */
+  function retryOriginOf(workspace, attempt_id) {
+    try {
+      const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
+      const origin = attempt?.retry?.origin_attempt_id;
+      return typeof origin === 'string' && origin.length > 0
+        ? origin
+        : attempt_id;
+    } catch {
+      return attempt_id;
+    }
+  }
+
+  /**
+   * Write ONE classified outcome to its attempt record and to the queue's own
+   * stop state (2026-08-28 worker-failure-tiers spec §3). What used to be one
+   * behaviour ("mark failed, switch `auto_advance` OFF") is now four:
+   *
+   *   - `parked`     — the session ended successfully waiting on a user
+   *                    decision. Not a failure; the queue keeps running and
+   *                    nothing re-dispatches until the user acts or the
+   *                    `awaiting_user` key clears (§3.1).
+   *   - `individual` — this bead failed and nothing else is implicated (§3.2).
+   *   - `env`        — an environment fault: the attempt waits on a backoff
+   *                    ladder and the queue takes an unattended `env` hold,
+   *                    which promotes to a systemic stop on repetition (§3.3).
+   *   - `systemic`   — every bead would hit the same wall; the queue stops
+   *                    until the user clicks `재개` (§3.4).
+   *
+   * `auto_advance` is NOT touched on any of them: it went back to being the
+   * user's ⏸/▶ alone, and the failure-owned stop is `queue.hold` (§4).
+   *
+   * Shared by {@link failAttempt} and {@link finalizeLaunchRefusal} so a launch
+   * refusal is classified by the same table a session termination is: a
+   * `spawn_failed` or `codex_home_prepare_failed` is environmental wherever it
+   * is caught, and a second hand-written `failed` patch is exactly how the two
+   * paths would drift apart.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {import('./failure-class.js').FailureClassification} classification
+   * @param {any} cause_detail
+   * @param {{ moot?: boolean, bead_status?: string|null, awaiting_user?: string|null, repo?: string|null, at?: number }} [options]
+   */
+  function settleFailureTier(
+    workspace,
+    attempt_id,
+    bead_id,
+    classification,
+    cause_detail,
+    options = {}
+  ) {
+    const at = typeof options.at === 'number' ? options.at : now();
+    const repo =
+      options.repo !== undefined
+        ? options.repo
+        : repoOfAttempt(workspace, attempt_id);
+    // A MOOT settlement is dismissed on arrival — its target is already gone —
+    // so it can never be the evidence of an environment fault or a systemic
+    // wall. It settles as the individual record it has always been.
+    const tier = options.moot === true ? 'individual' : classification.tier;
+
+    if (tier === 'parked') {
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          status: 'parked',
+          cause: classification.cause,
+          cause_detail: {
+            summary: classification.summary,
+            awaiting_user: options.awaiting_user ?? null,
+            bead_status: options.bead_status ?? null
+          },
+          awaiting_user_present: true,
+          finished_at: at
+        }
+      });
+      notifyLifecycle('attemptParked', {
+        bead_id,
+        cause: classification.cause,
+        repo,
+        awaiting_user: options.awaiting_user ?? null
+      });
+      closeRetryLineage(workspace, bead_id);
+      return;
+    }
+
+    if (tier === 'env') {
+      const key = causeKey(classification.cause, classification.env_group);
+      const origin_attempt_id = retryOriginOf(workspace, attempt_id);
+      const applied = deps.store.applyQueueHold(workspace, {
+        event: {
+          kind: 'env_failure',
+          bead_id,
+          attempt_id,
+          cause: key,
+          at,
+          origin_attempt_id
+        },
+        now: at
+      });
+      const scheduled = applied.effects.find(
+        (/** @type {any} */ effect) => effect.kind === 'retry_scheduled'
+      );
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          status: scheduled ? 'retry_wait' : 'failed',
+          cause: classification.cause,
+          cause_detail: mergeCauseDetail(cause_detail, classification.summary, {
+            env_pattern: classification.env_group
+          }),
+          finished_at: at,
+          retry: scheduled
+            ? {
+                cause: key,
+                attempts: scheduled.attempts ?? 1,
+                max: RETRY_MAX,
+                next_at: scheduled.next_at ?? null,
+                origin_attempt_id:
+                  scheduled.origin_attempt_id ?? origin_attempt_id
+              }
+            : null
+        }
+      });
+      // The reducer's own terminations: a promoted ladder fails the attempt it
+      // promoted on, and an env failure under a standing systemic stop opens no
+      // ladder at all.
+      for (const effect of /** @type {any[]} */ (applied.effects)) {
+        if (effect.kind === 'attempt_failed' && effect.attempt_id) {
+          deps.store.updateAttempt(workspace, {
+            attempt_id: effect.attempt_id,
+            patch: { status: 'failed', finished_at: at }
+          });
+        }
+      }
+      if (!scheduled) {
+        // Only a TERMINAL env outcome is announced: a `retry_wait` rung is not
+        // a failure the watcher can act on, and a three-rung outage would
+        // otherwise push the same sentence four times.
+        notifyLifecycle('attemptFailed', {
+          bead_id,
+          cause: classification.cause,
+          repo,
+          cause_detail: cause_detail ?? null
+        });
+      }
+      armRetryTimer(workspace);
+      return;
+    }
+
+    if (tier === 'systemic') {
+      deps.store.applyQueueHold(workspace, {
+        event: {
+          kind: 'systemic_failure',
+          bead_id,
+          attempt_id,
+          cause: classification.cause,
+          at
+        },
+        now: at
+      });
+    }
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: {
+        status: 'failed',
+        cause: classification.cause,
+        finished_at: at,
+        cause_detail: mergeCauseDetail(cause_detail, classification.summary),
+        ...(options.moot === true ? { dismissed_at: at } : {})
+      }
+    });
+    notifyLifecycle('attemptFailed', {
+      bead_id,
+      cause: classification.cause,
+      repo,
+      cause_detail: cause_detail ?? null
+    });
+    if (tier === 'individual') {
+      closeRetryLineage(workspace, bead_id);
+    }
+  }
+
+  /**
+   * Finalize an attempt that did not deliver — the SINGLE classification point
+   * for a terminated SESSION (spec §3). The tier write itself lives in
+   * {@link settleFailureTier}; this is the session-termination wrapper around
+   * it: revert the bead's metadata, clear the lane arm, and give the claim back.
    *
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {string} bead_id
    * @param {string|null} prior
-   * @param {string} cause
-   * @param {{ reason: string, command: string|null }} [cause_detail] - What the
-   * fail-closed path actually caught (UI-2o4z §2). Only the blocker path has
-   * one; every other cause stays detail-less.
-   * @param {{ moot?: boolean }} [options]
+   * @param {string|null} cause
+   * @param {any} [cause_detail] - What the fail-closed path actually caught
+   * (UI-2o4z §2); the classifier's `summary` is merged into it here.
+   * @param {{ moot?: boolean, verdict?: any, bead_status?: string|null,
+   *   pr_url?: string|null, awaiting_user?: string|null }} [options]
+   * `verdict`/`bead_status`/`pr_url`/`awaiting_user` are the classifier's
+   * inputs (§3.1): without them a successful-but-undelivered ending cannot be
+   * told apart from a park, so only the paths that HAVE them pass them.
    */
   async function failAttempt(
     workspace,
@@ -3101,22 +3322,29 @@ export function createScheduler(deps) {
     cause_detail,
     options = {}
   ) {
-    deps.store.updateAttempt(workspace, {
+    const at = now();
+    const classification = classifyFailure({
+      cause: cause ?? null,
+      cause_detail: cause_detail ?? null,
+      verdict: options.verdict ?? null,
+      bead_status: options.bead_status ?? null,
+      pr_url: options.pr_url ?? null,
+      awaiting_user: options.awaiting_user ?? null
+    });
+    settleFailureTier(
+      workspace,
       attempt_id,
-      patch: {
-        status: 'failed',
-        cause,
-        finished_at: now(),
-        cause_detail: cause_detail ?? null,
-        ...(options.moot === true ? { dismissed_at: now() } : {})
-      }
-    });
-    notifyLifecycle('attemptFailed', {
       bead_id,
-      cause,
-      repo: repoOfAttempt(workspace, attempt_id),
-      cause_detail: cause_detail ?? null
-    });
+      classification,
+      cause_detail,
+      {
+        moot: options.moot === true,
+        bead_status: options.bead_status ?? null,
+        awaiting_user: options.awaiting_user ?? null,
+        at
+      }
+    );
+
     try {
       await revertWorkflowMode(
         bead_id,
@@ -3124,8 +3352,8 @@ export function createScheduler(deps) {
         workflowModeSourcePriorOf(workspace, attempt_id)
       );
     } catch (err) {
-      // Best-effort on the failure path: the halt below already stops the queue,
-      // so a bd-down revert failure must not escape onSessionDone.
+      // Best-effort on the termination path: the durable record above already
+      // carries the outcome, so a bd-down revert must not escape onSessionDone.
       log('workflow_mode revert failed for %s: %o', bead_id, err);
     }
     // Revert any exec-setting stamps this attempt wrote (best-effort).
@@ -3136,28 +3364,16 @@ export function createScheduler(deps) {
     );
     if (options.moot !== true) {
       // The cross-lane arm is cleared for THIS row in THIS workspace only
-      // (UI-jaua §5.5): the failed spot must not re-dispatch, the lane's other
+      // (UI-jaua §5.5): the settled spot must not re-dispatch, the lane's other
       // repos are not this scheduler's to write, and the followers are already
-      // held by the bd dependency gate while this bead stays open.
+      // held by the bd dependency gate while this bead stays open. It applies
+      // to every tier: an env retry and a parked resume both dispatch through
+      // their own path, never through the lane's arm.
       deps.store.disarmEntry(workspace, { bead_id });
-      // The two axes are exclusive. An ARMED failure must not touch the
-      // `auto_advance` circuit breaker (§5.5) — a lane member failing is no
-      // reason to switch off the repo's own automation, which nobody in this
-      // lane asked for and which would silently stop unrelated work. The
-      // judgment reads the ATTEMPT's own arm snapshot, the same binding §5.5
-      // uses to decide whether a failure belongs to a lane at all, so it does
-      // not depend on where the row sits when the session ends.
-      const failed_arm = attemptArmedLane(
-        deps.store.snapshot(workspace),
-        attempt_id
-      );
-      if (failed_arm === null) {
-        deps.store.haltAutoAdvanceForAttempt(workspace, { attempt_id });
-      }
     }
-    // STRICTLY after the halt: reopening the bead makes it dispatchable again,
-    // so a tick raised by a sibling attempt finishing concurrently must already
-    // see auto_advance OFF or it would relaunch the attempt that just failed.
+    // The bead goes back to `open` on EVERY tier, including `parked`: the whole
+    // point of a park is that the USER's own session picks the bead up, and it
+    // cannot while the worker still holds the claim (spec §3.1).
     await releaseBeadClaim(bead_id);
   }
 
@@ -3374,7 +3590,11 @@ export function createScheduler(deps) {
             : `session_failed:${verdict.reason}`,
           verdict.blocked
             ? blockerCauseDetail(verdict.blocked_detail)
-            : undefined
+            : undefined,
+          // The session's own last sentence is what decides whether
+          // `session_failed:is_error` is a bead-specific error or an outage
+          // (spec §3.3); it rides the verdict.
+          { verdict }
         );
         notifyChanged(workspace);
         await tick(workspace);
@@ -3507,6 +3727,7 @@ export function createScheduler(deps) {
             attempt_id,
             patch: { status: 'done', finished_at: now() }
           });
+          closeRetryLineage(workspace, bead_id);
         } else {
           // Attempt done + bead into `pr_wait` in ONE persist (§4): a split write
           // could leave the bead queued for re-dispatch with its PR already open.
@@ -3515,6 +3736,9 @@ export function createScheduler(deps) {
             attempt_id,
             patch: { status: 'done', finished_at: now() }
           });
+          // The bead DELIVERED, so its env lineage is over and an env hold with
+          // no lineage left releases itself (spec §3.3).
+          closeRetryLineage(workspace, bead_id);
           notifyLifecycle('prWaitEntered', {
             bead_id,
             pr_url: vr.pr_url ?? null,
@@ -3527,7 +3751,18 @@ export function createScheduler(deps) {
           attempt_id,
           bead_id,
           prior,
-          `verify_failed:${vr.reason}`
+          // `no_pr` is an OBSERVATION, not a verdict (spec §3.1-§3.3): it is
+          // handed in as "no cause yet" so the classifier decides between
+          // `parked`, `session_ended_unresolved` and an env pattern from the
+          // readbacks below. Every other reason is already a cause.
+          vr.reason === 'no_pr' ? null : `verify_failed:${vr.reason}`,
+          undefined,
+          {
+            verdict,
+            bead_status: vr.bead_status ?? null,
+            awaiting_user: vr.awaiting_user ?? null,
+            pr_url: vr.pr_url ?? null
+          }
         );
       }
       notifyChanged(workspace);
@@ -3709,6 +3944,7 @@ export function createScheduler(deps) {
     }
 
     if (result.ok) {
+      closeRetryLineage(workspace, bead_id);
       notifyChanged(workspace);
       await tick(workspace);
       return { ok: true };
@@ -4490,7 +4726,12 @@ export function createScheduler(deps) {
           attempt_id,
           bead_id,
           prior,
-          `verify_failed:${vr.reason}`
+          // A DETACHED dead attempt has no verdict to classify by, so `no_pr`
+          // is named directly for what it is here: a session that ended without
+          // delivering (UI-5ym8 §3.2). Every other reason is already a cause.
+          vr.reason === 'no_pr'
+            ? 'session_ended_unresolved'
+            : `verify_failed:${vr.reason}`
         );
       }
     } finally {
@@ -4627,7 +4868,9 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} bead_id
    * @param {LaneLaunchLease|null} reservation
-   * @param {{ stale_work?: StaleWorkAdmission }} [options]
+   * @param {{ stale_work?: StaleWorkAdmission, retry?: { cause: string, attempts: number, max?: number, origin_attempt_id?: string|null } }} [options]
+   * `retry` continues an env backoff ladder (2026-08-28 worker-failure-tiers
+   * spec §3.3): the new attempt carries the lineage's origin and rung count.
    */
   async function dispatch(
     workspace,
@@ -4636,6 +4879,9 @@ export function createScheduler(deps) {
     options = {}
   ) {
     const stale_context = options.stale_work || null;
+    // The env ladder this dispatch continues (spec §3.3), stamped onto the new
+    // attempt so the tile can say "자동 재시도 2/3" without walking history.
+    const retry_context = options.retry || null;
     try {
       // RE-READ authoritative ready/blocked/deps/exec-settings at dispatch.
       // A disagreement with the scan pass is a real TOCTOU stop, so it is
@@ -4764,12 +5010,16 @@ export function createScheduler(deps) {
       // ordinary hook would make that lane reject its own terminal duty;
       // disposition has the same exemption, and base-drift skips this lane.
       if (
-        !quickfix_lane &&
         !installGuardHook({
           workspace,
           attempt_id,
           repo: snap.repo,
-          target_base: snap.target_base
+          target_base: snap.target_base,
+          // The quick_fix lane installs the RECORD-mode hook (spec §5): its
+          // landing is judged from the push log this produces, so the lane can
+          // no longer run without one — but it must still be allowed to push
+          // the base it is there to push.
+          mode: quickfix_lane ? 'record' : 'guard'
         })
       ) {
         refuseDispatch(workspace, bead_id, 'guard_hook_install_failed');
@@ -5010,6 +5260,17 @@ export function createScheduler(deps) {
           quickfix_lane,
           serial_lane_id,
           armed_by_lane,
+          ...(retry_context
+            ? {
+                retry: {
+                  cause: retry_context.cause,
+                  attempts: retry_context.attempts,
+                  max: retry_context.max ?? RETRY_MAX,
+                  next_at: null,
+                  origin_attempt_id: retry_context.origin_attempt_id ?? null
+                }
+              }
+            : {}),
           status: 'running',
           pid: null
         })
@@ -5025,6 +5286,15 @@ export function createScheduler(deps) {
         }
         refuseDispatch(workspace, bead_id, 'attempt_prerecord_failed');
         return;
+      }
+      if (retry_context) {
+        // ONE live rung per bead: the earlier `retry_wait` records become
+        // `superseded` so the board shows the attempt that is actually running
+        // rather than a column of waiting ones (spec §6).
+        deps.store.supersedeRetryAttempts(workspace, {
+          bead_id,
+          except_attempt_id: attempt_id
+        });
       }
       reservation.handoff();
 
@@ -5535,10 +5805,13 @@ export function createScheduler(deps) {
     // over the inherited environment, and `claude.js`'s routing env touches no
     // `GIT_CONFIG_*` key, so there is no collision to lose.
     //
-    // DISPOSITION and quick_fix sessions are left alone in all three layers:
-    // publishing the resolved/base-direct target IS their job, so no hook was
-    // installed. Pointing session git at that absent hooksPath would also
-    // disable every repository hook for the session.
+    // A DISPOSITION session is left alone in all three layers: publishing the
+    // resolved target IS its job, so no hook was installed, and pointing
+    // session git at that absent hooksPath would disable every repository hook
+    // for the session. The quick_fix lane is NOT excluded any more
+    // (worker-failure-tiers §5): it installs the RECORD-mode hook, whose whole
+    // purpose is the push log the landing judgment reads — a hook that git is
+    // never pointed at records nothing.
     if (receipt_dir !== null || monitor_dir !== null) {
       settings.env = {
         ...(settings.env || {}),
@@ -5551,7 +5824,7 @@ export function createScheduler(deps) {
           : {})
       };
     }
-    if (!settings.disposition && !settings.quickfix_lane) {
+    if (!settings.disposition) {
       settings.env = {
         ...settings.env,
         ...guardHook.envFor({ workspace, attempt_id })
@@ -5910,9 +6183,18 @@ export function createScheduler(deps) {
   /**
    * Apply the existing spawn-abort cleanup to a terminal launch refusal.
    *
+   * The record itself goes through {@link settleFailureTier}, the same tier
+   * table a terminated session uses (worker-failure-tiers §3): a `spawn_failed`
+   * or `codex_home_prepare_failed` is an ENVIRONMENT fault whether it is caught
+   * at spawn or at completion, and writing a bare `failed` patch here would
+   * silently deny those refusals the backoff ladder and the queue hold the same
+   * cause earns everywhere else.
+   *
    * @param {any} input
    * @param {string} cause
-   * @param {boolean} dismissed
+   * @param {boolean} dismissed - A refusal whose target is already gone. It is
+   * MOOT, so it settles individually and dismissed, never as evidence of an
+   * outage.
    * @param {{ reason: string, command: string|null }|null} [cause_detail] - The
    * operator-actionable specifics behind a closed-vocabulary `cause`, such as
    * which account-HOME path failed which mirror check.
@@ -5937,22 +6219,14 @@ export function createScheduler(deps) {
       input.stamped_keys,
       execRestoreValuesOf(input.workspace, input.attempt_id)
     );
-    deps.store.updateAttempt(input.workspace, {
-      attempt_id: input.attempt_id,
-      patch: {
-        status: 'failed',
-        cause,
-        finished_at: now(),
-        ...(cause_detail ? { cause_detail } : {}),
-        ...(dismissed ? { dismissed_at: now() } : {})
-      }
-    });
-    notifyLifecycle('attemptFailed', {
-      bead_id: input.bead_id,
-      cause,
-      repo: input.repo,
-      cause_detail
-    });
+    settleFailureTier(
+      input.workspace,
+      input.attempt_id,
+      input.bead_id,
+      classifyFailure({ cause, cause_detail: cause_detail ?? null }),
+      cause_detail ?? null,
+      { moot: dismissed === true, repo: input.repo ?? null }
+    );
     try {
       await revertWorkflowMode(
         input.bead_id,
@@ -7116,12 +7390,15 @@ export function createScheduler(deps) {
     try {
       if (
         !options.disposition &&
-        !quickfix_lane &&
         !installGuardHook({
           workspace,
           attempt_id: new_attempt_id,
           repo,
-          target_base
+          target_base,
+          // Same split as first dispatch (worker-failure-tiers §5): the
+          // quick_fix lane gets the RECORD-mode hook so its landing keeps a
+          // push log, and only a disposition is left without one.
+          mode: quickfix_lane ? 'record' : 'guard'
         })
       ) {
         serial_lease.release();
@@ -7151,16 +7428,33 @@ export function createScheduler(deps) {
       prior.base_drift == null &&
       (await settleBaseDrift(workspace, attempt_id))
     ) {
+      const landed_at = now();
       deps.store.updateAttempt(workspace, {
         attempt_id: new_attempt_id,
         patch: {
           status: 'failed',
           cause: 'base_landing_detected',
-          finished_at: now()
+          finished_at: landed_at
         }
       });
+      // A base landing is SYSTEMIC wherever it is observed (worker-failure-tiers
+      // §3.4): the prevention layer was breached and the base moved
+      // irreversibly, so the queue stops here exactly as it does on the session
+      // termination path. This branch writes its own record instead of going
+      // through `failAttempt` — the relaunch it aborts never started — so the
+      // hold has to be raised explicitly.
+      deps.store.applyQueueHold(workspace, {
+        event: {
+          kind: 'systemic_failure',
+          bead_id,
+          attempt_id: new_attempt_id,
+          cause: 'base_landing_detected',
+          at: landed_at
+        },
+        now: landed_at
+      });
       removeGuardHook(workspace, attempt_id);
-      if (!options.disposition && !quickfix_lane) {
+      if (!options.disposition) {
         removeGuardHook(workspace, new_attempt_id);
       }
       notifyChanged(workspace);
@@ -7698,6 +7992,510 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Live retry timers, one per workspace (2026-08-28 worker-failure-tiers spec
+   * §3.3). In-memory on purpose: the LADDER is durable (`queue.lineages`), the
+   * timer is only this process's way of waking up for it, and a restart re-arms
+   * it from the durable state.
+   *
+   * @type {Map<string, ReturnType<typeof setTimeout>>}
+   */
+  const retry_timers = new Map();
+
+  /**
+   * @param {string} workspace
+   * @returns {import('./queue-hold.js').QueueHoldState}
+   */
+  function holdStateOf(workspace) {
+    const q = deps.store.snapshot(workspace);
+    return {
+      hold: q.hold ?? null,
+      lineages: Array.isArray(q.lineages) ? q.lineages : [],
+      hold_history: Array.isArray(q.hold_history) ? q.hold_history : []
+    };
+  }
+
+  /**
+   * @param {string} workspace
+   */
+  function clearRetryTimer(workspace) {
+    const timer = retry_timers.get(workspace);
+    if (timer) {
+      clearTimeout(timer);
+      retry_timers.delete(workspace);
+    }
+  }
+
+  /**
+   * Arm the wake-up for the EARLIEST scheduled retry of this workspace. Idempotent
+   * — every caller re-arms from the durable ladder rather than adding a timer, so
+   * an env failure, a `지금 재시도` click and a restart all converge on one timer.
+   *
+   * A SYSTEMIC stop arms nothing: the ladder is preserved so `재개` can still
+   * redispatch what was mid-climb, but retrying into a wall every bead hits is
+   * the exact session waste the hold exists to stop (spec §3.4).
+   *
+   * @param {string} workspace
+   */
+  function armRetryTimer(workspace) {
+    clearRetryTimer(workspace);
+    /** @type {import('./queue-hold.js').QueueHoldState} */
+    let state;
+    try {
+      state = holdStateOf(workspace);
+    } catch (err) {
+      log('retry timer arm failed for %s: %o', workspace, err);
+      return;
+    }
+    if (state.hold !== null && state.hold.kind === 'systemic') {
+      return;
+    }
+    const earliest = earliestRetryAt(state);
+    if (earliest === null) {
+      return;
+    }
+    const timer = setTimeout(
+      () => {
+        retry_timers.delete(workspace);
+        runDueRetries(workspace).catch((err) => {
+          log('retry dispatch failed for %s: %o', workspace, err);
+        });
+      },
+      Math.max(0, earliest - now())
+    );
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    retry_timers.set(workspace, timer);
+  }
+
+  /**
+   * Dispatch every lineage whose backoff has elapsed (spec §3.3). The retry is a
+   * NEW attempt of the same bead carrying the lineage's origin, and it bypasses
+   * the candidate fence {@link runPass} applies — the whole point of the ladder
+   * is that this bead's last attempt failed.
+   *
+   * The env hold itself does NOT block this: holding the queue means no NEW work
+   * starts, while the retries already on the ladder are what resolves the hold.
+   *
+   * @param {string} workspace
+   */
+  async function runDueRetries(workspace) {
+    const at = now();
+    /** @type {import('./queue-hold.js').QueueHoldState} */
+    let state;
+    try {
+      state = holdStateOf(workspace);
+    } catch (err) {
+      log('retry scan failed for %s: %o', workspace, err);
+      return;
+    }
+    if (state.hold !== null && state.hold.kind === 'systemic') {
+      return;
+    }
+    const q = deps.store.snapshot(workspace);
+    const waiting = new Set([
+      ...q.queue.map(
+        (/** @type {{ bead_id: string }} */ entry) => entry.bead_id
+      ),
+      ...(q.serial_lanes || []).flatMap(
+        (/** @type {{ entries: Array<{ bead_id: string }> }} */ lane) =>
+          lane.entries.map((entry) => entry.bead_id)
+      )
+    ]);
+    const active = activeBeadIdsFrom(q);
+    let dispatched = false;
+    for (const lineage of dueRetries(state, at)) {
+      const bead_id = lineage.bead_id;
+      if (
+        !waiting.has(bead_id) ||
+        claimed.has(bead_id) ||
+        active.has(bead_id)
+      ) {
+        continue;
+      }
+      // The rung is consumed by the ATTEMPT, not by the intent to dispatch
+      // one. `dispatch` returns normally on every ordinary refusal (bead not
+      // ready, bd snapshot failure, worktree residue, lane refusal), and
+      // marking the lineage dispatched before that would burn the retry with
+      // nothing to show for it — the ladder would silently stop climbing.
+      const before_attempt_id =
+        latestImplementationAttempt(q, bead_id)?.attempt_id ?? null;
+      claimed.add(bead_id);
+      try {
+        await dispatch(workspace, bead_id, null, {
+          retry: {
+            cause: lineage.cause,
+            attempts: lineage.attempts,
+            max: RETRY_MAX,
+            origin_attempt_id: lineage.origin_attempt_id
+          }
+        });
+      } catch (err) {
+        claimed.delete(bead_id);
+        log('retry dispatch failed for %s: %o', bead_id, err);
+      }
+      const after_attempt_id =
+        latestImplementationAttempt(deps.store.snapshot(workspace), bead_id)
+          ?.attempt_id ?? null;
+      if (after_attempt_id !== null && after_attempt_id !== before_attempt_id) {
+        deps.store.applyQueueHold(workspace, {
+          event: { kind: 'retry_dispatched', bead_id, at },
+          now: at
+        });
+        dispatched = true;
+      } else {
+        // Nothing launched. The rung stays unspent, but its `next_at` has to
+        // move off the past or `armRetryTimer` below would re-fire on it in a
+        // tight loop.
+        deps.store.applyQueueHold(workspace, {
+          event: { kind: 'retry_deferred', bead_id, at },
+          now: at
+        });
+      }
+    }
+    armRetryTimer(workspace);
+    if (dispatched) {
+      notifyChanged(workspace);
+    }
+  }
+
+  /**
+   * Close a bead's env retry lineage (spec §3.3): the lineage is removed and an
+   * env hold with no lineages left releases itself. A bead that carries no
+   * lineage is a no-op, so an ordinary outcome costs no queue write.
+   *
+   * ANY non-env outcome closes the lineage, not just a delivery: the ladder
+   * exists to answer "is this bead still failing on the environment?", and a
+   * retry that ends `parked` or with an individual failure has answered it —
+   * leaving the lineage would hold the queue on a bead nothing will retry, and
+   * `armRetryTimer` would keep waking for a rung no attempt is climbing.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   */
+  function closeRetryLineage(workspace, bead_id) {
+    try {
+      const state = holdStateOf(workspace);
+      if (!state.lineages.some((lineage) => lineage.bead_id === bead_id)) {
+        return;
+      }
+      const at = now();
+      deps.store.applyQueueHold(workspace, {
+        event: { kind: 'retry_succeeded', bead_id, at },
+        now: at
+      });
+      armRetryTimer(workspace);
+    } catch (err) {
+      log('retry lineage close failed for %s: %o', bead_id, err);
+    }
+  }
+
+  /**
+   * The bead's LAST implementation attempt, or null. Review sessions,
+   * dispositions and retired kinds share the history but never this judgment.
+   *
+   * @param {any} q
+   * @param {string} bead_id
+   * @returns {any}
+   */
+  function latestImplementationAttempt(q, bead_id) {
+    /** @type {any} */
+    let latest = null;
+    for (const attempt of Object.values(q.attempts || {})) {
+      const record = /** @type {any} */ (attempt);
+      if (record.bead_id !== bead_id || !isImplementationAttempt(record)) {
+        continue;
+      }
+      latest = record;
+    }
+    return latest;
+  }
+
+  /**
+   * The candidate fence (spec §3.2/§3.3, design decision of the wiring unit):
+   * a bead whose last implementation attempt is `failed`, `parked` or
+   * `retry_wait` is NOT re-dispatched by the ordinary pass.
+   *
+   * The retired regime got this for free — every failure switched
+   * `auto_advance` off, so nothing re-dispatched anything. Now that the queue
+   * keeps running past an individual failure, the fence has to be stated: the
+   * pass would otherwise see the bead back in its waiting lane (the failure
+   * path releases the claim and reopens the bead) and relaunch the exact
+   * attempt that just failed, in a loop. Every EXPLICIT path — the retry
+   * ladder, 재시도 on a parked tile, `재개` — bypasses it.
+   *
+   * @param {any} q
+   * @param {string} bead_id
+   * @returns {string|null} The skip reason, or null when the bead may dispatch.
+   */
+  function settledAttemptFence(q, bead_id) {
+    const latest = latestImplementationAttempt(q, bead_id);
+    if (!latest || typeof latest.dismissed_at === 'number') {
+      return null;
+    }
+    if (latest.status === 'failed') {
+      return 'failed_unhandled';
+    }
+    if (latest.status === 'parked') {
+      return 'parked';
+    }
+    if (latest.status === 'retry_wait') {
+      return 'retry_wait';
+    }
+    return null;
+  }
+
+  /**
+   * Re-check every `parked` attempt whose bead was waiting on a user decision
+   * (spec §3.1). Wired into the bd issue-change subscription, so it runs exactly
+   * when a human's `bd update` lands — never on a cadence.
+   *
+   * The transition, not the state, is what resumes: only an attempt that
+   * RECORDED `awaiting_user_present:true` and now reads the key as absent
+   * dispatches again. A bead that never had the key was classified
+   * `session_ended_unresolved` in the first place and has no parked record here;
+   * a repeated notification with the key still present changes nothing; and the
+   * `parked_resumed_at` stamp — written before the dispatch — makes the real
+   * clearing fire exactly once per attempt.
+   *
+   * @param {string} workspace
+   */
+  async function onIssuesChanged(workspace) {
+    /** @type {any} */
+    let q;
+    try {
+      q = deps.store.snapshot(workspace);
+    } catch (err) {
+      log('parked resume scan failed for %s: %o', workspace, err);
+      return;
+    }
+    const waiting = new Set([
+      ...q.queue.map(
+        (/** @type {{ bead_id: string }} */ entry) => entry.bead_id
+      ),
+      ...(q.serial_lanes || []).flatMap(
+        (/** @type {{ entries: Array<{ bead_id: string }> }} */ lane) =>
+          lane.entries.map((entry) => entry.bead_id)
+      )
+    ]);
+    /** @type {any[]} */
+    const candidates = [];
+    for (const attempt of Object.values(q.attempts || {})) {
+      const record = /** @type {any} */ (attempt);
+      if (
+        record.status !== 'parked' ||
+        record.awaiting_user_present !== true ||
+        typeof record.parked_resumed_at === 'number' ||
+        !waiting.has(record.bead_id) ||
+        claimed.has(record.bead_id)
+      ) {
+        continue;
+      }
+      if (
+        latestImplementationAttempt(q, record.bead_id)?.attempt_id !==
+        record.attempt_id
+      ) {
+        continue;
+      }
+      candidates.push(record);
+    }
+    for (const record of candidates) {
+      /** @type {string|null} */
+      let awaiting_user;
+      try {
+        awaiting_user = await deps.bd.readMetadata(
+          record.bead_id,
+          'awaiting_user'
+        );
+      } catch (err) {
+        // Fail-QUIET: an unreadable bd is not evidence the key was cleared, and
+        // the next issue-change signal re-asks.
+        log('awaiting_user readback failed for %s: %o', record.bead_id, err);
+        continue;
+      }
+      if (typeof awaiting_user === 'string') {
+        continue;
+      }
+      await resumeParkedAttempt(workspace, record.bead_id, record.attempt_id);
+    }
+  }
+
+  /**
+   * Dispatch a fresh attempt for a parked one and stamp the parked record
+   * resumed (spec §3.1).
+   *
+   * The stamp lands AFTER the dispatch and only when an attempt actually
+   * appeared. `dispatch` returns normally on every ordinary refusal, and a stamp
+   * written before that would consume the ONE resume this attempt gets while
+   * launching nothing: the bead would sit parked forever with its transition
+   * already spent. An aborted resume is simply left unstamped — the next
+   * bd-change signal re-asks, which is the same evidence that raised this one.
+   *
+   * `claimed` is what makes it once-only in the meantime: the check and the add
+   * are synchronous, so two concurrent signals cannot both reach the dispatch.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   * @returns {Promise<boolean>}
+   */
+  async function resumeParkedAttempt(workspace, bead_id, attempt_id) {
+    const record = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    if (
+      !record ||
+      record.status !== 'parked' ||
+      typeof record.parked_resumed_at === 'number' ||
+      claimed.has(bead_id)
+    ) {
+      return false;
+    }
+    claimed.add(bead_id);
+    try {
+      await dispatch(workspace, bead_id);
+    } catch (err) {
+      claimed.delete(bead_id);
+      log('parked resume dispatch failed for %s: %o', bead_id, err);
+      return false;
+    }
+    const launched =
+      latestImplementationAttempt(deps.store.snapshot(workspace), bead_id)
+        ?.attempt_id ?? null;
+    if (launched === null || launched === attempt_id) {
+      return false;
+    }
+    deps.store.markParkedResumed(workspace, { attempt_id, at: now() });
+    notifyChanged(workspace);
+    return true;
+  }
+
+  /**
+   * `재시도` on a parked tile (ws `worker-parked-retry`, spec §4).
+   *
+   * @param {string} workspace
+   * @param {{ bead_id: string, attempt_id: string }} input
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function retryParked(workspace, input) {
+    /** @type {any} */
+    let q;
+    try {
+      q = deps.store.snapshot(workspace);
+    } catch {
+      return { ok: false, reason: 'queue_unreadable' };
+    }
+    const attempt = q.attempts?.[input.attempt_id];
+    if (!attempt || attempt.bead_id !== input.bead_id) {
+      return { ok: false, reason: 'attempt_not_found' };
+    }
+    if (attempt.status !== 'parked') {
+      return { ok: false, reason: 'not_parked' };
+    }
+    if (
+      latestImplementationAttempt(q, input.bead_id)?.attempt_id !==
+      input.attempt_id
+    ) {
+      return { ok: false, reason: 'not_latest' };
+    }
+    const resumed = await resumeParkedAttempt(
+      workspace,
+      input.bead_id,
+      input.attempt_id
+    );
+    return resumed ? { ok: true } : { ok: false, reason: 'dispatch_refused' };
+  }
+
+  /**
+   * `재개` on a systemic stop (ws `worker-queue-hold-resume`, spec §3.4).
+   *
+   * CAS on `hold.since`: the button was drawn against ONE stop, and a stop that
+   * moved underneath it is a different one — clearing it would silently
+   * acknowledge a wall the user never saw.
+   *
+   * @param {string} workspace
+   * @param {{ since?: number|null }} input
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function resumeQueueHold(workspace, input) {
+    /** @type {import('./queue-hold.js').QueueHoldState} */
+    let state;
+    try {
+      state = holdStateOf(workspace);
+    } catch {
+      return { ok: false, reason: 'queue_unreadable' };
+    }
+    if (state.hold === null || state.hold.since !== input.since) {
+      return { ok: false, reason: 'hold_changed' };
+    }
+    const at = now();
+    const applied = deps.store.applyQueueHold(workspace, {
+      event: { kind: 'resume', at },
+      now: at
+    });
+    clearRetryTimer(workspace);
+    /** @type {string[]} */
+    const bead_ids = [];
+    for (const effect of applied.effects) {
+      if (effect.kind === 'redispatch') {
+        bead_ids.push(...(effect.bead_ids ?? []));
+      }
+    }
+    // The fence keys off the bead's LAST attempt, so lifting the hold is not
+    // enough on its own: the record that stopped the pass is dismissed here,
+    // which is exactly what `재개` means — the user has seen this failure and
+    // wants the bead tried again.
+    const q = deps.store.snapshot(workspace);
+    for (const bead_id of bead_ids) {
+      const latest = latestImplementationAttempt(q, bead_id);
+      if (
+        latest &&
+        typeof latest.dismissed_at !== 'number' &&
+        (latest.status === 'retry_wait' || latest.status === 'failed')
+      ) {
+        deps.store.updateAttempt(workspace, {
+          attempt_id: latest.attempt_id,
+          patch: { dismissed_at: at }
+        });
+      }
+    }
+    notifyChanged(workspace);
+    await tick(workspace);
+    return { ok: true };
+  }
+
+  /**
+   * `지금 재시도` on an env hold (ws `worker-queue-hold-retry-now`, spec §4):
+   * every lineage's `next_at` moves to now and the timer fires immediately.
+   * Same CAS as `재개`, for the same reason.
+   *
+   * @param {string} workspace
+   * @param {{ since?: number|null }} input
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function retryQueueHoldNow(workspace, input) {
+    /** @type {import('./queue-hold.js').QueueHoldState} */
+    let state;
+    try {
+      state = holdStateOf(workspace);
+    } catch {
+      return { ok: false, reason: 'queue_unreadable' };
+    }
+    if (state.hold === null || state.hold.since !== input.since) {
+      return { ok: false, reason: 'hold_changed' };
+    }
+    if (state.hold.kind !== 'env') {
+      return { ok: false, reason: 'not_env_hold' };
+    }
+    const at = now();
+    deps.store.applyQueueHold(workspace, {
+      event: { kind: 'retry_now', at },
+      now: at
+    });
+    await runDueRetries(workspace);
+    notifyChanged(workspace);
+    return { ok: true };
+  }
+
+  /**
    * One dispatch pass (worker-phase2 §3): ONE ordered scan of the single
    * waiting lane, filling the free slots of the store-owned cap.
    *
@@ -7721,7 +8519,13 @@ export function createScheduler(deps) {
     // the candidate set to the parallel rows a cross lane armed. With the
     // toggle ON the set is unchanged, arm or no arm. With it OFF and nothing
     // armed there is no candidate at all, which is the old bail-out verbatim.
-    const armed_only = q.auto_advance !== true;
+    // TWO independent narrowings, one candidate set (2026-08-28
+    // worker-failure-tiers spec §4): the user's ⏸ (`auto_advance`) and the
+    // failure-owned stop (`queue.hold`). Either one alone leaves only the rows
+    // a cross lane armed, which is the UI-jaua §5.2 exception verbatim; neither
+    // implies the other, so `▶` no longer overrides a systemic stop and a
+    // released hold no longer resumes a paused queue.
+    const armed_only = q.auto_advance !== true || q.hold !== null;
     if (armed_only && !q.queue.some(isArmedEntry)) {
       return;
     }
@@ -7789,6 +8593,14 @@ export function createScheduler(deps) {
         paused_beads.has(entry.bead_id) ||
         active_beads.has(entry.bead_id)
       ) {
+        continue;
+      }
+      // A bead whose last implementation attempt settled unhandled is not a
+      // candidate: it is reopened and back in its lane, and the queue no longer
+      // stops on its failure.
+      const fenced = settledAttemptFence(q, entry.bead_id);
+      if (fenced !== null) {
+        recordSkipReason(workspace, entry.bead_id, fenced);
         continue;
       }
       let snap;
@@ -8245,6 +9057,10 @@ export function createScheduler(deps) {
         await drivePauseControl(workspace, attempt_id);
       }
     }
+    // The env ladder is DURABLE and its timer is not (spec §3.3): a restart in
+    // the middle of a backoff must pick the wake-up back up, and an elapsed one
+    // fires immediately.
+    armRetryTimer(workspace);
   }
 
   /**
@@ -8531,6 +9347,10 @@ export function createScheduler(deps) {
     fenceDiscardAttempt,
     finalizeDiscardAttempt,
     recoverControls,
+    onIssuesChanged,
+    resumeQueueHold,
+    retryQueueHoldNow,
+    retryParked,
     reconcile,
     sweepClosedQueue,
     activeBeadIds,

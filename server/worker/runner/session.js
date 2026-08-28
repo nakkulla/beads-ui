@@ -69,6 +69,11 @@ const DIRECT_CHILD_KILL_GRACE_MS = 1_000;
  * @typedef {Object} RunnerVerdict
  * @property {boolean} success - Whether the adapter's success criteria hold.
  * @property {string} reason - Machine-readable reason (e.g. 'ok', 'blocker').
+ * @property {string|null} summary - The session's own last sentence, lifted by
+ * the adapter off the terminal event (worker-failure-tiers §6): the first
+ * non-empty line, trimmed, at most 200 characters. It is what the failure
+ * classifier reads to tell an environment outage from a bead-specific error,
+ * and what the attempt tile shows; null when the stream carried none.
  * @property {number|null} exit - Process exit code.
  * @property {boolean} blocked - True when fail-closed fired (question/approval).
  * @property {BlockedDetail|null} blocked_detail - What the fail-closed path
@@ -130,7 +135,11 @@ const DIRECT_CHILD_KILL_GRACE_MS = 1_000;
  * @property {(raw: any) => (string|null)} detectQuestion - Return a reason string when a raw line is an interactive request, else null.
  * @property {(raw: any) => (string|null)} [extractShellCommand] - Return the shell command of a Bash/exec tool_use, else null (feeds the merge guards).
  * @property {(raw: any) => (string|null)} [extractSessionId] - Return the runner's session identifier from a raw line, else null. The engine emits the FIRST non-null result once on the `session_id` event so the attempt record can persist it for `--resume`/transcript tracking (spec §2).
- * @property {(ctx: { raw: any[], exit: number|null, blocked: boolean }) => { success: boolean, reason: string }} verdict
+ * @property {(ctx: { raw: any[], exit: number|null, blocked: boolean }) => { success: boolean, reason: string, summary: string|null }} verdict -
+ * Judge the closed stream. `summary` is the session's own last sentence
+ * (worker-failure-tiers §6) — the runner owns the extraction because only it
+ * knows which event carries the report, and the classifier downstream reads one
+ * field instead of two stream shapes.
  */
 
 /**
@@ -650,7 +659,7 @@ export function runSession(spec, bead, workspace, settings, deps) {
       } catch {
         /* ignore */
       }
-      const { success, reason } = spec.verdict({
+      const { success, reason, summary } = spec.verdict({
         raw: raw_events,
         exit,
         blocked
@@ -659,6 +668,10 @@ export function runSession(spec, bead, workspace, settings, deps) {
       const verdict = {
         success: blocked ? false : success,
         reason: blocked ? 'blocker' : reason,
+        // Carried through even for a blocked session: the kill replaces the
+        // REASON, not what the session had last reported about itself.
+        summary:
+          typeof summary === 'string' && summary.length > 0 ? summary : null,
         exit,
         blocked,
         blocked_detail: blocked ? blocked_detail : null,

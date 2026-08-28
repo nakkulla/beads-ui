@@ -8545,3 +8545,327 @@ describe('worker/queue-store — 연결 레인 arm 축 (UI-jaua §5.1)', () => {
     expect(loaded.disarmed_on_load).toEqual([]);
   });
 });
+
+describe('queue store failure-tier fields (UI-5ym8)', () => {
+  test('starts a fresh queue with no hold and no lineages', () => {
+    const store = createQueueStore();
+
+    const snap = store.snapshot(WS);
+
+    expect(snap.hold).toBe(null);
+    expect(snap.lineages).toEqual([]);
+    expect(snap.hold_history).toEqual([]);
+  });
+
+  test('round-trips the durable hold triple through a reload', () => {
+    const store = createQueueStore();
+    store.applyQueueHold(WS, {
+      event: {
+        kind: 'env_failure',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        cause: 'verify_cmd_spawn_error',
+        at: 1000
+      },
+      now: 1000
+    });
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.hold).toMatchObject({
+      kind: 'env',
+      cause: 'verify_cmd_spawn_error',
+      since: 1000,
+      bead_ids: ['UI-1']
+    });
+    expect(loaded.lineages).toEqual([
+      {
+        bead_id: 'UI-1',
+        origin_attempt_id: 'att-1',
+        cause: 'verify_cmd_spawn_error',
+        next_at: 1000 + 120000,
+        attempts: 1
+      }
+    ]);
+    expect(loaded.hold_history).toEqual([
+      { bead_id: 'UI-1', cause: 'verify_cmd_spawn_error', at: 1000 }
+    ]);
+  });
+
+  test('drops a malformed hold rather than refusing the load', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        hold: { kind: 'weird', cause: '', since: 'soon' },
+        lineages: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2', cause: 'x' }],
+        hold_history: [{ bead_id: 'UI-1' }]
+      })
+    );
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.hold).toBe(null);
+    expect(loaded.lineages).toEqual([
+      {
+        bead_id: 'UI-2',
+        origin_attempt_id: null,
+        cause: 'x',
+        next_at: null,
+        attempts: 1
+      }
+    ]);
+    expect(loaded.hold_history).toEqual([]);
+  });
+
+  test('returns the reducer effects alongside the persisted state', () => {
+    const store = createQueueStore();
+
+    const result = store.applyQueueHold(WS, {
+      event: {
+        kind: 'env_failure',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        cause: 'spawn_failed',
+        at: 500
+      },
+      now: 500
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.effects).toEqual([
+      {
+        kind: 'retry_scheduled',
+        bead_id: 'UI-1',
+        origin_attempt_id: 'att-1',
+        next_at: 500 + 120000,
+        attempts: 1
+      }
+    ]);
+    expect(result.hold).toMatchObject({ kind: 'env' });
+  });
+
+  test('defaults the new attempt fields on a legacy record', () => {
+    const attempt = makeAttempt({ attempt_id: 'a1', bead_id: 'UI-1' });
+
+    expect(attempt.retry).toBe(null);
+    expect(attempt.awaiting_user_present).toBe(false);
+    expect(attempt.parked_resumed_at).toBe(null);
+  });
+
+  test('keeps a retry stamp and a free-form cause_detail through makeAttempt', () => {
+    const attempt = makeAttempt({
+      attempt_id: 'a1',
+      bead_id: 'UI-1',
+      status: 'retry_wait',
+      retry: {
+        cause: 'session_failed:is_error:api',
+        attempts: 2,
+        max: 3,
+        next_at: 900,
+        origin_attempt_id: 'a0'
+      },
+      cause_detail: {
+        summary: 'API Error: 529 Overloaded',
+        awaiting_user: null,
+        bead_status: 'in_progress'
+      }
+    });
+
+    expect(attempt.retry).toEqual({
+      cause: 'session_failed:is_error:api',
+      attempts: 2,
+      max: 3,
+      next_at: 900,
+      origin_attempt_id: 'a0'
+    });
+    expect(attempt.cause_detail).toEqual({
+      summary: 'API Error: 529 Overloaded',
+      awaiting_user: null,
+      bead_status: 'in_progress'
+    });
+  });
+
+  test('drops a retry stamp that cannot name its cause', () => {
+    const attempt = makeAttempt({
+      attempt_id: 'a1',
+      bead_id: 'UI-1',
+      retry: /** @type {any} */ ({ attempts: 2 })
+    });
+
+    expect(attempt.retry).toBe(null);
+  });
+
+  test('stamps a parked attempt resumed exactly once', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a1', bead_id: 'UI-1' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'a1',
+      patch: { status: 'parked', awaiting_user_present: true }
+    });
+
+    const first = store.markParkedResumed(WS, { attempt_id: 'a1', at: 700 });
+    const second = store.markParkedResumed(WS, { attempt_id: 'a1', at: 800 });
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(false);
+    expect(store.snapshot(WS).attempts.a1.parked_resumed_at).toBe(700);
+  });
+
+  test('supersedes a bead other retry_wait attempts', () => {
+    const store = createQueueStore();
+    for (const attempt_id of ['a1', 'a2', 'a3']) {
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: { attempt_id, bead_id: 'UI-1' }
+      });
+      store.updateAttempt(WS, {
+        attempt_id,
+        patch: { status: 'retry_wait' }
+      });
+    }
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'other', bead_id: 'UI-2' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'other',
+      patch: { status: 'retry_wait' }
+    });
+
+    store.supersedeRetryAttempts(WS, {
+      bead_id: 'UI-1',
+      except_attempt_id: 'a3'
+    });
+
+    const snap = store.snapshot(WS);
+    expect(snap.attempts.a1.status).toBe('superseded');
+    expect(snap.attempts.a2.status).toBe('superseded');
+    expect(snap.attempts.a3.status).toBe('retry_wait');
+    expect(snap.attempts.other.status).toBe('retry_wait');
+  });
+});
+
+describe('queue store atomic terminalize + hold (UI-5ym8 §7)', () => {
+  /**
+   * @param {string} root_bead_id
+   * @returns {any}
+   */
+  function storeWithIntent(root_bead_id) {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: `att-${root_bead_id}`,
+        bead_id: root_bead_id,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40)
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: root_bead_id,
+      attempt_id: `att-${root_bead_id}`,
+      patch: { status: 'done', finished_at: 1 }
+    });
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id,
+      source_attempt_id: `att-${root_bead_id}`,
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: root_bead_id,
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    return store;
+  }
+
+  test('lands the terminal and the systemic hold in ONE revision bump', () => {
+    const store = storeWithIntent('UI-1');
+    const before = store.snapshot(WS).revision;
+
+    const written = store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-1',
+      terminal: {
+        reason: 'verify_red',
+        stage: 'repo_verify',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 2000
+      },
+      hold_event: {
+        kind: 'systemic_failure',
+        bead_id: 'UI-1',
+        cause: 'verify_red',
+        at: 2000
+      },
+      now: 2000
+    });
+
+    const snap = store.snapshot(WS);
+    expect(written.ok).toBe(true);
+    expect(snap.revision).toBe(before + 1);
+    expect(snap.completion_intents['UI-1'].phase).toBe('needs_human');
+    expect(snap.hold).toMatchObject({
+      kind: 'systemic',
+      cause: 'verify_red',
+      since: 2000,
+      bead_ids: ['UI-1']
+    });
+  });
+
+  test('leaves the queue running when no hold event is given', () => {
+    const store = storeWithIntent('UI-1');
+
+    store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-1',
+      terminal: {
+        reason: 'conflict_unresolved:rebase',
+        stage: 'merge_subject',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 2000
+      }
+    });
+
+    expect(store.snapshot(WS).completion_intents['UI-1'].phase).toBe(
+      'needs_human'
+    );
+    expect(store.snapshot(WS).hold).toBe(null);
+  });
+
+  test('does not stop the queue when the terminal itself is rejected', () => {
+    const store = createQueueStore();
+
+    const written = store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-absent',
+      terminal: {
+        reason: 'verify_red',
+        stage: 'repo_verify',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 2000
+      },
+      hold_event: {
+        kind: 'systemic_failure',
+        bead_id: 'UI-absent',
+        cause: 'verify_red',
+        at: 2000
+      },
+      now: 2000
+    });
+
+    expect(written.ok).toBe(false);
+    expect(store.snapshot(WS).hold).toBe(null);
+  });
+});

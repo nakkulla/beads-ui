@@ -62,7 +62,7 @@ import {
   saveCandidateSort,
   setChainStepKey
 } from './candidate-sort.js';
-import { failureSentence } from './failure-labels.js';
+import { failureSentence, failureText } from './failure-labels.js';
 import { createLaneCollapse } from './lane-collapse.js';
 import { createLaneDrag } from './lane-drag.js';
 import { baseException, buildLanes, resolvesConflict } from './lane-model.js';
@@ -1999,6 +1999,70 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The two 큐 보류/정지 exits (UI-5ym8 §4). Both are CAS-guarded by the hold's
+   * own `since` rather than by the queue revision: the question is "is this
+   * still the hold I read", and a hold that was released and re-armed under the
+   * same revision would otherwise be released again by a stale click.
+   *
+   * A mismatch (`hold_changed`) is reported and NOT retried — the banner has
+   * already been redrawn from the fanout snapshot by then, so a silent retry
+   * would act on a hold the person never saw.
+   *
+   * @param {'worker-queue-hold-resume'|'worker-queue-hold-retry-now'} type
+   * @param {string} refusal - 거부 응답을 알릴 때 쓰는 toast 앞머리.
+   */
+  async function sendHoldAction(type, refusal) {
+    const hold = currentQueue().hold;
+    if (!transport || !hold || typeof hold.since !== 'number') {
+      return;
+    }
+    const res = /** @type {any} */ (
+      await transport(type, { since: hold.since })
+    );
+    adopt(res);
+    if (res && res.ok === false) {
+      showToast(
+        `${refusal}: ${
+          res.reason === 'hold_changed'
+            ? '큐 상태가 바뀌었습니다 — 다시 확인하세요'
+            : res.reason || ''
+        }`,
+        'error',
+        2800
+      );
+    }
+  }
+
+  /**
+   * Dispatch a NEW attempt for a parked bead (§3.1). Not a resume: the parked
+   * session ended normally waiting for a decision, so continuing it would land
+   * back where the decision was still missing.
+   *
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   */
+  async function retryParked(bead_id, attempt_id) {
+    if (!transport || !bead_id || !attempt_id) {
+      return;
+    }
+    const res = /** @type {any} */ (
+      await transport('worker-parked-retry', { bead_id, attempt_id })
+    );
+    adopt(res);
+    if (res && res.ok === false) {
+      showToast(
+        `재시도 거부: ${
+          res.reason === 'not_latest'
+            ? '이 bead에 더 새로운 시도가 있습니다'
+            : res.reason || ''
+        }`,
+        'error',
+        2800
+      );
+    }
+  }
+
+  /**
    * Complete a background resolver decision already persisted on the queue
    * item.
    *
@@ -2769,12 +2833,21 @@ export function createWorkerView(mount_element, options = {}) {
             attempt_id: item.attempt_id || '',
             paused: item.run_state === 'paused',
             failed: item.run_state === 'failed',
+            // 파킹·backoff 대기 (UI-5ym8 §8). 실패와 같은 자리(판정 칩)를 쓰되
+            // 실패는 아니므로 별도 플래그다 — 하나로 합치면 큐가 멈췄다는 뜻이
+            // 딸려 온다.
+            parked: item.run_state === 'parked',
+            retry_wait: item.run_state === 'retry_wait',
             status_label:
               item.run_state === 'failed'
                 ? item.status === 'orphaned'
                   ? '중단됨'
                   : '실패'
-                : undefined,
+                : item.run_state === 'parked'
+                  ? '세션 대기'
+                  : item.run_state === 'retry_wait'
+                    ? '재시도 대기'
+                    : undefined,
             can_pause: item.can_pause !== false,
             // 레포 배지는 한 레포 화면의 사실이 아니다 (모니터 타일만 그린다).
             workspace_name: '',
@@ -2788,10 +2861,13 @@ export function createWorkerView(mount_element, options = {}) {
               : null
           })
       );
-    // 실패 타일이 실행중 레인의 앞이다: 사람이 결정할 것이 먼저 보여야 한다.
+    // 사람이 결정할 것이 먼저 보여야 한다: 실패, 그 다음 파킹(사용자 결정을
+    // 기다리는 중), 그 다음 스스로 굴러가는 나머지. backoff 대기는 사람이 할 일이
+    // 없으므로 앞으로 나오지 않는다.
     return [
       ...tiles.filter((tile) => tile.failed === true),
-      ...tiles.filter((tile) => tile.failed !== true)
+      ...tiles.filter((tile) => tile.failed !== true && tile.parked === true),
+      ...tiles.filter((tile) => tile.failed !== true && tile.parked !== true)
     ];
   }
 
@@ -3093,6 +3169,77 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Why the queue stopped dispatching, and the way out (UI-5ym8 §8).
+   *
+   * 사용자 ⏸(`auto_advance`)와는 다른 사실이고 다른 자리다: 그것은 사람이
+   * 내린 결정이라 툴바 버튼이 말하고, 이것은 실패가 켠 상태라 왜 멈췄는지와
+   * 무엇을 누르면 풀리는지를 함께 말해야 한다. 둘은 독립이므로 배너가 서 있는
+   * 동안에도 ▶ 표시는 그대로다.
+   *
+   * 두 종류는 사람이 할 일이 다르다. **환경 보류**는 자동 재시도가 이미
+   * 예약돼 있어 아무것도 하지 않아도 풀리므로 회색이고, 버튼은 그 시각을 앞당길
+   * 뿐이다. **체계적 정지**는 자동 출구가 없어 사람의 `재개`만이 유일한 길이라
+   * 경고색이다.
+   *
+   * @param {any} q - 현재 `worker-queue-snapshot` 값.
+   * @returns {import('lit-html').TemplateResult|''}
+   */
+  function holdBannerTemplate(q) {
+    const hold = q.hold && typeof q.hold === 'object' ? q.hold : null;
+    if (!hold || (hold.kind !== 'env' && hold.kind !== 'systemic')) {
+      return '';
+    }
+    // 원인 문장은 실패 타일·타임라인과 같은 어휘를 쓴다. 모르는 토큰은 raw로
+    // 흘려보내는 `failureText`의 규약 그대로다 — 침묵보다 낫다.
+    const cause = failureText(hold.cause) || String(hold.cause || '');
+    const lineages = Array.isArray(q.lineages) ? q.lineages : [];
+    if (hold.kind === 'env') {
+      // 가장 이른 재시도가 이 보류가 언제 움직이는지에 답한다. 하나도 예약돼
+      // 있지 않으면 시각 조각만 빠진다 (fail-quiet).
+      const next_at = lineages
+        .map((/** @type {any} */ line) => line && line.next_at)
+        .filter((/** @type {any} */ at) => typeof at === 'number')
+        .sort((/** @type {number} */ a, /** @type {number} */ b) => a - b)[0];
+      const next =
+        typeof next_at === 'number'
+          ? ` · 다음 ${new Date(next_at).toLocaleTimeString('ko-KR', {
+              hour: '2-digit',
+              minute: '2-digit'
+            })}`
+          : '';
+      return html`<div class="worker-hold worker-hold--env" role="status">
+        <span class="worker-hold__text"
+          >환경 보류: ${cause} — 재시도 대기${next}</span
+        >
+        <button
+          type="button"
+          class="worker-hold__retry"
+          title="예약된 재시도를 지금 실행합니다"
+        >
+          지금 재시도
+        </button>
+      </div>`;
+    }
+    const bead_ids = (Array.isArray(hold.bead_ids) ? hold.bead_ids : []).filter(
+      (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+    );
+    return html`<div class="worker-hold worker-hold--systemic" role="alert">
+      <span class="worker-hold__text"
+        >${cause}${bead_ids.length > 0
+          ? ` — bead ${bead_ids.join(', ')}`
+          : ''}</span
+      >
+      <button
+        type="button"
+        class="worker-hold__resume"
+        title="정지를 풀고 멈춰 있던 bead를 다시 디스패치합니다"
+      >
+        재개
+      </button>
+    </div>`;
+  }
+
+  /**
    * @param {LaneModel} m
    * @returns {import('lit-html').TemplateResult}
    */
@@ -3190,6 +3337,10 @@ export function createWorkerView(mount_element, options = {}) {
       group.repo_operations,
       group.cleanup_failures
     );
+    // 보류/정지 배너는 리본·툴바 밖, 레포 작업 스트립 앞이다: 큐 전체가 멈춘
+    // 이유는 개별 레포 작업보다 먼저 읽혀야 하고, 고정되는 것은 "항상 읽혀야
+    // 하는 한 줄"뿐이어야 하므로 sticky 리본에는 넣지 않는다.
+    const hold_banner = holdBannerTemplate(q);
     if (is_mobile) {
       // sticky 리본 (UI-58y2 §모바일 1)에는 두 자동화 토글과 세 카운트만 둔다.
       // 슬롯·⚙는 아래 조작 줄로 내리고 배너는 리본 밖에 남긴다 — 고정되는 것은
@@ -3205,7 +3356,7 @@ export function createWorkerView(mount_element, options = {}) {
           <div class="worker-ctrl__ops">${settings}</div>
           <div class="worker-kpi">${base_chip}</div>
         </div>
-        ${repo_operations}${repo_ops_settings.template()}`;
+        ${hold_banner}${repo_operations}${repo_ops_settings.template()}`;
     }
     // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
     return html`<div class="worker-ctrl">
@@ -3235,7 +3386,7 @@ export function createWorkerView(mount_element, options = {}) {
           >
         </div>
       </div>
-      ${repo_operations}${repo_ops_settings.template()}`;
+      ${hold_banner}${repo_operations}${repo_ops_settings.template()}`;
   }
 
   /**
@@ -4165,6 +4316,16 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return;
     }
+    // 보류/정지 배너의 두 출구 (UI-5ym8 §8). 툴바의 ▶와 같은 줄에 서지 않고
+    // 같은 mutation도 아니므로 각자 라우팅한다.
+    if (target?.closest?.('.worker-hold__retry')) {
+      void sendHoldAction('worker-queue-hold-retry-now', '지금 재시도 거부');
+      return;
+    }
+    if (target?.closest?.('.worker-hold__resume')) {
+      void sendHoldAction('worker-queue-hold-resume', '재개 거부');
+      return;
+    }
     if (target?.closest?.('.worker-play')) {
       void setAutomation(!currentQueue().auto_advance);
       return;
@@ -4408,6 +4569,19 @@ export function createWorkerView(mount_element, options = {}) {
           );
         });
       }
+      return;
+    }
+    // 파킹 타일의 [재시도] (UI-5ym8 §3.1). `.rtile__resume`(이어하기)보다 앞에
+    // 두지 않아도 클래스가 다르므로 섞이지 않지만, 폐기와 같은 액션 foot에
+    // 있으므로 그 둘을 붙여 읽는다.
+    if (target?.closest?.('.rtile__parked-retry')) {
+      const tile = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile')
+      );
+      void retryParked(
+        tile?.dataset?.beadId || '',
+        tile?.dataset?.attemptId || ''
+      );
       return;
     }
     // Tile controls act on the attempt and must never also open the drawer.

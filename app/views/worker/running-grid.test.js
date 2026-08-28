@@ -1703,3 +1703,267 @@ describe('running grid reads the overlay material off the tile (UI-4tud §4.3)',
     expect(grid).toContain('rtile__activity--session');
   });
 });
+
+describe('worker 대기 타일 (UI-5ym8 §8)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * A `parked` attempt's tile input. It carries the SAME failure projection a
+   * failed tile does — the two answer the same question — so this fixture is
+   * deliberately the failed one plus `parked`.
+   *
+   * @param {Partial<any>} [over]
+   * @returns {any}
+   */
+  function parkTile(over = {}) {
+    return {
+      bead_id: 'UI-p1',
+      attempt_id: 'attempt-p1',
+      title: 'REVISE 대기 중',
+      runner: 'claude',
+      model: 'opus',
+      started_at: 1000,
+      parked: true,
+      status: 'parked',
+      status_label: '세션 대기',
+      failure: {
+        cause: 'session_parked',
+        cause_detail: {
+          summary: 'spec 리뷰 REVISE 7건을 사용자에게 확인 요청함',
+          awaiting_user: 'spec_review',
+          bead_status: 'in_progress'
+        },
+        summary: 'spec 리뷰 REVISE 7건을 사용자에게 확인 요청함',
+        bead_id: 'UI-p1',
+        retry: null,
+        finished_at: 4000,
+        runner: 'claude',
+        model: 'opus',
+        effort: null,
+        observed_effort: null,
+        speed: null,
+        attempt_id: 'attempt-p1',
+        usage: null,
+        halted_auto_advance: false,
+        quickfix_lane: false,
+        quickfix_landing: null,
+        resume_eligible: false,
+        resume_reason: '세션 대기 — [재시도]가 새 attempt를 띄웁니다',
+        landed: false,
+        confirmation: 'unmerged'
+      },
+      discard: {
+        action: true,
+        enabled: true,
+        label: '폐기',
+        title: '백업 후 정리',
+        operation: null
+      },
+      ...over
+    };
+  }
+
+  test('badges a parked attempt in the 판정 칩 slot', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([parkTile()]), mount);
+
+    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+    expect(
+      tile.querySelector('.rtile__hd .rtile__held-badge')?.textContent
+    ).toBe('⏸ 세션 대기');
+    expect(tile.classList.contains('rtile--parked')).toBe(true);
+    expect(tile.classList.contains('rtile--failed')).toBe(false);
+  });
+
+  test('renders the session summary on a parked tile', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([parkTile()]), mount);
+
+    expect(mount.querySelector('.rtile__held-summary')?.textContent).toContain(
+      'REVISE 7건'
+    );
+  });
+
+  test('truncates a parked summary longer than 200 characters', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const tile = parkTile();
+    tile.failure.summary = 'x'.repeat(240);
+
+    render(runningGridTemplate([tile]), mount);
+
+    expect(mount.querySelector('.rtile__held-summary')?.textContent).toBe(
+      `${'x'.repeat(200)}…`
+    );
+  });
+
+  test('offers 재시도 and 폐기 in the parked action foot', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([parkTile()]), mount);
+
+    const foot = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__foot')
+    );
+    expect(
+      foot.querySelector('.rtile__parked-retry')?.textContent?.trim()
+    ).toBe('재시도');
+    expect(foot.querySelector('.rtile__discard')?.textContent?.trim()).toBe(
+      '폐기'
+    );
+    expect(mount.querySelector('.rtile__resume')).toBeNull();
+    expect(mount.querySelector('.rtile__pause')).toBeNull();
+  });
+
+  test('badges a retry_wait attempt with its count and next time', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const next_at = new Date(2026, 7, 28, 14, 5).getTime();
+
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-r1',
+          attempt_id: 'attempt-r1',
+          title: '환경 장애 재시도 대기',
+          runner: 'codex',
+          model: 'sol',
+          started_at: 1000,
+          retry_wait: true,
+          status: 'retry_wait',
+          status_label: '재시도 대기',
+          retry: {
+            cause: 'session_failed:is_error',
+            attempts: 2,
+            max: 3,
+            next_at
+          }
+        }
+      ]),
+      mount
+    );
+
+    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+    expect(tile.querySelector('.rtile__held-badge')?.textContent).toBe(
+      `↻ 재시도 대기 2/3 · ${new Date(next_at).toLocaleTimeString('ko-KR', {
+        hour: '2-digit',
+        minute: '2-digit'
+      })}`
+    );
+    expect(tile.classList.contains('rtile--retry-wait')).toBe(true);
+    expect(tile.querySelector('.rtile__foot')).toBeNull();
+  });
+
+  test('omits the retry_wait counts a record does not carry', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-r2',
+          attempt_id: 'attempt-r2',
+          title: '옛 기록',
+          runner: null,
+          model: null,
+          started_at: 1000,
+          retry_wait: true,
+          status: 'retry_wait',
+          retry: null
+        }
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__held-badge')?.textContent).toBe(
+      '↻ 재시도 대기'
+    );
+  });
+});
+
+describe('worker 실패 팝오버의 §6 재료 (UI-5ym8 §8)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Partial<any>} over - The failure fields under test.
+   * @returns {HTMLElement}
+   */
+  function mountOpenPopover(over) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-f1',
+          attempt_id: 'attempt-f1',
+          title: '실패한 작업',
+          runner: 'claude',
+          model: 'opus',
+          started_at: null,
+          failed: true,
+          status: 'failed',
+          status_label: '실패',
+          failure: {
+            cause: 'session_failed:is_error',
+            cause_detail: null,
+            finished_at: 4000,
+            runner: 'claude',
+            model: 'opus',
+            effort: null,
+            observed_effort: null,
+            speed: null,
+            attempt_id: 'attempt-f1',
+            usage: null,
+            halted_auto_advance: false,
+            quickfix_lane: false,
+            quickfix_landing: null,
+            resume_eligible: false,
+            resume_reason: null,
+            landed: false,
+            confirmation: 'unmerged',
+            open: true,
+            ...over
+          }
+        }
+      ]),
+      mount
+    );
+    return mount;
+  }
+
+  test('leads the popover with the session summary', () => {
+    const mount = mountOpenPopover({ summary: 'API Error: 529 Overloaded' });
+
+    const rows = Array.from(
+      mount.querySelectorAll('.rtile__failure-kv > div')
+    ).map((row) => row.textContent || '');
+
+    expect(rows[0]).toContain('보고');
+    expect(rows[0]).toContain('API Error: 529 Overloaded');
+  });
+
+  test('reports how many automatic retries preceded the failure', () => {
+    const mount = mountOpenPopover({
+      retry: {
+        cause: 'session_failed:is_error',
+        attempts: 3,
+        max: 3,
+        next_at: null
+      }
+    });
+
+    expect(mount.querySelector('.rtile__failure-pop')?.textContent).toContain(
+      '자동 재시도 3회 — 같은 오류'
+    );
+  });
+
+  test('omits the retry history row for a failure with no lineage', () => {
+    const mount = mountOpenPopover({});
+
+    expect(
+      mount.querySelector('.rtile__failure-pop')?.textContent
+    ).not.toContain('자동 재시도');
+  });
+});

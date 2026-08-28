@@ -73,74 +73,13 @@ function shellLiteral(value) {
 }
 
 /**
- * Render the `/bin/sh` pre-push script for one attempt.
+ * The docs-only exemption machinery, rendered in GUARD mode only. Record mode
+ * refuses nothing, so an exemption from a refusal would be dead code carrying a
+ * verdict — and the reader could not tell which mode it belonged to.
  *
- * Step 1 asks whether this push belongs to the attempt's repository, comparing
- * `--git-common-dir` (identical for a main checkout and every linked worktree,
- * which is what makes the `cd`-then-push path judgeable) on both sides. Both
- * sides are produced by git itself and then normalized with `pwd -P`, so a
- * symlinked path cannot make a repo look foreign. An unresolvable side passes:
- * the hook judges what git tells it and nothing else.
- *
- * Step 2 RECORDS every ref of this push and then asks whether any of them lands
- * on the attempt's base. The record comes first and covers the refused pushes
- * too (UI-1xcd §4.1): git computed these destinations, so the line is a FACT
- * about what this attempt tried, and the post-hoc detection layer is built on
- * it instead of guessing provenance from the commit graph. An append failure is
- * swallowed — a lost diagnostic must never turn into a failed push.
- *
- * The REMOTE NAME is never consulted — `refs/heads/<base>` on any remote is the
- * protected destination — and a deletion (all-zero local oid) counts as a
- * landing, because deleting the base is at least as destructive as moving it.
- *
- * A push judged FOREIGN by step 1 is never recorded: it exits before the loop,
- * and logging it would hand the detection layer someone else's push.
- *
- * ONE structural exemption sits inside that judgment (UI-7ufi §2.1): a
- * fast-forward whose whole delta lives under `docs/` passes and is recorded with
- * `"exempt":"docs_only"`. Without it the workflow contract's only artifact
- * publication path — `land-reviewed-artifact.py`, which pushes a detached
- * candidate straight at the base — is unreachable from inside a Worker attempt,
- * so a spec the Worker itself reviewed can never be revised. The exemption is
- * cut on the RESULT TREE rather than the commit shape, and nothing a session can
- * write (env, allowlist file, commit message) takes part in it. Because a base
- * line's verdict now belongs in its record, base lines are judged and then
- * recorded; every other line is recorded exactly as before.
- *
- * @param {{ repo: string, target_base: string, attempt_id: string, push_log: string }} input
- * @returns {string}
+ * @type {string}
  */
-export function renderHookScript(input) {
-  const repo_literal = shellLiteral(input.repo);
-  const ref_literal = shellLiteral(`refs/heads/${input.target_base}`);
-  const attempt_literal = shellLiteral(input.attempt_id);
-  const push_log_literal = shellLiteral(input.push_log);
-  return `#!/bin/sh
-# bdui worker base guard (UI-8mvc §2, UI-1xcd §4.1) — generated, do not edit.
-# attempt: ${input.attempt_id}
-set -u
-
-guard_attempt=${attempt_literal}
-guard_repo=${repo_literal}
-guard_ref=${ref_literal}
-guard_push_log=${push_log_literal}
-
-# JSON-escape one value. Ref names may legally hold a backslash-free set, but
-# the oids and refs arrive from git unchecked, so the two characters that could
-# break the line are escaped rather than assumed away.
-guard_json() {
-  printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g'
-}
-
-guard_record() {
-  {
-    printf '{"local_ref":"%s","local_oid":"%s","remote_ref":"%s","remote_oid":"%s"}\\n' \\
-      "$(guard_json "$1")" "$(guard_json "$2")" "$(guard_json "$3")" "$(guard_json "$4")" \\
-      >> "$guard_push_log"
-  } 2>/dev/null || :
-}
-
-# The same line plus the verdict that let it through (UI-7ufi §2.3). Only an
+const DOCS_ONLY_JUDGMENT = `# The same line plus the verdict that let it through (UI-7ufi §2.3). Only an
 # EXEMPTED base line takes this shape; every other line keeps the one above,
 # byte for byte, because the detection layer reads both.
 guard_record_exempt() {
@@ -249,18 +188,15 @@ guard_docs_only() {
   return 0
 }
 
-# 1) Is this push happening in the attempt's OWN repository? core.hooksPath is
-#    injected process-wide, so every repository the session pushes from lands
-#    here; only this one is judged.
-here=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
-mine=$(git -C "$guard_repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
-[ -n "$here" ] || exit 0
-[ -n "$mine" ] || exit 0
-here=$(CDPATH= cd -- "$here" 2>/dev/null && pwd -P) || exit 0
-mine=$(CDPATH= cd -- "$mine" 2>/dev/null && pwd -P) || exit 0
-[ "$here" = "$mine" ] || exit 0
+`;
 
-# 2) Record every ref of this push, THEN ask whether any lands on the base.
+/**
+ * The guard-mode ref loop: record every line, judge the base-destined ones, and
+ * refuse the ones the exemption does not cover.
+ *
+ * @type {string}
+ */
+const GUARD_LOOP = `# 2) Record every ref of this push, THEN ask whether any lands on the base.
 status=0
 while read -r local_ref local_oid remote_ref remote_oid; do
   [ -n "$remote_ref" ] || continue
@@ -287,6 +223,120 @@ while read -r local_ref local_oid remote_ref remote_oid; do
 done
 exit $status
 `;
+
+/**
+ * The record-mode ref loop (worker-failure-tiers §5.1): the same record, the
+ * same line shape, and no refusal — `status` never leaves 0.
+ *
+ * @type {string}
+ */
+const RECORD_LOOP = `# 2) Record every ref of this push and pass (worker-failure-tiers §5.1). The
+#    quick_fix lane's errand IS the base push, so no line is refused here; the
+#    record is the whole point, and the landing judgment reads it.
+status=0
+while read -r local_ref local_oid remote_ref remote_oid; do
+  [ -n "$remote_ref" ] || continue
+  guard_record "$local_ref" "$local_oid" "$remote_ref" "$remote_oid"
+  if [ "$remote_ref" = "$guard_ref" ]; then
+    printf '%s\\n' "bdui guard: recording base push to $remote_ref (attempt $guard_attempt, record mode)" >&2
+  fi
+done
+exit $status
+`;
+
+/**
+ * Render the `/bin/sh` pre-push script for one attempt.
+ *
+ * Step 1 asks whether this push belongs to the attempt's repository, comparing
+ * `--git-common-dir` (identical for a main checkout and every linked worktree,
+ * which is what makes the `cd`-then-push path judgeable) on both sides. Both
+ * sides are produced by git itself and then normalized with `pwd -P`, so a
+ * symlinked path cannot make a repo look foreign. An unresolvable side passes:
+ * the hook judges what git tells it and nothing else.
+ *
+ * Step 2 RECORDS every ref of this push and then asks whether any of them lands
+ * on the attempt's base. The record comes first and covers the refused pushes
+ * too (UI-1xcd §4.1): git computed these destinations, so the line is a FACT
+ * about what this attempt tried, and the post-hoc detection layer is built on
+ * it instead of guessing provenance from the commit graph. An append failure is
+ * swallowed — a lost diagnostic must never turn into a failed push.
+ *
+ * The REMOTE NAME is never consulted — `refs/heads/<base>` on any remote is the
+ * protected destination — and a deletion (all-zero local oid) counts as a
+ * landing, because deleting the base is at least as destructive as moving it.
+ *
+ * A push judged FOREIGN by step 1 is never recorded: it exits before the loop,
+ * and logging it would hand the detection layer someone else's push.
+ *
+ * ONE structural exemption sits inside that judgment (UI-7ufi §2.1): a
+ * fast-forward whose whole delta lives under `docs/` passes and is recorded with
+ * `"exempt":"docs_only"`. Without it the workflow contract's only artifact
+ * publication path — `land-reviewed-artifact.py`, which pushes a detached
+ * candidate straight at the base — is unreachable from inside a Worker attempt,
+ * so a spec the Worker itself reviewed can never be revised. The exemption is
+ * cut on the RESULT TREE rather than the commit shape, and nothing a session can
+ * write (env, allowlist file, commit message) takes part in it. Because a base
+ * line's verdict now belongs in its record, base lines are judged and then
+ * recorded; every other line is recorded exactly as before.
+ *
+ * RECORD MODE (worker-failure-tiers §5.1) keeps every one of those decisions
+ * except the refusal. The quick_fix lane's whole errand IS the base push, so it
+ * runs today with no hook at all and therefore leaves no evidence of what it
+ * landed; a hook that records and passes gives the landing judgment the same
+ * ref/oid facts the guarded lanes already produce. The record line is
+ * byte-identical to the guarded one — the detection layer reads one shape — and
+ * the docs-only judgment is not rendered at all, because an exemption from a
+ * refusal that cannot happen would only be dead code with a verdict.
+ *
+ * @param {{ repo: string, target_base: string, attempt_id: string, push_log: string, mode?: 'guard'|'record' }} input
+ * @returns {string}
+ */
+export function renderHookScript(input) {
+  const repo_literal = shellLiteral(input.repo);
+  const ref_literal = shellLiteral(`refs/heads/${input.target_base}`);
+  const attempt_literal = shellLiteral(input.attempt_id);
+  const push_log_literal = shellLiteral(input.push_log);
+  const mode = input.mode === 'record' ? 'record' : 'guard';
+  const judgment_block = mode === 'record' ? '' : DOCS_ONLY_JUDGMENT;
+  const loop_block = mode === 'record' ? RECORD_LOOP : GUARD_LOOP;
+  return `#!/bin/sh
+# bdui worker base guard (UI-8mvc §2, UI-1xcd §4.1) — generated, do not edit.
+# attempt: ${input.attempt_id}
+# mode: ${mode}
+set -u
+
+guard_attempt=${attempt_literal}
+guard_repo=${repo_literal}
+guard_ref=${ref_literal}
+guard_push_log=${push_log_literal}
+
+# JSON-escape one value. Ref names may legally hold a backslash-free set, but
+# the oids and refs arrive from git unchecked, so the two characters that could
+# break the line are escaped rather than assumed away.
+guard_json() {
+  printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g'
+}
+
+guard_record() {
+  {
+    printf '{"local_ref":"%s","local_oid":"%s","remote_ref":"%s","remote_oid":"%s"}\\n' \\
+      "$(guard_json "$1")" "$(guard_json "$2")" "$(guard_json "$3")" "$(guard_json "$4")" \\
+      >> "$guard_push_log"
+  } 2>/dev/null || :
+}
+
+${judgment_block}# 1) Is this push happening in the attempt's OWN repository? core.hooksPath is
+#    injected process-wide, so every repository the session pushes from lands
+#    here; only this one is judged.
+here=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+mine=$(git -C "$guard_repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+[ -n "$here" ] || exit 0
+[ -n "$mine" ] || exit 0
+here=$(CDPATH= cd -- "$here" 2>/dev/null && pwd -P) || exit 0
+mine=$(CDPATH= cd -- "$mine" 2>/dev/null && pwd -P) || exit 0
+[ "$here" = "$mine" ] || exit 0
+
+${loop_block}`;
 }
 
 /**
@@ -353,7 +403,12 @@ export function envFor(input, options = {}) {
  * from "this attempt predates the record" — so a failure to create it is a
  * dispatch refusal like any other, not a silent downgrade to guessing.
  *
- * @param {{ workspace: string, attempt_id: string, repo: string, target_base: string }} input
+ * `mode` picks which script is written (worker-failure-tiers §5.1). It is an
+ * input rather than an option because it is a property of the ATTEMPT — the
+ * quick_fix lane installs `record`, every other lane `guard` — and defaults to
+ * `guard`, so an unset value fails closed on the refusing script.
+ *
+ * @param {{ workspace: string, attempt_id: string, repo: string, target_base: string, mode?: 'guard'|'record' }} input
  * @param {{ fs?: typeof import('node:fs') }} [options]
  * @returns {{ ok: boolean, dir?: string, hook_path?: string, reason?: string }}
  */
@@ -383,7 +438,8 @@ export function install(input, options = {}) {
         repo,
         target_base,
         attempt_id: input.attempt_id,
-        push_log
+        push_log,
+        mode: input.mode === 'record' ? 'record' : 'guard'
       }),
       { mode: HOOK_MODE }
     );

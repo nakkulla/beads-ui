@@ -3384,6 +3384,58 @@ html[data-theme='dark'] {
 /* ==== 저장소 작업 상태 스트립 (UI-q0uy §4.1) ====
    기존 `<details>` 패널은 실패 1건에 전체를 강제로 펼쳐 화면을 덮었다. 접힌
    상태에서 사실을 다 말하는 한 줄 버튼으로 바꾸고, 부르는 일은 배지에 맡긴다. */
+/* 큐 보류/정지 배너 (UI-5ym8 §8). 두 종류의 색이 다른 것은 장식이 아니다:
+   환경 보류는 가만히 둬도 재시도가 풀어 주므로 회색이고, 체계적 정지는 사람의
+   [재개]만이 출구이므로 경고색이다. */
+.worker-hold {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-10);
+  flex-wrap: wrap;
+  width: 100%;
+  padding: var(--sp-6) var(--sp-10);
+  border: 1px solid var(--border-panel);
+  border-radius: var(--r-8);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: var(--fs-body-sm);
+}
+
+.worker-hold--systemic {
+  border-color: var(--border-warn);
+  background: color-mix(in srgb, var(--accent-warn) 8%, transparent);
+  color: var(--accent-warn);
+}
+
+.worker-hold__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.worker-hold__retry,
+.worker-hold__resume {
+  flex: 0 0 auto;
+  padding: 2px var(--sp-6);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-3);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-small);
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.worker-hold__resume {
+  border-color: var(--border-warn);
+}
+
+.worker-hold__retry:hover,
+.worker-hold__resume:hover {
+  border-color: currentcolor;
+}
+
 .worker-repo-strip {
   display: flex;
   align-items: center;
@@ -4146,6 +4198,63 @@ html[data-theme='dark'] {
   border-color: var(--border-warn);
   background: color-mix(in srgb, var(--accent-warn) 8%, transparent);
   color: var(--accent-warn);
+}
+
+/* 대기 타일 (UI-5ym8 §8): 파킹도 backoff 대기도 실패가 아니므로 붉은 테두리를
+   쓰지 않는다 — 색이 "큐가 멈췄다"를 말하면 안 된다. */
+.rtile--held {
+  border-color: var(--border-chip);
+}
+
+.rtile--held .rtile__dot {
+  background: var(--text-muted);
+  box-shadow: none;
+  animation: none;
+}
+
+.rtile__held-badge {
+  flex: 0 0 auto;
+  padding: 1px var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.rtile__held-summary {
+  margin: var(--sp-4) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.rtile__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  flex-wrap: wrap;
+  margin-top: var(--sp-6);
+}
+
+.rtile__parked-retry {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-3);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.rtile__parked-retry:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .rtile__failure-pop {

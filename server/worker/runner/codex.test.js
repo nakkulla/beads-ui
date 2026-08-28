@@ -554,7 +554,7 @@ describe('runner/codex verdict (last turn terminal event)', () => {
         exit: 0,
         blocked: false
       })
-    ).toEqual({ success: true, reason: 'ok' });
+    ).toEqual({ success: true, reason: 'ok', summary: 'no_result' });
   });
 
   test('fails on a turn.failed', () => {
@@ -566,7 +566,11 @@ describe('runner/codex verdict (last turn terminal event)', () => {
         exit: 1,
         blocked: false
       })
-    ).toEqual({ success: false, reason: 'turn_failed' });
+    ).toEqual({
+      success: false,
+      reason: 'turn_failed',
+      summary: 'no_result'
+    });
   });
 
   test('fails with no_result on a stream with no terminal turn event', () => {
@@ -578,7 +582,101 @@ describe('runner/codex verdict (last turn terminal event)', () => {
         exit: 0,
         blocked: false
       })
-    ).toEqual({ success: false, reason: 'no_result' });
+    ).toEqual({
+      success: false,
+      reason: 'no_result',
+      summary: 'no_result'
+    });
+  });
+});
+
+describe('runner/codex verdict summary (worker-failure-tiers §6)', () => {
+  /**
+   * @param {string} text
+   * @returns {any}
+   */
+  function agentMessage(text) {
+    return {
+      type: 'item.completed',
+      item: { id: 'i', type: 'agent_message', text }
+    };
+  }
+
+  /**
+   * @param {string} message
+   * @returns {any}
+   */
+  function turnFailed(message) {
+    return { type: 'turn.failed', error: { message } };
+  }
+
+  test('reports the no_result literal for a stream that said nothing', () => {
+    const v = codexSpec().verdict({
+      raw: [{ type: 'turn.completed' }],
+      exit: 0,
+      blocked: false
+    });
+
+    expect(v.summary).toBe('no_result');
+  });
+
+  test('reports the last agent message when the turn completed', () => {
+    const v = codexSpec().verdict({
+      raw: [
+        agentMessage('첫 보고'),
+        agentMessage('마지막 보고'),
+        { type: 'turn.completed' }
+      ],
+      exit: 0,
+      blocked: false
+    });
+
+    expect(v.summary).toBe('마지막 보고');
+  });
+
+  test('prefers a failed turn error message over the agent message', () => {
+    const v = codexSpec().verdict({
+      raw: [agentMessage('작업을 정리했습니다'), turnFailed('fetch failed')],
+      exit: 1,
+      blocked: false
+    });
+
+    expect(v).toEqual({
+      success: false,
+      reason: 'turn_failed',
+      summary: 'fetch failed'
+    });
+  });
+
+  test('falls back to the agent message when the failed turn carries no message', () => {
+    const v = codexSpec().verdict({
+      raw: [
+        agentMessage('테스트가 실패했습니다'),
+        { type: 'turn.failed', error: {} }
+      ],
+      exit: 1,
+      blocked: false
+    });
+
+    expect(v.summary).toBe('테스트가 실패했습니다');
+  });
+
+  test('keeps the first non-empty line, cut at 200 characters', () => {
+    const v = codexSpec().verdict({
+      raw: [turnFailed(`\n\n  ${'y'.repeat(300)}\n뒷줄`)],
+      exit: 1,
+      blocked: false
+    });
+
+    expect(v.summary).toBe('y'.repeat(200));
+  });
+
+  test('carries the summary out of the session engine', async () => {
+    const spawn_impl = makeFixtureSpawn({ file: SUCCESS_FIXTURE, exit: 0 });
+
+    const v = await spawnCodex(BEAD, WS, { model: 'sol' }, { spawn_impl }).done;
+
+    expect(v.summary).toBe('DONE');
   });
 });
 

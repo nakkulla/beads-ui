@@ -137,7 +137,7 @@ const DONE_KIND_LABELS = {
  *   kind?: 'session',
  *   non_occupying?: boolean,
  *   attempt_id?: string|null,
- *   run_state?: 'running'|'paused'|'failed',
+ *   run_state?: 'running'|'paused'|'failed'|'parked'|'retry_wait',
  *   can_pause?: boolean,
  *   can_resume?: boolean,
  *   started_at?: number|null,
@@ -152,6 +152,7 @@ const DONE_KIND_LABELS = {
  *   continuation_mode?: 'session'|'fresh'|null,
  *   continuation_mismatch?: any,
  *   failure?: import('./running-grid.js').FailureTile|null,
+ *   retry?: import('./running-grid.js').RetryTile|null,
  *   conflict_resolution?: boolean,
  *   base_exception?: string|null,
  *   rollup?: import('../../utils/child-rollup.js').ChildRollup|null,
@@ -497,62 +498,226 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
     });
     const failure =
       run_state === 'failed'
-        ? {
-            cause: typeof a.cause === 'string' ? a.cause : null,
-            cause_detail:
-              a.cause_detail && typeof a.cause_detail === 'object'
-                ? a.cause_detail
-                : null,
-            finished_at:
-              typeof a.finished_at === 'number' ? a.finished_at : null,
-            runner: typeof a.runner === 'string' ? a.runner : null,
-            model: typeof a.model === 'string' ? a.model : null,
-            effort: typeof a.effort === 'string' ? a.effort : null,
-            observed_effort:
-              typeof a.observed_effort === 'string' ? a.observed_effort : null,
-            speed: typeof a.speed === 'string' ? a.speed : null,
-            attempt_id: typeof a.attempt_id === 'string' ? a.attempt_id : '',
-            usage: a.usage && typeof a.usage === 'object' ? a.usage : null,
-            halted_auto_advance: a.halted_auto_advance === true,
-            quickfix_lane: a.quickfix_lane === true,
-            quickfix_landing:
-              a.quickfix_landing && typeof a.quickfix_landing === 'object'
-                ? a.quickfix_landing
-                : null,
+        ? failureProjection(a, {
             resume_eligible,
             resume_reason,
-            landed: quickFixLanded(a),
             confirmation: discard.confirmation
-          }
+          })
         : null;
     map.set(bead_id, {
-      attempt_id: typeof a.attempt_id === 'string' ? a.attempt_id : '',
-      run_state,
+      ...liveAttemptFields(a, attempts, run_state),
       started_at,
-      last_event_at:
-        typeof a.last_event_at === 'number' ? a.last_event_at : null,
-      last_activity:
-        a.last_activity && typeof a.last_activity === 'object'
-          ? a.last_activity
-          : null,
-      legs: Array.isArray(a.legs) ? a.legs : [],
-      runner: typeof a.runner === 'string' ? a.runner : null,
-      model: typeof a.model === 'string' ? a.model : null,
-      effort: typeof a.effort === 'string' ? a.effort : null,
-      speed: typeof a.speed === 'string' ? a.speed : null,
-      resumed_from: typeof a.resumed_from === 'string' ? a.resumed_from : null,
-      continuation_mode:
-        a.continuation_mode === 'session' || a.continuation_mode === 'fresh'
-          ? a.continuation_mode
-          : null,
-      status: typeof a.status === 'string' ? a.status : null,
-      usage: sumAttemptUsage(attempts, a.bead_id),
       ...(failure ? { failure } : {}),
       can_pause: run_state === 'running' && has_session,
       can_resume: resume_eligible
     });
   }
+
+  // 사람(파킹) 또는 시계(backoff)를 기다리는 attempt (UI-5ym8 §3.1·§3.3).
+  // `activeAttemptStates`는 실행·일시정지·실패만 안다 — 그 판정은 점유(그리고
+  // 서버의 `counts.running`)가 쓰는 것이고, 이 둘은 슬롯을 잡지 않으므로 거기
+  // 넣으면 기다리는 bead가 '실행 중'으로 세어진다. 그래서 타일은 여기서 난다.
+  for (const [bead_id, held] of heldAttemptStates(attempts, done_at_by_bead)) {
+    // 같은 bead에 살아 있는 attempt가 이미 있으면 그것이 이긴다: 사람이 파킹을
+    // 재시도해 새 세션이 도는 동안 옛 파킹 기록이 카드를 빼앗지 않는다.
+    if (map.has(bead_id)) {
+      continue;
+    }
+    const a = held.attempt;
+    const discard = discardProjection(input.discard_operations, bead_id, {
+      attempt_id: a.attempt_id
+    });
+    const retry = retryProjection(a);
+    map.set(bead_id, {
+      ...liveAttemptFields(a, attempts, held.run_state),
+      started_at: typeof a.started_at === 'number' ? a.started_at : null,
+      ...(held.run_state === 'parked'
+        ? {
+            failure: failureProjection(a, {
+              // 파킹의 출구는 이어하기가 아니라 새 attempt다 (§3.1): 같은
+              // 세션을 되살리면 사용자가 결정하기 전 자리로 돌아간다.
+              resume_eligible: false,
+              resume_reason: '세션 대기 — [재시도]가 새 attempt를 띄웁니다',
+              confirmation: discard.confirmation
+            })
+          }
+        : {}),
+      ...(retry ? { retry } : {}),
+      can_pause: false,
+      can_resume: false
+    });
+  }
   return map;
+}
+
+/**
+ * The fields every 실행중 항목 carries whatever its state is. Extracted so the
+ * running/paused/failed loop and the parked/retry_wait loop cannot end up
+ * describing the same attempt with two different sets of facts.
+ *
+ * @param {any} a
+ * @param {Record<string, any>} attempts
+ * @param {'running'|'paused'|'failed'|'parked'|'retry_wait'} run_state
+ */
+function liveAttemptFields(a, attempts, run_state) {
+  return {
+    attempt_id: typeof a.attempt_id === 'string' ? a.attempt_id : '',
+    run_state,
+    last_event_at: typeof a.last_event_at === 'number' ? a.last_event_at : null,
+    last_activity:
+      a.last_activity && typeof a.last_activity === 'object'
+        ? a.last_activity
+        : null,
+    legs: Array.isArray(a.legs) ? a.legs : [],
+    runner: typeof a.runner === 'string' ? a.runner : null,
+    model: typeof a.model === 'string' ? a.model : null,
+    effort: typeof a.effort === 'string' ? a.effort : null,
+    speed: typeof a.speed === 'string' ? a.speed : null,
+    resumed_from: typeof a.resumed_from === 'string' ? a.resumed_from : null,
+    continuation_mode:
+      a.continuation_mode === 'session' || a.continuation_mode === 'fresh'
+        ? a.continuation_mode
+        : null,
+    status: typeof a.status === 'string' ? a.status : null,
+    usage: sumAttemptUsage(attempts, a.bead_id)
+  };
+}
+
+/**
+ * The decision material of an attempt that ENDED without landing — a failure or
+ * a park (UI-5ym8 §8). Both travel through the same projection because both
+ * answer the same question ("무엇이 이 시도를 끝냈나"); only the badge and the
+ * buttons differ, and those are the renderer's call.
+ *
+ * `summary` is hoisted out of `cause_detail` rather than left inside it: it is
+ * the ONE line the parked tile body and the failure popover's first row both
+ * read, and records written before §6 simply have none (fail-quiet).
+ *
+ * @param {any} a
+ * @param {{ resume_eligible: boolean, resume_reason: string|null, confirmation: 'merged'|'unmerged' }} ctx
+ * @returns {import('./running-grid.js').FailureTile}
+ */
+function failureProjection(a, ctx) {
+  const cause_detail =
+    a.cause_detail && typeof a.cause_detail === 'object'
+      ? a.cause_detail
+      : null;
+  return {
+    cause: typeof a.cause === 'string' ? a.cause : null,
+    cause_detail,
+    summary:
+      cause_detail && typeof cause_detail.summary === 'string'
+        ? cause_detail.summary
+        : null,
+    bead_id: typeof a.bead_id === 'string' ? a.bead_id : '',
+    finished_at: typeof a.finished_at === 'number' ? a.finished_at : null,
+    runner: typeof a.runner === 'string' ? a.runner : null,
+    model: typeof a.model === 'string' ? a.model : null,
+    effort: typeof a.effort === 'string' ? a.effort : null,
+    observed_effort:
+      typeof a.observed_effort === 'string' ? a.observed_effort : null,
+    speed: typeof a.speed === 'string' ? a.speed : null,
+    attempt_id: typeof a.attempt_id === 'string' ? a.attempt_id : '',
+    usage: a.usage && typeof a.usage === 'object' ? a.usage : null,
+    halted_auto_advance: a.halted_auto_advance === true,
+    quickfix_lane: a.quickfix_lane === true,
+    quickfix_landing:
+      a.quickfix_landing && typeof a.quickfix_landing === 'object'
+        ? a.quickfix_landing
+        : null,
+    retry: retryProjection(a),
+    resume_eligible: ctx.resume_eligible,
+    resume_reason: ctx.resume_reason,
+    landed: quickFixLanded(a),
+    confirmation: ctx.confirmation
+  };
+}
+
+/**
+ * The backoff facts of one attempt (UI-5ym8 §6), or null when it carries none.
+ * A record written before §6 has no `retry` key at all, so the 재시도 대기 badge
+ * and the popover's 이력 row simply do not render.
+ *
+ * @param {any} attempt
+ * @returns {import('./running-grid.js').RetryTile|null}
+ */
+function retryProjection(attempt) {
+  const retry =
+    attempt && attempt.retry && typeof attempt.retry === 'object'
+      ? attempt.retry
+      : null;
+  if (!retry) {
+    return null;
+  }
+  return {
+    cause: typeof retry.cause === 'string' ? retry.cause : null,
+    attempts: typeof retry.attempts === 'number' ? retry.attempts : 0,
+    max: typeof retry.max === 'number' ? retry.max : 0,
+    next_at: typeof retry.next_at === 'number' ? retry.next_at : null
+  };
+}
+
+/**
+ * Attempt statuses that keep a bead in the 실행중 레인 WITHOUT it running
+ * (UI-5ym8 §6). `parked` waits for a person's decision and `retry_wait` waits
+ * for the backoff clock; neither is a failure, so neither halts the queue, and
+ * neither occupies a slot — but both need a tile, because the tile is the only
+ * place the 재시도·폐기 actions exist.
+ *
+ * `superseded` is deliberately NOT here: it records an attempt that a later
+ * retry replaced, so it is history and leaves the grid the way a dismissed
+ * failure does.
+ *
+ * @type {Set<string>}
+ */
+const HELD_STATUSES = new Set(['parked', 'retry_wait']);
+
+/**
+ * The parked/retry_wait attempts of one repo, folded onto their beads.
+ *
+ * The admission rules mirror the unhandled-failure ones exactly (last
+ * implementation attempt · not dismissed · not resolved by a done entry), so a
+ * park a person already cleared does not come back as a card.
+ *
+ * @param {Record<string, any>} attempts
+ * @param {Map<string, number>} done_at_by_bead
+ * @returns {Map<string, { attempt: any, run_state: 'parked'|'retry_wait' }>}
+ */
+function heldAttemptStates(attempts, done_at_by_bead) {
+  const values = /** @type {any[]} */ (Object.values(attempts || {}));
+  /** @type {Map<string, string>} */
+  const last_impl_by_bead = new Map();
+  for (const a of values) {
+    if (a && typeof a.bead_id === 'string' && isImplementationAttempt(a)) {
+      last_impl_by_bead.set(a.bead_id, a.attempt_id);
+    }
+  }
+  /** @type {Map<string, { attempt: any, run_state: 'parked'|'retry_wait' }>} */
+  const held = new Map();
+  for (const a of values) {
+    if (
+      !a ||
+      typeof a.bead_id !== 'string' ||
+      a.bead_id.length === 0 ||
+      !isImplementationAttempt(a) ||
+      !HELD_STATUSES.has(a.status) ||
+      last_impl_by_bead.get(a.bead_id) !== a.attempt_id ||
+      typeof a.dismissed_at === 'number'
+    ) {
+      continue;
+    }
+    const done_at = done_at_by_bead.get(a.bead_id);
+    if (
+      typeof done_at === 'number' &&
+      done_at > 0 &&
+      typeof a.finished_at === 'number' &&
+      done_at >= a.finished_at
+    ) {
+      continue;
+    }
+    held.set(a.bead_id, { attempt: a, run_state: a.status });
+  }
+  return held;
 }
 
 /**
@@ -2007,6 +2172,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
         continuation_mode: live.continuation_mode,
         usage: live.usage,
         failure: live.failure || null,
+        // backoff 사실은 실패와 별개 키다 (UI-5ym8 §6): `retry_wait` 타일의
+        // 배지가 이것만으로 그려지고, `failed` 타일에서는 팝오버의 재시도 이력
+        // 줄이 같은 값을 읽는다.
+        retry: live.retry || null,
         exec_chips: {
           orchestration: formatAttemptOrchestrationChip(live),
           // worker 칩은 그 attempt가 기록한 runner를 controller로 삼아 푼다
@@ -2032,7 +2201,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
             ? ['⏸ 일시정지']
             : live.run_state === 'failed'
               ? ['⚠ 실패']
-              : [],
+              : live.run_state === 'parked'
+                ? ['⏸ 세션 대기']
+                : live.run_state === 'retry_wait'
+                  ? ['↻ 재시도 대기']
+                  : [],
+        // 경보는 실패의 것이다 (UI-5ym8 §2): 파킹도 backoff 대기도 큐를 세우지
+        // 않으므로, 그것들을 붉게 물들이면 "타일이 서면 큐가 멈춘 것"이라는
+        // 낡은 읽기를 다시 가르치게 된다.
         alert: live.run_state === 'failed'
       });
     }

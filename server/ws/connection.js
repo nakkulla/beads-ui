@@ -98,9 +98,12 @@ import {
   handleWorkerMergeQueueAdd,
   handleWorkerMergeQueueAddAll,
   handleWorkerMergeQueueRemove,
+  handleWorkerParkedRetry,
   handleWorkerPrDiscard,
   handleWorkerQueueArm,
   handleWorkerQueueDisarm,
+  handleWorkerQueueHoldResume,
+  handleWorkerQueueHoldRetryNow,
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
@@ -569,6 +572,18 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-repo-operation-dismiss':
       await handleWorkerRepoOperationDismiss(ws, req);
+      return;
+    // UI-5ym8: protocol.js union updated by worker-ui unit
+    case /** @type {any} */ ('worker-queue-hold-resume'):
+      await handleWorkerQueueHoldResume(ws, req);
+      return;
+    // UI-5ym8: protocol.js union updated by worker-ui unit
+    case /** @type {any} */ ('worker-queue-hold-retry-now'):
+      await handleWorkerQueueHoldRetryNow(ws, req);
+      return;
+    // UI-5ym8: protocol.js union updated by worker-ui unit
+    case /** @type {any} */ ('worker-parked-retry'):
+      await handleWorkerParkedRetry(ws, req);
       return;
     case 'worker-repo-operation-deploy-run':
       await handleWorkerRepoOperationDeployRun(ws, req);

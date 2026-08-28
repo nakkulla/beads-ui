@@ -33,6 +33,22 @@ describe('failureCategory', () => {
     expect(failureCategory('session_transport_failed')).toBe('세션 실패');
   });
 
+  // 파킹은 실패가 아니고 미해소 종료는 세션 자체의 실패와 다르다 (UI-5ym8
+  // §3): 둘 다 `session_` 접두 규칙이 '세션 실패'로 뭉뚱그리기 전에 잡힌다.
+  test('names a parked session apart from a session failure', () => {
+    expect(failureCategory('session_parked')).toBe('세션 대기');
+  });
+
+  test('names an unresolved session end apart from a session failure', () => {
+    expect(failureCategory('session_ended_unresolved')).toBe('세션 종료');
+  });
+
+  test('names missing landing evidence', () => {
+    expect(failureCategory('delivery_unproven:push_log_absent')).toBe(
+      '착지 증거 부족'
+    );
+  });
+
   test('returns 실패 for an unclassified token', () => {
     expect(failureCategory('surprise_new_token')).toBe('실패');
   });

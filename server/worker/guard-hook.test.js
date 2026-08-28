@@ -347,6 +347,102 @@ describe('guard-hook push log (UI-1xcd §4.1)', () => {
   });
 });
 
+describe('guard-hook record mode (worker-failure-tiers §5.1)', () => {
+  /**
+   * @param {'guard'|'record'} [mode]
+   * @returns {string}
+   */
+  function render(mode) {
+    return renderHookScript({
+      repo: '/repo',
+      target_base: 'main',
+      attempt_id: ATTEMPT,
+      push_log: '/state/pushes.jsonl',
+      mode
+    });
+  }
+
+  test('renders no refusal for the base ref', () => {
+    const script = render('record');
+
+    expect(script).not.toContain('status=1');
+    expect(script).not.toContain('refusing push to');
+  });
+
+  test('keeps refusing the base ref in guard mode', () => {
+    const script = render('guard');
+
+    expect(script).toContain('status=1');
+    expect(script).toContain('refusing push to');
+  });
+
+  test('defaults to guard mode when no mode is named', () => {
+    expect(render()).toBe(render('guard'));
+  });
+
+  test('records the base line in the SAME shape the detection layer reads', () => {
+    // Byte-for-byte the guarded record: `readPushLog` and the landing judgment
+    // parse one line shape, not one per mode.
+    const record_line =
+      'printf \'{"local_ref":"%s","local_oid":"%s","remote_ref":"%s","remote_oid":"%s"}\\n\'';
+
+    expect(render('record')).toContain(record_line);
+    expect(render('guard')).toContain(record_line);
+  });
+
+  test('announces the recorded base push on stderr', () => {
+    expect(render('record')).toContain(
+      'bdui guard: recording base push to $remote_ref (attempt $guard_attempt, record mode)'
+    );
+  });
+
+  test('omits the docs-only judgment it can never use', () => {
+    const script = render('record');
+
+    expect(script).not.toContain('guard_docs_only');
+    expect(script).not.toContain('exempt":"docs_only');
+  });
+
+  test('keeps the repo identity gate, so a foreign push is still out of scope', () => {
+    expect(render('record')).toContain('[ "$here" = "$mine" ] || exit 0');
+  });
+
+  test('install writes the record script under the record mode', () => {
+    install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '/repo',
+      target_base: 'main',
+      mode: 'record'
+    });
+
+    const script = fs.readFileSync(
+      path.join(guardHookDir(WS, ATTEMPT), 'pre-push'),
+      'utf8'
+    );
+
+    expect(script).toContain('# mode: record');
+    expect(script).not.toContain('refusing push to');
+  });
+
+  test('install without a mode keeps writing the refusing script', () => {
+    install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '/repo',
+      target_base: 'main'
+    });
+
+    const script = fs.readFileSync(
+      path.join(guardHookDir(WS, ATTEMPT), 'pre-push'),
+      'utf8'
+    );
+
+    expect(script).toContain('# mode: guard');
+    expect(script).toContain('refusing push to');
+  });
+});
+
 describe('guard-hook envFor', () => {
   test('returns the three GIT_CONFIG keys at index 0 with no inherited count', () => {
     const env = envFor({ workspace: WS, attempt_id: ATTEMPT }, { env: {} });

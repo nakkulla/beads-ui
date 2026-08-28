@@ -12,9 +12,10 @@
  *
  * Three-state, fail-closed (the gh adapter's contract):
  *   - observed a PR              → success.
- *   - observed successfully, none → `pr_missing` (the attempt failed).
+ *   - observed successfully, none → `no_pr` + the bd `status`/`awaiting_user`
+ *     readback the failure tiers judge that ending with (spec §3.1-§3.3).
  *   - could not observe          → short retry, then `gh_observation_failed`.
- *     An observation error is NEVER downgraded to `pr_missing`; a `gh` outage
+ *     An observation error is NEVER downgraded to `no_pr`; a `gh` outage
  *     must not read as "the session never opened a PR".
  *
  * On success the WORKER back-fills bd itself — `metadata.pr_url` = the observed
@@ -44,7 +45,7 @@
  * MERGED counts as success: the question verify answers is "is the work done",
  * and a merged PR answers it more strongly than an open one. Everything else
  * stays fail-closed — a gh failure is still `gh_observation_failed`, a bd query
- * failure is `bd_read_failed`, and CLOSED-unmerged is still `pr_missing`.
+ * failure is `bd_read_failed`, and CLOSED-unmerged is still `no_pr`.
  *
  * @import { GhResult, PrObservation, PrDetail } from './gh.js'
  */
@@ -53,12 +54,16 @@ import { branchForBead } from './worktree.js';
 /**
  * @typedef {Object} VerifyResult
  * @property {boolean} ok - An open PR was observed AND bd carries the record.
- * @property {'ok'|'pr_missing'|'gh_observation_failed'|'bd_record_failed'|'bd_read_failed'} reason
- * `pr_missing` = successful observation, no PR that proves completion.
+ * @property {'ok'|'no_pr'|'gh_observation_failed'|'bd_record_failed'|'bd_read_failed'} reason
+ * `no_pr` = successful observation, no PR that proves completion. It is a
+ * FACT, not a verdict (2026-08-28 worker-failure-tiers spec §3.1-§3.3): the
+ * retired `pr_missing` verdict called every such ending a failure, and the
+ * tiers now decide between `parked`, `individual` and `env` from the two
+ * readbacks this result carries.
  * `gh_observation_failed` = the observation itself could not be completed
  * (retried). `bd_record_failed` = PR observed, but the worker's
  * `pr_url`/`resolved` back-fill did not stick. `bd_read_failed` = the fallback's
- * bd query itself failed, which is NOT downgraded to `pr_missing` for the same
+ * bd query itself failed, which is NOT downgraded to `no_pr` for the same
  * reason a gh outage is not.
  * @property {string|null} pr_url - Observed PR URL (null unless observed).
  * @property {number|null} pr_number - Observed PR number (null unless observed).
@@ -70,6 +75,12 @@ import { branchForBead } from './worktree.js';
  * @property {boolean} already_finished - The bead was ALREADY `closed` when the
  * merged PR was observed: bd was left untouched and the scheduler must route the
  * bead to `done` instead of `pr_wait`, so a finished cleanup is not re-run.
+ * @property {string|null} [bead_status] - bd status read back at the moment of
+ * a `no_pr` observation (spec §3.1). Only the `no_pr` result carries it.
+ * @property {string|null} [awaiting_user] - The bead's `awaiting_user`
+ * metadata at that same moment; its PRESENCE is what separates a parked
+ * session from an unresolved one. Null means the key is absent, which is a
+ * successful read — a failed read is `bd_read_failed` instead.
  */
 
 /** Extra observation attempts after the first (worker-phase2 §1 "짧은 재시도"). */
@@ -173,7 +184,7 @@ export function createVerifier(deps) {
   /**
    * Observe the branch's open PR, retrying ONLY the error state (an empty
    * result is an answer, not a failure — retrying it would just delay the
-   * `pr_missing` verdict).
+   * `no_pr` verdict).
    *
    * @param {string} repo
    * @param {string} branch
@@ -256,6 +267,36 @@ export function createVerifier(deps) {
   }
 
   /**
+   * Complete a `no_pr` observation with the two bd readbacks the failure tiers
+   * judge it by (spec §3.1-§3.3): the bead's status and whether it carries an
+   * `awaiting_user` key. Neither read is a verdict here — this module reports
+   * the FACT and `failure-class.js` decides what it means.
+   *
+   * A read that FAILS is not downgraded to "the key is absent", for the same
+   * reason a gh outage is not downgraded to "no PR": absence is what makes an
+   * ending an individual failure rather than a park, so an unreadable bd would
+   * silently fail a parked bead. It yields `bd_read_failed`, which is itself an
+   * environmental cause.
+   *
+   * @param {string} bead_id
+   * @param {VerifyResult} base
+   * @returns {Promise<VerifyResult>}
+   */
+  async function noPr(bead_id, base) {
+    /** @type {string|null} */
+    let bead_status;
+    /** @type {string|null} */
+    let awaiting_user;
+    try {
+      bead_status = await deps.bd.readStatus(bead_id);
+      awaiting_user = await deps.bd.readMetadata(bead_id, 'awaiting_user');
+    } catch {
+      return { ...base, reason: 'bd_read_failed' };
+    }
+    return { ...base, bead_status, awaiting_user };
+  }
+
+  /**
    * Second-stage observation: the PR recorded in `metadata.pr_url`, admitted
    * only when it PROVES it is this repository's pull request.
    *
@@ -267,7 +308,7 @@ export function createVerifier(deps) {
     /** @type {VerifyResult} */
     const missing = {
       ok: false,
-      reason: 'pr_missing',
+      reason: 'no_pr',
       pr_url: null,
       pr_number: null,
       gh_reason: null,
@@ -286,11 +327,11 @@ export function createVerifier(deps) {
       return { ...missing, reason: 'bd_read_failed' };
     }
     if (recorded === null) {
-      return missing;
+      return noPr(bead_id, missing);
     }
     const parsed = parsePrUrlStrict(recorded);
     if (parsed === null) {
-      return missing;
+      return noPr(bead_id, missing);
     }
     /** @type {string|null} */
     let slug;
@@ -310,7 +351,7 @@ export function createVerifier(deps) {
       };
     }
     if (slug.toLowerCase() !== parsed.slug.toLowerCase()) {
-      return missing;
+      return noPr(bead_id, missing);
     }
     /** @type {GhResult<PrDetail>} */
     let detail;
@@ -330,10 +371,10 @@ export function createVerifier(deps) {
     if (pr.url !== recorded) {
       // The number resolved to a different PR than the one recorded — the url
       // is the identity, not the number.
-      return missing;
+      return noPr(bead_id, missing);
     }
     if (pr.state !== 'OPEN' && pr.state !== 'MERGED') {
-      return missing;
+      return noPr(bead_id, missing);
     }
     /** @type {{ ok: boolean, already_finished: boolean, reason: 'ok'|'bd_read_failed'|'bd_record_failed' }} */
     let record;

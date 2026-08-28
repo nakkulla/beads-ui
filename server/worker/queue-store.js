@@ -100,7 +100,11 @@
  * @property {string|null} repo - Target repo root (the reconcile's observation
  * scope: a dead attempt's PR is looked for in THIS repo).
  * @property {string|null} status - Attempt lifecycle: pending/running/done/
- * failed/orphaned/paused/stopped/discarded. `paused` is resumable; `stopped` is
+ * failed/orphaned/paused/stopped/discarded/parked/retry_wait/superseded.
+ * `parked` is a session that ended successfully while waiting on a user
+ * decision (2026-08-28 worker-failure-tiers spec §3.1) — not a failure.
+ * `retry_wait` is an env failure whose backoff ladder still has a rung (§3.3),
+ * and `superseded` is an earlier `retry_wait` record the retry replaced. `paused` is resumable; `stopped` is
  * legacy history; `discarded` is the unified archive-backed terminal action.
  * `pending` is a `review_session` registered by the `[리뷰 후 머지]` CAS write
  * whose session has not spawned yet (UI-d7fy §5.2); the four states that lane
@@ -109,7 +113,7 @@
  * @property {string|null} target_base - Merge target base at dispatch.
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
  * @property {string|null} cause - Failure cause shown by the decision tile.
- * @property {{ reason: string, command: string|null }|null} cause_detail -
+ * @property {{ reason?: string, command?: string|null, summary?: string|null, [k: string]: unknown }|null} cause_detail -
  * What the fail-closed path actually caught, when the cause alone cannot say
  * it (UI-2o4z §2): the caught `reason` plus the simple command it matched
  * (`command` null for an interactive-question blocker). Every fail-closed path
@@ -120,7 +124,20 @@
  * also round-trip. Null alone does not resolve the failure; supersede and done
  * records are the other resolution evidence.
  * @property {boolean} halted_auto_advance - Whether this attempt performed the
- * durable true-to-false auto-advance transition.
+ * durable true-to-false auto-advance transition. LEGACY: the failure tiers of
+ * the 2026-08-28 spec never write it; it is what limits the "unhandled
+ * failure" judgment to the records the old regime halted on (§4).
+ * @property {{ cause: string, attempts: number, max: number, next_at: number|null, origin_attempt_id: string|null }|null} retry -
+ * The env retry ladder this attempt sits on (spec §3.3/§6). `origin_attempt_id`
+ * names the FIRST attempt of the lineage, so a bead's retries read as one
+ * chain. Null on every attempt that is not part of a ladder.
+ * @property {boolean} awaiting_user_present - Whether the bead carried an
+ * `awaiting_user` key when this attempt parked (spec §3.1). It is the LEFT half
+ * of the present→absent transition the bd-change subscription resumes on; an
+ * attempt that never parked leaves it false.
+ * @property {number|null} parked_resumed_at - Epoch ms this `parked` attempt
+ * was resumed (auto or by the tile's 재시도). Written once, and its presence is
+ * what makes the resume fire exactly once per attempt.
  * @property {{ input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens?: number, total_cost_usd?: number }|null} usage -
  * Token usage this attempt consumed (UI-raqh §1), persisted when the session
  * ends (success/failure/pause/stop) from the live tally in `usage-store.js`.
@@ -423,6 +440,15 @@
  * and never in the cache — it is attached to exported snapshots only, because
  * the value is recomputed at every start. It is what separates "a restart
  * stopped this lane" from "this lane was never started".
+ * @property {import('./queue-hold.js').QueueHold|null} hold - The queue's
+ * FAILURE-owned stop (2026-08-28 worker-failure-tiers spec §4). `env` is an
+ * unattended backoff hold, `systemic` is the stop only a user `재개` clears.
+ * Independent of {@link Queue.auto_advance}, which is the user's ⏸/▶ alone.
+ * @property {import('./queue-hold.js').RetryLineage[]} lineages - Live env
+ * retry ladders, one per bead (spec §3.3). Empty means nothing is waiting to
+ * retry, which is what every legacy `queue.json` loads as.
+ * @property {import('./queue-hold.js').HoldHistoryEntry[]} hold_history -
+ * Recent env failures, pruned to the 30-minute cross-bead repetition window.
  * @property {Record<string, Attempt>} attempts - Attempt records by attempt_id.
  * @property {Record<string, AdmissionRecord>} admission -
  * Auto-run admission observations by bead_id (badge display). Cleared only on a
@@ -790,6 +816,12 @@ import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { createUnhandledFailurePredicate } from './attempt-failure.js';
+// The `needs_human` vocabulary is the KERNEL's (UI-5ym8 §7), so the store
+// consumes it rather than re-stating it. This is a module cycle —
+// `completion-intent.js` imports two constants back from here — and it is safe
+// only because neither side touches the other's bindings at module-evaluation
+// time. Nothing here may move a use of this import to the top level.
+import { migrateStoredNeedsHumanReason } from './completion-intent.js';
 import {
   finalizeDelegationSessions,
   normalizeDelegationSessions,
@@ -797,6 +829,11 @@ import {
 } from './delegation-monitor.js';
 import { ORCHESTRATION_KEYS, execSettingEnums } from './exec-enums.js';
 import { orderLaneByBlocks } from './lane-order.js';
+import {
+  RETRY_MAX,
+  normalizeHoldState,
+  reduceQueueHold
+} from './queue-hold.js';
 import { queueFilePath } from './state-paths.js';
 import {
   consumeUsageReceiptFiles,
@@ -1453,6 +1490,14 @@ function planRepairLaneRetirements(parsed) {
 /* UI-8w4t legacy-read:end */
 
 /**
+ * Cold load of every durable completion saga.
+ *
+ * This is also where a terminal cause left by a RETIRED lane is migrated into
+ * the five-family vocabulary the kernel now stops on (`completion-intent.js`
+ * `migrateStoredNeedsHumanReason`). It is deliberately narrow — see that
+ * function for why renaming every stored cause here would strand the sagas the
+ * migration exists to carry forward.
+ *
  * @param {unknown} raw
  * @returns {Record<string, CompletionIntent>}
  */
@@ -1473,7 +1518,15 @@ function normalizeCompletionIntents(raw) {
     if (isRecord(value) && RETIRED_REPAIR_PHASES.has(String(value.phase))) {
       continue;
     }
-    out[root_bead_id] = normalizeCompletionIntent(root_bead_id, value);
+    const intent = normalizeCompletionIntent(root_bead_id, value);
+    const terminal = intent.terminal_reason;
+    const migrated = terminal
+      ? migrateStoredNeedsHumanReason(terminal.reason)
+      : '';
+    out[root_bead_id] =
+      terminal && migrated !== terminal.reason
+        ? { ...intent, terminal_reason: { ...terminal, reason: migrated } }
+        : intent;
   }
   return out;
 }
@@ -1595,7 +1648,15 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
   'failed',
   'orphaned',
   'stopped',
-  'discarded'
+  'discarded',
+  // 2026-08-28 worker-failure-tiers spec §6. All three END an attempt: a
+  // `parked` session exited 0, a `retry_wait` rung is waiting for a NEW attempt
+  // rather than running, and `superseded` is a rung the retry already replaced.
+  // Leaving them outside this set would make the bead read as still-active and
+  // fence its own retry and resume out of every dispatch.
+  'parked',
+  'retry_wait',
+  'superseded'
 ]);
 
 /**
@@ -1663,6 +1724,9 @@ function serialLaneIndex(id) {
 const KNOWN_QUEUE_FIELDS = new Set([
   'revision',
   'auto_advance',
+  'hold',
+  'lineages',
+  'hold_history',
   // Legacy-drop key: the merge-serial toggle retired by the serial-lane regime
   // (UI-04vo). Listed so it is DROPPED on load instead of round-tripping.
   'pr_wait_holds_slot',
@@ -1724,6 +1788,9 @@ function emptyQueue() {
   return {
     revision: 0,
     auto_advance: false,
+    hold: null,
+    lineages: [],
+    hold_history: [],
     orchestration_model: null,
     orchestration_effort: null,
     orchestration_speed: null,
@@ -2382,6 +2449,45 @@ function normalizeDiscardOperations(raw) {
 }
 
 /**
+ * Normalize the env retry ladder stamp (spec §6). A record that cannot name its
+ * cause is DROPPED rather than kept: the ladder's whole identity is "this bead
+ * keeps failing for THIS reason", and a nameless rung could never be matched to
+ * a lineage.
+ *
+ * @param {unknown} value
+ * @returns {Attempt['retry']}
+ */
+function normalizeAttemptRetry(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.cause !== 'string' ||
+    value.cause.length === 0
+  ) {
+    return null;
+  }
+  return {
+    cause: value.cause,
+    attempts:
+      typeof value.attempts === 'number' && Number.isFinite(value.attempts)
+        ? value.attempts
+        : 1,
+    max:
+      typeof value.max === 'number' && Number.isFinite(value.max)
+        ? value.max
+        : RETRY_MAX,
+    next_at:
+      typeof value.next_at === 'number' && Number.isFinite(value.next_at)
+        ? value.next_at
+        : null,
+    origin_attempt_id:
+      typeof value.origin_attempt_id === 'string' &&
+      value.origin_attempt_id.length > 0
+        ? value.origin_attempt_id
+        : null
+  };
+}
+
+/**
  * Fill an attempt container over its default (all-null) shape.
  *
  * @param {Partial<Attempt> & { attempt_id: string, bead_id: string }} fields
@@ -2429,12 +2535,17 @@ export function makeAttempt(fields) {
     finished_at: fields.finished_at ?? null,
     cause: fields.cause ?? null,
     cause_detail: isRecord(fields.cause_detail)
-      ? /** @type {{ reason: string, command: string|null }} */ (
-          fields.cause_detail
-        )
+      ? /** @type {Attempt['cause_detail']} */ (fields.cause_detail)
       : null,
     dismissed_at: fields.dismissed_at ?? null,
     halted_auto_advance: fields.halted_auto_advance === true,
+    retry: normalizeAttemptRetry(fields.retry),
+    awaiting_user_present: fields.awaiting_user_present === true,
+    parked_resumed_at:
+      typeof fields.parked_resumed_at === 'number' &&
+      Number.isFinite(fields.parked_resumed_at)
+        ? fields.parked_resumed_at
+        : null,
     usage: isRecord(fields.usage)
       ? /** @type {Attempt['usage']} */ (fields.usage)
       : null,
@@ -3252,6 +3363,15 @@ function normalizeQueue(raw) {
   q.repo_operation_migration = normalizeRepoOperationMigration(
     raw.repo_operation_migration
   );
+  // The failure-owned stop (spec §4) survives a restart on purpose: the wall a
+  // `systemic` hold names is a property of the environment, not of this
+  // process, and an env ladder mid-climb must not silently resume dispatching.
+  // No `now` is passed, so a restart keeps the history it was written with and
+  // the first live reduction prunes it.
+  const hold_state = normalizeHoldState(raw);
+  q.hold = hold_state.hold;
+  q.lineages = hold_state.lineages;
+  q.hold_history = hold_state.hold_history;
   // auto_advance intentionally left false — see load() restart-safety note.
   return q;
 }
@@ -3860,6 +3980,36 @@ export function createQueueStore(options = {}) {
     persist(workspace, next);
     cache.set(keyFor(workspace), next);
     return { ok: true, conflict: false, queue: exportQueue(workspace, next) };
+  }
+
+  /**
+   * Reduce one queue-hold event INTO a mutation already in progress (2026-08-28
+   * worker-failure-tiers spec §4).
+   *
+   * Separated from {@link createQueueStore.applyQueueHold} so a caller whose
+   * settlement must not be observable half-done — a `needs_human` terminal that
+   * also stops the queue — folds the hold into its OWN write instead of
+   * following it with a second one.
+   *
+   * @param {Queue} next - the in-flight clone being mutated.
+   * @param {import('./queue-hold.js').QueueHoldEvent} event
+   * @param {number} at
+   * @returns {import('./queue-hold.js').QueueHoldResult}
+   */
+  function applyHoldEvent(next, event, at) {
+    const outcome = reduceQueueHold(
+      {
+        hold: next.hold,
+        lineages: next.lineages,
+        hold_history: next.hold_history
+      },
+      event,
+      at
+    );
+    next.hold = outcome.state.hold;
+    next.lineages = outcome.state.lineages;
+    next.hold_history = outcome.state.hold_history;
+    return outcome;
   }
 
   /**
@@ -6318,6 +6468,95 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Apply one queue-hold event to the durable `hold`/`lineages`/`hold_history`
+     * triple (2026-08-28 worker-failure-tiers spec §4). Scheduler-owned and
+     * unconditional, exactly like the attempt lifecycle writes it accompanies.
+     *
+     * The reducer is pure, so this is the ONLY place the triple is written: the
+     * caller hands it an event and gets the effects it must act on plus the new
+     * state read back, rather than reasoning about the transition itself.
+     *
+     * @param {string} workspace
+     * @param {{ event: import('./queue-hold.js').QueueHoldEvent, now?: number }} input
+     * @returns {{ ok: boolean, effects: import('./queue-hold.js').QueueHoldEffect[], hold: import('./queue-hold.js').QueueHold|null, lineages: import('./queue-hold.js').RetryLineage[] }}
+     */
+    applyQueueHold(workspace, input) {
+      const at = typeof input.now === 'number' ? input.now : now();
+      /** @type {import('./queue-hold.js').QueueHoldResult|null} */
+      let outcome = null;
+      const result = applyUnconditional(workspace, (next) => {
+        outcome = applyHoldEvent(next, input.event, at);
+        return true;
+      });
+      const settled =
+        /** @type {import('./queue-hold.js').QueueHoldResult|null} */ (outcome);
+      return {
+        ok: result.ok === true,
+        effects: settled ? settled.effects : [],
+        hold: settled ? settled.state.hold : null,
+        lineages: settled ? settled.state.lineages : []
+      };
+    },
+
+    /**
+     * Stamp a `parked` attempt as resumed (spec §3.1). The write is what makes
+     * the present→absent `awaiting_user` transition fire ONCE: an attempt that
+     * already carries the stamp is refused, so a repeated bd-change signal
+     * cannot dispatch the same bead twice.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, at?: number }} input
+     * @returns {QueueOpResult}
+     */
+    markParkedResumed(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const attempt = next.attempts[input.attempt_id];
+        if (
+          !attempt ||
+          attempt.status !== 'parked' ||
+          typeof attempt.parked_resumed_at === 'number'
+        ) {
+          return false;
+        }
+        next.attempts[input.attempt_id] = makeAttempt({
+          ...attempt,
+          parked_resumed_at: typeof input.at === 'number' ? input.at : now()
+        });
+        return true;
+      });
+    },
+
+    /**
+     * Close out a bead's earlier `retry_wait` records when its ladder moves on
+     * (spec §6): only the attempt the retry actually runs on stays waiting, and
+     * every earlier rung becomes `superseded` so the bead shows ONE live tile.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, except_attempt_id?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    supersedeRetryAttempts(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        let changed = false;
+        for (const [attempt_id, attempt] of Object.entries(next.attempts)) {
+          if (
+            attempt.bead_id !== input.bead_id ||
+            attempt.status !== 'retry_wait' ||
+            attempt_id === input.except_attempt_id
+          ) {
+            continue;
+          }
+          next.attempts[attempt_id] = makeAttempt({
+            ...attempt,
+            status: 'superseded'
+          });
+          changed = true;
+        }
+        return changed;
+      });
+    },
+
+    /**
      * Dismiss repair failures whose target became moot and restore automatic
      * dispatch, when eligible, in the same durable write.
      *
@@ -7436,12 +7675,20 @@ export function createQueueStore(options = {}) {
      * journal is deliberately preserved: ambiguity at an external effect is
      * evidence a restart or human diagnosis still needs.
      *
+     * `hold_event` rides the SAME mutation (2026-08-28 worker-failure-tiers
+     * §3.4/§7): a `verify_red` or `cleanup_failed:*` terminal is a wall every
+     * later bead hits too, and raising that stop in a second write would leave a
+     * crash window in which the board shows `확인 필요` on a queue that is still
+     * dispatching. The event is applied only when the terminal itself lands, so
+     * a rejected terminalization never stops the queue on its own.
+     *
      * @param {string} workspace
-     * @param {{ root_bead_id: string, terminal: CompletionTerminalInput }} input
+     * @param {{ root_bead_id: string, terminal: CompletionTerminalInput, hold_event?: import('./queue-hold.js').QueueHoldEvent|null, now?: number }} input
      * @returns {QueueOpResult}
      */
     terminalizeCompletionIntent(workspace, input) {
-      const { root_bead_id, terminal } = input;
+      const { root_bead_id, terminal, hold_event } = input;
+      const at = typeof input.now === 'number' ? input.now : now();
       return applyUnconditional(workspace, (next) => {
         const intent = next.completion_intents[root_bead_id];
         const normalized_terminal = normalizeCompletionTerminal(terminal);
@@ -7455,6 +7702,9 @@ export function createQueueStore(options = {}) {
         next.merge_queue = next.merge_queue.filter(
           (entry) => entry.bead_id !== root_bead_id
         );
+        if (hold_event) {
+          applyHoldEvent(next, hold_event, at);
+        }
         return true;
       });
     },

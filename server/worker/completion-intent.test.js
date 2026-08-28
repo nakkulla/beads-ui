@@ -7,12 +7,16 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   COMPLETION_RETRY_DELAYS_MS,
   COMPLETION_RETRY_POLICY,
+  NEEDS_HUMAN_FAMILIES,
   classifyCompletionFailure,
   completionFailureComment,
   createCompletionActionDriver,
   createCompletionFailureKey,
   createCompletionIntentCoordinator,
-  decideCompletionAction
+  decideCompletionAction,
+  foldNeedsHumanReason,
+  migrateStoredNeedsHumanReason,
+  needsHumanHoldKind
 } from './completion-intent.js';
 import { createQueueStore } from './queue-store.js';
 
@@ -276,7 +280,7 @@ describe('worker/completion-intent decisions', () => {
 
     expect(action).toEqual({
       kind: 'needs_human',
-      reason: 'deploy_script_failure',
+      reason: 'cleanup_failed:deploy_script_failure',
       terminal: true
     });
   });
@@ -293,22 +297,24 @@ describe('worker/completion-intent decisions', () => {
         evidence: { failure_code: 'deploy_script_failure', reason: 'raw' },
         failure_key: { reason: 'keyed' }
       })
-    ).toBe('deploy_script_failure');
+    ).toBe('cleanup_failed:deploy_script_failure');
     expect(
       of({
         state: 'cleanup_repairable',
         evidence: { reason: 'raw' },
         failure_key: { reason: 'keyed' }
       })
-    ).toBe('raw');
+    ).toBe('cleanup_failed:raw');
     expect(
       of({
         state: 'cleanup_repairable',
         evidence: {},
         failure_key: { reason: 'keyed' }
       })
-    ).toBe('keyed');
-    expect(of({ state: 'cleanup_repairable' })).toBe('cleanup_failed');
+    ).toBe('cleanup_failed:keyed');
+    expect(of({ state: 'cleanup_repairable' })).toBe(
+      'cleanup_failed:unrecorded'
+    );
   });
 
   test('stops a post-merge verify red for a human instead of probing', () => {
@@ -457,6 +463,30 @@ describe('worker/completion-intent action driver', () => {
     expect(comment.mock.calls[0][1]).toContain(
       '- 원인: verify_red — 머지 후 검증이 실패했습니다.'
     );
+    // UI-5ym8 §3.4: a post-merge pipeline failure raises the SYSTEMIC hold.
+    expect(store.snapshot(DRIVER_WS).hold).toMatchObject({
+      kind: 'systemic',
+      cause: 'verify_red',
+      bead_ids: ['UI-root']
+    });
+  });
+
+  test('leaves the queue hold alone on a bead-local needs_human family', () => {
+    const store = seededCompletionStore();
+
+    store.terminalizeCompletionIntent(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      terminal: {
+        reason: 'internal_record_failed:merge_subject_pin_failed',
+        stage: 'coordinator',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 1
+      }
+    });
+
+    expect(store.snapshot(DRIVER_WS).hold ?? null).toBeNull();
   });
 
   test('comments one failure once across a [머지] re-click', async () => {
@@ -693,7 +723,7 @@ describe('worker/completion-intent action driver', () => {
       phase: 'needs_human',
       auto_resolution: null,
       terminal_reason: {
-        reason: 'verify_cmd_failed',
+        reason: 'cleanup_failed:verify_cmd_failed',
         op_id: 'op-77',
         log_path: '/state/repo-operation-logs/op-77.log',
         comment_at: expect.any(Number)
@@ -705,7 +735,7 @@ describe('worker/completion-intent action driver', () => {
       [
         '## 🤖 완료 실패 기록',
         '- 단계: verify',
-        '- 원인: verify_cmd_failed — 머지 후 검증 명령이 실패했습니다.',
+        '- 원인: cleanup_failed:verify_cmd_failed — 머지 후 검증 명령이 실패했습니다.',
         `- 대상: ${'c'.repeat(40)} (base main)`,
         '- 로그: /state/repo-operation-logs/op-77.log',
         '- 재시도: 없음',
@@ -878,7 +908,7 @@ describe('worker/completion-intent action driver', () => {
     });
     expect(action).toEqual({
       kind: 'needs_human',
-      reason: 'bd_read_failed',
+      reason: 'cleanup_failed:bd_read_failed',
       terminal: true
     });
   });
@@ -993,7 +1023,10 @@ describe('worker/completion-intent action driver', () => {
         completion_intents: {
           'UI-root': {
             phase: 'needs_human',
-            terminal_reason: { reason, stage: 'conflict_resolution' }
+            terminal_reason: {
+              reason: `conflict_unresolved:${reason}`,
+              stage: 'conflict_resolution'
+            }
           }
         }
       });
@@ -1205,7 +1238,9 @@ describe('worker/completion-intent action driver', () => {
       completion_intents: {
         'UI-root': {
           phase: 'needs_human',
-          terminal_reason: { reason: 'resolution_lineage_ambiguous' }
+          terminal_reason: {
+            reason: 'conflict_unresolved:resolution_lineage_ambiguous'
+          }
         }
       }
     });
@@ -1776,10 +1811,11 @@ describe('worker/completion-intent auto-resolution decisions (UI-hk74 §4)', () 
 
     // Nothing creates a `reviewing` intent any more (UI-d7fy §3.5) and no
     // owner is left to re-drive one, so a record that survived the upgrade
-    // stops with the retirement as its cause.
+    // stops with the retirement as its cause — folded, since the retired lane
+    // is a migration residue and not one of the five families (UI-5ym8 §7).
     expect(action).toEqual({
       kind: 'needs_human',
-      reason: 'auto_review_retired',
+      reason: 'internal_record_failed:migration:auto_review_retired',
       terminal: true
     });
   });
@@ -1845,7 +1881,7 @@ describe('worker/completion-intent auto-resolution driver (UI-hk74 §4/§5)', ()
       store.snapshot(DRIVER_WS).completion_intents['UI-root']
     ).toMatchObject({
       phase: 'needs_human',
-      terminal_reason: { reason: 'brand_new_failure' }
+      terminal_reason: { reason: 'internal_record_failed:brand_new_failure' }
     });
   });
 
@@ -2314,6 +2350,215 @@ describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
   test('carries a code it has no sentence for alone', () => {
     expect(commentLines({ reason: 'cleanup_incomplete' })[2]).toBe(
       '- 원인: cleanup_incomplete'
+    );
+  });
+
+  test('explains a folded cause with its family sentence', () => {
+    expect(commentLines({ reason: 'cleanup_failed:bd_read_failed' })[2]).toBe(
+      '- 원인: cleanup_failed:bd_read_failed — 머지 후 정리가 끝나지 못했습니다.'
+    );
+  });
+
+  test('prefers the detail sentence over the family sentence', () => {
+    expect(
+      commentLines({ reason: 'cleanup_failed:verify_cmd_failed' })[2]
+    ).toBe(
+      '- 원인: cleanup_failed:verify_cmd_failed — 머지 후 검증 명령이 실패했습니다.'
+    );
+  });
+});
+
+describe('worker/completion-intent needs_human 5종 접기 (UI-5ym8 §7)', () => {
+  test('names exactly the five families', () => {
+    expect(NEEDS_HUMAN_FAMILIES).toEqual([
+      'verify_red',
+      'cleanup_failed',
+      'retry_exhausted',
+      'conflict_unresolved',
+      'internal_record_failed'
+    ]);
+  });
+
+  test.each([
+    ['verify_red', 'verify_red'],
+    ['cleanup_incomplete', 'cleanup_failed:cleanup_incomplete'],
+    ['cleanup_journal_conflict', 'cleanup_failed:cleanup_journal_conflict'],
+    [
+      'cleanup_completion_unrecorded',
+      'cleanup_failed:cleanup_completion_unrecorded'
+    ],
+    ['cleanup_replay_unavailable', 'cleanup_failed:cleanup_replay_unavailable'],
+    ['retry_exhausted:verify_cmd_failed', 'retry_exhausted:verify_cmd_failed'],
+    ['resolution_wait_invalid', 'conflict_unresolved:resolution_wait_invalid'],
+    [
+      'resolution_attempt_missing',
+      'conflict_unresolved:resolution_attempt_missing'
+    ],
+    [
+      'resolution_lineage_ambiguous',
+      'conflict_unresolved:resolution_lineage_ambiguous'
+    ],
+    [
+      'resolution_subject_mismatch',
+      'conflict_unresolved:resolution_subject_mismatch'
+    ],
+    [
+      'resolution_attempt_not_conflict',
+      'conflict_unresolved:resolution_attempt_not_conflict'
+    ],
+    [
+      'resolution_attempt_status_invalid',
+      'conflict_unresolved:resolution_attempt_status_invalid'
+    ],
+    [
+      'resolution_ready_lineage_active',
+      'conflict_unresolved:resolution_ready_lineage_active'
+    ],
+    ['resolution_round_cap', 'conflict_unresolved:resolution_round_cap'],
+    [
+      'cleanup_prerecord_failed',
+      'internal_record_failed:cleanup_prerecord_failed'
+    ],
+    [
+      'merge_settlement_record_failed',
+      'internal_record_failed:merge_settlement_record_failed'
+    ],
+    [
+      'root_cleanup_pin_missing',
+      'internal_record_failed:root_cleanup_pin_missing'
+    ],
+    [
+      'merge_subject_pin_failed',
+      'internal_record_failed:merge_subject_pin_failed'
+    ],
+    [
+      'reconciliation_ambiguous',
+      'internal_record_failed:reconciliation_ambiguous'
+    ],
+    [
+      'auto_resolution_invalid',
+      'internal_record_failed:auto_resolution_invalid'
+    ],
+    ['intent_state_invalid', 'internal_record_failed:intent_state_invalid'],
+    ['ownership_undecidable', 'internal_record_failed:ownership_undecidable'],
+    [
+      'completion_subject_missing',
+      'internal_record_failed:completion_subject_missing'
+    ],
+    [
+      'completion_op_in_flight',
+      'internal_record_failed:completion_op_in_flight'
+    ],
+    [
+      'auto_review_retired',
+      'internal_record_failed:migration:auto_review_retired'
+    ],
+    [
+      'repair_lane_retired',
+      'internal_record_failed:migration:repair_lane_retired'
+    ]
+  ])('folds %s into %s', (raw, folded) => {
+    expect(foldNeedsHumanReason(raw)).toBe(folded);
+  });
+
+  test.each(
+    NEEDS_HUMAN_FAMILIES.flatMap((family) => [family, `${family}:detail:more`])
+  )('returns the already-folded %s unchanged', (folded) => {
+    expect(foldNeedsHumanReason(folded)).toBe(folded);
+  });
+
+  test('folds a second time to the same value', () => {
+    const once = foldNeedsHumanReason('cleanup_journal_conflict');
+
+    expect(foldNeedsHumanReason(once)).toBe(once);
+  });
+
+  test.each([[undefined], [null], [''], ['   '], [42]])(
+    'names a missing reason instead of guessing one for %s',
+    (absent) => {
+      expect(foldNeedsHumanReason(absent)).toBe(
+        'internal_record_failed:reason_missing'
+      );
+    }
+  );
+
+  test('leaves the legacy adoption key resolution_timeout out of the conflict family', () => {
+    // `adoptLegacyTimeout` matches this token EXACTLY, so a `resolution_`
+    // prefix rule would strand every saga it is the only handle for.
+    expect(foldNeedsHumanReason('resolution_timeout')).toBe(
+      'internal_record_failed:resolution_timeout'
+    );
+  });
+
+  test.each([
+    ['verify_red', 'systemic'],
+    ['cleanup_failed:verify_cmd_failed', 'systemic'],
+    ['cleanup_journal_conflict', 'systemic'],
+    ['retry_exhausted:verify_cmd_failed', null],
+    ['conflict_unresolved:resolution_round_cap', null],
+    ['internal_record_failed:intent_state_invalid', null],
+    ['', null]
+  ])('holds the queue for %s as %s', (reason, kind) => {
+    expect(needsHumanHoldKind(reason)).toBe(kind);
+  });
+});
+
+describe('worker/completion-intent 마이그레이션 토큰 읽기 (UI-5ym8 §7)', () => {
+  /**
+   * @param {string} reason
+   * @returns {ReturnType<typeof createQueueStore>}
+   */
+  function storeWithTerminal(reason) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-fold-'));
+    tmp_dirs.push(dir);
+    const file = path.join(dir, 'queue.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        completion_intents: {
+          'UI-root': {
+            ...intent({ phase: 'needs_human' }),
+            terminal_reason: {
+              reason,
+              stage: 'conflict_resolution',
+              failure_key: null,
+              evidence: null,
+              log_path: null,
+              op_id: null,
+              comment_at: null,
+              at: 1
+            }
+          }
+        }
+      })
+    );
+    return createQueueStore({ filePathFor: () => file });
+  }
+
+  test.each(['auto_review_retired', 'repair_lane_retired'])(
+    'reads the retired-lane residue %s as an internal record failure',
+    (retired) => {
+      const store = storeWithTerminal(retired);
+
+      const loaded = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+      expect(loaded.terminal_reason?.reason).toBe(
+        `internal_record_failed:migration:${retired}`
+      );
+    }
+  );
+
+  test('leaves a live adoption key untouched on load', () => {
+    const store = storeWithTerminal('resolution_timeout');
+
+    const loaded = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    expect(loaded.terminal_reason?.reason).toBe('resolution_timeout');
+  });
+
+  test('passes a non-retired cause straight through', () => {
+    expect(migrateStoredNeedsHumanReason('cleanup_journal_conflict')).toBe(
+      'cleanup_journal_conflict'
     );
   });
 });

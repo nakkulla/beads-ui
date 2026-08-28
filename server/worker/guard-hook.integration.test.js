@@ -363,6 +363,93 @@ describe('guard hook — prevention layer (UI-8mvc §2)', () => {
   });
 });
 
+describe('guard hook — record mode (worker-failure-tiers §5.1)', () => {
+  /**
+   * Re-install this attempt's hook in record mode. Same attempt id, so the
+   * `core.hooksPath` env the suite already exported keeps pointing at it and
+   * the push log is truncated back to empty.
+   */
+  function installRecordMode() {
+    const installed = install({
+      workspace: repo,
+      attempt_id: ATTEMPT,
+      repo,
+      target_base: BASE,
+      mode: 'record'
+    });
+    expect(installed.ok).toBe(true);
+  }
+
+  /**
+   * @returns {Record<string, unknown>[]}
+   */
+  function entries() {
+    const read = readPushLog({ workspace: repo, attempt_id: ATTEMPT });
+    return read.ok ? read.entries : [];
+  }
+
+  test('lets a base push through and records the ref and SHA it landed', () => {
+    installRecordMode();
+    commit(repo, 'record-mode-landing');
+    const local = git(['rev-parse', 'HEAD'], repo).trim();
+    const before = remoteTip(origin, BASE);
+
+    const result = run('git', ['push', 'origin', `HEAD:${BASE}`], repo);
+
+    expect(result.code).toBe(0);
+    expect(remoteTip(origin, BASE)).toBe(local);
+    expect(entries()).toEqual([
+      {
+        local_ref: 'HEAD',
+        local_oid: local,
+        remote_ref: `refs/heads/${BASE}`,
+        remote_oid: before
+      }
+    ]);
+  });
+
+  test('announces the recorded base push on stderr', () => {
+    installRecordMode();
+    commit(repo, 'record-mode-note');
+
+    const result = run('git', ['push', 'origin', `HEAD:${BASE}`], repo);
+
+    expect(result.stderr).toContain('bdui guard: recording base push to');
+    expect(result.stderr).toContain('record mode');
+  });
+
+  test('records a non-base push exactly as the guarded mode does', () => {
+    installRecordMode();
+    commit(worktree, 'record-mode-feature');
+
+    const result = run(
+      'git',
+      ['push', 'origin', 'HEAD:refs/heads/UI-8mvc'],
+      worktree
+    );
+
+    expect(result.code).toBe(0);
+    expect(entries()).toEqual([
+      {
+        local_ref: 'HEAD',
+        local_oid: git(['rev-parse', 'HEAD'], worktree).trim(),
+        remote_ref: 'refs/heads/UI-8mvc',
+        remote_oid: '0'.repeat(40)
+      }
+    ]);
+  });
+
+  test('records nothing for a base push in another repository', () => {
+    installRecordMode();
+    commit(other, 'record-mode-enclosed');
+
+    const result = run('git', ['push', 'origin', `HEAD:${BASE}`], other);
+
+    expect(result.code).toBe(0);
+    expect(entries()).toEqual([]);
+  });
+});
+
 describe('guard hook — docs-only base push exemption (UI-7ufi §2)', () => {
   /** Distinguishes the throwaway candidate worktrees within one test. */
   let candidate_seq = 0;

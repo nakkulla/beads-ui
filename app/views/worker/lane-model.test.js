@@ -1264,6 +1264,10 @@ describe('monitor attempt folding', () => {
     expect(map.get('A-1')?.failure).toEqual({
       cause: 'quickfix_landing_failed:deploy_failed',
       cause_detail,
+      // 이 기록에는 §6 이후 필드가 없다 — 있는 척하지 않고 null로 남는다.
+      summary: null,
+      retry: null,
+      bead_id: 'A-1',
       finished_at: 123,
       runner: 'codex',
       model: 'sol',
@@ -1280,6 +1284,169 @@ describe('monitor attempt folding', () => {
       landed: true,
       confirmation: 'merged'
     });
+  });
+});
+
+describe('monitor 대기 attempt 투영 (UI-5ym8 §3.1·§3.3·§6)', () => {
+  test('projects a parked attempt as its own run state', () => {
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'parked',
+          started_at: 10,
+          finished_at: 20,
+          cause: 'session_parked',
+          cause_detail: {
+            summary: '사용자 결정 대기',
+            awaiting_user: 'spec_review',
+            bead_status: 'in_progress'
+          }
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.run_state).toBe('parked');
+  });
+
+  test('carries the parked session summary onto the tile projection', () => {
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'parked',
+          cause: 'session_parked',
+          cause_detail: { summary: '사용자 결정 대기' }
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.failure?.summary).toBe('사용자 결정 대기');
+    expect(map.get('A-1')?.failure?.bead_id).toBe('A-1');
+  });
+
+  test('refuses to resume a parked attempt', () => {
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'parked',
+          session_id: 'sid',
+          cause: 'session_parked'
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.can_resume).toBe(false);
+    expect(map.get('A-1')?.failure?.resume_eligible).toBe(false);
+  });
+
+  test('projects a retry_wait attempt with its backoff facts', () => {
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'retry_wait',
+          retry: {
+            cause: 'session_failed:is_error',
+            attempts: 1,
+            max: 3,
+            next_at: 5000,
+            origin_attempt_id: 't1'
+          }
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.run_state).toBe('retry_wait');
+    expect(map.get('A-1')?.retry).toEqual({
+      cause: 'session_failed:is_error',
+      attempts: 1,
+      max: 3,
+      next_at: 5000
+    });
+  });
+
+  test('hides a superseded attempt', () => {
+    const map = activeByBead(
+      {
+        t1: { attempt_id: 't1', bead_id: 'A-1', status: 'superseded' }
+      },
+      new Map()
+    );
+
+    expect(map.has('A-1')).toBe(false);
+  });
+
+  test('lets a newer running attempt win over an earlier park', () => {
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'parked',
+          started_at: 10
+        },
+        t2: {
+          attempt_id: 't2',
+          bead_id: 'A-1',
+          status: 'running',
+          started_at: 20
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.run_state).toBe('running');
+  });
+
+  test('hides a dismissed park', () => {
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'parked',
+          dismissed_at: 99
+        }
+      },
+      new Map()
+    );
+
+    expect(map.has('A-1')).toBe(false);
+  });
+
+  test('leaves a parked bead out of the failed lane state', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'parked',
+              started_at: 5,
+              cause: 'session_parked',
+              cause_detail: { summary: '사용자 결정 대기' }
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const row = lanes.running.find((item) => item.id === 'A-1');
+    expect(row?.run_state).toBe('parked');
+    expect(row?.alert).toBe(false);
+    expect(row?.badges).toEqual(['⏸ 세션 대기']);
   });
 });
 

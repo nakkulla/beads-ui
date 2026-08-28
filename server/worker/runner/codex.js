@@ -289,23 +289,105 @@ function extractSessionId(raw) {
 }
 
 /**
- * Judge the LAST terminal turn event.
+ * How much of the session's closing sentence a summary keeps
+ * (worker-failure-tiers §6).
+ *
+ * @type {number}
+ */
+const SUMMARY_MAX_CHARS = 200;
+
+/**
+ * The literal a codex stream that reported nothing about itself carries
+ * (worker-failure-tiers §6). It is a summary VALUE rather than a null, so the
+ * classifier and the tile both read the same "the session said nothing" fact
+ * instead of one of them inventing it.
+ *
+ * @type {string}
+ */
+const NO_RESULT_SUMMARY = 'no_result';
+
+/**
+ * The first non-empty line of a reported sentence, trimmed to
+ * {@link SUMMARY_MAX_CHARS}. A non-string yields null: a stringified object
+ * would match no environment pattern while still looking like evidence.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function summaryOf(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  for (const line of value.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) {
+      return trimmed.slice(0, SUMMARY_MAX_CHARS);
+    }
+  }
+  return null;
+}
+
+/**
+ * The session's own last sentence, in the priority the design fixes
+ * (worker-failure-tiers §6): a failed turn's `error.message` first, because it
+ * names why the turn ended; otherwise the last agent message, which is what a
+ * session that ended on its own terms reported; otherwise the `no_result`
+ * literal.
+ *
+ * @param {any[]} raw
+ * @returns {string}
+ */
+function extractSummary(raw) {
+  /** @type {string|null} */
+  let agent_message = null;
+  /** @type {string|null} */
+  let turn_failure = null;
+  for (const event of raw) {
+    if (!event || typeof event !== 'object') {
+      continue;
+    }
+    if (event.type === 'turn.failed') {
+      const error = event.error;
+      const message =
+        error && typeof error === 'object' ? summaryOf(error.message) : null;
+      if (message) {
+        turn_failure = message;
+      }
+      continue;
+    }
+    if (event.type === 'item.completed') {
+      const item = itemOf(event);
+      if (item && item.type === 'agent_message') {
+        const text = summaryOf(item.text);
+        if (text) {
+          agent_message = text;
+        }
+      }
+    }
+  }
+  return turn_failure ?? agent_message ?? NO_RESULT_SUMMARY;
+}
+
+/**
+ * Judge the LAST terminal turn event, and lift the session's own sentence off
+ * the same stream (worker-failure-tiers §6).
  *
  * @param {{ raw: any[], exit: number|null, blocked: boolean }} ctx
- * @returns {{ success: boolean, reason: string }}
+ * @returns {{ success: boolean, reason: string, summary: string|null }}
  */
 function verdict(ctx) {
+  const summary = extractSummary(ctx.raw);
   const terminals = ctx.raw.filter(
     (e) => e && typeof e === 'object' && TERMINAL_TYPES.has(e.type)
   );
   if (terminals.length === 0) {
-    return { success: false, reason: 'no_result' };
+    return { success: false, reason: 'no_result', summary };
   }
   const last = terminals[terminals.length - 1];
   if (last.type === 'turn.failed') {
-    return { success: false, reason: 'turn_failed' };
+    return { success: false, reason: 'turn_failed', summary };
   }
-  return { success: true, reason: 'ok' };
+  return { success: true, reason: 'ok', summary };
 }
 
 /**

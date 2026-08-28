@@ -1772,8 +1772,22 @@ export function createMonitorView(mount_element, options) {
                 continuation_mode: item.continuation_mode ?? null,
                 paused: item.run_state === 'paused',
                 failed: item.run_state === 'failed',
+                // 파킹·backoff 대기 (UI-5ym8 §8). 같은 렌더러를 쓰는 두 탭이
+                // 같은 사실을 같은 모양으로 그려야 하므로 (ADR 14) Worker 탭의
+                // 투영과 같은 네 키를 여기서도 싣는다 — 빠지면 기다리는 세션이
+                // 모니터에서만 돌아가는 시계와 ⏸를 얻는다.
+                parked: item.run_state === 'parked',
+                retry_wait: item.run_state === 'retry_wait',
+                retry: item.retry || null,
                 status: /** @type {any} */ (item.status),
-                status_label: item.run_state === 'failed' ? '실패' : undefined,
+                status_label:
+                  item.run_state === 'failed'
+                    ? '실패'
+                    : item.run_state === 'parked'
+                      ? '세션 대기'
+                      : item.run_state === 'retry_wait'
+                        ? '재시도 대기'
+                        : undefined,
                 can_pause: item.can_pause !== false,
                 exec_chips: item.exec_chips || null,
                 usage: item.usage || null,
@@ -2828,6 +2842,26 @@ export function createMonitorView(mount_element, options) {
           revision
         );
       });
+      return;
+    }
+    // 파킹 타일의 [재시도] (UI-5ym8 §3.1). CAS를 쓰지 않는 attempt 제어라
+    // `send`이고, 서버가 "그 attempt가 아직 마지막인가"로 판정한다. 배선하지
+    // 않으면 이 탭에서만 버튼이 이슈 상세를 여는 죽은 버튼이 된다.
+    if (cls.contains('rtile__parked-retry')) {
+      void send('worker-parked-retry', { bead_id, attempt_id }, root_dir).then(
+        (res) => {
+          if (res && res.ok === false) {
+            showToast(
+              `재시도 거부: ${
+                res.reason === 'not_latest'
+                  ? '이 bead에 더 새로운 시도가 있습니다'
+                  : res.reason || ''
+              }`,
+              'error'
+            );
+          }
+        }
+      );
       return;
     }
     if (cls.contains('rtile__discard')) {

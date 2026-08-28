@@ -1885,6 +1885,220 @@ describe('views/worker', () => {
     ).toBeNull();
   });
 
+  // 큐 보류/정지 (UI-5ym8 §8). 사용자 ⏸와 다른 사실이므로 다른 자리·다른
+  // 메시지이고, 두 종류는 사람이 할 일이 달라 버튼도 다르다.
+  test('renders the environment hold with its earliest scheduled retry', () => {
+    const next_at = new Date(2026, 7, 28, 9, 40).getTime();
+    const mount = mountAttemptTiles({
+      hold: {
+        kind: 'env',
+        cause: 'verify_failed:gh_observation_failed',
+        since: 1000,
+        bead_ids: ['A-1']
+      },
+      lineages: [
+        { bead_id: 'A-1', origin_attempt_id: 't1', cause: 'x', next_at: null },
+        { bead_id: 'A-2', origin_attempt_id: 't2', cause: 'x', next_at },
+        {
+          bead_id: 'A-3',
+          origin_attempt_id: 't3',
+          cause: 'x',
+          next_at: next_at + 60_000
+        }
+      ]
+    });
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-hold--env')
+    );
+    expect(banner.querySelector('.worker-hold__text')?.textContent).toContain(
+      '환경 보류'
+    );
+    expect(banner.querySelector('.worker-hold__text')?.textContent).toContain(
+      `재시도 대기 · 다음 ${new Date(next_at).toLocaleTimeString('ko-KR', {
+        hour: '2-digit',
+        minute: '2-digit'
+      })}`
+    );
+    expect(banner.querySelector('.worker-hold__resume')).toBeNull();
+  });
+
+  test('sends the hold since when 지금 재시도 is clicked', async () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountAttemptTiles(
+      {
+        hold: { kind: 'env', cause: 'verify_cmd_spawn_error', since: 4242 },
+        lineages: []
+      },
+      transport
+    );
+
+    mount
+      .querySelector('.worker-hold__retry')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-hold-retry-now', {
+      since: 4242
+    });
+  });
+
+  test('names the halted beads on a systemic hold', () => {
+    const mount = mountAttemptTiles({
+      hold: {
+        kind: 'systemic',
+        cause: 'base_landing_detected',
+        since: 1000,
+        bead_ids: ['A-1', 'A-2'],
+        halted_by_attempt_id: 't9'
+      }
+    });
+
+    const banner = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-hold--systemic')
+    );
+    expect(banner.querySelector('.worker-hold__text')?.textContent).toContain(
+      'bead A-1, A-2'
+    );
+    expect(banner.querySelector('.worker-hold__retry')).toBeNull();
+  });
+
+  test('sends the hold since when 재개 is clicked', async () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountAttemptTiles(
+      {
+        hold: { kind: 'systemic', cause: 'verify_red', since: 77 },
+        lineages: []
+      },
+      transport
+    );
+
+    mount
+      .querySelector('.worker-hold__resume')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-hold-resume', {
+      since: 77
+    });
+  });
+
+  test('draws no hold banner when the queue carries none', () => {
+    const mount = mountAttemptTiles({});
+
+    expect(mount.querySelector('.worker-hold')).toBeNull();
+  });
+
+  test('renders a parked attempt as a waiting tile, not a failure', () => {
+    const mount = mountAttemptTiles({
+      attempts: {
+        parked: {
+          attempt_id: 'parked',
+          bead_id: 'PARKED',
+          status: 'parked',
+          started_at: Date.now() - 5000,
+          finished_at: Date.now() - 1000,
+          cause: 'session_parked',
+          cause_detail: {
+            summary: 'REVISE 판정 확인을 사용자에게 요청함',
+            awaiting_user: 'spec_review',
+            bead_status: 'in_progress'
+          }
+        }
+      }
+    });
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="parked"]')
+    );
+    expect(tile.querySelector('.rtile__held-badge')?.textContent).toBe(
+      '⏸ 세션 대기'
+    );
+    expect(tile.querySelector('.rtile__held-summary')?.textContent).toContain(
+      'REVISE 판정'
+    );
+    expect(tile.querySelector('.rtile__failure-badge')).toBeNull();
+    expect(tile.querySelector('.rtile__foot .rtile__discard')).not.toBeNull();
+  });
+
+  test('dispatches a new attempt when a parked tile is retried', async () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountAttemptTiles(
+      {
+        attempts: {
+          parked: {
+            attempt_id: 'parked',
+            bead_id: 'PARKED',
+            status: 'parked',
+            cause: 'session_parked',
+            cause_detail: { summary: '결정 대기' }
+          }
+        }
+      },
+      transport
+    );
+
+    mount
+      .querySelector('.rtile[data-attempt-id="parked"] .rtile__parked-retry')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-parked-retry', {
+      bead_id: 'PARKED',
+      attempt_id: 'parked'
+    });
+  });
+
+  test('renders a retry_wait attempt as a countdown badge with no actions', () => {
+    const next_at = new Date(2026, 7, 28, 11, 20).getTime();
+    const mount = mountAttemptTiles({
+      attempts: {
+        waiting: {
+          attempt_id: 'waiting',
+          bead_id: 'WAITING',
+          status: 'retry_wait',
+          started_at: Date.now() - 5000,
+          retry: {
+            cause: 'session_failed:is_error',
+            attempts: 1,
+            max: 3,
+            next_at,
+            origin_attempt_id: 'waiting'
+          }
+        }
+      }
+    });
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="waiting"]')
+    );
+    expect(tile.querySelector('.rtile__held-badge')?.textContent).toBe(
+      `↻ 재시도 대기 1/3 · ${new Date(next_at).toLocaleTimeString('ko-KR', {
+        hour: '2-digit',
+        minute: '2-digit'
+      })}`
+    );
+    expect(tile.querySelector('.rtile__parked-retry')).toBeNull();
+    expect(tile.querySelector('.rtile__resume')).toBeNull();
+  });
+
+  test('keeps a parked bead out of the 실행 count', () => {
+    const mount = mountAttemptTiles({
+      attempts: {
+        parked: {
+          attempt_id: 'parked',
+          bead_id: 'PARKED',
+          status: 'parked',
+          cause: 'session_parked'
+        }
+      }
+    });
+
+    expect(
+      mount.querySelector('.worker-kpi__chip--running')?.textContent
+    ).toContain('실행 0');
+  });
+
   test('sends the failed tile resume payload with the current revision', async () => {
     const transport = vi.fn().mockResolvedValue({});
     const mount = mountAttemptTiles(

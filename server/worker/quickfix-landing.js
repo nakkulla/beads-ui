@@ -51,7 +51,21 @@ function isNoChangeClose(close_reason) {
  * remaining values distinguish an unobservable judgment from the exact lower
  * settlement step that failed, instead of reporting false success.
  *
- * @typedef {'premature_close'|'not_resolved'|'invalid_impl_review'|'head_mismatch'|'push_not_contained'|'containment_unobservable'|'repo_ops_config_invalid'|'repo_operation_failed'|'repo_operation_pending'|'worktree_remove_failed'|'local_branch_delete_failed'|'bd_close_failed'} QuickfixLandingReason
+ * `not_resolved` is retired (worker-failure-tiers §5): a session's own status
+ * write is no longer the only admissible proof that its work landed. What
+ * replaces it names which EVIDENCE was missing — the push record, the review
+ * receipt, or the binding between them — plus the two record failures that were
+ * previously reported as if the bead had simply not been resolved.
+ *
+ * @typedef {'premature_close'|'invalid_impl_review'|'head_mismatch'|'push_not_contained'|'containment_unobservable'|'repo_ops_config_invalid'|'repo_operation_failed'|'repo_operation_pending'|'worktree_remove_failed'|'local_branch_delete_failed'|'bd_close_failed'|'bd_read_failed'|'bd_record_failed'|'delivery_unproven:push_log_absent'|'delivery_unproven:impl_review_missing'|'delivery_unproven:impl_review_sha_mismatch'} QuickfixLandingReason
+ */
+
+/**
+ * Extra fields a landing record keeps across every later write. Today the only
+ * one is `resolved_by`, which names the Worker's own evidence-based resolve
+ * (§5.3) so a reader can tell it from a session's status write.
+ *
+ * @typedef {{ resolved_by: string }|null|undefined} LandingExtra
  */
 
 /**
@@ -81,9 +95,19 @@ function isNoChangeClose(close_reason) {
  *     ensureDeploy: (subject: any) => Promise<any>,
  *     waitForDeployTerminal: (operation_id: string, input: any) => Promise<any>
  *   }|null,
+ *   readPushLog?: (input: { attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string },
+ *   accept_skipped_receipt?: boolean,
  *   notifyChanged?: (workspace: string) => void,
  *   now?: () => number
  * }} deps
+ * `readPushLog` is the attempt's own pre-push record (`guard-hook.js`, record
+ * mode) — the delivery evidence §5.3 judges. An absent dep reads exactly like
+ * an absent log: unproven, never innocent.
+ *
+ * `accept_skipped_receipt` widens the receipt vocabulary to `skipped@<sha>`.
+ * It defaults to false and stays false until the dotfiles contract Bead that
+ * introduces that receipt form is closed (design §9); until then a `skipped`
+ * reviewer is an invalid receipt, exactly as before.
  */
 export function createQuickfixLanding(deps) {
   const workspace = deps.workspace;
@@ -91,17 +115,40 @@ export function createQuickfixLanding(deps) {
   const repo_operations = deps.repoOperations || null;
   const notifyChanged = deps.notifyChanged || (() => {});
   const now = deps.now || (() => Date.now());
+  const accept_skipped_receipt = deps.accept_skipped_receipt === true;
+
+  /**
+   * One landing record, plus whatever this attempt has to keep carrying.
+   *
+   * Every step rewrites `quickfix_landing` whole, so a fact recorded once — the
+   * Worker's own evidence-based resolve (§5.3) — must ride along with each
+   * later write or the next one erases it.
+   *
+   * @param {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null }} record
+   * @param {LandingExtra} extra
+   * @returns {Attempt['quickfix_landing']}
+   */
+  function landingRecord(record, extra) {
+    return /** @type {Attempt['quickfix_landing']} */ ({
+      ...record,
+      ...(extra || {})
+    });
+  }
 
   /**
    * @param {string} attempt_id
    * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'} cursor
    * @param {string} head_sha
+   * @param {LandingExtra} [extra]
    */
-  function markStep(attempt_id, cursor, head_sha) {
+  function markStep(attempt_id, cursor, head_sha, extra = null) {
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
-        quickfix_landing: { cursor, head_sha, reason: null }
+        quickfix_landing: landingRecord(
+          { cursor, head_sha, reason: null },
+          extra
+        )
       }
     });
     notifyChanged(workspace);
@@ -112,17 +159,121 @@ export function createQuickfixLanding(deps) {
    * @param {QuickfixLandingReason|string} reason
    * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null} step
    * @param {string|null} head_sha
+   * @param {LandingExtra} [extra]
    * @returns {{ ok: false, reason: string, step: string|null }}
    */
-  function fail(attempt_id, reason, step, head_sha) {
+  function fail(attempt_id, reason, step, head_sha, extra = null) {
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
-        quickfix_landing: { cursor: step, head_sha, reason }
+        quickfix_landing: landingRecord(
+          { cursor: step, head_sha, reason },
+          extra
+        )
       }
     });
     notifyChanged(workspace);
     return { ok: false, reason, step };
+  }
+
+  /**
+   * Read and validate the `impl_review` receipt. Shared by the ordinary
+   * `resolved` path and the delivery-evidence path (§5.3), so the two can never
+   * disagree about which receipt is admissible.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: true, sha: string }|{ ok: false, reason: 'invalid_impl_review'|'impl_review_missing' }>}
+   */
+  async function readReceipt(bead_id) {
+    /** @type {string|null} */
+    let receipt;
+    try {
+      receipt = await deps.bd.readMetadata(bead_id, 'impl_review');
+    } catch (err) {
+      log('quick_fix impl_review readback failed for %s: %o', bead_id, err);
+      return { ok: false, reason: 'invalid_impl_review' };
+    }
+    const trimmed = typeof receipt === 'string' ? receipt.trim() : '';
+    if (trimmed.length === 0) {
+      return { ok: false, reason: 'impl_review_missing' };
+    }
+    const separator = trimmed.lastIndexOf('@');
+    const reviewer = trimmed.slice(0, separator);
+    if (
+      !ADMISSION_RECEIPT_RE.test(trimmed) ||
+      (reviewer === 'skipped' && !accept_skipped_receipt)
+    ) {
+      return { ok: false, reason: 'invalid_impl_review' };
+    }
+    return { ok: true, sha: trimmed.slice(separator + 1) };
+  }
+
+  /**
+   * Prove that this attempt's reviewed work actually reached the base, for a
+   * bead whose status the session never wrote (§5.2–§5.3).
+   *
+   * The evidence is the attempt's OWN pre-push record plus the review receipt
+   * bound to the pushed head. That pair is strictly stronger than the status
+   * write it replaces: a session could set `resolved` without pushing anything,
+   * while it cannot forge a hook record git itself produced, and an unreviewed
+   * head still fails because the receipt SHA has to equal the pushed one.
+   *
+   * Only after the pair matches does the Worker write `resolved` itself, with a
+   * confirming readback — an unconfirmed write is a record failure, not a
+   * landing.
+   *
+   * @param {{ attempt_id: string, bead_id: string, target_base: string }} input
+   * @returns {Promise<{ ok: true, receipt_sha: string }|{ ok: false, reason: QuickfixLandingReason }>}
+   */
+  async function proveDelivery(input) {
+    const { attempt_id, bead_id, target_base } = input;
+    const base_ref = `refs/heads/${target_base}`;
+    const read = deps.readPushLog
+      ? deps.readPushLog({ attempt_id })
+      : { ok: /** @type {const} */ (false), reason: 'absent' };
+    const base_pushes = read.ok
+      ? read.entries.filter(
+          (entry) =>
+            typeof entry.remote_ref === 'string' &&
+            entry.remote_ref === base_ref
+        )
+      : [];
+    if (base_pushes.length === 0) {
+      return { ok: false, reason: 'delivery_unproven:push_log_absent' };
+    }
+    const receipt = await readReceipt(bead_id);
+    if (!receipt.ok) {
+      return {
+        ok: false,
+        reason:
+          receipt.reason === 'impl_review_missing'
+            ? 'delivery_unproven:impl_review_missing'
+            : 'invalid_impl_review'
+      };
+    }
+    // The LAST base-destined line is the landing: a lane that pushed twice
+    // landed the second one, and the receipt has to bind to what is on the base
+    // now, not to an intermediate head.
+    const landed = base_pushes[base_pushes.length - 1].local_oid;
+    if (
+      typeof landed !== 'string' ||
+      landed.toLowerCase() !== receipt.sha.toLowerCase()
+    ) {
+      return {
+        ok: false,
+        reason: 'delivery_unproven:impl_review_sha_mismatch'
+      };
+    }
+    try {
+      await deps.bd.setStatus(bead_id, 'resolved');
+      if ((await deps.bd.readStatus(bead_id)) !== 'resolved') {
+        return { ok: false, reason: 'bd_record_failed' };
+      }
+    } catch (err) {
+      log('quick_fix worker resolve failed for %s: %o', bead_id, err);
+      return { ok: false, reason: 'bd_record_failed' };
+    }
+    return { ok: true, receipt_sha: receipt.sha };
   }
 
   /**
@@ -345,7 +496,9 @@ export function createQuickfixLanding(deps) {
       issue = await deps.bd.readIssue(bead_id);
     } catch (err) {
       log('quick_fix status readback failed for %s: %o', bead_id, err);
-      return fail(attempt_id, 'not_resolved', null, null);
+      // An unreadable bead says nothing about the landing; naming the read is
+      // what lets the classifier treat it as the environment failure it is.
+      return fail(attempt_id, 'bd_read_failed', null, null);
     }
     const status = typeof issue.status === 'string' ? issue.status : null;
     if (
@@ -376,25 +529,46 @@ export function createQuickfixLanding(deps) {
       }
       return settleNoChangeClose(attempt_id, bead_id, target_base);
     }
-    if (status !== 'resolved') {
-      return fail(attempt_id, 'not_resolved', null, null);
-    }
+    // Fields every later landing record must carry. Assigned only on the
+    // evidence path below, and read at each write — a step that rewrites
+    // `quickfix_landing` whole would otherwise erase what was recorded here.
+    /** @type {LandingExtra} */
+    let landing_extra = null;
 
     /** @type {string|null} */
-    let receipt;
-    try {
-      receipt = await deps.bd.readMetadata(bead_id, 'impl_review');
-    } catch (err) {
-      log('quick_fix impl_review readback failed for %s: %o', bead_id, err);
-      return fail(attempt_id, 'invalid_impl_review', null, null);
+    let receipt_head_sha = null;
+    if (status !== 'resolved') {
+      // §5.2–§5.3: the session did not write `resolved`. That is not a verdict
+      // about the work — it is a missing self-report, and the attempt's own
+      // push record plus the review receipt answer the question the report was
+      // standing in for.
+      const proven = await proveDelivery({ attempt_id, bead_id, target_base });
+      if (!proven.ok) {
+        return fail(attempt_id, proven.reason, null, null);
+      }
+      receipt_head_sha = proven.receipt_sha;
+      landing_extra = { resolved_by: 'worker:evidence' };
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          quickfix_landing: landingRecord(
+            { cursor: null, head_sha: receipt_head_sha, reason: null },
+            landing_extra
+          )
+        }
+      });
+      notifyChanged(workspace);
+    } else {
+      const receipt = await readReceipt(bead_id);
+      if (!receipt.ok) {
+        // The ordinary path keeps ONE receipt reason: on a bead the session
+        // itself resolved, an absent receipt and a malformed one are the same
+        // contract failure, and splitting them now would rename a token the
+        // failure vocabulary already carries.
+        return fail(attempt_id, 'invalid_impl_review', null, null);
+      }
+      receipt_head_sha = receipt.sha;
     }
-    const trimmed_receipt = typeof receipt === 'string' ? receipt.trim() : '';
-    const separator = trimmed_receipt.lastIndexOf('@');
-    const reviewer = trimmed_receipt.slice(0, separator);
-    if (!ADMISSION_RECEIPT_RE.test(trimmed_receipt) || reviewer === 'skipped') {
-      return fail(attempt_id, 'invalid_impl_review', null, null);
-    }
-    const receipt_head_sha = trimmed_receipt.slice(separator + 1);
     const head_sha = durable_cursor ? durable_head_sha : receipt_head_sha;
 
     if (
@@ -402,7 +576,7 @@ export function createQuickfixLanding(deps) {
       !/^[0-9a-f]{40}$/i.test(head_sha) ||
       (durable_cursor && receipt_head_sha !== head_sha)
     ) {
-      return fail(attempt_id, 'head_mismatch', null, head_sha);
+      return fail(attempt_id, 'head_mismatch', null, head_sha, landing_extra);
     }
 
     // The landed head is the receipt-bound SHA, not the owned worktree's HEAD:
@@ -410,14 +584,15 @@ export function createQuickfixLanding(deps) {
     // that worktree, so its HEAD stays at the dispatch base (UI-fiei). The
     // proof that the reviewed bytes landed is base containment below.
 
-    markStep(attempt_id, 'base_containment', head_sha);
+    markStep(attempt_id, 'base_containment', head_sha, landing_extra);
     const fetched = await fetchBase(target_base);
     if (!fetched.ok) {
       return fail(
         attempt_id,
         'containment_unobservable',
         'base_containment',
-        head_sha
+        head_sha,
+        landing_extra
       );
     }
     let containment;
@@ -432,7 +607,8 @@ export function createQuickfixLanding(deps) {
         attempt_id,
         'containment_unobservable',
         'base_containment',
-        head_sha
+        head_sha,
+        landing_extra
       );
     }
     if (containment.code === 1) {
@@ -440,7 +616,8 @@ export function createQuickfixLanding(deps) {
         attempt_id,
         'push_not_contained',
         'base_containment',
-        head_sha
+        head_sha,
+        landing_extra
       );
     }
     if (containment.code !== 0) {
@@ -448,12 +625,13 @@ export function createQuickfixLanding(deps) {
         attempt_id,
         'containment_unobservable',
         'base_containment',
-        head_sha
+        head_sha,
+        landing_extra
       );
     }
 
     if (repo_operations) {
-      markStep(attempt_id, 'repo_operations', head_sha);
+      markStep(attempt_id, 'repo_operations', head_sha, landing_extra);
       let config;
       try {
         config = await repo_operations.hasConfig(head_sha, {
@@ -465,7 +643,8 @@ export function createQuickfixLanding(deps) {
           attempt_id,
           'repo_ops_config_invalid',
           'repo_operations',
-          head_sha
+          head_sha,
+          landing_extra
         );
       }
       if (!config.ok) {
@@ -473,7 +652,8 @@ export function createQuickfixLanding(deps) {
           attempt_id,
           config.code || 'repo_ops_config_invalid',
           'repo_operations',
-          head_sha
+          head_sha,
+          landing_extra
         );
       }
       if (config.present) {
@@ -494,7 +674,8 @@ export function createQuickfixLanding(deps) {
             attempt_id,
             'repo_operation_failed',
             'repo_operations',
-            head_sha
+            head_sha,
+            landing_extra
           );
         }
         if (!deployed.ok) {
@@ -502,7 +683,8 @@ export function createQuickfixLanding(deps) {
             attempt_id,
             deployed.code || 'repo_operation_failed',
             'repo_operations',
-            head_sha
+            head_sha,
+            landing_extra
           );
         }
         if (!deployed.inert && typeof deployed.operation_id === 'string') {
@@ -522,7 +704,8 @@ export function createQuickfixLanding(deps) {
               attempt_id,
               'repo_operation_failed',
               'repo_operations',
-              head_sha
+              head_sha,
+              landing_extra
             );
           }
           if (evidence?.state === 'failed') {
@@ -530,7 +713,8 @@ export function createQuickfixLanding(deps) {
               attempt_id,
               evidence.code || 'repo_operation_failed',
               'repo_operations',
-              head_sha
+              head_sha,
+              landing_extra
             );
           }
           if (evidence?.state !== 'succeeded') {
@@ -538,26 +722,39 @@ export function createQuickfixLanding(deps) {
               attempt_id,
               evidence?.code || 'repo_operation_pending',
               'repo_operations',
-              head_sha
+              head_sha,
+              landing_extra
             );
           }
         }
       }
     }
 
-    markStep(attempt_id, 'branch_cleanup', head_sha);
+    markStep(attempt_id, 'branch_cleanup', head_sha, landing_extra);
     const cleaned = await cleanupBranch(bead_id, fetched.sha);
     if (!cleaned.ok) {
-      return fail(attempt_id, cleaned.reason, 'branch_cleanup', head_sha);
+      return fail(
+        attempt_id,
+        cleaned.reason,
+        'branch_cleanup',
+        head_sha,
+        landing_extra
+      );
     }
 
-    markStep(attempt_id, 'parent_close', head_sha);
+    markStep(attempt_id, 'parent_close', head_sha, landing_extra);
     const closed = await closeBead(bead_id);
     if (!closed.ok) {
       if (closed.wrote) {
         await restoreResolved(bead_id);
       }
-      return fail(attempt_id, 'bd_close_failed', 'parent_close', head_sha);
+      return fail(
+        attempt_id,
+        'bd_close_failed',
+        'parent_close',
+        head_sha,
+        landing_extra
+      );
     }
 
     deps.store.moveToDone(workspace, {
@@ -566,11 +763,10 @@ export function createQuickfixLanding(deps) {
       patch: {
         status: 'done',
         finished_at: now(),
-        quickfix_landing: {
-          cursor: 'parent_close',
-          head_sha,
-          reason: null
-        }
+        quickfix_landing: landingRecord(
+          { cursor: 'parent_close', head_sha, reason: null },
+          landing_extra
+        )
       }
     });
     notifyChanged(workspace);

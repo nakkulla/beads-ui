@@ -682,7 +682,9 @@ describe('worker e2e — worker-dispatched quick_fix lands without a PR', () => 
       )
     );
     expect(running_attempt.quickfix_lane).toBe(true);
-    expect(hook_install_calls).toBe(0);
+    // UI-5ym8 §5: the lane installs the RECORD-mode hook — it needs the push
+    // log — but still injects no hook env into the session.
+    expect(hook_install_calls).toBe(1);
     expect(fixture_spawn.captured.calls[0].options.env.GIT_CONFIG_COUNT).toBe(
       undefined
     );
@@ -1214,10 +1216,12 @@ describe('worker e2e — completion intent post-merge recovery', () => {
     });
 
     // The cleanup record's own reason IS the cause, and it is a token the
-    // retry policy would otherwise have re-run automatically.
+    // retry policy would otherwise have re-run automatically. It rides as the
+    // DETAIL of `cleanup_failed` (UI-5ym8 §7) so it cannot be mistaken for the
+    // gate's own retryable `verify_cmd_failed`.
     expect(stopped_action).toEqual({
       kind: 'needs_human',
-      reason: 'verify_cmd_failed',
+      reason: 'cleanup_failed:verify_cmd_failed',
       terminal: true
     });
 
@@ -1466,8 +1470,8 @@ describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', 
   });
 });
 
-describe('worker e2e — failure injection halts the queue (no breaker)', () => {
-  test('failed session → auto_advance OFF + workflow_mode revert + decision record', async () => {
+describe('worker e2e — failure injection settles one bead (UI-5ym8 tiers)', () => {
+  test('failed session → queue keeps running + workflow_mode revert + decision record', async () => {
     const { runtime, bd, scheduler } = buildSystem({
       // codex-failure.jsonl: a turn.failed/error stream → verdict fail.
       fixture: 'codex-failure.jsonl',
@@ -1479,10 +1483,17 @@ describe('worker e2e — failure injection halts the queue (no breaker)', () => 
     await scheduler.tick(WS);
     expect(scheduler.isRunning('S1')).toBe(true);
 
-    await waitFor(() => !runtime.queueStore.snapshot(WS).auto_advance);
+    await waitFor(() =>
+      Object.values(runtime.queueStore.snapshot(WS).attempts).some(
+        (/** @type {any} */ a) => a.bead_id === 'S1' && a.status === 'failed'
+      )
+    );
 
-    // auto_advance forced off, workflow_mode reverted (unset), attempt failed.
-    expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(false);
+    // UI-5ym8 §4: an individual failure never stops the queue — `auto_advance`
+    // is the user's toggle and `queue.hold` stays null. workflow_mode is still
+    // reverted and the attempt still carries the decision record.
+    expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(true);
+    expect(runtime.queueStore.snapshot(WS).hold).toBe(null);
     expect(
       bd.calls.some(
         (c) =>
@@ -1501,23 +1512,22 @@ describe('worker e2e — failure injection halts the queue (no breaker)', () => 
     expect(failed.cause).toContain('session_failed:');
     expect(failed.repo).toBe(repo_dir);
 
-    // The repo is NOT blocked: re-enabling auto_advance (the ▶ click) is the
-    // whole recovery path now that the breaker is gone.
+    // The repo is NOT blocked: the next bead dispatches with no gesture at all,
+    // because the queue never stopped.
     runtime.queueStore.place(WS, {
       expected_revision: runtime.queueStore.snapshot(WS).revision,
       bead_id: 'P1'
     });
-    runtime.queueStore.setAutoAdvance(WS, true);
     await scheduler.tick(WS);
     expect(scheduler.isRunning('P1')).toBe(true);
   });
 });
 
 describe('worker e2e — a session that never delivered fails verification (fail-closed)', () => {
-  test('success verdict but no open PR observed → verify fails → queue halts', async () => {
+  test('success verdict but no open PR observed → individual failure', async () => {
     // The session replays a SUCCESS fixture (verdict success), but the SERVER
-    // observes no open PR for the branch — a successful, empty observation, so
-    // the attempt fails closed with pr_missing.
+    // observes no open PR for the branch — a successful, empty observation with
+    // no `awaiting_user`, which is `session_ended_unresolved` (UI-5ym8 §3.2).
     const { runtime, bd, scheduler } = buildSystem({
       fixture: 'claude-success.jsonl',
       prOpen: false,
@@ -1529,10 +1539,15 @@ describe('worker e2e — a session that never delivered fails verification (fail
     await scheduler.tick(WS);
     expect(scheduler.isRunning('S1')).toBe(true);
 
-    // Session succeeds, but the observation is empty → fails closed:
-    // auto_advance off, workflow_mode reverted, attempt failed.
-    await waitFor(() => !runtime.queueStore.snapshot(WS).auto_advance);
-    expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(false);
+    // Session succeeds, but the observation is empty → the bead fails and the
+    // queue keeps running; workflow_mode is still reverted.
+    await waitFor(() =>
+      Object.values(runtime.queueStore.snapshot(WS).attempts).some(
+        (/** @type {any} */ a) => a.bead_id === 'S1' && a.status === 'failed'
+      )
+    );
+    expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(true);
+    expect(runtime.queueStore.snapshot(WS).hold).toBe(null);
 
     const attempt = /** @type {any} */ (
       Object.values(runtime.queueStore.snapshot(WS).attempts).find(
@@ -1542,8 +1557,8 @@ describe('worker e2e — a session that never delivered fails verification (fail
     expect(attempt.status).toBe('failed');
     expect(attempt.verify_result.ok).toBe(false);
     // A SUCCESSFUL empty observation — not an observation error.
-    expect(attempt.verify_result.reason).toBe('pr_missing');
-    expect(attempt.cause).toBe('verify_failed:pr_missing');
+    expect(attempt.verify_result.reason).toBe('no_pr');
+    expect(attempt.cause).toBe('session_ended_unresolved');
     // S1 was NOT moved to the PR-wait lane.
     expect(
       runtime.queueStore.snapshot(WS).pr_wait.map((e) => e.bead_id)
