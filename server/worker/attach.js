@@ -494,6 +494,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // if nobody else constructs a second instance — producers (scheduler, merge
   // queue, repo-operation coordinator, ws handlers) receive THIS one.
   const timeline = options.timeline || createBeadTimeline({ workspace_root });
+  // The queue store is process-wide while a timeline is per workspace, so the
+  // attachment is what pairs them (record-timeline-retention §7): the store may
+  // only transfer a processed-terminal attempt out of `queue.json` once THIS
+  // workspace's terminal event is durable.
+  runtime.queueStore.useTimeline(workspace_root, timeline);
 
   // The ONE base resolution seam (worker-base-scope-alignment §1/§2). The base
   // has exactly one source — the target repo's `docs/agents/repo-ops.toml`
