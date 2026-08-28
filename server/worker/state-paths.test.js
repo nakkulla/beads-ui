@@ -2,6 +2,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
+  attemptRecordPath,
+  beadArchivePath,
+  beadSessionLogPath,
+  beadSessionStderrPath,
+  beadStateDir,
+  beadTimelinePath,
+  beadsRootDir,
   codexAccountHomeDir,
   delegationMonitorDir,
   delegationMonitorRootDir,
@@ -9,6 +16,8 @@ import {
   discardBackupRootDir,
   execPresetsFilePath,
   guardHookDir,
+  recordMigrationMarkerPath,
+  retentionPolicyPath,
   sessionLogPath,
   usageReceiptInboxDir,
   workspaceSlug,
@@ -128,5 +137,72 @@ describe('codexAccountHomeDir', () => {
       )
     );
     expect(path.basename(result)).not.toMatch(/[+/=]/);
+  });
+});
+
+describe('bead-scoped record paths', () => {
+  test('lays the bead record tree out under beads/<bead_id>', () => {
+    const dir = beadStateDir(WS, 'UI-8wpb');
+
+    expect(beadsRootDir(WS)).toBe(path.join(workspaceStateDir(WS), 'beads'));
+    expect(dir).toBe(path.join(workspaceStateDir(WS), 'beads', 'UI-8wpb'));
+  });
+
+  test('places every per-bead record file at its spec location', () => {
+    const dir = beadStateDir(WS, 'UI-8wpb');
+
+    expect(beadTimelinePath(WS, 'UI-8wpb')).toBe(
+      path.join(dir, 'events.jsonl')
+    );
+    expect(attemptRecordPath(WS, 'UI-8wpb', 'UI-8wpb-1')).toBe(
+      path.join(dir, 'attempts', 'UI-8wpb-1.json')
+    );
+    expect(beadSessionLogPath(WS, 'UI-8wpb', 'UI-8wpb-1')).toBe(
+      path.join(dir, 'sessions', 'UI-8wpb-1.jsonl')
+    );
+    expect(beadSessionStderrPath(WS, 'UI-8wpb', 'UI-8wpb-1')).toBe(
+      path.join(dir, 'sessions', 'UI-8wpb-1.stderr.log')
+    );
+    expect(beadArchivePath(WS, 'UI-8wpb', 'UI-8wpb-1')).toBe(
+      path.join(dir, 'archive', 'UI-8wpb-1.jsonl.gz')
+    );
+  });
+
+  test('requires an explicit bead id at every bead-scoped call', () => {
+    // @ts-expect-error - a bead is never derivable from an attempt id.
+    beadTimelinePath(WS);
+    // @ts-expect-error - the bead has to be named before the attempt.
+    attemptRecordPath(WS, 'UI-8wpb-1');
+    // @ts-expect-error - same for the session original.
+    beadSessionLogPath(WS, 'UI-8wpb-1');
+  });
+
+  test('sanitizes a bead id the same way the attempt-scoped helpers do', () => {
+    const dir = beadStateDir(WS, '../escape/UI-1');
+
+    expect(path.basename(dir)).toBe('.._escape_UI-1');
+    expect(path.dirname(dir)).toBe(beadsRootDir(WS));
+  });
+
+  test('keeps a dot-only bead id inside the beads root', () => {
+    expect(beadStateDir(WS, '..')).toBe(path.join(beadsRootDir(WS), 'bead'));
+  });
+
+  test('keeps the legacy flat session path for the read-resolution order', () => {
+    expect(sessionLogPath(WS, 'UI-8wpb-1')).toBe(
+      path.join(workspaceStateDir(WS), 'sessions', 'UI-8wpb-1.jsonl')
+    );
+  });
+
+  test('keeps the migration marker inside the tree it describes', () => {
+    expect(recordMigrationMarkerPath(WS)).toBe(
+      path.join(beadsRootDir(WS), '.migrated-v1')
+    );
+  });
+
+  test('keeps the retention policy in its own workspace file', () => {
+    expect(retentionPolicyPath(WS)).toBe(
+      path.join(workspaceStateDir(WS), 'retention-policy.json')
+    );
   });
 });

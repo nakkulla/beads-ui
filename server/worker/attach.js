@@ -47,6 +47,7 @@ import { validateAdmission } from './admission.js';
 import { createAutoAdvanceRestoreController } from './auto-advance-restore.js';
 import { createAutoMerge } from './auto-merge.js';
 import { createBdMetadata } from './bd-metadata.js';
+import { createBeadTimeline } from './bead-timeline.js';
 import {
   createCompletionActionDriver,
   createCompletionIntentCoordinator
@@ -468,6 +469,7 @@ export function defaultProbePid(pid) {
  *   completionActionDriver?: any,
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
+ *   timeline?: ReturnType<typeof createBeadTimeline>,
  *   repoOperationMigration?: { run: () => Promise<any> },
  *   autoAdvanceRestore?: ReturnType<typeof createAutoAdvanceRestoreController>,
  *   getSubscriberCount?: () => number,
@@ -485,6 +487,13 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       runShell('git', args, opts));
   const gitRun = (/** @type {string[]} */ args, /** @type {any} */ opts = {}) =>
     baseGitRun(args, { ...opts, cwd: opts.cwd ?? repo });
+
+  // The workspace's ONE timeline writer (record-timeline-retention §5). Built
+  // here, beside the other attachment-owned collaborators, because the bead
+  // history it owns is per workspace and its single-writer guarantee only holds
+  // if nobody else constructs a second instance — producers (scheduler, merge
+  // queue, repo-operation coordinator, ws handlers) receive THIS one.
+  const timeline = options.timeline || createBeadTimeline({ workspace_root });
 
   // The ONE base resolution seam (worker-base-scope-alignment §1/§2). The base
   // has exactly one source — the target repo's `docs/agents/repo-ops.toml`
@@ -1589,6 +1598,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     deployTargetJudge,
     repoOperationCoordinator,
     repoOperationMigration,
+    timeline,
     repo,
     resolveBase,
     // Exposed so pinned-blob readers use the attachment's own runner rather
