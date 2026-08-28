@@ -865,6 +865,33 @@ function byId(chips) {
 }
 
 /**
+ * The `스펙 대기` 판정 칩 (UI-svh6 §4.3). `⛓` 칩이 말하는 막힘이 실행뿐 아니라
+ * **설계까지** 미친다는 사실 하나이므로 슬롯 1이 아니라 슬롯 4a에서 `⛓` 바로
+ * 다음에 선다 — 답하는 질문이 "지금 갈 수 있나"라 머리줄의
+ * `worker-ineligible`·`세션 권장`과 상호배제하지 않는다. 색은 기존
+ * `ctl-chip--label` 그대로다 (§4.5). 재료가 없으면 빈 문자열이다 (fail-quiet).
+ *
+ * @param {boolean} active
+ * @param {boolean} [open] - 사유 팝업이 지금 이 카드에서 이 칩 아래에 펼쳐져
+ * 있는지. `aria-expanded`가 되는 값이다.
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function specAfterBlockerChipTemplate(active, open = false) {
+  if (!active) {
+    return '';
+  }
+  return html`<button
+    type="button"
+    class="ctl-chip ctl-chip--label judgement-chip worker-card__spec-after-blocker"
+    data-chip-key="spec_after_blocker"
+    aria-expanded=${open ? 'true' : 'false'}
+    title="선행의 결과가 설계 전제라 스펙도 선행 뒤에 씁니다"
+  >
+    스펙 대기
+  </button>`;
+}
+
+/**
  * The two lines of 슬롯 4 (UI-8x90 §4.1·§4.2). 상단은 "지금 갈 수 있나"를 바꾸는
  * 사실(`▶ 연결` 발차 · `⛓` 선행 · `→` 후속), 하단은 판단 재료(`🔓` 해제 ·
  * `⧉` 겹침 · `scope 없음`)다. 재료가 없는 줄은 그리지 않으며 두 줄은 서로를
@@ -874,11 +901,19 @@ function byId(chips) {
  * 그 재료를 받는가는 투영이 정하고, 이 템플릿은 받은 것을 그린다.
  *
  * @param {DependencyChips|null|undefined} chips
+ * @param {import('lit-html').TemplateResult|''} [after_predecessors] - `⛓` 칩
+ * 바로 뒤에 서는 조각 (UI-svh6 §4.3). 칩 하나를 위해 이 템플릿이 `MiniItem`을
+ * 통째로 읽게 만들지 않으려고 호출 자리가 만들어 넘긴다. 값이 있으면 상단 줄은
+ * 선행 칩이 없어도 선다.
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function dependencyChipsTemplate(chips) {
+export function dependencyChipsTemplate(chips, after_predecessors = '') {
   if (!chips) {
-    return '';
+    return after_predecessors === ''
+      ? ''
+      : html`<div class="worker-deps worker-deps--primary">
+          ${after_predecessors}
+        </div>`;
   }
   // 각 묶음 안은 ID 사전순이다 (UI-8x90 §4.1). 투영이 실어 주는 순서는 서버
   // `blocked_by` 배열 순서·겹침 판정 순서라 카드마다 달라지므로, 같은 칩 집합이
@@ -891,7 +926,10 @@ export function dependencyChipsTemplate(chips) {
   const scope_missing = chips.scope_missing === true;
   const armed_lane = chips.armed_lane || null;
   const has_primary =
-    !!armed_lane || predecessors.length > 0 || dependents.length > 0;
+    !!armed_lane ||
+    predecessors.length > 0 ||
+    dependents.length > 0 ||
+    after_predecessors !== '';
   const has_secondary =
     released.length > 0 || overlaps.length > 0 || scope_missing;
   if (!has_primary && !has_secondary) {
@@ -917,7 +955,9 @@ export function dependencyChipsTemplate(chips) {
             >`
           : ''}${predecessors.map((chip) =>
           openableChipTemplate(chip, 'pred')
-        )}${dependents.map((chip) => openableChipTemplate(chip, 'dependents'))}
+        )}${after_predecessors}${dependents.map((chip) =>
+          openableChipTemplate(chip, 'dependents')
+        )}
       </div>`
     : ''}${has_secondary
     ? html`<div class="worker-deps worker-deps--secondary">
@@ -1251,6 +1291,13 @@ export function priorityBadgeTemplate(priority) {
  * 다시 판정하지 않고, 실행 자격·drag·적재는 건드리지 않는다.
  * @property {string} [session_preferred_reason] - 계약 enum 안의 사유. 칩 툴팁
  * 문구의 키이며, enum 밖 값은 투영에 도달하기 전에 걸러진다.
+ * @property {string[]} [blocked_by] - 지금 이 bead를 막는 선행 ID들. 칩은
+ * `dependency_chips.predecessors`가 그리고, 여기 배열은 판정 팝업의 문장이
+ * 읽는다.
+ * @property {boolean} [spec_after_blocker] - 선행의 결과가 이 bead의 설계
+ * 전제라 spec까지 선행 뒤로 미룬다 (UI-svh6 §4.2). 투영이 `spec-after-blocker`
+ * 라벨과 지금의 blocker를 함께 읽어 접은 값이며, 자격·drag·적재 어디에도 들어가지
+ * 않는다.
  * @property {import('../../utils/rec-settings.js').RecSettings|null} [rec] -
  * 복잡 판정 (UI-sbum §3): 워크플로가 이 bead에 다른 실행 설정을 추천했다는 사실
  * 하나. 표시 전용이고 자격·drag·적재 어디에도 들어가지 않는다. `null`/생략은
@@ -1768,10 +1815,10 @@ const SESSION_PREFERRED_TOOLTIP = {
 };
 
 /**
- * The four 판정 칩 keys (UI-8x90 §4.5). `data-chip-key` carries them into the
- * DOM so one click handler per tab covers every surface.
+ * The 판정 칩 keys (UI-8x90 §4.5, UI-svh6 §4.3). `data-chip-key` carries them
+ * into the DOM so one click handler per tab covers every surface.
  *
- * @typedef {'rec'|'session_preferred'|'ineligible'|'qfr'} JudgementChipKey
+ * @typedef {'rec'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'} JudgementChipKey
  */
 
 /**
@@ -1821,6 +1868,19 @@ export function judgementPopoverContent(item, chip_key) {
       ]
     };
   }
+  if (chip_key === 'spec_after_blocker') {
+    if (item.spec_after_blocker !== true) {
+      return null;
+    }
+    const blockers = Array.isArray(item.blocked_by) ? item.blocked_by : [];
+    return {
+      title: '선행 결과가 설계 전제 — 스펙도 선행 뒤에',
+      lines: [
+        `선행: ${blockers.join(' · ')}`,
+        '선행이 닫히면 이 표시는 저절로 사라진다 — 라벨은 이슈 상세의 라벨 절에서 뗀다'
+      ]
+    };
+  }
   if (chip_key === 'qfr') {
     const review = item.workflow ? item.workflow.quick_fix_review : null;
     if (!review || (review.state !== 'reviewed' && review.state !== 'stale')) {
@@ -1839,8 +1899,9 @@ export function judgementPopoverContent(item, chip_key) {
 }
 
 /**
- * The four keys, in the order a card would read them (UI-8x90 §4.5). 한 카드에
- * 두 팝업이 동시에 열리지 않으므로 첫 열림 하나만 찾으면 된다.
+ * The keys, in the order a card would read them (UI-8x90 §4.5) — 머리줄 넷이
+ * 먼저고 슬롯 4a의 `스펙 대기`가 그 아래다. 한 카드에 두 팝업이 동시에 열리지
+ * 않으므로 첫 열림 하나만 찾으면 된다.
  *
  * @type {ReadonlyArray<string>}
  */
@@ -1848,7 +1909,8 @@ export const JUDGEMENT_CHIP_KEYS = [
   'rec',
   'session_preferred',
   'ineligible',
-  'qfr'
+  'qfr',
+  'spec_after_blocker'
 ];
 
 /**
@@ -1958,7 +2020,22 @@ export function candidateCard(item, place_menu = null, options = {}) {
   );
   const danger =
     typeof item.reason === 'string' && item.reason.startsWith('⛔');
-  const deps_el = dependencyChipsTemplate(item.dependency_chips);
+  // 슬롯 4a의 판정 칩 (UI-svh6 §4.3). 팝업은 그 칩이 선 줄 아래에 열리므로
+  // (UI-8x90 §5) 머리줄이 아니라 이 줄이 싣는다 — `.worker-deps`가 그 기준
+  // 상자다.
+  const spec_after_blocker_open = chipOpen(item, 'spec_after_blocker');
+  const spec_after_blocker_el = specAfterBlockerChipTemplate(
+    item.spec_after_blocker === true,
+    spec_after_blocker_open
+  );
+  const deps_el = dependencyChipsTemplate(
+    item.dependency_chips,
+    spec_after_blocker_el === ''
+      ? ''
+      : html`${spec_after_blocker_el}${spec_after_blocker_open
+          ? judgementPopover(item)
+          : ''}`
+  );
   // 좌표 칩은 정체성 줄이 아니라 슬롯 5 줄이다 (UI-251y §2·§3.2): 헤더에 서면
   // 폭에 따라 조작 버튼을 다음 줄로 밀어내 사용자가 버튼을 찾는 자리가
   // 달라진다. 순서는 레포 → route → from → exec 칩 하나다.
@@ -2016,7 +2093,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
         item.rec,
         chipOpen(item, 'rec')
       )}${quickFixReviewChipTemplate(workflow, chipOpen(item, 'qfr'))}
-      ${judgementPopover(item)}
+      ${spec_after_blocker_open ? '' : judgementPopover(item)}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow

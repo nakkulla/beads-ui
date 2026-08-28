@@ -3873,6 +3873,28 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
     ]).toEqual([true, 'visual_verification']);
   });
 
+  test('carries the 스펙 대기 judgement onto the candidate row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-1', { spec_after_blocker: true })]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].spec_after_blocker).toBe(true);
+  });
+
+  test('leaves a row without the judgement carrying no spec-after-blocker key', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1')] })],
+      [state()]
+    );
+
+    expect(Object.hasOwn(lanes.runnable[0], 'spec_after_blocker')).toBe(false);
+  });
+
   test('leaves a row without the advisory carrying no session-preferred key', () => {
     const lanes = buildLanes(
       [workspace({ runnable: [runnable('A-1')] })],

@@ -2931,6 +2931,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
                   : ''
             }
           : {}),
+        // 선행이 실행뿐 아니라 설계까지 막는다는 예외 라벨 (UI-svh6 §4.2).
+        // 판정은 어댑터가 이미 접었으므로 레인은 값만 옮긴다 — 재료를 싣지 않는
+        // 행에는 키 자체가 없다 (fail-quiet).
+        ...(entry.spec_after_blocker === true
+          ? { spec_after_blocker: true }
+          : {}),
         ...(released ? { dependency_chips: { released } } : {}),
         ...(entry.dependents_info && typeof entry.dependents_info === 'object'
           ? { dependents_info: entry.dependents_info }
