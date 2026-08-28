@@ -2273,6 +2273,55 @@ describe('worker/attach target base resolution wiring (worker-base-scope-alignme
     expect(result).toEqual({ ok: false, reason: 'base_unresolved:format' });
   });
 
+  test('forwards a snapshot awaiting_user key into admission', async () => {
+    const att = attach({
+      bd: fakeBd(),
+      gh: { checkAvailability: async () => ({ state: 'ok' }) }
+    });
+
+    const result = await att.admission.validate(
+      /** @type {any} */ ({
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'a'.repeat(40),
+        base_unresolved: null,
+        route: 'spec_backed',
+        spec_id: 'docs/spec.md',
+        spec_review: `codex@${'b'.repeat(40)}`,
+        awaiting_user: 'spec_review_stale:revise'
+      })
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'awaiting_user' });
+  });
+
+  test('leaves admission unrefused when the snapshot has no awaiting_user key', async () => {
+    const att = attach({
+      bd: fakeBd(),
+      gh: { checkAvailability: async () => ({ state: 'ok' }) },
+      gitRun: async (/** @type {string[]} */ args) => ({
+        code: 0,
+        stdout:
+          args[0] === 'show' ? '---\nscope:\n  - server/worker/\n---\n' : '',
+        stderr: ''
+      })
+    });
+
+    const result = await att.admission.validate(
+      /** @type {any} */ ({
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'a'.repeat(40),
+        base_unresolved: null,
+        route: 'spec_backed',
+        spec_id: 'docs/spec.md',
+        spec_review: `codex@${'b'.repeat(40)}`
+      })
+    );
+
+    expect(result).toEqual({ ok: true });
+  });
+
   test('asks git about the fetched remote tip, not the branch name', async () => {
     /** @type {string[][]} */
     const git_calls = [];

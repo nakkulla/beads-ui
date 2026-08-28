@@ -589,7 +589,14 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           plan_path: snap.plan_path,
           plan_approval: snap.plan_approval,
           last_checked_sha: snap.last_checked_sha,
-          labels: snap.labels
+          labels: snap.labels,
+          // 스냅샷과 같은 조건부 spread여야 한다. 이 리터럴은 고정 키 목록이라
+          // `awaiting_user: snap.awaiting_user`로 항상 실으면 파킹이 없는 Bead도
+          // own-property를 얻어 presence 판정이 전부 거부하고, 아예 빼면 파킹이
+          // admission에 도달하지 못한다.
+          ...(Object.hasOwn(snap, 'awaiting_user')
+            ? { awaiting_user: snap.awaiting_user }
+            : {})
         }
       });
     },
