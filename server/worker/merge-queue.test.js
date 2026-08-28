@@ -157,7 +157,7 @@ describe('worker/merge-queue — bead timeline (record-timeline-retention §5)',
       {
         bead_id: 'UI-1',
         kind: 'merge_step',
-        seq: 'merged',
+        seq: 'm1',
         summary: '머지 큐 · squash 머지 완료'
       }
     ]);
@@ -180,9 +180,55 @@ describe('worker/merge-queue — bead timeline (record-timeline-retention §5)',
     expect(timeline.events[0]).toMatchObject({
       bead_id: 'UI-1',
       kind: 'merge_step',
-      seq: 'refused'
+      seq: 'm1'
     });
     expect(timeline.events[0].summary).toContain('머지 보류');
+  });
+
+  test('keeps two attempts of one bead as two lines', async () => {
+    const store = seed(['UI-1']);
+    const timeline = recorder();
+    /** @type {string[]} */
+    const reasons = ['snapshot_unreadable', 'merge_error'];
+    const mq = driver(store, {
+      timeline,
+      merge: async () => ({
+        ok: false,
+        action: 'refused',
+        reason: reasons.shift() || 'merge_error'
+      })
+    });
+
+    await mq.kick();
+    await mq.kick();
+
+    expect(timeline.events.map((/** @type {any} */ e) => e.seq)).toEqual([
+      'm1',
+      'm2'
+    ]);
+    expect(timeline.events[0].summary).not.toBe(timeline.events[1].summary);
+  });
+
+  test('continues the numbering a restart found on the timeline', async () => {
+    const store = seed(['UI-1']);
+    const timeline = recorder();
+    const mq = driver(store, {
+      timeline: {
+        ...timeline,
+        readTimeline: () => [
+          { event_id: 'merge_step:UI-1:m1', kind: 'merge_step' }
+        ]
+      },
+      merge: async () => ({
+        ok: false,
+        action: 'refused',
+        reason: 'merge_error'
+      })
+    });
+
+    await mq.kick();
+
+    expect(timeline.events[0].seq).toBe('m2');
   });
 
   test('merges when no timeline is injected', async () => {

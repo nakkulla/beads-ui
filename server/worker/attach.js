@@ -2092,13 +2092,21 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   // ahead of the detached monitor reattach and both reconciles for the same
   // reason — those are the first readers.
   //
-  // Non-fatal: a migration that could not finish leaves the workspace in the
-  // layout it already had, which every read path still resolves, and the next
-  // start tries again. Its completion is what clears the health gate.
+  // FAIL-CLOSED: §8.3 puts the migration before every reader, so a pass that
+  // did not finish stops the startup sequence here. The workspace keeps the
+  // layout it already had and the next start retries; going on would start the
+  // very readers that cache a pre-migration `queue.json` and persist it back
+  // over the reduced one. The attachment stays constructed but inert, and the
+  // health gate stays not-ready.
   try {
-    att.recordRetention?.migrate();
+    const migration = att.recordRetention?.migrate();
+    if (migration && migration.ok !== true) {
+      log('record migration did not finish for %s: %o', key, migration);
+      return;
+    }
   } catch (err) {
     log('record migration failed for %s: %o', key, err);
+    return;
   }
   await retireRepairLanes(att, key);
   await retireKindAttempts(att, key);

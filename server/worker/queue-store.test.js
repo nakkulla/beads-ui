@@ -9216,6 +9216,51 @@ describe('worker/queue-store record transfer', () => {
     );
   });
 
+  test('transfers a done attempt once its completion saga has finished', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        attempts: {
+          'a-done': {
+            attempt_id: 'a-done',
+            bead_id: 'UI-saga',
+            status: 'done',
+            finished_at: 700
+          }
+        },
+        completion_intents: {
+          'UI-saga': {
+            target_base: 'main',
+            phase: 'completed',
+            subject: {
+              role: 'root',
+              bead_id: 'UI-saga',
+              pr_url: 'https://example.test/pr/1',
+              head_sha: 'a'.repeat(40),
+              base_sha: 'b'.repeat(40),
+              merged_sha: 'c'.repeat(40)
+            },
+            active_op: null,
+            terminal_reason: null
+          }
+        }
+      })
+    );
+    const { store } = storeWithTimeline();
+
+    store.setSlots(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      slots: 3
+    });
+
+    expect(store.snapshot(WS).attempts['a-done']).toBeUndefined();
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-saga', 'a-done'))).toBe(
+      true
+    );
+  });
+
   test('returns the union of live and transferred attempts for a bead', () => {
     const { store } = storeWithTimeline();
     append(store, {

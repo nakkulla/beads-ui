@@ -1073,6 +1073,56 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(runtime.queueStore.snapshot(WS).attempts).toEqual({});
   });
 
+  test('starts no queue reader when the record migration did not finish', async () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        attempts: {
+          'run-1': {
+            attempt_id: 'run-1',
+            bead_id: 'UI-1',
+            status: 'running',
+            pid: 4242
+          }
+        }
+      })
+    );
+    const runtime = createWorkerRuntime();
+    const recordRetention = {
+      policy: () => ({ archive_days: 30, delete_days: 180 }),
+      migrate: vi.fn(() => ({
+        ok: false,
+        skipped: false,
+        records: 0,
+        moved: 0,
+        events: 0
+      })),
+      sweep: vi.fn(async () => ({ archived: 0, deleted: 0, closed: 0 }))
+    };
+    const probePid = vi.fn(() => ({ alive: true, started_at: 1000 }));
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      recordRetention,
+      probePid
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => recordRetention.migrate.mock.calls.length > 0);
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The running attempt's recovery probe and the retention pass are both
+    // downstream of the migration; neither may run on a workspace still in the
+    // pre-migration layout.
+    expect(probePid).not.toHaveBeenCalled();
+    expect(recordRetention.sweep).not.toHaveBeenCalled();
+  });
+
   test('retires a persisted repair lane before anything else observes it', async () => {
     // The legacy payload lives in a fixture on purpose: it is the one shape
     // that must still name the retired keys, and the identifier gate in

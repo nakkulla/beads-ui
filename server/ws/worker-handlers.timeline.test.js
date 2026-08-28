@@ -9,8 +9,23 @@ const state = vi.hoisted(() => ({
   timelines: {},
   /** @type {Record<string, any>} */
   attempts: {},
+  /** @type {Record<string, any[]>} */
+  bead_attempts: {},
   /** @type {Set<string>} */
-  existing_logs: new Set()
+  existing_logs: new Set(),
+  /** @type {Set<string>} */
+  unreadable_logs: new Set()
+}));
+
+vi.mock('../worker/runtime.js', () => ({
+  getWorkerRuntime: () => ({
+    queueStore: {
+      readAttemptsForBead: (
+        /** @type {string} */ _workspace,
+        /** @type {string} */ bead_id
+      ) => state.bead_attempts[bead_id] || []
+    }
+  })
 }));
 
 vi.mock('../worker/attach.js', () => ({
@@ -27,10 +42,15 @@ vi.mock('../worker/attach.js', () => ({
 
 vi.mock('../worker/session-log.js', () => ({
   beadOfTransferredAttempt: () => null,
-  resolveSessionLogRead: (/** @type {any} */ input) =>
-    state.existing_logs.has(String(input.log_path))
-      ? { status: 'ok', path: String(input.log_path), gzipped: false }
-      : { status: 'expired', path: null, gzipped: false }
+  resolveSessionLogRead: (/** @type {any} */ input) => {
+    const path = String(input.log_path);
+    if (state.unreadable_logs.has(path)) {
+      return { status: 'unreadable', path, gzipped: false };
+    }
+    return state.existing_logs.has(path)
+      ? { status: 'ok', path, gzipped: false }
+      : { status: 'expired', path: null, gzipped: false };
+  }
 }));
 
 const { setConnWorkspace } = await import('./context.js');
@@ -96,6 +116,30 @@ describe('get-bead-timeline (record-timeline-retention §9)', () => {
     ).toEqual(['e2', 'e1']);
   });
 
+  test("returns the bead's attempt union alongside its events", () => {
+    // A bead whose finished records already left `queue.json` (§7): the client
+    // store cannot see them, so the detail panel's 세션 이력 and 총 사용량 read
+    // this list.
+    state.timelines = { 'UI-1': [event('e1', 1000)] };
+    state.bead_attempts = {
+      'UI-1': [
+        { attempt_id: 'a-old', bead_id: 'UI-1', status: 'done' },
+        { attempt_id: 'a-new', bead_id: 'UI-1', status: 'running' }
+      ]
+    };
+    const sock = fakeSocket();
+
+    handleGetBeadTimeline(sock, {
+      id: 'r1',
+      type: 'get-bead-timeline',
+      payload: { bead_id: 'UI-1' }
+    });
+
+    expect(
+      lastPayload(sock).attempts.map((/** @type {any} */ a) => a.attempt_id)
+    ).toEqual(['a-old', 'a-new']);
+  });
+
   test('returns an empty list for an unknown bead', () => {
     state.timelines = { 'UI-1': [event('e1', 1000)] };
     const sock = fakeSocket();
@@ -106,7 +150,11 @@ describe('get-bead-timeline (record-timeline-retention §9)', () => {
       payload: { bead_id: 'UI-nope' }
     });
 
-    expect(lastPayload(sock)).toEqual({ bead_id: 'UI-nope', events: [] });
+    expect(lastPayload(sock)).toEqual({
+      bead_id: 'UI-nope',
+      events: [],
+      attempts: []
+    });
   });
 
   test('refuses a payload with no bead id', () => {
@@ -145,6 +193,26 @@ describe('bead_timelines snapshot decoration (§9)', () => {
     ).toEqual(['e3', 'e4', 'e5', 'e6', 'e7']);
     expect(out['UI-1'].log_path).toBe('/w/UI-1/a1.jsonl');
     expect(out['UI-1'].log_expired).toBe(false);
+  });
+
+  test('marks a log the resolution order could not read as unreadable', () => {
+    state.timelines = { 'UI-1': [event('e1', 1000)] };
+    state.existing_logs = new Set();
+    state.unreadable_logs = new Set(['/w/UI-1/a1.jsonl']);
+    state.attempts = {
+      a1: {
+        attempt_id: 'a1',
+        bead_id: 'UI-1',
+        status: 'failed',
+        log_path: '/w/UI-1/a1.jsonl'
+      }
+    };
+
+    const out = beadTimelinesFor(WS, { attempts: state.attempts });
+
+    expect(out['UI-1'].log_unreadable).toBe(true);
+    expect(out['UI-1'].log_expired).toBe(false);
+    state.unreadable_logs = new Set();
   });
 
   test('marks a stored log the resolution order no longer finds as expired', () => {

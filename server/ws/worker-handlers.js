@@ -940,13 +940,16 @@ const TIMELINE_TILE_STATUSES = new Set(['failed', 'orphaned', 'parked']);
  * `log_expired` is the §4 read-resolution order's `expired` outcome — the
  * retention policy deleted the transcript — which is a different answer from
  * "this attempt recorded no path", and the tile says so with 만료됨.
+ * `log_unreadable` is its `unreadable` outcome, and it is a THIRD answer: the
+ * ladder hit a storage fault instead of an absence, so the tile must not say a
+ * deletion happened that never did.
  *
  * Exported for the §9 transport test, which fixes the omission rules; the
  * snapshot builder is its only production caller.
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
- * @returns {Record<string, { events: import('../worker/bead-timeline.js').TimelineEvent[], log_path: string|null, log_expired: boolean }>}
+ * @returns {Record<string, { events: import('../worker/bead-timeline.js').TimelineEvent[], log_path: string|null, log_expired: boolean, log_unreadable?: boolean }>}
  */
 export function beadTimelinesFor(workspace_key, queue) {
   const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
@@ -971,7 +974,7 @@ export function beadTimelinesFor(workspace_key, queue) {
     }
   }
 
-  /** @type {Record<string, { events: import('../worker/bead-timeline.js').TimelineEvent[], log_path: string|null, log_expired: boolean }>} */
+  /** @type {Record<string, { events: import('../worker/bead-timeline.js').TimelineEvent[], log_path: string|null, log_expired: boolean, log_unreadable?: boolean }>} */
   const out = {};
   for (const [bead_id, attempt] of newest_by_bead) {
     const events = readBeadTimeline(workspace_key, bead_id, {
@@ -987,7 +990,8 @@ export function beadTimelinesFor(workspace_key, queue) {
         log_path: typeof attempt.log_path === 'string' ? attempt.log_path : null
       });
     } catch {
-      located = { status: 'expired', path: null, gzipped: false };
+      // A ladder that threw did not observe an absence either.
+      located = { status: 'unreadable', path: '', gzipped: false };
     }
     // A record that never stored a path AND resolved to nothing is a failure
     // that ran no session at all — there is no log fact to report, expired or
@@ -997,11 +1001,22 @@ export function beadTimelinesFor(workspace_key, queue) {
         ? attempt.log_path
         : null;
     const log_expired = located.status === 'expired' && stored !== null;
+    const log_unreadable = located.status === 'unreadable';
     const log_path = located.status === 'ok' ? located.path : null;
-    if (events.length === 0 && log_path === null && !log_expired) {
+    if (
+      events.length === 0 &&
+      log_path === null &&
+      !log_expired &&
+      !log_unreadable
+    ) {
       continue;
     }
-    out[bead_id] = { events, log_path, log_expired };
+    out[bead_id] = {
+      events,
+      log_path,
+      log_expired,
+      ...(log_unreadable ? { log_unreadable: true } : {})
+    };
   }
   return out;
 }
@@ -3468,10 +3483,18 @@ export function handleGetBeadPrompt(ws, req) {
  * events are short enough that paging them server-side would only add a cursor
  * nobody needs. The section reveals them progressively on its own.
  *
+ * The reply also carries `attempts`: the §7 union of the live queue and the
+ * bead's transferred records. The detail panel's 세션 이력 and 총 사용량 read
+ * the client queue store, which by construction holds only what `queue.json`
+ * still has — so a bead whose records were transferred would show a timeline
+ * and no sessions at all. This is the request that already asks the server for
+ * one bead's whole history, so it answers with the whole record set too rather
+ * than adding a second round trip for the same bead.
+ *
  * An unknown bead, a workspace with no attachment, and a bead that has simply
- * never been dispatched all reply `{ bead_id, events: [] }` rather than an
- * error: the section draws nothing on an empty list, and three different
- * silences would be three ways of saying the same "이력 없음".
+ * never been dispatched all reply `{ bead_id, events: [], attempts: [] }`
+ * rather than an error: the section draws nothing on an empty list, and three
+ * different silences would be three ways of saying the same "이력 없음".
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -3506,7 +3529,15 @@ export function handleGetBeadTimeline(ws, req) {
   // reversing HERE keeps the one ordering decision on the wire instead of in
   // every consumer.
   const events = readBeadTimeline(key, bead_id).slice().reverse();
-  ws.send(JSON.stringify(makeOk(req, { bead_id, events })));
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id,
+        events,
+        attempts: transferredAttemptsFor(key, bead_id)
+      })
+    )
+  );
 }
 
 /**

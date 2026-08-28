@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createBeadTimeline } from './bead-timeline.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { install as guardHookInstall } from './guard-hook.js';
 import { resolveExecSettings } from './policy.js';
@@ -8379,6 +8380,34 @@ describe('scheduler already-finished verify verdict (UI-b8n8 §접근 B)', () =>
 
     const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
     expect(/** @type {any} */ (attempt.verify_result).pr_state).toBe('MERGED');
+  });
+
+  test('records the ending exactly once on the transferred record', async () => {
+    // The store and the scheduler share ONE real timeline, which is what the
+    // runtime does: the `done` move makes the attempt transferable in the same
+    // write, and the transfer writes an ending for any attempt it finds none
+    // for (record-timeline-retention §5).
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    const store = createQueueStore({ timeline });
+    const env = setup({
+      store,
+      timeline,
+      config: { S1: {} },
+      slots: 1,
+      verify: verifyWith({ already_finished: true })
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const endings = timeline
+      .readTimeline('S1')
+      .filter((event) => event.kind === 'session_ended');
+    expect(endings).toHaveLength(1);
+    expect(endings[0].summary).toBe('성공 · PR 머지 확인됨');
   });
 });
 

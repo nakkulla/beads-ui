@@ -3767,6 +3767,29 @@ function completeIntentForDone(q, bead_id) {
 }
 
 /**
+ * Has this completion saga FINISHED — the `done`이 "saga 종료 후" transferable
+ * becomes true (§7)?
+ *
+ * The predicate is the intent's own record of its termination, not the presence
+ * of its key: {@link completeIntentForDone} is what ends a saga, and it writes
+ * `completed` with no `active_op` and no `terminal_reason`. The key itself
+ * survives that until the done-lane prune sweeps it days later, so holding on
+ * key presence would pin every finished bead's records for exactly as long.
+ *
+ * `needs_human` is NOT finished. That phase stops the saga on a question a
+ * human still has to answer, and answering it resumes the same intent — the
+ * records it names must still be in the queue when that happens.
+ *
+ * @param {CompletionIntent|undefined} intent
+ * @returns {boolean}
+ */
+function isFinishedCompletionIntent(intent) {
+  // The migration hands this the RAW file's intents, where a value may be
+  // anything at all; anything that is not a recognizable finished saga holds.
+  return isRecord(intent) && intent.phase === 'completed' && !intent.active_op;
+}
+
+/**
  * Attempt statuses whose record is a PROCESSED terminal — the ones §7 moves out
  * of `queue.json` into the bead's own directory.
  *
@@ -3816,12 +3839,20 @@ function isProcessedTerminalAttempt(attempt) {
  * as an unhandled one that holds auto-advance closed. Keeping the bead's
  * records together makes that impossible instead of merely unlikely.
  *
+ * That grouping is NOT incidental, and it is not a step on the way to a
+ * per-attempt transfer. Making it per-attempt would mean converting every one
+ * of those judgments to {@link createQueueStore.readAttemptsForBead} — a
+ * redesign, not a narrowing — and until that happens, transferring a newer
+ * `done` while an older undismissed `failed` of the same bead stays behind is
+ * exactly how that failure becomes the bead's last attempt again. Do not
+ * "simplify" this to per-attempt without moving those readers first.
+ *
  * A bead is held while it has any attempt that is NOT a processed terminal, and
  * while it still sits in a lane that means work is in flight (`queue`, a serial
- * lane, `pr_wait`, `merge_queue`), owns a completion-saga intent, or has a
- * discard operation still running. The `done` lane is NOT held: that is the
- * settled archive, and holding it would keep every finished bead's history in
- * the state file forever, which is the problem §7 exists to fix.
+ * lane, `pr_wait`, `merge_queue`), owns an UNFINISHED completion-saga intent,
+ * or has a discard operation still running. The `done` lane is NOT held: that
+ * is the settled archive, and holding it would keep every finished bead's
+ * history in the state file forever, which is the problem §7 exists to fix.
  *
  * @param {Queue} q
  * @returns {Set<string>}
@@ -3843,8 +3874,10 @@ function beadsWithLiveRecords(q) {
   for (const entry of q.merge_queue) {
     held.add(entry.bead_id);
   }
-  for (const bead_id of Object.keys(q.completion_intents)) {
-    held.add(bead_id);
+  for (const [bead_id, intent] of Object.entries(q.completion_intents)) {
+    if (!isFinishedCompletionIntent(intent)) {
+      held.add(bead_id);
+    }
   }
   for (const operation of Object.values(q.discard_operations)) {
     if (operation.phase !== 'done') {

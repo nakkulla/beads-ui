@@ -170,6 +170,8 @@ import { logPathTemplate } from './log-path.js';
  * 아카이브(`.gz`)일 수도 있고, 기록된 값과 다를 수도 있다. 없으면 줄이 빠진다.
  * @property {boolean} [log_expired] - 보존 정책이 로그를 지웠다 (§4). 경로가
  * 없다는 것과 다른 대답이므로 자기 키를 갖는다.
+ * @property {boolean} [log_unreadable] - 해석 사다리가 저장소 오류를 만났다
+ * (§4). 삭제된 것이 아니므로 만료됨과 다른 문구를 쓴다.
  * @property {boolean} [open] - Ephemeral view state for this attempt's detail.
  */
 
@@ -255,7 +257,8 @@ function retryWaitBadgeText(retry) {
  *
  * Every part is conditional on its own material, so a bead with events but no
  * log draws only the list, a bead whose log the retention policy deleted draws
- * only 만료됨, and a bead with neither draws NOTHING — not an empty block.
+ * only 만료됨, a bead whose log could not be read draws 읽기 실패 instead — a
+ * fault is not a deletion — and a bead with neither draws NOTHING.
  *
  * @param {FailureTile|null|undefined} tile
  * @returns {import('lit-html').TemplateResult|''}
@@ -267,7 +270,8 @@ function historyBlockTemplate(tile) {
   const rows = Array.isArray(tile.timeline) ? tile.timeline : [];
   const log_path = typeof tile.log_path === 'string' ? tile.log_path : '';
   const expired = tile.log_expired === true;
-  if (rows.length === 0 && log_path.length === 0 && !expired) {
+  const unreadable = tile.log_unreadable === true;
+  if (rows.length === 0 && log_path.length === 0 && !expired && !unreadable) {
     return '';
   }
   return html`${rows.length > 0
@@ -283,19 +287,27 @@ function historyBlockTemplate(tile) {
             </li>`
         )}
       </ol>`
-    : ''}${expired
+    : ''}${unreadable
     ? html`<p
         class="rtile__history-log"
         data-seam="tile-log-path"
-        title="180일 보존 정책으로 삭제됨"
+        title="로그 파일을 읽을 수 없습니다 — 삭제된 것이 아닙니다"
       >
-        만료됨
+        읽기 실패
       </p>`
-    : log_path.length > 0
-      ? html`<p class="rtile__history-log" data-seam="tile-log-path">
-          ${logPathTemplate(log_path)}
+    : expired
+      ? html`<p
+          class="rtile__history-log"
+          data-seam="tile-log-path"
+          title="180일 보존 정책으로 삭제됨"
+        >
+          만료됨
         </p>`
-      : ''}`;
+      : log_path.length > 0
+        ? html`<p class="rtile__history-log" data-seam="tile-log-path">
+            ${logPathTemplate(log_path)}
+          </p>`
+        : ''}`;
 }
 
 /**

@@ -116,7 +116,10 @@ export function defaultRecordsProbe(root_dir) {
   try {
     return !recordMigrationPending(root_dir);
   } catch {
-    return true;
+    // A probe that threw does not know whether the layout is current, and
+    // "ready" is the one answer it must not invent: it would let exactly the
+    // reads through that the migration window exists to hold back.
+    return false;
   }
 }
 

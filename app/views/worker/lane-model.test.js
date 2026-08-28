@@ -1339,6 +1339,22 @@ describe('타임라인 투영 (record-timeline-retention §9)', () => {
     expect(failure?.log_path).toBeUndefined();
   });
 
+  test('marks a log the ladder could not read as unreadable', () => {
+    const map = projectFailure({
+      'A-1': {
+        events: [],
+        log_path: null,
+        log_expired: false,
+        log_unreadable: true
+      }
+    });
+
+    const failure = map.get('A-1')?.failure;
+
+    expect(failure?.log_unreadable).toBe(true);
+    expect(failure?.log_expired).toBeUndefined();
+  });
+
   test('omits every history key for a bead with no snapshot entry', () => {
     const failure = projectFailure().get('A-1')?.failure;
 

@@ -39,13 +39,6 @@ import { createRepoOpsDeployWorktreeManager } from './worktree.js';
 const RECONCILE_GRACE_MS = 5000;
 
 /**
- * How much of a run log's tail is decoded when quoting the failing line. Large
- * enough to hold a test runner's failure block, small enough that a huge log
- * costs one page rather than a full decode.
- */
-const LOG_SUMMARY_TAIL_BYTES = 64 * 1024;
-
-/**
  * @param {{ repo_operations: Record<string, any> }} queue
  * @param {string} repo_id
  * @param {string} target_base
@@ -224,9 +217,11 @@ export function createRepoOperationCoordinator(deps) {
    * ONE read — the log is already read whole for the digest, so a second pass
    * over the same bytes is the only cost.
    *
-   * The summary is extracted from the log's TAIL: a script announces its
-   * failure at the end, and a multi-megabyte deploy log must not be decoded in
-   * full just to quote one line.
+   * The summary search sees the WHOLE output, not a tail window. §6 asks for
+   * the FIRST line that announces a failure, and a script that fails early and
+   * then keeps printing — a `npm ci` that died before a long deploy log — puts
+   * that line outside any tail. Scanning from the front is also what makes the
+   * "last non-empty line" fallback mean what it says.
    *
    * @param {string} file
    * @returns {{ digest: string|null, summary: string|null }}
@@ -240,8 +235,7 @@ export function createRepoOperationCoordinator(deps) {
       return { digest: null, summary: null };
     }
     const digest = crypto.createHash('sha256').update(raw).digest('hex');
-    const tail = raw.subarray(Math.max(0, raw.length - LOG_SUMMARY_TAIL_BYTES));
-    return { digest, summary: scriptSummary(tail.toString('utf8')) };
+    return { digest, summary: scriptSummary(raw.toString('utf8')) };
   }
 
   /**

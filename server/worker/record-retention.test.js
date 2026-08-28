@@ -83,18 +83,46 @@ function attempt(overrides) {
 }
 
 /**
- * @param {{ statuses?: Record<string, string>, now?: number }} [options]
+ * @param {{ statuses?: Record<string, string>, now?: number, fs?: any, timeline?: any }} [options]
  */
 function makeRetention(options = {}) {
-  const timeline = createBeadTimeline({ workspace_root: WS });
+  const timeline =
+    options.timeline || createBeadTimeline({ workspace_root: WS });
   const statuses = options.statuses || {};
   const retention = createRecordRetention({
     workspace_root: WS,
     timeline,
     readStatus: async (bead_id) => statuses[bead_id] ?? null,
-    now: () => options.now ?? NOW
+    now: () => options.now ?? NOW,
+    ...(options.fs ? { fs: options.fs } : {})
   });
   return { retention, timeline };
+}
+
+/**
+ * The real `node:fs`, with ONE call made to fail — the shape a permission or
+ * I/O fault has for this module.
+ *
+ * @param {'writeFileSync'|'renameSync'|'readFileSync'} method
+ * @param {(...args: any[]) => boolean} shouldFail
+ * @param {string} [code]
+ */
+function fsFailing(method, shouldFail, code = 'EACCES') {
+  return new Proxy(fs, {
+    get(target, prop) {
+      if (prop !== method) {
+        return /** @type {any} */ (target)[prop];
+      }
+      return (/** @type {any[]} */ ...args) => {
+        if (shouldFail(...args)) {
+          const err = /** @type {any} */ (new Error(`${code}: ${method}`));
+          err.code = code;
+          throw err;
+        }
+        return /** @type {any} */ (target)[prop](...args);
+      };
+    }
+  });
 }
 
 /**
@@ -651,5 +679,117 @@ describe('record migration health gate', () => {
     const result = await health(WS);
 
     expect(result.checks.records).toBe(true);
+  });
+});
+
+describe('record migration fail-closed (§8.3)', () => {
+  test('leaves the queue unreduced when a record write fails', () => {
+    const { retention } = makeRetention({
+      fs: fsFailing('writeFileSync', (file) =>
+        String(file).includes(path.join('UI-a', 'attempts'))
+      )
+    });
+    writeQueue({ 'UI-a-1': attempt({ status: 'done' }) });
+
+    const result = retention.migrate();
+
+    expect(result.ok).toBe(false);
+    expect(exists(recordMigrationMarkerPath(WS))).toBe(false);
+    expect(
+      Object.keys(
+        JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8')).attempts
+      )
+    ).toEqual(['UI-a-1']);
+  });
+
+  test('leaves the queue unreduced when a session log move fails', () => {
+    const { retention } = makeRetention({
+      fs: fsFailing('renameSync', (from) =>
+        String(from).endsWith(path.join('sessions', 'UI-a-1.jsonl'))
+      )
+    });
+    writeQueue({ 'UI-a-1': attempt({ status: 'done' }) });
+    writeFile(sessionLogPath(WS, 'UI-a-1'), '{"type":"init"}\n');
+
+    const result = retention.migrate();
+
+    expect(result.ok).toBe(false);
+    expect(exists(recordMigrationMarkerPath(WS))).toBe(false);
+    expect(
+      Object.keys(
+        JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8')).attempts
+      )
+    ).toEqual(['UI-a-1']);
+  });
+
+  test('leaves the queue unreduced when a failure event cannot be appended', () => {
+    const { retention } = makeRetention({
+      timeline: {
+        append: () => ({ ok: false, reason: 'write_failed', detail: 'nope' }),
+        readTimeline: () => []
+      }
+    });
+    writeQueue({
+      'UI-a-1': attempt({ status: 'done' }),
+      'UI-a-2': attempt({
+        attempt_id: 'UI-a-2',
+        status: 'failed',
+        cause: 'session_failed',
+        dismissed_at: NOW - DAY_MS
+      })
+    });
+
+    const result = retention.migrate();
+
+    expect(result.ok).toBe(false);
+    expect(exists(recordMigrationMarkerPath(WS))).toBe(false);
+    expect(
+      Object.keys(
+        JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8')).attempts
+      )
+    ).toEqual(['UI-a-1', 'UI-a-2']);
+  });
+
+  test('stamps no marker when the queue file cannot be parsed', () => {
+    const { retention } = makeRetention();
+    writeFile(queueFilePath(WS), '{ this is not json');
+
+    const result = retention.migrate();
+
+    expect(result.ok).toBe(false);
+    expect(exists(recordMigrationMarkerPath(WS))).toBe(false);
+  });
+
+  test('stamps no marker when the queue file cannot be read', () => {
+    const { retention } = makeRetention({
+      fs: fsFailing(
+        'readFileSync',
+        (file) => String(file) === queueFilePath(WS)
+      )
+    });
+    writeQueue({ 'UI-a-1': attempt({ status: 'done' }) });
+
+    const result = retention.migrate();
+
+    expect(result.ok).toBe(false);
+    expect(exists(recordMigrationMarkerPath(WS))).toBe(false);
+    expect(exists(attemptRecordPath(WS, 'UI-a', 'UI-a-1'))).toBe(false);
+  });
+
+  test('keeps health not-ready after a failed migration', async () => {
+    const { retention } = makeRetention();
+    writeFile(queueFilePath(WS), '{ this is not json');
+
+    retention.migrate();
+    const result = await checkHealth({
+      root_dir: WS,
+      bd_probe: () => true,
+      db_probe: () => true,
+      bd_capability_probe: async () => ({ ok: true, diagnostics: {} }),
+      worker_status: () => /** @type {any} */ ({}),
+      runtime_identity: () => null
+    });
+
+    expect(result.checks.records).toBe(false);
   });
 });

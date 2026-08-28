@@ -2926,6 +2926,23 @@ describe('RepoOperation coordinator', () => {
     expect(failure?.summary).toEqual('deploy interrupted');
   });
 
+  test('records a failing line that fell outside the log tail', async () => {
+    // §6 asks for the FIRST announcing line. A script that dies early and keeps
+    // printing pushes it far past any tail window.
+    const failure = await failedOperationOver(
+      [
+        '+ npm ci',
+        'npm ERR! code ENOENT',
+        ...Array.from(
+          { length: 4000 },
+          (_, i) => `progress line ${i} ${'x'.repeat(40)}`
+        )
+      ].join('\n')
+    );
+
+    expect(failure?.summary).toEqual('npm ERR! code ENOENT');
+  });
+
   test('records no summary when the run log is empty', async () => {
     const failure = await failedOperationOver('   \n');
 

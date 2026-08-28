@@ -37,10 +37,15 @@ import {
 export const EXPIRED_SESSION_LOG_NOTICE = '만료됨(180일 보존 정책)';
 
 /**
- * Where one attempt's transcript can be read, or `expired` when none of the
- * three locations holds it.
+ * Where one attempt's transcript can be read; `expired` when none of the
+ * locations holds it, and `unreadable` when one of them exists as far as the
+ * process can tell but could not be examined.
  *
- * @typedef {{ status: 'ok', path: string, gzipped: boolean }|{ status: 'expired', path: null, gzipped: false }} SessionLogLocation
+ * `unreadable` carries the path that faulted, because the two answers are acted
+ * on differently: `expired` is the retention policy having done its job, and
+ * `unreadable` is a storage fault a human has to look at.
+ *
+ * @typedef {{ status: 'ok', path: string, gzipped: boolean }|{ status: 'unreadable', path: string, gzipped: boolean }|{ status: 'expired', path: null, gzipped: false }} SessionLogLocation
  */
 
 /**
@@ -105,8 +110,21 @@ export function resolveSessionLogRead(input) {
           gzipped: candidate.gzipped
         };
       }
-    } catch {
-      // Absent or unreadable: the next candidate answers.
+    } catch (err) {
+      const code = /** @type {NodeJS.ErrnoException} */ (err)?.code;
+      // ONLY absence falls through. A permission or I/O fault says nothing
+      // about whether the transcript is there, and letting it walk to the end
+      // of the ladder would report a storage problem as a deletion the
+      // retention policy never performed — the one answer this ladder must not
+      // invent. The ORDER is unchanged: the fault stops at the candidate that
+      // raised it.
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        return {
+          status: 'unreadable',
+          path: candidate.path,
+          gzipped: candidate.gzipped
+        };
+      }
     }
   }
   return { status: 'expired', path: null, gzipped: false };

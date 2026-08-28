@@ -4097,12 +4097,19 @@ export function createScheduler(deps) {
           // would queue that finished work for a second run, so the attempt
           // terminates straight into `done`, in ONE persist like the lane move
           // below. No `prWaitEntered` push: the bead never enters the lane.
+          //
+          // The ending goes on the timeline BEFORE that mutation, not after:
+          // `moveToDone` completes the saga, which makes the attempt
+          // transferable in the same write, and the transfer records an ending
+          // of its own for any attempt it does not already find one for. Ahead
+          // of the write this detailed line IS what it finds; behind it, the
+          // reader gets the blander one first and this one second.
+          appendSessionEnded(bead_id, attempt_id, '성공 · PR 머지 확인됨');
           deps.store.moveToDone(workspace, {
             bead_id,
             attempt_id,
             patch: { status: 'done', finished_at: now() }
           });
-          appendSessionEnded(bead_id, attempt_id, '성공 · PR 머지 확인됨');
           closeRetryLineage(workspace, bead_id);
         } else {
           // Attempt done + bead into `pr_wait` in ONE persist (§4): a split write

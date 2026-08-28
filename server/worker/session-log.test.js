@@ -4,7 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { beadOfTransferredAttempt, createSessionLog } from './session-log.js';
+import {
+  beadOfTransferredAttempt,
+  createSessionLog,
+  resolveSessionLogRead
+} from './session-log.js';
 import {
   attemptRecordPath,
   beadArchivePath,
@@ -935,6 +939,56 @@ describe('worker/session-log — read resolution order (record-timeline-retentio
     const located = log.resolveLog(WS, 'att-gone', { bead_id: BEAD });
 
     expect(located).toEqual({ status: 'expired', path: null, gzipped: false });
+  });
+
+  test('reports a candidate it could not read as unreadable', () => {
+    const stored = path.join(tmp_state, 'locked', 'att-1.jsonl');
+    writeJsonl(beadSessionLogPath(WS, BEAD, 'att-1'), [{ type: 'bead' }]);
+    const denying = {
+      ...fs,
+      statSync: (/** @type {string} */ file) => {
+        if (String(file) === stored) {
+          const err = /** @type {any} */ (new Error('EACCES: denied'));
+          err.code = 'EACCES';
+          throw err;
+        }
+        return fs.statSync(file);
+      }
+    };
+
+    const located = resolveSessionLogRead({
+      workspace: WS,
+      attempt_id: 'att-1',
+      bead_id: BEAD,
+      log_path: stored,
+      fs: /** @type {any} */ (denying)
+    });
+
+    // NOT `expired`: nothing was deleted, and 만료됨 would say it was.
+    expect(located).toEqual({
+      status: 'unreadable',
+      path: stored,
+      gzipped: false
+    });
+  });
+
+  test('walks past a candidate whose parent is not a directory', () => {
+    const blocking_file = path.join(tmp_state, 'not-a-dir');
+    fs.writeFileSync(blocking_file, 'x');
+    writeJsonl(beadSessionLogPath(WS, BEAD, 'att-1'), [{ type: 'bead' }]);
+
+    const located = resolveSessionLogRead({
+      workspace: WS,
+      attempt_id: 'att-1',
+      bead_id: BEAD,
+      log_path: path.join(blocking_file, 'att-1.jsonl')
+    });
+
+    expect(located).toEqual({
+      status: 'ok',
+      path: beadSessionLogPath(WS, BEAD, 'att-1'),
+      gzipped: false
+    });
   });
 
   test('names the gzip archive as a gzipped location', () => {

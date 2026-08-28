@@ -605,7 +605,7 @@ function liveAttemptFields(a, attempts, run_state) {
  * the ONE line the parked tile body and the failure popover's first row both
  * read, and records written before §6 simply have none (fail-quiet).
  *
- * `timeline`/`log_path`/`log_expired` come from the snapshot's `bead_timelines`
+ * `timeline`/`log_path`/`log_expired`/`log_unreadable` come from the snapshot's `bead_timelines`
  * decoration (record-timeline-retention §9), NOT from anything the renderer
  * reads: ADR 14 makes this projection the only place a card's materials are
  * assembled. The events arrive oldest first and are turned around here, because
@@ -662,7 +662,7 @@ function failureProjection(a, ctx) {
  * empty 이력 block for every bead whose timeline predates this spec.
  *
  * @param {any} history - One `bead_timelines` entry, or undefined.
- * @returns {{ timeline?: import('./running-grid.js').TimelineRow[], log_path?: string, log_expired?: boolean }}
+ * @returns {{ timeline?: import('./running-grid.js').TimelineRow[], log_path?: string, log_expired?: boolean, log_unreadable?: boolean }}
  */
 function timelineFields(history) {
   if (!history || typeof history !== 'object') {
@@ -695,7 +695,8 @@ function timelineFields(history) {
   return {
     ...(rows.length > 0 ? { timeline: rows } : {}),
     ...(log_path === null ? {} : { log_path }),
-    ...(history.log_expired === true ? { log_expired: true } : {})
+    ...(history.log_expired === true ? { log_expired: true } : {}),
+    ...(history.log_unreadable === true ? { log_unreadable: true } : {})
   };
 }
 

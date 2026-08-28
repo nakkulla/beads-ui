@@ -2089,6 +2089,24 @@ describe('worker 실패 팝오버의 §6 재료 (UI-5ym8 §8)', () => {
     ).toBe('만료됨');
   });
 
+  test('renders 읽기 실패 for a log the ladder could not read', () => {
+    const mount = mountOpenPopover({
+      timeline: [
+        {
+          event_id: 'e1',
+          kind: 'attempt_failed',
+          summary: '세션 실패',
+          at: 1000
+        }
+      ],
+      log_unreadable: true
+    });
+
+    expect(
+      mount.querySelector('[data-seam="tile-log-path"]')?.textContent?.trim()
+    ).toBe('읽기 실패');
+  });
+
   test('draws no history rows for a failure with no timeline', () => {
     const mount = mountOpenPopover({});
 

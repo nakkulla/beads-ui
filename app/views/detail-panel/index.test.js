@@ -966,6 +966,68 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('session-history includes an attempt the queue no longer holds', async () => {
+    // §7: a transferred record is not in the client queue store at all, so the
+    // panel reads the union `get-bead-timeline` carries.
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: {
+          live: {
+            attempt_id: 'live',
+            bead_id: 'UI-1',
+            status: 'running',
+            started_at: 2000,
+            usage: { input_tokens: 10, output_tokens: 0 }
+          }
+        }
+      })
+    );
+    const transport = vi.fn(async (/** @type {string} */ type) =>
+      type === 'get-bead-timeline'
+        ? {
+            bead_id: 'UI-1',
+            events: [],
+            attempts: [
+              {
+                attempt_id: 'moved',
+                bead_id: 'UI-1',
+                status: 'done',
+                started_at: 1000,
+                usage: { input_tokens: 90, output_tokens: 0 }
+              }
+            ]
+          }
+        : { ok: true }
+    );
+
+    const panel = createDetailPanel(mount, {
+      queueStore,
+      transport,
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      mount.querySelector('.detail-session[data-attempt-id="moved"]')
+    ).not.toBeNull();
+    expect(
+      mount.querySelector('.detail-session[data-attempt-id="live"]')
+    ).not.toBeNull();
+    expect(mount.querySelector('.detail-usage-total')?.textContent).toContain(
+      '100'
+    );
+
+    panel.destroy();
+  });
+
   test('projects explicit or observed effort only for session history', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();

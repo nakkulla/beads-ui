@@ -252,11 +252,13 @@ function replaceJsonlSuffix(jsonl_path, suffix) {
  *
  * Constructing one MARKS the workspace's migration pending: the window §8.3
  * gates health on opens the moment the attachment exists, not when its startup
- * sequence happens to reach {@link RecordRetention.migrate}. {@link
- * RecordRetention.migrate} is what closes it, and it closes it whether the pass
- * converted anything, skipped on the marker, or failed — "pending" means
- * unfinished, not unsuccessful, and a failed migration that never cleared would
- * hold the server at 503 forever.
+ * sequence happens to reach {@link RecordRetention.migrate}. A SUCCESSFUL
+ * {@link RecordRetention.migrate} — a converted pass, or one that found the
+ * completion marker already there — is what closes it. A failed pass leaves it
+ * open on purpose: the workspace is still in the pre-migration layout, the
+ * startup sequence stops before the readers that gate exists to hold back, and
+ * a server that answered ready there would be answering for records it never
+ * converted.
  *
  * @param {{
  *   workspace_root: string,
@@ -298,19 +300,50 @@ export function createRecordRetention(deps) {
    * supposed to precede — and would then cache a pre-migration queue for the
    * rest of the process.
    *
-   * @returns {Record<string, any>|null}
+   * An ABSENT queue and an unreadable one are different answers (§8.3): a
+   * workspace that has never run has nothing to convert, while a queue this
+   * process cannot read or parse is a FAULT, and converting "nothing" on top of
+   * it would stamp the marker over records still sitting in that file.
+   *
+   * @returns {{ status: 'ok', queue: Record<string, any> }|{ status: 'absent' }|{ status: 'unreadable', detail: string }}
    */
   function readQueueFile() {
     const file = queueFilePath(workspace_root);
+    /** @type {string} */
+    let text;
     try {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-      return isRecord(parsed) ? parsed : null;
+      text = fs.readFileSync(file, 'utf8');
     } catch (err) {
-      if (/** @type {NodeJS.ErrnoException} */ (err)?.code !== 'ENOENT') {
-        log('queue read failed for %s: %s', file, errorDetail(err));
+      if (/** @type {NodeJS.ErrnoException} */ (err)?.code === 'ENOENT') {
+        return { status: 'absent' };
       }
-      return null;
+      const detail = errorDetail(err);
+      log('queue read failed for %s: %s', file, detail);
+      return { status: 'unreadable', detail };
     }
+    try {
+      const parsed = JSON.parse(text);
+      if (!isRecord(parsed)) {
+        throw new Error('queue file is not an object');
+      }
+      return { status: 'ok', queue: parsed };
+    } catch (err) {
+      const detail = errorDetail(err);
+      log('queue parse failed for %s: %s', file, detail);
+      return { status: 'unreadable', detail };
+    }
+  }
+
+  /**
+   * The queue as the RETENTION pass wants it: a file it cannot read answers the
+   * same way an absent one does, because the pass reads it only to learn which
+   * attempts are running, and it already skips a bead it cannot judge.
+   *
+   * @returns {Record<string, any>|null}
+   */
+  function queueForSweep() {
+    const read = readQueueFile();
+    return read.status === 'ok' ? read.queue : null;
   }
 
   /**
@@ -687,11 +720,13 @@ export function createRecordRetention(deps) {
    * §7 says may leave `queue.json`.
    *
    * @param {Record<string, any>} queue
-   * @returns {string[]} Attempt ids whose record is readable on disk.
+   * @returns {{ written: string[], failed: number }} Attempt ids whose record is
+   * readable on disk, and how many candidates did not get one.
    */
   function migrateAttemptRecords(queue) {
     /** @type {string[]} */
     const written = [];
+    let failed = 0;
     for (const attempt of transferCandidates(queue)) {
       const file = attemptRecordPath(
         workspace_root,
@@ -710,13 +745,14 @@ export function createRecordRetention(deps) {
         }
         written.push(attempt.attempt_id);
       } catch (err) {
-        // Not fatal, and deliberately NOT recorded as written: step 4 only
-        // removes attempts whose record it can prove, so this one stays in the
-        // queue and the next run tries again.
+        // Deliberately NOT recorded as written, and COUNTED: the pass stops
+        // before step 4 on any failure, so this attempt keeps its queue row and
+        // the next start converts it.
+        failed += 1;
         log('attempt record write failed for %s: %s', file, errorDetail(err));
       }
     }
-    return written;
+    return { written, failed };
   }
 
   /**
@@ -732,10 +768,12 @@ export function createRecordRetention(deps) {
    *
    * @param {Record<string, any>} queue
    * @param {Set<string>} running
-   * @returns {number} Files moved.
+   * @returns {{ moved: number, failed: number }} Files moved, and how many moves
+   * the pass could not make.
    */
   function migrateSessionLogs(queue, running) {
     let moved = 0;
+    let failed = 0;
     for (const attempt of attemptsOf(queue)) {
       const attempt_id = String(attempt.attempt_id);
       if (running.has(attempt_id)) {
@@ -755,11 +793,12 @@ export function createRecordRetention(deps) {
           fs.renameSync(source, destination);
           moved += 1;
         } catch (err) {
+          failed += 1;
           log('session log move failed for %s: %s', source, errorDetail(err));
         }
       }
     }
-    return moved;
+    return { moved, failed };
   }
 
   /**
@@ -777,10 +816,12 @@ export function createRecordRetention(deps) {
    * rows would make history look like it had evidence it never had.
    *
    * @param {Record<string, any>} queue
-   * @returns {number} Events appended.
+   * @returns {{ appended: number, failed: number }} Events appended, and how
+   * many failure records did not get one.
    */
   function backfillFailureEvents(queue) {
     let appended = 0;
+    let failed = 0;
     for (const attempt of attemptsOf(queue)) {
       if (attempt.status !== 'failed') {
         continue;
@@ -801,9 +842,16 @@ export function createRecordRetention(deps) {
       });
       if (result.ok) {
         appended += 1;
+      } else {
+        failed += 1;
+        log(
+          'failure back-fill append failed for %s: %s',
+          attempt.attempt_id,
+          result.detail || result.reason
+        );
       }
     }
-    return appended;
+    return { appended, failed };
   }
 
   /**
@@ -885,47 +933,93 @@ export function createRecordRetention(deps) {
      *
      * Interrupting anywhere is safe: 1-3 pass on existence checks, an interrupt
      * before 4 loses nothing because the queue has not been reduced yet, and an
-     * interrupt after 4 but before 5 makes 1-4 no-ops on the re-run. The marker
-     * is stamped LAST and only when step 4 succeeded, so a workspace whose queue
-     * could not be reduced is retried instead of being declared converted.
+     * interrupt after 4 but before 5 makes 1-4 no-ops on the re-run.
+     *
+     * FAIL-CLOSED at every step. Steps 1-3 each report whether they finished
+     * ALL of their work, and a single unfinished item stops the pass before
+     * step 4: the marker is the thing that makes this migration one-time, so
+     * stamping it over a record that never moved, a transcript that never
+     * moved, or a failure event that was never written would make that loss
+     * permanent. Nothing is undone — the workspace keeps the layout it already
+     * had, which every read path still resolves — and the next start retries.
      *
      * @returns {{ ok: boolean, skipped: boolean, records: number, moved: number, events: number }}
      */
     migrate() {
+      /** @type {{ ok: boolean, skipped: boolean, records: number, moved: number, events: number }} */
+      let result = {
+        ok: false,
+        skipped: false,
+        records: 0,
+        moved: 0,
+        events: 0
+      };
       try {
         if (exists(recordMigrationMarkerPath(workspace_root))) {
-          return { ok: true, skipped: true, records: 0, moved: 0, events: 0 };
+          result = { ok: true, skipped: true, records: 0, moved: 0, events: 0 };
+          return result;
         }
-        const queue = readQueueFile();
-        if (queue === null) {
+        const read = readQueueFile();
+        if (read.status === 'unreadable') {
+          // A queue this process cannot read is a FAULT, not an empty
+          // workspace: its records are still in that file, so nothing may be
+          // declared converted on top of it.
+          log(
+            'record migration aborted for %s: queue.json unreadable (%s)',
+            workspace_root,
+            read.detail
+          );
+          return result;
+        }
+        if (read.status === 'absent') {
           // A workspace with no queue file has no records to convert. It is
           // still stamped: the marker means "this layout is current", and a
           // fresh workspace's is.
-          const ok = writeMarker(now());
-          return { ok, skipped: false, records: 0, moved: 0, events: 0 };
+          result = {
+            ok: writeMarker(now()),
+            skipped: false,
+            records: 0,
+            moved: 0,
+            events: 0
+          };
+          return result;
         }
+        const queue = read.queue;
         const running = runningAttemptIds(queue);
         const records = migrateAttemptRecords(queue);
-        const moved = migrateSessionLogs(queue, running);
+        const logs = migrateSessionLogs(queue, running);
         const events = backfillFailureEvents(queue);
-        if (!writeReducedQueue(queue, records)) {
-          return {
-            ok: false,
-            skipped: false,
-            records: records.length,
-            moved,
-            events
-          };
-        }
-        return {
-          ok: writeMarker(now()),
+        result = {
+          ok: false,
           skipped: false,
-          records: records.length,
-          moved,
-          events
+          records: records.written.length,
+          moved: logs.moved,
+          events: events.appended
         };
+        const incomplete = records.failed + logs.failed + events.failed > 0;
+        if (incomplete) {
+          log(
+            'record migration incomplete for %s: %d record(s), %d log move(s), %d failure event(s) failed — queue left unreduced',
+            workspace_root,
+            records.failed,
+            logs.failed,
+            events.failed
+          );
+          return result;
+        }
+        if (!writeReducedQueue(queue, records.written)) {
+          return result;
+        }
+        result = { ...result, ok: writeMarker(now()) };
+        return result;
       } finally {
-        MIGRATION_PENDING.delete(keyFor(workspace_root));
+        // Health stays not-ready while the layout is unconverted (§8.3): the
+        // flag is cleared on a REAL success and on the marker skip, never on a
+        // failure, because everything a client would read is still mid-layout
+        // and the readers this gate protects have not been started either.
+        if (result.ok) {
+          MIGRATION_PENDING.delete(keyFor(workspace_root));
+        }
       }
     },
 
@@ -946,7 +1040,7 @@ export function createRecordRetention(deps) {
     async sweep() {
       const policy = readRetentionPolicy(workspace_root, { fs });
       const at = now();
-      const queue = readQueueFile();
+      const queue = queueForSweep();
       const running = runningAttemptIds(queue);
       const queue_by_bead = attemptIdsByBead(queue);
       let archived = 0;
