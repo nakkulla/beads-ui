@@ -463,6 +463,33 @@ export function createDiscardCoordinator(deps, options = {}) {
   }
 
   /**
+   * The session transcript this archive should copy, resolved through the §4
+   * read ladder rather than the flat derivation.
+   *
+   * A log is no longer necessarily at the legacy flat path: a new session is
+   * written straight into `beads/<bead>/sessions/`, and the one-time record
+   * migration renamed the historical ones there without rewriting the stored
+   * `log_path`. `pathFor` answers only the flat location, so it would hand the
+   * archiver a name that does not exist and the copy would silently skip.
+   * `readPathFor` walks the same candidates every other reader does; the bead
+   * is passed because it is what makes the bead-scoped candidate reachable.
+   *
+   * @param {{ attempt_id?: string|null, bead_id?: string|null }} operation
+   * @returns {string|null}
+   */
+  function sessionLogPathOf(operation) {
+    if (!operation.attempt_id) {
+      return null;
+    }
+    if (typeof deps.sessionLog.readPathFor === 'function') {
+      return deps.sessionLog.readPathFor(deps.workspace, operation.attempt_id, {
+        bead_id: operation.bead_id ?? null
+      });
+    }
+    return deps.sessionLog.pathFor(deps.workspace, operation.attempt_id);
+  }
+
+  /**
    * @param {any} operation
    */
   async function archive(operation) {
@@ -496,12 +523,7 @@ export function createDiscardCoordinator(deps, options = {}) {
                   workspace: deps.workspace,
                   operation_id: operation.operation_id,
                   source_snapshot: source,
-                  session_log_path: operation.attempt_id
-                    ? deps.sessionLog.pathFor(
-                        deps.workspace,
-                        operation.attempt_id
-                      )
-                    : null
+                  session_log_path: sessionLogPathOf(operation)
                 })
               : { ok: false, reason: 'committed_source_archive_unwired' }
             : deps.archive.create({
@@ -512,12 +534,7 @@ export function createDiscardCoordinator(deps, options = {}) {
                 target_base: source.base_oid || source.target_base,
                 source_head: source.source_head,
                 source_snapshot: source,
-                session_log_path: operation.attempt_id
-                  ? deps.sessionLog.pathFor(
-                      deps.workspace,
-                      operation.attempt_id
-                    )
-                  : null
+                session_log_path: sessionLogPathOf(operation)
               })
     });
   }

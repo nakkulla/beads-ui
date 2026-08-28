@@ -536,7 +536,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * attachment built without it (every hermetic test) refuses the dispatch as
  * `not_external` rather than launching against an unverified bead.
  * @property {{ existsSync: (path: string) => boolean }} [fs]
- * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, publish?: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void, pathFor?: (workspace: string, attempt_id: string) => string, stderrPathFor?: (workspace: string, attempt_id: string) => string }} sessionLog
+ * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, publish?: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void, pathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string, stderrPathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string }} sessionLog
  * The session-log broker. `pathFor`/`stderrPathFor` are what the spawn hands the
  * runner as its stdout/stderr files (UI-o2yt §3.1); a fake without them simply
  * leaves the engine on its stdout-pipe fallback, which is what fixture-driven
@@ -5886,12 +5886,23 @@ export function createScheduler(deps) {
     // session log is keyed by the WORKSPACE, not the worktree the session runs
     // in, so the path is resolved here and handed down rather than derived
     // inside the engine.
+    //
+    // The bead is handed down with the attempt so the session writes into
+    // `beads/<bead>/sessions/` from birth (record-timeline-retention §4) rather
+    // than being renamed there once it is terminal — a move a live child's
+    // inherited fd makes hazardous. `settings.log_path` is then stored on the
+    // attempt record verbatim, and stays authoritative for every reader.
     if (typeof deps.sessionLog.pathFor === 'function') {
-      settings.log_path = deps.sessionLog.pathFor(workspace, attempt_id);
+      settings.log_path = deps.sessionLog.pathFor(
+        workspace,
+        attempt_id,
+        bead_id
+      );
       if (typeof deps.sessionLog.stderrPathFor === 'function') {
         settings.stderr_path = deps.sessionLog.stderrPathFor(
           workspace,
-          attempt_id
+          attempt_id,
+          bead_id
         );
       }
     }

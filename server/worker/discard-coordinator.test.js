@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 /**
- * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any, phaseChildren?: Record<string, any>[], newChildAfterArchive?: Record<string, any>, parentAuthorityChangesAfterArchive?: boolean, partialDeleteOnce?: boolean, readbackFindFailsOnce?: boolean }} [options]
+ * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any, phaseChildren?: Record<string, any>[], newChildAfterArchive?: Record<string, any>, parentAuthorityChangesAfterArchive?: boolean, partialDeleteOnce?: boolean, readbackFindFailsOnce?: boolean, sessionLog?: any }} [options]
  */
 function setup(options = {}) {
   const store = createQueueStore({ now: () => 100 });
@@ -343,7 +343,7 @@ function setup(options = {}) {
     scheduler,
     archive,
     processController: options.processController || {},
-    sessionLog: { pathFor: () => '/state/session.jsonl' },
+    sessionLog: options.sessionLog || { pathFor: () => '/state/session.jsonl' },
     revertBuilder: options.revertBuilder,
     verifyRevert: options.verifyRevert,
     actionInFlight: options.actionInFlight,
@@ -1017,6 +1017,28 @@ describe('worker discard coordinator unmerged lifecycle', () => {
             plan_path: { present: true, value: 'docs/plan.md' }
           })
         })
+      })
+    );
+  });
+
+  test('resolves the archived session log through the read ladder', async () => {
+    const readPathFor = vi.fn(() => '/state/beads/UI-1/sessions/att-1.jsonl');
+    const env = setup({
+      sessionLog: { pathFor: () => '/state/flat.jsonl', readPathFor }
+    });
+
+    await env.coordinator.discard({
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(readPathFor).toHaveBeenCalledWith(workspace, 'att-1', {
+      bead_id: 'UI-1'
+    });
+    expect(env.archive.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session_log_path: '/state/beads/UI-1/sessions/att-1.jsonl'
       })
     );
   });

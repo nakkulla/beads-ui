@@ -9,6 +9,7 @@ import {
   attemptRecordPath,
   beadArchivePath,
   beadSessionLogPath,
+  beadSessionStderrPath,
   beadStateDir,
   sessionLogPath
 } from './state-paths.js';
@@ -974,5 +975,57 @@ describe('worker/session-log — read resolution order (record-timeline-retentio
     const bead_id = beadOfTransferredAttempt(WS, 'att-missing');
 
     expect(bead_id).toBe(null);
+  });
+});
+
+describe('worker/session-log — bead-scoped write path (record-timeline-retention §4)', () => {
+  const BEAD = 'UI-1';
+
+  test('names the bead-scoped session log for a spawn that knows its bead', () => {
+    const log = createSessionLog();
+
+    const file = log.pathFor(WS, 'att-1', BEAD);
+
+    expect(file).toBe(beadSessionLogPath(WS, BEAD, 'att-1'));
+  });
+
+  test('names the bead-scoped stderr sidecar beside that log', () => {
+    const log = createSessionLog();
+
+    const file = log.stderrPathFor(WS, 'att-1', BEAD);
+
+    expect(file).toBe(beadSessionStderrPath(WS, BEAD, 'att-1'));
+  });
+
+  test('keeps the legacy flat path when no bead is named', () => {
+    const log = createSessionLog();
+
+    const file = log.pathFor(WS, 'att-1');
+    const stderr_file = log.stderrPathFor(WS, 'att-1');
+
+    expect(file).toBe(sessionLogPath(WS, 'att-1'));
+    expect(stderr_file).toBe(
+      `${sessionLogPath(WS, 'att-1').replace(/\.jsonl$/, '')}.stderr.log`
+    );
+  });
+
+  test('keeps the legacy flat path for an empty bead id', () => {
+    const log = createSessionLog();
+
+    const file = log.pathFor(WS, 'att-1', '');
+
+    expect(file).toBe(sessionLogPath(WS, 'att-1'));
+  });
+
+  test('reads a log written before the bead-scoped layout from its flat path', () => {
+    writeRunnerLine('att-old', { type: 'legacy' });
+    const log = createSessionLog();
+
+    const events = log.read(WS, 'att-old', {
+      bead_id: BEAD,
+      log_path: sessionLogPath(WS, 'att-old')
+    });
+
+    expect(events).toEqual([{ type: 'legacy' }]);
   });
 });

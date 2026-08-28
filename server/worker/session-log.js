@@ -23,6 +23,7 @@ import {
   attemptRecordPath,
   beadArchivePath,
   beadSessionLogPath,
+  beadSessionStderrPath,
   beadsRootDir,
   sessionLogPath
 } from './state-paths.js';
@@ -348,10 +349,13 @@ function activityOf(line, at) {
  * wiring, plus `attemptLogPath`: the READ-side override (UI-hk74 §7), by which
  * an attempt whose durable record names its own transcript is read from THAT
  * file. It is deliberately not consulted by `pathFor`/`stderrPathFor`, which
- * are the write-side contract the scheduler hands to a spawn.
+ * are the write-side contract the scheduler hands to a spawn. The `pathFor`
+ * OPTION overrides the legacy flat derivation only; a bead-scoped write path is
+ * always `state-paths.js`'s, because the §4 layout is the same tree the
+ * timeline, the transferred records, and retention address.
  * @returns {{
- *   pathFor: (workspace: string, attempt_id: string) => string,
- *   stderrPathFor: (workspace: string, attempt_id: string) => string,
+ *   pathFor: (workspace: string, attempt_id: string, bead_id?: string|null) => string,
+ *   stderrPathFor: (workspace: string, attempt_id: string, bead_id?: string|null) => string,
  *   readPathFor: (workspace: string, attempt_id: string, options?: SessionLogReadOptions) => string,
  *   resolveLog: (workspace: string, attempt_id: string, options?: SessionLogReadOptions) => SessionLogLocation,
  *   publish: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void,
@@ -769,18 +773,43 @@ export function createSessionLog(options = {}) {
   }
 
   return {
-    // The WRITE-side contract: what the scheduler hands a spawn as
-    // `log_path`/`stderr_path`. Deliberately NOT attempt-aware — resolving it
-    // through a record that does not exist yet at spawn time would decide where
-    // a session writes from state the session itself is about to create.
-    pathFor,
-
     /**
+     * The WRITE-side contract: what the scheduler hands a spawn as `log_path`.
+     * Deliberately NOT attempt-aware — resolving it through a record that does
+     * not exist yet at spawn time would decide where a session writes from
+     * state the session itself is about to create.
+     *
+     * It IS bead-aware (record-timeline-retention §4). A caller that knows the
+     * bead gets the bead-scoped `beads/<bead>/sessions/<attempt>.jsonl`, so a
+     * session lands in the §4 layout FROM BIRTH: nothing has to rename a file a
+     * live child still holds an inherited fd to. A caller that does not know
+     * one — an attempt id carries no bead (`review:authority-…`) — keeps the
+     * legacy flat path, which stays a read candidate for every log written
+     * before this.
+     *
      * @param {string} workspace
      * @param {string} attempt_id
+     * @param {string|null} [bead_id]
+     * @returns {string}
      */
-    stderrPathFor(workspace, attempt_id) {
-      return stderrPathOf(pathFor(workspace, attempt_id));
+    pathFor(workspace, attempt_id, bead_id) {
+      return typeof bead_id === 'string' && bead_id.length > 0
+        ? beadSessionLogPath(workspace, bead_id, attempt_id)
+        : pathFor(workspace, attempt_id);
+    },
+
+    /**
+     * The stderr sidecar of {@link pathFor}, on the same bead-scoped/flat split.
+     *
+     * @param {string} workspace
+     * @param {string} attempt_id
+     * @param {string|null} [bead_id]
+     * @returns {string}
+     */
+    stderrPathFor(workspace, attempt_id, bead_id) {
+      return typeof bead_id === 'string' && bead_id.length > 0
+        ? beadSessionStderrPath(workspace, bead_id, attempt_id)
+        : stderrPathOf(pathFor(workspace, attempt_id));
     },
 
     /**

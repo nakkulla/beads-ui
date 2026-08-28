@@ -19,7 +19,10 @@ import {
   quickFixSelfReviewBlock,
   withQuickFixSelfReview
 } from './scheduler.js';
+import { createSessionLog } from './session-log.js';
 import {
+  beadSessionLogPath,
+  beadSessionStderrPath,
   delegationMonitorDir,
   guardHookDir,
   usageReceiptInboxDir
@@ -2473,6 +2476,48 @@ describe('scheduler policy axis removal (worker-phase2 §2)', () => {
     await env.scheduler.tick(WS);
 
     expect('conflict_resolution' in env.runner.settingsFor('S1')).toBe(false);
+  });
+
+  // record-timeline-retention §4: a session writes into its bead's directory
+  // FROM BIRTH, so nothing has to rename a live log into place later.
+  test('spawns a session against its bead-scoped session log', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      sessionLog: createSessionLog()
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    const settings = env.runner.settingsFor('S1');
+    expect(settings.log_path).toBe(
+      beadSessionLogPath(WS, 'S1', attempt.attempt_id)
+    );
+    expect(settings.stderr_path).toBe(
+      beadSessionStderrPath(WS, 'S1', attempt.attempt_id)
+    );
+  });
+
+  test('records the spawned session log path on the attempt', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      sessionLog: createSessionLog()
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(attempt.log_path).toBe(
+      beadSessionLogPath(WS, 'S1', attempt.attempt_id)
+    );
   });
 });
 
