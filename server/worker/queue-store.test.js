@@ -8943,3 +8943,758 @@ describe('queue store atomic terminalize + hold (UI-5ym8 §7)', () => {
     expect(store.snapshot(WS).hold).toBe(null);
   });
 });
+
+describe('worker/queue-store — 자동 리뷰 dispatch claim (2026-08-28 auto-review-dispatch §3/§5)', () => {
+  const CLAIM_HEAD = 'a'.repeat(40);
+  const MOVED_HEAD = 'b'.repeat(40);
+
+  /** A held row with a manual authority, the state §4 judges. */
+  function heldStore() {
+    const ids = ['authority-1', 'authority-2'];
+    const store = createQueueStore({
+      now: () => 500,
+      randomUUID: () => /** @type {string} */ (ids.shift())
+    });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-UI-1', bead_id: 'UI-1' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-UI-1',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1', head_sha: CLAIM_HEAD, target_base: 'main' }]
+    });
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: { reason: 'review_receipt_missing', head_sha: CLAIM_HEAD },
+      at: 7
+    });
+    return store;
+  }
+
+  /**
+   * @param {Partial<{ authority_id: string, authority_source: 'manual'|'automatic', hold_reason: string, head_sha: string }>} [overrides]
+   */
+  function expectedFacts(overrides = {}) {
+    return {
+      authority_id: 'authority-1',
+      /** @type {'manual'} */
+      authority_source: 'manual',
+      hold_reason: 'review_receipt_missing',
+      head_sha: CLAIM_HEAD,
+      ...overrides
+    };
+  }
+
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {string} attempt_id
+   */
+  function clickReviewSession(store, attempt_id) {
+    return store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1', head_sha: CLAIM_HEAD, target_base: 'main' }],
+      review_session: { attempt_id, session_source: 'resume' }
+    });
+  }
+
+  test('registers the auto attempt on the row existing authority', () => {
+    const store = heldStore();
+    const before = store.snapshot(WS).revision;
+
+    const claimed = store.claimAutoReviewDispatch(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'review:auto',
+      session_source: 'resume',
+      expected: expectedFacts()
+    });
+
+    expect(claimed.ok).toBe(true);
+    expect(store.snapshot(WS).revision).toBe(before + 1);
+    expect(store.snapshot(WS).attempts['review:auto']).toMatchObject({
+      bead_id: 'UI-1',
+      kind: 'review_session',
+      origin: 'auto',
+      status: 'pending',
+      authority_id: 'authority-1',
+      head_sha: CLAIM_HEAD,
+      continuation_mode: 'session'
+    });
+  });
+
+  test('writes the active claim in that same write', () => {
+    const store = heldStore();
+
+    store.claimAutoReviewDispatch(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'review:auto',
+      expected: expectedFacts()
+    });
+
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toEqual({
+      head_sha: CLAIM_HEAD,
+      attempt_id: 'review:auto',
+      state: 'active',
+      at: 500
+    });
+  });
+
+  test('leaves the authority untouched when it claims', () => {
+    const store = heldStore();
+
+    store.claimAutoReviewDispatch(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'review:auto',
+      expected: expectedFacts()
+    });
+
+    expect(store.snapshot(WS).merge_queue[0].authority).toMatchObject({
+      id: 'authority-1',
+      source: 'manual',
+      requested_head_sha: CLAIM_HEAD
+    });
+  });
+
+  test('rejects a claim on a row that has no authority', () => {
+    const store = createQueueStore({ now: () => 500 });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-UI-1', bead_id: 'UI-1' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-UI-1',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: { reason: 'review_receipt_missing', head_sha: CLAIM_HEAD },
+      at: 7
+    });
+    const before = store.snapshot(WS).revision;
+
+    const claimed = store.claimAutoReviewDispatch(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'review:auto',
+      expected: expectedFacts()
+    });
+
+    expect(claimed).toMatchObject({ ok: false, reason: 'authority_missing' });
+    expect(store.snapshot(WS).revision).toBe(before);
+    expect(store.snapshot(WS).attempts['review:auto']).toBeUndefined();
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toBeUndefined();
+  });
+
+  test('rejects a claim while a review session is in flight', () => {
+    const store = heldStore();
+    clickReviewSession(store, 'review:click');
+    const before = store.snapshot(WS).revision;
+
+    const claimed = store.claimAutoReviewDispatch(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'review:auto',
+      expected: expectedFacts()
+    });
+
+    expect(claimed).toMatchObject({
+      ok: false,
+      reason: 'review_session_in_flight'
+    });
+    expect(store.snapshot(WS).revision).toBe(before);
+    expect(store.snapshot(WS).attempts['review:auto']).toBeUndefined();
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      attempt_id: 'review:click'
+    });
+  });
+
+  test('rejects a second claim on the head already claimed', () => {
+    const store = heldStore();
+    clickReviewSession(store, 'review:click');
+    store.settleReviewSession(WS, {
+      attempt_id: 'review:click',
+      outcome: 'failed',
+      cause: 'session_failed:exit',
+      hold_reason: 'review_receipt_missing',
+      final_head_sha: CLAIM_HEAD,
+      head_moved_by_session: false,
+      at: 800
+    });
+    const before = store.snapshot(WS).revision;
+
+    const claimed = store.claimAutoReviewDispatch(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'review:auto',
+      expected: expectedFacts()
+    });
+
+    expect(claimed).toMatchObject({
+      ok: false,
+      reason: 'review_dispatch_claimed'
+    });
+    expect(store.snapshot(WS).revision).toBe(before);
+    expect(store.snapshot(WS).attempts['review:auto']).toBeUndefined();
+  });
+
+  test('rejects a claim at any head while the claim head is undetermined', () => {
+    const store = heldStore();
+    clickReviewSession(store, 'review:click');
+    store.settleReviewSession(WS, {
+      attempt_id: 'review:click',
+      outcome: 'failed',
+      cause: 'session_failed:exit',
+      hold_reason: 'review_receipt_missing',
+      at: 800
+    });
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: { reason: 'review_receipt_missing', head_sha: MOVED_HEAD },
+      at: 900
+    });
+    const before = store.snapshot(WS).revision;
+
+    const claimed = store.claimAutoReviewDispatch(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'review:auto',
+      expected: expectedFacts({ head_sha: MOVED_HEAD })
+    });
+
+    expect(claimed).toMatchObject({
+      ok: false,
+      reason: 'review_dispatch_claimed'
+    });
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('rejects a claim whose expected authority id is stale', () => {
+    const store = heldStore();
+    const before = store.snapshot(WS).revision;
+
+    const claimed = store.claimAutoReviewDispatch(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'review:auto',
+      expected: expectedFacts({ authority_id: 'authority-9' })
+    });
+
+    expect(claimed).toMatchObject({ ok: false, reason: 'claim_input_stale' });
+    expect(store.snapshot(WS).revision).toBe(before);
+    expect(store.snapshot(WS).attempts['review:auto']).toBeUndefined();
+  });
+
+  test('rejects a claim whose expected authority source is stale', () => {
+    const store = heldStore();
+    const before = store.snapshot(WS).revision;
+
+    const claimed = store.claimAutoReviewDispatch(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'review:auto',
+      expected: expectedFacts({ authority_source: 'automatic' })
+    });
+
+    expect(claimed).toMatchObject({ ok: false, reason: 'claim_input_stale' });
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('rejects a claim whose expected hold reason is stale', () => {
+    const store = heldStore();
+    const before = store.snapshot(WS).revision;
+
+    const claimed = store.claimAutoReviewDispatch(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'review:auto',
+      expected: expectedFacts({ hold_reason: 'review_receipt_stale' })
+    });
+
+    expect(claimed).toMatchObject({ ok: false, reason: 'claim_input_stale' });
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('rejects a claim whose expected head is stale', () => {
+    const store = heldStore();
+    const before = store.snapshot(WS).revision;
+
+    const claimed = store.claimAutoReviewDispatch(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'review:auto',
+      expected: expectedFacts({ head_sha: MOVED_HEAD })
+    });
+
+    expect(claimed).toMatchObject({ ok: false, reason: 'claim_input_stale' });
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('claims the head in the click write that registers the session', () => {
+    const store = heldStore();
+    const before = store.snapshot(WS).revision;
+
+    const clicked = clickReviewSession(store, 'review:click');
+
+    expect(clicked.review_session_registered).toBe(true);
+    expect(store.snapshot(WS).revision).toBe(before + 1);
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toEqual({
+      head_sha: CLAIM_HEAD,
+      attempt_id: 'review:click',
+      state: 'active',
+      at: 500
+    });
+  });
+
+  test('returns a complete no-op click while a review session is in flight', () => {
+    const store = heldStore();
+    clickReviewSession(store, 'review:click');
+    const before = store.snapshot(WS).revision;
+
+    const again = store.enqueueMergeManual(WS, {
+      expected_revision: before,
+      entries: [{ bead_id: 'UI-1', head_sha: MOVED_HEAD, target_base: 'main' }]
+    });
+
+    expect(again).toMatchObject({
+      ok: true,
+      review_session_registered: false,
+      reason: 'review_session_in_flight'
+    });
+    expect(store.snapshot(WS).revision).toBe(before);
+    expect(store.snapshot(WS).merge_queue[0]).toMatchObject({
+      authority: { id: 'authority-1', requested_head_sha: CLAIM_HEAD },
+      hold: { reason: 'review_receipt_missing' },
+      review_dispatch: { attempt_id: 'review:click', state: 'active' }
+    });
+  });
+
+  test('enrols the unguarded beads of a mixed lane call', () => {
+    const store = heldStore();
+    clickReviewSession(store, 'review:click');
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-UI-2', bead_id: 'UI-2' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-2',
+      attempt_id: 'att-UI-2',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    const before = store.snapshot(WS).revision;
+
+    const enrolled = store.enqueueMergeManual(WS, {
+      expected_revision: before,
+      entries: [
+        { bead_id: 'UI-1', head_sha: MOVED_HEAD, target_base: 'main' },
+        { bead_id: 'UI-2', head_sha: MOVED_HEAD, target_base: 'main' }
+      ]
+    });
+
+    expect(enrolled.ok).toBe(true);
+    expect(
+      store.snapshot(WS).merge_queue.map((entry) => entry.bead_id)
+    ).toEqual(['UI-1', 'UI-2']);
+    expect(store.snapshot(WS).merge_queue[0]).toMatchObject({
+      authority: { id: 'authority-1', requested_head_sha: CLAIM_HEAD },
+      hold: { reason: 'review_receipt_missing' },
+      review_dispatch: { attempt_id: 'review:click', state: 'active' }
+    });
+  });
+
+  test('deletes the claim when the receipt settles current', () => {
+    const store = heldStore();
+    clickReviewSession(store, 'review:click');
+
+    store.settleReviewSession(WS, {
+      attempt_id: 'review:click',
+      outcome: 'current',
+      final_head_sha: MOVED_HEAD,
+      at: 800
+    });
+
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toBeUndefined();
+  });
+
+  test('exhausts the claim on its own head when the head did not move', () => {
+    const store = heldStore();
+    clickReviewSession(store, 'review:click');
+
+    store.settleReviewSession(WS, {
+      attempt_id: 'review:click',
+      outcome: 'failed',
+      cause: 'receipt_not_current',
+      final_head_sha: CLAIM_HEAD,
+      head_moved_by_session: true,
+      at: 800
+    });
+
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toEqual({
+      head_sha: CLAIM_HEAD,
+      attempt_id: 'review:click',
+      state: 'exhausted',
+      at: 800
+    });
+  });
+
+  test('carries the claim to the final head the session itself pushed', () => {
+    const store = heldStore();
+    clickReviewSession(store, 'review:click');
+
+    store.settleReviewSession(WS, {
+      attempt_id: 'review:click',
+      outcome: 'failed',
+      cause: 'session_failed:exit',
+      final_head_sha: MOVED_HEAD,
+      head_moved_by_session: true,
+      at: 800
+    });
+
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: MOVED_HEAD,
+      state: 'exhausted'
+    });
+  });
+
+  test('keeps the claim head when something else moved the head', () => {
+    const store = heldStore();
+    clickReviewSession(store, 'review:click');
+
+    store.settleReviewSession(WS, {
+      attempt_id: 'review:click',
+      outcome: 'failed',
+      cause: 'session_failed:exit',
+      final_head_sha: MOVED_HEAD,
+      head_moved_by_session: false,
+      at: 800
+    });
+
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: CLAIM_HEAD,
+      state: 'exhausted'
+    });
+  });
+
+  test('exhausts the claim with no head when the move is unjudged', () => {
+    const store = heldStore();
+    clickReviewSession(store, 'review:click');
+
+    store.settleReviewSession(WS, {
+      attempt_id: 'review:click',
+      outcome: 'failed',
+      cause: 'session_failed:exit',
+      final_head_sha: MOVED_HEAD,
+      head_moved_by_session: null,
+      at: 800
+    });
+
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: null,
+      state: 'exhausted'
+    });
+  });
+
+  test('exhausts the claim with no head when no final head was observed', () => {
+    const store = heldStore();
+    clickReviewSession(store, 'review:click');
+
+    store.settleReviewSession(WS, {
+      attempt_id: 'review:click',
+      outcome: 'failed',
+      cause: 'session_failed:exit',
+      at: 800
+    });
+
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: null,
+      state: 'exhausted'
+    });
+  });
+
+  test('leaves the claim untouched when another attempt settles', () => {
+    const store = heldStore();
+    store.claimAutoReviewDispatch(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'review:auto',
+      expected: expectedFacts()
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'review:stray',
+        bead_id: 'UI-1',
+        kind: 'review_session',
+        status: 'pending',
+        authority_id: 'authority-1',
+        head_sha: CLAIM_HEAD
+      }
+    });
+
+    store.settleReviewSession(WS, {
+      attempt_id: 'review:stray',
+      outcome: 'failed',
+      cause: 'session_failed:exit',
+      final_head_sha: MOVED_HEAD,
+      head_moved_by_session: true,
+      at: 800
+    });
+
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toEqual({
+      head_sha: CLAIM_HEAD,
+      attempt_id: 'review:auto',
+      state: 'active',
+      at: 500
+    });
+  });
+
+  test('keeps the claim when only the hold is released', () => {
+    const store = heldStore();
+    clickReviewSession(store, 'review:click');
+
+    store.setMergeHold(WS, { bead_id: 'UI-1', hold: null, at: 900 });
+
+    expect(store.snapshot(WS).merge_queue[0].hold).toBeUndefined();
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      attempt_id: 'review:click',
+      state: 'active'
+    });
+  });
+
+  test('preserves the slot wait when the field is omitted', () => {
+    const store = heldStore();
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: {
+        reason: 'review_receipt_missing',
+        head_sha: CLAIM_HEAD,
+        auto_review_wait: 'slot'
+      },
+      at: 900
+    });
+
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: { reason: 'review_receipt_stale', head_sha: CLAIM_HEAD },
+      at: 950
+    });
+
+    expect(store.snapshot(WS).merge_queue[0].hold).toMatchObject({
+      reason: 'review_receipt_stale',
+      auto_review_wait: 'slot'
+    });
+  });
+
+  test('writes nothing when the same slot wait repeats', () => {
+    const store = heldStore();
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: {
+        reason: 'review_receipt_missing',
+        head_sha: CLAIM_HEAD,
+        auto_review_wait: 'slot'
+      },
+      at: 900
+    });
+    const before = store.snapshot(WS).revision;
+
+    const again = store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: {
+        reason: 'review_receipt_missing',
+        head_sha: CLAIM_HEAD,
+        auto_review_wait: 'slot'
+      },
+      at: 950
+    });
+
+    expect(again.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('clears the slot wait when null is passed explicitly', () => {
+    const store = heldStore();
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: {
+        reason: 'review_receipt_missing',
+        head_sha: CLAIM_HEAD,
+        auto_review_wait: 'slot'
+      },
+      at: 900
+    });
+
+    const cleared = store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: {
+        reason: 'review_receipt_missing',
+        head_sha: CLAIM_HEAD,
+        auto_review_wait: null
+      },
+      at: 950
+    });
+
+    expect(cleared.ok).toBe(true);
+    expect(store.snapshot(WS).merge_queue[0].hold?.auto_review_wait).toBe(
+      undefined
+    );
+  });
+});
+
+describe('worker/queue-store — review_dispatch 정규화 (2026-08-28 auto-review-dispatch §3.1)', () => {
+  const HEAD = 'a'.repeat(40);
+
+  /**
+   * @param {Record<string, unknown>} row
+   */
+  function seedRow(row) {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        merge_queue: [
+          {
+            bead_id: 'UI-1',
+            resolution_rounds: 0,
+            rebase_rounds: 0,
+            resolution: null,
+            ...row
+          }
+        ]
+      })
+    );
+  }
+
+  test('loads an old queue.json that has no claim at all', () => {
+    seedRow({});
+
+    const entry = createQueueStore().snapshot(WS).merge_queue[0];
+
+    expect(entry).toMatchObject({ bead_id: 'UI-1' });
+    expect(entry.review_dispatch).toBeUndefined();
+  });
+
+  test('round-trips a well-formed claim', () => {
+    seedRow({
+      review_dispatch: {
+        head_sha: HEAD.toUpperCase(),
+        attempt_id: 'review:1',
+        state: 'active',
+        at: 12
+      }
+    });
+
+    const entry = createQueueStore().snapshot(WS).merge_queue[0];
+
+    expect(entry.review_dispatch).toEqual({
+      head_sha: HEAD,
+      attempt_id: 'review:1',
+      state: 'active',
+      at: 12
+    });
+  });
+
+  test('keeps an exhausted claim whose head is undetermined', () => {
+    seedRow({
+      review_dispatch: {
+        head_sha: null,
+        attempt_id: 'review:1',
+        state: 'exhausted',
+        at: 12
+      }
+    });
+
+    const entry = createQueueStore().snapshot(WS).merge_queue[0];
+
+    expect(entry.review_dispatch).toMatchObject({
+      head_sha: null,
+      state: 'exhausted'
+    });
+  });
+
+  test('drops a claim whose head is neither a sha nor null', () => {
+    seedRow({
+      review_dispatch: {
+        head_sha: 'not-a-sha',
+        attempt_id: 'review:1',
+        state: 'active',
+        at: 12
+      }
+    });
+
+    const entry = createQueueStore().snapshot(WS).merge_queue[0];
+
+    expect(entry.review_dispatch).toBeUndefined();
+  });
+
+  test('drops an active claim that names no head', () => {
+    seedRow({
+      review_dispatch: {
+        head_sha: null,
+        attempt_id: 'review:1',
+        state: 'active',
+        at: 12
+      }
+    });
+
+    const entry = createQueueStore().snapshot(WS).merge_queue[0];
+
+    expect(entry.review_dispatch).toBeUndefined();
+  });
+
+  test('drops a claim whose state is outside the enum', () => {
+    seedRow({
+      review_dispatch: {
+        head_sha: HEAD,
+        attempt_id: 'review:1',
+        state: 'running',
+        at: 12
+      }
+    });
+
+    const entry = createQueueStore().snapshot(WS).merge_queue[0];
+
+    expect(entry.review_dispatch).toBeUndefined();
+  });
+
+  test('drops a claim that names no attempt', () => {
+    seedRow({
+      review_dispatch: { head_sha: HEAD, state: 'exhausted', at: 12 }
+    });
+
+    const entry = createQueueStore().snapshot(WS).merge_queue[0];
+
+    expect(entry.review_dispatch).toBeUndefined();
+  });
+
+  test('keeps a persisted slot wait on the hold', () => {
+    seedRow({
+      hold: {
+        reason: 'review_receipt_missing',
+        head_sha: HEAD,
+        since: 4,
+        auto_review_wait: 'slot'
+      }
+    });
+
+    const entry = createQueueStore().snapshot(WS).merge_queue[0];
+
+    expect(entry.hold).toMatchObject({ auto_review_wait: 'slot' });
+  });
+
+  test('drops an unknown wait value from the hold', () => {
+    seedRow({
+      hold: {
+        reason: 'review_receipt_missing',
+        head_sha: HEAD,
+        since: 4,
+        auto_review_wait: 'runner'
+      }
+    });
+
+    const entry = createQueueStore().snapshot(WS).merge_queue[0];
+
+    expect(entry.hold).toMatchObject({ reason: 'review_receipt_missing' });
+    expect(entry.hold?.auto_review_wait).toBeUndefined();
+  });
+});
