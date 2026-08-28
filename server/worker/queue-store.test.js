@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { activeAttemptStates } from '../../app/utils/active-attempts.js';
 import { ensureDelegationMonitorDir } from './delegation-monitor.js';
 import {
   GUARD_WARNINGS_CAP,
@@ -5298,6 +5299,65 @@ describe('worker/queue-store — manual merge continuation authority', () => {
     expect(store.snapshot(WS).merge_queue[0].authority?.id).toBe('authority-1');
   });
 
+  test("mints a fresh authority when this bead's last review session failed", () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:1', session_source: 'resume' }
+    });
+    store.settleReviewSession(WS, {
+      attempt_id: 'review:1',
+      outcome: 'failed',
+      cause: 'receipt_not_current',
+      hold_reason: 'review_receipt_stale',
+      at: 300
+    });
+
+    const reclick = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'c'.repeat(40), target_base: 'main' }
+      ]
+    });
+
+    expect(reclick.ok).toBe(true);
+    expect(store.snapshot(WS).merge_queue[0].authority).toMatchObject({
+      id: 'authority-2',
+      source: 'manual',
+      requested_head_sha: 'c'.repeat(40)
+    });
+  });
+
+  test('reuses the authority after a review session that succeeded', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:1', session_source: 'resume' }
+    });
+    store.settleReviewSession(WS, {
+      attempt_id: 'review:1',
+      outcome: 'current',
+      final_head_sha: 'a'.repeat(40),
+      at: 300
+    });
+
+    const reclick = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ]
+    });
+
+    expect(reclick.ok).toBe(false);
+    expect(store.snapshot(WS).merge_queue[0].authority?.id).toBe('authority-1');
+  });
+
   test('rebinds the authority to the final head when the receipt is current', () => {
     const store = manualStore();
     store.enqueueMergeManual(WS, {
@@ -7951,10 +8011,22 @@ describe('worker/queue-store — retired head-review migration (UI-d7fy §3.8)',
     expect(attempt).toMatchObject({
       status: 'failed',
       cause: 'retired_kind',
-      kind: 'implementation'
+      kind: 'retired_kind'
     });
     // The pid stays readable: the caller still owes this process a stop.
     expect(attempt.pid).toBe(4242);
+  });
+
+  test('keeps a migrated retired-kind attempt out of implementation occupancy', () => {
+    seedLegacyFile();
+    const store = createQueueStore();
+
+    const { winners } = activeAttemptStates(
+      store.snapshot(WS).attempts,
+      new Map()
+    );
+
+    expect(winners.has('UI-1')).toBe(false);
   });
 
   test('names the running retired-kind attempts the caller must stop', () => {

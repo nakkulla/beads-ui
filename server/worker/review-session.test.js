@@ -253,6 +253,17 @@ describe('review-session — the click (UI-d7fy §5.2)', () => {
     });
   });
 
+  test('hands the PR head branch to the dispatch, not only to the prompt', async () => {
+    const { review, store, dispatchReviewSession } = coordinator();
+
+    await click(review, store);
+
+    expect(dispatchReviewSession).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({ head_ref: 'UI-1' })
+    );
+  });
+
   test('dispatches nothing when the write fails', async () => {
     const { review, store, dispatchReviewSession } = coordinator();
 

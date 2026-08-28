@@ -82,13 +82,18 @@ export const COMPLETION_RETRY_DELAYS_MS = [60_000, 300_000, 900_000];
  * `reconciliation_ambiguous` is a deliberate human case rather than an
  * oversight that happened to fall through.
  *
- * The two review reasons are `metadata_watch` and NOT terminal (UI-d7fy §3.5).
- * The automatic-review lane that used to own them is gone, and the reason it
- * is not simply `human` instead is that the exit really is a metadata write:
- * the `[리뷰 후 머지]` session writes an `impl_review` receipt to the Bead, the
- * bd issue-change trigger re-runs the gate on it, and the row resumes. Ending
- * the saga on `needs_human` would take that resume away for a state that is a
- * pre-merge hold, not a completion failure.
+ * All THREE review reasons are `metadata_watch` and NOT terminal (UI-d7fy
+ * §3.3/§3.5). The automatic-review lane that used to own them is gone, and the
+ * reason they are not simply `human` instead is that the exit really is a
+ * metadata write: the `[리뷰 후 머지]` session writes an `impl_review` receipt
+ * to the Bead, the bd issue-change trigger re-runs the gate on it, and the row
+ * resumes. Ending the saga on `needs_human` would take that resume away for a
+ * state that is a pre-merge hold, not a completion failure.
+ *
+ * `review_receipt_undetermined` is the same class for a stricter reason: it is
+ * not a verdict at all but an ancestry probe that could not be taken, so the
+ * next observation re-takes it. Hardening a saga to `needs_human` on a probe
+ * error would make a transient `git` failure terminal.
  *
  * @type {Readonly<Record<string, 'metadata_watch'|'retry'|'human'>>}
  */
@@ -97,6 +102,7 @@ export const COMPLETION_FAILURE_POLICY = Object.freeze({
   spec_id_missing: 'metadata_watch',
   review_receipt_missing: 'metadata_watch',
   review_receipt_stale: 'metadata_watch',
+  review_receipt_undetermined: 'metadata_watch',
   continuation_persist_failed: 'retry',
   cleanup_prerecord_failed: 'retry',
   cleanup_settlement_record_failed: 'retry',

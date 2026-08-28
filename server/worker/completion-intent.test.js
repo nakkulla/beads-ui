@@ -1480,6 +1480,7 @@ describe('worker/completion-intent resolution policy (UI-hk74 §3)', () => {
     ['spec_id_missing', 'metadata_watch', 'waiting_metadata'],
     ['review_receipt_missing', 'metadata_watch', 'waiting_metadata'],
     ['review_receipt_stale', 'metadata_watch', 'waiting_metadata'],
+    ['review_receipt_undetermined', 'metadata_watch', 'waiting_metadata'],
     ['cleanup_prerecord_failed', 'retry', 'retrying'],
     ['cleanup_settlement_record_failed', 'retry', 'retrying'],
     ['completion_gate_spawn_failed', 'retry', 'retrying'],
@@ -2197,6 +2198,28 @@ describe('worker/completion-intent auto-resolution driver (UI-hk74 §4/§5)', ()
     expect(
       store.snapshot(DRIVER_WS).completion_intents['UI-root']
     ).toMatchObject({ phase: 'gating', auto_resolution: null });
+  });
+
+  test('waits instead of hardening when the ancestry probe could not be taken', async () => {
+    const store = seededCompletionStore();
+    const driver = settleDriver(store);
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'review_receipt_undetermined' },
+      current
+    );
+
+    // A probe error is not a verdict (UI-d7fy §3.3/§3.5): the next observation
+    // re-takes it, so ending the saga on `needs_human` here would make a
+    // transient `git` failure terminal.
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'waiting_metadata',
+      auto_resolution: { class: 'metadata_watch' }
+    });
   });
 
   test('keeps a second review-receipt refusal on the same metadata watch', async () => {

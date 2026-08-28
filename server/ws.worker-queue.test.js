@@ -1827,6 +1827,16 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
   }
 
   /**
+   * The two stop seams a cancel could reach (UI-d7fy §5.6): only the
+   * review-session PROCESS stop may be used, never the generic attempt stop.
+   *
+   * @type {any}
+   */
+  let stop_review_session = null;
+  /** @type {any} */
+  let stop_attempt = null;
+
+  /**
    * A driver stub whose `kick` never merges: these tests assert the QUEUE
    * contract, and letting the real loop run would reach `gh`.
    *
@@ -1834,10 +1844,16 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
    */
   function registerDriver(state = {}) {
     const kick = vi.fn(async () => {});
+    stop_review_session = vi.fn(async () => true);
+    stop_attempt = vi.fn(async () => true);
     __registerWorkerAttachmentForTest(
       process.cwd(),
       /** @type {any} */ ({
-        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        scheduler: {
+          tick: vi.fn(),
+          stop: stop_attempt,
+          stopReviewSessionProcess: stop_review_session
+        },
         prActions: {
           merge: vi.fn(),
           discard: vi.fn(),
@@ -2530,6 +2546,48 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
       status: 'failed',
       cause: 'cancelled'
     });
+    // PROCESS-ONLY: the generic attempt stop would overwrite that cancellation
+    // cause with `stopped`, revert the session's stamps, and reopen the bead's
+    // claim while its PR is still open.
+    expect(stop_review_session).toHaveBeenCalledWith(process.cwd(), 'review:x');
+    expect(stop_attempt).not.toHaveBeenCalled();
+  });
+
+  test('the bulk cancel stops the review sessions it settled (UI-d7fy §5.6)', async () => {
+    parkInPrWait('UI-1');
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const store = getWorkerRuntime().queueStore;
+    await send(sock, 'm1', 'worker-merge-queue-add', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision
+    });
+    const authority_id = store.snapshot('').merge_queue[0].authority?.id || '';
+    store.upsertReviewSessionAttempt('', {
+      attempt_id: 'review:x',
+      patch: {
+        bead_id: 'UI-1',
+        kind: 'review_session',
+        status: 'running',
+        authority_id,
+        head_sha: 'f'.repeat(40)
+      }
+    });
+
+    await send(sock, 'm2', 'worker-merge-queue-remove', {
+      all: true,
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm2').payload.applied).toBe(true);
+    expect(store.snapshot('').attempts['review:x']).toMatchObject({
+      status: 'failed',
+      cause: 'cancelled'
+    });
+    // [일괄 머지 중단] settled the same sessions the single cancel does, so it
+    // owes them the same process stop.
+    expect(stop_review_session).toHaveBeenCalledWith(process.cwd(), 'review:x');
   });
 
   test('add-all leaves out an EXTERNAL conflicting row even on a green gate', async () => {

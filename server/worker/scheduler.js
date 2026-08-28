@@ -827,6 +827,7 @@ function launchAccountRefusalDetail(failure, accounts, account_sources) {
  *   staleWorkContinue: (workspace: string, input: { bead_id: string, action_id: string, expected_revision: number }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, conflict?: boolean }>,
  *   staleWorkRecheck: (workspace: string, input: { bead_id: string, action_id: string, expected_revision: number }) => Promise<{ ok: boolean, reason?: string, state?: string, conflict?: boolean }>,
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
+ *   stopReviewSessionProcess: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
  *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
@@ -3244,6 +3245,41 @@ export function createScheduler(deps) {
       running.delete(attempt_id);
       claimed.delete(bead_id);
 
+      // A REVIEW SESSION takes its own completion path (UI-d7fy §5.4), ahead
+      // of EVERY other branch — including the stop/pause settlement and the
+      // exit/usage write below. It opens no PR, pushes only the PR head
+      // branch, and its verdict is a re-observation of the receipt against the
+      // FINAL head, none of which the branches below can express. The order is
+      // load-bearing for the cancel case (§5.6): the cancel's CAS already owns
+      // this attempt's durable half, so the BINDING CHECK must run before any
+      // attempt write — a late exit that recorded its exit code and usage
+      // first would be writing over a record that is no longer its own.
+      if (reviewSessionOf(workspace, attempt_id)) {
+        stopped.delete(attempt_id);
+        /** @type {{ ok: boolean, reason?: string }|null} */
+        let settled = null;
+        try {
+          settled =
+            (await deps.reviewSession?.complete({
+              workspace,
+              attempt_id,
+              bead_id,
+              session_ok: verdict.success === true,
+              reason: verdict.reason ?? null
+            })) ?? null;
+        } catch (err) {
+          log('review session completion failed for %s: %o', attempt_id, err);
+        }
+        if (settled === null || settled.reason !== 'binding_gone') {
+          deps.store.updateAttempt(workspace, {
+            attempt_id,
+            patch: { exit: verdict.exit, ...usagePatch(workspace, attempt_id) }
+          });
+        }
+        notifyChanged(workspace);
+        return;
+      }
+
       // An explicit stop/pause already finalized this attempt (status + mode
       // reverted); the late `done` resolution must not re-run the failure path.
       // It IS still this attempt's last word on usage: the SIGTERM does not
@@ -3286,28 +3322,6 @@ export function createScheduler(deps) {
         attempt_id,
         patch: { exit: verdict.exit, ...usagePatch(workspace, attempt_id) }
       });
-
-      // A REVIEW SESSION takes its own completion path (UI-d7fy §5.4), ahead
-      // of every other branch including the base-drift settlement: it opens no
-      // PR, pushes only the PR head branch, and its verdict is a re-observation
-      // of the receipt against the FINAL head — none of which the branches
-      // below can express. Its authority binding is checked there, so a
-      // cancelled session's late exit writes nothing.
-      if (reviewSessionOf(workspace, attempt_id)) {
-        try {
-          await deps.reviewSession?.complete({
-            workspace,
-            attempt_id,
-            bead_id,
-            session_ok: verdict.success === true,
-            reason: verdict.reason ?? null
-          });
-        } catch (err) {
-          log('review session completion failed for %s: %o', attempt_id, err);
-        }
-        notifyChanged(workspace);
-        return;
-      }
 
       // The settlement step, ahead of EVERY completion branch (UI-8mvc §3).
       // Above the disposition split on purpose: that branch returns, so a call
@@ -8459,11 +8473,49 @@ export function createScheduler(deps) {
     return true;
   }
 
+  /**
+   * Stop a `review_session` PROCESS and nothing else (UI-d7fy §5.6).
+   *
+   * The cancel's CAS already owns this attempt's whole durable half: it
+   * terminalized the attempt as `failed: cancelled` and reclaimed the merge
+   * authority in one write. So this path deliberately does NOT do what
+   * {@link stop} does — no `discardAttempt` (it would overwrite the
+   * cancellation cause with `stopped`/`null`), no `revertStamps`, and above all
+   * no {@link releaseBeadClaim}: a review session runs against a Bead whose PR
+   * is already open, and reopening that Bead's claim would tear down the PR-wait
+   * state the cancel never touched.
+   *
+   * What is left is exactly the process: kill it, drop it from the running map,
+   * stop its monitor. A late `done` from the killed process finds its binding
+   * gone in {@link createReviewSession.complete} and writes nothing.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {Promise<boolean>} True when a live process was torn down.
+   */
+  async function stopReviewSessionProcess(workspace, attempt_id) {
+    if (!reviewSessionOf(workspace, attempt_id)) {
+      return false;
+    }
+    const entry = running.get(attempt_id);
+    if (!entry) {
+      deps.sessionMonitors?.stop(workspace, attempt_id);
+      return false;
+    }
+    teardownLiveSession(attempt_id, entry);
+    deps.sessionMonitors?.stop(workspace, attempt_id);
+    notifyChanged(workspace);
+    // The slot this session held is free now, so the ordinary lane may fill it.
+    await tick(workspace);
+    return true;
+  }
+
   return {
     tick,
     staleWorkContinue,
     staleWorkRecheck,
     stop,
+    stopReviewSessionProcess,
     pause,
     resume,
     resolveConflict,

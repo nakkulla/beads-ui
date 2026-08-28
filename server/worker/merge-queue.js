@@ -669,6 +669,24 @@ export function createMergeQueue(deps) {
   }
 
   /**
+   * Whether ANY queued item is currently on a gate hold (UI-d7fy §3.3).
+   *
+   * The hold's exit is a fact the queue does not own — an `impl_review` receipt
+   * written to the Bead by the `[리뷰 후 머지]` session, or by a person, or by
+   * any other path. Nothing about that write touches the queue file, so the
+   * only signal the driver can hang the re-judgement on is the ambient
+   * queue-changed event the PR observation pass emits. Hence: while a hold
+   * stands, that event is a reason to drain.
+   *
+   * @returns {boolean}
+   */
+  function hasHeldEntry() {
+    const q = snapshot();
+    const lane = Array.isArray(q?.merge_queue) ? q.merge_queue : [];
+    return lane.some((/** @type {any} */ entry) => !!entry.hold);
+  }
+
+  /**
    * Release a hold the gate no longer justifies.
    *
    * @param {string} bead_id
@@ -2154,6 +2172,16 @@ export function createMergeQueue(deps) {
             void requestDrain();
           }
           if (resolutionNeedsDrain()) {
+            void requestDrain();
+          }
+          // A HELD item is re-judged on every kick (UI-d7fy §3.3), and `wake()`
+          // above only nudges a drain that is already in progress. Without this
+          // the hold would end only on a queue-owned mutation — so a receipt
+          // that became valid through any other path would leave the row held
+          // forever. Coalesced by `requestDrain`/`drain`: overlapping events set
+          // the latch instead of starting a second pass, and a re-judgement that
+          // lands on the same reason writes nothing and emits no further event.
+          if (hasHeldEntry()) {
             void requestDrain();
           }
         });

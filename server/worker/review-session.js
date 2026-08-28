@@ -152,7 +152,7 @@ function holdReasonFor(state) {
  *   workspace: string,
  *   store: any,
  *   bd: { readIssue: (bead_id: string) => Promise<Record<string, any>> },
- *   scheduler: { dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id: string|null }) => Promise<{ ok: boolean, reason?: string }> },
+ *   scheduler: { dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id: string|null, head_ref: string|null }) => Promise<{ ok: boolean, reason?: string }> },
  *   observeReviewReceipt: (bead_id: string) => Promise<{ ok: true, head_sha: string, head_ref: string|null, state: string }|{ ok: false, reason: string }>,
  *   kick?: () => Promise<void>|void,
  *   notifyChanged?: (workspace: string) => void,
@@ -288,6 +288,11 @@ export function createReviewSession(deps) {
           bead_id,
           attempt_id,
           resume_session_id: selection.resume_session_id,
+          // The PR head branch, not just prompt text: a bead whose worktree
+          // post-merge cleanup or a manual removal took away is restored from
+          // this ref by the dispatch. Without it a recoverable worktree is a
+          // flat `worktree_missing` refusal.
+          head_ref: probe.head_ref ?? null,
           prompt: reviewSessionPrompt({
             bead_id,
             pr_url: probe.pr_url ?? null,

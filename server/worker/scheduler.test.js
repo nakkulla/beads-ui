@@ -594,7 +594,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -728,6 +728,7 @@ function setup(opts) {
     fs: opts.fs || { existsSync: () => true },
     notifyQueueChanged: opts.notifyQueueChanged,
     onCompletionAttemptSettled: opts.onCompletionAttemptSettled,
+    reviewSession: opts.reviewSession,
     now: () => 1000
   });
   // The concurrency cap lives in the STORE now (worker-phase2 §3), not in a
@@ -5032,6 +5033,160 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     expect(q.pr_wait).toEqual([]);
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
     expect(notify.prWaitEntered).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduler review-session dispatch (UI-d7fy §5)', () => {
+  /**
+   * Register the pending `review_session` attempt the click's CAS commits.
+   *
+   * @param {any} store
+   */
+  function seedPendingReviewSession(store) {
+    store.upsertReviewSessionAttempt(WS, {
+      attempt_id: 'review:1',
+      patch: {
+        bead_id: 'B1',
+        kind: 'review_session',
+        status: 'pending',
+        authority_id: 'authority-1',
+        head_sha: 'a'.repeat(40)
+      }
+    });
+  }
+
+  test('restores a missing worktree from the PR head branch', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.worktree.exists.mockReturnValue(false);
+    env.worktree.restore.mockImplementation(async () => {
+      env.worktree.exists.mockReturnValue(true);
+      return { ok: true, path: '/wt/B1' };
+    });
+    seedPendingReviewSession(env.store);
+
+    const result = await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.worktree.restore).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'B1',
+      head_ref: 'B1'
+    });
+  });
+
+  test('the cancel stop kills the process and writes nothing durable', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedPendingReviewSession(env.store);
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+    // The cancel's own CAS already owns the durable half (UI-d7fy §5.6).
+    env.store.updateAttempt(WS, {
+      attempt_id: 'review:1',
+      patch: { status: 'failed', cause: 'cancelled', finished_at: 900 }
+    });
+    const kill = env.runner.killFor('B1');
+
+    const stopped = await env.scheduler.stopReviewSessionProcess(
+      WS,
+      'review:1'
+    );
+
+    expect(stopped).toBe(true);
+    expect(kill).toHaveBeenCalledWith('SIGTERM');
+    // The cancellation cause survives — the generic ■ stop would have written
+    // `stopped` with a null cause over it.
+    expect(env.store.snapshot(WS).attempts['review:1']).toMatchObject({
+      status: 'failed',
+      cause: 'cancelled'
+    });
+    // And the bead's claim is NOT reopened: its PR is still open, and the
+    // cancel had no business touching that wait.
+    expect(
+      env.bd.calls.some(
+        (/** @type {any} */ c) =>
+          c.method === 'setStatus' && c.bead_id === 'B1' && c.value === 'open'
+      )
+    ).toBe(false);
+  });
+
+  test('a late exit whose binding is gone records no exit or usage', async () => {
+    const complete = vi.fn(async () => ({
+      ok: false,
+      reason: 'binding_gone'
+    }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      reviewSession: { complete }
+    });
+    seedPendingReviewSession(env.store);
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    env.runner.finish('B1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    // The binding check runs BEFORE any attempt write (UI-d7fy §5.6): a
+    // cancelled session's late exit must not stamp its exit code onto a record
+    // that is no longer its own.
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(env.store.snapshot(WS).attempts['review:1'].exit).toBe(null);
+  });
+
+  test('a live binding still records the session exit', async () => {
+    const complete = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      reviewSession: { complete }
+    });
+    seedPendingReviewSession(env.store);
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    env.runner.finish('B1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts['review:1'].exit).toBe(0);
+  });
+
+  test('refuses worktree_missing when the click named no head branch', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.worktree.exists.mockReturnValue(false);
+    seedPendingReviewSession(env.store);
+
+    const result = await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'worktree_missing' });
+    expect(env.worktree.restore).not.toHaveBeenCalled();
   });
 });
 

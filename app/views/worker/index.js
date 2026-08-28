@@ -1356,7 +1356,6 @@ function prWaitRow(
       gate?.reason === 'base_behind' ||
       gate?.reason === 'review_receipt_missing' ||
       gate?.reason === 'review_receipt_stale' ||
-      gate?.reason === 'review_receipt_undetermined' ||
       cleanup_retry ||
       external_cleanup);
   // 이 행이 [리뷰 후 머지]를 내는 행인가 (UI-d7fy §5.1). 게이트 사유 둘만
@@ -1522,10 +1521,12 @@ function prWaitRow(
         gate?.reason === 'base_behind' ||
         gate?.reason === 'review_receipt_missing' ||
         gate?.reason === 'review_receipt_stale' ||
-        // Undetermined is clickable for the same reason stale is: the click
-        // path re-takes the verdict live, and a probe error there routes to
-        // the observed-head review. The row shows no badge for it (UI-32he).
-        gate?.reason === 'review_receipt_undetermined' ||
+        // `review_receipt_undetermined` is deliberately absent (UI-d7fy §5.1):
+        // an ancestry probe that could not be taken is not a verdict, the gate
+        // treats it as fail-closed, and the next observation re-takes it. A
+        // click could therefore only land the row on a hold — and this row does
+        // not draw that hold's exit button either. It waits, with no button and
+        // no badge (UI-32he).
         cleanup_retry ||
         external_cleanup ||
         reclick_continuable ||
@@ -1586,18 +1587,15 @@ function prWaitRow(
                                 ? '리뷰 영수증 없음 — 머지 게이트 보류입니다. 클릭하면 기록된 세션을 이어 리뷰만 수행시키고, 영수증이 최종 head에 유효해지면 큐가 머지합니다'
                                 : gate?.reason === 'review_receipt_stale'
                                   ? 'head 재작성됨(영수증이 현재 head의 조상이 아님) — 머지 게이트 보류입니다. 클릭하면 기록된 세션을 이어 최종 head를 다시 리뷰시키고, 영수증이 유효해지면 큐가 머지합니다'
-                                  : gate?.reason ===
-                                      'review_receipt_undetermined'
-                                    ? '리뷰 영수증 판정 미결 — 다음 관측에서 다시 판정합니다. 지금 머지하면 관측된 head를 다시 판정합니다'
-                                    : gate?.reason === 'spec_id_missing'
-                                      ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
-                                      : enabled
-                                        ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
-                                        : gate && gate.tier === 'merged'
-                                          ? // Already merged with no cleanup failure recorded: the cleanup
-                                            // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                                            '머지됨 — 머지 후 정리 진행 중'
-                                          : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+                                  : gate?.reason === 'spec_id_missing'
+                                    ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
+                                    : enabled
+                                      ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
+                                      : gate && gate.tier === 'merged'
+                                        ? // Already merged with no cleanup failure recorded: the cleanup
+                                          // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                                          '머지됨 — 머지 후 정리 진행 중'
+                                        : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 

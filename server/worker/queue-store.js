@@ -282,14 +282,15 @@
  * attempt before spawn.
  * @property {CompletionFailureKey|null} completion_failure_key - SHA-bound
  * failure identity the session was asked to repair.
- * @property {'implementation'|'review_session'} kind - Which lane produced
- * this attempt (UI-d7fy §5.5). A `review_session` is the `[리뷰 후 머지]`
- * click's session: real work a person must be able to see, but not the bead's
- * own implementation run, so it never holds the bead's 실행중 slot. Legacy
- * records carry no `kind` and are implementation runs by definition; a kind
- * this enum no longer names is a RETIRED lane and normalizes to a terminal
- * `retired_kind` record (§3.8) rather than silently becoming an
- * implementation attempt that would occupy a lane forever.
+ * @property {'implementation'|'review_session'|'retired_kind'} kind - Which
+ * lane produced this attempt (UI-d7fy §5.5). A `review_session` is the
+ * `[리뷰 후 머지]` click's session: real work a person must be able to see, but
+ * not the bead's own implementation run, so it never holds the bead's 실행중
+ * slot. Legacy records carry no `kind` and are implementation runs by
+ * definition; a kind this enum no longer names is a RETIRED lane and
+ * normalizes to a terminal `retired_kind` attempt of KIND `retired_kind`
+ * (§3.8) — never to `implementation`, which would let the migrated record
+ * read as the bead's own failed run and occupy a lane forever.
  * @property {'click'|'auto'|null} origin - Whether a human click or the
  * automatic resolution lane asked for this attempt. Null on an ordinary
  * implementation attempt, which answers to neither.
@@ -897,7 +898,7 @@ export const COMPLETION_VERIFY_SUPPRESSED_PHASES = new Set([
 ]);
 
 /** @type {NonNullable<Attempt['kind']>[]} */
-const ATTEMPT_KINDS = ['implementation', 'review_session'];
+const ATTEMPT_KINDS = ['implementation', 'review_session', 'retired_kind'];
 
 /** @type {CompletionOperation['kind'][]} */
 const COMPLETION_OP_KINDS = ['merge_subject', 'retry_cleanup'];
@@ -2583,10 +2584,13 @@ function migrateLegacyStopped(value) {
  * `makeAttempt` maps a kind the enum no longer names onto `implementation`,
  * which is the one reading that must never happen: a still-`running`
  * `head_review` record would come back as the bead's own implementation run
- * and hold its 실행중 slot forever. So the unknown kind is answered where it is
- * read — the record reaches the terminal `retired_kind` its lane's removal
- * makes it. A record that already settled keeps the history it settled with;
- * only its kind is answered.
+ * and hold its 실행중 slot forever — and so would a TERMINAL one, as the bead's
+ * last implementation attempt showing an unhandled failure. So the unknown kind
+ * is answered where it is read, and it is answered with the distinct kind
+ * `retired_kind`, which `isImplementationAttempt` excludes: the record reaches
+ * the terminal `retired_kind` its lane's removal makes it without ever passing
+ * for an implementation run. A record that already settled keeps the history it
+ * settled with; only its kind is answered.
  *
  * The process the running record names is the CALLER's to stop, and it is
  * still nameable afterwards: `pid`/`process_identity` survive this migration
@@ -2607,11 +2611,11 @@ function migrateRetiredKind(value, at) {
     return value;
   }
   if (TERMINAL_ATTEMPT_STATUSES.has(String(value.status))) {
-    return { ...value, kind: 'implementation' };
+    return { ...value, kind: 'retired_kind' };
   }
   return {
     ...value,
-    kind: 'implementation',
+    kind: 'retired_kind',
     status: 'failed',
     cause: 'retired_kind',
     control: null,
@@ -6424,12 +6428,13 @@ export function createQueueStore(options = {}) {
      *
      * Authority lifecycle per row:
      * - new entry → fresh `authority` (source `manual`), empty review journal
-     * - duplicate click on a nonterminal current authority → reuse, no new id
-     *   and no budget reset
-     * - re-click after a `failed` review, or a legacy authority-less entry →
-     *   the current slot is atomically replaced with a NEW authority bound to
-     *   the freshly observed head/base; every late result of the old attempt
-     *   then fails its `authority_id` CAS and is a no-op.
+     * - duplicate click on a current manual authority → reuse, no new id and
+     *   no budget reset
+     * - re-click after a FAILED `review_session`, an automatic enrolment, or a
+     *   legacy authority-less entry → the current slot is atomically replaced
+     *   with a NEW authority bound to the freshly observed head/base; every
+     *   late result of the old attempt then fails its `authority_id` CAS and is
+     *   a no-op.
      *
      * `via` is provenance, not a new authority kind (UI-jaua §5.4): a lane's
      * armed member registers through this same mutation with the same
@@ -6451,6 +6456,48 @@ export function createQueueStore(options = {}) {
      */
     enqueueMergeManual(workspace, input) {
       const { expected_revision, entries } = input;
+      /**
+       * Whether this Bead's most recent `[리뷰 후 머지]` session FAILED — the
+       * one case in which an existing MANUAL authority is not reusable
+       * (UI-d7fy §5.4). A failed completion leaves the authority bound to the
+       * head that was CLICKED, so reusing it would send the next review at a
+       * head that may since have moved: the stale binding §5.4's rebind exists
+       * to prevent. A Bead with no review session at all is unaffected, which
+       * keeps the plain `[머지]` re-click reusing its authority exactly as
+       * before.
+       *
+       * An unsettled session is the most recent by definition and is not a
+       * failure, so it reuses; among settled ones the latest timestamp wins.
+       *
+       * @param {Queue} next
+       * @param {string} bead_id
+       * @returns {boolean}
+       */
+      function lastReviewSessionFailed(next, bead_id) {
+        /** @type {string|null} */
+        let latest_status = null;
+        let latest_at = -1;
+        for (const attempt of Object.values(next.attempts)) {
+          if (
+            attempt.kind !== 'review_session' ||
+            attempt.bead_id !== bead_id
+          ) {
+            continue;
+          }
+          if (!TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status))) {
+            return false;
+          }
+          const at = Math.max(
+            typeof attempt.finished_at === 'number' ? attempt.finished_at : 0,
+            typeof attempt.started_at === 'number' ? attempt.started_at : 0
+          );
+          if (at >= latest_at) {
+            latest_at = at;
+            latest_status = String(attempt.status);
+          }
+        }
+        return latest_status === 'failed';
+      }
       const review_session =
         isRecord(input.review_session) &&
         typeof input.review_session.attempt_id === 'string' &&
@@ -6580,11 +6627,18 @@ export function createQueueStore(options = {}) {
           }
           const existing = next.merge_queue.find((e) => e.bead_id === bead_id);
           if (existing) {
-            // Only a duplicate click on the SAME MANUAL authority reuses it.
-            // An automatic enrolment is not the user's click — the click
-            // promotes it to a fresh manual authority, exactly like a legacy
-            // slot (UI-58w8 §1).
-            if (existing.authority && existing.authority.source === 'manual') {
+            // Only a duplicate click on the SAME MANUAL authority reuses it,
+            // and only while this Bead's last review session did not FAIL. An
+            // automatic enrolment is not the user's click — the click promotes
+            // it to a fresh manual authority, exactly like a legacy slot
+            // (UI-58w8 §1) — and a failed review session leaves the authority
+            // pinned to the clicked head, so the re-click mints a fresh one
+            // bound to the head just observed (UI-d7fy §5.4).
+            if (
+              existing.authority &&
+              existing.authority.source === 'manual' &&
+              !lastReviewSessionFailed(next, bead_id)
+            ) {
               granted.set(bead_id, {
                 authority_id: existing.authority.id,
                 head_sha

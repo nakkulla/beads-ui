@@ -2501,6 +2501,63 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 
+  test('an observation pass re-judges a held item the queue never mutated', async () => {
+    const store = seedManual(['UI-1']);
+    /** @type {Array<(ws: string) => void>} */
+    const listeners = [];
+    let current = false;
+    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
+      landMerge(store, bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const mq = driver(store, {
+      merge,
+      subscribeQueueChanged: (/** @type {any} */ fn) => {
+        listeners.push(fn);
+        return () => {};
+      },
+      probeMergeability: async () =>
+        current
+          ? {
+              ok: true,
+              kind: 'clean',
+              reason: null,
+              head_sha: MOVED_HEAD,
+              base_ref: 'main',
+              external: false
+            }
+          : {
+              ok: false,
+              kind: 'blocked',
+              reason: 'review_receipt_stale',
+              head_sha: MOVED_HEAD,
+              base_ref: 'main',
+              external: false
+            }
+    });
+    mq.start();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(store.snapshot(WS).merge_queue[0].hold?.reason).toBe(
+      'review_receipt_stale'
+    );
+
+    // The receipt becomes valid EXTERNALLY — a session writes it to the Bead,
+    // and nothing in the queue file changes. The PR observation pass fires
+    // `queue-changed`, and that has to be enough (UI-d7fy §3.3): `wake()` alone
+    // only nudges a drain already in progress, so without the hold's own drain
+    // the row would stay held forever.
+    current = true;
+    for (const fn of listeners) {
+      fn(WS);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    mq.stop();
+  });
+
   test('holds an undetermined review verdict like a stale one', async () => {
     const store = seedManual(['UI-1']);
     const merge = vi.fn();

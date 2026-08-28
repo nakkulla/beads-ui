@@ -4186,7 +4186,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(button.title).toBe(title);
   });
 
-  test('draws no badge for an undetermined review verdict and keeps 머지 clickable', () => {
+  test('offers no click at all on an undetermined review verdict', () => {
     const { mount } = mountWith(
       queueWithGate({
         enabled: false,
@@ -4201,9 +4201,9 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       mount.querySelector('.worker-mini__merge')
     );
     expect(mount.querySelector('.worker-mini__badge')).toBeNull();
-    expect(button.disabled).toBe(false);
+    expect(button.disabled).toBe(true);
     expect(button.textContent?.trim()).toBe('머지');
-    expect(button.title).toContain('판정 미결');
+    expect(button.title).toContain('review_receipt_undetermined');
   });
 
   test.each([

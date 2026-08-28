@@ -1429,6 +1429,32 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           );
         }
       );
+      // A gate hold's exit is an `impl_review` receipt written to the BEAD
+      // (UI-d7fy §3.3), which this is the signal for. Gated on a hold actually
+      // standing so an ordinary `bd update` costs no merge pass: without a hold
+      // there is nothing here for the queue to re-judge, and with one the PR
+      // observation pass would otherwise be the upper bound on how long the row
+      // waits after the receipt lands.
+      try {
+        const held = (
+          runtime.queueStore.snapshot(keyFor(workspace_root)).merge_queue || []
+        ).some((/** @type {any} */ entry) => !!entry.hold);
+        if (held) {
+          Promise.resolve(mergeQueue.kick()).catch((err) => {
+            log(
+              'bd issue-change merge kick failed for %s: %o',
+              keyFor(workspace_root),
+              err
+            );
+          });
+        }
+      } catch (err) {
+        log(
+          'bd issue-change hold check failed for %s: %o',
+          keyFor(workspace_root),
+          err
+        );
+      }
     };
     return {
       start() {
@@ -1589,10 +1615,13 @@ function recoverRunningAttempts(att, key) {
       if (!a || a.status !== 'running') {
         continue;
       }
-      // Head review / repair records are the transport's, not this engine's
-      // (UI-hk74 §7): they have no scheduler session log to replay and no
-      // process for a monitor to reattach to.
-      if ((a.kind ?? 'implementation') !== 'implementation') {
+      // `review_session` records ARE this engine's (UI-d7fy §5): the scheduler
+      // dispatches them, so they have a session log to replay and a process to
+      // reattach a monitor to, exactly like an implementation run. Any OTHER
+      // non-implementation kind is a retired lane whose record the load-time
+      // migration already terminalized, so nothing here can be `running`.
+      const kind = a.kind ?? 'implementation';
+      if (kind !== 'implementation' && kind !== 'review_session') {
         continue;
       }
       if (att.scheduler.isRunning(a.bead_id)) {
@@ -1622,6 +1651,111 @@ function recoverRunningAttempts(att, key) {
   } catch (err) {
     log('running-attempt recovery failed for %s: %o', key, err);
   }
+}
+
+/**
+ * Settle the `[리뷰 후 머지]` sessions a restart orphaned (UI-d7fy §5.2/§5.4).
+ *
+ * A `review_session` attempt is dispatched by the SCHEDULER, so a crash can
+ * leave one of two records behind, and the §5.2 per-Bead in-flight guard reads
+ * both as live forever — which permanently disables the one button that is the
+ * hold's only exit:
+ *
+ *   - `pending`: the click's CAS committed and the process never launched.
+ *   - `running`: the session was launched and did not outlive the restart.
+ *
+ * A record whose process IS still alive is left exactly as it is — the monitor
+ * reattaches to it in {@link recoverRunningAttempts} below. An ambiguous probe
+ * (`unknown`, no controller identity on a record that has one) counts as alive
+ * for the same reason: terminalizing a live reviewer would re-enable the button
+ * and buy a SECOND reviewer on the same head, which is worse than a button that
+ * stays disabled until the next restart proves the process gone.
+ *
+ * The settlement is {@link createQueueStore.settleReviewSession}, so the row
+ * keeps its hold and its authority and only the attempt ends. When the binding
+ * is already gone (the entry was cancelled or re-authorized while the server
+ * was down) that write refuses by design — and the attempt still has to leave
+ * `pending`/`running`, or the guard outlives the authority it was taken under.
+ * The direct patch is that case and only that case.
+ *
+ * @param {ReturnType<typeof createWorkerAttachment>} att
+ * @param {string} key
+ */
+function recoverReviewSessions(att, key) {
+  const store = att.runtime.queueStore;
+  /** @type {Array<{ attempt_id: string, cause: string }>} */
+  const doomed = [];
+  try {
+    const q = store.snapshot(key);
+    for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
+      const a = /** @type {any} */ (attempt);
+      if (!a || a.kind !== 'review_session') {
+        continue;
+      }
+      if (a.status !== 'pending' && a.status !== 'running') {
+        continue;
+      }
+      if (att.scheduler.isRunning(a.bead_id)) {
+        continue;
+      }
+      if (a.status === 'pending') {
+        doomed.push({ attempt_id, cause: 'session_lost:never_launched' });
+        continue;
+      }
+      const identity = attemptProcessIdentity(a);
+      const state =
+        identity && att.processController
+          ? att.processController.probe(identity).state
+          : 'gone';
+      if (state === 'gone' || state === 'recycled') {
+        doomed.push({ attempt_id, cause: 'session_lost:process_gone' });
+      }
+    }
+  } catch (err) {
+    log('review-session recovery plan failed for %s: %o', key, err);
+    return;
+  }
+  if (doomed.length === 0) {
+    return;
+  }
+  for (const plan of doomed) {
+    try {
+      att.sessionMonitors?.stop(key, plan.attempt_id);
+    } catch (err) {
+      log(
+        'review-session monitor stop failed for %s: %o',
+        plan.attempt_id,
+        err
+      );
+    }
+    try {
+      const settled = store.settleReviewSession(key, {
+        attempt_id: plan.attempt_id,
+        outcome: 'failed',
+        cause: plan.cause,
+        hold_reason: null,
+        at: Date.now()
+      });
+      if (!settled.ok) {
+        store.updateAttempt(key, {
+          attempt_id: plan.attempt_id,
+          patch: {
+            status: 'failed',
+            cause: plan.cause,
+            control: null,
+            finished_at: Date.now()
+          }
+        });
+      }
+    } catch (err) {
+      log(
+        'review-session recovery write failed for %s: %o',
+        plan.attempt_id,
+        err
+      );
+    }
+  }
+  emitQueueChanged(key);
 }
 
 /**
@@ -1847,6 +1981,9 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     return;
   }
 
+  // Before the monitor reattach below, which is what the surviving records are
+  // owed and the orphaned ones must not get.
+  recoverReviewSessions(att, key);
   recoverRunningAttempts(att, key);
   try {
     await att.discardCoordinator.recover();
@@ -2162,6 +2299,33 @@ export async function stopWorkerAttempt(workspace_root, attempt_id) {
     return false;
   }
   return att.scheduler.stop(keyFor(workspace_root), attempt_id);
+}
+
+/**
+ * Stop a cancelled `[리뷰 후 머지]` session's PROCESS (UI-d7fy §5.6), IF an
+ * attachment is registered.
+ *
+ * Deliberately NOT {@link stopWorkerAttempt}: that path is the tile's ■, which
+ * writes a `stopped` record, reverts the attempt's metadata stamps and reopens
+ * the bead's claim. Against a cancelled review session all three are wrong —
+ * the cancel's CAS already wrote `failed: cancelled`, the session stamped
+ * nothing, and the bead's claim belongs to a PR that is still open.
+ *
+ * @param {string} workspace_root
+ * @param {string} attempt_id
+ */
+export async function stopWorkerReviewSessionProcess(
+  workspace_root,
+  attempt_id
+) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return false;
+  }
+  return att.scheduler.stopReviewSessionProcess(
+    keyFor(workspace_root),
+    attempt_id
+  );
 }
 
 /**

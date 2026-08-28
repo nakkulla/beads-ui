@@ -51,7 +51,7 @@ import {
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
   startWorkerRepoOperationDeployRun,
-  stopWorkerAttempt,
+  stopWorkerReviewSessionProcess,
   tickWorkerQueue,
   workerMergeEffectInFlight,
   workerMergeQueueState,
@@ -4408,6 +4408,36 @@ export function handleWorkerMergeAutoToggle(ws, req) {
 }
 
 /**
+ * Kill the processes of the review sessions ONE cancel just settled — the
+ * single `[취소]` and the lane's bulk `[일괄 머지 중단]` alike (UI-d7fy §5.6).
+ *
+ * Best-effort, and deliberately AFTER the write: the CAS already terminalized
+ * these attempts as `failed: cancelled` and reclaimed their authority, so a
+ * session that outlives the stop finds its binding gone and writes nothing.
+ *
+ * PROCESS-ONLY on purpose. The generic attempt stop is the tile's ■ — it
+ * records a `stopped` attempt with a null cause, reverts the session's metadata
+ * stamps and reopens the bead's claim — and all three would corrupt this state:
+ * the cancellation cause is the durable one, this session stamped nothing, and
+ * the bead's claim belongs to a PR that is still open and still waiting.
+ *
+ * @param {string} key
+ * @param {string[]|undefined} attempt_ids
+ */
+function stopCancelledReviewSessions(key, attempt_ids) {
+  for (const attempt_id of attempt_ids || []) {
+    try {
+      void Promise.resolve(
+        stopWorkerReviewSessionProcess(key, attempt_id)
+      ).catch(() => {});
+    } catch {
+      // The reply and the durable write are already out; a stop that cannot
+      // even be attempted must not take the handler down with it.
+    }
+  }
+}
+
+/**
  * Handle `worker-merge-queue-remove`. Payload:
  * `{ bead_id, expected_revision }`, or `{ all: true, expected_revision }`.
  *
@@ -4462,6 +4492,7 @@ export function handleWorkerMergeQueueRemove(ws, req) {
     );
     if (result.ok) {
       fanout(key, /** @type {any} */ (result.queue));
+      stopCancelledReviewSessions(key, result.cancelled_attempt_ids);
     }
     return;
   }
@@ -4516,12 +4547,7 @@ export function handleWorkerMergeQueueRemove(ws, req) {
   );
   if (result.ok) {
     fanout(key, /** @type {any} */ (result.queue));
-    // Best-effort, and deliberately AFTER the write (UI-d7fy §5.6): the CAS
-    // above already settled these attempts and reclaimed their authority, so a
-    // session that outlives the stop and finishes writes nothing.
-    for (const attempt_id of result.cancelled_attempt_ids || []) {
-      void Promise.resolve(stopWorkerAttempt(key, attempt_id)).catch(() => {});
-    }
+    stopCancelledReviewSessions(key, result.cancelled_attempt_ids);
   }
 }
 
