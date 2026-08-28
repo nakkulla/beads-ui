@@ -64,6 +64,15 @@ export { RETRY_DELAYS_MS, RETRY_MAX };
  */
 
 /**
+ * @typedef {Object} SystemicFailureEvent
+ * @property {'systemic_failure'} kind
+ * @property {string} bead_id
+ * @property {string} [attempt_id]
+ * @property {string} cause
+ * @property {number} [at]
+ */
+
+/**
  * @typedef {Object} RetrySucceededEvent
  * @property {'retry_succeeded'} kind
  * @property {string} bead_id
@@ -91,8 +100,8 @@ export { RETRY_DELAYS_MS, RETRY_MAX };
  */
 
 /**
- * @typedef {EnvFailureEvent | RetrySucceededEvent | RetryDispatchedEvent
- *   | ResumeEvent | RetryNowEvent} QueueHoldEvent
+ * @typedef {EnvFailureEvent | SystemicFailureEvent | RetrySucceededEvent
+ *   | RetryDispatchedEvent | ResumeEvent | RetryNowEvent} QueueHoldEvent
  */
 
 /**
@@ -358,7 +367,11 @@ function reduceEnvFailure(state, event, at) {
       ));
 
   const attempts = index === -1 ? 1 : state.lineages[index].attempts + 1;
-  const exhausted = index !== -1 && attempts >= RETRY_MAX;
+  // `RETRY_MAX` counts RETRIES, not failures: the first failure opens the
+  // lineage and each of the three ladder rungs buys one retry, so promotion is
+  // the failure AFTER the last rung (`attempts > RETRY_MAX`). Promoting at
+  // `>=` would spend only two rungs and leave `RETRY_DELAYS_MS[2]` dead.
+  const exhausted = index !== -1 && attempts > RETRY_MAX;
 
   if (repeated_on_other_bead || exhausted) {
     const lineages = state.lineages.map((lineage, position) =>
@@ -428,6 +441,53 @@ function reduceEnvFailure(state, event, at) {
         attempts
       }
     ]
+  };
+}
+
+/**
+ * A `systemic` tier failure (spec §3.4) stops the queue on FIRST sight: there
+ * is no ladder to climb and no repetition to wait for. An env hold underneath
+ * is overwritten rather than merged — a systemic stop is strictly stronger —
+ * but the lineages are preserved, so `재개` still redispatches the beads that
+ * were mid-retry when the wall appeared.
+ *
+ * @param {QueueHoldState} state
+ * @param {SystemicFailureEvent} event
+ * @param {number} at
+ * @returns {QueueHoldResult}
+ */
+function reduceSystemicFailure(state, event, at) {
+  const already_systemic =
+    state.hold !== null && state.hold.kind === 'systemic';
+  /** @type {QueueHold} */
+  const hold = already_systemic
+    ? {
+        .../** @type {QueueHold} */ (state.hold),
+        bead_ids: dedupe([
+          .../** @type {QueueHold} */ (state.hold).bead_ids,
+          event.bead_id
+        ])
+      }
+    : {
+        kind: 'systemic',
+        cause: event.cause,
+        since: at,
+        bead_ids: dedupe([
+          ...(state.hold ? state.hold.bead_ids : []),
+          ...state.lineages.map((lineage) => lineage.bead_id),
+          event.bead_id
+        ]),
+        halted_by_attempt_id: isNonEmptyString(event.attempt_id)
+          ? event.attempt_id
+          : null
+      };
+  return {
+    state: {
+      hold,
+      lineages: state.lineages.map((lineage) => ({ ...lineage })),
+      hold_history: [...state.hold_history]
+    },
+    effects: already_systemic ? [] : [{ kind: 'promoted', cause: event.cause }]
   };
 }
 
@@ -541,6 +601,12 @@ export function reduceQueueHold(state, event, now) {
         return { state: current, effects: [] };
       }
       return reduceEnvFailure(current, event, at);
+    }
+    case 'systemic_failure': {
+      if (!isNonEmptyString(event.bead_id) || !isNonEmptyString(event.cause)) {
+        return { state: current, effects: [] };
+      }
+      return reduceSystemicFailure(current, event, at);
     }
     case 'retry_succeeded': {
       if (!isNonEmptyString(event.bead_id)) {

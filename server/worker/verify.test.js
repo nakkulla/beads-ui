@@ -191,7 +191,7 @@ describe('worker/verify — three-state PR observation', () => {
     expect(openPrForBranch).toHaveBeenCalledWith('/repo', 'UI-1');
   });
 
-  test('reports pr_missing on a SUCCESSFUL empty observation', async () => {
+  test('reports no_pr on a SUCCESSFUL empty observation', async () => {
     const openPrForBranch = vi.fn(async () => ({
       state: /** @type {const} */ ('empty')
     }));
@@ -200,7 +200,7 @@ describe('worker/verify — three-state PR observation', () => {
     const v = await verifier.verifyPrSubmitted(INPUT);
 
     expect(v.ok).toBe(false);
-    expect(v.reason).toBe('pr_missing');
+    expect(v.reason).toBe('no_pr');
   });
 
   test('never retries a successful empty observation', async () => {
@@ -214,7 +214,7 @@ describe('worker/verify — three-state PR observation', () => {
     expect(openPrForBranch).toHaveBeenCalledTimes(1);
   });
 
-  test('reports gh_observation_failed — NOT pr_missing — on an observation error', async () => {
+  test('reports gh_observation_failed — NOT no_pr — on an observation error', async () => {
     const openPrForBranch = vi.fn(async () => ({
       state: /** @type {const} */ ('error'),
       reason: 'gh_failed'
@@ -354,16 +354,16 @@ describe('worker/verify — worker bd back-fill', () => {
 });
 
 describe('worker/verify — pr_url fallback (UI-b8n8)', () => {
-  test('reports pr_missing when bd holds no pr_url to fall back to', async () => {
+  test('reports no_pr when bd holds no pr_url to fall back to', async () => {
     const { verifier, prDetail } = makeFallback({ recorded: null });
 
     const v = await verifier.verifyPrSubmitted(INPUT);
 
-    expect(v.reason).toBe('pr_missing');
+    expect(v.reason).toBe('no_pr');
     expect(prDetail).not.toHaveBeenCalled();
   });
 
-  test('reports bd_read_failed — NOT pr_missing — when the bd query throws', async () => {
+  test('reports bd_read_failed — NOT no_pr — when the bd query throws', async () => {
     const { verifier, prDetail } = makeFallback({ readThrows: true });
 
     const v = await verifier.verifyPrSubmitted(INPUT);
@@ -397,7 +397,7 @@ describe('worker/verify — pr_url fallback (UI-b8n8)', () => {
     expect(v.pr_url).toBe(PR_URL);
   });
 
-  test('reports pr_missing for a CLOSED-unmerged PR', async () => {
+  test('reports no_pr for a CLOSED-unmerged PR', async () => {
     const { verifier, bd } = makeFallback({
       recorded: PR_URL,
       detail: detailOf('CLOSED')
@@ -405,7 +405,7 @@ describe('worker/verify — pr_url fallback (UI-b8n8)', () => {
 
     const v = await verifier.verifyPrSubmitted(INPUT);
 
-    expect(v.reason).toBe('pr_missing');
+    expect(v.reason).toBe('no_pr');
     expect(bd.calls).toEqual([]);
   });
 
@@ -442,7 +442,7 @@ describe('worker/verify — pr_url fallback (UI-b8n8)', () => {
 
     const v = await verifier.verifyPrSubmitted(INPUT);
 
-    expect(v.reason).toBe('pr_missing');
+    expect(v.reason).toBe('no_pr');
   });
 
   test('refuses a pr_url pointing at another repository', async () => {
@@ -452,7 +452,7 @@ describe('worker/verify — pr_url fallback (UI-b8n8)', () => {
 
     const v = await verifier.verifyPrSubmitted(INPUT);
 
-    expect(v.reason).toBe('pr_missing');
+    expect(v.reason).toBe('no_pr');
     expect(prDetail).not.toHaveBeenCalled();
   });
 
@@ -469,7 +469,7 @@ describe('worker/verify — pr_url fallback (UI-b8n8)', () => {
 
     const v = await verifier.verifyPrSubmitted(INPUT);
 
-    expect(v.reason).toBe('pr_missing');
+    expect(v.reason).toBe('no_pr');
     expect(prDetail).not.toHaveBeenCalled();
   });
 
@@ -541,5 +541,57 @@ describe('worker/verify — pr_url fallback (UI-b8n8)', () => {
 
     expect(v.ok).toBe(false);
     expect(v.reason).toBe('bd_record_failed');
+  });
+});
+
+describe('worker/verify — no_pr readback (UI-5ym8)', () => {
+  test('carries the bd status and awaiting_user of a no_pr observation', async () => {
+    const bd = makeBd();
+    bd.status.value = 'in_progress';
+    bd.metadata.awaiting_user = '스펙 승인 대기';
+    const { verifier } = makeFallback({ bd });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.reason).toBe('no_pr');
+    expect(v.bead_status).toBe('in_progress');
+    expect(v.awaiting_user).toBe('스펙 승인 대기');
+  });
+
+  test('reports an absent awaiting_user as null, not as a failed read', async () => {
+    const { verifier } = makeFallback({ recorded: null });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.reason).toBe('no_pr');
+    expect(v.awaiting_user).toBe(null);
+  });
+
+  test('reports bd_read_failed when the status readback throws', async () => {
+    const bd = makeBd();
+    bd.readStatus = async () => {
+      throw new Error('bd down');
+    };
+    const { verifier } = makeFallback({ bd });
+
+    const v = await verifier.verifyPrSubmitted(INPUT);
+
+    expect(v.reason).toBe('bd_read_failed');
+  });
+
+  test('does not read awaiting_user when a PR was observed', async () => {
+    const bd = makeBd();
+    const readMetadata = vi.fn(bd.readMetadata);
+    bd.readMetadata = readMetadata;
+    const { verifier } = makeVerifier(
+      vi.fn(async () => okObservation()),
+      bd
+    );
+
+    await verifier.verifyPrSubmitted(INPUT);
+
+    expect(
+      readMetadata.mock.calls.some((call) => call[1] === 'awaiting_user')
+    ).toBe(false);
   });
 });

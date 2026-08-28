@@ -299,7 +299,9 @@ describe('worker/auto-advance-restore unresolved failures', () => {
         bead_id: 'UI-blocked',
         status: 'failed',
         finished_at: 120,
-        halted_auto_advance: false
+        // The LEGACY halt is the only thing that blocks a restore now
+        // (2026-08-28 worker-failure-tiers spec §4).
+        halted_auto_advance: true
       }
     });
 
@@ -313,6 +315,27 @@ describe('worker/auto-advance-restore unresolved failures', () => {
     await runPass(harness);
 
     expect(blocked).toBe(false);
+    expect(harness.store.snapshot(harness.workspace).auto_advance).toBe(true);
+  });
+
+  test('restores despite an undismissed individual failure', async () => {
+    const harness = createHarness();
+    harness.store.appendAttempt(harness.workspace, {
+      expected_revision: harness.store.snapshot(harness.workspace).revision,
+      attempt: {
+        attempt_id: 'individual-failure',
+        bead_id: 'UI-individual',
+        status: 'failed',
+        cause: 'session_ended_unresolved',
+        finished_at: 120,
+        halted_auto_advance: false
+      }
+    });
+
+    await runPass(harness, () =>
+      succeedDeploy(harness.store, harness.workspace)
+    );
+
     expect(harness.store.snapshot(harness.workspace).auto_advance).toBe(true);
   });
 });

@@ -53,6 +53,7 @@ import {
 } from './completion-intent.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
+import { readPushLog } from './guard-hook.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
@@ -668,16 +669,28 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   });
   const quickfixLanding =
     options.quickfixLanding ||
-    createQuickfixLanding({
-      workspace: keyFor(workspace_root),
-      repo,
-      store: runtime.queueStore,
-      bd,
-      gitRun,
-      worktree,
-      repoOperations: repoOperationCoordinator,
-      notifyChanged: (ws_key) => emitQueueChanged(ws_key)
-    });
+    createQuickfixLanding(
+      // UI-5ym8: `readPushLog` enters the landing dep contract with the
+      // `session-outcome` unit (spec §5); the cast keeps this wiring type-clean
+      // until that typedef lands.
+      /** @type {any} */ ({
+        workspace: keyFor(workspace_root),
+        repo,
+        store: runtime.queueStore,
+        bd,
+        gitRun,
+        worktree,
+        repoOperations: repoOperationCoordinator,
+        // The attempt's OWN pre-push record (2026-08-28 worker-failure-tiers spec
+        // §5): the lane's landing is judged from the ref/SHA the record-mode hook
+        // wrote, not from the session's self-report. Bound here because the
+        // landing module has no workspace of its own.
+        readPushLog: (/** @type {{ attempt_id: string }} */ input) =>
+          readPushLog({ workspace: keyFor(workspace_root), ...input }),
+        notifyChanged: (/** @type {string} */ ws_key) =>
+          emitQueueChanged(ws_key)
+      })
+    );
   // The observation verdict + the worker's `pr_url`/`resolved` back-fill: the
   // bd writer is the same metadata adapter the scheduler uses (extended with
   // the status pair), so both write through one confirmed argv encoding.
@@ -1445,6 +1458,19 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           );
         }
       );
+      // The parked-resume trigger rides the SAME signal (2026-08-28
+      // worker-failure-tiers spec §3.1): a bead parked on `awaiting_user`
+      // resumes exactly when the human's `bd update` clears the key, not on a
+      // cadence of its own.
+      Promise.resolve(
+        scheduler.onIssuesChanged?.(keyFor(workspace_root))
+      ).catch((err) => {
+        log(
+          'bd issue-change parked resume failed for %s: %o',
+          keyFor(workspace_root),
+          err
+        );
+      });
       // A gate hold's exit is an `impl_review` receipt written to the BEAD
       // (UI-d7fy §3.3), which this is the signal for. Gated on a hold actually
       // standing so an ordinary `bd update` costs no merge pass: without a hold
@@ -2380,6 +2406,55 @@ export async function resumeWorkerAttempt(
     return { ok: false, reason: 'no_attachment' };
   }
   return att.scheduler.resume(keyFor(workspace_root), attempt_id, continuation);
+}
+
+/**
+ * Release a systemic queue stop (`재개`, 2026-08-28 worker-failure-tiers spec
+ * §3.4). CAS on `hold.since`, so a stop that moved under the button is refused
+ * rather than silently acknowledged.
+ *
+ * @param {string} workspace_root
+ * @param {{ since?: number|null }} input
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
+ */
+export async function resumeWorkerQueueHold(workspace_root, input) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.resumeQueueHold(keyFor(workspace_root), input);
+}
+
+/**
+ * Collapse an env hold's backoff to now (`지금 재시도`, spec §4). Same CAS.
+ *
+ * @param {string} workspace_root
+ * @param {{ since?: number|null }} input
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
+ */
+export async function retryWorkerQueueHoldNow(workspace_root, input) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.retryQueueHoldNow(keyFor(workspace_root), input);
+}
+
+/**
+ * Dispatch a fresh attempt for a `parked` one (`재시도` on the tile, spec §3.1).
+ * Refused unless the named attempt is still the bead's last implementation
+ * attempt — the tile the user clicked must still be the current state.
+ *
+ * @param {string} workspace_root
+ * @param {{ bead_id: string, attempt_id: string }} input
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
+ */
+export async function retryWorkerParkedAttempt(workspace_root, input) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.retryParked(keyFor(workspace_root), input);
 }
 
 /**

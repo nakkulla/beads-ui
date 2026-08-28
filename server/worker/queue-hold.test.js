@@ -170,7 +170,7 @@ describe('queue hold env ladder', () => {
 });
 
 describe('queue hold promotion', () => {
-  test('promotes to systemic when a lineage exhausts its attempts', () => {
+  test('promotes to systemic when a lineage spends all three retries', () => {
     const first = reduceQueueHold(
       normalizeHoldState(null),
       envFailure('UI-1', 0),
@@ -181,24 +181,58 @@ describe('queue hold promotion', () => {
       envFailure('UI-1', 200000),
       200000
     );
-
     const third = reduceQueueHold(
       second.state,
-      envFailure('UI-1', 600000, { attempt_id: 'att-last' }),
+      envFailure('UI-1', 600000),
       600000
     );
 
-    expect(third.state.hold).toEqual({
+    const fourth = reduceQueueHold(
+      third.state,
+      envFailure('UI-1', 1600000, { attempt_id: 'att-last' }),
+      1600000
+    );
+
+    expect(fourth.state.hold).toEqual({
       kind: 'systemic',
       cause: API_CAUSE,
-      since: 600000,
+      since: 1600000,
       bead_ids: ['UI-1'],
       halted_by_attempt_id: 'att-last'
     });
-    expect(third.effects).toEqual([
+    expect(fourth.effects).toEqual([
       { kind: 'attempt_failed', attempt_id: 'att-last' },
       { kind: 'promoted', cause: API_CAUSE }
     ]);
+  });
+
+  test('spends every rung of the backoff ladder before promoting', () => {
+    const first = reduceQueueHold(
+      normalizeHoldState(null),
+      envFailure('UI-1', 0),
+      0
+    );
+    const second = reduceQueueHold(
+      first.state,
+      envFailure('UI-1', 200000),
+      200000
+    );
+    const third = reduceQueueHold(
+      second.state,
+      envFailure('UI-1', 600000),
+      600000
+    );
+
+    expect([
+      first.state.lineages[0].next_at,
+      second.state.lineages[0].next_at,
+      third.state.lineages[0].next_at
+    ]).toEqual([
+      0 + RETRY_DELAYS_MS[0],
+      200000 + RETRY_DELAYS_MS[1],
+      600000 + RETRY_DELAYS_MS[2]
+    ]);
+    expect(third.state.hold?.kind).toEqual('env');
   });
 
   test('promotes when another bead fails on the same cause', () => {
@@ -450,5 +484,94 @@ describe('queue hold state normalization', () => {
     );
 
     expect(state.hold_history.map((entry) => entry.bead_id)).toEqual(['UI-2']);
+  });
+});
+
+describe('queue hold systemic failures', () => {
+  test('stops the queue on the first systemic failure', () => {
+    const { state, effects } = reduceQueueHold(
+      normalizeHoldState(null),
+      {
+        kind: 'systemic_failure',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        cause: 'base_landing_detected',
+        at: 5000
+      },
+      5000
+    );
+
+    expect(state.hold).toEqual({
+      kind: 'systemic',
+      cause: 'base_landing_detected',
+      since: 5000,
+      bead_ids: ['UI-1'],
+      halted_by_attempt_id: 'att-1'
+    });
+    expect(effects).toEqual([
+      { kind: 'promoted', cause: 'base_landing_detected' }
+    ]);
+  });
+
+  test('preserves live lineages when it overwrites an env hold', () => {
+    const first = reduceQueueHold(
+      normalizeHoldState(null),
+      envFailure('UI-1', 0),
+      0
+    );
+
+    const { state } = reduceQueueHold(
+      first.state,
+      {
+        kind: 'systemic_failure',
+        bead_id: 'UI-2',
+        attempt_id: 'att-2',
+        cause: 'verify_red',
+        at: 1000
+      },
+      1000
+    );
+
+    expect(state.hold).toMatchObject({
+      kind: 'systemic',
+      cause: 'verify_red',
+      bead_ids: ['UI-1', 'UI-2']
+    });
+    expect(state.lineages.map((lineage) => lineage.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('appends the bead without re-promoting while already systemic', () => {
+    const first = reduceQueueHold(
+      normalizeHoldState(null),
+      {
+        kind: 'systemic_failure',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        cause: 'verify_red',
+        at: 1000
+      },
+      1000
+    );
+
+    const second = reduceQueueHold(
+      first.state,
+      {
+        kind: 'systemic_failure',
+        bead_id: 'UI-2',
+        attempt_id: 'att-2',
+        cause: 'cleanup_failed:deploy',
+        at: 2000
+      },
+      2000
+    );
+
+    expect(second.state.hold).toEqual({
+      kind: 'systemic',
+      cause: 'verify_red',
+      since: 1000,
+      bead_ids: ['UI-1', 'UI-2'],
+      halted_by_attempt_id: 'att-1'
+    });
+    expect(second.effects).toEqual([]);
   });
 });

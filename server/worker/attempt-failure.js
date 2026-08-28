@@ -2,6 +2,13 @@
  * Build the failure predicate shared by the Worker projection and repair
  * reconciliation.
  *
+ * SCOPE (2026-08-28 worker-failure-tiers spec §4): "unhandled failure" means a
+ * failure that HALTED the queue, and only the retired regime's failures ever
+ * did — they are exactly the records carrying `halted_auto_advance:true`. The
+ * new tiers stop the queue through `queue.hold` instead and never write the
+ * flag, so an `individual` failure sitting on the board must not hold a past
+ * halt's dismiss, nor the deploy-restart `auto_advance` restore, closed.
+ *
  * @param {{ attempts?: Record<string, any>, done?: any[] }} queue
  * @returns {(attempt: any) => boolean}
  */
@@ -45,6 +52,7 @@ export function createUnhandledFailurePredicate(queue) {
       typeof attempt.finished_at === 'number' &&
       done_at >= attempt.finished_at;
     return (
+      attempt.halted_auto_advance === true &&
       !superseded &&
       !resolved_by_done &&
       typeof attempt.dismissed_at !== 'number'

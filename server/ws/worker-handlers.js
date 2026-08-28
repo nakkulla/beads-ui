@@ -47,7 +47,10 @@ import {
   recheckWorkerStaleWork,
   refreshWorkerExternalPrs,
   resumeWorkerAttempt,
+  resumeWorkerQueueHold,
   retryWorkerCleanup,
+  retryWorkerParkedAttempt,
+  retryWorkerQueueHoldNow,
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
   startWorkerRepoOperationDeployRun,
@@ -2257,6 +2260,11 @@ export function decorateQueue(workspace_key, raw_queue) {
     log('snapshot retention failed for %s: %o', workspace_key, err);
   }
   public_queue.admission = publicAdmissions(overlaid.admission);
+  // `hold` and `lineages` DO travel — the stop banner and its 다음 HH:MM are
+  // drawn from them (2026-08-28 worker-failure-tiers spec §8). `hold_history` is
+  // the reducer's own 30-minute working memory: nothing renders it, so it stays
+  // server-side like `completion_intents`.
+  delete public_queue.hold_history;
   delete public_queue.completion_intents;
   delete public_queue.last_deploy;
   delete public_queue.reconcile;
@@ -3732,6 +3740,147 @@ export async function handleWorkerRepoOperationDismiss(ws, req) {
         ok: result.ok === true,
         reason:
           result.ok === true ? undefined : result.code || 'dismiss_refused',
+        queue: decorateQueue(key, queueStore().snapshot(key))
+      })
+    )
+  );
+  fanout(key, queueStore().snapshot(key));
+}
+
+/**
+ * Handle `worker-queue-hold-resume`. Payload: `{ since: number }`.
+ *
+ * The `재개` click on a systemic queue stop (2026-08-28 worker-failure-tiers
+ * spec §3.4). `since` is a CAS on the stop the button was drawn against: a
+ * mismatch is a NO-OP reply, never a release, because clearing a stop the user
+ * never saw is exactly what the confirmation is there to prevent. A duplicate
+ * click is idempotent for the same reason — the second one no longer matches.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerQueueHoldResume(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.since !== 'number' || !Number.isFinite(p.since)) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { since }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  /** @type {{ ok: boolean, reason?: string }} */
+  let result;
+  try {
+    result = await resumeWorkerQueueHold(key, { since: p.since });
+  } catch (err) {
+    log('queue hold resume failed for %s: %o', key, err);
+    result = { ok: false, reason: 'queue_hold_resume_failed' };
+  }
+  replyQueueHold(ws, req, key, result);
+}
+
+/**
+ * Handle `worker-queue-hold-retry-now`. Payload: `{ since: number }`.
+ *
+ * The `지금 재시도` click on an env hold (spec §4): every lineage's backoff
+ * collapses to now. Same CAS, same idempotence.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerQueueHoldRetryNow(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.since !== 'number' || !Number.isFinite(p.since)) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { since }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  /** @type {{ ok: boolean, reason?: string }} */
+  let result;
+  try {
+    result = await retryWorkerQueueHoldNow(key, { since: p.since });
+  } catch (err) {
+    log('queue hold retry-now failed for %s: %o', key, err);
+    result = { ok: false, reason: 'queue_hold_retry_failed' };
+  }
+  replyQueueHold(ws, req, key, result);
+}
+
+/**
+ * Handle `worker-parked-retry`. Payload: `{ bead_id, attempt_id }`.
+ *
+ * The `재시도` button on a `parked` tile (spec §3.1). Refused with `not_latest`
+ * when the named attempt is no longer the bead's last implementation attempt:
+ * the tile the user clicked has to still be the bead's current state.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerParkedRetry(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (
+    typeof p.bead_id !== 'string' ||
+    p.bead_id.length === 0 ||
+    typeof p.attempt_id !== 'string' ||
+    p.attempt_id.length === 0
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { bead_id, attempt_id }'
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  /** @type {{ ok: boolean, reason?: string }} */
+  let result;
+  try {
+    result = await retryWorkerParkedAttempt(key, {
+      bead_id: p.bead_id,
+      attempt_id: p.attempt_id
+    });
+  } catch (err) {
+    log('parked retry failed for %s: %o', key, err);
+    result = { ok: false, reason: 'parked_retry_failed' };
+  }
+  replyQueueHold(ws, req, key, result);
+}
+
+/**
+ * The shared reply of the three queue-hold clicks: the decorated queue rides
+ * the reply so the clicking client re-renders off a readback, and the fanout
+ * gives every OTHER subscriber the same one.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {string} key
+ * @param {{ ok: boolean, reason?: string }} result
+ */
+function replyQueueHold(ws, req, key, result) {
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        ok: result.ok === true,
+        reason: result.ok === true ? undefined : result.reason || 'refused',
         queue: decorateQueue(key, queueStore().snapshot(key))
       })
     )
