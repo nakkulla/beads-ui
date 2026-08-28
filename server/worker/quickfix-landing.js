@@ -24,8 +24,11 @@
  *
  * @import { Attempt } from './queue-store.js'
  */
+import os from 'node:os';
+import path from 'node:path';
 import { debug } from '../logging.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
+import { resolveRepoOps } from './repo-ops-resolver.js';
 import { branchForBead } from './worktree.js';
 
 const log = debug('worker:quickfix-landing');
@@ -57,7 +60,7 @@ function isNoChangeClose(close_reason) {
  * receipt, or the binding between them — plus the two record failures that were
  * previously reported as if the bead had simply not been resolved.
  *
- * @typedef {'premature_close'|'invalid_impl_review'|'head_mismatch'|'push_not_contained'|'containment_unobservable'|'repo_ops_config_invalid'|'repo_operation_failed'|'repo_operation_pending'|'worktree_remove_failed'|'local_branch_delete_failed'|'bd_close_failed'|'bd_read_failed'|'bd_record_failed'|'delivery_unproven:push_log_absent'|'delivery_unproven:impl_review_missing'|'delivery_unproven:impl_review_sha_mismatch'} QuickfixLandingReason
+ * @typedef {'premature_close'|'invalid_impl_review'|'head_mismatch'|'push_not_contained'|'containment_unobservable'|'repo_ops_config_invalid'|'repo_operation_failed'|'repo_operation_pending'|'worktree_remove_failed'|'local_branch_delete_failed'|'bd_close_failed'|'bd_read_failed'|'bd_record_failed'|'delivery_unproven:push_log_absent'|'delivery_unproven:impl_review_missing'|'delivery_unproven:impl_review_sha_mismatch'|'foreign_landing_unpinned:foreign_repo'|'foreign_landing_unpinned:foreign_path'|'foreign_landing_unpinned:foreign_base'|'foreign_checkout_unavailable'|'foreign_deploy_unsupported'} QuickfixLandingReason
  */
 
 /**
@@ -303,6 +306,188 @@ export function createQuickfixLanding(deps) {
       });
     } catch (err) {
       log('quick_fix base observation failed for %s: %o', target_base, err);
+      return { ok: false };
+    }
+  }
+
+  /**
+   * Read the enclosed foreign landing pins (dotfiles `workflow-state.yaml
+   * enclosed_foreign_landing`). `foreign_repo` alone decides whether this
+   * Bead's landing is foreign at all; once it is, every pin is required and a
+   * missing or malformed one names itself instead of surfacing later as an
+   * unobservable containment in the wrong repository (UI-jf33).
+   *
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: true, foreign: { repo: string, path: string, base: string }|null }|{ ok: false, reason: QuickfixLandingReason }>}
+   */
+  async function readForeignLanding(bead_id) {
+    /** @type {Record<'foreign_repo'|'foreign_path'|'foreign_base', string>} */
+    const pins = { foreign_repo: '', foreign_path: '', foreign_base: '' };
+    for (const key of /** @type {const} */ ([
+      'foreign_repo',
+      'foreign_path',
+      'foreign_base'
+    ])) {
+      let value;
+      try {
+        value = await deps.bd.readMetadata(bead_id, key);
+      } catch (err) {
+        log('quick_fix %s readback failed for %s: %o', key, bead_id, err);
+        return { ok: false, reason: 'bd_read_failed' };
+      }
+      pins[key] = typeof value === 'string' ? value.trim() : '';
+    }
+    if (
+      pins.foreign_repo.length === 0 &&
+      pins.foreign_path.length === 0 &&
+      pins.foreign_base.length === 0
+    ) {
+      return { ok: true, foreign: null };
+    }
+    // The URL is compared verbatim against `git remote get-url` later, so the
+    // only shape rule here is non-emptiness.
+    if (pins.foreign_repo.length === 0) {
+      return { ok: false, reason: 'foreign_landing_unpinned:foreign_repo' };
+    }
+    const expanded =
+      pins.foreign_path === '~' || pins.foreign_path.startsWith('~/')
+        ? path.join(os.homedir(), pins.foreign_path.slice(1))
+        : pins.foreign_path;
+    if (expanded.length === 0 || !path.isAbsolute(expanded)) {
+      return { ok: false, reason: 'foreign_landing_unpinned:foreign_path' };
+    }
+    // Git itself judges the branch name (`foo..bar`, `.hidden`, `main.lock`
+    // are all refused); the rig cwd is only a place to run a repo-independent
+    // command from.
+    if (pins.foreign_base.length === 0 || /\s/.test(pins.foreign_base)) {
+      return { ok: false, reason: 'foreign_landing_unpinned:foreign_base' };
+    }
+    try {
+      const checked = await deps.gitRun(
+        ['check-ref-format', `refs/heads/${pins.foreign_base}`],
+        { cwd: repo }
+      );
+      if (checked.code !== 0) {
+        return { ok: false, reason: 'foreign_landing_unpinned:foreign_base' };
+      }
+    } catch (err) {
+      log('quick_fix foreign_base check failed for %s: %o', bead_id, err);
+      return { ok: false, reason: 'foreign_landing_unpinned:foreign_base' };
+    }
+    return {
+      ok: true,
+      foreign: {
+        repo: pins.foreign_repo,
+        path: path.normalize(expanded),
+        base: pins.foreign_base
+      }
+    };
+  }
+
+  /**
+   * Bind the pinned foreign checkout: it must be a git checkout, and one of its
+   * remotes must carry exactly the pinned URL — that remote, not `origin`, is
+   * what the base is fetched from.
+   *
+   * @param {{ repo: string, path: string, base: string }} foreign
+   * @returns {Promise<{ ok: true, remote: string }|{ ok: false, reason: 'foreign_checkout_unavailable' }>}
+   */
+  async function resolveForeignRemote(foreign) {
+    try {
+      const top = await deps.gitRun(['rev-parse', '--show-toplevel'], {
+        cwd: foreign.path
+      });
+      if (top.code !== 0) {
+        return { ok: false, reason: 'foreign_checkout_unavailable' };
+      }
+      const remotes = await deps.gitRun(['remote'], { cwd: foreign.path });
+      if (remotes.code !== 0) {
+        return { ok: false, reason: 'foreign_checkout_unavailable' };
+      }
+      for (const name of remotes.stdout.split(/\r?\n/)) {
+        const remote = name.trim();
+        if (remote.length === 0) {
+          continue;
+        }
+        const url = await deps.gitRun(['remote', 'get-url', remote], {
+          cwd: foreign.path
+        });
+        if (url.code === 0 && url.stdout.trim() === foreign.repo) {
+          return { ok: true, remote };
+        }
+      }
+      return { ok: false, reason: 'foreign_checkout_unavailable' };
+    } catch (err) {
+      log(
+        'quick_fix foreign checkout unavailable at %s: %o',
+        foreign.path,
+        err
+      );
+      return { ok: false, reason: 'foreign_checkout_unavailable' };
+    }
+  }
+
+  /**
+   * Fetch and resolve the foreign base tip in the foreign checkout. The rig's
+   * topology lock guards the rig's own worktree graph and says nothing about
+   * this checkout, so none is taken here; a fetch moves no local branch.
+   *
+   * @param {{ repo: string, path: string, base: string }} foreign
+   * @param {string} remote
+   * @returns {Promise<{ ok: true, sha: string }|{ ok: false }>}
+   */
+  async function fetchForeignBase(foreign, remote) {
+    try {
+      const fetched = await deps.gitRun(
+        ['fetch', '--no-tags', remote, foreign.base],
+        { cwd: foreign.path }
+      );
+      if (fetched.code !== 0) {
+        return { ok: false };
+      }
+      // `FETCH_HEAD` is the commit this fetch just brought in; a
+      // remote-tracking ref can lag it under a custom refspec.
+      const rev = await deps.gitRun(['rev-parse', 'FETCH_HEAD'], {
+        cwd: foreign.path
+      });
+      const sha = rev.stdout.trim();
+      if (rev.code !== 0 || !/^[0-9a-f]{40}$/i.test(sha)) {
+        return { ok: false };
+      }
+      return { ok: true, sha };
+    } catch (err) {
+      log(
+        'quick_fix foreign base observation failed for %s: %o',
+        foreign.repo,
+        err
+      );
+      return { ok: false };
+    }
+  }
+
+  /**
+   * Whether the landed commit's own `repo-ops/config.toml` declares `[deploy]`,
+   * read through the same resolver the rig uses (TOML parse, absent-by-ls-tree
+   * proof, declaration validity). The rig coordinator can only deploy the rig,
+   * so a foreign declaration is a fail-closed stop rather than a skipped step.
+   *
+   * @param {{ repo: string, path: string, base: string }} foreign
+   * @param {string} head_sha
+   * @returns {Promise<{ ok: true, declared: boolean }|{ ok: false }>}
+   */
+  async function foreignDeclaresDeploy(foreign, head_sha) {
+    try {
+      const resolved = await resolveRepoOps({
+        repo: foreign.path,
+        sha: head_sha,
+        gitRun: deps.gitRun
+      });
+      if ('ok' in resolved && resolved.ok === false) {
+        return { ok: false };
+      }
+      return { ok: true, declared: resolved.deploy !== null };
+    } catch (err) {
+      log('quick_fix foreign deploy declaration read failed: %o', err);
       return { ok: false };
     }
   }
@@ -585,6 +770,21 @@ export function createQuickfixLanding(deps) {
     // proof that the reviewed bytes landed is base containment below.
 
     markStep(attempt_id, 'base_containment', head_sha, landing_extra);
+    const foreign_read = await readForeignLanding(bead_id);
+    if (!foreign_read.ok) {
+      return fail(
+        attempt_id,
+        foreign_read.reason,
+        'base_containment',
+        head_sha,
+        landing_extra
+      );
+    }
+    const foreign = foreign_read.foreign;
+    // The rig base is always fetched: it is the discard judgment for the rig
+    // worktree below. For a foreign landing the containment question is asked
+    // in the pinned checkout instead, because the landed SHA does not exist in
+    // the rig at all (UI-jf33).
     const fetched = await fetchBase(target_base);
     if (!fetched.ok) {
       return fail(
@@ -595,11 +795,39 @@ export function createQuickfixLanding(deps) {
         landing_extra
       );
     }
+    /** @type {string} */
+    let containment_cwd = repo;
+    /** @type {string} */
+    let containment_tip = fetched.sha;
+    if (foreign) {
+      const remote = await resolveForeignRemote(foreign);
+      if (!remote.ok) {
+        return fail(
+          attempt_id,
+          remote.reason,
+          'base_containment',
+          head_sha,
+          landing_extra
+        );
+      }
+      const foreign_fetched = await fetchForeignBase(foreign, remote.remote);
+      if (!foreign_fetched.ok) {
+        return fail(
+          attempt_id,
+          'containment_unobservable',
+          'base_containment',
+          head_sha,
+          landing_extra
+        );
+      }
+      containment_cwd = foreign.path;
+      containment_tip = foreign_fetched.sha;
+    }
     let containment;
     try {
       containment = await deps.gitRun(
-        ['merge-base', '--is-ancestor', head_sha, fetched.sha],
-        { cwd: repo }
+        ['merge-base', '--is-ancestor', head_sha, containment_tip],
+        { cwd: containment_cwd }
       );
     } catch (err) {
       log('quick_fix containment check failed for %s: %o', bead_id, err);
@@ -630,7 +858,28 @@ export function createQuickfixLanding(deps) {
       );
     }
 
-    if (repo_operations) {
+    if (foreign) {
+      markStep(attempt_id, 'repo_operations', head_sha, landing_extra);
+      const declared = await foreignDeclaresDeploy(foreign, head_sha);
+      if (!declared.ok) {
+        return fail(
+          attempt_id,
+          'repo_ops_config_invalid',
+          'repo_operations',
+          head_sha,
+          landing_extra
+        );
+      }
+      if (declared.declared) {
+        return fail(
+          attempt_id,
+          'foreign_deploy_unsupported',
+          'repo_operations',
+          head_sha,
+          landing_extra
+        );
+      }
+    } else if (repo_operations) {
       markStep(attempt_id, 'repo_operations', head_sha, landing_extra);
       let config;
       try {

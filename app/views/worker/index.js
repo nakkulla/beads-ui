@@ -1415,8 +1415,9 @@ export function createWorkerView(mount_element, options = {}) {
     doneRange,
     onDoneRangeChange
   } = options;
-  // Worker 탭은 ui-order를 읽지 않는다 (UI-d13v §6): 후보 순서는 정렬 체인이
-  // 정하고 수동 rank는 Board 탭만 쓴다. 그래서 selectors도 order 인자 없이 만든다.
+  // Worker 탭은 ui-order를 읽지 않는다 (UI-d13v §6): 후보 순서는 정렬 체인과
+  // 그 뒤의 의존 인접화 패스가 정하고 (UI-q1y7 §2) 수동 rank는 Board 탭만 쓴다.
+  // 그래서 selectors도 order 인자 없이 만든다.
   const selectors = issueStores ? createListSelectors(issueStores) : null;
 
   /**
@@ -2436,10 +2437,11 @@ export function createWorkerView(mount_element, options = {}) {
    * live store 다섯 열을 워크스페이스 항목 하나로 접고, `buildLanes`가 두 탭이
    * 같이 쓰는 레인 모델을 낸다.
    *
-   * 후보 순서는 어댑터의 정렬 체인이 이미 정했으므로 `as_given`이다. 대기·직렬·
-   * 후보가 모두 비어도 그룹은 남아야 하므로 (`slots`·머지 큐·저장소 작업이 그
-   * 안에 산다) `groups: 'all'`이다. `cross_lanes` 키는 넘기지 않는다 — 연결 레인은
-   * 모니터 탭의 사실이고, 키의 부재가 "모른다"(구서버와 같은 자리)다.
+   * 후보 순서는 어댑터의 정렬 체인과 그 뒤의 의존 인접화 패스가 이미 정했으므로
+   * (UI-q1y7 §4.2) `as_given`이다. 대기·직렬·후보가 모두 비어도 그룹은 남아야
+   * 하므로 (`slots`·머지 큐·저장소 작업이 그 안에 산다) `groups: 'all'`이다.
+   * `cross_lanes` 키는 넘기지 않는다 — 연결 레인은 모니터 탭의 사실이고, 키의
+   * 부재가 "모른다"(구서버와 같은 자리)다.
    *
    * @returns {LaneModel}
    */

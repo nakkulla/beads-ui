@@ -4,6 +4,7 @@ scope:
   - app/views/worker/candidate-sort.js
   - app/views/worker/candidate-sort.test.js
   - app/views/worker/blocker-ids.js
+  - app/views/worker/workspace-adapter.js
   - app/views/worker/index.js
 ---
 
@@ -16,7 +17,7 @@ scope:
 후행을 방금 건드렸으면 후행이 위, 선행이 한참 아래에 서고, 그 둘이 한 줄기라는
 사실은 카드를 하나씩 열어 봐야 안다.
 
-`⛓ blocked: <id>` 칩이 선행 ID를 적기는 한다(`app/views/worker/index.js`
+`⛓ blocked: <id>` 칩이 선행 ID를 적기는 한다(`app/views/worker/workspace-adapter.js`
 `blockerIdsOf`). 하지만 칩은 "누가 막고 있다"만 말하고, 그 선행이 같은 화면
 어디에 있는지는 말하지 않는다. 사용자는 ID를 눈으로 들고 목록을 위아래로
 훑어야 한다.
@@ -119,10 +120,11 @@ function groupByDependency(base) {
 
 ### 4.1 `blockerIdsOf` 추출
 
-`blockerIdsOf`는 지금 `app/views/worker/index.js`에 있다. 정렬 모듈이 그것을
-import하면 `index.js → candidate-sort.js → index.js` 순환이 된다. 함수 본문을
-그대로 `app/views/worker/blocker-ids.js`로 옮기고 두 쪽이 import한다. 동작·사다리
-순서·fail-quiet은 바뀌지 않는다.
+`blockerIdsOf`는 지금 `app/views/worker/workspace-adapter.js`에 있다(UI-4tud가
+`buildModel`을 이 어댑터로 옮기면서 함께 왔다). 정렬 모듈이 그것을 import하면
+`workspace-adapter.js → candidate-sort.js → workspace-adapter.js` 순환이 된다.
+함수 본문을 그대로 `app/views/worker/blocker-ids.js`로 옮기고 두 쪽이
+import한다. 동작·사다리 순서·fail-quiet은 바뀌지 않는다.
 
 사다리는 이미 두 단이다: 서버가 합성한 `blocked_info.blockers`(미해소 `blocks`
 선행 id만)를 먼저 읽고, 그 객체가 통째로 없는 구형 서버에서는 embedded
@@ -131,7 +133,7 @@ import하면 `index.js → candidate-sort.js → index.js` 순환이 된다. 함
 ### 4.2 `applyCandidateSort`
 
 시그니처는 그대로다. edge를 이슈 객체가 들고 있으므로 호출 측
-(`app/views/worker/index.js` `buildModel`)이 새로 넘길 것이 없다.
+(`app/views/worker/workspace-adapter.js` `runnableRows`)이 새로 넘길 것이 없다.
 
 ```js
 export function applyCandidateSort(issues, state) {
@@ -149,6 +151,10 @@ export function applyCandidateSort(issues, state) {
 2. `preds`를 뒤집어 `dependents`(선행 id → 후행 행들, `base` 순서)를 만든다.
 3. §3의 의사코드를 그대로 돌려 **새 배열**을 반환한다. 입력 배열은 변형하지
    않는다.
+
+어댑터가 낸 순서는 `buildLanes`가 `candidate_sort: 'as_given'`으로 그대로 받으므로
+(`app/views/worker/index.js` `laneModel`), 레인 조립 단일화(ADR 14)와 충돌하지
+않는다 — 재배치는 `buildLanes` **앞**에서 끝난다.
 
 ### 4.3 규모
 
@@ -189,9 +195,12 @@ export function applyCandidateSort(issues, state) {
 - `docs/superpowers/specs/2026-08-27-worker-candidate-sort-chain-release-chips-design.md`
   §2-5와 §4.1의 "순서는 체인만이 정한다"에, UI-8ham이 그 앞 문장에 붙였던 것과
   같은 방식으로 UI-q1y7의 정정 줄을 단다. 결정을 지우지 않고 계보를 남긴다.
-- `app/views/worker/candidate-sort.js`의 `applyCandidateSort` JSDoc과
-  `app/views/worker/index.js`의 "정렬 체인만이 렌더 순서를 정한다" 한글 주석을
-  이 스펙에 맞춘다.
+- `app/views/worker/candidate-sort.js`의 `applyCandidateSort` JSDoc("The chain
+  alone decides"), `app/views/worker/workspace-adapter.js` `runnableRows`의
+  "정렬 체인만이 렌더 순서를 정한다" 주석, 그리고
+  `app/views/worker/index.js`의 같은 취지 주석 두 곳(`createWorkerView`의 "후보
+  순서는 정렬 체인이 정하고", `laneModel`의 "후보 순서는 어댑터의 정렬 체인이
+  이미 정했으므로")을 이 스펙에 맞춘다.
 - `AGENTS.md`는 카드 *배치 문법*만 소유하고 정렬 규칙을 담고 있지 않아 무변경이다.
 
 ## 7. 비목표

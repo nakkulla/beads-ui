@@ -29,6 +29,14 @@ function presetChain(id) {
   return chainOf({ preset: id });
 }
 
+/**
+ * A one-step chain whose seats are decided by `created_at` alone, so a
+ * dependency-adjacency case can state its `base` order directly (UI-q1y7 §3).
+ *
+ * @type {{ chain: { key: 'created', dir: 'desc' }[] }}
+ */
+const NEWEST_FIRST = { chain: [{ key: 'created', dir: 'desc' }] };
+
 describe('candidate sort presets (UI-d13v §4.2)', () => {
   test('orders spec-first then oldest-created for the spec preset', () => {
     expect(presetChain('spec')).toEqual([
@@ -274,6 +282,153 @@ describe('applyCandidateSort (UI-d13v §4.1)', () => {
     ];
 
     applyCandidateSort(list, { preset: 'created' });
+
+    expect(list.map((i) => i.id)).toEqual(['B', 'A']);
+  });
+
+  test('drops a dependent below the blocker that sorted under it', () => {
+    const list = [
+      issue('C', { created_at: 400 }),
+      issue('B', { created_at: 300, blocked_info: { blockers: ['A'] } }),
+      issue('D', { created_at: 200 }),
+      issue('A', { created_at: 100 })
+    ];
+
+    const sorted = applyCandidateSort(list, NEWEST_FIRST);
+
+    expect(sorted.map((i) => i.id)).toEqual(['C', 'D', 'A', 'B']);
+  });
+
+  test('keeps the blocker seat and pulls the dependent up behind it', () => {
+    const list = [
+      issue('A', { created_at: 400 }),
+      issue('B', { created_at: 300 }),
+      issue('C', { created_at: 200 }),
+      issue('D', { created_at: 100, blocked_info: { blockers: ['A'] } })
+    ];
+
+    const sorted = applyCandidateSort(list, NEWEST_FIRST);
+
+    expect(sorted.map((i) => i.id)).toEqual(['A', 'D', 'B', 'C']);
+  });
+
+  test('places a dependent of two blockers behind the later blocker', () => {
+    const list = [
+      issue('A', { created_at: 400 }),
+      issue('C', { created_at: 300, blocked_info: { blockers: ['A', 'B'] } }),
+      issue('B', { created_at: 200 })
+    ];
+
+    const sorted = applyCandidateSort(list, NEWEST_FIRST);
+
+    expect(sorted.map((i) => i.id)).toEqual(['A', 'B', 'C']);
+  });
+
+  test('lays a multi-step chain A to B to C out consecutively', () => {
+    const list = [
+      issue('C', { created_at: 400, blocked_info: { blockers: ['B'] } }),
+      issue('A', { created_at: 300 }),
+      issue('B', { created_at: 200, blocked_info: { blockers: ['A'] } })
+    ];
+
+    const sorted = applyCandidateSort(list, NEWEST_FIRST);
+
+    expect(sorted.map((i) => i.id)).toEqual(['A', 'B', 'C']);
+  });
+
+  test('follows one strand to its end before the next branch', () => {
+    const list = [
+      issue('A', { created_at: 400 }),
+      issue('B', { created_at: 300, blocked_info: { blockers: ['A'] } }),
+      issue('D', { created_at: 200, blocked_info: { blockers: ['A'] } }),
+      issue('C', { created_at: 100, blocked_info: { blockers: ['B'] } })
+    ];
+
+    const sorted = applyCandidateSort(list, NEWEST_FIRST);
+
+    expect(sorted.map((i) => i.id)).toEqual(['A', 'B', 'C', 'D']);
+  });
+
+  test('leaves a dependent at its chain seat when the blocker is absent', () => {
+    const list = [
+      issue('X', { created_at: 300 }),
+      issue('B', { created_at: 200, blocked_info: { blockers: ['A'] } }),
+      issue('Y', { created_at: 100 })
+    ];
+
+    const sorted = applyCandidateSort(list, NEWEST_FIRST);
+
+    expect(sorted.map((i) => i.id)).toEqual(['X', 'B', 'Y']);
+  });
+
+  test('ignores related and discovered-from edges', () => {
+    const list = [
+      issue('B', {
+        created_at: 300,
+        dependencies: [
+          { type: 'related', depends_on_id: 'A' },
+          { type: 'discovered-from', depends_on_id: 'A' }
+        ]
+      }),
+      issue('A', { created_at: 100 })
+    ];
+
+    const sorted = applyCandidateSort(list, NEWEST_FIRST);
+
+    expect(sorted.map((i) => i.id)).toEqual(['B', 'A']);
+  });
+
+  test('forces the first remaining row when a cycle blocks every row', () => {
+    const list = [
+      issue('A', { created_at: 400, blocked_info: { blockers: ['B'] } }),
+      issue('B', { created_at: 300, blocked_info: { blockers: ['A'] } }),
+      issue('C', { created_at: 200 })
+    ];
+
+    const sorted = applyCandidateSort(list, NEWEST_FIRST);
+
+    expect(sorted.map((i) => i.id)).toEqual(['C', 'A', 'B']);
+  });
+
+  test('reads blocks dependency edges when blocked_info is absent', () => {
+    const list = [
+      issue('C', { created_at: 400 }),
+      issue('B', {
+        created_at: 300,
+        dependencies: [{ type: 'blocks', depends_on_id: 'A' }]
+      }),
+      issue('D', { created_at: 200 }),
+      issue('A', { created_at: 100 })
+    ];
+
+    const sorted = applyCandidateSort(list, NEWEST_FIRST);
+
+    expect(sorted.map((i) => i.id)).toEqual(['C', 'D', 'A', 'B']);
+  });
+
+  test('groups dependents under the spec preset too', () => {
+    const list = [
+      issue('B', {
+        created_at: 100,
+        spec_id: 'docs/b.md',
+        metadata: { spec_review: RECEIPT },
+        blocked_info: { blockers: ['A'] }
+      }),
+      issue('A', { created_at: 200, spec_id: 'docs/a.md', metadata: {} })
+    ];
+
+    const sorted = applyCandidateSort(list, { preset: 'spec' });
+
+    expect(sorted.map((i) => i.id)).toEqual(['A', 'B']);
+  });
+
+  test('leaves the input array untouched while regrouping dependents', () => {
+    const list = [
+      issue('B', { created_at: 300, blocked_info: { blockers: ['A'] } }),
+      issue('A', { created_at: 100 })
+    ];
+
+    applyCandidateSort(list, NEWEST_FIRST);
 
     expect(list.map((i) => i.id)).toEqual(['B', 'A']);
   });

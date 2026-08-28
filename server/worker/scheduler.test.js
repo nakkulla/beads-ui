@@ -595,7 +595,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, now?: () => number }} opts
+ * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, now?: () => number }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -706,6 +706,7 @@ function setup(opts) {
     resolveBase: opts.resolveBase,
     notify: opts.notify,
     disposition: opts.disposition,
+    directionInquiry: opts.directionInquiry,
     // Absent by default: the external registry is a live-wiring dep, and a
     // scheduler built without it must refuse the external dispatch outright.
     externalPrs: opts.externalPrs
@@ -14688,5 +14689,150 @@ describe('scheduler 실패 계층 회귀 (UI-5ym8 impl 리뷰)', () => {
     const snap = env.store.snapshot(WS);
     expect(snap.lineages).toEqual([]);
     expect(snap.hold).toBe(null);
+  });
+});
+
+describe('scheduler 방향 질의 세션 훅 (UI-7uid §3.1)', () => {
+  /**
+   * A verifier that ends the session successfully with nothing delivered and
+   * the bead waiting on a direction decision — the park this hook triggers on.
+   *
+   * @returns {any}
+   */
+  function directionParkVerifier() {
+    return {
+      verifyPrSubmitted: vi.fn(async () => ({
+        ok: false,
+        reason: 'no_pr',
+        pr_url: null,
+        bead_status: 'in_progress',
+        awaiting_user: 'spec_review_stale:revise'
+      }))
+    };
+  }
+
+  /**
+   * Admission that flags every dispatch as a stale re-review, which is what
+   * puts `spec_review_stale` on the attempt record.
+   *
+   * @param {boolean} stale
+   * @returns {any}
+   */
+  function staleAdmission(stale) {
+    return { validate: vi.fn(async () => ({ ok: true, stale })) };
+  }
+
+  /**
+   * Drive one bead through a dispatch that ends parked.
+   *
+   * @param {{ stale: boolean, directionInquiry?: any }} input
+   */
+  async function parkStale(input) {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      verify: directionParkVerifier(),
+      admission: staleAdmission(input.stale),
+      directionInquiry: input.directionInquiry
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    return { env, attempt_id };
+  }
+
+  test('calls the hook with the parked attempt coordinates', async () => {
+    const directionInquiry = { onParkedAttempt: vi.fn(async () => {}) };
+
+    const { env, attempt_id } = await parkStale({
+      stale: true,
+      directionInquiry
+    });
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('parked');
+    expect(directionInquiry.onParkedAttempt).toHaveBeenCalledWith({
+      workspace: WS,
+      bead_id: 'S1',
+      attempt_id,
+      repo: '/repo',
+      target_base: 'main',
+      awaiting_user: 'spec_review_stale:revise'
+    });
+  });
+
+  test('leaves the hook alone for a park that is not a stale re-review', async () => {
+    const directionInquiry = { onParkedAttempt: vi.fn(async () => {}) };
+
+    const { env, attempt_id } = await parkStale({
+      stale: false,
+      directionInquiry
+    });
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('parked');
+    expect(directionInquiry.onParkedAttempt).not.toHaveBeenCalled();
+  });
+
+  test('parks normally when no direction-inquiry dep is wired', async () => {
+    const { env, attempt_id } = await parkStale({ stale: true });
+
+    expect(env.store.snapshot(WS).attempts[attempt_id]).toMatchObject({
+      status: 'parked',
+      cause: 'session_parked'
+    });
+  });
+
+  test('swallows a hook that rejects', async () => {
+    const directionInquiry = {
+      onParkedAttempt: vi.fn(async () => {
+        throw new Error('inquiry exploded');
+      })
+    };
+
+    const { env, attempt_id } = await parkStale({
+      stale: true,
+      directionInquiry
+    });
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('parked');
+  });
+
+  test('leaves the hook alone when a disposition session settles', async () => {
+    const directionInquiry = { onParkedAttempt: vi.fn(async () => {}) };
+    const env = setup({ config: {}, slots: 1, directionInquiry });
+    let rev = env.store.snapshot(WS).revision;
+    rev = env.store.place(WS, { expected_revision: rev, bead_id: 'B1' }).queue
+      .revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'p1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'p1',
+      patch: {
+        bead_id: 'B1',
+        status: 'failed',
+        cause: 'verify_failed:pr_missing',
+        spec_review_stale: true,
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'base-B1',
+        session_id: 'sid-park',
+        finished_at: 50
+      }
+    });
+
+    await env.scheduler.dispatchReviseFix(WS, {
+      bead_id: 'B1',
+      attempt_id: 'p1',
+      prompt: '처분 프롬프트'
+    });
+    env.runner.finish('B1', { success: true });
+    await flush();
+    await flush();
+
+    expect(directionInquiry.onParkedAttempt).not.toHaveBeenCalled();
   });
 });

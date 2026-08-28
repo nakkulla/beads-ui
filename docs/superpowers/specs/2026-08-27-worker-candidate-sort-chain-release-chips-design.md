@@ -49,6 +49,10 @@ Worker 탭 후보 레인에서는 그것을 알아볼 수 없다.
    **UI-8ham에서 철회**: 순서는 체인만이 정한다. blocked인지는 `⛓ blocked` 칩이
    말하고, 실행 자격은 `queue_placeable`과 서버 admission이 지키므로 순서가 그
    사실을 두 번 표시할 이유가 없었다.
+   **UI-q1y7에서 정정**: 체인 정렬 **뒤에** 의존 인접화 패스가 한 번 돌아 후행을
+   자기 선행 바로 뒤로 옮긴다. blocked라는 *사실*은 여전히 순서에 손대지 않고,
+   순서를 움직이는 것은 "그 선행이 같은 후보 레인에 있다"는 사실뿐이다 — 맨 아래
+   고정으로 되돌아간 것이 아니다.
 
 ## 3. 서버
 
@@ -206,6 +210,10 @@ owner를 싣는 `root_dirs`가 더해졌고(같은 레포 id는 항목이 없다
   (UI-8ham). Blocked 이슈를 맨 아래로 내리던 안정 분할과 `blocked_ids` 인자는
   없앴다 — `blocked_ids`는 호출 측에 행 사유(`⛓ blocked` 칩) 계산용으로만
   남는다.
+  **UI-q1y7에서 정정**: `applyCandidateSort`는 `cmpChain(steps)` 정렬 결과 위에
+  비공개 `groupByDependency`를 한 번 더 돌린다. 안정 분할과 `blocked_ids` 인자가
+  없다는 것은 그대로이며(선행 id는 행이 스스로 싣는 `blocked_info`/`dependencies`
+  에서 `blockerIdsOf`가 읽는다), 선행은 체인이 준 자리를 지킨다.
 - `cmpChain`은 `app/data/sort.js`에 두고, 기존 `cmpCreatedDescThenPriority`
   등과 같은 파일에서 테스트한다. `cmpEffectiveRank`는 Board 탭이 계속 쓰므로
   남긴다.

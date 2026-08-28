@@ -7,6 +7,8 @@ scope:
   - server/worker/scheduler.js
   - server/worker/attach.js
   - server/worker/attempt-failure.js
+  - server/worker/failure-class.js
+  - server/worker/queue-hold.js
   - server/worker/usage-store.js
   - server/worker/repo-operation-coordinator.js
   - server/worker/bead-timeline.js
@@ -18,8 +20,9 @@ scope:
 
 # Worker 기록 구조 재편 — bead 타임라인·실패 요약·상태 전용 queue.json·보존 정책
 
-Bead: UI-8wpb · route: spec_backed · 2026-08-28 · rev 2 (spec review REVISE 7건 반영) ·
-형제: UI-5ym8(실패 분류 2계층)
+Bead: UI-8wpb · route: spec_backed · 2026-08-28 · rev 3 (stale 재리뷰 correction —
+UI-5ym8 착지분 제거·UI-4tud projection 이동 반영; rev 2는 spec review REVISE 7건) ·
+형제: UI-5ym8(실패 분류 2계층, c02f321로 착지)
 
 ## 1. 문제 (beads-ui 워크스페이스 실측)
 
@@ -72,8 +75,12 @@ Airflow(`dag/run/task/attempt=N.log`, 원격 아카이브), GitHub Actions(step 
 - 경로 API는 전부 `bead_id`를 받는다: `sessionLogPath(workspace, bead_id, attempt_id)`,
   `attemptRecordPath(workspace, bead_id, attempt_id)`, `beadTimelinePath(workspace, bead_id)`.
   attempt ID에서 bead를 복원하지 않는다(`review:authority-…` 같은 ID는 불가능).
-- 각 attempt 레코드는 **정확한 `log_path`를 저장**한다. 소비자(프런트 16곳·세션 로그
-  뷰어·`bd comment`·`session-monitor.js`)는 저장된 문자열을 그대로 쓴다.
+- 각 attempt 레코드는 **정확한 `log_path`를 저장**한다. 소비자는 저장된 문자열을
+  그대로 쓴다. 프런트 소비자는 `app/data/worker-queue-store.js`,
+  `app/views/worker/lane-model.js`, `index.js`, `lanes.js`, `repo-ops-timeline.js`
+  다 — UI-4tud(26e8c7e)가 attempt projection을 `lane-model.js`로 모았으므로 새
+  소비는 ADR 14의 단일 `buildLanes` 계약대로 거기서 실어 나르고 렌더러가 따로
+  읽지 않는다. 서버 쪽 소비자는 세션 로그 뷰어·`bd comment`·`session-monitor.js`다.
 - 읽기 해석 순서(`session-log.js`·세션 로그 뷰어 공통): 저장된 `log_path` → legacy
   flat `sessions/<attempt_id>.jsonl` → `archive/<attempt_id>.jsonl.gz`(서버가 gunzip
   스트림으로 읽음) → 없으면 `expired`. 뷰어는 `expired`를 "만료됨(180일 보존 정책)"
@@ -96,14 +103,19 @@ Airflow(`dag/run/task/attempt=N.log`, 원격 아카이브), GitHub Actions(step 
 | `guard_warning` | runner guard warn | `base 동기화 머지 기록: git merge origin/main` |
 | `session_ended` | verdict | `성공 · 6커밋 push · PR #231` / `파킹 · <awaiting_user>` |
 | `attempt_failed` | `failAttempt` | `세션 실패 — API Error: 529 Overloaded` |
-| `attempt_retry` | UI-5ym8 §3.3 | `자동 재시도 2/3 · 다음 14:05` |
-| `queue_hold` / `queue_resume` | UI-5ym8 §4 | `환경 보류: gh 관측 실패` / `사용자 재개` |
+| `attempt_retry` | `queue-hold.js` lineage(사다리 상수는 `failure-class.js`) | `자동 재시도 2/3 · 다음 14:05` |
+| `queue_hold` / `queue_resume` | `queue-hold.js` `reduceQueueHold` | `환경 보류: gh 관측 실패` / `사용자 재개` |
 | `landing_step` | quickfix-landing | `push 포함 확인 · deploy 시작 · close` |
 | `merge_step` | merge-queue / completion-intent | `머지 큐 진입 · gate eligible · squash 머지 · cleanup` |
 | `operation_failed` | repo-operation-coordinator | `배포 실패 — deploy: exit 1 · npm ci ENOENT` |
 | `needs_human` | completion-intent | `확인 필요 — verify_red` |
 | `user_action` | ws 핸들러 | `[머지] 클릭` / `[폐기]` / `재시도` |
 
+- **`hold_history`는 대체재가 아니다**: `queue-hold.js`의 `hold_history`는
+  `HOLD_HISTORY_WINDOW_MS`(30분) 창으로 잘리는 살아 있는 상태다. 영구 이력은
+  타임라인이 소유하므로 `queue_hold`/`queue_resume`는 `reduceQueueHold`의 결과를
+  적용하는 자리(`queue-store.js`)에서 append하고 — 순수 reducer 안에서 쓰지
+  않는다 — 지나간 hold를 `hold_history`에서 뒤늦게 복원하지 않는다.
 - **단일 writer**: 쓰기는 Worker runtime의 `timeline` 인스턴스 하나가 `attach.js`에서
   만들어져 scheduler·merge-queue·coordinator·ws 핸들러에 주입된다. ws 핸들러는 직접
   파일을 열지 않고 이 인스턴스에 append를 요청한다. 다중 프로세스 쓰기는 없다
@@ -121,12 +133,13 @@ Airflow(`dag/run/task/attempt=N.log`, 원격 아카이브), GitHub Actions(step 
 
 | 원천 | 규칙 |
 |---|---|
-| 세션 실패/파킹 | UI-5ym8 §6의 규칙(claude: 마지막 `result` 텍스트 첫 줄; codex: `turn.failed` → 마지막 agent_message → `no_result`), 200자 |
+| 세션 실패/파킹 | **UI-5ym8(c02f321)에서 착지 완료** — `runner/claude.js` `summaryOf`, `runner/codex.js` `extractSummary`(`turn.failed` → 마지막 agent_message → `no_result`), `failure-class.js` `extractSummary`(200자)가 `verdict.summary` → `cause_detail.summary`로 싣는다. 이 spec은 재구현하지 않고 그 문자열을 이벤트에 읽어 쓴다 |
 | verify/deploy 스크립트 | 출력에서 첫 매치 줄: `/^(FAIL|✗|Error|error:|npm ERR!|Traceback|AssertionError)/` 없으면 마지막 비어있지 않은 줄. 200자 |
 | guard kill | `guardWarningMessage`/kill 메시지 그대로 |
 | 착지/머지/정리 | 실패 토큰의 `failure-sentences.js` 문장 + 세부 토큰 |
 
 추출은 서버에서 한 번 하고 attempt 기록·이벤트·`bd comment`가 같은 문자열을 쓴다.
+이 spec이 새로 만드는 추출은 2~4행뿐이고, 1행은 이미 있는 값을 소비만 한다.
 
 ## 7. `queue.json` 상태 전용화
 
@@ -187,8 +200,10 @@ no-op이고 5만 남는다.
 
 ## 9. 표면
 
-- 실패 타일 팝오버(UI-rj02)와 `parked` 타일(UI-5ym8 §8): `summary` 한 줄을 첫 줄로,
-  아래에 최근 타임라인 5줄, 마지막에 로그 경로(만료면 "만료됨").
+- 실패 타일 팝오버(UI-rj02)와 `parked` 타일(UI-5ym8 §8): `summary` 첫 줄은 이미
+  착지했다(`lane-model.js` `failureProjection.summary` → `running-grid.js`). 이
+  spec이 더하는 것은 그 아래 최근 타임라인 5줄과 마지막 로그 경로(만료면
+  "만료됨")뿐이며, 재료는 §4대로 `lane-model.js` projection이 싣는다.
 - 이슈 상세(bead 페이지)에 "Worker 이력" 섹션: 타임라인 전체(최근순, 더 보기).
 - `bd comment`: 실패·파킹·needs_human 시 `summary` 한 줄 + 로그 경로(지금의 완료
   실패 댓글과 같은 형식으로 통일).
@@ -196,7 +211,8 @@ no-op이고 5만 남는다.
 ## 10. 구현 unit 후보
 
 1. `timeline` — `bead-timeline.js` + `attach.js` 주입 + 발생 지점 12곳의 append.
-2. `summary` — runner verdict·operation 결과·착지 실패의 summary 추출.
+2. `summary` — operation 결과·guard kill·착지/머지 실패의 summary 추출(§6 2~4행).
+   runner verdict는 UI-5ym8에서 착지했으므로 이 unit의 대상이 아니다.
 3. `state-split` — `state-paths.js` 경로(bead_id), `queue-store.js` 이관·조회 API,
    `usage`·`snapshot-retention`·세션 뷰어 소비자 전환, `session-monitor.js` 경로.
 4. `retention` — `record-retention.js` 설정·아카이브·삭제·마이그레이션·health 게이트.
@@ -206,8 +222,10 @@ no-op이고 5만 남는다.
 
 - `bead-timeline.test.js`: `event_id` dedupe(같은 사실 두 번 append → 한 줄로 읽힘),
   끊긴 마지막 줄 무시, 재시작 재생 중복 없음, append 실패 시 이관 보류.
-- summary 추출: 세션 result 첫 줄·200자 절단·`is_error` 문장, codex 우선순위,
-  스크립트 출력 첫 매치 줄·fallback 마지막 줄.
+- summary 추출(신규): 스크립트 출력 첫 매치 줄·fallback 마지막 줄·200자 절단,
+  guard kill 메시지, 착지/머지 실패 문장. 세션 계열(result 첫 줄·`is_error` 문장·
+  codex 우선순위)은 `failure-class.test.js`와 runner 테스트가 이미 고정하므로
+  회귀로만 확인한다.
 - `queue-store`: `failed`(미 dismiss)·`parked`·`retry_wait`는 이관되지 않음 / dismiss
   후 이관 / `readAttemptsForBead` 합집합·dedupe / 리뷰 세션 attempt가 섞여도 미처리
   실패가 남음 / 재시작 reconcile 회귀.
