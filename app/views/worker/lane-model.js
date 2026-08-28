@@ -797,32 +797,8 @@ function execGlobalValues(state) {
  * @returns {import('../../utils/exec-settings-chip.js').ExecChips|null}
  */
 function overlayExecChips(state, metadata, enriched_route) {
-  const execution_defaults = state.execution_defaults ?? null;
   const runner_catalog = state.runner_catalog ?? null;
-  const global = execGlobalValues(state);
-  const route = isWorkflowRoute(enriched_route)
-    ? enriched_route
-    : isWorkflowRoute(metadata.route)
-      ? metadata.route
-      : null;
-  /**
-   * @param {string|null} controller_runtime
-   */
-  const rowsFor = (controller_runtime) => {
-    try {
-      return resolveExecutionSettings({
-        pin: metadata,
-        global,
-        execution_defaults,
-        runner_catalog,
-        route,
-        controller_runtime
-      });
-    } catch {
-      return null;
-    }
-  };
-  const probe = rowsFor(null);
+  const probe = execRows(state, metadata, enriched_route, null);
   if (!probe) {
     return null;
   }
@@ -830,10 +806,73 @@ function overlayExecChips(state, metadata, enriched_route) {
     runner_catalog,
     probe.orchestration_model.value ?? ''
   );
-  const rows = ctl === null ? probe : rowsFor(ctl) || probe;
+  const rows =
+    ctl === null
+      ? probe
+      : execRows(state, metadata, enriched_route, ctl) || probe;
   const orchestration = formatOrchestrationChip(rows, runner_catalog);
   const worker = formatWorkerChip(rows, ctl);
   return orchestration || worker ? { orchestration, worker } : null;
+}
+
+/**
+ * One bead's resolved execution settings, the way the issue detail's
+ * effective-settings card resolves them (Worker `execRowsFor`). `route`는 서버
+ * 장식(`enriched_route`)이 먼저이고 핀 metadata가 다음이다 — `impl_dispatch`의
+ * route 기본값(`quick_fix → main`)이 Board 카드와 같은 답을 하도록.
+ *
+ * @param {Record<string, any>} state - The repo's `workspaces_state` row.
+ * @param {Record<string, any>} metadata - The bead's issue metadata.
+ * @param {unknown} enriched_route - Server-enriched `workflow.route`, if known.
+ * @param {string|null} controller_runtime
+ * @returns {Record<string, import('../../utils/execution-defaults.js').ExecutionValue>|null}
+ */
+function execRows(state, metadata, enriched_route, controller_runtime) {
+  const route = isWorkflowRoute(enriched_route)
+    ? enriched_route
+    : isWorkflowRoute(metadata.route)
+      ? metadata.route
+      : null;
+  try {
+    return resolveExecutionSettings({
+      pin: metadata,
+      global: execGlobalValues(state),
+      execution_defaults: state.execution_defaults ?? null,
+      runner_catalog: state.runner_catalog ?? null,
+      route,
+      controller_runtime
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The 실행 중 타일의 worker(구현 위임) 칩 (Worker `attemptExecChips`,
+ * worker-card-exec-chips §2.2). 그 attempt가 **기록한** runner가
+ * `impl_runtime: inherit`이 따를 controller이므로, 후보·대기 행처럼
+ * orchestration 모델에서 controller를 되유추하지 않고 그 값을 그대로 쓴다.
+ * 오버레이가 이 bead의 metadata를 모르면(구독 열 밖·Monitor 스냅샷) 칩이
+ * 서지 않는다 — 틀린 칩보다 없는 칩.
+ *
+ * @param {Record<string, any>} state - The repo's `workspaces_state` row.
+ * @param {Record<string, any>|null|undefined} overlay - The bead's `bead_overlay` entry.
+ * @param {string|null} controller_runtime - The attempt's own runner.
+ * @returns {import('../../utils/exec-settings-chip.js').ExecChip|null}
+ */
+function attemptWorkerChip(state, overlay, controller_runtime) {
+  if (!overlay || !Object.hasOwn(overlay, 'metadata')) {
+    return null;
+  }
+  return formatWorkerChip(
+    execRows(
+      state,
+      objectOf(overlay.metadata),
+      overlay.route,
+      controller_runtime
+    ),
+    controller_runtime
+  );
 }
 
 /**
@@ -1441,13 +1480,17 @@ function timeOf(value) {
  *
  * `options.candidate_sort: 'as_given'`은 정렬을 이미 끝낸 호출자(Worker
  * 어댑터)의 값이다 (UI-4tud §4.3): 입력 순서를 그대로 두고 섹션도 만들지 않는다.
+ * `options.candidate_hidden_counts: 'per_control'`은 후보 필터가 감춘 수를 Worker
+ * 규칙으로 센다 (UI-4tud §4.3): 두 필터에 모두 걸린 행은 어느 수에도 들어가지
+ * 않는다. 기본값 `'sequential'`은 현행 Monitor 규칙이다.
+ *
  * `options.groups: 'all'`은 대기·직렬·후보가 모두 비어도 `workspaces_state` 행
  * 하나당 그룹을 남긴다 — 실행 중·PR 대기·완료·저장소 작업만 있는 스냅샷에서도
  * `slots`·`merge`·`repo_operations`가 살아 있어야 하기 때문이다.
  *
  * @param {Array<Record<string, any>>|null|undefined} workspaces
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state]
- * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', groups?: 'nonempty'|'all', cross_lanes?: { revision: number, lanes: Array<Record<string, any>> }|null }} [options]
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', candidate_hidden_counts?: 'sequential'|'per_control', groups?: 'nonempty'|'all', cross_lanes?: { revision: number, lanes: Array<Record<string, any>> }|null }} [options]
  * @returns {LaneModel}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
@@ -1476,6 +1519,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
           )
         : 'repo_spec';
   const groups_mode = options && options.groups === 'all' ? 'all' : 'nonempty';
+  // 후보 필터가 감춘 수를 세는 규칙 (§4.3). 두 탭의 뜻이 달라 하나로 합칠 수
+  // 없다: Monitor는 순차(앞 필터가 겹친 행을 가져간다), Worker는 조작별(두
+  // 필터에 모두 걸린 행은 어느 수에도 없다).
+  const hidden_counts =
+    options && options.candidate_hidden_counts === 'per_control'
+      ? 'per_control'
+      : 'sequential';
   // 해제 칩의 7일 창 기준 시각 (UI-d13v §5.3). 모델 조립당 한 번만 읽어 같은
   // 렌더 안의 모든 카드가 같은 창을 본다.
   const now = Date.now();
@@ -1959,7 +2009,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
         failure: live.failure || null,
         exec_chips: {
           orchestration: formatAttemptOrchestrationChip(live),
-          worker: null
+          // worker 칩은 그 attempt가 기록한 runner를 controller로 삼아 푼다
+          // (Worker `attemptExecChips`). 재료가 없는 스냅샷은 `null`이다.
+          worker: attemptWorkerChip(
+            objectOf(state),
+            overlay,
+            live.runner || null
+          )
         },
         discard: discardProjection(discard_operations, bead_id, {
           attempt_id: live.attempt_id,
@@ -3044,19 +3100,48 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 필터 이전 목록에서 나온다.
   model.runnable_all = model.runnable.slice();
   let visible = model.runnable;
-  if (!candidate_filter.show_blocked) {
-    visible = visible.filter((item) => item.blocked !== true);
+  /** @param {LaneItem} item */
+  const blockedPass = (item) =>
+    candidate_filter.show_blocked || item.blocked !== true;
+  /** @param {LaneItem} item */
+  const specPass = (item) =>
+    candidate_filter.spec === 'all' ||
+    (candidate_filter.spec === 'with'
+      ? item.published === true
+      : item.published !== true);
+  if (hidden_counts === 'per_control') {
+    // Worker 규칙 (UI-ki09 `applyCandidateFilter`): 한 조작이 감춘 수는 "그
+    // 조작만 풀면 나타날 행"이다. 두 필터에 **모두** 걸린 행은 어느 수에도
+    // 들어가지 않는다 — 한쪽만 풀어도 그 행은 그대로 숨어 있으므로, 세면
+    // 지키지 못할 노출을 약속하게 된다.
+    /** @type {LaneItem[]} */
+    const kept = [];
+    let hidden_blocked = 0;
+    let hidden_spec = 0;
+    for (const item of visible) {
+      const by_blocked = blockedPass(item);
+      const by_spec = specPass(item);
+      if (by_blocked && by_spec) {
+        kept.push(item);
+      } else if (!by_blocked && by_spec) {
+        hidden_blocked += 1;
+      } else if (by_blocked && !by_spec) {
+        hidden_spec += 1;
+      }
+    }
+    visible = kept;
+    model.runnable_hidden = { blocked: hidden_blocked, spec: hidden_spec };
+  } else {
+    // Monitor 규칙: 두 필터를 차례로 적용하고 각 단계가 줄인 수를 센다 — 두
+    // 필터에 모두 걸린 행은 앞 단계인 `blocked`가 가져간다.
+    visible = visible.filter(blockedPass);
+    const after_blocked = visible.length;
+    visible = visible.filter(specPass);
+    model.runnable_hidden = {
+      blocked: before - after_blocked,
+      spec: after_blocked - visible.length
+    };
   }
-  const after_blocked = visible.length;
-  if (candidate_filter.spec === 'with') {
-    visible = visible.filter((item) => item.published === true);
-  } else if (candidate_filter.spec === 'without') {
-    visible = visible.filter((item) => item.published !== true);
-  }
-  model.runnable_hidden = {
-    blocked: before - after_blocked,
-    spec: after_blocked - visible.length
-  };
 
   /**
    * @param {LaneItem} a

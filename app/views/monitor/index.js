@@ -568,7 +568,9 @@ export function createMonitorView(mount_element, options) {
     },
     onDragBegin: () => {
       place_menu_bead = null;
-    }
+    },
+    // 접힌 후보 띠에 대기 행을 떨어뜨리면 큐에서 뺀다 — Monitor의 기존 문법이다.
+    candidate_drop: true
   });
   const { applyDrop, dropModel, runPlanned, sendQueueCas } = lane_drag;
 

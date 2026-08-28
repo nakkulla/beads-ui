@@ -47,6 +47,9 @@ import {
  * 응답이 실어 온 권위 있는 queue를 호출 측 상태로 채택한다.
  * @property {() => void} [onDragBegin] - 손이 행을 집었다. 열려 있던
  * `place_menu`를 걷는 자리다.
+ * @property {boolean} [candidate_drop] - 접힌 **후보** 띠를 드롭 타깃으로 삼는다
+ * (기본 `false`). 대기 행을 후보 띠에 떨어뜨리면 큐에서 빠지는 Monitor 문법이며,
+ * Worker에는 그 조작이 없었다 (UI-d13v 이후 후보는 드롭 타깃이 아니다).
  */
 
 /**
@@ -105,7 +108,8 @@ export function createLaneDrag(options) {
     showToast,
     requestRender,
     adoptQueue,
-    onDragBegin
+    onDragBegin,
+    candidate_drop
   } = options;
 
   /**
@@ -795,6 +799,9 @@ export function createLaneDrag(options) {
    * 띠에 떨어뜨린 사람이 원한 것은 "대기에 넣기"이지 "다음으로 실행"이 아니므로
    * 병렬 큐 **말미**로 적재하고, 레인을 자동으로 펼치지 않는다.
    *
+   * 후보 띠는 `candidate_drop`을 켠 탭(Monitor)에서만 타깃이다 — 대기 행을 거기
+   * 떨어뜨리면 큐에서 빠지는 그 조작은 Worker에 없던 문법이다.
+   *
    * @param {HTMLElement|null} node
    * @returns {{ zone: HTMLElement, target: DropTarget }|null}
    */
@@ -818,7 +825,7 @@ export function createLaneDrag(options) {
         }
       };
     }
-    if (lane === 'candidate') {
+    if (lane === 'candidate' && candidate_drop === true) {
       return { zone: pane, target: { kind: 'candidate' } };
     }
     return null;

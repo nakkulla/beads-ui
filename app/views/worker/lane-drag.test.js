@@ -160,7 +160,8 @@ function setup(over = {}) {
     onCorrection,
     showToast,
     requestRender,
-    adoptQueue: over.adoptQueue ?? (() => {})
+    adoptQueue: over.adoptQueue ?? (() => {}),
+    candidate_drop: over.candidate_drop
   });
   drag.attach(dom.mount);
   return {
@@ -309,6 +310,65 @@ describe('드롭 타깃 식별자 (UI-4tud §4.5)', () => {
           root_dir: '/r',
           expected_revision: 4
         }
+      }
+    ]);
+  });
+
+  test('ignores the collapsed 후보 strip when the tab does not enable it', async () => {
+    const dom = mountDom({
+      rows: sourceHtml({
+        id: 'A',
+        kind: 'parallel',
+        row_index: 0,
+        queue_index: 0
+      })
+    });
+    const ctx = setup({
+      dom,
+      lanes: laneModelOf({
+        parallel_rows: [parallelRow('A', 0)],
+        owner_of: { A: '/r' },
+        queue: [parallelRow('A', 0)],
+        queue_groups: [groupOf(3)]
+      })
+    });
+
+    startDrag(ctx.mount, 'A');
+    const ev = fireDrag(document.getElementById('cand-strip'), 'drop');
+    await flush();
+
+    expect(ev.defaultPrevented).toBe(false);
+    expect(ctx.sent).toEqual([]);
+  });
+
+  test('removes a queue row dropped on the collapsed 후보 strip under candidate_drop', async () => {
+    const dom = mountDom({
+      rows: sourceHtml({
+        id: 'A',
+        kind: 'parallel',
+        row_index: 0,
+        queue_index: 0
+      })
+    });
+    const ctx = setup({
+      dom,
+      candidate_drop: true,
+      lanes: laneModelOf({
+        parallel_rows: [parallelRow('A', 0)],
+        owner_of: { A: '/r' },
+        queue: [parallelRow('A', 0)],
+        queue_groups: [groupOf(3)]
+      })
+    });
+
+    startDrag(ctx.mount, 'A');
+    fireDrag(document.getElementById('cand-strip'), 'drop');
+    await flush();
+
+    expect(ctx.sent).toEqual([
+      {
+        type: 'worker-queue-remove',
+        payload: { bead_id: 'A', root_dir: '/r', expected_revision: 1 }
       }
     ]);
   });

@@ -234,6 +234,41 @@ describe('monitor 실행가능 filter and sort (UI-eey2 §5)', () => {
     expect(without_spec.runnable_hidden.spec).toBe(2);
   });
 
+  test('counts a compound-filtered row once, in the blocked count', () => {
+    const lanes = buildLanes([repo], [state()], {
+      candidate_filter: { show_blocked: false, spec: 'without' }
+    });
+
+    // A-1은 blocked이면서 spec도 있다 — Monitor는 앞 단계인 blocked가 가져간다.
+    expect(lanes.runnable.map((r) => r.id)).toEqual(['A-2']);
+    expect(lanes.runnable_hidden).toEqual({ blocked: 1, spec: 1 });
+  });
+
+  test('counts a compound-filtered row in neither control under per_control', () => {
+    const lanes = buildLanes([repo], [state()], {
+      candidate_filter: { show_blocked: false, spec: 'without' },
+      candidate_hidden_counts: 'per_control'
+    });
+
+    // 한쪽만 풀어도 A-1은 그대로 숨는다 — 어느 배지도 그것을 세지 않는다.
+    expect(lanes.runnable.map((r) => r.id)).toEqual(['A-2']);
+    expect(lanes.runnable_hidden).toEqual({ blocked: 0, spec: 1 });
+  });
+
+  test('counts each control alone under per_control when only one filters', () => {
+    const blocked_only = buildLanes([repo], [state()], {
+      candidate_filter: { show_blocked: false, spec: 'all' },
+      candidate_hidden_counts: 'per_control'
+    });
+    const spec_only = buildLanes([repo], [state()], {
+      candidate_filter: { show_blocked: true, spec: 'without' },
+      candidate_hidden_counts: 'per_control'
+    });
+
+    expect(blocked_only.runnable_hidden).toEqual({ blocked: 1, spec: 0 });
+    expect(spec_only.runnable_hidden).toEqual({ blocked: 0, spec: 2 });
+  });
+
   test('sorts published candidates first inside their repo section', () => {
     const lanes = buildLanes([repo], [state()], {
       candidate_sort: 'repo_spec'
@@ -3807,7 +3842,7 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
     );
   });
 
-  test('leaves the running tile attempt chips alone', () => {
+  test('resolves the running tile worker chip against the attempt runner', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -3817,7 +3852,7 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
               bead_id: 'A-1',
               status: 'running',
               started_at: 1,
-              runner: 'claude',
+              runner: 'codex',
               model: 'sonnet'
             }
           },
@@ -3826,7 +3861,65 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
       ],
       [
         state({
-          execution_defaults: EXECUTION_DEFAULTS,
+          execution_defaults: ROUTED_EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {}
+        })
+      ]
+    );
+
+    expect(lanes.running[0].exec_chips?.worker?.text).toBe(
+      'inherit→codex · auto · auto'
+    );
+  });
+
+  test('resolves the running tile worker chip against the pinned route', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 1,
+              runner: 'codex'
+            }
+          },
+          bead_overlay: { 'A-1': { metadata: {}, route: 'quick_fix' } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: ROUTED_EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {}
+        })
+      ]
+    );
+
+    expect(lanes.running[0].exec_chips?.worker?.text).toBe('메인');
+  });
+
+  test('leaves the running tile worker chip null without overlay metadata', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 1,
+              runner: 'codex'
+            }
+          },
+          bead_overlay: { 'A-1': { priority: 1 } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: ROUTED_EXECUTION_DEFAULTS,
           runner_catalog: { runtimes: {} },
           session_defaults: {}
         })

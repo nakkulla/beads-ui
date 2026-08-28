@@ -600,9 +600,9 @@ export function createWorkspaceAdapter(options = {}) {
       ) {
         continue;
       }
-      const identity = `${root_dir} ${issue.id} ${String(
+      const identity = `${root_dir}\0${issue.id}\0${String(
         issue.updated_at
-      )} ${issue.comment_count}`;
+      )}\0${issue.comment_count}`;
       const cached = session_report_cache.get(identity);
       if (cached === undefined && transport) {
         session_report_cache.set(identity, 'pending');

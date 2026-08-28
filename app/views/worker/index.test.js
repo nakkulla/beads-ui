@@ -12557,6 +12557,33 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
     );
   });
 
+  test('keeps a PR 대기 blocker seat while its review session runs', () => {
+    const mount = mountQueue(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        pr_wait: [{ bead_id: 'W-0', added_at: 1 }],
+        // 비점유 리뷰 세션 타일 (UI-d7fy §5.5): 같은 bead가 PR 대기에도 서 있다.
+        attempts: {
+          rev: {
+            attempt_id: 'rev',
+            bead_id: 'W-0',
+            kind: 'review_session',
+            status: 'running',
+            started_at: 1
+          }
+        },
+        bead_blocked_by: { 'W-1': ['W-0'] }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"]')
+    );
+    expect(row.querySelector('.worker-dep--pred')?.getAttribute('title')).toBe(
+      '이 이슈는 W-0가 close될 때까지 출발하지 않는다 (PR 대기)'
+    );
+  });
+
   test('folds a blocker this tab cannot see into 미적재', () => {
     const mount = mountQueue(
       queueOf({

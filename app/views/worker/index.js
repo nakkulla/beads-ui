@@ -2534,6 +2534,9 @@ export function createWorkerView(mount_element, options = {}) {
     current_lanes = buildLanes(input.workspaces, input.workspaces_state, {
       done_since,
       candidate_filter,
+      // 감춘 수는 조작별로 센다 (UI-ki09): 두 필터에 모두 걸린 후보는 어느
+      // 배지에도 들어가지 않는다 — 한쪽만 풀어도 나타나지 않기 때문이다.
+      candidate_hidden_counts: 'per_control',
       candidate_sort: 'as_given',
       groups: 'all'
     });
@@ -2978,6 +2981,12 @@ export function createWorkerView(mount_element, options = {}) {
     /** @type {import('./queue-overlaps.js').LaneMember[]} */
     const members = [];
     for (const tile of m.running) {
+      // 비점유 타일(돌고 있는 리뷰 세션)은 그 bead의 자리를 주장하지 않는다
+      // (UI-d7fy §5.5). 첫 등장이 이기는 목록이므로, 여기서 넣으면 같은 bead의
+      // PR 대기 자리가 가려져 겹침·차단 칩이 틀린 레인을 가리킨다.
+      if (tile.non_occupying === true) {
+        continue;
+      }
       members.push({
         id: tile.id,
         title: tile.title,
