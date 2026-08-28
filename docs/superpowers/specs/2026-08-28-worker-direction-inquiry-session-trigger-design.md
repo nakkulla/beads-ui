@@ -241,4 +241,7 @@ launchd(`com.beads-ui.server`)에서 사용자 tmux 소켓(`/private/tmp/tmux-<u
   표 갱신과 함께 별도 Bead.
 - 관찰: scope 겹침 — `2026-08-28-worker-failure-tiers-queue-hold-design.md`(UI-5ym8)와
   `scheduler.js`·`notify.js`를 공유하나 그 spec은 실패 등급·hold를, 이 spec은 `failAttempt` 뒤 훅
-  한 줄과 알림 전이 하나를 더한다. 착지 순서에 따른 rebase만 남는다.
+  한 줄과 알림 전이 하나를 더한다. `2026-08-28-worker-record-timeline-retention-design.md`(UI-8wpb,
+  open)도 `scheduler.js`를 공유하나 기록 구조(events.jsonl·queue.json 상태 전용화)를 다루고 이
+  spec은 `failAttempt` 뒤 훅 호출만 더한다 — 같은 파일의 다른 절이며 의도 충돌 없음. 둘 다 착지
+  순서에 따른 rebase만 남는다.
