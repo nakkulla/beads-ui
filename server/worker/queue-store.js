@@ -816,6 +816,12 @@ import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { createUnhandledFailurePredicate } from './attempt-failure.js';
+// The `needs_human` vocabulary is the KERNEL's (UI-5ym8 §7), so the store
+// consumes it rather than re-stating it. This is a module cycle —
+// `completion-intent.js` imports two constants back from here — and it is safe
+// only because neither side touches the other's bindings at module-evaluation
+// time. Nothing here may move a use of this import to the top level.
+import { migrateStoredNeedsHumanReason } from './completion-intent.js';
 import {
   finalizeDelegationSessions,
   normalizeDelegationSessions,
@@ -1484,6 +1490,14 @@ function planRepairLaneRetirements(parsed) {
 /* UI-8w4t legacy-read:end */
 
 /**
+ * Cold load of every durable completion saga.
+ *
+ * This is also where a terminal cause left by a RETIRED lane is migrated into
+ * the five-family vocabulary the kernel now stops on (`completion-intent.js`
+ * `migrateStoredNeedsHumanReason`). It is deliberately narrow — see that
+ * function for why renaming every stored cause here would strand the sagas the
+ * migration exists to carry forward.
+ *
  * @param {unknown} raw
  * @returns {Record<string, CompletionIntent>}
  */
@@ -1504,7 +1518,15 @@ function normalizeCompletionIntents(raw) {
     if (isRecord(value) && RETIRED_REPAIR_PHASES.has(String(value.phase))) {
       continue;
     }
-    out[root_bead_id] = normalizeCompletionIntent(root_bead_id, value);
+    const intent = normalizeCompletionIntent(root_bead_id, value);
+    const terminal = intent.terminal_reason;
+    const migrated = terminal
+      ? migrateStoredNeedsHumanReason(terminal.reason)
+      : '';
+    out[root_bead_id] =
+      terminal && migrated !== terminal.reason
+        ? { ...intent, terminal_reason: { ...terminal, reason: migrated } }
+        : intent;
   }
   return out;
 }

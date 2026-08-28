@@ -1216,10 +1216,12 @@ describe('worker e2e — completion intent post-merge recovery', () => {
     });
 
     // The cleanup record's own reason IS the cause, and it is a token the
-    // retry policy would otherwise have re-run automatically.
+    // retry policy would otherwise have re-run automatically. It rides as the
+    // DETAIL of `cleanup_failed` (UI-5ym8 §7) so it cannot be mistaken for the
+    // gate's own retryable `verify_cmd_failed`.
     expect(stopped_action).toEqual({
       kind: 'needs_human',
-      reason: 'verify_cmd_failed',
+      reason: 'cleanup_failed:verify_cmd_failed',
       terminal: true
     });
 

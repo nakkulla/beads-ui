@@ -33,6 +33,135 @@ const CONFLICT_RESOLUTION_FAILURES = new Set([
 ]);
 
 /**
+ * The only five causes a completion saga is allowed to stop a human with
+ * (UI-5ym8 §7). The kernel used to name 25 terminal tokens, none of which ever
+ * fired, and roughly ten of which said the same thing — "a durable write did
+ * not land" — in ten different words. A surface cannot build a sentence, a hold
+ * decision, or an operator habit on a vocabulary that wide, so every raw cause
+ * folds into one of these and carries its original token as detail.
+ *
+ * @type {readonly string[]}
+ */
+export const NEEDS_HUMAN_FAMILIES = Object.freeze([
+  'verify_red',
+  'cleanup_failed',
+  'retry_exhausted',
+  'conflict_unresolved',
+  'internal_record_failed'
+]);
+
+/**
+ * Post-merge cleanup causes that used to be their own terminal token. Each one
+ * answers "why did cleanup stop", not "which lane stopped", so they become the
+ * detail of `cleanup_failed` rather than siblings of it.
+ *
+ * @type {Set<string>}
+ */
+const CLEANUP_FAILURE_TOKENS = new Set([
+  'cleanup_incomplete',
+  'cleanup_journal_conflict',
+  'cleanup_completion_unrecorded',
+  'cleanup_replay_unavailable'
+]);
+
+/**
+ * The two retired-lane residues (UI-d7fy §3.5, UI-8w4t §2). Nothing running
+ * produces them any more, but a saga persisted before those upgrades can still
+ * name one, so the fold keeps a `migration:` infix: a record read later has to
+ * say it stopped because its owner was removed, not because a write failed.
+ *
+ * @type {Set<string>}
+ */
+const RETIRED_LANE_TOKENS = new Set([
+  'auto_review_retired',
+  'repair_lane_retired'
+]);
+
+/**
+ * Fold one raw terminal cause into its §7 family.
+ *
+ * Pure and IDEMPOTENT by design: a reason already in a family is returned
+ * unchanged, which is what lets the fold sit at the producer (`decide*`) and
+ * again at the persistence boundary (`terminalize`) without building
+ * `cleanup_failed:cleanup_failed:...` on the second pass.
+ *
+ * The residual default is `internal_record_failed` and that is deliberate: the
+ * tokens that fall through are the ones a durable write or a state check
+ * produced, and folding them anywhere else would claim knowledge about the
+ * merge, the cleanup, or the conflict that the failure never had.
+ *
+ * @param {unknown} raw
+ * @returns {string}
+ */
+export function foldNeedsHumanReason(raw) {
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (text.length === 0) {
+    return 'internal_record_failed:reason_missing';
+  }
+  if (NEEDS_HUMAN_FAMILIES.includes(text.split(':', 1)[0])) {
+    return text;
+  }
+  if (CLEANUP_FAILURE_TOKENS.has(text)) {
+    return `cleanup_failed:${text}`;
+  }
+  // Membership, NOT a `resolution_` prefix. `resolution_timeout` shares the
+  // prefix but is not a conflict verdict at all — it is the retired time-only
+  // terminal that `adoptLegacyTimeout` still matches EXACTLY to decide whether
+  // an old saga may resume. A prefix rule would rename that key and silently
+  // strand every record it is the only handle for.
+  if (
+    CONFLICT_RESOLUTION_FAILURES.has(text) ||
+    text === 'resolution_round_cap'
+  ) {
+    return `conflict_unresolved:${text}`;
+  }
+  if (RETIRED_LANE_TOKENS.has(text)) {
+    return `internal_record_failed:migration:${text}`;
+  }
+  return `internal_record_failed:${text}`;
+}
+
+/**
+ * The cold-load read of a terminal cause persisted before UI-5ym8 §7.
+ *
+ * Only the two retired-lane residues are rewritten, and that is the whole
+ * migration the spec asks for: they are the only stored causes with no owner
+ * left, and §1 counted ZERO real occurrences of the other 23 tokens. Folding
+ * every stored cause instead would rename live durable keys — `resolution_
+ * timeout` is matched exactly by `adoptLegacyTimeout` and by the store's own
+ * resume guard — so a migration that "just normalizes everything" would strand
+ * exactly the sagas it was meant to carry forward.
+ *
+ * @param {unknown} raw
+ * @returns {string} The raw cause unchanged, unless it is a retired-lane
+ * residue.
+ */
+export function migrateStoredNeedsHumanReason(raw) {
+  return typeof raw === 'string' && RETIRED_LANE_TOKENS.has(raw)
+    ? foldNeedsHumanReason(raw)
+    : /** @type {string} */ (raw);
+}
+
+/**
+ * Which queue hold — if any — a folded `needs_human` cause earns (UI-5ym8 §7).
+ *
+ * `verify_red` and `cleanup_failed` are the two that recur on the NEXT bead:
+ * post-merge verification and post-merge cleanup run against the shared base
+ * and the shared deploy worktree, so a red one stays red until a human acts.
+ * The other three are bounded to the saga that produced them and must not stop
+ * the queue.
+ *
+ * @param {unknown} reason
+ * @returns {'systemic'|null}
+ */
+export function needsHumanHoldKind(reason) {
+  const family = foldNeedsHumanReason(reason).split(':', 1)[0];
+  return family === 'verify_red' || family === 'cleanup_failed'
+    ? 'systemic'
+    : null;
+}
+
+/**
  * Build the stable identity of one failure observed at pinned subject/base
  * SHAs. The digest input is bounded and normalized so line endings cannot
  * manufacture distinct completion operations for the same result.
@@ -227,6 +356,32 @@ export function classifyCompletionFailure(reason) {
  */
 
 /**
+ * The ONE constructor for a `needs_human` decision (UI-5ym8 §7).
+ *
+ * A `terminal` decision is the kernel's own judgment and stops the saga, so its
+ * cause is folded here, at the point it is decided. A NON-terminal one is only
+ * a proposal: `settleFailure` still offers it to the §3 policy tables, whose
+ * keys are the RAW codes (`review_receipt_undetermined`, `verify_cmd_failed`,
+ * …). Folding those at the producer would hide the key behind a family prefix
+ * and turn every metadata watch and every retry into an immediate stop. What
+ * survives the tables is folded by `terminalize`, which is where it actually
+ * becomes a terminal.
+ *
+ * @param {string} reason
+ * @param {boolean} [terminal]
+ * @returns {CompletionAction}
+ */
+function needsHuman(reason, terminal = false) {
+  return terminal
+    ? {
+        kind: 'needs_human',
+        reason: foldNeedsHumanReason(reason),
+        terminal: true
+      }
+    : { kind: 'needs_human', reason };
+}
+
+/**
  * Decide the next action for an intent parked in one of the three
  * auto-resolution phases (UI-hk74 §4).
  *
@@ -243,7 +398,7 @@ function decideAutoResolution(intent, now) {
       /** @type {'metadata_watch'|'retry'} */ (resolution.class)
     ] !== intent.phase
   ) {
-    return { kind: 'needs_human', reason: 'auto_resolution_invalid' };
+    return needsHuman('auto_resolution_invalid');
   }
   if (intent.phase === 'retrying') {
     // Waiting out a LIVE operation IS the first step of the retry, and deciding
@@ -265,10 +420,7 @@ function decideAutoResolution(intent, now) {
       return { kind: 'reconcile_op' };
     }
     if (resolution.attempts >= COMPLETION_RETRY_MAX) {
-      return {
-        kind: 'needs_human',
-        reason: `retry_exhausted:${resolution.origin_reason}`
-      };
+      return needsHuman(`retry_exhausted:${resolution.origin_reason}`);
     }
     if (typeof resolution.next_at === 'number' && now < resolution.next_at) {
       return null;
@@ -285,7 +437,7 @@ function decideAutoResolution(intent, now) {
   // the retirement as its cause rather than waiting on a dispatch that will
   // never come. This is a migration terminal, not a review verdict: a review
   // reason never terminalizes an intent this deploy created.
-  return { kind: 'needs_human', reason: 'auto_review_retired', terminal: true };
+  return needsHuman('auto_review_retired', true);
 }
 
 /**
@@ -294,6 +446,11 @@ function decideAutoResolution(intent, now) {
  * contract token in `failure_code`, falls back to its own raw `reason`, and
  * only then to the reason the failure key was built from. Reading `failure.code`
  * — the RepoOperation card's field — would have found nothing on any of them.
+ *
+ * The winner is carried as the DETAIL of `cleanup_failed` (UI-5ym8 §7) instead
+ * of standing alone: `verify_cmd_failed` observed here means "cleanup stopped
+ * on a failed verify", and read bare it is indistinguishable from the gate's
+ * own retryable `verify_cmd_failed`.
  *
  * @param {any} fact
  * @returns {string}
@@ -307,10 +464,10 @@ function completionFailureReason(fact) {
   ];
   for (const candidate of candidates) {
     if (typeof candidate === 'string' && candidate.length > 0) {
-      return candidate;
+      return foldNeedsHumanReason(`cleanup_failed:${candidate}`);
     }
   }
-  return 'cleanup_failed';
+  return 'cleanup_failed:unrecorded';
 }
 
 /**
@@ -325,7 +482,7 @@ export function decideCompletionAction(input) {
   const intent = input.intent;
   const fact = input.fact || { state: 'waiting' };
   if (!intent || typeof intent !== 'object') {
-    return { kind: 'needs_human', reason: 'intent_state_invalid' };
+    return needsHuman('intent_state_invalid');
   }
   if (intent.phase === 'needs_human' || intent.phase === 'completed') {
     return null;
@@ -352,10 +509,7 @@ export function decideCompletionAction(input) {
     return { kind: 'resume_intent' };
   }
   if (fact.state === 'undecidable') {
-    return {
-      kind: 'needs_human',
-      reason: fact.reason || 'ownership_undecidable'
-    };
+    return needsHuman(fact.reason || 'ownership_undecidable');
   }
   if (fact.state === 'completed') {
     return { kind: 'complete' };
@@ -366,11 +520,7 @@ export function decideCompletionAction(input) {
       // cleanup failure reaches here, and the failure card already carries the
       // cause and the retry outcome. Waiting longer buys nothing, so the saga
       // stops with the cause a human can act on (UI-8w4t §1).
-      return {
-        kind: 'needs_human',
-        reason: completionFailureReason(fact),
-        terminal: true
-      };
+      return needsHuman(completionFailureReason(fact), true);
     }
     if (fact.state === 'cleanup_pending') {
       return { kind: 'retry_cleanup' };
@@ -381,7 +531,7 @@ export function decideCompletionAction(input) {
     return { kind: 'merge_subject' };
   }
   if (intent.phase !== 'gating') {
-    return { kind: 'needs_human', reason: 'intent_state_invalid' };
+    return needsHuman('intent_state_invalid');
   }
   if (fact.state === 'cleanup_repairable' || fact.state === 'cleanup_pending') {
     return { kind: 'enter_cleanup' };
@@ -393,7 +543,7 @@ export function decideCompletionAction(input) {
     // Post-merge verification red is a code question, and code questions go
     // through an ordinary Bead/PR (UI-8w4t §1). No ownership probe, no
     // automatic session.
-    return { kind: 'needs_human', reason: 'verify_red', terminal: true };
+    return needsHuman('verify_red', true);
   }
   return { kind: 'gate' };
 }
@@ -688,6 +838,31 @@ function retryOutcomeText(operation) {
 }
 
 /**
+ * The cause sentence for a folded terminal reason, matched the way the client
+ * card matches (`app/views/worker/failure-labels.js failureSentence`): by colon
+ * segment, LAST match wins. Exact-key lookup stopped being enough once every
+ * cause carries a family prefix — `cleanup_failed:cleanup_journal_conflict`
+ * would otherwise render no sentence at all, and the comment and the card would
+ * disagree about the same record.
+ *
+ * @param {unknown} reason
+ * @returns {string|null}
+ */
+function completionFailureSentence(reason) {
+  if (typeof reason !== 'string') {
+    return null;
+  }
+  /** @type {string|null} */
+  let found = null;
+  for (const segment of reason.split(':')) {
+    if (segment.length > 0 && Object.hasOwn(FAILURE_SENTENCES, segment)) {
+      found = FAILURE_SENTENCES[segment];
+    }
+  }
+  return found;
+}
+
+/**
  * The failure hand-off comment (UI-8w4t §4). The log is POINTED at, never
  * inlined: a verify log is large and can carry secrets, and the path is what a
  * human opens anyway.
@@ -698,9 +873,7 @@ function retryOutcomeText(operation) {
  * @returns {string}
  */
 export function completionFailureComment(intent, queue, terminal) {
-  const sentence = Object.hasOwn(FAILURE_SENTENCES, terminal.reason)
-    ? FAILURE_SENTENCES[terminal.reason]
-    : null;
+  const sentence = completionFailureSentence(terminal.reason);
   const subject = intent?.subject || {};
   const target_sha =
     terminal.failure_key?.subject_sha ||
@@ -1124,6 +1297,14 @@ export function createCompletionActionDriver(deps) {
     evidence = null,
     op_id = null
   ) {
+    // The single persistence boundary for a `needs_human` cause (UI-5ym8 §7).
+    // `settleFailure` deliberately classifies the RAW token against the §3
+    // policy tables first — those keys are the retryable/metadata contract and
+    // must not see a family prefix — and only what actually stops here is
+    // folded. Folding at the write also means the de-dup below compares folded
+    // to folded, so a re-observation of the same failure still finds its
+    // earlier comment.
+    const folded = foldNeedsHumanReason(reason);
     const text =
       evidence === null
         ? null
@@ -1142,11 +1323,11 @@ export function createCompletionActionDriver(deps) {
       intent,
       resolved_op_id,
       failure_key,
-      reason
+      folded
     );
     const at = now();
     const terminal = {
-      reason,
+      reason: folded,
       stage,
       failure_key,
       evidence: typeof text === 'string' ? text.slice(-4000) : null,
@@ -1961,7 +2142,15 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (action.kind === 'needs_human') {
-      const reason = action.reason || 'completion_needs_human';
+      // A missing reason is a kernel bug, not a state: it becomes
+      // `internal_record_failed:reason_missing` rather than a sixth token that
+      // says only "a human is needed" (UI-5ym8 §7). Anything present is passed
+      // on RAW — `terminalize` folds, and `settleFailure` must still see the
+      // policy-table key.
+      const reason =
+        typeof action.reason === 'string' && action.reason.length > 0
+          ? action.reason
+          : 'internal_record_failed:reason_missing';
       if (action.terminal === true) {
         // A kernel-judged terminal does NOT consult the §3 tables (UI-8w4t
         // §1). A cleanup cause is often `verify_cmd_failed`, which the surviving
