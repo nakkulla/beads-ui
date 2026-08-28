@@ -305,7 +305,7 @@ enum 중 `visual_verification`에 해당한다. 게이트 종료 시 컨트롤�
 | --- | --- | --- | --- |
 | UI-qksl (open) | `2026-08-28-auto-review-dispatch-on-hold-design.md` | `server/worker/scheduler.js` · `app/views/worker/` | 다른 절 — 머지 큐의 `impl_review` 보류 시 리뷰 lineage dispatch를 다룬다. 이 설계는 quick_fix **착지 정산**의 재개이고 머지 큐를 지나지 않는다(base 직접 push). 두 판정은 입력도 호출 지점도 겹치지 않는다 |
 | UI-8wpb (in_progress) | `2026-08-28-worker-record-timeline-retention-design.md` | `server/worker/scheduler.js` · `app/views/worker/` | 다른 절 — Worker **기록 구조**(bead 타임라인·실패 요약·`queue.json` 보존)를 재편한다. 이 설계는 기록 형식을 바꾸지 않고 이미 있는 `quickfix_landing.reason`을 읽기만 하므로, 어느 쪽이 먼저 착지해도 다른 쪽이 읽는 필드가 사라지지 않는다 |
-| UI-8x90 (in_progress) | `2026-08-28-chip-grammar-unify-design.md` | `app/utils/` · `app/views/worker/` | 다른 요소 — **칩** 문법(의존·겹침 칩의 글리프+ID 라벨, 클릭 의미)을 통일한다. 이 설계가 건드리는 것은 액션 foot의 **버튼** 라벨 하나이고 칩이 아니다. AGENTS.md 카드 문법상 조작과 칩은 서로 다른 슬롯이며, 이 설계는 슬롯 표를 갱신하지 않는다 |
+| UI-8x90 (**landed** `3741fb1`, 2026-08-28) | `2026-08-28-chip-grammar-unify-design.md` | `app/utils/` · `app/views/worker/` | 다른 요소 — **칩** 문법(의존·겹침 칩의 글리프+ID 라벨, 클릭 의미)을 통일한다. 이 설계가 건드리는 것은 액션 foot의 **버튼** 라벨 하나이고 칩이 아니다. AGENTS.md 카드 문법상 조작과 칩은 서로 다른 슬롯이며, 이 설계는 슬롯 표를 갱신하지 않는다. 착지 후 확인: `running-grid.js`의 `.rtile__resume` 버튼과 `lane-model.js`의 `resume_eligible`은 그 델타에서 바뀌지 않았고(줄 위치만 이동), §3.3이 인용한 코드는 그대로 유효하다 |
 
 ### 5.2 관찰
 
