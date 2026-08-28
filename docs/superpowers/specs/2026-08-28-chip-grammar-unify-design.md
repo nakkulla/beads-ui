@@ -9,8 +9,8 @@ scope:
   - app/views/worker/running-grid.js
   - app/views/worker/index.js
   - app/views/worker/index.test.js
-  - app/views/monitor/lanes.js
-  - app/views/monitor/lanes.test.js
+  - app/views/worker/lane-model.js
+  - app/views/worker/lane-model.test.js
   - app/views/monitor/index.js
   - app/views/monitor/index.test.js
   - app/views/chip-popover.js
@@ -49,6 +49,12 @@ scope:
   UI-d13v(해제·후속 칩) · UI-sbum(`복잡` 칩) · UI-49mc(`세션 권장` 칩) · UI-lx45(상세
   의존성 절). 이 스펙은 그 결정 중 **칩의 문구·클릭·슬롯 4 내부 배치**만 바꾸고, 각
   스펙에 `정정(UI-8x90)` 문단으로 되돌아가 가리킨다(§8).
+- stale 재리뷰 정정 (2026-08-28, 관측 base `c02f321`): 앵커 `d94fe32a` 이후
+  UI-4tud(레인 조립 단일화)가 `app/views/monitor/lanes.js`를
+  `app/views/worker/lane-model.js`로 옮기고 Worker 전용 모델 빌더를 없앴으며
+  (ADR 0014), UI-ucni가 이 저장소에 `docs/adr/` 인덱스를 만들었다. 사용자
+  결정(§2)·글리프 표(§3)·수용 기준(§11)은 그대로 성립하고, 아래 참조 경로와
+  §4.4 배선 위치만 현재 base에 맞춰 정정한다.
 
 ## 1. 문제
 
@@ -136,9 +142,11 @@ UI-251y §2 표의 4번 줄을 두 줄로 나눈다. 두 줄 모두 fail-quiet�
 
 - `cross_lane`은 이 템플릿에서 빠지고, 세 렌더러의 슬롯 5 줄(`.worker-chips` /
   `.rtile__meta`)이 `crossLaneChipTemplate(item.cross_lane_chip)`를 직렬 레인 칩 다음에
-  부른다. 투영(`monitor/lanes.js`)은 `dependency_chips.cross_lane` 대신 항목 최상위
-  `cross_lane_chip`을 채운다 — 슬롯 5 재료는 항목 필드가 관용이다(`route`·`from_id`·
-  `exec_chips`).
+  부른다. 투영(`worker/lane-model.js`)은 이미 항목 최상위 `cross_lane_chip`을 채우고
+  있으므로, 지울 것은 `monitor/index.js`의 `chipsWithOverlaps`가 그 값을 다시
+  `dependency_chips.cross_lane`으로 접는 분기다 — 슬롯 5 재료는 항목 필드가
+  관용이다(`route`·`from_id`·`exec_chips`). `armed_lane_chip`(`▶ 연결 n`)은 4a에
+  남으므로 접는 분기를 그대로 둔다.
 - 열리는 칩(`⛓`·`→`·`🔓`·`⧉`)은 전부 같은 마크업이다:
   `<button type="button" class="worker-dep worker-dep--<kind> worker-dep__open" data-dep-id data-root-dir title>`.
   `openable`이 아닌 칩(타 레포인데 owner를 모름)은 `<span>`이다 — 누를 수 없는 버튼은
@@ -149,7 +157,7 @@ UI-251y §2 표의 4번 줄을 두 줄로 나눈다. 두 줄 모두 fail-quiet�
   close되어 이 이슈가 풀렸다`. `⛓`: `선행 — close될 때까지 출발하지 않는다 (<위치>)`.
 - `dependents`는 `DependencyChips.dependents: DependentsChip[]`(ID별 배열)로 바뀐다.
   `count`/`title`만 담던 객체 형태는 폐기한다.
-- 해제 칩의 `candidateReleasedChips`(`worker/index.js`)에서 `RELEASED_CHIP_MAX`(2)와
+- 해제 칩의 `releasedChipsFor`(`worker/lane-model.js`)에서 `RELEASED_CHIP_MAX`(2)와
   마지막 칩에 ` 외 n`을 덧붙이는 분기를 없앤다. 7일 창(`releasedChip`)은 그대로다 —
   칩 수를 제한하는 것은 창 하나뿐이다.
 - `popover`·`overlaps[].prefixes`를 팝오버용으로 쓰던 자리는 사라진다. `prefixes`는
@@ -164,11 +172,13 @@ UI-251y §2 표의 4번 줄을 두 줄로 나눈다. 두 줄 모두 fail-quiet�
   `overlapPopoverFor`, `placeIntoSameSerialLane`, `queue-overlaps.js`의
   `workerPlacementPlan`과 그 타입; Monitor의 같은 것들(`open_overlap`·
   `overlapPopoverFor`·`placeIntoSameSerialLane`·`mon-overlap__chip`/`__place` 분기);
-  `lanes.js`의 `overlapPopoverTemplate`·`OverlapPopover` 타입; CSS `.mon-overlap__*`
+  `worker/lanes.js`의 `overlapPopoverTemplate`·`OverlapPopover` 타입; CSS `.mon-overlap__*`
   전부(§7에서 `.chip-popover`로 개명해 재사용하는 규칙 제외).
-- `deriveWorkerOverlaps`·`applyScopeOverlaps`는 `overlaps[]`·`scope_missing` 파생만
-  남기고 바뀌지 않는다. 겹침 칩의 `openable`은 선행 칩과 같은 규칙이다: 같은 레포는
-  항상, 타 레포(Monitor만 생김)는 `locations`가 `root_dir`을 아는 것만.
+- `deriveWorkerOverlaps`(`worker/queue-overlaps.js`, Worker 뷰가 직접 부른다)와
+  `applyScopeOverlaps`(`worker/lane-model.js`, 투영이 부른다)는 `overlaps[]`·
+  `scope_missing` 파생만 남기고 바뀌지 않는다. 겹침 칩의 `openable`은 선행 칩과 같은
+  규칙이다: 같은 레포는 항상, 타 레포(Monitor만 생김)는 `locations`가 `root_dir`을 아는
+  것만.
 
 ### 4.4 후속 칩의 재료 — 모든 레인
 
@@ -176,24 +186,31 @@ UI-251y §2 표의 4번 줄을 두 줄로 나눈다. 두 줄 모두 fail-quiet�
 `⛓`와 같은 범위로 넓히려면 큐 스냅샷에도 실어야 한다.
 
 - 서버(§6.2) `bead_dependents`를 Worker·Monitor가 함께 읽는다.
-- Worker `index.js`: `dependents_by_bead`는 두 원천의 **합집합**이다 — 큐 장식
-  `bead_dependents[id].ids`와 후보 행의 `dependents_info.ids`를 ID로 dedupe해 합친다.
-  blocked 칩의 "큐 장식이 이긴다" 규칙(UI-anna §5.1)을 쓰지 않는 이유는 재료의 성질이
-  다르기 때문이다: `bead_blocked_by`는 서버가 매 스냅샷 완전 재계산하는 값이라 빈 배열이
-  "없다"이지만, 후속은 peer 스냅샷이 아직 없으면 그 레포의 후속을 세지 못해 빈 배열이
-  "모른다"일 수 있다. 합집합은 어느 원천도 다른 원천의 사실을 지우지 않는다.
-  `root_dirs`도 두 원천을 합친다. `dependencyChipsFor`가 `dependents`를 함께 만들고,
-  실행중 오버레이의 최소 조건에 `dependents`도 든다(UI-anna §5.3의 blocked와 같은
-  이유).
-- Monitor `lanes.js`: `bead_blocked_by`를 읽어 `predecessors`를 붙이는 같은 루프에서
-  `bead_dependents`를 읽어 `dependents`를 붙인다. 각 후속 ID의 `root_dir` 결정 순서:
-  (1) 서버 `root_dirs[id]`; (2) 없으면 ID 접두사가 카드의 레포 접두사와 같으면 **카드의
+- 부착 자리는 **한 곳**이다: `app/views/worker/lane-model.js`의 `buildLanes`. UI-4tud가
+  Worker 전용 모델 빌더를 없애고 두 탭을 이 순수 함수 하나로 모았으므로(ADR 0014), 탭마다
+  같은 합집합을 다시 쓰지 않는다. Worker 탭은 `workspace-adapter.js`가 큐 스냅샷을 그대로
+  펼친 워크스페이스 1개를, Monitor는 워크스페이스 N개를 같은 함수에 넣는다.
+- `bead_blocked_by`를 읽어 `predecessors`를 붙이는 네 레인 루프(`queue` 대기 ·
+  `runnable` 후보 · `running` 실행중 · `pr_wait`)에서 `dependents`도 붙인다. 선행 칩이 없다고 `continue`하던 자리가 후속 칩을
+  삼키지 않도록, 두 칩은 각자 재료로 판정한다(fail-quiet).
+- 재료는 두 원천의 **합집합**이다 — 워크스페이스 `bead_dependents[id].ids`와 후보 행의
+  `dependents_info.ids`를 ID로 dedupe해 합친다(후자는 지금도 `lane-model.js`가
+  `dependentsChip`으로 후보 행에만 접는 값이다). blocked 칩의 "큐 장식이 이긴다"
+  규칙(UI-anna §5.1)을 쓰지 않는 이유는 재료의 성질이 다르기 때문이다:
+  `bead_blocked_by`는 서버가 매 스냅샷 완전 재계산하는 값이라 빈 배열이 "없다"이지만,
+  후속은 peer 스냅샷이 아직 없으면 그 레포의 후속을 세지 못해 빈 배열이 "모른다"일 수
+  있다. 합집합은 어느 원천도 다른 원천의 사실을 지우지 않는다. `root_dirs`도 두 원천을
+  합친다.
+- 각 후속 ID의 `root_dir` 결정 순서(두 탭 공통): (1) 서버 `root_dirs[id]`; (2) 없으면 ID
+  접두사가 카드의 레포 접두사와 같으면(`isForeignBlocker`가 거짓) **카드의
   `item.root_dir`** — 레인에 없는 열린 후속(예: `worker-ineligible` 이슈)은 `locations`에
   없으므로, 이 단계가 없으면 다른 레포가 활성인 상태에서 현재 레포로 잘못 연다;
   (3) 그 외 타 레포는 `locations.get(id)?.root_dir`; (4) 셋 다 없으면 `openable`이
-  아니다.
-- Worker의 `openable`: 같은 레포는 항상(현재 워크스페이스), 타 레포는 `root_dirs`를
-  아는 것만(§4.2).
+  아니다. Worker 탭은 워크스페이스가 하나라 (2)에서 사실상 항상 열리고, 타 레포 후속만
+  (1)/(3)에 걸린다 — 별도 규칙을 두지 않는다.
+- Worker 뷰의 `chipsWithOverlaps`는 투영이 실은 `released`·`dependents`를 그대로
+  지키므로(`kept`), 이 부착 하나로 네 레인 전부에 `→` 칩이 선다. 선행 칩만 Worker 어휘로
+  다시 만드는 현행 분기는 그대로다.
 - 후보 정렬 체인의 `후속 많은 순`(UI-d13v §4)은 `dependents_info.count`를 그대로 읽는다
   — 정렬 키는 바꾸지 않는다.
 
@@ -255,7 +272,7 @@ export function chipPopoverTemplate(content) // → <div class="chip-popover" ro
 - `attach(root)`: `document`에 click(캡처 아님)·keydown(Esc) 리스너를 한 번 건다.
   `.chip-popover, .judgement-chip` 안의 클릭은 무시한다. `detach()`는 뷰 unmount에서.
 - 콘텐츠 구성은 뷰가 한다: `{ title: string, lines: string[] }`. 템플릿은 제목 한 줄과
-  `<ul>`뿐이다. 칩 종류별 문장은 §4.5 표를 `lanes.js`의 `judgementPopoverContent(item,
+  `<ul>`뿐이다. 칩 종류별 문장은 §4.5 표를 `worker/lanes.js`의 `judgementPopoverContent(item,
   chip_key)` 하나가 만든다(두 탭 공유).
 - 렌더 위치: 그 칩이 속한 줄(§4.5 — 후보 카드는 정체성 줄, 대기·PR 대기·완료 행은
   `.worker-chips`, 실행 타일은 `.rtile__meta`) 바로 아래, 카드 안 절대 배치(기존
@@ -301,6 +318,8 @@ bead_dependents: Record<bead_id, { ids: string[], root_dirs?: Record<string, str
   peer 스냅샷은 있는 것만 센다 — 그래서 한 bead의 빈 배열은 "없다"가 아니라 "보이는
   스냅샷 안에는 없다"이며, 소비자는 이 값을 후보 `dependents_info`와 **합집합**으로만
   쓴다(§4.4). 컨텍스트 조립이 던지면 로그 한 줄과 함께 키 전체를 생략한다.
+- Worker 탭은 `workspace-adapter.js`가 큐 스냅샷을 그대로 펼쳐(`...q`) 워크스페이스에
+  싣는 경로를 이미 갖고 있으므로 어댑터는 바뀌지 않는다.
 - 비영속, Worker 런타임 미소비(`policy.test.js`에 불변 케이스 1개).
 - `app/protocol.md`: `bead_scope` 단락 옆에 `bead_dependents` 단락, `dependents_info`
   단락의 "최대 5개"를 전량·`root_dirs`로 고친다.
@@ -322,7 +341,9 @@ bead_dependents: Record<bead_id, { ids: string[], root_dirs?: Record<string, str
 
 - **UI-251y** `2026-08-25-card-header-grammar-unify-design.md`: §2 표 4번 줄을 4a/4b로,
   §5.1 슬롯 표 4번을 `4a 의존 · 4b 정보`로 나누고 `연결 레인 칩`을 5번으로 옮긴다.
-  `정정(UI-8x90)` 문단으로 근거를 남긴다. §6 "칩의 문구·툴팁·색·클릭 동작은 바꾸지
+  `정정(UI-8x90)` 문단으로 근거를 남긴다 — 그 스펙은 이미 `정정(UI-anna)`·
+  `정정(UI-8w4t)`·`정정(UI-rj02)`·`정정(UI-5ksp)`·`정정(UI-lx45)` 문단을 갖고 있으므로
+  각 절의 마지막 정정 문단 뒤에 붙인다. §6 "칩의 문구·툴팁·색·클릭 동작은 바꾸지
   않는다"에 이 스펙이 바꿨다는 정정 한 줄.
 - **UI-qm12** §5.3·§5.4: 팝오버·1클릭 배치 제거 정정. §1의 "팝오버에서 1클릭 배치"
   결정이 이 스펙으로 대체됐음을 적는다.
@@ -372,15 +393,16 @@ RED seam은 지금 구현에서 **실패하고** 변경 후 통과하는 케이�
   `복잡` 팝업 본문에 §4.6 문장.
 - `app/views/chip-popover.test.js`(신규 모듈): toggle/close/isOpen, 바깥 클릭·Esc 닫힘,
   팝업·칩 안 클릭 무시, detach 후 리스너 없음.
-- `app/views/worker/index.test.js`: `candidateReleasedChips`가 해제 3개 이상을 전부
-  돌려주고 ` 외 n`이 없다(지금은 2개+` 외 n`); `dependents_by_bead` 합집합(큐 장식 ∪
-  후보 `dependents_info`, 빈 큐 장식이 후보 재료를 지우지 않음); 대기·직렬·실행중·PR
-  대기 행에 `dependents` 부착(지금은 후보만); `.worker-dep__open` 클릭이 `→`·`⧉`에서도
+- `app/views/worker/lane-model.test.js`: `releasedChipsFor`가 해제 3개 이상을 전부
+  돌려주고 ` 외 n`이 없다(지금은 2개+` 외 n`); `bead_dependents` → `dependents` 부착과
+  후보 `dependents_info`와의 합집합(빈 워크스페이스 장식이 후보 재료를 지우지 않음);
+  대기·후보·실행중·PR 대기 네 레인 모두에 부착(지금은 후보만); 선행 칩이 없는
+  항목에도 후속 칩이 선다; `root_dir` 결정 순서 §4.4(서버 → 같은 레포면
+  `item.root_dir` → `locations` → 없으면 비활성), 특히 레인에 없는 같은 레포 후속이
+  카드의 `root_dir`을 받는 케이스.
+- `app/views/worker/index.test.js`: 투영이 실은 `dependents`가 Worker 행까지
+  살아남는다(`chipsWithOverlaps`의 `kept`); `.worker-dep__open` 클릭이 `→`·`⧉`에서도
   `openBlocker`로 간다; 판정 칩 클릭이 팝업을 열고 카드 클릭으로 흐르지 않는다.
-- `app/views/monitor/lanes.test.js`: `bead_dependents` → `dependents` 부착; `root_dir`
-  결정 순서 §4.4(서버 → 같은 레포면 `item.root_dir` → `locations` → 없으면 비활성),
-  특히 레인에 없는 같은 레포 후속이 카드의 `root_dir`을 받는 케이스; `cross_lane_chip`
-  항목 필드; 겹침 칩 `openable` 규칙.
 - `app/views/monitor/index.test.js`: `→`·`⧉` `.worker-dep__open` → `openRow`(다른
   레포가 활성인 상태에서 전환 후 열림 포함); 판정 칩 팝업.
 - `app/views/detail-panel/index.test.js`: 의존성 칩 라벨 §3(지금은 `막는`/`막히는`
@@ -398,6 +420,8 @@ RED seam은 지금 구현에서 **실패하고** 변경 후 통과하는 케이�
 
 - `app/views/worker/queue-overlaps.test.js`: `workerPlacementPlan` 삭제에 맞춰 배치
   케이스 제거; `deriveWorkerOverlaps` 불변.
+- `app/views/worker/lane-model.test.js`: `applyScopeOverlaps`의 `overlaps[]`·
+  `scope_missing`·`openable` 파생 불변; `cross_lane_chip`이 항목 최상위에 남는다.
 - `app/views/worker/lanes.test.js`·`monitor/index.test.js`: `mon-overlap` 클래스·
   `overlapPopoverTemplate`·`mon-overlap__place` 부재; `mon-lane__chip` 스크롤 불변;
   `open_overlap`·배치 op 부재.
@@ -461,15 +485,18 @@ RED seam은 지금 구현에서 **실패하고** 변경 후 통과하는 케이�
   - 실제 트레이드오프: **성립** — runnable 행과 큐 항목에 각각 싣는 대안 대신 장식 하나를
     택했다. 하나만 성립하므로 ADR이 아니다.
 
-이 저장소 `docs/adr/`에는 `README.md` 인덱스가 없고 기존 ADR 2건(001·002)은 목록 push
-설계라 충돌하지 않는다.
+이 저장소 `docs/adr/`에는 UI-ucni가 만든 생성 인덱스 `README.md`가 있다(직접 편집 금지,
+`adr` 스킬 소유). 현재 유효한 결정 중 이 설계와 접하는 것은 ADR 0014(단일 `buildLanes`
+계약과 공유 슬롯 표)뿐이며 충돌하지 않는다 — 이 스펙은 조립기를 나누지 않고, 슬롯 4를
+쪼개기 전에 공유 슬롯 표(UI-251y §5.1)를 먼저 갱신하는 그 ADR의 규칙을 §8에서 따른다.
+나머지 결정은 머지 자격·배포·데이터 계층이라 접점이 없다.
 
 ## 구현 unit 후보
 
 1. `server`: `server/list-adapters.js` · `server/ws/worker-handlers.js` ·
    `app/protocol.md` · 서버 테스트
 2. `cards`: `app/views/chip-popover.js` · `app/views/worker/{queue-blockers,
-   queue-overlaps,lanes,running-grid,index}.js` · `app/views/monitor/{lanes,index}.js` ·
+   queue-overlaps,lanes,lane-model,running-grid,index}.js` · `app/views/monitor/index.js` ·
    `app/utils/rec-settings.js` · CSS · 뷰 테스트
 3. `detail+docs`: `app/views/detail-panel/{index,effective-settings-view}.js` · 스펙
    정정 6건 · `AGENTS.md` · `npm run build` 산출물
