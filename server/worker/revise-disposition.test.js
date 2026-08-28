@@ -34,10 +34,10 @@ function harness(over = {}) {
   /** @type {any[]} */
   const bd_writes = [];
   let issue = {
-    status: 'blocked',
+    status: 'open',
     metadata: {
       spec_review: `codex@${OLD_SHA}`,
-      blocked_reason: 'spec_review_stale:revise'
+      awaiting_user: 'spec_review_stale:revise'
     }
   };
   const bd = {
@@ -309,16 +309,34 @@ describe('revise disposition — completion verdict', () => {
     const h = harness();
     await h.disposition.fix('UI-1');
     h.setIssue({
-      status: 'blocked',
+      status: 'open',
       metadata: {
         spec_review: `skipped@${FIX_SHA}`,
-        blocked_reason: 'spec_review_stale:revise'
+        awaiting_user: 'spec_review_stale:revise'
       }
     });
 
     const result = await h.disposition.complete({ bead_id: 'UI-1' });
 
     expect(result).toEqual({ ok: false, reason: 'still_blocked' });
+  });
+
+  test('rejects an awaiting_user key left behind with an emptied value', async () => {
+    for (const value of [null, '', 0]) {
+      const h = harness();
+      await h.disposition.fix('UI-1');
+      h.setIssue({
+        status: 'open',
+        metadata: {
+          spec_review: `skipped@${FIX_SHA}`,
+          awaiting_user: value
+        }
+      });
+
+      const result = await h.disposition.complete({ bead_id: 'UI-1' });
+
+      expect(result).toEqual({ ok: false, reason: 'still_blocked' });
+    }
   });
 
   test('rejects a receipt commit that is not published on the base upstream', async () => {
@@ -355,7 +373,7 @@ describe('revise disposition — completion verdict', () => {
 });
 
 describe('revise disposition — approve', () => {
-  test('writes the receipt, lineage, status and unblock in ONE bd update', async () => {
+  test('writes the receipt, lineage and unpark in ONE bd update', async () => {
     const h = harness();
 
     const result = await h.disposition.approve('UI-1');
@@ -365,10 +383,17 @@ describe('revise disposition — approve', () => {
     expect(h.bd_writes[0]).toMatchObject({
       id: 'UI-1',
       set: { spec_review: `skipped@${TIP_SHA}` },
-      unset: ['blocked_reason'],
-      status: 'open'
+      unset: ['awaiting_user']
     });
     expect(h.bd_writes[0].append_notes).toContain(`codex@${OLD_SHA}`);
+  });
+
+  test('writes no status: the park never changed one', async () => {
+    const h = harness();
+
+    await h.disposition.approve('UI-1');
+
+    expect(Object.hasOwn(h.bd_writes[0], 'status')).toBe(false);
   });
 
   test('resumes auto_advance on success', async () => {

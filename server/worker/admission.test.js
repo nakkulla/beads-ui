@@ -148,6 +148,59 @@ describe('worker/admission fail-closed validator', () => {
     expect(gitRun).not.toHaveBeenCalled();
   });
 
+  test('rejects an awaiting_user bead before environment and git probes', async () => {
+    const gitRun = makeGitRun();
+    const ghAvailable = vi.fn(async () => true);
+
+    const r = await validateAdmission({
+      gitRun,
+      ghAvailable,
+      repo: '/repo',
+      base: BASE,
+      bead: { ...makeBead(), awaiting_user: 'spec_review_stale:revise' }
+    });
+
+    expect(r).toEqual({ ok: false, reason: 'awaiting_user' });
+    expect(ghAvailable).not.toHaveBeenCalled();
+    expect(gitRun).not.toHaveBeenCalled();
+  });
+
+  test('rejects an awaiting_user key whatever its value', async () => {
+    for (const value of ['', '   ', null, 0, { reason: 'x' }]) {
+      const r = await validateAdmission({
+        gitRun: makeGitRun(),
+        repo: '/repo',
+        base: BASE,
+        bead: { ...makeBead(), awaiting_user: value }
+      });
+
+      expect(r).toEqual({ ok: false, reason: 'awaiting_user' });
+    }
+  });
+
+  test('admits a bead that carries no awaiting_user key', async () => {
+    const bead = makeBead();
+
+    const r = await run(makeGitRun(), bead);
+
+    expect(Object.hasOwn(bead, 'awaiting_user')).toBe(false);
+    expect(r).toEqual({ ok: true });
+  });
+
+  test('refuses a worker-ineligible bead before the awaiting_user check', async () => {
+    const r = await validateAdmission({
+      gitRun: makeGitRun(),
+      repo: '/repo',
+      base: BASE,
+      bead: {
+        ...makeBead({ labels: ['worker-ineligible'] }),
+        awaiting_user: 'spec_review_stale:revise'
+      }
+    });
+
+    expect(r).toEqual({ ok: false, reason: 'worker_ineligible' });
+  });
+
   test('passes a fresh spec_backed bead with a reviewer receipt', async () => {
     const gitRun = makeGitRun();
     const r = await run(gitRun, makeBead());

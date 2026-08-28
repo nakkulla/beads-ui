@@ -1729,6 +1729,16 @@ const SESSION_PREFERRED_TOOLTIP = {
 };
 
 /**
+ * 사용자 결정 대기 파킹의 사유 파트 접두사 (UI-dqg9 §2.2). 투영(`worker/index.js`)이
+ * 뒤에 계약 값을 붙여 `item.reason`에 싣고, 여기 place 버튼 title이 그 파트를
+ * 접두사로 되읽는다 — `missing_description`과 같은 관용이되, 값이 가변이라
+ * 완전일치 대신 접두사로 맞춘다.
+ *
+ * @type {string}
+ */
+export const AWAITING_USER_REASON_PREFIX = '사용자 리뷰 필요';
+
+/**
  * One candidate `.worker-card` (spec §2, mockup 변형 B). Richer than
  * {@link miniRow}: a route chip + the Board's route-driven stepper. It keeps
  * miniRow's row contract (`draggable` / `data-bead-id` / `data-lane`), but the
@@ -1773,9 +1783,12 @@ export function candidateCard(item, place_menu = null, options = {}) {
   const session_preferred_tooltip =
     SESSION_PREFERRED_TOOLTIP[item.session_preferred_reason || ''] || '';
   const workflow = item.workflow;
-  const missing_description =
-    typeof item.reason === 'string' &&
-    item.reason.split(' · ').includes('missing_description');
+  const reason_parts =
+    typeof item.reason === 'string' ? item.reason.split(' · ') : [];
+  const missing_description = reason_parts.includes('missing_description');
+  const awaiting_user = reason_parts.some((part) =>
+    part.startsWith(AWAITING_USER_REASON_PREFIX)
+  );
   const danger =
     typeof item.reason === 'string' && item.reason.startsWith('⛔');
   const deps_el = dependencyChipsTemplate(item.dependency_chips);
@@ -1877,9 +1890,11 @@ export function candidateCard(item, place_menu = null, options = {}) {
                 ? '대기 큐 맨 뒤에 추가'
                 : worker_ineligible
                   ? 'worker-ineligible label로 워커에서 실행할 수 없습니다'
-                  : missing_description
-                    ? 'description이 없어 대기 큐에 넣을 수 없습니다'
-                    : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
+                  : awaiting_user
+                    ? '사용자 리뷰를 기다리는 중이라 대기 큐에 넣을 수 없습니다'
+                    : missing_description
+                      ? 'description이 없어 대기 큐에 넣을 수 없습니다'
+                      : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
             >
               대기로 ↴
             </button>`}

@@ -298,6 +298,14 @@ export function createLiveBd(config) {
       const session_ref = Object.hasOwn(md, 'session_ref')
         ? md.session_ref
         : undefined;
+      // 여기만 presence 규칙이 반대다. 다른 입력은 부재를 `undefined` 값으로
+      // 눕혀도 되지만, admission은 `awaiting_user`를 **키 존재**로 판정한다
+      // (값 형식을 보지 않는다). `undefined`를 항상 채우면 모든 Bead에서
+      // `Object.hasOwn`이 참이 되어 전부 거부되므로, 키가 있을 때만 조건부
+      // spread로 실어 보낸다.
+      const awaiting_user_entry = Object.hasOwn(md, 'awaiting_user')
+        ? { awaiting_user: md.awaiting_user }
+        : {};
 
       const resolved = await config.resolveBase();
 
@@ -382,6 +390,7 @@ export function createLiveBd(config) {
         issue_type,
         quick_fix_review,
         session_ref,
+        ...awaiting_user_entry,
         deps: blocks_blockers,
         blocked_by: blocks_blockers
       };
@@ -896,7 +905,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     );
 
   // REVISE-parking disposition (UI-hs11 §3.2–§3.4): the two human clicks that
-  // dispose of a bead parked at `blocked_reason=spec_review_stale:revise`.
+  // dispose of a bead parked at `awaiting_user=spec_review_stale:revise`.
   // Wired with the SAME queue store, parking-observation cache, lock manager
   // and scheduler the decoration and dispatch use, so a click can never act on
   // a different view of the world than the badge it followed.

@@ -21,7 +21,7 @@ export const CHIP_TOGGLES = [
   ['fast_track', '⚡ fast_track 칩'],
   ['pr', 'PR 칩'],
   ['from', '↩ from 칩'],
-  ['blocked', 'blocked 사유 칩'],
+  ['blocked', 'blocked·사용자 리뷰 필요 칩'],
   ['stepper', 'stepper']
 ];
 

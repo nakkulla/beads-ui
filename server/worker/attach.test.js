@@ -1517,6 +1517,82 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.labels).toEqual(['worker-ineligible', 'frontend']);
   });
 
+  test('snapshotBead carries awaiting_user only when the key exists', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: {
+            id: 'UI-1',
+            status: 'open',
+            metadata: { awaiting_user: 'spec_review_stale:revise' }
+          }
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const snap = await bd.snapshotBead('UI-1');
+
+    expect(Object.hasOwn(snap, 'awaiting_user')).toBe(true);
+    expect(snap.awaiting_user).toBe('spec_review_stale:revise');
+  });
+
+  test('snapshotBead omits the awaiting_user own-property when the key is absent', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: { id: 'UI-1', status: 'open', metadata: {} }
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const snap = await bd.snapshotBead('UI-1');
+
+    expect(Object.hasOwn(snap, 'awaiting_user')).toBe(false);
+  });
+
+  test('snapshotBead keeps a null awaiting_user present', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: {
+            id: 'UI-1',
+            status: 'open',
+            metadata: { awaiting_user: null }
+          }
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const snap = await bd.snapshotBead('UI-1');
+
+    expect(Object.hasOwn(snap, 'awaiting_user')).toBe(true);
+    expect(snap.awaiting_user).toBeNull();
+  });
+
   test('snapshotBead resolves native spec_id and ignores a differing metadata spec_id', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {

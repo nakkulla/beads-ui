@@ -1,7 +1,7 @@
 /**
  * REVISE-parking disposition actions (UI-hs11 §3.2–§3.4).
  *
- * A bead parked at `blocked_reason=spec_review_stale:revise` is disposed of by
+ * A bead parked at `awaiting_user=spec_review_stale:revise` is disposed of by
  * a human click in the Worker tab. The click is a session-external human action
  * of the same standing as the merge click and IS explicit user approval — the
  * authority semantics belong to the workflow contract (dotfiles
@@ -60,7 +60,7 @@ export function reviseFixPrompt(input) {
       '절차(workflow 계약 "REVISE parking disposition" 소유):',
       '1. 이 비드 notes에 기록된 REVISE findings를 읽고 스펙에 반영한다.',
       `2. 수정은 resolved target_base 체크아웃(${input.repo})에서 하고 거기서 커밋·퍼블리시한다 (fetch, ff-only 동기화, push, ahead == 0).`,
-      '3. `spec_review = skipped@<수정 커밋 40hex>` 와 notes 계보(원 영수증·findings·수정 커밋 SHA)를 같은 `bd update`로 기록하고, 그 동일 쓰기에서 `status=open` 과 `blocked_reason` 해제까지 함께 수행한다. readback 필수.',
+      '3. `spec_review = skipped@<수정 커밋 40hex>` 와 notes 계보(원 영수증·findings·수정 커밋 SHA)를 같은 `bd update`로 기록하고, 그 동일 쓰기에서 `awaiting_user` 해제(상태는 바꾸지 않는다)까지 함께 수행한다. readback 필수.',
       '4. 종료한다.'
     ].join('\n'),
     '금지: 재리뷰 디스패치 · 구현 착수 · PR 생성. 구현은 이 처분이 끝난 뒤 워커 일반 레인이 새 세션으로 재디스패치한다.'
@@ -243,7 +243,7 @@ export function createReviseDisposition(deps) {
    * server-side write and the session-side write are judged by the same rule.
    *
    * @param {string} bead_id
-   * @returns {Promise<{ ok: true, receipt: string|null, status: string, blocked_reason: unknown }|{ ok: false, reason: string }>}
+   * @returns {Promise<{ ok: true, receipt: string|null, status: string, awaiting_user_present: boolean }|{ ok: false, reason: string }>}
    */
   async function readBack(bead_id) {
     /** @type {Record<string, any>} */
@@ -262,7 +262,10 @@ export function createReviseDisposition(deps) {
       ok: /** @type {const} */ (true),
       receipt: typeof md.spec_review === 'string' ? md.spec_review : null,
       status: typeof issue.status === 'string' ? issue.status : '',
-      blocked_reason: md.blocked_reason
+      // 존재 여부로 판정한다. `!= null` 비교로 바꾸면 키가 남아 있으나 값이
+      // `null`·빈 문자열인 상태를 해제 성공으로 오판하고, 그 뒤 admission이
+      // 같은 Bead를 계속 거부한다.
+      awaiting_user_present: Object.hasOwn(md, 'awaiting_user')
     };
   }
 
@@ -431,11 +434,12 @@ export function createReviseDisposition(deps) {
     /**
      * The disposition session's completion verdict (§3.3), called by the
      * scheduler in place of the PR-existence check. Success requires ALL of:
-     * the receipt refreshed to a NEW `skipped@<40hex>`, the bead back at
-     * exactly `open` with no `blocked_reason`, and the receipt commit published
-     * on the base's upstream. Anything else is a failure the banner reports.
+     * the receipt refreshed to a NEW `skipped@<40hex>`, the `awaiting_user`
+     * key gone, the bead at exactly `open`, and the receipt commit published on
+     * the base's upstream. Anything else is a failure the banner reports.
      *
-     * `open` is checked exactly, not merely "not blocked": the acceptance
+     * Parking never moved the status, so an `open` bead is still `open` after
+     * the disposition; `open` is checked exactly, not merely "not parked": the acceptance
      * criterion is that the ORDINARY lane re-dispatches the implementation, and
      * a `resolved`/`closed` bead never becomes ready again — that would end the
      * disposition looking successful with the work silently dropped.
@@ -475,7 +479,7 @@ export function createReviseDisposition(deps) {
         ) {
           return refuse('receipt_not_refreshed');
         }
-        if (back.status !== 'open' || back.blocked_reason != null) {
+        if (back.awaiting_user_present !== false || back.status !== 'open') {
           return refuse('still_blocked');
         }
         const sha = receipt.slice(DISPOSITION_RECEIPT_PREFIX.length);
@@ -492,9 +496,9 @@ export function createReviseDisposition(deps) {
     /**
      * Run the delta approval behind [승인하고 진행] (§3.4).
      *
-     * No session at all: the server writes the
-     * receipt refresh, the notes lineage, the status return and the
-     * `blocked_reason` clear in ONE `bd update`, then reads it back.
+     * No session at all: the server writes the receipt refresh, the notes
+     * lineage and the `awaiting_user` clear in ONE `bd update`, then reads it
+     * back. No status is written: the park never changed one.
      *
      * @param {string} bead_id
      * @returns {Promise<{ ok: boolean, reason?: string, sha?: string }>}
@@ -528,8 +532,7 @@ export function createReviseDisposition(deps) {
         try {
           await deps.bd.updateFields(bead_id, {
             set: { spec_review: receipt },
-            unset: ['blocked_reason'],
-            status: 'open',
+            unset: ['awaiting_user'],
             append_notes: dispositionNotes({
               kind: 'approve',
               receipt: observation.receipt,
@@ -548,7 +551,7 @@ export function createReviseDisposition(deps) {
         if (back.receipt !== receipt) {
           return refuse('receipt_not_refreshed');
         }
-        if (back.status !== 'open' || back.blocked_reason != null) {
+        if (back.awaiting_user_present !== false || back.status !== 'open') {
           return refuse('still_blocked');
         }
         deps.parked.invalidate(workspace, bead_id);

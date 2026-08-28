@@ -45,6 +45,20 @@ Read data flows through subscriptions, never one-shot list RPCs.
 The detail panel uses the same mechanism with a `detail:<id>` client id and an
 `issue-detail` spec.
 
+### `blocked-issues` 구독 (UI-dqg9 §2.1)
+
+`blocked-issues`의 소스는 `bd ready --explain`의 `blocked` 목록 하나다 — 즉
+**의존성 차단만** 담는다. 저장 상태 `blocked` 조회는 없다: 워크플로우 계약은
+사용자 결정 대기를 `metadata.awaiting_user`로 파킹하고 상태를 바꾸지 않으므로,
+파킹된 Bead는 자기 상태가 정하는 컬럼(ready / in_progress …)에 그대로 남는다.
+
+- 각 항목은 `blocked_info: { blockers: string[] }`를 얻는다. 먼저 착지해야 하는
+  Bead id 목록이며, 그 외 키는 없다.
+- 카드의 `⏸ 사용자 리뷰 필요: <값>` chip은 `blocked_info`가 아니라 이슈의
+  `metadata.awaiting_user`를 읽는다. 값 어휘는 계약이 소유하고 UI는 검증하지
+  않으며, 키가 없거나 metadata를 읽을 수 없으면 chip 없이 렌더한다(fail-quiet).
+  chip은 어느 컬럼에서든 같은 자리에 선다.
+
 ### `ready-issues` / `blocked-issues` partial decorations (UI-d13v §3.3/§3.5/§3.7)
 
 Items of these two types carry additive display decorations derived from the

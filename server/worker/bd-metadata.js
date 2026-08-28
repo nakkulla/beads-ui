@@ -387,10 +387,10 @@ export function createBdMetadata(deps = {}) {
      * ONE `bd update` carrying every field of a single logical transition
      * (metadata set/unset + status + notes lineage). The REVISE disposition
      * contract (dotfiles `docs/contracts/workflow.md`) requires the receipt
-     * refresh, the notes lineage, the status return and the `blocked_reason`
-     * clear to land in the SAME write: a split write can leave a bead
-     * unblocked with a stale receipt, which the admission gate would then
-     * admit as if the disposition had never happened.
+     * refresh, the notes lineage and the `awaiting_user` clear to land in the
+     * SAME write: a split write can leave a bead unparked with a stale
+     * receipt, which the admission gate would then admit as if the disposition
+     * had never happened. `status` stays available for other transitions.
      *
      * A non-zero exit throws, like every other mutator here.
      *
