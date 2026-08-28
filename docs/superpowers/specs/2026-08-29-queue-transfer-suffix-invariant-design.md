@@ -170,6 +170,18 @@ attempts after a transfer` 등)은 접미 규칙의 기대로 갱신한다. 구�
 - reader의 `readAttemptsForBead` 합집합 이관(대안 A) — 채택하지 않음.
 - 실패 분류·큐 정지(UI-5ym8), 보존 정책 자체(§8), dotfiles 계약.
 
+## 11. 교차 (scope overlap)
+
+- **UI-8jau** (`in_progress`, `2026-08-28-worker-prerequisite-wait-tier-design.md`):
+  `server/worker/queue-store.js`를 공유한다. 같은 파일의 **다른 함수** — UI-8jau는
+  `TERMINAL_ATTEMPT_STATUSES`와 직렬 레인 해제 집합에 `'waiting'`을 더하고
+  `PROCESSED_TERMINAL_STATUSES`에는 넣지 않는다(그 스펙 §4.5). 이 스펙의 §3은
+  `isProcessedTerminalAttempt`를 그대로 쓰므로 `waiting`은 미처리로 읽혀 접미를 막는다 —
+  UI-8jau의 기대("`waiting` attempt는 `transferableAttempts`에 들지 않음", 그 스펙 §7 (h))는
+  접미 규칙 아래에서도 그대로 성립한다. 의존 edge는 두지 않는다(어느 쪽이 먼저 착지해도
+  다른 쪽의 판정이 바뀌지 않음); 뒤에 착지하는 쪽이 `queue-store.test.js`의 textual
+  충돌만 해소한다.
+
 ## 구현 unit 후보
 
 단일 unit: `server/worker/queue-store.js`(`transferableAttempts`·`heldBeads`·
