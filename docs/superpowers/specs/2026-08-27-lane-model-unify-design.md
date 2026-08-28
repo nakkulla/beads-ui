@@ -39,15 +39,15 @@ UI-5ksp가 레인 **표면**(pane·대기 본문·접기·폭·토큰·모바일
 
 | | Worker | Monitor |
 |---|---|---|
-| 조립 함수 | `app/views/worker/index.js` `buildModel()` (~3035–4798, `createWorkerView` 클로저) | `app/views/monitor/lanes.js` `buildLanes(workspaces, workspaces_state, options)` (~1106–2429, export) |
+| 조립 함수 | `app/views/worker/index.js` `buildModel()` (~2832–4574, `createWorkerView` 클로저) | `app/views/monitor/lanes.js` `buildLanes(workspaces, workspaces_state, options)` (~1152–2480, export) |
 | 입력 | `worker-queue` 스냅샷 + Board live store(Ready·Blocked·In-progress·Resolved·Closed) + `analysisStore` + `uiOrderStore` + `transport('get-comments')` | `monitor-pipeline` 스냅샷(`workspaces[]`, `workspaces_state[]`, `cross_lanes`) |
-| 출력 | `{ queue, idToTitle, candidates, candidate_hidden, running, live_count, slots, over_cap, failure, waiting, serial_lanes, serial_lane_count, running_overlays, pr_wait, merge_queue_*, auto_excluded, declared_base, done, token_total, cleanup_failures, repo_operations }` | `MonitorLanes` — `{ runnable, runnable_all, runnable_hidden, runnable_sections, runnable_flat, queue, queue_groups, running, pr_wait, done, parallel_rows, chain_lanes, cross_lanes_revision, cross_lanes_unreadable, parallel_raw_length, owner_of }` |
+| 출력 | `{ queue, idToTitle, candidates, candidate_hidden, running, live_count, slots, over_cap, waiting, serial_lanes, serial_lane_count, running_overlays, pr_wait, merge_queue_*, auto_excluded, declared_base, done, token_total, cleanup_failures, repo_operations }` | `MonitorLanes` — `{ runnable, runnable_all, runnable_hidden, runnable_sections, runnable_flat, queue, queue_groups, running, pr_wait, done, parallel_rows, chain_lanes, cross_lanes_revision, cross_lanes_unreadable, parallel_raw_length, owner_of }` |
 | 드롭 식별자 | pane `data-lane`(`candidate`·`queue`·`s1..s5`), `onDrop`이 DOM 순서로 인덱스 계산 → `placeBead`/`reorderBead`/`removeBead` | 행 컨테이너 `data-drop`/`data-root-dir`/`data-lane-id`/`data-lane-length`, `dropTarget()` → `planDrop()` → `sendPlan()` |
-| 테스트 | `buildModel`은 private — `index.test.js`(14,137줄)가 DOM으로만 간접 검증 | `lanes.test.js` 146건이 `buildLanes`를 직접 호출 |
+| 테스트 | `buildModel`은 private — `index.test.js`(14,296줄)가 DOM으로만 간접 검증 | `lanes.test.js` 146건이 `buildLanes`를 직접 호출 |
 
 admission 뱃지·직렬 레인 점유·실행 출발 레인·의존/겹침 칩·PR 대기·완료 행이 따로
 구현돼 있어 한쪽 수정이 다른 쪽에 반영되지 않는다. 그 실증이 흡수된 UI-e9sg다:
-Monitor PR 대기·완료 레인 본문(`monitor/index.js` ~1819, 모바일 `지금` ~1853)이
+Monitor PR 대기·완료 레인 본문(`monitor/index.js` ~1826, 모바일 `지금` ~1860)이
 `miniRow(item)`을 `withOverlaps` 없이 호출해 투영이 계산한 `⧉ 겹침`·`scope 없음` 칩을
 버린다.
 
@@ -73,7 +73,7 @@ Monitor PR 대기·완료 레인 본문(`monitor/index.js` ~1819, 모바일 `지
 - Worker 후보 레인은 Monitor 후보 레인보다 **넓다**. `RunnableItem`은 자격 통과분만
   (`worker-ineligible`·spec 미발행·description 없음은 서버가 제외)이고, Worker는
   Ready+Blocked 전부를 그리며 `worker_ineligible`·`spec 없음`·`missing_description`·
-  `spec_id_conflict`를 `reason`·음영으로 보여 준다(`index.js` ~3503–3600). UI-d13v는
+  `spec_id_conflict`를 `reason`·음영으로 보여 준다(`index.js` ~3214–3394). UI-d13v는
   이 Board 경로 위에 `release_info`·`dependents_info`·정렬 체인을 얹는다.
 - Monitor `planDrop`(`app/views/monitor/drop-plan.js` ~740)이 내는 큐 op는
   `worker-queue-place`·`worker-queue-reorder`·`worker-queue-remove`·
@@ -81,51 +81,69 @@ Monitor PR 대기·완료 레인 본문(`monitor/index.js` ~1819, 모바일 `지
   메시지와 같다. chain 계열(`monitor-lane-*`·`dep-add`·`dep-remove`)은
   `cross_lanes`가 있을 때만 나온다.
 - Monitor `running` 타일은 이미 `last_activity`·`legs`·`dependency_chips`를 싣는다
-  (`monitor/lanes.js` ~1424, ~1480). Worker `running_overlays`는 같은 재료를 타일 밖
+  (`monitor/lanes.js` ~1440–1530). Worker `running_overlays`는 같은 재료를 타일 밖
   `Map`으로 나르는 두 번째 경로다.
-- Monitor `buildLanes`에 **없는** Worker 계산: 미처리 실패 attempt 타일
-  (`createUnhandledFailurePredicate`), 실패 배너 `failure`, `live_count`/`over_cap`,
+- Monitor `buildLanes`에 **없는** Worker 계산: `live_count`/`over_cap`,
   quick_fix `landing` overlay(`prWaitProgress`), 머지 큐 위치·해소·continuation·
-  `autoSkipReason`·`auto_excluded`, `token_total`, `cleanup_failures` 배열,
-  세션 완료 행(`session_done_rows`, `get-comments` 비동기 조회 + 캐시 + `doRender()`
-  재호출, ~4195–4272), 병렬성 분석 `✳ serial 권장` 배지(UI-s582가 제거).
+  authority·`autoSkipReason`·`auto_excluded`(~3865–3890, ~4486–4495), `token_total`
+  (~4096), `cleanup_failures` 배열(~3150), 세션 완료 행(`session_done_rows`,
+  `get-comments` 비동기 조회 + 캐시 + `doRender()` 재호출, ~3973–4045), 병렬성 분석
+  `✳ serial 권장` 배지(UI-s582가 제거).
+- **미처리 실패 attempt 타일은 이미 한 판정이다.** UI-rj02(`a5b4cda`)가 Worker 실패
+  배너·✕ dismiss를 지우고 실패를 실행 중 레인의 결정 타일(원인 뱃지 + 상세 팝오버)로
+  만들면서, Monitor `activeByBead`(`monitor/lanes.js` ~395–530)도 같은 `failure`
+  타일 필드(`cause`·`cause_detail`·`resume_eligible`·`landed`·`confirmation` 등)를
+  싣게 됐다. 타일 선정 규칙은 `app/utils/active-attempts.js` `activeAttemptStates`
+  (마지막 구현 attempt·`done`으로 해소되지 않음·`dismissed_at` 없음)로, Worker
+  `createUnhandledFailurePredicate`(`server/worker/attempt-failure.js`)와 같은
+  술어다. 남는 차이는 Worker 타일 전용 필드 `discard`·`conflict_resolution`·
+  `base_exception`·`rollup`·`rollup_expanded`·`failure.open`(~3690–3760)뿐이며, 그중
+  `rollup_expanded`·`failure.open`은 뷰 로컬 상태(`rollup_expanded_ids`·
+  `open_failure_detail`)다.
 - **Worker의 Board live store 의존은 후보·세션 완료만이 아니다.** `buildModel`은
-  다섯 상태 열 전부에서 `idToPriority`·`idToFromId`(~3198–3225)와 이슈 `metadata`
-  (`beadRec`·`beadExecChips`, ~3132–3196)를 만들어 후보뿐 아니라 대기·직렬·실행·
-  PR 대기·완료 행에 `priority`·`from_id`·`rec`·`exec_chips`를 덧씌운다(~3650,
-  ~3817, ~3923, ~4675). 실행 설정 칩의 전역 값은 `transport('get-session-defaults')`
-  로 읽어 워크스페이스 키·generation 가드로 캐시하며(~1904–1980),
-  `createWorkerView`는 `refreshSessionDefaults()`를 공개 API로 노출한다(~1763).
+  다섯 상태 열 전부에서 `idToPriority`·`idToFromId`(~3027–3045)와 이슈 `metadata`
+  (`beadRec`·`beadExecChips`, ~2948–3020)를 만들어 후보뿐 아니라 대기·직렬·실행·
+  PR 대기·완료 행에 `priority`·`from_id`·`rec`·`exec_chips`를 덧씌운다(~3460,
+  ~3518, ~3750, ~4480). 실행 설정 칩의 전역 값은 `transport('get-session-defaults')`
+  로 읽어 워크스페이스 키·generation 가드로 캐시하며(~1820–1867),
+  `createWorkerView`는 `refreshSessionDefaults()`를 공개 API로 노출한다(~1867).
   `worker-queue` 스냅샷에는 `execution_defaults`가 있고, Monitor `workspaces_state`
   행은 서버가 `projectExecutionDefaults`(`monitor-handlers.js` ~574)와 서버 쪽
   `session_defaults` 캐시(~130–217)로 채운다. `buildLanes`는 그 행의
-  `runner_catalog`·`session_defaults`를 `pinnedExecChips`에 넘긴다(~513–525).
+  `runner_catalog`·`session_defaults`를 `pinnedExecChips`에 넘긴다(~564, ~1958).
 - **`buildLanes`는 대기·직렬·후보가 모두 없는 워크스페이스를 `queue_groups`에서
-  뺀다**(`monitor/lanes.js` ~2080–2097 `has_queue`·`roots_with_candidates`). 실행
+  뺀다**(`monitor/lanes.js` ~2137–2152 `has_queue`·`roots_with_candidates`). 실행
   중·PR 대기·완료·저장소 작업만 있는 정상 스냅샷에서는 그룹이 없다.
 - **Monitor `dropModel`은 투영만 읽지 않는다.** `settledBlockerSources()`가 스냅샷
   원본 `workspaces[].bead_blocked_by`·`runnable[].blocked_by`의 완전성을,
-  `blockedByMapWithDelta()`(~2414)가 이 세션이 보낸 `dep-add`/`dep-remove` 델타
-  (`rememberDep`)를 읽는다. CAS 충돌 시 `runPlanned`(~2841)는 서버가 돌려준
+  `blockedByMapWithDelta()`(~2421)가 이 세션이 보낸 `dep-add`/`dep-remove` 델타
+  (`rememberDep`)를 읽는다. CAS 충돌 시 `runPlanned`(~2848)는 서버가 돌려준
   `cross_lanes`로 `projectLanes(conflict)`를 다시 돌려 전체를 재계획하고,
-  `plan.correction`은 `noteCorrection(lane_id, corrected)`(~476)로 호출자 상태에
+  `plan.correction`은 `noteCorrection(lane_id, corrected)`(~478)로 호출자 상태에
   남는다.
-- **UI-d13v 확정 설계**(`2026-08-27-worker-candidate-sort-chain-release-chips-design.md`
-  §5–§6): 후보 카드 `draggable=false` 고정, 배치 자격은 `queue_placeable`
-  (`!done && !worker_ineligible`), Worker는 `uiOrderStore`를 읽지 않음, 정렬은
-  `app/views/worker/candidate-sort.js`의 원자 키 체인, 후보 행 `dependency_chips`에
-  `release_info`(7일 창·최대 2개·` 외 n`)와 `dependents_info` 칩을 싣는다. Monitor
-  runnable 행은 재료가 없어 fail-quiet.
+- **UI-d13v 착지 상태**(`1a78275`, PR #220;
+  `2026-08-27-worker-candidate-sort-chain-release-chips-design.md` §5–§6): 후보 카드
+  `draggable=false` 고정(`index.js` ~3349–3353), 배치 자격은 `queue_placeable`
+  (`eligible`), Worker는 `uiOrderStore`를 읽지 않음, 정렬은
+  `app/views/worker/candidate-sort.js`의 원자 키 체인(UI-8ham `8f4d5e3` 이후
+  blocked 하단 고정 없음 — 순서는 체인만이 정한다), 후보 행 `dependency_chips`에
+  `release_info`(7일 창·최대 2개·` 외 n`)와 `dependents_info` 칩(~3342)을 싣는다.
+  Monitor runnable 행은 재료가 없어 fail-quiet.
+- **admission 뱃지는 `⛔`뿐이다.** UI-d7fy(`2508bc2`)가 head-review 큐 계층을 지우며
+  `♻️ stale→재리뷰` 뱃지·`merge_queue[].head_review`·
+  `manual_merge_continuation.head_review_projection`이 스냅샷과 두 조립에서 모두
+  사라졌다.
 - `app/views/worker/queue-blockers.test.js`는 이미 `../monitor/lanes.js`의
   `buildLanes`를 import한다 — Worker 쪽이 Monitor 조립에 의존하는 방향이 이미 한 곳
   있다.
-- Monitor 드래그 코드: `collapsedDropTarget` ~3266–3287, `dropTarget` ~3296–3353,
+- Monitor 드래그 코드: `collapsedDropTarget` ~3273, `dropTarget` ~3303,
   `onPointerDown`/`onDragStart`/`onDragOver`/`onDragLeave`/`onDragEnd`/`onDrop`
-  ~3375–3563, `runPlanned` ~2841(CAS 충돌 1회 재시도), `applyDrop` ~2878,
-  `sendPlan` ~2722, `dropModel` ~2440. Worker: `onDragStart` ~5361, `onDragOver`
-  ~5401(`candidate`·`queue`·`s1..s5`만 허용), `onDrop` ~5478–5563.
+  ~3382–3560, `runPlanned` ~2848(CAS 충돌 1회 재시도), `applyDrop` ~2885,
+  `sendPlan` ~2729, `sendOp` ~2570, `dropModel` ~2447. Worker: `onDragStart` ~5204,
+  `onDragOver` ~5244(`queue`·`s1..s5`만 허용), `onDrop` ~5289, `placeBead`/
+  `reorderBead`/`removeBead` ~2068–2130.
 - `app/main.js`는 `worker-queue-snapshot` payload에서 `root_dir`가 현재
-  워크스페이스와 다르면 버리고 `worker_queue_store.set(p.queue)`만 저장한다(~1359).
+  워크스페이스와 다르면 버리고 `worker_queue_store.set(p.queue)`만 저장한다(~1407–1420).
   스토어(`app/data/worker-queue-store.js`)는 `root_dir`를 갖지 않는다; Worker 뷰는
   `getWorkspacePath?.()`로 경로를 얻는다.
 
@@ -232,9 +250,9 @@ export function createWorkspaceAdapter({ queueStore, issueStores, transport, get
   없는 Monitor runnable 행은 fail-quiet다.
 - 후보의 `reason` 문자열 조립(`BLOCKED_WITHOUT_IDS`·`missing_description`·
   `spec_id_conflict`·`spec 없음`·`spec 미발행(draft)`)은 어댑터가 하고, admission
-  뱃지(`⛔`·`♻️`)는 `buildLanes`가 `admission`에서 붙인다 — 지금 Monitor와 같다.
+  뱃지(`⛔`)는 `buildLanes`가 `admission`에서 붙인다 — 지금 Monitor와 같다.
   `buildLanes`는 `reason`이 있으면 admission 뱃지 앞에 ` · `로 잇는다.
-- **`session_done`**: `buildModel` ~4195–4272의 세션 완료 행 판정을 옮긴다. Closed
+- **`session_done`**: `buildModel` ~3973–4045의 세션 완료 행 판정을 옮긴다. Closed
   live store에서 Worker `done`에 없는 이슈 중 `comment_count > 0`인 것을
   `transport('get-comments')`로 조회해 `parseReport(...).lane === 'session'`이면 행을
   만든다. 캐시 키는 `${root_dir}\0${id}\0${updated_at}\0${comment_count}`,
@@ -259,20 +277,26 @@ Worker가 `buildModel`에서만 계산하던 것 중 **재료가 공유 스냅�
 
 | `queue_groups[i]` 추가 키 | 재료 | 지금 자리 |
 |---|---|---|
-| `failure: {…}\|null` | `attempts` 미처리 실패 중 최신 | `buildModel` ~4053 |
-| `failed_tiles: LaneItem[]` | `attempts` 미처리 실패(`createUnhandledFailurePredicate`), `running`과 **분리** — Monitor 실행 중 레인 표시를 바꾸지 않기 위해 | ~3741–4020 `failed_running` |
-| `live_count`, `over_cap` | 슬롯 점유 attempt 수 vs `slots` | ~4136–4167 |
-| `merge: { positions, resolutions, continuations, head_reviews, authorities, state, auto_excluded, running }` | `merge_queue`·`merge_queue_state`·`manual_merge_continuation` | ~4083–4134 |
-| `token_total: string\|null` | `done` 행 usage 합 | ~4273–4324 |
-| `cleanup_failures: […]` | `cleanup_failed` | ~3374–3427 |
-| `declared_base: string\|null` | `declared_base` | ~3806 |
-| `repo_operations` | 그대로 pass-through | ~4795 |
+| `live_count`, `over_cap` | 슬롯 점유 attempt 수 vs `slots` | ~3935–3944 |
+| `merge: { positions, resolutions, continuations, authorities, state, auto_excluded, running }` | `merge_queue`·`merge_queue_state`(`active`·`failures`·`waiting`)·`manual_merge_continuation` | ~3865–3890, ~4486–4495 |
+| `token_total: string\|null` | `done` 행 usage 합 | ~4096 |
+| `cleanup_failures: […]` | `cleanup_failed` | ~3150 |
+| `declared_base: string\|null` | `declared_base` | ~3587 |
+| `repo_operations` | 그대로 pass-through | ~4573 |
+
+- 미처리 실패 결정 타일은 **별도 키가 아니다**(§2): `buildLanes`의 `running`이 이미
+  `activeByBead`로 실패 타일을 `failure` 필드와 함께 싣는다. Worker `failed_running`
+  (~3620–3760)이 더 싣던 `discard`·`conflict_resolution`·`base_exception`·`rollup`은
+  같은 자리(실행 중 타일)의 필드로 옮기고, 뷰 로컬 상태인 `rollup_expanded`·
+  `failure.open`은 `buildLanes`가 모르는 값이므로 Worker `runningBody`가 타일을
+  그리기 직전에 `{ ...tile, rollup_expanded, failure: { ...tile.failure, open } }`로
+  덧씌운다. Monitor 실행 중 레인 표시는 바뀌지 않는다.
 
 - `running` 타일의 `landing`(quick_fix 착지 진행, `prWaitProgress`)은 타일 필드로
-  싣는다(`runningTile` typedef가 이미 `landing`을 받는다, `running-grid.js` ~96).
-- `running_overlays`는 폐기한다. `runningGridTemplate(tiles, now, selected)`는
-  타일 자체의 `last_activity`·`legs`·`dependency_chips`를 읽도록 시그니처에서
-  overlays 인자를 뺀다.
+  싣는다(`runningTile` typedef가 이미 `landing`을 받는다).
+- `running_overlays`는 폐기한다. `runningGridTemplate(tiles, now, selected)`
+  (`running-grid.js` ~784–805)는 타일 자체의 `last_activity`·`legs`·
+  `dependency_chips`를 읽도록 시그니처에서 overlays 인자를 뺀다.
 - `idToTitle`은 폐기한다. 제목은 행에 있다(`title`); 남는 소비처(transcript drawer 등)는
   `LaneItem`에서 찾는다.
 - 평면 레인(`runnable`·`running`·`pr_wait`·`done`)과 `queue_groups[0].sublanes`
@@ -286,7 +310,7 @@ Worker가 `buildModel`에서만 계산하던 것 중 **재료가 공유 스냅�
 - **그룹 유지**: `options.groups = 'nonempty' | 'all'`(신규, 기본 `'nonempty'` =
   현행 Monitor 규칙). Worker는 `'all'`로 호출해 대기·직렬·후보가 모두 없어도
   `workspaces_state` 행 하나당 그룹이 남는다 — 실행 중·PR 대기·완료·저장소 작업만
-  있는 스냅샷에서도 `queue_groups[0]`의 `slots`·`merge`·`failure`·
+  있는 스냅샷에서도 `queue_groups[0]`의 `slots`·`merge`·
   `repo_operations`가 살아 있어야 하기 때문이다. Monitor 표시는 바뀌지 않는다.
 
 ### 4.4 Worker 뷰 전환
@@ -296,7 +320,8 @@ Worker가 `buildModel`에서만 계산하던 것 중 **재료가 공유 스냅�
 - `buildModel`·`toRows`·`prWaitRow`·`admissionBadge`·`occupantBadge`·
   `dependencyChipsFor`·`attachChips`·`execRowsFor`·`attemptExecChips`·
   `beadExecChips`·`beadRec`·`runningRollup`·`failureResumeState`·`resolvesConflict`·
-  `prWaitTargetBase`·`autoSkipReason`·`session_report_cache` 등 조립 클로저를 지운다.
+  `prWaitTargetBase`·`autoSkipReason`·`session_report_cache` 등 조립 클로저를 지운다
+  (`failureResumeState`는 `activeByBead`의 `resume_eligible`·`resume_reason`이 대신한다).
 - `doRender()`: `const input = adapter.read({ candidate_sort, done_since }); const lanes
   = buildLanes(input.workspaces, input.workspaces_state, { done_since,
   candidate_filter, candidate_sort: 'as_given', groups: 'all', cross_lanes: undefined });`
@@ -364,7 +389,7 @@ export function createLaneDrag({
 
 ### 4.6 UI-e9sg 해소
 
-`monitor/index.js` `lanePane` 기본 분기(~1819)와 `nowPanel` `pr_wait_rows`(~1853)의
+`monitor/index.js` `lanePane` 기본 분기(~1826)와 `nowPanel` `pr_wait_rows`(~1860)의
 `miniRow(item)`을 `miniRow(withOverlaps(item))`으로 바꾼다. 완료 레인은
 `applyScopeOverlaps`가 비교 집합에 넣지 않아 `overlap_chips`·`scope_state`가 없으므로
 무변화이며, 그 무변화를 테스트로 고정한다(§7).
@@ -373,7 +398,7 @@ export function createLaneDrag({
 
 | 파일 | 변경 |
 |---|---|
-| `app/views/monitor/lanes.js` → `app/views/worker/lane-model.js` | `git mv`, typedef 개명, `queue_groups[i]` 추가 키·`failed_tiles`·`landing`·`session_done` 합류·`bead_overlay` 전 레인 적용·`runnable[].eligible/reason`·`queue_placeable`·`released`/`dependents` 칩·`candidate_sort: 'as_given'`·`groups: 'all'` |
+| `app/views/monitor/lanes.js` → `app/views/worker/lane-model.js` | `git mv`, typedef 개명, `queue_groups[i]` 추가 키·실행 중 타일 Worker 필드·`landing`·`session_done` 합류·`bead_overlay` 전 레인 적용·`runnable[].eligible/reason`·`queue_placeable`·`released`/`dependents` 칩·`candidate_sort: 'as_given'`·`groups: 'all'` |
 | `app/views/monitor/lanes.test.js` → `app/views/worker/lane-model.test.js` | `git mv`, import 경로, 신규 케이스 |
 | `app/views/worker/workspace-adapter.js` (+test) | 신규 §4.2 — 후보·`bead_overlay`·`session_done`·세션 기본값 캐시 |
 | `app/views/worker/lane-drag.js` (+test) | 신규 §4.5 |
@@ -401,7 +426,7 @@ Monitor 전용으로 남는 것: 데크·레포 섹션·연결 레인 pane과 op
   스냅샷으로 1회 재계획한다. Worker는 `cross_lanes`가 없으므로 lane op 자체가 없다.
 - `groups: 'all'`이므로 스냅샷이 있는 한 `queue_groups[0]`은 항상 있다. 없는 경우는
   스냅샷 미도착(어댑터가 빈 입력을 돌려줌)뿐이며 그때 `topTemplate`은 빈 그룹
-  상수로 그린다 — 지금 `currentQueue()`의 빈 스냅샷 폴백(~2095)과 같은 역할.
+  상수로 그린다 — 지금 `currentQueue()`의 빈 스냅샷 폴백(~1950)과 같은 역할.
 - 세션 기본값 조회 실패는 빈 객체로 캐시해 전역 실행 칩을 생략한다(현행).
 - 드롭 계획이 `dep-add`를 낸 뒤 CAS 충돌이 나면 `reproject(conflict)`로 전체를
   다시 계획하고 1회만 재시도한다(현행 `runPlanned`). 세션 dep 델타는 factory
@@ -411,10 +436,11 @@ Monitor 전용으로 남는 것: 데크·레포 섹션·연결 레인 pane과 op
 
 단위(vitest):
 
-- `lane-model.test.js`: 기존 146건 유지(경로만) + N=1 케이스 — `failed_tiles`가
-  `running`과 분리됨, `failure`·`live_count`·`over_cap`·`merge`·`token_total`·
-  `cleanup_failures`·`declared_base`가 `queue_groups[0]`에 실림, `landing`이 타일에
-  실림, `session_done` 합류·정렬, 후보 행 `draggable=false`·`queue_placeable`이
+- `lane-model.test.js`: 기존 케이스 유지(경로만) + N=1 케이스 — `live_count`·
+  `over_cap`·`merge`·`token_total`·`cleanup_failures`·`declared_base`가
+  `queue_groups[0]`에 실림, 실행 중 실패 타일에 `discard`·`conflict_resolution`·
+  `base_exception`·`rollup`이 실림, `landing`이 타일에 실림, `session_done`
+  합류·정렬, 후보 행 `draggable=false`·`queue_placeable`이
   `eligible && !worker_ineligible`, `reason`이 admission 뱃지 앞에 붙음,
   `release_info`·`dependents_info`가 `released`·`dependents` 칩으로(7일 창·` 외 n`)·
   재료 없으면 칩 없음, `bead_overlay`의 `priority`·`from_id`·`rec`·`exec_chips`가
@@ -435,7 +461,8 @@ Monitor 전용으로 남는 것: 데크·레포 섹션·연결 레인 pane과 op
   `bead_blocked_by`·`runnable[].blocked_by`가 없으면 dep op 없음, `rememberDep`
   델타가 다음 계획에 반영, `sendOp`의 revision 어댑트.
 - `worker/index.test.js`: DOM 단언은 유지 — 특히 대기·실행·PR 대기·완료 행의
-  priority·출처(`from_id`)·`rec`·실행 설정 칩과 전역 세션 기본값 칩이 통일 전과 같이
+  priority·출처(`from_id`)·`rec`·실행 설정 칩과 전역 세션 기본값 칩, 그리고 UI-rj02
+  실패 결정 타일(원인 뱃지·상세 팝오버 열림·착지 폐기 숨김)이 통일 전과 같이
   그려지는 기존 케이스가 회귀 방어선이다. `placeBead`/`reorderBead`/`removeBead`
   호출을 단언하던 케이스는 `transport` 메시지(`worker-queue-place` 등) 단언으로 바꾼다
   — 메시지 이름과 payload는 같다. `drag()` 헬퍼(~219)는 `data-drop` 타깃으로 떨어뜨
@@ -454,7 +481,7 @@ Pre-handoff: `npm run tsc` · `npm test` · `npm run lint` · `npm run prettier:
 
 ## 8. 구현 unit 후보
 
-1. `model-move` — `git mv`·typedef·`queue_groups` 추가 키·`failed_tiles`·`landing`·
+1. `model-move` — `git mv`·typedef·`queue_groups` 추가 키·실행 중 타일 Worker 필드·`landing`·
    `session_done`·`eligible/reason`·`as_given`·`runningGridTemplate` 시그니처·
    UI-e9sg 두 줄 + 테스트.
 2. `worker-adopt` — `workspace-adapter.js`, `buildModel` 일가 제거, 템플릿 전환,
@@ -468,6 +495,13 @@ Pre-handoff: `npm run tsc` · `npm test` · `npm run lint` · `npm run prettier:
 된 뒤 staleness 재리뷰 레인으로 실행에 들어간다. 이 스펙은 그 셋이 내린 상태를
 전제로 한다 — 그 셋의 최종 diff가 §2·§4의 전제(정렬 체인 모듈명, 후보 드래그 부재,
 PR 대기 행 필드)를 바꾸면 재리뷰에서 정정한다.
+
+staleness 재리뷰(2026-08-28, 앵커 `de4c345` → base `2c38bcd`): 셋이 모두 `closed`
+됐고, 그 뒤 착지한 UI-rj02(실패 배너·✕ dismiss 제거, 실패 결정 타일)·UI-d7fy
+(head-review 계층·`♻️` 뱃지 제거)·UI-8ham(blocked 하단 고정 제거)·UI-dqg9·UI-8w4t가
+§2·§4.3의 전제를 바꿨다. 정정은 이미 사라진 항목의 제거(`failure` 배너·
+`failed_tiles`·`merge.head_reviews`·`♻️`)와 줄 번호·참조 갱신에 한정되며, 입력 계약
+(§4.1 추가 키 넷)·어댑터·드래그 factory·unit 구성·검증 절차는 그대로다.
 
 형제·후속 Bead 후보는 없다 — 한 설계, 한 Bead.
 
