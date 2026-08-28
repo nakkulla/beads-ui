@@ -18,9 +18,11 @@ scope:
 # Worker `waiting` 계층 설계 — 세션의 선행 미충족 착수 거부를 착지 실패와 구분하고, 선행이 닫히면 보통 후보로 자동 복귀시킨다
 
 - Bead: `UI-8jau` (route `spec_backed`)
-- 선행: dotfiles `dotfiles-mq6f` (blocks) — 계약 정본
+- 선행: dotfiles `dotfiles-mq6f` (blocks) — **`closed`**(2026-08-28, 계약 착지
+  `095fe30731b25c8cca668af879054f9ace596574`). 계약 정본은
   `docs/superpowers/specs/2026-08-28-prerequisite-gate-session-refusal-design.md` @
-  `28cbcd1ea3a321cedbf8aaf87f30097028ae5894` (`spec_review=codex@28cbcd1e`). 이 스펙은 그
+  `28cbcd1ea3a321cedbf8aaf87f30097028ae5894` (`spec_review=codex@28cbcd1e`)이고, 착지한
+  `workflow-state.yaml prerequisite_gate` 블록이 그 §5.2·§5.4를 그대로 담고 있다. 이 스펙은
   §5.4 "소비자" 절의 구현이며, 판정식·신호·결과줄은 그쪽이 소유하고 여기서는 인용만 한다.
 - 출처: 2026-08-28 `dotfiles-6qc7`(attempt `dotfiles-6qc7-1787919923296-1`, $2.99)·`dotfiles-fifo`(2회)
 
@@ -28,7 +30,7 @@ scope:
 
 세션이 착수 전에 선행 미충족을 확인하고 push 없이 정상 종료하면, Worker는 quick_fix 착지
 정산으로 들어가 push 기록 부재만 보고 `quickfix_landing_failed:delivery_unproven:push_log_absent`
-로 실패 타일(`⛔ 착지 실패`)을 만든다(`server/worker/quickfix-landing.js:249`,
+로 실패 타일(`⛔ 착지 실패`)을 만든다(`server/worker/quickfix-landing.js:321`,
 `scheduler.js onSessionDone` → `settleQuickfixLanding`). `base-drift.js:175` 주석이 이미 이
 코드가 "진짜 사유를 묻는다"고 적고 있다. 실패 타일은 `settledAttemptFence`로 재디스패치를
 막고 사람의 처분(`이어하기`/`폐기`)을 기다리는데, 이 결말에는 처분할 것이 없다 — 선행이
@@ -91,7 +93,7 @@ if (quickfixLaneOf(workspace, attempt_id)) {
 | --- | --- | --- | --- |
 | 1 | `verdict.success === true` ∧ push 기록 부재 ∧ bead status ∉ {resolved, closed} | `deps.readPushLog({attempt_id})` (quickfix-landing과 같은 dep), `deps.bd.readStatus` | 불성립 → settle |
 | 2 | claim 해제 뒤 `bd ready --json`이 성공·정상 파싱되고 이 Bead 부재 | `releaseBeadClaim` 후 `deps.bd.snapshotBead(bead_id).ready === false` — 이 스냅샷은 `bd show`+`bd ready` 둘 다 throw-on-failure다 | throw/`ready=true` → 판정 불가 → settle |
-| 3 | outgoing `blocks` 엣지 ≥1, 그중 미해결 ≥1 | `deps.bd.readIssue(bead_id).dependencies[]` 중 `dependency_type==='blocks'`. 같은 rig(`external!==true`): `readStatus(target) !== 'closed'`. foreign(`external===true`): `foreign-blocker-status.js`에 **새 export `queryForeignBlockerStatus(bead_id, requester_root)`** — 캐시를 거치지 않는 awaited 조회로, `prefixOfBeadId` → `visibleWorkspaceRoots` 중 `cachedIssuePrefixFor`(없으면 즉시 `bd config` 조회)가 맞는 root → `bd -C <root> show <id> --json`을 끝까지 기다려 `{ok:true, status}` 또는 `{ok:false, reason: 'no_rig'\|'bd_failed'\|'unparsable'}`를 돌려준다. 기존 `foreignBlockerStatusFor`는 캐시 값을 돌려주고 백그라운드 조회만 시작하므로 판정에 쓰지 않는다. `ok:false`는 "미해결 추정"이 아니라 판정 불가 | 판정 불가 → settle |
+| 3 | outgoing `blocks` 엣지 ≥1, 그중 미해결 ≥1 | `deps.bd.readIssue(bead_id).dependencies[]` 중 `dependency_type==='blocks'`. 이 `readIssue`는 `bd-metadata.js`에 이미 있고 `attach.js`가 pr-poller에 넘기고 있지만 **scheduler의 `bd` dep typedef에는 없다** — `comment`와 같은 optional 속성으로 더하고 `attach.js`에서 주입한다. 없으면 판정 불가(→ settle)다. 같은 rig(`external!==true`): `readStatus(target) !== 'closed'`. foreign(`external===true`): `foreign-blocker-status.js`에 **새 export `queryForeignBlockerStatus(bead_id, requester_root)`** — 캐시를 거치지 않는 awaited 조회로, `prefixOfBeadId` → `visibleWorkspaceRoots` 중 `cachedIssuePrefixFor`(없으면 즉시 `bd config` 조회)가 맞는 root → `bd -C <root> show <id> --json`을 끝까지 기다려 `{ok:true, status}` 또는 `{ok:false, reason: 'no_rig'\|'bd_failed'\|'unparsable'}`를 돌려준다. 기존 `foreignBlockerStatusFor`는 캐시 값을 돌려주고 백그라운드 조회만 시작하므로 판정에 쓰지 않는다. `ok:false`는 "미해결 추정"이 아니라 판정 불가 | 판정 불가 → settle |
 | 4 | 비의존 제외 원인 부재 | `readIssue`의 `defer`가 비어 있음(필드 없으면 비어 있는 것으로 본다) ∧ 2의 readback status가 `open` | 불성립 → settle |
 
 순서는 1→2→3→4다. 2에서 claim 해제를 먼저 하는 이유는 `bd ready`가 `in_progress`를 제외하므로 해제 전 부재는 증거가 못 되기 때문이다. 해제 뒤 settle로 떨어져도 문제 없다 — `failAttempt`의 `releaseBeadClaim`은 `in_progress`가 아니면 no-op이다.
@@ -112,13 +114,29 @@ cause_detail: { summary, blockers: [{ id, rig, status }], bead_status },
 finished_at: at
 ```
 
-이어서 **`closeRetryLineage(workspace, bead_id)`** 를 부른다 — 환경 재시도 사다리의 attempt가 선행 대기로 끝나면 `queue.hold`가 남아 자동 후보 복귀를 막기 때문이다(성공 착지가 같은 함수를 부르는 것과 같은 이유). lifecycle 알림은 **추가하지 않는다**(production notifier에 소비자가 없고 승인된 의도에도 없다). `fireDirectionInquiry`는 부르지 않는다. 이후 공통 꼬리(workflow_mode revert·exec stamp revert·`disarmEntry`·`releaseBeadClaim`)는 그대로 탄다.
+이어서 **`closeRetryLineage(workspace, bead_id)`** 를 부른다 — 환경 재시도 사다리의 attempt가 선행 대기로 끝나면 `queue.hold`가 남아 자동 후보 복귀를 막기 때문이다(성공 착지가 같은 함수를 부르는 것과 같은 이유). lifecycle 알림은 **추가하지 않는다**(production notifier에 소비자가 없고 승인된 의도에도 없다). `fireDirectionInquiry`도, `postAttemptFailureComment`도 부르지 않는다 — 둘 다 `parked` 분기 **안에** 있는 호출이지 공통 꼬리가 아니고, 사람이 처분할 것이 없는 결말에 bd 댓글을 남길 이유도 없다. 이후 공통 꼬리(workflow_mode revert·exec stamp revert·`disarmEntry`·`releaseBeadClaim`)는 그대로 탄다.
+
+타임라인 이벤트는 **`parked` 분기가 이미 쓰는 형식을 그대로 따른다**(UI-8wpb 착지
+`43e2f257` §5): 선행 대기는 세션이 어떻게 **끝났는지**이지 실패가 아니므로 새 kind를 만들지
+않고 `appendTimeline({bead_id, attempt_id, kind: 'session_ended', seq: 'waiting', summary:
+'대기 · blocks:<id>[, <id>...]', at})` 한 줄이다. 그 summary 문자열은 §4.2가 이미 증명한
+`blockers[]`로 **서버가 조립**하는 것이지 세션 결과줄을 읽어 온 것이 아니다 — §2 비목표의
+"결과줄은 판정 입력이 아니다"는 그대로다(`parked`가 `파킹 · <awaiting_user>`를 같은 방식으로
+쓰는 것과 같다). `appendFailedEvent`(kind `attempt_failed`)는
+`individual`·`env` 종단 분기의 것이며 `waiting`에서는 부르지 않는다. `bead-timeline.js`의
+`TIMELINE_KINDS`는 **손대지 않는다** — 그 집합은 닫혀 있고, `session_ended`가 이 결말이
+답하는 질문에 이미 맞다.
 
 ### 4.5 재디스패치와 레인
 
 - `settledAttemptFence`: `latest.status === 'waiting'` → `null`(fence 없음). 그 함수의 주석에 "waiting은 bd ready 부재가 fence다"를 적는다.
 - `queue-store.js`: `TERMINAL_ATTEMPT_STATUSES`와 직렬 레인 해제 집합 둘 다에 `'waiting'` 추가(D4). `Attempt.status` 문서 갱신.
-- `scheduler.js`에도 **별도의 터미널 status 집합**(`'parked'`·`'retry_wait'`·`'superseded'`를 나열한 그 상수, 약 236행)이 있다. 여기에도 `'waiting'`을 넣는다 — 빠지면 스케줄러가 그 Bead를 아직 활성으로 보고 선행이 닫혀도 재디스패치하지 않는다. 두 집합이 갈리지 않도록 테스트가 둘 다 고정한다(§7 (e)).
+- `scheduler.js`에도 **별도의 터미널 status 집합**(`'parked'`·`'retry_wait'`·`'superseded'`를 나열한 그 상수, 약 241행)이 있다. 여기에도 `'waiting'`을 넣는다 — 빠지면 스케줄러가 그 Bead를 아직 활성으로 보고 선행이 닫혀도 재디스패치하지 않는다. 두 집합이 갈리지 않도록 테스트가 둘 다 고정한다(§7 (e)).
+- `queue-store.js`의 `PROCESSED_TERMINAL_STATUSES`(= `transferableAttempts`의 이관 대상)에는
+  `waiting`을 **넣지 않는다**. UI-8wpb §7이 `queue.json`에 남기는 집합(`running`·`retry_wait`·
+  `parked`·미dismiss `failed`)과 같은 이유다 — held 타일과 재디스패치 판정이 이 레코드를 계속
+  읽는다. 그 집합은 이관 대상 whitelist이므로 코드 변경은 없고, 테스트가 "`waiting`은 이관되지
+  않는다"를 고정한다(§7 (h)).
 - `latestImplementationAttempt`가 `waiting`을 "마지막 attempt"로 세는 것은 그대로 — held 타일이 그것을 읽는다. 새 attempt가 뜨면 `lane-model`의 `map.has(bead_id)` 규칙으로 타일이 밀린다(parked와 같음).
 - `attach.js`의 `onIssuesChanged` 구독은 손대지 않는다. 복귀 트리거는 별도 관측이 아니라 다음 tick의 보통 후보 선택이다.
 
@@ -147,9 +165,13 @@ finished_at: at
   버튼을 두지 않는 이유는 §3 D3 — 선행이 닫히면 저절로 돈다. 요약은 세션 결과줄
   (`대기 · blocks:...`)이 아니라 `cause_detail.summary`(세션 마지막 문장)이며 비어 있으면
   줄을 그리지 않는다(fail-quiet).
-- 슬롯 배정(카드 문법 §5.1): `선행 대기` 라벨 = 1번 정체성(상태 뱃지), `⛓` 칩 = 4a, `폐기` =
-  6번 foot. 새 슬롯은 없다. 카드 문법 스펙 §5.1 표의 "지금 실려 있는 것"에 `선행 대기`를 한
-  단어 추가한다(자리 변경 없음).
+- 슬롯 배정(카드 문법 §5.1): `선행 대기` 뱃지 = 1번 정체성(상태 뱃지), `⛓` 칩 = 4a, `폐기` =
+  6번 foot. 새 슬롯은 없다. 뱃지는 `running-grid.js`의 `held_badge`가 서는 그 배타 자리이며
+  (`⏸ 세션 대기`·`↻ 재시도 대기`와 상호배제), 실패 원인 뱃지와도 배타다.
+  카드 문법 스펙 §5.1 표 1번 정체성 행의 "지금 실려 있는 것"에 그 배타 자리를 한 항목으로
+  적는다: `held 판정 뱃지(⏸ 세션 대기 · ↻ 재시도 대기 · ⛓ 선행 대기)`. 자리 변경이 아니라
+  이미 렌더되던 두 뱃지가 표에 없던 것을 함께 채우는 것이므로 UI-svh6가 4a에 남긴 것 같은
+  별도 `정정` 문단은 두지 않는다.
 
 ### 5.3 `failure-labels.js`
 
@@ -158,9 +180,9 @@ attempt 이력·로그 라인이 cause를 사람 말로 바꿀 때 쓴다.
 
 ### 5.4 타일 어댑터 — `worker/index.js`와 `monitor/index.js`
 
-Worker 탭의 어댑터 `app/views/worker/index.js`(약 2713행, `parked:`·`retry_wait:`·
-`status_label` 투영)와 Monitor의 같은 자리(약 1485행) **둘 다**에 parked·retry_wait와 같은
-네 키 규칙(ADR 0014)으로 `waiting: item.run_state === 'waiting'`, `wait: item.wait || null`,
+Worker 탭의 어댑터 `app/views/worker/index.js`(약 2755행, `parked:`·`retry_wait:`·
+`status_label` 투영)와 Monitor의 같은 자리(`app/views/monitor/index.js` 약 1485행) **둘 다**에
+parked·retry_wait와 같은 네 키 규칙(ADR 0014)으로 `waiting: item.run_state === 'waiting'`, `wait: item.wait || null`,
 `status: item.status`, `status_label` `선행 대기`를 싣는다. Worker 어댑터를 빠뜨리면 `waiting`
 타일이 실행 중 타일로 그려져 시계와 세션 조작을 얻는다. 렌더러는 같은 `runningTile`이다.
 
@@ -188,11 +210,14 @@ Worker 탭의 어댑터 `app/views/worker/index.js`(약 2713행, `parked:`·`ret
   `ok:false` → settle; (d) defer 있음 → settle; (e) `waiting` 뒤 bead가 ready에 다시 오면 다음
   tick이 새 attempt dispatch(fence 없음 — `scheduler.js`·`queue-store.js` 두 터미널 집합 모두
   고정); (f) `waiting`이 직렬 레인을 해제; (g) 환경 재시도 attempt가 `waiting`으로 끝나면
-  `queue.hold`가 해제된다.
+  `queue.hold`가 해제된다; (h) `waiting` 마감이 `session_ended`/`seq='waiting'` 타임라인
+  이벤트를 한 줄 남기고 `attempt_failed`는 남기지 않는다.
 - `server/worker/foreign-blocker-status.test.js`: `queryForeignBlockerStatus` — rig 매핑 있음
   → `{ok:true,status}`; 매핑 없음 → `no_rig`; `bd` 실패 → `bd_failed`; 캐시를 채우거나 읽지 않음.
-- `app/views/worker/index.test.js`(또는 어댑터 테스트가 사는 파일): Worker 어댑터가 `waiting`·
-  `wait`·`status_label`을 Monitor와 같은 값으로 싣는다.
+- `app/views/worker/index.test.js`: Worker 어댑터가 `waiting`·`wait`·`status_label`을 Monitor와
+  같은 값으로 싣는다.
+- `server/worker/queue-store.test.js`: `waiting` attempt는 `transferableAttempts`에 들지
+  않는다(= `queue.json`에 남는다).
 - `server/worker/quickfix-landing.test.js`: 기존 `push_log_absent` 케이스 불변(신호 없는 결말).
 - `app/views/worker/lane-model.test.js`: `waiting` held 투영 — `wait` 있음·`failure` 없음·
   `can_resume=false`·`⛓` 칩 합집합. `running-grid.test.js`: `선행 대기` 라벨, foot에 `재시도`
@@ -208,14 +233,14 @@ Worker 탭의 어댑터 `app/views/worker/index.js`(약 2713행, `parked:`·`ret
 | --- | --- | --- | --- | --- | --- |
 | 형제 | dotfiles | awaited_by_consumer | different_repository — 신호·절차·결과줄은 계약 소유 | 없음 | dotfiles-mq6f |
 
-겹침(`stale-rereview-inputs.py` in_flight 3건, 엣지는 걸지 않는다 — 어느 쪽도 상대의 산출물을
-전제하지 않고, 먼저 착지한 쪽 위에 나중 쪽이 rebase한다):
+겹침(rev4 재리뷰 시점에 **셋 다 착지했다** — 엣지는 걸지 않았고 걸 필요도 없었다. 이 스펙이
+나중에 착지하는 쪽이므로, 아래 표가 예고한 조정은 전부 이 스펙이 흡수한다):
 
-| Bead | 상태 | 공유 경로 | 관계 |
+| Bead | 착지 | 공유 경로 | 해소 |
 | --- | --- | --- | --- |
-| `UI-svh6` | open | `lane-model.js`, 카드 문법 스펙 §5.1 | 같은 파일의 다른 절 — svh6는 후보 카드의 『스펙 대기』 예외 칩(슬롯 4a), 이 스펙은 held 타일의 `wait` 투영과 `선행 대기` 라벨(슬롯 1). §5.1 표에 각자 한 단어를 더한다 |
-| `UI-qksl` | in_progress | `scheduler.js`, `queue-store.js`, `attach.js` | 다른 함수 — qksl은 머지 큐의 `review_dispatch` claim·`review-session` 경로, 이 스펙은 `onSessionDone`의 quick_fix 분기·`settleFailureTier`·`settledAttemptFence`. `onSessionDone`은 리뷰 세션을 `failAttempt` 앞에서 분기하므로 `waiting` 판정이 리뷰 attempt에 닿지 않는다 |
-| `UI-8wpb` | in_progress | `scheduler.js`, `failure-class.js`, `queue-store.js`, `attach.js`, `lane-model.js`, `running-grid.js`, `failure-labels.js` | **실제 교차 1곳**: 8wpb §7 "queue.json에 남는 attempt" 집합(`running`·`retry_wait`·`parked`·미dismiss `failed`)과 §5 타임라인 이벤트 어휘에 `waiting`이 들어가야 한다. 나중에 착지하는 쪽이 그 집합에 `waiting`을(8wpb가 먼저면 이 스펙이, 이 스펙이 먼저면 8wpb가) 더하고, 타임라인 이벤트 `attempt_waiting`은 8wpb 이벤트 표의 열 형식을 따른다. 그 밖의 파일은 다른 절이다 |
+| `UI-svh6` | `77863d7c` (#234) | `lane-model.js`, `running-grid.js`, 카드 문법 스펙 §5.1 | 예고대로 다른 절이었다. svh6는 후보 카드 4a에 『스펙 대기』 판정 칩을 세우고 §5.1 4a 행과 `정정(UI-svh6)` 문단을 더했다. 이 스펙은 held 타일의 `wait` 투영과 슬롯 1 `⛓ 선행 대기` 뱃지이므로 자리가 겹치지 않는다(§5.2) |
+| `UI-qksl` | `de7137e7` (#232) | `scheduler.js`, `queue-store.js`, `attach.js` | 예고대로 다른 함수였다. `onSessionDone`은 리뷰 세션을 `failAttempt` 앞에서 분기하므로 `waiting` 판정이 리뷰 attempt에 닿지 않는다. 판정 삽입 위치(`recordReceiptCheck` 뒤 · `quickfixLaneOf` 분기 직전)는 그대로 유효하다 |
+| `UI-8wpb` | `43e2f257` (#233) | `scheduler.js`, `failure-class.js`, `queue-store.js`, `attach.js`, `lane-model.js`, `running-grid.js`, `failure-labels.js` | **예고한 교차 1곳을 이 스펙이 흡수했다.** (i) `queue.json`에 남는 집합 — 착지 구현은 이관 대상 whitelist `PROCESSED_TERMINAL_STATUSES`이므로 `waiting`을 넣지 않는 것으로 충족되고, 테스트만 더한다(§4.5·§7 (h)). (ii) 타임라인 — 착지한 `TIMELINE_KINDS`는 닫힌 집합이고, 같은 성격의 `parked`가 새 kind 없이 `session_ended`+`seq='parked'`로 기록된다. 따라서 예고했던 새 kind `attempt_waiting`은 **쓰지 않고** `session_ended`+`seq='waiting'`을 따른다(§4.4) |
 
 - 관찰: spec_backed/full_plan 레인의 같은 결말은 PR 검증 경로에서 `session_ended_unresolved`로
   남는다. 계약이 그 레인에도 같은 절차를 적용하므로 같은 판정식을 그 경로의
