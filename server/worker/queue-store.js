@@ -3983,6 +3983,36 @@ export function createQueueStore(options = {}) {
   }
 
   /**
+   * Reduce one queue-hold event INTO a mutation already in progress (2026-08-28
+   * worker-failure-tiers spec §4).
+   *
+   * Separated from {@link createQueueStore.applyQueueHold} so a caller whose
+   * settlement must not be observable half-done — a `needs_human` terminal that
+   * also stops the queue — folds the hold into its OWN write instead of
+   * following it with a second one.
+   *
+   * @param {Queue} next - the in-flight clone being mutated.
+   * @param {import('./queue-hold.js').QueueHoldEvent} event
+   * @param {number} at
+   * @returns {import('./queue-hold.js').QueueHoldResult}
+   */
+  function applyHoldEvent(next, event, at) {
+    const outcome = reduceQueueHold(
+      {
+        hold: next.hold,
+        lineages: next.lineages,
+        hold_history: next.hold_history
+      },
+      event,
+      at
+    );
+    next.hold = outcome.state.hold;
+    next.lineages = outcome.state.lineages;
+    next.hold_history = outcome.state.hold_history;
+    return outcome;
+  }
+
+  /**
    * Fold the terminal receipt scan into the SAME queue mutation that settles an
    * attempt. Files stay untouched until that atomic write succeeds, so a queue
    * persistence failure is retried from the inbox rather than losing evidence.
@@ -6455,18 +6485,7 @@ export function createQueueStore(options = {}) {
       /** @type {import('./queue-hold.js').QueueHoldResult|null} */
       let outcome = null;
       const result = applyUnconditional(workspace, (next) => {
-        outcome = reduceQueueHold(
-          {
-            hold: next.hold,
-            lineages: next.lineages,
-            hold_history: next.hold_history
-          },
-          input.event,
-          at
-        );
-        next.hold = outcome.state.hold;
-        next.lineages = outcome.state.lineages;
-        next.hold_history = outcome.state.hold_history;
+        outcome = applyHoldEvent(next, input.event, at);
         return true;
       });
       const settled =
@@ -7656,12 +7675,20 @@ export function createQueueStore(options = {}) {
      * journal is deliberately preserved: ambiguity at an external effect is
      * evidence a restart or human diagnosis still needs.
      *
+     * `hold_event` rides the SAME mutation (2026-08-28 worker-failure-tiers
+     * §3.4/§7): a `verify_red` or `cleanup_failed:*` terminal is a wall every
+     * later bead hits too, and raising that stop in a second write would leave a
+     * crash window in which the board shows `확인 필요` on a queue that is still
+     * dispatching. The event is applied only when the terminal itself lands, so
+     * a rejected terminalization never stops the queue on its own.
+     *
      * @param {string} workspace
-     * @param {{ root_bead_id: string, terminal: CompletionTerminalInput }} input
+     * @param {{ root_bead_id: string, terminal: CompletionTerminalInput, hold_event?: import('./queue-hold.js').QueueHoldEvent|null, now?: number }} input
      * @returns {QueueOpResult}
      */
     terminalizeCompletionIntent(workspace, input) {
-      const { root_bead_id, terminal } = input;
+      const { root_bead_id, terminal, hold_event } = input;
+      const at = typeof input.now === 'number' ? input.now : now();
       return applyUnconditional(workspace, (next) => {
         const intent = next.completion_intents[root_bead_id];
         const normalized_terminal = normalizeCompletionTerminal(terminal);
@@ -7675,6 +7702,9 @@ export function createQueueStore(options = {}) {
         next.merge_queue = next.merge_queue.filter(
           (entry) => entry.bead_id !== root_bead_id
         );
+        if (hold_event) {
+          applyHoldEvent(next, hold_event, at);
+        }
         return true;
       });
     },

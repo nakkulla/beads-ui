@@ -1731,9 +1731,11 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
 
     await env.scheduler.tick(WS);
 
+    // UI-5ym8 §3.3: `spawn_failed` is environmental, so the refusal opens a
+    // backoff ladder instead of a bare failure — the dismissal still rides it.
     const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
     expect(attempt).toMatchObject({
-      status: 'failed',
+      status: 'retry_wait',
       cause: 'spawn_failed',
       dismissed_at: 777
     });
@@ -2955,7 +2957,9 @@ describe('scheduler launch account pins', () => {
 
     expect(env.runner.spawnOrder).toEqual([]);
     expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
-      status: 'failed',
+      // UI-5ym8 §3.3: a failed account-HOME preparation is environmental and
+      // climbs the ladder; an unknown/ambiguous account is this bead's own.
+      status: reason === 'codex_home_prepare_failed' ? 'retry_wait' : 'failed',
       cause: reason,
       claude_account: null,
       codex_account: null
@@ -7169,7 +7173,10 @@ describe('scheduler worktree residue hygiene', () => {
     const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
 
     expect(result).toMatchObject({ ok: false, reason: 'spawn_failed' });
-    expect(attempt).toMatchObject({ status: 'failed', cause: 'spawn_failed' });
+    expect(attempt).toMatchObject({
+      status: 'retry_wait',
+      cause: 'spawn_failed'
+    });
     expect(env.worktree.remove).not.toHaveBeenCalled();
     expect(env.worktree.add).not.toHaveBeenCalled();
   });
@@ -9568,7 +9575,7 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
     expect(notify.attemptStarted).not.toHaveBeenCalled();
   });
 
-  test('pushes attemptFailed when the runner spawn throws', async () => {
+  test('holds the attemptFailed push while a spawn throw is still retryable', async () => {
     const notify = makeFakeNotify();
     const env = setup({
       config: { S1: {} },
@@ -9585,14 +9592,44 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
 
     await env.scheduler.tick(WS);
 
-    expect(notify.attemptFailed).toHaveBeenCalledTimes(1);
-    expect(notify.attemptFailed.mock.calls[0][0]).toEqual({
-      bead_id: 'S1',
-      cause: 'spawn_failed',
-      repo: '/repo',
-      cause_detail: null
-    });
+    // UI-5ym8 §3.3: a `retry_wait` rung is not a failure a watcher can act on,
+    // so the outward push waits for the ladder's terminal outcome.
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].status).toBe(
+      'retry_wait'
+    );
+    expect(notify.attemptFailed).not.toHaveBeenCalled();
     expect(notify.attemptStarted).not.toHaveBeenCalled();
+  });
+
+  test('pushes attemptFailed for a launch refusal the ladder does not own', async () => {
+    const notify = makeFakeNotify();
+    const deps = accountDeps();
+    deps.accountCatalog.resolveClaude.mockResolvedValue({
+      ok: false,
+      reason: 'claude_account_unknown'
+    });
+    const env = setup({
+      config: { S1: { claude_account: 'nobody@example.com' } },
+      slots: 1,
+      notify,
+      ...deps
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    // An unknown account is THIS bead's own problem (UI-5ym8 §3.2), so the
+    // refusal still settles `failed` and still announces.
+    expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
+      status: 'failed',
+      cause: 'claude_account_unknown'
+    });
+    expect(notify.attemptFailed).toHaveBeenCalledTimes(1);
+    expect(notify.attemptFailed.mock.calls[0][0]).toMatchObject({
+      bead_id: 'S1',
+      cause: 'claude_account_unknown',
+      repo: '/repo'
+    });
   });
 
   test('pushes prWaitEntered with the observed PR url on success', async () => {
@@ -10631,24 +10668,41 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
     await env.scheduler.tick(WS);
 
     // UI-5ym8 §5: the lane needs the push LOG, so the hook goes in — in
-    // `record` mode, which passes the base push it exists to make.
+    // `record` mode, which passes the base push it exists to make — and the
+    // session's git is POINTED at it, or the hook would record nothing.
     expect(guardHook.install).toHaveBeenCalledWith(
       expect.objectContaining({ mode: 'record' })
     );
-    expect(guardHook.envFor).not.toHaveBeenCalled();
+    expect(guardHook.envFor).toHaveBeenCalledWith({
+      workspace: WS,
+      attempt_id: 'S1-1000-1'
+    });
     expect(env.store.snapshot(WS).attempts['S1-1000-1'].quickfix_lane).toBe(
       true
     );
     expect(env.runner.settingsFor('S1').quickfix_lane).toBe(true);
-    expect(env.runner.settingsFor('S1').env).not.toHaveProperty(
-      'GIT_CONFIG_COUNT'
-    );
-    expect(env.runner.settingsFor('S1').env).not.toHaveProperty(
-      'GIT_CONFIG_KEY_0'
-    );
-    expect(env.runner.settingsFor('S1').env).not.toHaveProperty(
-      'GIT_CONFIG_VALUE_0'
-    );
+    expect(env.runner.settingsFor('S1').env).toMatchObject({
+      GIT_CONFIG_COUNT: '1'
+    });
+  });
+
+  test('points quick_fix session git at the record-mode hook directory', async () => {
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    // The REAL guard-hook module: the lane's landing judgment reads this
+    // directory's push log, so `core.hooksPath` has to reach the session.
+    expect(env.runner.settingsFor('S1').env).toMatchObject({
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: guardHookDir(WS, 'S1-1000-1')
+    });
+    expect(hookInstalled('S1-1000-1')).toBe(true);
   });
 
   test('keeps the hook and GIT_CONFIG env for spec_backed dispatch', async () => {
@@ -10823,7 +10877,7 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
     });
   });
 
-  test('inherits quick_fix lane without installing a guard hook on resume', async () => {
+  test('inherits quick_fix lane with a record-mode hook on resume', async () => {
     const guardHook = {
       install: vi.fn(() => ({ ok: true })),
       envFor: vi.fn(() => ({ GIT_CONFIG_COUNT: '1' })),
@@ -10853,7 +10907,12 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
     expect(
       env.store.snapshot(WS).attempts[String(res.attempt_id)].quickfix_lane
     ).toBe(true);
-    expect(guardHook.install).not.toHaveBeenCalled();
+    // UI-5ym8 §5: the resume path installs the same record-mode hook the first
+    // dispatch does, so a resumed quick_fix still leaves a push log.
+    expect(guardHook.install).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'record' })
+    );
+    expect(guardHook.envFor).toHaveBeenCalled();
     expect(env.runner.settingsFor('B1').quickfix_lane).toBe(true);
   });
 
@@ -11437,6 +11496,42 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     expect(q.hold).toMatchObject({
       kind: 'systemic',
       cause: 'base_landing_detected'
+    });
+  });
+
+  test('raises the systemic hold when a RELAUNCH detects the landing', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook: guardHookWith({ 'S1-1000-1': [pushedToBase(LANDED)] })
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    await env.scheduler.stop(WS, 'S1-1000-1');
+    env.runner.finish('S1', { success: false, reason: 'killed' });
+    await flush();
+    await flush();
+    // The stop already settled the landing; clear the record so the RESUME's
+    // own observation is the one under test.
+    env.store.updateAttempt(WS, {
+      attempt_id: 'S1-1000-1',
+      patch: { base_drift: null, status: 'failed', cause: null }
+    });
+    env.store.applyQueueHold(WS, { event: { kind: 'resume' }, now: 1000 });
+    expect(env.store.snapshot(WS).hold).toBe(null);
+
+    const res = await env.scheduler.resume(WS, 'S1-1000-1');
+
+    // UI-5ym8 §3.4: the relaunch writes its own `failed` record, so the stop
+    // has to be raised there too — it used to leave the queue running.
+    expect(res).toMatchObject({ ok: false, reason: 'base_landing_detected' });
+    expect(env.store.snapshot(WS).hold).toMatchObject({
+      kind: 'systemic',
+      cause: 'base_landing_detected',
+      bead_ids: ['S1']
     });
   });
 
@@ -14378,5 +14473,220 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
     expect(snap.pr_wait.map((/** @type {any} */ e) => e.bead_id)).toEqual([
       'S1'
     ]);
+  });
+});
+
+describe('scheduler 실패 계층 회귀 (UI-5ym8 impl 리뷰)', () => {
+  test('a spawn throw climbs the env ladder instead of failing flat', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      makeRunner: () => ({
+        name: 'claude',
+        spawn() {
+          throw new Error('spawn failed');
+        }
+      })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts['S1-1000-1']).toMatchObject({
+      status: 'retry_wait',
+      cause: 'spawn_failed',
+      retry: { cause: 'spawn_failed', attempts: 1, max: 3 }
+    });
+    expect(snap.hold).toMatchObject({ kind: 'env', bead_ids: ['S1'] });
+  });
+
+  test('a codex_home_prepare_failed refusal opens the same ladder', async () => {
+    const deps = accountDeps();
+    deps.prepareCodexAccountHome.mockResolvedValue({
+      ok: false,
+      reason: 'codex_home_prepare_failed',
+      detail: 'auth_file_not_regular'
+    });
+    const env = setup({
+      config: { S1: { codex_account: 'codex-key' } },
+      slots: 1,
+      ...deps
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts['S1-1000-1'].status).toBe('retry_wait');
+    expect(snap.hold).toMatchObject({ kind: 'env' });
+  });
+
+  test('an aborted retry defers the rung instead of spending it', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      verify: {
+        verifyPrSubmitted: vi.fn(async () => ({
+          ok: false,
+          reason: 'gh_observation_failed',
+          pr_url: null
+        }))
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const first = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    const since = /** @type {any} */ (env.store.snapshot(WS).hold).since;
+    // The bd re-read at dispatch refuses: `dispatch` returns normally with no
+    // new attempt, which is exactly the case that used to burn the rung.
+    env.bd.statuses.S1 = 'in_progress';
+    /** @type {any} */ (env.bd).snapshotBead = async () => ({
+      ready: false,
+      blocked: false,
+      repo: '/repo',
+      target_base: 'main',
+      status: 'in_progress',
+      labels: [],
+      deps: []
+    });
+
+    await env.scheduler.retryQueueHoldNow(WS, { since });
+
+    const snap = env.store.snapshot(WS);
+    expect(Object.keys(snap.attempts)).toEqual([first]);
+    expect(snap.lineages[0]).toMatchObject({ attempts: 1 });
+    // Deferred, not spent: `next_at` moved off the past so the timer cannot
+    // busy-loop, and the ladder still has all three rungs.
+    expect(snap.lineages[0].next_at).toBe(1000 + RETRY_DELAYS_MS[0]);
+    expect(snap.hold).toMatchObject({ kind: 'env' });
+  });
+
+  test('an aborted parked resume leaves the transition unspent', async () => {
+    /** @type {any} */
+    const config = { S1: { metadata: { awaiting_user: '스펙 승인 대기' } } };
+    const env = setup({
+      config,
+      slots: 1,
+      verify: {
+        verifyPrSubmitted: vi.fn(async () => ({
+          ok: false,
+          reason: 'no_pr',
+          pr_url: null,
+          bead_status: 'in_progress',
+          awaiting_user: '스펙 승인 대기'
+        }))
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const parked_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    config.S1.metadata = {};
+    const readMetadata = env.bd.readMetadata;
+    /** @type {any} */ (env.bd).snapshotBead = async () => ({
+      ready: false,
+      blocked: false,
+      repo: '/repo',
+      target_base: 'main',
+      status: 'in_progress',
+      labels: [],
+      deps: []
+    });
+    /** @type {any} */ (env.bd).readMetadata = readMetadata;
+
+    await env.scheduler.onIssuesChanged(WS);
+
+    // Nothing launched, so the ONE resume this attempt gets is still there for
+    // the next bd-change signal.
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual([parked_id]);
+    expect(env.store.snapshot(WS).attempts[parked_id].parked_resumed_at).toBe(
+      null
+    );
+  });
+
+  test('a retry that parks closes the lineage and releases the hold', async () => {
+    /** @type {{ ok: boolean, reason: string, pr_url: null, bead_status?: string, awaiting_user?: string }} */
+    let verdict = {
+      ok: false,
+      reason: 'gh_observation_failed',
+      pr_url: null
+    };
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      verify: { verifyPrSubmitted: vi.fn(async () => verdict) }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    const since = /** @type {any} */ (env.store.snapshot(WS).hold).since;
+    expect(env.store.snapshot(WS).lineages).toHaveLength(1);
+
+    verdict = {
+      ok: false,
+      reason: 'no_pr',
+      pr_url: null,
+      bead_status: 'in_progress',
+      awaiting_user: '스펙 승인 대기'
+    };
+    await env.scheduler.retryQueueHoldNow(WS, { since });
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    // The ladder answered "not the environment": the lineage closes and the
+    // env hold with nothing left on it releases itself.
+    const snap = env.store.snapshot(WS);
+    expect(
+      Object.values(snap.attempts).some(
+        (/** @type {any} */ a) => a.status === 'parked'
+      )
+    ).toBe(true);
+    expect(snap.lineages).toEqual([]);
+    expect(snap.hold).toBe(null);
+  });
+
+  test('a retry that fails individually closes the lineage too', async () => {
+    /** @type {any} */
+    let verdict = {
+      ok: false,
+      reason: 'gh_observation_failed',
+      pr_url: null
+    };
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      verify: { verifyPrSubmitted: vi.fn(async () => verdict) }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    const since = /** @type {any} */ (env.store.snapshot(WS).hold).since;
+
+    verdict = {
+      ok: false,
+      reason: 'no_pr',
+      pr_url: null,
+      bead_status: 'in_progress',
+      awaiting_user: null
+    };
+    await env.scheduler.retryQueueHoldNow(WS, { since });
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.lineages).toEqual([]);
+    expect(snap.hold).toBe(null);
   });
 });

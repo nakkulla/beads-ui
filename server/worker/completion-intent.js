@@ -1336,29 +1336,26 @@ export function createCompletionActionDriver(deps) {
       comment_at: commented_at === null ? at : commented_at,
       at
     };
-    const written = deps.store.terminalizeCompletionIntent(deps.workspace, {
-      root_bead_id,
-      terminal
-    });
     // A post-merge pipeline failure is a wall every later bead hits too (spec
     // §3.4/§7): `verify_red` and `cleanup_failed:*` raise the SYSTEMIC hold in
-    // the same settlement, on the queue this intent lives in. Other families
-    // stay bead-local. Best-effort on a store that predates the hold field.
-    if (
-      written.ok &&
-      needsHumanHoldKind(folded) === 'systemic' &&
-      typeof deps.store.applyQueueHold === 'function'
-    ) {
-      deps.store.applyQueueHold(deps.workspace, {
-        event: {
-          kind: 'systemic_failure',
-          bead_id: root_bead_id,
-          cause: folded,
-          at
-        },
-        now: at
-      });
-    }
+    // the SAME durable write as the terminal, so the board can never show
+    // `확인 필요` on a queue that is still dispatching. Other families stay
+    // bead-local and pass no event at all.
+    const hold_event =
+      needsHumanHoldKind(folded) === 'systemic'
+        ? {
+            kind: /** @type {const} */ ('systemic_failure'),
+            bead_id: root_bead_id,
+            cause: folded,
+            at
+          }
+        : null;
+    const written = deps.store.terminalizeCompletionIntent(deps.workspace, {
+      root_bead_id,
+      terminal,
+      hold_event,
+      now: at
+    });
     notify();
     if (written.ok && commented_at === null) {
       postFailureComment(root_bead_id, intent, queue, terminal);

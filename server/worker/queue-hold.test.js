@@ -575,3 +575,69 @@ describe('queue hold systemic failures', () => {
     expect(second.effects).toEqual([]);
   });
 });
+
+describe('queue hold deferred retries', () => {
+  test('moves next_at off the past without spending the rung', () => {
+    const first = reduceQueueHold(
+      normalizeHoldState(null),
+      envFailure('UI-1', 0),
+      0
+    );
+
+    const { state, effects } = reduceQueueHold(
+      first.state,
+      { kind: 'retry_deferred', bead_id: 'UI-1', at: 500000 },
+      500000
+    );
+
+    expect(state.lineages).toEqual([
+      {
+        bead_id: 'UI-1',
+        origin_attempt_id: 'att-UI-1-0',
+        cause: API_CAUSE,
+        next_at: 500000 + RETRY_DELAYS_MS[0],
+        attempts: 1
+      }
+    ]);
+    expect(state.hold).toMatchObject({ kind: 'env' });
+    expect(effects).toEqual([]);
+  });
+
+  test('defers only the named bead lineage', () => {
+    const first = reduceQueueHold(
+      normalizeHoldState(null),
+      envFailure('UI-1', 0),
+      0
+    );
+    const second = reduceQueueHold(
+      first.state,
+      envFailure('UI-2', 0, { cause: SPAWN_CAUSE }),
+      0
+    );
+
+    const { state } = reduceQueueHold(
+      second.state,
+      { kind: 'retry_deferred', bead_id: 'UI-1', at: 500000 },
+      500000
+    );
+
+    expect(
+      state.lineages.map((lineage) => [lineage.bead_id, lineage.next_at])
+    ).toEqual([
+      ['UI-1', 500000 + RETRY_DELAYS_MS[0]],
+      ['UI-2', 0 + RETRY_DELAYS_MS[0]]
+    ]);
+  });
+
+  test('is a no-op for a bead with no lineage', () => {
+    const before = normalizeHoldState(null);
+
+    const { state } = reduceQueueHold(
+      before,
+      { kind: 'retry_deferred', bead_id: 'UI-9', at: 100 },
+      100
+    );
+
+    expect(state).toEqual({ hold: null, lineages: [], hold_history: [] });
+  });
+});

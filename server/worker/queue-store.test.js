@@ -8749,3 +8749,123 @@ describe('queue store failure-tier fields (UI-5ym8)', () => {
     expect(snap.attempts.other.status).toBe('retry_wait');
   });
 });
+
+describe('queue store atomic terminalize + hold (UI-5ym8 §7)', () => {
+  /**
+   * @param {string} root_bead_id
+   * @returns {any}
+   */
+  function storeWithIntent(root_bead_id) {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: `att-${root_bead_id}`,
+        bead_id: root_bead_id,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40)
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: root_bead_id,
+      attempt_id: `att-${root_bead_id}`,
+      patch: { status: 'done', finished_at: 1 }
+    });
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id,
+      source_attempt_id: `att-${root_bead_id}`,
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: root_bead_id,
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    return store;
+  }
+
+  test('lands the terminal and the systemic hold in ONE revision bump', () => {
+    const store = storeWithIntent('UI-1');
+    const before = store.snapshot(WS).revision;
+
+    const written = store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-1',
+      terminal: {
+        reason: 'verify_red',
+        stage: 'repo_verify',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 2000
+      },
+      hold_event: {
+        kind: 'systemic_failure',
+        bead_id: 'UI-1',
+        cause: 'verify_red',
+        at: 2000
+      },
+      now: 2000
+    });
+
+    const snap = store.snapshot(WS);
+    expect(written.ok).toBe(true);
+    expect(snap.revision).toBe(before + 1);
+    expect(snap.completion_intents['UI-1'].phase).toBe('needs_human');
+    expect(snap.hold).toMatchObject({
+      kind: 'systemic',
+      cause: 'verify_red',
+      since: 2000,
+      bead_ids: ['UI-1']
+    });
+  });
+
+  test('leaves the queue running when no hold event is given', () => {
+    const store = storeWithIntent('UI-1');
+
+    store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-1',
+      terminal: {
+        reason: 'conflict_unresolved:rebase',
+        stage: 'merge_subject',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 2000
+      }
+    });
+
+    expect(store.snapshot(WS).completion_intents['UI-1'].phase).toBe(
+      'needs_human'
+    );
+    expect(store.snapshot(WS).hold).toBe(null);
+  });
+
+  test('does not stop the queue when the terminal itself is rejected', () => {
+    const store = createQueueStore();
+
+    const written = store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-absent',
+      terminal: {
+        reason: 'verify_red',
+        stage: 'repo_verify',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 2000
+      },
+      hold_event: {
+        kind: 'systemic_failure',
+        bead_id: 'UI-absent',
+        cause: 'verify_red',
+        at: 2000
+      },
+      now: 2000
+    });
+
+    expect(written.ok).toBe(false);
+    expect(store.snapshot(WS).hold).toBe(null);
+  });
+});

@@ -3123,11 +3123,9 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Finalize an attempt that did not deliver — the SINGLE classification point
-   * (2026-08-28 worker-failure-tiers spec §3). What used to be one behaviour
-   * ("mark failed, switch `auto_advance` OFF") is now four, and which one runs
-   * is decided by {@link classifyFailure} from the attempt's own outcome, never
-   * by the caller:
+   * Write ONE classified outcome to its attempt record and to the queue's own
+   * stop state (2026-08-28 worker-failure-tiers spec §3). What used to be one
+   * behaviour ("mark failed, switch `auto_advance` OFF") is now four:
    *
    *   - `parked`     — the session ended successfully waiting on a user
    *                    decision. Not a failure; the queue keeps running and
@@ -3143,37 +3141,32 @@ export function createScheduler(deps) {
    * `auto_advance` is NOT touched on any of them: it went back to being the
    * user's ⏸/▶ alone, and the failure-owned stop is `queue.hold` (§4).
    *
+   * Shared by {@link failAttempt} and {@link finalizeLaunchRefusal} so a launch
+   * refusal is classified by the same table a session termination is: a
+   * `spawn_failed` or `codex_home_prepare_failed` is environmental wherever it
+   * is caught, and a second hand-written `failed` patch is exactly how the two
+   * paths would drift apart.
+   *
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {string} bead_id
-   * @param {string|null} prior
-   * @param {string|null} cause
-   * @param {any} [cause_detail] - What the fail-closed path actually caught
-   * (UI-2o4z §2); the classifier's `summary` is merged into it here.
-   * @param {{ moot?: boolean, verdict?: any, bead_status?: string|null,
-   *   pr_url?: string|null, awaiting_user?: string|null }} [options]
-   * `verdict`/`bead_status`/`pr_url`/`awaiting_user` are the classifier's
-   * inputs (§3.1): without them a successful-but-undelivered ending cannot be
-   * told apart from a park, so only the paths that HAVE them pass them.
+   * @param {import('./failure-class.js').FailureClassification} classification
+   * @param {any} cause_detail
+   * @param {{ moot?: boolean, bead_status?: string|null, awaiting_user?: string|null, repo?: string|null, at?: number }} [options]
    */
-  async function failAttempt(
+  function settleFailureTier(
     workspace,
     attempt_id,
     bead_id,
-    prior,
-    cause,
+    classification,
     cause_detail,
     options = {}
   ) {
-    const at = now();
-    const classification = classifyFailure({
-      cause: cause ?? null,
-      cause_detail: cause_detail ?? null,
-      verdict: options.verdict ?? null,
-      bead_status: options.bead_status ?? null,
-      pr_url: options.pr_url ?? null,
-      awaiting_user: options.awaiting_user ?? null
-    });
+    const at = typeof options.at === 'number' ? options.at : now();
+    const repo =
+      options.repo !== undefined
+        ? options.repo
+        : repoOfAttempt(workspace, attempt_id);
     // A MOOT settlement is dismissed on arrival — its target is already gone —
     // so it can never be the evidence of an environment fault or a systemic
     // wall. It settles as the individual record it has always been.
@@ -3197,10 +3190,14 @@ export function createScheduler(deps) {
       notifyLifecycle('attemptParked', {
         bead_id,
         cause: classification.cause,
-        repo: repoOfAttempt(workspace, attempt_id),
+        repo,
         awaiting_user: options.awaiting_user ?? null
       });
-    } else if (tier === 'env') {
+      closeRetryLineage(workspace, bead_id);
+      return;
+    }
+
+    if (tier === 'env') {
       const key = causeKey(classification.cause, classification.env_group);
       const origin_attempt_id = retryOriginOf(workspace, attempt_id);
       const applied = deps.store.applyQueueHold(workspace, {
@@ -3256,41 +3253,97 @@ export function createScheduler(deps) {
         notifyLifecycle('attemptFailed', {
           bead_id,
           cause: classification.cause,
-          repo: repoOfAttempt(workspace, attempt_id),
+          repo,
           cause_detail: cause_detail ?? null
         });
       }
       armRetryTimer(workspace);
-    } else {
-      if (tier === 'systemic') {
-        deps.store.applyQueueHold(workspace, {
-          event: {
-            kind: 'systemic_failure',
-            bead_id,
-            attempt_id,
-            cause: classification.cause,
-            at
-          },
-          now: at
-        });
-      }
-      deps.store.updateAttempt(workspace, {
-        attempt_id,
-        patch: {
-          status: 'failed',
+      return;
+    }
+
+    if (tier === 'systemic') {
+      deps.store.applyQueueHold(workspace, {
+        event: {
+          kind: 'systemic_failure',
+          bead_id,
+          attempt_id,
           cause: classification.cause,
-          finished_at: at,
-          cause_detail: mergeCauseDetail(cause_detail, classification.summary),
-          ...(options.moot === true ? { dismissed_at: at } : {})
-        }
-      });
-      notifyLifecycle('attemptFailed', {
-        bead_id,
-        cause: classification.cause,
-        repo: repoOfAttempt(workspace, attempt_id),
-        cause_detail: cause_detail ?? null
+          at
+        },
+        now: at
       });
     }
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: {
+        status: 'failed',
+        cause: classification.cause,
+        finished_at: at,
+        cause_detail: mergeCauseDetail(cause_detail, classification.summary),
+        ...(options.moot === true ? { dismissed_at: at } : {})
+      }
+    });
+    notifyLifecycle('attemptFailed', {
+      bead_id,
+      cause: classification.cause,
+      repo,
+      cause_detail: cause_detail ?? null
+    });
+    if (tier === 'individual') {
+      closeRetryLineage(workspace, bead_id);
+    }
+  }
+
+  /**
+   * Finalize an attempt that did not deliver — the SINGLE classification point
+   * for a terminated SESSION (spec §3). The tier write itself lives in
+   * {@link settleFailureTier}; this is the session-termination wrapper around
+   * it: revert the bead's metadata, clear the lane arm, and give the claim back.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {string|null} prior
+   * @param {string|null} cause
+   * @param {any} [cause_detail] - What the fail-closed path actually caught
+   * (UI-2o4z §2); the classifier's `summary` is merged into it here.
+   * @param {{ moot?: boolean, verdict?: any, bead_status?: string|null,
+   *   pr_url?: string|null, awaiting_user?: string|null }} [options]
+   * `verdict`/`bead_status`/`pr_url`/`awaiting_user` are the classifier's
+   * inputs (§3.1): without them a successful-but-undelivered ending cannot be
+   * told apart from a park, so only the paths that HAVE them pass them.
+   */
+  async function failAttempt(
+    workspace,
+    attempt_id,
+    bead_id,
+    prior,
+    cause,
+    cause_detail,
+    options = {}
+  ) {
+    const at = now();
+    const classification = classifyFailure({
+      cause: cause ?? null,
+      cause_detail: cause_detail ?? null,
+      verdict: options.verdict ?? null,
+      bead_status: options.bead_status ?? null,
+      pr_url: options.pr_url ?? null,
+      awaiting_user: options.awaiting_user ?? null
+    });
+    settleFailureTier(
+      workspace,
+      attempt_id,
+      bead_id,
+      classification,
+      cause_detail,
+      {
+        moot: options.moot === true,
+        bead_status: options.bead_status ?? null,
+        awaiting_user: options.awaiting_user ?? null,
+        at
+      }
+    );
 
     try {
       await revertWorkflowMode(
@@ -3674,7 +3727,7 @@ export function createScheduler(deps) {
             attempt_id,
             patch: { status: 'done', finished_at: now() }
           });
-          settleRetrySuccess(workspace, bead_id);
+          closeRetryLineage(workspace, bead_id);
         } else {
           // Attempt done + bead into `pr_wait` in ONE persist (§4): a split write
           // could leave the bead queued for re-dispatch with its PR already open.
@@ -3685,7 +3738,7 @@ export function createScheduler(deps) {
           });
           // The bead DELIVERED, so its env lineage is over and an env hold with
           // no lineage left releases itself (spec §3.3).
-          settleRetrySuccess(workspace, bead_id);
+          closeRetryLineage(workspace, bead_id);
           notifyLifecycle('prWaitEntered', {
             bead_id,
             pr_url: vr.pr_url ?? null,
@@ -3891,7 +3944,7 @@ export function createScheduler(deps) {
     }
 
     if (result.ok) {
-      settleRetrySuccess(workspace, bead_id);
+      closeRetryLineage(workspace, bead_id);
       notifyChanged(workspace);
       await tick(workspace);
       return { ok: true };
@@ -5752,10 +5805,13 @@ export function createScheduler(deps) {
     // over the inherited environment, and `claude.js`'s routing env touches no
     // `GIT_CONFIG_*` key, so there is no collision to lose.
     //
-    // DISPOSITION and quick_fix sessions are left alone in all three layers:
-    // publishing the resolved/base-direct target IS their job, so no hook was
-    // installed. Pointing session git at that absent hooksPath would also
-    // disable every repository hook for the session.
+    // A DISPOSITION session is left alone in all three layers: publishing the
+    // resolved target IS its job, so no hook was installed, and pointing
+    // session git at that absent hooksPath would disable every repository hook
+    // for the session. The quick_fix lane is NOT excluded any more
+    // (worker-failure-tiers §5): it installs the RECORD-mode hook, whose whole
+    // purpose is the push log the landing judgment reads — a hook that git is
+    // never pointed at records nothing.
     if (receipt_dir !== null || monitor_dir !== null) {
       settings.env = {
         ...(settings.env || {}),
@@ -5768,7 +5824,7 @@ export function createScheduler(deps) {
           : {})
       };
     }
-    if (!settings.disposition && !settings.quickfix_lane) {
+    if (!settings.disposition) {
       settings.env = {
         ...settings.env,
         ...guardHook.envFor({ workspace, attempt_id })
@@ -6127,9 +6183,18 @@ export function createScheduler(deps) {
   /**
    * Apply the existing spawn-abort cleanup to a terminal launch refusal.
    *
+   * The record itself goes through {@link settleFailureTier}, the same tier
+   * table a terminated session uses (worker-failure-tiers §3): a `spawn_failed`
+   * or `codex_home_prepare_failed` is an ENVIRONMENT fault whether it is caught
+   * at spawn or at completion, and writing a bare `failed` patch here would
+   * silently deny those refusals the backoff ladder and the queue hold the same
+   * cause earns everywhere else.
+   *
    * @param {any} input
    * @param {string} cause
-   * @param {boolean} dismissed
+   * @param {boolean} dismissed - A refusal whose target is already gone. It is
+   * MOOT, so it settles individually and dismissed, never as evidence of an
+   * outage.
    * @param {{ reason: string, command: string|null }|null} [cause_detail] - The
    * operator-actionable specifics behind a closed-vocabulary `cause`, such as
    * which account-HOME path failed which mirror check.
@@ -6154,22 +6219,14 @@ export function createScheduler(deps) {
       input.stamped_keys,
       execRestoreValuesOf(input.workspace, input.attempt_id)
     );
-    deps.store.updateAttempt(input.workspace, {
-      attempt_id: input.attempt_id,
-      patch: {
-        status: 'failed',
-        cause,
-        finished_at: now(),
-        ...(cause_detail ? { cause_detail } : {}),
-        ...(dismissed ? { dismissed_at: now() } : {})
-      }
-    });
-    notifyLifecycle('attemptFailed', {
-      bead_id: input.bead_id,
-      cause,
-      repo: input.repo,
-      cause_detail
-    });
+    settleFailureTier(
+      input.workspace,
+      input.attempt_id,
+      input.bead_id,
+      classifyFailure({ cause, cause_detail: cause_detail ?? null }),
+      cause_detail ?? null,
+      { moot: dismissed === true, repo: input.repo ?? null }
+    );
     try {
       await revertWorkflowMode(
         input.bead_id,
@@ -7333,12 +7390,15 @@ export function createScheduler(deps) {
     try {
       if (
         !options.disposition &&
-        !quickfix_lane &&
         !installGuardHook({
           workspace,
           attempt_id: new_attempt_id,
           repo,
-          target_base
+          target_base,
+          // Same split as first dispatch (worker-failure-tiers §5): the
+          // quick_fix lane gets the RECORD-mode hook so its landing keeps a
+          // push log, and only a disposition is left without one.
+          mode: quickfix_lane ? 'record' : 'guard'
         })
       ) {
         serial_lease.release();
@@ -7368,16 +7428,33 @@ export function createScheduler(deps) {
       prior.base_drift == null &&
       (await settleBaseDrift(workspace, attempt_id))
     ) {
+      const landed_at = now();
       deps.store.updateAttempt(workspace, {
         attempt_id: new_attempt_id,
         patch: {
           status: 'failed',
           cause: 'base_landing_detected',
-          finished_at: now()
+          finished_at: landed_at
         }
       });
+      // A base landing is SYSTEMIC wherever it is observed (worker-failure-tiers
+      // §3.4): the prevention layer was breached and the base moved
+      // irreversibly, so the queue stops here exactly as it does on the session
+      // termination path. This branch writes its own record instead of going
+      // through `failAttempt` — the relaunch it aborts never started — so the
+      // hold has to be raised explicitly.
+      deps.store.applyQueueHold(workspace, {
+        event: {
+          kind: 'systemic_failure',
+          bead_id,
+          attempt_id: new_attempt_id,
+          cause: 'base_landing_detected',
+          at: landed_at
+        },
+        now: landed_at
+      });
       removeGuardHook(workspace, attempt_id);
-      if (!options.disposition && !quickfix_lane) {
+      if (!options.disposition) {
         removeGuardHook(workspace, new_attempt_id);
       }
       notifyChanged(workspace);
@@ -8036,12 +8113,14 @@ export function createScheduler(deps) {
       ) {
         continue;
       }
-      deps.store.applyQueueHold(workspace, {
-        event: { kind: 'retry_dispatched', bead_id, at },
-        now: at
-      });
+      // The rung is consumed by the ATTEMPT, not by the intent to dispatch
+      // one. `dispatch` returns normally on every ordinary refusal (bead not
+      // ready, bd snapshot failure, worktree residue, lane refusal), and
+      // marking the lineage dispatched before that would burn the retry with
+      // nothing to show for it — the ladder would silently stop climbing.
+      const before_attempt_id =
+        latestImplementationAttempt(q, bead_id)?.attempt_id ?? null;
       claimed.add(bead_id);
-      dispatched = true;
       try {
         await dispatch(workspace, bead_id, null, {
           retry: {
@@ -8055,6 +8134,24 @@ export function createScheduler(deps) {
         claimed.delete(bead_id);
         log('retry dispatch failed for %s: %o', bead_id, err);
       }
+      const after_attempt_id =
+        latestImplementationAttempt(deps.store.snapshot(workspace), bead_id)
+          ?.attempt_id ?? null;
+      if (after_attempt_id !== null && after_attempt_id !== before_attempt_id) {
+        deps.store.applyQueueHold(workspace, {
+          event: { kind: 'retry_dispatched', bead_id, at },
+          now: at
+        });
+        dispatched = true;
+      } else {
+        // Nothing launched. The rung stays unspent, but its `next_at` has to
+        // move off the past or `armRetryTimer` below would re-fire on it in a
+        // tight loop.
+        deps.store.applyQueueHold(workspace, {
+          event: { kind: 'retry_deferred', bead_id, at },
+          now: at
+        });
+      }
     }
     armRetryTimer(workspace);
     if (dispatched) {
@@ -8063,14 +8160,20 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Report that a bead on an env ladder DELIVERED (spec §3.3): its lineage is
-   * removed, and an env hold with no lineages left releases itself. A bead that
-   * carries no lineage is a no-op, so an ordinary success costs no queue write.
+   * Close a bead's env retry lineage (spec §3.3): the lineage is removed and an
+   * env hold with no lineages left releases itself. A bead that carries no
+   * lineage is a no-op, so an ordinary outcome costs no queue write.
+   *
+   * ANY non-env outcome closes the lineage, not just a delivery: the ladder
+   * exists to answer "is this bead still failing on the environment?", and a
+   * retry that ends `parked` or with an individual failure has answered it —
+   * leaving the lineage would hold the queue on a bead nothing will retry, and
+   * `armRetryTimer` would keep waking for a rung no attempt is climbing.
    *
    * @param {string} workspace
    * @param {string} bead_id
    */
-  function settleRetrySuccess(workspace, bead_id) {
+  function closeRetryLineage(workspace, bead_id) {
     try {
       const state = holdStateOf(workspace);
       if (!state.lineages.some((lineage) => lineage.bead_id === bead_id)) {
@@ -8083,7 +8186,7 @@ export function createScheduler(deps) {
       });
       armRetryTimer(workspace);
     } catch (err) {
-      log('retry success settlement failed for %s: %o', bead_id, err);
+      log('retry lineage close failed for %s: %o', bead_id, err);
     }
   }
 
@@ -8218,9 +8321,18 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Stamp a parked attempt resumed and dispatch a fresh one. The stamp lands
-   * FIRST and is CAS-like — the store refuses a second stamp — so two concurrent
-   * signals cannot both dispatch.
+   * Dispatch a fresh attempt for a parked one and stamp the parked record
+   * resumed (spec §3.1).
+   *
+   * The stamp lands AFTER the dispatch and only when an attempt actually
+   * appeared. `dispatch` returns normally on every ordinary refusal, and a stamp
+   * written before that would consume the ONE resume this attempt gets while
+   * launching nothing: the bead would sit parked forever with its transition
+   * already spent. An aborted resume is simply left unstamped — the next
+   * bd-change signal re-asks, which is the same evidence that raised this one.
+   *
+   * `claimed` is what makes it once-only in the meantime: the check and the add
+   * are synchronous, so two concurrent signals cannot both reach the dispatch.
    *
    * @param {string} workspace
    * @param {string} bead_id
@@ -8228,14 +8340,13 @@ export function createScheduler(deps) {
    * @returns {Promise<boolean>}
    */
   async function resumeParkedAttempt(workspace, bead_id, attempt_id) {
-    const stamped = deps.store.markParkedResumed(workspace, {
-      attempt_id,
-      at: now()
-    });
-    if (!stamped.ok) {
-      return false;
-    }
-    if (claimed.has(bead_id)) {
+    const record = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    if (
+      !record ||
+      record.status !== 'parked' ||
+      typeof record.parked_resumed_at === 'number' ||
+      claimed.has(bead_id)
+    ) {
       return false;
     }
     claimed.add(bead_id);
@@ -8246,6 +8357,13 @@ export function createScheduler(deps) {
       log('parked resume dispatch failed for %s: %o', bead_id, err);
       return false;
     }
+    const launched =
+      latestImplementationAttempt(deps.store.snapshot(workspace), bead_id)
+        ?.attempt_id ?? null;
+    if (launched === null || launched === attempt_id) {
+      return false;
+    }
+    deps.store.markParkedResumed(workspace, { attempt_id, at: now() });
     notifyChanged(workspace);
     return true;
   }

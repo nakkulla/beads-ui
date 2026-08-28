@@ -88,6 +88,13 @@ export { RETRY_DELAYS_MS, RETRY_MAX };
  */
 
 /**
+ * @typedef {Object} RetryDeferredEvent
+ * @property {'retry_deferred'} kind
+ * @property {string} bead_id
+ * @property {number} [at]
+ */
+
+/**
  * @typedef {Object} ResumeEvent
  * @property {'resume'} kind
  * @property {number} [at]
@@ -101,7 +108,8 @@ export { RETRY_DELAYS_MS, RETRY_MAX };
 
 /**
  * @typedef {EnvFailureEvent | SystemicFailureEvent | RetrySucceededEvent
- *   | RetryDispatchedEvent | ResumeEvent | RetryNowEvent} QueueHoldEvent
+ *   | RetryDispatchedEvent | RetryDeferredEvent | ResumeEvent
+ *   | RetryNowEvent} QueueHoldEvent
  */
 
 /**
@@ -581,6 +589,34 @@ function reduceRetryDispatched(state, event) {
 }
 
 /**
+ * A retry that was DUE but could not be dispatched (the bead left its lane, was
+ * claimed, or the dispatch aborted before creating an attempt). The rung is not
+ * spent — `attempts` is untouched — but `next_at` has to move off the past, or
+ * every `armRetryTimer` would fire immediately on a lineage nothing can climb.
+ * The shortest ladder rung is the wait, because nothing about the environment
+ * was learned.
+ *
+ * @param {QueueHoldState} state
+ * @param {RetryDeferredEvent} event
+ * @param {number} at
+ * @returns {QueueHoldResult}
+ */
+function reduceRetryDeferred(state, event, at) {
+  return {
+    state: {
+      hold: state.hold === null ? null : { ...state.hold },
+      lineages: state.lineages.map((lineage) =>
+        lineage.bead_id === event.bead_id
+          ? { ...lineage, next_at: at + RETRY_DELAYS_MS[0] }
+          : { ...lineage }
+      ),
+      hold_history: [...state.hold_history]
+    },
+    effects: []
+  };
+}
+
+/**
  * Apply one queue event to the hold state.
  *
  * @param {unknown} state - durable state; tolerated in any shape.
@@ -619,6 +655,12 @@ export function reduceQueueHold(state, event, now) {
         return { state: current, effects: [] };
       }
       return reduceRetryDispatched(current, event);
+    }
+    case 'retry_deferred': {
+      if (!isNonEmptyString(event.bead_id)) {
+        return { state: current, effects: [] };
+      }
+      return reduceRetryDeferred(current, event, at);
     }
     case 'resume':
       return reduceResume(current);
