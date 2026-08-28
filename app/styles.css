@@ -92,10 +92,33 @@
   --label-pr-border: color-mix(in srgb, #7c3aed 35%, transparent);
 }
 
+/* --- 문서 스크롤 레이아웃 상수 --- */
+:root {
+  /* 앱 헤더의 실측 높이. `main.js`의 ResizeObserver가 매 리사이즈마다 덮어쓰고,
+     여기 값은 그 관측이 붙기 전 첫 프레임의 fallback이다. 헤더는 좁은 폭에서
+     줄바꿈하므로 상수로 못박으면 그만큼 어긋난다. */
+  --app-header-h: 53px;
+  /* 레인·컬럼 높이 상한. 한 화면보다 **넉넉히** 잡는 것이 요점이다: 상한을 한
+     화면 이하로 두면 문서가 스크롤될 일이 없어져 뷰포트 잠금을 푼 의미가
+     사라지고, 상한이 아예 없으면 가장 긴 레인 하나가 페이지를 몇 배로 늘려
+     나머지 레인 옆이 전부 빈 공간이 된다. 한 화면 반이 그 사이다 — 창은 스크롤
+     한 번 분량만 내려가고, 그보다 긴 레인은 자기 안에서 스크롤한다. */
+  --lane-max-h: calc((100dvh - var(--app-header-h)) * 1.5);
+}
+
+/* 스크롤러는 문서다. 예전에는 여기서 `height: 100%`로 body를 뷰포트에 잠그고
+   `.app-shell`과 라우트 셸이 그 안을 `overflow: hidden`으로 잘라, 스크롤이
+   패널·레인 안쪽에서만 생겼다 — 창 자체는 내려가지 않았다. 잠금을 풀면
+   `.app-header`의 `position: sticky`는 문서를 기준으로 삼아 항상 상단에 남고,
+   본문은 내용만큼 자란다. 무한정 길어지는 것은 레인·컬럼의 `max-height`가
+   막고, 넘치는 몫은 그 안의 `overflow-y: auto`가 받는다. */
 html,
 body {
-  height: 100%;
   margin: 0;
+}
+
+body {
+  min-height: 100dvh;
 }
 
 /* Ensure the HTML hidden attribute wins over any display rules we set on routes */
@@ -144,12 +167,10 @@ a {
   align-items: start;
   justify-content: space-between;
   row-gap: var(--space-4);
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--panel-bg) 80%, transparent),
-    var(--panel-bg)
-  );
-  backdrop-filter: saturate(150%) blur(6px);
+  /* 불투명이어야 한다. 반투명 그라디언트는 데스크톱에 스크롤이 없어 헤더 뒤로
+     지나갈 내용도 없던 시절의 장식이었다 — 이제는 카드가 그 밑을 지나가며
+     테두리와 글자가 헤더 위로 비친다. */
+  background: var(--panel-bg);
 }
 .app-title {
   font-size: 18px;
@@ -855,9 +876,13 @@ a {
   }
 }
 
+/* sticky 헤더는 문서 흐름 안에 있으므로 셸은 헤더 아래에서 시작한다. 남은 한
+   화면을 하한으로만 잡고 상한은 두지 않는다 — 예전의 `height: calc(100% - 53px)`는
+   헤더 높이를 53px로 못박아, 헤더가 줄바꿈되는 폭에서 그만큼 어긋났다. */
 .app-shell {
-  /* Fill remaining viewport height below sticky header */
-  height: calc(100% - 53px);
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100dvh - var(--app-header-h));
 }
 
 /* Route shells */
@@ -865,14 +890,12 @@ a {
   min-height: 0; /* allow children to scroll */
 }
 
-/* Board route: fill height and let columns scroll */
+/* Board route: 컬럼은 가로로만 넘치고, 세로는 문서가 받는다. */
 .route {
   &.board {
     display: flex;
     flex-direction: column;
     min-height: 0;
-    height: 100%;
-    max-height: 100%;
 
     .panel__body {
       flex: 1;
@@ -882,13 +905,15 @@ a {
   }
 }
 
+/* 라우트 셸은 더 이상 뷰포트 높이를 고정하지도 넘치는 내용을 잘라내지도 않는다.
+   `overflow: hidden`을 남기면 문서 스크롤이 살아나도 내용이 잘려 보이지 않고,
+   그 안의 sticky 헤더도 잘린 상자를 기준으로 삼아 어긋난다. */
 #board-root.route.board,
 #worker-root.route.worker {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
-  height: 100%;
   min-height: 0;
-  overflow: hidden;
 }
 
 #board-root > .panel__body {
@@ -896,7 +921,7 @@ a {
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 .panel {
@@ -1802,16 +1827,10 @@ input.inline-edit:focus {
 
 /* Responsive: stack panels on narrow screens */
 @media (max-width: 900px) {
-  .app-shell {
-    height: auto;
-  }
-  /* 페이지 스크롤이 생기는 폭에서는 앱 헤더를 고정하지 않는다. sticky를 두면
-     부모 `body { height: 100% }` 박스 안에서만 붙어 있다가 한 화면을 넘기는
-     지점에서 풀려, 직렬 레인쯤부터 헤더가 사라지는 반쪽 고정이 된다. 모바일
-     Worker 리본과 같은 선택(둘 다 스크롤아웃)으로 통일한다. */
-  .app-header {
-    position: static;
-  }
+  /* 셸 높이를 풀던 이 폭의 특례는 사라졌다 — 문서 스크롤은 이제 모든 폭의
+     기본이다. 헤더 고정 해제는 없어진 것이 아니라 ≤640px로 좁혀졌다: 예전의
+     "반쪽 고정"은 sticky가 아니라 뷰포트 잠금이 원인이었으므로 이 폭에서 헤더를
+     풀 이유가 사라졌고, 헤더가 줄바꿈해 커지는 폭에서만 그 교환이 남는다. */
   .panel + .panel {
     border-left: none;
     border-top: 1px solid var(--border);
@@ -5063,6 +5082,9 @@ html[data-theme='dark'] {
 .worker-lanes > .worker-pane {
   flex: 1 1 0;
   min-width: 220px;
+  /* 레인 높이 상한 (문서 스크롤 전환): 값과 근거는 `--lane-max-h`가 소유한다.
+     넘치는 몫은 `.worker-pane__body`의 `overflow-y: auto`가 받는다. */
+  max-height: var(--lane-max-h);
 }
 
 .worker-pane {
@@ -6373,11 +6395,10 @@ html[data-theme='dark'] {
    여기서 height/min-height를 끊으면 레인 본문의 overflow-y가 영영 걸리지 않는다. */
 #monitor-root.route.monitor {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
-  height: 100%;
   min-height: 0;
   padding: var(--sp-10);
-  overflow: hidden;
   background: var(--bg-app);
 }
 
@@ -7493,12 +7514,10 @@ html[data-theme='dark'] {
    (UI-5ksp §4.7) — 실행 중·PR 대기가 `지금` 패널로 합쳐지는 것은 restyle이
    아니라 recombination이라 `order`로는 표현할 수 없었다. */
 @media (max-width: 640px) {
-  /* Worker 모바일과 같은 문서 스크롤: 라우트 셸의 높이 고정·클리핑을 풀고 다섯
-     레인이 내용만큼 늘어나 페이지와 함께 스크롤된다. 뷰포트 5등분은 폐기다. */
+  /* 뷰포트 5등분은 폐기다 — 레인은 내용만큼 늘어나 페이지와 함께 스크롤된다.
+     높이 고정·클리핑 해제는 기본이 되었으므로 여백만 좁힌다. */
   #monitor-root.route.monitor {
-    height: auto;
     padding: var(--sp-8);
-    overflow: visible;
   }
 
   /* 데크는 이미 세로로 쌓여 있다(합계 줄 → 타일). 좁은 화면에서는 합계 줄을
@@ -8149,6 +8168,11 @@ button.detail-session__leg:focus-visible {
   .app-header {
     gap: var(--space-4, 8px);
     padding: var(--space-4, 8px) var(--space-5, 12px) 0;
+    /* 여기서만 고정을 푼다. 줄바꿈한 헤더는 120~183px까지 자라 세로의 5분의 1을
+       상시 점유하는데, 좁은 화면에서 그만한 몫을 늘 내주는 것보다 스크롤아웃
+       시키는 쪽이 낫다 — 리본과 같은 선택이다. >640px에서는 헤더가 한 줄(79px)로
+       고정이라 그 교환이 성립하지 않으므로 sticky를 유지한다. */
+    position: static;
   }
 
   .header-left {
@@ -8178,14 +8202,8 @@ button.detail-session__leg:focus-visible {
   }
 
   /* 관제 우선 배치 (UI-58y2 §모바일): 뷰포트 5등분을 폐기하고 페이지 자연 세로
-     스크롤로 넘긴다. ≤900px에서 `.app-shell`이 `height: auto`가 되므로 높이
-     상한을 되살리려 하지 않고, 대신 라우트 셸의 높이 고정과 클리핑을 푼다 —
-     스크롤러는 문서이고, sticky의 기준도 뷰포트가 된다. */
-  #worker-root.route.worker {
-    height: auto;
-    overflow: visible;
-  }
-
+     스크롤로 넘긴다. 라우트 셸의 높이 고정·클리핑 해제는 이제 모든 폭의 기본이
+     되었으므로 여기서는 콘솔을 세로 스택으로 되돌리는 일만 남는다. */
   .worker-console {
     display: block;
     padding: var(--sp-8);
@@ -8193,10 +8211,8 @@ button.detail-session__leg:focus-visible {
   }
 
   /* 리본 (§모바일 1): 자동 진행 토글 + 실행/PR/완료 카운트를 한 줄로 묶는다.
-     고정하지는 않는다 — 앱 헤더도 ≤900px에서는 `position: static`으로 풀어
-     두었으므로(위 `.app-shell { height: auto }` 옆 규칙), 리본만 붙어 있으면
-     상단이 헤더 없이 리본만 뜬 어긋난 상태가 된다. 둘 다 같이 스크롤아웃하는
-     쪽으로 통일한다. */
+     고정하지는 않는다 — 상단에 붙는 자리는 앱 헤더 하나로 충분하고, 리본까지
+     붙이면 좁은 화면의 세로 몫을 두 겹으로 먹는다. */
   .worker-ribbon {
     display: flex;
     flex-wrap: nowrap;
@@ -8258,8 +8274,13 @@ button.detail-session__leg:focus-visible {
     min-width: 0;
   }
 
-  /* 후보 보드가 화면의 주인 (§모바일 4): 내부 스크롤을 강제하지 않고 내용만큼
-     늘어나 페이지와 함께 스크롤된다 — 5등분 문제의 직접 해결. */
+  /* 후보 보드가 화면의 주인 (§모바일 4, §4.7): 단일 컬럼으로 쌓인 레인 안에 또
+     스크롤러를 두지 않는다 — 상한도 내부 스크롤도 풀어 내용만큼 늘어나고 문서
+     스크롤 하나만 남긴다. 5등분 문제의 직접 해결이다. */
+  .worker-lanes--mobile > .worker-pane {
+    max-height: none;
+  }
+
   .worker-lanes--mobile .worker-pane__body {
     max-height: none;
     overflow: visible;

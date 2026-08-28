@@ -157,6 +157,66 @@ const CLOSED_CLIENT_ID = 'tab:board:closed';
 const CLOSED_RANGE_KEY = 'beads-ui.board.closed-range';
 
 /**
+ * Publish the sticky header's measured height as `--app-header-h`.
+ *
+ * The header wraps at narrow widths, so its height is not a constant; the CSS
+ * fallback only covers the first frame before this observer attaches. Every
+ * viewport-derived height in the stylesheet (`--lane-max-h`, the app shell's
+ * minimum) subtracts this value, so a stale number shows up as a lane that
+ * overshoots the fold or a scrollbar that never goes away.
+ *
+ * @param {HTMLElement|null} header_element
+ * @returns {() => void} Detaches the observer.
+ */
+function trackHeaderHeight(header_element) {
+  if (!header_element) {
+    return () => {};
+  }
+
+  /**
+   * @param {number} height
+   */
+  function publish(height) {
+    document.documentElement.style.setProperty(
+      '--app-header-h',
+      `${Math.round(height)}px`
+    );
+  }
+
+  publish(header_element.getBoundingClientRect().height);
+
+  if (typeof ResizeObserver !== 'function') {
+    return () => {};
+  }
+
+  const observer = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      publish(entry.contentRect.height + measureVerticalEdges(header_element));
+    }
+  });
+  observer.observe(header_element);
+
+  return () => observer.disconnect();
+}
+
+/**
+ * Border + padding the `contentRect` of a `ResizeObserver` entry leaves out.
+ *
+ * @param {HTMLElement} element
+ */
+function measureVerticalEdges(element) {
+  const style = getComputedStyle(element);
+  const parts = [
+    style.paddingTop,
+    style.paddingBottom,
+    style.borderTopWidth,
+    style.borderBottomWidth
+  ];
+
+  return parts.reduce((sum, part) => sum + (parseFloat(part) || 0), 0);
+}
+
+/**
  * Bootstrap the two-tab control-tower shell (Board / Worker) with a shared
  * detail overlay.
  *
@@ -165,6 +225,10 @@ const CLOSED_RANGE_KEY = 'beads-ui.board.closed-range';
 export function bootstrap(root_element) {
   const log = debug('main');
   log('bootstrap start');
+
+  trackHeaderHeight(
+    /** @type {HTMLElement|null} */ (document.querySelector('.app-header'))
+  );
 
   // Render route shells (nav + workspace picker live in the header).
   const shell = html`

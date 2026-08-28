@@ -50,11 +50,17 @@ describe('monitor tab styles (UI-eey2)', () => {
     expect(block).not.toContain('.mon2-deck__pill');
   });
 
-  test('releases the monitor route shell into document scroll on mobile (UI-thwe)', () => {
+  test('releases the monitor route shell into document scroll at every width (UI-tutz)', () => {
     const block = monitorBlock();
-    const mq = block.slice(block.indexOf('@media (max-width: 640px)'));
+    const shell =
+      block.match(/#monitor-root\.route\.monitor\s*{([^}]*)}/)?.[1] || '';
 
-    expect(mq).toMatch(/#monitor-root\.route\.monitor\s*{[^}]*height:\s*auto/);
+    // 문서 스크롤은 이제 640px 특례가 아니라 기본이다: 셸이 뷰포트 높이를 고정
+    // 하지도, 넘치는 내용을 잘라내지도 않는다.
+    expect(shell).not.toMatch(/height:/);
+    expect(shell).not.toMatch(/overflow:\s*hidden/);
+
+    const mq = block.slice(block.indexOf('@media (max-width: 640px)'));
     // 레인 스택 자체는 이제 Worker와 **같은** `.worker-lanes--mobile` 규칙이
     // 소유한다 (UI-5ksp §4.7) — Monitor만의 모바일 레인 예외는 남지 않는다.
     expect(mq).not.toContain('.mon2-lanes');

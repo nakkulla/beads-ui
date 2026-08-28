@@ -308,9 +308,9 @@ body {
 /* --- board view --- */
 .board-view {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: var(--sp-10);
-  min-height: 100%;
   padding: var(--sp-10);
   background: var(--bg-app);
 }
@@ -615,7 +615,9 @@ body {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  max-height: calc(100vh - 200px);
+  /* 컬럼 높이 상한: Worker 레인과 같은 어휘이자 같은 값이다 — 컬럼은 여기까지만
+     자라고 넘치는 카드는 `.board-column__body`의 `overflow-y: auto`가 받는다. */
+  max-height: var(--lane-max-h);
   background: var(--bg-panel);
   border: 1px solid var(--border-panel);
   border-top: 2px solid var(--text-dim);
