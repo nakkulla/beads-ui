@@ -1031,6 +1031,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         prActions
           ? prActions.observeReviewReceipt(bead_id)
           : Promise.resolve({ ok: false, reason: 'no_attachment' }),
+      // The attempt's own pre-push record, which the completion verdict reads
+      // to tell a head THIS session moved from one that moved under it
+      // (2026-08-28 auto-review-dispatch spec §5.2). Read here rather than in
+      // the scheduler because the verdict, not the launcher, owns the question.
+      guardHook: { readPushLog },
       kick: () => kickWorkerMergeQueue(workspace_root),
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
     });
@@ -1431,6 +1436,27 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           queue_bead_id,
           subject_bead_id
         ),
+      // The SAME slot fence, reused for the automatic review dispatch
+      // (2026-08-28 auto-review-dispatch spec §4 5번, ADR 0015). The subject is
+      // this bead itself: it sits in `pr_wait` and spends no slot of its own,
+      // so excusing it is what makes the predicate answer "is there a free
+      // slot for one more session".
+      reviewDispatchBlocked: (/** @type {string} */ bead_id) =>
+        scheduler.queueConflictBlocked(
+          keyFor(workspace_root),
+          bead_id,
+          bead_id
+        ),
+      // The queue's once-per-head dispatch of the review lineage the
+      // `[리뷰 후 머지]` click otherwise has to start by hand (§4 6번).
+      reviewSession: {
+        startAuto: (
+          /** @type {{ bead_id: string, head_sha: string, head_ref: string|null, reason: string }} */ input
+        ) =>
+          reviewSession
+            ? reviewSession.startAuto(input)
+            : Promise.resolve({ ok: false, reason: 'no_attachment' })
+      },
       // Preserve the mutation response as one object: `result_head_sha` is
       // authoritative only at this effect boundary (UI-vkk8 §4).
       updateBase: (/** @type {string} */ bead_id) =>

@@ -633,6 +633,24 @@
  * its slot, nothing is dequeued or terminalized, and every `kick()` re-runs the
  * gate on it. Absent on an item the gate has never held.
  * A cross-runner resolver decision that must survive restart.
+ * @property {ReviewDispatchClaim} [review_dispatch] - The one review lineage
+ * this row has already spent on a head (2026-08-28 auto-review-dispatch spec
+ * §3.1). Absent on every legacy `queue.json` and on any row the queue has never
+ * dispatched or clicked a review session for.
+ */
+/**
+ * One durable "this head has had its review lineage" claim (2026-08-28
+ * auto-review-dispatch spec §3.1). It belongs to the LINEAGE, not to the
+ * trigger: a click session and an automatic dispatch write the same claim, so
+ * neither can follow the other at the same head.
+ *
+ * @typedef {Object} ReviewDispatchClaim
+ * @property {string|null} head_sha - The head the claim was taken on (lowercase
+ * 40hex). Moved by the §5.2 rule on exhaustion; `null` means "final head
+ * undetermined — no automatic dispatch at ANY head" (fail-closed).
+ * @property {string} attempt_id - The `review_session` attempt of that lineage.
+ * @property {'active'|'exhausted'} state
+ * @property {number} at - When the claim last changed state.
  */
 /**
  * @typedef {Object} MergeAuthority
@@ -659,6 +677,10 @@
  * @property {number} since - When THIS reason started holding the item. A
  * refresh that reports the same reason keeps the original timestamp; a
  * different reason restarts it.
+ * @property {'slot'|null} [auto_review_wait] - Why no automatic review session
+ * was dispatched for this hold (2026-08-28 auto-review-dispatch spec §3.1):
+ * `'slot'` is ADR 0015's workspace slot fence. Absent means nothing is waiting,
+ * which is what every legacy hold round-trips to.
  */
 /**
  * @typedef {'waiting'|'yielded'|'ready'} ResolutionWaitState
@@ -1920,6 +1942,28 @@ function normalizeResolutionWait(value) {
 const SHA40_RE = /^[0-9a-f]{40}$/i;
 
 /**
+ * Whether this bead already has a `review_session` lineage in flight (UI-d7fy
+ * §5.2 per-bead guard, restated by the 2026-08-28 auto-review-dispatch spec §4
+ * 3번). One rule for every writer: a click, an automatic dispatch and the gate
+ * judgment must all read the same fact, or two sessions review one head.
+ *
+ * @param {Queue} next
+ * @param {string} bead_id
+ */
+function hasInFlightReviewSession(next, bead_id) {
+  for (const attempt of Object.values(next.attempts)) {
+    if (
+      attempt.kind === 'review_session' &&
+      attempt.bead_id === bead_id &&
+      (attempt.status === 'pending' || attempt.status === 'running')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * The dispatch identity BOTH `resolution` write paths must carry (UI-p49g
  * §3.1): `bindResolutionWait` and `appendResolutionAttempt`. A binding that
  * cannot name the exact head, base branch, and head branch it was dispatched
@@ -2003,7 +2047,51 @@ function normalizeMergeHold(value) {
   return {
     reason: value.reason,
     head_sha: value.head_sha.toLowerCase(),
-    since: value.since
+    since: value.since,
+    // Only the one defined wait survives, and only by being SET, so a legacy
+    // hold round-trips byte-identical (the `via` rule above).
+    ...(value.auto_review_wait === 'slot' ? { auto_review_wait: 'slot' } : {})
+  };
+}
+
+/**
+ * Read one persisted `review_dispatch` claim (2026-08-28 auto-review-dispatch
+ * spec §3.1). A claim whose shape cannot be trusted is DROPPED, never an error:
+ * absence is the normal state of every `queue.json` written before this field
+ * existed, and a row with no claim is simply one the §4 judgment may still
+ * dispatch once.
+ *
+ * @param {unknown} value
+ * @returns {ReviewDispatchClaim|null}
+ */
+function normalizeReviewDispatch(value) {
+  if (
+    !isRecord(value) ||
+    (value.state !== 'active' && value.state !== 'exhausted') ||
+    typeof value.attempt_id !== 'string' ||
+    value.attempt_id.length === 0 ||
+    typeof value.at !== 'number' ||
+    !Number.isFinite(value.at)
+  ) {
+    return null;
+  }
+  const head_sha =
+    typeof value.head_sha === 'string' && SHA40_RE.test(value.head_sha)
+      ? value.head_sha.toLowerCase()
+      : null;
+  if (head_sha === null && value.head_sha !== null) {
+    return null;
+  }
+  // `active` names the head a session is running against, so a null there is
+  // not the §5.2 fail-closed marker but an unreadable record.
+  if (head_sha === null && value.state === 'active') {
+    return null;
+  }
+  return {
+    head_sha,
+    attempt_id: value.attempt_id,
+    state: value.state,
+    at: value.at
   };
 }
 
@@ -2050,6 +2138,39 @@ function retiredReviewHold(value, authority) {
 }
 
 /**
+ * Which head an EXHAUSTED claim keeps (2026-08-28 auto-review-dispatch spec
+ * §5.2), from the two facts the settling caller observed: the head the branch
+ * ended at, and whether this session is what moved it.
+ *
+ * - final head === claim head → the claim stays where it was taken.
+ * - moved BY the session → the claim follows to the final head, or the next
+ *   `kick()` reads that head as a claim-free new lineage and sends a second
+ *   external review into the one the session was already running.
+ * - moved by anything else → the claim stays; that IS a new lineage, and the
+ *   next `kick()` opens its own claim there.
+ * - either fact unobserved (an omitted pair reads as this case) → `null`,
+ *   which §4 reads as "no automatic dispatch at ANY head"; the button is the
+ *   only exit and its click writes a fresh `active` claim.
+ *
+ * @param {string|null} claim_head_sha
+ * @param {{ final_head_sha?: string|null, head_moved_by_session?: boolean|null }} input
+ * @returns {string|null}
+ */
+function exhaustedClaimHeadSha(claim_head_sha, input) {
+  const final_head_sha = isSha(input.final_head_sha)
+    ? String(input.final_head_sha).toLowerCase()
+    : null;
+  const moved = input.head_moved_by_session;
+  if (final_head_sha === null || (moved !== true && moved !== false)) {
+    return null;
+  }
+  if (final_head_sha === claim_head_sha) {
+    return claim_head_sha;
+  }
+  return moved === true ? final_head_sha : claim_head_sha;
+}
+
+/**
  * Normalize the durable merge queue: entry order is the FIFO order, a bead may
  * appear once, a missing/unusable `resolution_rounds` reads as 0, and every
  * legacy entry receives an explicit null resolution binding.
@@ -2081,6 +2202,7 @@ function normalizeMergeQueue(arr) {
     const hold =
       normalizeMergeHold(raw.hold) ??
       retiredReviewHold(raw.head_review, authority);
+    const review_dispatch = normalizeReviewDispatch(raw.review_dispatch);
     out.push({
       bead_id: raw.bead_id,
       resolution_rounds:
@@ -2098,7 +2220,8 @@ function normalizeMergeQueue(arr) {
       resolution: normalizeResolutionWait(raw.resolution),
       ...(continuation_action === null ? {} : { continuation_action }),
       ...(authority === null ? {} : { authority }),
-      ...(hold === null ? {} : { hold })
+      ...(hold === null ? {} : { hold }),
+      ...(review_dispatch === null ? {} : { review_dispatch })
     });
   }
   return out;
@@ -7394,12 +7517,61 @@ export function createQueueStore(options = {}) {
      * failed write therefore dispatches nothing at all — the caller launches
      * only after `review_session_registered` comes back true.
      *
+     * An in-flight `review_session` on ANY clicked bead makes the whole call a
+     * complete no-op, judged BEFORE the mutation (2026-08-28
+     * auto-review-dispatch spec §3.3). Judging it after the authority write —
+     * as this op used to — let a click that arrived just after an automatic
+     * dispatch replace the authority the running attempt is bound to, leaving
+     * an `active` claim and an attempt that can never settle. The UI's button
+     * lock is a convenience above this; the server no-op is the canonical rule.
+     *
      * @param {string} workspace
      * @param {{ expected_revision: number, entries: Array<{ bead_id: string, head_sha?: string|null, target_base?: string|null, external?: boolean, via?: 'lane' }>, review_session?: { attempt_id: string, session_source?: string|null }|null }} input
      * @returns {QueueOpResult & { review_session_registered?: boolean }}
      */
     enqueueMergeManual(workspace, input) {
       const { expected_revision, entries } = input;
+      const loaded = ensureLoaded(workspace);
+      const requested = Array.isArray(entries) ? entries : [];
+      /** @type {Set<string>} */
+      const requested_ids = new Set(
+        requested
+          .map((entry) => (entry ? entry.bead_id : null))
+          .filter(
+            /** @returns {bead_id is string} */
+            (bead_id) => typeof bead_id === 'string' && bead_id.length > 0
+          )
+      );
+      /** @type {Set<string>} */
+      const guarded = new Set(
+        [...requested_ids].filter((bead_id) =>
+          hasInFlightReviewSession(loaded, bead_id)
+        )
+      );
+      // The guard is per BEAD, so a lane enrolment carrying one guarded bead
+      // still enrols the rest; only when every requested bead is guarded — the
+      // single-entry click the spec describes — is the whole call the `ok:true`
+      // no-op, which is the shape `review-session.js` reads to mean "the click
+      // was accepted and dispatched nothing".
+      if (guarded.size > 0 && guarded.size === requested_ids.size) {
+        return {
+          ok: true,
+          conflict: false,
+          queue: exportQueue(workspace, loaded),
+          review_session_registered: false,
+          reason: 'review_session_in_flight'
+        };
+      }
+      const open_entries =
+        guarded.size === 0
+          ? requested
+          : requested.filter(
+              (entry) =>
+                !(
+                  typeof entry?.bead_id === 'string' &&
+                  guarded.has(entry.bead_id)
+                )
+            );
       /**
        * Whether this Bead's most recent `[리뷰 후 머지]` session FAILED — the
        * one case in which an existing MANUAL authority is not reusable
@@ -7502,15 +7674,29 @@ export function createQueueStore(options = {}) {
           continuation_mode:
             click.session_source === 'resume' ? 'session' : 'fresh'
         });
+        // The click spends this head's ONE review lineage exactly as an
+        // automatic dispatch does (2026-08-28 auto-review-dispatch spec §3.3):
+        // "once per head" belongs to the lineage, not to the trigger, so the
+        // queue must not follow a click session that just failed at head X
+        // with a machine dispatch at the same X.
+        const entry = next.merge_queue.find((item) => item.bead_id === bead_id);
+        if (entry) {
+          entry.review_dispatch = {
+            head_sha: authority.head_sha,
+            attempt_id: click.attempt_id,
+            state: 'active',
+            at: now()
+          };
+        }
         review_session_registered = true;
         return true;
       }
       const result = applyMutation(workspace, expected_revision, (next) => {
-        if (!Array.isArray(entries) || entries.length === 0) {
+        if (open_entries.length === 0) {
           return false;
         }
         let changed = 0;
-        for (const entry of entries) {
+        for (const entry of open_entries) {
           const bead_id = entry && entry.bead_id;
           if (typeof bead_id !== 'string' || bead_id.length === 0) {
             continue;
@@ -7667,8 +7853,14 @@ export function createQueueStore(options = {}) {
      * reached. The authority binding above still guards it, so a cancelled
      * attempt (whose entry is gone) stays untouchable.
      *
+     * The `review_dispatch` claim moves in this same write (2026-08-28
+     * auto-review-dispatch spec §5): `current` deletes it (the lineage closed
+     * on a receipt at the final head), and a `failed` settlement of the claim's
+     * OWN attempt exhausts it at the head {@link exhaustedClaimHeadSha} picks.
+     * A settlement of any other attempt leaves the claim alone.
+     *
      * @param {string} workspace
-     * @param {{ attempt_id: string, outcome: 'current'|'failed', final_head_sha?: string|null, cause?: string|null, hold_reason?: string|null, from?: 'launch'|'completion', at?: number }} input
+     * @param {{ attempt_id: string, outcome: 'current'|'failed', final_head_sha?: string|null, head_moved_by_session?: boolean|null, cause?: string|null, hold_reason?: string|null, from?: 'launch'|'completion', at?: number }} input
      * @returns {QueueOpResult & { reason?: string }}
      */
     settleReviewSession(workspace, input) {
@@ -7716,6 +7908,7 @@ export function createQueueStore(options = {}) {
             ).toLowerCase();
           }
           delete entry.hold;
+          delete entry.review_dispatch;
           return true;
         }
         attempt.status = 'failed';
@@ -7739,6 +7932,142 @@ export function createQueueStore(options = {}) {
           head_sha,
           since: prior && prior.reason === hold_reason ? prior.since : at
         };
+        const claim = entry.review_dispatch ?? null;
+        if (claim && claim.attempt_id === input.attempt_id) {
+          entry.review_dispatch = {
+            head_sha: exhaustedClaimHeadSha(claim.head_sha, input),
+            attempt_id: claim.attempt_id,
+            state: 'exhausted',
+            at
+          };
+        }
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
+    },
+
+    /**
+     * Correct a claim the records disagree about (2026-08-28
+     * auto-review-dispatch spec §4 4번): `active` on a head with no
+     * `review_session` attempt left to end it — what a restart recovery that
+     * never landed leaves behind. The claim moves to `exhausted` KEEPING its
+     * head, so the row reads as "this head spent its lineage" and the button
+     * stays its only exit. Anything else is left alone and writes nothing.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, head_sha: string }} input
+     * @returns {QueueOpResult}
+     */
+    expireReviewDispatchClaim(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === input.bead_id
+        );
+        const claim = entry?.review_dispatch ?? null;
+        if (
+          !entry ||
+          !claim ||
+          claim.state !== 'active' ||
+          claim.head_sha !== input.head_sha
+        ) {
+          return false;
+        }
+        entry.review_dispatch = { ...claim, state: 'exhausted', at: now() };
+        return true;
+      });
+    },
+
+    /**
+     * Register ONE automatic review lineage on a held row and claim its head,
+     * in a single write (2026-08-28 auto-review-dispatch spec §4.1).
+     *
+     * The op never grants authority and never changes its source: the automatic
+     * dispatch rides the authority the row ALREADY has, and only a click mints
+     * a manual one. `expected` is the fact the §4 judgment was taken on, and
+     * all four members are re-checked HERE because the judgment reads bead
+     * metadata (a `bd` call) between deciding and writing: a click or a
+     * re-observation in that window would otherwise bind an old head to a new
+     * authority. A rejected claim writes nothing at all, and the next `kick()`
+     * simply judges the row again.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, session_source?: string|null, expected: { authority_id: string, authority_source: 'manual'|'automatic', hold_reason: string, head_sha: string } }} input
+     * @returns {QueueOpResult & { reason?: string }}
+     */
+    claimAutoReviewDispatch(workspace, input) {
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const bead_id = input.bead_id;
+        const attempt_id = input.attempt_id;
+        const expected = isRecord(input.expected) ? input.expected : null;
+        const head_sha =
+          expected && isSha(expected.head_sha)
+            ? String(expected.head_sha).toLowerCase()
+            : null;
+        if (
+          typeof bead_id !== 'string' ||
+          bead_id.length === 0 ||
+          typeof attempt_id !== 'string' ||
+          attempt_id.length === 0 ||
+          !expected ||
+          head_sha === null
+        ) {
+          reason = 'claim_input_invalid';
+          return false;
+        }
+        const entry = next.merge_queue.find((item) => item.bead_id === bead_id);
+        if (!entry) {
+          reason = 'claim_input_stale';
+          return false;
+        }
+        if (!entry.authority) {
+          reason = 'authority_missing';
+          return false;
+        }
+        if (
+          entry.authority.id !== expected.authority_id ||
+          entry.authority.source !== expected.authority_source ||
+          (entry.hold?.reason ?? null) !== expected.hold_reason ||
+          (entry.hold?.head_sha ?? null) !== head_sha
+        ) {
+          reason = 'claim_input_stale';
+          return false;
+        }
+        if (Object.hasOwn(next.attempts, attempt_id)) {
+          reason = 'review_session_attempt_exists';
+          return false;
+        }
+        if (hasInFlightReviewSession(next, bead_id)) {
+          reason = 'review_session_in_flight';
+          return false;
+        }
+        const claim = entry.review_dispatch ?? null;
+        // A claim already covers this head when it names it, and a
+        // `head_sha: null` claim covers EVERY head (§5.2 fail-closed): the
+        // button is the only exit from both.
+        if (claim && (claim.head_sha === null || claim.head_sha === head_sha)) {
+          reason = 'review_dispatch_claimed';
+          return false;
+        }
+        const at = now();
+        next.attempts[attempt_id] = makeAttempt({
+          attempt_id,
+          bead_id,
+          kind: 'review_session',
+          origin: 'auto',
+          status: 'pending',
+          authority_id: entry.authority.id,
+          head_sha,
+          continuation_mode:
+            input.session_source === 'resume' ? 'session' : 'fresh'
+        });
+        entry.review_dispatch = {
+          head_sha,
+          attempt_id,
+          state: 'active',
+          at
+        };
         return true;
       });
       return reason === null ? result : { ...result, reason };
@@ -7753,8 +8082,16 @@ export function createQueueStore(options = {}) {
      * keeps the moment that reason started, so the card can say how long this
      * particular hold has stood.
      *
+     * `auto_review_wait` is OMITTED by every caller that has no verdict on it
+     * (the gate's own hold write above all), and an omitted value PRESERVES
+     * what is stored; only an explicitly passed value that DIFFERS is written
+     * (2026-08-28 auto-review-dispatch spec §3.1). That is load-bearing, not
+     * tidiness: the fence re-judges the same held row on every `kick()`, and a
+     * write on every repeat would bump the revision, emit `queue-changed`, and
+     * drive the drain that re-judges it — forever.
+     *
      * @param {string} workspace
-     * @param {{ bead_id: string, hold: { reason: string, head_sha: string|null }|null, at: number }} input
+     * @param {{ bead_id: string, hold: { reason: string, head_sha: string|null, auto_review_wait?: 'slot'|null }|null, at: number }} input
      * @returns {QueueOpResult}
      */
     setMergeHold(workspace, input) {
@@ -7781,7 +8118,19 @@ export function createQueueStore(options = {}) {
         if (typeof reason !== 'string' || reason.length === 0) {
           return false;
         }
-        if (prior && prior.reason === reason && prior.head_sha === head_sha) {
+        const prior_wait = prior?.auto_review_wait ?? null;
+        const auto_review_wait =
+          input.hold.auto_review_wait === undefined
+            ? prior_wait
+            : input.hold.auto_review_wait === 'slot'
+              ? 'slot'
+              : null;
+        if (
+          prior &&
+          prior.reason === reason &&
+          prior.head_sha === head_sha &&
+          prior_wait === auto_review_wait
+        ) {
           return false;
         }
         entry.hold = {
@@ -7792,7 +8141,8 @@ export function createQueueStore(options = {}) {
               ? prior.since
               : typeof input.at === 'number' && Number.isFinite(input.at)
                 ? input.at
-                : now()
+                : now(),
+          ...(auto_review_wait === null ? {} : { auto_review_wait })
         };
         return true;
       });

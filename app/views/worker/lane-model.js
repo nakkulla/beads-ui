@@ -2556,13 +2556,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
         gate.tier === 'merged';
       const external_cleanup =
         external && !!cleanup && !!gate && gate.tier === 'merged';
-      // An undetermined review verdict (probe error, unreadable Bead) is
-      // re-taken by the next observation; nobody acts on it, so it neither
-      // alerts nor — via its empty gate_badge — draws a badge.
+      // `review_receipt_undetermined`도 이제 알린다 (UI-qksl §4 1번): 큐가 그
+      // 사유에서 보류하고 head당 1회 리뷰 lineage를 띄우며, 소진 뒤의 출구는
+      // `[리뷰 후 머지]` 클릭이다 — "다음 관측이 다시 가져가므로 아무도 할 일이
+      // 없다"던 UI-32he의 전제가 사라졌다. Worker 카드가 그 행에 보류 뱃지와
+      // 버튼을 그리는데 레인 투영만 조용하면 같은 행을 두 화면이 다르게 말한다.
       const gate_alert =
         !!gate &&
-        ['closed_unmerged', 'review', 'undecidable'].includes(gate.tier) &&
-        gate.reason !== 'review_receipt_undetermined';
+        ['closed_unmerged', 'review', 'undecidable'].includes(gate.tier);
       const discard = discardProjection(discard_operations, bead_id, {
         external,
         merge_active: active || merge_step?.step === 'merge',

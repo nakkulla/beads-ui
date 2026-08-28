@@ -233,6 +233,11 @@ export const COMPLETION_FAILURE_POLICY = Object.freeze({
   spec_id_missing: 'metadata_watch',
   review_receipt_missing: 'metadata_watch',
   review_receipt_stale: 'metadata_watch',
+  // A malformed receipt joins the other three (2026-08-28 auto-review-dispatch
+  // spec §4 1번): the queue HOLDS on it now instead of refusing, and a hold
+  // that terminalized as `needs_human` would take the row out of the very
+  // judgment the automatic review lineage exists to re-run.
+  review_receipt_invalid: 'metadata_watch',
   review_receipt_undetermined: 'metadata_watch',
   continuation_persist_failed: 'retry',
   cleanup_prerecord_failed: 'retry',

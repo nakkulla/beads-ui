@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0019 | [리뷰 영수증 보류는 큐가 head당 1회 리뷰 lineage를 자동 dispatch해 해소를 시도한다](0019-auto-review-dispatch-once-per-head.md) | 2026-08-28 | 영수증 부재·stale 보류는 큐가 head당 1회 같은 리뷰 lineage를 자동 dispatch하고 실패·소진 뒤에는 [리뷰 후 머지]가 같은 lineage를 resume하며 post-merge 자동 수리 금지(ADR 0005)와는 별개다 |
 | 0018 | [quick_fix 착지 재개는 정산 커서가 아니라 실패 사유로 판정한다](0018-quickfix-landing-resume-judged-by-failure-reason.md) | 2026-08-28 | 세션이 필요한 사유만 닫힌 목록으로 열거하고 나머지는 전부 같은 attempt의 정산을 다시 돌린다. 정산 계열 어휘는 coordinator가 만들어 열려 있고 settle은 멱등이라 기본값은 정산 쪽이 안전하다 |
 | 0017 | [awaiting_user를 남기고 정상 종료한 세션 결말은 parked이며 자동 재디스패치하지 않는다](0017-parked-session-outcome-no-auto-redispatch.md) | 2026-08-28 | 성공 종료 + 미resolved + PR 없음 + awaiting_user는 parked다. 재개는 사용자 클릭 또는 awaiting_user 소거 전이 관측뿐이다 |
 | 0016 | [큐 정지 권한은 systemic 실패 계층만 갖는다](0016-queue-hold-only-on-systemic-failure.md) | 2026-08-28 | Worker 큐 정지는 다음 bead에도 재발할 체계적 실패에만 걸고, 개별 실패는 bead 단위로 기록하고 큐를 계속 돌린다. 환경성 실패는 보류→재시도→승격의 사다리를 탄다 |

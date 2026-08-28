@@ -501,6 +501,22 @@ const AUTO_RESOLUTION_PHASES = new Set([
 ]);
 
 /**
+ * 리뷰 lineage 하나가 출구인 게이트 보류 사유 넷 (UI-qksl §4 1번). 큐는 이
+ * 넷에서 head당 1회 리뷰 세션을 자동 dispatch하고, 그 뒤의 출구는 `[리뷰 후
+ * 머지]` 하나다 — 그래서 뱃지도 버튼도 넷을 한 집합으로 읽는다. 서버
+ * `REVIEW_AFTER_MERGE_GATE_REASONS`와 같은 집합이며, 갈라지면 서버가 받아주는
+ * 보류에서 버튼이 사라진다.
+ *
+ * @type {Set<string>}
+ */
+const REVIEW_AFTER_MERGE_GATE_REASONS = new Set([
+  'review_receipt_missing',
+  'review_receipt_stale',
+  'review_receipt_invalid',
+  'review_receipt_undetermined'
+]);
+
+/**
  * The badge for an intent the completion coordinator is resolving WITHOUT a
  * person (UI-hk74 §9). Null for every other phase, and null for one of the
  * three whose `auto_resolution` record did not travel — fail-quiet, because a
@@ -814,9 +830,10 @@ export function prStatusBadge(input) {
   // unqueued, failed, waiting on a continuation choice — because there the
   // reason is what the person clicks to fix.
   const receipt_codes = receiptWarningCodes(input.receipt_check);
-  // 리뷰 사유 둘은 여기서 빠졌다 (UI-d7fy §5): 큐는 리뷰어를 디스패치하지도
-  // 수리하지도 않으므로, 그 행은 "자동으로 처리 중"이 아니라 사람이 [리뷰 후
-  // 머지]를 누를 때까지 서 있는 보류다.
+  // 리뷰 보류 사유들은 여기서 빠졌다: 큐가 head당 1회 리뷰 lineage를 띄우긴
+  // 하지만 (UI-qksl §4), 그 행이 무엇을 기다리는지는 아래 리뷰 보류 분기가
+  // 실행 중·슬롯 대기·1회 소진으로 정확히 말한다 — `확인 중`은 그 셋을 하나로
+  // 뭉개고, 소진 뒤에는 아무도 처리하지 않는다는 점에서 거짓이 된다.
   const auto_handled =
     input.conflicting ||
     input.gate?.reason === 'base_behind' ||
@@ -833,33 +850,53 @@ export function prStatusBadge(input) {
   if (input.gate?.reason === 'base_behind') {
     return badge('base 갱신 필요', { alert: true });
   }
-  if (
-    input.gate?.reason === 'review_receipt_missing' ||
-    input.gate?.reason === 'review_receipt_stale'
-  ) {
+  if (REVIEW_AFTER_MERGE_GATE_REASONS.has(input.gate?.reason)) {
     // Head movement alone no longer lands here: the receipt is ancestry-bound,
     // so a base-sync merge or a queue base update keeps reading current
-    // (UI-vzyh §2). What is left is abnormal — no receipt at all, or a receipt
-    // the observed head does not descend from (rewritten history, branch
-    // reset). An ancestry probe the gate could not complete is
-    // `review_receipt_undetermined` and deliberately NOT here: the next
-    // observation re-takes it and nobody has anything to do, so it draws no
-    // badge at all (UI-32he).
+    // (UI-vzyh §2). What is left is abnormal — no receipt at all, a receipt the
+    // observed head does not descend from (rewritten history, branch reset), a
+    // malformed record, or an ancestry probe the gate could not take. 넷 다 같은
+    // 보류다 (UI-qksl §4 1번): 리뷰 세션이 head에 정확히 쓴 새 영수증은 probe
+    // 없이 판정되므로, 지속적 probe 오류의 출구도 리뷰 lineage다.
     const hold_title =
       input.gate.reason === 'review_receipt_stale'
         ? '리뷰 영수증이 현재 head의 조상이 아닙니다 — 히스토리 재작성·브랜치 리셋 복구 경로입니다. [리뷰 후 머지]가 이 보류의 출구입니다'
-        : '리뷰 영수증이 없습니다 — [리뷰 후 머지]가 이 보류의 출구입니다';
+        : input.gate.reason === 'review_receipt_invalid'
+          ? '리뷰 영수증 기록이 성립하지 않습니다 — [리뷰 후 머지]가 이 보류의 출구입니다'
+          : input.gate.reason === 'review_receipt_undetermined'
+            ? '리뷰 영수증의 ancestry probe를 완료하지 못했습니다 — [리뷰 후 머지]가 이 보류의 출구입니다'
+            : '리뷰 영수증이 없습니다 — [리뷰 후 머지]가 이 보류의 출구입니다';
     // §5.4의 종료 사유는 게이트 뱃지 옆 텍스트다. 실행 중인 세션이 우선한다 —
     // 지난 실패는 이미 다시 눌린 뒤이므로 지금 무슨 일이 일어나는지가 답이다.
     if (input.review_session?.active === true) {
-      return badge('최종 변경 리뷰 필요 · 리뷰 세션 실행 중', {
-        title: `${hold_title}\n리뷰 세션이 실행 중입니다 — 끝나면 영수증을 다시 판정합니다`,
+      return badge(
+        input.review_session.origin === 'auto'
+          ? '최종 변경 리뷰 필요 · 자동 리뷰 세션 실행 중'
+          : '최종 변경 리뷰 필요 · 리뷰 세션 실행 중',
+        {
+          title: `${hold_title}\n리뷰 세션이 실행 중입니다 — 끝나면 영수증을 다시 판정합니다`,
+          live: true
+        }
+      );
+    }
+    // 슬롯이 비기를 기다리는 자동 dispatch (UI-qksl §4 5번)도 지금 일어나는
+    // 일이므로 지난 실패보다 앞이다 — 큐가 스스로 띄울 것이고, 클릭은 그 대기를
+    // 건너뛴다.
+    if (input.auto_review_wait === 'slot') {
+      return badge('최종 변경 리뷰 필요 · 리뷰 세션 슬롯 대기', {
+        title: `${hold_title}\n실행 슬롯이 비면 자동으로 리뷰 세션을 띄웁니다. 지금 클릭하면 즉시 띄웁니다`,
         live: true
       });
     }
     if (input.review_session?.failure) {
+      // 자동 1회를 이미 쓴 head인가 (UI-qksl §7): 소진된 claim이 남아 있으면 큐는
+      // 이 head에 다시 세션을 띄우지 않는다. 클릭 세션이 실패한 경우는 사람이
+      // 방금 누른 결과이므로 접두를 붙이지 않는다.
+      const auto_exhausted =
+        input.review_dispatch?.state === 'exhausted' &&
+        input.review_session.origin === 'auto';
       return badge(
-        `최종 변경 리뷰 필요 · ${reviewSessionFailureText(input.review_session.failure)}`,
+        `최종 변경 리뷰 필요 · ${auto_exhausted ? '자동 리뷰 1회 소진 · ' : ''}${reviewSessionFailureText(input.review_session.failure)}`,
         {
           title: `${hold_title}\n직전 리뷰 세션 종료 사유: ${input.review_session.failure}`,
           alert: true
@@ -873,12 +910,6 @@ export function prStatusBadge(input) {
     // badge must not suggest a review will (UI-yqw9 incident).
     return badge('스펙 ID 누락', {
       title: 'native spec_id 미기록 — bd update --spec-id 필요',
-      alert: true
-    });
-  }
-  if (input.gate?.reason === 'review_receipt_invalid') {
-    return badge('리뷰 기록 오류', {
-      title: 'review_receipt_invalid',
       alert: true
     });
   }
@@ -996,7 +1027,7 @@ export function prStatusBadge(input) {
  * durable lane membership an external row does not have), and a MERGED row
  * becomes a [정리] button because nothing auto-cleans it. 충돌 해소 is NOT one
  * of them any more — the attempt-less dispatch (UI-w0hi §1) runs it.
- * @param {{ position: number, active: boolean, failure: string|null, waiting?: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null, continuation_action?: any, hold?: any, authority?: any }|null} [merge_queue]
+ * @param {{ position: number, active: boolean, failure: string|null, waiting?: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null, continuation_action?: any, hold?: any, authority?: any, review_dispatch?: any }|null} [merge_queue]
  * This row's place in the sequential merge queue (UI-5v7d §4): a 1-based
  * `position` while it waits (0 = not queued), whether the driver is on it right
  * now, and the reason it was skipped, if any.
@@ -1021,9 +1052,10 @@ export function prStatusBadge(input) {
  * 겹침 칩 (UI-anna §5.3). PR 대기 행도 `⛓ blocked` · `⧉ 겹침` · `scope 없음`을
  * 받는다 — 레인이 바뀌어도 "이 이슈가 지금 무엇과 부딪히나"는 같은 질문이다.
  * 재료가 없으면 null이고 행은 그 줄을 그리지 않는다 (fail-quiet).
- * @param {{ active: boolean, failure: string|null }} [review_session] - 이 행의
+ * @param {{ active: boolean, failure: string|null, origin?: 'auto'|'click'|null }} [review_session] - 이 행의
  * `[리뷰 후 머지]` 세션 상태 (UI-d7fy §5.4). 실행 중이면 버튼이 잠기고, 마지막
- * 세션의 종료 사유는 게이트 뱃지 옆 텍스트가 된다.
+ * 세션의 종료 사유는 게이트 뱃지 옆 텍스트가 된다. `origin`은 그 세션을 사람이
+ * 눌렀는지 큐가 자동으로 띄웠는지다 (UI-qksl §7).
  * @returns {any}
  */
 function prWaitRow(
@@ -1045,7 +1077,7 @@ function prWaitRow(
   auto_merge_on = false,
   progress_input = {},
   dependency_chips = null,
-  review_session = { active: false, failure: null }
+  review_session = { active: false, failure: null, origin: null }
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const continuation_required =
@@ -1065,6 +1097,12 @@ function prWaitRow(
   const auto_resolution = autoResolutionBadge(completion);
   const recovery = completionView(completion, auto_resolution);
   const authority = (merge_queue && merge_queue.authority) || null;
+  // 큐가 이 head에 쓴 자동 리뷰 dispatch claim과 그 앞의 슬롯 대기 (UI-qksl §3.1).
+  // 둘 다 durable 행 필드이므로, 없는 행(구형 queue.json·아직 보류에 들어가지 않은
+  // 행)은 아무것도 그리지 않는다 (fail-quiet).
+  const review_dispatch = (merge_queue && merge_queue.review_dispatch) || null;
+  const auto_review_wait =
+    merge_queue?.hold?.auto_review_wait === 'slot' ? 'slot' : null;
   // A queued row the driver will NOT carry forward on its own: a legacy entry
   // with no authority, or an automatic enrolment sitting under a global toggle
   // that is off. For both the way forward is a fresh [머지] click, which the
@@ -1150,18 +1188,18 @@ function prWaitRow(
     (enabled ||
       conflicting ||
       gate?.reason === 'base_behind' ||
-      gate?.reason === 'review_receipt_missing' ||
-      gate?.reason === 'review_receipt_stale' ||
+      // 리뷰 보류 넷 전부 (UI-qksl §4 1번). 버튼이 나오는 사유와 재클릭이
+      // 살아나는 사유가 갈리면, 넓힌 둘(`invalid`·`undetermined`)에서만 재클릭이
+      // 죽는 자리가 생긴다.
+      REVIEW_AFTER_MERGE_GATE_REASONS.has(gate?.reason) ||
       cleanup_retry ||
       external_cleanup);
-  // 이 행이 [리뷰 후 머지]를 내는 행인가 (UI-d7fy §5.1). 게이트 사유 둘만
-  // 해당한다 — `review_receipt_undetermined`는 판정이 아니라 probe 오류라 다음
-  // 관측을 기다리고, `spec_id_missing`은 리뷰로 해소되지 않는다(UI-yqw9 사고
-  // 규칙). 이 행은 큐에 들어가 authority를 받은 뒤에도 버튼을 유지한다: 보류의
+  // 이 행이 [리뷰 후 머지]를 내는 행인가 (UI-d7fy §5.1, 사유 집합은 UI-qksl §4
+  // 1번이 넷으로 넓혔다). `spec_id_missing`은 여전히 제외다 — 리뷰로 해소되지
+  // 않고 Bead 메타데이터 write만이 고친다(UI-yqw9 사고 규칙). 이 행은 큐에
+  // 들어가 authority를 받은 뒤에도 버튼을 유지한다: 자동 1회가 소진된 뒤 보류의
   // 출구가 그 버튼뿐이고, 세션이 실패하면 다시 눌러야 하기 때문이다.
-  const review_after_merge =
-    gate?.reason === 'review_receipt_missing' ||
-    gate?.reason === 'review_receipt_stale';
+  const review_after_merge = REVIEW_AFTER_MERGE_GATE_REASONS.has(gate?.reason);
   // An external conflict WITHOUT a worktree has nowhere to run: the dispatch
   // never recreates one (UI-w0hi 제외), so the button would refuse every time.
   // The badge reports the conflict; the user resolves it in their own session.
@@ -1207,6 +1245,8 @@ function prWaitRow(
     queue_active,
     queue_position: merge_queue ? merge_queue.position : 0,
     review_session,
+    review_dispatch,
+    auto_review_wait,
     activity: conflict_badge ? null : (active && active.activity) || null
   });
   const rendered_status_badge =
@@ -1315,14 +1355,10 @@ function prWaitRow(
       (enabled ||
         conflicting ||
         gate?.reason === 'base_behind' ||
-        gate?.reason === 'review_receipt_missing' ||
-        gate?.reason === 'review_receipt_stale' ||
-        // `review_receipt_undetermined` is deliberately absent (UI-d7fy §5.1):
-        // an ancestry probe that could not be taken is not a verdict, the gate
-        // treats it as fail-closed, and the next observation re-takes it. A
-        // click could therefore only land the row on a hold — and this row does
-        // not draw that hold's exit button either. It waits, with no button and
-        // no badge (UI-32he).
+        // 리뷰 보류 넷 (UI-qksl §4 1번): probe를 완료하지 못한 행도 여기 있다 —
+        // 리뷰 세션이 최종 head에 정확히 쓴 새 영수증은 probe 없이 `equal`로
+        // 판정되므로, 반복되는 probe 오류의 출구도 이 클릭이다.
+        review_after_merge ||
         cleanup_retry ||
         external_cleanup ||
         reclick_continuable ||
@@ -1345,8 +1381,7 @@ function prWaitRow(
           ? '충돌 해소 후 머지'
           : gate?.reason === 'base_behind'
             ? 'base 갱신 후 머지'
-            : gate?.reason === 'review_receipt_missing' ||
-                gate?.reason === 'review_receipt_stale'
+            : review_after_merge
               ? '리뷰 후 머지'
               : needs_reclick
                 ? '다시 머지'
@@ -1378,20 +1413,27 @@ function prWaitRow(
                           : gate?.reason === 'base_behind'
                             ? 'base를 자동 갱신한 뒤 머지합니다'
                             : review_session.active === true
-                              ? '리뷰 세션 실행 중 — 끝나면 영수증을 다시 판정합니다'
+                              ? review_session.origin === 'auto'
+                                ? '자동 리뷰 세션 실행 중 — 끝나면 영수증을 다시 판정합니다'
+                                : '리뷰 세션 실행 중 — 끝나면 영수증을 다시 판정합니다'
                               : gate?.reason === 'review_receipt_missing'
                                 ? '리뷰 영수증 없음 — 머지 게이트 보류입니다. 클릭하면 기록된 세션을 이어 리뷰만 수행시키고, 영수증이 최종 head에 유효해지면 큐가 머지합니다'
                                 : gate?.reason === 'review_receipt_stale'
                                   ? 'head 재작성됨(영수증이 현재 head의 조상이 아님) — 머지 게이트 보류입니다. 클릭하면 기록된 세션을 이어 최종 head를 다시 리뷰시키고, 영수증이 유효해지면 큐가 머지합니다'
-                                  : gate?.reason === 'spec_id_missing'
-                                    ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
-                                    : enabled
-                                      ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
-                                      : gate && gate.tier === 'merged'
-                                        ? // Already merged with no cleanup failure recorded: the cleanup
-                                          // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                                          '머지됨 — 머지 후 정리 진행 중'
-                                        : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+                                  : gate?.reason === 'review_receipt_invalid'
+                                    ? '리뷰 영수증 기록이 성립하지 않음 — 머지 게이트 보류입니다. 클릭하면 기록된 세션을 이어 최종 head를 다시 리뷰시키고, 영수증이 유효해지면 큐가 머지합니다'
+                                    : gate?.reason ===
+                                        'review_receipt_undetermined'
+                                      ? '리뷰 영수증 ancestry probe 미완료 — 머지 게이트 보류입니다. 클릭하면 기록된 세션을 이어 최종 head를 다시 리뷰시키고, 새 영수증이 최종 head에 유효해지면 큐가 머지합니다'
+                                      : gate?.reason === 'spec_id_missing'
+                                        ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
+                                        : enabled
+                                          ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
+                                          : gate && gate.tier === 'merged'
+                                            ? // Already merged with no cleanup failure recorded: the cleanup
+                                              // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                                              '머지됨 — 머지 후 정리 진행 중'
+                                            : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 
@@ -2842,6 +2884,16 @@ export function createWorkerView(mount_element, options = {}) {
     const bead_titles = objectOf(q.bead_titles);
     const merge_state = q.merge_queue_state || { active: null, failures: {} };
     const merge_waiting = group.merge.state.waiting;
+    // 큐 행이 그대로 싣고 오는 보류·자동 dispatch claim (UI-qksl §3.1). 레인
+    // 모델은 이 둘을 투영하지 않으므로 스냅샷에서 직접 읽는다; 행이 없거나 필드가
+    // 없으면 PR 대기 행은 아무것도 그리지 않는다 (fail-quiet).
+    /** @type {Map<string, any>} */
+    const merge_entries = new Map();
+    for (const entry of Array.isArray(q.merge_queue) ? q.merge_queue : []) {
+      if (entry && typeof entry === 'object' && entry.bead_id) {
+        merge_entries.set(entry.bead_id, entry);
+      }
+    }
     const rows = (Array.isArray(q.pr_wait) ? q.pr_wait : []).map(
       (/** @type {any} */ e) => {
         const item = item_by_id.get(e.bead_id);
@@ -2880,7 +2932,10 @@ export function createWorkerView(mount_element, options = {}) {
                 : null,
             resolution: group.merge.resolutions.get(e.bead_id),
             continuation_action: group.merge.continuations.get(e.bead_id),
-            authority: group.merge.authorities.get(e.bead_id) || null
+            authority: group.merge.authorities.get(e.bead_id) || null,
+            hold: merge_entries.get(e.bead_id)?.hold || null,
+            review_dispatch:
+              merge_entries.get(e.bead_id)?.review_dispatch || null
           },
           // Also overlay-only (UI-w0hi §3): a durable row has no field here and
           // must keep the pre-existing behaviour, so absence reads as present.

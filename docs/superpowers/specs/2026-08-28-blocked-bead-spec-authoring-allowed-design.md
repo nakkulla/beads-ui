@@ -12,6 +12,7 @@ scope:
   - AGENTS.md
   - docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md
   - app/main.bundle.js
+  - app/main.bundle.js.map
 ---
 
 # blocked Bead의 spec·plan 작성 허용과 『스펙 대기』 예외 칩 (UI-svh6)
@@ -192,7 +193,9 @@ bd labels + bd ready ──▶ runnableRows(blocker_ids, labels)
 - `app/views/worker/lanes.test.js`: 4a 줄에 `⛓` 다음 `스펙 대기` 칩이 그려진다;
   `judgementPopoverContent`가 선행 ID 줄을 낸다; 값이 false면 `null`.
 - Pre-Handoff 묶음: `npm run tsc` · `npx vitest run --reporter=dot` · `npm run lint`
-  · `npm run prettier:write` → `npm run build`.
+  · `npm run prettier:write` → `npm run build`. 빌드 산출물 `app/main.bundle.js`와
+  `app/main.bundle.js.map`을 함께 커밋한다(prettier → build 순서; deploy의
+  tracked-clean 검사가 `.map`까지 본다).
 
 ## 8. 경계·후속
 
