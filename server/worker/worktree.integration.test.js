@@ -363,6 +363,66 @@ describe('worker/worktree (real git)', () => {
     expect(fs.existsSync(created.path)).toBe(true);
   });
 
+  test('removeIfDiscardable reclaims an untracked blob already contained by base', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const old_base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base: old_base });
+    fs.writeFileSync(path.join(repo, 'fixture.json'), '{"landed":true}\n');
+    git(['add', 'fixture.json'], repo);
+    git(['commit', '-q', '-m', 'publish new file'], repo);
+    const pinned_base = headOf(repo);
+    fs.writeFileSync(
+      path.join(created.path, 'fixture.json'),
+      '{"landed":true}\n'
+    );
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: pinned_base
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'base_contained',
+      removed: true,
+      reason: null,
+      summary: { staged_count: 0, unstaged_count: 0, untracked_count: 1 }
+    });
+    expect(fs.existsSync(created.path)).toBe(false);
+  });
+
+  test('removeIfDiscardable preserves an untracked blob whose bytes differ from base', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const old_base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base: old_base });
+    fs.writeFileSync(path.join(repo, 'fixture.json'), '{"landed":true}\n');
+    git(['add', 'fixture.json'], repo);
+    git(['commit', '-q', '-m', 'publish new file'], repo);
+    const pinned_base = headOf(repo);
+    fs.writeFileSync(
+      path.join(created.path, 'fixture.json'),
+      '{"landed":false}\n'
+    );
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: pinned_base
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: 'unique',
+      removed: false,
+      reason: 'untracked_present'
+    });
+    expect(fs.existsSync(created.path)).toBe(true);
+    expect(
+      fs.readFileSync(path.join(created.path, 'fixture.json'), 'utf8')
+    ).toBe('{"landed":false}\n');
+  });
+
   test('removeIfDiscardable reclaims an unstaged tracked blob already contained by base', async () => {
     const wt = createWorktreeManager({ locks: createLockManager() });
     const old_base = headOf(repo);

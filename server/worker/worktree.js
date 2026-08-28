@@ -57,6 +57,7 @@ import { repoOpsDeployWorktreeJournalPath } from './state-paths.js';
  * @typedef {Object} WorktreeChangedPaths
  * @property {string[]} staged
  * @property {string[]} unstaged
+ * @property {string[]} untracked
  */
 /**
  * @typedef {WorktreeObservation & { paths: WorktreeChangedPaths, ahead_contained?: boolean }} InternalWorktreeObservation
@@ -206,8 +207,9 @@ function parseStatusV2(stdout) {
     }
     const kind = record[0];
     if (kind === '?') {
+      // Untracked paths are judged by content against the base tree in
+      // observe(), exactly like tracked modifications (UI-rwmq).
       untracked.add(record.slice(2));
-      cause = cause || 'untracked_present';
       continue;
     }
     if (kind === '2') {
@@ -1114,7 +1116,7 @@ export function createWorktreeManager(deps) {
                 status_digest: sha256('observe_failed')
               },
               summary: { ...empty_summary },
-              paths: { staged: [], unstaged: [] }
+              paths: { staged: [], unstaged: [], untracked: [] }
             };
           }
           const base_oid = base_probe.stdout.trim();
@@ -1138,7 +1140,7 @@ export function createWorktreeManager(deps) {
                 status_digest: sha256('observe_failed')
               },
               summary: { ...empty_summary },
-              paths: { staged: [], unstaged: [] }
+              paths: { staged: [], unstaged: [], untracked: [] }
             };
           }
           const branch_probe = await run(
@@ -1162,7 +1164,7 @@ export function createWorktreeManager(deps) {
                 status_digest: sha256('observe_failed')
               },
               summary: { ...empty_summary },
-              paths: { staged: [], unstaged: [] }
+              paths: { staged: [], unstaged: [], untracked: [] }
             };
           }
           const branch_present = branch_probe.code === 0;
@@ -1189,7 +1191,7 @@ export function createWorktreeManager(deps) {
                 status_digest: sha256('observe_failed')
               },
               summary: { ...empty_summary },
-              paths: { staged: [], unstaged: [] }
+              paths: { staged: [], unstaged: [], untracked: [] }
             };
           }
           const branch_ahead = branch_present
@@ -1216,7 +1218,7 @@ export function createWorktreeManager(deps) {
                 status_digest: sha256('observe_failed')
               },
               summary: { ...empty_summary },
-              paths: { staged: [], unstaged: [] }
+              paths: { staged: [], unstaged: [], untracked: [] }
             };
           }
           if (!wt_present) {
@@ -1263,7 +1265,7 @@ export function createWorktreeManager(deps) {
                 )
               },
               summary: { ...empty_summary, branch_ahead },
-              paths: { staged: [], unstaged: [] },
+              paths: { staged: [], unstaged: [], untracked: [] },
               ahead_contained
             };
           }
@@ -1330,7 +1332,7 @@ export function createWorktreeManager(deps) {
                 branch_ahead,
                 head_ahead: head_ahead ?? 0
               },
-              paths: { staged: [], unstaged: [] }
+              paths: { staged: [], unstaged: [], untracked: [] }
             };
           }
           const status = await observeStatusDigest(run, fs, wt, {
@@ -1360,12 +1362,13 @@ export function createWorktreeManager(deps) {
                 branch_ahead,
                 head_ahead
               },
-              paths: { staged: [], unstaged: [] }
+              paths: { staged: [], unstaged: [], untracked: [] }
             };
           }
           const parsed = status.parsed;
           const staged_paths = status.staged_paths;
           const unstaged_paths = status.unstaged_paths;
+          const untracked_paths = [...parsed.untracked].sort();
           const special_paths = status.special_paths;
           const summary = {
             staged_count: staged_paths.length,
@@ -1395,7 +1398,11 @@ export function createWorktreeManager(deps) {
               owned,
               identity,
               summary,
-              paths: { staged: staged_paths, unstaged: unstaged_paths }
+              paths: {
+                staged: staged_paths,
+                unstaged: unstaged_paths,
+                untracked: untracked_paths
+              }
             };
           }
           let ahead_contained = false;
@@ -1410,7 +1417,11 @@ export function createWorktreeManager(deps) {
                 owned,
                 identity,
                 summary,
-                paths: { staged: staged_paths, unstaged: unstaged_paths }
+                paths: {
+                  staged: staged_paths,
+                  unstaged: unstaged_paths,
+                  untracked: untracked_paths
+                }
               };
             }
             const containment = await observeAheadContainment(
@@ -1429,7 +1440,11 @@ export function createWorktreeManager(deps) {
                 owned,
                 identity,
                 summary,
-                paths: { staged: staged_paths, unstaged: unstaged_paths }
+                paths: {
+                  staged: staged_paths,
+                  unstaged: unstaged_paths,
+                  untracked: untracked_paths
+                }
               };
             }
             ahead_contained = true;
@@ -1444,7 +1459,11 @@ export function createWorktreeManager(deps) {
               owned: false,
               identity,
               summary,
-              paths: { staged: staged_paths, unstaged: unstaged_paths }
+              paths: {
+                staged: staged_paths,
+                unstaged: unstaged_paths,
+                untracked: untracked_paths
+              }
             };
           }
           if (parsed.cause !== null) {
@@ -1457,7 +1476,11 @@ export function createWorktreeManager(deps) {
               owned,
               identity,
               summary,
-              paths: { staged: staged_paths, unstaged: unstaged_paths }
+              paths: {
+                staged: staged_paths,
+                unstaged: unstaged_paths,
+                untracked: untracked_paths
+              }
             };
           }
           if (special_paths.length > 0) {
@@ -1470,10 +1493,18 @@ export function createWorktreeManager(deps) {
               owned,
               identity,
               summary,
-              paths: { staged: staged_paths, unstaged: unstaged_paths }
+              paths: {
+                staged: staged_paths,
+                unstaged: unstaged_paths,
+                untracked: untracked_paths
+              }
             };
           }
-          if (staged_paths.length === 0 && unstaged_paths.length === 0) {
+          if (
+            staged_paths.length === 0 &&
+            unstaged_paths.length === 0 &&
+            untracked_paths.length === 0
+          ) {
             return {
               ok: true,
               state: 'discardable',
@@ -1483,7 +1514,7 @@ export function createWorktreeManager(deps) {
               owned,
               identity,
               summary,
-              paths: { staged: [], unstaged: [] },
+              paths: { staged: [], unstaged: [], untracked: [] },
               ahead_contained
             };
           }
@@ -1502,7 +1533,11 @@ export function createWorktreeManager(deps) {
                 owned,
                 identity,
                 summary,
-                paths: { staged: staged_paths, unstaged: unstaged_paths }
+                paths: {
+                  staged: staged_paths,
+                  unstaged: unstaged_paths,
+                  untracked: untracked_paths
+                }
               };
             }
             if (!samePathState(base_state.state, index_state.state)) {
@@ -1515,7 +1550,11 @@ export function createWorktreeManager(deps) {
                 owned,
                 identity,
                 summary,
-                paths: { staged: staged_paths, unstaged: unstaged_paths }
+                paths: {
+                  staged: staged_paths,
+                  unstaged: unstaged_paths,
+                  untracked: untracked_paths
+                }
               };
             }
           }
@@ -1534,7 +1573,11 @@ export function createWorktreeManager(deps) {
                 owned,
                 identity,
                 summary,
-                paths: { staged: staged_paths, unstaged: unstaged_paths }
+                paths: {
+                  staged: staged_paths,
+                  unstaged: unstaged_paths,
+                  untracked: untracked_paths
+                }
               };
             }
             if (worktree_state.special) {
@@ -1547,7 +1590,11 @@ export function createWorktreeManager(deps) {
                 owned,
                 identity,
                 summary,
-                paths: { staged: staged_paths, unstaged: unstaged_paths }
+                paths: {
+                  staged: staged_paths,
+                  unstaged: unstaged_paths,
+                  untracked: untracked_paths
+                }
               };
             }
             if (!samePathState(base_state.state, worktree_state.state)) {
@@ -1560,7 +1607,71 @@ export function createWorktreeManager(deps) {
                 owned,
                 identity,
                 summary,
-                paths: { staged: staged_paths, unstaged: unstaged_paths }
+                paths: {
+                  staged: staged_paths,
+                  unstaged: unstaged_paths,
+                  untracked: untracked_paths
+                }
+              };
+            }
+          }
+          for (const relative_path of untracked_paths) {
+            const [base_state, worktree_state] = await Promise.all([
+              treePathState(run, wt, base_oid, relative_path),
+              worktreePathState(run, fs, wt, relative_path)
+            ]);
+            if (!base_state.ok || !worktree_state.ok) {
+              return {
+                ok: false,
+                state: 'unknown',
+                removed: false,
+                reason: 'observe_failed',
+                cause: 'observe_failed',
+                owned,
+                identity,
+                summary,
+                paths: {
+                  staged: staged_paths,
+                  unstaged: unstaged_paths,
+                  untracked: untracked_paths
+                }
+              };
+            }
+            if (worktree_state.special) {
+              return {
+                ok: false,
+                state: 'unique',
+                removed: false,
+                reason: 'special_file',
+                cause: 'special_file',
+                owned,
+                identity,
+                summary,
+                paths: {
+                  staged: staged_paths,
+                  unstaged: unstaged_paths,
+                  untracked: untracked_paths
+                }
+              };
+            }
+            if (
+              base_state.state === null ||
+              !samePathState(base_state.state, worktree_state.state)
+            ) {
+              return {
+                ok: false,
+                state: 'unique',
+                removed: false,
+                reason: 'untracked_present',
+                cause: 'untracked_present',
+                owned,
+                identity,
+                summary,
+                paths: {
+                  staged: staged_paths,
+                  unstaged: unstaged_paths,
+                  untracked: untracked_paths
+                }
               };
             }
           }
@@ -1573,7 +1684,11 @@ export function createWorktreeManager(deps) {
             owned,
             identity,
             summary,
-            paths: { staged: staged_paths, unstaged: unstaged_paths },
+            paths: {
+              staged: staged_paths,
+              unstaged: unstaged_paths,
+              untracked: untracked_paths
+            },
             ahead_contained
           };
         }
@@ -1634,19 +1749,36 @@ export function createWorktreeManager(deps) {
         const changed_paths = [
           ...new Set([...first.paths.staged, ...first.paths.unstaged])
         ];
+        const untracked_paths = [...first.paths.untracked];
         if (first.state === 'base_contained') {
-          const restored = await run(
-            [
-              'restore',
-              '--source=HEAD',
-              '--staged',
-              '--worktree',
-              '--',
-              ...changed_paths
-            ],
-            { cwd: wt }
-          );
-          if (restored.code !== 0) {
+          const restored =
+            changed_paths.length > 0
+              ? await run(
+                  [
+                    'restore',
+                    '--source=HEAD',
+                    '--staged',
+                    '--worktree',
+                    '--',
+                    ...changed_paths
+                  ],
+                  { cwd: wt }
+                )
+              : { code: 0, stdout: '', stderr: '' };
+          // Untracked paths proven equal to the base tree have no HEAD copy to
+          // restore from; drop them so the worktree reads clean.
+          let untracked_removed = restored.code === 0;
+          if (untracked_removed) {
+            for (const relative_path of untracked_paths) {
+              try {
+                fs.rmSync(path.join(wt, relative_path));
+              } catch {
+                untracked_removed = false;
+                break;
+              }
+            }
+          }
+          if (restored.code !== 0 || !untracked_removed) {
             await restoreContainedState(first, changed_paths);
             return withoutPaths({
               ...first,
@@ -1761,14 +1893,17 @@ export function createWorktreeManager(deps) {
               { cwd: wt }
             );
           }
-          if (changed_paths.length > 0) {
+          const worktree_paths = [
+            ...new Set([...changed_paths, ...observation.paths.untracked])
+          ];
+          if (worktree_paths.length > 0) {
             await run(
               [
                 'restore',
                 `--source=${observation.identity.base_oid}`,
                 '--worktree',
                 '--',
-                ...changed_paths
+                ...worktree_paths
               ],
               { cwd: wt }
             );
