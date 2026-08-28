@@ -561,7 +561,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * (every dispatch-only test) simply pushes nothing, exactly like a machine that
  * left `[worker.notify]` off.
  * @property {{
- *   install: (i: { workspace: string, attempt_id: string, repo: string, target_base: string, mode?: 'reject'|'record' }) => { ok: boolean, dir?: string, hook_path?: string, reason?: string },
+ *   install: (i: { workspace: string, attempt_id: string, repo: string, target_base: string, mode?: 'guard'|'record' }) => { ok: boolean, dir?: string, hook_path?: string, reason?: string },
  *   envFor: (i: { workspace: string, attempt_id: string }) => Record<string, string>,
  *   remove: (i: { workspace: string, attempt_id: string }) => boolean,
  *   readPushLog?: (i: { workspace: string, attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string }
@@ -2334,7 +2334,7 @@ export function createScheduler(deps) {
    * to a failed install is a visible refusal, and a throw out of the dispatch
    * would abort with nothing on screen.
    *
-   * @param {{ workspace: string, attempt_id: string, repo: string, target_base: string, mode?: 'reject'|'record' }} input
+   * @param {{ workspace: string, attempt_id: string, repo: string, target_base: string, mode?: 'guard'|'record' }} input
    * `mode:'record'` renders the base branch as "record and pass" instead of
    * "reject" (2026-08-28 worker-failure-tiers spec §5): the quick_fix lane's
    * terminal duty IS a base push, so it needs the push LOG the ordinary hook
@@ -4966,7 +4966,7 @@ export function createScheduler(deps) {
           // landing is judged from the push log this produces, so the lane can
           // no longer run without one — but it must still be allowed to push
           // the base it is there to push.
-          mode: quickfix_lane ? 'record' : 'reject'
+          mode: quickfix_lane ? 'record' : 'guard'
         })
       ) {
         refuseDispatch(workspace, bead_id, 'guard_hook_install_failed');

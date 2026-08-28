@@ -463,6 +463,30 @@ describe('worker/completion-intent action driver', () => {
     expect(comment.mock.calls[0][1]).toContain(
       '- 원인: verify_red — 머지 후 검증이 실패했습니다.'
     );
+    // UI-5ym8 §3.4: a post-merge pipeline failure raises the SYSTEMIC hold.
+    expect(store.snapshot(DRIVER_WS).hold).toMatchObject({
+      kind: 'systemic',
+      cause: 'verify_red',
+      bead_ids: ['UI-root']
+    });
+  });
+
+  test('leaves the queue hold alone on a bead-local needs_human family', () => {
+    const store = seededCompletionStore();
+
+    store.terminalizeCompletionIntent(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      terminal: {
+        reason: 'internal_record_failed:merge_subject_pin_failed',
+        stage: 'coordinator',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 1
+      }
+    });
+
+    expect(store.snapshot(DRIVER_WS).hold ?? null).toBeNull();
   });
 
   test('comments one failure once across a [머지] re-click', async () => {

@@ -1340,6 +1340,25 @@ export function createCompletionActionDriver(deps) {
       root_bead_id,
       terminal
     });
+    // A post-merge pipeline failure is a wall every later bead hits too (spec
+    // §3.4/§7): `verify_red` and `cleanup_failed:*` raise the SYSTEMIC hold in
+    // the same settlement, on the queue this intent lives in. Other families
+    // stay bead-local. Best-effort on a store that predates the hold field.
+    if (
+      written.ok &&
+      needsHumanHoldKind(folded) === 'systemic' &&
+      typeof deps.store.applyQueueHold === 'function'
+    ) {
+      deps.store.applyQueueHold(deps.workspace, {
+        event: {
+          kind: 'systemic_failure',
+          bead_id: root_bead_id,
+          cause: folded,
+          at
+        },
+        now: at
+      });
+    }
     notify();
     if (written.ok && commented_at === null) {
       postFailureComment(root_bead_id, intent, queue, terminal);
