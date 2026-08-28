@@ -182,6 +182,14 @@ bead 상태를 건드리지 않고(bead는 `pr_wait`) `complete()`는 bead를 �
 | attempt `pending\|running`인데 행이 없거나 `entry.authority.id !== attempt.authority_id` | `binding_gone` | **attempt만** `updateAttempt({ status: 'orphaned', cause: 'binding_gone', control: null, finished_at })`; 행·claim·authority는 건드리지 않는다(행이 없거나 남의 것이다) |
 | attempt `pending\|running`이고 authority 일치 | alive | 기존 정산 |
 
+이 규칙은 **`complete()` 안의 두 자리 모두**에 적용한다. `bindingAlive`는 `observeReviewReceipt`
+(`gh` 호출, 수 초)를 기다리기 **전**의 검사라서, 그 대기 중에 행이 머지·취소로 사라지거나
+authority가 바뀌면 뒤의 `settle()` → `settleReviewSession`이 `binding_gone`을 돌려준다. 그
+결과도 같은 갈래로 처리한다 — `settle()`의 반환이 `binding_gone`이고 attempt가 아직
+`pending|running`이면 attempt만 `orphaned`로 종단하고 `{ ok: false, reason: 'binding_gone' }`을
+돌려준다. 구현은 "binding_gone 판정 → attempt가 비terminal이면 orphan write" 한 헬퍼로 두고
+앞의 검사와 `settle()`의 네 호출처가 그것을 공유한다(리뷰어 지적, 2026-08-29 codex).
+
 반환값은 `{ ok: false, reason: 'binding_gone' }` 그대로다. `onSessionDone`의 "binding_gone이면
 exit·usage를 쓰지 않는다" 규칙과 그 테스트는 유지된다 — 이미 주인이 바뀐 기록에 exit를
 덧쓰지 않는다는 의도는 같고, `orphaned` write는 그 기록의 **마지막 소유자**로서 끝을
@@ -252,6 +260,9 @@ exit·usage를 쓰지 않는다" 규칙과 그 테스트는 유지된다 — 이
 - 수정: `writes nothing when the authority was reissued under the session` → 행은 무변경이되
   attempt는 `orphaned`(제목을 `orphans the attempt, not the row, when the authority was
   reissued under it`로).
+- 추가: `orphans the attempt when the row disappears during the re-observation` —
+  `observeReviewReceipt`가 resolve되기 전에 행을 dequeue → `settle()`이 `binding_gone` →
+  attempt `orphaned`, 반환 `{ ok: false, reason: 'binding_gone' }`.
 - 유지: `writes nothing at all when the cancel already took the binding` — terminal attempt는
   그대로.
 
