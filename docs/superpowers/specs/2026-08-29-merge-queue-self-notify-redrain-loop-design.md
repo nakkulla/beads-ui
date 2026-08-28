@@ -28,9 +28,13 @@ scope:
 
 ## 2. 결정
 
-**드라이버는 자기가 발화한 `queue-changed`를 재드레인 신호로 세지 않는다.**
-`emitQueueChanged`는 동기 팬아웃이므로 `notify()`가 팬아웃 중임을 나타내는
-플래그 하나로 자기 이벤트를 정확히 가려낼 수 있다.
+**드라이버는 자기가 발화한 `queue-changed`를 보류 재판정(`hasHeldEntry()`)
+신호로 세지 않는다.** `emitQueueChanged`는 동기 팬아웃이므로 `notify()`가 팬아웃
+중임을 나타내는 플래그 하나로 자기 이벤트를 정확히 가려낼 수 있다. 구독 콜백의
+다른 분기(`wake()`·halt 재개 판정·`resolutionNeedsDrain()`)는 자기 이벤트에서도
+그대로 돈다 — 그중 `halted_on_snapshot` 재확인은 drain 종료 `notify()`에 기대어
+일시적 스냅샷 읽기 실패를 외부 이벤트 없이 회복하는 경로이기 때문이다(spec 리뷰
+codex 지적).
 
 기각한 대안과 이유:
 
@@ -50,23 +54,33 @@ scope:
 - `notify()`는 `deps.notifyChanged(workspace)` 호출을 `self_notifying = true` /
   `finally { self_notifying = false; }`로 감싼다. 기존 try/catch(팬아웃 예외
   삼킴)는 그대로다.
-- `start()`의 구독 콜백은 첫 줄의 워크스페이스 불일치 가드 바로 뒤에
-  `if (self_notifying) { return; }`를 둔다. 즉 자기 이벤트는 `wake()`·halt 재개
-  판정·`resolutionNeedsDrain()`·`hasHeldEntry()` 재드레인 **전부**를 건너뛴다.
+- `start()`의 구독 콜백에서 **마지막 분기** `if (hasHeldEntry()) requestDrain()`
+  만 `if (!self_notifying && hasHeldEntry())`로 좁힌다. 콜백의 다른 분기
+  (`wake()`·`halted_on_head`·`halted_on_completion`·`halted_on_snapshot`·
+  `halted_on_conflict`·`resolutionNeedsDrain()`)는 자기 이벤트에서도 지금처럼
+  평가한다.
 
-전부 건너뛰어도 되는 근거(각 분기가 기대는 신호가 드라이버 자신이 아님):
+분기를 하나만 좁히는 근거:
 
-- `wake()`: 해소 세션 대기 중 도착하는 **다른** 컴포넌트의 이벤트(세션 종료,
-  ws mutation)를 위한 것. 드라이버가 await 중 스스로 `notify()`를 부르는 경로는
-  없고, 해소 감시 타이머(`maintainResolutionWatcher`)는 `notify()`가 아니라
-  `requestDrain()`을 직접 부른다.
-- `halted_on_head`·`halted_on_completion`·`halted_on_snapshot`·
-  `halted_on_conflict`: halt를 세운 직후의 자기 알림 시점에는 halt를 정당화한
-  상태가 그대로이므로 재개 조건이 참이 될 수 없다. 재개는 관측 pass·정산·
-  스냅샷 fence 해제 등 외부 이벤트가 가져온다.
 - `hasHeldEntry()`: 이 스펙이 끊으려는 고리 그 자체. 보류 재판정은 UI-d7fy
   §3.3이 열거한 외부 kick(PR 관측 pass·enrollment·completion 드라이버·리뷰
   세션 완료·runnable-cache metadata 관측)으로 그대로 일어난다.
+- `halted_on_snapshot`: `processItem`이 스냅샷을 못 읽으면 halt를 세우고 drain이
+  끝나며, 종료 `notify()`가 자기 구독자를 통해 `snapshotFence(snapshot())`를
+  다시 본다. 읽기가 회복돼 있으면 그 자리에서 재드레인한다 — 이 회복은
+  드라이버 자신의 알림이 유일한 즉시 신호이므로 건너뛰면 안 된다.
+- `halted_on_head`·`halted_on_completion`: 자기 알림 시점에 halt를 정당화한
+  상태가 그대로면 재개 조건이 거짓이라 고리를 만들지 않는다. 상태가 바뀌었다면
+  재드레인이 맞다.
+- `halted_on_conflict`: `requestDrain()`이 `conflictDispatchStillBlocked()`로
+  스스로 게이트한다.
+- `wake()`·`resolutionNeedsDrain()`: 기존 동작 유지. 해소 감시 타이머
+  (`maintainResolutionWatcher`)는 `notify()`가 아니라 `requestDrain()`을 직접
+  부르므로 이 스펙과 무관하다.
+
+이 좁힌 형태로도 고리는 끊긴다: 보류 행만 서 있는 상태에서는 위 다른 분기가
+어느 것도 참이 아니므로, 자기 이벤트가 `requestDrain()`에 닿는 유일한 길이
+`hasHeldEntry()`였다.
 
 ### 3.2 바뀌지 않는 것
 
@@ -77,6 +91,7 @@ scope:
   있다.
 - `kick()`·`requestDrain()`·`drain()`의 래치 의미. 외부 이벤트가 pass 도중에
   오면 지금처럼 래치를 세우고 다음 pass가 돈다.
+- 구독 콜백의 halt 재개·해소 대기 분기. 자기 이벤트에서도 지금과 같이 돈다.
 - 보류 write의 "같은 판정이면 write 0건" 성질(UI-qksl). 그 성질은 저장 쪽
   방어이고 이 스펙은 신호 쪽 방어라 둘이 겹치지 않는다.
 
@@ -105,6 +120,11 @@ Bead 설명의 scope에 있던 `queue-events.js`·`attach.js`는 열린 분기 �
 3. **자기 이벤트는 래치도 세우지 않는다.** pass 안 `active` 알림이 래치를
    세우지 않는지 — 1번의 호출 횟수 정착이 이것도 함께 증명한다(래치가 서면
    pass가 한 번 더 돌아 호출이 늘어난다).
+4. **일시적 스냅샷 읽기 실패는 외부 이벤트 없이 회복된다.** 같은 실제 버스
+   배선에서 `store.snapshot`이 첫 호출 한 번만 `null`(또는 throw)을 돌려주도록
+   감싼 뒤 `mq.kick()`한다. 외부에서 `emitQueueChanged`를 부르지 않아도 drain
+   종료 자기 알림의 `halted_on_snapshot` 재확인으로 재드레인이 일어나 머지가
+   진행된다. 이 테스트가 §3.1의 "분기를 하나만 좁힌다"를 고정한다.
 
 pass 종료 `notify()`가 사라지는 것이 아니므로, UI 팬아웃 계약 테스트
 (`attach.test.js`·`worker-handlers` 쪽)는 그대로 통과해야 한다.
@@ -131,7 +151,7 @@ pass 종료 `notify()`가 사라지는 것이 아니므로, UI 팬아웃 계약 
 
 ## 결정 (ADR 후보)
 
-- 드라이버는 자기가 발화한 `queue-changed`를 재드레인 신호로 세지 않는다 —
+- 드라이버는 자기가 발화한 `queue-changed`를 보류 재판정 신호로 세지 않는다 —
   되돌리기 어려움: 아님(플래그 하나, 국소). 맥락 없이 놀라움: 아님(구독 콜백의
   주석이 근거를 담는다). 실질 trade-off: 아님(기각 대안이 계약을 깨므로 선택지가
   하나). → 세 조건 모두 불성립, ADR 아님.
