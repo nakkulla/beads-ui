@@ -141,6 +141,8 @@ function snapshotFence(q) {
  *   headSha?: (bead_id: string) => string|null,
  *   isExternalRow?: (bead_id: string) => boolean,
  *   conflictDispatchBlocked?: (queue_bead_id: string, subject_bead_id: string) => boolean,
+ *   reviewDispatchBlocked?: (bead_id: string) => boolean,
+ *   reviewSession?: { startAuto: (input: { bead_id: string, head_sha: string, head_ref: string|null, reason: string }) => Promise<{ ok: boolean, reason?: string }> },
  *   updateBase?: (bead_id: string) => Promise<{ ok: boolean, reason: string|null, result_head_sha: string|null }>,
  *   onCompletionResult?: (root_bead_id: string, subject_bead_id: string, result: MergeClickResult) => Promise<void>|void,
  *   prepare?: () => Promise<unknown>,
@@ -625,38 +627,53 @@ export function createMergeQueue(deps) {
   }
 
   /**
-   * The gate verdicts that HOLD an item instead of ending it (UI-d7fy §3.3).
+   * The gate verdicts that HOLD an item instead of ending it (UI-d7fy §3.3),
+   * widened to the workflow contract's four by the 2026-08-28
+   * auto-review-dispatch spec (§4 1번).
    *
-   * All three say the same thing — this head has no review the gate can stand
+   * All four say the same thing — this head has no review the gate can stand
    * on — and none of them is decided by anything the queue owns, so none of
-   * them is a failure of this item's turn. The exit is the `[리뷰 후 머지]`
-   * click (§5), not a dequeue and not a terminal `needs_human`.
+   * them is a failure of this item's turn. `review_receipt_invalid` used to be
+   * an ordinary refusal that dequeued the row; a malformed receipt is exactly
+   * what a review lineage rewrites, so it holds like the other three.
+   *
+   * The exit is the review lineage: the queue's own once-per-head dispatch
+   * (§4) or the `[리뷰 후 머지]` click that resumes it — never a dequeue and
+   * never a terminal `needs_human`.
    *
    * @type {Set<string>}
    */
   const HOLD_REASONS = new Set([
     'review_receipt_missing',
     'review_receipt_stale',
+    'review_receipt_invalid',
     'review_receipt_undetermined'
   ]);
 
   /**
-   * Put one item on a gate hold and take it out of THIS pass.
+   * Write or refresh one item's hold.
+   *
+   * `auto_review_wait` is OMITTED unless a fence verdict is being stated: the
+   * store preserves what it already holds on an omission, so the hold write
+   * itself never disturbs the wait marker the judgment below owns.
    *
    * @param {string} bead_id
    * @param {string} reason
    * @param {string|null|undefined} head_sha
+   * @param {'slot'|null} [auto_review_wait]
    */
-  function holdEntry(bead_id, reason, head_sha) {
-    held_this_pass.add(bead_id);
+  function writeHold(bead_id, reason, head_sha, auto_review_wait) {
     try {
-      // The store writes only when the reason or head actually changed, so a
-      // held item that is re-judged to the same verdict costs no revision and
-      // no fanout.
+      // The store writes only when something actually changed, so a held item
+      // re-judged to the same verdict costs no revision and no fanout.
       if (
         deps.store.setMergeHold(workspace, {
           bead_id,
-          hold: { reason, head_sha: head_sha || '' },
+          hold: {
+            reason,
+            head_sha: head_sha || '',
+            ...(auto_review_wait === undefined ? {} : { auto_review_wait })
+          },
           at: now()
         }).ok
       ) {
@@ -665,7 +682,188 @@ export function createMergeQueue(deps) {
     } catch (err) {
       log('merge queue hold write failed for %s: %o', bead_id, err);
     }
+  }
+
+  /**
+   * Whether this bead has a `review_session` attempt still in flight — the
+   * per-Bead guard every writer of a review lineage shares (UI-d7fy §5.2,
+   * restated by the 2026-08-28 auto-review-dispatch spec §4 3번).
+   *
+   * @param {any} q
+   * @param {string} bead_id
+   * @returns {boolean}
+   */
+  function reviewSessionInFlight(q, bead_id) {
+    const attempts = (q && q.attempts) || {};
+    return Object.values(attempts).some((/** @type {any} */ attempt) => {
+      return (
+        !!attempt &&
+        attempt.kind === 'review_session' &&
+        attempt.bead_id === bead_id &&
+        (attempt.status === 'pending' || attempt.status === 'running')
+      );
+    });
+  }
+
+  /**
+   * Decide whether THIS hold spends the row's one automatic review lineage
+   * (2026-08-28 auto-review-dispatch spec §4).
+   *
+   * The judgment lives in the hold write's own turn because that is the moment
+   * the gate produced the reason; every `kick()` re-judges a held row, so no
+   * watcher and no timer exist for this. Any condition that fails dispatches
+   * nothing and only logs — a failure to dispatch is not a failure of the row,
+   * whose hold stands either way.
+   *
+   * @param {string} bead_id
+   * @param {string} reason
+   * @param {string|null|undefined} raw_head_sha
+   * @param {string|null} head_ref
+   * @returns {Promise<void>}
+   */
+  async function judgeAutoReviewDispatch(
+    bead_id,
+    reason,
+    raw_head_sha,
+    head_ref
+  ) {
+    // 1. The reason must be one of the four review holds, and the head must be
+    //    a real sha — a claim is taken ON a head, and a gate refusal that
+    //    carried none cannot be told apart from any other.
+    if (
+      !HOLD_REASONS.has(reason) ||
+      typeof raw_head_sha !== 'string' ||
+      !SHA40_RE.test(raw_head_sha)
+    ) {
+      writeHold(bead_id, reason, raw_head_sha, null);
+      return;
+    }
+    // Every durable copy of a head is lowercase, so the claim comparison and
+    // the `expected` the store re-checks must be too.
+    const head_sha = raw_head_sha.toLowerCase();
+    const q = snapshot();
+    const entry = Array.isArray(q?.merge_queue)
+      ? q.merge_queue.find(
+          (/** @type {any} */ item) => item.bead_id === bead_id
+        )
+      : null;
+    if (!entry) {
+      return;
+    }
+    // 2. An automatic dispatch rides the authority the row ALREADY has and
+    //    never mints one — only a click makes a manual authority. A legacy
+    //    authority-less row's exit is the button.
+    const authority = entry.authority ?? null;
+    if (!authority) {
+      writeHold(bead_id, reason, head_sha, null);
+      return;
+    }
+    // 3. One review lineage per bead at a time. A session that pushed its own
+    //    REVISE fix moved the head, and this is what stops the queue from
+    //    reading that move as a new lineage while the session still runs.
+    if (reviewSessionInFlight(q, bead_id)) {
+      writeHold(bead_id, reason, head_sha, null);
+      return;
+    }
+    // 4. The claim: this head gets at most one lineage, whichever trigger
+    //    spent it. A `head_sha: null` exhausted claim (§5.2 fail-closed) covers
+    //    EVERY head.
+    const claim = entry.review_dispatch ?? null;
+    if (claim && (claim.head_sha === null || claim.head_sha === head_sha)) {
+      if (claim.state === 'active') {
+        // Same head, `active`, and no attempt in flight: the records disagree,
+        // which a restart recovery that did not land can produce. Correct the
+        // claim to `exhausted` at the SAME head and dispatch nothing (§4 4번) —
+        // leaving it `active` would keep saying a session is running that
+        // ended, and moving its head would buy the row a second lineage.
+        try {
+          deps.store.expireReviewDispatchClaim(workspace, {
+            bead_id,
+            head_sha
+          });
+        } catch (err) {
+          log('review claim correction failed for %s: %o', bead_id, err);
+        }
+      }
+      writeHold(bead_id, reason, head_sha, null);
+      return;
+    }
+    // 5. The slot fence (ADR 0015, 결정 1). A MANUAL authority is exempt: it
+    //    stands for a click a person just made. An automatic one waits for a
+    //    free workspace slot, and says so on the card.
+    if (authority.source !== 'manual' && reviewDispatchBlocked(bead_id)) {
+      // Written EXPLICITLY, and only when it differs from what is stored: a
+      // repeated blocked kick must add no revision and no `queue-changed` of
+      // its own, because `hasHeldEntry()` turns that event into another drain
+      // which re-judges this row. (The drain's own end-of-pass `notify()` is a
+      // second, older path into the same re-drain — UI-nfkp owns it; this
+      // write simply must not become a third.)
+      writeHold(bead_id, reason, head_sha, 'slot');
+      return;
+    }
+    writeHold(bead_id, reason, head_sha, null);
+    if (typeof deps.reviewSession?.startAuto !== 'function') {
+      return;
+    }
+    try {
+      const started = await deps.reviewSession.startAuto({
+        bead_id,
+        head_sha,
+        head_ref,
+        reason
+      });
+      if (started && started.ok !== true) {
+        log(
+          'merge queue: automatic review dispatch refused for %s (%s)',
+          bead_id,
+          started.reason || 'unknown'
+        );
+      }
+    } catch (err) {
+      log(
+        'merge queue automatic review dispatch threw for %s: %o',
+        bead_id,
+        err
+      );
+    }
+  }
+
+  /**
+   * Whether the workspace has no slot for an automatic review session right
+   * now (§4 5번). Unwired reads as "not blocked": the fence is the enrollment
+   * courtesy of ADR 0015, not a safety gate, and a driver built without a
+   * scheduler has no slots to protect.
+   *
+   * @param {string} bead_id
+   * @returns {boolean}
+   */
+  function reviewDispatchBlocked(bead_id) {
+    if (typeof deps.reviewDispatchBlocked !== 'function') {
+      return false;
+    }
+    try {
+      return deps.reviewDispatchBlocked(bead_id) === true;
+    } catch (err) {
+      log('review dispatch fence read failed for %s: %o', bead_id, err);
+      return false;
+    }
+  }
+
+  /**
+   * Put one item on a gate hold, take it out of THIS pass, and judge whether
+   * the hold spends the row's one automatic review lineage.
+   *
+   * @param {string} bead_id
+   * @param {string} reason
+   * @param {string|null|undefined} head_sha
+   * @param {string|null} [head_ref]
+   * @returns {Promise<void>}
+   */
+  async function holdEntry(bead_id, reason, head_sha, head_ref = null) {
+    held_this_pass.add(bead_id);
+    writeHold(bead_id, reason, head_sha);
     log('merge queue: %s held (%s)', bead_id, reason);
+    await judgeAutoReviewDispatch(bead_id, reason, head_sha, head_ref);
   }
 
   /**
@@ -687,7 +885,12 @@ export function createMergeQueue(deps) {
   }
 
   /**
-   * Release a hold the gate no longer justifies.
+   * Release a hold the gate no longer justifies. The whole record goes,
+   * `auto_review_wait` with it (2026-08-28 auto-review-dispatch spec §4 5번):
+   * nothing is waiting for a slot once nothing is held. The `review_dispatch`
+   * claim deliberately SURVIVES (§5.1) — it is pinned to a head, and a
+   * transient non-hold verdict between two holds at the same head must not buy
+   * that head a second automatic review.
    *
    * @param {string} bead_id
    */
@@ -1804,7 +2007,12 @@ export function createMergeQueue(deps) {
       // gate is no longer holding on a review, so a stale hold is released
       // before this turn decides anything else.
       if (action === 'refused' && HOLD_REASONS.has(String(result.reason))) {
-        holdEntry(bead_id, String(result.reason), result.head_sha);
+        await holdEntry(
+          bead_id,
+          String(result.reason),
+          result.head_sha,
+          result.head_ref ?? null
+        );
         return;
       }
       releaseHold(bead_id);

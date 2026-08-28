@@ -5126,6 +5126,44 @@ describe('scheduler review-session dispatch (UI-d7fy §5)', () => {
     });
   });
 
+  test('keeps a review-session spawn failure out of the worker failure ladder', async () => {
+    /** @type {any} */
+    let env;
+    env = setup({
+      config: { B1: {} },
+      slots: 1,
+      makeRunner: () => ({
+        name: 'claude',
+        spawn() {
+          throw new Error('spawn failed');
+        }
+      })
+    });
+    seedPendingReviewSession(env.store);
+
+    const result = await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    // 결정 2: the review lineage settles its own launch refusal as one
+    // `exhausted` claim. The tier table must not have touched the record, and
+    // no `env` queue hold may stand — a review that could not start is not the
+    // wall the NEXT bead will hit (ADR 0016).
+    expect(result).toMatchObject({ ok: false });
+    const q = env.store.snapshot(WS);
+    // The record is the launcher's own pre-record, untouched by the tier
+    // table: no `retry_wait` rung, no cause, and the settlement is still the
+    // review path's to write.
+    expect(q.attempts['review:1'].status).not.toBe('retry_wait');
+    expect(q.attempts['review:1'].status).not.toBe('failed');
+    expect(q.attempts['review:1'].cause ?? null).toBe(null);
+    expect(q.hold ?? null).toBe(null);
+  });
+
   test('the cancel stop kills the process and writes nothing durable', async () => {
     const env = setup({ config: { B1: {} }, slots: 1 });
     seedPendingReviewSession(env.store);
@@ -5233,6 +5271,88 @@ describe('scheduler review-session dispatch (UI-d7fy §5)', () => {
 
     expect(result).toEqual({ ok: false, reason: 'worktree_missing' });
     expect(env.worktree.restore).not.toHaveBeenCalled();
+  });
+
+  test('installs the pre-push hook for the review session too', async () => {
+    const guardHook = {
+      install: vi.fn(() => ({ ok: true })),
+      envFor: vi.fn(() => ({})),
+      remove: vi.fn(() => true)
+    };
+    const env = setup({ config: { B1: {} }, slots: 1, guardHook });
+    seedPendingReviewSession(env.store);
+
+    const result = await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    // Two reasons (2026-08-28 auto-review-dispatch spec §4.1): the completion
+    // verdict judges "did THIS session move the head" from the push log, and a
+    // base ref push is the one write the review lineage is forbidden.
+    expect(result.ok).toBe(true);
+    expect(guardHook.install).toHaveBeenCalledWith({
+      workspace: WS,
+      attempt_id: 'review:1',
+      repo: '/repo',
+      target_base: 'main'
+    });
+    // Installing is not delivering: the session's git has to be pointed at it.
+    expect(guardHook.envFor).toHaveBeenCalledWith({
+      workspace: WS,
+      attempt_id: 'review:1'
+    });
+  });
+
+  test('leaves no hook behind when the review launch is refused', async () => {
+    const guardHook = {
+      install: vi.fn(() => ({ ok: true })),
+      envFor: vi.fn(() => ({})),
+      remove: vi.fn(() => true)
+    };
+    const env = setup({ config: {}, slots: 1, guardHook });
+    env.worktree.exists.mockReturnValue(false);
+    seedPendingReviewSession(env.store);
+
+    const result = await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'worktree_missing' });
+    expect(guardHook.remove).toHaveBeenCalledWith({
+      workspace: WS,
+      attempt_id: 'review:1'
+    });
+  });
+
+  test('refuses the review launch when the hook cannot be installed', async () => {
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      guardHook: {
+        install: vi.fn(() => ({ ok: false, reason: 'write_failed' })),
+        envFor: vi.fn(() => ({})),
+        remove: vi.fn(() => true)
+      }
+    });
+    seedPendingReviewSession(env.store);
+
+    const result = await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'guard_hook_install_failed' });
+    expect(env.store.snapshot(WS).attempts['review:1'].status).toBe('pending');
   });
 });
 

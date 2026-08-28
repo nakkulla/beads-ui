@@ -6289,14 +6289,25 @@ export function createScheduler(deps) {
       input.stamped_keys,
       execRestoreValuesOf(input.workspace, input.attempt_id)
     );
-    settleFailureTier(
-      input.workspace,
-      input.attempt_id,
-      input.bead_id,
-      classifyFailure({ cause, cause_detail: cause_detail ?? null }),
-      cause_detail ?? null,
-      { moot: dismissed === true, repo: input.repo ?? null }
-    );
+    // A REVIEW SESSION settles through its own single path and nowhere else
+    // (2026-08-28 auto-review-dispatch spec 결정 2): every launch refusal is one
+    // `exhausted` claim plus a standing hold, and the caller writes it. Sending
+    // it through the tier table instead would classify a review launch as an
+    // ENVIRONMENT fault of the worker at large — an `env` queue hold and a
+    // backoff retry lineage for a bead that is only waiting on a receipt — and
+    // then the review path would write its own settlement over that record.
+    // ADR 0016 reserves the queue-stopping tiers for failures that recur on the
+    // NEXT bead; this one recurs on nothing.
+    if (!reviewSessionOf(input.workspace, input.attempt_id)) {
+      settleFailureTier(
+        input.workspace,
+        input.attempt_id,
+        input.bead_id,
+        classifyFailure({ cause, cause_detail: cause_detail ?? null }),
+        cause_detail ?? null,
+        { moot: dismissed === true, repo: input.repo ?? null }
+      );
+    }
     try {
       await revertWorkflowMode(
         input.bead_id,
@@ -7928,6 +7939,18 @@ export function createScheduler(deps) {
         : typeof snap.target_base === 'string' && snap.target_base.length > 0
           ? snap.target_base
           : 'main';
+    // PREVENTION LAYER (UI-8mvc §2), installed for a review session exactly as
+    // for an implementation one (2026-08-28 auto-review-dispatch spec §4.1).
+    // Two reasons: the completion verdict judges "did THIS session move the
+    // head" from the push log this produces (§5.2), and the review lineage's
+    // only permitted write is the PR head branch — a base ref push is
+    // contract-forbidden, and the hook is what refuses it. It goes in here,
+    // after the base resolution that supplies its subject and before the first
+    // state change (worktree, attempt record) — every early return below
+    // removes it again.
+    if (!installGuardHook({ workspace, attempt_id, repo, target_base: base })) {
+      return refuseLaunch('guard_hook_install_failed');
+    }
     const wt_present =
       typeof deps.worktree.exists === 'function'
         ? deps.worktree.exists(repo, bead_id)
@@ -7939,6 +7962,7 @@ export function createScheduler(deps) {
         input.head_ref ?? null
       );
       if (!restored.ok) {
+        removeGuardHook(workspace, attempt_id);
         return refuseLaunch(restored.reason);
       }
     }
@@ -7948,10 +7972,12 @@ export function createScheduler(deps) {
       await readWorkspaceAccountsLayer(workspace)
     );
     if (!resolved_exec.ok) {
+      removeGuardHook(workspace, attempt_id);
       return refuseLaunch(resolved_exec.reason);
     }
     const exec = resolved_exec.exec;
     if (exec.invalid_reason) {
+      removeGuardHook(workspace, attempt_id);
       return refuseLaunch(exec.invalid_reason);
     }
     // A `--resume` is a claude-transcript operation, so a resumed review runs
@@ -7977,6 +8003,7 @@ export function createScheduler(deps) {
     });
     if (!started.ok) {
       claimed.delete(bead_id);
+      removeGuardHook(workspace, attempt_id);
       return refuseLaunch('attempt_prerecord_failed');
     }
     notifyChanged(workspace);
@@ -8007,6 +8034,7 @@ export function createScheduler(deps) {
       // `launchSession`'s own spawn-abort cleanup already released it; this is
       // for the refusals it returns without reaching that path.
       claimed.delete(bead_id);
+      removeGuardHook(workspace, attempt_id);
       return refuseLaunch(launched.reason || 'spawn_failed');
     }
     return { ok: true, attempt_id };

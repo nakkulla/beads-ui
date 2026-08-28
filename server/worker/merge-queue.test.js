@@ -3224,3 +3224,498 @@ describe('worker/merge-queue — halt only where an observation can arrive (UI-w
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 });
+
+describe('worker/merge-queue — automatic review dispatch (2026-08-28 §4)', () => {
+  const MANUAL_HEAD = 'a'.repeat(40);
+  const MOVED_HEAD = 'b'.repeat(40);
+  const THIRD_HEAD = 'c'.repeat(40);
+
+  /**
+   * A row whose authority a `[머지]` click minted.
+   *
+   * @param {string} bead_id
+   */
+  function seedManual(bead_id) {
+    const store = seed([bead_id]);
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id, head_sha: MANUAL_HEAD, target_base: 'main' }]
+    });
+    return store;
+  }
+
+  /**
+   * A row the automatic enroller queued, which carries an `automatic`
+   * authority and is therefore subject to the slot fence.
+   *
+   * @param {string} bead_id
+   */
+  function seedAutomatic(bead_id) {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: `att-${bead_id}`,
+        bead_id,
+        repo: WS,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'claude'
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id,
+      attempt_id: `att-${bead_id}`,
+      patch: { status: 'done', finished_at: 1 }
+    });
+    store.enqueueMergeAuto(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id, head_sha: MANUAL_HEAD, target_base: 'main' }],
+      present_ids: [bead_id]
+    });
+    return store;
+  }
+
+  /**
+   * A `startAuto` that does what the real one does to the STORE — claim the
+   * head on the row's existing authority — so a second `kick()` judges the
+   * same durable facts the production path would leave behind.
+   *
+   * @param {any} queue_store
+   * @param {{ launch_fails?: boolean }} [options]
+   */
+  function fakeStartAuto(queue_store, options = {}) {
+    let seq = 0;
+    return vi.fn(
+      async (
+        /** @type {{ bead_id: string, head_sha: string, reason: string }} */ input
+      ) => {
+        const entry = queue_store
+          .snapshot(WS)
+          .merge_queue.find(
+            (/** @type {any} */ e) => e.bead_id === input.bead_id
+          );
+        const authority = entry?.authority;
+        if (!authority) {
+          return { ok: false, reason: 'authority_missing' };
+        }
+        const attempt_id = `review:${++seq}`;
+        const claimed = queue_store.claimAutoReviewDispatch(WS, {
+          bead_id: input.bead_id,
+          attempt_id,
+          session_source: 'fresh',
+          expected: {
+            authority_id: authority.id,
+            authority_source: authority.source,
+            hold_reason: input.reason,
+            head_sha: input.head_sha
+          }
+        });
+        if (!claimed.ok) {
+          return claimed;
+        }
+        if (options.launch_fails === true) {
+          queue_store.settleReviewSession(WS, {
+            attempt_id,
+            outcome: 'failed',
+            from: 'launch',
+            cause: 'launch_failed:bead_running',
+            hold_reason: input.reason,
+            final_head_sha: input.head_sha,
+            head_moved_by_session: false
+          });
+        }
+        return { ok: true, attempt_id };
+      }
+    );
+  }
+
+  /**
+   * @param {string} reason
+   * @param {string} head_sha
+   */
+  function blockedProbe(reason, head_sha) {
+    return async () => ({
+      ok: false,
+      kind: /** @type {const} */ ('blocked'),
+      reason,
+      head_sha,
+      base_ref: 'main',
+      head_ref: 'UI-1',
+      external: false
+    });
+  }
+
+  test('dispatches one review session when a manual row enters a review hold', async () => {
+    const store = seedManual('UI-1');
+    const startAuto = fakeStartAuto(store);
+    const mq = driver(store, {
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      probeMergeability: blockedProbe('review_receipt_missing', MOVED_HEAD)
+    });
+
+    await mq.kick();
+
+    expect(startAuto).toHaveBeenCalledTimes(1);
+    expect(startAuto).toHaveBeenCalledWith({
+      bead_id: 'UI-1',
+      head_sha: MOVED_HEAD,
+      head_ref: 'UI-1',
+      reason: 'review_receipt_missing'
+    });
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: MOVED_HEAD,
+      state: 'active'
+    });
+  });
+
+  test('does not dispatch a second time at the same head', async () => {
+    const store = seedManual('UI-1');
+    const startAuto = fakeStartAuto(store, { launch_fails: true });
+    const mq = driver(store, {
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      probeMergeability: blockedProbe('review_receipt_missing', MOVED_HEAD)
+    });
+
+    await mq.kick();
+    await mq.kick();
+
+    // The claim is EXHAUSTED at this head after the launch failed, and the
+    // exhausted claim is the whole reason the queue does not try again.
+    expect(startAuto).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: MOVED_HEAD,
+      state: 'exhausted'
+    });
+  });
+
+  test('opens a new lineage when the head moves under an exhausted claim', async () => {
+    const store = seedManual('UI-1');
+    const startAuto = fakeStartAuto(store, { launch_fails: true });
+    let head = MOVED_HEAD;
+    const mq = driver(store, {
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      probeMergeability: async () => ({
+        ok: false,
+        kind: 'blocked',
+        reason: 'review_receipt_stale',
+        head_sha: head,
+        base_ref: 'main',
+        head_ref: 'UI-1',
+        external: false
+      })
+    });
+
+    await mq.kick();
+    head = THIRD_HEAD;
+    await mq.kick();
+
+    expect(startAuto).toHaveBeenCalledTimes(2);
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: THIRD_HEAD,
+      state: 'exhausted'
+    });
+  });
+
+  test('dispatches nothing while a review session is still in flight', async () => {
+    const store = seedManual('UI-1');
+    const startAuto = fakeStartAuto(store);
+    let head = MOVED_HEAD;
+    const mq = driver(store, {
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      probeMergeability: async () => ({
+        ok: false,
+        kind: 'blocked',
+        reason: 'review_receipt_stale',
+        head_sha: head,
+        base_ref: 'main',
+        head_ref: 'UI-1',
+        external: false
+      })
+    });
+
+    await mq.kick();
+    // The session's own REVISE push moved the head. That is the SAME lineage,
+    // so the per-bead in-flight guard — not the claim — is what refuses here.
+    head = THIRD_HEAD;
+    await mq.kick();
+
+    expect(startAuto).toHaveBeenCalledTimes(1);
+  });
+
+  test('holds an automatic row for a slot instead of dispatching', async () => {
+    const store = seedAutomatic('UI-1');
+    const startAuto = fakeStartAuto(store);
+    let blocked = true;
+    const mq = driver(store, {
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      reviewDispatchBlocked: () => blocked,
+      probeMergeability: blockedProbe('review_receipt_missing', MOVED_HEAD)
+    });
+
+    await mq.kick();
+
+    expect(startAuto).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue[0].hold?.auto_review_wait).toBe(
+      'slot'
+    );
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toBeUndefined();
+
+    blocked = false;
+    await mq.kick();
+
+    expect(startAuto).toHaveBeenCalledTimes(1);
+    expect(
+      store.snapshot(WS).merge_queue[0].hold?.auto_review_wait
+    ).toBeUndefined();
+  });
+
+  test('exempts a manual authority from the slot fence', async () => {
+    const store = seedManual('UI-1');
+    const startAuto = fakeStartAuto(store);
+    const reviewDispatchBlocked = vi.fn(() => true);
+    const mq = driver(store, {
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      reviewDispatchBlocked,
+      probeMergeability: blockedProbe('review_receipt_missing', MOVED_HEAD)
+    });
+
+    await mq.kick();
+
+    expect(reviewDispatchBlocked).not.toHaveBeenCalled();
+    expect(startAuto).toHaveBeenCalledTimes(1);
+  });
+
+  test('makes no revision and no event on a repeated blocked kick', async () => {
+    const store = seedAutomatic('UI-1');
+    const startAuto = fakeStartAuto(store);
+    /** @type {boolean[]} */
+    const hold_writes = [];
+    const spy_store = {
+      ...store,
+      setMergeHold: (/** @type {string} */ ws, /** @type {any} */ input) => {
+        const result = store.setMergeHold(ws, input);
+        hold_writes.push(result.ok);
+        return result;
+      }
+    };
+    const mq = driver(store, {
+      store: spy_store,
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      reviewDispatchBlocked: () => true,
+      probeMergeability: blockedProbe('review_receipt_missing', MOVED_HEAD)
+    });
+
+    await mq.kick();
+    const settled_revision = store.snapshot(WS).revision;
+    hold_writes.length = 0;
+
+    await mq.kick();
+    await mq.kick();
+
+    // Load-bearing: a write here would bump the revision and emit
+    // `queue-changed`, which `hasHeldEntry()` turns into another drain, which
+    // re-judges this row — forever.
+    expect(hold_writes).toEqual([false, false, false, false]);
+    expect(store.snapshot(WS).revision).toBe(settled_revision);
+  });
+
+  test('holds and dispatches on a malformed receipt', async () => {
+    const store = seedManual('UI-1');
+    const startAuto = fakeStartAuto(store);
+    const merge = vi.fn();
+    const mq = driver(store, {
+      merge,
+      reviewSession: { startAuto },
+      probeMergeability: blockedProbe('review_receipt_invalid', MOVED_HEAD)
+    });
+
+    await mq.kick();
+
+    expect(merge).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue[0].hold?.reason).toBe(
+      'review_receipt_invalid'
+    );
+    expect(startAuto).toHaveBeenCalledTimes(1);
+  });
+
+  test('holds and dispatches on an undetermined receipt probe', async () => {
+    const store = seedManual('UI-1');
+    const startAuto = fakeStartAuto(store);
+    const mq = driver(store, {
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      probeMergeability: blockedProbe('review_receipt_undetermined', MOVED_HEAD)
+    });
+
+    await mq.kick();
+
+    expect(startAuto).toHaveBeenCalledTimes(1);
+  });
+
+  test('dispatches nothing for a legacy authority-less row', async () => {
+    const store = seed(['UI-1']);
+    const startAuto = fakeStartAuto(store);
+    const mq = driver(store, {
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      probeMergeability: blockedProbe('review_receipt_missing', MOVED_HEAD)
+    });
+
+    await mq.kick();
+
+    expect(startAuto).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue[0].hold?.reason).toBe(
+      'review_receipt_missing'
+    );
+  });
+
+  test('dispatches nothing for a head-less exhausted claim, at any head', async () => {
+    const store = seedManual('UI-1');
+    const startAuto = fakeStartAuto(store);
+    // The §5.2 fail-closed claim: the final head was never observed, so no
+    // head may be dispatched on and the button is the only exit.
+    const file = queueFilePath(WS);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.merge_queue[0].review_dispatch = {
+      head_sha: null,
+      attempt_id: 'review:gone',
+      state: 'exhausted',
+      at: 1
+    };
+    fs.writeFileSync(file, JSON.stringify(raw));
+    store.__clearCacheForTest();
+    let head = MOVED_HEAD;
+    const mq = driver(store, {
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      probeMergeability: async () => ({
+        ok: false,
+        kind: 'blocked',
+        reason: 'review_receipt_missing',
+        head_sha: head,
+        base_ref: 'main',
+        head_ref: 'UI-1',
+        external: false
+      })
+    });
+
+    await mq.kick();
+    head = THIRD_HEAD;
+    await mq.kick();
+
+    expect(startAuto).not.toHaveBeenCalled();
+  });
+
+  test('exhausts an active claim whose attempt is gone, dispatching nothing', async () => {
+    const store = seedManual('UI-1');
+    const startAuto = fakeStartAuto(store);
+    // A restart recovery that never landed: the claim still says a session
+    // owns this head, and no attempt is left to end it.
+    const file = queueFilePath(WS);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.merge_queue[0].review_dispatch = {
+      head_sha: MOVED_HEAD,
+      attempt_id: 'review:gone',
+      state: 'active',
+      at: 1
+    };
+    fs.writeFileSync(file, JSON.stringify(raw));
+    store.__clearCacheForTest();
+    const mq = driver(store, {
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      probeMergeability: blockedProbe('review_receipt_missing', MOVED_HEAD)
+    });
+
+    await mq.kick();
+
+    expect(startAuto).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: MOVED_HEAD,
+      attempt_id: 'review:gone',
+      state: 'exhausted'
+    });
+  });
+
+  test('keeps the claim across a released hold at the same head', async () => {
+    const store = seedManual('UI-1');
+    const startAuto = fakeStartAuto(store, { launch_fails: true });
+    /** @type {string[]} */
+    const reasons = [
+      'review_receipt_missing',
+      'mergeability_changed',
+      'review_receipt_missing'
+    ];
+    const mq = driver(store, {
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      probeMergeability: async () => ({
+        ok: false,
+        kind: 'blocked',
+        reason: reasons.shift() || 'review_receipt_missing',
+        head_sha: MOVED_HEAD,
+        base_ref: 'main',
+        head_ref: 'UI-1',
+        external: false
+      })
+    });
+
+    await mq.kick();
+    await mq.kick();
+
+    // The transient non-hold verdict released the HOLD and left the claim
+    // (§5.1), so the same head does not buy a second automatic review.
+    expect(startAuto).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: MOVED_HEAD,
+      state: 'exhausted'
+    });
+  });
+
+  test('leaves the automatic attempt bound when a click lands right after it', async () => {
+    const store = seedManual('UI-1');
+    const startAuto = fakeStartAuto(store);
+    const mq = driver(store, {
+      merge: vi.fn(),
+      reviewSession: { startAuto },
+      probeMergeability: blockedProbe('review_receipt_missing', MOVED_HEAD)
+    });
+
+    await mq.kick();
+    const before = store.snapshot(WS);
+    const clicked = store.enqueueMergeManual(WS, {
+      expected_revision: before.revision,
+      entries: [{ bead_id: 'UI-1', head_sha: THIRD_HEAD, target_base: 'main' }],
+      review_session: { attempt_id: 'click:1', session_source: 'fresh' }
+    });
+    const after = store.snapshot(WS);
+
+    // A complete no-op: the click neither reissues the authority the running
+    // attempt is bound to, nor refreshes the hold, nor spends the claim.
+    expect(clicked).toMatchObject({
+      ok: true,
+      review_session_registered: false,
+      reason: 'review_session_in_flight'
+    });
+    expect(after.revision).toBe(before.revision);
+    expect(after.merge_queue[0].authority).toEqual(
+      before.merge_queue[0].authority
+    );
+    expect(after.merge_queue[0].hold).toEqual(before.merge_queue[0].hold);
+    expect(after.merge_queue[0].review_dispatch).toEqual(
+      before.merge_queue[0].review_dispatch
+    );
+    expect(after.attempts['click:1']).toBeUndefined();
+    expect(after.attempts['review:1'].authority_id).toBe(
+      after.merge_queue[0].authority?.id
+    );
+  });
+});

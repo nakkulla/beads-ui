@@ -68,7 +68,7 @@ function prWaitStore() {
 }
 
 /**
- * @param {{ store?: any, metadata?: Record<string, unknown>, dispatch?: any, observe?: any, kick?: any }} [overrides]
+ * @param {{ store?: any, metadata?: Record<string, unknown>, dispatch?: any, observe?: any, kick?: any, guardHook?: any }} [overrides]
  */
 function coordinator(overrides = {}) {
   const store = overrides.store || prWaitStore();
@@ -92,6 +92,7 @@ function coordinator(overrides = {}) {
     scheduler: { dispatchReviewSession },
     observeReviewReceipt,
     kick,
+    ...(overrides.guardHook ? { guardHook: overrides.guardHook } : {}),
     homeDir: tmp_home,
     makeAttemptId: () => 'review:1',
     now: () => 500
@@ -122,14 +123,15 @@ function click(review, store, expected_revision) {
 }
 
 describe('review-session — display condition (UI-d7fy §5.1)', () => {
-  test('claims the two review-hold reasons', () => {
+  test('claims all four review-hold reasons', () => {
     expect(isReviewAfterMergeReason('review_receipt_missing')).toBe(true);
     expect(isReviewAfterMergeReason('review_receipt_stale')).toBe(true);
+    expect(isReviewAfterMergeReason('review_receipt_invalid')).toBe(true);
+    expect(isReviewAfterMergeReason('review_receipt_undetermined')).toBe(true);
   });
 
-  test('refuses spec_id_missing and undetermined', () => {
+  test('refuses spec_id_missing', () => {
     expect(isReviewAfterMergeReason('spec_id_missing')).toBe(false);
-    expect(isReviewAfterMergeReason('review_receipt_undetermined')).toBe(false);
   });
 });
 
@@ -194,6 +196,7 @@ describe('review-session — prompt (UI-d7fy §5.3)', () => {
   test('carries the observed facts and the four prohibitions', () => {
     const prompt = reviewSessionPrompt({
       bead_id: 'UI-1',
+      trigger: 'click',
       pr_url: 'https://example.test/pr/9',
       head_ref: 'UI-1',
       head_sha: CLICK_HEAD,
@@ -215,6 +218,7 @@ describe('review-session — prompt (UI-d7fy §5.3)', () => {
   test('says the receipt is absent rather than printing nothing', () => {
     const prompt = reviewSessionPrompt({
       bead_id: 'UI-1',
+      trigger: 'click',
       pr_url: null,
       head_ref: null,
       head_sha: CLICK_HEAD,
@@ -395,8 +399,14 @@ describe('review-session — completion verdict (UI-d7fy §5.4)', () => {
     expect(kick).not.toHaveBeenCalled();
   });
 
-  test('records an abnormal exit without re-judging the receipt', async () => {
-    const { review, store, observeReviewReceipt } = coordinator();
+  test('records an abnormal exit as a failure, whatever the receipt says', async () => {
+    const observe = vi.fn(async () => ({
+      ok: true,
+      head_sha: CLICK_HEAD,
+      head_ref: 'UI-1',
+      state: 'current'
+    }));
+    const { review, store } = coordinator({ observe });
     await click(review, store);
 
     await review.complete({
@@ -406,7 +416,10 @@ describe('review-session — completion verdict (UI-d7fy §5.4)', () => {
       reason: 'killed'
     });
 
-    expect(observeReviewReceipt).not.toHaveBeenCalled();
+    // The head IS re-observed now (2026-08-28 auto-review-dispatch spec §5.2)
+    // — the claim's next head depends on it — but the receipt is still not
+    // re-judged: a session that died is a failure whatever the Bead now says.
+    expect(observe).toHaveBeenCalledWith('UI-1');
     expect(store.snapshot(WS).attempts['review:1']).toMatchObject({
       status: 'failed',
       cause: 'session_failed:killed'
@@ -480,5 +493,317 @@ describe('review-session — completion verdict (UI-d7fy §5.4)', () => {
 
     expect(verdict).toEqual({ ok: false, reason: 'binding_gone' });
     expect(store.snapshot(WS).merge_queue[0].authority?.id).toBe('authority-2');
+  });
+});
+
+describe('review-session — the automatic dispatch (2026-08-28 §4.1)', () => {
+  /**
+   * A row already holding on a review verdict, with the manual authority a
+   * `[머지]` click minted and no lineage spent yet.
+   *
+   * @param {string} [head_sha]
+   * @param {string} [reason]
+   */
+  function heldStore(head_sha = CLICK_HEAD, reason = 'review_receipt_missing') {
+    const store = prWaitStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1', head_sha, target_base: 'main' }]
+    });
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: { reason, head_sha },
+      at: 1
+    });
+    return store;
+  }
+
+  /**
+   * @param {any} review
+   * @param {{ head_sha?: string, reason?: string }} [overrides]
+   */
+  function auto(review, overrides = {}) {
+    return review.startAuto({
+      bead_id: 'UI-1',
+      head_sha: overrides.head_sha || CLICK_HEAD,
+      head_ref: 'UI-1',
+      reason: overrides.reason || 'review_receipt_missing'
+    });
+  }
+
+  test('registers the attempt on the row existing authority', async () => {
+    const store = heldStore();
+    const { review, dispatchReviewSession } = coordinator({ store });
+    const authority_before = /** @type {any} */ (
+      store.snapshot(WS).merge_queue[0].authority
+    );
+
+    await auto(review);
+
+    const q = store.snapshot(WS);
+    expect(q.merge_queue[0].authority).toEqual(authority_before);
+    expect(q.attempts['review:1']).toMatchObject({
+      kind: 'review_session',
+      origin: 'auto',
+      authority_id: authority_before.id,
+      head_sha: CLICK_HEAD
+    });
+    expect(q.merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: CLICK_HEAD,
+      attempt_id: 'review:1',
+      state: 'active'
+    });
+    expect(dispatchReviewSession).toHaveBeenCalledTimes(1);
+  });
+
+  test('launches nothing when the claim write is refused', async () => {
+    const store = heldStore();
+    const { review, dispatchReviewSession } = coordinator({ store });
+
+    // The hold the judgment saw is not the hold on the row any more.
+    const result = await auto(review, { reason: 'review_receipt_stale' });
+
+    expect(result).toMatchObject({ ok: false, reason: 'claim_input_stale' });
+    expect(dispatchReviewSession).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).attempts['review:1']).toBeUndefined();
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toBeUndefined();
+  });
+
+  test('refuses without an authority to ride', async () => {
+    const store = prWaitStore();
+    const { review, dispatchReviewSession } = coordinator({ store });
+
+    const result = await auto(review);
+
+    expect(result).toMatchObject({ ok: false, reason: 'authority_missing' });
+    expect(dispatchReviewSession).not.toHaveBeenCalled();
+  });
+
+  test('exhausts the claim at its own head when the launch is refused', async () => {
+    const store = heldStore();
+    const { review } = coordinator({
+      store,
+      dispatch: vi.fn(async () => ({ ok: false, reason: 'bead_running' }))
+    });
+
+    await auto(review);
+
+    const q = store.snapshot(WS);
+    expect(q.attempts['review:1']).toMatchObject({
+      status: 'failed',
+      cause: 'launch_failed:bead_running'
+    });
+    // No session ran, so the head cannot have moved under one (§5.2).
+    expect(q.merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: CLICK_HEAD,
+      state: 'exhausted'
+    });
+    expect(q.merge_queue[0].hold).toMatchObject({
+      reason: 'review_receipt_missing'
+    });
+  });
+
+  test('resumes the recorded session exactly as the click does', async () => {
+    plantClaudeTranscript('sess-claude');
+    const store = heldStore();
+    const { review, dispatchReviewSession } = coordinator({
+      store,
+      metadata: { session_ref: `claude:sess-claude@${os.hostname()}` }
+    });
+
+    await auto(review);
+
+    expect(dispatchReviewSession).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({
+        bead_id: 'UI-1',
+        attempt_id: 'review:1',
+        resume_session_id: 'sess-claude',
+        head_ref: 'UI-1'
+      })
+    );
+  });
+
+  test('tells the session the queue authorized it, not a person', async () => {
+    const store = heldStore();
+    const { review, dispatchReviewSession } = coordinator({ store });
+
+    await auto(review);
+
+    const prompt = dispatchReviewSession.mock.calls[0][1].prompt;
+    expect(prompt).toContain('머지 큐가 durable `review_dispatch` claim으로');
+    expect(prompt).toContain('사람의 클릭은 없었다');
+    expect(prompt).not.toContain('`[리뷰 후 머지]` 클릭이 이 세션을 인가했다');
+    // Everything else is the shared prompt.
+    expect(prompt).toContain('머지는 beads-ui 큐가 소유한다');
+    expect(prompt).toContain('review_receipt_missing');
+  });
+});
+
+describe('review-session — the head a receipt-less ending left (2026-08-28 §5.2)', () => {
+  /**
+   * @param {{ observe?: any, guardHook?: any }} [overrides]
+   */
+  async function clicked(overrides = {}) {
+    const built = coordinator(overrides);
+    await click(built.review, built.store);
+    return built;
+  }
+
+  test('follows the head this session pushed', async () => {
+    const readPushLog = vi.fn(() => ({
+      ok: /** @type {const} */ (true),
+      entries: [{ local_oid: MOVED_HEAD }]
+    }));
+    const { review, store } = await clicked({
+      observe: vi.fn(async () => ({
+        ok: true,
+        head_sha: MOVED_HEAD,
+        head_ref: 'UI-1',
+        state: 'missing'
+      })),
+      guardHook: { readPushLog }
+    });
+
+    await review.complete({
+      attempt_id: 'review:1',
+      bead_id: 'UI-1',
+      session_ok: false,
+      reason: 'turn_limit'
+    });
+
+    // A REVISE fix that was pushed and never receipted: leaving the claim at
+    // the click head would let the next kick read the new head as a lineage of
+    // its own and send a second external review into this one.
+    expect(readPushLog).toHaveBeenCalledWith({
+      workspace: WS,
+      attempt_id: 'review:1'
+    });
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: MOVED_HEAD,
+      state: 'exhausted'
+    });
+  });
+
+  test('keeps its own head when something else moved the branch', async () => {
+    const { review, store } = await clicked({
+      observe: vi.fn(async () => ({
+        ok: true,
+        head_sha: MOVED_HEAD,
+        head_ref: 'UI-1',
+        state: 'missing'
+      })),
+      guardHook: {
+        readPushLog: () => ({ ok: /** @type {const} */ (true), entries: [] })
+      }
+    });
+
+    await review.complete({
+      attempt_id: 'review:1',
+      bead_id: 'UI-1',
+      session_ok: false,
+      reason: 'turn_limit'
+    });
+
+    // An external force-push or a base sync is a NEW lineage, which the next
+    // kick opens its own claim on.
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: CLICK_HEAD,
+      state: 'exhausted'
+    });
+  });
+
+  test('fails closed when the push record cannot be read', async () => {
+    const { review, store } = await clicked({
+      observe: vi.fn(async () => ({
+        ok: true,
+        head_sha: MOVED_HEAD,
+        head_ref: 'UI-1',
+        state: 'missing'
+      })),
+      guardHook: {
+        readPushLog: () => ({
+          ok: /** @type {const} */ (false),
+          reason: 'absent'
+        })
+      }
+    });
+
+    await review.complete({
+      attempt_id: 'review:1',
+      bead_id: 'UI-1',
+      session_ok: false,
+      reason: 'turn_limit'
+    });
+
+    // `head_sha: null` is read by §4 as "no automatic dispatch at ANY head";
+    // the button is the exit and its click writes a fresh claim.
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: null,
+      state: 'exhausted'
+    });
+  });
+
+  test('re-observes the head even when the session died', async () => {
+    const observe = vi.fn(async () => ({
+      ok: true,
+      head_sha: MOVED_HEAD,
+      head_ref: 'UI-1',
+      state: 'missing'
+    }));
+    const { review, store } = await clicked({
+      observe,
+      guardHook: {
+        readPushLog: () => ({
+          ok: /** @type {const} */ (true),
+          entries: [{ local_oid: MOVED_HEAD }]
+        })
+      }
+    });
+
+    await review.complete({
+      attempt_id: 'review:1',
+      bead_id: 'UI-1',
+      session_ok: false,
+      reason: 'process_gone'
+    });
+
+    // The old path settled a dead session without asking where the head ended
+    // up, which made every park and turn limit a fail-closed claim.
+    expect(observe).toHaveBeenCalledWith('UI-1');
+    expect(store.snapshot(WS).attempts['review:1']).toMatchObject({
+      status: 'failed',
+      cause: 'session_failed:process_gone'
+    });
+    expect(store.snapshot(WS).merge_queue[0].hold?.head_sha).toBe(MOVED_HEAD);
+  });
+
+  test('carries the same two facts out of a receipt that is not current', async () => {
+    const { review, store } = await clicked({
+      observe: vi.fn(async () => ({
+        ok: true,
+        head_sha: MOVED_HEAD,
+        head_ref: 'UI-1',
+        state: 'stale'
+      })),
+      guardHook: {
+        readPushLog: () => ({
+          ok: /** @type {const} */ (true),
+          entries: [{ local_oid: MOVED_HEAD }]
+        })
+      }
+    });
+
+    await review.complete({
+      attempt_id: 'review:1',
+      bead_id: 'UI-1',
+      session_ok: true,
+      reason: null
+    });
+
+    expect(store.snapshot(WS).merge_queue[0].review_dispatch).toMatchObject({
+      head_sha: MOVED_HEAD,
+      state: 'exhausted'
+    });
   });
 });

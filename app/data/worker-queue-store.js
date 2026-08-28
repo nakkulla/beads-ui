@@ -32,7 +32,7 @@
  * @property {'waiting'|'yielded'|'ready'} state
  * @property {number|null} yielded_at
  * @property {number|null} settled_at
- * @typedef {Omit<Queue, 'completion_intents'|'merge_queue'> & { merge_queue: Array<{ bead_id: string, resolution_rounds: number, resolution?: ResolutionProjection|null, authority?: import('../../server/worker/queue-store.js').MergeAuthority|null, hold?: import('../../server/worker/queue-store.js').MergeHold|null }>, completion_status?: Record<string, CompletionStatus>, manual_merge_continuation?: { schema_version: number }, execution_defaults?: { supported: boolean, schema_version: number|null, source_commit: string|null, digest: string|null, session: Record<string, any>|null, orchestration: Record<string, any>|null }, bead_scope?: Record<string, { scope: string[], artifacts: string[] }|null> }} WorkerQueueSnapshot
+ * @typedef {Omit<Queue, 'completion_intents'|'merge_queue'> & { merge_queue: Array<{ bead_id: string, resolution_rounds: number, resolution?: ResolutionProjection|null, authority?: import('../../server/worker/queue-store.js').MergeAuthority|null, hold?: import('../../server/worker/queue-store.js').MergeHold|null, review_dispatch?: import('../../server/worker/queue-store.js').ReviewDispatchClaim|null }>, completion_status?: Record<string, CompletionStatus>, manual_merge_continuation?: { schema_version: number }, execution_defaults?: { supported: boolean, schema_version: number|null, source_commit: string|null, digest: string|null, session: Record<string, any>|null, orchestration: Record<string, any>|null }, bead_scope?: Record<string, { scope: string[], artifacts: string[] }|null> }} WorkerQueueSnapshot
  */
 
 /**
