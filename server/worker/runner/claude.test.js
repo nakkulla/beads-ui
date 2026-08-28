@@ -480,6 +480,100 @@ describe('runner/claude 2-rule success (judged over the last result)', () => {
   });
 });
 
+describe('runner/claude verdict summary (worker-failure-tiers §6)', () => {
+  /**
+   * @param {Record<string, unknown>} result
+   * @returns {{ success: boolean, reason: string, summary: string|null }}
+   */
+  function judge(result) {
+    return claudeSpec().verdict({
+      raw: [{ type: 'result', subtype: 'success', is_error: false, ...result }],
+      exit: 0,
+      blocked: false
+    });
+  }
+
+  test('lifts the last result text as the summary', () => {
+    const v = judge({ result: 'PR를 열었습니다.' });
+
+    expect(v.summary).toBe('PR를 열었습니다.');
+  });
+
+  test('keeps only the first non-empty line', () => {
+    const v = judge({ result: '\n  \n첫 줄 보고\n둘째 줄\n' });
+
+    expect(v.summary).toBe('첫 줄 보고');
+  });
+
+  test('cuts the summary at 200 characters', () => {
+    const v = judge({ result: 'x'.repeat(400) });
+
+    expect(v.summary).toBe('x'.repeat(200));
+  });
+
+  test('reads the error text when the result is an error', () => {
+    const v = judge({
+      subtype: 'success',
+      is_error: true,
+      error: 'API Error: 529 Overloaded'
+    });
+
+    expect(v).toEqual({
+      success: false,
+      reason: 'is_error',
+      summary: 'API Error: 529 Overloaded'
+    });
+  });
+
+  test('prefers the result text over the error text on an errored result', () => {
+    const v = judge({
+      is_error: true,
+      result: 'API Error: 429 rate limited',
+      error: 'unused'
+    });
+
+    expect(v.summary).toBe('API Error: 429 rate limited');
+  });
+
+  test('reports a null summary for a non-string result', () => {
+    const v = judge({ result: { text: 'not a string' } });
+
+    expect(v.summary).toBeNull();
+  });
+
+  test('reports a null summary when the stream carried no result', () => {
+    const v = claudeSpec().verdict({ raw: [], exit: 0, blocked: false });
+
+    expect(v).toEqual({ success: false, reason: 'no_result', summary: null });
+  });
+
+  test('carries the summary out of the session engine', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        JSON.stringify({
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result: '세션이 사용자 결정을 기다립니다.'
+        })
+      ],
+      exit: 0
+    });
+
+    const v = await spawnClaude(BEAD, WS, {}, { spawn_impl }).done;
+
+    expect(v.summary).toBe('세션이 사용자 결정을 기다립니다.');
+  });
+
+  test('resolves a null summary when the adapter found none', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+
+    const v = await spawnClaude(BEAD, WS, {}, { spawn_impl }).done;
+
+    expect(v.summary).toBeNull();
+  });
+});
+
 describe('runner/claude event normalization', () => {
   test('maps assistant tool_use to normalized tool events', async () => {
     const spawn_impl = makeFixtureSpawn({ file: TOOLS_FIXTURE, exit: 0 });

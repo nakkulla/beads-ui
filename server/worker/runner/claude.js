@@ -523,26 +523,66 @@ function extractSessionId(raw) {
 }
 
 /**
+ * How much of the session's closing sentence a summary keeps
+ * (worker-failure-tiers §6).
+ *
+ * @type {number}
+ */
+const SUMMARY_MAX_CHARS = 200;
+
+/**
+ * The session's own sentence, cut to what a failure tile can carry
+ * (worker-failure-tiers §6): the first non-empty line, trimmed, at most 200
+ * characters. A non-string carries no sentence and yields null rather than a
+ * stringified object — the classifier matches environment patterns against
+ * this, and `[object Object]` would match nothing while looking like evidence.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function summaryOf(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  for (const line of value.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) {
+      return trimmed.slice(0, SUMMARY_MAX_CHARS);
+    }
+  }
+  return null;
+}
+
+/**
  * Compute the claude 2-rule success verdict over the LAST `result` event. A
  * headless session may accumulate multiple `result` events (e.g. background
  * task-notification re-entry mid-session); only the final one is judged.
  *
+ * The same event supplies the verdict's `summary`: claude reports its closing
+ * text in `result`, and an errored run may put the sentence in `error` instead
+ * (worker-failure-tiers §6). The summary is lifted for a PASSING result too —
+ * a session that ended unresolved is judged on what it said, not on its exit.
+ *
  * @param {{ raw: any[], exit: number|null, blocked: boolean }} ctx
- * @returns {{ success: boolean, reason: string }}
+ * @returns {{ success: boolean, reason: string, summary: string|null }}
  */
 function verdict(ctx) {
   const results = ctx.raw.filter((e) => e && e.type === 'result');
   if (results.length === 0) {
-    return { success: false, reason: 'no_result' };
+    return { success: false, reason: 'no_result', summary: null };
   }
   const r = results[results.length - 1];
+  const summary =
+    r.is_error === true
+      ? (summaryOf(r.result) ?? summaryOf(r.error))
+      : summaryOf(r.result);
   if (r.subtype !== 'success') {
-    return { success: false, reason: 'subtype' };
+    return { success: false, reason: 'subtype', summary };
   }
   if (r.is_error !== false) {
-    return { success: false, reason: 'is_error' };
+    return { success: false, reason: 'is_error', summary };
   }
-  return { success: true, reason: 'ok' };
+  return { success: true, reason: 'ok', summary };
 }
 
 /**
