@@ -39,6 +39,13 @@ dotfiles 워크플로우는 Bead 생성·spec 게이트 마감 때 metadata에 `
 | 전송 | Monitor용 runnable 행에 `rec` 필드 신설(`exec_pins`와 분리). Worker 탭은 `issue_by_id`의 전체 metadata를 이미 받고(`execRowsFor`와 같은 경로), 상세도 전체 metadata를 받으므로 둘 다 서버 변경 없음 |
 | Worker 런타임 | `rec`/`rec_*`를 읽지 않음(불변, 테스트로 고정) |
 
+**정정(UI-8x90).** `적용 동작`과 `충돌` 두 행은 폐기됐다. 상세 헤더 chip의 즉시
+적용은 제거됐고, chip 클릭은 어느 표면에서나 **사유 팝업**이다 — 적용은 이슈
+상세의 실행 설정 편집기에서 사용자가 수동으로 한다. `confirm`도 비활성 상태도
+없다. `표시 위치` 행의 "이슈 상세 헤더 (클릭 적용)"는 "이슈 상세 헤더 (클릭
+팝업)"로 읽는다. `모델명 노출`·`rec_*` 처리(unset 없음)·`Worker 런타임` 불변은
+그대로다 (`2026-08-28-chip-grammar-unify-design.md` §2·§4.5·§5.1).
+
 ## 1. 판정 유틸 — `app/utils/rec-settings.js` (신규)
 
 DOM 없는 순수 모듈. `session-preferred.js`와 같은 fail-quiet 원칙: 잘못된 입력은 `null`/빈값, 절대 throw 없음.
@@ -71,6 +78,14 @@ Monitor 레인은 runnable 행(`entry.exec_pins`)만 받으므로 `RunnableItem`
 - Monitor: `app/views/monitor/lanes.js` `pinnedExecChips` 호출부에서 `recSettings(entry.rec, entry.exec_pins)`로 같은 chip. 같은 유틸·같은 클래스, 클릭 없음.
 - 카드 chip은 표시 전용. 클릭 핸들러를 달지 않는다.
 
+**정정(UI-8x90).** 카드 chip도 클릭된다. 네 판정 칩(`복잡`·`세션 권장`·
+`worker-ineligible`·`리뷰`)은 그려지는 모든 표면에서 `<button class="ctl-chip …
+judgement-chip" data-chip-key aria-expanded>`이고, 클릭하면 그 칩이 선 줄 바로
+아래에 사유 팝업(`.chip-popover`)이 열린다. 자리와 `data-state` 시각 상태는 이
+절이 정한 그대로이고, `title` 툴팁도 유지된다 — 바뀐 것은 사유를 툴팁 없이도
+읽을 수 있게 된 것뿐이다. 상태를 쓰는 클릭은 여전히 어느 카드에도 없다
+(`2026-08-28-chip-grammar-unify-design.md` §4.5).
+
 ## 4. 상세 적용 — `effective-settings-view.js` + `detail-panel/index.js`
 
 - `summaryHeaderTemplate`: `receipt` chip 뒤에 `<button class="detail-summary__chip detail-summary__chip--rec" data-state title=${recTooltip(rec)} ?disabled=${state==='applied'}>복잡</button>`.
@@ -82,6 +97,15 @@ Monitor 레인은 runnable 행(`entry.exec_pins`)만 받으므로 `RunnableItem`
   4. 2단계 reject 시 3단계 진행 안 함. 오류 표시는 두 경로의 기존 토스트 그대로.
 - 부분 성공은 readback으로 chip `state`가 `diverged`로 재계산되므로 별도 상태 저장 없음.
 - `rec_*`는 어떤 경로에서도 unset하지 않는다.
+
+**정정(UI-8x90).** 이 절의 적용 경로는 제거됐다. `onApplyRec`와 `?disabled`와
+`confirm`이 사라지고, `summaryHeaderTemplate`의 chip은 카드와 같은
+`judgement-chip` 버튼(`data-chip-key="rec"`)이 되어 클릭하면 같은 사유 팝업을
+연다 — 헤더는 이제 어떤 metadata도 쓰지 않는다. 한 번 클릭의 편의 대신 칩 클릭
+의미의 단일성과 모바일 오터치 방지를 택한 결정이다. **`onExecChange`/
+`onImplTargetChange`의 `Promise` 반환 계약(위 두 번째 항목)은 그대로 남는다** —
+실행 설정 편집기가 그 계약을 쓴다. `rec_*`를 unset하지 않는다는 규칙도 그대로다
+(`2026-08-28-chip-grammar-unify-design.md` §5.1).
 
 ## 5. 스타일
 

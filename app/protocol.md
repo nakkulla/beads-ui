@@ -72,10 +72,13 @@ same projections and simply ignores them.
   `blocked_info`. A foreign entry appears only once the owning rig's cache
   reports `closed` with a `closed_at`, and carries `root_dir` only when that
   owner is known. An empty `released_by` carries no key.
-- `dependents_info?: { count, ids }` — OPEN issues waiting on this one, counted
-  over this workspace's snapshot plus whatever snapshot each other visible
-  workspace already had; `ids` is alphabetical, at most 5. `count === 0` carries
-  no key, so 0 and unknown are indistinguishable.
+- `dependents_info?: { count, ids, root_dirs? }` — OPEN issues waiting on this
+  one, collected over this workspace's snapshot plus whatever snapshot each
+  other visible workspace already had; `ids` is EVERY one of them, alphabetical
+  (UI-8x90 §6.1 — the old cap of 5 is gone). `root_dirs` maps an id to the peer
+  workspace whose snapshot produced it, exactly as `release_info` does: a
+  same-repo id has no entry, and an empty map carries no key. `count === 0`
+  carries no key, so 0 and unknown are indistinguishable.
 - `decoration_rev: string` — stable serialization of the two keys above (`''`
   when neither is present). NOT display material: it is the delta fingerprint
   that lets an upsert reach the client when only a decoration moved, since
@@ -427,6 +430,21 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   derives dependency chains from `bead_blocked_by`; the server ships facts only.
   An older server omits the whole key, which consumers read as "skip the overlap
   derivation entirely".
+
+- `bead_dependents: Record<bead_id, { ids: string[], root_dirs?: Record<string, string> }>`
+  (UI-8x90 §6.2) is the OPEN follow-ups of the beads in exactly the `bead_scope`
+  target set: `queue` ∪ `serial_lanes[].entries` ∪ the 실행중 레인 beads ∪
+  `pr_wait` ∪ the runnable projection ∪ `session_active`. The material is the
+  workspace list snapshot's `blocks_in` index — this workspace's own plus
+  whatever snapshot each other visible workspace already had, peeked and never
+  requested — and `root_dirs` names the peer workspace that produced a given id,
+  with no entry for a same-repo one. Non-persisted, display only, fail-quiet.
+  PARTIAL in a way `bead_blocked_by` is not: an EMPTY array means "none among
+  the snapshots this process can see", NOT "none", because a peer with no
+  snapshot yet contributes nothing. Consumers must therefore UNION this with the
+  후보 행's `dependents_info` rather than letting either source win. The whole
+  key is absent when this workspace has no snapshot yet or the lookup context
+  would not assemble — that is 모름, and an older server omits it too.
 
 - `session_active[]` (UI-0a2m) is the SAME per-repo bucket the monitor
   aggregation ships (UI-yrzu §4.1, row shape and semantics above): beads an

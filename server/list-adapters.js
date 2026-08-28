@@ -32,8 +32,6 @@ const DEPENDENCY_BLOCKED_ARGS = [
 ];
 const DEFAULT_LIST_LIMIT = 50;
 const SNAPSHOT_LIST_LIMIT = 1000;
-/** Follow-up ids carried with `dependents_info` (UI-d13v §3.5). */
-const DEPENDENTS_ID_LIMIT = 5;
 /** Field separator of the `decoration_rev` delta fingerprint (UI-d13v §3.7). */
 const DECORATION_FIELD_SEPARATOR = '\u001e';
 
@@ -382,8 +380,9 @@ function projectBlockedIssues(snapshot, root_dir) {
 /**
  * @typedef {{ id: string, closed_at: number, foreign: boolean, root_dir?: string }} ReleasedBlocker
  * @typedef {{ released_by: ReleasedBlocker[], last_released_at: number }} ReleaseInfo
- * @typedef {{ count: number, ids: string[] }} DependentsInfo
- * @typedef {{ snapshot: WorkspaceSnapshot, root_dir: string, self_prefix: string | null, owner_by_prefix: Map<string, string>, peer_snapshots: WorkspaceSnapshot[] }} DecorationContext
+ * @typedef {{ count: number, ids: string[], root_dirs?: Record<string, string> }} DependentsInfo
+ * @typedef {{ root_dir: string, snapshot: WorkspaceSnapshot }} PeerSnapshot
+ * @typedef {{ snapshot: WorkspaceSnapshot, root_dir: string, self_prefix: string | null, owner_by_prefix: Map<string, string>, peer_snapshots: PeerSnapshot[] }} DecorationContext
  */
 
 /**
@@ -430,7 +429,7 @@ function attachCandidateDecorations(items, snapshot, root_dir) {
  * @param {string | undefined} root_dir
  * @returns {DecorationContext}
  */
-function createDecorationContext(snapshot, root_dir) {
+export function createDecorationContext(snapshot, root_dir) {
   const self_root =
     typeof root_dir === 'string' && root_dir.length > 0 ? root_dir : '';
   const self_resolved = self_root.length > 0 ? path.resolve(self_root) : '';
@@ -443,7 +442,7 @@ function createDecorationContext(snapshot, root_dir) {
   }
   /** @type {Map<string, string>} */
   const owner_by_prefix = new Map();
-  /** @type {WorkspaceSnapshot[]} */
+  /** @type {PeerSnapshot[]} */
   const peer_snapshots = [];
   for (const other_root of roots) {
     if (other_root === self_resolved) {
@@ -458,7 +457,7 @@ function createDecorationContext(snapshot, root_dir) {
     }
     const peer = peekWorkspaceSnapshot(other_root);
     if (peer !== null) {
-      peer_snapshots.push(peer);
+      peer_snapshots.push({ root_dir: other_root, snapshot: peer });
     }
   }
   return {
@@ -552,33 +551,66 @@ function foreignReleasedBlocker(blocker_id, context) {
 }
 
 /**
- * How many OPEN issues are waiting on this one (UI-d13v §3.5).
+ * Which OPEN issues are waiting on this one, and which rig owns each of them
+ * (UI-d13v §3.5, widened to the full set + owners by UI-8x90 §6.1).
  *
- * Counted across this generation plus the last snapshot every OTHER visible
+ * Collected across this generation plus the last snapshot every OTHER visible
  * workspace happened to have — peeked, never requested, because a follow-up
- * count is worth one refresh cycle of lag and not a fanout multiplied by the
+ * list is worth one refresh cycle of lag and not a fanout multiplied by the
  * number of open repos. A workspace with no snapshot yet contributes nothing
- * and says so nowhere: the count is a lower bound by construction.
+ * and says so nowhere: the set is a lower bound by construction.
  *
- * `count === 0` carries no key, so 0 and unknown are the same answer.
+ * The owner is the peer whose snapshot produced the id. A same-repo id gets no
+ * entry — the same meaning `release_info.released_by[].root_dir` carries, so a
+ * consumer reads "no entry" as "this rig" without a second rule.
+ *
+ * @param {string} issue_id
+ * @param {DecorationContext} context
+ * @returns {{ ids: string[], root_dirs: Record<string, string> }}
+ */
+export function openDependentsWithOwners(issue_id, context) {
+  /** @type {Set<string>} */
+  const own_ids = new Set();
+  collectOpenDependents(context.snapshot, issue_id, own_ids);
+  /** @type {Set<string>} */
+  const all_ids = new Set(own_ids);
+  /** @type {Record<string, string>} */
+  const root_dirs = {};
+  for (const peer of context.peer_snapshots) {
+    /** @type {Set<string>} */
+    const peer_ids = new Set();
+    collectOpenDependents(peer.snapshot, issue_id, peer_ids);
+    for (const peer_id of peer_ids) {
+      if (own_ids.has(peer_id)) {
+        continue;
+      }
+      all_ids.add(peer_id);
+      if (peer.root_dir.length > 0) {
+        root_dirs[peer_id] = peer.root_dir;
+      }
+    }
+  }
+  return { ids: [...all_ids].sort(), root_dirs };
+}
+
+/**
+ * `count === 0` carries no key, so 0 and unknown are the same answer; an empty
+ * `root_dirs` carries none either, for the same reason.
  *
  * @param {string} issue_id
  * @param {DecorationContext} context
  * @returns {DependentsInfo | null}
  */
 function dependentsInfoFor(issue_id, context) {
-  /** @type {Set<string>} */
-  const open_ids = new Set();
-  collectOpenDependents(context.snapshot, issue_id, open_ids);
-  for (const peer of context.peer_snapshots) {
-    collectOpenDependents(peer, issue_id, open_ids);
-  }
-  if (open_ids.size === 0) {
+  const { ids, root_dirs } = openDependentsWithOwners(issue_id, context);
+  if (ids.length === 0) {
     return null;
   }
+  const has_owners = Object.keys(root_dirs).length > 0;
   return {
-    count: open_ids.size,
-    ids: [...open_ids].sort().slice(0, DEPENDENTS_ID_LIMIT)
+    count: ids.length,
+    ids,
+    ...(has_owners ? { root_dirs } : {})
   };
 }
 
@@ -587,7 +619,7 @@ function dependentsInfoFor(issue_id, context) {
  * @param {string} issue_id
  * @param {Set<string>} out
  */
-function collectOpenDependents(snapshot, issue_id, out) {
+export function collectOpenDependents(snapshot, issue_id, out) {
   const waiter_ids = blocksIndexOf(snapshot, 'blocks_in').get(issue_id);
   if (!waiter_ids) {
     return;
@@ -643,8 +675,15 @@ function decorationRev(release_info, dependents_info) {
   /** @type {string[]} */
   const fields = [];
   if (dependents_info !== null) {
+    // The owners ride in the SAME field as the ids: a peer snapshot landing
+    // changes only `root_dirs`, and without it in the fingerprint the delta
+    // reads "unchanged" and the chip keeps its stale `openable` (UI-8x90 §6.1).
+    const owned = Object.entries(dependents_info.root_dirs ?? {})
+      .map(([id, owner_root]) => `${id}=${owner_root}`)
+      .sort()
+      .join(',');
     fields.push(
-      `dependents_info=${dependents_info.count}:${dependents_info.ids.join(',')}`
+      `dependents_info=${dependents_info.count}:${dependents_info.ids.join(',')}:${owned}`
     );
   }
   if (release_info !== null) {

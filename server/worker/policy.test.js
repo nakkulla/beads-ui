@@ -602,3 +602,31 @@ describe('worker/policy rec_* invariance (UI-sbum §6)', () => {
     expect(with_rec.stamped_keys).not.toContain('rec_orchestration_model');
   });
 });
+
+describe('worker/policy bead_dependents invariance (UI-8x90 §6.2)', () => {
+  test('resolves identical settings with and without the follow-up decoration', () => {
+    const bead = {
+      orchestration_model: 'sonnet',
+      impl_runtime: 'codex'
+    };
+
+    const without_dependents = resolveExecSettings({ bead, defaults: {} });
+    const with_dependents = resolveExecSettings({
+      bead: /** @type {any} */ ({
+        ...bead,
+        bead_dependents: {
+          'UI-1': { ids: ['UI-20'], root_dirs: { 'UI-20': '/repos/peer' } }
+        }
+      }),
+      defaults: /** @type {any} */ ({
+        bead_dependents: { 'UI-1': { ids: ['UI-21'] } }
+      })
+    });
+
+    expect(with_dependents).toEqual(without_dependents);
+    expect(/** @type {any} */ (with_dependents).bead_dependents).toBe(
+      undefined
+    );
+    expect(with_dependents.stamped_keys).not.toContain('bead_dependents');
+  });
+});

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   REC_LABEL,
   REC_REASONS,
+  REC_REASON_TEXT,
   recSettings,
   recTooltip
 } from './rec-settings.js';
@@ -160,7 +161,53 @@ describe('recSettings fail-quiet (UI-sbum §1)', () => {
   });
 });
 
-describe('recTooltip (UI-sbum §1)', () => {
+describe('REC_REASON_TEXT (UI-8x90 §4.6)', () => {
+  test('gives every contract signal a sentence', () => {
+    const missing = REC_REASONS.filter(
+      (reason) => (REC_REASON_TEXT[reason] || '').length === 0
+    );
+
+    expect(missing).toEqual([]);
+  });
+
+  test('names no signal outside the contract enum', () => {
+    expect(Object.keys(REC_REASON_TEXT).sort()).toEqual(
+      [...REC_REASONS].sort()
+    );
+  });
+
+  test('names neither a model nor a runtime in any sentence', () => {
+    const joined = Object.values(REC_REASON_TEXT).join(' ');
+
+    expect(joined).not.toContain('fable');
+    expect(joined).not.toContain('codex');
+  });
+});
+
+describe('recTooltip (UI-sbum §1, 문장은 UI-8x90 §4.6)', () => {
+  test('writes the reason sentences rather than the signal codes', () => {
+    const rec = recSettings({
+      rec_orchestration_model: 'fable',
+      rec_reason: 'multi_phase'
+    });
+
+    expect(recTooltip(rec)).toContain(
+      '사유: 여러 Phase 또는 병렬 쓰기 조정이 필요하다'
+    );
+    expect(recTooltip(rec)).not.toContain('multi_phase');
+  });
+
+  test('drops an unknown signal instead of naming it', () => {
+    const rec = recSettings({
+      rec_orchestration_model: 'fable',
+      rec_reason: 'multi_repo+wat'
+    });
+
+    expect(recTooltip(rec)).toBe(
+      '복잡한 작업으로 판정됨\n사유: 둘 이상의 저장소에 작업 단위가 생긴다\n상태: 미적용'
+    );
+  });
+
   test('names the judgement, the reasons, and the state', () => {
     const rec = recSettings(
       {
@@ -172,7 +219,7 @@ describe('recTooltip (UI-sbum §1)', () => {
     );
 
     expect(recTooltip(rec)).toBe(
-      '복잡한 작업으로 판정됨\n사유: contract_change, claude_bound\n상태: 미적용'
+      '복잡한 작업으로 판정됨\n사유: 계약 문서·checker·스킬 사본을 함께 바꿔야 한다 · Claude 세션 자산·의미론에 강하게 묶여 있다\n상태: 미적용'
     );
   });
 

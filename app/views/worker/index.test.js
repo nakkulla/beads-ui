@@ -449,7 +449,7 @@ describe('views/worker', () => {
       cand.querySelector('.worker-card[data-bead-id="BL-1"]')
     );
     expect(bl1.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ blocked: DEP-9'
+      '⛓ DEP-9'
     );
     expect(bl1.querySelector('.worker-card__reason')).toBeNull();
 
@@ -579,7 +579,7 @@ describe('views/worker', () => {
     const chips = Array.from(card.querySelectorAll('.worker-dep--pred'))
       .map((el) => el.textContent || '')
       .join(' ');
-    expect(chips).toContain('⛓ blocked: DEP-7');
+    expect(chips).toContain('⛓ DEP-7');
     expect(chips).not.toContain('DEP-OLD');
   });
 
@@ -11621,7 +11621,7 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
     const row = mountBlockedSerialHead();
 
     expect(row.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ blocked: UI-x'
+      '⛓ UI-x'
     );
   });
 
@@ -12301,10 +12301,10 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
       mount.querySelector('.worker-mini[data-bead-id="W-2"]')
     );
 
-    expect(w1.querySelector('.mon-overlap__chip')?.textContent).toContain(
+    expect(w1.querySelector('.worker-dep--overlap')?.textContent).toContain(
       'W-2'
     );
-    expect(w2.querySelector('.mon-overlap__chip')?.textContent).toContain(
+    expect(w2.querySelector('.worker-dep--overlap')?.textContent).toContain(
       'W-1'
     );
   });
@@ -12316,7 +12316,7 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
       mount.querySelector('.worker-mini[data-bead-id="S-1"]')
     );
 
-    expect(s1.querySelector('.mon-overlap__chip')).toBe(null);
+    expect(s1.querySelector('.worker-dep--overlap')).toBe(null);
   });
 
   test('draws nothing on an old snapshot without bead_scope', () => {
@@ -12325,7 +12325,7 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
       overlapQueue({ bead_scope: undefined })
     );
 
-    expect(mount.querySelector('.mon-overlap__chip')).toBe(null);
+    expect(mount.querySelector('.worker-dep--overlap')).toBe(null);
   });
 
   test('marks a declared-empty scope as 판정 불가 rather than 겹침 없음', () => {
@@ -12346,124 +12346,38 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
     );
   });
 
-  test('a chip click opens the popover with the counterpart and its paths', () => {
+  test('keeps the overlapping paths in the chip tooltip (UI-8x90 §4.2)', () => {
     const mount = mountWithOverlaps(vi.fn());
 
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="W-1"] .mon-overlap__chip')
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    const popover = /** @type {HTMLElement} */ (
+    const chip = /** @type {HTMLElement} */ (
       mount.querySelector(
-        '.worker-mini[data-bead-id="W-1"] .mon-overlap__popover'
+        '.worker-mini[data-bead-id="W-1"] .worker-dep--overlap'
       )
     );
-    expect(popover.querySelector('.mon-overlap__rid')?.textContent).toBe('W-2');
-    expect(popover.querySelector('.mon-overlap__paths')?.textContent).toContain(
-      'app/views/worker/lanes.js'
-    );
+
+    expect(chip.title).toContain('겹침 · ');
+    expect(chip.title).toContain('app/views/worker/lanes.js');
   });
 
-  test('Escape closes an open popover', () => {
-    const mount = mountWithOverlaps(vi.fn());
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="W-1"] .mon-overlap__chip')
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-
-    expect(mount.querySelector('.mon-overlap__popover')).toBe(null);
-  });
-
-  test('1클릭 배치 sends two ops into the first empty serial lane, the second at the returned revision', async () => {
-    const transport = vi
-      .fn()
-      .mockResolvedValueOnce(reply(queueOf({ revision: 4 })))
-      .mockResolvedValueOnce(reply(queueOf({ revision: 5 })));
-    const mount = mountWithOverlaps(transport);
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="W-1"] .mon-overlap__chip')
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    /** @type {HTMLElement} */ (
-      mount.querySelector(
-        '.worker-mini[data-bead-id="W-1"] .mon-overlap__place'
-      )
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledTimes(2);
-    expect(transport.mock.calls[0][1]).toEqual({
-      bead_id: 'W-2',
-      lane: 's2',
-      index: 0,
-      expected_revision: 3
+  test('opens the counterpart issue on a 겹침 chip click (UI-8x90 §4.3)', () => {
+    const gotoIssue = vi.fn();
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn(),
+      gotoIssue
     });
-    expect(transport.mock.calls[1][1]).toEqual({
-      bead_id: 'W-1',
-      lane: 's2',
-      index: 1,
-      expected_revision: 4
-    });
-  });
-
-  test('a CAS conflict stops after the first op without retrying', async () => {
-    const transport = vi.fn().mockResolvedValue({
-      applied: false,
-      conflict: true,
-      queue: queueOf({ revision: 9 })
-    });
-    const mount = mountWithOverlaps(transport);
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="W-1"] .mon-overlap__chip')
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    queueStore.set(overlapQueue());
 
     /** @type {HTMLElement} */ (
       mount.querySelector(
-        '.worker-mini[data-bead-id="W-1"] .mon-overlap__place'
+        '.worker-mini[data-bead-id="W-1"] .worker-dep--overlap'
       )
     ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
 
-    expect(transport).toHaveBeenCalledTimes(1);
-  });
-
-  test('an unapplied reply stops the chain', async () => {
-    const transport = vi
-      .fn()
-      .mockResolvedValue({ applied: false, admission_reason: 'not_ready' });
-    const mount = mountWithOverlaps(transport);
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="W-1"] .mon-overlap__chip')
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    /** @type {HTMLElement} */ (
-      mount.querySelector(
-        '.worker-mini[data-bead-id="W-1"] .mon-overlap__place'
-      )
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledTimes(1);
-  });
-
-  test('a reply without a numeric revision stops the chain', async () => {
-    const transport = vi
-      .fn()
-      .mockResolvedValue({ applied: true, queue: queueOf({ revision: null }) });
-    const mount = mountWithOverlaps(transport);
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="W-1"] .mon-overlap__chip')
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    /** @type {HTMLElement} */ (
-      mount.querySelector(
-        '.worker-mini[data-bead-id="W-1"] .mon-overlap__place'
-      )
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledTimes(1);
+    expect(gotoIssue).toHaveBeenCalledWith('W-2');
   });
 
   test('draws the 겹침 chip on a running tile and scope 없음 there too', () => {
@@ -12500,7 +12414,7 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
     expect(tile.querySelector('.worker-dep--muted')?.textContent).toContain(
       'scope 없음'
     );
-    expect(s1.querySelector('.mon-overlap__chip')?.textContent).toContain(
+    expect(s1.querySelector('.worker-dep--overlap')?.textContent).toContain(
       'W-2'
     );
   });
@@ -12526,36 +12440,9 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
       mount.querySelector('.rtile[data-bead-id="W-1"]')
     );
 
-    expect(tile.querySelector('.mon-overlap__chip')?.textContent).toContain(
+    expect(tile.querySelector('.worker-dep--overlap')?.textContent).toContain(
       'W-2'
     );
-  });
-
-  test('a chip on a running tile offers moving the counterpart, not the runner', () => {
-    const mount = mountWithOverlaps(
-      vi.fn(),
-      overlapQueue({
-        attempts: {
-          'att-1': {
-            attempt_id: 'att-1',
-            bead_id: 'W-1',
-            status: 'running',
-            runner: 'claude',
-            started_at: Date.now(),
-            session_id: 'sid-1'
-          }
-        }
-      })
-    );
-
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile[data-bead-id="W-1"] .mon-overlap__chip')
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    const note = mount.querySelector(
-      '.rtile[data-bead-id="W-1"] .mon-overlap__note'
-    );
-    expect(note?.textContent).toContain('실행 중');
   });
 
   test('draws the 겹침 chip on a 후보 card colliding with a waiting row', () => {
@@ -12579,50 +12466,12 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
       mount.querySelector('.worker-mini[data-bead-id="W-1"]')
     );
 
-    expect(rd1.querySelector('.mon-overlap__chip')?.textContent).toContain(
+    expect(rd1.querySelector('.worker-dep--overlap')?.textContent).toContain(
       'W-1'
     );
     expect(
-      w1.querySelector('.mon-overlap__chip')?.getAttribute('aria-label')
+      w1.querySelector('.worker-dep--overlap')?.getAttribute('title')
     ).toContain('후보');
-  });
-
-  test('a 후보 chip offers placing the candidate into the counterpart serial lane', async () => {
-    const transport = vi
-      .fn()
-      .mockResolvedValue(reply(queueOf({ revision: 4 })));
-    const mount = mountWithOverlaps(
-      transport,
-      overlapQueue({
-        bead_scope: {
-          'S-1': { scope: ['app/views/worker'], artifacts: ['s1.md'] },
-          'RD-1': {
-            scope: ['app/views/worker/lanes.js'],
-            artifacts: ['rd1.md']
-          }
-        }
-      })
-    );
-    /** @type {HTMLElement} */ (
-      mount.querySelector(
-        '.worker-card[data-bead-id="RD-1"] .mon-overlap__chip'
-      )
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    /** @type {HTMLElement} */ (
-      mount.querySelector(
-        '.worker-card[data-bead-id="RD-1"] .mon-overlap__place'
-      )
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledTimes(1);
-    expect(transport.mock.calls[0][1]).toEqual({
-      bead_id: 'RD-1',
-      lane: 's1',
-      index: 1,
-      expected_revision: 3
-    });
   });
 
   test('draws no 겹침 chip on a 후보 card the filter hides', () => {
@@ -12645,7 +12494,7 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
     );
 
     expect(mount.querySelector('.worker-card[data-bead-id="BL-1"]')).toBe(null);
-    expect(w1.querySelector('.mon-overlap__chip')).toBe(null);
+    expect(w1.querySelector('.worker-dep--overlap')).toBe(null);
   });
 });
 
@@ -12703,7 +12552,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.worker-mini[data-bead-id="W-1"]')
     );
     expect(row.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ blocked: UI-x'
+      '⛓ UI-x'
     );
   });
 
@@ -12715,7 +12564,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.worker-card[data-bead-id="BL-1"]')
     );
     expect(card.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ blocked: DEP-9'
+      '⛓ DEP-9'
     );
   });
 
@@ -12738,7 +12587,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.rtile[data-bead-id="SS-1"]')
     );
     expect(tile.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ blocked: UI-x'
+      '⛓ UI-x'
     );
   });
 
@@ -12767,7 +12616,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.worker-mini[data-bead-id="W-1"]')
     );
     expect(row.querySelector('.worker-dep--pred')?.getAttribute('title')).toBe(
-      '이 이슈는 W-0가 close될 때까지 출발하지 않는다 (#1)'
+      '선행 — close될 때까지 출발하지 않는다 (#1)'
     );
   });
 
@@ -12794,7 +12643,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.worker-mini[data-bead-id="W-1"]')
     );
     expect(row.querySelector('.worker-dep--pred')?.getAttribute('title')).toBe(
-      '이 이슈는 W-0가 close될 때까지 출발하지 않는다 (PR 대기)'
+      '선행 — close될 때까지 출발하지 않는다 (PR 대기)'
     );
   });
 
@@ -12810,7 +12659,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.worker-mini[data-bead-id="W-1"]')
     );
     expect(row.querySelector('.worker-dep--pred')?.getAttribute('title')).toBe(
-      '이 이슈는 W-9가 close될 때까지 출발하지 않는다 (미적재)'
+      '선행 — close될 때까지 출발하지 않는다 (미적재)'
     );
   });
 
@@ -12841,7 +12690,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.rtile[data-bead-id="W-1"]')
     );
     expect(tile.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ blocked: UI-x'
+      '⛓ UI-x'
     );
   });
 
@@ -12879,9 +12728,9 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       )
     );
     expect(row.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ blocked: UI-x'
+      '⛓ UI-x'
     );
-    expect(row.querySelector('.mon-overlap__chip')?.textContent).toContain(
+    expect(row.querySelector('.worker-dep--overlap')?.textContent).toContain(
       'W-1'
     );
   });
@@ -12920,7 +12769,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('#worker-pane-queue .worker-mini[data-bead-id="W-1"]')
     );
     expect(
-      row.querySelector('.mon-overlap__chip')?.getAttribute('aria-label')
+      row.querySelector('.worker-dep--overlap')?.getAttribute('title')
     ).toContain('PR 대기');
   });
 
@@ -12938,6 +12787,102 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.rtile[data-bead-id="W-1"]')
     );
     expect(tile.querySelector('.worker-deps')).not.toBeNull();
+  });
+});
+
+describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * One candidate carrying the `복잡` judgement.
+   *
+   * @param {{ gotoIssue?: any }} [handlers]
+   * @returns {HTMLElement}
+   */
+  function mountJudgement(handlers = {}) {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'REC-1',
+        title: '복잡 후보',
+        status: 'open',
+        created_at: 100,
+        spec_id: 'S',
+        metadata: {
+          spec_review: RECEIPT,
+          rec_orchestration_model: 'fable',
+          rec_reason: 'multi_repo'
+        }
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn(),
+      ...handlers
+    });
+    return mount;
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {HTMLElement}
+   */
+  function recChip(mount) {
+    return /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="REC-1"] .judgement-chip')
+    );
+  }
+
+  test('opens the 사유 popup on a judgement chip click', () => {
+    const mount = mountJudgement();
+
+    recChip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.chip-popover')?.getAttribute('role')).toBe(
+      'dialog'
+    );
+  });
+
+  test('names the 사유 sentence in the popup body (UI-8x90 §4.6)', () => {
+    const mount = mountJudgement();
+
+    recChip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.chip-popover')?.textContent).toContain(
+      '둘 이상의 저장소에 작업 단위가 생긴다'
+    );
+  });
+
+  test('does not open the issue detail on that click', () => {
+    const gotoIssue = vi.fn();
+    const mount = mountJudgement({ gotoIssue });
+
+    recChip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(gotoIssue).not.toHaveBeenCalled();
+  });
+
+  test('closes the popup on a second click of the same chip', () => {
+    const mount = mountJudgement();
+    recChip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    recChip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.chip-popover')).toBeNull();
+  });
+
+  test('closes the popup on Escape', () => {
+    const mount = mountJudgement();
+    recChip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(mount.querySelector('.chip-popover')).toBeNull();
   });
 });
 
@@ -12979,6 +12924,25 @@ describe('worker 탭 blocked 칩 열기 (UI-u6zf §5)', () => {
       `.worker-mini[data-bead-id="${bead_id}"] .worker-dep__open`
     );
   }
+
+  test('opens a 후속 issue from the same button (UI-8x90 §4.3)', () => {
+    const gotoIssue = vi.fn();
+    const mount = mountWithHandlers(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }],
+        bead_dependents: { 'W-1': { ids: ['W-8'] } }
+      }),
+      { gotoIssue }
+    );
+
+    /** @type {HTMLElement|null} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="W-1"] .worker-dep--dependents'
+      )
+    )?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(gotoIssue.mock.calls).toEqual([['W-8']]);
+  });
 
   test('draws an open button on a same-repo blocker', () => {
     const mount = mountWithHandlers(
@@ -13067,7 +13031,7 @@ describe('worker 탭 blocked 칩 열기 (UI-u6zf §5)', () => {
     expect(
       mount.querySelector('.worker-mini[data-bead-id="W-1"] .worker-dep--pred')
         ?.textContent
-    ).toContain('⛓ blocked: UI-x');
+    ).toContain('⛓ UI-x');
   });
 
   test('never opens the card own issue on a chip click', () => {
@@ -13954,7 +13918,9 @@ describe('복잡 chip projection on the worker tab (UI-sbum §3)', () => {
     );
 
     expect(chip.textContent?.trim()).toBe('복잡');
-    expect(chip.title).toContain('사유: contract_change');
+    expect(chip.title).toContain(
+      '사유: 계약 문서·checker·스킬 사본을 함께 바꿔야 한다'
+    );
     expect(chip.dataset.state).toBe('unapplied');
   });
 
@@ -14287,7 +14253,7 @@ describe('해제·후속 칩과 대기 행 ✕ (UI-d13v §5·§6)', () => {
       }
     });
 
-    expect(releasedLabels(mount)).toEqual(['🔓 해제: RD-9']);
+    expect(releasedLabels(mount)).toEqual(['🔓 RD-9']);
   });
 
   test('drops a release chip for a blocker closed before the window', () => {
@@ -14303,7 +14269,7 @@ describe('해제·후속 칩과 대기 행 ✕ (UI-d13v §5·§6)', () => {
     expect(releasedLabels(mount)).toEqual([]);
   });
 
-  test('keeps at most two release chips and counts the rest on the last one', () => {
+  test('draws every release chip inside the window without folding', () => {
     const now = Date.now();
 
     const mount = mountDecorated({
@@ -14317,23 +14283,19 @@ describe('해제·후속 칩과 대기 행 ✕ (UI-d13v §5·§6)', () => {
       }
     });
 
-    expect(releasedLabels(mount)).toEqual([
-      '🔓 해제: RD-9',
-      '🔓 해제: RD-8 외 1'
-    ]);
+    expect(releasedLabels(mount)).toEqual(['🔓 RD-9', '🔓 RD-8', '🔓 RD-7']);
   });
 
-  test('draws the dependents chip from the server count', () => {
+  test('draws one dependents chip per id the server listed', () => {
     const mount = mountDecorated({
-      dependents_info: { count: 3, ids: ['RD-2', 'RD-3'] }
+      dependents_info: { count: 2, ids: ['RD-3', 'RD-2'] }
     });
 
-    const chip = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-dep--dependents')
-    );
-
-    expect(chip.textContent?.replace(/\s+/g, ' ').trim()).toBe('→ 후속 3');
-    expect(chip.title).toBe('이 이슈가 close되면 풀리는 이슈: RD-2, RD-3 외 1');
+    expect(
+      Array.from(mount.querySelectorAll('.worker-dep--dependents'), (el) =>
+        (el.textContent || '').replace(/\s+/g, ' ').trim()
+      )
+    ).toEqual(['→ RD-2', '→ RD-3']);
   });
 
   test('draws neither chip when the server sends no decoration', () => {
@@ -14343,7 +14305,7 @@ describe('해제·후속 칩과 대기 행 ✕ (UI-d13v §5·§6)', () => {
     expect(mount.querySelector('.worker-dep--dependents')).toBeNull();
   });
 
-  test('leaves the two chips off a waiting row', () => {
+  test('leaves the release chip off a waiting row', () => {
     const closed_at = Date.now() - DAY;
 
     const mount = mountDecorated(
@@ -14351,8 +14313,7 @@ describe('해제·후속 칩과 대기 행 ✕ (UI-d13v §5·§6)', () => {
         release_info: {
           released_by: [{ id: 'RD-9', closed_at }],
           last_released_at: closed_at
-        },
-        dependents_info: { count: 2, ids: ['RD-2'] }
+        }
       },
       { queue: [{ bead_id: 'RD-1', added_at: 1 }] }
     );
@@ -14364,7 +14325,26 @@ describe('해제·후속 칩과 대기 행 ✕ (UI-d13v §5·§6)', () => {
     );
 
     expect(row.querySelector('.worker-dep--released')).toBeNull();
-    expect(row.querySelector('.worker-dep--dependents')).toBeNull();
+  });
+
+  test('carries the dependents chip onto a waiting row (UI-8x90 §4.4)', () => {
+    const mount = mountDecorated(
+      {},
+      {
+        queue: [{ bead_id: 'RD-1', added_at: 1 }],
+        bead_dependents: { 'RD-1': { ids: ['RD-2'] } }
+      }
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-queue .worker-mini[data-bead-id="RD-1"]'
+      )
+    );
+
+    expect(
+      row.querySelector('.worker-dep--dependents')?.textContent?.trim()
+    ).toBe('→ RD-2');
   });
 
   test('renders the remove button on a waiting row', () => {
