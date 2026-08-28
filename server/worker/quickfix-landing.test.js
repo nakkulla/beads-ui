@@ -61,6 +61,7 @@ afterEach(() => {
  *   acceptSkippedReceipt?: boolean,
  *   resolveWriteSticks?: boolean,
  *   readIssueThrows?: boolean,
+ *   readMetadataThrows?: boolean,
  *   foreign?: {
  *     pins: Record<string, string>,
  *     remotes?: Record<string, string>,
@@ -210,6 +211,10 @@ function makeLanding(options = {}) {
       bead_status = status;
     }),
     readMetadata: vi.fn(async (bead_id, key) => {
+      if (options.readMetadataThrows && key === 'impl_review') {
+        calls.push('bd:readMetadata:threw');
+        throw new Error('bd unreachable');
+      }
       calls.push(`bd:readMetadata:${key}`);
       if (key === 'impl_review') {
         return receipt ?? null;
@@ -387,6 +392,36 @@ test('rejects absent review receipt', async () => {
     reason: 'invalid_impl_review',
     step: null
   });
+});
+
+test('records an impl_review read outage as bd_read_failed, not as a malformed receipt', async () => {
+  const { landing, store, calls } = makeLanding({ readMetadataThrows: true });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: false, reason: 'bd_read_failed', step: null });
+  expect(calls).toContain('store:update:null:bd_read_failed');
+  expect(store.updateAttempt).toHaveBeenCalledWith(WORKSPACE, {
+    attempt_id: ATTEMPT,
+    patch: {
+      quickfix_landing: {
+        cursor: null,
+        head_sha: null,
+        reason: 'bd_read_failed'
+      }
+    }
+  });
+});
+
+test('records an impl_review read outage on the evidence path as bd_read_failed', async () => {
+  const { landing } = makeLanding({
+    status: 'in_progress',
+    readMetadataThrows: true
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: false, reason: 'bd_read_failed', step: null });
 });
 
 test('accepts a skipped review receipt once the contract flag is on', async () => {

@@ -1970,3 +1970,136 @@ describe('worker 실패 팝오버의 §6 재료 (UI-5ym8 §8)', () => {
     ).not.toContain('자동 재시도');
   });
 });
+
+describe('worker failed tile resume button (UI-8h1x §3.3a)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * Render one failed quick_fix tile and hand back its resume button.
+   *
+   * @param {{ reason: string|null, resume_eligible?: boolean, resume_reason?: string|null }} landing
+   * @returns {HTMLButtonElement}
+   */
+  function renderResumeButton(landing) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-8h1x',
+          attempt_id: 'attempt-1',
+          title: 'landing failed',
+          runner: 'claude',
+          model: 'opus',
+          started_at: null,
+          failed: true,
+          status: 'failed',
+          status_label: '실패',
+          failure: {
+            cause: `quickfix_landing_failed:${landing.reason}`,
+            cause_detail: null,
+            finished_at: 4000,
+            runner: 'claude',
+            model: 'opus',
+            effort: 'high',
+            observed_effort: null,
+            speed: 'default',
+            attempt_id: 'attempt-1',
+            usage: null,
+            halted_auto_advance: false,
+            quickfix_lane: true,
+            quickfix_landing: {
+              cursor: 'base_containment',
+              reason: landing.reason
+            },
+            resume_eligible: landing.resume_eligible !== false,
+            resume_reason: landing.resume_reason ?? null,
+            landed: false,
+            confirmation: 'unmerged'
+          }
+        }
+      ]),
+      mount
+    );
+
+    return /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile__resume')
+    );
+  }
+
+  test('labels a settlement-natured failure as a settlement re-run', () => {
+    const resume = renderResumeButton({ reason: 'containment_unobservable' });
+
+    expect(resume.textContent?.trim()).toBe('↻ 정산 재개');
+    expect(resume.getAttribute('aria-label')).toBe('정산 재개');
+    expect(resume.title).toBe('착지 정산을 다시 실행');
+  });
+
+  test('labels a session-natured failure as a session continuation', () => {
+    const resume = renderResumeButton({ reason: 'push_not_contained' });
+
+    expect(resume.textContent?.trim()).toBe('↻ 이어하기');
+    expect(resume.getAttribute('aria-label')).toBe('이어하기');
+    expect(resume.title).toBe('같은 세션으로 이어서 진행');
+  });
+
+  test('labels a coordinator code the reason union does not name as settlement', () => {
+    const resume = renderResumeButton({
+      reason: 'remote_history_not_monotonic'
+    });
+
+    expect(resume.textContent?.trim()).toBe('↻ 정산 재개');
+    expect(resume.getAttribute('aria-label')).toBe('정산 재개');
+  });
+
+  test('carries the resume kind for the click delegation to read', () => {
+    const settlement = renderResumeButton({
+      reason: 'containment_unobservable'
+    });
+
+    expect(settlement.dataset.resumeKind).toBe('settlement');
+
+    const session = renderResumeButton({ reason: 'head_mismatch' });
+
+    expect(session.dataset.resumeKind).toBe('session');
+  });
+
+  test('follows the label in the disabled fallback title', () => {
+    const resume = renderResumeButton({
+      reason: 'containment_unobservable',
+      resume_eligible: false,
+      resume_reason: null
+    });
+
+    expect(resume.disabled).toBe(true);
+    expect(resume.title).toBe('정산 재개 불가');
+  });
+
+  test('keeps a recorded refusal reason as the disabled title', () => {
+    const resume = renderResumeButton({
+      reason: 'containment_unobservable',
+      resume_eligible: false,
+      resume_reason:
+        '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
+    });
+
+    expect(resume.title).toBe(
+      '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
+    );
+  });
+
+  test('keeps the class and the tile position unchanged across both kinds', () => {
+    const settlement = renderResumeButton({
+      reason: 'containment_unobservable'
+    });
+
+    expect(settlement.className).toBe('rtile__resume');
+    expect(settlement.closest('.rtile__hd-actions')).not.toBeNull();
+
+    const session = renderResumeButton({ reason: 'push_not_contained' });
+
+    expect(session.className).toBe('rtile__resume');
+    expect(session.closest('.rtile__hd-actions')).not.toBeNull();
+  });
+});

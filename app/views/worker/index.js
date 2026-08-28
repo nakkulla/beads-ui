@@ -1828,9 +1828,13 @@ export function createWorkerView(mount_element, options = {}) {
    * authoritative queue a conflict reply carries, and retry ONCE against the
    * fresh revision. A refusal surfaces its admission-badge reason as a toast.
    *
+   * `resume_kind`는 실패 타일이 누른 버튼의 종류이며(UI-8h1x §3.3c), 거부 토스트
+   * 문구가 그 버튼 라벨을 따르게 하는 데에만 쓰인다.
+   *
    * @param {string} attempt_id
+   * @param {'settlement'|'session'} [resume_kind]
    */
-  async function resumeAttempt(attempt_id) {
+  async function resumeAttempt(attempt_id, resume_kind = 'session') {
     if (!transport || !attempt_id) {
       return;
     }
@@ -1863,7 +1867,9 @@ export function createWorkerView(mount_element, options = {}) {
       }
     );
     if (res && res.resumed === false && !res.conflict && res.reason) {
-      showToast(`이어하기 거부: ${res.reason}`, 'error', 2400);
+      const refusal_label =
+        resume_kind === 'settlement' ? '정산 재개' : '이어하기';
+      showToast(`${refusal_label} 거부: ${res.reason}`, 'error', 2400);
     }
   }
 
@@ -4439,12 +4445,20 @@ export function createWorkerView(mount_element, options = {}) {
       return;
     }
     if (target?.closest?.('.rtile__resume')) {
+      const resume_button = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile__resume')
+      );
       const tile = /** @type {HTMLElement|null} */ (
         target?.closest?.('.rtile')
       );
       const att = tile?.dataset?.attemptId;
       if (att) {
-        void resumeAttempt(att);
+        void resumeAttempt(
+          att,
+          resume_button?.dataset?.resumeKind === 'settlement'
+            ? 'settlement'
+            : 'session'
+        );
       }
       return;
     }

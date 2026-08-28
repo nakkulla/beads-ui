@@ -4432,3 +4432,91 @@ describe('lane model as_given candidate order (UI-4tud §4.3)', () => {
     expect(lanes.runnable.map((row) => row.id)).toEqual(['A-1', 'A-2']);
   });
 });
+
+describe('quick_fix 착지 재개 자격 (UI-8h1x §3.3b)', () => {
+  /**
+   * One failed quick_fix landing attempt that never recorded a session id.
+   *
+   * @param {string} reason
+   */
+  function sessionlessLandingFailure(reason) {
+    return {
+      t1: {
+        attempt_id: 't1',
+        bead_id: 'A-1',
+        status: 'failed',
+        finished_at: 123,
+        cause: `quickfix_landing_failed:${reason}`,
+        quickfix_lane: true,
+        quickfix_landing: {
+          cursor: 'base_containment',
+          head_sha: 'a'.repeat(40),
+          reason
+        }
+      }
+    };
+  }
+
+  test('resumes a settlement-natured failure that carries no session id', () => {
+    const map = activeByBead(
+      sessionlessLandingFailure('containment_unobservable'),
+      new Map()
+    );
+
+    expect(map.get('A-1')?.failure?.resume_eligible).toBe(true);
+    expect(map.get('A-1')?.failure?.resume_reason).toBeNull();
+  });
+
+  test('refuses a session-natured failure that carries no session id', () => {
+    const map = activeByBead(
+      sessionlessLandingFailure('push_not_contained'),
+      new Map()
+    );
+
+    expect(map.get('A-1')?.failure?.resume_eligible).toBe(false);
+    expect(map.get('A-1')?.failure?.resume_reason).toBe(
+      'session_id 없는 구 attempt — 이어하기 불가'
+    );
+  });
+
+  test('keeps refusing an already-resumed settlement failure', () => {
+    const attempts = sessionlessLandingFailure('containment_unobservable');
+
+    const map = activeByBead(
+      {
+        ...attempts,
+        t2: {
+          attempt_id: 't2',
+          bead_id: 'A-1',
+          status: 'failed',
+          finished_at: 456,
+          resumed_from: 't1'
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.failure?.attempt_id).toBe('t2');
+    expect(map.get('A-1')?.failure?.resume_eligible).toBe(false);
+  });
+
+  test('leaves an ordinary failure without a landing record on the session rule', () => {
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'failed',
+          finished_at: 123,
+          cause: 'session_failed:is_error'
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.failure?.resume_eligible).toBe(false);
+    expect(map.get('A-1')?.failure?.resume_reason).toBe(
+      'session_id 없는 구 attempt — 이어하기 불가'
+    );
+  });
+});
