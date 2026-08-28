@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { activeAttemptStates } from '../../app/utils/active-attempts.js';
 import { ensureDelegationMonitorDir } from './delegation-monitor.js';
 import {
   GUARD_WARNINGS_CAP,
@@ -4749,7 +4750,8 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
   });
 
   test('pairs every queue-entry creation point with a zero rebase budget', () => {
-    // The two budgets are written together at eight literal sites (spec §3.2).
+    // The two budgets are written together at seven literal sites (spec §3.2;
+    // the automatic-review enrolment site left with UI-d7fy §3.4).
     // Normalization and consumption both floor a missed one, so this is about
     // the third guarantee: no creation point drifts apart from the others.
     const source = fs.readFileSync(
@@ -4761,8 +4763,8 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
       /resolution_rounds: 0,\n\s*rebase_rounds: 0,/g
     );
 
-    expect(source.match(/resolution_rounds: 0,/g)).toHaveLength(8);
-    expect(created).toHaveLength(8);
+    expect(source.match(/resolution_rounds: 0,/g)).toHaveLength(7);
+    expect(created).toHaveLength(7);
   });
 });
 
@@ -5028,8 +5030,7 @@ describe('worker/queue-store — manual merge continuation authority', () => {
         granted_at: 123,
         requested_head_sha: 'a'.repeat(40),
         target_base: 'main'
-      },
-      head_review: null
+      }
     });
   });
 
@@ -5119,7 +5120,7 @@ describe('worker/queue-store — manual merge continuation authority', () => {
     expect(store.snapshot(WS).merge_queue[0].authority?.source).toBe('manual');
   });
 
-  test('CAS rejects a late review result from a cancelled authority', () => {
+  test('settles a running review session in the cancel write itself', () => {
     const store = manualStore();
     store.enqueueMergeManual(WS, {
       expected_revision: store.snapshot(WS).revision,
@@ -5131,28 +5132,31 @@ describe('worker/queue-store — manual merge continuation authority', () => {
         }
       ]
     });
-    store.beginHeadReview(WS, {
-      bead_id: 'UI-1',
-      authority_id: 'authority-1',
-      head_sha: 'b'.repeat(40),
-      reviewer: 'codex',
-      effort: 'xhigh'
+    store.upsertReviewSessionAttempt(WS, {
+      attempt_id: 'review:1',
+      patch: {
+        bead_id: 'UI-1',
+        kind: 'review_session',
+        status: 'running',
+        authority_id: 'authority-1',
+        head_sha: 'a'.repeat(40)
+      }
     });
-    store.cancelMerge(WS, {
+
+    const cancelled = store.cancelMerge(WS, {
       expected_revision: store.snapshot(WS).revision,
       bead_id: 'UI-1'
     });
 
-    const late = store.setHeadReviewState(WS, {
-      bead_id: 'UI-1',
-      authority_id: 'authority-1',
-      head_sha: 'b'.repeat(40),
-      expected_state: 'pending',
-      patch: { state: 'failed', failure_reason: 'late' }
-    });
-
-    expect(late.ok).toBe(false);
+    // One write commits the authority reclaim AND the attempt terminal
+    // (UI-d7fy §5.6); the process stop is the caller's, afterwards.
+    expect(cancelled.ok).toBe(true);
+    expect(cancelled.cancelled_attempt_ids).toEqual(['review:1']);
     expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(store.snapshot(WS).attempts['review:1']).toMatchObject({
+      status: 'failed',
+      cause: 'cancelled'
+    });
   });
 
   test('records automatic source when the auto enroller queues a row', () => {
@@ -5196,27 +5200,19 @@ describe('worker/queue-store — manual merge continuation authority', () => {
     expect(store.snapshot(WS).merge_queue[0].authority?.id).toBe('authority-1');
   });
 
-  test('issues a new authority on re-click after a failed review', () => {
+  test('drops the gate hold when a click issues a fresh authority', () => {
     const store = manualStore();
-    store.enqueueMergeManual(WS, {
+    store.enqueueMergeAuto(WS, {
       expected_revision: store.snapshot(WS).revision,
       entries: [
         { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
-      ]
+      ],
+      present_ids: ['UI-1']
     });
-    store.beginHeadReview(WS, {
+    store.setMergeHold(WS, {
       bead_id: 'UI-1',
-      authority_id: 'authority-1',
-      head_sha: 'b'.repeat(40),
-      reviewer: 'codex',
-      effort: 'xhigh'
-    });
-    store.setHeadReviewState(WS, {
-      bead_id: 'UI-1',
-      authority_id: 'authority-1',
-      head_sha: 'b'.repeat(40),
-      expected_state: 'pending',
-      patch: { state: 'failed', failure_reason: 'transport_unavailable' }
+      hold: { reason: 'review_receipt_missing', head_sha: 'a'.repeat(40) },
+      at: 5
     });
 
     const reclick = store.enqueueMergeManual(WS, {
@@ -5225,24 +5221,12 @@ describe('worker/queue-store — manual merge continuation authority', () => {
         { bead_id: 'UI-1', head_sha: 'c'.repeat(40), target_base: 'main' }
       ]
     });
-    const late = store.setHeadReviewState(WS, {
-      bead_id: 'UI-1',
-      authority_id: 'authority-1',
-      head_sha: 'b'.repeat(40),
-      expected_state: 'failed',
-      patch: { state: 'approved' }
-    });
 
     expect(reclick.ok).toBe(true);
-    expect(late.ok).toBe(false);
     expect(store.snapshot(WS).merge_queue[0]).toMatchObject({
-      authority: {
-        id: 'authority-2',
-        source: 'manual',
-        requested_head_sha: 'c'.repeat(40)
-      },
-      head_review: null
+      authority: { source: 'manual', requested_head_sha: 'c'.repeat(40) }
     });
+    expect(store.snapshot(WS).merge_queue[0].hold).toBeUndefined();
   });
 
   test('attaches a fresh manual authority to a legacy authority-less entry', () => {
@@ -5265,7 +5249,174 @@ describe('worker/queue-store — manual merge continuation authority', () => {
     expect(store.snapshot(WS).merge_queue[0].authority?.source).toBe('manual');
   });
 
-  test('persists authority and head review across a cold reload', () => {
+  test('commits the review-session attempt in the authority write itself', () => {
+    const store = manualStore();
+    const before = store.snapshot(WS).revision;
+
+    const clicked = store.enqueueMergeManual(WS, {
+      expected_revision: before,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:1', session_source: 'resume' }
+    });
+
+    // ONE write (UI-d7fy §5.2): the authority and the attempt are one decision.
+    expect(clicked.ok).toBe(true);
+    expect(clicked.review_session_registered).toBe(true);
+    expect(store.snapshot(WS).revision).toBe(before + 1);
+    expect(store.snapshot(WS).attempts['review:1']).toMatchObject({
+      bead_id: 'UI-1',
+      kind: 'review_session',
+      origin: 'click',
+      status: 'pending',
+      authority_id: 'authority-1',
+      head_sha: 'a'.repeat(40),
+      continuation_mode: 'session'
+    });
+  });
+
+  test('registers no attempt when a review session is already in flight', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:1', session_source: 'resume' }
+    });
+
+    const again = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:2', session_source: 'fresh' }
+    });
+
+    expect(again.review_session_registered).toBe(false);
+    expect(store.snapshot(WS).attempts['review:2']).toBeUndefined();
+    expect(store.snapshot(WS).merge_queue[0].authority?.id).toBe('authority-1');
+  });
+
+  test("mints a fresh authority when this bead's last review session failed", () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:1', session_source: 'resume' }
+    });
+    store.settleReviewSession(WS, {
+      attempt_id: 'review:1',
+      outcome: 'failed',
+      cause: 'receipt_not_current',
+      hold_reason: 'review_receipt_stale',
+      at: 300
+    });
+
+    const reclick = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'c'.repeat(40), target_base: 'main' }
+      ]
+    });
+
+    expect(reclick.ok).toBe(true);
+    expect(store.snapshot(WS).merge_queue[0].authority).toMatchObject({
+      id: 'authority-2',
+      source: 'manual',
+      requested_head_sha: 'c'.repeat(40)
+    });
+  });
+
+  test('reuses the authority after a review session that succeeded', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:1', session_source: 'resume' }
+    });
+    store.settleReviewSession(WS, {
+      attempt_id: 'review:1',
+      outcome: 'current',
+      final_head_sha: 'a'.repeat(40),
+      at: 300
+    });
+
+    const reclick = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ]
+    });
+
+    expect(reclick.ok).toBe(false);
+    expect(store.snapshot(WS).merge_queue[0].authority?.id).toBe('authority-1');
+  });
+
+  test('rebinds the authority to the final head when the receipt is current', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:1', session_source: 'resume' }
+    });
+    store.setMergeHold(WS, {
+      bead_id: 'UI-1',
+      hold: { reason: 'review_receipt_missing', head_sha: 'a'.repeat(40) },
+      at: 5
+    });
+
+    const settled = store.settleReviewSession(WS, {
+      attempt_id: 'review:1',
+      outcome: 'current',
+      final_head_sha: 'b'.repeat(40),
+      at: 900
+    });
+
+    expect(settled.ok).toBe(true);
+    expect(store.snapshot(WS).attempts['review:1']).toMatchObject({
+      status: 'done',
+      finished_at: 900
+    });
+    expect(store.snapshot(WS).merge_queue[0]).toMatchObject({
+      authority: { id: 'authority-1', requested_head_sha: 'b'.repeat(40) }
+    });
+    expect(store.snapshot(WS).merge_queue[0].hold).toBeUndefined();
+  });
+
+  test('writes nothing when the settle arrives after the authority is gone', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ],
+      review_session: { attempt_id: 'review:1', session_source: 'resume' }
+    });
+    store.cancelMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-1'
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const settled = store.settleReviewSession(WS, {
+      attempt_id: 'review:1',
+      outcome: 'current',
+      final_head_sha: 'b'.repeat(40)
+    });
+
+    expect(settled).toMatchObject({ ok: false, reason: 'binding_gone' });
+    expect(store.snapshot(WS).revision).toBe(revision);
+  });
+
+  test('persists authority and its gate hold across a cold reload', () => {
     const store = manualStore();
     store.enqueueMergeManual(WS, {
       expected_revision: store.snapshot(WS).revision,
@@ -5273,25 +5424,20 @@ describe('worker/queue-store — manual merge continuation authority', () => {
         { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
       ]
     });
-    store.beginHeadReview(WS, {
+    store.setMergeHold(WS, {
       bead_id: 'UI-1',
-      authority_id: 'authority-1',
-      head_sha: 'b'.repeat(40),
-      reviewer: 'codex',
-      effort: 'xhigh'
+      hold: { reason: 'review_receipt_stale', head_sha: 'b'.repeat(40) },
+      at: 7
     });
 
     store.__clearCacheForTest();
 
     expect(store.snapshot(WS).merge_queue[0]).toMatchObject({
       authority: { id: 'authority-1', source: 'manual' },
-      head_review: {
-        authority_id: 'authority-1',
+      hold: {
+        reason: 'review_receipt_stale',
         head_sha: 'b'.repeat(40),
-        state: 'pending',
-        reviewer: 'codex',
-        effort: 'xhigh',
-        repair_rounds: 0
+        since: 7
       }
     });
   });
@@ -7710,7 +7856,7 @@ describe('worker/queue-store completion auto-resolution (UI-hk74)', () => {
   });
 });
 
-describe('worker/queue-store head review attempts (UI-hk74)', () => {
+describe('worker/queue-store review session attempts (UI-d7fy §5.5)', () => {
   const HEAD_SHA = 'a'.repeat(40);
 
   test('defaults a legacy attempt record to the implementation kind', () => {
@@ -7720,48 +7866,46 @@ describe('worker/queue-store head review attempts (UI-hk74)', () => {
     expect(attempt.origin).toBe(null);
   });
 
-  test('round-trips the head review attempt fields', () => {
+  test('round-trips the review session attempt fields', () => {
     const store = createQueueStore();
 
-    store.upsertHeadReviewAttempt(WS, {
+    store.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review-1',
       patch: {
         bead_id: 'UI-1',
-        kind: 'head_review',
-        origin: 'auto',
-        reviewer_source: 'harness',
+        kind: 'review_session',
+        origin: 'click',
         authority_id: 'authority-1',
         head_sha: HEAD_SHA,
-        log_path: 'head-review-attempts/review-1.log.jsonl',
+        log_path: 'review-sessions/review-1.log.jsonl',
         status: 'running'
       }
     });
 
     expect(createQueueStore().snapshot(WS).attempts['review-1']).toMatchObject({
-      kind: 'head_review',
-      origin: 'auto',
-      reviewer_source: 'harness',
+      kind: 'review_session',
+      origin: 'click',
       authority_id: 'authority-1',
       head_sha: HEAD_SHA,
-      log_path: 'head-review-attempts/review-1.log.jsonl'
+      log_path: 'review-sessions/review-1.log.jsonl'
     });
   });
 
   test('adopts a prerecorded attempt without losing earlier fields', () => {
     const store = createQueueStore();
-    store.upsertHeadReviewAttempt(WS, {
+    store.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review-1',
-      patch: { bead_id: 'UI-1', kind: 'head_review', origin: 'auto' }
+      patch: { bead_id: 'UI-1', kind: 'review_session', origin: 'click' }
     });
 
-    const result = store.upsertHeadReviewAttempt(WS, {
+    const result = store.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review-1',
       patch: { status: 'running', session_id: 'sess-1' }
     });
 
     expect(result.queue.attempts['review-1']).toMatchObject({
-      kind: 'head_review',
-      origin: 'auto',
+      kind: 'review_session',
+      origin: 'click',
       status: 'running',
       session_id: 'sess-1'
     });
@@ -7769,374 +7913,208 @@ describe('worker/queue-store head review attempts (UI-hk74)', () => {
 
   test('refuses to overwrite a terminal record of the same attempt', () => {
     const store = createQueueStore();
-    store.upsertHeadReviewAttempt(WS, {
+    store.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review-1',
-      patch: { bead_id: 'UI-1', kind: 'head_review', status: 'done' }
+      patch: { bead_id: 'UI-1', kind: 'review_session', status: 'done' }
     });
 
-    const result = store.upsertHeadReviewAttempt(WS, {
+    const result = store.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review-1',
       patch: { status: 'running' }
     });
 
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe('head_review_attempt_terminal');
+    expect(result.reason).toBe('review_session_attempt_terminal');
     expect(store.snapshot(WS).attempts['review-1'].status).toBe('done');
   });
 
-  test('refuses a patch that names no review kind', () => {
+  test('refuses a patch that names no review session kind', () => {
     const store = createQueueStore();
 
-    const result = store.upsertHeadReviewAttempt(WS, {
+    const result = store.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review-1',
       patch: { bead_id: 'UI-1' }
     });
 
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe('head_review_attempt_invalid');
+    expect(result.reason).toBe('review_session_attempt_invalid');
   });
 });
 
-describe('worker/queue-store — 자동 리뷰 enrolment (UI-hk74 §6)', () => {
+describe('worker/queue-store — retired head-review migration (UI-d7fy §3.8)', () => {
   const HEAD = 'a'.repeat(40);
-  const MOVED_HEAD = 'f'.repeat(40);
 
   /**
-   * A root that has reached PR wait and owns a completion intent — the only
-   * shape the automatic review lane can enrol.
+   * A `queue.json` written by the head-review build: one running `head_review`
+   * attempt and one queue entry whose journal is mid-flight.
+   *
+   * @param {Record<string, unknown>} extra
    */
-  function enrolableStore() {
-    const ids = ['authority-1', 'authority-2'];
-    const store = createQueueStore({
-      now: () => 100,
-      randomUUID: () => /** @type {string} */ (ids.shift())
-    });
-    store.appendAttempt(WS, {
-      expected_revision: 0,
-      attempt: {
-        attempt_id: 'att-UI-root',
-        bead_id: 'UI-root',
-        target_base: 'main',
-        base_oid: 'b'.repeat(40)
-      }
-    });
-    store.moveToPrWait(WS, {
-      bead_id: 'UI-root',
-      attempt_id: 'att-UI-root',
-      patch: { status: 'done', finished_at: 1 }
-    });
-    store.enqueueCompletionIntent(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      root_bead_id: 'UI-root',
-      source_attempt_id: 'att-UI-root',
-      target_base: 'main',
-      subject: {
-        role: 'root',
-        bead_id: 'UI-root',
-        pr_url: 'https://github.com/o/r/pull/1',
-        head_sha: HEAD,
-        base_sha: 'b'.repeat(40),
-        merged_sha: null
-      }
-    });
-    return store;
+  function seedLegacyFile(extra = {}) {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        attempts: {
+          'review:authority-1:aaa': {
+            attempt_id: 'review:authority-1:aaa',
+            bead_id: 'UI-1',
+            kind: 'head_review',
+            status: 'running',
+            pid: 4242,
+            started_at: 1000
+          }
+        },
+        merge_queue: [
+          {
+            bead_id: 'UI-1',
+            resolution_rounds: 0,
+            rebase_rounds: 0,
+            resolution: null,
+            authority: {
+              id: 'authority-1',
+              source: 'manual',
+              granted_at: 1,
+              requested_head_sha: HEAD,
+              target_base: 'main'
+            },
+            head_review: {
+              authority_id: 'authority-1',
+              head_sha: HEAD,
+              state: 'reviewing',
+              reviewer: 'codex',
+              effort: 'xhigh',
+              reviewer_source: 'bead',
+              review_attempt_id: 'review:authority-1:aaa',
+              findings_digest: null,
+              repair_attempt_id: null,
+              repair_rounds: 0,
+              approval_source: null,
+              receipt: null,
+              failure_reason: null,
+              updated_at: 2
+            }
+          }
+        ],
+        ...extra
+      })
+    );
   }
 
-  /**
-   * @param {Record<string, any>} [patch]
-   */
-  function autoReviewResolution(patch = {}) {
-    return /** @type {any} */ ({
-      class: 'auto_review',
-      origin_reason: 'review_receipt_missing',
-      origin_stage: 'merge_gate',
-      return_phase: 'gating',
-      attempts: 1,
-      next_at: null,
-      last_error: null,
-      ...patch
+  test('terminalizes a running retired-kind attempt as retired_kind', () => {
+    seedLegacyFile();
+    const store = createQueueStore();
+
+    const attempt = store.snapshot(WS).attempts['review:authority-1:aaa'];
+
+    expect(attempt).toMatchObject({
+      status: 'failed',
+      cause: 'retired_kind',
+      kind: 'retired_kind'
     });
-  }
-
-  test('stores a zero rebase budget on the enrolled queue entry', () => {
-    const store = enrolableStore();
-
-    const result = store.enrolAutoReview(WS, {
-      root_bead_id: 'UI-root',
-      resolution: autoReviewResolution(),
-      head_sha: HEAD,
-      target_base: 'main',
-      reviewer: 'unresolved',
-      effort: 'unresolved'
-    });
-
-    expect(result.ok).toBe(true);
-    expect(
-      store
-        .snapshot(WS)
-        .merge_queue.find((entry) => entry.bead_id === 'UI-root')
-    ).toMatchObject({ resolution_rounds: 0, rebase_rounds: 0 });
+    // The pid stays readable: the caller still owes this process a stop.
+    expect(attempt.pid).toBe(4242);
   });
 
-  test('writes phase, authority, and journal in one revision', () => {
-    const store = enrolableStore();
-    const before = store.snapshot(WS).revision;
+  test('keeps a migrated retired-kind attempt out of implementation occupancy', () => {
+    seedLegacyFile();
+    const store = createQueueStore();
 
-    const result = store.enrolAutoReview(WS, {
-      root_bead_id: 'UI-root',
-      resolution: autoReviewResolution(),
-      head_sha: HEAD,
-      target_base: 'main',
-      reviewer: 'unresolved',
-      effort: 'unresolved'
-    });
-
-    const queue = store.snapshot(WS);
-    expect(result.ok).toBe(true);
-    expect(queue.revision).toBe(before + 1);
-    expect(queue.completion_intents['UI-root']).toMatchObject({
-      phase: 'reviewing',
-      auto_resolution: { class: 'auto_review', attempts: 1 }
-    });
-    expect(
-      queue.merge_queue.find((entry) => entry.bead_id === 'UI-root')
-    ).toMatchObject({
-      authority: { source: 'automatic', requested_head_sha: HEAD },
-      head_review: { state: 'pending', head_sha: HEAD, reviewer: 'unresolved' }
-    });
-  });
-
-  test('leaves the intent untouched when the head is unusable', () => {
-    const store = enrolableStore();
-
-    const result = store.enrolAutoReview(WS, {
-      root_bead_id: 'UI-root',
-      resolution: autoReviewResolution(),
-      head_sha: 'not-a-sha',
-      target_base: 'main',
-      reviewer: 'unresolved',
-      effort: 'unresolved'
-    });
-
-    const queue = store.snapshot(WS);
-    expect(result.ok).toBe(false);
-    expect(queue.completion_intents['UI-root']).toMatchObject({
-      phase: 'gating',
-      auto_resolution: null
-    });
-    expect(
-      queue.merge_queue.find((entry) => entry.bead_id === 'UI-root')
-        ?.head_review ?? null
-    ).toBe(null);
-  });
-
-  test('promotes a running review attempt origin on the click', () => {
-    const store = enrolableStore();
-    store.enrolAutoReview(WS, {
-      root_bead_id: 'UI-root',
-      resolution: autoReviewResolution(),
-      head_sha: HEAD,
-      target_base: 'main',
-      reviewer: 'unresolved',
-      effort: 'unresolved'
-    });
-    const authority_id = String(
-      store
-        .snapshot(WS)
-        .merge_queue.find((entry) => entry.bead_id === 'UI-root')?.authority?.id
+    const { winners } = activeAttemptStates(
+      store.snapshot(WS).attempts,
+      new Map()
     );
-    store.upsertHeadReviewAttempt(WS, {
-      attempt_id: 'review-1',
-      patch: {
-        bead_id: 'UI-root',
-        kind: 'head_review',
-        origin: 'auto',
-        authority_id,
-        head_sha: HEAD,
-        status: 'running'
-      }
-    });
-    store.setHeadReviewState(WS, {
-      bead_id: 'UI-root',
-      authority_id,
-      head_sha: HEAD,
-      expected_state: 'pending',
-      patch: { state: 'reviewing', review_attempt_id: 'review-1' }
-    });
 
-    store.enqueueMergeManual(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      entries: [{ bead_id: 'UI-root', head_sha: HEAD, target_base: 'main' }]
-    });
-
-    expect(store.snapshot(WS).attempts['review-1'].origin).toBe('click');
+    expect(winners.has('UI-1')).toBe(false);
   });
 
-  test('keeps a promoted origin when the transport settles the attempt', () => {
-    const store = enrolableStore();
-    store.upsertHeadReviewAttempt(WS, {
-      attempt_id: 'review-1',
-      patch: {
-        bead_id: 'UI-root',
-        kind: 'head_review',
-        origin: 'click',
-        status: 'running'
+  test('names the running retired-kind attempts the caller must stop', () => {
+    seedLegacyFile();
+    const store = createQueueStore();
+
+    expect(store.pendingRetiredKindAttempts(WS)).toEqual([
+      {
+        attempt_id: 'review:authority-1:aaa',
+        bead_id: 'UI-1',
+        kind: 'head_review'
       }
-    });
-
-    store.upsertHeadReviewAttempt(WS, {
-      attempt_id: 'review-1',
-      patch: { origin: 'auto', status: 'done' }
-    });
-
-    expect(store.snapshot(WS).attempts['review-1'].origin).toBe('click');
+    ]);
   });
 
-  test('leaves a settled review attempt origin alone on the click', () => {
-    const store = enrolableStore();
-    store.enrolAutoReview(WS, {
-      root_bead_id: 'UI-root',
-      resolution: autoReviewResolution(),
-      head_sha: HEAD,
-      target_base: 'main',
-      reviewer: 'unresolved',
-      effort: 'unresolved'
+  test('moves a mid-flight journal entry to a gate hold and keeps authority', () => {
+    seedLegacyFile();
+    const store = createQueueStore();
+
+    const entry = store.snapshot(WS).merge_queue[0];
+
+    expect(entry.authority).toMatchObject({ id: 'authority-1' });
+    expect(entry.hold).toMatchObject({
+      reason: 'review_receipt_missing',
+      head_sha: HEAD
     });
-    const authority_id = String(
-      store
-        .snapshot(WS)
-        .merge_queue.find((entry) => entry.bead_id === 'UI-root')?.authority?.id
+    expect('head_review' in entry).toBe(false);
+  });
+
+  test('drops the head_review field from the saved file', () => {
+    seedLegacyFile();
+    const store = createQueueStore();
+
+    store.commitRetiredKindAttempts(WS);
+
+    const saved = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    expect(saved.merge_queue[0].head_review).toBeUndefined();
+    expect(saved.merge_queue[0].authority.id).toBe('authority-1');
+    expect(saved.attempts['review:authority-1:aaa'].cause).toBe('retired_kind');
+    expect(store.pendingRetiredKindAttempts(WS)).toEqual([]);
+  });
+
+  test('loads a settled head_review journal by dropping the field alone', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 1,
+        merge_queue: [
+          {
+            bead_id: 'UI-1',
+            resolution_rounds: 0,
+            rebase_rounds: 0,
+            resolution: null,
+            authority: {
+              id: 'authority-1',
+              source: 'manual',
+              granted_at: 1,
+              requested_head_sha: HEAD,
+              target_base: 'main'
+            },
+            head_review: {
+              authority_id: 'authority-1',
+              head_sha: HEAD,
+              state: 'approved',
+              reviewer: 'codex',
+              effort: 'xhigh',
+              reviewer_source: null,
+              review_attempt_id: null,
+              findings_digest: null,
+              repair_attempt_id: null,
+              repair_rounds: 0,
+              approval_source: 'existing_current',
+              receipt: `codex@${HEAD}`,
+              failure_reason: null,
+              updated_at: 2
+            }
+          }
+        ]
+      })
     );
-    store.upsertHeadReviewAttempt(WS, {
-      attempt_id: 'review-old',
-      patch: {
-        bead_id: 'UI-root',
-        kind: 'head_review',
-        origin: 'auto',
-        authority_id,
-        status: 'done'
-      }
-    });
-    store.setHeadReviewState(WS, {
-      bead_id: 'UI-root',
-      authority_id,
-      head_sha: HEAD,
-      expected_state: 'pending',
-      patch: { state: 'reviewing', review_attempt_id: 'review-old' }
-    });
 
-    store.enqueueMergeManual(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      entries: [{ bead_id: 'UI-root', head_sha: HEAD, target_base: 'main' }]
-    });
+    const entry = createQueueStore().snapshot(WS).merge_queue[0];
 
-    expect(store.snapshot(WS).attempts['review-old'].origin).toBe('auto');
-  });
-
-  test('refuses a second enrolment over an existing journal', () => {
-    const store = enrolableStore();
-    store.enrolAutoReview(WS, {
-      root_bead_id: 'UI-root',
-      resolution: autoReviewResolution(),
-      head_sha: HEAD,
-      target_base: 'main',
-      reviewer: 'unresolved',
-      effort: 'unresolved'
-    });
-
-    const result = store.enrolAutoReview(WS, {
-      root_bead_id: 'UI-root',
-      resolution: autoReviewResolution(),
-      head_sha: MOVED_HEAD,
-      target_base: 'main',
-      reviewer: 'unresolved',
-      effort: 'unresolved'
-    });
-
-    expect(result.ok).toBe(false);
-    expect(
-      store
-        .snapshot(WS)
-        .merge_queue.find((entry) => entry.bead_id === 'UI-root')?.head_review
-    ).toMatchObject({ head_sha: HEAD });
-  });
-
-  test('refuses to enrol a root that has no completion intent', () => {
-    const store = createQueueStore({ now: () => 100 });
-
-    const result = store.enrolAutoReview(WS, {
-      root_bead_id: 'UI-orphan',
-      resolution: autoReviewResolution(),
-      head_sha: HEAD,
-      target_base: 'main',
-      reviewer: 'unresolved',
-      effort: 'unresolved'
-    });
-
-    expect(result.ok).toBe(false);
-    expect(store.snapshot(WS).merge_queue).toEqual([]);
-  });
-
-  test('promotes a live automatic authority in place on a click', () => {
-    const store = enrolableStore();
-    store.enrolAutoReview(WS, {
-      root_bead_id: 'UI-root',
-      resolution: autoReviewResolution(),
-      head_sha: HEAD,
-      target_base: 'main',
-      reviewer: 'unresolved',
-      effort: 'unresolved'
-    });
-
-    store.enqueueMergeManual(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      entries: [{ bead_id: 'UI-root', head_sha: HEAD, target_base: 'main' }]
-    });
-
-    const entry = store
-      .snapshot(WS)
-      .merge_queue.find((item) => item.bead_id === 'UI-root');
-    expect(entry?.authority).toMatchObject({
-      id: 'authority-1',
-      source: 'manual'
-    });
-    expect(entry?.head_review).toMatchObject({
-      authority_id: 'authority-1',
-      state: 'pending'
-    });
-  });
-
-  test('still mints a fresh authority when the journal already failed', () => {
-    const store = enrolableStore();
-    store.enrolAutoReview(WS, {
-      root_bead_id: 'UI-root',
-      resolution: autoReviewResolution(),
-      head_sha: HEAD,
-      target_base: 'main',
-      reviewer: 'unresolved',
-      effort: 'unresolved'
-    });
-    store.setHeadReviewState(WS, {
-      bead_id: 'UI-root',
-      authority_id: 'authority-1',
-      head_sha: HEAD,
-      expected_state: 'pending',
-      patch: { state: 'failed', failure_reason: 'reviewer_selection_self' }
-    });
-
-    store.enqueueMergeManual(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      entries: [{ bead_id: 'UI-root', head_sha: HEAD, target_base: 'main' }]
-    });
-
-    const entry = store
-      .snapshot(WS)
-      .merge_queue.find((item) => item.bead_id === 'UI-root');
-    expect(entry?.authority).toMatchObject({
-      id: 'authority-2',
-      source: 'manual'
-    });
-    expect(entry?.head_review ?? null).toBe(null);
+    // `approved`/`failed` had nowhere left to go: the gate re-judges them.
+    expect(entry.authority).toMatchObject({ id: 'authority-1' });
+    expect(entry.hold).toBeUndefined();
+    expect('head_review' in entry).toBe(false);
   });
 });
 

@@ -3198,19 +3198,19 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
   }
 
   /**
-   * A running head-review session on a bead that keeps its PR 대기 seat
+   * A running review session on a bead that keeps its PR 대기 seat
    * (UI-hk74 §7). 그 비점유 타일이 겹침 칩을 그리므로, PR 대기 카드가 팝오버의
    * 주인이 되는 조합은 이 타일을 통해 도달한다.
    *
    * @param {string} id
    * @returns {Record<string, any>}
    */
-  function headReview(id) {
+  function reviewSession(id) {
     return {
       [`r-${id}`]: {
         attempt_id: `r-${id}`,
         bead_id: id,
-        kind: 'head_review',
+        kind: 'review_session',
         status: 'running',
         origin: 'auto',
         started_at: NOW - 1000
@@ -3625,7 +3625,7 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
         workspace({
           queue: [{ bead_id: 'A-2' }],
           pr_wait: [{ bead_id: 'A-1' }],
-          attempts: headReview('A-1'),
+          attempts: reviewSession('A-1'),
           serial_lane_count: 2,
           bead_scope: { 'A-1': declared(), 'A-2': declared() }
         })

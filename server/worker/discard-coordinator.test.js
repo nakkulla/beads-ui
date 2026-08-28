@@ -967,11 +967,11 @@ describe('worker discard coordinator unmerged lifecycle', () => {
     // A head review attempt for the SAME bead, recorded after the one that
     // opened the PR (UI-hk74 §7). Taking the "last attempt" slot would point
     // the rollback at the reviewer's session.
-    env.store.upsertHeadReviewAttempt(workspace, {
+    env.store.upsertReviewSessionAttempt(workspace, {
       attempt_id: 'review:authority-1:x',
       patch: {
         bead_id: 'UI-1',
-        kind: 'head_review',
+        kind: 'review_session',
         status: 'done',
         repo: '/repo',
         finished_at: 9_999

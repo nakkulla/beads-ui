@@ -51,7 +51,7 @@ import {
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
   startWorkerRepoOperationDeployRun,
-  stopWorkerHeadReviewAttempts,
+  stopWorkerReviewSessionProcess,
   tickWorkerQueue,
   workerMergeEffectInFlight,
   workerMergeQueueState,
@@ -3097,8 +3097,9 @@ export function handleGetBeadPrompt(ws, req) {
   }
   const key = workspaceKeyOf(ws);
   const attempts = Object.values(queueStore().snapshot(key).attempts).filter(
-    // The panel asks what the bead's own dispatch was told to do; a head-review
-    // prompt is a different question the same bead id would answer (UI-hk74 §7).
+    // The panel asks what the bead's own dispatch was told to do; a review
+    // session's prompt is a different question the same bead id would answer
+    // (UI-hk74 §7).
     (/** @type {any} */ a) =>
       a && a.bead_id === bead_id && isImplementationAttempt(a)
   );
@@ -4407,6 +4408,36 @@ export function handleWorkerMergeAutoToggle(ws, req) {
 }
 
 /**
+ * Kill the processes of the review sessions ONE cancel just settled — the
+ * single `[취소]` and the lane's bulk `[일괄 머지 중단]` alike (UI-d7fy §5.6).
+ *
+ * Best-effort, and deliberately AFTER the write: the CAS already terminalized
+ * these attempts as `failed: cancelled` and reclaimed their authority, so a
+ * session that outlives the stop finds its binding gone and writes nothing.
+ *
+ * PROCESS-ONLY on purpose. The generic attempt stop is the tile's ■ — it
+ * records a `stopped` attempt with a null cause, reverts the session's metadata
+ * stamps and reopens the bead's claim — and all three would corrupt this state:
+ * the cancellation cause is the durable one, this session stamped nothing, and
+ * the bead's claim belongs to a PR that is still open and still waiting.
+ *
+ * @param {string} key
+ * @param {string[]|undefined} attempt_ids
+ */
+function stopCancelledReviewSessions(key, attempt_ids) {
+  for (const attempt_id of attempt_ids || []) {
+    try {
+      void Promise.resolve(
+        stopWorkerReviewSessionProcess(key, attempt_id)
+      ).catch(() => {});
+    } catch {
+      // The reply and the durable write are already out; a stop that cannot
+      // even be attempted must not take the handler down with it.
+    }
+  }
+}
+
+/**
  * Handle `worker-merge-queue-remove`. Payload:
  * `{ bead_id, expected_revision }`, or `{ all: true, expected_revision }`.
  *
@@ -4461,25 +4492,27 @@ export function handleWorkerMergeQueueRemove(ws, req) {
     );
     if (result.ok) {
       fanout(key, /** @type {any} */ (result.queue));
+      stopCancelledReviewSessions(key, result.cancelled_attempt_ids);
     }
     return;
   }
   // Only an actual merge EFFECT in flight (the GitHub API window) locks the
-  // item. The head-review continuation phases stay cancellable (UI-58w8 §1):
-  // the cancel is what discards the authority, and every late review/repair
-  // result then fails its journal CAS.
-  const entry_journal = /** @type {any} */ (
-    queueStore().snapshot(key)
-  ).merge_queue?.find(
-    (/** @type {any} */ e) => e?.bead_id === p.bead_id
-  )?.head_review;
-  const continuation_phase =
-    !!entry_journal &&
-    ['pending', 'reviewing', 'revising'].includes(entry_journal.state);
+  // item (UI-d7fy §5.6). A running review session does NOT — reviewing is not
+  // merging, and the cancel is exactly what reclaims the authority that
+  // session was dispatched under, so refusing it would leave the one lever
+  // that stops it unusable.
+  const review_session_running = Object.values(
+    /** @type {any} */ (queueStore().snapshot(key)).attempts || {}
+  ).some(
+    (/** @type {any} */ a) =>
+      a?.bead_id === p.bead_id &&
+      a.kind === 'review_session' &&
+      (a.status === 'running' || a.status === 'pending')
+  );
   if (
     state &&
     state.active === p.bead_id &&
-    (!continuation_phase || workerMergeEffectInFlight(key, p.bead_id))
+    (!review_session_running || workerMergeEffectInFlight(key, p.bead_id))
   ) {
     ws.send(
       JSON.stringify(
@@ -4514,14 +4547,7 @@ export function handleWorkerMergeQueueRemove(ws, req) {
   );
   if (result.ok) {
     fanout(key, /** @type {any} */ (result.queue));
-    if (continuation_phase) {
-      // Best-effort stop request to the recorded attempts — never a safety
-      // input, the CAS above already made their late results no-ops.
-      stopWorkerHeadReviewAttempts(key, {
-        review_attempt_id: entry_journal.review_attempt_id ?? null,
-        repair_attempt_id: entry_journal.repair_attempt_id ?? null
-      });
-    }
+    stopCancelledReviewSessions(key, result.cancelled_attempt_ids);
   }
 }
 

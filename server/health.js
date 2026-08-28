@@ -72,7 +72,7 @@ async function runProbe(fn) {
 }
 
 /**
- * @typedef {{ auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: { schema_version: number, head_review_projection: boolean } }} WorkerStatus
+ * @typedef {{ auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: { schema_version: number } }} WorkerStatus
  */
 
 /**

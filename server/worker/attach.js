@@ -53,10 +53,7 @@ import {
 } from './completion-intent.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
-import { createHeadReviewTransport } from './head-review-transport.js';
-import { autoReviewHeadDrifted, createHeadReview } from './head-review.js';
 import { observedHeadSha } from './merge-candidates.js';
-import { createAncestryProbe } from './merge-gate.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
@@ -78,6 +75,10 @@ import {
   repoOpsDisplayFor
 } from './repo-ops-display.js';
 import { createRevertBuilder } from './revert-builder.js';
+import {
+  createReviewSession,
+  isReviewAfterMergeReason
+} from './review-session.js';
 import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
@@ -448,9 +449,9 @@ export function defaultProbePid(pid) {
  *   quickfixLanding?: ReturnType<typeof createQuickfixLanding>,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
- *   headReview?: any,
  *   notify?: any,
  *   reviseDisposition?: any,
+ *   reviewSession?: any,
  *   mergeQueue?: any,
  *   autoMerge?: any,
  *   completionIntent?: any,
@@ -713,6 +714,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // without disposition wiring reports.
   /** @type {ReturnType<typeof createReviseDisposition>|null} */
   let reviseDisposition = null;
+  // Same late-bound indirection as the disposition dep above, and for the same
+  // reason: the coordinator needs the scheduler to dispatch, and the scheduler
+  // needs the coordinator's verdict when the session exits (UI-d7fy §5.4).
+  /** @type {ReturnType<typeof createReviewSession>|null} */
+  let reviewSession = null;
   /** @type {ReturnType<typeof createPrActions>|null} */
   let prActions = null;
   /** @type {ReturnType<typeof createCompletionIntentCoordinator>|null} */
@@ -794,6 +800,16 @@ export function createWorkerAttachment(workspace_root, options = {}) {
        */
       release(bead_id) {
         reviseDisposition?.release(bead_id);
+      }
+    },
+    reviewSession: {
+      /**
+       * @param {{ workspace: string, attempt_id: string, bead_id: string, session_ok: boolean, reason?: string|null }} input
+       */
+      complete(input) {
+        return reviewSession
+          ? reviewSession.complete(input)
+          : Promise.resolve({ ok: false, reason: 'no_review_session_dep' });
       }
     },
     onCompletionAttemptSettled(input) {
@@ -895,6 +911,25 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       scheduler,
       locks: runtime.locks,
       gitRun,
+      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
+    });
+
+  // The `[리뷰 후 머지]` click (UI-d7fy §5). It reads the SAME queue store the
+  // gate holds the row in and re-observes through the SAME `prActions` the
+  // click bound its authority with, so the verdict can never describe a
+  // different PR than the button did.
+  reviewSession =
+    options.reviewSession ||
+    createReviewSession({
+      workspace: keyFor(workspace_root),
+      store: runtime.queueStore,
+      bd: createBdMetadata({ cwd: workspace_root }),
+      scheduler,
+      observeReviewReceipt: (/** @type {string} */ bead_id) =>
+        prActions
+          ? prActions.observeReviewReceipt(bead_id)
+          : Promise.resolve({ ok: false, reason: 'no_attachment' }),
+      kick: () => kickWorkerMergeQueue(workspace_root),
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
     });
 
@@ -1240,59 +1275,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         prActions.resumeMigratedClosure(bead_id)
     });
 
-  // The manual-continuation head-review machine (UI-58w8 §2–§4): live effect
-  // adapters bound to the SAME bd/gh/runner/worktree surfaces every other
-  // Worker effect uses, so its receipts and observations can never come from
-  // a different view of the world than the merge gate's.
-  const headReviewTransport = createHeadReviewTransport({
-    workspace: keyFor(workspace_root),
-    repo,
-    bd,
-    makeRunner,
-    worktree,
-    gitRun,
-    probeHead: async (/** @type {string} */ bead_id) => {
-      if (!prActions) {
-        return null;
-      }
-      const probe = await prActions.probeMergeability(bead_id);
-      return probe.head_sha || null;
-    },
-    // Unique-writer fence for the repair round: an ordinary session that owns
-    // this bead's worktree must finish first. Review and repair records are
-    // excluded by kind (UI-hk74 §7) — since they now live in the same attempt
-    // history, counting them would let this lane fence itself out.
-    beadSessionActive: (/** @type {string} */ bead_id) => {
-      try {
-        const attempts =
-          runtime.queueStore.snapshot(keyFor(workspace_root)).attempts || {};
-        return Object.values(attempts).some(
-          (/** @type {any} */ attempt) =>
-            attempt &&
-            attempt.bead_id === bead_id &&
-            attempt.status === 'running' &&
-            (attempt.kind ?? 'implementation') === 'implementation'
-        );
-      } catch {
-        return true;
-      }
-    },
-    // Where head review / repair attempts join the ordinary attempt history.
-    store: runtime.queueStore,
-    log
-  });
-  const headReview =
-    options.headReview ||
-    createHeadReview({
-      workspace: keyFor(workspace_root),
-      store: runtime.queueStore,
-      ...headReviewTransport,
-      // The same probe the merge gate decides on, so the manual lane and the
-      // badge never disagree about a moved head (UI-vzyh §2).
-      probeAncestry: createAncestryProbe({ gitRun, repo }),
-      log
-    });
-
   // The sequential merge driver (UI-5v7d §2). It is the ONLY caller of
   // `prActions.merge()` for a queued item, so it is built with the same actions
   // instance every click routes into — a click queues, this merges. Started by
@@ -1346,7 +1328,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           queue_bead_id,
           subject_bead_id
         ),
-      headReview,
       // Preserve the mutation response as one object: `result_head_sha` is
       // authoritative only at this effect boundary (UI-vkk8 §4).
       updateBase: (/** @type {string} */ bead_id) =>
@@ -1398,114 +1379,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       log
     });
 
-  /**
-   * The automatic head-review dispatch (UI-hk74 §6). It goes through the SAME
-   * `ensureApproved` a [머지] click does — the only differences are the
-   * authority's `source` and the `origin` recorded on the attempt — so a
-   * reviewer can never be dispatched by a path the click's safety properties
-   * do not cover.
-   *
-   * `halted` is the only DISPATCH failure. Everything else (`approved`,
-   * `failed`, `gone`) is written into the journal, which is the coordinator's
-   * next input; re-deciding it here would race the journal.
-   *
-   * @param {string} root_bead_id
-   * @returns {Promise<{ state: string, reason: string|null }>}
-   */
-  async function dispatchAutoHeadReview(root_bead_id) {
-    const ws_key = keyFor(workspace_root);
-    const intent = /** @type {any} */ (runtime.queueStore.snapshot(ws_key))
-      .completion_intents?.[root_bead_id];
-    const subject_bead_id = intent?.subject?.bead_id;
-    if (!intent || typeof subject_bead_id !== 'string') {
-      return { state: 'halted', reason: 'auto_review_subject_unknown' };
-    }
-    if (!prActions) {
-      return { state: 'halted', reason: 'pr_actions_unavailable' };
-    }
-    /** @type {any} */
-    let probe;
-    try {
-      probe = await prActions.probeMergeability(subject_bead_id);
-    } catch (err) {
-      log('auto head-review head probe failed for %s: %o', root_bead_id, err);
-      return { state: 'halted', reason: 'head_unobservable' };
-    }
-    const head_sha =
-      typeof probe?.head_sha === 'string' && probe.head_sha.length > 0
-        ? probe.head_sha.toLowerCase()
-        : null;
-    if (head_sha === null) {
-      return { state: 'halted', reason: 'head_unobservable' };
-    }
-    // §6.1 binds the authority to the OBSERVED head, so the head this dispatch
-    // reads must still be the one enrolment named. A head that moved in between
-    // has no vouched queue-owned mutation the automatic lane could offer, and
-    // handing it to `ensureApproved` would fail the journal with a lineage
-    // reason that describes the wrong thing. Stopping here keeps the journal
-    // `pending`, so the [머지] click promotes this exact authority in place and
-    // the manual lane re-drives it with real mutation evidence.
-    //
-    // This does not re-review anything §1 already settled: a queue-owned base
-    // update whose receipt still covers the head by ancestry never reaches the
-    // `review_receipt_*` verdict that enrols a root here in the first place.
-    const authority = /** @type {any} */ (
-      runtime.queueStore.snapshot(ws_key)
-    ).merge_queue?.find(
-      (/** @type {any} */ entry) => entry.bead_id === root_bead_id
-    )?.authority;
-    if (autoReviewHeadDrifted(authority, head_sha)) {
-      return { state: 'halted', reason: 'auto_review_head_drift' };
-    }
-    await recordUpstreamViolation(
-      root_bead_id,
-      subject_bead_id,
-      head_sha,
-      intent
-    );
-    return headReview.ensureApproved(root_bead_id, subject_bead_id, {
-      head_sha,
-      base_ref: probe.base_ref || null,
-      head_ref: probe.head_ref || null
-    });
-  }
-
-  /**
-   * Leave the §6 trace on the root Bead: this head reached PR wait without a
-   * current `impl_review` receipt, which is an upstream contract violation the
-   * automatic lane is only papering over. Never a gate — a note that cannot be
-   * written must not stop the review it describes.
-   *
-   * @param {string} root_bead_id
-   * @param {string} subject_bead_id
-   * @param {string} head_sha
-   * @param {any} intent
-   */
-  async function recordUpstreamViolation(
-    root_bead_id,
-    subject_bead_id,
-    head_sha,
-    intent
-  ) {
-    if (typeof headReviewTransport.recordUpstreamViolation !== 'function') {
-      return;
-    }
-    const reason =
-      intent.auto_resolution?.origin_reason || 'review_receipt_missing';
-    try {
-      const prior = await headReviewTransport.readReceipt(subject_bead_id);
-      await headReviewTransport.recordUpstreamViolation({
-        root_bead_id,
-        head_sha,
-        reason,
-        prior_receipt: prior ? prior.raw : null,
-        gate_reason: reason
-      });
-    } catch (err) {
-      log('upstream violation note failed for %s: %o', root_bead_id, err);
-    }
-  }
-
   const resolvedCompletionActionDriver =
     options.completionActionDriver ||
     createCompletionActionDriver({
@@ -1515,8 +1388,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       bd,
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
       kickMerge: () => mergeQueue.kick(),
-      dispatchAutoReview: (/** @type {string} */ root_bead_id) =>
-        dispatchAutoHeadReview(root_bead_id),
       log
     });
   completionActionDriver = resolvedCompletionActionDriver;
@@ -1558,6 +1429,32 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           );
         }
       );
+      // A gate hold's exit is an `impl_review` receipt written to the BEAD
+      // (UI-d7fy §3.3), which this is the signal for. Gated on a hold actually
+      // standing so an ordinary `bd update` costs no merge pass: without a hold
+      // there is nothing here for the queue to re-judge, and with one the PR
+      // observation pass would otherwise be the upper bound on how long the row
+      // waits after the receipt lands.
+      try {
+        const held = (
+          runtime.queueStore.snapshot(keyFor(workspace_root)).merge_queue || []
+        ).some((/** @type {any} */ entry) => !!entry.hold);
+        if (held) {
+          Promise.resolve(mergeQueue.kick()).catch((err) => {
+            log(
+              'bd issue-change merge kick failed for %s: %o',
+              keyFor(workspace_root),
+              err
+            );
+          });
+        }
+      } catch (err) {
+        log(
+          'bd issue-change hold check failed for %s: %o',
+          keyFor(workspace_root),
+          err
+        );
+      }
     };
     return {
       start() {
@@ -1631,7 +1528,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     reconciler,
     prPoller,
     prActions,
-    headReviewTransport,
     discardCoordinator,
     mergeQueue,
     autoMerge,
@@ -1640,6 +1536,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     beadsChanges,
     refreshExternalPrs,
     reviseDisposition,
+    reviewSession,
     sessionMonitors,
     processController,
     bd,
@@ -1718,10 +1615,13 @@ function recoverRunningAttempts(att, key) {
       if (!a || a.status !== 'running') {
         continue;
       }
-      // Head review / repair records are the transport's, not this engine's
-      // (UI-hk74 §7): they have no scheduler session log to replay and no
-      // process for a monitor to reattach to.
-      if ((a.kind ?? 'implementation') !== 'implementation') {
+      // `review_session` records ARE this engine's (UI-d7fy §5): the scheduler
+      // dispatches them, so they have a session log to replay and a process to
+      // reattach a monitor to, exactly like an implementation run. Any OTHER
+      // non-implementation kind is a retired lane whose record the load-time
+      // migration already terminalized, so nothing here can be `running`.
+      const kind = a.kind ?? 'implementation';
+      if (kind !== 'implementation' && kind !== 'review_session') {
         continue;
       }
       if (att.scheduler.isRunning(a.bead_id)) {
@@ -1751,6 +1651,111 @@ function recoverRunningAttempts(att, key) {
   } catch (err) {
     log('running-attempt recovery failed for %s: %o', key, err);
   }
+}
+
+/**
+ * Settle the `[리뷰 후 머지]` sessions a restart orphaned (UI-d7fy §5.2/§5.4).
+ *
+ * A `review_session` attempt is dispatched by the SCHEDULER, so a crash can
+ * leave one of two records behind, and the §5.2 per-Bead in-flight guard reads
+ * both as live forever — which permanently disables the one button that is the
+ * hold's only exit:
+ *
+ *   - `pending`: the click's CAS committed and the process never launched.
+ *   - `running`: the session was launched and did not outlive the restart.
+ *
+ * A record whose process IS still alive is left exactly as it is — the monitor
+ * reattaches to it in {@link recoverRunningAttempts} below. An ambiguous probe
+ * (`unknown`, no controller identity on a record that has one) counts as alive
+ * for the same reason: terminalizing a live reviewer would re-enable the button
+ * and buy a SECOND reviewer on the same head, which is worse than a button that
+ * stays disabled until the next restart proves the process gone.
+ *
+ * The settlement is {@link createQueueStore.settleReviewSession}, so the row
+ * keeps its hold and its authority and only the attempt ends. When the binding
+ * is already gone (the entry was cancelled or re-authorized while the server
+ * was down) that write refuses by design — and the attempt still has to leave
+ * `pending`/`running`, or the guard outlives the authority it was taken under.
+ * The direct patch is that case and only that case.
+ *
+ * @param {ReturnType<typeof createWorkerAttachment>} att
+ * @param {string} key
+ */
+function recoverReviewSessions(att, key) {
+  const store = att.runtime.queueStore;
+  /** @type {Array<{ attempt_id: string, cause: string }>} */
+  const doomed = [];
+  try {
+    const q = store.snapshot(key);
+    for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
+      const a = /** @type {any} */ (attempt);
+      if (!a || a.kind !== 'review_session') {
+        continue;
+      }
+      if (a.status !== 'pending' && a.status !== 'running') {
+        continue;
+      }
+      if (att.scheduler.isRunning(a.bead_id)) {
+        continue;
+      }
+      if (a.status === 'pending') {
+        doomed.push({ attempt_id, cause: 'session_lost:never_launched' });
+        continue;
+      }
+      const identity = attemptProcessIdentity(a);
+      const state =
+        identity && att.processController
+          ? att.processController.probe(identity).state
+          : 'gone';
+      if (state === 'gone' || state === 'recycled') {
+        doomed.push({ attempt_id, cause: 'session_lost:process_gone' });
+      }
+    }
+  } catch (err) {
+    log('review-session recovery plan failed for %s: %o', key, err);
+    return;
+  }
+  if (doomed.length === 0) {
+    return;
+  }
+  for (const plan of doomed) {
+    try {
+      att.sessionMonitors?.stop(key, plan.attempt_id);
+    } catch (err) {
+      log(
+        'review-session monitor stop failed for %s: %o',
+        plan.attempt_id,
+        err
+      );
+    }
+    try {
+      const settled = store.settleReviewSession(key, {
+        attempt_id: plan.attempt_id,
+        outcome: 'failed',
+        cause: plan.cause,
+        hold_reason: null,
+        at: Date.now()
+      });
+      if (!settled.ok) {
+        store.updateAttempt(key, {
+          attempt_id: plan.attempt_id,
+          patch: {
+            status: 'failed',
+            cause: plan.cause,
+            control: null,
+            finished_at: Date.now()
+          }
+        });
+      }
+    } catch (err) {
+      log(
+        'review-session recovery write failed for %s: %o',
+        plan.attempt_id,
+        err
+      );
+    }
+  }
+  emitQueueChanged(key);
 }
 
 /**
@@ -1803,11 +1808,17 @@ function attemptProcessIdentity(attempt) {
  * @param {ReturnType<typeof createWorkerAttachment>} att
  * @param {string} key
  * @param {string} attempt_id
+ * @param {{ running_only?: boolean }} [options] - `running_only: false` asks by
+ * process identity instead of by status, for the §3.8 caller whose records the
+ * STORE already settled at load while their processes are still alive.
  * @returns {Promise<boolean>} Whether the stop is confirmed.
  */
-async function stopRetiredRepairSession(att, key, attempt_id) {
+async function stopRetiredRepairSession(att, key, attempt_id, options = {}) {
   const attempt = att.runtime.queueStore.snapshot(key).attempts?.[attempt_id];
-  if (!attempt || attempt.status !== 'running') {
+  if (!attempt) {
+    return true;
+  }
+  if (options.running_only !== false && attempt.status !== 'running') {
     return true;
   }
   try {
@@ -1896,6 +1907,54 @@ async function retireRepairLanes(att, key) {
 }
 
 /**
+ * Stop and settle every attempt of a RETIRED lane, once per boot (UI-d7fy
+ * §3.8).
+ *
+ * The store already terminalized these records as it read them — an unknown
+ * `kind` must never come back as an implementation attempt holding a 실행중
+ * slot — so the ordering this function owns is the other half: the PROCESS the
+ * record named is still running, and a pure store cannot kill a pid. The
+ * migration is written back once, after the stops, so the file on disk stops
+ * naming a lane this build no longer has.
+ *
+ * Best-effort per attempt: a refused stop still leaves a terminal record whose
+ * every late write fails, which is the property the retirement needs.
+ *
+ * @param {ReturnType<typeof createWorkerAttachment>} att
+ * @param {string} key
+ */
+async function retireKindAttempts(att, key) {
+  const store = att.runtime.queueStore;
+  let pending = [];
+  try {
+    pending = store.pendingRetiredKindAttempts(key);
+  } catch (err) {
+    log('retired-kind attempt plan failed for %s: %o', key, err);
+    return;
+  }
+  if (pending.length === 0) {
+    return;
+  }
+  for (const plan of pending) {
+    log(
+      'retiring %s attempt %s of kind %s',
+      plan.bead_id,
+      plan.attempt_id,
+      plan.kind
+    );
+    await stopRetiredRepairSession(att, key, plan.attempt_id, {
+      running_only: false
+    });
+  }
+  try {
+    store.commitRetiredKindAttempts(key);
+  } catch (err) {
+    log('retired-kind attempt commit failed for %s: %o', key, err);
+  }
+  emitQueueChanged(key);
+}
+
+/**
  * Recover persisted control before any monitor or ordinary driver can observe
  * the same attempt. A recovery failure leaves the attachment constructed but
  * inert; starting reconcile/poll/merge after an ambiguous signal would let a
@@ -1907,6 +1966,7 @@ async function retireRepairLanes(att, key) {
  */
 async function startWorkerAttachment(att, key, start_pr_poller) {
   await retireRepairLanes(att, key);
+  await retireKindAttempts(att, key);
   try {
     await att.discardCoordinator.recoverFences();
   } catch (err) {
@@ -1921,6 +1981,9 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     return;
   }
 
+  // Before the monitor reattach below, which is what the surviving records are
+  // owed and the orphaned ones must not get.
+  recoverReviewSessions(att, key);
   recoverRunningAttempts(att, key);
   try {
     await att.discardCoordinator.recover();
@@ -1993,16 +2056,6 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     }
   } catch (err) {
     log('auto-merge start failed for %s: %o', key, err);
-  }
-  // BEFORE the completion coordinator (UI-hk74 review F2): the reconcile is
-  // what settles an attempt whose marker was lost and fails its journal, and
-  // the coordinator now re-drives every non-terminal journal. Starting the
-  // coordinator first would let one pass reach a journal whose marker-less
-  // attempt has not been repudiated yet and spawn a second reviewer for it.
-  try {
-    att.headReviewTransport?.reconcileAttempts?.();
-  } catch (err) {
-    log('head-review attempt reconcile failed for %s: %o', key, err);
   }
   try {
     att.completionIntent.start();
@@ -2249,6 +2302,33 @@ export async function stopWorkerAttempt(workspace_root, attempt_id) {
 }
 
 /**
+ * Stop a cancelled `[리뷰 후 머지]` session's PROCESS (UI-d7fy §5.6), IF an
+ * attachment is registered.
+ *
+ * Deliberately NOT {@link stopWorkerAttempt}: that path is the tile's ■, which
+ * writes a `stopped` record, reverts the attempt's metadata stamps and reopens
+ * the bead's claim. Against a cancelled review session all three are wrong —
+ * the cancel's CAS already wrote `failed: cancelled`, the session stamped
+ * nothing, and the bead's claim belongs to a PR that is still open.
+ *
+ * @param {string} workspace_root
+ * @param {string} attempt_id
+ */
+export async function stopWorkerReviewSessionProcess(
+  workspace_root,
+  attempt_id
+) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return false;
+  }
+  return att.scheduler.stopReviewSessionProcess(
+    keyFor(workspace_root),
+    attempt_id
+  );
+}
+
+/**
  * Pause a running attempt (tile ⏸, worker-phase1 §2.1), IF an attachment is
  * registered. Inert (`{ ok: false, reason: 'no_attachment' }`) without one.
  *
@@ -2371,32 +2451,6 @@ export async function kickWorkerMergeQueue(workspace_root) {
 }
 
 /**
- * Best-effort stop of a cancelled item's recorded review/repair attempts
- * (UI-58w8 §1). Cancel semantics only — the authority discard is the queue
- * mutation the caller already made, and every late result of these attempts
- * fails its journal CAS whether or not the processes die here.
- *
- * @param {string} workspace_root
- * @param {{ review_attempt_id?: string|null, repair_attempt_id?: string|null }} input
- */
-export function stopWorkerHeadReviewAttempts(workspace_root, input) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  const transport = att && att.headReviewTransport;
-  if (!transport || typeof transport.stopAttempt !== 'function') {
-    return;
-  }
-  for (const attempt_id of [input.review_attempt_id, input.repair_attempt_id]) {
-    if (typeof attempt_id === 'string' && attempt_id.length > 0) {
-      try {
-        transport.stopAttempt(attempt_id);
-      } catch (err) {
-        log('head-review stop failed for %s: %o', attempt_id, err);
-      }
-    }
-  }
-}
-
-/**
  * Whether a queue item's [머지] click may NOT be cancelled right now. Only an
  * actual merge effect in flight (the GitHub API window) locks the item; the
  * review/repair continuation phases are cancellable — that is exactly what
@@ -2475,6 +2529,24 @@ export async function enqueueWorkerManualMerge(workspace_root, input) {
       reason: 'pr_identity_unreadable',
       queue: store.snapshot(key)
     };
+  }
+  // `[리뷰 후 머지]` (UI-d7fy §5.1–§5.2). The gate reason THIS probe just took
+  // decides it, not the badge the person clicked: the same authority is granted
+  // either way, and the only difference is that a held row also gets a review
+  // session registered in the same write and dispatched after it.
+  if (att.reviewSession && isReviewAfterMergeReason(probe.reason)) {
+    return att.reviewSession.start({
+      bead_id: input.bead_id,
+      expected_revision: store.snapshot(key).revision,
+      probe: {
+        head_sha,
+        target_base,
+        head_ref: probe.head_ref ?? null,
+        pr_url: probe.pr_url ?? null,
+        external: probe.external === true,
+        reason: probe.reason
+      }
+    });
   }
   return store.enqueueMergeManual(key, {
     expected_revision: store.snapshot(key).revision,

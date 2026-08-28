@@ -12,10 +12,6 @@ import path from 'node:path';
 // this comment and the client card read, so one failure never gets two
 // sentences. `attach.js` already imports `app/utils` the same way.
 import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
-import {
-  UNRESOLVED_REVIEWER,
-  UNRESOLVED_REVIEW_EFFORT
-} from './head-review.js';
 import { RESOLUTION_ROUND_CAP, RESOLUTION_WAIT_MS } from './merge-queue.js';
 import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
@@ -86,13 +82,27 @@ export const COMPLETION_RETRY_DELAYS_MS = [60_000, 300_000, 900_000];
  * `reconciliation_ambiguous` is a deliberate human case rather than an
  * oversight that happened to fall through.
  *
- * @type {Readonly<Record<string, 'metadata_watch'|'auto_review'|'retry'|'human'>>}
+ * All THREE review reasons are `metadata_watch` and NOT terminal (UI-d7fy
+ * §3.3/§3.5). The automatic-review lane that used to own them is gone, and the
+ * reason they are not simply `human` instead is that the exit really is a
+ * metadata write: the `[리뷰 후 머지]` session writes an `impl_review` receipt
+ * to the Bead, the bd issue-change trigger re-runs the gate on it, and the row
+ * resumes. Ending the saga on `needs_human` would take that resume away for a
+ * state that is a pre-merge hold, not a completion failure.
+ *
+ * `review_receipt_undetermined` is the same class for a stricter reason: it is
+ * not a verdict at all but an ancestry probe that could not be taken, so the
+ * next observation re-takes it. Hardening a saga to `needs_human` on a probe
+ * error would make a transient `git` failure terminal.
+ *
+ * @type {Readonly<Record<string, 'metadata_watch'|'retry'|'human'>>}
  */
 export const COMPLETION_FAILURE_POLICY = Object.freeze({
   receipt_unbacked: 'metadata_watch',
   spec_id_missing: 'metadata_watch',
-  review_receipt_missing: 'auto_review',
-  review_receipt_stale: 'auto_review',
+  review_receipt_missing: 'metadata_watch',
+  review_receipt_stale: 'metadata_watch',
+  review_receipt_undetermined: 'metadata_watch',
   continuation_persist_failed: 'retry',
   cleanup_prerecord_failed: 'retry',
   cleanup_settlement_record_failed: 'retry',
@@ -159,7 +169,7 @@ export const COMPLETION_RETRY_POLICY = Object.freeze({
 
 /**
  * @typedef {Object} CompletionFailureClass
- * @property {'metadata_watch'|'auto_review'|'retry'|'human'} class
+ * @property {'metadata_watch'|'retry'|'human'} class
  * @property {string|null} phase - Non-terminal phase that owns the resolution.
  * @property {string} return_phase
  * @property {CompletionRetryPolicy|null} retry
@@ -213,7 +223,7 @@ export function classifyCompletionFailure(reason) {
  * `receipt_unbacked`/`review_receipt_missing` are exactly how the surviving
  * metadata-watch and automatic-review lanes are entered.
  *
- * @typedef {{ kind: 'gate'|'enter_cleanup'|'resume_intent'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'resume_metadata_check'|'dispatch_auto_review'|'retry_failed_op'|'pause'|'needs_human'|'complete', reason?: string, terminal?: boolean }} CompletionAction
+ * @typedef {{ kind: 'gate'|'enter_cleanup'|'resume_intent'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'resume_metadata_check'|'retry_failed_op'|'pause'|'needs_human'|'complete', reason?: string, terminal?: boolean }} CompletionAction
  */
 
 /**
@@ -221,18 +231,16 @@ export function classifyCompletionFailure(reason) {
  * auto-resolution phases (UI-hk74 §4).
  *
  * @param {any} intent
- * @param {any} head_review - The `merge_queue[].head_review` journal for this
- * root, which is the ONLY truth about a `reviewing` intent.
  * @param {number} now
  * @returns {CompletionAction|null}
  */
-function decideAutoResolution(intent, head_review, now) {
+function decideAutoResolution(intent, now) {
   const resolution = intent.auto_resolution;
   if (
     !resolution ||
     !Object.hasOwn(COMPLETION_AUTO_RESOLUTION_PHASE, resolution.class) ||
     COMPLETION_AUTO_RESOLUTION_PHASE[
-      /** @type {'metadata_watch'|'auto_review'|'retry'} */ (resolution.class)
+      /** @type {'metadata_watch'|'retry'} */ (resolution.class)
     ] !== intent.phase
   ) {
     return { kind: 'needs_human', reason: 'auto_resolution_invalid' };
@@ -270,31 +278,14 @@ function decideAutoResolution(intent, head_review, now) {
   if (intent.phase === 'waiting_metadata') {
     return { kind: 'resume_metadata_check' };
   }
-  if (!head_review) {
-    // Enrolment writes the journal in the same revision that sets `reviewing`,
-    // so a missing journal is never "not yet" — it is a torn write, and a second
-    // dispatch on top of an unknown first one is the lineage risk §10 refuses.
-    return { kind: 'needs_human', reason: 'auto_review_journal_missing' };
-  }
-  if (head_review.state === 'approved') {
-    return { kind: 'gate' };
-  }
-  if (head_review.state === 'failed') {
-    return {
-      kind: 'needs_human',
-      reason: head_review.failure_reason || 'auto_review_failed'
-    };
-  }
-  // An in-progress journal is RE-DRIVEN, never left alone (UI-hk74 review F2).
-  // The drive is idempotent on the attempt marker: a terminal marker settles
-  // the attempt, a live one is adopted by its recorded pid, and only a journal
-  // with no marker at all spawns. Returning null on a journal that had already
-  // minted `review_attempt_id` stranded every restart in the middle of a
-  // review — including the marker-only crash window §7 asks reconcile to adopt.
-  // The opposite window (attempt recorded, marker lost) is closed before this
-  // ever runs: the transport's own startup reconcile fails that journal, and a
-  // failed journal is answered above.
-  return { kind: 'dispatch_auto_review' };
+  // `reviewing` is a RETIRED phase (UI-d7fy §3.5): nothing creates one any
+  // more, and the lane that used to drive it — the automatic reviewer and its
+  // bounded repair — is gone. A record still parked here survived the upgrade,
+  // and there is no owner left to re-drive it, so it stops for a human with
+  // the retirement as its cause rather than waiting on a dispatch that will
+  // never come. This is a migration terminal, not a review verdict: a review
+  // reason never terminalizes an intent this deploy created.
+  return { kind: 'needs_human', reason: 'auto_review_retired', terminal: true };
 }
 
 /**
@@ -327,7 +318,7 @@ function completionFailureReason(fact) {
  * authoritative fact. The function is pure so reconciliation and live paths
  * share the same judgment.
  *
- * @param {{ auto_merge: boolean, intent: any, fact?: ObservedCompletionFact|null, head_review?: any, now?: number }} input
+ * @param {{ auto_merge: boolean, intent: any, fact?: ObservedCompletionFact|null, now?: number }} input
  * @returns {CompletionAction|null}
  */
 export function decideCompletionAction(input) {
@@ -351,7 +342,6 @@ export function decideCompletionAction(input) {
   ) {
     return decideAutoResolution(
       intent,
-      input.head_review || null,
       typeof input.now === 'number' ? input.now : 0
     );
   }
@@ -491,8 +481,7 @@ export function createCompletionIntentCoordinator(deps) {
     const intent = intents[root_bead_id];
     // A row parked on metadata or a retry delay decides from its own durable
     // record alone, so observing it would spend a `gh` round trip on a fact the
-    // judgment discards. `reviewing` still observes: an approved journal hands
-    // straight back to the gate, which needs the pinned subject.
+    // judgment discards.
     const fact =
       intent?.phase === 'waiting_metadata' || intent?.phase === 'retrying'
         ? /** @type {CompletionFact} */ ({ state: 'waiting' })
@@ -501,7 +490,6 @@ export function createCompletionIntentCoordinator(deps) {
       auto_merge: queue.auto_merge === true,
       intent,
       fact,
-      head_review: head?.head_review || null,
       now: now()
     });
     if (action) {
@@ -777,7 +765,6 @@ function operationIdentity(root_bead_id, kind, failure_key) {
  *   bd?: { comment?: (bead_id: string, text: string) => Promise<unknown> },
  *   notifyChanged?: (workspace: string) => void,
  *   kickMerge?: () => Promise<unknown>|unknown,
- *   dispatchAutoReview?: (root_bead_id: string) => Promise<unknown>|unknown,
  *   now?: () => number,
  *   log?: (...args: any[]) => void
  * }} deps
@@ -1346,69 +1333,6 @@ export function createCompletionActionDriver(deps) {
       });
       if (!started.ok) {
         terminalize(root_bead_id, reason, stage, failure_key, evidence);
-        return;
-      }
-      notify();
-      return;
-    }
-    if (policy.class === 'auto_review') {
-      const entry = Array.isArray(queue.merge_queue)
-        ? queue.merge_queue.find(
-            (/** @type {any} */ item) => item?.bead_id === root_bead_id
-          )
-        : null;
-      // One automatic review per root. A gate that asks for a receipt again
-      // after one has already been produced is saying the automatic lane cannot
-      // satisfy it, which is a human question.
-      if (existing?.class === 'auto_review' || entry?.head_review) {
-        terminalize(
-          root_bead_id,
-          `auto_review_exhausted:${reason}`,
-          stage,
-          failure_key,
-          evidence
-        );
-        return;
-      }
-      // Enrolment is ONE revision (UI-hk74 §6.2): the `reviewing` phase, the
-      // merge-queue authority, and the prerecorded journal. Anything less is
-      // not a dispatchable state — reconcile reads a `reviewing` intent with no
-      // journal as a torn write and stops for a human — so a refused write
-      // stops here instead of leaving a half-enrolled row behind.
-      const enrolled = deps.store.enrolAutoReview(deps.workspace, {
-        root_bead_id,
-        resolution: {
-          class: 'auto_review',
-          origin_reason: reason,
-          origin_stage: stage,
-          return_phase: policy.return_phase,
-          attempts: 1,
-          next_at: null,
-          last_error: null,
-          op: autoResolutionOp(intent, queue, { ...extras, failure_key })
-        },
-        // §6.1: the authority names the head this observation READ. Falling
-        // back to the pinned subject keeps a caller that has no fresh reading
-        // enrolable, and the dispatch-time equality check below is what makes
-        // that fallback safe — a pin that no longer matches the live head stops
-        // for a human instead of reviewing the wrong commit.
-        head_sha:
-          typeof extras.observed_head_sha === 'string' &&
-          extras.observed_head_sha.length > 0
-            ? extras.observed_head_sha
-            : intent.subject?.head_sha,
-        target_base: intent.target_base,
-        reviewer: UNRESOLVED_REVIEWER,
-        effort: UNRESOLVED_REVIEW_EFFORT
-      });
-      if (!enrolled.ok) {
-        terminalize(
-          root_bead_id,
-          'auto_review_enrol_failed',
-          stage,
-          failure_key,
-          evidence
-        );
         return;
       }
       notify();
@@ -2025,37 +1949,6 @@ export function createCompletionActionDriver(deps) {
     }
     if (action.kind === 'retry_failed_op') {
       await runRetry(root_bead_id);
-      return;
-    }
-    if (action.kind === 'dispatch_auto_review') {
-      // The reviewer transport owns this effect. Without one the row waits in
-      // `reviewing` on its prerecorded journal, which is the one state a second
-      // dispatch could not corrupt.
-      if (typeof deps.dispatchAutoReview !== 'function') {
-        return;
-      }
-      /** @type {{ state?: string, reason?: string|null }} */
-      let dispatched;
-      try {
-        dispatched = (await deps.dispatchAutoReview(root_bead_id)) || {};
-      } catch (err) {
-        log('auto review dispatch threw for %s: %o', root_bead_id, err);
-        dispatched = { state: 'halted', reason: 'dispatch_threw' };
-      }
-      if (dispatched.state === 'halted') {
-        // §10: a dispatch that could not even start is NOT a retry candidate.
-        // Retrying it means risking a second reviewer against the same head,
-        // and duplicate review lineage is worse than a human question.
-        settleFailure(
-          root_bead_id,
-          'auto_review_dispatch_failed',
-          'auto_review',
-          fact.failure_key,
-          dispatched.reason ?? null
-        );
-        return;
-      }
-      notify();
       return;
     }
     if (action.kind === 'pause') {

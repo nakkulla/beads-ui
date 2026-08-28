@@ -769,7 +769,7 @@ describe('monitor PR 대기 — 리뷰 판정 미결 (UI-32he)', () => {
   });
 });
 
-describe('monitor 세션 타일 — head review·repair (UI-hk74 §7)', () => {
+describe('monitor 세션 타일 — 리뷰 세션 (UI-d7fy §5.5)', () => {
   test('draws a running head review as its own session tile', () => {
     const lanes = buildLanes(
       [
@@ -788,7 +788,7 @@ describe('monitor 세션 타일 — head review·repair (UI-hk74 §7)', () => {
               bead_id: 'A-1',
               status: 'running',
               started_at: 50,
-              kind: 'head_review',
+              kind: 'review_session',
               origin: 'auto',
               runner: 'codex'
             }
@@ -810,7 +810,7 @@ describe('monitor 세션 타일 — head review·repair (UI-hk74 §7)', () => {
     });
   });
 
-  test('labels a clicked repair round without the automatic marker', () => {
+  test('labels a clicked review session without the automatic marker', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -821,7 +821,7 @@ describe('monitor 세션 타일 — head review·repair (UI-hk74 §7)', () => {
               bead_id: 'A-1',
               status: 'running',
               started_at: 50,
-              kind: 'head_repair',
+              kind: 'review_session',
               origin: 'click'
             }
           }
@@ -830,7 +830,7 @@ describe('monitor 세션 타일 — head review·repair (UI-hk74 §7)', () => {
       [state()]
     );
 
-    expect(lanes.running[0].badges).toEqual(['수리']);
+    expect(lanes.running[0].badges).toEqual(['리뷰']);
   });
 
   test('leaves the bead in PR 대기 while its review runs', () => {
@@ -844,7 +844,7 @@ describe('monitor 세션 타일 — head review·repair (UI-hk74 §7)', () => {
               bead_id: 'A-1',
               status: 'running',
               started_at: 50,
-              kind: 'head_review',
+              kind: 'review_session',
               origin: 'auto'
             }
           }
@@ -872,7 +872,7 @@ describe('monitor 세션 타일 — head review·repair (UI-hk74 §7)', () => {
               bead_id: 'A-1',
               status: 'running',
               started_at: 50,
-              kind: 'head_review',
+              kind: 'review_session',
               origin: 'auto'
             }
           }
@@ -897,7 +897,7 @@ describe('monitor 세션 타일 — head review·repair (UI-hk74 §7)', () => {
               status: 'done',
               started_at: 50,
               finished_at: 60,
-              kind: 'head_review',
+              kind: 'review_session',
               origin: 'auto'
             }
           }
@@ -957,7 +957,7 @@ describe('monitor 완료 lane (UI-eey2 §8)', () => {
               status: 'done',
               started_at: 50,
               finished_at: 60,
-              kind: 'head_review',
+              kind: 'review_session',
               origin: 'auto'
             }
           }
@@ -969,7 +969,7 @@ describe('monitor 완료 lane (UI-eey2 §8)', () => {
     expect(lanes.done[0].badges).toEqual(['자동 머지', '리뷰 · 자동']);
   });
 
-  test('keeps the done-kind badge when a later head review outlives it', () => {
+  test('keeps the done-kind badge when a later review session outlives it', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -989,7 +989,7 @@ describe('monitor 완료 lane (UI-eey2 §8)', () => {
               status: 'done',
               started_at: 50,
               finished_at: 900,
-              kind: 'head_repair',
+              kind: 'review_session',
               origin: 'click'
             }
           }
@@ -999,7 +999,7 @@ describe('monitor 완료 lane (UI-eey2 §8)', () => {
     );
 
     expect(lanes.done[0].done_kind).toBe('auto_merge');
-    expect(lanes.done[0].badges).toEqual(['자동 머지', '수리']);
+    expect(lanes.done[0].badges).toEqual(['자동 머지', '리뷰']);
   });
 
   test('drops entries older than the period bound but keeps undated ones', () => {
@@ -2764,7 +2764,7 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
             t1: {
               attempt_id: 't1',
               bead_id: 'A-1',
-              kind: 'head_review',
+              kind: 'review_session',
               status: 'running',
               started_at: 1
             }
@@ -2790,7 +2790,7 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
             t1: {
               attempt_id: 't1',
               bead_id: 'A-1',
-              kind: 'head_review',
+              kind: 'review_session',
               status: 'running',
               started_at: 1
             }
@@ -2819,7 +2819,7 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
             t1: {
               attempt_id: 't1',
               bead_id: 'A-1',
-              kind: 'head_review',
+              kind: 'review_session',
               status: 'running',
               started_at: 1
             }
@@ -2850,7 +2850,7 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
             t1: {
               attempt_id: 't1',
               bead_id: 'A-1',
-              kind: 'head_review',
+              kind: 'review_session',
               status: 'running',
               started_at: 1
             }

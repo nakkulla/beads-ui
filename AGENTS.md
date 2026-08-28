@@ -247,9 +247,14 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   큐가 소유한 base update로 head가 움직였다는 사실만으로는 재리뷰가 걸리지
   않는다. 조상이 아니면(히스토리 재작성·브랜치 리셋) stale이고, ancestry probe
   오류는 머지 게이트에서 fail-closed(stale 취급)·보드 표시에서만 fail-quiet다.
-  큐가 소유한 `resolver:` 충돌 해소는 ancestry보다 우선하는 필수조건으로, 해소
-  세션의 exact-delta self-review 영수증(`resolver-self:`) 없이는 머지되지
-  않는다. `carry:` 영수증 형식과 그 스탬프 절차는 폐기됐다(과거 기록만 읽는다).
+  큐가 소유한 `resolver:` 충돌 해소 커밋도 다른 커밋과 똑같이 이 ancestry 규칙
+  하나로 판정한다 — 앞세우는 별도 필수조건은 없다. `resolver-self:`는 `carry:`와
+  함께 폐기된 영수증 형식이다(과거 기록만 읽는다).
+- `impl_review`가 없거나 조상이 아니면 머지 게이트 **보류**다. terminal 실패도
+  아니고 자동 재리뷰 dispatch도 아니다 — 큐는 리뷰어를 띄우지도 수리하지도
+  않는다. 유일한 출구는 `[리뷰 후 머지]` 클릭이며, `[머지]`와 같은 authority를
+  주고 기록된 세션을 resume해 리뷰 lineage만 수행시킨다. 머지는 그대로 큐가
+  소유한다.
 - 이 저장소는 `[verify]`를 선언한다(`repo-ops/script/verify` — `npm ci` 후
   `npm run tsc`와 `npm test`). ancestry 결속이 통과시키는 "리뷰된 델타 + 움직인
   base" 조합의 의미 충돌을 기계가 잡는 자리이며, base에 PR head를 squash-merge한

@@ -433,12 +433,11 @@ export function createSessionLog(options = {}) {
   /**
    * Which file a READER should open for one attempt (UI-hk74 §7).
    *
-   * Head review and repair sessions write their transcript beside their own
-   * durable marker (`head-review-attempts/<id>.log.jsonl`), not under
-   * `sessions/`, because the transport — not the scheduler — spawns them and
-   * hands the runner that fd. The attempt record POINTS at that file; nothing
-   * is ever copied, so this resolution is the whole of what makes the drawer
-   * open a review's log.
+   * A session whose transcript is written somewhere other than `sessions/` —
+   * because something other than the scheduler spawned it and handed the
+   * runner that fd — records the path on its attempt. The attempt record
+   * POINTS at that file; nothing is ever copied, so this resolution is the
+   * whole of what makes the drawer open such a log.
    *
    * `pathFor` stays the fallback and keeps its exact meaning: an attempt whose
    * record names no log — every implementation attempt, and every legacy record

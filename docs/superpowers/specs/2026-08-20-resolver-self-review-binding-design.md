@@ -9,6 +9,15 @@ scope:
 
 # resolver 무디스패치 self-review 결속 성립 (UI-ww5s)
 
+> **은퇴 (UI-d7fy, 2026-08-28).** 이 문서가 설계한 `resolver-self:` 영수증
+> 결속은 그 검증기(`head-review.js`)와 함께 제거됐다. 큐가 소유한 `resolver:`
+> 해소 커밋도 다른 커밋과 같이 머지 게이트의 `impl_review` ancestry 하나로
+> 판정하며, 영수증 부재·비조상은 게이트 보류로 남아 `[리뷰 후 머지]` 클릭이
+> 유일한 출구다. `resolver-self:`는 `carry:`와 함께 폐기된 영수증 형식이다(과거
+> 기록만 읽는다). 제거 근거는
+> `docs/superpowers/specs/2026-08-27-head-review-layer-removal-design.md`
+> 이며, 이 파일은 기록으로만 남는다.
+
 ## 1. 문제
 
 계약(dotfiles `docs/contracts/workflow.md` Worker manual merge continuation,

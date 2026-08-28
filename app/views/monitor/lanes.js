@@ -20,8 +20,8 @@
  */
 import {
   activeAttemptStates,
-  headReviewAttemptStates,
-  isImplementationAttempt
+  isImplementationAttempt,
+  reviewSessionAttemptStates
 } from '../../utils/active-attempts.js';
 import {
   formatAttemptOrchestrationChip,
@@ -34,7 +34,7 @@ import { overlapPrefixes } from '../../utils/scope-overlap.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
 import {
   discardProjection,
-  headReviewAttemptBadges,
+  reviewSessionAttemptBadges,
   sumAttemptWorkMs
 } from '../worker/lanes.js';
 import {
@@ -469,7 +469,7 @@ export function activeByBead(attempts, done_at_by_bead) {
 }
 
 /**
- * The ⛔ / ♻️ chip an admission record renders as.
+ * The ⛔ chip an admission record renders as.
  *
  * @param {Record<string, any>} admission
  * @param {string} bead_id
@@ -479,9 +479,6 @@ function admissionBadge(admission, bead_id) {
   const record = admission[bead_id];
   if (!record) {
     return '';
-  }
-  if (record.stale === true) {
-    return '♻️ stale→재리뷰';
   }
   const reason = typeof record.reason === 'string' ? record.reason : '';
   const sep = reason.indexOf(':');
@@ -1447,16 +1444,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
       });
     }
 
-    // 돌고 있는 head review·repair 세션 (UI-hk74 §7). **비점유** 타일이다:
-    // `claimed`에 넣지 않으므로 그 bead는 PR 대기 레인의 점유자로 그대로 남고,
-    // 여기에는 지금 실제로 돌고 있는 리뷰/수리 세션이 함께 보일 뿐이다. 점유
+    // 돌고 있는 리뷰 세션 (UI-d7fy §5.5). **비점유** 타일이다: `claimed`에
+    // 넣지 않으므로 그 bead는 PR 대기 레인의 점유자로 그대로 남고, 여기에는
+    // 지금 실제로 돌고 있는 리뷰 세션이 함께 보일 뿐이다. 점유
     // 계산(`activeByBead`)은 구현 attempt만 본다 — 그대로 둔다.
-    for (const [bead_id, review] of headReviewAttemptStates(attempts)) {
+    for (const [bead_id, review] of reviewSessionAttemptStates(attempts)) {
       if (running.some((item) => item.id === bead_id)) {
         continue;
       }
       const a = review.attempt;
-      const label = review.kind === 'head_review' ? '리뷰' : '수리';
       running.push({
         ...base(bead_id),
         lane: 'running',
@@ -1470,7 +1466,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         status: 'running',
         non_occupying: true,
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
-        // 리뷰 세션은 사람이 재개·일시정지할 대상이 아니다: 저널이 그 lifecycle의
+        // 리뷰 세션은 사람이 재개·일시정지할 대상이 아니다: 큐가 그 lifecycle의
         // 주인이고, 여기서 손대면 CAS가 늦은 결과로 만들 수 있다.
         can_pause: false,
         can_resume: false,
@@ -1497,7 +1493,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         discard: discardProjection(discard_operations, bead_id, {
           merge_queued: true
         }),
-        badges: [review.origin === 'auto' ? `${label} · 자동` : label],
+        badges: [review.origin === 'auto' ? '리뷰 · 자동' : '리뷰'],
         alert: false
       });
     }
@@ -2010,7 +2006,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         // 완료 종류 배지 + 이 bead에 섞인 head review·repair 시도 (UI-hk74 §7).
         badges: [
           ...(kind && DONE_KIND_LABELS[kind] ? [DONE_KIND_LABELS[kind]] : []),
-          ...headReviewAttemptBadges(attempts, bead_id)
+          ...reviewSessionAttemptBadges(attempts, bead_id)
         ]
       });
     }

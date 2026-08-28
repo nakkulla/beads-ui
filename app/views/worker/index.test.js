@@ -8,7 +8,6 @@ import {
   applyCandidateFilter,
   autoResolutionBadge,
   createWorkerView,
-  headReviewFailureCategory,
   mergeFailureText,
   mergeQueueRefusalText,
   mergeStepView,
@@ -4031,16 +4030,141 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     }
   });
 
+  const REVIEW_HOLD_GATE = {
+    enabled: false,
+    tier: 'review',
+    gate_badge: '리뷰 확인 필요',
+    base_badge: '최신',
+    reason: 'review_receipt_missing'
+  };
+
+  test.each([
+    [
+      'spec_id_missing',
+      {
+        enabled: false,
+        tier: 'review',
+        gate_badge: '스펙 ID 누락',
+        base_badge: '최신',
+        reason: 'spec_id_missing'
+      }
+    ],
+    [
+      'review_receipt_undetermined',
+      {
+        enabled: false,
+        tier: 'review',
+        gate_badge: '',
+        base_badge: '최신',
+        reason: 'review_receipt_undetermined'
+      }
+    ]
+  ])('offers no [리뷰 후 머지] on %s (UI-d7fy §5.1)', (_reason, gate) => {
+    const { mount } = mountWith(queueWithGate(gate));
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(button.textContent?.trim()).not.toBe('리뷰 후 머지');
+  });
+
+  test('keeps [리뷰 후 머지] on the row the click already queued (UI-d7fy §5.1)', () => {
+    const { mount } = mountWith(
+      queueWithGate(REVIEW_HOLD_GATE, {
+        merge_queue: [
+          {
+            bead_id: 'RD-1',
+            authority: { id: 'authority-1', source: 'manual' },
+            hold: {
+              reason: 'review_receipt_missing',
+              head_sha: 'a'.repeat(40),
+              since: 5
+            }
+          }
+        ]
+      })
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(button.textContent?.trim()).toBe('리뷰 후 머지');
+    expect(button.disabled).toBe(false);
+  });
+
+  test('locks the button while its review session runs (UI-d7fy §5.2)', () => {
+    const { mount } = mountWith(
+      queueWithGate(REVIEW_HOLD_GATE, {
+        merge_queue: [
+          {
+            bead_id: 'RD-1',
+            authority: { id: 'authority-1', source: 'manual' }
+          }
+        ],
+        attempts: {
+          'review:1': {
+            attempt_id: 'review:1',
+            bead_id: 'RD-1',
+            kind: 'review_session',
+            status: 'running'
+          }
+        }
+      })
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe(
+      '리뷰 세션 실행 중 — 끝나면 영수증을 다시 판정합니다'
+    );
+    expect(mount.textContent).toContain(
+      '최종 변경 리뷰 필요 · 리뷰 세션 실행 중'
+    );
+  });
+
+  test('re-enables the button and states why the last review ended (UI-d7fy §5.4)', () => {
+    const { mount } = mountWith(
+      queueWithGate(REVIEW_HOLD_GATE, {
+        merge_queue: [
+          {
+            bead_id: 'RD-1',
+            authority: { id: 'authority-1', source: 'manual' }
+          }
+        ],
+        attempts: {
+          'review:1': {
+            attempt_id: 'review:1',
+            bead_id: 'RD-1',
+            kind: 'review_session',
+            status: 'failed',
+            cause: 'receipt_not_current',
+            finished_at: 9
+          }
+        }
+      })
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(button.disabled).toBe(false);
+    expect(mount.textContent).toContain(
+      '최종 변경 리뷰 필요 · 리뷰 후에도 영수증이 최종 head에 유효하지 않음'
+    );
+  });
+
   test.each([
     [
       'review_receipt_missing',
       '리뷰 후 머지',
-      '리뷰 영수증 없음 — 자동 리뷰 세션 후 승인되면 머지합니다'
+      '리뷰 영수증 없음 — 머지 게이트 보류입니다. 클릭하면 기록된 세션을 이어 리뷰만 수행시키고, 영수증이 최종 head에 유효해지면 큐가 머지합니다'
     ],
     [
       'review_receipt_stale',
       '리뷰 후 머지',
-      'head 재작성됨(영수증이 현재 head의 조상이 아님) — 자동 재리뷰 세션 후 승인되면 머지합니다'
+      'head 재작성됨(영수증이 현재 head의 조상이 아님) — 머지 게이트 보류입니다. 클릭하면 기록된 세션을 이어 최종 head를 다시 리뷰시키고, 영수증이 유효해지면 큐가 머지합니다'
     ],
     ['base_behind', 'base 갱신 후 머지', 'base를 자동 갱신한 뒤 머지합니다']
   ])('enables the manual continuation for %s', (reason, label, title) => {
@@ -4062,7 +4186,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(button.title).toBe(title);
   });
 
-  test('draws no badge for an undetermined review verdict and keeps 머지 clickable', () => {
+  test('offers no click at all on an undetermined review verdict', () => {
     const { mount } = mountWith(
       queueWithGate({
         enabled: false,
@@ -4077,9 +4201,9 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       mount.querySelector('.worker-mini__merge')
     );
     expect(mount.querySelector('.worker-mini__badge')).toBeNull();
-    expect(button.disabled).toBe(false);
+    expect(button.disabled).toBe(true);
     expect(button.textContent?.trim()).toBe('머지');
-    expect(button.title).toContain('판정 미결');
+    expect(button.title).toContain('review_receipt_undetermined');
   });
 
   test.each([
@@ -9354,8 +9478,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
               granted_at: 1,
               requested_head_sha: 'a'.repeat(40),
               target_base: 'main'
-            },
-            head_review: null
+            }
           },
           {
             bead_id: 'RD-2',
@@ -9366,8 +9489,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
               granted_at: 1,
               requested_head_sha: 'a'.repeat(40),
               target_base: 'main'
-            },
-            head_review: null
+            }
           }
         ],
         merge_queue_state: { active: 'RD-1', failures: {} }
@@ -9524,10 +9646,11 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
   });
 
   /**
-   * @param {string} state
-   * @param {Record<string, unknown>} [extra]
+   * A queued row the merge gate is holding (UI-d7fy §3.3).
+   *
+   * @param {string} reason
    */
-  function headReviewEntry(state, extra = {}) {
+  function heldEntry(reason) {
     return {
       bead_id: 'RD-1',
       resolution_rounds: 0,
@@ -9538,75 +9661,29 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
         requested_head_sha: 'a'.repeat(40),
         target_base: 'main'
       },
-      head_review: {
-        authority_id: 'authority-1',
-        head_sha: 'b'.repeat(40),
-        state,
-        reviewer: 'codex',
-        effort: 'xhigh',
-        review_attempt_id: null,
-        findings_digest: null,
-        repair_attempt_id: null,
-        repair_rounds: 0,
-        approval_source: null,
-        receipt: null,
-        failure_reason: null,
-        updated_at: 2,
-        ...extra
-      }
+      hold: { reason, head_sha: 'b'.repeat(40), since: 2 }
     };
   }
 
-  test.each([
-    // `pending` names the receipt check it actually is: no reviewer has been
-    // dispatched in that state, and on the ordinary path none ever is.
-    ['pending', '머지 전 확인 중', false],
-    ['reviewing', '리뷰 진행 중', true],
-    ['revising', '리뷰 수정 중 · 1회', true]
-  ])('renders the %s head-review badge (UI-58w8 §7)', (state, label, live) => {
+  test('draws no review journal badge on a held row', () => {
     const { mount } = mountLane(
       laneOf(['RD-1'], {
-        merge_queue: [headReviewEntry(state)],
+        merge_queue: [heldEntry('review_receipt_stale')],
         merge_queue_state: { active: null, failures: {} }
       })
     );
 
-    const row = rowOf(mount, 'RD-1');
-    const badge = /** @type {HTMLElement} */ (
-      Array.from(row.querySelectorAll('.worker-mini__badge')).find((element) =>
-        (element.textContent || '').includes(label)
-      )
-    );
+    const text = rowOf(mount, 'RD-1').textContent || '';
 
-    expect(badge).toBeDefined();
-    expect(badge.classList.contains('worker-mini__badge--activity')).toBe(live);
+    // The gate badge is the whole surface now (UI-d7fy §6); the journal's own
+    // labels are gone with the journal.
+    expect(text).not.toContain('implementation review');
+    expect(text).not.toContain('review 자동 진행 실패');
+    expect(text).not.toContain('리뷰 실패');
+    expect(text).not.toContain('머지 전 확인 중');
   });
 
-  test('renders a failed head review as an alert naming the sanitized reason', () => {
-    const { mount } = mountLane(
-      laneOf(['RD-1'], {
-        merge_queue: [
-          headReviewEntry('failed', {
-            failure_reason: 'transport_unavailable'
-          })
-        ],
-        merge_queue_state: { active: null, failures: {} }
-      })
-    );
-
-    const row = rowOf(mount, 'RD-1');
-    const badge = /** @type {HTMLElement} */ (
-      Array.from(row.querySelectorAll('.worker-mini__badge')).find((element) =>
-        (element.textContent || '').includes('리뷰 실패')
-      )
-    );
-
-    expect(badge).toBeDefined();
-    expect(badge.title).toContain('transport_unavailable');
-    expect(badge.classList.contains('worker-mini__badge--alert')).toBe(true);
-  });
-
-  test('omits head-review UI on a legacy entry without the optional fields', () => {
+  test('omits review UI on a legacy entry without the optional fields', () => {
     const { mount } = mountLane(
       laneOf(['RD-1'], {
         merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
@@ -9620,116 +9697,10 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     expect(text).not.toContain('review 자동 진행 실패');
   });
 
-  test('offers a re-click on a terminally failed head review', () => {
-    const { mount } = mountLane(
-      laneOf(['RD-1'], {
-        merge_queue: [
-          headReviewEntry('failed', {
-            failure_reason: 'transport_unavailable'
-          })
-        ],
-        merge_queue_state: { active: null, failures: {} }
-      })
-    );
-
-    const button = /** @type {HTMLButtonElement} */ (
-      rowOf(mount, 'RD-1').querySelector('.worker-mini__merge')
-    );
-
-    expect(button).not.toBe(null);
-    expect(button.disabled).toBe(false);
-    expect(button.textContent).toContain('다시 머지');
-  });
-
-  test('keeps a failed-journal re-click disabled for an invalid receipt', () => {
-    const queue = laneOf(['RD-1'], {
-      merge_queue: [
-        headReviewEntry('failed', {
-          failure_reason: 'receipt_readback_mismatch'
-        })
-      ],
-      merge_queue_state: { active: null, failures: {} }
-    });
-    queue.pr_observations['RD-1'].gate = {
-      enabled: false,
-      tier: 'review',
-      gate_badge: '차단',
-      base_badge: '최신',
-      reason: 'review_receipt_invalid'
-    };
-    const { mount } = mountLane(queue);
-
-    const row = rowOf(mount, 'RD-1');
-    const button = /** @type {HTMLButtonElement} */ (
-      row.querySelector('.worker-mini__merge')
-    );
-
-    expect(button).not.toBe(null);
-    expect(button.disabled).toBe(true);
-    expect(row.querySelector('.worker-mini__badge')?.textContent).toBe(
-      '리뷰 기록 오류'
-    );
-  });
-
-  test.each(['mergeability_unknown', 'gh_failed'])(
-    'keeps a failed-journal re-click disabled for %s',
-    (reason) => {
-      const queue = laneOf(['RD-1'], {
-        merge_queue: [
-          headReviewEntry('failed', {
-            failure_reason: 'head_unobservable'
-          })
-        ],
-        merge_queue_state: { active: null, failures: {} }
-      });
-      queue.pr_observations['RD-1'].gate = {
-        enabled: false,
-        tier: 'undecidable',
-        gate_badge: '관측 오류',
-        base_badge: '',
-        reason
-      };
-      const { mount } = mountLane(queue);
-
-      const row = rowOf(mount, 'RD-1');
-      const button = /** @type {HTMLButtonElement} */ (
-        row.querySelector('.worker-mini__merge')
-      );
-
-      expect(button).not.toBe(null);
-      expect(button.disabled).toBe(true);
-      expect(row.querySelector('.worker-mini__badge')?.textContent).toBe(
-        '리뷰 실패: 진행 불가'
-      );
-    }
-  );
-
-  test('keeps 취소 enabled while a review or repair is running', () => {
-    const { mount } = mountLane(
-      laneOf(['RD-1'], {
-        merge_queue: [headReviewEntry('reviewing')],
-        // The driver holds this item while the reviewer is out.
-        merge_queue_state: { active: 'RD-1', failures: {} }
-      })
-    );
-
-    const cancel = /** @type {HTMLButtonElement} */ (
-      rowOf(mount, 'RD-1').querySelector('.worker-mini__merge-cancel')
-    );
-
-    expect(cancel).not.toBe(null);
-    expect(cancel.disabled).toBe(false);
-  });
-
   test('keeps 취소 disabled while the merge effect itself runs', () => {
     const { mount } = mountLane(
       laneOf(['RD-1'], {
-        merge_queue: [
-          headReviewEntry('approved', {
-            approval_source: 'external_review',
-            receipt: `codex@${'b'.repeat(40)}`
-          })
-        ],
+        merge_queue: [heldEntry('review_receipt_missing')],
         merge_queue_state: { active: 'RD-1', failures: {} }
       })
     );
@@ -9741,23 +9712,20 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     expect(cancel.disabled).toBe(true);
   });
 
-  test('an approved head review adds no badge of its own', () => {
+  test('keeps 취소 enabled on a held row the driver is not on', () => {
     const { mount } = mountLane(
       laneOf(['RD-1'], {
-        merge_queue: [
-          headReviewEntry('approved', {
-            approval_source: 'external_review',
-            receipt: `codex@${'b'.repeat(40)}`
-          })
-        ],
+        merge_queue: [heldEntry('review_receipt_missing')],
         merge_queue_state: { active: null, failures: {} }
       })
     );
 
-    const text = rowOf(mount, 'RD-1').textContent || '';
+    const cancel = /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__merge-cancel')
+    );
 
-    expect(text).not.toContain('implementation review');
-    expect(text).not.toContain('review 수정 중');
+    expect(cancel).not.toBe(null);
+    expect(cancel.disabled).toBe(false);
   });
 
   test('the active item shows no position badge and cannot be cancelled', () => {
@@ -10161,14 +10129,14 @@ describe('prStatusBadge priority (UI-vkk8 §3)', () => {
     expect(result?.title).toContain('main_receipt_unbacked');
   });
 
-  test('shows 확인 중 for a queued row whose review receipt the queue will fetch (UI-kxhf)', () => {
+  test('keeps the review hold on a queued row instead of 확인 중 (UI-d7fy §5)', () => {
     const result = prStatusBadge({
       auto_pending: true,
       queued: true,
       gate: { reason: 'review_receipt_missing' }
     });
 
-    expect(result).toMatchObject({ label: '확인 중', live: true });
+    expect(result).toMatchObject({ label: '최종 변경 리뷰 필요', alert: true });
   });
 
   test('shows 확인 중 for a queued row whose receipt warning the queue re-checks (UI-kxhf)', () => {
@@ -10199,11 +10167,7 @@ describe('prStatusBadge priority (UI-vkk8 §3)', () => {
     const result = prStatusBadge({
       auto_pending: false,
       queued: true,
-      gate: { reason: 'review_receipt_missing' },
-      head_review: {
-        state: 'failed',
-        failure_reason: 'repair_head_unobservable'
-      }
+      gate: { reason: 'review_receipt_missing' }
     });
 
     expect(result?.label).not.toBe('확인 중');
@@ -11991,26 +11955,6 @@ describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', ()
   });
 });
 
-describe('headReviewFailureCategory (UI-nlgz)', () => {
-  test.each([
-    ['review_failed', '리뷰어 거부'],
-    ['review_verdict_malformed', '리뷰어 거부'],
-    ['reviewer_selection_invalid', '리뷰어 설정 오류'],
-    ['external_head_drift', 'head 불일치'],
-    ['receipt_readback_mismatch', 'head 불일치'],
-    ['resolver_self_review_not_approved', 'head 불일치'],
-    ['repair_budget_exhausted', '수리 실패'],
-    ['repair_self_review_missing', '수리 실패'],
-    ['transport_unavailable', '진행 불가'],
-    [null, '진행 불가']
-  ])('folds %s into %s', (code, label) => {
-    const result = headReviewFailureCategory(code);
-
-    expect(result.label).toBe(label);
-    expect(result.action.length).toBeGreaterThan(0);
-  });
-});
-
 describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
@@ -13073,42 +13017,6 @@ describe('worker view — 자동 해소 phase 배지 (UI-hk74 §9)', () => {
     expect(badge.title).toContain('메타데이터 정정이 관측되면 자동 재개');
   });
 
-  test('badges an automatic review row with its reviewer, effort and source', () => {
-    const mount = render(
-      prWaitQueue({
-        merge_queue: [
-          {
-            bead_id: 'RD-1',
-            resolution_rounds: 0,
-            authority: { source: 'automatic' },
-            head_review: {
-              state: 'reviewing',
-              reviewer: 'codex',
-              effort: 'xhigh',
-              reviewer_source: 'harness'
-            }
-          }
-        ],
-        merge_queue_state: { active: null, failures: {} },
-        completion_status: completionOf('reviewing', {
-          class: 'auto_review',
-          origin_reason: 'review_receipt_missing',
-          attempts: 1,
-          attempt_cap: 3,
-          next_at: null,
-          last_error: null
-        })
-      })
-    );
-
-    const badge = badgeWith(mount, '자동 리뷰 중');
-
-    expect(badge).not.toBeUndefined();
-    const title = badge.querySelector('[title]')?.getAttribute('title') || '';
-    expect(title).toContain('리뷰어 codex · effort xhigh');
-    expect(title).toContain('리뷰어 출처 harness');
-  });
-
   test('badges a retrying row 재시도 n/3 with its next wake and last error', () => {
     const next_at = Date.parse('2026-08-24T10:30:00Z');
     const mount = render(
@@ -13319,15 +13227,14 @@ describe('worker view — 자동 해소 phase 배지 (UI-hk74 §9)', () => {
           next_at: null,
           last_error: null
         }
-      }),
-      null
+      })
     );
 
     expect(result?.label).toBe('재시도 2');
   });
 });
 
-describe('worker view — head review 시도 이력 표시 (UI-hk74 §7)', () => {
+describe('worker view — 리뷰 세션 시도 이력 표시 (UI-d7fy §5.5)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
@@ -13352,14 +13259,14 @@ describe('worker view — head review 시도 이력 표시 (UI-hk74 §7)', () =>
     return mount;
   }
 
-  test('marks an automatic head review on the done row', () => {
+  test('marks an automatic review session on the done row', () => {
     const mount = renderDone({
       a1: { attempt_id: 'a1', bead_id: 'RD-1', status: 'done' },
       r1: {
         attempt_id: 'r1',
         bead_id: 'RD-1',
         status: 'done',
-        kind: 'head_review',
+        kind: 'review_session',
         origin: 'auto'
       }
     });
@@ -13371,14 +13278,14 @@ describe('worker view — head review 시도 이력 표시 (UI-hk74 §7)', () =>
     expect(row.textContent).toContain('리뷰 · 자동');
   });
 
-  test('marks a clicked head repair without the 자동 marker', () => {
+  test('marks a clicked review session without the 자동 marker', () => {
     const mount = renderDone({
       a1: { attempt_id: 'a1', bead_id: 'RD-1', status: 'done' },
       p1: {
         attempt_id: 'p1',
         bead_id: 'RD-1',
         status: 'done',
-        kind: 'head_repair',
+        kind: 'review_session',
         origin: 'click'
       }
     });
@@ -13387,8 +13294,8 @@ describe('worker view — head review 시도 이력 표시 (UI-hk74 §7)', () =>
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
 
-    expect(row.textContent).toContain('수리');
-    expect(row.textContent).not.toContain('수리 · 자동');
+    expect(row.textContent).toContain('리뷰');
+    expect(row.textContent).not.toContain('리뷰 · 자동');
   });
 
   test('leaves a done row of plain implementation attempts unbadged', () => {
@@ -13401,10 +13308,9 @@ describe('worker view — head review 시도 이력 표시 (UI-hk74 §7)', () =>
     );
 
     expect(row.textContent).not.toContain('리뷰');
-    expect(row.textContent).not.toContain('수리');
   });
 
-  test('sums a head review attempt into the done row token total', () => {
+  test('sums a review session attempt into the done row token total', () => {
     const mount = renderDone({
       a1: {
         attempt_id: 'a1',
@@ -13416,7 +13322,7 @@ describe('worker view — head review 시도 이력 표시 (UI-hk74 §7)', () =>
         attempt_id: 'r1',
         bead_id: 'RD-1',
         status: 'done',
-        kind: 'head_review',
+        kind: 'review_session',
         origin: 'auto',
         usage: { input_tokens: 1000, output_tokens: 0 }
       }
@@ -13429,7 +13335,7 @@ describe('worker view — head review 시도 이력 표시 (UI-hk74 §7)', () =>
     expect(el.textContent).toContain('2.0k');
   });
 
-  test('keeps a running head review out of the 실행중 tiles', () => {
+  test('keeps a running review session out of the 실행중 tiles', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -13439,7 +13345,7 @@ describe('worker view — head review 시도 이력 표시 (UI-hk74 §7)', () =>
             attempt_id: 'r1',
             bead_id: 'RD-1',
             status: 'running',
-            kind: 'head_review',
+            kind: 'review_session',
             origin: 'auto'
           }
         }

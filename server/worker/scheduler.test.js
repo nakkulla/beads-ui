@@ -594,7 +594,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -728,6 +728,7 @@ function setup(opts) {
     fs: opts.fs || { existsSync: () => true },
     notifyQueueChanged: opts.notifyQueueChanged,
     onCompletionAttemptSettled: opts.onCompletionAttemptSettled,
+    reviewSession: opts.reviewSession,
     now: () => 1000
   });
   // The concurrency cap lives in the STORE now (worker-phase2 §3), not in a
@@ -4125,37 +4126,18 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect(prompt).toContain('PR 머지는 절대 수행하지 마라');
   });
 
-  test('instructs the exact-delta self-review the merge requires', async () => {
+  test('does not ask the resolver session to review or write a receipt', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedDoneAttempt(env.store);
 
     await env.scheduler.resolveConflict(WS, 'B1');
 
-    // Without it the resolved PR strands at `resolver_self_review_not_approved`
-    // and no external reviewer is dispatched to rescue it (UI-vzyh §2).
+    // The resolver session resolves and pushes; the merge gate's `impl_review`
+    // ancestry rule is the ONE review judgment (UI-d7fy §3.6).
     const prompt = env.runner.spawnedBead('B1').prompt;
-    expect(prompt).toContain('exact delta');
-    expect(prompt).toContain('self-review');
-    expect(prompt).toContain('머지의 필수조건');
-  });
-
-  test('names the attempt id and the exact resolver-self receipt write', async () => {
-    const env = setup({ config: {}, slots: 1 });
-    seedDoneAttempt(env.store);
-
-    const result = await env.scheduler.resolveConflict(WS, 'B1');
-
-    // The queue reads `impl_review=resolver-self:<attempt>:<prior>@<result>`
-    // back from bd metadata; a session told only to "leave a verdict" wrote a
-    // comment instead and its PR fell to an external review (UI-hm55).
-    const prompt = env.runner.spawnedBead('B1').prompt;
-    expect(result.ok).toBe(true);
-    expect(prompt).toContain(`attempt id: ${result.attempt_id}`);
-    expect(prompt).toContain(
-      `bd update B1 --set-metadata impl_review=resolver-self:${result.attempt_id}:`
-    );
-    expect(prompt).toContain('bd show B1 --json');
-    expect(prompt).toContain('git rev-parse HEAD');
+    expect(prompt).not.toContain('resolver-self');
+    expect(prompt).not.toContain('self-review');
+    expect(prompt).not.toContain('impl_review');
   });
 
   test('instructs recording the resolution as a bd comment on the bead', async () => {
@@ -5051,6 +5033,160 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     expect(q.pr_wait).toEqual([]);
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
     expect(notify.prWaitEntered).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduler review-session dispatch (UI-d7fy §5)', () => {
+  /**
+   * Register the pending `review_session` attempt the click's CAS commits.
+   *
+   * @param {any} store
+   */
+  function seedPendingReviewSession(store) {
+    store.upsertReviewSessionAttempt(WS, {
+      attempt_id: 'review:1',
+      patch: {
+        bead_id: 'B1',
+        kind: 'review_session',
+        status: 'pending',
+        authority_id: 'authority-1',
+        head_sha: 'a'.repeat(40)
+      }
+    });
+  }
+
+  test('restores a missing worktree from the PR head branch', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.worktree.exists.mockReturnValue(false);
+    env.worktree.restore.mockImplementation(async () => {
+      env.worktree.exists.mockReturnValue(true);
+      return { ok: true, path: '/wt/B1' };
+    });
+    seedPendingReviewSession(env.store);
+
+    const result = await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.worktree.restore).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'B1',
+      head_ref: 'B1'
+    });
+  });
+
+  test('the cancel stop kills the process and writes nothing durable', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedPendingReviewSession(env.store);
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+    // The cancel's own CAS already owns the durable half (UI-d7fy §5.6).
+    env.store.updateAttempt(WS, {
+      attempt_id: 'review:1',
+      patch: { status: 'failed', cause: 'cancelled', finished_at: 900 }
+    });
+    const kill = env.runner.killFor('B1');
+
+    const stopped = await env.scheduler.stopReviewSessionProcess(
+      WS,
+      'review:1'
+    );
+
+    expect(stopped).toBe(true);
+    expect(kill).toHaveBeenCalledWith('SIGTERM');
+    // The cancellation cause survives — the generic ■ stop would have written
+    // `stopped` with a null cause over it.
+    expect(env.store.snapshot(WS).attempts['review:1']).toMatchObject({
+      status: 'failed',
+      cause: 'cancelled'
+    });
+    // And the bead's claim is NOT reopened: its PR is still open, and the
+    // cancel had no business touching that wait.
+    expect(
+      env.bd.calls.some(
+        (/** @type {any} */ c) =>
+          c.method === 'setStatus' && c.bead_id === 'B1' && c.value === 'open'
+      )
+    ).toBe(false);
+  });
+
+  test('a late exit whose binding is gone records no exit or usage', async () => {
+    const complete = vi.fn(async () => ({
+      ok: false,
+      reason: 'binding_gone'
+    }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      reviewSession: { complete }
+    });
+    seedPendingReviewSession(env.store);
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    env.runner.finish('B1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    // The binding check runs BEFORE any attempt write (UI-d7fy §5.6): a
+    // cancelled session's late exit must not stamp its exit code onto a record
+    // that is no longer its own.
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(env.store.snapshot(WS).attempts['review:1'].exit).toBe(null);
+  });
+
+  test('a live binding still records the session exit', async () => {
+    const complete = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      reviewSession: { complete }
+    });
+    seedPendingReviewSession(env.store);
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    env.runner.finish('B1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts['review:1'].exit).toBe(0);
+  });
+
+  test('refuses worktree_missing when the click named no head branch', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.worktree.exists.mockReturnValue(false);
+    seedPendingReviewSession(env.store);
+
+    const result = await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'worktree_missing' });
+    expect(env.worktree.restore).not.toHaveBeenCalled();
   });
 });
 
@@ -8449,13 +8585,13 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     ]);
   });
 
-  test('leaves a running head review attempt out of the orphan sweep', async () => {
+  test('leaves a running review session attempt out of the orphan sweep', async () => {
     const env = reconcileEnv({ alive: true, started_at: 1000 });
-    env.store.upsertHeadReviewAttempt(WS, {
+    env.store.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review:authority-1:aaa',
       patch: {
         bead_id: 'UI-1',
-        kind: 'head_review',
+        kind: 'review_session',
         status: 'running',
         pid: null,
         started_at: 1000,
@@ -8470,7 +8606,7 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     ).toBe('running');
   });
 
-  test('leaves a live head review attempt out of the occupied slot count', () => {
+  test('leaves a live review session attempt out of the occupied slot count', () => {
     const env = reconcileEnv(
       { alive: true, started_at: 1000 },
       { 'UI-1': {} },
@@ -8478,11 +8614,11 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
         slots: 1
       }
     );
-    env.store.upsertHeadReviewAttempt(WS, {
+    env.store.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review:authority-1:aaa',
       patch: {
         bead_id: 'UI-1',
-        kind: 'head_review',
+        kind: 'review_session',
         status: 'running',
         pid: 4242,
         started_at: 1000,

@@ -103,8 +103,7 @@ describe('GET /healthz', () => {
       running_count: 0,
       auto_merge: false,
       manual_merge_continuation: {
-        schema_version: 1,
-        head_review_projection: true
+        schema_version: 2
       }
     });
   });

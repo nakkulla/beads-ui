@@ -117,10 +117,10 @@ export function createWorkerRuntime() {
   // reading the pre-write value back.
   const sessionLog = createSessionLog({
     onBeadWrite: (workspace, bead_id) => titleCache.expire(workspace, bead_id),
-    // Head review / repair transcripts live beside their own marker, because
-    // the head-review transport spawns those sessions and hands the runner that
-    // fd (UI-hk74 §7). The attempt record POINTS at the file; the drawer reads
-    // it in place and nothing is ever copied.
+    // A session spawned outside the scheduler writes its transcript beside its
+    // own marker rather than under `sessions/` (UI-hk74 §7). The attempt record
+    // POINTS at the file; the drawer reads it in place and nothing is ever
+    // copied.
     //
     // Containment is checked here rather than in the log module because this is
     // the trust boundary: the path comes out of durable state, and a reader

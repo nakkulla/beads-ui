@@ -1025,13 +1025,14 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
         }
       }
     });
-    // A LATER head review attempt for the same bead. It carries no baseline,
-    // so winning "latest" would silently skip every baseline-dependent check.
-    store.upsertHeadReviewAttempt(WS, {
+    // A LATER review session attempt for the same bead. It carries no
+    // baseline, so winning "latest" would silently skip every
+    // baseline-dependent check.
+    store.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review:authority-1:x',
       patch: {
         bead_id: BEAD,
-        kind: 'head_review',
+        kind: 'review_session',
         status: 'done',
         finished_at: 9_999
       }

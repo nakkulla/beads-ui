@@ -23,7 +23,7 @@ describe('worker attempt failure projection', () => {
     expect([first, latest].filter(predicate)).toEqual([latest]);
   });
 
-  test('ignores a head review attempt when picking the bead last attempt', () => {
+  test('ignores a review session attempt when picking the bead last attempt', () => {
     const implementation = {
       attempt_id: 'att-1',
       bead_id: 'UI-1',
@@ -31,19 +31,19 @@ describe('worker attempt failure projection', () => {
       finished_at: 100,
       dismissed_at: null
     };
-    const head_review = {
+    const review_session = {
       attempt_id: 'review:authority-1:aaa',
       bead_id: 'UI-1',
-      kind: 'head_review',
+      kind: 'review_session',
       finished_at: 200,
       dismissed_at: null
     };
     const predicate = createUnhandledFailurePredicate({
-      attempts: { implementation, head_review },
+      attempts: { implementation, review_session },
       done: []
     });
 
-    expect([implementation, head_review].filter(predicate)).toEqual([
+    expect([implementation, review_session].filter(predicate)).toEqual([
       implementation
     ]);
   });

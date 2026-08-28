@@ -35,8 +35,7 @@ describe('worker/runtime status', () => {
       running_count: 2,
       auto_merge: false,
       manual_merge_continuation: {
-        schema_version: 1,
-        head_review_projection: true
+        schema_version: 2
       }
     });
   });
@@ -51,8 +50,7 @@ describe('worker/runtime status', () => {
       running_count: 0,
       auto_merge: false,
       manual_merge_continuation: {
-        schema_version: 1,
-        head_review_projection: true
+        schema_version: 2
       }
     });
     expect('breaker_tripped' in status).toBe(false);
@@ -69,8 +67,7 @@ describe('worker/runtime status', () => {
 
     expect(status.auto_merge).toBe(true);
     expect(status.manual_merge_continuation).toEqual({
-      schema_version: 1,
-      head_review_projection: true
+      schema_version: 2
     });
   });
 
@@ -113,23 +110,23 @@ describe('worker/runtime session-log → title-cache wiring (UI-eey2 §9.2)', ()
   });
 });
 
-describe('worker/runtime session-log attempt paths (UI-hk74 §7)', () => {
+describe('worker/runtime session-log attempt paths (UI-d7fy §5.5)', () => {
   /**
    * @param {any} rt
    * @param {Record<string, any>} patch
    */
   function recordHeadReview(rt, patch) {
-    rt.queueStore.upsertHeadReviewAttempt(WS, {
+    rt.queueStore.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review:authority-1:aaa',
-      patch: { bead_id: 'UI-1', kind: 'head_review', ...patch }
+      patch: { bead_id: 'UI-1', kind: 'review_session', ...patch }
     });
   }
 
-  test('reads a head review attempt from the log its record names', () => {
+  test('reads a review session attempt from the log its record names', () => {
     const rt = createWorkerRuntime();
     const recorded = path.join(
       workspaceStateDir(WS),
-      'head-review-attempts',
+      'review-sessions',
       'review_authority-1_aaa.log.jsonl'
     );
     fs.mkdirSync(path.dirname(recorded), { recursive: true });
@@ -158,7 +155,7 @@ describe('worker/runtime session-log attempt paths (UI-hk74 §7)', () => {
     fs.writeFileSync(outside, `${JSON.stringify({ type: 'assistant' })}\n`);
     const link = path.join(
       workspaceStateDir(WS),
-      'head-review-attempts',
+      'review-sessions',
       'review_authority-1_aaa.log.jsonl'
     );
     fs.mkdirSync(path.dirname(link), { recursive: true });

@@ -14,6 +14,18 @@ scope:
 
 # needs_human 사유별 자동 해소 정책 — 설계 (UI-hk74)
 
+> **부분 은퇴 (UI-d7fy, 2026-08-28).** `## 6. head review 정합`과
+> `## 7. head review·repair를 attempt 이력에 올리기`, 그리고 `auto_review`
+> 분류와 `reviewing` phase를 다루는 부분(§3 정책 표의 `auto_review` 행, §4 상태
+> 머신, §5·§8~§11의 관련 항목)은 head-review 큐 계층과 함께 제거됐다. 자동
+> 재리뷰 dispatch·리뷰어 사다리·`head_review`/`head_repair` attempt kind는 더
+> 이상 존재하지 않고, 리뷰 사유는 completion intent를 종단하지 않으며 머지
+> 게이트 보류로 남아 `[리뷰 후 머지]` 클릭이 유일한 출구다.
+> `waiting_metadata`·`retrying` 정책 등 나머지 절은 그대로 유효하다. 제거
+> 근거는
+> `docs/superpowers/specs/2026-08-27-head-review-layer-removal-design.md`
+> 이다.
+
 ## 1. 배경과 문제
 
 2026-08-24 UI-e6hw(#192)에서 자동 머지 코디네이터가 `receipt_unbacked:unit_plan_mismatch`로
@@ -170,6 +182,10 @@ auto_resolution: {
 
 ## 6. head review 정합
 
+> **은퇴 (UI-d7fy).** 이 절은 실행되지 않는다 — 근거는
+> `docs/superpowers/specs/2026-08-27-head-review-layer-removal-design.md`
+> 이다.
+
 리뷰어 사다리
 
 - `selectReviewer`는 dotfiles 계약의 manual-continuation 선택 순서를 그대로 따른다: Bead
@@ -215,6 +231,10 @@ auto_resolution: {
   `continuation_action` 질문이 뜬다.
 
 ## 7. head review·repair를 attempt 이력에 올리기
+
+> **은퇴 (UI-d7fy).** 이 절은 실행되지 않는다 — 근거는
+> `docs/superpowers/specs/2026-08-27-head-review-layer-removal-design.md`
+> 이다.
 
 - head review / repair 시도를 `queue.attempts`에 등록한다. 기존 `Attempt` 스키마에는
   이 용도의 필드가 없으므로 다음을 **스키마·정규화·projection에 함께** 추가한다(정규화기는

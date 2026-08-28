@@ -14,6 +14,15 @@ scope:
 
 # impl_review 신선도를 ancestry 결속으로 바꾸고 재리뷰 정지를 verify로 대체한다 (UI-vzyh)
 
+> **부분 은퇴 (UI-d7fy, 2026-08-28).** §2의 ancestry 판정 규칙은 그대로
+> 유효하며, 이제 머지 자격의 **유일한** 리뷰 판정이다. 다만 §4.2의 두 조항 —
+> `resolver:` mutation에 대한 `resolver_self_review_not_approved` 강제점 존치와
+> stale 시 `ensureHeadReview` 외부 리뷰 fallback — 은 head-review 큐 계층과 함께
+> 제거됐다. 해소 커밋도 같은 ancestry 규칙으로 판정하고, 영수증 부재·비조상은
+> 게이트 보류로 남아 `[리뷰 후 머지]` 클릭이 유일한 출구다. 근거는
+> `docs/superpowers/specs/2026-08-27-head-review-layer-removal-design.md`
+> 이다.
+
 - Bead: `UI-vzyh`
 - Route: `spec_backed`
 - 배경 사건: UI-c00b(PR #167)가 리뷰 사이클(외부 리뷰 → 지적 반영 →

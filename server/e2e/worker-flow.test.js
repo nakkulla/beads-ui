@@ -30,7 +30,6 @@ import {
   createCompletionIntentCoordinator,
   decideCompletionAction
 } from '../worker/completion-intent.js';
-import { createHeadReview } from '../worker/head-review.js';
 import { createMergeQueue } from '../worker/merge-queue.js';
 import { createPrActions } from '../worker/pr-actions.js';
 import { createPrObservationStore } from '../worker/pr-observations.js';
@@ -1377,38 +1376,8 @@ describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', 
   /**
    * @param {import('../worker/runtime.js').WorkerRuntime} runtime
    * @param {ReturnType<typeof buildPrActions>} pr_actions
-   * @param {{ metadata: Record<string, string>, status: string }} bd_record
-   * @param {{ review_calls: any[] }} record
    */
-  function buildManualDriver(runtime, pr_actions, bd_record, record) {
-    const head_review = createHeadReview({
-      workspace: WS,
-      store: runtime.queueStore,
-      selectReviewer: async () => ({
-        ok: true,
-        reviewer: 'codex',
-        effort: 'xhigh'
-      }),
-      readReceipt: async () => {
-        const raw = bd_record.metadata.impl_review || '';
-        const m = /^([^@\s]+)@([0-9a-f]{40})$/i.exec(raw);
-        return m ? { actor: m[1], head_sha: m[2].toLowerCase(), raw } : null;
-      },
-      lineage: async () => ({ queue_owned: true }),
-      runReview: async (/** @type {any} */ packet) => {
-        record.review_calls.push(packet);
-        return { ok: true, verdict: 'APPROVE' };
-      },
-      writeReceipt: async (
-        /** @type {string} */ _bead_id,
-        /** @type {string} */ receipt
-      ) => {
-        bd_record.metadata.impl_review = receipt;
-        return { ok: true, readback: receipt };
-      },
-      observeHead: async () => NEW_HEAD,
-      runRepair: async () => ({ ok: false, reason: 'unexpected' })
-    });
+  function buildManualDriver(runtime, pr_actions) {
     return createMergeQueue({
       workspace: WS,
       store: runtime.queueStore,
@@ -1417,13 +1386,12 @@ describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', 
       probeMergeability: (/** @type {string} */ bead_id) =>
         pr_actions.probeMergeability(bead_id),
       observePr: (/** @type {string} */ bead_id) => pr_actions.prState(bead_id),
-      headReview: head_review,
       headSha: () => NEW_HEAD,
       setResolutionPollTimer: () => 1
     });
   }
 
-  test('manual click → stale receipt → automatic review → exactly-once merge', async () => {
+  test('a stale receipt holds the queued item instead of ending it', async () => {
     const runtime = createWorkerRuntime();
     /** @type {{ metadata: Record<string, string>, status: string }} */
     const bd_record = {
@@ -1443,88 +1411,7 @@ describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', 
       squash_calls: []
     };
     const pr_actions = buildPrActions(runtime, bd_record, world);
-    /** @type {{ review_calls: any[] }} */
-    const record = { review_calls: [] };
-    const mq = buildManualDriver(runtime, pr_actions, bd_record, record);
-    const enqueue = runtime.queueStore.enqueueMergeManual(WS, {
-      expected_revision: runtime.queueStore.snapshot(WS).revision,
-      entries: [{ bead_id: 'M2', head_sha: NEW_HEAD, target_base: 'main' }]
-    });
-    expect(enqueue.ok).toBe(true);
-    expect(runtime.queueStore.snapshot(WS).auto_merge).toBe(false);
-
-    await mq.kick();
-
-    // Exactly one automatic review of the moved head, receipt written and
-    // bound, then exactly one pinned-head squash merge — under a FALSE global
-    // toggle throughout.
-    expect(record.review_calls).toHaveLength(1);
-    expect(record.review_calls[0].head_sha).toBe(NEW_HEAD);
-    expect(bd_record.metadata.impl_review).toBe(`codex@${NEW_HEAD}`);
-    expect(world.squash_calls).toEqual([NEW_HEAD]);
-    expect(runtime.queueStore.snapshot(WS).merge_queue).toEqual([]);
-  });
-
-  test('cancel during the review makes the late approval a no-op', async () => {
-    const runtime = createWorkerRuntime();
-    /** @type {{ metadata: Record<string, string>, status: string }} */
-    const bd_record = {
-      metadata: {
-        route: 'spec_backed',
-        spec_review: `codex@${OLD_HEAD}`,
-        impl_review: `codex@${OLD_HEAD}`
-      },
-      status: 'resolved'
-    };
-    seedStaleReviewed(runtime);
-    const merged = await gitRun(['rev-parse', 'main'], { cwd: repo_dir });
-    /** @type {{ pr_state: string, merged_sha: string, squash_calls: string[] }} */
-    const world = {
-      pr_state: 'OPEN',
-      merged_sha: merged.stdout.trim(),
-      squash_calls: []
-    };
-    const pr_actions = buildPrActions(runtime, bd_record, world);
-    const head_review = createHeadReview({
-      workspace: WS,
-      store: runtime.queueStore,
-      selectReviewer: async () => ({
-        ok: true,
-        reviewer: 'codex',
-        effort: 'xhigh'
-      }),
-      readReceipt: async () => null,
-      lineage: async () => ({ queue_owned: true }),
-      runReview: async () => {
-        // The user clicks [취소] while the reviewer is still out.
-        runtime.queueStore.cancelMerge(WS, {
-          expected_revision: runtime.queueStore.snapshot(WS).revision,
-          bead_id: 'M2'
-        });
-        return { ok: true, verdict: 'APPROVE' };
-      },
-      writeReceipt: async (
-        /** @type {string} */ _bead_id,
-        /** @type {string} */ receipt
-      ) => {
-        bd_record.metadata.impl_review = receipt;
-        return { ok: true, readback: receipt };
-      },
-      observeHead: async () => NEW_HEAD,
-      runRepair: async () => ({ ok: false, reason: 'unexpected' })
-    });
-    const mq = createMergeQueue({
-      workspace: WS,
-      store: runtime.queueStore,
-      merge: (/** @type {string} */ bead_id) =>
-        pr_actions.merge(bead_id, { allow_conflict_resolution: false }),
-      probeMergeability: (/** @type {string} */ bead_id) =>
-        pr_actions.probeMergeability(bead_id),
-      observePr: (/** @type {string} */ bead_id) => pr_actions.prState(bead_id),
-      headReview: head_review,
-      headSha: () => NEW_HEAD,
-      setResolutionPollTimer: () => 1
-    });
+    const mq = buildManualDriver(runtime, pr_actions);
     runtime.queueStore.enqueueMergeManual(WS, {
       expected_revision: runtime.queueStore.snapshot(WS).revision,
       entries: [{ bead_id: 'M2', head_sha: NEW_HEAD, target_base: 'main' }]
@@ -1532,10 +1419,49 @@ describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', 
 
     await mq.kick();
 
-    // The cancelled authority's late approval writes no receipt and merges
-    // nothing; the queue stays empty.
+    // Nothing merged, nothing dequeued, nothing terminalized (UI-d7fy §3.3):
+    // the item keeps its slot and its authority and says WHY it is standing.
+    const entry = runtime.queueStore.snapshot(WS).merge_queue[0];
     expect(world.squash_calls).toEqual([]);
-    expect(bd_record.metadata.impl_review).toBe(`codex@${OLD_HEAD}`);
+    expect(entry.bead_id).toBe('M2');
+    expect(entry.authority?.source).toBe('manual');
+    expect(entry.hold?.reason.startsWith('review_receipt_')).toBe(true);
+  });
+
+  test('a receipt that covers the head releases the hold and merges once', async () => {
+    const runtime = createWorkerRuntime();
+    /** @type {{ metadata: Record<string, string>, status: string }} */
+    const bd_record = {
+      metadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${OLD_HEAD}`,
+        impl_review: `codex@${OLD_HEAD}`
+      },
+      status: 'resolved'
+    };
+    seedStaleReviewed(runtime);
+    const merged = await gitRun(['rev-parse', 'main'], { cwd: repo_dir });
+    /** @type {{ pr_state: string, merged_sha: string, squash_calls: string[] }} */
+    const world = {
+      pr_state: 'OPEN',
+      merged_sha: merged.stdout.trim(),
+      squash_calls: []
+    };
+    const pr_actions = buildPrActions(runtime, bd_record, world);
+    const mq = buildManualDriver(runtime, pr_actions);
+    runtime.queueStore.enqueueMergeManual(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      entries: [{ bead_id: 'M2', head_sha: NEW_HEAD, target_base: 'main' }]
+    });
+    await mq.kick();
+    expect(runtime.queueStore.snapshot(WS).merge_queue[0].hold).toBeTruthy();
+
+    // The `[리뷰 후 머지]` session's only durable effect: a receipt on the
+    // observed head. The next kick re-runs the same gate and proceeds.
+    bd_record.metadata.impl_review = `codex@${NEW_HEAD}`;
+    await mq.kick();
+
+    expect(world.squash_calls).toEqual([NEW_HEAD]);
     expect(runtime.queueStore.snapshot(WS).merge_queue).toEqual([]);
   });
 });

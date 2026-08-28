@@ -27,8 +27,7 @@ describe('decorateQueue manual continuation capability (UI-58w8 §8)', () => {
     const out = /** @type {any} */ (decorateQueue(WS, bareQueue()));
 
     expect(out.manual_merge_continuation).toEqual({
-      schema_version: 1,
-      head_review_projection: true
+      schema_version: 2
     });
     expect(out.manual_merge_continuation).toEqual(MANUAL_MERGE_CONTINUATION);
   });

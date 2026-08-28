@@ -67,7 +67,7 @@ vi.mock('../worker/attach.js', () => {
     ),
     reviseApproveWorkerBead: rec(() => Promise.resolve({ ok: true })),
     reviseFixWorkerBead: rec(() => Promise.resolve({ ok: true })),
-    stopWorkerAttempt: rec(() => Promise.resolve(true)),
+    stopWorkerReviewSessionProcess: rec(() => Promise.resolve(true)),
     tickWorkerQueue: rec(() => Promise.resolve()),
     workerMergeQueueState: rec(() => ({ active: null, failures: {} })),
     workerSlots: rec(() => null),

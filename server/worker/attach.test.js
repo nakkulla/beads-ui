@@ -2978,7 +2978,7 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
 });
 
 describe('worker/attach base-update result wiring (UI-vzyh §2)', () => {
-  test('passes no vouched mutation for a base update', async () => {
+  test('takes the moved head straight back to the merge gate', async () => {
     const original_head = 'a'.repeat(40);
     const result_head = 'b'.repeat(40);
     const raced_head = 'c'.repeat(40);
@@ -3018,10 +3018,6 @@ describe('worker/attach base-update result wiring (UI-vzyh §2)', () => {
       state: 'ok',
       data: result_head
     }));
-    const ensureApproved = vi.fn(async () => ({
-      state: /** @type {const} */ ('failed'),
-      reason: 'external_review_required'
-    }));
     const att = createWorkerAttachment(WS, {
       runtime,
       bd: {
@@ -3045,15 +3041,7 @@ describe('worker/attach base-update result wiring (UI-vzyh §2)', () => {
         updateBranch,
         mergeSquash: vi.fn(),
         closePr: vi.fn()
-      }),
-      headReview: {
-        captureStartingApproval: async () => ({
-          actor: 'codex',
-          head_sha: original_head,
-          raw: `codex@${original_head}`
-        }),
-        ensureApproved
-      }
+      })
     });
     runtime.queueStore.appendAttempt(WS, {
       expected_revision: runtime.queueStore.snapshot(WS).revision,
@@ -3089,19 +3077,174 @@ describe('worker/attach base-update result wiring (UI-vzyh §2)', () => {
     await att.mergeQueue.kick();
 
     expect(updateBranch).toHaveBeenCalledWith(WS, 304);
-    // The retired carry stamp was the only consumer of the mutation result SHA
-    // (UI-vzyh §2): ancestry keeps the receipt current across the moved head,
-    // so head review sees the raced observation unvouched and reviews it.
-    expect(ensureApproved).toHaveBeenCalledWith(
-      'UI-1',
-      'UI-1',
-      expect.objectContaining({
-        head_sha: raced_head,
-        mutation: null,
-        mutation_result_sha: null
+    // The queue-owned base update is the ONLY mutation left here (UI-d7fy
+    // §3.3): the raced head is re-observed and judged by the merge gate's own
+    // ancestry rule, with no second freshness layer of the queue's to satisfy
+    // and no carry stamp to vouch for the move.
+    expect(updateBranch).toHaveBeenCalledTimes(1);
+    const entry = runtime.queueStore.snapshot(WS).merge_queue;
+    expect(entry).toHaveLength(1);
+    expect(entry[0].authority?.source).toBe('manual');
+    expect(entry[0].hold).toBeUndefined();
+  });
+});
+
+describe('worker/attach — review-session restart recovery (UI-d7fy §5)', () => {
+  /**
+   * The crash-window state on disk: a queued row with a manual authority, and
+   * one `review_session` attempt bound to it.
+   *
+   * @param {Record<string, any>} attempt
+   */
+  function seedReviewSessionQueue(attempt) {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        pr_wait: [{ bead_id: 'UI-1', attempt_id: 'att-UI-1', added_at: 5 }],
+        merge_queue: [
+          {
+            bead_id: 'UI-1',
+            authority: {
+              id: 'authority-1',
+              source: 'manual',
+              granted_at: 10,
+              requested_head_sha: 'a'.repeat(40),
+              target_base: 'main'
+            },
+            hold: {
+              reason: 'review_receipt_missing',
+              head_sha: 'a'.repeat(40),
+              since: 10
+            }
+          }
+        ],
+        attempts: {
+          'att-UI-1': {
+            attempt_id: 'att-UI-1',
+            bead_id: 'UI-1',
+            status: 'done',
+            repo: '/repo',
+            target_base: 'main',
+            finished_at: 4,
+            pr_url: 'https://example.test/pr/9'
+          },
+          'review:1': {
+            attempt_id: 'review:1',
+            bead_id: 'UI-1',
+            kind: 'review_session',
+            origin: 'click',
+            authority_id: 'authority-1',
+            head_sha: 'a'.repeat(40),
+            repo: '/repo',
+            target_base: 'main',
+            ...attempt
+          }
+        }
       })
     );
-    expect(runtime.queueStore.snapshot(WS).merge_queue).toHaveLength(1);
+  }
+
+  /**
+   * @param {{ state: 'gone'|'owned' }} probe_state
+   */
+  function attachWith(probe_state) {
+    const runtime = createWorkerRuntime();
+    const sessionMonitors = {
+      start: vi.fn(() => true),
+      stop: vi.fn(),
+      stopAll: vi.fn()
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      processController: /** @type {any} */ ({
+        capture: vi.fn(),
+        terminate: vi.fn(async () => ({
+          ok: true,
+          state: /** @type {const} */ ('gone'),
+          forced: false
+        })),
+        probe: vi.fn(() => probe_state),
+        signal: vi.fn()
+      }),
+      sessionMonitors,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+    return { runtime, att, sessionMonitors };
+  }
+
+  test('settles a review session that crashed between the CAS and the launch', async () => {
+    // Window 1: `enqueueMergeManual` committed, the process never spawned.
+    seedReviewSessionQueue({ status: 'pending' });
+    const { runtime } = attachWith({ state: 'gone' });
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(
+      () =>
+        runtime.queueStore.snapshot(WS).attempts['review:1'].status !==
+        'pending'
+    );
+
+    // The §5.2 in-flight guard has to clear, or every later [리뷰 후 머지]
+    // click on this Bead is a no-op forever.
+    expect(runtime.queueStore.snapshot(WS).attempts['review:1']).toMatchObject({
+      status: 'failed',
+      cause: 'session_lost:never_launched'
+    });
+    // The row itself survives with its authority intact — the recovery settles
+    // the ATTEMPT only, so the gate is what decides the row's hold from here.
+    expect(runtime.queueStore.snapshot(WS).merge_queue[0]).toMatchObject({
+      authority: { id: 'authority-1' }
+    });
+  });
+
+  test('settles a review session whose process did not outlive the restart', async () => {
+    // Window 2: the session was running when the server died.
+    seedReviewSessionQueue({
+      status: 'running',
+      pid: 4242,
+      started_at: 1000,
+      process_identity: { pid: 4242, pgid: 4242, started_at: 1000 }
+    });
+    const { runtime } = attachWith({ state: 'gone' });
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(
+      () =>
+        runtime.queueStore.snapshot(WS).attempts['review:1'].status !==
+        'running'
+    );
+
+    expect(runtime.queueStore.snapshot(WS).attempts['review:1']).toMatchObject({
+      status: 'failed',
+      cause: 'session_lost:process_gone'
+    });
+  });
+
+  test('reattaches a review session whose process is still alive', async () => {
+    seedReviewSessionQueue({
+      status: 'running',
+      pid: 4242,
+      started_at: 1000,
+      process_identity: { pid: 4242, pgid: 4242, started_at: 1000 }
+    });
+    const { runtime, sessionMonitors } = attachWith({ state: 'owned' });
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => sessionMonitors.start.mock.calls.length > 0);
+
+    expect(runtime.queueStore.snapshot(WS).attempts['review:1'].status).toBe(
+      'running'
+    );
+    expect(
+      /** @type {any} */ (sessionMonitors.start.mock.calls[0])[1].attempt_id
+    ).toBe('review:1');
   });
 });
 
