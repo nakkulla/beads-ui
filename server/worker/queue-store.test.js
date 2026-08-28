@@ -2920,6 +2920,38 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     });
   });
 
+  test('keeps a cleanup failure summary across a reload', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      summary: 'FAIL server/a.test.js'
+    });
+
+    expect(createQueueStore().load(WS).cleanup_failed['UI-1'].summary).toBe(
+      'FAIL server/a.test.js'
+    );
+  });
+
+  test('omits a cleanup failure summary the caller did not have', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'post_merge_verify',
+      reason: 'verify_cmd_failed',
+      summary: null
+    });
+
+    expect(
+      createQueueStore().load(WS).cleanup_failed['UI-1']
+    ).not.toHaveProperty('summary');
+  });
+
   test('round-trips raw historical diagnosis fields across a later cleanup failure write', () => {
     const store = createQueueStore();
     seedPrWait(store);

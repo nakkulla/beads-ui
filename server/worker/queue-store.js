@@ -456,7 +456,7 @@
  * the ONE non-blocking record (UI-dlim §3.4): the bead was ADMITTED with a
  * stale spec_review receipt, so the badge must not read as a refusal. Every
  * record without the flag is a refusal, exactly as before.
- * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, summary?: string, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
  * `resolved`, and nothing retries by itself — so the record that a human must
@@ -577,7 +577,10 @@
  * @property {string|null} log_digest
  * @property {number|null} exit_code
  * @property {string|null} signal
- * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }|null} failure
+ * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean, summary?: string, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }|null} failure
+ * `summary` is the one line the failing script printed (2026-08-28
+ * worker-record-timeline spec §6 row 2), extracted once by the coordinator;
+ * absent when the run left no readable output.
  * @property {{ first_failure: RepoOperation['failure'], first_fingerprint: string|null, first_failed_at: number|null, consumed_key: [string, string, string]|null, absorbed: { first_failure: NonNullable<RepoOperation['failure']>, first_fingerprint: string, at: number }|null, outcome: 'pending'|'consumed'|'not_applicable'|'absorbed', blocked_reason: string|null }|null} retry
  * @property {string|null} superseded_by
  * @property {'automatic'|'manual'} source - Who asked for this operation. Every
@@ -2785,6 +2788,9 @@ function normalizeRepoOperationFailure(value) {
     fingerprint: typeof value.fingerprint === 'string' ? value.fingerprint : '',
     detail: typeof value.detail === 'string' ? value.detail : '',
     interrupted: value.interrupted === true,
+    ...(typeof value.summary === 'string' && value.summary.length > 0
+      ? { summary: value.summary }
+      : {}),
     ...(value.fetch_failure === 'timeout' || value.fetch_failure === 'nonzero'
       ? { fetch_failure: value.fetch_failure }
       : {}),
@@ -3269,6 +3275,9 @@ function normalizeQueue(raw) {
           at: typeof value.at === 'number' ? value.at : 0,
           detail: typeof value.detail === 'string' ? value.detail : null
         };
+        if (typeof value.summary === 'string' && value.summary.length > 0) {
+          q.cleanup_failed[bead_id].summary = value.summary;
+        }
         if (typeof value.output_tail === 'string') {
           q.cleanup_failed[bead_id].output_tail = value.output_tail;
         }
@@ -6134,11 +6143,17 @@ export function createQueueStore(options = {}) {
      * `output_tail` carries the failing command's own trailing output when the
      * step ran one (UI-qult §1); omit it otherwise.
      *
+     * `summary` is the ONE line that says why the cleanup stopped (2026-08-28
+     * worker-record-timeline spec §6): the caller extracts it once, from the
+     * step's own output when it ran a command and from the failure token
+     * otherwise. Omit it when the call site has nothing to say — a summary is
+     * never synthesized from an unknown token.
+     *
      * `log_path` carries the absolute path to that command's full preserved
      * output (UI-0x54); omit it when the run left no complete log file.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, output_tail?: string|null, log_path?: string|null, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} input
+     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, summary?: string|null, output_tail?: string|null, log_path?: string|null, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} input
      * @returns {QueueOpResult}
      */
     recordCleanupFailure(workspace, input) {
@@ -6148,6 +6163,7 @@ export function createQueueStore(options = {}) {
         reason,
         bd_restore,
         detail,
+        summary,
         output_tail,
         log_path,
         failure_code,
@@ -6183,6 +6199,9 @@ export function createQueueStore(options = {}) {
           detail:
             typeof detail === 'string' && detail.length > 0 ? detail : null
         };
+        if (typeof summary === 'string' && summary.length > 0) {
+          next.cleanup_failed[bead_id].summary = summary;
+        }
         if (typeof output_tail === 'string' && output_tail.length > 0) {
           next.cleanup_failed[bead_id].output_tail = output_tail;
         }

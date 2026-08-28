@@ -68,7 +68,13 @@ import * as default_delegation_monitor from './delegation-monitor.js';
 import { errorDetail } from './error-detail.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
-import { RETRY_MAX, causeKey, classifyFailure } from './failure-class.js';
+import {
+  RETRY_MAX,
+  causeKey,
+  classifyFailure,
+  extractSummary,
+  guardKillMessage
+} from './failure-class.js';
 import * as default_guard_hook from './guard-hook.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
@@ -256,8 +262,14 @@ const SESSION_EFFORT_RETRY_LIMIT = 3;
  * `cause_detail` (UI-2o4z §2). Undefined when the session left nothing to
  * record, so the patch keeps the field null instead of inventing one.
  *
+ * The guard's own kill message rides along as `summary` (2026-08-28
+ * worker-record-timeline spec §6 row 3). This is the ONE place it is extracted:
+ * every guard kill — the live engine's blocked verdict and the restart
+ * monitor's `guard_kill` evidence alike — reaches a durable record through
+ * here, so the failure tile and the timeline quote the same sentence.
+ *
  * @param {{ reason: string, command: string|null }|null|undefined} detail
- * @returns {{ reason: string, command: string|null }|undefined}
+ * @returns {{ reason: string, command: string|null, summary?: string }|undefined}
  */
 function blockerCauseDetail(detail) {
   if (!detail || typeof detail.reason !== 'string') {
@@ -267,7 +279,14 @@ function blockerCauseDetail(detail) {
     typeof detail.command === 'string'
       ? detail.command.slice(0, CAUSE_DETAIL_COMMAND_MAX)
       : null;
-  return { reason: detail.reason, command };
+  const summary = extractSummary(
+    guardKillMessage({ reason: detail.reason, command })
+  );
+  return {
+    reason: detail.reason,
+    command,
+    ...(summary === null ? {} : { summary })
+  };
 }
 
 /**

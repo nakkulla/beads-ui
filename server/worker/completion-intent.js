@@ -12,6 +12,7 @@ import path from 'node:path';
 // this comment and the client card read, so one failure never gets two
 // sentences. `attach.js` already imports `app/utils` the same way.
 import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
+import { scriptSummary } from './failure-class.js';
 import { RESOLUTION_ROUND_CAP, RESOLUTION_WAIT_MS } from './merge-queue.js';
 import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
@@ -863,6 +864,30 @@ function completionFailureSentence(reason) {
 }
 
 /**
+ * The one line a completion failure is summarized by (2026-08-28
+ * worker-record-timeline spec §6 row 2). The evidence a `verify_red` or a
+ * repairable cleanup carries is the verify/deploy run itself, so its
+ * `output_tail` — the SAME tail {@link createCompletionFailureKey} digests — is
+ * what says why the script failed.
+ *
+ * Extracted ONCE, here, so the hand-off comment quotes the same string the
+ * record was settled on rather than re-deriving its own. Null when the failure
+ * ran no command at all, which is fail-quiet: the comment then carries only the
+ * cause sentence it already had.
+ *
+ * @param {unknown} evidence - The fact's own evidence object, when it has one.
+ * @returns {string | null}
+ */
+export function completionFailureSummary(evidence) {
+  if (evidence === null || typeof evidence !== 'object') {
+    return null;
+  }
+  return scriptSummary(
+    /** @type {{ output_tail?: unknown }} */ (evidence).output_tail
+  );
+}
+
+/**
  * The failure hand-off comment (UI-8w4t §4). The log is POINTED at, never
  * inlined: a verify log is large and can carry secrets, and the path is what a
  * human opens anyway.
@@ -870,9 +895,17 @@ function completionFailureSentence(reason) {
  * @param {any} intent
  * @param {any} queue
  * @param {any} terminal
+ * @param {string|null} [summary] - The failing script's own line (spec §6 row
+ * 2), extracted once by the caller. Omitted from the comment when the failure
+ * ran no command, so the reader is never shown an empty field.
  * @returns {string}
  */
-export function completionFailureComment(intent, queue, terminal) {
+export function completionFailureComment(
+  intent,
+  queue,
+  terminal,
+  summary = null
+) {
   const sentence = completionFailureSentence(terminal.reason);
   const subject = intent?.subject || {};
   const target_sha =
@@ -890,6 +923,9 @@ export function completionFailureComment(intent, queue, terminal) {
     '## 🤖 완료 실패 기록',
     `- 단계: ${publicFailureStage(terminal)}`,
     `- 원인: ${terminal.reason}${sentence ? ` — ${sentence}` : ''}`,
+    ...(typeof summary === 'string' && summary.length > 0
+      ? [`- 요약: ${summary}`]
+      : []),
     `- 대상: ${target_sha} (base ${target_base})`,
     `- 로그: ${terminal.log_path || '(없음)'}`,
     `- 재시도: ${retryOutcomeText(operation)}`,
@@ -1358,7 +1394,16 @@ export function createCompletionActionDriver(deps) {
     });
     notify();
     if (written.ok && commented_at === null) {
-      postFailureComment(root_bead_id, intent, queue, terminal);
+      // Extracted from the evidence this terminal was settled on, not
+      // re-derived inside the comment builder (spec §6: one extraction, one
+      // string).
+      postFailureComment(
+        root_bead_id,
+        intent,
+        queue,
+        terminal,
+        completionFailureSummary(evidence)
+      );
     }
   }
 
@@ -1409,13 +1454,15 @@ export function createCompletionActionDriver(deps) {
    * @param {any} intent
    * @param {any} queue
    * @param {any} terminal
+   * @param {string|null} summary - The failing script's own line (spec §6),
+   * already extracted by the caller from the evidence this terminal settled on.
    */
-  function postFailureComment(root_bead_id, intent, queue, terminal) {
+  function postFailureComment(root_bead_id, intent, queue, terminal, summary) {
     if (typeof deps.bd?.comment !== 'function') {
       return;
     }
     const comment = deps.bd.comment;
-    const text = completionFailureComment(intent, queue, terminal);
+    const text = completionFailureComment(intent, queue, terminal, summary);
     comment_chain = comment_chain
       .then(() => comment(root_bead_id, text))
       .then(

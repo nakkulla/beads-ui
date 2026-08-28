@@ -27,6 +27,7 @@
 import { EventEmitter } from 'node:events';
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { guardKillMessage } from '../failure-class.js';
 import {
   findMergeViolation,
   guardEffect,
@@ -526,7 +527,7 @@ export function runSession(spec, bead, workspace, settings, deps) {
       const blocker = {
         kind: 'blocker',
         reason: question_reason,
-        message: question_reason,
+        message: guardKillMessage(blocked_detail),
         raw: obj
       };
       norm_events.push(blocker);
@@ -578,14 +579,10 @@ export function runSession(spec, bead, workspace, settings, deps) {
           reason: violation.reason,
           command: violation.command
         };
-        const message =
-          violation.reason === 'merge_to_base_blocked'
-            ? `landing on the base branch is never permitted: ${violation.command}`
-            : violation.reason === 'hook_bypass_blocked'
-              ? `disabling the git hooks is never permitted: ${violation.command}`
-              : // Unreachable while the effect table names only the two kinds
-                // above as kills; kept so a NEW kind still says something.
-                `the session engine refused this command: ${violation.command}`;
+        // One copy of the sentence, in `failure-class.js`, because the restart
+        // monitor's kill reaches the same durable record through the
+        // scheduler's `blockerCauseDetail` (spec §6 row 3).
+        const message = guardKillMessage(blocked_detail);
         /** @type {RunnerEvent} */
         const merge_blocker = {
           kind: 'blocker',

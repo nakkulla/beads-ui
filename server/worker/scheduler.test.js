@@ -1825,7 +1825,9 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     expect(a.cause).toBe('loud_fail_blocker');
     expect(a.cause_detail).toEqual({
       reason: 'merge_to_base_blocked',
-      command: 'gh pr merge 311'
+      command: 'gh pr merge 311',
+      // The guard's own kill message, extracted once (UI-8wpb §6 row 3).
+      summary: 'landing on the base branch is never permitted: gh pr merge 311'
     });
   });
 
@@ -8910,7 +8912,8 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(snap.attempts['att-1'].cause).toBe('loud_fail_blocker');
     expect(snap.attempts['att-1'].cause_detail).toEqual({
       reason: 'merge_to_base_blocked',
-      command: 'git merge main'
+      command: 'git merge main',
+      summary: 'landing on the base branch is never permitted: git merge main'
     });
     expect(snap.pr_wait).toEqual([]);
     // A breached prevention layer is SYSTEMIC (UI-5ym8 §3.4): the stop is
@@ -9521,7 +9524,8 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
     );
     expect(notify.attemptFailed.mock.calls[0][0].cause_detail).toEqual({
       reason: 'git_merge_guard',
-      command: 'git merge main'
+      command: 'git merge main',
+      summary: 'the session engine refused this command: git merge main'
     });
   });
 

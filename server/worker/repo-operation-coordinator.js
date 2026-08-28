@@ -11,6 +11,7 @@ import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { acquireDeployLock } from './deploy-lock.js';
+import { scriptSummary } from './failure-class.js';
 import { repoOperationPolicySupported } from './repo-operation-policy.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
@@ -36,6 +37,13 @@ import {
 import { createRepoOpsDeployWorktreeManager } from './worktree.js';
 
 const RECONCILE_GRACE_MS = 5000;
+
+/**
+ * How much of a run log's tail is decoded when quoting the failing line. Large
+ * enough to hold a test runner's failure block, small enough that a huge log
+ * costs one page rather than a full decode.
+ */
+const LOG_SUMMARY_TAIL_BYTES = 64 * 1024;
 
 /**
  * @param {{ repo_operations: Record<string, any> }} queue
@@ -207,6 +215,33 @@ export function createRepoOperationCoordinator(deps) {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * The two things a settled operation keeps from its run log: the digest that
+   * gives the failure its identity, and the one line that says why the script
+   * failed (2026-08-28 worker-record-timeline spec §6 row 2). Both come out of
+   * ONE read — the log is already read whole for the digest, so a second pass
+   * over the same bytes is the only cost.
+   *
+   * The summary is extracted from the log's TAIL: a script announces its
+   * failure at the end, and a multi-megabyte deploy log must not be decoded in
+   * full just to quote one line.
+   *
+   * @param {string} file
+   * @returns {{ digest: string|null, summary: string|null }}
+   */
+  function logEvidence(file) {
+    /** @type {Buffer} */
+    let raw;
+    try {
+      raw = fs.readFileSync(file);
+    } catch {
+      return { digest: null, summary: null };
+    }
+    const digest = crypto.createHash('sha256').update(raw).digest('hex');
+    const tail = raw.subarray(Math.max(0, raw.length - LOG_SUMMARY_TAIL_BYTES));
+    return { digest, summary: scriptSummary(tail.toString('utf8')) };
   }
 
   /**
@@ -550,7 +585,10 @@ export function createRepoOperationCoordinator(deps) {
   async function settleFailure(workspace, operation, operation_id, failure) {
     const current =
       deps.store.snapshot(workspace).repo_operations[operation_id] || operation;
-    const log_digest = current.log_path ? fileSha256(current.log_path) : null;
+    const evidence = current.log_path
+      ? logEvidence(current.log_path)
+      : { digest: null, summary: null };
+    const log_digest = evidence.digest;
     const failure_record = {
       code: failure.code,
       fingerprint: failureFingerprint({
@@ -561,6 +599,7 @@ export function createRepoOperationCoordinator(deps) {
       }),
       detail: failure.detail ?? '',
       interrupted: failure.interrupted === true,
+      ...(evidence.summary === null ? {} : { summary: evidence.summary }),
       ...(failure.fetch_failure === 'timeout' ||
       failure.fetch_failure === 'nonzero'
         ? { fetch_failure: failure.fetch_failure }

@@ -2863,6 +2863,79 @@ describe('RepoOperation coordinator', () => {
       retry: { blocked_reason: 'schema_unsupported' }
     });
   });
+
+  /**
+   * Settle `op-1` from a nonzero marker over a run log holding `output`
+   * (UI-8wpb §6 row 2), and answer with the failure record that was persisted.
+   *
+   * @param {string|null} output - Run log contents, or null to leave no file.
+   */
+  async function failedOperationOver(output) {
+    const log_path = path.join(root, 'operation.log');
+    if (output !== null) {
+      fs.writeFileSync(log_path, output);
+    }
+    const runner = {
+      start: vi.fn(),
+      readMarker: () => ({ exit_code: 1, signal: null }),
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      policySupported: () => false
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'op-1',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const attempt_id = store.snapshot(root).repo_operations['op-1'].attempt_id;
+    store.startRepoOperation(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path,
+      target_sha: TARGET
+    });
+
+    await coordinator.reconcile(root);
+
+    return store.snapshot(root).repo_operations['op-1'].failure;
+  }
+
+  test('records the failing line of the deploy script output', async () => {
+    const failure = await failedOperationOver(
+      ['+ npm ci', 'npm ERR! code ELIFECYCLE', 'exiting'].join('\n')
+    );
+
+    expect(failure?.summary).toEqual('npm ERR! code ELIFECYCLE');
+  });
+
+  test('records the last output line when nothing announces a failure', async () => {
+    const failure = await failedOperationOver(
+      ['+ npm ci', 'deploy interrupted', ''].join('\n')
+    );
+
+    expect(failure?.summary).toEqual('deploy interrupted');
+  });
+
+  test('records no summary when the run log is empty', async () => {
+    const failure = await failedOperationOver('   \n');
+
+    expect(failure).not.toHaveProperty('summary');
+  });
+
+  test('records no summary when the run left no log at all', async () => {
+    const failure = await failedOperationOver(null);
+
+    expect(failure).not.toHaveProperty('summary');
+  });
 });
 
 describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () => {

@@ -1167,7 +1167,10 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
     expect(store.recordCleanupFailure).toHaveBeenCalledWith('/ws', {
       bead_id: 'UI-ext',
       step: 'repo_operations',
-      reason: 'external_deployment_promote_failed'
+      reason: 'external_deployment_promote_failed',
+      // The observer holds no command output and the token maps to no
+      // sentence, so it stays fail-quiet (UI-8wpb §6).
+      summary: null
     });
   });
 
@@ -1277,7 +1280,8 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
     expect(store.recordCleanupFailure).toHaveBeenCalledWith('/ws', {
       bead_id: 'UI-1',
       step: 'repo_operations',
-      reason: 'discard_in_progress'
+      reason: 'discard_in_progress',
+      summary: null
     });
   });
 

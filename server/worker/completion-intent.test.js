@@ -10,6 +10,7 @@ import {
   NEEDS_HUMAN_FAMILIES,
   classifyCompletionFailure,
   completionFailureComment,
+  completionFailureSummary,
   createCompletionActionDriver,
   createCompletionFailureKey,
   createCompletionIntentCoordinator,
@@ -736,6 +737,9 @@ describe('worker/completion-intent action driver', () => {
         '## 🤖 완료 실패 기록',
         '- 단계: verify',
         '- 원인: cleanup_failed:verify_cmd_failed — 머지 후 검증 명령이 실패했습니다.',
+        // The failing run's own line, extracted from the evidence tail once
+        // (UI-8wpb §6 row 2).
+        '- 요약: merged regression',
         `- 대상: ${'c'.repeat(40)} (base main)`,
         '- 로그: /state/repo-operation-logs/op-77.log',
         '- 재시도: 없음',
@@ -2285,6 +2289,35 @@ describe('worker/completion-intent auto-resolution driver (UI-hk74 §4/§5)', ()
   });
 });
 
+describe('완료 실패 summary 추출 (UI-8wpb §6 row 2)', () => {
+  test('takes the failing line of the verify run output', () => {
+    const summary = completionFailureSummary({
+      output_tail: ['+ npm test', 'FAIL server/a.test.js', 'done'].join('\n')
+    });
+
+    expect(summary).toBe('FAIL server/a.test.js');
+  });
+
+  test('falls back to the last line of a run that announced nothing', () => {
+    const summary = completionFailureSummary({
+      output_tail: ['+ npm test', 'killed after 600s'].join('\n')
+    });
+
+    expect(summary).toBe('killed after 600s');
+  });
+
+  test('returns null when the failure ran no command', () => {
+    expect(completionFailureSummary(null)).toBeNull();
+    expect(completionFailureSummary({ log_path: '/x.log' })).toBeNull();
+  });
+
+  test('caps the summary at 200 characters', () => {
+    expect(
+      completionFailureSummary({ output_tail: `Error: ${'x'.repeat(300)}` })
+    ).toHaveLength(200);
+  });
+});
+
 describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
   /**
    * @param {Record<string, unknown>} patch
@@ -2307,6 +2340,12 @@ describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
       }
     ).split('\n');
   }
+
+  test('omits the summary line when the failure ran no command', () => {
+    expect(commentLines({}).some((line) => line.startsWith('- 요약:'))).toBe(
+      false
+    );
+  });
 
   test('says verify for the stages a post-merge verification fails in', () => {
     expect(commentLines({ failure_key: { stage: 'merge_gate' } })[1]).toBe(

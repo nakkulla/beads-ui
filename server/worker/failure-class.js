@@ -14,6 +14,11 @@
  *   - `env`        — environment failure; backoff retry + queue hold.
  *   - `systemic`   — every bead would hit the same wall; the queue stops.
  */
+// The cause sentences of the landing/merge/cleanup contract tokens (spec §6
+// row 4). Imported from the dependency-free leaf under `app/utils/`, the same
+// direction `completion-intent.js` already takes: the map is pure data shared
+// by both runtimes, so reading it here keeps this module pure.
+import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
 
 /**
  * @typedef {'parked' | 'individual' | 'env' | 'systemic'} FailureTier
@@ -169,6 +174,116 @@ export function extractSummary(text) {
 }
 
 /**
+ * Lines a verify/deploy script prints when it is announcing its own failure
+ * (spec §6 row 2). Matched against the TRIMMED line so an indented test-runner
+ * failure is not missed by the anchor.
+ *
+ * @type {RegExp}
+ */
+export const SCRIPT_FAILURE_LINE_RE =
+  /^(FAIL|✗|Error|error:|npm ERR!|Traceback|AssertionError)/;
+
+/**
+ * The one line that says why a verify/deploy script failed (spec §6 row 2):
+ * the first line that announces a failure, and otherwise the last non-empty
+ * line — a script that ends by printing its own error needs no pattern, and a
+ * script that fails in the middle of a long run does.
+ *
+ * @param {unknown} output - The script's captured stdout+stderr.
+ * @returns {string | null} null when there is no non-empty line at all.
+ */
+export function scriptSummary(output) {
+  if (typeof output !== 'string') {
+    return null;
+  }
+  /** @type {string | null} */
+  let last_non_empty = null;
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    if (SCRIPT_FAILURE_LINE_RE.test(trimmed)) {
+      return trimmed.slice(0, SUMMARY_MAX_CHARS);
+    }
+    last_non_empty = trimmed;
+  }
+  return last_non_empty === null
+    ? null
+    : last_non_empty.slice(0, SUMMARY_MAX_CHARS);
+}
+
+/**
+ * The message a guard kill announces (spec §6 row 3), verbatim. It lives here
+ * rather than at either kill site because there are two of them — the live
+ * engine (`runner/session.js`) and the restart monitor (`session-monitor.js`,
+ * whose evidence the scheduler later turns into a `loud_fail_blocker`) — and a
+ * second copy of the sentence is exactly how one kill starts reading as two
+ * different facts.
+ *
+ * A kill with no command is the interactive-request kill, whose message has
+ * always been the reason itself.
+ *
+ * @param {{ reason?: unknown, command?: unknown } | null | undefined} detail
+ * @returns {string}
+ */
+export function guardKillMessage(detail) {
+  const reason = typeof detail?.reason === 'string' ? detail.reason : '';
+  const command = typeof detail?.command === 'string' ? detail.command : null;
+  if (command === null) {
+    return reason;
+  }
+  if (reason === 'merge_to_base_blocked') {
+    return `landing on the base branch is never permitted: ${command}`;
+  }
+  if (reason === 'hook_bypass_blocked') {
+    return `disabling the git hooks is never permitted: ${command}`;
+  }
+  // Unreachable while the effect table names only the two kinds above as
+  // kills; kept so a NEW kind still says something.
+  return `the session engine refused this command: ${command}`;
+}
+
+/**
+ * The landing/merge/cleanup summary for a failure token (spec §6 row 4): the
+ * token's `failure-sentences.js` sentence, with the detail token appended when
+ * the cause carries one the sentence does not already name.
+ *
+ * Segment lookup runs front-to-back and keeps the LAST match, mirroring
+ * `app/views/worker/failure-labels.js failureSentence` so the server and the
+ * card say the same thing about the same code. An unknown token is never
+ * guessed at: it yields `null` and the caller keeps showing the raw cause.
+ *
+ * @param {unknown} cause
+ * @returns {string | null}
+ */
+export function failureTokenSummary(cause) {
+  if (typeof cause !== 'string' || cause.length === 0) {
+    return null;
+  }
+  const segments = cause.split(':').filter((segment) => segment.length > 0);
+  /** @type {string | null} */
+  let sentence = null;
+  /** @type {string | null} */
+  let sentence_segment = null;
+  for (const segment of segments) {
+    if (Object.hasOwn(FAILURE_SENTENCES, segment)) {
+      sentence = FAILURE_SENTENCES[segment];
+      sentence_segment = segment;
+    }
+  }
+  if (sentence === null) {
+    return null;
+  }
+  const detail_token = segments[segments.length - 1];
+  const text =
+    detail_token === sentence_segment
+      ? sentence
+      : `${sentence} (${detail_token})`;
+  return text.slice(0, SUMMARY_MAX_CHARS);
+}
+
+/**
  * Name of the environment pattern group `summary` matches, or `null`.
  *
  * @param {unknown} summary
@@ -241,6 +356,13 @@ function endedWithoutDelivery(input) {
 }
 
 /**
+ * `summary` falls back to the cause token's own sentence (§6 row 4) — the
+ * landing, merge and cleanup failures have no session text to quote, so the
+ * contract token is the only thing that can say what happened. The fallback is
+ * applied HERE and not in {@link readSummary} on purpose: the env-pattern match
+ * must keep reading the failure's real text, never a Korean sentence this
+ * module synthesized.
+ *
  * @param {FailureTier} tier
  * @param {string} cause
  * @param {string | null} summary
@@ -253,7 +375,7 @@ function classification(tier, cause, summary, env_group) {
     retry:
       tier === 'env' ? { max: RETRY_MAX, delays_ms: RETRY_DELAYS_MS } : null,
     cause,
-    summary,
+    summary: summary ?? failureTokenSummary(cause),
     env_group
   };
 }
