@@ -10,6 +10,7 @@
  * @import { SortKey, SortStep } from '../../data/sort.js'
  */
 import { SORT_KEY_DEFAULT_DIR, cmpChain, isSortStep } from '../../data/sort.js';
+import { blockerIdsOf } from './blocker-ids.js';
 
 /**
  * @type {string}
@@ -320,12 +321,82 @@ export function flipChainStepDir(chain, index) {
 }
 
 /**
- * Order the merged candidate list (§4.1).
+ * Re-place a chain-sorted list so a dependent sits right behind its blocker
+ * (UI-q1y7 §3). Depth-first: one strand is followed to its end before the next
+ * branch starts, so `A→B`, `A→D`, `B→C` reads `A, B, C, D`.
  *
- * The chain alone decides. A blocked issue is NOT sunk to the bottom: the
- * `⛓ blocked` chip already says it cannot start, and placement eligibility is
- * carried by `queue_placeable` plus the server admission guard, so the order
- * does not have to carry that fact a second time.
+ * A blocker keeps the seat the chain gave it and the dependent is pulled to it,
+ * never the other way round. Only blockers PRESENT in the list move anything —
+ * a blocker already queued, closed, or filtered out drops from the intersection
+ * and its dependent stays at its chain seat. When the remaining rows all wait on
+ * each other (a cycle), the first remaining row is placed anyway (fail-quiet):
+ * the order loses meaning there, but the list is never truncated.
+ *
+ * @param {any[]} base
+ * @returns {any[]}
+ */
+function groupByDependency(base) {
+  const in_lane = new Set(base.map((item) => item.id));
+  /** @type {Map<string, string[]>} */
+  const preds_of = new Map();
+  /** @type {Map<string, any[]>} */
+  const dependents_of = new Map();
+  for (const item of base) {
+    const preds = blockerIdsOf(item).filter((id) => in_lane.has(id));
+    preds_of.set(item.id, preds);
+    for (const id of preds) {
+      const list = dependents_of.get(id);
+      if (list) {
+        list.push(item);
+      } else {
+        dependents_of.set(id, [item]);
+      }
+    }
+  }
+
+  /** @type {Set<string>} */
+  const placed = new Set();
+  /** @type {any[]} */
+  const out = [];
+
+  /**
+   * @param {any} item
+   * @returns {void}
+   */
+  const place = (item) => {
+    placed.add(item.id);
+    out.push(item);
+    for (const next of dependents_of.get(item.id) ?? []) {
+      if (
+        !placed.has(next.id) &&
+        (preds_of.get(next.id) ?? []).every((id) => placed.has(id))
+      ) {
+        place(next);
+      }
+    }
+  };
+
+  while (out.length < base.length) {
+    const ready = base.find(
+      (item) =>
+        !placed.has(item.id) &&
+        (preds_of.get(item.id) ?? []).every((id) => placed.has(id))
+    );
+    place(ready ?? base.find((item) => !placed.has(item.id)));
+  }
+
+  return out;
+}
+
+/**
+ * Order the merged candidate list (§4.1, UI-q1y7 §2).
+ *
+ * The chain decides the seats, then ONE dependency-adjacency pass pulls each
+ * dependent behind its blocker. A blocked issue is still NOT sunk to the bottom:
+ * the `⛓ blocked` chip already says it cannot start, and placement eligibility
+ * is carried by `queue_placeable` plus the server admission guard, so the order
+ * does not have to carry that fact a second time. What moves a row is only the
+ * fact that its blocker is on the SAME lane.
  *
  * Returns a NEW array; the caller's list is left alone.
  *
@@ -334,7 +405,7 @@ export function flipChainStepDir(chain, index) {
  * @returns {any[]}
  */
 export function applyCandidateSort(issues, state) {
-  const list = Array.isArray(issues) ? issues.slice() : [];
-  list.sort(cmpChain(chainOf(state)));
-  return list;
+  const base = Array.isArray(issues) ? issues.slice() : [];
+  base.sort(cmpChain(chainOf(state)));
+  return groupByDependency(base);
 }

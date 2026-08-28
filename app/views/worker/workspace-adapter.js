@@ -19,6 +19,7 @@ import { parseReport } from '../../utils/report-marker.js';
 import { sessionPreferredReason } from '../../utils/session-preferred.js';
 import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
 import { IMPL_PRESET_KEYS } from '../settings-dialog/session-model.js';
+import { blockerIdsOf } from './blocker-ids.js';
 import {
   applyCandidateSort,
   normalizeCandidateSort
@@ -96,41 +97,6 @@ export function isPhaseChild(issue) {
   const has_parent =
     typeof raw === 'string' ? raw.length > 0 : !!(raw && raw.id);
   return has_parent || /\.\d+$/.test((issue && issue.id) || '');
-}
-
-/**
- * The blocker ids of a blocked candidate. The server-synthesized
- * `blocked_info.blockers` is the primary source; when the whole object is absent
- * (older server) the embedded `blocks` dependency edges answer instead.
- *
- * @param {any} issue
- * @returns {string[]}
- */
-export function blockerIdsOf(issue) {
-  const info = issue?.blocked_info;
-  if (info && typeof info === 'object') {
-    return Array.isArray(info.blockers)
-      ? info.blockers.filter(
-          (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
-        )
-      : [];
-  }
-  const deps = Array.isArray(issue?.dependencies) ? issue.dependencies : [];
-  return deps
-    .map((/** @type {any} */ d) => {
-      if (typeof d === 'string') {
-        return d;
-      }
-      if (!d || typeof d !== 'object') {
-        return '';
-      }
-      const kind = d.type ?? d.dependency_type;
-      if (kind !== undefined && kind !== 'blocks') {
-        return '';
-      }
-      return d.depends_on_id || d.id || '';
-    })
-    .filter(Boolean);
 }
 
 /**
@@ -391,8 +357,10 @@ export function createWorkspaceAdapter(options = {}) {
       seen.add(it.id);
       merged.push(it);
     }
-    // 정렬 체인만이 렌더 순서를 정한다 (UI-d13v §4.1, UI-8ham). `buildLanes`는
-    // `candidate_sort: 'as_given'`으로 이 순서를 그대로 받는다.
+    // 체인이 순서를 정하고, 그 뒤 의존 인접화 패스가 후행을 자기 선행 바로 뒤로
+    // 끌어온다 (UI-d13v §4.1, UI-8ham, UI-q1y7 §2). 둘 다 `applyCandidateSort`
+    // 안에서 끝나므로 `buildLanes`는 `candidate_sort: 'as_given'`으로 이 순서를
+    // 그대로 받는다.
     const sorted = applyCandidateSort(
       merged,
       normalizeCandidateSort(candidate_sort)
