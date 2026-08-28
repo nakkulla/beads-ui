@@ -1,5 +1,10 @@
 # Agents
 
+## 설계 결정 기록 (ADR)
+
+- 설계 결정 정본: `docs/adr/README.md` "현재 유효한 결정" — 설계 변경 전 확인,
+  충돌 시 supersede ADR 필요 (`adr` 스킬; 인덱스는 생성물이라 직접 편집 금지).
+
 ## Beads (bd) — Work Tracking
 
 Use MCP `beads` (bd) as our dependency‑aware issue tracker. Run
