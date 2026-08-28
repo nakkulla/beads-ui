@@ -424,6 +424,10 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * `undefined`, any present value reaches the judge unflattened.
  * @property {unknown} [quick_fix_review] - Raw quick_fix self-review receipt
  * metadata, under the same presence rule.
+ * @property {unknown} [awaiting_user] - Raw `awaiting_user` contract value.
+ * Carried by PRESENCE, not value: the key exists only while a user decision is
+ * outstanding, so `snapshotBead` omits the property entirely when the bead
+ * carries no parking and admission refuses on `Object.hasOwn` alone.
  * @property {unknown} [session_ref] - Raw `session_ref` contract value naming
  * the interactive sessions that worked this bead (UI-p206 §5.1). The fork
  * qualification's only input; same presence rule, so a malformed value reaches

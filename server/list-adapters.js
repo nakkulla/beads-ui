@@ -50,17 +50,6 @@ export function mapSubscriptionToBdArgs(spec) {
     case 'all-issues': {
       return ['list', '--json', '--tree=false'];
     }
-    case 'blocked-issues': {
-      return [
-        'list',
-        '--json',
-        '--tree=false',
-        '--status',
-        'blocked',
-        '--limit',
-        '1000'
-      ];
-    }
     case 'ready-issues': {
       return ['ready', '--limit', '1000', '--json'];
     }
@@ -370,10 +359,6 @@ function projectReadyIssues(snapshot, root_dir) {
  * @returns {NormalizedIssue[]}
  */
 function projectBlockedIssues(snapshot, root_dir) {
-  const stored_items = limitSnapshotItems(
-    projectByStatus(snapshot, 'blocked'),
-    SNAPSHOT_LIST_LIMIT
-  );
   /** @type {NormalizedIssue[]} */
   const dependency_items = [];
   for (const blocked_item of snapshot.ready_explain.blocked) {
@@ -383,20 +368,11 @@ function projectBlockedIssues(snapshot, root_dir) {
       dependency_items.push(mergeSnapshotIssue(stored, blocked_item));
     }
   }
-  const capped_dependency_items = limitSnapshotItems(
-    dependency_items,
-    SNAPSHOT_LIST_LIMIT
-  );
   return attachCandidateDecorations(
     attachBlockedInfo(
       /** @type {any} */ (
-        mergeIssueLists(
-          /** @type {any} */ (stored_items),
-          /** @type {any} */ (capped_dependency_items)
-        )
-      ),
-      /** @type {any} */ (stored_items),
-      /** @type {any} */ (capped_dependency_items)
+        limitSnapshotItems(dependency_items, SNAPSHOT_LIST_LIMIT)
+      )
     ),
     snapshot,
     root_dir
@@ -954,27 +930,19 @@ async function fetchListForSubscriptionRaw(spec, options = {}) {
 }
 
 /**
- * Fetch Board Blocked-column issues from both stored blocked status and
- * dependency-aware `bd ready --explain` blockers.
+ * Fetch Board Blocked-column issues from the dependency-aware
+ * `bd ready --explain` blockers.
+ *
+ * The stored `status=blocked` source is gone: the workflow contract parks a
+ * bead with `metadata.awaiting_user` without touching its status, so the column
+ * carries dependency blocking only and a parked bead stays in its own status
+ * column with the `awaiting_user` chip.
  *
  * @param {{ cwd?: string }} [options]
  * @returns {Promise<FetchListResultSuccess | FetchListResultFailure>}
  */
 async function fetchBlockedIssues(options = {}) {
-  const stored_args = mapSubscriptionToBdArgs({ type: 'blocked-issues' });
   try {
-    const stored_res = await runBdJsonProjected('list', stored_args, {
-      cwd: options.cwd
-    });
-    if (!stored_res || stored_res.ok !== true) {
-      log(
-        'bd failed for blocked stored issues (args=%o) code=%s',
-        stored_args,
-        stored_res?.error?.code
-      );
-      return bdCommandFailure(stored_res);
-    }
-
     const dependency_res = await runBdJsonProjected(
       'ready-explain',
       DEPENDENCY_BLOCKED_ARGS,
@@ -989,20 +957,12 @@ async function fetchBlockedIssues(options = {}) {
       return bdCommandFailure(dependency_res);
     }
 
-    const stored_raw = stored_res.data;
     const dependency_raw = extractDependencyBlockedIssues(dependency_res.data);
-    const stored_items = normalizeIssueList(stored_raw);
-    const dependency_items = normalizeIssueList(dependency_raw);
-    const items = attachBlockedInfo(
-      mergeIssueLists(stored_items, dependency_items),
-      stored_items,
-      dependency_items
-    );
+    const items = attachBlockedInfo(normalizeIssueList(dependency_raw));
     return { ok: true, items };
   } catch (err) {
     log(
-      'bd invocation failed for blocked issues (stored args=%o, dependency args=%o): %o',
-      stored_args,
+      'bd invocation failed for blocked issues (dependency args=%o): %o',
       DEPENDENCY_BLOCKED_ARGS,
       err
     );
@@ -1034,42 +994,18 @@ function extractDependencyBlockedIssues(value) {
 /**
  * Synthesize `blocked_info` for every Blocked-column issue.
  *
- * The column has two independent sources — a stored `status=blocked` (an
- * EXTERNAL blocker: something outside the tracker is being waited on) and
- * `bd ready --explain` (a DEPENDENCY blocker: other beads must land first) —
- * and an issue can be in both at once. {@link mergeIssueLists} cannot carry
- * that distinction: it shallow-spreads one record over the other, so whichever
- * source loses the spread is erased. Membership is therefore read from the two
- * source lists directly, after the merge.
+ * The column has one source — `bd ready --explain` — so the info carries the
+ * blocker ids only. Waiting on a person is no longer a status: it is
+ * `metadata.awaiting_user`, which the card reads directly.
  *
- * `reason` comes from `metadata.blocked_reason` and stays null when the key is
- * absent, so the card falls back to a bare "blocked" chip.
- *
- * @param {NormalizedIssue[]} merged
- * @param {NormalizedIssue[]} stored_items
  * @param {NormalizedIssue[]} dependency_items
  * @returns {NormalizedIssue[]}
  */
-function attachBlockedInfo(merged, stored_items, dependency_items) {
-  const external_ids = new Set(stored_items.map((it) => String(it.id ?? '')));
-  /** @type {Map<string, string[]>} */
-  const blockers_by_id = new Map();
-  for (const item of dependency_items) {
-    blockers_by_id.set(String(item.id ?? ''), extractBlockerIds(item));
-  }
-  return merged.map((item) => {
-    const id = String(item.id ?? '');
-    const external = external_ids.has(id);
-    const blockers = blockers_by_id.get(id) || [];
-    return {
-      ...item,
-      blocked_info: {
-        external,
-        reason: external ? blockedReasonOf(item) : null,
-        blockers
-      }
-    };
-  });
+function attachBlockedInfo(dependency_items) {
+  return dependency_items.map((item) => ({
+    ...item,
+    blocked_info: { blockers: extractBlockerIds(item) }
+  }));
 }
 
 /**
@@ -1095,42 +1031,6 @@ function extractBlockerIds(item) {
     }
   }
   return ids;
-}
-
-/**
- * @param {Record<string, unknown>} item
- * @returns {string | null}
- */
-function blockedReasonOf(item) {
-  const metadata = item.metadata;
-  if (!metadata || typeof metadata !== 'object') {
-    return null;
-  }
-  const reason = /** @type {Record<string, unknown>} */ (metadata)
-    .blocked_reason;
-  if (typeof reason !== 'string') {
-    return null;
-  }
-  const trimmed = reason.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-/**
- * Merge issue lists by id while preserving first-seen order.
- *
- * @param {...Array<{ id: string, created_at: number, updated_at: number, closed_at: number | null } & Record<string, unknown>>} lists
- * @returns {Array<{ id: string, created_at: number, updated_at: number, closed_at: number | null } & Record<string, unknown>>}
- */
-function mergeIssueLists(...lists) {
-  /** @type {Map<string, { id: string, created_at: number, updated_at: number, closed_at: number | null } & Record<string, unknown>>} */
-  const by_id = new Map();
-  for (const list of lists) {
-    for (const item of list) {
-      const existing = by_id.get(item.id);
-      by_id.set(item.id, existing ? { ...existing, ...item } : item);
-    }
-  }
-  return Array.from(by_id.values());
 }
 
 /**

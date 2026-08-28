@@ -1517,6 +1517,82 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.labels).toEqual(['worker-ineligible', 'frontend']);
   });
 
+  test('snapshotBead carries awaiting_user only when the key exists', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: {
+            id: 'UI-1',
+            status: 'open',
+            metadata: { awaiting_user: 'spec_review_stale:revise' }
+          }
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const snap = await bd.snapshotBead('UI-1');
+
+    expect(Object.hasOwn(snap, 'awaiting_user')).toBe(true);
+    expect(snap.awaiting_user).toBe('spec_review_stale:revise');
+  });
+
+  test('snapshotBead omits the awaiting_user own-property when the key is absent', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: { id: 'UI-1', status: 'open', metadata: {} }
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const snap = await bd.snapshotBead('UI-1');
+
+    expect(Object.hasOwn(snap, 'awaiting_user')).toBe(false);
+  });
+
+  test('snapshotBead keeps a null awaiting_user present', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: {
+            id: 'UI-1',
+            status: 'open',
+            metadata: { awaiting_user: null }
+          }
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const snap = await bd.snapshotBead('UI-1');
+
+    expect(Object.hasOwn(snap, 'awaiting_user')).toBe(true);
+    expect(snap.awaiting_user).toBeNull();
+  });
+
   test('snapshotBead resolves native spec_id and ignores a differing metadata spec_id', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {
@@ -2195,6 +2271,55 @@ describe('worker/attach target base resolution wiring (worker-base-scope-alignme
     );
 
     expect(result).toEqual({ ok: false, reason: 'base_unresolved:format' });
+  });
+
+  test('forwards a snapshot awaiting_user key into admission', async () => {
+    const att = attach({
+      bd: fakeBd(),
+      gh: { checkAvailability: async () => ({ state: 'ok' }) }
+    });
+
+    const result = await att.admission.validate(
+      /** @type {any} */ ({
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'a'.repeat(40),
+        base_unresolved: null,
+        route: 'spec_backed',
+        spec_id: 'docs/spec.md',
+        spec_review: `codex@${'b'.repeat(40)}`,
+        awaiting_user: 'spec_review_stale:revise'
+      })
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'awaiting_user' });
+  });
+
+  test('leaves admission unrefused when the snapshot has no awaiting_user key', async () => {
+    const att = attach({
+      bd: fakeBd(),
+      gh: { checkAvailability: async () => ({ state: 'ok' }) },
+      gitRun: async (/** @type {string[]} */ args) => ({
+        code: 0,
+        stdout:
+          args[0] === 'show' ? '---\nscope:\n  - server/worker/\n---\n' : '',
+        stderr: ''
+      })
+    });
+
+    const result = await att.admission.validate(
+      /** @type {any} */ ({
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'a'.repeat(40),
+        base_unresolved: null,
+        route: 'spec_backed',
+        spec_id: 'docs/spec.md',
+        spec_review: `codex@${'b'.repeat(40)}`
+      })
+    );
+
+    expect(result).toEqual({ ok: true });
   });
 
   test('asks git about the fetched remote tip, not the branch name', async () => {

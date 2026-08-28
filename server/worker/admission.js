@@ -8,6 +8,8 @@
  *
  *   0. no exact `worker-ineligible` label. Checked before environment probes so
  *      an interactive-only disposition is always the visible refusal.
+ *   0.5 no `awaiting_user` key. A permanent disposition label still outranks a
+ *      temporary park, so this sits directly after (0) and before every probe.
  *   1. `gh` usable (installed + authenticated). Checked before git because it is the
  *      only ENVIRONMENT condition here: without `gh` the server cannot observe
  *      the PR that is now the sole completion verdict (worker-phase2 §1/§10), so
@@ -77,7 +79,7 @@ const PLAN_APPROVAL_RE = /^user@([0-9a-fA-F]{40})$/;
  * base there is nothing for this validator to ask git about
  * (worker-base-scope-alignment §1).
  *
- * @typedef {'worker_ineligible'|'bd_snapshot_failed'|'gh_unavailable'|'invalid_route'|'missing_description'|'spec_id_conflict'|'spec_missing'|`spec_missing_at_base:${string}`|`base_unresolved:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
+ * @typedef {'worker_ineligible'|'awaiting_user'|'bd_snapshot_failed'|'gh_unavailable'|'invalid_route'|'missing_description'|'spec_id_conflict'|'spec_missing'|`spec_missing_at_base:${string}`|`base_unresolved:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
  */
 
 /**
@@ -154,6 +156,13 @@ export async function validateAdmission(input) {
 
   if (isWorkerIneligible(bead && bead.labels)) {
     return { ok: false, reason: 'worker_ineligible' };
+  }
+
+  // 계약상 `awaiting_user` 키의 존재 자체가 "사용자 결정 산출물이 아직 없다"이고,
+  // 키 제거는 그 산출물을 쓰는 같은 `bd update`에서만 일어난다. 그래서 값 형식은
+  // 보지 않고 presence 하나로 fail-closed 거부한다.
+  if (bead && Object.hasOwn(bead, 'awaiting_user')) {
+    return { ok: false, reason: 'awaiting_user' };
   }
 
   if (typeof ghAvailable === 'function') {

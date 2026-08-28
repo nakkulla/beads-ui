@@ -1449,21 +1449,21 @@ describe('views/board blocked column composition', () => {
   function mountBlockedBoard() {
     const stores = createTestIssueStores();
     const now = Date.now();
-    // The Blocked subscription merges two sources: an OPEN issue held up by
-    // dependencies, and an issue stored as `status=blocked` (external wait).
+    // The Blocked subscription carries dependency blocking only. A bead parked
+    // on a user decision keeps its own status and stays in its own column.
     seed(stores, 'tab:board:blocked', [
       {
         id: 'DEP-1',
         title: 'dependency blocked',
         status: 'open',
-        blocked_info: { external: false, reason: null, blockers: ['DEP-2'] },
+        blocked_info: { blockers: ['DEP-2'] },
         updated_at: now
       },
       {
         id: 'EXT-1',
-        title: 'external blocked',
-        status: 'blocked',
-        blocked_info: { external: true, reason: '릴리스 대기', blockers: [] },
+        title: 'not open any more',
+        status: 'in_progress',
+        blocked_info: { blockers: [] },
         updated_at: now
       }
     ]);
@@ -1472,22 +1472,34 @@ describe('views/board blocked column composition', () => {
     return mount;
   }
 
-  test('keeps a stored status=blocked issue in the column', () => {
+  test('keeps only open issues in the column', () => {
     const mount = mountBlockedBoard();
 
     const ids = Array.from(
       mount.querySelectorAll('#blocked-col .board-card')
     ).map((el) => String(el.getAttribute('data-issue-id')));
-    expect(ids.sort()).toEqual(['DEP-1', 'EXT-1']);
+    expect(ids.sort()).toEqual(['DEP-1']);
   });
 
-  test('renders the external blocked chip for a stored blocked issue', () => {
-    const mount = mountBlockedBoard();
+  test('renders the awaiting-user chip from metadata in the column', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:board:blocked', [
+      {
+        id: 'DEP-1',
+        title: 'dependency blocked and parked',
+        status: 'open',
+        metadata: { awaiting_user: 'spec_review_stale:revise' },
+        blocked_info: { blockers: ['DEP-2'] },
+        updated_at: Date.now()
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createBoardView(mount, { gotoIssue: vi.fn(), issueStores: stores }).load();
 
     const chips = Array.from(
       mount.querySelectorAll('#blocked-col .ctl-chip--blocked')
     ).map((el) => String(el.textContent || '').trim());
-    expect(chips).toEqual(['⏸ blocked: 릴리스 대기']);
+    expect(chips).toEqual(['⏸ 사용자 리뷰 필요: spec_review_stale:revise']);
   });
 
   test('renders the dependency blocked chip for an open blocked issue', () => {

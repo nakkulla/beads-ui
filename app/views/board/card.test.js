@@ -503,37 +503,67 @@ describe('views/board/card display policy', () => {
     expect(onCardClick).not.toHaveBeenCalled();
   });
 
-  test('renders an external blocked chip with its reason', () => {
+  test('renders the awaiting-user chip from metadata', () => {
     const m = mountCard(
       {
         id: 'UI-1',
-        blocked_info: { external: true, reason: '릴리스 대기', blockers: [] }
+        metadata: { awaiting_user: 'spec_review_stale:revise' }
       },
       makeCtx({ policy: makePolicy() })
     );
 
     expect(chipTexts(m, '.ctl-chip--blocked')).toEqual([
-      '⏸ blocked: 릴리스 대기'
+      '⏸ 사용자 리뷰 필요: spec_review_stale:revise'
     ]);
   });
 
-  test('renders a bare external blocked chip when no reason is set', () => {
+  test('omits the awaiting-user chip on a blank value', () => {
     const m = mountCard(
-      {
-        id: 'UI-1',
-        blocked_info: { external: true, reason: null, blockers: [] }
-      },
+      { id: 'UI-1', metadata: { awaiting_user: '   ' } },
       makeCtx({ policy: makePolicy() })
     );
 
-    expect(chipTexts(m, '.ctl-chip--blocked')).toEqual(['⏸ blocked']);
+    expect(m.querySelector('.ctl-chip--blocked')).toBeNull();
+  });
+
+  test('omits the awaiting-user chip on a non-string value', () => {
+    const m = mountCard(
+      { id: 'UI-1', metadata: { awaiting_user: 7 } },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(m.querySelector('.ctl-chip--blocked')).toBeNull();
+  });
+
+  test('renders without a chip when metadata is absent, null, or a string', () => {
+    for (const metadata of [undefined, null, 'awaiting_user']) {
+      const m = mountCard(
+        { id: 'UI-1', metadata },
+        makeCtx({ policy: makePolicy() })
+      );
+
+      expect(m.querySelector('.board-card')).not.toBeNull();
+      expect(m.querySelector('.ctl-chip--blocked')).toBeNull();
+    }
+  });
+
+  test('omits the awaiting-user chip when the blocked toggle is off', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        metadata: { awaiting_user: 'plan_approval_stale:revise' }
+      },
+      makeCtx({ policy: makePolicy({ chips: { blocked: false } }) })
+    );
+
+    expect(m.querySelector('.ctl-chip--blocked')).toBeNull();
   });
 
   test('renders a dependency blocked chip listing the blockers', () => {
     const m = mountCard(
       {
         id: 'UI-1',
-        blocked_info: { external: false, reason: null, blockers: ['A', 'B'] }
+        blocked_info: { blockers: ['A', 'B'] }
       },
       makeCtx({ policy: makePolicy() })
     );
@@ -545,11 +575,7 @@ describe('views/board/card display policy', () => {
     const m = mountCard(
       {
         id: 'UI-1',
-        blocked_info: {
-          external: false,
-          reason: null,
-          blockers: ['A', 'B', 'C', 'D']
-        }
+        blocked_info: { blockers: ['A', 'B', 'C', 'D'] }
       },
       makeCtx({ policy: makePolicy() })
     );
@@ -563,11 +589,7 @@ describe('views/board/card display policy', () => {
     const m = mountCard(
       {
         id: 'UI-1',
-        blocked_info: {
-          external: false,
-          reason: null,
-          blockers: ['dotfiles-j8e6']
-        }
+        blocked_info: { blockers: ['dotfiles-j8e6'] }
       },
       makeCtx({ policy: makePolicy() })
     );
@@ -583,8 +605,6 @@ describe('views/board/card display policy', () => {
       {
         id: 'UI-1',
         blocked_info: {
-          external: false,
-          reason: null,
           blockers: ['UI-a1b2', 'dotfiles-j8e6', 'UI-c3d4']
         }
       },
@@ -604,8 +624,6 @@ describe('views/board/card display policy', () => {
       {
         id: 'UI-1',
         blocked_info: {
-          external: false,
-          reason: null,
           blockers: ['dotfiles-a', 'dotfiles-b', 'dotfiles-c', 'UI-a1b2']
         }
       },
@@ -620,11 +638,12 @@ describe('views/board/card display policy', () => {
     ]);
   });
 
-  test('renders both blocked chips when an issue is blocked in both ways', () => {
+  test('renders both chips when a parked issue is also dependency blocked', () => {
     const m = mountCard(
       {
         id: 'UI-1',
-        blocked_info: { external: true, reason: '검토 대기', blockers: ['A'] }
+        metadata: { awaiting_user: 'spec_review_stale:revise' },
+        blocked_info: { blockers: ['A'] }
       },
       makeCtx({ policy: makePolicy() })
     );
@@ -809,7 +828,8 @@ describe('views/board/card display policy', () => {
     const m = mountCard(
       {
         id: 'UI-1',
-        blocked_info: { external: true, reason: null, blockers: ['A'] }
+        metadata: { awaiting_user: 'spec_review_stale:revise' },
+        blocked_info: { blockers: ['A'] }
       },
       makeCtx({ policy: makePolicy({ chips: { blocked: false } }) })
     );

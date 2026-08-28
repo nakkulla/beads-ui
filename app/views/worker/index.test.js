@@ -655,6 +655,79 @@ describe('views/worker', () => {
     expect(placeButton(mount, 'RD-1').disabled).toBe(false);
   });
 
+  test('refuses placement for an awaiting_user candidate and names the reason', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'RD-1',
+        title: 'ready with spec',
+        status: 'open',
+        spec_id: 'SPEC-1',
+        metadata: { spec_review: RECEIPT }
+      },
+      {
+        id: 'PARKED-1',
+        title: 'awaiting the user',
+        status: 'open',
+        spec_id: 'SPEC-Y',
+        metadata: {
+          spec_review: RECEIPT,
+          awaiting_user: 'spec_review_stale:revise'
+        }
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="PARKED-1"]')
+    );
+    expect(card).not.toBeNull();
+    expect(card.querySelector('.worker-card__reason')?.textContent).toContain(
+      '사용자 리뷰 필요: spec_review_stale:revise'
+    );
+    expect(placeButton(mount, 'PARKED-1').disabled).toBe(true);
+    expect(placeButton(mount, 'RD-1').disabled).toBe(false);
+  });
+
+  test('leaves a candidate placeable when metadata carries no awaiting_user', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'RD-1',
+        title: 'ready with spec',
+        status: 'open',
+        spec_id: 'SPEC-1',
+        metadata: { spec_review: RECEIPT }
+      },
+      {
+        id: 'NO-META',
+        title: 'no metadata at all',
+        status: 'open',
+        spec_id: 'SPEC-Z',
+        spec_review: RECEIPT,
+        metadata: null
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    expect(placeButton(mount, 'RD-1').disabled).toBe(false);
+    expect(
+      mount.querySelector('.worker-card[data-bead-id="NO-META"]')
+    ).not.toBeNull();
+  });
+
   test('clicking a card ID copies the bead id and never opens the detail', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const gotoIssue = vi.fn();

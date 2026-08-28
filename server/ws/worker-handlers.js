@@ -774,7 +774,7 @@ const REVISE_FILL_WIRED = new WeakSet();
 
 /**
  * Project which waiting-lane beads are parked at
- * `blocked_reason=spec_review_stale:revise` (UI-hs11 §3.1), so the row can
+ * `awaiting_user=spec_review_stale:revise` (UI-hs11 §3.1), so the row can
  * offer the two disposition buttons.
  *
  * ADVISORY, and PARTIAL like {@link beadTitlesFor}: the third condition of the

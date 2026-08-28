@@ -23,6 +23,8 @@ import { stepperTemplate } from './stepper.js';
  * @property {number | string} [created_at]
  * @property {string[]} [labels]
  * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
+ * @property {unknown} [metadata] - Raw bead metadata; only `awaiting_user` is
+ * read here, and never trusted to be an object.
  * @property {BoardCardBlockedInfo} [blocked_info]
  * @property {import('./stepper.js').WorkflowSummary & { chips?: BoardCardChips }} [workflow]
  */
@@ -40,8 +42,6 @@ import { stepperTemplate } from './stepper.js';
 
 /**
  * @typedef {Object} BoardCardBlockedInfo
- * @property {boolean} external - Stored `status=blocked`: waiting on something outside the tracker.
- * @property {string | null} reason - Short `metadata.blocked_reason`, when set.
  * @property {string[]} blockers - Bead ids that must land first.
  */
 
@@ -142,11 +142,7 @@ function dependencyChipLabel(blockers) {
 }
 
 /**
- * Render the blocked-reason chips. The two blockers are independent, so a bead
- * that is both externally blocked and dependency-blocked shows both chips:
- *
- * - `⏸` external — a stored `status=blocked`, optionally with a short reason,
- * - `⛓` dependency — the beads that must land first.
+ * Render the dependency-blocked chips — the beads that must land first.
  *
  * A dependency-blocked bead splits into at most two `⛓` chips — same-repo and
  * 타 레포 ({@link isForeignBlocker}) — because the ids collapse into ONE chip
@@ -164,12 +160,6 @@ function blockedChips(owner_id, blocked_info) {
   }
   /** @type {TemplateResult[]} */
   const items = [];
-  if (blocked_info.external) {
-    const label = blocked_info.reason
-      ? `⏸ blocked: ${blocked_info.reason}`
-      : '⏸ blocked';
-    items.push(html`<span class="ctl-chip ctl-chip--blocked">${label}</span>`);
-  }
   const blockers = Array.isArray(blocked_info.blockers)
     ? blocked_info.blockers
     : [];
@@ -195,6 +185,36 @@ function blockedChips(owner_id, blocked_info) {
     );
   }
   return items;
+}
+
+/**
+ * The `⏸ 사용자 리뷰 필요` chip: the workflow contract parks a bead on a user
+ * decision with `metadata.awaiting_user` and leaves its status alone, so this
+ * chip is the only place the parking is visible — in whatever column the stored
+ * status put the card.
+ *
+ * The value vocabulary belongs to the contract and is not validated here; the
+ * read only narrows enough to stay fail-quiet on a bead whose metadata is
+ * absent, `null`, or not an object.
+ *
+ * @param {unknown} metadata
+ * @returns {TemplateResult | null}
+ */
+function awaitingUserChip(metadata) {
+  if (!metadata || typeof metadata !== 'object') {
+    return null;
+  }
+  const value = /** @type {Record<string, unknown>} */ (metadata).awaiting_user;
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  return html`<span class="ctl-chip ctl-chip--blocked"
+    >${`⏸ 사용자 리뷰 필요: ${trimmed}`}</span
+  >`;
 }
 
 /**
@@ -330,7 +350,7 @@ function compactExecutionChip(exec_receipt) {
 
 /**
  * Card chips row: route · ⚡fast_track · PR #n · labels · ↩ provenance ·
- * blocked reason. The PR chip is present only when a pr_url produced one
+ * 사용자 리뷰 필요 · dependency blockers. The PR chip is present only when a pr_url produced one
  * server-side, keeping it in agreement with the stepper PR cell. Labels render
  * by default and the display policy only subtracts; each derived chip family
  * can be switched off independently via `policy.chips`.
@@ -417,6 +437,10 @@ function chipsTemplate(issue, ctx) {
     );
   }
   if (isChipEnabled(policy, 'blocked')) {
+    const awaiting_chip = awaitingUserChip(issue.metadata);
+    if (awaiting_chip) {
+      items.push(awaiting_chip);
+    }
     items.push(...blockedChips(issue.id, issue.blocked_info));
   }
   const cleanup_failure = ctx.cleanupFailureFor

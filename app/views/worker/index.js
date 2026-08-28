@@ -89,6 +89,7 @@ import {
 import { failureSentence } from './failure-labels.js';
 import { createLaneCollapse } from './lane-collapse.js';
 import {
+  AWAITING_USER_REASON_PREFIX,
   discardCompletionMessage,
   discardConfirmationMessage,
   discardProjection,
@@ -457,6 +458,25 @@ function candidateReleasedChips(issue, now) {
  * 선행을 모른다"를 말한다.
  */
 const BLOCKED_WITHOUT_IDS = '🔒 blocked';
+
+/**
+ * `awaiting_user` 파킹이 후보 행에 다는 사유 파트 (UI-dqg9 §2.2). 값 어휘는
+ * 계약이 소유하므로 검증하지 않고 그대로 싣되, 문자열이 아니거나 빈 값이면
+ * 접두사만 남긴다.
+ *
+ * @param {unknown} metadata
+ * @returns {string}
+ */
+function awaitingUserReason(metadata) {
+  const value =
+    metadata && typeof metadata === 'object'
+      ? /** @type {Record<string, unknown>} */ (metadata).awaiting_user
+      : undefined;
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text.length > 0
+    ? `${AWAITING_USER_REASON_PREFIX}: ${text}`
+    : AWAITING_USER_REASON_PREFIX;
+}
 
 /**
  * Poller activity replaces a gate badge ONLY where it changes what the badge
@@ -3310,8 +3330,16 @@ export function createWorkerView(mount_element, options = {}) {
               /** @type {any} */ (it).metadata
             );
       const session_preferred = session_preferred_reason.length > 0;
+      // 사용자 결정 대기 파킹 (UI-dqg9 §2.2). 서버 admission과 같은 presence
+      // 규칙 — 값 형식은 보지 않고 키 존재만 본다 — 을 쓰되, metadata가 없는
+      // 페이로드에서는 판정하지 않고 서버에 맡긴다 (fail-quiet).
+      const awaiting_user =
+        it.metadata && typeof it.metadata === 'object'
+          ? Object.hasOwn(/** @type {any} */ (it).metadata, 'awaiting_user')
+          : false;
       const eligible =
         !worker_ineligible &&
+        !awaiting_user &&
         (is_quick_fix ? has_description : has_spec && !spec.conflict);
       const is_blocked = blocked_ids.has(it.id);
       /** @type {string[]} */
@@ -3323,6 +3351,9 @@ export function createWorkerView(mount_element, options = {}) {
         } else {
           parts.push(BLOCKED_WITHOUT_IDS);
         }
+      }
+      if (awaiting_user) {
+        parts.push(awaitingUserReason(/** @type {any} */ (it).metadata));
       }
       if (is_quick_fix && !has_description) {
         parts.push('missing_description');

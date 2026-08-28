@@ -103,17 +103,8 @@ describe('list adapters for subscription types', () => {
     expect(args).toEqual(['list', '--json', '--tree=false']);
   });
 
-  test('mapSubscriptionToBdArgs returns args for blocked-issues', () => {
-    const args = mapSubscriptionToBdArgs({ type: 'blocked-issues' });
-    expect(args).toEqual([
-      'list',
-      '--json',
-      '--tree=false',
-      '--status',
-      'blocked',
-      '--limit',
-      '1000'
-    ]);
+  test('rejects blocked-issues as an unmapped bd command', () => {
+    expect(() => mapSubscriptionToBdArgs({ type: 'blocked-issues' })).toThrow();
   });
 
   test('mapSubscriptionToBdArgs returns args for ready-issues', () => {
@@ -276,48 +267,41 @@ describe('list adapters for subscription types', () => {
     }
   });
 
-  test('returns stored and dependency-blocked issues for blocked subscription', async () => {
-    /** @type {import('vitest').Mock} */ (runBdJsonProjected)
-      .mockResolvedValueOnce(
-        asProjectedResponse({
-          code: 0,
-          stdoutJson: [
+  test('returns only dependency-blocked issues for blocked subscription', async () => {
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockResolvedValueOnce(
+      asProjectedResponse({
+        code: 0,
+        stdoutJson: {
+          ready: [],
+          blocked: [
             {
-              id: 'S-1',
-              title: 'stored blocked',
-              status: 'blocked',
-              updated_at: '2024-01-01T00:00:00.000Z'
+              id: 'D-1',
+              title: 'dependency blocked',
+              status: 'open',
+              updated_at: '2024-01-01T00:00:01.000Z',
+              blocked_by: [{ id: 'D-0', status: 'in_progress' }]
             }
-          ]
-        })
-      )
-      .mockResolvedValueOnce(
-        asProjectedResponse({
-          code: 0,
-          stdoutJson: {
-            ready: [],
-            blocked: [
-              {
-                id: 'D-1',
-                title: 'dependency blocked',
-                status: 'open',
-                updated_at: '2024-01-01T00:00:01.000Z',
-                blocked_by: [{ id: 'D-0', status: 'in_progress' }]
-              }
-            ],
-            summary: { total_ready: 0, total_blocked: 1 }
-          }
-        })
-      );
+          ],
+          summary: { total_ready: 0, total_blocked: 1 }
+        }
+      })
+    );
 
     const res = await fetchListForSubscription({ type: 'blocked-issues' });
 
-    // stored list + dependency explain + the provenance batch dep list.
-    expect(runBdJsonProjected).toHaveBeenCalledTimes(3);
+    // dependency explain + the provenance batch dep list — no stored query.
+    expect(runBdJsonProjected).toHaveBeenCalledTimes(2);
+    expect(
+      /** @type {import('vitest').Mock} */ (runBdJsonProjected).mock.calls.some(
+        (call) => call[1] && call[1].includes('--status')
+      )
+    ).toBe(false);
     expect(res.ok).toBe(true);
     if (res.ok) {
-      expect(res.items.map((it) => it.id)).toEqual(['S-1', 'D-1']);
-      expect(res.items[1]).toMatchObject({
+      expect(res.items.map((it) => it.id)).toEqual(['D-1']);
+      expect(res.items[0]).toMatchObject({
         id: 'D-1',
         status: 'open',
         blocked_by: [{ id: 'D-0', status: 'in_progress' }]
@@ -390,7 +374,6 @@ describe('list adapters for subscription types', () => {
             {
               id: 'BLOCKED-1',
               status: 'blocked',
-              metadata: { blocked_reason: 'external wait' },
               dependencies: []
             },
             {
@@ -437,20 +420,8 @@ describe('list adapters for subscription types', () => {
     expect(ready.ok && ready.items.map((item) => item.id)).toEqual(['OPEN-1']);
     expect(blocked.ok && blocked.items).toEqual([
       expect.objectContaining({
-        id: 'BLOCKED-1',
-        blocked_info: {
-          external: true,
-          reason: 'external wait',
-          blockers: []
-        }
-      }),
-      expect.objectContaining({
         id: 'OPEN-1',
-        blocked_info: {
-          external: false,
-          reason: null,
-          blockers: ['UPSTREAM-1']
-        }
+        blocked_info: { blockers: ['UPSTREAM-1'] }
       })
     ]);
   });
@@ -471,7 +442,6 @@ describe('list adapters for subscription types', () => {
             {
               id: 'BLOCKED-1',
               status: 'blocked',
-              metadata: { blocked_reason: 'external wait' },
               dependencies: []
             },
             { id: 'RUNNING-1', status: 'in_progress', dependencies: [] },
@@ -558,25 +528,13 @@ describe('list adapters for subscription types', () => {
     expect(typeof (ready.ok && ready.items[0].updated_at)).toBe('number');
     expect(blocked.ok && blocked.items).toEqual([
       expect.objectContaining({
-        id: 'BLOCKED-1',
-        blocked_info: {
-          external: true,
-          reason: 'external wait',
-          blockers: []
-        }
-      }),
-      expect.objectContaining({
         id: 'OPEN-1',
         blocked_extra: true,
-        blocked_info: {
-          external: false,
-          reason: null,
-          blockers: ['EXTERNAL-1']
-        }
+        blocked_info: { blockers: ['EXTERNAL-1'] }
       })
     ]);
-    expect(typeof (blocked.ok && blocked.items[1].created_at)).toBe('number');
-    expect(typeof (blocked.ok && blocked.items[1].updated_at)).toBe('number');
+    expect(typeof (blocked.ok && blocked.items[0].created_at)).toBe('number');
+    expect(typeof (blocked.ok && blocked.items[0].updated_at)).toBe('number');
     expect(running.ok && running.items.map((item) => item.id)).toEqual([
       'RUNNING-1'
     ]);
@@ -760,9 +718,8 @@ describe('list adapters for subscription types', () => {
     );
     expect(running.ok && running.items).toHaveLength(50);
     expect(ready_result.ok && ready_result.items).toHaveLength(1000);
-    expect(blocked_result.ok && blocked_result.items).toHaveLength(2000);
-    expect(blocked_result.ok && blocked_result.items[0].id).toBe('STORED-1');
-    expect(blocked_result.ok && blocked_result.items[1000].id).toBe('READY-1');
+    expect(blocked_result.ok && blocked_result.items).toHaveLength(1000);
+    expect(blocked_result.ok && blocked_result.items[0].id).toBe('READY-1');
     expect(resolved.ok && resolved.items).toHaveLength(1000);
     expect(deferred.ok && deferred.items).toHaveLength(1000);
     expect(closed.ok && closed.items).toHaveLength(1001);
@@ -798,14 +755,10 @@ describe('blocked-issues blocked_info derivation', () => {
   });
 
   /**
-   * @param {unknown[]} stored
    * @param {unknown[]} dependency_blocked
    */
-  function mockBlockedSources(stored, dependency_blocked) {
+  function mockBlockedSources(dependency_blocked) {
     /** @type {import('vitest').Mock} */ (runBdJsonProjected)
-      .mockResolvedValueOnce(
-        asProjectedResponse({ code: 0, stdoutJson: stored })
-      )
       .mockResolvedValueOnce(
         asProjectedResponse({
           code: 0,
@@ -828,104 +781,53 @@ describe('blocked-issues blocked_info derivation', () => {
     return item && /** @type {any} */ (item).blocked_info;
   }
 
-  test('marks a stored-only blocked issue as external with no blockers', async () => {
-    mockBlockedSources([{ id: 'S-1', status: 'blocked' }], []);
+  test('carries only the blocker ids', async () => {
+    mockBlockedSources([
+      {
+        id: 'D-1',
+        status: 'open',
+        blocked_by: [{ id: 'D-0' }, { id: 'D-9' }]
+      }
+    ]);
 
     const res = await fetchListForSubscription({ type: 'blocked-issues' });
 
-    expect(blockedInfoOf(res, 'S-1')).toEqual({
-      external: true,
-      reason: null,
-      blockers: []
-    });
+    expect(blockedInfoOf(res, 'D-1')).toEqual({ blockers: ['D-0', 'D-9'] });
   });
 
-  test('carries metadata.blocked_reason on a stored blocked issue', async () => {
-    mockBlockedSources(
-      [
-        {
-          id: 'S-1',
-          status: 'blocked',
-          metadata: { blocked_reason: 'upstream 릴리스 대기' }
-        }
-      ],
-      []
-    );
+  test('carries an empty blockers list when the entry names none', async () => {
+    mockBlockedSources([{ id: 'D-1', status: 'open' }]);
 
     const res = await fetchListForSubscription({ type: 'blocked-issues' });
 
-    expect(blockedInfoOf(res, 'S-1').reason).toBe('upstream 릴리스 대기');
+    expect(blockedInfoOf(res, 'D-1')).toEqual({ blockers: [] });
   });
 
-  test('marks a dependency-only blocked issue as non-external with blockers', async () => {
-    mockBlockedSources(
-      [],
-      [
-        {
-          id: 'D-1',
-          status: 'open',
-          blocked_by: [{ id: 'D-0' }, { id: 'D-9' }]
-        }
-      ]
-    );
+  test('ignores metadata.awaiting_user when deriving blocked_info', async () => {
+    mockBlockedSources([
+      {
+        id: 'D-1',
+        status: 'open',
+        metadata: { awaiting_user: 'spec_review_stale:revise' },
+        blocked_by: [{ id: 'D-0' }]
+      }
+    ]);
 
     const res = await fetchListForSubscription({ type: 'blocked-issues' });
 
-    expect(blockedInfoOf(res, 'D-1')).toEqual({
-      external: false,
-      reason: null,
-      blockers: ['D-0', 'D-9']
-    });
+    expect(blockedInfoOf(res, 'D-1')).toEqual({ blockers: ['D-0'] });
   });
 
-  test('preserves both sources when an issue is blocked in both ways', async () => {
-    mockBlockedSources(
-      [
-        {
-          id: 'B-1',
-          status: 'blocked',
-          metadata: { blocked_reason: '보안 검토 대기' }
-        }
-      ],
-      [{ id: 'B-1', status: 'blocked', blocked_by: [{ id: 'B-0' }] }]
+  test('queries no stored status list for the blocked subscription', async () => {
+    mockBlockedSources([{ id: 'D-1', status: 'open', blocked_by: [] }]);
+
+    await fetchListForSubscription({ type: 'blocked-issues' });
+
+    const calls = /** @type {import('vitest').Mock} */ (runBdJsonProjected).mock
+      .calls;
+    expect(calls.some((call) => call[1] && call[1].includes('--status'))).toBe(
+      false
     );
-
-    const res = await fetchListForSubscription({ type: 'blocked-issues' });
-
-    expect(blockedInfoOf(res, 'B-1')).toEqual({
-      external: true,
-      reason: '보안 검토 대기',
-      blockers: ['B-0']
-    });
-  });
-
-  test('ignores blocked_reason on a dependency-only blocked issue', async () => {
-    mockBlockedSources(
-      [],
-      [
-        {
-          id: 'D-1',
-          status: 'open',
-          metadata: { blocked_reason: '남은 값' },
-          blocked_by: [{ id: 'D-0' }]
-        }
-      ]
-    );
-
-    const res = await fetchListForSubscription({ type: 'blocked-issues' });
-
-    expect(blockedInfoOf(res, 'D-1').reason).toBeNull();
-  });
-
-  test('treats a blank blocked_reason as absent', async () => {
-    mockBlockedSources(
-      [{ id: 'S-1', status: 'blocked', metadata: { blocked_reason: '   ' } }],
-      []
-    );
-
-    const res = await fetchListForSubscription({ type: 'blocked-issues' });
-
-    expect(blockedInfoOf(res, 'S-1').reason).toBeNull();
   });
 });
 

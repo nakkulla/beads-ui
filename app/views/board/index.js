@@ -188,18 +188,15 @@ export function createBoardView(mount_element, options) {
   }
 
   /**
-   * The Blocked column carries two kinds of issue and must keep both: an OPEN
-   * issue held up by dependencies, and an issue stored as `status=blocked`
-   * because something outside the tracker is being waited on. Filtering the
-   * column down to `open` would drop the second kind entirely — and with it the
-   * ⏸ external-blocked chip, which would never render.
+   * The Blocked column carries dependency-blocked OPEN issues only. Waiting on
+   * a person is no longer a stored status — it is `metadata.awaiting_user`,
+   * which shows as a chip in whatever column the issue's own status owns.
    *
    * @param {IssueLite} issue
    * @returns {boolean}
    */
   function isBlockedBoardIssue(issue) {
-    const status = String(issue.status || 'open');
-    return status === 'open' || status === 'blocked';
+    return String(issue.status || 'open') === 'open';
   }
 
   /**

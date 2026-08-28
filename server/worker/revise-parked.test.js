@@ -40,10 +40,10 @@ function bdReturning(issue) {
 
 const PARKED_ISSUE = {
   id: 'UI-1',
-  status: 'blocked',
+  status: 'open',
   notes: 'findings: 스펙 §3 누락',
   metadata: {
-    blocked_reason: 'spec_review_stale:revise',
+    awaiting_user: 'spec_review_stale:revise',
     spec_review: 'codex@' + 'a'.repeat(40)
   }
 };
@@ -102,6 +102,34 @@ describe('createReviseParkedStore', () => {
       session_id: 'sess-1',
       receipt: 'codex@' + 'a'.repeat(40)
     });
+  });
+
+  test('observes the park whatever the stored status is', async () => {
+    const store = createReviseParkedStore({
+      runJson: /** @type {any} */ (
+        bdReturning({ ...PARKED_ISSUE, status: 'in_progress' })
+      )
+    });
+
+    const result = await store.verify('/ws', parkedQueue(), 'UI-1');
+
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  test('refuses a park held for another awaiting_user reason', async () => {
+    const store = createReviseParkedStore({
+      runJson: /** @type {any} */ (
+        bdReturning({
+          id: 'UI-1',
+          status: 'open',
+          metadata: { awaiting_user: 'plan_approval_stale:revise' }
+        })
+      )
+    });
+
+    const result = await store.verify('/ws', parkedQueue(), 'UI-1');
+
+    expect(result).toEqual({ ok: false, reason: 'not_parked' });
   });
 
   test('caches a non-parked verdict so the next snapshot re-queries nothing', async () => {
