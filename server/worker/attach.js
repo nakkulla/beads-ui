@@ -857,6 +857,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         kvGetJson(key, { cwd: workspace })),
     makeRunner,
     accountCatalog,
+    // The WHOLE bd surface, `createBdMetadata`'s readers included. `readIssue`
+    // rides it as the scheduler's only reader of a bead's outgoing `blocks`
+    // edges (2026-08-28 worker-prerequisite-wait-tier spec §4.2); an injected
+    // stub without it simply cannot prove that ending, which is the optional
+    // dep's contract.
     bd,
     worktree,
     verify,

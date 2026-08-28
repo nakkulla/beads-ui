@@ -10,7 +10,8 @@ import {
   GUARD_WARNING_COMMAND_MAX,
   createQueueStore,
   makeAttempt,
-  orderLaneByBlocks
+  orderLaneByBlocks,
+  transferableAttempts
 } from './queue-store.js';
 import {
   attemptRecordPath,
@@ -10216,5 +10217,55 @@ describe('worker/queue-store — review_dispatch 정규화 (2026-08-28 auto-revi
 
     expect(entry.hold).toMatchObject({ reason: 'review_receipt_missing' });
     expect(entry.hold?.auto_review_wait).toBeUndefined();
+  });
+});
+
+describe('waiting attempt records (선행 대기 계층 §4.5)', () => {
+  test('keeps a waiting attempt in queue.json', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-wait', bead_id: 'A' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'att-wait',
+      patch: { status: 'waiting', finished_at: 1000 }
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-gone', bead_id: 'B' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'att-gone',
+      patch: { status: 'discarded', finished_at: 1000 }
+    });
+
+    const moved = transferableAttempts(store.snapshot(WS)).map(
+      (attempt) => attempt.attempt_id
+    );
+
+    expect(moved).toEqual(['att-gone']);
+  });
+
+  test('counts a waiting attempt as no longer owning its bead', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+    store.place(WS, { expected_revision: 1, bead_id: 'B' });
+    store.appendAttempt(WS, {
+      expected_revision: 2,
+      attempt: { attempt_id: 'att-B', bead_id: 'B' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'att-B',
+      patch: { status: 'waiting', finished_at: 1000 }
+    });
+
+    const r = store.applySerialGroup(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      lane: 's1',
+      ordered_bead_ids: ['A', 'B']
+    });
+
+    expect(r.ok).toBe(true);
   });
 });

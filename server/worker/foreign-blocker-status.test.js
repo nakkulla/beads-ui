@@ -7,7 +7,8 @@ import {
   foreignBlockerClosedAtFor,
   foreignBlockerStatusFor,
   onForeignBlockerResolved,
-  prewarmIssuePrefix
+  prewarmIssuePrefix,
+  queryForeignBlockerStatus
 } from './foreign-blocker-status.js';
 
 vi.mock('../bd.js', async (importOriginal) => {
@@ -578,5 +579,146 @@ describe('foreign blocker close time (UI-d13v §3.4)', () => {
       'dotfiles-1',
       '--json'
     ]);
+  });
+});
+
+describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
+  /**
+   * @param {Record<string, string|null>} prefixes
+   */
+  function querySeams(prefixes) {
+    return {
+      listRoots: () => [WS_A, WS_B],
+      issuePrefixFor: (/** @type {string} */ root) => prefixes[root] ?? null
+    };
+  }
+
+  test('answers the owning rig status when a prefix maps', async () => {
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: { id: 'dotfiles-1', status: 'open' }
+      })
+    );
+
+    const result = await queryForeignBlockerStatus(
+      'dotfiles-1',
+      WS_A,
+      querySeams({ [WS_B]: 'dotfiles' })
+    );
+
+    expect(result).toEqual({ ok: true, status: 'open' });
+  });
+
+  test('reports no_rig when no visible rig owns the prefix', async () => {
+    const result = await queryForeignBlockerStatus(
+      'Analysis-2zly',
+      WS_A,
+      querySeams({ [WS_B]: 'dotfiles' })
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'no_rig' });
+  });
+
+  test('reports bd_failed when the owning rig lookup fails', async () => {
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({ ok: false, error: { code: 'exit_1' } })
+    );
+
+    const result = await queryForeignBlockerStatus(
+      'dotfiles-1',
+      WS_A,
+      querySeams({ [WS_B]: 'dotfiles' })
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'bd_failed' });
+  });
+
+  test('reports unparsable when the payload carries no status', async () => {
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({ ok: true, data: { id: 'dotfiles-1' } })
+    );
+
+    const result = await queryForeignBlockerStatus(
+      'dotfiles-1',
+      WS_A,
+      querySeams({ [WS_B]: 'dotfiles' })
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'unparsable' });
+  });
+
+  test('never fills the status cache the display path reads', async () => {
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: { id: 'dotfiles-1', status: 'closed' }
+      })
+    );
+
+    await queryForeignBlockerStatus(
+      'dotfiles-1',
+      WS_A,
+      querySeams({ [WS_B]: 'dotfiles' })
+    );
+
+    expect(foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A)).toBeNull();
+  });
+
+  test('never reads a cached status instead of asking bd', async () => {
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: { id: 'dotfiles-1', status: 'closed' }
+      })
+    );
+    foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A);
+    await vi.waitFor(() =>
+      expect(foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A)).toBe('closed')
+    );
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: { id: 'dotfiles-1', status: 'open' }
+      })
+    );
+
+    const result = await queryForeignBlockerStatus(
+      'dotfiles-1',
+      WS_A,
+      querySeams({ [WS_B]: 'dotfiles' })
+    );
+
+    expect(result).toEqual({ ok: true, status: 'open' });
+  });
+
+  test('excludes the requesting workspace from the rig search', async () => {
+    const result = await queryForeignBlockerStatus(
+      'UI-1',
+      WS_A,
+      querySeams({ [WS_A]: 'UI', [WS_B]: 'dotfiles' })
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'no_rig' });
+  });
+
+  test('resolves a cold prefix with an immediate bd config read', async () => {
+    vi.mocked(runBdJsonProjected).mockImplementation(
+      /** @type {any} */ (
+        (/** @type {string} */ family) =>
+          Promise.resolve(
+            family === 'config'
+              ? { ok: true, data: { issue_prefix: 'dotfiles' } }
+              : { ok: true, data: { id: 'dotfiles-1', status: 'open' } }
+          )
+      )
+    );
+
+    const result = await queryForeignBlockerStatus('dotfiles-1', WS_A, {
+      listRoots: () => [WS_B]
+    });
+
+    expect(result).toEqual({ ok: true, status: 'open' });
+    expect(cachedIssuePrefixFor(WS_B)).toBeNull();
   });
 });

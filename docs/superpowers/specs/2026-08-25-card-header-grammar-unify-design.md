@@ -195,7 +195,7 @@ blocked · 겹침 칩이 어느 레인에 서는지는 **이미 투영이 소유
 
 | 슬롯 | 답하는 질문 | 지금 실려 있는 것 |
 |---|---|---|
-| 1 정체성 (왼쪽) | 이것이 무엇인가 · 어떤 상태인가 | 상태점 · grip · 직렬 순번 · ID · `P n` · `↻` 재개 계보 · `worker-ineligible` · `quick_fix` self-review 칩 · legacy `worker-serial` · PR 링크 · 상태 뱃지(완료·live activity·`충돌 해소` · base 예외·실패 원인 뱃지(클릭 = 상세 팝오버)·`자동 진행 꺼짐`) · reason |
+| 1 정체성 (왼쪽) | 이것이 무엇인가 · 어떤 상태인가 | 상태점 · grip · 직렬 순번 · ID · `P n` · `↻` 재개 계보 · `worker-ineligible` · `quick_fix` self-review 칩 · legacy `worker-serial` · PR 링크 · 상태 뱃지(완료·live activity·`충돌 해소` · base 예외·실패 원인 뱃지(클릭 = 상세 팝오버)·`자동 진행 꺼짐`) · held 판정 뱃지(⏸ 세션 대기 · ↻ 재시도 대기 · ⛓ 선행 대기) · reason |
 | 1 조작 (오른쪽 끝) | 내가 여기서 무엇을 하나 | 경과/상태 라벨 · merge-step 게이지 · `▤ 세션` · `⏸`/`▶` · `↻ 이어하기` · `머지`/`취소` · `폐기` |
 | 2 제목 | 무슨 일인가 | 제목 (카드형 변형만; 한 줄 변형은 1번 줄에 포함) |
 | 3 진행 | 어디까지 왔나 | stepper · 활동 줄 · 위임 칩 · 자식 롤업 · landing 진행 |

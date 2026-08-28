@@ -100,9 +100,13 @@
  * @property {string|null} repo - Target repo root (the reconcile's observation
  * scope: a dead attempt's PR is looked for in THIS repo).
  * @property {string|null} status - Attempt lifecycle: pending/running/done/
- * failed/orphaned/paused/stopped/discarded/parked/retry_wait/superseded.
+ * failed/orphaned/paused/stopped/discarded/parked/retry_wait/superseded/waiting.
  * `parked` is a session that ended successfully while waiting on a user
  * decision (2026-08-28 worker-failure-tiers spec §3.1) — not a failure.
+ * `waiting` is a session that refused to START because a prerequisite of this
+ * bead is still open (2026-08-28 worker-prerequisite-wait-tier spec §4.4) —
+ * also not a failure, and it needs no disposition: the bead returns as an
+ * ordinary candidate the moment `bd ready` lists it again.
  * `retry_wait` is an env failure whose backoff ladder still has a rung (§3.3),
  * and `superseded` is an earlier `retry_wait` record the retry replaced. `paused` is resumable; `stopped` is
  * legacy history; `discarded` is the unified archive-backed terminal action.
@@ -1685,7 +1689,12 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
   // fence its own retry and resume out of every dispatch.
   'parked',
   'retry_wait',
-  'superseded'
+  'superseded',
+  // 2026-08-28 worker-prerequisite-wait-tier spec §4.5. A `waiting` attempt
+  // ended on an unmet prerequisite; leaving it outside would make the bead read
+  // as still-active and keep it out of the dispatch that a closed blocker is
+  // supposed to bring back.
+  'waiting'
 ]);
 
 /**
@@ -1700,7 +1709,11 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
 const LANE_RELEASING_ATTEMPT_STATUSES = new Set([
   'done',
   'stopped',
-  'discarded'
+  'discarded',
+  // The prerequisite wait releases too (waiting-tier spec §4.5, D4): the
+  // attempt is over, and a lane it kept would lock out the very sibling whose
+  // landing closes the blocker this bead is waiting on.
+  'waiting'
 ]);
 
 /** @type {number} */
@@ -3919,7 +3932,9 @@ function isFinishedCompletionIntent(intent) {
  * `failed` is deliberately absent: a failure is processed only once it carries a
  * `dismissed_at`, which {@link isProcessedTerminalAttempt} checks separately. So
  * are `paused`, `stopped` and `orphaned` — `paused` is resumable, and the other
- * two are still judged on the board.
+ * two are still judged on the board. `waiting` is absent for the same reason
+ * (waiting-tier spec §4.5): its held tile and its re-dispatch judgment both
+ * keep reading the record, so it stays in `queue.json`.
  *
  * @type {ReadonlySet<string>}
  */

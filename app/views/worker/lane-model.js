@@ -139,7 +139,7 @@ const DONE_KIND_LABELS = {
  *   kind?: 'session',
  *   non_occupying?: boolean,
  *   attempt_id?: string|null,
- *   run_state?: 'running'|'paused'|'failed'|'parked'|'retry_wait',
+ *   run_state?: 'running'|'paused'|'failed'|'parked'|'retry_wait'|'waiting',
  *   can_pause?: boolean,
  *   can_resume?: boolean,
  *   started_at?: number|null,
@@ -154,6 +154,7 @@ const DONE_KIND_LABELS = {
  *   continuation_mode?: 'session'|'fresh'|null,
  *   continuation_mismatch?: any,
  *   failure?: import('./running-grid.js').FailureTile|null,
+ *   wait?: import('./running-grid.js').WaitTile|null,
  *   retry?: import('./running-grid.js').RetryTile|null,
  *   conflict_resolution?: boolean,
  *   base_exception?: string|null,
@@ -554,6 +555,10 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
             })
           }
         : {}),
+      // 선행 대기는 `failure` 투영을 쓰지 않는다 (선행 대기 계층 §5.1): 실패
+      // 팝오버가 묻는 것 — 실패 코드·착지 단계·재개 행 — 중 이 결말이 답할 수
+      // 있는 질문이 하나도 없고, 정산은 시작되지도 않았다.
+      ...(held.run_state === 'waiting' ? { wait: waitProjection(a) } : {}),
       ...(retry ? { retry } : {}),
       can_pause: false,
       can_resume: false
@@ -569,7 +574,7 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
  *
  * @param {any} a
  * @param {Record<string, any>} attempts
- * @param {'running'|'paused'|'failed'|'parked'|'retry_wait'} run_state
+ * @param {'running'|'paused'|'failed'|'parked'|'retry_wait'|'waiting'} run_state
  */
 function liveAttemptFields(a, attempts, run_state) {
   return {
@@ -701,6 +706,55 @@ function timelineFields(history) {
 }
 
 /**
+ * The decision material of an attempt that ended on an UNMET PREREQUISITE
+ * (선행 대기 계층 §5.1). Its own projection rather than the failure one because
+ * the questions differ: this tile says what the session left behind and which
+ * bead it is waiting on, and it has no exits — the blocker closing is what
+ * moves it.
+ *
+ * `blockers` is the server's proven list (§4.4), kept in its `{id, rig, status}`
+ * shape so the 4a chip reads the same fact the settlement recorded. Records
+ * written without it simply carry none (fail-quiet).
+ *
+ * @param {any} a
+ * @returns {import('./running-grid.js').WaitTile}
+ */
+function waitProjection(a) {
+  const cause_detail =
+    a.cause_detail && typeof a.cause_detail === 'object'
+      ? a.cause_detail
+      : null;
+  const raw = Array.isArray(cause_detail?.blockers)
+    ? cause_detail.blockers
+    : [];
+  /** @type {Array<{ id: string, rig: string|null, status: string }>} */
+  const blockers = [];
+  for (const blocker of raw) {
+    if (
+      !blocker ||
+      typeof blocker !== 'object' ||
+      typeof blocker.id !== 'string' ||
+      blocker.id.length === 0
+    ) {
+      continue;
+    }
+    blockers.push({
+      id: blocker.id,
+      rig: typeof blocker.rig === 'string' ? blocker.rig : null,
+      status: typeof blocker.status === 'string' ? blocker.status : ''
+    });
+  }
+  return {
+    summary:
+      cause_detail && typeof cause_detail.summary === 'string'
+        ? cause_detail.summary
+        : null,
+    blockers,
+    since: typeof a.finished_at === 'number' ? a.finished_at : null
+  };
+}
+
+/**
  * The backoff facts of one attempt (UI-5ym8 §6), or null when it carries none.
  * A record written before §6 has no `retry` key at all, so the 재시도 대기 badge
  * and the popover's 이력 row simply do not render.
@@ -731,13 +785,19 @@ function retryProjection(attempt) {
  * neither occupies a slot — but both need a tile, because the tile is the only
  * place the 재시도·폐기 actions exist.
  *
+ * `waiting` joins them (선행 대기 계층 §5.1): the session refused to start on an
+ * unmet prerequisite, so nothing is running and nothing failed. It differs from
+ * the other two in having no exit of its own — the blocker closing brings the
+ * bead back as an ordinary candidate — but it still needs a tile, because
+ * otherwise the bead vanishes from the board while it waits.
+ *
  * `superseded` is deliberately NOT here: it records an attempt that a later
  * retry replaced, so it is history and leaves the grid the way a dismissed
  * failure does.
  *
  * @type {Set<string>}
  */
-const HELD_STATUSES = new Set(['parked', 'retry_wait']);
+const HELD_STATUSES = new Set(['parked', 'retry_wait', 'waiting']);
 
 /**
  * The parked/retry_wait attempts of one repo, folded onto their beads.
@@ -748,7 +808,7 @@ const HELD_STATUSES = new Set(['parked', 'retry_wait']);
  *
  * @param {Record<string, any>} attempts
  * @param {Map<string, number>} done_at_by_bead
- * @returns {Map<string, { attempt: any, run_state: 'parked'|'retry_wait' }>}
+ * @returns {Map<string, { attempt: any, run_state: 'parked'|'retry_wait'|'waiting' }>}
  */
 function heldAttemptStates(attempts, done_at_by_bead) {
   const values = /** @type {any[]} */ (Object.values(attempts || {}));
@@ -759,7 +819,7 @@ function heldAttemptStates(attempts, done_at_by_bead) {
       last_impl_by_bead.set(a.bead_id, a.attempt_id);
     }
   }
-  /** @type {Map<string, { attempt: any, run_state: 'parked'|'retry_wait' }>} */
+  /** @type {Map<string, { attempt: any, run_state: 'parked'|'retry_wait'|'waiting' }>} */
   const held = new Map();
   for (const a of values) {
     if (
@@ -2270,6 +2330,31 @@ export function buildLanes(workspaces, workspaces_state, options) {
       };
     };
 
+    /**
+     * Slot 4a's dependency-chip material, merged (선행 대기 계층 §5.1). 큐
+     * 장식이 아직 그 엣지를 싣지 않았어도 `waiting` attempt가 증명한 blocker는
+     * 칩이 되어야 하고, 둘이 같은 ID를 말하면 칩은 하나다.
+     *
+     * @param {string} bead_id
+     * @param {import('./running-grid.js').WaitTile|null|undefined} wait
+     * @returns {{ blocked_by?: string[] }}
+     */
+    const blockedByFields = (bead_id, wait) => {
+      const decorated = decoratedBlockedBy(bead_id);
+      const waited = (wait?.blockers || []).map((blocker) => blocker.id);
+      if (waited.length === 0) {
+        return decorated;
+      }
+      /** @type {string[]} */
+      const merged = [...(decorated.blocked_by || [])];
+      for (const id of waited) {
+        if (!merged.includes(id)) {
+          merged.push(id);
+        }
+      }
+      return { blocked_by: merged };
+    };
+
     /** @type {Set<string>} */
     const claimed = new Set();
 
@@ -2331,7 +2416,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       running.push({
         ...base(bead_id),
         lane: 'running',
-        ...decoratedBlockedBy(bead_id),
+        ...blockedByFields(bead_id, live.wait),
         ...(serial_lane_by_bead.has(bead_id)
           ? { serial_lane_id: serial_lane_by_bead.get(bead_id) }
           : {}),
@@ -2355,6 +2440,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
         continuation_mode: live.continuation_mode,
         usage: live.usage,
         failure: live.failure || null,
+        // 선행 대기의 재료 (선행 대기 계층 §5.1). 실패와 별개 키이므로 타일이
+        // 실패 팝오버를 얻지 않고, 없으면 held 본문이 그려지지 않는다.
+        wait: live.wait || null,
         // backoff 사실은 실패와 별개 키다 (UI-5ym8 §6): `retry_wait` 타일의
         // 배지가 이것만으로 그려지고, `failed` 타일에서는 팝오버의 재시도 이력
         // 줄이 같은 값을 읽는다.
@@ -2388,7 +2476,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
                 ? ['⏸ 세션 대기']
                 : live.run_state === 'retry_wait'
                   ? ['↻ 재시도 대기']
-                  : [],
+                  : live.run_state === 'waiting'
+                    ? ['⛓ 선행 대기']
+                    : [],
         // 경보는 실패의 것이다 (UI-5ym8 §2): 파킹도 backoff 대기도 큐를 세우지
         // 않으므로, 그것들을 붉게 물들이면 "타일이 서면 큐가 멈춘 것"이라는
         // 낡은 읽기를 다시 가르치게 된다.

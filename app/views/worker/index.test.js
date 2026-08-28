@@ -1522,6 +1522,57 @@ describe('views/worker', () => {
     expect(mount.querySelector('.worker-banner--breaker')).toBeNull();
   });
 
+  // Worker 어댑터가 Monitor와 같은 키를 실어야 한다 (선행 대기 계층 §5.4,
+  // ADR 14): 빠뜨리면 같은 렌더러가 이 타일을 실행 중 타일로 그려 시계와 세션
+  // 조작을 준다.
+  test('renders a waiting attempt as a held tile with the 선행 대기 badge', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'W1', added_at: 0 }],
+        attempts: {
+          aw: {
+            attempt_id: 'aw',
+            bead_id: 'W1',
+            status: 'waiting',
+            runner: 'claude',
+            model: 'opus',
+            started_at: Date.now() - 5000,
+            finished_at: Date.now() - 1000,
+            cause: 'prerequisite_unmet',
+            cause_detail: {
+              summary: '선행 미충족으로 착수하지 않았습니다',
+              blockers: [{ id: 'W9', rig: null, status: 'open' }],
+              bead_status: 'open'
+            }
+          }
+        }
+      })
+    );
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="aw"]')
+    );
+    expect(tile.querySelector('.rtile__held-badge')?.textContent).toBe(
+      '⛓ 선행 대기'
+    );
+    expect(tile.querySelector('.rtile__elapsed')?.textContent).toBe(
+      '선행 대기'
+    );
+    expect(tile.querySelector('.rtile__held-summary')?.textContent).toBe(
+      '선행 미충족으로 착수하지 않았습니다'
+    );
+    expect(tile.querySelector('.rtile__pause')).toBeNull();
+    expect(tile.querySelector('.rtile__failure-badge')).toBeNull();
+  });
+
   /**
    * @param {Record<string, any>} over
    * @param {(type: string, payload?: unknown) => Promise<any>} [transport]

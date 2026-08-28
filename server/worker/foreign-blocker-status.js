@@ -16,8 +16,15 @@
  * worker-handlers, never the reverse, and this layer keeps that direction
  * intact.
  *
- * Display only. A closed blocker is simply not a blocker, exactly as `bd ready`
- * already judges it; nothing here is scheduling input.
+ * The CACHED path (`foreignBlockerStatusFor` and everything feeding it) is
+ * display only: a closed blocker is simply not a blocker, exactly as `bd ready`
+ * already judges it, and no snapshot decoration is scheduling input. The one
+ * exception is {@link queryForeignBlockerStatus} — the awaited, cache-free
+ * lookup the Worker's prerequisite-wait judgment reads (2026-08-28
+ * worker-prerequisite-wait-tier spec §4.2·§8). It shares only the prefix→rig
+ * resolution; the status cache, its TTLs and its cleanup take no part in a
+ * judgment, because a cached value cannot tell a landed answer from a failed
+ * one at the moment the decision is made.
  */
 import path from 'node:path';
 import { runBdJsonProjected } from '../bd.js';
@@ -323,6 +330,115 @@ export function foreignBlockerClosedAtFor(bead_id, owner_root, requester_root) {
     foreignStatusKey(bead_id, owner_root)
   )?.closed_at;
   return typeof closed_at === 'number' ? closed_at : null;
+}
+
+/**
+ * @typedef {{ ok: true, status: string }
+ *   | { ok: false, reason: 'no_rig'|'bd_failed'|'unparsable' }} ForeignBlockerQuery
+ */
+
+/**
+ * The status of a FOREIGN blocker, read to the end (waiting-tier spec §4.2).
+ *
+ * Deliberately NOT {@link foreignBlockerStatusFor}: that reader answers from
+ * the cache and only STARTS a lookup, so at the moment a judgment runs it
+ * cannot tell "closed" from "not asked yet" from "asked and failed". A
+ * scheduling decision needs those apart, so this path awaits the `bd show` and
+ * touches neither the status cache nor its TTL.
+ *
+ * `ok:false` is JUDGMENT IMPOSSIBLE, never "assume still blocking": the caller
+ * falls back to its ordinary settlement rather than inventing an answer.
+ *
+ * The prefix→rig resolution IS shared with the display path, because there is
+ * only one of it. A cold prefix is resolved with an immediate `bd config` read
+ * rather than {@link prewarmIssuePrefix}, so this call never depends on a
+ * background lookup landing first — and never fills the cache on its behalf.
+ *
+ * @param {string} bead_id - The blocker, whose prefix names its owning rig.
+ * @param {string} requester_root - The workspace holding the blocked bead; it
+ * is excluded from the search because a blocker over here is not foreign.
+ * @param {{
+ *   listRoots?: () => string[],
+ *   issuePrefixFor?: (root_dir: string) => string|null,
+ *   runJson?: typeof runBdJsonProjected
+ * }} [options] - Test seams; each defaults to the live source.
+ * @returns {Promise<ForeignBlockerQuery>}
+ */
+export async function queryForeignBlockerStatus(
+  bead_id,
+  requester_root,
+  options = {}
+) {
+  const runJson = options.runJson || runBdJsonProjected;
+  const listRoots = options.listRoots || (() => visibleWorkspaceRoots());
+  const issuePrefixFor = options.issuePrefixFor || cachedIssuePrefixFor;
+  const requester = path.resolve(String(requester_root || ''));
+  const prefix = prefixOfBeadId(bead_id);
+  /** @type {string[]} */
+  let roots;
+  try {
+    roots = listRoots();
+  } catch (err) {
+    log('visible roots unreadable while resolving %s: %o', bead_id, err);
+    return { ok: false, reason: 'no_rig' };
+  }
+  /** @type {string|null} */
+  let owner_root = null;
+  for (const root of roots) {
+    if (root === requester) {
+      continue;
+    }
+    /** @type {string|null} */
+    let owner_prefix = null;
+    try {
+      owner_prefix = issuePrefixFor(root);
+    } catch {
+      owner_prefix = null;
+    }
+    if (owner_prefix === null) {
+      try {
+        const config = await runJson('config', ['config', 'list', '--json'], {
+          cwd: root
+        });
+        owner_prefix =
+          config && config.ok === true
+            ? issuePrefixFromConfig(config.data)
+            : null;
+      } catch (err) {
+        log('issue prefix read failed for %s: %o', root, err);
+        owner_prefix = null;
+      }
+    }
+    if (owner_prefix !== null && owner_prefix === prefix) {
+      owner_root = root;
+      break;
+    }
+  }
+  if (owner_root === null) {
+    return { ok: false, reason: 'no_rig' };
+  }
+  /** @type {any} */
+  let shown;
+  try {
+    shown = await runJson('show', ['show', bead_id, '--json'], {
+      cwd: owner_root,
+      expected_id: bead_id
+    });
+  } catch (err) {
+    log('foreign blocker query threw for %s: %o', bead_id, err);
+    return { ok: false, reason: 'bd_failed' };
+  }
+  if (!shown || shown.ok !== true) {
+    return { ok: false, reason: 'bd_failed' };
+  }
+  const status =
+    shown.data && typeof shown.data === 'object'
+      ? /** @type {any} */ (shown.data).status
+      : null;
+  if (typeof status !== 'string' || status.length === 0) {
+    return { ok: false, reason: 'unparsable' };
+  }
+  return { ok: true, status };
 }
 
 /**

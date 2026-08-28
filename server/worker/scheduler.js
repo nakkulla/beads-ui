@@ -77,6 +77,10 @@ import {
   guardKillMessage
 } from './failure-class.js';
 import { attemptFailureComment } from './failure-comment.js';
+import {
+  prefixOfBeadId,
+  queryForeignBlockerStatus
+} from './foreign-blocker-status.js';
 import * as default_guard_hook from './guard-hook.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
@@ -251,7 +255,12 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
   // fence its own retry and resume out of every dispatch.
   'parked',
   'retry_wait',
-  'superseded'
+  'superseded',
+  // 2026-08-28 worker-prerequisite-wait-tier spec §4.5. A `waiting` attempt is
+  // over: the session refused to start on an unmet prerequisite. Outside this
+  // set the bead reads as still-active, so the ordinary pass would never
+  // re-dispatch it once the blocker closes — which is the whole return path.
+  'waiting'
 ]);
 
 /** Maximum terminal receipt inboxes inspected per reconciliation pass. */
@@ -498,11 +507,15 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   readMetadata: (bead_id: string, key: string) => Promise<string|null>,
  *   setStatus: (bead_id: string, status: string) => Promise<void>,
  *   readStatus: (bead_id: string) => Promise<string|null>,
- *   comment?: (bead_id: string, text: string) => Promise<unknown>
+ *   comment?: (bead_id: string, text: string) => Promise<unknown>,
+ *   readIssue?: (bead_id: string) => Promise<Record<string, any>>
  * }} bd
  * `comment` is OPTIONAL because a scheduler built without it — every existing
  * unit test — must settle failures identically and simply post nothing
- * (record-timeline-retention §9).
+ * (record-timeline-retention §9). `readIssue` is optional on the same rule
+ * (waiting-tier spec §4.2): it is the ONLY reader of a bead's outgoing `blocks`
+ * edges, so an attachment without it cannot prove a prerequisite wait and every
+ * such ending falls through to the ordinary landing settlement.
  * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean, restore?: (i: { repo: string, bead_id: string, head_ref: string }) => Promise<{ ok: boolean, reason?: string }> }} worktree
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean, bead_status?: string|null, awaiting_user?: string|null }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
@@ -645,7 +658,15 @@ function serialLineageId(attempt) {
  *
  * @type {Set<string>}
  */
-const LANE_RELEASING_STATUSES = new Set(['done', 'stopped', 'discarded']);
+const LANE_RELEASING_STATUSES = new Set([
+  'done',
+  'stopped',
+  'discarded',
+  // The prerequisite wait releases too (waiting-tier spec §4.5, D4): the
+  // attempt ended and holding the lane would keep the SIBLING that closes the
+  // blocker out of it. Mirrors `queue-store.js`'s set, which must agree.
+  'waiting'
+]);
 
 /**
  * Zero-based slot index of a serial lane id, or null for anything else.
@@ -3534,8 +3555,62 @@ export function createScheduler(deps) {
       return;
     }
 
+    if (tier === 'waiting') {
+      // The prerequisite wait (waiting-tier spec §4.4). `blockers` is not read
+      // off the session's result line: the caller PROVED each id against bd
+      // before this tier could be reached (§4.2), and §2 keeps the result line
+      // out of the judgment entirely.
+      const blockers = Array.isArray(
+        /** @type {{ blockers?: unknown }|null} */ (cause_detail)?.blockers
+      )
+        ? /** @type {{ blockers: Array<{ id: string, rig: string|null, status: string }> }} */ (
+            cause_detail
+          ).blockers
+        : [];
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          status: 'waiting',
+          cause: classification.cause,
+          cause_detail: {
+            summary: classification.summary,
+            blockers,
+            bead_status: options.bead_status ?? null
+          },
+          finished_at: at
+        }
+      });
+      // Same reason the success path calls it: an env-retry rung that ends in a
+      // prerequisite wait would otherwise leave `queue.hold` standing, and the
+      // hold is exactly what would keep the bead from coming back as an
+      // ordinary candidate once the blocker closes.
+      closeRetryLineage(workspace, bead_id);
+      // §5's ending kind, in the SAME shape the park writes: this says how the
+      // session ended, and it is not a failure, so `appendFailedEvent` and its
+      // `attempt_failed` kind stay out of it. No lifecycle push, no direction
+      // inquiry and no bd comment either — there is nothing for a person to
+      // dispose of, and the blocker closing is what moves this bead.
+      appendTimeline({
+        bead_id,
+        attempt_id,
+        kind: 'session_ended',
+        // One ending per attempt, so the id is fixed rather than sequenced.
+        seq: 'waiting',
+        summary: `대기 · blocks:${blockers
+          .map((blocker) => blocker.id)
+          .join(', ')}`,
+        at
+      });
+      return;
+    }
+
     if (tier === 'env') {
-      const key = causeKey(classification.cause, classification.env_group);
+      // `causeKey` answers null for a cause that never promotes (§4.3). No
+      // such cause classifies `env`, so this branch cannot see one; the
+      // fallback exists only so the ladder's key stays a string.
+      const key =
+        causeKey(classification.cause, classification.env_group) ??
+        classification.cause;
       const origin_attempt_id = retryOriginOf(workspace, attempt_id);
       const applied = deps.store.applyQueueHold(workspace, {
         event: {
@@ -3683,10 +3758,13 @@ export function createScheduler(deps) {
    * @param {any} [cause_detail] - What the fail-closed path actually caught
    * (UI-2o4z §2); the classifier's `summary` is merged into it here.
    * @param {{ moot?: boolean, verdict?: any, bead_status?: string|null,
-   *   pr_url?: string|null, awaiting_user?: string|null }} [options]
+   *   pr_url?: string|null, awaiting_user?: string|null,
+   *   tier_hint?: 'waiting' }} [options]
    * `verdict`/`bead_status`/`pr_url`/`awaiting_user` are the classifier's
    * inputs (§3.1): without them a successful-but-undelivered ending cannot be
    * told apart from a park, so only the paths that HAVE them pass them.
+   * `tier_hint` is the prerequisite-wait proof (waiting-tier spec §4.3) and
+   * only {@link judgePrerequisiteWait} may carry it.
    */
   async function failAttempt(
     workspace,
@@ -3704,7 +3782,8 @@ export function createScheduler(deps) {
       verdict: options.verdict ?? null,
       bead_status: options.bead_status ?? null,
       pr_url: options.pr_url ?? null,
-      awaiting_user: options.awaiting_user ?? null
+      awaiting_user: options.awaiting_user ?? null,
+      ...(options.tier_hint ? { tier_hint: options.tier_hint } : {})
     });
     settleFailureTier(
       workspace,
@@ -4030,6 +4109,23 @@ export function createScheduler(deps) {
       }
 
       if (quickfixLaneOf(workspace, attempt_id)) {
+        // The prerequisite wait is judged BEFORE the landing settlement
+        // (waiting-tier spec §4.1, D1): inside `settleQuickfixLanding` the
+        // missing push record is read first and this ending becomes
+        // `delivery_unproven:push_log_absent`, a failure tile with nothing to
+        // dispose of. It stays behind `recordReceiptCheck` for the reason
+        // UI-bu6d put that observation ahead of every success branch.
+        if (
+          await judgePrerequisiteWait(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            verdict
+          )
+        ) {
+          return;
+        }
         await settleQuickfixLanding(
           workspace,
           attempt_id,
@@ -4234,6 +4330,243 @@ export function createScheduler(deps) {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * @typedef {{ id: string, rig: string|null, status: string }} PrerequisiteBlocker
+   */
+
+  /**
+   * Whether a bead's `defer` field holds anything at all (waiting-tier spec
+   * §4.2 condition 4). A missing field reads as EMPTY — the contract's own
+   * rule — while any present, non-empty value is a non-dependency reason this
+   * bead is out of the queue, which the wait must not claim as its own.
+   *
+   * @param {unknown} value
+   */
+  function hasDeferReason(value) {
+    if (value === null || value === undefined) {
+      return false;
+    }
+    if (typeof value === 'string') {
+      return value.trim().length > 0;
+    }
+    if (Array.isArray(value)) {
+      return value.length > 0;
+    }
+    if (typeof value === 'object') {
+      return Object.keys(value).length > 0;
+    }
+    return true;
+  }
+
+  /**
+   * Whether this attempt left no push record at all (§4.2 condition 1).
+   *
+   * An UNREADABLE record answers the same "no push" the missing one does: the
+   * hook writes the file at its first push, so both shapes mean the same thing
+   * here, and this is precisely the observation `delivery_unproven:
+   * push_log_absent` is about to make from the other side.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   */
+  function pushRecordAbsent(workspace, attempt_id) {
+    if (typeof guardHook.readPushLog !== 'function') {
+      return true;
+    }
+    try {
+      const read = guardHook.readPushLog({ workspace, attempt_id });
+      return read.ok !== true || read.entries.length === 0;
+    } catch (err) {
+      log('push log read failed for %s: %o', attempt_id, err);
+      return true;
+    }
+  }
+
+  /**
+   * The UNRESOLVED outgoing `blocks` edges of a bead (§4.2 condition 3), or
+   * null when any one of them could not be observed.
+   *
+   * Null is "judgment impossible", never "nothing is blocking": a rig this
+   * server cannot see and a `bd` that failed both have to fall back to the
+   * ordinary settlement rather than be read as an answer.
+   *
+   * @param {string} workspace
+   * @param {Record<string, any>} issue - The `bd show --json` payload.
+   * @returns {Promise<PrerequisiteBlocker[]|null>}
+   */
+  async function unresolvedBlockersOf(workspace, issue) {
+    const edges = Array.isArray(issue.dependencies) ? issue.dependencies : [];
+    /** @type {PrerequisiteBlocker[]} */
+    const unresolved = [];
+    let outgoing = 0;
+    for (const edge of edges) {
+      if (
+        !edge ||
+        typeof edge !== 'object' ||
+        /** @type {any} */ (edge).dependency_type !== 'blocks' ||
+        typeof (/** @type {any} */ (edge).id) !== 'string' ||
+        /** @type {any} */ (edge).id.length === 0
+      ) {
+        continue;
+      }
+      outgoing += 1;
+      const blocker_id = /** @type {string} */ (/** @type {any} */ (edge).id);
+      // `bd show` carries a status for a SAME-RIG dependency only; a foreign
+      // edge is marked as such and its status lives in the owning rig.
+      if (/** @type {any} */ (edge).external === true) {
+        const found = await queryForeignBlockerStatus(blocker_id, workspace);
+        if (found.ok !== true) {
+          return null;
+        }
+        if (found.status !== 'closed') {
+          unresolved.push({
+            id: blocker_id,
+            rig: prefixOfBeadId(blocker_id),
+            status: found.status
+          });
+        }
+        continue;
+      }
+      /** @type {string|null} */
+      let status;
+      try {
+        status = await deps.bd.readStatus(blocker_id);
+      } catch (err) {
+        log('blocker status read failed for %s: %o', blocker_id, err);
+        return null;
+      }
+      if (status === null) {
+        return null;
+      }
+      if (status !== 'closed') {
+        unresolved.push({ id: blocker_id, rig: null, status });
+      }
+    }
+    return outgoing === 0 ? null : unresolved;
+  }
+
+  /**
+   * The four prerequisite-wait conditions, in order (waiting-tier spec §4.2),
+   * or null when any of them fails to hold or cannot be observed.
+   *
+   * Condition 2 releases the bead claim FIRST and on purpose: `bd ready`
+   * excludes `in_progress`, so absence from it before the release proves
+   * nothing. Falling through to the ordinary settlement after the release costs
+   * nothing — `failAttempt`'s own `releaseBeadClaim` is a no-op on a bead that
+   * is no longer `in_progress`.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {RunnerVerdict} verdict
+   * @returns {Promise<{ blockers: PrerequisiteBlocker[], bead_status: string|null }|null>}
+   */
+  async function provePrerequisiteWait(
+    workspace,
+    attempt_id,
+    bead_id,
+    verdict
+  ) {
+    if (verdict.success !== true || !pushRecordAbsent(workspace, attempt_id)) {
+      return null;
+    }
+    /** @type {string|null} */
+    let bead_status;
+    try {
+      bead_status = await deps.bd.readStatus(bead_id);
+    } catch (err) {
+      log('prerequisite wait status read failed for %s: %o', bead_id, err);
+      return null;
+    }
+    if (bead_status === 'resolved' || bead_status === 'closed') {
+      return null;
+    }
+    if (typeof deps.bd.readIssue !== 'function') {
+      // Unwired reader ⇒ the outgoing edges cannot be read at all ⇒ judgment
+      // impossible. Named before the claim release so an attachment that can
+      // never prove this ending does not churn the bead's status either.
+      return null;
+    }
+
+    await releaseBeadClaim(bead_id);
+    /** @type {BeadSnapshot} */
+    let snap;
+    try {
+      snap = await deps.bd.snapshotBead(bead_id);
+    } catch (err) {
+      log('prerequisite wait ready read failed for %s: %o', bead_id, err);
+      return null;
+    }
+    if (snap.ready !== false) {
+      return null;
+    }
+
+    /** @type {Record<string, any>} */
+    let issue;
+    try {
+      issue = await deps.bd.readIssue(bead_id);
+    } catch (err) {
+      log('prerequisite wait issue read failed for %s: %o', bead_id, err);
+      return null;
+    }
+    const blockers = await unresolvedBlockersOf(workspace, issue);
+    if (blockers === null || blockers.length === 0) {
+      return null;
+    }
+
+    if (hasDeferReason(issue.defer) || snap.status !== 'open') {
+      return null;
+    }
+    return { blockers, bead_status };
+  }
+
+  /**
+   * Settle an attempt whose session refused to start on an unmet prerequisite
+   * (waiting-tier spec §4.1), ahead of the landing settlement.
+   *
+   * The trailing `notifyChanged`/`tick` are this function's own because
+   * `failAttempt` fires neither — exactly like the failure arms of
+   * {@link settleQuickfixLanding}, which call both at every return. Without
+   * them the board and the empty slot would sit still until some unrelated
+   * event moved them.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {string|null} prior
+   * @param {RunnerVerdict} verdict
+   * @returns {Promise<boolean>} Whether the attempt was settled as `waiting`.
+   */
+  async function judgePrerequisiteWait(
+    workspace,
+    attempt_id,
+    bead_id,
+    prior,
+    verdict
+  ) {
+    const proven = await provePrerequisiteWait(
+      workspace,
+      attempt_id,
+      bead_id,
+      verdict
+    );
+    if (proven === null) {
+      return false;
+    }
+    await failAttempt(
+      workspace,
+      attempt_id,
+      bead_id,
+      prior,
+      'prerequisite_unmet',
+      { blockers: proven.blockers },
+      { verdict, bead_status: proven.bead_status, tier_hint: 'waiting' }
+    );
+    notifyChanged(workspace);
+    await tick(workspace);
+    return true;
   }
 
   /**
@@ -8707,6 +9040,10 @@ export function createScheduler(deps) {
     if (latest.status === 'retry_wait') {
       return 'retry_wait';
     }
+    // `waiting` is deliberately absent (waiting-tier spec §4.5, D3): absence
+    // from `bd ready` is that ending's fence, and it lifts itself the moment
+    // the blocker closes. Fencing here would demand a click for a bead that
+    // has nothing for a person to decide.
     return null;
   }
 

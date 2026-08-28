@@ -1925,6 +1925,112 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
   });
 });
 
+describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * A `waiting` attempt's tile input. It carries `wait`, never `failure`: the
+   * ending has no failure code, no landing step and no resume to describe.
+   *
+   * @param {Partial<any>} [over]
+   * @returns {any}
+   */
+  function waitTile(over = {}) {
+    return {
+      bead_id: 'UI-w1',
+      attempt_id: 'attempt-w1',
+      title: '선행 미충족으로 착수 거부',
+      runner: 'claude',
+      model: 'opus',
+      started_at: 1000,
+      waiting: true,
+      status: 'waiting',
+      status_label: '선행 대기',
+      wait: {
+        summary: '선행 Analysis-2zly 미충족으로 착수하지 않았습니다',
+        blockers: [{ id: 'Analysis-2zly', rig: 'Analysis', status: 'open' }],
+        since: 4000
+      },
+      discard: {
+        action: true,
+        enabled: true,
+        label: '폐기',
+        title: '백업 후 정리',
+        operation: null
+      },
+      ...over
+    };
+  }
+
+  test('badges a waiting attempt in the 판정 칩 slot', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([waitTile()]), mount);
+
+    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+    expect(
+      tile.querySelector('.rtile__hd .rtile__held-badge')?.textContent
+    ).toBe('⛓ 선행 대기');
+    expect(tile.classList.contains('rtile--failed')).toBe(false);
+  });
+
+  test('labels the status instead of running a clock', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([waitTile()]), mount);
+
+    expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe(
+      '선행 대기'
+    );
+  });
+
+  test('renders the session summary line', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([waitTile()]), mount);
+
+    expect(mount.querySelector('.rtile__held-summary')?.textContent).toContain(
+      'Analysis-2zly'
+    );
+  });
+
+  test('draws no summary line when the record carries none', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const tile = waitTile();
+    tile.wait.summary = null;
+
+    render(runningGridTemplate([tile]), mount);
+
+    expect(mount.querySelector('.rtile__held-summary')).toBeNull();
+  });
+
+  test('offers 폐기 alone in the action foot', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([waitTile()]), mount);
+
+    const foot = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__foot')
+    );
+    expect(foot.querySelector('.rtile__discard')?.textContent?.trim()).toBe(
+      '폐기'
+    );
+    expect(foot.querySelector('.rtile__parked-retry')).toBeNull();
+  });
+
+  test('draws no resume button and no failure popover', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([waitTile()]), mount);
+
+    expect(mount.querySelector('.rtile__resume')).toBeNull();
+    expect(mount.querySelector('.rtile__failure-badge')).toBeNull();
+    expect(mount.querySelector('.rtile__pause')).toBeNull();
+  });
+});
+
 describe('worker 실패 팝오버의 §6 재료 (UI-5ym8 §8)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';

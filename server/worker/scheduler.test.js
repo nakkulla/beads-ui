@@ -594,6 +594,26 @@ function makeFakeBd(config) {
       return cfg && cfg.readStatusStuck
         ? (cfg.status ?? null)
         : (statuses[bead_id] ?? null);
+    },
+    /**
+     * The whole issue, the prerequisite-wait judgment's only reader of a bead's
+     * outgoing `blocks` edges (선행 대기 계층 §4.2). Fail-closed like the real
+     * one: a bead configured to throw makes the judgment impossible.
+     *
+     * @param {string} bead_id
+     * @returns {Promise<Record<string, any>>}
+     */
+    async readIssue(bead_id) {
+      const cfg = /** @type {any} */ (config[bead_id] || {});
+      if (cfg.throwOnReadIssue) {
+        throw new Error(`bd show ${bead_id} failed (readIssue)`);
+      }
+      return {
+        id: bead_id,
+        status: statuses[bead_id] ?? cfg.status ?? 'open',
+        dependencies: cfg.dependencies ?? [],
+        ...(cfg.defer === undefined ? {} : { defer: cfg.defer })
+      };
     }
   };
 }
@@ -15351,5 +15371,267 @@ describe('scheduler 방향 질의 세션 훅 (UI-7uid §3.1)', () => {
     await flush();
 
     expect(directionInquiry.onParkedAttempt).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
+  /**
+   * A quick_fix bead whose session will end without pushing. `dependencies` is
+   * what `readIssue` answers with, and `status` seeds both the live bd status
+   * and the snapshot readback condition 4 reads.
+   *
+   * @param {any[]} dependencies
+   * @param {Record<string, any>} [extra]
+   * @returns {Record<string, any>}
+   */
+  function waitingConfig(dependencies, extra = {}) {
+    return {
+      S1: {
+        route: 'quick_fix',
+        target_base: 'release',
+        status: 'open',
+        dependencies,
+        ...extra
+      },
+      S9: { status: 'open' }
+    };
+  }
+
+  /**
+   * Dispatch S1, model the session taking the bd claim, then finish it exit 0
+   * with nothing pushed — the ending the whole tier is about.
+   *
+   * @param {any} env
+   * @param {Record<string, any>} config
+   */
+  async function runRefusedSession(env, config) {
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    // The session claimed the bead and never gave it back, and the blocker is
+    // what keeps the bead out of `bd ready` once the claim is released.
+    env.bd.statuses.S1 = 'in_progress';
+    config.S1.ready = false;
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+  }
+
+  test('settles a refused session as waiting instead of a landing failure', async () => {
+    const config = waitingConfig([{ dependency_type: 'blocks', id: 'S9' }]);
+    const settle = vi.fn(async () => ({ ok: true }));
+    const env = setup({ config, slots: 1, quickfixLanding: { settle } });
+
+    await runRefusedSession(env, config);
+
+    expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
+      status: 'waiting',
+      cause: 'prerequisite_unmet',
+      cause_detail: {
+        blockers: [{ id: 'S9', rig: null, status: 'open' }],
+        bead_status: 'in_progress'
+      }
+    });
+  });
+
+  test('never enters the landing settlement', async () => {
+    const config = waitingConfig([{ dependency_type: 'blocks', id: 'S9' }]);
+    const settle = vi.fn(async () => ({ ok: true }));
+    const env = setup({ config, slots: 1, quickfixLanding: { settle } });
+
+    await runRefusedSession(env, config);
+
+    expect(settle).not.toHaveBeenCalled();
+  });
+
+  test('gives the bead claim back', async () => {
+    const config = waitingConfig([{ dependency_type: 'blocks', id: 'S9' }]);
+    const env = setup({
+      config,
+      slots: 1,
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+    });
+
+    await runRefusedSession(env, config);
+
+    expect(env.bd.statuses.S1).toBe('open');
+  });
+
+  test('publishes the transition and refills the freed slot', async () => {
+    const config = waitingConfig([{ dependency_type: 'blocks', id: 'S9' }]);
+    config.S2 = {};
+    const notifyQueueChanged = vi.fn();
+    const env = setup({
+      config,
+      slots: 1,
+      notifyQueueChanged,
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1', 'S2']);
+    await env.scheduler.tick(WS);
+    env.bd.statuses.S1 = 'in_progress';
+    config.S1.ready = false;
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(notifyQueueChanged).toHaveBeenCalledWith(WS);
+    expect(env.scheduler.isRunning('S2')).toBe(true);
+  });
+
+  test('settles the ordinary way when the bead is still in bd ready', async () => {
+    const config = waitingConfig([{ dependency_type: 'blocks', id: 'S9' }]);
+    const settle = vi.fn(async () => ({
+      ok: false,
+      reason: 'delivery_unproven:push_log_absent'
+    }));
+    const env = setup({ config, slots: 1, quickfixLanding: { settle } });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.bd.statuses.S1 = 'in_progress';
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(settle).toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].cause).toBe(
+      'quickfix_landing_failed:delivery_unproven:push_log_absent'
+    );
+  });
+
+  test('settles the ordinary way when a foreign blocker cannot be read', async () => {
+    const config = waitingConfig([
+      { dependency_type: 'blocks', id: 'Nosuchrig-1', external: true }
+    ]);
+    const settle = vi.fn(async () => ({
+      ok: false,
+      reason: 'delivery_unproven:push_log_absent'
+    }));
+    const env = setup({ config, slots: 1, quickfixLanding: { settle } });
+
+    await runRefusedSession(env, config);
+
+    expect(settle).toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].status).toBe('failed');
+  });
+
+  test('settles the ordinary way when the bead carries a defer', async () => {
+    const config = waitingConfig([{ dependency_type: 'blocks', id: 'S9' }], {
+      defer: '2026-09-01'
+    });
+    const settle = vi.fn(async () => ({
+      ok: false,
+      reason: 'delivery_unproven:push_log_absent'
+    }));
+    const env = setup({ config, slots: 1, quickfixLanding: { settle } });
+
+    await runRefusedSession(env, config);
+
+    expect(settle).toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].status).toBe('failed');
+  });
+
+  test('settles the ordinary way without a readIssue reader', async () => {
+    const config = waitingConfig([{ dependency_type: 'blocks', id: 'S9' }]);
+    const settle = vi.fn(async () => ({
+      ok: false,
+      reason: 'delivery_unproven:push_log_absent'
+    }));
+    const env = setup({ config, slots: 1, quickfixLanding: { settle } });
+    delete (/** @type {any} */ (env.bd).readIssue);
+
+    await runRefusedSession(env, config);
+
+    expect(settle).toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].status).toBe('failed');
+  });
+
+  test('dispatches a new attempt once the blocker closes', async () => {
+    const config = waitingConfig([{ dependency_type: 'blocks', id: 'S9' }]);
+    const env = setup({
+      config,
+      slots: 1,
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+    });
+    await runRefusedSession(env, config);
+    // The blocker closed, so `bd ready` lists the bead again — the only
+    // return trigger this tier has.
+    config.S1.ready = true;
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+    expect(env.store.snapshot(WS).attempts['S1-1000-2'].status).toBe('running');
+  });
+
+  test('releases the serial lane it was holding', async () => {
+    const attempts = {
+      'att-1': {
+        attempt_id: 'att-1',
+        bead_id: 'S1',
+        status: 'waiting',
+        serial_lane_id: 's1'
+      }
+    };
+
+    const lanes = activeLaneLineages({ attempts });
+
+    expect(lanes.get('s1')).toBeUndefined();
+  });
+
+  test('closes the retry lineage the ladder left standing', async () => {
+    const config = waitingConfig([{ dependency_type: 'blocks', id: 'S9' }]);
+    const env = setup({
+      config,
+      slots: 1,
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.store.applyQueueHold(WS, {
+      event: {
+        kind: 'env_failure',
+        bead_id: 'S1',
+        attempt_id: 'prior',
+        cause: 'verify_failed:gh_observation_failed',
+        at: 500,
+        origin_attempt_id: 'prior'
+      },
+      now: 500
+    });
+    env.bd.statuses.S1 = 'in_progress';
+    config.S1.ready = false;
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).lineages).toEqual([]);
+    expect(env.store.snapshot(WS).hold).toBe(null);
+  });
+
+  test('records one session_ended line and no attempt_failed', async () => {
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    const config = waitingConfig([{ dependency_type: 'blocks', id: 'S9' }]);
+    const env = setup({
+      config,
+      slots: 1,
+      timeline,
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+    });
+
+    await runRefusedSession(env, config);
+
+    const events = timeline.readTimeline('S1');
+    expect(events.filter((event) => event.kind === 'attempt_failed')).toEqual(
+      []
+    );
+    expect(
+      events
+        .filter((event) => event.kind === 'session_ended')
+        .map((event) => event.summary)
+    ).toEqual(['대기 · blocks:S9']);
   });
 });
