@@ -2933,6 +2933,36 @@ describe('슬롯 4 두 줄 (UI-8x90 §4.1)', () => {
     ]);
   });
 
+  test('sorts each 묶음 by id', () => {
+    const row = renderChips({
+      predecessors: [
+        { id: 'UI-p2', label: '⛓ UI-p2' },
+        { id: 'UI-p1', label: '⛓ UI-p1' }
+      ],
+      dependents: [
+        { id: 'UI-s2', label: '→ UI-s2' },
+        { id: 'UI-s1', label: '→ UI-s1' }
+      ]
+    });
+
+    expect(
+      Array.from(lineOf(row, 'primary').children, (chip) => chip.textContent)
+    ).toEqual(['⛓ UI-p1', '⛓ UI-p2', '→ UI-s1', '→ UI-s2']);
+  });
+
+  test('keeps the 해제 칩 in the closed_at order the projection gave', () => {
+    const row = renderChips({
+      released: [
+        { id: 'UI-r2', label: '🔓 UI-r2' },
+        { id: 'UI-r1', label: '🔓 UI-r1' }
+      ]
+    });
+
+    expect(
+      Array.from(lineOf(row, 'secondary').children, (chip) => chip.textContent)
+    ).toEqual(['🔓 UI-r2', '🔓 UI-r1']);
+  });
+
   test('orders the 정보 line 해제 → 겹침 → scope 없음', () => {
     const row = renderChips({
       scope_missing: true,

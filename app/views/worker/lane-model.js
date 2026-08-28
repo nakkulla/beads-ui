@@ -1594,6 +1594,41 @@ function applyScopeOverlaps(
 }
 
 /**
+ * Where a dependency chip's click should land, and whether it may be a button
+ * at all (UI-8x90 §4.2·§4.4). One ladder for all four chip kinds: 모델이 아는
+ * 위치가 먼저고, 레인에 없는 같은 레포 상대는 카드 자신의 레포에 있으며, 셋 다
+ * 없는 — 소유 레포를 모르는 타 레포 — 상대는 누를 수 없다.
+ *
+ * `root_dir` 없이 여는 것은 "현재 활성 레포에서 이 ID를 연다"는 뜻이라, 모니터가
+ * 다른 레포를 보고 있으면 같은 ID의 남의 이슈를 연다. 같은 레포 상대에게만 그
+ * 생략이 안전하고, 거기서도 카드의 `root_dir`을 실을 수 있으면 싣는다.
+ *
+ * `locations`는 아직 없을 수 있다 — 해제 칩은 위치 사전이 만들어지기 전, 후보 행을
+ * 조립하는 자리에서 붙는다. 그 자리에서는 타 레포 owner를 서버 `release_info`가
+ * 이미 실어 왔으므로 사다리의 첫 칸만 비는 셈이다.
+ *
+ * @param {{ id: string, root_dir?: string }} card
+ * @param {string} other_id
+ * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} [locations]
+ * @returns {{ openable?: true, root_dir?: string }}
+ */
+function openTarget(card, other_id, locations) {
+  const located = locations ? locations.get(other_id)?.root_dir : undefined;
+  const same_repo = !isForeignBlocker(card.id, other_id);
+  const own = typeof card.root_dir === 'string' ? card.root_dir : '';
+  const root_dir =
+    typeof located === 'string' && located.length > 0
+      ? located
+      : same_repo && own.length > 0
+        ? own
+        : '';
+  if (root_dir.length > 0) {
+    return { openable: true, root_dir };
+  }
+  return same_repo ? { openable: true } : {};
+}
+
+/**
  * The `→` 칩 재료 for one card (UI-8x90 §4.4): 큐 장식과 후보 행 장식의 합집합,
  * 그리고 각 ID의 `root_dir` 결정.
  *
@@ -2801,7 +2836,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
       // 출발해 "왜 이제 갈 수 있나"가 의미 없다. 후속 칩은 반대로 네 레인 전부가
       // 얻으므로 (UI-8x90 §4.4) 여기서는 재료만 실어 보내고 부착은 한 곳에서
       // 한다. 재료가 없는 Monitor 행은 그냥 서지 않는다 (fail-quiet).
-      const released = releasedChipsFor(bead_id, entry.release_info, now);
+      const released = releasedChipsFor(bead_id, entry.release_info, now)?.map(
+        (chip) => ({
+          ...chip,
+          ...openTarget({ id: bead_id, root_dir }, chip.id)
+        })
+      );
       runnable.push({
         ...base(bead_id),
         title: entry.title || titles[bead_id] || bead_id,
@@ -3190,16 +3230,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
     // blocker 이슈로 이동하고(UI-lx45 §5), 타 레포면 `root_dir`이 전환 대상을
     // 말한다 — 위치를 모르는 blocker만 그 값 없이 현재 레포로 열린다.
     /** @type {DependencyChip[]} */
-    const predecessors = (item.blockers || []).map((blocker) => {
-      const blocker_root = locations.get(blocker.id)?.root_dir;
-      return {
-        ...predecessorChip(item.id, blocker),
-        openable: true,
-        ...(typeof blocker_root === 'string' && blocker_root.length > 0
-          ? { root_dir: blocker_root }
-          : {})
-      };
-    });
+    const predecessors = (item.blockers || []).map((blocker) => ({
+      ...predecessorChip(item.id, blocker),
+      ...openTarget(item, blocker.id, locations)
+    }));
     // 후속 칩도 같은 루프에서 붙는다 (UI-8x90 §4.4). 재료는 두 원천의
     // 합집합이다: 큐 장식 `bead_dependents`는 보이는 스냅샷 안의 것만 세고,
     // 후보 행의 `dependents_info`는 그 행에만 실린다 — 어느 쪽의 빈 값도 다른

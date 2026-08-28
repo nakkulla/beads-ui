@@ -4011,6 +4011,59 @@ describe('lane model candidate release chips (UI-d13v §5.3)', () => {
     ).toBeUndefined();
   });
 
+  test('gives a same-repo blocker outside every lane the card own repo', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_blocked_by: { 'A-1': ['A-9'] }
+        })
+      ],
+      [state()]
+    );
+
+    const chip = lanes.queue[0].dependency_chips?.predecessors?.[0];
+    expect(chip?.openable).toBe(true);
+    expect(chip?.root_dir).toBe(WS_A);
+  });
+
+  test('leaves a foreign blocker of unknown owner unopenable', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_blocked_by: { 'A-1': ['B-9'] }
+        })
+      ],
+      [state()]
+    );
+
+    const chip = lanes.queue[0].dependency_chips?.predecessors?.[0];
+    expect(chip?.openable).toBeUndefined();
+    expect(chip?.root_dir).toBeUndefined();
+  });
+
+  test('falls back to the location map for a foreign blocker', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_blocked_by: { 'A-1': ['B-9'] }
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-9' }]
+        })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })]
+    );
+
+    expect(lanes.queue[0].dependency_chips?.predecessors?.[0].root_dir).toBe(
+      WS_B
+    );
+  });
+
   test('draws no dependents chip without the queue decoration', () => {
     const lanes = buildLanes(
       [workspace({ queue: [{ bead_id: 'A-1' }] })],
@@ -4027,6 +4080,28 @@ describe('lane model candidate release chips (UI-d13v §5.3)', () => {
     );
 
     expect(lanes.runnable[0].dependency_chips).toBeUndefined();
+  });
+
+  test('carries the card own repo on a same-repo release chip', () => {
+    const now = Date.now();
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', {
+              release_info: {
+                released_by: [{ id: 'A-9', closed_at: now - 1000 }]
+              }
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    const chip = lanes.runnable[0].dependency_chips?.released?.[0];
+    expect(chip?.openable).toBe(true);
+    expect(chip?.root_dir).toBe(WS_A);
   });
 
   test('keeps the released chips when a predecessor chip is added', () => {

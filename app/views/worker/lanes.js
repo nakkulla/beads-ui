@@ -823,6 +823,20 @@ function overlapAsChip(chip) {
 }
 
 /**
+ * One chip group in ID 사전순 (UI-8x90 §4.1). 복사본을 정렬하므로 투영이 실어
+ * 준 배열은 그대로 남는다.
+ *
+ * @template {{ id: string }} T
+ * @param {T[]|undefined} chips
+ * @returns {T[]}
+ */
+function byId(chips) {
+  return Array.isArray(chips)
+    ? chips.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    : [];
+}
+
+/**
  * The two lines of 슬롯 4 (UI-8x90 §4.1·§4.2). 상단은 "지금 갈 수 있나"를 바꾸는
  * 사실(`▶ 연결` 발차 · `⛓` 선행 · `→` 후속), 하단은 판단 재료(`🔓` 해제 ·
  * `⧉` 겹침 · `scope 없음`)다. 재료가 없는 줄은 그리지 않으며 두 줄은 서로를
@@ -838,12 +852,14 @@ export function dependencyChipsTemplate(chips) {
   if (!chips) {
     return '';
   }
-  const predecessors = Array.isArray(chips.predecessors)
-    ? chips.predecessors
-    : [];
+  // 각 묶음 안은 ID 사전순이다 (UI-8x90 §4.1). 투영이 실어 주는 순서는 서버
+  // `blocked_by` 배열 순서·겹침 판정 순서라 카드마다 달라지므로, 같은 칩 집합이
+  // 언제나 같은 자리에 서도록 여기서 한 번 정렬한다. `released`만 예외로 그
+  // 스펙이 정한 `closed_at` 내림차순을 그대로 쓴다.
+  const predecessors = byId(chips.predecessors);
   const released = Array.isArray(chips.released) ? chips.released : [];
-  const dependents = Array.isArray(chips.dependents) ? chips.dependents : [];
-  const overlaps = Array.isArray(chips.overlaps) ? chips.overlaps : [];
+  const dependents = byId(chips.dependents);
+  const overlaps = byId(chips.overlaps);
   const scope_missing = chips.scope_missing === true;
   const armed_lane = chips.armed_lane || null;
   const has_primary =

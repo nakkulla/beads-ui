@@ -412,6 +412,8 @@ dependents?: DependentsChip     // `→ 후속 n`
 
 - Monitor runnable 행의 `🔓 해제`·`→ 후속` 재료 적재 — 공유 렌더러라 칩 자리는
   준비되지만 Monitor 투영은 이번에 바꾸지 않는다.
+  **정정(UI-8x90).** 이 비목표는 해소됐다. UI-4tud가 두 탭의 조립을 하나로 합친
+  뒤 UI-8x90이 `→` 재료를 네 레인·두 탭에 싣는다(`🔓`는 후보 행 그대로).
 - Board 탭 카드의 해제·후속 표시, Board 탭 정렬.
 - 보이지 않는 rig의 후속 수 — 셀 수 없고, 못 셌다는 표시도 하지 않는다.
 - `⛓ blocked` 칩·`blocked_info`·admission 판정 변경.
