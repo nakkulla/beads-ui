@@ -6289,14 +6289,25 @@ export function createScheduler(deps) {
       input.stamped_keys,
       execRestoreValuesOf(input.workspace, input.attempt_id)
     );
-    settleFailureTier(
-      input.workspace,
-      input.attempt_id,
-      input.bead_id,
-      classifyFailure({ cause, cause_detail: cause_detail ?? null }),
-      cause_detail ?? null,
-      { moot: dismissed === true, repo: input.repo ?? null }
-    );
+    // A REVIEW SESSION settles through its own single path and nowhere else
+    // (2026-08-28 auto-review-dispatch spec 결정 2): every launch refusal is one
+    // `exhausted` claim plus a standing hold, and the caller writes it. Sending
+    // it through the tier table instead would classify a review launch as an
+    // ENVIRONMENT fault of the worker at large — an `env` queue hold and a
+    // backoff retry lineage for a bead that is only waiting on a receipt — and
+    // then the review path would write its own settlement over that record.
+    // ADR 0016 reserves the queue-stopping tiers for failures that recur on the
+    // NEXT bead; this one recurs on nothing.
+    if (!reviewSessionOf(input.workspace, input.attempt_id)) {
+      settleFailureTier(
+        input.workspace,
+        input.attempt_id,
+        input.bead_id,
+        classifyFailure({ cause, cause_detail: cause_detail ?? null }),
+        cause_detail ?? null,
+        { moot: dismissed === true, repo: input.repo ?? null }
+      );
+    }
     try {
       await revertWorkflowMode(
         input.bead_id,

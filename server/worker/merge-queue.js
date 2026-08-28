@@ -793,9 +793,11 @@ export function createMergeQueue(deps) {
     //    free workspace slot, and says so on the card.
     if (authority.source !== 'manual' && reviewDispatchBlocked(bead_id)) {
       // Written EXPLICITLY, and only when it differs from what is stored: a
-      // repeated blocked kick that bumped the revision would emit
-      // `queue-changed`, which `hasHeldEntry()` turns into another drain, which
-      // re-judges this row — forever.
+      // repeated blocked kick must add no revision and no `queue-changed` of
+      // its own, because `hasHeldEntry()` turns that event into another drain
+      // which re-judges this row. (The drain's own end-of-pass `notify()` is a
+      // second, older path into the same re-drain — UI-nfkp owns it; this
+      // write simply must not become a third.)
       writeHold(bead_id, reason, head_sha, 'slot');
       return;
     }
