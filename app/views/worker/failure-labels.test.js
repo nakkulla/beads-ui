@@ -22,8 +22,19 @@ describe('failureCategory', () => {
     expect(failureCategory('interrupted_without_terminal_exit')).toBe('중단됨');
   });
 
-  test('returns null for an unknown token', () => {
-    expect(failureCategory('repo_ops_worktree_unowned')).toBeNull();
+  test('maps a quick-fix landing token to 착지 실패', () => {
+    expect(failureCategory('quickfix_landing_failed:head_mismatch')).toBe(
+      '착지 실패'
+    );
+  });
+
+  test('maps session exit tokens to 세션 실패', () => {
+    expect(failureCategory('runner_exit')).toBe('세션 실패');
+    expect(failureCategory('session_transport_failed')).toBe('세션 실패');
+  });
+
+  test('returns 실패 for an unclassified token', () => {
+    expect(failureCategory('surprise_new_token')).toBe('실패');
   });
 
   test('returns null for a non-string value', () => {
@@ -94,8 +105,8 @@ describe('isKnownFailure', () => {
 });
 
 describe('prototype-member tokens', () => {
-  test('does not match a prototype member as a category', () => {
-    expect(failureCategory('constructor')).toBeNull();
+  test('falls back without matching a prototype member as a category', () => {
+    expect(failureCategory('constructor')).toBe('실패');
   });
 
   test('does not match a prototype member as a sentence', () => {
@@ -169,8 +180,10 @@ describe('cleanup step-1 (base 포함 확인) codes', () => {
     );
   });
 
-  test('leaves the step-1 codes out of the three category words', () => {
-    expect(BASE_CODES.map(failureCategory)).toEqual(BASE_CODES.map(() => null));
+  test('falls back for step-1 codes without a specific category', () => {
+    expect(BASE_CODES.map(failureCategory)).toEqual(
+      BASE_CODES.map(() => '실패')
+    );
   });
 
   test('maps every code the step can record', () => {

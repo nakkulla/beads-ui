@@ -90,6 +90,22 @@ describe('activeAttemptStates', () => {
     expect(winners.has('UI-1')).toEqual(false);
   });
 
+  test('drops a source attempt stamped by discard completion', () => {
+    const attempts = attemptsOf([
+      {
+        attempt_id: 'a1',
+        bead_id: 'UI-1',
+        status: 'discarded',
+        finished_at: 1000,
+        dismissed_at: 1500
+      }
+    ]);
+
+    const { winners } = activeAttemptStates(attempts, new Map());
+
+    expect(winners.has('UI-1')).toEqual(false);
+  });
+
   test('folds several unfinished attempts of one bead onto the highest state', () => {
     const attempts = attemptsOf([
       { attempt_id: 'a1', bead_id: 'UI-1', status: 'paused' },

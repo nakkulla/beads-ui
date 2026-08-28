@@ -3676,35 +3676,30 @@ html[data-theme='dark'] {
 }
 
 /* 원시 계약 토큰은 본문에서 사라지되 여기서는 언제나 남는다 (§4.3). */
-.worker-ev__details,
-.worker-banner__raw {
+.worker-ev__details {
   margin-top: var(--sp-4);
 }
 
-.worker-ev__details summary,
-.worker-banner__raw summary {
+.worker-ev__details summary {
   color: var(--text-dim);
   font-size: var(--fs-caption);
   cursor: pointer;
 }
 
-.worker-ev__kv,
-.worker-banner__kv {
+.worker-ev__kv {
   margin: var(--sp-6) 0 0;
   border-top: 1px solid var(--border-kv-row);
   font-size: var(--fs-body-sm);
 }
 
-.worker-ev__kv div,
-.worker-banner__kv div {
+.worker-ev__kv div {
   display: flex;
   gap: var(--sp-12);
   padding: 3px 0;
   border-bottom: 1px solid var(--border-kv-row);
 }
 
-.worker-ev__kv dt,
-.worker-banner__kv dt {
+.worker-ev__kv dt {
   flex: none;
   padding-top: 1px;
   width: 74px;
@@ -3712,8 +3707,7 @@ html[data-theme='dark'] {
   font-size: var(--fs-caption);
 }
 
-.worker-ev__kv dd,
-.worker-banner__kv dd {
+.worker-ev__kv dd {
   margin: 0;
   overflow-wrap: anywhere;
   color: var(--text-secondary);
@@ -3922,69 +3916,6 @@ html[data-theme='dark'] {
   color: var(--text-muted);
 }
 
-.worker-banners {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-6);
-  margin-bottom: var(--sp-10);
-}
-
-.worker-banner {
-  padding: var(--sp-6) var(--sp-10);
-  border-radius: var(--r-6);
-  font-size: var(--fs-body-sm);
-}
-
-/* 좌측 레드 레일 (UI-58y2 데스크톱 §실패·정리 배너): 배너 전체를 붉게 칠하는
-   대신 한쪽 모서리에만 무게를 주어, 위치·동작은 그대로 두고 시선만 잡는다. */
-.worker-banner--failure {
-  border: 1px solid var(--border-danger);
-  border-left: 3px solid var(--accent-danger);
-  background: color-mix(in srgb, var(--accent-danger) 14%, var(--bg-panel));
-  color: var(--accent-danger);
-}
-
-/* 실패 배너의 수동 이어하기(↻) · 폐기 · 닫기(✕) 버튼. */
-.worker-banner__resume,
-.worker-banner__discard,
-.worker-banner__dismiss {
-  margin-left: var(--sp-8);
-  padding: 1px var(--sp-6);
-  border: 1px solid var(--border-danger);
-  border-radius: var(--r-6);
-  background: transparent;
-  color: var(--accent-danger);
-  font-size: var(--fs-chip);
-  cursor: pointer;
-}
-
-.worker-banner__resume:hover:not(:disabled),
-.worker-banner__discard:hover:not(:disabled),
-.worker-banner__dismiss:hover {
-  background: color-mix(in srgb, var(--accent-danger) 22%, var(--bg-panel));
-}
-
-.worker-banner__resume:disabled,
-.worker-banner__discard:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-/* 배너의 진단 한 줄 (가드 이름 + 매치 명령 / git stderr, UI-2o4z). 배너 색을
-   그대로 쓰되 한 줄로 잘라 배너가 세로로 번지지 않게 한다. */
-.worker-banner__detail {
-  margin-top: var(--sp-4);
-  font-size: var(--fs-chip);
-  opacity: 0.85;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.worker-banner__detail code {
-  font-family: var(--font-mono);
-}
-
 .worker-rungrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
@@ -4004,6 +3935,7 @@ html[data-theme='dark'] {
 }
 
 .rtile {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
@@ -4169,19 +4101,102 @@ html[data-theme='dark'] {
   color: var(--accent-danger);
 }
 
-.rtile__dismiss {
+.rtile__failure-badge,
+.rtile__auto-halted {
   flex: 0 0 auto;
+  padding: 1px var(--sp-4);
+  border: 1px solid color-mix(in srgb, var(--accent-danger) 45%, transparent);
+  border-radius: var(--r-5);
+  background: color-mix(in srgb, var(--accent-danger) 8%, transparent);
+  color: var(--accent-danger);
+  font: inherit;
+  font-size: var(--fs-caption);
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.rtile__failure-badge {
+  cursor: pointer;
+}
+
+.rtile__failure-badge:hover {
+  border-color: var(--accent-danger);
+}
+
+.rtile__auto-halted {
+  border-color: var(--border-warn);
+  background: color-mix(in srgb, var(--accent-warn) 8%, transparent);
+  color: var(--accent-warn);
+}
+
+.rtile__failure-pop {
+  position: absolute;
+  top: calc(100% + var(--sp-4));
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  width: min(360px, calc(100vw - var(--sp-16)));
+  max-height: 360px;
+  overflow-y: auto;
+  padding: var(--sp-8);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-8);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: var(--fs-small);
+  text-align: left;
+  cursor: default;
+}
+
+.rtile__failure-kv {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin: 0;
+}
+
+.rtile__failure-kv > div {
+  display: grid;
+  grid-template-columns: 7ch minmax(0, 1fr);
+  gap: var(--sp-6);
+}
+
+.rtile__failure-kv dt {
+  color: var(--text-muted);
+}
+
+.rtile__failure-kv dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rtile__failure-kv code {
+  font-family: var(--font-mono);
+}
+
+.rtile__attempt-copy {
   border: none;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: var(--fs-small);
-  line-height: 1;
-  padding: 0 2px;
 }
 
-.rtile__dismiss:hover {
-  color: var(--accent-danger);
+.rtile__failure-landed {
+  margin: 0;
+  color: var(--accent-warn);
+  font-size: var(--fs-caption);
+}
+
+@media (max-width: 640px) {
+  .rtile__failure-pop {
+    position: static;
+    width: 100%;
+    max-height: none;
+    margin-top: var(--sp-6);
+  }
 }
 
 .worker-overcap {

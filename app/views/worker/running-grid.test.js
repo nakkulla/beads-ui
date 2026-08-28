@@ -4,18 +4,14 @@ import {
   formatAttemptOrchestrationChip,
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
-import {
-  bannersTemplate,
-  runningGridTemplate,
-  runningTile
-} from './running-grid.js';
+import { runningGridTemplate, runningTile } from './running-grid.js';
 
 describe('worker failed running tile template', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
   });
 
-  test('renders failed controls and an ineligible resume tooltip', () => {
+  test('renders the categorized cause badge without dismiss', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(
@@ -30,8 +26,25 @@ describe('worker failed running tile template', () => {
           failed: true,
           status: 'failed',
           status_label: '실패',
-          resume_eligible: false,
-          resume_reason: 'session_id 없는 구 attempt — 이어하기 불가',
+          failure: {
+            cause: 'quickfix_landing_failed:head_mismatch',
+            cause_detail: null,
+            finished_at: 4000,
+            runner: 'claude',
+            model: 'opus',
+            effort: 'high',
+            observed_effort: null,
+            speed: 'default',
+            attempt_id: 'attempt-1',
+            usage: null,
+            halted_auto_advance: false,
+            quickfix_lane: true,
+            quickfix_landing: { cursor: null },
+            resume_eligible: false,
+            resume_reason: 'session_id 없는 구 attempt — 이어하기 불가',
+            landed: false,
+            confirmation: 'unmerged'
+          },
           discard: {
             action: true,
             enabled: true,
@@ -50,12 +63,14 @@ describe('worker failed running tile template', () => {
     );
 
     expect(tile.classList.contains('rtile--failed')).toBe(true);
+    expect(tile.classList.contains('rtile--compact')).toBe(true);
     expect(tile.querySelector('.rtile__elapsed')?.textContent).toBe('실패');
+    expect(tile.querySelector('.rtile__failure-badge')?.textContent).toContain(
+      '⛔ 착지 실패'
+    );
     expect(resume.disabled).toBe(true);
     expect(resume.title).toBe('session_id 없는 구 attempt — 이어하기 불가');
-    expect(tile.querySelector('.rtile__dismiss')?.getAttribute('title')).toBe(
-      '실패 알림 닫기 — 레인에는 남습니다'
-    );
+    expect(tile.querySelector('.rtile__dismiss')).toBeNull();
     expect(tile.querySelector('.rtile__session')).toBeNull();
     expect(tile.querySelector('.rtile__pause')).toBeNull();
     expect(tile.querySelector('.rtile__stop')).toBeNull();
@@ -63,7 +78,7 @@ describe('worker failed running tile template', () => {
     expect(tile.querySelector('.rtile__accent')).toBeNull();
   });
 
-  test('labels orphaned tiles as 중단됨', () => {
+  test('renders auto-advance-off only when the attempt halted it', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(
@@ -78,14 +93,169 @@ describe('worker failed running tile template', () => {
           failed: true,
           status: 'orphaned',
           status_label: '중단됨',
-          resume_eligible: true,
-          resume_reason: null
+          failure: {
+            cause: 'runner_exit',
+            cause_detail: null,
+            finished_at: null,
+            runner: null,
+            model: null,
+            effort: null,
+            observed_effort: null,
+            speed: null,
+            attempt_id: 'attempt-2',
+            usage: null,
+            halted_auto_advance: true,
+            quickfix_lane: false,
+            quickfix_landing: null,
+            resume_eligible: true,
+            resume_reason: null,
+            landed: false,
+            confirmation: 'unmerged'
+          }
         }
       ]),
       mount
     );
 
     expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe('중단됨');
+    expect(mount.querySelector('.rtile__auto-halted')?.textContent).toContain(
+      '자동 진행 꺼짐'
+    );
+  });
+
+  test('omits auto-advance-off when the attempt did not halt it', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        tileInput({
+          failed: true,
+          status: 'failed',
+          failure: failureInput({ halted_auto_advance: false })
+        })
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__auto-halted')).toBeNull();
+  });
+
+  test.each(['repo_operations', 'branch_cleanup', 'parent_close'])(
+    'hides discard after the landed cursor %s',
+    (cursor) => {
+      const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+      render(
+        runningTile(
+          tileInput({
+            failed: true,
+            failure: failureInput({
+              landed: true,
+              quickfix_lane: true,
+              quickfix_landing: { cursor }
+            }),
+            discard: discardInput()
+          }),
+          5000
+        ),
+        mount
+      );
+
+      expect(mount.querySelector('.rtile__discard')).toBeNull();
+    }
+  );
+
+  test.each([null, 'base_containment'])(
+    'keeps discard before landing at cursor %s',
+    (cursor) => {
+      const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+      render(
+        runningTile(
+          tileInput({
+            failed: true,
+            failure: failureInput({
+              landed: false,
+              quickfix_lane: true,
+              quickfix_landing: { cursor }
+            }),
+            discard: discardInput()
+          }),
+          5000
+        ),
+        mount
+      );
+
+      expect(mount.querySelector('.rtile__discard')).not.toBeNull();
+    }
+  );
+
+  test('carries the projected discard confirmation on the button', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        tileInput({
+          failed: true,
+          failure: failureInput({ confirmation: 'merged' }),
+          discard: discardInput()
+        }),
+        5000
+      ),
+      mount
+    );
+
+    expect(
+      mount.querySelector('.rtile__discard')?.getAttribute('data-confirmation')
+    ).toBe('merged');
+  });
+
+  test('keeps compact failures to identity and title rows', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        tileInput({
+          failed: true,
+          failure: failureInput(),
+          usage: { input_tokens: 1 },
+          rollup: /** @type {any} */ ({ total: 1, done: 0 })
+        }),
+        5000,
+        null,
+        {
+          monitor: /** @type {any} */ ({
+            last_activity: { at: 1, text: 'running' },
+            dependency_chips: { scope_missing: true }
+          })
+        }
+      ),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__meta')).toBeNull();
+    expect(mount.querySelector('.worker-deps')).toBeNull();
+    expect(mount.querySelector('.rtile__activity')).toBeNull();
+  });
+
+  test('renders the open failure popover as a direct tile child', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        tileInput({
+          failed: true,
+          failure: failureInput({ open: true })
+        }),
+        5000
+      ),
+      mount
+    );
+
+    const popover = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__failure-pop')
+    );
+    expect(popover.parentElement?.classList.contains('rtile')).toBe(true);
   });
 
   test('renders the recorded attempt tuple as the orchestration chip', () => {
@@ -393,88 +563,17 @@ describe('worker failed running tile template', () => {
     expect(plain_tile.querySelector('.rtile__landing')).toBeNull();
   });
 
-  test('renders no cleanup banner — the timeline owns stopped cleanups', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    render(bannersTemplate({}), mount);
-
-    expect(mount.querySelector('.worker-banner--cleanup')).toBeNull();
-  });
-
-  test('says a session failure in the shared failure vocabulary', () => {
+  test('renders no failure banner template', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(
-      bannersTemplate({
-        failure: /** @type {any} */ ({
-          repo: 'beads-ui',
-          bead_id: 'UI-3',
-          reason: 'verify_failed:gh_observation_failed',
-          discard: { action: false }
-        })
-      }),
+      runningGridTemplate([
+        tileInput({ failed: true, failure: failureInput() })
+      ]),
       mount
     );
 
-    expect(
-      mount.querySelector('.worker-banner--failure')?.textContent
-    ).toContain('검증 실패 — GitHub에서 PR 상태를 읽지 못했습니다.');
-  });
-
-  test('keeps the raw failure code inside the banner details block', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    render(
-      bannersTemplate({
-        failure: /** @type {any} */ ({
-          repo: 'beads-ui',
-          bead_id: 'UI-3',
-          reason: 'verify_failed:gh_observation_failed',
-          discard: { action: false }
-        })
-      }),
-      mount
-    );
-
-    expect(mount.querySelector('.worker-banner__raw dd')?.textContent).toBe(
-      'verify_failed:gh_observation_failed'
-    );
-  });
-
-  test('explains that dismissing a failure banner keeps its lane membership', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    render(
-      bannersTemplate({
-        failure: /** @type {any} */ ({
-          repo: 'beads-ui',
-          bead_id: 'UI-3',
-          reason: 'verify_failed:gh_observation_failed',
-          resume_attempt_id: 'attempt-3',
-          resume_eligible: true,
-          discard: { action: false }
-        })
-      }),
-      mount
-    );
-
-    expect(
-      mount.querySelector('.worker-banner__dismiss')?.getAttribute('title')
-    ).toBe('실패 알림 닫기 — 레인에는 남습니다');
-  });
-});
-
-describe('repo deployment strip template (UI-lb58 Phase 4)', () => {
-  beforeEach(() => {
-    document.body.innerHTML = '<div id="m"></div>';
-  });
-
-  test('does not render the retired deployment strip in the banners area', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    render(bannersTemplate({}), mount);
-
-    expect(mount.querySelector('.worker-deployment-strip')).toBeNull();
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
   });
 });
 
@@ -525,6 +624,46 @@ function tileInput(patch = {}) {
   };
 }
 
+/**
+ * @param {Partial<import('./running-grid.js').FailureTile>} [patch]
+ * @returns {import('./running-grid.js').FailureTile}
+ */
+function failureInput(patch = {}) {
+  return {
+    cause: 'quickfix_landing_failed:head_mismatch',
+    cause_detail: null,
+    finished_at: 4000,
+    runner: 'claude',
+    model: 'opus',
+    effort: 'high',
+    observed_effort: null,
+    speed: 'default',
+    attempt_id: 'a1',
+    usage: null,
+    halted_auto_advance: false,
+    quickfix_lane: false,
+    quickfix_landing: null,
+    resume_eligible: true,
+    resume_reason: null,
+    landed: false,
+    confirmation: 'unmerged',
+    ...patch
+  };
+}
+
+/**
+ * @returns {Record<string, any>}
+ */
+function discardInput() {
+  return {
+    action: true,
+    enabled: true,
+    label: '폐기',
+    title: '복구 archive 생성 후 폐기',
+    operation: null
+  };
+}
+
 describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', () => {
   test('renders no repo badge, stepper, activity or delegation line', () => {
     const tile = shape(runningTile(tileInput(), 5000, null));
@@ -534,7 +673,7 @@ describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', 
     expect(tile).not.toContain('rtile__legs');
     expect(tile).not.toContain('stepper');
     expect(tile).toMatchInlineSnapshot(
-      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span> <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions"> <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div> </div>"`
+      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span> <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions"> <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div>  </div>"`
     );
   });
 

@@ -1458,7 +1458,7 @@ describe('views/worker', () => {
     expect(tile.querySelector('.rtile__meta--policy')).toBeNull();
   });
 
-  test('running attempts render tiles + a failed attempt raises the failure banner', () => {
+  test('running and failed attempts render tiles without a failure banner', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -1510,12 +1510,10 @@ describe('views/worker', () => {
       mount.querySelector('.rtile[data-bead-id="S1"] .rtile__badge')
     ).toBeNull();
 
-    // The failed attempt itself is the banner source — no breaker object.
-    const banner = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--failure')
-    );
-    expect(banner).not.toBeNull();
-    expect(banner.textContent).toContain('/repo');
+    expect(
+      mount.querySelector('.rtile[data-attempt-id="a3"] .rtile__failure-badge')
+    ).not.toBeNull();
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
     expect(mount.querySelector('.worker-banner--breaker')).toBeNull();
   });
 
@@ -1995,7 +1993,7 @@ describe('views/worker', () => {
     ]);
   });
 
-  test('sends the failed tile dismiss payload with the current revision', async () => {
+  test('renders no failed-tile dismiss control or dismiss request', async () => {
     const transport = vi.fn().mockResolvedValue({});
     const mount = mountAttemptTiles(
       {
@@ -2012,14 +2010,14 @@ describe('views/worker', () => {
       transport
     );
 
-    /** @type {HTMLButtonElement} */ (
+    expect(
       mount.querySelector('.rtile[data-attempt-id="failed"] .rtile__dismiss')
-    ).click();
+    ).toBeNull();
     await flush();
-    expect(transport).toHaveBeenCalledWith('worker-attempt-dismiss', {
-      attempt_id: 'failed',
-      expected_revision: 7
-    });
+    expect(transport).not.toHaveBeenCalledWith(
+      'worker-attempt-dismiss',
+      expect.anything()
+    );
   });
 
   test('paused/stopped attempts raise no banner; only a leaf paused renders a tile (worker-phase1 §1)', () => {
@@ -3375,7 +3373,7 @@ describe('views/worker', () => {
     );
   });
 
-  test('failure banner ↻ resumes the newest eligible failed attempt (§1)', async () => {
+  test('failed tile ↻ resumes its eligible attempt', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -3399,12 +3397,12 @@ describe('views/worker', () => {
       transport
     });
     const btn = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--failure .worker-banner__resume')
+      mount.querySelector('.rtile[data-attempt-id="f1"] .rtile__resume')
     );
     expect(btn).not.toBeNull();
-    expect(btn.dataset.attemptId).toBe('f1');
+    expect(btn.closest('.rtile')?.getAttribute('data-attempt-id')).toBe('f1');
     expect(
-      mount.querySelector('.worker-banner--failure .worker-banner__discard')
+      mount.querySelector('.rtile[data-attempt-id="f1"] .rtile__discard')
     ).not.toBeNull();
     btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     /** @type {HTMLButtonElement} */ (
@@ -3417,7 +3415,7 @@ describe('views/worker', () => {
     });
   });
 
-  test('retries a failed discard from the failure banner with its receipt', () => {
+  test('retries a failed discard from the failed tile', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -3461,17 +3459,11 @@ describe('views/worker', () => {
       vi.fn(() => true)
     );
 
-    const banner = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--failure')
-    );
     const retry = /** @type {HTMLButtonElement} */ (
-      banner.querySelector('.worker-banner__discard')
+      mount.querySelector('.rtile[data-attempt-id="f1"] .rtile__discard')
     );
     expect(retry.textContent?.trim()).toBe('재시도');
-    expect(banner.textContent).toContain('작업: op-failed');
-    expect(banner.textContent).toContain('/state/op-failed');
-    expect(banner.textContent).toContain('PR 정리 중');
-    expect(banner.textContent).toContain('폐기 실패: pr_observe_failed');
+    expect(retry.dataset.operationId).toBe('op-failed');
 
     retry.click();
 
@@ -3484,7 +3476,7 @@ describe('views/worker', () => {
     vi.unstubAllGlobals();
   });
 
-  test('the ↻ targets exactly the latest failure — ineligible renders disabled with the reason, never an older substitute (§1)', () => {
+  test('the failed tile targets the latest same-bead failure', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -3514,11 +3506,10 @@ describe('views/worker', () => {
       transport: vi.fn()
     });
     const btn = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-banner--failure .worker-banner__resume')
+      mount.querySelector(
+        '.rtile[data-attempt-id="latest_no_sid"] .rtile__resume'
+      )
     );
-    // The banner describes latest_no_sid, so its ↻ must point there — a
-    // different (older) session is never silently substituted.
-    expect(btn.dataset.attemptId).toBe('latest_no_sid');
     expect(btn.disabled).toBe(true);
     expect(btn.title).toContain('session_id 없는');
   });
@@ -3553,7 +3544,7 @@ describe('views/worker', () => {
     expect(badge).not.toBeNull();
   });
 
-  test('the failure banner is sourced from the latest failed attempt, not a breaker', () => {
+  test('renders every unhandled failure as its own decision tile', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -3585,16 +3576,13 @@ describe('views/worker', () => {
       transport: vi.fn()
     });
 
-    const banner = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--failure')
-    );
-    // The banner reports the LATEST terminal failure record verbatim.
-    expect(banner.textContent).toContain('orphan');
     expect(
-      /** @type {HTMLElement} */ (
-        banner.querySelector('.worker-banner__resume')
-      ).dataset.attemptId
-    ).toBe('newest');
+      mount.querySelector('.rtile[data-attempt-id="older"]')
+    ).not.toBeNull();
+    expect(
+      mount.querySelector('.rtile[data-attempt-id="newest"]')
+    ).not.toBeNull();
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
   });
 
   test('no failed attempt renders no failure banner', () => {
@@ -5025,7 +5013,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
   });
 });
 
-describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
+describe('worker view — failed tile decision surface (UI-rj02)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
@@ -5050,6 +5038,107 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
     return mount;
   }
 
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} [attempt_id]
+   * @returns {HTMLElement}
+   */
+  function openFailure(mount, attempt_id = 'f1') {
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        `.rtile[data-attempt-id="${attempt_id}"] .rtile__failure-badge`
+      )
+    ).click();
+    return /** @type {HTMLElement} */ (
+      mount.querySelector(
+        `.rtile[data-attempt-id="${attempt_id}"] .rtile__failure-pop`
+      )
+    );
+  }
+
+  test('opens failure detail from the badge and closes it on outside click', () => {
+    const mount = mountWithAttempts({
+      f1: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        cause: 'runner_exit'
+      }
+    });
+
+    expect(openFailure(mount)).not.toBeNull();
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.rtile__failure-pop')).toBeNull();
+  });
+
+  test('closes failure detail on Escape', () => {
+    const mount = mountWithAttempts({
+      f1: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        cause: 'runner_exit'
+      }
+    });
+    openFailure(mount);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(mount.querySelector('.rtile__failure-pop')).toBeNull();
+  });
+
+  test('moves failure detail to the next clicked badge', () => {
+    const mount = mountWithAttempts({
+      f1: {
+        attempt_id: 'f1',
+        bead_id: 'B1',
+        status: 'failed',
+        cause: 'runner_exit'
+      },
+      f2: {
+        attempt_id: 'f2',
+        bead_id: 'B2',
+        status: 'failed',
+        cause: 'session_failed'
+      }
+    });
+    openFailure(mount, 'f1');
+
+    const second = openFailure(mount, 'f2');
+
+    expect(
+      mount.querySelector('.rtile[data-attempt-id="f1"] .rtile__failure-pop')
+    ).toBeNull();
+    expect(second).not.toBeNull();
+  });
+
+  test('uses the failure projection confirmation for discard', () => {
+    const transport = vi.fn(async () => ({}));
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirm);
+    const mount = mountWithAttempts(
+      {
+        f1: {
+          attempt_id: 'f1',
+          bead_id: 'B1',
+          status: 'failed',
+          cause: 'runner_exit',
+          merge_sha: 'a'.repeat(40)
+        }
+      },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="f1"] .rtile__discard')
+    ).click();
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('revert PR'));
+    expect(transport).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
   test('shows the guard reason AND the matched command on a blocker failure', () => {
     const mount = mountWithAttempts({
       f1: {
@@ -5065,16 +5154,14 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       }
     });
 
-    const detail = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--failure .worker-banner__detail')
-    );
+    const detail = openFailure(mount);
     const text = (detail.textContent || '').replace(/\s+/g, ' ');
 
     expect(text).toContain('merge_to_base_blocked');
     expect(text).toContain('gh pr merge 311 --squash');
   });
 
-  test('labels a guard kill detail 가드', () => {
+  test('labels guard detail as 가드/원인', () => {
     const mount = mountWithAttempts({
       f1: {
         attempt_id: 'f1',
@@ -5089,11 +5176,9 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       }
     });
 
-    const detail = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--failure .worker-banner__detail')
-    );
+    const detail = openFailure(mount);
 
-    expect((detail.textContent || '').trim()).toMatch(/^가드:/);
+    expect(detail.textContent).toContain('가드/원인');
   });
 
   test('labels a non-guard failure detail 원인', () => {
@@ -5111,13 +5196,10 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       }
     });
 
-    const detail = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--failure .worker-banner__detail')
-    );
+    const detail = openFailure(mount);
     const text = (detail.textContent || '').replace(/\s+/g, ' ').trim();
 
-    expect(text).toMatch(/^원인:/);
-    expect(text).not.toContain('가드:');
+    expect(text).toContain('가드/원인');
     expect(text).toContain('bd set-metadata failed for UI-ksp2');
   });
 
@@ -5136,12 +5218,12 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       }
     });
 
-    const detail = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--failure .worker-banner__detail')
-    );
+    const detail = openFailure(mount);
 
     expect(detail.textContent).toContain('question tool: AskUserQuestion');
-    expect(detail.querySelector('code')).toBeNull();
+    expect(
+      Array.from(detail.querySelectorAll('dt'), (node) => node.textContent)
+    ).not.toContain('명령');
   });
 
   test('renders no detail line for a failure without cause_detail', () => {
@@ -5155,12 +5237,14 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       }
     });
 
+    const detail = openFailure(mount);
+
     expect(
-      mount.querySelector('.worker-banner--failure .worker-banner__detail')
-    ).toBeNull();
+      Array.from(detail.querySelectorAll('dt'), (node) => node.textContent)
+    ).not.toContain('가드/원인');
   });
 
-  test('renders no banner for a failure a later same-bead attempt superseded', () => {
+  test('renders no failure tile after a later same-bead attempt supersedes it', () => {
     const mount = mountWithAttempts({
       f1: {
         attempt_id: 'f1',
@@ -5178,10 +5262,10 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       }
     });
 
-    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+    expect(mount.querySelector('.rtile[data-attempt-id="f1"]')).toBeNull();
   });
 
-  test('renders no banner when the later same-bead failure is itself dismissed', () => {
+  test('renders no failure tile when the later same-bead failure is dismissed', () => {
     const mount = mountWithAttempts({
       f1: {
         attempt_id: 'f1',
@@ -5200,10 +5284,10 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       }
     });
 
-    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+    expect(mount.querySelector('.rtile--failed')).toBeNull();
   });
 
-  test('renders no banner for a dismissed failed attempt', () => {
+  test('renders no tile for a dismissed failed attempt', () => {
     const mount = mountWithAttempts({
       f1: {
         attempt_id: 'f1',
@@ -5215,10 +5299,10 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       }
     });
 
-    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+    expect(mount.querySelector('.rtile[data-attempt-id="f1"]')).toBeNull();
   });
 
-  test('renders no banner for a dismissed orphaned attempt', () => {
+  test('renders no tile for a dismissed orphaned attempt', () => {
     const mount = mountWithAttempts({
       o1: {
         attempt_id: 'o1',
@@ -5230,10 +5314,10 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       }
     });
 
-    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+    expect(mount.querySelector('.rtile[data-attempt-id="o1"]')).toBeNull();
   });
 
-  test('drops the ancestor banner as soon as a resume child exists', () => {
+  test('drops the ancestor failure tile as soon as a resume child exists', () => {
     const mount = mountWithAttempts({
       anc: {
         attempt_id: 'anc',
@@ -5252,10 +5336,10 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       }
     });
 
-    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+    expect(mount.querySelector('.rtile[data-attempt-id="anc"]')).toBeNull();
   });
 
-  test('shows the newest of two unhandled failures, then the older once it is dismissed', () => {
+  test('shows every unhandled failure until each one is handled', () => {
     const attempts = {
       older: {
         attempt_id: 'older',
@@ -5283,9 +5367,11 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       transport: vi.fn()
     });
     expect(
-      /** @type {HTMLElement} */ (mount.querySelector('.worker-banner__resume'))
-        .dataset.attemptId
-    ).toBe('newer');
+      mount.querySelector('.rtile[data-attempt-id="older"]')
+    ).not.toBeNull();
+    expect(
+      mount.querySelector('.rtile[data-attempt-id="newer"]')
+    ).not.toBeNull();
 
     queueStore.set(
       queueOf({
@@ -5298,12 +5384,12 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
     );
 
     expect(
-      /** @type {HTMLElement} */ (mount.querySelector('.worker-banner__resume'))
-        .dataset.attemptId
-    ).toBe('older');
+      mount.querySelector('.rtile[data-attempt-id="older"]')
+    ).not.toBeNull();
+    expect(mount.querySelector('.rtile[data-attempt-id="newer"]')).toBeNull();
   });
 
-  test('the banner ✕ dismisses exactly the attempt the banner describes', () => {
+  test('offers no dismiss control or dismiss transport', () => {
     const transport = vi.fn().mockResolvedValue({ dismissed: true });
     const mount = mountWithAttempts(
       {
@@ -5319,16 +5405,11 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       transport
     );
 
-    const btn = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--failure .worker-banner__dismiss')
+    expect(mount.querySelector('.rtile__dismiss')).toBeNull();
+    expect(transport).not.toHaveBeenCalledWith(
+      'worker-attempt-dismiss',
+      expect.anything()
     );
-    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    expect(btn.dataset.attemptId).toBe('f1');
-    expect(transport).toHaveBeenCalledWith('worker-attempt-dismiss', {
-      attempt_id: 'f1',
-      expected_revision: 1
-    });
   });
 
   test('leaves the ↻ button and its disabled reason untouched', () => {
@@ -5343,7 +5424,7 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
     });
 
     const btn = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-banner__resume')
+      mount.querySelector('.rtile[data-attempt-id="f1"] .rtile__resume')
     );
 
     expect(btn.disabled).toBe(true);
@@ -5376,7 +5457,7 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
 
   const FAILED_AT = startOfToday() + 1000;
 
-  test('renders no banner for a failure the bead finished after (UI-a9ys)', () => {
+  test('renders no tile for a failure the bead finished after (UI-a9ys)', () => {
     const mount = mountWithDone(
       {
         f1: {
@@ -5391,10 +5472,10 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       [{ bead_id: 'B1', added_at: FAILED_AT + 60_000 }]
     );
 
-    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+    expect(mount.querySelector('.rtile[data-attempt-id="f1"]')).toBeNull();
   });
 
-  test('renders the banner for a failure whose bead is not in the done lane', () => {
+  test('renders the tile for a failure whose bead is not in the done lane', () => {
     const mount = mountWithDone(
       {
         f1: {
@@ -5409,10 +5490,10 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       [{ bead_id: 'B2', added_at: FAILED_AT + 60_000 }]
     );
 
-    expect(mount.querySelector('.worker-banner--failure')).not.toBeNull();
+    expect(mount.querySelector('.rtile[data-attempt-id="f1"]')).not.toBeNull();
   });
 
-  test('renders the banner when the failure came after the done entry', () => {
+  test('renders the tile when the failure came after the done entry', () => {
     const mount = mountWithDone(
       {
         f1: {
@@ -5427,7 +5508,7 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       [{ bead_id: 'B1', added_at: FAILED_AT - 60_000 }]
     );
 
-    expect(mount.querySelector('.worker-banner--failure')).not.toBeNull();
+    expect(mount.querySelector('.rtile[data-attempt-id="f1"]')).not.toBeNull();
   });
 
   test('falls through to another bead unhandled failure once one is resolved', () => {
@@ -5458,9 +5539,11 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
     );
 
     expect(
-      /** @type {HTMLElement} */ (mount.querySelector('.worker-banner__resume'))
-        .dataset.attemptId
-    ).toBe('open');
+      mount.querySelector('.rtile[data-attempt-id="open"]')
+    ).not.toBeNull();
+    expect(
+      mount.querySelector('.rtile[data-attempt-id="resolved"]')
+    ).toBeNull();
   });
 
   test('keeps the resolution when the done period filter hides the row', () => {
@@ -5482,10 +5565,10 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
     expect(
       mount.querySelectorAll('#worker-pane-done .worker-mini').length
     ).toBe(0);
-    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
+    expect(mount.querySelector('.rtile[data-attempt-id="f1"]')).toBeNull();
   });
 
-  test('renders the banner for a legacy attempt carrying no finished_at', () => {
+  test('renders the tile for a legacy attempt carrying no finished_at', () => {
     const mount = mountWithDone(
       {
         f1: {
@@ -5500,10 +5583,10 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       [{ bead_id: 'B1', added_at: FAILED_AT + 60_000 }]
     );
 
-    expect(mount.querySelector('.worker-banner--failure')).not.toBeNull();
+    expect(mount.querySelector('.rtile[data-attempt-id="f1"]')).not.toBeNull();
   });
 
-  test('renders the banner for a legacy done entry normalized to added_at 0', () => {
+  test('renders the tile for a legacy done entry normalized to added_at 0', () => {
     const mount = mountWithDone(
       {
         f1: {
@@ -5518,7 +5601,7 @@ describe('worker view — failure banner lifecycle (UI-dcw7)', () => {
       [{ bead_id: 'B1', added_at: 0 }]
     );
 
-    expect(mount.querySelector('.worker-banner--failure')).not.toBeNull();
+    expect(mount.querySelector('.rtile[data-attempt-id="f1"]')).not.toBeNull();
   });
 });
 
@@ -8366,7 +8449,7 @@ describe('mobile ribbon (UI-58y2)', () => {
     expect(mount.querySelector('.worker-repo-ops-settings')).not.toBe(null);
   });
 
-  test('leaves the failure banner outside the ribbon', () => {
+  test('renders a failed decision tile without a ribbon banner', () => {
     const mount = mountRibbon({
       attempts: {
         a1: {
@@ -8379,10 +8462,8 @@ describe('mobile ribbon (UI-58y2)', () => {
       }
     });
 
-    expect(mount.querySelector('.worker-banner--failure')).not.toBe(null);
-    expect(mount.querySelector('.worker-ribbon .worker-banner--failure')).toBe(
-      null
-    );
+    expect(mount.querySelector('.rtile[data-attempt-id="a1"]')).not.toBeNull();
+    expect(mount.querySelector('.worker-banner--failure')).toBeNull();
   });
 });
 

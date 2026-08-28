@@ -68,4 +68,20 @@ describe('worker attempt failure projection', () => {
 
     expect([resolved, dismissed].filter(predicate)).toEqual([]);
   });
+
+  test('excludes a source attempt stamped by discard completion', () => {
+    const discarded = {
+      attempt_id: 'att-1',
+      bead_id: 'UI-1',
+      status: 'discarded',
+      finished_at: 100,
+      dismissed_at: 200
+    };
+    const predicate = createUnhandledFailurePredicate({
+      attempts: { discarded },
+      done: []
+    });
+
+    expect(predicate(discarded)).toBe(false);
+  });
 });

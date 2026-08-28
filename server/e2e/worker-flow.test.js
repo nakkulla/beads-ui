@@ -1467,7 +1467,7 @@ describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', 
 });
 
 describe('worker e2e — failure injection halts the queue (no breaker)', () => {
-  test('failed session → auto_advance OFF + workflow_mode revert + banner record', async () => {
+  test('failed session → auto_advance OFF + workflow_mode revert + decision record', async () => {
     const { runtime, bd, scheduler } = buildSystem({
       // codex-failure.jsonl: a turn.failed/error stream → verdict fail.
       fixture: 'codex-failure.jsonl',
@@ -1497,7 +1497,7 @@ describe('worker e2e — failure injection halts the queue (no breaker)', () => 
       )
     );
     expect(failed.status).toBe('failed');
-    // The record carries what the failure banner renders.
+    // The record carries what the failed decision tile renders.
     expect(failed.cause).toContain('session_failed:');
     expect(failed.repo).toBe(repo_dir);
 

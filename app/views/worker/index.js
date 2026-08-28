@@ -14,11 +14,11 @@
  *
  * The ▶/⏸ controls flip `auto_advance`, and the slot editor sets the
  * concurrency cap (`worker-queue-set-slots`, same CAS discipline; lower bound
- * 1 — which is exactly the retired serial lane). Running tiles + the failure
- * banner are derived from the queue snapshot's `attempts` (status='running' → tiles;
- * status='failed'/'orphaned' → failure banner), which the server-side scheduler
- * fills as sessions dispatch and terminate. The banner reads the LATEST failed
- * attempt directly — there is no breaker object behind it (worker-phase2 §2).
+ * 1 — which is exactly the retired serial lane). Running and failed decision
+ * tiles are derived from the queue snapshot's `attempts`, which the server-side
+ * scheduler fills as sessions dispatch and terminate. Unhandled failures are
+ * projected directly from attempt records; there is no breaker object behind
+ * them (worker-phase2 §2).
  *
  * LAYOUT (worker-phase2 §7). The lane row is the spec's four columns —
  * 대기 · 실행 중 · PR 대기 · 완료 — so a bead's whole life reads left to right in
@@ -96,6 +96,7 @@ import {
   miniRow,
   nowPanel,
   paneTemplate,
+  quickFixLanded,
   repoOpsStripTemplate,
   reviewSessionAttemptBadges,
   reviewSessionRowState,
@@ -114,7 +115,7 @@ import { deriveWorkerOverlaps, workerPlacementPlan } from './queue-overlaps.js';
 import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
 import { createRepoOpsDrawer } from './repo-ops-timeline.js';
-import { bannersTemplate, runningGridTemplate } from './running-grid.js';
+import { runningGridTemplate } from './running-grid.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
 
 export { mergeStepView } from './merge-steps.js';
@@ -1660,6 +1661,8 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {{ bead_id: string, counterpart_id: string }|null}
    */
   let open_overlap = null;
+  /** @type {string|null} */
+  let open_failure_detail = null;
   /**
    * 마지막 렌더의 비교 집합·레인 사실 (UI-jbao). 팝오버의 배치 판정은 클릭
    * 시점의 최신 모델로 한다 — 스냅샷 갱신마다 buildModel이 다시 채운다.
@@ -2183,40 +2186,6 @@ export function createWorkerView(mount_element, options = {}) {
     );
     if (res && res.resumed === false && !res.conflict && res.reason) {
       showToast(`이어하기 거부: ${res.reason}`, 'error', 2400);
-    }
-  }
-
-  /**
-   * Dismiss (✕) the failure banner's attempt: stamp `dismissed_at` so the
-   * failure stops counting as unhandled and the banner drops to the next one (if
-   * any). Same CAS discipline as {@link resumeAttempt} — send the current
-   * revision, adopt the conflict reply's queue, retry ONCE. A refusal surfaces
-   * its reason as a toast.
-   *
-   * @param {string} attempt_id
-   */
-  async function dismissAttempt(attempt_id) {
-    if (!transport || !attempt_id) {
-      return;
-    }
-    let res = /** @type {any} */ (
-      await transport('worker-attempt-dismiss', {
-        attempt_id,
-        expected_revision: currentRevision()
-      })
-    );
-    adopt(res);
-    if (res && res.conflict) {
-      res = /** @type {any} */ (
-        await transport('worker-attempt-dismiss', {
-          attempt_id,
-          expected_revision: currentRevision()
-        })
-      );
-      adopt(res);
-    }
-    if (res && res.dismissed === false && !res.conflict && res.reason) {
-      showToast(`배너 닫기 거부: ${res.reason}`, 'error', 2400);
     }
   }
 
@@ -2858,7 +2827,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], serial_lanes: Array<{ id: string, index: number, rows: any[], occupied: boolean, badge: string, cycle: boolean }>, serial_lane_count: number, pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, repo_operations: any[], running_overlays: Map<string, RunningOverlay> }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, waiting: any[], serial_lanes: Array<{ id: string, index: number, rows: any[], occupied: boolean, badge: string, cycle: boolean }>, serial_lane_count: number, pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, repo_operations: any[], running_overlays: Map<string, RunningOverlay> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -3653,8 +3622,8 @@ export function createWorkerView(mount_element, options = {}) {
     const active_running = [];
     const isUnhandledFailure = createUnhandledFailurePredicate(q);
     /**
-     * Resume eligibility is deliberately the same for the banner and its
-     * corresponding failed tile.
+     * Resume eligibility is projected once for the failed decision tile and
+     * its detail popover.
      *
      * @param {any} attempt
      * @returns {{ eligible: boolean, reason: string|null }}
@@ -3672,8 +3641,6 @@ export function createWorkerView(mount_element, options = {}) {
             : null
       };
     };
-    /** @type {any|null} */
-    let latest_failed = null;
     for (const a of /** @type {any[]} */ (attempts)) {
       // A paused attempt that was already resumed is history: its child is the
       // live one, so only a LEAF paused attempt renders a tile (§1.1).
@@ -3723,13 +3690,18 @@ export function createWorkerView(mount_element, options = {}) {
           ...timesOf(a.bead_id)
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {
-        // Only a real failure surfaces the banner — a user pause/discard is not
-        // a failure and never renders one (worker-phase1 §1) — and only an
-        // UNHANDLED one: a later attempt for the same bead (↻ child, redispatch,
-        // whatever its outcome) supersedes it, a ✕ dismisses it, and entering
-        // the done lane AFTER the failure resolves it (UI-a9ys).
+        // Only an unhandled real failure renders a decision tile. A later
+        // attempt, completed discard, or done entry resolves it.
         if (isUnhandledFailure(a)) {
           const resume = failureResumeState(a);
+          const observed_pr = pr_obs[a.bead_id]?.pr;
+          const merged =
+            (typeof a.merge_sha === 'string' && a.merge_sha.length > 0) ||
+            observed_pr?.state === 'MERGED';
+          const discard = discardProjection(discard_operations, a.bead_id, {
+            attempt_id: a.attempt_id,
+            merged
+          });
           failed_running.push({
             bead_id: a.bead_id,
             attempt_id: a.attempt_id,
@@ -3744,11 +3716,37 @@ export function createWorkerView(mount_element, options = {}) {
             failed: true,
             status: a.status,
             status_label: a.status === 'orphaned' ? '중단됨' : '실패',
-            discard: discardProjection(discard_operations, a.bead_id, {
-              attempt_id: a.attempt_id
-            }),
-            resume_eligible: resume.eligible,
-            resume_reason: resume.reason,
+            discard,
+            failure: {
+              cause: typeof a.cause === 'string' ? a.cause : null,
+              cause_detail:
+                a.cause_detail && typeof a.cause_detail === 'object'
+                  ? a.cause_detail
+                  : null,
+              finished_at:
+                typeof a.finished_at === 'number' ? a.finished_at : null,
+              runner: typeof a.runner === 'string' ? a.runner : null,
+              model: typeof a.model === 'string' ? a.model : null,
+              effort: typeof a.effort === 'string' ? a.effort : null,
+              observed_effort:
+                typeof a.observed_effort === 'string'
+                  ? a.observed_effort
+                  : null,
+              speed: typeof a.speed === 'string' ? a.speed : null,
+              attempt_id: a.attempt_id,
+              usage: a.usage && typeof a.usage === 'object' ? a.usage : null,
+              halted_auto_advance: a.halted_auto_advance === true,
+              quickfix_lane: a.quickfix_lane === true,
+              quickfix_landing:
+                a.quickfix_landing && typeof a.quickfix_landing === 'object'
+                  ? a.quickfix_landing
+                  : null,
+              resume_eligible: resume.eligible,
+              resume_reason: resume.reason,
+              landed: quickFixLanded(a),
+              confirmation: discard.confirmation,
+              open: open_failure_detail === a.attempt_id
+            },
             conflict_resolution: resolvesConflict(a),
             base_exception: baseException(declared_base, a.target_base),
             workflow: bead_workflow[a.bead_id] || null,
@@ -3760,7 +3758,6 @@ export function createWorkerView(mount_element, options = {}) {
             rec: beadRec(a.bead_id),
             ...timesOf(a.bead_id)
           });
-          latest_failed = a;
         }
       }
     }
@@ -3860,37 +3857,6 @@ export function createWorkerView(mount_element, options = {}) {
       });
       return landing ? { ...tile, landing } : tile;
     });
-    // The banner's ↻ targets EXACTLY the attempt the banner describes — the
-    // latest failure. An older eligible attempt is never substituted (that
-    // would resume a different session than the one reported); ineligibility
-    // renders the button disabled with the reason in its title (spec §1.5).
-    /** @type {any|null} */
-    let failure = null;
-    if (latest_failed) {
-      const resume = failureResumeState(latest_failed);
-      const detail = latest_failed.cause_detail;
-      failure = {
-        bead_id: latest_failed.bead_id,
-        repo: latest_failed.repo || '',
-        reason: latest_failed.cause || latest_failed.status,
-        // Fail-quiet: only a fail-closed blocker records one (UI-2o4z §2).
-        cause_detail:
-          detail && typeof detail.reason === 'string'
-            ? {
-                reason: detail.reason,
-                command:
-                  typeof detail.command === 'string' ? detail.command : null
-              }
-            : null,
-        resume_attempt_id: latest_failed.attempt_id,
-        resume_eligible: resume.eligible,
-        resume_reason: resume.reason,
-        discard: discardProjection(discard_operations, latest_failed.bead_id, {
-          attempt_id: latest_failed.attempt_id
-        })
-      };
-    }
-
     /** @type {Set<string>} */
     const active_bead_ids = new Set(running.map((r) => r.bead_id));
 
@@ -4579,7 +4545,6 @@ export function createWorkerView(mount_element, options = {}) {
       live_count,
       slots,
       over_cap,
-      failure,
       // 실행 중(leaf paused 포함) attempt가 있는 bead는 attempt가 끝날 때까지
       // 큐 항목이 남지만, 대기 컬럼에 같이 그리면 두 컬럼 동시 표시가 되므로
       // 실행 중 컬럼에만 보여준다.
@@ -4698,7 +4663,6 @@ export function createWorkerView(mount_element, options = {}) {
           )}
         </select>
       </label> `;
-    const banners = bannersTemplate({ failure: m.failure });
     // 정리 멈춤은 더 이상 배너가 아니라 타임라인의 한 항목이다 (§4.2) — 스트립의
     // 해결 필요 배지가 부르고, 클릭이 그 자리로 데려간다.
     const repo_operations = repoOpsStripTemplate(
@@ -4720,7 +4684,7 @@ export function createWorkerView(mount_element, options = {}) {
           <div class="worker-ctrl__ops">${settings}</div>
           <div class="worker-kpi">${base_chip}</div>
         </div>
-        ${repo_operations}${repo_ops_settings.template()}${banners}`;
+        ${repo_operations}${repo_ops_settings.template()}`;
     }
     // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
     return html`<div class="worker-ctrl">
@@ -4750,7 +4714,7 @@ export function createWorkerView(mount_element, options = {}) {
           >
         </div>
       </div>
-      ${repo_operations}${repo_ops_settings.template()}${banners}`;
+      ${repo_operations}${repo_ops_settings.template()}`;
   }
 
   /**
@@ -5813,44 +5777,6 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return;
     }
-    // The failure banner's ↻ resumes the newest eligible failed attempt (§1).
-    const resumeBtn = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-banner__resume')
-    );
-    if (resumeBtn) {
-      const att = resumeBtn.dataset.attemptId;
-      if (att) {
-        void resumeAttempt(att);
-      }
-      return;
-    }
-    const bannerDiscardBtn = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-banner__discard')
-    );
-    if (bannerDiscardBtn) {
-      const confirmation =
-        bannerDiscardBtn.dataset.confirmation === 'merged'
-          ? 'merged'
-          : 'unmerged';
-      void discardBead(
-        bannerDiscardBtn.dataset.beadId || '',
-        bannerDiscardBtn.dataset.attemptId || null,
-        confirmation,
-        bannerDiscardBtn.dataset.operationId || null
-      );
-      return;
-    }
-    // The failure banner's ✕ marks that same attempt handled.
-    const dismissBtn = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-banner__dismiss')
-    );
-    if (dismissBtn) {
-      const att = dismissBtn.dataset.attemptId;
-      if (att) {
-        void dismissAttempt(att);
-      }
-      return;
-    }
     if (target?.closest?.('.worker-play')) {
       void setAutomation(!currentQueue().auto_advance);
       return;
@@ -6063,8 +5989,37 @@ export function createWorkerView(mount_element, options = {}) {
     if (target?.closest?.('.worker-mini__pr')) {
       return;
     }
+    const failure_badge = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.rtile__failure-badge')
+    );
+    if (failure_badge) {
+      const attempt_id = failure_badge.dataset.attemptId || '';
+      open_failure_detail =
+        open_failure_detail === attempt_id ? null : attempt_id;
+      doRender();
+      return;
+    }
+    const attempt_copy = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.rtile__attempt-copy')
+    );
+    if (attempt_copy) {
+      const attempt_id = attempt_copy.dataset.attemptId || '';
+      if (attempt_id) {
+        void copyToClipboard(attempt_id).then((ok) => {
+          showToast(
+            ok ? '복사됨' : '복사 실패',
+            ok ? 'success' : 'error',
+            1400
+          );
+        });
+      }
+      return;
+    }
     // Tile controls act on the attempt and must never also open the drawer.
-    if (target?.closest?.('.rtile__discard')) {
+    const tile_discard = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.rtile__discard')
+    );
+    if (tile_discard) {
       const tile = /** @type {HTMLElement|null} */ (
         target?.closest?.('.rtile')
       );
@@ -6074,20 +6029,11 @@ export function createWorkerView(mount_element, options = {}) {
         void discardBead(
           bead_id,
           att || null,
-          'unmerged',
-          /** @type {HTMLElement|null} */ (target?.closest?.('.rtile__discard'))
-            ?.dataset.operationId || null
+          tile_discard.dataset.confirmation === 'merged'
+            ? 'merged'
+            : 'unmerged',
+          tile_discard.dataset.operationId || null
         );
-      }
-      return;
-    }
-    if (target?.closest?.('.rtile__dismiss')) {
-      const tile = /** @type {HTMLElement|null} */ (
-        target?.closest?.('.rtile')
-      );
-      const att = tile?.dataset?.attemptId;
-      if (att) {
-        void dismissAttempt(att);
       }
       return;
     }
@@ -6128,6 +6074,12 @@ export function createWorkerView(mount_element, options = {}) {
       if (session_bead) {
         openDrawerForSessionRef(session_bead);
       }
+      return;
+    }
+    // 팝오버 본문 클릭은 타일 기본 동작(드로어 열기)으로 떨어지지 않는다. 안의
+    // 조작(`▤ 세션`·attempt id 복사)은 이미 위에서 라우팅됐으므로 여기 오는 것은
+    // 읽기만 하는 영역이다.
+    if (target?.closest?.('.rtile__failure-pop')) {
       return;
     }
     // Backdrop click closes the drawer modal (the ✕ inside the bar is the
@@ -6253,29 +6205,40 @@ export function createWorkerView(mount_element, options = {}) {
    * @param {Event} ev
    */
   function onDocumentClick(ev) {
-    if (!open_overlap) {
-      return;
-    }
     const target = /** @type {HTMLElement|null} */ (ev.target);
-    if (
-      target &&
-      typeof target.closest === 'function' &&
-      target.closest('.mon-overlap__popover, .mon-overlap__chip')
-    ) {
-      return;
+    const closest =
+      target && typeof target.closest === 'function'
+        ? (/** @type {string} */ selector) => target.closest(selector)
+        : () => null;
+    let changed = false;
+    if (open_overlap && !closest('.mon-overlap__popover, .mon-overlap__chip')) {
+      open_overlap = null;
+      changed = true;
     }
-    open_overlap = null;
-    doRender();
+    if (
+      open_failure_detail &&
+      !closest('.rtile__failure-pop, .rtile__failure-badge')
+    ) {
+      open_failure_detail = null;
+      changed = true;
+    }
+    if (changed) {
+      doRender();
+    }
   }
 
   /**
    * @param {KeyboardEvent} ev
    */
   function onDocumentKeyDown(ev) {
-    if (ev.key !== 'Escape' || !open_overlap) {
+    if (
+      ev.key !== 'Escape' ||
+      (!open_overlap && open_failure_detail === null)
+    ) {
       return;
     }
     open_overlap = null;
+    open_failure_detail = null;
     doRender();
   }
 

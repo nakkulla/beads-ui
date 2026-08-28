@@ -1148,6 +1148,88 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
       expect(button).toBeNull();
     }
   });
+
+  test('opens failed detail from the badge and closes it outside', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              cause: 'runner_exit',
+              session_id: 's'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.rtile__failure-badge');
+    expect(mount.querySelector('.rtile__failure-pop')).not.toBeNull();
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.rtile__failure-pop')).toBeNull();
+  });
+
+  test('uses the failed projection confirmation for discard', () => {
+    const confirmFn = vi.fn(() => false);
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              cause: 'runner_exit',
+              session_id: 's',
+              merge_sha: 'a'.repeat(40)
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()],
+      confirm: confirmFn
+    });
+
+    view.load();
+    click(mount, '.rtile__discard');
+
+    expect(confirmFn).toHaveBeenCalledWith(
+      expect.stringContaining('revert PR')
+    );
+    expect(sent).toEqual([]);
+  });
+
+  test('sends no attempt-dismiss request from a failed tile', () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              cause: 'runner_exit',
+              session_id: 's'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(mount.querySelector('.rtile__dismiss')).toBeNull();
+    expect(
+      sent.some((message) => message.type === 'worker-attempt-dismiss')
+    ).toBe(false);
+  });
 });
 
 describe('views/monitor [대기로 ↴] lane menu (UI-e6hw §6)', () => {

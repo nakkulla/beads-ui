@@ -1189,6 +1189,63 @@ describe('monitor attempt folding', () => {
 
     expect(attempt.attempt_id).toBe('t2');
   });
+
+  test('projects every failed-attempt decision field', () => {
+    const usage = { total_cost_usd: 1.25 };
+    const cause_detail = {
+      reason: 'head moved',
+      command: 'git rev-parse HEAD'
+    };
+    const quickfix_landing = {
+      cursor: 'repo_operations',
+      head_sha: 'a'.repeat(40),
+      reason: 'deploy_failed'
+    };
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'failed',
+          session_id: 'session-1',
+          cause: 'quickfix_landing_failed:deploy_failed',
+          cause_detail,
+          finished_at: 123,
+          runner: 'codex',
+          model: 'sol',
+          effort: 'xhigh',
+          observed_effort: 'high',
+          speed: 'default',
+          usage,
+          halted_auto_advance: true,
+          quickfix_lane: true,
+          quickfix_landing,
+          merge_sha: 'b'.repeat(40)
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.failure).toEqual({
+      cause: 'quickfix_landing_failed:deploy_failed',
+      cause_detail,
+      finished_at: 123,
+      runner: 'codex',
+      model: 'sol',
+      effort: 'xhigh',
+      observed_effort: 'high',
+      speed: 'default',
+      attempt_id: 't1',
+      usage,
+      halted_auto_advance: true,
+      quickfix_lane: true,
+      quickfix_landing,
+      resume_eligible: true,
+      resume_reason: null,
+      landed: true,
+      confirmation: 'merged'
+    });
+  });
 });
 
 describe('monitor 병렬 통합 큐 (UI-e6hw §4.1)', () => {

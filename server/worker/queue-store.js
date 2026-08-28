@@ -108,17 +108,17 @@
  * @property {string|null} workflow_mode_prior - workflow_mode value snapshotted before launch (null=was unset).
  * @property {string|null} target_base - Merge target base at dispatch.
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
- * @property {string|null} cause - Failure cause (failure banner reason).
+ * @property {string|null} cause - Failure cause shown by the decision tile.
  * @property {{ reason: string, command: string|null }|null} cause_detail -
  * What the fail-closed path actually caught, when the cause alone cannot say
  * it (UI-2o4z §2): the caught `reason` plus the simple command it matched
  * (`command` null for an interactive-question blocker). Every fail-closed path
  * that knows one records it — the `loud_fail_blocker` guard kill and, since
  * UI-ogf9, the `workflow_mode` stamp failures; other causes leave it null.
- * @property {number|null} dismissed_at - Epoch ms a human closed (✕) this
- * failure's banner, declaring it handled. Null means "still unhandled", which
- * is one of the two ways the UI stops showing a failure banner (the other is
- * being superseded by a later attempt for the same bead).
+ * @property {number|null} dismissed_at - Epoch ms this failure became handled
+ * through discard or an existing moot-settlement path. Legacy explicit stamps
+ * also round-trip. Null alone does not resolve the failure; supersede and done
+ * records are the other resolution evidence.
  * @property {boolean} halted_auto_advance - Whether this attempt performed the
  * durable true-to-false auto-advance transition.
  * @property {{ input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens?: number, total_cost_usd?: number }|null} usage -
@@ -2562,7 +2562,7 @@ export function makeAttempt(fields) {
 /**
  * Migrate a pre-worker-phase1 attempt record on load (spec §3). A user ■ used
  * to be recorded as `failed` + `cause:'stopped'`, which the UI renders as a
- * failure banner; the honest state is now `stopped` with no cause.
+ * failed decision tile; the honest state is now `stopped` with no cause.
  *
  * Lane placement is deliberately NOT touched: retroactively pulling a bead out
  * of a lane would rewrite a queue the user built. §2.2's lane removal applies
@@ -5548,6 +5548,15 @@ export function createQueueStore(options = {}) {
         }
         delete next.admission[current.bead_id];
         delete next.cleanup_failed[current.bead_id];
+        if (
+          typeof current.attempt_id === 'string' &&
+          current.attempt_id.length > 0
+        ) {
+          const attempt = next.attempts[current.attempt_id];
+          if (attempt && typeof attempt.dismissed_at !== 'number') {
+            attempt.dismissed_at = now();
+          }
+        }
         next.discard_operations[operation_id] = {
           ...current,
           phase: 'done',
@@ -6269,8 +6278,8 @@ export function createQueueStore(options = {}) {
 
     /**
      * Force the auto_advance flag (scheduler-owned, no CAS) — used to turn
-     * execution OFF on a session failure or a reconcile failure, which together with
-     * the failure banner IS the halt behaviour (worker-phase2 §2).
+     * execution OFF on a session failure or a reconcile failure. The failed
+     * decision tile makes that halt actionable (worker-phase2 §2).
      *
      * @param {string} workspace
      * @param {boolean} on

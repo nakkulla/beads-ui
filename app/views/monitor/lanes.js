@@ -34,6 +34,7 @@ import { overlapPrefixes } from '../../utils/scope-overlap.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
 import {
   discardProjection,
+  quickFixLanded,
   reviewSessionAttemptBadges,
   sumAttemptWorkMs
 } from '../worker/lanes.js';
@@ -145,6 +146,7 @@ const DONE_KIND_LABELS = {
  *   resumed_from?: string|null,
  *   continuation_mode?: 'session'|'fresh'|null,
  *   continuation_mismatch?: any,
+ *   failure?: import('../worker/running-grid.js').FailureTile|null,
  *   queue_position?: number,
  *   queue_index?: number,
  *   queue_length?: number,
@@ -420,9 +422,10 @@ export function latestTerminalAttempt(attempts, bead_id) {
  *
  * @param {Record<string, any>} attempts
  * @param {Map<string, number>} done_at_by_bead
+ * @param {{ discard_operations?: Record<string, any>, observations?: Record<string, any> }} [input]
  * @returns {Map<string, any>}
  */
-export function activeByBead(attempts, done_at_by_bead) {
+export function activeByBead(attempts, done_at_by_bead, input = {}) {
   const { winners, resumed_from_ids } = activeAttemptStates(
     attempts,
     done_at_by_bead
@@ -436,6 +439,54 @@ export function activeByBead(attempts, done_at_by_bead) {
     const started_at = state.started_at;
     const has_session =
       typeof a.session_id === 'string' && a.session_id.length > 0;
+    const resume_eligible =
+      run_state !== 'running' &&
+      has_session &&
+      !resumed_from_ids.has(a.attempt_id);
+    const resume_reason = !has_session
+      ? 'session_id 없는 구 attempt — 이어하기 불가'
+      : resumed_from_ids.has(a.attempt_id)
+        ? '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
+        : null;
+    const observed = objectOf(input.observations?.[bead_id]);
+    const observed_pr = objectOf(observed.pr);
+    const merged =
+      (typeof a.merge_sha === 'string' && a.merge_sha.length > 0) ||
+      observed_pr.state === 'MERGED';
+    const discard = discardProjection(input.discard_operations, bead_id, {
+      attempt_id: a.attempt_id,
+      merged
+    });
+    const failure =
+      run_state === 'failed'
+        ? {
+            cause: typeof a.cause === 'string' ? a.cause : null,
+            cause_detail:
+              a.cause_detail && typeof a.cause_detail === 'object'
+                ? a.cause_detail
+                : null,
+            finished_at:
+              typeof a.finished_at === 'number' ? a.finished_at : null,
+            runner: typeof a.runner === 'string' ? a.runner : null,
+            model: typeof a.model === 'string' ? a.model : null,
+            effort: typeof a.effort === 'string' ? a.effort : null,
+            observed_effort:
+              typeof a.observed_effort === 'string' ? a.observed_effort : null,
+            speed: typeof a.speed === 'string' ? a.speed : null,
+            attempt_id: typeof a.attempt_id === 'string' ? a.attempt_id : '',
+            usage: a.usage && typeof a.usage === 'object' ? a.usage : null,
+            halted_auto_advance: a.halted_auto_advance === true,
+            quickfix_lane: a.quickfix_lane === true,
+            quickfix_landing:
+              a.quickfix_landing && typeof a.quickfix_landing === 'object'
+                ? a.quickfix_landing
+                : null,
+            resume_eligible,
+            resume_reason,
+            landed: quickFixLanded(a),
+            confirmation: discard.confirmation
+          }
+        : null;
     map.set(bead_id, {
       attempt_id: typeof a.attempt_id === 'string' ? a.attempt_id : '',
       run_state,
@@ -458,11 +509,9 @@ export function activeByBead(attempts, done_at_by_bead) {
           : null,
       status: typeof a.status === 'string' ? a.status : null,
       usage: sumAttemptUsage(attempts, a.bead_id),
+      ...(failure ? { failure } : {}),
       can_pause: run_state === 'running' && has_session,
-      can_resume:
-        run_state !== 'running' &&
-        has_session &&
-        !resumed_from_ids.has(a.attempt_id)
+      can_resume: resume_eligible
     });
   }
   return map;
@@ -1388,7 +1437,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
     /** @type {Set<string>} */
     const claimed = new Set();
 
-    for (const [bead_id, live] of activeByBead(attempts, done_at_by_bead)) {
+    for (const [bead_id, live] of activeByBead(attempts, done_at_by_bead, {
+      discard_operations,
+      observations
+    })) {
       claimed.add(bead_id);
       // 실패 판정은 **attempt 스냅샷**의 `armed_by_lane`에 결속된다 (§5.5): 지금
       // 큐 행이 무엇으로 armed되어 있는지가 아니라 그 실행이 무엇으로 출발했는지가
@@ -1427,12 +1479,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
         resumed_from: live.resumed_from,
         continuation_mode: live.continuation_mode,
         usage: live.usage,
+        failure: live.failure || null,
         exec_chips: {
           orchestration: formatAttemptOrchestrationChip(live),
           worker: null
         },
         discard: discardProjection(discard_operations, bead_id, {
-          attempt_id: live.attempt_id
+          attempt_id: live.attempt_id,
+          merged:
+            live.failure?.confirmation === 'merged' ||
+            objectOf(observations[bead_id]).pr?.state === 'MERGED'
         }),
         badges:
           live.run_state === 'paused'
