@@ -36,6 +36,7 @@ scope:
   - docs/superpowers/specs/2026-08-27-ui-sbum-rec-complex-chip-design.md
   - docs/superpowers/specs/2026-08-25-session-preferred-chip-consumer-design.md
   - docs/superpowers/specs/2026-08-27-detail-panel-dependency-editor-design.md
+  - docs/superpowers/specs/2026-08-27-worker-candidate-sort-chain-release-chips-design.md
   - app/main.bundle.js
   - app/main.bundle.js.map
 ---
@@ -56,8 +57,8 @@ Worker·Monitor 탭 카드는 같은 렌더러를 쓰지만(UI-251y §1) 칩마�
 | 칩 | 지금 라벨 | 지금 클릭 | 어긋남 |
 | --- | --- | --- | --- |
 | 선행 | `⛓ blocked: UI-x` | 이슈 상세(openable일 때) | 방향어가 라벨에 다시 적힘 |
-| 해제 | `🔓 해제: UI-x` | 이슈 상세 | 같음 |
-| 후속 | `→ 후속 3` | 없음 | ID가 없고 툴팁에 5개까지만(서버 `DEPENDENTS_ID_LIMIT`) |
+| 해제 | `🔓 해제: UI-x` (최대 2개, 세 번째부터 마지막 칩에 ` 외 n`) | 이슈 상세 | 같음, 그리고 `RELEASED_CHIP_MAX`로 축약 |
+| 후속 | `→ 후속 3` | 없음 | ID가 없고 툴팁에 5개까지만(서버 `DEPENDENTS_ID_LIMIT`); 후보 행에만 |
 | 겹침 | `⧉ UI-x` | 팝오버(경로 목록·`[같은 직렬 레인으로]` 1클릭 배치) | 같은 줄의 다른 칩과 클릭 결과가 다름 |
 | `복잡` | `복잡` | 카드: 없음 · 상세 헤더: **즉시 적용**(권위 키 덮어쓰기) | 오터치 위험, 사유는 툴팁에만 |
 | `세션 권장` · `worker-ineligible` · `리뷰 ✓/stale` | — | 없음(툴팁만) | 사유가 툴팁에만 |
@@ -69,7 +70,8 @@ Worker·Monitor 탭 카드는 같은 렌더러를 쓰지만(UI-251y §1) 칩마�
 ## 2. 사용자 결정 (2026-08-28)
 
 1. 의존·겹침 칩 라벨은 `<글리프> <ID>`만이다. 방향어·`block:`·`해제:`는 라벨에서 빼고
-   툴팁으로 보낸다. ID는 축약하지 않는다 — 후속이 7개면 칩 7개.
+   툴팁으로 보낸다. ID는 축약하지 않는다 — 후속이 7개면 칩 7개, 해제도 상한(`RELEASED_CHIP_MAX`
+   2개)과 ` 외 n` 없이 7일 창 안의 것 전부.
 2. 슬롯 4를 두 줄로 나눈다. 상단은 행동을 바꾸는 사실(`⛓`·`→`), 하단은 정보(`🔓`·`⧉`·
    `scope 없음`). `연결 n`은 좌표 줄(슬롯 5)로 내린다.
 3. `⛓`·`→`·`🔓`·`⧉` 클릭은 모두 **그 이슈의 상세 열기**다. 겹침 팝오버와 1클릭 직렬
@@ -112,7 +114,7 @@ UI-251y §2 표의 4번 줄을 두 줄로 나눈다. 두 줄 모두 fail-quiet�
 | # | 줄 | 싣는 것 | 순서 |
 | --- | --- | --- | --- |
 | 4a | 의존 (상단) | `▶ 연결 n` 발차 칩(고아 `해제` 버튼 포함) · `⛓ <ID>`… · `→ <ID>`… | 발차 → 선행 → 후속. 각 묶음 안은 ID 사전순 |
-| 4b | 정보 (하단, 저채도) | `🔓 <ID>`… · `⧉ <ID>`… · `scope 없음` | 해제(`closed_at` 내림차순, 현행) → 겹침(ID 사전순) → scope 없음 |
+| 4b | 정보 (하단, 저채도) | `🔓 <ID>`… · `⧉ <ID>`… · `scope 없음` | 해제(`closed_at` 내림차순, 개수 상한 없음) → 겹침(ID 사전순) → scope 없음 |
 
 `▶ 연결 n`이 4a인 이유: "연결 레인이 이 항목을 지금 발차했다"는 행동 상태이고, 고아
 변형의 `해제`는 그 상태를 끄는 유일한 조작이다(UI-jaua §5.3). 자리와 동작 모두 바꾸지
@@ -147,6 +149,9 @@ UI-251y §2 표의 4번 줄을 두 줄로 나눈다. 두 줄 모두 fail-quiet�
   close되어 이 이슈가 풀렸다`. `⛓`: `선행 — close될 때까지 출발하지 않는다 (<위치>)`.
 - `dependents`는 `DependencyChips.dependents: DependentsChip[]`(ID별 배열)로 바뀐다.
   `count`/`title`만 담던 객체 형태는 폐기한다.
+- 해제 칩의 `candidateReleasedChips`(`worker/index.js`)에서 `RELEASED_CHIP_MAX`(2)와
+  마지막 칩에 ` 외 n`을 덧붙이는 분기를 없앤다. 7일 창(`releasedChip`)은 그대로다 —
+  칩 수를 제한하는 것은 창 하나뿐이다.
 - `popover`·`overlaps[].prefixes`를 팝오버용으로 쓰던 자리는 사라진다. `prefixes`는
   툴팁 재료로 남는다.
 
@@ -171,24 +176,37 @@ UI-251y §2 표의 4번 줄을 두 줄로 나눈다. 두 줄 모두 fail-quiet�
 `⛓`와 같은 범위로 넓히려면 큐 스냅샷에도 실어야 한다.
 
 - 서버(§6.2) `bead_dependents`를 Worker·Monitor가 함께 읽는다.
-- Worker `index.js`: blocked 칩의 3원천 정규화(UI-anna §5.1, `blockers_by_bead`)와
-  같은 관용으로 `dependents_by_bead`를 만든다 — `bead_dependents`(큐 장식)가 이기고,
-  없는 bead는 후보 행의 `dependents_info`로 채운다. 키가 있으면 빈 배열도 "없다"로
-  쓴다. `dependencyChipsFor`가 `dependents`를 함께 만든다. 실행중 오버레이의 최소
-  조건에 `dependents`도 든다(UI-anna §5.3의 blocked와 같은 이유).
+- Worker `index.js`: `dependents_by_bead`는 두 원천의 **합집합**이다 — 큐 장식
+  `bead_dependents[id].ids`와 후보 행의 `dependents_info.ids`를 ID로 dedupe해 합친다.
+  blocked 칩의 "큐 장식이 이긴다" 규칙(UI-anna §5.1)을 쓰지 않는 이유는 재료의 성질이
+  다르기 때문이다: `bead_blocked_by`는 서버가 매 스냅샷 완전 재계산하는 값이라 빈 배열이
+  "없다"이지만, 후속은 peer 스냅샷이 아직 없으면 그 레포의 후속을 세지 못해 빈 배열이
+  "모른다"일 수 있다. 합집합은 어느 원천도 다른 원천의 사실을 지우지 않는다.
+  `root_dirs`도 두 원천을 합친다. `dependencyChipsFor`가 `dependents`를 함께 만들고,
+  실행중 오버레이의 최소 조건에 `dependents`도 든다(UI-anna §5.3의 blocked와 같은
+  이유).
 - Monitor `lanes.js`: `bead_blocked_by`를 읽어 `predecessors`를 붙이는 같은 루프에서
-  `bead_dependents`를 읽어 `dependents`를 붙인다. `root_dir`은 서버가 준 값을 쓰고,
-  없으면 `locations`에서 찾는다.
-- `openable`: 같은 레포는 항상; 타 레포는 `root_dir`을 아는 것만(§4.2).
+  `bead_dependents`를 읽어 `dependents`를 붙인다. 각 후속 ID의 `root_dir` 결정 순서:
+  (1) 서버 `root_dirs[id]`; (2) 없으면 ID 접두사가 카드의 레포 접두사와 같으면 **카드의
+  `item.root_dir`** — 레인에 없는 열린 후속(예: `worker-ineligible` 이슈)은 `locations`에
+  없으므로, 이 단계가 없으면 다른 레포가 활성인 상태에서 현재 레포로 잘못 연다;
+  (3) 그 외 타 레포는 `locations.get(id)?.root_dir`; (4) 셋 다 없으면 `openable`이
+  아니다.
+- Worker의 `openable`: 같은 레포는 항상(현재 워크스페이스), 타 레포는 `root_dirs`를
+  아는 것만(§4.2).
 - 후보 정렬 체인의 `후속 많은 순`(UI-d13v §4)은 `dependents_info.count`를 그대로 읽는다
   — 정렬 키는 바꾸지 않는다.
 
 ### 4.5 판정 칩 팝업
 
-대상은 정체성 줄(슬롯 1)의 네 칩이다. 네 칩 모두 `<button type="button"
-class="ctl-chip … judgement-chip" data-chip-key="<kind>" aria-expanded>`가 되고,
-클릭하면 카드 안에 `.chip-popover`(`role="dialog"`)가 열린다. 카드 클릭(상세 열기)보다
-먼저 잡고 멈춘다.
+대상은 네 판정 칩이다. **칩의 슬롯은 표면마다 지금 자리 그대로다** — `세션 권장`·
+`worker-ineligible`·`리뷰`·`복잡`은 후보 카드에서 슬롯 1(정체성 줄), `복잡`은 대기·PR
+대기·완료 행의 `.worker-chips`와 실행 타일의 `.rtile__meta`(슬롯 5)에 있다(UI-sbum §3).
+이 스펙은 자리를 옮기지 않고, 그 칩이 그려지는 **모든 표면**에서 칩을 `<button
+type="button" class="ctl-chip … judgement-chip" data-chip-key="<kind>" aria-expanded>`로
+바꾼다. 완료 행의 `복잡`도 포함한다 — 완료 행의 줄 문법(§9 비목표)은 그대로이고 칩 하나가
+버튼이 될 뿐이다. 클릭하면 **그 칩이 속한 줄 바로 아래**에 `.chip-popover`(`role="dialog"`)가
+카드 안 절대 배치로 열린다. 카드 클릭(상세 열기)보다 먼저 잡고 멈춘다.
 
 | 칩 | `data-chip-key` | 팝업 제목 | 팝업 본문 |
 | --- | --- | --- | --- |
@@ -239,7 +257,8 @@ export function chipPopoverTemplate(content) // → <div class="chip-popover" ro
 - 콘텐츠 구성은 뷰가 한다: `{ title: string, lines: string[] }`. 템플릿은 제목 한 줄과
   `<ul>`뿐이다. 칩 종류별 문장은 §4.5 표를 `lanes.js`의 `judgementPopoverContent(item,
   chip_key)` 하나가 만든다(두 탭 공유).
-- 렌더 위치: 그 칩이 있는 정체성 줄 바로 아래, 카드 안 절대 배치(기존
+- 렌더 위치: 그 칩이 속한 줄(§4.5 — 후보 카드는 정체성 줄, 대기·PR 대기·완료 행은
+  `.worker-chips`, 실행 타일은 `.rtile__meta`) 바로 아래, 카드 안 절대 배치(기존
   `.mon-overlap__popover` 규칙을 `.chip-popover`로 개명, ≤640px 규칙 포함).
 - 이슈 상세 헤더도 같은 모듈을 쓴다(§5.1). 상세는 오버레이라 바깥 클릭 판정이 패널
   닫힘과 겹치지 않도록 `.detail-summary` 안 클릭은 패널 닫힘으로 흐르지 않는 현행
@@ -262,7 +281,9 @@ export function chipPopoverTemplate(content) // → <div class="chip-popover" ro
 - 타 레포 후속(peer snapshot에서 온 id)은 `root_dirs: Record<id, root_dir>`에 owner를
   싣는다 — 같은 레포 id는 항목이 없다. `release_info.released_by[].root_dir`과 같은
   의미다.
-- `decoration_rev`는 이미 `ids.join(',')`을 쓰므로 전량이 그대로 지문에 들어간다.
+- `decoration_rev`는 `ids.join(',')`에 더해 정렬된 `root_dirs` 항목(`id=root_dir`)도
+  지문에 넣는다 — 후속 ID는 같은데 소유 레포만 바뀐(peer 스냅샷 도착) 경우에도 후보
+  구독이 upsert돼 칩의 `openable`이 갱신된다.
 - `collectOpenDependents`와 owner 조회를 export해 §6.2가 재사용한다.
 
 ### 6.2 `server/ws/worker-handlers.js decorateQueue` — `bead_dependents`
@@ -276,8 +297,10 @@ bead_dependents: Record<bead_id, { ids: string[], root_dirs?: Record<string, str
 - 재료는 워크스페이스 목록 스냅샷의 `blocks_in` 색인(`peekWorkspaceSnapshot(root)` +
   peers, `list-adapters.js`와 같은 `createDecorationContext` 경로). 열린(`status !==
   'closed'`) 후속만 싣는다.
-- partial·fail-quiet: 스냅샷이 아직 없으면 키를 싣지 않는다(모름). 후속이 없으면 빈
-  배열(없음). 컨텍스트 조립이 던지면 로그 한 줄과 함께 키 전체를 생략한다.
+- partial·fail-quiet: 자기 레포 스냅샷이 아직 없으면 키 전체를 싣지 않는다(모름).
+  peer 스냅샷은 있는 것만 센다 — 그래서 한 bead의 빈 배열은 "없다"가 아니라 "보이는
+  스냅샷 안에는 없다"이며, 소비자는 이 값을 후보 `dependents_info`와 **합집합**으로만
+  쓴다(§4.4). 컨텍스트 조립이 던지면 로그 한 줄과 함께 키 전체를 생략한다.
 - 비영속, Worker 런타임 미소비(`policy.test.js`에 불변 케이스 1개).
 - `app/protocol.md`: `bead_scope` 단락 옆에 `bead_dependents` 단락, `dependents_info`
   단락의 "최대 5개"를 전량·`root_dirs`로 고친다.
@@ -305,7 +328,11 @@ bead_dependents: Record<bead_id, { ids: string[], root_dirs?: Record<string, str
   결정이 이 스펙으로 대체됐음을 적는다.
 - **UI-anna** §5.3a·§8: 클릭 동작 통일 정정, "후속 칩 부활 비목표"가 UI-d13v→이 스펙
   순으로 바뀐 경위 한 줄.
-- **UI-sbum** 결정 표 `적용 동작`·§4: 적용 제거 정정.
+- **UI-d13v** `2026-08-27-worker-candidate-sort-chain-release-chips-design.md`: §3.5
+  (`ids` 최대 5 → 전량 + `root_dirs`), §5.2·§5.3(`→ 후속 n`·` 외 n`·`RELEASED_CHIP_MAX`·
+  후보 행 전용·클릭 없음 → §3·§4의 라벨·전 레인·클릭=이슈 상세), §8 검증 항목 정정.
+  정렬 체인(§4)·후보 드래그 제거(§6)는 그대로다.
+- **UI-sbum** 결정 표 `적용 동작`·§3(카드 칩 클릭 없음)·§4: 팝업·적용 제거 정정.
 - **UI-49mc** §4: 칩이 버튼이 되고 클릭=팝업임을 정정.
 - **UI-lx45** §4.1 표: 표기 열을 §3 글리프 표로 정정.
 - **`AGENTS.md`** 카드 배치 문법 절: 줄 순서에 `의존(상단)·정보(하단)`을 반영하고,
@@ -328,37 +355,57 @@ bead_dependents: Record<bead_id, { ids: string[], root_dirs?: Record<string, str
 
 ### Test scope
 
+RED seam은 지금 구현에서 **실패하고** 변경 후 통과하는 케이스다. 기존 동작의 부재를
+확인하거나 불변을 지키는 케이스는 회귀 검사로 따로 적는다 — 변경 전에도 통과하는
+케이스는 seam이 아니다.
+
+**RED seams**
+
 - `app/views/worker/queue-blockers.test.js`: `predecessorChip`/`releasedChip` 라벨이
-  `<글리프> <ID>`; `dependentsChip`이 ID별 배열을 돌려주고 `root_dirs`로 `openable`·
-  `root_dir`을 정한다; 축약 문자열(`외 n`) 부재.
-- `app/views/worker/queue-overlaps.test.js`: `workerPlacementPlan` 삭제에 맞춰 배치
-  케이스 제거, `deriveWorkerOverlaps` 불변.
-- `app/views/worker/lanes.test.js`: `.worker-deps--primary`에 `▶ 연결`·`⛓`·`→`만,
-  `--secondary`에 `🔓`·`⧉`·`scope 없음`만; 재료 없는 줄 미렌더; 네 칩이
-  `.worker-dep__open` 버튼(openable) 또는 span; `연결 n`이 `.worker-chips`/`.rtile__meta`
-  안 직렬 레인 칩 다음; `mon-overlap` 클래스 부재; 판정 칩 네 종이 `judgement-chip`
-  버튼이고 `judgementPopoverContent`가 §4.5 표대로; `복잡` 팝업 본문에 §4.6 문장.
-- `app/views/chip-popover.test.js`: toggle/close/isOpen, 바깥 클릭·Esc 닫힘, 팝업·칩
-  안 클릭 무시, detach 후 리스너 없음.
-- `app/views/worker/index.test.js`: `dependents_by_bead` 정규화(큐 장식 우선·후보
-  `dependents_info` 폴백·빈 배열=없음), 대기·직렬·실행중·PR 대기 행에 `dependents`
-  부착, `.worker-dep__open` 클릭이 `openBlocker`로 가고 `open_overlap`·배치 op가
-  없음, 판정 칩 클릭이 팝업을 열고 카드 클릭으로 흐르지 않음.
-- `app/views/monitor/lanes.test.js`: `bead_dependents` → `dependents` 부착(root_dir
-  포함), `cross_lane_chip` 항목 필드, 겹침 칩 `openable` 규칙.
-- `app/views/monitor/index.test.js`: `.worker-dep__open` → `openRow`, 겹침 팝오버·
-  `mon-overlap__place` 스위트 제거, `mon-lane__chip` 스크롤 불변, 판정 칩 팝업.
-- `app/views/detail-panel/index.test.js`: 의존성 칩 라벨 §3, 툴팁 첫 줄 관계명,
-  `onApplyRec` 부재.
-- `app/views/detail-panel/effective-settings-view.test.js`: `복잡` 버튼이 disabled
-  없이 `judgement-chip`, 클릭=팝업, 세 `data-state` 유지.
+  `⛓ <ID>`/`🔓 <ID>`(지금은 `blocked:`/`해제:` 포함); `dependentsChip`이 ID별 배열을
+  돌려주고(지금은 `{count,title}` 하나) `root_dirs`로 `openable`·`root_dir`을 정한다.
+- `app/views/worker/lanes.test.js`: `.worker-deps--primary`/`--secondary` 두 컨테이너와
+  각 줄의 칩 집합(지금은 `.worker-deps` 하나); `→`·`🔓`·`⧉`가 `.worker-dep__open`
+  버튼(지금 `→`는 span, `⧉`는 `mon-overlap__chip`); `연결 n`이 `.worker-chips`/
+  `.rtile__meta` 안 직렬 레인 칩 다음(지금은 `.worker-deps`); 판정 칩 네 종이
+  `judgement-chip` 버튼(지금은 span); `judgementPopoverContent`가 §4.5 표대로;
+  `복잡` 팝업 본문에 §4.6 문장.
+- `app/views/chip-popover.test.js`(신규 모듈): toggle/close/isOpen, 바깥 클릭·Esc 닫힘,
+  팝업·칩 안 클릭 무시, detach 후 리스너 없음.
+- `app/views/worker/index.test.js`: `candidateReleasedChips`가 해제 3개 이상을 전부
+  돌려주고 ` 외 n`이 없다(지금은 2개+` 외 n`); `dependents_by_bead` 합집합(큐 장식 ∪
+  후보 `dependents_info`, 빈 큐 장식이 후보 재료를 지우지 않음); 대기·직렬·실행중·PR
+  대기 행에 `dependents` 부착(지금은 후보만); `.worker-dep__open` 클릭이 `→`·`⧉`에서도
+  `openBlocker`로 간다; 판정 칩 클릭이 팝업을 열고 카드 클릭으로 흐르지 않는다.
+- `app/views/monitor/lanes.test.js`: `bead_dependents` → `dependents` 부착; `root_dir`
+  결정 순서 §4.4(서버 → 같은 레포면 `item.root_dir` → `locations` → 없으면 비활성),
+  특히 레인에 없는 같은 레포 후속이 카드의 `root_dir`을 받는 케이스; `cross_lane_chip`
+  항목 필드; 겹침 칩 `openable` 규칙.
+- `app/views/monitor/index.test.js`: `→`·`⧉` `.worker-dep__open` → `openRow`(다른
+  레포가 활성인 상태에서 전환 후 열림 포함); 판정 칩 팝업.
+- `app/views/detail-panel/index.test.js`: 의존성 칩 라벨 §3(지금은 `막는`/`막히는`
+  문구), 툴팁 첫 줄 관계명.
+- `app/views/detail-panel/effective-settings-view.test.js`: `복잡` 버튼이 `disabled`
+  없이 `judgement-chip`이고 클릭이 팝업을 연다(지금은 `onApplyRec`).
 - `app/utils/rec-settings.test.js`: `REC_REASON_TEXT` 전 신호 커버, `recTooltip`에
-  코드 대신 문장, 모델명 부재.
-- `server/list-adapters.test.js`: 후속 6개 이상 전량, `root_dirs`(peer id만),
-  `decoration_rev` 지문.
-- `server/ws/worker-handlers.test.js`: `bead_dependents` 대상 집합·열린 후속만·스냅샷
-  부재 시 키 생략·컨텍스트 예외 시 로그+생략.
+  코드 대신 문장.
+- `server/list-adapters.test.js`: 후속 6개 이상 전량(지금은 5개), `root_dirs`(peer id만),
+  `decoration_rev`가 `root_dirs`만 바뀌어도 달라진다.
+- `server/ws/worker-handlers.test.js`: `bead_dependents` 대상 집합·열린 후속만·자기
+  스냅샷 부재 시 키 생략·peer 부재 시 나머지로 계산·컨텍스트 예외 시 로그+생략.
+
+**회귀 검사** (변경 전에도 통과하는 것 — 제거·불변 확인)
+
+- `app/views/worker/queue-overlaps.test.js`: `workerPlacementPlan` 삭제에 맞춰 배치
+  케이스 제거; `deriveWorkerOverlaps` 불변.
+- `app/views/worker/lanes.test.js`·`monitor/index.test.js`: `mon-overlap` 클래스·
+  `overlapPopoverTemplate`·`mon-overlap__place` 부재; `mon-lane__chip` 스크롤 불변;
+  `open_overlap`·배치 op 부재.
+- `app/views/detail-panel/index.test.js`: `onApplyRec` 부재; `✕`·추가 입력 불변.
+- `app/views/detail-panel/effective-settings-view.test.js`: 세 `data-state` 유지.
+- `app/utils/rec-settings.test.js`: 모델명 부재.
 - `server/worker/policy.test.js`: `bead_dependents`가 결정에 영향 없음.
+- 완료 2줄·3줄 행 마크업 불변(UI-251y §7 케이스 유지).
 
 ### 절차
 
@@ -370,7 +417,7 @@ bead_dependents: Record<bead_id, { ids: string[], root_dirs?: Record<string, str
 ## 11. 수용 기준
 
 1. 카드 어디서도 `blocked:`·`해제:`·`후속 n`·`외 n` 문구가 보이지 않고, 의존·겹침 칩은
-   전부 `<글리프> <ID>`다.
+   전부 `<글리프> <ID>`다. 7일 창 안의 해제가 3개 이상이면 칩도 그 수만큼 선다.
 2. 후속이 6개 이상인 이슈의 카드에 후속 칩이 그 수만큼 선다(후보·대기·실행중·PR 대기,
    두 탭).
 3. `⛓`·`→`·`🔓`·`⧉` 클릭이 그 이슈의 상세를 연다(타 레포는 전환 후). 겹침 팝오버·1클릭
@@ -394,12 +441,25 @@ bead_dependents: Record<bead_id, { ids: string[], root_dirs?: Record<string, str
     의미의 단일성과 모바일 오터치 방지를 택했다.
   - `summary`: 워커·모니터 카드 위 칩은 정보만 열고(이슈 상세·사유 팝업) 상태를 바꾸지
     않는다; 실행 설정 적용과 레인 배치는 편집기·배치 메뉴가 소유한다.
-- 슬롯 4를 의존(상단)·정보(하단) 두 줄로 나눈 것: 되돌리기 어려움 **불성립**(템플릿·CSS
-  한 곳), 의아함 **불성립**(UI-251y 슬롯 문법의 연장) — 스펙 본문(§4.1)에 둔다.
-- 글리프 표(§3)를 카드·상세가 공유하는 것: 되돌리기 어려움 **불성립**(문자열 상수),
-  트레이드오프 **불성립**(대안이 없는 일관성 정리) — 스펙 본문에 둔다.
-- `bead_dependents` 큐 장식을 `bead_scope`와 같은 대상 집합으로 싣는 것: 의아함
-  **불성립**(기존 장식 관용을 따름) — 스펙 본문(§6.2)에 둔다.
+- 슬롯 4를 의존(상단)·정보(하단) 두 줄로 나눈 것 — 스펙 본문(§4.1)에 둔다.
+  - 되돌리기 어려움: **불성립** — 템플릿 한 함수와 CSS 두 규칙을 합치면 끝난다.
+  - 맥락 없이 보면 의아함: **불성립** — UI-251y 슬롯 문법("행동을 바꾸는 사실이 위")의
+    연장이라 그 스펙만 읽어도 이해된다.
+  - 실제 트레이드오프: **성립** — 한 줄(공간 절약) 대 두 줄(우선순위 가독)이라는 대안이
+    있었다. 하나만 성립하므로 ADR이 아니다.
+- 글리프 표(§3)를 카드·상세가 공유하는 것 — 스펙 본문에 둔다.
+  - 되돌리기 어려움: **불성립** — 라벨 문자열 상수 몇 개다.
+  - 맥락 없이 보면 의아함: **불성립** — 같은 관계에 같은 기호를 쓰는 것은 설명이 필요
+    없는 기본값이다.
+  - 실제 트레이드오프: **불성립** — 방향어를 라벨에 남기는 대안은 사용자가 이미 배제했고,
+    거절된 다른 설계는 없다.
+- `bead_dependents` 큐 장식을 `bead_scope`와 같은 대상 집합으로 싣는 것 — 스펙 본문
+  (§6.2)에 둔다.
+  - 되돌리기 어려움: **불성립** — 장식 하나를 빼면 소비자는 후보 `dependents_info`만으로
+    돌아간다(합집합이라 코드 경로가 남는다).
+  - 맥락 없이 보면 의아함: **불성립** — `bead_blocked_by`·`bead_scope`와 같은 관용이다.
+  - 실제 트레이드오프: **성립** — runnable 행과 큐 항목에 각각 싣는 대안 대신 장식 하나를
+    택했다. 하나만 성립하므로 ADR이 아니다.
 
 이 저장소 `docs/adr/`에는 `README.md` 인덱스가 없고 기존 ADR 2건(001·002)은 목록 push
 설계라 충돌하지 않는다.
