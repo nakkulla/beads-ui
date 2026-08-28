@@ -221,23 +221,42 @@ export function inquiryWrapper(input) {
 }
 
 /**
+ * Every slot in one alternation, so filling is a SINGLE pass over the template.
+ * A chain of `replace` calls would let an already-inserted value be scanned
+ * again by a later slot — a conflict summary quoting `<path>` would swallow the
+ * checkout substitution and leave the real slot empty.
+ *
+ * @type {RegExp}
+ */
+const SLOT_PATTERN = new RegExp(
+  [SLOT_BEAD, SLOT_RECEIPT, SLOT_STALE_KIND, SLOT_SUMMARY, SLOT_CHECKOUT]
+    .map((slot) => slot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|'),
+  'g'
+);
+
+/**
  * Fill the five per-Bead slots of the quoted prompt. The Bead id is replaced
  * everywhere (the procedure names it a second time); the other four occur once.
- * Replacements go through a function so a `$` in a value cannot be read as a
- * substitution pattern.
+ * One pass, and the replacement goes through a function, so neither an inserted
+ * value nor a `$` inside one can be read as a pattern.
  *
  * @param {{ bead_id: string, receipt_key: string, receipt: string|null, stale_kind: string, summary: string|null, checkout: string }} input
  * @returns {string}
  */
 export function fillInquiryPrompt(input) {
-  return DIRECTION_INQUIRY_PROMPT.replaceAll(SLOT_BEAD, () => input.bead_id)
-    .replace(
-      SLOT_RECEIPT,
-      () => `${input.receipt_key}=${input.receipt ?? ABSENT}`
-    )
-    .replace(SLOT_STALE_KIND, () => input.stale_kind)
-    .replace(SLOT_SUMMARY, () => input.summary ?? ABSENT)
-    .replace(SLOT_CHECKOUT, () => input.checkout);
+  /** @type {Map<string, string>} */
+  const values = new Map([
+    [SLOT_BEAD, input.bead_id],
+    [SLOT_RECEIPT, `${input.receipt_key}=${input.receipt ?? ABSENT}`],
+    [SLOT_STALE_KIND, input.stale_kind],
+    [SLOT_SUMMARY, input.summary ?? ABSENT],
+    [SLOT_CHECKOUT, input.checkout]
+  ]);
+  return DIRECTION_INQUIRY_PROMPT.replace(
+    SLOT_PATTERN,
+    (slot) => values.get(slot) ?? slot
+  );
 }
 
 /**
@@ -429,10 +448,21 @@ export function createDirectionInquiry(deps) {
         return { session: 'not_launched', reason: 'tmux_unavailable' };
       }
       if (!created || created.code !== 0) {
-        return {
-          session: 'not_launched',
-          reason: 'launch_failed:new_session'
-        };
+        // Another Bead's trigger may have created the session between our read
+        // and this call: two parks landing together both see it missing and
+        // only one `new-session` can win. The session existing is the whole
+        // requirement, whoever made it, so re-read before calling this a
+        // failure.
+        const recheck = await listPanes();
+        if (
+          !recheck.ok ||
+          !recheck.rows.some((row) => row.session === input.tmux_session)
+        ) {
+          return {
+            session: 'not_launched',
+            reason: 'launch_failed:new_session'
+          };
+        }
       }
     }
     const wrapper = inquiryWrapper({

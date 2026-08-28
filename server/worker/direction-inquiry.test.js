@@ -311,6 +311,20 @@ describe('direction-inquiry prompt filling', () => {
     expect(filled).toContain('ADR <번호>에 맞춰');
     expect(filled).toContain('상대 spec(<Bead ID>)이 권위');
   });
+
+  test('keeps a summary that quotes a slot from eating the checkout', () => {
+    const filled = fillInquiryPrompt({
+      bead_id: BEAD,
+      receipt_key: 'spec_review',
+      receipt: 'self@abc',
+      stale_kind: 'adr_conflict',
+      summary: '상대 spec이 <path>를 다르게 정한다',
+      checkout: '/repo'
+    });
+
+    expect(filled).toContain('- 충돌 요약: 상대 spec이 <path>를 다르게 정한다');
+    expect(filled).toContain('- target_base 체크아웃: /repo');
+  });
 });
 
 describe('direction-inquiry launch', () => {
@@ -352,6 +366,47 @@ describe('direction-inquiry launch', () => {
     await inquiry.onParkedAttempt(parkedInput());
 
     expect(tmux.names()).toEqual(['list-panes', 'new-window', 'list-panes']);
+  });
+
+  test('continues when another park won the race to create the session', async () => {
+    const tmux = makeTmux({
+      panes: [['dev', '%1', '', '0']],
+      panes_after: [
+        ['bdui-inquiry', '%1', 'UI-other', '0'],
+        ['bdui-inquiry', '%9', BEAD, '0']
+      ],
+      new_session: { code: 1, stderr: 'duplicate session: bdui-inquiry' }
+    });
+    const { inquiry, awaitingUser } = makeInquiry({ tmux });
+
+    await inquiry.onParkedAttempt(parkedInput());
+
+    expect(tmux.names()).toEqual([
+      'list-panes',
+      'new-session',
+      'list-panes',
+      'new-window',
+      'list-panes'
+    ]);
+    expect(awaitingUser).toHaveBeenCalledWith(
+      expect.objectContaining({ session: 'launched' })
+    );
+  });
+
+  test('notifies launch_failed:new_session when the session is still absent', async () => {
+    const tmux = makeTmux({
+      panes: [['dev', '%1', '', '0']],
+      panes_after: [['dev', '%1', '', '0']],
+      new_session: { code: 1, stderr: 'no server running' }
+    });
+    const { inquiry, awaitingUser } = makeInquiry({ tmux });
+
+    await inquiry.onParkedAttempt(parkedInput());
+
+    expect(tmux.names()).toEqual(['list-panes', 'new-session', 'list-panes']);
+    expect(awaitingUser).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'launch_failed:new_session' })
+    );
   });
 
   test('passes the resolved checkout, window name and wrapper to new-window', async () => {
