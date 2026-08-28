@@ -32,6 +32,7 @@ describe('worker failure classification table', () => {
     ['verify_failed:bd_record_failed', 'individual'],
     ['verify_failed:gh_observation_failed', 'env'],
     ['verify_failed:bd_read_failed', 'env'],
+    ['quickfix_landing_failed:bd_read_failed', 'env'],
     ['verify_cmd_spawn_error', 'env'],
     ['spawn_failed', 'env'],
     ['spawn_failed:codex', 'env'],

@@ -90,6 +90,7 @@ export const ENV_ERROR_PATTERNS = Object.freeze([
 const ALWAYS_ENV_CAUSES = new Set([
   'verify_failed:gh_observation_failed',
   'verify_failed:bd_read_failed',
+  'quickfix_landing_failed:bd_read_failed',
   'verify_cmd_spawn_error',
   'spawn_failed',
   'codex_home_prepare_failed'
