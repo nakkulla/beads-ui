@@ -197,6 +197,15 @@ parked·retry_wait와 같은 네 키 규칙(ADR 0014)으로 `waiting: item.run_s
 | --- | --- | --- | --- | --- | --- |
 | 형제 | dotfiles | awaited_by_consumer | different_repository — 신호·절차·결과줄은 계약 소유 | 없음 | dotfiles-mq6f |
 
+겹침(`stale-rereview-inputs.py` in_flight 3건, 엣지는 걸지 않는다 — 어느 쪽도 상대의 산출물을
+전제하지 않고, 먼저 착지한 쪽 위에 나중 쪽이 rebase한다):
+
+| Bead | 상태 | 공유 경로 | 관계 |
+| --- | --- | --- | --- |
+| `UI-svh6` | open | `lane-model.js`, 카드 문법 스펙 §5.1 | 같은 파일의 다른 절 — svh6는 후보 카드의 『스펙 대기』 예외 칩(슬롯 4a), 이 스펙은 held 타일의 `wait` 투영과 `선행 대기` 라벨(슬롯 1). §5.1 표에 각자 한 단어를 더한다 |
+| `UI-qksl` | in_progress | `scheduler.js`, `queue-store.js`, `attach.js` | 다른 함수 — qksl은 머지 큐의 `review_dispatch` claim·`review-session` 경로, 이 스펙은 `onSessionDone`의 quick_fix 분기·`settleFailureTier`·`settledAttemptFence`. `onSessionDone`은 리뷰 세션을 `failAttempt` 앞에서 분기하므로 `waiting` 판정이 리뷰 attempt에 닿지 않는다 |
+| `UI-8wpb` | in_progress | `scheduler.js`, `failure-class.js`, `queue-store.js`, `attach.js`, `lane-model.js`, `running-grid.js`, `failure-labels.js` | **실제 교차 1곳**: 8wpb §7 "queue.json에 남는 attempt" 집합(`running`·`retry_wait`·`parked`·미dismiss `failed`)과 §5 타임라인 이벤트 어휘에 `waiting`이 들어가야 한다. 나중에 착지하는 쪽이 그 집합에 `waiting`을(8wpb가 먼저면 이 스펙이, 이 스펙이 먼저면 8wpb가) 더하고, 타임라인 이벤트 `attempt_waiting`은 8wpb 이벤트 표의 열 형식을 따른다. 그 밖의 파일은 다른 절이다 |
+
 - 관찰: spec_backed/full_plan 레인의 같은 결말은 PR 검증 경로에서 `session_ended_unresolved`로
   남는다. 계약이 그 레인에도 같은 절차를 적용하므로 같은 판정식을 그 경로의
   `endedWithoutDelivery` 앞에 두는 것이 자연스럽지만, 이 Bead의 출처 둘이 모두 quick_fix라
