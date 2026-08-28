@@ -34,6 +34,7 @@
  * (`worker-pane--src`) precisely so it does not read as one of the four.
  */
 import { html, render } from 'lit-html';
+import { ifDefined } from 'lit-html/directives/if-defined.js';
 import {
   DONE_RANGE_OPTIONS,
   closedRangeSince,
@@ -63,6 +64,7 @@ import {
 } from './candidate-sort.js';
 import { failureSentence } from './failure-labels.js';
 import { createLaneCollapse } from './lane-collapse.js';
+import { createLaneDrag } from './lane-drag.js';
 import { baseException, buildLanes, resolvesConflict } from './lane-model.js';
 import {
   discardCompletionMessage,
@@ -209,46 +211,6 @@ function saveCandidateFilter(filter) {
   } catch {
     /* ignore — a private-mode storage denial must not break the toggle */
   }
-}
-
-/**
- * Apply the two candidate display filters (AND) and report, per control, how
- * many rows THAT control alone is hiding.
- *
- * The per-control count is "rows that would appear if only this control were
- * relaxed" — so a row refused by BOTH filters is counted by neither (relaxing
- * one keeps it hidden, and counting it twice would promise a reveal that does
- * not happen).
- *
- * @template {{ blocked: boolean, has_spec: boolean }} T
- * @param {T[]} rows
- * @param {CandidateFilter} filter
- * @returns {{ visible: T[], hidden_blocked: number, hidden_spec: number }}
- */
-export function applyCandidateFilter(rows, filter) {
-  /** @param {{ blocked: boolean }} row */
-  const blockedPass = (row) => filter.show_blocked || !row.blocked;
-  /** @param {{ has_spec: boolean }} row */
-  const specPass = (row) =>
-    filter.spec === 'all' ||
-    (filter.spec === 'with' ? row.has_spec : !row.has_spec);
-
-  /** @type {T[]} */
-  const visible = [];
-  let hidden_blocked = 0;
-  let hidden_spec = 0;
-  for (const row of rows) {
-    const by_blocked = blockedPass(row);
-    const by_spec = specPass(row);
-    if (by_blocked && by_spec) {
-      visible.push(row);
-    } else if (!by_blocked && by_spec) {
-      hidden_blocked += 1;
-    } else if (by_blocked && !by_spec) {
-      hidden_spec += 1;
-    }
-  }
-  return { visible, hidden_blocked, hidden_spec };
 }
 
 /**
@@ -1455,8 +1417,6 @@ export function createWorkerView(mount_element, options = {}) {
   // 정하고 수동 rank는 Board 탭만 쓴다. 그래서 selectors도 order 인자 없이 만든다.
   const selectors = issueStores ? createListSelectors(issueStores) : null;
 
-  /** @type {{ bead_id: string, from_lane: string }|null} */
-  let dragging = null;
   /**
    * Candidate pane display filter (UI-ki09), restored at view creation.
    *
@@ -1641,6 +1601,41 @@ export function createWorkerView(mount_element, options = {}) {
   console_el.append(top_el, drawer_overlay_el, lanes_el);
   mount_element.appendChild(console_el);
 
+  /**
+   * 지금 그려진 레인 모델과 그것이 나온 스냅샷 원본 (§4.5). 드래그 컨트롤러가
+   * 계획을 세울 때 읽는 두 값이고, `laneModel()`이 한 자리에서 갱신한다.
+   *
+   * @type {LaneModel}
+   */
+  let current_lanes = buildLanes(null, null);
+  /** @type {Array<Record<string, any>>} */
+  let last_workspaces = [];
+
+  /**
+   * 드롭 식별자·계획 실행 컨트롤러 (UI-4tud §4.5). Monitor 탭과 **같은** 모듈이고,
+   * Worker는 연결 레인이 없으므로 `cross_lanes`를 넘기지 않는다 — chain 맵이 비어
+   * 계획기가 chain 타깃을 스스로 거부한다(코드 분기가 아니라 데이터).
+   */
+  const lane_drag = createLaneDrag({
+    transport,
+    console_el,
+    getLanes: () => current_lanes,
+    getWorkspaces: () => last_workspaces,
+    getCrossLanes: () => null,
+    reproject: () => ({ lanes: laneModel(), raw_lanes: null }),
+    onCorrection: () => {},
+    showToast,
+    requestRender: () => doRender(),
+    adoptQueue: (_root_dir, queue) => {
+      if (queueStore) {
+        queueStore.set(queue);
+      }
+    },
+    onDragBegin: () => {
+      place_menu_bead_id = null;
+    }
+  });
+
   /** @type {string|null} Currently open attempt (for the tile ring). */
   let selected_attempt = null;
 
@@ -1770,6 +1765,35 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The workspace coordinate this tab sees. 세션이 고른 하나뿐이라 값이 없을 수
+   * 있고, 그때는 op가 좌표를 싣지 않는다 — 서버가 세션의 선택을 쓴다 (§4.5).
+   *
+   * @returns {string}
+   */
+  function rootDir() {
+    return (getWorkspacePath && getWorkspacePath()) || '';
+  }
+
+  /**
+   * `[대기로 ↴]` 배치 메뉴 한 항목 (§4.5): 계획이 아니라 단일 op이므로 드래그
+   * 컨트롤러의 `sendOp`를 그대로 쓴다. index를 싣지 않는 것이 "맨 뒤에 붙이기"다
+   * (UI-mwju) — 서버 `queue-store.place`가 index 없는 요청을 append로 읽는다.
+   *
+   * @param {string} bead_id
+   * @param {'parallel'|'s1'|'s2'|'s3'|'s4'|'s5'} lane
+   */
+  async function placeAtLaneTail(bead_id, lane) {
+    await lane_drag.sendOp(
+      {
+        type: 'worker-queue-place',
+        payload: { bead_id, ...(lane === 'parallel' ? {} : { lane }) },
+        root_dir: rootDir()
+      },
+      bead_id
+    );
+  }
+
+  /**
    * @returns {number}
    */
   function currentRevision() {
@@ -1786,83 +1810,6 @@ export function createWorkerView(mount_element, options = {}) {
   function adopt(res) {
     if (res && res.queue && queueStore) {
       queueStore.set(res.queue);
-    }
-  }
-
-  /**
-   * The index that appends to the waiting queue for a collapsed-strip drop.
-   *
-   * @returns {number}
-   */
-  function queueTailIndex() {
-    const entries = currentQueue().queue;
-    return Array.isArray(entries) ? entries.length : 0;
-  }
-
-  /**
-   * Place a bead into a waiting lane at an index, retrying ONCE on a CAS
-   * conflict (UI-04vo §5). New entry and cross-lane move share this op.
-   *
-   * @param {string} bead_id
-   * @param {'parallel'|'s1'|'s2'|'s3'|'s4'|'s5'} lane
-   * @param {number} [index]
-   */
-  async function placeBead(bead_id, lane, index) {
-    if (!transport) {
-      return;
-    }
-    const payload = () => ({
-      bead_id,
-      ...(lane === 'parallel' ? {} : { lane }),
-      ...(index === undefined ? {} : { index }),
-      expected_revision: currentRevision()
-    });
-    const res = await transport('worker-queue-place', payload());
-    adopt(res);
-    if (res && res.conflict) {
-      await transport('worker-queue-place', payload()).then(adopt);
-    }
-  }
-
-  /**
-   * @param {string} bead_id
-   * @param {'parallel'|'s1'|'s2'|'s3'|'s4'|'s5'} lane
-   * @param {number} to_index
-   */
-  async function reorderBead(bead_id, lane, to_index) {
-    if (!transport) {
-      return;
-    }
-    const payload = () => ({
-      bead_id,
-      ...(lane === 'parallel' ? {} : { lane }),
-      to_index,
-      expected_revision: currentRevision()
-    });
-    const res = await transport('worker-queue-reorder', payload());
-    adopt(res);
-    if (res && res.conflict) {
-      await transport('worker-queue-reorder', payload()).then(adopt);
-    }
-  }
-
-  /**
-   * @param {string} bead_id
-   */
-  async function removeBead(bead_id) {
-    if (!transport) {
-      return;
-    }
-    const res = await transport('worker-queue-remove', {
-      bead_id,
-      expected_revision: currentRevision()
-    });
-    adopt(res);
-    if (res && res.conflict) {
-      await transport('worker-queue-remove', {
-        bead_id,
-        expected_revision: currentRevision()
-      }).then(adopt);
     }
   }
 
@@ -2581,12 +2528,16 @@ export function createWorkerView(mount_element, options = {}) {
   function laneModel() {
     const done_since = closedRangeSince(done_range);
     const input = adapter.read({ candidate_sort, done_since });
-    return buildLanes(input.workspaces, input.workspaces_state, {
+    // 드롭 계획의 `settledBlockerSources`는 투영이 아니라 이 스냅샷 원본을
+    // 읽는다 (§4.5) — 키가 없으면 "미상"이고, 그때 계획은 dep op를 만들지 않는다.
+    last_workspaces = input.workspaces;
+    current_lanes = buildLanes(input.workspaces, input.workspaces_state, {
       done_since,
       candidate_filter,
       candidate_sort: 'as_given',
       groups: 'all'
     });
+    return current_lanes;
   }
 
   /**
@@ -2746,12 +2697,12 @@ export function createWorkerView(mount_element, options = {}) {
    * 대기 entries의 구성원이 아니므로 드래그도 드롭 인덱스도 갖지 않는다.
    *
    * @param {LaneModel} m
-   * @returns {Array<{ id: string, index: number, rows: any[], occupied: boolean, badge: string, cycle: boolean }>}
+   * @returns {Array<{ id: string, index: number, raw_length: number, ghosts: any[], items: any[], occupied: boolean, badge: string, cycle: boolean }>}
    */
   function serialLanes(m) {
     const facts = waitingFacts();
     return groupOf(m).sublanes.serial.map((lane) => {
-      const ghost_rows = lane.occupants.map((occupant) => ({
+      const ghosts = lane.occupants.map((occupant) => ({
         id: occupant.id,
         title: occupant.title,
         draggable: false,
@@ -2762,10 +2713,9 @@ export function createWorkerView(mount_element, options = {}) {
       return {
         id: lane.id,
         index: lane.index + 1,
-        rows: [
-          ...ghost_rows,
-          ...lane.items.map((item) => waitingRowOf(item, facts))
-        ],
+        raw_length: lane.raw_length,
+        ghosts,
+        items: lane.items.map((item) => waitingRowOf(item, facts)),
         occupied: lane.occupied_by.length > 0,
         badge: lane.occupants.length > 0 ? lane.occupants[0].badge : '대기',
         cycle: lane.cycle === true
@@ -3526,6 +3476,28 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * One 대기 행 shell (UI-4tud §4.5). 드래그 원천 종류·레포·좌표를 DOM에 실어
+   * 드래그 컨트롤러가 행 템플릿을 몰라도 되게 한다 — Monitor `.mon2-item`과 같은
+   * 계약이고, 두 탭이 같은 `lane-drag` 모듈을 쓴다.
+   *
+   * @param {any} item
+   * @param {{ kind: 'parallel'|'repo-serial', root_dir: string, row_index: number, lane_id?: string }} coordinate
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function dragRow(item, coordinate) {
+    return html`<div
+      data-bead-id=${item.id}
+      data-drag-kind=${coordinate.kind}
+      data-root-dir=${coordinate.root_dir}
+      data-lane-id=${ifDefined(coordinate.lane_id)}
+      data-row-index=${coordinate.row_index}
+      data-queue-index=${String(item.queue_index ?? 0)}
+    >
+      ${miniRow(item, { actions: queueRowActions(item) })}
+    </div>`;
+  }
+
+  /**
    * The 대기 pane body (UI-5ksp §4.2): 병렬 영역 하나 + 직렬 영역 하나를 한
    * pane 안에 담는다. 구조는 두 탭이 공유하는 `waitBody`가 소유하고, 여기서는
    * 행과 레인 재료만 만들어 슬롯으로 넘긴다.
@@ -3535,28 +3507,48 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function waitBodyTemplate(m) {
     const parallel_rows = waitingRows(m);
+    const root_dir = rootDir();
     return waitBody({
       parallel: {
-        rows: parallel_rows.map((/** @type {any} */ it) =>
-          miniRow(it, { actions: queueRowActions(it) })
+        rows: parallel_rows.map((/** @type {any} */ it, index) =>
+          dragRow(it, { kind: 'parallel', root_dir, row_index: index })
         ),
         count: parallel_rows.length,
-        collapsed: collapse.isAreaCollapsed('parallel')
+        collapsed: collapse.isAreaCollapsed('parallel'),
+        drop: { drop: 'parallel', root_dir }
       },
       serial: {
         lanes: serialLanes(m).map((lane) => ({
           id: lane.id,
           title: `직렬 ${lane.index}`,
-          rows: lane.rows.map((/** @type {any} */ it) =>
-            miniRow(it, { actions: queueRowActions(it) })
-          ),
-          // 점유 ghost 행도 `rows`의 구성원이므로 건수와 빈 판정을 한 재료로
+          rows: [
+            // 점유 ghost 행은 서버 레인 entries의 구성원이 아니므로 드롭 마커
+            // 에도 서버 인덱스에도 들어가지 않는다 — 좌표 속성을 싣지 않는다.
+            ...lane.ghosts.map((/** @type {any} */ it) =>
+              miniRow(it, { actions: queueRowActions(it) })
+            ),
+            ...lane.items.map((/** @type {any} */ it, index) =>
+              dragRow(it, {
+                kind: 'repo-serial',
+                root_dir,
+                row_index: index,
+                lane_id: lane.id
+              })
+            )
+          ],
+          // 점유 ghost 행도 행 목록의 구성원이므로 건수와 빈 판정을 한 재료로
           // 읽는다 — 점유 중인 레인은 비어 있지 않다.
-          count: lane.rows.length,
-          empty: lane.rows.length === 0,
+          count: lane.ghosts.length + lane.items.length,
+          empty: lane.ghosts.length + lane.items.length === 0,
           badge: lane.badge,
           held: lane.occupied,
-          cycle: lane.cycle
+          cycle: lane.cycle,
+          drop: {
+            drop: 'repo-serial',
+            root_dir,
+            lane_id: lane.id,
+            lane_length: String(lane.raw_length)
+          }
         })),
         collapsed: collapse.isAreaCollapsed('serial')
       }
@@ -3746,186 +3738,6 @@ export function createWorkerView(mount_element, options = {}) {
       doRender();
     });
     unsubscribers.push(stop);
-  }
-
-  // --- Native drag/drop (no library), mirroring board.js conventions. ---
-  /**
-   * The last pointerdown target. dragstart retargets to the draggable ancestor
-   * (the row), so the press target is the only way to tell a row-body drag from
-   * one that started on an interactive child (checkbox, button, link).
-   *
-   * @type {Element|null}
-   */
-  let press_target = null;
-
-  /**
-   * @param {PointerEvent} ev
-   */
-  function onPointerDown(ev) {
-    press_target = ev.target instanceof Element ? ev.target : null;
-  }
-
-  /**
-   * @param {DragEvent} ev
-   */
-  function onDragStart(ev) {
-    const target = /** @type {HTMLElement} */ (ev.target);
-    const el = /** @type {HTMLElement|null} */ (
-      target?.closest?.(
-        '.worker-mini[draggable="true"], .worker-card[draggable="true"]'
-      )
-    );
-    if (!el) {
-      return;
-    }
-    // 인터랙티브 자식에서 시작한 드래그는 행 이동이 아니라 오조작이다 — 상태
-    // 없는 유령 드래그가 남지 않도록 취소한다 (#124가 grip 전용화로 지키던
-    // 체크박스 보호를, 행 전체 드래그로 되돌리면서 이 판정으로 유지).
-    if (
-      press_target &&
-      el.contains(press_target) &&
-      press_target.closest('input, button, a')
-    ) {
-      ev.preventDefault();
-      return;
-    }
-    const bead_id = el.dataset.beadId || '';
-    const from_lane = el.dataset.lane || '';
-    dragging = { bead_id, from_lane };
-    // ≤640px에서 접혀 있던 빈 직렬 레인을 드롭 타깃으로 되살린다 (§4.3) —
-    // 표시 조건은 CSS 한 곳이 소유하고, 여기서는 "지금 드래그 중"만 말한다.
-    console_el.classList.add('is-dragging');
-    try {
-      ev.dataTransfer?.setData('text/plain', bead_id);
-      if (ev.dataTransfer) {
-        ev.dataTransfer.effectAllowed = 'move';
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-
-  /**
-   * @param {DragEvent} ev
-   */
-  function onDragOver(ev) {
-    const pane = /** @type {HTMLElement|null} */ (
-      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-pane')
-    );
-    if (!pane) {
-      return;
-    }
-    // Only the panes a drop actually mutates accept one — the parallel waiting
-    // lane and the serial lanes. 후보 레인은 드롭 대상이 아니다 (UI-d13v §6):
-    // 순서를 만드는 것은 정렬 체인이고, 대기에서 후보로 되돌리는 것은 대기 행의
-    // `✕`다. 실행 중/PR 대기/완료 are observation columns — the server puts beads
-    // there — so they must not light up as drop targets and then silently
-    // swallow the drag.
-    const lane = pane.dataset.lane || '';
-    if (lane !== 'queue' && !/^s[1-5]$/.test(lane)) {
-      return;
-    }
-    ev.preventDefault();
-    if (ev.dataTransfer) {
-      ev.dataTransfer.dropEffect = 'move';
-    }
-    pane.classList.add('worker-pane--drag-over');
-  }
-
-  /**
-   * @param {DragEvent} ev
-   */
-  function onDragLeave(ev) {
-    const pane = /** @type {HTMLElement|null} */ (
-      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-pane')
-    );
-    pane?.classList.remove('worker-pane--drag-over');
-  }
-
-  /**
-   * Drop이든 취소든 드래그가 끝나면 ≤640px의 빈 직렬 레인은 다시 힌트 한 줄로
-   * 접힌다 (§4.3).
-   */
-  function onDragEnd() {
-    console_el.classList.remove('is-dragging');
-  }
-
-  /**
-   * @param {DragEvent} ev
-   */
-  function onDrop(ev) {
-    const pane = /** @type {HTMLElement|null} */ (
-      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-pane')
-    );
-    if (!pane) {
-      return;
-    }
-    ev.preventDefault();
-    pane.classList.remove('worker-pane--drag-over');
-    console_el.classList.remove('is-dragging');
-    const to_lane = pane.dataset.lane || '';
-    const bead_id =
-      dragging?.bead_id || ev.dataTransfer?.getData('text/plain') || '';
-    const from_lane = dragging?.from_lane || '';
-    dragging = null;
-    if (!bead_id) {
-      return;
-    }
-
-    // Drop index = position of the row under the cursor, else append. Candidate
-    // rows are `.worker-card`, queue rows are `.worker-mini` — match both.
-    const over = /** @type {HTMLElement|null} */ (
-      /** @type {HTMLElement} */ (ev.target)?.closest?.(
-        '.worker-mini, .worker-card'
-      )
-    );
-    // 대기 pane은 병렬 행과 직렬 레인 pane을 함께 품으므로 (UI-5ksp §4.2)
-    // 인덱스를 pane 전체에서 세면 직렬 행까지 딸려 들어온다. 세는 자리는 그
-    // 드롭이 실제로 바꾸는 목록 하나다.
-    const row_host =
-      to_lane === 'queue'
-        ? pane.querySelector(
-            '.worker-wait__area--parallel > .worker-wait__area-body'
-          ) || pane
-        : pane;
-    const minis = Array.from(
-      row_host.querySelectorAll('.worker-mini, .worker-card')
-    );
-    let index = minis.length;
-    if (over) {
-      const i = minis.indexOf(over);
-      if (i >= 0) {
-        index = i;
-      }
-    }
-    // ghost 점유 행은 대기 entries의 구성원이 아니므로 서버 인덱스에서 뺀다.
-    index = Math.max(
-      0,
-      index - row_host.querySelectorAll('.worker-mini--ghost').length
-    );
-    // 접힌 스트립은 행을 하나도 그리지 않으므로 위 계산이 0(=큐 맨 앞)을 낸다.
-    // 스트립에 떨어뜨린 사람이 원한 것은 "대기에 넣기"이지 "다음으로 실행"이
-    // 아니므로, 버튼과 같은 큐 말미 의미로 맞춘다 (UI-58y2 §모바일 3).
-    if (pane.classList.contains('worker-pane--collapsed')) {
-      index = queueTailIndex();
-    }
-
-    // 병렬(`queue`) ↔ 직렬(`s1`..`s5`) 공용 드롭 (UI-04vo §4): 같은 레인 안은
-    // reorder, 레인이 다르면 place가 원 레인 제거 + 삽입을 한 번에 한다. ghost
-    // 점유 행은 draggable=false라 여기 도달하지 않는다.
-    if (to_lane === 'queue' || /^s[1-5]$/.test(to_lane)) {
-      const target_lane = /** @type {any} */ (
-        to_lane === 'queue' ? 'parallel' : to_lane
-      );
-      if (from_lane === to_lane) {
-        void reorderBead(bead_id, target_lane, index);
-      } else {
-        // 레인에 처음 들어오는 드롭은 index를 보내지 않는다 (UI-mwju): 후보
-        // 카드의 [대기로 ↴]/배치 메뉴와 같은 "맨 뒤에 붙이기" 의미로 맞춘다.
-        // 서버 `queue-store.place`는 index가 없으면 append한다.
-        void placeBead(bead_id, target_lane);
-      }
-    }
   }
 
   /**
@@ -4405,7 +4217,7 @@ export function createWorkerView(mount_element, options = {}) {
       if (id && (lane === 'parallel' || /^s[1-5]$/.test(lane || ''))) {
         place_menu_bead_id = null;
         doRender();
-        void placeBead(
+        void placeAtLaneTail(
           id,
           /** @type {'parallel'|'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane)
         );
@@ -4435,7 +4247,7 @@ export function createWorkerView(mount_element, options = {}) {
           place_menu_bead_id = id;
           doRender();
         } else {
-          void placeBead(id, 'parallel');
+          void placeAtLaneTail(id, 'parallel');
         }
       }
       return;
@@ -4460,7 +4272,14 @@ export function createWorkerView(mount_element, options = {}) {
     if (queueRemoveBtn) {
       const bead_id = queueRemoveBtn.dataset.beadId || '';
       if (bead_id) {
-        void removeBead(bead_id);
+        void lane_drag.sendOp(
+          {
+            type: 'worker-queue-remove',
+            payload: { bead_id },
+            root_dir: rootDir()
+          },
+          bead_id
+        );
       }
       return;
     }
@@ -4753,15 +4572,7 @@ export function createWorkerView(mount_element, options = {}) {
     }
   }
 
-  mount_element.addEventListener(
-    'pointerdown',
-    /** @type {any} */ (onPointerDown)
-  );
-  mount_element.addEventListener('dragstart', /** @type {any} */ (onDragStart));
-  mount_element.addEventListener('dragover', /** @type {any} */ (onDragOver));
-  mount_element.addEventListener('dragleave', /** @type {any} */ (onDragLeave));
-  mount_element.addEventListener('dragend', /** @type {any} */ (onDragEnd));
-  mount_element.addEventListener('drop', /** @type {any} */ (onDrop));
+  lane_drag.attach(mount_element);
   mount_element.addEventListener('click', /** @type {any} */ (onClick));
   mount_element.addEventListener('change', /** @type {any} */ (onChange));
 
@@ -4860,27 +4671,7 @@ export function createWorkerView(mount_element, options = {}) {
           /* ignore */
         }
       }
-      mount_element.removeEventListener(
-        'pointerdown',
-        /** @type {any} */ (onPointerDown)
-      );
-      mount_element.removeEventListener(
-        'dragstart',
-        /** @type {any} */ (onDragStart)
-      );
-      mount_element.removeEventListener(
-        'dragover',
-        /** @type {any} */ (onDragOver)
-      );
-      mount_element.removeEventListener(
-        'dragleave',
-        /** @type {any} */ (onDragLeave)
-      );
-      mount_element.removeEventListener(
-        'dragend',
-        /** @type {any} */ (onDragEnd)
-      );
-      mount_element.removeEventListener('drop', /** @type {any} */ (onDrop));
+      lane_drag.detach();
       mount_element.removeEventListener('click', /** @type {any} */ (onClick));
       mount_element.removeEventListener(
         'change',

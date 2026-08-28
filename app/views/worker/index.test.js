@@ -5,7 +5,6 @@ import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import {
   activityBadge,
-  applyCandidateFilter,
   autoResolutionBadge,
   createWorkerView,
   mergeFailureText,
@@ -208,7 +207,9 @@ function queueOf(over = {}) {
 }
 
 /**
- * Simulate a native drag of a mini row into a target pane.
+ * Simulate a native drag of a mini row into a target pane. 드롭은 그 pane이
+ * 소유한 `[data-drop]` 영역에 떨어진다 (UI-4tud §4.5) — 접힌 pane은 본문을
+ * 그리지 않으므로 pane 자신이 타깃이다.
  *
  * @param {HTMLElement} mount
  * @param {string} bead_id
@@ -239,9 +240,12 @@ function drag(mount, bead_id, pane_id) {
   row.dispatchEvent(ds);
 
   const pane = /** @type {HTMLElement} */ (mount.querySelector(`#${pane_id}`));
+  const zone = /** @type {HTMLElement} */ (
+    pane.querySelector('[data-drop]') || pane
+  );
   const drop = new Event('drop', { bubbles: true, cancelable: true });
   Object.defineProperty(drop, 'dataTransfer', { value: dt });
-  pane.dispatchEvent(drop);
+  zone.dispatchEvent(drop);
 }
 
 async function flush() {
@@ -834,13 +838,14 @@ describe('views/worker', () => {
       transport
     });
 
-    // Drop B onto the queue pane (append) — same lane → reorder.
-    drag(mount, 'B', 'worker-pane-queue');
+    // Drop A at the parallel tail — same lane → reorder. (마지막 행을 말미에
+    // 놓는 것은 제자리라 op가 없다: 움직인 행만 op를 낸다.)
+    drag(mount, 'A', 'worker-pane-queue');
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-reorder', {
-      bead_id: 'B',
-      to_index: 2,
+      bead_id: 'A',
+      to_index: 1,
       expected_revision: 3
     });
   });
@@ -5602,96 +5607,6 @@ describe('worker view — failed tile decision surface (UI-rj02)', () => {
     );
 
     expect(mount.querySelector('.rtile[data-attempt-id="f1"]')).not.toBeNull();
-  });
-});
-
-describe('candidate display filter — projection (UI-ki09)', () => {
-  /**
-   * @param {string} id
-   * @param {boolean} blocked
-   * @param {boolean} has_spec
-   */
-  const row = (id, blocked, has_spec) => ({ id, blocked, has_spec });
-
-  /** All four blocked × spec combinations. */
-  const rows = [
-    row('RS', false, true),
-    row('RN', false, false),
-    row('BS', true, true),
-    row('BN', true, false)
-  ];
-
-  /** @param {any[]} out */
-  const ids = (out) => out.map((r) => r.id);
-
-  test('hides blocked rows by default', () => {
-    const out = applyCandidateFilter(rows, {
-      show_blocked: false,
-      spec: 'all'
-    });
-
-    expect(ids(out.visible)).toEqual(['RS', 'RN']);
-    expect(out.hidden_blocked).toBe(2);
-    expect(out.hidden_spec).toBe(0);
-  });
-
-  test('shows blocked rows once the toggle is on', () => {
-    const out = applyCandidateFilter(rows, { show_blocked: true, spec: 'all' });
-
-    expect(ids(out.visible)).toEqual(['RS', 'RN', 'BS', 'BN']);
-    expect(out.hidden_blocked).toBe(0);
-  });
-
-  test('keeps only spec-carrying rows under the spec 있음 filter', () => {
-    const out = applyCandidateFilter(rows, {
-      show_blocked: true,
-      spec: 'with'
-    });
-
-    expect(ids(out.visible)).toEqual(['RS', 'BS']);
-    expect(out.hidden_spec).toBe(2);
-  });
-
-  test('keeps only spec-less rows under the spec 없음 filter', () => {
-    const out = applyCandidateFilter(rows, {
-      show_blocked: true,
-      spec: 'without'
-    });
-
-    expect(ids(out.visible)).toEqual(['RN', 'BN']);
-    expect(out.hidden_spec).toBe(2);
-  });
-
-  test('combines the two filters with AND', () => {
-    const out = applyCandidateFilter(rows, {
-      show_blocked: false,
-      spec: 'with'
-    });
-
-    expect(ids(out.visible)).toEqual(['RS']);
-  });
-
-  test('counts a row refused by both filters in neither control count', () => {
-    const out = applyCandidateFilter(rows, {
-      show_blocked: false,
-      spec: 'with'
-    });
-
-    // BN fails BOTH — relaxing either one alone still hides it.
-    expect(out.hidden_blocked).toBe(1);
-    expect(out.hidden_spec).toBe(1);
-    expect(out.visible.length + out.hidden_blocked + out.hidden_spec).toBe(3);
-  });
-
-  test('returns every row when nothing is filtered out', () => {
-    const out = applyCandidateFilter([row('RS', false, true)], {
-      show_blocked: false,
-      spec: 'all'
-    });
-
-    expect(ids(out.visible)).toEqual(['RS']);
-    expect(out.hidden_blocked).toBe(0);
-    expect(out.hidden_spec).toBe(0);
   });
 });
 
@@ -13641,10 +13556,13 @@ describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
     const transport = vi.fn().mockResolvedValue({ ok: true });
     const mount = mountDesktop(
       {
-        queue: [{ bead_id: 'QQ-1', added_at: 1 }],
+        queue: [
+          { bead_id: 'QQ-1', added_at: 1 },
+          { bead_id: 'QQ-2', added_at: 2 }
+        ],
         serial_lane_count: 1,
         serial_lanes: [
-          { id: 's1', entries: [{ bead_id: 'SQ-1', added_at: 2 }] }
+          { id: 's1', entries: [{ bead_id: 'SQ-1', added_at: 3 }] }
         ],
         lane_states: {
           s1: { occupied_by: [], order: ['SQ-1'], corrections: [] }
@@ -13653,10 +13571,15 @@ describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
       transport
     );
 
+    const zone = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-queue [data-drop="parallel"]')
+    );
     drag(mount, 'QQ-1', 'worker-pane-queue');
     await flush();
 
-    // 직렬 행(SQ-1)까지 셌다면 2가 됐을 것이다 — 세는 자리는 병렬 영역 하나다.
+    // 직렬 행(SQ-1)은 자기 레인의 드롭 영역에 산다 — 병렬 영역이 세는 행은
+    // 병렬 행 둘뿐이므로 말미는 2가 아니라 1이다.
+    expect(zone.querySelectorAll('[data-row-index]').length).toBe(2);
     expect(transport).toHaveBeenCalledWith('worker-queue-reorder', {
       bead_id: 'QQ-1',
       to_index: 1,
