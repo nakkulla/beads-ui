@@ -3780,10 +3780,131 @@ describe('judgementPopoverContent (UI-8x90 §4.5)', () => {
     expect(content?.lines).toEqual(['빠진 항목 없음']);
   });
 
+  test('names the blockers the spec is waiting on', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-a',
+        spec_after_blocker: true,
+        blocked_by: ['UI-b', 'UI-c']
+      }),
+      'spec_after_blocker'
+    );
+
+    expect(content).toEqual({
+      title: '선행 결과가 설계 전제 — 스펙도 선행 뒤에',
+      lines: [
+        '선행: UI-b · UI-c',
+        '선행이 닫히면 이 표시는 저절로 사라진다 — 라벨은 이슈 상세의 라벨 절에서 뗀다'
+      ]
+    });
+  });
+
+  test('answers null when the 스펙 대기 judgement is absent', () => {
+    expect(
+      judgementPopoverContent(
+        /** @type {any} */ ({ id: 'UI-a', blocked_by: ['UI-b'] }),
+        'spec_after_blocker'
+      )
+    ).toBeNull();
+  });
+
   test('answers null when the chip has no material', () => {
     expect(
       judgementPopoverContent(/** @type {any} */ ({ id: 'UI-a' }), 'rec')
     ).toBeNull();
+  });
+});
+
+describe('스펙 대기 칩 (UI-svh6 §4.3)', () => {
+  test('draws the chip right after the ⛓ chip on the dependency line', () => {
+    const card = renderCandidate({
+      spec_after_blocker: true,
+      blocked_by: ['UI-b'],
+      dependency_chips: /** @type {any} */ ({
+        predecessors: [{ id: 'UI-b', label: '⛓ UI-b' }],
+        dependents: [{ id: 'UI-c', label: '→ UI-c' }]
+      })
+    });
+    const primary = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-deps--primary')
+    );
+
+    expect(
+      Array.from(primary.children, (child) => child.textContent?.trim())
+    ).toEqual(['⛓ UI-b', '스펙 대기', '→ UI-c']);
+  });
+
+  test('turns the chip into a 판정 button that opens a 사유 popup', () => {
+    const card = renderCandidate({
+      spec_after_blocker: true,
+      blocked_by: ['UI-b'],
+      dependency_chips: /** @type {any} */ ({
+        predecessors: [{ id: 'UI-b', label: '⛓ UI-b' }]
+      })
+    });
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__spec-after-blocker')
+    );
+
+    expect([
+      chip.tagName,
+      chip.classList.contains('judgement-chip'),
+      chip.dataset.chipKey,
+      chip.getAttribute('aria-expanded')
+    ]).toEqual(['BUTTON', true, 'spec_after_blocker', 'false']);
+  });
+
+  test('keeps the 세션 권장 chip on the head line beside it', () => {
+    const card = renderCandidate({
+      spec_after_blocker: true,
+      blocked_by: ['UI-b'],
+      session_preferred: true,
+      session_preferred_reason: 'exclusive_machine',
+      dependency_chips: /** @type {any} */ ({
+        predecessors: [{ id: 'UI-b', label: '⛓ UI-b' }]
+      })
+    });
+
+    expect([
+      !!card.querySelector(
+        '.worker-card__head .worker-card__session-preferred'
+      ),
+      !!card.querySelector(
+        '.worker-deps--primary .worker-card__spec-after-blocker'
+      )
+    ]).toEqual([true, true]);
+  });
+
+  test('omits the chip on a candidate without the judgement', () => {
+    const card = renderCandidate({
+      dependency_chips: /** @type {any} */ ({
+        predecessors: [{ id: 'UI-b', label: '⛓ UI-b' }]
+      })
+    });
+
+    expect(card.querySelector('.worker-card__spec-after-blocker')).toBeNull();
+  });
+
+  test('opens the 사유 popup on the dependency line, not the head line', () => {
+    const card = renderCandidate({
+      spec_after_blocker: true,
+      blocked_by: ['UI-b'],
+      chip_popover: /** @type {any} */ ({
+        chip_key: 'spec_after_blocker',
+        content: {
+          title: '선행 결과가 설계 전제 — 스펙도 선행 뒤에',
+          lines: []
+        }
+      }),
+      dependency_chips: /** @type {any} */ ({
+        predecessors: [{ id: 'UI-b', label: '⛓ UI-b' }]
+      })
+    });
+
+    expect([
+      !!card.querySelector('.worker-deps--primary .chip-popover'),
+      !!card.querySelector('.worker-card__head .chip-popover')
+    ]).toEqual([true, false]);
   });
 });
 

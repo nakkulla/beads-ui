@@ -17,6 +17,7 @@ import { debug } from '../../utils/logging.js';
 import { coerceTimestampMs } from '../../utils/relative-time.js';
 import { parseReport } from '../../utils/report-marker.js';
 import { sessionPreferredReason } from '../../utils/session-preferred.js';
+import { specAfterBlockerActive } from '../../utils/spec-after-blocker.js';
 import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
 import { IMPL_PRESET_KEYS } from '../settings-dialog/session-model.js';
 import { blockerIdsOf } from './blocker-ids.js';
@@ -456,6 +457,10 @@ export function createWorkspaceAdapter(options = {}) {
         worker_ineligible,
         session_preferred: session_preferred_reason.length > 0,
         session_preferred_reason,
+        // 예외 라벨 `spec-after-blocker` (UI-svh6 §4.2). 계약이 이 라벨을
+        // `effective_only_while: dependency_unsatisfied`로 두므로 판정은 라벨과
+        // 지금의 blocker를 함께 읽는다 — 자격에는 들어가지 않는다.
+        spec_after_blocker: specAfterBlockerActive(it.labels, blocker_ids),
         // UI-d13v 재료는 서버 Ready/Blocked 장식을 그대로 전달한다.
         release_info: it.release_info,
         dependents_info: it.dependents_info

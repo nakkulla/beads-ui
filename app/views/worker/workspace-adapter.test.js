@@ -325,6 +325,45 @@ describe('worker workspace adapter', () => {
     expect(row.eligible).toBe(true);
   });
 
+  test('carries the 스펙 대기 judgement on a blocked candidate', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:blocked', [
+      {
+        id: 'WAIT',
+        title: 'spec waits',
+        labels: ['spec-after-blocker'],
+        spec_id: 'SPEC-1',
+        metadata: { spec_review: RECEIPT },
+        blocked_info: { blockers: ['DEP-9'] }
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .runnable[0];
+
+    expect(row.spec_after_blocker).toBe(true);
+  });
+
+  test('drops the 스펙 대기 judgement once the candidate is ready', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'WAIT',
+        title: 'spec waits',
+        labels: ['spec-after-blocker'],
+        spec_id: 'SPEC-1',
+        metadata: { spec_review: RECEIPT }
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .runnable[0];
+
+    expect(row.spec_after_blocker).toBe(false);
+  });
+
   test('extracts only the execution pin keys from the issue metadata', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:ready', [
