@@ -8337,7 +8337,7 @@ describe('scheduler already-finished verify verdict (UI-b8n8 §접근 B)', () =>
 describe('scheduler quick_fix landing settlement', () => {
   /**
    * @param {any} store
-   * @param {'branch_cleanup'|'parent_close'} cursor
+   * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|null} cursor
    * @param {string} reason
    */
   function seedQuickfixCleanupFailure(store, cursor, reason) {
@@ -8534,6 +8534,104 @@ describe('scheduler quick_fix landing settlement', () => {
     expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual([
       'quickfix-cleanup'
     ]);
+  });
+
+  test('settles an unobservable containment failure without a new attempt', async () => {
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    const settle = vi.fn(async ({ attempt_id, bead_id }) => {
+      env.store.moveToDone(WS, {
+        bead_id,
+        attempt_id,
+        patch: { status: 'done', finished_at: 1000 }
+      });
+      return { ok: true };
+    });
+    env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      quickfixLanding: { settle }
+    });
+    env.worktree.exists.mockReturnValue(false);
+    seedQuickfixCleanupFailure(
+      env.store,
+      'base_containment',
+      'containment_unobservable'
+    );
+
+    const result = await env.scheduler.resume(WS, 'quickfix-cleanup');
+
+    expect(result).toEqual({ ok: true, attempt_id: 'quickfix-cleanup' });
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual([
+      'quickfix-cleanup'
+    ]);
+  });
+
+  test('sends an uncontained push on the same cursor down the session re-run path', async () => {
+    const settle = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      quickfixLanding: { settle }
+    });
+    env.worktree.exists.mockReturnValue(false);
+    seedQuickfixCleanupFailure(
+      env.store,
+      'base_containment',
+      'push_not_contained'
+    );
+
+    const result = await env.scheduler.resume(WS, 'quickfix-cleanup');
+
+    expect(result).toEqual({ ok: false, reason: 'worktree_missing' });
+    expect(settle).not.toHaveBeenCalled();
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual([
+      'quickfix-cleanup'
+    ]);
+  });
+
+  test('settles a coordinator repo-operation failure the reason union does not name', async () => {
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    const settle = vi.fn(async ({ attempt_id, bead_id }) => {
+      env.store.moveToDone(WS, {
+        bead_id,
+        attempt_id,
+        patch: { status: 'done', finished_at: 1000 }
+      });
+      return { ok: true };
+    });
+    env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      quickfixLanding: { settle }
+    });
+    env.worktree.exists.mockReturnValue(false);
+    seedQuickfixCleanupFailure(
+      env.store,
+      'repo_operations',
+      'remote_history_not_monotonic'
+    );
+
+    const result = await env.scheduler.resume(WS, 'quickfix-cleanup');
+
+    expect(result).toEqual({ ok: true, attempt_id: 'quickfix-cleanup' });
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('sends a cursorless session-natured failure down the session re-run path', async () => {
+    const settle = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      quickfixLanding: { settle }
+    });
+    env.worktree.exists.mockReturnValue(false);
+    seedQuickfixCleanupFailure(env.store, null, 'premature_close');
+
+    const result = await env.scheduler.resume(WS, 'quickfix-cleanup');
+
+    expect(result).toEqual({ ok: false, reason: 'worktree_missing' });
+    expect(settle).not.toHaveBeenCalled();
   });
 
   test('keeps failed cleanup resume on the original durable cursor', async () => {

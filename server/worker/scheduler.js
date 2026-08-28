@@ -50,6 +50,7 @@ import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
+import { resumeKindOf } from '../../app/utils/quickfix-resume-kind.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
@@ -6381,13 +6382,20 @@ export function createScheduler(deps) {
     }
     const bead_id = prior.bead_id;
     const repo = typeof prior.repo === 'string' ? prior.repo : '';
+    // Which resume a failed quick_fix landing gets is decided by the FAILURE
+    // REASON, never by the settlement cursor (UI-8h1x §3.2). The same cursor
+    // carries opposite-natured failures — `base_containment` holds both
+    // `push_not_contained` (the session still has work) and
+    // `containment_unobservable` (only the observation failed) — so the cursor
+    // was an approximation that broke on foreign landings. The cursor stays a
+    // durable progress record (progress display and the `head_sha` bind); it
+    // is simply out of the judgment.
     const quickfix_cleanup_resume =
       prior.status === 'failed' &&
       prior.quickfix_lane === true &&
       typeof prior.quickfix_landing?.reason === 'string' &&
       prior.quickfix_landing.reason.length > 0 &&
-      (prior.quickfix_landing.cursor === 'branch_cleanup' ||
-        prior.quickfix_landing.cursor === 'parent_close');
+      resumeKindOf(prior.quickfix_landing) === 'settlement';
     // worktree_missing: the bead worktree is gone (resume never recreates it).
     const wt_present =
       typeof deps.worktree.exists === 'function'

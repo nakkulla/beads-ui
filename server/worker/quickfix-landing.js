@@ -185,7 +185,7 @@ export function createQuickfixLanding(deps) {
    * disagree about which receipt is admissible.
    *
    * @param {string} bead_id
-   * @returns {Promise<{ ok: true, sha: string }|{ ok: false, reason: 'invalid_impl_review'|'impl_review_missing' }>}
+   * @returns {Promise<{ ok: true, sha: string }|{ ok: false, reason: 'invalid_impl_review'|'impl_review_missing'|'bd_read_failed' }>}
    */
   async function readReceipt(bead_id) {
     /** @type {string|null} */
@@ -194,7 +194,11 @@ export function createQuickfixLanding(deps) {
       receipt = await deps.bd.readMetadata(bead_id, 'impl_review');
     } catch (err) {
       log('quick_fix impl_review readback failed for %s: %o', bead_id, err);
-      return { ok: false, reason: 'invalid_impl_review' };
+      // A read OUTAGE is environmental, not a malformed receipt (UI-8h1x
+      // §3.1.1). Recording it as `invalid_impl_review` would send a transient
+      // bd failure down the session re-run branch; only a FORMAT error keeps
+      // that token.
+      return { ok: false, reason: 'bd_read_failed' };
     }
     const trimmed = typeof receipt === 'string' ? receipt.trim() : '';
     if (trimmed.length === 0) {
@@ -251,7 +255,9 @@ export function createQuickfixLanding(deps) {
         reason:
           receipt.reason === 'impl_review_missing'
             ? 'delivery_unproven:impl_review_missing'
-            : 'invalid_impl_review'
+            : // A read outage keeps its own token so the resume judgment sees
+              // an environmental failure, not a malformed receipt (§3.1.1).
+              receipt.reason
       };
     }
     // The LAST base-destined line is the landing: a lane that pushed twice
@@ -749,8 +755,17 @@ export function createQuickfixLanding(deps) {
         // The ordinary path keeps ONE receipt reason: on a bead the session
         // itself resolved, an absent receipt and a malformed one are the same
         // contract failure, and splitting them now would rename a token the
-        // failure vocabulary already carries.
-        return fail(attempt_id, 'invalid_impl_review', null, null);
+        // failure vocabulary already carries. A read OUTAGE is not one of the
+        // two — it keeps `bd_read_failed` so the resume judgment reads it as
+        // environmental (§3.1.1).
+        return fail(
+          attempt_id,
+          receipt.reason === 'bd_read_failed'
+            ? 'bd_read_failed'
+            : 'invalid_impl_review',
+          null,
+          null
+        );
       }
       receipt_head_sha = receipt.sha;
     }

@@ -30,6 +30,7 @@ import {
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
 import { recSettings } from '../../utils/rec-settings.js';
 import { overlapPrefixes } from '../../utils/scope-overlap.js';
 import {
@@ -480,15 +481,22 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
     const started_at = state.started_at;
     const has_session =
       typeof a.session_id === 'string' && a.session_id.length > 0;
+    // 정산 재개는 서버에서 세션 ID도 워크트리도 요구하지 않으므로 (UI-8h1x
+    // §3.2·§3.3b) `has_session`은 세션 재실행일 때만 조건이다. 반대로
+    // `resumed_from_ids` 검사는 세션 유무와 무관한 중복 방지라 두 경우 모두
+    // 유지한다.
+    const resume_kind = resumeKindOf(a.quickfix_landing);
+    const session_required = resume_kind === 'session';
     const resume_eligible =
       run_state !== 'running' &&
-      has_session &&
+      (has_session || !session_required) &&
       !resumed_from_ids.has(a.attempt_id);
-    const resume_reason = !has_session
-      ? 'session_id 없는 구 attempt — 이어하기 불가'
-      : resumed_from_ids.has(a.attempt_id)
-        ? '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
-        : null;
+    const resume_reason =
+      !has_session && session_required
+        ? 'session_id 없는 구 attempt — 이어하기 불가'
+        : resumed_from_ids.has(a.attempt_id)
+          ? '이미 이어받은 attempt (child attempt 존재) — 이어하기 불가'
+          : null;
     const observed = objectOf(input.observations?.[bead_id]);
     const observed_pr = objectOf(observed.pr);
     const merged =

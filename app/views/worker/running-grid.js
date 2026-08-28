@@ -12,6 +12,7 @@
  */
 import { html } from 'lit-html';
 import { formatContinuationLineage } from '../../utils/attempt-display.js';
+import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
 import { formatRelativeTime } from '../../utils/relative-time.js';
 import { sessionRefLabel } from '../../utils/session-ref.js';
 import {
@@ -806,6 +807,15 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 세션 타일의 수정 시각은 활동 줄이 "갱신 n 전"으로 이미 말한다 (§6) —
   // 같은 사실을 두 줄로 쓰지 않는다.
   const times_el = session ? '' : timesMeta(tile);
+  // 실패 타일의 재개 버튼이 무엇을 하는지는 착지 실패 사유가 정한다 (UI-8h1x
+  // §3.3a). 보이는 문구만 바꾸면 보조기술과 툴팁이 계속 "같은 세션"이라고 잘못
+  // 안내하므로 셋을 함께 분기한다.
+  const resume_kind = resumeKindOf(failure?.quickfix_landing);
+  const resume_label = resume_kind === 'settlement' ? '정산 재개' : '이어하기';
+  const resume_title =
+    resume_kind === 'settlement'
+      ? '착지 정산을 다시 실행'
+      : '같은 세션으로 이어서 진행';
   const discard_button =
     tile.discard?.action && !(failed && failure?.landed === true)
       ? html`<button
@@ -856,13 +866,14 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
             ? html`<button
                   type="button"
                   class="rtile__resume"
+                  data-resume-kind=${resume_kind}
                   ?disabled=${failure?.resume_eligible === false}
                   title=${failure?.resume_eligible === false
-                    ? failure.resume_reason || '이어하기 불가'
-                    : '같은 세션으로 이어서 진행'}
-                  aria-label="이어하기"
+                    ? failure.resume_reason || `${resume_label} 불가`
+                    : resume_title}
+                  aria-label=${resume_label}
                 >
-                  ↻ 이어하기
+                  ↻ ${resume_label}
                 </button>
                 ${discard_button}`
             : html`<button
