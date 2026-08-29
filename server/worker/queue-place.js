@@ -100,13 +100,22 @@ export async function placeBeadInQueue(workspace_key, input) {
     // Persist the refusal so the candidate badge renders it for EVERY client
     // (the reply-only admission_reason was droppable — implementation review
     // 2026-07-22 finding 4).
+    let recorded = false;
     try {
-      queueStore().recordAdmission(workspace_key, { bead_id, reason });
+      recorded = queueStore().recordAdmission(workspace_key, {
+        bead_id,
+        reason
+      }).ok;
     } catch (err) {
       log('admission record failed for %s/%s: %o', workspace_key, bead_id, err);
     }
     const snap = queueStore().snapshot(workspace_key);
-    fanout(workspace_key, snap);
+    // A REPEATED identical refusal is a no-op write (`recordAdmission` reports
+    // `ok:false` without bumping the revision), and so is a throwing one: the
+    // fanout obligation is owned by the branches that CHANGED the queue.
+    if (recorded) {
+      fanout(workspace_key, snap);
+    }
     return {
       applied: false,
       conflict: false,

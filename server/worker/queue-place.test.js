@@ -111,6 +111,25 @@ test('fans the refusal snapshot out exactly once', async () => {
   });
 });
 
+test('fans nothing out when the identical refusal is already recorded', async () => {
+  __setUnattachedAdmissionCheckForTest(async () => ({
+    ok: false,
+    reason: 'worker_ineligible'
+  }));
+  await placeBeadInQueue(WS, { bead_id: 'UI-a', expected_revision: 0 });
+  const before = snapshot().revision;
+  state.fanout_calls = [];
+
+  const outcome = await placeBeadInQueue(WS, {
+    bead_id: 'UI-a',
+    expected_revision: 0
+  });
+
+  expect(outcome.admission_reason).toBe('worker_ineligible');
+  expect(snapshot().revision).toBe(before);
+  expect(state.fanout_calls).toEqual([]);
+});
+
 test('degrades a throwing admission check to a git_error refusal', async () => {
   __setUnattachedAdmissionCheckForTest(async () => {
     throw new Error('git exploded');
