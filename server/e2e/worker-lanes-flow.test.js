@@ -330,6 +330,8 @@ describe('worker lanes — 은퇴 심볼 부재 (UI-04vo Phase 9)', PURE, () => 
       'rebuildPendingSerial',
       'refreshPendingSerial',
       'convergeWorkerSerialLabel',
+      'isWorkerSerial',
+      'WORKER_SERIAL_LABEL',
       'setPrWaitHoldsSlot',
       'worker-queue-set-pr-wait-hold'
     ];

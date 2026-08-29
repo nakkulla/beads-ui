@@ -185,8 +185,8 @@ The `session-preferred` label is ADVISORY and, unlike `worker-ineligible`, never
 removes a row from the runnable verdict — `qualify()` in
 `server/worker/runnable-cache.js` does not read it. It is valid only when the
 paired `session_preferred_reason` metadata is inside the contract enum
-(`exclusive_machine`, `iterative_user_judgment`, `visual_verification`), and it
-loses to `worker-ineligible` in display: a row carrying both draws the
+(`external_roundtrip`, `user_feedback_loop`), and it loses to
+`worker-ineligible` in display: a row carrying both draws the
 `worker-ineligible` treatment only (UI-49mc §5).
 
 Runnable rows also carry `workflow` and `exec_pins` (UI-eey2 §9.1). `workflow`

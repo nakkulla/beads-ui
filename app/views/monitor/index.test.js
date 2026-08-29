@@ -3611,7 +3611,7 @@ describe('monitor 판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
               title: '복잡 후보',
               rec: {
                 rec_orchestration_model: 'fable',
-                rec_reason: 'multi_repo'
+                rec_reason: 'invariant_reasoning'
               }
             }
           ]
@@ -3637,7 +3637,7 @@ describe('monitor 판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
     click(mount, '.worker-card[data-bead-id="A-1"] .judgement-chip');
 
     expect(el(mount, '.chip-popover')?.textContent).toContain(
-      '둘 이상의 저장소에 작업 단위가 생긴다'
+      '정합성이 상태기계·동시성·불변식 추론에 달려 있다'
     );
   });
 

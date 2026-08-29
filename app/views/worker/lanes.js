@@ -1260,8 +1260,6 @@ export function priorityBadgeTemplate(priority) {
  * @property {boolean} [ghost] - Serial-lane occupancy row (UI-04vo §4): the
  * lineage holding the lane, drawn dimmed and never draggable.
  * @property {number} [seq] - 1-based execution order number in a serial lane.
- * @property {boolean} [worker_serial] - Legacy `worker-serial` label residue:
- * renders a display-only strikethrough chip. Never a scheduling input.
  * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} [exec_chips] -
  * 실행 설정 칩 (worker-card-exec-chips §2.2): 대기 행과 후보 카드가 "이 설정으로
  * 돌아간다"를 적재 전에 미리 보여 준다. 완료 행·PR 대기 행은 싣지 않는다.
@@ -1423,16 +1421,6 @@ export function miniRow(item, options = {}) {
     typeof item.seq === 'number'
       ? html`<span class="worker-mini__seq" aria-hidden="true"
           >${item.seq}</span
-        >`
-      : '';
-  // 표시 전용 취소선 잔재 (UI-04vo §4): 라벨 정리는 사용자/워크플로 몫이고,
-  // 스케줄링은 이 라벨을 더 이상 소비하지 않는다.
-  const serial_el =
-    item.worker_serial === true
-      ? html`<span
-          class="worker-mini__serial worker-mini__serial--legacy"
-          title="legacy worker-serial 라벨 잔재 — 스케줄링에 사용되지 않습니다"
-          >worker-serial</span
         >`
       : '';
   // 레포 뱃지는 값이 있을 때만 그린다 (UI-qrfo §8) — Worker 탭 행은 이 필드를
@@ -1715,7 +1703,7 @@ export function miniRow(item, options = {}) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${badge_els}${serial_el}${reason_el}${actions_el}
+              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${badge_els}${reason_el}${actions_el}
             </div>
             <div class="worker-mini__body">${title_el}${stale_details}</div>
             ${deps_el}${chips_el}${has_foot
@@ -1732,7 +1720,7 @@ export function miniRow(item, options = {}) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${badge_els}${serial_el}${reason_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}${actions_el}
+              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${badge_els}${reason_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}${actions_el}
             </div>
             ${deps_el}${chips_el}${receipt_el} ${timesMeta(item)}`}
   </div>`;
@@ -1808,10 +1796,10 @@ function placeMenuList(entries, bead_id) {
  * @type {Record<string, string>}
  */
 const SESSION_PREFERRED_TOOLTIP = {
-  exclusive_machine: '실행 중 머신 독점 필요 — 부하 하네스·timing 비교',
-  iterative_user_judgment:
-    '구현 중 사용자 판단 반복 개입 필요 — 문안·레이아웃·설계 미세조정',
-  visual_verification: '렌더 결과 사람 확인 필요 — 스크린샷·목업·라이브 페이지'
+  external_roundtrip:
+    '하네스 밖 상대와 예측 불가 왕복 반복 — 다른 rig 세션·사람·외부 시스템',
+  user_feedback_loop:
+    '진행 중 사용자 피드백 없이는 품질이 낮음 — 문안·설계 세부·방향 선택'
 };
 
 /**

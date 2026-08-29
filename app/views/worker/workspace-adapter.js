@@ -616,7 +616,6 @@ export function createWorkspaceAdapter(options = {}) {
         lane: 'done',
         selectable: false,
         selected: false,
-        worker_serial: false,
         badges: ['세션 작업'],
         alert: false,
         usage: null,

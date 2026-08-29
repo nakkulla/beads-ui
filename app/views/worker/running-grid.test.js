@@ -1538,7 +1538,7 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
 describe('복잡 chip on the running tile (UI-sbum §3)', () => {
   /** @type {import('../../utils/rec-settings.js').RecSettings} */
   const REC = {
-    reasons: ['multi_phase'],
+    reasons: ['verification_by_judgment'],
     rec: { orchestration_model: 'fable' },
     state: 'diverged'
   };
@@ -1580,7 +1580,7 @@ describe('복잡 chip on the running tile (UI-sbum §3)', () => {
 
     expect(chip.textContent?.trim()).toBe('복잡');
     expect(chip.title).toBe(
-      '복잡한 작업으로 판정됨\n사유: 여러 Phase 또는 병렬 쓰기 조정이 필요하다\n상태: 추천과 다름'
+      '복잡한 작업으로 판정됨\n사유: 테스트가 못 잡고 리뷰어의 추론으로만 검증할 수 있다\n상태: 추천과 다름'
     );
     expect(chip.dataset.state).toBe('diverged');
   });

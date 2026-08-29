@@ -5889,22 +5889,6 @@ html[data-theme='dark'] {
   outline-offset: 2px;
 }
 
-.worker-mini__serial {
-  flex: 0 0 auto;
-  padding: 0 var(--sp-4);
-  border: 1px solid var(--stage-plan-on);
-  border-radius: var(--r-6);
-  color: var(--stage-plan-on);
-  font-size: var(--fs-caption);
-  white-space: nowrap;
-}
-
-.worker-mini__serial--legacy {
-  border-color: var(--border-card);
-  color: var(--text-dim);
-  text-decoration: line-through;
-}
-
 /* 제목이 줄바꿈을 얻은 뒤(UI-k59y §2) 한 줄 행의 shrink 대상이 ID로 옮겨붙는다
    — ID는 4글자짜리 식별자라 한 글자도 접히면 안 된다. */
 .worker-mini__id {

@@ -973,7 +973,7 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
             metadata: {
               rec_orchestration_model: 'fable',
               rec_impl_runtime: 'claude',
-              rec_reason: 'contract_change+multi_repo'
+              rec_reason: 'hard_diagnosis+invariant_reasoning'
             }
           })
         ]
@@ -986,7 +986,7 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
     expect(out[0].rec).toEqual({
       rec_orchestration_model: 'fable',
       rec_impl_runtime: 'claude',
-      rec_reason: 'contract_change+multi_repo'
+      rec_reason: 'hard_diagnosis+invariant_reasoning'
     });
   });
 
@@ -1024,7 +1024,7 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
             metadata: {
               rec_orchestration_model: 'fable',
               rec_impl_runtime: 'codex',
-              rec_reason: 'multi_phase+made_up'
+              rec_reason: 'verification_by_judgment+made_up'
             }
           })
         ]
@@ -1036,7 +1036,7 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
 
     expect(out[0].rec).toEqual({
       rec_orchestration_model: 'fable',
-      rec_reason: 'multi_phase'
+      rec_reason: 'verification_by_judgment'
     });
   });
 

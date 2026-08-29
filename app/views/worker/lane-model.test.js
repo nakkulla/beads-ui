@@ -3341,7 +3341,7 @@ describe('monitor runnable rec projection (UI-sbum §4)', () => {
               rec: {
                 rec_orchestration_model: 'fable',
                 rec_impl_runtime: 'claude',
-                rec_reason: 'contract_change'
+                rec_reason: 'hard_diagnosis'
               },
               exec_pins: { orchestration_model: 'opus' }
             })
@@ -3352,7 +3352,7 @@ describe('monitor runnable rec projection (UI-sbum §4)', () => {
     );
 
     expect(lanes.runnable[0].rec).toEqual({
-      reasons: ['contract_change'],
+      reasons: ['hard_diagnosis'],
       rec: { orchestration_model: 'fable', impl_runtime: 'claude' },
       state: 'diverged'
     });
@@ -3953,7 +3953,7 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
           runnable: [
             runnable('A-1', {
               session_preferred: true,
-              session_preferred_reason: 'visual_verification'
+              session_preferred_reason: 'user_feedback_loop'
             })
           ]
         })
@@ -3964,7 +3964,7 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
     expect([
       lanes.runnable[0].session_preferred,
       lanes.runnable[0].session_preferred_reason
-    ]).toEqual([true, 'visual_verification']);
+    ]).toEqual([true, 'user_feedback_loop']);
   });
 
   test('carries the 스펙 대기 judgement onto the candidate row', () => {

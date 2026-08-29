@@ -2883,7 +2883,7 @@ describe('views/detail-panel 헤더 복잡 chip (UI-8x90 §5.1)', () => {
   const REC_META = {
     rec_orchestration_model: 'fable',
     rec_impl_runtime: 'claude',
-    rec_reason: 'contract_change'
+    rec_reason: 'hard_diagnosis'
   };
 
   /** The two mutations the removed 즉시 적용 path used to send. */

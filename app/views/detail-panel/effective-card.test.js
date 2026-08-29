@@ -1043,7 +1043,7 @@ describe('detail header 복잡 chip (UI-8x90 §5.1)', () => {
   const REC_META = {
     rec_orchestration_model: 'fable',
     rec_impl_runtime: 'claude',
-    rec_reason: 'contract_change+multi_repo'
+    rec_reason: 'hard_diagnosis+invariant_reasoning'
   };
 
   /** The two mutations the removed 즉시 적용 path used to send. */
@@ -1100,7 +1100,7 @@ describe('detail header 복잡 chip (UI-8x90 §5.1)', () => {
 
     expect(chip.textContent?.trim()).toBe('복잡');
     expect(chip.title).toBe(
-      '복잡한 작업으로 판정됨\n사유: 계약 문서·checker·스킬 사본을 함께 바꿔야 한다 · 둘 이상의 저장소에 작업 단위가 생긴다\n상태: 미적용'
+      '복잡한 작업으로 판정됨\n사유: 원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다 · 정합성이 상태기계·동시성·불변식 추론에 달려 있다\n상태: 미적용'
     );
     expect(chip.title).not.toContain('fable');
     expect(chip.dataset.state).toBe('unapplied');

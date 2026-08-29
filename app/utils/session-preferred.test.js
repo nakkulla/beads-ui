@@ -9,7 +9,7 @@ describe('isSessionPreferred (UI-49mc §6.1)', () => {
     const labels = ['session-preferred'];
 
     const result = isSessionPreferred(labels, {
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
 
     expect(result).toBe(true);
@@ -23,21 +23,11 @@ describe('isSessionPreferred (UI-49mc §6.1)', () => {
     expect(result).toBe(false);
   });
 
-  test('accepts the iterative_user_judgment reason', () => {
+  test('accepts the user_feedback_loop reason', () => {
     const labels = ['session-preferred'];
 
     const result = isSessionPreferred(labels, {
-      session_preferred_reason: 'iterative_user_judgment'
-    });
-
-    expect(result).toBe(true);
-  });
-
-  test('accepts the visual_verification reason', () => {
-    const labels = ['session-preferred'];
-
-    const result = isSessionPreferred(labels, {
-      session_preferred_reason: 'visual_verification'
+      session_preferred_reason: 'user_feedback_loop'
     });
 
     expect(result).toBe(true);
@@ -54,10 +44,10 @@ describe('isSessionPreferred (UI-49mc §6.1)', () => {
   });
 
   test('ignores a reason carried without the label', () => {
-    const labels = ['worker-serial'];
+    const labels = ['worker-ineligible'];
 
     const result = isSessionPreferred(labels, {
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
 
     expect(result).toBe(false);
@@ -67,7 +57,7 @@ describe('isSessionPreferred (UI-49mc §6.1)', () => {
     const labels = 'session-preferred';
 
     const result = isSessionPreferred(labels, {
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
 
     expect(result).toBe(false);
@@ -84,7 +74,7 @@ describe('isSessionPreferred (UI-49mc §6.1)', () => {
   test('returns false on a string metadata payload', () => {
     const labels = ['session-preferred'];
 
-    const result = isSessionPreferred(labels, 'exclusive_machine');
+    const result = isSessionPreferred(labels, 'external_roundtrip');
 
     expect(result).toBe(false);
   });
@@ -101,7 +91,7 @@ describe('isSessionPreferred (UI-49mc §6.1)', () => {
     const labels = [7, null, 'session-preferred'];
 
     const result = isSessionPreferred(labels, {
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
 
     expect(result).toBe(true);
@@ -113,10 +103,10 @@ describe('sessionPreferredReason (UI-49mc §6.1)', () => {
     const labels = ['session-preferred'];
 
     const result = sessionPreferredReason(labels, {
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
 
-    expect(result).toBe('exclusive_machine');
+    expect(result).toBe('external_roundtrip');
   });
 
   test('returns an empty string when the reason is missing', () => {
@@ -127,24 +117,14 @@ describe('sessionPreferredReason (UI-49mc §6.1)', () => {
     expect(result).toBe('');
   });
 
-  test('returns the iterative_user_judgment reason', () => {
+  test('returns the user_feedback_loop reason', () => {
     const labels = ['session-preferred'];
 
     const result = sessionPreferredReason(labels, {
-      session_preferred_reason: 'iterative_user_judgment'
+      session_preferred_reason: 'user_feedback_loop'
     });
 
-    expect(result).toBe('iterative_user_judgment');
-  });
-
-  test('returns the visual_verification reason', () => {
-    const labels = ['session-preferred'];
-
-    const result = sessionPreferredReason(labels, {
-      session_preferred_reason: 'visual_verification'
-    });
-
-    expect(result).toBe('visual_verification');
+    expect(result).toBe('user_feedback_loop');
   });
 
   test('returns an empty string for a reason outside the enum', () => {
@@ -158,10 +138,10 @@ describe('sessionPreferredReason (UI-49mc §6.1)', () => {
   });
 
   test('returns an empty string when the label is absent', () => {
-    const labels = ['worker-serial'];
+    const labels = ['worker-ineligible'];
 
     const result = sessionPreferredReason(labels, {
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
 
     expect(result).toBe('');
@@ -171,7 +151,7 @@ describe('sessionPreferredReason (UI-49mc §6.1)', () => {
     const labels = 'session-preferred';
 
     const result = sessionPreferredReason(labels, {
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
 
     expect(result).toBe('');
@@ -189,7 +169,7 @@ describe('sessionPreferredReason (UI-49mc §6.1)', () => {
     const labels = ['session-preferred'];
 
     const results = [
-      sessionPreferredReason(labels, 'exclusive_machine'),
+      sessionPreferredReason(labels, 'external_roundtrip'),
       sessionPreferredReason(labels, 42)
     ];
 
@@ -200,9 +180,9 @@ describe('sessionPreferredReason (UI-49mc §6.1)', () => {
     const labels = [7, null, 'session-preferred'];
 
     const result = sessionPreferredReason(labels, {
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
 
-    expect(result).toBe('exclusive_machine');
+    expect(result).toBe('external_roundtrip');
   });
 });

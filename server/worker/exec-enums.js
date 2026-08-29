@@ -135,10 +135,9 @@ export const BEAD_APPLY_KEYS = [
  * @type {ReadonlyArray<string>}
  */
 export const REC_SIGNALS = [
-  'contract_change',
-  'multi_repo',
-  'open_design_fork',
-  'multi_phase',
+  'hard_diagnosis',
+  'invariant_reasoning',
+  'verification_by_judgment',
   'claude_bound'
 ];
 

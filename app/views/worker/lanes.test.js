@@ -245,19 +245,6 @@ describe('waiting row (UI-04vo 직렬 레인)', () => {
     ).toBe('true');
   });
 
-  test('renders a legacy worker-serial chip as display-only residue', () => {
-    const row = renderRow({
-      lane: 'queue',
-      done: false,
-      draggable: true,
-      worker_serial: true
-    });
-
-    const chip = row.querySelector('.worker-mini__serial');
-    expect(chip?.classList.contains('worker-mini__serial--legacy')).toBe(true);
-    expect(chip?.textContent).toContain('worker-serial');
-  });
-
   test('renders a serial-lane row with its sequence number', () => {
     const row = renderRow({
       lane: 's1',
@@ -809,13 +796,13 @@ describe('worker-ineligible candidate card (UI-8881)', () => {
 });
 
 describe('session-preferred candidate card (UI-49mc)', () => {
-  const EXCLUSIVE_MACHINE_TITLE =
-    '실행 중 머신 독점 필요 — 부하 하네스·timing 비교';
+  const EXTERNAL_ROUNDTRIP_TITLE =
+    '하네스 밖 상대와 예측 불가 왕복 반복 — 다른 rig 세션·사람·외부 시스템';
 
   test('draws the 세션 권장 chip with the contract tooltip', () => {
     const card = renderCandidate({
       session_preferred: true,
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
 
     const chip = /** @type {HTMLElement} */ (
@@ -823,18 +810,14 @@ describe('session-preferred candidate card (UI-49mc)', () => {
     );
 
     expect(chip.textContent?.trim()).toBe('세션 권장');
-    expect(chip.title).toBe(EXCLUSIVE_MACHINE_TITLE);
+    expect(chip.title).toBe(EXTERNAL_ROUNDTRIP_TITLE);
   });
 
   test('draws the contract tooltip for each added enum reason', () => {
     const reasons = [
       [
-        'iterative_user_judgment',
-        '구현 중 사용자 판단 반복 개입 필요 — 문안·레이아웃·설계 미세조정'
-      ],
-      [
-        'visual_verification',
-        '렌더 결과 사람 확인 필요 — 스크린샷·목업·라이브 페이지'
+        'user_feedback_loop',
+        '진행 중 사용자 피드백 없이는 품질이 낮음 — 문안·설계 세부·방향 선택'
       ]
     ];
 
@@ -862,7 +845,7 @@ describe('session-preferred candidate card (UI-49mc)', () => {
       draggable: false,
       worker_ineligible: true,
       session_preferred: true,
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
 
     expect(card.querySelector('.worker-card__ineligible')).not.toBeNull();
@@ -872,7 +855,7 @@ describe('session-preferred candidate card (UI-49mc)', () => {
   test('keeps the card draggable and unshaded', () => {
     const card = renderCandidate({
       session_preferred: true,
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
 
     expect(card.getAttribute('draggable')).toBe('true');
@@ -883,7 +866,7 @@ describe('session-preferred candidate card (UI-49mc)', () => {
     const card = renderCandidate(
       {
         session_preferred: true,
-        session_preferred_reason: 'exclusive_machine'
+        session_preferred_reason: 'external_roundtrip'
       },
       {
         bead_id: 'UI-qf',
@@ -898,7 +881,7 @@ describe('session-preferred candidate card (UI-49mc)', () => {
   test('leaves the queue button enabled with the unchanged tooltip', () => {
     const card = renderCandidate({
       session_preferred: true,
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
     const place = /** @type {HTMLButtonElement} */ (
       card.querySelector('.worker-card__place')
@@ -3523,12 +3506,12 @@ describe('nowPanel (UI-5ksp §4.7)', () => {
 describe('복잡 chip on the worker lane surfaces (UI-sbum §3)', () => {
   /** @type {import('../../utils/rec-settings.js').RecSettings} */
   const REC = {
-    reasons: ['contract_change', 'claude_bound'],
+    reasons: ['hard_diagnosis', 'claude_bound'],
     rec: { orchestration_model: 'fable', impl_runtime: 'claude' },
     state: 'unapplied'
   };
   const REC_TITLE =
-    '복잡한 작업으로 판정됨\n사유: 계약 문서·checker·스킬 사본을 함께 바꿔야 한다 · Claude 세션 자산·의미론에 강하게 묶여 있다\n상태: 미적용';
+    '복잡한 작업으로 판정됨\n사유: 원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다 · Claude 세션 자산·의미론에 강하게 묶여 있다\n상태: 미적용';
 
   test('draws the chip on a waiting row with the shared tooltip', () => {
     const row = renderRow({ lane: 'queue', done: false, rec: REC });
@@ -3595,7 +3578,7 @@ describe('복잡 chip on the worker lane surfaces (UI-sbum §3)', () => {
     const card = renderCandidate({
       rec: REC,
       session_preferred: true,
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
 
     expect(
@@ -3608,7 +3591,7 @@ describe('복잡 chip on the worker lane surfaces (UI-sbum §3)', () => {
 describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
   /** @type {import('../../utils/rec-settings.js').RecSettings} */
   const REC = {
-    reasons: ['multi_phase'],
+    reasons: ['verification_by_judgment'],
     rec: { orchestration_model: 'fable' },
     state: 'diverged'
   };
@@ -3631,7 +3614,7 @@ describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
   test('makes the 세션 권장 chip a judgement button', () => {
     const card = renderCandidate({
       session_preferred: true,
-      session_preferred_reason: 'exclusive_machine'
+      session_preferred_reason: 'external_roundtrip'
     });
     const chip = /** @type {HTMLElement} */ (
       card.querySelector('.worker-card__session-preferred')
@@ -3654,14 +3637,16 @@ describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
   test('keeps the tooltip on a judgement chip', () => {
     const card = renderCandidate({
       session_preferred: true,
-      session_preferred_reason: 'visual_verification'
+      session_preferred_reason: 'user_feedback_loop'
     });
 
     expect(
       card
         .querySelector('.worker-card__session-preferred')
         ?.getAttribute('title')
-    ).toBe('렌더 결과 사람 확인 필요 — 스크린샷·목업·라이브 페이지');
+    ).toBe(
+      '진행 중 사용자 피드백 없이는 품질이 낮음 — 문안·설계 세부·방향 선택'
+    );
   });
 
   test('draws the popup under the identity line of a candidate card', () => {
@@ -3703,7 +3688,7 @@ describe('judgementPopoverContent (UI-8x90 §4.5)', () => {
       /** @type {any} */ ({
         id: 'UI-a',
         rec: {
-          reasons: ['multi_phase'],
+          reasons: ['verification_by_judgment'],
           rec: { orchestration_model: 'fable' },
           state: 'diverged'
         }
@@ -3714,7 +3699,7 @@ describe('judgementPopoverContent (UI-8x90 §4.5)', () => {
     expect(content).toEqual({
       title: '복잡한 작업으로 판정됨',
       lines: [
-        '여러 Phase 또는 병렬 쓰기 조정이 필요하다',
+        '테스트가 못 잡고 리뷰어의 추론으로만 검증할 수 있다',
         '상태: 추천과 다름',
         '적용은 이슈 상세의 실행 설정 편집기에서'
       ]
@@ -3726,14 +3711,16 @@ describe('judgementPopoverContent (UI-8x90 §4.5)', () => {
       /** @type {any} */ ({
         id: 'UI-a',
         session_preferred: true,
-        session_preferred_reason: 'exclusive_machine'
+        session_preferred_reason: 'external_roundtrip'
       }),
       'session_preferred'
     );
 
     expect(content).toEqual({
       title: '워커로 돌릴 수 있지만 세션이 낫다',
-      lines: ['실행 중 머신 독점 필요 — 부하 하네스·timing 비교']
+      lines: [
+        '하네스 밖 상대와 예측 불가 왕복 반복 — 다른 rig 세션·사람·외부 시스템'
+      ]
     });
   });
 
@@ -3859,7 +3846,7 @@ describe('스펙 대기 칩 (UI-svh6 §4.3)', () => {
       spec_after_blocker: true,
       blocked_by: ['UI-b'],
       session_preferred: true,
-      session_preferred_reason: 'exclusive_machine',
+      session_preferred_reason: 'external_roundtrip',
       dependency_chips: /** @type {any} */ ({
         predecessors: [{ id: 'UI-b', label: '⛓ UI-b' }]
       })

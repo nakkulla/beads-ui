@@ -2,9 +2,8 @@ import { workerLabels } from './worker-eligibility.js';
 
 export const SESSION_PREFERRED_LABEL = 'session-preferred';
 export const SESSION_PREFERRED_REASONS = [
-  'exclusive_machine',
-  'iterative_user_judgment',
-  'visual_verification'
+  'external_roundtrip',
+  'user_feedback_loop'
 ];
 
 /**

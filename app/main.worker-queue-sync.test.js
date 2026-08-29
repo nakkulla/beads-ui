@@ -197,7 +197,7 @@ describe('worker-queue snapshot workspace guard', () => {
     expect(waitingRowCount()).toBe(1);
     expect(
       document.querySelector(
-        '#worker-pane-queue .worker-wait__area--parallel .worker-mini__serial'
+        '#worker-pane-queue .worker-wait__area--parallel .exec-chip'
       )
     ).toBeNull();
   });

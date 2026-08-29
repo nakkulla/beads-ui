@@ -13,10 +13,9 @@ import {
  * here and an equality against THIS list in `server/worker/exec-enums.test.js`.
  */
 const CONTRACT_SIGNALS = [
-  'contract_change',
-  'multi_repo',
-  'open_design_fork',
-  'multi_phase',
+  'hard_diagnosis',
+  'invariant_reasoning',
+  'verification_by_judgment',
   'claude_bound'
 ];
 
@@ -69,19 +68,19 @@ describe('recSettings rec_reason 파싱 (UI-sbum §1)', () => {
   test('splits the signal list on +', () => {
     const result = recSettings({
       rec_orchestration_model: 'fable',
-      rec_reason: 'contract_change+claude_bound'
+      rec_reason: 'hard_diagnosis+claude_bound'
     });
 
-    expect(result?.reasons).toEqual(['contract_change', 'claude_bound']);
+    expect(result?.reasons).toEqual(['hard_diagnosis', 'claude_bound']);
   });
 
   test('drops tokens outside the signal enum', () => {
     const result = recSettings({
       rec_orchestration_model: 'fable',
-      rec_reason: 'contract_change+made_up'
+      rec_reason: 'hard_diagnosis+made_up'
     });
 
-    expect(result?.reasons).toEqual(['contract_change']);
+    expect(result?.reasons).toEqual(['hard_diagnosis']);
   });
 
   test('keeps the chip when rec_reason is absent', () => {
@@ -188,23 +187,23 @@ describe('recTooltip (UI-sbum §1, 문장은 UI-8x90 §4.6)', () => {
   test('writes the reason sentences rather than the signal codes', () => {
     const rec = recSettings({
       rec_orchestration_model: 'fable',
-      rec_reason: 'multi_phase'
+      rec_reason: 'verification_by_judgment'
     });
 
     expect(recTooltip(rec)).toContain(
-      '사유: 여러 Phase 또는 병렬 쓰기 조정이 필요하다'
+      '사유: 테스트가 못 잡고 리뷰어의 추론으로만 검증할 수 있다'
     );
-    expect(recTooltip(rec)).not.toContain('multi_phase');
+    expect(recTooltip(rec)).not.toContain('verification_by_judgment');
   });
 
   test('drops an unknown signal instead of naming it', () => {
     const rec = recSettings({
       rec_orchestration_model: 'fable',
-      rec_reason: 'multi_repo+wat'
+      rec_reason: 'invariant_reasoning+wat'
     });
 
     expect(recTooltip(rec)).toBe(
-      '복잡한 작업으로 판정됨\n사유: 둘 이상의 저장소에 작업 단위가 생긴다\n상태: 미적용'
+      '복잡한 작업으로 판정됨\n사유: 정합성이 상태기계·동시성·불변식 추론에 달려 있다\n상태: 미적용'
     );
   });
 
@@ -213,13 +212,13 @@ describe('recTooltip (UI-sbum §1, 문장은 UI-8x90 §4.6)', () => {
       {
         rec_orchestration_model: 'fable',
         rec_impl_runtime: 'claude',
-        rec_reason: 'contract_change+claude_bound'
+        rec_reason: 'hard_diagnosis+claude_bound'
       },
       {}
     );
 
     expect(recTooltip(rec)).toBe(
-      '복잡한 작업으로 판정됨\n사유: 계약 문서·checker·스킬 사본을 함께 바꿔야 한다 · Claude 세션 자산·의미론에 강하게 묶여 있다\n상태: 미적용'
+      '복잡한 작업으로 판정됨\n사유: 원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다 · Claude 세션 자산·의미론에 강하게 묶여 있다\n상태: 미적용'
     );
   });
 
@@ -233,7 +232,7 @@ describe('recTooltip (UI-sbum §1, 문장은 UI-8x90 §4.6)', () => {
     const rec = recSettings({
       rec_orchestration_model: 'fable',
       rec_impl_runtime: 'claude',
-      rec_reason: 'multi_repo'
+      rec_reason: 'invariant_reasoning'
     });
 
     const tooltip = recTooltip(rec);

@@ -21,10 +21,9 @@
  * @type {ReadonlyArray<string>}
  */
 export const REC_REASONS = [
-  'contract_change',
-  'multi_repo',
-  'open_design_fork',
-  'multi_phase',
+  'hard_diagnosis',
+  'invariant_reasoning',
+  'verification_by_judgment',
   'claude_bound'
 ];
 
@@ -40,10 +39,11 @@ export const REC_LABEL = '복잡';
  * @type {Record<string, string>}
  */
 export const REC_REASON_TEXT = {
-  contract_change: '계약 문서·checker·스킬 사본을 함께 바꿔야 한다',
-  multi_repo: '둘 이상의 저장소에 작업 단위가 생긴다',
-  open_design_fork: '실행 중에도 이어질 미해결 설계 분기가 있다',
-  multi_phase: '여러 Phase 또는 병렬 쓰기 조정이 필요하다',
+  hard_diagnosis:
+    '원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다',
+  invariant_reasoning: '정합성이 상태기계·동시성·불변식 추론에 달려 있다',
+  verification_by_judgment:
+    '테스트가 못 잡고 리뷰어의 추론으로만 검증할 수 있다',
   claude_bound: 'Claude 세션 자산·의미론에 강하게 묶여 있다'
 };
 

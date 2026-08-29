@@ -589,7 +589,7 @@ describe('worker/policy rec_* invariance (UI-sbum §6)', () => {
         rec: { rec_orchestration_model: 'fable' },
         rec_orchestration_model: 'fable',
         rec_impl_runtime: 'claude',
-        rec_reason: 'contract_change+multi_repo'
+        rec_reason: 'hard_diagnosis+invariant_reasoning'
       }),
       defaults: {}
     });

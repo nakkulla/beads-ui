@@ -312,7 +312,7 @@ describe('worker workspace adapter', () => {
         spec_id: 'SPEC-1',
         metadata: {
           spec_review: RECEIPT,
-          session_preferred_reason: 'visual_verification'
+          session_preferred_reason: 'user_feedback_loop'
         }
       }
     ]);

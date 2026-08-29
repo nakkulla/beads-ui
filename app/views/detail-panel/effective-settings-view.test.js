@@ -13,7 +13,7 @@ import { summaryHeaderTemplate } from './effective-settings-view.js';
 const REC_META = {
   rec_orchestration_model: 'fable',
   rec_impl_runtime: 'claude',
-  rec_reason: 'contract_change+multi_repo'
+  rec_reason: 'hard_diagnosis+invariant_reasoning'
 };
 
 const APPLIED_META = {
@@ -93,7 +93,7 @@ describe('detail header 복잡 chip (UI-8x90 §5.1)', () => {
 
     expect(popover.textContent).toContain('복잡한 작업으로 판정됨');
     expect(popover.textContent).toContain(
-      '계약 문서·checker·스킬 사본을 함께 바꿔야 한다'
+      '원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다'
     );
     expect(popover.textContent).toContain(
       '적용은 이슈 상세의 실행 설정 편집기에서'

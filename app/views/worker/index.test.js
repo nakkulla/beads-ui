@@ -7122,7 +7122,7 @@ describe('session-preferred candidates (UI-49mc)', () => {
         spec_id: 'S',
         metadata: {
           spec_review: RECEIPT,
-          session_preferred_reason: 'exclusive_machine'
+          session_preferred_reason: 'external_roundtrip'
         },
         labels: ['session-preferred'],
         ...over
@@ -8173,8 +8173,7 @@ describe('mobile control-first layout (UI-58y2)', () => {
 
   test('omits waiting selection controls on the mobile queue lane', () => {
     const mount = mountMobile({
-      queue: [{ bead_id: 'RD-1', added_at: 1 }],
-      bead_labels: { 'RD-1': ['worker-serial'] }
+      queue: [{ bead_id: 'RD-1', added_at: 1 }]
     });
 
     const queue_pane = /** @type {HTMLElement} */ (
@@ -11951,28 +11950,6 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
 
     expect(transport).not.toHaveBeenCalled();
   });
-
-  test('renders a legacy worker-serial label as a display-only strikethrough chip', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      transport: vi.fn()
-    });
-
-    queueStore.set(
-      laneQueue({
-        queue: [{ bead_id: 'A', added_at: 1 }],
-        bead_labels: { A: ['worker-serial'] }
-      })
-    );
-
-    const row = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="A"]')
-    );
-    expect(row.querySelector('.worker-mini__serial--legacy')).not.toBeNull();
-  });
 });
 
 describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', () => {
@@ -13066,7 +13043,7 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
         metadata: {
           spec_review: RECEIPT,
           rec_orchestration_model: 'fable',
-          rec_reason: 'multi_repo'
+          rec_reason: 'invariant_reasoning'
         }
       }
     ]);
@@ -13106,7 +13083,7 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
     recChip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(mount.querySelector('.chip-popover')?.textContent).toContain(
-      '둘 이상의 저장소에 작업 단위가 생긴다'
+      '정합성이 상태기계·동시성·불변식 추론에 달려 있다'
     );
   });
 
@@ -14109,7 +14086,7 @@ describe('복잡 chip projection on the worker tab (UI-sbum §3)', () => {
     spec_review: RECEIPT,
     rec_orchestration_model: 'fable',
     rec_impl_runtime: 'claude',
-    rec_reason: 'contract_change'
+    rec_reason: 'hard_diagnosis'
   };
 
   /**
@@ -14171,7 +14148,7 @@ describe('복잡 chip projection on the worker tab (UI-sbum §3)', () => {
 
     expect(chip.textContent?.trim()).toBe('복잡');
     expect(chip.title).toContain(
-      '사유: 계약 문서·checker·스킬 사본을 함께 바꿔야 한다'
+      '사유: 원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다'
     );
     expect(chip.dataset.state).toBe('unapplied');
   });

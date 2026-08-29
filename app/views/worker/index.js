@@ -50,7 +50,6 @@ import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
 import { watchMobile } from '../../utils/viewport.js';
-import { isWorkerSerial } from '../../utils/worker-serial.js';
 import { createChipPopover } from '../chip-popover.js';
 import {
   CANDIDATE_SORT_PRESETS,
@@ -1043,7 +1042,6 @@ export function prStatusBadge(input) {
  * @param {import('../../data/worker-queue-store.js').CompletionStatus|null} [completion] - Bounded root completion status;
  * @param {Record<string, any>} [discard_operations] - UI-safe durable discard projection.
  * the durable journal itself never reaches the client (UI-x9tu §10).
- * @param {boolean} [worker_serial] - Durable attempt execution mode.
  * @param {boolean} [auto_merge_on] - The workspace's global auto-merge toggle
  * (UI-58w8 §1). Read only to tell whether an AUTOMATIC enrolment still has a
  * driver behind it; it never gates a manual authority's continuation.
@@ -1073,7 +1071,6 @@ function prWaitRow(
   base_exception = null,
   completion = null,
   discard_operations = {},
-  worker_serial = false,
   auto_merge_on = false,
   progress_input = {},
   dependency_chips = null,
@@ -1263,7 +1260,6 @@ function prWaitRow(
     draggable: false,
     done: true,
     lane: 'pr_wait',
-    worker_serial,
     ...(dependency_chips ? { dependency_chips } : {}),
     // Card tone, not an affordance (UI-w0hi §4): an external row came from
     // somewhere else, and the lane reads better when that is visible before the
@@ -2597,10 +2593,10 @@ export function createWorkerView(mount_element, options = {}) {
 
   /**
    * What a 대기·직렬 row reads from the snapshot on top of the lane model
-   * (§4.4). 레인 모델은 두 탭이 공유하는 값만 싣고, stale 점유 처분·legacy `worker-serial` 취소선·`blocks` 자동 정정
+   * (§4.4). 레인 모델은 두 탭이 공유하는 값만 싣고, stale 점유 처분·`blocks` 자동 정정
    * 배지는 워커 탭 대기 행만의 조작·표시다.
    *
-   * @returns {{ admission: Record<string, any>, bead_labels: Record<string, any>, correction_after: Map<string, string> }}
+   * @returns {{ admission: Record<string, any>, correction_after: Map<string, string> }}
    */
   function waitingFacts() {
     const q = currentQueue();
@@ -2622,7 +2618,6 @@ export function createWorkerView(mount_element, options = {}) {
     }
     return {
       admission: objectOf(q.admission),
-      bead_labels: objectOf(q.bead_labels),
       correction_after
     };
   }
@@ -2643,16 +2638,12 @@ export function createWorkerView(mount_element, options = {}) {
       facts.admission[item.id] || null,
       !!item.discard || stale_work_pending.has(item.id)
     );
-    // 표시 전용 legacy worker-serial 잔재 (UI-04vo §4): 스케줄링 소비는 은퇴
-    // 했고, 라벨이 남아 있는 행만 취소선 칩을 위해 표시한다.
-    const labels = facts.bead_labels[item.id];
     const correction = facts.correction_after.get(item.id);
     return {
       ...row,
       draggable: row.draggable === true && !stale_work,
       stale_work,
       reason: stale_work ? '' : row.reason,
-      worker_serial: Array.isArray(labels) && isWorkerSerial(labels),
       badges: correction
         ? [`🔗 ${correction} 뒤 (blocks 자동)`, ...(row.badges || [])]
         : row.badges,
@@ -2955,7 +2946,6 @@ export function createWorkerView(mount_element, options = {}) {
           baseException(group.declared_base, targetBase(e.bead_id)),
           objectOf(q.completion_status)[e.bead_id] || null,
           discard_operations,
-          last_attempt_by_bead.get(e.bead_id)?.worker_serial === true,
           q.auto_merge === true,
           {
             merge_sha: e.merge_sha,
@@ -4127,7 +4117,7 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function onClick(ev) {
     const target = /** @type {HTMLElement} */ (ev.target);
-    if (target?.closest?.('.worker-mini__serial, .worker-mini__grip')) {
+    if (target?.closest?.('.worker-mini__grip')) {
       return;
     }
     // 정렬 체인 방향 토글 (UI-d13v §4.4): pane 헤더 아래 줄의 버튼이므로 카드
