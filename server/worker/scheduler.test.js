@@ -14857,6 +14857,141 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
     }
   });
 
+  test('closes a due lineage whose bead left the waiting lanes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      let clock = 1000;
+      const env = setup({
+        config: { S1: {} },
+        slots: 1,
+        verify: ghDownVerifier(),
+        now: () => clock
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.runner.finish('S1', { success: true });
+      await flush();
+      await flush();
+      env.store.remove(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        bead_id: 'S1'
+      });
+
+      clock = 1000 + RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
+
+      const snap = env.store.snapshot(WS);
+      expect(snap.lineages).toEqual([]);
+      expect(snap.hold).toBe(null);
+      expect(Object.keys(snap.attempts).length).toBe(1);
+
+      // Nothing is due any more, so the pass leaves no timer behind: the
+      // observable form of the hot loop's absence.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      const after = env.store.snapshot(WS);
+      expect(Object.keys(after.attempts).length).toBe(1);
+      expect(after.revision).toBe(snap.revision);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('defers a due lineage while the bead still has a live attempt', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      let clock = 1000;
+      const env = setup({
+        config: { S1: {} },
+        slots: 1,
+        verify: ghDownVerifier(),
+        now: () => clock
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.runner.finish('S1', { success: true });
+      await flush();
+      await flush();
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: { attempt_id: 'live', bead_id: 'S1', status: 'running' }
+      });
+
+      clock = 1000 + RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
+
+      const snap = env.store.snapshot(WS);
+      expect(snap.lineages).toHaveLength(1);
+      expect(snap.lineages[0]).toMatchObject({
+        bead_id: 'S1',
+        next_at: clock + RETRY_DELAYS_MS[0],
+        attempts: 1
+      });
+      expect(Object.keys(snap.attempts).length).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('dispatches the lane-side lineage exactly once beside an abandoned one', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      let clock = 1000;
+      const env = setup({
+        config: { S1: {}, S2: {} },
+        slots: 2,
+        // Distinct env causes on purpose: the SAME cause on a second bead
+        // promotes the hold to `systemic`, which would return before the loop.
+        verify: {
+          verifyPrSubmitted: vi.fn(
+            async (/** @type {{ bead_id: string }} */ input) => ({
+              ok: false,
+              reason:
+                input.bead_id === 'S1'
+                  ? 'gh_observation_failed'
+                  : 'bd_read_failed',
+              pr_url: null
+            })
+          )
+        },
+        now: () => clock
+      });
+      seedQueue(env.store, ['S1', 'S2']);
+      await env.scheduler.tick(WS);
+      env.runner.finish('S1', { success: true });
+      await flush();
+      await flush();
+      env.runner.finish('S2', { success: true });
+      await flush();
+      await flush();
+      env.store.remove(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        bead_id: 'S1'
+      });
+
+      clock = 1000 + RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
+
+      const snap = env.store.snapshot(WS);
+      expect(snap.lineages).toHaveLength(1);
+      expect(snap.lineages[0]).toMatchObject({ bead_id: 'S2', next_at: null });
+      expect(Object.keys(snap.attempts).length).toBe(3);
+
+      // Closing S1 mid-loop must not arm a 0ms timer off S2's still-past
+      // `next_at` and re-enter the scan under the awaited dispatch.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      const after = env.store.snapshot(WS);
+      expect(Object.keys(after.attempts).length).toBe(3);
+      expect(after.revision).toBe(snap.revision);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('retryQueueHoldNow refuses a since that no longer matches', async () => {
     const env = setup({
       config: { S1: {} },

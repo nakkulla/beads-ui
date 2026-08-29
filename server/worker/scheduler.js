@@ -8968,6 +8968,15 @@ export function createScheduler(deps) {
    * The env hold itself does NOT block this: holding the queue means no NEW work
    * starts, while the retries already on the ladder are what resolves the hold.
    *
+   * Every due lineage leaves exactly one outcome, so no `next_at` survives this
+   * pass in the past (2026-08-29-worker-retry-lineage-off-lane-design.md §3):
+   * a bead the user pulled out of the waiting lanes has abandoned the ladder,
+   * so its lineage is closed (D1); a claimed or active bead is deferred without
+   * spending a rung, because the live attempt's settlement is the real answer
+   * about the environment (D2); and no branch here arms the retry timer — that
+   * happens once after the loop, since a mid-loop arm would see an unprocessed
+   * past `next_at`, fire at 0ms and re-enter this scan under `await` (D5).
+   *
    * @param {string} workspace
    */
   async function runDueRetries(workspace) {
@@ -8997,11 +9006,33 @@ export function createScheduler(deps) {
     let dispatched = false;
     for (const lineage of dueRetries(state, at)) {
       const bead_id = lineage.bead_id;
-      if (
-        !waiting.has(bead_id) ||
-        claimed.has(bead_id) ||
-        active.has(bead_id)
-      ) {
+      if (claimed.has(bead_id) || active.has(bead_id)) {
+        // Judged BEFORE the lane check: a bead the user removed mid-attempt is
+        // running outside the lanes, and closing its lineage before that
+        // attempt settles would restart the ladder at `attempts: 1` on the next
+        // env failure. The rung stays unspent — the settlement closes or
+        // advances the lineage.
+        deps.store.applyQueueHold(workspace, {
+          event: { kind: 'retry_deferred', bead_id, at },
+          now: at
+        });
+        continue;
+      }
+      if (!waiting.has(bead_id)) {
+        // Leaving the waiting lanes abandons the ladder: nothing will retry
+        // this bead, so the queue must not stay held for it. Closing here, not
+        // through `closeRetryLineage`, because that arms the retry timer (D5).
+        log(
+          'retry lineage abandoned for %s: bead left the waiting lanes',
+          bead_id
+        );
+        const closed = deps.store.applyQueueHold(workspace, {
+          event: { kind: 'retry_succeeded', bead_id, at },
+          now: at
+        });
+        if (!closed.ok) {
+          log('retry lineage close failed for %s', bead_id);
+        }
         continue;
       }
       // The rung is consumed by the ATTEMPT, not by the intent to dispatch
