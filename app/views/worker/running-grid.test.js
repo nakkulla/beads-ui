@@ -1896,7 +1896,49 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
       })}`
     );
     expect(tile.classList.contains('rtile--retry-wait')).toBe(true);
-    expect(tile.querySelector('.rtile__foot')).toBeNull();
+    // 투영이 폐기를 주지 않은 타일은 버튼을 지어내지 않는다.
+    expect(tile.querySelector('.rtile__discard')).toBeNull();
+  });
+
+  test('offers 폐기 alone in the retry_wait action foot', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const next_at = new Date(2026, 7, 28, 14, 5).getTime();
+
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-r1',
+          attempt_id: 'attempt-r1',
+          title: '환경 장애 재시도 대기',
+          runner: 'codex',
+          model: 'sol',
+          started_at: 1000,
+          retry_wait: true,
+          status: 'retry_wait',
+          status_label: '재시도 대기',
+          retry: {
+            cause: 'session_failed:is_error',
+            attempts: 2,
+            max: 3,
+            next_at
+          },
+          discard: {
+            action: true,
+            enabled: true,
+            label: '폐기',
+            title: '백업 후 정리',
+            operation: null
+          }
+        }
+      ]),
+      mount
+    );
+
+    const foot = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__foot')
+    );
+    expect(foot.querySelectorAll('.rtile__discard')).toHaveLength(1);
+    expect(foot.querySelector('.rtile__parked-retry')).toBeNull();
   });
 
   test('omits the retry_wait counts a record does not carry', () => {

@@ -2097,7 +2097,7 @@ ${l}</pre
     aria-label="라이브 세션 열기"
   >
     ▤ 세션
-  </button>`}function iy(e,t,n,r=""){if(e==="retry_wait")return"";let o=Zb(t?.summary);if(e==="waiting")return c`${o?c`<p class="rtile__held-summary">${o}</p>`:""}${r}
+  </button>`}function iy(e,t,n,r=""){if(e==="retry_wait")return c`<div class="rtile__foot">${n}</div>`;let o=Zb(t?.summary);if(e==="waiting")return c`${o?c`<p class="rtile__held-summary">${o}</p>`:""}${r}
       <div class="rtile__foot">${n}</div>`;let s=gp(t);return c`${o?c`<p class="rtile__held-summary">${o}</p>`:""}${s}
     <div class="rtile__foot">
       <button

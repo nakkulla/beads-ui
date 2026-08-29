@@ -14969,6 +14969,57 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
       'S1'
     ]);
   });
+
+  test('finalizing a discarded retry_wait attempt closes its env lineage', async () => {
+    // 2026-08-29 held-tile-discard §4.2 (D2): 폐기는 사다리 포기이므로 정산이
+    // lineage를 닫고, 마지막 lineage였으니 env hold가 스스로 풀린다.
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      verify: ghDownVerifier()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    const result = await env.scheduler.finalizeDiscardAttempt(
+      WS,
+      attempt_id,
+      'S1'
+    );
+
+    const snap = env.store.snapshot(WS);
+    expect(result).toEqual({ ok: true });
+    expect(snap.attempts[attempt_id].status).toBe('discarded');
+    expect(snap.lineages).toEqual([]);
+    expect(snap.hold).toBe(null);
+  });
+
+  test('finalizing a discarded failed attempt leaves the lineage untouched', async () => {
+    // 대조: 판정은 정산 전 스냅샷의 status다. `failed`는 `settleFailureTier`가
+    // 이미 lineage를 닫는 결말이라 정산이 다시 닫지 않는다.
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      verify: ghDownVerifier()
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    env.store.updateAttempt(WS, { attempt_id, patch: { status: 'failed' } });
+
+    await env.scheduler.finalizeDiscardAttempt(WS, attempt_id, 'S1');
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.lineages).toMatchObject([{ bead_id: 'S1', attempts: 1 }]);
+    expect(snap.hold).toMatchObject({ kind: 'env', bead_ids: ['S1'] });
+  });
 });
 
 describe('scheduler 실패 계층 회귀 (UI-5ym8 impl 리뷰)', () => {

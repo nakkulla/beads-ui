@@ -395,6 +395,60 @@ describe('worker discard source eligibility (선행 대기 계층 §5.2)', () =>
 
     expect(result).toMatchObject({ ok: true, operation_id: 'discard-1' });
   });
+
+  test('discards a parked attempt waiting on a user decision', async () => {
+    const env = setup();
+    // 2026-08-29 held-tile-discard §3 D3: the parked tile draws `폐기`, so the
+    // status has to be a discardable source or that button always refuses.
+    env.store.updateAttempt(workspace, {
+      attempt_id: 'att-1',
+      patch: {
+        status: 'parked',
+        cause: 'session_parked',
+        cause_detail: {
+          summary: '사용자 결정을 기다립니다',
+          awaiting_user_present: true
+        },
+        finished_at: 200
+      }
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({ ok: true, operation_id: 'discard-1' });
+  });
+
+  test('discards a retry_wait attempt holding an env rung', async () => {
+    const env = setup();
+    // 같은 정합 원칙: `retry_wait` 타일도 §5.1부터 foot `폐기`를 그린다.
+    env.store.updateAttempt(workspace, {
+      attempt_id: 'att-1',
+      patch: {
+        status: 'retry_wait',
+        cause: 'verify_failed:gh_observation_failed',
+        retry: {
+          cause: 'verify_failed:gh_observation_failed',
+          attempts: 1,
+          max: 3,
+          next_at: 400,
+          origin_attempt_id: 'att-1'
+        },
+        finished_at: 200
+      }
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({ ok: true, operation_id: 'discard-1' });
+  });
 });
 
 describe('worker discard coordinator unmerged lifecycle', () => {

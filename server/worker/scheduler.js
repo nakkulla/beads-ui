@@ -10040,6 +10040,14 @@ export function createScheduler(deps) {
     if (!updated.ok) {
       return { ok: false, reason: 'attempt_persist_failed' };
     }
+    // 2026-08-29 worker-held-tile-discard spec §4.2 (D2 사다리 포기): 폐기는
+    // env 사다리의 비-env 결말 중 하나이므로 그 bead의 lineage를 닫는다.
+    // `parked`·`waiting`은 `settleFailureTier`에서 이미 닫았고 `retry_wait`만
+    // lineage를 살려 둔 채 끝난다. 판정 입력은 정산 전 스냅샷 `attempt`다 —
+    // 위 패치 뒤의 레코드는 언제나 `discarded`라 조건이 항상 거짓이 된다.
+    if (attempt.status === 'retry_wait') {
+      closeRetryLineage(workspace, attempt.bead_id);
+    }
     await revertStamps(workspace, attempt_id, {
       bead_id: attempt.bead_id,
       prior: attempt.workflow_mode_prior ?? null

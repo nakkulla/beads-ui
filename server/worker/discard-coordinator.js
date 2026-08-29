@@ -20,10 +20,17 @@ const DISCARDABLE_ATTEMPT_STATUSES = new Set([
   'failed',
   'orphaned',
   'done',
-  // 2026-08-28 worker-prerequisite-wait-tier spec §5.2: `폐기` is the ONLY
-  // action that tile has, so a `waiting` attempt outside this set makes its one
-  // button answer `attempt_not_discardable` every time it is pressed.
-  'waiting'
+  // 2026-08-29 worker-held-tile-discard spec §3 D3 (정합 원칙): this set is the
+  // union of the statuses at the two places that draw a `폐기` button — the
+  // running-lane Worker attempt tile and the PR 대기 row's `done` attempt — so
+  // that no drawn button can answer `attempt_not_discardable`.
+  //
+  // That is why `waiting` is here (2026-08-28 worker-prerequisite-wait-tier
+  // §5.2: `폐기` is the ONLY action that tile has), and why the other two held
+  // statuses joined it.
+  'waiting',
+  'parked',
+  'retry_wait'
 ]);
 
 /**
