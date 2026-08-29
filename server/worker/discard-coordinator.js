@@ -20,10 +20,17 @@ const DISCARDABLE_ATTEMPT_STATUSES = new Set([
   'failed',
   'orphaned',
   'done',
-  // 2026-08-28 worker-prerequisite-wait-tier spec §5.2: `폐기` is the ONLY
-  // action that tile has, so a `waiting` attempt outside this set makes its one
-  // button answer `attempt_not_discardable` every time it is pressed.
-  'waiting'
+  // 2026-08-29 worker-held-tile-discard spec §3 D3 (정합 원칙): this set is the
+  // union of the statuses at the two places that draw a `폐기` button — the
+  // running-lane Worker attempt tile and the PR 대기 row's `done` attempt — so
+  // that no drawn button can answer `attempt_not_discardable`.
+  //
+  // That is why `waiting` is here (2026-08-28 worker-prerequisite-wait-tier
+  // §5.2: `폐기` is the ONLY action that tile has), and why the other two held
+  // statuses joined it.
+  'waiting',
+  'parked',
+  'retry_wait'
 ]);
 
 /**
@@ -581,10 +588,17 @@ export function createDiscardCoordinator(deps, options = {}) {
       }
     }
     if (operation.attempt_id) {
+      // 정산 전 status는 `captureSource`가 포착한 것을 넘긴다 (2026-08-29
+      // held-tile-discard §4.2): 이 단계는 `runner_terminated`가 저장되기 전에
+      // 죽으면 recovery가 다시 돌리는데, 그때 attempt 레코드는 이미 `discarded`라
+      // 스스로는 자기가 무엇이었는지 답하지 못한다.
       const settled = await deps.scheduler.finalizeDiscardAttempt(
         deps.workspace,
         operation.attempt_id,
-        operation.bead_id
+        operation.bead_id,
+        typeof operation.source_snapshot?.attempt_status === 'string'
+          ? operation.source_snapshot.attempt_status
+          : null
       );
       if (!settled.ok) {
         return { ok: false, reason: settled.reason || 'attempt_settle_failed' };

@@ -77,7 +77,8 @@ import { logPathTemplate } from './log-path.js';
  * (UI-5ym8 §3.1). 실패가 아니므로 큐는 계속 가고, 타일은 `cause_detail.summary`
  * 한 줄과 `재시도`·`폐기`만 싣는다.
  * @property {boolean} [retry_wait] - 환경성 실패의 backoff를 기다리는 attempt
- * (§3.3). 사람이 할 일이 없으므로 배지만 남고 조작은 없다.
+ * (§3.3). 배지가 상태를 말하므로 본문은 비고, 액션 foot에는 `폐기` 하나만 선다
+ * (2026-08-29 held-tile-discard §5.1) — 재시도는 사다리가 스스로 한다.
  * @property {boolean} [waiting] - 선행 미충족으로 착수를 거부하고 정상 종료한
  * attempt (선행 대기 계층 §5.2). 실패도 파킹도 아니므로 `재시도`가 없다 — 선행이
  * 닫히면 보통 후보로 저절로 돌아온다.
@@ -711,9 +712,12 @@ function sessionOpenButton(current) {
  * The body of a tile that is WAITING rather than running (UI-5ym8 §8, 선행 대기
  * 계층 §5.2).
  *
- * A `retry_wait` tile has no body at all: its badge already says how many tries
- * are left and when the next one fires, and there is nothing for a person to
- * do — adding a line would only make the grid taller while the queue works.
+ * A `retry_wait` tile carries the action foot and nothing else, and not even
+ * that when the projection withholds the button (2026-08-29 held-tile-discard
+ * §5.1): its badge already says how many tries are left and
+ * when the next one fires, so a summary line would only make the grid taller
+ * while the queue works. `재시도` is not there — the ladder retries by itself
+ * and `지금 재시도` is the queue header's operation.
  *
  * A `parked` tile has exactly two things to say: the one line the session left
  * behind, and the two exits. The buttons sit in an action foot rather than in
@@ -731,9 +735,8 @@ function sessionOpenButton(current) {
  * still blocked. No 이력 block either: this ending has no attempt history to
  * explain — the session never started.
  *
- * `parked` and `retry_wait` keep their bodies exactly as they were: no spec puts
- * a 4a chip on either, and widening the change would alter tiles this design
- * never judged.
+ * `parked` and `retry_wait` carry no 4a chip: no spec puts one on either, and
+ * widening the change would alter tiles this design never judged.
  *
  * @param {'parked'|'retry_wait'|'waiting'} kind
  * @param {FailureTile|WaitTile|null} held - 대기 중인 attempt의 투영.
@@ -745,7 +748,13 @@ function sessionOpenButton(current) {
  */
 function heldBodyTemplate(kind, held, discard_button, dependency_chips = '') {
   if (kind === 'retry_wait') {
-    return '';
+    // 스펙 §5.1: 뱃지 `↻ 재시도 대기 n/3 · HH:MM`이 이미 상태를 말하므로 본문은
+    // 비운다 (fail-quiet). foot에는 `폐기` 하나뿐이고, 투영이 그 버튼을 주지
+    // 않으면 재료 없는 줄이므로 foot 자체를 그리지 않는다.
+    if (!discard_button) {
+      return '';
+    }
+    return html`<div class="rtile__foot">${discard_button}</div>`;
   }
   const summary = summaryText(held?.summary);
   if (kind === 'waiting') {
