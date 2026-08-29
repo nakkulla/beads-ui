@@ -4,6 +4,11 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createCompletionIntentCoordinator } from './completion-intent.js';
 import { createMergeQueue } from './merge-queue.js';
+import {
+  __resetQueueEventsForTest,
+  emitQueueChanged,
+  onQueueChanged
+} from './queue-events.js';
 import { createQueueStore } from './queue-store.js';
 import { queueFilePath } from './state-paths.js';
 
@@ -3851,5 +3856,211 @@ describe('worker/merge-queue — automatic review dispatch (2026-08-28 §4)', ()
     expect(after.attempts['review:1'].authority_id).toBe(
       after.merge_queue[0].authority?.id
     );
+  });
+});
+
+describe('worker/merge-queue — 자기 알림 재드레인 고리 (UI-nfkp §4)', () => {
+  const MOVED_HEAD = 'b'.repeat(40);
+
+  /**
+   * The REAL process-wide bus on BOTH sides, which is the `attach.js` wiring
+   * and the only shape this loop exists in: everywhere else in this file
+   * `subscribeQueueChanged` is an array nothing ever emits into, so a driver
+   * built that way cannot hear itself.
+   */
+  function realBus() {
+    return {
+      subscribeQueueChanged: onQueueChanged,
+      notifyChanged: vi.fn(emitQueueChanged)
+    };
+  }
+
+  /**
+   * A stop switch the probes below trip after a fixed number of judgements.
+   *
+   * Not a behaviour under test. The loop these tests forbid is driven by
+   * microtasks alone, so it starves the macrotask `settle()` and an unguarded
+   * regression HANGS the file — no assertion, no test timeout — instead of
+   * failing. Tripping the switch turns that back into the plain count mismatch
+   * each test states.
+   *
+   * @param {number} [budget]
+   */
+  function loopGuard(budget = 5) {
+    let calls = 0;
+    /** @type {{ stop: () => void }|null} */
+    let driven = null;
+    return {
+      /** @param {{ stop: () => void }} mq */
+      arm(mq) {
+        driven = mq;
+      },
+      count() {
+        calls += 1;
+        if (calls >= budget && driven) {
+          driven.stop();
+        }
+      }
+    };
+  }
+
+  /**
+   * @param {string} reason
+   * @param {string} head_sha
+   */
+  function blockedProbe(reason, head_sha) {
+    return async () => ({
+      ok: false,
+      kind: /** @type {const} */ ('blocked'),
+      reason,
+      head_sha,
+      base_ref: 'main',
+      head_ref: 'UI-1',
+      external: false
+    });
+  }
+
+  /**
+   * Let every drain and timer already scheduled run to a stop.
+   *
+   * @param {number} [turns]
+   */
+  async function settle(turns = 3) {
+    for (let i = 0; i < turns; i += 1) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+
+  afterEach(() => {
+    __resetQueueEventsForTest();
+  });
+
+  test('settles a held row after a finite number of drains on a closed bus', async () => {
+    const store = seed(['UI-1']);
+    const bus = realBus();
+    const guard = loopGuard();
+    const blocked = blockedProbe('review_receipt_missing', MOVED_HEAD);
+    const probeMergeability = vi.fn(async () => {
+      guard.count();
+      return blocked();
+    });
+    const merge = vi.fn();
+    const mq = driver(store, { merge, probeMergeability, ...bus });
+    guard.arm(mq);
+
+    mq.start();
+    await settle();
+    const settled_probes = probeMergeability.mock.calls.length;
+    const settled_events = bus.notifyChanged.mock.calls.length;
+    await settle(5);
+
+    // ONE gate judgement, not one per turn. The driver both emits
+    // `queue-changed` and subscribes to it, so before UI-nfkp its end-of-drain
+    // notify walked straight back into `hasHeldEntry()` and asked for another
+    // pass — a loop that ran for as long as the hold stood.
+    expect(settled_probes).toBe(1);
+    // The in-pass `active` transition notifies did not set the latch either: a
+    // latch set inside the pass makes the outer `while` run one more, which
+    // would already have probed twice by the first settle.
+    expect(probeMergeability).toHaveBeenCalledTimes(settled_probes);
+    expect(bus.notifyChanged).toHaveBeenCalledTimes(settled_events);
+    expect(store.snapshot(WS).merge_queue[0].hold?.reason).toBe(
+      'review_receipt_missing'
+    );
+    mq.stop();
+  });
+
+  test('re-judges a held row when an external source emits on the real bus', async () => {
+    const store = seed(['UI-1']);
+    const bus = realBus();
+    const guard = loopGuard();
+    let current = false;
+    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
+      landMerge(store, bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const probeMergeability = vi.fn(async () => {
+      guard.count();
+      return current
+        ? {
+            ok: true,
+            kind: /** @type {const} */ ('clean'),
+            reason: null,
+            head_sha: MOVED_HEAD,
+            base_ref: 'main',
+            head_ref: 'UI-1',
+            external: false
+          }
+        : {
+            ok: false,
+            kind: /** @type {const} */ ('blocked'),
+            reason: 'review_receipt_missing',
+            head_sha: MOVED_HEAD,
+            base_ref: 'main',
+            head_ref: 'UI-1',
+            external: false
+          };
+    });
+    const mq = driver(store, { merge, probeMergeability, ...bus });
+    guard.arm(mq);
+    mq.start();
+    await settle();
+    const probes_while_held = probeMergeability.mock.calls.length;
+
+    // The receipt lands on the Bead and the PR observation pass fires — an
+    // event the driver did NOT emit. Excluding the driver's own event from the
+    // hold branch must leave this path untouched (UI-d7fy §3.3).
+    current = true;
+    emitQueueChanged(WS);
+    await settle();
+
+    expect(probeMergeability.mock.calls.length).toBeGreaterThan(
+      probes_while_held
+    );
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    mq.stop();
+  });
+
+  test('recovers from a transient snapshot read failure with no external event', async () => {
+    const store = seed(['UI-1']);
+    const originalSnapshot = store.snapshot.bind(store);
+    let snapshot_calls = 0;
+    // `processItem`'s fence is the 4th read of the first pass — after
+    // `promoteTerminalResolutions`, `headEntry`, and the `resolutionNeedsDrain`
+    // that the pick notify runs. The halt log asserted below is what pins that
+    // aim: a read order that drifts fails there instead of passing for some
+    // other reason.
+    const guardedSnapshot = (/** @type {string} */ workspace) => {
+      snapshot_calls += 1;
+      return snapshot_calls === 4 ? null : originalSnapshot(workspace);
+    };
+    const guarded_store = { ...store, snapshot: guardedSnapshot };
+    const bus = realBus();
+    /** @type {string[]} */
+    const lines = [];
+    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
+      landMerge(store, bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const mq = driver(guarded_store, {
+      merge,
+      log: (/** @type {string} */ line) => lines.push(line),
+      ...bus
+    });
+
+    mq.start();
+    await settle();
+
+    expect(
+      lines.some((line) => line.includes('queue snapshot unreadable'))
+    ).toBe(true);
+    // Nobody outside emitted. The end-of-drain notify is the ONLY signal that
+    // the read recovered, so `halted_on_snapshot` has to keep being re-checked
+    // on the driver's own event — which is why UI-nfkp §3.1 narrows exactly one
+    // branch of that callback and not the callback.
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    mq.stop();
   });
 });
