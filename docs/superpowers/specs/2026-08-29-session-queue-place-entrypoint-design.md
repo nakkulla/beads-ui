@@ -5,6 +5,7 @@ scope:
   - server/worker/queue-place.js
   - server/worker/queue-place.test.js
   - server/ws/worker-handlers.js
+  - server/ws/worker-fanout.js
   - server/app.js
 ---
 
@@ -69,17 +70,24 @@ scope:
     { "id": "s1", "entries": [] },
     { "id": "s2", "entries": [{ "bead_id": "UI-bbbb", "added_at": 0 }] }
   ],
-  "running": ["UI-cccc"],
-  "pr_wait": ["UI-dddd"]
+  "running": [{ "bead_id": "UI-cccc", "serial_lane_id": "s2" }],
+  "pr_wait": [{ "bead_id": "UI-dddd", "serial_lane_id": null }]
 }
 ```
 
 - `queueStore().snapshot(key)`를 그대로 투영한다. `lanes`는 `parallel` 뒤에
   `serial_lanes`를 앞에서 `serial_lane_count`개까지만 싣는다(UI-16b8 §4와 같은
   절단). `entries`는 대기 entries만이다.
-- `running`·`pr_wait`는 bead_id 목록이다. 레인이 비어 있어도 앞 항목이 아직 안
-  끝났음을 세션이 알기 위한 것이며, 새 필드를 만들지 않고 스냅샷의 기존 필드에서
-  id만 뽑는다.
+- `running`·`pr_wait`는 `{ bead_id, serial_lane_id }` 항목 목록이다. 레인이
+  비어 있어도 앞 항목이 아직 안 끝났음과 그 항목이 **어느 직렬 레인을 점유
+  중인지**를 세션이 알기 위한 것이다(§4.3 3단계가 `serial_lane_id`를 읽는다).
+  - `running`은 `attempts` 중 `status === 'running'`인 attempt(일시정지 포함 —
+    `rebindLineageLane`이 레인 점유를 유지하는 것과 같은 집합)를 bead당 하나로
+    모은 것이고, `serial_lane_id`는 그 attempt의 `serial_lane_id`(병렬이면
+    `null`)다.
+  - `pr_wait`는 스냅샷 `pr_wait` 행의 `bead_id`·`serial_lane_id`(legacy 행에
+    없으면 `null`)다.
+  - 새 durable 필드를 만들지 않고 스냅샷의 기존 필드에서만 뽑는다.
 - `root_dir` 검증은 `server/ws/workspace-target.js`의 `targetWorkspaceOf`와
   같은 규칙이다: 절대경로이고 `getAvailableWorkspaces()` allow-list에 있어야
   한다. HTTP에는 연결 워크스페이스가 없으므로 `root_dir`은 **필수**이고, 부재·
@@ -115,9 +123,23 @@ placeBeadInQueue(workspace_key, { bead_id, lane, index, expected_revision })
   // → { applied, conflict, admission_reason?, reason?, lane?, index?, queue }
 ```
 
-한 함수로 뽑는다. WS 핸들러는 이 함수를 부르고 envelope 응답·`fanout`만 남긴다.
-HTTP 라우트도 같은 함수를 부른다. 서버에 새 판단 로직은 없다(ADR 0009 유지).
+한 함수로 뽑는다. WS 핸들러는 이 함수를 부르고 envelope 응답만 남긴다. HTTP
+라우트도 같은 함수를 부른다. 서버에 새 판단 로직은 없다(ADR 0009 유지).
 `laneBlocksEdges` 호출도 함수 안으로 들어간다.
+
+**구독자 알림은 두 경로가 공유한다.** `queueStore().place`는 변경 이벤트를
+스스로 발행하지 않으므로(`fanout`은 지금 WS 핸들러가 `replyMutation` 뒤에 직접
+부른다), 추출 함수가 큐를 바꾼 뒤 — 배치 성공, admission 거부 기록
+(`recordAdmission`), stale 표시·`clearAdmission` 모두 — 이미 export된
+`fanout(workspace_key, queue)`(`server/ws/worker-handlers.js`)를 마지막 스냅샷으로
+한 번 부른다. WS 핸들러는 거부 분기의 명시적 `fanout(key, snap)`을 없애고 이
+함수에 맡기며, 성공 응답의 공용 `replyMutation`(성공 시 `fanout`을 부르는 다른
+WS 뮤테이션과 공유하는 helper)은 그대로 둔다 — 같은 스냅샷의 두 번째 push는
+`pushSnapshotIfChanged`가 거른다. 그래야
+HTTP로 배치해도 Worker 탭 구독자가 새 카드를 받고, `auto_advance`가 꺼져 있어도
+갱신이 온다. import 방향은 `queue-place.js → worker-handlers.js(fanout)`이므로
+순환이 생기면 `fanout`을 `server/ws/worker-fanout.js`로 옮기고 두 파일이 그것을
+import한다.
 
 ### 3.4 파일과 등록
 
@@ -220,9 +242,13 @@ HTTP 라우트도 같은 함수를 부른다. 서버에 새 판단 로직은 없
 ## 6. 검증
 
 - `server/worker/queue-place.test.js`: 거부·stale 통과·성공·conflict 네 경로가
-  WS 핸들러의 기존 동작과 같은 큐 상태를 만든다.
-- `server/routes/worker-queue.test.js`: GET 400(부재·상대경로·미등록)/200 투영,
-  POST 400/성공/거부/충돌/rejected.
+  WS 핸들러의 기존 동작과 같은 큐 상태를 만들고, 큐를 바꾼 세 경우(성공·거부
+  기록·clearAdmission) 각각 `fanout`이 마지막 스냅샷으로 정확히 한 번 불린다.
+- `server/routes/worker-queue.test.js`: GET 400(부재·상대경로·미등록)/200 투영
+  — `running`이 `status==='running'` attempt만 bead당 하나로, `serial_lane_id`가
+  attempt 값(병렬 `null`)으로, `pr_wait`가 행의 `serial_lane_id`(legacy `null`)로
+  나온다; POST 400/성공/거부/충돌/rejected, 그리고 HTTP 배치 성공 뒤 WS
+  구독자(`worker-queue-snapshot`)가 새 스냅샷을 받는다.
 - `server/ws/worker-handlers` 기존 테스트 무변경 통과(추출 리팩터 회귀).
 - Pre-Handoff Validation: `npm run tsc`, `npx vitest run --reporter=dot`,
   `npm run lint`, `npm run prettier:write`. 프런트엔드 소스 변경이 없으므로
