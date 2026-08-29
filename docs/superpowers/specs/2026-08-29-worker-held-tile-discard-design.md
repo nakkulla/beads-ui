@@ -168,7 +168,17 @@ if (kind === 'retry_wait') {
 | 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
 | --- | --- | --- | --- | --- | --- |
 
-형제·발견 행 없음 — 아래는 관찰 줄이다.
+형제·발견 행 없음.
+
+겹침(front-matter `scope`가 교차하는 비-`closed` Bead — 발행 전 수동 프로브):
+
+| Bead | 상태 | 공유 경로 | 관계 |
+| --- | --- | --- | --- |
+| `UI-h6t1` | open | `scheduler.js` | 다른 함수. h6t1은 `recordReceiptCheck`의 exec_receipt 판정·로그이고, 이 스펙은 `finalizeDiscardAttempt` 한 곳이다 |
+| `UI-jr8v` | deferred | `server/worker/`, `app/views/worker/` | 다른 절. jr8v는 공급자 장애를 `holdAttempt`·`provider_hold`로 보류하고, 이 스펙의 lineage 닫기는 env 사다리(`queue.lineages`)만 건드린다. jr8v가 새 held 상태를 더한다면 D3 정합 원칙대로 그 상태도 `DISCARDABLE_ATTEMPT_STATUSES`에 넣어야 한다 — 그 스펙이 흡수할 조정이다 |
+| `UI-ww5s` | deferred | `scheduler.js` | 다른 함수. ww5s는 `conflictPrompt`/`resolveConflict`의 self-review 결속이다 |
+
+관찰 줄:
 
 - 관찰: 워크트리가 만들어지기 전 spawn 실패(`spawn_failed`, `codex_home_prepare_failed`)로
   `retry_wait`가 된 attempt는 `captureSource`가 topology 부재 → `source_branch_unknown`으로
