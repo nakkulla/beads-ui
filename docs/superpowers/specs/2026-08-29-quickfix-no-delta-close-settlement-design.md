@@ -68,8 +68,13 @@ push 로그·배포 증거 없이 정산한다 — 은 beads-ui 소유다.
   base fetch·잔여 제거·fail-closed 분기·배포 없음·`bd` status 미기록은 전부 그대로다.
 - 파일 머리 설명("a session that refuted … closes it itself")과 `queue-store.js`의
   `quickfix_landing` typedef 주석("for a contract refuted close")을 두 종류(`refuted:`·
-  `no-delta:`)로 정정한다. `done_kind` typedef 주석에 이 두 값이 무변경 종결의 종류임을
-  한 줄 덧붙인다.
+  `no-delta:`)로 정정한다.
+- `queue-store.js` `Attempt` typedef에서 `done_kind`는 지금 "RETIRED merge-axis fields —
+  new attempts never write them" 묶음 안에 있다. 이 스펙이 다시 쓰므로 그 묶음에서 빼내
+  활성 속성으로 옮기고, 값을 명시한다: `@property {string|null} done_kind — 무변경 종결의
+  종류 (`'refuted'`·`'no_delta'`, quick_fix 착지가 씀); 그 밖의 값은 legacy 머지 축 기록`.
+  폐기 묶음의 나머지 필드와 `makeAttempt` 정규화(`fields.done_kind ?? null`)는 그대로다.
+  (스펙 리뷰 정정 — codex minor 1.)
 
 ### 3.2 `app/views/worker/lane-model.js`
 
