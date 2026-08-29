@@ -39,7 +39,6 @@ import {
 } from '../list-adapters.js';
 import {
   backupFreshWorkerStaleWork,
-  checkWorkerQueueAdmission,
   continueWorkerStaleWork,
   discardWorkerBead,
   dismissWorkerRepoOperation,
@@ -82,6 +81,7 @@ import {
 } from '../worker/merge-gate.js';
 import { sanitizeOutput } from '../worker/output-sanitize.js';
 import { onQueueChanged } from '../worker/queue-events.js';
+import { placeBeadInQueue } from '../worker/queue-place.js';
 import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
   COMPLETION_RETRY_MAX,
@@ -1039,13 +1039,15 @@ function beadLabelsFor(workspace_key, queue) {
  * the authoritative ordering input a lane mutation must apply (UI-04vo §3).
  * Edges naming a bead outside that set carry no in-lane ordering signal.
  *
+ * Exported for `worker/queue-place.js`, which runs the shared place body.
+ *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue - Normalized queue snapshot.
  * @param {unknown} lane
  * @param {string} bead_id
  * @returns {{ blocker: string, blockee: string }[]}
  */
-function laneBlocksEdges(workspace_key, queue, lane, bead_id) {
+export function laneBlocksEdges(workspace_key, queue, lane, bead_id) {
   if (typeof lane !== 'string' || !/^s[1-5]$/.test(lane)) {
     return [];
   }
@@ -3757,80 +3759,32 @@ export async function handleWorkerQueuePlace(ws, req) {
   if (key === null) {
     return;
   }
-  /** @type {import('../worker/admission.js').AdmissionResult | null} */
-  let admission = null;
-  try {
-    admission = await checkWorkerQueueAdmission(key, p.bead_id);
-  } catch (err) {
-    log('admission check failed for %s/%s: %o', key, p.bead_id, err);
-    admission = { ok: false, reason: 'git_error' };
-  }
-  if (admission && !admission.ok) {
-    const reason = admission.reason || 'git_error';
-    // Persist the refusal so the candidate badge renders it for EVERY client
-    // (the reply-only admission_reason was droppable — implementation review
-    // 2026-07-22 finding 4).
-    try {
-      queueStore().recordAdmission(key, { bead_id: p.bead_id, reason });
-    } catch (err) {
-      log('admission record failed for %s/%s: %o', key, p.bead_id, err);
-    }
-    const snap = queueStore().snapshot(key);
+  const outcome = await placeBeadInQueue(key, {
+    bead_id: p.bead_id,
+    lane: typeof p.lane === 'string' ? p.lane : undefined,
+    index: typeof p.index === 'number' ? p.index : undefined,
+    expected_revision: revisionOf(p)
+  });
+  if (typeof outcome.admission_reason === 'string') {
+    // The refusal's own fanout already happened inside the shared body; this
+    // reply only carries the reason back to the client that asked.
     ws.send(
       JSON.stringify(
         makeOk(req, {
           applied: false,
           conflict: false,
-          admission_reason: reason,
-          queue: decorateQueue(key, snap)
+          admission_reason: outcome.admission_reason,
+          queue: decorateQueue(key, outcome.queue)
         })
       )
     );
-    fanout(key, snap);
     return;
   }
-  const place_lane =
-    typeof p.lane === 'string' && /^s[1-5]$/.test(p.lane) ? p.lane : undefined;
-  let result = queueStore().place(key, {
-    expected_revision: revisionOf(p),
-    bead_id: p.bead_id,
-    lane: place_lane,
-    index: typeof p.index === 'number' ? p.index : undefined,
-    blocks_edges: laneBlocksEdges(
-      key,
-      queueStore().snapshot(key),
-      place_lane,
-      p.bead_id
-    )
+  replyMutation(ws, req, key, {
+    ok: outcome.applied,
+    conflict: outcome.conflict,
+    queue: outcome.queue
   });
-  if (result.ok) {
-    // A successful (admission-passed) placement clears any prior refusal —
-    // unless the pass itself observed a stale receipt (UI-dlim §3.2), in which
-    // case the placement REPLACES the refusal with the non-blocking stale mark
-    // so the queued row announces the in-session re-review from the moment it
-    // enters the lane.
-    const applied =
-      admission && admission.stale
-        ? queueStore().recordAdmission(key, {
-            bead_id: p.bead_id,
-            reason: 'spec_review_stale',
-            stale: true
-          })
-        : queueStore().clearAdmission(key, p.bead_id);
-    if (applied.ok) {
-      result = { ...result, queue: applied.queue };
-    }
-  }
-  replyMutation(ws, req, key, result);
-  if (result.ok) {
-    // A placement is the OTHER thing that can fill a free slot, and it is the
-    // only dispatch path a discarded bead has (discard spec §1): without this
-    // kick an auto_advance-ON queue would sit idle until the next attempt
-    // finished. Same fire-and-forget pattern as the toggle-ON tick.
-    Promise.resolve(tickWorkerQueue(key)).catch((err) => {
-      log('worker tick after place failed for %s: %o', key, err);
-    });
-  }
 }
 
 /**

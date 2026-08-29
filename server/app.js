@@ -14,6 +14,10 @@ import { claudeUsageHandler } from './routes/claude-usage.js';
 import { codexUsageHandler } from './routes/codex-usage.js';
 import { docHandler } from './routes/doc.js';
 import { repoOpsScriptHandler } from './routes/repo-ops-script.js';
+import {
+  workerQueueGetHandler,
+  workerQueuePlaceHandler
+} from './routes/worker-queue.js';
 
 /**
  * Bootstrap config handed to the client in the served HTML. Label visibility is
@@ -97,6 +101,11 @@ export function createApp(config) {
 
   // Fail-quiet Codex usage snapshot from the versioned codex-auth contract.
   app.get('/api/codex-usage', codexUsageHandler);
+
+  // Read the Worker waiting lanes, and place a bead into one, from a session
+  // that has no browser (UI-1gpj §3).
+  app.get('/api/worker/queue', workerQueueGetHandler);
+  app.post('/api/worker/queue/place', workerQueuePlaceHandler);
 
   // Switch the active account of one provider from the usage card.
   app.post('/api/claude-account/switch', claudeAccountSwitchHandler);
