@@ -92,6 +92,7 @@ import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import {
   RECEIPT_BASELINE_KEYS,
   RECEIPT_METADATA_KEYS,
+  blockingReceiptCodes,
   checkReceipts,
   receiptDefaultsFrom,
   receiptLineageForAttempt,
@@ -2385,7 +2386,11 @@ export function createScheduler(deps) {
         result = receiptProbeError('check_threw');
       }
     }
-    if (!result.ok) {
+    // Only a finding that would actually hold a merge is worth a warning line.
+    // The contract's `badge` grade is accounting residue — an external PR with
+    // no `exec_receipt` would otherwise log on every attempt while nothing is
+    // wrong.
+    if (blockingReceiptCodes(result).length > 0 || result.probe_error) {
       log(
         'receipt check unbacked for %s: probe_error=%o violations=%o',
         bead_id,

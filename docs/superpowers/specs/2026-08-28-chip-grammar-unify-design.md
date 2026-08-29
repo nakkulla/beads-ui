@@ -231,6 +231,7 @@ type="button" class="ctl-chip … judgement-chip" data-chip-key="<kind>" aria-ex
 | `세션 권장` | `session_preferred` | 워커로 돌릴 수 있지만 세션이 낫다 | `SESSION_PREFERRED_TOOLTIP[reason]` 한 줄 |
 | `worker-ineligible` | `ineligible` | 워커 실행 대상이 아니다 | `worker-ineligible 라벨이 붙어 있다 — 라벨은 이슈 상세의 라벨 절에서 뗀다` |
 | `리뷰 ✓` / `리뷰 stale` | `qfr` | 현행 상태 문장 | `missing[]` 목록(없으면 `빠진 항목 없음`) |
+| `영수증 · <code>` 정정(UI-h6t1) | `receipt` | 실행 영수증 회계 잔여 — 머지는 진행 | 코드별 한 줄(`RECEIPT_BADGE_TEXT`; 어휘 밖 코드는 코드 문자열 그대로) · 안내 `자동 머지 판정에는 영향이 없다 — 정정은 bd update --set-metadata exec_receipt=… 로` |
 
 - 팝업은 한 번에 하나다. 같은 칩을 다시 누르면 닫히고, 다른 칩을 누르면 바뀐다. 바깥
   클릭·Esc로 닫힌다. 카드가 재렌더돼도 열림 상태는 `bead_id + chip_key`로 유지된다.
@@ -239,6 +240,11 @@ type="button" class="ctl-chip … judgement-chip" data-chip-key="<kind>" aria-ex
   투영에만 있다, UI-49mc §3). 그 두 칩의 팝업은 두 탭에서 같다.
 - `복잡`의 `data-state`(unapplied/applied/diverged) 시각 상태는 유지한다. 상태가 무엇이든
   클릭은 팝업이다.
+- **정정(UI-h6t1).** `영수증` 칩이 다섯 번째 판정 칩으로 들어온다. 그리는 표면은 PR
+  대기 행(외부 PR 행 포함)뿐이고 두 탭이 같다 — 재료는 같은
+  `observations[bead_id].receipt_check.badge_codes`이며, 후보 카드는 attempt 관측이
+  없어 그 재료 자체가 없다. 자리는 슬롯 5(좌표·실행 사실)이고 근거는 카드 문법 스펙
+  §5.1 정정(UI-h6t1)이 소유한다.
 
 ### 4.6 `복잡` 사유 문장 (`app/utils/rec-settings.js`)
 

@@ -884,6 +884,21 @@ function objectOf(value) {
 }
 
 /**
+ * The DISPLAY-ONLY receipt codes on a `receipt_check` summary (UI-h6t1 §4.3).
+ * dotfiles 계약의 `badge` 등급이며, 서버가 `summarizeReceiptCheck`로 실어 보낸다.
+ * 부재·비배열·빈 문자열은 전부 빈 목록이다 (fail-quiet).
+ *
+ * @param {unknown} summary
+ * @returns {string[]}
+ */
+function receiptBadgeCodesOf(summary) {
+  const codes = objectOf(summary).badge_codes;
+  return Array.isArray(codes)
+    ? codes.filter((code) => typeof code === 'string' && code.length > 0)
+    : [];
+}
+
+/**
  * The 실행가능 card's exec chips (UI-eey2 §5): drawn ONLY when the issue pin
  * resolves to something different from the repo's own default, because the repo
  * default is what the deck tile says and repeating it on every card is noise.
@@ -2662,10 +2677,18 @@ export function buildLanes(workspaces, workspaces_state, options) {
         merged: !!cleanup || gate?.tier === 'merged'
       });
       const discard_blocks_merge = !!discard.operation;
+      // 회계 잔여 판정 칩의 재료 (UI-h6t1 §4.3). Worker 탭과 같은
+      // `receipt_check` 관측에서 오므로 두 탭이 같은 행을 같게 말한다 —
+      // hold는 Monitor도 이미 `gate.gate_badge`로 그린다. 코드가 없으면 필드도
+      // 없다 (fail-quiet).
+      const receipt_badge_codes = receiptBadgeCodesOf(observed.receipt_check);
       pr_wait.push({
         ...base(bead_id),
         lane: 'pr_wait',
         ...decoratedBlockedBy(bead_id),
+        ...(receipt_badge_codes.length > 0
+          ? { receipt_badge: { codes: receipt_badge_codes } }
+          : {}),
         // 대기 행과 같은 route 칩 재료 (UI-yrzu §5·§7.2).
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
         pr_number: typeof pr.number === 'number' ? pr.number : null,

@@ -881,16 +881,30 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
 
   test('refuses a merge whose execution receipt is unbacked', async () => {
     const h = makeActions({
-      bdMetadata: { exec_receipt: `main:bead@${'e'.repeat(40)}` }
+      bdMetadata: {
+        unit_plan: '한 유닛 | core:server/core.js',
+        exec_receipt: `delegated:sol:high@${'e'.repeat(40)}`
+      }
     });
 
     const result = await h.actions.merge(BEAD);
 
     expect(result).toMatchObject({
       ok: false,
-      reason: 'receipt_unbacked:main_receipt_unbacked'
+      reason: 'receipt_unbacked:unit_plan_mismatch'
     });
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  // 계약이 `badge` 등급으로 확정한 잔여는 머지를 잠그지 않는다 (UI-h6t1 §3.1).
+  test('merges a receipt whose only finding is the badge grade', async () => {
+    const h = makeActions({
+      bdMetadata: { exec_receipt: `main:bead@${'e'.repeat(40)}` }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, action: 'merged' });
   });
 
   test('merges an unbacked receipt under a manual authority bound to this head', async () => {
@@ -906,7 +920,10 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     const h = makeActions({
       store,
       details: [prOf({ head_sha })],
-      bdMetadata: { exec_receipt: `main:bead@${'e'.repeat(40)}` }
+      bdMetadata: {
+        unit_plan: '한 유닛 | core:server/core.js',
+        exec_receipt: `delegated:sol:high@${'e'.repeat(40)}`
+      }
     });
 
     const result = await h.actions.merge(BEAD);
@@ -931,14 +948,17 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     const h = makeActions({
       store,
       details: [prOf({ head_sha: 'a'.repeat(40) })],
-      bdMetadata: { exec_receipt: `main:bead@${'e'.repeat(40)}` }
+      bdMetadata: {
+        unit_plan: '한 유닛 | core:server/core.js',
+        exec_receipt: `delegated:sol:high@${'e'.repeat(40)}`
+      }
     });
 
     const result = await h.actions.merge(BEAD);
 
     expect(result).toMatchObject({
       ok: false,
-      reason: 'receipt_unbacked:main_receipt_unbacked'
+      reason: 'receipt_unbacked:unit_plan_mismatch'
     });
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });
@@ -1052,18 +1072,16 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });
 
-  test('holds a takeover receipt whose lineage no attempt can prove', async () => {
+  // 계보를 볼 수 없다는 사실은 이제 관측 실패가 아니라 그 자체가 `badge` 잔여다
+  // (UI-h6t1 §3.1) — 머지는 진행하고 코드만 남는다.
+  test('merges a takeover receipt whose lineage no attempt can prove', async () => {
     const h = makeActions({
       bdMetadata: { exec_receipt: `main:takeover@${'e'.repeat(40)}` }
     });
 
     const result = await h.actions.merge(BEAD);
 
-    expect(result).toMatchObject({
-      ok: false,
-      reason: 'receipt_unbacked:probe_error'
-    });
-    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ ok: true, action: 'merged' });
   });
 
   test('fails closed when the ancestry probe cannot answer', async () => {

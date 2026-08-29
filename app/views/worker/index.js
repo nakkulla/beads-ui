@@ -735,6 +735,27 @@ export function receiptWarningCodes(summary) {
 }
 
 /**
+ * The DISPLAY-ONLY receipt codes a recorded observation carries (UI-h6t1 §4.2)
+ * — dotfiles 계약의 `badge` 등급이다. 머지 판정을 바꾸지 않으므로 상태 뱃지가
+ * 아니라 슬롯 5 판정 칩 하나가 된다.
+ *
+ * Same fail-quiet posture as {@link receiptWarningCodes}: 부재·비배열·빈
+ * 문자열은 전부 빈 목록이다.
+ *
+ * @param {unknown} summary
+ * @returns {string[]}
+ */
+export function receiptBadgeCodes(summary) {
+  if (!summary || typeof summary !== 'object') {
+    return [];
+  }
+  const codes = /** @type {Record<string, unknown>} */ (summary).badge_codes;
+  return Array.isArray(codes)
+    ? codes.filter((code) => typeof code === 'string' && code.length > 0)
+    : [];
+}
+
+/**
  * Resolve every PR-card status input to one priority-ordered badge. The first
  * match is the state the user must read or act on now; lower-grade failure
  * facts remain in its tooltip instead of stacking another badge (UI-vkk8 §3).
@@ -1250,6 +1271,9 @@ function prWaitRow(
     status_badge?.live === true && status_badge.title
       ? html`<span title=${status_badge.title}>${status_badge.label}</span>`
       : status_badge?.label || null;
+  const receipt_badge_codes = receiptBadgeCodes(
+    obs && obs.receipt_check ? obs.receipt_check : null
+  );
   return {
     id: bead_id,
     title: external ? html`${title}<span class="muted"> · 세션</span>` : title,
@@ -1283,6 +1307,11 @@ function prWaitRow(
     typeof completion.log_path === 'string' &&
     completion.log_path.length > 0
       ? { log_path: completion.log_path }
+      : {}),
+    // 회계 잔여 판정 칩의 재료 (UI-h6t1 §4.2). 코드가 하나도 없으면 필드 자체를
+    // 넘기지 않는다 — 빈 배열은 행이 그릴 것 없는 칩을 판정하게 만든다.
+    ...(receipt_badge_codes.length > 0
+      ? { receipt_badge: { codes: receipt_badge_codes } }
       : {}),
     badges: rendered_status_badge ? [rendered_status_badge] : [],
     // Which badge (if any) reports live server activity rather than a settled
@@ -2798,6 +2827,22 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {any[]}
    */
   function prWaitRows(m) {
+    // 판정 팝업의 열림은 모델이 아니라 클릭이 바꾼다 (UI-h6t1 §4.2): 메모는 무거운
+    // 투영만 재사용하고, `chip_popover`는 렌더마다 다시 얹는다.
+    return prWaitRowsOf(m).map((/** @type {any} */ row) => ({
+      ...row,
+      chip_popover: popoverOf(row)
+    }));
+  }
+
+  /**
+   * The memoized part of {@link prWaitRows} — everything that depends only on
+   * the lane model and the current snapshot.
+   *
+   * @param {LaneModel} m
+   * @returns {any[]}
+   */
+  function prWaitRowsOf(m) {
     if (pr_wait_memo && pr_wait_memo.model === m) {
       return pr_wait_memo.rows;
     }

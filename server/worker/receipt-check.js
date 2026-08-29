@@ -14,9 +14,10 @@
  *
  * Two postures live here on purpose:
  *   - Receipt violations are FAIL-CLOSED at the merge gate only (spec §4). They
- *     never fail an attempt.
+ *     never fail an attempt, and only the contract's `hold` grade
+ *     ({@link EXEC_RECEIPT_MERGE_GATE}) holds a merge at all.
  *   - `verify_receipt` findings are DISPLAY-ONLY: {@link RECEIPT_DISPLAY_ONLY_CODES}
- *     names them so the gate can drop them from its blocking set.
+ *     names them, and they belong to neither grade.
  *
  * @import { DelegationSession } from './queue-store.js'
  */
@@ -64,6 +65,41 @@ export const RECEIPT_DISPLAY_ONLY_CODES = new Set([
 ]);
 
 /**
+ * The contract's two grades for an `exec_receipt` finding, copied here as a
+ * code-level field registry (ADR 0012). dotfiles
+ * `workflow-state.yaml metadata.parent_keys.exec_receipt.merge_gate` OWNS the
+ * split; beads-ui only consumes it, so a code that is in neither list is in
+ * neither grade and this module never invents a third meaning for it.
+ *
+ * @type {Readonly<{ hold: ReadonlyArray<string>, badge: ReadonlyArray<string> }>}
+ */
+export const EXEC_RECEIPT_MERGE_GATE = Object.freeze({
+  hold: Object.freeze([
+    'unit_plan_mismatch',
+    'approval_forged',
+    'dispatch_forged',
+    'mode_authority_forged',
+    'non_ancestor',
+    'ancestry_probe_error'
+  ]),
+  badge: Object.freeze([
+    'absent',
+    'unparsable',
+    'effort_unknown',
+    'main_reason_retired',
+    'main_receipt_unbacked',
+    'takeover_lineage_missing',
+    'takeover_lineage_unobservable'
+  ])
+});
+
+/** @type {ReadonlySet<string>} */
+const HOLD_CODES = new Set(EXEC_RECEIPT_MERGE_GATE.hold);
+
+/** @type {ReadonlySet<string>} */
+const BADGE_CODES = new Set(EXEC_RECEIPT_MERGE_GATE.badge);
+
+/**
  * The five keys an attempt snapshots before its first metadata write (spec §2).
  * "Appeared or changed" is only sayable against this exact snapshot.
  *
@@ -106,16 +142,17 @@ export const RECEIPT_METADATA_KEYS = [
  * @property {boolean} ok - True when no violation of ANY kind was observed.
  * @property {ReceiptViolation[]} violations
  * @property {Record<string, unknown>} checks - What was judged, for display.
- * @property {boolean} probe_error - The observation itself failed, or one
- * element's backing could not be observed. Either way the verdict is unproven,
- * which the merge gate holds on and the board renders as nothing.
+ * @property {boolean} probe_error - The observation itself could not be made —
+ * the bead was unreadable, or the checker threw. The verdict is unproven, which
+ * the merge gate holds on and the board renders as nothing.
  */
 
 /**
  * @typedef {Object} ReceiptLineageInput
  * @property {boolean} supported - False when this attempt's delegation legs are
- * outside the monitor's reach. That makes `main:takeover` UNPROVEN — a probe
- * error, not a pass and not a forgery finding.
+ * outside the monitor's reach. That leaves `main:takeover` UNPROVEN, which the
+ * contract grades `takeover_lineage_unobservable` — accounting residue, not a
+ * pass and not a forgery finding.
  * @property {DelegationSession[]} sessions
  * @property {string|null} resolved_impl_model
  */
@@ -163,13 +200,13 @@ export function receiptProbeError(detail) {
 }
 
 /**
- * The violation codes that may hold a merge (spec §4) — every code except the
- * display-only `verify_receipt_*` pair.
+ * The distinct codes in a result that fall in one grade.
  *
  * @param {ReceiptCheckResult|null|undefined} result
+ * @param {ReadonlySet<string>} grade
  * @returns {string[]}
  */
-export function blockingReceiptCodes(result) {
+function receiptCodesIn(result, grade) {
   if (!result || !Array.isArray(result.violations)) {
     return [];
   }
@@ -177,15 +214,34 @@ export function blockingReceiptCodes(result) {
   const codes = [];
   for (const violation of result.violations) {
     const code = str(violation?.code);
-    if (
-      code &&
-      !RECEIPT_DISPLAY_ONLY_CODES.has(code) &&
-      !codes.includes(code)
-    ) {
+    if (code && grade.has(code) && !codes.includes(code)) {
       codes.push(code);
     }
   }
   return codes;
+}
+
+/**
+ * The violation codes that may hold a merge — the contract's `hold` grade and
+ * nothing else. A `badge` finding is accounting residue the contract says must
+ * not change behaviour, and `verify_receipt_*` is in neither grade.
+ *
+ * @param {ReceiptCheckResult|null|undefined} result
+ * @returns {string[]}
+ */
+export function blockingReceiptCodes(result) {
+  return receiptCodesIn(result, HOLD_CODES);
+}
+
+/**
+ * The violation codes that are DISPLAY-ONLY accounting residue — the contract's
+ * `badge` grade. The gate passes them; the PR 대기 행 draws them.
+ *
+ * @param {ReceiptCheckResult|null|undefined} result
+ * @returns {string[]}
+ */
+export function badgeReceiptCodes(result) {
+  return receiptCodesIn(result, BADGE_CODES);
 }
 
 /**
@@ -262,7 +318,7 @@ export function receiptGateState(result) {
  * an empty "clean" summary that would read as evidence.
  *
  * @param {ReceiptCheckResult|null|undefined} result
- * @returns {{ ok: boolean, probe_error: boolean, codes: string[], blocking_codes: string[] }|null}
+ * @returns {{ ok: boolean, probe_error: boolean, codes: string[], blocking_codes: string[], badge_codes: string[] }|null}
  */
 export function summarizeReceiptCheck(result) {
   if (!result || typeof result !== 'object') {
@@ -282,7 +338,8 @@ export function summarizeReceiptCheck(result) {
     ok: result.ok === true,
     probe_error: result.probe_error === true,
     codes,
-    blocking_codes: blockingReceiptCodes(result)
+    blocking_codes: blockingReceiptCodes(result),
+    badge_codes: badgeReceiptCodes(result)
   };
 }
 
@@ -339,25 +396,29 @@ function parseUnitPlanNames(value) {
  * Judge ONE receipt string's form. Parsing is delegated to
  * {@link parseExecReceipt} so the effort vocabulary has exactly one owner: a
  * `delegated:<model>:<effort>@<sha>` receipt and its historical
- * `delegated:<model>@<sha>` form are both well-formed, and only a trailing
- * segment that is NOT an effort token is malformed.
+ * `delegated:<model>@<sha>` form are both well-formed.
+ *
+ * The two failure codes are the contract's, not a severity judgement made here:
+ * a value nobody can read at all is `unparsable`, while a value whose model,
+ * SHA and shape are all fine and whose only defect is a trailing segment
+ * outside the effort vocabulary is `effort_unknown`.
  *
  * @param {string} value
- * @returns {{ ok: true, parsed: { kind: string, actor: string, effort: string|null, sha: string } }|{ ok: false, detail: string }}
+ * @returns {{ ok: true, parsed: { kind: string, actor: string, effort: string|null, sha: string } }|{ ok: false, code: 'unparsable'|'effort_unknown', detail: string }}
  */
 function parseReceiptForm(value) {
   const parsed = parseExecReceipt(value);
   if (!parsed) {
-    return { ok: false, detail: value };
+    return { ok: false, code: 'unparsable', detail: value };
   }
   if (parsed.kind === 'delegated' && parsed.effort === null) {
     const cut = parsed.actor.lastIndexOf(':');
     if (cut >= 0 && !DELEGATED_EFFORT_TOKENS.has(parsed.actor.slice(cut + 1))) {
-      return { ok: false, detail: value };
+      return { ok: false, code: 'effort_unknown', detail: value };
     }
   }
   if (parsed.actor.length === 0) {
-    return { ok: false, detail: value };
+    return { ok: false, code: 'unparsable', detail: value };
   }
   return { ok: true, parsed };
 }
@@ -392,13 +453,13 @@ function takeoverLineage(lineage) {
 /**
  * Judge one well-formed receipt against the state that must back it.
  *
- * `undecidable` is NOT a pass: it says the backing could not be observed, and
- * the caller turns it into a probe error so the merge gate holds while the
- * board stays quiet (spec §4).
+ * An unobservable lineage is NOT a pass either — it is its own finding, and the
+ * contract grades that finding `badge`, so it is recorded and displayed while
+ * the merge proceeds.
  *
  * @param {{ kind: string, actor: string, effort: string|null, sha: string }} parsed
  * @param {{ metadata: Record<string, unknown>, defaults: ReceiptDefaultsInput|null|undefined, lineage: ReceiptLineageInput|null|undefined }} ctx
- * @returns {{ violations: ReceiptViolation[], notes: Record<string, unknown>, undecidable?: boolean }}
+ * @returns {{ violations: ReceiptViolation[], notes: Record<string, unknown> }}
  */
 function backingFor(parsed, ctx) {
   /** @type {ReceiptViolation[]} */
@@ -470,14 +531,17 @@ function backingFor(parsed, ctx) {
       detail: 'no terminal implementation delegation matches the resolved model'
     });
   }
-  // A lineage nobody can read leaves `main:takeover` UNPROVEN. The approved
-  // predicate grants no exemption for a runtime the monitor cannot see, so the
-  // observation fails closed at the gate rather than passing quietly.
-  return {
-    violations,
-    notes,
-    ...(lineage_state === 'undecidable' ? { undecidable: true } : {})
-  };
+  // A lineage nobody can read leaves `main:takeover` UNPROVEN, and the contract
+  // gives that ignorance its own code rather than the probe-error channel: the
+  // observation is recorded and shown, and only a failure to observe the BEAD
+  // ITSELF still fails closed.
+  if (lineage_state === 'undecidable') {
+    violations.push({
+      code: 'takeover_lineage_unobservable',
+      detail: 'delegation lineage is outside the monitor reach'
+    });
+  }
+  return { violations, notes };
 }
 
 /**
@@ -495,6 +559,65 @@ function baselineDelta(metadata, baseline, key) {
       ? /** @type {string} */ (metadata[key])
       : null;
   return { changed: from !== to, from, to };
+}
+
+/**
+ * Bind ONE parsed receipt SHA to the observed PR head, by the same ancestry
+ * rule `impl_review` uses (contract `ancestry_rule: same_as_impl_review`): a
+ * receipt issued on a commit the head descends from still reads current, so a
+ * base-sync merge does not invalidate it.
+ *
+ * A caller with no head and no probe is a DISPLAY caller, and a surface with no
+ * authority judges nothing — `unproven` is that abstention. The gate, which
+ * always passes both, fails closed on a probe it could not take.
+ *
+ * @param {string} sha
+ * @param {string[]} heads
+ * @param {((receipt_sha: string, head_sha: string) => Promise<string>)|undefined} probeAncestry
+ * @param {string} label - `<unit>:` prefix for a multi-unit receipt, else empty.
+ * @returns {Promise<{ ancestry: string, violation: ReceiptViolation|null }>}
+ */
+async function receiptAncestry(sha, heads, probeAncestry, label) {
+  if (heads.length === 0 || typeof probeAncestry !== 'function') {
+    return { ancestry: 'unproven', violation: null };
+  }
+  if (heads.includes(sha)) {
+    return { ancestry: 'equal', violation: null };
+  }
+  let probe_failed = false;
+  for (const head of heads) {
+    /** @type {string} */
+    let ancestry;
+    try {
+      ancestry = await probeAncestry(sha, head);
+    } catch {
+      probe_failed = true;
+      continue;
+    }
+    if (ancestry === 'probe_error') {
+      probe_failed = true;
+      continue;
+    }
+    if (ancestry === 'equal' || ancestry === 'ancestor') {
+      return { ancestry: 'ancestor', violation: null };
+    }
+  }
+  if (probe_failed) {
+    return {
+      ancestry: 'probe_error',
+      violation: {
+        code: 'ancestry_probe_error',
+        detail: `${label}${sha} ancestry against ${heads[0]} is unobservable`
+      }
+    };
+  }
+  return {
+    ancestry: 'non_ancestor',
+    violation: {
+      code: 'non_ancestor',
+      detail: `${label}${sha} not in ${heads[0]}`
+    }
+  };
 }
 
 /**
@@ -589,10 +712,6 @@ export async function checkReceipts(input) {
   const violations = [];
   /** @type {Record<string, unknown>} */
   const checks = {};
-  // Set when an element's backing could not be observed at all. It is neither a
-  // violation nor a pass, so it leaves through the probe-error channel: the
-  // merge gate holds, the board stays quiet (spec §4).
-  let undecidable = false;
 
   const heads = (
     Array.isArray(input.head)
@@ -614,6 +733,10 @@ export async function checkReceipts(input) {
   const unit_names = parseUnitPlanNames(metadata.unit_plan);
   checks.unit_plan = unit_names;
   if (receipt_raw === null) {
+    // Absence is a finding, not silence: the contract grades it `badge` so the
+    // discipline stays observable on rows that never recorded one (historical
+    // beads, external-session PRs) without holding their merge.
+    violations.push({ code: 'absent', detail: 'exec_receipt' });
     checks.exec_receipt = null;
   } else {
     const items = parseUnitReceipts(receipt_raw);
@@ -626,7 +749,7 @@ export async function checkReceipts(input) {
         const form = parseReceiptForm(item.receipt);
         if (!form.ok) {
           violations.push({
-            code: 'exec_receipt_malformed',
+            code: form.code,
             detail: `${item.unit}:${form.detail}`
           });
           unit_checks.push({ unit: item.unit, malformed: true });
@@ -634,13 +757,22 @@ export async function checkReceipts(input) {
         }
         const backing = backingFor(form.parsed, ctx);
         violations.push(...backing.violations);
-        undecidable = undecidable || backing.undecidable === true;
+        const ancestry = await receiptAncestry(
+          form.parsed.sha,
+          heads,
+          input.probeAncestry,
+          `${item.unit}:`
+        );
+        if (ancestry.violation) {
+          violations.push(ancestry.violation);
+        }
         unit_checks.push({
           unit: item.unit,
           kind: form.parsed.kind,
           actor: form.parsed.actor,
           effort: form.parsed.effort,
           sha: form.parsed.sha,
+          ancestry: ancestry.ancestry,
           ...backing.notes
         });
       }
@@ -661,19 +793,28 @@ export async function checkReceipts(input) {
       const form = parseReceiptForm(receipt_raw);
       if (!form.ok) {
         violations.push({
-          code: 'exec_receipt_malformed',
+          code: form.code,
           detail: form.detail
         });
         checks.exec_receipt = { malformed: true };
       } else {
         const backing = backingFor(form.parsed, ctx);
         violations.push(...backing.violations);
-        undecidable = undecidable || backing.undecidable === true;
+        const ancestry = await receiptAncestry(
+          form.parsed.sha,
+          heads,
+          input.probeAncestry,
+          ''
+        );
+        if (ancestry.violation) {
+          violations.push(ancestry.violation);
+        }
         checks.exec_receipt = {
           kind: form.parsed.kind,
           actor: form.parsed.actor,
           effort: form.parsed.effort,
           sha: form.parsed.sha,
+          ancestry: ancestry.ancestry,
           ...backing.notes
         };
         if (unit_names !== null) {
@@ -737,9 +878,11 @@ export async function checkReceipts(input) {
   checks.verify_receipt = verify.notes;
 
   return {
-    ok: violations.length === 0 && !undecidable,
+    ok: violations.length === 0,
     violations,
     checks,
-    probe_error: undecidable
+    // Only a failure to observe the BEAD reaches here as a probe error, and
+    // that leaves through {@link receiptProbeError} above.
+    probe_error: false
   };
 }
