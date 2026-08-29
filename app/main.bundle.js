@@ -2101,8 +2101,8 @@ ${l}</pre
     aria-label="라이브 세션 열기"
   >
     ▤ 세션
-  </button>`}function ay(e,t,n){if(e==="retry_wait")return"";let r=Jb(t?.summary);if(e==="waiting")return c`${r?c`<p class="rtile__held-summary">${r}</p>`:""}
-      <div class="rtile__foot">${n}</div>`;let o=gp(t);return c`${r?c`<p class="rtile__held-summary">${r}</p>`:""}${o}
+  </button>`}function ay(e,t,n,r=""){if(e==="retry_wait")return"";let o=Jb(t?.summary);if(e==="waiting")return c`${o?c`<p class="rtile__held-summary">${o}</p>`:""}${r}
+      <div class="rtile__foot">${n}</div>`;let s=gp(t);return c`${o?c`<p class="rtile__held-summary">${o}</p>`:""}${s}
     <div class="rtile__foot">
       <button
         type="button"
@@ -2214,7 +2214,7 @@ ${l}</pre
       </div>
     </div>
     <div class="rtile__title">${e.title}</div>
-    ${m?ay(a?"parked":u?"retry_wait":"waiting",a?f:b,Ze):i?"":c`${z}${e.rollup?ws(e.rollup,{parent_id:e.bead_id,expanded:e.rollup_expanded===!0,childChips:ea}):""}
+    ${m?ay(a?"parked":u?"retry_wait":"waiting",a?f:b,Ze,d?Z:""):i?"":c`${z}${e.rollup?ws(e.rollup,{parent_id:e.bead_id,expanded:e.rollup_expanded===!0,childChips:ea}):""}
             ${I?c`<div class="rtile__landing">
                   <span
                     class="merge-step${I.failed?" merge-step--failed":""}"

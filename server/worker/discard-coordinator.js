@@ -19,7 +19,11 @@ const DISCARDABLE_ATTEMPT_STATUSES = new Set([
   'paused',
   'failed',
   'orphaned',
-  'done'
+  'done',
+  // 2026-08-28 worker-prerequisite-wait-tier spec §5.2: `폐기` is the ONLY
+  // action that tile has, so a `waiting` attempt outside this set makes its one
+  // button answer `attempt_not_discardable` every time it is pressed.
+  'waiting'
 ]);
 
 /**

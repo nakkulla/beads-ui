@@ -1367,6 +1367,38 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     expect(tile?.querySelector('.rtile__parked-retry')).toBeNull();
     expect(tile?.querySelector('.rtile__pause')).toBeNull();
   });
+
+  test('draws the blocker chip on a waiting tile', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'waiting',
+              started_at: NOW - 100,
+              finished_at: NOW - 50,
+              cause: 'prerequisite_unmet',
+              cause_detail: {
+                summary: '선행 미충족으로 착수하지 않았습니다',
+                blockers: [{ id: 'A-9', rig: null, status: 'open' }],
+                bead_status: 'open'
+              }
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const tile = el(mount, '.rtile[data-attempt-id="t1"]');
+    expect(tile?.querySelector('.worker-dep--pred')?.textContent).toContain(
+      '⛓ A-9'
+    );
+  });
 });
 
 describe('views/monitor [대기로 ↴] lane menu (UI-e6hw §6)', () => {

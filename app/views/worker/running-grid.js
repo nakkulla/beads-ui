@@ -720,19 +720,30 @@ function sessionOpenButton(current) {
  * the header, because the header's right end already carries 상태 (카드 문법
  * §5.1) and two more buttons there push it onto a second line at narrow widths.
  *
- * A `waiting` tile says the same one line and offers `폐기` ONLY. No `재시도`,
- * because the blocker closing re-dispatches the bead by itself (§3 D3) and a
- * button that races that would spend a session on a bead that is still blocked.
- * No 이력 block either: this ending has no attempt history to explain — the
- * session never started.
+ * A `waiting` tile says the same one line, then the slot-4a 의존 칩, then `폐기`
+ * ONLY. That order is the card grammar's line order (제목 → 진행 → 의존 칩 4a →
+ * 액션 foot). The chips have to be drawn HERE because the non-held branch below
+ * is the only other place that emits them, so a held tile would otherwise lose
+ * the one fact this ending is about — which bead it is waiting on (§2·§5.1·§6).
+ *
+ * No `재시도`, because the blocker closing re-dispatches the bead by itself
+ * (§3 D3) and a button that races that would spend a session on a bead that is
+ * still blocked. No 이력 block either: this ending has no attempt history to
+ * explain — the session never started.
+ *
+ * `parked` and `retry_wait` keep their bodies exactly as they were: no spec puts
+ * a 4a chip on either, and widening the change would alter tiles this design
+ * never judged.
  *
  * @param {'parked'|'retry_wait'|'waiting'} kind
  * @param {FailureTile|WaitTile|null} held - 대기 중인 attempt의 투영.
  * @param {import('lit-html').TemplateResult|''} discard_button - 실패 타일이 쓰는
  * `.rtile__discard` 그대로. 같은 정리이므로 두 번째 조작을 만들지 않는다.
+ * @param {import('lit-html').TemplateResult|''} [dependency_chips] - 슬롯 4a 칩,
+ * 이미 계산된 것 그대로. 재료가 없으면 `''`이라 줄이 통째로 빠진다 (fail-quiet).
  * @returns {import('lit-html').TemplateResult|''}
  */
-function heldBodyTemplate(kind, held, discard_button) {
+function heldBodyTemplate(kind, held, discard_button, dependency_chips = '') {
   if (kind === 'retry_wait') {
     return '';
   }
@@ -740,7 +751,7 @@ function heldBodyTemplate(kind, held, discard_button) {
   if (kind === 'waiting') {
     return html`${summary
         ? html`<p class="rtile__held-summary">${summary}</p>`
-        : ''}
+        : ''}${dependency_chips}
       <div class="rtile__foot">${discard_button}</div>`;
   }
   // 파킹 타일도 같은 블록을 싣는다 (§9): 팝오버가 없는 타일이므로 이력이
@@ -1070,7 +1081,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ? heldBodyTemplate(
           parked ? 'parked' : retry_wait ? 'retry_wait' : 'waiting',
           parked ? park : wait,
-          discard_button
+          discard_button,
+          waiting ? monitor_deps : ''
         )
       : failed
         ? ''

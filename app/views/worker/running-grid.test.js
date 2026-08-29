@@ -2029,6 +2029,68 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     expect(mount.querySelector('.rtile__failure-badge')).toBeNull();
     expect(mount.querySelector('.rtile__pause')).toBeNull();
   });
+
+  test('draws the slot 4a blocker chip in the held body', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        waitTile({
+          dependency_chips: {
+            predecessors: [{ id: 'Analysis-2zly', label: '⛓ Analysis-2zly' }]
+          }
+        }),
+        5000,
+        null,
+        {
+          monitor: /** @type {any} */ ({
+            dependency_chips: {
+              predecessors: [{ id: 'Analysis-2zly', label: '⛓ Analysis-2zly' }]
+            }
+          })
+        }
+      ),
+      mount
+    );
+
+    expect(mount.querySelector('.worker-dep--pred')?.textContent).toContain(
+      '⛓ Analysis-2zly'
+    );
+  });
+
+  test('orders the blocker chip between the summary and the 폐기 foot', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(waitTile(), 5000, null, {
+        monitor: /** @type {any} */ ({
+          dependency_chips: {
+            predecessors: [{ id: 'Analysis-2zly', label: '⛓ Analysis-2zly' }]
+          }
+        })
+      }),
+      mount
+    );
+
+    const order = Array.from(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('.rtile')
+      ).querySelectorAll('.rtile__held-summary, .worker-deps, .rtile__foot')
+    ).map((node) => node.className.split(' ')[0]);
+    expect(order).toEqual([
+      'rtile__held-summary',
+      'worker-deps',
+      'rtile__foot'
+    ]);
+  });
+
+  test('draws no dependency row when the tile carries no chips', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([waitTile()]), mount);
+
+    expect(mount.querySelector('.worker-deps')).toBeNull();
+  });
 });
 
 describe('worker 실패 팝오버의 §6 재료 (UI-5ym8 §8)', () => {

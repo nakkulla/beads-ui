@@ -1573,6 +1573,48 @@ describe('views/worker', () => {
     expect(tile.querySelector('.rtile__failure-badge')).toBeNull();
   });
 
+  // 슬롯 4a 의존 칩은 이 결말이 답하는 유일한 사실 — 무엇을 기다리는가 — 이므로
+  // held 본문이 그린다 (선행 대기 계층 §2·§5.1·§6).
+  test('draws the blocker chip on a waiting tile', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'W1', added_at: 0 }],
+        attempts: {
+          aw: {
+            attempt_id: 'aw',
+            bead_id: 'W1',
+            status: 'waiting',
+            runner: 'claude',
+            model: 'opus',
+            started_at: Date.now() - 5000,
+            finished_at: Date.now() - 1000,
+            cause: 'prerequisite_unmet',
+            cause_detail: {
+              summary: '선행 미충족으로 착수하지 않았습니다',
+              blockers: [{ id: 'W9', rig: null, status: 'open' }],
+              bead_status: 'open'
+            }
+          }
+        }
+      })
+    );
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="aw"]')
+    );
+    expect(tile.querySelector('.worker-dep--pred')?.textContent).toContain(
+      '⛓ W9'
+    );
+  });
+
   /**
    * @param {Record<string, any>} over
    * @param {(type: string, payload?: unknown) => Promise<any>} [transport]
