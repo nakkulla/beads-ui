@@ -116,15 +116,29 @@ export function createExecutionPane(mount_element, binding) {
   /** @type {Record<string, string>} */
   let session_draft = {};
   /**
-   * Text a free-form session key currently holds that is NOT storable yet: the
-   * user is mid-typing, or the value fails the key's format. Kept OUT of
-   * `session_draft` on purpose — the pane saves the whole session diff on every
-   * edit, so parking an invalid value there would make the next select change
-   * ship a patch the server refuses in full.
+   * Raw text a free-form session key's box holds that the draft has not
+   * adopted: the user is mid-typing, or their last commit failed the key's
+   * format. Kept OUT of `session_draft` on purpose — the pane saves the whole
+   * session diff on every edit, so parking an unsavable value there would make
+   * the next select change ship a patch the server refuses in full.
+   *
+   * It is written on every keystroke, like `preset_name_draft`, because the box
+   * renders through `live()`: any re-render (the monitor adopting a queue
+   * snapshot, another row saving) would otherwise reset the box to the
+   * committed value and swallow what the user was typing.
    *
    * @type {Record<string, string>}
    */
   let session_text_draft = {};
+  /**
+   * Free-form keys whose LAST COMMIT attempt failed the format. Separate from
+   * the text above because typing is not a verdict: the box turns red when the
+   * user commits something illegal, and goes quiet again as soon as they resume
+   * editing it.
+   *
+   * @type {Record<string, true>}
+   */
+  let session_text_invalid = {};
   /** @type {string[]} */
   let session_warnings = [];
   let session_loading = false;
@@ -288,6 +302,7 @@ export function createExecutionPane(mount_element, binding) {
       session_baseline = isRecord(res?.values) ? { ...res.values } : {};
       session_draft = { ...session_baseline };
       session_text_draft = {};
+      session_text_invalid = {};
       session_warnings = Array.isArray(res?.warnings) ? res.warnings : [];
     } catch (err) {
       session_warnings = ['kv_read_failed'];
@@ -515,22 +530,38 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * Commit one free-form session key. An empty box is the deletion request; a
-   * value that passes the key's format becomes the draft value and saves; a
-   * value that fails stays in `session_text_draft` and saves NOTHING, so the row
-   * can show why without the server refusing an unrelated edit alongside it.
+   * Record a free-form key's keystrokes without judging or saving them. No
+   * render: the box already shows what was typed, and re-rendering mid-word
+   * would fight the caret.
    *
    * @param {string} key
    * @param {string} raw
+   */
+  function onTextInput(key, raw) {
+    session_text_draft[key] = raw;
+    delete session_text_invalid[key];
+  }
+
+  /**
+   * Commit one free-form session key on blur/Enter. An empty box is the
+   * deletion request; a value that passes the key's format becomes the draft
+   * value and saves; a value that fails is marked invalid and saves NOTHING, so
+   * the row can show why without the server refusing an unrelated edit
+   * alongside it.
+   *
+   * @param {string} key
+   * @param {string} raw - The box's text, already trimmed.
    * @param {(value: string) => boolean} isValid
    */
-  function onTextChange(key, raw, isValid) {
+  function onTextCommit(key, raw, isValid) {
+    session_text_draft[key] = raw;
     if (raw.length > 0 && !isValid(raw)) {
-      session_text_draft[key] = raw;
+      session_text_invalid[key] = true;
       doRender();
       return;
     }
     delete session_text_draft[key];
+    delete session_text_invalid[key];
     if (raw.length === 0) {
       delete session_draft[key];
     } else {
@@ -1103,7 +1134,7 @@ export function createExecutionPane(mount_element, binding) {
    * types `enum: none` — no `(기본)`-first select can carry it, so the row
    * offers a box whose empty state IS the unset state.
    *
-   * The commit fires on `change` (blur/Enter) rather than on every keystroke:
+   * Keystrokes only record; the commit fires on `change` (blur/Enter), because
    * a half-typed URL is not a value worth asking the server to store.
    *
    * @param {string} key
@@ -1111,28 +1142,31 @@ export function createExecutionPane(mount_element, binding) {
    * @param {string} placeholder
    * @param {string} hint - What the value is FOR, shown while the box is valid.
    * @param {string} format_hint - What a legal value looks like, shown instead
-   * once the typed text fails the format.
+   * once a committed value fails the format.
    * @param {(value: string) => boolean} isValid
    * @returns {TemplateResult}
    */
   function textRow(key, label, placeholder, hint, format_hint, isValid) {
-    const pending = Object.hasOwn(session_text_draft, key);
-    const value = pending
-      ? session_text_draft[key]
-      : (session_draft[key] ?? UNSET);
+    const invalid = Object.hasOwn(session_text_invalid, key);
+    const value = session_text_draft[key] ?? session_draft[key] ?? UNSET;
     return html`<div class="settings-dialog__row">
       <span class="settings-dialog__row-label">${label}</span>
       <span class="settings-dialog__controls">
         <input
           type="text"
-          class=${`settings-dialog__text${pending ? ' settings-dialog__text--invalid' : ''}`}
+          class=${`settings-dialog__text${invalid ? ' settings-dialog__text--invalid' : ''}`}
           data-key=${key}
           aria-label=${label}
-          aria-invalid=${String(pending)}
+          aria-invalid=${String(invalid)}
           placeholder=${placeholder}
           .value=${live(value)}
+          @input=${(/** @type {Event} */ ev) =>
+            onTextInput(
+              key,
+              String(/** @type {HTMLInputElement} */ (ev.target).value)
+            )}
           @change=${(/** @type {Event} */ ev) =>
-            onTextChange(
+            onTextCommit(
               key,
               String(/** @type {HTMLInputElement} */ (ev.target).value).trim(),
               isValid
@@ -1142,7 +1176,7 @@ export function createExecutionPane(mount_element, binding) {
           ? html`<span class="settings-dialog__source-badge">기본</span>`
           : ''}
         <span class="settings-dialog__hint" data-key-hint=${key}
-          >${pending ? format_hint : hint}</span
+          >${invalid ? format_hint : hint}</span
         >
       </span>
     </div>`;
@@ -1781,6 +1815,7 @@ export function createExecutionPane(mount_element, binding) {
     load() {
       worker_draft = {};
       session_text_draft = {};
+      session_text_invalid = {};
       /** @type {Promise<void>[]} */
       const pending = [loadSessionDefaults(), loadWorkspaceAccounts()];
       if (!account_catalog_loaded) {

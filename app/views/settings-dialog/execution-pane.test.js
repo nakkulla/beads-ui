@@ -285,6 +285,62 @@ describe('createExecutionPane bdui_url row', () => {
     ]);
   });
 
+  test('keeps mid-typed text when an unrelated re-render lands', async () => {
+    const { root, pane, calls } = mount();
+    await pane.load();
+
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="bdui_url"]')
+    );
+    input.value = 'http://host:30';
+    input.dispatchEvent(new Event('input'));
+    pane.render();
+
+    expect(
+      /** @type {HTMLInputElement} */ (el(root, 'input[data-key="bdui_url"]'))
+        .value
+    ).toBe('http://host:30');
+    expect(payloadsOf(calls, 'set-session-defaults')).toEqual([]);
+  });
+
+  test('leaves the box unmarked while the typed text is still incomplete', async () => {
+    const { root, pane } = mount();
+    await pane.load();
+
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="bdui_url"]')
+    );
+    input.value = 'http://host:30';
+    input.dispatchEvent(new Event('input'));
+    pane.render();
+
+    expect(
+      el(root, 'input[data-key="bdui_url"]').getAttribute('aria-invalid')
+    ).toBe('false');
+  });
+
+  test('clears the invalid mark once the user resumes editing', async () => {
+    const { root, pane } = mount();
+    await pane.load();
+
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="bdui_url"]')
+    );
+    input.value = 'host:3000';
+    input.dispatchEvent(new Event('change'));
+    await settle();
+    const marked = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="bdui_url"]')
+    );
+    marked.value = 'http://host:3000';
+    marked.dispatchEvent(new Event('input'));
+    pane.render();
+
+    expect(
+      el(root, 'input[data-key="bdui_url"]').getAttribute('aria-invalid')
+    ).toBe('false');
+  });
+
   test('keeps the invalid text on screen after an unrelated save succeeds', async () => {
     const { root, pane } = mount();
     await pane.load();

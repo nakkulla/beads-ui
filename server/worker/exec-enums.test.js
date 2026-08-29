@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import { REC_REASONS } from '../../app/utils/rec-settings.js';
+import {
+  WORKSPACE_KV_KEYS as CLIENT_WORKSPACE_KV_KEYS,
+  isHttpOriginValue as clientIsHttpOriginValue
+} from '../../app/views/settings-dialog/session-model.js';
+import { isHttpOriginValue } from '../session-defaults.js';
 import * as enums from './exec-enums.js';
 import {
   ACCOUNT_KEYS,
@@ -405,6 +410,41 @@ describe('worker/exec-enums implementation target coherence', () => {
         { catalog, active_writer: true, controller_runtime: 'claude' }
       )
     ).toMatchObject({ ok: false, reason: 'provider_model_mismatch' });
+  });
+});
+
+describe('workspace kv mirror across the two runtimes', () => {
+  test('matches the client workspace kv key list exactly', () => {
+    expect(WORKSPACE_KV_KEYS).toEqual(CLIENT_WORKSPACE_KV_KEYS);
+  });
+
+  test('judges every bdui_url case the same way on both sides', () => {
+    const cases = [
+      'http://100.64.0.1:3000',
+      'https://beads.example',
+      'http://host:3000/',
+      'http://host:3000/api',
+      'http://host:3000?a=1',
+      'http://host:3000#x',
+      'http://user:pw@host:3000',
+      'HTTP://HOST:3000',
+      '100.64.0.1:3000',
+      'ftp://host',
+      ''
+    ];
+
+    const disagreements = cases
+      .map((value) => [
+        value,
+        isHttpOriginValue(value),
+        clientIsHttpOriginValue(value)
+      ])
+      .filter(
+        ([, server_verdict, client_verdict]) =>
+          server_verdict !== client_verdict
+      );
+
+    expect(disagreements).toEqual([]);
   });
 });
 
