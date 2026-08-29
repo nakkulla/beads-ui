@@ -1041,10 +1041,13 @@ describe('worker discard coordinator unmerged lifecycle', () => {
     expect(env.store.snapshot(workspace).attempts['att-1']).toMatchObject({
       dismissed_at: 100
     });
+    // 넷째 인자는 `captureSource`가 포착한 정산 전 status다: replay가 이 단계를
+    // 다시 돌릴 때 `discarded`가 된 레코드 대신 이것이 판정 입력이 된다.
     expect(env.scheduler.finalizeDiscardAttempt).toHaveBeenCalledWith(
       workspace,
       'att-1',
-      'UI-1'
+      'UI-1',
+      'done'
     );
     expect(env.worktree.withTopologyLock).toHaveBeenCalledTimes(3);
   });

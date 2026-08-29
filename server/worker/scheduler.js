@@ -930,7 +930,7 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
- *   finalizeDiscardAttempt: (workspace: string, attempt_id: string, bead_id?: string|null) => Promise<{ ok: boolean, reason?: string }>,
+ *   finalizeDiscardAttempt: (workspace: string, attempt_id: string, bead_id?: string|null, source_status?: string|null) => Promise<{ ok: boolean, reason?: string }>,
  *   recoverControls: (workspace: string) => Promise<void>,
  *   onIssuesChanged: (workspace: string) => Promise<void>,
  *   resumeQueueHold: (workspace: string, input: { since?: number|null }) => Promise<{ ok: boolean, reason?: string }>,
@@ -9990,9 +9990,18 @@ export function createScheduler(deps) {
    * @param {string} attempt_id
    * @param {string|null} [bead_id] - The bead the discard names, which is the
    * only way to reach a record §7 transferred out of `queue.json`.
+   * @param {string|null} [source_status] - 폐기 작업이 착수 시점에 포착한 attempt
+   * status (`source_snapshot.attempt_status`). 이 함수는 replay될 수 있으므로
+   * (2026-08-29 held-tile-discard §4.2), 살아 있는 레코드가 아니라 이 durable
+   * 포착이 정산 전 상태의 정본이다. 없으면 레코드로 되돌아간다 (fail-quiet).
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
-  async function finalizeDiscardAttempt(workspace, attempt_id, bead_id = null) {
+  async function finalizeDiscardAttempt(
+    workspace,
+    attempt_id,
+    bead_id = null,
+    source_status = null
+  ) {
     if (!canDiscardAttempt(attempt_id)) {
       return { ok: false, reason: 'attempt_settling' };
     }
@@ -10043,9 +10052,14 @@ export function createScheduler(deps) {
     // 2026-08-29 worker-held-tile-discard spec §4.2 (D2 사다리 포기): 폐기는
     // env 사다리의 비-env 결말 중 하나이므로 그 bead의 lineage를 닫는다.
     // `parked`·`waiting`은 `settleFailureTier`에서 이미 닫았고 `retry_wait`만
-    // lineage를 살려 둔 채 끝난다. 판정 입력은 정산 전 스냅샷 `attempt`다 —
-    // 위 패치 뒤의 레코드는 언제나 `discarded`라 조건이 항상 거짓이 된다.
-    if (attempt.status === 'retry_wait') {
+    // lineage를 살려 둔 채 끝난다.
+    //
+    // 판정 입력은 폐기 작업이 포착한 `source_status`다. 위 `discarded` 패치와
+    // 호출자의 phase 저장 사이에서 죽으면 startup recovery가 이 단계를 다시
+    // 돌리는데, 그때 살아 있는 레코드는 이미 `discarded`라 조건이 영영 거짓이
+    // 되어 lineage와 env hold가 남는다 — 이 스펙 §1이 없애려는 헛돎 그대로다.
+    // `closeRetryLineage`는 lineage가 없으면 no-op이라 replay가 안전하다.
+    if ((source_status ?? attempt.status) === 'retry_wait') {
       closeRetryLineage(workspace, attempt.bead_id);
     }
     await revertStamps(workspace, attempt_id, {

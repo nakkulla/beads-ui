@@ -1896,8 +1896,8 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
       })}`
     );
     expect(tile.classList.contains('rtile--retry-wait')).toBe(true);
-    // 투영이 폐기를 주지 않은 타일은 버튼을 지어내지 않는다.
-    expect(tile.querySelector('.rtile__discard')).toBeNull();
+    // 투영이 폐기를 주지 않으면 액션 foot 자체가 재료 없는 줄이다.
+    expect(tile.querySelector('.rtile__foot')).toBeNull();
   });
 
   test('offers 폐기 alone in the retry_wait action foot', () => {

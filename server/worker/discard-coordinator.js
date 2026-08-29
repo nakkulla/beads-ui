@@ -588,10 +588,17 @@ export function createDiscardCoordinator(deps, options = {}) {
       }
     }
     if (operation.attempt_id) {
+      // 정산 전 status는 `captureSource`가 포착한 것을 넘긴다 (2026-08-29
+      // held-tile-discard §4.2): 이 단계는 `runner_terminated`가 저장되기 전에
+      // 죽으면 recovery가 다시 돌리는데, 그때 attempt 레코드는 이미 `discarded`라
+      // 스스로는 자기가 무엇이었는지 답하지 못한다.
       const settled = await deps.scheduler.finalizeDiscardAttempt(
         deps.workspace,
         operation.attempt_id,
-        operation.bead_id
+        operation.bead_id,
+        typeof operation.source_snapshot?.attempt_status === 'string'
+          ? operation.source_snapshot.attempt_status
+          : null
       );
       if (!settled.ok) {
         return { ok: false, reason: settled.reason || 'attempt_settle_failed' };
