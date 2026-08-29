@@ -1701,12 +1701,16 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
  * Statuses that RELEASE a serial lane (UI-04vo §2). Deliberately NARROWER than
  * {@link TERMINAL_ATTEMPT_STATUSES}: a `failed`/`orphaned` lineage keeps its
  * lane until it merges-and-cleans or is discarded, so those two are absent
- * here even though they are terminal for membership purposes. Mirrors the
- * scheduler's set — the two must agree or occupancy would mean two things.
+ * here even though they are terminal for membership purposes.
+ *
+ * This is the ONLY copy. `scheduler.js` `activeLaneLineages` imports it rather
+ * than declaring its own, and {@link isTransferableRecord} reads it to decide
+ * whether a record still holds a lane: the two answers have to come from one
+ * membership or a transfer would free a lane occupancy still believes in.
  *
  * @type {Set<string>}
  */
-const LANE_RELEASING_ATTEMPT_STATUSES = new Set([
+export const LANE_RELEASING_ATTEMPT_STATUSES = new Set([
   'done',
   'stopped',
   'discarded',
@@ -3965,47 +3969,46 @@ function isProcessedTerminalAttempt(attempt) {
 }
 
 /**
- * The bead ids whose attempt records must stay in `queue.json` WHOLE.
+ * The bead ids whose attempt records must ALL stay in `queue.json`, whatever
+ * their own status says.
  *
- * Transfer is decided per bead rather than per attempt on purpose. Every
- * judgment §7 protects — the unhandled-failure predicate
- * ({@link createUnhandledFailurePredicate}), {@link settleMootRepairFailures},
- * the restart reconcile, the review-session judgment — reads a bead's attempts
- * as a SET and asks which of them is the bead's last one. Removing a subset can
- * change that answer: transfer a bead's `done` record and an older failure of
- * the same bead stops being superseded, which would resurrect a settled failure
- * as an unhandled one that holds auto-advance closed. Keeping the bead's
- * records together makes that impossible instead of merely unlikely.
+ * These are the beads whose PROCESSED-terminal records are still live material
+ * for a reader, so the suffix rule below is not enough for them (§4):
  *
- * That grouping is NOT incidental, and it is not a step on the way to a
- * per-attempt transfer. Making it per-attempt would mean converting every one
- * of those judgments to {@link createQueueStore.readAttemptsForBead} — a
- * redesign, not a narrowing — and until that happens, transferring a newer
- * `done` while an older undismissed `failed` of the same bead stays behind is
- * exactly how that failure becomes the bead's last attempt again. Do not
- * "simplify" this to per-attempt without moving those readers first.
+ *   - a `pr_wait` member — `pr-poller.js` reads the PR number out of its
+ *     `verify_result`, and `pr-actions.js` reads `target_base` for
+ *     `expectedBaseFor` and the newest implementation attempt for the receipt
+ *     baseline, all of them off a `done` record;
+ *   - a `merge_queue` member — `merge-candidates.js` builds the completion
+ *     subject (`target_base`, `base_oid`) from the same kind of record;
+ *   - an UNFINISHED completion saga — the intent names the `done` attempt it
+ *     is still driving, and `needs_human` is not finished;
+ *   - a discard operation still in flight — `discard-coordinator.js` already
+ *     reads the union, but an operation in progress must not watch its own
+ *     input set change underneath it.
  *
- * A bead is held while it has any attempt that is NOT a processed terminal, and
- * while it still sits in a lane that means work is in flight (`queue`, a serial
- * lane, `pr_wait`, `merge_queue`), owns an UNFINISHED completion-saga intent,
- * or has a discard operation still running. The `done` lane is NOT held: that
- * is the settled archive, and holding it would keep every finished bead's
- * history in the state file forever, which is the problem §7 exists to fix.
+ * The waiting lanes (`queue`, the serial lanes) are deliberately NOT held. A
+ * waiting bead's readers ask either for its last implementation attempt, which
+ * the suffix invariant preserves, or for unprocessed residue only, which the
+ * processed-terminal definition preserves. Serial-lane OCCUPANCY is guarded by
+ * the record itself in {@link isTransferableRecord}, not by lane membership, so
+ * a lane hold here would buy nothing but accumulation. The `done` lane is not
+ * held either: that is the settled archive, and holding it would pin every
+ * finished bead's history in the state file forever.
+ *
+ * "Any unprocessed attempt holds its whole bead" is likewise gone. What kept
+ * that rule honest was never the grouping but the ORDER — transferring a newer
+ * `done` while an older undismissed `failed` stays behind is what resurrects a
+ * settled failure as the bead's last attempt. {@link transferableAttempts}
+ * enforces exactly that, per attempt, so the coarse hold is no longer the thing
+ * standing between the readers and a wrong answer.
  *
  * @param {Queue} q
  * @returns {Set<string>}
  */
-function beadsWithLiveRecords(q) {
+function heldBeads(q) {
   /** @type {Set<string>} */
   const held = new Set();
-  for (const entry of q.queue) {
-    held.add(entry.bead_id);
-  }
-  for (const lane of q.serial_lanes) {
-    for (const entry of lane.entries) {
-      held.add(entry.bead_id);
-    }
-  }
   for (const entry of q.pr_wait) {
     held.add(entry.bead_id);
   }
@@ -4022,18 +4025,83 @@ function beadsWithLiveRecords(q) {
       held.add(operation.bead_id);
     }
   }
-  for (const attempt of Object.values(q.attempts)) {
-    if (!isProcessedTerminalAttempt(attempt)) {
-      held.add(attempt.bead_id);
-    }
-  }
   return held;
 }
 
 /**
- * The attempts this pass may move out of `queue.json` (§7). No per-bead cap:
+ * The attempt ids some other attempt resumes from — the records that are NOT
+ * leaves of their lineage.
+ *
+ * @param {Queue} q
+ * @returns {Set<string>}
+ */
+function resumedFromIds(q) {
+  /** @type {Set<string>} */
+  const ids = new Set();
+  for (const attempt of Object.values(q.attempts)) {
+    if (typeof attempt.resumed_from === 'string' && attempt.resumed_from) {
+      ids.add(attempt.resumed_from);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Whether ONE record may leave `queue.json` — processed-terminal (§7) and not
+ * holding a serial lane (§3).
+ *
+ * The lane half mirrors `scheduler.js` `activeLaneLineages` by construction: a
+ * leaf attempt (nothing resumed from it) carrying a serial `serial_lane_id` in
+ * a status outside {@link LANE_RELEASING_ATTEMPT_STATUSES} owns that lane's
+ * mutex until the lineage lands or is discarded. `dismissed_at` is a UI hide,
+ * never a release, so a dismissed `failed` and a `superseded` leaf are
+ * processed terminals that still hold a lane — transferring one would let
+ * another lineage walk into an occupied lane.
+ *
+ * This predicate says nothing about ORDER. Whether a transferable record may
+ * actually go is decided by {@link transferableAttempts}, and the order it
+ * decides on is the INSERTION order of `q.attempts` — the order every "which is
+ * this bead's last attempt" reader walks. The timestamp sort in
+ * {@link createQueueStore.readAttemptsForBead} is a DISPLAY order and must
+ * never be used here: a clock that went backwards, or a legacy record with a
+ * smaller `finished_at` than the failure it followed, would sort the suffix
+ * apart from the way the readers read it.
+ *
+ * @param {Queue} q
+ * @param {Attempt} attempt
+ * @param {Set<string>} [resumed_ids] - Precomputed {@link resumedFromIds}.
+ * @returns {boolean}
+ */
+function isTransferableRecord(q, attempt, resumed_ids = resumedFromIds(q)) {
+  if (!isProcessedTerminalAttempt(attempt)) {
+    return false;
+  }
+  if (serialLaneIndex(attempt.serial_lane_id) === null) {
+    return true;
+  }
+  if (LANE_RELEASING_ATTEMPT_STATUSES.has(String(attempt.status))) {
+    return true;
+  }
+  return resumed_ids.has(attempt.attempt_id);
+}
+
+/**
+ * The attempts this pass may move out of `queue.json` (§3). No per-bead cap:
  * a cap would evict by count, and the record it evicted first would be the
  * oldest unprocessed failure — exactly the one a human still has to look at.
+ *
+ * The rule is a SUFFIX invariant: what stays in `queue.json` is the newest
+ * suffix of each bead's history, so an attempt leaves only when every OLDER
+ * attempt of the same bead leaves in the same pass. That is what keeps the
+ * readers correct without moving any of them to the union: the maximum of a
+ * non-empty suffix is the maximum of the whole history, and an empty suffix
+ * means the whole history is processed-terminal, which every reader already
+ * reads as "nothing to judge". Kind is not filtered — the suffix of the whole
+ * order is also a suffix of the implementation-only subsequence, so a reader
+ * that skips review or repair records gets the same answer.
+ *
+ * "Older" is INSERTION order, never a timestamp — see
+ * {@link isTransferableRecord}.
  *
  * Exported for `record-retention.js`: the one-time migration (§8.3 step 1)
  * transfers exactly the same set out of the pre-split `queue.json`, and a
@@ -4043,11 +4111,23 @@ function beadsWithLiveRecords(q) {
  * @returns {Attempt[]}
  */
 export function transferableAttempts(q) {
-  const held = beadsWithLiveRecords(q);
-  return Object.values(q.attempts).filter(
-    (attempt) =>
-      isProcessedTerminalAttempt(attempt) && !held.has(attempt.bead_id)
-  );
+  const held = heldBeads(q);
+  const resumed_ids = resumedFromIds(q);
+  /** @type {Set<string>} */
+  const stopped = new Set();
+  /** @type {Attempt[]} */
+  const candidates = [];
+  for (const attempt of Object.values(q.attempts)) {
+    if (held.has(attempt.bead_id) || stopped.has(attempt.bead_id)) {
+      continue;
+    }
+    if (!isTransferableRecord(q, attempt, resumed_ids)) {
+      stopped.add(attempt.bead_id);
+      continue;
+    }
+    candidates.push(attempt);
+  }
+  return candidates;
 }
 
 /**
@@ -4573,14 +4653,24 @@ export function createQueueStore(options = {}) {
     );
     /** @type {Map<string, Set<string>>} */
     const recorded_by_bead = new Map();
+    // A candidate that cannot go takes the rest of ITS bead with it for this
+    // pass (§7). The candidates arrive in insertion order, so skipping only the
+    // stuck record would transfer newer ones past it and break the suffix — the
+    // exact shape that resurrects an older undismissed failure as the bead's
+    // last attempt. Withholding and write failure are the same case here: both
+    // mean this record is still in the queue when the pass ends.
+    /** @type {Set<string>} */
+    const stopped_beads = new Set();
     for (const attempt of candidates) {
-      if (withheld.has(attempt.attempt_id)) {
+      if (stopped_beads.has(attempt.bead_id)) {
         continue;
       }
-      if (!ensureTerminalTimelineEvent(timeline, attempt, recorded_by_bead)) {
-        continue;
-      }
-      if (!writeAttemptRecord(workspace, attempt)) {
+      if (
+        withheld.has(attempt.attempt_id) ||
+        !ensureTerminalTimelineEvent(timeline, attempt, recorded_by_bead) ||
+        !writeAttemptRecord(workspace, attempt)
+      ) {
+        stopped_beads.add(attempt.bead_id);
         continue;
       }
       delete next.attempts[attempt.attempt_id];

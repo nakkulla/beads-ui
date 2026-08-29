@@ -428,7 +428,7 @@ describe('record migration step 1 — attempt records', () => {
     expect(exists(attemptRecordPath(WS, 'UI-b', 'UI-b-1'))).toBe(false);
   });
 
-  test('holds a bead whose failure is not dismissed', () => {
+  test('transfers the processed prefix ahead of an undismissed failure', () => {
     const { retention } = makeRetention();
     writeQueue({
       'UI-a-1': attempt({ status: 'done' }),
@@ -437,8 +437,22 @@ describe('record migration step 1 — attempt records', () => {
 
     const result = retention.migrate();
 
+    expect(result.records).toBe(1);
+    expect(exists(attemptRecordPath(WS, 'UI-a', 'UI-a-1'))).toBe(true);
+    expect(exists(attemptRecordPath(WS, 'UI-a', 'UI-a-2'))).toBe(false);
+  });
+
+  test('holds a bead record newer than an undismissed failure', () => {
+    const { retention } = makeRetention();
+    writeQueue({
+      'UI-a-1': attempt({ attempt_id: 'UI-a-1', status: 'failed', cause: 'x' }),
+      'UI-a-2': attempt({ attempt_id: 'UI-a-2', status: 'done' })
+    });
+
+    const result = retention.migrate();
+
     expect(result.records).toBe(0);
-    expect(exists(attemptRecordPath(WS, 'UI-a', 'UI-a-1'))).toBe(false);
+    expect(exists(attemptRecordPath(WS, 'UI-a', 'UI-a-2'))).toBe(false);
   });
 
   test('adopts a record an interrupted pass already wrote', () => {

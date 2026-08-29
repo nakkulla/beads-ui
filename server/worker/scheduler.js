@@ -83,7 +83,11 @@ import {
 } from './foreign-blocker-status.js';
 import * as default_guard_hook from './guard-hook.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
-import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
+import {
+  DEFAULT_SLOTS,
+  LANE_RELEASING_ATTEMPT_STATUSES,
+  MIN_SLOTS
+} from './queue-store.js';
 import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import {
   RECEIPT_BASELINE_KEYS,
@@ -650,25 +654,6 @@ function serialLineageId(attempt) {
 }
 
 /**
- * Statuses that RELEASE lane occupancy (UI-04vo §2): merge-and-cleanup
- * completion (`done` via moveToDone), the unified discard terminal, and the
- * legacy `stopped` history state. Everything else — running, paused,
- * `failed`, `orphaned`, `dismissed_at` regardless — keeps the lineage's lane
- * occupied until the lineage merges or is discarded.
- *
- * @type {Set<string>}
- */
-const LANE_RELEASING_STATUSES = new Set([
-  'done',
-  'stopped',
-  'discarded',
-  // The prerequisite wait releases too (waiting-tier spec §4.5, D4): the
-  // attempt ended and holding the lane would keep the SIBLING that closes the
-  // blocker out of it. Mirrors `queue-store.js`'s set, which must agree.
-  'waiting'
-]);
-
-/**
  * Zero-based slot index of a serial lane id, or null for anything else.
  *
  * @param {unknown} id
@@ -732,9 +717,12 @@ function armedByLaneOf(q, bead_id) {
  * occupied by a lineage while any of these holds for an attempt carrying its
  * `serial_lane_id`:
  *
- *   - a LEAF attempt (nothing resumed from it) in a non-releasing status —
- *     running, paused, failed, orphaned; `dismissed_at` is a UI hide, never
- *     a release;
+ *   - a LEAF attempt (nothing resumed from it) in a status outside
+ *     {@link LANE_RELEASING_ATTEMPT_STATUSES} — running, paused, failed,
+ *     orphaned; `dismissed_at` is a UI hide, never a release. That set is
+ *     owned by `queue-store.js` and imported rather than restated: the
+ *     transfer predicate reads the same membership, and a second copy here
+ *     would let occupancy and transfer mean two different things;
  *   - the bead sits in durable `pr_wait` (its terminal `done` attempt is the
  *     lane holder until merge cleanup moves it to Done);
  *   - a discard operation for the lineage is still in flight.
@@ -763,7 +751,7 @@ export function activeLaneLineages(q) {
     lanes.set(key, set);
   }
   for (const attempt of values) {
-    if (!attempt || LANE_RELEASING_STATUSES.has(attempt.status)) {
+    if (!attempt || LANE_RELEASING_ATTEMPT_STATUSES.has(attempt.status)) {
       continue;
     }
     if (resumed.has(attempt.attempt_id)) {
