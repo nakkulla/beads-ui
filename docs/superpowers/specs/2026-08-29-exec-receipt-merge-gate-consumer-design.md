@@ -281,6 +281,11 @@ alert 색을 쓰지 않는다 — 행동이 필요 없는 잔여이기 때문이
 - 과거 영수증 마이그레이션 없음.
 - 관찰: Monitor 탭 PR 대기 투영은 `receipt_check`를 싣지 않아 hold 뱃지도 badge
   칩도 그리지 않는다 — 현행과 같은 비대칭이며 이 Bead 범위 밖.
+- 관찰(scope 겹침): UI-1gpj(세션용 큐 배치 HTTP 진입점,
+  `2026-08-29-session-queue-place-entrypoint-design.md`)와 `server/ws/worker-handlers.js`
+  접두어를 공유한다. 이 스펙은 그 파일을 바꾸지 않고(§3.5 전송 변경 없음)
+  UI-1gpj는 큐 배치 핸들러를 만지므로 같은 파일의 다른 절이며 의존 관계가
+  없다 — `blocks` 엣지 없음.
 - 관찰: `attach.js` 외부 PR 표시 검사와 `scheduler.js` 완료 시 기록은
   `head: null`이라 `non_ancestor`를 표시층에서 볼 수 없다. hold이므로 큐 실패
   사유(`receipt_unbacked:non_ancestor`)로는 보인다.
