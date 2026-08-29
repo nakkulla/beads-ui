@@ -2754,6 +2754,11 @@ export function createWorkerView(mount_element, options = {}) {
             // 딸려 온다.
             parked: item.run_state === 'parked',
             retry_wait: item.run_state === 'retry_wait',
+            // 선행 대기는 Monitor 어댑터와 같은 네 키로 싣는다 (선행 대기 계층
+            // §5.4, ADR 0014). 여기서 빠뜨리면 같은 렌더러가 이 타일을 실행 중
+            // 타일로 그려 시계와 세션 조작을 준다.
+            waiting: item.run_state === 'waiting',
+            wait: item.wait || null,
             status_label:
               item.run_state === 'failed'
                 ? item.status === 'orphaned'
@@ -2763,7 +2768,9 @@ export function createWorkerView(mount_element, options = {}) {
                   ? '세션 대기'
                   : item.run_state === 'retry_wait'
                     ? '재시도 대기'
-                    : undefined,
+                    : item.run_state === 'waiting'
+                      ? '선행 대기'
+                      : undefined,
             can_pause: item.can_pause !== false,
             // 레포 배지는 한 레포 화면의 사실이 아니다 (모니터 타일만 그린다).
             workspace_name: '',

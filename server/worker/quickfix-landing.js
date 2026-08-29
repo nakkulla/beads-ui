@@ -22,6 +22,14 @@
  * (`workflow-state.yaml no_change_close`), and the Worker then removes residue
  * only — no push containment, review receipt, deployment, or close.
  *
+ * This module judges only what happens AFTER a session delivered. A session
+ * that refused to start on an unmet prerequisite never reaches it: the
+ * scheduler settles that attempt as `waiting` ahead of the call (2026-08-28
+ * worker-prerequisite-wait-tier spec §4.1·§4.6). So `QuickfixLandingReason`
+ * gains no token for it — `waiting` is not an outcome of landing settlement but
+ * an ending in front of one, and reading the absent push record as
+ * `delivery_unproven:push_log_absent` is exactly the confusion that spec removes.
+ *
  * @import { Attempt } from './queue-store.js'
  */
 import os from 'node:os';

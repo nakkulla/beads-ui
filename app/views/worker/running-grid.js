@@ -78,13 +78,18 @@ import { logPathTemplate } from './log-path.js';
  * 한 줄과 `재시도`·`폐기`만 싣는다.
  * @property {boolean} [retry_wait] - 환경성 실패의 backoff를 기다리는 attempt
  * (§3.3). 사람이 할 일이 없으므로 배지만 남고 조작은 없다.
+ * @property {boolean} [waiting] - 선행 미충족으로 착수를 거부하고 정상 종료한
+ * attempt (선행 대기 계층 §5.2). 실패도 파킹도 아니므로 `재시도`가 없다 — 선행이
+ * 닫히면 보통 후보로 저절로 돌아온다.
+ * @property {WaitTile|null} [wait] - 선행 대기 타일의 재료. 실패 투영과 따로인
+ * 이유는 §5.1에 있다: 실패 팝오버가 묻는 질문에 이 결말이 답할 것이 없다.
  * @property {FailureTile|null} [failure] - Failed-tile decision material. The
  * renderer reads failure detail only through this explicit projection. A parked
  * tile carries the SAME projection — the question it answers ("무엇이 이 시도를
  * 끝냈나") is the same one.
  * @property {RetryTile|null} [retry] - backoff 사실 (§6). `retry_wait` 타일의
  * 배지 재료이며, 없으면 배지가 그려지지 않는다 (fail-quiet).
- * @property {'running'|'paused'|'failed'|'orphaned'|'parked'|'retry_wait'} [status] - Raw
+ * @property {'running'|'paused'|'failed'|'orphaned'|'parked'|'retry_wait'|'waiting'} [status] - Raw
  * attempt status, used to distinguish failure from orphan interruption.
  * @property {string} [status_label] - Terminal status label for a failed tile.
  * @property {boolean} [can_pause] - Running attempt whose session id is already
@@ -136,6 +141,19 @@ import { logPathTemplate } from './log-path.js';
  * @property {number} attempts
  * @property {number} max
  * @property {number|null} next_at
+ */
+
+/**
+ * 선행 대기 attempt의 결정 재료 (선행 대기 계층 §5.1).
+ *
+ * `blockers`는 서버가 판정 시점에 증명한 미해결 `blocks` 엣지이며 세션 결과줄이
+ * 아니다 (§4.2). `summary`는 세션의 마지막 문장이고, 없으면 본문 줄을 그리지
+ * 않는다 (fail-quiet).
+ *
+ * @typedef {Object} WaitTile
+ * @property {string|null} summary
+ * @property {Array<{ id: string, rig: string|null, status: string }>} blockers
+ * @property {number|null} since - 이 attempt가 대기로 마감된 시각.
  */
 
 /**
@@ -690,7 +708,8 @@ function sessionOpenButton(current) {
 }
 
 /**
- * The body of a tile that is WAITING rather than running (UI-5ym8 §8).
+ * The body of a tile that is WAITING rather than running (UI-5ym8 §8, 선행 대기
+ * 계층 §5.2).
  *
  * A `retry_wait` tile has no body at all: its badge already says how many tries
  * are left and when the next one fires, and there is nothing for a person to
@@ -701,20 +720,43 @@ function sessionOpenButton(current) {
  * the header, because the header's right end already carries 상태 (카드 문법
  * §5.1) and two more buttons there push it onto a second line at narrow widths.
  *
- * @param {boolean} parked
- * @param {FailureTile|null} park - 대기 중인 attempt의 투영 (실패와 같은 모양).
+ * A `waiting` tile says the same one line, then the slot-4a 의존 칩, then `폐기`
+ * ONLY. That order is the card grammar's line order (제목 → 진행 → 의존 칩 4a →
+ * 액션 foot). The chips have to be drawn HERE because the non-held branch below
+ * is the only other place that emits them, so a held tile would otherwise lose
+ * the one fact this ending is about — which bead it is waiting on (§2·§5.1·§6).
+ *
+ * No `재시도`, because the blocker closing re-dispatches the bead by itself
+ * (§3 D3) and a button that races that would spend a session on a bead that is
+ * still blocked. No 이력 block either: this ending has no attempt history to
+ * explain — the session never started.
+ *
+ * `parked` and `retry_wait` keep their bodies exactly as they were: no spec puts
+ * a 4a chip on either, and widening the change would alter tiles this design
+ * never judged.
+ *
+ * @param {'parked'|'retry_wait'|'waiting'} kind
+ * @param {FailureTile|WaitTile|null} held - 대기 중인 attempt의 투영.
  * @param {import('lit-html').TemplateResult|''} discard_button - 실패 타일이 쓰는
  * `.rtile__discard` 그대로. 같은 정리이므로 두 번째 조작을 만들지 않는다.
+ * @param {import('lit-html').TemplateResult|''} [dependency_chips] - 슬롯 4a 칩,
+ * 이미 계산된 것 그대로. 재료가 없으면 `''`이라 줄이 통째로 빠진다 (fail-quiet).
  * @returns {import('lit-html').TemplateResult|''}
  */
-function heldBodyTemplate(parked, park, discard_button) {
-  if (!parked) {
+function heldBodyTemplate(kind, held, discard_button, dependency_chips = '') {
+  if (kind === 'retry_wait') {
     return '';
   }
-  const summary = summaryText(park?.summary);
+  const summary = summaryText(held?.summary);
+  if (kind === 'waiting') {
+    return html`${summary
+        ? html`<p class="rtile__held-summary">${summary}</p>`
+        : ''}${dependency_chips}
+      <div class="rtile__foot">${discard_button}</div>`;
+  }
   // 파킹 타일도 같은 블록을 싣는다 (§9): 팝오버가 없는 타일이므로 이력이
   // 보일 자리가 본문뿐이다.
-  const history = historyBlockTemplate(park);
+  const history = historyBlockTemplate(/** @type {FailureTile|null} */ (held));
   return html`${summary
       ? html`<p class="rtile__held-summary">${summary}</p>`
       : ''}${history}
@@ -764,8 +806,12 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 뱃지도 팝오버도 얻지 않고, 큐가 계속 간다는 사실이 색으로도 보여야 한다.
   const parked = tile.parked === true && !failed;
   const retry_wait = tile.retry_wait === true && !failed && !parked;
+  // 선행 대기는 셋째 held 상태다 (선행 대기 계층 §5.2). 앞의 둘과 배타로 판정해
+  // 하나의 배타 자리(상태 뱃지)를 두 상태가 동시에 차지하지 못하게 한다.
+  const waiting = tile.waiting === true && !failed && !parked && !retry_wait;
   const park = parked ? tile.failure || null : null;
-  const held = parked || retry_wait;
+  const wait = waiting ? tile.wait || null : null;
+  const held = parked || retry_wait || waiting;
   const paused = !!tile.paused;
   // 대기 중인 타일에 시계를 돌리면 멈춰 있는 것이 일하는 것처럼 읽힌다.
   const elapsed =
@@ -775,9 +821,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           ? '세션 대기'
           : retry_wait
             ? '재시도 대기'
-            : tile.status === 'orphaned'
-              ? '중단됨'
-              : '실패')
+            : waiting
+              ? '선행 대기'
+              : tile.status === 'orphaned'
+                ? '중단됨'
+                : '실패')
       : paused
         ? '일시정지'
         : typeof tile.started_at === 'number'
@@ -894,7 +942,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           : ''}`
     : '';
   // 판정 칩 슬롯은 하나다 (카드 문법 §5.1): 실패 뱃지가 서는 그 자리에 파킹과
-  // backoff 대기가 선다. 셋은 배타적이므로 헤더 폭이 늘지 않는다.
+  // backoff 대기와 선행 대기가 선다. 넷은 배타적이므로 헤더 폭이 늘지 않는다.
   const held_badge = parked
     ? html`<span
         class="rtile__held-badge"
@@ -907,7 +955,13 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           title="환경성 실패의 자동 재시도를 기다립니다 — 사람이 할 일은 없습니다"
           >${retryWaitBadgeText(tile.retry)}</span
         >`
-      : '';
+      : waiting
+        ? html`<span
+            class="rtile__held-badge"
+            title="세션이 선행 미충족으로 착수를 거부했습니다 — 선행이 닫히면 저절로 다시 돕니다"
+            >⛓ 선행 대기</span
+          >`
+        : '';
   const status_badges = html`${conflict_badge
     ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
     : ''}${base_badge
@@ -950,7 +1004,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ? ' rtile--held rtile--compact'
       : ''}${parked ? ' rtile--parked' : ''}${retry_wait
       ? ' rtile--retry-wait'
-      : ''}${session ? ' rtile--session' : ''}"
+      : ''}${waiting ? ' rtile--waiting' : ''}${session
+      ? ' rtile--session'
+      : ''}"
     data-bead-id=${tile.bead_id}
     data-attempt-id=${tile.attempt_id || ''}
   >
@@ -1022,7 +1078,12 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     </div>
     <div class="rtile__title">${tile.title}</div>
     ${held
-      ? heldBodyTemplate(parked, park, discard_button)
+      ? heldBodyTemplate(
+          parked ? 'parked' : retry_wait ? 'retry_wait' : 'waiting',
+          parked ? park : wait,
+          discard_button,
+          waiting ? monitor_deps : ''
+        )
       : failed
         ? ''
         : html`${monitor_body}${tile.rollup

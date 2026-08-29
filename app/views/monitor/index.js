@@ -1478,12 +1478,15 @@ export function createMonitorView(mount_element, options) {
                 continuation_mode: item.continuation_mode ?? null,
                 paused: item.run_state === 'paused',
                 failed: item.run_state === 'failed',
-                // 파킹·backoff 대기 (UI-5ym8 §8). 같은 렌더러를 쓰는 두 탭이
-                // 같은 사실을 같은 모양으로 그려야 하므로 (ADR 14) Worker 탭의
-                // 투영과 같은 네 키를 여기서도 싣는다 — 빠지면 기다리는 세션이
-                // 모니터에서만 돌아가는 시계와 ⏸를 얻는다.
+                // 파킹·backoff 대기·선행 대기 (UI-5ym8 §8, 선행 대기 계층
+                // §5.4). 같은 렌더러를 쓰는 두 탭이 같은 사실을 같은 모양으로
+                // 그려야 하므로 (ADR 14) Worker 탭의 투영과 같은 키를 여기서도
+                // 싣는다 — 빠지면 기다리는 세션이 모니터에서만 돌아가는 시계와
+                // ⏸를 얻는다.
                 parked: item.run_state === 'parked',
                 retry_wait: item.run_state === 'retry_wait',
+                waiting: item.run_state === 'waiting',
+                wait: item.wait || null,
                 retry: item.retry || null,
                 status: /** @type {any} */ (item.status),
                 status_label:
@@ -1493,7 +1496,9 @@ export function createMonitorView(mount_element, options) {
                       ? '세션 대기'
                       : item.run_state === 'retry_wait'
                         ? '재시도 대기'
-                        : undefined,
+                        : item.run_state === 'waiting'
+                          ? '선행 대기'
+                          : undefined,
                 can_pause: item.can_pause !== false,
                 exec_chips: item.exec_chips || null,
                 usage: item.usage || null,

@@ -393,6 +393,50 @@ describe('worker landing failure summary', () => {
   });
 });
 
+describe('worker prerequisite wait classification', () => {
+  const wait_input = {
+    cause: 'prerequisite_unmet',
+    cause_detail: {
+      blockers: [{ id: 'Analysis-2zly', rig: 'Analysis', status: 'open' }]
+    },
+    verdict: { success: true, summary: '대기 · blocks:Analysis-2zly' },
+    bead_status: 'open',
+    pr_url: null,
+    tier_hint: 'waiting'
+  };
+
+  test('classifies a proven prerequisite wait as waiting', () => {
+    const result = classifyFailure(input(wait_input));
+
+    expect({ tier: result.tier, cause: result.cause }).toEqual({
+      tier: 'waiting',
+      cause: 'prerequisite_unmet'
+    });
+  });
+
+  test('falls back to individual without the tier hint', () => {
+    const result = classifyFailure(
+      input({ ...wait_input, tier_hint: undefined })
+    );
+
+    expect(result.tier).toEqual('individual');
+  });
+
+  test('falls back to individual when no blocker was proven', () => {
+    const result = classifyFailure(
+      input({ ...wait_input, cause_detail: { blockers: [] } })
+    );
+
+    expect(result.tier).toEqual('individual');
+  });
+
+  test('opens no retry ladder', () => {
+    const result = classifyFailure(input(wait_input));
+
+    expect(result.retry).toBeNull();
+  });
+});
+
 describe('worker failure cause keys', () => {
   test('keeps the first two colon segments', () => {
     expect(
@@ -410,6 +454,10 @@ describe('worker failure cause keys', () => {
     expect(causeKey('verify_cmd_spawn_error', 'api')).toEqual(
       'verify_cmd_spawn_error'
     );
+  });
+
+  test('excludes a prerequisite wait from promotion comparison', () => {
+    expect(causeKey('prerequisite_unmet')).toBeNull();
   });
 });
 

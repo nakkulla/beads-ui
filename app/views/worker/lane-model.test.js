@@ -1545,6 +1545,100 @@ describe('monitor 대기 attempt 투영 (UI-5ym8 §3.1·§3.3·§6)', () => {
   });
 });
 
+describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
+  /**
+   * @param {Partial<Record<string, any>>} [patch]
+   * @returns {Record<string, any>}
+   */
+  function waitingAttempt(patch = {}) {
+    return {
+      t1: {
+        attempt_id: 't1',
+        bead_id: 'A-1',
+        status: 'waiting',
+        started_at: 10,
+        finished_at: 20,
+        cause: 'prerequisite_unmet',
+        cause_detail: {
+          summary: '선행 Analysis-2zly 미충족으로 착수하지 않았습니다',
+          blockers: [{ id: 'Analysis-2zly', rig: 'Analysis', status: 'open' }],
+          bead_status: 'open'
+        },
+        ...patch
+      }
+    };
+  }
+
+  test('projects a waiting attempt as its own run state', () => {
+    const map = activeByBead(waitingAttempt(), new Map());
+
+    expect(map.get('A-1')?.run_state).toBe('waiting');
+  });
+
+  test('carries the proven blockers onto the wait projection', () => {
+    const map = activeByBead(waitingAttempt(), new Map());
+
+    expect(map.get('A-1')?.wait).toEqual({
+      summary: '선행 Analysis-2zly 미충족으로 착수하지 않았습니다',
+      blockers: [{ id: 'Analysis-2zly', rig: 'Analysis', status: 'open' }],
+      since: 20
+    });
+  });
+
+  test('projects no failure material for a waiting attempt', () => {
+    const map = activeByBead(waitingAttempt(), new Map());
+
+    expect(map.get('A-1')?.failure).toBeUndefined();
+  });
+
+  test('refuses to resume a waiting attempt', () => {
+    const map = activeByBead(waitingAttempt({ session_id: 'sid' }), new Map());
+
+    expect(map.get('A-1')?.can_resume).toBe(false);
+  });
+
+  test('badges a waiting bead without raising the failure alert', () => {
+    const lanes = buildLanes(
+      [workspace({ attempts: waitingAttempt() })],
+      [state()]
+    );
+
+    const row = lanes.running.find((item) => item.id === 'A-1');
+    expect(row?.badges).toEqual(['⛓ 선행 대기']);
+    expect(row?.alert).toBe(false);
+  });
+
+  test('unions the proven blocker into the decorated blocker chips', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: waitingAttempt(),
+          bead_blocked_by: { 'A-1': ['A-9'] }
+        })
+      ],
+      [state()]
+    );
+
+    const row = lanes.running.find((item) => item.id === 'A-1');
+    expect(row?.blocked_by).toEqual(['A-9', 'Analysis-2zly']);
+  });
+
+  test('lists a proven blocker once when the decoration already carries it', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: waitingAttempt(),
+          bead_blocked_by: { 'A-1': ['Analysis-2zly'] }
+        })
+      ],
+      [state()]
+    );
+
+    const row = lanes.running.find((item) => item.id === 'A-1');
+    expect(row?.blocked_by).toEqual(['Analysis-2zly']);
+  });
+});
+
 describe('monitor 병렬 통합 큐 (UI-e6hw §4.1)', () => {
   test('flattens every visible repo queue into one list ordered by repo name', () => {
     const lanes = buildLanes(

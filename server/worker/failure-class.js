@@ -10,6 +10,10 @@
  * Tier meaning (spec §3.1-§3.4):
  *   - `parked`     — the session ended successfully while waiting on a user
  *                    decision; not a failure, and the queue keeps running.
+ *   - `waiting`    — the session refused to START because a prerequisite of
+ *                    this bead is still open (2026-08-28
+ *                    worker-prerequisite-wait-tier spec §4.3); not a failure,
+ *                    and `bd ready` absence — not a fence — is what holds it.
  *   - `individual` — this bead failed; the queue keeps running.
  *   - `env`        — environment failure; backoff retry + queue hold.
  *   - `systemic`   — every bead would hit the same wall; the queue stops.
@@ -21,7 +25,7 @@
 import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
 
 /**
- * @typedef {'parked' | 'individual' | 'env' | 'systemic'} FailureTier
+ * @typedef {'parked' | 'waiting' | 'individual' | 'env' | 'systemic'} FailureTier
  */
 
 /**
@@ -39,6 +43,10 @@ import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
  * @property {string | null} [bead_status]
  * @property {string | null} [pr_url]
  * @property {string | null} [awaiting_user]
+ * @property {'waiting'} [tier_hint] - The caller's PROOF that it already
+ * observed the four prerequisite-wait conditions (waiting-tier spec §4.2).
+ * Without it a `prerequisite_unmet` cause classifies as the fail-quiet default,
+ * so no caller can reach the tier by naming the cause alone.
  */
 
 /**
@@ -134,6 +142,13 @@ const PATTERN_SENSITIVE_CAUSES = new Set([
  * errors must not read as one systemic outage.
  */
 const GROUP_KEYED_CAUSES = new Set(['session_failed:is_error']);
+
+/**
+ * Causes that never take part in queue-hold promotion (waiting-tier spec §4.3).
+ * A `prerequisite_unmet` ending is a terminal WAIT, not a failure: two of them
+ * in a row say the blocker is still open, never that the environment is.
+ */
+const NON_PROMOTING_CAUSES = new Set(['prerequisite_unmet']);
 
 /** Bead statuses that mean the work landed, so a successful end is not parked. */
 const SETTLED_BEAD_STATUSES = new Set(['resolved', 'closed']);
@@ -308,12 +323,16 @@ export function matchEnvPattern(summary) {
  *
  * @param {string | null | undefined} cause
  * @param {string | null} [env_group]
+ * @returns {string | null} null for a cause that never promotes (§4.3).
  */
 export function causeKey(cause, env_group) {
   if (typeof cause !== 'string' || cause.length === 0) {
     return UNKNOWN_CAUSE;
   }
   const head = cause.split(':').slice(0, 2).join(':');
+  if (NON_PROMOTING_CAUSES.has(head)) {
+    return null;
+  }
   if (GROUP_KEYED_CAUSES.has(head) && typeof env_group === 'string') {
     return `${head}:${env_group}`;
   }
@@ -389,6 +408,24 @@ function classification(tier, cause, summary, env_group) {
 export function classifyFailure(input) {
   const summary = readSummary(input);
   const raw_cause = typeof input.cause === 'string' ? input.cause : '';
+
+  // Waiting-tier spec §4.3, ahead of every other rule: a prerequisite wait is
+  // an ending the CALLER proved, and its inputs (exit 0, bead still open, no
+  // PR) are exactly the ones §3.1-§3.2 below would otherwise read as an
+  // undelivered session. The proof is the hint plus the blockers the caller
+  // observed; either missing falls through to the fail-quiet default.
+  if (raw_cause === 'prerequisite_unmet') {
+    const detail = /** @type {{ blockers?: unknown } | null | undefined} */ (
+      input.cause_detail
+    );
+    if (
+      input.tier_hint === 'waiting' &&
+      Array.isArray(detail?.blockers) &&
+      detail.blockers.length > 0
+    ) {
+      return classification('waiting', raw_cause, summary, null);
+    }
+  }
 
   // §3.1-§3.2: a session that exited 0 without delivering is judged by its
   // ending, not by the placeholder cause the caller carried in.

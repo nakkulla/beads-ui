@@ -368,6 +368,35 @@ function setup(options = {}) {
   };
 }
 
+describe('worker discard source eligibility (선행 대기 계층 §5.2)', () => {
+  test('discards an attempt that ended on an unmet prerequisite', async () => {
+    const env = setup();
+    // `폐기` is the only action the 선행 대기 타일 carries, so this status has
+    // to be a discardable source or that one button always refuses.
+    env.store.updateAttempt(workspace, {
+      attempt_id: 'att-1',
+      patch: {
+        status: 'waiting',
+        cause: 'prerequisite_unmet',
+        cause_detail: {
+          summary: '선행 미충족으로 착수하지 않았습니다',
+          blockers: [{ id: 'UI-9', rig: null, status: 'open' }],
+          bead_status: 'open'
+        },
+        finished_at: 200
+      }
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({ ok: true, operation_id: 'discard-1' });
+  });
+});
+
 describe('worker discard coordinator unmerged lifecycle', () => {
   test('persists a closed revert PR state before recording the failure', async () => {
     const env = setup({ prState: 'CLOSED' });
