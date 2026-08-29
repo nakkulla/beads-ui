@@ -128,7 +128,9 @@ const DONE_KIND_LABELS = {
   merge: '머지',
   pr_stop: 'PR 중단',
   stopped: '중단',
-  failed: '실패'
+  failed: '실패',
+  refuted: '반증',
+  no_delta: '무-delta'
 };
 
 /**

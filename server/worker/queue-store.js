@@ -154,6 +154,8 @@
  * @property {DelegationSession[]} delegation_sessions - Validated delegated
  * session summaries, same two providers. Legacy attempts normalize this
  * optional field to an empty list.
+ * @property {string|null} done_kind - 무변경 종결의 종류 (`'refuted'`·
+ * `'no_delta'`, quick_fix 착지가 씀); 그 밖의 값은 legacy 머지 축 기록.
  *
  * RETIRED merge-axis fields (worker-phase2 §2). New attempts never write them,
  * but attempt history is immutable (§9), so the shape is preserved so a legacy
@@ -164,7 +166,6 @@
  * @property {string|null} drift_policy - Resolved drift policy at dispatch.
  * @property {string|null} demoted_reason - Why the merge policy was demoted.
  * @property {string|null} release_rejected - Last rejected merge-lock release.
- * @property {string|null} done_kind - How the attempt completed.
  * @property {unknown} verify_cmd_result - Post-merge verify_cmd result.
  * @property {string[]|null} exec_stamped_keys - Exec-setting metadata keys
  * stamped onto the bead at dispatch (bead-absent keys filled from the
@@ -222,8 +223,9 @@
  * textual guard). Defaults false.
  * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null }|null} quickfix_landing -
  * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
- * before the first cleanup step) plus `no_change_close` for a contract
- * refuted close settled without a delta head, `head_sha` is the 40hex bound by
+ * before the first cleanup step) plus `no_change_close` for either kind of
+ * contract no-change close (`refuted:`·`no-delta:`) settled without a delta
+ * head, `head_sha` is the 40hex bound by
  * `impl_review` (null under `no_change_close`), and `reason` records a landing
  * failure. Its shape is directly
  * consumable by the existing `prWaitProgress` projection.

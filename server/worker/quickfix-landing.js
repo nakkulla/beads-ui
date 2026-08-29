@@ -17,8 +17,10 @@
  * state: it carries the head binding across restarts, and a `parent_close`
  * record makes an already-closed bead a successful resume.
  * `premature_close` applies only without that Worker-owned close record and
- * outside the contract's no-change close: a session that refuted the Bead's
- * root-cause hypothesis closes it itself with `close_reason` `refuted: ...`
+ * outside the contract's no-change close, which has two kinds: a session that
+ * refuted the Bead's root-cause hypothesis, or that passed the approved
+ * verification bundle with no tracked delta and nothing pushed, closes the Bead
+ * itself with `close_reason` `refuted: ...` or `no-delta: ...`
  * (`workflow-state.yaml no_change_close`), and the Worker then removes residue
  * only — no push containment, review receipt, deployment, or close.
  *
@@ -44,7 +46,7 @@ const log = debug('worker:quickfix-landing');
 
 // Consumed verbatim from dotfiles `workflow-state.yaml no_change_close`
 // (`close_reason.regex`, `lines: single_line_only`); not redefined here.
-const NO_CHANGE_CLOSE_REASON_RE = /^refuted: \S/;
+const NO_CHANGE_CLOSE_REASON_RE = /^(?:refuted|no-delta): \S/;
 
 /**
  * What each landing cursor is called on the bead's timeline
@@ -63,15 +65,33 @@ const LANDING_STEP_LABELS = Object.freeze({
 });
 
 /**
- * @param {unknown} close_reason
- * @returns {boolean}
+ * Which of the contract's two no-change close kinds this `close_reason`
+ * declares. `null` for anything else — a non-string, a prefix the contract
+ * does not name, or a multi-line reason.
+ *
+ * @type {Readonly<Record<string, 'refuted'|'no_delta'>>}
  */
-function isNoChangeClose(close_reason) {
-  return (
-    typeof close_reason === 'string' &&
-    NO_CHANGE_CLOSE_REASON_RE.test(close_reason) &&
-    !/[\r\n]/.test(close_reason)
-  );
+const NO_CHANGE_CLOSE_KINDS = Object.freeze({
+  refuted: 'refuted',
+  'no-delta': 'no_delta'
+});
+
+/**
+ * @param {unknown} close_reason
+ * @returns {'refuted'|'no_delta'|null}
+ */
+function noChangeCloseKind(close_reason) {
+  if (typeof close_reason !== 'string') {
+    return null;
+  }
+  if (!NO_CHANGE_CLOSE_REASON_RE.test(close_reason)) {
+    return null;
+  }
+  if (/[\r\n]/.test(close_reason)) {
+    return null;
+  }
+  const prefix = close_reason.slice(0, close_reason.indexOf(':'));
+  return NO_CHANGE_CLOSE_KINDS[prefix] ?? null;
 }
 
 /**
@@ -675,9 +695,10 @@ export function createQuickfixLanding(deps) {
    * @param {string} attempt_id
    * @param {string} bead_id
    * @param {string} target_base
+   * @param {'refuted'|'no_delta'} kind
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string, step: string|null }>}
    */
-  async function settleNoChangeClose(attempt_id, bead_id, target_base) {
+  async function settleNoChangeClose(attempt_id, bead_id, target_base, kind) {
     const fetched = await fetchBase(target_base);
     if (!fetched.ok) {
       return fail(
@@ -726,6 +747,7 @@ export function createQuickfixLanding(deps) {
       patch: {
         status: 'done',
         finished_at: now(),
+        done_kind: kind,
         quickfix_landing: {
           cursor: 'no_change_close',
           head_sha: null,
@@ -795,10 +817,16 @@ export function createQuickfixLanding(deps) {
       return { ok: true };
     }
     if (status === 'closed') {
-      if (!isNoChangeClose(issue.close_reason)) {
+      const no_change_kind = noChangeCloseKind(issue.close_reason);
+      if (no_change_kind === null) {
         return fail(attempt_id, 'premature_close', null, null);
       }
-      return settleNoChangeClose(attempt_id, bead_id, target_base);
+      return settleNoChangeClose(
+        attempt_id,
+        bead_id,
+        target_base,
+        no_change_kind
+      );
     }
     // Fields every later landing record must carry. Assigned only on the
     // evidence path below, and read at each write — a step that rewrites

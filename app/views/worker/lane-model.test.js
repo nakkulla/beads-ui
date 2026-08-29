@@ -1099,6 +1099,52 @@ describe('monitor 완료 lane (UI-eey2 §8)', () => {
     expect(lanes.done[0].badges).toEqual(['자동 머지', '리뷰']);
   });
 
+  test('badges a no-delta quick_fix close as 무-delta', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 100 }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'done',
+              started_at: 10,
+              finished_at: 40,
+              done_kind: 'no_delta'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].badges).toEqual(['무-delta']);
+  });
+
+  test('badges a refuted quick_fix close as 반증', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 100 }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'done',
+              started_at: 10,
+              finished_at: 40,
+              done_kind: 'refuted'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].badges).toEqual(['반증']);
+  });
+
   test('drops entries older than the period bound but keeps undated ones', () => {
     const lanes = buildLanes(
       [

@@ -943,6 +943,7 @@ test('settles a refuted no-change close by removing residue only', async () => {
     WORKSPACE,
     expect.objectContaining({
       patch: expect.objectContaining({
+        done_kind: 'refuted',
         quickfix_landing: {
           cursor: 'no_change_close',
           head_sha: null,
@@ -955,6 +956,54 @@ test('settles a refuted no-change close by removing residue only', async () => {
   expect(bd.setStatus).not.toHaveBeenCalled();
   expect(repoOperations.ensureDeploy).not.toHaveBeenCalled();
   expect(calls).not.toContain('worktree:removeByBranch');
+});
+
+test('settles a no-delta no-change close without deploying or writing status', async () => {
+  const { landing, bd, store, repoOperations } = makeLanding({
+    status: 'closed',
+    closeReason: 'no-delta: 두 rig 집계가 readback으로 확인됐다'
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+  expect(store.moveToDone).toHaveBeenCalledWith(
+    WORKSPACE,
+    expect.objectContaining({
+      patch: expect.objectContaining({
+        done_kind: 'no_delta',
+        quickfix_landing: {
+          cursor: 'no_change_close',
+          head_sha: null,
+          reason: null
+        }
+      })
+    })
+  );
+  expect(repoOperations.ensureDeploy).not.toHaveBeenCalled();
+  expect(bd.setStatus).not.toHaveBeenCalled();
+});
+
+test('rejects a no-delta close_reason without a space after the prefix', async () => {
+  const { landing } = makeLanding({
+    status: 'closed',
+    closeReason: 'no-delta:근거'
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: false, reason: 'premature_close', step: null });
+});
+
+test('rejects multi-line no-delta close_reason', async () => {
+  const { landing } = makeLanding({
+    status: 'closed',
+    closeReason: 'no-delta: 첫 줄\n둘째 줄'
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: false, reason: 'premature_close', step: null });
 });
 
 test('rejects closed Bead whose close_reason is not the contract refuted form', async () => {
