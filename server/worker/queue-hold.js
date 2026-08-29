@@ -589,8 +589,8 @@ function reduceRetryDispatched(state, event) {
 }
 
 /**
- * A retry that was DUE but could not be dispatched (the bead left its lane, was
- * claimed, or the dispatch aborted before creating an attempt). The rung is not
+ * A retry that was DUE but could not be dispatched (the bead is claimed or has
+ * a live attempt, or the dispatch aborted before creating one). The rung is not
  * spent — `attempts` is untouched — but `next_at` has to move off the past, or
  * every `armRetryTimer` would fire immediately on a lineage nothing can climb.
  * The shortest ladder rung is the wait, because nothing about the environment
