@@ -76,16 +76,24 @@ for a in Object.values(q.attempts) (삽입 순서, 오래된 것부터):
   레인을 점유하지 않는 것:
   - 처리 완료 terminal 정의는 지금과 같다: `done`·`discarded`·`superseded`, 그리고
     `dismissed_at`이 숫자인 `failed`. `paused`·`stopped`·`orphaned`·`parked`·
-    `retry_wait`·`running`·미dismiss `failed`는 미처리다.
+    `retry_wait`·`waiting`·`running`·미dismiss `failed`는 미처리다. `waiting`은
+    UI-8jau(ecfdf5e)가 더한 다섯 번째 계층이고 `PROCESSED_TERMINAL_STATUSES` 밖이므로
+    접미를 막는다 — §11.
   - **직렬 레인 점유**(`scheduler.js` `activeLaneLineages`의 규칙): `serial_lane_id`가
-    직렬 레인이고, status가 해제 집합 `LANE_RELEASING_STATUSES`(`done`·`stopped`·
-    `discarded`) 밖이며, 다른 attempt가 `resumed_from`으로 잇지 않은 **leaf**인 레코드는
+    직렬 레인이고, status가 해제 집합(`done`·`stopped`·`discarded`·`waiting`) 밖이며,
+    다른 attempt가 `resumed_from`으로 잇지 않은 **leaf**인 레코드는
     착지·폐기 전까지 레인 mutex를 쥔다. `dismissed_at`은 UI hide일 뿐 해제가 아니므로
     dismissed `failed`와 `superseded`가 여기 해당한다. 이런 레코드를 이관하면 다른
     lineage가 그 레인에 조기 진입한다. 따라서 이관 불가이며, 접미를 막는다.
-  - 해제 집합은 한 곳에만 둔다: `LANE_RELEASING_STATUSES`를 `queue-store.js`가 export하고
-    `scheduler.js`가 import한다(지금은 scheduler에만 있다). 두 사본이 어긋나면 이관과
-    점유가 다른 답을 낸다.
+  - 해제 집합은 한 곳에만 둔다. 지금은 **사본이 둘**이다:
+    `queue-store.js`의 module-private `LANE_RELEASING_ATTEMPT_STATUSES`
+    (`rebindLineageLane`이 쓰고 `releaseLandedLineageLanes` 주석이 참조한다)와
+    `scheduler.js`의
+    `LANE_RELEASING_STATUSES`(`activeLaneLineages`). 두 주석이 서로 "must agree"라고
+    적고 있고, UI-8jau(ecfdf5e)가 `waiting`을 **양쪽에** 각각 더해 그 위험을 한 번 더
+    보였다. `queue-store.js`가 `LANE_RELEASING_ATTEMPT_STATUSES`를 export하고
+    `scheduler.js`가 그것을 import해 자기 사본을 지운다(이름은 export 쪽으로 통일).
+    두 사본이 어긋나면 이관과 점유가 다른 답을 낸다.
 - **kind를 구분하지 않는다.** `review_session`·`resolution`·`disposition`·`retired_kind`
   attempt도 같은 bead 이력의 한 줄이다. 전체 순서의 접미는 그 부분 순서(구현 attempt만)의
   접미이기도 하므로 `isImplementationAttempt`로 거르는 reader의 답도 보존된다.
@@ -141,8 +149,8 @@ for a in Object.values(q.attempts) (삽입 순서, 오래된 것부터):
 
 ## 6. 남는 누적과 그 범위
 
-비이관 레코드(미dismiss `failed`·`parked`·`paused`·`stopped`·`orphaned`·`retry_wait`,
-그리고 직렬 레인을 점유하는 leaf `failed(dismissed)`·`superseded`) **뒤의** 처리 완료
+비이관 레코드(미dismiss `failed`·`parked`·`paused`·`stopped`·`orphaned`·`retry_wait`·
+`waiting`, 그리고 직렬 레인을 점유하는 leaf `failed(dismissed)`·`superseded`) **뒤의** 처리 완료
 기록은 그 레코드가 처리될 때까지 큐에 남는다. 이는 사람이 보고 dismiss·재개·폐기할
 상태이거나 레인 착지·폐기를 기다리는 상태이고, 그 처리 순간 다음 persist에서 접두가
 함께 나간다. §7의
@@ -179,8 +187,9 @@ attempt도 같은 취급이다: 만나면 그 bead의 나머지 후보를 이번
 10. **직렬 레인 점유**: `serial_lane_id`를 가진 leaf `failed(dismissed)` → 잔류하고
     `activeLaneLineages`가 그 레인을 계속 점유로 봄; 더 최신 attempt가 `resumed_from`으로
     이으면(leaf 아님) 이관됨; `superseded` leaf도 같은 규칙.
-11. `LANE_RELEASING_STATUSES`가 `queue-store.js` export 하나임(scheduler 테스트의 기존
-    기대는 import 경로만 바뀜).
+11. 해제 집합이 `queue-store.js`의 `LANE_RELEASING_ATTEMPT_STATUSES` export 하나임 —
+    `scheduler.js`에 두 번째 리터럴이 없고, `waiting`을 포함한 멤버십이 UI-8jau 착지분과
+    같음(scheduler 테스트의 기존 기대는 import 경로만 바뀜).
 12. `record-retention` 마이그레이션 테스트: in-flight bead의 처리 완료 접두가 이관됨
     (기존 "bead 전체 잔류" 기대가 있으면 갱신).
 
@@ -195,8 +204,10 @@ attempts after a transfer` 등)은 접미 규칙의 기대로 갱신한다. 구�
   §4 표를 한 줄씩 옮긴다.
 - `isProcessedTerminalAttempt`는 `isTransferableRecord(q, attempt)`로 감싼다(§3). 주석에
   "판정 순서 = 삽입 순서, `readAttemptsForBead`의 시각 정렬은 표시 전용"을 고정한다.
-- `LANE_RELEASING_STATUSES`는 `queue-store.js`로 옮겨 export하고 `scheduler.js`
-  `activeLaneLineages`가 import한다. 의미 변경 없음.
+- 해제 집합은 `queue-store.js`의 `LANE_RELEASING_ATTEMPT_STATUSES` 하나만 남기고
+  export하며, `scheduler.js` `activeLaneLineages`가 그것을 import한다(scheduler의
+  `LANE_RELEASING_STATUSES` 리터럴 삭제). 멤버십·의미 변경 없음 —
+  `waiting`을 포함한 UI-8jau 착지분 그대로다.
 - `2026-08-28-worker-record-timeline-retention-design.md` §7 원문은 그대로 유효하다
   (attempt 단위 이관을 말함). 이 spec이 그 §7의 이관 판정 규칙을 구체화한다.
 
@@ -207,24 +218,37 @@ attempts after a transfer` 등)은 접미 규칙의 기대로 갱신한다. 구�
 
 ## 11. 교차 (scope overlap)
 
-- **UI-8jau** (`in_progress`, `2026-08-28-worker-prerequisite-wait-tier-design.md`):
-  `server/worker/queue-store.js`를 공유한다. 같은 파일의 **다른 함수** — UI-8jau는
-  `TERMINAL_ATTEMPT_STATUSES`와 직렬 레인 해제 집합에 `'waiting'`을 더하고
-  `PROCESSED_TERMINAL_STATUSES`에는 넣지 않는다(그 스펙 §4.5). 이 스펙의 §3은
-  `isProcessedTerminalAttempt`를 그대로 쓰므로 `waiting`은 미처리로 읽혀 접미를 막는다 —
-  UI-8jau의 기대("`waiting` attempt는 `transferableAttempts`에 들지 않음", 그 스펙 §7 (h))는
-  접미 규칙 아래에서도 그대로 성립한다. 두 스펙이 같은 상수를 만진다: UI-8jau는 직렬
-  레인 해제 집합에 `'waiting'`을 더하고, 이 스펙은 그 집합(`LANE_RELEASING_STATUSES`)을
-  `queue-store.js`로 옮겨 export한다(§3·§9). 의미는 합성 가능하다 — `waiting`은 해제
-  집합에 있어도 처리 완료 terminal이 아니므로 이관 불가이고, 옮긴 뒤의 집합에
-  `'waiting'`을 더하면 UI-8jau의 의도가 그대로 성립한다. 의존 edge는 두지 않는다
-  (어느 쪽이 먼저 착지해도 다른 쪽의 판정이 바뀌지 않음); 뒤에 착지하는 쪽이 상수의
-  위치와 `queue-store.test.js`의 textual 충돌을 해소한다.
+- **UI-8jau** (`closed`, PR #235, `2026-08-28-worker-prerequisite-wait-tier-design.md`):
+  이 스펙의 rev3 발행(21878a7) 뒤 **먼저 착지했다**(ecfdf5e). 착지분 중 이 스펙에
+  닿는 것은 셋이다.
+  - `waiting` status가 `TERMINAL_ATTEMPT_STATUSES`에 들어갔고
+    `PROCESSED_TERMINAL_STATUSES`에는 들어가지 않았다(그 스펙 §4.5). 따라서 §3의
+    `isProcessedTerminalAttempt`가 `waiting`을 미처리로 읽어 접미를 막는다. 그 스펙
+    §7 (h)의 기대("`waiting` attempt는 `transferableAttempts`에 들지 않음")는 착지한
+    테스트 `waiting attempt records (선행 대기 계층 §4.5)`가 이미 고정하고 있고,
+    접미 규칙 아래에서도 그대로 통과한다(그 테스트의 다른 bead `discarded`는 레인을
+    점유하지 않는 접미 후보다).
+  - 직렬 레인 해제 집합에 `waiting`이 **두 사본 모두에** 더해졌다
+    (`queue-store.js` `LANE_RELEASING_ATTEMPT_STATUSES`, `scheduler.js`
+    `LANE_RELEASING_STATUSES`). §3·§9의 단일화는 멤버십을 바꾸지 않고 그 두 사본을
+    하나로 줄이는 일이며, 지금은 **뒤에 착지하는 쪽이 이 스펙**이므로 그 정리는 이
+    작업의 몫이다.
+  - `queue-store.test.js`가 양쪽에서 커졌다. textual 충돌은 이미 해소된 상태이고,
+    §8의 새 테스트는 그 위에 얹는다.
+  의존 edge는 두지 않는다 — 선행이 이미 착지했다.
+- **UI-k4jm** (`open`, `2026-08-29-review-session-lifecycle-reconcile-design.md`):
+  `server/worker/scheduler.js`를 공유한다. 같은 파일의 다른 절 — k4jm은
+  `isSchedulerOwned`·reconcile의 dead 처분·`occupiedBeadIds`·
+  `disposeDeadReviewSession`을 만지고, 이 스펙은 scheduler에서 해제 집합 import 한
+  줄만 바꾼다. k4jm의 §1.3·§3.5(비terminal `review_session`의 `orphaned` 종단)는 이
+  스펙의 hold를 **덜 걸리게 하는** 방향이지 규칙을 바꾸지 않는다(그 스펙 §교차 표도
+  같은 판정). 어느 쪽 산출도 상대의 전제가 아니므로 의존 edge를 두지 않는다.
 
 ## 구현 unit 후보
 
 단일 unit: `server/worker/queue-store.js`(`transferableAttempts`·`heldBeads`·
-`isTransferableRecord`·`transferProcessedAttempts`·`LANE_RELEASING_STATUSES` export) +
+`isTransferableRecord`·`transferProcessedAttempts`·`LANE_RELEASING_ATTEMPT_STATUSES`
+export) +
 `server/worker/scheduler.js`(import 한 줄) + `queue-store.test.js` +
 `record-retention.test.js` 기대 갱신.
 
