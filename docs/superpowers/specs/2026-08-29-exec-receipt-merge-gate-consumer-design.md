@@ -6,8 +6,17 @@ scope:
   - server/worker/completion-intent.js
   - server/ws/worker-handlers.js
   - app/views/worker/index.js
+  - app/views/worker/index.test.js
   - app/views/worker/lanes.js
+  - app/views/worker/lanes.test.js
+  - app/views/worker/lane-model.js
+  - app/views/worker/lane-model.test.js
   - app/styles.css
+  - app/main.bundle.js
+  - app/main.bundle.js.map
+  - server/worker/receipt-check.test.js
+  - server/worker/merge-gate.test.js
+  - server/worker/completion-intent.test.js
   - docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md
   - docs/superpowers/specs/2026-08-28-chip-grammar-unify-design.md
   - docs/superpowers/specs/2026-08-21-ui-bu6d-receipt-check-design.md
@@ -67,8 +76,9 @@ merge_gate:
    상태 뱃지 「영수증 확인 필요 · <code>」다.
 2. `absent`도 칩으로 그린다 — 계약 문구("displayed as accounting residue")
    그대로. 규율이 관측 가능한 상태로 남는다는 ADR 0038 의도와 일치한다.
-3. 칩을 그리는 표면은 **PR 대기 행(외부 PR 행 포함)** 뿐이다. `receipt_check`
-   관측이 실려 있는 행만 재료가 있다. 후보 카드는 attempt 관측이 없어
+3. 칩을 그리는 표면은 **PR 대기 행(외부 PR 행 포함)** 뿐이다 — Worker 탭과
+   Monitor 탭 둘 다(같은 `miniRow`, 같은 `observations[bead_id].receipt_check`
+   재료). `receipt_check` 관측이 실려 있는 행만 재료가 있다. 후보 카드는 attempt 관측이 없어
    baseline·lineage·ancestry 판정이 불가능하고, 부재 칩이 모든 후보에 뜨는
    소음을 피한다.
 
@@ -213,9 +223,12 @@ attempt마다 경고 로그가 되지 않게 한다. 기록(`updateAttempt`)은 
   | `takeover_lineage_unobservable` | `main:takeover`인데 위임 계보를 모니터가 볼 수 없다(Codex 밖 런타임) |
 
   어휘 밖 코드는 코드 문자열 그대로 한 줄(서버가 자란 코드를 삼키지 않는다).
-- Monitor 탭은 같은 `miniRow`를 쓰지만 Monitor의 PR 대기 투영은 `receipt_check`
-  요약을 싣지 않으므로 칩이 그려지지 않는다(fail-quiet). 이 스펙은 Monitor
-  투영을 바꾸지 않는다 — 관찰로 남긴다(§8).
+- Monitor 탭(`app/views/worker/lane-model.js`의 `pr_wait` 투영)도 같은
+  `observations[bead_id].receipt_check`에서 `badge_codes`를 읽어 같은
+  `receipt_badge: { codes }`를 싣는다(코드 없으면 필드 없음). Monitor는 hold를
+  이미 `gate.gate_badge`(「영수증 확인 필요」)로 그리므로, 이로써 두 탭이 같은
+  행을 같게 말한다(ADR 0014). Monitor의 판정 칩 클릭 핸들러는 UI-8x90이 이미
+  두 탭에 같은 `judgement-chip` 위임으로 두었으므로 키 추가로 충분하다.
 
 ### 4.4 `app/styles.css`
 
@@ -267,6 +280,9 @@ alert 색을 쓰지 않는다 — 행동이 필요 없는 잔여이기 때문이
   문장; 외부 행도 같음; `badge_codes` 부재 시 칩 없음.
 - `app/views/worker/lanes.test.js`: `JUDGEMENT_CHIP_KEYS`에 `receipt`;
   `judgementPopoverContent` 재료 없음 → `null`.
+- `app/views/worker/lane-model.test.js`: Monitor `pr_wait` 항목이
+  `receipt_check.badge_codes`를 `receipt_badge`로 싣고, 부재·빈 배열이면 필드가
+  없다.
 - 절차: `npm run tsc` · `npx vitest run --reporter=dot`(timeout 120s) ·
   `npm run lint` · `npm run prettier:write` → `npm run build`
   (`app/main.bundle.js`·`.map` 포함, prettier → build 순서).
@@ -279,8 +295,6 @@ alert 색을 쓰지 않는다 — 행동이 필요 없는 잔여이기 때문이
   않는다.
 - badge를 durable metadata로 기록하지 않는다(매 관측 재계산).
 - 과거 영수증 마이그레이션 없음.
-- 관찰: Monitor 탭 PR 대기 투영은 `receipt_check`를 싣지 않아 hold 뱃지도 badge
-  칩도 그리지 않는다 — 현행과 같은 비대칭이며 이 Bead 범위 밖.
 - 관찰(scope 겹침): UI-1gpj(세션용 큐 배치 HTTP 진입점,
   `2026-08-29-session-queue-place-entrypoint-design.md`)와 `server/ws/worker-handlers.js`
   접두어를 공유한다. 이 스펙은 그 파일을 바꾸지 않고(§3.5 전송 변경 없음)
@@ -305,6 +319,9 @@ alert 색을 쓰지 않는다 — 행동이 필요 없는 잔여이기 때문이
   - 되돌리기 어려움: 불성립 — 슬롯 표 한 줄과 템플릿 위치 변경으로 되돌린다.
   - 맥락 없이 놀라움: 불성립 — 슬롯 표의 판정 규칙("행동을 바꾸는 쪽이
     이긴다")에서 직접 나온다.
-  - 실질 트레이드오프: 불성립.
+  - 실질 트레이드오프: 불성립 — 슬롯 5는 표시 위치만 바꾸고 게이트 판정·
+    자동화·데이터 형식은 건드리지 않으므로 안전성·운영 비용·성능 같은 경쟁
+    가치를 교환하지 않는다; 잃는 것은 상태 줄에서의 가시성뿐이고 그것은 계약이
+    badge에 요구하지 않는 것이다.
 - 없음 — 등급 자체의 결정은 dotfiles ADR 0038이 소유하고, beads-ui는 그 enum의
   소비 위치만 정했다.
