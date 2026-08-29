@@ -161,8 +161,8 @@ export const REC_VALUES = {
 export const ACCOUNT_KEYS = ['claude_account', 'codex_account'];
 
 /**
- * The 12 keys that may be STORED workspace-wide through
- * `bd kv workflow_session_defaults` (dotfiles `workflow.yaml
+ * The 13 keys that may be STORED workspace-wide through
+ * `bd kv workflow_session_defaults` (dotfiles `workflow-state.yaml
  * workspace_kv_defaults.allowed_keys`).
  *
  * `impl_dispatch` is absent by contract: a workspace-global default would make
@@ -170,15 +170,23 @@ export const ACCOUNT_KEYS = ['claude_account', 'codex_account'];
  * what `write_rule: user_write_only` forbids. A value left in an older kv
  * object therefore drops per key with a warning, never failing the layer.
  *
- * The list is NOT a subset of the per-bead list: it carries one kv-only
- * route-scoped key, `quick_fix_impl_model`, which has no bead-metadata layer at
- * all (dotfiles `workflow-state.yaml route_scoped`).
+ * The list is NOT a subset of the per-bead list: it carries two kv-only keys
+ * with no bead-metadata layer at all — the route-scoped
+ * `quick_fix_impl_model` (`workflow-state.yaml route_scoped`) and `bdui_url`
+ * (`key_scoped`, `metadata_key: forbidden`). Neither is an `IMPL_PRESET_KEYS`
+ * member, so {@link PRESET_KV_KEYS} drops both and a preset apply preserves
+ * them.
+ *
+ * `bdui_url` is also the one key with no entry in {@link sessionDefaultEnums}:
+ * the contract types it `enum: none`, so its value is judged by FORMAT in
+ * `server/session-defaults.js` rather than by this table.
  *
  * @type {ReadonlyArray<string>}
  */
 export const WORKSPACE_KV_KEYS = [
   ...BEAD_APPLY_KEYS.filter((key) => key !== 'impl_dispatch'),
-  'quick_fix_impl_model'
+  'quick_fix_impl_model',
+  'bdui_url'
 ];
 
 /**

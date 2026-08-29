@@ -70,26 +70,45 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
   });
 
   test('drops impl_dispatch from the workspace kv list', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(12);
+    expect(WORKSPACE_KV_KEYS).toHaveLength(13);
 
     expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
   });
 
-  test('appends quick_fix_impl_model as the kv-only route-scoped key', () => {
-    expect(WORKSPACE_KV_KEYS.at(-1)).toBe('quick_fix_impl_model');
+  test('appends bdui_url as the last kv-only key', () => {
+    expect(WORKSPACE_KV_KEYS.at(-1)).toBe('bdui_url');
   });
 
-  test('exceeds the per-bead list by the one kv-only key', () => {
+  test('exceeds the per-bead list by the two kv-only keys', () => {
     const extra = WORKSPACE_KV_KEYS.filter(
       (key) => !BEAD_APPLY_KEYS.includes(key)
     );
 
-    expect(extra).toEqual(['quick_fix_impl_model']);
+    expect(extra).toEqual(['quick_fix_impl_model', 'bdui_url']);
   });
 
-  test('keeps quick_fix_impl_model out of the preset-carried kv list', () => {
+  test('keeps bdui_url off every per-bead surface (metadata_key forbidden)', () => {
+    expect(BEAD_APPLY_KEYS).not.toContain('bdui_url');
+    expect(IMPL_PRESET_KEYS).not.toContain('bdui_url');
+    expect(EXEC_SETTING_KEYS).not.toContain('bdui_url');
+    expect(
+      Object.keys(execSettingEnums(resolveCatalog({ warn: () => {} })))
+    ).not.toContain('bdui_url');
+  });
+
+  test('gives bdui_url no enum entry, since the contract types it as a string', () => {
+    const session_enums = sessionDefaultEnums(
+      resolveCatalog({ warn: () => {} })
+    );
+
+    expect(WORKSPACE_KV_KEYS).toContain('bdui_url');
+    expect(Object.keys(session_enums)).not.toContain('bdui_url');
+  });
+
+  test('keeps both kv-only keys out of the preset-carried kv list', () => {
     expect(PRESET_KV_KEYS).toHaveLength(11);
     expect(PRESET_KV_KEYS).not.toContain('quick_fix_impl_model');
+    expect(PRESET_KV_KEYS).not.toContain('bdui_url');
 
     expect(PRESET_KV_KEYS.every((key) => IMPL_PRESET_KEYS.includes(key))).toBe(
       true

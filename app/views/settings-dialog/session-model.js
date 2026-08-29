@@ -32,17 +32,43 @@ export const BEAD_APPLY_KEYS = [
 ];
 
 /**
- * The twelve keys `bd kv workflow_session_defaults` may STORE, in dialog
+ * The thirteen keys `bd kv workflow_session_defaults` may STORE, in dialog
  * display order. `impl_dispatch` is absent by contract
  * (`write_rule: user_write_only`): a workspace-global dispatch would decide for
  * every later bead, so the session-defaults group offers no such row.
- * `quick_fix_impl_model` is the one kv-only route-scoped key — it has no
- * per-bead layer, so no preset and no pin can carry it.
+ * `quick_fix_impl_model` and `bdui_url` are the two kv-only keys — neither has
+ * a per-bead layer, so no preset and no pin can carry them.
  */
 export const WORKSPACE_KV_KEYS = [
   ...BEAD_APPLY_KEYS.filter((key) => key !== 'impl_dispatch'),
-  'quick_fix_impl_model'
+  'quick_fix_impl_model',
+  'bdui_url'
 ];
+
+/**
+ * True for an absolute `http`/`https` origin written exactly as `URL`
+ * normalizes it — no trailing slash, path, query, fragment, or userinfo.
+ *
+ * `bdui_url` is the one workspace kv key the contract types `enum: none`
+ * (`workflow-state.yaml key_scoped`), so the dialog judges its FORMAT before
+ * offering to save it rather than letting the server refuse the whole patch.
+ * The server enforces the same rule in `server/session-defaults.js`; the two
+ * runtimes share no module, so the equality is asserted from both test files.
+ *
+ * @param {string} value
+ */
+export function isHttpOriginValue(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    (url.protocol === 'http:' || url.protocol === 'https:') &&
+    value === url.origin
+  );
+}
 
 /** The three orchestration keys the workspace queue stores as values. */
 export const ORCHESTRATION_KEYS = [
@@ -327,8 +353,8 @@ const PRESET_DIFF_KEYS = [...PRESET_KV_KEYS, ...ORCHESTRATION_KEYS];
 
 /**
  * Declared keys a preset may carry that a global apply does NOT write:
- * `impl_dispatch` is `user_write_only`, and `quick_fix_impl_model` has no preset
- * layer at all.
+ * `impl_dispatch` is `user_write_only`, and `quick_fix_impl_model` / `bdui_url`
+ * have no preset layer at all.
  */
 const PRESET_IGNORED_KEYS = [...IMPL_PRESET_KEYS, ...WORKSPACE_KV_KEYS].filter(
   (key, index, list) =>

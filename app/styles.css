@@ -9003,13 +9003,25 @@ button.detail-session__leg:focus-visible {
   min-width: 0;
 }
 
-.settings-dialog__controls select {
+.settings-dialog__controls select,
+.settings-dialog__text {
   padding: var(--sp-4) var(--sp-9);
   border: 1px solid var(--border-chip);
   border-radius: var(--r-6);
   background: var(--bg-drawer);
   color: var(--text-primary);
   font-size: var(--fs-small);
+}
+
+.settings-dialog__text {
+  min-width: 0;
+  flex: 1 1 200px;
+  max-width: 260px;
+}
+
+.settings-dialog__text--invalid {
+  border-color: var(--border-danger);
+  color: var(--accent-danger);
 }
 
 .settings-dialog__unset {
@@ -9318,6 +9330,7 @@ button.detail-session__leg:focus-visible {
   }
 
   .settings-dialog__controls select,
+  .settings-dialog__text,
   .settings-dialog__seg button {
     padding: var(--sp-7) var(--sp-12);
     font-size: var(--fs-body-sm);

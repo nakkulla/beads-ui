@@ -14,6 +14,7 @@ import {
   implEffortOptions,
   implModelOptions,
   isDelegationDisabled,
+  isHttpOriginValue,
   narrowImplTarget,
   orchestrationEffortOptions,
   orchestrationModelOptions
@@ -112,15 +113,19 @@ describe('session key lists', () => {
     ).toBe(false);
   });
 
-  test('drops impl_dispatch from the twelve workspace kv keys', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(12);
+  test('drops impl_dispatch from the thirteen workspace kv keys', () => {
+    expect(WORKSPACE_KV_KEYS).toHaveLength(13);
 
     expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
   });
 
-  test('mirrors the server kv-only quick_fix_impl_model key last', () => {
-    expect(WORKSPACE_KV_KEYS.at(-1)).toBe('quick_fix_impl_model');
+  test('mirrors the server kv-only keys after the per-bead ones', () => {
+    expect(WORKSPACE_KV_KEYS.slice(-2)).toEqual([
+      'quick_fix_impl_model',
+      'bdui_url'
+    ]);
     expect(IMPL_PRESET_KEYS).not.toContain('quick_fix_impl_model');
+    expect(IMPL_PRESET_KEYS).not.toContain('bdui_url');
   });
 
   test('names the eleven kv keys a global preset apply replaces', () => {
@@ -418,7 +423,7 @@ describe('buildPresetDiff', () => {
       'orchestration_effort',
       'orchestration_speed'
     ]);
-    expect(diff.ignored_keys).toEqual(['quick_fix_impl_model']);
+    expect(diff.ignored_keys).toEqual(['quick_fix_impl_model', 'bdui_url']);
   });
 
   test('returns impl_dispatch as ignored rather than comparing it', () => {
@@ -580,6 +585,51 @@ describe('buildSessionDefaultsPatch', () => {
     );
 
     expect(patch).toEqual({ quick_fix_impl_model: 'terra' });
+  });
+
+  test('diffs bdui_url like any other workspace kv key', () => {
+    const patch = buildSessionDefaultsPatch(
+      { bdui_url: 'http://one:3000' },
+      { bdui_url: 'http://two:3000' }
+    );
+
+    expect(patch).toEqual({ bdui_url: 'http://two:3000' });
+  });
+
+  test('sends a dropped bdui_url as the null deletion request', () => {
+    const patch = buildSessionDefaultsPatch(
+      { bdui_url: 'http://one:3000' },
+      {}
+    );
+
+    expect(patch).toEqual({ bdui_url: null });
+  });
+});
+
+describe('isHttpOriginValue', () => {
+  test('accepts an absolute http origin with a port', () => {
+    expect(isHttpOriginValue('http://100.64.0.1:3000')).toBe(true);
+  });
+
+  test('accepts an https origin without a port', () => {
+    expect(isHttpOriginValue('https://beads.example')).toBe(true);
+  });
+
+  test('rejects a trailing slash, which would concatenate into //api', () => {
+    expect(isHttpOriginValue('http://100.64.0.1:3000/')).toBe(false);
+  });
+
+  test('rejects a path, query, fragment, or userinfo', () => {
+    expect(isHttpOriginValue('http://host:3000/api')).toBe(false);
+    expect(isHttpOriginValue('http://host:3000?a=1')).toBe(false);
+    expect(isHttpOriginValue('http://host:3000#x')).toBe(false);
+    expect(isHttpOriginValue('http://user:pw@host:3000')).toBe(false);
+  });
+
+  test('rejects a scheme-less host and a non-http scheme', () => {
+    expect(isHttpOriginValue('100.64.0.1:3000')).toBe(false);
+    expect(isHttpOriginValue('ftp://host')).toBe(false);
+    expect(isHttpOriginValue('')).toBe(false);
   });
 });
 

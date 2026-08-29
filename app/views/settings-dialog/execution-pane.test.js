@@ -201,6 +201,132 @@ describe('createExecutionPane unbound (root_dir null)', () => {
   });
 });
 
+describe('createExecutionPane bdui_url row', () => {
+  test('renders the stored origin in a text box, not a select', async () => {
+    const { root, pane } = mount({ values: { bdui_url: 'http://host:3000' } });
+
+    await pane.load();
+
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="bdui_url"]')
+    );
+    expect(input.value).toBe('http://host:3000');
+    expect(root.querySelector('select[data-key="bdui_url"]')).toBeNull();
+  });
+
+  test('saves a well-formed origin through the session-defaults op', async () => {
+    const { root, pane, calls } = mount();
+    await pane.load();
+
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="bdui_url"]')
+    );
+    input.value = 'http://100.64.0.1:3000';
+    input.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'set-session-defaults')).toEqual([
+      { values: { bdui_url: 'http://100.64.0.1:3000' } }
+    ]);
+  });
+
+  test('trims the typed value before judging and saving it', async () => {
+    const { root, pane, calls } = mount();
+    await pane.load();
+
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="bdui_url"]')
+    );
+    input.value = '  http://host:3000  ';
+    input.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'set-session-defaults')).toEqual([
+      { values: { bdui_url: 'http://host:3000' } }
+    ]);
+  });
+
+  test('refuses to save a malformed origin and marks the box invalid', async () => {
+    const { root, pane, calls } = mount();
+    await pane.load();
+
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="bdui_url"]')
+    );
+    input.value = 'host:3000';
+    input.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'set-session-defaults')).toEqual([]);
+    expect(
+      el(root, 'input[data-key="bdui_url"]').getAttribute('aria-invalid')
+    ).toBe('true');
+  });
+
+  test('keeps an unrelated edit saveable while the box holds invalid text', async () => {
+    const { root, pane, calls } = mount();
+    await pane.load();
+
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="bdui_url"]')
+    );
+    input.value = 'host:3000';
+    input.dispatchEvent(new Event('change'));
+    await settle();
+    const select = /** @type {HTMLSelectElement} */ (
+      el(root, 'select[data-key="impl_speed"]')
+    );
+    select.value = 'fast';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'set-session-defaults')).toEqual([
+      { values: { impl_speed: 'fast' } }
+    ]);
+  });
+
+  test('keeps the invalid text on screen after an unrelated save succeeds', async () => {
+    const { root, pane } = mount();
+    await pane.load();
+
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="bdui_url"]')
+    );
+    input.value = 'host:3000';
+    input.dispatchEvent(new Event('change'));
+    await settle();
+    const select = /** @type {HTMLSelectElement} */ (
+      el(root, 'select[data-key="impl_speed"]')
+    );
+    select.value = 'fast';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(
+      /** @type {HTMLInputElement} */ (el(root, 'input[data-key="bdui_url"]'))
+        .value
+    ).toBe('host:3000');
+  });
+
+  test('sends an emptied box as the null deletion request', async () => {
+    const { root, pane, calls } = mount({
+      values: { bdui_url: 'http://host:3000' }
+    });
+    await pane.load();
+
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="bdui_url"]')
+    );
+    input.value = '';
+    input.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'set-session-defaults')).toEqual([
+      { values: { bdui_url: null } }
+    ]);
+  });
+});
+
 describe('createExecutionPane bound to another repo', () => {
   test('carries root_dir on both session-defaults ops', async () => {
     const { root, pane, calls } = mount({ root_dir: REPO_B });

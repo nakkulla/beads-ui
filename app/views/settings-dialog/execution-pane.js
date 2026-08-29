@@ -47,6 +47,7 @@ import {
   buildSessionDefaultsPatch,
   implEffortOptions,
   implModelOptions,
+  isHttpOriginValue,
   narrowImplTarget,
   orchestrationEffortOptions,
   orchestrationModelOptions
@@ -114,6 +115,16 @@ export function createExecutionPane(mount_element, binding) {
   /** The user's in-progress edits — deliberately NOT reset on a save failure. */
   /** @type {Record<string, string>} */
   let session_draft = {};
+  /**
+   * Text a free-form session key currently holds that is NOT storable yet: the
+   * user is mid-typing, or the value fails the key's format. Kept OUT of
+   * `session_draft` on purpose — the pane saves the whole session diff on every
+   * edit, so parking an invalid value there would make the next select change
+   * ship a patch the server refuses in full.
+   *
+   * @type {Record<string, string>}
+   */
+  let session_text_draft = {};
   /** @type {string[]} */
   let session_warnings = [];
   let session_loading = false;
@@ -276,6 +287,7 @@ export function createExecutionPane(mount_element, binding) {
       const res = await send('get-session-defaults', { ...rootPayload() });
       session_baseline = isRecord(res?.values) ? { ...res.values } : {};
       session_draft = { ...session_baseline };
+      session_text_draft = {};
       session_warnings = Array.isArray(res?.warnings) ? res.warnings : [];
     } catch (err) {
       session_warnings = ['kv_read_failed'];
@@ -301,6 +313,10 @@ export function createExecutionPane(mount_element, binding) {
       });
       session_baseline = isRecord(res?.values) ? { ...res.values } : {};
       session_draft = { ...session_baseline };
+      // `session_text_draft` deliberately survives: this save may belong to an
+      // unrelated key, and the text box's own commit already cleared its entry
+      // on the way in. Dropping it here would silently discard text the user
+      // is still fixing.
       session_warnings = Array.isArray(res?.warnings) ? res.warnings : [];
     } catch (err) {
       // Keep `session_draft` exactly as the user left it so a retry does not
@@ -493,6 +509,32 @@ export function createExecutionPane(mount_element, binding) {
       delete session_draft[key];
     } else {
       session_draft[key] = value;
+    }
+    doRender();
+    void saveSessionDefaults();
+  }
+
+  /**
+   * Commit one free-form session key. An empty box is the deletion request; a
+   * value that passes the key's format becomes the draft value and saves; a
+   * value that fails stays in `session_text_draft` and saves NOTHING, so the row
+   * can show why without the server refusing an unrelated edit alongside it.
+   *
+   * @param {string} key
+   * @param {string} raw
+   * @param {(value: string) => boolean} isValid
+   */
+  function onTextChange(key, raw, isValid) {
+    if (raw.length > 0 && !isValid(raw)) {
+      session_text_draft[key] = raw;
+      doRender();
+      return;
+    }
+    delete session_text_draft[key];
+    if (raw.length === 0) {
+      delete session_draft[key];
+    } else {
+      session_draft[key] = raw;
     }
     doRender();
     void saveSessionDefaults();
@@ -1057,6 +1099,56 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
+   * One free-text session-default row, for a workspace kv key the contract
+   * types `enum: none` — no `(기본)`-first select can carry it, so the row
+   * offers a box whose empty state IS the unset state.
+   *
+   * The commit fires on `change` (blur/Enter) rather than on every keystroke:
+   * a half-typed URL is not a value worth asking the server to store.
+   *
+   * @param {string} key
+   * @param {string} label
+   * @param {string} placeholder
+   * @param {string} hint - What the value is FOR, shown while the box is valid.
+   * @param {string} format_hint - What a legal value looks like, shown instead
+   * once the typed text fails the format.
+   * @param {(value: string) => boolean} isValid
+   * @returns {TemplateResult}
+   */
+  function textRow(key, label, placeholder, hint, format_hint, isValid) {
+    const pending = Object.hasOwn(session_text_draft, key);
+    const value = pending
+      ? session_text_draft[key]
+      : (session_draft[key] ?? UNSET);
+    return html`<div class="settings-dialog__row">
+      <span class="settings-dialog__row-label">${label}</span>
+      <span class="settings-dialog__controls">
+        <input
+          type="text"
+          class=${`settings-dialog__text${pending ? ' settings-dialog__text--invalid' : ''}`}
+          data-key=${key}
+          aria-label=${label}
+          aria-invalid=${String(pending)}
+          placeholder=${placeholder}
+          .value=${live(value)}
+          @change=${(/** @type {Event} */ ev) =>
+            onTextChange(
+              key,
+              String(/** @type {HTMLInputElement} */ (ev.target).value).trim(),
+              isValid
+            )}
+        />
+        ${value.length === 0
+          ? html`<span class="settings-dialog__source-badge">기본</span>`
+          : ''}
+        <span class="settings-dialog__hint" data-key-hint=${key}
+          >${pending ? format_hint : hint}</span
+        >
+      </span>
+    </div>`;
+  }
+
+  /**
    * The empty option's label: what "no repo default" actually falls through to,
    * which is the machine's current login (§6.1).
    *
@@ -1559,6 +1651,14 @@ export function createExecutionPane(mount_element, binding) {
                   </span>
                 </span>
               </div>
+              ${textRow(
+                'bdui_url',
+                'beads-ui 주소',
+                'http://호스트:3000',
+                '세션이 Worker 레인 배치를 물어볼 때 쓰는 주소입니다',
+                'http:// 또는 https:// 로 시작하는 주소만 저장됩니다 (경로 없이)',
+                isHttpOriginValue
+              )}
             </div>
 
             <div class="settings-dialog__group">
@@ -1680,6 +1780,7 @@ export function createExecutionPane(mount_element, binding) {
     /** Reset the per-open drafts and read the bound repo's kv layers. */
     load() {
       worker_draft = {};
+      session_text_draft = {};
       /** @type {Promise<void>[]} */
       const pending = [loadSessionDefaults(), loadWorkspaceAccounts()];
       if (!account_catalog_loaded) {
