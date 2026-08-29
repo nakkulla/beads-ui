@@ -191,11 +191,12 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   dotfiles `docs/contracts/workflow-contract.md`와
   `docs/contracts/workflow-state.yaml`에 따라 Worker가 소유한다. `[정리]`는
   `cleanup_failed`가 기록된 행의 실패 재개 전용이다.
-- 실패 해결은 v2 사다리
-  `script_retry → auto_repair_session → user_triggered_session` 순서다. 구체적인
-  자동화·예산·중단 의미는 dotfiles의 `docs/contracts/workflow-contract.md`와
-  `docs/contracts/workflow-state.yaml`과 Worker/Monitor의 계약 projection을
-  따른다.
+- 실패 해결 사다리는 상시 단발 `script_retry` 하나뿐이다. 그 뒤로 post-merge
+  실패는 원인을 기록한 채 `needs_human`으로 종단하고 재진입은 사람의 클릭뿐이며,
+  자동 AI 수리 세션 dispatch는 없다(ADR 0005). 사다리·자동 처리 항목·자동으로
+  하지 않는 것의 정본은 dotfiles가 소유하고, 이 저장소가 읽는 것은 핀된 사본
+  `generated/contracts/repo-operation-policy.json`이다 — 문장을 여기에 복제하지
+  않는다.
 - 실제 소비자 표면은 canonical `repo-ops/config.toml`, `repo-ops/script/deploy`,
   Worker/Monitor의 저장소 작업·자동 해결 화면이다. 계약 문구와 automation enum은
   dotfiles가 소유하며 이 문서에 복제하지 않는다.
