@@ -19,10 +19,13 @@
  *      branch, which MOVES the head. So the completion verdict re-observes the
  *      PR and judges `reviewReceiptState(receipt, final_head)` (§5.4) — never
  *      the head that was clicked.
- *   3. A DEAD BINDING WRITES NOTHING. A cancel (§5.6) settles the attempt and
- *      reclaims the authority in its own write, so a session that outlives the
- *      stop finds its binding gone and records nothing at all — not even its
- *      own failure.
+ *   3. A DEAD BINDING WRITES NOTHING TO THE ROW. A cancel (§5.6) settles the
+ *      attempt and reclaims the authority in its own write, so a session that
+ *      outlives the stop finds its binding gone and records no verdict — not
+ *      even its own failure. The attempt record is the one exception, and only
+ *      when nobody else ended it: a row taken away by a MERGE leaves a
+ *      `running` attempt with no owner, so the lost binding orphans it
+ *      (review-session lifecycle spec §3.5).
  *
  * The session-selection rule is NOT redefined here: it is the REVISE-parking
  * `fix` disposition's rule (`revise-disposition.js` → `qualifySessionFork`),
@@ -303,6 +306,52 @@ export function createReviewSession(deps) {
   }
 
   /**
+   * The ONE ending a `binding_gone` judgment writes (review-session lifecycle
+   * spec §3.5), shared by the pre-observation binding check and every
+   * completion settlement that comes back `binding_gone`.
+   *
+   * Property 3 above says a dead binding writes nothing, and it stays true of
+   * the ROW: the entry is gone or is already another authority's, so neither it
+   * nor its claim is touched. What property 3 never covered is the attempt
+   * whose row a MERGE took away — nobody had terminalized it, so it stayed
+   * `running` forever, holding a slot and an in-flight guard. This is that
+   * record's last owner writing its end. A cancel (§5.6) got there first and
+   * left a terminal attempt, so its own cause survives untouched.
+   *
+   * @param {string} attempt_id
+   * @returns {{ ok: false, reason: 'binding_gone' }}
+   */
+  function orphanLostBinding(attempt_id) {
+    /** @type {any} */
+    let attempt = null;
+    try {
+      attempt =
+        (deps.store.snapshot(workspace).attempts || {})[attempt_id] ?? null;
+    } catch (err) {
+      log('review session orphan read failed for %s: %o', attempt_id, err);
+    }
+    if (
+      attempt &&
+      attempt.kind === 'review_session' &&
+      (attempt.status === 'pending' || attempt.status === 'running')
+    ) {
+      const result = deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          status: 'orphaned',
+          cause: 'binding_gone',
+          control: null,
+          finished_at: now()
+        }
+      });
+      if (result && result.ok) {
+        notifyChanged(workspace);
+      }
+    }
+    return { ok: false, reason: 'binding_gone' };
+  }
+
+  /**
    * @param {string} attempt_id
    * @param {{ outcome: 'current'|'failed', final_head_sha?: string|null, head_moved_by_session?: boolean|null, cause?: string|null, hold_reason?: string|null, from?: 'launch'|'completion' }} verdict
    */
@@ -511,7 +560,7 @@ export function createReviewSession(deps) {
     async complete(input) {
       const attempt_id = input.attempt_id;
       if (!bindingAlive(attempt_id)) {
-        return { ok: false, reason: 'binding_gone' };
+        return orphanLostBinding(attempt_id);
       }
       // The re-observation runs AHEAD of the death branch (2026-08-28
       // auto-review-dispatch spec §5.2), not only for the receipt: every
@@ -536,6 +585,11 @@ export function createReviewSession(deps) {
         observed.ok === true && typeof observed.head_sha === 'string'
           ? observed.head_sha
           : null;
+      // Every settlement below can still come back `binding_gone`: the binding
+      // was alive when it was read, and the `gh` re-observation above takes
+      // seconds, in which a merge or a cancel can take the row away. All four
+      // hand that answer to the one helper (§3.5).
+      //
       // A session that died is a failure whatever the Bead now says: the
       // receipt branch below judges a session that RAN to the end.
       if (input.session_ok !== true) {
@@ -546,30 +600,42 @@ export function createReviewSession(deps) {
           final_head_sha,
           head_moved_by_session: headMovedBySession(attempt_id, final_head_sha)
         });
+        if (settled.reason === 'binding_gone') {
+          return orphanLostBinding(attempt_id);
+        }
         return { ok: settled.ok, reason: 'session_failed' };
       }
       if (observed.ok !== true) {
-        settle(attempt_id, {
+        const undetermined = settle(attempt_id, {
           outcome: 'failed',
           cause: 'receipt_not_current',
           hold_reason: 'review_receipt_undetermined'
         });
+        if (undetermined.reason === 'binding_gone') {
+          return orphanLostBinding(attempt_id);
+        }
         return { ok: false, reason: observed.reason || 'observation_failed' };
       }
       if (observed.state !== 'current') {
-        settle(attempt_id, {
+        const stale = settle(attempt_id, {
           outcome: 'failed',
           cause: 'receipt_not_current',
           hold_reason: holdReasonFor(String(observed.state)),
           final_head_sha,
           head_moved_by_session: headMovedBySession(attempt_id, final_head_sha)
         });
+        if (stale.reason === 'binding_gone') {
+          return orphanLostBinding(attempt_id);
+        }
         return { ok: false, reason: 'receipt_not_current' };
       }
       const settled = settle(attempt_id, {
         outcome: 'current',
         final_head_sha: observed.head_sha
       });
+      if (settled.reason === 'binding_gone') {
+        return orphanLostBinding(attempt_id);
+      }
       if (settled.ok && typeof deps.kick === 'function') {
         try {
           await deps.kick();

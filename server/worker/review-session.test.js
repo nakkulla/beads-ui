@@ -467,7 +467,7 @@ describe('review-session — completion verdict (UI-d7fy §5.4)', () => {
     });
   });
 
-  test('writes nothing when the authority was reissued under the session', async () => {
+  test('orphans the attempt, not the row, when the authority was reissued under it', async () => {
     const { review, store } = coordinator();
     await click(review, store);
     store.cancelMerge(WS, {
@@ -493,6 +493,69 @@ describe('review-session — completion verdict (UI-d7fy §5.4)', () => {
 
     expect(verdict).toEqual({ ok: false, reason: 'binding_gone' });
     expect(store.snapshot(WS).merge_queue[0].authority?.id).toBe('authority-2');
+    expect(store.snapshot(WS).attempts['review:1']).toMatchObject({
+      status: 'orphaned',
+      cause: 'binding_gone'
+    });
+  });
+
+  test('orphans a still-running attempt whose row is gone', async () => {
+    const { review, store } = coordinator();
+    await click(review, store);
+    store.updateAttempt(WS, {
+      attempt_id: 'review:1',
+      patch: { status: 'running' }
+    });
+    // The MERGE this session's own receipt authorized: the row leaves, and
+    // with it every owner the attempt had left.
+    store.dequeueMerge(WS, 'UI-1');
+
+    const verdict = await review.complete({
+      attempt_id: 'review:1',
+      bead_id: 'UI-1',
+      session_ok: true
+    });
+
+    expect(verdict).toEqual({ ok: false, reason: 'binding_gone' });
+    expect(store.snapshot(WS).attempts['review:1']).toMatchObject({
+      status: 'orphaned',
+      cause: 'binding_gone'
+    });
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('orphans the attempt when the row disappears during the re-observation', async () => {
+    /** @type {any} */
+    let store_ref = null;
+    const observe = vi.fn(async () => {
+      store_ref.dequeueMerge(WS, 'UI-1');
+      return {
+        ok: true,
+        head_sha: CLICK_HEAD,
+        head_ref: 'UI-1',
+        state: 'current'
+      };
+    });
+    const { review, store, kick } = coordinator({ observe });
+    store_ref = store;
+    await click(review, store);
+    store.updateAttempt(WS, {
+      attempt_id: 'review:1',
+      patch: { status: 'running' }
+    });
+
+    const verdict = await review.complete({
+      attempt_id: 'review:1',
+      bead_id: 'UI-1',
+      session_ok: true
+    });
+
+    expect(verdict).toEqual({ ok: false, reason: 'binding_gone' });
+    expect(store.snapshot(WS).attempts['review:1']).toMatchObject({
+      status: 'orphaned',
+      cause: 'binding_gone'
+    });
+    expect(kick).not.toHaveBeenCalled();
   });
 });
 

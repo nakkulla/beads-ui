@@ -267,6 +267,18 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
   'waiting'
 ]);
 
+/**
+ * Attempt kinds whose LIFECYCLE this engine owns (review-session lifecycle
+ * spec §3.1). A `retired_kind` record is a lane removal's tombstone with no
+ * process behind it; anything else unknown is left alone for the same reason.
+ *
+ * @type {Set<string>}
+ */
+const SCHEDULER_OWNED_ATTEMPT_KINDS = new Set([
+  'implementation',
+  'review_session'
+]);
+
 /** Maximum terminal receipt inboxes inspected per reconciliation pass. */
 const TERMINAL_RECEIPT_RECOVERY_MAX = 32;
 // Assistant lines a fresh session may take before its project JSONL holds one.
@@ -4965,20 +4977,24 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Whether the SCHEDULER is the lifecycle owner of a persisted attempt
-   * (UI-hk74 §7). A review session runs through the same `launchSession` and is
-   * stoppable like any other, but its DISPATCH and its VERDICT belong to the
-   * merge queue's own lane (UI-d7fy §5.2/§5.4): the queue decides when one
-   * starts and what its exit means. So it is excluded from the two judgments
-   * that assume this engine decides — slot occupancy, and the reconcile pass,
-   * whose `isDeadAttempt` probe would orphan a review the queue is still
-   * waiting on across a restart.
+   * Whether the SCHEDULER is the LIFECYCLE owner of a persisted attempt
+   * (UI-hk74 §7, redefined by the review-session lifecycle spec §3.1).
+   *
+   * Ownership is two questions, and this predicate answers only the first. Is
+   * it alive, does it hold a slot, and who STARTS its settlement — this engine,
+   * because it spawned the session and recorded the pid, the process identity,
+   * the session log and the guard hook. What a dead session's result IS stays
+   * with the lane that dispatched it: a `review_session`'s verdict is the merge
+   * queue's `complete()` (UI-d7fy §5.4), which {@link reconcile} reaches by
+   * splitting on kind at the disposition, never here. Reading the two questions
+   * as one is what left a review session that outlived a restart `running`
+   * forever, with nobody to end it and a slot nobody counted.
    *
    * @param {any} attempt
    * @returns {boolean}
    */
   function isSchedulerOwned(attempt) {
-    return (attempt?.kind ?? 'implementation') === 'implementation';
+    return SCHEDULER_OWNED_ATTEMPT_KINDS.has(attempt?.kind ?? 'implementation');
   }
 
   /**
@@ -5453,6 +5469,77 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Dispose ONE `review_session` whose detached process is gone
+   * (review-session lifecycle spec §3.3). It reproduces `onSessionDone`'s
+   * review branch WITHOUT a process handle: this engine only starts the
+   * settlement, and `complete()` re-observes the final head and judges the
+   * receipt exactly as it does for a live exit. The exit code is unobservable
+   * from here, so the verdict carries none.
+   *
+   * No bead claim is taken, unlike {@link disposeDeadAttempt}. That claim
+   * exists because `failAttempt` reopens the bead and a tick could re-dispatch
+   * it mid-observation; a review disposition never reopens the bead — it stays
+   * in `pr_wait` — so there is nothing for a claim to fence.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {any} attempt
+   */
+  async function disposeDeadReviewSession(workspace, attempt_id, attempt) {
+    // Same two reasons as the implementation disposition: the `settling` fence
+    // makes a discard requested mid-disposition refuse with `attempt_settling`
+    // rather than race the terminal write, and the hook assets come down only
+    // after `complete()` has read the push record out of them (§5.2's rule for
+    // which head the exhausted claim lands on).
+    settling.add(attempt_id);
+    try {
+      // FIRST: retire the detached monitor. The stop drains the session log to
+      // EOF, which completes the usage tally and settles any guard evidence
+      // still in the tail (UI-o2yt §3.3).
+      if (deps.sessionMonitors) {
+        try {
+          deps.sessionMonitors.stop(workspace, attempt_id);
+        } catch (err) {
+          log('session monitor stop failed for %s: %o', attempt_id, err);
+        }
+      }
+      // Re-read AFTER the drain: the evidence may have been written by it.
+      const guard_kill = guardKillOf(workspace, attempt_id);
+      /** @type {{ ok: boolean, reason?: string }|null} */
+      let settled = null;
+      try {
+        settled =
+          (await deps.reviewSession?.complete({
+            workspace,
+            attempt_id,
+            bead_id: attempt.bead_id,
+            session_ok: guard_kill === null,
+            reason: guard_kill === null ? 'reconciled' : 'guard_kill'
+          })) ?? null;
+      } catch (err) {
+        log('review session completion failed for %s: %o', attempt_id, err);
+      }
+      // The same rule the live review branch applies: a binding that is already
+      // someone else's takes no exit and no usage from this session, and §3.5
+      // has by then written that record's own ending.
+      if (settled === null || settled.reason !== 'binding_gone') {
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: { exit: null, ...usagePatch(workspace, attempt_id) }
+        });
+      }
+    } finally {
+      settling.delete(attempt_id);
+      removeGuardHook(workspace, attempt_id);
+    }
+    // The freed slot goes back to the implementation lane, and the queue-changed
+    // event is what makes the merge queue re-judge its held rows. A `current`
+    // verdict already kicked the gate from inside `complete()`.
+    notifyChanged(workspace);
+    await tick(workspace);
+  }
+
+  /**
    * Reconcile persisted `running` attempts against the OS
    * (worker-detached-session-reconcile §1). Both entry points — server startup
    * and the periodic timer — share this one routine.
@@ -5563,7 +5650,15 @@ export function createScheduler(deps) {
         ) {
           continue;
         }
-        await disposeDeadAttempt(workspace, d.attempt_id, current);
+        // The candidate fences above are identical for both kinds; only the
+        // DISPOSITION splits (review-session lifecycle spec §3.2). Judging a
+        // review session by `disposeDeadAttempt`'s PR observation would fail
+        // every one of them as `pr_missing` — a review lineage opens no PR.
+        if (current.kind === 'review_session') {
+          await disposeDeadReviewSession(workspace, d.attempt_id, current);
+        } else {
+          await disposeDeadAttempt(workspace, d.attempt_id, current);
+        }
       }
     } finally {
       reconciling.delete(workspace);
@@ -8383,6 +8478,11 @@ export function createScheduler(deps) {
   /**
    * Return the launcher's physical slot occupants: in-process claims plus
    * durable running attempts whose process cannot be proven dead.
+   *
+   * A `review_session` counts in BOTH halves (review-session lifecycle spec
+   * §3.4). The live half always did — `dispatchReviewSession` claims the bead
+   * before it launches — so counting the durable half is what makes the answer
+   * the same before and after a restart, rather than a new rule.
    *
    * @param {Record<string, any>} q
    * @returns {Set<string>}

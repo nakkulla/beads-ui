@@ -8985,50 +8985,207 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     ]);
   });
 
-  test('leaves a running review session attempt out of the orphan sweep', async () => {
-    const env = reconcileEnv({ alive: true, started_at: 1000 });
-    env.store.upsertReviewSessionAttempt(WS, {
+  /**
+   * Persist a `running` `review_session` exactly as a PRIOR process left it:
+   * the durable record survived the restart, its in-memory handle and its bead
+   * claim did not (review-session lifecycle spec §1.1).
+   *
+   * @param {any} store
+   * @param {Record<string, any>} [patch]
+   */
+  function seedDetachedReviewSession(store, patch = {}) {
+    store.upsertReviewSessionAttempt(WS, {
       attempt_id: 'review:authority-1:aaa',
       patch: {
         bead_id: 'UI-1',
         kind: 'review_session',
         status: 'running',
-        pid: null,
+        authority_id: 'authority-1',
+        pid: 4242,
         started_at: 1000,
-        repo: '/repo'
+        repo: '/repo',
+        ...patch
       }
     });
+  }
+
+  test('settles a dead review session through the queue verdict', async () => {
+    /** @type {string[]} */
+    const order = [];
+    const complete = vi.fn(async () => ({ ok: true }));
+    const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      reviewSession: { complete },
+      sessionMonitors: {
+        stop: vi.fn(() => {
+          order.push('monitor_stop');
+          return true;
+        })
+      },
+      guardHook: {
+        install: vi.fn(() => ({ ok: true })),
+        envFor: vi.fn(() => ({})),
+        remove: vi.fn(() => {
+          order.push('hook_remove');
+          return true;
+        })
+      }
+    });
+    seedDetachedReviewSession(env.store);
 
     await env.scheduler.reconcile(WS);
 
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledWith({
+      workspace: WS,
+      attempt_id: 'review:authority-1:aaa',
+      bead_id: 'UI-1',
+      session_ok: true,
+      reason: 'reconciled'
+    });
+    // The drain settles the evidence the verdict is read from, and the hook
+    // still holds the push record `complete()` reads, so it comes down last.
+    expect(order).toEqual(['monitor_stop', 'hook_remove']);
+  });
+
+  test('leaves a live review session attempt running', async () => {
+    const complete = vi.fn(async () => ({ ok: true }));
+    const env = reconcileEnv({ alive: true, started_at: 1000 }, undefined, {
+      reviewSession: { complete }
+    });
+    seedDetachedReviewSession(env.store);
+
+    await env.scheduler.reconcile(WS);
+
+    expect(complete).not.toHaveBeenCalled();
     expect(
       env.store.snapshot(WS).attempts['review:authority-1:aaa'].status
     ).toBe('running');
   });
 
-  test('leaves a live review session attempt out of the occupied slot count', () => {
-    const env = reconcileEnv(
-      { alive: true, started_at: 1000 },
-      { 'UI-1': {} },
-      {
-        slots: 1
-      }
-    );
-    env.store.upsertReviewSessionAttempt(WS, {
+  test('reports a guard kill on a dead review session as a failure', async () => {
+    const complete = vi.fn(async () => ({ ok: true }));
+    const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      reviewSession: { complete }
+    });
+    seedDetachedReviewSession(env.store);
+    env.store.updateAttempt(WS, {
       attempt_id: 'review:authority-1:aaa',
       patch: {
-        bead_id: 'UI-1',
-        kind: 'review_session',
-        status: 'running',
-        pid: 4242,
-        started_at: 1000,
-        repo: '/repo'
+        guard_kill: { reason: 'question_blocked', command: null, at: 900 }
       }
     });
 
-    const blocked = env.scheduler.queueConflictBlocked(WS, 'UI-2', 'UI-2');
+    await env.scheduler.reconcile(WS);
 
-    expect(blocked).toBe(false);
+    expect(complete).toHaveBeenCalledWith({
+      workspace: WS,
+      attempt_id: 'review:authority-1:aaa',
+      bead_id: 'UI-1',
+      session_ok: false,
+      reason: 'guard_kill'
+    });
+  });
+
+  test('writes exit and usage after a settled review session, none after binding_gone', async () => {
+    /** @type {any} */
+    let settled_ref = null;
+    /** @type {any} */
+    let gone_ref = null;
+    /**
+     * @param {any} complete
+     * @returns {any}
+     */
+    const drainingEnv = (complete) => {
+      /** @type {any} */
+      let ref = null;
+      const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+        reviewSession: { complete },
+        sessionMonitors: {
+          stop: vi.fn((/** @type {string} */ ws, /** @type {string} */ id) => {
+            ref.usage.record(ws, id, {
+              message_id: 'm1',
+              input_tokens: 12,
+              output_tokens: 3
+            });
+            return true;
+          })
+        }
+      });
+      ref = env;
+      seedDetachedReviewSession(env.store);
+      return env;
+    };
+    settled_ref = drainingEnv(vi.fn(async () => ({ ok: true })));
+    gone_ref = drainingEnv(
+      vi.fn(async () => ({ ok: false, reason: 'binding_gone' }))
+    );
+
+    await settled_ref.scheduler.reconcile(WS);
+    await gone_ref.scheduler.reconcile(WS);
+
+    expect(
+      settled_ref.store.snapshot(WS).attempts['review:authority-1:aaa']
+    ).toMatchObject({
+      exit: null,
+      usage: { input_tokens: 12, output_tokens: 3 }
+    });
+    // A record that is already someone else's takes nothing from this session,
+    // so the tally is never even lifted out of the usage store.
+    expect(
+      gone_ref.store.snapshot(WS).attempts['review:authority-1:aaa'].usage ??
+        null
+    ).toBe(null);
+    expect(gone_ref.usage.get(WS, 'review:authority-1:aaa')).toMatchObject({
+      input_tokens: 12
+    });
+  });
+
+  test('disposes a dead review session that never got a pid', async () => {
+    const complete = vi.fn(async () => ({ ok: true }));
+    const env = reconcileEnv({ alive: true, started_at: 1000 }, undefined, {
+      reviewSession: { complete }
+    });
+    seedDetachedReviewSession(env.store, { pid: null });
+
+    await env.scheduler.reconcile(WS);
+
+    // A `running` review session with no pid and no claim died before its
+    // spawn — the same record the boot recovery reads as `gone`.
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  test('counts a live detached review session attempt as an occupied slot', () => {
+    const live = reconcileEnv({ alive: true, started_at: 1000 }, undefined, {
+      slots: 1
+    });
+    seedDetachedReviewSession(live.store);
+    const dead = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      slots: 1
+    });
+    seedDetachedReviewSession(dead.store);
+
+    const blocked = live.scheduler.queueConflictBlocked(WS, 'UI-2', 'UI-2');
+    const freed = dead.scheduler.queueConflictBlocked(WS, 'UI-2', 'UI-2');
+
+    // The slot comes back only when the process is PROVEN dead — the same rule
+    // an implementation attempt gets, and the same answer the live path gives
+    // through `claimed` before the restart.
+    expect(blocked).toBe(true);
+    expect(freed).toBe(false);
+  });
+
+  test('tick does not dispatch into a slot a detached review session holds', async () => {
+    const env = reconcileEnv(
+      { alive: true, started_at: 1000 },
+      { 'UI-1': {}, S1: {} },
+      { slots: 1 }
+    );
+    seedDetachedReviewSession(env.store);
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.runningCount()).toBe(0);
   });
 
   test('ignores attempts that are not running', async () => {
