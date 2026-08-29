@@ -3,16 +3,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { activeAttemptStates } from '../../app/utils/active-attempts.js';
+import { createUnhandledFailurePredicate } from './attempt-failure.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { ensureDelegationMonitorDir } from './delegation-monitor.js';
 import {
   GUARD_WARNINGS_CAP,
   GUARD_WARNING_COMMAND_MAX,
+  LANE_RELEASING_ATTEMPT_STATUSES,
   createQueueStore,
   makeAttempt,
   orderLaneByBlocks,
   transferableAttempts
 } from './queue-store.js';
+import { activeLaneLineages } from './scheduler.js';
 import {
   attemptRecordPath,
   delegationMonitorDir,
@@ -9438,6 +9441,375 @@ describe('worker/queue-store record transfer', () => {
     });
 
     expect(store.snapshot(WS).attempts['a-legacy']).toBeDefined();
+  });
+});
+
+describe('worker/queue-store record transfer — 접미 불변식 (UI-e20c §3)', () => {
+  /**
+   * A raw queue file, so the INSERTION order of `attempts` is the fixture
+   * rather than a by-product of how many transfer passes an append triggered.
+   *
+   * @param {Record<string, any>} attempts
+   * @param {Record<string, any>} [extra]
+   */
+  function writeRawQueue(attempts, extra = {}) {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({ revision: 3, attempts, ...extra })
+    );
+  }
+
+  /**
+   * @param {{ timeline?: any }} [overrides]
+   */
+  function storeWithTimeline(overrides = {}) {
+    const timeline =
+      overrides.timeline || createBeadTimeline({ workspace_root: WS });
+    return { store: createQueueStore({ timeline }), timeline };
+  }
+
+  /**
+   * Any persist runs one transfer pass; slots is the smallest one available.
+   *
+   * @param {ReturnType<typeof createQueueStore>} store
+   */
+  function runTransferPass(store) {
+    return store.setSlots(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      slots: 3
+    });
+  }
+
+  /**
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {Record<string, any>} [fields]
+   */
+  function rawAttempt(attempt_id, bead_id, fields = {}) {
+    return { attempt_id, bead_id, status: 'done', ...fields };
+  }
+
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   */
+  function liveAttemptIds(store) {
+    return Object.keys(store.snapshot(WS).attempts);
+  }
+
+  test('transfers the processed prefix and leaves the running suffix', () => {
+    writeRawQueue({
+      'a-1': rawAttempt('a-1', 'UI-sfx', { finished_at: 100 }),
+      'a-2': rawAttempt('a-2', 'UI-sfx', { finished_at: 200 }),
+      'a-3': rawAttempt('a-3', 'UI-sfx', { status: 'running', started_at: 300 })
+    });
+    const { store } = storeWithTimeline();
+
+    runTransferPass(store);
+
+    expect(liveAttemptIds(store)).toEqual(['a-3']);
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-sfx', 'a-1'))).toBe(true);
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-sfx', 'a-2'))).toBe(true);
+  });
+
+  test('transfers nothing behind an undismissed failure', () => {
+    writeRawQueue({
+      'a-1': rawAttempt('a-1', 'UI-hold', {
+        status: 'failed',
+        cause: 'session_failed',
+        finished_at: 100
+      }),
+      'a-2': rawAttempt('a-2', 'UI-hold', { finished_at: 200 }),
+      'a-3': rawAttempt('a-3', 'UI-hold', {
+        status: 'running',
+        started_at: 300
+      })
+    });
+    const { store } = storeWithTimeline();
+
+    runTransferPass(store);
+
+    expect(liveAttemptIds(store)).toEqual(['a-1', 'a-2', 'a-3']);
+  });
+
+  test('transfers an entire processed history that holds no lane', () => {
+    writeRawQueue({
+      'a-1': rawAttempt('a-1', 'UI-all', { finished_at: 100 }),
+      'a-2': rawAttempt('a-2', 'UI-all', {
+        status: 'failed',
+        cause: 'session_failed',
+        finished_at: 200,
+        dismissed_at: 250
+      }),
+      'a-3': rawAttempt('a-3', 'UI-all', { finished_at: 300 })
+    });
+    const { store } = storeWithTimeline();
+
+    runTransferPass(store);
+
+    expect(liveAttemptIds(store)).toEqual([]);
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-all', 'a-2'))).toBe(true);
+  });
+
+  test('transfers a done attempt of a bead still waiting in the parallel lane', () => {
+    const { store } = storeWithTimeline();
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-lane'
+    });
+
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a-done', bead_id: 'UI-lane', status: 'done' }
+    });
+
+    expect(store.snapshot(WS).attempts['a-done']).toBeUndefined();
+    expect(store.snapshot(WS).queue.map((entry) => entry.bead_id)).toEqual([
+      'UI-lane'
+    ]);
+  });
+
+  test('keeps a done attempt while its bead waits in pr_wait', () => {
+    writeRawQueue(
+      { 'a-done': rawAttempt('a-done', 'UI-pr', { finished_at: 100 }) },
+      { pr_wait: [{ bead_id: 'UI-pr', added_at: 10 }] }
+    );
+    const { store } = storeWithTimeline();
+
+    runTransferPass(store);
+
+    expect(liveAttemptIds(store)).toEqual(['a-done']);
+  });
+
+  test('leaves a halted failure judged handled across the transfer', () => {
+    writeRawQueue({
+      'a-1': rawAttempt('a-1', 'UI-halt', {
+        status: 'failed',
+        cause: 'session_failed',
+        finished_at: 100,
+        halted_auto_advance: true
+      }),
+      'a-2': rawAttempt('a-2', 'UI-halt', { finished_at: 200 }),
+      'a-3': rawAttempt('a-3', 'UI-halt', {
+        status: 'running',
+        started_at: 300
+      })
+    });
+    const { store } = storeWithTimeline();
+    const before = createUnhandledFailurePredicate(store.snapshot(WS));
+
+    runTransferPass(store);
+
+    const after = createUnhandledFailurePredicate(store.snapshot(WS));
+    const failure = store.snapshot(WS).attempts['a-1'];
+    expect(before(failure)).toBe(false);
+    expect(after(failure)).toBe(false);
+  });
+
+  test('orders the suffix by insertion even when the timestamps invert', () => {
+    writeRawQueue({
+      'a-1': rawAttempt('a-1', 'UI-clock', {
+        status: 'failed',
+        cause: 'session_failed',
+        started_at: 900,
+        finished_at: 950
+      }),
+      'a-2': rawAttempt('a-2', 'UI-clock', {
+        started_at: 100,
+        finished_at: 200
+      })
+    });
+    const { store } = storeWithTimeline();
+
+    runTransferPass(store);
+
+    expect(liveAttemptIds(store)).toEqual(['a-1', 'a-2']);
+  });
+
+  test('keeps the rest of a bead when a candidate cannot be recorded', () => {
+    const real = createBeadTimeline({ workspace_root: WS });
+    writeRawQueue({
+      'a-1': rawAttempt('a-1', 'UI-torn', { finished_at: 100 }),
+      'a-2': rawAttempt('a-2', 'UI-torn', { finished_at: 200 }),
+      'a-3': rawAttempt('a-3', 'UI-torn', { finished_at: 300 })
+    });
+    const { store } = storeWithTimeline({
+      timeline: {
+        /** @param {any} input */
+        append: (input) =>
+          input.attempt_id === 'a-2'
+            ? { ok: false, reason: 'write_failed', detail: 'disk full' }
+            : real.append(input),
+        /** @param {string} bead_id */
+        readTimeline: (bead_id) => real.readTimeline(bead_id)
+      }
+    });
+
+    runTransferPass(store);
+
+    expect(liveAttemptIds(store)).toEqual(['a-2', 'a-3']);
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-torn', 'a-3'))).toBe(false);
+  });
+
+  test('keeps the rest of a bead when a record file cannot be written', () => {
+    writeRawQueue({
+      'a-1': rawAttempt('a-1', 'UI-eisdir', { finished_at: 100 }),
+      'a-2': rawAttempt('a-2', 'UI-eisdir', { finished_at: 200 }),
+      'a-3': rawAttempt('a-3', 'UI-eisdir', { finished_at: 300 })
+    });
+    // A directory where the atomic write wants its temp file is the smallest
+    // real EISDIR this module can hit.
+    fs.mkdirSync(`${attemptRecordPath(WS, 'UI-eisdir', 'a-2')}.tmp`, {
+      recursive: true
+    });
+    const { store } = storeWithTimeline();
+
+    runTransferPass(store);
+
+    expect(liveAttemptIds(store)).toEqual(['a-2', 'a-3']);
+  });
+
+  test('keeps the rest of a bead behind a withheld repair-lane attempt', () => {
+    writeRawQueue(
+      {
+        'r-1': rawAttempt('r-1', 'UI-repair', { finished_at: 100 }),
+        'r-2': rawAttempt('r-2', 'UI-repair', { finished_at: 200 })
+      },
+      {
+        completion_intents: {
+          'UI-root': {
+            target_base: 'main',
+            phase: 'repairing',
+            subject: {
+              role: 'root',
+              bead_id: 'UI-root',
+              pr_url: 'https://example.test/pr/1',
+              head_sha: 'a'.repeat(40),
+              base_sha: 'b'.repeat(40),
+              merged_sha: null
+            },
+            active_op: { kind: 'repair', attempt_id: 'r-1' },
+            terminal_reason: null
+          }
+        }
+      }
+    );
+    const { store } = storeWithTimeline();
+
+    runTransferPass(store);
+
+    expect(liveAttemptIds(store)).toEqual(['r-1', 'r-2']);
+  });
+
+  test('transfers a repair-lane bead on the pass after its retirement', () => {
+    writeRawQueue(
+      {
+        'r-1': rawAttempt('r-1', 'UI-repair', { finished_at: 100 }),
+        'r-2': rawAttempt('r-2', 'UI-repair', { finished_at: 200 })
+      },
+      {
+        completion_intents: {
+          'UI-root': {
+            target_base: 'main',
+            phase: 'repairing',
+            subject: {
+              role: 'root',
+              bead_id: 'UI-root',
+              pr_url: 'https://example.test/pr/1',
+              head_sha: 'a'.repeat(40),
+              base_sha: 'b'.repeat(40),
+              merged_sha: null
+            },
+            active_op: { kind: 'repair', attempt_id: 'r-1' },
+            terminal_reason: null
+          }
+        }
+      }
+    );
+    const { store } = storeWithTimeline();
+    runTransferPass(store);
+    store.retireRepairLane(WS, { root_bead_id: 'UI-root', at: 900 });
+
+    runTransferPass(store);
+
+    expect(liveAttemptIds(store)).toEqual([]);
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-repair', 'r-1'))).toBe(true);
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-repair', 'r-2'))).toBe(true);
+  });
+
+  test('keeps a dismissed failure that still holds a serial lane', () => {
+    writeRawQueue({
+      'a-1': rawAttempt('a-1', 'UI-mutex', {
+        status: 'failed',
+        cause: 'session_failed',
+        serial_lane_id: 's1',
+        finished_at: 100,
+        dismissed_at: 150
+      })
+    });
+    const { store } = storeWithTimeline();
+
+    runTransferPass(store);
+
+    expect(liveAttemptIds(store)).toEqual(['a-1']);
+    expect([...activeLaneLineages(store.snapshot(WS)).keys()]).toEqual(['s1']);
+  });
+
+  test('keeps a superseded leaf that still holds a serial lane', () => {
+    writeRawQueue({
+      'a-1': rawAttempt('a-1', 'UI-sup', {
+        status: 'superseded',
+        serial_lane_id: 's1',
+        finished_at: 100
+      })
+    });
+    const { store } = storeWithTimeline();
+
+    runTransferPass(store);
+
+    expect(liveAttemptIds(store)).toEqual(['a-1']);
+  });
+
+  test('transfers a lane-bound record once a newer attempt resumes from it', () => {
+    writeRawQueue({
+      'a-1': rawAttempt('a-1', 'UI-leaf', {
+        status: 'failed',
+        cause: 'session_failed',
+        serial_lane_id: 's1',
+        finished_at: 100,
+        dismissed_at: 150
+      }),
+      'a-2': rawAttempt('a-2', 'UI-leaf', {
+        status: 'running',
+        serial_lane_id: 's1',
+        resumed_from: 'a-1',
+        started_at: 200
+      })
+    });
+    const { store } = storeWithTimeline();
+
+    runTransferPass(store);
+
+    expect(liveAttemptIds(store)).toEqual(['a-2']);
+    expect(fs.existsSync(attemptRecordPath(WS, 'UI-leaf', 'a-1'))).toBe(true);
+  });
+});
+
+describe('worker/queue-store — 레인 해제 집합 단일화 (UI-e20c §9)', () => {
+  test('exports the lane-releasing statuses UI-8jau landed', () => {
+    const members = [...LANE_RELEASING_ATTEMPT_STATUSES].sort();
+
+    expect(members).toEqual(['discarded', 'done', 'stopped', 'waiting']);
+  });
+
+  test('leaves the scheduler no second copy of the releasing set', () => {
+    const source = fs.readFileSync(
+      new URL('./scheduler.js', import.meta.url),
+      'utf8'
+    );
+
+    expect(source).not.toMatch(/const LANE_RELEASING_\w* = new Set/);
+    expect(source).toContain('LANE_RELEASING_ATTEMPT_STATUSES');
   });
 });
 
