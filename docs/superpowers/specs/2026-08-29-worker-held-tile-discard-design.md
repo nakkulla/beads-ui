@@ -47,7 +47,6 @@ scope:
 - `dismissed_at`(타일 숨김)로 `폐기`를 재정의하는 것. 같은 라벨이 실패 타일에선 원복, held
   타일에선 숨김이 되어 한 이름이 두 뜻을 갖는다.
 - 폐기 후 자동 재큐잉. 2026-07-27 스펙 §1이 제거한 것이며 이 스펙도 되살리지 않는다.
-- 워크트리가 만들어지기 전 spawn 실패로 `retry_wait`가 된 attempt의 폐기(§8 관찰).
 - `parked`의 `재시도`(`worker-parked-retry`) 경로 변경.
 
 ## 3. 결정 요약
@@ -64,10 +63,12 @@ scope:
   풀린다(reducer `reduceRetrySucceeded`의 기존 규칙). 타일은 foot `폐기`만 그린다 — 재시도는
   사다리가 자동으로 하고 `지금 재시도`는 큐 상단의 조작이므로 타일에 두 번째 조작을 만들지
   않는다.
-- **D3. 정합 원칙.** `DISCARDABLE_ATTEMPT_STATUSES` = running-lane 타일이 `.rtile__discard`를
-  그리는 status 전부 = `{running, paused, failed, orphaned, done, parked, retry_wait, waiting}`.
-  `discardProjection`의 `action`은 `!external && !done`이라 running-lane 타일은 전부 버튼을
-  얻으므로, 이 집합이 `HELD_STATUSES` ∪ 기존 집합과 같아야 "그려지되 거절되는" 조합이 없다.
+- **D3. 정합 원칙.** `DISCARDABLE_ATTEMPT_STATUSES` = 폐기 버튼을 그리는 두 자리의 status를
+  합친 집합 — (i) running-lane의 Worker attempt 타일(`running`·`paused`·`failed`·`orphaned`와
+  held 셋 `parked`·`retry_wait`·`waiting`)과 (ii) PR 대기 행의 성공 attempt(`done`) —
+  = `{running, paused, failed, orphaned, done, parked, retry_wait, waiting}`. 세션 타일(리뷰
+  세션·세션 점유 이슈)은 running-lane에 있어도 Worker attempt가 아니라 이 등식 밖이다. 이
+  집합이 `HELD_STATUSES` ∪ 기존 집합과 같아야 "그려지되 거절되는" 조합이 없다.
 - **D4. PR을 가진 parked.** `parked`는 정의상 정산 시점 `pr_url` 부재다(ADR 0017). attempt
   `verify_result`나 `pr_wait`에 기록된 PR이 있으면 `observeAndClosePr`의 기존 규칙(OPEN →
   close, MERGED → 원복 PR)을 그대로 따른다. 사람이 손으로 연 PR은 `resolvePrRef`가 모르므로
@@ -78,7 +79,14 @@ scope:
 ### 4.1 `discard-coordinator.js`
 
 - `DISCARDABLE_ATTEMPT_STATUSES`에 `'parked'`, `'retry_wait'`를 더한다. 주석은 D3의 정합
-  원칙(집합 = 버튼을 그리는 status 전부)을 한 문장으로 적고 이 스펙을 가리킨다.
+  원칙(집합 = Worker attempt 타일과 PR 대기 행이 폐기 버튼을 그리는 status의 합)을 한 문장으로
+  적고 이 스펙을 가리킨다.
+- `retry_wait` 출처는 언제나 자기 워크트리를 갖는다: env 계층으로 정산되는 모든 결말(세션
+  종료의 환경 패턴·`verify_cmd_spawn_error`·`spawn_failed`·`codex_home_prepare_failed`)은
+  `launchSession`이 워크트리 pre-flight 뒤 `wt_path`를 받아 진입한 다음에 일어나고,
+  `finalizeLaunchRefusal`은 워크트리를 지우지 않는다. 워크트리를 지우는 dispatch 거절
+  (`refuseDispatch`)은 attempt 레코드가 생기기 전이라 타일이 없다. 따라서 `captureSource`의
+  topology 판정은 `failed`와 같은 조건으로 성립하며, 잔여물 없는 폐기 경로는 필요 없다.
 - `captureSource`의 나머지 판정(leaf·latest·identity·topology·PR·authority)은 손대지 않는다.
   `parked`·`retry_wait`는 세션이 이미 끝난 attempt라 `process_identity`가 있으면
   `terminateRunner`의 probe가 `gone`을 답하고 신호 없이 `finalizeDiscardAttempt`로 간다 —
@@ -139,7 +147,8 @@ if (kind === 'retry_wait') {
 
 ### 5.3 `lane-model.js`
 
-변경 없음. `discardProjection`은 이미 모든 running-lane 타일에 `action: true`를 준다.
+변경 없음. `discardProjection`은 Worker attempt 타일 전부에 `action: true`를 주고, `retry_wait`
+타일이 지금 버튼을 못 얻는 이유는 투영이 아니라 `heldBodyTemplate`의 빈 본문이다.
 
 ## 6. 검증 bundle
 
@@ -180,10 +189,6 @@ if (kind === 'retry_wait') {
 
 관찰 줄:
 
-- 관찰: 워크트리가 만들어지기 전 spawn 실패(`spawn_failed`, `codex_home_prepare_failed`)로
-  `retry_wait`가 된 attempt는 `captureSource`가 topology 부재 → `source_branch_unknown`으로
-  거절한다 — 사다리 소진 뒤 `failed`가 된 같은 attempt도 똑같이 거절되는 기존 한계라, 잔여물
-  없는 폐기(archive·브랜치 단계 생략)는 이 스펙이 정하지 않는다. 재관측 시 admission 재판정.
 - 관찰: `runDueRetries`가 대기 레인 밖의 lineage를 `retry_deferred` 없이 `continue`하는 것은
   D2가 폐기 경로에서 막지만, 사용자가 `retry_wait` bead를 대기 레인에서 후보로 끌어낸
   경우에도 같은 헛돎이 남는다 — 이 Bead의 출처 밖이라 범위에 넣지 않는다.
