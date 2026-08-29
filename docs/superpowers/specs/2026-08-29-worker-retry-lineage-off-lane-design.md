@@ -62,7 +62,7 @@ if (!waiting.has(bead_id) || claimed.has(bead_id) || active.has(bead_id)) {
   관찰로 남긴다.
 - `queue-hold.js`의 이벤트 어휘 추가(`retry_abandoned` 같은 새 kind). 기존
   `retry_succeeded`가 reducer의 "lineage 닫기" 이벤트이고 `closeRetryLineage`가 비-env 결말
-  전부에 이미 그것을 쓴다.
+  전부에 이미 그것을 쓴다 — 루프 안에서도 같은 이벤트를 직접 적용한다(§4.1).
 - 레인 밖으로 나간 `retry_wait` attempt 레코드(타일) 자체의 처분. attempt status와 타일은
   UI-w56w·UI-5ym8이 소유한다.
 - `armRetryTimer`에 최소 지연 바닥을 두는 것. 바닥은 hot loop를 "느린 loop"로 바꿀 뿐이며
@@ -91,6 +91,10 @@ if (!waiting.has(bead_id) || claimed.has(bead_id) || active.has(bead_id)) {
   살아 있는 attempt의 정산이 사다리에 대한 정본 답이라 미룸이 맞고, 레인 부재를 먼저 보면
   정산 전에 lineage를 닫아 뒤이은 env 실패가 `attempts: 1`부터 새 사다리를 시작한다.
 
+- **D5. 재무장은 루프 뒤 한 번.** 루프 안의 어떤 분기도 `armRetryTimer`를 부르지 않는다. 루프
+  중간 재무장은 아직 처리하지 않은 lineage의 과거 `next_at`을 보고 0ms 타이머를 걸어,
+  `await dispatch` 중 `runDueRetries`가 중첩 실행되는 경로를 만든다(스펙 리뷰 지적).
+
 ## 4. 변경
 
 ### 4.1 `scheduler.js runDueRetries`
@@ -109,9 +113,16 @@ for (const lineage of dueRetries(state, at)) {
     continue;
   }
   if (!waiting.has(bead_id)) {
-    // D1: 레인 이탈은 사다리 포기다.
+    // D1: 레인 이탈은 사다리 포기다. 재무장 없이 lineage만 제거한다 — 타이머는
+    // 루프 뒤에 한 번 건다(D5).
     log('retry lineage abandoned for %s: bead left the waiting lanes', bead_id);
-    closeRetryLineage(workspace, bead_id);
+    const closed = deps.store.applyQueueHold(workspace, {
+      event: { kind: 'retry_succeeded', bead_id, at },
+      now: at
+    });
+    if (!closed.ok) {
+      log('retry lineage close failed for %s', bead_id);
+    }
     continue;
   }
   // 이하 dispatch 경로는 그대로 (retry_dispatched / retry_deferred).
@@ -119,10 +130,17 @@ for (const lineage of dueRetries(state, at)) {
 armRetryTimer(workspace);
 ```
 
-- `closeRetryLineage`는 내부에서 `armRetryTimer`를 한 번 더 부르지만 idempotent
-  (`clearRetryTimer` 뒤 재무장)이고, 루프 끝의 `armRetryTimer`가 최종 상태로 다시 건다.
-  `dueRetries`가 돌려준 배열은 스냅샷이라 루프 중 lineage 제거가 반복을 깨지 않는다.
-- 함수 헤더 주석에 D1·D2를 한 문장씩 더하고 이 스펙을 가리킨다.
+- 루프 안에서는 `closeRetryLineage`를 부르지 **않는다**(D5). 그 함수는 내부에서
+  `armRetryTimer`를 부르므로, 아직 처리하지 않은 다른 due lineage의 과거 `next_at`으로 0ms
+  타이머를 걸고, 이어지는 `await dispatch` 동안 `runDueRetries`가 중첩 실행된다. 루프는
+  `retry_succeeded` 이벤트를 직접 적용하고 `ok`를 확인하며, `armRetryTimer`는 루프 뒤 한 번만
+  부른다. `closeRetryLineage` 자체(정산 경로용)는 바뀌지 않는다.
+- `applyQueueHold`가 `ok: false`를 돌려주면(큐 persist 실패) 그 lineage의 `next_at`은 과거에
+  남는다. 이 실패는 같은 `runDueRetries`의 다른 이벤트 쓰기(`retry_dispatched`·
+  `retry_deferred`)도 똑같이 겪는 기존 한계이며, 그 경우의 재무장은 persist 실패가 회복될
+  때까지의 재시도이지 무한 헛돎이 아니다 — 로그 한 줄로 관측 가능하게 한다.
+- `dueRetries`가 돌려준 배열은 스냅샷이라 루프 중 lineage 제거가 반복을 깨지 않는다.
+- 함수 헤더 주석에 D1·D2·D5를 한 문장씩 더하고 이 스펙을 가리킨다.
 
 ### 4.2 `queue-hold.js reduceRetryDeferred` 헤더 주석
 
@@ -131,7 +149,8 @@ armRetryTimer(workspace);
 
 ### 4.3 손대지 않는 것
 
-- `dueRetries`·`earliestRetryAt`·`armRetryTimer`·`closeRetryLineage`의 본문.
+- `dueRetries`·`earliestRetryAt`·`armRetryTimer`·`closeRetryLineage`의 본문(후자는 정산 경로가
+  계속 쓴다).
 - `queue-store.js remove`·`moveToDone`·`dropFromQueue` — lineage를 모른 채 그대로다.
 - `retryParked`·`resumeQueueHold`·`retryQueueHoldNow`의 경로.
 
@@ -148,6 +167,12 @@ armRetryTimer(workspace);
   2. **active → 미룸.** lineage가 due인 상태에서 같은 bead에 살아 있는 implementation attempt를
      `appendAttempt`로 둔 채 `runDueRetries`가 돌면 `lineages[0].next_at`이
      `clock + RETRY_DELAYS_MS[0]`이고 `attempts`는 그대로다. lineage는 남는다.
+  3. **두 lineage, 하나만 레인 밖 → 중첩 없음(D5).** S1·S2가 같은 env cause로 lineage를 얻은 뒤
+     S1만 `store.remove`하고 `next_at`까지 시계를 옮긴다. 타이머가 한 번 돈 뒤 `lineages`에는
+     S2 하나만 남아 `next_at: null`(dispatch됨)이고, 새 attempt는 정확히 하나(S2)다.
+     dispatch된 lineage는 `next_at: null`이라 재시도 타이머가 걸리지 않고,
+     `vi.advanceTimersByTimeAsync(0)`를 두 번 더 돌려도 attempt 수·`revision`이 변하지 않는다 —
+     루프 중간 0ms 재무장·중첩 실행 부재의 관측 가능한 형태.
   - 대조(기존 테스트 유지): 레인 안의 due lineage는 새 attempt로 dispatch된다
     (`retry_dispatched`, `next_at: null`).
 - `npm run tsc` · `npx vitest run --reporter=dot`(timeout 120s) · `npm run lint` ·
@@ -156,8 +181,8 @@ armRetryTimer(workspace);
 
 ## 6. 구현 unit 후보
 
-한 unit이다. 서버 한 함수의 분기 재구성과 reducer 주석 한 줄이며, 테스트 둘이 같은 불변식
-(D3)을 고정한다.
+한 unit이다. 서버 한 함수의 분기 재구성과 reducer 주석 한 줄이며, 테스트 셋이 같은 불변식
+(D3·D5)을 고정한다.
 
 ## 7. 경계·후속
 
