@@ -3389,7 +3389,15 @@ describe('worker/attach — review-session restart recovery (UI-d7fy §5)', () =
         signal: vi.fn()
       }),
       sessionMonitors,
-      probePid: () => ({ alive: false, started_at: null })
+      // Both probes read the SAME OS, so the harness must not let them
+      // disagree: the reconcile pass judges a review session by this one now
+      // (review-session lifecycle spec §3.2), and a fixture that called the
+      // process owned here and gone there would describe a machine state that
+      // cannot exist.
+      probePid: () => ({
+        alive: probe_state.state === 'owned',
+        started_at: probe_state.state === 'owned' ? 1000 : null
+      })
     });
     __registerWorkerAttachmentForTest(WS, att);
     return { runtime, att, sessionMonitors };
