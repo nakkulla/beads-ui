@@ -1128,6 +1128,75 @@ export function recChipTemplate(rec, open = false) {
 }
 
 /**
+ * `badge` 등급 코드 하나가 무엇을 뜻하는지 (UI-h6t1 §4.3 표). 계약이 등급을
+ * 소유하므로 여기 없는 코드는 코드 문자열 그대로 읽힌다 — 계약이 자란 코드를
+ * 이 표가 삼키면 새 잔여가 화면에서 사라진다.
+ *
+ * @type {Record<string, string>}
+ */
+const RECEIPT_BADGE_TEXT = {
+  absent: '실행 영수증이 기록되지 않았다 — 과거 Bead·외부 경로 PR은 원래 없다',
+  unparsable:
+    '영수증 값을 읽을 수 없다 — 40hex SHA나 `delegated:`/`main:` 형식이 아니다',
+  effort_unknown:
+    'effort 토큰이 harness 어휘 밖이다 — 모델·SHA·unit은 유효하다',
+  main_reason_retired:
+    '`main:` 사유가 고정 4토큰(bead·quick_fix_default·phase_line·takeover) 밖이다',
+  main_receipt_unbacked:
+    '`main:` 사유를 뒷받침하는 메타데이터(impl_dispatch·route·planned_execution·quick_fix 기본 dispatch)가 없다',
+  takeover_lineage_missing:
+    '`main:takeover`인데 resolved 모델과 일치하는 완료된 위임 세션이 없다',
+  takeover_lineage_unobservable:
+    '`main:takeover`인데 위임 계보를 모니터가 볼 수 없다(Codex 밖 런타임)'
+};
+
+/**
+ * The 실행 영수증 회계 잔여 칩 하나 (UI-h6t1 §4.3). 슬롯 5(좌표·실행 사실)에
+ * 서는 이유는 계약이 이 등급을 "행동을 바꾸지 않는 회계 잔여"로 못박았기
+ * 때문이다 — 머지를 잠그는 `hold`는 그대로 슬롯 1 상태 뱃지다. 재료가 없으면 빈
+ * 문자열이다 (fail-quiet).
+ *
+ * 라벨은 첫 코드 하나만 싣는다: 좁은 레인에서 코드 일곱을 늘어놓으면 이 줄이
+ * 제목을 밀어내고, 나머지는 `title`과 사유 팝업이 전부 말한다.
+ *
+ * @param {MiniItem} item
+ * @param {boolean} [open] - 사유 팝업이 지금 이 카드에서 이 칩 아래에 펼쳐져
+ * 있는지. `aria-expanded`가 되는 값이다.
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function receiptBadgeChipTemplate(item, open = false) {
+  const codes = receiptBadgeCodesOf(item);
+  if (codes.length === 0) {
+    return '';
+  }
+  const label =
+    codes.length > 1
+      ? `영수증 · ${codes[0]} +${codes.length - 1}`
+      : `영수증 · ${codes[0]}`;
+  return html`<button
+    type="button"
+    class="ctl-chip ctl-chip--label judgement-chip worker-card__receipt"
+    data-chip-key="receipt"
+    data-bead-id=${item.id}
+    aria-expanded=${open ? 'true' : 'false'}
+    title=${codes.join(', ')}
+  >
+    ${label}
+  </button>`;
+}
+
+/**
+ * @param {MiniItem} item
+ * @returns {string[]}
+ */
+function receiptBadgeCodesOf(item) {
+  const codes = item.receipt_badge ? item.receipt_badge.codes : null;
+  return Array.isArray(codes)
+    ? codes.filter((code) => typeof code === 'string' && code.length > 0)
+    : [];
+}
+
+/**
  * The PR 링크 하나 — `#<n> ↗`. PR 대기 행·카드형 행·완료 행이 모두 이것을
  * 부르므로, "이 bead가 어느 PR인가"는 어느 레인에서 읽어도 같은 모양이다
  * (스펙 §5.1 슬롯 1). 번호나 URL 중 하나라도 없으면 빈 문자열이다
@@ -1300,6 +1369,10 @@ export function priorityBadgeTemplate(priority) {
  * 복잡 판정 (UI-sbum §3): 워크플로가 이 bead에 다른 실행 설정을 추천했다는 사실
  * 하나. 표시 전용이고 자격·drag·적재 어디에도 들어가지 않는다. `null`/생략은
  * 추천 없음이다.
+ * @property {{ codes: string[] }} [receipt_badge] - 실행 영수증 회계 잔여
+ * (UI-h6t1 §4.3): dotfiles 계약이 `badge` 등급으로 확정한 코드들이다. 머지
+ * 판정을 바꾸지 않으므로 슬롯 5 판정 칩 하나로만 선다. 코드가 없으면 필드도
+ * 없다.
  * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
  * @property {number} [priority] - Bead 우선순위 0..4. 숫자가 아니면 배지를
  * 그리지 않는다.
@@ -1627,6 +1700,13 @@ export function miniRow(item, options = {}) {
   // 지금 보이는 정보가 사라진다. 재료가 하나도 없으면 줄 자체를 그리지 않는다
   // (빈 div는 행에 여백만 남긴다).
   const rec_el = recChipTemplate(item.rec, chipOpen(item, 'rec'));
+  // 영수증 회계 잔여도 슬롯 5다 (UI-h6t1 §4.1): 같은 줄의 `exec_receipt`·실패
+  // 로그 경로와 짝이라 "그 실행이 어디서 무엇으로 일어났고 그 기록이 얼마나
+  // 성립하는지"를 한 줄이 답한다.
+  const receipt_badge_el = receiptBadgeChipTemplate(
+    item,
+    chipOpen(item, 'receipt')
+  );
   // 소속 칩은 슬롯 5의 좌표 칩이다 (UI-8x90 §4.1): 레포 다음, route 앞.
   const cross_lane_el = crossLaneChipTemplate(item.cross_lane_chip);
   // 실패 로그 경로도 슬롯 5다 (UI-251y §5.1 정정, UI-8w4t §4): "어느 경로의
@@ -1641,6 +1721,7 @@ export function miniRow(item, options = {}) {
     from_el ||
     has_exec_chips ||
     rec_el ||
+    receipt_badge_el ||
     usage_el ||
     log_path_el
       ? html`<div class="worker-chips">
@@ -1648,7 +1729,9 @@ export function miniRow(item, options = {}) {
             ? execChipsTemplate(item.exec_chips, {
                 pin: item.exec_chips_pinned === true
               })
-            : ''}${rec_el}${usage_el}${log_path_el}${judgementPopover(item)}
+            : ''}${rec_el}${receipt_badge_el}${usage_el}${log_path_el}${judgementPopover(
+            item
+          )}
         </div>`
       : '';
   const deps_el = dependencyChipsTemplate(item.dependency_chips);
@@ -1806,7 +1889,7 @@ const SESSION_PREFERRED_TOOLTIP = {
  * The 판정 칩 keys (UI-8x90 §4.5, UI-svh6 §4.3). `data-chip-key` carries them
  * into the DOM so one click handler per tab covers every surface.
  *
- * @typedef {'rec'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'} JudgementChipKey
+ * @typedef {'rec'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'} JudgementChipKey
  */
 
 /**
@@ -1869,6 +1952,19 @@ export function judgementPopoverContent(item, chip_key) {
       ]
     };
   }
+  if (chip_key === 'receipt') {
+    const codes = receiptBadgeCodesOf(item);
+    if (codes.length === 0) {
+      return null;
+    }
+    return {
+      title: '실행 영수증 회계 잔여 — 머지는 진행',
+      lines: [
+        ...codes.map((code) => RECEIPT_BADGE_TEXT[code] || code),
+        '자동 머지 판정에는 영향이 없다 — 정정은 bd update --set-metadata exec_receipt=… 로'
+      ]
+    };
+  }
   if (chip_key === 'qfr') {
     const review = item.workflow ? item.workflow.quick_fix_review : null;
     if (!review || (review.state !== 'reviewed' && review.state !== 'stale')) {
@@ -1895,6 +1991,7 @@ export function judgementPopoverContent(item, chip_key) {
  */
 export const JUDGEMENT_CHIP_KEYS = [
   'rec',
+  'receipt',
   'session_preferred',
   'ineligible',
   'qfr',

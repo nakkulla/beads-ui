@@ -771,6 +771,72 @@ describe('monitor PR 대기 — 리뷰 판정 미결 (UI-32he, UI-qksl §4 1번�
     });
   });
 
+  test('carries the receipt badge codes onto the Monitor PR 대기 row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+          pr_observations: {
+            'A-1': {
+              pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
+              receipt_check: {
+                ok: false,
+                probe_error: false,
+                codes: ['absent'],
+                blocking_codes: [],
+                badge_codes: ['absent']
+              }
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0].receipt_badge).toEqual({ codes: ['absent'] });
+  });
+
+  test('omits the receipt badge field for an empty code list', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+          pr_observations: {
+            'A-1': {
+              pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
+              receipt_check: {
+                ok: true,
+                probe_error: false,
+                codes: [],
+                blocking_codes: [],
+                badge_codes: []
+              }
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect('receipt_badge' in lanes.pr_wait[0]).toBe(false);
+  });
+
+  test('omits the receipt badge field without an observation', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+          pr_observations: {
+            'A-1': { pr: { number: 7, url: 'https://github.com/o/r/pull/7' } }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect('receipt_badge' in lanes.pr_wait[0]).toBe(false);
+  });
+
   test('still alerts on a stale review verdict', () => {
     const lanes = buildLanes(
       [

@@ -1075,7 +1075,8 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
       ok: false,
       probe_error: false,
       codes: ['main_receipt_unbacked'],
-      blocking_codes: ['main_receipt_unbacked']
+      blocking_codes: [],
+      badge_codes: ['main_receipt_unbacked']
     });
   });
 

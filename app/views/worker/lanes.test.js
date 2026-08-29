@@ -1,6 +1,7 @@
 import { html, render } from 'lit-html';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
+  JUDGEMENT_CHIP_KEYS,
   candidateCard,
   discardCompletionMessage,
   discardConfirmationMessage,
@@ -3799,6 +3800,92 @@ describe('judgementPopoverContent (UI-8x90 §4.5)', () => {
     expect(
       judgementPopoverContent(/** @type {any} */ ({ id: 'UI-a' }), 'rec')
     ).toBeNull();
+  });
+
+  test('names one sentence per receipt badge code', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-a',
+        receipt_badge: { codes: ['absent'] }
+      }),
+      'receipt'
+    );
+
+    expect(content).toEqual({
+      title: '실행 영수증 회계 잔여 — 머지는 진행',
+      lines: [
+        '실행 영수증이 기록되지 않았다 — 과거 Bead·외부 경로 PR은 원래 없다',
+        '자동 머지 판정에는 영향이 없다 — 정정은 bd update --set-metadata exec_receipt=… 로'
+      ]
+    });
+  });
+
+  test('answers null when the receipt chip has no material', () => {
+    expect(
+      judgementPopoverContent(/** @type {any} */ ({ id: 'UI-a' }), 'receipt')
+    ).toBeNull();
+  });
+});
+
+describe('JUDGEMENT_CHIP_KEYS (UI-h6t1 §4.3)', () => {
+  test('carries the receipt chip key', () => {
+    expect(JUDGEMENT_CHIP_KEYS).toContain('receipt');
+  });
+});
+
+describe('영수증 회계 잔여 칩 (UI-h6t1 §4.3)', () => {
+  /**
+   * @param {string[]|undefined} codes
+   * @returns {HTMLElement|null}
+   */
+  function renderReceiptRow(codes) {
+    render(
+      miniRow(
+        /** @type {any} */ ({
+          id: 'UI-a',
+          title: 'PR 대기',
+          lane: 'pr_wait',
+          draggable: false,
+          ...(codes ? { receipt_badge: { codes } } : {})
+        })
+      ),
+      mount
+    );
+    return mount.querySelector('[data-chip-key="receipt"]');
+  }
+
+  test('draws the chip on the 슬롯 5 chip line', () => {
+    renderReceiptRow(['absent']);
+
+    expect(
+      mount.querySelector('.worker-chips [data-chip-key="receipt"]')
+    ).not.toBeNull();
+  });
+
+  test('stands right after the 복잡 chip slot and before usage', () => {
+    renderReceiptRow(['absent']);
+
+    const chip = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-chip-key="receipt"]')
+    );
+    expect(chip.classList.contains('worker-card__receipt')).toBe(true);
+    expect(chip.classList.contains('ctl-chip--label')).toBe(true);
+  });
+
+  test('keeps every code in the chip tooltip', () => {
+    renderReceiptRow(['absent', 'effort_unknown']);
+
+    expect(
+      mount.querySelector('[data-chip-key="receipt"]')?.getAttribute('title')
+    ).toBe('absent, effort_unknown');
+  });
+
+  test('draws no chip without codes', () => {
+    expect(renderReceiptRow(undefined)).toBeNull();
+  });
+
+  test('draws no chip for an empty code list', () => {
+    expect(renderReceiptRow([])).toBeNull();
   });
 });
 

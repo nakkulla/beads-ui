@@ -6,6 +6,7 @@ import {
   reviewReceiptState,
   verifyReceiptMatches
 } from './merge-gate.js';
+import { checkReceipts, receiptGateState } from './receipt-check.js';
 
 const SHA = 'a'.repeat(40);
 const OLD_SHA = 'b'.repeat(40);
@@ -265,13 +266,52 @@ describe('worker/merge-gate — receipt backing (UI-bu6d §4)', () => {
     const gate = evaluateMergeGate(
       entryOf(),
       inputOf({
-        receipt_state: { state: 'unbacked', codes: ['main_receipt_unbacked'] }
+        receipt_state: { state: 'unbacked', codes: ['unit_plan_mismatch'] }
       })
     );
 
     expect(gate.enabled).toBe(false);
     expect(gate.tier).toBe('receipt');
-    expect(gate.reason).toBe('receipt_unbacked:main_receipt_unbacked');
+    expect(gate.reason).toBe('receipt_unbacked:unit_plan_mismatch');
+  });
+
+  test('names an ancestry probe the gate could not take', () => {
+    const gate = evaluateMergeGate(
+      entryOf(),
+      inputOf({
+        receipt_state: { state: 'unbacked', codes: ['ancestry_probe_error'] }
+      })
+    );
+
+    expect(gate.enabled).toBe(false);
+    expect(gate.reason).toBe('receipt_unbacked:ancestry_probe_error');
+  });
+
+  test('merges a PR whose only receipt findings are the badge grade', async () => {
+    const observed = await checkReceipts({
+      metadata: { exec_receipt: `main:bead@${SHA}` },
+      baseline: null
+    });
+
+    const gate = evaluateMergeGate(
+      entryOf(),
+      inputOf({ receipt_state: receiptGateState(observed) })
+    );
+
+    expect(gate.enabled).toBe(true);
+    expect(gate.tier).toBe('eligible');
+  });
+
+  test('merges a PR that recorded no execution receipt at all', async () => {
+    const observed = await checkReceipts({ metadata: {}, baseline: null });
+
+    const gate = evaluateMergeGate(
+      entryOf(),
+      inputOf({ receipt_state: receiptGateState(observed) })
+    );
+
+    expect(gate.enabled).toBe(true);
+    expect(gate.tier).toBe('eligible');
   });
 
   test('names the first blocking code in the refusal reason', () => {

@@ -134,6 +134,14 @@ scheduler의 세션 성공 verdict 직후, **경로 분기(external-PR 해소·q
 - 게이트 시점 probe 오류는 기존 ancestry probe 관례를 따른다: 게이트에서는
   보류(fail-closed), 보드 표시층에서는 fail-quiet.
 
+**정정(UI-h6t1).** "`verify_receipt_*`를 제외한 위반 하나라도 있으면 자동 머지
+자격 미달"은 dotfiles 계약
+`workflow-state.yaml metadata.parent_keys.exec_receipt.merge_gate`로 승계됐다 —
+보류는 `hold` 집합만이고, `badge` 집합은 표시 전용이다. 등급의 정본은 그 계약이며
+beads-ui는 `receipt-check.js`의 `EXEC_RECEIPT_MERGE_GATE` 상수로 복제 소비한다
+(ADR 0012). 이 절의 나머지 — 매 평가 재검사·`waived`·probe 오류 fail-closed — 는
+그대로다.
+
 ### 5. `workflow_mode_source` 쓰기 시행
 
 Worker가 무인 dispatch에서 `workflow_mode=fast_track`을 스탬프할 때 같은

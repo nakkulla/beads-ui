@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import {
+  EXEC_RECEIPT_MERGE_GATE,
   RECEIPT_BASELINE_KEYS,
+  badgeReceiptCodes,
   blockingReceiptCodes,
   checkReceipts,
   receiptDefaultsFrom,
@@ -12,6 +14,22 @@ import {
 
 const SHA = 'a'.repeat(40);
 const OTHER_SHA = 'b'.repeat(40);
+
+/** A well-formed receipt needing no backing, for cases about another key. */
+const DELEGATED_OK = `delegated:sol:high@${SHA}`;
+
+/**
+ * A dispatch snapshot in which none of the five keys was set.
+ *
+ * @type {Record<string, string|null>}
+ */
+const BLANK_BASELINE = {
+  exec_receipt: null,
+  impl_entry: null,
+  plan_approval: null,
+  workflow_mode_source: null,
+  impl_dispatch: null
+};
 
 /** Projection facts that make `main:quick_fix_default` decidable. */
 const QUICK_FIX_MAIN = { supported: true, quick_fix_dispatch: 'main' };
@@ -47,19 +65,33 @@ describe('receipt-check exec_receipt form', () => {
   test('reports a delegated tail that is not an effort token', async () => {
     const result = await run({ exec_receipt: `delegated:sol:hgih@${SHA}` });
 
-    expect(codesOf(result)).toEqual(['exec_receipt_malformed']);
+    expect(codesOf(result)).toEqual(['effort_unknown']);
+  });
+
+  test('reports the same effort defect inside a multi-unit receipt', async () => {
+    const result = await run({
+      exec_receipt: `core:delegated:sol:native-fixed-posture@${SHA}`
+    });
+
+    expect(codesOf(result)).toEqual(['effort_unknown']);
   });
 
   test('reports a receipt whose sha is not forty hex', async () => {
     const result = await run({ exec_receipt: 'main:bead@deadbeef' });
 
-    expect(codesOf(result)).toEqual(['exec_receipt_malformed']);
+    expect(codesOf(result)).toEqual(['unparsable']);
   });
 
-  test('judges nothing when exec_receipt is absent', async () => {
+  test('reports a free-sentence receipt as unreadable', async () => {
+    const result = await run({ exec_receipt: '이 유닛은 세션이 직접 했다' });
+
+    expect(codesOf(result)).toEqual(['unparsable']);
+  });
+
+  test('reports an absent exec_receipt as accounting residue', async () => {
     const result = await run({ route: 'quick_fix' });
 
-    expect(result.ok).toBe(true);
+    expect(codesOf(result)).toEqual(['absent']);
     expect(result.checks.exec_receipt).toBe(null);
   });
 });
@@ -202,7 +234,7 @@ describe('receipt-check main token backing', () => {
     expect(codesOf(result)).toEqual(['takeover_lineage_missing']);
   });
 
-  test('leaves a takeover unproven where the monitor cannot see the lineage', async () => {
+  test('names an unobservable takeover lineage rather than failing the observation', async () => {
     const result = await run(
       { exec_receipt: `main:takeover@${SHA}` },
       {
@@ -214,9 +246,8 @@ describe('receipt-check main token backing', () => {
       }
     );
 
-    expect(result.ok).toBe(false);
-    expect(result.probe_error).toBe(true);
-    expect(codesOf(result)).toEqual([]);
+    expect(codesOf(result)).toEqual(['takeover_lineage_unobservable']);
+    expect(result.probe_error).toBe(false);
     expect(result.checks.exec_receipt).toMatchObject({
       takeover_lineage: 'undecidable'
     });
@@ -329,7 +360,7 @@ describe('receipt-check baseline deltas', () => {
 
   test('reports an impl_entry that appeared during an unattended attempt', async () => {
     const result = await run(
-      { impl_entry: `user@${SHA}` },
+      { exec_receipt: DELEGATED_OK, impl_entry: `user@${SHA}` },
       { baseline: EMPTY_BASELINE }
     );
 
@@ -338,7 +369,7 @@ describe('receipt-check baseline deltas', () => {
 
   test('reports a plan_approval whose value changed under the attempt', async () => {
     const result = await run(
-      { plan_approval: `user@${OTHER_SHA}` },
+      { exec_receipt: DELEGATED_OK, plan_approval: `user@${OTHER_SHA}` },
       { baseline: { ...EMPTY_BASELINE, plan_approval: `user@${SHA}` } }
     );
 
@@ -371,7 +402,7 @@ describe('receipt-check baseline deltas', () => {
 
   test('reports an impl_entry the attempt deleted', async () => {
     const result = await run(
-      {},
+      { exec_receipt: DELEGATED_OK },
       { baseline: { ...EMPTY_BASELINE, impl_entry: `user@${SHA}` } }
     );
 
@@ -380,7 +411,7 @@ describe('receipt-check baseline deltas', () => {
 
   test('reports a plan_approval the attempt deleted', async () => {
     const result = await run(
-      {},
+      { exec_receipt: DELEGATED_OK },
       { baseline: { ...EMPTY_BASELINE, plan_approval: `user@${SHA}` } }
     );
 
@@ -389,7 +420,7 @@ describe('receipt-check baseline deltas', () => {
 
   test('reports a workflow_mode_source that became user', async () => {
     const result = await run(
-      { workflow_mode_source: 'user' },
+      { exec_receipt: DELEGATED_OK, workflow_mode_source: 'user' },
       { baseline: EMPTY_BASELINE }
     );
 
@@ -398,7 +429,7 @@ describe('receipt-check baseline deltas', () => {
 
   test("accepts the worker's own workflow_mode_source stamp", async () => {
     const result = await run(
-      { workflow_mode_source: 'worker' },
+      { exec_receipt: DELEGATED_OK, workflow_mode_source: 'worker' },
       { baseline: EMPTY_BASELINE }
     );
 
@@ -421,7 +452,7 @@ describe('receipt-check baseline deltas', () => {
 describe('receipt-check verify_receipt binding', () => {
   test('binds a verify receipt on the attempt head', async () => {
     const result = await run(
-      { verify_receipt: `beads-ui@${SHA}:0` },
+      { exec_receipt: DELEGATED_OK, verify_receipt: `beads-ui@${SHA}:0` },
       { head: SHA }
     );
 
@@ -436,7 +467,7 @@ describe('receipt-check verify_receipt binding', () => {
 
   test('records a non-zero exit without calling the receipt unbound', async () => {
     const result = await run(
-      { verify_receipt: `beads-ui@${SHA}:2` },
+      { exec_receipt: DELEGATED_OK, verify_receipt: `beads-ui@${SHA}:2` },
       { head: SHA }
     );
 
@@ -449,7 +480,7 @@ describe('receipt-check verify_receipt binding', () => {
 
   test('binds a verify receipt that is an ancestor of the head', async () => {
     const result = await run(
-      { verify_receipt: `beads-ui@${OTHER_SHA}:0` },
+      { exec_receipt: DELEGATED_OK, verify_receipt: `beads-ui@${OTHER_SHA}:0` },
       { head: SHA, probeAncestry: async () => 'ancestor' }
     );
 
@@ -459,7 +490,7 @@ describe('receipt-check verify_receipt binding', () => {
 
   test('reports a verify receipt the head does not descend from', async () => {
     const result = await run(
-      { verify_receipt: `beads-ui@${OTHER_SHA}:0` },
+      { exec_receipt: DELEGATED_OK, verify_receipt: `beads-ui@${OTHER_SHA}:0` },
       { head: SHA, probeAncestry: async () => 'non_ancestor' }
     );
 
@@ -468,7 +499,7 @@ describe('receipt-check verify_receipt binding', () => {
 
   test('stays quiet when the ancestry probe cannot answer', async () => {
     const result = await run(
-      { verify_receipt: `beads-ui@${OTHER_SHA}:0` },
+      { exec_receipt: DELEGATED_OK, verify_receipt: `beads-ui@${OTHER_SHA}:0` },
       { head: SHA, probeAncestry: async () => 'probe_error' }
     );
 
@@ -480,7 +511,7 @@ describe('receipt-check verify_receipt binding', () => {
 
   test('reports a verify receipt that does not parse', async () => {
     const result = await run(
-      { verify_receipt: 'beads-ui@nope' },
+      { exec_receipt: DELEGATED_OK, verify_receipt: 'beads-ui@nope' },
       { head: SHA }
     );
 
@@ -494,6 +525,202 @@ describe('receipt-check verify_receipt binding', () => {
     );
 
     expect(blockingReceiptCodes(result)).toEqual([]);
+  });
+});
+
+/**
+ * Metadata that produces exactly one violation with the given code.
+ *
+ * @type {Record<string, { metadata: Record<string, unknown>, extra?: Record<string, unknown> }>}
+ */
+const ONE_CODE = {
+  unit_plan_mismatch: {
+    metadata: {
+      unit_plan: '한 유닛 | core:server/core.js',
+      exec_receipt: DELEGATED_OK
+    }
+  },
+  approval_forged: {
+    metadata: { exec_receipt: DELEGATED_OK, impl_entry: `user@${SHA}` },
+    extra: { baseline: BLANK_BASELINE }
+  },
+  dispatch_forged: {
+    metadata: { exec_receipt: DELEGATED_OK, impl_dispatch: 'delegated' },
+    extra: { baseline: BLANK_BASELINE }
+  },
+  mode_authority_forged: {
+    metadata: { exec_receipt: DELEGATED_OK, workflow_mode_source: 'user' },
+    extra: { baseline: BLANK_BASELINE }
+  },
+  non_ancestor: {
+    metadata: { exec_receipt: `delegated:sol:high@${OTHER_SHA}` },
+    extra: { head: SHA, probeAncestry: async () => 'non_ancestor' }
+  },
+  ancestry_probe_error: {
+    metadata: { exec_receipt: `delegated:sol:high@${OTHER_SHA}` },
+    extra: { head: SHA, probeAncestry: async () => 'probe_error' }
+  },
+  absent: { metadata: { route: 'quick_fix' } },
+  unparsable: { metadata: { exec_receipt: '세션이 직접 했다' } },
+  effort_unknown: {
+    metadata: { exec_receipt: `delegated:opus:native-fixed-posture@${SHA}` }
+  },
+  main_reason_retired: {
+    metadata: { exec_receipt: `main:user_choice@${SHA}` }
+  },
+  main_receipt_unbacked: { metadata: { exec_receipt: `main:bead@${SHA}` } },
+  takeover_lineage_missing: {
+    metadata: { exec_receipt: `main:takeover@${SHA}` },
+    extra: {
+      lineage: { supported: true, sessions: [], resolved_impl_model: 'sol' }
+    }
+  },
+  takeover_lineage_unobservable: {
+    metadata: { exec_receipt: `main:takeover@${SHA}` },
+    extra: {
+      lineage: { supported: false, sessions: [], resolved_impl_model: null }
+    }
+  }
+};
+
+/**
+ * @param {string} code
+ */
+function runOneCode(code) {
+  const fixture = ONE_CODE[code];
+  return run(fixture.metadata, fixture.extra || {});
+}
+
+describe('receipt-check merge-gate grades', () => {
+  test('names the thirteen contract codes across two disjoint grades', () => {
+    const hold = EXEC_RECEIPT_MERGE_GATE.hold;
+    const badge = EXEC_RECEIPT_MERGE_GATE.badge;
+
+    expect(hold.filter((code) => badge.includes(code))).toEqual([]);
+    expect([...hold, ...badge].sort()).toEqual(
+      [
+        'absent',
+        'ancestry_probe_error',
+        'approval_forged',
+        'dispatch_forged',
+        'effort_unknown',
+        'main_reason_retired',
+        'main_receipt_unbacked',
+        'mode_authority_forged',
+        'non_ancestor',
+        'takeover_lineage_missing',
+        'takeover_lineage_unobservable',
+        'unit_plan_mismatch',
+        'unparsable'
+      ].sort()
+    );
+  });
+
+  test('fixes one reproduction per contract code', () => {
+    expect(Object.keys(ONE_CODE).sort()).toEqual(
+      [...EXEC_RECEIPT_MERGE_GATE.hold, ...EXEC_RECEIPT_MERGE_GATE.badge].sort()
+    );
+  });
+
+  for (const code of EXEC_RECEIPT_MERGE_GATE.hold) {
+    test(`holds the gate on ${code}`, async () => {
+      const result = await runOneCode(code);
+
+      expect(blockingReceiptCodes(result)).toEqual([code]);
+      expect(badgeReceiptCodes(result)).toEqual([]);
+      expect(receiptGateState(result).state).toBe('unbacked');
+    });
+  }
+
+  for (const code of EXEC_RECEIPT_MERGE_GATE.badge) {
+    test(`passes the gate on ${code}`, async () => {
+      const result = await runOneCode(code);
+
+      expect(badgeReceiptCodes(result)).toEqual([code]);
+      expect(blockingReceiptCodes(result)).toEqual([]);
+      expect(receiptGateState(result).state).toBe('ok');
+    });
+  }
+});
+
+describe('receipt-check exec_receipt ancestry', () => {
+  test('judges nothing without a head to bind against', async () => {
+    const result = await run({
+      exec_receipt: `delegated:sol:high@${OTHER_SHA}`
+    });
+
+    expect(codesOf(result)).toEqual([]);
+    expect(result.checks.exec_receipt).toMatchObject({ ancestry: 'unproven' });
+  });
+
+  test('judges nothing when the caller injected no probe', async () => {
+    const result = await run(
+      { exec_receipt: `delegated:sol:high@${OTHER_SHA}` },
+      { head: SHA }
+    );
+
+    expect(codesOf(result)).toEqual([]);
+    expect(result.checks.exec_receipt).toMatchObject({ ancestry: 'unproven' });
+  });
+
+  test('binds a receipt issued on the observed head', async () => {
+    const result = await run(
+      { exec_receipt: DELEGATED_OK },
+      { head: SHA, probeAncestry: async () => 'non_ancestor' }
+    );
+
+    expect(codesOf(result)).toEqual([]);
+    expect(result.checks.exec_receipt).toMatchObject({ ancestry: 'equal' });
+  });
+
+  test('binds a receipt the observed head descends from', async () => {
+    const result = await run(
+      { exec_receipt: `delegated:sol:high@${OTHER_SHA}` },
+      { head: SHA, probeAncestry: async () => 'ancestor' }
+    );
+
+    expect(codesOf(result)).toEqual([]);
+    expect(result.checks.exec_receipt).toMatchObject({ ancestry: 'ancestor' });
+  });
+
+  test('reports a receipt the observed head does not descend from', async () => {
+    const result = await run(
+      { exec_receipt: `delegated:sol:high@${OTHER_SHA}` },
+      { head: SHA, probeAncestry: async () => 'non_ancestor' }
+    );
+
+    expect(codesOf(result)).toEqual(['non_ancestor']);
+    expect(result.checks.exec_receipt).toMatchObject({
+      ancestry: 'non_ancestor'
+    });
+  });
+
+  test('reports a probe that threw as an ancestry probe error', async () => {
+    const result = await run(
+      { exec_receipt: `delegated:sol:high@${OTHER_SHA}` },
+      {
+        head: SHA,
+        probeAncestry: async () => {
+          throw new Error('git missing');
+        }
+      }
+    );
+
+    expect(codesOf(result)).toEqual(['ancestry_probe_error']);
+  });
+
+  test('judges every unit of a multi-unit receipt', async () => {
+    const result = await run(
+      {
+        unit_plan: '두 유닛 | core:server/; display:app/',
+        exec_receipt: `core:delegated:sol:high@${SHA}; display:delegated:sol:high@${OTHER_SHA}`
+      },
+      { head: SHA, probeAncestry: async () => 'non_ancestor' }
+    );
+
+    expect(result.violations).toEqual([
+      { code: 'non_ancestor', detail: `display:${OTHER_SHA} not in ${SHA}` }
+    ]);
   });
 });
 
@@ -518,13 +745,22 @@ describe('receipt-check projections', () => {
     });
   });
 
-  test('reports a blocking violation to the gate as unbacked', async () => {
-    const result = await run({ exec_receipt: `main:bead@${SHA}` });
+  test('reports a hold violation to the gate as unbacked', async () => {
+    const result = await run({
+      unit_plan: '한 유닛 | core:server/core.js',
+      exec_receipt: DELEGATED_OK
+    });
 
     expect(receiptGateState(result)).toEqual({
       state: 'unbacked',
-      codes: ['main_receipt_unbacked']
+      codes: ['unit_plan_mismatch']
     });
+  });
+
+  test('clears the gate when only badge findings remain', async () => {
+    const result = await run({ exec_receipt: `main:bead@${SHA}` });
+
+    expect(receiptGateState(result)).toEqual({ state: 'ok', codes: [] });
   });
 
   test('clears the gate when only a verify_receipt finding remains', async () => {
@@ -536,9 +772,10 @@ describe('receipt-check projections', () => {
     expect(receiptGateState(result).state).toBe('ok');
   });
 
-  test('summarizes both the full and the blocking code lists', async () => {
+  test('summarizes the full, blocking and badge code lists', async () => {
     const result = await run(
       {
+        unit_plan: '한 유닛 | core:server/core.js',
         exec_receipt: `main:bead@${SHA}`,
         verify_receipt: `beads-ui@${OTHER_SHA}:0`
       },
@@ -548,8 +785,13 @@ describe('receipt-check projections', () => {
     expect(summarizeReceiptCheck(result)).toEqual({
       ok: false,
       probe_error: false,
-      codes: ['main_receipt_unbacked', 'verify_receipt_unbound'],
-      blocking_codes: ['main_receipt_unbacked']
+      codes: [
+        'main_receipt_unbacked',
+        'unit_plan_mismatch',
+        'verify_receipt_unbound'
+      ],
+      blocking_codes: ['unit_plan_mismatch'],
+      badge_codes: ['main_receipt_unbacked']
     });
   });
 

@@ -14260,7 +14260,7 @@ describe('PR 대기 뱃지 우선순위·영수증 라벨 (UI-17mj §2.4)', () =
   };
 
   /**
-   * @param {{ gate?: any, receipt_check?: any, attempts?: Record<string, any> }} [over]
+   * @param {{ gate?: any, receipt_check?: any, attempts?: Record<string, any>, external?: boolean }} [over]
    * @returns {HTMLElement}
    */
   function renderRow(over = {}) {
@@ -14268,7 +14268,13 @@ describe('PR 대기 뱃지 우선순위·영수증 라벨 (UI-17mj §2.4)', () =
     const queueStore = createWorkerQueueStore();
     queueStore.set(
       queueOf({
-        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_wait: [
+          {
+            bead_id: 'RD-1',
+            added_at: 1,
+            ...(over.external ? { external: true } : {})
+          }
+        ],
         pr_observations: {
           'RD-1': {
             pr: {
@@ -14412,6 +14418,173 @@ describe('PR 대기 뱃지 우선순위·영수증 라벨 (UI-17mj §2.4)', () =
       expect(row(mount).textContent).not.toContain('영수증 확인 필요');
     }
   );
+});
+
+describe('PR 대기 행 영수증 회계 잔여 칩 (UI-h6t1 §4.2)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  const CLEAN_GATE = {
+    enabled: true,
+    tier: 'eligible',
+    gate_badge: '머지 가능',
+    base_badge: '최신',
+    reason: null
+  };
+
+  /**
+   * @param {string[]} badge_codes
+   * @returns {any}
+   */
+  function residue(badge_codes) {
+    return {
+      ok: false,
+      probe_error: false,
+      codes: badge_codes,
+      blocking_codes: [],
+      badge_codes
+    };
+  }
+
+  /**
+   * @param {{ receipt_check?: any, external?: boolean }} [over]
+   * @returns {HTMLElement}
+   */
+  function renderRow(over = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [
+          {
+            bead_id: 'RD-1',
+            added_at: 1,
+            ...(over.external ? { external: true } : {})
+          }
+        ],
+        pr_observations: {
+          'RD-1': {
+            pr: {
+              number: 7,
+              url: 'https://github.com/o/r/pull/7',
+              state: 'OPEN',
+              head_sha: 'a'.repeat(40)
+            },
+            verify: null,
+            error: null,
+            observed_at: 1,
+            gate: CLEAN_GATE,
+            receipt_check: over.receipt_check || null
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {HTMLElement}
+   */
+  function chip(mount) {
+    return /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="RD-1"] [data-chip-key="receipt"]'
+      )
+    );
+  }
+
+  test('names the single badge code in the chip label', () => {
+    const mount = renderRow({ receipt_check: residue(['effort_unknown']) });
+
+    expect(chip(mount).textContent?.trim()).toBe('영수증 · effort_unknown');
+  });
+
+  test('counts the remaining codes when more than one is observed', () => {
+    const mount = renderRow({
+      receipt_check: residue(['absent', 'main_reason_retired'])
+    });
+
+    expect(chip(mount).textContent?.trim()).toBe('영수증 · absent +1');
+  });
+
+  test('draws no status badge for a badge-only observation', () => {
+    const mount = renderRow({ receipt_check: residue(['absent']) });
+
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')?.textContent
+    ).not.toContain('영수증 확인 필요');
+  });
+
+  test('draws the same chip on an external PR row', () => {
+    const mount = renderRow({
+      receipt_check: residue(['absent']),
+      external: true
+    });
+
+    expect(chip(mount).textContent?.trim()).toBe('영수증 · absent');
+  });
+
+  test('draws no chip when the observation carries no badge codes', () => {
+    const mount = renderRow({
+      receipt_check: {
+        ok: true,
+        probe_error: false,
+        codes: [],
+        blocking_codes: [],
+        badge_codes: []
+      }
+    });
+
+    expect(chip(mount)).toBeNull();
+  });
+
+  test('draws no chip when the observation is absent', () => {
+    const mount = renderRow();
+
+    expect(chip(mount)).toBeNull();
+  });
+
+  test('opens the 사유 popup with one sentence per code', () => {
+    const mount = renderRow({
+      receipt_check: residue(['effort_unknown', 'takeover_lineage_missing'])
+    });
+
+    chip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const popover = mount.querySelector('.chip-popover');
+    expect(popover?.textContent).toContain('effort 토큰이 harness 어휘 밖이다');
+    expect(popover?.textContent).toContain(
+      'resolved 모델과 일치하는 완료된 위임 세션이 없다'
+    );
+  });
+
+  test('says the merge is unaffected in the popup', () => {
+    const mount = renderRow({ receipt_check: residue(['absent']) });
+
+    chip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.chip-popover')?.textContent).toContain(
+      '자동 머지 판정에는 영향이 없다'
+    );
+  });
+
+  test('reads an unknown code back as the code string itself', () => {
+    const mount = renderRow({ receipt_check: residue(['grown_later']) });
+
+    chip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.chip-popover')?.textContent).toContain(
+      'grown_later'
+    );
+  });
 });
 
 describe('해제·후속 칩과 대기 행 ✕ (UI-d13v §5·§6)', () => {

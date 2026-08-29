@@ -13958,7 +13958,9 @@ describe('scheduler receipt observation (UI-bu6d §2/§3/§5)', () => {
 
   test('catches an impl_dispatch written after the dispatch snapshot', async () => {
     /** @type {Record<string, any>} */
-    const config = { S1: { metadata: {} } };
+    const config = {
+      S1: { metadata: { exec_receipt: `delegated:sol:high@${RECEIPT_SHA}` } }
+    };
     const env = setup({ config, slots: 1 });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);

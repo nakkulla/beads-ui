@@ -21,6 +21,7 @@ import {
   needsHumanHoldKind
 } from './completion-intent.js';
 import { createQueueStore } from './queue-store.js';
+import { EXEC_RECEIPT_MERGE_GATE } from './receipt-check.js';
 
 const DRIVER_WS = '/repo';
 /** @type {string[]} */
@@ -1643,6 +1644,21 @@ describe('worker/completion-intent resolution policy (UI-hk74 §3)', () => {
     expect(classified.class).toBe(expected_class);
     expect(classified.phase).toBe(phase);
   });
+
+  // UI-h6t1 §3.4: 계약이 영수증 판정을 두 등급으로 나눈 뒤에도 이 매핑은 그대로다.
+  // `badge` 등급은 게이트를 통과해 `receipt_unbacked:*` 사유 자체를 만들지 않으므로
+  // 여기 도달하지 않고, 도달하는 `hold` 등급은 전부 사람이 고칠 metadata 문제다.
+  test.each(EXEC_RECEIPT_MERGE_GATE.hold.map((code) => [code]))(
+    'keeps receipt_unbacked:%s on the metadata watch',
+    (code) => {
+      const classified = classifyCompletionFailure(`receipt_unbacked:${code}`);
+
+      expect(classified).toMatchObject({
+        class: 'metadata_watch',
+        phase: 'waiting_metadata'
+      });
+    }
+  );
 
   test.each([
     ['reconciliation_ambiguous'],
