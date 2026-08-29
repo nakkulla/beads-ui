@@ -210,6 +210,10 @@ export function createMergeQueue(deps) {
   let stopped = false;
   let draining = false;
   let drain_requested = false;
+  // True for exactly the synchronous span of `deps.notifyChanged` (UI-nfkp
+  // §3.1). `emitQueueChanged` fans out synchronously, so this is enough for the
+  // driver's own subscriber to tell the driver's own event from an external one.
+  let self_notifying = false;
   // Set when a durable write the loop DEPENDS ON did not stick. It ends the
   // current drain instead of retrying in place; the queue is durable, so the
   // next kick or restart resumes it.
@@ -258,10 +262,18 @@ export function createMergeQueue(deps) {
 
   function notify() {
     if (typeof deps.notifyChanged === 'function') {
+      // Restore the ENCLOSING value rather than clearing: `start()`'s callback
+      // re-enters `drain()` synchronously on a halt resume, and the pass it
+      // starts notifies again — a hard reset would drop the flag while the
+      // OUTER fanout is still running.
+      const outer_self_notifying = self_notifying;
       try {
+        self_notifying = true;
         deps.notifyChanged(workspace);
       } catch {
         // A broken fanout must never break the queue.
+      } finally {
+        self_notifying = outer_self_notifying;
       }
     }
   }
@@ -2521,7 +2533,17 @@ export function createMergeQueue(deps) {
           // forever. Coalesced by `requestDrain`/`drain`: overlapping events set
           // the latch instead of starting a second pass, and a re-judgement that
           // lands on the same reason writes nothing and emits no further event.
-          if (hasHeldEntry()) {
+          //
+          // The driver's OWN event is not such a kick (UI-nfkp §2/§3.1). This
+          // driver both emits and subscribes, so while a hold stands the
+          // end-of-drain `notify()` — and every in-pass `active` transition —
+          // would land right here and ask for another pass, a closed loop that
+          // no amount of write-side idempotence breaks. The re-judgement still
+          // arrives on every external kick UI-d7fy §3.3 enumerates (PR
+          // observation pass, enrollment, completion driver, review session
+          // done, runnable-cache metadata), which is where a receipt written
+          // outside the queue actually becomes visible.
+          if (!self_notifying && hasHeldEntry()) {
             void requestDrain();
           }
         });
