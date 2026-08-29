@@ -69,8 +69,11 @@ Bead 본문은 "fence가 리뷰 세션을 세지 않아 보류 행이 M개면 �
 CAS가 attempt를 **먼저** `failed: cancelled`로 종단하는 경우를 위한 것이었는데, 행이
 머지로 사라진 경우에는 attempt를 종단한 주체가 없다. 그래서 live 경로에서도 attempt가
 영구 `running`으로 남는다 — 뿌리는 1.1과 같다(binding을 잃은 `review_session`의 lifecycle을
-아무도 소유하지 않는다). 부수 효과: 그 bead는 `activeBeadIdsFrom`(비terminal attempt)에
-남고, UI-8wpb/UI-e20c의 큐 파일 이관에서 영원히 hold된다.
+아무도 소유하지 않는다). 부수 효과 둘: 그 bead는 `activeBeadIdsFrom`(비terminal attempt)에
+남아 dispatch 판정의 활성 집합을 계속 차지하고, 그 attempt 레코드는 처리 완료 terminal이
+아니라 `queue.json`을 영원히 떠나지 못한다 — UI-e20c(be21021) 착지 뒤의 접미 불변식에서는
+`transferableAttempts`가 그 레코드에서 멈춰 같은 bead의 더 나중 레코드까지 매 pass에서 함께
+withheld된다(bead 전체 hold는 그 착지로 이미 없어졌다).
 
 ## 2. 사용자 결정 (2026-08-29)
 
@@ -307,12 +310,12 @@ exit·usage를 쓰지 않는다" 규칙과 그 테스트는 유지된다 — 이
 
 - 없음 — 다른 저장소·소유자로 갈라지는 작업이 없다.
 
-scope 겹침(`stale-rereview-inputs.py`, 2026-08-29):
+scope 겹침(`stale-rereview-inputs.py`, 2026-08-29 재리뷰 시점 갱신 — 두 Bead 모두 착지·closed):
 
 | Bead | 상태 | 겹치는 경로 | 관계 |
 | --- | --- | --- | --- |
-| UI-8jau (`2026-08-28-worker-prerequisite-wait-tier-design.md`) | in_progress | `scheduler.js`, `attach.js` | 같은 파일의 다른 절. 8jau는 `onSessionDone`의 구현 attempt 종결 판정·`settleFailureTier`·터미널 status 집합(`waiting` 추가)·`attach.js`의 `bd.readIssue` 주입을 만지고, 이 스펙은 `isSchedulerOwned`·`reconcile`의 dead 처분·`occupiedBeadIds`·`disposeDeadReviewSession`(신설)을 만진다. `onSessionDone`의 리뷰 분기는 8jau의 판정 삽입 위치(`recordReceiptCheck` 뒤) 앞에서 return하므로 서로 닿지 않는다. 새 `waiting` 상태는 terminal이며 `review_session`은 그 상태를 얻지 않는다. 먼저 착지하는 쪽이 base가 되고, 뒤쪽은 staleness re-review로 정합한다. 의존 엣지 없음 |
-| UI-e20c (`2026-08-29-queue-transfer-suffix-invariant-design.md`) | open | `scheduler.js` | 같은 파일의 다른 절. e20c는 이관 reader(`activeLaneLineages`·`latestImplementationAttempt`·`resumableResidueAttempts`·`resolveConflict`)를 읽기만 하고 `queue-store.js`의 이관 판정을 바꾼다. 이 스펙의 §1.3·§3.5(비terminal `review_session`의 `orphaned` 종단)는 e20c의 hold 규칙("bead에 미처리 attempt가 있으면 이관 불가")이 영구 hold로 굳는 원인 하나를 없애는 관계이며, e20c의 규칙 자체는 바꾸지 않는다. 의존 엣지 없음 |
+| UI-8jau (`2026-08-28-worker-prerequisite-wait-tier-design.md`) | closed — `ecfdf5e` 착지 | `scheduler.js`, `attach.js` | 같은 파일의 다른 절. 8jau는 `onSessionDone`의 구현 attempt 종결 판정(`judgePrerequisiteWait`)·`settleFailureTier`의 `waiting` 분기·터미널 status 집합(`waiting` 추가)·`attach.js`의 `bd.readIssue` 주입을 만지고, 이 스펙은 `isSchedulerOwned`·`reconcile`의 dead 처분·`occupiedBeadIds`·`disposeDeadReviewSession`(신설)을 만진다. 착지분 확인: `onSessionDone`의 리뷰 분기는 `recordReceiptCheck`보다 앞에서 return하고 `judgePrerequisiteWait` 호출은 그보다 뒤의 quick_fix 레인 분기 안에만 있으므로 `review_session`에 닿지 않는다. `waiting`은 terminal 집합에 들어갔으나 `review_session`은 그 상태를 얻지 않으므로 §3.5의 "이미 terminal" 갈래는 그대로다. `attach.js` 델타는 주석 한 블록뿐이라 §3.6은 무변경이다. 의존 엣지 없음 |
+| UI-e20c (`2026-08-29-queue-transfer-suffix-invariant-design.md`) | closed — `be21021` 착지 | `scheduler.js` | 같은 파일의 다른 절. e20c는 이관 reader를 읽기만 하고 `queue-store.js`의 이관 판정을 바꿨다. 착지분 확인: `beadsWithLiveRecords`가 `heldBeads`로 좁아지며 "bead에 미처리 attempt가 있으면 bead 전체 이관 불가" 규칙이 없어졌고, 남은 hold는 `pr_wait`·`merge_queue` 멤버십·미종료 completion saga·진행 중 discard 넷이다. 그래서 §3.5(비terminal `review_session`의 `orphaned` 종단)가 푸는 대상은 bead 전체가 아니라 그 attempt 레코드와 접미의 더 나중 레코드이며, §1.3을 그에 맞게 정정했다. `LANE_RELEASING_ATTEMPT_STATUSES`가 `queue-store.js`로 옮겨 export되고 `scheduler.js`의 사본이 지워졌으나 이 스펙은 그 집합을 참조하지 않는다. 의존 엣지 없음 |
 - 관찰: 재시작 뒤 취소(§5.6)는 `running` 핸들이 없어 살아남은 프로세스를 죽이지 못한다
   (`stopReviewSessionProcess`가 monitor만 멈춤) — 이 스펙 뒤에는 그 세션이 끝나면 3.5가
   `orphaned`로 닫으므로 기록은 정리되지만, 즉시 종료를 원하면
