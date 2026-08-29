@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0021 | [review_session의 생존·슬롯·정산 시작은 scheduler reconcile이, 결과 판정은 큐가 소유한다](0021-review-session-lifecycle-owned-by-scheduler-reconcile.md) | 2026-08-29 | review_session은 구현 attempt와 같은 reconcile pid probe로 생존·슬롯 점유·정산 시작을 판정하고 죽은 세션의 결과는 큐의 complete()가 영수증으로 판정하며 살아 있는 리뷰어를 죽이는 부팅 종료는 두지 않는다 |
 | 0020 | [blocks 의존은 구현 실행 진입만 막고 spec·plan 작성은 blocked Bead에서도 진행한다](0020-blocks-edge-gates-implementation-entry-only.md) | 2026-08-29 | blocks 의존은 구현 진입(in_progress claim)만 막는다; 세션은 blocked Bead의 spec·plan을 쓰고 게이트 착지에서 끝나며, 선행 결과가 설계 전제인 경우만 spec-after-blocker 라벨로 spec을 미룬다 |
 | 0019 | [리뷰 영수증 보류는 큐가 head당 1회 리뷰 lineage를 자동 dispatch해 해소를 시도한다](0019-auto-review-dispatch-once-per-head.md) | 2026-08-28 | 영수증 부재·stale 보류는 큐가 head당 1회 같은 리뷰 lineage를 자동 dispatch하고 실패·소진 뒤에는 [리뷰 후 머지]가 같은 lineage를 resume하며 post-merge 자동 수리 금지(ADR 0005)와는 별개다 |
 | 0018 | [quick_fix 착지 재개는 정산 커서가 아니라 실패 사유로 판정한다](0018-quickfix-landing-resume-judged-by-failure-reason.md) | 2026-08-28 | 세션이 필요한 사유만 닫힌 목록으로 열거하고 나머지는 전부 같은 attempt의 정산을 다시 돌린다. 정산 계열 어휘는 coordinator가 만들어 열려 있고 settle은 멱등이라 기본값은 정산 쪽이 안전하다 |
