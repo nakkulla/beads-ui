@@ -1297,6 +1297,22 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // awaits in this pass, but they are enough for a dispatch to land
       // meanwhile, and registering a bead the worker just claimed is exactly
       // the accident UI-b8n8 closed.
+      // The origin slug the foreign-repository mark compares against
+      // (UI-lpg1). Resolved with the receipt observations, before the fence:
+      // it is one cached `git remote get-url` read, and an unresolvable origin
+      // (null) marks nothing — the PR read fails closed on its own then.
+      /** @type {string|null} */
+      let origin_slug = null;
+      if (typeof gh.repoSlug === 'function') {
+        try {
+          origin_slug = await gh.repoSlug(repo);
+        } catch {
+          origin_slug = null;
+        }
+      }
+      if (generation !== external_scan_generation) {
+        return;
+      }
       const owned_now = externalProtectedIds();
       if (owned_now === null) {
         log(
@@ -1320,7 +1336,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
             excluded.join(', ')
           );
         }
-        runtime.externalPrs.replace(keyFor(workspace_root), registered);
+        runtime.externalPrs.replace(keyFor(workspace_root), registered, {
+          origin_slug
+        });
       }
     }
     try {

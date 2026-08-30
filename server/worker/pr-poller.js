@@ -120,9 +120,14 @@ function retiredPrNumbers(queue, bead_id) {
  * that its PR was merged and cleaned up, so any attempt pointing at a PR a
  * `done` row already names is skipped in favour of the later sources.
  *
+ * An external row marked `foreign` (its url names another repository,
+ * UI-lpg1) resolves to NOTHING: the number would be read against this
+ * workspace's origin as a different PR. Attempt and durable rows are this
+ * worker's own PRs and never carry the mark.
+ *
  * @param {Queue} queue
  * @param {string} bead_id
- * @param {{ pr_url: string, pr_number: number|null }|null} [external]
+ * @param {{ pr_url: string, pr_number: number|null, foreign?: boolean }|null} [external]
  * @returns {{ number: number, url: string }|null}
  */
 export function resolvePrRef(queue, bead_id, external = null) {
@@ -175,7 +180,7 @@ export function resolvePrRef(queue, bead_id, external = null) {
   if (durable_number !== null) {
     return { number: durable_number, url: durable_url };
   }
-  if (!external) {
+  if (!external || external.foreign === true) {
     return null;
   }
   const url = typeof external.pr_url === 'string' ? external.pr_url : '';
@@ -326,6 +331,15 @@ export function createPrPoller(deps) {
    * @returns {Promise<{ verify: Promise<void>|null }>}
    */
   async function observeBead(queue, bead_id, external_row = null) {
+    if (external_row !== null && external_row.foreign === true) {
+      // The url names another repository (UI-lpg1): reading its number here
+      // would observe a different PR. Recorded as its own state so the lane
+      // says why, and never handed to cleanup.
+      deps.observations.record(workspace, bead_id, {
+        error: 'pr_repo_foreign'
+      });
+      return { verify: null };
+    }
     const ref = resolvePrRef(queue, bead_id, external_row);
     if (!ref) {
       // No durable PR reference: the bead is in `pr_wait` but nothing records

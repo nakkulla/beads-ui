@@ -38,11 +38,57 @@ describe('worker/external-pr', () => {
         bead_id: 'UI-1',
         pr_url: 'https://github.com/o/r/pull/7',
         pr_number: 7,
+        repo_slug: 'o/r',
+        foreign: false,
         added_at: 100,
         receipt_key: null,
         receipt_check: null
       }
     ]);
+  });
+
+  test('marks a row foreign when its url names another repository', () => {
+    const store = createExternalPrStore({ now: () => 100 });
+
+    store.replace(
+      WS,
+      [
+        {
+          bead_id: 'UI-1',
+          pr_url: 'https://github.com/other/repo/pull/1',
+          pr_number: 1
+        },
+        {
+          bead_id: 'UI-2',
+          pr_url: 'https://github.com/O/R/pull/2',
+          pr_number: 2
+        }
+      ],
+      { origin_slug: 'ghe.example.com/o/r' }
+    );
+
+    expect(store.list(WS).map((row) => [row.repo_slug, row.foreign])).toEqual([
+      ['other/repo', true],
+      ['O/R', false]
+    ]);
+  });
+
+  test('marks nothing foreign without a resolvable origin', () => {
+    const store = createExternalPrStore({ now: () => 100 });
+
+    store.replace(
+      WS,
+      [
+        {
+          bead_id: 'UI-1',
+          pr_url: 'https://github.com/other/repo/pull/1',
+          pr_number: 1
+        }
+      ],
+      { origin_slug: null }
+    );
+
+    expect(store.list(WS)[0].foreign).toBe(false);
   });
 
   test('keeps a null pr_number rather than guessing one', () => {

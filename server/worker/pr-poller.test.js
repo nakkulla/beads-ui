@@ -1072,6 +1072,25 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
     expect(observations.get('/ws', 'UI-ext')?.error).toBe(null);
   });
 
+  test('reads no PR for an external row whose url names another repository', async () => {
+    const onMerged = vi.fn(async () => ({ ok: true }));
+    const external = externalOf([{ bead_id: 'UI-ext', pr_number: 1 }]);
+    const rows = external.list();
+    external.list = () => rows.map((row) => ({ ...row, foreign: true }));
+    const { poller, prDetail, observations } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      detail: { state: 'ok', data: detailOf({ state: 'MERGED' }) },
+      external,
+      onMerged
+    });
+
+    await poller.tick();
+
+    expect(prDetail).not.toHaveBeenCalled();
+    expect(onMerged).not.toHaveBeenCalled();
+    expect(observations.get('/ws', 'UI-ext')?.error).toBe('pr_repo_foreign');
+  });
+
   test('re-scans the registry before every pass', async () => {
     const external = externalOf([{ bead_id: 'UI-ext' }]);
     const { poller } = makePoller({

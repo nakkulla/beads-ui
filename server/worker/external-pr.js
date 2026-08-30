@@ -35,7 +35,32 @@ import path from 'node:path';
  * receipt_check - The DISPLAY-ONLY receipt observation the scan made for an
  * external bead, which has no worker attempt to have recorded one. The merge
  * gate never reads it — the click path re-checks live.
+ * @property {string|null} repo_slug - `OWNER/REPO` parsed from `pr_url`, or
+ * null when the url names no repository.
+ * @property {boolean} foreign - Whether `repo_slug` names a repository OTHER
+ * than this workspace's origin (UI-lpg1). Every PR read in this workspace goes
+ * through `gh --repo <origin>` by NUMBER, so a foreign url would be read as a
+ * different PR that happens to share the number — and a MERGED reading of that
+ * PR closed a bead whose own PR was still open. A foreign row stays visible
+ * but yields no PR reference: nothing observes, merges, or cleans it up here.
  */
+
+/**
+ * `OWNER/REPO` a PR url names, or null. Only the path is read, so any host
+ * works; a url without `/pull/<n>` after two path segments is not a PR url.
+ *
+ * @param {unknown} url
+ * @returns {string|null}
+ */
+export function prRepoSlugFromUrl(url) {
+  if (typeof url !== 'string') {
+    return null;
+  }
+  const m = /^[a-z][a-z0-9+.-]*:\/\/[^/]+\/([^/]+)\/([^/]+)\/pull\/\d+/i.exec(
+    url.trim()
+  );
+  return m ? `${m[1]}/${m[2]}` : null;
+}
 
 /**
  * Create the external PR registry. One instance is held process-wide by the
@@ -81,11 +106,24 @@ export function createExternalPrStore(options = {}) {
      * value stands (null on a brand-new row). Passing any other value —
      * including null — replaces it.
      *
+     * `origin_slug` is this workspace's own `OWNER/REPO`; a row whose url
+     * names another repository is marked `foreign`. With no resolvable origin
+     * (null) no row is judged foreign — the PR read itself fails closed then,
+     * because `gh --repo` cannot be derived either.
+     *
      * @param {string} workspace
      * @param {{ bead_id: string, pr_url: string, pr_number: number|null, receipt_key?: string|null, receipt_check?: import('./receipt-check.js').ReceiptCheckResult|null }[]} rows
+     * @param {{ origin_slug?: string|null }} [options]
      * @returns {ExternalPrRow[]}
      */
-    replace(workspace, rows) {
+    replace(workspace, rows, options = {}) {
+      // gh addresses an Enterprise origin as `HOST/OWNER/REPO`; only the
+      // trailing `OWNER/REPO` is what a PR url carries.
+      const origin_slug =
+        typeof options.origin_slug === 'string' &&
+        options.origin_slug.length > 0
+          ? options.origin_slug.split('/').slice(-2).join('/').toLowerCase()
+          : null;
       const lane = laneFor(workspace);
       /** @type {Map<string, ExternalPrRow>} */
       const next = new Map();
@@ -94,9 +132,15 @@ export function createExternalPrStore(options = {}) {
           continue;
         }
         const prior = lane.get(row.bead_id);
+        const repo_slug = prRepoSlugFromUrl(row.pr_url);
         next.set(row.bead_id, {
           bead_id: row.bead_id,
           pr_url: typeof row.pr_url === 'string' ? row.pr_url : '',
+          repo_slug,
+          foreign:
+            origin_slug !== null &&
+            repo_slug !== null &&
+            repo_slug.toLowerCase() !== origin_slug,
           pr_number:
             typeof row.pr_number === 'number' && Number.isFinite(row.pr_number)
               ? row.pr_number
