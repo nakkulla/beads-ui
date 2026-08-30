@@ -4235,6 +4235,24 @@ export function createScheduler(deps) {
           });
         }
       } else {
+        // The prerequisite wait applies to every route (contract
+        // `prerequisite_gate.applies_to.routes`), so a spec_backed/full_plan
+        // session that refused on its blocker and left no PR is judged here
+        // exactly as the quick_fix lane judges it before its landing
+        // settlement (waiting-tier spec §8 observation, UI-8kvi). A PR
+        // observed above is a delivery and never reaches this branch.
+        if (
+          vr.reason === 'no_pr' &&
+          (await judgePrerequisiteWait(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            verdict
+          ))
+        ) {
+          return;
+        }
         await failAttempt(
           workspace,
           attempt_id,
@@ -4529,7 +4547,8 @@ export function createScheduler(deps) {
 
   /**
    * Settle an attempt whose session refused to start on an unmet prerequisite
-   * (waiting-tier spec §4.1), ahead of the landing settlement.
+   * (waiting-tier spec §4.1), ahead of the landing settlement on the quick_fix
+   * lane and ahead of the `no_pr` failure on the PR lane (UI-8kvi).
    *
    * The trailing `notifyChanged`/`tick` are this function's own because
    * `failAttempt` fires neither — exactly like the failure arms of

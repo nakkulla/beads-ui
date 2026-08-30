@@ -257,7 +257,9 @@ parked·retry_wait와 같은 네 키 규칙(ADR 0014)으로 `waiting: item.run_s
 - 관찰: spec_backed/full_plan 레인의 같은 결말은 PR 검증 경로에서 `session_ended_unresolved`로
   남는다. 계약이 그 레인에도 같은 절차를 적용하므로 같은 판정식을 그 경로의
   `endedWithoutDelivery` 앞에 두는 것이 자연스럽지만, 이 Bead의 출처 둘이 모두 quick_fix라
-  범위를 quick_fix로 한정했다. 재관측 시 admission 재판정.
+  범위를 quick_fix로 한정했다. — 2026-08-30 `Analysis-ez8l`로 재관측되어 `UI-8kvi`(quick_fix)가
+  같은 `judgePrerequisiteWait`를 PR 검증 경로의 `no_pr` 갈래 앞에 두었다. 죽은 attempt 복구
+  경로(`disposeDeadAttempt`)는 세션 verdict가 없어 그대로 `session_ended_unresolved`다.
 - 관찰: `foreign-blocker-status.js`는 표시 전용이라는 헤더 주석을 달고 있다. 이 설계가 판정에
   쓰는 것은 즉시 조회 경로 하나이며, 캐시·TTL·정리 로직은 판정에 관여하지 않는다 — 헤더
   주석의 "Display only" 문장을 그 경계로 고쳐 쓴다.

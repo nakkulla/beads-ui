@@ -16009,4 +16009,70 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
         .map((event) => event.summary)
     ).toEqual(['대기 · blocks:S9']);
   });
+
+  /**
+   * The same ending on the PR lane (spec §8 observation, UI-8kvi): a
+   * spec_backed session refuses on the blocker and exits 0 with no PR and no
+   * push. `verifyOk: false` is the server's `no_pr` observation.
+   *
+   * @param {any[]} dependencies
+   * @returns {Record<string, any>}
+   */
+  function specBackedConfig(dependencies) {
+    return {
+      S1: {
+        route: 'spec_backed',
+        target_base: 'release',
+        status: 'open',
+        dependencies
+      },
+      S9: { status: 'open' }
+    };
+  }
+
+  test('settles a spec_backed refused session as waiting instead of session_ended_unresolved', async () => {
+    const config = specBackedConfig([{ dependency_type: 'blocks', id: 'S9' }]);
+    const env = setup({ config, slots: 1, verifyOk: false });
+
+    await runRefusedSession(env, config);
+
+    expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
+      status: 'waiting',
+      cause: 'prerequisite_unmet',
+      cause_detail: {
+        blockers: [{ id: 'S9', rig: null, status: 'open' }],
+        bead_status: 'in_progress'
+      }
+    });
+    expect(env.bd.statuses.S1).toBe('open');
+  });
+
+  test('keeps session_ended_unresolved for a spec_backed session still in bd ready', async () => {
+    const config = specBackedConfig([{ dependency_type: 'blocks', id: 'S9' }]);
+    const env = setup({ config, slots: 1, verifyOk: false });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.bd.statuses.S1 = 'in_progress';
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
+      status: 'failed',
+      cause: 'session_ended_unresolved'
+    });
+  });
+
+  test('never judges the wait once a PR is observed', async () => {
+    const config = specBackedConfig([{ dependency_type: 'blocks', id: 'S9' }]);
+    const env = setup({ config, slots: 1, verifyOk: true });
+
+    await runRefusedSession(env, config);
+
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].status).toBe('done');
+    expect(env.store.snapshot(WS).pr_wait.map((row) => row.bead_id)).toEqual([
+      'S1'
+    ]);
+  });
 });
