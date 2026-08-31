@@ -3,11 +3,14 @@ scope:
   - server/worker/exec-enums.js
   - server/worker/policy.js
   - server/worker/attach.js
+  - server/worker/queue-store.js
+  - server/worker/scheduler.js
   - server/ws/exec-preset-handlers.js
   - app/views/detail-panel/exec-settings.js
   - app/views/detail-panel/effective-settings.js
   - app/views/detail-panel/effective-settings-view.js
   - app/views/settings-dialog/execution-pane.js
+  - app/views/settings-dialog/session-model.js
   - app/utils/execution-defaults.js
 ---
 
@@ -72,55 +75,115 @@ session's own `review` skill ladder; the server does not participate").
 
 | 파일 | 델타 |
 | --- | --- |
-| `server/worker/exec-enums.js` | `REVIEW_SPEEDS = ['default','fast']` 신규. `BEAD_APPLY_KEYS` 12 → 15. 헤더 JSDoc의 "12 worker exec-preference keys" 문구 갱신 |
+| `server/worker/exec-enums.js` | `REVIEW_SPEEDS = ['default','fast']` 신규. `BEAD_APPLY_KEYS` 12 → 15. **`sessionDefaultEnums()`에 3키를 명시**(아래 §3.3). 헤더 JSDoc의 "12 worker exec-preference keys" 문구 갱신 |
 | `server/worker/policy.js` | `pickBead(REVIEW_SPEEDS, bead.<step>_review_speed)` 3줄 + typedef 3항목 |
 | `server/worker/attach.js` | raw metadata 통과 3항목 (`typeof md.<key> === 'string'` 형판 그대로) |
 | `server/worker/queue-store.js` · `server/worker/scheduler.js` · `server/ws/exec-preset-handlers.js` · `app/views/detail-panel/effective-settings-view.js` | 하드코딩된 "12키" 문구를 15로 정정 (레거시 프리셋 프로토콜을 가리키는 `exec-preset-store.js`·`exec-preset-apply.test.js`의 "12-key"는 **다른 12**이므로 건드리지 않는다) |
-| `app/views/detail-panel/exec-settings.js` | `EXEC_SETTING_KEYS` 3항목, 라벨 3항목, `speedGroups(speedTiersForModel(...))` 분기, 해석 표 3행. 새 상수 목록은 두지 않는다 |
-| `app/utils/execution-defaults.js` | `EXECUTION_SETTING_KEYS` 3항목, `REVIEW_PAIRS` 옆에 속도 쌍 해석(`self`/`skip`은 `해당 없음`) |
+| `app/utils/execution-defaults.js` | `EXECUTION_SETTING_KEYS` 16 → 19. `REVIEW_PAIRS` 루프 옆에 속도 쌍 해석 — `self`/`skip`은 effort 행과 같은 `해당 없음` + `not_applicable` |
+| `app/views/detail-panel/exec-settings.js` | `EXEC_KEYS` 12 → 15, `EXEC_ADVANCED_GROUPS`의 `review` 그룹 6 → 9키, `EXEC_SETTING_PRESENTATION` +3, id 조회 helper(§4) + `speedGroups()` 분기. 리뷰어 동사 목록 상수는 두지 않는다 |
+| `app/views/detail-panel/effective-settings.js` | 해석 카드의 키 그룹·라벨에 3항목 |
 | `app/views/settings-dialog/execution-pane.js` · `session-model.js` | 워크스페이스 기본값 창의 3행 |
 
-`WORKSPACE_KV_KEYS`·`IMPL_PRESET_KEYS`·`PRESET_KV_KEYS`는 전부
-`BEAD_APPLY_KEYS`에서 파생되므로 별도 편집이 없다.
+### 3.3 파생되는 것과 손으로 써야 하는 것
+
+파생되는 것: `WORKSPACE_KV_KEYS`(16) · `IMPL_PRESET_KEYS`(18) ·
+`PRESET_KV_KEYS`(14)는 전부 `BEAD_APPLY_KEYS`에서 나오므로 자동으로 늘어난다.
+
+**파생되지 않는 것이 다섯 자리 있고, 둘은 빠뜨리면 런타임에서 죽는다.**
+
+| 자리 | 지금 | 뒤 | 빠뜨리면 |
+| --- | --- | --- | --- |
+| `execSettingEnums()` (server) | — | +3 | `validateExecSettings()`가 `enums[key].includes()`에서 **TypeError** |
+| `sessionDefaultEnums()` (server) | — | +3 | `validateImplPresetSettings()`가 같은 자리에서 **TypeError** |
+| `EXEC_SETTING_KEYS` (server) | 12 | 15 | attempt `exec_values`에 속도가 안 실리고, 아래 `EXEC_KEYS`와 어긋난다 |
+| `EXEC_KEYS` (`exec-settings.js`, server 표의 선언된 mirror) · `EXEC_ADVANCED_GROUPS.review`(6→9키) · `EXEC_SETTING_PRESENTATION`(+3) | 12 / 6 / 12 | 15 / 9 / 15 | **속도 행이 편집 화면에 아예 나오지 않는다** |
+| `EXECUTION_SETTING_KEYS` (`app/utils/execution-defaults.js`, 해석기 입력) | 16 | 19 | 해석 표에 속도 행이 없다 |
+
+마지막 줄이 이 기능의 존재 조건이다. `impl_speed`가 정확히 그 목록들 밖에
+있어서 상세 패널에서 편집할 수 없다 — 리뷰 속도를 같은 자리에 두면 기능이
+닿지 않는다. 그래서 `impl_speed`와의 대칭이 아니라 **편집 가능성**을 택한다.
+
+앞의 두 줄은 같은 종류의 crash다. `BEAD_APPLY_KEYS`·`EXEC_SETTING_KEYS`는
+"어떤 키가 있는가"를 말하고 enum 테이블은 "그 값이 무엇일 수 있는가"를 말하는데,
+검증 루프가 키 목록을 돌며 enum 테이블을 첨자로 읽기 때문에 한쪽만 늘리면
+`undefined.includes`가 된다.
 
 ## 4. 게이팅은 하드코딩 목록이 아니라 카탈로그 유도다
 
-리뷰어별로 어떤 속도를 고를 수 있는지는 목록을 새로 적어서 정하지 않는다.
-필요한 재료가 이미 다 있다.
+리뷰어별로 어떤 속도를 고를 수 있는지는 동사 목록을 새로 적어서 정하지 않는다.
+다만 **기존 helper를 그대로 부를 수는 없다** — 키 공간이 다르다.
 
-`app/utils/execution-defaults.js:151`의 `reviewerModelId()`는 핀된
-`generated/contracts/execution-defaults.json`의 `review.reviewers`에서
-리뷰어 동사를 카탈로그 모델 id로 옮긴다(`codex` → `gpt-5.6-sol`). 그리고
-`resolveExecutionSettings()`가 만드는 `<step>_review_model` 행은 그 값을
-이미 `full_value`에 담고 있다(`result(value, source, display, full_value,
-resolution)`).
+| 값 | 예시 |
+| --- | --- |
+| 리뷰어 동사 | `codex` |
+| 카탈로그 **키** (`runners.codex.models`의 프로퍼티명) | `sol` |
+| 모델 **id** (`models.sol.id`) | `gpt-5.6-sol` |
+| `compactModelId()` 결과 | `5.6-sol` |
 
-따라서 `orchestration_speed`가 쓰는 것과 **같은 함수**를 그대로 부른다.
+`reviewerModelId()`가 주는 것도, 해석된 행의 `full_value`가 담는 것도 **id**다.
+그런데 `speedTiersForModel()`은 `Object.hasOwn(entry.models, model)`로 **키**를
+찾는다(`exec-settings.js:318`). 그래서
+`speedTiersForModel(catalog, 'gpt-5.6-sol')`은 `[]`를 준다 — 즉 순진하게 이으면
+codex 속도까지 꺼진다. `compactModelId()`도 `'5.6-sol'`이라 키가 아니다.
+
+그러므로 **id로 항목을 찾는 조회를 새로 정의한다**.
 
 ```js
-speedTiersForModel(runner_catalog, rows[`${prefix}_review_model`].full_value)
+// exec-settings.js — runners[*].models[key].id === model_id 인 항목의 speed_tiers.
+// claude 모델은 key와 id가 같아(`opus: { id: 'opus' }`) 같은 조회로 덮인다.
+// 못 찾으면 [] — 모르는 모델에 fast를 주지 않는다.
+function speedTiersForModelId(runner_catalog, model_id) { /* ... */ }
 ```
 
-의도한 동작이 별도 규칙 없이 그대로 떨어진다.
+그리고 **해석 상태가 `incompatible`·`unavailable`이면 `full_value`를 보지 않고
+곧장 `[]`로 간다.** `incompatibleResult()`는 `full_value`에 리뷰어 동사 원문을
+그대로 넣기 때문에(`app/utils/execution-defaults.js:269`), 동사가 우연히
+카탈로그 키나 id와 겹치면 비호환 리뷰어의 속도가 잘못 활성화된다.
 
-| 리뷰어 | `full_value` | 카탈로그 tier | 속도 행 |
-| --- | --- | --- | --- |
-| `codex` | `gpt-5.6-sol` | `['default','fast']` | 활성 |
-| `opus` · `fable` | `opus` · `fable` | `['default']` (`speed_tiers` 없음) | 비활성 — Standard 고정 |
-| `self` · `skip` | 카탈로그 밖 | `[]` | 비활성 — `해당 없음` |
+아래 표에서 `resolution`·`full_value`는 **리뷰어 행**(`<step>_review_model`)의
+것이고, 맨 오른쪽 두 열이 이 스펙이 새로 정하는 **속도 행**이다. 둘을 섞지
+않는다 — `self`/`skip`의 리뷰어 행은 `not_applicable`이 아니라 평범한
+`default`/`explicit`이고, `full_value`도 `null`이 아니라 동사 그대로
+`'self'`/`'skip'`이다(해석기의 `else` 가지가 `reviewerModelId()`를 그대로
+부른다). `not_applicable`이 되는 것은 effort 행이고, 속도 행도 그 형판을
+따른다.
 
-렌더는 tier 목록이 2개 미만이면 `disabled`로 그린다. `self`/`skip`은 effort
-행의 현행 처리와 맞춰 해석 표에서 `해당 없음`으로 적는다
-(`execution-defaults.js`의 `REVIEW_PAIRS` 처리에 속도 쌍을 나란히 추가).
+| 리뷰어 | 리뷰어 행 `resolution` | 리뷰어 행 `full_value` | tier | 속도 행 `resolution` | 속도 편집 |
+| --- | --- | --- | --- | --- | --- |
+| `codex` | `default`·`explicit` | `gpt-5.6-sol` | `['default','fast']` | `default`·`explicit` | 활성 |
+| `opus` · `fable` | `default`·`explicit` | `opus` · `fable` | `['default']` | `default`·`explicit` | 비활성 |
+| `self` · `skip` | `default`·`explicit` | `'self'` · `'skip'` | `[]` | `not_applicable` | 비활성 |
+| 비호환 값 | `incompatible` | 동사 원문 | `[]` (조회하지 않음) | `not_applicable` | 비활성 |
+| 기본값 확인 불가 | `unavailable` | `null` | `[]` | `unavailable` | 비활성 |
 
-게이팅은 **표시만** 한다. 값 저장·검증은 게이팅과 무관하며, 적용되지 않는
-리뷰어에 속도가 남아 있어도 오류가 아니다 — `*_review_effort`의 현행 규칙과
-같다.
+편집 셀렉트는 tier 목록이 2개 미만이면 `disabled`로 그린다.
 
 유도로 얻는 것: `[runner]` 설정이 카탈로그의 `speed_tiers`를 바꾸면 화면이
-따라간다. 하드코딩 목록이었다면 조용히 어긋났을 자리다.
+따라간다. 동사 목록을 손으로 적었다면 조용히 어긋났을 자리다.
 
-### 4.1 오케스트레이션 러너로는 게이팅하지 않는다
+### 4.1 두 화면은 서로 다른 질문에 답한다
+
+게이팅을 한 곳에만 적으면 실제 화면에서 어긋난다. 상세 패널에는 표면이 둘이고,
+비활성 판정 기계가 서로 다르다.
+
+**해석 카드** (`effective-settings.js` → `effective-settings-view.js:235`)는
+`resolution === 'not_applicable'`만 비활성화한다. 이 표가 답하는 질문은 "지금
+무엇이 적용 중인가"다. 따라서:
+
+- `self`·`skip` 단계의 속도 행은 resolver가 effort 행과 **똑같은 형판**으로
+  `result(null, 'base', '해당 없음', null, 'not_applicable')`을 만든다
+  (`execution-defaults.js`의 `REVIEW_PAIRS` 루프).
+- `opus`·`fable` 단계의 속도 행은 `not_applicable`이 **아니다**. 그 리뷰어에
+  실제로 적용되는 값이 Standard이고, 적용 중인 값을 보여주는 것이 이 표의
+  일이다. 여기서 회색 처리하면 참인 값을 감추게 된다.
+
+**편집 셀렉트** (`exec-settings.js`)가 답하는 질문은 "무엇을 고를 수 있는가"다.
+카탈로그 유도 tier 목록으로 게이팅하는 곳은 여기다.
+
+이 비대칭은 의도된 것이다. 나중에 "해석 카드에서도 opus는 회색이어야 한다"고
+맞추면 적용 중인 값을 숨기는 퇴행이 된다.
+
+### 4.2 오케스트레이션 러너로는 게이팅하지 않는다
 
 속도가 실제로 통하는 경로는 정확히 하나다: **Claude 런타임 + `codex` 리뷰어
 → `codex-runner-bridge` Launch `--speed`**. Codex 런타임의 native
@@ -140,7 +203,7 @@ speedTiersForModel(runner_catalog, rows[`${prefix}_review_model`].full_value)
 | 층 | vocabulary | 선례 |
 | --- | --- | --- |
 | 저장·검증 (`sessionDefaultEnums`, `policy.js pickBead`) | 고정 `REVIEW_SPEEDS = ['default','fast']` | `impl_speed: IMPL_SPEEDS` — 카탈로그가 있는데도 고정이다 |
-| 셀렉트 옵션·게이팅 (`exec-settings.js`) | `speedTiersForModel()` 유도 | `orchestration_speed` |
+| 편집 셀렉트 옵션 (`exec-settings.js`) | `speedTiersForModelId()` 유도 | `orchestration_speed` |
 
 저장층이 고정이어야 하는 이유는 소비 시점이 다르기 때문이다. Bead에 핀된 값은
 나중에 **다른 세션이 다른 레이어에서** 해소한다 — 그 세션이 무슨 리뷰어를
@@ -160,17 +223,26 @@ preflight(`service_tiers[].id=priority` 확인)가 잡는다 — 그 실패는 l
    metadata·워크스페이스 kv 기본값·프리셋·상세 패널 해석 표를 왕복한다.
 2. `default`·`fast` 외의 값은 `pickBead`가 떨어뜨리고 해석값이 `undefined`가
    된다.
-3. 속도 셀렉트의 옵션이
-   `speedTiersForModel(catalog, rows[<step>_review_model].full_value)`와 같고,
-   그 목록이 2개 미만이면 `disabled`로 그려진다 — 리뷰어가 `codex`면 활성,
-   `opus`·`fable`이면 비활성, `self`·`skip`이면 비활성이다. 이 판정은 어디에도
-   리뷰어 동사 목록을 새로 적지 않고 카탈로그에서 유도된다.
-4. 해석 표에서 `self`·`skip` 단계의 속도 행은 effort 행과 같은 `해당 없음`으로
-   적힌다.
-5. 게이팅이 걸린 상태에서도 이미 저장된 속도 값은 지워지지 않고 그대로 표시된다.
-6. `BEAD_APPLY_KEYS`가 15개이고, `WORKSPACE_KV_KEYS`가 16개다.
-7. dotfiles `review` 스킬의 codex leg Launch 줄이 해소된 속도를 싣고, 해소값이
-   없으면 `default`를 싣는다.
+3. `validateImplPresetSettings({ spec_review_speed: 'fast' })`가 예외 없이
+   `{ ok: true }`를 주고, `{ spec_review_speed: 'turbo' }`는
+   `invalid_spec_review_speed`를 준다.
+4. 편집 셀렉트의 옵션이 §4 표와 같다 — `codex`는 활성, `opus`·`fable`은 비활성,
+   `self`·`skip`은 비활성, `incompatible`·`unavailable` 해석은 카탈로그를
+   조회하지 않고 비활성이다. 이 판정은 어디에도 리뷰어 동사 목록을 새로 적지
+   않는다.
+5. 해석 카드에서 `self`·`skip` 단계의 속도 행은 `해당 없음` +
+   `not_applicable`이고, `opus`·`fable` 단계의 속도 행은 `not_applicable`이
+   아니며 Standard가 적용 값으로 보인다.
+6. 게이팅이 걸린 상태에서도 이미 저장된 속도 값은 지워지지 않고 그대로 표시된다.
+7. 키 개수: `BEAD_APPLY_KEYS` 15, `WORKSPACE_KV_KEYS` 16, `IMPL_PRESET_KEYS` 18,
+   `PRESET_KV_KEYS` 14, 서버 `EXEC_SETTING_KEYS` 15, 클라이언트 `EXEC_KEYS` 15,
+   `EXEC_ADVANCED_GROUPS`의 `review` 그룹 9키, `EXEC_SETTING_PRESENTATION` 15항목,
+   `EXECUTION_SETTING_KEYS` 19.
+8. `validateExecSettings({ impl_review_speed: 'fast' })`가 예외 없이 통과하고,
+   `'turbo'`는 `invalid_impl_review_speed`를 준다.
+9. 상세 패널 편집 화면의 `리뷰` 그룹에 속도 셀렉트 3개가 실제로 렌더된다.
+10. dotfiles `review` 스킬의 codex leg Launch 줄이 해소된 속도를 싣고, 해소값이
+    없으면 `default`를 싣는다.
 
 ## 7. 검증
 
@@ -183,6 +255,12 @@ Pre-Handoff Validation 전량: `npm run tsc` · `npm test` ·
 `server/ws/exec-preset-apply.test.js`,
 `app/views/settings-dialog/session-model.test.js`,
 `app/views/detail-panel/exec-settings.test.js`, `effective-card.test.js`.
+
+§6.3·§6.8(두 검증 루프가 `undefined.includes`로 죽지 않는다)과 §6.4~6.5·§6.9
+(두 화면의 렌더와 활성/비활성)은 각각
+독립적으로 실패할 수 있는 판정이므로 별도 테스트로 고정한다 — 특히 §6.4는
+`full_value`가 모델 id라는 사실 때문에 순진한 조회로는 codex까지 꺼지는
+자리이므로, 실제 카탈로그 모양으로 codex 활성을 단언한다.
 
 ## 8. 구현 unit 후보
 
@@ -222,3 +300,8 @@ residue를 운반하므로 UI-iv7l에 `worker-ineligible`은 필요 없다.
   `['codex','fable','skip']`로 제외한다 — 계약과 소비자가 어긋나 있다. 이번
   변경의 결함도 아니고 이 변경이 유발하지도 않으므로 admission 클래스에 들지
   않는다. 계약 쪽 정정으로 별도 제기할 사안이다.
+
+- 관찰: `impl_speed`는 `EXEC_KEYS`·`EXEC_ADVANCED_GROUPS`·
+  `EXEC_SETTING_PRESENTATION`·`EXEC_SETTING_KEYS` 어디에도 없어서 상세 패널
+  편집 화면에서 고를 수 없다 — 프리셋과 워크스페이스 kv로만 넣을 수 있다.
+  기존 공백이고 이번 변경이 유발하지 않으므로 admission 클래스에 들지 않는다.
