@@ -117,6 +117,10 @@ timeline drawer(`repo-ops-timeline.js`)에 verify·deploy와 같은 문법으로
   소유한다(이 Bead에 `blocks`로 결속 — 핸드오프에서 router가 기록).
 - 관찰: 이 Bead 자신은 `UI-btj6`에 `blocks`로 결속된다(같은 정리 cursor 순차
   수정).
+- 관찰: scope 교차 — `UI-iv7l`
+  (`docs/superpowers/specs/2026-08-31-review-gate-speed-design.md`)과
+  `server/worker/queue-store.js`를 공유하나 다른 절이다: iv7l은 리뷰 속도
+  키, 이 스펙은 `post_merge_jobs` 맵을 추가한다. 의존 관계 없음.
 
 ## 결정 (ADR 후보)
 
