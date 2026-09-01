@@ -170,6 +170,7 @@ const DONE_KIND_LABELS = {
  *   place_lanes?: Array<{ id: 's1'|'s2'|'s3'|'s4'|'s5', index: number, length: number, occupied_by: string[] }>,
  *   blocked?: boolean,
  *   blocked_by?: string[],
+ *   carried_to?: string[],
  *   blockers?: import('../monitor/blockers.js').BlockerDisplay[],
  *   done_kind?: string|null,
  *   spec_id?: string,
@@ -3173,6 +3174,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }
       if (typeof overlay.from_id === 'string' && overlay.from_id.length > 0) {
         item.from_id = overlay.from_id;
+      }
+      // 이월 후속 (UI-btj6 §3). 완료 행만 이 사실을 묻는다 — 끝난 일이 무엇으로
+      // 이어졌나. metadata 검사보다 앞에 서는 이유는 완료 bead가 닫힌 열에
+      // 있어 오버레이가 그 metadata를 싣지 않기 때문이다. 재료가 없으면 필드
+      // 자체가 없다 (fail-quiet).
+      if (
+        item.lane === 'done' &&
+        Array.isArray(overlay.carried_to) &&
+        overlay.carried_to.length > 0
+      ) {
+        item.carried_to = overlay.carried_to;
       }
       if (!Object.hasOwn(overlay, 'metadata')) {
         continue;

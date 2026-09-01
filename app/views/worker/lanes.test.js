@@ -1729,6 +1729,94 @@ describe('카드 배치 문법 (UI-251y §2)', () => {
   });
 });
 
+describe('worker lanes 이월 칩 (UI-btj6 §3)', () => {
+  test('renders one chip per carryover successor on the two-line done row', () => {
+    const row = renderRow({
+      lane: 'done',
+      done: true,
+      carried_to: ['UI-s2', 'UI-s1']
+    });
+
+    const chips = row.querySelectorAll('.worker-deps--secondary .worker-dep');
+
+    expect(Array.from(chips, (chip) => chip.textContent?.trim())).toEqual([
+      '이월 → UI-s1',
+      '이월 → UI-s2'
+    ]);
+  });
+
+  test('renders the chip on the three-line done row too', () => {
+    const row = renderRow({
+      lane: 'done',
+      done: true,
+      done_layout: 'three_line',
+      carried_to: ['UI-s1']
+    });
+
+    const chip = row.querySelector('.worker-deps--secondary .worker-dep');
+
+    expect(chip?.textContent?.trim()).toBe('이월 → UI-s1');
+  });
+
+  test('makes the chip an opening one carrying the successor id', () => {
+    const row = renderRow({
+      lane: 'done',
+      done: true,
+      carried_to: ['UI-s1']
+    });
+
+    const chip = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-deps--secondary .worker-dep__open')
+    );
+
+    expect(chip.tagName).toBe('BUTTON');
+    expect(chip.dataset.depId).toBe('UI-s1');
+  });
+
+  test('carries the done row own root_dir onto the chip', () => {
+    const row = renderRow({
+      lane: 'done',
+      done: true,
+      root_dir: '/repos/other',
+      carried_to: ['UI-s1']
+    });
+
+    const chip = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-deps--secondary .worker-dep__open')
+    );
+
+    expect(chip.dataset.rootDir).toBe('/repos/other');
+  });
+
+  test('omits the line when the done row carries no successor', () => {
+    const row = renderRow({ lane: 'done', done: true });
+
+    expect(row.querySelector('.worker-deps--secondary')).toBeNull();
+  });
+
+  test('omits the line when the successor list is empty', () => {
+    const row = renderRow({ lane: 'done', done: true, carried_to: [] });
+
+    expect(row.querySelector('.worker-deps')).toBeNull();
+  });
+
+  test('draws the chips below the title and above the coordinate line', () => {
+    const row = renderRow({
+      lane: 'done',
+      done: true,
+      carried_to: ['UI-s1']
+    });
+
+    const classes = Array.from(row.children, (el) => el.className);
+
+    expect(classes).toEqual([
+      'worker-mini__row1',
+      'worker-deps worker-deps--secondary',
+      'worker-mini__row2'
+    ]);
+  });
+});
+
 /**
  * Serialize a rendered template as tag + sorted attributes + text, dropping
  * lit-html's marker comments (engine bookkeeping, not rendered content).

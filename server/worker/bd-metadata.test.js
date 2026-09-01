@@ -326,7 +326,36 @@ describe('worker/bd-metadata child listing (post-merge sweep)', () => {
 
     const children = await createBdMetadata({ runJson }).listChildren('UI-1');
 
-    expect(children).toEqual([{ id: 'UI-1.1', status: 'open' }]);
+    expect(children).toEqual([
+      { id: 'UI-1.1', status: 'open', parent_child_dep: true }
+    ]);
+  });
+
+  test('reports which relation found each child', async () => {
+    const runJson = listRunner({
+      parent: [{ id: 'UI-1.1', status: 'open' }],
+      metadata: [{ id: 'UI-1.2', status: 'open' }]
+    });
+
+    const children = await createBdMetadata({ runJson }).listChildren('UI-1');
+
+    expect(children.map((c) => [c.id, c.parent_child_dep])).toEqual([
+      ['UI-1.1', true],
+      ['UI-1.2', false]
+    ]);
+  });
+
+  test('marks a child carrying BOTH relations as a dependency child', async () => {
+    const runJson = listRunner({
+      parent: [{ id: 'UI-1.1', status: 'open' }],
+      metadata: [{ id: 'UI-1.1', status: 'open' }]
+    });
+
+    const children = await createBdMetadata({ runJson }).listChildren('UI-1');
+
+    expect(children).toEqual([
+      { id: 'UI-1.1', status: 'open', parent_child_dep: true }
+    ]);
   });
 
   test('throws on a malformed payload rather than sweeping nothing', async () => {
@@ -366,6 +395,214 @@ describe('worker/bd-metadata fail-closed writes (implementation review 2026-07-2
     await expect(meta.unsetMetadata('UI-1', 'workflow_mode')).rejects.toThrow(
       /unset-metadata workflow_mode failed \(1\)/
     );
+  });
+});
+
+describe('worker/bd-metadata carryover mutators (2026-09-01 sweep carryover §2)', () => {
+  test('creates a top-level issue with the succession metadata inline', async () => {
+    const run = vi.fn(async () => ({
+      code: 0,
+      stdout: JSON.stringify({ id: 'UI-9' }),
+      stderr: ''
+    }));
+
+    const created = await createBdMetadata({
+      run,
+      cwd: '/repo'
+    }).createTopLevelIssue({
+      title: 'Phase 2 남은 계약',
+      description: '본문',
+      type: 'task',
+      priority: 1,
+      metadata: { carried_from: 'UI-1.2', route: 'spec_backed' }
+    });
+
+    expect(created).toBe('UI-9');
+    expect(run).toHaveBeenCalledWith(
+      [
+        'create',
+        '--title',
+        'Phase 2 남은 계약',
+        '--description',
+        '본문',
+        '--type',
+        'task',
+        '--priority',
+        '1',
+        '--metadata',
+        '{"carried_from":"UI-1.2","route":"spec_backed"}',
+        '--json'
+      ],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('never passes --parent, so a successor cannot be created as a phase child', async () => {
+    /** @type {string[][]} */
+    const argv = [];
+    const run = vi.fn(async (/** @type {string[]} */ args) => {
+      argv.push(args);
+      return { code: 0, stdout: JSON.stringify([{ id: 'UI-9' }]), stderr: '' };
+    });
+
+    await createBdMetadata({ run }).createTopLevelIssue({
+      title: 't',
+      type: 'task',
+      priority: 2
+    });
+
+    expect(argv[0]).not.toContain('--parent');
+  });
+
+  test('throws when bd create prints a payload carrying no id', async () => {
+    const run = vi.fn(async () => ({
+      code: 0,
+      stdout: 'created!',
+      stderr: ''
+    }));
+
+    await expect(
+      createBdMetadata({ run }).createTopLevelIssue({
+        title: 't',
+        type: 'task',
+        priority: 2
+      })
+    ).rejects.toThrow(/unreadable payload/);
+  });
+
+  test('adds one typed dependency edge', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+
+    await createBdMetadata({ run, cwd: '/repo' }).addDep(
+      'UI-9',
+      'UI-1',
+      'blocks'
+    );
+
+    expect(run).toHaveBeenCalledWith(
+      ['dep', 'add', 'UI-9', 'UI-1', '--type', 'blocks'],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('throws when a dependency edge cannot be added', async () => {
+    const run = vi.fn(async () => ({ code: 1, stdout: '', stderr: 'boom' }));
+
+    await expect(
+      createBdMetadata({ run }).addDep('UI-9', 'UI-1', 'blocks')
+    ).rejects.toThrow(/dep add UI-9 UI-1 failed \(1\)/);
+  });
+
+  test('closes with the contract reason and confirms the close', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: { id: 'UI-1.2', status: 'closed' }
+    }));
+
+    await createBdMetadata({ run, runJson, cwd: '/repo' }).closeWithReason(
+      'UI-1.2',
+      '이월 → UI-9'
+    );
+
+    expect(run).toHaveBeenCalledWith(
+      ['close', 'UI-1.2', '--reason', '이월 → UI-9'],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('throws when the reasoned close readback does not confirm closed', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: { id: 'UI-1.2', status: 'open' }
+    }));
+
+    await expect(
+      createBdMetadata({ run, runJson }).closeWithReason(
+        'UI-1.2',
+        '이월 → UI-9'
+      )
+    ).rejects.toThrow(/readback returned open/);
+  });
+
+  test('lists whole rows for one metadata field', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: [{ id: 'UI-9', metadata: { carried_from: 'UI-1.2' } }]
+    }));
+
+    const rows = await createBdMetadata({
+      runJson,
+      cwd: '/repo'
+    }).listByMetadataField('carried_from', 'UI-1.2');
+
+    expect(runJson).toHaveBeenCalledWith(
+      [
+        'list',
+        '--json',
+        '--all',
+        '--limit',
+        '0',
+        '--metadata-field',
+        'carried_from=UI-1.2'
+      ],
+      { cwd: '/repo' }
+    );
+    expect(rows[0].metadata.carried_from).toBe('UI-1.2');
+  });
+
+  test('throws rather than reporting no successor when the lookup fails', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 1,
+      stdoutJson: null,
+      stderr: 'boom'
+    }));
+
+    await expect(
+      createBdMetadata({ runJson }).listByMetadataField(
+        'carried_from',
+        'UI-1.2'
+      )
+    ).rejects.toThrow(/carried_from=UI-1.2 failed \(bd_exit_error\)/);
+  });
+
+  test('lists the dependency rows of one issue', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: [{ id: 'UI-1', dependency_type: 'blocks' }]
+    }));
+
+    const rows = await createBdMetadata({ runJson, cwd: '/repo' }).listDeps(
+      'UI-9'
+    );
+
+    expect(runJson).toHaveBeenCalledWith(['dep', 'list', 'UI-9', '--json'], {
+      cwd: '/repo'
+    });
+    expect(rows).toEqual([{ id: 'UI-1', dependency_type: 'blocks' }]);
+  });
+
+  test('refuses every carryover write on a closed effect gate', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const meta = createBdMetadata({
+      run,
+      requireCapability: async () => ({
+        ok: false,
+        error: { code: 'bd_json_unsupported' }
+      })
+    });
+
+    await expect(
+      meta.createTopLevelIssue({ title: 't', type: 'task', priority: 2 })
+    ).rejects.toThrow(/bd write refused/);
+    await expect(meta.addDep('UI-9', 'UI-1', 'blocks')).rejects.toThrow(
+      /bd write refused/
+    );
+    await expect(meta.closeWithReason('UI-1.2', 'canceled')).rejects.toThrow(
+      /bd write refused/
+    );
+    expect(run).not.toHaveBeenCalled();
   });
 });
 

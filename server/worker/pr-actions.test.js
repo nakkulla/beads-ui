@@ -29,6 +29,8 @@ const WS = '/tmp/example-workspace/project-p5';
 const REPO = '/tmp/example-workspace/project-p5';
 const BEAD = 'UI-1';
 const BASE_SHA = 'd'.repeat(40);
+/** Id prefix the fake bd allocates for a carryover successor. */
+const SUCCESSOR_PREFIX = 'UI-carry';
 
 /** @type {string} */
 let tmp_state;
@@ -136,7 +138,9 @@ function seedStore(options = {}) {
  *   gitBranch?: string,
  *   gitStatus?: string,
  *   gitHead?: string,
- *   children?: Record<string, { id: string, status: string }[]>,
+ *   children?: Record<string, { id: string, status: string, parent_child_dep?: boolean }[]>,
+ *   bdIssues?: Record<string, Record<string, any>>,
+ *   bdDeps?: { from: string, to: string, type: string }[],
  *   bdFail?: (method: string, id: string) => boolean,
  *   mergeFails?: boolean,
  *   updateBranchResult?: any,
@@ -235,6 +239,22 @@ function makeActions(options = {}) {
   const children = options.children || {};
   /** @type {Set<string>} */
   const closed_by_sweep = new Set();
+  // A tiny bd issue store, so the carryover conversion's create → update →
+  // dep → readback → close sequence is exercised against ONE world instead of
+  // per-call stubs: the readback has to be able to fail when a step did not
+  // land, which a stub that always answers "yes" cannot express.
+  /** @type {Map<string, Record<string, any>>} */
+  const bd_issues = new Map(
+    Object.entries(options.bdIssues || {}).map(([id, issue]) => [
+      id,
+      { ...issue, metadata: { ...(issue.metadata || {}) } }
+    ])
+  );
+  /** @type {{ from: string, to: string, type: string }[]} */
+  const bd_edges = [...(options.bdDeps || [])];
+  /** @type {Map<string, string>} */
+  const close_reasons = new Map();
+  let created_seq = 0;
   const bd = {
     setStatus: vi.fn(async (/** @type {string} */ id, s) => {
       calls.push(`bd:setStatus:${id}:${s}`);
@@ -277,18 +297,21 @@ function makeActions(options = {}) {
       if (options.bdFail && options.bdFail('readIssue', id)) {
         throw new Error('bd down');
       }
+      const record = bd_issues.get(id) || {};
       return {
         id,
         spec_id: options.bdSpecId ?? null,
         // The CLICK-TIME guard answer, kept apart from `bd_status` (which
         // models the cleanup's own close/restore readbacks).
         status: (options.bdStatus || {})[id] ?? bd_status.get(id) ?? 'closed',
+        ...record,
         metadata: {
           route: 'quick_fix',
           ...(options.bdMetadata || {}),
           ...(Object.hasOwn(options, 'bdPrUrl')
             ? { pr_url: options.bdPrUrl ?? undefined }
-            : {})
+            : {}),
+          ...(record.metadata || {})
         }
       };
     }),
@@ -298,7 +321,87 @@ function makeActions(options = {}) {
         if (options.bdFail && options.bdFail('updateFields', id)) {
           throw new Error('bd down');
         }
+        const record = bd_issues.get(id);
+        if (record) {
+          record.metadata = { ...record.metadata, ...(input.set || {}) };
+          if (typeof input.append_notes === 'string') {
+            record.notes =
+              typeof record.notes === 'string' && record.notes.length > 0
+                ? `${record.notes}\n${input.append_notes}`
+                : input.append_notes;
+          }
+        }
         return input;
+      }
+    ),
+    createTopLevelIssue: vi.fn(async (/** @type {any} */ input) => {
+      calls.push(`bd:createTopLevelIssue:${input.title}`);
+      if (
+        options.bdFail &&
+        options.bdFail('createTopLevelIssue', input.title)
+      ) {
+        throw new Error('bd down');
+      }
+      created_seq += 1;
+      const id = `${SUCCESSOR_PREFIX}${created_seq}`;
+      bd_issues.set(id, {
+        title: input.title,
+        description: input.description,
+        issue_type: input.type,
+        priority: input.priority,
+        status: 'open',
+        notes: '',
+        metadata: { ...(input.metadata || {}) }
+      });
+      return id;
+    }),
+    addDep: vi.fn(
+      async (
+        /** @type {string} */ from_id,
+        /** @type {string} */ to_id,
+        /** @type {string} */ type
+      ) => {
+        calls.push(`bd:addDep:${from_id}:${to_id}:${type}`);
+        if (options.bdFail && options.bdFail('addDep', from_id)) {
+          throw new Error('bd down');
+        }
+        bd_edges.push({ from: from_id, to: to_id, type });
+      }
+    ),
+    // The SINGLE-id `bd dep list` shape: the target issues, each carrying a
+    // `dependency_type` (server/list-adapters.js).
+    listDeps: vi.fn(async (/** @type {string} */ id) => {
+      calls.push(`bd:listDeps:${id}`);
+      if (options.bdFail && options.bdFail('listDeps', id)) {
+        throw new Error('bd down');
+      }
+      return bd_edges
+        .filter((edge) => edge.from === id)
+        .map((edge) => ({ id: edge.to, dependency_type: edge.type }));
+    }),
+    listByMetadataField: vi.fn(
+      async (/** @type {string} */ key, /** @type {string} */ value) => {
+        calls.push(`bd:listByMetadataField:${key}=${value}`);
+        if (options.bdFail && options.bdFail('listByMetadataField', value)) {
+          throw new Error('bd down');
+        }
+        return [...bd_issues.entries()]
+          .filter(([, issue]) => (issue.metadata || {})[key] === value)
+          .map(([id, issue]) => ({ id, ...issue }));
+      }
+    ),
+    closeWithReason: vi.fn(
+      async (/** @type {string} */ id, /** @type {string} */ reason) => {
+        calls.push(`bd:closeWithReason:${id}:${reason}`);
+        if (options.bdFail && options.bdFail('closeWithReason', id)) {
+          throw new Error('bd down');
+        }
+        closed_by_sweep.add(id);
+        close_reasons.set(id, reason);
+        const record = bd_issues.get(id);
+        if (record) {
+          record.status = 'closed';
+        }
       }
     )
   };
@@ -566,6 +669,9 @@ function makeActions(options = {}) {
     gh,
     bd,
     bd_status,
+    bd_issues,
+    bd_edges,
+    close_reasons,
     worktree,
     gitRun,
     git_argv,
@@ -3960,5 +4066,632 @@ describe('worker/pr-actions — base containment probe (UI-p49g §4.1)', () => {
     });
 
     expect(result).toBe('not_contained');
+  });
+});
+
+/**
+ * The post-merge sweep's per-child classification and carryover conversion
+ * (2026-09-01 `sweep-carryover-conversion` spec §1-§2).
+ *
+ * What these hold down is the difference between the three shapes the sweep
+ * used to collapse into one bulk close: a deferred child becomes a top-level
+ * successor, a deliberately unexecuted child closes with its own reason, and an
+ * unexecuted phase child stops the cleanup instead of disappearing.
+ */
+describe('post-merge sweep — child disposition (2026-09-01 carryover §1)', () => {
+  const CHILD = 'UI-1.2';
+  const OTHER_CHILD = 'UI-1.1';
+  const PLAN_PATH = 'docs/superpowers/plans/2026-09-01-example-plan.md';
+  const ANCHOR = 'Phase 2 — 남은 계약';
+  const NOTES_LINE = `carryover: sweep_backstop — ${BEAD}/${CHILD}`;
+
+  /**
+   * One parent with `plan_path`, and children the test describes in full.
+   *
+   * @param {Record<string, Record<string, any>>} child_issues
+   * @param {Record<string, any>} [over]
+   */
+  function sweepEnv(child_issues, over = {}) {
+    return makeActions({
+      children: {
+        [BEAD]: Object.keys(child_issues).map((id) => ({
+          id,
+          status: 'open',
+          parent_child_dep: true
+        }))
+      },
+      ...over,
+      bdIssues: {
+        [BEAD]: { priority: 1, metadata: { plan_path: PLAN_PATH } },
+        ...child_issues,
+        ...(over.bdIssues || {})
+      }
+    });
+  }
+
+  /**
+   * One deferred child, the shape the conversion is written for.
+   *
+   * @param {Record<string, any>} [over]
+   */
+  function deferredChild(over = {}) {
+    return {
+      title: '자식 제목',
+      description: '자식 본문',
+      issue_type: 'feature',
+      status: 'open',
+      ...over,
+      metadata: {
+        parent: BEAD,
+        child_disposition: 'deferred',
+        plan_task_anchor: ANCHOR,
+        ...(over.metadata || {})
+      }
+    };
+  }
+
+  /**
+   * The id of the successor the sweep created, or a THROW naming its absence —
+   * `undefined` flowing into an assertion would read as an unrelated failure.
+   *
+   * @param {any} env
+   * @returns {string}
+   */
+  function successorOf(env) {
+    const id = [...env.bd_issues.keys()].find((/** @type {string} */ id) =>
+      id.startsWith(SUCCESSOR_PREFIX)
+    );
+    if (typeof id !== 'string') {
+      throw new Error('the sweep created no carryover successor');
+    }
+    return id;
+  }
+
+  /**
+   * One issue the fake bd holds, or a THROW.
+   *
+   * @param {any} env
+   * @param {string} id
+   * @returns {Record<string, any>}
+   */
+  function issueOf(env, id) {
+    const record = env.bd_issues.get(id);
+    if (!record) {
+      throw new Error(`the fake bd holds no issue ${id}`);
+    }
+    return record;
+  }
+
+  /**
+   * @param {any} env
+   */
+  function sweepFailure(env) {
+    return env.store.snapshot(WS).cleanup_failed[BEAD];
+  }
+
+  test('creates a top-level successor carrying the succession triple', async () => {
+    const env = sweepEnv({ [CHILD]: deferredChild() });
+
+    await env.actions.merge(BEAD);
+
+    expect(issueOf(env, successorOf(env)).metadata).toMatchObject({
+      carried_from: CHILD,
+      plan_path: PLAN_PATH,
+      plan_task_anchor: ANCHOR,
+      route: 'spec_backed'
+    });
+  });
+
+  test('succeeds the child title, body and type at the parent priority', async () => {
+    const env = sweepEnv({ [CHILD]: deferredChild() });
+
+    await env.actions.merge(BEAD);
+
+    expect(issueOf(env, successorOf(env))).toMatchObject({
+      title: '자식 제목',
+      description: '자식 본문',
+      issue_type: 'feature',
+      priority: 1
+    });
+  });
+
+  test('appends the carryover execution-path line to the successor notes', async () => {
+    const env = sweepEnv({ [CHILD]: deferredChild() });
+
+    await env.actions.merge(BEAD);
+
+    expect(issueOf(env, successorOf(env)).notes).toContain(NOTES_LINE);
+  });
+
+  test('links the successor to the original child and to the parent', async () => {
+    const env = sweepEnv({ [CHILD]: deferredChild() });
+
+    await env.actions.merge(BEAD);
+
+    const successor = successorOf(env);
+    expect(env.bd_edges).toEqual([
+      { from: successor, to: CHILD, type: 'discovered-from' },
+      { from: successor, to: BEAD, type: 'blocks' }
+    ]);
+  });
+
+  test('closes the deferred child with the carryover reason', async () => {
+    const env = sweepEnv({ [CHILD]: deferredChild() });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.close_reasons.get(CHILD)).toBe(`이월 → ${successorOf(env)}`);
+  });
+
+  test('closes the parent once the deferred child was carried over', async () => {
+    const env = sweepEnv({ [CHILD]: deferredChild() });
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toBeUndefined();
+    expect(env.calls).toContain(`bd:setStatus:${BEAD}:closed`);
+  });
+
+  test('verifies the successor BEFORE closing the child it succeeds', async () => {
+    const env = sweepEnv({ [CHILD]: deferredChild() });
+
+    await env.actions.merge(BEAD);
+
+    const successor = successorOf(env);
+    expect(env.calls.lastIndexOf(`bd:listDeps:${successor}`)).toBeLessThan(
+      env.calls.indexOf(`bd:closeWithReason:${CHILD}:이월 → ${successor}`)
+    );
+  });
+
+  test('adopts the successor an interrupted sweep already created', async () => {
+    const env = sweepEnv(
+      { [CHILD]: deferredChild() },
+      {
+        bdIssues: {
+          'UI-9': {
+            title: '자식 제목',
+            status: 'open',
+            notes: NOTES_LINE,
+            metadata: {
+              carried_from: CHILD,
+              plan_path: PLAN_PATH,
+              plan_task_anchor: ANCHOR,
+              route: 'spec_backed'
+            }
+          }
+        }
+      }
+    );
+
+    await env.actions.merge(BEAD);
+
+    expect(env.close_reasons.get(CHILD)).toBe('이월 → UI-9');
+  });
+
+  test('creates no duplicate successor on the retried sweep', async () => {
+    const env = sweepEnv(
+      { [CHILD]: deferredChild() },
+      {
+        bdIssues: {
+          'UI-9': {
+            title: '자식 제목',
+            status: 'open',
+            notes: NOTES_LINE,
+            metadata: {
+              carried_from: CHILD,
+              plan_path: PLAN_PATH,
+              plan_task_anchor: ANCHOR,
+              route: 'spec_backed'
+            }
+          }
+        }
+      }
+    );
+
+    await env.actions.merge(BEAD);
+
+    expect(env.bd.createTopLevelIssue).not.toHaveBeenCalled();
+  });
+
+  test('completes the edges an interrupted sweep never added', async () => {
+    const env = sweepEnv(
+      { [CHILD]: deferredChild() },
+      {
+        bdIssues: {
+          'UI-9': {
+            title: '자식 제목',
+            status: 'open',
+            notes: '',
+            metadata: {
+              carried_from: CHILD,
+              plan_path: PLAN_PATH,
+              plan_task_anchor: ANCHOR,
+              route: 'spec_backed'
+            }
+          }
+        },
+        bdDeps: [{ from: 'UI-9', to: CHILD, type: 'discovered-from' }]
+      }
+    );
+
+    await env.actions.merge(BEAD);
+
+    expect(env.bd_edges).toEqual([
+      { from: 'UI-9', to: CHILD, type: 'discovered-from' },
+      { from: 'UI-9', to: BEAD, type: 'blocks' }
+    ]);
+  });
+
+  test('appends the notes line only once across a retried sweep', async () => {
+    const env = sweepEnv(
+      { [CHILD]: deferredChild() },
+      {
+        bdIssues: {
+          'UI-9': {
+            title: '자식 제목',
+            status: 'open',
+            notes: NOTES_LINE,
+            metadata: {
+              carried_from: CHILD,
+              plan_path: PLAN_PATH,
+              plan_task_anchor: ANCHOR,
+              route: 'spec_backed'
+            }
+          }
+        }
+      }
+    );
+
+    await env.actions.merge(BEAD);
+
+    expect(issueOf(env, 'UI-9').notes.split(NOTES_LINE).length - 1).toBe(1);
+  });
+
+  test('stops when two beads already claim the same carryover identity', async () => {
+    const successor = {
+      title: '자식 제목',
+      status: 'open',
+      notes: NOTES_LINE,
+      metadata: {
+        carried_from: CHILD,
+        plan_path: PLAN_PATH,
+        plan_task_anchor: ANCHOR
+      }
+    };
+    const env = sweepEnv(
+      { [CHILD]: deferredChild() },
+      { bdIssues: { 'UI-9': successor, 'UI-10': successor } }
+    );
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toMatchObject({
+      step: 'child_sweep',
+      reason: `carryover_ambiguous:${CHILD}`
+    });
+  });
+
+  test('stops when the existing successor fails the identity triple', async () => {
+    const env = sweepEnv(
+      { [CHILD]: deferredChild() },
+      {
+        bdIssues: {
+          'UI-9': {
+            title: '자식 제목',
+            status: 'open',
+            metadata: {
+              carried_from: CHILD,
+              plan_path: PLAN_PATH,
+              plan_task_anchor: '다른 anchor'
+            }
+          }
+        }
+      }
+    );
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toMatchObject({
+      step: 'child_sweep',
+      reason: `carryover_identity_mismatch:${CHILD}`
+    });
+  });
+
+  test("stops when the candidate successor is itself somebody's phase child", async () => {
+    const env = sweepEnv(
+      { [CHILD]: deferredChild() },
+      {
+        bdIssues: {
+          'UI-9': {
+            title: '자식 제목',
+            status: 'open',
+            metadata: {
+              parent: 'UI-7',
+              carried_from: CHILD,
+              plan_path: PLAN_PATH,
+              plan_task_anchor: ANCHOR
+            }
+          }
+        }
+      }
+    );
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toMatchObject({
+      reason: `carryover_identity_mismatch:${CHILD}`
+    });
+  });
+
+  test('stops when the parent carries no plan_path to succeed', async () => {
+    const env = sweepEnv(
+      { [CHILD]: deferredChild() },
+      { bdIssues: { [BEAD]: { priority: 1, metadata: {} } } }
+    );
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toMatchObject({
+      step: 'child_sweep',
+      reason: `carryover_identity_incomplete:${CHILD}`
+    });
+  });
+
+  test('stops when the deferred child carries no plan_task_anchor', async () => {
+    const env = sweepEnv({
+      [CHILD]: {
+        title: '자식 제목',
+        status: 'open',
+        metadata: { parent: BEAD, child_disposition: 'deferred' }
+      }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toMatchObject({
+      step: 'child_sweep',
+      reason: `carryover_identity_incomplete:${CHILD}`
+    });
+  });
+
+  test('creates no successor when the succession material is incomplete', async () => {
+    const env = sweepEnv(
+      { [CHILD]: deferredChild() },
+      { bdIssues: { [BEAD]: { priority: 1, metadata: {} } } }
+    );
+
+    await env.actions.merge(BEAD);
+
+    expect(env.bd.createTopLevelIssue).not.toHaveBeenCalled();
+  });
+
+  test('records the unexecuted phase child that stopped the sweep', async () => {
+    const env = sweepEnv({
+      [CHILD]: {
+        title: '미실행 자식',
+        status: 'open',
+        metadata: { parent: BEAD, child_disposition: 'active' }
+      }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toMatchObject({
+      step: 'child_sweep',
+      reason: `unexecuted_phase_child:${CHILD}`
+    });
+  });
+
+  test('treats an ABSENT child_disposition as unexecuted, not as permission', async () => {
+    const env = sweepEnv({
+      [CHILD]: {
+        title: '미실행 자식',
+        status: 'open',
+        metadata: { parent: BEAD }
+      }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toMatchObject({
+      reason: `unexecuted_phase_child:${CHILD}`
+    });
+  });
+
+  test('closes neither the parent nor the unexecuted child', async () => {
+    const env = sweepEnv({
+      [CHILD]: {
+        title: '미실행 자식',
+        status: 'open',
+        metadata: { parent: BEAD }
+      }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.calls).not.toContain(`bd:setStatus:${CHILD}:closed`);
+    expect(env.calls).not.toContain(`bd:setStatus:${BEAD}:closed`);
+  });
+
+  test('names the lexicographically first unexecuted child', async () => {
+    const unexecuted = {
+      title: '미실행 자식',
+      status: 'open',
+      metadata: { parent: BEAD }
+    };
+    const env = sweepEnv({ [CHILD]: unexecuted, [OTHER_CHILD]: unexecuted });
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toMatchObject({
+      reason: `unexecuted_phase_child:${OTHER_CHILD}`
+    });
+  });
+
+  test('skips a child the detail read reports as already closed', async () => {
+    const env = sweepEnv({
+      [CHILD]: {
+        title: '그 사이 닫힌 자식',
+        status: 'closed',
+        metadata: { parent: BEAD }
+      }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toBeUndefined();
+    expect(env.calls).not.toContain(`bd:setStatus:${CHILD}:closed`);
+    expect(env.calls).toContain(`bd:setStatus:${BEAD}:closed`);
+  });
+
+  test.each([
+    ['a padded enum member', 'deferred '],
+    ['an empty value', ''],
+    ['a non-string value', 7]
+  ])('stops on %s in child_disposition', async (_label, value) => {
+    const env = sweepEnv({
+      [CHILD]: {
+        title: '자식',
+        status: 'open',
+        metadata: { parent: BEAD, child_disposition: value }
+      }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toMatchObject({
+      step: 'child_sweep',
+      reason: `unknown_child_disposition:${CHILD}`
+    });
+  });
+
+  test('stops on a child_disposition outside the contract enum', async () => {
+    const env = sweepEnv({
+      [CHILD]: {
+        title: '자식',
+        status: 'open',
+        metadata: { parent: BEAD, child_disposition: 'parked' }
+      }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toMatchObject({
+      step: 'child_sweep',
+      reason: `unknown_child_disposition:${CHILD}`
+    });
+  });
+
+  test.each(['out_of_scope', 'canceled'])(
+    'closes a %s child with that reason',
+    async (disposition) => {
+      const env = sweepEnv({
+        [CHILD]: {
+          title: '자식',
+          status: 'open',
+          metadata: { parent: BEAD, child_disposition: disposition }
+        }
+      });
+
+      await env.actions.merge(BEAD);
+
+      expect(env.close_reasons.get(CHILD)).toBe(disposition);
+    }
+  );
+
+  test('closes the parent over an out_of_scope child', async () => {
+    const env = sweepEnv({
+      [CHILD]: {
+        title: '자식',
+        status: 'open',
+        metadata: { parent: BEAD, child_disposition: 'out_of_scope' }
+      }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toBeUndefined();
+    expect(env.calls).toContain(`bd:setStatus:${BEAD}:closed`);
+  });
+
+  test('sweeps a phase child that actually ran exactly as before', async () => {
+    const env = sweepEnv({
+      [CHILD]: {
+        title: '실행된 자식',
+        status: 'open',
+        started_at: '2026-08-31T10:00:00Z',
+        metadata: { parent: BEAD }
+      }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.calls).toContain(`bd:setStatus:${CHILD}:closed`);
+    expect(sweepFailure(env)).toBeUndefined();
+  });
+
+  test('reads an exec_receipt as an execution trace too', async () => {
+    const env = sweepEnv({
+      [CHILD]: {
+        title: '실행된 자식',
+        status: 'open',
+        metadata: { parent: BEAD, exec_receipt: 'main:bead@' + 'a'.repeat(40) }
+      }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.calls).toContain(`bd:setStatus:${CHILD}:closed`);
+  });
+
+  test('sweeps a linked bead that is no phase child exactly as before', async () => {
+    const env = makeActions({
+      children: {
+        [BEAD]: [{ id: CHILD, status: 'open', parent_child_dep: false }]
+      },
+      bdIssues: { [CHILD]: { title: '연결된 이슈', status: 'open' } }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.calls).toContain(`bd:setStatus:${CHILD}:closed`);
+    expect(sweepFailure(env)).toBeUndefined();
+  });
+
+  test('stops when a child detail cannot be read at all', async () => {
+    const env = sweepEnv(
+      { [CHILD]: deferredChild() },
+      {
+        bdFail: (/** @type {string} */ method, /** @type {string} */ id) =>
+          method === 'readIssue' && id === CHILD
+      }
+    );
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toMatchObject({
+      step: 'child_sweep',
+      reason: `child_read_failed:${CHILD}`
+    });
+  });
+
+  test('closes nothing when a LATER child stops the classification', async () => {
+    const env = sweepEnv({
+      [OTHER_CHILD]: {
+        title: '실행된 자식',
+        status: 'open',
+        started_at: '2026-08-31T10:00:00Z',
+        metadata: { parent: BEAD }
+      },
+      [CHILD]: {
+        title: '미실행 자식',
+        status: 'open',
+        metadata: { parent: BEAD }
+      }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.calls).not.toContain(`bd:setStatus:${OTHER_CHILD}:closed`);
   });
 });

@@ -148,6 +148,51 @@ function execPinsOf(metadata) {
 }
 
 /**
+ * `carried_to` 이월 후속 색인 (UI-btj6 §3): 이월을 남긴 bead → 그 bead에서
+ * 이월된 후속 ID들.
+ *
+ * 재료는 sweep의 이월 변환이 남긴 흔적 둘뿐이다 — 후속의 metadata `carried_from`과
+ * 그 후속이 부모에 건 `blocks` 의존. 새 metadata 키를 만들지 않으므로 같은 꼴의
+ * 흔적을 가진 과거 사례도 그대로 읽힌다. `blocks` 간선은 후보 행과 같은 사다리
+ * ({@link blockerIdsOf})로 읽는다 — 의존 해석기가 세 벌이 되면 한 벌은 반드시
+ * 낡는다.
+ *
+ * 입력은 아직 살아 있는 구독 열(Ready·Blocked·In-progress·Resolved)이다: 이미
+ * 닫힌 후속은 그 집합에 없으므로 재료가 되지 않고, 부모 카드는 줄 자체를 잃는다
+ * (fail-quiet).
+ *
+ * @param {any[]} issues
+ * @returns {Map<string, string[]>}
+ */
+function buildCarryoverIndex(issues) {
+  /** @type {Map<string, Set<string>>} */
+  const by_parent = new Map();
+  for (const issue of issues) {
+    if (!issue || typeof issue.id !== 'string' || issue.id.length === 0) {
+      continue;
+    }
+    const carried_from = objectOf(issue.metadata).carried_from;
+    if (typeof carried_from !== 'string' || carried_from.length === 0) {
+      continue;
+    }
+    for (const parent_id of blockerIdsOf(issue)) {
+      let successors = by_parent.get(parent_id);
+      if (!successors) {
+        successors = new Set();
+        by_parent.set(parent_id, successors);
+      }
+      successors.add(issue.id);
+    }
+  }
+  /** @type {Map<string, string[]>} */
+  const index = new Map();
+  for (const [parent_id, successors] of by_parent) {
+    index.set(parent_id, [...successors].sort());
+  }
+  return index;
+}
+
+/**
  * `path/to/x` → `x`. 워크스페이스 항목의 `name`은 Monitor 서버 투영과 같은
  * 규칙(경로 마지막 조각)으로 만든다.
  *
@@ -474,6 +519,10 @@ export function createWorkspaceAdapter(options = {}) {
    * 싣는다 — 나머지 두 열의 이슈는 실행 설정·복잡 판정의 핀을 볼 수 없으므로
    * 전역값만으로 해석하면 틀린 칩이 된다.
    *
+   * 이월 후속 색인(`carried_to`)도 여기서 같이 만든다 (UI-btj6 §3):
+   * {@link buildChildrenIndex}와 같이 이미 구독된 이슈 집합 하나에서 파생하는
+   * 교차 이슈 색인이라 서버 왕복이 없다.
+   *
    * @param {any[][]} columns - `[ready, blocked, in_progress, resolved, closed]`
    * @returns {Record<string, any>}
    */
@@ -487,6 +536,16 @@ export function createWorkspaceAdapter(options = {}) {
       ...in_progress,
       ...resolved,
       ...closed
+    ]);
+    // 이월 후속 색인 (UI-btj6 §3). 닫힌 후속만 재료에서 빠진다 — `resolved`는
+    // PR을 이미 낸 후속이고 아직 살아 있는 일이라 부모 카드에서 지울 이유가
+    // 없다. 이 색인은 오버레이의 metadata 적재 규칙과 무관하게 열의 이슈를
+    // 직접 읽으므로 네 열 모두에서 파생할 수 있다.
+    const carried_to_by_parent = buildCarryoverIndex([
+      ...ready,
+      ...blocked,
+      ...in_progress,
+      ...resolved
     ]);
     /** @type {Record<string, any>} */
     const overlay = {};
@@ -536,6 +595,13 @@ export function createWorkspaceAdapter(options = {}) {
         const entry = overlay[bead_id] || (overlay[bead_id] = {});
         entry.rollup = rollup;
       }
+    }
+    // 이월된 부모도 어느 구독 열에도 없을 수 있다 (완료 레인 행은 큐 스냅샷이
+    // 알고 Board는 닫힌 열에서만 안다) — 자식 색인과 같이 색인의 부모 키도 함께
+    // 돈다. 후속이 없는 bead는 키를 만들지 않는다 (fail-quiet).
+    for (const [bead_id, carried_to] of carried_to_by_parent) {
+      const entry = overlay[bead_id] || (overlay[bead_id] = {});
+      entry.carried_to = carried_to;
     }
     return overlay;
   }

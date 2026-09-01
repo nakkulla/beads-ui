@@ -76,6 +76,36 @@ const log = debug('worker:pr-actions');
  */
 export const DEFAULT_CLICK_REQUERY_DELAY_MS = 2000;
 
+/**
+ * The contract enum of `child_disposition` (dotfiles `workflow-state.yaml`
+ * `metadata.child_keys`). beads-ui CONSUMES this vocabulary; a value outside it
+ * is not a value this build may interpret, so the sweep stops on one rather
+ * than guessing which side of the enum it meant.
+ *
+ * @type {Set<string>}
+ */
+const CHILD_DISPOSITIONS = new Set([
+  'active',
+  'deferred',
+  'out_of_scope',
+  'canceled'
+]);
+
+/**
+ * Dispositions whose contract action is a plain reasoned close: the child was
+ * deliberately not executed, and the reason IS the disposition word.
+ *
+ * @type {Set<string>}
+ */
+const REASONED_CLOSE_DISPOSITIONS = new Set(['out_of_scope', 'canceled']);
+
+/**
+ * Priority a carryover successor takes when the parent's own priority is not a
+ * readable number. `2` is bd's own `create` default, so this falls back to what
+ * bd would have chosen instead of inventing an urgency.
+ */
+const DEFAULT_CARRYOVER_PRIORITY = 2;
+
 /** @type {Set<string>} */
 const RESUMABLE_TERMINAL_STATUSES = new Set([
   'done',
@@ -168,6 +198,126 @@ export const CLEANUP_STEPS = [
  */
 
 /**
+ * One metadata bag, always an object.
+ *
+ * @param {unknown} issue
+ * @returns {Record<string, unknown>}
+ */
+function metadataOf(issue) {
+  if (!issue || typeof issue !== 'object') {
+    return {};
+  }
+  const md = /** @type {Record<string, unknown>} */ (issue).metadata;
+  return md && typeof md === 'object'
+    ? /** @type {Record<string, unknown>} */ (md)
+    : {};
+}
+
+/**
+ * The value as a non-empty trimmed string, or `null`.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function nonEmptyString(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const text = value.trim();
+  return text.length > 0 ? text : null;
+}
+
+/**
+ * Whether a bead carries a trace of having actually run (spec §1): a
+ * `started_at` timestamp or an `exec_receipt`. Either one makes the child
+ * executed work whose close is the ordinary sweep, not the unexecuted phase
+ * child the backstop refuses to swallow.
+ *
+ * `started_at` is checked for PRESENCE, not for a parsable date: a timestamp
+ * this build cannot parse still means bd recorded a start.
+ *
+ * @param {Record<string, any>} detail
+ * @param {Record<string, unknown>} metadata
+ */
+function hasExecutionTrace(detail, metadata) {
+  const started_at = detail ? detail.started_at : null;
+  if (started_at != null && String(started_at).trim().length > 0) {
+    return true;
+  }
+  return nonEmptyString(metadata.exec_receipt) !== null;
+}
+
+/**
+ * The lexicographically first id — the deterministic representative when
+ * several children fail the same way (spec §1).
+ *
+ * @param {string[]} ids
+ */
+function firstId(ids) {
+  return [...ids].sort()[0];
+}
+
+/**
+ * Whether `bd dep list <from_id> --json` already reports the edge
+ * `<from_id> --<type>--> <to_id>`.
+ *
+ * BOTH payload shapes are read because bd answers differently by arity (see
+ * `server/list-adapters.js`): asked for one id it returns the TARGET issues
+ * carrying a `dependency_type`, and asked for several it returns bare
+ * `{issue_id, depends_on_id, type}` edges. Reading only one shape would report
+ * a present edge as missing and add it twice.
+ *
+ * @param {unknown} rows
+ * @param {string} from_id
+ * @param {string} to_id
+ * @param {string} type
+ */
+function hasDepEdge(rows, from_id, to_id, type) {
+  if (!Array.isArray(rows)) {
+    return false;
+  }
+  return rows.some((raw) => {
+    if (!raw || typeof raw !== 'object') {
+      return false;
+    }
+    const row = /** @type {Record<string, unknown>} */ (raw);
+    if (row.issue_id !== undefined || row.depends_on_id !== undefined) {
+      return (
+        row.issue_id === from_id &&
+        row.depends_on_id === to_id &&
+        row.type === type
+      );
+    }
+    return row.id === to_id && row.dependency_type === type;
+  });
+}
+
+/**
+ * Whether the row is linked to any parent — the top-level test the carryover
+ * adoption applies to its candidate.
+ *
+ * @param {Record<string, any>} issue
+ * @param {unknown} dep_rows
+ */
+function hasParentLink(issue, dep_rows) {
+  if (nonEmptyString(metadataOf(issue).parent) !== null) {
+    return true;
+  }
+  if (!Array.isArray(dep_rows)) {
+    return false;
+  }
+  return dep_rows.some((raw) => {
+    if (!raw || typeof raw !== 'object') {
+      return false;
+    }
+    const row = /** @type {Record<string, unknown>} */ (raw);
+    return (
+      row.type === 'parent-child' || row.dependency_type === 'parent-child'
+    );
+  });
+}
+
+/**
  * Whether the re-read PR is in genuine conflict. Both spellings GitHub uses are
  * accepted: `mergeable: CONFLICTING` is the computed verdict, `DIRTY` is the
  * merge-state status that accompanies it.
@@ -218,8 +368,13 @@ function authoritativeMergeSha(pr) {
  *     unsetMetadata: (bead_id: string, key: string) => Promise<void>,
  *     readMetadata: (bead_id: string, key: string) => Promise<string|null>,
  *     readIssue?: (bead_id: string) => Promise<Record<string, any>>,
- *     listChildren?: (bead_id: string) => Promise<{ id: string, status: string }[]>,
- *     updateFields?: (bead_id: string, input: { append_notes?: string }) => Promise<void>,
+ *     listChildren?: (bead_id: string) => Promise<{ id: string, status: string, parent_child_dep?: boolean }[]>,
+ *     updateFields?: (bead_id: string, input: { set?: Record<string, string>, append_notes?: string }) => Promise<void>,
+ *     createTopLevelIssue?: (input: { title: string, description?: string, type: string, priority: number, metadata?: Record<string, string> }) => Promise<string>,
+ *     addDep?: (from_id: string, to_id: string, type: string) => Promise<void>,
+ *     closeWithReason?: (bead_id: string, reason: string) => Promise<void>,
+ *     listByMetadataField?: (key: string, value: string) => Promise<Record<string, any>[]>,
+ *     listDeps?: (bead_id: string) => Promise<Record<string, any>[]>,
  *   },
  *   external?: {
  *     get: (workspace: string, bead_id: string) => import('./external-pr.js').ExternalPrRow|null,
@@ -1286,6 +1441,13 @@ export function createPrActions(deps) {
    * STOP, never an empty sweep: "this bead has no children" and "bd would not
    * tell us" must not produce the same act.
    *
+   * Since 2026-09-01 (sweep carryover spec §1) the walk is only the first half:
+   * every non-closed child is then CLASSIFIED by its `child_disposition`, and
+   * the sweep no longer has one act. A deferred child is carried over, an
+   * out-of-scope or canceled child closes with that reason, and an unexecuted
+   * phase child stops the cleanup instead of being closed — a bulk close over
+   * those was how three phases were swallowed.
+   *
    * @param {string} bead_id
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string }>}
    */
@@ -1293,7 +1455,7 @@ export function createPrActions(deps) {
     if (typeof deps.bd.listChildren !== 'function') {
       return { ok: false, reason: 'child_sweep_unavailable' };
     }
-    /** @type {string[]} */
+    /** @type {{ id: string, phase_link: boolean }[]} */
     const leaves_first = [];
     /** @type {Set<string>} */
     const seen = new Set([bead_id]);
@@ -1303,7 +1465,7 @@ export function createPrActions(deps) {
      * @returns {Promise<{ ok: true }|{ ok: false, reason: string }>}
      */
     const walk = async (id) => {
-      /** @type {{ id: string, status: string }[]} */
+      /** @type {{ id: string, status: string, parent_child_dep?: boolean }[]} */
       let children;
       try {
         children = await /** @type {any} */ (deps.bd.listChildren)(id);
@@ -1321,7 +1483,10 @@ export function createPrActions(deps) {
           return deeper;
         }
         if (child.status !== 'closed') {
-          leaves_first.push(child.id);
+          leaves_first.push({
+            id: child.id,
+            phase_link: child.parent_child_dep === true
+          });
         }
       }
       return { ok: true };
@@ -1331,13 +1496,389 @@ export function createPrActions(deps) {
     if (!walked.ok) {
       return walked;
     }
-    for (const id of leaves_first) {
-      const closed = await closeBead(id);
+    if (leaves_first.length === 0) {
+      return { ok: /** @type {const} */ (true) };
+    }
+    const classified = await classifyChildren(leaves_first);
+    if (!classified.ok) {
+      return classified;
+    }
+    return applyChildDispositions(bead_id, classified.children);
+  }
+
+  /**
+   * Read every non-closed child and sort it into its contract disposition
+   * (spec §1), BEFORE the sweep closes anything.
+   *
+   * Classification is a whole pass of its own on purpose: a terminal child —
+   * an unexecuted phase child, an unreadable disposition — must stop the sweep
+   * with nothing closed yet. Interleaving the reads with the closes would let
+   * the walk close two leaves and only then discover that the third one is the
+   * very shape the backstop exists to refuse.
+   *
+   * @param {{ id: string, phase_link: boolean }[]} children
+   * @returns {Promise<{ ok: true, children: { id: string, disposition: string, detail: Record<string, any> }[] }|{ ok: false, reason: string }>}
+   */
+  async function classifyChildren(children) {
+    if (typeof deps.bd.readIssue !== 'function') {
+      return { ok: false, reason: 'child_detail_unavailable' };
+    }
+    /** @type {{ id: string, disposition: string, detail: Record<string, any> }[]} */
+    const classified = [];
+    /** @type {string[]} */
+    const unknown = [];
+    /** @type {string[]} */
+    const unexecuted = [];
+    for (const child of children) {
+      /** @type {Record<string, any>} */
+      let detail;
+      try {
+        detail = await /** @type {any} */ (deps.bd.readIssue)(child.id);
+      } catch (err) {
+        // The same rule the child listing follows: "bd would not tell us" and
+        // "this child needs nothing" must not produce the same act.
+        log('child detail read failed for %s: %o', child.id, err);
+        return { ok: false, reason: `child_read_failed:${child.id}` };
+      }
+      // The DETAIL's status, not the listing's: the two selectors and the
+      // per-child read are separate queries, so a child somebody closed in
+      // between must drop out here rather than be carried over or reclosed.
+      if (detail.status === 'closed') {
+        continue;
+      }
+      const metadata = metadataOf(detail);
+      const has_disposition = Object.hasOwn(metadata, 'child_disposition');
+      const disposition = has_disposition
+        ? metadata.child_disposition
+        : undefined;
+      // A PRESENT key is judged on its raw value: `'deferred '`, `''` and a
+      // non-string are all outside the contract enum, and normalizing them into
+      // it would be this build guessing which member was meant (spec §1).
+      if (
+        has_disposition &&
+        (typeof disposition !== 'string' ||
+          !CHILD_DISPOSITIONS.has(disposition))
+      ) {
+        unknown.push(child.id);
+        continue;
+      }
+      if (
+        disposition === 'deferred' ||
+        REASONED_CLOSE_DISPOSITIONS.has(String(disposition))
+      ) {
+        classified.push({
+          id: child.id,
+          disposition: String(disposition),
+          detail
+        });
+        continue;
+      }
+      // `active` or ABSENT — the key's absence is not permission (spec §1).
+      const phase_child =
+        child.phase_link || nonEmptyString(metadata.parent) !== null;
+      if (phase_child && !hasExecutionTrace(detail, metadata)) {
+        unexecuted.push(child.id);
+        continue;
+      }
+      classified.push({ id: child.id, disposition: 'active', detail });
+    }
+    // An unreadable disposition outranks an unexecuted child: it says this
+    // build cannot classify that bead at all, so the more specific verdict
+    // would be a guess about which enum member the value meant.
+    if (unknown.length > 0) {
+      return {
+        ok: false,
+        reason: `unknown_child_disposition:${firstId(unknown)}`
+      };
+    }
+    if (unexecuted.length > 0) {
+      return {
+        ok: false,
+        reason: `unexecuted_phase_child:${firstId(unexecuted)}`
+      };
+    }
+    return { ok: true, children: classified };
+  }
+
+  /**
+   * Act on the classified children, still LEAVES FIRST — the walk's order is
+   * preserved, and only the act per child differs by disposition.
+   *
+   * @param {string} bead_id
+   * @param {{ id: string, disposition: string, detail: Record<string, any> }[]} children
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string }>}
+   */
+  async function applyChildDispositions(bead_id, children) {
+    for (const child of children) {
+      if (child.disposition === 'deferred') {
+        const converted = await convertToCarryover(bead_id, child);
+        if (!converted.ok) {
+          return converted;
+        }
+        continue;
+      }
+      if (REASONED_CLOSE_DISPOSITIONS.has(child.disposition)) {
+        if (typeof deps.bd.closeWithReason !== 'function') {
+          return { ok: false, reason: 'child_reason_close_unavailable' };
+        }
+        try {
+          await /** @type {any} */ (deps.bd.closeWithReason)(
+            child.id,
+            child.disposition
+          );
+        } catch (err) {
+          log('reasoned child close failed for %s: %o', child.id, err);
+          return { ok: false, reason: `child_close_failed:${child.id}` };
+        }
+        continue;
+      }
+      const closed = await closeBead(child.id);
       if (!closed.ok) {
-        return { ok: false, reason: `child_close_failed:${id}` };
+        return { ok: false, reason: `child_close_failed:${child.id}` };
       }
     }
-    return { ok: true };
+    return { ok: /** @type {const} */ (true) };
+  }
+
+  /**
+   * Convert ONE deferred phase child into a top-level successor and close it
+   * with the carryover reason (spec §2 — the beads-ui side of the dotfiles
+   * `### Phase carryover` sequence).
+   *
+   * Identity is the TRIPLE (parent id, original child id, `plan_task_anchor`),
+   * surfaced by the successor's `carried_from`. That is what makes a retry
+   * safe: an attempt interrupted anywhere between the create and the close
+   * finds its own successor by `carried_from`, verifies the triple, and
+   * finishes the remaining steps instead of creating a second one. Nothing here
+   * ever guesses — a candidate whose triple disagrees is a human's problem, not
+   * a bead to adopt.
+   *
+   * @param {string} parent_id
+   * @param {{ id: string, detail: Record<string, any> }} child
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string }>}
+   */
+  async function convertToCarryover(parent_id, child) {
+    const bd = /** @type {Record<string, any>} */ (deps.bd);
+    const required = [
+      'readIssue',
+      'listByMetadataField',
+      'listDeps',
+      'createTopLevelIssue',
+      'addDep',
+      'updateFields',
+      'closeWithReason'
+    ];
+    if (required.some((name) => typeof bd[name] !== 'function')) {
+      return { ok: false, reason: 'carryover_unavailable' };
+    }
+    /** @type {{ ok: false, reason: string }} */
+    const incomplete = {
+      ok: false,
+      reason: `carryover_identity_incomplete:${child.id}`
+    };
+    /** @type {{ ok: false, reason: string }} */
+    const failed = { ok: false, reason: `carryover_failed:${child.id}` };
+
+    // 1. Succession material. `plan_path` and `plan_task_anchor` are MANDATORY:
+    // without them the successor carries no identity, so an unreadable read and
+    // an absent key end the same way — the triple cannot be completed.
+    /** @type {Record<string, any>} */
+    let parent_detail;
+    try {
+      parent_detail = await bd.readIssue(parent_id);
+    } catch (err) {
+      log('carryover parent read failed for %s: %o', parent_id, err);
+      return incomplete;
+    }
+    const plan_path = nonEmptyString(metadataOf(parent_detail).plan_path);
+    const plan_task_anchor = nonEmptyString(
+      metadataOf(child.detail).plan_task_anchor
+    );
+    if (plan_path === null || plan_task_anchor === null) {
+      return incomplete;
+    }
+    /** @type {Record<string, string>} */
+    const succession = {
+      carried_from: child.id,
+      plan_path,
+      plan_task_anchor,
+      // A PROVISIONAL route pin: the succession spec still goes through the
+      // spec gate, and the machine writes no `rec_*` judgement key.
+      route: 'spec_backed'
+    };
+    const notes_line = `carryover: sweep_backstop — ${parent_id}/${child.id}`;
+
+    // 2. Lookup, then adoption ONLY on a verified triple.
+    /** @type {Record<string, any>[]} */
+    let matches;
+    try {
+      matches = await bd.listByMetadataField('carried_from', child.id);
+    } catch (err) {
+      log('carryover lookup failed for %s: %o', child.id, err);
+      return failed;
+    }
+    if (matches.length > 1) {
+      return { ok: false, reason: `carryover_ambiguous:${child.id}` };
+    }
+    /** @type {string|null} */
+    let successor_id = null;
+    if (matches.length === 1) {
+      const candidate = matches[0];
+      const candidate_id = nonEmptyString(candidate ? candidate.id : null);
+      const candidate_md = metadataOf(candidate);
+      /** @type {Record<string, any>[]} */
+      let candidate_deps;
+      try {
+        candidate_deps =
+          candidate_id === null ? [] : await bd.listDeps(candidate_id);
+      } catch (err) {
+        log('carryover candidate deps read failed for %s: %o', child.id, err);
+        return failed;
+      }
+      if (
+        candidate_id === null ||
+        nonEmptyString(candidate_md.carried_from) !== child.id ||
+        nonEmptyString(candidate_md.plan_path) !== plan_path ||
+        nonEmptyString(candidate_md.plan_task_anchor) !== plan_task_anchor ||
+        hasParentLink(candidate, candidate_deps)
+      ) {
+        return {
+          ok: false,
+          reason: `carryover_identity_mismatch:${child.id}`
+        };
+      }
+      successor_id = candidate_id;
+    }
+
+    // 3. Create — top-level, and already carrying `carried_from` so the NEXT
+    // attempt can find it if this one dies before the close.
+    if (successor_id === null) {
+      const title = nonEmptyString(child.detail.title);
+      if (title === null) {
+        log('carryover has no title to succeed for %s', child.id);
+        return failed;
+      }
+      const child_type = nonEmptyString(
+        child.detail.issue_type ?? child.detail.type
+      );
+      try {
+        successor_id = nonEmptyString(
+          await bd.createTopLevelIssue({
+            title,
+            description:
+              typeof child.detail.description === 'string'
+                ? child.detail.description
+                : '',
+            type: child_type ?? 'task',
+            priority:
+              typeof parent_detail.priority === 'number'
+                ? parent_detail.priority
+                : DEFAULT_CARRYOVER_PRIORITY,
+            metadata: succession
+          })
+        );
+      } catch (err) {
+        log('carryover create failed for %s: %o', child.id, err);
+        return failed;
+      }
+      if (successor_id === null) {
+        return failed;
+      }
+    }
+
+    // 4. ONE update carrying the succession metadata and the execution-path
+    // notes line. The line is appended only when it is not already there, so a
+    // retry over an adopted successor does not stack duplicates.
+    /** @type {Record<string, any>} */
+    let successor;
+    try {
+      successor = await bd.readIssue(successor_id);
+    } catch (err) {
+      log('carryover successor read failed for %s: %o', successor_id, err);
+      return failed;
+    }
+    const prior_notes =
+      typeof successor.notes === 'string' ? successor.notes : '';
+    try {
+      await bd.updateFields(successor_id, {
+        set: succession,
+        ...(prior_notes.includes(notes_line)
+          ? {}
+          : { append_notes: notes_line })
+      });
+    } catch (err) {
+      log('carryover metadata write failed for %s: %o', successor_id, err);
+      return failed;
+    }
+
+    // 5. Edges: lineage back to the original child, and the parent as blocker
+    // so closing the parent hands the successor back to `bd ready`.
+    /** @type {{ to: string, type: string }[]} */
+    const edges = [
+      { to: child.id, type: 'discovered-from' },
+      { to: parent_id, type: 'blocks' }
+    ];
+    /** @type {Record<string, any>[]} */
+    let existing_edges;
+    try {
+      existing_edges = await bd.listDeps(successor_id);
+    } catch (err) {
+      log('carryover dep read failed for %s: %o', successor_id, err);
+      return failed;
+    }
+    for (const edge of edges) {
+      if (hasDepEdge(existing_edges, successor_id, edge.to, edge.type)) {
+        continue;
+      }
+      try {
+        await bd.addDep(successor_id, edge.to, edge.type);
+      } catch (err) {
+        log('carryover dep add failed for %s: %o', successor_id, err);
+        return failed;
+      }
+    }
+
+    // 6. Readback FIRST, close second. The original child is the only record of
+    // the work; closing it over an unverified successor is how a phase gets
+    // swallowed.
+    /** @type {Record<string, any>} */
+    let final_issue;
+    /** @type {Record<string, any>[]} */
+    let final_edges;
+    try {
+      final_issue = await bd.readIssue(successor_id);
+      final_edges = await bd.listDeps(successor_id);
+    } catch (err) {
+      log('carryover readback failed for %s: %o', successor_id, err);
+      return failed;
+    }
+    const final_md = metadataOf(final_issue);
+    const metadata_confirmed = Object.entries(succession).every(
+      ([key, value]) => nonEmptyString(final_md[key]) === value
+    );
+    const notes_confirmed =
+      typeof final_issue.notes === 'string' &&
+      final_issue.notes.includes(notes_line);
+    const edges_confirmed = edges.every((edge) =>
+      hasDepEdge(final_edges, successor_id, edge.to, edge.type)
+    );
+    if (!metadata_confirmed || !notes_confirmed || !edges_confirmed) {
+      log(
+        'carryover readback rejected %s (metadata %o, notes %o, edges %o)',
+        successor_id,
+        metadata_confirmed,
+        notes_confirmed,
+        edges_confirmed
+      );
+      return failed;
+    }
+    try {
+      await bd.closeWithReason(child.id, `이월 → ${successor_id}`);
+    } catch (err) {
+      log('carryover child close failed for %s: %o', child.id, err);
+      return failed;
+    }
+    return { ok: /** @type {const} */ (true) };
   }
 
   /**
