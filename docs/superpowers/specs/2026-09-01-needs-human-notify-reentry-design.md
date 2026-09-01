@@ -144,6 +144,10 @@ coordinator/액션 계층이 한다).
   그 러너의 존재를 전제; 핸드오프에서 router가 기록).
 - 관찰: 폐기 교착의 종료 경로 자체(포기 액션 등)는 기존 독립 Bead `UI-3si1`이
   소유한다 — 이 스펙은 실패를 알리는 것까지다.
+- 관찰: scope 교차 — `UI-iv7l`
+  (`docs/superpowers/specs/2026-08-31-review-gate-speed-design.md`)과
+  `server/ws/`를 공유하나 다른 절이다: iv7l은 리뷰 게이트 속도 설정 표면,
+  이 스펙은 새 액션 `worker-resolve-in-session`을 추가한다. 의존 관계 없음.
 
 ## 결정 (ADR 후보)
 
