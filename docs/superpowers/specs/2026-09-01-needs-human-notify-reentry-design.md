@@ -68,9 +68,14 @@ Bead: `UI-jw27` · 2026-09-01
 | 기록 지점 | 클래스 | 비고 |
 | --- | --- | --- |
 | `failDiscardOperation` 호출부 (`discard-coordinator.js` — notify dep 추가) | 폐기 실패 | 사다리가 없어 첫 실패가 terminal; 재클릭 실패도 매번 |
-| `completion-intent.js terminalize()` | 배포 실패 · post-merge 잡 실패 | `script_retry` 소진 후 needs_human 진입 시 1건 |
-| `pr-actions.js failCleanup` → `recordCleanupFailure` | 정리 중단 | `UI-btj6`의 `unexecuted_phase_child:*`·`carryover_*` 포함 |
+| `completion-intent.js terminalize()` | 배포 실패 · post-merge 잡 실패 | `script_retry` 소진 후 needs_human 진입 시 1건 — **이 클래스의 발송을 단독 소유** |
+| `pr-actions.js failCleanup` → `recordCleanupFailure`, 단 `script_retry` 사다리를 거치는 단계(`repo_operations`·`post_merge_jobs`)의 실패는 **발송하지 않는다** | 정리 중단 | 사다리 없는 즉시 종단 단계(`base_containment`·`child_sweep`·`branch_cleanup`·`parent_close`)만 — `UI-btj6`의 `unexecuted_phase_child:*`·`carryover_*` 포함 |
 | 수동 배포 run의 terminal 실패 (`repo-operation-coordinator.js`) | 수동 배포 실패 | `[배포 실행]` 클릭 기원(`manual_run_id`)의 실패 settle 시 |
+
+같은 실패가 두 기록 경로를 지나는 배포·잡 실패의 발송 소유는
+`terminalize()` 한 곳이다: `failCleanup`의 `repo_operations`·`post_merge_jobs`
+단계 기록은 사다리 도중의 중간 기록이라 발송하면 terminal 전 조기 알림과
+중복 알림이 생긴다. 단계 이름으로 판정한다(닫힌 목록).
 
 배선은 각 소유 모듈에 기존 `notify` 인스턴스를 dep으로 전달하는 방식이다
 (스토어 `queue-store.js`는 순수 기록 계층으로 남긴다 — 발송은 기록을 쓰게 한
@@ -125,6 +130,9 @@ coordinator/액션 계층이 한다).
 5. 기존 7종 전이의 발송 조건·본문은 불변이다.
 6. 재시작 복구 pass는 기존 terminal 기록을 재발송하지 않는다; 사용자 재시도의
    새 terminal 실패는 다시 발송된다.
+6-1. 배포·post-merge 잡의 한 실패 사이클에서 알림은 needs_human 진입 시
+   정확히 1건이다 — `failCleanup`의 `repo_operations`·`post_merge_jobs` 단계
+   기록 경로는 무발송임을 테스트가 확인한다.
 7. `[세션에서 해결]` 클릭이 기록 세션 `--resume --fork-session` 대화형 tmux
    세션을 기동하고(불가 시 fallback 새 세션 + 사유 기록) marked pane으로
    Discord 중계 대상이 된다. 자동 기동 경로는 없다.
