@@ -987,10 +987,15 @@ export function dependencyChipsTemplate(chips, after_predecessors = '') {
  * 같은 관계에 새 색 토큰을 두면 어휘가 갈라진다. 재료가 없으면 줄 자체를 그리지
  * 않는다 (fail-quiet).
  *
+ * `root_dir`는 그 행이 속한 저장소다. 후속은 원본 자식과 같은 rig에 만들어지므로
+ * (이월 변환 스펙 §2) 완료 행의 저장소가 곧 후속의 저장소이고, 여러 레포를 한
+ * 화면에 섞는 모니터에서 다른 레포의 상세를 열지 않게 하는 것이 그 값이다.
+ *
  * @param {MiniItem['carried_to']} carried_to
+ * @param {string} [root_dir]
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function carryoverChipsTemplate(carried_to) {
+export function carryoverChipsTemplate(carried_to, root_dir = '') {
   const ids = (Array.isArray(carried_to) ? carried_to : [])
     .filter((/** @type {unknown} */ id) => typeof id === 'string' && id !== '')
     .slice()
@@ -1005,7 +1010,8 @@ export function carryoverChipsTemplate(carried_to) {
           id,
           label: `이월 → ${id}`,
           title: `이월된 후속 ${id} 열기`,
-          openable: true
+          openable: true,
+          ...(root_dir ? { root_dir } : {})
         },
         'dependents'
       )
@@ -1467,7 +1473,7 @@ function doneThreeLineRow(item) {
     <div class="worker-mini__row2">
       <span class="worker-mini__title">${item.title}</span>
     </div>
-    ${carryoverChipsTemplate(item.carried_to)}
+    ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
     <div class="worker-mini__row3">
       ${provider_badges.length > 0
         ? provider_badges.map(
@@ -1807,7 +1813,7 @@ export function miniRow(item, options = {}) {
       ? html`<div class="worker-mini__row1">
             ${repo_el}${id_el}${pri_el}${from_el}${pr_el}${title_el}${actions_el}
           </div>
-          ${carryoverChipsTemplate(item.carried_to)}
+          ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
           <div class="worker-mini__row2">
             ${usage_el}${done_at_label
               ? html`<span

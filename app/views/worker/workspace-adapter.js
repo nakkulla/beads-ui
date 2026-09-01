@@ -157,8 +157,8 @@ function execPinsOf(metadata) {
  * ({@link blockerIdsOf})로 읽는다 — 의존 해석기가 세 벌이 되면 한 벌은 반드시
  * 낡는다.
  *
- * 입력은 metadata를 싣는 구독 열(Ready·Blocked·In-progress)뿐이다: 이미 닫힌
- * 후속은 그 집합에 없으므로 재료가 되지 않고, 부모 카드는 줄 자체를 잃는다
+ * 입력은 아직 살아 있는 구독 열(Ready·Blocked·In-progress·Resolved)이다: 이미
+ * 닫힌 후속은 그 집합에 없으므로 재료가 되지 않고, 부모 카드는 줄 자체를 잃는다
  * (fail-quiet).
  *
  * @param {any[]} issues
@@ -537,11 +537,15 @@ export function createWorkspaceAdapter(options = {}) {
       ...resolved,
       ...closed
     ]);
-    // 이월 후속 색인 (UI-btj6 §3). 재료를 아는 열은 metadata를 싣는 세 열뿐이다.
+    // 이월 후속 색인 (UI-btj6 §3). 닫힌 후속만 재료에서 빠진다 — `resolved`는
+    // PR을 이미 낸 후속이고 아직 살아 있는 일이라 부모 카드에서 지울 이유가
+    // 없다. 이 색인은 오버레이의 metadata 적재 규칙과 무관하게 열의 이슈를
+    // 직접 읽으므로 네 열 모두에서 파생할 수 있다.
     const carried_to_by_parent = buildCarryoverIndex([
       ...ready,
       ...blocked,
-      ...in_progress
+      ...in_progress,
+      ...resolved
     ]);
     /** @type {Record<string, any>} */
     const overlay = {};

@@ -566,6 +566,23 @@ describe('worker workspace adapter', () => {
     expect(Object.hasOwn(overlay['UI-p1'] || {}, 'carried_to')).toBe(false);
   });
 
+  test('derives a carryover successor still sitting in resolved', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:resolved', [
+      {
+        id: 'UI-s1',
+        metadata: { carried_from: 'UI-p1.1' },
+        dependencies: [{ depends_on_id: 'UI-p1', type: 'blocks' }]
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .bead_overlay;
+
+    expect(overlay['UI-p1'].carried_to).toEqual(['UI-s1']);
+  });
+
   test('omits a carryover successor that is already closed', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:closed', [

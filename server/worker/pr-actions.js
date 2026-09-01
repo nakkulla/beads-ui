@@ -1540,19 +1540,35 @@ export function createPrActions(deps) {
         log('child detail read failed for %s: %o', child.id, err);
         return { ok: false, reason: `child_read_failed:${child.id}` };
       }
+      // The DETAIL's status, not the listing's: the two selectors and the
+      // per-child read are separate queries, so a child somebody closed in
+      // between must drop out here rather than be carried over or reclosed.
+      if (detail.status === 'closed') {
+        continue;
+      }
       const metadata = metadataOf(detail);
-      const disposition = nonEmptyString(metadata.child_disposition);
-      if (disposition !== null && !CHILD_DISPOSITIONS.has(disposition)) {
+      const has_disposition = Object.hasOwn(metadata, 'child_disposition');
+      const disposition = has_disposition
+        ? metadata.child_disposition
+        : undefined;
+      // A PRESENT key is judged on its raw value: `'deferred '`, `''` and a
+      // non-string are all outside the contract enum, and normalizing them into
+      // it would be this build guessing which member was meant (spec §1).
+      if (
+        has_disposition &&
+        (typeof disposition !== 'string' ||
+          !CHILD_DISPOSITIONS.has(disposition))
+      ) {
         unknown.push(child.id);
         continue;
       }
       if (
         disposition === 'deferred' ||
-        REASONED_CLOSE_DISPOSITIONS.has(disposition || '')
+        REASONED_CLOSE_DISPOSITIONS.has(String(disposition))
       ) {
         classified.push({
           id: child.id,
-          disposition: disposition || '',
+          disposition: String(disposition),
           detail
         });
         continue;

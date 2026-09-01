@@ -4528,6 +4528,43 @@ describe('post-merge sweep — child disposition (2026-09-01 carryover §1)', ()
     });
   });
 
+  test('skips a child the detail read reports as already closed', async () => {
+    const env = sweepEnv({
+      [CHILD]: {
+        title: '그 사이 닫힌 자식',
+        status: 'closed',
+        metadata: { parent: BEAD }
+      }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toBeUndefined();
+    expect(env.calls).not.toContain(`bd:setStatus:${CHILD}:closed`);
+    expect(env.calls).toContain(`bd:setStatus:${BEAD}:closed`);
+  });
+
+  test.each([
+    ['a padded enum member', 'deferred '],
+    ['an empty value', ''],
+    ['a non-string value', 7]
+  ])('stops on %s in child_disposition', async (_label, value) => {
+    const env = sweepEnv({
+      [CHILD]: {
+        title: '자식',
+        status: 'open',
+        metadata: { parent: BEAD, child_disposition: value }
+      }
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(sweepFailure(env)).toMatchObject({
+      step: 'child_sweep',
+      reason: `unknown_child_disposition:${CHILD}`
+    });
+  });
+
   test('stops on a child_disposition outside the contract enum', async () => {
     const env = sweepEnv({
       [CHILD]: {
