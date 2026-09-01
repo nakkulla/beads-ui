@@ -4513,6 +4513,34 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
     );
   });
 
+  test('overlays the carryover successors on the done row (UI-btj6 §3)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-6', added_at: 5 }],
+          bead_overlay: { 'A-6': { carried_to: ['A-7', 'A-8'] } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].carried_to).toEqual(['A-7', 'A-8']);
+  });
+
+  test('omits the carryover successors on a row outside the done lane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: { 'A-2': { carried_to: ['A-7'] } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].carried_to).toBeUndefined();
+  });
+
   test('leaves a bead without an overlay key unchanged', () => {
     const lanes = buildLanes(
       [

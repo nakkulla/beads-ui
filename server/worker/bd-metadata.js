@@ -59,8 +59,13 @@ import { RECEIPT_METADATA_KEYS } from './receipt-check.js';
  *   findIssue: (bead_id: string) => Promise<Record<string, any>|null>,
  *   deleteIssues: (bead_ids: string[]) => Promise<void>,
  *   createIssue: (input: { id: string, title: string, description: string, type: string, priority: number, dependency?: string }) => Promise<void>,
+ *   createTopLevelIssue: (input: { title: string, description?: string, type: string, priority: number, metadata?: Record<string, string> }) => Promise<string>,
+ *   addDep: (from_id: string, to_id: string, type: string) => Promise<void>,
+ *   closeWithReason: (bead_id: string, reason: string) => Promise<void>,
+ *   listByMetadataField: (key: string, value: string) => Promise<Record<string, any>[]>,
+ *   listDeps: (bead_id: string) => Promise<Record<string, any>[]>,
  *   updateFields: (bead_id: string, input: { set?: Record<string, string>, unset?: string[], status?: string, append_notes?: string }) => Promise<void>,
- *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>,
+ *   listChildren: (bead_id: string) => Promise<{ id: string, status: string, parent_child_dep: boolean }[]>,
  *   scanBeads: () => Promise<{ pr_rows: ExternalPrScanRow[], statuses: Record<string, string>, generation?: number, fresh?: boolean }>
  * }}
  */
@@ -118,7 +123,10 @@ export function createBdMetadata(deps = {}) {
     }
   }
 
-  return {
+  // Named rather than returned inline so one member can reuse another as a
+  // confirming readback (`closeWithReason` reads `readStatus`) without a second
+  // copy of the fail-closed `bd show` handling.
+  const adapter = {
     /**
      * A non-zero bd exit MUST surface as a throw — callers (workflow_mode
      * stamp/revert) are fail-closed and a swallowed failure would let a stray
@@ -384,6 +392,164 @@ export function createBdMetadata(deps = {}) {
     },
 
     /**
+     * Create ONE issue whose id bd allocates, returning that id.
+     *
+     * `--parent` is deliberately not reachable from here: the carryover
+     * successor of a swept phase child is a TOP-LEVEL bead (2026-09-01 sweep
+     * carryover spec §2-3), and a wrapper able to pass `--parent` would let a
+     * caller rebuild the very phase-child relation the conversion dissolves.
+     *
+     * Identity metadata is written AT CREATE (`--metadata` JSON), not by a
+     * following update: the retry lookup finds an already-created successor by
+     * its `carried_from`, so a successor created without it would be invisible
+     * to the next attempt, which would then create a SECOND one.
+     *
+     * @param {{ title: string, description?: string, type: string, priority: number, metadata?: Record<string, string> }} input
+     * @returns {Promise<string>} The id bd allocated.
+     */
+    async createTopLevelIssue(input) {
+      /** @type {string[]} */
+      const args = [
+        'create',
+        '--title',
+        input.title,
+        '--description',
+        typeof input.description === 'string' ? input.description : '',
+        '--type',
+        input.type,
+        '--priority',
+        String(input.priority)
+      ];
+      if (input.metadata && Object.keys(input.metadata).length > 0) {
+        args.push('--metadata', JSON.stringify(input.metadata));
+      }
+      args.push('--json');
+      const r = await run(args, opts);
+      if (r.code !== 0) {
+        throw new Error(
+          `bd create ${input.title} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
+      const created_id = createdIdOf(r.stdout);
+      if (created_id === null) {
+        throw new Error('bd create returned an unreadable payload');
+      }
+      return created_id;
+    },
+
+    /**
+     * One dependency edge, `<from_id>` depending on `<to_id>`. A non-zero exit
+     * throws like every other mutator: the carryover conversion verifies its
+     * edges before closing the original child, and a swallowed failure would
+     * close it over a successor nothing links back.
+     *
+     * @param {string} from_id
+     * @param {string} to_id
+     * @param {string} type
+     */
+    async addDep(from_id, to_id, type) {
+      const r = await run(['dep', 'add', from_id, to_id, '--type', type], opts);
+      if (r.code !== 0) {
+        throw new Error(
+          `bd dep add ${from_id} ${to_id} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
+    },
+
+    /**
+     * Close one issue WITH its contract reason, then confirm it.
+     *
+     * A reasoned close is a different act from {@link setStatus}: the reason is
+     * the durable record of WHY a child the sweep never executed is being
+     * closed (carried over, out of scope, canceled), and the sweep must not be
+     * able to produce a reasonless close for those children. The readback is
+     * the same rule the parent close follows — a close nobody confirmed is not
+     * a close.
+     *
+     * @param {string} bead_id
+     * @param {string} reason
+     */
+    async closeWithReason(bead_id, reason) {
+      const r = await run(['close', bead_id, '--reason', reason], opts);
+      if (r.code !== 0) {
+        throw new Error(
+          `bd reasoned close ${bead_id} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
+      const status = await adapter.readStatus(bead_id);
+      if (status !== 'closed') {
+        throw new Error(
+          `bd reasoned close ${bead_id} readback returned ${status ?? 'no status'}`
+        );
+      }
+    },
+
+    /**
+     * Every issue carrying one exact metadata key=value, WHOLE rows.
+     *
+     * The carryover lookup needs the candidate's own `metadata` to verify the
+     * identity triple, so this returns bd's rows untouched instead of the
+     * `{id, status}` projection {@link listChildren} builds.
+     *
+     * Fail-closed like the other listings: a failed query THROWS rather than
+     * reading as "no successor exists", which is the one answer that would make
+     * the conversion create a duplicate.
+     *
+     * @param {string} key
+     * @param {string} value
+     * @returns {Promise<Record<string, any>[]>}
+     */
+    async listByMetadataField(key, value) {
+      const r = await runJson(
+        'list',
+        [
+          'list',
+          '--json',
+          '--all',
+          '--limit',
+          '0',
+          '--metadata-field',
+          `${key}=${value}`
+        ],
+        opts
+      );
+      if (!r || r.ok !== true) {
+        throw new Error(
+          `bd list --metadata-field ${key}=${value} failed (${
+            r && r.error ? r.error.code : 'no result'
+          })`
+        );
+      }
+      return /** @type {Record<string, any>[]} */ (r.data);
+    },
+
+    /**
+     * The dependency rows of ONE issue, as bd prints them.
+     *
+     * Asked for a single id, `bd dep list` answers with the TARGET issues, each
+     * carrying a `dependency_type` (see `server/list-adapters.js`); the batch
+     * shape is bare `{issue_id, depends_on_id, type}` edges. Both survive here
+     * untouched because interpreting them is the caller's job.
+     *
+     * Fail-closed: an unreadable dependency list must stop the carryover
+     * conversion, not read as "the edges are missing".
+     *
+     * @param {string} bead_id
+     * @returns {Promise<Record<string, any>[]>}
+     */
+    async listDeps(bead_id) {
+      const r = await runJson('dep', ['dep', 'list', bead_id, '--json'], opts);
+      if (!r || r.ok !== true) {
+        throw new Error(
+          `bd dep list ${bead_id} failed (${
+            r && r.error ? r.error.code : 'no result'
+          })`
+        );
+      }
+      return /** @type {Record<string, any>[]} */ (r.data);
+    },
+
+    /**
      * ONE `bd update` carrying every field of a single logical transition
      * (metadata set/unset + status + notes lineage). The REVISE disposition
      * contract (dotfiles `docs/contracts/workflow.md`) requires the receipt
@@ -451,26 +617,36 @@ export function createBdMetadata(deps = {}) {
      * its open leaves. The exit code and the payload shape are BOTH checked; an
      * empty array is the only thing that may mean "no children".
      *
+     * `parent_child_dep` reports WHICH relation found the row, because the two
+     * are not interchangeable to the sweep's classifier (2026-09-01 sweep
+     * carryover spec §1): a phase child is one linked by the `parent-child`
+     * dependency OR by `metadata.parent`, and only the caller that knows the
+     * relation can tell an unexecuted phase child from an ordinary linked bead.
+     * A row found by both relations carries `true`.
+     *
      * @param {string} bead_id
-     * @returns {Promise<{ id: string, status: string }[]>}
+     * @returns {Promise<{ id: string, status: string, parent_child_dep: boolean }[]>}
      */
     async listChildren(bead_id) {
-      /** @type {Map<string, { id: string, status: string }>} */
+      /** @type {Map<string, { id: string, status: string, parent_child_dep: boolean }>} */
       const merged = new Map();
-      /** @type {string[][]} */
+      /** @type {{ flags: string[], parent_child_dep: boolean }[]} */
       const selectors = [
-        ['--parent', bead_id],
-        ['--metadata-field', `parent=${bead_id}`]
+        { flags: ['--parent', bead_id], parent_child_dep: true },
+        {
+          flags: ['--metadata-field', `parent=${bead_id}`],
+          parent_child_dep: false
+        }
       ];
       for (const selector of selectors) {
         const r = await runJson(
           'list',
-          ['list', '--json', '--all', '--limit', '0', ...selector],
+          ['list', '--json', '--all', '--limit', '0', ...selector.flags],
           opts
         );
         if (!r || r.ok !== true) {
           throw new Error(
-            `bd list ${selector.join(' ')} failed (${
+            `bd list ${selector.flags.join(' ')} failed (${
               r && r.error ? r.error.code : 'no result'
             })`
           );
@@ -482,16 +658,23 @@ export function createBdMetadata(deps = {}) {
           }
           const row = /** @type {Record<string, unknown>} */ (raw);
           if (
-            typeof row.id === 'string' &&
-            row.id.length > 0 &&
-            row.id !== bead_id &&
-            !merged.has(row.id)
+            typeof row.id !== 'string' ||
+            row.id.length === 0 ||
+            row.id === bead_id
           ) {
-            merged.set(row.id, {
-              id: row.id,
-              status: typeof row.status === 'string' ? row.status : ''
-            });
+            continue;
           }
+          const prior = merged.get(row.id);
+          if (prior) {
+            prior.parent_child_dep =
+              prior.parent_child_dep || selector.parent_child_dep;
+            continue;
+          }
+          merged.set(row.id, {
+            id: row.id,
+            status: typeof row.status === 'string' ? row.status : '',
+            parent_child_dep: selector.parent_child_dep
+          });
         }
       }
       return [...merged.values()];
@@ -554,6 +737,42 @@ export function createBdMetadata(deps = {}) {
       return scanRows(r.data);
     }
   };
+  return adapter;
+}
+
+/**
+ * The id `bd create --json` reports, or `null` when the payload cannot be read.
+ *
+ * bd has printed the created issue as a bare object and as a single-item array
+ * across builds, and older wrappers nested it under `issue`; all three are
+ * accepted because the id is the only field this reads. Anything else returns
+ * `null` so the caller can fail closed rather than carry an invented id.
+ *
+ * @param {unknown} stdout
+ * @returns {string|null}
+ */
+function createdIdOf(stdout) {
+  if (typeof stdout !== 'string' || stdout.trim().length === 0) {
+    return null;
+  }
+  /** @type {unknown} */
+  let payload;
+  try {
+    payload = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  const candidate = Array.isArray(payload) ? payload[0] : payload;
+  if (!candidate || typeof candidate !== 'object') {
+    return null;
+  }
+  const record = /** @type {Record<string, unknown>} */ (candidate);
+  const nested =
+    record.issue && typeof record.issue === 'object'
+      ? /** @type {Record<string, unknown>} */ (record.issue)
+      : null;
+  const id = typeof record.id === 'string' ? record.id : nested?.id;
+  return typeof id === 'string' && id.length > 0 ? id : null;
 }
 
 /**

@@ -496,6 +496,93 @@ describe('worker workspace adapter', () => {
     expect(overlay.S1.rollup.total).toBe(2);
   });
 
+  test('derives one carryover successor per blocked bead (UI-btj6 §3)', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:blocked', [
+      {
+        id: 'UI-s1',
+        metadata: { carried_from: 'UI-p1.1' },
+        blocked_info: { blockers: ['UI-p1'] }
+      },
+      {
+        id: 'UI-s2',
+        metadata: { carried_from: 'UI-p1.2' },
+        blocked_info: { blockers: ['UI-p1'] }
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .bead_overlay;
+
+    expect(overlay['UI-p1'].carried_to).toEqual(['UI-s1', 'UI-s2']);
+  });
+
+  test('reads the carryover blocks edge off an unblocked successor', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'UI-s1',
+        metadata: { carried_from: 'UI-p1.1' },
+        dependencies: [{ depends_on_id: 'UI-p1', type: 'blocks' }]
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .bead_overlay;
+
+    expect(overlay['UI-p1'].carried_to).toEqual(['UI-s1']);
+  });
+
+  test('omits a carryover successor that blocks on another bead', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:blocked', [
+      {
+        id: 'UI-s1',
+        metadata: { carried_from: 'UI-p2.1' },
+        blocked_info: { blockers: ['UI-p2'] }
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .bead_overlay;
+
+    expect(overlay['UI-p1']).toBeUndefined();
+    expect(overlay['UI-p2'].carried_to).toEqual(['UI-s1']);
+  });
+
+  test('omits a successor without the carried_from metadata', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:blocked', [
+      { id: 'UI-s1', metadata: {}, blocked_info: { blockers: ['UI-p1'] } }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .bead_overlay;
+
+    expect(Object.hasOwn(overlay['UI-p1'] || {}, 'carried_to')).toBe(false);
+  });
+
+  test('omits a carryover successor that is already closed', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:closed', [
+      {
+        id: 'UI-s1',
+        metadata: { carried_from: 'UI-p1.1' },
+        dependencies: [{ depends_on_id: 'UI-p1', type: 'blocks' }]
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .bead_overlay;
+
+    expect(overlay['UI-p1']).toBeUndefined();
+  });
+
   test('prefers the live issue title over the server decoration', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:ready', [

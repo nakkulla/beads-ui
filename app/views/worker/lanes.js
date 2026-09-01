@@ -977,6 +977,43 @@ export function dependencyChipsTemplate(chips, after_predecessors = '') {
 }
 
 /**
+ * The 이월 칩 줄 (UI-btj6 §3). 완료 카드의 bead에서 이월된 후속 하나마다 열리는
+ * 칩 `이월 → <ID>` 하나이고, 클릭은 다른 열리는 칩 넷과 같은 이슈 상세 열기다
+ * — 카드 위의 칩은 상태를 쓰지 않는다 (UI-8x90 §4.3).
+ *
+ * 자리는 슬롯 **4b 정보**다 (2026-08-25 카드 문법 §5.1 정정(UI-btj6)): 문답은
+ * 4a `→ <ID>`와 같은 후속 관계지만, 완료 카드에서는 "지금 갈 수 있나"라는 행동에
+ * 답하지 않는 관계 정보다. 색은 그래서 후속 칩(`--dependents`) 그대로 쓴다 —
+ * 같은 관계에 새 색 토큰을 두면 어휘가 갈라진다. 재료가 없으면 줄 자체를 그리지
+ * 않는다 (fail-quiet).
+ *
+ * @param {MiniItem['carried_to']} carried_to
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function carryoverChipsTemplate(carried_to) {
+  const ids = (Array.isArray(carried_to) ? carried_to : [])
+    .filter((/** @type {unknown} */ id) => typeof id === 'string' && id !== '')
+    .slice()
+    .sort();
+  if (ids.length === 0) {
+    return '';
+  }
+  return html`<div class="worker-deps worker-deps--secondary">
+    ${ids.map((id) =>
+      openableChipTemplate(
+        {
+          id,
+          label: `이월 → ${id}`,
+          title: `이월된 후속 ${id} 열기`,
+          openable: true
+        },
+        'dependents'
+      )
+    )}
+  </div>`;
+}
+
+/**
  * The `연결 n` 소속 칩 (UI-j92s §5.2a, 자리는 UI-8x90 §4.1). "어느 레인 소속인가"는
  * 레포·직렬 레인 칩과 같은 좌표이므로 슬롯 5 줄이 싣는다. 클릭은 그대로 그
  * 레인으로의 스크롤이다. 재료가 없으면 빈 문자열이다 (fail-quiet).
@@ -1374,6 +1411,10 @@ export function priorityBadgeTemplate(priority) {
  * 판정을 바꾸지 않으므로 슬롯 5 판정 칩 하나로만 선다. 코드가 없으면 필드도
  * 없다.
  * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
+ * @property {string[]} [carried_to] - 이 bead에서 이월된 후속 ID들 (UI-btj6 §3).
+ * 투영이 `carried_from` metadata와 이 bead를 가리키는 `blocks` 간선만으로 접은
+ * 값이며, 완료 행만 싣는다. 칩은 {@link carryoverChipsTemplate}이 슬롯 4b에
+ * 그리고, 재료가 없으면 필드도 없다.
  * @property {number} [priority] - Bead 우선순위 0..4. 숫자가 아니면 배지를
  * 그리지 않는다.
  */
@@ -1426,6 +1467,7 @@ function doneThreeLineRow(item) {
     <div class="worker-mini__row2">
       <span class="worker-mini__title">${item.title}</span>
     </div>
+    ${carryoverChipsTemplate(item.carried_to)}
     <div class="worker-mini__row3">
       ${provider_badges.length > 0
         ? provider_badges.map(
@@ -1765,6 +1807,7 @@ export function miniRow(item, options = {}) {
       ? html`<div class="worker-mini__row1">
             ${repo_el}${id_el}${pri_el}${from_el}${pr_el}${title_el}${actions_el}
           </div>
+          ${carryoverChipsTemplate(item.carried_to)}
           <div class="worker-mini__row2">
             ${usage_el}${done_at_label
               ? html`<span
