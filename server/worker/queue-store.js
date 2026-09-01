@@ -522,6 +522,13 @@
  * actually in.
  * @property {Record<string, RepoOperation>} repo_operations - Worker-owned
  * one-shot repository operation journal.
+ * @property {Record<string, PostMergeJobRecord>} post_merge_jobs - The
+ * post-merge job application ledger (UI-i60a §3), keyed
+ * `<filename>@<blob sha>`. Content-addressed on purpose: a job file runs ONCE
+ * per byte-identical content no matter how many merges pass over it, and
+ * editing the file yields a new key hence exactly one new run. A legacy queue
+ * file has no key, which normalizes to an empty ledger — the state every
+ * workspace was in before any job existed.
  * @property {number} manual_deploy_seq - Monotonic per-workspace counter of
  * MANUAL deploy runs (UI-s582 §3.5). Its only consumer is the manual deploy
  * operation identity: the automatic id hashes (repo, base, target, effective
@@ -556,10 +563,22 @@
  * @property {Record<string, RepoOperationMigrationResult>} results
  */
 /**
+ * @typedef {Object} PostMergeJobRecord
+ * @property {'intent'|'applied'} state - `intent` is written BEFORE the script
+ * is spawned and `applied` only after terminal success plus the tracked-clean
+ * readback, so an interruption is always readable as "outcome unknown" rather
+ * than as a completed application.
+ * @property {string} operation_id - The kind `job` RepoOperation this ledger
+ * entry currently names. A retry that re-records swaps it in the SAME mutation
+ * that keeps the entry an `intent`.
+ * @property {string} repo_id
+ * @property {number} at
+ */
+/**
  * @typedef {Object} RepoOperation
  * @property {number} schema
  * @property {string} repo_id
- * @property {'verify'|'deploy'} kind
+ * @property {'verify'|'deploy'|'job'} kind
  * @property {{ bead_id: string, merged_sha: string }[]} subjects
  * @property {string} effective_base_sha
  * @property {string} target_base
@@ -1812,6 +1831,7 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'auto_repair',
   'repo_ops_opt_out',
   'repo_operations',
+  'post_merge_jobs',
   'manual_deploy_seq',
   'repo_operation_migration'
 ]);
@@ -1859,6 +1879,7 @@ function emptyQueue() {
     discard_operations: {},
     repo_ops_opt_out: { verify: false, deploy: false },
     repo_operations: {},
+    post_merge_jobs: {},
     manual_deploy_seq: 0,
     repo_operation_migration: null
   };
@@ -3040,7 +3061,9 @@ function normalizeRepoOperation(value) {
   if (
     !isRecord(value) ||
     value.schema !== 1 ||
-    (value.kind !== 'verify' && value.kind !== 'deploy') ||
+    (value.kind !== 'verify' &&
+      value.kind !== 'deploy' &&
+      value.kind !== 'job') ||
     typeof value.repo_id !== 'string' ||
     typeof value.effective_base_sha !== 'string' ||
     typeof value.target_base !== 'string' ||
@@ -3204,6 +3227,46 @@ function normalizeRepoOperation(value) {
           }
         : null
   };
+}
+
+/**
+ * Normalize the post-merge job ledger (UI-i60a §3). A malformed entry is
+ * DROPPED rather than kept as opaque data: the ledger's whole job is to answer
+ * "has this exact file content already been applied", and an entry that cannot
+ * name its state or the operation it points at can answer neither — keeping it
+ * would either suppress a run forever or make an unreadable record look like
+ * evidence.
+ *
+ * @param {unknown} raw
+ * @returns {Record<string, PostMergeJobRecord>}
+ */
+function normalizePostMergeJobs(raw) {
+  /** @type {Record<string, PostMergeJobRecord>} */
+  const out = {};
+  if (!isRecord(raw)) {
+    return out;
+  }
+  for (const [key, value] of Object.entries(raw)) {
+    if (
+      key.length === 0 ||
+      !isRecord(value) ||
+      (value.state !== 'intent' && value.state !== 'applied') ||
+      typeof value.operation_id !== 'string' ||
+      value.operation_id.length === 0 ||
+      typeof value.repo_id !== 'string' ||
+      value.repo_id.length === 0
+    ) {
+      continue;
+    }
+    out[key] = {
+      state: value.state,
+      operation_id: value.operation_id,
+      repo_id: value.repo_id,
+      at:
+        typeof value.at === 'number' && Number.isFinite(value.at) ? value.at : 0
+    };
+  }
+  return out;
 }
 
 /**
@@ -3521,6 +3584,7 @@ function normalizeQueue(raw) {
     Number.isInteger(raw.manual_deploy_seq) && Number(raw.manual_deploy_seq) > 0
       ? Number(raw.manual_deploy_seq)
       : 0;
+  q.post_merge_jobs = normalizePostMergeJobs(raw.post_merge_jobs);
   q.repo_operation_migration = normalizeRepoOperationMigration(
     raw.repo_operation_migration
   );
@@ -5504,7 +5568,7 @@ export function createQueueStore(options = {}) {
      * record the coordinator must receive before it asks the runner to spawn.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_sha?: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
+     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy'|'job', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_sha?: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, source?: 'automatic'|'manual', manual_run_id?: number, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
      * @returns {QueueOpResult}
      */
     ensureRepoOperation(workspace, input) {
@@ -5516,7 +5580,9 @@ export function createQueueStore(options = {}) {
           !isSha(input.script_blob_sha) ||
           !Array.isArray(input.subjects) ||
           input.subjects.length === 0 ||
-          (input.kind !== 'verify' && input.kind !== 'deploy')
+          (input.kind !== 'verify' &&
+            input.kind !== 'deploy' &&
+            input.kind !== 'job')
         ) {
           return false;
         }
@@ -6013,6 +6079,77 @@ export function createQueueStore(options = {}) {
         const operation = next.repo_operations[input.operation_id];
         if (!operation || operation.superseded_by) return false;
         operation.superseded_by = input.successor_id;
+        return true;
+      });
+    },
+
+    /**
+     * Claim one post-merge job key for an about-to-run operation (UI-i60a §3).
+     * Written BEFORE the spawn, so an interruption between the script's effect
+     * and its ledger record reads as "outcome unknown" instead of as a run that
+     * never happened.
+     *
+     * `expect_operation_id` is the retry reconcile's swap (§3 branch ③): the
+     * new operation replaces the old one in the SAME mutation that keeps the
+     * entry an intent, so no window exists in which the ledger names an
+     * operation nobody is running. An `applied` key is never reopened.
+     *
+     * @param {string} workspace
+     * @param {{ key: string, operation_id: string, repo_id: string, expect_operation_id?: string }} input
+     * @returns {QueueOpResult}
+     */
+    recordPostMergeJobIntent(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        if (
+          typeof input.key !== 'string' ||
+          input.key.length === 0 ||
+          typeof input.operation_id !== 'string' ||
+          input.operation_id.length === 0 ||
+          typeof input.repo_id !== 'string' ||
+          input.repo_id.length === 0
+        ) {
+          return false;
+        }
+        const existing = next.post_merge_jobs[input.key];
+        if (existing && existing.state === 'applied') {
+          return false;
+        }
+        if (
+          input.expect_operation_id !== undefined &&
+          existing?.operation_id !== input.expect_operation_id
+        ) {
+          return false;
+        }
+        next.post_merge_jobs[input.key] = {
+          state: 'intent',
+          operation_id: input.operation_id,
+          repo_id: input.repo_id,
+          at: now()
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Settle one post-merge job key as applied. Only the operation the entry
+     * currently names may settle it — a later operation that superseded this
+     * one must have swapped the pointer first.
+     *
+     * @param {string} workspace
+     * @param {{ key: string, operation_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    applyPostMergeJob(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const existing = next.post_merge_jobs[input.key];
+        if (!existing || existing.operation_id !== input.operation_id) {
+          return false;
+        }
+        if (existing.state === 'applied') {
+          return false;
+        }
+        existing.state = 'applied';
+        existing.at = now();
         return true;
       });
     },
@@ -6897,6 +7034,7 @@ export function createQueueStore(options = {}) {
       const cursors = [
         'base_containment',
         'repo_operations',
+        'post_merge_jobs',
         'child_sweep',
         'branch_cleanup',
         'parent_close'

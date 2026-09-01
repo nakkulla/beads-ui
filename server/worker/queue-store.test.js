@@ -6009,6 +6009,7 @@ describe('worker/queue-store — 자동 머지 durable 상태 (UI-yk55 §2/§3)'
     for (const cursor of [
       'base_containment',
       'repo_operations',
+      'post_merge_jobs',
       'child_sweep',
       'branch_cleanup',
       'parent_close'
@@ -10639,5 +10640,222 @@ describe('waiting attempt records (선행 대기 계층 §4.5)', () => {
     });
 
     expect(r.ok).toBe(true);
+  });
+});
+
+describe('worker/queue-store — post-merge job ledger (UI-i60a §3)', () => {
+  const JOB_KEY = '10-reindex@1111111111111111111111111111111111111111';
+
+  /**
+   * The prerecord a job operation makes before the ledger names it.
+   *
+   * @param {any} store
+   * @param {string} operation_id
+   */
+  function prerecordJob(store, operation_id) {
+    store.ensureRepoOperation(WS, {
+      operation_id,
+      repo_id: WS,
+      kind: 'job',
+      subjects: [{ bead_id: 'UI-1', merged_sha: 'a'.repeat(40) }],
+      effective_base_sha: 'a'.repeat(40),
+      target_base: 'main',
+      target_sha: 'a'.repeat(40),
+      script_path: 'repo-ops/post-merge.d/10-reindex',
+      script_mode: '100755',
+      script_blob_sha: '1'.repeat(40)
+    });
+  }
+
+  test('creates a kind job operation record', () => {
+    const store = createQueueStore();
+
+    prerecordJob(store, 'job-1');
+
+    expect(store.snapshot(WS).repo_operations['job-1']).toMatchObject({
+      kind: 'job',
+      state: 'queued',
+      target_sha: 'a'.repeat(40),
+      script_path: 'repo-ops/post-merge.d/10-reindex'
+    });
+  });
+
+  test('reloads a kind job operation record from disk', () => {
+    const store = createQueueStore();
+    prerecordJob(store, 'job-1');
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(reloaded.repo_operations['job-1'].kind).toBe('job');
+  });
+
+  test('records an intent naming the operation about to run', () => {
+    const store = createQueueStore();
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).post_merge_jobs[JOB_KEY]).toMatchObject({
+      state: 'intent',
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+  });
+
+  test('settles an intent as applied for the operation it names', () => {
+    const store = createQueueStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+
+    const result = store.applyPostMergeJob(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).post_merge_jobs[JOB_KEY].state).toBe('applied');
+  });
+
+  test('refuses to settle a key for an operation it does not name', () => {
+    const store = createQueueStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+
+    const result = store.applyPostMergeJob(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-other'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).post_merge_jobs[JOB_KEY].state).toBe('intent');
+  });
+
+  test('refuses to reopen an applied key as a new intent', () => {
+    const store = createQueueStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+    store.applyPostMergeJob(WS, { key: JOB_KEY, operation_id: 'job-1' });
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-2',
+      repo_id: WS
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).post_merge_jobs[JOB_KEY]).toMatchObject({
+      state: 'applied',
+      operation_id: 'job-1'
+    });
+  });
+
+  test('swaps the named operation in one mutation on a retry re-record', () => {
+    const store = createQueueStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-2',
+      repo_id: WS,
+      expect_operation_id: 'job-1'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).post_merge_jobs[JOB_KEY]).toMatchObject({
+      state: 'intent',
+      operation_id: 'job-2'
+    });
+  });
+
+  test('refuses a swap whose expected operation is not the one named', () => {
+    const store = createQueueStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-3',
+      repo_id: WS,
+      expect_operation_id: 'job-2'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).post_merge_jobs[JOB_KEY].operation_id).toBe(
+      'job-1'
+    );
+  });
+
+  test('round-trips an applied ledger entry through disk', () => {
+    const store = createQueueStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+    store.applyPostMergeJob(WS, { key: JOB_KEY, operation_id: 'job-1' });
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(reloaded.post_merge_jobs[JOB_KEY]).toMatchObject({
+      state: 'applied',
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+  });
+
+  test('drops a malformed stored ledger entry instead of keeping it', () => {
+    const store = createQueueStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+    const queue_path = queueFilePath(WS);
+    const stored = JSON.parse(fs.readFileSync(queue_path, 'utf8'));
+    stored.post_merge_jobs['20-broken@' + '2'.repeat(40)] = {
+      state: 'applied'
+    };
+    fs.writeFileSync(queue_path, JSON.stringify(stored));
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(Object.keys(reloaded.post_merge_jobs)).toEqual([JOB_KEY]);
+  });
+
+  test('normalizes a missing ledger to an empty map', () => {
+    const store = createQueueStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+    const queue_path = queueFilePath(WS);
+    const stored = JSON.parse(fs.readFileSync(queue_path, 'utf8'));
+    delete stored.post_merge_jobs;
+    fs.writeFileSync(queue_path, JSON.stringify(stored));
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(reloaded.post_merge_jobs).toEqual({});
   });
 });
