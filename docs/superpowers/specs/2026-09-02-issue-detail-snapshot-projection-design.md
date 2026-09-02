@@ -53,6 +53,10 @@ Bead: `UI-wbjx` · 2026-09-02 · 기준 HEAD `0e79482b0a688a4fec48e99f76be0e83d6
   키로 캐시한다. anchor·impl 브랜치·dirty 프로브는 캐시가 없다.
 - 코디네이터 `request()`는 in-flight가 없으면 요청마다 새 세대(2회 read, 병렬 약
   40ms 벽시계)를 만든다. cold-subscribe도 같다.
+- 구독 레지스트리(`subscriptions.js`)는 detach 뒤에도 키별 `cachedSnapshot`을
+  보존하므로 **같은 id를 다시 여는 것은 약 1ms의 캐시 적중**이다. 느린 것은 id당
+  첫 열기(cold)다. 현재 배포(`3e7ae4a`, 공유 서버)에서 서로 다른 30개 id의 cold
+  open 실측: p50 266ms · p95 440ms · 최대 589ms, 같은 id 재열기: p50 1ms.
 
 ## §1 issue-detail을 워크스페이스 스냅샷 투영으로
 
@@ -102,6 +106,11 @@ compact 간선 형태 하나를 쓴다:
   하이드레이션하고 `id` 오름차순으로 정렬한다 — `deps_signature`
   (`subscriptions.js:151-184`)가 배열 순서에 민감하므로 결정적 순서가 필요하다.
 - `from_id`는 모든 투영에 이미 붙는 `attachSnapshotProvenance`(`:718`)로 온다.
+  단, 이 함수의 embedded 모드 collector(`collectEmbeddedProvenance`, `:739`)는
+  bare edge의 `type`·`depends_on_id`를 읽으므로 **하이드레이션보다 먼저** 원본
+  스냅샷 이슈(bare edge 그대로)에 대해 실행한다. 순서: 선택 → provenance 부착 →
+  compact 하이드레이션 → warm → enrich. embedded·legacy 두 모드의 issue-detail
+  `discovered-from` 테스트를 둔다.
 - `schema_version`은 싣지 않는다.
 
 ## §2 git 프로브: 투영 전 비동기 warm + 불변 키 캐시
@@ -110,31 +119,49 @@ compact 간선 형태 하나를 쓴다:
 
 - **가변 사실**(캐시하지 않음, 세대 컨텍스트로 명시 전달): HEAD, 브랜치 tip 전체,
   plan 경로 dirty 여부.
-- **불변 사실**(모듈 캐시): 경로 변경 `<head>\0<sha>\0<path>`(기존 `stale_cache`),
-  조상 관계 `<root>\0<a>\0<b>`(exit 0/1만), 커밋 객체 존재 `<root>\0<sha>`.
-  상한과 비움은 기존 `STALE_CACHE_CAP=5000` / 가득 차면 전체 비움 정책을 캐시마다
-  같이 쓴다.
-- `stale_cache`는 미판정(`null`)도 head 키로 캐시한다. 오늘은 receipt sha가 저장소에
-  없을 때(squash-merge된 브랜치 sha) `git log`가 매 폴링 실패하며 재실행된다. head가
-  같은 동안 같은 답이므로 캐시가 맞고, head가 움직이면 키가 바뀌어 다시 묻는다.
+- **불변 사실**(모듈 캐시, 확정 결과만): 경로 변경 `<head>\0<sha>\0<path>`
+  (기존 `stale_cache`, `true|false`만), 조상 관계 `<root>\0<a>\0<b>`(exit 0/1만),
+  커밋 객체 존재 `<root>\0<sha>`(**존재 확인만**). 상한과 비움은 기존
+  `STALE_CACHE_CAP=5000` / 가득 차면 전체 비움 정책을 캐시마다 같이 쓴다.
+- **미판정·부재는 불변이 아니다**: 다른 워크트리의 커밋이나 fetch로 객체가 생겨도
+  HEAD는 그대로일 수 있다. 따라서 `null`(git 오류)과 "커밋 없음"은 전역 캐시에
+  넣지 않고 세대 컨텍스트의 `undetermined: Set<key>`에만 기록해 같은 세대 안의
+  재질의만 막고 다음 세대에서 다시 묻는다. 오늘 receipt sha 부재(squash-merge된
+  브랜치 sha)로 `git log`가 매 폴링 실패하는 비용은 이렇게 세대당 1회로 줄고
+  비동기가 된다.
+- 경로 변경 프로브는 `git log <sha>..<captured_head> -- <path>`로 **캡처한 head를
+  명시**한다. 오늘의 `..HEAD` 리터럴(`:438`)은 비동기 실행 중 HEAD가 움직이면 결과와
+  캐시 키가 어긋난다. 동기 폴백 경로도 같은 형태로 바꾼다(head는 이미 인자다).
 
 ### 2.2 `warmWorkflowProbes`
 
 `server/workflow-enrich.js`에 추가한다.
 
 ```
-async function warmWorkflowProbes(items, workspace_root, generation_key)
+async function warmWorkflowProbes(items, workspace_root, generation)
   → Promise<WorkflowProbeContext | null>
-WorkflowProbeContext = { head: string | null, branch_tips: Map<string, string>, dirty_paths: Set<string> }
+generation = { generation: number, all: NormalizedIssue[] }   // 스냅샷의 두 필드
+WorkflowProbeContext = {
+  head: string | null,
+  branch_tips: Map<string, string>,
+  dirty_paths: Set<string>,      // 검사한 plan_path 중 dirty인 것
+  checked_paths: Set<string>,    // status로 검사한 plan_path 전체
+  undetermined: Set<string>      // 이 세대에서 미판정으로 끝난 프로브 키
+}
 ```
 
 - 모든 spawn은 `node:child_process` `execFile`(promisify)이며 fail-quiet다.
   `workspace_root`가 없으면 `null`.
-- **세대 컨텍스트**는 `(workspace_root, generation_key)`당 한 번만 만든다(모듈
-  Map, root당 최신 1건 보관). `git rev-parse HEAD` 1회,
+- **세대 컨텍스트**는 `(workspace_root, generation.generation)`당 **공유 in-flight
+  Promise 하나**로 만든다(모듈 Map, root당 최신 1건 보관). 같은 세대에 합류한 여러
+  투영이 동시에 warm해도 컨텍스트 spawn은 한 번이다. 재료는 이번 items가 아니라
+  **`generation.all`** 전체다: `git rev-parse HEAD` 1회,
   `git for-each-ref --format=%(objectname) %(refname:short) refs/heads/` 1회,
-  이번 items 중 `staleProbesApply(status)`인 full_plan 이슈의 `plan_path`들에 대한
-  `git status --porcelain -- <paths...>` 1회(경로가 없으면 생략). HEAD 실패는
+  `all` 중 `staleProbesApply(status)`인 full_plan 이슈의 `plan_path` 전체에 대한
+  `git status --porcelain -- <paths...>` 1회(경로가 없으면 생략). 첫 투영의 선택
+  항목만으로 만들면 같은 세대의 다른 구독이 가진 `plan_path`가 검사에서 빠져
+  "깨끗함"으로 오판되므로 `all`이어야 한다. `pathDirty`는
+  `checked_paths`에 없는 경로를 `unknown`으로 답한다(가산식 방어). HEAD 실패는
   `head: null`이며 그 뒤 프로브는 오늘처럼 fail-quiet다.
 - **이슈별 입력 수집**(순수 계산): `staleProbesApply(status)`인 이슈에서
   spec receipt sha·`last_checked_sha` cursor·published spec path, impl receipt sha·
@@ -142,8 +169,10 @@ WorkflowProbeContext = { head: string | null, branch_tips: Map<string, string>, 
   변경 프로브, `(a, b)` 조상 프로브, cursor 존재 프로브로 중복 제거한다.
   `freshnessAnchor`의 두 단계(cursor 존재 → cursor가 head의 조상)는 순차 의존이므로
   존재 결과가 난 뒤 조상 프로브를 낸다.
-- 캐시 미스만 상한 동시성 8로 실행해 캐시에 넣는다. 두 번째 스펙부터는 세대
-  컨텍스트 메모와 캐시 히트로 spawn이 거의 없다.
+- 전역 캐시 미스이고 이 세대의 `undetermined`에도 없는 키만 상한 동시성 8로
+  실행한다. 실행 중인 프로브는 키별 in-flight Promise 맵으로 공유해 동시 warm이 같은
+  미스를 두 번 띄우지 않는다. 확정 결과는 전역 캐시에, 미판정은 `undetermined`에
+  넣는다. 두 번째 스펙부터는 세대 컨텍스트 공유와 캐시 히트로 spawn이 거의 없다.
 
 ### 2.3 동기 API는 캐시 리더
 
@@ -155,7 +184,8 @@ WorkflowProbeContext = { head: string | null, branch_tips: Map<string, string>, 
   - `probes` **있음**: 캐시와 컨텍스트만 읽는다. 미스는 `null`/`unknown`(미판정,
     fail-quiet)이며 **절대 spawn하지 않는다**. `implFreshness`는
     `probes.branch_tips`에 브랜치가 없으면 `unknown`이다(for-each-ref가 전체
-    목록이므로 재조회하지 않는다). `pathDirty`는 `probes.dirty_paths` 소속 여부다.
+    목록이므로 재조회하지 않는다). `pathDirty`는 경로가 `probes.checked_paths`에
+    없으면 `null`(unknown), 있으면 `probes.dirty_paths` 소속 여부다.
   - `probes` **없음**: 오늘과 같은 동기 spawn 경로다. Worker의 `title-cache`·
     `runnable-cache`는 이 경로를 그대로 쓰며 이번 범위 밖이다.
 - 이 규칙이 "투영 경로 동기 spawn 0회"를 테스트 가능한 불변식으로 만든다.
@@ -164,9 +194,10 @@ WorkflowProbeContext = { head: string | null, branch_tips: Map<string, string>, 
 
 `fetchWorkspaceSnapshotProjection`(`list-adapters.js:228`) 하나다.
 `projectWorkspaceSnapshot`을 둘로 나눈다: 항목 선택(동기, 기존 switch와
-decoration) → `await warmWorkflowProbes(items, cwd, snapshot.generation)` →
-`enrichIssuesWorkflow(items, cwd, probes)` → `attachSnapshotProvenance`.
-`enrichIssuesWorkflow`의 선두 `gitHead` 동기 호출은 `probes` 있을 때 건너뛴다.
+decoration) → `attachSnapshotProvenance`(bare edge 기준) → issue-detail만 compact
+하이드레이션 → `await warmWorkflowProbes(items, cwd, snapshot)` →
+`enrichIssuesWorkflow(items, cwd, probes)`. `enrichIssuesWorkflow`의 선두 `gitHead`
+동기 호출은 `probes` 있을 때 건너뛴다.
 
 ## §3 Artifacts 행: 서버 `stages.*.doc`만 읽기 (UI-0d1c)
 
@@ -192,24 +223,38 @@ repo, `list-adapters.test.js`는 `runBdJsonProjected` mock):
    (issue-detail 포함)에서 호출 0회.
 2. issue-detail 투영에서 `runBdJsonProjected`에 `show`·`dep` family 호출 없음.
 3. 같은 (head, sha, path)·(a, b)로 두 번째 warm은 spawn 0회; head가 바뀌면 경로
-   변경 프로브를 다시 낸다; 미판정 `null`도 head 키로 캐시된다.
-4. `probes` 있을 때 캐시 미스는 spawn 없이 `null`/`unknown`이다.
-5. `probes` 없을 때(Worker 경로) 기존 동기 결과가 그대로다(기존 테스트 유지).
-6. dependents 하이드레이션·id 정렬·외부 rig 스텁·`not_found`·legacy 모드
+   변경 프로브를 다시 낸다; 경로 프로브의 인자에 캡처한 head가 들어간다(`..HEAD`
+   리터럴 없음).
+4. 미판정(git 오류)과 커밋 부재는 전역 캐시에 남지 않는다: 같은 세대의 두 번째
+   warm은 재질의하지 않고, 다음 세대의 warm은 다시 묻는다(두 경우 각각 테스트).
+5. 세대 컨텍스트는 `(root, generation)`당 spawn 1세트다: 서로 다른 항목을 요청하는
+   두 투영을 같은 세대에서 동시에 warm해도 `rev-parse`·`for-each-ref`·`status`는
+   한 번이고, 첫 투영에 없던 full_plan 이슈의 `plan_path` dirty가 두 번째 투영에서
+   맞게 나온다.
+6. `probes` 있을 때 캐시 미스는 spawn 없이 `null`/`unknown`이다.
+7. `probes` 없을 때(Worker 경로) 기존 동기 결과가 그대로다(기존 테스트 유지).
+8. dependents 하이드레이션·id 정렬·외부 rig 스텁·`not_found`·legacy 모드
    `dependency_edges` walk.
-7. `edges_in`이 embedded·legacy 두 모드에서 같은 결과.
-8. `artifacts.test.js` 9건을 `workflow.stages.*.doc` 입력으로 갱신하고, `workflow`
-   부재 시 행 생략을 추가한다.
-9. 갱신할 기존 테스트: `list-adapters.test.js:203`(issue-detail args),
-   `ws.list-subscriptions.test.js:351·398·458`(상세 snapshot·dependents 전달·id
-   강제 — 입력을 `bd show` mock에서 스냅샷 mock으로).
+9. `edges_in`이 embedded·legacy 두 모드에서 같은 결과.
+10. issue-detail의 `from_id`가 embedded·legacy 두 모드에서 붙는다(compact
+    하이드레이션 뒤에도 provenance가 살아 있음).
+11. `artifacts.test.js` 9건을 `workflow.stages.*.doc` 입력으로 갱신하고, `workflow`
+    부재 시 행 생략을 추가한다.
+12. 갱신할 기존 테스트: `list-adapters.test.js:203`(issue-detail args),
+    `ws.list-subscriptions.test.js:351·398·458`(상세 snapshot·dependents 전달·id
+    강제 — 입력을 `bd show` mock에서 스냅샷 mock으로).
 
 배포 후 실측(완료 보고서에 기록):
 
-- WS 클라이언트 스크립트(scratchpad)로 공유 서버에 `subscribe-list issue-detail`을
-  같은 id로 30회 보내 첫 `snapshot`까지의 p50/p95를 잰다. 변경 전 배포에서 같은
-  스크립트로 먼저 재 둔다. 목표 p95 300ms 이하.
+- WS 클라이언트 스크립트(scratchpad)로 공유 서버에 **서로 다른 30개 id**로
+  `subscribe-list issue-detail`을 한 번씩 보내 첫 `snapshot`까지의 p50/p95를 잰다.
+  같은 id를 반복하면 구독 레지스트리 캐시 적중(약 1ms)을 재게 되므로 표본은 id당
+  첫 열기여야 한다. 변경 전 기준값은 §0에 기록해 두었다(현재 배포 `3e7ae4a`:
+  p50 266ms · p95 440ms). 같은 스크립트·같은 id 집합으로 변경 후를 잰다.
+  목표: p50 120ms 이하, p95 200ms 이하.
 - 이벤트 루프 블로킹 0ms는 계측 대신 기준 1의 구조적 보장으로 답한다.
+- 이 실측은 완료 보고서의 잔여 줄로 넘기는 통상 운영 인수 작업이다 —
+  `worker-ineligible` 사유가 아니고 `session_preferred_reason`도 없다.
 
 ## §5 경계
 
