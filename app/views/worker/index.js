@@ -1178,10 +1178,15 @@ function prWaitRow(
   // script. Until UI-j2f0 the card hid the action for that step and left the
   // person guessing which drawer button would move the row (UI-q0uy §4.4
   // wanted the AI-repair ladder there; UI-s582 removed that ladder).
+  // A `post_merge_jobs` stall is the same click again (UI-i60a §4): the resume
+  // re-runs the cleanup, whose ledger reconcile decides whether the job is
+  // re-adopted or re-run. Renaming this button and adding [세션에서 해결]
+  // belong to UI-jw27, not here.
   const cleanup_retry =
     !!cleanup_failed &&
     [
       'repo_operations',
+      'post_merge_jobs',
       'child_sweep',
       'branch_cleanup',
       'parent_close'

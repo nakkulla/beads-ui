@@ -284,6 +284,30 @@ describe('prWaitProgress', () => {
     }
   );
 
+  // UI-i60a §1: `post_merge_jobs` runs AFTER `repo_operations`, so once the
+  // cursor is there the verify/deploy cards are history, not current progress.
+  test('disowns a running deploy once the cursor reaches post_merge_jobs', () => {
+    const result = prWaitProgress(
+      progressInput({
+        cleanup_cursor: 'post_merge_jobs',
+        repo_operations: [operation({ state: 'running' })]
+      })
+    );
+
+    expect(result).toBeNull();
+  });
+
+  test('keeps a job operation out of the merge card entirely', () => {
+    const result = prWaitProgress(
+      progressInput({
+        cleanup_cursor: 'repo_operations',
+        repo_operations: [operation({ kind: 'job', state: 'running' })]
+      })
+    );
+
+    expect(result).toBeNull();
+  });
+
   test('keeps a later cursor ahead of an older succeeded operation', () => {
     const result = prWaitProgress(
       progressInput({

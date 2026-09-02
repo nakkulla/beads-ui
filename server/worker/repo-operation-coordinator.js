@@ -21,6 +21,7 @@ import {
   refreshRepoOpsDisplay
 } from './repo-ops-display.js';
 import {
+  DEFAULT_REPO_OPS_TIMEOUT_MS,
   resolveEffectiveRepoOps,
   resolveRepoOps
 } from './repo-ops-resolver.js';
@@ -500,6 +501,11 @@ export function createRepoOperationCoordinator(deps) {
         await sweepVerifyCoverage(workspace, operation_id, settled);
         return;
       }
+      // Descendant coverage is a DEPLOY adoption: a newer HEAD containing the
+      // target proves the delivery is on disk. A post-merge job is an ACTION,
+      // not a state — a newer tree containing its target says nothing about
+      // whether the script ever ran (UI-i60a §2), so a job record is never
+      // covered by, and never covers, another operation.
       if (settled.kind !== 'deploy') {
         return;
       }
@@ -591,7 +597,12 @@ export function createRepoOperationCoordinator(deps) {
     if (!deps.timeline) {
       return;
     }
-    const kind_label = operation?.kind === 'verify' ? '검증' : '배포';
+    const kind_label =
+      operation?.kind === 'verify'
+        ? '검증'
+        : operation?.kind === 'job'
+          ? '잡'
+          : '배포';
     const exit_code = failure.exit_code ?? null;
     const line = [
       `${failure.code}`,
@@ -720,17 +731,25 @@ export function createRepoOperationCoordinator(deps) {
               path: operation.deploy_worktree,
               target_tree: operation.target_tree
             })
-          : typeof operation.target_sha === 'string'
-            ? typeof deploy_worktree.verifyCovered === 'function'
-              ? await deploy_worktree.verifyCovered({
+          : typeof operation.target_sha !== 'string'
+            ? { ok: false }
+            : // A job's readback is EXACT, never covered: the run is only
+              // evidence for the tree it was aligned to, so a worktree that
+              // moved on during the script invalidates it (UI-i60a §2).
+              operation.kind === 'job'
+              ? await deploy_worktree.verifyAligned({
                   repo: deps.repo,
                   target_sha: operation.target_sha
                 })
-              : await deploy_worktree.verifyAligned({
-                  repo: deps.repo,
-                  target_sha: operation.target_sha
-                })
-            : { ok: false };
+              : typeof deploy_worktree.verifyCovered === 'function'
+                ? await deploy_worktree.verifyCovered({
+                    repo: deps.repo,
+                    target_sha: operation.target_sha
+                  })
+                : await deploy_worktree.verifyAligned({
+                    repo: deps.repo,
+                    target_sha: operation.target_sha
+                  });
       if (!aligned.ok) {
         const deploy_code =
           'code' in aligned && aligned.code === 'repo_ops_worktree_unowned'
@@ -1575,6 +1594,450 @@ export function createRepoOperationCoordinator(deps) {
       : launched;
   }
 
+  // -------------------------------------------------------------------------
+  // The post-merge job lane (UI-i60a §2): kind `job` rides the deploy envelope
+  // — durable prerecord, the shared `.repo-ops-deploy` worktree, the
+  // cross-process deploy lock, the deploy timeout, the runner's log directory,
+  // and the tracked-clean readback — with ONE deliberate divergence. Deploy
+  // adopts a newer containing HEAD as success without running; a job may not,
+  // because "the tree is on disk" is not "the script ran".
+  // -------------------------------------------------------------------------
+
+  /**
+   * Identity of one post-merge job RUN. Deploy hashes what it delivers so two
+   * requests for the same delivery coalesce; a job hashes its ATTEMPT instead,
+   * because a terminal RepoOperation never reopens and the retry reconcile
+   * (§3 branch ③) has to be able to record a genuinely new run of the same
+   * file at the same target. The ledger, not this id, is what keeps the file
+   * to one application.
+   *
+   * @param {{ target_sha: string, script_path: string, script_blob_sha: string, attempt: number }} input
+   */
+  function jobOperationId(input) {
+    return crypto
+      .createHash('sha256')
+      .update(
+        JSON.stringify({
+          repo: deps.repo,
+          kind: 'job',
+          target_sha: input.target_sha,
+          script_path: input.script_path,
+          script_blob_sha: input.script_blob_sha,
+          attempt: input.attempt
+        })
+      )
+      .digest('hex')
+      .slice(0, 24);
+  }
+
+  /**
+   * How many runs of this exact job file at this exact target already have a
+   * record. Reading it inside the lock is what makes the next id fresh without
+   * a clock or a counter.
+   *
+   * @param {Record<string, any>} operations
+   * @param {{ target_sha: string, script_path: string, script_blob_sha: string }} input
+   */
+  function jobAttemptCount(operations, input) {
+    let count = 0;
+    for (const operation of Object.values(operations || {})) {
+      if (
+        operation &&
+        operation.kind === 'job' &&
+        operation.repo_id === deps.repo &&
+        operation.target_sha === input.target_sha &&
+        operation.script_path === input.script_path &&
+        operation.script_blob_sha === input.script_blob_sha
+      ) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * The `[deploy]` declaration's timeout at the job's own target, or the
+   * default when the repository declares none. Identical resolution to deploy's
+   * (§2), so a repository tunes both with one number.
+   *
+   * @param {string} target_sha
+   * @returns {Promise<{ ok: boolean, code?: string, timeout_ms?: number }>}
+   */
+  async function jobTimeoutFor(target_sha) {
+    /** @type {any} */
+    const resolved = await resolveRepoOps({
+      repo: deps.repo,
+      sha: target_sha,
+      gitRun: deps.gitRun
+    });
+    if (resolved.ok === false) {
+      return { ok: false, code: resolved.code || 'repo_ops_config_invalid' };
+    }
+    const declared = resolved.deploy?.timeout_ms;
+    return {
+      ok: true,
+      timeout_ms:
+        Number.isInteger(declared) && Number(declared) > 0
+          ? Number(declared)
+          : DEFAULT_REPO_OPS_TIMEOUT_MS
+    };
+  }
+
+  /**
+   * Align the shared runtime worktree to the job's exact target under the
+   * cross-process deploy lock, refusing every outcome that is not "HEAD is the
+   * merge commit this job was discovered in".
+   *
+   * A HEAD that already CONTAINS the target is the monotonicity refusal §2
+   * names: rewinding the shared runtime source to run a job would deploy an
+   * older tree as a side effect, and the newer tree is not evidence the job
+   * ran. Unreadable ancestry fails the same way rather than guessing.
+   *
+   * `onAligned` runs INSIDE the lock, right after the exact-HEAD read and
+   * before the release. §2 conditions the spawn on "the aligned worktree HEAD
+   * is `merge_sha`", and a caller that spawned after the release would only
+   * have proved that it WAS, since another executor holding the same lock can
+   * realign the shared worktree in the gap. The callback holds the lock for the
+   * spawn alone, never for the run: the script's own window is covered by the
+   * post-exit exact `verifyAligned` readback, which fails the operation — and
+   * so writes no `applied` — if the worktree moved underneath it.
+   *
+   * @param {string} target_sha
+   * @param {number} timeout_ms
+   * @param {(path: string) => Promise<void>} [onAligned]
+   * @returns {Promise<{ ok: boolean, code?: string, path?: string }>}
+   */
+  async function alignJobWorktree(target_sha, timeout_ms, onAligned) {
+    const acquired = await deployLock({ repo: deps.repo, timeout_ms });
+    if (!acquired.ok) {
+      return { ok: false, code: acquired.code };
+    }
+    try {
+      const state =
+        typeof deploy_worktree.readState === 'function'
+          ? await deploy_worktree.readState({ repo: deps.repo })
+          : { ok: true, head: null, clean: true };
+      if (!state.ok) {
+        return {
+          ok: false,
+          code:
+            'code' in state && typeof state.code === 'string'
+              ? state.code
+              : 'repo_ops_worktree_unreadable'
+        };
+      }
+      if (typeof state.head === 'string' && state.head !== target_sha) {
+        const head_contains_target = await ancestryStatus(
+          target_sha,
+          state.head
+        );
+        const target_contains_head = await ancestryStatus(
+          state.head,
+          target_sha
+        );
+        if (
+          head_contains_target !== 'not_ancestor' ||
+          target_contains_head !== 'ancestor'
+        ) {
+          return { ok: false, code: 'post_merge_job_target_moved' };
+        }
+      }
+      const aligned = await deploy_worktree.ensureAligned({
+        repo: deps.repo,
+        workspace: deps.workspace,
+        target_sha
+      });
+      if (!aligned.ok || typeof aligned.path !== 'string') {
+        return {
+          ok: false,
+          code: aligned.code || 'repo_ops_worktree_align_failed'
+        };
+      }
+      // §2's spawn-time condition, asserted as its own read: the worktree HEAD
+      // IS the merge commit, not merely something that contains it.
+      const exact = await deploy_worktree.verifyAligned({
+        repo: deps.repo,
+        target_sha
+      });
+      if (!exact.ok) {
+        return { ok: false, code: 'post_merge_job_target_moved' };
+      }
+      if (typeof onAligned === 'function') {
+        await onAligned(aligned.path);
+      }
+      return { ok: true, path: aligned.path };
+    } finally {
+      await acquired.release();
+    }
+  }
+
+  /**
+   * Phase 1 of a job run: prove the target is runnable and write the durable
+   * record, WITHOUT spawning. The caller writes the ledger `intent` naming the
+   * returned operation before calling {@link launchJob}, which is what makes a
+   * refusal here (a moved target above all) leave the ledger untouched — a
+   * later merge then finds the same content-addressed key still pending.
+   *
+   * @param {{ target_base: string, target_sha: string, bead_id: string, script_path: string, script_mode: string, script_blob_sha: string }} input
+   */
+  async function prepareJob(input) {
+    const release = await deps.locks.repoOperationLock(deps.repo);
+    try {
+      return await prepareJobLocked(input);
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * @param {{ target_base: string, target_sha: string, bead_id: string, script_path: string, script_mode: string, script_blob_sha: string }} input
+   */
+  async function prepareJobLocked(input) {
+    const workspace = deps.workspace;
+    const target_sha =
+      typeof input.target_sha === 'string' &&
+      /^[0-9a-f]{40}$/i.test(input.target_sha)
+        ? input.target_sha.toLowerCase()
+        : null;
+    const script_blob_sha =
+      typeof input.script_blob_sha === 'string' &&
+      /^[0-9a-f]{40}$/i.test(input.script_blob_sha)
+        ? input.script_blob_sha.toLowerCase()
+        : null;
+    if (
+      target_sha === null ||
+      script_blob_sha === null ||
+      typeof input.script_path !== 'string' ||
+      input.script_path.length === 0 ||
+      typeof input.script_mode !== 'string' ||
+      input.script_mode.length === 0 ||
+      typeof input.bead_id !== 'string' ||
+      input.bead_id.length === 0
+    ) {
+      return { ok: false, code: 'post_merge_job_input_invalid' };
+    }
+    const timeout = await jobTimeoutFor(target_sha);
+    if (!timeout.ok || !Number.isInteger(timeout.timeout_ms)) {
+      return { ok: false, code: timeout.code || 'repo_ops_config_invalid' };
+    }
+    const timeout_ms = Number(timeout.timeout_ms);
+    const operations = deps.store.snapshot(workspace).repo_operations;
+    // Durable per-repo serialization, refused BEFORE any record exists: a job
+    // that queued behind another operation would have nothing to launch it,
+    // because a queued job is never auto-launched (see the reconcile).
+    if (runningOperationFor(operations, null)) {
+      return { ok: false, code: 'repo_operation_busy' };
+    }
+    const aligned = await alignJobWorktree(target_sha, timeout_ms);
+    if (!aligned.ok || typeof aligned.path !== 'string') {
+      return {
+        ok: false,
+        code: aligned.code || 'repo_ops_worktree_align_failed'
+      };
+    }
+    const operation_id = jobOperationId({
+      target_sha,
+      script_path: input.script_path,
+      script_blob_sha,
+      attempt: jobAttemptCount(operations, {
+        target_sha,
+        script_path: input.script_path,
+        script_blob_sha
+      })
+    });
+    const prerecord = deps.store.ensureRepoOperation(workspace, {
+      operation_id,
+      repo_id: deps.repo,
+      kind: 'job',
+      subjects: [{ bead_id: input.bead_id, merged_sha: target_sha }],
+      effective_base_sha: target_sha,
+      target_base: input.target_base,
+      target_sha,
+      deploy_worktree: aligned.path,
+      script_path: input.script_path,
+      script_mode: input.script_mode,
+      script_blob_sha
+    });
+    if (!prerecord.ok) {
+      return { ok: false, code: 'repo_operation_prerecord_failed' };
+    }
+    return { ok: true, operation_id, timeout_ms, path: aligned.path };
+  }
+
+  /**
+   * Phase 2 of a job run: re-align and spawn the record {@link prepareJob}
+   * wrote and the caller's ledger now names.
+   *
+   * @param {{ operation_id: string }} input
+   */
+  async function launchJob(input) {
+    const release = await deps.locks.repoOperationLock(deps.repo);
+    try {
+      const workspace = deps.workspace;
+      const operation =
+        deps.store.snapshot(workspace).repo_operations[input.operation_id];
+      if (!operation || operation.kind !== 'job') {
+        return { ok: false, code: 'repo_operation_missing' };
+      }
+      if (operation.state !== 'queued' && operation.state !== 'retry_pending') {
+        return { ok: true, operation_id: input.operation_id, adopted: true };
+      }
+      return await launchRecordedJob(workspace, input.operation_id, operation, {
+        retry: operation.state === 'retry_pending'
+      });
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Align and spawn one already-prerecorded job. Shared by the first launch and
+   * by the reconcile's `script_retry` relaunch, so the retry re-proves the
+   * exact-target condition instead of trusting the first attempt's alignment.
+   *
+   * @param {string} workspace
+   * @param {string} operation_id
+   * @param {any} operation
+   * @param {{ retry?: boolean }} plan
+   */
+  async function launchRecordedJob(workspace, operation_id, operation, plan) {
+    const target_sha = operation.target_sha;
+    /**
+     * @param {string} code
+     */
+    async function refuse(code) {
+      if (plan.retry === true) {
+        deps.store.settleConsumedRepoOperationRetry(workspace, {
+          operation_id,
+          blocked_reason: code
+        });
+      } else {
+        await settleFailure(workspace, operation, operation_id, { code });
+      }
+      return { ok: false, code, operation_id };
+    }
+    if (
+      typeof target_sha !== 'string' ||
+      typeof operation.script_path !== 'string' ||
+      operation.script_path.length === 0
+    ) {
+      return await refuse('post_merge_job_identity_missing');
+    }
+    const timeout = await jobTimeoutFor(target_sha);
+    if (!timeout.ok || !Number.isInteger(timeout.timeout_ms)) {
+      return await refuse(timeout.code || 'repo_ops_config_invalid');
+    }
+    const timeout_ms = Number(timeout.timeout_ms);
+    // The spawn happens inside the align lock (§2): between the exact-HEAD read
+    // and a spawn made after the release, another executor can realign the
+    // shared worktree, and the job would then run against a tree that is not
+    // the merge commit it was discovered in.
+    /** @type {any} */
+    let spawned = null;
+    const aligned = await alignJobWorktree(
+      target_sha,
+      timeout_ms,
+      async (aligned_path) => {
+        spawned = await spawnRecorded(workspace, operation_id, operation, {
+          script_path: path.join(aligned_path, operation.script_path),
+          cwd: aligned_path,
+          target_sha,
+          timeout_ms,
+          deploy_worktree: aligned_path,
+          retry: plan.retry === true
+        });
+      }
+    );
+    if (!aligned.ok || typeof aligned.path !== 'string') {
+      return await refuse(aligned.code || 'repo_ops_worktree_align_failed');
+    }
+    return spawned;
+  }
+
+  /**
+   * The terminal evidence of one job record, with no coverage adoption of any
+   * kind. `unknown` is a record that is not there (or not a job) — which the
+   * ledger reads as an interruption, never as a run that succeeded.
+   *
+   * `started` is the durable invocation trace `startRepoOperation` writes, the
+   * same marker `resolution-ladder.scriptIdentity` reads as "a runner was
+   * actually invoked". The ledger needs it because a record that failed BEFORE
+   * any spawn (a refused re-alignment above all) did not leave an unknown
+   * effect behind — it left none — so its key is still plainly pending.
+   *
+   * @param {string} operation_id
+   */
+  function jobEvidence(operation_id) {
+    const operation = observe(operation_id);
+    if (!operation || operation.kind !== 'job') {
+      return {
+        state: /** @type {const} */ ('unknown'),
+        operation_id,
+        started: false
+      };
+    }
+    const started = typeof operation.started_at === 'number';
+    if (operation.state === 'succeeded') {
+      return {
+        state: /** @type {const} */ ('succeeded'),
+        operation_id,
+        started
+      };
+    }
+    if (operation.state === 'failed') {
+      return {
+        state: /** @type {const} */ ('failed'),
+        operation_id,
+        started,
+        code: operation.failure?.code || 'repo_operation_failed',
+        ...(typeof operation.log_path === 'string' && operation.log_path
+          ? { log_path: operation.log_path }
+          : {})
+      };
+    }
+    return { state: /** @type {const} */ ('running'), operation_id, started };
+  }
+
+  /**
+   * Settle whatever the record the ledger names has become, then report it.
+   * This is the re-judgement §3's retry reconcile runs before it decides
+   * between waiting, re-adopting, and re-recording.
+   *
+   * @param {string} operation_id
+   */
+  async function reconcileJob(operation_id) {
+    await reconcile(deps.workspace);
+    return jobEvidence(operation_id);
+  }
+
+  /**
+   * @param {string} operation_id
+   * @param {{ timeout_ms?: number, poll_ms?: number }} [input]
+   */
+  async function waitForJobTerminal(operation_id, input = {}) {
+    const timeout_ms =
+      Number.isFinite(input.timeout_ms) && Number(input.timeout_ms) >= 0
+        ? Number(input.timeout_ms)
+        : DEFAULT_REPO_OPS_TIMEOUT_MS;
+    const poll_ms =
+      Number.isFinite(input.poll_ms) && Number(input.poll_ms) > 0
+        ? Number(input.poll_ms)
+        : 100;
+    const deadline = now() + timeout_ms + RECONCILE_GRACE_MS;
+    while (true) {
+      await reconcile(deps.workspace);
+      const evidence = jobEvidence(operation_id);
+      if (evidence.state !== 'running') {
+        return evidence;
+      }
+      const remaining_ms = deadline - now();
+      if (remaining_ms <= 0) {
+        return evidence;
+      }
+      await sleep(Math.min(poll_ms, remaining_ms));
+    }
+  }
+
   /**
    * Reasons the 배포 실행 click can be refused (UI-s582 §3). Every one of them
    * is a REFUSAL: no record is written, nothing is queued, and the client says
@@ -2322,6 +2785,10 @@ export function createRepoOperationCoordinator(deps) {
         if (!runningOperationFor(operations_now, operation_id)) {
           if (operation.kind === 'verify') {
             await launchVerifyRetry(workspace, operation_id, operation);
+          } else if (operation.kind === 'job') {
+            await launchRecordedJob(workspace, operation_id, operation, {
+              retry: true
+            });
           } else {
             await launchQueued(workspace, operation_id, operation);
           }
@@ -2434,6 +2901,19 @@ export function createRepoOperationCoordinator(deps) {
         await verify_checkout.cleanup({
           repo: deps.repo,
           path: operation.deploy_worktree
+        });
+        continue;
+      }
+      // A queued job is NEVER launched from here. Its ledger `intent` is
+      // written between the prerecord and the spawn, so a queued job record
+      // may be one whose intent was never written — running it would apply a
+      // file the ledger cannot account for. Terminalizing instead is what lets
+      // the cleanup's own re-judgement decide (UI-i60a §3).
+      if (operation.kind === 'job') {
+        await settleFailure(workspace, operation, operation_id, {
+          code: 'interrupted',
+          detail: 'post_merge_job_launch_missing',
+          interrupted: true
         });
         continue;
       }
@@ -2594,6 +3074,10 @@ export function createRepoOperationCoordinator(deps) {
     findExactDeployOperation,
     deploymentEvidence,
     waitForDeployTerminal,
+    prepareJob,
+    launchJob,
+    reconcileJob,
+    waitForJobTerminal,
     reconcile,
     dismiss,
     refreshDisplay
