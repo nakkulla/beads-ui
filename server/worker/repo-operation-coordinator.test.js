@@ -3833,3 +3833,468 @@ describe('repo-operation bead timeline (record-timeline-retention §5)', () => {
     );
   });
 });
+
+describe('post-merge job operations (UI-i60a §2)', () => {
+  const JOB_BLOB = '9'.repeat(40);
+  const JOB_PATH = 'repo-ops/post-merge.d/10-reindex';
+  const WORKTREE = path.join('/tmp', 'repo-ops-deploy');
+
+  /**
+   * The job the cleanup step hands the coordinator: the merged commit as the
+   * target, and the file's own blob identity as the script.
+   *
+   * @param {object} [overrides]
+   */
+  function jobRequest(overrides = {}) {
+    return {
+      target_base: 'main',
+      target_sha: TARGET,
+      bead_id: 'UI-1',
+      script_path: JOB_PATH,
+      script_mode: '100755',
+      script_blob_sha: JOB_BLOB,
+      ...overrides
+    };
+  }
+
+  /**
+   * A deploy worktree whose readback answers can be steered per test.
+   *
+   * @param {{ head?: string|null, clean?: boolean, aligned?: boolean }} [state]
+   */
+  function worktreeAt(state = {}) {
+    return {
+      bindTarget: vi.fn(async () => ({ ok: true, target_sha: TARGET })),
+      readState: vi.fn(async () => ({
+        ok: true,
+        head: state.head ?? null,
+        clean: state.clean ?? true,
+        path: WORKTREE
+      })),
+      ensureAligned: vi.fn(async () => ({
+        ok: true,
+        path: WORKTREE,
+        target_sha: TARGET
+      })),
+      verifyCovered: vi.fn(async () => ({ ok: true })),
+      verifyAligned: vi.fn(async () => ({ ok: state.aligned ?? true }))
+    };
+  }
+
+  test('prerecords a queued job operation at the merged commit', async () => {
+    const { store, coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt()
+    });
+
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+
+    expect(
+      store.snapshot(root).repo_operations[prepared.operation_id]
+    ).toMatchObject({
+      kind: 'job',
+      state: 'queued',
+      target_sha: TARGET,
+      script_path: JOB_PATH,
+      script_blob_sha: JOB_BLOB
+    });
+  });
+
+  test('resolves the job timeout from the deploy declaration', async () => {
+    const { coordinator } = coordinatorFor({
+      gitRun: gitForBootstrap({ config: `${CONFIG}\ntimeout_ms = 4321` }),
+      deployWorktree: worktreeAt()
+    });
+
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+
+    expect(prepared.timeout_ms).toBe(4321);
+  });
+
+  test('falls back to the default timeout when no deploy is declared', async () => {
+    const { coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      deployWorktree: worktreeAt()
+    });
+
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+
+    expect(prepared.timeout_ms).toBe(600_000);
+  });
+
+  test('aligns a worktree that is behind the merged commit', async () => {
+    const worktree = worktreeAt({ head: BASE });
+    const { coordinator } = coordinatorFor({
+      gitRun: gitWithAncestry({
+        [`${TARGET}->${BASE}`]: false,
+        [`${BASE}->${TARGET}`]: true
+      }),
+      deployWorktree: worktree
+    });
+
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+
+    expect(prepared.ok).toBe(true);
+    expect(worktree.ensureAligned).toHaveBeenCalledOnce();
+  });
+
+  test('refuses a job whose worktree already contains a newer commit', async () => {
+    const worktree = worktreeAt({ head: ADVANCED_HEAD });
+    const { coordinator } = coordinatorFor({
+      gitRun: gitWithAncestry({ [`${TARGET}->${ADVANCED_HEAD}`]: true }),
+      deployWorktree: worktree
+    });
+
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+
+    expect(prepared).toMatchObject({
+      ok: false,
+      code: 'post_merge_job_target_moved'
+    });
+    expect(worktree.ensureAligned).not.toHaveBeenCalled();
+  });
+
+  test('records no operation when the job target moved', async () => {
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitWithAncestry({ [`${TARGET}->${ADVANCED_HEAD}`]: true }),
+      deployWorktree: worktreeAt({ head: ADVANCED_HEAD })
+    });
+
+    await coordinator.prepareJob(jobRequest());
+
+    expect(store.snapshot(root).repo_operations).toEqual({});
+  });
+
+  test('refuses a job whose post-align readback is not the exact target', async () => {
+    const { coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt({ aligned: false })
+    });
+
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+
+    expect(prepared).toMatchObject({
+      ok: false,
+      code: 'post_merge_job_target_moved'
+    });
+  });
+
+  test('spawns the job script from the aligned worktree', async () => {
+    const start = vi.fn(async () => ({
+      ok: true,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'job.log')
+    }));
+    const { coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt(),
+      runner: {
+        start,
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+
+    await coordinator.launchJob({ operation_id: prepared.operation_id });
+
+    expect(start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        script_path: path.join(WORKTREE, JOB_PATH),
+        cwd: WORKTREE,
+        target_sha: TARGET
+      })
+    );
+  });
+
+  test('spawns the job script while the deploy lock is still held', async () => {
+    let held = false;
+    /** @type {boolean|null} */
+    let held_at_spawn = null;
+    const { coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt(),
+      deployLock: async () => {
+        held = true;
+        return {
+          ok: true,
+          release: async () => {
+            held = false;
+          }
+        };
+      },
+      runner: {
+        start: async () => {
+          held_at_spawn = held;
+          return {
+            ok: true,
+            process_identity: { pid: 1, pgid: 1, started_at: 1 },
+            log_path: path.join(root, 'job.log')
+          };
+        },
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+
+    await coordinator.launchJob({ operation_id: prepared.operation_id });
+
+    expect(held_at_spawn).toBe(true);
+  });
+
+  test('terminalizes a queued job instead of launching it', async () => {
+    const start = vi.fn();
+    const { store, coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt(),
+      runner: {
+        start,
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+
+    await coordinator.reconcile(root);
+
+    expect(start).not.toHaveBeenCalled();
+    expect(
+      store.snapshot(root).repo_operations[prepared.operation_id]
+    ).toMatchObject({
+      state: 'failed',
+      failure: { code: 'interrupted', detail: 'post_merge_job_launch_missing' }
+    });
+  });
+
+  test('names a job failure 잡 on the subject timeline', async () => {
+    /** @type {any[]} */
+    const appended = [];
+    const { coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt(),
+      timeline: { append: (/** @type {any} */ line) => appended.push(line) }
+    });
+    await coordinator.prepareJob(jobRequest());
+
+    await coordinator.reconcile(root);
+
+    expect(appended[0]).toMatchObject({
+      bead_id: 'UI-1',
+      kind: 'operation_failed',
+      summary: expect.stringContaining('잡 실패')
+    });
+  });
+
+  test('fails a job whose worktree is not tracked-clean after exit', async () => {
+    const worktree = worktreeAt();
+    worktree.verifyAligned = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValue({ ok: false });
+    const { store, coordinator } = coordinatorFor({
+      deployWorktree: worktree,
+      runner: {
+        start: async () => ({
+          ok: true,
+          process_identity: { pid: 1, pgid: 1, started_at: 1 },
+          log_path: path.join(root, 'job.log')
+        }),
+        readMarker: () => ({ exit_code: 0, signal: null }),
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+    await coordinator.launchJob({ operation_id: prepared.operation_id });
+
+    await coordinator.reconcile(root);
+
+    expect(
+      store.snapshot(root).repo_operations[prepared.operation_id]
+    ).toMatchObject({ state: 'failed' });
+  });
+
+  test('judges a job readback by exact alignment, never by coverage', async () => {
+    const worktree = worktreeAt();
+    const { coordinator } = coordinatorFor({
+      deployWorktree: worktree,
+      runner: {
+        start: async () => ({
+          ok: true,
+          process_identity: { pid: 1, pgid: 1, started_at: 1 },
+          log_path: path.join(root, 'job.log')
+        }),
+        readMarker: () => ({ exit_code: 0, signal: null }),
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+    await coordinator.launchJob({ operation_id: prepared.operation_id });
+
+    await coordinator.reconcile(root);
+
+    expect(worktree.verifyCovered).not.toHaveBeenCalled();
+  });
+
+  test('leaves a failed deploy unsuperseded by a job success', async () => {
+    const { store, coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt(),
+      runner: {
+        start: async () => ({
+          ok: true,
+          process_identity: { pid: 1, pgid: 1, started_at: 1 },
+          log_path: path.join(root, 'job.log')
+        }),
+        readMarker: () => ({ exit_code: 0, signal: null }),
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'deploy-old',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-0', merged_sha: HEAD }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'deploy-old',
+      attempt_id: store.snapshot(root).repo_operations['deploy-old'].attempt_id,
+      exit_code: 1,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'f'.repeat(64),
+        detail: '',
+        interrupted: false
+      }
+    });
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+    await coordinator.launchJob({ operation_id: prepared.operation_id });
+
+    await coordinator.reconcile(root);
+
+    expect(
+      store.snapshot(root).repo_operations['deploy-old'].superseded_by
+    ).toBe(null);
+  });
+
+  test('grants a failing job one script retry before terminal failure', async () => {
+    /** @type {{ exit_code: number, signal: null }|null} */
+    let marker = null;
+    const start = vi.fn(async () => ({
+      ok: true,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'job.log')
+    }));
+    const { store, coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt(),
+      runner: {
+        start,
+        readMarker: () => marker,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+    await coordinator.launchJob({ operation_id: prepared.operation_id });
+    marker = { exit_code: 1, signal: null };
+
+    await coordinator.reconcile(root);
+    const after_first =
+      store.snapshot(root).repo_operations[prepared.operation_id].state;
+    await coordinator.reconcile(root);
+    await coordinator.reconcile(root);
+
+    expect(after_first).toBe('retry_pending');
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(
+      store.snapshot(root).repo_operations[prepared.operation_id].state
+    ).toBe('failed');
+  });
+
+  test('reports a job with no record as unknown evidence', async () => {
+    const { coordinator } = coordinatorFor({ deployWorktree: worktreeAt() });
+
+    const evidence = await coordinator.reconcileJob('job-missing');
+
+    expect(evidence).toMatchObject({ state: 'unknown' });
+  });
+
+  test('reports a succeeded job as terminal success evidence', async () => {
+    const { coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt(),
+      runner: {
+        start: async () => ({
+          ok: true,
+          process_identity: { pid: 1, pgid: 1, started_at: 1 },
+          log_path: path.join(root, 'job.log')
+        }),
+        readMarker: () => ({ exit_code: 0, signal: null }),
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+    await coordinator.launchJob({ operation_id: prepared.operation_id });
+
+    const evidence = await coordinator.waitForJobTerminal(
+      prepared.operation_id,
+      { timeout_ms: 10, poll_ms: 1 }
+    );
+
+    expect(evidence).toMatchObject({
+      state: 'succeeded',
+      operation_id: prepared.operation_id
+    });
+  });
+
+  test('issues a fresh operation id for a re-recorded run of the same job', async () => {
+    const { coordinator } = coordinatorFor({ deployWorktree: worktreeAt() });
+    /** @type {any} */
+    const first = await coordinator.prepareJob(jobRequest());
+
+    /** @type {any} */
+    const second = await coordinator.prepareJob(
+      jobRequest({ supersedes: first.operation_id })
+    );
+
+    expect(second.operation_id).not.toBe(first.operation_id);
+  });
+
+  // The supersede lineage itself is no longer written here: it belongs to the
+  // one ledger mutation that also swaps the pointer, so a re-record cannot
+  // leave a lineage naming an operation the ledger never adopted
+  // (`queue-store.js recordPostMergeJobIntent`).
+  test('prerecords a distinct operation for a re-recorded run', async () => {
+    const { store, coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt()
+    });
+    /** @type {any} */
+    const first = await coordinator.prepareJob(jobRequest());
+
+    /** @type {any} */
+    const second = await coordinator.prepareJob(jobRequest());
+
+    expect(second.operation_id).not.toBe(first.operation_id);
+    expect(
+      store.snapshot(root).repo_operations[second.operation_id]
+    ).toMatchObject({ kind: 'job', state: 'queued' });
+  });
+});

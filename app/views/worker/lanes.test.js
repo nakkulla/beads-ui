@@ -1116,6 +1116,41 @@ describe('repoOpsStripModel (UI-q0uy §4.1)', () => {
     expect(model?.deploy).toBeNull();
   });
 
+  test('ignores a post-merge job when naming the current deployment', () => {
+    const model = repoOpsStripModel(
+      [
+        card({
+          kind: 'job',
+          script_path: 'repo-ops/post-merge.d/010-reindex'
+        })
+      ],
+      []
+    );
+
+    expect(model?.deploy).toBeNull();
+  });
+
+  test('counts a failed post-merge job into 해결 필요', () => {
+    const model = repoOpsStripModel(
+      [
+        card({
+          kind: 'job',
+          state: 'failed',
+          script_path: 'repo-ops/post-merge.d/010-reindex'
+        })
+      ],
+      []
+    );
+
+    expect(model?.badge).toEqual({ tone: 'act', label: '해결 필요 1' });
+  });
+
+  test('opens the strip for a cleanup stopped at post_merge_jobs', () => {
+    expect(
+      repoOpsStripModel([], [{ bead_id: 'UI-a', step: 'post_merge_jobs' }])
+    ).not.toBeNull();
+  });
+
   test('counts an unresolved failure and a stopped cleanup together', () => {
     const model = repoOpsStripModel(
       [card({ state: 'failed' })],

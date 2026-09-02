@@ -109,6 +109,7 @@ describe('v1 deployment provider retirement — shared owners survive', () => {
     expect(CLEANUP_STEPS).toEqual([
       'base_containment',
       'repo_operations',
+      'post_merge_jobs',
       'child_sweep',
       'branch_cleanup',
       'parent_close'

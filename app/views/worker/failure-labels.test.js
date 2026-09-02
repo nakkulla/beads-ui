@@ -18,6 +18,10 @@ describe('failureCategory', () => {
     expect(failureCategory('deploy_script_failure')).toBe('배포 실패');
   });
 
+  test('maps a post-merge job token to 잡 실패', () => {
+    expect(failureCategory('job_script_failure')).toBe('잡 실패');
+  });
+
   test('maps an interruption token to 중단됨', () => {
     expect(failureCategory('interrupted_without_terminal_exit')).toBe('중단됨');
   });
@@ -167,6 +171,20 @@ describe('operationFailureText', () => {
 
   test('renders nothing when there is no failure at all', () => {
     expect(operationFailureText(null, '')).toBe('');
+  });
+
+  // UI-i60a §4: a post-merge job carries the same bare `script_failed` code a
+  // deploy does, so only `failure_kind` can keep the row from reading 배포 실패.
+  test('names a failed post-merge job 잡 실패 rather than 배포 실패', () => {
+    expect(operationFailureText('job_script_failure', 'script_failed')).toBe(
+      '잡 실패'
+    );
+  });
+
+  test('keeps a timed-out job in the 잡 실패 category', () => {
+    expect(operationFailureText('job_script_failure', 'timeout')).toContain(
+      '잡 실패'
+    );
   });
 });
 

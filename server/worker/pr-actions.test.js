@@ -2214,6 +2214,7 @@ describe('worker/pr-actions — merge progress (UI-raqh §4)', () => {
       'merging',
       'base_containment',
       'repo_operations',
+      'post_merge_jobs',
       'child_sweep',
       'branch_cleanup',
       'parent_close',
@@ -2752,7 +2753,12 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
     });
     // The cursor is monotonic and advances ONE step at a time, exactly as the
     // live closure walks it — a seed that jumps is silently ignored.
-    for (const step of ['repo_operations', 'child_sweep', 'branch_cleanup']) {
+    for (const step of [
+      'repo_operations',
+      'post_merge_jobs',
+      'child_sweep',
+      'branch_cleanup'
+    ]) {
       store.setCleanupCursor(WS, { bead_id: BEAD, cursor: step });
       if (step === cursor) {
         break;
@@ -3896,7 +3902,9 @@ describe('worker/pr-actions — legacy migration seams (master spec §11)', () =
   });
 
   test('closes a migrated row through the standard closure', async () => {
-    const env = makeActions({ details: [prOf({ state: 'MERGED' })] });
+    const env = makeActions({
+      details: [prOf({ state: 'MERGED', merged_sha: 'c'.repeat(40) })]
+    });
 
     const result = await env.actions.resumeMigratedClosure(BEAD);
 
@@ -3910,7 +3918,10 @@ describe('worker/pr-actions — legacy migration seams (master spec §11)', () =
     const store = seedStore({
       cleanup_failed: { [BEAD]: { step: 'child_sweep', reason: 'boom' } }
     });
-    const env = makeActions({ store, details: [prOf({ state: 'MERGED' })] });
+    const env = makeActions({
+      store,
+      details: [prOf({ state: 'MERGED', merged_sha: 'c'.repeat(40) })]
+    });
     store.clearCleanupFailure(WS, BEAD);
 
     const result = await env.actions.resumeMigratedClosure(BEAD);
@@ -4693,5 +4704,792 @@ describe('post-merge sweep — child disposition (2026-09-01 carryover §1)', ()
     await env.actions.merge(BEAD);
 
     expect(env.calls).not.toContain(`bd:setStatus:${OTHER_CHILD}:closed`);
+  });
+});
+
+describe('post-merge cleanup — the post-merge job step (UI-i60a §1–§3)', () => {
+  const MERGE_SHA = 'c'.repeat(40);
+  const BLOB_FIRST = '1'.repeat(40);
+  const BLOB_SECOND = '2'.repeat(40);
+  const BLOB_CHANGED = '3'.repeat(40);
+  const KEY_FIRST = `10-first@${BLOB_FIRST}`;
+  const KEY_SECOND = `20-second@${BLOB_SECOND}`;
+
+  /**
+   * One `git ls-tree -z` listing of `repo-ops/post-merge.d/`.
+   *
+   * @param {{ name: string, sha: string, mode?: string, type?: string }[]} entries
+   */
+  function listing(entries) {
+    return entries
+      .map(
+        (entry) =>
+          `${entry.mode ?? '100755'} ${entry.type ?? 'blob'} ${entry.sha}\trepo-ops/post-merge.d/${entry.name}`
+      )
+      .map((record) => `${record}\0`)
+      .join('');
+  }
+
+  /**
+   * @param {{ name: string, sha: string, mode?: string, type?: string }[]} entries
+   */
+  function gitListing(entries) {
+    return (/** @type {string[]} */ args) =>
+      args[0] === 'ls-tree' ? listing(entries) : undefined;
+  }
+
+  /**
+   * The coordinator's job lane, recording what each phase was asked to do.
+   *
+   * @param {any} [overrides]
+   */
+  function jobCoordinator(overrides = {}) {
+    /** @type {string[]} */
+    const prepared = [];
+    /** @type {string[]} */
+    const launched = [];
+    let seq = 0;
+    const coordinator = {
+      hasConfig: vi.fn(async () => ({ ok: true, present: false })),
+      prepareJob: vi.fn(async (/** @type {any} */ input) => {
+        prepared.push(input.script_path);
+        seq += 1;
+        return { ok: true, operation_id: `job-${seq}`, timeout_ms: 1000 };
+      }),
+      launchJob: vi.fn(async (/** @type {any} */ input) => {
+        launched.push(input.operation_id);
+        return { ok: true, operation_id: input.operation_id };
+      }),
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'unknown',
+        operation_id
+      })),
+      waitForJobTerminal: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'succeeded',
+        operation_id
+      })),
+      ...overrides
+    };
+    return { coordinator, prepared, launched };
+  }
+
+  /**
+   * The durable record a ledger intent already names, so the retry's supersede
+   * lineage has a real operation to point back at.
+   *
+   * @param {any} store
+   * @param {string} operation_id
+   */
+  function prerecordJobOperation(store, operation_id) {
+    store.ensureRepoOperation(WS, {
+      operation_id,
+      repo_id: REPO,
+      kind: 'job',
+      subjects: [{ bead_id: BEAD, merged_sha: MERGE_SHA }],
+      effective_base_sha: MERGE_SHA,
+      target_base: 'main',
+      target_sha: MERGE_SHA,
+      script_path: 'repo-ops/post-merge.d/10-first',
+      script_mode: '100755',
+      script_blob_sha: BLOB_FIRST
+    });
+  }
+
+  /**
+   * A row whose post-merge job step already failed, waiting to be re-entered.
+   *
+   * @param {{ reason?: string }} [options]
+   */
+  function storeAtFailedJob(options = {}) {
+    const store = seedStore();
+    store.setCleanupCursor(WS, {
+      bead_id: BEAD,
+      cursor: 'base_containment',
+      merge_sha: MERGE_SHA
+    });
+    prerecordJobOperation(store, 'job-prior');
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_FIRST,
+      operation_id: 'job-prior',
+      repo_id: REPO
+    });
+    store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'post_merge_jobs',
+      reason: options.reason ?? `post_merge_job_outcome_unknown:${KEY_FIRST}`
+    });
+    return store;
+  }
+
+  /**
+   * Put the row under a prerecorded `retry_cleanup` completion op, which is
+   * what {@link resumeCompletionCleanup} requires to own the replay.
+   *
+   * @param {any} store
+   */
+  function ownCompletionCleanup(store) {
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: BEAD,
+      source_attempt_id: 'a1',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: BEAD,
+        pr_url: 'https://github.com/o/r/pull/304',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: MERGE_SHA
+      }
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: BEAD,
+      phase: 'cleaning',
+      subject: store.snapshot(WS).completion_intents[BEAD].subject
+    });
+    store.prepareCompletionOp(WS, {
+      root_bead_id: BEAD,
+      phase: 'cleaning',
+      op: {
+        op_id: 'cleanup-1',
+        kind: 'retry_cleanup',
+        failure_key: {
+          stage: 'post_merge_jobs',
+          reason: `post_merge_job_outcome_unknown:${KEY_FIRST}`,
+          subject_sha: MERGE_SHA,
+          base_sha: 'b'.repeat(40),
+          result_digest: 'c'.repeat(64)
+        },
+        attempt_id: null,
+        status: 'prepared'
+      }
+    });
+    return store;
+  }
+
+  /**
+   * @param {{ entries?: any[], coordinator: any, store?: any }} options
+   */
+  function jobEnv(options) {
+    return makeActions({
+      ...ON_BASE,
+      ...(options.store ? { store: options.store } : {}),
+      gitStdout: gitListing(options.entries ?? []),
+      repoOperations: options.coordinator
+    });
+  }
+
+  test('runs no job when the merged tree carries no job directory', async () => {
+    const { coordinator } = jobCoordinator();
+    const env = jobEnv({ coordinator });
+
+    await env.actions.merge(BEAD);
+
+    expect(coordinator.prepareJob).not.toHaveBeenCalled();
+  });
+
+  test('closes the row when the merged tree carries no job directory', async () => {
+    const { coordinator } = jobCoordinator();
+    const env = jobEnv({ coordinator });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).pr_wait).toEqual([]);
+  });
+
+  test('runs pending jobs in filename order', async () => {
+    const { coordinator, prepared } = jobCoordinator();
+    const env = jobEnv({
+      coordinator,
+      entries: [
+        { name: '20-second', sha: BLOB_SECOND },
+        { name: '10-first', sha: BLOB_FIRST }
+      ]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(prepared).toEqual([
+      'repo-ops/post-merge.d/10-first',
+      'repo-ops/post-merge.d/20-second'
+    ]);
+  });
+
+  test('writes the ledger intent before the job is launched', async () => {
+    /** @type {any} */
+    let ledger_at_launch = null;
+    /** @type {any} */
+    let env;
+    const { coordinator } = jobCoordinator({
+      launchJob: vi.fn(async (/** @type {any} */ input) => {
+        ledger_at_launch = env.store.snapshot(WS).post_merge_jobs[KEY_FIRST];
+        return { ok: true, operation_id: input.operation_id };
+      })
+    });
+    env = jobEnv({
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(ledger_at_launch).toMatchObject({
+      state: 'intent',
+      operation_id: 'job-1'
+    });
+  });
+
+  test('writes applied after the job reaches terminal success', async () => {
+    const { coordinator } = jobCoordinator();
+    const env = jobEnv({
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).post_merge_jobs[KEY_FIRST]).toMatchObject({
+      state: 'applied',
+      operation_id: 'job-1'
+    });
+  });
+
+  test('skips a key the ledger already applied', async () => {
+    const store = seedStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_FIRST,
+      operation_id: 'job-old',
+      repo_id: REPO
+    });
+    store.applyPostMergeJob(WS, { key: KEY_FIRST, operation_id: 'job-old' });
+    const { coordinator } = jobCoordinator();
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(coordinator.prepareJob).not.toHaveBeenCalled();
+  });
+
+  test('runs a job once more when the file bytes change', async () => {
+    const store = seedStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_FIRST,
+      operation_id: 'job-old',
+      repo_id: REPO
+    });
+    store.applyPostMergeJob(WS, { key: KEY_FIRST, operation_id: 'job-old' });
+    const { coordinator, prepared } = jobCoordinator();
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_CHANGED }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(prepared).toEqual(['repo-ops/post-merge.d/10-first']);
+    expect(
+      env.store.snapshot(WS).post_merge_jobs[`10-first@${BLOB_CHANGED}`]
+    ).toMatchObject({ state: 'applied' });
+  });
+
+  test('re-adopts an exit-zero run instead of spawning it again', async () => {
+    const store = seedStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_FIRST,
+      operation_id: 'job-prior',
+      repo_id: REPO
+    });
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'succeeded',
+        operation_id
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(coordinator.launchJob).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).post_merge_jobs[KEY_FIRST]).toMatchObject({
+      state: 'applied',
+      operation_id: 'job-prior'
+    });
+  });
+
+  test('terminates cleanup when an intent has no terminal evidence', async () => {
+    const store = seedStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_FIRST,
+      operation_id: 'job-prior',
+      repo_id: REPO
+    });
+    const { coordinator } = jobCoordinator();
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'post_merge_jobs',
+      reason: `post_merge_job_outcome_unknown:${KEY_FIRST}`
+    });
+    expect(coordinator.prepareJob).not.toHaveBeenCalled();
+  });
+
+  test('re-judges the evidence on the cleanup retry click', async () => {
+    const store = seedStore();
+    store.setCleanupCursor(WS, {
+      bead_id: BEAD,
+      cursor: 'base_containment',
+      merge_sha: MERGE_SHA
+    });
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_FIRST,
+      operation_id: 'job-prior',
+      repo_id: REPO
+    });
+    store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'post_merge_jobs',
+      reason: `post_merge_job_outcome_unknown:${KEY_FIRST}`
+    });
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'succeeded',
+        operation_id
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.retryCleanup(BEAD);
+
+    expect(coordinator.launchJob).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).post_merge_jobs[KEY_FIRST].state).toBe(
+      'applied'
+    );
+  });
+
+  test('refuses a new spawn while the recorded run is still alive', async () => {
+    const store = seedStore();
+    store.setCleanupCursor(WS, {
+      bead_id: BEAD,
+      cursor: 'base_containment',
+      merge_sha: MERGE_SHA
+    });
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_FIRST,
+      operation_id: 'job-prior',
+      repo_id: REPO
+    });
+    store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'post_merge_jobs',
+      reason: `post_merge_job_outcome_unknown:${KEY_FIRST}`
+    });
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'running',
+        operation_id
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    const result = await env.actions.retryCleanup(BEAD);
+
+    expect(result).toMatchObject({ ok: true, pending: true });
+    expect(coordinator.prepareJob).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).post_merge_jobs[KEY_FIRST].state).toBe(
+      'intent'
+    );
+  });
+
+  test('keeps the row in pr_wait while a live run is waited on', async () => {
+    const store = seedStore();
+    store.setCleanupCursor(WS, {
+      bead_id: BEAD,
+      cursor: 'base_containment',
+      merge_sha: MERGE_SHA
+    });
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_FIRST,
+      operation_id: 'job-prior',
+      repo_id: REPO
+    });
+    store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'post_merge_jobs',
+      reason: `post_merge_job_outcome_unknown:${KEY_FIRST}`
+    });
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'running',
+        operation_id
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.retryCleanup(BEAD);
+
+    expect(
+      env.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+  });
+
+  test('re-records a new operation when the recorded run failed terminally', async () => {
+    const store = storeAtFailedJob({ reason: 'script_failed' });
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        started: true,
+        operation_id,
+        code: 'script_failed'
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.retryCleanup(BEAD);
+
+    expect(env.store.snapshot(WS).post_merge_jobs[KEY_FIRST]).toMatchObject({
+      state: 'applied',
+      operation_id: 'job-1'
+    });
+  });
+
+  test('preserves the superseded operation lineage across the retry swap', async () => {
+    const store = storeAtFailedJob({ reason: 'script_failed' });
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        started: true,
+        operation_id,
+        code: 'script_failed'
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.retryCleanup(BEAD);
+
+    expect(env.store.snapshot(WS).repo_operations['job-prior']).toMatchObject({
+      superseded_by: 'job-1'
+    });
+  });
+
+  test('re-runs a coordinator-refused job the cleanup replay finds pending', async () => {
+    const store = seedStore();
+    prerecordJobOperation(store, 'job-prior');
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_FIRST,
+      operation_id: 'job-prior',
+      repo_id: REPO
+    });
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        started: false,
+        operation_id,
+        code: 'post_merge_job_target_moved'
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).post_merge_jobs[KEY_FIRST]).toMatchObject({
+      state: 'applied',
+      operation_id: 'job-1'
+    });
+  });
+
+  test('terminates a job that started and then died without terminal evidence', async () => {
+    const store = seedStore();
+    prerecordJobOperation(store, 'job-prior');
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_FIRST,
+      operation_id: 'job-prior',
+      repo_id: REPO
+    });
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        started: true,
+        operation_id,
+        code: 'interrupted'
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'post_merge_jobs',
+      reason: `post_merge_job_outcome_unknown:${KEY_FIRST}`
+    });
+    expect(coordinator.prepareJob).not.toHaveBeenCalled();
+  });
+
+  test('refuses to re-run an outcome-unknown job on a completion cleanup replay', async () => {
+    const store = ownCompletionCleanup(storeAtFailedJob());
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        started: true,
+        operation_id,
+        code: 'interrupted'
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.resumeCompletionCleanup(BEAD);
+
+    expect(coordinator.prepareJob).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).post_merge_jobs[KEY_FIRST]).toMatchObject({
+      state: 'intent',
+      operation_id: 'job-prior'
+    });
+  });
+
+  test('re-runs the same outcome-unknown job on the cleanup retry click', async () => {
+    const store = ownCompletionCleanup(storeAtFailedJob());
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        started: true,
+        operation_id,
+        code: 'interrupted'
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.retryCleanup(BEAD);
+
+    expect(env.store.snapshot(WS).post_merge_jobs[KEY_FIRST]).toMatchObject({
+      state: 'applied',
+      operation_id: 'job-1'
+    });
+  });
+
+  test('stops the cleanup on a job entry that is not a regular file', async () => {
+    const { coordinator } = jobCoordinator();
+    const env = jobEnv({
+      coordinator,
+      entries: [
+        { name: 'nested', sha: BLOB_FIRST, mode: '040000', type: 'tree' }
+      ]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'post_merge_jobs',
+      reason: 'post_merge_job_invalid:nested'
+    });
+    expect(coordinator.prepareJob).not.toHaveBeenCalled();
+  });
+
+  test('stops the cleanup on a symlinked job entry', async () => {
+    const { coordinator } = jobCoordinator();
+    const env = jobEnv({
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST, mode: '120000' }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      reason: 'post_merge_job_invalid:10-first'
+    });
+  });
+
+  test('blocks the parent close when a job fails', async () => {
+    const { coordinator } = jobCoordinator({
+      waitForJobTerminal: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        operation_id,
+        code: 'script_failed',
+        log_path: '/tmp/job.log'
+      }))
+    });
+    const env = jobEnv({
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'post_merge_jobs',
+      reason: 'script_failed',
+      log_path: '/tmp/job.log'
+    });
+    expect(
+      env.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+    expect(env.calls).not.toContain(`bd:setStatus:${BEAD}:closed`);
+  });
+
+  test('writes no applied key for a failed job', async () => {
+    const { coordinator } = jobCoordinator({
+      waitForJobTerminal: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        operation_id,
+        code: 'script_failed'
+      }))
+    });
+    const env = jobEnv({
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).post_merge_jobs[KEY_FIRST].state).toBe(
+      'intent'
+    );
+  });
+
+  test('runs no later job once an earlier one failed', async () => {
+    const { coordinator, prepared } = jobCoordinator({
+      waitForJobTerminal: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        operation_id,
+        code: 'script_failed'
+      }))
+    });
+    const env = jobEnv({
+      coordinator,
+      entries: [
+        { name: '10-first', sha: BLOB_FIRST },
+        { name: '20-second', sha: BLOB_SECOND }
+      ]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(prepared).toEqual(['repo-ops/post-merge.d/10-first']);
+    expect(env.store.snapshot(WS).post_merge_jobs[KEY_SECOND]).toBeUndefined();
+  });
+
+  test('refuses to run a job whose aligned target moved', async () => {
+    const { coordinator } = jobCoordinator({
+      prepareJob: vi.fn(async () => ({
+        ok: false,
+        code: 'post_merge_job_target_moved'
+      }))
+    });
+    const env = jobEnv({
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'post_merge_jobs',
+      reason: `post_merge_job_target_moved:${KEY_FIRST}`
+    });
+  });
+
+  test('leaves the ledger untouched when the target moved', async () => {
+    const { coordinator } = jobCoordinator({
+      prepareJob: vi.fn(async () => ({
+        ok: false,
+        code: 'post_merge_job_target_moved'
+      }))
+    });
+    const env = jobEnv({
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).post_merge_jobs).toEqual({});
+  });
+
+  test('resumes a row parked past the job step without re-running it', async () => {
+    const { coordinator } = jobCoordinator();
+    const env = jobEnv({ coordinator });
+    env.store.setCleanupCursor(WS, {
+      bead_id: BEAD,
+      cursor: 'base_containment',
+      merge_sha: MERGE_SHA
+    });
+    env.store.setCleanupCursor(WS, {
+      bead_id: BEAD,
+      cursor: 'repo_operations'
+    });
+    env.store.setCleanupCursor(WS, {
+      bead_id: BEAD,
+      cursor: 'post_merge_jobs'
+    });
+    env.store.setCleanupCursor(WS, { bead_id: BEAD, cursor: 'child_sweep' });
+
+    await env.actions.resumeRepoOperations();
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+  });
+
+  test('stops on an unreadable job listing rather than reading it as empty', async () => {
+    const { coordinator } = jobCoordinator();
+    const env = makeActions({
+      ...ON_BASE,
+      gitResult: (/** @type {string[]} */ args) =>
+        args[0] === 'ls-tree' ? 128 : 0,
+      repoOperations: coordinator
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'post_merge_jobs',
+      reason: 'post_merge_jobs_unreadable'
+    });
   });
 });

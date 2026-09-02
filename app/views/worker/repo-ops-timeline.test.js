@@ -2,6 +2,8 @@ import { render } from 'lit-html';
 import { describe, expect, test, vi } from 'vitest';
 import {
   createRepoOpsDrawer,
+  jobFileName,
+  operationLabel,
   repoOpsTimelineTemplate,
   timelineEvents,
   timelineView
@@ -806,5 +808,256 @@ describe('카드 로그 경로 인계 (UI-8w4t §4)', () => {
     expect(
       mount.querySelector('.worker-ev__copy')?.getAttribute('aria-label')
     ).toBe('로그 경로 복사: /state/logs/op-1.log');
+  });
+});
+
+describe('post-merge 잡 행 (UI-i60a §4)', () => {
+  /**
+   * A kind `job` card in the SERVER's projected shape. `script_path` is the
+   * `repo-ops/post-merge.d/<name>` entry the runner executed, which is the only
+   * thing that tells two jobs apart.
+   *
+   * @param {Record<string, any>} [patch]
+   */
+  function jobCard(patch = {}) {
+    return {
+      operation_id: 'op-job',
+      kind: 'job',
+      repo_id: '/repo',
+      target_base: 'main',
+      target_sha: 'c'.repeat(40),
+      script_path: 'repo-ops/post-merge.d/010-reindex',
+      script_blob_sha: 'e'.repeat(40),
+      state: 'succeeded',
+      requested_at: 1000,
+      finished_at: 43_100,
+      elapsed_ms: 42_000,
+      exit_code: 0,
+      log_path: '/logs/op-job.log',
+      subjects: [],
+      failure: null,
+      failure_kind: '',
+      retry: null,
+      superseded_by: null,
+      dismissed: null,
+      ...patch
+    };
+  }
+
+  /**
+   * @param {Record<string, any>} card
+   * @param {any} [repo_ops]
+   * @returns {HTMLElement}
+   */
+  function renderRow(card, repo_ops) {
+    const mount = document.createElement('div');
+    const view = timelineView([card], [], { expanded: false });
+
+    render(
+      repoOpsTimelineTemplate({
+        events: view.visible,
+        hidden: view.hidden,
+        expanded: false,
+        repo: '/repo',
+        repo_ops
+      }),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.worker-ev'));
+  }
+
+  test('labels a job row with its script file name', () => {
+    const row = renderRow(jobCard());
+
+    const what = row.querySelector('.worker-ev__what');
+
+    expect(what?.textContent).toBe('010-reindex');
+  });
+
+  test('keeps a job row out of the deploy lane name', () => {
+    const row = renderRow(jobCard());
+
+    const what = row.querySelector('.worker-ev__what');
+
+    expect(what?.textContent).not.toBe('머지 후 배포');
+  });
+
+  test('names an unnamed job by its kind word rather than blank', () => {
+    const row = renderRow(jobCard({ script_path: null }));
+
+    const what = row.querySelector('.worker-ev__what');
+
+    expect(what?.textContent).toBe('머지 후 잡');
+  });
+
+  test('derives the label from the last path segment', () => {
+    expect(jobFileName('repo-ops/post-merge.d/020-migrate.sh')).toBe(
+      '020-migrate.sh'
+    );
+  });
+
+  test('yields no job name for a non-string script path', () => {
+    expect(jobFileName(undefined)).toBe('');
+  });
+
+  test('keeps the verify and deploy lane words unchanged', () => {
+    const labels = [
+      operationLabel({ kind: 'verify' }),
+      operationLabel({ kind: 'deploy' })
+    ];
+
+    expect(labels).toEqual(['머지 전 검증', '머지 후 배포']);
+  });
+
+  test('shows the elapsed time and target on a job row like any other', () => {
+    const row = renderRow(jobCard());
+
+    const meta = row.querySelector('.worker-ev__meta');
+
+    expect(meta?.textContent).toContain('42.0초');
+  });
+
+  test('offers the log path and exit code inside 세부 on a job row', () => {
+    const row = renderRow(jobCard({ state: 'failed' }));
+
+    const details = row.querySelector('.worker-ev__details');
+
+    expect(details?.textContent).toContain('/logs/op-job.log');
+  });
+
+  test('reads 잡 실패 for a failed job rather than 배포 실패', () => {
+    const row = renderRow(
+      jobCard({
+        state: 'failed',
+        exit_code: 1,
+        failure: { code: 'script_failed', interrupted: false },
+        failure_kind: 'job_script_failure'
+      })
+    );
+
+    const explain = row.querySelector('.worker-ev__cause');
+
+    expect(explain?.textContent).toContain('잡 실패');
+  });
+
+  test('reads the deploy declaration timeout for a timed-out job', () => {
+    const row = renderRow(
+      jobCard({
+        state: 'failed',
+        failure: { code: 'timeout', interrupted: false },
+        failure_kind: 'job_script_failure'
+      }),
+      { deploy: { timeout_ms: 600_000 } }
+    );
+
+    const why = row.querySelector('.worker-ev__why');
+
+    expect(why?.textContent).toContain('타임아웃 600초 초과');
+  });
+
+  test('borrows no lane timeout for an unknown operation kind', () => {
+    const row = renderRow(
+      jobCard({
+        kind: 'teleport',
+        state: 'failed',
+        failure: { code: 'timeout', interrupted: false }
+      }),
+      { deploy: { timeout_ms: 600_000 } }
+    );
+
+    const why = row.querySelector('.worker-ev__why');
+
+    expect(why?.textContent).toContain('타임아웃 초과');
+  });
+
+  test('offers only 기록 닫기 on a failed job row', () => {
+    const row = renderRow(
+      jobCard({
+        state: 'failed',
+        failure: { code: 'script_failed', interrupted: false },
+        failure_kind: 'job_script_failure'
+      })
+    );
+
+    const buttons = Array.from(
+      row.querySelectorAll('.worker-ev__acts button')
+    ).map((button) => button.textContent?.trim());
+
+    expect(buttons).toEqual(['기록 닫기']);
+  });
+});
+
+describe('post_merge_jobs 정리 멈춤 행 (UI-i60a §1)', () => {
+  /**
+   * @param {Record<string, any>} entry
+   * @returns {HTMLElement}
+   */
+  function renderCleanupRow(entry) {
+    const mount = document.createElement('div');
+    const view = timelineView([], [entry], { expanded: false });
+
+    render(
+      repoOpsTimelineTemplate({
+        events: view.visible,
+        hidden: view.hidden,
+        expanded: false,
+        repo: '/repo'
+      }),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.worker-ev'));
+  }
+
+  test('draws six pips in the cleanup stepper', () => {
+    const row = renderCleanupRow(cleanup({ step: 'post_merge_jobs' }));
+
+    const pips = row.querySelectorAll('.worker-step');
+
+    expect(pips.length).toBe(6);
+  });
+
+  test('stalls the stepper on the post_merge_jobs pip', () => {
+    const row = renderCleanupRow(cleanup({ step: 'post_merge_jobs' }));
+
+    const stalled = row.querySelector('.worker-step--stall');
+
+    expect(stalled?.getAttribute('data-step')).toBe('post_merge_jobs');
+  });
+
+  test('resumes a stopped job step from the existing 정리 재개 button', () => {
+    const row = renderCleanupRow(
+      cleanup({ step: 'post_merge_jobs', reason: 'post_merge_job_failed' })
+    );
+
+    const button = row.querySelector('.worker-cleanup__resume');
+
+    expect(button?.textContent?.trim()).toBe('정리 재개 — 머지 후 잡 단계부터');
+  });
+
+  test('adds no session-resolution button to a stopped job step', () => {
+    const row = renderCleanupRow(
+      cleanup({ step: 'post_merge_jobs', reason: 'post_merge_job_failed' })
+    );
+
+    const buttons = Array.from(
+      row.querySelectorAll('.worker-ev__acts button')
+    ).map((button) => button.textContent?.trim());
+
+    expect(buttons).toEqual(['정리 재개 — 머지 후 잡 단계부터']);
+  });
+
+  test('keeps the raw job reason inspectable in 세부', () => {
+    const row = renderCleanupRow(
+      cleanup({
+        step: 'post_merge_jobs',
+        reason: 'post_merge_job_target_moved:010-reindex@abc'
+      })
+    );
+
+    const details = row.querySelector('.worker-ev__details');
+
+    expect(details?.textContent).toContain(
+      'post_merge_job_target_moved:010-reindex@abc'
+    );
   });
 });

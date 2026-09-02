@@ -1,10 +1,10 @@
 /**
  * The 저장소 작업 타임라인 drawer (UI-q0uy §4.2).
  *
- * One time axis for everything the Worker did to this repository: verify/deploy
- * operations and stopped post-merge cleanups, merged newest-first. It is a PURE
- * derivation of projections the queue snapshot already carries — no new query
- * exists for this view.
+ * One time axis for everything the Worker did to this repository:
+ * verify/deploy/job operations and stopped post-merge cleanups, merged
+ * newest-first. It is a PURE derivation of projections the queue snapshot
+ * already carries — no new query exists for this view.
  *
  * The rendering rule is the whole point of the redesign. A success is one quiet
  * line with its evidence folded away; a failure carries the cause SENTENCE and,
@@ -60,15 +60,80 @@ const UNRESOLVED_STATES = new Set([
 ]);
 
 /**
- * What each operation kind is called in the timeline. `verify` and `deploy` are
- * durable vocabulary; these are the human names for the same two lanes.
+ * What each operation kind is called in the timeline. `verify`, `deploy` and
+ * `job` are durable vocabulary; these are the human names for the same lanes.
+ *
+ * The `job` word is only a FALLBACK: a post-merge job row is named by its own
+ * file (see `operationLabel`), because a repository can have many of them and
+ * "머지 후 잡" would say the same thing about every one.
  *
  * @type {Record<string, string>}
  */
 const OPERATION_KIND_LABELS = {
   verify: '머지 전 검증',
-  deploy: '머지 후 배포'
+  deploy: '머지 후 배포',
+  job: '머지 후 잡'
 };
+
+/**
+ * Which `repo_ops` declaration a kind's timeout comes from. It is a MAP rather
+ * than a `verify ? : deploy` ternary so that only the kinds that really read a
+ * declaration do: a kind this client does not know reads none and its
+ * termination line says `타임아웃 초과` without a number instead of borrowing
+ * the deploy limit.
+ *
+ * `job` reads the DEPLOY declaration on purpose (UI-i60a §2): jobs are activated
+ * by the existence of `repo-ops/post-merge.d/`, `repo-ops/config.toml` has no
+ * job section to declare, and the runner gives a job the deploy lane's declared
+ * timeout. The row's identity is still its own — only the limit is shared.
+ *
+ * @type {Record<string, 'verify'|'deploy'>}
+ */
+const KIND_TIMEOUT_LANES = {
+  verify: 'verify',
+  deploy: 'deploy',
+  job: 'deploy'
+};
+
+/**
+ * The file name of a post-merge job, from the `repo-ops/post-merge.d/<name>`
+ * path the projection already carries. This is the ONE place a job row's label
+ * is derived.
+ *
+ * A path with no usable last segment yields '' so the caller falls back to the
+ * kind word — a row is never labelled with an empty string (fail-quiet).
+ *
+ * @param {unknown} script_path
+ * @returns {string}
+ */
+export function jobFileName(script_path) {
+  if (typeof script_path !== 'string') {
+    return '';
+  }
+  const segments = script_path.split('/').filter((part) => part.length > 0);
+  return segments.length > 0 ? segments[segments.length - 1] : '';
+}
+
+/**
+ * What one operation row calls itself. A job says its file name, which is the
+ * only thing that tells two jobs apart; verify and deploy say their lane word;
+ * an unknown kind travels through raw rather than being renamed into a lane it
+ * does not belong to.
+ *
+ * @param {any} operation
+ * @returns {string}
+ */
+export function operationLabel(operation) {
+  if (!operation || typeof operation !== 'object') {
+    return '';
+  }
+  if (operation.kind === 'job') {
+    return jobFileName(operation.script_path) || OPERATION_KIND_LABELS.job;
+  }
+  return Object.hasOwn(OPERATION_KIND_LABELS, operation.kind)
+    ? OPERATION_KIND_LABELS[operation.kind]
+    : operation.kind;
+}
 
 /**
  * Merge the two projections into one newest-first event list (§4.2/§5). A row
@@ -289,8 +354,11 @@ function laneTimeoutMs(repo_ops, operation) {
   if (!repo_ops || typeof repo_ops !== 'object') {
     return undefined;
   }
-  const lane = operation && operation.kind === 'verify' ? 'verify' : 'deploy';
-  const declaration = repo_ops[lane];
+  const kind = operation && typeof operation === 'object' ? operation.kind : '';
+  if (!Object.hasOwn(KIND_TIMEOUT_LANES, kind)) {
+    return undefined;
+  }
+  const declaration = repo_ops[KIND_TIMEOUT_LANES[kind]];
   const timeout_ms =
     declaration && typeof declaration === 'object'
       ? declaration.timeout_ms
@@ -384,11 +452,7 @@ function operationEventTemplate(event, repo_ops) {
     ></span>
     <div class="worker-ev__body">
       <div class="worker-ev__line1">
-        <span class="worker-ev__what"
-          >${Object.hasOwn(OPERATION_KIND_LABELS, operation.kind)
-            ? OPERATION_KIND_LABELS[operation.kind]
-            : operation.kind}</span
-        >
+        <span class="worker-ev__what">${operationLabel(operation)}</span>
         <span class="worker-ev__meta"
           >${operation.target_base}@${shortSha(
             operation.target_sha
@@ -442,7 +506,7 @@ function operationEventTemplate(event, repo_ops) {
 }
 
 /**
- * One stopped-cleanup event: the five-step stepper showing WHERE it stopped, the
+ * One stopped-cleanup event: the cursor stepper showing WHERE it stopped, the
  * cause sentence, and a resume button that names the step it resumes from. This
  * absorbs the old yellow banner without losing any of its information — the
  * output tail and log path move into 세부.

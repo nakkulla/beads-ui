@@ -43,6 +43,9 @@ function isMergeSha(merge_sha) {
  */
 function isExactOperation(operation, bead_id, merge_sha) {
   if (
+    // kind `job` is deliberately absent: the merge card's positions are fixed
+    // (`MERGE_STEPS`) and a repository may run any number of jobs, so there is
+    // no honest `N/7` for one. Jobs report on the 저장소 작업 timeline instead.
     !['verify', 'deploy'].includes(operation.kind) ||
     ![...ACTIVE_OPERATION_STATES, ...TERMINAL_OPERATION_STATES].includes(
       operation.state
@@ -150,7 +153,12 @@ export function prWaitProgress(input) {
     input.cleanup_failed && typeof input.cleanup_failed === 'object'
       ? /** @type {Record<string, any>} */ (input.cleanup_failed)
       : null;
+  // Every cursor step the server runs AFTER `repo_operations` (UI-i60a §1 put
+  // `post_merge_jobs` at the head of that closure). Past this line the
+  // verify/deploy stage is over, so its operation cards are history rather than
+  // current progress.
   const cursor_after_repo_operations = [
+    'post_merge_jobs',
     'child_sweep',
     'branch_cleanup',
     'parent_close'

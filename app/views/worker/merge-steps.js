@@ -4,7 +4,7 @@
  *
  * It lives in its own module because two views need it and neither may import
  * the other: `index.js` renders the in-flight merge progress, and
- * `repo-ops-timeline.js` renders the five-step cleanup stepper. The client keeps
+ * `repo-ops-timeline.js` renders the cleanup stepper. The client keeps
  * its own copy of the server order on purpose — a view must not import server
  * code — and an unknown step still renders by its raw name rather than blanking
  * the row.
@@ -28,17 +28,35 @@ export const MERGE_STEPS = [
 
 /**
  * The POST-merge cleanup cursor alone — the merge itself is not one of its
- * steps, so the stepper a stopped cleanup draws has five pips, not six.
+ * steps, so the stepper a stopped cleanup draws is exactly the server cursor.
+ *
+ * This ONE list is where the client's copy of the cursor order lives: the
+ * stepper, the step label, the `N단계 중 M단계` counter and the stalled sentence
+ * all read it, so a server that grows a step is followed in one place
+ * (UI-i60a §1 added `post_merge_jobs`, taking the sequence from five to six).
  *
  * @type {Array<{ step: string, label: string }>}
  */
 export const CLEANUP_STEPS = [
   { step: 'base_containment', label: 'base 포함 확인' },
   { step: 'repo_operations', label: '저장소 작업' },
+  { step: 'post_merge_jobs', label: '머지 후 잡' },
   { step: 'child_sweep', label: '자식 정리' },
   { step: 'branch_cleanup', label: '브랜치 정리' },
   { step: 'parent_close', label: '부모 close' }
 ];
+
+/**
+ * Cleanup cursor steps that hold NO fixed position on the merge card. Both run
+ * a variable number of scripts, so the card names the stage and leaves the
+ * counter off rather than claiming a position the sequence does not have.
+ *
+ * @type {Set<string>}
+ */
+const UNPOSITIONED_CURSOR_STEPS = new Set([
+  'repo_operations',
+  'post_merge_jobs'
+]);
 
 /** @type {Record<string, { step: string, label: string }>} */
 const MERGE_PROGRESS_STEPS = {
@@ -88,8 +106,8 @@ export function mergeStepView(step) {
     return null;
   }
   const total = MERGE_STEPS.length;
-  if (step === 'repo_operations') {
-    return { label: '저장소 작업', index: 0, total, percent: 0 };
+  if (UNPOSITIONED_CURSOR_STEPS.has(step)) {
+    return { label: cleanupStepLabel(step), index: 0, total, percent: 0 };
   }
   const mapped = MERGE_PROGRESS_STEPS[step];
   if (!mapped) {
@@ -107,7 +125,7 @@ export function mergeStepView(step) {
 }
 
 /**
- * The five cleanup pips with the stopped one marked. Steps before the stop are
+ * The cleanup pips with the stopped one marked. Steps before the stop are
  * done, the stop itself is `stall`, and everything after is unreached. An
  * unknown step leaves every pip unreached rather than guessing a position — the
  * cursor is a contract the client only consumes.

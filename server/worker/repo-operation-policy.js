@@ -113,9 +113,15 @@ export function classifyRepoOperationFailure(operation) {
   if (failure.code !== 'script_failed' && failure.code !== 'timeout') {
     return failure.code;
   }
-  return operation.kind === 'verify'
-    ? 'verify_script_failure'
-    : 'deploy_script_failure';
+  if (operation.kind === 'verify') {
+    return 'verify_script_failure';
+  }
+  // A post-merge job is its own lane (UI-i60a): without this it would classify
+  // as `deploy_script_failure` and every surface would call it 배포 실패.
+  if (operation.kind === 'job') {
+    return 'job_script_failure';
+  }
+  return 'deploy_script_failure';
 }
 
 /**

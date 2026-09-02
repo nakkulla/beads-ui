@@ -5,7 +5,14 @@ import { parse as parseToml } from 'smol-toml';
 
 export const REPO_OPS_CONFIG_PATH = 'repo-ops/config.toml';
 const SCRIPT_ROOT = 'repo-ops/script/';
-const DEFAULT_TIMEOUT_MS = 600_000;
+/**
+ * The timeout a declaration that omits `timeout_ms` runs under. Exported
+ * because the post-merge job lane (UI-i60a §2) resolves its timeout by exactly
+ * the same rule as deploy — the `[deploy]` declaration's value, else this —
+ * and a second private copy of the number would be a second contract.
+ */
+export const DEFAULT_REPO_OPS_TIMEOUT_MS = 600_000;
+const DEFAULT_TIMEOUT_MS = DEFAULT_REPO_OPS_TIMEOUT_MS;
 
 /**
  * @param {string} value

@@ -2500,6 +2500,12 @@ describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
     );
   });
 
+  test('says cleanup for the post-merge job cursor step', () => {
+    expect(commentLines({ failure_key: { stage: 'post_merge_jobs' } })[1]).toBe(
+      '- 단계: cleanup'
+    );
+  });
+
   test('carries an unmapped stage token through raw', () => {
     expect(commentLines({ failure_key: { stage: 'merge_subject' } })[1]).toBe(
       '- 단계: merge_subject'

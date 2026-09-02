@@ -2655,11 +2655,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
       });
       const cleanup_active = isPrWaitCleanupActive(merge_step);
       const conflicting = !!gate && gate.base_badge === '충돌';
+      // `post_merge_jobs` is the first closure step (UI-i60a §1), so a job that
+      // stopped the cleanup offers the Monitor mirror the same resume the other
+      // closure steps do.
       const cleanup_retry =
         !!cleanup &&
-        ['child_sweep', 'branch_cleanup', 'parent_close'].includes(
-          cleanup.step
-        ) &&
+        [
+          'post_merge_jobs',
+          'child_sweep',
+          'branch_cleanup',
+          'parent_close'
+        ].includes(cleanup.step) &&
         !!gate &&
         gate.tier === 'merged';
       const external_cleanup =
