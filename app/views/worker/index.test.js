@@ -3842,6 +3842,66 @@ describe('views/worker', () => {
     vi.unstubAllGlobals();
   });
 
+  test('abandons a failed archive-step discard from the failed tile', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          f1: {
+            attempt_id: 'f1',
+            bead_id: 'B1',
+            status: 'failed',
+            repo: '/repo',
+            cause: 'verify_failed:x',
+            session_id: 'sid-1'
+          }
+        },
+        discard_operations: {
+          'op-archive': {
+            operation_id: 'op-archive',
+            bead_id: 'B1',
+            attempt_id: 'f1',
+            requested_at: 1,
+            mode: 'unmerged',
+            phase: 'requested',
+            last_error: 'orphan_gitlink_content:vendor/child'
+          }
+        }
+      })
+    );
+    const transport = vi.fn(async () => ({
+      abandoned: true,
+      conflict: false,
+      queue: null
+    }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+
+    const abandon = /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        '.rtile[data-attempt-id="f1"] .rtile__discard-abandon'
+      )
+    );
+    abandon.click();
+
+    expect(abandon.textContent?.trim()).toBe('폐기 포기');
+    expect(confirm).toHaveBeenCalledWith(
+      'B1: 실패한 폐기 작업을 포기합니다. 백업과 폐기는 수행되지 않았고 bead는 폐기 이전 상태로 돌아갑니다. 계속할까요?'
+    );
+    expect(transport).toHaveBeenCalledWith('worker-discard-abandon', {
+      bead_id: 'B1',
+      operation_id: 'op-archive',
+      expected_revision: 1
+    });
+    vi.unstubAllGlobals();
+  });
+
   test('the failed tile targets the latest same-bead failure', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
@@ -5020,6 +5080,102 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       bead_id: 'RD-1',
       expected_revision: 1
     });
+    vi.unstubAllGlobals();
+  });
+
+  test('retries abandon once and restores the pre-discard card', async () => {
+    const operation = {
+      operation_id: 'op1',
+      bead_id: 'RD-1',
+      requested_at: 1,
+      mode: 'unmerged',
+      phase: 'requested',
+      last_error: 'archive_failed'
+    };
+    const fresh_queue = queueWithGate(GREEN, {
+      revision: 7,
+      discard_operations: { op1: operation }
+    });
+    const abandoned_queue = queueWithGate(GREEN, {
+      revision: 8,
+      discard_operations: {
+        op1: { ...operation, phase: 'abandoned' }
+      }
+    });
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({ conflict: true, queue: fresh_queue })
+      .mockResolvedValueOnce({
+        abandoned: true,
+        conflict: false,
+        queue: abandoned_queue
+      });
+    const { mount } = mountWith(
+      queueWithGate(GREEN, { discard_operations: { op1: operation } }),
+      transport
+    );
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__discard-abandon')
+    ).click();
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
+
+    expect(confirm).toHaveBeenCalledWith(
+      'RD-1: 실패한 폐기 작업을 포기합니다. 백업과 폐기는 수행되지 않았고 bead는 폐기 이전 상태로 돌아갑니다. 계속할까요?'
+    );
+    expect(transport.mock.calls).toEqual([
+      [
+        'worker-discard-abandon',
+        { bead_id: 'RD-1', operation_id: 'op1', expected_revision: 1 }
+      ],
+      [
+        'worker-discard-abandon',
+        { bead_id: 'RD-1', operation_id: 'op1', expected_revision: 7 }
+      ]
+    ]);
+    expect(document.querySelector('.toast')?.textContent).toContain(
+      '폐기 포기됨 · 폐기는 수행되지 않았습니다 (원인: archive_failed)'
+    );
+    expect(mount.querySelector('.worker-discard-receipt')).toBeNull();
+    expect(
+      mount.querySelector('.worker-mini__discard')?.textContent?.trim()
+    ).toBe('폐기');
+    vi.unstubAllGlobals();
+  });
+
+  test('announces an abandon refusal', async () => {
+    const operation = {
+      operation_id: 'op1',
+      bead_id: 'RD-1',
+      requested_at: 1,
+      phase: 'requested',
+      last_error: 'archive_failed'
+    };
+    const transport = vi.fn(async () => ({
+      abandoned: false,
+      conflict: false,
+      reason: 'operation_not_requested'
+    }));
+    const { mount } = mountWith(
+      queueWithGate(GREEN, { discard_operations: { op1: operation } }),
+      transport
+    );
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__discard-abandon')
+    ).click();
+    await vi.waitFor(() =>
+      expect(document.querySelector('.toast')?.textContent).toContain(
+        '폐기 포기 거부: operation_not_requested'
+      )
+    );
+
     vi.unstubAllGlobals();
   });
 

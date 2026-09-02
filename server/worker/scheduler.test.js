@@ -16284,3 +16284,120 @@ describe('scheduler waiting return rescan (UI-978d §4)', () => {
     expect(result).toEqual({ checked: 0, returned: 0 });
   });
 });
+
+describe('scheduler abandoned discard release', () => {
+  /**
+   * Persist an abandoned operation for a queued or running Bead.
+   *
+   * @param {ReturnType<typeof setup>} env
+   * @param {string|null} [attempt_id]
+   */
+  function seedAbandoned(env, attempt_id = null) {
+    env.store.createDiscardOperation(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      operation: {
+        operation_id: 'discard-abandoned',
+        bead_id: 'S1',
+        attempt_id,
+        source_snapshot: { repo: '/repo', branch: 'S1' }
+      }
+    });
+    env.store.failDiscardOperation(WS, {
+      operation_id: 'discard-abandoned',
+      expected_phase: 'requested',
+      reason: 'archive_failed'
+    });
+    env.store.abandonDiscardOperation(WS, {
+      operation_id: 'discard-abandoned',
+      resume: null
+    });
+  }
+
+  test('launches a bead after its discard is abandoned', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    seedAbandoned(env);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+  });
+
+  test('releases serial lane occupancy after abandonment', () => {
+    const lanes = activeLaneLineages({
+      attempts: {
+        'att-1': {
+          attempt_id: 'att-1',
+          bead_id: 'S1',
+          status: 'done',
+          serial_lane_id: 's1'
+        }
+      },
+      discard_operations: {
+        'discard-1': {
+          operation_id: 'discard-1',
+          bead_id: 'S1',
+          attempt_id: 'att-1',
+          phase: 'abandoned'
+        }
+      }
+    });
+
+    expect(lanes.size).toBe(0);
+  });
+
+  test('permits pause after abandonment', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { session_id: 'session-1' }
+    });
+    seedAbandoned(env, attempt_id);
+
+    const result = await env.scheduler.pause(WS, attempt_id);
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  test('permits stop after abandonment', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    seedAbandoned(env, attempt_id);
+
+    const result = await env.scheduler.stop(WS, attempt_id);
+
+    expect(result).toBe(true);
+  });
+
+  test('does not unfence a user-stopped attempt', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    await env.scheduler.stop(WS, attempt_id);
+    env.scheduler.fenceDiscardAttempt(attempt_id);
+
+    const unfenced = env.scheduler.unfenceDiscardAttempt(attempt_id);
+
+    expect(unfenced).toBe(false);
+    expect(env.scheduler.externalProtectedBeadIds(WS).has('S1')).toBe(true);
+  });
+
+  test('unfences only a discard-owned stop marker once', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.scheduler.fenceDiscardAttempt(attempt_id);
+
+    const first = env.scheduler.unfenceDiscardAttempt(attempt_id);
+    const second = env.scheduler.unfenceDiscardAttempt(attempt_id);
+
+    expect([first, second]).toEqual([true, false]);
+  });
+});

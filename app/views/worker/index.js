@@ -68,6 +68,8 @@ import { createLaneCollapse } from './lane-collapse.js';
 import { createLaneDrag } from './lane-drag.js';
 import { baseException, buildLanes, resolvesConflict } from './lane-model.js';
 import {
+  discardAbandonCompletionMessage,
+  discardAbandonConfirmationMessage,
   discardCompletionMessage,
   discardConfirmationMessage,
   discardProjection,
@@ -2440,6 +2442,55 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Abandon one failed pre-backup discard operation after confirmation. CAS
+   * conflicts adopt the fresh queue and retry once, matching discardBead.
+   *
+   * @param {string} bead_id
+   * @param {string} operation_id
+   * @param {{ kind?: string, last_error: string }} operation
+   */
+  async function abandonDiscard(bead_id, operation_id, operation) {
+    if (!transport || !bead_id || !operation_id) {
+      return;
+    }
+    if (
+      typeof globalThis.confirm === 'function' &&
+      !globalThis.confirm(discardAbandonConfirmationMessage(bead_id, operation))
+    ) {
+      return;
+    }
+    let res = /** @type {any} */ (
+      await transport('worker-discard-abandon', {
+        bead_id,
+        operation_id,
+        expected_revision: currentRevision()
+      })
+    );
+    adopt(res);
+    if (res && res.conflict) {
+      res = /** @type {any} */ (
+        await transport('worker-discard-abandon', {
+          bead_id,
+          operation_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+    }
+    if (res && res.abandoned === true) {
+      showToast(discardAbandonCompletionMessage(operation), 'success', 5000);
+      return;
+    }
+    if (res && res.reason) {
+      showToast(`폐기 포기 거부: ${res.reason}`, 'error', 2800);
+      return;
+    }
+    if (res && !res.conflict) {
+      showToast('폐기 포기 거부: unknown', 'error', 2800);
+    }
+  }
+
+  /**
    * Send one identity-bound stale-work action. A conflict response carries the
    * newest queue snapshot, but is never retried with an obsolete action id.
    *
@@ -4603,6 +4654,20 @@ export function createWorkerView(mount_element, options = {}) {
     const discardBtn = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-mini__discard')
     );
+    const discardAbandonBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__discard-abandon')
+    );
+    if (discardAbandonBtn) {
+      void abandonDiscard(
+        discardAbandonBtn.dataset.beadId || '',
+        discardAbandonBtn.dataset.operationId || '',
+        {
+          kind: discardAbandonBtn.dataset.operationKind || '',
+          last_error: discardAbandonBtn.dataset.lastError || ''
+        }
+      );
+      return;
+    }
     if (discardBtn) {
       void discardBead(
         discardBtn.dataset.beadId || '',
@@ -4711,6 +4776,26 @@ export function createWorkerView(mount_element, options = {}) {
       return;
     }
     // Tile controls act on the attempt and must never also open the drawer.
+    const tile_discard_abandon = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.rtile__discard-abandon')
+    );
+    if (tile_discard_abandon) {
+      const tile = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile')
+      );
+      const bead_id = tile?.dataset?.beadId;
+      if (bead_id) {
+        void abandonDiscard(
+          bead_id,
+          tile_discard_abandon.dataset.operationId || '',
+          {
+            kind: tile_discard_abandon.dataset.operationKind || '',
+            last_error: tile_discard_abandon.dataset.lastError || ''
+          }
+        );
+      }
+      return;
+    }
     const tile_discard = /** @type {HTMLElement|null} */ (
       target?.closest?.('.rtile__discard')
     );

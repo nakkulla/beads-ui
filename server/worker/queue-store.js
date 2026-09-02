@@ -635,6 +635,8 @@
  * @property {Record<string, unknown>|null} revert_pr
  * @property {Record<string, unknown>} receipts
  * @property {string|null} last_error
+ * @property {number|null} abandoned_at
+ * @property {'continued'|'gone'|'recycled'|null} abandon_resume
  */
 /**
  * One member of the sequential merge queue (UI-5v7d §1).
@@ -878,6 +880,7 @@ import {
   normalizeDelegationSessions,
   readAttemptDelegationStreams
 } from './delegation-monitor.js';
+import { discardOperationActive } from './discard-phase.js';
 import { errorDetail } from './error-detail.js';
 import { ORCHESTRATION_KEYS, execSettingEnums } from './exec-enums.js';
 import { orderLaneByBlocks } from './lane-order.js';
@@ -2595,6 +2598,17 @@ function normalizeDiscardOperation(value, operation_id) {
     last_error:
       typeof value.last_error === 'string' && value.last_error.length > 0
         ? value.last_error
+        : null,
+    abandoned_at:
+      typeof value.abandoned_at === 'number' &&
+      Number.isFinite(value.abandoned_at)
+        ? value.abandoned_at
+        : null,
+    abandon_resume:
+      value.abandon_resume === 'continued' ||
+      value.abandon_resume === 'gone' ||
+      value.abandon_resume === 'recycled'
+        ? value.abandon_resume
         : null
   };
 }
@@ -3767,7 +3781,8 @@ function removeFromLanes(q, bead_id) {
  */
 function hasActiveDiscardOperation(q, bead_id) {
   return Object.values(q.discard_operations).some(
-    (operation) => operation.bead_id === bead_id && operation.phase !== 'done'
+    (operation) =>
+      operation.bead_id === bead_id && discardOperationActive(operation)
   );
 }
 
@@ -4087,7 +4102,7 @@ function heldBeads(q) {
     }
   }
   for (const operation of Object.values(q.discard_operations)) {
-    if (operation.phase !== 'done') {
+    if (discardOperationActive(operation)) {
       held.add(operation.bead_id);
     }
   }
@@ -5401,7 +5416,7 @@ export function createQueueStore(options = {}) {
           active.add(entry.bead_id);
         }
         for (const operation of Object.values(next.discard_operations)) {
-          if (operation.phase !== 'done') {
+          if (discardOperationActive(operation)) {
             active.add(operation.bead_id);
           }
         }
@@ -6584,7 +6599,8 @@ export function createQueueStore(options = {}) {
         };
       }
       const existing = Object.values(current.discard_operations).find(
-        (item) => item.bead_id === operation?.bead_id && item.phase !== 'done'
+        (item) =>
+          item.bead_id === operation?.bead_id && discardOperationActive(item)
       );
       if (existing) {
         return {
@@ -6624,7 +6640,8 @@ export function createQueueStore(options = {}) {
         if (
           Object.values(next.discard_operations).some(
             (item) =>
-              item.bead_id === normalized.bead_id && item.phase !== 'done'
+              item.bead_id === normalized.bead_id &&
+              discardOperationActive(item)
           )
         ) {
           return false;
@@ -6743,6 +6760,42 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Preserve a failed requested discard as terminal without changing lanes.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, resume: 'continued'|'gone'|'recycled'|null }} input
+     * @returns {QueueOpResult & { reason?: string }}
+     */
+    abandonDiscardOperation(workspace, input) {
+      const { operation_id, resume } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const current = next.discard_operations[operation_id];
+        if (!current) {
+          reason = 'operation_not_found';
+          return false;
+        }
+        if (current.phase !== 'requested') {
+          reason = 'phase_not_abandonable';
+          return false;
+        }
+        if (typeof current.last_error !== 'string') {
+          reason = 'operation_not_failed';
+          return false;
+        }
+        next.discard_operations[operation_id] = {
+          ...current,
+          phase: 'abandoned',
+          abandoned_at: now(),
+          abandon_resume: resume
+        };
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
+    },
+
+    /**
      * Remove all server-owned lane/failure membership and release the durable
      * fence on the same final write.
      *
@@ -6795,7 +6848,7 @@ export function createQueueStore(options = {}) {
     activeDiscardBeadIds(workspace) {
       return new Set(
         Object.values(ensureLoaded(workspace).discard_operations)
-          .filter((operation) => operation.phase !== 'done')
+          .filter(discardOperationActive)
           .map((operation) => operation.bead_id)
       );
     },

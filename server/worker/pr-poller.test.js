@@ -596,6 +596,30 @@ describe('worker/pr-poller — external PR state classification (§4)', () => {
     expect(onDiscardObservation).toHaveBeenCalledWith('UI-1');
     expect(onMerged).not.toHaveBeenCalled();
   });
+
+  test('routes an abandoned discard through ordinary PR observation', async () => {
+    const onDiscardObservation = vi.fn(async () => {});
+    const queue = queueOf({
+      discard_operations: {
+        'discard-1': {
+          operation_id: 'discard-1',
+          bead_id: 'UI-1',
+          phase: 'abandoned',
+          last_error: 'archive_failed'
+        }
+      }
+    });
+    const { poller, observations } = makePoller({
+      queue,
+      detail: { state: 'ok', data: detailOf({ state: 'MERGED' }) },
+      onDiscardObservation
+    });
+
+    await poller.tick();
+
+    expect(onDiscardObservation).not.toHaveBeenCalled();
+    expect(observations.get('/ws', 'UI-1')?.pr?.state).toBe('MERGED');
+  });
 });
 
 describe('worker/pr-poller — observation errors fail closed', () => {

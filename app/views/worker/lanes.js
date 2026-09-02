@@ -13,6 +13,7 @@
  */
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
+import { discardOperationActive } from '../../../server/worker/discard-phase.js';
 import {
   REC_LABEL,
   REC_STATE_TEXT,
@@ -403,6 +404,9 @@ export function discardPhaseLabel(phase) {
   if (!phase || phase === 'requested') {
     return '백업 중';
   }
+  if (phase === 'abandoned') {
+    return '폐기 포기됨';
+  }
   if (phase === 'backup_verified' || phase === 'signaled') {
     return 'runner 종료 중';
   }
@@ -438,6 +442,32 @@ export function discardConfirmationMessage(bead_id, confirmation) {
 }
 
 /**
+ * Describe the non-destructive abandon outcome before sending its request.
+ *
+ * @param {string} bead_id
+ * @param {{ kind?: string }} operation
+ * @returns {string}
+ */
+export function discardAbandonConfirmationMessage(bead_id, operation) {
+  return operation.kind === 'stale_work_backup_fresh'
+    ? `${bead_id}: 실패한 백업 작업을 포기합니다. 백업은 만들어지지 않았고 기존 작업은 그대로 남습니다. 계속할까요?`
+    : `${bead_id}: 실패한 폐기 작업을 포기합니다. 백업과 폐기는 수행되지 않았고 bead는 폐기 이전 상태로 돌아갑니다. 계속할까요?`;
+}
+
+/**
+ * Preserve why a failed discard was abandoned after its active projection
+ * disappears from the card.
+ *
+ * @param {{ kind?: string, last_error: string }} operation
+ * @returns {string}
+ */
+export function discardAbandonCompletionMessage(operation) {
+  return operation.kind === 'stale_work_backup_fresh'
+    ? `백업 포기됨 · 기존 작업은 그대로 남습니다 (원인: ${operation.last_error})`
+    : `폐기 포기됨 · 폐기는 수행되지 않았습니다 (원인: ${operation.last_error})`;
+}
+
+/**
  * Preserve the terminal recovery receipt in the success toast after the
  * completed operation leaves every queue lane and active snapshot projection.
  *
@@ -462,6 +492,27 @@ export function discardCompletionMessage(result) {
 }
 
 /**
+ * Add bounded recovery guidance for known discard failures. Unknown tokens
+ * remain unmodified by callers (fail-quiet).
+ *
+ * @param {string|null|undefined} error
+ * @returns {string|null}
+ */
+export function discardFailureGuidance(error) {
+  if (error?.startsWith('orphan_gitlink_content:')) {
+    const path = error.slice('orphan_gitlink_content:'.length);
+    return `매핑 없는 gitlink 경로 ${path}에 내용이 있습니다 — 저장소에서 그 경로를 정리한 뒤 재시도하거나 포기하세요`;
+  }
+  if (error === 'dirty_submodule') {
+    return '서브모듈에 미커밋 변경이나 미초기화 항목이 있습니다 — 정리 후 재시도하세요';
+  }
+  if (error === 'submodule_observation_failed') {
+    return '서브모듈 상태를 읽지 못했습니다 (git 오류) — 워크트리에서 git 명령을 직접 확인하세요';
+  }
+  return null;
+}
+
+/**
  * One shared UI projection for Worker and Monitor discard affordances. The
  * server owns final admission; this only keeps both views from advertising a
  * knowingly conflicting action and keeps a failed operation retry bound to its
@@ -470,14 +521,14 @@ export function discardCompletionMessage(result) {
  * @param {Record<string, any>|null|undefined} operations
  * @param {string} bead_id
  * @param {{ attempt_id?: string|null, external?: boolean, done?: boolean, merge_active?: boolean, merge_queued?: boolean, conflict_active?: boolean, cleanup_active?: boolean, merged?: boolean }} [input]
- * @returns {{ action: boolean, enabled: boolean, label: string, title: string, attempt_id: string|null, operation: any, progress: string|null, error: string|null, confirmation: 'merged'|'unmerged' }}
+ * @returns {{ action: boolean, enabled: boolean, label: string, title: string, attempt_id: string|null, operation: any, progress: string|null, error: string|null, confirmation: 'merged'|'unmerged', abandon: { action: boolean, label: string, title: string } }}
  */
 export function discardProjection(operations, bead_id, input = {}) {
   const list = operations && typeof operations === 'object' ? operations : {};
   const operation = Object.values(list)
     .filter(
       (/** @type {any} */ value) =>
-        value && value.bead_id === bead_id && value.phase !== 'done'
+        value && value.bead_id === bead_id && discardOperationActive(value)
     )
     .sort(
       (/** @type {any} */ left, /** @type {any} */ right) =>
@@ -507,6 +558,7 @@ export function discardProjection(operations, bead_id, input = {}) {
     typeof operation?.last_error === 'string' ? operation.last_error : null;
   const progress = operation ? discardPhaseLabel(operation.phase) : null;
   const stale_recovery = operation?.kind === 'stale_work_backup_fresh';
+  const guidance = discardFailureGuidance(error);
   const confirmation =
     input.merged || operation?.mode === 'merged_revert' ? 'merged' : 'unmerged';
   return {
@@ -522,9 +574,11 @@ export function discardProjection(operations, bead_id, input = {}) {
     title:
       blocked_reason ||
       (error
-        ? stale_recovery
-          ? `백업 뒤 정리 실패: ${error} — 원본과 검증 영수증을 보존한 채 재시도합니다`
-          : `폐기 실패: ${error} — 같은 작업을 재시도합니다`
+        ? guidance
+          ? `폐기 실패: ${error} — ${guidance}`
+          : stale_recovery
+            ? `백업 뒤 정리 실패: ${error} — 원본과 검증 영수증을 보존한 채 재시도합니다`
+            : `폐기 실패: ${error} — 같은 작업을 재시도합니다`
         : operation
           ? `${progress || '폐기 처리 중'} — 완료를 기다리세요`
           : confirmation === 'merged'
@@ -534,7 +588,14 @@ export function discardProjection(operations, bead_id, input = {}) {
     operation: operation || null,
     progress,
     error,
-    confirmation
+    confirmation,
+    abandon: {
+      action: !!operation && operation.phase === 'requested' && Boolean(error),
+      label: stale_recovery ? '백업 포기' : '폐기 포기',
+      title: stale_recovery
+        ? '실패한 백업 작업을 포기합니다 — 원본은 그대로 남고 새로 시작하지 않습니다'
+        : '실패한 폐기 작업을 포기합니다 — 백업·폐기는 수행되지 않았고 bead는 폐기 이전 상태로 돌아갑니다'
+    }
   };
 }
 
@@ -571,6 +632,7 @@ export function discardReceiptTemplate(item) {
     return '';
   }
   const operation = discard.operation;
+  const guidance = discardFailureGuidance(discard.error);
   const archive =
     operation.kind === 'stale_work_backup_fresh' && !discard.error
       ? null
@@ -582,7 +644,11 @@ export function discardReceiptTemplate(item) {
     role=${discard.error ? 'alert' : 'status'}
   >
     <span>${discard.progress}</span>
-    ${discard.error ? html`<span>폐기 실패: ${discard.error}</span>` : ''}
+    ${discard.error
+      ? html`<span
+          >폐기 실패: ${discard.error}${guidance ? ` — ${guidance}` : ''}</span
+        >`
+      : ''}
     <code>작업: ${operation.operation_id}</code>
     ${archive
       ? html`<code>백업: ${archive}</code>`
@@ -1598,7 +1664,10 @@ export function miniRow(item, options = {}) {
   const usage_label = formatUsageTotalWithCost(item.usage);
   const merging = item.merge_step || null;
   const card =
-    item.lane === 'pr_wait' || !!item.revise_action || !!item.stale_work;
+    item.lane === 'pr_wait' ||
+    !!item.revise_action ||
+    !!item.stale_work ||
+    item.discard?.abandon.action === true;
   // 완료 행은 2줄이다 (UI-rkly §3): 제목이 가로 전체를 쓰는 1줄과, 나머지 사실을
   // 전부 받는 2줄. 한 줄에 usage까지 실으면 제목이 먼저 잘린다.
   const two_line = item.lane === 'done' && !card;
@@ -1735,9 +1804,22 @@ export function miniRow(item, options = {}) {
           ${discard?.label || '폐기'}
         </button>`
       : '';
-  // [세션에서 해결] (UI-jw27 §4). 같은 액션 foot의 [정리 재시도] 다음 자리다 —
-  // 둘은 같은 실패 행이 내는 두 출구이고, 재시도가 먼저 읽혀야 한다. 이 버튼은
-  // 아무것도 되돌리지 않으므로 [폐기]보다 앞에 선다.
+  const abandon_el = discard?.abandon.action
+    ? html`<button
+        type="button"
+        class="worker-mini__discard-abandon"
+        data-bead-id=${item.id}
+        data-operation-id=${discard.operation.operation_id}
+        data-operation-kind=${discard.operation.kind || ''}
+        data-last-error=${discard.error || ''}
+        title=${discard.abandon.title}
+      >
+        ${discard.abandon.label}
+      </button>`
+    : '';
+  // [세션에서 해결] (UI-jw27 §4). 평소에는 아무것도 되돌리지 않으므로 [폐기]
+  // 앞에 선다. requested 실패에서는 더 약한 복구부터 읽히도록 재시도와 포기 뒤로
+  // 이동한다 (discard-abandon §3.1).
   const resolve_el = item.resolve_action
     ? html`<button
         type="button"
@@ -1750,6 +1832,9 @@ export function miniRow(item, options = {}) {
         세션에서 해결
       </button>`
     : '';
+  const discard_actions_el = discard?.abandon.action
+    ? html`${discard_el}${abandon_el}${resolve_el}`
+    : html`${resolve_el}${discard_el}`;
   const stale_work = item.stale_work || null;
   const stale_els = stale_work
     ? html`${stale_work.can_resume || stale_work.can_continue
@@ -1916,7 +2001,7 @@ export function miniRow(item, options = {}) {
                 >`
               : ''}${badge_els}${merge_step_el}
             <span class="worker-mini__actions"
-              >${merge_el}${cancel_el}${resolve_el}${discard_el}</span
+              >${merge_el}${cancel_el}${discard_actions_el}</span
             >
             ${timesMeta(item)}
           </div>`
@@ -1929,7 +2014,7 @@ export function miniRow(item, options = {}) {
               ? html`<div class="worker-mini__foot">
                   ${merge_step_el}
                   <span class="worker-mini__actions"
-                    >${merge_el}${cancel_el}${resolve_el}${discard_el}${revise_els}${stale_els}</span
+                    >${merge_el}${cancel_el}${discard_actions_el}${revise_els}${stale_els}</span
                   >
                   ${discardReceiptTemplate(item)}
                 </div>`
@@ -1939,7 +2024,7 @@ export function miniRow(item, options = {}) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${badge_els}${reason_el}${merge_step_el}${merge_el}${cancel_el}${resolve_el}${discard_el}${actions_el}
+              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${badge_els}${reason_el}${merge_step_el}${merge_el}${cancel_el}${discard_actions_el}${actions_el}
             </div>
             ${deps_el}${chips_el}${receipt_el} ${timesMeta(item)}`}
   </div>`;

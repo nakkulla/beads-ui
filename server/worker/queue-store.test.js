@@ -10952,3 +10952,220 @@ describe('worker/queue-store — post-merge job ledger (UI-i60a §3)', () => {
     expect(reloaded.post_merge_jobs).toEqual({});
   });
 });
+
+describe('worker/queue-store discard abandonment', () => {
+  /**
+   * Create one requested operation and optionally give it a durable failure.
+   *
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {{ operation_id?: string, bead_id?: string, failed?: boolean }} [input]
+   */
+  function seedOperation(store, input = {}) {
+    const operation_id = input.operation_id || 'discard-abandon';
+    const bead_id = input.bead_id || 'UI-abandon';
+    store.createDiscardOperation(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      operation: {
+        operation_id,
+        bead_id,
+        attempt_id: 'attempt-abandon',
+        source_snapshot: { repo: '/repo', branch: bead_id }
+      }
+    });
+    if (input.failed !== false) {
+      store.failDiscardOperation(WS, {
+        operation_id,
+        expected_phase: 'requested',
+        reason: 'archive_failed'
+      });
+    }
+    return { operation_id, bead_id };
+  }
+
+  test('rejects an unknown operation', () => {
+    const store = createQueueStore();
+
+    const result = store.abandonDiscardOperation(WS, {
+      operation_id: 'missing',
+      resume: null
+    });
+
+    expect(result.reason).toBe('operation_not_found');
+  });
+
+  test('rejects a phase outside requested', () => {
+    const store = createQueueStore();
+    const { operation_id } = seedOperation(store, { failed: false });
+    store.advanceDiscardOperation(WS, {
+      operation_id,
+      expected_phase: 'requested',
+      next_phase: 'archiving'
+    });
+    store.failDiscardOperation(WS, {
+      operation_id,
+      expected_phase: 'archiving',
+      reason: 'archive_failed'
+    });
+
+    const result = store.abandonDiscardOperation(WS, {
+      operation_id,
+      resume: null
+    });
+
+    expect(result.reason).toBe('phase_not_abandonable');
+  });
+
+  test('rejects an operation without a failure', () => {
+    const store = createQueueStore();
+    const { operation_id } = seedOperation(store, { failed: false });
+
+    const result = store.abandonDiscardOperation(WS, {
+      operation_id,
+      resume: null
+    });
+
+    expect(result.reason).toBe('operation_not_failed');
+  });
+
+  test('preserves failure and lane state on success', () => {
+    const store = createQueueStore({ now: () => 500 });
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-abandon',
+      lane: 's1'
+    });
+    store.recordAdmission(WS, {
+      bead_id: 'UI-abandon',
+      reason: 'worktree_stale_work'
+    });
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-abandon',
+      step: 'child_sweep',
+      reason: 'child_close_failed'
+    });
+    const { operation_id } = seedOperation(store);
+    const before = store.snapshot(WS);
+
+    const result = store.abandonDiscardOperation(WS, {
+      operation_id,
+      resume: 'continued'
+    });
+
+    expect(result.queue.discard_operations[operation_id]).toMatchObject({
+      phase: 'abandoned',
+      last_error: 'archive_failed',
+      abandoned_at: 500,
+      abandon_resume: 'continued'
+    });
+    expect(result.queue.serial_lanes).toEqual(before.serial_lanes);
+    expect(result.queue.admission).toEqual(before.admission);
+    expect(result.queue.cleanup_failed).toEqual(before.cleanup_failed);
+    expect(result.queue.attempts).toEqual(before.attempts);
+  });
+
+  test('normalizes abandonment fields after restart', () => {
+    const store = createQueueStore({ now: () => 700 });
+    const { operation_id } = seedOperation(store);
+    store.abandonDiscardOperation(WS, {
+      operation_id,
+      resume: 'gone'
+    });
+
+    const restarted = createQueueStore().snapshot(WS);
+
+    expect(restarted.discard_operations[operation_id]).toMatchObject({
+      phase: 'abandoned',
+      last_error: 'archive_failed',
+      abandoned_at: 700,
+      abandon_resume: 'gone'
+    });
+  });
+
+  test('releases active guards and permits a new operation', () => {
+    const store = createQueueStore();
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-abandon',
+      lane: 's1'
+    });
+    const { operation_id, bead_id } = seedOperation(store);
+    store.abandonDiscardOperation(WS, { operation_id, resume: null });
+
+    const moved = store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id,
+      lane: 'parallel'
+    });
+    const active_after_abandon = store.activeDiscardBeadIds(WS).has(bead_id);
+    const next = store.createDiscardOperation(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      operation: {
+        operation_id: 'discard-next',
+        bead_id,
+        source_snapshot: { repo: '/repo', branch: bead_id }
+      }
+    });
+
+    expect(active_after_abandon).toBe(false);
+    expect(moved.ok).toBe(true);
+    expect(next.ok).toBe(true);
+    expect(next.reused).not.toBe(true);
+    expect(next.operation?.operation_id).toBe('discard-next');
+  });
+
+  test('stops holding its bead record once abandoned', () => {
+    const store = createQueueStore();
+    const { bead_id } = seedOperation(store);
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-abandon', bead_id }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'att-abandon',
+      patch: { status: 'discarded', finished_at: 1000 }
+    });
+    const held_while_failed = transferableAttempts(store.snapshot(WS)).map(
+      (attempt) => attempt.attempt_id
+    );
+
+    store.abandonDiscardOperation(WS, {
+      operation_id: 'discard-abandon',
+      resume: null
+    });
+
+    expect(held_while_failed).toEqual([]);
+    expect(
+      transferableAttempts(store.snapshot(WS)).map(
+        (attempt) => attempt.attempt_id
+      )
+    ).toEqual(['att-abandon']);
+  });
+
+  test('stops refusing serial grouping once abandoned', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-abandon' });
+    store.place(WS, { expected_revision: 1, bead_id: 'UI-other' });
+    seedOperation(store);
+    const refused = store.applySerialGroup(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      lane: 's1',
+      ordered_bead_ids: ['UI-abandon', 'UI-other']
+    });
+
+    store.abandonDiscardOperation(WS, {
+      operation_id: 'discard-abandon',
+      resume: null
+    });
+    const grouped = store.applySerialGroup(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      lane: 's1',
+      ordered_bead_ids: ['UI-abandon', 'UI-other']
+    });
+
+    expect(refused.ok).toBe(false);
+    expect(grouped.ok).toBe(true);
+    expect(grouped.queue.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual(
+      ['UI-abandon', 'UI-other']
+    );
+  });
+});

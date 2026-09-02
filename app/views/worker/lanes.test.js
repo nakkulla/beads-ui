@@ -3,8 +3,11 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   JUDGEMENT_CHIP_KEYS,
   candidateCard,
+  discardAbandonCompletionMessage,
+  discardAbandonConfirmationMessage,
   discardCompletionMessage,
   discardConfirmationMessage,
+  discardFailureGuidance,
   discardPhaseLabel,
   discardProjection,
   discardReceiptTemplate,
@@ -895,6 +898,33 @@ describe('session-preferred candidate card (UI-49mc)', () => {
 });
 
 describe('discard receipts', () => {
+  test.each([
+    [
+      {},
+      'UI-x1: 실패한 폐기 작업을 포기합니다. 백업과 폐기는 수행되지 않았고 bead는 폐기 이전 상태로 돌아갑니다. 계속할까요?',
+      '폐기 포기됨 · 폐기는 수행되지 않았습니다 (원인: archive_failed)'
+    ],
+    [
+      { kind: 'stale_work_backup_fresh' },
+      'UI-x1: 실패한 백업 작업을 포기합니다. 백업은 만들어지지 않았고 기존 작업은 그대로 남습니다. 계속할까요?',
+      '백업 포기됨 · 기존 작업은 그대로 남습니다 (원인: archive_failed)'
+    ]
+  ])(
+    'shares exact abandon confirmation and completion wording',
+    (operation, confirmation, completion) => {
+      const input = { ...operation, last_error: 'archive_failed' };
+
+      const confirmation_message = discardAbandonConfirmationMessage(
+        'UI-x1',
+        input
+      );
+      const completion_message = discardAbandonCompletionMessage(input);
+
+      expect(confirmation_message).toBe(confirmation);
+      expect(completion_message).toBe(completion);
+    }
+  );
+
   test('uses the shared state-specific confirmation wording', () => {
     expect(discardConfirmationMessage('UI-x1', 'unmerged')).toContain(
       'runner/PR/branch/worktree를 정리하고 이슈를 후보로 되돌립니다'
@@ -918,12 +948,125 @@ describe('discard receipts', () => {
     );
   });
 
+  test.each([
+    [
+      'orphan_gitlink_content:vendor/local',
+      '매핑 없는 gitlink 경로 vendor/local에 내용이 있습니다 — 저장소에서 그 경로를 정리한 뒤 재시도하거나 포기하세요'
+    ],
+    [
+      'dirty_submodule',
+      '서브모듈에 미커밋 변경이나 미초기화 항목이 있습니다 — 정리 후 재시도하세요'
+    ],
+    [
+      'submodule_observation_failed',
+      '서브모듈 상태를 읽지 못했습니다 (git 오류) — 워크트리에서 git 명령을 직접 확인하세요'
+    ],
+    ['archive_failed', null]
+  ])('%s의 닫힌 실패 안내를 반환한다', (error, expected) => {
+    const guidance = discardFailureGuidance(error);
+
+    expect(guidance).toBe(expected);
+  });
+
   test('maps durable phases to the five user-facing progress labels', () => {
     expect(discardPhaseLabel('requested')).toBe('백업 중');
     expect(discardPhaseLabel('signaled')).toBe('runner 종료 중');
     expect(discardPhaseLabel('runner_terminated')).toBe('PR 정리 중');
     expect(discardPhaseLabel('revert_local_prepared')).toBe('revert PR 대기');
     expect(discardPhaseLabel('rollback_verified')).toBe('원복 배포 중');
+  });
+
+  test('labels abandon variants and excludes abandoned operations', () => {
+    const regular = discardProjection(
+      {
+        op1: {
+          operation_id: 'op1',
+          bead_id: 'UI-x1',
+          phase: 'requested',
+          last_error: 'archive_failed'
+        }
+      },
+      'UI-x1'
+    );
+    const stale = discardProjection(
+      {
+        op1: {
+          operation_id: 'op1',
+          bead_id: 'UI-x1',
+          kind: 'stale_work_backup_fresh',
+          phase: 'requested',
+          last_error: 'archive_failed'
+        }
+      },
+      'UI-x1'
+    );
+    const abandoned = discardProjection(
+      {
+        op1: {
+          operation_id: 'op1',
+          bead_id: 'UI-x1',
+          phase: 'abandoned',
+          last_error: 'archive_failed'
+        }
+      },
+      'UI-x1'
+    );
+
+    expect(regular.abandon.label).toBe('폐기 포기');
+    expect(regular.abandon.title).toBe(
+      '실패한 폐기 작업을 포기합니다 — 백업·폐기는 수행되지 않았고 bead는 폐기 이전 상태로 돌아갑니다'
+    );
+    expect(stale.abandon.label).toBe('백업 포기');
+    expect(stale.abandon.title).toBe(
+      '실패한 백업 작업을 포기합니다 — 원본은 그대로 남고 새로 시작하지 않습니다'
+    );
+    expect(abandoned.operation).toBeNull();
+    expect(discardPhaseLabel('abandoned')).toBe('폐기 포기됨');
+  });
+
+  test.each([
+    ['활성 작업 없음', {}, false],
+    [
+      '진행 중',
+      {
+        op1: {
+          operation_id: 'op1',
+          bead_id: 'UI-x1',
+          phase: 'requested'
+        }
+      },
+      false
+    ],
+    [
+      'requested 실패',
+      {
+        op1: {
+          operation_id: 'op1',
+          bead_id: 'UI-x1',
+          phase: 'requested',
+          last_error: 'archive_failed'
+        }
+      },
+      true
+    ],
+    [
+      'requested 밖 phase 실패',
+      {
+        op1: {
+          operation_id: 'op1',
+          bead_id: 'UI-x1',
+          phase: 'backup_verified',
+          last_error: 'worktree_remove_failed'
+        }
+      },
+      false
+    ]
+  ])('%s에서만 포기 action을 노출한다', (_label, operations, expected) => {
+    const discard = discardProjection(operations, 'UI-x1');
+
+    const action = discard.abandon.action;
+
+    expect(action).toBe(expected);
   });
 
   test('shows no deletion before a failed backup has a receipt', () => {
@@ -945,6 +1088,38 @@ describe('discard receipts', () => {
     expect(mount.textContent).toContain('작업: discard-1');
     expect(mount.textContent).toContain('백업 중');
     expect(mount.textContent).toContain('폐기 실패: archive_failed');
+  });
+
+  test.each([
+    [
+      'orphan_gitlink_content:vendor/local',
+      '매핑 없는 gitlink 경로 vendor/local에 내용이 있습니다 — 저장소에서 그 경로를 정리한 뒤 재시도하거나 포기하세요'
+    ],
+    [
+      'dirty_submodule',
+      '서브모듈에 미커밋 변경이나 미초기화 항목이 있습니다 — 정리 후 재시도하세요'
+    ],
+    [
+      'submodule_observation_failed',
+      '서브모듈 상태를 읽지 못했습니다 (git 오류) — 워크트리에서 git 명령을 직접 확인하세요'
+    ]
+  ])('attaches %s guidance to retry title and receipt', (error, guidance) => {
+    const discard = discardProjection(
+      {
+        'discard-1': {
+          operation_id: 'discard-1',
+          bead_id: 'UI-x1',
+          phase: 'requested',
+          last_error: error
+        }
+      },
+      'UI-x1'
+    );
+
+    render(discardReceiptTemplate({ discard }), mount);
+
+    expect(discard.title).toBe(`폐기 실패: ${error} — ${guidance}`);
+    expect(mount.textContent).toContain(`폐기 실패: ${error} — ${guidance}`);
   });
 
   test('keeps the archive path after a failed later phase', () => {
@@ -1057,6 +1232,53 @@ describe('discard receipts', () => {
 
     expect(discard.operation?.operation_id).toBe('newer');
     expect(discard.label).toBe('재시도');
+  });
+
+  test('orders failed abandon exits and preserves the normal action order', () => {
+    const failed = discardProjection(
+      {
+        op1: {
+          operation_id: 'op1',
+          bead_id: 'UI-x1',
+          phase: 'requested',
+          last_error: 'archive_failed'
+        }
+      },
+      'UI-x1'
+    );
+    const failed_row = renderRow({
+      lane: 'queue',
+      done: false,
+      discard: failed,
+      resolve_action: true
+    });
+    const failed_labels = Array.from(
+      failed_row.querySelectorAll('.worker-mini__foot button')
+    ).map((button) => button.textContent?.trim());
+    const abandon_button = /** @type {HTMLButtonElement} */ (
+      failed_row.querySelector('.worker-mini__discard-abandon')
+    );
+    const abandon_bead_id = abandon_button.dataset.beadId;
+    const abandon_operation_id = abandon_button.dataset.operationId;
+    const abandon_title = abandon_button.title;
+    const normal = discardProjection({}, 'UI-x1');
+    const normal_row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      discard: normal,
+      resolve_action: true
+    });
+    const normal_labels = Array.from(
+      normal_row.querySelectorAll('.worker-mini__foot button')
+    ).map((button) => button.textContent?.trim());
+
+    expect(failed_labels).toEqual(['재시도', '폐기 포기', '세션에서 해결']);
+    expect(abandon_bead_id).toBe('UI-x1');
+    expect(abandon_operation_id).toBe('op1');
+    expect(abandon_title).toBe(
+      '실패한 폐기 작업을 포기합니다 — 백업·폐기는 수행되지 않았고 bead는 폐기 이전 상태로 돌아갑니다'
+    );
+    expect(normal_labels).toEqual(['세션에서 해결', '폐기']);
   });
 });
 

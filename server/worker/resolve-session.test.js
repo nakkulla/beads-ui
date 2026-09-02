@@ -215,6 +215,23 @@ describe('resolveFailureContext (UI-jw27 §4)', () => {
     expect(context?.failure_class).toBe('폐기 실패');
   });
 
+  test('ignores an abandoned discard failure', () => {
+    const queue = {
+      discard_operations: {
+        op1: {
+          bead_id: BEAD,
+          phase: 'abandoned',
+          last_error: 'pr_close_failed',
+          requested_at: 5
+        }
+      }
+    };
+
+    const context = resolveFailureContext(queue, BEAD);
+
+    expect(context).toBeNull();
+  });
+
   test('returns null for a bead with no terminal failure', () => {
     const queue = {
       completion_intents: { [BEAD]: { phase: 'cleaning' } },

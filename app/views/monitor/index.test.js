@@ -1260,6 +1260,114 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     }
   });
 
+  test('confirms and retries abandon with the workspace revision', async () => {
+    const operation = {
+      operation_id: 'op1',
+      bead_id: 'A-1',
+      requested_at: 1,
+      phase: 'requested',
+      last_error: 'archive_failed'
+    };
+    let calls = 0;
+    const confirmFn = vi.fn(() => true);
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1', added_at: 1 }],
+          discard_operations: { op1: operation }
+        })
+      ],
+      workspaces_state: [state()],
+      confirm: confirmFn,
+      transport: async () => {
+        calls += 1;
+        return calls === 1
+          ? { conflict: true, queue: { revision: 7 } }
+          : { abandoned: true, conflict: false, queue: { revision: 8 } };
+      }
+    });
+    view.load();
+
+    click(mount, '.worker-mini__discard-abandon');
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+
+    expect(confirmFn).toHaveBeenCalledWith(
+      'A-1: 실패한 폐기 작업을 포기합니다. 백업과 폐기는 수행되지 않았고 bead는 폐기 이전 상태로 돌아갑니다. 계속할까요?'
+    );
+    expect(sent).toEqual([
+      {
+        type: 'worker-discard-abandon',
+        payload: {
+          bead_id: 'A-1',
+          operation_id: 'op1',
+          root_dir: WS_A,
+          expected_revision: 1
+        }
+      },
+      {
+        type: 'worker-discard-abandon',
+        payload: {
+          bead_id: 'A-1',
+          operation_id: 'op1',
+          root_dir: WS_A,
+          expected_revision: 7
+        }
+      }
+    ]);
+    expect(document.querySelector('.toast')?.textContent).toContain(
+      '폐기 포기됨 · 폐기는 수행되지 않았습니다 (원인: archive_failed)'
+    );
+  });
+
+  test('abandons a failed archive-step discard from the failed tile', () => {
+    const confirmFn = vi.fn(() => true);
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              cause: 'runner_exit',
+              session_id: 's'
+            }
+          },
+          discard_operations: {
+            op1: {
+              operation_id: 'op1',
+              bead_id: 'A-1',
+              attempt_id: 't1',
+              requested_at: 1,
+              phase: 'requested',
+              last_error: 'submodule_observation_failed'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()],
+      confirm: confirmFn
+    });
+
+    view.load();
+    click(mount, '.rtile__discard-abandon');
+
+    expect(confirmFn).toHaveBeenCalledWith(
+      expect.stringContaining('실패한 폐기 작업을 포기합니다')
+    );
+    expect(sent).toEqual([
+      {
+        type: 'worker-discard-abandon',
+        payload: {
+          bead_id: 'A-1',
+          operation_id: 'op1',
+          root_dir: WS_A,
+          expected_revision: 1
+        }
+      }
+    ]);
+  });
+
   test('opens failed detail from the badge and closes it outside', () => {
     const { mount, view } = setup({
       workspaces: [

@@ -38,6 +38,7 @@ import {
   openDependentsWithOwners
 } from '../list-adapters.js';
 import {
+  abandonWorkerDiscard,
   backupFreshWorkerStaleWork,
   continueWorkerStaleWork,
   discardWorkerBead,
@@ -70,6 +71,7 @@ import {
   normalizeDelegationSessions,
   readAttemptDelegationStreams
 } from '../worker/delegation-monitor.js';
+import { discardOperationActive } from '../worker/discard-phase.js';
 import { projectExecutionDefaults } from '../worker/execution-defaults.js';
 import {
   applyForeignBlockerCleanup,
@@ -452,7 +454,7 @@ function publicDiscardOperations(value) {
     if (
       !operation ||
       typeof operation !== 'object' ||
-      operation.phase === 'done'
+      !discardOperationActive(operation)
     ) {
       continue;
     }
@@ -5118,6 +5120,103 @@ export async function handleWorkerDiscard(ws, req) {
   if (accepted) {
     fanout(key, queue);
   }
+}
+
+/**
+ * Handle `worker-discard-abandon` for one failed requested operation.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerDiscardAbandon(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (
+    typeof p.bead_id !== 'string' ||
+    p.bead_id.trim().length === 0 ||
+    typeof p.operation_id !== 'string' ||
+    p.operation_id.length === 0 ||
+    !Number.isInteger(p.expected_revision)
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { bead_id, operation_id, expected_revision }'
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  const operation = current.discard_operations?.[p.operation_id];
+  const last_error =
+    operation?.bead_id === p.bead_id && typeof operation.last_error === 'string'
+      ? operation.last_error
+      : null;
+  recordUserAction(key, p.bead_id, 'discard_abandon', '[폐기 포기] 클릭');
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          operation_id: p.operation_id,
+          abandoned: false,
+          conflict: true,
+          reason: null,
+          resume: null,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  /** @type {{ ok: boolean, reason?: string|null, resume?: 'continued'|'gone'|'recycled'|null }} */
+  let result = { ok: false, reason: 'no_attachment' };
+  try {
+    result = await abandonWorkerDiscard(key, {
+      bead_id: p.bead_id,
+      operation_id: p.operation_id
+    });
+  } catch (err) {
+    log('worker discard abandon failed for %s/%s: %o', key, p.bead_id, err);
+    result = { ok: false, reason: 'error' };
+  }
+  const latest = /** @type {any} */ (queueStore().snapshot(key));
+  if (result.ok === true) {
+    try {
+      queueStore().recordTimelineEvent(key, {
+        bead_id: p.bead_id,
+        kind: 'user_action',
+        seq: `discard_abandoned:${latest.revision}`,
+        summary: `폐기 포기 — 폐기 미수행 (원인: ${last_error})`
+      });
+    } catch (err) {
+      log(
+        'discard-abandoned timeline record failed for %s: %o',
+        p.bead_id,
+        err
+      );
+    }
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        operation_id: p.operation_id,
+        abandoned: result.ok === true,
+        conflict: false,
+        reason: result.ok ? null : result.reason || null,
+        resume: result.resume ?? null,
+        queue: decorateQueue(key, latest)
+      })
+    )
+  );
+  fanout(key, latest);
 }
 
 /**

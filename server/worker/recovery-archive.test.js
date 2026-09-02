@@ -39,6 +39,50 @@ function write(file, contents) {
   fs.writeFileSync(file, contents);
 }
 
+/**
+ * Adds an orphan gitlink to the real Git index and commits it.
+ *
+ * @param {string} relative_path
+ */
+function addOrphanGitlink(relative_path) {
+  const oid = git(['rev-parse', 'HEAD']);
+  git([
+    'update-index',
+    '--add',
+    '--cacheinfo',
+    `160000,${oid},${relative_path}`
+  ]);
+  git(['commit', '-m', `orphan gitlink ${relative_path}`]);
+}
+
+/**
+ * Adds a real, initialized Git submodule to the parent repository.
+ *
+ * @param {string} relative_path
+ */
+function addMappedSubmodule(relative_path) {
+  const child_repo = path.join(tmp, `child-${path.basename(relative_path)}`);
+  fs.mkdirSync(child_repo);
+  git(['init'], child_repo);
+  git(['config', 'user.email', 'test@example.com'], child_repo);
+  git(['config', 'user.name', 'Test'], child_repo);
+  write(path.join(child_repo, 'child.txt'), 'base\n');
+  git(['add', '.'], child_repo);
+  git(['commit', '-m', 'child'], child_repo);
+  git(
+    [
+      '-c',
+      'protocol.file.allow=always',
+      'submodule',
+      'add',
+      child_repo,
+      relative_path
+    ],
+    repo
+  );
+  git(['commit', '-am', `submodule ${relative_path}`]);
+}
+
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-archive-'));
   process.env.XDG_STATE_HOME = path.join(tmp, 'state');
@@ -263,6 +307,7 @@ describe('worker recovery archive real-git integration', () => {
     const manifest = JSON.parse(
       fs.readFileSync(path.join(result.receipt.path, 'manifest.json'), 'utf8')
     );
+    expect(manifest.orphan_gitlinks).toEqual([]);
     expect(manifest.excluded).toEqual([
       'git-ignored',
       'dependency-build-output'
@@ -324,6 +369,193 @@ describe('worker recovery archive real-git integration', () => {
 
     expect(result.ok).toBe(true);
     expect(fs.existsSync(path.join(final_path, 'COMPLETE'))).toBe(true);
+  });
+
+  test('archives an empty orphan gitlink and records it in the manifest', () => {
+    const relative_path = 'vendor/orphan';
+    addOrphanGitlink(relative_path);
+    fs.mkdirSync(path.join(repo, relative_path), { recursive: true });
+    const archive = createRecoveryArchive({ now: () => 5000 });
+
+    const result = archive.create(input('discard-empty-orphan'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(result.receipt.path, 'manifest.json'), 'utf8')
+    );
+    expect(manifest.orphan_gitlinks).toEqual([relative_path]);
+  });
+
+  test('archives an absent orphan gitlink without inventorying it', () => {
+    const relative_path = 'vendor/orphan';
+    addOrphanGitlink(relative_path);
+    const archive = createRecoveryArchive({ now: () => 5000 });
+
+    const result = archive.create(input('discard-absent-orphan'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(result.receipt.path, 'manifest.json'), 'utf8')
+    );
+    expect(manifest.orphan_gitlinks).toEqual([relative_path]);
+    expect(manifest.files).not.toContainEqual(
+      expect.objectContaining({ path: relative_path })
+    );
+  });
+
+  test('rejects an orphan gitlink containing a regular file', () => {
+    const relative_path = 'vendor/orphan';
+    addOrphanGitlink(relative_path);
+    write(path.join(repo, relative_path), 'untracked content\n');
+    const archive = createRecoveryArchive({ now: () => 5000 });
+
+    const result = archive.create(input('discard-file-orphan'));
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: `orphan_gitlink_content:${relative_path}`
+    });
+  });
+
+  test('rejects an orphan gitlink containing a nested repository', () => {
+    const relative_path = 'vendor/orphan';
+    addOrphanGitlink(relative_path);
+    fs.mkdirSync(path.join(repo, relative_path), { recursive: true });
+    git(['init'], path.join(repo, relative_path));
+    const archive = createRecoveryArchive({ now: () => 5000 });
+
+    const result = archive.create(input('discard-nested-orphan'));
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: `orphan_gitlink_content:${relative_path}`
+    });
+  });
+
+  test('archives an orphan gitlink with a mapped clean submodule', () => {
+    const orphan_path = 'vendor/orphan';
+    addMappedSubmodule('vendor/child');
+    addOrphanGitlink(orphan_path);
+    fs.mkdirSync(path.join(repo, orphan_path), { recursive: true });
+    const archive = createRecoveryArchive({ now: () => 5000 });
+
+    const result = archive.create(input('discard-clean-mixed'));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(result.receipt.path, 'manifest.json'), 'utf8')
+    );
+    expect(manifest.orphan_gitlinks).toEqual([orphan_path]);
+  });
+
+  test('rejects a dirty mapped submodule alongside an orphan gitlink', () => {
+    const orphan_path = 'vendor/orphan';
+    addMappedSubmodule('vendor/child');
+    addOrphanGitlink(orphan_path);
+    fs.mkdirSync(path.join(repo, orphan_path), { recursive: true });
+    write(path.join(repo, 'vendor/child/child.txt'), 'dirty\n');
+    const archive = createRecoveryArchive({ now: () => 5000 });
+
+    const result = archive.create(input('discard-dirty-mixed'));
+
+    expect(result).toMatchObject({ ok: false, reason: 'dirty_submodule' });
+  });
+
+  test('reports an index observation failure when gitlink listing fails', () => {
+    addOrphanGitlink('vendor/orphan');
+    const archive = createRecoveryArchive({
+      now: () => 5000,
+      git(cwd, args) {
+        if (
+          args[0] === 'ls-files' &&
+          args[1] === '--stage' &&
+          args[2] === '-z'
+        ) {
+          throw new Error('injected ls-files failure');
+        }
+        return execFileSync('git', args, { cwd, encoding: null });
+      }
+    });
+
+    const result = archive.create(input('discard-index-observation'));
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'git_index_observation_failed'
+    });
+  });
+
+  test('reports a submodule observation failure when manifest reading fails', () => {
+    const relative_path = 'vendor/child';
+    const oid = git(['rev-parse', 'HEAD']);
+    write(
+      path.join(repo, '.gitmodules'),
+      `[submodule "child"]\n\tpath = ${relative_path}\n\turl = ../child\n`
+    );
+    git(['add', '.gitmodules']);
+    git([
+      'update-index',
+      '--add',
+      '--cacheinfo',
+      `160000,${oid},${relative_path}`
+    ]);
+    git(['commit', '-m', 'uninitialized submodule']);
+    const archive = createRecoveryArchive({
+      now: () => 5000,
+      git(cwd, args) {
+        if (
+          args[0] === 'config' &&
+          args[1] === '--file' &&
+          args[2] === '.gitmodules'
+        ) {
+          throw new Error('injected config failure');
+        }
+        return execFileSync('git', args, { cwd, encoding: null });
+      }
+    });
+
+    const result = archive.create(input('discard-manifest-observation'));
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'submodule_observation_failed'
+    });
+  });
+
+  test('reports a submodule observation failure when mapped status fails', () => {
+    const relative_path = 'vendor/child';
+    addMappedSubmodule(relative_path);
+    write(path.join(repo, relative_path, 'child.txt'), 'dirty\n');
+    const archive = createRecoveryArchive({
+      now: () => 5000,
+      git(cwd, args) {
+        if (
+          args[0] === 'submodule' &&
+          args[1] === 'status' &&
+          args[2] === '--recursive' &&
+          args[3] === '--'
+        ) {
+          throw new Error('injected submodule status failure');
+        }
+        return execFileSync('git', args, { cwd, encoding: null });
+      }
+    });
+
+    const result = archive.create(input('discard-status-observation'));
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'submodule_observation_failed'
+    });
   });
 
   test('fails closed on a dirty submodule', () => {

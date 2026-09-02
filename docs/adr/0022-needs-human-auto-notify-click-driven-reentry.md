@@ -1,7 +1,8 @@
 ---
 id: 22
 title: needs_human은 자동 알림으로 관측되고 재진입은 두 클릭뿐이다
-status: accepted
+status: superseded
+superseded_by: 24
 date: 2026-09-02
 summary: 'needs_human은 Discord 푸시로 자동 관측되고 재진입은 [정리 재시도]와 기록 세션 resume 기반 Discord 중계 대화형 [세션에서 해결] 두 클릭뿐이며 자동 수리 dispatch 금지는 유지된다'
 supersedes: [5]

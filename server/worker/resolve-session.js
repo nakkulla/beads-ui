@@ -24,6 +24,7 @@
  */
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
+import { discardOperationActive } from './discard-phase.js';
 import { qualifySessionFork } from './session-ref.js';
 import {
   RESOLVE_PANE_MARKER,
@@ -124,7 +125,7 @@ export function resolveFailureContext(queue, bead_id) {
       (/** @type {any} */ value) =>
         value &&
         value.bead_id === bead_id &&
-        value.phase !== 'done' &&
+        discardOperationActive(value) &&
         typeof value.last_error === 'string' &&
         value.last_error.length > 0
     )
