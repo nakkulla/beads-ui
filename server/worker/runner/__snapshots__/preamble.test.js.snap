@@ -10,6 +10,10 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 - headless 프로세스는 턴이 끝나는 즉시 종료된다. 대기 중인 백그라운드 태스크(예: 비동기 리뷰 브리지)는 함께 kill되고 결과는 유실된다. 결과가 필요한 태스크는 턴 안에서 완료까지 기다려라.
 - 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키 — \`impl_dispatch\`, \`impl_entry\`, \`plan_approval\`, \`workflow_mode_source=user\` — 는 이 세션이 쓸 수 없다. Worker는 시도 시작 시 이 키들을 스냅샷하고, 시도 중 값이 바뀌면(부재→기록 포함) 머지 게이트가 영수증 위조로 fail-closed한다. 위임 기본 모델이 이 세션의 모델과 같다는 사실은 main 실행 근거가 아니다 — 실행 형태는 dotfiles workflow 계약의 selector가 정한다.
 
+## fix-now
+
+승인 스펙의 front-matter \`scope:\`와 \`경계\`/\`비목표\` 절은 설계 범위이지 fix-now 흡수의 금지 목록이 아니다. scope 안 변경과 같은 결함·드리프트 클래스의 닫힌 인접 항목은 dotfiles workflow 계약 Follow-ups (a)의 세 조건으로 이 세션에서 같이 고치고, 완료 보고서 \`세션 중 흡수한 발견 항목\`에 앵커와 함께 적어라. 후속 Bead로 넘기는 것은 gate가 거부한 항목뿐이다.
+
 ## 종점
 
 PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·bead \`resolved\`(pr_url metadata 포함) 기록까지 마친 뒤 종료하라. 머지는 사람의 클릭이다.
@@ -55,6 +59,10 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 - headless 프로세스는 턴이 끝나는 즉시 종료된다. 대기 중인 백그라운드 태스크(예: 비동기 리뷰 브리지)는 함께 kill되고 결과는 유실된다. 결과가 필요한 태스크는 턴 안에서 완료까지 기다려라.
 - 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키 — \`impl_dispatch\`, \`impl_entry\`, \`plan_approval\`, \`workflow_mode_source=user\` — 는 이 세션이 쓸 수 없다. Worker는 시도 시작 시 이 키들을 스냅샷하고, 시도 중 값이 바뀌면(부재→기록 포함) 머지 게이트가 영수증 위조로 fail-closed한다. 위임 기본 모델이 이 세션의 모델과 같다는 사실은 main 실행 근거가 아니다 — 실행 형태는 dotfiles workflow 계약의 selector가 정한다.
 
+## fix-now
+
+승인 스펙의 front-matter \`scope:\`와 \`경계\`/\`비목표\` 절은 설계 범위이지 fix-now 흡수의 금지 목록이 아니다. scope 안 변경과 같은 결함·드리프트 클래스의 닫힌 인접 항목은 dotfiles workflow 계약 Follow-ups (a)의 세 조건으로 이 세션에서 같이 고치고, 완료 보고서 \`세션 중 흡수한 발견 항목\`에 앵커와 함께 적어라. 후속 Bead로 넘기는 것은 gate가 거부한 항목뿐이다.
+
 ## 가드 계약
 
 이 세션 위에는 세션이 안에서 볼 수 없는 가드 층이 있다. 심각도는 셋으로 갈린다.
@@ -96,6 +104,10 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 게이트는 기본값으로 자동 디스패치하고 영수증만 남긴다. 질문 없이 기본값으로 진행하라.
 
+## fix-now
+
+승인 스펙의 front-matter \`scope:\`와 \`경계\`/\`비목표\` 절은 설계 범위이지 fix-now 흡수의 금지 목록이 아니다. scope 안 변경과 같은 결함·드리프트 클래스의 닫힌 인접 항목은 dotfiles workflow 계약 Follow-ups (a)의 세 조건으로 이 세션에서 같이 고치고, 완료 보고서 \`세션 중 흡수한 발견 항목\`에 앵커와 함께 적어라. 후속 Bead로 넘기는 것은 gate가 거부한 항목뿐이다.
+
 ## 가드 계약
 
 이 세션 위에는 세션이 안에서 볼 수 없는 가드 층이 있다. 심각도는 셋으로 갈린다.
@@ -133,6 +145,10 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 게이트는 기본값으로 자동 디스패치하고 영수증만 남긴다. 질문 없이 기본값으로 진행하라.
 
+## fix-now
+
+승인 스펙의 front-matter \`scope:\`와 \`경계\`/\`비목표\` 절은 설계 범위이지 fix-now 흡수의 금지 목록이 아니다. scope 안 변경과 같은 결함·드리프트 클래스의 닫힌 인접 항목은 dotfiles workflow 계약 Follow-ups (a)의 세 조건으로 이 세션에서 같이 고치고, 완료 보고서 \`세션 중 흡수한 발견 항목\`에 앵커와 함께 적어라. 후속 Bead로 넘기는 것은 gate가 거부한 항목뿐이다.
+
 ## 가드 계약
 
 이 세션 위에는 세션이 안에서 볼 수 없는 가드 층이 있다. 심각도는 셋으로 갈린다.
@@ -166,6 +182,10 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 - headless 프로세스는 턴이 끝나는 즉시 종료된다. 대기 중인 백그라운드 태스크(예: 비동기 리뷰 브리지)는 함께 kill되고 결과는 유실된다. 결과가 필요한 태스크는 턴 안에서 완료까지 기다려라.
 - 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키 — \`impl_dispatch\`, \`impl_entry\`, \`plan_approval\`, \`workflow_mode_source=user\` — 는 이 세션이 쓸 수 없다. Worker는 시도 시작 시 이 키들을 스냅샷하고, 시도 중 값이 바뀌면(부재→기록 포함) 머지 게이트가 영수증 위조로 fail-closed한다. 위임 기본 모델이 이 세션의 모델과 같다는 사실은 main 실행 근거가 아니다 — 실행 형태는 dotfiles workflow 계약의 selector가 정한다.
 
+## fix-now
+
+승인 스펙의 front-matter \`scope:\`와 \`경계\`/\`비목표\` 절은 설계 범위이지 fix-now 흡수의 금지 목록이 아니다. scope 안 변경과 같은 결함·드리프트 클래스의 닫힌 인접 항목은 dotfiles workflow 계약 Follow-ups (a)의 세 조건으로 이 세션에서 같이 고치고, 완료 보고서 \`세션 중 흡수한 발견 항목\`에 앵커와 함께 적어라. 후속 Bead로 넘기는 것은 gate가 거부한 항목뿐이다.
+
 ## 가드 계약
 
 이 세션 위에는 세션이 안에서 볼 수 없는 가드 층이 있다. 심각도는 셋으로 갈린다.
@@ -198,6 +218,10 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 - hard-stop 조건은 \`blocker\` 줄을 출력한 뒤 비정상 종료로 표면화하라. 그것이 이 환경에서 사람에게 도달하는 유일한 경로다.
 - headless 프로세스는 턴이 끝나는 즉시 종료된다. 대기 중인 백그라운드 태스크(예: 비동기 리뷰 브리지)는 함께 kill되고 결과는 유실된다. 결과가 필요한 태스크는 턴 안에서 완료까지 기다려라.
 - 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키 — \`impl_dispatch\`, \`impl_entry\`, \`plan_approval\`, \`workflow_mode_source=user\` — 는 이 세션이 쓸 수 없다. Worker는 시도 시작 시 이 키들을 스냅샷하고, 시도 중 값이 바뀌면(부재→기록 포함) 머지 게이트가 영수증 위조로 fail-closed한다. 위임 기본 모델이 이 세션의 모델과 같다는 사실은 main 실행 근거가 아니다 — 실행 형태는 dotfiles workflow 계약의 selector가 정한다.
+
+## fix-now
+
+승인 스펙의 front-matter \`scope:\`와 \`경계\`/\`비목표\` 절은 설계 범위이지 fix-now 흡수의 금지 목록이 아니다. scope 안 변경과 같은 결함·드리프트 클래스의 닫힌 인접 항목은 dotfiles workflow 계약 Follow-ups (a)의 세 조건으로 이 세션에서 같이 고치고, 완료 보고서 \`세션 중 흡수한 발견 항목\`에 앵커와 함께 적어라. 후속 Bead로 넘기는 것은 gate가 거부한 항목뿐이다.
 
 ## 가드 계약
 
@@ -235,6 +259,10 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 ## fast_track
 
 게이트는 기본값으로 자동 디스패치하고 영수증만 남긴다. 질문 없이 기본값으로 진행하라.
+
+## fix-now
+
+승인 스펙의 front-matter \`scope:\`와 \`경계\`/\`비목표\` 절은 설계 범위이지 fix-now 흡수의 금지 목록이 아니다. scope 안 변경과 같은 결함·드리프트 클래스의 닫힌 인접 항목은 dotfiles workflow 계약 Follow-ups (a)의 세 조건으로 이 세션에서 같이 고치고, 완료 보고서 \`세션 중 흡수한 발견 항목\`에 앵커와 함께 적어라. 후속 Bead로 넘기는 것은 gate가 거부한 항목뿐이다.
 
 ## 종점
 
@@ -285,6 +313,10 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 게이트는 기본값으로 자동 디스패치하고 영수증만 남긴다. 질문 없이 기본값으로 진행하라.
 
+## fix-now
+
+승인 스펙의 front-matter \`scope:\`와 \`경계\`/\`비목표\` 절은 설계 범위이지 fix-now 흡수의 금지 목록이 아니다. scope 안 변경과 같은 결함·드리프트 클래스의 닫힌 인접 항목은 dotfiles workflow 계약 Follow-ups (a)의 세 조건으로 이 세션에서 같이 고치고, 완료 보고서 \`세션 중 흡수한 발견 항목\`에 앵커와 함께 적어라. 후속 Bead로 넘기는 것은 gate가 거부한 항목뿐이다.
+
 ## 종점
 
 PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·bead \`resolved\`(pr_url metadata 포함) 기록까지 마친 뒤 종료하라. 머지는 사람의 클릭이다.
@@ -326,6 +358,10 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 - headless 프로세스는 턴이 끝나는 즉시 종료된다. 대기 중인 백그라운드 태스크(예: 비동기 리뷰 브리지)는 함께 kill되고 결과는 유실된다. 결과가 필요한 태스크는 턴 안에서 완료까지 기다려라.
 - 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키 — \`impl_dispatch\`, \`impl_entry\`, \`plan_approval\`, \`workflow_mode_source=user\` — 는 이 세션이 쓸 수 없다. Worker는 시도 시작 시 이 키들을 스냅샷하고, 시도 중 값이 바뀌면(부재→기록 포함) 머지 게이트가 영수증 위조로 fail-closed한다. 위임 기본 모델이 이 세션의 모델과 같다는 사실은 main 실행 근거가 아니다 — 실행 형태는 dotfiles workflow 계약의 selector가 정한다.
 
+## fix-now
+
+승인 스펙의 front-matter \`scope:\`와 \`경계\`/\`비목표\` 절은 설계 범위이지 fix-now 흡수의 금지 목록이 아니다. scope 안 변경과 같은 결함·드리프트 클래스의 닫힌 인접 항목은 dotfiles workflow 계약 Follow-ups (a)의 세 조건으로 이 세션에서 같이 고치고, 완료 보고서 \`세션 중 흡수한 발견 항목\`에 앵커와 함께 적어라. 후속 Bead로 넘기는 것은 gate가 거부한 항목뿐이다.
+
 ## 종점
 
 PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·bead \`resolved\`(pr_url metadata 포함) 기록까지 마친 뒤 종료하라. 머지는 사람의 클릭이다.
@@ -352,6 +388,55 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 
 ### 허용됨 — 오해하지 말 것
 
+- base 를 브랜치로 들이는 \`git merge\`(예: \`git merge origin/main\`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.
+- hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다.
+- git 명령 하나에만 붙는 **1회성** 재배치 — 뒤따르는 서브커맨드가 \`status\`·\`rev-parse\`·\`ls-files\`·\`ls-tree\`·\`cat-file\`(\`--filters\`/\`--textconv\` 제외)·\`describe\`·\`shortlog\`·\`merge-base\`·\`for-each-ref\`·\`config\` 열 가지 안에 있고, 재배치가 \`core.hooksPath\` 하나만 지정하며, 접두에 다른 환경변수 할당이 없으면 위반이 아니다. **다만 붙일 이유도 없다** — 이 명령들은 pre-push 를 타지 않는다."
+`;
+
+exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled system prompt for 'quickfix_lane' 1`] = `
+"## 무인 모드
+
+이 세션은 사람 없이 실행된다. 다음은 규칙이 아니라 환경 사실이다.
+
+- 사용자는 이 세션과 통신할 수 없다. 질문 도구는 응답자가 없어 영원히 대기한다.
+- hard-stop 조건은 \`blocker\` 줄을 출력한 뒤 비정상 종료로 표면화하라. 그것이 이 환경에서 사람에게 도달하는 유일한 경로다.
+- headless 프로세스는 턴이 끝나는 즉시 종료된다. 대기 중인 백그라운드 태스크(예: 비동기 리뷰 브리지)는 함께 kill되고 결과는 유실된다. 결과가 필요한 태스크는 턴 안에서 완료까지 기다려라.
+- 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키 — \`impl_dispatch\`, \`impl_entry\`, \`plan_approval\`, \`workflow_mode_source=user\` — 는 이 세션이 쓸 수 없다. Worker는 시도 시작 시 이 키들을 스냅샷하고, 시도 중 값이 바뀌면(부재→기록 포함) 머지 게이트가 영수증 위조로 fail-closed한다. 위임 기본 모델이 이 세션의 모델과 같다는 사실은 main 실행 근거가 아니다 — 실행 형태는 dotfiles workflow 계약의 selector가 정한다.
+
+## fix-now
+
+승인 스펙의 front-matter \`scope:\`와 \`경계\`/\`비목표\` 절은 설계 범위이지 fix-now 흡수의 금지 목록이 아니다. scope 안 변경과 같은 결함·드리프트 클래스의 닫힌 인접 항목은 dotfiles workflow 계약 Follow-ups (a)의 세 조건으로 이 세션에서 같이 고치고, 완료 보고서 \`세션 중 흡수한 발견 항목\`에 앵커와 함께 적어라. 후속 Bead로 넘기는 것은 gate가 거부한 항목뿐이다.
+
+## 종점
+
+이 세션은 Worker가 dispatch한 quick_fix 레인이다. PR을 열지 않는다.
+
+- 종점은 구현 → 세션 내 implementation review 1회(필수) → base ref 직접 push → push containment 확인 → completion report → bead \`resolved\` 기록 후 종료다.
+- 리뷰 게이트를 \`skip\`으로 선택하지 마라. \`skipped@\` 영수증은 Worker landing에서 fail-closed다. \`impl_review\` 영수증은 실제로 push한 head SHA에 결속되어야 한다. push 후 head가 바뀌었으면 계약의 follow-up 규칙대로 영수증을 새 SHA로 갱신하라.
+- 배포 실행·배포 증거·bead \`closed\`·worktree/브랜치 정리는 Worker가 소유한다. 수행하지 마라. worktree와 브랜치를 보존한 채 \`resolved\`에서 멈춰라.
+- 이 레인의 canonical 문구는 dotfiles \`docs/contracts/workflow.md\`가 소유한다. 여기서 복제하지 말고 그 계약을 따르라.
+
+## 가드 계약
+
+이 세션 위에는 세션이 안에서 볼 수 없는 가드 층이 있다. 심각도는 셋으로 갈린다.
+
+### 즉시 종료 — 세션이 kill된다
+
+- \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
+  - 대안: 이 세션의 종점은 리뷰드 base push와 bead \`resolved\` 기록이다. 머지 클릭도 PR도 이 세션의 일이 아니다.
+- hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
+- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다.
+  - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
+  - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
+  - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`
+
+### 거부만 됨 — 세션은 계속된다
+
+- 이 세션에 걸리는 거부 판정은 없다. 리뷰드 base push가 이 레인의 임무이기 때문이다(아래 「허용됨」).
+
+### 허용됨 — 오해하지 말 것
+
+- 이 세션은 Worker-dispatched reviewed quick_fix 레인이다. base 로의 \`git push\`가 임무이며 attempt 전용 pre-push hook도 설치되지 않는다. hook 무력화 판정은 그대로 적용된다.
 - base 를 브랜치로 들이는 \`git merge\`(예: \`git merge origin/main\`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.
 - hook 경로를 **읽는 것**(\`git config --get core.hooksPath\`, \`git config get core.hooksPath\`, \`git config core.hooksPath\`) — 위반이 아니다.
 - git 명령 하나에만 붙는 **1회성** 재배치 — 뒤따르는 서브커맨드가 \`status\`·\`rev-parse\`·\`ls-files\`·\`ls-tree\`·\`cat-file\`(\`--filters\`/\`--textconv\` 제외)·\`describe\`·\`shortlog\`·\`merge-base\`·\`for-each-ref\`·\`config\` 열 가지 안에 있고, 재배치가 \`core.hooksPath\` 하나만 지정하며, 접두에 다른 환경변수 할당이 없으면 위반이 아니다. **다만 붙일 이유도 없다** — 이 명령들은 pre-push 를 타지 않는다."

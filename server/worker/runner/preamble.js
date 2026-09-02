@@ -37,6 +37,23 @@ export const UNATTENDED_PREAMBLE = [
 ].join('\n');
 
 /**
+ * The fix-now directive (dotfiles fix-now-over-scope-fence §8.1): an approved
+ * spec's `scope:` and 경계/비목표 sections bound the DESIGN, not what the
+ * session is allowed to repair, so an adjacent item of the same defect class
+ * gets fixed here instead of split into a follow-up Bead.
+ *
+ * Kept out of `UNATTENDED_PREAMBLE` because that block is framed as
+ * environment fact (UI-rxp3) while this one states a contract rule.
+ *
+ * @type {string}
+ */
+export const FIX_NOW_DIRECTIVE = [
+  '## fix-now',
+  '',
+  '승인 스펙의 front-matter `scope:`와 `경계`/`비목표` 절은 설계 범위이지 fix-now 흡수의 금지 목록이 아니다. scope 안 변경과 같은 결함·드리프트 클래스의 닫힌 인접 항목은 dotfiles workflow 계약 Follow-ups (a)의 세 조건으로 이 세션에서 같이 고치고, 완료 보고서 `세션 중 흡수한 발견 항목`에 앵커와 함께 적어라. 후속 Bead로 넘기는 것은 gate가 거부한 항목뿐이다.'
+].join('\n');
+
+/**
  * The fast_track directive injected when the dispatch runs in fast_track mode.
  * Mirrors the `workflow_mode=fast_track` bead metadata the Worker records +
  * reads back before launch (spec §5.2) so the mode is double-delivered
@@ -264,6 +281,7 @@ export function applyPreamble(base_prompt, options = {}) {
   if (options.fast_track) {
     parts.push(FAST_TRACK_DIRECTIVE);
   }
+  parts.push(FIX_NOW_DIRECTIVE);
   if (quickfix_lane) {
     parts.push(QUICKFIX_LANE_DIRECTIVE);
   } else if (pr_submit) {
