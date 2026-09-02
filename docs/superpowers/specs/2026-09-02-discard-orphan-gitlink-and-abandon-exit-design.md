@@ -6,6 +6,8 @@ scope:
   - server/worker/queue-store.js
   - server/worker/scheduler.js
   - server/worker/pr-actions.js
+  - server/worker/pr-poller.js
+  - server/worker/resolve-session.js
   - server/worker/attach.js
   - server/ws/
   - app/protocol.js
@@ -64,9 +66,11 @@ prostate 사건은 두 번째 줄이다. 워크트리의 자기 HEAD(`e60d1b0`)�
 - `queue-store.js`의 `discard_operations`는 `set`만 있고 terminal은
   `completeDiscardOperation`의 `phase: 'done'` 하나다. `failDiscardOperation`은
   `last_error`만 채우고 같은 phase에 둔다.
-- `discardActive`가 세 곳(`queue-store.js` `hasActiveDiscardOperation`,
-  `scheduler.js`, `pr-actions.js`)과 UI(`lanes.js` `discardProjection`)에서
-  각각 `phase !== 'done'`으로 구현되어, 실패한 작업이 계속 "진행 중"이다.
+- 활성 판정이 서버 여러 곳(`queue-store.js` `hasActiveDiscardOperation`,
+  `scheduler.js`·`pr-actions.js`의 `discardActive`, `pr-poller.js`,
+  `resolve-session.js`, coordinator 자신 등 — 전수는 §2.1 표)과 UI(`lanes.js`
+  `discardProjection`)에서 각각 `phase !== 'done'`으로 구현되어, 실패한
+  작업이 계속 "진행 중"이다.
   재디스패치·드래그·resume·pause·stop·stale-work 액션·merge·cleanup이 전부
   막힌다.
 - WS 액션은 `worker-discard` 하나이며 `operation_id`를 실으면
@@ -156,20 +160,30 @@ export const DISCARD_TERMINAL_PHASES = Object.freeze(['done', 'abandoned']);
 export function discardOperationActive(operation) { ... }
 ```
 
-`phase !== 'done'`을 직접 비교하던 자리를 전부 이 헬퍼로 바꾼다.
+`phase !== 'done'` / `phase === 'done'`을 직접 비교하는 자리를 **전부** 이
+헬퍼로 바꾼다. 아래 표는 `grep "phase [!=]== 'done'"`(테스트·번들 제외)로
+열거한 현행 전수이며, 구현은 같은 grep이 0건이 될 때까지 바꾼다.
 
-| 파일 | 자리 |
-| --- | --- |
-| `server/worker/queue-store.js` | `hasActiveDiscardOperation`, `createDiscardOperation`의 기존 작업 탐색 2곳, held 집합(`discard_operations` 순회), active 집합(`discard_operations` 순회), `activeDiscardBeadIds` |
-| `server/worker/scheduler.js` | `discardActive` |
-| `server/worker/pr-actions.js` | `discardActive` |
-| `server/worker/attach.js` | `discardWorkerBead`의 `operation_id` 재시도 판정 |
-| `server/worker/discard-coordinator.js` | `recover`, `recoverFences`, `observeBead`, `retry` |
-| `app/views/worker/lanes.js` | `discardProjection`의 활성 작업 선택 |
+| 파일 | 자리 | 의미 |
+| --- | --- | --- |
+| `server/worker/queue-store.js` | `hasActiveDiscardOperation`, `createDiscardOperation`의 기존 작업 탐색 2곳, held 집합(`discard_operations` 순회), active 집합(`discard_operations` 순회), `activeDiscardBeadIds` | 활성 판정 |
+| `server/worker/scheduler.js` | 직렬 레인 점유 계산(`discard_operations` 순회로 `occupy`), `activeBeadIdsFrom`, `discardActive`, `recoverControls`의 `discard_attempts` | 활성 판정 |
+| `server/worker/pr-actions.js` | `discardActive` | 활성 판정 |
+| `server/worker/pr-poller.js` | `active_discard` (PR 관측을 coordinator로 넘길지) | 활성 판정 |
+| `server/worker/resolve-session.js` | 폐기 실패 행의 `failure_class` 판정 | 활성 판정 — `abandoned`는 [세션에서 해결] 대상이 아니다 |
+| `server/worker/attach.js` | `discardWorkerBead`의 `operation_id` 재시도 판정 | 활성 판정 |
+| `server/worker/discard-coordinator.js` | `discard()`의 기존 작업 재사용 탐색, 생성 실패 뒤 `concurrent` 탐색, `backupFresh`의 stale-work 진행 중 판정, `recover`, `recoverFences`, `observeBead`, `retry` | 활성 판정 |
+| `server/worker/discard-coordinator.js` | `driveOperation`의 `phase === 'done'` 분기 | terminal 분기 — `abandoned`면 아무것도 하지 않고 `{ ok: false, reason: 'operation_abandoned' }` |
+| `server/ws/worker-handlers.js` | `publicDiscardOperations` | 공개 투영 — `abandoned`는 `done`처럼 투영에서 제외 |
+| `app/views/worker/lanes.js` | `discardProjection`의 활성 작업 선택 | 활성 판정 |
+
+`worker-handlers.js` `handleWorkerDiscard`의 `discarded: phase === 'done'`은
+"폐기 완료" 판정이라 그대로 둔다(`abandoned`는 완료가 아니다).
+`record-retention.js`는 레코드를 통째로 보존하므로 불변이다.
 
 `abandoned`는 `done`과 똑같이 비활성이다. 따라서 포기 뒤에는 같은 bead에 새
-[폐기]가 새 `operation_id`로 새 작업을 만든다(`createDiscardOperation`의
-재사용 탐색이 비활성 작업을 보지 않으므로).
+[폐기]가 새 `operation_id`로 새 작업을 만든다(`createDiscardOperation`과
+`discard()`의 재사용 탐색이 비활성 작업을 보지 않으므로).
 
 ### §2.2 `queue-store.js` — `abandonDiscardOperation`
 
@@ -189,7 +203,7 @@ abandonDiscardOperation(workspace, { operation_id, resume })
   않는다(사용자가 다시 넣는다).
 - `DiscardOperation` typedef와 `normalizeDiscardOperation`에
   `abandoned_at: number|null`, `abandon_resume:
-  'continued'|'gone'|'recycled'|'unknown'|null`을 더한다. 재시작 후에도 남는다.
+  'continued'|'gone'|'recycled'|null`을 더한다. 재시작 후에도 남는다.
 
 ### §2.3 `discard-coordinator.js` — `abandon(operation_id)`
 
@@ -203,8 +217,12 @@ abandonDiscardOperation(workspace, { operation_id, resume })
    `process_controller_missing`으로 거부. `probe(identity)`가 `owned`면
    `signal(identity, 'SIGCONT')` — 실패하면 `continued.reason ||
    identity_<state>`로 거부하고 **아무것도 쓰지 않는다**(`last_error`도
-   그대로). `gone`·`recycled`·`unknown`이면 재개할 대상이 없으므로 그 상태를
-   `resume`으로 들고 진행한다. identity가 없으면 `resume = null`.
+   그대로). `gone`·`recycled`면 재개할 대상이 없으므로 그 상태를 `resume`으로
+   들고 진행한다. `unknown`은 "대상 없음"이 아니라 **소유권 판정 불능**이다
+   (`inspect_failed`·`leader_gone_group_alive`·`group_probe_failed` 등) —
+   SIGSTOP된 runner가 남아 있을 수 있으므로 `identity_unknown:<reason>`으로
+   거부하고 아무것도 쓰지 않는다. 사용자는 원인이 걷힌 뒤 다시 누른다.
+   identity가 없으면 `resume = null`.
 3. `deps.store.abandonDiscardOperation(workspace, { operation_id, resume })`.
    `ok`가 아니면 그 `reason`으로 거부.
 4. `deps.scheduler.unfenceDiscardAttempt?.(operation.attempt_id)` (§2.4).
@@ -242,8 +260,17 @@ terminal 기록을 쓰는 순간"만 대상이다.
   `bead_id`가 payload와 다르면 `operation_not_found`.
 - 응답 `{ bead_id, operation_id, abandoned: boolean, conflict: boolean,
   reason: string|null, resume, queue }`.
-- 타임라인: `recordUserAction(key, bead_id, 'discard_abandon', '[폐기 포기]
-  클릭')`. [정리 재시도]와 같은 경로라 `get-bead-timeline`에 남는다.
+- 타임라인 두 건, 역할이 다르다.
+  - 클릭 기록: `recordUserAction(key, bead_id, 'discard_abandon', '[폐기 포기]
+    클릭')` — 거부된 클릭도 남는다([정리 재시도]와 같은 관행).
+  - **결과 기록(성공에만)**: 응답이 `abandoned: true`일 때만
+    `recordTimelineEvent`로 `kind: 'user_action'`, `seq:
+    'discard_abandoned:<revision>'`, `summary: '폐기 포기 — 폐기 미수행 (원인:
+    <last_error>)'`를 쓴다. 거부된 포기는 이 이벤트를 쓰지 않는다. 기존 closed
+    kind 어휘(`bead-timeline.js` `TIMELINE_KINDS`)는 늘리지 않는다.
+- 알림 문구: `discard-coordinator.js` `announceDiscardFailure`의
+  `next_action`을 `'재클릭·[폐기 포기]·[세션에서 해결]'`로 바꾼다. 실패 알림이
+  사용자에게 출구 집합을 말해 주는 자리이므로 출구가 늘면 문구도 는다.
 - `server/ws/connection.js` dispatch와 `app/protocol.js` `MessageType`에
   등록한다.
 
@@ -267,9 +294,13 @@ terminal 기록을 쓰는 순간"만 대상이다.
   포기합니다 — 원본은 그대로 남고 새로 시작하지 않습니다`.
 
 버튼(`worker-mini__discard-abandon`, `data-bead-id`·`data-operation-id`)의
-자리는 액션 foot에서 **[재시도] 바로 다음**이다. 같은 실패 행이 내는 두
-출구이고 재시도가 먼저 읽혀야 한다는 UI-jw27 §4의 규칙을 그대로 따른다.
-[세션에서 해결]의 자리는 불변이다.
+자리는 액션 foot이다. 실패한 폐기 행(폐기 버튼이 `재시도`/`백업 정리 재시도`
+라벨인 행)의 순서는 정확히 **`[재시도] → [폐기 포기] → [세션에서 해결]`**이다.
+같은 실패 행이 내는 출구들이고 재시도가 먼저 읽혀야 한다는 UI-jw27 §4의
+규칙을 따르되, 현행 `lanes.js`가 `[세션에서 해결]`을 폐기 버튼 앞에 그리는
+순서는 이 행에서만 바뀐다(되돌리는 정도가 약한 것부터: 재시도 → 포기 →
+세션). 폐기 버튼이 `폐기`/`백업 후 새로 시작` 라벨인 행(실패 없음)은 현행
+순서 그대로다.
 
 ### §3.2 문구
 
@@ -305,10 +336,20 @@ verbatim 공유한다(기존 `discardConfirmationMessage`와 같은 위치).
 ### §3.4 포기 뒤 화면
 
 카드는 폐기 이전 모습으로 돌아간다(활성 작업이 없으므로 영수증 줄이
-사라지고 [폐기]가 다시 보인다). "실제로 폐기가 수행되지 않았다"는 사실은
-`queue.json`의 `abandoned` 레코드(`last_error`·`abandoned_at`·`abandon_resume`
-보존)와 타임라인의 `discard_abandon` 이벤트, 성공 토스트가 담당한다. 카드에
-영구 배지를 남기지 않는다 — 폐기 이전 상태로의 복귀가 곧 정직한 표시다.
+사라지고 [폐기]가 다시 보인다). 카드에 영구 배지를 남기지 않는다 — 폐기
+이전 상태로의 복귀가 곧 정직한 표시다.
+
+"실제로 폐기가 수행되지 않았다"는 사실이 **영구적으로** 보이는 자리는
+§2.5의 결과 이벤트가 닿는 두 표면이다. 성공 토스트는 보조일 뿐이다.
+
+- 이슈 상세(bead 페이지)의 "Worker 이력" 섹션(`get-bead-timeline`,
+  `app/views/detail-panel/index.js`) — bead가 어느 레인(후보·대기·실행·PR
+  대기)으로 돌아가든 같은 자리에서 읽힌다.
+- 실패·파킹 타일의 최근 이력 5줄(`bead_timelines` → `lane-model.js`
+  `timelineFields`) — bead가 그 상태로 돌아갔을 때.
+
+durable 근거는 `queue.json`의 `abandoned` 레코드(`last_error`·`abandoned_at`·
+`abandon_resume` 보존)다.
 
 Worker(`app/views/worker/index.js`)와 Monitor(`app/views/monitor/index.js`)
 모두 클릭을 `worker-discard-abandon`으로 보낸다. revision 충돌 시 1회
@@ -323,23 +364,28 @@ Worker(`app/views/worker/index.js`)와 Monitor(`app/views/monitor/index.js`)
    저장소)이 있으면 `orphan_gitlink_content:<path>`로 실패한다.
 3. 매핑된 dirty·미초기화·객체 부재 서브모듈은 고아 gitlink 동반 여부와
    무관하게 `dirty_submodule`이다. 안전 완화 없음.
-4. `git` 명령 자체의 실패는 `submodule_observation_failed`로 남는다.
+4. 관측 자체의 실패는 단계별 토큰으로 fail-closed다: `ls-files` 실패는
+   `git_index_observation_failed`, `.gitmodules` 읽기·고아 경로
+   `lstat`/`readdir`(ENOENT 외)·`submodule status`·서브모듈 안 `status` 실패는
+   `submodule_observation_failed`.
 5. `requested` phase에서 `last_error`가 있는 작업에 [폐기 포기]를 누르면
-   `phase: 'abandoned'`가 되고, 그 bead의 재디스패치·대기 행 드래그·
-   resume·pause·stop·stale-work 액션·merge·cleanup 차단이 풀린다
-   (`discardActive`가 `false`). 이어지는 [폐기]는 새 `operation_id`의 새
-   작업을 만든다.
-6. SIGSTOP된 owned runner는 포기 시 SIGCONT로 재개된다. SIGCONT가 실패하면
-   작업은 실패 상태 그대로 남고 응답에 사유가 실린다.
+   `phase: 'abandoned'`가 되고, 그 bead의 재디스패치·직렬 레인 점유·대기 행
+   드래그·resume·pause·stop·stale-work 액션·merge·cleanup·PR 관측 위임이
+   풀리며(§2.1 표의 모든 활성 판정이 `false`), 공개 투영과 [세션에서 해결]
+   판정에서 사라진다. 이어지는 [폐기]는 새 `operation_id`의 새 작업을 만든다.
+6. SIGSTOP된 owned runner는 포기 시 SIGCONT로 재개된다. SIGCONT가 실패하거나
+   probe가 `unknown`이면 작업은 실패 상태 그대로 남고 응답에 사유가 실린다.
 7. `requested` 밖 phase, `last_error` 없는 작업, `done`·`abandoned` 작업의
    포기는 거부된다.
 8. `abandoned` 레코드는 재시작 후에도 `last_error`·`abandoned_at`·
    `abandon_resume`를 유지하며 `recover()`·`recoverFences()`가 건드리지
    않는다.
 9. 화면: §3.3의 안내 3종이 [재시도] `title`과 영수증 줄에 붙고, `requested`
-   실패 행에만 [폐기 포기]/[백업 포기]가 [재시도] 다음에 나타나며, 포기 뒤
-   카드가 폐기 이전 모습으로 돌아가고 타임라인에 `discard_abandon`이
-   남는다.
+   실패 행에만 `[재시도] → [폐기 포기]/[백업 포기] → [세션에서 해결]` 순으로
+   나타나며, 포기 뒤 카드가 폐기 이전 모습으로 돌아간다. 성공한 포기만
+   `폐기 포기 — 폐기 미수행 (원인: …)` 이벤트를 남기고, 그 이벤트가 이슈
+   상세 "Worker 이력"에서 bead의 레인과 무관하게 읽힌다. 거부된 포기는 클릭
+   기록만 남긴다. 폐기 실패 알림의 `다음:` 줄이 세 출구를 말한다.
 10. 정상 폐기 흐름과 실패 없는 진행 중 작업의 차단 동작은 불변이다.
 11. Pre-Handoff Validation(tsc/test/lint/prettier/build) 통과, `npm run
     build`로 `app/main.bundle.js`·`.map` 갱신.
@@ -350,35 +396,50 @@ Worker(`app/views/worker/index.js`)와 Monitor(`app/views/monitor/index.js`)
   `ok`·manifest `orphan_gitlinks`; (b) 고아 + 경로 부재 → `ok`(인벤토리
   건너뜀); (c) 고아 + 일반 파일 → `orphan_gitlink_content:<path>`; (d) 고아 +
   중첩 저장소 → 같은 실패; (e) 고아 + 매핑된 clean 서브모듈 → `ok`; (f) 고아
-  + 매핑된 dirty 서브모듈 → `dirty_submodule`; (g) 주입한 `git`이 throw →
-  `submodule_observation_failed`; (h) 기존 `dirty_submodule` 테스트 불변.
-  고아 gitlink는 `git update-index --add --cacheinfo 160000,<oid>,<path>`로
-  만든다.
+  + 매핑된 dirty 서브모듈 → `dirty_submodule`; (g1) 주입한 `git`이
+  `ls-files`에서 throw → `git_index_observation_failed`; (g2) 주입한 `git`이
+  `.gitmodules`가 있는 저장소에서 `config --file .gitmodules`에서 throw →
+  `submodule_observation_failed`; (g3) 매핑된 서브모듈이 있는 저장소에서
+  `submodule status`에서 throw → `submodule_observation_failed` (g1~g3는
+  인자를 보고 골라 throw하는 `git` 목으로 나누어, 각각이 변경 전 구현에서는
+  다른 토큰이 나와 실패하는 seam이어야 한다); (h) 기존 `dirty_submodule`
+  테스트 불변. 고아 gitlink는 `git update-index --add --cacheinfo
+  160000,<oid>,<path>`로 만든다.
 - `server/worker/discard-phase.test.js`: `done`·`abandoned` 비활성, 그 밖
   활성, 비정상 입력 활성 아님.
 - `server/worker/queue-store.test.js`: `abandonDiscardOperation` CAS 3종
   거부, 성공 시 필드·`last_error` 보존·레인 불변, 재시작 정규화,
-  `hasActiveDiscardOperation`·`activeDiscardBeadIds`가 `abandoned`를 제외,
-  포기 뒤 `createDiscardOperation`이 새 작업 생성.
+  `hasActiveDiscardOperation`·`activeDiscardBeadIds`·held/active 집합이
+  `abandoned`를 제외, 포기 뒤 `createDiscardOperation`이 새 작업 생성.
 - `server/worker/discard-coordinator.test.js`: SIGCONT → write → unfence
-  순서, SIGCONT 실패 시 무변경, `gone`/`unknown`의 `resume` 기록, phase·
-  `last_error` 게이트, `recover`가 `abandoned`를 건너뜀.
+  순서, SIGCONT 실패 시 무변경, probe `unknown` 거부·무변경, `gone`의
+  `resume` 기록, phase·`last_error` 게이트, `recover`가 `abandoned`를
+  건너뜀, 포기 뒤 `discard()`가 재사용하지 않고 새 작업을 만듦,
+  `driveOperation`이 `abandoned`에서 `operation_abandoned`, 알림
+  `next_action` 문구.
 - `server/worker/scheduler.test.js`·`pr-actions.test.js`: `abandoned` 작업이
-  있는 bead의 launch·pause·stop·merge·cleanup이 막히지 않음;
+  있는 bead의 launch·직렬 레인 점유·pause·stop·merge·cleanup이 막히지 않음;
   `unfenceDiscardAttempt`가 ⏸/■의 fence를 지우지 않음.
+- `server/worker/pr-poller.test.js`·`resolve-session.test.js`: `abandoned`
+  작업이 PR 관측을 coordinator로 넘기지 않음; 폐기 실패 `failure_class`
+  판정에서 제외됨.
 - `server/ws/worker-handlers.discard-abandon.test.js`(신규, 기존
   `worker-handlers.<topic>.test.js` 패턴): `worker-discard-abandon` 검증·
-  revision 충돌·성공 응답·타임라인 이벤트.
+  revision 충돌·성공 응답, 성공에만 결과 이벤트(`discard_abandoned:*`)가
+  남고 거부에는 클릭 기록만 남음, `publicDiscardOperations`가 `abandoned`를
+  제외.
 - `app/views/worker/lanes.test.js`: `discardProjection.abandon`의 `action`
   조건 4종(활성 없음·진행 중·`requested` 실패·다른 phase 실패), 라벨 2종,
-  `abandoned` 작업 제외, `discardFailureGuidance` 3종+미등록, 확인·완료 문구.
+  `abandoned` 작업 제외, `discardFailureGuidance` 3종+미등록, 확인·완료 문구,
+  실패 행의 버튼 렌더링 순서 `[재시도] → [폐기 포기] → [세션에서 해결]`과
+  실패 없는 행의 현행 순서 유지.
 
 ## 구현 unit 후보
 
 - `archive-classify`: `server/worker/recovery-archive.js` §1 + 그 테스트.
 - `abandon-server`: `server/worker/discard-phase.js`, `queue-store.js`,
-  `discard-coordinator.js`, `scheduler.js`, `pr-actions.js`, `attach.js`,
-  `server/ws/` §2 + 테스트.
+  `discard-coordinator.js`, `scheduler.js`, `pr-actions.js`, `pr-poller.js`,
+  `resolve-session.js`, `attach.js`, `server/ws/` §2 + 테스트.
 - `abandon-ui`: `app/protocol.js`, `app/views/worker/lanes.js`,
   `app/views/worker/index.js`, `app/views/monitor/index.js` §3 + 테스트 +
   build.
@@ -394,18 +455,35 @@ Worker(`app/views/worker/index.js`)와 Monitor(`app/views/monitor/index.js`)
   이미 마쳤다. 이 스펙은 그 수정 이전 HEAD를 가진 워크트리에서도 성립한다.
 - 관찰: `stale_work_backup_fresh` 작업의 [백업 포기]는 같은 `requested`
   phase·같은 코드 경로라 이 스펙 안이다(형제 Bead 아님).
+- 관찰: process probe가 지속적으로 `unknown`인 identity(그룹 프로브 실패
+  등)는 §2.3에 따라 포기도 거부되어 남는다 — 안전 우선의 대가이며, 그 경우의
+  출구는 이 스펙 밖이다.
+- 관찰: 타임라인 kind 어휘(`bead-timeline.js` `TIMELINE_KINDS`)는
+  `2026-08-28-worker-record-timeline-retention-design.md` §5 표가 소유하므로
+  늘리지 않고 `user_action`의 `seq`·`summary`로 결과를 구분한다.
+- 관찰: 리뷰(codex, 2026-09-02) 1차 REVISE 6건을 이 판에 반영했다 — 활성
+  판정 전수 표, `unknown` 거부, 성공 전용 결과 이벤트와 이슈 상세 표면,
+  git 실패 토큰 분리, ADR 0022 supersede, 실패 행 버튼 순서.
 
 ## 결정 (ADR 후보)
 
-- **폐기 작업의 terminal은 `done`·`abandoned` 둘이며 `abandoned`는
-  `requested` 실패에서 사람 클릭으로만 진입한다** — 되돌리기 어려움:
-  성립(`queue.json`의 durable phase 어휘와 `discardActive` 판정을 서버 3곳·
-  UI가 소비). 맥락 없이 놀라움: 성립(실패한 폐기가 왜 자동 종단되지 않고
-  왜 뒤 phase에서는 포기할 수 없는지). 실제 트레이드오프: 성립(재시도 한도
-  자동 종단·백업 없는 폐기 기각, ADR 0016·0022의 "자동 종단은 systemic
-  실패만·재진입은 클릭" 방향 유지). → summary 초안: "실패한 폐기 작업의
-  출구는 아카이브 단계에 한해 사람이 누르는 [폐기 포기]뿐이며, 그것은
-  runner를 되살리고 bead를 폐기 이전 자리로 돌려놓는 terminal `abandoned`다"
+- **폐기 실패의 출구는 재클릭·[폐기 포기]·[세션에서 해결] 셋으로 닫히고,
+  [폐기 포기]는 `requested` 실패에서만 진입하는 terminal `abandoned`다
+  (ADR 0022 supersede)** — ADR 0022는 사용자 개시 작업 실패의 재진입을
+  "재클릭·[세션에서 해결] 두 클릭뿐"으로 닫았다. 이 결정은 폐기 실패에 한해
+  세 번째 출구를 더하므로 0022와 모순이며, 0022의 나머지(알림 자동·자동 수리
+  dispatch 금지·[정리 재시도]·설정 토글 없음)는 그대로 승계한다. 되돌리기
+  어려움: 성립(`queue.json`의 durable phase 어휘·§2.1 표의 활성 판정 전수·
+  알림 문구·버튼을 UI와 운영 습관이 소비). 맥락 없이 놀라움: 성립(실패한 폐기가
+  왜 자동 종단되지 않는지, 왜 뒤 phase에서는 포기할 수 없는지, 왜 포기가
+  "재진입"이 아니라 "출구"인지). 실제 트레이드오프: 성립(재시도 한도 자동
+  종단·백업 없는 폐기 기각; ADR 0016의 "자동 종단은 systemic 실패만" 유지;
+  `unknown` 소유권에서 포기 거부라는 안전 우선). → summary 초안: "사용자
+  개시 작업 실패의 재진입은 자동 알림 뒤 사람 클릭뿐이라는 0022를 승계하되,
+  폐기 실패의 출구는 재클릭·[폐기 포기]·[세션에서 해결] 셋으로 닫힌다.
+  [폐기 포기]는 아카이브 단계 실패에서만 runner를 되살리고 bead를 폐기 이전
+  자리로 돌려놓는 terminal `abandoned`이며, 뒤 phase의 실패와 소유권 판정
+  불능에서는 허용하지 않는다"
 - 고아 gitlink 판정 기준(매핑 부재 + 경로 부재/빈 디렉터리)은 되돌리기
   어려움이 성립하지 않는다(순수 검사 함수 하나의 규칙). ADR 없이 §1.1이
   정본이다.
