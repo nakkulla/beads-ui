@@ -100,14 +100,120 @@ export function createRecoveryArchive(deps = {}) {
       }));
 
   /**
-   * @param {string} worktree
+   * Normalizes a Git path for gitlink classification.
+   *
+   * @param {string} git_path
    */
-  function assertSubmodulesClean(worktree) {
-    let output;
+  function normalizeGitPath(git_path) {
+    return path.posix.normalize(git_path).replace(/\/+$/, '');
+  }
+
+  /**
+   * Classifies index gitlinks before archive inventory.
+   *
+   * @param {string} worktree
+   * @returns {{ orphan_gitlinks: string[] }}
+   */
+  function classifySubmodules(worktree) {
+    let index_output;
     try {
-      output = git(worktree, ['submodule', 'status', '--recursive']).toString(
+      index_output = git(worktree, ['ls-files', '--stage', '-z']).toString(
         'utf8'
       );
+    } catch {
+      throw new ArchiveError('git_index_observation_failed');
+    }
+    /** @type {Set<string>} */
+    const gitlink_path_set = new Set();
+    for (const entry of index_output.split('\0')) {
+      const match = /^160000 [0-9a-f]+ \d\t(.+)$/s.exec(entry);
+      if (match) {
+        gitlink_path_set.add(normalizeGitPath(match[1]));
+      }
+    }
+    const gitlink_paths = [...gitlink_path_set].sort();
+
+    /** @type {Set<string>} */
+    const mapped_paths = new Set();
+    if (fs.existsSync(path.join(worktree, '.gitmodules'))) {
+      let config_output;
+      try {
+        config_output = git(worktree, [
+          'config',
+          '--file',
+          '.gitmodules',
+          '--list',
+          '-z'
+        ]).toString('utf8');
+      } catch {
+        throw new ArchiveError('submodule_observation_failed');
+      }
+      for (const entry of config_output.split('\0')) {
+        const separator = entry.indexOf('\n');
+        if (separator === -1) {
+          continue;
+        }
+        const key = entry.slice(0, separator);
+        if (!/^submodule\..+\.path$/.test(key)) {
+          continue;
+        }
+        mapped_paths.add(normalizeGitPath(entry.slice(separator + 1)));
+      }
+    }
+
+    /** @type {string[]} */
+    const orphan_gitlinks = [];
+    for (const gitlink_path of gitlink_paths) {
+      if (mapped_paths.has(gitlink_path)) {
+        continue;
+      }
+      const absolute_path = path.join(worktree, gitlink_path);
+      let stat;
+      try {
+        stat = fs.lstatSync(absolute_path);
+      } catch (err) {
+        const code = err && /** @type {any} */ (err).code;
+        if (code === 'ENOENT') {
+          orphan_gitlinks.push(gitlink_path);
+          continue;
+        }
+        throw new ArchiveError('submodule_observation_failed');
+      }
+      if (!stat.isDirectory()) {
+        throw new ArchiveError(`orphan_gitlink_content:${gitlink_path}`);
+      }
+      try {
+        if (fs.readdirSync(absolute_path).length === 0) {
+          orphan_gitlinks.push(gitlink_path);
+          continue;
+        }
+      } catch (err) {
+        const code = err && /** @type {any} */ (err).code;
+        if (code === 'ENOENT') {
+          orphan_gitlinks.push(gitlink_path);
+          continue;
+        }
+        throw new ArchiveError('submodule_observation_failed');
+      }
+      throw new ArchiveError(`orphan_gitlink_content:${gitlink_path}`);
+    }
+
+    const mapped_gitlinks = gitlink_paths.filter((gitlink_path) =>
+      mapped_paths.has(gitlink_path)
+    );
+    if (mapped_gitlinks.length === 0) {
+      return { orphan_gitlinks };
+    }
+
+    let output;
+    try {
+      output = git(worktree, [
+        'submodule',
+        'status',
+        '--recursive',
+        '--',
+        ...mapped_gitlinks
+      ]).toString('utf8');
     } catch {
       throw new ArchiveError('submodule_observation_failed');
     }
@@ -135,6 +241,7 @@ export function createRecoveryArchive(deps = {}) {
         throw new ArchiveError('dirty_submodule');
       }
     }
+    return { orphan_gitlinks };
   }
 
   /**
@@ -302,7 +409,8 @@ export function createRecoveryArchive(deps = {}) {
       fs.mkdirSync(path.dirname(final_path), { recursive: true });
       fs.rmSync(temp_path, { recursive: true, force: true });
       fs.mkdirSync(path.join(temp_path, 'files'), { recursive: true });
-      assertSubmodulesClean(input.worktree);
+      const { orphan_gitlinks } = classifySubmodules(input.worktree);
+      const orphan_gitlink_set = new Set(orphan_gitlinks);
       assertNoUntrackedSpecialFiles(input.worktree);
 
       /** @type {Array<{ path: string, kind: string, mode: number, size: number, sha256: string }>} */
@@ -413,6 +521,9 @@ export function createRecoveryArchive(deps = {}) {
       /** @type {Array<{ path: string, type: string, mode: number|null, size: number, sha256: string|null }>} */
       const files = [];
       for (const relative_path of relative_paths) {
+        if (orphan_gitlink_set.has(relative_path)) {
+          continue;
+        }
         assertNotSubmodule(input.worktree, relative_path);
         const source_path = safePath(input.worktree, relative_path);
         let stat;
@@ -470,6 +581,7 @@ export function createRecoveryArchive(deps = {}) {
           ahead_count
         },
         excluded: ['git-ignored', 'dependency-build-output'],
+        orphan_gitlinks,
         failures: [],
         artifacts,
         files
