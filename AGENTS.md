@@ -255,9 +255,10 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   (`scripts/ci-workflow-retired.test.js`). branch protection의 required check도
   0개다(`gh api repos/<owner>/<repo>/branches/main/protection` →
   `Branch not protected`).
-- **머지 자격 판정은 checks를 아예 보지 않는다.**(ADR 0003) 판정 입력은 네
+- **머지 자격 판정은 checks를 아예 보지 않는다**(ADR 0003). 판정 입력은 다섯
   가지뿐이다: fresh PR/base/head identity, clean mergeability, current workflow
-  review 영수증, 그리고 `repo-ops/config.toml`의 `[verify]` 영수증.
+  review 영수증, 실행 영수증 backing(`receipt_state`), 그리고
+  `repo-ops/config.toml`의 `[verify]` 영수증.
 - review 영수증의 결속은 두 가지로 갈린다. `spec_review`는 스펙 문서 경로
   프로브가 판정하고, `impl_review`는 **exact head가 아니라 ancestry** 결속이다:
   영수증 SHA가 관측된 head와 같거나 그 조상이면 유효하고, 조상이 아니면(히스토리
@@ -266,15 +267,14 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   충돌 해소 커밋도 다른 커밋과 똑같이 이 ancestry 규칙 하나로 판정한다.
   `resolver-self:`는 `carry:`와 함께 폐기된 영수증 형식이다(과거 기록만 읽는다).
 - `impl_review`가 없거나 조상이 아니면 머지 게이트 **보류**다. terminal 실패가
-  아니다. 큐는 그 head에 대해 같은 리뷰 lineage를 1회 자동 dispatch하고(ADR
-  0019), 그 1회가 소진되면 출구는 `[리뷰 후 머지]` 클릭이다 — 클릭은 `[머지]`와
-  같은 authority를 주고 새 lineage가 아니라 기록된 세션의 같은 lineage를
-  resume한다. 머지는 그대로 큐가 소유한다(ADR 0006).
+  아니다. 큐는 그 head에 같은 리뷰 lineage를 1회 자동 dispatch한다(ADR 0019). 그
+  1회가 소진되면 출구는 `[리뷰 후 머지]` 클릭이다 — 클릭은 `[머지]`와 같은
+  authority를 주고 새 lineage가 아니라 기록된 세션의 같은 lineage를 resume한다.
+  머지는 그대로 큐가 소유한다(ADR 0006).
 - 이 저장소는 `[verify]`를 선언한다(`repo-ops/script/verify` — ADR 인덱스·인용
   검사와 `npm ci`, `npm run tsc`, `npm test`). base에 PR head를 squash-merge한
   일회용 candidate 체크아웃에서 돌기 때문에 tracked 파일을 쓰면 안 된다.
-- 따라서 `gh pr checks`를 기다리거나 폴링하지 마라. 빈 checks를 즉시 통과로
-  취급하던 예전 특례는, 판정에서 checks 자체가 사라지면서 함께 없어졌다.
+- 따라서 `gh pr checks`를 기다리거나 폴링하지 마라.
 - 머지 전 검증은 Pre‑Handoff Validation(lint/tsc/test/prettier/build)으로
   수행한다. `[verify]`는 그것을 대체하지 않는다 — 머지 후보의 base 조합을 머지
   직전에 다시 확인하는 별개의 안전망이다.
