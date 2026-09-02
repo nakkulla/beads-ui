@@ -34,6 +34,11 @@ import {
   sessionLogPath,
   workspaceStateDir
 } from './state-paths.js';
+import {
+  __resetWorkspaceActivityForTest,
+  onWorkspaceActivity,
+  publishWorkspaceActivity
+} from './workspace-activity.js';
 
 // 큐 deps는 attach 안에서만 조립된다. 같은 위임 mock으로 그 deps를 붙잡아,
 // 생산 조립이 seam을 실제로 연결하는지 본다(UI-p49g §4.1).
@@ -61,6 +66,10 @@ const receipt_check_capture = vi.hoisted(() => ({
   calls: [],
   throws: false
 }));
+const foreign_prefix_capture = vi.hoisted(() => ({
+  /** @type {string|null} */
+  value: null
+}));
 
 vi.mock('./receipt-check.js', async (importOriginal) => {
   const actual = /** @type {any} */ (await importOriginal());
@@ -73,6 +82,23 @@ vi.mock('./receipt-check.js', async (importOriginal) => {
       }
       return actual.checkReceipts(input);
     }
+  };
+});
+
+vi.mock('./foreign-blocker-status.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    cachedIssuePrefixFor: () => foreign_prefix_capture.value,
+    prewarmIssuePrefix: vi.fn()
+  };
+});
+
+vi.mock('../watcher.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    watchDb: vi.fn(() => ({ close: () => {} }))
   };
 });
 
@@ -133,13 +159,16 @@ beforeEach(() => {
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-attach-'));
   process.env.XDG_STATE_HOME = tmp_state;
   WS = path.join(tmp_state, 'workspace');
+  foreign_prefix_capture.value = null;
   __resetWorkerAttachmentsForTest();
+  __resetWorkspaceActivityForTest();
 });
 
 afterEach(() => {
   delete process.env.XDG_STATE_HOME;
   delete process.env.BDUI_CONFIG_PATH;
   __resetWorkerAttachmentsForTest();
+  __resetWorkspaceActivityForTest();
   try {
     fs.rmSync(tmp_state, { recursive: true, force: true });
   } catch {
@@ -372,6 +401,37 @@ describe('worker/attach construction + live loop (F1)', () => {
 
     expect(listeners).toHaveLength(1);
     expect(onIssuesChanged).toHaveBeenCalledTimes(1);
+  });
+
+  test('publishes and rescans waiting work after a bd issue change', async () => {
+    /** @type {Array<() => void>} */
+    const listeners = [];
+    const activity_listener = vi.fn();
+    onWorkspaceActivity(activity_listener);
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      watchBeads: (
+        /** @type {string} */ _root,
+        /** @type {() => void} */ onChange
+      ) => {
+        listeners.push(onChange);
+        return { close: () => {} };
+      }
+    });
+    const rescan = vi
+      .spyOn(att.scheduler, 'rescanWaiting')
+      .mockResolvedValue({ checked: 0, returned: 0 });
+    att.beadsChanges.start();
+
+    listeners[0]();
+    await Promise.resolve();
+
+    expect(rescan).toHaveBeenCalledWith(path.resolve(WS));
+    expect(activity_listener).toHaveBeenCalledWith(path.resolve(WS));
   });
 
   test('binds no bd issue-change watcher before the attachment starts', () => {
@@ -773,6 +833,25 @@ describe('worker/attach construction + live loop (F1)', () => {
 
     await waitFor(() => completionIntent.start.mock.calls.length === 1);
     expect(completionIntent.start).toHaveBeenCalledTimes(1);
+  });
+
+  test('rescans waiting work once after attachment startup', async () => {
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    const rescan = vi
+      .spyOn(att.scheduler, 'rescanWaiting')
+      .mockResolvedValue({ checked: 0, returned: 0 });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+
+    await waitFor(() => rescan.mock.calls.length === 1);
+    expect(rescan).toHaveBeenCalledWith(path.resolve(WS));
   });
 
   test('reset stops the completion-intent coordinator', () => {
@@ -1578,7 +1657,130 @@ describe('worker/attach construction + live loop (F1)', () => {
   });
 });
 
+describe('worker/attach waiting activity routing (UI-978d §4)', () => {
+  /**
+   * Build one subscribed attachment holding a foreign prerequisite wait.
+   *
+   * @param {string|null} issue_prefix
+   */
+  function waitingActivityAttachment(issue_prefix) {
+    foreign_prefix_capture.value = issue_prefix;
+    const runtime = createWorkerRuntime();
+    runtime.queueStore.appendAttempt(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      attempt: { attempt_id: 'waiting-1', bead_id: 'UI-waiting' }
+    });
+    runtime.queueStore.updateAttempt(WS, {
+      attempt_id: 'waiting-1',
+      patch: {
+        status: 'waiting',
+        cause: 'prerequisite_unmet',
+        cause_detail: {
+          blockers: [{ id: 'OWNER-1', rig: 'OWNER', status: 'open' }]
+        }
+      }
+    });
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      watchBeads: vi.fn(() => ({ close: () => {} })),
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    const rescan = vi
+      .spyOn(att.scheduler, 'rescanWaiting')
+      .mockResolvedValue({ checked: 0, returned: 0 });
+    att.beadsChanges.start();
+    return { att, rescan };
+  }
+
+  test('rescans when a foreign activity prefix matches', () => {
+    const owner_root = path.join(tmp_state, 'owner');
+    const { rescan } = waitingActivityAttachment('OWNER');
+
+    publishWorkspaceActivity(path.resolve(owner_root));
+
+    expect(rescan).toHaveBeenCalledWith(path.resolve(WS));
+  });
+
+  test('ignores a foreign activity prefix mismatch', () => {
+    const owner_root = path.join(tmp_state, 'owner');
+    const { rescan } = waitingActivityAttachment('OTHER');
+
+    publishWorkspaceActivity(path.resolve(owner_root));
+
+    expect(rescan).not.toHaveBeenCalled();
+  });
+
+  test('rescans when a foreign activity prefix is unknown', () => {
+    const owner_root = path.join(tmp_state, 'owner');
+    const { rescan } = waitingActivityAttachment(null);
+
+    publishWorkspaceActivity(path.resolve(owner_root));
+
+    expect(rescan).toHaveBeenCalledWith(path.resolve(WS));
+  });
+
+  test('ignores activity from its own root', () => {
+    const { rescan } = waitingActivityAttachment('OWNER');
+
+    publishWorkspaceActivity(path.resolve(WS));
+
+    expect(rescan).not.toHaveBeenCalled();
+  });
+
+  test('unsubscribes from activity on stop', () => {
+    const owner_root = path.join(tmp_state, 'owner');
+    const { att, rescan } = waitingActivityAttachment('OWNER');
+
+    att.beadsChanges.stop();
+    publishWorkspaceActivity(path.resolve(owner_root));
+
+    expect(rescan).not.toHaveBeenCalled();
+  });
+});
+
 describe('worker/attach createLiveBd bd show parsing', () => {
+  test('readyBeadIds reads one ready payload into an id set', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: [{ id: 'UI-1' }, { id: 'UI-2' }]
+    }));
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const ids = await bd.readyBeadIds();
+
+    expect(ids).toEqual(new Set(['UI-1', 'UI-2']));
+    expect(runJson).toHaveBeenCalledTimes(1);
+    expect(runJson).toHaveBeenCalledWith(
+      ['ready', '--limit', '1000', '--json'],
+      { cwd: '/ws' }
+    );
+  });
+
+  test('readyBeadIds throws when bd ready fails', async () => {
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(async () => ({
+        code: 1,
+        stdoutJson: null,
+        stderr: 'busy'
+      }))
+    });
+
+    await expect(bd.readyBeadIds()).rejects.toThrow(
+      'bd ready failed (bd_exit_error)'
+    );
+  });
+
   test('snapshotBead normalizes string labels from the issue', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {

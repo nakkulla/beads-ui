@@ -140,6 +140,10 @@ finished_at: at
   않는다"를 고정한다(§7 (h)).
 - `latestImplementationAttempt`가 `waiting`을 "마지막 attempt"로 세는 것은 그대로 — held 타일이 그것을 읽는다. 새 attempt가 뜨면 `lane-model`의 `map.has(bead_id)` 규칙으로 타일이 밀린다(parked와 같음).
 - `attach.js`의 `onIssuesChanged` 구독은 손대지 않는다. 복귀 트리거는 별도 관측이 아니라 다음 tick의 보통 후보 선택이다.
+- **정정(UI-978d).** `onIssuesChanged` 구독을 손대지 않는다는 결정은
+  `2026-09-02-worker-waiting-return-trigger-design.md`가 뒤집었다 — `fire()`가 `rescanWaiting`을
+  부르고 foreign rig 활동은 워크스페이스 활동 버스로 관측한다. 판정이 `bd ready`라는 점과 fence
+  없음은 그대로다.
 
 ### 4.6 `quickfix-landing.js`
 

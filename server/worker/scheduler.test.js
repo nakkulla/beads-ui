@@ -446,10 +446,27 @@ function makeFakeBd(config) {
    */
   const snapshot_calls = {};
   let snapshotCount = 0;
+  let readyCount = 0;
   return {
     calls,
     statuses,
     snapshotCounts: () => snapshotCount,
+    readyCounts: () => readyCount,
+    async readyBeadIds() {
+      readyCount += 1;
+      /** @type {Set<string>} */
+      const ids = new Set();
+      for (const [bead_id, value] of Object.entries(config)) {
+        const c = /** @type {any} */ (value || {});
+        const ready = c.ready_follows_status
+          ? (statuses[bead_id] ?? 'open') === 'open'
+          : (c.ready ?? true);
+        if (ready) {
+          ids.add(bead_id);
+        }
+      }
+      return ids;
+    },
     /**
      * @param {string} bead_id
      * @returns {Promise<import('./scheduler.js').BeadSnapshot>}
@@ -619,7 +636,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number }} opts
+ * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number, publishActivity?: (workspace: string) => void, waitingRescan?: { cover_ms: number, max_wait_ms: number } }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -756,7 +773,9 @@ function setup(opts) {
     onCompletionAttemptSettled: opts.onCompletionAttemptSettled,
     reviewSession: opts.reviewSession,
     timeline: opts.timeline,
-    now: opts.now || (() => 1000)
+    now: opts.now || (() => 1000),
+    publishActivity: opts.publishActivity,
+    waitingRescan: opts.waitingRescan
   });
   // The concurrency cap lives in the STORE now (worker-phase2 §3), not in a
   // constructor dep, so a test sets it exactly the way the UI does.
@@ -16074,5 +16093,194 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
     expect(env.store.snapshot(WS).pr_wait.map((row) => row.bead_id)).toEqual([
       'S1'
     ]);
+  });
+});
+
+describe('scheduler waiting return rescan (UI-978d §4)', () => {
+  /**
+   * Build one lane-resident terminal waiting attempt without running a prior
+   * session; each test controls the ready transition directly.
+   *
+   * @param {Partial<Parameters<typeof setup>[0]>} [options]
+   */
+  function waitingRescanEnv(options = {}) {
+    const config = { S1: { route: 'quick_fix', ready: false } };
+    const env = setup({
+      config,
+      slots: 1,
+      ...options
+    });
+    seedQueue(env.store, ['S1']);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'waiting-1', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'waiting-1',
+      patch: {
+        status: 'waiting',
+        cause: 'prerequisite_unmet',
+        cause_detail: { blockers: [{ id: 'S9', rig: null }] }
+      }
+    });
+    return { env, config };
+  }
+
+  test('returns a ready waiting bead through an internal pass', async () => {
+    const publishActivity = vi.fn();
+    const { env, config } = waitingRescanEnv({ publishActivity });
+    config.S1.ready = true;
+
+    const result = await env.scheduler.rescanWaiting(WS);
+
+    expect(result).toEqual({ checked: 1, returned: 1 });
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].status).toBe('running');
+    expect(publishActivity).not.toHaveBeenCalled();
+  });
+
+  test('leaves a not-ready waiting bead unrecorded', async () => {
+    const { env } = waitingRescanEnv();
+    const snapshots_before = env.bd.snapshotCounts();
+
+    const result = await env.scheduler.rescanWaiting(WS);
+
+    expect(result).toEqual({ checked: 1, returned: 0 });
+    expect(env.bd.readyCounts()).toBe(1);
+    expect(env.bd.snapshotCounts() - snapshots_before).toBe(0);
+    expect(env.store.snapshot(WS).attempts).toEqual({
+      'waiting-1': expect.objectContaining({ status: 'waiting' })
+    });
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+  });
+
+  test('skips the bd ready read without a waiting candidate', async () => {
+    const env = setup({ config: {}, slots: 1 });
+
+    const result = await env.scheduler.rescanWaiting(WS);
+
+    expect(result).toEqual({ checked: 0, returned: 0 });
+    expect(env.bd.readyCounts()).toBe(0);
+  });
+
+  test('coalesces calls into one leading scan and one trailing cover', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const { env } = waitingRescanEnv({
+      now: () => Date.now(),
+      waitingRescan: { cover_ms: 2_000, max_wait_ms: 30_000 }
+    });
+
+    await env.scheduler.rescanWaiting(WS);
+    await vi.advanceTimersByTimeAsync(500);
+    await env.scheduler.rescanWaiting(WS);
+    await vi.advanceTimersByTimeAsync(500);
+    await env.scheduler.rescanWaiting(WS);
+    await vi.advanceTimersByTimeAsync(1_999);
+
+    expect(env.bd.readyCounts()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(env.bd.readyCounts()).toBe(2);
+    vi.useRealTimers();
+  });
+
+  test('moves the trailing cover to the latest call', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const { env } = waitingRescanEnv({
+      now: () => Date.now(),
+      waitingRescan: { cover_ms: 2_000, max_wait_ms: 30_000 }
+    });
+
+    await env.scheduler.rescanWaiting(WS);
+    await vi.advanceTimersByTimeAsync(1_500);
+    await env.scheduler.rescanWaiting(WS);
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(env.bd.readyCounts()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(env.bd.readyCounts()).toBe(2);
+    vi.useRealTimers();
+  });
+
+  test('forces the cover at max-wait under continuous calls', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const { env } = waitingRescanEnv({
+      now: () => Date.now(),
+      waitingRescan: { cover_ms: 2_000, max_wait_ms: 30_000 }
+    });
+    await env.scheduler.rescanWaiting(WS);
+
+    for (let elapsed = 1_000; elapsed < 30_000; elapsed += 1_000) {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await env.scheduler.rescanWaiting(WS);
+    }
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(env.bd.readyCounts()).toBe(2);
+    vi.useRealTimers();
+  });
+
+  test('does not arm another cover from a cover execution', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const { env } = waitingRescanEnv({
+      now: () => Date.now(),
+      waitingRescan: { cover_ms: 2_000, max_wait_ms: 30_000 }
+    });
+
+    await env.scheduler.rescanWaiting(WS);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(env.bd.readyCounts()).toBe(2);
+    vi.useRealTimers();
+  });
+
+  test('excludes a dispatch-refused waiting bead from later rescans', async () => {
+    let refuse_dispatch = false;
+    const admission = {
+      validate: vi.fn(
+        async (/** @type {any} */ _snap, /** @type {string} */ base) =>
+          refuse_dispatch && typeof base === 'string'
+            ? { ok: false, reason: 'receipt_unreachable' }
+            : { ok: true }
+      )
+    };
+    const { env, config } = waitingRescanEnv({ admission });
+    config.S1.ready = true;
+    refuse_dispatch = true;
+    await env.scheduler.tick(WS);
+    const ready_before = env.bd.readyCounts();
+
+    const result = await env.scheduler.rescanWaiting(WS);
+
+    expect(result).toEqual({ checked: 0, returned: 0 });
+    expect(env.bd.readyCounts()).toBe(ready_before);
+    expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(true);
+  });
+
+  test('publishes only external tick activity', async () => {
+    const publishActivity = vi.fn();
+    const { env } = waitingRescanEnv({ publishActivity });
+
+    await env.scheduler.rescanWaiting(WS);
+    await env.scheduler.tick(WS);
+
+    expect(publishActivity).toHaveBeenCalledTimes(1);
+    expect(publishActivity).toHaveBeenCalledWith(WS);
+  });
+
+  test('fails quiet without a ready set reader', async () => {
+    const { env } = waitingRescanEnv();
+    delete (/** @type {any} */ (env.bd).readyBeadIds);
+
+    const result = await env.scheduler.rescanWaiting(WS);
+
+    expect(result).toEqual({ checked: 0, returned: 0 });
   });
 });

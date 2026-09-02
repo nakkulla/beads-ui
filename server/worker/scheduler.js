@@ -105,8 +105,12 @@ import { qualifySessionFork } from './session-ref.js';
 import { staleResidueIntact } from './stale-work.js';
 import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths.js';
 import * as default_usage_receipts from './usage-receipts.js';
+import { publishWorkspaceActivity } from './workspace-activity.js';
 
 const log = debug('worker:scheduler');
+
+const WAITING_RESCAN_COVER_MS = 2_000;
+const WAITING_RESCAN_MAX_WAIT_MS = 30_000;
 
 /**
  * The bd write a `workflow_mode_record_failed` attempt names in its
@@ -528,7 +532,8 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   setStatus: (bead_id: string, status: string) => Promise<void>,
  *   readStatus: (bead_id: string) => Promise<string|null>,
  *   comment?: (bead_id: string, text: string) => Promise<unknown>,
- *   readIssue?: (bead_id: string) => Promise<Record<string, any>>
+ *   readIssue?: (bead_id: string) => Promise<Record<string, any>>,
+ *   readyBeadIds?: () => Promise<Set<string>>
  * }} bd
  * `comment` is OPTIONAL because a scheduler built without it — every existing
  * unit test — must settle failures identically and simply post nothing
@@ -536,6 +541,9 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * (waiting-tier spec §4.2): it is the ONLY reader of a bead's outgoing `blocks`
  * edges, so an attachment without it cannot prove a prerequisite wait and every
  * such ending falls through to the ordinary landing settlement.
+ * `readyBeadIds` is optional for the same compatibility reason. Without the
+ * workspace-wide ready reader, waiting return scans fail quiet and ordinary
+ * scheduler behavior stays unchanged.
  * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean, restore?: (i: { repo: string, bead_id: string, head_ref: string }) => Promise<{ ok: boolean, reason?: string }> }} worktree
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean, bead_status?: string|null, awaiting_user?: string|null }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
@@ -654,6 +662,10 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * the legacy process-local handle behavior for older embedders and tests.
  * @property {() => number} [now]
  * @property {(bead_id: string) => string} [makeAttemptId]
+ * @property {(workspace: string) => void} [publishActivity]
+ * External `tick` activity publisher. Tests may replace the process-local bus.
+ * @property {{ cover_ms: number, max_wait_ms: number }} [waitingRescan]
+ * Waiting-return throttle timings. Production uses the constants above.
  */
 
 /**
@@ -937,6 +949,7 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   finalizeDiscardAttempt: (workspace: string, attempt_id: string, bead_id?: string|null, source_status?: string|null) => Promise<{ ok: boolean, reason?: string }>,
  *   recoverControls: (workspace: string) => Promise<void>,
  *   onIssuesChanged: (workspace: string) => Promise<void>,
+ *   rescanWaiting: (workspace: string) => Promise<{ checked: number, returned: number }>,
  *   resumeQueueHold: (workspace: string, input: { since?: number|null }) => Promise<{ ok: boolean, reason?: string }>,
  *   retryQueueHoldNow: (workspace: string, input: { since?: number|null }) => Promise<{ ok: boolean, reason?: string }>,
  *   retryParked: (workspace: string, input: { bead_id: string, attempt_id: string }) => Promise<{ ok: boolean, reason?: string }>,
@@ -955,6 +968,7 @@ export function createScheduler(deps) {
   const fs = deps.fs || nodeFs;
   const guardHook = deps.guardHook || default_guard_hook;
   const usage_receipts = deps.usageReceipts || default_usage_receipts;
+  const publishActivity = deps.publishActivity || publishWorkspaceActivity;
   const delegation_monitor =
     deps.delegationMonitor || default_delegation_monitor;
   const observeClaudeEffort =
@@ -1185,6 +1199,14 @@ export function createScheduler(deps) {
    */
   let draining = null;
   let rescan = false;
+  /**
+   * Waiting-return scans are bounded per workspace. `leading_at` remains the
+   * start of the current burst while calls keep moving its cover; this makes
+   * max-wait a real upper bound instead of another debounce delay.
+   *
+   * @type {Map<string, { running: boolean, cover_timer: ReturnType<typeof setTimeout>|null, leading_at: number }>}
+   */
+  const waiting_rescans = new Map();
   /**
    * Beads whose ■ stop cleanup has not finished yet. A live stop's residue
    * check waits for the killed process to actually exit, and re-dispatching in
@@ -8856,9 +8878,163 @@ export function createScheduler(deps) {
    * @returns {Promise<void>}
    */
   async function tick(workspace) {
+    publishActivity(workspace);
     gcUsageReceiptInboxes(workspace);
     dispatch_refused.clear();
     await tickPass(workspace);
+  }
+
+  /**
+   * Read waiting attempts against one authoritative workspace-wide ready set.
+   * This path only decides whether the ordinary pass should run; dispatch,
+   * slots, lane heads, admission and claims remain owned by {@link tickPass}.
+   *
+   * @param {string} workspace
+   * @returns {Promise<{ checked: number, returned: number }>}
+   */
+  async function runWaitingRescan(workspace) {
+    if (typeof deps.bd.readyBeadIds !== 'function') {
+      return { checked: 0, returned: 0 };
+    }
+    /** @type {any} */
+    let q;
+    try {
+      q = deps.store.snapshot(workspace);
+    } catch (err) {
+      log('waiting rescan snapshot failed for %s: %o', workspace, err);
+      return { checked: 0, returned: 0 };
+    }
+    /** @type {Set<string>} */
+    const lanes = new Set([
+      ...q.queue.map(
+        (/** @type {{ bead_id: string }} */ entry) => entry.bead_id
+      ),
+      ...(q.serial_lanes || []).flatMap(
+        (/** @type {{ entries: Array<{ bead_id: string }> }} */ lane) =>
+          lane.entries.map((entry) => entry.bead_id)
+      )
+    ]);
+    const active = activeBeadIdsFrom(q);
+    const paused = leafPausedBeads(q);
+    /** @type {Set<string>} */
+    const candidates = new Set();
+    for (const attempt of Object.values(q.attempts || {})) {
+      const record = /** @type {any} */ (attempt);
+      if (
+        record.status !== 'waiting' ||
+        latestImplementationAttempt(q, record.bead_id)?.attempt_id !==
+          record.attempt_id ||
+        !lanes.has(record.bead_id) ||
+        claimed.has(record.bead_id) ||
+        active.has(record.bead_id) ||
+        paused.has(record.bead_id) ||
+        dispatch_refused.has(record.bead_id) ||
+        cleanup_pending.has(record.bead_id)
+      ) {
+        continue;
+      }
+      candidates.add(record.bead_id);
+    }
+    if (candidates.size === 0) {
+      return { checked: 0, returned: 0 };
+    }
+    /** @type {Set<string>} */
+    let ready;
+    try {
+      ready = await deps.bd.readyBeadIds();
+    } catch (err) {
+      log('waiting ready scan failed for %s: %o', workspace, err);
+      return { checked: 0, returned: 0 };
+    }
+    const returned = [...candidates].filter((bead_id) => ready.has(bead_id));
+    log(
+      'waiting rescan checked %d candidate(s) for %s; %d ready',
+      candidates.size,
+      workspace,
+      returned.length
+    );
+    if (returned.length > 0) {
+      await tickPass(workspace);
+    }
+    return { checked: candidates.size, returned: returned.length };
+  }
+
+  /**
+   * Arm the trailing cover without extending the current burst past max-wait.
+   * Cover execution never arms itself; only activity arriving during it can
+   * create the next cover.
+   *
+   * @param {string} workspace
+   * @param {{ running: boolean, cover_timer: ReturnType<typeof setTimeout>|null, leading_at: number }} state
+   */
+  function armWaitingRescanCover(workspace, state) {
+    if (state.cover_timer !== null) {
+      clearTimeout(state.cover_timer);
+    }
+    const cover_ms = deps.waitingRescan?.cover_ms ?? WAITING_RESCAN_COVER_MS;
+    const max_wait_ms =
+      deps.waitingRescan?.max_wait_ms ?? WAITING_RESCAN_MAX_WAIT_MS;
+    const delay = Math.max(
+      0,
+      Math.min(cover_ms, state.leading_at + max_wait_ms - now())
+    );
+    const timer = setTimeout(() => {
+      state.cover_timer = null;
+      if (state.running) {
+        return;
+      }
+      state.running = true;
+      state.leading_at = 0;
+      void runWaitingRescan(workspace)
+        .catch((err) => {
+          log('waiting cover scan failed for %s: %o', workspace, err);
+        })
+        .finally(() => {
+          state.running = false;
+          if (state.cover_timer === null && state.leading_at !== 0) {
+            armWaitingRescanCover(workspace, state);
+          }
+        });
+    }, delay);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    state.cover_timer = timer;
+  }
+
+  /**
+   * Re-observe prerequisite-wait attempts with a leading + trailing cover.
+   * Suppressed calls still move the cover, but do not start another bd read.
+   *
+   * @param {string} workspace
+   * @returns {Promise<{ checked: number, returned: number }>}
+   */
+  async function rescanWaiting(workspace) {
+    if (typeof deps.bd.readyBeadIds !== 'function') {
+      return { checked: 0, returned: 0 };
+    }
+    let state = waiting_rescans.get(workspace);
+    if (!state) {
+      state = { running: false, cover_timer: null, leading_at: 0 };
+      waiting_rescans.set(workspace, state);
+    }
+    if (state.running || state.cover_timer !== null) {
+      if (state.leading_at === 0) {
+        state.leading_at = now();
+      }
+      armWaitingRescanCover(workspace, state);
+      return { checked: 0, returned: 0 };
+    }
+    state.running = true;
+    state.leading_at = now();
+    try {
+      return await runWaitingRescan(workspace);
+    } finally {
+      state.running = false;
+      if (state.cover_timer === null) {
+        armWaitingRescanCover(workspace, state);
+      }
+    }
   }
 
   /**
@@ -10340,6 +10516,7 @@ export function createScheduler(deps) {
     finalizeDiscardAttempt,
     recoverControls,
     onIssuesChanged,
+    rescanWaiting,
     resumeQueueHold,
     retryQueueHoldNow,
     retryParked,
