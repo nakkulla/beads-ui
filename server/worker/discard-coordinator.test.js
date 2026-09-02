@@ -2716,3 +2716,172 @@ describe('discard failure notification (UI-jw27 §2)', () => {
     expect(result).toMatchObject({ ok: false, reason: 'discard_driver_error' });
   });
 });
+
+describe('archive-stage discard failure notification (UI-e98l)', () => {
+  /** A notifier fake that records every `needsHuman` body it is handed. */
+  function makeNotify() {
+    /** @type {any[]} */
+    const sent = [];
+    return {
+      sent,
+      needsHuman: vi.fn(async (/** @type {any} */ input) => {
+        sent.push(input);
+      })
+    };
+  }
+
+  /**
+   * A discard whose source is a running attempt, so the operation carries a
+   * process identity and `archiveDiscardSource` reaches its own failure writes.
+   *
+   * @param {any} [options]
+   */
+  function runningEnv(options) {
+    const env = setup(options);
+    env.store.updateAttempt(workspace, {
+      attempt_id: 'att-1',
+      patch: {
+        status: 'running',
+        pid: 4242,
+        started_at: 1_000,
+        process_identity: null
+      }
+    });
+    return env;
+  }
+
+  /**
+   * @param {any} env
+   */
+  function discard(env) {
+    return env.coordinator.discard({
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+  }
+
+  test('announces an unknown process identity observed at the archive stage', async () => {
+    const notify = makeNotify();
+    const env = runningEnv({
+      notify,
+      processController: {
+        probe: vi.fn(() => ({ state: 'unknown', reason: 'ps_failed' })),
+        signal: vi.fn()
+      }
+    });
+
+    const result = await discard(env);
+
+    expect(result).toMatchObject({ ok: false, reason: 'ps_failed' });
+    expect(notify.sent).toEqual([
+      expect.objectContaining({
+        bead_id: 'UI-1',
+        failure_class: '폐기 실패',
+        reason: 'ps_failed',
+        next_action: '재클릭 또는 [세션에서 해결]',
+        repo: '/repo'
+      })
+    ]);
+  });
+
+  test('announces a quiesce signal the owned runner refused', async () => {
+    const notify = makeNotify();
+    const env = runningEnv({
+      notify,
+      processController: {
+        probe: vi.fn(() => ({ state: 'owned' })),
+        signal: vi.fn(() => ({ ok: false, state: 'gone' }))
+      }
+    });
+
+    const result = await discard(env);
+
+    expect(result).toMatchObject({ ok: false, reason: 'identity_gone' });
+    expect(notify.sent).toEqual([
+      expect.objectContaining({
+        bead_id: 'UI-1',
+        failure_class: '폐기 실패',
+        reason: 'identity_gone'
+      })
+    ]);
+  });
+
+  test('announces a failed archive creation', async () => {
+    const notify = makeNotify();
+    const env = runningEnv({
+      notify,
+      processController: {
+        probe: vi.fn(() => ({ state: 'owned' })),
+        signal: vi.fn(() => ({ ok: true, state: 'owned' }))
+      }
+    });
+    env.archive.create.mockReturnValueOnce(
+      /** @type {any} */ ({ ok: false, reason: 'disk_write_failed' })
+    );
+
+    const result = await discard(env);
+
+    expect(result).toMatchObject({ ok: false, reason: 'disk_write_failed' });
+    expect(notify.sent).toEqual([
+      expect.objectContaining({
+        bead_id: 'UI-1',
+        failure_class: '폐기 실패',
+        reason: 'disk_write_failed'
+      })
+    ]);
+  });
+
+  test('sends nothing when the store refuses the archive-stage failure write', async () => {
+    const notify = makeNotify();
+    const env = runningEnv({
+      notify,
+      processController: {
+        probe: vi.fn(() => ({ state: 'unknown', reason: 'ps_failed' })),
+        signal: vi.fn()
+      }
+    });
+    vi.spyOn(env.store, 'failDiscardOperation').mockReturnValue({
+      ok: false,
+      conflict: false,
+      reason: 'phase_mismatch',
+      queue: env.store.snapshot(workspace)
+    });
+
+    const result = await discard(env);
+
+    expect(result).toMatchObject({ ok: false, reason: 'ps_failed' });
+    expect(notify.sent).toEqual([]);
+  });
+
+  test('returns the archive-stage failure normally when the notifier throws', async () => {
+    const env = runningEnv({
+      notify: {
+        needsHuman: vi.fn(() => {
+          throw new Error('notifier broken');
+        })
+      },
+      processController: {
+        probe: vi.fn(() => ({ state: 'unknown', reason: 'ps_failed' })),
+        signal: vi.fn()
+      }
+    });
+
+    const result = await discard(env);
+
+    expect(result).toMatchObject({ ok: false, reason: 'ps_failed' });
+  });
+
+  test('returns the archive-stage failure normally when no notifier is wired', async () => {
+    const env = runningEnv({
+      processController: {
+        probe: vi.fn(() => ({ state: 'unknown', reason: 'ps_failed' })),
+        signal: vi.fn()
+      }
+    });
+
+    const result = await discard(env);
+
+    expect(result).toMatchObject({ ok: false, reason: 'ps_failed' });
+  });
+});

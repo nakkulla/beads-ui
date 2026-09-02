@@ -782,42 +782,77 @@ export function createRecoveryArchive(deps = {}) {
  * topology lock, then persist the receipt. Failure deliberately sends no CONT:
  * the fenced operation and frozen artifacts remain available for same-id retry.
  *
- * @param {{ workspace: string, operation: any, store: any, processController: any, withTopologyLock: (work: () => any) => any, createArchive: () => any }} input
+ * `announceFailure` is the discard coordinator's own announce seam (UI-e98l):
+ * this function writes durable discard failures the coordinator's `fail()`
+ * never sees, so without it an archive-stage failure stays silent.
+ *
+ * @param {{ workspace: string, operation: any, store: any, processController: any, withTopologyLock: (work: () => any) => any, createArchive: () => any, announceFailure?: (bead_id: unknown, reason: string) => void }} input
  * @returns {Promise<any>}
  */
 export async function archiveDiscardSource(input) {
   const { operation } = input;
   const identity = operation?.process_identity || null;
+
+  /**
+   * Report one durable discard-failure write to the coordinator's announce
+   * seam. Only a write that LANDED is a terminal fact — `failDiscardOperation`
+   * is a CAS, and a refused or unwired write left no record a push could be
+   * about. The guard keeps this seam NO-THROW for a callback that breaks its
+   * own contract.
+   *
+   * @param {any} written
+   * @param {string} reason
+   */
+  function announceIfWritten(written, reason) {
+    if (!written?.ok) {
+      return;
+    }
+    try {
+      input.announceFailure?.(operation.bead_id, reason);
+    } catch {
+      // NO-THROW: a broken notifier never becomes a discard failure.
+    }
+  }
   if (identity) {
     const observed = input.processController.probe(identity);
     if (observed.state === 'unknown') {
-      input.store.failDiscardOperation?.(input.workspace, {
-        operation_id: operation.operation_id,
-        expected_phase: operation.phase,
-        reason: observed.reason || 'identity_unknown'
-      });
-      return { ok: false, reason: observed.reason || 'identity_unknown' };
+      const reason = observed.reason || 'identity_unknown';
+      announceIfWritten(
+        input.store.failDiscardOperation?.(input.workspace, {
+          operation_id: operation.operation_id,
+          expected_phase: operation.phase,
+          reason
+        }),
+        reason
+      );
+      return { ok: false, reason };
     }
     if (observed.state === 'owned') {
       const stopped = input.processController.signal(identity, 'SIGSTOP');
       if (!stopped.ok) {
         const reason = stopped.reason || `identity_${stopped.state}`;
-        input.store.failDiscardOperation?.(input.workspace, {
-          operation_id: operation.operation_id,
-          expected_phase: operation.phase,
+        announceIfWritten(
+          input.store.failDiscardOperation?.(input.workspace, {
+            operation_id: operation.operation_id,
+            expected_phase: operation.phase,
+            reason
+          }),
           reason
-        });
+        );
         return { ok: false, reason };
       }
     }
   }
   const archived = await input.withTopologyLock(() => input.createArchive());
   if (!archived.ok) {
-    input.store.failDiscardOperation?.(input.workspace, {
-      operation_id: operation.operation_id,
-      expected_phase: operation.phase,
-      reason: archived.reason
-    });
+    announceIfWritten(
+      input.store.failDiscardOperation?.(input.workspace, {
+        operation_id: operation.operation_id,
+        expected_phase: operation.phase,
+        reason: archived.reason
+      }),
+      archived.reason
+    );
     return archived;
   }
   const persisted = input.store.advanceDiscardOperation(input.workspace, {

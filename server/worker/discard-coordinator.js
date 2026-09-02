@@ -561,6 +561,9 @@ export function createDiscardCoordinator(deps, options = {}) {
       operation,
       store: deps.store,
       processController: deps.processController,
+      // The archive seam writes its own `failDiscardOperation` records, so it
+      // gets the same announce path `fail()` uses (UI-e98l).
+      announceFailure: announceDiscardFailure,
       withTopologyLock: (work) =>
         deps.worktree.withTopologyLock(source.repo, async () => work()),
       createArchive: () =>
