@@ -71,6 +71,12 @@ describe('failureSentence', () => {
     );
   });
 
+  test('names the approval exit for a bootstrap gate stop', () => {
+    expect(failureSentence('bootstrap_not_approved')).toBe(
+      '첫 [deploy] 선언은 사람 승인 없이 실행하지 않습니다. Worker 설정의 [배포 실행]으로 원격 base tip을 한 번 배포한 뒤 [정산 재개]를 누르세요 — 그 뒤 머지부터는 자동 배포됩니다.'
+    );
+  });
+
   test('returns null for an unknown code', () => {
     expect(failureSentence('surprise_new_token')).toBeNull();
   });

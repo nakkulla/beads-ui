@@ -29,6 +29,11 @@ export const FAILURE_SENTENCES = Object.freeze({
   interrupted_without_terminal_exit: '작업이 종료 기록 없이 중단됐습니다.',
   manual_target_missing:
     '수동 배포 기록에 핀된 대상 SHA가 없어 실행하지 않았습니다.',
+  // 첫 `[deploy]` 선언의 bootstrap 게이트(2026-08-13 compat spec §3.5). 자동
+  // 경로는 이전 base의 스크립트만 실행하므로, 이전 base에 선언이 없는 첫
+  // 활성화는 사람 승인 없이 돌지 않는다 — 문장이 출구까지 말해야 카드가 답이 된다.
+  bootstrap_not_approved:
+    '첫 [deploy] 선언은 사람 승인 없이 실행하지 않습니다. Worker 설정의 [배포 실행]으로 원격 base tip을 한 번 배포한 뒤 [정산 재개]를 누르세요 — 그 뒤 머지부터는 자동 배포됩니다.',
   // Cleanup step 1 (base 포함 확인). This step runs before any repo operation
   // exists, so a stop here produces no operation card and no failure_kind —
   // the cleanup record's raw reason is the ONLY thing that can say what
