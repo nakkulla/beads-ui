@@ -1328,6 +1328,12 @@ export function priorityBadgeTemplate(priority) {
  * @property {boolean} [merge_action] - Render the [머지] action (`pr_wait` rows
  * only, worker-phase2 §6).
  * @property {boolean} [discard_action] - Render the [폐기] action.
+ * @property {boolean} [resolve_action] - Render the [세션에서 해결] action
+ * (UI-jw27 §4). 슬롯 6 액션 foot의 [정리 재시도] 옆에 서고, 재료(=기동 가능한
+ * terminal 실패 행)가 없으면 필드도 없어 버튼 자체가 그려지지 않는다.
+ * @property {boolean} [resolve_enabled] - Whether [세션에서 해결] may be
+ * clicked; false while this row's own click is in flight.
+ * @property {string} [resolve_title] - Tooltip: what the click starts.
  * @property {ReturnType<typeof discardProjection>} [discard] - Shared durable
  * discard eligibility, phase, error, archive, and PR-receipt projection.
  * @property {StaleWorkView|null} [stale_work] - Optional stale worktree action card.
@@ -1664,6 +1670,21 @@ export function miniRow(item, options = {}) {
           ${discard?.label || '폐기'}
         </button>`
       : '';
+  // [세션에서 해결] (UI-jw27 §4). 같은 액션 foot의 [정리 재시도] 다음 자리다 —
+  // 둘은 같은 실패 행이 내는 두 출구이고, 재시도가 먼저 읽혀야 한다. 이 버튼은
+  // 아무것도 되돌리지 않으므로 [폐기]보다 앞에 선다.
+  const resolve_el = item.resolve_action
+    ? html`<button
+        type="button"
+        class="worker-mini__resolve"
+        data-bead-id=${item.id}
+        ?disabled=${item.resolve_enabled === false}
+        title=${item.resolve_title ||
+        '실패한 작업을 이어받는 대화형 세션을 띄웁니다 (기록된 세션이 있으면 fork)'}
+      >
+        세션에서 해결
+      </button>`
+    : '';
   const stale_work = item.stale_work || null;
   const stale_els = stale_work
     ? html`${stale_work.can_resume || stale_work.can_continue
@@ -1789,6 +1810,7 @@ export function miniRow(item, options = {}) {
     merging ||
     item.merge_action ||
     item.cancel_action ||
+    item.resolve_action ||
     item.discard_action ||
     discard?.operation ||
     item.revise_action ||
@@ -1829,7 +1851,7 @@ export function miniRow(item, options = {}) {
                 >`
               : ''}${badge_els}${merge_step_el}
             <span class="worker-mini__actions"
-              >${merge_el}${cancel_el}${discard_el}</span
+              >${merge_el}${cancel_el}${resolve_el}${discard_el}</span
             >
             ${timesMeta(item)}
           </div>`
@@ -1842,7 +1864,7 @@ export function miniRow(item, options = {}) {
               ? html`<div class="worker-mini__foot">
                   ${merge_step_el}
                   <span class="worker-mini__actions"
-                    >${merge_el}${cancel_el}${discard_el}${revise_els}${stale_els}</span
+                    >${merge_el}${cancel_el}${resolve_el}${discard_el}${revise_els}${stale_els}</span
                   >
                   ${discardReceiptTemplate(item)}
                 </div>`
@@ -1852,7 +1874,7 @@ export function miniRow(item, options = {}) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${badge_els}${reason_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}${actions_el}
+              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${badge_els}${reason_el}${merge_step_el}${merge_el}${cancel_el}${resolve_el}${discard_el}${actions_el}
             </div>
             ${deps_el}${chips_el}${receipt_el} ${timesMeta(item)}`}
   </div>`;

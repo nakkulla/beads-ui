@@ -99,6 +99,7 @@ import {
   repoOpsVerifyReceiptState
 } from '../worker/repo-ops-display.js';
 import { normalizeScriptRetry } from '../worker/resolution-ladder.js';
+import { resolveFailureContext } from '../worker/resolve-session.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
 import { createTailReader } from '../worker/runner/tail-reader.js';
@@ -5405,7 +5406,7 @@ export async function handleWorkerCleanupRetry(ws, req) {
     log('worker cleanup retry failed for %s/%s: %o', key, p.bead_id, err);
     result = { ok: false, reason: 'error' };
   }
-  recordUserAction(key, p.bead_id, 'cleanup_retry', '[정리] 클릭');
+  recordUserAction(key, p.bead_id, 'cleanup_retry', '[정리 재시도] 클릭');
   const latest = /** @type {any} */ (queueStore().snapshot(key));
   ws.send(
     JSON.stringify(
@@ -5416,6 +5417,132 @@ export async function handleWorkerCleanupRetry(ws, req) {
         pending: result.pending === true,
         cleanup_step: result.step || null,
         reason: result.ok ? null : result.reason || null,
+        queue: decorateQueue(key, latest)
+      })
+    )
+  );
+  fanout(key, latest);
+}
+
+/**
+ * Handle `worker-resolve-in-session`. Payload: `{ bead_id, expected_revision }`.
+ *
+ * [세션에서 해결] (UI-jw27 §4): start the interactive session a person would
+ * otherwise open by hand for a terminal failure, forked off the bead's recorded
+ * session when one can be forked. The CLICK is the only trigger — nothing here
+ * is reachable from an automatic path, and ADR 0005's ban on automatic repair
+ * dispatch is untouched.
+ *
+ * Same skeleton as {@link handleWorkerCleanupRetry}: the queue revision is
+ * checked BEFORE anything is looked up, so a stale click has no action-side
+ * effects at all — not even a tmux read.
+ *
+ * The refusal reasons travel in the reply rather than being folded away: a
+ * fresh-session fallback looks nothing like a fork to the person who has to
+ * work in it, and `reason` is the only place a launch that did not happen can
+ * say so.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerResolveInSession(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.bead_id !== 'string' || p.bead_id.trim().length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          launched: false,
+          conflict: true,
+          session: null,
+          reason: null,
+          mode: null,
+          fallback_reason: null,
+          command: null,
+          bridge_active: false,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  // The click's own precondition, re-read server-side: the button is only drawn
+  // on a failure row, but a row can settle between render and click and a
+  // session that cannot state what it is for is worse than a refusal.
+  const failure = resolveFailureContext(current, p.bead_id);
+  if (failure === null) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          launched: false,
+          conflict: false,
+          session: 'not_launched',
+          reason: 'no_terminal_failure',
+          mode: null,
+          fallback_reason: null,
+          command: null,
+          bridge_active: false,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  /** @type {any} */
+  let result;
+  try {
+    result = await getWorkerRuntime().resolveSession.resolve({
+      workspace: key,
+      repo: key,
+      bead_id: p.bead_id,
+      failure
+    });
+  } catch (err) {
+    log('resolve-in-session failed for %s/%s: %o', key, p.bead_id, err);
+    result = {
+      launched: false,
+      session: 'not_launched',
+      reason: 'error',
+      mode: null,
+      fallback_reason: null,
+      command: null,
+      bridge_active: false
+    };
+  }
+  recordUserAction(
+    key,
+    p.bead_id,
+    'resolve_in_session',
+    '[세션에서 해결] 클릭'
+  );
+  const latest = /** @type {any} */ (queueStore().snapshot(key));
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        launched: result.launched === true,
+        conflict: false,
+        session: result.session || null,
+        reason: result.reason || null,
+        mode: result.mode || null,
+        fallback_reason: result.fallback_reason || null,
+        command: result.command || null,
+        bridge_active: result.bridge_active === true,
+        failure_class: failure.failure_class,
         queue: decorateQueue(key, latest)
       })
     )

@@ -775,6 +775,22 @@ function operationIdFromLogPath(log_path) {
 }
 
 /**
+ * Stage token → the `클래스:` word of the `needs_human` push (UI-jw27 §2). A
+ * CLOSED map on purpose: this call site owns the announcement of exactly the
+ * two classes the spec's §2 table gives it, and a stage that is in neither
+ * sends NOTHING. A quietly misfiled class reads as a fact about the failure
+ * and is worse than the card the operator already has.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+const NEEDS_HUMAN_NOTIFY_CLASSES = Object.freeze({
+  post_merge_jobs: 'post-merge 잡 실패',
+  repo_operations: '배포 실패',
+  deploy: '배포 실패',
+  deployment_request: '배포 실패'
+});
+
+/**
  * Internal stage token → the three public stage words the comment format fixes
  * (UI-8w4t §4). The internal tokens are coordinates of THIS server's saga
  * (`merge_gate`, the cleanup cursor steps); the comment is read by a person who
@@ -983,6 +999,8 @@ function operationIdentity(root_bead_id, kind, failure_key) {
  *   timeline?: { append: (input: any) => unknown },
  *   notifyChanged?: (workspace: string) => void,
  *   kickMerge?: () => Promise<unknown>|unknown,
+ *   repo?: string,
+ *   notify?: { needsHuman: (input: any) => Promise<void> }|null,
  *   now?: () => number,
  *   log?: (...args: any[]) => void
  * }} deps
@@ -991,6 +1009,11 @@ export function createCompletionActionDriver(deps) {
   const facts = new Map();
   const now = deps.now || (() => Date.now());
   const log = deps.log || (() => {});
+  // The outward push (UI-jw27). Optional so every existing construction site
+  // (and test) keeps working with no notifier at all — a missing one is
+  // silence, never a terminalization failure. Named apart from the local
+  // `notify()`, which is this driver's queue-event wakeup.
+  const failure_notify = deps.notify || null;
 
   /**
    * Put one completion-saga fact on the root bead's permanent history
@@ -1434,16 +1457,60 @@ export function createCompletionActionDriver(deps) {
     );
     notify();
     if (written.ok && commented_at === null) {
+      const summary = completionFailureSummary(evidence);
       // Extracted from the evidence this terminal was settled on, not
       // re-derived inside the comment builder (spec §6: one extraction, one
       // string).
-      postFailureComment(
-        root_bead_id,
-        intent,
-        queue,
-        terminal,
-        completionFailureSummary(evidence)
-      );
+      postFailureComment(root_bead_id, intent, queue, terminal, summary);
+      // Same condition, same reason (UI-jw27 §2): `commented_at === null` means
+      // THIS pass is what first made the terminal durable. A re-observation of
+      // the same wall finds its earlier `comment_at` and is therefore silent,
+      // which is what keeps a restart from replaying the whole board as pushes.
+      announceNeedsHuman(root_bead_id, intent, terminal, summary);
+    }
+  }
+
+  /**
+   * Push one `needs_human` terminal (UI-jw27 §2). This call site SOLELY owns
+   * the deploy and post-merge-job classes: the same failure also writes a
+   * `cleanup_failed` record on the way here, and announcing there too would
+   * mean an early push mid-ladder and a second one at the wall.
+   *
+   * Fire-and-forget and guarded: the notifier is no-throw by its own contract,
+   * and this guard keeps that true for an injected fake that breaks it.
+   *
+   * @param {string} root_bead_id
+   * @param {any} intent
+   * @param {any} terminal
+   * @param {string|null} summary
+   */
+  function announceNeedsHuman(root_bead_id, intent, terminal, summary) {
+    if (!failure_notify) {
+      return;
+    }
+    const token = terminal.failure_key?.stage || terminal.stage;
+    const failure_class = Object.hasOwn(NEEDS_HUMAN_NOTIFY_CLASSES, token)
+      ? NEEDS_HUMAN_NOTIFY_CLASSES[token]
+      : null;
+    if (failure_class === null) {
+      return;
+    }
+    try {
+      Promise.resolve(
+        failure_notify.needsHuman({
+          bead_id: root_bead_id,
+          failure_class,
+          reason: terminal.reason,
+          reason_detail: summary,
+          next_action: '[정리 재시도] 또는 [세션에서 해결]',
+          pr_url: intent?.subject?.pr_url ?? null,
+          repo: deps.repo ?? null
+        })
+      ).catch((err) => {
+        log('needs_human notify failed for %s: %o', root_bead_id, err);
+      });
+    } catch (err) {
+      log('needs_human notify failed for %s: %o', root_bead_id, err);
     }
   }
 

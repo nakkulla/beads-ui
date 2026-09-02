@@ -28,6 +28,7 @@ import { createLockManager } from './locks.js';
 import { createNotifier } from './notify.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { MANUAL_MERGE_CONTINUATION, createQueueStore } from './queue-store.js';
+import { createResolveSession } from './resolve-session.js';
 import { createReviseParkedStore } from './revise-parked.js';
 import { createRunnableCache } from './runnable-cache.js';
 import { createSessionLog } from './session-log.js';
@@ -50,6 +51,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createRunnableCache>} runnableCache
  * @property {ReturnType<typeof createReviseParkedStore>} reviseParked
  * @property {ReturnType<typeof createDirectionInquiry>} directionInquiry
+ * @property {ReturnType<typeof createResolveSession>} resolveSession
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: typeof MANUAL_MERGE_CONTINUATION }} status
@@ -131,6 +133,24 @@ export function createWorkerRuntime() {
     },
     notifier: createNotifier({ getConfig })
   });
+  // Process-wide `[세션에서 해결]` launcher (UI-jw27 §4). Process-wide for the
+  // same reason as the trigger above — its duplicate guard is a tmux pane
+  // marker, one truth for the whole machine — and it shares that trigger's bd
+  // reader shape. No notifier: this launch is a click the user already made, so
+  // the reply on their own socket IS the report.
+  const resolveSession = createResolveSession({
+    getConfig,
+    bd: {
+      readIssue: async (workspace, bead_id) => {
+        const result = await runBdJsonProjected(
+          'show',
+          ['show', bead_id, '--json'],
+          { cwd: workspace, expected_id: bead_id }
+        );
+        return result.ok === true ? result.data : null;
+      }
+    }
+  });
   // Shared session-log broker: the scheduler's `attach` persists the raw stream
   // AND the ws `subscribe-session-log` handler follows live appends off the
   // same instance (spec §5.6).
@@ -203,6 +223,7 @@ export function createWorkerRuntime() {
     runnableCache,
     reviseParked,
     directionInquiry,
+    resolveSession,
     sessionLog,
     /**
      * @param {() => number} fn

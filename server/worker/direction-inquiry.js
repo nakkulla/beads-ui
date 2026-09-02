@@ -31,12 +31,17 @@
  * and a change on the dotfiles side makes updating this constant a sibling task
  * of that change.
  */
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { runShell } from '../bd.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
+// The tmux launch primitives moved out to be shared with the `[세션에서 해결]`
+// click (UI-jw27 §4). Nothing about this lane's behaviour moved with them: the
+// marker option, the prompt, and the launch reason all stay this module's.
+import {
+  INQUIRY_PANE_MARKER,
+  createTmuxLauncher,
+  markerWrapper,
+  shellQuote
+} from './tmux-launcher.js';
 
 const default_log = debug('worker:direction-inquiry');
 
@@ -53,26 +58,7 @@ const DIRECTION_PARK_REASONS = new Set([
 ]);
 
 /** The pane option that names the Bead an inquiry session belongs to. */
-const PANE_MARKER = '@bdui_inquiry_bead';
-
-/**
- * The pane listing format. Its three trailing fields are the liveness triple
- * (spec §3.3); `session_name` leads so the SAME read also answers whether the
- * inquiry session exists, rather than spending another tmux round trip on it.
- *
- * The separator is a real TAB in the argv: tmux is spawned without a shell and
- * does not expand a backslash escape inside a format.
- */
-const PANE_FORMAT = `#{session_name}\t#{pane_id}\t#{${PANE_MARKER}}\t#{pane_dead}`;
-
-/**
- * How fresh the bridge heartbeat must be to read as active. Read-only
- * observation: a stale beat is reported, never a reason to skip a launch — the
- * session then waits for the user in tmux (spec §3.5).
- *
- * @type {number}
- */
-const BRIDGE_MAX_AGE_MS = 15_000;
+const PANE_MARKER = INQUIRY_PANE_MARKER;
 
 /** The last `stale_kind=` in the notes. A notes LINE, never a metadata key. */
 const STALE_KIND_RE = /stale_kind=(adr_conflict|intent_conflict)/;
@@ -120,14 +106,6 @@ export const DIRECTION_INQUIRY_PROMPT =
     '',
     '금지: 재리뷰 디스패치(외부 리뷰어) · 구현 착수 · PR 생성 · `awaiting_user` 단독 해제 · Bead 상태 변경.'
   ].join('\n') + '\n';
-
-/**
- * @typedef {Object} InquiryPaneRow
- * @property {string} session
- * @property {string} pane
- * @property {string} bead
- * @property {string} dead
- */
 
 /**
  * @typedef {{ session: 'launched', tmux_session: string, tmux_window: string }
@@ -189,18 +167,10 @@ export function parseStaleNotes(notes) {
   return out;
 }
 
-/**
- * Quote one value for the `sh -c` tmux runs the wrapper under. Everything
- * inside `'…'` is literal to the shell, and an embedded quote is closed,
- * escaped and reopened — the only sequence a single-quoted string cannot carry
- * directly.
- *
- * @param {string} value
- * @returns {string}
- */
-export function shellQuote(value) {
-  return `'${String(value).split("'").join("'\\''")}'`;
-}
+// Re-exported rather than re-implemented: the wrapper's quoting is now the
+// shared launcher's, and this module's own tests still assert it here because
+// this is the surface UI-7uid pinned.
+export { shellQuote };
 
 /**
  * The one-line shell command the inquiry pane runs.
@@ -214,10 +184,11 @@ export function shellQuote(value) {
  * @returns {string}
  */
 export function inquiryWrapper(input) {
-  return [
-    `tmux set-option -p ${PANE_MARKER} ${shellQuote(input.bead_id)}`,
-    `&& exec ${shellQuote(input.claude)} ${shellQuote(input.prompt)}`
-  ].join(' ');
+  return markerWrapper({
+    marker: PANE_MARKER,
+    key: input.bead_id,
+    argv: [input.claude, input.prompt]
+  });
 }
 
 /**
@@ -260,33 +231,6 @@ export function fillInquiryPrompt(input) {
 }
 
 /**
- * `claude`'s absolute path off the Worker's own PATH. Absolute on purpose: the
- * wrapper runs under `sh -c` inside a tmux pane whose PATH is the tmux server's
- * environment, not this process's.
- *
- * @returns {string|null}
- */
-function defaultResolveClaude() {
-  const raw = process.env.PATH;
-  if (typeof raw !== 'string' || raw.length === 0) {
-    return null;
-  }
-  for (const dir of raw.split(path.delimiter)) {
-    if (dir.length === 0) {
-      continue;
-    }
-    const candidate = path.join(dir, 'claude');
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // Not here; keep walking the PATH.
-    }
-  }
-  return null;
-}
-
-/**
  * @typedef {Object} DirectionInquiryDeps
  * @property {() => any} getConfig - Runtime config accessor (server/config.js).
  * @property {{ readIssue: (workspace: string, bead_id: string) => Promise<any> }} bd
@@ -310,21 +254,17 @@ function defaultResolveClaude() {
  */
 export function createDirectionInquiry(deps) {
   const log = deps.log || default_log;
-  const now = deps.now || (() => Date.now());
-  const resolveClaude = deps.resolveClaude || defaultResolveClaude;
-  const statFile =
-    deps.statFile || ((/** @type {string} */ p) => fs.statSync(p));
-  const runTmux =
-    deps.runTmux || ((/** @type {string[]} */ args) => runShell('tmux', args));
-  const heartbeat_path =
-    deps.heartbeatPath ||
-    path.join(
-      os.homedir(),
-      'tmp',
-      'claude-discord-bridge',
-      'state',
-      'heartbeat'
-    );
+  // Every tmux fact this lane needs comes from the shared launcher (UI-jw27
+  // §4); the injected deps pass through unchanged so this module's own tests
+  // still drive the same seams.
+  const launcher = createTmuxLauncher({
+    ...(deps.runTmux ? { runTmux: deps.runTmux } : {}),
+    ...(deps.resolveClaude ? { resolveClaude: deps.resolveClaude } : {}),
+    ...(deps.statFile ? { statFile: deps.statFile } : {}),
+    ...(deps.now ? { now: deps.now } : {}),
+    ...(deps.heartbeatPath ? { heartbeatPath: deps.heartbeatPath } : {}),
+    log
+  });
 
   /**
    * Beads whose trigger is mid-flight. Reserved before the first `await` so two
@@ -365,150 +305,31 @@ export function createDirectionInquiry(deps) {
   }
 
   /**
-   * Every pane the tmux server knows about. `ok: false` covers an absent
-   * server, a non-zero tmux, and a runner that threw — all one fact: liveness
-   * could not be judged.
+   * Whether an inquiry session is already alive for this Bead, and every fact
+   * `launch` needs about the tmux server. Named here so the outcome vocabulary
+   * (`tmux_unavailable`, `launch_failed:*`) stays this lane's contract.
    *
-   * @returns {Promise<{ ok: true, rows: InquiryPaneRow[] }|{ ok: false, error: string }>}
+   * @returns {Promise<{ ok: true, rows: import('./tmux-launcher.js').PaneRow[] }|{ ok: false, error: string }>}
    */
-  async function listPanes() {
-    /** @type {{ code: number, stdout: string, stderr: string }} */
-    let result;
-    try {
-      result = await runTmux(['list-panes', '-a', '-F', PANE_FORMAT]);
-    } catch (err) {
-      return { ok: false, error: String(err) };
-    }
-    if (!result || result.code !== 0) {
-      return {
-        ok: false,
-        error: (result?.stderr || '').trim() || `exit ${result?.code}`
-      };
-    }
-    /** @type {InquiryPaneRow[]} */
-    const rows = [];
-    for (const line of (result.stdout || '').split('\n')) {
-      if (line.length === 0) {
-        continue;
-      }
-      const [session, pane, bead, dead] = line.split('\t');
-      rows.push({
-        session: session ?? '',
-        pane: pane ?? '',
-        bead: bead ?? '',
-        dead: dead ?? ''
-      });
-    }
-    return { ok: true, rows };
+  function listPanes() {
+    return launcher.listPanes(PANE_MARKER);
   }
 
   /**
    * Start the inquiry session, unless one is already alive for this Bead.
    *
-   * The window is confirmed by re-reading the pane list: a pane that is already
-   * gone means the marker write failed or `claude` exited at once, and both are
-   * the same fact — there is no session (spec §3.4). A pane that is alive but
-   * not yet marked is a LAUNCH: the wrapper writes the marker before it execs,
-   * so the mark is in flight, and the pane could not be running `claude`
-   * without it.
-   *
    * @param {{ bead_id: string, tmux_session: string, prompt: string, cwd: string }} input
    * @returns {Promise<InquiryOutcome>}
    */
-  async function launch(input) {
-    const listed = await listPanes();
-    if (!listed.ok) {
-      log('tmux list failed for %s: %s', input.bead_id, listed.error);
-      return { session: 'not_launched', reason: 'tmux_unavailable' };
-    }
-    if (
-      listed.rows.some((row) => row.bead === input.bead_id && row.dead === '0')
-    ) {
-      return { session: 'already_running' };
-    }
-    const claude = resolveClaude();
-    if (typeof claude !== 'string' || claude.length === 0) {
-      return {
-        session: 'not_launched',
-        reason: 'launch_failed:claude_not_found'
-      };
-    }
-    if (!listed.rows.some((row) => row.session === input.tmux_session)) {
-      /** @type {{ code: number }} */
-      let created;
-      try {
-        created = await runTmux([
-          'new-session',
-          '-d',
-          '-s',
-          input.tmux_session
-        ]);
-      } catch (err) {
-        log('tmux new-session threw for %s: %o', input.bead_id, err);
-        return { session: 'not_launched', reason: 'tmux_unavailable' };
-      }
-      if (!created || created.code !== 0) {
-        // Another Bead's trigger may have created the session between our read
-        // and this call: two parks landing together both see it missing and
-        // only one `new-session` can win. The session existing is the whole
-        // requirement, whoever made it, so re-read before calling this a
-        // failure.
-        const recheck = await listPanes();
-        if (
-          !recheck.ok ||
-          !recheck.rows.some((row) => row.session === input.tmux_session)
-        ) {
-          return {
-            session: 'not_launched',
-            reason: 'launch_failed:new_session'
-          };
-        }
-      }
-    }
-    const wrapper = inquiryWrapper({
-      bead_id: input.bead_id,
-      claude,
-      prompt: input.prompt
-    });
-    /** @type {{ code: number, stdout: string }} */
-    let opened;
-    try {
-      opened = await runTmux([
-        'new-window',
-        '-d',
-        '-P',
-        '-F',
-        '#{pane_id}',
-        '-t',
-        input.tmux_session,
-        '-n',
-        input.bead_id,
-        '-c',
-        input.cwd,
-        '--',
-        wrapper
-      ]);
-    } catch (err) {
-      log('tmux new-window threw for %s: %o', input.bead_id, err);
-      return { session: 'not_launched', reason: 'tmux_unavailable' };
-    }
-    const pane_id = (opened?.stdout || '').trim();
-    if (!opened || opened.code !== 0 || pane_id.length === 0) {
-      return { session: 'not_launched', reason: 'launch_failed:new_window' };
-    }
-    const confirmed = await listPanes();
-    if (!confirmed.ok) {
-      return { session: 'not_launched', reason: 'tmux_unavailable' };
-    }
-    const row = confirmed.rows.find((r) => r.pane === pane_id);
-    if (!row || row.dead !== '0') {
-      return { session: 'not_launched', reason: 'launch_failed:exited' };
-    }
-    return {
-      session: 'launched',
+  function launch(input) {
+    return launcher.launch({
+      marker: PANE_MARKER,
+      key: input.bead_id,
       tmux_session: input.tmux_session,
-      tmux_window: input.bead_id
-    };
+      window_name: input.bead_id,
+      cwd: input.cwd,
+      commandArgs: [input.prompt]
+    });
   }
 
   /**
@@ -519,14 +340,7 @@ export function createDirectionInquiry(deps) {
    * @returns {boolean}
    */
   function bridgeActive() {
-    try {
-      const stat = statFile(heartbeat_path);
-      const mtime =
-        stat && typeof stat.mtimeMs === 'number' ? stat.mtimeMs : null;
-      return mtime !== null && now() - mtime <= BRIDGE_MAX_AGE_MS;
-    } catch {
-      return false;
-    }
+    return launcher.bridgeActive();
   }
 
   /**

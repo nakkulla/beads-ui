@@ -1,7 +1,8 @@
 ---
 id: 5
 title: 자동 AI 수리 레인 폐기와 needs_human 종단
-status: accepted
+status: superseded
+superseded_by: 22
 date: 2026-08-27
 summary: 'post-merge 실패는 needs_human으로 종단하고 재진입은 사람 클릭뿐이며 자동 AI 수리 레인은 두지 않는다'
 spec: docs/superpowers/specs/2026-08-27-completion-repair-lane-removal-design.md

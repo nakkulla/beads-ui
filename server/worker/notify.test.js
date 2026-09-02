@@ -637,3 +637,101 @@ describe('worker/notify awaiting_user transition (UI-7uid §3.5)', () => {
     expect(log).toHaveBeenCalled();
   });
 });
+
+describe('worker/notify needs_human transition', () => {
+  test('sends the class, cause, next action, PR and repo in one body', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.needsHuman({
+      bead_id: 'UI-1',
+      title: '워커 알림',
+      failure_class: '배포 실패',
+      reason: 'cleanup_failed:script_failed',
+      reason_detail: 'deploy exited 2',
+      next_action: '[정리 재시도] 또는 [세션에서 해결]',
+      pr_url: 'https://github.com/o/r/pull/7',
+      repo: '/Users/me/GitHub/beads-ui'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      [
+        '🤖 🚨 사람 필요 — UI-1 워커 알림',
+        '클래스: 배포 실패',
+        '사유: cleanup_failed:script_failed — deploy exited 2',
+        '다음: [정리 재시도] 또는 [세션에서 해결]',
+        'https://github.com/o/r/pull/7',
+        '리포: beads-ui'
+      ].join('\n')
+    );
+  });
+
+  test('drops the absent fields instead of printing them empty', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.needsHuman({
+      bead_id: 'UI-2',
+      failure_class: '폐기 실패',
+      reason: 'attempt_settling'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      '🤖 🚨 사람 필요 — UI-2\n클래스: 폐기 실패\n사유: attempt_settling'
+    );
+  });
+
+  test('quotes only the first line of a multi-line cause tail', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.needsHuman({
+      bead_id: 'UI-3',
+      failure_class: '정리 중단',
+      reason: 'verify_cmd_failed',
+      reason_detail: 'FAIL server/x.test.js\n  expected 1\n  received 2'
+    });
+
+    expect(messageOf(spawn.last())).toContain(
+      '사유: verify_cmd_failed — FAIL server/x.test.js'
+    );
+    expect(messageOf(spawn.last())).not.toContain('received 2');
+  });
+
+  test('spawns nothing and reads no title when notifications are off', async () => {
+    const spawn = makeFakeSpawn();
+    const resolveTitle = vi.fn(async () => '조회된 제목');
+    const notifier = makeNotifier(
+      { enabled: false, cmd: ['discord'] },
+      { spawnImpl: spawn.spawnImpl, resolveTitle }
+    );
+
+    await notifier.needsHuman({
+      bead_id: 'UI-4',
+      failure_class: '수동 배포 실패',
+      reason: 'script_failed'
+    });
+
+    expect(spawn.calls).toHaveLength(0);
+    expect(resolveTitle).not.toHaveBeenCalled();
+  });
+
+  test('resolves after a spawn that throws', async () => {
+    const log = vi.fn();
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: () => {
+        throw new Error('EACCES');
+      },
+      log
+    });
+
+    await expect(
+      notifier.needsHuman({
+        bead_id: 'UI-5',
+        failure_class: '폐기 실패',
+        reason: 'attempt_settling'
+      })
+    ).resolves.toBeUndefined();
+    expect(log).toHaveBeenCalled();
+  });
+});

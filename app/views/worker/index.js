@@ -411,6 +411,107 @@ export function mergeQueueRefusalText(reason) {
 }
 
 /**
+ * Why a `[세션에서 해결]` launch did not happen, in human words (UI-jw27 §4).
+ * An unknown token travels through raw rather than being renamed into a cause
+ * it cannot prove.
+ *
+ * @param {unknown} reason
+ * @returns {string}
+ */
+export function resolveSessionRefusalText(reason) {
+  switch (reason) {
+    case 'no_terminal_failure':
+      return '이 행에 이어받을 terminal 실패 기록이 없습니다';
+    case 'tmux_unavailable':
+      return 'tmux에 닿지 못했습니다 — 세션을 띄우지 않았습니다';
+    case 'launch_failed:claude_not_found':
+      return 'claude 실행 파일을 PATH에서 찾지 못했습니다';
+    case 'launch_failed:new_session':
+      return 'tmux 세션을 만들지 못했습니다';
+    case 'launch_failed:new_window':
+      return 'tmux 창을 만들지 못했습니다';
+    case 'launch_failed:exited':
+      return '띄운 세션이 곧바로 종료됐습니다';
+    case 'error':
+      return '세션 기동 중 오류가 났습니다';
+    default:
+      return typeof reason === 'string' && reason.length > 0
+        ? reason
+        : '세션을 띄우지 못했습니다';
+  }
+}
+
+/**
+ * Why the recorded session could not be forked, in human words (UI-jw27 §4).
+ * Every one of these still LAUNCHES — a fresh session — so the sentence is
+ * about what the new session does NOT carry, never about a refusal.
+ *
+ * @param {unknown} reason
+ * @returns {string}
+ */
+export function resolveSessionFallbackText(reason) {
+  switch (reason) {
+    case 'no_session_ref':
+      return '기록된 세션 없음';
+    case 'unsafe_session_id':
+      return '세션 ID를 인자로 쓸 수 없음';
+    case 'provider_mismatch':
+      return '기록된 세션이 claude가 아님';
+    case 'not_local':
+      return '기록된 세션의 transcript가 이 기기에 없음';
+    case 'bd_unavailable':
+      return 'Bead 메타데이터를 읽지 못함';
+    default:
+      return typeof reason === 'string' && reason.length > 0
+        ? reason
+        : '사유 미상';
+  }
+}
+
+/**
+ * The one sentence a `[세션에서 해결]` reply becomes on screen.
+ *
+ * The fallback reason is carried into the toast on purpose: a fresh session and
+ * a fork look the same from outside, and the person is about to work inside the
+ * difference (spec §4 — fail-quiet 은폐 금지).
+ *
+ * @param {any} res
+ * @returns {string}
+ */
+export function resolveSessionToast(res) {
+  if (!res || typeof res !== 'object') {
+    return '세션 기동 응답을 받지 못했습니다';
+  }
+  if (res.conflict === true) {
+    return '큐가 바뀌어 클릭이 적용되지 않았습니다 — 다시 눌러주세요';
+  }
+  if (res.session === 'already_running') {
+    return '이미 이 이슈의 해결 세션이 열려 있습니다';
+  }
+  if (res.launched !== true) {
+    return `세션에서 해결 거부: ${resolveSessionRefusalText(res.reason)}`;
+  }
+  const bridge =
+    res.bridge_active === true
+      ? ''
+      : ' (Discord 중계 비활성 — tmux에서 답하세요)';
+  return res.mode === 'fork'
+    ? `기록된 세션을 fork해 띄웠습니다${bridge}`
+    : `새 세션을 띄웠습니다 — ${resolveSessionFallbackText(res.fallback_reason)}${bridge}`;
+}
+
+/**
+ * The toast tone for the same reply. A fresh-session fallback is a SUCCESS with
+ * a caveat, not an error: a session did start.
+ *
+ * @param {any} res
+ * @returns {'success'|'error'}
+ */
+export function resolveSessionTone(res) {
+  return res && res.launched === true ? 'success' : 'error';
+}
+
+/**
  * Project a known nonterminal resolver wait reason; unknown values fail quiet.
  *
  * @param {unknown} reason
@@ -791,7 +892,7 @@ export function prStatusBadge(input) {
   // and it never claims a merge step: the queue place is not taken yet.
   if (input.queueing) {
     return input.queueing === 'cleanup'
-      ? badge('정리 재개 요청 중', {
+      ? badge('정리 재시도 요청 중', {
           title: '서버 응답을 기다리는 중입니다',
           live: true
         })
@@ -1021,7 +1122,7 @@ export function prStatusBadge(input) {
  * disabled tooltip carries the refusal reason so the badge is not the only
  * explanation. [폐기] is visually subordinate: a misclick there discards a PR.
  * It is withheld entirely on a merged tile — a landed merge cannot be discarded
- * (discard spec §2), and there [정리] is the cleanup-retry button.
+ * (discard spec §2), and there [정리 재시도] is the cleanup-retry button.
  *
  * The gate shown here is ADVISORY. The click re-queries `gh` server-side and
  * decides again, so a badge that went stale between render and click cannot
@@ -1045,7 +1146,7 @@ export function prStatusBadge(input) {
  * normal session delivered, with no worker attempt behind it (UI-7agi §5).
  * Two affordances change: [폐기] disappears (the server's discard needs the
  * durable lane membership an external row does not have), and a MERGED row
- * becomes a [정리] button because nothing auto-cleans it. 충돌 해소 is NOT one
+ * becomes a [정리 재시도] button because nothing auto-cleans it. 충돌 해소 is NOT one
  * of them any more — the attempt-less dispatch (UI-w0hi §1) runs it.
  * @param {{ position: number, active: boolean, failure: string|null, waiting?: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null, continuation_action?: any, hold?: any, authority?: any, review_dispatch?: any }|null} [merge_queue]
  * This row's place in the sequential merge queue (UI-5v7d §4): a 1-based
@@ -1075,6 +1176,9 @@ export function prStatusBadge(input) {
  * `[리뷰 후 머지]` 세션 상태 (UI-d7fy §5.4). 실행 중이면 버튼이 잠기고, 마지막
  * 세션의 종료 사유는 게이트 뱃지 옆 텍스트가 된다. `origin`은 그 세션을 사람이
  * 눌렀는지 큐가 자동으로 띄웠는지다 (UI-qksl §7).
+ * @param {boolean} [resolve_pending] - 이 행의 `[세션에서 해결]` 클릭이 아직
+ * 서버 응답을 기다리는 중인지 (UI-jw27 §4). 클라이언트만 아는 사실이라 스냅샷에
+ * 없다 — 두 번째 클릭이 두 번째 창을 요청하지 않도록 버튼을 잠근다.
  * @returns {any}
  */
 function prWaitRow(
@@ -1095,7 +1199,8 @@ function prWaitRow(
   auto_merge_on = false,
   progress_input = {},
   dependency_chips = null,
-  review_session = { active: false, failure: null, origin: null }
+  review_session = { active: false, failure: null, origin: null },
+  resolve_pending = false
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const continuation_required =
@@ -1180,8 +1285,8 @@ function prWaitRow(
   // wanted the AI-repair ladder there; UI-s582 removed that ladder).
   // A `post_merge_jobs` stall is the same click again (UI-i60a §4): the resume
   // re-runs the cleanup, whose ledger reconcile decides whether the job is
-  // re-adopted or re-run. Renaming this button and adding [세션에서 해결]
-  // belong to UI-jw27, not here.
+  // re-adopted or re-run. UI-jw27 §3 renamed this button to [정리 재시도] and
+  // §4 put the row's second exit — [세션에서 해결] — beside it.
   const cleanup_retry =
     !!cleanup_failed &&
     [
@@ -1237,6 +1342,12 @@ function prWaitRow(
     merged: !!cleanup_failed || gate?.tier === 'merged'
   });
   const discard_blocks_merge = !!discard.operation;
+  // [세션에서 해결]의 재료 (UI-jw27 §4): 이 행이 사람이 직접 이어받아야 하는
+  // terminal 실패인가. 답하는 사실은 셋뿐이다 — 멈춘 머지 후 정리, needs_human
+  // 종단, 실패한 폐기 작업. 셋 다 아니면 버튼을 그리지 않는다 (fail-quiet):
+  // 실패가 아닌 행에서 이 클릭은 무엇을 해결하라고 말할지가 없다.
+  const resolve_action =
+    !!cleanup_failed || completion?.phase === 'needs_human' || !!discard.error;
   // The queue will act on this row without a click (UI-kxhf): it is queued and
   // nothing terminal or choice-bound stands in the way.
   const auto_pending =
@@ -1348,6 +1459,11 @@ function prWaitRow(
           : '머지 큐에서 이 항목을 뺍니다 (다시 [머지]로 넣을 수 있습니다)',
     discard,
     discard_action: discard.action,
+    resolve_action,
+    resolve_enabled: !resolve_pending,
+    resolve_title: resolve_pending
+      ? '세션 기동 요청 중 — 서버 응답을 기다립니다'
+      : '이 실패를 사람이 이어받는 대화형 세션을 띄웁니다 — 기록된 세션이 있으면 fork하고, 없으면 새 세션에 사유를 싣습니다',
     merge_step,
     discard_enabled: discard.enabled,
     discard_title: discard.title,
@@ -1406,7 +1522,7 @@ function prWaitRow(
           ? '배포 재시도 후 정리'
           : stalled_script === 'verify'
             ? '검증 재시도 후 정리'
-            : '정리 재개'
+            : '정리 재시도'
         : conflicting && !merge_step && !cleanup_retry
           ? '충돌 해소 후 머지'
           : gate?.reason === 'base_behind'
@@ -1429,7 +1545,7 @@ function prWaitRow(
             : stalled_script
               ? `머지 완료 — ${stalled_script === 'deploy' ? '배포' : '검증'} 스크립트가 실패해 정리가 멈췄습니다. 클릭하면 저장소 작업부터 정리를 다시 진행합니다`
               : external_cleanup
-                ? '머지 완료 — 클릭하면 실패한 정리를 재개합니다'
+                ? '머지 완료 — 클릭하면 실패한 정리를 다시 시도합니다'
                 : external_conflict_unresolvable
                   ? '워크트리 없음 — 세션에서 직접 해소하세요'
                   : conflict_session === 'running'
@@ -1437,7 +1553,7 @@ function prWaitRow(
                     : conflict_session === 'paused'
                       ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
                       : cleanup_retry
-                        ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 재개합니다'
+                        ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 다시 시도합니다'
                         : conflicting
                           ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
                           : gate?.reason === 'base_behind'
@@ -1580,6 +1696,38 @@ export function createWorkerView(mount_element, options = {}) {
   const merge_pending = new Set();
   /** @type {Set<string>} Beads with one manual cleanup retry in flight. */
   const cleanup_pending = new Set();
+  /**
+   * Beads whose `[세션에서 해결]` click is in flight (UI-jw27 §4). The pane
+   * marker on the server is the AUTHORITY for "one live resolution session per
+   * bead"; this only keeps the row from inviting a second click the server
+   * would answer with `already_running`.
+   *
+   * @type {Set<string>}
+   */
+  const resolve_pending = new Set();
+  /**
+   * `[세션에서 해결]` 필드 3종 (UI-jw27 §4). 폐기 실패는 PR 대기 행만이 아니라
+   * 실행 중·held·파킹 타일과 대기 행에서도 나므로, 그 사실을 싣는 모든 워커
+   * 표면이 같은 판정을 같은 자리에서 쓴다. 재료(=실패한 폐기 작업)가 없으면
+   * 필드 자체를 만들지 않아 버튼이 그려지지 않는다.
+   *
+   * @param {string} bead_id
+   * @param {any} discard
+   * @returns {{ resolve_action?: boolean, resolve_enabled?: boolean, resolve_title?: string }}
+   */
+  function discardResolveFields(bead_id, discard) {
+    if (!discard?.error || !bead_id) {
+      return {};
+    }
+    return {
+      resolve_action: true,
+      resolve_enabled: !resolve_pending.has(bead_id),
+      resolve_title: resolve_pending.has(bead_id)
+        ? '세션 기동 요청 중 — 서버 응답을 기다립니다'
+        : '실패한 폐기를 사람이 이어받는 대화형 세션을 띄웁니다 — 기록된 세션이 있으면 fork하고, 없으면 새 세션에 사유를 싣습니다'
+    };
+  }
+
   /**
    * Beads whose REVISE-disposition click is in flight (UI-hs11 §3.5). It covers
    * the same gap `merge_pending` covers — the window between the click and the
@@ -2057,10 +2205,40 @@ export function createWorkerView(mount_element, options = {}) {
       );
       adopt(res);
       if (res && !res.retried && !res.conflict && res.reason) {
-        showToast(`정리 재개 거부: ${res.reason}`, 'error', 2400);
+        showToast(`정리 재시도 거부: ${res.reason}`, 'error', 2400);
       }
     } finally {
       cleanup_pending.delete(bead_id);
+      doRender();
+    }
+  }
+
+  /**
+   * Start the interactive resolution session for one terminal failure row
+   * (UI-jw27 §4). The click is the ONLY trigger — nothing else in this view
+   * calls it — and the reply is reported verbatim rather than folded away: a
+   * fresh-session fallback and a fork look identical on screen otherwise, and
+   * the person is about to work inside the difference.
+   *
+   * @param {string} bead_id
+   */
+  async function resolveInSession(bead_id) {
+    if (!transport || !bead_id || resolve_pending.has(bead_id)) {
+      return;
+    }
+    resolve_pending.add(bead_id);
+    doRender();
+    try {
+      const res = /** @type {any} */ (
+        await transport('worker-resolve-in-session', {
+          bead_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+      showToast(resolveSessionToast(res), resolveSessionTone(res), 4000);
+    } finally {
+      resolve_pending.delete(bead_id);
       doRender();
     }
   }
@@ -2807,7 +2985,8 @@ export function createWorkerView(mount_element, options = {}) {
                   ...item.failure,
                   open: open_failure_detail === item.attempt_id
                 }
-              : null
+              : null,
+            ...discardResolveFields(item.id, item.discard)
           })
       );
     // 사람이 결정할 것이 먼저 보여야 한다: 실패, 그 다음 파킹(사용자 결정을
@@ -3003,7 +3182,8 @@ export function createWorkerView(mount_element, options = {}) {
             repo_operations: group.repo_operations
           },
           item ? chipsWithOverlaps(item) : null,
-          reviewSessionRowState(attempts, e.bead_id)
+          reviewSessionRowState(attempts, e.bead_id),
+          resolve_pending.has(e.bead_id)
         );
         return {
           ...row,
@@ -3605,7 +3785,10 @@ export function createWorkerView(mount_element, options = {}) {
       data-row-index=${coordinate.row_index}
       data-queue-index=${String(item.queue_index ?? 0)}
     >
-      ${miniRow(item, { actions: queueRowActions(item) })}
+      ${miniRow(
+        { ...item, ...discardResolveFields(item.id, item.discard) },
+        { actions: queueRowActions(item) }
+      )}
     </div>`;
   }
 
@@ -3637,7 +3820,10 @@ export function createWorkerView(mount_element, options = {}) {
             // 점유 ghost 행은 서버 레인 entries의 구성원이 아니므로 드롭 마커
             // 에도 서버 인덱스에도 들어가지 않는다 — 좌표 속성을 싣지 않는다.
             ...lane.ghosts.map((/** @type {any} */ it) =>
-              miniRow(it, { actions: queueRowActions(it) })
+              miniRow(
+                { ...it, ...discardResolveFields(it.id, it.discard) },
+                { actions: queueRowActions(it) }
+              )
             ),
             ...lane.items.map((/** @type {any} */ it, index) =>
               dragRow(it, {
@@ -4234,7 +4420,7 @@ export function createWorkerView(mount_element, options = {}) {
       void dismissRepoOperation(repoOpDismiss.dataset.operationId || '');
       return;
     }
-    // 타임라인의 정리 재개는 PR 대기 카드의 [정리 재개]와 같은 mutation이다 —
+    // 타임라인의 정리 재시도는 PR 대기 카드의 [정리 재시도]와 같은 mutation이다 —
     // 서버가 멈춘 단계부터 재개하는 기존 semantics 그대로다 (§4.4).
     const cleanupResume = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-cleanup__resume')
@@ -4243,6 +4429,19 @@ export function createWorkerView(mount_element, options = {}) {
       const bead_id = cleanupResume.dataset.beadId;
       if (bead_id) {
         void retryCleanup(bead_id);
+      }
+      return;
+    }
+    // 타임라인의 [세션에서 해결]도 PR 대기 카드의 것과 같은 mutation이다
+    // (UI-jw27 §4): 같은 실패 행의 두 번째 출구이므로 두 표면이 같은 클릭을
+    // 같은 액션으로 보낸다.
+    const cleanupResolve = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-cleanup__resolve')
+    );
+    if (cleanupResolve) {
+      const bead_id = cleanupResolve.dataset.beadId;
+      if (bead_id) {
+        void resolveInSession(bead_id);
       }
       return;
     }
@@ -4402,6 +4601,25 @@ export function createWorkerView(mount_element, options = {}) {
     );
     if (mergeCancelBtn) {
       void cancelMerge(mergeCancelBtn.dataset.beadId || '');
+      return;
+    }
+    const resolveBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__resolve')
+    );
+    if (resolveBtn) {
+      void resolveInSession(resolveBtn.dataset.beadId || '');
+      return;
+    }
+    // 실행 중 타일의 같은 출구 (UI-jw27 §4). 타일은 bead id를 행이 아니라 바깥
+    // `.rtile`의 `data-bead-id`에 싣는다.
+    const tileResolveBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.rtile__resolve')
+    );
+    if (tileResolveBtn) {
+      const tile = /** @type {HTMLElement|null} */ (
+        tileResolveBtn.closest('.rtile')
+      );
+      void resolveInSession(tile?.dataset.beadId || '');
       return;
     }
     const discardBtn = /** @type {HTMLElement|null} */ (

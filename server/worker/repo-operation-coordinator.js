@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { debug } from '../logging.js';
 import { acquireDeployLock } from './deploy-lock.js';
 import { scriptSummary } from './failure-class.js';
 import { repoOperationPolicySupported } from './repo-operation-policy.js';
@@ -36,6 +37,8 @@ import {
   repoOpsSpoolProcessedDir
 } from './state-paths.js';
 import { createRepoOpsDeployWorktreeManager } from './worktree.js';
+
+const default_log = debug('worker:repo-ops');
 
 const RECONCILE_GRACE_MS = 5000;
 
@@ -85,7 +88,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, policySupported?: () => boolean, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, policySupported?: () => boolean, notify?: { needsHuman: (input: any) => Promise<void> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -98,6 +101,11 @@ export function createRepoOperationCoordinator(deps) {
   const verify_checkout =
     deps.verifyCheckout || createVerifyCheckout({ fs, gitRun: deps.gitRun });
   const policySupported = deps.policySupported || repoOperationPolicySupported;
+  const log = deps.log || default_log;
+  // The outward push (UI-jw27). Optional so every existing construction site
+  // (and test) keeps working with no notifier at all — a missing one is
+  // silence, never a settlement failure.
+  const notify = deps.notify || null;
   const now = deps.now || (() => Date.now());
   const sleep =
     deps.sleep ||
@@ -633,6 +641,57 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * Announce a `[배포 실행]` click that ended in a terminal failure (UI-jw27
+   * §2). Reached only from the branch of {@link settleFailure} that has already
+   * written the durable settlement AND has no retry left — a deferred
+   * `script_retry` returns before this, so a run that still has a ladder step
+   * is not announced as a wall.
+   *
+   * MANUAL origin only. An automatic deploy's terminal failure is announced by
+   * `completion-intent.js terminalize()`, which owns that class; announcing it
+   * here as well would send the same wall twice under two names.
+   *
+   * @param {any} operation - The settled record, read back before the write.
+   * @param {{ code: string, detail?: string }} failure
+   * @param {string|null} summary
+   */
+  function announceManualDeployFailure(operation, failure, summary) {
+    if (
+      !notify ||
+      operation?.source !== 'manual' ||
+      !Number.isInteger(operation?.manual_run_id)
+    ) {
+      return;
+    }
+    const subject = Array.isArray(operation.subjects)
+      ? operation.subjects.find(
+          (/** @type {any} */ entry) =>
+            typeof entry?.bead_id === 'string' && entry.bead_id.length > 0
+        )
+      : null;
+    try {
+      Promise.resolve(
+        notify.needsHuman({
+          bead_id: subject ? subject.bead_id : 'manual',
+          failure_class: '수동 배포 실패',
+          reason: failure.code,
+          reason_detail: summary ?? failure.detail ?? null,
+          // `[배포 실행]` 재클릭만이다. A manual run's subject is the `manual`
+          // sentinel rather than a bead, so no failure ROW carries it and
+          // `[세션에서 해결]` has nothing to open — naming it would send the
+          // operator looking for a button that is not drawn anywhere.
+          next_action: '[배포 실행] 재클릭',
+          repo: deps.repo
+        })
+      ).catch((err) => {
+        log('manual deploy failure notify failed: %o', err);
+      });
+    } catch (err) {
+      log('manual deploy failure notify failed: %o', err);
+    }
+  }
+
+  /**
    * Durable failure settlement with the master §5 fingerprint identity.
    *
    * @param {string} workspace
@@ -692,6 +751,12 @@ export function createRepoOperationCoordinator(deps) {
       !policySupported()
         ? 'schema_unsupported'
         : null;
+    // A record that is ALREADY terminal is a no-op for the store, so the
+    // announcement below is bound to the same fact: this pass is what wrote the
+    // failure. A reconcile that re-settles the same run therefore sends nothing
+    // (UI-jw27 §2).
+    const settled_before =
+      current.state === 'succeeded' || current.state === 'failed';
     deps.store.settleRepoOperation(workspace, {
       operation_id,
       attempt_id: current.attempt_id,
@@ -706,6 +771,13 @@ export function createRepoOperationCoordinator(deps) {
           : undefined,
       retry_blocked_reason: blocked_reason
     });
+    if (
+      !settled_before &&
+      deps.store.snapshot(workspace).repo_operations[operation_id]?.state ===
+        'failed'
+    ) {
+      announceManualDeployFailure(current, failure_record, evidence.summary);
+    }
     recordOperationFailure(current, operation_id, failure, evidence.summary);
     await sweepDescendantCoverage(workspace, operation_id);
     transition.reclaim(workspace, operation_id);

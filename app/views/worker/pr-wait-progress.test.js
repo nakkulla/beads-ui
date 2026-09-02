@@ -59,12 +59,12 @@ describe('prWaitProgress', () => {
     ['verify', 'running', '검증 중', 3, true, false],
     ['verify', 'retry_pending', '검증 재시도 대기', 3, true, false],
     ['verify', 'failed', '검증 실패', 3, false, true],
-    ['verify', 'succeeded', '검증 완료 · 정리 재개 대기', 3, false, false],
+    ['verify', 'succeeded', '검증 완료 · 정리 재시도 대기', 3, false, false],
     ['deploy', 'queued', '배포 대기', 4, true, false],
     ['deploy', 'running', '배포 중', 4, true, false],
     ['deploy', 'retry_pending', '배포 재시도 대기', 4, true, false],
     ['deploy', 'failed', '배포 실패', 4, false, true],
-    ['deploy', 'succeeded', '배포 완료 · 정리 재개 대기', 4, false, false]
+    ['deploy', 'succeeded', '배포 완료 · 정리 재시도 대기', 4, false, false]
   ])(
     'projects %s %s with its fixed card wording',
     (kind, state, label, index, active, failed) => {

@@ -119,6 +119,13 @@ import { logPathTemplate } from './log-path.js';
  * quick_fix landing progress projected by `prWaitProgress`; absent omits the
  * line (fail-quiet).
  * @property {any} [discard] - Shared durable discard UI projection.
+ * @property {boolean} [resolve_action] - Render `[세션에서 해결]` (UI-jw27 §4).
+ * 이 타일이 실패한 폐기 작업을 싣고 있을 때만 Worker 어댑터가 켠다 — Monitor는
+ * 이 필드를 넘기지 않으므로 클릭을 배선하지 않은 탭에 죽은 버튼이 서지 않는다.
+ * @property {boolean} [resolve_enabled] - false면 이 타일의 클릭이 아직 서버
+ * 응답을 기다리는 중이라 버튼이 잠긴다.
+ * @property {string} [resolve_title] - hover 문구: 이 클릭이 무엇을 띄우는지.
+ * 없으면 렌더러의 기본 문장이 대신 선다.
  * @property {import('../../utils/rec-settings.js').RecSettings|null} [rec] -
  * 복잡 판정 (UI-sbum §3), 레인 행·후보 카드와 같은 칩·같은 툴팁. 표시 전용이다.
  * @property {{ at?: number|null, kind?: string, text?: string, tool?: string }|null} [last_activity] -
@@ -992,6 +999,21 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     resume_kind === 'settlement'
       ? '착지 정산을 다시 실행'
       : '같은 세션으로 이어서 진행';
+  // 실패한 폐기 작업의 두 번째 출구 (UI-jw27 §4). 폐기 실패는 실행 중·held·
+  // 파킹 타일 어디서나 날 수 있으므로 상태 분기 밖에서 한 번만 만들고, 자리는
+  // `[폐기]`와 같은 슬롯 1 오른쪽 끝이다 — 같은 실패가 내는 두 조작이다.
+  const resolve_button = tile.resolve_action
+    ? html`<button
+        type="button"
+        class="rtile__resolve"
+        ?disabled=${tile.resolve_enabled === false}
+        title=${tile.resolve_title ||
+        '이 실패를 사람이 이어받는 대화형 세션을 띄웁니다'}
+        aria-label="세션에서 해결"
+      >
+        세션에서 해결
+      </button>`
+    : '';
   const discard_button =
     tile.discard?.action && !(failed && failure?.landed === true)
       ? html`<button
@@ -1082,7 +1104,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                     >
                       ⏸
                     </button>`}
-                ${discard_button}`}
+                ${discard_button}`}${resolve_button}
       </div>
     </div>
     <div class="rtile__title">${tile.title}</div>

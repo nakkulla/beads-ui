@@ -8,11 +8,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
+import { debug } from '../logging.js';
 import { resolvePrRef } from './pr-poller.js';
 import { archiveDiscardSource } from './recovery-archive.js';
 import { createRevertBuilder } from './revert-builder.js';
 import { staleResidueIntact } from './stale-work.js';
 import { discardRevertWorktreeDir } from './state-paths.js';
+
+const default_log = debug('worker:discard');
 
 const DISCARDABLE_ATTEMPT_STATUSES = new Set([
   'running',
@@ -34,7 +37,7 @@ const DISCARDABLE_ATTEMPT_STATUSES = new Set([
 ]);
 
 /**
- * @param {{ workspace: string, repo: string, store: any, gh: any, bd: any, worktree: any, gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>, scheduler: any, archive: any, processController: any, sessionLog: any, revertBuilder?: any, verifyRevert?: (input: any) => Promise<any>, rollbackBaseSync?: (refs: any) => Promise<any>, rollbackVerify?: (bead_id: string, base_sha: string) => Promise<any>, external?: { get: (workspace: string, bead_id: string) => any }, actionInFlight?: (bead_id: string) => boolean, makeOperationId?: () => string, now?: () => number, notifyChanged?: (workspace: string) => void }} deps
+ * @param {{ workspace: string, repo: string, store: any, gh: any, bd: any, worktree: any, gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>, scheduler: any, archive: any, processController: any, sessionLog: any, revertBuilder?: any, verifyRevert?: (input: any) => Promise<any>, rollbackBaseSync?: (refs: any) => Promise<any>, rollbackVerify?: (bead_id: string, base_sha: string) => Promise<any>, external?: { get: (workspace: string, bead_id: string) => any }, actionInFlight?: (bead_id: string) => boolean, makeOperationId?: () => string, now?: () => number, notifyChanged?: (workspace: string) => void, notify?: { needsHuman: (input: any) => Promise<void> }|null, log?: (...args: any[]) => void }} deps
  * @param {{ resolveBase?: (options?: { force?: boolean }) => Promise<{ ok: boolean, base?: string|null, base_oid?: string|null, step?: string }> }} [options]
  */
 export function createDiscardCoordinator(deps, options = {}) {
@@ -44,6 +47,10 @@ export function createDiscardCoordinator(deps, options = {}) {
     deps.makeOperationId ||
     (() => `discard-${now()}-${Math.random().toString(16).slice(2, 10)}`);
   const notifyChanged = deps.notifyChanged || (() => {});
+  const log = deps.log || default_log;
+  // Optional so every existing construction site (and test) keeps working with
+  // no notifier at all — a missing one is silence, never a discard failure.
+  const notify = deps.notify || null;
   const revertBuilder =
     deps.revertBuilder || createRevertBuilder({ gitRun: deps.gitRun });
   /** @type {Map<string, Promise<any>>} */
@@ -59,15 +66,55 @@ export function createDiscardCoordinator(deps, options = {}) {
   }
 
   /**
+   * Announce one durable discard failure (UI-jw27 §2). The discard ladder has
+   * no retry step, so the FIRST failure is already terminal and every
+   * `failDiscardOperation` write announces — including the one a re-click
+   * produces, which is a new terminal record and a new fact.
+   *
+   * Fire-and-forget and guarded: the notifier is no-throw by its own contract,
+   * and this guard keeps that true for an injected fake that breaks it.
+   *
+   * @param {unknown} bead_id
+   * @param {string} reason
+   */
+  function announceDiscardFailure(bead_id, reason) {
+    if (!notify || typeof bead_id !== 'string' || bead_id.length === 0) {
+      return;
+    }
+    try {
+      Promise.resolve(
+        notify.needsHuman({
+          bead_id,
+          failure_class: '폐기 실패',
+          reason,
+          next_action: '재클릭 또는 [세션에서 해결]',
+          repo: deps.repo
+        })
+      ).catch((err) => {
+        log('discard failure notify failed: %o', err);
+      });
+    } catch (err) {
+      log('discard failure notify failed: %o', err);
+    }
+  }
+
+  /**
    * @param {any} operation
    * @param {string} reason
    */
   function fail(operation, reason) {
-    deps.store.failDiscardOperation(deps.workspace, {
+    const written = deps.store.failDiscardOperation(deps.workspace, {
       operation_id: operation.operation_id,
       expected_phase: operation.phase,
       reason
     });
+    // Only a write that LANDED is a terminal fact. `failDiscardOperation` is a
+    // CAS on the observed phase, so a refused write (`phase_mismatch`,
+    // `operation_not_found`) left no record for a push to be about (UI-jw27
+    // §2); announcing it anyway would report a failure the board never shows.
+    if (written.ok) {
+      announceDiscardFailure(operation.bead_id, reason);
+    }
     notifyChanged(deps.workspace);
     return {
       ok: false,
@@ -2437,11 +2484,14 @@ export function createDiscardCoordinator(deps, options = {}) {
       typeof captured.attempt.attempt_id === 'string' &&
       !deps.scheduler.fenceDiscardAttempt?.(captured.attempt.attempt_id)
     ) {
-      deps.store.failDiscardOperation(deps.workspace, {
+      const settled = deps.store.failDiscardOperation(deps.workspace, {
         operation_id,
         expected_phase: 'requested',
         reason: 'attempt_settling'
       });
+      if (settled.ok) {
+        announceDiscardFailure(input.bead_id, 'attempt_settling');
+      }
       notifyChanged(deps.workspace);
       return {
         ok: false,

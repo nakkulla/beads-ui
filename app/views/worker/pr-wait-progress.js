@@ -9,7 +9,7 @@ const OPERATION_STATE_LABELS = {
   running: '중',
   retry_pending: '재시도 대기',
   failed: '실패',
-  succeeded: '완료 · 정리 재개 대기'
+  succeeded: '완료 · 정리 재시도 대기'
 };
 
 /** @type {Record<string, { step: string, label: string }>} */

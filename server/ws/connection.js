@@ -115,6 +115,7 @@ import {
   handleWorkerRepoOperationDeployRun,
   handleWorkerRepoOperationDismiss,
   handleWorkerRepoOpsOptOutToggle,
+  handleWorkerResolveInSession,
   handleWorkerReviseApprove,
   handleWorkerReviseFix,
   handleWorkerStaleWorkBackupFresh,
@@ -612,6 +613,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-cleanup-retry':
       await handleWorkerCleanupRetry(ws, req);
+      return;
+    case 'worker-resolve-in-session':
+      await handleWorkerResolveInSession(ws, req);
       return;
     case 'worker-merge-queue-add':
       handleWorkerMergeQueueAdd(ws, req);
