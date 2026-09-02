@@ -3735,6 +3735,30 @@ describe('lane model worker group values (UI-4tud §4.3)', () => {
     ]);
   });
 
+  // UI-i60a §1: `post_merge_jobs` is the first closure step, so the Monitor
+  // mirror offers the same resume it offers the other closure steps.
+  test('offers the cleanup resume for a stop at post_merge_jobs', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          cleanup_failed: {
+            'A-1': {
+              step: 'post_merge_jobs',
+              reason: 'post_merge_job_failed',
+              at: 42
+            }
+          }
+        })
+      ],
+      [state()],
+      { groups: 'all' }
+    );
+
+    expect(lanes.queue_groups[0].cleanup_failures[0].step).toBe(
+      'post_merge_jobs'
+    );
+  });
+
   test('passes the declared base and repo operations through to the group', () => {
     const lanes = buildLanes(
       [

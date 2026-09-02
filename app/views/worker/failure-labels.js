@@ -2,10 +2,10 @@
  * One shared vocabulary for repo-operation and cleanup failures (UI-q0uy §4.3).
  *
  * The contract tokens themselves are owned by dotfiles' workflow contract —
- * this module is a CONSUMER map that only says a known token in Korean. Three
- * category words (검증 실패 · 배포 실패 · 중단됨) plus one cause sentence per
- * known code, so the strip, the timeline and the session banner all describe
- * the same failure the same way.
+ * this module is a CONSUMER map that only says a known token in Korean. A small
+ * set of category words (검증 실패 · 배포 실패 · 잡 실패 · 중단됨) plus one cause
+ * sentence per known code, so the strip, the timeline and the session banner
+ * all describe the same failure the same way.
  *
  * An unknown token is never guessed at: it travels through as the raw string
  * (the `POLICY_TOKEN_LABELS` fallback convention), and every surface keeps the
@@ -29,6 +29,12 @@ const FAILURE_CATEGORIES = {
   verify_script_failure: '검증 실패',
   deploy_failed: '배포 실패',
   deploy_script_failure: '배포 실패',
+  // UI-i60a §4. A post-merge job is not a deployment: it runs once per file,
+  // against the merged tree, and calling its failure 배포 실패 would send a
+  // reader to the deploy script that never ran. The token is derived in THIS
+  // repository (`classifyRepoOperationFailure`), so the word is added here with
+  // it rather than waiting on the pinned policy artifact.
+  job_script_failure: '잡 실패',
   interrupted_without_terminal_exit: '중단됨',
   quickfix_landing_failed: '착지 실패',
   runner_exit: '세션 실패',

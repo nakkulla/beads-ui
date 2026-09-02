@@ -5355,6 +5355,59 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     ]);
   });
 
+  // UI-i60a §4: a cleanup stopped by a post-merge job reuses the SAME resume
+  // path. Renaming this button and adding [세션에서 해결] belong to UI-jw27.
+  test('offers the cleanup resume for a stop at post_merge_jobs', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({
+        step: 'post_merge_jobs',
+        reason: 'post_merge_job_failed',
+        at: 1
+      })
+    );
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+
+    expect([btn.disabled, btn.textContent?.trim()]).toEqual([
+      false,
+      '정리 재개'
+    ]);
+  });
+
+  test('adds no session-resolution button for a stop at post_merge_jobs', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({
+        step: 'post_merge_jobs',
+        reason: 'post_merge_job_failed',
+        at: 1
+      })
+    );
+
+    const labels = Array.from(mount.querySelectorAll('button')).map((button) =>
+      button.textContent?.trim()
+    );
+
+    expect(labels).not.toContain('세션에서 해결');
+  });
+
+  test('marks the post_merge_jobs pip on the cleanup stepper', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({
+        step: 'post_merge_jobs',
+        reason: 'post_merge_job_failed',
+        at: 1
+      })
+    );
+
+    const drawer = openTimeline(mount);
+
+    expect(
+      drawer.querySelector('.worker-step--stall')?.textContent?.trim()
+    ).toBe('머지 후 잡');
+  });
+
   test('sends one cleanup retry with the current revision while pending', () => {
     const transport = vi.fn(() => new Promise(() => {}));
     const { mount } = mountWith(

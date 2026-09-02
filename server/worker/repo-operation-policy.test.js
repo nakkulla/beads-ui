@@ -133,6 +133,26 @@ describe('pinned repo-operation policy contract', () => {
     expect(classified).toBe('deploy_script_failure');
   });
 
+  // UI-i60a: without its own token a post-merge job would classify as
+  // `deploy_script_failure` and every client surface would call it 배포 실패.
+  test('classifies a failed post-merge job as job_script_failure', () => {
+    const classified = classifyRepoOperationFailure({
+      kind: 'job',
+      failure: { code: 'script_failed', interrupted: false }
+    });
+
+    expect(classified).toBe('job_script_failure');
+  });
+
+  test('classifies a timed-out post-merge job as job_script_failure', () => {
+    const classified = classifyRepoOperationFailure({
+      kind: 'job',
+      failure: { code: 'timeout', interrupted: false }
+    });
+
+    expect(classified).toBe('job_script_failure');
+  });
+
   test('classifies a marker-less operation as interrupted', () => {
     const classified = classifyRepoOperationFailure({
       kind: 'deploy',
