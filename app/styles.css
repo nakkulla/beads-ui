@@ -6202,6 +6202,30 @@ html[data-theme='dark'] {
   cursor: not-allowed;
 }
 
+/* [세션에서 해결] (UI-jw27 §4) — 같은 액션 foot에서 [정리 재시도] 다음에 서는
+   두 번째 출구다. 되돌리는 것이 없으니 [폐기]의 경고색을 쓰지 않고, 재시도가
+   먼저 읽혀야 하므로 [머지]의 solid 무게도 쓰지 않는다 — [취소]와 같은 조용한
+   외곽선이 이 행에서 이 버튼이 차지해야 할 무게다. */
+.worker-mini__resolve {
+  padding: 1px var(--sp-6);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.worker-mini__resolve:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.worker-mini__resolve:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* 툴바 [자동 머지] / [자동 머지 중단] (UI-5v7d §4). 한 자리에서 상태만
    바뀌는 단일 버튼이라 [자동 진행] 바로 옆에 고정되어야 오조작이 없다. */
 .worker-merge-all {

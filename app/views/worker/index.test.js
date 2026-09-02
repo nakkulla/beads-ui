@@ -5162,7 +5162,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
     expect(
       drawer.querySelector('.worker-cleanup__resume')?.textContent?.trim()
-    ).toBe('정리 재개 — 저장소 작업 단계부터');
+    ).toBe('정리 재시도 — 저장소 작업 단계부터');
   });
 
   test('mentions retry only when durable cleanup evidence consumed it', () => {
@@ -5351,12 +5351,12 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
     expect([btn.disabled, btn.textContent?.trim()]).toEqual([
       false,
-      '정리 재개'
+      '정리 재시도'
     ]);
   });
 
   // UI-i60a §4: a cleanup stopped by a post-merge job reuses the SAME resume
-  // path. Renaming this button and adding [세션에서 해결] belong to UI-jw27.
+  // path. UI-jw27 §3 renamed that button and §4 gave the row its second exit.
   test('offers the cleanup resume for a stop at post_merge_jobs', () => {
     const { mount } = mountWith(
       mergedWithCleanup({
@@ -5372,11 +5372,11 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
     expect([btn.disabled, btn.textContent?.trim()]).toEqual([
       false,
-      '정리 재개'
+      '정리 재시도'
     ]);
   });
 
-  test('adds no session-resolution button for a stop at post_merge_jobs', () => {
+  test('adds the session-resolution button for a stop at post_merge_jobs', () => {
     const { mount } = mountWith(
       mergedWithCleanup({
         step: 'post_merge_jobs',
@@ -5389,7 +5389,83 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       button.textContent?.trim()
     );
 
-    expect(labels).not.toContain('세션에서 해결');
+    expect(labels).toContain('세션에서 해결');
+  });
+
+  // UI-jw27 §4: terminal 실패 행 3종이 같은 출구를 얻는다. 자리는 슬롯 6 액션
+  // foot의 [정리 재시도] 옆이고, 실패가 아닌 행은 재료가 없어 버튼 자체가 없다
+  // (fail-quiet).
+  test('offers 세션에서 해결 on a stopped cleanup row', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({ step: 'child_sweep', reason: 'boom', at: 1 })
+    );
+
+    const button = mount.querySelector('.worker-mini__resolve');
+
+    expect(button?.textContent?.trim()).toBe('세션에서 해결');
+  });
+
+  test('offers 세션에서 해결 on a needs_human completion row', () => {
+    const { mount } = mountWith(
+      queueWithGate(GREEN, {
+        completion_status: {
+          'RD-1': {
+            root_bead_id: 'RD-1',
+            phase: 'needs_human',
+            subject_role: 'root',
+            subject_bead_id: 'RD-1',
+            active_attempt_id: null,
+            failure_stage: 'verify',
+            failure_reason: 'verify_cmd_failed',
+            terminal_reason: 'verify_red'
+          }
+        }
+      })
+    );
+
+    expect(mount.querySelector('.worker-mini__resolve')).not.toBeNull();
+  });
+
+  test('offers 세션에서 해결 on a failed discard row', () => {
+    const { mount } = mountWith(
+      queueWithGate(GREEN, {
+        discard_operations: {
+          op1: {
+            operation_id: 'op1',
+            bead_id: 'RD-1',
+            requested_at: 1,
+            mode: 'unmerged',
+            phase: 'runner_terminated',
+            last_error: 'pr_close_failed'
+          }
+        }
+      })
+    );
+
+    expect(mount.querySelector('.worker-mini__resolve')).not.toBeNull();
+  });
+
+  test('draws no 세션에서 해결 on a row with no terminal failure', () => {
+    const { mount } = mountWith(queueWithGate(GREEN));
+
+    expect(mount.querySelector('.worker-mini__resolve')).toBeNull();
+  });
+
+  test('sends worker-resolve-in-session from that button', async () => {
+    const transport = vi.fn(async () => ({ ok: true, launched: true }));
+    const { mount } = mountWith(
+      mergedWithCleanup({ step: 'child_sweep', reason: 'boom', at: 1 }),
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__resolve')
+    ).click();
+
+    expect(transport).toHaveBeenCalledWith('worker-resolve-in-session', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
   });
 
   test('marks the post_merge_jobs pip on the cleanup stepper', () => {
@@ -5481,7 +5557,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     );
   });
 
-  test('offers 정리 재개 on a repo_operations stall (UI-j2f0)', () => {
+  test('offers 정리 재시도 on a repo_operations stall (UI-j2f0)', () => {
     const { mount } = mountWith(
       mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 })
     );
@@ -5489,7 +5565,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect([
       mount.querySelector('.worker-mini__merge')?.textContent?.trim(),
       mount.querySelector('.worker-mini__timeline')
-    ]).toEqual(['정리 재개', null]);
+    ]).toEqual(['정리 재시도', null]);
   });
 
   test('resumes the cleanup from that button', async () => {
@@ -9458,7 +9534,7 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
     expect(mount.querySelector('.worker-mini__merge')).toBe(null);
   });
 
-  test('offers 정리 재개 on a merged external row after a failure', () => {
+  test('offers 정리 재시도 on a merged external row after a failure', () => {
     const mount = mountRow(MERGED, {
       cleanup_failed: {
         'RD-1': { step: 'base_containment', reason: 'base_fetch_failed' }
@@ -9468,7 +9544,7 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
     const btn = /** @type {HTMLButtonElement} */ (
       mount.querySelector('.worker-mini__merge')
     );
-    expect(btn.textContent?.trim()).toBe('정리 재개');
+    expect(btn.textContent?.trim()).toBe('정리 재시도');
     expect(btn.disabled).toBe(false);
   });
 

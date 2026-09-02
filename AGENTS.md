@@ -189,12 +189,14 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   추적하지 않는 quick_fix ref push는 관측 대상이 아니므로 배포 실행과 그 증거
   확인까지 push한 세션이 소유한다. Worker-dispatched quick_fix의 배포·close는
   dotfiles `docs/contracts/workflow-contract.md`와
-  `docs/contracts/workflow-state.yaml`에 따라 Worker가 소유한다. `[정리]`는
-  `cleanup_failed`가 기록된 행의 실패 재개 전용이다.
+  `docs/contracts/workflow-state.yaml`에 따라 Worker가 소유한다.
+  `[정리 재시도]`는 `cleanup_failed`가 기록된 행의 실패 재개 전용이다.
 - 실패 해결 사다리는 상시 단발 `script_retry` 하나뿐이다. 그 뒤로 post-merge
-  실패는 원인을 기록한 채 `needs_human`으로 종단하고 재진입은 사람의 클릭뿐이며,
-  자동 AI 수리 세션 dispatch는 없다(ADR 0005). 사다리·자동 처리 항목·자동으로
-  하지 않는 것의 정본은 dotfiles가 소유하고, 이 저장소가 읽는 것은 핀된 사본
+  실패는 원인을 기록한 채 `needs_human`으로 종단하고 자동 AI 수리 세션
+  dispatch는 없다. 그 종단은 Discord 푸시로 자동 관측되고 재진입은
+  `[정리 재시도]`와 `[세션에서 해결]` 두 클릭뿐이다(ADR 0022, ADR 0005를
+  supersede). 사다리·자동 처리 항목·자동으로 하지 않는 것의 정본은 dotfiles가
+  소유하고, 이 저장소가 읽는 것은 핀된 사본
   `generated/contracts/repo-operation-policy.json`이다 — 문장을 여기에 복제하지
   않는다.
 - 실제 소비자 표면은 canonical `repo-ops/config.toml`, `repo-ops/script/deploy`,

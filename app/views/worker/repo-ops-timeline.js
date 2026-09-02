@@ -507,9 +507,15 @@ function operationEventTemplate(event, repo_ops) {
 
 /**
  * One stopped-cleanup event: the cursor stepper showing WHERE it stopped, the
- * cause sentence, and a resume button that names the step it resumes from. This
- * absorbs the old yellow banner without losing any of its information — the
- * output tail and log path move into 세부.
+ * cause sentence, and the two exits a person has for it. This absorbs the old
+ * yellow banner without losing any of its information — the output tail and log
+ * path move into 세부.
+ *
+ * Both exits live in the SAME action group (UI-jw27 §3·§4): `[정리 재시도]`
+ * names the step it resumes from, and `[세션에서 해결]` starts the interactive
+ * session that works out why it stopped. A stopped cleanup always has both —
+ * the row exists only because the cursor could not finish — so neither is
+ * conditional here.
  *
  * @param {any} event
  * @returns {TemplateResult}
@@ -550,8 +556,8 @@ function cleanupEventTemplate(event) {
       ${explainTemplate(
         failureText(cleanup.reason),
         typeof cleanup.retry_count === 'number' && cleanup.retry_count > 0
-          ? `${cleanup.retry_count}회 자동 재시도 후에도 실패했습니다 — 정리를 재개하면 멈춘 단계부터 다시 진행합니다.`
-          : '정리를 재개하면 멈춘 단계부터 다시 진행합니다.',
+          ? `${cleanup.retry_count}회 자동 재시도 후에도 실패했습니다 — 정리를 다시 시도하면 멈춘 단계부터 다시 진행합니다.`
+          : '정리를 다시 시도하면 멈춘 단계부터 다시 진행합니다.',
         true
       )}
       <div class="worker-ev__acts">
@@ -560,7 +566,15 @@ function cleanupEventTemplate(event) {
           class="worker-ev__btn worker-ev__btn--warn worker-cleanup__resume"
           data-bead-id=${cleanup.bead_id}
         >
-          정리 재개${step_label ? ` — ${step_label} 단계부터` : ''}
+          정리 재시도${step_label ? ` — ${step_label} 단계부터` : ''}
+        </button>
+        <button
+          type="button"
+          class="worker-ev__btn worker-cleanup__resolve"
+          data-bead-id=${cleanup.bead_id}
+          title="이 실패를 사람이 이어받는 대화형 세션을 띄웁니다 — 기록된 세션이 있으면 fork하고, 없으면 새 세션에 사유를 싣습니다"
+        >
+          세션에서 해결
         </button>
       </div>
       ${detailsTemplate([

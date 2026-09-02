@@ -488,7 +488,7 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
     ).toEqual(['cleanup_stalled', 'failed']);
   });
 
-  test('leaves 정리 재개 as the only action on a stopped cleanup', () => {
+  test('offers 정리 재시도 and 세션에서 해결 on a stopped cleanup', () => {
     const { mount } = mountWorker({
       cleanup_failed: {
         'UI-cleanup': {
@@ -501,6 +501,7 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
     const timeline = openTimeline(mount);
 
     expect(timeline.querySelector('.worker-cleanup__resume')).not.toBeNull();
+    expect(timeline.querySelector('.worker-cleanup__resolve')).not.toBeNull();
     expect(timeline.querySelector('.worker-repo-op__resolve')).toBeNull();
   });
 

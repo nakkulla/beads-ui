@@ -2740,7 +2740,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         merge_label: continuation_required
           ? '이어하기 선택'
           : external_cleanup || cleanup_retry
-            ? '정리 재개'
+            ? '정리 재시도'
             : conflicting && !cleanup_retry
               ? '충돌 해소 후 머지'
               : undefined,
@@ -2751,9 +2751,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
               ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`
               : `폐기 진행 중 — ${discard.progress || '완료를 기다리세요'}`
             : external_cleanup
-              ? '머지 완료 — 클릭하면 실패한 정리를 재개합니다'
+              ? '머지 완료 — 클릭하면 실패한 정리를 다시 시도합니다'
               : cleanup_retry
-                ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 재개합니다'
+                ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 다시 시도합니다'
                 : conflicting
                   ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
                   : gate?.enabled === true

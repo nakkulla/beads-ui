@@ -741,6 +741,36 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
   });
 });
 
+describe('monitor PR 대기 — 정리 재시도 라벨 (UI-jw27 §3)', () => {
+  test('names the stopped-cleanup action 정리 재시도', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+          cleanup_failed: {
+            'A-1': { step: 'child_sweep', reason: 'boom', at: 42 }
+          },
+          pr_observations: {
+            'A-1': {
+              pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
+              gate: {
+                enabled: false,
+                tier: 'merged',
+                gate_badge: '머지됨',
+                base_badge: '머지됨',
+                reason: null
+              }
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0].merge_label).toBe('정리 재시도');
+  });
+});
+
 describe('monitor PR 대기 — 리뷰 판정 미결 (UI-32he, UI-qksl §4 1번이 넓힘)', () => {
   test('alerts on an undetermined review verdict without a gate badge', () => {
     const lanes = buildLanes(
