@@ -13,7 +13,8 @@ scope:
 
 - Bead: UI-jr8v (discovered-from UI-yrzu)
 - 날짜: 2026-08-24 · 확장 2026-09-02 (rev2)
-- 상태: 확장분 spec 리뷰 대기 (원안 spec 리뷰 통과 `codex@c4dc35de`)
+- 상태: 확장분 spec 리뷰 REVISE 6건 반영본 (원안 spec 리뷰 통과 `codex@c4dc35de`;
+  rev2 리뷰 F1–F6은 본문에 표기)
 - rev2 변경 요약: (a) **계정 사용 한도**(`usage_limit`) 클래스를 공급자 장애에
   넣고 회복을 "창 리셋 대기" 또는 "다른 계정으로 같은 transcript 이어하기"로
   정한다(§3.3·§6·§7.4·§8.3). (b) 세션이 결과 줄로 실패를 보고하고 정상 종료하는
@@ -142,8 +143,10 @@ classifyProviderOutage(ctx: { raw: any[], stderr_tail: string|null })
    `api_error_status`만 쓴다 — `terminal_reason`은 `completed`/`api_error` 외 값의
    의미가 문서화되지 않았다). 필드가 없거나 정수가 아니면 `result` 문자열 패턴으로
    상태 코드를 읽는다(구 CLI 호환).
-2. `result` 이벤트가 아예 없으면(`no_result`) `stderr_tail`에 같은 문자열 패턴을
-   적용한다.
+2. `result` 이벤트가 아예 없으면(`no_result`) `stderr_tail`에 **공급자 HTTP·과부하
+   패턴만**(§3.2의 529·5xx·429 행) 적용한다. `LIMIT_RE`는 stderr에 적용하지
+   않는다 — `usage_limit`은 마지막 `result.is_error === true`가 있을 때만
+   성립한다 (codex rev2 리뷰 F1). stderr에 limit 문구만 있는 attempt는 null이다.
 
 **오탐 방지(rev2).** 판정 재료는 오직 마지막 `result` 이벤트(또는 그 부재 시
 stderr 꼬리)다. assistant 텍스트·tool_result 본문·중간 result는 보지 않는다 —
@@ -246,7 +249,12 @@ resume은 disposition 전용 필드를 승계하지 못해 일반 구현 attempt
 
 계층 판정은 그대로 `classifyFailure`가 한다: `session_hard_stop:environment`는
 summary가 `ENV_ERROR_PATTERNS`에 걸리면 `env`, 아니면 `individual`;
-`session_hard_stop:failure`는 `individual`. `대기 ·`는 선행 대기 계층이 이미 앞에서
+`session_hard_stop:failure`는 `individual`. 그러려면 `failure-class.js`의
+`PATTERN_SENSITIVE_CAUSES`와 `GROUP_KEYED_CAUSES` **둘 다**에
+`session_hard_stop:environment`를 명시적으로 추가한다 — 전자가 없으면 패턴을
+보지 않아 항상 `individual`이고, 후자가 없으면 `api`/`runtime` 서로 다른 그룹의
+환경 오류가 같은 cause 문자열로 묶여 systemic 승격 비교에 잘못 들어간다 (codex
+rev2 리뷰 F2). `session_hard_stop:failure`는 어느 집합에도 넣지 않는다. `대기 ·`는 선행 대기 계층이 이미 앞에서
 잡고, `파킹 ·`은 `awaiting_user` 판정이 잡으므로 여기서 다시 보지 않는다. 마크다운
 굵게(`**실패 · …**`)는 별표를 벗기고 대조한다 — UI-i60a attempt 2의 result가
 `**성공 · PR #245**`로 시작했듯 세션은 결과 줄을 굵게 찍는다.
@@ -296,11 +304,18 @@ provider_hold: {
       model: string, account: string|null,   // account = cswap email
       detail: string, last_error: string,
       resets_at: number|null,                // rev2, usage_limit만
-      rearm_count: number                    // rev2, §7.4
+      rearm_count: number,                   // rev2, §7.4
+      attempt_ids: string[]                  // rev2, 이 target에 묶인 보류 attempt (F3)
     }>
   }
 }
 ```
+
+attempt와 target의 결속은 **`attempt_ids`가 영속**한다 — 모델·계정을 나중에
+다시 맞춰보는 방식은 pin 없는 attempt(`claude_account:null`)를 재시작 뒤 복원할
+수 없고, 활성 로그인이 바뀌면 리셋 후 자동 재개가 한도에 걸렸던 계정이 아니라
+현재 활성 계정으로 나갈 수 있다 (codex rev2 리뷰 F3). 회복 시 자동 재개 영수증은
+target의 `account`를 실어 launch-only override로 적용한다(§7.5).
 
 `targets`는 장애를 관측한 (모델, 계정 라우팅) 조합의 **목록**이다. 단일 model
 필드는 서로 다른 모델로 돌던 attempt들의 장애가 마지막 쓰기로 덮이고, account
@@ -311,7 +326,12 @@ pin(cswap)을 쓴 attempt의 장애를 기본 계정 프로브 성공이 잘못 
   활성 로그인"이다. target에는 null을 쓰지 않고 hold 진입 시 카탈로그
   `active_key`의 email로 **고정**한다 — 사람이 `cswap switch`를 해도 한도가 걸린
   계정은 바뀌지 않기 때문이다. 카탈로그 조회 실패면 `account:null`로 기록하고
-  `usage_limit` 게이트는 러너 전체로 넓힌다(fail-closed).
+  `usage_limit` 게이트는 러너 전체로 넓히며, 그 target은 **프로브도 자동
+  재개도 하지 않는다** — 어느 계정을 찔러야 회복 증거가 되는지 모르기 때문이다
+  (codex rev2 리뷰 F3, fail-closed). 출구는 그 target에 묶인 attempt의 수동
+  이어하기(§9)뿐이고, 그 클릭이 `account:null` target을 지운다(사용자가 회복을
+  단언한 것으로 본다). `account`가 있는 target은 수동 이어하기로 지워지지
+  않는다 — 프로브가 판정한다.
 - 쓰기: `holdAttempt`의 단일 mutation(§5)이 target을 등록한다. 회복 해제는 §7
   프로브가 target 단위로 수행하고, `targets`가 비면 runner 항목 자체를 지운다.
 - 디스패치 게이트: `tick()`의 launch 경로에서 `resolveDispatchSettings`가 준
@@ -347,7 +367,8 @@ pin(cswap)을 쓴 attempt의 장애를 기본 계정 프로브 성공이 잘못 
 
 ### §7.2 프로브 사양 (claude)
 
-`provider_hold[runner].targets`의 **각 target을 따로** 찌른다 — 러너 어댑터와 같은
+`provider_hold[runner].targets`의 **각 target을 따로** 찌른다(`account:null`인
+`usage_limit` target은 제외 — §6 F3, 수동 해제 전용) — 러너 어댑터와 같은
 바이너리·계정 라우팅(`cswap run <account> --share-history --` 경로 포함) 해석으로
 `claude -p "ok" --model <그 target의 카탈로그 CLI 모델 id> --output-format json`,
 타임아웃 120초. **장애를 겪은 그 모델·그 계정 경로로 찌른다** — 529는 모델·요청
@@ -385,13 +406,17 @@ target 실패로 계속 보류. 프로브 출력에 §3 분류기를 다시 적�
 
 ### §7.5 회복 시 (target 단위, 재시작 안전 순서 — codex spec 리뷰 F4)
 
-성공한 target에 대해 (1) 그 target(모델·계정이 일치하는 attempt가 그 target에
-묶인다)에 묶인 보류 attempt 중 **§8 cap 판정을 통과한 것만** 자동 재개 영수증
-(`auto_resume_pending`, 현재 `generation` 포함, §8)을 target 제거와 **같은 영속
-mutation으로 먼저** 기록하고 (마지막 target 제거 = runner hold 제거 = 게이트
+성공한 target에 대해 (1) 그 target의 `attempt_ids`(§6) 중 아직 `paused`인 leaf
+attempt — 자식 attempt의 `resumed_from`이 가리키는 부모는 제외한다(§8.1) —
+가운데 **§8 cap 판정을 통과한 것만** 자동 재개 영수증
+(`auto_resume_pending: { attempt_id, generation, account: <target.account> }`,
+§8)을 target 제거와 **같은 영속 mutation으로 먼저** 기록하고 (마지막 target 제거 = runner hold 제거 = 게이트
 개방), (2) 그 다음 pending을 소비하며 자동 재개를 실행한다. 재시작이 어느 지점에
 끼어도 pending 영수증이 남아 재개가 유실되지 않으며, load 시 남은 pending을
-재개하고 `generation` 불일치 pending은 폐기한다. 이후
+재개하고 `generation` 불일치 pending은 폐기한다. pending 소비는 영수증의
+`account`를 launch-only `exec_override.claude_account`로 적용해 한도에 걸렸던
+그 계정으로 `--resume`한다 — §8.1 모델 고정과 같은 형태의 계정 고정이며 Bead
+metadata·kv에는 쓰지 않는다 (codex rev2 리뷰 F3). 이후
 `notifyLifecycle('providerRecovered', …)` → `tick()`.
 
 ## §8 자동 재개 — 계보당 1회 (사용자 결정 2026-08-24)
@@ -399,7 +424,10 @@ mutation으로 먼저** 기록하고 (마지막 target 제거 = runner hold 제�
 ### §8.1 cap 판정과 실행
 
 회복 감지 시, `status==='paused' ∧ cause=provider_outage:*`이고 superseded/dismissed/
-discard-중이 아닌 attempt마다:
+discard-중이 아니며 **leaf인**(다른 attempt의 `resumed_from`이 자신을 가리키지
+않는) attempt마다 — 계정 전환(§8.3)으로 자식이 이미 태어난 부모는 `paused`로
+남아 있어도 재개 대상이 아니다; 그 부모를 cap 판정에 넣으면 `already_resumed`
+가드에서 뒤늦게 거부되며 pending만 쌓인다 (codex rev2 리뷰 F6):
 
 - **cap 판정**: 자동 재개로 태어난 attempt에는 `auto_resume_kind:'provider_outage'`
   마커를 스탬프한다. 대상 attempt 자신 또는 `resumed_from` 체인의 조상에 이 마커가
@@ -445,14 +473,22 @@ discard-중이 아닌 attempt마다:
    조건 `5h.pct ≤ 80 ∧ (7d 창 부재 ∨ 7d.pct ≤ 90)`을 만족하는 계정. `5h` 창이
    없는 행(사용량 미관측)은 후보가 아니다. 정렬은 `7d.pct` 오름차순(부재는 0),
    동률이면 `number` 오름차순. 임계값은 코드 상수다(설정 키를 만들지 않는다).
-2. 후보가 있고 §8.1 cap 이내면 **프로브 없이 즉시** 그 계정으로 자동 재개한다 —
-   `auto_resume_pending`에 `account: <email>`을 실어 §7.5와 같은 선영속 뒤 소비
-   순서로 `resume(workspace, attempt_id, { continuation:'auto', exec_override:
-   { claude_account: <email> } })`. 한도는 계정에 묶이므로 다른 계정의 프로브는
-   증거가 못 되고, 첫 `--resume` 요청 자체가 프로브다(실패하면 §4→§5 재보류).
-   원 target은 그대로 남아 §7.4 타이머를 계속 탄다 — 리셋되면 target만 지운다
-   (묶인 attempt는 이미 전환 재개됐으므로 재개 대상이 없다).
-3. 후보가 없거나 cap 소진이면 §7.4 타이머 경로다.
+2. 후보가 있고 §8.1 cap 이내면 **프로브 없이 즉시** 그 계정으로 자동 재개한다.
+   **판정과 영속은 hold 진입 mutation 안이다** (codex rev2 리뷰 F4): `holdAttempt`는
+   mutation 전에 카탈로그를 읽어 후보를 고르고, attempt patch·target 등록과
+   **같은 mutation**에 `auto_resume_pending: { attempt_id, generation,
+   account: <후보 email>, kind:'account_switch' }`를 기록한다. 그 다음 §7.5와 같은
+   순서로 pending을 소비해 `resume(workspace, attempt_id, { continuation:'auto',
+   exec_override: { claude_account: <email> } })`를 부른다. target 등록과 소비
+   사이에 재시작이 끼어도 load 시 남은 pending 재개(§7.5)가 이 전환을 그대로
+   실행한다 — 전환 판정이 재시작으로 영구 누락되는 창이 없다. 한도는 계정에
+   묶이므로 다른 계정의 프로브는 증거가 못 되고, 첫 `--resume` 요청 자체가
+   프로브다(실패하면 §4→§5 재보류). 원 target은 그대로 남아 §7.4 타이머를 계속
+   탄다 — 리셋되면 target만 지운다(`attempt_ids`의 attempt는 자식이 생긴 부모라
+   §8.1 leaf 규칙으로 재개 대상이 아니다).
+3. 후보가 없거나 cap 소진이거나 토글이 꺼져 있으면 §7.4 타이머 경로다. 이
+   결정도 같은 mutation의 target에 `auto_switch: 'none'|'cap'|'disabled'`로
+   남겨 팝오버(§10)와 알림(§11)이 사유를 읽는다.
 
 자동 계정 전환을 허용하는 근거: §2 비목표의 "자동 모델·런타임 전환 금지"는 산출물
 품질과 리뷰 계보가 바뀌는 것을 막는 규칙이고, 계정은 같은 모델·같은 transcript의
@@ -534,7 +570,9 @@ id로 바뀐다 — `opus-4.8→claude-opus-4-8`, `opus-4.6→claude-opus-4-6` (
   자동 재개(§8)·수동 이어하기 모두 같은 규칙이다. 수동 경로의 ws 응답에는
   `fallback:'transcript_missing'`을 실어 UI가 토스트로 알린다.
 - **런치 후 실패**: 파일은 있었으나 CLI가 `no_result`로 죽고 stderr 꼬리가
-  `/No conversation found|session .* not found|resume/i`에 걸리면 cause
+  `/No conversation found with session ID|No session found|session(?: id)? \S+ (?:was )?not found/i`에
+  걸리면 — bare `resume`은 `--resume`을 언급하는 인증·실행 오류까지 유실로 오인하므로
+  쓰지 않는다 (codex rev2 리뷰 F5) — cause
   `resume_failed:transcript_missing`(`individual`, 실패)로 기록하고, 같은 계보에
   `resume_fallback` 마커가 아직 없을 때 **1회** fresh 대체를 자동 실행한다. 마커가
   이미 있으면 실패로 남긴다(무한 fresh 방지).
@@ -542,7 +580,9 @@ id로 바뀐다 — `opus-4.8→claude-opus-4-8`, `opus-4.6→claude-opus-4-6` (
 
 ### §9.5 게이트 예외와 기록
 
-- 수동 이어하기는 §6 게이트의 예외로 launch가 허용된다. 단 hold가 서 있는 동안의
+- 수동 이어하기는 §6 게이트의 예외로 launch가 허용된다. 그 클릭은 `account:null`
+  `usage_limit` target(§6 F3)만 지우고, `account`가 있는 target은 프로브가 판정할
+  때까지 남긴다. 단 hold가 서 있는 동안의
   이어하기 UI에는 게이트 배지(§10)로 장애 진행 중임이 함께 보인다 — 반복 클릭이
   attempt 기록만 쌓는 상황을 사용자가 인지한 채 선택하게 한다.
 - attempt 기록: 새 attempt의 `runner/model/effort/claude_account`는 override
@@ -634,8 +674,9 @@ detached 정산 경로(`scheduler.js disposeDeadAttemptSettlement`)에서 PR 관
   (`api_error_status:429` + session limit 문장)로 `usage_limit`·`scope:'account'`·
   `resets_at`(KST 18:00, `finished_at` 이후 첫 발생); `api_error_status` 부재 구
   형식; 429 + 일반 문장 → `rate_limited_429`; assistant 텍스트에만 "session limit"
-  이 있는 transcript → null(오탐 방지); `resets Sep 3, 6pm` 날짜 형식; 파싱 실패
-  → 카탈로그 창 fallback → null.
+  이 있는 transcript → null(오탐 방지); stderr에만 limit 문구가 있고 result가
+  없는 attempt → null, stderr에 `API Error: 529`만 있으면 `overloaded_529`(F1);
+  `resets Sep 3, 6pm` 날짜 형식; 파싱 실패 → 카탈로그 창 fallback → null.
 - **scheduler 라이브 경로**: fake 어댑터로 hold 라우팅, `haltAutoAdvance`·
   `settleFailureTier` 미호출, `queue.hold`/`lineages` 불변, disposition 쌍둥이 분기
   — outage 분류가 disposition 판정보다 먼저, lease 해제, 회복 시 수리 기계
@@ -643,11 +684,18 @@ detached 정산 경로(`scheduler.js disposeDeadAttemptSettlement`)에서 PR 관
   토큰 제거 뒤 전송 장애 문장은 여전히 `env`; hard-stop arm — `실패 ·`/`환경 ·`/
   `**실패 · …**` 첫 줄 → `session_hard_stop:*` + `cause_detail.summary`, 선행
   대기·parked 판정이 먼저 성립하면 진입하지 않음, 그 외 첫 줄은
-  `session_ended_unresolved` 유지.
+  `session_ended_unresolved` 유지; `failure-class.test.js` —
+  `session_hard_stop:environment`가 `runtime` 패턴 summary로 `env`, 패턴 없으면
+  `individual`, `api` 그룹과 `runtime` 그룹의 두 hard-stop이 서로 다른
+  `causeKey`로 systemic 승격에 묶이지 않음, `session_hard_stop:failure`는 패턴이
+  있어도 `individual`(F2).
 - **보류·회복 영속성**: hold 진입이 attempt patch+target 등록 단일 mutation인지,
   `cause_detail` 객체형(`message`·`summary`·`resets_at`)이 저장·재로드에
   보존되는지, 회복이 pending 영수증 선영속 후 소비인지, 재시작 시 남은 pending
-  재개와 `generation` 불일치 폐기.
+  재개와 `generation` 불일치 폐기; target `attempt_ids` 결속이 재시작 뒤 복원되고
+  pin 없는 attempt의 회복 재개 argv가 target `account`로 고정되는지(활성 로그인을
+  바꿔 둔 뒤 재개), `account:null` target은 프로브·자동 재개 없이 수동 이어하기로만
+  지워지는지(F3).
 - **reconcile 경로**: jsonl fixture 재생 → `provider_outage:overloaded_529` +
   `paused`, `session_ended_unresolved` 미발생 (핵심 수용 기준). (rev2) UI-i60a
   fixture → `provider_outage:usage_limit` + `paused`.
@@ -668,7 +716,10 @@ detached 정산 경로(`scheduler.js disposeDeadAttemptSettlement`)에서 PR 관
   (`claude_account`·`account_sources.claude:'outage_switch'`·
   `account_switched_from`), Bead metadata·kv 미기록, 전환 재개도 cap 소비, 후보
   없음 → 타이머 경로, `provider_auto_switch:false`면 후보가 있어도 타이머 경로,
-  토글 ws 메시지의 CAS·readback·재시작 생존(load 시 값 유지, 부재 시 `true`).
+  토글 ws 메시지의 CAS·readback·재시작 생존(load 시 값 유지, 부재 시 `true`);
+  전환 pending이 hold 진입과 같은 mutation에 있고 target 등록 직후 재시작해도
+  load가 전환을 실행하는지(F4); 전환 뒤 원 target 회복 시 부모(`paused`, 자식
+  있음)는 leaf가 아니라 pending에 들어가지 않고 target만 지워지는지(F6).
 - **exec_override**: 카탈로그 검증 거부, claude 모델 override argv
   (`--resume` + `--model claude-opus-4-8`), 교차 런타임 fresh_current 강제 + 인계
   블록 내용·4,000자 상한, 같은 러너 fresh_current 선택 시에도 인계 블록 주입,
@@ -676,7 +727,9 @@ detached 정산 경로(`scheduler.js disposeDeadAttemptSettlement`)에서 PR 관
   `exec_override_invalid`.
 - **transcript 유실(rev2)**: 파일 부재 → fresh_current + 인계 블록 +
   `resume_fallback` 스탬프 + ws 응답 `fallback`; 런치 후 stderr 패턴 →
-  `resume_failed:transcript_missing` + 1회 자동 fresh, 마커 있으면 실패 유지.
+  `resume_failed:transcript_missing` + 1회 자동 fresh, 마커 있으면 실패 유지;
+  stderr가 `--resume`을 언급하는 인증 오류(예: `not authenticated … --resume`)일
+  때는 유실로 판정하지 않음(F5).
 - **UI 투영**: `provider_hold` held 상태 판정(사용자 `paused`와 배타), 뱃지 3변형,
   팝오버 행(재료 없는 행 미생성), foot 버튼 3종, 선택기 옵션 = `runner_catalog` +
   `account_catalog`(창 미달 회색), 어휘 매핑(hard-stop 2종·transcript 유실 포함),
