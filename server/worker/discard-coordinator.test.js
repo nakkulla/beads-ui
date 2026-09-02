@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 /**
- * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any, phaseChildren?: Record<string, any>[], newChildAfterArchive?: Record<string, any>, parentAuthorityChangesAfterArchive?: boolean, partialDeleteOnce?: boolean, readbackFindFailsOnce?: boolean, sessionLog?: any }} [options]
+ * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any, phaseChildren?: Record<string, any>[], newChildAfterArchive?: Record<string, any>, parentAuthorityChangesAfterArchive?: boolean, partialDeleteOnce?: boolean, readbackFindFailsOnce?: boolean, sessionLog?: any, notify?: any }} [options]
  */
 function setup(options = {}) {
   const store = createQueueStore({ now: () => 100 });
@@ -343,6 +343,7 @@ function setup(options = {}) {
     scheduler,
     archive,
     processController: options.processController || {},
+    notify: options.notify,
     sessionLog: options.sessionLog || { pathFor: () => '/state/session.jsonl' },
     revertBuilder: options.revertBuilder,
     verifyRevert: options.verifyRevert,
@@ -2590,5 +2591,128 @@ describe('worker discard coordinator stale-work recovery', () => {
       phase: 'backup_verified',
       last_error: 'worktree_identity_changed'
     });
+  });
+});
+
+describe('discard failure notification (UI-jw27 §2)', () => {
+  /** A notifier fake that records every `needsHuman` body it is handed. */
+  function makeNotify() {
+    /** @type {any[]} */
+    const sent = [];
+    return {
+      sent,
+      needsHuman: vi.fn(async (/** @type {any} */ input) => {
+        sent.push(input);
+      })
+    };
+  }
+
+  test('announces the bead and the cause when a discard phase fails', async () => {
+    const notify = makeNotify();
+    const env = setup({ notify });
+    env.worktree.removeByBranch.mockRejectedValueOnce(
+      new Error('spawn failed')
+    );
+
+    await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(notify.sent).toHaveLength(1);
+    expect(notify.sent[0]).toMatchObject({
+      bead_id: 'UI-1',
+      failure_class: '폐기 실패',
+      reason: 'discard_driver_error',
+      repo: '/repo'
+    });
+  });
+
+  test('announces again when the retry click fails again', async () => {
+    const notify = makeNotify();
+    const env = setup({ notify });
+    env.worktree.removeByBranch.mockRejectedValue(new Error('spawn failed'));
+
+    await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+    await env.coordinator.retry('discard-1');
+
+    expect(notify.sent).toHaveLength(2);
+  });
+
+  test('announces the settling refusal taken before any phase advanced', async () => {
+    const notify = makeNotify();
+    const env = setup({ notify });
+    env.scheduler.fenceDiscardAttempt.mockReturnValueOnce(false);
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'attempt_settling' });
+    expect(notify.sent).toEqual([
+      expect.objectContaining({
+        bead_id: 'UI-1',
+        failure_class: '폐기 실패',
+        reason: 'attempt_settling'
+      })
+    ]);
+  });
+
+  test('returns the failure normally when the notifier throws', async () => {
+    const notify = {
+      needsHuman: vi.fn(() => {
+        throw new Error('notifier broken');
+      })
+    };
+    const env = setup({ notify });
+    env.worktree.removeByBranch.mockRejectedValueOnce(
+      new Error('spawn failed')
+    );
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'discard_driver_error' });
+  });
+
+  test('sends nothing when the store refuses the failure write', async () => {
+    const notify = makeNotify();
+    const env = setup({ notify });
+    env.worktree.removeByBranch.mockRejectedValueOnce(
+      new Error('spawn failed')
+    );
+    vi.spyOn(env.store, 'failDiscardOperation').mockReturnValue({
+      ok: false,
+      conflict: false,
+      reason: 'phase_mismatch',
+      queue: env.store.snapshot(workspace)
+    });
+
+    await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(notify.sent).toEqual([]);
+  });
+
+  test('sends nothing when no notifier is wired', async () => {
+    const env = setup();
+    env.worktree.removeByBranch.mockRejectedValueOnce(
+      new Error('spawn failed')
+    );
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'discard_driver_error' });
   });
 });

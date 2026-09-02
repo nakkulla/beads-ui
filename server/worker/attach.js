@@ -729,6 +729,21 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       return { verdict: 'unresolved', evidence: null };
     }
   };
+  // The outward attempt-lifecycle push (UI-2yoq). Config is read per call, so a
+  // machine that never opted into `[worker.notify]` pushes nothing and a toggle
+  // takes effect without a restart.
+  const notify =
+    options.notify ||
+    createNotifier({
+      getConfig,
+      // The snapshot title cache doubles as the push's title source (UI-vb0t
+      // §3.3): a notification naming only a bead id is one the notification
+      // centre cannot place, and the cache already knows how to read — and not
+      // re-read — a title.
+      resolveTitle: (bead_id) =>
+        runtime.titleCache.ensureTitle(workspace_root, bead_id)
+    });
+
   const repoOperationCoordinator = createRepoOperationCoordinator({
     workspace: workspace_root,
     repo,
@@ -740,6 +755,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // in one resolution, so nothing there assumes `origin`.
     resolveBase,
     gitRun,
+    notify,
     autoAdvanceRestore: options.autoAdvanceRestore
   });
   const quickfixLanding =
@@ -796,21 +812,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     createAccountCatalog({
       listClaude: listClaudeAccounts,
       listCodex: listCodexAccounts
-    });
-
-  // The outward attempt-lifecycle push (UI-2yoq). Config is read per call, so a
-  // machine that never opted into `[worker.notify]` pushes nothing and a toggle
-  // takes effect without a restart.
-  const notify =
-    options.notify ||
-    createNotifier({
-      getConfig,
-      // The snapshot title cache doubles as the push's title source (UI-vb0t
-      // §3.3): a notification naming only a bead id is one the notification
-      // centre cannot place, and the cache already knows how to read — and not
-      // re-read — a title.
-      resolveTitle: (bead_id) =>
-        runtime.titleCache.ensureTitle(workspace_root, bead_id)
     });
 
   // The disposition actions need the scheduler and the scheduler needs their
@@ -956,6 +957,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         scheduler,
         archive: recoveryArchive,
         processController,
+        notify,
         sessionLog: runtime.sessionLog,
         revertBuilder: createRevertBuilder({ gitRun }),
         verifyRevert: async (
@@ -1553,6 +1555,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       bd,
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
       kickMerge: () => mergeQueue.kick(),
+      repo,
+      notify,
       log
     });
   completionActionDriver = resolvedCompletionActionDriver;

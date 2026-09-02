@@ -2736,3 +2736,152 @@ describe('worker/completion-intent 마이그레이션 토큰 읽기 (UI-5ym8 §7
     );
   });
 });
+
+describe('needs_human notification at terminalize (UI-jw27 §2)', () => {
+  /** A notifier fake that records every `needsHuman` body it is handed. */
+  function makeNotify() {
+    /** @type {any[]} */
+    const sent = [];
+    return {
+      sent,
+      needsHuman: vi.fn(async (/** @type {any} */ input) => {
+        sent.push(input);
+      })
+    };
+  }
+
+  /**
+   * Drive one merged root to a terminal cleanup failure recorded at `step`,
+   * which is what puts that step into the terminal's `failure_key.stage`.
+   *
+   * @param {string} step
+   * @param {{ notify?: any }} [overrides]
+   */
+  async function terminalizeCleanupStep(step, overrides = {}) {
+    const store = seededCompletionStore();
+    store.recordCleanupFailure(DRIVER_WS, {
+      bead_id: 'UI-root',
+      step,
+      reason: 'script_failed',
+      output_tail: 'deploy exited 2',
+      log_path: '/state/repo-operation-logs/op-9.log'
+    });
+    const merged_subject = {
+      ...intent().subject,
+      base_sha: 'c'.repeat(40),
+      merged_sha: 'c'.repeat(40)
+    };
+    const driver = actionDriver(store, {
+      prActions: {
+        completionGate: vi.fn(async () =>
+          redGate({
+            base_sha: 'c'.repeat(40),
+            subject: merged_subject,
+            verdict: { enabled: false, tier: 'merged', reason: null },
+            evidence: {}
+          })
+        )
+      },
+      repo: '/Users/me/GitHub/beads-ui',
+      ...overrides
+    });
+    await driver.onMergeResult('UI-root', 'UI-root', {
+      ok: false,
+      action: 'merged',
+      reason: 'script_failed',
+      cleanup_step: step
+    });
+
+    /** Settle the cleaning-phase intent once, as a reconcile pass would. */
+    async function settleOnce() {
+      const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+      const fact = await driver.observe('UI-root', current);
+      const action = decideCompletionAction({
+        auto_merge: true,
+        intent: current,
+        fact
+      });
+      if (!action) {
+        throw new Error('cleanup action missing');
+      }
+      await driver.onAction('UI-root', action, current);
+      await driver.commentsIdle();
+    }
+
+    await settleOnce();
+    return { store, settleOnce };
+  }
+
+  test('announces a deploy-step terminal as 배포 실패', async () => {
+    const notify = makeNotify();
+
+    await terminalizeCleanupStep('repo_operations', { notify });
+
+    expect(notify.sent).toEqual([
+      expect.objectContaining({
+        bead_id: 'UI-root',
+        failure_class: '배포 실패',
+        reason: 'cleanup_failed:script_failed',
+        reason_detail: 'deploy exited 2',
+        next_action: '[정리 재시도] 또는 [세션에서 해결]',
+        pr_url: 'https://github.com/o/r/pull/1',
+        repo: '/Users/me/GitHub/beads-ui'
+      })
+    ]);
+  });
+
+  test('announces a job-step terminal as post-merge 잡 실패', async () => {
+    const notify = makeNotify();
+
+    await terminalizeCleanupStep('post_merge_jobs', { notify });
+
+    expect(notify.sent).toEqual([
+      expect.objectContaining({
+        failure_class: 'post-merge 잡 실패',
+        reason: 'cleanup_failed:script_failed'
+      })
+    ]);
+  });
+
+  test('sends nothing for a stage outside the two owned classes', async () => {
+    const notify = makeNotify();
+
+    await terminalizeCleanupStep('branch_cleanup', { notify });
+
+    expect(notify.sent).toEqual([]);
+  });
+
+  test('does not resend when a re-click re-settles the same terminal', async () => {
+    const notify = makeNotify();
+    const driven = await terminalizeCleanupStep('repo_operations', { notify });
+
+    // The re-click moves the terminal to `resumed_terminal`, which is where the
+    // second pass has to look for the announcement it already made.
+    driven.store.enqueueMergeManual(DRIVER_WS, {
+      expected_revision: driven.store.snapshot(DRIVER_WS).revision,
+      entries: [
+        { bead_id: 'UI-root', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ]
+    });
+    await driven.settleOnce();
+
+    expect(notify.sent).toHaveLength(1);
+  });
+
+  test('terminalizes normally when the notifier throws', async () => {
+    const notify = {
+      needsHuman: vi.fn(() => {
+        throw new Error('notifier broken');
+      })
+    };
+
+    const driven = await terminalizeCleanupStep('repo_operations', { notify });
+
+    expect(
+      driven.store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: { reason: 'cleanup_failed:script_failed' }
+    });
+  });
+});

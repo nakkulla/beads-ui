@@ -106,7 +106,7 @@ function gitWithAncestry(pairs, options = {}) {
 }
 
 /**
- * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, locks?: ReturnType<typeof createLockManager>, policySupported?: () => boolean, timeline?: any, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, resolveBase?: (options?: { force?: boolean }) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
+ * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, locks?: ReturnType<typeof createLockManager>, policySupported?: () => boolean, notify?: any, timeline?: any, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, resolveBase?: (options?: { force?: boolean }) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
  */
 function coordinatorFor(overrides = {}) {
   const store = createQueueStore({
@@ -158,6 +158,7 @@ function coordinatorFor(overrides = {}) {
     verifyCheckout: /** @type {never} */ (overrides.verifyCheckout),
     autoAdvanceRestore: overrides.autoAdvanceRestore,
     policySupported: overrides.policySupported,
+    notify: overrides.notify,
     timeline: overrides.timeline,
     now: overrides.now,
     sleep: overrides.sleep
@@ -3687,6 +3688,118 @@ describe('manual deploy run', () => {
     expect(start).not.toHaveBeenCalled();
   });
 
+  // UI-jw27 §2: a `[배포 실행]` click that ends terminally is the one deploy
+  // failure `terminalize` does NOT own, because no completion intent tracks it.
+  test('announces a manual run that settles terminally failed', async () => {
+    /** @type {any[]} */
+    const sent = [];
+    const { store, coordinator } = manualCoordinatorFor({
+      notify: {
+        needsHuman: vi.fn(async (/** @type {any} */ input) => {
+          sent.push(input);
+        })
+      },
+      runner: {
+        start: vi.fn(),
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'manual-unpinned',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'manual', merged_sha: TARGET }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      source: 'manual',
+      manual_run_id: 1
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(sent).toEqual([
+      expect.objectContaining({
+        bead_id: 'manual',
+        failure_class: '수동 배포 실패',
+        reason: 'manual_target_missing',
+        repo: root
+      })
+    ]);
+  });
+
+  test('does not announce the same manual failure on a later reconcile', async () => {
+    /** @type {any[]} */
+    const sent = [];
+    const { store, coordinator } = manualCoordinatorFor({
+      notify: {
+        needsHuman: vi.fn(async (/** @type {any} */ input) => {
+          sent.push(input);
+        })
+      },
+      runner: {
+        start: vi.fn(),
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'manual-unpinned',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'manual', merged_sha: TARGET }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      source: 'manual',
+      manual_run_id: 1
+    });
+
+    await coordinator.reconcile(root);
+    await coordinator.reconcile(root);
+
+    expect(sent).toHaveLength(1);
+  });
+
+  test('settles the manual failure normally when the notifier throws', async () => {
+    const { store, coordinator } = manualCoordinatorFor({
+      notify: {
+        needsHuman: vi.fn(() => {
+          throw new Error('notifier broken');
+        })
+      },
+      runner: {
+        start: vi.fn(),
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'manual-unpinned',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'manual', merged_sha: TARGET }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      source: 'manual',
+      manual_run_id: 1
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(store.snapshot(root).repo_operations['manual-unpinned'].state).toBe(
+      'failed'
+    );
+  });
+
   test('says opted out when the opt-out lands mid-flight', async () => {
     /** @type {any} */
     let store_ref = null;
@@ -4296,5 +4409,58 @@ describe('post-merge job operations (UI-i60a §2)', () => {
     expect(
       store.snapshot(root).repo_operations[second.operation_id]
     ).toMatchObject({ kind: 'job', state: 'queued' });
+  });
+});
+
+describe('automatic run failures stay unannounced here (UI-jw27 §2)', () => {
+  test('announces nothing when an automatic run exhausts its script retry', async () => {
+    /** @type {any[]} */
+    const sent = [];
+    const runner = {
+      start: vi.fn(() => ({
+        ok: true,
+        process_identity: { pid: 2, pgid: 2, started_at: 2 },
+        log_path: path.join(root, 'operation.log')
+      })),
+      readMarker: () => ({ exit_code: 2, signal: null }),
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      notify: {
+        needsHuman: vi.fn(async (/** @type {any} */ input) => {
+          sent.push(input);
+        })
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'op-auto',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const attempt_id =
+      store.snapshot(root).repo_operations['op-auto'].attempt_id;
+    store.startRepoOperation(root, {
+      operation_id: 'op-auto',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'operation.log'),
+      target_sha: TARGET
+    });
+
+    await coordinator.reconcile(root);
+    await coordinator.reconcile(root);
+    await coordinator.reconcile(root);
+
+    expect(store.snapshot(root).repo_operations['op-auto'].state).toBe(
+      'failed'
+    );
+    expect(sent).toEqual([]);
   });
 });

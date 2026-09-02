@@ -550,7 +550,13 @@ function makeActions(options = {}) {
   });
   /** @type {any[]} */
   const merge_notices = [];
+  /** @type {any[]} */
+  const human_notices = [];
   const notify = {
+    needsHuman: vi.fn(async (/** @type {any} */ input) => {
+      calls.push('notify:needsHuman');
+      human_notices.push(input);
+    }),
     mergeCompleted: vi.fn(async (/** @type {any} */ input) => {
       calls.push('notify:mergeCompleted');
       merge_notices.push(input);
@@ -680,7 +686,8 @@ function makeActions(options = {}) {
     resolveVerify,
     runVerify,
     notify,
-    merge_notices
+    merge_notices,
+    human_notices
   };
 }
 
@@ -2877,6 +2884,25 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
 
     expect(operations.ensureVerify).not.toHaveBeenCalled();
   });
+
+  // UI-jw27 §6-1: the deploy step rides the `script_retry` ladder, so its
+  // cleanup record is mid-ladder and `terminalize` owns the one push.
+  test('announces nothing when the cleanup record is the deploy step', async () => {
+    const operations = coordinatorFor(null);
+    operations.findExactDeployOperation.mockResolvedValue({
+      operation_id: 'deploy-1',
+      code: 'repo_operation_timeout_unresolved'
+    });
+    const env = makeActions({ ...ON_BASE, repoOperations: operations });
+    seedResumableRow(env.store);
+
+    await env.actions.resumeRepoOperations();
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'repo_operations'
+    });
+    expect(env.human_notices).toEqual([]);
+  });
 });
 
 describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
@@ -4382,6 +4408,35 @@ describe('post-merge sweep — child disposition (2026-09-01 carryover §1)', ()
     });
   });
 
+  // UI-jw27 §2: the sweep has no ladder, so its first stop IS terminal and the
+  // record write announces — including the `carryover_*` tokens UI-btj6 added.
+  test('announces the sweep stop with its carryover cause', async () => {
+    const successor = {
+      title: '자식 제목',
+      status: 'open',
+      notes: NOTES_LINE,
+      metadata: {
+        carried_from: CHILD,
+        plan_path: PLAN_PATH,
+        plan_task_anchor: ANCHOR
+      }
+    };
+    const env = sweepEnv(
+      { [CHILD]: deferredChild() },
+      { bdIssues: { 'UI-9': successor, 'UI-10': successor } }
+    );
+
+    await env.actions.merge(BEAD);
+
+    expect(env.human_notices).toEqual([
+      expect.objectContaining({
+        bead_id: BEAD,
+        failure_class: '정리 중단',
+        reason: `carryover_ambiguous:${CHILD}`
+      })
+    ]);
+  });
+
   test('stops when the existing successor fails the identity triple', async () => {
     const env = sweepEnv(
       { [CHILD]: deferredChild() },
@@ -5490,6 +5545,108 @@ describe('post-merge cleanup — the post-merge job step (UI-i60a §1–§3)', (
     expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       step: 'post_merge_jobs',
       reason: 'post_merge_jobs_unreadable'
+    });
+  });
+
+  // UI-jw27 §6-1: same ladder, same owner — the job step announces nothing
+  // here either.
+  test('announces nothing when the cleanup record is the job step', async () => {
+    const { coordinator } = jobCoordinator();
+    const env = makeActions({
+      ...ON_BASE,
+      gitResult: (/** @type {string[]} */ args) =>
+        args[0] === 'ls-tree' ? 128 : 0,
+      repoOperations: coordinator
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'post_merge_jobs'
+    });
+    expect(env.human_notices).toEqual([]);
+  });
+});
+
+describe('cleanup stop notification (UI-jw27 §2)', () => {
+  test('announces a base containment stop with its cause and PR', async () => {
+    const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'base_containment'
+    });
+    expect(h.human_notices).toEqual([
+      expect.objectContaining({
+        bead_id: BEAD,
+        failure_class: '정리 중단',
+        reason: 'base_fetch_failed',
+        next_action: '[정리 재시도] 또는 [세션에서 해결]',
+        repo: REPO
+      })
+    ]);
+  });
+
+  test('sends nothing when the store refuses the failure record', async () => {
+    const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+    vi.spyOn(h.store, 'recordCleanupFailure').mockReturnValue({
+      ok: false,
+      conflict: false,
+      queue: h.store.snapshot(WS)
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.human_notices).toEqual([]);
+  });
+
+  test('announces a branch cleanup stop', async () => {
+    const h = makeActions({ gitFail: (args) => args[0] === 'branch' });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'branch_cleanup'
+    });
+    expect(h.human_notices).toEqual([
+      expect.objectContaining({
+        failure_class: '정리 중단',
+        reason: 'local_branch_delete_failed'
+      })
+    ]);
+  });
+
+  test('announces a parent close stop', async () => {
+    const h = makeActions();
+    h.bd.readStatus.mockImplementation(async () => {
+      throw new Error('bd down');
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'parent_close'
+    });
+    expect(h.human_notices).toEqual([
+      expect.objectContaining({
+        failure_class: '정리 중단',
+        reason: 'bd_close_failed'
+      })
+    ]);
+  });
+
+  test('completes the merge normally when the notifier throws', async () => {
+    const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+    h.notify.needsHuman.mockImplementation(() => {
+      throw new Error('notifier broken');
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: false, cleanup_step: 'base_containment' });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'base_containment'
     });
   });
 });

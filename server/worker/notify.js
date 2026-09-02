@@ -51,7 +51,12 @@ const TITLE = {
   failed: `${SENDER} ❌ 실패`,
   pr_wait: `${SENDER} 📬 PR 제출`,
   merged: `${SENDER} ✅ 머지 완료`,
-  awaiting_user: `${SENDER} ⏸️ 방향 질의`
+  awaiting_user: `${SENDER} ⏸️ 방향 질의`,
+  // One transition for every user-initiated terminal failure (UI-jw27 §1). The
+  // kinds are told apart by the body's `클래스:` line rather than by their own
+  // titles: a push preview that says only which of five internal write paths
+  // failed would not tell the reader anything the class line does not.
+  needs_human: `${SENDER} 🚨 사람 필요`
 };
 
 /**
@@ -60,6 +65,23 @@ const TITLE = {
  * of view on a narrow notification.
  */
 const TITLE_MAX = 60;
+
+/**
+ * One user-initiated terminal failure, as the four durable-write call sites
+ * describe it (UI-jw27 §2). Only `bead_id` and `failure_class` are structural;
+ * every other field is dropped from the body when absent.
+ *
+ * @typedef {Object} NeedsHumanInput
+ * @property {string} bead_id
+ * @property {string|null} [title]
+ * @property {string} failure_class - The `클래스:` value, from the §2 vocabulary.
+ * @property {string|null} [reason] - The failure's own cause code, unfolded.
+ * @property {string|null} [reason_detail] - Human-readable tail for that code.
+ * @property {string|null} [next_action] - The recommended next click, supplied
+ * by the call site because only it knows which buttons that row draws.
+ * @property {string|null} [pr_url]
+ * @property {string|null} [repo]
+ */
 
 /**
  * @typedef {Object} NotifierDeps
@@ -101,6 +123,19 @@ function text(value) {
 }
 
 /**
+ * The first line of a multi-line diagnostic, trimmed. A failure tail is quoted
+ * as ONE line (UI-jw27 §1): a script's output pasted whole would push the class
+ * and the next action out of the notification preview it exists to fill.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function firstLine(value) {
+  const trimmed = text(value);
+  return trimmed === null ? null : (text(trimmed.split('\n')[0]) ?? null);
+}
+
+/**
  * The push preview's first line: the transition, then the bead it is about.
  * Without the id and title here a notification says only that SOMETHING moved,
  * which is the whole failure this format exists to fix (UI-vb0t §3.2).
@@ -135,7 +170,8 @@ function headline(transition, bead_id, bead_title) {
  *   attemptFailed: (input: { bead_id: string, cause: string, repo?: string|null, cause_detail?: { reason: string, command: string|null }|null }) => Promise<void>,
  *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
- *   awaitingUser: (input: { bead_id: string, title?: string|null, awaiting_user?: string|null, stale_kind?: string|null, session?: string|null, reason?: string|null, tmux_session?: string|null, tmux_window?: string|null, bridge_active?: boolean, repo?: string|null }) => Promise<void>
+ *   awaitingUser: (input: { bead_id: string, title?: string|null, awaiting_user?: string|null, stale_kind?: string|null, session?: string|null, reason?: string|null, tmux_session?: string|null, tmux_window?: string|null, bridge_active?: boolean, repo?: string|null }) => Promise<void>,
+ *   needsHuman: (input: NeedsHumanInput) => Promise<void>
  * }}
  */
 export function createNotifier(deps) {
@@ -449,6 +485,47 @@ export function createNotifier(deps) {
         send(cmd, prBody(TITLE.merged, input, bead_title));
       } catch (err) {
         log('mergeCompleted failed: %o', err);
+      }
+    },
+
+    // Every user-initiated terminal failure (UI-jw27 §1·§2). The call sites are
+    // the four durable terminal WRITES, so a re-observation pass that finds an
+    // existing record sends nothing and a restart cannot produce a burst.
+    async needsHuman(input) {
+      try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        const bead_title =
+          text(input.title) ?? (await lookupTitle(input.bead_id));
+        const lines = [headline(TITLE.needs_human, input.bead_id, bead_title)];
+        const failure_class = text(input.failure_class);
+        if (failure_class) {
+          lines.push(`클래스: ${failure_class}`);
+        }
+        const reason = text(input.reason);
+        if (reason) {
+          const detail = firstLine(input.reason_detail);
+          lines.push(`사유: ${reason}${detail ? ` — ${detail}` : ''}`);
+        }
+        // Supplied by the caller, never derived here: which buttons the failing
+        // row actually draws is the call site's knowledge (§2).
+        const next_action = text(input.next_action);
+        if (next_action) {
+          lines.push(`다음: ${next_action}`);
+        }
+        const pr_url = text(input.pr_url);
+        if (pr_url) {
+          lines.push(pr_url);
+        }
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        send(cmd, lines.join('\n'));
+      } catch (err) {
+        log('needsHuman failed: %o', err);
       }
     }
   };
