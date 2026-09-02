@@ -54,6 +54,10 @@ import {
 } from './completion-intent.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
+import {
+  cachedIssuePrefixFor,
+  prewarmIssuePrefix
+} from './foreign-blocker-status.js';
 import { readPushLog } from './guard-hook.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
@@ -94,6 +98,10 @@ import { baseUnresolvedReason, resolveTargetBase } from './target-base.js';
 import { replayUsage } from './usage-replay.js';
 import { runVerifyAtSha } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
+import {
+  onWorkspaceActivity,
+  publishWorkspaceActivity
+} from './workspace-activity.js';
 import { createWorktreeManager } from './worktree.js';
 
 const log = debug('worker:attach');
@@ -216,8 +224,35 @@ export function createLiveBd(config) {
     ...(config.onReadback ? { onReadback: config.onReadback } : {})
   });
 
+  /**
+   * Read the workspace's authoritative runnable set through one command and
+   * parser shared by snapshots and waiting-return scans.
+   *
+   * @returns {Promise<Set<string>>}
+   */
+  async function readReadyBeadIds() {
+    const ready_list = await runJson(
+      'ready',
+      ['ready', '--limit', '1000', '--json'],
+      { cwd }
+    );
+    if (!ready_list || ready_list.ok !== true) {
+      throw new Error(
+        `bd ready failed (${
+          ready_list && ready_list.error ? ready_list.error.code : 'no result'
+        })`
+      );
+    }
+    const ready_rows = readyRows(ready_list.data);
+    if (!ready_rows) {
+      throw new Error('bd ready returned an unreadable payload');
+    }
+    return readyIdSet(ready_rows);
+  }
+
   return {
     ...meta,
+    readyBeadIds: readReadyBeadIds,
     /**
      * @param {string} bead_id
      * @returns {Promise<BeadSnapshot>}
@@ -242,23 +277,7 @@ export function createLiveBd(config) {
       const status = typeof issue.status === 'string' ? issue.status : '';
       const closed = status === 'closed' || status === 'resolved';
 
-      const readyList = await runJson(
-        'ready',
-        ['ready', '--limit', '1000', '--json'],
-        { cwd }
-      );
-      if (!readyList || readyList.ok !== true) {
-        throw new Error(
-          `bd ready failed (${
-            readyList && readyList.error ? readyList.error.code : 'no result'
-          })`
-        );
-      }
-      const ready_rows = readyRows(readyList.data);
-      if (!ready_rows) {
-        throw new Error('bd ready returned an unreadable payload');
-      }
-      const ready_ids = readyIdSet(ready_rows);
+      const ready_ids = await readReadyBeadIds();
 
       const ready = !closed && ready_ids.has(bead_id);
       const blocked = !closed && !ready_ids.has(bead_id);
@@ -1587,7 +1606,50 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   const beadsChanges = (() => {
     /** @type {{ close: () => void }|null} */
     let handle = null;
+    /** @type {(() => void)|null} */
+    let activity_unsubscribe = null;
     const watch = options.watchBeads || watchDb;
+    const key = keyFor(workspace_root);
+
+    /**
+     * Whether this attachment holds a waiting attempt on the active root.
+     * Prefix uncertainty is a match: missing a release is worse than one
+     * bounded false-positive ready scan.
+     *
+     * @param {string} root
+     */
+    function holdsWaitingOn(root) {
+      /** @type {any} */
+      let queue;
+      try {
+        queue = runtime.queueStore.snapshot(key);
+      } catch (err) {
+        log('waiting activity snapshot failed for %s: %o', key, err);
+        return false;
+      }
+      const prefix = cachedIssuePrefixFor(root);
+      for (const attempt of Object.values(queue.attempts || {})) {
+        const record = /** @type {any} */ (attempt);
+        if (
+          record.status !== 'waiting' ||
+          !record.cause_detail ||
+          !Array.isArray(record.cause_detail.blockers)
+        ) {
+          continue;
+        }
+        if (
+          record.cause_detail.blockers.some(
+            (/** @type {any} */ blocker) =>
+              blocker.rig !== null &&
+              (prefix === null || blocker.rig === prefix)
+          )
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+
     const fire = () => {
       Promise.resolve(resolvedCompletionActionDriver.onIssuesChanged?.()).catch(
         (err) => {
@@ -1637,9 +1699,30 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           err
         );
       }
+      Promise.resolve(scheduler.rescanWaiting(key)).catch((err) => {
+        log('bd issue-change waiting rescan failed for %s: %o', key, err);
+      });
+      Promise.resolve(publishWorkspaceActivity(key)).catch((err) => {
+        log('bd issue-change activity publish failed for %s: %o', key, err);
+      });
     };
     return {
       start() {
+        prewarmIssuePrefix(key);
+        if (activity_unsubscribe === null) {
+          activity_unsubscribe = onWorkspaceActivity((root) => {
+            if (root === key || !holdsWaitingOn(root)) {
+              return;
+            }
+            void scheduler.rescanWaiting(key).catch((err) => {
+              log(
+                'foreign activity waiting rescan failed for %s: %o',
+                key,
+                err
+              );
+            });
+          });
+        }
         if (handle) {
           return;
         }
@@ -1655,15 +1738,18 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         }
       },
       stop() {
-        if (!handle) {
-          return;
+        if (handle) {
+          try {
+            handle.close();
+          } catch {
+            // A watcher that cannot be closed must not break teardown.
+          }
+          handle = null;
         }
-        try {
-          handle.close();
-        } catch {
-          // A watcher that cannot be closed must not break teardown.
+        if (activity_unsubscribe !== null) {
+          activity_unsubscribe();
+          activity_unsubscribe = null;
         }
-        handle = null;
       }
     };
   })();
@@ -2286,6 +2372,9 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   } catch (err) {
     log('bd issue-change subscription start failed for %s: %o', key, err);
   }
+  void att.scheduler.rescanWaiting(key).catch((err) => {
+    log('startup waiting rescan failed for %s: %o', key, err);
+  });
 }
 
 /**

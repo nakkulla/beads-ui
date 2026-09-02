@@ -296,4 +296,4 @@ export function __resetWorkspaceActivityForTest()
   워크스페이스당 leading+cover throttle 안에서 `bd ready` 한 번으로 판정한다". 대기 tier 스펙의
   ADR 후보("waiting은 터미널 결말이며 복귀는 보통 후보 dispatch")와 충돌하지 않는다 — 그
   결정의 "다음 tick"을 이 결정이 공급한다. ADR 0017(parked 비자동 복귀)과도 충돌하지 않는다 —
-  이 트리거는 `waiting` 행만 후보로 삼는다.
+  이 트리거는 `waiting` 행만 후보로 삼는다. → ADR
