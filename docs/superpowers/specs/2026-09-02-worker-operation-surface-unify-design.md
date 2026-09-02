@@ -81,6 +81,11 @@ scope:
    큐 스냅샷이 있고 bead가 open이면 항상 그리고, 자격 미달·이미 배치됨은 사유
    title과 함께 disabled, closed·스냅샷 없음은 그리지 않는다.
 4. **검색은 탭 상단 하나, 전 레인 공통, 비일치는 흐림(숨김 아님), 저장 없음.**
+   Bead 본문의 "기존 필터 strip과 한 자리"는 이 결정으로 **대체**됐다: 그 strip은
+   후보 페인 안의 컨트롤이고 카운트가 후보 헤더와 짝이라, 전 레인에 걸리는 검색을
+   거기 두면 자리와 범위가 어긋난다. 후보 필터를 탭 상단으로 끌어올리는 안(공용
+   strip)과 후보 전용 숨김 필터 안을 함께 제시했고, 사용자가 탭 상단 검색과 strip
+   유지를 골랐다(2026-09-02).
 5. **transcript/문서 패널 높이는 이 스펙에서 제외**한다(재현 화면 미확인).
 
 ## 3. 조작 형태 토큰 `.op-btn`
@@ -170,27 +175,41 @@ Worker `queueRowActions`와 Monitor `rowActions`를 `app/views/worker/lanes.js`�
 /**
  * @param {{
  *   context: { bead_id: string, kind: 'session'|'settlement', tuple?: string },
- *   send: (extra?: Record<string, unknown>) => Promise<any>,
- *   onResult?: (res: any) => void
+ *   transport: (payload: Record<string, unknown>) => Promise<any>,
+ *   adopt?: (res: any) => void
  * }} options
  * @returns {Promise<any|null>}  null = 사용자가 취소
  */
 export async function runResumeFlow(options)
 ```
 
-- 순서는 지금 세 곳이 공유하는 그대로다: `requestResumeInstructions(context)` →
-  `null`이면 종료 → `send({ instructions? })` → `resolveContinuationMismatch(res,
-  (continuation, decision_token) => send({ continuation, decision_token }),
-  { onResult, refresh: () => send() })` → `res.resumed === false && !res.conflict
-  && res.reason`이면 `showToast(`${라벨} 거부: ${res.reason}`, 'error', 2400)`.
-  라벨은 `kind`가 정한다(`이어하기` / `정산 재개`).
-- **전송과 CAS는 각 화면이 소유한다.** Worker와 상세 패널의 `send`는 지금처럼
-  `expected_revision`을 싣고 충돌 1회 재시도를 자기 래퍼 안에서 하며, Monitor의
-  `send`는 `sendContinuationAction`을 감싼다. 유틸은 revision을 모른다 — 세
-  화면의 revision 원천(`currentQueue()`·`queueStore.get()`·root_dir별
-  `casOf`)이 다르고, 그 차이를 유틸로 끌어올리면 유틸이 세 스토어를 알아야 한다.
-- `instructions`는 유틸이 `send`의 `extra`에 얹는다(`''`이면 키 없음, 현행과
-  같다).
+- **payload 규칙 — 모든 전송이 같은 기본 payload를 싣는다.** 유틸은 첫
+  다이얼로그의 답으로 `base = instructions === '' ? {} : { instructions }`를 만들고,
+  이 흐름의 **모든** `transport` 호출 — 최초 전송, 충돌 재시도, continuation
+  재전송(`{ ...base, continuation, decision_token }`), mismatch `refresh`
+  재전송(`{ ...base }`) — 에 `base`를 합쳐 보낸다. 지금 세 화면이 클로저·spread로
+  각자 지키고 있는 사실을 유틸 하나가 지킨다.
+- **충돌 1회 재시도의 단일 소유자는 유틸이다.** 순서: `requestResumeInstructions(
+  context)` → `null`이면 종료 → `transport(base)` → `adopt(res)` → `res.conflict`면
+  **정확히 한 번** `transport(base)`를 다시 보내고 `adopt` → `resolveContinuationMismatch(
+  res, (continuation, decision_token) => transport({ ...base, continuation,
+  decision_token }), { onResult: adopt, refresh: () => transport(base) })` →
+  `res.resumed === false && !res.conflict && res.reason`이면 `showToast(`${라벨}
+  거부: ${res.reason}`, 'error', 2400)`. 라벨은 `kind`가 정한다(`이어하기` /
+  `정산 재개`). mismatch 경로의 충돌은 `resolveContinuationMismatch`의 `refresh`
+  루프가 이미 새 사실로 다이얼로그를 다시 여는 것으로 처리하므로, 유틸은 그
+  안에서 별도 재시도를 하지 않는다.
+- **`transport`는 재시도 없는 전송 하나다.** 화면이 넘기는 `transport(payload)`는
+  `attempt_id`와 **호출 시점에 새로 읽은** `expected_revision`을 payload에 더해 WS
+  로 한 번 보내고 응답을 그대로 돌려준다 — 내부 재시도 없음. revision 원천은 화면이
+  안다(Worker `currentRevision()`, 상세 패널 `queueStore.get().revision`, Monitor는
+  `casOf(bead_id)`/`exec_adopted`의 root_dir별 값). Monitor는 이 경로에서
+  `sendCas(type, payload, root_dir, revision, false)`(재시도 끔)를 `transport`로
+  감싸고, `sendContinuationAction`은 이 경로에 더 쓰지 않는다 — 그 함수의 내부
+  재시도와 유틸의 재시도가 겹치면 소유자가 둘이 된다.
+- `adopt(res)`는 응답의 `queue`를 그 화면의 스토어에 채택한다(Worker `adopt`, 상세
+  패널 `queueStore.set`, Monitor `exec_adopted`). 충돌 응답의 큐를 먼저 채택해야
+  다음 `transport`의 `expected_revision`이 새 값이 된다.
 
 ### 5.2 첫 다이얼로그 (`resume-instructions-dialog.js`)
 
@@ -215,8 +234,9 @@ export async function runResumeFlow(options)
 
 - Worker `resumeAttempt(attempt_id, resume_kind)`와 상세 패널
   `resumeAttempt(attempt_id)`는 본문이 `runResumeFlow` 호출 하나로 준다. Monitor
-  `.rtile__resume` 분기도 같다. 상세 패널의 세션 이력 행은 `kind`를 항상
-  `'session'`으로 넘긴다 — 그 행의 버튼은 착지 정산과 무관하다.
+  `.rtile__resume` 분기도 같다 — 지금 Monitor만 없던 거부 토스트가 유틸을 통해
+  생긴다. 상세 패널의 세션 이력 행은 `kind`를 항상 `'session'`으로 넘긴다 — 그
+  행의 버튼은 착지 정산과 무관하다.
 
 ## 6. 이슈 상세 `[↴ 대기로]`
 
@@ -256,7 +276,9 @@ export function placementTitle(placement)  // 후보 카드 title 문구 그대�
   대기 큐에 넣을 수 없습니다」, 그 외 spec 미달 → 「spec이 없어 대기 큐에 넣을 수
   없습니다」. 여기에 `location`용 문장이 더해진다: 「이미 대기 중 · 병렬 #n」,
   「이미 대기 중 · 직렬 N #n」, 「실행 중이라 대기 큐에 넣을 수 없습니다」,
-  「PR 대기 중이라 대기 큐에 넣을 수 없습니다」. `candidateCard`는 `reason`
+  「PR 대기 중이라 대기 큐에 넣을 수 없습니다」, 「완료 레인에 있어 대기 큐에 넣을
+  수 없습니다」(`done` — 스냅샷의 완료 레인에 아직 남아 있는 bead는 status와 무관하게
+  이 문장이다). `candidateCard`는 `reason`
   파싱으로 얻던 값 대신 이 함수를 쓴다 — 두 표면이 같은 문장을 쓰는 것이 이
   절의 목적이다.
 
@@ -307,7 +329,10 @@ blocked 이슈는 후보 카드와 같이 spec만 있으면 배치할 수 있다
 - 입력 `<input type="search" class="worker-search" placeholder="ID·제목 검색">`을
   데스크톱 `.worker-ctrl__ops` 끝, 모바일 `.worker-ctrl--mobile .worker-ctrl__ops`
   끝(⚙ 옆)에 둔다. 조작 묶음에 두는 이유는 "누르는 곳"과 "읽는 곳"을 가르는
-  UI-58y2 툴바 규칙에서 검색은 누르는 쪽이기 때문이다.
+  UI-58y2 툴바 규칙에서 검색은 누르는 쪽이기 때문이다. 후보 필터 strip
+  (`candidateControlsTemplate`)은 **바뀌지 않는다** — Bead 본문의 "필터 strip과 한
+  자리"를 대체한 §2.4의 결정이다: strip은 후보 페인의 표시 조건이고 검색은 탭
+  전체의 강조라 답하는 질문이 다르다.
 - 상태 `search_query`는 `index.js`의 메모리에만 있다. localStorage에 쓰지 않는다 —
   새로고침 뒤 남은 검색어는 화면을 이유 없이 흐리게 한다. Esc는 비우고 `input`
   이벤트마다 `doRender()`한다.
@@ -329,7 +354,9 @@ blocked 이슈는 후보 카드와 같이 spec만 있으면 배치할 수 있다
 `2026-08-25-card-header-grammar-unify-design.md` §5.1 끝에 다음 정정 문단을 더한다.
 
 > **정정(UI-6g3t).** 슬롯은 자리를 정하고 형태 토큰 `.op-btn`이 모양을 정한다
-> (`2026-09-02-worker-operation-surface-unify-design.md` §3). 세 조작의 자리는
+> (`2026-09-02-worker-operation-surface-unify-design.md` §3). 토큰의 적용 대상은
+> 그 §3.2 표의 조작(`↴ 대기로`·대기 행 `✕ ↑ ↓`·`↻ 이어하기`/`▶ 재개`)과 앞으로
+> 새로 다는 조작 버튼이고, 같은 묶음의 기존 이웃은 높이만 맞춘다. 세 조작의 자리는
 > 그대로다 — `↴ 대기로`는 6번 foot, `✕`(대기에서 빼기)와 `↻ 이어하기`·`▶ 재개`는
 > 1번 조작 — 이고 바뀐 것은 형태와 라벨 순서(아이콘 앞)뿐이다. `✕`는 병렬·직렬
 > 모든 대기 행에 상시로 서고 `↑↓`만 coarse 전용이다. 이슈 상세 패널의 상단 바는
@@ -338,10 +365,12 @@ blocked 이슈는 후보 카드와 같이 spec만 있으면 배치할 수 있다
 
 `AGENTS.md` 「워커·모니터 카드 배치 문법」 절에 결정 한 줄을 더한다.
 
-> - 조작 버튼의 형태는 공통 토큰 `.op-btn`이다. 크기·테두리·글자 크기를 카드마다
->   고르지 않는다 — 근거는
+> - `↴ 대기로`·`✕ ↑ ↓`(대기 행)·`↻ 이어하기`/`▶ 재개` 계열 조작과 **새로 다는**
+>   조작 버튼은 공통 토큰 `.op-btn`으로 만든다. 같은 묶음에 이미 있는 다른 버튼
+>   (`⏸`·`폐기`·`머지` 등)은 높이만 토큰에 맞추고 색·문구는 그대로다. 크기·
+>   테두리·글자 크기를 카드마다 고르지 않는다 — 적용 표와 근거는
 >   `docs/superpowers/specs/2026-09-02-worker-operation-surface-unify-design.md`
->   §3이 소유한다.
+>   §3.2가 소유한다.
 
 ## 9. 비목표
 
@@ -365,17 +394,23 @@ blocked 이슈는 후보 카드와 같이 spec만 있으면 배치할 수 있다
   `.rtile__resume`이 `op-btn`을 가진다.
 - `placement.test.js`: `candidatePlacement`가 어댑터의 `eligible`과 같은 판정을
   내는 표(worker-ineligible · awaiting_user · quick_fix+description 없음 ·
-  spec_backed+draft · conflict · published)와 `location` 네 종류; `placementTitle`
-  문장 다섯 + 자리 문장. `workspace-adapter.test.js`의 기존 자격 사례가 그대로
-  통과한다.
+  spec_backed+draft · conflict · published)와 `location` 다섯 종류(병렬·직렬·
+  실행 중·PR 대기·완료); `placementTitle` 문장 다섯 + 자리 문장 다섯.
+  `workspace-adapter.test.js`의 기존 자격 사례가 그대로 통과한다.
 - `detail-panel/index.test.js`: 스냅샷 null이면 버튼 없음; closed면 없음;
   placeable이면 활성; 자격 미달이면 disabled와 title; 이미 병렬 #2면 disabled와
   「이미 대기 중 · 병렬 #2」; 직렬 레인이 있으면 클릭이 메뉴를 열고 레인 선택이
   `worker-queue-place`를 `lane`과 `expected_revision`으로 보낸다; `applied:false`
   응답이 토스트를 낸다.
-- `resume-flow.test.js`: 취소 시 `send` 미호출; 지시가 `extra`로 실림;
-  `continuation_mismatch` 응답이 두 번째 다이얼로그를 거쳐 `send`를 다시 부름;
-  `resumed:false`가 `kind`별 라벨 토스트를 낸다.
+- `resume-flow.test.js`: 취소 시 `transport` 미호출; 최초 전송·충돌 재시도·
+  continuation 재전송·`refresh` 재전송 **네 호출 모두**의 payload에 같은
+  `instructions`가 실리고, 빈 지시면 네 호출 모두에 키가 없다; 첫 응답이
+  `conflict`면 정확히 한 번 더 보내고 두 번째도 `conflict`면 더 보내지 않는다;
+  `continuation_mismatch` 응답이 두 번째 다이얼로그를 거쳐 최종 전송에
+  `continuation`·`decision_token`·`instructions`를 함께 싣는다; `resumed:false`가
+  `kind`별 라벨 토스트를 낸다. 세 화면의 `transport` 래퍼 테스트: 호출마다
+  `expected_revision`을 새로 읽고 내부 재시도가 없다(Monitor는 `sendCas`의 재시도
+  인자 `false`).
   `resume-instructions-dialog.test.js`: `context` 유무에 따른 제목·대상 줄·확인
   버튼 문구.
 - `index.test.js`(worker): 검색어가 있으면 비일치 카드에 `is-dimmed`, 헤더에
@@ -406,7 +441,8 @@ scope가 겹치는 열린 Bead 둘은 같은 파일의 **다른 절**이며 새 
   표면): held 타일에 `⋯ 다른 방법으로` 버튼과 러너·모델·계정 선택기 다이얼로그를
   더하고 수동 이어하기에 `exec_override`를 싣는다. 그 버튼은 이 스펙 §3의
   `.op-btn`, 그 다이얼로그는 §5.3의 `.op-dialog` 토큰을 쓰며, `exec_override`는
-  §5.1 `runResumeFlow`의 `send(extra)`에 얹는 값이다. 이 스펙은 그 값을 만들지
+  §5.1 `runResumeFlow`의 기본 payload(`base`)에 얹어 모든 전송에 함께 실리는
+  값이다. 이 스펙은 그 값을 만들지
   않고, 그 스펙은 흐름을 복제하지 않는다.
 - `UI-b93d`(`2026-09-02-discard-orphan-gitlink-and-abandon-exit-design.md` §3.1):
   실패한 폐기 행의 액션 foot에 `[폐기 포기]`/`[백업 포기]`를 더한다. §3.2의 "이웃
