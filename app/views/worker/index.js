@@ -2869,7 +2869,11 @@ export function createWorkerView(mount_element, options = {}) {
         draggable: false,
         lane: lane.id,
         ghost: true,
-        badges: [occupant.badge]
+        badges: [occupant.badge],
+        // 검색 중이 아니면 모델이 키를 달지 않으므로 여기도 달지 않는다 (§7).
+        ...(typeof occupant.search_match === 'boolean'
+          ? { search_match: occupant.search_match }
+          : {})
       }));
       return {
         id: lane.id,
@@ -3802,6 +3806,9 @@ export function createWorkerView(mount_element, options = {}) {
           // 점유 ghost 행도 행 목록의 구성원이므로 건수와 빈 판정을 한 재료로
           // 읽는다 — 점유 중인 레인은 비어 있지 않다.
           count: lane.ghosts.length + lane.items.length,
+          // 「일치 n」도 건수와 같은 재료로 읽는다 — 점유 ghost 행도 이 레인에
+          // 그려지는 행이므로 일치 수에 든다 (§7).
+          match_count: matchCountOf([...lane.ghosts, ...lane.items]),
           empty: lane.ghosts.length + lane.items.length === 0,
           badge: lane.badge,
           held: lane.occupied,

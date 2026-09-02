@@ -5037,6 +5037,39 @@ describe('워커 탭 검색 태깅 (UI-6g3t §7)', () => {
     expect(untagged).toBe(true);
   });
 
+  test('tags a serial lane occupant ghost with the search verdict', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_titles: { 'OCC-1': '점유 중인 작업', 'SER-1': 'title SER-1' },
+          serial_lanes: [
+            {
+              id: 's1',
+              entries: [{ bead_id: 'OCC-1' }, { bead_id: 'SER-1' }]
+            }
+          ],
+          lane_states: { s1: { occupied_by: ['OCC-1'] } },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'OCC-1',
+              status: 'paused',
+              started_at: 10
+            }
+          }
+        })
+      ],
+      [state()],
+      { search: 'occ' }
+    );
+
+    const lane = lanes.queue_groups[0].sublanes.serial[0];
+    expect([
+      lane.occupants[0].search_match,
+      lane.items[0].search_match
+    ]).toEqual([true, false]);
+  });
+
   test('leaves lane membership and order unchanged while searching', () => {
     const plain = buildLanes([everyLaneWorkspace()], [state()]);
 

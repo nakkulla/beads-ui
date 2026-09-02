@@ -228,6 +228,8 @@ const DONE_KIND_LABELS = {
  * @property {string} id
  * @property {string} title
  * @property {string} badge
+ * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
+ * 점유 ghost 행도 직렬 레인의 항목이므로 다른 레인 항목과 같은 판정을 받는다.
  */
 
 /**
@@ -1936,15 +1938,27 @@ function tagSearchMatches(model, matches) {
   for (const section of model.runnable_sections) {
     buckets.push(section.items);
   }
+  /** @type {MonitorOccupant[][]} */
+  const occupant_buckets = [];
   for (const group of model.queue_groups) {
     buckets.push(group.items, group.sublanes.parallel);
     for (const lane of group.sublanes.serial) {
       buckets.push(lane.items);
+      // 점유 ghost 행은 대기 entries의 구성원이 아니라 별도 투영이라 위 버킷에
+      // 들어오지 않는다. 그래도 직렬 레인에 그려지는 행이므로 같은 판정을 받는다.
+      occupant_buckets.push(lane.occupants);
     }
   }
   for (const bucket of buckets) {
     for (const item of bucket) {
       item.search_match = matches(item);
+    }
+  }
+  for (const bucket of occupant_buckets) {
+    for (const occupant of bucket) {
+      occupant.search_match = matches(
+        /** @type {LaneItem} */ (/** @type {unknown} */ (occupant))
+      );
     }
   }
 }

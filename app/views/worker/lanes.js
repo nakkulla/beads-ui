@@ -2490,6 +2490,8 @@ export function paneTemplate(pane) {
  * 넘긴 행 목록 (`miniRow` 등). 본문은 구조만 소유하므로 행 렌더링에 관여하지
  * 않는다.
  * @property {number} count - 헤더가 쓰는 건수. `rows`와 다를 수 있다 (점유자).
+ * @property {number} [match_count] - 검색 중인 레인의 「일치 n」 (UI-6g3t §7).
+ * 다른 pane과 같은 규칙으로, 검색 중이 아니면 키가 없어 헤더가 지금 그대로다.
  * @property {boolean} empty - `rows`도 점유자도 없어 힌트 한 줄로 접히는 상태.
  * @property {import('lit-html').TemplateResult|string} [badge] - 누가 잡고
  * 있는지 말하는 점유 표시 (Worker 점유자 id). 재료가 없으면 그리지 않는다.
@@ -2622,6 +2624,7 @@ function serialLaneTemplate(lane) {
       title: lane.title,
       items: [],
       count: lane.count,
+      match_count: lane.match_count,
       empty: '비어 있음 — 행을 여기로 드래그',
       header_control: html`${badge_el}${lane.header_control
         ? lane.header_control

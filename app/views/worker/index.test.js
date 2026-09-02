@@ -15143,6 +15143,80 @@ describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
     );
   });
 
+  /**
+   * Mount the Worker console over one 직렬 레인 holding an occupant ghost row and
+   * one waiting row, so the search can be judged on both (UI-6g3t §7).
+   *
+   * @returns {HTMLElement}
+   */
+  function mountWithSerialLane() {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        serial_lane_count: 1,
+        serial_lanes: [
+          {
+            id: 's1',
+            entries: [{ bead_id: 'OCC-1' }, { bead_id: 'SL-1' }]
+          }
+        ],
+        lane_states: {
+          s1: {
+            occupied_by: ['OCC-1'],
+            order: ['OCC-1', 'SL-1'],
+            corrections: [],
+            cycle: false
+          }
+        },
+        attempts: {
+          t1: {
+            attempt_id: 't1',
+            bead_id: 'OCC-1',
+            status: 'paused',
+            started_at: 10
+          }
+        },
+        bead_titles: { 'OCC-1': 'occupied one', 'SL-1': 'serial one' }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('dims a serial lane occupant ghost row the query does not match', () => {
+    const mount = mountWithSerialLane();
+
+    typeSearch(mount, 'SL-1');
+
+    const lane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-lane-s1')
+    );
+    expect([
+      lane
+        .querySelector('.worker-mini[data-bead-id="OCC-1"]')
+        ?.classList.contains('is-dimmed'),
+      lane
+        .querySelector('.worker-mini[data-bead-id="SL-1"]')
+        ?.classList.contains('is-dimmed')
+    ]).toEqual([true, false]);
+  });
+
+  test('appends 일치 n to a serial lane header while searching', () => {
+    const mount = mountWithSerialLane();
+
+    typeSearch(mount, 'one');
+
+    expect(
+      mount.querySelector('#worker-pane-lane-s1 .worker-pane__match')
+        ?.textContent
+    ).toBe('일치 2');
+  });
+
   test('leaves the pane count itself untouched by the query', () => {
     const mount = mountWithQueue();
     const before = mount.querySelector(
