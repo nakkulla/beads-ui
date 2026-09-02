@@ -391,6 +391,18 @@ function verdict(ctx) {
 }
 
 /**
+ * Keep the runner-general outage seam explicit while codex patterns remain
+ * outside this implementation unit (provider-outage-hold-resume §3.4).
+ *
+ * @param {{ raw: any[], stderr_tail: string|null }} _ctx
+ * @returns {null}
+ */
+function classifyProviderOutage(_ctx) {
+  void _ctx;
+  return null;
+}
+
+/**
  * Build the codex adapter spec. `catalog_entry` is the resolved catalog's codex
  * entry, so a `[runner.codex]` config override reaches the argv; absent one the
  * builtin entry stands and a zero-config install still dispatches.
@@ -478,6 +490,7 @@ export function codexSpec(catalog_entry, options = {}) {
     detectQuestion,
     extractShellCommand,
     extractSessionId,
+    classifyProviderOutage,
     verdict
   };
 }

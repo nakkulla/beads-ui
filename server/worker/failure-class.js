@@ -83,15 +83,16 @@ export const SUMMARY_MAX_CHARS = 200;
 export const UNKNOWN_CAUSE = 'unknown';
 
 /**
- * Environment failure patterns (spec §3.3). `api` covers provider-side outages
- * and transport faults; `runtime` covers a missing or unauthenticated CLI.
+ * Environment failure patterns (spec §3.3). Per provider-outage-hold-resume
+ * §4.1, `api` keeps transport faults only; provider HTTP/overload tokens belong
+ * to the runner classifier. `runtime` covers a missing or unauthenticated CLI.
  *
  * @type {ReadonlyArray<{ group: string, re: RegExp }>}
  */
 export const ENV_ERROR_PATTERNS = Object.freeze([
   Object.freeze({
     group: 'api',
-    re: /API Error: 5\d\d|Overloaded|overloaded_error|rate.?limit|429|ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up|fetch failed/i
+    re: /ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up|fetch failed/i
   }),
   Object.freeze({
     group: 'runtime',
@@ -133,7 +134,8 @@ const SYSTEMIC_BLOCKER_REASONS = new Set([
 /** Session-level causes whose tier depends on the error text (spec §3.3). */
 const PATTERN_SENSITIVE_CAUSES = new Set([
   'session_failed:is_error',
-  'session_ended_unresolved'
+  'session_ended_unresolved',
+  'session_hard_stop:environment'
 ]);
 
 /**
@@ -141,7 +143,10 @@ const PATTERN_SENSITIVE_CAUSES = new Set([
  * instead of the bare cause (spec §3.3): two beads dying on unrelated session
  * errors must not read as one systemic outage.
  */
-const GROUP_KEYED_CAUSES = new Set(['session_failed:is_error']);
+const GROUP_KEYED_CAUSES = new Set([
+  'session_failed:is_error',
+  'session_hard_stop:environment'
+]);
 
 /**
  * Causes that never take part in queue-hold promotion (waiting-tier spec §4.3).

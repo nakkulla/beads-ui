@@ -16,6 +16,7 @@
 import { resolveCswapPath } from '../../routes/claude-usage.js';
 import { builtinCatalog } from '../runner-catalog.js';
 import { applyPreamble, defaultTaskPrompt } from './preamble.js';
+import { classifyProviderOutage } from './provider-outage.js';
 import { runSession } from './session.js';
 
 /**
@@ -705,6 +706,7 @@ export function claudeSpec(options = {}) {
     detectQuestion,
     extractShellCommand,
     extractSessionId,
+    classifyProviderOutage,
     verdict
   };
 }

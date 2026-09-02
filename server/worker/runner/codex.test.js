@@ -590,6 +590,19 @@ describe('runner/codex verdict (last turn terminal event)', () => {
   });
 });
 
+describe('runner/codex provider outage hook', () => {
+  test('returns null while codex outage patterns remain unsupported', () => {
+    const spec = codexSpec();
+    const raw = [
+      { type: 'turn.failed', error: { message: 'API Error: 529 Overloaded' } }
+    ];
+
+    const result = spec.classifyProviderOutage?.({ raw, stderr_tail: null });
+
+    expect(result).toBeNull();
+  });
+});
+
 describe('runner/codex verdict summary (worker-failure-tiers §6)', () => {
   /**
    * @param {string} text

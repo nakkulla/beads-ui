@@ -16,8 +16,8 @@
  * because a bead carrying a stale or misspelled runner must still dispatch.
  *
  * `adapterSpec` is the SPAWN-FREE half of the same resolution, for the readers
- * that parse a runner's output without owning a process (the startup usage
- * replay and the detached-session monitor). Both halves judge through
+ * that parse a runner's output without owning a process (startup usage replay,
+ * detached-session monitoring, and provider-outage classification). Both judge through
  * `codexEntry`, so a reader can never lift usage with a different adapter than
  * the one that wrote the log.
  *
