@@ -160,6 +160,17 @@ export function defaultResolveClaude() {
  */
 export function createTmuxLauncher(deps = {}) {
   const log = deps.log || default_log;
+  /**
+   * Launches this process has started but not yet finished, keyed by marker and
+   * key. The pane marker is written by the wrapper and is therefore not
+   * readable until the window is already open, so two concurrent launches for
+   * one key would BOTH read "no live pane" and both open a window. This
+   * reservation closes exactly that window; it does not replace the marker,
+   * which remains the cross-process truth.
+   *
+   * @type {Set<string>}
+   */
+  const in_flight = new Set();
   const now = deps.now || (() => Date.now());
   const resolveClaude = deps.resolveClaude || defaultResolveClaude;
   const statFile =
@@ -230,6 +241,27 @@ export function createTmuxLauncher(deps = {}) {
    * @returns {Promise<LaunchOutcome>}
    */
   async function launch(input) {
+    const reservation = `${input.marker}\u0000${input.key}`;
+    if (in_flight.has(reservation)) {
+      // A launch for this key is already underway in this process. Its window
+      // is coming up, so the answer is the same one a live pane gives.
+      return { session: 'already_running' };
+    }
+    in_flight.add(reservation);
+    try {
+      return await launchLocked(input);
+    } finally {
+      in_flight.delete(reservation);
+    }
+  }
+
+  /**
+   * The launch itself, run under the reservation above.
+   *
+   * @param {{ marker: string, key: string, tmux_session: string, window_name: string, cwd: string, commandArgs: string[] }} input
+   * @returns {Promise<LaunchOutcome>}
+   */
+  async function launchLocked(input) {
     const listed = await listPanes(input.marker);
     if (!listed.ok) {
       log('tmux list failed for %s: %s', input.key, listed.error);

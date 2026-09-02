@@ -412,6 +412,33 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     expect(tmux.names()).toEqual(['list-panes']);
   });
 
+  test('opens one window for two concurrent clicks on the same bead', async () => {
+    const { tmux, resolver } = makeLauncher();
+
+    const [first, second] = await Promise.all([
+      resolver.resolve({
+        workspace: REPO,
+        repo: REPO,
+        bead_id: BEAD,
+        failure: FAILURE
+      }),
+      resolver.resolve({
+        workspace: REPO,
+        repo: REPO,
+        bead_id: BEAD,
+        failure: FAILURE
+      })
+    ]);
+
+    expect(
+      tmux.names().filter((/** @type {string} */ name) => name === 'new-window')
+    ).toHaveLength(1);
+    expect([first.session, second.session].sort()).toEqual([
+      'already_running',
+      'launched'
+    ]);
+  });
+
   test('is not blocked by this bead direction-inquiry pane', async () => {
     const { tmux, resolver } = makeLauncher({
       tmux: makeTmux({

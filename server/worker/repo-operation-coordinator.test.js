@@ -3725,6 +3725,7 @@ describe('manual deploy run', () => {
       expect.objectContaining({
         bead_id: 'manual',
         failure_class: '수동 배포 실패',
+        next_action: '[배포 실행] 재클릭',
         reason: 'manual_target_missing',
         repo: root
       })

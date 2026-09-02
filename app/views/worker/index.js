@@ -1706,6 +1706,29 @@ export function createWorkerView(mount_element, options = {}) {
    */
   const resolve_pending = new Set();
   /**
+   * `[세션에서 해결]` 필드 3종 (UI-jw27 §4). 폐기 실패는 PR 대기 행만이 아니라
+   * 실행 중·held·파킹 타일과 대기 행에서도 나므로, 그 사실을 싣는 모든 워커
+   * 표면이 같은 판정을 같은 자리에서 쓴다. 재료(=실패한 폐기 작업)가 없으면
+   * 필드 자체를 만들지 않아 버튼이 그려지지 않는다.
+   *
+   * @param {string} bead_id
+   * @param {any} discard
+   * @returns {{ resolve_action?: boolean, resolve_enabled?: boolean, resolve_title?: string }}
+   */
+  function discardResolveFields(bead_id, discard) {
+    if (!discard?.error || !bead_id) {
+      return {};
+    }
+    return {
+      resolve_action: true,
+      resolve_enabled: !resolve_pending.has(bead_id),
+      resolve_title: resolve_pending.has(bead_id)
+        ? '세션 기동 요청 중 — 서버 응답을 기다립니다'
+        : '실패한 폐기를 사람이 이어받는 대화형 세션을 띄웁니다 — 기록된 세션이 있으면 fork하고, 없으면 새 세션에 사유를 싣습니다'
+    };
+  }
+
+  /**
    * Beads whose REVISE-disposition click is in flight (UI-hs11 §3.5). It covers
    * the same gap `merge_pending` covers — the window between the click and the
    * reply — so a second click cannot be issued while the first is still being
@@ -2962,7 +2985,8 @@ export function createWorkerView(mount_element, options = {}) {
                   ...item.failure,
                   open: open_failure_detail === item.attempt_id
                 }
-              : null
+              : null,
+            ...discardResolveFields(item.id, item.discard)
           })
       );
     // 사람이 결정할 것이 먼저 보여야 한다: 실패, 그 다음 파킹(사용자 결정을
@@ -3761,7 +3785,10 @@ export function createWorkerView(mount_element, options = {}) {
       data-row-index=${coordinate.row_index}
       data-queue-index=${String(item.queue_index ?? 0)}
     >
-      ${miniRow(item, { actions: queueRowActions(item) })}
+      ${miniRow(
+        { ...item, ...discardResolveFields(item.id, item.discard) },
+        { actions: queueRowActions(item) }
+      )}
     </div>`;
   }
 
@@ -3793,7 +3820,10 @@ export function createWorkerView(mount_element, options = {}) {
             // 점유 ghost 행은 서버 레인 entries의 구성원이 아니므로 드롭 마커
             // 에도 서버 인덱스에도 들어가지 않는다 — 좌표 속성을 싣지 않는다.
             ...lane.ghosts.map((/** @type {any} */ it) =>
-              miniRow(it, { actions: queueRowActions(it) })
+              miniRow(
+                { ...it, ...discardResolveFields(it.id, it.discard) },
+                { actions: queueRowActions(it) }
+              )
             ),
             ...lane.items.map((/** @type {any} */ it, index) =>
               dragRow(it, {
@@ -4578,6 +4608,18 @@ export function createWorkerView(mount_element, options = {}) {
     );
     if (resolveBtn) {
       void resolveInSession(resolveBtn.dataset.beadId || '');
+      return;
+    }
+    // 실행 중 타일의 같은 출구 (UI-jw27 §4). 타일은 bead id를 행이 아니라 바깥
+    // `.rtile`의 `data-bead-id`에 싣는다.
+    const tileResolveBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.rtile__resolve')
+    );
+    if (tileResolveBtn) {
+      const tile = /** @type {HTMLElement|null} */ (
+        tileResolveBtn.closest('.rtile')
+      );
+      void resolveInSession(tile?.dataset.beadId || '');
       return;
     }
     const discardBtn = /** @type {HTMLElement|null} */ (

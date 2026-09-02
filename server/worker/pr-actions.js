@@ -2139,8 +2139,20 @@ export function createPrActions(deps) {
    * @param {string|null} summary
    */
   function announceCleanupStop(q, bead_id, step, reason, summary) {
-    if (!notify?.needsHuman || !IMMEDIATE_TERMINAL_CLEANUP_STEPS.has(step)) {
+    if (!notify?.needsHuman) {
       return;
+    }
+    if (!IMMEDIATE_TERMINAL_CLEANUP_STEPS.has(step)) {
+      // A ladder step, so `terminalize` owns the push — but only while it can
+      // still fire. `decideCompletionAction` returns null for an intent already
+      // in `needs_human`, so a [정리 재시도] click that fails again at the same
+      // ladder step writes a NEW cleanup record that no terminalization will
+      // ever follow. Silence there would drop the retry's own failure (spec §6
+      // acceptance 6), and it cannot duplicate the earlier push: that one was
+      // this intent's terminalization, which has already happened.
+      if (q?.completion_intents?.[bead_id]?.phase !== 'needs_human') {
+        return;
+      }
     }
     const row = (Array.isArray(q.pr_wait) ? q.pr_wait : []).find(
       (/** @type {any} */ entry) => entry && entry.bead_id === bead_id

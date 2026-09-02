@@ -2885,6 +2885,71 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
     expect(operations.ensureVerify).not.toHaveBeenCalled();
   });
 
+  /**
+   * A completion intent already terminalized as `needs_human`: the state a
+   * `[정리 재시도]` click starts from.
+   *
+   * @param {any} store
+   */
+  function seedTerminalIntent(store) {
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: BEAD,
+      source_attempt_id: 'a1',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: BEAD,
+        pr_url: 'https://github.com/o/r/pull/304',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: 'c'.repeat(40)
+      }
+    });
+    store.terminalizeCompletionIntent(WS, {
+      root_bead_id: BEAD,
+      terminal: {
+        reason: 'cleanup_failed:repo_operation_timeout_unresolved',
+        stage: 'repo_operations',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        op_id: 'deploy-0',
+        comment_at: 1,
+        at: 1
+      },
+      hold_event: null,
+      now: 1
+    });
+  }
+
+  // UI-jw27 §6 acceptance 6: `decideCompletionAction` answers null for an
+  // intent already in `needs_human`, so a retry that fails at the SAME ladder
+  // step is never terminalized again. The record write announces there, or the
+  // user's own retry failure reaches nobody.
+  test('announces the deploy step again once the intent is already terminal', async () => {
+    const operations = coordinatorFor(null);
+    operations.findExactDeployOperation.mockResolvedValue({
+      operation_id: 'deploy-2',
+      code: 'repo_operation_timeout_unresolved'
+    });
+    const env = makeActions({ ...ON_BASE, repoOperations: operations });
+    seedResumableRow(env.store);
+    seedTerminalIntent(env.store);
+    expect(env.store.snapshot(WS).completion_intents[BEAD].phase).toBe(
+      'needs_human'
+    );
+
+    await env.actions.resumeRepoOperations();
+
+    expect(env.human_notices).toEqual([
+      expect.objectContaining({
+        bead_id: BEAD,
+        failure_class: '정리 중단',
+        reason: 'repo_operation_timeout_unresolved'
+      })
+    ]);
+  });
+
   // UI-jw27 §6-1: the deploy step rides the `script_retry` ladder, so its
   // cleanup record is mid-ladder and `terminalize` owns the one push.
   test('announces nothing when the cleanup record is the deploy step', async () => {

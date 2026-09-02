@@ -2468,3 +2468,78 @@ describe('worker failed tile resume button (UI-8h1x §3.3a)', () => {
     expect(session.closest('.rtile__hd-actions')).not.toBeNull();
   });
 });
+
+// UI-jw27 §4: 폐기는 실행 중 타일에서도 시작되므로 그 실패 행도 [세션에서 해결]
+// 출구를 가져야 한다. 필드는 Worker 어댑터만 켠다 — Monitor는 넘기지 않는다.
+describe('worker running tile — [세션에서 해결] (UI-jw27 §4)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Record<string, any>} [extra]
+   */
+  function tileWith(extra = {}) {
+    return {
+      bead_id: 'UI-9',
+      attempt_id: 'attempt-9',
+      title: 'held work',
+      runner: 'claude',
+      model: 'opus',
+      started_at: 1,
+      parked: true,
+      status: /** @type {const} */ ('parked'),
+      status_label: '세션 대기',
+      ...extra
+    };
+  }
+
+  test('draws the resolve button on a tile carrying a failed discard', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        tileWith({
+          resolve_action: true,
+          resolve_enabled: true,
+          resolve_title: '세션을 띄웁니다'
+        })
+      ]),
+      mount
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile__resolve')
+    );
+
+    expect([button.disabled, button.textContent?.trim()]).toEqual([
+      false,
+      '세션에서 해결'
+    ]);
+  });
+
+  test('draws no resolve button when the adapter passes no field', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([tileWith()]), mount);
+
+    expect(mount.querySelector('.rtile__resolve')).toBeNull();
+  });
+
+  test('locks the resolve button while its own click is in flight', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        tileWith({ resolve_action: true, resolve_enabled: false })
+      ]),
+      mount
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile__resolve')
+    );
+
+    expect(button.disabled).toBe(true);
+  });
+});

@@ -676,7 +676,11 @@ export function createRepoOperationCoordinator(deps) {
           failure_class: '수동 배포 실패',
           reason: failure.code,
           reason_detail: summary ?? failure.detail ?? null,
-          next_action: '재클릭 또는 [세션에서 해결]',
+          // `[배포 실행]` 재클릭만이다. A manual run's subject is the `manual`
+          // sentinel rather than a bead, so no failure ROW carries it and
+          // `[세션에서 해결]` has nothing to open — naming it would send the
+          // operator looking for a button that is not drawn anywhere.
+          next_action: '[배포 실행] 재클릭',
           repo: deps.repo
         })
       ).catch((err) => {
