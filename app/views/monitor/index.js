@@ -42,6 +42,8 @@ import {
 } from '../worker/lane-model.js';
 import {
   candidateCard,
+  discardAbandonCompletionMessage,
+  discardAbandonConfirmationMessage,
   discardCompletionMessage,
   discardConfirmationMessage,
   judgementPopoverOf,
@@ -705,6 +707,34 @@ export function createMonitorView(mount_element, options) {
     }
     if (res && !res.conflict) {
       showToast('폐기 거부: unknown', 'error');
+    }
+  }
+
+  /**
+   * Abandon one failed discard while preserving the workspace CAS boundary.
+   *
+   * @param {Record<string, unknown>} payload
+   * @param {string} root_dir
+   * @param {number} revision
+   * @param {{ kind?: string, last_error: string }} operation
+   */
+  async function abandonDiscard(payload, root_dir, revision, operation) {
+    const res = await sendCas(
+      'worker-discard-abandon',
+      payload,
+      root_dir,
+      revision
+    );
+    if (res && res.abandoned === true) {
+      showToast(discardAbandonCompletionMessage(operation), 'success', 5000);
+      return;
+    }
+    if (res && res.reason) {
+      showToast(`폐기 포기 거부: ${res.reason}`, 'error');
+      return;
+    }
+    if (res && !res.conflict) {
+      showToast('폐기 포기 거부: unknown', 'error');
     }
   }
 
@@ -2562,6 +2592,25 @@ export function createMonitorView(mount_element, options) {
         { bead_id },
         root_dir,
         revision
+      );
+      return;
+    }
+    if (cls.contains('worker-mini__discard-abandon')) {
+      const operation = {
+        kind: button.dataset.operationKind || '',
+        last_error: button.dataset.lastError || ''
+      };
+      if (!confirmFn(discardAbandonConfirmationMessage(bead_id, operation))) {
+        return;
+      }
+      void abandonDiscard(
+        {
+          bead_id,
+          operation_id: button.dataset.operationId || ''
+        },
+        root_dir,
+        revision,
+        operation
       );
       return;
     }
