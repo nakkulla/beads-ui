@@ -32,6 +32,7 @@
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
+import { discardOperationActive } from './discard-phase.js';
 import { failureTokenSummary } from './failure-class.js';
 import { createAncestryProbe, reviewReceiptState } from './merge-gate.js';
 import { onQueueChanged } from './queue-events.js';
@@ -385,7 +386,7 @@ export function createPrPoller(deps) {
     const active_discard = Object.values(queue.discard_operations || {}).some(
       (operation) =>
         /** @type {any} */ (operation).bead_id === bead_id &&
-        /** @type {any} */ (operation).phase !== 'done'
+        discardOperationActive(/** @type {any} */ (operation))
     );
     if (active_discard) {
       deps.observations.record(workspace, bead_id, { error: null, pr });

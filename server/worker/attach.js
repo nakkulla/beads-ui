@@ -53,6 +53,7 @@ import {
   createCompletionIntentCoordinator
 } from './completion-intent.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
+import { discardOperationActive } from './discard-phase.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
 import {
   cachedIssuePrefixFor,
@@ -3086,7 +3087,7 @@ export async function discardWorkerBead(workspace_root, input) {
     if (
       !operation ||
       operation.bead_id !== input.bead_id ||
-      operation.phase === 'done'
+      !discardOperationActive(operation)
     ) {
       return { ok: false, reason: 'operation_not_retryable' };
     }
@@ -3096,6 +3097,28 @@ export async function discardWorkerBead(workspace_root, input) {
     return att.discardCoordinator.retry(input.operation_id);
   }
   return att.discardCoordinator.discard(input);
+}
+
+/**
+ * Abandon one failed requested discard after confirming its Bead binding.
+ *
+ * @param {string} workspace_root
+ * @param {{ bead_id: string, operation_id: string }} input
+ */
+export async function abandonWorkerDiscard(workspace_root, input) {
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  if (!att || !att.discardCoordinator) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  const operation =
+    getWorkerRuntime().queueStore.snapshot(key).discard_operations?.[
+      input.operation_id
+    ];
+  if (!operation || operation.bead_id !== input.bead_id) {
+    return { ok: false, reason: 'operation_not_found' };
+  }
+  return att.discardCoordinator.abandon(input.operation_id);
 }
 
 /**

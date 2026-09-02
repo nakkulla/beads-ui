@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { debug } from '../logging.js';
+import { discardOperationActive } from './discard-phase.js';
 import { resolvePrRef } from './pr-poller.js';
 import { archiveDiscardSource } from './recovery-archive.js';
 import { createRevertBuilder } from './revert-builder.js';
@@ -87,7 +88,7 @@ export function createDiscardCoordinator(deps, options = {}) {
           bead_id,
           failure_class: '폐기 실패',
           reason,
-          next_action: '재클릭 또는 [세션에서 해결]',
+          next_action: '재클릭·[폐기 포기]·[세션에서 해결]',
           repo: deps.repo
         })
       ).catch((err) => {
@@ -1917,6 +1918,11 @@ export function createDiscardCoordinator(deps, options = {}) {
       if (!operation) {
         return { ok: false, reason: 'operation_not_found' };
       }
+      if (!discardOperationActive(operation)) {
+        return operation.phase === 'abandoned'
+          ? { ok: false, reason: 'operation_abandoned' }
+          : { ok: true, operation_id };
+      }
       if (operation.last_error) {
         return {
           ok: false,
@@ -1924,9 +1930,6 @@ export function createDiscardCoordinator(deps, options = {}) {
           phase: operation.phase,
           reason: operation.last_error
         };
-      }
-      if (operation.phase === 'done') {
-        return { ok: true, operation_id };
       }
       if (operation.phase === 'merged_revert') {
         if (typeof deps.gh.revertSource !== 'function') {
@@ -2302,7 +2305,8 @@ export function createDiscardCoordinator(deps, options = {}) {
     if (
       Object.values(snapshot.discard_operations || {}).some(
         (operation) =>
-          operation.bead_id === input.bead_id && operation.phase !== 'done'
+          operation.bead_id === input.bead_id &&
+          discardOperationActive(operation)
       ) ||
       deps.actionInFlight?.(input.bead_id) ||
       deps.scheduler.staleWorkActionInFlight?.(
@@ -2414,7 +2418,7 @@ export function createDiscardCoordinator(deps, options = {}) {
     const existing = Object.values(snapshot.discard_operations || {}).find(
       (operation) =>
         /** @type {any} */ (operation).bead_id === input.bead_id &&
-        /** @type {any} */ (operation).phase !== 'done'
+        discardOperationActive(/** @type {any} */ (operation))
     );
     if (existing) {
       return {
@@ -2467,7 +2471,7 @@ export function createDiscardCoordinator(deps, options = {}) {
       ).find(
         (operation) =>
           /** @type {any} */ (operation).bead_id === input.bead_id &&
-          /** @type {any} */ (operation).phase !== 'done'
+          discardOperationActive(/** @type {any} */ (operation))
       );
       if (concurrent) {
         return {
@@ -2513,7 +2517,7 @@ export function createDiscardCoordinator(deps, options = {}) {
     );
     for (const operation of operations) {
       const record = /** @type {any} */ (operation);
-      if (record.phase !== 'done' && !record.last_error) {
+      if (discardOperationActive(record) && !record.last_error) {
         await drive(record.operation_id);
       }
     }
@@ -2526,7 +2530,7 @@ export function createDiscardCoordinator(deps, options = {}) {
     );
     for (const operation of operations) {
       const record = /** @type {any} */ (operation);
-      if (record.phase !== 'done') {
+      if (discardOperationActive(record)) {
         deps.scheduler.fenceDiscardAttempt?.(record.attempt_id);
       }
     }
@@ -2544,7 +2548,7 @@ export function createDiscardCoordinator(deps, options = {}) {
     ).find(
       (candidate) =>
         /** @type {any} */ (candidate).bead_id === bead_id &&
-        /** @type {any} */ (candidate).phase !== 'done'
+        discardOperationActive(/** @type {any} */ (candidate))
     );
     return operation
       ? drive(/** @type {any} */ (operation).operation_id)
@@ -2556,7 +2560,7 @@ export function createDiscardCoordinator(deps, options = {}) {
    */
   async function retry(operation_id) {
     const operation = operationOf(operation_id);
-    if (!operation || operation.phase === 'done') {
+    if (!discardOperationActive(operation)) {
       return { ok: false, reason: 'operation_not_retryable' };
     }
     if (operation.last_error) {
@@ -2572,12 +2576,80 @@ export function createDiscardCoordinator(deps, options = {}) {
     return drive(operation_id);
   }
 
+  /**
+   * Resume a quiesced runner, persist terminal abandonment, then release fence.
+   *
+   * @param {string} operation_id
+   */
+  async function abandon(operation_id) {
+    const operation = operationOf(operation_id);
+    if (!operation) {
+      return { ok: false, reason: 'operation_not_found' };
+    }
+    if (operation.phase !== 'requested') {
+      return { ok: false, reason: 'phase_not_abandonable' };
+    }
+    if (typeof operation.last_error !== 'string') {
+      return { ok: false, reason: 'operation_not_failed' };
+    }
+
+    /** @type {'continued'|'gone'|'recycled'|null} */
+    let resume = null;
+    const identity = operation.process_identity;
+    if (identity) {
+      if (!deps.processController) {
+        return { ok: false, reason: 'process_controller_missing' };
+      }
+      const observed = deps.processController.probe(identity);
+      if (observed.state === 'unknown') {
+        return {
+          ok: false,
+          reason: `identity_unknown:${observed.reason || 'unknown'}`
+        };
+      }
+      if (observed.state === 'owned') {
+        const continued = deps.processController.signal(identity, 'SIGCONT');
+        if (!continued.ok) {
+          return {
+            ok: false,
+            reason: continued.reason || `identity_${continued.state}`
+          };
+        }
+        resume = 'continued';
+      } else if (observed.state === 'gone' || observed.state === 'recycled') {
+        resume = observed.state;
+      } else {
+        return {
+          ok: false,
+          reason: `identity_unknown:${observed.reason || observed.state}`
+        };
+      }
+    }
+
+    const written = deps.store.abandonDiscardOperation(deps.workspace, {
+      operation_id,
+      resume
+    });
+    if (!written.ok) {
+      return { ok: false, reason: written.reason };
+    }
+    deps.scheduler.unfenceDiscardAttempt?.(operation.attempt_id);
+    notifyChanged(deps.workspace);
+    return {
+      ok: true,
+      operation_id,
+      phase: 'abandoned',
+      resume
+    };
+  }
+
   return {
     discard,
     backupFresh,
     recoverFences,
     recover,
     retry,
+    abandon,
     drive,
     observeBead
   };

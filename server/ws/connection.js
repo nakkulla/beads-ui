@@ -95,6 +95,7 @@ import {
   handleWorkerAutomationToggle,
   handleWorkerCleanupRetry,
   handleWorkerDiscard,
+  handleWorkerDiscardAbandon,
   handleWorkerMergeAutoToggle,
   handleWorkerMergeQueueAdd,
   handleWorkerMergeQueueAddAll,
@@ -631,6 +632,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-discard':
       await handleWorkerDiscard(ws, req);
+      return;
+    case 'worker-discard-abandon':
+      await handleWorkerDiscardAbandon(ws, req);
       return;
     case 'worker-stale-work-continue':
       await handleWorkerStaleWorkContinue(ws, req);

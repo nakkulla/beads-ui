@@ -48,6 +48,7 @@
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
+import { discardOperationActive } from './discard-phase.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
 import { failureTokenSummary, scriptSummary } from './failure-class.js';
 import {
@@ -655,7 +656,7 @@ export function createPrActions(deps) {
     return Object.values(q.discard_operations || {}).some(
       (operation) =>
         /** @type {any} */ (operation).bead_id === bead_id &&
-        /** @type {any} */ (operation).phase !== 'done'
+        discardOperationActive(/** @type {any} */ (operation))
     );
   }
 
