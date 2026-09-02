@@ -128,14 +128,25 @@ describe('claude usage normalization', () => {
     });
   });
 
-  test('returns unavailable when a required usage window is missing', () => {
-    const account = activeAccount();
-    const usage = /** @type {any} */ (account.usage);
-    delete usage.fiveHour;
+  test('keeps the active account on a plan without a seven-day window', () => {
+    const account = activeAccount({
+      usage: { fiveHour: { pct: 26, resetsAt: '2026-08-06T03:09:59Z' } }
+    });
 
     const payload = normalizeClaudeUsage({ accounts: [account] });
 
-    expect(payload).toEqual({ available: false, accounts: [] });
+    expect(payload).toMatchObject({
+      available: true,
+      windows: [{ key: '5h', pct: 26 }]
+    });
+  });
+
+  test('returns unavailable when the active account reports no window', () => {
+    const account = activeAccount({ usage: {} });
+
+    const payload = normalizeClaudeUsage({ accounts: [account] });
+
+    expect(payload).toMatchObject({ available: false });
   });
 });
 
@@ -271,8 +282,7 @@ describe('claude account rows', () => {
   });
 
   test('drops only the malformed row and keeps the rest', () => {
-    const broken = accountRow({ number: 2, active: false });
-    delete (/** @type {any} */ (broken).usage.fiveHour);
+    const broken = accountRow({ number: 2, active: false, usage: null });
 
     const payload = normalizeClaudeUsage({
       accounts: [accountRow(), broken, accountRow({ number: 7, active: false })]
@@ -280,6 +290,46 @@ describe('claude account rows', () => {
 
     expect(payload).toMatchObject({
       accounts: [{ number: 1 }, { number: 7 }]
+    });
+  });
+
+  test('keeps a five-hour-only account row', () => {
+    const team = accountRow({
+      number: 4,
+      active: false,
+      email: 'team@example.com',
+      usage: { fiveHour: { pct: 31, resetsAt: '2026-09-02T08:00:00Z' } }
+    });
+
+    const payload = normalizeClaudeUsage({ accounts: [accountRow(), team] });
+
+    const accounts = payload.accounts || [];
+    expect(accounts).toHaveLength(2);
+    expect(accounts[1]).toMatchObject({
+      number: 4,
+      email: 'team@example.com',
+      status: 'ok',
+      windows: [{ key: '5h', pct: 31, resetsAt: '2026-09-02T08:00:00Z' }]
+    });
+  });
+
+  test('keeps a windowless ok row and states the reason in status', () => {
+    const windowless = accountRow({
+      number: 5,
+      active: false,
+      email: 'empty@example.com',
+      usage: {}
+    });
+
+    const payload = normalizeClaudeUsage({
+      accounts: [accountRow(), windowless]
+    });
+
+    const accounts = payload.accounts || [];
+    expect(accounts[1]).toMatchObject({
+      number: 5,
+      status: 'no_usage_windows',
+      windows: []
     });
   });
 

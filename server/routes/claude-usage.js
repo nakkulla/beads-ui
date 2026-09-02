@@ -60,6 +60,9 @@ function normalizeWindow(key, input) {
 
 /**
  * Normalize the five-hour, seven-day and scoped windows of one cswap account.
+ * A team plan reports no `sevenDay` window at all, so both primary windows are
+ * optional and the account keeps whichever ones it does report; `null` is
+ * reserved for a usage object that cannot be parsed at all.
  *
  * @param {unknown} input
  * @returns {UsageWindow[] | null}
@@ -75,14 +78,17 @@ function normalizeAccountWindows(input) {
     return null;
   }
 
+  /** @type {UsageWindow[]} */
+  const windows = [];
   const five_hour = normalizeWindow('5h', usage.fiveHour);
+  if (five_hour) {
+    windows.push(five_hour);
+  }
   const seven_day = normalizeWindow('7d', usage.sevenDay);
-  if (!five_hour || !seven_day) {
-    return null;
+  if (seven_day) {
+    windows.push(seven_day);
   }
 
-  /** @type {UsageWindow[]} */
-  const scoped_windows = [];
   for (const scoped of scoped_input) {
     if (!scoped || typeof scoped.name !== 'string') {
       return null;
@@ -91,10 +97,10 @@ function normalizeAccountWindows(input) {
     if (!window) {
       return null;
     }
-    scoped_windows.push(window);
+    windows.push(window);
   }
 
-  return [five_hour, seven_day, ...scoped_windows];
+  return windows;
 }
 
 /**
@@ -146,6 +152,24 @@ function normalizeAccountRow(input) {
     row.usageAgeSeconds < 0
   ) {
     return null;
+  }
+
+  // An `ok` row that reports no drawable window keeps its place in the card
+  // and states the reason through `status`; dropping it would also take the
+  // switch button and the worker account catalog entry with it.
+  if (windows.length === 0) {
+    return {
+      key: row.email,
+      number: row.number,
+      email: row.email,
+      alias,
+      plan: null,
+      active,
+      status: 'no_usage_windows',
+      windows: [],
+      fetchedAt: row.usageFetchedAt,
+      ageSeconds: row.usageAgeSeconds
+    };
   }
 
   return {
@@ -217,7 +241,7 @@ function normalizeActiveAccount(rows) {
     return unavailable();
   }
   const windows = normalizeAccountWindows(active.usage);
-  if (!windows) {
+  if (!windows || windows.length === 0) {
     return unavailable();
   }
   return {

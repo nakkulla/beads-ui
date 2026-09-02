@@ -810,6 +810,30 @@ describe('usage meter account card', () => {
     meter.destroy();
   });
 
+  test('draws one bar for a row that reports a single window', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [
+        accountRow({
+          number: 1,
+          status: 'ok',
+          windows: [{ key: '5h', pct: 31, resetsAt: '' }]
+        })
+      ]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+
+    const bars = document.querySelectorAll('.usage-meter__account-window');
+    expect(bars).toHaveLength(1);
+    expect(
+      bars[0].querySelector('.usage-meter__account-key')?.textContent
+    ).toBe('5h');
+    meter.destroy();
+  });
+
   test('replaces the bars with a relogin message on an expired account', async () => {
     const mount = mountMeter();
     stubProviders({
