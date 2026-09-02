@@ -6,8 +6,8 @@
  * fallback, and invalid values fail closed. Their only consumer is this
  * launcher, which passes them as CLI flags.
  *
- * The nine SESSION keys (the three `*_review_model` + `*_review_effort` step
- * pairs and the linked impl_runtime / impl_model / impl_effort target) resolve
+ * The twelve SESSION keys (the three review model/effort/speed step
+ * triples and the linked impl_runtime / impl_model / impl_effort target) resolve
  * from bead metadata ALONE here. Their workspace layer moved to
  * `bd kv workflow_session_defaults`, which the session's own workflow skill
  * reads (spec §A) — so an interactive session gets the same defaults a Worker
@@ -15,7 +15,7 @@
  * invalid linked implementation target still blocks dispatch instead of
  * silently demoting. The final fallback is `opus` for orchestration_model
  * (worker-orchestration-model-default-opus), `default` for orchestration_speed,
- * and unset for the other 10 keys.
+ * and unset for the other 13 keys.
  *
  * The single `review_model` key is retired (dotfiles-mqcj): it is neither read
  * nor used to seed the per-step keys, so a bead still carrying it resolves the
@@ -37,6 +37,7 @@
 import {
   PLAN_REVIEW_MODELS,
   REVIEW_EFFORTS,
+  REVIEW_SPEEDS,
   REVIEW_STEP_MODELS,
   validateImplSettings
 } from './exec-enums.js';
@@ -171,10 +172,13 @@ function normalizeImplLayer(layer, catalog) {
  *   orchestration_speed?: unknown,
  *   spec_review_model?: unknown,
  *   spec_review_effort?: unknown,
+ *   spec_review_speed?: unknown,
  *   impl_review_model?: unknown,
  *   impl_review_effort?: unknown,
+ *   impl_review_speed?: unknown,
  *   plan_review_model?: unknown,
  *   plan_review_effort?: unknown,
+ *   plan_review_speed?: unknown,
  *   impl_runtime?: unknown,
  *   impl_model?: unknown,
  *   impl_effort?: unknown
@@ -187,15 +191,15 @@ function normalizeImplLayer(layer, catalog) {
  */
 
 /**
- * Resolve the 12 exec settings for one dispatch, plus the runner they imply
+ * Resolve the 15 exec settings for one dispatch, plus the runner they imply
  * (worker-global-exec-defaults; worker-multi-provider-runner §C; dotfiles-mqcj).
  *
  * The three orchestration keys resolve bead metadata > workspace queue value >
- * final fallback; the nine session keys resolve from bead metadata alone and
+ * final fallback; the twelve session keys resolve from bead metadata alone and
  * pass through to the session's own `bd kv` / harness layers when absent.
  * `orchestration_model` alone has a hardcoded final fallback (`opus`) and
  * therefore never resolves to undefined; speed finally falls back to `default`
- * and the other 10 keys still end at unset.
+ * and the other 13 keys still end at unset.
  *
  * The implementation runtime/model/effort group is validated as a unit.
  * Model-only legacy metadata infers a known model's provider read-only; a
@@ -203,7 +207,7 @@ function normalizeImplLayer(layer, catalog) {
  * `invalid_reason` rather than silently selecting a lower-layer value.
  *
  * The returned `runner` is the reverse lookup of the resolved orchestration
- * model, never an independently-set key. The six review keys are plain enum
+ * model, never an independently-set key. The nine review keys are plain enum
  * picks — their consumer is the workflow skill inside the session, not the
  * worker launcher — with `plan_review_model` on the narrower vocabulary.
  *
@@ -227,10 +231,13 @@ function normalizeImplLayer(layer, catalog) {
  *   runner: string,
  *   spec_review_model: string|undefined,
  *   spec_review_effort: string|undefined,
+ *   spec_review_speed: string|undefined,
  *   impl_review_model: string|undefined,
  *   impl_review_effort: string|undefined,
+ *   impl_review_speed: string|undefined,
  *   plan_review_model: string|undefined,
  *   plan_review_effort: string|undefined,
+ *   plan_review_speed: string|undefined,
  *   impl_runtime: string|undefined,
  *   impl_runtime_inferred: boolean,
  *   impl_model: string|undefined,
@@ -246,7 +253,7 @@ export function resolveExecSettings(input) {
   const model_names = Object.keys(catalog.model_index);
   /**
    * Always empty. The pre-spawn stamp existed only to deliver workspace
-   * defaults for the nine session keys into Bead metadata; `bd kv` now reaches
+   * defaults for the twelve session keys into Bead metadata; `bd kv` now reaches
    * interactive and Worker sessions alike, so nothing is copied onto a Bead at
    * dispatch (spec §C.4). The field itself stays so attempts recorded before
    * this change still revert their durable stamps.
@@ -292,16 +299,19 @@ export function resolveExecSettings(input) {
     bead.spec_review_model
   );
   const spec_review_effort = pickBead(REVIEW_EFFORTS, bead.spec_review_effort);
+  const spec_review_speed = pickBead(REVIEW_SPEEDS, bead.spec_review_speed);
   const plan_review_model = pickBead(
     PLAN_REVIEW_MODELS,
     bead.plan_review_model
   );
   const plan_review_effort = pickBead(REVIEW_EFFORTS, bead.plan_review_effort);
+  const plan_review_speed = pickBead(REVIEW_SPEEDS, bead.plan_review_speed);
   const impl_review_model = pickBead(
     REVIEW_STEP_MODELS,
     bead.impl_review_model
   );
   const impl_review_effort = pickBead(REVIEW_EFFORTS, bead.impl_review_effort);
+  const impl_review_speed = pickBead(REVIEW_SPEEDS, bead.impl_review_speed);
   const bead_impl = normalizeImplLayer(bead, catalog);
   const impl_validation = validateImplSettings(bead_impl.values, {
     catalog,
@@ -329,10 +339,13 @@ export function resolveExecSettings(input) {
     runner,
     spec_review_model,
     spec_review_effort,
+    spec_review_speed,
     plan_review_model,
     plan_review_effort,
+    plan_review_speed,
     impl_review_model,
     impl_review_effort,
+    impl_review_speed,
     impl_runtime,
     impl_runtime_inferred,
     impl_model,

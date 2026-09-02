@@ -31,10 +31,13 @@ export const EFFECTIVE_GROUPS = [
     keys: [
       'spec_review_model',
       'spec_review_effort',
+      'spec_review_speed',
       'plan_review_model',
       'plan_review_effort',
+      'plan_review_speed',
       'impl_review_model',
-      'impl_review_effort'
+      'impl_review_effort',
+      'impl_review_speed'
     ]
   },
   {
@@ -60,10 +63,13 @@ export const SETTING_LABELS = {
   workflow_mode: '모드',
   spec_review_model: '사양 리뷰',
   spec_review_effort: '사양 리뷰 effort',
+  spec_review_speed: '사양 리뷰 속도',
   plan_review_model: '계획 리뷰',
   plan_review_effort: '계획 리뷰 effort',
+  plan_review_speed: '계획 리뷰 속도',
   impl_review_model: '구현 리뷰',
   impl_review_effort: '구현 리뷰 effort',
+  impl_review_speed: '구현 리뷰 속도',
   impl_dispatch: '실행 방식',
   impl_runtime: '위임 대상',
   impl_model: '모델',

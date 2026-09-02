@@ -1812,10 +1812,13 @@ describe('worker/attach createLiveBd bd show parsing', () => {
                 orchestration_speed: 'fast',
                 spec_review_model: 'codex',
                 spec_review_effort: 'high',
+                spec_review_speed: 'fast',
                 impl_review_model: 'self',
                 impl_review_effort: 'low',
+                impl_review_speed: 'default',
                 plan_review_model: 'fable',
                 plan_review_effort: 'xhigh',
+                plan_review_speed: 'fast',
                 impl_model: 'luna',
                 impl_effort: 'max',
                 claude_account: 'user@example.com',
@@ -1838,10 +1841,13 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       orchestration_speed: 'fast',
       spec_review_model: 'codex',
       spec_review_effort: 'high',
+      spec_review_speed: 'fast',
       impl_review_model: 'self',
       impl_review_effort: 'low',
+      impl_review_speed: 'default',
       plan_review_model: 'fable',
       plan_review_effort: 'xhigh',
+      plan_review_speed: 'fast',
       impl_model: 'luna',
       impl_effort: 'max',
       claude_account: 'user@example.com',
@@ -1923,10 +1929,13 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     const snap = await bd.snapshotBead('UI-3');
     expect(snap.spec_review_model).toBeUndefined();
     expect(snap.spec_review_effort).toBeUndefined();
+    expect(snap.spec_review_speed).toBeUndefined();
     expect(snap.impl_review_model).toBeUndefined();
     expect(snap.impl_review_effort).toBeUndefined();
+    expect(snap.impl_review_speed).toBeUndefined();
     expect(snap.plan_review_model).toBeUndefined();
     expect(snap.plan_review_effort).toBeUndefined();
+    expect(snap.plan_review_speed).toBeUndefined();
     expect(snap.impl_model).toBeUndefined();
     expect(snap.impl_effort).toBeUndefined();
   });

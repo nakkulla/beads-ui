@@ -453,10 +453,13 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {string} [codex_account] - Per-bead codex-auth account key pin.
  * @property {string} [spec_review_model] - spec_review_model (per-bead exec setting).
  * @property {string} [spec_review_effort] - spec_review_effort (per-bead exec setting).
+ * @property {string} [spec_review_speed] - spec_review_speed (per-bead exec setting).
  * @property {string} [impl_review_model] - impl_review_model (per-bead exec setting).
  * @property {string} [impl_review_effort] - impl_review_effort (per-bead exec setting).
+ * @property {string} [impl_review_speed] - impl_review_speed (per-bead exec setting).
  * @property {string} [plan_review_model] - plan_review_model (per-bead exec setting).
  * @property {string} [plan_review_effort] - plan_review_effort (per-bead exec setting).
+ * @property {string} [plan_review_speed] - plan_review_speed (per-bead exec setting).
  * @property {string} [impl_runtime] - impl_runtime (per-bead exec setting).
  * @property {string} [impl_model] - impl_model (per-bead exec setting).
  * @property {string} [impl_effort] - impl_effort (per-bead exec setting).
@@ -2199,7 +2202,7 @@ export function createScheduler(deps) {
   /**
    * Build the durable effective-value provenance independently from the subset
    * of keys this worker writes into metadata. Unset optional keys are recorded
-   * as null so every fresh snapshot still has the complete 12-key shape.
+   * as null so every fresh snapshot still has the complete 15-key shape.
    *
    * @param {any} exec
    * @returns {Record<string, string|null>}
@@ -6065,7 +6068,7 @@ export function createScheduler(deps) {
       const receipt_baseline = await captureReceiptBaseline(bead_id);
 
       // DURABLE pre-record before the FIRST metadata write. It carries the whole
-      // effective 12-key snapshot and exact cleanup provenance.
+      // effective 15-key snapshot and exact cleanup provenance.
       if (
         !prerecordAttempt(workspace, {
           attempt_id,

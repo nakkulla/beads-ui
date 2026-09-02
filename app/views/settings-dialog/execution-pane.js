@@ -39,6 +39,7 @@ import {
   ORCHESTRATION_KEYS,
   PLAN_REVIEW_MODELS,
   REVIEW_EFFORTS,
+  REVIEW_SPEEDS,
   REVIEW_STEP_MODELS,
   WORKFLOW_MODES,
   buildExecutionOptionView,
@@ -1282,9 +1283,17 @@ export function createExecutionPane(mount_element, binding) {
    * @param {string} model_key
    * @param {ReadonlyArray<string>} model_choices
    * @param {string} effort_key
+   * @param {string} speed_key
    * @returns {TemplateResult}
    */
-  function gateRow(label, stage, model_key, model_choices, effort_key) {
+  function gateRow(
+    label,
+    stage,
+    model_key,
+    model_choices,
+    effort_key,
+    speed_key
+  ) {
     return html`<div class="settings-dialog__row">
       <span class="settings-dialog__row-label">
         <i
@@ -1306,6 +1315,14 @@ export function createExecutionPane(mount_element, binding) {
           effort_key,
           `${label} effort`,
           REVIEW_EFFORTS,
+          onSessionChange,
+          session_draft,
+          false
+        )}
+        ${selectControl(
+          speed_key,
+          `${label} 속도`,
+          REVIEW_SPEEDS,
           onSessionChange,
           session_draft,
           false
@@ -1698,28 +1715,31 @@ export function createExecutionPane(mount_element, binding) {
             <div class="settings-dialog__group">
               <div class="settings-dialog__group-title">
                 리뷰 게이트
-                <span class="settings-dialog__hint">모델 · effort</span>
+                <span class="settings-dialog__hint">모델 · effort · 속도</span>
               </div>
               ${gateRow(
                 '사양 리뷰',
                 'spec',
                 'spec_review_model',
                 REVIEW_STEP_MODELS,
-                'spec_review_effort'
+                'spec_review_effort',
+                'spec_review_speed'
               )}
               ${gateRow(
                 '계획 리뷰',
                 'plan',
                 'plan_review_model',
                 PLAN_REVIEW_MODELS,
-                'plan_review_effort'
+                'plan_review_effort',
+                'plan_review_speed'
               )}
               ${gateRow(
                 '구현 리뷰',
                 'impl',
                 'impl_review_model',
                 REVIEW_STEP_MODELS,
-                'impl_review_effort'
+                'impl_review_effort',
+                'impl_review_speed'
               )}
             </div>
 

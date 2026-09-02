@@ -18,7 +18,13 @@ const CATALOG = {
     },
     codex: {
       command: 'codex',
-      models: { sol: { id: 'gpt-5.6-sol', efforts: ['medium'] } }
+      models: {
+        sol: {
+          id: 'gpt-5.6-sol',
+          efforts: ['medium'],
+          speed_tiers: ['default', 'fast']
+        }
+      }
     }
   },
   model_index: { opus: 'claude', sol: 'codex' }
@@ -33,6 +39,7 @@ const EXECUTION_DEFAULTS = {
       default: 'codex',
       reviewers: {
         codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+        opus: { model: 'opus', effort: 'high' },
         fable: { model: 'fable', effort: 'high' }
       }
     },
@@ -619,7 +626,7 @@ describe('effective-settings card', () => {
     expect(summary.textContent).toContain('5.6-sol');
     expect(summary.textContent).toContain('핀 0');
     expect(summary.textContent).toContain('전역 0');
-    expect(summary.textContent).toContain('기본 15');
+    expect(summary.textContent).toContain('기본 18');
     expect(
       summary.querySelector('.detail-effective__summary')?.getAttribute('title')
     ).toContain('gpt-5.6-sol');
@@ -674,6 +681,49 @@ describe('effective-settings card', () => {
     expect(
       row.querySelector('.detail-effective__v')?.getAttribute('title')
     ).toBe('gpt-5.6-sol');
+    panel.destroy();
+  });
+
+  test('marks self and skip review speeds not applicable and disables them', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: {
+        spec_review_model: 'self',
+        spec_review_speed: 'fast',
+        impl_review_model: 'skip',
+        impl_review_speed: 'fast'
+      }
+    });
+    await settle();
+    await openEffective(mount);
+
+    for (const key of ['spec_review_speed', 'impl_review_speed']) {
+      const row = rowOf(mount, key);
+      const select = /** @type {HTMLSelectElement} */ (
+        row.querySelector(`select[data-edit-key="${key}"]`)
+      );
+      expect(row.textContent).toContain('해당 없음');
+      expect(select.disabled).toBe(true);
+    }
+    panel.destroy();
+  });
+
+  test('shows Standard as applicable for opus and fable review speeds', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { spec_review_model: 'opus', plan_review_model: 'fable' }
+    });
+    await settle();
+    await openEffective(mount);
+
+    for (const key of ['spec_review_speed', 'plan_review_speed']) {
+      const row = rowOf(mount, key);
+      const select = /** @type {HTMLSelectElement} */ (
+        row.querySelector(`select[data-edit-key="${key}"]`)
+      );
+      expect(row.textContent).toContain('default (일반)');
+      expect(select.disabled).toBe(false);
+    }
     panel.destroy();
   });
 
@@ -795,7 +845,7 @@ describe('effective-settings card', () => {
     panel.destroy();
   });
 
-  test('applies twelve session keys and reports skipped orchestration keys', async () => {
+  test('applies fifteen session keys and reports skipped orchestration keys', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi.fn(async (/** @type {string} */ type) => {
       if (type === 'get-session-defaults') {
@@ -812,10 +862,13 @@ describe('effective-settings card', () => {
               workflow_mode: 'fast_track',
               spec_review_model: 'codex',
               spec_review_effort: 'xhigh',
+              spec_review_speed: 'fast',
               plan_review_model: 'fable',
               plan_review_effort: 'high',
+              plan_review_speed: 'default',
               impl_review_model: 'codex',
               impl_review_effort: 'xhigh',
+              impl_review_speed: 'fast',
               impl_dispatch: 'delegated',
               impl_runtime: 'codex',
               impl_model: 'sol',
@@ -877,7 +930,7 @@ describe('effective-settings card', () => {
     ).toContain('오케스트레이션 3키는 Bead에 핀할 수 없어 건너뜀');
     expect(
       mount.querySelectorAll('.detail-effective__row [data-source="pin"]')
-    ).toHaveLength(12);
+    ).toHaveLength(15);
     panel.destroy();
   });
 

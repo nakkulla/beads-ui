@@ -1,7 +1,15 @@
 import { render } from 'lit-html';
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { execSettingsTemplate, normalizeImplTarget } from './exec-settings.js';
+import {
+  EXEC_ADVANCED_GROUPS,
+  EXEC_KEYS,
+  EXEC_SETTING_PRESENTATION,
+  execSettingsTemplate,
+  normalizeImplTarget,
+  speedTiersForModel,
+  speedTiersForModelId
+} from './exec-settings.js';
 
 /**
  * The catalog shape the server ships on the queue snapshot (`runner_catalog`).
@@ -224,7 +232,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     ).toContain('스펙 5.6-sol/xhigh · 계획 5.6-sol/xhigh · 구현 5.6-sol/xhigh');
   });
 
-  test('groups three core keys above ten advanced keys', () => {
+  test('groups three core keys above thirteen advanced keys', () => {
     const mount = mountTemplate();
 
     expect(
@@ -255,14 +263,23 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     ).toEqual([
       'spec_review_model',
       'spec_review_effort',
+      'spec_review_speed',
       'plan_review_model',
       'plan_review_effort',
+      'plan_review_speed',
       'impl_review_model',
-      'impl_review_effort'
+      'impl_review_effort',
+      'impl_review_speed'
     ]);
     expect(
       mount.querySelectorAll('[data-exec-settings-advanced] select[data-key]')
-    ).toHaveLength(10);
+    ).toHaveLength(13);
+    expect(EXEC_KEYS).toHaveLength(15);
+    expect(
+      EXEC_ADVANCED_GROUPS.find((group) => group.id === 'review')?.keys
+    ).toHaveLength(9);
+    // 16, not 15: the label table also carries the per-bead-only workflow_mode.
+    expect(Object.keys(EXEC_SETTING_PRESENTATION)).toHaveLength(16);
   });
 
   test('counts non-default advanced values in the fold summary', () => {
@@ -282,7 +299,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     ).toContain('고급 설정 — 2개 변경됨');
   });
 
-  test('renders the 12 exec keys plus workflow_mode and drops review_model', () => {
+  test('renders the 15 exec keys plus workflow_mode and drops review_model', () => {
     const mount = mountTemplate();
 
     for (const key of [
@@ -291,11 +308,14 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
       'orchestration_speed',
       'spec_review_model',
       'spec_review_effort',
+      'spec_review_speed',
       'impl_review_model',
       'impl_review_effort',
+      'impl_review_speed',
       'impl_runtime',
       'plan_review_model',
       'plan_review_effort',
+      'plan_review_speed',
       'impl_model',
       'impl_effort',
       'workflow_mode'
@@ -326,10 +346,13 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
       { label: '구현 reasoning effort', key: 'impl_effort' },
       { label: '스펙 리뷰어', key: 'spec_review_model' },
       { label: '스펙 리뷰 reasoning effort', key: 'spec_review_effort' },
+      { label: '스펙 리뷰 속도', key: 'spec_review_speed' },
       { label: '계획 리뷰어', key: 'plan_review_model' },
       { label: '계획 리뷰 reasoning effort', key: 'plan_review_effort' },
+      { label: '계획 리뷰 속도', key: 'plan_review_speed' },
       { label: '구현 리뷰어', key: 'impl_review_model' },
-      { label: '구현 리뷰 reasoning effort', key: 'impl_review_effort' }
+      { label: '구현 리뷰 reasoning effort', key: 'impl_review_effort' },
+      { label: '구현 리뷰 속도', key: 'impl_review_speed' }
     ]);
   });
 
@@ -397,10 +420,13 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
       ['impl_effort', 'medium'],
       ['spec_review_model', 'codex'],
       ['spec_review_effort', 'high'],
+      ['spec_review_speed', 'fast'],
       ['plan_review_model', 'skip'],
       ['plan_review_effort', 'xhigh'],
+      ['plan_review_speed', 'fast'],
       ['impl_review_model', 'self'],
-      ['impl_review_effort', 'low']
+      ['impl_review_effort', 'low'],
+      ['impl_review_speed', 'fast']
     ]) {
       const sel = selectFor(mount, key);
       sel.value = value;
@@ -535,6 +561,77 @@ describe('views/detail-panel/exec-settings catalog-driven selectors', () => {
     ).toEqual(['기본값 사용 — default (일반)', 'Standard', 'Fast']);
   });
 
+  test('finds review speed tiers by model id in the real catalog shape', () => {
+    const catalog = catalogFixture();
+
+    expect(speedTiersForModel(catalog, 'gpt-5.6-sol')).toEqual([]);
+    expect(speedTiersForModelId(catalog, 'gpt-5.6-sol')).toEqual([
+      'default',
+      'fast'
+    ]);
+    expect(speedTiersForModelId(catalog, 'opus')).toEqual(['default']);
+  });
+
+  test('gates review speed from resolved reviewer model ids', () => {
+    const codex = mountTemplate();
+
+    expect(optionValues(selectFor(codex, 'spec_review_speed'))).toEqual([
+      '',
+      'default',
+      'fast'
+    ]);
+    expect(selectFor(codex, 'spec_review_speed').disabled).toBe(false);
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const gated = mountTemplate({
+      spec_review_model: 'opus',
+      plan_review_model: 'fable',
+      impl_review_model: 'self',
+      impl_review_speed: 'fast'
+    });
+
+    expect(selectFor(gated, 'spec_review_speed').disabled).toBe(true);
+    expect(selectFor(gated, 'plan_review_speed').disabled).toBe(true);
+    expect(selectFor(gated, 'impl_review_speed').disabled).toBe(true);
+    expect(selectFor(gated, 'impl_review_speed').value).toBe('fast');
+    expect(
+      selectFor(gated, 'impl_review_speed').options[
+        selectFor(gated, 'impl_review_speed').selectedIndex
+      ].textContent?.trim()
+    ).toBe('Fast (비호환)');
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const skipped = mountTemplate({ plan_review_model: 'skip' });
+
+    expect(selectFor(skipped, 'plan_review_speed').disabled).toBe(true);
+  });
+
+  test('disables review speed for incompatible and unavailable reviewers', () => {
+    const incompatible = mountTemplate({ spec_review_model: 'removed' });
+
+    expect(selectFor(incompatible, 'spec_review_speed').disabled).toBe(true);
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const unavailable_mount = /** @type {HTMLElement} */ (
+      document.getElementById('m')
+    );
+    render(
+      execSettingsTemplate(
+        { metadata: {} },
+        { onChange: vi.fn() },
+        {},
+        catalogFixture(),
+        '',
+        { supported: false }
+      ),
+      unavailable_mount
+    );
+
+    expect(selectFor(unavailable_mount, 'spec_review_speed').disabled).toBe(
+      true
+    );
+  });
+
   test('keeps a stale speed value selected as incompatible', () => {
     const mount = mountTemplate({
       orchestration_model: 'opus',
@@ -658,8 +755,11 @@ describe('views/detail-panel/exec-settings projected default labels', () => {
       ['impl_review_model', '기본값 사용 — 5.6-sol'],
       ['plan_review_model', '기본값 사용 — 5.6-sol'],
       ['spec_review_effort', '기본값 사용 — xhigh'],
+      ['spec_review_speed', '기본값 사용 — default (일반)'],
       ['impl_review_effort', '기본값 사용 — xhigh'],
+      ['impl_review_speed', '기본값 사용 — default (일반)'],
       ['plan_review_effort', '기본값 사용 — xhigh'],
+      ['plan_review_speed', '기본값 사용 — default (일반)'],
       ['impl_model', '기본값 사용 — 5.6-sol'],
       ['impl_effort', '기본값 사용 — auto (실행 시 결정)']
     ];

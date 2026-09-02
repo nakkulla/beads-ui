@@ -6,6 +6,7 @@ import {
   ORCHESTRATION_KEYS,
   PRESET_KV_KEYS,
   REVIEW_EFFORTS,
+  REVIEW_SPEEDS,
   WORKSPACE_KV_KEYS,
   buildExecutionOptionView,
   buildOrchestrationPatch,
@@ -104,8 +105,8 @@ const ORCHESTRATION_CATALOG = {
 };
 
 describe('session key lists', () => {
-  test('names the twelve per-bead keys and no orchestration key', () => {
-    expect(BEAD_APPLY_KEYS).toHaveLength(12);
+  test('names the fifteen per-bead keys and no orchestration key', () => {
+    expect(BEAD_APPLY_KEYS).toHaveLength(15);
     expect(BEAD_APPLY_KEYS).toContain('impl_dispatch');
     expect(BEAD_APPLY_KEYS).toContain('impl_speed');
     expect(
@@ -113,8 +114,8 @@ describe('session key lists', () => {
     ).toBe(false);
   });
 
-  test('drops impl_dispatch from the thirteen workspace kv keys', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(13);
+  test('drops impl_dispatch from the sixteen workspace kv keys', () => {
+    expect(WORKSPACE_KV_KEYS).toHaveLength(16);
 
     expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
   });
@@ -128,15 +129,18 @@ describe('session key lists', () => {
     expect(IMPL_PRESET_KEYS).not.toContain('bdui_url');
   });
 
-  test('names the eleven kv keys a global preset apply replaces', () => {
+  test('names the fourteen kv keys a global preset apply replaces', () => {
     expect(PRESET_KV_KEYS).toEqual([
       'workflow_mode',
       'spec_review_model',
       'spec_review_effort',
+      'spec_review_speed',
       'plan_review_model',
       'plan_review_effort',
+      'plan_review_speed',
       'impl_review_model',
       'impl_review_effort',
+      'impl_review_speed',
       'impl_runtime',
       'impl_model',
       'impl_effort',
@@ -148,12 +152,16 @@ describe('session key lists', () => {
     expect(IMPL_DISPATCHES).toEqual(['delegated', 'main']);
   });
 
-  test('mirrors all fifteen execution preset keys', () => {
+  test('mirrors all eighteen execution preset keys', () => {
     expect(IMPL_PRESET_KEYS).toEqual([
       ...BEAD_APPLY_KEYS,
       ...ORCHESTRATION_KEYS
     ]);
-    expect(IMPL_PRESET_KEYS).toHaveLength(15);
+    expect(IMPL_PRESET_KEYS).toHaveLength(18);
+  });
+
+  test('offers the fixed review speed vocabulary', () => {
+    expect(REVIEW_SPEEDS).toEqual(['default', 'fast']);
   });
 });
 
@@ -398,7 +406,7 @@ describe('buildPresetDiff', () => {
     ]);
   });
 
-  test('compares exactly the fourteen keys a global apply writes', () => {
+  test('compares exactly the seventeen keys a global apply writes', () => {
     const every_key = Object.fromEntries(
       [...PRESET_KV_KEYS, ...ORCHESTRATION_KEYS, ...WORKSPACE_KV_KEYS].map(
         (key) => [key, 'x']
@@ -411,10 +419,13 @@ describe('buildPresetDiff', () => {
       'workflow_mode',
       'spec_review_model',
       'spec_review_effort',
+      'spec_review_speed',
       'plan_review_model',
       'plan_review_effort',
+      'plan_review_speed',
       'impl_review_model',
       'impl_review_effort',
+      'impl_review_speed',
       'impl_runtime',
       'impl_model',
       'impl_effort',
@@ -541,11 +552,22 @@ describe('buildExecutionOptionView', () => {
 describe('buildSessionDefaultsPatch', () => {
   test('sends only the keys whose value changed', () => {
     const patch = buildSessionDefaultsPatch(
-      { workflow_mode: 'standard', impl_speed: 'fast' },
-      { workflow_mode: 'fast_track', impl_speed: 'fast' }
+      {
+        workflow_mode: 'standard',
+        spec_review_speed: 'default',
+        impl_speed: 'fast'
+      },
+      {
+        workflow_mode: 'fast_track',
+        spec_review_speed: 'fast',
+        impl_speed: 'fast'
+      }
     );
 
-    expect(patch).toEqual({ workflow_mode: 'fast_track' });
+    expect(patch).toEqual({
+      workflow_mode: 'fast_track',
+      spec_review_speed: 'fast'
+    });
   });
 
   test('never sends impl_dispatch to the workspace kv layer', () => {

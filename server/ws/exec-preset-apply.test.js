@@ -212,10 +212,13 @@ describe('buildApplyImplPresetArgs', () => {
       'workflow_mode',
       'spec_review_model',
       'spec_review_effort',
+      'spec_review_speed',
       'plan_review_model',
       'plan_review_effort',
+      'plan_review_speed',
       'impl_review_model',
       'impl_review_effort',
+      'impl_review_speed',
       'impl_dispatch',
       'impl_runtime',
       'impl_model',
@@ -228,11 +231,11 @@ describe('buildApplyImplPresetArgs', () => {
     expect(args.some((arg) => arg.includes('orchestration_'))).toBe(false);
   });
 
-  test('names exactly the twelve session keys and no orchestration key', () => {
+  test('names exactly the fifteen session keys and no orchestration key', () => {
     const args = buildApplyImplPresetArgs('UI-1', {});
 
     const named = args.slice(2).filter((_, index) => index % 2 === 1);
-    expect(named).toHaveLength(12);
+    expect(named).toHaveLength(15);
     expect(args.some((arg) => arg.includes('orchestration_'))).toBe(false);
   });
 });
@@ -241,6 +244,7 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
   test('pins the preset onto the bead and replies with the readback issue', async () => {
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(ws, sent, {
+      spec_review_speed: 'fast',
       impl_dispatch: 'delegated',
       impl_runtime: 'inherit'
     });
@@ -248,7 +252,13 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
     runBdJsonProjectedInWorkspace.mockResolvedValue({
       ok: true,
       protocol: { format: 'bare', schema_version: null },
-      data: { id: 'UI-1', metadata: { impl_dispatch: 'delegated' } }
+      data: {
+        id: 'UI-1',
+        metadata: {
+          spec_review_speed: 'fast',
+          impl_dispatch: 'delegated'
+        }
+      }
     });
 
     await handleApplyImplPreset(ws, {
@@ -260,6 +270,7 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
     expect(runBdInWorkspace).toHaveBeenCalledWith(
       ws,
       buildApplyImplPresetArgs('UI-1', {
+        spec_review_speed: 'fast',
         impl_dispatch: 'delegated',
         impl_runtime: 'inherit'
       })

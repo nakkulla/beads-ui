@@ -19,10 +19,13 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.orchestration_speed).toBe('default');
     expect(r.spec_review_model).toBe(undefined);
     expect(r.spec_review_effort).toBe(undefined);
+    expect(r.spec_review_speed).toBe(undefined);
     expect(r.impl_review_model).toBe(undefined);
     expect(r.impl_review_effort).toBe(undefined);
+    expect(r.impl_review_speed).toBe(undefined);
     expect(r.plan_review_model).toBe(undefined);
     expect(r.plan_review_effort).toBe(undefined);
+    expect(r.plan_review_speed).toBe(undefined);
     expect(r.impl_model).toBe(undefined);
     expect(r.impl_effort).toBe(undefined);
     // The hardcoded fallback is never a stamp/revert target.
@@ -68,10 +71,13 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
           orchestration_model: 'sonnet',
           spec_review_model: 'opus',
           spec_review_effort: 'high',
+          spec_review_speed: 'fast',
           plan_review_model: 'fable',
           plan_review_effort: 'xhigh',
+          plan_review_speed: 'default',
           impl_review_model: 'self',
           impl_review_effort: 'low',
+          impl_review_speed: 'fast',
           impl_runtime: 'claude',
           impl_model: 'sonnet',
           impl_effort: 'medium'
@@ -81,10 +87,13 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
 
     expect(r.spec_review_model).toBe(undefined);
     expect(r.spec_review_effort).toBe(undefined);
+    expect(r.spec_review_speed).toBe(undefined);
     expect(r.plan_review_model).toBe(undefined);
     expect(r.plan_review_effort).toBe(undefined);
+    expect(r.plan_review_speed).toBe(undefined);
     expect(r.impl_review_model).toBe(undefined);
     expect(r.impl_review_effort).toBe(undefined);
+    expect(r.impl_review_speed).toBe(undefined);
     expect(r.impl_runtime).toBe(undefined);
     expect(r.impl_model).toBe(undefined);
     expect(r.impl_effort).toBe(undefined);
@@ -103,15 +112,18 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.stamped_keys).toEqual([]);
   });
 
-  test('resolves the nine session keys from the bead layer alone', () => {
+  test('resolves the twelve session keys from the bead layer alone', () => {
     const r = resolveExecSettings({
       bead: {
         spec_review_model: 'skip',
         spec_review_effort: 'low',
+        spec_review_speed: 'fast',
         plan_review_model: 'fable',
         plan_review_effort: 'medium',
+        plan_review_speed: 'default',
         impl_review_model: 'codex',
         impl_review_effort: 'xhigh',
+        impl_review_speed: 'fast',
         impl_runtime: 'claude',
         impl_model: 'haiku',
         impl_effort: 'high'
@@ -122,10 +134,13 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r).toMatchObject({
       spec_review_model: 'skip',
       spec_review_effort: 'low',
+      spec_review_speed: 'fast',
       plan_review_model: 'fable',
       plan_review_effort: 'medium',
+      plan_review_speed: 'default',
       impl_review_model: 'codex',
       impl_review_effort: 'xhigh',
+      impl_review_speed: 'fast',
       impl_runtime: 'claude',
       impl_model: 'haiku',
       impl_effort: 'high'
@@ -302,6 +317,21 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     // Fail-quiet: the key passes through to the session's own kv/harness layer.
     expect(r.spec_review_effort).toBe(undefined);
     expect(r.stamped_keys).toEqual([]);
+  });
+
+  test('drops review speed outside the fixed vocabulary', () => {
+    const r = resolveExecSettings({
+      bead: {
+        spec_review_speed: 'fast',
+        plan_review_speed: 'turbo',
+        impl_review_speed: 'default'
+      },
+      defaults: {}
+    });
+
+    expect(r.spec_review_speed).toBe('fast');
+    expect(r.plan_review_speed).toBe(undefined);
+    expect(r.impl_review_speed).toBe('default');
   });
 
   test('a retired codex model blocks dispatch without reading lower layers', () => {

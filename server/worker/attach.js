@@ -363,6 +363,10 @@ export function createLiveBd(config) {
           typeof md.spec_review_effort === 'string'
             ? md.spec_review_effort
             : undefined,
+        spec_review_speed:
+          typeof md.spec_review_speed === 'string'
+            ? md.spec_review_speed
+            : undefined,
         impl_review_model:
           typeof md.impl_review_model === 'string'
             ? md.impl_review_model
@@ -371,6 +375,10 @@ export function createLiveBd(config) {
           typeof md.impl_review_effort === 'string'
             ? md.impl_review_effort
             : undefined,
+        impl_review_speed:
+          typeof md.impl_review_speed === 'string'
+            ? md.impl_review_speed
+            : undefined,
         plan_review_model:
           typeof md.plan_review_model === 'string'
             ? md.plan_review_model
@@ -378,6 +386,10 @@ export function createLiveBd(config) {
         plan_review_effort:
           typeof md.plan_review_effort === 'string'
             ? md.plan_review_effort
+            : undefined,
+        plan_review_speed:
+          typeof md.plan_review_speed === 'string'
+            ? md.plan_review_speed
             : undefined,
         impl_runtime:
           typeof md.impl_runtime === 'string' ? md.impl_runtime : undefined,

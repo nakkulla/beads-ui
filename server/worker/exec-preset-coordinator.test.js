@@ -140,22 +140,25 @@ describe('exec-preset-coordinator implementation presets', () => {
     ]);
   });
 
-  test('keeps a 15-key profile and hides a preset with an outside key', () => {
+  test('keeps an 18-key profile and hides a preset with an outside key', () => {
     const presetStore = {
       snapshot: () => ({
         revision: 2,
         presets: [
           {
-            id: 'profile-15',
+            id: 'profile-18',
             name: '전체 프로필',
             settings: {
               workflow_mode: 'standard',
               spec_review_model: 'codex',
               spec_review_effort: 'high',
+              spec_review_speed: 'fast',
               plan_review_model: 'fable',
               plan_review_effort: 'low',
+              plan_review_speed: 'default',
               impl_review_model: 'self',
               impl_review_effort: 'xhigh',
+              impl_review_speed: 'fast',
               impl_dispatch: 'main',
               impl_runtime: 'claude',
               impl_model: 'terra',
@@ -183,7 +186,7 @@ describe('exec-preset-coordinator implementation presets', () => {
 
     const snapshot = coordinator.snapshot();
 
-    expect(snapshot.presets.map((preset) => preset.id)).toEqual(['profile-15']);
+    expect(snapshot.presets.map((preset) => preset.id)).toEqual(['profile-18']);
   });
 
   test('hides a preset whose outside key survived a real store load', () => {
@@ -507,7 +510,7 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     );
   });
 
-  test('makes no legacy copy for a partial 15-key preset before reseeding', async () => {
+  test('makes no legacy copy for a partial 18-key preset before reseeding', async () => {
     const fixture = createFixture({
       queue: legacyQueue(),
       preset: {
@@ -545,7 +548,7 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     expect(Object.hasOwn(persisted, 'exec_defaults')).toBe(false);
   });
 
-  test('replaces a partial 15-key preset after every workspace succeeded', async () => {
+  test('replaces a partial 18-key preset after every workspace succeeded', async () => {
     const fixture = createFixture({
       queue: legacyQueue(),
       preset: {
@@ -694,7 +697,7 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     ).toBe(null);
   });
 
-  test('creates no migration copy for a partial 15-key preset on a re-run', async () => {
+  test('creates no migration copy for a partial 18-key preset on a re-run', async () => {
     const preset = {
       revision: 1,
       presets: [
