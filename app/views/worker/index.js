@@ -82,6 +82,7 @@ import {
   waitBody
 } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
+import { placeMenuLanes } from './placement.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
 import { deriveWorkerBlockers } from './queue-blockers.js';
 import { deriveWorkerOverlaps } from './queue-overlaps.js';
@@ -1912,55 +1913,10 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Build queue-lane choices from the authoritative snapshot. A null result
-   * means parallel is the only choice, so no menu is needed.
-   *
-   * @returns {Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }>|null}
-   */
-  function placeMenuLanes() {
-    const q = currentQueue();
-    const serial_lane_count =
-      typeof q.serial_lane_count === 'number' &&
-      Number.isInteger(q.serial_lane_count) &&
-      q.serial_lane_count > 0
-        ? Math.min(q.serial_lane_count, 5)
-        : 0;
-    const serial_lanes = Array.isArray(q.serial_lanes) ? q.serial_lanes : [];
-    /** @type {Array<{ id: 's1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }>} */
-    const choices = [];
-    for (const lane of serial_lanes) {
-      if (choices.length >= serial_lane_count) {
-        break;
-      }
-      if (
-        !lane ||
-        typeof lane.id !== 'string' ||
-        !/^s[1-5]$/.test(lane.id) ||
-        !Array.isArray(lane.entries)
-      ) {
-        continue;
-      }
-      choices.push({
-        id: /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane.id),
-        label: `직렬 ${lane.id.slice(1)}`,
-        count: lane.entries.length
-      });
-    }
-    if (choices.length === 0) {
-      return null;
-    }
-    const queue_entries = Array.isArray(q.queue) ? q.queue : [];
-    return [
-      { id: 'parallel', label: '병렬', count: queue_entries.length },
-      ...choices
-    ];
-  }
-
-  /**
    * Build the open candidate menu for this render, if its bead is still shown.
    *
    * @param {any[]} candidates
-   * @returns {{ bead_id: string, lanes: Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }> }|null}
+   * @returns {import('./lanes.js').PlaceMenu|null}
    */
   function currentPlaceMenu(candidates) {
     if (
@@ -1971,7 +1927,7 @@ export function createWorkerView(mount_element, options = {}) {
     ) {
       return null;
     }
-    const lanes = placeMenuLanes();
+    const lanes = placeMenuLanes(currentQueue());
     return lanes ? { bead_id: place_menu_bead_id, lanes } : null;
   }
 
@@ -4501,7 +4457,7 @@ export function createWorkerView(mount_element, options = {}) {
       // 클릭을 막아 주더라도, 적재 경로가 자격을 스스로 확인해야 드래그와
       // 같은 규율이 된다.
       if (id && !place_btn.disabled) {
-        if (placeMenuLanes()) {
+        if (placeMenuLanes(currentQueue())) {
           place_menu_bead_id = id;
           doRender();
         } else {

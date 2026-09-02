@@ -3058,3 +3058,259 @@ describe('views/detail-panel 헤더 복잡 chip (UI-8x90 §5.1)', () => {
     panel.destroy();
   });
 });
+
+describe('views/detail-panel [↴ 대기로] (UI-6g3t §6)', () => {
+  /** A format-valid spec review receipt (`<reviewer>@<40-hex>`). */
+  const RECEIPT = 'codex@' + 'a'.repeat(40);
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    for (const el of Array.from(document.querySelectorAll('.toast'))) {
+      el.remove();
+    }
+  });
+
+  /**
+   * @param {Partial<any>} [over]
+   * @returns {any}
+   */
+  function queueOf(over = {}) {
+    return {
+      revision: 7,
+      auto_advance: false,
+      auto_merge: false,
+      slots: 2,
+      queue: [],
+      serial_lanes: [],
+      serial_lane_count: 0,
+      pr_wait: [],
+      done: [],
+      attempts: {},
+      ...over
+    };
+  }
+
+  /**
+   * @param {Partial<any>} [issue_patch]
+   * @param {any} [queue] - null이면 큐 스냅샷 없는 화면.
+   * @param {any} [transport]
+   */
+  function placePanel(issue_patch = {}, queue = queueOf(), transport = null) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const queueStore = createWorkerQueueStore();
+    if (queue) {
+      queueStore.set(queue);
+    }
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      queueStore: queue ? queueStore : undefined,
+      transport: transport || undefined,
+      onClose: vi.fn()
+    });
+    issueStores.register('detail:UI-1', {
+      type: 'issue-detail',
+      params: { id: 'UI-1' }
+    });
+    issueStores.getStore('detail:UI-1')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-1',
+      revision: 1,
+      issues: /** @type {any} */ ([
+        {
+          id: 'UI-1',
+          title: '인증 모듈',
+          status: 'open',
+          description: '설명 본문',
+          labels: [],
+          spec_id: 'docs/specs/x.md',
+          metadata: { spec_review: RECEIPT },
+          ...issue_patch
+        }
+      ])
+    });
+    panel.load('UI-1');
+    return { mount, panel, queueStore };
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {HTMLButtonElement|null}
+   */
+  function placeButton(mount) {
+    return mount.querySelector('.detail-overlay__place');
+  }
+
+  test('draws no button without a queue snapshot', () => {
+    const { mount, panel } = placePanel({}, null);
+
+    expect(placeButton(mount)).toBeNull();
+    panel.destroy();
+  });
+
+  test('draws no button for a closed bead', () => {
+    const { mount, panel } = placePanel({ status: 'closed' });
+
+    expect(placeButton(mount)).toBeNull();
+    panel.destroy();
+  });
+
+  test('enables the button for a placeable bead', () => {
+    const { mount, panel } = placePanel();
+
+    const button = placeButton(mount);
+
+    expect(button?.disabled).toBe(false);
+    expect(button?.getAttribute('title')).toBe('대기 큐 맨 뒤에 추가');
+    panel.destroy();
+  });
+
+  test('disables the button for a worker-ineligible bead with its reason', () => {
+    const { mount, panel } = placePanel({ labels: ['worker-ineligible'] });
+
+    const button = placeButton(mount);
+
+    expect(button?.disabled).toBe(true);
+    expect(button?.getAttribute('title')).toBe(
+      'worker-ineligible label로 워커에서 실행할 수 없습니다'
+    );
+    panel.destroy();
+  });
+
+  test('disables the button for a bead already waiting in the parallel lane', () => {
+    const { mount, panel } = placePanel(
+      {},
+      queueOf({ queue: [{ bead_id: 'OTHER' }, { bead_id: 'UI-1' }] })
+    );
+
+    const button = placeButton(mount);
+
+    expect(button?.disabled).toBe(true);
+    expect(button?.getAttribute('title')).toBe('이미 대기 중 · 병렬 #2');
+    panel.destroy();
+  });
+
+  test('sends worker-queue-place with no lane when only the parallel lane exists', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      queue: queueOf({ revision: 8, queue: [{ bead_id: 'UI-1' }] })
+    });
+    const { mount, panel } = placePanel({}, queueOf(), transport);
+
+    placeButton(mount)?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-place', {
+      bead_id: 'UI-1',
+      expected_revision: 7
+    });
+    panel.destroy();
+  });
+
+  test('opens the lane menu and sends the picked serial lane', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      queue: queueOf({
+        revision: 8,
+        serial_lane_count: 2,
+        serial_lanes: [
+          { id: 's1', entries: [] },
+          { id: 's2', entries: [{ bead_id: 'UI-1' }] }
+        ]
+      })
+    });
+    const queue = queueOf({
+      serial_lane_count: 2,
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [] }
+      ]
+    });
+    const { mount, panel } = placePanel({}, queue, transport);
+
+    placeButton(mount)?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    const lane = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.detail-overlay__place-menu .worker-card__place-lane[data-lane="s2"]'
+      )
+    );
+    lane.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-place', {
+      bead_id: 'UI-1',
+      lane: 's2',
+      expected_revision: 7
+    });
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '직렬 2 대기 #1에 추가'
+    );
+    expect(mount.querySelector('.detail-overlay__place-menu')).toBeNull();
+    panel.destroy();
+  });
+
+  test('raises a toast when the server refuses admission', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: false,
+      conflict: false,
+      admission_reason: 'spec_missing',
+      queue: queueOf()
+    });
+    const { mount, panel } = placePanel({}, queueOf(), transport);
+
+    placeButton(mount)?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '대기 적재 거부: spec_missing'
+    );
+    panel.destroy();
+  });
+
+  test('retries a conflict exactly once with the adopted revision', async () => {
+    const replies = [
+      { applied: false, conflict: true, queue: queueOf({ revision: 9 }) },
+      {
+        applied: true,
+        conflict: false,
+        queue: queueOf({ revision: 10, queue: [{ bead_id: 'UI-1' }] })
+      }
+    ];
+    const transport = vi.fn(async (/** @type {string} */ type) =>
+      type === 'worker-queue-place' ? replies.shift() : {}
+    );
+    const { mount, panel } = placePanel({}, queueOf(), transport);
+
+    placeButton(mount)?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    for (let i = 0; i < 8; i++) {
+      await Promise.resolve();
+    }
+
+    expect(
+      transport.mock.calls
+        .filter((call) => call[0] === 'worker-queue-place')
+        .map((call) => /** @type {any} */ (call)[1].expected_revision)
+    ).toEqual([7, 9]);
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '병렬 대기 #1에 추가'
+    );
+    panel.destroy();
+  });
+});

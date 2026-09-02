@@ -31,6 +31,7 @@ import {
 import { stepperTemplate } from '../board/stepper.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
 import { logPathTemplate } from './log-path.js';
+import { placementTitle } from './placement.js';
 
 /**
  * @param {unknown} sha
@@ -1969,7 +1970,7 @@ export function miniRow(item, options = {}) {
  * @param {string} bead_id
  * @returns {import('lit-html').TemplateResult}
  */
-function placeMenuList(entries, bead_id) {
+export function placeMenuList(entries, bead_id) {
   /** @type {string|undefined} */
   let current_group = undefined;
   /** @type {Array<import('lit-html').TemplateResult>} */
@@ -2360,15 +2361,12 @@ export function candidateCard(item, place_menu = null, options = {}) {
               class="op-btn op-btn--primary worker-card__place"
               data-bead-id=${item.id}
               ?disabled=${!queue_placeable}
-              title=${queue_placeable
-                ? '대기 큐 맨 뒤에 추가'
-                : worker_ineligible
-                  ? 'worker-ineligible label로 워커에서 실행할 수 없습니다'
-                  : awaiting_user
-                    ? '사용자 리뷰를 기다리는 중이라 대기 큐에 넣을 수 없습니다'
-                    : missing_description
-                      ? 'description이 없어 대기 큐에 넣을 수 없습니다'
-                      : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
+              title=${placementTitle({
+                placeable: queue_placeable,
+                worker_ineligible,
+                awaiting_user,
+                missing_description
+              })}
             >
               ↴ 대기로
             </button>`}

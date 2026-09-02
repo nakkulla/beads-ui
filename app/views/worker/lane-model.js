@@ -461,6 +461,32 @@ export function latestTerminalAttempt(attempts, bead_id) {
 }
 
 /**
+ * `queue` 스냅샷의 실행중 레인 구성원 (UI-6g3t §6.1). 레인을 세우는 판정
+ * ({@link activeByBead})을 그대로 부르므로 배치 판정(`placement.js`)과 이 레인이
+ * 같은 사실을 본다 — 술어를 다시 쓰면 두 화면이 서로 다른 "실행 중"을 말한다.
+ *
+ * @param {any} queue - `worker-queue` 스냅샷.
+ * @returns {Set<string>}
+ */
+export function runningLaneBeadIds(queue) {
+  const snapshot = objectOf(queue);
+  /** @type {Map<string, number>} */
+  const done_at_by_bead = new Map();
+  for (const entry of Array.isArray(snapshot.done) ? snapshot.done : []) {
+    if (
+      entry &&
+      typeof entry.bead_id === 'string' &&
+      typeof entry.added_at === 'number'
+    ) {
+      done_at_by_bead.set(entry.bead_id, entry.added_at);
+    }
+  }
+  return new Set(
+    activeByBead(objectOf(snapshot.attempts), done_at_by_bead).keys()
+  );
+}
+
+/**
  * Fold one repo's UNFINISHED attempts onto the beads they belong to.
  *
  * 실행중 레인은 `running` attempt만이 아니라 leaf paused와 아직 처리되지 않은
