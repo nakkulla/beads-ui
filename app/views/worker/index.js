@@ -4798,6 +4798,26 @@ export function createWorkerView(mount_element, options = {}) {
       return;
     }
     // Tile controls act on the attempt and must never also open the drawer.
+    const tile_discard_abandon = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.rtile__discard-abandon')
+    );
+    if (tile_discard_abandon) {
+      const tile = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile')
+      );
+      const bead_id = tile?.dataset?.beadId;
+      if (bead_id) {
+        void abandonDiscard(
+          bead_id,
+          tile_discard_abandon.dataset.operationId || '',
+          {
+            kind: tile_discard_abandon.dataset.operationKind || '',
+            last_error: tile_discard_abandon.dataset.lastError || ''
+          }
+        );
+      }
+      return;
+    }
     const tile_discard = /** @type {HTMLElement|null} */ (
       target?.closest?.('.rtile__discard')
     );

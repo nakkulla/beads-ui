@@ -2553,6 +2553,25 @@ export function createMonitorView(mount_element, options) {
       );
       return;
     }
+    if (cls.contains('rtile__discard-abandon')) {
+      const operation = {
+        kind: button.dataset.operationKind || '',
+        last_error: button.dataset.lastError || ''
+      };
+      if (!confirmFn(discardAbandonConfirmationMessage(bead_id, operation))) {
+        return;
+      }
+      void abandonDiscard(
+        {
+          bead_id,
+          operation_id: button.dataset.operationId || ''
+        },
+        root_dir,
+        revision,
+        operation
+      );
+      return;
+    }
     if (cls.contains('rtile__discard')) {
       const confirmation =
         button.dataset.confirmation === 'merged' ? 'merged' : 'unmerged';

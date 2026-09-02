@@ -747,28 +747,30 @@ function sessionOpenButton(current) {
  *
  * @param {'parked'|'retry_wait'|'waiting'} kind
  * @param {FailureTile|WaitTile|null} held - 대기 중인 attempt의 투영.
- * @param {import('lit-html').TemplateResult|''} discard_button - 실패 타일이 쓰는
- * `.rtile__discard` 그대로. 같은 정리이므로 두 번째 조작을 만들지 않는다.
+ * @param {import('lit-html').TemplateResult|''} discard_actions - 실패 타일이 쓰는
+ * `.rtile__discard`와, 그 작업이 아카이브 단계에서 실패했을 때 뒤따르는
+ * `.rtile__discard-abandon` 그대로. 같은 정리이므로 두 번째 조작을 만들지 않는다.
+ * 폐기 버튼이 없으면 `''`이라 foot 자체가 재료 없는 줄이 된다.
  * @param {import('lit-html').TemplateResult|''} [dependency_chips] - 슬롯 4a 칩,
  * 이미 계산된 것 그대로. 재료가 없으면 `''`이라 줄이 통째로 빠진다 (fail-quiet).
  * @returns {import('lit-html').TemplateResult|''}
  */
-function heldBodyTemplate(kind, held, discard_button, dependency_chips = '') {
+function heldBodyTemplate(kind, held, discard_actions, dependency_chips = '') {
   if (kind === 'retry_wait') {
     // 스펙 §5.1: 뱃지 `↻ 재시도 대기 n/3 · HH:MM`이 이미 상태를 말하므로 본문은
     // 비운다 (fail-quiet). foot에는 `폐기` 하나뿐이고, 투영이 그 버튼을 주지
     // 않으면 재료 없는 줄이므로 foot 자체를 그리지 않는다.
-    if (!discard_button) {
+    if (!discard_actions) {
       return '';
     }
-    return html`<div class="rtile__foot">${discard_button}</div>`;
+    return html`<div class="rtile__foot">${discard_actions}</div>`;
   }
   const summary = summaryText(held?.summary);
   if (kind === 'waiting') {
     return html`${summary
         ? html`<p class="rtile__held-summary">${summary}</p>`
         : ''}${dependency_chips}
-      <div class="rtile__foot">${discard_button}</div>`;
+      <div class="rtile__foot">${discard_actions}</div>`;
   }
   // 파킹 타일도 같은 블록을 싣는다 (§9): 팝오버가 없는 타일이므로 이력이
   // 보일 자리가 본문뿐이다.
@@ -785,7 +787,7 @@ function heldBodyTemplate(kind, held, discard_button, dependency_chips = '') {
       >
         재시도
       </button>
-      ${discard_button}
+      ${discard_actions}
     </div>`;
 }
 
@@ -1028,6 +1030,28 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           ${tile.discard.label}
         </button>`
       : '';
+  // 아카이브 단계에서 영구 실패한 폐기의 세 번째 출구 (discard-abandon §3.1).
+  // 폐기 실패는 실행 중·held·파킹 타일 어디서나 나므로 이 버튼도 `[폐기]`와
+  // 같은 자리에서 같은 재료로 만들고, 순서는 `[재시도] → [폐기 포기] →
+  // [세션에서 해결]`이다 — 되돌리는 정도가 약한 것부터 읽힌다. `[재시도]`가
+  // 없는 타일에서는 이 출구도 없다: 같은 실패 하나가 내는 두 조작이다.
+  const abandon_button =
+    discard_button && tile.discard?.abandon?.action === true
+      ? html`<button
+          type="button"
+          class="rtile__discard-abandon"
+          data-operation-id=${tile.discard.operation?.operation_id || ''}
+          data-operation-kind=${tile.discard.operation?.kind || ''}
+          data-last-error=${tile.discard.error || ''}
+          title=${tile.discard.abandon.title}
+          aria-label=${tile.discard.abandon.label}
+        >
+          ${tile.discard.abandon.label}
+        </button>`
+      : '';
+  const discard_actions = abandon_button
+    ? html`${discard_button}${abandon_button}`
+    : discard_button;
   return html`<div
     class="rtile${sel ? ' rtile--sel' : ''}${paused
       ? ' rtile--paused'
@@ -1075,7 +1099,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 >
                   ↻ ${resume_label}
                 </button>
-                ${discard_button}`
+                ${discard_actions}`
             : html`<button
                   type="button"
                   class="rtile__session"
@@ -1104,7 +1128,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                     >
                       ⏸
                     </button>`}
-                ${discard_button}`}${resolve_button}
+                ${discard_actions}`}${resolve_button}
       </div>
     </div>
     <div class="rtile__title">${tile.title}</div>
@@ -1112,7 +1136,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ? heldBodyTemplate(
           parked ? 'parked' : retry_wait ? 'retry_wait' : 'waiting',
           parked ? park : wait,
-          discard_button,
+          discard_actions,
           waiting ? monitor_deps : ''
         )
       : failed

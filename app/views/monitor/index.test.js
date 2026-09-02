@@ -1207,6 +1207,55 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     );
   });
 
+  test('abandons a failed archive-step discard from the failed tile', () => {
+    const confirmFn = vi.fn(() => true);
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              cause: 'runner_exit',
+              session_id: 's'
+            }
+          },
+          discard_operations: {
+            op1: {
+              operation_id: 'op1',
+              bead_id: 'A-1',
+              attempt_id: 't1',
+              requested_at: 1,
+              phase: 'requested',
+              last_error: 'submodule_observation_failed'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()],
+      confirm: confirmFn
+    });
+
+    view.load();
+    click(mount, '.rtile__discard-abandon');
+
+    expect(confirmFn).toHaveBeenCalledWith(
+      expect.stringContaining('실패한 폐기 작업을 포기합니다')
+    );
+    expect(sent).toEqual([
+      {
+        type: 'worker-discard-abandon',
+        payload: {
+          bead_id: 'A-1',
+          operation_id: 'op1',
+          root_dir: WS_A,
+          expected_revision: 1
+        }
+      }
+    ]);
+  });
+
   test('opens failed detail from the badge and closes it outside', () => {
     const { mount, view } = setup({
       workspaces: [

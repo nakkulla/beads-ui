@@ -4102,9 +4102,11 @@ html[data-theme='dark'] {
   opacity: 0.5;
 }
 
-/* [세션에서 해결] (UI-jw27 §4) — 같은 슬롯 1 오른쪽 끝에서 [폐기] 다음에 선다.
-   되돌리는 것이 없으니 [폐기]의 danger 색을 쓰지 않고, 중립 외곽선으로 둔다. */
-.rtile__resolve {
+/* [세션에서 해결]·[폐기 포기] — 같은 슬롯 1 오른쪽 끝에서 [폐기] 다음에 선다.
+   둘 다 되돌리는 것이 없으니 [폐기]의 danger 색을 쓰지 않고, 중립 외곽선으로
+   둔다. */
+.rtile__resolve,
+.rtile__discard-abandon {
   flex: 0 0 auto;
   border: 1px solid var(--border-card);
   border-radius: var(--r-3);
@@ -4116,11 +4118,13 @@ html[data-theme='dark'] {
   padding: 2px 5px;
 }
 
-.rtile__resolve:hover:not(:disabled) {
+.rtile__resolve:hover:not(:disabled),
+.rtile__discard-abandon:hover:not(:disabled) {
   color: var(--text-primary);
 }
 
-.rtile__resolve:disabled {
+.rtile__resolve:disabled,
+.rtile__discard-abandon:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }

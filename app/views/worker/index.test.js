@@ -3788,6 +3788,66 @@ describe('views/worker', () => {
     vi.unstubAllGlobals();
   });
 
+  test('abandons a failed archive-step discard from the failed tile', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          f1: {
+            attempt_id: 'f1',
+            bead_id: 'B1',
+            status: 'failed',
+            repo: '/repo',
+            cause: 'verify_failed:x',
+            session_id: 'sid-1'
+          }
+        },
+        discard_operations: {
+          'op-archive': {
+            operation_id: 'op-archive',
+            bead_id: 'B1',
+            attempt_id: 'f1',
+            requested_at: 1,
+            mode: 'unmerged',
+            phase: 'requested',
+            last_error: 'orphan_gitlink_content:vendor/child'
+          }
+        }
+      })
+    );
+    const transport = vi.fn(async () => ({
+      abandoned: true,
+      conflict: false,
+      queue: null
+    }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+
+    const abandon = /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        '.rtile[data-attempt-id="f1"] .rtile__discard-abandon'
+      )
+    );
+    abandon.click();
+
+    expect(abandon.textContent?.trim()).toBe('폐기 포기');
+    expect(confirm).toHaveBeenCalledWith(
+      'B1: 실패한 폐기 작업을 포기합니다. 백업과 폐기는 수행되지 않았고 bead는 폐기 이전 상태로 돌아갑니다. 계속할까요?'
+    );
+    expect(transport).toHaveBeenCalledWith('worker-discard-abandon', {
+      bead_id: 'B1',
+      operation_id: 'op-archive',
+      expected_revision: 1
+    });
+    vi.unstubAllGlobals();
+  });
+
   test('the failed tile targets the latest same-bead failure', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
