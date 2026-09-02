@@ -48,6 +48,7 @@ import {
   miniRow,
   nowPanel,
   paneTemplate,
+  queueRowOps,
   waitBody
 } from '../worker/lanes.js';
 import { runningTile } from '../worker/running-grid.js';
@@ -999,51 +1000,6 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * The 대기 행 조작 묶음 (UI-5ksp §4.6). 행 밖 별도 줄이던 자리를 `miniRow`의
-   * `actions` 슬롯 — 행 1번 줄 오른쪽 끝 — 으로 옮겼다. `↑ ↓ ✕`는 드래그의
-   * coarse pointer 보완재라 표시 조건은 CSS가 소유한다. 의존성 편집은 여기
-   * 있던 ⛓이 아니라 이슈 상세 `의존성` 절이다 (UI-lx45 §5).
-   *
-   * @param {LaneItem} item
-   * @param {boolean} [nudgeable] - true for 병렬 행 only: 직렬 레인의 순서는
-   * 의존이 소유하므로 한 칸 위·아래로 미는 버튼이 없다.
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function rowActions(item, nudgeable = false) {
-    return html`<span class="worker-mini__rowops">
-      ${nudgeable
-        ? html`<button
-              type="button"
-              class="worker-mini__rowops-up"
-              data-bead-id=${item.id}
-              title="같은 레포 안에서 한 칸 위로"
-              aria-label="한 칸 위로"
-            >
-              ↑
-            </button>
-            <button
-              type="button"
-              class="worker-mini__rowops-down"
-              data-bead-id=${item.id}
-              title="같은 레포 안에서 한 칸 아래로"
-              aria-label="한 칸 아래로"
-            >
-              ↓
-            </button>
-            <button
-              type="button"
-              class="worker-mini__rowops-remove"
-              data-bead-id=${item.id}
-              title="대기에서 빼기"
-              aria-label="대기에서 빼기"
-            >
-              ✕
-            </button>`
-        : ''}
-    </span>`;
-  }
-
-  /**
    * One 병렬 영역 row (§4.1). Worker `miniRow` 그대로이고, 드래그 좌표만 바깥
    * shell이 싣는다.
    *
@@ -1060,7 +1016,9 @@ export function createMonitorView(mount_element, options) {
       data-row-index=${row_index}
       data-queue-index=${String(item.queue_index ?? 0)}
     >
-      ${miniRow(withOverlaps(item), { actions: rowActions(item, true) })}
+      ${miniRow(withOverlaps(item), {
+        actions: queueRowOps(item, { nudgeable: true })
+      })}
     </div>`;
   }
 
@@ -1282,7 +1240,7 @@ export function createMonitorView(mount_element, options) {
       data-row-index=${row_index}
       data-queue-index=${String(item.queue_index ?? 0)}
     >
-      ${miniRow(withOverlaps(item), { actions: rowActions(item) })}
+      ${miniRow(withOverlaps(item), { actions: queueRowOps(item) })}
     </div>`;
   }
 

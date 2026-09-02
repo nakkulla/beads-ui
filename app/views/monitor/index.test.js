@@ -669,6 +669,46 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     ).toEqual(['A-2']);
   });
 
+  // 두 탭이 같은 조각(`queueRowOps`)을 쓰기 전에는 Monitor 직렬 행만 `nudgeable`
+  // false로 묶음 전체가 비어 `✕`가 없었다 (UI-6g3t §4).
+  test('stands the remove ✕ on a serial lane row too', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      el(mount, '.worker-wait__lane .worker-mini__rowops-remove')
+    ).not.toBeNull();
+  });
+
+  test('keeps ↑ ↓ off a serial lane row', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const ops = el(mount, '.worker-wait__lane .worker-mini__rowops');
+
+    expect(
+      Array.from(ops.querySelectorAll('button')).map((button) =>
+        (button.textContent || '').trim()
+      )
+    ).toEqual(['✕']);
+  });
+
   test('names each repo serial lane with its repo', () => {
     const { mount, view } = setup({
       workspaces: [

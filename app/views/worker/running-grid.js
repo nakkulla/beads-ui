@@ -1065,7 +1065,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           : failed
             ? html`<button
                   type="button"
-                  class="rtile__resume"
+                  class="op-btn rtile__resume"
                   data-resume-kind=${resume_kind}
                   ?disabled=${failure?.resume_eligible === false}
                   title=${failure?.resume_eligible === false
@@ -1087,11 +1087,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 ${paused
                   ? html`<button
                       type="button"
-                      class="rtile__resume"
+                      class="op-btn rtile__resume"
                       title="같은 세션으로 이어서 재개"
                       aria-label="재개"
                     >
-                      ▶
+                      ▶ 재개
                     </button>`
                   : html`<button
                       type="button"

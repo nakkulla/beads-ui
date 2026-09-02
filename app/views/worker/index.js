@@ -74,6 +74,7 @@ import {
   miniRow,
   nowPanel,
   paneTemplate,
+  queueRowOps,
   repoOpsStripTemplate,
   reviewSessionRowState,
   staleWorkProjection,
@@ -3739,35 +3740,6 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * The 대기·직렬 행 `✕` (UI-d13v §6): 후보 레인이 드롭 대상이 아니게 되면서
-   * 대기→후보 되돌리기가 잃은 경로를 대신한다. 자리는 Monitor가 UI-5ksp §4.6으로
-   * 같은 조각을 붙인 곳과 같다 — 행 1번 줄 조작 슬롯 끝이다.
-   *
-   * 이미 출발한 행에는 그리지 않는다: 판정은 드롭이 거부되던 것과 같은 조건
-   * (`done`이거나 draggable하지 않은 행 — 실행 중 attempt·폐기·stale 점유)이다.
-   *
-   * @param {any} item
-   * @returns {import('lit-html').TemplateResult|undefined}
-   */
-  function queueRowActions(item) {
-    if (item.draggable !== true || item.done === true) {
-      return undefined;
-    }
-    return html`<span class="worker-mini__rowops">
-      <button
-        type="button"
-        class="worker-mini__rowops-remove"
-        data-action="queue-remove"
-        data-bead-id=${item.id}
-        title="대기에서 빼기"
-        aria-label="대기에서 빼기"
-      >
-        ✕
-      </button>
-    </span>`;
-  }
-
-  /**
    * One 대기 행 shell (UI-4tud §4.5). 드래그 원천 종류·레포·좌표를 DOM에 실어
    * 드래그 컨트롤러가 행 템플릿을 몰라도 되게 한다 — Monitor `.mon2-item`과 같은
    * 계약이고, 두 탭이 같은 `lane-drag` 모듈을 쓴다.
@@ -3787,7 +3759,7 @@ export function createWorkerView(mount_element, options = {}) {
     >
       ${miniRow(
         { ...item, ...discardResolveFields(item.id, item.discard) },
-        { actions: queueRowActions(item) }
+        { actions: queueRowOps(item) }
       )}
     </div>`;
   }
@@ -3822,7 +3794,7 @@ export function createWorkerView(mount_element, options = {}) {
             ...lane.ghosts.map((/** @type {any} */ it) =>
               miniRow(
                 { ...it, ...discardResolveFields(it.id, it.discard) },
-                { actions: queueRowActions(it) }
+                { actions: queueRowOps(it) }
               )
             ),
             ...lane.items.map((/** @type {any} */ it, index) =>

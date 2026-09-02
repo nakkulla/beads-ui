@@ -1505,6 +1505,64 @@ function doneThreeLineRow(item) {
 }
 
 /**
+ * The 대기 행 조작 묶음 — 행 1번 줄 끝의 조작 슬롯이다 (UI-6g3t §4). Worker
+ * `queueRowActions`와 Monitor `rowActions`가 같은 조각을 따로 들고 있어 두 탭의
+ * 조작 밀도가 갈렸다 — Monitor 직렬 행에는 `✕`가 아예 없었다. 여기 하나로 합친다.
+ *
+ * `✕`는 병렬·직렬, 두 탭의 **모든** 대기 행에 선다. 그리지 않는 조건은 이미
+ * 출발한 행 하나뿐이다. `↑ ↓`는 `nudgeable === true`일 때만 마크업에 있고 실제
+ * 표시 여부는 지금처럼 CSS(coarse pointer · 640px 이하)가 소유한다 — Worker 탭은
+ * nudge 핸들러가 없으므로 넘기지 않는다. 순서는 `↑ ↓ ✕` 고정이고 묶음이
+ * `margin-left: auto`로 오른쪽에 붙으므로 `↑↓`가 나타나도 `✕`의 자리는 폭과
+ * 무관하게 그대로다.
+ *
+ * 클릭 핸들러는 두 탭이 각자 남는다: Worker는 `[data-action="queue-remove"]`로,
+ * Monitor `runRowAction`은 클래스로 분기한다. 드래그 컨트롤러가 이미 그렇게
+ * 나뉘어 있는 것과 같은 경계다.
+ *
+ * @param {any} item
+ * @param {{ nudgeable?: boolean }} [options]
+ * @returns {import('lit-html').TemplateResult|undefined}
+ */
+export function queueRowOps(item, options = {}) {
+  if (item.draggable !== true || item.done === true) {
+    return undefined;
+  }
+  return html`<span class="worker-mini__rowops">
+    ${options.nudgeable === true
+      ? html`<button
+            type="button"
+            class="op-btn op-btn--icon worker-mini__rowops-up"
+            data-bead-id=${item.id}
+            title="같은 레포 안에서 한 칸 위로"
+            aria-label="한 칸 위로"
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            class="op-btn op-btn--icon worker-mini__rowops-down"
+            data-bead-id=${item.id}
+            title="같은 레포 안에서 한 칸 아래로"
+            aria-label="한 칸 아래로"
+          >
+            ↓
+          </button>`
+      : ''}
+    <button
+      type="button"
+      class="op-btn op-btn--icon worker-mini__rowops-remove"
+      data-action="queue-remove"
+      data-bead-id=${item.id}
+      title="대기에서 빼기"
+      aria-label="대기에서 빼기"
+    >
+      ✕
+    </button>
+  </span>`;
+}
+
+/**
  * One `.mini` row.
  *
  * PR 대기 레인과 REVISE 파킹 행만 다단 카드로 그린다 (UI-k59y §1, UI-yp64 §3):
@@ -2277,7 +2335,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
             ${placeMenuList(place_menu.lanes, item.id)}
             <button
               type="button"
-              class="worker-card__place-cancel"
+              class="op-btn op-btn--icon worker-card__place-cancel"
               data-bead-id=${item.id}
               title="레인 선택 취소"
               aria-label="레인 선택 취소"
@@ -2299,7 +2357,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
                  종류로 감추지 않는다: 드래그라는 대체 경로가 없다. -->
             <button
               type="button"
-              class="worker-card__place"
+              class="op-btn op-btn--primary worker-card__place"
               data-bead-id=${item.id}
               ?disabled=${!queue_placeable}
               title=${queue_placeable
@@ -2312,7 +2370,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
                       ? 'description이 없어 대기 큐에 넣을 수 없습니다'
                       : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
             >
-              대기로 ↴
+              ↴ 대기로
             </button>`}
     </div>
     ${timesMeta(item)}

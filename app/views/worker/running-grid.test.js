@@ -2454,17 +2454,17 @@ describe('worker failed tile resume button (UI-8h1x §3.3a)', () => {
     );
   });
 
+  // 두 종류가 갈라 놓는 것은 문구·title·aria뿐이다. 셀렉터와 슬롯은 같아야 하고,
+  // UI-6g3t §3.2가 그 셀렉터에 형태 토큰 `.op-btn`을 덧붙였다.
   test('keeps the class and the tile position unchanged across both kinds', () => {
     const settlement = renderResumeButton({
       reason: 'containment_unobservable'
     });
-
-    expect(settlement.className).toBe('rtile__resume');
-    expect(settlement.closest('.rtile__hd-actions')).not.toBeNull();
-
     const session = renderResumeButton({ reason: 'push_not_contained' });
 
-    expect(session.className).toBe('rtile__resume');
+    expect(settlement.className).toBe('op-btn rtile__resume');
+    expect(session.className).toBe(settlement.className);
+    expect(settlement.closest('.rtile__hd-actions')).not.toBeNull();
     expect(session.closest('.rtile__hd-actions')).not.toBeNull();
   });
 });
@@ -2541,5 +2541,61 @@ describe('worker running tile — [세션에서 해결] (UI-jw27 §4)', () => {
     );
 
     expect(button.disabled).toBe(true);
+  });
+});
+
+describe('실행 타일 조작 형태 (UI-6g3t §3.2·§3.3)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Record<string, unknown>} [patch]
+   * @returns {HTMLElement}
+   */
+  function tileEl(patch = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(
+        /** @type {any} */ (tileInput(patch)),
+        5000,
+        null,
+        /** @type {any} */ ({ monitor: null })
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  // 홀로 선 `▶`는 옆의 `▤`·`⏸`과 뜻이 갈리므로 라벨을 얻는다 (§3.3).
+  test('labels the paused tile resume button', () => {
+    const tile = tileEl({ paused: true });
+
+    const resume = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__resume')
+    );
+
+    expect(resume.textContent?.replace(/\s+/g, ' ').trim()).toBe('▶ 재개');
+  });
+
+  test('gives the paused tile resume button the op token', () => {
+    const tile = tileEl({ paused: true });
+
+    const resume = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__resume')
+    );
+
+    expect(resume.classList.contains('op-btn')).toBe(true);
+  });
+
+  test('leaves the ⏸ neighbour icon-only', () => {
+    const tile = tileEl({});
+
+    const pause = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__pause')
+    );
+
+    expect(pause.textContent?.trim()).toBe('⏸');
+    expect(pause.classList.contains('op-btn')).toBe(false);
   });
 });

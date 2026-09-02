@@ -2785,6 +2785,80 @@ html[data-theme='dark'] {
   color: var(--fg);
 }
 
+/* ---------- 조작 형태 토큰 `.op-btn` (UI-6g3t §3.1) ---------- */
+/* 슬롯 표(`2026-08-25-card-header-grammar-unify-design.md` §5.1)가 조작의
+   **자리**를 정하고, 이 토큰이 **모양**을 정한다. 둘을 나눠야 다음에 버튼을 다는
+   사람이 자리도 모양도 고르지 않는다. 토큰이 정하는 것은 크기·테두리 두께·글자
+   크기·hover·disabled뿐이고 색은 변형 클래스나 기존 클래스가 덮어쓰므로, 색
+   의미가 있는 이웃(`.rtile__discard`의 danger, `.worker-mini__merge`의 success)은
+   토큰을 받지 않고 높이만 맞춘다. 적용 대상 표는
+   `2026-09-02-worker-operation-surface-unify-design.md` §3.2가 소유한다. */
+.op-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 24px;
+  padding: 2px var(--sp-6);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-small);
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.op-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.op-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.op-btn--primary {
+  border-color: var(--stage-plan-dim);
+  color: var(--stage-plan-on);
+}
+
+.op-btn--icon {
+  min-width: 24px;
+  padding: 2px;
+  justify-content: center;
+}
+
+/* 같은 묶음의 이웃 버튼은 **높이만** 맞춘다 (§3.2). 한 묶음 안에서 높이가 갈리면
+   줄이 들쭉날쭉해 어느 것이 버튼인지 다시 읽어야 하고, 반대로 색까지 통일하면
+   `폐기`의 danger 신호가 사라진다 — 그래서 색·테두리·문구는 각자의 규칙이
+   그대로 소유한다. */
+.rtile__hd-actions > button,
+.worker-mini__rowops > button,
+.worker-mini__actions > button,
+.worker-card__foot > button {
+  min-height: 24px;
+}
+
+@media (any-pointer: coarse), (max-width: 640px) {
+  .op-btn {
+    min-height: 32px;
+  }
+
+  .op-btn--icon {
+    min-width: 32px;
+  }
+
+  .rtile__hd-actions > button,
+  .worker-mini__rowops > button,
+  .worker-mini__actions > button,
+  .worker-card__foot > button {
+    min-height: 32px;
+  }
+}
+
 /* ---------- Worker console (queue + running grid + transcript, spec §5) ---------- */
 /* Token-driven (tokens.css): dark default + [data-theme='light'] both supported. */
 .worker-console {
@@ -4148,9 +4222,9 @@ html[data-theme='dark'] {
 }
 
 /* 일시정지·재개 (worker-phase1 §2.1): durable [폐기]와 달리 되돌릴 수 있으므로
-   danger 색을 쓰지 않는다. */
-.rtile__pause,
-.rtile__resume {
+   danger 색을 쓰지 않는다. `[↻ 이어하기]`는 UI-6g3t §3.2에서 `.op-btn`을 받았고
+   `⏸`은 그 이웃이라 높이만 맞춘다 — 그래서 둘의 규칙이 갈린다. */
+.rtile__pause {
   flex: 0 0 auto;
   border: none;
   background: transparent;
@@ -4161,13 +4235,15 @@ html[data-theme='dark'] {
   padding: 0 2px;
 }
 
-.rtile__pause:hover:not(:disabled),
-.rtile__resume:hover:not(:disabled) {
+.rtile__resume {
+  flex: 0 0 auto;
+}
+
+.rtile__pause:hover:not(:disabled) {
   color: var(--accent);
 }
 
-.rtile__pause:disabled,
-.rtile__resume:disabled {
+.rtile__pause:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
@@ -6494,23 +6570,13 @@ html[data-theme='dark'] {
 /* 버튼식 큐 적재 (UI-fmwh §4.2): 드래그 가능 여부와 무관하게 항상 보이는
    보완재. 자격 조건은 템플릿이 드래그와 동일하게 결정한다. */
 .worker-card__place {
-  display: inline-block;
   margin-left: auto;
-  padding: 2px var(--sp-8);
-  border: 1px solid var(--stage-plan-dim);
-  border-radius: var(--r-6);
-  background: transparent;
-  color: var(--stage-plan-on);
-  font-size: var(--fs-chip);
-  white-space: nowrap;
-  cursor: pointer;
 }
 
+/* 자격 미달의 색만 남긴다 — 흐림·커서는 `.op-btn:disabled`가 소유한다. */
 .worker-card__place:disabled {
   border-color: var(--border-chip);
   color: var(--text-dim);
-  opacity: 0.55;
-  cursor: not-allowed;
 }
 
 .worker-card__reason + .worker-card__place {
@@ -6567,16 +6633,7 @@ html[data-theme='dark'] {
 }
 
 .worker-card__place-cancel {
-  display: inline-flex;
   align-self: flex-end;
-  align-items: center;
-  padding: 2px var(--sp-6);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: var(--fs-chip);
-  cursor: pointer;
 }
 
 /* --- 모니터 탭 (UI-qrfo §8) --- */
@@ -7152,17 +7209,6 @@ html[data-theme='dark'] {
   margin-left: auto;
 }
 
-.worker-mini__rowops button {
-  min-width: 28px;
-  padding: var(--sp-2) var(--sp-4);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  cursor: pointer;
-}
-
 /* 자리 옮기기만 드래그의 coarse pointer 보완재다 — 의존성 버튼은 화면 폭과
    무관한 상시 조작이라 늘 보인다. `✕`도 상시다 (UI-d13v §6): 후보 레인이 드롭
    대상이 아니게 되면서 대기→후보 되돌리기의 유일한 경로가 됐으므로 포인터
@@ -7174,14 +7220,12 @@ html[data-theme='dark'] {
 
 .worker-mini__rowops-remove {
   display: inline-flex;
-  align-items: center;
 }
 
 @media (any-pointer: coarse), (max-width: 640px) {
   .worker-mini__rowops-up,
   .worker-mini__rowops-down {
     display: inline-flex;
-    align-items: center;
   }
 }
 
@@ -7860,43 +7904,16 @@ html[data-theme='dark'] {
   min-width: 0;
 }
 
+/* 크기·테두리·글자 크기·hover·disabled는 `.op-btn`이 소유한다 (UI-6g3t §3.2).
+   여기 남는 것은 행 안에서 줄지 않는다는 배치 사실뿐이다. */
 .detail-session__resume {
   flex: 0 0 auto;
-  padding: 0 var(--sp-6);
-  border: 1px solid var(--border-card);
-  border-radius: var(--r-6);
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font-size: var(--fs-caption);
-  cursor: pointer;
 }
 
-.detail-session__resume:hover:not(:disabled) {
-  border-color: var(--border-tile-run);
-}
-
-.detail-session__resume:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-/* 터미널에 붙여 넣을 재개 명령 복사 (UI-4xzk §6.5). `↻ 이어하기`와 다른 조작이라
-   같은 크기·같은 자리를 쓰되 테두리를 중립 계열로 낮춘다 — 서버에 무언가를
-   시키는 버튼이 아니다. */
+/* 터미널에 붙여 넣을 재개 명령 복사 (UI-4xzk §6.5). `↻ 이어하기`와 다른 조작이지만
+   같은 크기·같은 자리이고, 형태는 두 버튼 모두 `.op-btn`이 정한다. */
 .detail-session__resume-cmd {
   flex: 0 0 auto;
-  padding: 0 var(--sp-6);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: var(--fs-caption);
-  cursor: pointer;
-}
-
-.detail-session__resume-cmd:hover {
-  color: var(--text-primary);
-  border-color: var(--border-route);
 }
 
 /* 세션 행의 토큰 배지 (UI-d7pw §2.2). 레인의 .worker-usage와 같은 톤 —
