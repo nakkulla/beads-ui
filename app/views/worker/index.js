@@ -1689,6 +1689,34 @@ export function createWorkerView(mount_element, options = {}) {
    */
   let is_mobile = false;
   /**
+   * 이 탭의 이슈 검색어 (UI-6g3t §7). 뷰의 메모리에만 있고 localStorage에는
+   * 쓰지 않는다 — 새로고침 뒤 남은 검색어는 아무도 요청하지 않은 채 화면 절반을
+   * 흐리게 만든다. 일치하지 않는 카드는 흐려질 뿐 사라지지 않으므로 순번·드래그
+   * 좌표·건수는 검색과 무관하다.
+   *
+   * @type {string}
+   */
+  let search_query = '';
+  /**
+   * Whether a search is on. 판정은 모델과 같은 정규화(`trim`)를 쓴다 — 공백만
+   * 친 검색은 검색이 아니다.
+   */
+  function searching() {
+    return search_query.trim().length > 0;
+  }
+  /**
+   * One pane header's 「일치 n」 (§7). 검색 중이 아니면 `undefined`이고, 그때
+   * `paneTemplate`은 키가 없는 것으로 보고 지금 그대로 그린다 (fail-quiet).
+   *
+   * @param {any[]} rows
+   * @returns {number|undefined}
+   */
+  function matchCountOf(rows) {
+    return searching()
+      ? rows.filter((row) => row.search_match === true).length
+      : undefined;
+  }
+  /**
    * Beads whose [머지] click has been sent but whose first progress snapshot has
    * not arrived yet (UI-raqh §4). It covers exactly that gap so the row reacts
    * to the click immediately; the server's own `merge_progress` supersedes it
@@ -2658,7 +2686,10 @@ export function createWorkerView(mount_element, options = {}) {
       // 배지에도 들어가지 않는다 — 한쪽만 풀어도 나타나지 않기 때문이다.
       candidate_hidden_counts: 'per_control',
       candidate_sort: 'as_given',
-      groups: 'all'
+      groups: 'all',
+      // 검색은 워커 탭만의 강조다 (§7): 값이 비면 모델은 키를 달지 않으므로
+      // Monitor 탭과 같은 모델이 그대로 나온다.
+      search: search_query
     });
     return current_lanes;
   }
@@ -3131,6 +3162,12 @@ export function createWorkerView(mount_element, options = {}) {
         );
         return {
           ...row,
+          // 검색 판정은 레인 모델이 소유한다 (UI-6g3t §7). PR 대기 행은 행
+          // 투영이 새로 만드는 객체라 그 키를 여기서 옮겨 실어야 하고, 검색이
+          // 없으면 옮길 키도 없다 (fail-quiet).
+          ...(item?.search_match === undefined
+            ? {}
+            : { search_match: item.search_match }),
           workflow: bead_workflow[e.bead_id] || null,
           priority: item?.priority,
           from_id: item?.from_id,
@@ -3407,6 +3444,17 @@ export function createWorkerView(mount_element, options = {}) {
           )}
         </select>
       </label> `;
+    // 검색은 "누르는 곳"이므로 조작 묶음의 끝이다 (UI-6g3t §7, 툴바 규칙은
+    // UI-58y2). 후보 필터 strip과는 답하는 질문이 다르다 — strip은 후보 페인의
+    // 표시 조건이고 이 입력은 탭 전체의 강조다. 버튼이 아니므로 `.op-btn`을
+    // 주지 않는다.
+    const search = html`<input
+      type="search"
+      class="worker-search"
+      placeholder="ID·제목 검색"
+      aria-label="이슈 검색 (ID·제목)"
+      .value=${search_query}
+    />`;
     // 정리 멈춤은 더 이상 배너가 아니라 타임라인의 한 항목이다 (§4.2) — 스트립의
     // 해결 필요 배지가 부르고, 클릭이 그 자리로 데려간다.
     const repo_operations = repoOpsStripTemplate(
@@ -3429,14 +3477,16 @@ export function createWorkerView(mount_element, options = {}) {
           </div>
         </div>
         <div class="worker-ctrl worker-ctrl--mobile">
-          <div class="worker-ctrl__ops">${settings}</div>
+          <div class="worker-ctrl__ops">${settings}${search}</div>
           <div class="worker-kpi">${base_chip}</div>
         </div>
         ${hold_banner}${repo_operations}${repo_ops_settings.template()}`;
     }
     // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
     return html`<div class="worker-ctrl">
-        <div class="worker-ctrl__ops">${play}${merge_all}${settings}</div>
+        <div class="worker-ctrl__ops">
+          ${play}${merge_all}${settings}${search}
+        </div>
         <div class="worker-kpi">
           ${overcap}${armed_hint}${counts}${base_chip}
           ${(Array.isArray(group.token_total)
@@ -3808,6 +3858,7 @@ export function createWorkerView(mount_element, options = {}) {
       lane: 'candidate',
       title: '후보',
       items: candidates,
+      match_count: matchCountOf(candidates),
       src: true,
       empty: '후보 없음',
       header_control: candidateSortTemplate(),
@@ -3827,6 +3878,7 @@ export function createWorkerView(mount_element, options = {}) {
       lane: 'done',
       title: '완료',
       items: done,
+      match_count: matchCountOf(done),
       empty: `${doneRangeLabel()} 완료 없음`,
       header_control: doneRangeTemplate(),
       collapsible: true,
@@ -3857,6 +3909,7 @@ export function createWorkerView(mount_element, options = {}) {
           title: '대기',
           items: waiting,
           count: waiting.length,
+          match_count: matchCountOf(waiting),
           collapsible: true,
           collapsed: collapse.isCollapsed('queue'),
           preview: stripPreview(waiting),
@@ -3873,6 +3926,7 @@ export function createWorkerView(mount_element, options = {}) {
         title: '대기',
         items: waiting,
         count: waiting.length,
+        match_count: matchCountOf(waiting),
         collapsible: true,
         collapsed: collapse.isCollapsed('queue'),
         body: waitBodyTemplate(m)
@@ -3882,6 +3936,7 @@ export function createWorkerView(mount_element, options = {}) {
         lane: 'running',
         title: '실행 중',
         items: /** @type {any[]} */ (running),
+        match_count: matchCountOf(running),
         // 슬롯 수는 제목이 아니라 탭 부가정보다 (§4.5) — 제목 어휘는 두 탭이
         // 같고, 탭이 다른 것은 `header_control`이 싣는다.
         header_control: html`<span class="worker-pane__meta"
@@ -3897,6 +3952,7 @@ export function createWorkerView(mount_element, options = {}) {
         lane: 'pr_wait',
         title: 'PR 대기',
         items: pr_wait,
+        match_count: matchCountOf(pr_wait),
         empty: 'PR 대기 없음',
         collapsible: true,
         collapsed: collapse.isCollapsed('pr_wait')
@@ -4826,9 +4882,49 @@ export function createWorkerView(mount_element, options = {}) {
     }
   }
 
+  /**
+   * Every keystroke in the search input (UI-6g3t §7). 값은 뷰 메모리에만 남고
+   * 저장되지 않으며, 다시 그려도 lit이 같은 `<input>` 노드를 유지하므로
+   * 포커스·캐럿이 그대로다.
+   *
+   * @param {Event} ev
+   */
+  function onSearchInput(ev) {
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    if (!target?.closest?.('.worker-search')) {
+      return;
+    }
+    search_query = /** @type {HTMLInputElement} */ (target).value;
+    doRender();
+  }
+
+  /**
+   * Esc는 검색어를 비운다 (§7) — 흐려진 화면에서 빠져나오는 한 번의 키다.
+   * 이미 비어 있으면 아무 일도 하지 않으므로 다른 Esc 소비자를 가리지 않는다.
+   *
+   * @param {KeyboardEvent} ev
+   */
+  function onSearchKeyDown(ev) {
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    if (
+      ev.key !== 'Escape' ||
+      !target?.closest?.('.worker-search') ||
+      search_query.length === 0
+    ) {
+      return;
+    }
+    search_query = '';
+    doRender();
+  }
+
   lane_drag.attach(mount_element);
   mount_element.addEventListener('click', /** @type {any} */ (onClick));
   mount_element.addEventListener('change', /** @type {any} */ (onChange));
+  mount_element.addEventListener('input', /** @type {any} */ (onSearchInput));
+  mount_element.addEventListener(
+    'keydown',
+    /** @type {any} */ (onSearchKeyDown)
+  );
 
   /**
    * An outside click closes the 실패 상세 팝오버. 그것을 여는 요소는 예외다 —

@@ -181,7 +181,8 @@ const DONE_KIND_LABELS = {
  *   scope_state?: 'declared'|'missing',
  *   cross_lane_chip?: CrossLaneChip,
  *   armed_lane_chip?: ArmedLaneChip,
- *   session_refs?: import('../../../server/worker/session-ref.js').SessionRefView[]
+ *   session_refs?: import('../../../server/worker/session-ref.js').SessionRefView[],
+ *   search_match?: boolean
  * }} LaneItem
  */
 
@@ -1890,6 +1891,65 @@ function timeOf(value) {
 }
 
 /**
+ * One query's match predicate (UI-6g3t §7). 빈 질의는 `null`이고, 그때 모델은
+ * `search_match` 키를 아예 달지 않는다 (fail-quiet): "검색하지 않았다"와 "아무것도
+ * 맞지 않았다"는 다른 사실이라, 렌더러가 둘을 같은 흐림으로 그리면 안 된다.
+ *
+ * @param {string|undefined} query
+ * @returns {((item: LaneItem) => boolean)|null}
+ */
+function searchMatcher(query) {
+  const needle = typeof query === 'string' ? query.trim().toLowerCase() : '';
+  if (needle.length === 0) {
+    return null;
+  }
+  return (item) => {
+    const id = typeof item.id === 'string' ? item.id.toLowerCase() : '';
+    const title =
+      typeof item.title === 'string' ? item.title.toLowerCase() : '';
+    return id.includes(needle) || title.includes(needle);
+  };
+}
+
+/**
+ * Tag every lane item with the search verdict (UI-6g3t §7). 숨기지도 빼지도
+ * 않으므로 순번·드래그 좌표·헤더 카운트·필터 카운트·겹침 비교 집합은 그대로이고,
+ * 바뀌는 것은 카드의 흐림 하나뿐이다.
+ *
+ * 후보 섹션 항목은 모델이 이미 복사본으로 들고 있으므로 (`{ ...item }`) 원본과
+ * 따로 달아야 한다 — 그 사본이 실제로 그려지는 카드다.
+ *
+ * @param {LaneModel} model
+ * @param {(item: LaneItem) => boolean} matches
+ */
+function tagSearchMatches(model, matches) {
+  /** @type {LaneItem[][]} */
+  const buckets = [
+    model.runnable,
+    model.runnable_all,
+    model.queue,
+    model.running,
+    model.pr_wait,
+    model.done,
+    model.parallel_rows
+  ];
+  for (const section of model.runnable_sections) {
+    buckets.push(section.items);
+  }
+  for (const group of model.queue_groups) {
+    buckets.push(group.items, group.sublanes.parallel);
+    for (const lane of group.sublanes.serial) {
+      buckets.push(lane.items);
+    }
+  }
+  for (const bucket of buckets) {
+    for (const item of bucket) {
+      item.search_match = matches(item);
+    }
+  }
+}
+
+/**
  * Merge the aggregated snapshot into the five exclusive lanes, the repo
  * sections, and the 저장 연결 레인 projection on top of them.
  *
@@ -1903,13 +1963,17 @@ function timeOf(value) {
  * 규칙으로 센다 (UI-4tud §4.3): 두 필터에 모두 걸린 행은 어느 수에도 들어가지
  * 않는다. 기본값 `'sequential'`은 현행 Monitor 규칙이다.
  *
+ * `options.search`는 워커 탭의 이슈 검색어다 (UI-6g3t §7). 값이 있으면 모든 레인
+ * 항목에 `search_match`가 실리고, 없거나 공백뿐이면 키 자체가 붙지 않는다 —
+ * 그래서 검색을 받지 않는 Monitor 탭의 렌더는 한 글자도 달라지지 않는다.
+ *
  * `options.groups: 'all'`은 대기·직렬·후보가 모두 비어도 `workspaces_state` 행
  * 하나당 그룹을 남긴다 — 실행 중·PR 대기·완료·저장소 작업만 있는 스냅샷에서도
  * `slots`·`merge`·`repo_operations`가 살아 있어야 하기 때문이다.
  *
  * @param {Array<Record<string, any>>|null|undefined} workspaces
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state]
- * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', candidate_hidden_counts?: 'sequential'|'per_control', groups?: 'nonempty'|'all', cross_lanes?: { revision: number, lanes: Array<Record<string, any>> }|null }} [options]
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', candidate_hidden_counts?: 'sequential'|'per_control', groups?: 'nonempty'|'all', cross_lanes?: { revision: number, lanes: Array<Record<string, any>> }|null, search?: string }} [options]
  * @returns {LaneModel}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
@@ -3751,6 +3815,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
     model.runnable = ordered;
     model.runnable_sections = sections;
+  }
+
+  // 검색 태깅은 정렬·섹션 조립보다 뒤다 (§7): 섹션이 만드는 사본까지 같은 판정을
+  // 지녀야 그려지는 카드와 모델이 어긋나지 않는다.
+  const matchesSearch = searchMatcher(options ? options.search : undefined);
+  if (matchesSearch) {
+    tagSearchMatches(model, matchesSearch);
   }
 
   return model;

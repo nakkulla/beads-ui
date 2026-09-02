@@ -1430,6 +1430,9 @@ export function priorityBadgeTemplate(priority) {
  * 그리고, 재료가 없으면 필드도 없다.
  * @property {number} [priority] - Bead 우선순위 0..4. 숫자가 아니면 배지를
  * 그리지 않는다.
+ * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
+ * `false`인 행만 `is-dimmed`로 흐려지고, 검색 중이 아니면 키 자체가 없어 지금
+ * 그대로 그려진다 (fail-quiet). 숨김이 아니므로 순번·좌표·건수는 그대로다.
  */
 
 /**
@@ -1448,7 +1451,10 @@ function doneThreeLineRow(item) {
   const usage_label = formatUsageTotalWithCost(item.usage);
   const done_at_label = formatRelativeTime(item.done_at);
   return html`<div
-    class="worker-mini worker-mini--static worker-mini--done worker-mini--three-line"
+    class="worker-mini worker-mini--static worker-mini--done worker-mini--three-line${item.search_match ===
+    false
+      ? ' is-dimmed'
+      : ''}"
     draggable="false"
     data-bead-id=${item.id}
     data-lane=${item.lane}
@@ -1884,7 +1890,7 @@ export function miniRow(item, options = {}) {
       ? ' worker-mini--merging'
       : ''}${merging?.failed ? ' worker-mini--merge-failed' : ''}${item.external
       ? ' worker-mini--external'
-      : ''}"
+      : ''}${item.search_match === false ? ' is-dimmed' : ''}"
     style=${merging ? `--progress: ${merging.percent}%` : ''}
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
@@ -2271,7 +2277,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
       ? ''
       : ' worker-card--static'}${worker_ineligible
       ? ' worker-card--ineligible'
-      : ''}"
+      : ''}${item.search_match === false ? ' is-dimmed' : ''}"
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
     data-lane=${item.lane}
@@ -2395,7 +2401,10 @@ export function candidateCard(item, place_menu = null, options = {}) {
  * 그대로 두므로 후보→대기 드롭이 띠 위에서도 성립한다. `live`는 실제로 일이
  * 도는 레인 하나를 표시한다 — 헤더 점이 숨쉬는 유일한 레인이다.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: PlaceMenu|null, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} pane
+ * `match_count`는 워커 탭 검색이 켜져 있을 때만 실리는 「일치 n」이다 (UI-6g3t
+ * §7): `worker-pane__count` 뒤에 덧붙고, 키가 없으면 헤더는 지금 그대로다.
+ *
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, match_count?: number, place_menu?: PlaceMenu|null, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -2409,7 +2418,10 @@ export function paneTemplate(pane) {
     ${collapsed && pane.preview
       ? html`<span class="worker-pane__preview">${pane.preview}</span>`
       : ''}
-    <span class="worker-pane__count">${count}</span>`;
+    <span class="worker-pane__count">${count}</span>
+    ${typeof pane.match_count === 'number'
+      ? html`<span class="worker-pane__match">일치 ${pane.match_count}</span>`
+      : ''}`;
   return html`<section
     class="worker-pane worker-pane--lane-${pane.lane}${pane.src
       ? ' worker-pane--src'

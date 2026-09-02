@@ -2886,6 +2886,40 @@ html[data-theme='dark'] {
   gap: var(--sp-8);
 }
 
+/* 워커 탭 이슈 검색 (UI-6g3t §7). 조작 묶음 끝에 서지만 버튼이 아니므로
+   `.op-btn` 토큰을 주지 않는다 — 높이만 같은 묶음에 맞춘다. */
+.worker-search {
+  flex: 0 1 180px;
+  min-width: 96px;
+  min-height: 24px;
+  padding: 2px var(--sp-6);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-small);
+  line-height: 1.2;
+}
+
+/* `--accent`는 이 저장소에 정의가 없어 `var(--accent)`가 무효값이 된다. 포커스
+   테두리를 그것에 맡기면 `outline: none`과 겹쳐 포커스 표시가 아예 사라지므로,
+   `.op-btn--primary`가 쓰는 정의된 토큰을 쓴다. */
+.worker-search:focus {
+  border-color: var(--stage-plan-on);
+  outline: none;
+}
+
+.worker-search::placeholder {
+  color: var(--text-dim);
+}
+
+/* 검색이 걸러 낸 카드 (§7). 숨기지 않고 흐릴 뿐이라 순번·드래그 좌표·건수가
+   그대로이고, `pointer-events`를 남겨 두므로 흐린 카드도 그대로 조작된다. */
+.is-dimmed {
+  opacity: 0.35;
+}
+
 .worker-kpi {
   display: flex;
   flex-wrap: wrap;
@@ -5550,6 +5584,17 @@ html[data-theme='dark'] {
     flex: 0 0 auto;
     margin-left: 0;
   }
+}
+
+/* 검색 중인 레인의 일치 건수 (UI-6g3t §7): 전체 건수(`worker-pane__count`)를
+   대체하지 않고 뒤에 덧붙는다 — 흐린 카드도 레인의 구성원이기 때문이다. */
+.worker-pane__match {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-6);
+  border-radius: var(--r-10);
+  background: var(--bg-app);
+  color: var(--stage-plan-on);
+  font-variant-numeric: tabular-nums;
 }
 
 /* 탭 부가정보 칩 (§4.5): 제목 어휘는 두 탭이 같고, 탭이 다른 것(`슬롯 N`)은
