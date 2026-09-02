@@ -2,7 +2,7 @@
  * Server-global IMPLEMENTATION-preset WebSocket channel (spec §C.6).
  *
  * A preset carries the full execution profile and has exactly two apply paths:
- * its 12 Bead-pin-compatible session keys go onto ONE Bead's metadata, while a
+ * its 15 Bead-pin-compatible session keys go onto ONE Bead's metadata, while a
  * global apply replaces those session keys in `bd kv` and the three
  * orchestration keys in the workspace queue.
  * The retired 12-key family — `exec-preset-*`, `apply-exec-preset`,
@@ -283,7 +283,7 @@ function resolvePresetForApply(ws, req, preset_id, expected_revision) {
 }
 
 /**
- * Apply path 1 — pin one preset's 12 session keys onto ONE Bead's metadata.
+ * Apply path 1 — pin one preset's 15 session keys onto ONE Bead's metadata.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req

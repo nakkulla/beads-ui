@@ -18,6 +18,7 @@ import {
   REC_SIGNALS,
   REC_VALUES,
   REVIEW_EFFORTS,
+  REVIEW_SPEEDS,
   REVIEW_STEP_MODELS,
   WORKSPACE_KV_KEYS,
   execSettingEnums,
@@ -30,17 +31,20 @@ import {
 } from './exec-enums.js';
 import { resolveCatalog } from './runner-catalog.js';
 
-/** The 12 workspace-global-capable exec keys (workflow_mode excluded). */
+/** The 15 workspace-global-capable exec keys (workflow_mode excluded). */
 const EXPECTED_KEYS = [
   'orchestration_model',
   'orchestration_effort',
   'orchestration_speed',
   'spec_review_model',
   'spec_review_effort',
+  'spec_review_speed',
   'plan_review_model',
   'plan_review_effort',
+  'plan_review_speed',
   'impl_review_model',
   'impl_review_effort',
+  'impl_review_speed',
   'impl_runtime',
   'impl_model',
   'impl_effort'
@@ -59,8 +63,8 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     }
   });
 
-  test('covers all 15 full-profile preset keys', () => {
-    expect(IMPL_PRESET_KEYS).toHaveLength(15);
+  test('covers all 18 full-profile preset keys', () => {
+    expect(IMPL_PRESET_KEYS).toHaveLength(18);
     expect(IMPL_PRESET_KEYS).toEqual([
       ...BEAD_APPLY_KEYS,
       ...ORCHESTRATION_KEYS
@@ -69,13 +73,13 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
   });
 
   test('keeps impl_dispatch on the per-bead apply list', () => {
-    expect(BEAD_APPLY_KEYS).toHaveLength(12);
+    expect(BEAD_APPLY_KEYS).toHaveLength(15);
 
     expect(BEAD_APPLY_KEYS).toContain('impl_dispatch');
   });
 
   test('drops impl_dispatch from the workspace kv list', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(13);
+    expect(WORKSPACE_KV_KEYS).toHaveLength(16);
 
     expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
   });
@@ -111,7 +115,7 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
   });
 
   test('keeps both kv-only keys out of the preset-carried kv list', () => {
-    expect(PRESET_KV_KEYS).toHaveLength(11);
+    expect(PRESET_KV_KEYS).toHaveLength(14);
     expect(PRESET_KV_KEYS).not.toContain('quick_fix_impl_model');
     expect(PRESET_KV_KEYS).not.toContain('bdui_url');
 
@@ -155,6 +159,10 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     expect(REVIEW_EFFORTS).toEqual(['low', 'medium', 'high', 'xhigh']);
   });
 
+  test('fixes the review speed vocabulary at two tiers', () => {
+    expect(REVIEW_SPEEDS).toEqual(['default', 'fast']);
+  });
+
   test('drops the retired review_model surface entirely', () => {
     expect(/** @type {any} */ (enums).REVIEW_MODELS).toBeUndefined();
     expect(/** @type {any} */ (enums).EXEC_SETTING_ENUMS).toBeUndefined();
@@ -164,6 +172,21 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
 });
 
 describe('worker/exec-enums full-profile presets', () => {
+  test('validates review speed without a missing enum crash', () => {
+    const accepted = validateImplPresetSettings({
+      spec_review_speed: 'fast'
+    });
+    const rejected = validateImplPresetSettings({
+      spec_review_speed: 'turbo'
+    });
+
+    expect(accepted).toEqual({ ok: true });
+    expect(rejected).toEqual({
+      ok: false,
+      reason: 'invalid_spec_review_speed'
+    });
+  });
+
   test('reuses the exec-setting orchestration enums', () => {
     const catalog = resolveCatalog({
       overrides: {
@@ -235,7 +258,7 @@ describe('worker/exec-enums full-profile presets', () => {
 });
 
 describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
-  test('covers the canonical 12 workspace-global exec keys in contract order', () => {
+  test('covers the canonical 15 workspace-global exec keys in contract order', () => {
     expect(EXEC_SETTING_KEYS).toEqual(EXPECTED_KEYS);
     expect(Object.keys(execSettingEnums())).toEqual(EXPECTED_KEYS);
   });
@@ -307,6 +330,9 @@ describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
     expect(table.spec_review_effort).toEqual(REVIEW_EFFORTS);
     expect(table.impl_review_effort).toEqual(REVIEW_EFFORTS);
     expect(table.plan_review_effort).toEqual(REVIEW_EFFORTS);
+    expect(table.spec_review_speed).toEqual(REVIEW_SPEEDS);
+    expect(table.impl_review_speed).toEqual(REVIEW_SPEEDS);
+    expect(table.plan_review_speed).toEqual(REVIEW_SPEEDS);
   });
 
   test('exposes the implementation runtime contract enum', () => {
@@ -316,7 +342,7 @@ describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
 });
 
 describe('worker/exec-enums implementation target coherence', () => {
-  test('marks stale known settings incompatible across all 12 keys', () => {
+  test('marks stale known settings incompatible across all 15 keys', () => {
     const catalog = resolveCatalog({ warn: () => {} });
 
     expect(
@@ -334,6 +360,17 @@ describe('worker/exec-enums implementation target coherence', () => {
     expect(
       validateExecSettings({ impl_review_effort: 'max' }, { catalog })
     ).toMatchObject({ ok: false, reason: 'invalid_impl_review_effort' });
+  });
+
+  test('validates review speed without a missing enum crash', () => {
+    const accepted = validateExecSettings({ impl_review_speed: 'fast' });
+    const rejected = validateExecSettings({ impl_review_speed: 'turbo' });
+
+    expect(accepted).toMatchObject({ ok: true });
+    expect(rejected).toEqual({
+      ok: false,
+      reason: 'invalid_impl_review_speed'
+    });
   });
 
   test('infers a provider only for a known model-only legacy value', () => {

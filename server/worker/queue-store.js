@@ -178,7 +178,7 @@
  * revision paired with `exec_default_preset_id`; null without a selected
  * preset. Together they prove which mutable preset version the attempt pinned.
  * @property {Record<string, string|null>|null} exec_values - Effective resolved
- * values from the 12-key dispatch contract, kept independently from the worker
+ * values from the 15-key dispatch contract, kept independently from the worker
  * stamp subset so relaunch decisions can prove their exact current or explicit
  * prior provenance. Null on legacy attempts.
  * @property {string|null} resumed_from - Prior attempt_id this attempt resumes

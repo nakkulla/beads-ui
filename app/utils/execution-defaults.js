@@ -8,10 +8,13 @@ export const EXECUTION_SETTING_KEYS = [
   'workflow_mode',
   'spec_review_model',
   'spec_review_effort',
+  'spec_review_speed',
   'plan_review_model',
   'plan_review_effort',
+  'plan_review_speed',
   'impl_review_model',
   'impl_review_effort',
+  'impl_review_speed',
   'impl_dispatch',
   'impl_runtime',
   'impl_model',
@@ -27,6 +30,12 @@ const REVIEW_PAIRS = {
   spec_review_effort: 'spec_review_model',
   plan_review_effort: 'plan_review_model',
   impl_review_effort: 'impl_review_model'
+};
+
+const REVIEW_SPEED_PAIRS = {
+  spec_review_speed: 'spec_review_model',
+  plan_review_speed: 'plan_review_model',
+  impl_review_speed: 'impl_review_model'
 };
 
 const KNOWN_TRANSPORT_EFFORTS = new Set([
@@ -424,6 +433,39 @@ export function resolveExecutionSettings(input) {
             );
     }
 
+    for (const [speed_key, model_key] of Object.entries(REVIEW_SPEED_PAIRS)) {
+      const model_row = rows[model_key];
+      if (
+        model_row.resolution === 'incompatible' ||
+        model_row.value === 'self' ||
+        model_row.value === 'skip'
+      ) {
+        rows[speed_key] = result(
+          null,
+          'base',
+          '해당 없음',
+          null,
+          'not_applicable'
+        );
+        continue;
+      }
+      if (model_row.resolution === 'unavailable') {
+        rows[speed_key] = result(
+          null,
+          'base',
+          '기본값 확인 불가',
+          null,
+          'unavailable'
+        );
+        continue;
+      }
+      const chosen = layeredValue(speed_key, pin, global_values, 'default');
+      rows[speed_key] =
+        chosen.source === 'base'
+          ? result('default', 'base', 'default (일반)', 'default', 'default')
+          : explicitResult(chosen.value, chosen.source);
+    }
+
     const defaults = isRecord(session.implementation?.default)
       ? session.implementation.default
       : {};
@@ -594,6 +636,20 @@ export function resolveExecutionSettings(input) {
         rows[model_key].value === 'skip'
       ) {
         rows[effort_key] = result(
+          null,
+          'base',
+          '해당 없음',
+          null,
+          'not_applicable'
+        );
+      }
+    }
+    for (const [speed_key, model_key] of Object.entries(REVIEW_SPEED_PAIRS)) {
+      if (
+        rows[model_key].value === 'self' ||
+        rows[model_key].value === 'skip'
+      ) {
+        rows[speed_key] = result(
           null,
           'base',
           '해당 없음',

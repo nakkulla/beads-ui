@@ -173,6 +173,10 @@ export function optionsForKey(key, effective, catalog) {
     case 'plan_review_effort':
     case 'impl_review_effort':
       return REVIEW_EFFORTS;
+    case 'spec_review_speed':
+    case 'plan_review_speed':
+    case 'impl_review_speed':
+      return IMPL_SPEEDS;
     case 'impl_dispatch':
       return IMPL_DISPATCHES;
     case 'impl_runtime':
@@ -422,7 +426,7 @@ export function effectiveSettingsCardTemplate(model, handlers) {
               이 이슈에 적용
             </button>
             <span class="detail-effective__hint"
-              >세션 키 12개를 핀으로 기록</span
+              >세션 키 15개를 핀으로 기록</span
             >
             ${(model.skipped_orchestration_keys || []).length > 0
               ? html`<span

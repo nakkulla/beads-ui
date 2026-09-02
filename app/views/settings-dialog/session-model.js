@@ -12,7 +12,7 @@
 import { buildOptionView } from '../../utils/execution-defaults.js';
 
 /**
- * The twelve session keys a PER-BEAD write may carry — the per-bead preset
+ * The fifteen session keys a PER-BEAD write may carry — the per-bead preset
  * apply and the detail panel's individual edits. Mirrors
  * `server/worker/exec-enums.js BEAD_APPLY_KEYS`.
  */
@@ -20,10 +20,13 @@ export const BEAD_APPLY_KEYS = [
   'workflow_mode',
   'spec_review_model',
   'spec_review_effort',
+  'spec_review_speed',
   'plan_review_model',
   'plan_review_effort',
+  'plan_review_speed',
   'impl_review_model',
   'impl_review_effort',
+  'impl_review_speed',
   'impl_dispatch',
   'impl_runtime',
   'impl_model',
@@ -32,7 +35,7 @@ export const BEAD_APPLY_KEYS = [
 ];
 
 /**
- * The thirteen keys `bd kv workflow_session_defaults` may STORE, in dialog
+ * The sixteen keys `bd kv workflow_session_defaults` may STORE, in dialog
  * display order. `impl_dispatch` is absent by contract
  * (`write_rule: user_write_only`): a workspace-global dispatch would decide for
  * every later bead, so the session-defaults group offers no such row.
@@ -77,11 +80,11 @@ export const ORCHESTRATION_KEYS = [
   'orchestration_speed'
 ];
 
-/** The fifteen keys an execution preset carries. */
+/** The eighteen keys an execution preset carries. */
 export const IMPL_PRESET_KEYS = [...BEAD_APPLY_KEYS, ...ORCHESTRATION_KEYS];
 
 /**
- * The eleven kv keys a preset actually CARRIES — the workspace kv list minus the
+ * The fourteen kv keys a preset actually CARRIES — the workspace kv list minus the
  * keys no preset can supply. Mirrors `server/worker/exec-enums.js
  * PRESET_KV_KEYS`, which is exactly the list a global apply REPLACES, so the
  * kv-only `quick_fix_impl_model` survives an apply instead of being cleared.
@@ -105,6 +108,7 @@ export const WORKFLOW_MODES = ['standard', 'fast_track'];
 export const REVIEW_STEP_MODELS = ['codex', 'opus', 'fable', 'self', 'skip'];
 export const PLAN_REVIEW_MODELS = ['codex', 'fable', 'skip'];
 export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
+export const REVIEW_SPEEDS = ['default', 'fast'];
 
 /** The selector's model/auto · effort/auto state, offered as a real choice. */
 export const AUTO_LITERAL = 'auto';
@@ -326,7 +330,7 @@ export function narrowImplTarget(target, catalog, controller_runtime) {
 }
 
 /**
- * Korean labels for the fourteen keys a preset diff can name — the same
+ * Korean labels for the seventeen keys a preset diff can name — the same
  * vocabulary the dialog's own rows use.
  *
  * @type {Record<string, string>}
@@ -335,10 +339,13 @@ export const PRESET_DIFF_LABELS = {
   workflow_mode: '워크플로 모드',
   spec_review_model: '스펙 리뷰어',
   spec_review_effort: '스펙 리뷰 effort',
+  spec_review_speed: '스펙 리뷰 속도',
   plan_review_model: '계획 리뷰어',
   plan_review_effort: '계획 리뷰 effort',
+  plan_review_speed: '계획 리뷰 속도',
   impl_review_model: '구현 리뷰어',
   impl_review_effort: '구현 리뷰 effort',
+  impl_review_speed: '구현 리뷰 속도',
   impl_runtime: '위임 대상',
   impl_model: '구현 모델',
   impl_effort: '구현 effort',

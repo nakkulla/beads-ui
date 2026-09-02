@@ -32,7 +32,7 @@ export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 export const WORKFLOW_MODES = ['standard', 'fast_track'];
 
 /**
- * The 12 workspace-global-capable exec keys, in display order. Mirrors the
+ * The 15 workspace-global-capable exec keys, in display order. Mirrors the
  * server table in server/worker/exec-enums.js; `workflow_mode` is per-bead only
  * and therefore not part of it.
  */
@@ -42,10 +42,13 @@ export const EXEC_KEYS = [
   'orchestration_speed',
   'spec_review_model',
   'spec_review_effort',
+  'spec_review_speed',
   'plan_review_model',
   'plan_review_effort',
+  'plan_review_speed',
   'impl_review_model',
   'impl_review_effort',
+  'impl_review_speed',
   'impl_runtime',
   'impl_model',
   'impl_effort'
@@ -72,10 +75,13 @@ export const EXEC_ADVANCED_GROUPS = [
     keys: [
       'spec_review_model',
       'spec_review_effort',
+      'spec_review_speed',
       'plan_review_model',
       'plan_review_effort',
+      'plan_review_speed',
       'impl_review_model',
-      'impl_review_effort'
+      'impl_review_effort',
+      'impl_review_speed'
     ]
   }
 ];
@@ -95,10 +101,13 @@ export const EXEC_SETTING_PRESENTATION = {
   },
   spec_review_model: { title: '스펙 리뷰어' },
   spec_review_effort: { title: '스펙 리뷰 reasoning effort' },
+  spec_review_speed: { title: '스펙 리뷰 속도' },
   plan_review_model: { title: '계획 리뷰어' },
   plan_review_effort: { title: '계획 리뷰 reasoning effort' },
+  plan_review_speed: { title: '계획 리뷰 속도' },
   impl_review_model: { title: '구현 리뷰어' },
   impl_review_effort: { title: '구현 리뷰 reasoning effort' },
+  impl_review_speed: { title: '구현 리뷰 속도' },
   impl_runtime: { title: '구현 runtime' },
   impl_model: {
     title: '구현 모델',
@@ -120,6 +129,17 @@ const REVIEW_EFFORT_PAIR = {
   spec_review_effort: 'spec_review_model',
   impl_review_effort: 'impl_review_model',
   plan_review_effort: 'plan_review_model'
+};
+
+/**
+ * Which review-model row determines each review-speed row's catalog tiers.
+ *
+ * @type {Record<string, string>}
+ */
+const REVIEW_SPEED_PAIR = {
+  spec_review_speed: 'spec_review_model',
+  impl_review_speed: 'impl_review_model',
+  plan_review_speed: 'plan_review_model'
 };
 
 /**
@@ -333,6 +353,32 @@ export function speedTiersForModel(runner_catalog, model) {
 }
 
 /**
+ * Speed vocabulary accepted by the catalog model whose declared `id` matches.
+ * Legacy entries are Standard-only; unknown ids have no available tier.
+ *
+ * @param {any} runner_catalog
+ * @param {string} model_id
+ * @returns {string[]}
+ */
+export function speedTiersForModelId(runner_catalog, model_id) {
+  const runners = catalogRunners(runner_catalog);
+  if (!runners || !model_id) {
+    return [];
+  }
+  for (const [, entry] of runners) {
+    for (const model_entry of Object.values(entry.models)) {
+      if (model_entry.id !== model_id) {
+        continue;
+      }
+      return Array.isArray(model_entry.speed_tiers)
+        ? model_entry.speed_tiers.slice()
+        : ['default'];
+    }
+  }
+  return [];
+}
+
+/**
  * Effort vocabulary `model` accepts: its own list when it pins one, else the
  * owning runner's. An unknown model (or an absent catalog) has none.
  *
@@ -468,7 +514,7 @@ export function normalizeImplTarget(
 }
 
 /**
- * Build the option model for all 12 exec rows — the SINGLE implementation both
+ * Build the option model for all 15 exec rows — the SINGLE implementation both
  * the per-bead detail panel and the ⚙ global dialog render, so the two surfaces
  * cannot drift on grouping, effort narrowing or the self/skip gate.
  *
@@ -482,13 +528,20 @@ export function normalizeImplTarget(
  * @param {{
  *   selectedOf: (key: string) => string,
  *   effectiveOf: (key: string) => string,
+ *   resolvedOf?: (key: string) => { resolution?: string, full_value?: string|null }|undefined,
  *   runner_catalog: any,
  *   controller_runtime?: string|null
  * }} input
  * @returns {ExecRow[]}
  */
 export function execSettingRows(input) {
-  const { selectedOf, effectiveOf, runner_catalog, controller_runtime } = input;
+  const {
+    selectedOf,
+    effectiveOf,
+    resolvedOf,
+    runner_catalog,
+    controller_runtime
+  } = input;
   const orchestration_model = effectiveOf('orchestration_model');
   const impl_model = effectiveOf('impl_model');
   const requested_runtime = effectiveOf('impl_runtime');
@@ -539,6 +592,20 @@ export function execSettingRows(input) {
       disabled = requested_runtime === 'inherit' && impl_runtime === null;
     } else if (key === 'plan_review_model') {
       groups = valueGroups(PLAN_REVIEW_MODELS, selected);
+    } else if (Object.hasOwn(REVIEW_SPEED_PAIR, key)) {
+      const model_key = REVIEW_SPEED_PAIR[key];
+      const model_row = resolvedOf?.(model_key);
+      const blocked =
+        model_row?.resolution === 'incompatible' ||
+        model_row?.resolution === 'unavailable';
+      const speed_tiers = blocked
+        ? []
+        : speedTiersForModelId(
+            runner_catalog,
+            model_row?.full_value || effectiveOf(model_key)
+          );
+      groups = speedGroups(speed_tiers, selected);
+      disabled = speed_tiers.length < 2;
     } else if (Object.hasOwn(REVIEW_EFFORT_PAIR, key)) {
       groups = valueGroups(REVIEW_EFFORTS, selected);
       disabled = EFFORT_GATING_MODELS.includes(
@@ -789,7 +856,7 @@ function execSummaryTemplate(effectiveOf, default_source, resolved) {
 }
 
 /**
- * Execution-settings editor (detail-panel.html "실행 설정"): the 12 exec keys +
+ * Execution-settings editor (detail-panel.html "실행 설정"): the 15 exec keys +
  * workflow_mode. Selecting `standard` for workflow_mode (or `(기본)` for a key)
  * records an unset — the server mutation removes the metadata key.
  *
@@ -826,7 +893,14 @@ export function execSettingsTemplate(
   });
   /** @param {string} key */
   const effectiveOf = (key) => resolved[key]?.value || '';
-  const rows = execSettingRows({ selectedOf, effectiveOf, runner_catalog });
+  /** @param {string} key */
+  const resolvedOf = (key) => resolved[key];
+  const rows = execSettingRows({
+    selectedOf,
+    effectiveOf,
+    resolvedOf,
+    runner_catalog
+  });
   const wf_mode = md.workflow_mode === 'fast_track' ? 'fast_track' : 'standard';
   /** @type {Map<string, ExecRow>} */
   const row_by_key = new Map(rows.map((row) => [row.key, row]));
