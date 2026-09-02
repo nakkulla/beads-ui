@@ -1693,13 +1693,21 @@ export function createRepoOperationCoordinator(deps) {
    * older tree as a side effect, and the newer tree is not evidence the job
    * ran. Unreadable ancestry fails the same way rather than guessing.
    *
-   * The lock is released before the spawn, exactly as the deploy path does.
+   * `onAligned` runs INSIDE the lock, right after the exact-HEAD read and
+   * before the release. §2 conditions the spawn on "the aligned worktree HEAD
+   * is `merge_sha`", and a caller that spawned after the release would only
+   * have proved that it WAS, since another executor holding the same lock can
+   * realign the shared worktree in the gap. The callback holds the lock for the
+   * spawn alone, never for the run: the script's own window is covered by the
+   * post-exit exact `verifyAligned` readback, which fails the operation — and
+   * so writes no `applied` — if the worktree moved underneath it.
    *
    * @param {string} target_sha
    * @param {number} timeout_ms
+   * @param {(path: string) => Promise<void>} [onAligned]
    * @returns {Promise<{ ok: boolean, code?: string, path?: string }>}
    */
-  async function alignJobWorktree(target_sha, timeout_ms) {
+  async function alignJobWorktree(target_sha, timeout_ms, onAligned) {
     const acquired = await deployLock({ repo: deps.repo, timeout_ms });
     if (!acquired.ok) {
       return { ok: false, code: acquired.code };
@@ -1754,6 +1762,9 @@ export function createRepoOperationCoordinator(deps) {
       if (!exact.ok) {
         return { ok: false, code: 'post_merge_job_target_moved' };
       }
+      if (typeof onAligned === 'function') {
+        await onAligned(aligned.path);
+      }
       return { ok: true, path: aligned.path };
     } finally {
       await acquired.release();
@@ -1767,7 +1778,7 @@ export function createRepoOperationCoordinator(deps) {
    * refusal here (a moved target above all) leave the ledger untouched — a
    * later merge then finds the same content-addressed key still pending.
    *
-   * @param {{ target_base: string, target_sha: string, bead_id: string, script_path: string, script_mode: string, script_blob_sha: string, supersedes?: string|null }} input
+   * @param {{ target_base: string, target_sha: string, bead_id: string, script_path: string, script_mode: string, script_blob_sha: string }} input
    */
   async function prepareJob(input) {
     const release = await deps.locks.repoOperationLock(deps.repo);
@@ -1779,7 +1790,7 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
-   * @param {{ target_base: string, target_sha: string, bead_id: string, script_path: string, script_mode: string, script_blob_sha: string, supersedes?: string|null }} input
+   * @param {{ target_base: string, target_sha: string, bead_id: string, script_path: string, script_mode: string, script_blob_sha: string }} input
    */
   async function prepareJobLocked(input) {
     const workspace = deps.workspace;
@@ -1850,18 +1861,6 @@ export function createRepoOperationCoordinator(deps) {
     if (!prerecord.ok) {
       return { ok: false, code: 'repo_operation_prerecord_failed' };
     }
-    if (
-      typeof input.supersedes === 'string' &&
-      input.supersedes.length > 0 &&
-      input.supersedes !== operation_id
-    ) {
-      // Audit lineage for §3 branch ③: the operation the ledger used to name
-      // stays in the journal, pointing at the run that replaced it.
-      deps.store.supersedeRepoOperation(workspace, {
-        operation_id: input.supersedes,
-        successor_id: operation_id
-      });
-    }
     return { ok: true, operation_id, timeout_ms, path: aligned.path };
   }
 
@@ -1929,18 +1928,30 @@ export function createRepoOperationCoordinator(deps) {
       return await refuse(timeout.code || 'repo_ops_config_invalid');
     }
     const timeout_ms = Number(timeout.timeout_ms);
-    const aligned = await alignJobWorktree(target_sha, timeout_ms);
+    // The spawn happens inside the align lock (§2): between the exact-HEAD read
+    // and a spawn made after the release, another executor can realign the
+    // shared worktree, and the job would then run against a tree that is not
+    // the merge commit it was discovered in.
+    /** @type {any} */
+    let spawned = null;
+    const aligned = await alignJobWorktree(
+      target_sha,
+      timeout_ms,
+      async (aligned_path) => {
+        spawned = await spawnRecorded(workspace, operation_id, operation, {
+          script_path: path.join(aligned_path, operation.script_path),
+          cwd: aligned_path,
+          target_sha,
+          timeout_ms,
+          deploy_worktree: aligned_path,
+          retry: plan.retry === true
+        });
+      }
+    );
     if (!aligned.ok || typeof aligned.path !== 'string') {
       return await refuse(aligned.code || 'repo_ops_worktree_align_failed');
     }
-    return spawnRecorded(workspace, operation_id, operation, {
-      script_path: path.join(aligned.path, operation.script_path),
-      cwd: aligned.path,
-      target_sha,
-      timeout_ms,
-      deploy_worktree: aligned.path,
-      retry: plan.retry === true
-    });
+    return spawned;
   }
 
   /**
@@ -1948,27 +1959,43 @@ export function createRepoOperationCoordinator(deps) {
    * kind. `unknown` is a record that is not there (or not a job) — which the
    * ledger reads as an interruption, never as a run that succeeded.
    *
+   * `started` is the durable invocation trace `startRepoOperation` writes, the
+   * same marker `resolution-ladder.scriptIdentity` reads as "a runner was
+   * actually invoked". The ledger needs it because a record that failed BEFORE
+   * any spawn (a refused re-alignment above all) did not leave an unknown
+   * effect behind — it left none — so its key is still plainly pending.
+   *
    * @param {string} operation_id
    */
   function jobEvidence(operation_id) {
     const operation = observe(operation_id);
     if (!operation || operation.kind !== 'job') {
-      return { state: /** @type {const} */ ('unknown'), operation_id };
+      return {
+        state: /** @type {const} */ ('unknown'),
+        operation_id,
+        started: false
+      };
     }
+    const started = typeof operation.started_at === 'number';
     if (operation.state === 'succeeded') {
-      return { state: /** @type {const} */ ('succeeded'), operation_id };
+      return {
+        state: /** @type {const} */ ('succeeded'),
+        operation_id,
+        started
+      };
     }
     if (operation.state === 'failed') {
       return {
         state: /** @type {const} */ ('failed'),
         operation_id,
+        started,
         code: operation.failure?.code || 'repo_operation_failed',
         ...(typeof operation.log_path === 'string' && operation.log_path
           ? { log_path: operation.log_path }
           : {})
       };
     }
-    return { state: /** @type {const} */ ('running'), operation_id };
+    return { state: /** @type {const} */ ('running'), operation_id, started };
   }
 
   /**

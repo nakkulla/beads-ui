@@ -2316,7 +2316,14 @@ export function createPrActions(deps) {
           base_sync: ctx.base_sync
         };
       }
-      if (!ctx.job_retry) {
+      const never_started =
+        judged.state === 'failed' && judged.started !== true;
+      // A record that failed before any spawn is not an unknown outcome: the
+      // script demonstrably never ran, so the key is still pending and needs no
+      // human authority to re-record. §2 promises exactly this exit for a
+      // refused re-alignment, whose operation is terminally failed while the
+      // job itself never started.
+      if (!ctx.job_retry && !never_started) {
         // The effect of an interrupted run is unknown, and guessing either way
         // is worse than stopping: re-running risks a second application, and
         // writing `applied` risks recording one that never happened.
@@ -2331,7 +2338,8 @@ export function createPrActions(deps) {
           judged.log_path
         );
       }
-      // Branch ③: an authorized retry re-records rather than reopening.
+      // Branch ③ (and the never-started case above): re-record rather than
+      // reopen, because a terminal RepoOperation never returns to `queued`.
       supersedes = ledger.operation_id;
     }
     const prepared = await operations.prepareJob({
@@ -2340,8 +2348,7 @@ export function createPrActions(deps) {
       bead_id,
       script_path: `${POST_MERGE_JOB_DIR}/${entry.name}`,
       script_mode: entry.mode,
-      script_blob_sha: entry.object_sha,
-      supersedes
+      script_blob_sha: entry.object_sha
     });
     if (prepared.ok !== true || typeof prepared.operation_id !== 'string') {
       return await failCleanup(
@@ -2351,11 +2358,18 @@ export function createPrActions(deps) {
         ctx.base_sync
       );
     }
+    // One mutation carries the whole swap: the CAS on the old pointer, the new
+    // intent, and the audit lineage that records which run replaced which. Kept
+    // apart, an interruption between them could leave a lineage pointing at an
+    // operation this ledger never adopted.
     const claimed = deps.store.recordPostMergeJobIntent?.(workspace, {
       key: entry.key,
       operation_id: prepared.operation_id,
       repo_id: repo,
-      ...(supersedes === null ? {} : { expect_operation_id: supersedes })
+      ...(supersedes === null ? {} : { expect_operation_id: supersedes }),
+      ...(supersedes === null || supersedes === prepared.operation_id
+        ? {}
+        : { supersede_operation_id: supersedes })
     });
     const intent =
       deps.store.snapshot(workspace).post_merge_jobs?.[entry.key] || null;
@@ -2445,11 +2459,22 @@ export function createPrActions(deps) {
    * Execute only the closure half once the repo operations for this row have
    * reached a terminal success.
    *
+   * `job_retry_authorized` is deliberately NOT derived from `resume_failure`:
+   * every boot- and coordinator-driven resume passes `resume_failure` too, and
+   * §3 lets an outcome-unknown job be re-run only under a human click. Only
+   * {@link retryCleanupLocked} — whose callers are the [정리] retry and the
+   * [머지] click on an already-merged PR — carries that authority.
+   *
    * @param {string} bead_id
    * @param {boolean} [resume_failure]
+   * @param {boolean} [job_retry_authorized]
    * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
    */
-  async function closeCoveredRow(bead_id, resume_failure = false) {
+  async function closeCoveredRow(
+    bead_id,
+    resume_failure = false,
+    job_retry_authorized = false
+  ) {
     const q = deps.store.snapshot(workspace);
     const row = q.pr_wait.find(
       (/** @type {any} */ entry) => entry.bead_id === bead_id
@@ -2500,9 +2525,11 @@ export function createPrActions(deps) {
       const jobs = await runPostMergeJobs(bead_id, row, {
         base_sync: null,
         // §3: an outcome-unknown job is re-judged, re-recorded and re-run only
-        // under an authorized retry OF THIS STEP. A boot resume of an
-        // interrupted row carries no such authority and must terminate instead.
-        job_retry: resume_failure === true && resume_step === 'post_merge_jobs'
+        // under a human-authorized retry OF THIS STEP. A boot resume or a
+        // coordinator replay of an interrupted row carries no such authority
+        // and must terminate instead.
+        job_retry:
+          job_retry_authorized === true && resume_step === 'post_merge_jobs'
       });
       if (jobs !== null) {
         return jobs;
@@ -3886,7 +3913,9 @@ export function createPrActions(deps) {
       return { ok: false, step: null, reason: 'cleanup_failed_missing' };
     }
     if (CLOSURE_STEPS.includes(cleanup_failure.step)) {
-      return await closeCoveredRow(bead_id, true);
+      // The human-click boundary: both callers are clicks, so this is the one
+      // entry that may re-run an outcome-unknown post-merge job (§3).
+      return await closeCoveredRow(bead_id, true, true);
     }
     return await runCleanup(bead_id, refs);
   }

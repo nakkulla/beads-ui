@@ -10805,6 +10805,99 @@ describe('worker/queue-store — post-merge job ledger (UI-i60a §3)', () => {
     );
   });
 
+  test('refuses a second first-claim on a key already held as intent', () => {
+    const store = createQueueStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-2',
+      repo_id: WS
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).post_merge_jobs[JOB_KEY].operation_id).toBe(
+      'job-1'
+    );
+  });
+
+  test('records the supersede lineage in the mutation that swaps the pointer', () => {
+    const store = createQueueStore();
+    prerecordJob(store, 'job-1');
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-2',
+      repo_id: WS,
+      expect_operation_id: 'job-1',
+      supersede_operation_id: 'job-1'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).repo_operations['job-1'].superseded_by).toBe(
+      'job-2'
+    );
+  });
+
+  test('leaves the ledger pointer unchanged when the supersede is refused', () => {
+    const store = createQueueStore();
+    prerecordJob(store, 'job-1');
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-2',
+      repo_id: WS,
+      expect_operation_id: 'job-1',
+      supersede_operation_id: 'job-absent'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).post_merge_jobs[JOB_KEY].operation_id).toBe(
+      'job-1'
+    );
+  });
+
+  test('refuses to supersede an operation that already names a successor', () => {
+    const store = createQueueStore();
+    prerecordJob(store, 'job-1');
+    store.supersedeRepoOperation(WS, {
+      operation_id: 'job-1',
+      successor_id: 'job-other'
+    });
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-1',
+      repo_id: WS
+    });
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-2',
+      repo_id: WS,
+      expect_operation_id: 'job-1',
+      supersede_operation_id: 'job-1'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).repo_operations['job-1'].superseded_by).toBe(
+      'job-other'
+    );
+  });
+
   test('round-trips an applied ledger entry through disk', () => {
     const store = createQueueStore();
     store.recordPostMergeJobIntent(WS, {

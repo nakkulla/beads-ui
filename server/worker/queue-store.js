@@ -6089,13 +6089,26 @@ export function createQueueStore(options = {}) {
      * and its ledger record reads as "outcome unknown" instead of as a run that
      * never happened.
      *
-     * `expect_operation_id` is the retry reconcile's swap (§3 branch ③): the
-     * new operation replaces the old one in the SAME mutation that keeps the
-     * entry an intent, so no window exists in which the ledger names an
-     * operation nobody is running. An `applied` key is never reopened.
+     * The claim is a compare-and-set on BOTH shapes, because the ledger key is
+     * what serializes two executions of the same job file:
+     * - without `expect_operation_id` it is a FIRST claim, and only an absent
+     *   key may be claimed. A second cleanup row that reached here concurrently
+     *   would otherwise overwrite the first row's `operation_id` and run the
+     *   same script twice; the loser instead fails closed on its own readback.
+     * - with `expect_operation_id` it is the retry reconcile's swap (§3 branch
+     *   ③): the new operation replaces the old one in the SAME mutation that
+     *   keeps the entry an intent, so no window exists in which the ledger
+     *   names an operation nobody is running.
+     *
+     * An `applied` key is never reopened by either shape.
+     *
+     * `supersede_operation_id` folds §3 branch ③'s audit lineage into this one
+     * mutation: the superseded operation and the pointer that replaced it are
+     * written together or not at all, so no interruption can leave a lineage
+     * naming an operation the ledger never adopted.
      *
      * @param {string} workspace
-     * @param {{ key: string, operation_id: string, repo_id: string, expect_operation_id?: string }} input
+     * @param {{ key: string, operation_id: string, repo_id: string, expect_operation_id?: string, supersede_operation_id?: string }} input
      * @returns {QueueOpResult}
      */
     recordPostMergeJobIntent(workspace, input) {
@@ -6114,11 +6127,20 @@ export function createQueueStore(options = {}) {
         if (existing && existing.state === 'applied') {
           return false;
         }
-        if (
-          input.expect_operation_id !== undefined &&
-          existing?.operation_id !== input.expect_operation_id
-        ) {
+        if (input.expect_operation_id === undefined) {
+          if (existing) {
+            return false;
+          }
+        } else if (existing?.operation_id !== input.expect_operation_id) {
           return false;
+        }
+        if (input.supersede_operation_id !== undefined) {
+          const superseded =
+            next.repo_operations[input.supersede_operation_id] || null;
+          if (!superseded || superseded.superseded_by) {
+            return false;
+          }
+          superseded.superseded_by = input.operation_id;
         }
         next.post_merge_jobs[input.key] = {
           state: 'intent',

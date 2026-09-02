@@ -4012,6 +4012,43 @@ describe('post-merge job operations (UI-i60a §2)', () => {
     );
   });
 
+  test('spawns the job script while the deploy lock is still held', async () => {
+    let held = false;
+    /** @type {boolean|null} */
+    let held_at_spawn = null;
+    const { coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt(),
+      deployLock: async () => {
+        held = true;
+        return {
+          ok: true,
+          release: async () => {
+            held = false;
+          }
+        };
+      },
+      runner: {
+        start: async () => {
+          held_at_spawn = held;
+          return {
+            ok: true,
+            process_identity: { pid: 1, pgid: 1, started_at: 1 },
+            log_path: path.join(root, 'job.log')
+          };
+        },
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+
+    await coordinator.launchJob({ operation_id: prepared.operation_id });
+
+    expect(held_at_spawn).toBe(true);
+  });
+
   test('terminalizes a queued job instead of launching it', async () => {
     const start = vi.fn();
     const { store, coordinator } = coordinatorFor({
@@ -4241,7 +4278,11 @@ describe('post-merge job operations (UI-i60a §2)', () => {
     expect(second.operation_id).not.toBe(first.operation_id);
   });
 
-  test('preserves the replaced run as supersede lineage', async () => {
+  // The supersede lineage itself is no longer written here: it belongs to the
+  // one ledger mutation that also swaps the pointer, so a re-record cannot
+  // leave a lineage naming an operation the ledger never adopted
+  // (`queue-store.js recordPostMergeJobIntent`).
+  test('prerecords a distinct operation for a re-recorded run', async () => {
     const { store, coordinator } = coordinatorFor({
       deployWorktree: worktreeAt()
     });
@@ -4249,12 +4290,11 @@ describe('post-merge job operations (UI-i60a §2)', () => {
     const first = await coordinator.prepareJob(jobRequest());
 
     /** @type {any} */
-    const second = await coordinator.prepareJob(
-      jobRequest({ supersedes: first.operation_id })
-    );
+    const second = await coordinator.prepareJob(jobRequest());
 
+    expect(second.operation_id).not.toBe(first.operation_id);
     expect(
-      store.snapshot(root).repo_operations[first.operation_id].superseded_by
-    ).toBe(second.operation_id);
+      store.snapshot(root).repo_operations[second.operation_id]
+    ).toMatchObject({ kind: 'job', state: 'queued' });
   });
 });

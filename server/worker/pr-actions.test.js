@@ -4774,6 +4774,99 @@ describe('post-merge cleanup — the post-merge job step (UI-i60a §1–§3)', (
   }
 
   /**
+   * The durable record a ledger intent already names, so the retry's supersede
+   * lineage has a real operation to point back at.
+   *
+   * @param {any} store
+   * @param {string} operation_id
+   */
+  function prerecordJobOperation(store, operation_id) {
+    store.ensureRepoOperation(WS, {
+      operation_id,
+      repo_id: REPO,
+      kind: 'job',
+      subjects: [{ bead_id: BEAD, merged_sha: MERGE_SHA }],
+      effective_base_sha: MERGE_SHA,
+      target_base: 'main',
+      target_sha: MERGE_SHA,
+      script_path: 'repo-ops/post-merge.d/10-first',
+      script_mode: '100755',
+      script_blob_sha: BLOB_FIRST
+    });
+  }
+
+  /**
+   * A row whose post-merge job step already failed, waiting to be re-entered.
+   *
+   * @param {{ reason?: string }} [options]
+   */
+  function storeAtFailedJob(options = {}) {
+    const store = seedStore();
+    store.setCleanupCursor(WS, {
+      bead_id: BEAD,
+      cursor: 'base_containment',
+      merge_sha: MERGE_SHA
+    });
+    prerecordJobOperation(store, 'job-prior');
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_FIRST,
+      operation_id: 'job-prior',
+      repo_id: REPO
+    });
+    store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'post_merge_jobs',
+      reason: options.reason ?? `post_merge_job_outcome_unknown:${KEY_FIRST}`
+    });
+    return store;
+  }
+
+  /**
+   * Put the row under a prerecorded `retry_cleanup` completion op, which is
+   * what {@link resumeCompletionCleanup} requires to own the replay.
+   *
+   * @param {any} store
+   */
+  function ownCompletionCleanup(store) {
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: BEAD,
+      source_attempt_id: 'a1',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: BEAD,
+        pr_url: 'https://github.com/o/r/pull/304',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: MERGE_SHA
+      }
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: BEAD,
+      phase: 'cleaning',
+      subject: store.snapshot(WS).completion_intents[BEAD].subject
+    });
+    store.prepareCompletionOp(WS, {
+      root_bead_id: BEAD,
+      phase: 'cleaning',
+      op: {
+        op_id: 'cleanup-1',
+        kind: 'retry_cleanup',
+        failure_key: {
+          stage: 'post_merge_jobs',
+          reason: `post_merge_job_outcome_unknown:${KEY_FIRST}`,
+          subject_sha: MERGE_SHA,
+          base_sha: 'b'.repeat(40),
+          result_digest: 'c'.repeat(64)
+        },
+        attempt_id: null,
+        status: 'prepared'
+      }
+    });
+    return store;
+  }
+
+  /**
    * @param {{ entries?: any[], coordinator: any, store?: any }} options
    */
   function jobEnv(options) {
@@ -5066,25 +5159,11 @@ describe('post-merge cleanup — the post-merge job step (UI-i60a §1–§3)', (
   });
 
   test('re-records a new operation when the recorded run failed terminally', async () => {
-    const store = seedStore();
-    store.setCleanupCursor(WS, {
-      bead_id: BEAD,
-      cursor: 'base_containment',
-      merge_sha: MERGE_SHA
-    });
-    store.recordPostMergeJobIntent(WS, {
-      key: KEY_FIRST,
-      operation_id: 'job-prior',
-      repo_id: REPO
-    });
-    store.recordCleanupFailure(WS, {
-      bead_id: BEAD,
-      step: 'post_merge_jobs',
-      reason: 'script_failed'
-    });
+    const store = storeAtFailedJob({ reason: 'script_failed' });
     const { coordinator } = jobCoordinator({
       reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
         state: 'failed',
+        started: true,
         operation_id,
         code: 'script_failed'
       }))
@@ -5097,9 +5176,139 @@ describe('post-merge cleanup — the post-merge job step (UI-i60a §1–§3)', (
 
     await env.actions.retryCleanup(BEAD);
 
-    expect(coordinator.prepareJob).toHaveBeenCalledWith(
-      expect.objectContaining({ supersedes: 'job-prior' })
-    );
+    expect(env.store.snapshot(WS).post_merge_jobs[KEY_FIRST]).toMatchObject({
+      state: 'applied',
+      operation_id: 'job-1'
+    });
+  });
+
+  test('preserves the superseded operation lineage across the retry swap', async () => {
+    const store = storeAtFailedJob({ reason: 'script_failed' });
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        started: true,
+        operation_id,
+        code: 'script_failed'
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.retryCleanup(BEAD);
+
+    expect(env.store.snapshot(WS).repo_operations['job-prior']).toMatchObject({
+      superseded_by: 'job-1'
+    });
+  });
+
+  test('re-runs a coordinator-refused job the cleanup replay finds pending', async () => {
+    const store = seedStore();
+    prerecordJobOperation(store, 'job-prior');
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_FIRST,
+      operation_id: 'job-prior',
+      repo_id: REPO
+    });
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        started: false,
+        operation_id,
+        code: 'post_merge_job_target_moved'
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).post_merge_jobs[KEY_FIRST]).toMatchObject({
+      state: 'applied',
+      operation_id: 'job-1'
+    });
+  });
+
+  test('terminates a job that started and then died without terminal evidence', async () => {
+    const store = seedStore();
+    prerecordJobOperation(store, 'job-prior');
+    store.recordPostMergeJobIntent(WS, {
+      key: KEY_FIRST,
+      operation_id: 'job-prior',
+      repo_id: REPO
+    });
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        started: true,
+        operation_id,
+        code: 'interrupted'
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.merge(BEAD);
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'post_merge_jobs',
+      reason: `post_merge_job_outcome_unknown:${KEY_FIRST}`
+    });
+    expect(coordinator.prepareJob).not.toHaveBeenCalled();
+  });
+
+  test('refuses to re-run an outcome-unknown job on a completion cleanup replay', async () => {
+    const store = ownCompletionCleanup(storeAtFailedJob());
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        started: true,
+        operation_id,
+        code: 'interrupted'
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.resumeCompletionCleanup(BEAD);
+
+    expect(coordinator.prepareJob).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).post_merge_jobs[KEY_FIRST]).toMatchObject({
+      state: 'intent',
+      operation_id: 'job-prior'
+    });
+  });
+
+  test('re-runs the same outcome-unknown job on the cleanup retry click', async () => {
+    const store = ownCompletionCleanup(storeAtFailedJob());
+    const { coordinator } = jobCoordinator({
+      reconcileJob: vi.fn(async (/** @type {string} */ operation_id) => ({
+        state: 'failed',
+        started: true,
+        operation_id,
+        code: 'interrupted'
+      }))
+    });
+    const env = jobEnv({
+      store,
+      coordinator,
+      entries: [{ name: '10-first', sha: BLOB_FIRST }]
+    });
+
+    await env.actions.retryCleanup(BEAD);
+
     expect(env.store.snapshot(WS).post_merge_jobs[KEY_FIRST]).toMatchObject({
       state: 'applied',
       operation_id: 'job-1'
