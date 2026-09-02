@@ -302,16 +302,48 @@ describe('parseTranscript — codex delegation monitor', () => {
       })
     ]);
 
-    expect(lines).toHaveLength(3);
-    expect(lines.map((line) => line.kind)).toEqual(['tool', 'tool', 'tool']);
+    expect(lines).toHaveLength(2);
+    expect(lines.map((line) => line.kind)).toEqual(['tool', 'tool']);
     expect(lines.map((line) => line.tool)).toEqual([
-      '명령 실행 · 시작',
       '명령 실행 · 완료',
       '파일 변경 · 실패'
     ]);
     expect(lines.every((line) => !line.command && !line.path)).toBe(true);
     expect(lines.every((line) => line.input === undefined)).toBe(true);
     expect(lines.every((line) => line.output === undefined)).toBe(true);
+  });
+
+  test('draws one line per activity by dropping the started twin', () => {
+    const lines = parseTranscript([
+      envelope({
+        type: 'item.started',
+        item: { id: 'i5', kind: 'activity', activity: 'command_execution' }
+      }),
+      envelope({
+        type: 'item.completed',
+        item: {
+          id: 'i5',
+          kind: 'activity',
+          activity: 'command_execution',
+          status: 'completed'
+        }
+      }),
+      envelope({
+        type: 'item.started',
+        item: { id: 'i6', kind: 'activity', activity: 'file_change' }
+      }),
+      envelope({
+        type: 'item.completed',
+        item: {
+          id: 'i6',
+          kind: 'activity',
+          activity: 'file_change',
+          status: 'failed'
+        }
+      })
+    ]);
+
+    expect(lines.filter((line) => line.kind === 'tool')).toHaveLength(2);
   });
 
   test('projects turn terminals using existing result and error lines', () => {

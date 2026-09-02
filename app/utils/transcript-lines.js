@@ -572,6 +572,7 @@ function parseCodex(raw) {
 
 /**
  * Project a validated producer envelope onto existing drawer line kinds.
+ * Activity starts emit no line, so they do not clear an open progress line.
  *
  * @param {Record<string, unknown>} raw
  * @returns {DisplayLine[]}
@@ -604,37 +605,37 @@ function parseDelegationMonitor(raw) {
       const line = thinkingLine(item.text);
       return line ? [line] : [];
     }
-    if (item.kind !== 'activity' || typeof item.activity !== 'string') {
+    if (
+      event.type !== 'item.completed' ||
+      item.kind !== 'activity' ||
+      typeof item.activity !== 'string'
+    ) {
       return [];
     }
     const activity_label = DELEGATION_ACTIVITY_LABELS[item.activity];
     if (!activity_label) {
       return [];
     }
-    let lifecycle = '시작';
-    let icon = '…';
-    /** @type {DisplayLine} */
-    const line = {
-      kind: 'tool',
-      tool: '',
-      icon,
-      expandable: false
-    };
-    if (event.type === 'item.completed') {
-      if (item.status === 'completed') {
-        lifecycle = '완료';
-        icon = '✓';
-      } else if (item.status === 'failed') {
-        lifecycle = '실패';
-        icon = '✗';
-      } else {
-        return [];
-      }
-      line.result = '';
+    let lifecycle;
+    let icon;
+    if (item.status === 'completed') {
+      lifecycle = '완료';
+      icon = '✓';
+    } else if (item.status === 'failed') {
+      lifecycle = '실패';
+      icon = '✗';
+    } else {
+      return [];
     }
-    line.tool = `${activity_label} · ${lifecycle}`;
-    line.icon = icon;
-    return [line];
+    return [
+      {
+        kind: 'tool',
+        tool: `${activity_label} · ${lifecycle}`,
+        icon,
+        expandable: false,
+        result: ''
+      }
+    ];
   }
   if (event.type === 'turn.completed' && event.status === 'completed') {
     return [{ kind: 'result', success: true, text: 'DONE' }];

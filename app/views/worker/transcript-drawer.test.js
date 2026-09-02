@@ -406,6 +406,56 @@ describe('transcript drawer', () => {
     expect(mount.querySelectorAll('.sv__tool')).toHaveLength(0);
   });
 
+  test('folds a run of identical delegation activity lines', () => {
+    const base = {
+      schema: 'codex-delegation-monitor-v1',
+      attempt_id: 'att-delegation-fold',
+      launch_id: 'launch-1',
+      provider: 'codex',
+      role: 'implementation',
+      model: 'gpt-5.6-sol',
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      recorded_at: 1
+    };
+    /** @type {unknown[]} */
+    const lines = [];
+    for (let i = 0; i < 6; i += 1) {
+      const item = {
+        id: `i${i}`,
+        kind: 'activity',
+        activity: 'command_execution'
+      };
+      lines.push(
+        { ...base, event: { type: 'item.started', item } },
+        {
+          ...base,
+          event: {
+            type: 'item.completed',
+            item: { ...item, status: 'completed' }
+          }
+        }
+      );
+    }
+    store.set('session-log:att-delegation-fold:launch-1', lines);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({
+      attempt_id: 'att-delegation-fold',
+      launch_id: 'launch-1'
+    });
+
+    const group = /** @type {HTMLElement} */ (
+      mount.querySelector('.sv__group')
+    );
+    expect(group?.textContent).toContain('명령 실행 · 완료');
+    expect(group?.textContent).toContain('6');
+    expect(mount.querySelectorAll('.sv__tool')).toHaveLength(0);
+  });
+
   test('a folded group expands on click', () => {
     /** @type {unknown[]} */
     const lines = [];
@@ -618,8 +668,13 @@ describe('transcript drawer', () => {
       {
         ...base,
         event: {
-          type: 'item.started',
-          item: { id: 'i3', kind: 'activity', activity: 'file_change' }
+          type: 'item.completed',
+          item: {
+            id: 'i3',
+            kind: 'activity',
+            activity: 'file_change',
+            status: 'completed'
+          }
         }
       },
       { ...base, event: { type: 'turn.completed', status: 'completed' } }
@@ -636,7 +691,7 @@ describe('transcript drawer', () => {
       '위임 판단'
     );
     expect(mount.querySelector('.sv__tool')?.textContent).toContain(
-      '파일 변경 · 시작'
+      '파일 변경 · 완료'
     );
     expect(mount.querySelector('.sv__result--ok')?.textContent).toContain(
       'DONE'
