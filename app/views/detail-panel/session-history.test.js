@@ -436,13 +436,45 @@ describe('session-history delegation monitors', () => {
     expect(row?.tagName).toBe('BUTTON');
     expect(row?.textContent).toContain('implementation');
     expect(row?.textContent).toContain('codex · gpt-5.6-sol');
-    expect(row?.textContent).toContain('session-');
+    expect(row?.textContent).toContain('launch-running');
     expect(
       row?.querySelector('.detail-session__leg-sid')?.getAttribute('title')
-    ).toBe('session-running');
+    ).toBe('launch-running · thread session-running');
     expect(
       row?.querySelector('.detail-session__leg-time')?.textContent
     ).not.toBe('');
+  });
+
+  test('marks only later Codex rows that continue the same thread', () => {
+    const first = {
+      ...monitor('done', 'unit1-codex-02'),
+      session_id: 'shared-thread',
+      started_at: 100
+    };
+    const second = {
+      ...monitor('done', 'unit1-r1'),
+      session_id: 'shared-thread',
+      started_at: 200
+    };
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [first, second]
+        }
+      ])
+    );
+
+    const ids = Array.from(host.querySelectorAll('.detail-session__leg-sid'));
+
+    expect(ids.map((node) => node.textContent)).toEqual([
+      'unit1-codex-02',
+      '↩ unit1-r1'
+    ]);
+    expect(ids.map((node) => node.getAttribute('title'))).toEqual([
+      'unit1-codex-02 · thread shared-thread',
+      'unit1-r1 · thread shared-thread · 이전 라운드 스레드 이어감'
+    ]);
   });
 
   test('renders monitored and static effort while omitting absent effort', () => {
@@ -524,7 +556,38 @@ describe('session-history delegation monitors', () => {
 
     expect(row?.tagName).toBe('DIV');
     expect(row?.textContent).toContain('Codex τ 8');
+    expect(row?.querySelector('.detail-session__leg-sid')?.textContent).toBe(
+      'legacy-1'
+    );
+    expect(
+      row?.querySelector('.detail-session__leg-sid')?.getAttribute('title')
+    ).toBe('legacy-1 · thread legacy-session');
     expect(row?.querySelector('.detail-session__leg-glyph')).toBeNull();
+  });
+
+  test('renders a static Codex launch id without a thread id', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          usage_legs: [
+            {
+              receipt_id: 'receipt-without-thread',
+              provider: 'codex',
+              role: 'implementation',
+              model: 'gpt-5.6-terra',
+              completed_at: '2026-08-18T04:27:00.000Z',
+              usage: { input_tokens: 5 }
+            }
+          ]
+        }
+      ])
+    );
+
+    const id = host.querySelector('.detail-session__leg-sid');
+
+    expect(id?.textContent).toBe('receipt-without-thread');
+    expect(id?.getAttribute('title')).toBe('receipt-without-thread');
   });
 
   test('joins matching terminal usage into one monitored row', () => {

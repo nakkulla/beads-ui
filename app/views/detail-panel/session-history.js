@@ -181,19 +181,25 @@ function shortModel(model) {
 }
 
 /**
- * The short id a delegated row shows. A Claude subagent's `agentId` only exists
- * once it finished, so a running row falls back to the tail of its launch id —
- * the head is the constant `toolu_01` prefix and would identify nothing.
+ * The id a delegated row shows. Codex rows lead with the launch id while keeping
+ * the thread id in the title. A Claude subagent's `agentId` only exists once it
+ * finished, so a running row falls back to the tail of its launch id — the head
+ * is the constant `toolu_01` prefix and would identify nothing.
  *
- * @param {DelegationSession} session
+ * @param {{ provider: 'codex'|'claude', launch_id: string, session_id?: string|null }} session
  * @param {Record<string, any>|null} leg
+ * @param {boolean} continued
  * @returns {{ text: string, title: string }}
  */
-function shortIdOf(session, leg) {
+function shortIdOf(session, leg, continued) {
   if (session.provider !== 'claude') {
+    const thread_title = session.session_id
+      ? ` · thread ${session.session_id}`
+      : '';
+    const continuation_title = continued ? ' · 이전 라운드 스레드 이어감' : '';
     return {
-      text: session.session_id.slice(0, 8),
-      title: session.session_id
+      text: `${continued ? '↩ ' : ''}${session.launch_id}`,
+      title: `${session.launch_id}${thread_title}${continuation_title}`
     };
   }
   const agent_id = leg && typeof leg.agent_id === 'string' ? leg.agent_id : '';
@@ -307,9 +313,10 @@ function validDelegation(candidate) {
  * @param {'implementation'|'review-consult'|'subagent'} role
  * @param {'codex'|'claude'} provider
  * @param {Record<string, any>} leg
+ * @param {boolean} continued
  * @returns {TemplateResult}
  */
-function staticLegTemplate(role, provider, leg) {
+function staticLegTemplate(role, provider, leg, continued) {
   const badges = providerUsageBadges({
     providers: {
       [provider]: {
@@ -321,6 +328,16 @@ function staticLegTemplate(role, provider, leg) {
     roles: {}
   });
   const badge = badges[0];
+  const short_id = shortIdOf(
+    {
+      provider,
+      launch_id: leg.receipt_id,
+      session_id:
+        typeof leg.session_id === 'string' ? leg.session_id : undefined
+    },
+    leg,
+    continued
+  );
   return html`<div class="detail-session__leg detail-session__usage-detail">
     <span class="detail-session__leg-role detail-session__usage-label"
       >${role}</span
@@ -330,13 +347,11 @@ function staticLegTemplate(role, provider, leg) {
         .filter(Boolean)
         .join(' · ')}</span
     >
-    ${leg.session_id
-      ? html`<span
-          class="detail-session__leg-sid detail-session__sid"
-          title=${leg.session_id}
-          >${leg.session_id.slice(0, 8)}</span
-        >`
-      : ''}
+    <span
+      class="detail-session__leg-sid detail-session__sid"
+      title=${short_id.title}
+      >${short_id.text}</span
+    >
     ${completedTime(leg.completed_at)
       ? html`<span class="detail-session__leg-time detail-session__time"
           >${completedTime(leg.completed_at)}</span
@@ -355,9 +370,10 @@ function staticLegTemplate(role, provider, leg) {
  * @param {Record<string, any>|null} leg
  * @param {string} attempt_id
  * @param {{ onOpenDelegation?: (attempt_id: string, launch_id: string) => void }} handlers
+ * @param {boolean} continued
  * @returns {TemplateResult}
  */
-function monitoredLegTemplate(session, leg, attempt_id, handlers) {
+function monitoredLegTemplate(session, leg, attempt_id, handlers, continued) {
   const terminal_leg = session.status === 'running' ? null : leg;
   const badges = terminal_leg
     ? providerUsageBadges({
@@ -394,7 +410,7 @@ function monitoredLegTemplate(session, leg, attempt_id, handlers) {
   )
     .filter(Boolean)
     .join(' · ');
-  const short_id = shortIdOf(session, terminal_leg);
+  const short_id = shortIdOf(session, terminal_leg, continued);
   return html`<button
     type="button"
     class="detail-session__leg detail-session__usage-detail detail-session__leg--${session.status}"
@@ -491,6 +507,8 @@ function delegationLegs(attempt, projection, handlers) {
   const all_usage = DELEGATION_ROLES.flatMap(({ role }) => usage_by_role[role]);
   /** @type {Set<string>} */
   const joined_receipts = new Set();
+  /** @type {Set<string>} */
+  const codex_session_ids = new Set();
   /** @type {TemplateResult[]} */
   const rows = [];
 
@@ -507,16 +525,38 @@ function delegationLegs(attempt, projection, handlers) {
       if (leg) {
         joined_receipts.add(leg.receipt_id);
       }
+      const continued =
+        provider === 'codex' && codex_session_ids.has(session.session_id);
       rows.push(
-        monitoredLegTemplate(session, leg, attempt.attempt_id, handlers)
+        monitoredLegTemplate(
+          session,
+          leg,
+          attempt.attempt_id,
+          handlers,
+          continued
+        )
       );
+      if (provider === 'codex') {
+        codex_session_ids.add(session.session_id);
+      }
     }
     for (const leg of usage_by_role[role]) {
       if (
         !joined_receipts.has(leg.receipt_id) &&
         !isToolAgentType(leg.agent_type)
       ) {
-        rows.push(staticLegTemplate(role, provider, leg));
+        const session_id =
+          typeof leg.session_id === 'string' && leg.session_id.length > 0
+            ? leg.session_id
+            : null;
+        const continued =
+          provider === 'codex' &&
+          session_id !== null &&
+          codex_session_ids.has(session_id);
+        rows.push(staticLegTemplate(role, provider, leg, continued));
+        if (provider === 'codex' && session_id !== null) {
+          codex_session_ids.add(session_id);
+        }
       }
     }
   }
