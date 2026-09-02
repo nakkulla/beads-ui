@@ -703,6 +703,13 @@ detached 정산 경로(`scheduler.js disposeDeadAttemptSettlement`)에서 PR 관
   독립이다(§6). ADR 0016과 정합.
 - **2026-08-28 worker-prerequisite-wait-tier**·**UI-8kvi**: `대기 ·` 결말은 그
   계층이 먼저 잡고(§4.2 진입 조건), 이 스펙은 그 뒤의 `no_pr` 결말만 다룬다.
+- **2026-09-02 worker-waiting-return-trigger (UI-978d, 진행 중)**
+  (`server/worker/scheduler.js`, `attach.js`): `waiting` 복귀 pass의 재디스패치
+  조건이 `¬leafPausedBeads(q)`를 포함하므로 `provider_outage` 보류(`paused` leaf)
+  bead는 그 pass가 새 attempt를 만들지 않는다 — 재개는 §8의 `resume` 경로만이다.
+  두 스펙은 `onSessionDone`의 서로 다른 결말(선행 대기 vs 공급자 보류)을 다루고
+  같은 함수를 고치지 않는다. 그 스펙의 출력은 이 스펙의 전제가 아니므로 `blocks`
+  엣지는 쓰지 않는다.
 - **2026-08-27 failed-tile-decision-surface**·**2026-08-29 worker-held-tile-discard**
   ·**2026-08-25 card-header-grammar-unify**·**2026-08-28 chip-grammar-unify**: §10이
   그 표면(held 타일·판정 뱃지·팝오버·`폐기`)과 슬롯 표를 그대로 소비한다. 원안의
