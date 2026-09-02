@@ -2543,3 +2543,156 @@ describe('worker running tile — [세션에서 해결] (UI-jw27 §4)', () => {
     expect(button.disabled).toBe(true);
   });
 });
+
+// discard-abandon §3.1: 폐기 실패는 실행 중·실패·파킹 타일 어디서나 나므로,
+// 그 출구도 대기 행뿐 아니라 타일에 있어야 한다. 없으면 실행 중이던 bead는
+// 어느 화면에서도 포기할 수 없다.
+describe('worker running tile — [폐기 포기] (discard-abandon §3.1)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * One failed discard projection whose abandon slot is open.
+   *
+   * @param {Record<string, any>} [extra]
+   */
+  function failedDiscard(extra = {}) {
+    return {
+      action: true,
+      enabled: true,
+      label: '재시도',
+      title: '폐기 실패: dirty_submodule — 정리 후 재시도하세요',
+      error: 'dirty_submodule',
+      operation: {
+        operation_id: 'op-1',
+        phase: 'requested',
+        kind: 'discard'
+      },
+      abandon: {
+        action: true,
+        label: '폐기 포기',
+        title: '실패한 폐기 작업을 포기합니다'
+      },
+      ...extra
+    };
+  }
+
+  /**
+   * @param {Record<string, any>} [extra]
+   */
+  function failedTile(extra = {}) {
+    return {
+      bead_id: 'UI-7',
+      attempt_id: 'attempt-7',
+      title: 'failed work',
+      runner: 'claude',
+      model: 'opus',
+      started_at: 1,
+      failed: true,
+      status: /** @type {const} */ ('failed'),
+      status_label: '실패',
+      ...extra
+    };
+  }
+
+  test('orders 재시도 · 폐기 포기 · 세션에서 해결 on a failed tile', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        failedTile({
+          discard: failedDiscard(),
+          resolve_action: true,
+          resolve_enabled: true
+        })
+      ]),
+      mount
+    );
+
+    const order = Array.from(
+      mount.querySelectorAll(
+        '.rtile__discard, .rtile__discard-abandon, .rtile__resolve'
+      )
+    ).map((el) => el.className);
+
+    expect(order).toEqual([
+      'rtile__discard',
+      'rtile__discard-abandon',
+      'rtile__resolve'
+    ]);
+  });
+
+  test('carries the operation identity the abandon request needs', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([failedTile({ discard: failedDiscard() })]),
+      mount
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile__discard-abandon')
+    );
+
+    expect([
+      button.dataset.operationId,
+      button.dataset.operationKind,
+      button.dataset.lastError,
+      button.textContent?.trim()
+    ]).toEqual(['op-1', 'discard', 'dirty_submodule', '폐기 포기']);
+  });
+
+  test('draws no abandon button while the discard is still running', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        failedTile({
+          discard: failedDiscard({
+            label: '폐기',
+            error: null,
+            operation: { operation_id: 'op-1', phase: 'requested' },
+            abandon: { action: false, label: '폐기 포기', title: '' }
+          })
+        })
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__discard-abandon')).toBeNull();
+    expect(mount.querySelector('.rtile__discard')).not.toBeNull();
+  });
+
+  test('offers the abandon button in the parked action foot', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-8',
+          attempt_id: 'attempt-8',
+          title: 'parked work',
+          runner: 'claude',
+          model: 'opus',
+          started_at: 1,
+          parked: true,
+          status: /** @type {const} */ ('parked'),
+          status_label: '세션 대기',
+          discard: failedDiscard({ label: '백업 정리 재시도' })
+        }
+      ]),
+      mount
+    );
+
+    const foot = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__foot')
+    );
+
+    expect(
+      Array.from(foot.querySelectorAll('button')).map((el) =>
+        el.textContent?.trim()
+      )
+    ).toEqual(['재시도', '백업 정리 재시도', '폐기 포기']);
+  });
+});

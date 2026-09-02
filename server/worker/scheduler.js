@@ -66,6 +66,7 @@ import {
 import { prepareCodexAccountHome as defaultPrepareCodexAccountHome } from './codex-account-home.js';
 import { observeCodexEffort as defaultObserveCodexEffort } from './codex-effort-observer.js';
 import * as default_delegation_monitor from './delegation-monitor.js';
+import { discardOperationActive } from './discard-phase.js';
 import { errorDetail } from './error-detail.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
@@ -798,7 +799,7 @@ export function activeLaneLineages(q) {
     }
   }
   for (const operation of Object.values(q.discard_operations || {})) {
-    if (!operation || operation.phase === 'done') {
+    if (!discardOperationActive(operation)) {
       continue;
     }
     const attempt =
@@ -946,6 +947,7 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
+ *   unfenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   finalizeDiscardAttempt: (workspace: string, attempt_id: string, bead_id?: string|null, source_status?: string|null) => Promise<{ ok: boolean, reason?: string }>,
  *   recoverControls: (workspace: string) => Promise<void>,
  *   onIssuesChanged: (workspace: string) => Promise<void>,
@@ -1175,6 +1177,12 @@ export function createScheduler(deps) {
    * @type {Set<string>}
    */
   const stopped = new Set();
+  /**
+   * Attempts whose scheduler-local stop fence was added by discard itself.
+   *
+   * @type {Set<string>}
+   */
+  const discard_fenced = new Set();
   /**
    * Beads refused by the dispatch-time admission RE-check within the current
    * tick cascade. The refill pass skips them so a scan-pass/dispatch-fail
@@ -2811,7 +2819,10 @@ export function createScheduler(deps) {
     const out = new Set(claimed);
     for (const operation of Object.values(q.discard_operations || {})) {
       const discard = /** @type {any} */ (operation);
-      if (discard.phase !== 'done' && typeof discard.bead_id === 'string') {
+      if (
+        discardOperationActive(discard) &&
+        typeof discard.bead_id === 'string'
+      ) {
         out.add(discard.bead_id);
       }
     }
@@ -2853,7 +2864,7 @@ export function createScheduler(deps) {
     return Object.values(q.discard_operations || {}).some((operation) => {
       const discard = /** @type {any} */ (operation);
       return (
-        discard.phase !== 'done' &&
+        discardOperationActive(discard) &&
         ((typeof identity.bead_id === 'string' &&
           discard.bead_id === identity.bead_id) ||
           (typeof identity.attempt_id === 'string' &&
@@ -3991,6 +4002,7 @@ export function createScheduler(deps) {
       // finalizing write and would otherwise strand a live tally forever.
       if (stopped.has(attempt_id)) {
         stopped.delete(attempt_id);
+        discard_fenced.delete(attempt_id);
         // A ⏸/■ of a disposition session ends that disposition: the guard and
         // the repo lease it holds must come back, or the bead and every later
         // fix in this repo stay fenced (UI-hs11 §3.3).
@@ -10162,7 +10174,7 @@ export function createScheduler(deps) {
     const snapshot = deps.store.snapshot(workspace);
     const discard_attempts = new Set(
       Object.values(snapshot.discard_operations || {})
-        .filter((operation) => /** @type {any} */ (operation).phase !== 'done')
+        .filter(discardOperationActive)
         .map((operation) => /** @type {any} */ (operation).attempt_id)
         .filter((attempt_id) => typeof attempt_id === 'string')
     );
@@ -10212,7 +10224,23 @@ export function createScheduler(deps) {
     if (!canDiscardAttempt(attempt_id)) {
       return false;
     }
-    stopped.add(attempt_id);
+    if (!stopped.has(attempt_id)) {
+      stopped.add(attempt_id);
+      discard_fenced.add(attempt_id);
+    }
+    return true;
+  }
+
+  /**
+   * Release only a stop fence this scheduler added for discard.
+   *
+   * @param {string|null|undefined} attempt_id
+   */
+  function unfenceDiscardAttempt(attempt_id) {
+    if (typeof attempt_id !== 'string' || !discard_fenced.delete(attempt_id)) {
+      return false;
+    }
+    stopped.delete(attempt_id);
     return true;
   }
 
@@ -10252,6 +10280,7 @@ export function createScheduler(deps) {
         bead_id !== null &&
         readTransferredAttempt(workspace, bead_id, attempt_id)
       ) {
+        discard_fenced.delete(attempt_id);
         return { ok: true };
       }
       return { ok: false, reason: 'attempt_not_found' };
@@ -10300,6 +10329,7 @@ export function createScheduler(deps) {
       bead_id: attempt.bead_id,
       prior: attempt.workflow_mode_prior ?? null
     });
+    discard_fenced.delete(attempt_id);
     notifyChanged(workspace);
     return { ok: true };
   }
@@ -10513,6 +10543,7 @@ export function createScheduler(deps) {
     dispatchReviewSession,
     canDiscardAttempt,
     fenceDiscardAttempt,
+    unfenceDiscardAttempt,
     finalizeDiscardAttempt,
     recoverControls,
     onIssuesChanged,

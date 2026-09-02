@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 /**
- * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any, phaseChildren?: Record<string, any>[], newChildAfterArchive?: Record<string, any>, parentAuthorityChangesAfterArchive?: boolean, partialDeleteOnce?: boolean, readbackFindFailsOnce?: boolean, sessionLog?: any, notify?: any }} [options]
+ * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any, phaseChildren?: Record<string, any>[], newChildAfterArchive?: Record<string, any>, parentAuthorityChangesAfterArchive?: boolean, partialDeleteOnce?: boolean, readbackFindFailsOnce?: boolean, sessionLog?: any, notify?: any, makeOperationId?: () => string }} [options]
  */
 function setup(options = {}) {
   const store = createQueueStore({ now: () => 100 });
@@ -299,6 +299,7 @@ function setup(options = {}) {
   const scheduler = {
     canDiscardAttempt: vi.fn(() => options.schedulerCanDiscard ?? true),
     fenceDiscardAttempt: vi.fn(() => true),
+    unfenceDiscardAttempt: vi.fn(() => true),
     finalizeDiscardAttempt: vi.fn(async () => ({ ok: true })),
     tick: vi.fn(async () => {})
   };
@@ -332,6 +333,7 @@ function setup(options = {}) {
       };
     })
   };
+  const notifyChanged = vi.fn();
   const coordinator = createDiscardCoordinator({
     workspace,
     repo: '/repo',
@@ -352,9 +354,9 @@ function setup(options = {}) {
       options.rollbackBaseSync ||
       vi.fn(async () => ({ ok: true, sha: 'base-sha' })),
     rollbackVerify: options.rollbackVerify || vi.fn(async () => ({ ok: true })),
-    makeOperationId: () => 'discard-1',
+    makeOperationId: options.makeOperationId || (() => 'discard-1'),
     now: () => 300,
-    notifyChanged: vi.fn()
+    notifyChanged
   });
   return {
     store,
@@ -365,7 +367,8 @@ function setup(options = {}) {
     gitRun,
     scheduler,
     archive,
-    coordinator
+    coordinator,
+    notifyChanged
   };
 }
 
@@ -2779,7 +2782,7 @@ describe('archive-stage discard failure notification (UI-e98l)', () => {
         bead_id: 'UI-1',
         failure_class: '폐기 실패',
         reason: 'ps_failed',
-        next_action: '재클릭 또는 [세션에서 해결]',
+        next_action: '재클릭·[폐기 포기]·[세션에서 해결]',
         repo: '/repo'
       })
     ]);
@@ -2883,5 +2886,213 @@ describe('archive-stage discard failure notification (UI-e98l)', () => {
     const result = await discard(env);
 
     expect(result).toMatchObject({ ok: false, reason: 'ps_failed' });
+  });
+});
+
+describe('worker discard coordinator abandonment', () => {
+  /**
+   * Persist one failed operation without driving destructive phases.
+   *
+   * @param {ReturnType<typeof setup>} env
+   * @param {{ phase?: string, process_identity?: any }} [input]
+   */
+  function seedFailedOperation(env, input = {}) {
+    env.store.createDiscardOperation(workspace, {
+      expected_revision: env.store.snapshot(workspace).revision,
+      operation: {
+        operation_id: 'discard-abandon',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        process_identity: input.process_identity || null,
+        source_snapshot: { repo: '/repo', branch: 'UI-1' }
+      }
+    });
+    if (input.phase && input.phase !== 'requested') {
+      env.store.advanceDiscardOperation(workspace, {
+        operation_id: 'discard-abandon',
+        expected_phase: 'requested',
+        next_phase: input.phase
+      });
+    }
+    env.store.failDiscardOperation(workspace, {
+      operation_id: 'discard-abandon',
+      expected_phase: input.phase || 'requested',
+      reason: 'archive_failed'
+    });
+  }
+
+  test('orders resume before write, unfence, and notification', async () => {
+    /** @type {string[]} */
+    const order = [];
+    const processController = {
+      probe: vi.fn(() => ({ state: 'owned' })),
+      signal: vi.fn(() => {
+        order.push('signal');
+        return { ok: true, state: 'owned' };
+      })
+    };
+    const env = setup({ processController });
+    seedFailedOperation(env, {
+      process_identity: { pid: 10, pgid: 10, started_at: 20 }
+    });
+    const write = env.store.abandonDiscardOperation.bind(env.store);
+    vi.spyOn(env.store, 'abandonDiscardOperation').mockImplementation(
+      (target_workspace, input) => {
+        order.push('write');
+        return write(target_workspace, input);
+      }
+    );
+    env.scheduler.unfenceDiscardAttempt.mockImplementation(() => {
+      order.push('unfence');
+      return true;
+    });
+    env.notifyChanged.mockImplementation(() => order.push('notify'));
+
+    const result = await env.coordinator.abandon('discard-abandon');
+
+    expect(processController.signal).toHaveBeenCalledWith(
+      { pid: 10, pgid: 10, started_at: 20 },
+      'SIGCONT'
+    );
+    expect(order).toEqual(['signal', 'write', 'unfence', 'notify']);
+    expect(result).toEqual({
+      ok: true,
+      operation_id: 'discard-abandon',
+      phase: 'abandoned',
+      resume: 'continued'
+    });
+  });
+
+  test('leaves the operation unchanged when SIGCONT fails', async () => {
+    const env = setup({
+      processController: {
+        probe: vi.fn(() => ({ state: 'owned' })),
+        signal: vi.fn(() => ({ ok: false, state: 'gone' }))
+      }
+    });
+    seedFailedOperation(env, {
+      process_identity: { pid: 10, pgid: 10, started_at: 20 }
+    });
+    const write = vi.spyOn(env.store, 'abandonDiscardOperation');
+
+    const result = await env.coordinator.abandon('discard-abandon');
+
+    expect(result).toEqual({ ok: false, reason: 'identity_gone' });
+    expect(write).not.toHaveBeenCalled();
+    expect(
+      env.store.snapshot(workspace).discard_operations['discard-abandon']
+    ).toMatchObject({ phase: 'requested', last_error: 'archive_failed' });
+  });
+
+  test('leaves the operation unchanged when identity is unknown', async () => {
+    const env = setup({
+      processController: {
+        probe: vi.fn(() => ({ state: 'unknown', reason: 'inspect_failed' })),
+        signal: vi.fn()
+      }
+    });
+    seedFailedOperation(env, {
+      process_identity: { pid: 10, pgid: 10, started_at: 20 }
+    });
+    const write = vi.spyOn(env.store, 'abandonDiscardOperation');
+
+    const result = await env.coordinator.abandon('discard-abandon');
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'identity_unknown:inspect_failed'
+    });
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  test('records gone when no runner remains to resume', async () => {
+    const env = setup({
+      processController: {
+        probe: vi.fn(() => ({ state: 'gone' })),
+        signal: vi.fn()
+      }
+    });
+    seedFailedOperation(env, {
+      process_identity: { pid: 10, pgid: 10, started_at: 20 }
+    });
+
+    const result = await env.coordinator.abandon('discard-abandon');
+
+    expect(result.resume).toBe('gone');
+    expect(
+      env.store.snapshot(workspace).discard_operations['discard-abandon']
+    ).toMatchObject({ phase: 'abandoned', abandon_resume: 'gone' });
+  });
+
+  test('rejects an unknown operation', async () => {
+    const env = setup();
+
+    const result = await env.coordinator.abandon('missing');
+
+    expect(result.reason).toBe('operation_not_found');
+  });
+
+  test('rejects an operation outside requested', async () => {
+    const env = setup();
+    seedFailedOperation(env, { phase: 'archiving' });
+
+    const result = await env.coordinator.abandon('discard-abandon');
+
+    expect(result.reason).toBe('phase_not_abandonable');
+  });
+
+  test('rejects an operation without a failure', async () => {
+    const env = setup();
+    env.store.createDiscardOperation(workspace, {
+      expected_revision: env.store.snapshot(workspace).revision,
+      operation: {
+        operation_id: 'discard-abandon',
+        bead_id: 'UI-1',
+        source_snapshot: { repo: '/repo' }
+      }
+    });
+
+    const result = await env.coordinator.abandon('discard-abandon');
+
+    expect(result.reason).toBe('operation_not_failed');
+  });
+
+  test('skips abandoned work during recovery', async () => {
+    const env = setup();
+    seedFailedOperation(env);
+    await env.coordinator.abandon('discard-abandon');
+    env.archive.create.mockClear();
+    env.scheduler.fenceDiscardAttempt.mockClear();
+
+    await env.coordinator.recover();
+    env.coordinator.recoverFences();
+
+    expect(env.archive.create).not.toHaveBeenCalled();
+    expect(env.scheduler.fenceDiscardAttempt).not.toHaveBeenCalled();
+  });
+
+  test('refuses to drive an abandoned operation', async () => {
+    const env = setup();
+    seedFailedOperation(env);
+    await env.coordinator.abandon('discard-abandon');
+
+    const result = await env.coordinator.drive('discard-abandon');
+
+    expect(result).toEqual({ ok: false, reason: 'operation_abandoned' });
+  });
+
+  test('creates a new operation after abandonment', async () => {
+    const env = setup({ makeOperationId: () => 'discard-next' });
+    seedFailedOperation(env);
+    await env.coordinator.abandon('discard-abandon');
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result.operation_id).toBe('discard-next');
+    expect(result.reused).not.toBe(true);
   });
 });

@@ -4102,9 +4102,11 @@ html[data-theme='dark'] {
   opacity: 0.5;
 }
 
-/* [세션에서 해결] (UI-jw27 §4) — 같은 슬롯 1 오른쪽 끝에서 [폐기] 다음에 선다.
-   되돌리는 것이 없으니 [폐기]의 danger 색을 쓰지 않고, 중립 외곽선으로 둔다. */
-.rtile__resolve {
+/* [세션에서 해결]·[폐기 포기] — 같은 슬롯 1 오른쪽 끝에서 [폐기] 다음에 선다.
+   둘 다 되돌리는 것이 없으니 [폐기]의 danger 색을 쓰지 않고, 중립 외곽선으로
+   둔다. */
+.rtile__resolve,
+.rtile__discard-abandon {
   flex: 0 0 auto;
   border: 1px solid var(--border-card);
   border-radius: var(--r-3);
@@ -4116,11 +4118,13 @@ html[data-theme='dark'] {
   padding: 2px 5px;
 }
 
-.rtile__resolve:hover:not(:disabled) {
+.rtile__resolve:hover:not(:disabled),
+.rtile__discard-abandon:hover:not(:disabled) {
   color: var(--text-primary);
 }
 
-.rtile__resolve:disabled {
+.rtile__resolve:disabled,
+.rtile__discard-abandon:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }
@@ -6225,11 +6229,9 @@ html[data-theme='dark'] {
   cursor: not-allowed;
 }
 
-/* [세션에서 해결] (UI-jw27 §4) — 같은 액션 foot에서 [정리 재시도] 다음에 서는
-   두 번째 출구다. 되돌리는 것이 없으니 [폐기]의 경고색을 쓰지 않고, 재시도가
-   먼저 읽혀야 하므로 [머지]의 solid 무게도 쓰지 않는다 — [취소]와 같은 조용한
-   외곽선이 이 행에서 이 버튼이 차지해야 할 무게다. */
-.worker-mini__resolve {
+/* [세션에서 해결]·[폐기 포기] — 둘 다 액션 foot의 조용한 보조 출구다. */
+.worker-mini__resolve,
+.worker-mini__discard-abandon {
   padding: 1px var(--sp-6);
   border: 1px solid var(--border-card);
   border-radius: var(--r-6);
@@ -6240,11 +6242,13 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
-.worker-mini__resolve:hover:not(:disabled) {
+.worker-mini__resolve:hover:not(:disabled),
+.worker-mini__discard-abandon:hover:not(:disabled) {
   color: var(--text-primary);
 }
 
-.worker-mini__resolve:disabled {
+.worker-mini__resolve:disabled,
+.worker-mini__discard-abandon:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
