@@ -18,7 +18,6 @@ import { coerceTimestampMs } from '../../utils/relative-time.js';
 import { parseReport } from '../../utils/report-marker.js';
 import { sessionPreferredReason } from '../../utils/session-preferred.js';
 import { specAfterBlockerActive } from '../../utils/spec-after-blocker.js';
-import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
 import { IMPL_PRESET_KEYS } from '../settings-dialog/session-model.js';
 import { blockerIdsOf } from './blocker-ids.js';
 import {
@@ -27,6 +26,7 @@ import {
 } from './candidate-sort.js';
 import { MIN_SLOTS } from './lane-model.js';
 import { AWAITING_USER_REASON_PREFIX } from './lanes.js';
+import { candidatePlacement } from './placement.js';
 
 const log = debug('views:worker:adapter');
 
@@ -374,33 +374,30 @@ export function createWorkspaceAdapter(options = {}) {
    * @returns {any[]}
    */
   function runnableRows(q, ready, blocked, candidate_sort) {
-    const queue_entries = Array.isArray(q.queue) ? q.queue : [];
-    const queued = new Set([
-      ...queue_entries.map((/** @type {any} */ e) => e.bead_id),
-      ...(Array.isArray(q.serial_lanes) ? q.serial_lanes : []).flatMap(
-        (/** @type {any} */ lane) =>
-          (Array.isArray(lane?.entries) ? lane.entries : []).map(
-            (/** @type {any} */ e) => e.bead_id
-          )
-      ),
-      ...(Array.isArray(q.pr_wait) ? q.pr_wait : []).map(
-        (/** @type {any} */ e) => e.bead_id
-      ),
-      ...(Array.isArray(q.done) ? q.done : []).map(
-        (/** @type {any} */ e) => e.bead_id
-      )
-    ]);
     /** @type {Set<string>} */
     const blocked_ids = new Set(blocked.map((/** @type {any} */ it) => it.id));
     /** @type {Set<string>} */
     const seen = new Set();
+    /**
+     * 이 렌더의 배치 판정 — 후보 제외와 자격·사유가 같은 값을 읽는다 (§6.1).
+     *
+     * @type {Map<string, import('./placement.js').Placement>}
+     */
+    const placements = new Map();
     /** @type {any[]} */
     const merged = [];
     for (const it of [...ready, ...blocked]) {
-      if (queued.has(it.id) || seen.has(it.id) || isPhaseChild(it)) {
+      if (seen.has(it.id) || isPhaseChild(it)) {
+        continue;
+      }
+      const placement = candidatePlacement(it, q);
+      // 이미 어느 레인에 서 있는 bead는 후보가 아니다 — 종전 `queued` 집합의
+      // 자리이며, 그 구성원 판정도 이제 `candidatePlacement`가 소유한다.
+      if (placement.location !== null) {
         continue;
       }
       seen.add(it.id);
+      placements.set(it.id, placement);
       merged.push(it);
     }
     // 체인이 순서를 정하고, 그 뒤 의존 인접화 패스가 후행을 자기 선행 바로 뒤로
@@ -414,6 +411,10 @@ export function createWorkspaceAdapter(options = {}) {
     /** @type {Record<string, any>} */
     const bead_scope = objectOf(q.bead_scope);
     return sorted.map((/** @type {any} */ it) => {
+      // 위 루프가 `merged`에 넣은 행만 여기 오므로 판정은 언제나 있다.
+      const placement = /** @type {import('./placement.js').Placement} */ (
+        placements.get(it.id)
+      );
       const spec = resolveSpecEvidence(it);
       const has_spec = spec.evidence === 'published';
       const route =
@@ -421,18 +422,7 @@ export function createWorkspaceAdapter(options = {}) {
         (it.metadata && typeof it.metadata.route === 'string'
           ? it.metadata.route
           : '');
-      const is_quick_fix = route === 'quick_fix';
-      // Ready/Blocked subscriptions preserve raw bd fields, including
-      // `description`. An older/partial server may omit the key; that absence
-      // stays fail-quiet and leaves the authoritative check to the server.
-      const has_description =
-        !Object.hasOwn(it, 'description') ||
-        (typeof it.description === 'string' &&
-          it.description.trim().length > 0);
-      // Labels follow the same ownership boundary.
-      const worker_ineligible =
-        Object.hasOwn(it, 'labels') &&
-        isWorkerIneligible(/** @type {any} */ (it).labels);
+      const worker_ineligible = placement.worker_ineligible;
       // Advisory only (UI-49mc §3): the projection folds the contract's
       // priority here so no card re-decides that `worker-ineligible` beats
       // `session-preferred`.
@@ -443,33 +433,25 @@ export function createWorkspaceAdapter(options = {}) {
               /** @type {any} */ (it).labels,
               /** @type {any} */ (it).metadata
             );
-      // 사용자 결정 대기 파킹 (UI-dqg9 §2.2). 서버 admission과 같은 presence
-      // 규칙을 쓰되, metadata가 없는 페이로드에서는 판정하지 않는다.
-      const awaiting_user =
-        it.metadata && typeof it.metadata === 'object'
-          ? Object.hasOwn(/** @type {any} */ (it).metadata, 'awaiting_user')
-          : false;
-      const eligible =
-        !worker_ineligible &&
-        !awaiting_user &&
-        (is_quick_fix ? has_description : has_spec && !spec.conflict);
       const is_blocked = blocked_ids.has(it.id);
       const blocker_ids = is_blocked ? blockerIdsOf(it) : [];
       /** @type {string[]} */
       const parts = [];
+      // 잠금 파트만 어댑터가 앞에 붙인다 (§6.1): blocked는 배치 자격이 아니라
+      // 후보 행이 덧붙이는 관측 사실이다.
       if (is_blocked && blocker_ids.length === 0) {
         parts.push(BLOCKED_WITHOUT_IDS);
       }
-      if (awaiting_user) {
+      if (placement.awaiting_user) {
         parts.push(awaitingUserReason(/** @type {any} */ (it).metadata));
       }
-      if (is_quick_fix && !has_description) {
+      if (placement.missing_description) {
         parts.push('missing_description');
-      } else if (!is_quick_fix && spec.conflict) {
+      } else if (placement.spec === 'conflict') {
         parts.push('spec_id_conflict');
-      } else if (!is_quick_fix && spec.evidence === 'none') {
+      } else if (placement.spec === 'none') {
         parts.push('spec 없음');
-      } else if (!is_quick_fix && spec.evidence === 'draft') {
+      } else if (placement.spec === 'draft') {
         parts.push('spec 미발행(draft)');
       }
       const scope_entry = bead_scope[it.id];
@@ -496,8 +478,9 @@ export function createWorkspaceAdapter(options = {}) {
         ...(scope_entry && Array.isArray(scope_entry.scope)
           ? { scope: scope_entry.scope }
           : {}),
-        // 자격·사유는 관측 행을 싣는 이 어댑터만 실어 보낸다 (§4.1).
-        eligible,
+        // 자격·사유는 관측 행을 싣는 이 어댑터만 실어 보낸다 (§4.1). 자격
+        // 판정 자체의 소유자는 `placement.js` 하나다 (UI-6g3t §6.1).
+        eligible: placement.placeable,
         reason: parts.join(' · '),
         worker_ineligible,
         session_preferred: session_preferred_reason.length > 0,

@@ -669,6 +669,46 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     ).toEqual(['A-2']);
   });
 
+  // 두 탭이 같은 조각(`queueRowOps`)을 쓰기 전에는 Monitor 직렬 행만 `nudgeable`
+  // false로 묶음 전체가 비어 `✕`가 없었다 (UI-6g3t §4).
+  test('stands the remove ✕ on a serial lane row too', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      el(mount, '.worker-wait__lane .worker-mini__rowops-remove')
+    ).not.toBeNull();
+  });
+
+  test('keeps ↑ ↓ off a serial lane row', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const ops = el(mount, '.worker-wait__lane .worker-mini__rowops');
+
+    expect(
+      Array.from(ops.querySelectorAll('button')).map((button) =>
+        (button.textContent || '').trim()
+      )
+    ).toEqual(['✕']);
+  });
+
   test('names each repo serial lane with its repo', () => {
     const { mount, view } = setup({
       workspaces: [
@@ -1083,6 +1123,78 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
       type: 'worker-attempt-pause',
       payload: { attempt_id: 't1', root_dir: WS_A }
     });
+  });
+
+  test('re-reads the revision for each resume send and never retries twice', async () => {
+    const attempt = {
+      attempt_id: 't1',
+      bead_id: 'A-1',
+      status: 'failed',
+      cause: 'verify_failed:x',
+      started_at: NOW - 100,
+      session_id: 's'
+    };
+    const { mount, view, sent } = setup({
+      workspaces: [workspace({ attempts: { t1: attempt } })],
+      workspaces_state: [state()],
+      transport: async () => ({
+        resumed: false,
+        conflict: true,
+        queue: workspace({ revision: 9, attempts: { t1: attempt } })
+      })
+    });
+
+    view.load();
+    click(mount, '.rtile__resume');
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await vi.waitFor(() =>
+      expect(
+        sent.filter((call) => call.type === 'worker-attempt-resume')
+      ).toHaveLength(2)
+    );
+    await flushMicrotasks();
+
+    expect(
+      sent
+        .filter((call) => call.type === 'worker-attempt-resume')
+        .map((call) => call.payload.expected_revision)
+    ).toEqual([1, 9]);
+  });
+
+  test('raises the refusal toast the tab used to swallow', async () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              cause: 'verify_failed:x',
+              started_at: NOW - 100,
+              session_id: 's'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()],
+      transport: async () => ({ resumed: false, reason: 'no_session_id' })
+    });
+
+    view.load();
+    click(mount, '.rtile__resume');
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await vi.waitFor(() =>
+      expect(document.querySelector('.toast')).not.toBeNull()
+    );
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '이어하기 거부: no_session_id'
+    );
   });
 
   test('sends the bulk merge once per repo holding a PR', async () => {

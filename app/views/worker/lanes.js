@@ -32,6 +32,7 @@ import {
 import { stepperTemplate } from '../board/stepper.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
 import { logPathTemplate } from './log-path.js';
+import { placementTitle } from './placement.js';
 
 /**
  * @param {unknown} sha
@@ -1495,6 +1496,9 @@ export function priorityBadgeTemplate(priority) {
  * 그리고, 재료가 없으면 필드도 없다.
  * @property {number} [priority] - Bead 우선순위 0..4. 숫자가 아니면 배지를
  * 그리지 않는다.
+ * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
+ * `false`인 행만 `is-dimmed`로 흐려지고, 검색 중이 아니면 키 자체가 없어 지금
+ * 그대로 그려진다 (fail-quiet). 숨김이 아니므로 순번·좌표·건수는 그대로다.
  */
 
 /**
@@ -1513,7 +1517,10 @@ function doneThreeLineRow(item) {
   const usage_label = formatUsageTotalWithCost(item.usage);
   const done_at_label = formatRelativeTime(item.done_at);
   return html`<div
-    class="worker-mini worker-mini--static worker-mini--done worker-mini--three-line"
+    class="worker-mini worker-mini--static worker-mini--done worker-mini--three-line${item.search_match ===
+    false
+      ? ' is-dimmed'
+      : ''}"
     draggable="false"
     data-bead-id=${item.id}
     data-lane=${item.lane}
@@ -1568,6 +1575,64 @@ function doneThreeLineRow(item) {
         : ''}
     </div>
   </div>`;
+}
+
+/**
+ * The 대기 행 조작 묶음 — 행 1번 줄 끝의 조작 슬롯이다 (UI-6g3t §4). Worker
+ * `queueRowActions`와 Monitor `rowActions`가 같은 조각을 따로 들고 있어 두 탭의
+ * 조작 밀도가 갈렸다 — Monitor 직렬 행에는 `✕`가 아예 없었다. 여기 하나로 합친다.
+ *
+ * `✕`는 병렬·직렬, 두 탭의 **모든** 대기 행에 선다. 그리지 않는 조건은 이미
+ * 출발한 행 하나뿐이다. `↑ ↓`는 `nudgeable === true`일 때만 마크업에 있고 실제
+ * 표시 여부는 지금처럼 CSS(coarse pointer · 640px 이하)가 소유한다 — Worker 탭은
+ * nudge 핸들러가 없으므로 넘기지 않는다. 순서는 `↑ ↓ ✕` 고정이고 묶음이
+ * `margin-left: auto`로 오른쪽에 붙으므로 `↑↓`가 나타나도 `✕`의 자리는 폭과
+ * 무관하게 그대로다.
+ *
+ * 클릭 핸들러는 두 탭이 각자 남는다: Worker는 `[data-action="queue-remove"]`로,
+ * Monitor `runRowAction`은 클래스로 분기한다. 드래그 컨트롤러가 이미 그렇게
+ * 나뉘어 있는 것과 같은 경계다.
+ *
+ * @param {any} item
+ * @param {{ nudgeable?: boolean }} [options]
+ * @returns {import('lit-html').TemplateResult|undefined}
+ */
+export function queueRowOps(item, options = {}) {
+  if (item.draggable !== true || item.done === true) {
+    return undefined;
+  }
+  return html`<span class="worker-mini__rowops">
+    ${options.nudgeable === true
+      ? html`<button
+            type="button"
+            class="op-btn op-btn--icon worker-mini__rowops-up"
+            data-bead-id=${item.id}
+            title="같은 레포 안에서 한 칸 위로"
+            aria-label="한 칸 위로"
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            class="op-btn op-btn--icon worker-mini__rowops-down"
+            data-bead-id=${item.id}
+            title="같은 레포 안에서 한 칸 아래로"
+            aria-label="한 칸 아래로"
+          >
+            ↓
+          </button>`
+      : ''}
+    <button
+      type="button"
+      class="op-btn op-btn--icon worker-mini__rowops-remove"
+      data-action="queue-remove"
+      data-bead-id=${item.id}
+      title="대기에서 빼기"
+      aria-label="대기에서 빼기"
+    >
+      ✕
+    </button>
+  </span>`;
 }
 
 /**
@@ -1910,7 +1975,7 @@ export function miniRow(item, options = {}) {
       ? ' worker-mini--merging'
       : ''}${merging?.failed ? ' worker-mini--merge-failed' : ''}${item.external
       ? ' worker-mini--external'
-      : ''}"
+      : ''}${item.search_match === false ? ' is-dimmed' : ''}"
     style=${merging ? `--progress: ${merging.percent}%` : ''}
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
@@ -1996,7 +2061,7 @@ export function miniRow(item, options = {}) {
  * @param {string} bead_id
  * @returns {import('lit-html').TemplateResult}
  */
-function placeMenuList(entries, bead_id) {
+export function placeMenuList(entries, bead_id) {
   /** @type {string|undefined} */
   let current_group = undefined;
   /** @type {Array<import('lit-html').TemplateResult>} */
@@ -2297,7 +2362,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
       ? ''
       : ' worker-card--static'}${worker_ineligible
       ? ' worker-card--ineligible'
-      : ''}"
+      : ''}${item.search_match === false ? ' is-dimmed' : ''}"
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
     data-lane=${item.lane}
@@ -2362,7 +2427,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
             ${placeMenuList(place_menu.lanes, item.id)}
             <button
               type="button"
-              class="worker-card__place-cancel"
+              class="op-btn op-btn--icon worker-card__place-cancel"
               data-bead-id=${item.id}
               title="레인 선택 취소"
               aria-label="레인 선택 취소"
@@ -2384,20 +2449,17 @@ export function candidateCard(item, place_menu = null, options = {}) {
                  종류로 감추지 않는다: 드래그라는 대체 경로가 없다. -->
             <button
               type="button"
-              class="worker-card__place"
+              class="op-btn op-btn--primary worker-card__place"
               data-bead-id=${item.id}
               ?disabled=${!queue_placeable}
-              title=${queue_placeable
-                ? '대기 큐 맨 뒤에 추가'
-                : worker_ineligible
-                  ? 'worker-ineligible label로 워커에서 실행할 수 없습니다'
-                  : awaiting_user
-                    ? '사용자 리뷰를 기다리는 중이라 대기 큐에 넣을 수 없습니다'
-                    : missing_description
-                      ? 'description이 없어 대기 큐에 넣을 수 없습니다'
-                      : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
+              title=${placementTitle({
+                placeable: queue_placeable,
+                worker_ineligible,
+                awaiting_user,
+                missing_description
+              })}
             >
-              대기로 ↴
+              ↴ 대기로
             </button>`}
     </div>
     ${timesMeta(item)}
@@ -2424,7 +2486,10 @@ export function candidateCard(item, place_menu = null, options = {}) {
  * 그대로 두므로 후보→대기 드롭이 띠 위에서도 성립한다. `live`는 실제로 일이
  * 도는 레인 하나를 표시한다 — 헤더 점이 숨쉬는 유일한 레인이다.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: PlaceMenu|null, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} pane
+ * `match_count`는 워커 탭 검색이 켜져 있을 때만 실리는 「일치 n」이다 (UI-6g3t
+ * §7): `worker-pane__count` 뒤에 덧붙고, 키가 없으면 헤더는 지금 그대로다.
+ *
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, match_count?: number, place_menu?: PlaceMenu|null, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -2438,7 +2503,10 @@ export function paneTemplate(pane) {
     ${collapsed && pane.preview
       ? html`<span class="worker-pane__preview">${pane.preview}</span>`
       : ''}
-    <span class="worker-pane__count">${count}</span>`;
+    <span class="worker-pane__count">${count}</span>
+    ${typeof pane.match_count === 'number'
+      ? html`<span class="worker-pane__match">일치 ${pane.match_count}</span>`
+      : ''}`;
   return html`<section
     class="worker-pane worker-pane--lane-${pane.lane}${pane.src
       ? ' worker-pane--src'
@@ -2507,6 +2575,8 @@ export function paneTemplate(pane) {
  * 넘긴 행 목록 (`miniRow` 등). 본문은 구조만 소유하므로 행 렌더링에 관여하지
  * 않는다.
  * @property {number} count - 헤더가 쓰는 건수. `rows`와 다를 수 있다 (점유자).
+ * @property {number} [match_count] - 검색 중인 레인의 「일치 n」 (UI-6g3t §7).
+ * 다른 pane과 같은 규칙으로, 검색 중이 아니면 키가 없어 헤더가 지금 그대로다.
  * @property {boolean} empty - `rows`도 점유자도 없어 힌트 한 줄로 접히는 상태.
  * @property {import('lit-html').TemplateResult|string} [badge] - 누가 잡고
  * 있는지 말하는 점유 표시 (Worker 점유자 id). 재료가 없으면 그리지 않는다.
@@ -2639,6 +2709,7 @@ function serialLaneTemplate(lane) {
       title: lane.title,
       items: [],
       count: lane.count,
+      match_count: lane.match_count,
       empty: '비어 있음 — 행을 여기로 드래그',
       header_control: html`${badge_el}${lane.header_control
         ? lane.header_control

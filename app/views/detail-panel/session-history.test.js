@@ -1286,3 +1286,49 @@ describe('session-history 세션 행 (UI-4xzk §6.5)', () => {
     `);
   });
 });
+
+describe('세션 이력 행 조작 형태 (UI-6g3t §3.2)', () => {
+  test('gives the ↻ 이어하기 button the op token', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'a-1',
+          bead_id: 'UI-1',
+          status: 'failed',
+          runner: 'claude',
+          model: 'opus',
+          session_id: 'sid-1'
+        }
+      ])
+    );
+
+    const resume = /** @type {HTMLElement} */ (
+      host.querySelector('.detail-session__resume')
+    );
+
+    expect(resume.classList.contains('op-btn')).toBe(true);
+  });
+
+  test('gives the 재개 명령 복사 button the same op token', () => {
+    const host = mount(
+      sessionHistoryTemplate([], {}, {}, [
+        {
+          index: 0,
+          provider: 'claude',
+          session_id: 'a1b2c3d4-5e6f',
+          host: 'mac-studio',
+          current: true,
+          locality: 'local',
+          last_event_at: 1_700_000_000_000,
+          resume_command: "claude --resume 'a1b2c3d4-5e6f'"
+        }
+      ])
+    );
+
+    const copy = /** @type {HTMLElement} */ (
+      host.querySelector('.detail-session__resume-cmd')
+    );
+
+    expect(copy.classList.contains('op-btn')).toBe(true);
+  });
+});

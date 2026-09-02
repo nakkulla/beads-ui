@@ -18,6 +18,7 @@ import {
   miniRow,
   nowPanel,
   paneTemplate,
+  queueRowOps,
   quickFixReviewChipTemplate,
   repoOpsStripModel,
   reviewSessionRowState,
@@ -2181,7 +2182,7 @@ describe('worker templates are unchanged without the monitor options', () => {
     expect(card).not.toContain('exec-chip--pin');
     expect(card).not.toContain('worker-deps');
     expect(card).toMatchInlineSnapshot(
-      `"<div class="worker-card" data-bead-id="UI-a3" data-lane="candidate" draggable="true"> <div class="worker-card__head"> <span aria-hidden="true" class="worker-card__grip">⠿</span> <span class="worker-card__id" title="클릭하면 ID 복사">UI-a3</span>   </div> <div class="worker-card__title">후보 카드</div>  <div class="worker-chips"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div> <div class="worker-card__foot worker-card__foot--actions-only">   <button class="worker-card__place" data-bead-id="UI-a3" title="대기 큐 맨 뒤에 추가" type="button"> 대기로 ↴ </button> </div>  </div>"`
+      `"<div class="worker-card" data-bead-id="UI-a3" data-lane="candidate" draggable="true"> <div class="worker-card__head"> <span aria-hidden="true" class="worker-card__grip">⠿</span> <span class="worker-card__id" title="클릭하면 ID 복사">UI-a3</span>   </div> <div class="worker-card__title">후보 카드</div>  <div class="worker-chips"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div> <div class="worker-card__foot worker-card__foot--actions-only">   <button class="op-btn op-btn--primary worker-card__place" data-bead-id="UI-a3" title="대기 큐 맨 뒤에 추가" type="button"> ↴ 대기로 </button> </div>  </div>"`
     );
   });
 
@@ -4409,5 +4410,129 @@ describe('완료 실패 로그 경로 (UI-8w4t §4)', () => {
 
     expect(writeText).toHaveBeenCalledWith('/state/bdui/repo/logs/op-1.log');
     vi.unstubAllGlobals();
+  });
+});
+
+describe('조작 형태 토큰 `.op-btn` (UI-6g3t §3.2·§3.3)', () => {
+  test('leads the candidate foot button with its icon', () => {
+    const card = renderCandidate({});
+
+    const place = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__place')
+    );
+
+    expect(place.textContent?.trim()).toBe('↴ 대기로');
+  });
+
+  test('gives the candidate foot button the primary token', () => {
+    const card = renderCandidate({});
+
+    const place = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__place')
+    );
+
+    expect(place.classList.contains('op-btn')).toBe(true);
+    expect(place.classList.contains('op-btn--primary')).toBe(true);
+  });
+
+  test('gives the lane menu cancel the icon token', () => {
+    const card = renderCandidate(
+      {},
+      { bead_id: 'UI-qf', lanes: [{ id: 'parallel', label: '병렬', count: 3 }] }
+    );
+
+    const cancel = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__place-cancel')
+    );
+
+    expect(cancel.classList.contains('op-btn')).toBe(true);
+    expect(cancel.classList.contains('op-btn--icon')).toBe(true);
+  });
+});
+
+describe('queueRowOps (UI-6g3t §4)', () => {
+  /**
+   * @param {Partial<import('./lanes.js').MiniItem>} item
+   * @param {{ nudgeable?: boolean }} [options]
+   * @returns {HTMLElement|null}
+   */
+  function renderOps(item, options) {
+    render(
+      html`<div>
+        ${queueRowOps(
+          /** @type {any} */ ({ id: 'UI-q1', draggable: true, ...item }),
+          options
+        )}
+      </div>`,
+      mount
+    );
+    return mount.querySelector('.worker-mini__rowops');
+  }
+
+  test('renders only ✕ without nudgeable', () => {
+    const ops = renderOps({});
+
+    const glyphs = Array.from(
+      /** @type {HTMLElement} */ (ops).querySelectorAll('button')
+    ).map((button) => button.textContent?.trim());
+
+    expect(glyphs).toEqual(['✕']);
+  });
+
+  test('renders ↑ ↓ ✕ in that order when nudgeable', () => {
+    const ops = renderOps({}, { nudgeable: true });
+
+    const glyphs = Array.from(
+      /** @type {HTMLElement} */ (ops).querySelectorAll('button')
+    ).map((button) => button.textContent?.trim());
+
+    expect(glyphs).toEqual(['↑', '↓', '✕']);
+  });
+
+  test('keeps ✕ last so its place does not move with the width', () => {
+    const ops = renderOps({}, { nudgeable: true });
+
+    const last = /** @type {HTMLElement} */ (ops).lastElementChild;
+
+    expect(last?.className).toContain('worker-mini__rowops-remove');
+  });
+
+  test('carries the queue-remove action and the icon token on ✕', () => {
+    const ops = renderOps({}, { nudgeable: true });
+
+    const remove = /** @type {HTMLElement} */ (
+      /** @type {HTMLElement} */ (ops).querySelector(
+        '.worker-mini__rowops-remove'
+      )
+    );
+
+    expect(remove.getAttribute('data-action')).toBe('queue-remove');
+    expect(remove.classList.contains('op-btn')).toBe(true);
+    expect(remove.classList.contains('op-btn--icon')).toBe(true);
+  });
+
+  test('names every icon-only button for assistive tech', () => {
+    const ops = renderOps({}, { nudgeable: true });
+
+    const named = Array.from(
+      /** @type {HTMLElement} */ (ops).querySelectorAll('button')
+    ).every(
+      (button) =>
+        button.title !== '' && button.getAttribute('aria-label') !== null
+    );
+
+    expect(named).toBe(true);
+  });
+
+  test('renders nothing for a departed row', () => {
+    const ops = renderOps({ done: true });
+
+    expect(ops).toBeNull();
+  });
+
+  test('renders nothing for a row that cannot be dragged', () => {
+    const ops = renderOps({ draggable: false });
+
+    expect(ops).toBeNull();
   });
 });

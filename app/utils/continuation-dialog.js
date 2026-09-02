@@ -10,22 +10,28 @@ import { formatAttemptTuple } from './attempt-display.js';
  */
 export function chooseContinuation(mismatch, doc = document) {
   const dialog = doc.createElement('dialog');
-  dialog.className = 'continuation-dialog';
+  dialog.className = 'op-dialog continuation-dialog';
   const prior = doc.createElement('button');
   const fresh = doc.createElement('button');
   const cancel = doc.createElement('button');
   const title = doc.createElement('h2');
   const copy = doc.createElement('p');
+  const actions = doc.createElement('div');
+  actions.className = 'op-dialog__actions';
   title.textContent = '실행 provider가 변경되었습니다';
   copy.textContent = `${formatAttemptTuple(mismatch.prior || {}) || '이전 설정'} → ${formatAttemptTuple(mismatch.current || {}) || '현재 설정'}`;
   prior.type = 'button';
+  prior.className = 'op-btn';
   prior.textContent = '기존 session 이어하기';
   prior.disabled = mismatch.prior_available === false;
   fresh.type = 'button';
+  fresh.className = 'op-btn';
   fresh.textContent = '현재 preset으로 새 session';
   cancel.type = 'button';
+  cancel.className = 'op-btn';
   cancel.textContent = '취소';
-  dialog.append(title, copy, prior, fresh, cancel);
+  actions.append(prior, fresh, cancel);
+  dialog.append(title, copy, actions);
   doc.body.append(dialog);
 
   return new Promise((resolve) => {

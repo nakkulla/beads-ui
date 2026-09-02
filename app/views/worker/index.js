@@ -42,10 +42,11 @@ import {
 } from '../../data/closed-range.js';
 import { createListSelectors } from '../../data/list-selectors.js';
 import { isImplementationAttempt } from '../../utils/active-attempts.js';
+import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
-import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
+import { runResumeFlow } from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
@@ -76,12 +77,14 @@ import {
   miniRow,
   nowPanel,
   paneTemplate,
+  queueRowOps,
   repoOpsStripTemplate,
   reviewSessionRowState,
   staleWorkProjection,
   waitBody
 } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
+import { placeMenuLanes } from './placement.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
 import { deriveWorkerBlockers } from './queue-blockers.js';
 import { deriveWorkerOverlaps } from './queue-overlaps.js';
@@ -1688,6 +1691,34 @@ export function createWorkerView(mount_element, options = {}) {
    */
   let is_mobile = false;
   /**
+   * 이 탭의 이슈 검색어 (UI-6g3t §7). 뷰의 메모리에만 있고 localStorage에는
+   * 쓰지 않는다 — 새로고침 뒤 남은 검색어는 아무도 요청하지 않은 채 화면 절반을
+   * 흐리게 만든다. 일치하지 않는 카드는 흐려질 뿐 사라지지 않으므로 순번·드래그
+   * 좌표·건수는 검색과 무관하다.
+   *
+   * @type {string}
+   */
+  let search_query = '';
+  /**
+   * Whether a search is on. 판정은 모델과 같은 정규화(`trim`)를 쓴다 — 공백만
+   * 친 검색은 검색이 아니다.
+   */
+  function searching() {
+    return search_query.trim().length > 0;
+  }
+  /**
+   * One pane header's 「일치 n」 (§7). 검색 중이 아니면 `undefined`이고, 그때
+   * `paneTemplate`은 키가 없는 것으로 보고 지금 그대로 그린다 (fail-quiet).
+   *
+   * @param {any[]} rows
+   * @returns {number|undefined}
+   */
+  function matchCountOf(rows) {
+    return searching()
+      ? rows.filter((row) => row.search_match === true).length
+      : undefined;
+  }
+  /**
    * Beads whose [머지] click has been sent but whose first progress snapshot has
    * not arrived yet (UI-raqh §4). It covers exactly that gap so the row reacts
    * to the click immediately; the server's own `merge_progress` supersedes it
@@ -1912,55 +1943,10 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Build queue-lane choices from the authoritative snapshot. A null result
-   * means parallel is the only choice, so no menu is needed.
-   *
-   * @returns {Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }>|null}
-   */
-  function placeMenuLanes() {
-    const q = currentQueue();
-    const serial_lane_count =
-      typeof q.serial_lane_count === 'number' &&
-      Number.isInteger(q.serial_lane_count) &&
-      q.serial_lane_count > 0
-        ? Math.min(q.serial_lane_count, 5)
-        : 0;
-    const serial_lanes = Array.isArray(q.serial_lanes) ? q.serial_lanes : [];
-    /** @type {Array<{ id: 's1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }>} */
-    const choices = [];
-    for (const lane of serial_lanes) {
-      if (choices.length >= serial_lane_count) {
-        break;
-      }
-      if (
-        !lane ||
-        typeof lane.id !== 'string' ||
-        !/^s[1-5]$/.test(lane.id) ||
-        !Array.isArray(lane.entries)
-      ) {
-        continue;
-      }
-      choices.push({
-        id: /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane.id),
-        label: `직렬 ${lane.id.slice(1)}`,
-        count: lane.entries.length
-      });
-    }
-    if (choices.length === 0) {
-      return null;
-    }
-    const queue_entries = Array.isArray(q.queue) ? q.queue : [];
-    return [
-      { id: 'parallel', label: '병렬', count: queue_entries.length },
-      ...choices
-    ];
-  }
-
-  /**
    * Build the open candidate menu for this render, if its bead is still shown.
    *
    * @param {any[]} candidates
-   * @returns {{ bead_id: string, lanes: Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }> }|null}
+   * @returns {import('./lanes.js').PlaceMenu|null}
    */
   function currentPlaceMenu(candidates) {
     if (
@@ -1971,7 +1957,7 @@ export function createWorkerView(mount_element, options = {}) {
     ) {
       return null;
     }
-    const lanes = placeMenuLanes();
+    const lanes = placeMenuLanes(currentQueue());
     return lanes ? { bead_id: place_menu_bead_id, lanes } : null;
   }
 
@@ -2045,13 +2031,14 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Resume (↻ / paused tile ▶) an attempt (spec §1), under the
-   * queue mutations' CAS discipline: send the current revision, adopt the
-   * authoritative queue a conflict reply carries, and retry ONCE against the
-   * fresh revision. A refusal surfaces its admission-badge reason as a toast.
+   * Resume (↻ / paused tile ▶) an attempt (spec §1). The flow itself — 지시
+   * 다이얼로그, 충돌 1회 재시도, provider 경계, 거부 토스트 — 는
+   * `runResumeFlow`가 소유하고(UI-6g3t §5.1), 이 화면이 넘기는 것은 대상 문맥과
+   * 재시도 없는 전송 하나뿐이다. `expected_revision`을 전송마다 새로 읽으므로
+   * `adopt`가 채택한 큐가 곧 다음 전송의 revision이다.
    *
-   * `resume_kind`는 실패 타일이 누른 버튼의 종류이며(UI-8h1x §3.3c), 거부 토스트
-   * 문구가 그 버튼 라벨을 따르게 하는 데에만 쓰인다.
+   * `resume_kind`는 실패 타일이 누른 버튼의 종류이며(UI-8h1x §3.3c), 다이얼로그
+   * 제목·확인 문구와 거부 토스트 문구가 그 버튼 라벨을 따르게 한다.
    *
    * @param {string} attempt_id
    * @param {'settlement'|'session'} [resume_kind]
@@ -2060,39 +2047,24 @@ export function createWorkerView(mount_element, options = {}) {
     if (!transport || !attempt_id) {
       return;
     }
-    const instructions = await requestResumeInstructions();
-    if (instructions === null) {
-      return;
-    }
-    /** @param {Record<string, unknown>} extra */
-    const send = async (extra = {}) =>
-      /** @type {any} */ (
-        await transport('worker-attempt-resume', {
-          attempt_id,
-          expected_revision: currentRevision(),
-          ...(instructions !== '' ? { instructions } : {}),
-          ...extra
-        })
-      );
-    let res = await send();
-    adopt(res);
-    if (res && res.conflict) {
-      res = await send();
-      adopt(res);
-    }
-    res = await resolveContinuationMismatch(
-      res,
-      (continuation, decision_token) => send({ continuation, decision_token }),
-      {
-        onResult: adopt,
-        refresh: () => send()
-      }
-    );
-    if (res && res.resumed === false && !res.conflict && res.reason) {
-      const refusal_label =
-        resume_kind === 'settlement' ? '정산 재개' : '이어하기';
-      showToast(`${refusal_label} 거부: ${res.reason}`, 'error', 2400);
-    }
+    const send = transport;
+    const attempt = currentQueue().attempts?.[attempt_id] || null;
+    await runResumeFlow({
+      context: {
+        bead_id: attempt?.bead_id || '',
+        kind: resume_kind,
+        tuple: attempt ? formatAttemptTuple(attempt) : ''
+      },
+      transport: (payload) =>
+        /** @type {any} */ (
+          send('worker-attempt-resume', {
+            attempt_id,
+            expected_revision: currentRevision(),
+            ...payload
+          })
+        ),
+      adopt
+    });
   }
 
   /**
@@ -2765,7 +2737,10 @@ export function createWorkerView(mount_element, options = {}) {
       // 배지에도 들어가지 않는다 — 한쪽만 풀어도 나타나지 않기 때문이다.
       candidate_hidden_counts: 'per_control',
       candidate_sort: 'as_given',
-      groups: 'all'
+      groups: 'all',
+      // 검색은 워커 탭만의 강조다 (§7): 값이 비면 모델은 키를 달지 않으므로
+      // Monitor 탭과 같은 모델이 그대로 나온다.
+      search: search_query
     });
     return current_lanes;
   }
@@ -2945,7 +2920,11 @@ export function createWorkerView(mount_element, options = {}) {
         draggable: false,
         lane: lane.id,
         ghost: true,
-        badges: [occupant.badge]
+        badges: [occupant.badge],
+        // 검색 중이 아니면 모델이 키를 달지 않으므로 여기도 달지 않는다 (§7).
+        ...(typeof occupant.search_match === 'boolean'
+          ? { search_match: occupant.search_match }
+          : {})
       }));
       return {
         id: lane.id,
@@ -3238,6 +3217,12 @@ export function createWorkerView(mount_element, options = {}) {
         );
         return {
           ...row,
+          // 검색 판정은 레인 모델이 소유한다 (UI-6g3t §7). PR 대기 행은 행
+          // 투영이 새로 만드는 객체라 그 키를 여기서 옮겨 실어야 하고, 검색이
+          // 없으면 옮길 키도 없다 (fail-quiet).
+          ...(item?.search_match === undefined
+            ? {}
+            : { search_match: item.search_match }),
           workflow: bead_workflow[e.bead_id] || null,
           priority: item?.priority,
           from_id: item?.from_id,
@@ -3514,6 +3499,17 @@ export function createWorkerView(mount_element, options = {}) {
           )}
         </select>
       </label> `;
+    // 검색은 "누르는 곳"이므로 조작 묶음의 끝이다 (UI-6g3t §7, 툴바 규칙은
+    // UI-58y2). 후보 필터 strip과는 답하는 질문이 다르다 — strip은 후보 페인의
+    // 표시 조건이고 이 입력은 탭 전체의 강조다. 버튼이 아니므로 `.op-btn`을
+    // 주지 않는다.
+    const search = html`<input
+      type="search"
+      class="worker-search"
+      placeholder="ID·제목 검색"
+      aria-label="이슈 검색 (ID·제목)"
+      .value=${search_query}
+    />`;
     // 정리 멈춤은 더 이상 배너가 아니라 타임라인의 한 항목이다 (§4.2) — 스트립의
     // 해결 필요 배지가 부르고, 클릭이 그 자리로 데려간다.
     const repo_operations = repoOpsStripTemplate(
@@ -3536,14 +3532,16 @@ export function createWorkerView(mount_element, options = {}) {
           </div>
         </div>
         <div class="worker-ctrl worker-ctrl--mobile">
-          <div class="worker-ctrl__ops">${settings}</div>
+          <div class="worker-ctrl__ops">${settings}${search}</div>
           <div class="worker-kpi">${base_chip}</div>
         </div>
         ${hold_banner}${repo_operations}${repo_ops_settings.template()}`;
     }
     // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
     return html`<div class="worker-ctrl">
-        <div class="worker-ctrl__ops">${play}${merge_all}${settings}</div>
+        <div class="worker-ctrl__ops">
+          ${play}${merge_all}${settings}${search}
+        </div>
         <div class="worker-kpi">
           ${overcap}${armed_hint}${counts}${base_chip}
           ${(Array.isArray(group.token_total)
@@ -3790,35 +3788,6 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * The 대기·직렬 행 `✕` (UI-d13v §6): 후보 레인이 드롭 대상이 아니게 되면서
-   * 대기→후보 되돌리기가 잃은 경로를 대신한다. 자리는 Monitor가 UI-5ksp §4.6으로
-   * 같은 조각을 붙인 곳과 같다 — 행 1번 줄 조작 슬롯 끝이다.
-   *
-   * 이미 출발한 행에는 그리지 않는다: 판정은 드롭이 거부되던 것과 같은 조건
-   * (`done`이거나 draggable하지 않은 행 — 실행 중 attempt·폐기·stale 점유)이다.
-   *
-   * @param {any} item
-   * @returns {import('lit-html').TemplateResult|undefined}
-   */
-  function queueRowActions(item) {
-    if (item.draggable !== true || item.done === true) {
-      return undefined;
-    }
-    return html`<span class="worker-mini__rowops">
-      <button
-        type="button"
-        class="worker-mini__rowops-remove"
-        data-action="queue-remove"
-        data-bead-id=${item.id}
-        title="대기에서 빼기"
-        aria-label="대기에서 빼기"
-      >
-        ✕
-      </button>
-    </span>`;
-  }
-
-  /**
    * One 대기 행 shell (UI-4tud §4.5). 드래그 원천 종류·레포·좌표를 DOM에 실어
    * 드래그 컨트롤러가 행 템플릿을 몰라도 되게 한다 — Monitor `.mon2-item`과 같은
    * 계약이고, 두 탭이 같은 `lane-drag` 모듈을 쓴다.
@@ -3838,7 +3807,7 @@ export function createWorkerView(mount_element, options = {}) {
     >
       ${miniRow(
         { ...item, ...discardResolveFields(item.id, item.discard) },
-        { actions: queueRowActions(item) }
+        { actions: queueRowOps(item) }
       )}
     </div>`;
   }
@@ -3873,7 +3842,7 @@ export function createWorkerView(mount_element, options = {}) {
             ...lane.ghosts.map((/** @type {any} */ it) =>
               miniRow(
                 { ...it, ...discardResolveFields(it.id, it.discard) },
-                { actions: queueRowActions(it) }
+                { actions: queueRowOps(it) }
               )
             ),
             ...lane.items.map((/** @type {any} */ it, index) =>
@@ -3888,6 +3857,9 @@ export function createWorkerView(mount_element, options = {}) {
           // 점유 ghost 행도 행 목록의 구성원이므로 건수와 빈 판정을 한 재료로
           // 읽는다 — 점유 중인 레인은 비어 있지 않다.
           count: lane.ghosts.length + lane.items.length,
+          // 「일치 n」도 건수와 같은 재료로 읽는다 — 점유 ghost 행도 이 레인에
+          // 그려지는 행이므로 일치 수에 든다 (§7).
+          match_count: matchCountOf([...lane.ghosts, ...lane.items]),
           empty: lane.ghosts.length + lane.items.length === 0,
           badge: lane.badge,
           held: lane.occupied,
@@ -3944,6 +3916,7 @@ export function createWorkerView(mount_element, options = {}) {
       lane: 'candidate',
       title: '후보',
       items: candidates,
+      match_count: matchCountOf(candidates),
       src: true,
       empty: '후보 없음',
       header_control: candidateSortTemplate(),
@@ -3963,6 +3936,7 @@ export function createWorkerView(mount_element, options = {}) {
       lane: 'done',
       title: '완료',
       items: done,
+      match_count: matchCountOf(done),
       empty: `${doneRangeLabel()} 완료 없음`,
       header_control: doneRangeTemplate(),
       collapsible: true,
@@ -3993,6 +3967,7 @@ export function createWorkerView(mount_element, options = {}) {
           title: '대기',
           items: waiting,
           count: waiting.length,
+          match_count: matchCountOf(waiting),
           collapsible: true,
           collapsed: collapse.isCollapsed('queue'),
           preview: stripPreview(waiting),
@@ -4009,6 +3984,7 @@ export function createWorkerView(mount_element, options = {}) {
         title: '대기',
         items: waiting,
         count: waiting.length,
+        match_count: matchCountOf(waiting),
         collapsible: true,
         collapsed: collapse.isCollapsed('queue'),
         body: waitBodyTemplate(m)
@@ -4018,6 +3994,7 @@ export function createWorkerView(mount_element, options = {}) {
         lane: 'running',
         title: '실행 중',
         items: /** @type {any[]} */ (running),
+        match_count: matchCountOf(running),
         // 슬롯 수는 제목이 아니라 탭 부가정보다 (§4.5) — 제목 어휘는 두 탭이
         // 같고, 탭이 다른 것은 `header_control`이 싣는다.
         header_control: html`<span class="worker-pane__meta"
@@ -4033,6 +4010,7 @@ export function createWorkerView(mount_element, options = {}) {
         lane: 'pr_wait',
         title: 'PR 대기',
         items: pr_wait,
+        match_count: matchCountOf(pr_wait),
         empty: 'PR 대기 없음',
         collapsible: true,
         collapsed: collapse.isCollapsed('pr_wait')
@@ -4593,7 +4571,7 @@ export function createWorkerView(mount_element, options = {}) {
       // 클릭을 막아 주더라도, 적재 경로가 자격을 스스로 확인해야 드래그와
       // 같은 규율이 된다.
       if (id && !place_btn.disabled) {
-        if (placeMenuLanes()) {
+        if (placeMenuLanes(currentQueue())) {
           place_menu_bead_id = id;
           doRender();
         } else {
@@ -4996,9 +4974,49 @@ export function createWorkerView(mount_element, options = {}) {
     }
   }
 
+  /**
+   * Every keystroke in the search input (UI-6g3t §7). 값은 뷰 메모리에만 남고
+   * 저장되지 않으며, 다시 그려도 lit이 같은 `<input>` 노드를 유지하므로
+   * 포커스·캐럿이 그대로다.
+   *
+   * @param {Event} ev
+   */
+  function onSearchInput(ev) {
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    if (!target?.closest?.('.worker-search')) {
+      return;
+    }
+    search_query = /** @type {HTMLInputElement} */ (target).value;
+    doRender();
+  }
+
+  /**
+   * Esc는 검색어를 비운다 (§7) — 흐려진 화면에서 빠져나오는 한 번의 키다.
+   * 이미 비어 있으면 아무 일도 하지 않으므로 다른 Esc 소비자를 가리지 않는다.
+   *
+   * @param {KeyboardEvent} ev
+   */
+  function onSearchKeyDown(ev) {
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    if (
+      ev.key !== 'Escape' ||
+      !target?.closest?.('.worker-search') ||
+      search_query.length === 0
+    ) {
+      return;
+    }
+    search_query = '';
+    doRender();
+  }
+
   lane_drag.attach(mount_element);
   mount_element.addEventListener('click', /** @type {any} */ (onClick));
   mount_element.addEventListener('change', /** @type {any} */ (onChange));
+  mount_element.addEventListener('input', /** @type {any} */ (onSearchInput));
+  mount_element.addEventListener(
+    'keydown',
+    /** @type {any} */ (onSearchKeyDown)
+  );
 
   /**
    * An outside click closes the 실패 상세 팝오버. 그것을 여는 요소는 예외다 —

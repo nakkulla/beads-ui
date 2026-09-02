@@ -2222,6 +2222,60 @@ describe('views/worker', () => {
     });
   });
 
+  test('re-reads the revision for each resume send and never retries twice', async () => {
+    const failed_attempt = {
+      attempt_id: 'failed',
+      bead_id: 'FAILED',
+      status: 'failed',
+      session_id: 'sid-failed'
+    };
+    const transport = vi.fn().mockResolvedValue({
+      resumed: false,
+      conflict: true,
+      queue: queueOf({ revision: 9, attempts: { failed: failed_attempt } })
+    });
+    const mount = mountAttemptTiles(
+      { revision: 7, attempts: { failed: failed_attempt } },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="failed"] .rtile__resume')
+    ).click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await flush();
+
+    expect(
+      transport.mock.calls.map(([, payload]) => payload.expected_revision)
+    ).toEqual([7, 9]);
+  });
+
+  test('names the resume target with the attempt bead id and tuple', () => {
+    const mount = mountAttemptTiles({
+      revision: 7,
+      attempts: {
+        failed: {
+          attempt_id: 'failed',
+          bead_id: 'FAILED',
+          status: 'failed',
+          session_id: 'sid-failed',
+          runner: 'codex',
+          model: 'sol'
+        }
+      }
+    });
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="failed"] .rtile__resume')
+    ).click();
+
+    expect(
+      document.querySelector('.resume-instructions-dialog__target')?.textContent
+    ).toBe('FAILED · codex · sol');
+  });
+
   test('preserves instructions through initial, conflict, and continuation sends', async () => {
     const decision_token = { source_attempt_id: 'failed', digest: 'one' };
     const failed_attempt = {
@@ -15123,5 +15177,262 @@ describe('해제·후속 칩과 대기 행 ✕ (UI-d13v §5·§6)', () => {
     );
 
     expect(ghost.querySelector('[data-action="queue-remove"]')).toBeNull();
+  });
+});
+
+describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+    expandDoneLane();
+  });
+
+  /**
+   * Type one query into the toolbar's search input. lit keeps the same DOM node
+   * across the re-render, so the returned element stays live.
+   *
+   * @param {HTMLElement} mount
+   * @param {string} value
+   * @returns {HTMLInputElement}
+   */
+  function typeSearch(mount, value) {
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-search')
+    );
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return input;
+  }
+
+  /**
+   * Every fact a search must not move: 대기 행의 순서, `#n` 좌표(드롭 인덱스),
+   * 드래그 속성.
+   *
+   * @param {HTMLElement} mount
+   * @returns {Array<Record<string, string>>}
+   */
+  function queueRowFacts(mount) {
+    return Array.from(
+      mount.querySelectorAll('#worker-pane-queue [data-drag-kind]')
+    ).map((el) => {
+      const wrapper = /** @type {HTMLElement} */ (el);
+      const row = /** @type {HTMLElement} */ (
+        wrapper.querySelector('.worker-mini')
+      );
+      return {
+        id: wrapper.dataset.beadId || '',
+        drag_kind: wrapper.dataset.dragKind || '',
+        row_index: wrapper.dataset.rowIndex || '',
+        queue_index: wrapper.dataset.queueIndex || '',
+        draggable: row.getAttribute('draggable') || ''
+      };
+    });
+  }
+
+  /**
+   * Mount the Worker console over three candidates and a two-row 병렬 대기.
+   *
+   * @returns {HTMLElement}
+   */
+  function mountWithQueue() {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    presetCandidateFilter({ show_blocked: true });
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [
+          { bead_id: 'SQ-1', added_at: 0 },
+          { bead_id: 'SQ-2', added_at: 1 }
+        ],
+        bead_titles: { 'SQ-1': 'queued one', 'SQ-2': 'queued two' }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('places the search input last in the toolbar ops group', () => {
+    const mount = mountWithQueue();
+
+    const ops = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-ctrl__ops')
+    );
+
+    expect(ops.lastElementChild?.className).toBe('worker-search');
+  });
+
+  test('dims candidate cards the query does not match', () => {
+    const mount = mountWithQueue();
+
+    typeSearch(mount, 'RD-1');
+
+    const cand = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate')
+    );
+    expect([
+      cand
+        .querySelector('.worker-card[data-bead-id="RD-1"]')
+        ?.classList.contains('is-dimmed'),
+      cand
+        .querySelector('.worker-card[data-bead-id="RD-2"]')
+        ?.classList.contains('is-dimmed'),
+      cand
+        .querySelector('.worker-card[data-bead-id="BL-1"]')
+        ?.classList.contains('is-dimmed')
+    ]).toEqual([false, true, true]);
+  });
+
+  test('appends 일치 n to the pane header while searching', () => {
+    const mount = mountWithQueue();
+
+    typeSearch(mount, 'ready');
+
+    const cand = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate')
+    );
+    expect(cand.querySelector('.worker-pane__match')?.textContent).toBe(
+      '일치 2'
+    );
+  });
+
+  /**
+   * Mount the Worker console over one 직렬 레인 holding an occupant ghost row and
+   * one waiting row, so the search can be judged on both (UI-6g3t §7).
+   *
+   * @returns {HTMLElement}
+   */
+  function mountWithSerialLane() {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        serial_lane_count: 1,
+        serial_lanes: [
+          {
+            id: 's1',
+            entries: [{ bead_id: 'OCC-1' }, { bead_id: 'SL-1' }]
+          }
+        ],
+        lane_states: {
+          s1: {
+            occupied_by: ['OCC-1'],
+            order: ['OCC-1', 'SL-1'],
+            corrections: [],
+            cycle: false
+          }
+        },
+        attempts: {
+          t1: {
+            attempt_id: 't1',
+            bead_id: 'OCC-1',
+            status: 'paused',
+            started_at: 10
+          }
+        },
+        bead_titles: { 'OCC-1': 'occupied one', 'SL-1': 'serial one' }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('dims a serial lane occupant ghost row the query does not match', () => {
+    const mount = mountWithSerialLane();
+
+    typeSearch(mount, 'SL-1');
+
+    const lane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-lane-s1')
+    );
+    expect([
+      lane
+        .querySelector('.worker-mini[data-bead-id="OCC-1"]')
+        ?.classList.contains('is-dimmed'),
+      lane
+        .querySelector('.worker-mini[data-bead-id="SL-1"]')
+        ?.classList.contains('is-dimmed')
+    ]).toEqual([true, false]);
+  });
+
+  test('appends 일치 n to a serial lane header while searching', () => {
+    const mount = mountWithSerialLane();
+
+    typeSearch(mount, 'one');
+
+    expect(
+      mount.querySelector('#worker-pane-lane-s1 .worker-pane__match')
+        ?.textContent
+    ).toBe('일치 2');
+  });
+
+  test('leaves the pane count itself untouched by the query', () => {
+    const mount = mountWithQueue();
+    const before = mount.querySelector(
+      '#worker-pane-candidate .worker-pane__count'
+    )?.textContent;
+
+    typeSearch(mount, 'RD-1');
+
+    expect(
+      mount.querySelector('#worker-pane-candidate .worker-pane__count')
+        ?.textContent
+    ).toBe(before);
+  });
+
+  test('keeps queue row order, drop coordinates and drag attributes', () => {
+    const mount = mountWithQueue();
+    const before = queueRowFacts(mount);
+
+    typeSearch(mount, 'SQ-2');
+
+    expect(queueRowFacts(mount)).toEqual(before);
+  });
+
+  test('dims no card and shows no 일치 count for an empty query', () => {
+    const mount = mountWithQueue();
+
+    typeSearch(mount, '');
+
+    expect([
+      mount.querySelectorAll('.is-dimmed').length,
+      mount.querySelectorAll('.worker-pane__match').length
+    ]).toEqual([0, 0]);
+  });
+
+  test('clears the query on Escape', () => {
+    const mount = mountWithQueue();
+    const input = typeSearch(mount, 'RD-1');
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+    );
+
+    expect([
+      /** @type {HTMLInputElement} */ (mount.querySelector('.worker-search'))
+        .value,
+      mount.querySelectorAll('.is-dimmed').length
+    ]).toEqual(['', 0]);
+  });
+
+  test('writes nothing to localStorage while searching', () => {
+    const mount = mountWithQueue();
+    const before = JSON.stringify({ ...window.localStorage });
+
+    typeSearch(mount, 'RD-1');
+    /** @type {HTMLInputElement} */ (
+      mount.querySelector('.worker-search')
+    ).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+    );
+
+    expect(JSON.stringify({ ...window.localStorage })).toBe(before);
   });
 });
