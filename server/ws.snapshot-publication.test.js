@@ -28,6 +28,19 @@ vi.mock('./bd-effect-gate.js', async (importOriginal) => {
 
 vi.mock('./bd.js', () => ({ runBdJsonProjected: vi.fn(), runBd: vi.fn() }));
 
+// The async git warm has its own tests. Publication ordering here runs on fake
+// timers, which cannot advance real child-process I/O, so the projection would
+// never reach its publish step; a null context sends enrichment down the same
+// synchronous path this file has always exercised.
+vi.mock('./workflow-enrich.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    warmWorkflowProbes: async () => null
+  };
+});
+
 const ALL_ARGS = ['list', '--json', '--tree=false', '--all', '--limit', '0'];
 const READY_ARGS = ['ready', '--explain', '--limit', '0', '--json'];
 

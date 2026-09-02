@@ -20,14 +20,16 @@
  *
  * Receipt format: `<reviewer>@<40hexsha>` or `skipped@<40hexsha>`.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import { promisify } from 'node:util';
 import { debug } from './logging.js';
 import { resolveRealpathWithinDocs } from './path-safety.js';
 import { resolveSpecEvidence, resolveSpecId } from './spec-id.js';
 import { judgeQuickFixHandoff } from './worker/quick-fix-handoff.js';
 
 const log = debug('workflow-enrich');
+const execFileAsync = promisify(execFile);
 
 /** `<reviewer>@<sha>` — reviewer is a token, sha is 7-40 hex chars. */
 const RECEIPT_RE = /^([A-Za-z0-9_.:-]+)@([0-9a-fA-F]{7,40})$/;
@@ -106,6 +108,31 @@ const REVIEW_REVIEWER_TOKENS = new Set([
  */
 const stale_cache = new Map();
 const STALE_CACHE_CAP = 5000;
+/** @type {Map<string, boolean>} */
+const ancestry_cache = new Map();
+/** @type {Map<string, boolean>} */
+const commit_cache = new Map();
+/** @type {Map<string, Promise<boolean | null>>} */
+const stale_in_flight = new Map();
+/** @type {Map<string, Promise<boolean | null>>} */
+const ancestry_in_flight = new Map();
+/** @type {Map<string, Promise<boolean | null>>} */
+const commit_in_flight = new Map();
+/** @type {Map<string, { generation: number, promise: Promise<WorkflowProbeContext> }>} */
+const generation_contexts = new Map();
+const PROBE_CONCURRENCY = 8;
+let active_probes = 0;
+/** @type {Array<() => void>} */
+const probe_waiters = [];
+
+/**
+ * @typedef {Object} WorkflowProbeContext
+ * @property {string | null} head
+ * @property {Map<string, string>} branch_tips
+ * @property {Set<string>} dirty_paths
+ * @property {Set<string>} checked_paths
+ * @property {Set<string>} undetermined
+ */
 
 /**
  * @typedef {Object} ParsedReceipt
@@ -312,6 +339,537 @@ export function classifyGlyph(receipt) {
 }
 
 /**
+ * Warm immutable workflow facts asynchronously for one snapshot projection.
+ *
+ * @param {Array<{ id?: string, status?: string, spec_id?: unknown, metadata?: Record<string, any> }>} items
+ * @param {string | undefined | null} workspace_root
+ * @param {{ generation: number, all: Array<{ id?: string, status?: string, spec_id?: unknown, metadata?: Record<string, any> }> }} generation
+ * @returns {Promise<WorkflowProbeContext | null>}
+ */
+export async function warmWorkflowProbes(items, workspace_root, generation) {
+  if (!workspace_root) {
+    return null;
+  }
+  const context = await generationProbeContext(workspace_root, generation);
+  if (!context.head) {
+    return context;
+  }
+  const captured_head = context.head;
+
+  /** @type {Set<string>} */
+  const cursor_candidates = new Set();
+  for (const issue of items) {
+    if (!staleProbesApply(String(issue.status || 'open'))) {
+      continue;
+    }
+    const md = issue.metadata || {};
+    const cursor = validCursor(md.last_checked_sha);
+    if (cursor === null) {
+      continue;
+    }
+    const spec_receipt = parseReceipt(md.spec_review);
+    const plan_receipt = planApprovalReceipt(md);
+    if (spec_receipt && resolveSpecId(issue).path.length > 0) {
+      cursor_candidates.add(cursor);
+    }
+    if (plan_receipt && nonEmptyPath(md.plan_path) !== null) {
+      cursor_candidates.add(cursor);
+    }
+  }
+
+  await Promise.all(
+    [...cursor_candidates].map((sha) =>
+      warmCommitExistence(workspace_root, sha, context)
+    )
+  );
+  await Promise.all(
+    [...cursor_candidates]
+      .filter((sha) => commit_cache.has(commitCacheKey(workspace_root, sha)))
+      .map((sha) => warmAncestry(workspace_root, sha, captured_head, context))
+  );
+
+  /** @type {Array<Promise<boolean | null>>} */
+  const probes = [];
+  for (const issue of items) {
+    if (!staleProbesApply(String(issue.status || 'open'))) {
+      continue;
+    }
+    const md = issue.metadata || {};
+    const spec_receipt = parseReceipt(md.spec_review);
+    const spec_path = resolveSpecId(issue).path;
+    if (spec_receipt && spec_path.length > 0) {
+      const anchor = cachedFreshnessAnchor(
+        workspace_root,
+        captured_head,
+        md.last_checked_sha,
+        spec_receipt.sha
+      );
+      probes.push(
+        warmPathChange(
+          workspace_root,
+          captured_head,
+          anchor,
+          spec_path,
+          context
+        )
+      );
+    }
+
+    const impl_receipt = parseReceipt(md.impl_review);
+    const bead_id = nonEmptyPath(issue.id);
+    if (impl_receipt && bead_id !== null) {
+      const tip = context.branch_tips.get(bead_id);
+      if (tip && !sameCommit(impl_receipt.sha, tip)) {
+        probes.push(
+          warmAncestry(workspace_root, impl_receipt.sha, tip, context)
+        );
+      }
+    }
+
+    const plan_receipt = planApprovalReceipt(md);
+    const plan_path = nonEmptyPath(md.plan_path);
+    if (plan_receipt && plan_path !== null) {
+      const anchor = cachedFreshnessAnchor(
+        workspace_root,
+        captured_head,
+        md.last_checked_sha,
+        plan_receipt.sha
+      );
+      probes.push(
+        warmPathChange(
+          workspace_root,
+          captured_head,
+          anchor,
+          plan_path,
+          context
+        )
+      );
+    }
+  }
+  await Promise.all(probes);
+  return context;
+}
+
+/**
+ * Share mutable git facts across every projection joining one generation.
+ *
+ * @param {string} workspace_root
+ * @param {{ generation: number, all: Array<{ status?: string, metadata?: Record<string, any> }> }} generation
+ * @returns {Promise<WorkflowProbeContext>}
+ */
+function generationProbeContext(workspace_root, generation) {
+  const current = generation_contexts.get(workspace_root);
+  if (current && current.generation === generation.generation) {
+    return current.promise;
+  }
+  const promise = createGenerationProbeContext(workspace_root, generation.all);
+  generation_contexts.set(workspace_root, {
+    generation: generation.generation,
+    promise
+  });
+  return promise;
+}
+
+/**
+ * Capture mutable workflow facts for a snapshot generation.
+ *
+ * @param {string} workspace_root
+ * @param {Array<{ status?: string, metadata?: Record<string, any> }>} all
+ * @returns {Promise<WorkflowProbeContext>}
+ */
+async function createGenerationProbeContext(workspace_root, all) {
+  /** @type {Set<string>} */
+  const checked_paths = new Set();
+  for (const issue of all) {
+    const status = String(issue.status || 'open');
+    const md = issue.metadata || {};
+    const plan_path = nonEmptyPath(md.plan_path);
+    if (
+      staleProbesApply(status) &&
+      deriveRoute(md) === 'full_plan' &&
+      plan_path !== null
+    ) {
+      checked_paths.add(plan_path);
+    }
+  }
+  const paths = [...checked_paths];
+  const [head_out, refs_out, status_out] = await Promise.all([
+    runGitAsync(workspace_root, ['rev-parse', 'HEAD']),
+    runGitAsync(workspace_root, [
+      'for-each-ref',
+      '--format=%(objectname) %(refname:short)',
+      'refs/heads/'
+    ]),
+    paths.length > 0
+      ? runGitAsync(workspace_root, ['status', '--porcelain', '--', ...paths])
+      : Promise.resolve('')
+  ]);
+  const completed_paths = status_out === null ? new Set() : checked_paths;
+  return {
+    head: head_out ? head_out.trim() : null,
+    branch_tips: parseBranchTips(refs_out),
+    dirty_paths: parseDirtyPaths(status_out, completed_paths),
+    checked_paths: completed_paths,
+    undetermined: new Set()
+  };
+}
+
+/**
+ * Parse the complete local branch listing captured for a generation.
+ *
+ * @param {string | null} output
+ * @returns {Map<string, string>}
+ */
+function parseBranchTips(output) {
+  /** @type {Map<string, string>} */
+  const tips = new Map();
+  if (output === null) {
+    return tips;
+  }
+  for (const line of output.split('\n')) {
+    const match = /^([0-9a-fA-F]{40}) (.+)$/.exec(line.trim());
+    if (match) {
+      tips.set(match[2], match[1].toLowerCase());
+    }
+  }
+  return tips;
+}
+
+/**
+ * Match porcelain paths back to the exact plan paths included in one batch.
+ *
+ * @param {string | null} output
+ * @param {Set<string>} checked_paths
+ * @returns {Set<string>}
+ */
+function parseDirtyPaths(output, checked_paths) {
+  /** @type {Set<string>} */
+  const dirty_paths = new Set();
+  if (output === null) {
+    return dirty_paths;
+  }
+  const changed = output
+    .split('\n')
+    .filter((line) => line.length >= 4)
+    .map((line) => line.slice(3));
+  for (const path of checked_paths) {
+    if (
+      changed.some((entry) => entry === path || entry.endsWith(` -> ${path}`))
+    ) {
+      dirty_paths.add(path);
+    }
+  }
+  return dirty_paths;
+}
+
+/**
+ * Run a promisified git command and return stdout without throwing.
+ *
+ * @param {string} cwd
+ * @param {string[]} args
+ * @returns {Promise<string | null>}
+ */
+async function runGitAsync(cwd, args) {
+  try {
+    const result = await execFileAsync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      windowsHide: true
+    });
+    return typeof result === 'string' ? result : result.stdout;
+  } catch (err) {
+    log('async git %o failed in %s: %o', args, cwd, err);
+    return null;
+  }
+}
+
+/**
+ * Read an async git predicate's definitive exit code.
+ *
+ * @param {string} cwd
+ * @param {string[]} args
+ * @returns {Promise<number | null>}
+ */
+async function runGitStatusAsync(cwd, args) {
+  try {
+    await execFileAsync('git', args, { cwd, windowsHide: true });
+    return 0;
+  } catch (err) {
+    const code =
+      err && typeof err === 'object'
+        ? /** @type {{ code?: unknown }} */ (err).code
+        : null;
+    return typeof code === 'number' ? code : null;
+  }
+}
+
+/**
+ * Run one probe under the module-wide concurrency cap.
+ *
+ * @template T
+ * @param {() => Promise<T>} task
+ * @returns {Promise<T>}
+ */
+async function withProbeSlot(task) {
+  if (active_probes >= PROBE_CONCURRENCY) {
+    await new Promise((resolve) => {
+      probe_waiters.push(() => resolve(undefined));
+    });
+  } else {
+    active_probes += 1;
+  }
+  try {
+    return await task();
+  } finally {
+    const next = probe_waiters.shift();
+    if (next) {
+      next();
+    } else {
+      active_probes -= 1;
+    }
+  }
+}
+
+/**
+ * Warm one path-change cache entry.
+ *
+ * @param {string} workspace_root
+ * @param {string} head
+ * @param {string} sha
+ * @param {string} path
+ * @param {WorkflowProbeContext} probes
+ * @returns {Promise<boolean | null>}
+ */
+function warmPathChange(workspace_root, head, sha, path, probes) {
+  const key = staleCacheKey(head, sha, path);
+  return warmCachedProbe(
+    stale_cache,
+    stale_in_flight,
+    key,
+    probeMarker('path', key),
+    probes,
+    async () => {
+      const out = await runGitAsync(workspace_root, [
+        'log',
+        `${sha}..${head}`,
+        '--',
+        path
+      ]);
+      return out === null ? null : out.trim().length > 0;
+    }
+  );
+}
+
+/**
+ * Warm one ancestry cache entry.
+ *
+ * @param {string} workspace_root
+ * @param {string} ancestor
+ * @param {string} descendant
+ * @param {WorkflowProbeContext} probes
+ * @returns {Promise<boolean | null>}
+ */
+function warmAncestry(workspace_root, ancestor, descendant, probes) {
+  const key = ancestryCacheKey(workspace_root, ancestor, descendant);
+  return warmCachedProbe(
+    ancestry_cache,
+    ancestry_in_flight,
+    key,
+    probeMarker('ancestry', key),
+    probes,
+    async () => {
+      const code = await runGitStatusAsync(workspace_root, [
+        'merge-base',
+        '--is-ancestor',
+        ancestor,
+        descendant
+      ]);
+      return code === 0 ? true : code === 1 ? false : null;
+    }
+  );
+}
+
+/**
+ * Warm one commit-object existence entry without caching absence.
+ *
+ * @param {string} workspace_root
+ * @param {string} sha
+ * @param {WorkflowProbeContext} probes
+ * @returns {Promise<boolean | null>}
+ */
+function warmCommitExistence(workspace_root, sha, probes) {
+  const key = commitCacheKey(workspace_root, sha);
+  return warmCachedProbe(
+    commit_cache,
+    commit_in_flight,
+    key,
+    probeMarker('commit', key),
+    probes,
+    async () => {
+      const code = await runGitStatusAsync(workspace_root, [
+        'rev-parse',
+        '--verify',
+        '--quiet',
+        `${sha}^{commit}`
+      ]);
+      return code === 0 ? true : null;
+    }
+  );
+}
+
+/**
+ * Share one immutable probe and cache only definitive results.
+ *
+ * @param {Map<string, boolean>} cache
+ * @param {Map<string, Promise<boolean | null>>} in_flight
+ * @param {string} key
+ * @param {string} marker
+ * @param {WorkflowProbeContext} probes
+ * @param {() => Promise<boolean | null>} task
+ * @returns {Promise<boolean | null>}
+ */
+function warmCachedProbe(cache, in_flight, key, marker, probes, task) {
+  const cached = cache.get(key);
+  if (cached !== undefined) {
+    return Promise.resolve(cached);
+  }
+  if (probes.undetermined.has(marker)) {
+    return Promise.resolve(null);
+  }
+  const current = in_flight.get(key);
+  if (current) {
+    return current.then((result) => {
+      if (result === null) {
+        probes.undetermined.add(marker);
+      }
+      return result;
+    });
+  }
+  const promise = withProbeSlot(task)
+    .then((result) => {
+      if (result === null) {
+        probes.undetermined.add(marker);
+      } else {
+        setBoundedCache(cache, key, result);
+      }
+      return result;
+    })
+    .finally(() => {
+      in_flight.delete(key);
+    });
+  in_flight.set(key, promise);
+  return promise;
+}
+
+/**
+ * Store one immutable result with the shared clear-when-full policy.
+ *
+ * @param {Map<string, boolean>} cache
+ * @param {string} key
+ * @param {boolean} value
+ */
+function setBoundedCache(cache, key, value) {
+  if (cache.size >= STALE_CACHE_CAP) {
+    cache.clear();
+  }
+  cache.set(key, value);
+}
+
+/**
+ * Build a path-change cache key.
+ *
+ * @param {string} head - Captured workspace HEAD.
+ * @param {string} sha - Receipt or cursor commit.
+ * @param {string} path - Workspace-relative document path.
+ */
+function staleCacheKey(head, sha, path) {
+  return `${head}\x00${sha}\x00${path}`;
+}
+
+/**
+ * Build an ancestry cache key.
+ *
+ * @param {string} root - Workspace root.
+ * @param {string} ancestor - Candidate ancestor commit.
+ * @param {string} descendant - Candidate descendant commit.
+ */
+function ancestryCacheKey(root, ancestor, descendant) {
+  return `${root}\x00${ancestor}\x00${descendant}`;
+}
+
+/**
+ * Build a commit-existence cache key.
+ *
+ * @param {string} root - Workspace root.
+ * @param {string} sha - Commit object to verify.
+ */
+function commitCacheKey(root, sha) {
+  return `${root}\x00${sha}`;
+}
+
+/**
+ * Namespace an undetermined probe key by fact kind.
+ *
+ * @param {string} kind - Immutable fact category.
+ * @param {string} key - Fact cache key.
+ */
+function probeMarker(kind, key) {
+  return `${kind}\x00${key}`;
+}
+
+/** @param {unknown} value */
+function validCursor(value) {
+  const cursor = typeof value === 'string' ? value.trim() : '';
+  return /^[0-9a-fA-F]{40}$/.test(cursor) ? cursor : null;
+}
+
+/** @param {unknown} value */
+function nonEmptyPath(value) {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : null;
+}
+
+/**
+ * Match a receipt commit to its full branch tip.
+ *
+ * @param {string} first - Full or abbreviated receipt commit.
+ * @param {string} second - Full branch-tip commit.
+ */
+function sameCommit(first, second) {
+  const left = first.toLowerCase();
+  const right = second.toLowerCase();
+  return left === right || right.startsWith(left);
+}
+
+/** @param {Record<string, any>} md */
+function planApprovalReceipt(md) {
+  return Object.hasOwn(md, 'plan_approval')
+    ? parsePlanApprovalReceipt(md.plan_approval)
+    : parsePlanReceipt(md.plan_review);
+}
+
+/**
+ * Resolve an already-warmed cursor without spawning.
+ *
+ * @param {string} workspace_root
+ * @param {string} head
+ * @param {unknown} cursor
+ * @param {string} receipt_sha
+ */
+function cachedFreshnessAnchor(workspace_root, head, cursor, receipt_sha) {
+  const cursor_sha = validCursor(cursor);
+  if (cursor_sha === null) {
+    return receipt_sha;
+  }
+  const exists = commit_cache.has(commitCacheKey(workspace_root, cursor_sha));
+  const ancestor = ancestry_cache.get(
+    ancestryCacheKey(workspace_root, cursor_sha, head)
+  );
+  return exists && ancestor === true ? cursor_sha : receipt_sha;
+}
+
+/**
  * Run a git command fail-quiet. Returns stdout string, or null on any error.
  *
  * @param {string} cwd
@@ -369,9 +927,13 @@ function runGitStatus(cwd, args) {
  * Current HEAD sha of the workspace, or null (fail-quiet).
  *
  * @param {string | undefined | null} workspace_root
+ * @param {WorkflowProbeContext | null} [probes]
  * @returns {string | null}
  */
-export function gitHead(workspace_root) {
+export function gitHead(workspace_root, probes = null) {
+  if (probes) {
+    return probes.head;
+  }
   if (!workspace_root) {
     return null;
   }
@@ -388,11 +950,21 @@ export function gitHead(workspace_root) {
  * @param {string | null} head
  * @param {unknown} cursor
  * @param {string} receipt_sha
+ * @param {WorkflowProbeContext | null} [probes]
  */
-function freshnessAnchor(workspace_root, head, cursor, receipt_sha) {
+function freshnessAnchor(
+  workspace_root,
+  head,
+  cursor,
+  receipt_sha,
+  probes = null
+) {
   const cursor_sha = typeof cursor === 'string' ? cursor.trim() : '';
   if (!workspace_root || !head || !/^[0-9a-fA-F]{40}$/.test(cursor_sha)) {
     return receipt_sha;
+  }
+  if (probes) {
+    return cachedFreshnessAnchor(workspace_root, head, cursor_sha, receipt_sha);
   }
   const reachable = runGit(workspace_root, [
     'rev-parse',
@@ -424,18 +996,28 @@ function freshnessAnchor(workspace_root, head, cursor, receipt_sha) {
  * @param {string | null} head
  * @param {string} sha
  * @param {string} path
+ * @param {WorkflowProbeContext | null} [probes]
  * @returns {boolean | null}
  */
-function pathChangedSinceOrNull(workspace_root, head, sha, path) {
+function pathChangedSinceOrNull(
+  workspace_root,
+  head,
+  sha,
+  path,
+  probes = null
+) {
   if (!workspace_root || !head || !sha || !path) {
     return null;
   }
-  const key = `${head}\x00${sha}\x00${path}`;
+  const key = staleCacheKey(head, sha, path);
   const cached = stale_cache.get(key);
   if (cached !== undefined) {
     return cached;
   }
-  const out = runGit(workspace_root, ['log', `${sha}..HEAD`, '--', path]);
+  if (probes) {
+    return null;
+  }
+  const out = runGit(workspace_root, ['log', `${sha}..${head}`, '--', path]);
   if (out === null) {
     return null;
   }
@@ -455,10 +1037,13 @@ function pathChangedSinceOrNull(workspace_root, head, sha, path) {
  * @param {string | null} head
  * @param {string} sha
  * @param {string} path
+ * @param {WorkflowProbeContext | null} [probes]
  * @returns {boolean}
  */
-function pathChangedSince(workspace_root, head, sha, path) {
-  return pathChangedSinceOrNull(workspace_root, head, sha, path) === true;
+function pathChangedSince(workspace_root, head, sha, path, probes = null) {
+  return (
+    pathChangedSinceOrNull(workspace_root, head, sha, path, probes) === true
+  );
 }
 
 /**
@@ -468,11 +1053,15 @@ function pathChangedSince(workspace_root, head, sha, path) {
  *
  * @param {string | undefined | null} workspace_root
  * @param {string} path
+ * @param {WorkflowProbeContext | null} [probes]
  * @returns {boolean | null}
  */
-function pathDirty(workspace_root, path) {
+function pathDirty(workspace_root, path, probes = null) {
   if (!workspace_root || !path) {
     return null;
+  }
+  if (probes) {
+    return probes.checked_paths.has(path) ? probes.dirty_paths.has(path) : null;
   }
   const out = runGit(workspace_root, ['status', '--porcelain', '--', path]);
   if (out === null) {
@@ -494,20 +1083,33 @@ function pathDirty(workspace_root, path) {
  * @param {string | null} head
  * @param {string} sha
  * @param {string} plan_path
+ * @param {WorkflowProbeContext | null} [probes]
  * @returns {'fresh' | 'stale' | 'unknown'}
  */
-export function planFreshness(workspace_root, head, sha, plan_path) {
+export function planFreshness(
+  workspace_root,
+  head,
+  sha,
+  plan_path,
+  probes = null
+) {
   if (!workspace_root || !head || !sha || !plan_path) {
     return 'unknown';
   }
-  const dirty = pathDirty(workspace_root, plan_path);
+  const dirty = pathDirty(workspace_root, plan_path, probes);
   if (dirty === null) {
     return 'unknown';
   }
   if (dirty) {
     return 'stale';
   }
-  const changed = pathChangedSinceOrNull(workspace_root, head, sha, plan_path);
+  const changed = pathChangedSinceOrNull(
+    workspace_root,
+    head,
+    sha,
+    plan_path,
+    probes
+  );
   if (changed === null) {
     return 'unknown';
   }
@@ -545,25 +1147,33 @@ export function planFreshness(workspace_root, head, sha, plan_path) {
  * fresh while the real impl branch has advanced, and a surviving descendant
  * branch reads stale after the impl branch is deleted.
  *
- * Deliberately NOT cached: `stale_cache` is HEAD-keyed, and committing in a
- * worktree never moves the shared checkout's HEAD, so a cache could not see a
- * branch tip move (same reason `pathDirty` bypasses it).
+ * The branch tip itself is generation-scoped rather than globally cached:
+ * committing in a worktree need not move the shared checkout's HEAD. With a
+ * probe context, only the immutable ancestry result is cached by both commits.
  *
  * @param {string | undefined | null} workspace_root
  * @param {string} receipt_sha
  * @param {string | undefined | null} bead_id
+ * @param {WorkflowProbeContext | null} [probes]
  * @returns {'fresh' | 'stale' | 'unknown'}
  */
-export function implFreshness(workspace_root, receipt_sha, bead_id) {
+export function implFreshness(
+  workspace_root,
+  receipt_sha,
+  bead_id,
+  probes = null
+) {
   if (!workspace_root || !receipt_sha || !bead_id) {
     return 'unknown';
   }
-  const out = runGit(workspace_root, [
-    'rev-parse',
-    '--verify',
-    '--quiet',
-    `refs/heads/${bead_id}`
-  ]);
+  const out = probes
+    ? (probes.branch_tips.get(bead_id) ?? null)
+    : runGit(workspace_root, [
+        'rev-parse',
+        '--verify',
+        '--quiet',
+        `refs/heads/${bead_id}`
+      ]);
   const tip = out ? out.trim().toLowerCase() : '';
   if (!tip) {
     return 'unknown';
@@ -572,12 +1182,17 @@ export function implFreshness(workspace_root, receipt_sha, bead_id) {
   if (tip === receipt || tip.startsWith(receipt)) {
     return 'fresh';
   }
-  const code = runGitStatus(workspace_root, [
-    'merge-base',
-    '--is-ancestor',
-    receipt_sha,
-    tip
-  ]);
+  const code = probes
+    ? ancestry_cache.get(ancestryCacheKey(workspace_root, receipt_sha, tip))
+    : runGitStatus(workspace_root, [
+        'merge-base',
+        '--is-ancestor',
+        receipt_sha,
+        tip
+      ]);
+  if (probes) {
+    return code === true ? 'fresh' : code === false ? 'stale' : 'unknown';
+  }
   if (code === 0) {
     return 'fresh';
   }
@@ -596,6 +1211,7 @@ export function implFreshness(workspace_root, receipt_sha, bead_id) {
  * @param {string} [published_spec_path] - Native `spec_id` path. Metadata
  * alone carries no spec key anymore, so the metadata-only entry point never
  * probes spec staleness.
+ * @param {WorkflowProbeContext | null} [probes]
  * @returns {{ spec_stale: boolean, impl_stale: boolean, spec_receipt: ParsedReceipt | null, impl_receipt: ParsedReceipt | null }}
  */
 function computeStaleWithHead(
@@ -604,7 +1220,8 @@ function computeStaleWithHead(
   head,
   bead_id,
   status,
-  published_spec_path = ''
+  published_spec_path = '',
+  probes = null
 ) {
   const spec_receipt = parseReceipt(md.spec_review);
   const impl_receipt = parseReceipt(md.impl_review);
@@ -623,13 +1240,16 @@ function computeStaleWithHead(
         workspace_root,
         head,
         md.last_checked_sha,
-        spec_receipt.sha
+        spec_receipt.sha,
+        probes
       ),
-      published_spec_path
+      published_spec_path,
+      probes
     );
   const impl_stale =
     !!impl_receipt &&
-    implFreshness(workspace_root, impl_receipt.sha, bead_id) === 'stale';
+    implFreshness(workspace_root, impl_receipt.sha, bead_id, probes) ===
+      'stale';
   return { spec_stale, impl_stale, spec_receipt, impl_receipt };
 }
 
@@ -842,9 +1462,10 @@ function docArtifactExists(workspace_root, doc_path) {
  * @param {string} status
  * @param {string | undefined | null} workspace_root
  * @param {string | null} head
+ * @param {WorkflowProbeContext | null} [probes]
  * @returns {WorkflowStage}
  */
-function planStage(md, status, workspace_root, head) {
+function planStage(md, status, workspace_root, head, probes = null) {
   if (!md.plan_path) {
     return {
       ...makeStage('none', null, false, null),
@@ -920,13 +1541,15 @@ function planStage(md, status, workspace_root, head) {
         workspace_root,
         head,
         md.last_checked_sha,
-        approval_receipt.sha
+        approval_receipt.sha,
+        probes
       );
       approval_state = planFreshness(
         workspace_root,
         head,
         approval_anchor,
-        md.plan_path
+        probes ? plan_path : md.plan_path,
+        probes
       );
     } else {
       approval_state = 'fresh';
@@ -1016,15 +1639,25 @@ function mergeStage(md, status) {
  * @param {{ id?: string, status?: string, spec_id?: unknown, description?: unknown, issue_type?: unknown, metadata?: Record<string, any> }} issue
  * @param {string | undefined | null} [workspace_root]
  * @param {string | null} [head] - Optional precomputed HEAD.
+ * @param {WorkflowProbeContext | null} [probes]
  * @returns {WorkflowSummary}
  */
-export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
+export function enrichIssueWorkflow(
+  issue,
+  workspace_root,
+  head = undefined,
+  probes = null
+) {
   const md = (issue && issue.metadata) || {};
   const spec = resolveSpecEvidence(issue);
   const published_spec_path = resolveSpecId(issue).path;
   const status = String((issue && issue.status) || 'open');
   const bead_id = (issue && issue.id) || null;
-  const resolved_head = head === undefined ? gitHead(workspace_root) : head;
+  const resolved_head = probes
+    ? probes.head
+    : head === undefined
+      ? gitHead(workspace_root)
+      : head;
   const { spec_stale, impl_stale, spec_receipt, impl_receipt } =
     computeStaleWithHead(
       md,
@@ -1032,7 +1665,8 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
       resolved_head,
       bead_id,
       status,
-      published_spec_path
+      published_spec_path,
+      probes
     );
 
   const route = deriveRoute(md);
@@ -1066,7 +1700,7 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
     merge: mergeStage(md, status)
   };
   if (route === 'full_plan') {
-    stages.plan = planStage(md, status, workspace_root, resolved_head);
+    stages.plan = planStage(md, status, workspace_root, resolved_head, probes);
   } else if (route === 'quick_fix') {
     stages.close = makeStage(
       status === 'closed' ? 'full' : status === 'resolved' ? 'dim' : 'none',
@@ -1134,18 +1768,19 @@ function quickFixReview(issue) {
  *
  * @param {Array<{ status?: string, metadata?: Record<string, any> } & Record<string, any>>} issues
  * @param {string | undefined | null} workspace_root
+ * @param {WorkflowProbeContext | null} [probes]
  * @returns {any[]}
  */
-export function enrichIssuesWorkflow(issues, workspace_root) {
+export function enrichIssuesWorkflow(issues, workspace_root, probes = null) {
   if (!Array.isArray(issues)) {
     return /** @type {any} */ (issues);
   }
-  const head = gitHead(workspace_root);
+  const head = probes ? probes.head : gitHead(workspace_root);
   return issues.map((it) => {
     try {
       return {
         ...it,
-        workflow: enrichIssueWorkflow(it, workspace_root, head)
+        workflow: enrichIssueWorkflow(it, workspace_root, head, probes)
       };
     } catch (err) {
       log('enrichIssueWorkflow failed for %o: %o', it && it.id, err);
@@ -1159,4 +1794,10 @@ export function enrichIssuesWorkflow(issues, workspace_root) {
  */
 export function _clearStaleCache() {
   stale_cache.clear();
+  ancestry_cache.clear();
+  commit_cache.clear();
+  stale_in_flight.clear();
+  ancestry_in_flight.clear();
+  commit_in_flight.clear();
+  generation_contexts.clear();
 }

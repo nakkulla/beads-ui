@@ -34,6 +34,7 @@ const log = debug('workspace-snapshot');
  * @property {Record<string, unknown>[]} dependency_edges
  * @property {Map<string, string[]>} blocks_out - issue → the blocker ids it depends on.
  * @property {Map<string, string[]>} blocks_in - issue → the snapshot issues waiting on it.
+ * @property {Map<string, Array<{ issue_id: string, type: string }>>} edges_in - issue → all snapshot issues depending on it.
  */
 
 /**
@@ -430,7 +431,8 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
             : 2,
         dependency_edges,
         blocks_out: blocks_index.blocks_out,
-        blocks_in: blocks_index.blocks_in
+        blocks_in: blocks_index.blocks_in,
+        edges_in: blocks_index.edges_in
       };
       state.generation = snapshot.generation;
       state.snapshot = snapshot;
@@ -692,7 +694,7 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
 }
 
 /**
- * Derive the two `blocks` adjacency indexes once per generation (UI-d13v §3.2).
+ * Derive dependency adjacency indexes once per generation (UI-d13v §3.2).
  *
  * Both dependency modes carry the SAME edge shape — embedded mode hangs it off
  * each issue as `dependencies`, the legacy fallback returns the identical
@@ -707,32 +709,39 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
  * @param {Map<string, NormalizedIssue>} id_index
  * @param {'embedded-dependencies'|'legacy-dependency-fallback'} command_mode
  * @param {Record<string, unknown>[]} dependency_edges
- * @returns {{ blocks_out: Map<string, string[]>, blocks_in: Map<string, string[]> }}
+ * @returns {{ blocks_out: Map<string, string[]>, blocks_in: Map<string, string[]>, edges_in: Map<string, Array<{ issue_id: string, type: string }>> }}
  */
 function buildBlocksIndex(all, id_index, command_mode, dependency_edges) {
   /** @type {Map<string, string[]>} */
   const blocks_out = new Map();
   /** @type {Map<string, string[]>} */
   const blocks_in = new Map();
+  /** @type {Map<string, Array<{ issue_id: string, type: string }>>} */
+  const edges_in = new Map();
   const edges =
     command_mode === 'embedded-dependencies'
-      ? embeddedBlocksEdges(all)
-      : legacyBlocksEdges(dependency_edges);
-  for (const [issue_id, depends_on_id] of edges) {
-    appendUnique(blocks_out, issue_id, depends_on_id);
+      ? embeddedDependencyEdges(all)
+      : legacyDependencyEdges(dependency_edges);
+  for (const [issue_id, depends_on_id, type] of edges) {
+    if (type === 'blocks') {
+      appendUnique(blocks_out, issue_id, depends_on_id);
+    }
     if (id_index.has(issue_id)) {
-      appendUnique(blocks_in, depends_on_id, issue_id);
+      appendEdge(edges_in, depends_on_id, { issue_id, type });
+      if (type === 'blocks') {
+        appendUnique(blocks_in, depends_on_id, issue_id);
+      }
     }
   }
-  return { blocks_out, blocks_in };
+  return { blocks_out, blocks_in, edges_in };
 }
 
 /**
  * @param {NormalizedIssue[]} all
- * @returns {Array<[string, string]>}
+ * @returns {Array<[string, string, string]>}
  */
-function embeddedBlocksEdges(all) {
-  /** @type {Array<[string, string]>} */
+function embeddedDependencyEdges(all) {
+  /** @type {Array<[string, string, string]>} */
   const edges = [];
   for (const issue of all) {
     if (!Array.isArray(issue.dependencies)) {
@@ -741,7 +750,7 @@ function embeddedBlocksEdges(all) {
     for (const edge of issue.dependencies) {
       // The embedded record repeats its owner as `issue_id`; a build that omits
       // it still names the issue the array hangs off.
-      const pair = blocksEdgePair(edge, issue.id);
+      const pair = dependencyEdgeTuple(edge, issue.id);
       if (pair !== null) {
         edges.push(pair);
       }
@@ -752,13 +761,13 @@ function embeddedBlocksEdges(all) {
 
 /**
  * @param {Record<string, unknown>[]} dependency_edges
- * @returns {Array<[string, string]>}
+ * @returns {Array<[string, string, string]>}
  */
-function legacyBlocksEdges(dependency_edges) {
-  /** @type {Array<[string, string]>} */
+function legacyDependencyEdges(dependency_edges) {
+  /** @type {Array<[string, string, string]>} */
   const edges = [];
   for (const edge of dependency_edges) {
-    const pair = blocksEdgePair(edge, null);
+    const pair = dependencyEdgeTuple(edge, null);
     if (pair !== null) {
       edges.push(pair);
     }
@@ -769,18 +778,41 @@ function legacyBlocksEdges(dependency_edges) {
 /**
  * @param {unknown} edge
  * @param {string | null} owner_id - Issue the edge hangs off, when known.
- * @returns {[string, string] | null}
+ * @returns {[string, string, string] | null}
  */
-function blocksEdgePair(edge, owner_id) {
-  if (!isRecord(edge) || edge.type !== 'blocks') {
+function dependencyEdgeTuple(edge, owner_id) {
+  if (!isRecord(edge)) {
     return null;
   }
   const issue_id = nonEmptyString(edge.issue_id) ?? owner_id;
   const depends_on_id = nonEmptyString(edge.depends_on_id);
-  if (issue_id === null || depends_on_id === null) {
+  const type = nonEmptyString(edge.type);
+  if (issue_id === null || depends_on_id === null || type === null) {
     return null;
   }
-  return [issue_id, depends_on_id];
+  return [issue_id, depends_on_id, type];
+}
+
+/**
+ * Append one reverse edge while preserving source order and exact edge identity.
+ *
+ * @param {Map<string, Array<{ issue_id: string, type: string }>>} index
+ * @param {string} key
+ * @param {{ issue_id: string, type: string }} value
+ */
+function appendEdge(index, key, value) {
+  const current = index.get(key);
+  if (current) {
+    if (
+      !current.some(
+        (edge) => edge.issue_id === value.issue_id && edge.type === value.type
+      )
+    ) {
+      current.push(value);
+    }
+    return;
+  }
+  index.set(key, [value]);
 }
 
 /**

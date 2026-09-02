@@ -16,7 +16,7 @@ import {
   foreignBlockerClosedAtFor,
   visibleWorkspaceRoots
 } from './worker/foreign-blocker-status.js';
-import { enrichIssuesWorkflow } from './workflow-enrich.js';
+import { enrichIssuesWorkflow, warmWorkflowProbes } from './workflow-enrich.js';
 import { createWorkspaceSnapshotCoordinator } from './workspace-snapshot-coordinator.js';
 import {
   __resetWorkspaceSnapshotRuntimeForTest,
@@ -25,7 +25,8 @@ import {
 
 vi.mock('./bd.js', () => ({ runBdJsonProjected: vi.fn() }));
 vi.mock('./workflow-enrich.js', () => ({
-  enrichIssuesWorkflow: vi.fn((items) => items)
+  enrichIssuesWorkflow: vi.fn((items) => items),
+  warmWorkflowProbes: vi.fn(async () => null)
 }));
 vi.mock('./worker/foreign-blocker-status.js', async (importOriginal) => {
   /** @type {any} */
@@ -96,6 +97,8 @@ describe('list adapters for subscription types', () => {
   beforeEach(() => {
     /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockReset();
     __resetWorkspaceSnapshotRuntimeForTest();
+    /** @type {import('vitest').Mock} */ (warmWorkflowProbes).mockClear();
+    /** @type {import('vitest').Mock} */ (enrichIssuesWorkflow).mockClear();
   });
 
   test('mapSubscriptionToBdArgs returns args for all-issues', () => {
@@ -200,12 +203,13 @@ describe('list adapters for subscription types', () => {
     ]);
   });
 
-  test('mapSubscriptionToBdArgs returns args for issue-detail', () => {
-    const args = mapSubscriptionToBdArgs({
-      type: 'issue-detail',
-      params: { id: 'UI-123' }
-    });
-    expect(args).toEqual(['show', 'UI-123', '--include-dependents', '--json']);
+  test('rejects issue-detail as a raw bd command', () => {
+    expect(() =>
+      mapSubscriptionToBdArgs({
+        type: 'issue-detail',
+        params: { id: 'UI-123' }
+      })
+    ).toThrow('Unknown subscription type: issue-detail');
   });
 
   test('fetchListForSubscription returns normalized items (Date.parse)', async () => {
@@ -723,6 +727,205 @@ describe('list adapters for subscription types', () => {
     expect(resolved.ok && resolved.items).toHaveLength(1000);
     expect(deferred.ok && deferred.items).toHaveLength(1000);
     expect(closed.ok && closed.items).toHaveLength(1001);
+  });
+
+  test('hydrates issue-detail edges and sorts dependents by id', async () => {
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (command_family, args) => {
+      if (args[0] === 'version') {
+        return supportedVersion();
+      }
+      if (args[0] === 'list') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: [
+            {
+              id: 'UI-2',
+              title: 'detail',
+              status: 'closed',
+              schema_version: 9,
+              dependencies: [
+                { depends_on_id: 'UI-1', type: 'blocks' },
+                { depends_on_id: 'foreign-X', type: 'related' }
+              ]
+            },
+            {
+              id: 'UI-1',
+              title: 'blocker',
+              status: 'open',
+              issue_type: 'task',
+              priority: 2,
+              dependencies: []
+            },
+            {
+              id: 'UI-10',
+              title: 'later',
+              status: 'open',
+              dependencies: [{ depends_on_id: 'UI-2', type: 'related' }]
+            },
+            {
+              id: 'UI-3',
+              title: 'earlier',
+              status: 'open',
+              dependencies: [{ depends_on_id: 'UI-2', type: 'blocks' }]
+            }
+          ]
+        });
+      }
+      return asProjectedResponse({
+        code: 0,
+        stdoutJson: { ready: [], blocked: [] }
+      });
+    });
+
+    const result = await fetchListForSubscription(
+      { type: 'issue-detail', params: { id: 'UI-2' } },
+      { cwd: '/workspace-detail', workspace_snapshot: true }
+    );
+
+    expect(result.ok && result.items[0].dependencies).toEqual([
+      expect.objectContaining({
+        id: 'UI-1',
+        dependency_type: 'blocks',
+        title: 'blocker',
+        status: 'open'
+      }),
+      { id: 'foreign-X', dependency_type: 'related', title: '' }
+    ]);
+    expect(
+      result.ok &&
+        /** @type {any[]} */ (result.items[0].dependents).map((item) => item.id)
+    ).toEqual(['UI-10', 'UI-3']);
+    expect(result.ok && 'schema_version' in result.items[0]).toBe(false);
+    expect(
+      /** @type {import('vitest').Mock} */ (runBdJsonProjected).mock.calls.some(
+        ([family]) => family === 'show' || family === 'dep'
+      )
+    ).toBe(false);
+  });
+
+  test('returns not_found for an issue absent from the snapshot', async () => {
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (command_family, args) => {
+      if (args[0] === 'version') {
+        return supportedVersion();
+      }
+      return args[0] === 'list'
+        ? asProjectedResponse({ code: 0, stdoutJson: [] })
+        : asProjectedResponse({
+            code: 0,
+            stdoutJson: { ready: [], blocked: [] }
+          });
+    });
+
+    const result = await fetchListForSubscription(
+      { type: 'issue-detail', params: { id: 'MISSING-1' } },
+      { cwd: '/workspace-missing', workspace_snapshot: true }
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'not_found', message: 'Issue not found: MISSING-1' }
+    });
+  });
+
+  test('preserves embedded issue-detail provenance before hydration', async () => {
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (command_family, args) => {
+      if (args[0] === 'version') {
+        return supportedVersion();
+      }
+      return args[0] === 'list'
+        ? asProjectedResponse({
+            code: 0,
+            stdoutJson: [
+              {
+                id: 'FOLLOWUP-1',
+                dependencies: [
+                  { depends_on_id: 'ROOT-1', type: 'discovered-from' }
+                ]
+              }
+            ]
+          })
+        : asProjectedResponse({
+            code: 0,
+            stdoutJson: { ready: [], blocked: [] }
+          });
+    });
+
+    const result = await fetchListForSubscription(
+      { type: 'issue-detail', params: { id: 'FOLLOWUP-1' } },
+      { cwd: '/workspace-detail-provenance', workspace_snapshot: true }
+    );
+
+    expect(result.ok && result.items[0].from_id).toBe('ROOT-1');
+  });
+
+  test('hydrates legacy issue-detail edges and provenance', async () => {
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: /** @type {any} */ (runBdJsonProjected),
+      dependency_mode: 'legacy-dependency-fallback'
+    });
+    __setWorkspaceSnapshotCoordinatorFactoryForTest(() => coordinator);
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (command_family, args) => {
+      if (args[0] === 'version') {
+        return supportedVersion();
+      }
+      if (args[0] === 'list') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: [
+            { id: 'ROOT-1', title: 'root' },
+            { id: 'FOLLOWUP-1', title: 'follow-up' }
+          ]
+        });
+      }
+      if (args[0] === 'ready') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: { ready: [], blocked: [] }
+        });
+      }
+      return asProjectedResponse(
+        {
+          code: 0,
+          stdoutJson: [
+            {
+              issue_id: 'FOLLOWUP-1',
+              depends_on_id: 'ROOT-1',
+              type: 'discovered-from'
+            }
+          ]
+        },
+        'dep'
+      );
+    });
+
+    const result = await fetchListForSubscription(
+      { type: 'issue-detail', params: { id: 'FOLLOWUP-1' } },
+      { cwd: '/workspace-detail-legacy', workspace_snapshot: true }
+    );
+
+    expect(result.ok && result.items[0]).toMatchObject({
+      from_id: 'ROOT-1',
+      dependencies: [
+        {
+          id: 'ROOT-1',
+          dependency_type: 'discovered-from',
+          title: 'root',
+          status: undefined,
+          issue_type: undefined,
+          priority: undefined,
+          created_at: 0,
+          updated_at: 0
+        }
+      ]
+    });
   });
 });
 

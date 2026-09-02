@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -9,13 +9,32 @@ import {
   classifyGlyph,
   computeStale,
   enrichIssueWorkflow,
+  enrichIssuesWorkflow,
   parseExecReceipt,
   parseImplEntry,
   parsePlanReceipt,
   parsePlannedExecution,
   parseReceipt,
-  parseResolverReceipt
+  parseResolverReceipt,
+  warmWorkflowProbes
 } from './workflow-enrich.js';
+
+vi.mock('node:child_process', async (importOriginal) => {
+  /** @type {typeof import('node:child_process')} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    execFile: vi.fn(actual.execFile),
+    execFileSync: vi.fn(actual.execFileSync)
+  };
+});
+
+const execFileMock = /** @type {import('vitest').Mock} */ (
+  /** @type {unknown} */ (execFile)
+);
+const execFileSyncMock = /** @type {import('vitest').Mock} */ (
+  /** @type {unknown} */ (execFileSync)
+);
 
 // Waits on REAL child processes (git, node, python), so wall time here is
 // process startup under the load the parallel suite creates, not product work.
@@ -80,6 +99,7 @@ function commitAll(dir, message) {
 
 beforeEach(() => {
   _clearStaleCache();
+  vi.clearAllMocks();
 });
 
 afterEach(() => {
@@ -89,6 +109,208 @@ afterEach(() => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }
+});
+
+/**
+ * Return async git invocations whose argv contains one token.
+ *
+ * @param {string} token
+ */
+function asyncGitCalls(token) {
+  return execFileMock.mock.calls.filter(
+    ([command, args]) =>
+      command === 'git' && Array.isArray(args) && args.includes(token)
+  );
+}
+
+describe('warmWorkflowProbes', () => {
+  test('keeps snapshot enrichment free of synchronous child processes', async () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/spec.md', '# spec\n');
+    const sha = commitAll(dir, 'add spec');
+    const issue = {
+      id: 'UI-1',
+      status: 'in_progress',
+      spec_id: 'docs/spec.md',
+      metadata: { route: 'spec_backed', spec_review: `codex@${sha}` }
+    };
+    const probes = await warmWorkflowProbes([issue], dir, {
+      generation: 1,
+      all: [issue]
+    });
+    execFileSyncMock.mockClear();
+
+    const enriched = enrichIssuesWorkflow([issue], dir, probes);
+
+    expect(enriched[0].workflow.stages.spec.stale).toBe(false);
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  test('reuses immutable keys and captures the changed head in path probes', async () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/spec.md', '# spec\n');
+    const receipt_sha = commitAll(dir, 'add spec');
+    writeFile(dir, 'other.txt', 'one\n');
+    commitAll(dir, 'advance head');
+    git(dir, ['branch', 'UI-1']);
+    const issue = {
+      id: 'UI-1',
+      status: 'in_progress',
+      spec_id: 'docs/spec.md',
+      metadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${receipt_sha}`,
+        impl_review: `codex@${receipt_sha}`
+      }
+    };
+    await warmWorkflowProbes([issue], dir, { generation: 1, all: [issue] });
+    execFileMock.mockClear();
+
+    await warmWorkflowProbes([issue], dir, { generation: 1, all: [issue] });
+    const repeated_calls = execFileMock.mock.calls.length;
+    writeFile(dir, 'other.txt', 'two\n');
+    const changed_head = commitAll(dir, 'advance head again');
+    execFileMock.mockClear();
+    await warmWorkflowProbes([issue], dir, { generation: 2, all: [issue] });
+    const log_args = asyncGitCalls('log')[0]?.[1];
+
+    expect(repeated_calls).toBe(0);
+    expect(log_args).toContain(`${receipt_sha}..${changed_head}`);
+    expect(log_args).not.toContain(`${receipt_sha}..HEAD`);
+  });
+
+  test('retries an undetermined path probe only in the next generation', async () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/spec.md', '# spec\n');
+    commitAll(dir, 'add spec');
+    const issue = {
+      id: 'UI-1',
+      status: 'in_progress',
+      spec_id: 'docs/spec.md',
+      metadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${'f'.repeat(40)}`
+      }
+    };
+    await warmWorkflowProbes([issue], dir, { generation: 1, all: [issue] });
+    execFileMock.mockClear();
+
+    await warmWorkflowProbes([issue], dir, { generation: 1, all: [issue] });
+    const same_generation_logs = asyncGitCalls('log').length;
+    await warmWorkflowProbes([issue], dir, { generation: 2, all: [issue] });
+    const next_generation_logs = asyncGitCalls('log').length;
+
+    expect(same_generation_logs).toBe(0);
+    expect(next_generation_logs).toBe(1);
+  });
+
+  test('retries commit absence only in the next generation', async () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/spec.md', '# spec\n');
+    const receipt_sha = commitAll(dir, 'add spec');
+    const missing_cursor = 'f'.repeat(40);
+    const issue = {
+      id: 'UI-1',
+      status: 'in_progress',
+      spec_id: 'docs/spec.md',
+      metadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${receipt_sha}`,
+        last_checked_sha: missing_cursor
+      }
+    };
+    await warmWorkflowProbes([issue], dir, { generation: 1, all: [issue] });
+    execFileMock.mockClear();
+
+    await warmWorkflowProbes([issue], dir, { generation: 1, all: [issue] });
+    const same_generation_checks = asyncGitCalls(
+      `${missing_cursor}^{commit}`
+    ).length;
+    await warmWorkflowProbes([issue], dir, { generation: 2, all: [issue] });
+    const next_generation_checks = asyncGitCalls(
+      `${missing_cursor}^{commit}`
+    ).length;
+
+    expect(same_generation_checks).toBe(0);
+    expect(next_generation_checks).toBe(1);
+  });
+
+  test('shares generation capture and checks plans outside the first items', async () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/spec.md', '# spec\n');
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    const receipt_sha = commitAll(dir, 'add docs');
+    writeFile(dir, 'docs/plan.md', '# plan\ndirty\n');
+    const spec_issue = {
+      id: 'UI-1',
+      status: 'in_progress',
+      spec_id: 'docs/spec.md',
+      metadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${receipt_sha}`
+      }
+    };
+    const plan_issue = {
+      id: 'UI-2',
+      status: 'in_progress',
+      metadata: {
+        route: 'full_plan',
+        plan_path: 'docs/plan.md',
+        plan_review: `user@${receipt_sha}`
+      }
+    };
+    const generation = { generation: 1, all: [spec_issue, plan_issue] };
+    execFileMock.mockClear();
+
+    const [, plan_probes] = await Promise.all([
+      warmWorkflowProbes([spec_issue], dir, generation),
+      warmWorkflowProbes([plan_issue], dir, generation)
+    ]);
+    const workflow = enrichIssueWorkflow(
+      plan_issue,
+      dir,
+      undefined,
+      plan_probes
+    );
+
+    expect(asyncGitCalls('rev-parse')).toHaveLength(1);
+    expect(asyncGitCalls('for-each-ref')).toHaveLength(1);
+    expect(asyncGitCalls('status')).toHaveLength(1);
+    expect(workflow.stages.plan?.approval_state).toBe('stale');
+  });
+
+  test('returns unknown on cache misses without spawning synchronously', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/spec.md', '# spec\n');
+    const head = commitAll(dir, 'add spec');
+    const probes = {
+      head,
+      branch_tips: new Map([['UI-1', 'e'.repeat(40)]]),
+      dirty_paths: new Set(),
+      checked_paths: new Set(['docs/plan.md']),
+      undetermined: new Set()
+    };
+    const issue = {
+      id: 'UI-1',
+      status: 'in_progress',
+      spec_id: 'docs/spec.md',
+      metadata: {
+        route: 'full_plan',
+        spec_review: `codex@${'a'.repeat(40)}`,
+        impl_review: `codex@${'b'.repeat(40)}`,
+        plan_path: 'docs/plan.md',
+        plan_review: `user@${'c'.repeat(40)}`
+      }
+    };
+    execFileSyncMock.mockClear();
+
+    const workflow = enrichIssueWorkflow(issue, dir, undefined, probes);
+
+    expect(workflow.stages.spec.stale).toBe(false);
+    expect(workflow.stages.impl.stale).toBe(false);
+    expect(workflow.stages.plan?.approval_state).toBe('unknown');
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
 });
 
 describe('parseReceipt', PURE, () => {

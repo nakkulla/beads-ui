@@ -393,6 +393,13 @@ describe('ws list subscriptions', () => {
       'detail:UI-1'
     );
     expect(Array.isArray(snapshot_envelope.payload.issues)).toBe(true);
+    expect(fetchListForSubscription).toHaveBeenLastCalledWith(
+      { type: 'issue-detail', params: { id: 'UI-1' } },
+      expect.objectContaining({
+        workspace_snapshot: true,
+        snapshot_cause: 'cold-subscribe'
+      })
+    );
   });
 
   test('subscribe-list forwards issue-detail dependents to the client', async () => {
@@ -453,9 +460,16 @@ describe('ws list subscriptions', () => {
     expect(snapshot_envelope.payload.issues[0].dependents).toEqual([
       { id: 'UI-2', dependency_type: 'blocks', status: 'open', title: '후행' }
     ]);
+    expect(fetchListForSubscription).toHaveBeenLastCalledWith(
+      { type: 'issue-detail', params: { id: 'UI-1' } },
+      expect.objectContaining({ workspace_snapshot: true })
+    );
   });
 
   test('subscribe-list issue-detail enforces id', async () => {
+    const calls_before = /** @type {import('vitest').Mock} */ (
+      fetchListForSubscription
+    ).mock.calls.length;
     const sock = {
       sent: /** @type {string[]} */ ([]),
       readyState: 1,
@@ -480,6 +494,9 @@ describe('ws list subscriptions', () => {
     const reply = JSON.parse(last);
     expect(reply && reply.ok).toBe(false);
     expect(reply && reply.error && reply.error.code).toBe('bad_request');
+    expect(
+      /** @type {import('vitest').Mock} */ (fetchListForSubscription).mock.calls
+    ).toHaveLength(calls_before);
   });
 
   test('subscribe-list closed-issues validates since param', async () => {

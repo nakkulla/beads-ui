@@ -90,7 +90,7 @@ export async function handleSubscribeList(ws, req) {
   try {
     initial = await fetchListForSubscription(spec, {
       cwd: root_dir || undefined,
-      workspace_snapshot: String(spec.type) !== 'issue-detail',
+      workspace_snapshot: true,
       snapshot_cause: 'cold-subscribe'
     });
   } catch (err) {
