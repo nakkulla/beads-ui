@@ -41,6 +41,11 @@ afterEach(() => {
  * A stand-in for the coordinator's candidate checkout plus a fake `npm` whose
  * per-subcommand exit code the test picks.
  *
+ * The ADR index and citation gates read real files, so the candidate carries
+ * this repository's `docs/adr` and `AGENTS.md` — the same bytes the coordinator
+ * would squash into the throwaway checkout. A test that wants the gate red
+ * mutates its own copy.
+ *
  * @param {{ npm_body?: string }} [options]
  */
 function fixture(options = {}) {
@@ -48,6 +53,20 @@ function fixture(options = {}) {
   created_roots.push(root);
   const repo = path.join(root, 'candidate');
   fs.mkdirSync(repo);
+  // The coordinator materializes a real checkout, and the citation gate refuses
+  // a `--repo` without one, so the candidate is a git repository here too.
+  spawnSync('git', ['init', '-q', repo]);
+  fs.cpSync(
+    path.join(REPO_ROOT, 'docs', 'adr'),
+    path.join(repo, 'docs', 'adr'),
+    {
+      recursive: true
+    }
+  );
+  fs.copyFileSync(
+    path.join(REPO_ROOT, 'AGENTS.md'),
+    path.join(repo, 'AGENTS.md')
+  );
 
   const log = path.join(root, 'calls.log');
   const bin = path.join(root, 'bin');
@@ -128,6 +147,36 @@ describe('repo-ops/script/verify', () => {
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('npm test failed');
+  });
+
+  test('fails on ADR index drift before paying the install cost', () => {
+    const env = fixture();
+    fs.writeFileSync(
+      path.join(env.repo, 'docs', 'adr', '9999-index-drift.md'),
+      '---\nid: 9999\ntitle: drift\nstatus: accepted\ndate: 2026-01-01\nsummary: drift\n---\n',
+      'utf8'
+    );
+
+    const result = run(env);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('ADR index drift check failed');
+    expect(calls(env)).toEqual([]);
+  });
+
+  test('fails on guidance citing an ADR that does not exist', () => {
+    const env = fixture();
+    fs.appendFileSync(
+      path.join(env.repo, 'AGENTS.md'),
+      '\n- 없는 결정을 가리키는 문장이다(ADR 9998).\n',
+      'utf8'
+    );
+
+    const result = run(env);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('stale ADR guidance citation check failed');
+    expect(calls(env)).toEqual([]);
   });
 
   test('refuses a cwd that is not the declared repo root', () => {

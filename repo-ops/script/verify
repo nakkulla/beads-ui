@@ -31,9 +31,17 @@ cwd="$(pwd -P)"
 # object before and after, and any write settles the operation as
 # `verify_candidate_mismatch` instead of a verdict.
 #
-# The bundle is tsc + test. lint, prettier and build are already forced by
-# Pre-Handoff Validation before the PR exists, and `npm run build` would rewrite
-# the tracked frontend bundle, which is exactly the write this checkout forbids.
+# The bundle is ADR index/citation checks + npm ci + tsc + test. lint, prettier
+# and build are already forced by Pre-Handoff Validation before the PR exists,
+# and `npm run build` would rewrite the tracked frontend bundle, which is
+# exactly the write this checkout forbids.
+#
+# The ADR index is generated and can drift silently; a retired ADR can also
+# leave a stale `(ADR NNNN)` pointer in AGENTS.md. Catch both before merge,
+# before paying the install cost.
+python3 "$HOME/.claude/skills/adr/scripts/adr-index.py" --dir "$repo_root/docs/adr" --check || fail "ADR index drift check failed"
+python3 "$HOME/.claude/skills/adr/scripts/adr-cite-check.py" --repo "$repo_root" || fail "stale ADR guidance citation check failed"
+
 npm ci || fail "npm ci failed"
 npm run tsc || fail "npm run tsc failed"
 npm test || fail "npm test failed"

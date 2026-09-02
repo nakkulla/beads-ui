@@ -1,8 +1,9 @@
 ---
 id: 4
 title: impl_review 신선도를 exact-head 대신 ancestry로 판정
-status: accepted
+status: superseded
 date: 2026-08-27
+superseded_by: 31
 summary: 'impl_review 영수증은 head와 같거나 그 조상이면 유효하며, head 이동만으로는 재리뷰를 걸지 않고 의미 충돌은 [verify]가 잡는다'
 spec: docs/superpowers/specs/2026-08-27-head-review-layer-removal-design.md
 bead: UI-d7fy
