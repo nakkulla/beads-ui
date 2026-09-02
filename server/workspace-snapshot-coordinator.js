@@ -403,7 +403,10 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
         }
         dependency_edges =
           dependency_result.ok === true
-            ? dependency_result.data.filter(isRecord)
+            ? normalizeDependencyEdges(
+                dependency_result.data.filter(isRecord),
+                all
+              )
             : [];
       }
 
@@ -773,6 +776,38 @@ function legacyDependencyEdges(dependency_edges) {
     }
   }
   return edges;
+}
+
+/**
+ * Bring the single-id `bd dep list` reply back to the batch bare-edge shape.
+ *
+ * The batch call answers `{ issue_id, depends_on_id, type }` records, but with
+ * exactly one id `bd` answers the FULL target issues with a `dependency_type`
+ * field instead. The legacy fallback passes every snapshot id, so a workspace
+ * holding a single issue silently lands on that second shape; without this
+ * normalization one parser would have to know both, and every consumer of
+ * `dependency_edges` would read an empty edge set for that issue.
+ *
+ * @param {Record<string, unknown>[]} edges
+ * @param {NormalizedIssue[]} all
+ * @returns {Record<string, unknown>[]}
+ */
+function normalizeDependencyEdges(edges, all) {
+  if (all.length !== 1) {
+    return edges;
+  }
+  const owner_id = all[0].id;
+  return edges.map((edge) => {
+    if (nonEmptyString(edge.depends_on_id) !== null) {
+      return edge;
+    }
+    const depends_on_id = nonEmptyString(edge.id);
+    const type = nonEmptyString(edge.dependency_type);
+    if (depends_on_id === null || type === null) {
+      return edge;
+    }
+    return { issue_id: owner_id, depends_on_id, type };
+  });
 }
 
 /**

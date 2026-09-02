@@ -134,13 +134,20 @@ describe('warmWorkflowProbes', () => {
       spec_id: 'docs/spec.md',
       metadata: { route: 'spec_backed', spec_review: `codex@${sha}` }
     };
-    const probes = await warmWorkflowProbes([issue], dir, {
-      generation: 1,
-      all: [issue]
-    });
+    // The hydrated `issue-detail` item the snapshot projection enriches carries
+    // its compact edges; nothing about it may reopen a synchronous probe.
+    const detail_item = {
+      ...issue,
+      dependencies: [{ id: 'UI-2', dependency_type: 'blocks', title: 'dep' }],
+      dependents: []
+    };
     execFileSyncMock.mockClear();
 
-    const enriched = enrichIssuesWorkflow([issue], dir, probes);
+    const probes = await warmWorkflowProbes([detail_item], dir, {
+      generation: 1,
+      all: [detail_item]
+    });
+    const enriched = enrichIssuesWorkflow([detail_item], dir, probes);
 
     expect(enriched[0].workflow.stages.spec.stale).toBe(false);
     expect(execFileSync).not.toHaveBeenCalled();

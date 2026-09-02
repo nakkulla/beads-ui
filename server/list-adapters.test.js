@@ -864,6 +864,56 @@ describe('list adapters for subscription types', () => {
     expect(result.ok && result.items[0].from_id).toBe('ROOT-1');
   });
 
+  test('hydrates a single-issue legacy foreign dependency stub', async () => {
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: /** @type {any} */ (runBdJsonProjected),
+      dependency_mode: 'legacy-dependency-fallback'
+    });
+    __setWorkspaceSnapshotCoordinatorFactoryForTest(() => coordinator);
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (command_family, args) => {
+      if (args[0] === 'version') {
+        return supportedVersion();
+      }
+      if (args[0] === 'list') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: [{ id: 'ONLY-1', title: 'only' }]
+        });
+      }
+      if (args[0] === 'ready') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: { ready: [], blocked: [] }
+        });
+      }
+      // With one id `bd dep list` answers full target issues, not bare edges.
+      return asProjectedResponse(
+        {
+          code: 0,
+          stdoutJson: [
+            {
+              id: 'dotfiles-9',
+              title: 'foreign',
+              dependency_type: 'blocks'
+            }
+          ]
+        },
+        'dep'
+      );
+    });
+
+    const result = await fetchListForSubscription(
+      { type: 'issue-detail', params: { id: 'ONLY-1' } },
+      { cwd: '/workspace-detail-single', workspace_snapshot: true }
+    );
+
+    expect(result.ok && result.items[0].dependencies).toEqual([
+      { id: 'dotfiles-9', dependency_type: 'blocks', title: '' }
+    ]);
+  });
+
   test('hydrates legacy issue-detail edges and provenance', async () => {
     const coordinator = createWorkspaceSnapshotCoordinator({
       runBdJsonProjected: /** @type {any} */ (runBdJsonProjected),
