@@ -1,83 +1,108 @@
 import { describe, expect, test } from 'vitest';
 import { collectArtifacts } from './artifacts.js';
 
-const RECEIPT = 'codex@' + 'a'.repeat(40);
-
 describe('views/detail-panel/artifacts', () => {
-  test('uses the native top-level spec_id for the spec artifact', () => {
-    expect(
-      collectArtifacts({
-        spec_id: ' docs/specs/native.md ',
-        metadata: { spec_id: 'docs/specs/legacy.md', spec_review: RECEIPT }
-      })[0]
-    ).toEqual({
-      kind: 'spec',
-      path: 'docs/specs/native.md',
-      missing_state: null
-    });
-  });
-
-  test('adds no spec row for a retired metadata-only spec_id', () => {
+  test('uses the server spec document verdict', () => {
     const rows = collectArtifacts({
-      metadata: { spec_id: ' docs/specs/legacy.md ', spec_review: RECEIPT }
-    });
-
-    expect(rows).toEqual([]);
-  });
-
-  test('adds no spec row for a retired metadata spec_path', () => {
-    const rows = collectArtifacts({
-      metadata: { spec_path: ' docs/specs/draft.md ' }
-    });
-
-    expect(rows).toEqual([]);
-  });
-
-  test('ignores a retired spec_path beside a published spec_id', () => {
-    const rows = collectArtifacts({
-      spec_id: 'docs/specs/published.md',
-      metadata: { spec_path: 'docs/specs/draft.md', spec_review: RECEIPT }
+      workflow: {
+        stages: {
+          spec: {
+            doc: { path: 'docs/specs/native.md', missing_state: null }
+          }
+        }
+      }
     });
 
     expect(rows).toEqual([
       {
         kind: 'spec',
-        path: 'docs/specs/published.md',
+        path: 'docs/specs/native.md',
         missing_state: null
       }
     ]);
   });
 
-  test('marks a spec_id awaiting its review receipt as a draft', () => {
-    const rows = collectArtifacts({ spec_id: 'docs/specs/awaiting.md' });
-
-    expect(rows).toEqual([
-      {
-        kind: 'spec',
-        path: 'docs/specs/awaiting.md',
-        missing_state: 'spec_draft'
-      }
-    ]);
-  });
-
-  test('marks a spec_id with a malformed receipt as a draft', () => {
+  test('omits the spec row when its stage has no document', () => {
     const rows = collectArtifacts({
-      spec_id: 'docs/specs/awaiting.md',
-      metadata: { spec_review: 'codex@abc' }
+      workflow: { stages: { spec: {} } }
     });
-
-    expect(rows[0].missing_state).toEqual('spec_draft');
-  });
-
-  test('adds no spec row when spec_id is absent', () => {
-    const rows = collectArtifacts({ metadata: { route: 'quick_fix' } });
 
     expect(rows).toEqual([]);
   });
 
-  test('marks a reserved plan without authoring history as pending', () => {
+  test('ignores retired metadata spec paths', () => {
     const rows = collectArtifacts({
-      metadata: { plan_path: 'docs/plans/x.md' }
+      metadata: { spec_path: 'docs/specs/draft.md' },
+      workflow: { stages: { spec: {} } }
+    });
+
+    expect(rows).toEqual([]);
+  });
+
+  test('prefers the server verdict over conflicting issue fields', () => {
+    const rows = collectArtifacts({
+      spec_id: 'docs/specs/ignored.md',
+      workflow: {
+        stages: {
+          spec: {
+            doc: { path: 'docs/specs/published.md', missing_state: null }
+          }
+        }
+      }
+    });
+
+    expect(rows[0]?.path).toBe('docs/specs/published.md');
+  });
+
+  test('carries the server spec draft state', () => {
+    const rows = collectArtifacts({
+      workflow: {
+        stages: {
+          spec: {
+            doc: {
+              path: 'docs/specs/awaiting.md',
+              missing_state: 'spec_draft'
+            }
+          }
+        }
+      }
+    });
+
+    expect(rows[0]?.missing_state).toBe('spec_draft');
+  });
+
+  test('keeps the spec path exactly as enriched by the server', () => {
+    const rows = collectArtifacts({
+      workflow: {
+        stages: {
+          spec: {
+            doc: { path: ' docs/specs/awaiting.md ', missing_state: null }
+          }
+        }
+      }
+    });
+
+    expect(rows[0]?.path).toBe(' docs/specs/awaiting.md ');
+  });
+
+  test('omits the spec row when the spec stage is absent', () => {
+    const rows = collectArtifacts({ workflow: { stages: {} } });
+
+    expect(rows).toEqual([]);
+  });
+
+  test('carries the server plan pending state', () => {
+    const rows = collectArtifacts({
+      workflow: {
+        stages: {
+          plan: {
+            doc: {
+              path: 'docs/plans/x.md',
+              missing_state: 'plan_pending'
+            }
+          }
+        }
+      }
     });
 
     expect(rows).toEqual([
@@ -89,20 +114,23 @@ describe('views/detail-panel/artifacts', () => {
     ]);
   });
 
-  test('keeps a reviewed plan outside the pending state', () => {
+  test('carries the server authored-plan verdict', () => {
     const rows = collectArtifacts({
-      metadata: {
-        plan_path: 'docs/plans/x.md',
-        plan_review: 'skipped@123456789abc'
+      workflow: {
+        stages: {
+          plan: { doc: { path: 'docs/plans/x.md', missing_state: null } }
+        }
       }
     });
 
-    expect(rows).toEqual([
-      {
-        kind: 'plan',
-        path: 'docs/plans/x.md',
-        missing_state: null
-      }
-    ]);
+    expect(rows[0]?.missing_state).toBeNull();
+  });
+
+  test('omits every row when workflow is absent', () => {
+    const rows = collectArtifacts({
+      metadata: { plan_path: 'docs/plans/x.md' }
+    });
+
+    expect(rows).toEqual([]);
   });
 });

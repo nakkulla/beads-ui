@@ -1,5 +1,4 @@
 import { html } from 'lit-html';
-import { resolveSpecEvidence } from '../../../server/spec-id.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
@@ -13,50 +12,41 @@ import { resolveSpecEvidence } from '../../../server/spec-id.js';
  */
 
 /**
+ * @typedef {Object} ArtifactDoc
+ * @property {string} path
+ * @property {'plan_pending'|'spec_draft'|null} missing_state
+ */
+
+/**
  * @typedef {Object} ArtifactHandlers
  * @property {(ev: Event, path: string) => void} onCopyPath - Path click = copy to clipboard.
  * @property {(ev: Event, path: string, missing_state: 'plan_pending'|'spec_draft'|null) => void} onOpenDoc - "열기" = open md viewer.
  */
 
 /**
- * Whether metadata records that plan authoring progressed beyond path pinning.
+ * Collect artifact rows from the server's workflow stage document verdicts.
  *
- * @param {Record<string, any>} metadata
- */
-function hasPlanAuthoringHistory(metadata) {
-  return ['plan_review', 'plan_approval', 'plan_check'].some((key) => {
-    const value = metadata[key];
-    return typeof value === 'string' && value.trim().length > 0;
-  });
-}
-
-/**
- * Collect artifact rows from native spec_id and workflow metadata. The draft
- * badge follows the evidence partition (UI-vb7u §2): a native `spec_id` still
- * awaiting a valid `spec_review` receipt wears it — publication, not path
- * presence, is what clears the badge. The retired `metadata.spec_path`
- * pointer is not read (UI-o0rx).
- *
- * @param {{ spec_id?: unknown, metadata?: Record<string, any> }} issue
+ * @param {{ workflow?: { stages?: { spec?: { doc?: ArtifactDoc }, plan?: { doc?: ArtifactDoc } } } } & Record<string, any>} issue
  * @returns {ArtifactRow[]}
  */
 export function collectArtifacts(issue) {
-  const md = (issue && issue.metadata) || {};
-  const spec = resolveSpecEvidence(issue);
   /** @type {ArtifactRow[]} */
   const rows = [];
-  if (spec.path) {
+  const stages = issue?.workflow?.stages;
+  const spec_doc = stages?.spec?.doc;
+  if (spec_doc) {
     rows.push({
       kind: 'spec',
-      path: spec.path,
-      missing_state: spec.evidence === 'draft' ? 'spec_draft' : null
+      path: spec_doc.path,
+      missing_state: spec_doc.missing_state
     });
   }
-  if (typeof md.plan_path === 'string' && md.plan_path.trim().length > 0) {
+  const plan_doc = stages?.plan?.doc;
+  if (plan_doc) {
     rows.push({
       kind: 'plan',
-      path: md.plan_path.trim(),
-      missing_state: hasPlanAuthoringHistory(md) ? null : 'plan_pending'
+      path: plan_doc.path,
+      missing_state: plan_doc.missing_state
     });
   }
   return rows;
@@ -66,7 +56,7 @@ export function collectArtifacts(issue) {
  * Artifacts section (detail-panel.html): spec/plan paths. Clicking the path
  * copies it; the "열기" button opens the md viewer.
  *
- * @param {{ metadata?: Record<string, any> }} issue
+ * @param {{ workflow?: { stages?: { spec?: { doc?: ArtifactDoc }, plan?: { doc?: ArtifactDoc } } } } & Record<string, any>} issue
  * @param {ArtifactHandlers} handlers
  * @returns {TemplateResult}
  */

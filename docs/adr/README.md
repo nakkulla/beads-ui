@@ -5,6 +5,8 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0026 | [워크스페이스 투영 경로는 동기 자식 프로세스를 띄우지 않는다](0026-projection-path-spawns-no-sync-child-process.md) | 2026-09-03 | 워크스페이스 투영은 warm이 채운 불변 키 캐시와 세대 컨텍스트만 읽어 동기 자식 프로세스를 띄우지 않고, 미스는 미판정으로 그린다 |
+| 0025 | [issue-detail은 워크스페이스 스냅샷 세대에서 투영한다](0025-issue-detail-projected-from-workspace-snapshot.md) | 2026-09-03 | issue-detail은 워크스페이스 스냅샷 세대에서 투영하며 dependents·provenance는 세대의 간선 인덱스로 만들고 상세 전용 bd read는 없다 |
 | 0024 | [폐기 실패의 출구는 셋이고 [폐기 포기]는 아카이브 단계 전용 terminal abandoned다](0024-discard-failure-exits-and-terminal-abandoned.md) | 2026-09-03 | 사용자 개시 작업 실패의 재진입은 자동 알림 뒤 사람 클릭뿐이라는 0022를 승계하되, 폐기 실패의 출구는 재클릭·[폐기 포기]·[세션에서 해결] 셋으로 닫힌다. [폐기 포기]는 아카이브 단계 실패에서만 runner를 되살리고 bead를 폐기 이전 자리로 돌려놓는 terminal `abandoned`이며, 뒤 phase의 실패와 소유권 판정 불능에서는 허용하지 않는다 |
 | 0023 | [waiting 복귀 트리거는 cadence가 아니라 이벤트 구독이다](0023-waiting-return-event-subscription-not-cadence.md) | 2026-09-03 | Worker의 waiting 복귀는 cadence가 아니라 이벤트 구독이다 — 같은 rig는 bd 변경 감시, foreign은 owner rig의 활동 버스가 요청 rig의 재스캔을 부르고, 재스캔은 워크스페이스당 leading+cover throttle 안에서 `bd ready` 한 번으로 판정한다 |
 | 0021 | [review_session의 생존·슬롯·정산 시작은 scheduler reconcile이, 결과 판정은 큐가 소유한다](0021-review-session-lifecycle-owned-by-scheduler-reconcile.md) | 2026-08-29 | review_session은 구현 attempt와 같은 reconcile pid probe로 생존·슬롯 점유·정산 시작을 판정하고 죽은 세션의 결과는 큐의 complete()가 영수증으로 판정하며 살아 있는 리뷰어를 죽이는 부팅 종료는 두지 않는다 |
