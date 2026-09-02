@@ -2222,6 +2222,60 @@ describe('views/worker', () => {
     });
   });
 
+  test('re-reads the revision for each resume send and never retries twice', async () => {
+    const failed_attempt = {
+      attempt_id: 'failed',
+      bead_id: 'FAILED',
+      status: 'failed',
+      session_id: 'sid-failed'
+    };
+    const transport = vi.fn().mockResolvedValue({
+      resumed: false,
+      conflict: true,
+      queue: queueOf({ revision: 9, attempts: { failed: failed_attempt } })
+    });
+    const mount = mountAttemptTiles(
+      { revision: 7, attempts: { failed: failed_attempt } },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="failed"] .rtile__resume')
+    ).click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await flush();
+
+    expect(
+      transport.mock.calls.map(([, payload]) => payload.expected_revision)
+    ).toEqual([7, 9]);
+  });
+
+  test('names the resume target with the attempt bead id and tuple', () => {
+    const mount = mountAttemptTiles({
+      revision: 7,
+      attempts: {
+        failed: {
+          attempt_id: 'failed',
+          bead_id: 'FAILED',
+          status: 'failed',
+          session_id: 'sid-failed',
+          runner: 'codex',
+          model: 'sol'
+        }
+      }
+    });
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="failed"] .rtile__resume')
+    ).click();
+
+    expect(
+      document.querySelector('.resume-instructions-dialog__target')?.textContent
+    ).toBe('FAILED · codex · sol');
+  });
+
   test('preserves instructions through initial, conflict, and continuation sends', async () => {
     const decision_token = { source_attempt_id: 'failed', digest: 'one' };
     const failed_attempt = {

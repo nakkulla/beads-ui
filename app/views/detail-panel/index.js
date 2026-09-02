@@ -1,10 +1,10 @@
 import { html, render } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
+import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
-import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
-import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
+import { runResumeFlow } from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import {
@@ -882,11 +882,16 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
-   * Manually resume a failed/orphaned attempt (spec §1) under the queue
-   * mutations' CAS discipline: send the current queue revision and retry ONCE
-   * against the revision a conflict reply reports. The server validates (six
-   * §1.2 refusals), dispatches, and pushes a fresh queue snapshot that surfaces
-   * the new running attempt in the history list.
+   * Manually resume a failed/orphaned attempt (spec §1). The flow — 지시
+   * 다이얼로그, 충돌 1회 재시도, provider 경계, 거부 토스트 — 는
+   * `runResumeFlow`가 소유하고(UI-6g3t §5.1), 이 화면은 대상 문맥과 재시도 없는
+   * 전송 하나만 넘긴다. 전송마다 스토어의 revision을 새로 읽으므로, 충돌 응답의
+   * 큐를 `adopt`가 채택한 것이 곧 다음 전송의 `expected_revision`이다. 서버가
+   * 검증(§1.2의 여섯 거부)하고 디스패치하면 새 스냅샷이 이력 목록에 새 실행
+   * attempt를 세운다.
+   *
+   * 세션 이력 행의 버튼은 착지 정산과 무관하므로 `kind`는 항상 `'session'`이다
+   * (§5.4).
    *
    * @param {string} attempt_id
    */
@@ -894,54 +899,33 @@ export function createDetailPanel(mount_element, options) {
     if (!transport || !attempt_id) {
       return;
     }
-    const instructions = await requestResumeInstructions();
-    if (instructions === null) {
-      return;
-    }
+    const send = transport;
     /** @returns {number} */
     const revision = () => {
       const q = queueStore ? queueStore.get() : null;
       return q && typeof q.revision === 'number' ? q.revision : 0;
     };
-    /**
-     * @param {Record<string, unknown>} extra
-     * @param {number} [expected_revision]
-     */
-    const send = async (extra = {}, expected_revision = revision()) =>
-      /** @type {any} */ (
-        await transport('worker-attempt-resume', {
-          attempt_id,
-          expected_revision,
-          ...(instructions !== '' ? { instructions } : {}),
-          ...extra
-        })
-      );
-    /** @param {any} response */
-    const adopt = (response) => {
-      if (response?.queue && queueStore?.set) {
-        queueStore.set(response.queue);
+    const attempt = queueStore?.get()?.attempts?.[attempt_id] || null;
+    await runResumeFlow({
+      context: {
+        bead_id: attempt?.bead_id || current_id || '',
+        kind: 'session',
+        tuple: attempt ? formatAttemptTuple(attempt) : ''
+      },
+      transport: (payload) =>
+        /** @type {any} */ (
+          send('worker-attempt-resume', {
+            attempt_id,
+            expected_revision: revision(),
+            ...payload
+          })
+        ),
+      adopt: (response) => {
+        if (response?.queue && queueStore?.set) {
+          queueStore.set(response.queue);
+        }
       }
-    };
-    let res = await send();
-    adopt(res);
-    if (res && res.conflict) {
-      // The conflict reply carries the authoritative queue; retry once against
-      // its revision (the push may not have landed in the store yet).
-      const fresh =
-        res.queue && typeof res.queue.revision === 'number'
-          ? res.queue.revision
-          : revision();
-      res = await send({}, fresh);
-      adopt(res);
-    }
-    res = await resolveContinuationMismatch(
-      res,
-      (continuation, decision_token) => send({ continuation, decision_token }),
-      { onResult: adopt, refresh: () => send() }
-    );
-    if (res && res.resumed === false && !res.conflict && res.reason) {
-      showToast(`이어하기 거부: ${res.reason}`, 'error', 2400);
-    }
+    });
   }
 
   /**

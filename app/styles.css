@@ -8820,8 +8820,14 @@ button.detail-session__leg:focus-visible {
   color: var(--text-dim);
   font-size: var(--fs-caption);
 }
-.continuation-dialog {
+/* ---------- 다이얼로그 기본 토큰 `.op-dialog` (UI-6g3t §5.3) ---------- */
+/* 이어하기의 두 다이얼로그는 폭·패딩·테두리·backdrop·제목 크기·버튼 줄을 이
+   토큰에서 받고, 각자 남기는 것은 본문뿐이다 — 지시 textarea와 튜플 문장.
+   버튼은 §3의 `.op-btn`이고 확인 버튼만 `--primary`다. 한 속성을 두 자리에서
+   정하지 않도록, 두 다이얼로그의 규칙에는 토큰이 정한 선언을 남기지 않는다. */
+.op-dialog {
   width: min(32rem, calc(100vw - 2rem));
+  padding: var(--sp-16);
   border: 1px solid var(--border-card);
   border-radius: var(--r-10);
   background: var(--bg-panel);
@@ -8829,13 +8835,20 @@ button.detail-session__leg:focus-visible {
   box-shadow: 0 24px 70px rgb(0 0 0 / 35%);
 }
 
-.continuation-dialog::backdrop {
+.op-dialog::backdrop {
   background: rgb(0 0 0 / 48%);
 }
 
-.continuation-dialog h2 {
+.op-dialog h2 {
   margin: 0 0 0.65rem;
   font-size: 1rem;
+}
+
+.op-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  margin-top: var(--sp-12);
 }
 
 .continuation-dialog p {
@@ -8843,26 +8856,12 @@ button.detail-session__leg:focus-visible {
   color: var(--text-muted);
 }
 
-.continuation-dialog button {
-  margin: 0.25rem 0.35rem 0 0;
-}
-
-.resume-instructions-dialog {
-  width: min(32rem, calc(100vw - 2rem));
-  border: 1px solid var(--border-card);
-  border-radius: var(--r-10);
-  background: var(--bg-panel);
-  color: var(--text-primary);
-  box-shadow: 0 24px 70px rgb(0 0 0 / 35%);
-}
-
-.resume-instructions-dialog::backdrop {
-  background: rgb(0 0 0 / 48%);
-}
-
-.resume-instructions-dialog h2 {
+/* 무엇을 이어가는지 말하는 한 줄 (§5.2). 재료가 없으면 줄 자체를 그리지 않으므로
+   빈 자리를 위한 규칙은 없다. */
+.resume-instructions-dialog__target {
   margin: 0 0 0.65rem;
-  font-size: 1rem;
+  color: var(--text-muted);
+  font-size: var(--fs-small);
 }
 
 .resume-instructions-dialog textarea {
@@ -8870,14 +8869,6 @@ button.detail-session__leg:focus-visible {
   width: 100%;
   min-height: 8rem;
   resize: vertical;
-}
-
-.resume-instructions-dialog__actions {
-  margin-top: 0.75rem;
-}
-
-.resume-instructions-dialog button {
-  margin: 0.25rem 0.35rem 0 0;
 }
 
 /* ============================================================================

@@ -1315,6 +1315,100 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('re-reads the queue revision for each resume send and never retries twice', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const attempt = {
+      attempt_id: 'kid',
+      bead_id: 'UI-1',
+      status: 'failed',
+      session_id: 'sid-kid',
+      started_at: 3000
+    };
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: { kid: attempt }
+      })
+    );
+    const transport = vi.fn().mockResolvedValue({
+      resumed: false,
+      conflict: true,
+      queue: {
+        revision: 7,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: { kid: attempt }
+      }
+    });
+    const panel = createDetailPanel(mount, {
+      queueStore,
+      transport,
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+    transport.mockClear();
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.detail-session__resume[data-attempt-id="kid"]')
+    ).click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
+
+    expect(
+      transport.mock.calls.map(([, payload]) => payload.expected_revision)
+    ).toEqual([1, 7]);
+    panel.destroy();
+  });
+
+  test('session-history asks about a session resume, never a settlement one', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: {
+          kid: {
+            attempt_id: 'kid',
+            bead_id: 'UI-1',
+            status: 'failed',
+            session_id: 'sid-kid',
+            started_at: 3000,
+            runner: 'codex',
+            model: 'sol'
+          }
+        }
+      })
+    );
+    const panel = createDetailPanel(mount, {
+      queueStore,
+      transport: vi.fn(),
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.detail-session__resume[data-attempt-id="kid"]')
+    ).click();
+
+    expect(
+      document.querySelector('.resume-instructions-dialog h2')?.textContent
+    ).toBe('세션 이어하기');
+    expect(
+      document.querySelector('.resume-instructions-dialog__target')?.textContent
+    ).toBe('UI-1 · codex · sol');
+    panel.destroy();
+  });
+
   test('session-history preserves instructions through initial, conflict, and continuation sends', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();

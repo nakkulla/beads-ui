@@ -1125,6 +1125,78 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     });
   });
 
+  test('re-reads the revision for each resume send and never retries twice', async () => {
+    const attempt = {
+      attempt_id: 't1',
+      bead_id: 'A-1',
+      status: 'failed',
+      cause: 'verify_failed:x',
+      started_at: NOW - 100,
+      session_id: 's'
+    };
+    const { mount, view, sent } = setup({
+      workspaces: [workspace({ attempts: { t1: attempt } })],
+      workspaces_state: [state()],
+      transport: async () => ({
+        resumed: false,
+        conflict: true,
+        queue: workspace({ revision: 9, attempts: { t1: attempt } })
+      })
+    });
+
+    view.load();
+    click(mount, '.rtile__resume');
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await vi.waitFor(() =>
+      expect(
+        sent.filter((call) => call.type === 'worker-attempt-resume')
+      ).toHaveLength(2)
+    );
+    await flushMicrotasks();
+
+    expect(
+      sent
+        .filter((call) => call.type === 'worker-attempt-resume')
+        .map((call) => call.payload.expected_revision)
+    ).toEqual([1, 9]);
+  });
+
+  test('raises the refusal toast the tab used to swallow', async () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              cause: 'verify_failed:x',
+              started_at: NOW - 100,
+              session_id: 's'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()],
+      transport: async () => ({ resumed: false, reason: 'no_session_id' })
+    });
+
+    view.load();
+    click(mount, '.rtile__resume');
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await vi.waitFor(() =>
+      expect(document.querySelector('.toast')).not.toBeNull()
+    );
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '이어하기 거부: no_session_id'
+    );
+  });
+
   test('sends the bulk merge once per repo holding a PR', async () => {
     const { mount, view, sent } = setup({
       workspaces: [

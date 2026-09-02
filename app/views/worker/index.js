@@ -42,10 +42,11 @@ import {
 } from '../../data/closed-range.js';
 import { createListSelectors } from '../../data/list-selectors.js';
 import { isImplementationAttempt } from '../../utils/active-attempts.js';
+import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
-import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
+import { runResumeFlow } from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
@@ -2044,13 +2045,14 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Resume (↻ / paused tile ▶) an attempt (spec §1), under the
-   * queue mutations' CAS discipline: send the current revision, adopt the
-   * authoritative queue a conflict reply carries, and retry ONCE against the
-   * fresh revision. A refusal surfaces its admission-badge reason as a toast.
+   * Resume (↻ / paused tile ▶) an attempt (spec §1). The flow itself — 지시
+   * 다이얼로그, 충돌 1회 재시도, provider 경계, 거부 토스트 — 는
+   * `runResumeFlow`가 소유하고(UI-6g3t §5.1), 이 화면이 넘기는 것은 대상 문맥과
+   * 재시도 없는 전송 하나뿐이다. `expected_revision`을 전송마다 새로 읽으므로
+   * `adopt`가 채택한 큐가 곧 다음 전송의 revision이다.
    *
-   * `resume_kind`는 실패 타일이 누른 버튼의 종류이며(UI-8h1x §3.3c), 거부 토스트
-   * 문구가 그 버튼 라벨을 따르게 하는 데에만 쓰인다.
+   * `resume_kind`는 실패 타일이 누른 버튼의 종류이며(UI-8h1x §3.3c), 다이얼로그
+   * 제목·확인 문구와 거부 토스트 문구가 그 버튼 라벨을 따르게 한다.
    *
    * @param {string} attempt_id
    * @param {'settlement'|'session'} [resume_kind]
@@ -2059,39 +2061,24 @@ export function createWorkerView(mount_element, options = {}) {
     if (!transport || !attempt_id) {
       return;
     }
-    const instructions = await requestResumeInstructions();
-    if (instructions === null) {
-      return;
-    }
-    /** @param {Record<string, unknown>} extra */
-    const send = async (extra = {}) =>
-      /** @type {any} */ (
-        await transport('worker-attempt-resume', {
-          attempt_id,
-          expected_revision: currentRevision(),
-          ...(instructions !== '' ? { instructions } : {}),
-          ...extra
-        })
-      );
-    let res = await send();
-    adopt(res);
-    if (res && res.conflict) {
-      res = await send();
-      adopt(res);
-    }
-    res = await resolveContinuationMismatch(
-      res,
-      (continuation, decision_token) => send({ continuation, decision_token }),
-      {
-        onResult: adopt,
-        refresh: () => send()
-      }
-    );
-    if (res && res.resumed === false && !res.conflict && res.reason) {
-      const refusal_label =
-        resume_kind === 'settlement' ? '정산 재개' : '이어하기';
-      showToast(`${refusal_label} 거부: ${res.reason}`, 'error', 2400);
-    }
+    const send = transport;
+    const attempt = currentQueue().attempts?.[attempt_id] || null;
+    await runResumeFlow({
+      context: {
+        bead_id: attempt?.bead_id || '',
+        kind: resume_kind,
+        tuple: attempt ? formatAttemptTuple(attempt) : ''
+      },
+      transport: (payload) =>
+        /** @type {any} */ (
+          send('worker-attempt-resume', {
+            attempt_id,
+            expected_revision: currentRevision(),
+            ...payload
+          })
+        ),
+      adopt
+    });
   }
 
   /**

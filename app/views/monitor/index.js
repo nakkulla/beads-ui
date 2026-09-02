@@ -24,10 +24,11 @@ import {
   closedRangeSince,
   normalizeDoneRange
 } from '../../data/closed-range.js';
+import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { debug } from '../../utils/logging.js';
-import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
+import { runResumeFlow } from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { watchMobile } from '../../utils/viewport.js';
@@ -2445,19 +2446,30 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('rtile__resume')) {
-      void requestResumeInstructions().then((instructions) => {
-        if (instructions === null) {
-          return;
-        }
-        return sendContinuationAction(
-          'worker-attempt-resume',
-          {
-            attempt_id,
-            ...(instructions !== '' ? { instructions } : {})
-          },
-          root_dir,
-          revision
-        );
+      // 이어하기 흐름은 `runResumeFlow`가 소유한다 (UI-6g3t §5.1) — 이 탭은 대상
+      // 문맥과 전송 하나만 넘기고, 그 대가로 여기에만 없던 거부 토스트를 얻는다.
+      // `sendCas`의 재시도를 끄는 이유는 유틸이 이미 충돌 1회 재시도의 소유자라,
+      // 켜 두면 한 충돌에 두 소유자가 각자 다시 보내기 때문이다. revision은 호출
+      // 시점에 채택된 큐에서 새로 읽는다.
+      void runResumeFlow({
+        context: {
+          bead_id,
+          kind:
+            button.dataset.resumeKind === 'settlement'
+              ? 'settlement'
+              : 'session',
+          tuple: item ? formatAttemptTuple(item) : ''
+        },
+        transport: (payload) =>
+          sendCas(
+            'worker-attempt-resume',
+            { attempt_id, ...payload },
+            root_dir,
+            exec_adopted.get(root_dir)?.revision ?? casOf(bead_id).revision,
+            false
+          )
+        // `adopt`는 넘기지 않는다 — `sendCas`가 응답의 큐를 `exec_adopted`에
+        // 이미 채택하고, 위 revision 읽기가 그 값을 본다.
       });
       return;
     }
