@@ -8,6 +8,8 @@ scope:
   - server/config.js
 ---
 
+정정(2026-09-03, UI-gjp2)
+
 # Worker 무인 방향성 충돌 파킹 직후 tmux 방향 질의 `claude` 세션 자동 기동 (UI-7uid)
 
 - Bead: `UI-7uid` · 선행: `dotfiles-0bdo`(착지, PR #457), `UI-5ym8`(진행 중 — §3.1)

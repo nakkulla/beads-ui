@@ -20,6 +20,8 @@ scope:
   - app/utils/failure-sentences.js
 ---
 
+정정(2026-09-03, UI-gjp2)
+
 # Worker 실패 2계층·큐 보류/정지·세션 파킹 결말 설계
 
 Bead: UI-5ym8 · route: spec_backed · 2026-08-28 · rev 2 (spec review REVISE 9건 반영)

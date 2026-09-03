@@ -57,7 +57,6 @@ import {
   resumeWorkerAttempt,
   resumeWorkerQueueHold,
   retryWorkerCleanup,
-  retryWorkerParkedAttempt,
   retryWorkerQueueHoldNow,
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
@@ -4390,54 +4389,6 @@ export async function handleWorkerQueueHoldRetryNow(ws, req) {
 }
 
 /**
- * Handle `worker-parked-retry`. Payload: `{ bead_id, attempt_id }`.
- *
- * The `재시도` button on a `parked` tile (spec §3.1). Refused with `not_latest`
- * when the named attempt is no longer the bead's last implementation attempt:
- * the tile the user clicked has to still be the bead's current state.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export async function handleWorkerParkedRetry(ws, req) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (
-    typeof p.bead_id !== 'string' ||
-    p.bead_id.length === 0 ||
-    typeof p.attempt_id !== 'string' ||
-    p.attempt_id.length === 0
-  ) {
-    ws.send(
-      JSON.stringify(
-        makeError(
-          req,
-          'bad_request',
-          'payload requires { bead_id, attempt_id }'
-        )
-      )
-    );
-    return;
-  }
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
-  }
-  /** @type {{ ok: boolean, reason?: string }} */
-  let result;
-  try {
-    result = await retryWorkerParkedAttempt(key, {
-      bead_id: p.bead_id,
-      attempt_id: p.attempt_id
-    });
-  } catch (err) {
-    log('parked retry failed for %s: %o', key, err);
-    result = { ok: false, reason: 'parked_retry_failed' };
-  }
-  recordUserAction(key, p.bead_id, 'parked_retry', '[재시도] 클릭 · 파킹 해제');
-  replyQueueHold(ws, req, key, result);
-}
-
-/**
  * The shared reply of the three queue-hold clicks: the decorated queue rides
  * the reply so the clicking client re-renders off a readback, and the fanout
  * gives every OTHER subscriber the same one.
@@ -5854,12 +5805,33 @@ export async function handleWorkerResolveInSession(ws, req) {
   /** @type {any} */
   let result;
   try {
-    result = await getWorkerRuntime().resolveSession.resolve({
-      workspace: key,
-      repo: key,
-      bead_id: p.bead_id,
-      failure
-    });
+    if (failure.failure_class === '파킹') {
+      /** @type {any} */
+      let attempt = null;
+      for (const value of Object.values(current.attempts || {})) {
+        const record = /** @type {any} */ (value);
+        if (record.bead_id === p.bead_id && isImplementationAttempt(record)) {
+          attempt = record;
+        }
+      }
+      result = await getWorkerRuntime().directionInquiry.launchForClick({
+        workspace: key,
+        bead_id: p.bead_id,
+        attempt_id: attempt?.attempt_id ?? '',
+        repo:
+          typeof attempt?.repo === 'string' && attempt.repo.length > 0
+            ? attempt.repo
+            : key,
+        awaiting_user: attempt?.cause_detail?.awaiting_user ?? null
+      });
+    } else {
+      result = await getWorkerRuntime().resolveSession.resolve({
+        workspace: key,
+        repo: key,
+        bead_id: p.bead_id,
+        failure
+      });
+    }
   } catch (err) {
     log('resolve-in-session failed for %s/%s: %o', key, p.bead_id, err);
     result = {
@@ -5891,6 +5863,9 @@ export async function handleWorkerResolveInSession(ws, req) {
         fallback_reason: result.fallback_reason || null,
         command: result.command || null,
         bridge_active: result.bridge_active === true,
+        session_id: result.session_id || null,
+        tmux_session: result.tmux_session || null,
+        tmux_window: result.tmux_window || null,
         failure_class: failure.failure_class,
         queue: decorateQueue(key, latest)
       })

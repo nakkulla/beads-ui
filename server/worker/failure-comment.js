@@ -92,7 +92,7 @@ export function attemptFailureComment(input) {
     logRow(input?.log_path),
     `- 다음: ${
       parked
-        ? '파킹 타일의 [재시도]가 새 attempt를 띄웁니다 · [폐기]'
+        ? '파킹 타일의 [세션에서 해결] · [폐기]'
         : '실패 타일의 [이어하기] · [폐기]'
     }`
   ].join('\n');

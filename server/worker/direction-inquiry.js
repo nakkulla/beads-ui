@@ -1,17 +1,19 @@
 /**
- * Direction-inquiry session trigger (UI-7uid).
+ * Parked-attempt inquiry session trigger (UI-gjp2).
  *
- * The Worker's unattended stale re-review lane parks a Bead it cannot decide by
- * itself. When the reason is a DIRECTION conflict — the artifact's premise is
- * broken, not merely out of date — the contract's disposition is to ask the
- * user, and until now nothing asked: the park sat in the queue until a human
- * happened to open the Worker tab.
+ * Every string-valued `awaiting_user` park reaches this module and selects one
+ * of three dispositions: stale artifact review, implementation/design
+ * conflict, or a generic unknown value. `onParkedAttempt` is the automatic
+ * trigger and obeys `worker_direction_inquiry.enabled`; `launchForClick` is the
+ * user's explicit `[세션에서 해결]` action and deliberately ignores that
+ * automatic-launch gate. Both start an INTERACTIVE `claude` session in tmux so
+ * `AskUserQuestion` reaches the user through `claude-discord-bridge`, with at
+ * most one live inquiry pane per Bead.
  *
- * This module is the trigger. Right after the scheduler writes the `parked`
- * record it starts an INTERACTIVE `claude` session in tmux, seeded with the
- * prompt dotfiles owns, so the session's `AskUserQuestion` reaches the user
- * through the existing `claude-discord-bridge`. At most one live session per
- * Bead, and the park is notified either way.
+ * `STALE_INQUIRY_PROMPT`, `IMPL_CONFLICT_INQUIRY_PROMPT`, and
+ * `GENERIC_INQUIRY_PROMPT` are byte-for-byte copies of the three canonical
+ * dotfiles prompt blocks. Unit tests pin all three SHA-256 digests because this
+ * runtime must not read the sibling repository's contract file.
  *
  * Three properties are load-bearing:
  *
@@ -26,13 +28,12 @@
  *     inquiry session cannot exist and pane liveness stays a sound duplicate
  *     guard across a server restart (spec §3.3).
  *
- * The prompt is a byte-for-byte COPY of the dotfiles block (ADR 0012: a
- * contract file is never read at runtime); the unit test asserts its digest,
- * and a change on the dotfiles side makes updating this constant a sibling task
- * of that change.
  */
+import os from 'node:os';
+import path from 'node:path';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
+import { qualifySessionFork, resolveSessionFile } from './session-ref.js';
 // The tmux launch primitives moved out to be shared with the `[세션에서 해결]`
 // click (UI-jw27 §4). Nothing about this lane's behaviour moved with them: the
 // marker option, the prompt, and the launch reason all stay this module's.
@@ -45,17 +46,13 @@ import {
 
 const default_log = debug('worker:direction-inquiry');
 
-/**
- * The two `awaiting_user` values this lane covers (spec §2). Every other park
- * reason — `impl_review_conflict:design` above all — is out of scope and gets
- * neither a session nor a notification.
- *
- * @type {Set<string>}
- */
-const DIRECTION_PARK_REASONS = new Set([
+/** Stale inquiries publish an artifact and leave implementation to Worker. */
+const STALE_REASONS = new Set([
   'spec_review_stale:revise',
   'plan_approval_stale:revise'
 ]);
+const IMPL_CONFLICT_REASON = 'impl_review_conflict:design';
+const FORK_RUNNER = 'claude';
 
 /** The pane option that names the Bead an inquiry session belongs to. */
 const PANE_MARKER = INQUIRY_PANE_MARKER;
@@ -66,15 +63,27 @@ const STALE_KIND_RE = /stale_kind=(adr_conflict|intent_conflict)/;
 /** The last direction-conflict re-review line, whose tail is the reason. */
 const REREVIEW_RE = /^\s*rereview:\s*direction_conflict\s*—\s*(.+)$/;
 
+/** The last implementation-conflict park line and its two required facts. */
+const PARK_RE =
+  /^park: impl_review_conflict:design — 대상: (.+?) — finding: (.+)$/;
+
 /** The five slots this module fills; every other `<…>` belongs to the session. */
 const SLOT_BEAD = '<bead-id>';
-const SLOT_RECEIPT = '<spec_review=… | plan_approval=…>';
+const SLOT_STALE_RECEIPT = '<spec_review=… | plan_approval=…>';
 const SLOT_STALE_KIND = '<adr_conflict | intent_conflict>';
-const SLOT_SUMMARY = '<ADR 번호, 또는 겹치는 Bead ID·spec 경로>';
+const SLOT_STALE_SUMMARY = '<ADR 번호, 또는 겹치는 Bead ID·spec 경로>';
 const SLOT_CHECKOUT = '<path>';
+const SLOT_IMPL_RECEIPT = 'spec_review=<…>';
+const SLOT_IMPL_TARGET = '<ADR <번호> | 스펙 `결정:` 줄 원문>';
+const SLOT_IMPL_FINDING =
+  '<리뷰어 출력 한 줄 — severity | location | what is wrong | fix>';
+const SLOT_SESSION = '<fork 대상 세션 id 또는 없음>';
+const SLOT_GENERIC_VALUE = '<값>';
+const SLOT_GENERIC_RECEIPT = '<spec_review=… | plan_approval=… | 없음>';
 
 /** What a field with nothing behind it prints, rather than an empty slot. */
 const ABSENT = '(없음)';
+const PLAIN_ABSENT = '없음';
 
 /**
  * The first input of a direction inquiry session, quoted verbatim from dotfiles
@@ -85,7 +94,7 @@ const ABSENT = '(없음)';
  *
  * @type {string}
  */
-export const DIRECTION_INQUIRY_PROMPT =
+export const STALE_INQUIRY_PROMPT =
   [
     'Bead <bead-id>의 stale 재리뷰가 방향성 충돌로 파킹됐습니다. 사용자에게 방향을 물어 처분하세요.',
     '- 원 영수증: <spec_review=… | plan_approval=…>',
@@ -108,23 +117,63 @@ export const DIRECTION_INQUIRY_PROMPT =
   ].join('\n') + '\n';
 
 /**
- * @typedef {{ session: 'launched', tmux_session: string, tmux_window: string }
- *   | { session: 'already_running' }
- *   | { session: 'not_launched', reason: string }} InquiryOutcome
+ * Implementation-conflict prompt copied byte-for-byte from dotfiles §3.2.
+ *
+ * @type {string}
  */
+export const IMPL_CONFLICT_INQUIRY_PROMPT =
+  [
+    'Bead <bead-id>의 구현 게이트가 설계 갈래로 파킹됐습니다. 사용자에게 방향을 물어 처분하고 구현을 마무리하세요.',
+    '- 원 영수증: spec_review=<…>',
+    '- 충돌 대상: <ADR <번호> | 스펙 `결정:` 줄 원문>',
+    '- finding: <리뷰어 출력 한 줄 — severity | location | what is wrong | fix>',
+    '- 구현 워크트리: <path>',
+    '- 기록 세션: <fork 대상 세션 id 또는 없음>',
+    '',
+    '절차',
+    '1. `bd show <bead-id> --json`과 notes의 `park:` 줄, 구현 게이트 라운드 댓글(`## 🔎 리뷰 결과 · impl · r<n>`)을 읽고 충돌을 한 문단으로 요약한다. 구현 워크트리의 후보 커밋은 그대로 이어받는다.',
+    '2. `AskUserQuestion`을 1회 부른다. 선택지는 고정 2개 + 자유 입력이다.',
+    '   - "충돌 대상에 맞춰 finding 처분(구현 수정)": 처분·일괄 수정·controller exact-delta self-review 뒤, 한 `bd update`로 `impl_review=self@<head>` + notes 계보(질문 요약·사용자 답 원문·수정 SHA) + `awaiting_user` 해제를 쓰고 readback한다. 이 self-review가 구현 게이트 lineage의 종결이다.',
+    '   - "구현 방향 유지 — 스펙 수정(ADR이면 `결정 (ADR 후보)` 절에 supersede 후보 추가, `결정:` 줄이면 그 줄 정정)": target_base 체크아웃에서 스펙을 고치고 full-artifact self-review를 거쳐 `land-reviewed-artifact.py`로 발행한 뒤, 한 `bd update`로 `spec_review=self@<contained_sha>` + notes 계보 + `awaiting_user` 해제를 쓰고 readback한다. 이어서 새 스펙에 대한 controller full-artifact 구현 self-review로 `impl_review=self@<head>`를 쓴다. ADR supersede 자체는 Finish의 `adr` 스킬이 처리한다.',
+    '   - 답이 중단·폐기류이면 아무것도 쓰지 않고 답 원문만 notes에 남긴 채 끝낸다. `awaiting_user`는 유지하고 close는 사람이 한다.',
+    '3. 해제 뒤 같은 세션이 finish까지 간다: 검증 bundle, PR, 완료 보고서(`스펙 이탈:` 줄 포함), `resolved`. 외부 리뷰어는 다시 dispatch하지 않는다 — 파킹을 만든 외부 리뷰 1회가 lineage의 cap이다.',
+    '',
+    '금지: 외부 리뷰어 재디스패치 · `awaiting_user` 단독 해제 · Bead 상태 직접 변경 · 새 워크트리 생성(기존 워크트리를 잇는다).'
+  ].join('\n') + '\n';
 
 /**
- * Whether a park reason is one this trigger acts on.
+ * Generic unknown-value prompt copied byte-for-byte from dotfiles §3.2.
  *
- * @param {unknown} awaiting_user
- * @returns {boolean}
+ * @type {string}
  */
-export function isDirectionParkReason(awaiting_user) {
-  return (
-    typeof awaiting_user === 'string' &&
-    DIRECTION_PARK_REASONS.has(awaiting_user)
-  );
-}
+export const GENERIC_INQUIRY_PROMPT =
+  [
+    'Bead <bead-id>가 awaiting_user=<값>으로 파킹됐습니다. 이 값은 계약 어휘에 없습니다. 사용자에게 처분을 물어 기록하세요.',
+    '- 원 영수증: <spec_review=… | plan_approval=… | 없음>',
+    '- 기록 세션: <fork 대상 세션 id 또는 없음>',
+    '- target_base 체크아웃: <path>',
+    '',
+    '절차',
+    '1. `bd show <bead-id> --json`의 metadata·notes·최근 댓글을 읽고 무엇이 파킹을 썼는지 한 문단으로 요약한다.',
+    '2. `AskUserQuestion`을 1회 부른다. 선택지는 "이 세션에서 계속 처리 — 처분 지시를 자유 입력으로" / "파킹 유지 — 사람이 직접 본다" + 자유 입력이다.',
+    '3. 답 원문을 notes에 `park-inquiry: <값> — 사용자 답: <원문>` 줄로 남긴다. 계속 처리 지시가 있으면 그 지시대로 진행하되 `awaiting_user`는 지시가 명시한 write에서만 함께 해제한다.',
+    '',
+    '금지: `awaiting_user` 단독 해제 · Bead 상태 직접 변경 · 외부 리뷰어 dispatch.'
+  ].join('\n') + '\n';
+
+/**
+ * @typedef {Object} InquiryOutcome
+ * @property {boolean} launched
+ * @property {'launched'|'already_running'|'not_launched'} session
+ * @property {string|null} reason
+ * @property {'fork'|'fresh'} mode
+ * @property {string|null} fallback_reason
+ * @property {string|null} session_id
+ * @property {string|null} command
+ * @property {boolean} bridge_active
+ * @property {string|null} tmux_session
+ * @property {string|null} tmux_window
+ */
 
 /**
  * The receipt key a park value belongs to — the prompt names the ORIGINAL
@@ -167,6 +216,28 @@ export function parseStaleNotes(notes) {
   return out;
 }
 
+/**
+ * Parse the last implementation-conflict park facts from notes.
+ *
+ * @param {unknown} notes
+ * @returns {{ target: string|null, finding: string|null }}
+ */
+export function parseParkNotes(notes) {
+  /** @type {{ target: string|null, finding: string|null }} */
+  const out = { target: null, finding: null };
+  if (typeof notes !== 'string' || notes.length === 0) {
+    return out;
+  }
+  for (const line of notes.split('\n')) {
+    const match = PARK_RE.exec(line);
+    if (match) {
+      out.target = match[1].trim();
+      out.finding = match[2].trim();
+    }
+  }
+  return out;
+}
+
 // Re-exported rather than re-implemented: the wrapper's quoting is now the
 // shared launcher's, and this module's own tests still assert it here because
 // this is the surface UI-7uid pinned.
@@ -192,42 +263,88 @@ export function inquiryWrapper(input) {
 }
 
 /**
- * Every slot in one alternation, so filling is a SINGLE pass over the template.
- * A chain of `replace` calls would let an already-inserted value be scanned
- * again by a later slot — a conflict summary quoting `<path>` would swallow the
- * checkout substitution and leave the real slot empty.
+ * Replace prompt slots in one pass so inserted values are not rescanned.
  *
- * @type {RegExp}
+ * @param {string} prompt
+ * @param {Map<string, string>} values
  */
-const SLOT_PATTERN = new RegExp(
-  [SLOT_BEAD, SLOT_RECEIPT, SLOT_STALE_KIND, SLOT_SUMMARY, SLOT_CHECKOUT]
-    .map((slot) => slot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('|'),
-  'g'
-);
+function fillPrompt(prompt, values) {
+  const pattern = new RegExp(
+    [...values.keys()]
+      .map((slot) => slot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('|'),
+    'g'
+  );
+  return prompt.replace(pattern, (slot) => values.get(slot) ?? slot);
+}
 
 /**
- * Fill the five per-Bead slots of the quoted prompt. The Bead id is replaced
- * everywhere (the procedure names it a second time); the other four occur once.
- * One pass, and the replacement goes through a function, so neither an inserted
- * value nor a `$` inside one can be read as a pattern.
+ * Fill the stale prompt's server-owned slots.
  *
  * @param {{ bead_id: string, receipt_key: string, receipt: string|null, stale_kind: string, summary: string|null, checkout: string }} input
- * @returns {string}
  */
-export function fillInquiryPrompt(input) {
-  /** @type {Map<string, string>} */
-  const values = new Map([
-    [SLOT_BEAD, input.bead_id],
-    [SLOT_RECEIPT, `${input.receipt_key}=${input.receipt ?? ABSENT}`],
-    [SLOT_STALE_KIND, input.stale_kind],
-    [SLOT_SUMMARY, input.summary ?? ABSENT],
-    [SLOT_CHECKOUT, input.checkout]
-  ]);
-  return DIRECTION_INQUIRY_PROMPT.replace(
-    SLOT_PATTERN,
-    (slot) => values.get(slot) ?? slot
+export function fillStalePrompt(input) {
+  return fillPrompt(
+    STALE_INQUIRY_PROMPT,
+    new Map([
+      [SLOT_BEAD, input.bead_id],
+      [SLOT_STALE_RECEIPT, `${input.receipt_key}=${input.receipt ?? ABSENT}`],
+      [SLOT_STALE_KIND, input.stale_kind],
+      [SLOT_STALE_SUMMARY, input.summary ?? ABSENT],
+      [SLOT_CHECKOUT, input.checkout]
+    ])
   );
+}
+
+/**
+ * Fill the implementation-conflict prompt's server-owned slots.
+ *
+ * @param {{ bead_id: string, receipt: string|null, target: string, finding: string, checkout: string, session_id: string|null }} input
+ */
+export function fillImplConflictPrompt(input) {
+  return fillPrompt(
+    IMPL_CONFLICT_INQUIRY_PROMPT,
+    new Map([
+      [SLOT_BEAD, input.bead_id],
+      [SLOT_IMPL_RECEIPT, `spec_review=${input.receipt ?? PLAIN_ABSENT}`],
+      [SLOT_IMPL_TARGET, input.target],
+      [SLOT_IMPL_FINDING, input.finding],
+      [SLOT_CHECKOUT, input.checkout],
+      [SLOT_SESSION, input.session_id ?? PLAIN_ABSENT]
+    ])
+  );
+}
+
+/**
+ * Fill the generic prompt's server-owned slots.
+ *
+ * @param {{ bead_id: string, awaiting_user: string, receipt: string, checkout: string, session_id: string|null }} input
+ */
+export function fillGenericPrompt(input) {
+  return fillPrompt(
+    GENERIC_INQUIRY_PROMPT,
+    new Map([
+      [SLOT_BEAD, input.bead_id],
+      [SLOT_GENERIC_VALUE, input.awaiting_user],
+      [SLOT_GENERIC_RECEIPT, input.receipt],
+      [SLOT_SESSION, input.session_id ?? PLAIN_ABSENT],
+      [SLOT_CHECKOUT, input.checkout]
+    ])
+  );
+}
+
+/**
+ * Add a fork fallback fact after the copied prompt's first line.
+ *
+ * @param {string} prompt
+ * @param {string|null} fallback_reason
+ */
+function withFallbackReason(prompt, fallback_reason) {
+  if (fallback_reason === null) {
+    return prompt;
+  }
+  const newline = prompt.indexOf('\n');
+  return `${prompt.slice(0, newline + 1)}- 기록 세션 fork 실패: ${fallback_reason}\n${prompt.slice(newline + 1)}`;
 }
 
 /**
@@ -241,22 +358,17 @@ export function fillInquiryPrompt(input) {
  * @property {() => number} [now]
  * @property {(...args: any[]) => void} [log]
  * @property {string} [heartbeatPath]
+ * @property {{ home_dir?: string, hostname?: string, fs?: any, now?: () => number }} [sessionRefOptions]
+ * @property {(workspace: string, attempt_id: string) => any|Promise<any>} [readAttempt] - Injected queue-store lookup; omission reads as unavailable rather than importing the runtime back through a cycle.
  */
 
 /**
- * Build the direction-inquiry trigger.
+ * Build the parked-attempt inquiry launcher.
  *
  * @param {DirectionInquiryDeps} deps
- * @returns {{
- *   onParkedAttempt: (input: { workspace: string, bead_id: string, attempt_id: string, repo: string|null, target_base: string|null, awaiting_user: string|null }) => Promise<void>,
- *   probeTmux: () => Promise<void>
- * }}
  */
 export function createDirectionInquiry(deps) {
   const log = deps.log || default_log;
-  // Every tmux fact this lane needs comes from the shared launcher (UI-jw27
-  // §4); the injected deps pass through unchanged so this module's own tests
-  // still drive the same seams.
   const launcher = createTmuxLauncher({
     ...(deps.runTmux ? { runTmux: deps.runTmux } : {}),
     ...(deps.resolveClaude ? { resolveClaude: deps.resolveClaude } : {}),
@@ -265,38 +377,27 @@ export function createDirectionInquiry(deps) {
     ...(deps.heartbeatPath ? { heartbeatPath: deps.heartbeatPath } : {}),
     log
   });
-
-  /**
-   * Beads whose trigger is mid-flight. Reserved before the first `await` so two
-   * calls landing in the same tick cannot both pass a check neither had
-   * recorded itself in — the same shape `revise-disposition.js` uses.
-   *
-   * @type {Set<string>}
-   */
+  // Reserve a bead synchronously before either public entry reaches its first
+  // `await`. Otherwise two calls in one tick both observe no owner and launch
+  // duplicate panes before either can publish its marker.
+  /** @type {Set<string>} */
   const in_flight = new Set();
 
-  /**
-   * The `[worker.direction_inquiry]` view. A config read that throws counts as
-   * off: a broken config must not launch anything, and must not throw into the
-   * queue transition either.
-   *
-   * @returns {{ enabled: boolean, tmux_session: string }}
-   */
+  /** Read automatic enablement and the shared tmux session name. */
   function readInquiryConfig() {
     /** @type {any} */
     let section;
     try {
       section = deps.getConfig()?.worker_direction_inquiry;
     } catch (err) {
+      // Broken config cannot prove automatic launch was authorized. Read it as
+      // disabled while retaining the default socket name for click responses.
       log('config read failed: %o', err);
       return { enabled: false, tmux_session: DEFAULT_INQUIRY_TMUX_SESSION };
     }
-    if (!section || section.enabled !== true) {
-      return { enabled: false, tmux_session: DEFAULT_INQUIRY_TMUX_SESSION };
-    }
-    const name = section.tmux_session;
+    const name = section?.tmux_session;
     return {
-      enabled: true,
+      enabled: section?.enabled === true,
       tmux_session:
         typeof name === 'string' && name.length > 0
           ? name
@@ -305,70 +406,127 @@ export function createDirectionInquiry(deps) {
   }
 
   /**
-   * Whether an inquiry session is already alive for this Bead, and every fact
-   * `launch` needs about the tmux server. Named here so the outcome vocabulary
-   * (`tmux_unavailable`, `launch_failed:*`) stays this lane's contract.
+   * Read an attempt through the injected queue-store seam.
    *
-   * @returns {Promise<{ ok: true, rows: import('./tmux-launcher.js').PaneRow[] }|{ ok: false, error: string }>}
+   * @param {string} workspace
+   * @param {string} attempt_id
    */
-  function listPanes() {
-    return launcher.listPanes(PANE_MARKER);
-  }
-
-  /**
-   * Start the inquiry session, unless one is already alive for this Bead.
-   *
-   * @param {{ bead_id: string, tmux_session: string, prompt: string, cwd: string }} input
-   * @returns {Promise<InquiryOutcome>}
-   */
-  function launch(input) {
-    return launcher.launch({
-      marker: PANE_MARKER,
-      key: input.bead_id,
-      tmux_session: input.tmux_session,
-      window_name: input.bead_id,
-      cwd: input.cwd,
-      commandArgs: [input.prompt]
-    });
-  }
-
-  /**
-   * Whether the Discord bridge beat recently enough to relay the session's
-   * question. A stat that fails reads as inactive — the notification then tells
-   * the user to answer in tmux directly.
-   *
-   * @returns {boolean}
-   */
-  function bridgeActive() {
-    return launcher.bridgeActive();
-  }
-
-  /**
-   * Push the park outward. Guarded even though the notifier is no-throw by
-   * contract: an injected fake is not bound by it.
-   *
-   * @param {Record<string, unknown>} input
-   */
-  async function announce(input) {
+  async function readAttempt(workspace, attempt_id) {
     try {
-      await deps.notifier.awaitingUser({
-        ...input,
-        bridge_active: bridgeActive()
-      });
+      if (!deps.readAttempt) {
+        return null;
+      }
+      return await deps.readAttempt(workspace, attempt_id);
     } catch (err) {
-      log('awaiting_user notify failed: %o', err);
+      log('attempt read failed for %s: %o', attempt_id, err);
+      return null;
     }
   }
 
   /**
-   * Steps 2–6 of the trigger (spec §3.2), inside the per-Bead reservation.
+   * Choose the attempt transcript, then session_ref, then fresh mode.
+   *
+   * @param {any} issue
+   * @param {any} attempt
+   */
+  function forkTarget(issue, attempt) {
+    /** @type {string|null} */
+    let attempt_reason = null;
+    const options = deps.sessionRefOptions || {};
+    const hostname = options.hostname || os.hostname();
+    if (
+      attempt?.runner === FORK_RUNNER &&
+      typeof attempt.session_id === 'string' &&
+      attempt.session_id.length > 0
+    ) {
+      const located = resolveSessionFile(
+        {
+          index: 0,
+          provider: FORK_RUNNER,
+          session_id: attempt.session_id,
+          host: hostname
+        },
+        options
+      );
+      if (located.locality === 'local') {
+        return { session_id: attempt.session_id, fallback_reason: null };
+      }
+      attempt_reason = 'attempt_transcript_missing';
+    }
+    const metadata =
+      issue?.metadata && typeof issue.metadata === 'object'
+        ? issue.metadata
+        : {};
+    const qualified = qualifySessionFork(metadata, FORK_RUNNER, options);
+    if (qualified.ok) {
+      return { session_id: qualified.session_id, fallback_reason: null };
+    }
+    return {
+      session_id: null,
+      fallback_reason: attempt_reason ?? qualified.reason
+    };
+  }
+
+  /**
+   * Create a uniform not-launched response.
+   *
+   * @param {string} reason
+   * @returns {InquiryOutcome}
+   */
+  function refusal(reason) {
+    return {
+      launched: false,
+      session: 'not_launched',
+      reason,
+      mode: 'fresh',
+      fallback_reason: null,
+      session_id: null,
+      command: null,
+      bridge_active: launcher.bridgeActive(),
+      tmux_session: null,
+      tmux_window: null
+    };
+  }
+
+  /**
+   * Map the shared launcher result to the click response contract.
+   *
+   * @param {any} outcome
+   * @param {{ session_id: string|null, fallback_reason: string|null }} fork
+   * @param {{ tmux_session: string, bead_id: string }} place
+   * @returns {InquiryOutcome}
+   */
+  function inquiryOutcome(outcome, fork, place) {
+    return {
+      launched: outcome.session === 'launched',
+      session: outcome.session,
+      reason: outcome.session === 'not_launched' ? outcome.reason : null,
+      mode: fork.session_id === null ? 'fresh' : 'fork',
+      fallback_reason: fork.fallback_reason,
+      session_id: fork.session_id,
+      command:
+        fork.session_id === null
+          ? 'claude'
+          : `claude --resume ${shellQuote(fork.session_id)} --fork-session`,
+      bridge_active: launcher.bridgeActive(),
+      tmux_session:
+        outcome.session === 'not_launched' ? null : place.tmux_session,
+      tmux_window: outcome.session === 'not_launched' ? null : place.bead_id
+    };
+  }
+
+  /**
+   * Build and launch one parked-attempt inquiry.
    *
    * @param {any} input
-   * @param {string} bead_id
-   * @param {string} awaiting_user
+   * @param {boolean} automatic
+   * @returns {Promise<{ outcome: InquiryOutcome, branch: 'stale'|'impl_conflict'|'generic', stale_kind: string|null, title: string|null, repo: string }>}
    */
-  async function dispose(input, bead_id, awaiting_user) {
+  async function dispose(input, automatic) {
     const workspace = String(input.workspace ?? '');
+    const bead_id = String(input.bead_id ?? '');
+    const attempt_id = String(input.attempt_id ?? '');
+    const awaiting_user = String(input.awaiting_user ?? '');
     const repo =
       typeof input.repo === 'string' && input.repo.length > 0
         ? input.repo
@@ -380,71 +538,166 @@ export function createDirectionInquiry(deps) {
     } catch (err) {
       log('bd read failed for %s: %o', bead_id, err);
     }
+    const branch = STALE_REASONS.has(awaiting_user)
+      ? 'stale'
+      : awaiting_user === IMPL_CONFLICT_REASON
+        ? 'impl_conflict'
+        : 'generic';
     if (!issue || typeof issue !== 'object') {
-      await announce({
-        bead_id,
-        title: null,
-        awaiting_user,
+      return {
+        outcome: refusal('bd_unavailable'),
+        branch,
         stale_kind: null,
-        session: 'not_launched',
-        reason: 'bd_unavailable',
+        title: null,
         repo
-      });
-      return;
+      };
     }
     const title = typeof issue.title === 'string' ? issue.title : null;
     const metadata =
       issue.metadata && typeof issue.metadata === 'object'
         ? issue.metadata
         : {};
-    const { stale_kind, summary } = parseStaleNotes(issue.notes);
-    if (!stale_kind) {
-      // Without the kind the prompt's own fields cannot be filled, and a session
-      // that cannot state the conflict is worse than the click disposition.
-      await announce({
-        bead_id,
-        title,
-        awaiting_user,
+    const attempt = await readAttempt(workspace, attempt_id);
+    const attempt_repo =
+      typeof attempt?.repo === 'string' && attempt.repo.length > 0
+        ? attempt.repo
+        : null;
+    if (branch === 'impl_conflict' && (!attempt || attempt_repo === null)) {
+      return {
+        outcome: refusal('attempt_unavailable'),
+        branch,
         stale_kind: null,
-        session: 'not_launched',
-        reason: 'stale_kind_missing',
+        title,
         repo
-      });
-      return;
+      };
     }
+    // Stale/generic dispositions edit the target-base checkout. An
+    // implementation conflict must inherit the existing Bead worktree where
+    // the reviewed candidate commit and uncommitted state live.
+    const checkout =
+      branch === 'impl_conflict'
+        ? path.join(/** @type {string} */ (attempt_repo), '.worktrees', bead_id)
+        : (attempt_repo ?? repo);
     const config = readInquiryConfig();
-    /** @type {InquiryOutcome} */
-    let outcome;
-    if (!config.enabled) {
-      outcome = { session: 'not_launched', reason: 'disabled' };
-    } else {
+    /** @type {string|null} */
+    let stale_kind = null;
+    /** @type {string} */
+    let prompt;
+    const fork = forkTarget(issue, attempt);
+    if (branch === 'stale') {
+      const stale = parseStaleNotes(issue.notes);
+      stale_kind = stale.stale_kind;
+      if (stale_kind === null) {
+        return {
+          outcome: refusal('stale_kind_missing'),
+          branch,
+          stale_kind,
+          title,
+          repo
+        };
+      }
       const receipt_key = receiptKeyFor(awaiting_user);
       const receipt = metadata[receipt_key];
-      outcome = await launch({
+      prompt = fillStalePrompt({
         bead_id,
-        tmux_session: config.tmux_session,
-        cwd: repo,
-        prompt: fillInquiryPrompt({
-          bead_id,
-          receipt_key,
-          receipt: typeof receipt === 'string' ? receipt : null,
+        receipt_key,
+        receipt: typeof receipt === 'string' ? receipt : null,
+        stale_kind,
+        summary: stale.summary,
+        checkout
+      });
+    } else if (branch === 'impl_conflict') {
+      const parked = parseParkNotes(issue.notes);
+      if (parked.target === null || parked.finding === null) {
+        return {
+          outcome: refusal('park_facts_missing'),
+          branch,
           stale_kind,
-          summary,
-          checkout: repo
-        })
+          title,
+          repo
+        };
+      }
+      prompt = fillImplConflictPrompt({
+        bead_id,
+        receipt:
+          typeof metadata.spec_review === 'string'
+            ? metadata.spec_review
+            : null,
+        target: parked.target,
+        finding: parked.finding,
+        checkout,
+        session_id: fork.session_id
+      });
+    } else {
+      const receipt =
+        typeof metadata.spec_review === 'string'
+          ? `spec_review=${metadata.spec_review}`
+          : typeof metadata.plan_approval === 'string'
+            ? `plan_approval=${metadata.plan_approval}`
+            : PLAIN_ABSENT;
+      prompt = fillGenericPrompt({
+        bead_id,
+        awaiting_user,
+        receipt,
+        checkout,
+        session_id: fork.session_id
       });
     }
-    await announce({
-      bead_id,
-      title,
-      awaiting_user,
-      stale_kind,
-      repo,
-      ...outcome
+    if (automatic && !config.enabled) {
+      return {
+        outcome: refusal('disabled'),
+        branch,
+        stale_kind,
+        title,
+        repo
+      };
+    }
+    const seeded = withFallbackReason(prompt, fork.fallback_reason);
+    const command_args =
+      fork.session_id === null
+        ? [seeded]
+        : ['--resume', fork.session_id, '--fork-session', seeded];
+    const launched = await launcher.launch({
+      marker: PANE_MARKER,
+      key: bead_id,
+      tmux_session: config.tmux_session,
+      window_name: bead_id,
+      cwd: checkout,
+      commandArgs: command_args
     });
+    return {
+      outcome: inquiryOutcome(launched, fork, {
+        tmux_session: config.tmux_session,
+        bead_id
+      }),
+      branch,
+      stale_kind,
+      title,
+      repo
+    };
+  }
+
+  /**
+   * Send one no-throw parking notification.
+   *
+   * @param {Record<string, unknown>} input
+   */
+  async function announce(input) {
+    try {
+      await deps.notifier.awaitingUser(input);
+    } catch (err) {
+      // Production notifier is no-throw; injected test/embedding fakes are not
+      // bound by that contract and still must not fail attempt settlement.
+      log('awaiting_user notify failed: %o', err);
+    }
   }
 
   return {
+    /**
+     * Launch automatically after the parked record is durable.
+     *
+     * @param {{ workspace: string, bead_id: string, attempt_id: string, repo: string|null, target_base: string|null, awaiting_user: string|null }} input
+     */
     async onParkedAttempt(input) {
       const bead_id =
         input && typeof input.bead_id === 'string' ? input.bead_id : '';
@@ -452,9 +705,7 @@ export function createDirectionInquiry(deps) {
         input && typeof input.awaiting_user === 'string'
           ? input.awaiting_user
           : '';
-      // The lane judgment is the ONE decision taken before the reservation: an
-      // out-of-scope park must leave no trace at all, not even a held slot.
-      if (bead_id.length === 0 || !isDirectionParkReason(awaiting_user)) {
+      if (bead_id.length === 0 || awaiting_user.length === 0) {
         return;
       }
       if (in_flight.has(bead_id)) {
@@ -462,7 +713,16 @@ export function createDirectionInquiry(deps) {
       }
       in_flight.add(bead_id);
       try {
-        await dispose(input, bead_id, awaiting_user);
+        const result = await dispose(input, true);
+        await announce({
+          bead_id,
+          title: result.title,
+          awaiting_user,
+          stale_kind: result.stale_kind,
+          branch: result.branch,
+          repo: result.repo,
+          ...result.outcome
+        });
       } catch (err) {
         log('direction inquiry failed for %s: %o', bead_id, err);
       } finally {
@@ -471,19 +731,50 @@ export function createDirectionInquiry(deps) {
     },
 
     /**
-     * Startup reachability probe (spec §3.7). The server runs under launchd and
-     * this design assumes it can reach the user's tmux socket; this is the only
-     * place that premise is checked before a park depends on it.
+     * Launch from the parked tile without consulting `enabled`.
      *
-     * Written to the CONSOLE, not the debug channel: the daemon runs without
-     * `--debug`, so a namespaced logger would put this line nowhere an operator
-     * reading `bdui-shared logs` can see it.
+     * @param {{ workspace: string, bead_id: string, attempt_id: string, repo: string|null, awaiting_user: string|null }} input
+     * @returns {Promise<InquiryOutcome>}
      */
+    async launchForClick(input) {
+      const bead_id =
+        input && typeof input.bead_id === 'string' ? input.bead_id : '';
+      const awaiting_user =
+        input && typeof input.awaiting_user === 'string'
+          ? input.awaiting_user
+          : '';
+      if (bead_id.length === 0 || awaiting_user.length === 0) {
+        return refusal('invalid_park');
+      }
+      if (in_flight.has(bead_id)) {
+        const config = readInquiryConfig();
+        return {
+          ...refusal('already_running'),
+          session: 'already_running',
+          reason: null,
+          tmux_session: config.tmux_session,
+          tmux_window: bead_id
+        };
+      }
+      in_flight.add(bead_id);
+      try {
+        return (await dispose(input, false)).outcome;
+      } catch (err) {
+        log('direction inquiry click failed for %s: %o', bead_id, err);
+        return refusal('error');
+      } finally {
+        in_flight.delete(bead_id);
+      }
+    },
+
+    /** Probe the configured tmux socket at startup. */
     async probeTmux() {
       if (!readInquiryConfig().enabled) {
         return;
       }
-      const listed = await listPanes();
+      const listed = await launcher.listPanes(PANE_MARKER);
+      // Daemons normally run without `--debug`; startup reachability must use
+      // console output or this operational failure disappears entirely.
       if (!listed.ok) {
         console.warn(`direction_inquiry: tmux unreachable: ${listed.error}`);
         return;

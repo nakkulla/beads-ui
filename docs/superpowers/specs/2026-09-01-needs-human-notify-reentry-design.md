@@ -11,6 +11,8 @@ scope:
   - app/views/worker/
 ---
 
+정정(2026-09-03, UI-gjp2)
+
 # needs_human·사용자 개시 작업 실패의 Discord 알림과 [정리 재시도]·[세션에서 해결] 재진입
 
 Bead: `UI-jw27` · 2026-09-01

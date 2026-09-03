@@ -22,6 +22,7 @@
  * The duplicate guard is the pane marker, which is one truth for the whole
  * machine: at most one live resolution session per bead.
  */
+import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
 import { discardOperationActive } from './discard-phase.js';
@@ -143,6 +144,28 @@ export function resolveFailureContext(queue, bead_id) {
           ? /** @type {any} */ (discard).phase
           : null,
       detail: null
+    };
+  }
+  /** @type {any} */
+  let latest = null;
+  for (const attempt of Object.values(queue?.attempts || {})) {
+    const record = /** @type {any} */ (attempt);
+    if (record.bead_id === bead_id && isImplementationAttempt(record)) {
+      latest = record;
+    }
+  }
+  if (latest?.status === 'parked') {
+    return {
+      failure_class: '파킹',
+      reason:
+        typeof latest.cause_detail?.awaiting_user === 'string'
+          ? latest.cause_detail.awaiting_user
+          : '원인 미상',
+      stage: null,
+      detail:
+        typeof latest.cause_detail?.summary === 'string'
+          ? latest.cause_detail.summary
+          : null
     };
   }
   return null;

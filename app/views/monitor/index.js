@@ -55,6 +55,7 @@ import {
   waitBody
 } from '../worker/lanes.js';
 import { runningTile } from '../worker/running-grid.js';
+import { tileResolveFields } from '../worker/tile-resolve.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
 import {
@@ -497,6 +498,8 @@ export function createMonitorView(mount_element, options) {
    * @type {Map<string, any>}
    */
   const exec_adopted = new Map();
+  /** @type {Set<string>} */
+  const resolve_pending = new Set();
 
   /** @type {null | (() => void)} */
   let unsubscribe_pipeline = null;
@@ -755,6 +758,43 @@ export function createMonitorView(mount_element, options) {
       return null;
     }
     return await transport(type, { ...payload, root_dir });
+  }
+
+  /**
+   * Launch the interactive session for one terminal or parked tile.
+   *
+   * @param {string} bead_id
+   * @param {string} root_dir
+   * @param {number} revision
+   */
+  async function resolveInSession(bead_id, root_dir, revision) {
+    if (resolve_pending.has(bead_id)) {
+      return;
+    }
+    resolve_pending.add(bead_id);
+    doRender();
+    try {
+      const res = await sendCas(
+        'worker-resolve-in-session',
+        { bead_id },
+        root_dir,
+        revision,
+        false
+      );
+      if (res?.session === 'already_running') {
+        showToast(`이미 열려 있습니다 · ${res.tmux_window || '?'}`, 'error');
+      } else if (res?.launched !== true) {
+        showToast(`세션 기동 실패: ${res?.reason || 'unknown'}`, 'error');
+      } else if (res.mode !== 'fork') {
+        showToast(
+          `새 세션으로 시작 (${res.fallback_reason || 'unknown'})`,
+          'success'
+        );
+      }
+    } finally {
+      resolve_pending.delete(bead_id);
+      doRender();
+    }
   }
 
   /**
@@ -1500,7 +1540,15 @@ export function createMonitorView(mount_element, options) {
                       ...item.failure,
                       open: open_failure_detail === item.attempt_id
                     }
-                  : null
+                  : null,
+                ...tileResolveFields(
+                  item.id,
+                  {
+                    discard: item.discard,
+                    parked: item.run_state === 'parked'
+                  },
+                  resolve_pending.has(item.id)
+                )
               },
               now,
               selected_attempt,
@@ -2513,23 +2561,11 @@ export function createMonitorView(mount_element, options) {
       });
       return;
     }
-    // 파킹 타일의 [재시도] (UI-5ym8 §3.1). CAS를 쓰지 않는 attempt 제어라
-    // `send`이고, 서버가 "그 attempt가 아직 마지막인가"로 판정한다. 배선하지
-    // 않으면 이 탭에서만 버튼이 이슈 상세를 여는 죽은 버튼이 된다.
-    if (cls.contains('rtile__parked-retry')) {
-      void send('worker-parked-retry', { bead_id, attempt_id }, root_dir).then(
-        (res) => {
-          if (res && res.ok === false) {
-            showToast(
-              `재시도 거부: ${
-                res.reason === 'not_latest'
-                  ? '이 bead에 더 새로운 시도가 있습니다'
-                  : res.reason || ''
-              }`,
-              'error'
-            );
-          }
-        }
+    if (cls.contains('rtile__resolve')) {
+      void resolveInSession(
+        bead_id,
+        root_dir,
+        exec_adopted.get(root_dir)?.revision ?? casOf(bead_id).revision
       );
       return;
     }

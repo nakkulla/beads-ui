@@ -1733,6 +1733,9 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
       model: 'opus',
       started_at: 1000,
       parked: true,
+      resolve_action: true,
+      resolve_enabled: true,
+      resolve_title: '파킹 문의 세션 열기',
       status: 'parked',
       status_label: '세션 대기',
       failure: {
@@ -1757,7 +1760,7 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
         quickfix_lane: false,
         quickfix_landing: null,
         resume_eligible: false,
-        resume_reason: '세션 대기 — [재시도]가 새 attempt를 띄웁니다',
+        resume_reason: '세션 대기 — [세션에서 해결]로 문의를 이어갑니다',
         landed: false,
         confirmation: 'unmerged'
       },
@@ -1847,7 +1850,7 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
     expect(mount.querySelector('[data-seam="tile-log-path"]')).toBeNull();
   });
 
-  test('offers 재시도 and 폐기 in the parked action foot', () => {
+  test('offers 세션에서 해결 and 폐기 in the parked action foot', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(runningGridTemplate([parkTile()]), mount);
@@ -1855,9 +1858,9 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
     const foot = /** @type {HTMLElement} */ (
       mount.querySelector('.rtile__foot')
     );
-    expect(
-      foot.querySelector('.rtile__parked-retry')?.textContent?.trim()
-    ).toBe('재시도');
+    expect(foot.querySelector('.rtile__resolve')?.textContent?.trim()).toBe(
+      '세션에서 해결'
+    );
     expect(foot.querySelector('.rtile__discard')?.textContent?.trim()).toBe(
       '폐기'
     );
@@ -1942,7 +1945,7 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
       mount.querySelector('.rtile__foot')
     );
     expect(foot.querySelectorAll('.rtile__discard')).toHaveLength(1);
-    expect(foot.querySelector('.rtile__parked-retry')).toBeNull();
+    expect(foot.querySelector('.rtile__resolve')).toBeNull();
   });
 
   test('omits the retry_wait counts a record does not carry', () => {
@@ -2260,7 +2263,7 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     expect(foot.querySelector('.rtile__discard')?.textContent?.trim()).toBe(
       '폐기'
     );
-    expect(foot.querySelector('.rtile__parked-retry')).toBeNull();
+    expect(foot.querySelector('.rtile__resolve')).toBeNull();
   });
 
   test('draws no resume button and no failure popover', () => {
@@ -2933,6 +2936,8 @@ describe('worker running tile — [폐기 포기] (discard-abandon §3.1)', () =
           model: 'opus',
           started_at: 1,
           parked: true,
+          resolve_action: true,
+          resolve_enabled: true,
           status: /** @type {const} */ ('parked'),
           status_label: '세션 대기',
           discard: failedDiscard({ label: '백업 정리 재시도' })
@@ -2949,6 +2954,6 @@ describe('worker running tile — [폐기 포기] (discard-abandon §3.1)', () =
       Array.from(foot.querySelectorAll('button')).map((el) =>
         el.textContent?.trim()
       )
-    ).toEqual(['재시도', '백업 정리 재시도', '폐기 포기']);
+    ).toEqual(['백업 정리 재시도', '폐기 포기', '세션에서 해결']);
   });
 });

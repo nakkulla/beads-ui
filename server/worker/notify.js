@@ -52,7 +52,7 @@ const TITLE = {
   pr_wait: `${SENDER} 📬 PR 제출`,
   merged: `${SENDER} ✅ 머지 완료`,
   landed: `${SENDER} ✅ 착지 완료`,
-  awaiting_user: `${SENDER} ⏸️ 방향 질의`,
+  awaiting_user: `${SENDER} ⏸️ 파킹`,
   provider_hold: `${SENDER} ⏳ 공급자 보류`,
   provider_recovered: `${SENDER} ✅ 공급자 회복`,
   provider_disarmed: `${SENDER} 🚨 자동 재개 중단`,
@@ -175,7 +175,7 @@ function headline(transition, bead_id, bead_title) {
  *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   quickfixLanded: (input: { bead_id: string, title?: string|null, head_sha?: string|null, close_kind?: string|null, repo?: string|null }) => Promise<void>,
- *   awaitingUser: (input: { bead_id: string, title?: string|null, awaiting_user?: string|null, stale_kind?: string|null, session?: string|null, reason?: string|null, tmux_session?: string|null, tmux_window?: string|null, bridge_active?: boolean, repo?: string|null }) => Promise<void>,
+ *   awaitingUser: (input: { bead_id: string, title?: string|null, awaiting_user?: string|null, stale_kind?: string|null, branch?: string|null, session?: string|null, reason?: string|null, mode?: string|null, fallback_reason?: string|null, session_id?: string|null, tmux_session?: string|null, tmux_window?: string|null, redispatch_refusal?: string|null, bridge_active?: boolean, repo?: string|null }) => Promise<void>,
  *   providerHoldEntered: (input: { bead_id: string, runner: string, kind: string, detail: string, summary: string, account?: string|null, resets_at?: number|null, auto_switch?: 'none'|'cap'|'disabled'|null, repo?: string|null }) => Promise<void>,
  *   providerRecovered: (input: { bead_id: string, runner: string, duration_ms: number, resumed_beads?: string[], refusal?: string|null, switched_from?: string|null, switched_to?: string|null, repo?: string|null }) => Promise<void>,
  *   providerAutoResumeDisarmed: (input: { bead_id: string, runner: string, reason: string, repo?: string|null }) => Promise<void>,
@@ -320,20 +320,26 @@ export function createNotifier(deps) {
 
   /**
    * The `질의 세션:` value (UI-7uid §3.5). One vocabulary, three outcomes: the
-   * session was started here, one was already running, or none was started and
-   * the reason says which of the refusals it was.
+   * session was started here, one was already running, or none was started.
+   * Refusal vocabulary includes missing Bead/park/attempt material
+   * (`bd_unavailable`, `park_facts_missing`, `attempt_unavailable`) and launch
+   * failures; fresh-fork fallback separately includes
+   * `attempt_transcript_missing`.
    *
-   * @param {{ session?: string|null, reason?: string|null, tmux_session?: string|null, tmux_window?: string|null }} input
+   * @param {{ session?: string|null, reason?: string|null, mode?: string|null, fallback_reason?: string|null, session_id?: string|null, tmux_session?: string|null, tmux_window?: string|null }} input
    * @returns {string}
    */
   function inquirySessionLine(input) {
     if (input.session === 'already_running') {
-      return '이미 실행 중';
+      return `already_running · ${text(input.tmux_window) ?? '?'}`;
     }
     if (input.session === 'launched') {
-      return `기동 — tmux ${text(input.tmux_session) ?? '?'}:${text(input.tmux_window) ?? '?'}`;
+      if (input.mode === 'fork') {
+        return `launched · fork ${(text(input.session_id) ?? '?').slice(0, 8)}`;
+      }
+      return `launched · fresh (${text(input.fallback_reason) ?? 'unknown'})`;
     }
-    return `미기동 — ${text(input.reason) ?? 'unknown'}`;
+    return `not_launched · ${text(input.reason) ?? 'unknown'}`;
   }
 
   return {
@@ -449,14 +455,20 @@ export function createNotifier(deps) {
             stale_kind ? ` (${stale_kind})` : ''
           }`
         );
-        lines.push(`질의 세션: ${inquirySessionLine(input)}`);
+        lines.push(
+          `문의 세션: ${text(input.branch) ?? 'generic'} · ${inquirySessionLine(input)}`
+        );
+        const redispatch_refusal = text(input.redispatch_refusal);
+        if (redispatch_refusal) {
+          lines.push(`재디스패치 거부 · ${redispatch_refusal}`);
+        }
         if (
           input.session !== 'launched' &&
           input.session !== 'already_running'
         ) {
           // The manual escape hatch stays the answer whenever no session came
           // up, so the push names it instead of leaving a dead end.
-          lines.push('처분: Worker 탭 fix/approve');
+          lines.push('처분: Worker 탭 [세션에서 해결] · [폐기]');
         }
         lines.push(
           `브리지: ${

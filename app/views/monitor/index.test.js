@@ -1523,8 +1523,13 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     expect(tile?.querySelector('.rtile__session')).toBeNull();
   });
 
-  test('sends the parked retry from the monitor tile', () => {
+  test('opens an inquiry session from the monitor parked tile', async () => {
     const { mount, view, sent } = setup({
+      transport: async () => ({
+        launched: false,
+        session: 'already_running',
+        tmux_window: 'UI-1'
+      }),
       workspaces: [
         workspace({
           attempts: {
@@ -1542,13 +1547,20 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     });
 
     view.load();
-    click(mount, '.rtile__parked-retry');
+    click(mount, '.rtile__resolve');
+    await vi.waitFor(() =>
+      expect(document.querySelector('.toast')).not.toBeNull()
+    );
 
-    expect(sent[0].type).toBe('worker-parked-retry');
+    expect(sent[0].type).toBe('worker-resolve-in-session');
     expect(sent[0].payload).toMatchObject({
       bead_id: 'A-1',
-      attempt_id: 't1'
+      root_dir: WS_A,
+      expected_revision: 1
     });
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '이미 열려 있습니다 · UI-1'
+    );
   });
 
   test('badges a retry_wait attempt with its backoff counts', () => {
@@ -1580,7 +1592,7 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     expect(tile?.querySelector('.rtile__held-badge')?.textContent).toBe(
       '↻ 재시도 대기 2/3'
     );
-    expect(tile?.querySelector('.rtile__parked-retry')).toBeNull();
+    expect(tile?.querySelector('.rtile__resolve')).toBeNull();
   });
 
   // 선행 대기도 같은 배타 자리를 쓰는 held 타일이다 (선행 대기 계층 §5.4).
@@ -1620,7 +1632,7 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     expect(tile?.querySelector('.rtile__held-summary')?.textContent).toBe(
       '선행 미충족으로 착수하지 않았습니다'
     );
-    expect(tile?.querySelector('.rtile__parked-retry')).toBeNull();
+    expect(tile?.querySelector('.rtile__resolve')).toBeNull();
     expect(tile?.querySelector('.rtile__pause')).toBeNull();
   });
 

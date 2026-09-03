@@ -113,7 +113,7 @@ export function createWorkerRuntime() {
   // and the two disposition handlers re-verify through the same instance so a
   // click and a badge can never disagree about which bead is parked.
   const reviseParked = createReviseParkedStore();
-  // Process-wide direction-conflict park trigger (UI-7uid §3.1). Process-wide
+  // Process-wide parked-attempt inquiry trigger (UI-gjp2 §1). Process-wide
   // rather than per-attachment because its duplicate guard is a tmux pane
   // marker, which is one truth for the whole machine; the workspace it acts on
   // rides each call. Its own notifier instance carries the `awaitingUser`
@@ -121,6 +121,8 @@ export function createWorkerRuntime() {
   // so no title cache has to be bound to it.
   const directionInquiry = createDirectionInquiry({
     getConfig,
+    readAttempt: (workspace, attempt_id) =>
+      queueStore.snapshot(workspace).attempts?.[attempt_id] ?? null,
     bd: {
       readIssue: async (workspace, bead_id) => {
         const result = await runBdJsonProjected(
