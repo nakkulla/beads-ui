@@ -143,17 +143,26 @@ disarm 실패 뒤 남은 arm의 유일한 출구다.
 
 `sendQueueCas`(`app/views/worker/lane-drag.js`):
 
-1. 전송 직전에 `chained = revisions.has(root_dir)`를 잡는다 — 이 레포의
-   `expected_revision`이 같은 계획의 앞 op 응답에서 왔는가.
+1. 전송 직전에 `chained`를 잡는다 — 이 레포의 `expected_revision`이 **같은 계획의 앞 op
+   응답에서 채택된 값인가**. 판정은 `revisions.has(root_dir)`가 아니라 계획이 공유하는
+   `Set<string> adopted_roots`로 한다: `sendQueueCas`와 `sendOp`가 응답 revision을
+   `revisions`에 넣을 때 그 `root_dir`을 이 집합에도 넣고, `chained`는 집합 멤버십이다.
+   `revisions`는 스냅샷 값으로 **미리 채워져 올 수 있으므로**(`releaseArm`은
+   `new Map([[root_dir, revision]])`을 넘긴다) 그 존재만으로는 체인을 뜻하지 않는다.
+   집합은 `runPlanned`/단일 op 진입점이 `revisions`와 함께 만들어 넘긴다.
 2. 응답이 `conflict`이고 `chained`면, 응답의 `queue.revision`으로 **같은 payload**를 1회
    다시 보낸다. 재전송의 응답은 첫 응답과 같은 규칙으로 판정한다(`applied:false`는 거부
    토스트, 성공은 revision 갱신).
 3. 재전송도 `conflict`면 현행 토스트 `큐가 바뀌었습니다 — 다시 시도해 주세요`.
 4. `chained`가 아닌 첫 op의 conflict는 현행대로 즉시 토스트한다 — 사용자의 화면이
-   낡았다는 뜻이며 재시도할 근거가 없다.
+   낡았다는 뜻이며 재시도할 근거가 없다. 스냅샷 revision으로 채워져 온 단일 op
+   (`releaseArm`의 고아 arm 해제)도 여기에 속한다.
 
-적용 범위는 `sendQueueCas`를 지나는 큐 op 전부(`place`·`reorder`·`remove`·`arm`)다.
-`disarm`은 `sendOp`가 따로 다루며 실패해도 계획을 멈추지 않으므로 대상이 아니다.
+적용 범위는 `sendQueueCas`를 지나는 큐 op 전부다 — `runLane`의 `place`·`arm`, 드롭 계획의
+`reorder`·`remove`, `releaseArm`의 `disarm`. 계획이 내는 `disarm`은 `sendOp`가 따로 다루고
+실패해도 계획을 멈추지 않으므로 재시도 대상이 아니다. `releaseArm`의 `disarm`은
+`sendQueueCas`를 지나지만 `adopted_roots`가 비어 있어 4에 따라 재시도되지 않는다 —
+적용 범위와 재시도 여부는 별개의 판정이다.
 
 - 재시도의 `index`는 그대로 둔다(서버 `clampIndex`). `arm`은 멱등이고, CAS는 쓰기 전에
   판정하므로 "적용됐는데 conflict로 답한" 경우는 없다.
@@ -191,7 +200,8 @@ disarm 실패 뒤 남은 arm의 유일한 출구다.
   (c) 3개 중 하나가 떠나면 떠나는 멤버만; (d) confirmed 행 → repo-serial place는 현행 유지.
 - `app/views/worker/lane-drag.test.js`: 체인 두 번째 op가 conflict → 응답 revision으로
   같은 payload 1회 재전송 → 성공; 재전송도 conflict → 토스트 1회, 이후 op 미전송; 첫 op
-  conflict → 재전송 없이 토스트.
+  conflict → 재전송 없이 토스트; **스냅샷 revision이 미리 채워진 `revisions`로 부른 단일
+  op**(`releaseArm` 모양)의 conflict → 재전송 없이 토스트.
 - `app/views/worker/lane-model.test.js`: draft 레인을 가리키는 `armed_by_lane`이 orphan
   칩으로 그려진다; confirmed 레인은 현행 `▶ 연결 n`.
 - `app/views/monitor/index.test.js`: `runLane`에서 arm의 첫 응답이 conflict여도 재전송
@@ -227,4 +237,7 @@ disarm 실패 뒤 남은 arm의 유일한 출구다.
   disarm 동반 이유는 §2의 스케줄러 사실에서 나오며 코드 주석으로 충분하다. 실재한 대안:
   0개만 복귀·자동 삭제(§3-1). → ADR 아님
 - 큐 op 체인 내 conflict 1회 재시도. 되돌리기 어려움: 아니다 — 레인 op가 이미 쓰는
-  규약의 확장. 실재한 대안: 서버 단일 op(§3-2). → ADR 아님
+  규약의 확장이고 되돌리면 현행 토스트로 돌아갈 뿐이다. 맥락 없이 놀라움: 아니다 —
+  "앞 op 응답에서 채택한 revision만 재시도한다"는 규칙이 `adopted_roots` 집합으로 코드에
+  드러나고, 그 이유(place가 띄우는 tick이 CAS 없이 revision을 올린다)는 §1.3의 주석
+  한 줄로 닫힌다. 실재한 대안: 서버 단일 op(§3-2). → ADR 아님
