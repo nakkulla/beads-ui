@@ -1,6 +1,8 @@
 ---
 scope:
   - server/worker/runnable-cache.js
+  - server/worker/admission.js
+  - server/worker/exec-enums.js
   - server/ws/monitor-handlers.js
   - app/views/worker/lane-model.js
   - app/views/worker/placement.js
@@ -154,22 +156,98 @@ candidatePlacement(issue, queue)
 ```
 
 `facts`는 `{ route, spec, has_description, awaiting_user, worker_ineligible }`이고
-`location`은 지금의 `locationOf()` 결과다. 자격 식은 지금 것을 그대로 옮긴다:
-`!worker_ineligible && !awaiting_user && (quick_fix ? has_description : spec === 'published')`.
-`placeable`은 거기에 `location === null`을 더한 것이다.
+`location`은 지금의 `locationOf()` 결과다.
 
-`Placement.missing_description`은 지금 이름을 유지한다(`quick_fix`인데 본문이
-없다). `placementTitle()`이 만드는 사유 문장도 그대로다.
+### 4.1 자격 식은 route 유효성을 포함한다 (교정)
+
+지금의 자격 식에는 route 검사가 없다.
+
+```js
+// 현행 candidatePlacement (결함)
+!worker_ineligible && !awaiting_user &&
+  (is_quick_fix ? has_description : evidence === 'published' && !conflict)
+```
+
+route가 비었거나 `RUNNABLE_ROUTES` 밖이면 `is_quick_fix`가 거짓이므로 else 가지로
+떨어지고, 발행된 스펙만 있으면 `placeable === true`가 된다. 그러나 서버
+admission은 그 행을 `invalid_route`로 거부한다(`server/worker/admission.js:181`).
+지금은 route 미핀 행이 후보 모집단에 거의 없어 드러나지 않지만, §3이 모집단을
+넓히면 화면이 admission과 다른 말을 하는 행이 눈에 보이게 된다.
+
+그래서 자격 식에 route 유효성을 **첫 조건**으로 넣는다.
+
+```js
+const route_ok = RUNNABLE_ROUTES.has(route);        // spec_backed | full_plan | quick_fix
+const eligible =
+  route_ok && !worker_ineligible && !awaiting_user &&
+  (is_quick_fix ? has_description : spec === 'published');
+```
+
+`Placement`에 `route_ok: boolean`을 더한다. 이것은 §3.2의 확장이 만든 새 요구가
+아니라 지금 있는 결함의 교정이므로, Worker 탭에서도 route 미핀 + 발행 스펙 행의
+`↴ 대기로`가 이 변경 뒤 비활성이 된다. admission과 같아지는 방향이다.
+
+route 집합은 지금 두 곳에 따로 적혀 있다 — `server/worker/admission.js:67`
+`ADMISSIBLE_ROUTES`와 `server/worker/runnable-cache.js:85` `RUNNABLE_ROUTES`이고,
+후자의 주석이 "same enum as `admission.js`"라고 손으로 묶어 둔 상태다. 이 스펙이
+세 번째 소비자(클라이언트 판정)를 만드므로, 정본을 이미 양쪽이 쓰는 얇은 enum
+모듈 `server/worker/exec-enums.js`로 올리고 세 소비자가 그것을 임포트한다.
+`placement.js`가 `server/spec-id.js`를 직접 임포트하는 것과 같은 경로이며,
+`runnable-cache.js` 전체를 프론트 번들에 끌어오지 않는다. 값은 바뀌지 않는다
+(`spec_backed`, `full_plan`, `quick_fix`).
+
+### 4.2 `placementTitle()`은 사유 넷을 구분한다 (교정)
+
+지금 `placementTitle()`의 마지막 폴백은 `'spec이 없어 대기 큐에 넣을 수 없습니다'`
+하나다(`placement.js:221`). 스펙 충돌·미발행·라우팅 미핀이 모두 그 한 문장으로
+뭉개지므로, §6이 약속한 "칩 팝업과 버튼 툴팁이 같은 구체 문장을 말한다"를 지금
+함수로는 지킬 수 없다.
+
+폴백을 사유별로 가른다. 판정 순서는 §4.1 자격 식과 같다.
+
+| 조건 | 문장 |
+|---|---|
+| `!route_ok` | `route가 정해지지 않아 대기 큐에 넣을 수 없습니다` |
+| `worker_ineligible` | (현행 유지) `worker-ineligible label로 워커에서 실행할 수 없습니다` |
+| `awaiting_user` | (현행 유지) `사용자 리뷰를 기다리는 중이라 대기 큐에 넣을 수 없습니다` |
+| `missing_description` | (현행 유지) `description이 없어 대기 큐에 넣을 수 없습니다` |
+| `spec === 'conflict'` | `spec 경로가 충돌해 대기 큐에 넣을 수 없습니다` |
+| 그 외(`spec !== 'published'`) | `spec이 발행되지 않아 대기 큐에 넣을 수 없습니다` |
+
+마지막 문장은 현행 문구를 "없어"에서 "발행되지 않아"로 바꾼다 — 경로는 있고
+`spec_review` 영수증만 없는 행이 이 문장을 받는 가장 흔한 경우이기 때문이다.
+`placementTitle()`은 `Partial<Placement>`를 받으므로 `route_ok`가 없는 부분 판정은
+지금처럼 route를 문제 삼지 않는다(fail-quiet).
+
+### 4.3 Monitor 행의 드래그와 배치
 
 모니터 쪽에서는 `app/views/worker/lane-model.js`의 runnable 투영(`:3296` 이하)이
 서버 행의 사실로 `placementFromFacts`를 불러 `eligible`·`worker_ineligible`·
-`reason`을 만든다. 그 아래는 손대지 않는다 — `observation_row`,
-`draggable: !observation_row`, `queue_placeable: eligible && !worker_ineligible`가
-이미 결정 4를 실행한다(`:3343`~`:3375`, `lanes.js:2306`~`:2311`). 즉 Monitor는
-Worker와 같은 코드 경로로 차단된다.
+`reason`을 만든다.
+
+`draggable` 판정은 바꿔야 한다. 지금은 `draggable: !observation_row`이고
+`observation_row`는 **`eligible` 키의 존재**로 판정한다(`:3350`). Worker 어댑터가
+그 키를 실어 후보 레인을 드래그 소스에서 뺀 규약이다(UI-d13v §6). 이 코드를 그대로
+두면 둘 중 하나가 깨진다 — 서버 Monitor 행에 `eligible` 키를 실으면 착수 가능한
+행까지 드래그가 죽고(모니터의 데스크톱 적재 수단은 드래그뿐이다), 싣지 않으면
+준비 필요 행이 그대로 드래그된다(결정 4 위반).
+
+그래서 판정을 가른다.
+
+```js
+draggable: !observation_row && queue_placeable
+```
+
+- Worker 어댑터 행(`observation_row === true`): 지금처럼 항상 `false` — 현행 규약 유지.
+- Monitor 행(`observation_row === false`): 착수 가능한 행만 드래그 소스가 된다.
+
+`queue_placeable: eligible && !worker_ineligible`는 그대로 두고, 서버 Monitor 행은
+`eligible` 키를 **싣지 않는다** — §3.2의 사실 필드만 싣고 `eligible`은 클라이언트가
+`placementFromFacts`로 만든다. 그래야 `observation_row`의 뜻("자격을 실어 오는
+어댑터의 행인가")이 흔들리지 않는다.
 
 `lanes.js`의 `↴ 대기로` 버튼은 이미 `?disabled=${!queue_placeable}` + `placementTitle`
-툴팁이다(`:2453`). 새로 더하는 것은 판정 칩과 그 팝업(§6)뿐이다.
+툴팁이다(`:2453`). 그쪽은 손대지 않는다.
 
 ## 5. 세그먼트 — 준비도 축
 
@@ -222,12 +300,15 @@ Worker의 기존 키). 저장된 객체에 `readiness`가 없으면 기본값을
 
 | 사유 | 칩 문구 | 조건 |
 |---|---|---|
+| 라우팅 미핀 | `라우팅 필요` | `route_ok === false` — `route`가 `RUNNABLE_ROUTES` 밖(빈 값 포함) |
 | 세션 전용 | (칩 없음) | `worker_ineligible` — 슬롯 1의 기존 `worker-ineligible` 칩이 이미 말한다 |
 | 사용자 대기 | (칩 없음) | `awaiting_user` — 기존 `reason` 문장이 말한다 |
 | 본문 없음 | `본문 필요` | `quick_fix`인데 `has_description === false` |
 | 스펙 충돌 | `스펙 충돌` | `spec === 'conflict'` |
 | 스펙 미발행 | `스펙 미발행` | `spec_backed`/`full_plan`인데 `spec !== 'published'` |
-| 라우팅 미핀 | `라우팅 필요` | `route`가 `RUNNABLE_ROUTES` 밖(빈 값 포함) |
+
+이 순서는 §4.1 자격 식·§4.2 사유 문장 표와 같다. 세 곳이 어긋나면 칩과 툴팁이
+같은 행을 두고 다른 말을 한다.
 
 칩 이름을 `스펙 미발행`으로 둔 것은 기존 `스펙 대기`(UI-svh6 §4.3 — 선행 결과가
 설계 전제라 스펙을 선행 뒤에 쓴다)와 섞이지 않게 하기 위해서다. 두 칩은 같은 슬롯
@@ -235,8 +316,8 @@ Worker의 기존 키). 저장된 객체에 `readiness`가 없으면 기본값을
 
 칩의 형태는 기존 `judgement-chip`(`ctl-chip--label`) 그대로이며, 클릭은 사유
 팝업이다(`app/views/chip-popover.js`, 2026-08-28 chip-grammar-unify). 팝업 문구는
-`placementTitle()`이 이미 만드는 문장을 쓴다 — 버튼 툴팁과 팝업이 같은 문장이어야
-두 표면이 같은 말을 한다.
+§4.2가 확장한 `placementTitle()`의 문장을 그대로 쓴다 — 버튼 툴팁과 팝업이 같은
+문장이어야 두 표면이 같은 말을 한다.
 
 ### 6.2 슬롯 표 개정
 
@@ -281,12 +362,20 @@ Worker의 기존 키). 저장된 객체에 `readiness`가 없으면 기본값을
   route 미핀·본문 없는 `quick_fix`·`worker-ineligible` 행이 `include_unadmitted`
   에서만 실리고 각각 `admitted:false`와 기대한 `spec_state`/`has_description`을
   갖는다. 기본 호출의 목록이 변경 전과 동일하다(회귀 fence). phase child와
-  `status!=='open'`은 두 모드 모두에서 빠진다.
+  `status!=='open'`은 두 모드 모두에서 빠진다. `exec-enums.js`의 route enum과
+  `admission.js`·`runnable-cache.js`가 쓰는 값이 같다(기존 enum 동등성 테스트
+  관행을 따른다).
 - **파이프라인** — `server/ws/monitor-pipeline.test.js`: 모니터 투영과
   `laneCountsFor`가 확장 행을 포함하고, 준비 필요 후보만 있는 레포가
   `hasPipeline`을 통과한다.
 - **판정** — `app/views/worker/placement.test.js`: `placementFromFacts`와
-  `candidatePlacement`가 같은 입력에서 같은 `Placement`를 낸다.
+  `candidatePlacement`가 같은 입력에서 같은 `Placement`를 낸다. route 미핀 + 발행
+  스펙 행이 `placeable:false`·`route_ok:false`다(§4.1 교정의 회귀 fence).
+  `placementTitle()`이 라우팅 미핀·스펙 충돌·스펙 미발행에 서로 다른 문장을
+  돌려주고, 나머지 네 문장은 바뀌지 않는다(§4.2).
+- **드래그 판정** — `app/views/worker/lane-model.test.js`: Monitor 행은 착수
+  가능할 때만 `draggable:true`이고 준비 필요 행은 `false`이며, `eligible` 키를
+  싣는 Worker 어댑터 행은 자격과 무관하게 `false`다(§4.3).
 - **레인 모델** — `app/views/worker/lane-model.test.js`: `readiness` 세그먼트
   세 값의 분할, `runnable_hidden.readiness`의 두 규칙(per_control·순차), 옛
   저장값이 기본값으로 떨어지는 것, `repo_spec` 정렬의 ready 우선.
@@ -302,8 +391,10 @@ Worker의 기존 키). 저장된 객체에 `readiness`가 없으면 기본값을
 
 1. 서버 — `qualify()` 분해, 사실 필드, `include_unadmitted` 진입, monitor 투영과
    레인 카운트 배선.
-2. 판정 — `placementFromFacts` 도입과 `candidatePlacement` 재배선, Monitor
-   runnable 투영에서의 호출.
+2. 판정 — route enum 정본을 `exec-enums.js`로 올리고 세 소비자 재배선,
+   `placementFromFacts` 도입과 `candidatePlacement`의 route 교정,
+   `placementTitle()` 사유 분화, Monitor runnable 투영에서의 호출과 `draggable`
+   판정.
 3. UI — `readiness` 세그먼트(두 탭), 숨김 카운트, 정렬 규칙, 저장값 처리.
 4. 카드 — 판정 칩과 사유 팝업, 흐림, 슬롯 표 개정.
 
@@ -313,14 +404,58 @@ Worker의 기존 키). 저장된 객체에 `readiness`가 없으면 기본값을
 
 ## 12. 결정 (ADR 후보)
 
-- **모니터 후보 레인도 admission 통과 집합이 아니라 관측 집합이다** — 되돌리기
-  비용이 크고(서버 투영·필터 어휘·카드 조작이 함께 움직인다), 소비자가 여럿이며
-  (Monitor·Worker·레포 타일·scope 장식), "후보 레인에 왜 이게 보이나"는 앞으로도
-  반복해서 물어볼 지점이다. UI-8881이 Worker에서 정한 결정을 Monitor로 넓히면서
-  두 탭의 후보 레인 의미가 하나가 된다. `summary`: "후보 레인은 Worker가 지금
-  집을 수 있는 집합이 아니라 미착수 이슈의 관측 집합이고, 실행 안전은 서버
-  admission이 지킨다" → ADR
-- **세그먼트 축을 준비도로 재정의한다** — 화면 어휘의 선택이고, 되돌리는 비용이
-  필터 상수와 그 테스트에 그친다. 이 스펙이 소유한다 → ADR 아님
-- **판정은 `placement.js` 한 벌이 소유한다** — 이미 그 모듈의 머리말이 소유권을
-  선언하고 있고, 이 스펙은 진입점을 하나 더할 뿐이다 → ADR 아님
+판정은 세 조건 각각의 성립 여부를 따진다: 되돌리기 어려움 · 맥락 없이는 놀라움 ·
+실질 트레이드오프.
+
+### 후보 1 — 후보 레인은 admission 통과 집합이 아니라 관측 집합이다
+
+- **되돌리기 어려움: 성립.** 되돌리려면 서버 투영(`admitted`와 사실 필드), 두 탭의
+  세그먼트 어휘와 저장값, 카드 판정 칩과 그 슬롯 배정, `draggable` 판정, 레인·타일
+  카운트를 함께 되돌려야 한다. 되돌린 뒤에도 사용자가 이미 보던 준비 필요 행이
+  화면에서 사라지므로, 코드만 되돌린다고 원상복구가 끝나지 않는다.
+- **맥락 없이는 놀라움: 성립.** 이름이 "실행가능(runnable)"인 레인에 실행할 수 없는
+  행이 서 있고, 서버 모듈 이름도 `runnable-cache`다. 그 이름만 읽은 사람은 이 집합이
+  admission 통과 집합이라고 읽는 것이 자연스럽다. 실제로 이 스펙을 쓰게 만든
+  사용자 질문도 "왜 안 보이나"였다.
+- **실질 트레이드오프: 성립.** 관측 집합은 계획을 돕지만 실행 화면의 신호 대 잡음을
+  낮춘다. 후보 레인이 백로그와 겹치는 만큼 "지금 돌릴 수 있는 일"이 눈에 덜 띈다.
+  반대편(좁은 집합)은 계획에 필요한 것을 감춘다. 어느 쪽도 공짜가 아니며, 우리는
+  세그먼트 필터와 판정 칩으로 잡음을 줄이는 대가를 치르고 넓은 쪽을 골랐다.
+- 세 조건이 모두 성립하므로 `summary` 초안을 단다.
+  `summary`: "후보 레인은 Worker가 지금 집을 수 있는 집합이 아니라 미착수 이슈의 관측 집합이고, 실행 안전은 서버 admission이 지킨다"
+- `docs/adr/README.md` `## 현재 유효한 결정`의 어떤 ADR과도 모순하지 않는다. ADR
+  0014(단일 `buildLanes` 계약과 공유 슬롯 표)는 레인 조립 경로와 슬롯 배정을
+  정하는데, 이 결정은 그 경로를 그대로 쓰고 입력 집합만 넓히며 새 칩의 자리도
+  §6.2에서 그 슬롯 표 개정으로 얻는다. → ADR
+
+### 후보 2 — 세그먼트 축을 준비도로 재정의한다
+
+- **되돌리기 어려움: 불성립.** 되돌릴 표면이 필터 상수·판정 함수·그 테스트로 닫혀
+  있고, 저장값은 이미 fail-quiet로 기본값에 떨어지므로 사용자 데이터 이관이 없다.
+- **맥락 없이는 놀라움: 불성립.** 세그먼트 라벨이 그 자리에서 자기 뜻을 말한다.
+  `착수 가능`이 무엇을 뜻하는지 알기 위해 다른 문서를 찾을 필요가 없다.
+- **실질 트레이드오프: 불성립에 가깝다.** 잃는 것은 "발행된 스펙이 있는 것만
+  보기"라는 문서 기준 보기인데, 기존 `레포 · spec 우선` 정렬과 카드의 spec 칩이
+  같은 질문에 이미 답한다. 축을 바꾸지 않으면 라벨이 사실과 어긋나므로 실질적으로
+  선택지가 대등하지 않다.
+- 하나도 성립하지 않으므로 이 스펙이 소유한다. → ADR 아님
+
+### 후보 3 — 대기 배치 판정은 `placement.js` 한 벌이 소유한다
+
+- **되돌리기 어려움: 불성립.** 진입점을 하나 더하는 변경이고, 되돌리면 함수 하나가
+  사라진다.
+- **맥락 없이는 놀라움: 불성립.** `placement.js` 머리말이 이미 그 소유권을 선언하고
+  있어, 이 스펙은 기존 결정을 따를 뿐 새로 정하지 않는다.
+- **실질 트레이드오프: 불성립.** 대안(서버가 사유를 다시 판정)은 같은 식을 두 벌로
+  만들고 한 벌이 낡는 알려진 실패뿐이라, 저울에 올릴 반대급부가 없다.
+- → ADR 아님
+
+### 후보 4 — 자격 식이 route 유효성을 본다 (§4.1 교정)
+
+- **되돌리기 어려움: 불성립.** 조건 하나와 그 테스트다.
+- **맥락 없이는 놀라움: 불성립.** 서버 admission이 `invalid_route`로 거부하는 행을
+  화면이 "넣을 수 있다"고 말하지 않게 되는 것이므로, 놀라움을 만드는 것이 아니라
+  없앤다.
+- **실질 트레이드오프: 불성립.** 잃는 것이 없다 — 지금 활성으로 보이던 버튼은
+  눌러도 서버가 거부하던 버튼이다.
+- → ADR 아님
