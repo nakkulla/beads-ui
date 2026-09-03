@@ -73,6 +73,7 @@ const EXECUTION_DEFAULTS = {
         effort: 'auto',
         speed: 'default'
       },
+      route_defaults: { quick_fix: { dispatch: 'main' } },
       model_catalog: { codex: { sol: 'gpt-5.6-sol' } },
       effort_by_transport: {}
     }
@@ -113,7 +114,10 @@ function mount(options = {}) {
     execution_defaults: EXECUTION_DEFAULTS,
     orchestration_model: null,
     orchestration_effort: null,
-    orchestration_speed: null
+    orchestration_speed: null,
+    quick_fix_orchestration_model: null,
+    quick_fix_orchestration_effort: null,
+    quick_fix_orchestration_speed: null
   };
   const dialog = createSettingsDialog(root, {
     transport,
@@ -213,6 +217,7 @@ describe('createSettingsDialog tabs', () => {
       '워크플로우',
       '리뷰 게이트',
       '구현',
+      'quick_fix 레인',
       '자동화',
       '워커 시스템 프롬프트'
     ]);
@@ -339,12 +344,10 @@ describe('createSettingsDialog session tab', () => {
     const values = Array.from(select.options).map((option) => option.value);
 
     expect(values).toEqual(['', 'opus', 'sol']);
-    expect(select.options[0].textContent).toContain(
-      '기본값 사용 — 메인 (orchestration opus)'
-    );
+    expect(select.options[0].textContent).toContain('기본값 사용 — 5.6-sol');
   });
 
-  test('names the workspace orchestration model in the quick_fix unset label', async () => {
+  test('stops quoting the workspace orchestration model in the quick_fix unset label', async () => {
     const { root, dialog } = mount({
       queue: {
         revision: 3,
@@ -363,9 +366,7 @@ describe('createSettingsDialog session tab', () => {
       root.querySelector('select[data-key="quick_fix_impl_model"]')
     );
 
-    expect(select.options[0].textContent).toContain(
-      '기본값 사용 — 메인 (orchestration 5.6-sol)'
-    );
+    expect(select.options[0].textContent).toContain('기본값 사용 — 5.6-sol');
   });
 
   test('clears an incompatible model and effort in one delegation write', async () => {
@@ -781,7 +782,7 @@ describe('createSettingsDialog implementation presets', () => {
     );
     expect(
       root.querySelector('[data-preset-apply-global]')?.textContent?.trim()
-    ).toBe('적용');
+    ).toBe('일반에 적용');
     dialog.destroy();
   });
 

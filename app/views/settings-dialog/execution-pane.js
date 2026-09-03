@@ -33,11 +33,13 @@ import { modelRunnerOf } from '../detail-panel/exec-settings.js';
 import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
 import {
   AUTO_LITERAL,
+  IMPL_DISPATCHES,
   IMPL_PRESET_KEYS,
   IMPL_RUNTIMES,
   IMPL_SPEEDS,
   ORCHESTRATION_KEYS,
   PLAN_REVIEW_MODELS,
+  QUICK_FIX_ORCHESTRATION_KEYS,
   REVIEW_EFFORTS,
   REVIEW_SPEEDS,
   REVIEW_STEP_MODELS,
@@ -45,6 +47,7 @@ import {
   buildExecutionOptionView,
   buildOrchestrationPatch,
   buildPresetDiff,
+  buildQuickFixPresetDiff,
   buildSessionDefaultsPatch,
   implEffortOptions,
   implModelOptions,
@@ -59,6 +62,9 @@ const UNSET = '';
 
 /** The three coupled implementation keys one runtime change re-narrows. */
 const IMPL_TARGET_KEYS = ['impl_runtime', 'impl_model', 'impl_effort'];
+
+/** A workspace quick_fix runtime is concrete; `inherit` has no controller yet. */
+const QUICK_FIX_IMPL_RUNTIMES = ['claude', 'codex'];
 
 /** The two repo-scoped account keys the `실행 계정` section edits. */
 const ACCOUNT_ROW_KEYS = ['claude_account', 'codex_account'];
@@ -186,6 +192,8 @@ export function createExecutionPane(mount_element, binding) {
 
   /** @type {string} */
   let preset_choice = '';
+  /** @type {'general'|'quick_fix'} */
+  let preset_lane = 'general';
   /** Draft name for saving the current execution settings as a preset. */
   let preset_name_draft = '';
 
@@ -217,6 +225,14 @@ export function createExecutionPane(mount_element, binding) {
     return queue && isRecord(queue.execution_defaults)
       ? queue.execution_defaults
       : null;
+  }
+
+  /** @returns {boolean} */
+  function supportsQuickFixLane() {
+    const queue = queueOf();
+    return Boolean(
+      queue && Object.hasOwn(queue, 'quick_fix_orchestration_model')
+    );
   }
 
   /** @returns {{ revision: number, presets: any[] }|null} */
@@ -637,7 +653,12 @@ export function createExecutionPane(mount_element, binding) {
     const baseline = {
       orchestration_model: queue.orchestration_model ?? null,
       orchestration_effort: queue.orchestration_effort ?? null,
-      orchestration_speed: queue.orchestration_speed ?? null
+      orchestration_speed: queue.orchestration_speed ?? null,
+      quick_fix_orchestration_model:
+        queue.quick_fix_orchestration_model ?? null,
+      quick_fix_orchestration_effort:
+        queue.quick_fix_orchestration_effort ?? null,
+      quick_fix_orchestration_speed: queue.quick_fix_orchestration_speed ?? null
     };
     const patch = buildOrchestrationPatch(baseline, {
       ...baseline,
@@ -885,11 +906,20 @@ export function createExecutionPane(mount_element, binding) {
     }
   }
 
-  /** Apply the chosen execution preset across the kv and queue stores. */
-  async function onApplyPresetGlobally() {
+  /**
+   * Apply the chosen execution preset to one workspace lane.
+   *
+   * @param {'general'|'quick_fix'} lane
+   */
+  async function onApplyPresetGlobally(lane) {
     const state = presetState();
     const queue = queueOf();
-    if (!state || !queue || preset_choice.length === 0) {
+    if (
+      !state ||
+      !queue ||
+      preset_choice.length === 0 ||
+      (lane === 'quick_fix' && !supportsQuickFixLane())
+    ) {
       return;
     }
     /** @param {number} queue_revision */
@@ -897,6 +927,7 @@ export function createExecutionPane(mount_element, binding) {
       preset_id: preset_choice,
       expected_revision: state.revision,
       expected_queue_revision: queue_revision,
+      ...(lane === 'quick_fix' ? { lane: 'quick_fix' } : {}),
       ...rootPayload()
     });
     try {
@@ -904,6 +935,13 @@ export function createExecutionPane(mount_element, binding) {
         'apply-impl-preset-global',
         payloadFor(queue.revision)
       );
+      if (lane === 'quick_fix' && res && res.lane !== 'quick_fix') {
+        notify(
+          '서버 응답에 lane이 없습니다 — 큐 스냅샷을 다시 받은 뒤 확인하세요'
+        );
+        doRender();
+        return;
+      }
       if (res && res.applied) {
         adoptPresetApply(res);
       }
@@ -916,6 +954,13 @@ export function createExecutionPane(mount_element, binding) {
             ? res.queue.revision
             : (queueOf()?.revision ?? queue.revision);
         res = await send('apply-impl-preset-global', payloadFor(fresh));
+        if (lane === 'quick_fix' && res && res.lane !== 'quick_fix') {
+          notify(
+            '서버 응답에 lane이 없습니다 — 큐 스냅샷을 다시 받은 뒤 확인하세요'
+          );
+          doRender();
+          return;
+        }
         if (res && res.applied) {
           adoptPresetApply(res);
         }
@@ -1036,6 +1081,7 @@ export function createExecutionPane(mount_element, binding) {
    * @param {boolean} [disabled]
    * @param {Record<string, string|null|undefined>} [resolution_source] - Label
    * resolution input when the row's own source is not the whole workspace layer.
+   * @param {string|null} [route]
    * @returns {TemplateResult}
    */
   function selectControl(
@@ -1045,7 +1091,8 @@ export function createExecutionPane(mount_element, binding) {
     onChange,
     source,
     disabled,
-    resolution_source
+    resolution_source,
+    route
   ) {
     const selected = source[key] ?? UNSET;
     const view = buildExecutionOptionView(
@@ -1054,7 +1101,8 @@ export function createExecutionPane(mount_element, binding) {
       source,
       executionProjection(),
       runnerCatalog(),
-      resolution_source
+      resolution_source,
+      route
     );
     const selected_option = view.options.find(
       (option) => option.value === selected
@@ -1066,7 +1114,8 @@ export function createExecutionPane(mount_element, binding) {
         data-key=${key}
         aria-label=${label}
         title=${full_value || ''}
-        ?disabled=${disabled === true || view.disabled}
+        ?disabled=${disabled === true ||
+        (route !== 'quick_fix' && view.disabled)}
         .value=${live(String(selected))}
         @change=${(/** @type {Event} */ ev) =>
           onChange(
@@ -1103,6 +1152,8 @@ export function createExecutionPane(mount_element, binding) {
    * @param {Record<string, string|null|undefined>} source
    * @param {boolean} [disabled]
    * @param {Record<string, string|null|undefined>} [resolution_source]
+   * @param {string|null} [route]
+   * @param {string|null} [disabled_title]
    * @returns {TemplateResult}
    */
   function selectRow(
@@ -1112,10 +1163,13 @@ export function createExecutionPane(mount_element, binding) {
     onChange,
     source,
     disabled = false,
-    resolution_source
+    resolution_source,
+    route = null,
+    disabled_title = null
   ) {
     return html`<div
       class=${`settings-dialog__row${disabled ? ' settings-dialog__row--off' : ''}`}
+      title=${disabled && disabled_title ? disabled_title : ''}
     >
       <span class="settings-dialog__row-label">${label}</span>
       <span class="settings-dialog__controls">
@@ -1126,7 +1180,8 @@ export function createExecutionPane(mount_element, binding) {
           onChange,
           source,
           disabled,
-          resolution_source
+          resolution_source,
+          route
         )}
       </span>
     </div>`;
@@ -1401,9 +1456,10 @@ export function createExecutionPane(mount_element, binding) {
    * the compared keys, so a key the preset omits reads as `기본(해제)`.
    *
    * @param {{ rows: import('./session-model.js').PresetDiffRow[], ignored_keys: string[] }} diff
+   * @param {'general'|'quick_fix'} lane
    * @returns {TemplateResult}
    */
-  function presetDiffTemplate(diff) {
+  function presetDiffTemplate(diff, lane) {
     return html`<div class="settings-dialog__preset-diff" data-preset-diff>
       <div class="settings-dialog__preset-diff-head">
         ${diff.rows.length > 0
@@ -1423,14 +1479,18 @@ export function createExecutionPane(mount_element, binding) {
             <span class="settings-dialog__preset-diff-arrow">→</span>
             <span
               class="settings-dialog__preset-diff-value settings-dialog__preset-diff-after"
-              >${row.after ?? '기본(해제)'}</span
+              >${row.after ??
+              (lane === 'quick_fix'
+                ? '기본(해제 → 일반 프로파일)'
+                : '기본(해제)')}</span
             >
           </div>`
       )}
       ${diff.ignored_keys.length > 0
         ? html`<div class="settings-dialog__preset-diff-note">
-            ${diff.ignored_keys.join(', ')}은(는) 전역 적용이 쓰지 않는 키라
-            무시됩니다
+            ${diff.ignored_keys.join(', ')}은(는)
+            ${lane === 'quick_fix' ? 'quick_fix 레인' : '전역'} 적용이 쓰지 않는
+            키라 무시됩니다
           </div>`
         : ''}
     </div>`;
@@ -1441,7 +1501,10 @@ export function createExecutionPane(mount_element, binding) {
     const queue = queueOf();
     /** @type {Record<string, string|null>} */
     const current = {};
-    for (const key of ORCHESTRATION_KEYS) {
+    for (const key of [
+      ...ORCHESTRATION_KEYS,
+      ...QUICK_FIX_ORCHESTRATION_KEYS
+    ]) {
       current[key] = Object.prototype.hasOwnProperty.call(worker_draft, key)
         ? worker_draft[key]
         : queue && typeof queue[key] === 'string'
@@ -1449,6 +1512,26 @@ export function createExecutionPane(mount_element, binding) {
           : null;
     }
     return current;
+  }
+
+  /** @returns {Record<string, string|null>} */
+  function currentQuickFixValues() {
+    const orchestration = currentOrchestrationValues();
+    /** @type {Record<string, string|null>} */
+    const values = {};
+    for (const key of QUICK_FIX_ORCHESTRATION_KEYS) {
+      values[key] = orchestration[key] ?? null;
+    }
+    for (const key of [
+      'quick_fix_impl_dispatch',
+      'quick_fix_impl_runtime',
+      'quick_fix_impl_model',
+      'quick_fix_impl_effort',
+      'quick_fix_impl_speed'
+    ]) {
+      values[key] = session_draft[key] ?? null;
+    }
+    return values;
   }
 
   /**
@@ -1474,6 +1557,11 @@ export function createExecutionPane(mount_element, binding) {
     const quick_fix_models = implModelOptions(catalog, undefined).filter(
       (token) => token !== AUTO_LITERAL
     );
+    const quick_fix_impl_efforts = implEffortOptions(
+      catalog,
+      undefined,
+      undefined
+    );
     const orchestration_efforts = orchestrationEffortOptions(
       catalog,
       worker_runtime_filter,
@@ -1484,12 +1572,40 @@ export function createExecutionPane(mount_element, binding) {
           (/** @type {any} */ preset) => preset.id === preset_choice
         )
       : null;
-    const preset_diff = selected_preset
+    const general_preset_diff = selected_preset
       ? buildPresetDiff(
           executionDraftSettings(),
           isRecord(selected_preset.settings) ? selected_preset.settings : {}
         )
       : null;
+    const quick_fix_target_enums = {
+      quick_fix_orchestration_model: orchestrationModelOptions(catalog, null),
+      quick_fix_orchestration_effort: orchestrationEffortOptions(
+        catalog,
+        null,
+        null
+      ).filter((effort) => effort !== AUTO_LITERAL),
+      quick_fix_orchestration_speed: IMPL_SPEEDS,
+      quick_fix_impl_dispatch: IMPL_DISPATCHES,
+      quick_fix_impl_runtime: QUICK_FIX_IMPL_RUNTIMES,
+      quick_fix_impl_model: quick_fix_models,
+      quick_fix_impl_effort: quick_fix_impl_efforts,
+      quick_fix_impl_speed: IMPL_SPEEDS
+    };
+    const quick_fix_preset_diff = selected_preset
+      ? buildQuickFixPresetDiff(
+          currentQuickFixValues(),
+          isRecord(selected_preset.settings) ? selected_preset.settings : {},
+          quick_fix_target_enums
+        )
+      : null;
+    const preset_diff =
+      preset_lane === 'quick_fix' ? quick_fix_preset_diff : general_preset_diff;
+    const quick_fix_supported = supportsQuickFixLane();
+    const quick_fix_disabled_title = quick_fix_supported
+      ? null
+      : '서버가 quick_fix 레인을 지원하지 않습니다';
+    const quick_fix_resolution = { ...session_draft, ...orchestration };
     const slots =
       queue && typeof queue.slots === 'number' ? queue.slots : MIN_COUNT + 1;
     const serial_lane_count =
@@ -1559,12 +1675,26 @@ export function createExecutionPane(mount_element, binding) {
               </select>
               <button
                 type="button"
-                class="settings-dialog__btn settings-dialog__btn--primary"
+                class="settings-dialog__btn settings-dialog__btn--primary op-btn"
                 data-preset-apply-global
-                ?disabled=${!preset_diff || preset_diff.rows.length === 0}
-                @click=${onApplyPresetGlobally}
+                data-preset-apply-general
+                ?disabled=${!general_preset_diff ||
+                general_preset_diff.rows.length === 0}
+                @click=${() => onApplyPresetGlobally('general')}
               >
-                적용
+                일반에 적용
+              </button>
+              <button
+                type="button"
+                class="settings-dialog__btn op-btn"
+                data-preset-apply-quick-fix
+                title=${quick_fix_disabled_title || ''}
+                ?disabled=${!quick_fix_supported ||
+                !quick_fix_preset_diff ||
+                quick_fix_preset_diff.rows.length === 0}
+                @click=${() => onApplyPresetGlobally('quick_fix')}
+              >
+                quick_fix 레인에 적용
               </button>
               <input
                 type="text"
@@ -1601,7 +1731,36 @@ export function createExecutionPane(mount_element, binding) {
                 삭제
               </button>
             </div>
-            ${preset_diff ? presetDiffTemplate(preset_diff) : ''}
+            <div
+              class="settings-dialog__seg"
+              role="group"
+              aria-label="프리셋 적용 레인"
+              data-preset-lane-tabs
+            >
+              <button
+                type="button"
+                data-preset-lane="general"
+                aria-pressed=${String(preset_lane === 'general')}
+                @click=${() => {
+                  preset_lane = 'general';
+                  doRender();
+                }}
+              >
+                일반
+              </button>
+              <button
+                type="button"
+                data-preset-lane="quick_fix"
+                aria-pressed=${String(preset_lane === 'quick_fix')}
+                @click=${() => {
+                  preset_lane = 'quick_fix';
+                  doRender();
+                }}
+              >
+                quick_fix
+              </button>
+            </div>
+            ${preset_diff ? presetDiffTemplate(preset_diff, preset_lane) : ''}
 
             <div class="settings-dialog__group">
               <div class="settings-dialog__group-title">오케스트레이션</div>
@@ -1798,14 +1957,106 @@ export function createExecutionPane(mount_element, binding) {
                 onSessionChange,
                 session_draft
               )}
+            </div>
+
+            <div
+              class="settings-dialog__group"
+              data-quick-fix-group
+              title=${quick_fix_disabled_title || ''}
+            >
+              <div class="settings-dialog__group-title">
+                quick_fix 레인
+                <span class="settings-dialog__hint"
+                  >${'비어 있는 값은 일반 프로파일로 떨어집니다. 이슈 핀이 있으면 핀이 우선합니다.'}</span
+                >
+              </div>
+              ${selectRow(
+                'quick_fix_orchestration_model',
+                '오케스트레이션 모델',
+                quick_fix_target_enums.quick_fix_orchestration_model,
+                onWorkerChange,
+                orchestration,
+                !quick_fix_supported,
+                quick_fix_resolution,
+                'quick_fix',
+                quick_fix_disabled_title
+              )}
+              ${selectRow(
+                'quick_fix_orchestration_effort',
+                '오케스트레이션 effort',
+                quick_fix_target_enums.quick_fix_orchestration_effort,
+                onWorkerChange,
+                orchestration,
+                !quick_fix_supported,
+                quick_fix_resolution,
+                'quick_fix',
+                quick_fix_disabled_title
+              )}
+              ${selectRow(
+                'quick_fix_orchestration_speed',
+                '오케스트레이션 속도',
+                IMPL_SPEEDS,
+                onWorkerChange,
+                orchestration,
+                !quick_fix_supported,
+                quick_fix_resolution,
+                'quick_fix',
+                quick_fix_disabled_title
+              )}
+              ${selectRow(
+                'quick_fix_impl_dispatch',
+                '실행 방식',
+                IMPL_DISPATCHES,
+                onSessionChange,
+                session_draft,
+                !quick_fix_supported,
+                quick_fix_resolution,
+                'quick_fix',
+                quick_fix_disabled_title
+              )}
+              ${selectRow(
+                'quick_fix_impl_runtime',
+                '위임 대상',
+                QUICK_FIX_IMPL_RUNTIMES,
+                onSessionChange,
+                session_draft,
+                !quick_fix_supported,
+                quick_fix_resolution,
+                'quick_fix',
+                quick_fix_disabled_title
+              )}
               ${selectRow(
                 'quick_fix_impl_model',
-                'quick_fix 구현 모델',
+                '모델',
                 quick_fix_models,
                 onSessionChange,
                 session_draft,
-                false,
-                { ...session_draft, ...orchestration }
+                !quick_fix_supported,
+                quick_fix_resolution,
+                'quick_fix',
+                quick_fix_disabled_title
+              )}
+              ${selectRow(
+                'quick_fix_impl_effort',
+                'effort',
+                quick_fix_impl_efforts,
+                onSessionChange,
+                session_draft,
+                !quick_fix_supported,
+                quick_fix_resolution,
+                'quick_fix',
+                quick_fix_disabled_title
+              )}
+              ${selectRow(
+                'quick_fix_impl_speed',
+                '속도',
+                IMPL_SPEEDS,
+                onSessionChange,
+                session_draft,
+                !quick_fix_supported,
+                quick_fix_resolution,
+                'quick_fix',
+                quick_fix_disabled_title
               )}
             </div>
 
@@ -1854,6 +2105,7 @@ export function createExecutionPane(mount_element, binding) {
     /** Reset the per-open drafts and read the bound repo's kv layers. */
     load() {
       worker_draft = {};
+      preset_lane = 'general';
       session_text_draft = {};
       session_text_invalid = {};
       /** @type {Promise<void>[]} */

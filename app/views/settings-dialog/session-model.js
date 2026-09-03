@@ -426,6 +426,18 @@ export const PRESET_DIFF_LABELS = {
   orchestration_speed: '워커 속도'
 };
 
+/** @type {Record<string, string>} */
+const QUICK_FIX_DIFF_LABELS = {
+  quick_fix_orchestration_model: '오케스트레이션 모델',
+  quick_fix_orchestration_effort: '오케스트레이션 effort',
+  quick_fix_orchestration_speed: '오케스트레이션 속도',
+  quick_fix_impl_dispatch: '실행 방식',
+  quick_fix_impl_runtime: '위임 대상',
+  quick_fix_impl_model: '모델',
+  quick_fix_impl_effort: 'effort',
+  quick_fix_impl_speed: '속도'
+};
+
 /** Exactly the keys a global preset apply replaces, in declaration order. */
 const PRESET_DIFF_KEYS = [...PRESET_KV_KEYS, ...ORCHESTRATION_KEYS];
 
@@ -483,6 +495,41 @@ export function buildPresetDiff(current, preset) {
 }
 
 /**
+ * Preview one lane-neutral preset as a complete quick_fix replacement.
+ * Server normalization owns the meaning: absent and incompatible values both
+ * become `null`, which the pane renders as fallthrough to the general profile.
+ *
+ * @param {Record<string, string|null>} current
+ * @param {Record<string, unknown>} preset
+ * @param {Record<string, ReadonlyArray<string>>} target_enums
+ * @returns {{ rows: PresetDiffRow[], ignored_keys: string[] }}
+ */
+export function buildQuickFixPresetDiff(current, preset, target_enums) {
+  const before_values = isRecord(current) ? current : {};
+  const normalized = normalizeQuickFixLanePreset(
+    isRecord(preset) ? preset : {},
+    target_enums
+  );
+  /** @type {PresetDiffRow[]} */
+  const rows = [];
+  for (const target_key of Object.values(QUICK_FIX_LANE_MAP)) {
+    const before = before_values[target_key] ?? null;
+    const after = normalized.values[target_key] ?? null;
+    if (before === after) {
+      continue;
+    }
+    rows.push({
+      key: target_key,
+      label: QUICK_FIX_DIFF_LABELS[target_key] || target_key,
+      before,
+      after,
+      kind: before === null ? 'added' : after === null ? 'removed' : 'changed'
+    });
+  }
+  return { rows, ignored_keys: normalized.skipped_keys };
+}
+
+/**
  * Build labels for the dialog's own layer: it edits the workspace-global values
  * directly, so its unset option names the result without naming a layer.
  * Dependent selectors remain in the draft and immediately affect that label.
@@ -495,6 +542,7 @@ export function buildPresetDiff(current, preset) {
  * @param {Record<string, string|null|undefined>} [resolution_draft] - Values the
  * OTHER keys resolve against when the session draft is not the whole workspace
  * layer; `draft` stays the edited and saved source.
+ * @param {string|null} [route]
  * @returns {{ unset_label: string, full_value: string|null, unavailable: boolean, disabled: boolean, options: Array<{ value: string, label: string, full_value: string|null }> }}
  */
 export function buildExecutionOptionView(
@@ -503,7 +551,8 @@ export function buildExecutionOptionView(
   draft,
   execution_defaults,
   runner_catalog,
-  resolution_draft
+  resolution_draft,
+  route = null
 ) {
   return buildOptionView({
     key,
@@ -512,7 +561,8 @@ export function buildExecutionOptionView(
     global: draft,
     resolution_global: resolution_draft,
     execution_defaults,
-    runner_catalog
+    runner_catalog,
+    route
   });
 }
 
@@ -543,7 +593,7 @@ export function buildSessionDefaultsPatch(baseline, draft) {
 }
 
 /**
- * Diff the Worker tab's three orchestration values. A session key offered here
+ * Diff the Worker tab's six orchestration values. A session key offered here
  * is dropped rather than forwarded — the two storages are disjoint by contract.
  *
  * @param {Record<string, string|null>} baseline
@@ -553,7 +603,7 @@ export function buildSessionDefaultsPatch(baseline, draft) {
 export function buildOrchestrationPatch(baseline, draft) {
   /** @type {Record<string, string|null>} */
   const patch = {};
-  for (const key of ORCHESTRATION_KEYS) {
+  for (const key of [...ORCHESTRATION_KEYS, ...QUICK_FIX_ORCHESTRATION_KEYS]) {
     const before = baseline?.[key] ?? null;
     const after = draft?.[key] ?? null;
     if (before === after) {

@@ -17,6 +17,10 @@ import {
   depCandidates as depCandidatesOf,
   filterDepCandidates
 } from '../monitor/dep-candidates.js';
+import {
+  ORCHESTRATION_KEYS,
+  QUICK_FIX_ORCHESTRATION_KEYS
+} from '../settings-dialog/session-model.js';
 import { placeMenuList } from '../worker/lanes.js';
 import {
   candidatePlacement,
@@ -1094,9 +1098,8 @@ export function createDetailPanel(mount_element, options) {
     /** @type {Record<string, any>} */
     const values = { ...session_defaults };
     for (const key of [
-      'orchestration_model',
-      'orchestration_effort',
-      'orchestration_speed'
+      ...ORCHESTRATION_KEYS,
+      ...QUICK_FIX_ORCHESTRATION_KEYS
     ]) {
       const value = q && /** @type {any} */ (q)[key];
       if (typeof value === 'string') {

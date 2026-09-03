@@ -14,6 +14,7 @@ import {
   buildExecutionOptionView,
   buildOrchestrationPatch,
   buildPresetDiff,
+  buildQuickFixPresetDiff,
   buildSessionDefaultsPatch,
   implEffortOptions,
   implModelOptions,
@@ -555,6 +556,48 @@ describe('normalizeQuickFixLanePreset', () => {
   });
 });
 
+describe('buildQuickFixPresetDiff', () => {
+  test('previews inherit auto and absent keys as general-profile fallthrough', () => {
+    const target_enums = {
+      quick_fix_orchestration_model: ['opus', 'sol'],
+      quick_fix_orchestration_effort: ['high'],
+      quick_fix_orchestration_speed: ['default', 'fast'],
+      quick_fix_impl_dispatch: ['delegated', 'main'],
+      quick_fix_impl_runtime: ['claude', 'codex'],
+      quick_fix_impl_model: ['opus', 'sol'],
+      quick_fix_impl_effort: ['auto', 'high'],
+      quick_fix_impl_speed: ['default', 'fast']
+    };
+    const current = {
+      quick_fix_orchestration_model: 'opus',
+      quick_fix_impl_dispatch: 'delegated',
+      quick_fix_impl_runtime: 'codex',
+      quick_fix_impl_model: 'sol',
+      quick_fix_impl_speed: 'fast'
+    };
+
+    const diff = buildQuickFixPresetDiff(
+      current,
+      {
+        impl_runtime: 'inherit',
+        impl_model: 'auto',
+        impl_effort: 'auto'
+      },
+      target_enums
+    );
+
+    expect(diff.rows).toMatchObject([
+      { key: 'quick_fix_orchestration_model', after: null },
+      { key: 'quick_fix_impl_dispatch', after: null },
+      { key: 'quick_fix_impl_runtime', after: null },
+      { key: 'quick_fix_impl_model', after: null },
+      { key: 'quick_fix_impl_effort', after: 'auto' },
+      { key: 'quick_fix_impl_speed', after: null }
+    ]);
+    expect(diff.ignored_keys).toEqual([]);
+  });
+});
+
 describe('orchestrationModelOptions', () => {
   test('filters the model list by the UI-only runtime choice', () => {
     expect(orchestrationModelOptions(CATALOG, 'claude')).toEqual([
@@ -767,5 +810,14 @@ describe('buildOrchestrationPatch', () => {
     );
 
     expect(patch).toEqual({ orchestration_model: 'sol' });
+  });
+
+  test('diffs quick_fix orchestration values with the general values', () => {
+    const patch = buildOrchestrationPatch(
+      { quick_fix_orchestration_model: 'opus' },
+      { quick_fix_orchestration_model: 'sol' }
+    );
+
+    expect(patch).toEqual({ quick_fix_orchestration_model: 'sol' });
   });
 });

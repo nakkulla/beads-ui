@@ -20,11 +20,47 @@ export const EXECUTION_SETTING_KEYS = [
   'impl_model',
   'impl_effort',
   'impl_speed',
+  'quick_fix_impl_dispatch',
+  'quick_fix_impl_runtime',
   'quick_fix_impl_model',
+  'quick_fix_impl_effort',
+  'quick_fix_impl_speed',
+  'orchestration_model',
+  'orchestration_effort',
+  'orchestration_speed',
+  'quick_fix_orchestration_model',
+  'quick_fix_orchestration_effort',
+  'quick_fix_orchestration_speed'
+];
+
+const GENERAL_ORCHESTRATION_KEYS = [
   'orchestration_model',
   'orchestration_effort',
   'orchestration_speed'
 ];
+
+const QUICK_FIX_ORCHESTRATION_KEYS = [
+  'quick_fix_orchestration_model',
+  'quick_fix_orchestration_effort',
+  'quick_fix_orchestration_speed'
+];
+
+const ORCHESTRATION_SETTING_KEYS = [
+  ...GENERAL_ORCHESTRATION_KEYS,
+  ...QUICK_FIX_ORCHESTRATION_KEYS
+];
+
+/** @type {Record<string, string>} */
+const QUICK_FIX_RESOLUTION_KEYS = {
+  quick_fix_impl_dispatch: 'impl_dispatch',
+  quick_fix_impl_runtime: 'impl_runtime',
+  quick_fix_impl_model: 'impl_model',
+  quick_fix_impl_effort: 'impl_effort',
+  quick_fix_impl_speed: 'impl_speed',
+  quick_fix_orchestration_model: 'orchestration_model',
+  quick_fix_orchestration_effort: 'orchestration_effort',
+  quick_fix_orchestration_speed: 'orchestration_speed'
+};
 
 const REVIEW_PAIRS = {
   spec_review_effort: 'spec_review_model',
@@ -344,7 +380,7 @@ export function resolveExecutionSettings(input) {
 
   if (!session) {
     for (const key of EXECUTION_SETTING_KEYS.filter(
-      (candidate) => !candidate.startsWith('orchestration_')
+      (candidate) => !ORCHESTRATION_SETTING_KEYS.includes(candidate)
     )) {
       rows[key] = unavailableResult(key, pin, global_values);
     }
@@ -480,60 +516,70 @@ export function resolveExecutionSettings(input) {
       known_route && isRecord(route_defaults[route])
         ? route_defaults[route]
         : {};
-    for (const key of [
-      'impl_dispatch',
-      'impl_runtime',
-      'impl_model',
-      'impl_effort',
-      'impl_speed'
-    ]) {
-      const chosen = layeredValue(
-        key,
-        pin,
-        global_values,
-        key === 'impl_dispatch'
-          ? usableString(route_default.dispatch) ||
-              usableString(defaults.dispatch)
-          : usableString(defaults[key.replace('impl_', '')])
+    /** @type {Record<string, 'pin'|'quick_fix'|'implied'|'derived'|'global'|'base'>} */
+    const impl_origins = {};
+    let quick_fix_model_accepted = false;
+    if (route === 'quick_fix') {
+      const pinned_runtime = usableString(pin.impl_runtime);
+      const quick_fix_runtime = usableString(
+        global_values.quick_fix_impl_runtime
       );
-      rows[key] =
-        chosen.value === null
-          ? result(null, 'base', '기본값 확인 불가', null, 'unavailable')
-          : result(
-              chosen.value,
-              chosen.source,
-              chosen.value,
-              chosen.value,
-              chosen.source === 'base' ? 'default' : 'explicit'
-            );
-    }
+      const upper_runtime = pinned_runtime || quick_fix_runtime;
+      const effective_upper_runtime =
+        upper_runtime === 'inherit'
+          ? usableString(input.controller_runtime)
+          : upper_runtime;
+      quick_fix_model_accepted =
+        quick_fix_model !== null &&
+        quick_fix_derived.runtime !== null &&
+        (upper_runtime === null ||
+          effective_upper_runtime === quick_fix_derived.runtime);
 
-    // A valid `quick_fix_impl_model` delegates a quick_fix bead that pinned no
-    // dispatch of its own, and the token's runtime becomes the delegation
-    // target. A pinned runtime that contradicts it — or an `inherit` pin whose
-    // controller runtime is unknown — leaves every row exactly as it was.
-    const pinned_runtime = usableString(pin.impl_runtime);
-    const effective_pinned_runtime =
-      pinned_runtime === 'inherit'
-        ? usableString(input.controller_runtime)
-        : pinned_runtime;
-    const quick_fix_delegated =
-      route === 'quick_fix' &&
-      usableString(pin.impl_dispatch) === null &&
-      quick_fix_derived.runtime !== null &&
-      (pinned_runtime === null ||
-        effective_pinned_runtime === quick_fix_derived.runtime);
-    if (quick_fix_delegated) {
-      const derived_runtime = /** @type {string} */ (quick_fix_derived.runtime);
-      const derived_model = /** @type {string} */ (quick_fix_model);
-      rows.impl_dispatch = result(
-        'delegated',
-        'global',
-        '위임 (전역 quick_fix)',
-        'delegated',
-        'explicit'
+      const pinned_dispatch = usableString(pin.impl_dispatch);
+      const quick_fix_dispatch = usableString(
+        global_values.quick_fix_impl_dispatch
       );
-      if (pinned_runtime === null) {
+      if (pinned_dispatch !== null) {
+        rows.impl_dispatch = explicitResult(pinned_dispatch, 'pin');
+        impl_origins.impl_dispatch = 'pin';
+      } else if (quick_fix_dispatch !== null) {
+        rows.impl_dispatch = explicitResult(quick_fix_dispatch, 'global');
+        impl_origins.impl_dispatch = 'quick_fix';
+      } else if (quick_fix_model_accepted) {
+        rows.impl_dispatch = result(
+          'delegated',
+          'global',
+          '위임 (모델 함의)',
+          'delegated',
+          'explicit'
+        );
+        impl_origins.impl_dispatch = 'implied';
+      } else {
+        const base_dispatch =
+          usableString(route_default.dispatch) ||
+          usableString(defaults.dispatch);
+        rows.impl_dispatch = base_dispatch
+          ? result(
+              base_dispatch,
+              'base',
+              base_dispatch,
+              base_dispatch,
+              'default'
+            )
+          : result(null, 'base', '기본값 확인 불가', null, 'unavailable');
+        impl_origins.impl_dispatch = 'base';
+      }
+
+      if (pinned_runtime !== null) {
+        rows.impl_runtime = explicitResult(pinned_runtime, 'pin');
+        impl_origins.impl_runtime = 'pin';
+      } else if (quick_fix_runtime !== null) {
+        rows.impl_runtime = explicitResult(quick_fix_runtime, 'global');
+        impl_origins.impl_runtime = 'quick_fix';
+      } else if (quick_fix_model_accepted) {
+        const derived_runtime = /** @type {string} */ (
+          quick_fix_derived.runtime
+        );
         rows.impl_runtime = result(
           derived_runtime,
           'global',
@@ -541,20 +587,253 @@ export function resolveExecutionSettings(input) {
           derived_runtime,
           'explicit'
         );
-      }
-      if (usableString(pin.impl_model) === null) {
-        rows.impl_model = result(
-          derived_model,
-          'global',
-          derived_model,
-          derived_model,
-          'explicit'
+        impl_origins.impl_runtime = 'derived';
+      } else {
+        const chosen = layeredValue(
+          'impl_runtime',
+          {},
+          global_values,
+          usableString(defaults.runtime)
         );
+        rows.impl_runtime =
+          chosen.value === null
+            ? result(null, 'base', '기본값 확인 불가', null, 'unavailable')
+            : result(
+                chosen.value,
+                chosen.source,
+                chosen.value,
+                chosen.value,
+                chosen.source === 'base' ? 'default' : 'explicit'
+              );
+        impl_origins.impl_runtime = chosen.source;
+      }
+
+      for (const key of ['impl_model', 'impl_effort', 'impl_speed']) {
+        const pinned = usableString(pin[key]);
+        const quick_fix = usableString(global_values[`quick_fix_${key}`]);
+        let chosen;
+        if (pinned !== null) {
+          chosen = { value: pinned, source: /** @type {const} */ ('pin') };
+          impl_origins[key] = 'pin';
+        } else if (
+          key === 'impl_model' &&
+          quick_fix_model_accepted &&
+          quick_fix_model !== null
+        ) {
+          chosen = {
+            value: quick_fix_model,
+            source: /** @type {const} */ ('global')
+          };
+          impl_origins[key] = 'quick_fix';
+        } else if (key !== 'impl_model' && quick_fix !== null) {
+          chosen = {
+            value: quick_fix,
+            source: /** @type {const} */ ('global')
+          };
+          impl_origins[key] = 'quick_fix';
+        } else {
+          chosen = layeredValue(
+            key,
+            {},
+            global_values,
+            usableString(defaults[key.replace('impl_', '')])
+          );
+          impl_origins[key] = chosen.source;
+        }
+        rows[key] =
+          chosen.value === null
+            ? result(null, 'base', '기본값 확인 불가', null, 'unavailable')
+            : result(
+                chosen.value,
+                chosen.source,
+                chosen.value,
+                chosen.value,
+                chosen.source === 'base' ? 'default' : 'explicit'
+              );
+      }
+    } else {
+      for (const key of [
+        'impl_dispatch',
+        'impl_runtime',
+        'impl_model',
+        'impl_effort',
+        'impl_speed'
+      ]) {
+        const chosen = layeredValue(
+          key,
+          pin,
+          global_values,
+          key === 'impl_dispatch'
+            ? usableString(route_default.dispatch) ||
+                usableString(defaults.dispatch)
+            : usableString(defaults[key.replace('impl_', '')])
+        );
+        rows[key] =
+          chosen.value === null
+            ? result(null, 'base', '기본값 확인 불가', null, 'unavailable')
+            : result(
+                chosen.value,
+                chosen.source,
+                chosen.value,
+                chosen.value,
+                chosen.source === 'base' ? 'default' : 'explicit'
+              );
       }
     }
 
-    if (rows.impl_dispatch.value === 'main') {
-      rows.impl_dispatch.display = '메인';
+    const main_dispatch = rows.impl_dispatch.value === 'main';
+    if (main_dispatch) {
+      // Only a quick_fix kv value renames this row. The harness route default
+      // stays plain 메인 here; the dialog's own quick_fix_impl_dispatch row is
+      // what names the harness layer, because that row has no general layer to
+      // fall through to.
+      rows.impl_dispatch.display =
+        impl_origins.impl_dispatch === 'quick_fix'
+          ? '메인 (quick_fix)'
+          : '메인';
+    } else if (rows.impl_dispatch.value === 'delegated') {
+      if (impl_origins.impl_dispatch === 'quick_fix') {
+        rows.impl_dispatch.display = '위임 (quick_fix)';
+      } else if (impl_origins.impl_dispatch !== 'implied') {
+        rows.impl_dispatch.display = '위임';
+      }
+    }
+    if (rows.impl_runtime.value === 'inherit') {
+      rows.impl_runtime.display = input.controller_runtime
+        ? `inherit (${input.controller_runtime})`
+        : 'inherit (실행 시 결정)';
+      rows.impl_runtime.resolution = 'dynamic';
+    }
+    if (rows.impl_model.value !== null) {
+      const runtime =
+        rows.impl_runtime.value === 'inherit'
+          ? usableString(input.controller_runtime)
+          : rows.impl_runtime.value;
+      const offered = runtime
+        ? runtimeModelTokens(runtime, session, runner_catalog)
+        : [];
+      if (
+        route === 'quick_fix' &&
+        impl_origins.impl_model === 'base' &&
+        impl_origins.impl_runtime !== 'base' &&
+        offered.length > 0 &&
+        !offered.includes(rows.impl_model.value)
+      ) {
+        rows.impl_model = result('auto', 'base', 'auto', 'auto', 'default');
+      }
+      const model_value = /** @type {string} */ (rows.impl_model.value);
+      if (
+        model_value !== 'auto' &&
+        offered.length > 0 &&
+        !offered.includes(model_value)
+      ) {
+        rows.impl_model = incompatibleResult(rows.impl_model);
+      } else {
+        const full_value = implementationModelId(
+          model_value,
+          runtime,
+          session,
+          runner_catalog
+        );
+        rows.impl_model.display = compactModelId(full_value);
+        rows.impl_model.full_value = full_value;
+        if (impl_origins.impl_model === 'quick_fix') {
+          rows.impl_model.display = `${rows.impl_model.display} (quick_fix)`;
+        }
+      }
+    }
+    if (rows.impl_effort.value === 'auto') {
+      const transport =
+        usableString(input.transport) ||
+        (rows.impl_runtime.value === 'codex'
+          ? 'codex-native-spawn'
+          : rows.impl_runtime.value === 'claude'
+            ? 'implement-claude'
+            : null);
+      const token = transport
+        ? usableString(
+            session.implementation?.effort_by_transport?.[transport]?.auto
+          )
+        : null;
+      if (token && !KNOWN_TRANSPORT_EFFORTS.has(token)) {
+        rows.impl_effort.display = `${token} (비호환)`;
+        rows.impl_effort.full_value = token;
+        rows.impl_effort.resolution = 'incompatible';
+      } else {
+        rows.impl_effort.display = 'auto (실행 시 결정)';
+        rows.impl_effort.resolution = 'dynamic';
+      }
+    }
+    if (
+      impl_origins.impl_effort === 'quick_fix' &&
+      rows.impl_effort.value !== null
+    ) {
+      rows.impl_effort = result(
+        rows.impl_effort.value,
+        'global',
+        `${rows.impl_effort.value} (quick_fix)`,
+        rows.impl_effort.value,
+        'explicit'
+      );
+    }
+    if (rows.impl_speed.value === 'default') {
+      rows.impl_speed =
+        impl_origins.impl_speed === 'quick_fix'
+          ? result(
+              'default',
+              'global',
+              'default (quick_fix)',
+              'default',
+              'explicit'
+            )
+          : rows.impl_speed.source === 'base'
+            ? result('default', 'base', 'default (일반)', 'default', 'default')
+            : explicitResult('default', rows.impl_speed.source);
+    }
+    for (const key of ['impl_runtime', 'impl_effort', 'impl_speed']) {
+      if (
+        impl_origins[key] === 'quick_fix' &&
+        rows[key].value !== null &&
+        !rows[key].display.endsWith('(quick_fix)')
+      ) {
+        rows[key].display = `${rows[key].display} (quick_fix)`;
+      }
+    }
+
+    if (route === 'quick_fix') {
+      if (
+        quick_fix_model !== null &&
+        !quick_fix_model_accepted &&
+        quick_fix_derived.offered
+      ) {
+        rows.quick_fix_impl_model = incompatibleResult(
+          result(quick_fix_model, 'global', '', quick_fix_model, 'explicit')
+        );
+      }
+      for (const [quick_key, resolved_key] of Object.entries(
+        QUICK_FIX_RESOLUTION_KEYS
+      )) {
+        if (
+          !quick_key.startsWith('quick_fix_orchestration_') &&
+          !Object.hasOwn(rows, quick_key)
+        ) {
+          rows[quick_key] = { ...rows[resolved_key] };
+        }
+      }
+      if (
+        rows.impl_dispatch.source === 'base' &&
+        rows.impl_dispatch.value === 'main'
+      ) {
+        rows.quick_fix_impl_dispatch = result(
+          'main',
+          'base',
+          '메인 (하네스)',
+          'main',
+          'default'
+        );
+      }
+    }
+    if (main_dispatch) {
       for (const key of [
         'impl_runtime',
         'impl_model',
@@ -562,69 +841,6 @@ export function resolveExecutionSettings(input) {
         'impl_speed'
       ]) {
         rows[key] = result(null, 'base', '해당 없음', null, 'not_applicable');
-      }
-    } else {
-      if (rows.impl_dispatch.value === 'delegated' && !quick_fix_delegated) {
-        rows.impl_dispatch.display = '위임';
-      }
-      if (rows.impl_runtime.value === 'inherit') {
-        rows.impl_runtime.display = input.controller_runtime
-          ? `inherit (${input.controller_runtime})`
-          : 'inherit (실행 시 결정)';
-        rows.impl_runtime.resolution = 'dynamic';
-      }
-      if (rows.impl_model.value !== null) {
-        const runtime =
-          rows.impl_runtime.value === 'inherit'
-            ? usableString(input.controller_runtime)
-            : rows.impl_runtime.value;
-        const offered = runtime
-          ? runtimeModelTokens(runtime, session, runner_catalog)
-          : [];
-        if (
-          rows.impl_model.value !== 'auto' &&
-          offered.length > 0 &&
-          !offered.includes(rows.impl_model.value)
-        ) {
-          rows.impl_model = incompatibleResult(rows.impl_model);
-        } else {
-          const full_value = implementationModelId(
-            rows.impl_model.value,
-            runtime,
-            session,
-            runner_catalog
-          );
-          rows.impl_model.display = compactModelId(full_value);
-          rows.impl_model.full_value = full_value;
-        }
-      }
-      if (rows.impl_effort.value === 'auto') {
-        const transport =
-          usableString(input.transport) ||
-          (rows.impl_runtime.value === 'codex'
-            ? 'codex-native-spawn'
-            : rows.impl_runtime.value === 'claude'
-              ? 'implement-claude'
-              : null);
-        const token = transport
-          ? usableString(
-              session.implementation?.effort_by_transport?.[transport]?.auto
-            )
-          : null;
-        if (token && !KNOWN_TRANSPORT_EFFORTS.has(token)) {
-          rows.impl_effort.display = `${token} (비호환)`;
-          rows.impl_effort.full_value = token;
-          rows.impl_effort.resolution = 'incompatible';
-        } else {
-          rows.impl_effort.display = 'auto (실행 시 결정)';
-          rows.impl_effort.resolution = 'dynamic';
-        }
-      }
-      if (rows.impl_speed.value === 'default') {
-        rows.impl_speed =
-          rows.impl_speed.source === 'base'
-            ? result('default', 'base', 'default (일반)', 'default', 'default')
-            : explicitResult('default', rows.impl_speed.source);
       }
     }
   }
@@ -685,18 +901,29 @@ export function resolveExecutionSettings(input) {
     }
   }
 
-  for (const key of [
-    'orchestration_model',
-    'orchestration_effort',
-    'orchestration_speed'
-  ]) {
+  for (const key of GENERAL_ORCHESTRATION_KEYS) {
     if (!orchestration) {
       rows[key] = unavailableResult(key, pin, global_values);
       continue;
     }
     const base_key = key.replace('orchestration_', '');
     const base_value = usableString(orchestration[base_key]);
-    const chosen = layeredValue(key, pin, global_values, base_value);
+    const quick_fix_key = `quick_fix_${key}`;
+    const quick_fix_value =
+      input.route === 'quick_fix'
+        ? usableString(global_values[quick_fix_key])
+        : null;
+    const pinned = usableString(pin[key]);
+    const chosen =
+      pinned !== null
+        ? { value: pinned, source: /** @type {const} */ ('pin') }
+        : quick_fix_value !== null
+          ? {
+              value: quick_fix_value,
+              source: /** @type {const} */ ('global')
+            }
+          : layeredValue(key, {}, global_values, base_value);
+    const from_quick_fix = pinned === null && quick_fix_value !== null;
     if (key === 'orchestration_effort' && chosen.source === 'base') {
       rows[key] = result(null, 'base', 'CLI 기본 (미지정)', null, 'default');
       continue;
@@ -713,27 +940,51 @@ export function resolveExecutionSettings(input) {
       rows[key] = result(
         chosen.value,
         chosen.source,
-        compactModelId(full_value),
+        `${compactModelId(full_value)}${from_quick_fix ? ' (quick_fix)' : ''}`,
         full_value,
         chosen.source === 'base' ? 'default' : 'explicit'
       );
       continue;
     }
     if (chosen.value === 'default') {
-      rows[key] =
-        chosen.source === 'base'
+      rows[key] = from_quick_fix
+        ? result(
+            'default',
+            'global',
+            'default (quick_fix)',
+            'default',
+            'explicit'
+          )
+        : chosen.source === 'base'
           ? result('default', 'base', 'default (일반)', 'default', 'default')
           : explicitResult('default', chosen.source);
       continue;
     }
-    rows[key] = explicitResult(chosen.value, chosen.source);
+    rows[key] = from_quick_fix
+      ? result(
+          chosen.value,
+          'global',
+          `${chosen.value} (quick_fix)`,
+          chosen.value,
+          'explicit'
+        )
+      : explicitResult(chosen.value, chosen.source);
+  }
+
+  for (const quick_key of QUICK_FIX_ORCHESTRATION_KEYS) {
+    const resolved_key = QUICK_FIX_RESOLUTION_KEYS[quick_key];
+    rows[quick_key] = rows[resolved_key]
+      ? { ...rows[resolved_key] }
+      : unavailableResult(quick_key, pin, global_values);
   }
 
   if (session) {
     // Built last on purpose: its unset label quotes the orchestration model row,
     // which the loop above has only just resolved against the real workspace
     // value rather than the projection's fixed fallback.
-    if (quick_fix_model === null) {
+    if (input.route === 'quick_fix') {
+      // Route-scoped rows were copied from the effective ladder above.
+    } else if (quick_fix_model === null) {
       const orchestration_model = rows.orchestration_model.full_value;
       rows.quick_fix_impl_model = result(
         null,
