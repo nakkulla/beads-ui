@@ -2097,7 +2097,7 @@ export function createWorkerView(mount_element, options = {}) {
       : [];
     const cross_runner = draft.runner !== draft.original_runner;
     return html`<dialog
-      class="provider-resume-dialog"
+      class="op-dialog provider-resume-dialog"
       aria-label="다른 방법으로 이어하기"
     >
       <h2>다른 방법으로 이어하기</h2>
@@ -2183,13 +2183,13 @@ export function createWorkerView(mount_element, options = {}) {
             이전 세션 맥락을 요약 인계합니다
           </p>`
         : ''}
-      <div class="provider-resume-dialog__actions">
-        <button type="button" class="provider-resume-dialog__cancel">
+      <div class="op-dialog__actions provider-resume-dialog__actions">
+        <button type="button" class="op-btn provider-resume-dialog__cancel">
           취소
         </button>
         <button
           type="button"
-          class="provider-resume-dialog__confirm"
+          class="op-btn op-btn--primary provider-resume-dialog__confirm"
           ?disabled=${draft.runner === 'claude' && !draft.account}
           title=${draft.runner === 'claude' && !draft.account
             ? '계정을 먼저 고르세요'
