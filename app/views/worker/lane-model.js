@@ -1599,6 +1599,15 @@ function chainRowLocation(
       title: ''
     };
   }
+  // 실행가능 레인은 큐 밖이다 — confirmed 같은 rig 멤버는 위치가 없을 때와
+  // 같은 `진행 대기`다 (§8 "큐 밖" 행).
+  if (
+    location.state === 'runnable' &&
+    confirmed &&
+    classifyBlockerPrefix(bead_id, states) === 'internal'
+  ) {
+    return { label: '진행 대기', title: '' };
+  }
   const queued =
     typeof location.position === 'number' &&
     (location.lane === 'parallel' || /^s[1-5]$/.test(location.lane));

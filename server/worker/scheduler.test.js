@@ -30,6 +30,23 @@ import {
 } from './state-paths.js';
 import { createUsageStore } from './usage-store.js';
 
+// foreign blocker 조회의 양성 경로 seam (UI-d3i1 §12): 기본은 원 구현이고, 한
+// 테스트가 `fn`을 채우면 그 테스트 동안만 그 답을 돌려준다.
+const foreign_query_seam = vi.hoisted(() => ({
+  /** @type {null|((bead_id: string) => Promise<any>)} */
+  fn: null
+}));
+vi.mock('./foreign-blocker-status.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    queryForeignBlockerStatus: (/** @type {any[]} */ ...args) =>
+      foreign_query_seam.fn
+        ? foreign_query_seam.fn(args[0])
+        : actual.queryForeignBlockerStatus(...args)
+  };
+});
+
 const WS = '/tmp/example-workspace/project-a';
 
 /** The dispatch head every resolution binding in this file is taken on. */
@@ -7432,6 +7449,35 @@ describe('scheduler silent-skip reasons', () => {
     await env.scheduler.tick(WS);
 
     expect(env.store.snapshot(WS).admission.S1.reason).toBe('not_ready:open');
+  });
+
+  test('records prerequisite_unmet with a readable foreign blocker', async () => {
+    foreign_query_seam.fn = async () => ({ ok: true, status: 'in_progress' });
+    const env = setup({
+      config: {
+        S1: {
+          ready: false,
+          status: 'open',
+          dependencies: [
+            { dependency_type: 'blocks', id: 'dotfiles-12su', external: true }
+          ]
+        }
+      },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    try {
+      await env.scheduler.tick(WS);
+    } finally {
+      foreign_query_seam.fn = null;
+    }
+
+    const record = env.store.snapshot(WS).admission.S1;
+    expect([record.reason, record.blockers]).toEqual([
+      'prerequisite_unmet',
+      [{ id: 'dotfiles-12su', rig: 'dotfiles', status: 'in_progress' }]
+    ]);
   });
 
   test('records not_ready when a foreign blocker cannot be observed', async () => {
@@ -17415,6 +17461,21 @@ describe('scheduler waiting return rescan (UI-978d §4)', () => {
 
   test('clears the prerequisite record once the bead is ready again', async () => {
     const { env, config } = admissionRescanEnv();
+    config.S1.ready = true;
+
+    const result = await env.scheduler.rescanWaiting(WS);
+
+    expect(result).toEqual({ checked: 1, returned: 1 });
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+  });
+
+  test('clears the record of a bead that is also a waiting candidate', async () => {
+    const { env, config } = waitingRescanEnv({ slots: 0 });
+    env.store.recordAdmission(WS, {
+      bead_id: 'S1',
+      reason: 'prerequisite_unmet',
+      blockers: [{ id: 'dotfiles-1', rig: 'dotfiles', status: 'open' }]
+    });
     config.S1.ready = true;
 
     const result = await env.scheduler.rescanWaiting(WS);

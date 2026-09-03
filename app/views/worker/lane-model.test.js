@@ -2348,6 +2348,30 @@ describe('monitor 저장 연결 레인 투영 (UI-j92s §5.1·§5.2)', () => {
     expect(lanes.chain_lanes[0].rows[1].location_label).toBe('진행 대기');
   });
 
+  test('labels a confirmed member that is only 실행가능 as 진행 대기', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          runnable: [runnable('A-9')],
+          bead_blocked_by: { 'A-9': ['A-1'] }
+        })
+      ],
+      [state()],
+      {
+        cross_lanes: crossLanes([
+          {
+            id: 'cl_1',
+            status: 'confirmed',
+            entries: [{ bead_id: 'A-1' }, { bead_id: 'A-9' }]
+          }
+        ])
+      }
+    );
+
+    expect(lanes.chain_lanes[0].rows[1].location_label).toBe('진행 대기');
+  });
+
   test('labels a queued member with a proven prerequisite wait as ⛓ 선행 대기', () => {
     const lanes = buildLanes(
       [

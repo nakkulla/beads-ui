@@ -10131,9 +10131,10 @@ export function createScheduler(deps) {
     /** @type {Set<string>} */
     const admission_candidates = new Set();
     const admission = /** @type {Record<string, any>} */ (q.admission || {});
+    // waiting attempt 후보와 겹쳐도 여기서 빼지 않는다 — 두 집합은 독립이고,
+    // 복귀가 확인되면 admission 쪽 소속으로 기록을 지워야 한다.
     for (const bead_id of lanes) {
       if (
-        candidates.has(bead_id) ||
         admission[bead_id]?.reason !== 'prerequisite_unmet' ||
         claimed.has(bead_id) ||
         active.has(bead_id) ||
@@ -10145,7 +10146,8 @@ export function createScheduler(deps) {
       }
       admission_candidates.add(bead_id);
     }
-    const checked = candidates.size + admission_candidates.size;
+    const union = new Set([...candidates, ...admission_candidates]);
+    const checked = union.size;
     if (checked === 0) {
       return { checked: 0, returned: 0 };
     }
@@ -10157,9 +10159,7 @@ export function createScheduler(deps) {
       log('waiting ready scan failed for %s: %o', workspace, err);
       return { checked: 0, returned: 0 };
     }
-    const returned = [...candidates, ...admission_candidates].filter(
-      (bead_id) => ready.has(bead_id)
-    );
+    const returned = [...union].filter((bead_id) => ready.has(bead_id));
     log(
       'waiting rescan checked %d candidate(s) for %s; %d ready',
       checked,
