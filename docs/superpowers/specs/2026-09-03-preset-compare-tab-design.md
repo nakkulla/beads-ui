@@ -168,15 +168,17 @@ beads-ui가 소비할 형태를 적는다. dotfiles 쪽 작업은 §5.
   라운드 수다.
 - 라운드는 같은 단계에서 APPROVE가 나올 때까지 센 횟수다. APPROVE 뒤 같은 단계에
   다시 리뷰가 걸리면(stale 재리뷰 등) r1부터 다시 센다.
-- 영수증을 쓰는 같은 `bd update`에 넣고 함께 readback한다. REVISE 라운드는
-  영수증 없이 stats 키와 댓글만 쓴다.
+- 쓰기 순서는 댓글 먼저(멱등 append + readback), 그다음 metadata다. APPROVE는
+  영수증과 stats를 같은 `bd update`에, REVISE는 stats만 쓴다(dotfiles-12su §1.2).
 
 ### 2.2 라운드별 댓글
 
 리뷰마다 댓글 하나. 첫 줄은 고정 헤더 `## 🔎 리뷰 결과 · <step> · r<n>`
-(`<step>`은 `spec`·`impl`·`plan`), 둘째 줄은 `VERDICT: APPROVE|REVISE`, 그 뒤에
-리뷰 스킬 출력의 지적 목록을 형식 그대로(`severity | 위치 | 문제 | 최소 수정`)
-옮긴다. 지적이 없으면 `- 지적 없음` 한 줄.
+(`<step>`은 `spec`·`impl`·`plan`), 둘째 줄은 `VERDICT: APPROVE|REVISE`, 셋째 줄은
+`anchor: <anchor>`, 빈 줄 뒤에 리뷰어 출력의 번호 붙은 지적 줄을 바이트 그대로
+(`1. severity(blocking) | 위치 | 문제 | 최소 수정` 또는 `1. blocking | …`) 옮긴다.
+지적이 없으면 `- 지적 없음` 한 줄. 댓글의 정체성은 `(step, round, anchor)`이며
+같은 셋은 한 번만 존재한다. 형식 정본은 dotfiles-12su §2다.
 
 ### 2.3 beads-ui 읽기
 
@@ -331,7 +333,8 @@ tuple로 해석해 핀한다**: `EXEC_SETTING_KEYS` 전부와 `impl_dispatch`를
   - `impl_dispatch=delegated` — quick_fix의 기본 dispatch는 `main`이라 이 핀이
     없으면 프리셋의 구현 런타임·모델이 쓰이지 않는다. 클론은 항상 위임한다.
   - `bench_run=<run_id>`, `bench_cell=<preset_id>:<k>`, `bench_source=<원 ID>`,
-    `bench_base=<40hex sha>` — 네 키와 `bench` 라벨은 §5.3에서 계약에 등록한다.
+    `bench_base=<40hex sha>` — 네 키와 `bench` 라벨은 §5.3대로 계약에 소유만
+    선언한다. `run_id`는 `^[A-Za-z0-9._-]+$`다.
   - `landing=none` (§5.2)
 - 의존 간선은 만들지 않는다. `related`는 형제 금지 규칙과 부딪히고
   `discovered-from`은 후속 의미가 붙는다. 연결은 `bench_source`가 맡는다.
@@ -358,12 +361,14 @@ tuple로 해석해 핀한다**: `EXEC_SETTING_KEYS` 전부와 `impl_dispatch`를
 
 1. **완료 판정**: 성공한 quick_fix attempt는 지금 `server/worker/quickfix-landing.js`
    의 정산으로 들어가고, 무변경 close 접두(`refuted:`·`no-delta:`)가 아닌 close는
-   `premature_close`로 거부된다. 여기에 `bench:` 접두를 세 번째 무변경 종결
-   kind로 더한다(`NO_CHANGE_CLOSE_REASON_RE`와 kind 맵, `done_kind=bench`).
-   정산 분기: Bead에 `landing=none`이 있고 close 사유의 run id가 그 Bead의
-   `bench_run`과 같으면 PR·containment·배포 단계 없이 `done`으로 종결한다.
-   둘 중 하나라도 어긋나면 기존대로 `premature_close`다. `scheduler.js`의 정산
-   호출 경로와 `admission.js`의 kind 어휘가 함께 바뀌며 통합 테스트로 묶는다.
+   `premature_close`로 거부된다. `bench:`는 무변경 종결이 **아니다**(워크트리에
+   델타가 있다). 계약(dotfiles-12su §3.3)의 별도 `landing_none_close` 블록에
+   맞춰 `NO_CHANGE_CLOSE_REASON_RE`와 kind 맵은 그대로 두고, 그 앞에 별도 분기
+   `BENCH_CLOSE_REASON_RE = /^bench:[A-Za-z0-9._-]+$/`를 둔다. 정산 분기: Bead에
+   `landing=none`이 있고 close 사유의 run id가 그 Bead의 `bench_run`과 같으면
+   PR·containment·배포 단계 없이 `done_kind=bench`로 종결한다. 둘 중 하나라도
+   어긋나면 기존대로 `premature_close`다. `scheduler.js`의 정산 호출 경로와
+   `admission.js`의 kind 어휘가 함께 바뀌며 통합 테스트로 묶는다.
 2. **push 방지 — git 수준**: ADR 0007대로 텍스트 판정이 아니라 git이 막는다.
    `server/worker/guard-hook.js`의 attempt별 `pre-push` 훅에 `deny` 모드를 더해
    모든 ref push를 거부하고 기록한다(현재 quick_fix는 `record` 모드라 push를
@@ -434,19 +439,23 @@ fail-quiet로 처리하므로 실제로 막히는 것은 §4뿐이다.
 - metadata 키 `landing=none` 등록. 있으면 workflow 마무리는 검증까지만 하고
   push·PR·배포를 하지 않는다. `impl_review`와 stats는 평소처럼 쓴다.
 - 세션은 `bd close <id> --reason bench:<run_id>`로 닫고 결과 줄
-  `성공 · bench`로 끝난다. `close_reason` 접두 `bench:` 등록(ADR dotfiles/0037
-  supersede). 같은 등록에 Worker(beads-ui)가 실패·중단 셀을
-  `bench:<run_id>:failed|aborted`로 닫는 권한을 포함한다.
+  `성공 · bench:<run_id>`로 끝난다. `close_reason` 접두 `bench:`는 무변경 종결
+  kind가 아니라 별도 `landing_none_close` 블록으로 등록한다(ADR dotfiles/0037
+  supersede — 뒤집히는 조항은 "델타 있는 Worker quick_fix의 close는 Worker 소유"
+  다). 같은 등록에 Worker(beads-ui)가 실패·중단 셀을
+  `bench:<run_id>:failed|aborted`로 닫는 권한을 포함한다. `landing=none`은 델타
+  유무와 무관하게 무변경 종결보다 먼저 선택되고 구현 게이트 1회는 항상 돈다.
 - 완료 보고서 댓글 의무는 그대로다.
 
-### 5.3 bench 표면 등록 (A3)
+### 5.3 bench 표면 소유 선언 (A3)
 
 `bench` 라벨과 `bench_run`·`bench_cell`·`bench_source`·`bench_base` metadata
-키는 beads-ui가 쓰고 읽는 값이지만 Bead 계약 표면(라벨 어휘·durable metadata
-키)이므로 canonical 정의는 dotfiles가 가진다(AGENTS.md "Workflow 계약의 canonical
-소유권"). 계약에 형식·작성자(`beads_ui`)·소비자(`beads_ui`, 그리고 `landing=none`을
-읽는 workflow 마무리)를 등록하고 checker·consumer registry에 함께 넣는다.
-세션은 이 키들을 쓰지 않는다.
+키는 beads-ui(Worker)만 쓰고 읽는 값이다. 계약은 kv의 `out_of_registry` 선례와
+같은 꼴로 **소유만 선언하고 등록하지 않는다**(dotfiles-12su §4): `metadata.
+out_of_registry.known`에 라벨·키·형식(`bench_run`은 `^[A-Za-z0-9._-]+$`, close
+사유의 run-id 토큰과 같은 집합)을 적고 checker는 그 키가 `parent_keys`에 없음을
+단언한다. 세션은 이 값들을 쓰지도 읽지도 않으며 `landing=none`만 세션(마무리)이
+읽는다.
 
 ## 6. 오류 처리
 
@@ -534,7 +543,7 @@ fail-quiet로 처리하므로 실제로 막히는 것은 §4뿐이다.
 
 | 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
 | --- | --- | --- | --- | --- | --- |
-| 형제 | dotfiles | awaited_by_consumer | different_repository — §5 A1·A2·A3 계약 변경(리뷰 stats 키·댓글, `landing=none`·`bench:` close 사유, `bench` 라벨과 `bench_*` 키 등록). `bench:` 접두가 ADR dotfiles/0037(무변경 close 두 접두)과 충돌해 supersede가 필요하므로 그쪽 route는 `spec_backed` | 없음 | dotfiles-12su |
+| 형제 | dotfiles | awaited_by_consumer | different_repository — §5 A1·A2·A3 계약 변경(리뷰 stats 키·댓글, `landing=none`·`bench:` close 사유, `bench` 라벨과 `bench_*` 키 소유 선언). `landing=none`이 ADR dotfiles/0037의 "델타 있는 Worker quick_fix close는 Worker 소유" 조항과 충돌해 supersede가 필요하므로 그쪽 route는 `spec_backed` | 없음 | dotfiles-12su |
 
 - 관찰: spec_backed 원본의 클론 실행 — 스펙 영수증 복제와 PR 억제 규칙이 더
   필요해 이번엔 빼며, 실작업 보기로 부족할 때 확장한다.
