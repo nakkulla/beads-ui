@@ -1790,6 +1790,24 @@ describe('monitor 대기 attempt 투영 (UI-5ym8 §3.1·§3.3·§6)', () => {
     expect(map.get('A-1')?.failure?.resume_eligible).toBe(false);
   });
 
+  test('points a parked attempt at its inquiry session exit', () => {
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'parked',
+          cause: 'session_parked'
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.failure?.resume_reason).toBe(
+      '세션 대기 — [세션에서 해결]로 문의를 이어갑니다'
+    );
+  });
+
   test('projects a retry_wait attempt with its backoff facts', () => {
     const map = activeByBead(
       {

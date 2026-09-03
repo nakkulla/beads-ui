@@ -215,6 +215,65 @@ describe('resolveFailureContext (UI-jw27 §4)', () => {
     expect(context?.failure_class).toBe('폐기 실패');
   });
 
+  test('reads the latest implementation park as 파킹', () => {
+    const queue = {
+      attempts: {
+        old: {
+          bead_id: BEAD,
+          status: 'failed'
+        },
+        review: {
+          bead_id: BEAD,
+          kind: 'review_session',
+          status: 'parked',
+          cause_detail: { awaiting_user: 'ignored' }
+        },
+        parked: {
+          bead_id: BEAD,
+          kind: 'implementation',
+          status: 'parked',
+          cause_detail: {
+            awaiting_user: 'impl_review_conflict:design',
+            summary: '구현과 설계가 충돌함'
+          }
+        }
+      }
+    };
+
+    const context = resolveFailureContext(queue, BEAD);
+
+    expect(context).toEqual({
+      failure_class: '파킹',
+      reason: 'impl_review_conflict:design',
+      stage: null,
+      detail: '구현과 설계가 충돌함'
+    });
+  });
+
+  test('prefers a discard failure over a parked attempt', () => {
+    const queue = {
+      discard_operations: {
+        op1: {
+          bead_id: BEAD,
+          phase: 'closing_pr',
+          last_error: 'pr_close_failed',
+          requested_at: 5
+        }
+      },
+      attempts: {
+        parked: {
+          bead_id: BEAD,
+          status: 'parked',
+          cause_detail: { awaiting_user: 'generic' }
+        }
+      }
+    };
+
+    const context = resolveFailureContext(queue, BEAD);
+
+    expect(context?.failure_class).toBe('폐기 실패');
+  });
+
   test('ignores an abandoned discard failure', () => {
     const queue = {
       discard_operations: {

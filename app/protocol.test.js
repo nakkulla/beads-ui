@@ -83,6 +83,12 @@ describe('server/protocol', () => {
     expect(res).toBe(true);
   });
 
+  test('rejects the retired parked retry message', () => {
+    const retired_type = ['worker', 'parked', 'retry'].join('-');
+
+    expect(isMessageType(retired_type)).toBe(false);
+  });
+
   test('isMessageType returns false for unknown type', () => {
     const res = isMessageType('not-a-type');
 

@@ -595,10 +595,10 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
       ...(held.run_state === 'parked'
         ? {
             failure: failureProjection(a, {
-              // 파킹의 출구는 이어하기가 아니라 새 attempt다 (§3.1): 같은
-              // 세션을 되살리면 사용자가 결정하기 전 자리로 돌아간다.
+              // 파킹 출구는 새 attempt나 원 세션 재개가 아니라 문의 세션이다:
+              // 사용자가 결정을 내릴 대화만 이어지고 구현 재디스패치는 없다.
               resume_eligible: false,
-              resume_reason: '세션 대기 — [재시도]가 새 attempt를 띄웁니다',
+              resume_reason: '세션 대기 — [세션에서 해결]로 문의를 이어갑니다',
               confirmation: discard.confirmation,
               history: input.bead_timelines?.[bead_id]
             })

@@ -1,7 +1,6 @@
 /**
- * `worker-queue-hold-resume` / `worker-queue-hold-retry-now` /
- * `worker-parked-retry` (2026-08-28 worker-failure-tiers spec §4): the three
- * CAS-guarded clicks the queue's stop banner and the parked tile send.
+ * `worker-queue-hold-resume` / `worker-queue-hold-retry-now` and the parked
+ * tile's `worker-resolve-in-session` exit.
  *
  * The scheduler side is mocked — this file owns the ws contract: the payload
  * guard, the reply shape, the readback the reply carries, and the fanout that
@@ -41,6 +40,7 @@ vi.mock('../worker/attach.js', () => ({
   kickWorkerMergeQueue: () => Promise.resolve(),
   observeWorkerPrs: () => Promise.resolve(),
   pauseWorkerAttempt: () => Promise.resolve({ ok: true }),
+  readBeadTimeline: () => [],
   recheckWorkerStaleWork: () => Promise.resolve({ ok: true }),
   reconcileWorkerRepoOperations: () => Promise.resolve(),
   refreshWorkerExternalPrs: () => Promise.resolve(false),
@@ -55,15 +55,6 @@ vi.mock('../worker/attach.js', () => ({
     return Promise.resolve(state.results.resume ?? { ok: true });
   },
   retryWorkerCleanup: () => Promise.resolve({ ok: true }),
-  /**
-   * @param {string} workspace
-   * @param {any} input
-   */
-  retryWorkerParkedAttempt: (workspace, input) => {
-    state.calls.push({ fn: 'parked', workspace, input });
-    state.onCall?.();
-    return Promise.resolve(state.results.parked ?? { ok: true });
-  },
   /**
    * @param {string} workspace
    * @param {any} input
@@ -93,6 +84,10 @@ const WS = '/tmp/example/queue-hold-ws';
 
 /** @type {string} */
 let tmp_state;
+/** @type {any} */
+let original_direction_inquiry;
+/** @type {any[]} */
+let inquiry_calls;
 
 /**
  * @returns {any}
@@ -152,6 +147,27 @@ beforeEach(() => {
   // make the mocked scheduler leg move the queue the way the real one does.
   state.onCall = null;
   handlers.__resetWorkerQueueForTest();
+  inquiry_calls = [];
+  original_direction_inquiry = getWorkerRuntime().directionInquiry;
+  getWorkerRuntime().directionInquiry = {
+    ...original_direction_inquiry,
+    /** @param {any} input */
+    launchForClick: async (input) => {
+      inquiry_calls.push(input);
+      return {
+        launched: false,
+        session: 'already_running',
+        reason: null,
+        mode: 'fork',
+        fallback_reason: null,
+        session_id: 'sid',
+        command: "claude --resume 'sid' --fork-session",
+        bridge_active: true,
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'UI-1'
+      };
+    }
+  };
   getWorkerRuntime().queueStore.place(WS, {
     expected_revision: getWorkerRuntime().queueStore.snapshot(WS).revision,
     bead_id: 'UI-1'
@@ -160,6 +176,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.XDG_STATE_HOME;
+  getWorkerRuntime().directionInquiry = original_direction_inquiry;
   handlers.__resetWorkerQueueForTest();
   try {
     fs.rmSync(tmp_state, { recursive: true, force: true });
@@ -295,73 +312,6 @@ describe('worker-queue-hold-retry-now (UI-5ym8 §4)', () => {
   });
 });
 
-describe('worker-parked-retry (UI-5ym8 §3.1)', () => {
-  test('forwards the bead and attempt the tile named', async () => {
-    const { reply } = await dispatch(
-      handlers.handleWorkerParkedRetry,
-      'worker-parked-retry',
-      { bead_id: 'UI-1', attempt_id: 'att-1' }
-    );
-
-    expect(state.calls).toEqual([
-      {
-        fn: 'parked',
-        workspace: WS,
-        input: { bead_id: 'UI-1', attempt_id: 'att-1' }
-      }
-    ]);
-    expect(reply.payload.ok).toBe(true);
-  });
-
-  test('reports not_latest as a no-op reason', async () => {
-    state.results.parked = { ok: false, reason: 'not_latest' };
-
-    const { reply } = await dispatch(
-      handlers.handleWorkerParkedRetry,
-      'worker-parked-retry',
-      { bead_id: 'UI-1', attempt_id: 'att-1' }
-    );
-
-    expect(reply.payload).toMatchObject({ ok: false, reason: 'not_latest' });
-  });
-
-  test('refuses a payload missing the attempt id', async () => {
-    const { reply } = await dispatch(
-      handlers.handleWorkerParkedRetry,
-      'worker-parked-retry',
-      { bead_id: 'UI-1' }
-    );
-
-    expect(reply.ok).toBe(false);
-    expect(reply.error.code).toBe('bad_request');
-    expect(state.calls).toEqual([]);
-  });
-
-  test('fans the readback out after the reply', async () => {
-    const watcher = subscriber();
-    state.onCall = () => {
-      const store = getWorkerRuntime().queueStore;
-      store.place(WS, {
-        expected_revision: store.snapshot(WS).revision,
-        bead_id: 'UI-2'
-      });
-    };
-
-    const { sock } = await dispatch(
-      handlers.handleWorkerParkedRetry,
-      'worker-parked-retry',
-      { bead_id: 'UI-1', attempt_id: 'att-1' }
-    );
-
-    expect(JSON.parse(sock.sent[0]).payload.ok).toBe(true);
-    expect(
-      watcher.sent
-        .map((/** @type {string} */ raw) => JSON.parse(String(raw)))
-        .some((/** @type {any} */ msg) => msg.type === 'worker-queue-snapshot')
-    ).toBe(true);
-  });
-});
-
 describe('worker queue hold snapshot projection (UI-5ym8 §4)', () => {
   test('carries hold and lineages on the wire and withholds hold_history', () => {
     const store = getWorkerRuntime().queueStore;
@@ -388,71 +338,44 @@ describe('worker queue hold snapshot projection (UI-5ym8 §4)', () => {
   });
 });
 
-/**
- * §5's `user_action` producer. The handler holds no `deps` object, so it asks
- * the writer the workspace registered with the queue store — the same instance
- * `attach.js` builds — instead of opening the timeline file itself.
- *
- * The registration is process-wide and has no unregister, so the order here is
- * load-bearing: the unregistered case runs FIRST, and this block sits last in
- * the file so nothing after it inherits a fake writer.
- */
-describe('worker-parked-retry timeline (record-timeline-retention §5)', () => {
-  /**
-   * @param {(input: any) => any} append
-   */
-  function useTimeline(append) {
-    /** @type {any[]} */
-    const events = [];
-    getWorkerRuntime().queueStore.useTimeline(WS, {
-      /** @param {any} input */
-      append: (input) => {
-        events.push(input);
-        return append(input);
-      },
-      readTimeline: () => []
+describe('parked tile resolution (UI-gjp2 §3.3)', () => {
+  test('routes the parked tile click to worker-resolve-in-session', async () => {
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'att-1',
+        bead_id: 'UI-1',
+        status: 'parked',
+        repo: '/repo',
+        cause_detail: {
+          awaiting_user: 'impl_review_conflict:design',
+          summary: '설계 충돌'
+        }
+      }
     });
-    return events;
-  }
 
-  test('replies to the click when no timeline is registered', async () => {
     const { reply } = await dispatch(
-      handlers.handleWorkerParkedRetry,
-      'worker-parked-retry',
-      { bead_id: 'UI-1', attempt_id: 'att-1' }
-    );
-
-    expect(reply.payload.ok).toBe(true);
-  });
-
-  test('records the click on the bead the tile named', async () => {
-    const events = useTimeline(() => ({ ok: true }));
-
-    await dispatch(handlers.handleWorkerParkedRetry, 'worker-parked-retry', {
-      bead_id: 'UI-1',
-      attempt_id: 'att-1'
-    });
-
-    const revision = getWorkerRuntime().queueStore.snapshot(WS).revision;
-    expect(events).toEqual([
+      handlers.handleWorkerResolveInSession,
+      'worker-resolve-in-session',
       {
         bead_id: 'UI-1',
-        kind: 'user_action',
-        seq: `parked_retry:${revision}`,
-        summary: '[재시도] 클릭 · 파킹 해제'
+        expected_revision: store.snapshot(WS).revision
       }
-    ]);
-  });
-
-  test('replies to the click when the timeline append fails', async () => {
-    useTimeline(() => ({ ok: false, reason: 'write_failed', detail: 'nope' }));
-
-    const { reply } = await dispatch(
-      handlers.handleWorkerParkedRetry,
-      'worker-parked-retry',
-      { bead_id: 'UI-1', attempt_id: 'att-1' }
     );
 
-    expect(reply.payload.ok).toBe(true);
+    expect(inquiry_calls).toEqual([
+      {
+        workspace: WS,
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        repo: '/repo',
+        awaiting_user: 'impl_review_conflict:design'
+      }
+    ]);
+    expect(reply.payload).toMatchObject({
+      session: 'already_running',
+      tmux_window: 'UI-1'
+    });
   });
 });

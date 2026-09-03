@@ -194,8 +194,8 @@ import { logPathTemplate } from './log-path.js';
  * @property {string|null} [summary] - 세션의 마지막 오류/보고 한 줄 (UI-5ym8
  * §6), `cause_detail`에서 끌어올린 값. 타일 본문과 팝오버 첫 줄이 같은 것을
  * 읽는다. 옛 기록에는 없다 (fail-quiet).
- * @property {string} [bead_id] - 이 시도가 속한 bead. `worker-parked-retry`가
- * bead와 attempt를 함께 보내야 하므로 투영이 실어 나른다.
+ * @property {string} [bead_id] - 이 시도가 속한 bead. Worker 액션이 CAS 명령의
+ * `bead_id`로 사용하므로 투영이 실어 나른다.
  * @property {RetryTile|null} [retry] - 이 실패 앞에 있었던 backoff 이력 (§6).
  * @property {number|null} finished_at
  * @property {string|null} runner
@@ -924,9 +924,19 @@ function sessionOpenButton(current) {
  * 폐기 버튼이 없으면 `''`이라 foot 자체가 재료 없는 줄이 된다.
  * @param {import('lit-html').TemplateResult|''} [dependency_chips] - 슬롯 4a 칩,
  * 이미 계산된 것 그대로. 재료가 없으면 `''`이라 줄이 통째로 빠진다 (fail-quiet).
+ * @param {import('lit-html').TemplateResult|''} [resolve_action] - parked 출구.
+ * @param {boolean} [discard_failed] - `true`면 같은 실패를 다루는 폐기 조작을
+ * 문의 세션 조작보다 먼저 그린다.
  * @returns {import('lit-html').TemplateResult|''}
  */
-function heldBodyTemplate(kind, held, discard_actions, dependency_chips = '') {
+function heldBodyTemplate(
+  kind,
+  held,
+  discard_actions,
+  dependency_chips = '',
+  resolve_action = '',
+  discard_failed = false
+) {
   if (kind === 'provider_hold') {
     return html`<div class="rtile__foot">
       <button
@@ -971,15 +981,9 @@ function heldBodyTemplate(kind, held, discard_actions, dependency_chips = '') {
       ? html`<p class="rtile__held-summary">${summary}</p>`
       : ''}${history}
     <div class="rtile__foot">
-      <button
-        type="button"
-        class="rtile__parked-retry"
-        title="이 bead를 새 attempt로 다시 디스패치합니다 (같은 세션을 잇지 않습니다)"
-        aria-label="재시도"
-      >
-        재시도
-      </button>
-      ${discard_actions}
+      ${discard_failed
+        ? html`${discard_actions}${resolve_action}`
+        : html`${resolve_action}${discard_actions}`}
     </div>`;
 }
 
@@ -1341,7 +1345,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                     >
                       ⏸
                     </button>`}
-                ${discard_actions}`}${resolve_button}
+                ${discard_actions}`}${parked ? '' : resolve_button}
       </div>
     </div>
     <div class="rtile__title">${tile.title}</div>
@@ -1356,7 +1360,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 : 'provider_hold',
           parked ? park : waiting ? wait : hold,
           discard_actions,
-          waiting ? monitor_deps : ''
+          waiting ? monitor_deps : '',
+          parked ? resolve_button : '',
+          parked && !!tile.discard?.error
         )
       : failed
         ? ''

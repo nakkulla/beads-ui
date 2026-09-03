@@ -350,6 +350,12 @@ describe('worker/attach construction + live loop (F1)', () => {
     ).toBeUndefined();
   });
 
+  test('does not expose the retired parked retry attachment action', () => {
+    const retired_export = ['retry', 'Worker', 'Parked', 'Attempt'].join('');
+
+    expect(/** @type {any} */ (attachModule)[retired_export]).toBeUndefined();
+  });
+
   test('createWorkerAttachment builds a scheduler + reconcile timer over REAL deps', () => {
     const runtime = createWorkerRuntime();
     const att = createWorkerAttachment(WS, {

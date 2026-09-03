@@ -4750,6 +4750,7 @@ describe('scheduler resume (spec §1)', () => {
   });
 
   test('rejects a decision token after an account pin changes', async () => {
+    /** @type {any} */
     const config = {
       B1: { model: 'sol', effort: 'high', codex_account: 'codex-one' }
     };
@@ -14573,6 +14574,7 @@ describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () =
   });
 
   test('dispatches the serial head after it turns ready', async () => {
+    /** @type {any} */
     const config = {
       A: { ready: false, blocked: true, status: 'open' }
     };
@@ -15896,12 +15898,19 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
    * Drive one bead to a `parked` attempt and hand back the harness.
    *
    * @param {Record<string, any>} config
+   * @param {string} [awaiting_user]
+   * @param {Record<string, any>} [deps]
    */
-  async function parkOne(config) {
+  async function parkOne(
+    config,
+    awaiting_user = 'spec_review_stale:revise',
+    deps = {}
+  ) {
     const env = setup({
       config,
       slots: 1,
-      verify: parkedVerifier('스펙 승인 대기')
+      verify: parkedVerifier(awaiting_user),
+      ...deps
     });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
@@ -15914,7 +15923,9 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
 
   test('does not resume while awaiting_user is still present', async () => {
     /** @type {any} */
-    const config = { S1: { metadata: { awaiting_user: '스펙 승인 대기' } } };
+    const config = {
+      S1: { metadata: { awaiting_user: 'spec_review_stale:revise' } }
+    };
     const { env, attempt_id } = await parkOne(config);
 
     await env.scheduler.onIssuesChanged(WS);
@@ -15928,7 +15939,9 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
 
   test('resumes exactly once when awaiting_user is cleared', async () => {
     /** @type {any} */
-    const config = { S1: { metadata: { awaiting_user: '스펙 승인 대기' } } };
+    const config = {
+      S1: { metadata: { awaiting_user: 'spec_review_stale:revise' } }
+    };
     const { env, attempt_id } = await parkOne(config);
     await env.scheduler.onIssuesChanged(WS);
     config.S1.metadata = {};
@@ -15944,31 +15957,49 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
     expect(Object.keys(env.store.snapshot(WS).attempts).length).toBe(2);
   });
 
-  test('retryParked dispatches a fresh attempt for the latest parked record', async () => {
-    const { env, attempt_id } = await parkOne({ S1: {} });
+  test('excludes implementation-conflict parks from transition redispatch', async () => {
+    /** @type {any} */
+    const config = {
+      S1: { metadata: { awaiting_user: 'impl_review_conflict:design' } }
+    };
+    const { env, attempt_id } = await parkOne(
+      config,
+      'impl_review_conflict:design'
+    );
+    config.S1.metadata = {};
 
-    const result = await env.scheduler.retryParked(WS, {
-      bead_id: 'S1',
-      attempt_id
-    });
+    await env.scheduler.onIssuesChanged(WS);
 
-    expect(result).toEqual({ ok: true });
-    expect(Object.keys(env.store.snapshot(WS).attempts).length).toBe(2);
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual([attempt_id]);
   });
 
-  test('retryParked refuses an attempt that is no longer the latest', async () => {
-    const { env, attempt_id } = await parkOne({ S1: {} });
-    env.store.appendAttempt(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      attempt: { attempt_id: 'later', bead_id: 'S1' }
+  test('reports an admission refusal during stale redispatch', async () => {
+    const notify = { awaitingUser: vi.fn() };
+    /** @type {any} */
+    const config = {
+      S1: { metadata: { awaiting_user: 'plan_approval_stale:revise' } }
+    };
+    const { env } = await parkOne(config, 'plan_approval_stale:revise', {
+      notify
+    });
+    config.S1.metadata = {};
+    /** @type {any} */ (env.bd).snapshotBead = async () => ({
+      ready: false,
+      blocked: false,
+      repo: '/repo',
+      target_base: 'main',
+      status: 'in_progress',
+      labels: [],
+      deps: []
     });
 
-    const result = await env.scheduler.retryParked(WS, {
-      bead_id: 'S1',
-      attempt_id
-    });
+    await env.scheduler.onIssuesChanged(WS);
 
-    expect(result).toEqual({ ok: false, reason: 'not_latest' });
+    expect(notify.awaitingUser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        redispatch_refusal: expect.stringMatching(/^not_ready:/)
+      })
+    );
   });
 
   test('the retry timer dispatches the ladder as a new attempt', async () => {
@@ -16436,7 +16467,9 @@ describe('scheduler 실패 계층 회귀 (UI-5ym8 impl 리뷰)', () => {
 
   test('an aborted parked resume leaves the transition unspent', async () => {
     /** @type {any} */
-    const config = { S1: { metadata: { awaiting_user: '스펙 승인 대기' } } };
+    const config = {
+      S1: { metadata: { awaiting_user: 'spec_review_stale:revise' } }
+    };
     const env = setup({
       config,
       slots: 1,
@@ -16446,7 +16479,7 @@ describe('scheduler 실패 계층 회귀 (UI-5ym8 impl 리뷰)', () => {
           reason: 'no_pr',
           pr_url: null,
           bead_status: 'in_progress',
-          awaiting_user: '스펙 승인 대기'
+          awaiting_user: 'spec_review_stale:revise'
         }))
       }
     });
@@ -16831,7 +16864,7 @@ describe('scheduler 방향 질의 세션 훅 (UI-7uid §3.1)', () => {
     });
   });
 
-  test('leaves the hook alone for a park that is not a stale re-review', async () => {
+  test('calls the hook for a park without spec_review_stale', async () => {
     const directionInquiry = { onParkedAttempt: vi.fn(async () => {}) };
 
     const { env, attempt_id } = await parkStale({
@@ -16840,7 +16873,13 @@ describe('scheduler 방향 질의 세션 훅 (UI-7uid §3.1)', () => {
     });
 
     expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('parked');
-    expect(directionInquiry.onParkedAttempt).not.toHaveBeenCalled();
+    expect(directionInquiry.onParkedAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bead_id: 'S1',
+        attempt_id,
+        awaiting_user: 'spec_review_stale:revise'
+      })
+    );
   });
 
   test('parks normally when no direction-inquiry dep is wired', async () => {

@@ -4442,23 +4442,6 @@ html[data-theme='dark'] {
   margin-top: var(--sp-6);
 }
 
-.rtile__parked-retry {
-  flex: 0 0 auto;
-  padding: 2px 5px;
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-3);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--fs-small);
-  line-height: 1.2;
-  cursor: pointer;
-}
-
-.rtile__parked-retry:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
 .rtile__resume-alternate {
   flex: 0 0 auto;
   padding: var(--sp-2) var(--sp-5);

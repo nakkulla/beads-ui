@@ -97,6 +97,7 @@ import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
 import { createRepoOpsDrawer } from './repo-ops-timeline.js';
 import { runningGridTemplate } from './running-grid.js';
+import { tileResolveFields } from './tile-resolve.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
 
@@ -410,64 +411,6 @@ export function mergeQueueRefusalText(reason) {
 }
 
 /**
- * Why a `[세션에서 해결]` launch did not happen, in human words (UI-jw27 §4).
- * An unknown token travels through raw rather than being renamed into a cause
- * it cannot prove.
- *
- * @param {unknown} reason
- * @returns {string}
- */
-export function resolveSessionRefusalText(reason) {
-  switch (reason) {
-    case 'no_terminal_failure':
-      return '이 행에 이어받을 terminal 실패 기록이 없습니다';
-    case 'tmux_unavailable':
-      return 'tmux에 닿지 못했습니다 — 세션을 띄우지 않았습니다';
-    case 'launch_failed:claude_not_found':
-      return 'claude 실행 파일을 PATH에서 찾지 못했습니다';
-    case 'launch_failed:new_session':
-      return 'tmux 세션을 만들지 못했습니다';
-    case 'launch_failed:new_window':
-      return 'tmux 창을 만들지 못했습니다';
-    case 'launch_failed:exited':
-      return '띄운 세션이 곧바로 종료됐습니다';
-    case 'error':
-      return '세션 기동 중 오류가 났습니다';
-    default:
-      return typeof reason === 'string' && reason.length > 0
-        ? reason
-        : '세션을 띄우지 못했습니다';
-  }
-}
-
-/**
- * Why the recorded session could not be forked, in human words (UI-jw27 §4).
- * Every one of these still LAUNCHES — a fresh session — so the sentence is
- * about what the new session does NOT carry, never about a refusal.
- *
- * @param {unknown} reason
- * @returns {string}
- */
-export function resolveSessionFallbackText(reason) {
-  switch (reason) {
-    case 'no_session_ref':
-      return '기록된 세션 없음';
-    case 'unsafe_session_id':
-      return '세션 ID를 인자로 쓸 수 없음';
-    case 'provider_mismatch':
-      return '기록된 세션이 claude가 아님';
-    case 'not_local':
-      return '기록된 세션의 transcript가 이 기기에 없음';
-    case 'bd_unavailable':
-      return 'Bead 메타데이터를 읽지 못함';
-    default:
-      return typeof reason === 'string' && reason.length > 0
-        ? reason
-        : '사유 미상';
-  }
-}
-
-/**
  * The one sentence a `[세션에서 해결]` reply becomes on screen.
  *
  * The fallback reason is carried into the toast on purpose: a fresh session and
@@ -475,7 +418,7 @@ export function resolveSessionFallbackText(reason) {
  * difference (spec §4 — fail-quiet 은폐 금지).
  *
  * @param {any} res
- * @returns {string}
+ * @returns {string|null}
  */
 export function resolveSessionToast(res) {
   if (!res || typeof res !== 'object') {
@@ -485,18 +428,14 @@ export function resolveSessionToast(res) {
     return '큐가 바뀌어 클릭이 적용되지 않았습니다 — 다시 눌러주세요';
   }
   if (res.session === 'already_running') {
-    return '이미 이 이슈의 해결 세션이 열려 있습니다';
+    return `이미 열려 있습니다 · ${res.tmux_window || '?'}`;
   }
   if (res.launched !== true) {
-    return `세션에서 해결 거부: ${resolveSessionRefusalText(res.reason)}`;
+    return `세션 기동 실패: ${res.reason || 'unknown'}`;
   }
-  const bridge =
-    res.bridge_active === true
-      ? ''
-      : ' (Discord 중계 비활성 — tmux에서 답하세요)';
   return res.mode === 'fork'
-    ? `기록된 세션을 fork해 띄웠습니다${bridge}`
-    : `새 세션을 띄웠습니다 — ${resolveSessionFallbackText(res.fallback_reason)}${bridge}`;
+    ? null
+    : `새 세션으로 시작 (${res.fallback_reason || 'unknown'})`;
 }
 
 /**
@@ -1737,29 +1676,6 @@ export function createWorkerView(mount_element, options = {}) {
    */
   const resolve_pending = new Set();
   /**
-   * `[세션에서 해결]` 필드 3종 (UI-jw27 §4). 폐기 실패는 PR 대기 행만이 아니라
-   * 실행 중·held·파킹 타일과 대기 행에서도 나므로, 그 사실을 싣는 모든 워커
-   * 표면이 같은 판정을 같은 자리에서 쓴다. 재료(=실패한 폐기 작업)가 없으면
-   * 필드 자체를 만들지 않아 버튼이 그려지지 않는다.
-   *
-   * @param {string} bead_id
-   * @param {any} discard
-   * @returns {{ resolve_action?: boolean, resolve_enabled?: boolean, resolve_title?: string }}
-   */
-  function discardResolveFields(bead_id, discard) {
-    if (!discard?.error || !bead_id) {
-      return {};
-    }
-    return {
-      resolve_action: true,
-      resolve_enabled: !resolve_pending.has(bead_id),
-      resolve_title: resolve_pending.has(bead_id)
-        ? '세션 기동 요청 중 — 서버 응답을 기다립니다'
-        : '실패한 폐기를 사람이 이어받는 대화형 세션을 띄웁니다 — 기록된 세션이 있으면 fork하고, 없으면 새 세션에 사유를 싣습니다'
-    };
-  }
-
-  /**
    * Beads whose REVISE-disposition click is in flight (UI-hs11 §3.5). It covers
    * the same gap `merge_pending` covers — the window between the click and the
    * reply — so a second click cannot be issued while the first is still being
@@ -2474,7 +2390,10 @@ export function createWorkerView(mount_element, options = {}) {
         })
       );
       adopt(res);
-      showToast(resolveSessionToast(res), resolveSessionTone(res), 4000);
+      const message = resolveSessionToast(res);
+      if (message !== null) {
+        showToast(message, resolveSessionTone(res), 4000);
+      }
     } finally {
       resolve_pending.delete(bead_id);
       doRender();
@@ -2508,35 +2427,6 @@ export function createWorkerView(mount_element, options = {}) {
         `${refusal}: ${
           res.reason === 'hold_changed'
             ? '큐 상태가 바뀌었습니다 — 다시 확인하세요'
-            : res.reason || ''
-        }`,
-        'error',
-        2800
-      );
-    }
-  }
-
-  /**
-   * Dispatch a NEW attempt for a parked bead (§3.1). Not a resume: the parked
-   * session ended normally waiting for a decision, so continuing it would land
-   * back where the decision was still missing.
-   *
-   * @param {string} bead_id
-   * @param {string} attempt_id
-   */
-  async function retryParked(bead_id, attempt_id) {
-    if (!transport || !bead_id || !attempt_id) {
-      return;
-    }
-    const res = /** @type {any} */ (
-      await transport('worker-parked-retry', { bead_id, attempt_id })
-    );
-    adopt(res);
-    if (res && res.ok === false) {
-      showToast(
-        `재시도 거부: ${
-          res.reason === 'not_latest'
-            ? '이 bead에 더 새로운 시도가 있습니다'
             : res.reason || ''
         }`,
         'error',
@@ -3289,7 +3179,14 @@ export function createWorkerView(mount_element, options = {}) {
                   open: open_failure_detail === item.attempt_id
                 }
               : null,
-            ...discardResolveFields(item.id, item.discard)
+            ...tileResolveFields(
+              item.id,
+              {
+                discard: item.discard,
+                parked: item.run_state === 'parked'
+              },
+              resolve_pending.has(item.id)
+            )
           })
       );
     // 사람이 결정할 것이 먼저 보여야 한다: 실패, 그 다음 파킹(사용자 결정을
@@ -4158,7 +4055,14 @@ export function createWorkerView(mount_element, options = {}) {
       data-queue-index=${String(item.queue_index ?? 0)}
     >
       ${miniRow(
-        { ...item, ...discardResolveFields(item.id, item.discard) },
+        {
+          ...item,
+          ...tileResolveFields(
+            item.id,
+            { discard: item.discard, parked: false },
+            resolve_pending.has(item.id)
+          )
+        },
         { actions: queueRowOps(item) }
       )}
     </div>`;
@@ -4193,7 +4097,14 @@ export function createWorkerView(mount_element, options = {}) {
             // 에도 서버 인덱스에도 들어가지 않는다 — 좌표 속성을 싣지 않는다.
             ...lane.ghosts.map((/** @type {any} */ it) =>
               miniRow(
-                { ...it, ...discardResolveFields(it.id, it.discard) },
+                {
+                  ...it,
+                  ...tileResolveFields(
+                    it.id,
+                    { discard: it.discard, parked: false },
+                    resolve_pending.has(it.id)
+                  )
+                },
                 { actions: queueRowOps(it) }
               )
             ),
@@ -5207,19 +5118,6 @@ export function createWorkerView(mount_element, options = {}) {
           );
         });
       }
-      return;
-    }
-    // 파킹 타일의 [재시도] (UI-5ym8 §3.1). `.rtile__resume`(이어하기)보다 앞에
-    // 두지 않아도 클래스가 다르므로 섞이지 않지만, 폐기와 같은 액션 foot에
-    // 있으므로 그 둘을 붙여 읽는다.
-    if (target?.closest?.('.rtile__parked-retry')) {
-      const tile = /** @type {HTMLElement|null} */ (
-        target?.closest?.('.rtile')
-      );
-      void retryParked(
-        tile?.dataset?.beadId || '',
-        tile?.dataset?.attemptId || ''
-      );
       return;
     }
     // Tile controls act on the attempt and must never also open the drawer.

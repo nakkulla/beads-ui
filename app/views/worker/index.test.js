@@ -2451,8 +2451,14 @@ describe('views/worker', () => {
     expect(tile.querySelector('.rtile__foot .rtile__discard')).not.toBeNull();
   });
 
-  test('dispatches a new attempt when a parked tile is retried', async () => {
-    const transport = vi.fn().mockResolvedValue({ ok: true });
+  test('opens an inquiry session from a parked tile', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      ok: true,
+      launched: true,
+      session: 'launched',
+      mode: 'fresh',
+      fallback_reason: 'attempt_transcript_missing'
+    });
     const mount = mountAttemptTiles(
       {
         attempts: {
@@ -2469,14 +2475,17 @@ describe('views/worker', () => {
     );
 
     mount
-      .querySelector('.rtile[data-attempt-id="parked"] .rtile__parked-retry')
+      .querySelector('.rtile[data-attempt-id="parked"] .rtile__resolve')
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await flush();
 
-    expect(transport).toHaveBeenCalledWith('worker-parked-retry', {
+    expect(transport).toHaveBeenCalledWith('worker-resolve-in-session', {
       bead_id: 'PARKED',
-      attempt_id: 'parked'
+      expected_revision: 1
     });
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '새 세션으로 시작 (attempt_transcript_missing)'
+    );
   });
 
   test('renders a retry_wait attempt as a countdown badge with no actions', () => {
@@ -2508,7 +2517,7 @@ describe('views/worker', () => {
         minute: '2-digit'
       })}`
     );
-    expect(tile.querySelector('.rtile__parked-retry')).toBeNull();
+    expect(tile.querySelector('.rtile__resolve')).toBeNull();
     expect(tile.querySelector('.rtile__resume')).toBeNull();
   });
 

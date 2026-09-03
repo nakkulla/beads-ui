@@ -251,6 +251,63 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     expect(monitor_root.querySelector('.mon-auto-all')).toBe(null);
   });
 
+  test('sends a resolution request from a parked monitor tile', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+    bootstrap(root);
+    await Promise.resolve();
+
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: [
+        {
+          root_dir: '/tmp/ws-a',
+          name: 'ws-a',
+          revision: 4,
+          queue: [],
+          pr_wait: [],
+          done: [],
+          attempts: {
+            parked: {
+              attempt_id: 'parked',
+              bead_id: 'UI-parked',
+              status: 'parked',
+              cause: 'session_parked',
+              cause_detail: {
+                awaiting_user: 'implementation_question',
+                summary: '사람 판단 대기'
+              }
+            }
+          },
+          bead_titles: { 'UI-parked': '파킹 작업' },
+          pr_observations: {}
+        }
+      ],
+      workspaces_state: [
+        { root_dir: '/tmp/ws-a', name: 'ws-a', revision: 4, slots: 1 }
+      ]
+    });
+    await flush();
+    client._clearSent();
+
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.rtile__resolve')
+    ).click();
+    await flush();
+
+    expect(client._sent()).toContainEqual({
+      type: 'worker-resolve-in-session',
+      payload: {
+        bead_id: 'UI-parked',
+        root_dir: '/tmp/ws-a',
+        expected_revision: 4
+      }
+    });
+  });
+
   // 서버가 만든 workspaces_state가 store까지 도달하지 않으면 파이프라인이 빈
   // 레포의 그룹 헤더는 revision도 exec_defaults도 없이 렌더된다.
   test('keeps the pushed workspaces_state in the pipeline store', async () => {

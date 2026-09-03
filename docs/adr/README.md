@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0036 | [파킹의 출구는 문의 세션뿐이고 해제 전이 재디스패치는 stale 두 값에만 걸린다](0036-parked-exit-is-inquiry-session-only.md) | 2026-09-03 | Worker 파킹(`awaiting_user` 존재)의 출구는 값별 문의 세션의 자동 기동과 파킹 타일 `[세션에서 해결]` 클릭뿐이고 새 attempt `[재시도]`는 없으며, `awaiting_user` 해제 전이의 자동 재디스패치는 문의 세션이 구현을 착수하지 않는 stale 두 값에만 걸리고 구현 충돌 값은 PR 관측으로만 정산한다 — parked 분류와 '자동 재디스패치 없음'은 0017에서 승계한다 |
 | 0035 | [연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다](0035-lane-confirm-writes-deps-only-run-places-and-arms.md) | 2026-09-03 | 연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다 — 직렬 레인 멤버는 진행 시 병렬 큐로 옮긴다 |
 | 0034 | [복귀 재스캔 후보는 waiting attempt와 prerequisite_unmet admission 큐 항목이다](0034-return-rescan-candidates-include-prerequisite-unmet-admission.md) | 2026-09-03 | Worker의 복귀 트리거는 이벤트 구독이며 재스캔 후보는 waiting attempt와 `prerequisite_unmet` admission 큐 항목이다 — 판정은 요청 rig의 `bd ready` 한 번, 복귀는 `tickPass`, not-ready에는 쓰지 않고 ready에서만 그 admission을 지운다 |
 | 0033 | [후보 레인은 admission 통과 집합이 아니라 관측 집합이다](0033-candidate-lane-is-observation-set-not-admission-set.md) | 2026-09-03 | 후보 레인은 Worker가 지금 집을 수 있는 집합이 아니라 미착수 이슈의 관측 집합이고, 실행 안전은 서버 admission이 지킨다 |
@@ -21,7 +22,6 @@
 | 0027 | [Worker 이력의 SoT는 bead별 events.jsonl 타임라인이고 queue.json은 상태 전용이다](0027-bead-timeline-history-sot.md) | 2026-08-28 | Worker의 실행·실패 이력은 bead별 append-only 타임라인이 소유하고, 상태 파일은 진행 중·미처리 것만 담는다. |
 | 0019 | [리뷰 영수증 보류는 큐가 head당 1회 리뷰 lineage를 자동 dispatch해 해소를 시도한다](0019-auto-review-dispatch-once-per-head.md) | 2026-08-28 | 영수증 부재·stale 보류는 큐가 head당 1회 같은 리뷰 lineage를 자동 dispatch하고 실패·소진 뒤에는 [리뷰 후 머지]가 같은 lineage를 resume하며 post-merge 자동 수리 금지(ADR 0005)와는 별개다 |
 | 0018 | [quick_fix 착지 재개는 정산 커서가 아니라 실패 사유로 판정한다](0018-quickfix-landing-resume-judged-by-failure-reason.md) | 2026-08-28 | 세션이 필요한 사유만 닫힌 목록으로 열거하고 나머지는 전부 같은 attempt의 정산을 다시 돌린다. 정산 계열 어휘는 coordinator가 만들어 열려 있고 settle은 멱등이라 기본값은 정산 쪽이 안전하다 |
-| 0017 | [awaiting_user를 남기고 정상 종료한 세션 결말은 parked이며 자동 재디스패치하지 않는다](0017-parked-session-outcome-no-auto-redispatch.md) | 2026-08-28 | 성공 종료 + 미resolved + PR 없음 + awaiting_user는 parked다. 재개는 사용자 클릭 또는 awaiting_user 소거 전이 관측뿐이다 |
 | 0016 | [큐 정지 권한은 systemic 실패 계층만 갖는다](0016-queue-hold-only-on-systemic-failure.md) | 2026-08-28 | Worker 큐 정지는 다음 bead에도 재발할 체계적 실패에만 걸고, 개별 실패는 bead 단위로 기록하고 큐를 계속 돌린다. 환경성 실패는 보류→재시도→승격의 사다리를 탄다 |
 | 0014 | [레인과 카드는 단일 buildLanes 계약과 공유 슬롯 표로 조립한다](0014-single-build-lanes-contract-and-shared-slot-table.md) | 2026-08-27 | Worker와 Monitor는 워크스페이스 N개를 받는 하나의 buildLanes로 레인을 만들고 카드의 줄 순서와 새 요소의 자리는 공유 슬롯 표가 정한다 |
 | 0009 | [병렬성 분석 기능 전면 제거와 수동 배포 실행](0009-parallelism-analysis-removal.md) | 2026-08-27 | 병렬성 분석 기능은 코드·테스트·프로토콜까지 제거하고 수동 [배포 실행] 버튼만 두며 script_retry는 토글 없이 상시다 |
@@ -42,5 +42,6 @@
 | 0001 | [Push‑Only Lists (v2)](0001-push-only-lists.md) | superseded | [0002](0002-per-subscription-stores-and-full-issue-push.md) |
 | 0004 | [impl_review 신선도를 exact-head 대신 ancestry로 판정](0004-impl-review-ancestry-freshness.md) | superseded | [0031](0031-impl-review-ancestry-and-hold-exit.md) |
 | 0005 | [자동 AI 수리 레인 폐기와 needs_human 종단](0005-no-auto-repair-lane.md) | superseded | [0022](0022-needs-human-auto-notify-click-driven-reentry.md) |
+| 0017 | [awaiting_user를 남기고 정상 종료한 세션 결말은 parked이며 자동 재디스패치하지 않는다](0017-parked-session-outcome-no-auto-redispatch.md) | superseded | [0036](0036-parked-exit-is-inquiry-session-only.md) |
 | 0022 | [needs_human은 자동 알림으로 관측되고 재진입은 두 클릭뿐이다](0022-needs-human-auto-notify-click-driven-reentry.md) | superseded | [0024](0024-discard-failure-exits-and-terminal-abandoned.md) |
 | 0023 | [waiting 복귀 트리거는 cadence가 아니라 이벤트 구독이다](0023-waiting-return-event-subscription-not-cadence.md) | superseded | [0034](0034-return-rescan-candidates-include-prerequisite-unmet-admission.md) |

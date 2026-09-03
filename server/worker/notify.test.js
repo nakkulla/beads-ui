@@ -601,7 +601,10 @@ describe('worker/notify awaiting_user transition (UI-7uid §3.5)', () => {
       title: '방향 질의 트리거',
       awaiting_user: 'spec_review_stale:revise',
       stale_kind: 'adr_conflict',
+      branch: 'stale',
       session: 'launched',
+      mode: 'fork',
+      session_id: '12345678-aaaa-bbbb-cccc-dddddddddddd',
       tmux_session: 'bdui-inquiry',
       tmux_window: 'UI-7uid',
       bridge_active: true,
@@ -610,9 +613,9 @@ describe('worker/notify awaiting_user transition (UI-7uid §3.5)', () => {
 
     expect(messageOf(spawn.last())).toBe(
       [
-        '🤖 ⏸️ 방향 질의 — UI-7uid 방향 질의 트리거',
+        '🤖 ⏸️ 파킹 — UI-7uid 방향 질의 트리거',
         '파킹: spec_review_stale:revise (adr_conflict)',
-        '질의 세션: 기동 — tmux bdui-inquiry:UI-7uid',
+        '문의 세션: stale · launched · fork 12345678',
         '브리지: 활성',
         '리포: beads-ui'
       ].join('\n')
@@ -628,16 +631,18 @@ describe('worker/notify awaiting_user transition (UI-7uid §3.5)', () => {
       title: '방향 질의 트리거',
       awaiting_user: 'plan_approval_stale:revise',
       stale_kind: 'intent_conflict',
+      branch: 'stale',
       session: 'already_running',
+      tmux_window: 'UI-7uid',
       bridge_active: false,
       repo: '/r/beads-ui'
     });
 
     expect(messageOf(spawn.last())).toBe(
       [
-        '🤖 ⏸️ 방향 질의 — UI-7uid 방향 질의 트리거',
+        '🤖 ⏸️ 파킹 — UI-7uid 방향 질의 트리거',
         '파킹: plan_approval_stale:revise (intent_conflict)',
-        '질의 세션: 이미 실행 중',
+        '문의 세션: stale · already_running · UI-7uid',
         '브리지: 비활성 — 질문은 tmux에서 직접 답',
         '리포: beads-ui'
       ].join('\n')
@@ -653,6 +658,7 @@ describe('worker/notify awaiting_user transition (UI-7uid §3.5)', () => {
       title: '방향 질의 트리거',
       awaiting_user: 'spec_review_stale:revise',
       stale_kind: null,
+      branch: 'stale',
       session: 'not_launched',
       reason: 'stale_kind_missing',
       bridge_active: true,
@@ -661,13 +667,30 @@ describe('worker/notify awaiting_user transition (UI-7uid §3.5)', () => {
 
     expect(messageOf(spawn.last())).toBe(
       [
-        '🤖 ⏸️ 방향 질의 — UI-7uid 방향 질의 트리거',
+        '🤖 ⏸️ 파킹 — UI-7uid 방향 질의 트리거',
         '파킹: spec_review_stale:revise',
-        '질의 세션: 미기동 — stale_kind_missing',
-        '처분: Worker 탭 fix/approve',
+        '문의 세션: stale · not_launched · stale_kind_missing',
+        '처분: Worker 탭 [세션에서 해결] · [폐기]',
         '브리지: 활성',
         '리포: beads-ui'
       ].join('\n')
+    );
+  });
+
+  test('reports a missing parked attempt record', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.awaitingUser({
+      bead_id: 'UI-7uid',
+      awaiting_user: 'impl_review_conflict:design',
+      branch: 'impl_conflict',
+      session: 'not_launched',
+      reason: 'attempt_unavailable'
+    });
+
+    expect(messageOf(spawn.last())).toContain(
+      '문의 세션: impl_conflict · not_launched · attempt_unavailable'
     );
   });
 

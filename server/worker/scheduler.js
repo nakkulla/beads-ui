@@ -120,6 +120,10 @@ const WAITING_RESCAN_MAX_WAIT_MS = 30_000;
 const AUTO_SWITCH_5H_MAX_PCT = 80;
 const AUTO_SWITCH_7D_MAX_PCT = 90;
 const RESUME_HANDOFF_MAX_CHARS = 4_000;
+const STALE_PARK_REASONS = new Set([
+  'spec_review_stale:revise',
+  'plan_approval_stale:revise'
+]);
 const TRANSCRIPT_MISSING_RE =
   /No conversation found with session ID|No session found|session(?: id)? \S+ (?:was )?not found/i;
 
@@ -643,6 +647,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   attemptStarted: (i: any) => void,
  *   attemptFailed: (i: any) => void,
  *   attemptParked?: (i: any) => void,
+ *   awaitingUser?: (i: any) => void,
  *   providerHoldEntered?: (i: any) => void,
  *   providerRecovered?: (i: any) => void,
  *   prWaitEntered: (i: any) => void
@@ -969,7 +974,6 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   rescanWaiting: (workspace: string) => Promise<{ checked: number, returned: number }>,
  *   resumeQueueHold: (workspace: string, input: { since?: number|null }) => Promise<{ ok: boolean, reason?: string }>,
  *   retryQueueHoldNow: (workspace: string, input: { since?: number|null }) => Promise<{ ok: boolean, reason?: string }>,
- *   retryParked: (workspace: string, input: { bead_id: string, attempt_id: string }) => Promise<{ ok: boolean, reason?: string }>,
  *   reconcile: (workspace: string) => Promise<void>,
  *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
  *   activeBeadIds: (workspace: string) => Set<string>,
@@ -1279,7 +1283,7 @@ export function createScheduler(deps) {
    * contract; this guard exists so a broken injected fake still cannot turn a
    * notification into a queue-transition failure.
    *
-   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'} event
+   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'} event
    * @param {any} input
    */
   function notifyLifecycle(event, input) {
@@ -3894,7 +3898,7 @@ export function createScheduler(deps) {
     }
     try {
       const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
-      if (!attempt || attempt.spec_review_stale !== true) {
+      if (!attempt) {
         return;
       }
       if (dispositionKindOf(workspace, attempt_id)) {
@@ -10634,6 +10638,7 @@ export function createScheduler(deps) {
         record.status !== 'parked' ||
         record.awaiting_user_present !== true ||
         typeof record.parked_resumed_at === 'number' ||
+        !STALE_PARK_REASONS.has(record.cause_detail?.awaiting_user) ||
         !waiting.has(record.bead_id) ||
         claimed.has(record.bead_id)
       ) {
@@ -10709,47 +10714,24 @@ export function createScheduler(deps) {
       latestImplementationAttempt(deps.store.snapshot(workspace), bead_id)
         ?.attempt_id ?? null;
     if (launched === null || launched === attempt_id) {
+      const refusal =
+        deps.store.snapshot(workspace).admission?.[bead_id]?.reason;
+      if (typeof refusal === 'string' && refusal.length > 0) {
+        notifyLifecycle('awaitingUser', {
+          bead_id,
+          awaiting_user: record.cause_detail?.awaiting_user ?? null,
+          branch: 'stale',
+          session: 'not_launched',
+          reason: 'redispatch_refused',
+          redispatch_refusal: refusal,
+          repo: record.repo ?? null
+        });
+      }
       return false;
     }
     deps.store.markParkedResumed(workspace, { attempt_id, at: now() });
     notifyChanged(workspace);
     return true;
-  }
-
-  /**
-   * `재시도` on a parked tile (ws `worker-parked-retry`, spec §4).
-   *
-   * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string }} input
-   * @returns {Promise<{ ok: boolean, reason?: string }>}
-   */
-  async function retryParked(workspace, input) {
-    /** @type {any} */
-    let q;
-    try {
-      q = deps.store.snapshot(workspace);
-    } catch {
-      return { ok: false, reason: 'queue_unreadable' };
-    }
-    const attempt = q.attempts?.[input.attempt_id];
-    if (!attempt || attempt.bead_id !== input.bead_id) {
-      return { ok: false, reason: 'attempt_not_found' };
-    }
-    if (attempt.status !== 'parked') {
-      return { ok: false, reason: 'not_parked' };
-    }
-    if (
-      latestImplementationAttempt(q, input.bead_id)?.attempt_id !==
-      input.attempt_id
-    ) {
-      return { ok: false, reason: 'not_latest' };
-    }
-    const resumed = await resumeParkedAttempt(
-      workspace,
-      input.bead_id,
-      input.attempt_id
-    );
-    return resumed ? { ok: true } : { ok: false, reason: 'dispatch_refused' };
   }
 
   /**
@@ -11763,7 +11745,6 @@ export function createScheduler(deps) {
     rescanWaiting,
     resumeQueueHold,
     retryQueueHoldNow,
-    retryParked,
     reconcile,
     sweepClosedQueue,
     activeBeadIds,

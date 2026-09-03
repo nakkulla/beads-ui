@@ -27,7 +27,7 @@ describe('실패 hand-off 댓글 형식 (record-timeline-retention §9)', () => 
     });
 
     expect(text).toContain('## 🤖 세션 파킹 기록');
-    expect(text).toContain('[재시도]');
+    expect(text).toContain('- 다음: 파킹 타일의 [세션에서 해결] · [폐기]');
   });
 
   test('omits the summary row when the failure produced no line', () => {

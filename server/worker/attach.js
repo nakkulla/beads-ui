@@ -2801,23 +2801,6 @@ export async function retryWorkerQueueHoldNow(workspace_root, input) {
 }
 
 /**
- * Dispatch a fresh attempt for a `parked` one (`재시도` on the tile, spec §3.1).
- * Refused unless the named attempt is still the bead's last implementation
- * attempt — the tile the user clicked must still be the current state.
- *
- * @param {string} workspace_root
- * @param {{ bead_id: string, attempt_id: string }} input
- * @returns {Promise<{ ok: boolean, reason?: string }>}
- */
-export async function retryWorkerParkedAttempt(workspace_root, input) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  if (!att) {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  return att.scheduler.retryParked(keyFor(workspace_root), input);
-}
-
-/**
  * Acknowledge one FAILED RepoOperation row (UI-q0uy §4.6-2). The row stays
  * failed and auditable; only the 해결 필요 tally and its action buttons drop it.
  *
