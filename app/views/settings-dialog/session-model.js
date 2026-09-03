@@ -35,16 +35,29 @@ export const BEAD_APPLY_KEYS = [
 ];
 
 /**
- * The sixteen keys `bd kv workflow_session_defaults` may STORE, in dialog
- * display order. `impl_dispatch` is absent by contract
+ * The route-scoped quick_fix kv profile. Each key overrides the same-name
+ * general key for a `route=quick_fix` Bead only, and an empty key falls through
+ * to that general key. Mirrors `server/worker/exec-enums.js QUICK_FIX_KV_KEYS`.
+ */
+export const QUICK_FIX_KV_KEYS = [
+  'quick_fix_impl_dispatch',
+  'quick_fix_impl_runtime',
+  'quick_fix_impl_model',
+  'quick_fix_impl_effort',
+  'quick_fix_impl_speed'
+];
+
+/**
+ * The twenty keys `bd kv workflow_session_defaults` may STORE, in the contract's
+ * own order. `impl_dispatch` is absent by contract
  * (`write_rule: user_write_only`): a workspace-global dispatch would decide for
  * every later bead, so the session-defaults group offers no such row.
- * `quick_fix_impl_model` and `bdui_url` are the two kv-only keys — neither has
- * a per-bead layer, so no preset and no pin can carry them.
+ * The quick_fix profile and `bdui_url` are kv-only keys — none has a per-bead
+ * layer, so no preset and no pin can carry them.
  */
 export const WORKSPACE_KV_KEYS = [
   ...BEAD_APPLY_KEYS.filter((key) => key !== 'impl_dispatch'),
-  'quick_fix_impl_model',
+  ...QUICK_FIX_KV_KEYS,
   'bdui_url'
 ];
 
@@ -80,18 +93,76 @@ export const ORCHESTRATION_KEYS = [
   'orchestration_speed'
 ];
 
+/** Route-scoped queue keys used only for quick_fix dispatches. */
+export const QUICK_FIX_ORCHESTRATION_KEYS = [
+  'quick_fix_orchestration_model',
+  'quick_fix_orchestration_effort',
+  'quick_fix_orchestration_speed'
+];
+
+/** Lane-neutral preset fields mapped onto quick_fix storage keys. */
+export const QUICK_FIX_LANE_MAP = Object.freeze({
+  orchestration_model: 'quick_fix_orchestration_model',
+  orchestration_effort: 'quick_fix_orchestration_effort',
+  orchestration_speed: 'quick_fix_orchestration_speed',
+  impl_dispatch: 'quick_fix_impl_dispatch',
+  impl_runtime: 'quick_fix_impl_runtime',
+  impl_model: 'quick_fix_impl_model',
+  impl_effort: 'quick_fix_impl_effort',
+  impl_speed: 'quick_fix_impl_speed'
+});
+
 /** The eighteen keys an execution preset carries. */
 export const IMPL_PRESET_KEYS = [...BEAD_APPLY_KEYS, ...ORCHESTRATION_KEYS];
 
 /**
  * The fourteen kv keys a preset actually CARRIES — the workspace kv list minus the
  * keys no preset can supply. Mirrors `server/worker/exec-enums.js
- * PRESET_KV_KEYS`, which is exactly the list a global apply REPLACES, so the
- * kv-only `quick_fix_impl_model` survives an apply instead of being cleared.
+ * PRESET_KV_KEYS`, which is exactly the list a general apply REPLACES, so the
+ * quick_fix kv profile survives instead of being cleared.
  */
 export const PRESET_KV_KEYS = WORKSPACE_KV_KEYS.filter((key) =>
   IMPL_PRESET_KEYS.includes(key)
 );
+
+/**
+ * Normalize one lane-neutral preset into a complete quick_fix replacement.
+ * Missing or lane-incompatible values become `null`; unmapped preset fields
+ * are reported instead of being applied.
+ *
+ * @param {Record<string, unknown>} settings
+ * @param {Record<string, ReadonlyArray<string>>} target_enums - Enum table
+ * keyed by quick_fix destination names.
+ * @returns {{ values: Record<string, string|null>, warnings: string[], skipped_keys: string[] }}
+ */
+export function normalizeQuickFixLanePreset(settings, target_enums) {
+  /** @type {Record<string, string|null>} */
+  const values = {};
+  /** @type {string[]} */
+  const warnings = [];
+  for (const [source_key, target_key] of Object.entries(QUICK_FIX_LANE_MAP)) {
+    const value = settings[source_key];
+    if (!Object.hasOwn(settings, source_key)) {
+      values[target_key] = null;
+      continue;
+    }
+    const allowed = target_enums[target_key];
+    if (
+      typeof value !== 'string' ||
+      !Array.isArray(allowed) ||
+      !allowed.includes(value)
+    ) {
+      values[target_key] = null;
+      warnings.push(`lane_incompatible:${target_key}`);
+      continue;
+    }
+    values[target_key] = value;
+  }
+  const skipped_keys = Object.keys(settings).filter(
+    (key) => !Object.hasOwn(QUICK_FIX_LANE_MAP, key)
+  );
+  return { values, warnings, skipped_keys };
+}
 
 /** 실행 방식: 위임(기존 runtime matrix) 또는 메인(컨트롤러 직접 구현). */
 export const IMPL_DISPATCHES = ['delegated', 'main'];
@@ -355,13 +426,25 @@ export const PRESET_DIFF_LABELS = {
   orchestration_speed: '워커 속도'
 };
 
+/** @type {Record<string, string>} */
+const QUICK_FIX_DIFF_LABELS = {
+  quick_fix_orchestration_model: '오케스트레이션 모델',
+  quick_fix_orchestration_effort: '오케스트레이션 effort',
+  quick_fix_orchestration_speed: '오케스트레이션 속도',
+  quick_fix_impl_dispatch: '실행 방식',
+  quick_fix_impl_runtime: '위임 대상',
+  quick_fix_impl_model: '모델',
+  quick_fix_impl_effort: 'effort',
+  quick_fix_impl_speed: '속도'
+};
+
 /** Exactly the keys a global preset apply replaces, in declaration order. */
 const PRESET_DIFF_KEYS = [...PRESET_KV_KEYS, ...ORCHESTRATION_KEYS];
 
 /**
  * Declared keys a preset may carry that a global apply does NOT write:
- * `impl_dispatch` is `user_write_only`, and `quick_fix_impl_model` / `bdui_url`
- * have no preset layer at all.
+ * `impl_dispatch` is `user_write_only`; quick_fix kv keys and `bdui_url` have
+ * no preset layer at all.
  */
 const PRESET_IGNORED_KEYS = [...IMPL_PRESET_KEYS, ...WORKSPACE_KV_KEYS].filter(
   (key, index, list) =>
@@ -412,6 +495,41 @@ export function buildPresetDiff(current, preset) {
 }
 
 /**
+ * Preview one lane-neutral preset as a complete quick_fix replacement.
+ * Server normalization owns the meaning: absent and incompatible values both
+ * become `null`, which the pane renders as fallthrough to the general profile.
+ *
+ * @param {Record<string, string|null>} current
+ * @param {Record<string, unknown>} preset
+ * @param {Record<string, ReadonlyArray<string>>} target_enums
+ * @returns {{ rows: PresetDiffRow[], ignored_keys: string[] }}
+ */
+export function buildQuickFixPresetDiff(current, preset, target_enums) {
+  const before_values = isRecord(current) ? current : {};
+  const normalized = normalizeQuickFixLanePreset(
+    isRecord(preset) ? preset : {},
+    target_enums
+  );
+  /** @type {PresetDiffRow[]} */
+  const rows = [];
+  for (const target_key of Object.values(QUICK_FIX_LANE_MAP)) {
+    const before = before_values[target_key] ?? null;
+    const after = normalized.values[target_key] ?? null;
+    if (before === after) {
+      continue;
+    }
+    rows.push({
+      key: target_key,
+      label: QUICK_FIX_DIFF_LABELS[target_key] || target_key,
+      before,
+      after,
+      kind: before === null ? 'added' : after === null ? 'removed' : 'changed'
+    });
+  }
+  return { rows, ignored_keys: normalized.skipped_keys };
+}
+
+/**
  * Build labels for the dialog's own layer: it edits the workspace-global values
  * directly, so its unset option names the result without naming a layer.
  * Dependent selectors remain in the draft and immediately affect that label.
@@ -424,6 +542,7 @@ export function buildPresetDiff(current, preset) {
  * @param {Record<string, string|null|undefined>} [resolution_draft] - Values the
  * OTHER keys resolve against when the session draft is not the whole workspace
  * layer; `draft` stays the edited and saved source.
+ * @param {string|null} [route]
  * @returns {{ unset_label: string, full_value: string|null, unavailable: boolean, disabled: boolean, options: Array<{ value: string, label: string, full_value: string|null }> }}
  */
 export function buildExecutionOptionView(
@@ -432,7 +551,8 @@ export function buildExecutionOptionView(
   draft,
   execution_defaults,
   runner_catalog,
-  resolution_draft
+  resolution_draft,
+  route = null
 ) {
   return buildOptionView({
     key,
@@ -441,7 +561,8 @@ export function buildExecutionOptionView(
     global: draft,
     resolution_global: resolution_draft,
     execution_defaults,
-    runner_catalog
+    runner_catalog,
+    route
   });
 }
 
@@ -472,7 +593,7 @@ export function buildSessionDefaultsPatch(baseline, draft) {
 }
 
 /**
- * Diff the Worker tab's three orchestration values. A session key offered here
+ * Diff the Worker tab's six orchestration values. A session key offered here
  * is dropped rather than forwarded — the two storages are disjoint by contract.
  *
  * @param {Record<string, string|null>} baseline
@@ -482,7 +603,7 @@ export function buildSessionDefaultsPatch(baseline, draft) {
 export function buildOrchestrationPatch(baseline, draft) {
   /** @type {Record<string, string|null>} */
   const patch = {};
-  for (const key of ORCHESTRATION_KEYS) {
+  for (const key of [...ORCHESTRATION_KEYS, ...QUICK_FIX_ORCHESTRATION_KEYS]) {
     const before = baseline?.[key] ?? null;
     const after = draft?.[key] ?? null;
     if (before === after) {

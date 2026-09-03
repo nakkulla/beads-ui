@@ -752,6 +752,11 @@ export function createWorkspaceAdapter(options = {}) {
             orchestration_model: q.orchestration_model,
             orchestration_effort: q.orchestration_effort,
             orchestration_speed: q.orchestration_speed,
+            // route=quick_fix Bead의 칩은 이 3키를 먼저 읽는다. 워크스페이스
+            // 오케스트레이션 표시 행은 위의 일반 3키 그대로다.
+            quick_fix_orchestration_model: q.quick_fix_orchestration_model,
+            quick_fix_orchestration_effort: q.quick_fix_orchestration_effort,
+            quick_fix_orchestration_speed: q.quick_fix_orchestration_speed,
             issue_prefix: ''
           }
         ]

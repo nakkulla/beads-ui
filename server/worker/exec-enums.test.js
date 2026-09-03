@@ -1,8 +1,12 @@
 import { describe, expect, test } from 'vitest';
 import { REC_REASONS } from '../../app/utils/rec-settings.js';
 import {
+  QUICK_FIX_KV_KEYS as CLIENT_QUICK_FIX_KV_KEYS,
+  QUICK_FIX_LANE_MAP as CLIENT_QUICK_FIX_LANE_MAP,
+  QUICK_FIX_ORCHESTRATION_KEYS as CLIENT_QUICK_FIX_ORCHESTRATION_KEYS,
   WORKSPACE_KV_KEYS as CLIENT_WORKSPACE_KV_KEYS,
-  isHttpOriginValue as clientIsHttpOriginValue
+  isHttpOriginValue as clientIsHttpOriginValue,
+  normalizeQuickFixLanePreset as clientNormalizeQuickFixLanePreset
 } from '../../app/views/settings-dialog/session-model.js';
 import { isHttpOriginValue } from '../session-defaults.js';
 import * as enums from './exec-enums.js';
@@ -15,6 +19,9 @@ import {
   ORCHESTRATION_KEYS,
   PLAN_REVIEW_MODELS,
   PRESET_KV_KEYS,
+  QUICK_FIX_KV_KEYS,
+  QUICK_FIX_LANE_MAP,
+  QUICK_FIX_ORCHESTRATION_KEYS,
   REC_SIGNALS,
   REC_VALUES,
   REVIEW_EFFORTS,
@@ -24,6 +31,7 @@ import {
   execSettingEnums,
   implPresetEnums,
   inferImplRuntime,
+  normalizeQuickFixLanePreset,
   sessionDefaultEnums,
   validateExecSettings,
   validateImplPresetSettings,
@@ -79,21 +87,42 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
   });
 
   test('drops impl_dispatch from the workspace kv list', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(16);
+    expect(WORKSPACE_KV_KEYS).toHaveLength(20);
 
-    expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
+    expect(WORKSPACE_KV_KEYS).toEqual([
+      'workflow_mode',
+      'spec_review_model',
+      'spec_review_effort',
+      'spec_review_speed',
+      'plan_review_model',
+      'plan_review_effort',
+      'plan_review_speed',
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_review_speed',
+      'impl_runtime',
+      'impl_model',
+      'impl_effort',
+      'impl_speed',
+      'quick_fix_impl_dispatch',
+      'quick_fix_impl_runtime',
+      'quick_fix_impl_model',
+      'quick_fix_impl_effort',
+      'quick_fix_impl_speed',
+      'bdui_url'
+    ]);
   });
 
   test('appends bdui_url as the last kv-only key', () => {
     expect(WORKSPACE_KV_KEYS.at(-1)).toBe('bdui_url');
   });
 
-  test('exceeds the per-bead list by the two kv-only keys', () => {
+  test('exceeds the per-bead list by the route profile and bdui_url', () => {
     const extra = WORKSPACE_KV_KEYS.filter(
       (key) => !BEAD_APPLY_KEYS.includes(key)
     );
 
-    expect(extra).toEqual(['quick_fix_impl_model', 'bdui_url']);
+    expect(extra).toEqual([...QUICK_FIX_KV_KEYS, 'bdui_url']);
   });
 
   test('keeps bdui_url off every per-bead surface (metadata_key forbidden)', () => {
@@ -114,9 +143,11 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     expect(Object.keys(session_enums)).not.toContain('bdui_url');
   });
 
-  test('keeps both kv-only keys out of the preset-carried kv list', () => {
+  test('keeps every quick_fix kv key out of the preset-carried kv list', () => {
     expect(PRESET_KV_KEYS).toHaveLength(14);
-    expect(PRESET_KV_KEYS).not.toContain('quick_fix_impl_model');
+    for (const key of QUICK_FIX_KV_KEYS) {
+      expect(PRESET_KV_KEYS).not.toContain(key);
+    }
     expect(PRESET_KV_KEYS).not.toContain('bdui_url');
 
     expect(PRESET_KV_KEYS.every((key) => IMPL_PRESET_KEYS.includes(key))).toBe(
@@ -133,6 +164,23 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
       Object.keys(catalog.model_index)
     );
     expect(session_enums.quick_fix_impl_model).not.toContain('auto');
+  });
+
+  test('mirrors every quick_fix session enum from the contract', () => {
+    const session_enums = sessionDefaultEnums(
+      resolveCatalog({ warn: () => {} })
+    );
+
+    expect(session_enums.quick_fix_impl_dispatch).toEqual([
+      'delegated',
+      'main'
+    ]);
+    expect(session_enums.quick_fix_impl_runtime).toEqual(['claude', 'codex']);
+    expect(session_enums.quick_fix_impl_effort).toEqual(
+      session_enums.impl_effort
+    );
+    expect(session_enums.quick_fix_impl_effort).toContain('auto');
+    expect(session_enums.quick_fix_impl_speed).toEqual(['default', 'fast']);
   });
 
   test('retires the merged SESSION_DEFAULT_KEYS surface', () => {
@@ -453,6 +501,40 @@ describe('worker/exec-enums implementation target coherence', () => {
 describe('workspace kv mirror across the two runtimes', () => {
   test('matches the client workspace kv key list exactly', () => {
     expect(WORKSPACE_KV_KEYS).toEqual(CLIENT_WORKSPACE_KV_KEYS);
+  });
+
+  test('matches every quick_fix key list and lane mapping exactly', () => {
+    expect(QUICK_FIX_KV_KEYS).toEqual(CLIENT_QUICK_FIX_KV_KEYS);
+    expect(QUICK_FIX_ORCHESTRATION_KEYS).toEqual(
+      CLIENT_QUICK_FIX_ORCHESTRATION_KEYS
+    );
+    expect(QUICK_FIX_LANE_MAP).toEqual(CLIENT_QUICK_FIX_LANE_MAP);
+  });
+
+  test('normalizes the same quick_fix lane values on both runtimes', () => {
+    const target_enums = {
+      quick_fix_orchestration_model: ['opus'],
+      quick_fix_orchestration_effort: ['high'],
+      quick_fix_orchestration_speed: ['default'],
+      quick_fix_impl_dispatch: ['delegated', 'main'],
+      quick_fix_impl_runtime: ['claude', 'codex'],
+      quick_fix_impl_model: ['opus'],
+      quick_fix_impl_effort: ['auto', 'high'],
+      quick_fix_impl_speed: ['default', 'fast']
+    };
+    const preset = {
+      workflow_mode: 'standard',
+      impl_dispatch: 'delegated',
+      impl_runtime: 'inherit',
+      impl_model: 'auto',
+      impl_effort: 'auto',
+      orchestration_model: 'opus'
+    };
+
+    const server = normalizeQuickFixLanePreset(preset, target_enums);
+    const client = clientNormalizeQuickFixLanePreset(preset, target_enums);
+
+    expect(client).toEqual(server);
   });
 
   test('judges every bdui_url case the same way on both sides', () => {

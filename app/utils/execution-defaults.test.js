@@ -204,16 +204,29 @@ describe('resolveExecutionSettings', () => {
     }
   });
 
+  test('names the harness layer on the quick_fix dispatch row alone', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.quick_fix_impl_dispatch).toMatchObject({
+      value: 'main',
+      source: 'base',
+      display: '메인 (하네스)'
+    });
+  });
+
   test('lets an upper-layer dispatch override the quick_fix route default', () => {
     const rows = resolveExecutionSettings({
       route: 'quick_fix',
-      global: { impl_dispatch: 'delegated' },
+      pin: { impl_dispatch: 'delegated' },
       execution_defaults: PROJECTION
     });
 
     expect(rows.impl_dispatch).toMatchObject({
       value: 'delegated',
-      source: 'global',
+      source: 'pin',
       display: '위임'
     });
     expect(rows.impl_model.display).toBe('5.6-sol');
@@ -243,7 +256,63 @@ describe('resolveExecutionSettings', () => {
 
     expect(spec_backed).toEqual(without_route);
     expect(unknown).toEqual(without_route);
-    expect(missing).toEqual(without_route);
+    expect(missing.impl_dispatch.value).toBe('delegated');
+  });
+
+  test('keeps route-less implementation rows at the existing snapshot', () => {
+    const rows = resolveExecutionSettings({ execution_defaults: PROJECTION });
+
+    expect({
+      impl_dispatch: rows.impl_dispatch,
+      impl_runtime: rows.impl_runtime,
+      impl_model: rows.impl_model,
+      impl_effort: rows.impl_effort,
+      impl_speed: rows.impl_speed,
+      quick_fix_impl_model: rows.quick_fix_impl_model
+    }).toEqual({
+      impl_dispatch: {
+        value: 'delegated',
+        source: 'base',
+        display: '위임',
+        full_value: 'delegated',
+        resolution: 'default'
+      },
+      impl_runtime: {
+        value: 'codex',
+        source: 'base',
+        display: 'codex',
+        full_value: 'codex',
+        resolution: 'default'
+      },
+      impl_model: {
+        value: 'sol',
+        source: 'base',
+        display: '5.6-sol',
+        full_value: 'gpt-5.6-sol',
+        resolution: 'default'
+      },
+      impl_effort: {
+        value: 'auto',
+        source: 'base',
+        display: 'auto (실행 시 결정)',
+        full_value: 'auto',
+        resolution: 'dynamic'
+      },
+      impl_speed: {
+        value: 'default',
+        source: 'base',
+        display: 'default (일반)',
+        full_value: 'default',
+        resolution: 'default'
+      },
+      quick_fix_impl_model: {
+        value: null,
+        source: 'base',
+        display: '메인 (orchestration opus)',
+        full_value: null,
+        resolution: 'default'
+      }
+    });
   });
 
   test('labels the unset quick_fix model row with the effective orchestration model', () => {
@@ -302,7 +371,7 @@ describe('resolveExecutionSettings', () => {
     expect(rows.impl_dispatch).toEqual({
       value: 'delegated',
       source: 'global',
-      display: '위임 (전역 quick_fix)',
+      display: '위임 (모델 함의)',
       full_value: 'delegated',
       resolution: 'explicit'
     });
@@ -314,9 +383,127 @@ describe('resolveExecutionSettings', () => {
     expect(rows.impl_model).toMatchObject({
       value: 'terra',
       source: 'global',
-      display: '5.6-terra',
+      display: '5.6-terra (quick_fix)',
       full_value: 'gpt-5.6-terra'
     });
+  });
+
+  test('keeps quick_fix dispatch main ahead of its model implication', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      global: {
+        quick_fix_impl_dispatch: 'main',
+        quick_fix_impl_model: 'sol'
+      },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.impl_dispatch).toMatchObject({
+      value: 'main',
+      source: 'global',
+      display: '메인 (quick_fix)'
+    });
+  });
+
+  test('resolves every explicit quick_fix implementation override', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      global: {
+        quick_fix_impl_dispatch: 'delegated',
+        quick_fix_impl_runtime: 'claude',
+        quick_fix_impl_model: 'opus',
+        quick_fix_impl_effort: 'high',
+        quick_fix_impl_speed: 'fast'
+      },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.impl_dispatch.display).toBe('위임 (quick_fix)');
+    expect(rows.impl_runtime.display).toBe('claude (quick_fix)');
+    expect(rows.impl_model.display).toBe('opus (quick_fix)');
+    expect(rows.impl_effort.display).toBe('high (quick_fix)');
+    expect(rows.impl_speed.display).toBe('fast (quick_fix)');
+  });
+
+  test('falls from a lone quick_fix delegated dispatch to general defaults', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      global: { quick_fix_impl_dispatch: 'delegated' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.impl_dispatch.display).toBe('위임 (quick_fix)');
+    expect(rows.impl_runtime.value).toBe('codex');
+    expect(rows.impl_model.value).toBe('sol');
+    expect(rows.impl_effort.value).toBe('auto');
+    expect(rows.impl_speed.value).toBe('default');
+  });
+
+  test('uses auto when a quick_fix runtime cannot run the harness model', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      global: {
+        quick_fix_impl_dispatch: 'delegated',
+        quick_fix_impl_runtime: 'claude'
+      },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.impl_model).toMatchObject({
+      value: 'auto',
+      source: 'base',
+      display: 'auto'
+    });
+  });
+
+  test('skips a quick_fix model whose provider contradicts its runtime', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      global: {
+        quick_fix_impl_runtime: 'claude',
+        quick_fix_impl_model: 'sol'
+      },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.impl_dispatch.display).toBe('메인');
+    expect(rows.quick_fix_impl_model).toMatchObject({
+      value: 'sol',
+      display: 'sol (비호환)',
+      resolution: 'incompatible'
+    });
+  });
+
+  test('keeps a general runtime from implying quick_fix delegation', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      global: { impl_runtime: 'codex' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.impl_dispatch.display).toBe('메인');
+  });
+
+  test('prefers quick_fix orchestration values before general values', () => {
+    const quick_fix = resolveExecutionSettings({
+      route: 'quick_fix',
+      global: {
+        orchestration_model: 'opus',
+        quick_fix_orchestration_model: 'sol'
+      },
+      execution_defaults: PROJECTION
+    });
+    const general = resolveExecutionSettings({
+      route: 'quick_fix',
+      global: { orchestration_model: 'opus' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(quick_fix.orchestration_model).toMatchObject({
+      value: 'sol',
+      display: '5.6-sol (quick_fix)'
+    });
+    expect(general.orchestration_model.value).toBe('opus');
   });
 
   test('keeps a pinned main dispatch ahead of the quick_fix kv model', () => {
@@ -526,9 +713,7 @@ describe('buildOptionView', () => {
       execution_defaults: PROJECTION
     });
 
-    expect(routed.unset_label).toBe(
-      '기본값 사용 — 위임 (전역 quick_fix) (전역)'
-    );
+    expect(routed.unset_label).toBe('기본값 사용 — 위임 (모델 함의) (전역)');
     expect(unrouted.unset_label).toBe('기본값 사용 — 위임 (harness)');
   });
 

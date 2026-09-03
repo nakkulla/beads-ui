@@ -5,18 +5,23 @@ import {
   IMPL_PRESET_KEYS,
   ORCHESTRATION_KEYS,
   PRESET_KV_KEYS,
+  QUICK_FIX_KV_KEYS,
+  QUICK_FIX_LANE_MAP,
+  QUICK_FIX_ORCHESTRATION_KEYS,
   REVIEW_EFFORTS,
   REVIEW_SPEEDS,
   WORKSPACE_KV_KEYS,
   buildExecutionOptionView,
   buildOrchestrationPatch,
   buildPresetDiff,
+  buildQuickFixPresetDiff,
   buildSessionDefaultsPatch,
   implEffortOptions,
   implModelOptions,
   isDelegationDisabled,
   isHttpOriginValue,
   narrowImplTarget,
+  normalizeQuickFixLanePreset,
   orchestrationEffortOptions,
   orchestrationModelOptions
 } from './session-model.js';
@@ -114,19 +119,40 @@ describe('session key lists', () => {
     ).toBe(false);
   });
 
-  test('drops impl_dispatch from the sixteen workspace kv keys', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(16);
+  test('drops impl_dispatch from the twenty workspace kv keys', () => {
+    expect(WORKSPACE_KV_KEYS).toHaveLength(20);
 
     expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
   });
 
-  test('mirrors the server kv-only keys after the per-bead ones', () => {
-    expect(WORKSPACE_KV_KEYS.slice(-2)).toEqual([
-      'quick_fix_impl_model',
+  test('mirrors the quick_fix kv block after the per-bead keys', () => {
+    expect(WORKSPACE_KV_KEYS.slice(-6)).toEqual([
+      ...QUICK_FIX_KV_KEYS,
       'bdui_url'
     ]);
-    expect(IMPL_PRESET_KEYS).not.toContain('quick_fix_impl_model');
+    for (const key of QUICK_FIX_KV_KEYS) {
+      expect(IMPL_PRESET_KEYS).not.toContain(key);
+      expect(PRESET_KV_KEYS).not.toContain(key);
+    }
     expect(IMPL_PRESET_KEYS).not.toContain('bdui_url');
+  });
+
+  test('maps exactly eight preset fields onto the quick_fix lane', () => {
+    expect(QUICK_FIX_ORCHESTRATION_KEYS).toEqual([
+      'quick_fix_orchestration_model',
+      'quick_fix_orchestration_effort',
+      'quick_fix_orchestration_speed'
+    ]);
+    expect(QUICK_FIX_LANE_MAP).toEqual({
+      orchestration_model: 'quick_fix_orchestration_model',
+      orchestration_effort: 'quick_fix_orchestration_effort',
+      orchestration_speed: 'quick_fix_orchestration_speed',
+      impl_dispatch: 'quick_fix_impl_dispatch',
+      impl_runtime: 'quick_fix_impl_runtime',
+      impl_model: 'quick_fix_impl_model',
+      impl_effort: 'quick_fix_impl_effort',
+      impl_speed: 'quick_fix_impl_speed'
+    });
   });
 
   test('names the fourteen kv keys a global preset apply replaces', () => {
@@ -434,7 +460,7 @@ describe('buildPresetDiff', () => {
       'orchestration_effort',
       'orchestration_speed'
     ]);
-    expect(diff.ignored_keys).toEqual(['quick_fix_impl_model', 'bdui_url']);
+    expect(diff.ignored_keys).toEqual([...QUICK_FIX_KV_KEYS, 'bdui_url']);
   });
 
   test('returns impl_dispatch as ignored rather than comparing it', () => {
@@ -457,6 +483,118 @@ describe('buildPresetDiff', () => {
     const diff = buildPresetDiff({}, {});
 
     expect(diff).toEqual({ rows: [], ignored_keys: [] });
+  });
+});
+
+describe('normalizeQuickFixLanePreset', () => {
+  const TARGET_ENUMS = {
+    quick_fix_orchestration_model: ['opus', 'sol'],
+    quick_fix_orchestration_effort: ['high', 'xhigh'],
+    quick_fix_orchestration_speed: ['default', 'fast'],
+    quick_fix_impl_dispatch: ['delegated', 'main'],
+    quick_fix_impl_runtime: ['claude', 'codex'],
+    quick_fix_impl_model: ['opus', 'sol'],
+    quick_fix_impl_effort: ['auto', 'high'],
+    quick_fix_impl_speed: ['default', 'fast']
+  };
+
+  test('maps compatible values and reports unmapped preset fields', () => {
+    const normalized = normalizeQuickFixLanePreset(
+      {
+        workflow_mode: 'fast_track',
+        impl_dispatch: 'delegated',
+        impl_runtime: 'codex',
+        impl_model: 'sol',
+        impl_effort: 'high',
+        impl_speed: 'fast',
+        orchestration_model: 'opus',
+        orchestration_effort: 'xhigh',
+        orchestration_speed: 'default'
+      },
+      TARGET_ENUMS
+    );
+
+    expect(normalized.values).toEqual({
+      quick_fix_orchestration_model: 'opus',
+      quick_fix_orchestration_effort: 'xhigh',
+      quick_fix_orchestration_speed: 'default',
+      quick_fix_impl_dispatch: 'delegated',
+      quick_fix_impl_runtime: 'codex',
+      quick_fix_impl_model: 'sol',
+      quick_fix_impl_effort: 'high',
+      quick_fix_impl_speed: 'fast'
+    });
+    expect(normalized.warnings).toEqual([]);
+    expect(normalized.skipped_keys).toEqual(['workflow_mode']);
+  });
+
+  test('unsets inherit, model auto, and every absent source key', () => {
+    const normalized = normalizeQuickFixLanePreset(
+      {
+        impl_runtime: 'inherit',
+        impl_model: 'auto',
+        impl_effort: 'auto'
+      },
+      TARGET_ENUMS
+    );
+
+    expect(normalized.values).toEqual({
+      quick_fix_orchestration_model: null,
+      quick_fix_orchestration_effort: null,
+      quick_fix_orchestration_speed: null,
+      quick_fix_impl_dispatch: null,
+      quick_fix_impl_runtime: null,
+      quick_fix_impl_model: null,
+      quick_fix_impl_effort: 'auto',
+      quick_fix_impl_speed: null
+    });
+    expect(normalized.warnings).toEqual([
+      'lane_incompatible:quick_fix_impl_runtime',
+      'lane_incompatible:quick_fix_impl_model'
+    ]);
+    expect(normalized.skipped_keys).toEqual([]);
+  });
+});
+
+describe('buildQuickFixPresetDiff', () => {
+  test('previews inherit auto and absent keys as general-profile fallthrough', () => {
+    const target_enums = {
+      quick_fix_orchestration_model: ['opus', 'sol'],
+      quick_fix_orchestration_effort: ['high'],
+      quick_fix_orchestration_speed: ['default', 'fast'],
+      quick_fix_impl_dispatch: ['delegated', 'main'],
+      quick_fix_impl_runtime: ['claude', 'codex'],
+      quick_fix_impl_model: ['opus', 'sol'],
+      quick_fix_impl_effort: ['auto', 'high'],
+      quick_fix_impl_speed: ['default', 'fast']
+    };
+    const current = {
+      quick_fix_orchestration_model: 'opus',
+      quick_fix_impl_dispatch: 'delegated',
+      quick_fix_impl_runtime: 'codex',
+      quick_fix_impl_model: 'sol',
+      quick_fix_impl_speed: 'fast'
+    };
+
+    const diff = buildQuickFixPresetDiff(
+      current,
+      {
+        impl_runtime: 'inherit',
+        impl_model: 'auto',
+        impl_effort: 'auto'
+      },
+      target_enums
+    );
+
+    expect(diff.rows).toMatchObject([
+      { key: 'quick_fix_orchestration_model', after: null },
+      { key: 'quick_fix_impl_dispatch', after: null },
+      { key: 'quick_fix_impl_runtime', after: null },
+      { key: 'quick_fix_impl_model', after: null },
+      { key: 'quick_fix_impl_effort', after: 'auto' },
+      { key: 'quick_fix_impl_speed', after: null }
+    ]);
+    expect(diff.ignored_keys).toEqual([]);
   });
 });
 
@@ -672,5 +810,14 @@ describe('buildOrchestrationPatch', () => {
     );
 
     expect(patch).toEqual({ orchestration_model: 'sol' });
+  });
+
+  test('diffs quick_fix orchestration values with the general values', () => {
+    const patch = buildOrchestrationPatch(
+      { quick_fix_orchestration_model: 'opus' },
+      { quick_fix_orchestration_model: 'sol' }
+    );
+
+    expect(patch).toEqual({ quick_fix_orchestration_model: 'sol' });
   });
 });

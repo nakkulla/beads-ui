@@ -2,7 +2,7 @@
  * Workspace-global SESSION defaults — the `bd kv` layer between a Bead's own
  * metadata pins and the harness defaults (spec §A).
  *
- * beads-ui is a CONSUMER of this contract: the key name, schema number, the 13
+ * beads-ui is a CONSUMER of this contract: the key name, schema number, the 20
  * allowed keys, and the `invalid_value: ignore_key_and_warn` / `absent:
  * skip_layer` rules are owned by dotfiles `workflow-state.yaml
  * workspace_kv_defaults`. Nothing here may widen that vocabulary, and no
@@ -12,9 +12,9 @@
  * `write_rule: user_write_only`, so a workspace-global copy of it would pin a
  * dispatch nobody chose for the bead it lands on. A value left behind in an
  * older kv object drops through the ordinary `unknown_key:` warning.
- * `quick_fix_impl_model` and `bdui_url` run the other way: both are kv-only
- * keys with no bead-metadata layer at all, and `bdui_url` carries the extra
- * `enum: none` typing that makes it the one format-judged value here.
+ * The quick_fix profile and `bdui_url` run the other way: all are kv-only keys
+ * with no bead-metadata layer, and `bdui_url` carries the extra `enum: none`
+ * typing that makes it the one format-judged value here.
  *
  * @import { ResolvedCatalog } from './worker/runner-catalog.js'
  * @typedef {(value: string) => boolean} SessionDefaultFormat
@@ -102,7 +102,7 @@ function isValidSessionDefaultValue(key, value, enums) {
 /**
  * Read the durable kv object into the usable session-default layer.
  *
- * A key outside the contract's 13, or one whose value leaves its enum (or its
+ * A key outside the contract's 20, or one whose value leaves its enum (or its
  * format, for the keys the contract gives no enum), is DROPPED with a warning
  * rather than failing the whole layer: the workspace default is not an explicit
  * pin, so it fails quiet (spec §A).

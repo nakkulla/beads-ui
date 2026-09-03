@@ -16,6 +16,7 @@ import {
   IMPL_PRESET_KEYS,
   ORCHESTRATION_KEYS,
   PRESET_KV_KEYS,
+  QUICK_FIX_LANE_MAP,
   execSettingEnums,
   implPresetEnums,
   validateImplPresetSettings
@@ -159,10 +160,14 @@ export function createExecPresetCoordinator(options) {
    */
   function resolveForDispatch(workspace, bead_snapshot) {
     const queue = queueStore.snapshot(workspace);
+    const quick_fix = bead_snapshot?.route === 'quick_fix';
     /** @type {Record<string, string>} */
     const settings = {};
     for (const key of ORCHESTRATION_KEYS) {
-      const value = /** @type {Record<string, unknown>} */ (queue)[key];
+      const queue_values = /** @type {Record<string, unknown>} */ (queue);
+      const value = quick_fix
+        ? (queue_values[QUICK_FIX_LANE_MAP[key]] ?? queue_values[key])
+        : queue_values[key];
       if (typeof value === 'string') {
         settings[key] = value;
       }

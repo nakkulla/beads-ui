@@ -436,6 +436,12 @@
  * leaves dispatch on the hardcoded `opus` fallback.
  * @property {string|null} orchestration_effort - Workspace default outer effort.
  * @property {string|null} orchestration_speed - Workspace default outer speed.
+ * @property {string|null} quick_fix_orchestration_model - Route-scoped outer
+ * model for quick_fix dispatches; null falls through to the general value.
+ * @property {string|null} quick_fix_orchestration_effort - Route-scoped outer
+ * effort for quick_fix dispatches.
+ * @property {string|null} quick_fix_orchestration_speed - Route-scoped outer
+ * speed for quick_fix dispatches.
  * @property {{ version: number, at: number }|null} session_defaults_migration -
  * The per-workspace completion marker for the spec §F migration. Written ONLY
  * after all three destinations read back, and it is what stops the migration
@@ -921,7 +927,11 @@ import {
 } from './delegation-monitor.js';
 import { discardOperationActive } from './discard-phase.js';
 import { errorDetail } from './error-detail.js';
-import { ORCHESTRATION_KEYS, execSettingEnums } from './exec-enums.js';
+import {
+  ORCHESTRATION_KEYS,
+  QUICK_FIX_ORCHESTRATION_KEYS,
+  execSettingEnums
+} from './exec-enums.js';
 import { orderLaneByBlocks } from './lane-order.js';
 import {
   RETRY_MAX,
@@ -1847,6 +1857,9 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'orchestration_model',
   'orchestration_effort',
   'orchestration_speed',
+  'quick_fix_orchestration_model',
+  'quick_fix_orchestration_effort',
+  'quick_fix_orchestration_speed',
   'session_defaults_migration',
   'slots',
   'queue',
@@ -1910,6 +1923,9 @@ function emptyQueue() {
     orchestration_model: null,
     orchestration_effort: null,
     orchestration_speed: null,
+    quick_fix_orchestration_model: null,
+    quick_fix_orchestration_effort: null,
+    quick_fix_orchestration_speed: null,
     session_defaults_migration: null,
     slots: DEFAULT_SLOTS,
     queue: [],
@@ -3620,10 +3636,13 @@ function normalizeQueue(raw) {
   // catalog no longer offers drops to null, exactly as the old `exec_defaults`
   // map did, so dispatch falls back rather than launching an unknown model.
   const orchestration_enums = execSettingEnums();
-  for (const key of ORCHESTRATION_KEYS) {
+  for (const key of [...ORCHESTRATION_KEYS, ...QUICK_FIX_ORCHESTRATION_KEYS]) {
     const value = raw[key];
+    const enum_key = QUICK_FIX_ORCHESTRATION_KEYS.includes(key)
+      ? key.slice('quick_fix_'.length)
+      : key;
     q[key] =
-      typeof value === 'string' && orchestration_enums[key].includes(value)
+      typeof value === 'string' && orchestration_enums[enum_key].includes(value)
         ? value
         : null;
   }
@@ -7975,7 +7994,7 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Store the three orchestration defaults as VALUES under the queue CAS
+     * Store general or quick_fix orchestration defaults as VALUES under the queue CAS
      * (spec §C.5). This replaces both the preset reference and the per-key
      * `exec_defaults` map: the worker launcher is the only consumer of these
      * keys, so the workspace holds the value itself rather than pointing at a
@@ -7999,14 +8018,20 @@ export function createQueueStore(options = {}) {
         /** @type {Record<string, string|null>} */
         const normalized = {};
         for (const [key, value] of Object.entries(values)) {
-          if (!ORCHESTRATION_KEYS.includes(key)) {
+          if (
+            !ORCHESTRATION_KEYS.includes(key) &&
+            !QUICK_FIX_ORCHESTRATION_KEYS.includes(key)
+          ) {
             return false;
           }
           if (value === null || value === '') {
             normalized[key] = null;
             continue;
           }
-          if (typeof value !== 'string' || !enums[key].includes(value)) {
+          const enum_key = QUICK_FIX_ORCHESTRATION_KEYS.includes(key)
+            ? key.slice('quick_fix_'.length)
+            : key;
+          if (typeof value !== 'string' || !enums[enum_key].includes(value)) {
             return false;
           }
           normalized[key] = value;

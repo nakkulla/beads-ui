@@ -167,21 +167,40 @@ export const REC_VALUES = {
 export const ACCOUNT_KEYS = ['claude_account', 'codex_account'];
 
 /**
- * The 16 keys that may be STORED workspace-wide through
+ * The route-scoped quick_fix kv profile (dotfiles `workflow-state.yaml
+ * workspace_kv_defaults.route_scoped`). Each key overrides the same-name
+ * general key for a `route=quick_fix` Bead only; an empty key falls through to
+ * that general key and then to the harness.
+ *
+ * `quick_fix_impl_dispatch` is the one member with NO general layer: kv
+ * `impl_dispatch` stays forbidden, so this key's fallthrough is the model
+ * implication and then the harness route default.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const QUICK_FIX_KV_KEYS = [
+  'quick_fix_impl_dispatch',
+  'quick_fix_impl_runtime',
+  'quick_fix_impl_model',
+  'quick_fix_impl_effort',
+  'quick_fix_impl_speed'
+];
+
+/**
+ * The 20 keys that may be STORED workspace-wide through
  * `bd kv workflow_session_defaults` (dotfiles `workflow-state.yaml
- * workspace_kv_defaults.allowed_keys`).
+ * workspace_kv_defaults.allowed_keys`), in that contract's own order.
  *
  * `impl_dispatch` is absent by contract: a workspace-global default would make
  * every later bead's dispatch a value nobody wrote for it, which is exactly
  * what `write_rule: user_write_only` forbids. A value left in an older kv
  * object therefore drops per key with a warning, never failing the layer.
  *
- * The list is NOT a subset of the per-bead list: it carries two kv-only keys
- * with no bead-metadata layer at all — the route-scoped
- * `quick_fix_impl_model` (`workflow-state.yaml route_scoped`) and `bdui_url`
- * (`key_scoped`, `metadata_key: forbidden`). Neither is an `IMPL_PRESET_KEYS`
- * member, so {@link PRESET_KV_KEYS} drops both and a preset apply preserves
- * them.
+ * The list is NOT a subset of the per-bead list: it carries the route-scoped
+ * {@link QUICK_FIX_KV_KEYS} profile and `bdui_url` (`key_scoped`,
+ * `metadata_key: forbidden`). None of those six is an `IMPL_PRESET_KEYS`
+ * member, so {@link PRESET_KV_KEYS} drops them and a general preset apply
+ * preserves them.
  *
  * `bdui_url` is also the one key with no entry in {@link sessionDefaultEnums}:
  * the contract types it `enum: none`, so its value is judged by FORMAT in
@@ -191,7 +210,7 @@ export const ACCOUNT_KEYS = ['claude_account', 'codex_account'];
  */
 export const WORKSPACE_KV_KEYS = [
   ...BEAD_APPLY_KEYS.filter((key) => key !== 'impl_dispatch'),
-  'quick_fix_impl_model',
+  ...QUICK_FIX_KV_KEYS,
   'bdui_url'
 ];
 
@@ -206,6 +225,30 @@ export const ORCHESTRATION_KEYS = [
   'orchestration_speed'
 ];
 
+/** Route-scoped queue keys used only for quick_fix dispatches. */
+export const QUICK_FIX_ORCHESTRATION_KEYS = [
+  'quick_fix_orchestration_model',
+  'quick_fix_orchestration_effort',
+  'quick_fix_orchestration_speed'
+];
+
+/**
+ * Map one lane-neutral preset field onto the quick_fix storage profile.
+ * Unmapped review and workflow fields are deliberately skipped.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const QUICK_FIX_LANE_MAP = Object.freeze({
+  orchestration_model: 'quick_fix_orchestration_model',
+  orchestration_effort: 'quick_fix_orchestration_effort',
+  orchestration_speed: 'quick_fix_orchestration_speed',
+  impl_dispatch: 'quick_fix_impl_dispatch',
+  impl_runtime: 'quick_fix_impl_runtime',
+  impl_model: 'quick_fix_impl_model',
+  impl_effort: 'quick_fix_impl_effort',
+  impl_speed: 'quick_fix_impl_speed'
+});
+
 /**
  * The 18 sparse keys a full-profile execution preset may carry: all session
  * defaults plus the workspace queue's orchestration defaults.
@@ -217,7 +260,7 @@ export const IMPL_PRESET_KEYS = [...BEAD_APPLY_KEYS, ...ORCHESTRATION_KEYS];
 /**
  * The 14 kv keys a full-profile preset actually CARRIES — the workspace kv list
  * minus the keys no preset can supply. Preset application replaces exactly this
- * list, so the kv-only `quick_fix_impl_model` survives an apply instead of being
+ * list, so the quick_fix profile survives a general apply instead of being
  * cleared by a profile that was never able to name it.
  *
  * @type {ReadonlyArray<string>}
@@ -231,9 +274,8 @@ export const PRESET_KV_KEYS = WORKSPACE_KV_KEYS.filter((key) =>
  * `auto` literal to their catalog vocabulary; every other key reuses the
  * existing metadata enum so the kv layer cannot diverge from the pin layer.
  *
- * `quick_fix_impl_model` is kv-only and takes the bare catalog tokens: the
- * contract forbids `auto` there because the runtime is DERIVED from the token's
- * catalog uniqueness.
+ * `quick_fix_impl_model` takes bare catalog tokens: the contract forbids `auto`
+ * there because runtime is DERIVED from the token's catalog uniqueness.
  *
  * @param {ResolvedCatalog} [catalog]
  * @returns {Record<string, ReadonlyArray<string>>}
@@ -256,8 +298,51 @@ export function sessionDefaultEnums(catalog = runtimeCatalog()) {
     impl_model: [AUTO_LITERAL, ...base.impl_model],
     impl_effort: [AUTO_LITERAL, ...base.impl_effort],
     impl_speed: IMPL_SPEEDS,
-    quick_fix_impl_model: base.impl_model
+    quick_fix_impl_dispatch: IMPL_DISPATCHES,
+    quick_fix_impl_runtime: ['claude', 'codex'],
+    quick_fix_impl_model: base.impl_model,
+    quick_fix_impl_effort: [AUTO_LITERAL, ...base.impl_effort],
+    quick_fix_impl_speed: IMPL_SPEEDS
   };
+}
+
+/**
+ * Normalize one lane-neutral preset into a complete quick_fix replacement.
+ * Missing or lane-incompatible values become `null`; unmapped preset fields
+ * are reported instead of being applied.
+ *
+ * @param {Record<string, unknown>} settings
+ * @param {Record<string, ReadonlyArray<string>>} target_enums - Enum table
+ * keyed by quick_fix destination names.
+ * @returns {{ values: Record<string, string|null>, warnings: string[], skipped_keys: string[] }}
+ */
+export function normalizeQuickFixLanePreset(settings, target_enums) {
+  /** @type {Record<string, string|null>} */
+  const values = {};
+  /** @type {string[]} */
+  const warnings = [];
+  for (const [source_key, target_key] of Object.entries(QUICK_FIX_LANE_MAP)) {
+    const value = settings[source_key];
+    if (!Object.hasOwn(settings, source_key)) {
+      values[target_key] = null;
+      continue;
+    }
+    const allowed = target_enums[target_key];
+    if (
+      typeof value !== 'string' ||
+      !Array.isArray(allowed) ||
+      !allowed.includes(value)
+    ) {
+      values[target_key] = null;
+      warnings.push(`lane_incompatible:${target_key}`);
+      continue;
+    }
+    values[target_key] = value;
+  }
+  const skipped_keys = Object.keys(settings).filter(
+    (key) => !Object.hasOwn(QUICK_FIX_LANE_MAP, key)
+  );
+  return { values, warnings, skipped_keys };
 }
 
 /**

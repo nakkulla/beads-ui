@@ -41,6 +41,7 @@ const EXECUTION_DEFAULTS = {
         effort: 'auto',
         speed: 'default'
       },
+      route_defaults: { quick_fix: { dispatch: 'main' } },
       model_catalog: { codex: { sol: 'gpt-5.6-sol' } },
       effort_by_transport: {}
     }
@@ -52,6 +53,17 @@ const EXECUTION_DEFAULTS = {
     effort: null,
     speed: 'default'
   }
+};
+
+const PRESETS = {
+  revision: 4,
+  presets: [
+    {
+      id: 'p1',
+      name: '위임',
+      settings: { impl_runtime: 'codex', impl_model: 'sol' }
+    }
+  ]
 };
 
 /**
@@ -71,6 +83,9 @@ function queueRow(patch = {}) {
     orchestration_model: null,
     orchestration_effort: null,
     orchestration_speed: null,
+    quick_fix_orchestration_model: null,
+    quick_fix_orchestration_effort: null,
+    quick_fix_orchestration_speed: null,
     ...patch
   };
 }
@@ -199,6 +214,205 @@ describe('createExecutionPane unbound (root_dir null)', () => {
     await settle();
 
     expect(payloadsOf(calls, 'worker-automation-toggle')).toHaveLength(1);
+  });
+});
+
+describe('createExecutionPane quick_fix lane', () => {
+  test('renders eight enabled rows after the general implementation group', async () => {
+    const { root, pane } = mount();
+
+    await pane.load();
+
+    const group = el(root, '[data-quick-fix-group]');
+    const rows = Array.from(group.querySelectorAll('select[data-key]'));
+    expect(rows.map((row) => row.getAttribute('data-key'))).toEqual([
+      'quick_fix_orchestration_model',
+      'quick_fix_orchestration_effort',
+      'quick_fix_orchestration_speed',
+      'quick_fix_impl_dispatch',
+      'quick_fix_impl_runtime',
+      'quick_fix_impl_model',
+      'quick_fix_impl_effort',
+      'quick_fix_impl_speed'
+    ]);
+    expect(
+      rows.every((row) => !(/** @type {HTMLSelectElement} */ (row).disabled))
+    ).toBe(true);
+    expect(group.textContent).toContain(
+      '비어 있는 값은 일반 프로파일로 떨어집니다. 이슈 핀이 있으면 핀이 우선합니다.'
+    );
+  });
+
+  test('derives the unset quick_fix runtime from its model before general runtime', async () => {
+    const { root, pane } = mount({
+      values: { impl_runtime: 'claude', quick_fix_impl_model: 'sol' }
+    });
+
+    await pane.load();
+
+    const runtime = /** @type {HTMLSelectElement} */ (
+      el(root, 'select[data-key="quick_fix_impl_runtime"]')
+    );
+    expect(runtime.options[0].textContent).toContain(
+      '기본값 사용 — codex (유도)'
+    );
+  });
+
+  test('marks a general model incompatible with the quick_fix runtime', async () => {
+    const { root, pane } = mount({
+      values: {
+        impl_model: 'sol',
+        quick_fix_impl_dispatch: 'delegated',
+        quick_fix_impl_runtime: 'claude'
+      }
+    });
+
+    await pane.load();
+
+    const model = /** @type {HTMLSelectElement} */ (
+      el(root, 'select[data-key="quick_fix_impl_model"]')
+    );
+    expect(model.options[0].textContent).toContain(
+      '기본값 사용 — sol (비호환)'
+    );
+  });
+
+  test('sends no lane for general apply and quick_fix for lane apply', async () => {
+    const { root, pane, calls } = mount({
+      presets: PRESETS,
+      transport: async (
+        /** @type {string} */ type,
+        /** @type {any} */ payload
+      ) => {
+        if (type === 'get-session-defaults') {
+          return { values: {}, warnings: [] };
+        }
+        if (type === 'apply-impl-preset-global') {
+          return {
+            applied: true,
+            lane: payload.lane,
+            values: {},
+            warnings: [],
+            queue_applied: true
+          };
+        }
+        return {};
+      }
+    });
+    await pane.load();
+    const preset = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    preset.value = 'p1';
+    preset.dispatchEvent(new Event('change'));
+
+    el(root, '[data-preset-apply-general]').click();
+    await settle();
+    el(root, '[data-preset-apply-quick-fix]').click();
+    await settle();
+
+    expect(payloadsOf(calls, 'apply-impl-preset-global')).toEqual([
+      {
+        preset_id: 'p1',
+        expected_revision: 4,
+        expected_queue_revision: 3
+      },
+      {
+        preset_id: 'p1',
+        expected_revision: 4,
+        expected_queue_revision: 3,
+        lane: 'quick_fix'
+      }
+    ]);
+  });
+
+  test('disables quick_fix controls when the snapshot lacks the capability key', async () => {
+    const old_queue = queueRow();
+    Reflect.deleteProperty(old_queue, 'quick_fix_orchestration_model');
+    const { root, pane } = mount({ queue: old_queue, presets: PRESETS });
+
+    await pane.load();
+
+    const apply = /** @type {HTMLButtonElement} */ (
+      el(root, '[data-preset-apply-quick-fix]')
+    );
+    const rows = Array.from(
+      el(root, '[data-quick-fix-group]').querySelectorAll('select[data-key]')
+    );
+    expect(apply.disabled).toBe(true);
+    expect(apply.title).toBe('서버가 quick_fix 레인을 지원하지 않습니다');
+    expect(
+      rows.every((row) => /** @type {HTMLSelectElement} */ (row).disabled)
+    ).toBe(true);
+  });
+
+  test('keeps drafts and warns when a quick_fix response omits lane', async () => {
+    const { root, pane, notify } = mount({
+      values: { quick_fix_impl_runtime: 'claude' },
+      presets: PRESETS,
+      transport: async (/** @type {string} */ type) => {
+        if (type === 'get-session-defaults') {
+          return {
+            values: { quick_fix_impl_runtime: 'claude' },
+            warnings: []
+          };
+        }
+        if (type === 'apply-impl-preset-global') {
+          return {
+            applied: true,
+            values: { quick_fix_impl_runtime: 'codex' },
+            warnings: [],
+            queue_applied: true
+          };
+        }
+        return {};
+      }
+    });
+    await pane.load();
+    const preset = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    preset.value = 'p1';
+    preset.dispatchEvent(new Event('change'));
+
+    el(root, '[data-preset-apply-quick-fix]').click();
+    await settle();
+
+    expect(pane.sessionDraft()).toEqual({ quick_fix_impl_runtime: 'claude' });
+    expect(notify).toHaveBeenCalledWith(
+      '서버 응답에 lane이 없습니다 — 큐 스냅샷을 다시 받은 뒤 확인하세요'
+    );
+  });
+
+  test('previews incompatible and absent quick_fix values as general fallthrough', async () => {
+    const { root, pane } = mount({
+      queue: queueRow({ quick_fix_orchestration_model: 'opus' }),
+      values: {
+        quick_fix_impl_runtime: 'codex',
+        quick_fix_impl_model: 'sol'
+      },
+      presets: {
+        revision: 4,
+        presets: [
+          {
+            id: 'p1',
+            name: '자동',
+            settings: { impl_runtime: 'inherit', impl_model: 'auto' }
+          }
+        ]
+      }
+    });
+    await pane.load();
+    const preset = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    preset.value = 'p1';
+    preset.dispatchEvent(new Event('change'));
+    el(root, '[data-preset-lane="quick_fix"]').click();
+
+    expect(el(root, '[data-preset-diff]').textContent).toContain(
+      '기본(해제 → 일반 프로파일)'
+    );
   });
 });
 

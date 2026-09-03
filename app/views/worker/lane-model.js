@@ -1319,7 +1319,12 @@ function execGlobalValues(state) {
   for (const key of [
     'orchestration_model',
     'orchestration_effort',
-    'orchestration_speed'
+    'orchestration_speed',
+    // The route-scoped triple travels in the same layer; the resolver reads it
+    // only for a `route=quick_fix` bead, so a general bead is unaffected.
+    'quick_fix_orchestration_model',
+    'quick_fix_orchestration_effort',
+    'quick_fix_orchestration_speed'
   ]) {
     const value = state[key];
     if (typeof value === 'string') {

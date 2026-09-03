@@ -146,13 +146,19 @@ not add a WebSocket op. `monitor-pipeline-snapshot` carries
 `workspaces_state` row:
 `{ root_dir, name, issue_prefix: string|null, auto_advance, auto_merge, slots, revision, runner_catalog }`
 plus, since UI-eey2 §9.4, the repo-panel control fields:
-`{ serial_lane_count, orchestration_model, orchestration_effort, orchestration_speed, execution_defaults, session_defaults, session_defaults_warnings, counts }`.
+`{ serial_lane_count, orchestration_model, orchestration_effort, orchestration_speed, quick_fix_orchestration_model, quick_fix_orchestration_effort, quick_fix_orchestration_speed, execution_defaults, session_defaults, session_defaults_warnings, counts }`.
 `issue_prefix` comes from that workspace's bd config cache; missing, malformed,
 or temporarily unreadable config is `null`.
 
-- `serial_lane_count` and the three `orchestration_*` values are that
-  workspace's own queue state. A legacy queue with no key reads as one serial
-  lane and null orchestration pins — the state such a workspace is actually in.
+- `serial_lane_count` and the six orchestration values are that workspace's own
+  queue state. A legacy queue with no key reads as one serial lane and null
+  orchestration pins — the state such a workspace is actually in.
+- The three `quick_fix_orchestration_*` values are the route-scoped override
+  layer a `route=quick_fix` dispatch reads before the general triple. They are
+  always PRESENT on this row, `null` included, because the repo panel's
+  execution pane probes the key to tell a new server from one that predates the
+  lane. The workspace's own orchestration display row keeps showing the general
+  triple.
 - `execution_defaults` is the same read-only projection the worker snapshot
   carries (see below), repeated here so a repo panel can resolve chips for a
   workspace it holds no worker subscription to.
@@ -848,9 +854,28 @@ The workspace-global execution layer lives in `bd kv workflow_session_defaults`
   so the write re-reads immediately beforehand, making it per-KEY
   last-write-wins, and confirms with a readback.
 - `apply-impl-preset-global` payload:
-  `{ preset_id, expected_revision, expected_queue_revision, root_dir? }` —
-  replaces the kv keys a full-profile preset can carry and the queue's three
-  orchestration defaults.
+  `{ preset_id, expected_revision, expected_queue_revision, lane?, root_dir? }`.
+  `lane` is `'general' | 'quick_fix'` and an absent value is `general`. The
+  general lane replaces the kv keys a preset can carry plus the queue's three
+  general orchestration values, and a request that omits `lane` gets back the
+  existing response shape with no `lane` field added.
+
+  The quick_fix lane moves the same preset's five implementation keys onto
+  `quick_fix_impl_dispatch` / `quick_fix_impl_runtime` / `quick_fix_impl_model`
+  / `quick_fix_impl_effort` / `quick_fix_impl_speed` and its three orchestration
+  values onto `quick_fix_orchestration_model` / `quick_fix_orchestration_effort`
+  / `quick_fix_orchestration_speed`. Its response adds `lane: 'quick_fix'` and
+  `skipped_keys: string[]` — the preset keys the lane has no destination for
+  (the three review triples and `workflow_mode`). A value outside the quick_fix
+  key's enum (`impl_runtime: 'inherit'`, `impl_model: 'auto'`) unsets that key
+  and adds `lane_incompatible:<destination key>` to `warnings`. Any other `lane`
+  value is `bad_request`.
+
+  A new client sends a quick_fix apply only when the queue snapshot HAS the
+  `quick_fix_orchestration_model` key — the key's presence, not its value, is
+  the capability probe. An old server ignores the unknown `lane` and applies to
+  the general lane, so without that probe a quick_fix preset would overwrite the
+  general profile.
 
 `root_dir` is optional on all three (UI-eey2 §9.5). Absent means the
 connection's workspace; present means that validated registry workspace, and an

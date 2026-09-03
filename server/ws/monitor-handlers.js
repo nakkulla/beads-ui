@@ -649,6 +649,22 @@ export function buildMonitorWorkspacesState(options = {}) {
         typeof queue.orchestration_speed === 'string'
           ? queue.orchestration_speed
           : null,
+      // Always present, `null` included: the settings pane reads the KEY, not
+      // the value, to tell a new server from one that never had the quick_fix
+      // lane. Dropping the key here would make every repo panel judge this
+      // server old and disable the lane it actually supports.
+      quick_fix_orchestration_model:
+        typeof queue.quick_fix_orchestration_model === 'string'
+          ? queue.quick_fix_orchestration_model
+          : null,
+      quick_fix_orchestration_effort:
+        typeof queue.quick_fix_orchestration_effort === 'string'
+          ? queue.quick_fix_orchestration_effort
+          : null,
+      quick_fix_orchestration_speed:
+        typeof queue.quick_fix_orchestration_speed === 'string'
+          ? queue.quick_fix_orchestration_speed
+          : null,
       execution_defaults,
       // Cold/expired cache ships the empty layer and the fill re-pushes; see
       // `prewarmSessionDefaults`.

@@ -424,6 +424,90 @@ describe('exec-preset-coordinator resolveForDispatch', () => {
     expect(resolved.exec.orchestration_model).toBe('sonnet');
   });
 
+  test('prefers quick_fix orchestration values for a quick_fix route', () => {
+    const fixture = createFixture();
+    fixture.queueStore.setOrchestrationDefaults(WORKSPACE, {
+      expected_revision: 0,
+      values: {
+        orchestration_model: 'sonnet',
+        orchestration_effort: 'high',
+        orchestration_speed: 'default',
+        quick_fix_orchestration_model: 'sol',
+        quick_fix_orchestration_effort: 'xhigh',
+        quick_fix_orchestration_speed: 'fast'
+      }
+    });
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, { route: 'quick_fix' })
+    );
+
+    expect(resolved.settings).toEqual({
+      orchestration_model: 'sol',
+      orchestration_effort: 'xhigh',
+      orchestration_speed: 'fast'
+    });
+    expect(resolved.exec.orchestration_model).toBe('sol');
+  });
+
+  test('falls through to general orchestration values for an empty quick_fix profile', () => {
+    const fixture = createFixture();
+    fixture.queueStore.setOrchestrationDefaults(WORKSPACE, {
+      expected_revision: 0,
+      values: {
+        orchestration_model: 'sonnet',
+        orchestration_effort: 'high'
+      }
+    });
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, { route: 'quick_fix' })
+    );
+
+    expect(resolved.settings).toEqual({
+      orchestration_model: 'sonnet',
+      orchestration_effort: 'high'
+    });
+  });
+
+  test('keeps a bead pin above the quick_fix workspace value', () => {
+    const fixture = createFixture();
+    fixture.queueStore.setOrchestrationDefaults(WORKSPACE, {
+      expected_revision: 0,
+      values: { quick_fix_orchestration_model: 'sol' }
+    });
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, {
+        route: 'quick_fix',
+        model: 'opus'
+      })
+    );
+
+    expect(resolved.settings.orchestration_model).toBe('sol');
+    expect(resolved.exec.orchestration_model).toBe('opus');
+  });
+
+  test('ignores quick_fix orchestration values for every other route', () => {
+    const fixture = createFixture();
+    fixture.queueStore.setOrchestrationDefaults(WORKSPACE, {
+      expected_revision: 0,
+      values: {
+        orchestration_model: 'sonnet',
+        quick_fix_orchestration_model: 'sol'
+      }
+    });
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, {
+        route: 'spec_backed'
+      })
+    );
+
+    expect(resolved.settings).toEqual({ orchestration_model: 'sonnet' });
+    expect(resolved.exec.orchestration_model).toBe('sonnet');
+  });
+
   test('never produces a stamped key', () => {
     const fixture = createFixture();
     fixture.queueStore.setOrchestrationDefaults(WORKSPACE, {
