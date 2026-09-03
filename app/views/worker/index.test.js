@@ -78,7 +78,7 @@ function seedCandidates() {
       priority: 1,
       updated_at: now,
       spec_id: 'SPEC-1',
-      metadata: { spec_review: RECEIPT }
+      metadata: { route: 'spec_backed', spec_review: RECEIPT }
     },
     {
       id: 'RD-2',
@@ -97,7 +97,7 @@ function seedCandidates() {
       priority: 1,
       updated_at: now,
       spec_id: 'SPEC-2',
-      metadata: { spec_review: RECEIPT },
+      metadata: { route: 'spec_backed', spec_review: RECEIPT },
       // 실제 서버 push의 embedded edge 형태: blocker id는 `depends_on_id`.
       dependencies: [
         { issue_id: 'BL-1', depends_on_id: 'DEP-9', type: 'blocks' }
@@ -274,7 +274,7 @@ function seedMerged() {
       created_at: 100,
       updated_at: 3000,
       spec_id: 'S',
-      metadata: { spec_review: RECEIPT }
+      metadata: { route: 'spec_backed', spec_review: RECEIPT }
     },
     {
       id: 'C',
@@ -283,7 +283,7 @@ function seedMerged() {
       created_at: 300,
       updated_at: 2000,
       spec_id: 'S',
-      metadata: { spec_review: RECEIPT }
+      metadata: { route: 'spec_backed', spec_review: RECEIPT }
     }
   ]);
   seed(stores, 'tab:worker:blocked', [
@@ -294,7 +294,7 @@ function seedMerged() {
       created_at: 200,
       updated_at: 1000,
       spec_id: 'S',
-      metadata: { spec_review: RECEIPT },
+      metadata: { route: 'spec_backed', spec_review: RECEIPT },
       dependencies: ['DEP-1']
     }
   ]);
@@ -560,7 +560,7 @@ describe('views/worker', () => {
         title: 'blocked via blocked_info',
         status: 'open',
         spec_id: 'SPEC-3',
-        metadata: { spec_review: RECEIPT },
+        metadata: { route: 'spec_backed', spec_review: RECEIPT },
         blocked_info: { external: false, reason: null, blockers: ['DEP-7'] },
         // blocked_info가 있으면 edge fallback은 읽지 않는다 (닫힌 blocker 오탐 방지).
         dependencies: [
@@ -599,7 +599,7 @@ describe('views/worker', () => {
         title: 'blocked without blocker ids',
         status: 'open',
         spec_id: 'SPEC-4',
-        metadata: { spec_review: RECEIPT },
+        metadata: { route: 'spec_backed', spec_review: RECEIPT },
         blocked_info: { external: true, reason: null, blockers: [] }
       }
     ]);
@@ -635,14 +635,14 @@ describe('views/worker', () => {
         title: 'ready with spec',
         status: 'open',
         spec_id: 'SPEC-1',
-        metadata: { spec_review: RECEIPT }
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
       },
       {
         id: 'NO-WORKER',
         title: 'interactive only',
         status: 'open',
         spec_id: 'SPEC-X',
-        metadata: { spec_review: RECEIPT },
+        metadata: { route: 'spec_backed', spec_review: RECEIPT },
         labels: ['worker-ineligible']
       }
     ]);
@@ -671,7 +671,7 @@ describe('views/worker', () => {
         title: 'ready with spec',
         status: 'open',
         spec_id: 'SPEC-1',
-        metadata: { spec_review: RECEIPT }
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
       },
       {
         id: 'PARKED-1',
@@ -679,6 +679,7 @@ describe('views/worker', () => {
         status: 'open',
         spec_id: 'SPEC-Y',
         metadata: {
+          route: 'spec_backed',
           spec_review: RECEIPT,
           awaiting_user: 'spec_review_stale:revise'
         }
@@ -711,7 +712,7 @@ describe('views/worker', () => {
         title: 'ready with spec',
         status: 'open',
         spec_id: 'SPEC-1',
-        metadata: { spec_review: RECEIPT }
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
       },
       {
         id: 'NO-META',
@@ -3682,7 +3683,7 @@ describe('views/worker', () => {
         title: 'normal',
         status: 'open',
         spec_id: 'S',
-        metadata: { spec_review: RECEIPT }
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
       },
       {
         id: 'P-1',
@@ -3690,7 +3691,7 @@ describe('views/worker', () => {
         status: 'open',
         parent: 'PAR-1',
         spec_id: 'S',
-        metadata: { spec_review: RECEIPT }
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
       }
     ]);
     seed(stores, 'tab:worker:blocked', [
@@ -3699,7 +3700,7 @@ describe('views/worker', () => {
         title: 'dotted child id',
         status: 'open',
         spec_id: 'S',
-        metadata: { spec_review: RECEIPT }
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
       }
     ]);
     createWorkerView(mount, {
@@ -3725,14 +3726,18 @@ describe('views/worker', () => {
         title: 'native spec',
         status: 'open',
         spec_id: ' docs/native.md ',
-        metadata: { spec_review: RECEIPT }
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
       },
       {
         id: 'CONFLICT-1',
         title: 'conflicting spec',
         status: 'open',
         spec_id: 'docs/native.md',
-        metadata: { spec_id: 'docs/legacy.md', spec_review: RECEIPT }
+        metadata: {
+          route: 'spec_backed',
+          spec_id: 'docs/legacy.md',
+          spec_review: RECEIPT
+        }
       }
     ]);
     createWorkerView(mount, {
@@ -3762,7 +3767,7 @@ describe('views/worker', () => {
         title: 'workflow candidate',
         status: 'open',
         spec_id: 'S',
-        metadata: { spec_review: RECEIPT },
+        metadata: { route: 'spec_backed', spec_review: RECEIPT },
         workflow: {
           route: 'spec_backed',
           route_source: 'derived',
@@ -3810,7 +3815,7 @@ describe('views/worker', () => {
         title: 'full plan candidate',
         status: 'open',
         spec_id: 'S',
-        metadata: { spec_review: RECEIPT },
+        metadata: { route: 'spec_backed', spec_review: RECEIPT },
         workflow: {
           route: 'full_plan',
           route_source: 'explicit',
@@ -3953,6 +3958,8 @@ describe('views/worker', () => {
         title: 'no workflow',
         status: 'open',
         spec_id: 'S',
+        // route를 싣지 않는다 — 이 테스트는 workflow 투영이 없는 카드가 route 칩을
+        // 그리지 않는 것만 본다 (배치 자격은 보지 않는다).
         metadata: { spec_review: RECEIPT }
       }
     ]);
@@ -7559,7 +7566,7 @@ describe('worker-ineligible candidates (UI-8881)', () => {
         status: 'open',
         created_at: 100,
         spec_id: 'S',
-        metadata: { spec_review: RECEIPT },
+        metadata: { route: 'spec_backed', spec_review: RECEIPT },
         labels: ['worker-ineligible'],
         ...over
       },
@@ -7576,7 +7583,7 @@ describe('worker-ineligible candidates (UI-8881)', () => {
         status: 'open',
         created_at: 300,
         spec_id: 'S',
-        metadata: { spec_review: RECEIPT }
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
       }
     ]);
     return stores;
@@ -7678,7 +7685,7 @@ describe('worker-ineligible candidates (UI-8881)', () => {
         title: 'ineligible blocked',
         status: 'open',
         spec_id: 'S',
-        metadata: { spec_review: RECEIPT },
+        metadata: { route: 'spec_backed', spec_review: RECEIPT },
         labels: ['worker-ineligible'],
         dependencies: ['DEP-1']
       }
@@ -7796,6 +7803,7 @@ describe('session-preferred candidates (UI-49mc)', () => {
         created_at: 100,
         spec_id: 'S',
         metadata: {
+          route: 'spec_backed',
           spec_review: RECEIPT,
           session_preferred_reason: 'external_roundtrip'
         },
@@ -7808,7 +7816,7 @@ describe('session-preferred candidates (UI-49mc)', () => {
         status: 'open',
         created_at: 300,
         spec_id: 'S',
-        metadata: { spec_review: RECEIPT }
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
       }
     ]);
     return stores;
@@ -7845,7 +7853,7 @@ describe('session-preferred candidates (UI-49mc)', () => {
 
   test('omits the chip when the label carries no reason', () => {
     const card = renderPreferred({
-      metadata: { spec_review: RECEIPT }
+      metadata: { route: 'spec_backed', spec_review: RECEIPT }
     });
 
     expect(card.querySelector('.worker-card__session-preferred')).toBeNull();
@@ -13716,6 +13724,7 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
         created_at: 100,
         spec_id: 'S',
         metadata: {
+          route: 'spec_backed',
           spec_review: RECEIPT,
           rec_orchestration_model: 'fable',
           rec_reason: 'invariant_reasoning'
@@ -13977,7 +13986,7 @@ describe('views/worker candidate stepper doc cells (UI-ajkn §5)', () => {
         priority: 1,
         updated_at: Date.now(),
         spec_id: 'SPEC-1',
-        metadata: { spec_review: RECEIPT },
+        metadata: { route: 'spec_backed', spec_review: RECEIPT },
         workflow: {
           route: 'spec_backed',
           stages: {
@@ -14788,7 +14797,7 @@ describe('복잡 chip projection on the worker tab (UI-sbum §3)', () => {
         status: 'open',
         created_at: 300,
         spec_id: 'S',
-        metadata: { spec_review: RECEIPT }
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
       }
     ]);
     return stores;

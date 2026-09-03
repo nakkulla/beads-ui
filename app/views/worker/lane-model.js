@@ -56,6 +56,7 @@ import {
   sumAttemptWorkMs
 } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
+import { placementFromFacts, placementTitle } from './placement.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
 // 칩의 모양은 두 탭이 공유한다 (UI-anna §5.1): 워커 투영도 같은 함수를 불러
 // 같은 라벨·같은 툴팁 문장 틀을 낸다.
@@ -3345,18 +3346,42 @@ export function buildLanes(workspaces, workspaces_state, options) {
           )
         );
       }
-      // 자격은 행이 실어 온다 (UI-4tud §4.1). 서버 `runnable`(Monitor)에는 두 키가
-      // 없고, 없으면 `eligible=true`·`worker_ineligible=false`로 읽는다 —
-      // 서버가 이미 자격 미달을 빼고 보내기 때문이다 (fail-quiet).
-      const eligible = entry.eligible !== false;
-      const worker_ineligible = entry.worker_ineligible === true;
       // 후보 레인이 드래그 소스인지도 그 재료가 가른다 (UI-d13v §6): 관측용 행을
       // 싣는 어댑터(`eligible`을 실어 오는 쪽)의 후보 레인은 드래그 소스가 아니고,
-      // 배치는 `queue_placeable`이 그대로 물려받는다. 그 키가 없는 Monitor 후보
-      // 카드는 지금처럼 드래그·배치를 둘 다 유지한다.
+      // 배치는 `queue_placeable`이 그대로 물려받는다.
       const observation_row = Object.hasOwn(entry, 'eligible');
+      const has_placement_facts =
+        !observation_row &&
+        Object.hasOwn(entry, 'route') &&
+        Object.hasOwn(entry, 'spec_state') &&
+        Object.hasOwn(entry, 'has_description') &&
+        Object.hasOwn(entry, 'awaiting_user') &&
+        Object.hasOwn(entry, 'worker_ineligible');
+      const placement = has_placement_facts
+        ? placementFromFacts(
+            {
+              route: typeof entry.route === 'string' ? entry.route : '',
+              spec: entry.spec_state,
+              has_description: entry.has_description === true,
+              awaiting_user: entry.awaiting_user === true,
+              worker_ineligible: entry.worker_ineligible === true
+            },
+            null
+          )
+        : null;
+      // 구 서버 행에는 새 사실 묶음이 없다. 그때만 기존 허용 폴백을 보존한다.
+      const eligible = placement
+        ? placement.placeable
+        : entry.eligible !== false;
+      const worker_ineligible = placement
+        ? placement.worker_ineligible
+        : entry.worker_ineligible === true;
+      const queue_placeable = eligible && !worker_ineligible;
       /** @type {string[]} */
       const reason_parts = [];
+      if (placement && !placement.placeable) {
+        reason_parts.push(placementTitle(placement));
+      }
       if (typeof entry.reason === 'string' && entry.reason.length > 0) {
         reason_parts.push(entry.reason);
       }
@@ -3378,8 +3403,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...base(bead_id),
         title: entry.title || titles[bead_id] || bead_id,
         lane: 'runnable',
-        draggable: !observation_row,
-        queue_placeable: eligible && !worker_ineligible,
+        draggable: !observation_row && queue_placeable,
+        queue_placeable,
         ...(worker_ineligible ? { worker_ineligible: true } : {}),
         // 세션 권장 advisory (UI-49mc §3). 자격 판정에는 들어가지 않고, 재료를
         // 싣지 않는 서버 `runnable` 행에는 키 자체가 없다 (fail-quiet).

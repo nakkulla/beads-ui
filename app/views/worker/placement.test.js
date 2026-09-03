@@ -5,6 +5,7 @@ import { normalizeCandidateSort } from './candidate-sort.js';
 import {
   candidatePlacement,
   placeMenuLanes,
+  placementFromFacts,
   placementTitle
 } from './placement.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
@@ -78,7 +79,7 @@ const ELIGIBILITY_TABLE = [
       id: 'PUB',
       title: 'published',
       spec_id: 'docs/specs/x.md',
-      metadata: { spec_review: RECEIPT }
+      metadata: { route: 'spec_backed', spec_review: RECEIPT }
     },
     placeable: true,
     spec: 'published'
@@ -90,7 +91,7 @@ const ELIGIBILITY_TABLE = [
       title: 'ineligible',
       labels: ['worker-ineligible'],
       spec_id: 'docs/specs/x.md',
-      metadata: { spec_review: RECEIPT }
+      metadata: { route: 'spec_backed', spec_review: RECEIPT }
     },
     placeable: false,
     spec: 'published'
@@ -101,7 +102,11 @@ const ELIGIBILITY_TABLE = [
       id: 'PARK',
       title: 'parked',
       spec_id: 'docs/specs/x.md',
-      metadata: { spec_review: RECEIPT, awaiting_user: 'spec_review_stale' }
+      metadata: {
+        route: 'spec_backed',
+        spec_review: RECEIPT,
+        awaiting_user: 'spec_review_stale'
+      }
     },
     placeable: false,
     spec: 'published'
@@ -124,7 +129,7 @@ const ELIGIBILITY_TABLE = [
       id: 'DRAFT',
       title: 'draft',
       spec_id: 'docs/specs/x.md',
-      metadata: {}
+      metadata: { route: 'spec_backed' }
     },
     placeable: false,
     spec: 'draft'
@@ -138,7 +143,11 @@ const ELIGIBILITY_TABLE = [
       id: 'LEGACY',
       title: 'legacy',
       spec_id: 'docs/specs/x.md',
-      metadata: { spec_id: 'docs/specs/other.md', spec_review: RECEIPT }
+      metadata: {
+        route: 'spec_backed',
+        spec_id: 'docs/specs/other.md',
+        spec_review: RECEIPT
+      }
     },
     placeable: true,
     spec: 'published'
@@ -158,6 +167,41 @@ describe('worker placement', () => {
       expect(adapter_row.eligible).toBe(placement.placeable);
     });
   }
+
+  test('returns the same placement from payload and extracted facts', () => {
+    const issue = {
+      id: 'PUB',
+      spec_id: 'docs/specs/x.md',
+      metadata: { route: 'spec_backed', spec_review: RECEIPT }
+    };
+
+    const from_issue = candidatePlacement(issue, queueOf());
+    const from_facts = placementFromFacts(
+      {
+        route: 'spec_backed',
+        spec: 'published',
+        has_description: true,
+        awaiting_user: false,
+        worker_ineligible: false
+      },
+      null
+    );
+
+    expect(from_issue).toEqual(from_facts);
+  });
+
+  test('rejects an unpinned route even with a published spec', () => {
+    const placement = candidatePlacement(
+      {
+        id: 'UNPINNED',
+        spec_id: 'docs/specs/x.md',
+        metadata: { spec_review: RECEIPT }
+      },
+      queueOf()
+    );
+
+    expect(placement).toMatchObject({ placeable: false, route_ok: false });
+  });
 
   test('reports no location for an issue outside every lane', () => {
     const placement = candidatePlacement({ id: 'FREE' }, queueOf());
@@ -260,9 +304,21 @@ describe('worker placement', () => {
     ).toBe('description이 없어 대기 큐에 넣을 수 없습니다');
   });
 
-  test('titles a bead without a published spec', () => {
+  test('titles an unpinned route', () => {
+    expect(placementTitle({ placeable: false, route_ok: false })).toBe(
+      'route가 정해지지 않아 대기 큐에 넣을 수 없습니다'
+    );
+  });
+
+  test('titles a conflicting spec path', () => {
+    expect(placementTitle({ placeable: false, spec: 'conflict' })).toBe(
+      'spec 경로가 충돌해 대기 큐에 넣을 수 없습니다'
+    );
+  });
+
+  test('titles an unpublished spec', () => {
     expect(placementTitle({ placeable: false, spec: 'draft' })).toBe(
-      'spec이 없어 대기 큐에 넣을 수 없습니다'
+      'spec이 발행되지 않아 대기 큐에 넣을 수 없습니다'
     );
   });
 

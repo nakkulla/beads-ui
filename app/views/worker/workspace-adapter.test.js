@@ -163,7 +163,8 @@ describe('worker workspace adapter', () => {
         id: 'OK',
         title: 'ok',
         spec_id: 'SPEC-1',
-        metadata: { spec_review: RECEIPT }
+        // route는 자격 식의 첫 조건이다 (UI-ff10 §4.1).
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
       }
     ]);
     const adapter = adapterOf({ stores });
@@ -311,6 +312,7 @@ describe('worker workspace adapter', () => {
         labels: ['session-preferred'],
         spec_id: 'SPEC-1',
         metadata: {
+          route: 'spec_backed',
           spec_review: RECEIPT,
           session_preferred_reason: 'user_feedback_loop'
         }

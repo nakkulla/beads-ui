@@ -13,6 +13,7 @@
  * @import { PlaceMenuEntry } from './lanes.js'
  */
 import { resolveSpecEvidence } from '../../../server/spec-id.js';
+import { WORKFLOW_ROUTES } from '../../../server/worker/routes.js';
 import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
 import { runningLaneBeadIds } from './lane-model.js';
 
@@ -23,8 +24,18 @@ import { runningLaneBeadIds } from './lane-model.js';
  */
 
 /**
+ * @typedef {Object} PlacementFacts
+ * @property {string} route
+ * @property {'published'|'draft'|'none'|'conflict'|'n/a'} spec
+ * @property {boolean} has_description
+ * @property {boolean} awaiting_user
+ * @property {boolean} worker_ineligible
+ */
+
+/**
  * @typedef {Object} Placement
  * @property {boolean} placeable - 자격을 갖췄고 `location`이 null인가.
+ * @property {boolean} route_ok
  * @property {boolean} worker_ineligible
  * @property {boolean} awaiting_user
  * @property {boolean} missing_description - quick_fix인데 description이 없다.
@@ -32,6 +43,9 @@ import { runningLaneBeadIds } from './lane-model.js';
  * 자격 입력으로 쓰지 않는 route(quick_fix)다.
  * @property {PlacementLocation|null} location - 이미 서 있는 레인, 없으면 null.
  */
+
+/** @type {ReadonlySet<string>} */
+const ROUTES = new Set(WORKFLOW_ROUTES);
 
 /**
  * 스냅샷 하나당 한 번만 세는 실행중 구성원. 스냅샷은 스토어가 통째로 갈아
@@ -125,12 +139,33 @@ function locationOf(bead_id, queue) {
 }
 
 /**
- * `queue`에 이 이슈를 지금 넣을 수 있는가, 없다면 무엇 때문인가 (§6.1).
+ * Fold raw eligibility facts into the single queue-placement judgment.
  *
- * 자격 식은 후보 어댑터가 쓰던 것 그대로다: `!worker_ineligible &&
- * !awaiting_user && (quick_fix ? has_description : published && !conflict)`.
- * `placeable`은 거기에 "아직 어느 레인에도 없다"를 더한 것이다 — 이미 대기·실행·
- * PR 대기·완료에 있는 bead는 자격과 무관하게 넣을 자리가 없다.
+ * @param {PlacementFacts} facts
+ * @param {PlacementLocation|null} location
+ * @returns {Placement}
+ */
+export function placementFromFacts(facts, location) {
+  const route_ok = ROUTES.has(facts.route);
+  const is_quick_fix = facts.route === 'quick_fix';
+  const eligible =
+    route_ok &&
+    !facts.worker_ineligible &&
+    !facts.awaiting_user &&
+    (is_quick_fix ? facts.has_description : facts.spec === 'published');
+  return {
+    placeable: eligible && location === null,
+    route_ok,
+    worker_ineligible: facts.worker_ineligible,
+    awaiting_user: facts.awaiting_user,
+    missing_description: is_quick_fix && !facts.has_description,
+    spec: facts.spec,
+    location
+  };
+}
+
+/**
+ * `queue`에 이 이슈를 지금 넣을 수 있는가, 없다면 무엇 때문인가 (§6.1).
  *
  * 필드 부재는 판정하지 않는다 (fail-quiet): `labels`·`description`이 없는 부분
  * 페이로드는 서버 admission이 권위 있게 다시 본다.
@@ -156,28 +191,24 @@ export function candidatePlacement(issue, queue) {
     Object.hasOwn(row, 'labels') && isWorkerIneligible(row.labels);
   // 사용자 결정 대기 파킹 (UI-dqg9 §2.2): 서버 admission과 같은 presence 규칙.
   const awaiting_user = Object.hasOwn(objectOf(row.metadata), 'awaiting_user');
-  const eligible =
-    !worker_ineligible &&
-    !awaiting_user &&
-    (is_quick_fix
-      ? has_description
-      : evidence.evidence === 'published' && !evidence.conflict);
   const location = locationOf(
     typeof row.id === 'string' ? row.id : '',
     snapshot
   );
-  return {
-    placeable: eligible && location === null,
-    worker_ineligible,
-    awaiting_user,
-    missing_description: is_quick_fix && !has_description,
-    spec: is_quick_fix
-      ? 'n/a'
-      : evidence.conflict
-        ? 'conflict'
-        : evidence.evidence,
+  return placementFromFacts(
+    {
+      route,
+      spec: is_quick_fix
+        ? 'n/a'
+        : evidence.conflict
+          ? 'conflict'
+          : evidence.evidence,
+      has_description,
+      awaiting_user,
+      worker_ineligible
+    },
     location
-  };
+  );
 }
 
 /**
@@ -209,6 +240,9 @@ export function placementTitle(placement) {
   if (placement.placeable) {
     return '대기 큐 맨 뒤에 추가';
   }
+  if (placement.route_ok === false) {
+    return 'route가 정해지지 않아 대기 큐에 넣을 수 없습니다';
+  }
   if (placement.worker_ineligible) {
     return 'worker-ineligible label로 워커에서 실행할 수 없습니다';
   }
@@ -218,7 +252,10 @@ export function placementTitle(placement) {
   if (placement.missing_description) {
     return 'description이 없어 대기 큐에 넣을 수 없습니다';
   }
-  return 'spec이 없어 대기 큐에 넣을 수 없습니다';
+  if (placement.spec === 'conflict') {
+    return 'spec 경로가 충돌해 대기 큐에 넣을 수 없습니다';
+  }
+  return 'spec이 발행되지 않아 대기 큐에 넣을 수 없습니다';
 }
 
 /**

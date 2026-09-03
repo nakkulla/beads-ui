@@ -4239,10 +4239,66 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
       [state()]
     );
 
-    expect(lanes.runnable[0].queue_placeable).toBe(false);
+    expect([
+      lanes.runnable[0].draggable,
+      lanes.runnable[0].queue_placeable
+    ]).toEqual([false, false]);
   });
 
-  test('keeps the server runnable row draggable and placeable', () => {
+  test('makes a ready Monitor row draggable and placeable', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', {
+              route: 'spec_backed',
+              spec_state: 'published',
+              has_description: false,
+              awaiting_user: false,
+              worker_ineligible: false
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect([
+      lanes.runnable[0].draggable,
+      lanes.runnable[0].queue_placeable
+    ]).toEqual([true, true]);
+  });
+
+  test('keeps an unready Monitor row fixed and unplaceable', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', {
+              route: 'spec_backed',
+              spec_state: 'draft',
+              has_description: false,
+              awaiting_user: false,
+              worker_ineligible: false
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect([
+      lanes.runnable[0].draggable,
+      lanes.runnable[0].queue_placeable,
+      lanes.runnable[0].reason
+    ]).toEqual([
+      false,
+      false,
+      'spec이 발행되지 않아 대기 큐에 넣을 수 없습니다'
+    ]);
+  });
+
+  test('keeps a legacy server row draggable and placeable', () => {
     const lanes = buildLanes(
       [workspace({ runnable: [runnable('A-1')] })],
       [state()]
