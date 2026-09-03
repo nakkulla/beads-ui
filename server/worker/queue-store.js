@@ -76,6 +76,9 @@
  * launch, or null when the runner did not apply a Claude pin.
  * @property {string|null} codex_account - Codex account key applied to the
  * launch, or null when no Codex pin was applied.
+ * @property {{ claude: 'bead'|'workspace_default'|'outage_switch'|null, codex: 'bead'|'workspace_default'|null }|null} account_sources - Provenance of the applied account pins.
+ * @property {string|null} account_switched_from - Claude email replaced by an outage switch.
+ * @property {{ reason: 'transcript_missing', session_id: string }|null} resume_fallback - One-shot fresh substitute marker.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
  * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], pushed?: string[], artifact_pushed?: string[], inherited?: string[], skipped?: string, error?: string }|null} base_drift -
@@ -556,6 +559,7 @@
  * @property {number|null} resets_at
  * @property {number} rearm_count
  * @property {string[]} attempt_ids
+ * @property {'none'|'cap'|'disabled'|null} [auto_switch]
  */
 /**
  * @typedef {Object} ProviderHold
@@ -2741,6 +2745,33 @@ export function makeAttempt(fields) {
       typeof fields.claude_account === 'string' ? fields.claude_account : null,
     codex_account:
       typeof fields.codex_account === 'string' ? fields.codex_account : null,
+    account_sources:
+      isRecord(fields.account_sources) &&
+      (fields.account_sources.claude === 'bead' ||
+        fields.account_sources.claude === 'workspace_default' ||
+        fields.account_sources.claude === 'outage_switch' ||
+        fields.account_sources.claude === null) &&
+      (fields.account_sources.codex === 'bead' ||
+        fields.account_sources.codex === 'workspace_default' ||
+        fields.account_sources.codex === null)
+        ? /** @type {Attempt['account_sources']} */ ({
+            claude: fields.account_sources.claude,
+            codex: fields.account_sources.codex
+          })
+        : null,
+    account_switched_from:
+      typeof fields.account_switched_from === 'string'
+        ? fields.account_switched_from
+        : null,
+    resume_fallback:
+      isRecord(fields.resume_fallback) &&
+      fields.resume_fallback.reason === 'transcript_missing' &&
+      typeof fields.resume_fallback.session_id === 'string'
+        ? {
+            reason: /** @type {const} */ ('transcript_missing'),
+            session_id: fields.resume_fallback.session_id
+          }
+        : null,
     exit: fields.exit ?? null,
     verify_result: fields.verify_result ?? null,
     base_drift: isRecord(fields.base_drift)
@@ -3413,7 +3444,13 @@ function normalizeProviderTarget(value) {
         : 0,
     attempt_ids: Array.isArray(value.attempt_ids)
       ? [...new Set(value.attempt_ids.filter((id) => typeof id === 'string'))]
-      : []
+      : [],
+    auto_switch:
+      value.auto_switch === 'none' ||
+      value.auto_switch === 'cap' ||
+      value.auto_switch === 'disabled'
+        ? value.auto_switch
+        : null
   };
 }
 
@@ -3464,6 +3501,7 @@ function normalizeProviderHolds(value) {
           existing.rearm_count,
           target.rearm_count
         );
+        existing.auto_switch = target.auto_switch;
       } else {
         targets.push(target);
       }
@@ -3514,6 +3552,26 @@ function normalizeAutoResumePending(value) {
     }
   }
   return pending;
+}
+
+/**
+ * Report whether one attempt lineage already consumed its provider auto-resume.
+ *
+ * @param {Record<string, Attempt>} attempts
+ * @param {Attempt} attempt
+ */
+function providerAutoResumeCapped(attempts, attempt) {
+  /** @type {Attempt|null} */
+  let cursor = attempt;
+  const seen = new Set();
+  while (cursor && !seen.has(cursor.attempt_id)) {
+    seen.add(cursor.attempt_id);
+    if (cursor.auto_resume_kind === 'provider_outage') {
+      return true;
+    }
+    cursor = cursor.resumed_from ? attempts[cursor.resumed_from] || null : null;
+  }
+  return false;
 }
 
 /**
@@ -6396,6 +6454,20 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Toggle automatic Claude account switching with revision CAS.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, on: boolean }} input
+     * @returns {QueueOpResult}
+     */
+    toggleProviderAutoSwitch(workspace, input) {
+      return applyMutation(workspace, input.expected_revision, (next) => {
+        next.provider_auto_switch = input.on;
+        return true;
+      });
+    },
+
+    /**
      * Remove a bead from all placement lanes. CAS-guarded.
      *
      * @param {string} workspace
@@ -6640,7 +6712,7 @@ export function createQueueStore(options = {}) {
      * Pause one attempt and register its provider target in the same write.
      *
      * @param {string} workspace
-     * @param {{ attempt_id: string, patch: Partial<Attempt>, runner: string, target: ProviderTarget }} input
+     * @param {{ attempt_id: string, patch: Partial<Attempt>, runner: string, target: ProviderTarget, auto_switch?: { enabled: boolean, candidate_account: string|null } }} input
      * @returns {QueueOpResult & { entered?: boolean, generation?: number }}
      */
     holdProviderAttempt(workspace, input) {
@@ -6686,6 +6758,8 @@ export function createQueueStore(options = {}) {
             candidate.model === target.model &&
             candidate.account === target.account
         );
+        /** @type {ProviderTarget} */
+        let stored_target;
         if (existing) {
           existing.detail = target.detail;
           existing.last_error = target.last_error;
@@ -6697,12 +6771,57 @@ export function createQueueStore(options = {}) {
           if (!existing.attempt_ids.includes(input.attempt_id)) {
             existing.attempt_ids.push(input.attempt_id);
           }
+          stored_target = existing;
         } else {
           entered = true;
-          hold.targets.push({
+          stored_target = {
             ...target,
             attempt_ids: [...new Set([...target.attempt_ids, input.attempt_id])]
-          });
+          };
+          hold.targets.push(stored_target);
+        }
+        if (target.kind === 'usage_limit' && input.auto_switch) {
+          const candidate_account = input.auto_switch.candidate_account;
+          const auto_switch_enabled =
+            input.auto_switch.enabled && next.provider_auto_switch !== false;
+          if (!auto_switch_enabled) {
+            stored_target.auto_switch = 'disabled';
+          } else if (!candidate_account) {
+            stored_target.auto_switch = 'none';
+          } else if (
+            providerAutoResumeCapped(
+              next.attempts,
+              next.attempts[input.attempt_id]
+            )
+          ) {
+            stored_target.auto_switch = 'cap';
+          } else {
+            const candidate_held = Object.values(next.provider_hold).some(
+              (candidate_hold) =>
+                candidate_hold.targets.some(
+                  (candidate_target) =>
+                    candidate_target.account === candidate_account
+                )
+            );
+            if (candidate_held) {
+              stored_target.auto_switch = 'none';
+            } else {
+              stored_target.auto_switch = null;
+              const receipt = {
+                attempt_id: input.attempt_id,
+                generation: hold.generation,
+                account: candidate_account,
+                kind: /** @type {const} */ ('account_switch')
+              };
+              if (
+                !next.auto_resume_pending.some(
+                  (candidate) => candidate.attempt_id === input.attempt_id
+                )
+              ) {
+                next.auto_resume_pending.push(receipt);
+              }
+            }
+          }
         }
         return true;
       });
@@ -6815,21 +6934,7 @@ export function createQueueStore(options = {}) {
             continue;
           }
           recovered_attempt_ids.push(attempt_id);
-          /** @type {Attempt|null} */
-          let cursor = attempt;
-          let capped = false;
-          const seen = new Set();
-          while (cursor && !seen.has(cursor.attempt_id)) {
-            seen.add(cursor.attempt_id);
-            if (cursor.auto_resume_kind === 'provider_outage') {
-              capped = true;
-              break;
-            }
-            cursor = cursor.resumed_from
-              ? next.attempts[cursor.resumed_from]
-              : null;
-          }
-          if (capped) {
+          if (providerAutoResumeCapped(next.attempts, attempt)) {
             disarmed_attempt_ids.push(attempt_id);
             continue;
           }
@@ -6903,6 +7008,39 @@ export function createQueueStore(options = {}) {
         return { ...result, discarded_attempt_ids: [] };
       }
       return { ...result, discarded_attempt_ids };
+    },
+
+    /**
+     * Clear only runner-wide usage-limit targets after a manual continuation.
+     *
+     * @param {string} workspace
+     * @param {{ runner: string, attempt_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    clearManualProviderResumeTarget(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const hold = next.provider_hold[input.runner];
+        if (!hold) {
+          return false;
+        }
+        const targets = hold.targets.filter(
+          (target) =>
+            !(
+              target.kind === 'usage_limit' &&
+              target.account === null &&
+              target.attempt_ids.includes(input.attempt_id)
+            )
+        );
+        if (targets.length === hold.targets.length) {
+          return false;
+        }
+        if (targets.length === 0) {
+          delete next.provider_hold[input.runner];
+        } else {
+          hold.targets = targets;
+        }
+        return true;
+      });
     },
 
     /**

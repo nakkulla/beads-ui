@@ -51,6 +51,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { resumeKindOf } from '../../app/utils/quickfix-resume-kind.js';
+import { createTranscriptReducer } from '../../app/utils/transcript-lines.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
@@ -100,10 +101,13 @@ import {
   receiptProbeError
 } from './receipt-check.js';
 import { liftDelegation } from './runner/claude.js';
-import { RUNNERS, adapterSpec } from './runner/index.js';
+import { RUNNERS, adapterSpec, runtimeCatalog } from './runner/index.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
 import { stderrPathOf } from './session-log.js';
-import { qualifySessionFork } from './session-ref.js';
+import {
+  resolveSessionFile as defaultResolveSessionFile,
+  qualifySessionFork
+} from './session-ref.js';
 import { staleResidueIntact } from './stale-work.js';
 import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths.js';
 import * as default_usage_receipts from './usage-receipts.js';
@@ -113,6 +117,11 @@ const log = debug('worker:scheduler');
 
 const WAITING_RESCAN_COVER_MS = 2_000;
 const WAITING_RESCAN_MAX_WAIT_MS = 30_000;
+const AUTO_SWITCH_5H_MAX_PCT = 80;
+const AUTO_SWITCH_7D_MAX_PCT = 90;
+const RESUME_HANDOFF_MAX_CHARS = 4_000;
+const TRANSCRIPT_MISSING_RE =
+  /No conversation found with session ID|No session found|session(?: id)? \S+ (?:was )?not found/i;
 
 /**
  * The bd write a `workflow_mode_record_failed` attempt names in its
@@ -520,7 +529,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * not one of §5.2's four `unusable` cases, and no repo default can be stored
  * without it either.
  * @property {(runner_name: string) => { name: string, spawn: (bead: any, workspace: string, settings: any) => RunnerHandle }} makeRunner
- * @property {{ resolveClaude: (email: string) => Promise<any>, resolveCodex: (key: string) => Promise<any>, readClaude?: (email: string) => Promise<any>, activeClaude?: () => Promise<any> }} [accountCatalog]
+ * @property {{ resolveClaude: (email: string) => Promise<any>, resolveCodex: (key: string) => Promise<any>, readClaude?: (email: string) => Promise<any>, activeClaude?: () => Promise<any>, listClaude?: () => Promise<any> }} [accountCatalog]
  * @property {() => string|null} [resolveCswapPath]
  * @property {typeof defaultPrepareCodexAccountHome} [prepareCodexAccountHome]
  * @property {(key: string) => string} [codexAccountHomeDir]
@@ -590,6 +599,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * attachment built without it (every hermetic test) refuses the dispatch as
  * `not_external` rather than launching against an unverified bead.
  * @property {{ existsSync: (path: string) => boolean }} [fs]
+ * @property {(entry: any, options?: any) => { locality: string, file: string|null, last_event_at: number|null }} [resolveSessionFile]
  * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, publish?: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void, read?: (workspace: string, attempt_id: string, options?: any) => unknown[], pathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string, stderrPathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string }} sessionLog
  * The session-log broker. `pathFor`/`stderrPathFor` are what the spawn hands the
  * runner as its stdout/stderr files (UI-o2yt §3.1); a fake without them simply
@@ -634,6 +644,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   attemptFailed: (i: any) => void,
  *   attemptParked?: (i: any) => void,
  *   providerHoldEntered?: (i: any) => void,
+ *   providerRecovered?: (i: any) => void,
  *   prWaitEntered: (i: any) => void
  * }} [notify]
  * Outward attempt-lifecycle push (UI-2yoq, notify.js). Optional: absent wiring
@@ -839,7 +850,7 @@ export function laneOccupiedByOther(occupancy, lane_id, lineage_id) {
  * `accounts`, and the same account spends the same tokens whether an issue pin
  * or a repo default named it.
  *
- * @typedef {{ claude: 'bead'|'workspace_default'|null, codex: 'bead'|'workspace_default'|null }} AccountSources
+ * @typedef {{ claude: 'bead'|'workspace_default'|'outage_switch'|null, codex: 'bead'|'workspace_default'|null }} AccountSources
  */
 
 /**
@@ -942,12 +953,12 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   stopReviewSessionProcess: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { claude_account?: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
- *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { claude_account?: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
@@ -1268,7 +1279,7 @@ export function createScheduler(deps) {
    * contract; this guard exists so a broken injected fake still cannot turn a
    * notification into a queue-transition failure.
    *
-   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'prWaitEntered'|'providerHoldEntered'} event
+   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'} event
    * @param {any} input
    */
   function notifyLifecycle(event, input) {
@@ -1318,6 +1329,228 @@ export function createScheduler(deps) {
       // Catalog failure is represented as account:null and never broadens proof.
     }
     return { account: null, row: null };
+  }
+
+  /**
+   * Choose the lowest-usage healthy Claude account allowed for one hold.
+   *
+   * @param {string} workspace
+   * @param {string|null} current_account
+   * @returns {Promise<string|null>}
+   */
+  async function selectProviderSwitchAccount(workspace, current_account) {
+    if (
+      !deps.accountCatalog ||
+      typeof deps.accountCatalog.listClaude !== 'function'
+    ) {
+      return null;
+    }
+    let listed;
+    try {
+      listed = await deps.accountCatalog.listClaude();
+    } catch {
+      return null;
+    }
+    if (!listed?.ok || !Array.isArray(listed.accounts)) {
+      return null;
+    }
+    const held_accounts = new Set();
+    for (const hold of Object.values(
+      deps.store.snapshot(workspace).provider_hold || {}
+    )) {
+      for (const target of /** @type {any} */ (hold).targets || []) {
+        if (typeof target.account === 'string') {
+          held_accounts.add(target.account);
+        }
+      }
+    }
+    return (
+      listed.accounts
+        .filter((/** @type {any} */ account) => {
+          if (
+            account?.status !== 'ok' ||
+            typeof account.email !== 'string' ||
+            account.email === current_account ||
+            held_accounts.has(account.email)
+          ) {
+            return false;
+          }
+          const windows = Array.isArray(account.windows) ? account.windows : [];
+          const five_hour = windows.find(
+            (/** @type {any} */ window) => window?.key === '5h'
+          );
+          const seven_day = windows.find(
+            (/** @type {any} */ window) => window?.key === '7d'
+          );
+          return (
+            typeof five_hour?.pct === 'number' &&
+            five_hour.pct <= AUTO_SWITCH_5H_MAX_PCT &&
+            (seven_day === undefined ||
+              (typeof seven_day.pct === 'number' &&
+                seven_day.pct <= AUTO_SWITCH_7D_MAX_PCT))
+          );
+        })
+        .sort((/** @type {any} */ left, /** @type {any} */ right) => {
+          const left_seven = left.windows?.find(
+            (/** @type {any} */ window) => window?.key === '7d'
+          )?.pct;
+          const right_seven = right.windows?.find(
+            (/** @type {any} */ window) => window?.key === '7d'
+          )?.pct;
+          const by_usage =
+            (typeof left_seven === 'number' ? left_seven : 0) -
+            (typeof right_seven === 'number' ? right_seven : 0);
+          if (by_usage !== 0) {
+            return by_usage;
+          }
+          return (
+            (typeof left.number === 'number'
+              ? left.number
+              : Number.MAX_SAFE_INTEGER) -
+            (typeof right.number === 'number'
+              ? right.number
+              : Number.MAX_SAFE_INTEGER)
+          );
+        })[0]?.email || null
+    );
+  }
+
+  /**
+   * Detect whether a resume lineage already used its fresh transcript fallback.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   */
+  function lineageHasResumeFallback(workspace, attempt) {
+    const attempts = deps.store.snapshot(workspace).attempts || {};
+    const seen = new Set();
+    let cursor = attempt;
+    while (cursor && !seen.has(cursor.attempt_id)) {
+      seen.add(cursor.attempt_id);
+      if (cursor.resume_fallback?.reason === 'transcript_missing') {
+        return true;
+      }
+      cursor = cursor.resumed_from
+        ? attempts[cursor.resumed_from] || null
+        : null;
+    }
+    return false;
+  }
+
+  /**
+   * Read recent assistant prose from the source attempt's stored session log.
+   *
+   * @param {string} workspace
+   * @param {any} prior
+   */
+  function recentAssistantText(workspace, prior) {
+    if (typeof deps.sessionLog.read !== 'function') {
+      return '';
+    }
+    const attempts = deps.store.snapshot(workspace).attempts || {};
+    const seen = new Set();
+    let cursor = prior;
+    while (cursor && !seen.has(cursor.attempt_id)) {
+      seen.add(cursor.attempt_id);
+      let raw;
+      try {
+        raw = deps.sessionLog.read(workspace, cursor.attempt_id, {
+          bead_id: cursor.bead_id,
+          log_path: cursor.log_path ?? undefined
+        });
+      } catch {
+        raw = null;
+      }
+      if (Array.isArray(raw)) {
+        const reducer = createTranscriptReducer({ skip_delegated: true });
+        /** @type {string[]} */
+        const texts = [];
+        for (const event of raw) {
+          for (const line of reducer.push(event)) {
+            if (
+              (line.kind === 'assistant' ||
+                line.kind === 'gate' ||
+                line.kind === 'phase') &&
+              typeof line.text === 'string' &&
+              line.text.trim().length > 0
+            ) {
+              texts.push(line.text.trim());
+            }
+          }
+        }
+        if (texts.length > 0) {
+          return texts.join('\n\n');
+        }
+      }
+      cursor = cursor.resumed_from
+        ? attempts[cursor.resumed_from] || null
+        : null;
+    }
+    return '';
+  }
+
+  /**
+   * Build the bounded context handoff injected into a fresh continuation.
+   *
+   * @param {string} workspace
+   * @param {any} prior
+   */
+  function resumeHandoffBlock(workspace, prior) {
+    const header = `이 작업은 공급자 장애/한도로 중단된 ${prior.runner || 'unknown'} 세션의 연속이다. 같은 워크트리에 부분 작업이 남아 있을 수 있다.`;
+    const instruction =
+      '먼저 `git status`와 `git diff`로 워크트리의 실제 상태를 확인한 뒤, 이미 끝난 작업을 반복하지 말고 남은 작업을 이어서 진행하라.';
+    const prefix = `${header}\n\n진행 요약:\n`;
+    const suffix = `\n\n지시:\n${instruction}`;
+    const available = Math.max(
+      0,
+      RESUME_HANDOFF_MAX_CHARS - prefix.length - suffix.length
+    );
+    const summary =
+      recentAssistantText(workspace, prior).slice(-available) ||
+      '원 세션의 assistant 텍스트를 읽을 수 없음.';
+    return `${prefix}${summary}${suffix}`.slice(0, RESUME_HANDOFF_MAX_CHARS);
+  }
+
+  /**
+   * Verify that one Claude session transcript still exists on this machine.
+   *
+   * @param {string} session_id
+   */
+  function claudeTranscriptPresent(session_id) {
+    const resolver = deps.resolveSessionFile || defaultResolveSessionFile;
+    try {
+      return (
+        resolver(
+          {
+            provider: 'claude',
+            session_id,
+            host: os.hostname(),
+            index: 0
+          },
+          { home_dir: deps.homeDir, hostname: os.hostname() }
+        ).locality === 'local'
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Match only the runner's exact missing-transcript diagnostics.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {any} attempt
+   * @param {RunnerVerdict} verdict
+   */
+  function resumeTranscriptMissing(workspace, attempt_id, attempt, verdict) {
+    if (verdict.reason !== 'no_result') {
+      return false;
+    }
+    const stderr_tail = providerStderrTail(workspace, attempt_id, attempt);
+    return (
+      typeof stderr_tail === 'string' && TRANSCRIPT_MISSING_RE.test(stderr_tail)
+    );
   }
 
   /**
@@ -4128,6 +4361,13 @@ export function createScheduler(deps) {
       0,
       200
     );
+    const usage_limit = outage.detail === 'usage_limit';
+    const auto_switch_enabled =
+      deps.store.snapshot(workspace).provider_auto_switch !== false;
+    const switch_account =
+      usage_limit && attempt.runner === 'claude' && auto_switch_enabled
+        ? await selectProviderSwitchAccount(workspace, classified.account)
+        : null;
     const saved = deps.store.holdProviderAttempt(workspace, {
       attempt_id,
       patch: {
@@ -4144,7 +4384,7 @@ export function createScheduler(deps) {
       },
       runner: attempt.runner,
       target: {
-        kind: outage.detail === 'usage_limit' ? 'usage_limit' : 'outage',
+        kind: usage_limit ? 'usage_limit' : 'outage',
         model: attempt.model ?? '',
         account: classified.account,
         detail: outage.detail,
@@ -4152,7 +4392,15 @@ export function createScheduler(deps) {
         resets_at: outage.resets_at,
         rearm_count: 0,
         attempt_ids: [attempt_id]
-      }
+      },
+      ...(usage_limit
+        ? {
+            auto_switch: {
+              enabled: auto_switch_enabled,
+              candidate_account: switch_account
+            }
+          }
+        : {})
     });
     if (!saved.ok) {
       return;
@@ -4169,7 +4417,7 @@ export function createScheduler(deps) {
       notifyLifecycle('providerHoldEntered', {
         bead_id,
         runner: attempt.runner,
-        kind: outage.detail === 'usage_limit' ? 'usage_limit' : 'outage',
+        kind: usage_limit ? 'usage_limit' : 'outage',
         detail: outage.detail,
         summary,
         account: classified.account,
@@ -4192,6 +4440,13 @@ export function createScheduler(deps) {
       execRestoreValuesOf(workspace, attempt_id)
     );
     await releaseBeadClaim(bead_id);
+    const pending_switch = saved.queue?.auto_resume_pending?.some(
+      (/** @type {any} */ entry) =>
+        entry.attempt_id === attempt_id && entry.kind === 'account_switch'
+    );
+    if (pending_switch) {
+      await consumeProviderAutoResume(workspace);
+    }
     deps.providerHealth?.sync(workspace);
   }
 
@@ -4412,6 +4667,48 @@ export function createScheduler(deps) {
             await tick(workspace);
             return;
           }
+        }
+        const failed_record =
+          deps.store.snapshot(workspace).attempts[attempt_id];
+        if (
+          failed_record?.continuation_mode === 'session' &&
+          !verdict.blocked &&
+          resumeTranscriptMissing(workspace, attempt_id, failed_record, verdict)
+        ) {
+          const attempts = deps.store.snapshot(workspace).attempts || {};
+          const source = failed_record.resumed_from
+            ? attempts[failed_record.resumed_from]
+            : null;
+          const source_session_id =
+            source?.session_id || failed_record.session_id || '';
+          const fallback_used = lineageHasResumeFallback(
+            workspace,
+            failed_record
+          );
+          await failAttempt(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            'resume_failed:transcript_missing'
+          );
+          if (!fallback_used && source_session_id) {
+            await resume(workspace, attempt_id, {
+              continuation: 'fresh_current',
+              decision_token: {},
+              provider_auto_resume: true,
+              auto_resume_kind: failed_record.auto_resume_kind ?? undefined,
+              account_switched_from:
+                failed_record.account_switched_from ?? undefined,
+              resume_fallback: {
+                reason: 'transcript_missing',
+                session_id: source_session_id
+              }
+            });
+          }
+          notifyChanged(workspace);
+          await tick(workspace);
+          return;
         }
         await failAttempt(
           workspace,
@@ -5142,13 +5439,16 @@ export function createScheduler(deps) {
       // A BLOCKED verdict is never retried: a guard violation is a property of
       // what the session did, not of a transcript that could not be found, and
       // relaunching it would just run into the same guard.
-      if (record.disposition_resume === true && !verdict.blocked) {
+      const transcript_missing =
+        record.disposition_resume === true &&
+        !verdict.blocked &&
+        resumeTranscriptMissing(workspace, attempt_id, record, verdict);
+      if (transcript_missing && !lineageHasResumeFallback(workspace, record)) {
         const retried = await retryDispositionFresh(
           workspace,
           attempt_id,
           bead_id,
-          record,
-          verdict
+          record
         );
         if (retried) {
           return;
@@ -5162,7 +5462,9 @@ export function createScheduler(deps) {
         prior,
         verdict.blocked
           ? 'loud_fail_blocker'
-          : `session_failed:${verdict.reason}`,
+          : transcript_missing
+            ? 'resume_failed:transcript_missing'
+            : `session_failed:${verdict.reason}`,
         verdict.blocked ? blockerCauseDetail(verdict.blocked_detail) : undefined
       );
       notifyChanged(workspace);
@@ -5287,10 +5589,8 @@ export function createScheduler(deps) {
   /**
    * Relaunch a failed `--resume` disposition as a FRESH substitute session
    * (UI-hs11 §3.3 fallback). The worktree and the session id can both still be
-   * present while the transcript itself is gone, in which case the resume dies
-   * without doing anything — indistinguishable from a session that ran and
-   * failed, so the retry is attempted once for both and the flag on the child
-   * (`disposition_resume:false`) is what stops a second one.
+   * present while the transcript itself is gone. The caller has already
+   * matched the exact missing-transcript stderr before entering this path.
    *
    * The failed ancestor is recorded terminally first, because the relaunch
    * links to it through `resumed_from` and the guards read that chain.
@@ -5299,16 +5599,9 @@ export function createScheduler(deps) {
    * @param {string} attempt_id
    * @param {string} bead_id
    * @param {any} record - The failed attempt.
-   * @param {RunnerVerdict} verdict
    * @returns {Promise<boolean>} Whether a substitute session was launched.
    */
-  async function retryDispositionFresh(
-    workspace,
-    attempt_id,
-    bead_id,
-    record,
-    verdict
-  ) {
+  async function retryDispositionFresh(workspace, attempt_id, bead_id, record) {
     const restored = await restoreAttemptOverlayForRelaunch(
       bead_id,
       record.workflow_mode_prior ?? null,
@@ -5323,13 +5616,16 @@ export function createScheduler(deps) {
       attempt_id,
       patch: {
         status: 'failed',
-        cause: `disposition_resume_failed:${verdict.reason}`,
+        cause: 'resume_failed:transcript_missing',
         finished_at: now()
       }
     });
     /** @type {{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }} */
     let relaunched;
     try {
+      const attempts = deps.store.snapshot(workspace).attempts || {};
+      const source = record.resumed_from ? attempts[record.resumed_from] : null;
+      const source_session_id = source?.session_id || record.session_id || '';
       relaunched = await dispatchReviseFix(workspace, {
         bead_id,
         attempt_id,
@@ -5339,7 +5635,14 @@ export function createScheduler(deps) {
             ? record.disposition_prompt
             : defaultTaskPrompt(bead_id),
         prior_receipt: record.disposition_receipt ?? null,
-        resume: false
+        resume: false,
+        provider_auto_resume: true,
+        auto_resume_kind: record.auto_resume_kind ?? undefined,
+        account_switched_from: record.account_switched_from ?? undefined,
+        resume_fallback: {
+          reason: 'transcript_missing',
+          session_id: source_session_id
+        }
       });
     } catch (err) {
       log('disposition substitute launch threw for %s: %o', bead_id, err);
@@ -7298,6 +7601,7 @@ export function createScheduler(deps) {
         speed,
         claude_account: account_settings.claude_account,
         codex_account: account_settings.codex_account,
+        account_sources,
         ...prompt_patch
       }
     });
@@ -7665,8 +7969,8 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { claude_account?: string } }} [continuation]
-   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
+   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
     const q = deps.store.snapshot(workspace);
@@ -7788,9 +8092,23 @@ export function createScheduler(deps) {
       provider_auto_resume: continuation.provider_auto_resume === true,
       auto_resume_kind: continuation.auto_resume_kind,
       exec_override: continuation.exec_override,
+      account_switched_from: continuation.account_switched_from,
+      resume_fallback: continuation.resume_fallback,
       bead_snapshot: snap
     });
     if (result.ok) {
+      if (
+        continuation.provider_auto_resume !== true &&
+        typeof prior.runner === 'string'
+      ) {
+        const cleared_target = deps.store.clearManualProviderResumeTarget(
+          workspace,
+          { runner: prior.runner, attempt_id }
+        );
+        if (cleared_target?.ok) {
+          notifyChanged(workspace);
+        }
+      }
       const cleared = deps.store.clearAdmission(workspace, bead_id);
       if (cleared && cleared.ok) {
         notifyChanged(workspace);
@@ -7813,7 +8131,17 @@ export function createScheduler(deps) {
     const refusals = [];
     for (const pending of snapshot.auto_resume_pending || []) {
       const prior = deps.store.snapshot(workspace).attempts[pending.attempt_id];
-      /** @type {{ ok: boolean, reason?: string }} */
+      const hold = prior?.runner
+        ? snapshot.provider_hold?.[prior.runner] || null
+        : null;
+      const source_target = hold?.targets?.find((/** @type {any} */ target) =>
+        target.attempt_ids?.includes(pending.attempt_id)
+      );
+      const switched_from =
+        pending.kind === 'account_switch'
+          ? source_target?.account || prior?.claude_account || null
+          : null;
+      /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
       let result;
       if (!prior) {
         result = { ok: false, reason: 'attempt_not_found' };
@@ -7827,7 +8155,12 @@ export function createScheduler(deps) {
           provider_auto_resume: true,
           auto_resume_kind: 'provider_outage',
           ...(pending.account !== null
-            ? { exec_override: { claude_account: pending.account } }
+            ? {
+                exec_override: { claude_account: pending.account },
+                ...(switched_from
+                  ? { account_switched_from: switched_from }
+                  : {})
+              }
             : {})
         });
       } else {
@@ -7836,15 +8169,53 @@ export function createScheduler(deps) {
           provider_auto_resume: true,
           auto_resume_kind: 'provider_outage',
           ...(pending.account !== null
-            ? { exec_override: { claude_account: pending.account } }
+            ? {
+                exec_override: { claude_account: pending.account },
+                ...(switched_from
+                  ? { account_switched_from: switched_from }
+                  : {})
+              }
             : {})
         });
       }
       deps.store.consumeAutoResumePending(workspace, pending);
       if (result.ok && prior) {
         resumed_beads.push(prior.bead_id);
+        if (
+          pending.kind === 'account_switch' &&
+          pending.account !== null &&
+          switched_from !== null
+        ) {
+          appendTimeline(
+            /** @type {any} */ ({
+              bead_id: prior.bead_id,
+              attempt_id: result.attempt_id || prior.attempt_id,
+              kind: 'provider_recovered',
+              seq: pending.generation,
+              summary: `${prior.runner || 'claude'} 계정 전환 회복`,
+              account: pending.account
+            })
+          );
+          notifyLifecycle('providerRecovered', {
+            bead_id: prior.bead_id,
+            runner: prior.runner || 'claude',
+            duration_ms: Math.max(0, now() - (hold?.since || now())),
+            resumed_beads: [prior.bead_id],
+            refusal: null,
+            switched_from,
+            switched_to: pending.account,
+            repo: prior.repo
+          });
+        }
       } else if (prior) {
-        refusals.push(`${prior.bead_id}:${result.reason || 'resume_refused'}`);
+        const reason = result.reason || 'resume_refused';
+        refusals.push(`${prior.bead_id}:${reason}`);
+        log(
+          'provider auto resume refused for %s/%s: %s',
+          prior.bead_id,
+          pending.attempt_id,
+          reason
+        );
       }
     }
     if (snapshot.auto_resume_pending?.length > 0) {
@@ -7893,6 +8264,94 @@ export function createScheduler(deps) {
       `push 후 \`bd comment ${bead_id}\`로 해소 내역을 기록하라 — 충돌 난 파일과 각각을 어떤 방식으로(어느 쪽을 살렸는지, 어떻게 양쪽 의도를 합쳤는지) 해소했는지 간결히.`,
       'PR 머지는 절대 수행하지 마라 — 머지는 사람이 버튼으로 한다.'
     ].join(' ');
+  }
+
+  /**
+   * Validate and atomically overlay one launch-only execution override.
+   *
+   * @param {any} resolved
+   * @param {unknown} raw_override
+   */
+  async function applyExecutionOverride(resolved, raw_override) {
+    if (raw_override === undefined) {
+      return { ok: true, resolved, applied: false };
+    }
+    if (
+      !raw_override ||
+      typeof raw_override !== 'object' ||
+      Array.isArray(raw_override)
+    ) {
+      return { ok: false, reason: 'exec_override_invalid' };
+    }
+    const override = /** @type {Record<string, unknown>} */ (raw_override);
+    const allowed = new Set(['runner', 'model', 'effort', 'claude_account']);
+    if (
+      Object.keys(override).some((key) => !allowed.has(key)) ||
+      Object.values(override).some(
+        (value) => typeof value !== 'string' || value.trim().length === 0
+      )
+    ) {
+      return { ok: false, reason: 'exec_override_invalid' };
+    }
+    const runner =
+      typeof override.runner === 'string'
+        ? override.runner.trim()
+        : resolved.exec.runner;
+    const model =
+      typeof override.model === 'string'
+        ? override.model.trim()
+        : resolved.exec.orchestration_model;
+    const effort =
+      typeof override.effort === 'string'
+        ? override.effort.trim()
+        : resolved.exec.orchestration_effort;
+    const catalog = runtimeCatalog();
+    const runner_entry = catalog.runners[runner];
+    const model_entry = runner_entry?.models?.[model];
+    const efforts = model_entry?.efforts ?? runner_entry?.efforts;
+    if (
+      !runner_entry ||
+      !model_entry ||
+      !Array.isArray(efforts) ||
+      !efforts.includes(effort)
+    ) {
+      return { ok: false, reason: 'exec_override_invalid' };
+    }
+    const accounts = { ...resolved.accounts };
+    if (typeof override.claude_account === 'string') {
+      const claude_account = override.claude_account.trim();
+      if (
+        runner !== 'claude' ||
+        !deps.accountCatalog ||
+        typeof deps.accountCatalog.resolveClaude !== 'function'
+      ) {
+        return { ok: false, reason: 'exec_override_invalid' };
+      }
+      let account;
+      try {
+        account = await deps.accountCatalog.resolveClaude(claude_account);
+      } catch {
+        return { ok: false, reason: 'exec_override_invalid' };
+      }
+      if (!account?.ok || account.account?.email !== claude_account) {
+        return { ok: false, reason: 'exec_override_invalid' };
+      }
+      accounts.claude = account.account.email;
+    }
+    return {
+      ok: true,
+      applied: Object.keys(override).length > 0,
+      resolved: {
+        ...resolved,
+        exec: {
+          ...resolved.exec,
+          runner,
+          orchestration_model: model,
+          orchestration_effort: effort
+        },
+        accounts
+      }
+    };
   }
 
   /**
@@ -8459,12 +8918,13 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'bd_snapshot_failed' };
       }
     }
-    const resolved = provider_auto_resume
+    const base_resolved = provider_auto_resume
       ? {
           ok: /** @type {const} */ (true),
           preset_id: prior.exec_default_preset_id ?? null,
           preset_revision: prior.exec_default_preset_revision ?? null,
           exec: {
+            ...(prior.exec_values || {}),
             runner: recorded_prior_runner,
             orchestration_model: prior.model ?? null,
             orchestration_effort: prior.effort ?? null,
@@ -8476,18 +8936,35 @@ export function createScheduler(deps) {
             claude: prior.claude_account ?? null,
             codex: prior.codex_account ?? null
           },
-          account_sources: { claude: null, codex: null }
+          account_sources: prior.account_sources || {
+            claude: null,
+            codex: null
+          }
         }
       : resolveDispatchSettings(
           workspace,
           bead_snapshot,
           await readWorkspaceAccountsLayer(workspace)
         );
-    if (!resolved.ok) {
-      return { ok: false, reason: resolved.reason };
+    if (!base_resolved.ok) {
+      return { ok: false, reason: base_resolved.reason };
     }
-    if (resolved.exec.invalid_reason) {
-      return { ok: false, reason: resolved.exec.invalid_reason };
+    if (base_resolved.exec.invalid_reason) {
+      return { ok: false, reason: base_resolved.exec.invalid_reason };
+    }
+    const override_result = await applyExecutionOverride(
+      base_resolved,
+      options.exec_override
+    );
+    if (!override_result.ok) {
+      return override_result;
+    }
+    const resolved = override_result.resolved;
+    if (typeof options.account_switched_from === 'string') {
+      resolved.account_sources = {
+        ...resolved.account_sources,
+        claude: 'outage_switch'
+      };
     }
     const prior_runner = recorded_prior_runner ?? resolved.exec.runner;
     const requested_decision = options.continuation || 'auto';
@@ -8518,12 +8995,18 @@ export function createScheduler(deps) {
       })
     };
     const runner_mismatch = prior_runner !== resolved.exec.runner;
+    const override_cross_runner = override_result.applied && runner_mismatch;
+    const explicit_fresh_current =
+      !runner_mismatch && requested_decision === 'fresh_current';
     // A choice is meaningful only while the provider boundary still exists.
     // Drift back to the prior runner discards the stale choice and follows the
     // ordinary current-settings path without reopening a dialog.
-    const decision =
-      requested_decision !== 'auto' && !runner_mismatch
-        ? 'auto'
+    const decision = override_cross_runner
+      ? 'fresh_current'
+      : requested_decision !== 'auto' && !runner_mismatch
+        ? explicit_fresh_current
+          ? 'fresh_current'
+          : 'auto'
         : requested_decision;
     const mismatch = () => ({
       reason: 'runner_mismatch',
@@ -8557,6 +9040,8 @@ export function createScheduler(deps) {
     }
     if (
       decision !== 'auto' &&
+      !override_cross_runner &&
+      !explicit_fresh_current &&
       !matchesDecisionToken(options.decision_token, decision_token)
     ) {
       return {
@@ -8565,14 +9050,21 @@ export function createScheduler(deps) {
         continuation_mismatch: mismatch()
       };
     }
-    const use_prior = decision === 'prior_session' || provider_auto_resume;
+    const use_prior =
+      (decision === 'prior_session' || provider_auto_resume) &&
+      !override_result.applied;
+    const internal_fresh_fallback =
+      provider_auto_resume &&
+      options.resume_fallback?.reason === 'transcript_missing';
     if (
       use_prior &&
       (!prior_exec_complete ||
         !prior_runner_available ||
-        options.resume === false ||
-        typeof prior.session_id !== 'string' ||
-        prior.session_id.length === 0)
+        (options.resume === false && !internal_fresh_fallback) ||
+        (decision !== 'fresh_current' &&
+          options.resume !== false &&
+          (typeof prior.session_id !== 'string' ||
+            prior.session_id.length === 0)))
     ) {
       return {
         ok: false,
@@ -8609,9 +9101,11 @@ export function createScheduler(deps) {
         runner_mismatch
       };
     }
-    const candidate_stamped_keys = use_prior
-      ? EXEC_SETTING_KEYS
-      : resolved.exec.stamped_keys;
+    const candidate_stamped_keys = override_result.applied
+      ? []
+      : use_prior
+        ? EXEC_SETTING_KEYS
+        : resolved.exec.stamped_keys;
     const restore_capture = await captureExecRestoreValues(
       bead_id,
       candidate_stamped_keys
@@ -8629,6 +9123,34 @@ export function createScheduler(deps) {
     for (const key of stamped_keys) {
       exec_restore_values[key] = restore_capture.values[key];
     }
+    let continuation_mode =
+      decision === 'fresh_current' || options.resume === false
+        ? 'fresh'
+        : 'session';
+    /** @type {{ reason: 'transcript_missing', session_id: string }|null} */
+    let resume_fallback =
+      options.resume_fallback?.reason === 'transcript_missing' &&
+      typeof options.resume_fallback.session_id === 'string'
+        ? options.resume_fallback
+        : null;
+    if (
+      continuation_mode === 'session' &&
+      runner_name === 'claude' &&
+      typeof prior.session_id === 'string' &&
+      !claudeTranscriptPresent(prior.session_id)
+    ) {
+      continuation_mode = 'fresh';
+      resume_fallback = {
+        reason: 'transcript_missing',
+        session_id: prior.session_id
+      };
+    }
+    const needs_handoff =
+      (runner_mismatch && !use_prior && continuation_mode === 'fresh') ||
+      resume_fallback !== null ||
+      (explicit_fresh_current &&
+        typeof prior.cause === 'string' &&
+        prior.cause.startsWith('provider_outage:'));
     return {
       ok: true,
       bead_snapshot,
@@ -8640,6 +9162,10 @@ export function createScheduler(deps) {
       exec_values,
       accounts: resolved.accounts,
       account_sources: resolved.account_sources,
+      account_switched_from:
+        typeof options.account_switched_from === 'string'
+          ? options.account_switched_from
+          : null,
       exec_restore_values,
       stamped_keys,
       decision_token,
@@ -8650,10 +9176,11 @@ export function createScheduler(deps) {
       preset_revision: use_prior
         ? (prior.exec_default_preset_revision ?? null)
         : resolved.preset_revision,
-      continuation_mode:
-        decision === 'fresh_current' || options.resume === false
-          ? 'fresh'
-          : 'session'
+      continuation_mode,
+      resume_fallback,
+      handoff_instructions: needs_handoff
+        ? resumeHandoffBlock(workspace, prior)
+        : null
     };
   }
 
@@ -8769,19 +9296,26 @@ export function createScheduler(deps) {
       exec_values,
       accounts,
       account_sources,
+      account_switched_from,
       exec_restore_values,
       stamped_keys,
       preset_id,
       preset_revision,
-      continuation_mode
+      continuation_mode,
+      resume_fallback,
+      handoff_instructions
     } = continuation;
     const new_attempt_id = makeAttemptId(bead_id);
     // A prompt that must name the attempt it runs under (the resolver receipt,
     // UI-hm55) is handed in as a factory, because the id is minted only here.
-    const prompt =
+    const base_prompt =
       typeof options.prompt === 'function'
         ? options.prompt(new_attempt_id)
         : options.prompt;
+    const prompt =
+      typeof handoff_instructions === 'string'
+        ? `${base_prompt || ''}\n\n${handoff_instructions}`.trim()
+        : base_prompt;
     const target_base =
       typeof prior.target_base === 'string' ? prior.target_base : 'main';
     const quickfix_lane = prior.quickfix_lane === true;
@@ -8825,6 +9359,11 @@ export function createScheduler(deps) {
       model: launch_model,
       effort: launch_effort,
       speed: launch_speed,
+      claude_account: accounts.claude,
+      codex_account: accounts.codex,
+      account_sources,
+      account_switched_from,
+      resume_fallback,
       workflow_mode_prior: prior_wf,
       workflow_mode_source_prior: prior_wf_source,
       receipt_baseline,
@@ -9073,7 +9612,11 @@ export function createScheduler(deps) {
       await reportCompletionSettlement(workspace, new_attempt_id, null);
       return { ok: false, reason: launched.reason || 'spawn_failed' };
     }
-    return { ok: true, attempt_id: new_attempt_id };
+    return {
+      ok: true,
+      attempt_id: new_attempt_id,
+      fallback: resume_fallback?.reason ?? null
+    };
   }
 
   /**
@@ -9189,7 +9732,7 @@ export function createScheduler(deps) {
    * Cap-exempt like every other human-click dispatch.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { claude_account?: string } }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviseFix(workspace, input) {
@@ -9249,7 +9792,9 @@ export function createScheduler(deps) {
       decision_token: input.decision_token,
       provider_auto_resume: input.provider_auto_resume === true,
       auto_resume_kind: input.auto_resume_kind,
-      exec_override: input.exec_override
+      exec_override: input.exec_override,
+      account_switched_from: input.account_switched_from,
+      resume_fallback: input.resume_fallback
     });
   }
 

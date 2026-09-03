@@ -17,7 +17,7 @@ const USAGE_REARM_CAP = 3;
 const HOLD_AGE_CAP_MS = 24 * 60 * 60 * 1000;
 
 /**
- * @typedef {{ kind: 'outage'|'usage_limit', model: string, account: string|null, detail: string, last_error: string, resets_at: number|null, rearm_count: number, attempt_ids: string[] }} ProviderTarget
+ * @typedef {{ kind: 'outage'|'usage_limit', model: string, account: string|null, detail: string, last_error: string, resets_at: number|null, rearm_count: number, attempt_ids: string[], auto_switch?: 'none'|'cap'|'disabled'|null }} ProviderTarget
  */
 
 /**
@@ -400,12 +400,21 @@ export function createProviderHealth(deps) {
         ? recovered.queue.attempts[recovered_attempt_id]
         : null;
       if (recovered_attempt) {
+        // The receipt's account is what the resume actually launches on, so an
+        // account-switch recovery records the pool it moved TO, not the one it
+        // was held on.
+        const recovered_account =
+          (recovered.pending || []).find(
+            (/** @type {{ attempt_id: string, account: string|null }} */ receipt) =>
+              receipt.attempt_id === recovered_attempt.attempt_id
+          )?.account ?? live_target.account;
         deps.timeline?.append({
           bead_id: recovered_attempt.bead_id,
           attempt_id: recovered_attempt.attempt_id,
           kind: 'provider_recovered',
           seq: generation,
-          summary: `${runner} 공급자 회복`
+          summary: `${runner} 공급자 회복`,
+          ...(recovered_account ? { account: recovered_account } : {})
         });
         void deps.notify.providerRecovered({
           bead_id: recovered_attempt.bead_id,

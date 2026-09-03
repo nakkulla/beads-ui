@@ -20,7 +20,7 @@ import {
   quickFixSelfReviewBlock,
   withQuickFixSelfReview
 } from './scheduler.js';
-import { createSessionLog } from './session-log.js';
+import { createSessionLog, stderrPathOf } from './session-log.js';
 import {
   beadSessionLogPath,
   beadSessionStderrPath,
@@ -636,7 +636,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, providerHealth?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number, publishActivity?: (workspace: string) => void, waitingRescan?: { cover_ms: number, max_wait_ms: number } }} opts
+ * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, providerHealth?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, resolveSessionFile?: (entry: any, options?: any) => any, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number, publishActivity?: (workspace: string) => void, waitingRescan?: { cover_ms: number, max_wait_ms: number } }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -770,6 +770,9 @@ function setup(opts) {
     // undone rather than judging an attempt it could not observe.
     gitRun,
     fs: opts.fs || { existsSync: () => true },
+    resolveSessionFile:
+      opts.resolveSessionFile ||
+      (() => ({ locality: 'local', file: '/transcript', last_event_at: 1 })),
     notifyQueueChanged: opts.notifyQueueChanged,
     onCompletionAttemptSettled: opts.onCompletionAttemptSettled,
     reviewSession: opts.reviewSession,
@@ -887,6 +890,181 @@ describe('scheduler provider hold and recovery', () => {
     expect(queue.lineages).toEqual([]);
     expect(queue.auto_advance).toBe(true);
     expect(providerHealth.sync).toHaveBeenCalledWith(WS);
+  });
+
+  test('switches a usage-limited attempt to the lowest eligible account', async () => {
+    const append = vi.fn();
+    const providerRecovered = vi.fn();
+    const rows = [
+      {
+        key: 'old@example.com',
+        number: 1,
+        email: 'old@example.com',
+        status: 'ok',
+        windows: [{ key: '5h', pct: 100, resetsAt: null }]
+      },
+      {
+        key: 'no-five@example.com',
+        number: 2,
+        email: 'no-five@example.com',
+        status: 'ok',
+        windows: [{ key: '7d', pct: 0, resetsAt: null }]
+      },
+      {
+        key: 'held@example.com',
+        number: 3,
+        email: 'held@example.com',
+        status: 'ok',
+        windows: [{ key: '5h', pct: 1, resetsAt: null }]
+      },
+      {
+        key: 'late@example.com',
+        number: 4,
+        email: 'late@example.com',
+        status: 'ok',
+        windows: [
+          { key: '5h', pct: 5, resetsAt: null },
+          { key: '7d', pct: 91, resetsAt: null }
+        ]
+      },
+      {
+        key: 'candidate-two@example.com',
+        number: 9,
+        email: 'candidate-two@example.com',
+        status: 'ok',
+        windows: [{ key: '5h', pct: 20, resetsAt: null }]
+      },
+      {
+        key: 'candidate-one@example.com',
+        number: 5,
+        email: 'candidate-one@example.com',
+        status: 'ok',
+        windows: [{ key: '5h', pct: 70, resetsAt: null }]
+      }
+    ];
+    const accountCatalog = {
+      resolveClaude: vi.fn(async (email) => ({
+        ok: true,
+        account: rows.find((row) => row.email === email)
+      })),
+      readClaude: vi.fn(async (email) => ({
+        ok: true,
+        account: rows.find((row) => row.email === email)
+      })),
+      activeClaude: vi.fn(async () => ({ ok: true, account: rows[0] })),
+      listClaude: vi.fn(async () => ({
+        ok: true,
+        accounts: rows,
+        active_key: rows[0].key
+      }))
+    };
+    const env = setup({
+      config: { B1: { claude_account: 'old@example.com' } },
+      slots: 2,
+      accountCatalog,
+      resolveCswapPath: () => '/bin/cswap',
+      timeline: { append },
+      notify: { providerRecovered }
+    });
+    seedProviderAttempt(env.store, 'held-other', 'H1');
+    registerProviderHold(
+      env.store,
+      'held-other',
+      'usage_limit',
+      'held@example.com'
+    );
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('B1').emit('session_id', 'sid-limit');
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          is_error: true,
+          api_error_status: 429,
+          result: "You've hit your session limit"
+        }
+      ]
+    });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    const child = Object.values(queue.attempts).find(
+      (attempt) => attempt.resumed_from === 'B1-1000-1'
+    );
+    expect(child).toMatchObject({
+      claude_account: 'candidate-one@example.com',
+      account_sources: { claude: 'outage_switch', codex: null },
+      account_switched_from: 'old@example.com',
+      auto_resume_kind: 'provider_outage'
+    });
+    expect(queue.auto_resume_pending).toEqual([]);
+    expect(
+      queue.provider_hold.claude.targets.find(
+        (target) => target.account === 'old@example.com'
+      )
+    ).toBeDefined();
+    expect(providerRecovered).toHaveBeenCalledWith(
+      expect.objectContaining({
+        switched_from: 'old@example.com',
+        switched_to: 'candidate-one@example.com'
+      })
+    );
+    expect(append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'provider_recovered',
+        account: 'candidate-one@example.com'
+      })
+    );
+    expect(
+      env.bd.calls.filter(
+        (call) =>
+          typeof call.key === 'string' && EXEC_SETTING_KEYS.includes(call.key)
+      )
+    ).toEqual([]);
+  });
+
+  test('keeps the timer path when automatic account switching is disabled', async () => {
+    const listClaude = vi.fn(async () => ({ ok: true, accounts: [] }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      accountCatalog: {
+        activeClaude: vi.fn(async () => ({
+          ok: true,
+          account: { email: 'old@example.com', status: 'ok', windows: [] }
+        })),
+        listClaude
+      }
+    });
+    env.store.toggleProviderAutoSwitch(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      on: false
+    });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          is_error: true,
+          api_error_status: 429,
+          result: "You've hit your session limit"
+        }
+      ]
+    });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    expect(queue.provider_hold.claude.targets[0].auto_switch).toBe('disabled');
+    expect(queue.auto_resume_pending).toEqual([]);
+    expect(listClaude).not.toHaveBeenCalled();
   });
 
   test('maps a bold explicit failure line to a hard-stop cause', async () => {
@@ -1033,7 +1211,13 @@ describe('scheduler provider hold and recovery', () => {
   test('pins provider recovery to the prior runner model and effort', async () => {
     const env = setup({
       config: { B1: { model: 'sol', effort: 'xhigh' } },
-      slots: 1
+      slots: 1,
+      accountCatalog: {
+        resolveClaude: vi.fn(async (email) => ({
+          ok: true,
+          account: { email }
+        }))
+      }
     });
     const exec_values = /** @type {Record<string, string|null>} */ (
       Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null]))
@@ -3765,6 +3949,317 @@ describe('scheduler resume (spec §1)', () => {
     expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
   });
 
+  test('clears only the runner-wide usage target after manual resume', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit()
+    });
+    seedAttempt(
+      env.store,
+      'manual-global',
+      resumablePrior({
+        status: 'paused',
+        cause: 'provider_outage:usage_limit'
+      })
+    );
+    seedAttempt(
+      env.store,
+      'manual-account',
+      resumablePrior({
+        bead_id: 'B2',
+        status: 'paused',
+        cause: 'provider_outage:usage_limit'
+      })
+    );
+    for (const [
+      attempt_id,
+      account
+    ] of /** @type {Array<[string, string|null]>} */ ([
+      ['manual-global', null],
+      ['manual-account', 'held@example.com']
+    ])) {
+      env.store.holdProviderAttempt(WS, {
+        attempt_id,
+        patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+        runner: 'claude',
+        target: {
+          kind: 'usage_limit',
+          model: 'opus',
+          account,
+          detail: 'usage_limit',
+          last_error: 'limit',
+          resets_at: null,
+          rearm_count: 0,
+          attempt_ids: []
+        }
+      });
+    }
+
+    const result = await env.scheduler.resume(WS, 'manual-global');
+
+    expect(result.ok).toBe(true);
+    expect(env.store.snapshot(WS).provider_hold.claude.targets).toMatchObject([
+      { kind: 'usage_limit', account: 'held@example.com' }
+    ]);
+  });
+
+  test('applies a same-runner override without dropping session continuation', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      accountCatalog: {
+        resolveClaude: vi.fn(async (email) => ({
+          ok: true,
+          account: { email }
+        }))
+      },
+      resolveCswapPath: () => '/opt/bin/cswap'
+    });
+    seedAttempt(env.store, 'override-same', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'override-same', {
+      exec_override: {
+        runner: 'claude',
+        model: 'opus-4.8',
+        effort: 'xhigh',
+        claude_account: 'next@example.com'
+      }
+    });
+
+    const settings = env.runner.settingsFor('B1');
+    const built = claudeSpec({
+      cswap_path: '/opt/bin/cswap',
+      catalog_entry: {
+        command: 'claude',
+        models: { 'opus-4.8': { id: 'claude-opus-4-8' } },
+        efforts: ['low', 'medium', 'high', 'xhigh']
+      }
+    }).buildArgv({ id: 'B1', prompt: 'continue' }, '/wt/B1', settings);
+    expect(result.ok).toBe(true);
+    expect(settings).toMatchObject({
+      model: 'opus-4.8',
+      effort: 'xhigh',
+      claude_account: 'next@example.com',
+      resume_session_id: 'sid-abc'
+    });
+    expect(built.command).toBe('/opt/bin/cswap');
+    expect(built.args.slice(0, 4)).toEqual([
+      'run',
+      'next@example.com',
+      '--share-history',
+      '--'
+    ]);
+    expect(built.args).toContain('sid-abc');
+    expect(built.args[built.args.indexOf('--model') + 1]).toBe(
+      'claude-opus-4-8'
+    );
+    expect(
+      env.bd.calls.filter(
+        (call) =>
+          typeof call.key === 'string' && EXEC_SETTING_KEYS.includes(call.key)
+      )
+    ).toEqual([]);
+  });
+
+  test.each([
+    [
+      'unknown model',
+      { runner: 'claude', model: 'missing', effort: 'high' },
+      true
+    ],
+    [
+      'unknown effort',
+      { runner: 'claude', model: 'opus', effort: 'ultra' },
+      true
+    ],
+    [
+      'Claude account on Codex',
+      {
+        runner: 'codex',
+        model: 'sol',
+        effort: 'xhigh',
+        claude_account: 'next@example.com'
+      },
+      true
+    ],
+    [
+      'unresolved Claude account',
+      {
+        runner: 'claude',
+        model: 'opus',
+        effort: 'high',
+        claude_account: 'missing@example.com'
+      },
+      false
+    ]
+  ])(
+    'rejects an invalid execution override: %s',
+    async (_name, override, account_ok) => {
+      const env = setup({
+        config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+        slots: 1,
+        gitRun: ownedWorktreeGit(),
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) =>
+            account_ok
+              ? { ok: true, account: { email } }
+              : { ok: false, reason: 'claude_account_unknown' }
+          )
+        }
+      });
+      seedAttempt(env.store, 'override-invalid', resumablePrior());
+
+      const result = await env.scheduler.resume(WS, 'override-invalid', {
+        exec_override: override
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'exec_override_invalid' });
+      expect(env.runner.spawnOrder).toEqual([]);
+      expect(
+        Object.values(env.store.snapshot(WS).attempts).filter(
+          (attempt) => attempt.resumed_from === 'override-invalid'
+        )
+      ).toEqual([]);
+    }
+  );
+
+  test('forces a cross-runner override fresh with a bounded context handoff', async () => {
+    const recent = `${'x'.repeat(5000)}-RECENT-END`;
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      sessionLog: {
+        attach: vi.fn(),
+        read: vi.fn(() => [
+          {
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: recent }] }
+          }
+        ])
+      }
+    });
+    seedAttempt(
+      env.store,
+      'override-cross',
+      resumablePrior({ cause: 'provider_outage:usage_limit' })
+    );
+
+    const result = await env.scheduler.resume(WS, 'override-cross', {
+      exec_override: { runner: 'codex', model: 'sol', effort: 'xhigh' }
+    });
+
+    const prompt = env.runner.spawnedBead('B1').prompt;
+    const handoff_start = prompt.indexOf(
+      '이 작업은 공급자 장애/한도로 중단된 claude 세션의 연속이다.'
+    );
+    expect(result.ok).toBe(true);
+    expect(env.runner.factoryNames.at(-1)).toBe('codex');
+    expect(env.runner.settingsFor('B1')).not.toHaveProperty(
+      'resume_session_id'
+    );
+    expect(prompt).toContain('-RECENT-END');
+    expect(prompt).toContain('`git status`');
+    expect(prompt).toContain('`git diff`');
+    expect(prompt.slice(handoff_start)).toHaveLength(4000);
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({
+      runner: 'codex',
+      model: 'sol',
+      effort: 'xhigh',
+      continuation_mode: 'fresh'
+    });
+  });
+
+  test('falls back fresh before launch when a Claude transcript is missing', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      resolveSessionFile: () => ({
+        locality: 'missing',
+        file: null,
+        last_event_at: null
+      }),
+      sessionLog: {
+        attach: vi.fn(),
+        read: vi.fn(() => [
+          {
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: '부분 구현 완료' }] }
+          }
+        ])
+      }
+    });
+    seedAttempt(env.store, 'missing-prelaunch', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'missing-prelaunch');
+
+    expect(result).toMatchObject({
+      ok: true,
+      fallback: 'transcript_missing'
+    });
+    expect(env.runner.settingsFor('B1')).not.toHaveProperty(
+      'resume_session_id'
+    );
+    expect(env.runner.spawnedBead('B1').prompt).toContain('부분 구현 완료');
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({
+      continuation_mode: 'fresh',
+      resume_fallback: {
+        reason: 'transcript_missing',
+        session_id: 'sid-abc'
+      }
+    });
+  });
+
+  test('replaces one missing resumed transcript after a no-result exit', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit()
+    });
+    seedAttempt(env.store, 'missing-after-launch', resumablePrior());
+    const resumed = await env.scheduler.resume(WS, 'missing-after-launch');
+    const failed_id = String(resumed.attempt_id);
+    const log_path = path.join(tmp_state, `${failed_id}.jsonl`);
+    env.store.updateAttempt(WS, {
+      attempt_id: failed_id,
+      patch: { log_path }
+    });
+    fs.writeFileSync(
+      stderrPathOf(log_path),
+      'No session found for session sid-abc'
+    );
+
+    env.runner.finish('B1', { success: false, reason: 'no_result' });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    const substitute = Object.values(queue.attempts).find(
+      (attempt) => attempt.resumed_from === failed_id
+    );
+    expect(queue.attempts[failed_id].cause).toBe(
+      'resume_failed:transcript_missing'
+    );
+    expect(substitute).toMatchObject({
+      status: 'running',
+      continuation_mode: 'fresh',
+      resumed_from: failed_id,
+      resume_fallback: {
+        reason: 'transcript_missing',
+        session_id: 'sid-abc'
+      }
+    });
+    expect(env.runner.settingsFor('B1')).not.toHaveProperty(
+      'resume_session_id'
+    );
+  });
+
   test('applies current snapshot pins on a prior_session relaunch', async () => {
     const deps = accountDeps();
     const env = setup({
@@ -4207,7 +4702,7 @@ describe('scheduler resume (spec §1)', () => {
     expect(env.runner.spawnOrder).toEqual([]);
   });
 
-  test('drops a stale explicit choice when drift removes the runner mismatch', async () => {
+  test('keeps an explicit fresh choice when drift removes the runner mismatch', async () => {
     const config = { B1: { model: 'sol', effort: 'high' } };
     const env = setup({ config, slots: 1 });
     seedAttempt(env.store, 'drift-same', resumablePrior());
@@ -4220,13 +4715,15 @@ describe('scheduler resume (spec §1)', () => {
     });
 
     expect(resumed.ok).toBe(true);
-    expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
+    expect(env.runner.settingsFor('B1')).not.toHaveProperty(
+      'resume_session_id'
+    );
     expect(
       env.store.snapshot(WS).attempts[String(resumed.attempt_id)]
     ).toMatchObject({
       runner: 'claude',
       model: 'opus',
-      continuation_mode: 'session'
+      continuation_mode: 'fresh'
     });
   });
 
@@ -5955,6 +6452,26 @@ describe('scheduler REVISE disposition dispatch (UI-hs11 §3.3)', () => {
 
 describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
   /**
+   * Write one runner stderr sidecar for a disposition attempt.
+   *
+   * @param {any} env
+   * @param {string} attempt_id
+   * @param {string} [message]
+   */
+  function writeResumeMissing(
+    env,
+    attempt_id,
+    message = 'No conversation found with session ID sid-park'
+  ) {
+    const log_path = path.join(tmp_state, `${attempt_id}.jsonl`);
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { log_path }
+    });
+    fs.writeFileSync(stderrPathOf(log_path), message);
+  }
+
+  /**
    * Dispatch a disposition session and hand back its child attempt id.
    *
    * @param {any} env
@@ -6209,12 +6726,13 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     });
     const child = await dispatchDisposition(env);
     config.B1 = { model: 'sonnet', effort: 'high' };
+    writeResumeMissing(env, child);
 
     env.runner.finish('B1', { success: false, reason: 'no_result' });
     await flush();
 
     const q = env.store.snapshot(WS);
-    expect(q.attempts[child].cause).toBe('disposition_resume_failed:no_result');
+    expect(q.attempts[child].cause).toBe('resume_failed:transcript_missing');
     const substitute = Object.values(q.attempts).find(
       (/** @type {any} */ a) => a.resumed_from === child
     );
@@ -6222,9 +6740,13 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
       disposition: 'revise_fix',
       disposition_resume: false,
       status: 'running',
-      model: 'sonnet',
+      model: 'opus',
       effort: 'high',
-      continuation_mode: 'fresh'
+      continuation_mode: 'fresh',
+      resume_fallback: {
+        reason: 'transcript_missing',
+        session_id: 'sid-park'
+      }
     });
     expect(env.runner.cwdFor('B1')).toBe('/repo');
     expect(env.runner.settingsFor('B1')).not.toHaveProperty(
@@ -6235,7 +6757,7 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     expect(release).not.toHaveBeenCalled();
   });
 
-  test('persists action-required when a disposition substitute crosses runners', async () => {
+  test('pins a transcript substitute to the failed disposition runner', async () => {
     const release = vi.fn();
     const config = { B1: { model: 'opus', effort: 'high' } };
     const env = setup({
@@ -6245,28 +6767,23 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     });
     const child = await dispatchDisposition(env);
     config.B1 = { model: 'sol', effort: 'xhigh' };
+    writeResumeMissing(env, child);
 
     env.runner.finish('B1', { success: false, reason: 'no_result' });
     await flush();
 
     const q = env.store.snapshot(WS);
-    expect(q.attempts[child]).toMatchObject({
-      cause: 'disposition_resume_failed:no_result',
-      continuation_action: {
-        continuation: null,
-        mismatch: {
-          continuation_required: true,
-          prior: { runner: 'claude' },
-          current: { runner: 'codex' }
-        }
-      }
+    const substitute = Object.values(q.attempts).find(
+      (/** @type {any} */ attempt) => attempt.resumed_from === child
+    );
+    expect(q.attempts[child].cause).toBe('resume_failed:transcript_missing');
+    expect(substitute).toMatchObject({
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      continuation_mode: 'fresh'
     });
-    expect(
-      Object.values(q.attempts).some(
-        (/** @type {any} */ attempt) => attempt.resumed_from === child
-      )
-    ).toBe(false);
-    expect(release).toHaveBeenCalledWith('B1');
+    expect(release).not.toHaveBeenCalled();
   });
 
   test('a substitute session that fails again takes the ordinary failure path', async () => {
@@ -6276,7 +6793,8 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
       slots: 1,
       disposition: { complete: vi.fn(), release }
     });
-    await dispatchDisposition(env);
+    const child = await dispatchDisposition(env);
+    writeResumeMissing(env, child);
     env.runner.finish('B1', { success: false, reason: 'no_result' });
     await flush();
 
@@ -6292,6 +6810,31 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     );
     expect(substitute.cause).toBe('session_failed:subtype');
     expect(release).toHaveBeenCalledWith('B1');
+  });
+
+  test('does not treat a bare resume authentication message as transcript loss', async () => {
+    const env = setup({
+      config: {},
+      slots: 1,
+      disposition: { complete: vi.fn(), release: vi.fn() }
+    });
+    const child = await dispatchDisposition(env);
+    writeResumeMissing(
+      env,
+      child,
+      'Not authenticated. Sign in before using --resume.'
+    );
+
+    env.runner.finish('B1', { success: false, reason: 'no_result' });
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts[child].cause).toBe('session_failed:no_result');
+    expect(
+      Object.values(q.attempts).some(
+        (/** @type {any} */ attempt) => attempt.resumed_from === child
+      )
+    ).toBe(false);
   });
 
   test('guard-kill evidence outranks a restart-surviving disposition’s readback', async () => {

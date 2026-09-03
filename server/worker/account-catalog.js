@@ -1,5 +1,5 @@
 /**
- * @typedef {{ key: string, email: string, status?: string, windows?: Array<{ pct: number, resetsAt: string|null }> }} Account
+ * @typedef {{ key: string, number?: number, email: string, status?: string, windows?: Array<{ key?: string, pct: number, resetsAt: string|null }> }} Account
  * @typedef {{ ok: true, accounts: Account[], active_key: string|null }|{ ok: false, error: string }} AccountList
  */
 
@@ -10,6 +10,23 @@
  */
 export function createAccountCatalog({ listClaude, listCodex }) {
   return {
+    /**
+     * Read every Claude account row used for automatic outage switching.
+     *
+     * @returns {Promise<{ ok: true, accounts: Account[], active_key: string|null }|{ ok: false, reason: string }>}
+     */
+    async listClaude() {
+      const listed = await listClaude();
+      if (!listed.ok) {
+        return { ok: false, reason: 'claude_account_list_unavailable' };
+      }
+      return {
+        ok: true,
+        accounts: listed.accounts,
+        active_key: listed.active_key
+      };
+    },
+
     /**
      * Read the active Claude row, including usage windows used by outage classification.
      *

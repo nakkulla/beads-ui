@@ -13,6 +13,42 @@ function catalogWith(claude_result, codex_result) {
 }
 
 describe('worker/account-catalog', () => {
+  test('lists Claude rows with usage fields intact', async () => {
+    const account = {
+      key: 'a@example.com',
+      number: 2,
+      email: 'a@example.com',
+      status: 'ok',
+      windows: [{ key: '5h', pct: 10, resetsAt: null }]
+    };
+    const catalog = catalogWith(
+      { ok: true, accounts: [account], active_key: account.key },
+      { ok: true, accounts: [], active_key: null }
+    );
+
+    const result = await catalog.listClaude();
+
+    expect(result).toEqual({
+      ok: true,
+      accounts: [account],
+      active_key: account.key
+    });
+  });
+
+  test('rejects an unavailable Claude account list', async () => {
+    const catalog = catalogWith(
+      { ok: false, error: 'offline' },
+      { ok: true, accounts: [], active_key: null }
+    );
+
+    const result = await catalog.listClaude();
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'claude_account_list_unavailable'
+    });
+  });
+
   test('resolves one Claude email', async () => {
     const account = { key: 'a@example.com', email: 'a@example.com' };
     const catalog = catalogWith(

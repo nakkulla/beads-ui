@@ -79,6 +79,9 @@ const SUMMARY_MAX = 200;
  * @property {string} [attempt_id]
  * @property {string} [detail]
  * @property {string} [log_path]
+ * @property {string} [account] - Runner account the event is about, when the
+ * event's meaning is account-scoped (a `provider_recovered` that switched pools
+ * reads as the wrong fact without it).
  */
 
 /**
@@ -94,6 +97,7 @@ const SUMMARY_MAX = 200;
  * the bead id is used otherwise (a bead-level fact has no attempt).
  * @property {string} [detail]
  * @property {string} [log_path]
+ * @property {string} [account]
  * @property {number} [at] - Epoch ms; defaults to the injected clock.
  */
 
@@ -150,6 +154,10 @@ function buildEvent(input, now) {
   const log_path = String(input?.log_path ?? '').trim();
   if (log_path.length > 0) {
     event.log_path = log_path;
+  }
+  const account = String(input?.account ?? '').trim();
+  if (account.length > 0) {
+    event.account = account;
   }
   return { ok: true, event };
 }

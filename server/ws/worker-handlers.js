@@ -4016,6 +4016,34 @@ export function handleWorkerAutomationToggle(ws, req) {
 }
 
 /**
+ * Handle `worker-provider-auto-switch-toggle`.
+ * Payload: `{ on: boolean, expected_revision }`.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerProviderAutoSwitchToggle(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.on !== 'boolean') {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { on: boolean }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const result = queueStore().toggleProviderAutoSwitch(key, {
+    expected_revision: revisionOf(p),
+    on: p.on
+  });
+  replyMutation(ws, req, key, result);
+}
+
+/**
  * Handle `worker-repo-ops-opt-out-toggle`. Payload:
  * `{ kind: 'verify'|'deploy', opted_out: boolean, expected_revision }`.
  *
@@ -4476,7 +4504,7 @@ export async function handleWorkerAttemptStop(ws, req) {
 
 /**
  * Handle `worker-attempt-resume`. Payload:
- * `{ attempt_id, expected_revision, continuation?, decision_token?, instructions? }`.
+ * `{ attempt_id, expected_revision, continuation?, decision_token?, instructions?, exec_override? }`.
  * Manually resumes (↻ / paused tile ▶) a paused, failed, or orphaned attempt in
  * its existing worktree (spec §1) under the SAME CAS revision contract as the
  * queue mutations: a stale `expected_revision` replies `conflict:true` with the
@@ -4549,6 +4577,44 @@ export async function handleWorkerAttemptResume(ws, req) {
     typeof p.instructions === 'string' && p.instructions.trim().length > 0
       ? p.instructions.trim()
       : undefined;
+  /** @type {{ runner?: string, model?: string, effort?: string, claude_account?: string }|undefined} */
+  let exec_override;
+  if (p.exec_override !== undefined) {
+    const allowed = new Set(['runner', 'model', 'effort', 'claude_account']);
+    if (
+      !p.exec_override ||
+      typeof p.exec_override !== 'object' ||
+      Array.isArray(p.exec_override) ||
+      Object.keys(p.exec_override).some((key_name) => !allowed.has(key_name)) ||
+      Object.values(p.exec_override).some(
+        (value) => typeof value !== 'string' || value.trim().length === 0
+      )
+    ) {
+      ws.send(
+        JSON.stringify(
+          makeOk(req, {
+            attempt_id: p.attempt_id,
+            resumed: false,
+            conflict: false,
+            new_attempt_id: null,
+            reason: 'exec_override_invalid',
+            continuation_mismatch: null,
+            fallback: null
+          })
+        )
+      );
+      return;
+    }
+    exec_override = {};
+    for (const key_name of allowed) {
+      const value = p.exec_override[key_name];
+      if (typeof value === 'string') {
+        exec_override[
+          /** @type {'runner'|'model'|'effort'|'claude_account'} */ (key_name)
+        ] = value.trim();
+      }
+    }
+  }
   const key = mutationWorkspaceOf(ws, req);
   if (key === null) {
     return;
@@ -4563,19 +4629,21 @@ export async function handleWorkerAttemptResume(ws, req) {
           conflict: true,
           new_attempt_id: null,
           reason: null,
+          fallback: null,
           queue: decorateQueue(key, current)
         })
       )
     );
     return;
   }
-  /** @type {{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }} */
+  /** @type {{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }} */
   let result = { ok: false, reason: 'no_attachment' };
   try {
     result = await resumeWorkerAttempt(key, p.attempt_id, {
       continuation: p.continuation,
       decision_token: p.decision_token,
-      instructions
+      instructions,
+      exec_override
     });
   } catch (err) {
     log('worker-attempt-resume failed for %s/%s: %o', key, p.attempt_id, err);
@@ -4589,7 +4657,8 @@ export async function handleWorkerAttemptResume(ws, req) {
         conflict: false,
         new_attempt_id: result.attempt_id || null,
         reason: result.ok ? null : result.reason || null,
-        continuation_mismatch: result.continuation_mismatch || null
+        continuation_mismatch: result.continuation_mismatch || null,
+        fallback: result.fallback || null
       })
     )
   );
