@@ -68,6 +68,41 @@ describe('worker/account-catalog', () => {
     });
   });
 
+  test('reads the active Claude row with usage windows', async () => {
+    const account = {
+      key: 'active@example.com',
+      email: 'active@example.com',
+      status: 'ok',
+      windows: [{ pct: 90, resetsAt: '2026-09-04T11:00:00Z' }]
+    };
+    const catalog = catalogWith(
+      {
+        ok: true,
+        accounts: [account],
+        active_key: 'active@example.com'
+      },
+      { ok: true, accounts: [], active_key: null }
+    );
+
+    const result = await catalog.activeClaude();
+
+    expect(result).toEqual({ ok: true, account });
+  });
+
+  test('fails closed when the active Claude row is unavailable', async () => {
+    const catalog = catalogWith(
+      { ok: true, accounts: [], active_key: null },
+      { ok: true, accounts: [], active_key: null }
+    );
+
+    const result = await catalog.activeClaude();
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'claude_active_account_unavailable'
+    });
+  });
+
   test('resolves one Codex key', async () => {
     const account = { key: 'acct-1', email: 'a@example.com' };
     const catalog = catalogWith(

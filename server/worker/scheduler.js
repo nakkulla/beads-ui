@@ -100,8 +100,9 @@ import {
   receiptProbeError
 } from './receipt-check.js';
 import { liftDelegation } from './runner/claude.js';
-import { RUNNERS } from './runner/index.js';
+import { RUNNERS, adapterSpec } from './runner/index.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
+import { stderrPathOf } from './session-log.js';
 import { qualifySessionFork } from './session-ref.js';
 import { staleResidueIntact } from './stale-work.js';
 import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths.js';
@@ -519,7 +520,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * not one of §5.2's four `unusable` cases, and no repo default can be stored
  * without it either.
  * @property {(runner_name: string) => { name: string, spawn: (bead: any, workspace: string, settings: any) => RunnerHandle }} makeRunner
- * @property {{ resolveClaude: (email: string) => Promise<any>, resolveCodex: (key: string) => Promise<any> }} [accountCatalog]
+ * @property {{ resolveClaude: (email: string) => Promise<any>, resolveCodex: (key: string) => Promise<any>, readClaude?: (email: string) => Promise<any>, activeClaude?: () => Promise<any> }} [accountCatalog]
  * @property {() => string|null} [resolveCswapPath]
  * @property {typeof defaultPrepareCodexAccountHome} [prepareCodexAccountHome]
  * @property {(key: string) => string} [codexAccountHomeDir]
@@ -589,7 +590,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * attachment built without it (every hermetic test) refuses the dispatch as
  * `not_external` rather than launching against an unverified bead.
  * @property {{ existsSync: (path: string) => boolean }} [fs]
- * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, publish?: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void, pathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string, stderrPathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string }} sessionLog
+ * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, publish?: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void, read?: (workspace: string, attempt_id: string, options?: any) => unknown[], pathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string, stderrPathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string }} sessionLog
  * The session-log broker. `pathFor`/`stderrPathFor` are what the spawn hands the
  * runner as its stdout/stderr files (UI-o2yt §3.1); a fake without them simply
  * leaves the engine on its stdout-pipe fallback, which is what fixture-driven
@@ -632,6 +633,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   attemptStarted: (i: any) => void,
  *   attemptFailed: (i: any) => void,
  *   attemptParked?: (i: any) => void,
+ *   providerHoldEntered?: (i: any) => void,
  *   prWaitEntered: (i: any) => void
  * }} [notify]
  * Outward attempt-lifecycle push (UI-2yoq, notify.js). Optional: absent wiring
@@ -666,6 +668,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {(workspace: string) => void} [publishActivity]
  * External `tick` activity publisher. Tests may replace the process-local bus.
  * @property {{ cover_ms: number, max_wait_ms: number }} [waitingRescan]
+ * @property {{ sync: (workspace: string) => void }} [providerHealth]
  * Waiting-return throttle timings. Production uses the constants above.
  */
 
@@ -939,11 +942,12 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   stopReviewSessionProcess: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { claude_account?: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
- *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { claude_account?: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
@@ -1264,7 +1268,7 @@ export function createScheduler(deps) {
    * contract; this guard exists so a broken injected fake still cannot turn a
    * notification into a queue-transition failure.
    *
-   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'prWaitEntered'} event
+   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'prWaitEntered'|'providerHoldEntered'} event
    * @param {any} input
    */
   function notifyLifecycle(event, input) {
@@ -1280,6 +1284,187 @@ export function createScheduler(deps) {
     } catch (err) {
       log('worker notify %s failed: %o', event, err);
     }
+  }
+
+  /**
+   * Read the runner account row used by provider classification and hold scope.
+   *
+   * @param {any} attempt
+   * @returns {Promise<{ account: string|null, row: any|null }>}
+   */
+  async function providerAccountContext(attempt) {
+    if (attempt.runner !== 'claude' || !deps.accountCatalog) {
+      return { account: null, row: null };
+    }
+    try {
+      if (
+        typeof attempt.claude_account === 'string' &&
+        typeof deps.accountCatalog.readClaude === 'function'
+      ) {
+        const result = await deps.accountCatalog.readClaude(
+          attempt.claude_account
+        );
+        return result.ok
+          ? { account: result.account.email, row: result.account }
+          : { account: attempt.claude_account, row: null };
+      }
+      if (typeof deps.accountCatalog.activeClaude === 'function') {
+        const result = await deps.accountCatalog.activeClaude();
+        return result.ok
+          ? { account: result.account.email, row: result.account }
+          : { account: null, row: null };
+      }
+    } catch {
+      // Catalog failure is represented as account:null and never broadens proof.
+    }
+    return { account: null, row: null };
+  }
+
+  /**
+   * Read the bounded stderr sidecar associated with one attempt log.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {any} attempt
+   * @returns {string|null}
+   */
+  function providerStderrTail(workspace, attempt_id, attempt) {
+    const log_path =
+      typeof attempt.log_path === 'string'
+        ? attempt.log_path
+        : deps.sessionLog.pathFor?.(workspace, attempt_id, attempt.bead_id);
+    const stderr_path = deps.sessionLog.stderrPathFor
+      ? deps.sessionLog.stderrPathFor(workspace, attempt_id, attempt.bead_id)
+      : log_path
+        ? stderrPathOf(log_path)
+        : null;
+    if (!stderr_path) {
+      return null;
+    }
+    try {
+      const contents = nodeFs.readFileSync(stderr_path, 'utf8');
+      return contents.slice(-64 * 1024);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Read a persisted JSONL only when its original file still exists.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {any} attempt
+   * @returns {unknown[]|null}
+   */
+  function persistedSessionRaw(workspace, attempt_id, attempt) {
+    const log_path =
+      typeof attempt.log_path === 'string'
+        ? attempt.log_path
+        : deps.sessionLog.pathFor?.(workspace, attempt_id, attempt.bead_id);
+    if (
+      !log_path ||
+      !nodeFs.existsSync(log_path) ||
+      typeof deps.sessionLog.read !== 'function'
+    ) {
+      return null;
+    }
+    return deps.sessionLog.read(workspace, attempt_id, {
+      bead_id: attempt.bead_id,
+      log_path
+    });
+  }
+
+  /**
+   * Apply the adapter's outage classifier to live or persisted session evidence.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {unknown[]|null} live_raw
+   * @param {boolean} require_log
+   * @returns {Promise<{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null }|null>}
+   */
+  async function providerOutageFor(
+    workspace,
+    attempt_id,
+    live_raw,
+    require_log
+  ) {
+    const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
+    if (!attempt) {
+      return null;
+    }
+    const classifier = adapterSpec(attempt.runner).classifyProviderOutage;
+    if (typeof classifier !== 'function') {
+      return null;
+    }
+    /** @type {unknown[]} */
+    let raw = Array.isArray(live_raw) ? live_raw : [];
+    if (require_log) {
+      const persisted = persistedSessionRaw(workspace, attempt_id, attempt);
+      if (persisted === null) {
+        return null;
+      }
+      raw = persisted;
+    }
+    const account = await providerAccountContext(attempt);
+    const outage = classifier({
+      raw,
+      stderr_tail: providerStderrTail(workspace, attempt_id, attempt),
+      finished_at: now(),
+      account_row: account.row
+    });
+    return outage ? { outage, account: account.account } : null;
+  }
+
+  /**
+   * Extract the explicit hard-stop line from the final runner result.
+   *
+   * @param {unknown[]} raw
+   * @returns {{ cause: string, detail: { kind: 'session_hard_stop', message: string, summary: string } }|null}
+   */
+  function sessionHardStop(raw) {
+    for (let index = raw.length - 1; index >= 0; index -= 1) {
+      const event = raw[index];
+      if (
+        !event ||
+        typeof event !== 'object' ||
+        Array.isArray(event) ||
+        /** @type {any} */ (event).type !== 'result' ||
+        typeof (/** @type {any} */ (event).result) !== 'string'
+      ) {
+        continue;
+      }
+      const result_event = /** @type {{ result: string }} */ (event);
+      const first = result_event.result
+        .split(/\r?\n/)
+        .map((/** @type {string} */ line) => line.trim())
+        .find((/** @type {string} */ line) => line.length > 0);
+      if (!first) {
+        return null;
+      }
+      const line =
+        first.startsWith('**') && first.endsWith('**')
+          ? first.slice(2, -2).trim()
+          : first;
+      const suffix = line.startsWith('실패 ·')
+        ? 'failure'
+        : line.startsWith('환경 ·')
+          ? 'environment'
+          : null;
+      if (!suffix) {
+        return null;
+      }
+      return {
+        cause: `session_hard_stop:${suffix}`,
+        detail: {
+          kind: 'session_hard_stop',
+          message: line.slice(0, 512),
+          summary: line.slice(0, 200)
+        }
+      };
+    }
+    return null;
   }
 
   /**
@@ -2119,6 +2304,52 @@ export function createScheduler(deps) {
     } catch {
       return { ok: false, reason: 'default_exec_preset_resolution_failed' };
     }
+  }
+
+  /**
+   * Decide the provider gate for one fully resolved launch candidate.
+   *
+   * @param {string} workspace
+   * @param {string} runner
+   * @param {{ claude: string|null, codex: string|null }} accounts
+   * @returns {Promise<boolean>}
+   */
+  async function providerDispatchHeld(workspace, runner, accounts) {
+    const hold = deps.store.snapshot(workspace).provider_hold?.[runner];
+    if (!hold || !Array.isArray(hold.targets) || hold.targets.length === 0) {
+      return false;
+    }
+    deps.providerHealth?.sync(workspace);
+    /** @type {Array<{ kind: string, account: string|null }>} */
+    const targets = hold.targets;
+    if (targets.some((target) => target.kind === 'outage')) {
+      return true;
+    }
+    const usage_targets = targets.filter(
+      (target) => target.kind === 'usage_limit'
+    );
+    if (usage_targets.some((target) => target.account === null)) {
+      return true;
+    }
+    let account = runner === 'claude' ? accounts.claude : accounts.codex;
+    if (runner === 'claude' && account === null) {
+      if (!deps.accountCatalog?.activeClaude) {
+        return true;
+      }
+      try {
+        const active = await deps.accountCatalog.activeClaude();
+        if (!active.ok || typeof active.account.email !== 'string') {
+          return true;
+        }
+        account = active.account.email;
+      } catch {
+        return true;
+      }
+    }
+    return (
+      account === null ||
+      usage_targets.some((target) => target.account === account)
+    );
   }
 
   /**
@@ -3873,6 +4104,98 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Persist a provider pause and its dispatch gate as one durable mutation.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {string|null} prior
+   * @param {{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null }} classified
+   */
+  async function holdAttempt(
+    workspace,
+    attempt_id,
+    bead_id,
+    prior,
+    classified
+  ) {
+    const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
+    if (!attempt || typeof attempt.runner !== 'string') {
+      return;
+    }
+    const outage = classified.outage;
+    const summary = (extractSummary(outage.message) || outage.message).slice(
+      0,
+      200
+    );
+    const saved = deps.store.holdProviderAttempt(workspace, {
+      attempt_id,
+      patch: {
+        status: 'paused',
+        cause: `provider_outage:${outage.detail}`,
+        cause_detail: {
+          kind: 'provider_outage',
+          message: outage.message,
+          summary,
+          resets_at: outage.resets_at
+        },
+        finished_at: now(),
+        ...usagePatch(workspace, attempt_id)
+      },
+      runner: attempt.runner,
+      target: {
+        kind: outage.detail === 'usage_limit' ? 'usage_limit' : 'outage',
+        model: attempt.model ?? '',
+        account: classified.account,
+        detail: outage.detail,
+        last_error: outage.message,
+        resets_at: outage.resets_at,
+        rearm_count: 0,
+        attempt_ids: [attempt_id]
+      }
+    });
+    if (!saved.ok) {
+      return;
+    }
+    appendTimeline({
+      bead_id,
+      attempt_id,
+      kind: 'provider_hold',
+      seq: saved.generation ?? 1,
+      summary: `${attempt.runner} ${outage.detail} 보류`,
+      at: now()
+    });
+    if (saved.entered) {
+      notifyLifecycle('providerHoldEntered', {
+        bead_id,
+        runner: attempt.runner,
+        kind: outage.detail === 'usage_limit' ? 'usage_limit' : 'outage',
+        detail: outage.detail,
+        summary,
+        account: classified.account,
+        resets_at: outage.resets_at,
+        repo: attempt.repo
+      });
+    }
+    try {
+      await revertWorkflowMode(
+        bead_id,
+        prior,
+        workflowModeSourcePriorOf(workspace, attempt_id)
+      );
+    } catch (err) {
+      log('workflow_mode revert failed for provider hold %s: %o', bead_id, err);
+    }
+    await revertExecStamps(
+      bead_id,
+      execStampedKeysOf(workspace, attempt_id),
+      execRestoreValuesOf(workspace, attempt_id)
+    );
+    await releaseBeadClaim(bead_id);
+    deps.providerHealth?.sync(workspace);
+  }
+
+  /**
    * The common SETTLEMENT step of every termination (UI-8mvc §3): observe the
    * remote base against the `base_oid` this attempt pinned and persist what was
    * seen. Runs after the process is gone and BEFORE any branch cleanup, on all
@@ -4076,6 +4399,20 @@ export function createScheduler(deps) {
       }
 
       if (!verdict.success) {
+        if (!verdict.blocked) {
+          const outage = await providerOutageFor(
+            workspace,
+            attempt_id,
+            verdict.raw,
+            false
+          );
+          if (outage) {
+            await holdAttempt(workspace, attempt_id, bead_id, prior, outage);
+            notifyChanged(workspace);
+            await tick(workspace);
+            return;
+          }
+        }
         await failAttempt(
           workspace,
           attempt_id,
@@ -4290,6 +4627,10 @@ export function createScheduler(deps) {
         ) {
           return;
         }
+        const hard_stop =
+          vr.reason === 'no_pr' && vr.awaiting_user == null
+            ? sessionHardStop(verdict.raw)
+            : null;
         await failAttempt(
           workspace,
           attempt_id,
@@ -4299,8 +4640,10 @@ export function createScheduler(deps) {
           // handed in as "no cause yet" so the classifier decides between
           // `parked`, `session_ended_unresolved` and an env pattern from the
           // readbacks below. Every other reason is already a cause.
-          vr.reason === 'no_pr' ? null : `verify_failed:${vr.reason}`,
-          undefined,
+          vr.reason === 'no_pr'
+            ? (hard_stop?.cause ?? null)
+            : `verify_failed:${vr.reason}`,
+          hard_stop?.detail,
           {
             verdict,
             bead_status: vr.bead_status ?? null,
@@ -4776,6 +5119,21 @@ export function createScheduler(deps) {
   ) {
     const record = deps.store.snapshot(workspace).attempts[attempt_id] || {};
     if (!verdict.success) {
+      if (!verdict.blocked) {
+        const outage = await providerOutageFor(
+          workspace,
+          attempt_id,
+          verdict.raw,
+          false
+        );
+        if (outage) {
+          releaseDisposition(bead_id);
+          await holdAttempt(workspace, attempt_id, bead_id, prior, outage);
+          notifyChanged(workspace);
+          await tick(workspace);
+          return;
+        }
+      }
       // A `--resume` launch whose transcript turned out to be gone fails before
       // it can do anything; the spec's fallback is a substitute session
       // carrying the same prompt (its lineage lives in the bead notes). Bounded
@@ -5221,13 +5579,75 @@ export function createScheduler(deps) {
       }
     }
     // Re-read AFTER the drain: the evidence may have been written by it.
-    const guard_kill = guardKillOf(workspace, attempt_id);
-    // The restart-side settlement (UI-8mvc §3). Ahead of both special branches
-    // for the same reason it is in `onSessionDone`: they return, and the
-    // exclusion of a disposition / an unpinned external resolution has to be
-    // recorded rather than silently skipped. The claim is taken around the
-    // failure exactly as the ordinary arm takes it — `failAttempt` reopens the
-    // bead, and an unclaimed reopen races a tick into re-dispatching it.
+    const guard_kill = /** @type {any} */ (guardKillOf(workspace, attempt_id));
+    if (guard_kill) {
+      if (kind) {
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: usagePatch(workspace, attempt_id)
+        });
+        await onDispositionDone(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior,
+          /** @type {any} */ ({
+            success: false,
+            reason: 'guard_kill',
+            exit: null,
+            blocked: true,
+            blocked_detail: {
+              reason: guard_kill.reason,
+              command: guard_kill.command ?? null
+            },
+            raw: []
+          }),
+          kind
+        );
+        return;
+      }
+      claimed.add(bead_id);
+      try {
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: usagePatch(workspace, attempt_id)
+        });
+        await failAttempt(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior,
+          'loud_fail_blocker',
+          blockerCauseDetail({
+            reason: guard_kill.reason,
+            command: guard_kill.command ?? null
+          })
+        );
+      } finally {
+        claimed.delete(bead_id);
+      }
+      notifyChanged(workspace);
+      await tick(workspace);
+      return;
+    }
+    const persisted_raw = persistedSessionRaw(workspace, attempt_id, attempt);
+    const outage =
+      persisted_raw === null
+        ? null
+        : await providerOutageFor(workspace, attempt_id, persisted_raw, false);
+    if (outage) {
+      if (kind) {
+        releaseDisposition(bead_id);
+      }
+      await holdAttempt(workspace, attempt_id, bead_id, prior, outage);
+      notifyChanged(workspace);
+      await tick(workspace);
+      return;
+    }
+    // The restart-side settlement (UI-8mvc §3). Provider evidence must be
+    // classified first (§12): a detached 529 is a hold even if the same session
+    // also moved the base. For every non-provider ending, this remains ahead of
+    // both special branches and the PR observation.
     if (await settleBaseDrift(workspace, attempt_id)) {
       claimed.add(bead_id);
       try {
@@ -5407,7 +5827,7 @@ export function createScheduler(deps) {
         return;
       }
 
-      /** @type {{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean }} */
+      /** @type {{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean, bead_status?: string|null, awaiting_user?: string|null }} */
       let vr;
       if (repo.length === 0) {
         vr = { ok: false, reason: 'gh_observation_failed' };
@@ -5507,6 +5927,29 @@ export function createScheduler(deps) {
           );
         }
       } else {
+        const reconciled_verdict = /** @type {RunnerVerdict} */ ({
+          success: true,
+          reason: 'reconciled',
+          exit: null,
+          blocked: false,
+          raw: persisted_raw ?? []
+        });
+        if (
+          vr.reason === 'no_pr' &&
+          (await judgePrerequisiteWait(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            reconciled_verdict
+          ))
+        ) {
+          return;
+        }
+        const hard_stop =
+          vr.reason === 'no_pr' && vr.awaiting_user == null
+            ? sessionHardStop(persisted_raw ?? [])
+            : null;
         await failAttempt(
           workspace,
           attempt_id,
@@ -5516,8 +5959,15 @@ export function createScheduler(deps) {
           // is named directly for what it is here: a session that ended without
           // delivering (UI-5ym8 §3.2). Every other reason is already a cause.
           vr.reason === 'no_pr'
-            ? 'session_ended_unresolved'
-            : `verify_failed:${vr.reason}`
+            ? (hard_stop?.cause ?? null)
+            : `verify_failed:${vr.reason}`,
+          hard_stop?.detail,
+          {
+            verdict: reconciled_verdict,
+            bead_status: vr.bead_status ?? null,
+            awaiting_user: vr.awaiting_user ?? null,
+            pr_url: vr.pr_url ?? null
+          }
         );
       }
     } finally {
@@ -5823,6 +6273,18 @@ export function createScheduler(deps) {
       // owns the model→runner map, so a bead asking for `sol` dispatches through
       // codex without anyone setting a runner key (§C-2).
       const runner_name = exec.runner;
+
+      if (
+        await providerDispatchHeld(
+          workspace,
+          runner_name,
+          resolved_exec.accounts
+        )
+      ) {
+        reservation.release();
+        claimed.delete(bead_id);
+        return;
+      }
 
       const attempt_id = makeAttemptId(bead_id);
       const prior = snap.workflow_mode ?? null;
@@ -7203,7 +7665,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { claude_account?: string } }} [continuation]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
@@ -7323,6 +7785,9 @@ export function createScheduler(deps) {
       completion_resume: true,
       continuation: continuation.continuation,
       decision_token: continuation.decision_token,
+      provider_auto_resume: continuation.provider_auto_resume === true,
+      auto_resume_kind: continuation.auto_resume_kind,
+      exec_override: continuation.exec_override,
       bead_snapshot: snap
     });
     if (result.ok) {
@@ -7332,6 +7797,60 @@ export function createScheduler(deps) {
       }
     }
     return result;
+  }
+
+  /**
+   * Consume recovery receipts only after their target-removal write is durable.
+   *
+   * @param {string} workspace
+   * @returns {Promise<{ resumed_beads: string[], refusals: string[] }>}
+   */
+  async function consumeProviderAutoResume(workspace) {
+    const snapshot = deps.store.snapshot(workspace);
+    /** @type {string[]} */
+    const resumed_beads = [];
+    /** @type {string[]} */
+    const refusals = [];
+    for (const pending of snapshot.auto_resume_pending || []) {
+      const prior = deps.store.snapshot(workspace).attempts[pending.attempt_id];
+      /** @type {{ ok: boolean, reason?: string }} */
+      let result;
+      if (!prior) {
+        result = { ok: false, reason: 'attempt_not_found' };
+      } else if (prior.disposition) {
+        result = await dispatchReviseFix(workspace, {
+          bead_id: prior.bead_id,
+          attempt_id: pending.attempt_id,
+          prompt: prior.disposition_prompt || '',
+          prior_receipt: prior.disposition_receipt ?? null,
+          continuation: 'auto',
+          provider_auto_resume: true,
+          auto_resume_kind: 'provider_outage',
+          ...(pending.account !== null
+            ? { exec_override: { claude_account: pending.account } }
+            : {})
+        });
+      } else {
+        result = await resume(workspace, pending.attempt_id, {
+          continuation: 'auto',
+          provider_auto_resume: true,
+          auto_resume_kind: 'provider_outage',
+          ...(pending.account !== null
+            ? { exec_override: { claude_account: pending.account } }
+            : {})
+        });
+      }
+      deps.store.consumeAutoResumePending(workspace, pending);
+      if (result.ok && prior) {
+        resumed_beads.push(prior.bead_id);
+      } else if (prior) {
+        refusals.push(`${prior.bead_id}:${result.reason || 'resume_refused'}`);
+      }
+    }
+    if (snapshot.auto_resume_pending?.length > 0) {
+      notifyChanged(workspace);
+    }
+    return { resumed_beads, refusals };
   }
 
   /**
@@ -7931,6 +8450,7 @@ export function createScheduler(deps) {
     );
     const prior_runner_available =
       recorded_prior_runner !== null && RUNNERS.includes(recorded_prior_runner);
+    const provider_auto_resume = options.provider_auto_resume === true;
     let bead_snapshot = options.bead_snapshot;
     if (!bead_snapshot) {
       try {
@@ -7939,11 +8459,30 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'bd_snapshot_failed' };
       }
     }
-    const resolved = resolveDispatchSettings(
-      workspace,
-      bead_snapshot,
-      await readWorkspaceAccountsLayer(workspace)
-    );
+    const resolved = provider_auto_resume
+      ? {
+          ok: /** @type {const} */ (true),
+          preset_id: prior.exec_default_preset_id ?? null,
+          preset_revision: prior.exec_default_preset_revision ?? null,
+          exec: {
+            runner: recorded_prior_runner,
+            orchestration_model: prior.model ?? null,
+            orchestration_effort: prior.effort ?? null,
+            orchestration_speed: prior.speed ?? 'default',
+            stamped_keys: EXEC_SETTING_KEYS,
+            invalid_reason: null
+          },
+          accounts: {
+            claude: prior.claude_account ?? null,
+            codex: prior.codex_account ?? null
+          },
+          account_sources: { claude: null, codex: null }
+        }
+      : resolveDispatchSettings(
+          workspace,
+          bead_snapshot,
+          await readWorkspaceAccountsLayer(workspace)
+        );
     if (!resolved.ok) {
       return { ok: false, reason: resolved.reason };
     }
@@ -8026,7 +8565,7 @@ export function createScheduler(deps) {
         continuation_mismatch: mismatch()
       };
     }
-    const use_prior = decision === 'prior_session';
+    const use_prior = decision === 'prior_session' || provider_auto_resume;
     if (
       use_prior &&
       (!prior_exec_complete ||
@@ -8297,6 +8836,7 @@ export function createScheduler(deps) {
       serial_lane_id: prior.serial_lane_id ?? null,
       quickfix_lane,
       resumed_from: attempt_id,
+      auto_resume_kind: options.auto_resume_kind ?? null,
       continuation_mode,
       conflict_resolution: options.conflict_resolution,
       external_conflict:
@@ -8649,7 +9189,7 @@ export function createScheduler(deps) {
    * Cap-exempt like every other human-click dispatch.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { claude_account?: string } }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviseFix(workspace, input) {
@@ -8706,7 +9246,10 @@ export function createScheduler(deps) {
         : repo,
       resume,
       continuation: input.continuation,
-      decision_token: input.decision_token
+      decision_token: input.decision_token,
+      provider_auto_resume: input.provider_auto_resume === true,
+      auto_resume_kind: input.auto_resume_kind,
+      exec_override: input.exec_override
     });
   }
 
@@ -10536,6 +11079,7 @@ export function createScheduler(deps) {
     stopReviewSessionProcess,
     pause,
     resume,
+    consumeProviderAutoResume,
     resolveConflict,
     dispatchExternalConflict,
     queueConflictBlocked,

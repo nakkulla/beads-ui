@@ -373,7 +373,7 @@ function makeFakeRunner() {
     factoryNames,
     /**
      * @param {string} bead_id
-     * @param {Partial<{ success: boolean, reason: string, exit: number | null, blocked: boolean, blocked_detail: { reason: string, command: string|null }|null, events: any[] }>} v
+     * @param {Partial<{ success: boolean, reason: string, exit: number | null, blocked: boolean, blocked_detail: { reason: string, command: string|null }|null, events: any[], raw: any[] }>} v
      */
     finish(bead_id, v) {
       const rec = byBead.get(bead_id);
@@ -387,7 +387,7 @@ function makeFakeRunner() {
         blocked: v.blocked ?? false,
         blocked_detail: v.blocked_detail ?? null,
         events: v.events ?? [],
-        raw: []
+        raw: v.raw ?? []
       });
     },
     settingsFor(/** @type {string} */ bead_id) {
@@ -636,7 +636,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number, publishActivity?: (workspace: string) => void, waitingRescan?: { cover_ms: number, max_wait_ms: number } }} opts
+ * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, providerHealth?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number, publishActivity?: (workspace: string) => void, waitingRescan?: { cover_ms: number, max_wait_ms: number } }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -723,6 +723,7 @@ function setup(opts) {
     store,
     makeRunner: opts.makeRunner || runner.factory,
     accountCatalog: opts.accountCatalog,
+    providerHealth: opts.providerHealth,
     // Absent by default: an unwired kv channel leaves the repo account layer
     // ABSENT, which is what every test that never stores a default expects.
     kvGet: opts.kvGet,
@@ -785,6 +786,300 @@ function setup(opts) {
   });
   return { store, runner, bd, verify, worktree, scheduler, usage };
 }
+
+describe('scheduler provider hold and recovery', () => {
+  /**
+   * Persist one running attempt for a direct provider-store transition.
+   *
+   * @param {any} queue_store
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {Partial<import('./queue-store.js').Attempt>} [patch]
+   */
+  function seedProviderAttempt(queue_store, attempt_id, bead_id, patch = {}) {
+    queue_store.appendAttempt(WS, {
+      expected_revision: queue_store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id }
+    });
+    queue_store.updateAttempt(WS, {
+      attempt_id,
+      patch: {
+        runner: 'claude',
+        model: 'opus',
+        status: 'running',
+        repo: '/repo',
+        ...patch
+      }
+    });
+  }
+
+  /**
+   * Register one durable provider target through the atomic store seam.
+   *
+   * @param {ReturnType<typeof createQueueStore>} queue_store
+   * @param {string} attempt_id
+   * @param {'outage'|'usage_limit'} kind
+   * @param {string|null} account
+   */
+  function registerProviderHold(queue_store, attempt_id, kind, account) {
+    const result = queue_store.holdProviderAttempt(WS, {
+      attempt_id,
+      patch: {
+        status: 'paused',
+        cause: `provider_outage:${kind}`,
+        finished_at: 1000
+      },
+      runner: 'claude',
+      target: {
+        kind,
+        model: 'opus',
+        account,
+        detail: kind,
+        last_error: kind,
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      }
+    });
+    if (!result.ok || typeof result.generation !== 'number') {
+      throw new Error('provider hold setup failed');
+    }
+    return { ...result, generation: result.generation };
+  }
+
+  test('routes a live Claude outage to provider hold without queue failure state', async () => {
+    const providerHealth = { sync: vi.fn() };
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      verifyOk: false,
+      providerHealth
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          subtype: 'success',
+          is_error: true,
+          result: 'API Error: 529 Overloaded'
+        }
+      ]
+    });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    expect(queue.attempts['B1-1000-1']).toMatchObject({
+      status: 'paused',
+      cause: 'provider_outage:overloaded_529',
+      cause_detail: {
+        kind: 'provider_outage',
+        message: 'API Error: 529 Overloaded',
+        summary: 'API Error: 529 Overloaded',
+        resets_at: null
+      }
+    });
+    expect(queue.hold).toBeNull();
+    expect(queue.lineages).toEqual([]);
+    expect(queue.auto_advance).toBe(true);
+    expect(providerHealth.sync).toHaveBeenCalledWith(WS);
+  });
+
+  test('maps a bold explicit failure line to a hard-stop cause', async () => {
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      verifyOk: false
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+    env.runner.finish('B1', {
+      success: true,
+      raw: [
+        {
+          type: 'result',
+          is_error: false,
+          result: '\n**실패 · 검증이 끝나지 않음**\n후속 설명'
+        }
+      ]
+    });
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+      cause: 'session_hard_stop:failure',
+      cause_detail: {
+        kind: 'session_hard_stop',
+        message: '실패 · 검증이 끝나지 않음',
+        summary: '실패 · 검증이 끝나지 않음'
+      }
+    });
+  });
+
+  test('lets a Codex candidate flow through a Claude outage gate', async () => {
+    const env = setup({
+      config: { C1: {}, X1: { model: 'sol' } },
+      slots: 2
+    });
+    seedProviderAttempt(env.store, 'held-1', 'H1');
+    registerProviderHold(env.store, 'held-1', 'outage', null);
+    seedQueue(env.store, ['C1', 'X1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['X1']);
+    expect(env.runner.factoryNames).toEqual(['codex']);
+    expect(env.store.snapshot(WS).queue.map((entry) => entry.bead_id)).toEqual([
+      'C1',
+      'X1'
+    ]);
+  });
+
+  test('blocks only the resolved account for a usage-limit target', async () => {
+    const accountCatalog = {
+      resolveClaude: vi.fn(async (email) => ({
+        ok: true,
+        account: { key: email, email }
+      })),
+      activeClaude: vi.fn(async () => ({
+        ok: true,
+        account: { key: 'held@example.com', email: 'held@example.com' }
+      }))
+    };
+    const env = setup({
+      config: {
+        C1: { claude_account: 'held@example.com' },
+        C2: { claude_account: 'other@example.com' }
+      },
+      slots: 2,
+      accountCatalog,
+      resolveCswapPath: () => '/bin/cswap'
+    });
+    seedProviderAttempt(env.store, 'held-1', 'H1');
+    registerProviderHold(
+      env.store,
+      'held-1',
+      'usage_limit',
+      'held@example.com'
+    );
+    seedQueue(env.store, ['C1', 'C2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['C2']);
+  });
+
+  test('fails closed when usage-limit account resolution is unavailable', async () => {
+    const env = setup({
+      config: { C1: {} },
+      slots: 1,
+      accountCatalog: {
+        activeClaude: vi.fn(async () => ({ ok: false, reason: 'offline' }))
+      }
+    });
+    seedProviderAttempt(env.store, 'held-1', 'H1');
+    registerProviderHold(
+      env.store,
+      'held-1',
+      'usage_limit',
+      'held@example.com'
+    );
+    seedQueue(env.store, ['C1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).attempts.C1).toBeUndefined();
+  });
+
+  test('reconciles a persisted 529 as provider hold before PR observation', async () => {
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'B1', 'att-1');
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        result: 'API Error: 529 Overloaded'
+      })}\n`
+    );
+    const env = setup({
+      config: { B1: {} },
+      verifyOk: false,
+      sessionLog,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    seedProviderAttempt(env.store, 'att-1', 'B1', {
+      pid: 4242,
+      started_at: 1000,
+      log_path
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1']).toMatchObject({
+      status: 'paused',
+      cause: 'provider_outage:overloaded_529'
+    });
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('pins provider recovery to the prior runner model and effort', async () => {
+    const env = setup({
+      config: { B1: { model: 'sol', effort: 'xhigh' } },
+      slots: 1
+    });
+    const exec_values = /** @type {Record<string, string|null>} */ (
+      Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null]))
+    );
+    exec_values.orchestration_model = 'opus';
+    exec_values.orchestration_effort = 'high';
+    seedProviderAttempt(env.store, 'held-1', 'B1', {
+      effort: 'high',
+      speed: 'default',
+      session_id: 'session-1',
+      base_oid: 'base-B1',
+      target_base: 'main',
+      exec_values
+    });
+    const held = registerProviderHold(
+      env.store,
+      'held-1',
+      'outage',
+      'held@example.com'
+    );
+    env.store.recoverProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com'
+    });
+
+    const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+    const child = Object.values(env.store.snapshot(WS).attempts).find(
+      (attempt) => attempt.resumed_from === 'held-1'
+    );
+    expect(result.resumed_beads).toEqual(['B1']);
+    expect(child).toMatchObject({
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      auto_resume_kind: 'provider_outage'
+    });
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      model: 'opus',
+      effort: 'high'
+    });
+  });
+});
 
 /**
  * Seed the single waiting lane in order and arm auto_advance.
@@ -5695,6 +5990,54 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     });
     return /** @type {string} */ (res.attempt_id);
   }
+
+  test('holds an outage before the disposition verdict and redispatches repair on recovery', async () => {
+    const complete = vi.fn(async () => ({ ok: true }));
+    const release = vi.fn();
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      disposition: { complete, release }
+    });
+    const child = await dispatchDisposition(env);
+    env.runner.eventsFor('B1').emit('session_id', 'sid-1');
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          subtype: 'success',
+          is_error: true,
+          result: 'API Error: 529 Overloaded'
+        }
+      ]
+    });
+    await flush();
+
+    const held = env.store.snapshot(WS).provider_hold.claude;
+    expect(complete).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledWith('B1');
+    expect(env.store.snapshot(WS).attempts[child].status).toBe('paused');
+
+    env.store.recoverProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: null
+    });
+    await env.scheduler.consumeProviderAutoResume(WS);
+
+    const repair = Object.values(env.store.snapshot(WS).attempts).find(
+      (attempt) => attempt.resumed_from === child
+    );
+    expect(repair).toMatchObject({
+      disposition: 'revise_fix',
+      auto_resume_kind: 'provider_outage'
+    });
+  });
 
   test('bypasses the PR observation entirely', async () => {
     const complete = vi.fn(async () => ({ ok: true }));

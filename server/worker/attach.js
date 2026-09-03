@@ -35,7 +35,10 @@ import { kvGetJson, runBdJsonProjected, runShell } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
-import { listAccounts as listClaudeAccounts } from '../routes/claude-usage.js';
+import {
+  listAccounts as listClaudeAccounts,
+  resolveCswapPath
+} from '../routes/claude-usage.js';
 import { listAccounts as listCodexAccounts } from '../routes/codex-usage.js';
 import { createRuntimeIdentity } from '../runtime-identity.js';
 import { resolveSpecId } from '../spec-id.js';
@@ -66,6 +69,7 @@ import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
+import { createProviderHealth } from './provider-health.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import { createQuickfixLanding } from './quickfix-landing.js';
 import {
@@ -91,7 +95,7 @@ import {
   isReviewAfterMergeReason
 } from './review-session.js';
 import { createReviseDisposition } from './revise-disposition.js';
-import { createRunner } from './runner/index.js';
+import { createRunner, runtimeCatalog } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { createScheduler } from './scheduler.js';
 import { createSessionMonitors } from './session-monitor.js';
@@ -520,6 +524,7 @@ export function defaultProbePid(pid) {
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
  *   timeline?: ReturnType<typeof createBeadTimeline>,
  *   recordRetention?: ReturnType<typeof createRecordRetention>,
+ *   providerHealth?: ReturnType<typeof createProviderHealth>,
  *   repoOperationMigration?: { run: () => Promise<any> },
  *   autoAdvanceRestore?: ReturnType<typeof createAutoAdvanceRestoreController>,
  *   getSubscriberCount?: () => number,
@@ -872,6 +877,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       notifyChanged: (ws_key) => emitQueueChanged(ws_key)
     });
 
+  /** @type {ReturnType<typeof createProviderHealth>|null} */
+  let providerHealth = null;
+
   const scheduler = createScheduler({
     store: runtime.queueStore,
     // The workspace's ONE bead-history writer (record-timeline-retention §5) —
@@ -890,6 +898,16 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         kvGetJson(key, { cwd: workspace })),
     makeRunner,
     accountCatalog,
+    providerHealth: {
+      /**
+       * Forward a durable hold transition after the controller is bound.
+       *
+       * @param {string} workspace
+       */
+      sync(workspace) {
+        providerHealth?.sync(workspace);
+      }
+    },
     // The WHOLE bd surface, `createBdMetadata`'s readers included. `readIssue`
     // rides it as the scheduler's only reader of a bead's outgoing `blocks`
     // edges (2026-08-28 worker-prerequisite-wait-tier spec §4.2); an injected
@@ -962,6 +980,21 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     sessionMonitors,
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
   });
+
+  providerHealth =
+    options.providerHealth ||
+    createProviderHealth({
+      store: runtime.queueStore,
+      accountCatalog,
+      notify,
+      timeline,
+      repo,
+      catalog: runtimeCatalog(),
+      resolveCswapPath,
+      spawnImpl: options.spawn_impl,
+      onPending: (workspace) => scheduler.consumeProviderAutoResume(workspace),
+      tick: (workspace) => scheduler.tick(workspace)
+    });
 
   const discardCoordinator =
     options.discardCoordinator ||
@@ -1818,6 +1851,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     repoOperationMigration,
     recordRetention,
     recordRetentionPoller,
+    providerHealth,
     timeline,
     repo,
     resolveBase,
@@ -2290,6 +2324,12 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     await att.scheduler.reconcile(key);
   } catch (err) {
     log('startup reconcile failed for %s: %o', key, err);
+    return;
+  }
+  try {
+    await att.providerHealth.start(key);
+  } catch (err) {
+    log('provider health startup failed for %s: %o', key, err);
     return;
   }
   try {
@@ -3257,6 +3297,11 @@ export function __resetWorkerAttachmentsForTest() {
     }
     try {
       att.recordRetentionPoller?.stop();
+    } catch {
+      /* ignore */
+    }
+    try {
+      att.providerHealth?.stop(att.workspace);
     } catch {
       /* ignore */
     }

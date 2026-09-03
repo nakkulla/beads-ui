@@ -250,7 +250,7 @@ describe('bead-timeline readTimeline', () => {
 });
 
 describe('TIMELINE_KINDS', () => {
-  test('carries exactly the twelve kinds of the event table', () => {
+  test('carries exactly the fourteen kinds of the event table', () => {
     expect([...TIMELINE_KINDS]).toEqual([
       'dispatched',
       'guard_warning',
@@ -259,6 +259,8 @@ describe('TIMELINE_KINDS', () => {
       'attempt_retry',
       'queue_hold',
       'queue_resume',
+      'provider_hold',
+      'provider_recovered',
       'landing_step',
       'merge_step',
       'operation_failed',
