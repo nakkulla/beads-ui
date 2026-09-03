@@ -2446,10 +2446,13 @@ export function candidateCard(item, place_menu = null, options = {}) {
     item.exec_chips &&
     (item.exec_chips.orchestration || item.exec_chips.worker)
   );
+  // 흐림은 "지금은 못 간다"는 하나의 사실이므로 한 번만 건다 (§6.3).
+  // `worker-card--ineligible`은 root opacity 대신 배경·글자색으로 같은 사실을
+  // 말하고 stepper에만 opacity를 걸므로, 여기서 root opacity를 겹쳐 걸면 그
+  // stepper가 0.65 × 0.65로 두 번 흐려진다.
   const blocked_or_not_ready =
-    item.blocked === true ||
-    item.queue_placeable === false ||
-    worker_ineligible;
+    !worker_ineligible &&
+    (item.blocked === true || item.queue_placeable === false);
   return html`<div
     class="worker-card${draggable
       ? ''

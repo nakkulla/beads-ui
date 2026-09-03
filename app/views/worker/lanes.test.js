@@ -4473,6 +4473,17 @@ describe('준비 필요 판정 칩과 흐림 (UI-ff10 §6)', () => {
     ).toHaveLength(1);
   });
 
+  test('leaves the root undimmed for a worker-ineligible card', () => {
+    const card = renderCandidate({
+      ...BASE,
+      queue_placeable: false,
+      worker_ineligible: true
+    });
+
+    expect(card.classList.contains('worker-card--ineligible')).toBe(true);
+    expect(card.classList.contains('worker-card--blocked')).toBe(false);
+  });
+
   test('leaves a ready unblocked card undimmed', () => {
     const card = renderCandidate({ ...BASE, queue_placeable: true });
 
