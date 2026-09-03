@@ -1,9 +1,10 @@
 ---
 id: 17
 title: awaiting_user를 남기고 정상 종료한 세션 결말은 parked이며 자동 재디스패치하지 않는다
-status: accepted
+status: superseded
 date: 2026-08-28
 summary: '성공 종료 + 미resolved + PR 없음 + awaiting_user는 parked다. 재개는 사용자 클릭 또는 awaiting_user 소거 전이 관측뿐이다'
+superseded_by: 36
 spec: docs/superpowers/specs/2026-08-28-worker-failure-tiers-queue-hold-design.md
 bead: UI-5ym8
 ---
