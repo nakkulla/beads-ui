@@ -117,8 +117,10 @@ const ELIGIBILITY_TABLE = [
       id: 'QF',
       title: 'quick fix',
       description: '   ',
-      workflow: { route: 'quick_fix' },
-      metadata: {}
+      // deriveRoute는 metadata.route가 quick_fix일 때만 quick_fix를 돌려주므로
+      // 실제 페이로드에서 이 둘은 늘 같이 온다.
+      workflow: { route: 'quick_fix', route_source: 'explicit' },
+      metadata: { route: 'quick_fix' }
     },
     placeable: false,
     spec: 'n/a'
@@ -201,6 +203,35 @@ describe('worker placement', () => {
     );
 
     expect(placement).toMatchObject({ placeable: false, route_ok: false });
+  });
+
+  test('rejects a derived workflow route as unpinned', () => {
+    const placement = candidatePlacement(
+      {
+        id: 'DERIVED',
+        spec_id: 'docs/specs/x.md',
+        metadata: { spec_review: RECEIPT },
+        // 서버 enrichment는 metadata.route가 없으면 spec_backed를 파생한다.
+        workflow: { route: 'spec_backed', route_source: 'derived' }
+      },
+      queueOf()
+    );
+
+    expect(placement).toMatchObject({ placeable: false, route_ok: false });
+  });
+
+  test('accepts an explicit workflow route', () => {
+    const placement = candidatePlacement(
+      {
+        id: 'EXPLICIT',
+        spec_id: 'docs/specs/x.md',
+        metadata: { route: 'spec_backed', spec_review: RECEIPT },
+        workflow: { route: 'spec_backed', route_source: 'explicit' }
+      },
+      queueOf()
+    );
+
+    expect(placement).toMatchObject({ placeable: true, route_ok: true });
   });
 
   test('reports no location for an issue outside every lane', () => {

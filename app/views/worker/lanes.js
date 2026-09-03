@@ -2404,14 +2404,10 @@ export function candidateCard(item, place_menu = null, options = {}) {
   const session_preferred_tooltip =
     SESSION_PREFERRED_TOOLTIP[item.session_preferred_reason || ''] || '';
   const workflow = item.workflow;
-  const reason_parts =
-    typeof item.reason === 'string' ? item.reason.split(' · ') : [];
-  const missing_description =
-    item.missing_description === true ||
-    reason_parts.includes('missing_description');
-  const awaiting_user =
-    item.awaiting_user === true ||
-    reason_parts.some((part) => part.startsWith(AWAITING_USER_REASON_PREFIX));
+  // 판정은 구조화 필드만 읽는다 (§4). `reason`은 표시 문자열이므로 그것을 되읽어
+  // 판정을 세우면 문구가 바뀌는 순간 툴팁과 판정 칩이 조용히 어긋난다.
+  const missing_description = item.missing_description === true;
+  const awaiting_user = item.awaiting_user === true;
   const danger =
     typeof item.reason === 'string' && item.reason.startsWith('⛔');
   // 슬롯 4a의 판정 칩 (UI-svh6 §4.3). 팝업은 그 칩이 선 줄 아래에 열리므로

@@ -499,6 +499,8 @@ describe('candidate card', () => {
     const card = renderCandidate({
       draggable: false,
       queue_placeable: false,
+      // 판정은 구조화 필드가 나른다 — `reason`은 표시 문자열일 뿐이다 (§4).
+      missing_description: true,
       reason: 'missing_description'
     });
     const place = /** @type {HTMLButtonElement} */ (
@@ -512,6 +514,27 @@ describe('candidate card', () => {
     expect(place.disabled).toBe(true);
     expect(place.title).toBe('description이 없어 대기 큐에 넣을 수 없습니다');
     expect(card.textContent).not.toContain('워커 비대상');
+  });
+
+  test('ignores the display reason string when judging placement', () => {
+    const card = renderCandidate({
+      draggable: false,
+      queue_placeable: false,
+      route_ok: true,
+      awaiting_user: false,
+      missing_description: false,
+      placement_spec: 'draft',
+      // 어댑터 문구를 그대로 들고 있어도 판정은 구조화 필드만 읽는다 (§4).
+      reason: 'missing_description'
+    });
+    const place = /** @type {HTMLButtonElement} */ (
+      card.querySelector('.worker-card__place')
+    );
+
+    expect(place.title).toBe('spec이 발행되지 않아 대기 큐에 넣을 수 없습니다');
+    expect(
+      card.querySelector('.worker-card__readiness')?.textContent?.trim()
+    ).toBe('스펙 미발행');
   });
 
   test('renders lane choices only for the matching candidate menu', () => {

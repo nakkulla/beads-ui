@@ -178,8 +178,16 @@ export function candidatePlacement(issue, queue) {
   const row = objectOf(issue);
   const snapshot = objectOf(queue);
   const evidence = resolveSpecEvidence(row);
+  // 자격 판정은 **핀된** route만 읽는다 (§4.1). `workflow.route`는 표시용 파생값
+  // 이라 `metadata.route`가 없으면 `deriveRoute`가 `spec_backed`를 돌려준다
+  // (server/workflow-enrich.js) — 그것을 자격 입력으로 읽으면 route 미핀 행이
+  // 발행 스펙만으로 자격을 얻어, 서버 admission이 `invalid_route`로 거부하는 행을
+  // 화면이 "넣을 수 있다"고 말한다. `route_source: 'explicit'`인 행만 그 값을
+  // 신뢰하고, 나머지는 metadata를 직접 읽는다.
   const route =
-    (typeof row.workflow?.route === 'string' && row.workflow.route) ||
+    (row.workflow?.route_source === 'explicit' &&
+      typeof row.workflow.route === 'string' &&
+      row.workflow.route) ||
     (typeof objectOf(row.metadata).route === 'string'
       ? objectOf(row.metadata).route
       : '');
