@@ -51,6 +51,7 @@ const TITLE = {
   failed: `${SENDER} ❌ 실패`,
   pr_wait: `${SENDER} 📬 PR 제출`,
   merged: `${SENDER} ✅ 머지 완료`,
+  landed: `${SENDER} ✅ 착지 완료`,
   awaiting_user: `${SENDER} ⏸️ 방향 질의`,
   provider_hold: `${SENDER} ⏳ 공급자 보류`,
   provider_recovered: `${SENDER} ✅ 공급자 회복`,
@@ -173,6 +174,7 @@ function headline(transition, bead_id, bead_title) {
  *   attemptFailed: (input: { bead_id: string, cause: string, repo?: string|null, cause_detail?: { reason: string, command: string|null }|null }) => Promise<void>,
  *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
+ *   quickfixLanded: (input: { bead_id: string, title?: string|null, head_sha?: string|null, close_kind?: string|null, repo?: string|null }) => Promise<void>,
  *   awaitingUser: (input: { bead_id: string, title?: string|null, awaiting_user?: string|null, stale_kind?: string|null, session?: string|null, reason?: string|null, tmux_session?: string|null, tmux_window?: string|null, bridge_active?: boolean, repo?: string|null }) => Promise<void>,
  *   providerHoldEntered: (input: { bead_id: string, runner: string, kind: string, detail: string, summary: string, account?: string|null, resets_at?: number|null, auto_switch?: 'none'|'cap'|'disabled'|null, repo?: string|null }) => Promise<void>,
  *   providerRecovered: (input: { bead_id: string, runner: string, duration_ms: number, resumed_beads?: string[], refusal?: string|null, switched_from?: string|null, switched_to?: string|null, repo?: string|null }) => Promise<void>,
@@ -586,6 +588,34 @@ export function createNotifier(deps) {
         send(cmd, prBody(TITLE.merged, input, bead_title));
       } catch (err) {
         log('mergeCompleted failed: %o', err);
+      }
+    },
+
+    // A quick_fix lands directly on the base without a PR, so the merge
+    // transition above never fires for its terminal success.
+    async quickfixLanded(input) {
+      try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        const bead_title =
+          text(input.title) ?? (await lookupTitle(input.bead_id));
+        const lines = [headline(TITLE.landed, input.bead_id, bead_title)];
+        const head_sha = text(input.head_sha);
+        const close_kind = text(input.close_kind);
+        if (head_sha) {
+          lines.push(`착지: ${head_sha}`);
+        } else if (close_kind) {
+          lines.push(`종결: ${close_kind}`);
+        }
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        send(cmd, lines.join('\n'));
+      } catch (err) {
+        log('quickfixLanded failed: %o', err);
       }
     },
 

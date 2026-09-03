@@ -66,6 +66,7 @@ afterEach(() => {
  *   resolveWriteSticks?: boolean,
  *   readIssueThrows?: boolean,
  *   timeline?: any,
+ *   notifier?: { quickfixLanded: (input: any) => Promise<void> }|null,
  *   readMetadataThrows?: boolean,
  *   foreign?: {
  *     pins: Record<string, string>,
@@ -325,6 +326,7 @@ function makeLanding(options = {}) {
     readPushLog,
     accept_skipped_receipt: options.acceptSkippedReceipt === true,
     timeline: options.timeline,
+    notifier: options.notifier,
     notifyChanged: () => calls.push('notify'),
     now: () => 1234
   });
@@ -427,6 +429,84 @@ test('lands when no timeline is injected', async () => {
   const result = await settle(landing);
 
   expect(result).toEqual({ ok: true });
+});
+
+test('announces a delta landing once with the landed head', async () => {
+  const quickfixLanded = vi.fn(async () => {});
+  const { landing } = makeLanding({ notifier: { quickfixLanded } });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+  expect(quickfixLanded).toHaveBeenCalledTimes(1);
+  expect(quickfixLanded).toHaveBeenCalledWith({
+    repo: REPO,
+    bead_id: BEAD,
+    head_sha: HEAD_SHA
+  });
+});
+
+test.each([
+  ['refuted: premise disproved', 'refuted'],
+  ['no-delta: already correct', 'no-delta']
+])('announces a %s close once', async (closeReason, close_kind) => {
+  const quickfixLanded = vi.fn(async () => {});
+  const { landing } = makeLanding({
+    status: 'closed',
+    closeReason,
+    notifier: { quickfixLanded }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+  expect(quickfixLanded).toHaveBeenCalledTimes(1);
+  expect(quickfixLanded).toHaveBeenCalledWith({
+    repo: REPO,
+    bead_id: BEAD,
+    close_kind
+  });
+});
+
+test.each([
+  ['delta landing', {}],
+  ['refuted close', { status: 'closed', closeReason: 'refuted: no bug' }],
+  ['no-delta close', { status: 'closed', closeReason: 'no-delta: no work' }]
+])('lands %s without a notifier', async (description, options) => {
+  const { landing } = makeLanding(options);
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+});
+
+test('does not announce a failed landing', async () => {
+  const quickfixLanded = vi.fn(async () => {});
+  const { landing } = makeLanding({
+    containmentCode: 1,
+    notifier: { quickfixLanded }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'push_not_contained',
+    step: 'base_containment'
+  });
+  expect(quickfixLanded).not.toHaveBeenCalled();
+});
+
+test('keeps settlement successful when landing notification rejects', async () => {
+  const quickfixLanded = vi.fn(async () => {
+    throw new Error('notify failed');
+  });
+  const { landing } = makeLanding({ notifier: { quickfixLanded } });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+  expect(quickfixLanded).toHaveBeenCalledTimes(1);
 });
 
 test('lands when the timeline append fails', async () => {
@@ -1069,13 +1149,15 @@ test('fails refuted close observably when base cannot be fetched', async () => {
 });
 
 test('resumes completed parent close without rewriting Bead status', async () => {
+  const quickfixLanded = vi.fn(async () => {});
   const { landing, bd, store } = makeLanding({
     status: 'closed',
     landingProgress: {
       cursor: 'parent_close',
       head_sha: HEAD_SHA,
       reason: null
-    }
+    },
+    notifier: { quickfixLanded }
   });
 
   const result = await settle(landing);
@@ -1083,6 +1165,7 @@ test('resumes completed parent close without rewriting Bead status', async () =>
   expect(result).toEqual({ ok: true });
   expect(store.moveToDone).toHaveBeenCalled();
   expect(bd.setStatus).not.toHaveBeenCalled();
+  expect(quickfixLanded).not.toHaveBeenCalled();
 });
 
 test('resumes branch cleanup without a worktree', async () => {

@@ -320,6 +320,52 @@ describe('worker/notify argv assembly', () => {
     expect(messageOf(spawn.last())).toBe('🤖 ✅ 머지 완료 — UI-1');
   });
 
+  test('sends a quick_fix landing with the full head and repo', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.quickfixLanded({
+      bead_id: 'UI-1',
+      title: '직접 착지',
+      head_sha: 'a'.repeat(40),
+      repo: '/r/proj'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      `🤖 ✅ 착지 완료 — UI-1 직접 착지\n착지: ${'a'.repeat(40)}\n리포: proj`
+    );
+  });
+
+  test.each(['refuted', 'no-delta'])(
+    'sends a quick_fix %s close without a landing line',
+    async (close_kind) => {
+      const spawn = makeFakeSpawn();
+      const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+      await notifier.quickfixLanded({ bead_id: 'UI-1', close_kind });
+
+      const message = messageOf(spawn.last());
+      expect(message).toBe(`🤖 ✅ 착지 완료 — UI-1\n종결: ${close_kind}`);
+      expect(message).not.toContain('착지:');
+    }
+  );
+
+  test('prefers the landing head over a close kind', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+    const head_sha = 'b'.repeat(40);
+
+    await notifier.quickfixLanded({
+      bead_id: 'UI-1',
+      head_sha,
+      close_kind: 'refuted'
+    });
+
+    const message = messageOf(spawn.last());
+    expect(message).toContain(`착지: ${head_sha}`);
+    expect(message).not.toContain('종결:');
+  });
+
   test('spawns the configured command argv without a shell', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(
@@ -387,6 +433,18 @@ describe('worker/notify bead title lookup (UI-vb0t)', () => {
     expect(messageOf(spawn.last())).toBe('🤖 ✅ 머지 완료 — UI-1');
   });
 
+  test('sends an id-only quick_fix landing when the title is absent', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: spawn.spawnImpl,
+      resolveTitle: async () => null
+    });
+
+    await notifier.quickfixLanded({ bead_id: 'UI-1' });
+
+    expect(messageOf(spawn.last())).toBe('🤖 ✅ 착지 완료 — UI-1');
+  });
+
   test('still sends when the lookup rejects', async () => {
     const spawn = makeFakeSpawn();
     const log = vi.fn();
@@ -416,6 +474,7 @@ describe('worker/notify bead title lookup (UI-vb0t)', () => {
     await notifier.attemptFailed({ bead_id: 'UI-1', cause: 'verify_failed' });
     await notifier.prWaitEntered({ bead_id: 'UI-1' });
     await notifier.mergeCompleted({ bead_id: 'UI-1' });
+    await notifier.quickfixLanded({ bead_id: 'UI-1' });
 
     // A disabled notifier is a pure no-op: it must not spend a `bd show` — nor,
     // on the awaited merge path, make the cleanup wait for one.
@@ -499,6 +558,18 @@ describe('worker/notify fail-quiet', () => {
       notifier.attemptFailed({ bead_id: 'UI-1', cause: 'spawn_failed' })
     ).resolves.toBeUndefined();
     expect(log).toHaveBeenCalled();
+  });
+
+  test('resolves a quick_fix landing after spawn throws', async () => {
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: () => {
+        throw new Error('EACCES');
+      }
+    });
+
+    await expect(
+      notifier.quickfixLanded({ bead_id: 'UI-1', head_sha: 'abc' })
+    ).resolves.toBeUndefined();
   });
 
   test('swallows the async error event a missing CLI emits', async () => {

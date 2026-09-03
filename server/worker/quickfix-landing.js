@@ -145,6 +145,7 @@ function noChangeCloseKind(close_reason) {
  *   }|null,
  *   readPushLog?: (input: { attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string },
  *   timeline?: { append: (input: any) => unknown },
+ *   notifier?: { quickfixLanded: (input: any) => Promise<void> }|null,
  *   accept_skipped_receipt?: boolean,
  *   notifyChanged?: (workspace: string) => void,
  *   now?: () => number
@@ -162,9 +163,27 @@ export function createQuickfixLanding(deps) {
   const workspace = deps.workspace;
   const repo = deps.repo;
   const repo_operations = deps.repoOperations || null;
+  const notifier = deps.notifier || null;
   const notifyChanged = deps.notifyChanged || (() => {});
   const now = deps.now || (() => Date.now());
   const accept_skipped_receipt = deps.accept_skipped_receipt === true;
+
+  /**
+   * Announce only a newly durable terminal success. The notifier is no-throw by
+   * contract; this guard also protects settlement from a broken injected fake.
+   *
+   * @param {{ bead_id: string, head_sha?: string|null, close_kind?: string|null }} input
+   */
+  async function announceLanded(input) {
+    if (!notifier || typeof notifier.quickfixLanded !== 'function') {
+      return;
+    }
+    try {
+      await notifier.quickfixLanded({ repo, ...input });
+    } catch (err) {
+      log('quick_fix landed notify failed: %o', err);
+    }
+  }
 
   /**
    * One landing record, plus whatever this attempt has to keep carrying.
@@ -265,6 +284,7 @@ export function createQuickfixLanding(deps) {
    * @returns {{ ok: false, reason: string, step: string|null }}
    */
   function fail(attempt_id, reason, step, head_sha, extra = null) {
+    // Existing needs_human/attemptFailed lanes own failure notifications.
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
@@ -677,6 +697,7 @@ export function createQuickfixLanding(deps) {
 
   /** @param {string} bead_id */
   async function restoreResolved(bead_id) {
+    // Restoration repairs a failed close; it is not a terminal success.
     try {
       await deps.bd.setStatus(bead_id, 'resolved');
       return (await deps.bd.readStatus(bead_id)) === 'resolved';
@@ -756,6 +777,8 @@ export function createQuickfixLanding(deps) {
       }
     });
     notifyChanged(workspace);
+    const close_kind = kind === 'no_delta' ? 'no-delta' : 'refuted';
+    await announceLanded({ bead_id, close_kind });
     return { ok: true };
   }
 
@@ -814,6 +837,8 @@ export function createQuickfixLanding(deps) {
         }
       });
       notifyChanged(workspace);
+      // The execution that wrote parent_close already announced the landing;
+      // a restart only resumes the durable record and must not duplicate it.
       return { ok: true };
     }
     if (status === 'closed') {
@@ -1142,6 +1167,7 @@ export function createQuickfixLanding(deps) {
       }
     });
     notifyChanged(workspace);
+    await announceLanded({ bead_id, head_sha });
     return { ok: true };
   }
 

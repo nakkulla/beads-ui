@@ -797,6 +797,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         gitRun,
         worktree,
         repoOperations: repoOperationCoordinator,
+        // Direct landing shares the scheduler and merge notifier instance.
+        notifier: notify,
         // The attempt's OWN pre-push record (2026-08-28 worker-failure-tiers spec
         // §5): the lane's landing is judged from the ref/SHA the record-mode hook
         // wrote, not from the session's self-report. Bound here because the
