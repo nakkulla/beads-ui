@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { recSettings } from '../../app/utils/rec-settings.js';
 import { normalizeIssueList } from '../list-adapters.js';
+import { ADMISSIBLE_ROUTES } from './admission.js';
 import {
   __resetQueueEventsForTest,
   emitQueueChanged,
   onQueueChanged
 } from './queue-events.js';
-import { createRunnableCache } from './runnable-cache.js';
+import { WORKFLOW_ROUTES } from './routes.js';
+import { RUNNABLE_ROUTES, createRunnableCache } from './runnable-cache.js';
 
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
@@ -128,6 +130,21 @@ async function warm(cache, workspace, exclude_ids) {
 }
 
 /**
+ * Trigger one fill and return the expanded observation population.
+ *
+ * @param {ReturnType<typeof createRunnableCache>} cache
+ * @param {string} workspace
+ * @param {string[]} [exclude_ids]
+ */
+async function warmExpanded(cache, workspace, exclude_ids) {
+  cache.runnableFor(workspace, exclude_ids, { include_unadmitted: true });
+  await settle();
+  return cache.runnableFor(workspace, exclude_ids, {
+    include_unadmitted: true
+  });
+}
+
+/**
  * Trigger the async fill and return the settled session bucket.
  *
  * @param {ReturnType<typeof createRunnableCache>} cache
@@ -175,6 +192,11 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         bead_id: 'UI-1',
         title: '실행 대기 이슈',
         route: 'spec_backed',
+        admitted: true,
+        spec_state: 'published',
+        has_description: false,
+        awaiting_user: false,
+        worker_ineligible: false,
         spec_id: 'docs/specs/thing.md',
         published: true,
         scope_spec_id: 'docs/specs/thing.md',
@@ -191,6 +213,126 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         rec: null
       }
     ]);
+  });
+
+  test('derives both server route collections from the canonical enum', () => {
+    expect(ADMISSIBLE_ROUTES).toBe(WORKFLOW_ROUTES);
+    expect([...RUNNABLE_ROUTES]).toEqual(WORKFLOW_ROUTES);
+  });
+
+  test('keeps an unpublished spec-backed row only in the expanded view', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [row({ metadata: { spec_review: '' } })]
+      })
+    });
+
+    const expanded = await warmExpanded(cache, WS_A);
+
+    expect(cache.runnableFor(WS_A)).toEqual([]);
+    expect(expanded[0]).toMatchObject({
+      admitted: false,
+      spec_state: 'draft',
+      spec_id: '',
+      scope_spec_id: 'docs/specs/thing.md',
+      spec_reviewer: '',
+      plan_state: 'none'
+    });
+  });
+
+  test('keeps an unpinned route only in the expanded view', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({ [WS_A]: [row({ metadata: { route: '' } })] })
+    });
+
+    const expanded = await warmExpanded(cache, WS_A);
+
+    expect(cache.runnableFor(WS_A)).toEqual([]);
+    expect(expanded[0]).toMatchObject({
+      route: '',
+      admitted: false,
+      spec_state: 'published',
+      has_description: false
+    });
+  });
+
+  test('keeps a description-less quick fix only in the expanded view', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [row({ metadata: { route: 'quick_fix' } })]
+      })
+    });
+
+    const expanded = await warmExpanded(cache, WS_A);
+
+    expect(cache.runnableFor(WS_A)).toEqual([]);
+    expect(expanded[0]).toMatchObject({
+      admitted: false,
+      spec_state: 'n/a',
+      has_description: false,
+      spec_id: '',
+      spec_reviewer: '',
+      plan_state: 'none'
+    });
+  });
+
+  test('keeps a worker-ineligible row only in the expanded view', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [row({ labels: ['worker-ineligible', 'frontend'] })]
+      })
+    });
+
+    const expanded = await warmExpanded(cache, WS_A);
+
+    expect(cache.runnableFor(WS_A)).toEqual([]);
+    expect(expanded[0]).toMatchObject({
+      admitted: false,
+      worker_ineligible: true,
+      labels: ['worker-ineligible', 'frontend']
+    });
+  });
+
+  test('keeps the default view equal to the legacy admitted population', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({ id: 'UI-ready' }),
+          row({ id: 'UI-draft', metadata: { spec_review: '' } }),
+          row({ id: 'UI-unpinned', metadata: { route: '' } }),
+          row({
+            id: 'UI-empty-quick-fix',
+            metadata: { route: 'quick_fix' }
+          }),
+          row({ id: 'UI-ineligible', labels: ['worker-ineligible'] })
+        ]
+      })
+    });
+
+    const expanded = await warmExpanded(cache, WS_A);
+
+    expect(cache.runnableFor(WS_A).map((item) => item.bead_id)).toEqual([
+      'UI-ready'
+    ]);
+    expect(expanded.map((item) => item.bead_id)).toEqual([
+      'UI-ready',
+      'UI-draft',
+      'UI-unpinned',
+      'UI-empty-quick-fix',
+      'UI-ineligible'
+    ]);
+  });
+
+  test('projects awaiting-user presence without changing legacy admission', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [row({ metadata: { awaiting_user: 'design' } })]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0]).toMatchObject({ admitted: true, awaiting_user: true });
   });
 
   test('projects published true for a spec_backed row with a valid receipt', async () => {
@@ -487,6 +629,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     const out = await warm(cache, WS_A);
 
     expect(out).toEqual([]);
+    expect(
+      cache.runnableFor(WS_A, undefined, { include_unadmitted: true })[0]
+    ).toMatchObject({ admitted: false, spec_state: 'none', spec_id: '' });
   });
 
   test('rejects a spec_review that is not <reviewer>@<40hex>', async () => {
@@ -499,6 +644,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     const out = await warm(cache, WS_A);
 
     expect(out).toEqual([]);
+    expect(
+      cache.runnableFor(WS_A, undefined, { include_unadmitted: true })[0]
+    ).toMatchObject({ admitted: false, spec_state: 'draft', spec_id: '' });
   });
 
   test('accepts a skipped receipt as explicit authority', async () => {
@@ -658,6 +806,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     const out = await warm(cache, WS_A);
 
     expect(out).toEqual([]);
+    expect(
+      cache.runnableFor(WS_A, undefined, { include_unadmitted: true })
+    ).toEqual([]);
   });
 
   test('rejects a phase child named by its dotted id', async () => {
@@ -668,6 +819,22 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     const out = await warm(cache, WS_A);
 
     expect(out).toEqual([]);
+    expect(
+      cache.runnableFor(WS_A, undefined, { include_unadmitted: true })
+    ).toEqual([]);
+  });
+
+  test('rejects a non-open row from both runnable views', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({ [WS_A]: [row({ status: 'closed' })] })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out).toEqual([]);
+    expect(
+      cache.runnableFor(WS_A, undefined, { include_unadmitted: true })
+    ).toEqual([]);
   });
 
   test('excludes a bead the caller already has in a lane', async () => {
@@ -1531,5 +1698,22 @@ describe('runnablePeek (UI-f3ma)', () => {
     const out = cache.runnablePeek(WS_A, ['UI-1']);
 
     expect(out).toEqual([]);
+  });
+
+  test('reveals unadmitted rows only when explicitly requested', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [row({ metadata: { spec_review: '' } })]
+      })
+    });
+    await warmExpanded(cache, WS_A);
+
+    const default_out = cache.runnablePeek(WS_A);
+    const expanded_out = cache.runnablePeek(WS_A, undefined, {
+      include_unadmitted: true
+    });
+
+    expect(default_out).toEqual([]);
+    expect(expanded_out.map((item) => item.bead_id)).toEqual(['UI-1']);
   });
 });

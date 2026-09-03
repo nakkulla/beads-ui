@@ -485,7 +485,7 @@ describe('views/monitor lane header controls (UI-eey2 §3)', () => {
     ).toBe(false);
   });
 
-  test('filters by spec presence from the segment', () => {
+  test('filters by readiness from the segment', () => {
     const { mount, view } = setup({
       workspaces: [
         workspace({
@@ -493,10 +493,23 @@ describe('views/monitor lane header controls (UI-eey2 §3)', () => {
             {
               bead_id: 'A-1',
               title: 'a',
+              route: 'spec_backed',
+              spec_state: 'published',
+              has_description: false,
+              awaiting_user: false,
+              worker_ineligible: false,
               spec_id: 'docs/a.md',
               published: true
             },
-            { bead_id: 'A-2', title: 'b' }
+            {
+              bead_id: 'A-2',
+              title: 'b',
+              route: 'spec_backed',
+              spec_state: 'draft',
+              has_description: false,
+              awaiting_user: false,
+              worker_ineligible: false
+            }
           ]
         })
       ],
@@ -504,9 +517,32 @@ describe('views/monitor lane header controls (UI-eey2 §3)', () => {
     });
 
     view.load();
-    click(mount, '.mon-filter__spec[data-spec="without"]');
+    click(mount, '.mon-filter__readiness[data-readiness="not_ready"]');
 
     expect(idsIn(mount, 'runnable')).toEqual(['A-2']);
+  });
+
+  test('ignores the retired stored spec axis', () => {
+    window.localStorage.setItem(
+      'beads-ui.monitor.candidate-filter',
+      JSON.stringify({ show_blocked: true, spec: 'without' })
+    );
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-1', title: 'a' }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      mount.querySelector(
+        '.mon-filter__readiness[data-readiness="all"].is-active'
+      )
+    ).not.toBeNull();
   });
 });
 

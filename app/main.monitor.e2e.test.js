@@ -332,6 +332,63 @@ describe('monitor tab direct entry (UI-nprg)', () => {
 
     expect(sentTypes(client)).toContain('unsubscribe-monitor-pipeline');
   });
+
+  test('renders an unready candidate without queue or drag actions', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: [
+        {
+          root_dir: '/tmp/ws-a',
+          name: 'ws-a',
+          revision: 3,
+          queue: [],
+          serial_lanes: [],
+          pr_wait: [],
+          done: [],
+          runnable: [
+            {
+              bead_id: 'UI-unready',
+              title: '준비 필요 후보',
+              route: 'spec_backed',
+              spec_state: 'draft',
+              has_description: false,
+              awaiting_user: false,
+              worker_ineligible: false
+            }
+          ],
+          attempts: {},
+          bead_titles: {},
+          bead_blocked_by: {},
+          pr_observations: {}
+        }
+      ],
+      workspaces_state: [
+        { root_dir: '/tmp/ws-a', name: 'ws-a', revision: 3, slots: 1 }
+      ]
+    });
+    await flush();
+
+    const card = /** @type {HTMLElement} */ (
+      document.querySelector(
+        '#monitor-runnable .worker-card[data-bead-id="UI-unready"]'
+      )
+    );
+    const place = /** @type {HTMLButtonElement} */ (
+      card.querySelector('.worker-card__place')
+    );
+
+    expect(card).not.toBeNull();
+    expect(card.getAttribute('draggable')).toBe('false');
+    expect(place.disabled).toBe(true);
+  });
 });
 
 describe('monitor 실행가능 → 연결 레인 드롭 (UI-j92s §5.5)', () => {

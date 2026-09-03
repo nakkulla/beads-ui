@@ -50,6 +50,7 @@ import {
   REC_SIGNALS,
   REC_VALUES
 } from './exec-enums.js';
+import { WORKFLOW_ROUTES } from './routes.js';
 import { sessionRefViews } from './session-ref.js';
 
 const log = debug('worker:runnable-cache');
@@ -75,14 +76,12 @@ const POSITIVE_TTL_MS = 30_000;
 const NEGATIVE_TTL_MS = 60_000;
 
 /**
- * The routes an auto-runnable bead may carry (spec §4, same enum as
- * `admission.js` `ADMISSIBLE_ROUTES`). A route outside this set is a bead the
- * worker would refuse as `invalid_route`, so showing it as runnable would be a
- * lie the user can only discover by clicking.
+ * The routes worker admission accepts. Derived from the import-free canonical
+ * enum so server and browser consumers share one vocabulary.
  *
  * @type {ReadonlySet<string>}
  */
-const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan', 'quick_fix']);
+export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
 
 /**
  * One display-runnable bead. Deliberately a PROJECTION of the `bd list` row, not
@@ -93,7 +92,13 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan', 'quick_fix']);
  * @typedef {Object} RunnableItem
  * @property {string} bead_id
  * @property {string} title
- * @property {string} route - The `metadata.route` that qualified it.
+ * @property {string} route - The projected `metadata.route`, or `''`.
+ * @property {boolean} admitted - Whether the row satisfies the legacy narrow
+ * runnable qualification.
+ * @property {'published'|'draft'|'none'|'conflict'|'n/a'} spec_state
+ * @property {boolean} has_description
+ * @property {boolean} awaiting_user
+ * @property {boolean} worker_ineligible
  * @property {string} spec_id - The native-first resolved spec path. ADMISSION
  * semantics: a quick_fix row carries `''` even when a spec resolves, because a
  * quick_fix is admitted without one. NEVER read this to choose a scope source —
@@ -127,8 +132,7 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan', 'quick_fix']);
  * @property {'approved'|'authored'|'none'} plan_state
  * @property {boolean} blocked - Membership in `ready_explain.blocked`.
  * @property {string[]} blocked_by - Direct `blocks` blocker ids.
- * @property {string[]} labels - Non-policy labels carried for display. An exact
- * `worker-ineligible` label excludes the row before this projection is made.
+ * @property {string[]} labels - Labels carried for display.
  * @property {number|string|null} created_at
  * @property {number|string|null} updated_at
  * @property {Record<string, unknown>|null} workflow - The stepper projection for
@@ -355,9 +359,8 @@ function planState(meta, route) {
 }
 
 /**
- * The 판정 조건 (spec §4), minus the lane exclusion — that one depends on the
- * CALLER's current queue state, so it is applied at read time instead of being
- * baked into the cached list.
+ * Adopt one open non-phase row, then project its narrow admission judgment as
+ * facts. Lane exclusion stays read-time because it depends on caller state.
  *
  * @param {Record<string, unknown>} row
  * @param {string[]|null} blocked_by - Null means no `ready_explain` source.
@@ -373,47 +376,36 @@ function qualify(row, blocked_by = null, enrich = undefined) {
   if (row.status !== 'open') {
     return null;
   }
-  if (isWorkerIneligible(row.labels)) {
+  if (isPhaseChild(row)) {
     return null;
   }
   const meta = metadataOf(row);
   const route = typeof meta.route === 'string' ? meta.route : '';
-  if (!RUNNABLE_ROUTES.has(route)) {
-    return null;
-  }
   const is_quick_fix = route === 'quick_fix';
   const spec = resolveSpecId(row);
-  let spec_id = '';
-  let spec_reviewer = '';
-  if (is_quick_fix) {
-    if (
-      typeof row.description !== 'string' ||
-      row.description.trim().length === 0
-    ) {
-      return null;
-    }
-  } else {
-    if (spec.path.length === 0 || spec.conflict) {
-      return null;
-    }
-    const spec_review = meta.spec_review;
-    const normalized_spec_review =
-      typeof spec_review === 'string' ? spec_review.trim() : '';
-    if (
-      normalized_spec_review.length === 0 ||
-      !ADMISSION_RECEIPT_RE.test(normalized_spec_review)
-    ) {
-      return null;
-    }
-    spec_id = spec.path;
-    spec_reviewer = normalized_spec_review.slice(
-      0,
-      normalized_spec_review.indexOf('@')
-    );
-  }
-  if (isPhaseChild(row)) {
-    return null;
-  }
+  const evidence = resolveSpecEvidence(row);
+  const spec_state = is_quick_fix
+    ? 'n/a'
+    : spec.conflict
+      ? 'conflict'
+      : evidence.evidence;
+  const has_description =
+    typeof row.description === 'string' && row.description.trim().length > 0;
+  const awaiting_user = Object.hasOwn(meta, 'awaiting_user');
+  const worker_ineligible = isWorkerIneligible(row.labels);
+  const admitted =
+    RUNNABLE_ROUTES.has(route) &&
+    !worker_ineligible &&
+    (is_quick_fix ? has_description : spec_state === 'published');
+  const normalized_spec_review =
+    typeof meta.spec_review === 'string' ? meta.spec_review.trim() : '';
+  const spec_id = !is_quick_fix && spec_state === 'published' ? spec.path : '';
+  const spec_reviewer =
+    !is_quick_fix &&
+    spec_state === 'published' &&
+    ADMISSION_RECEIPT_RE.test(normalized_spec_review)
+      ? normalized_spec_review.slice(0, normalized_spec_review.indexOf('@'))
+      : '';
   const plan_path =
     typeof meta.plan_path === 'string' ? meta.plan_path.trim() : '';
   // scope 원천은 admission `spec_id`와 무관하게 `resolveSpecId`로 판정한다
@@ -424,18 +416,26 @@ function qualify(row, blocked_by = null, enrich = undefined) {
   // 발행 여부도 route와 무관하게 판정한다 (UI-vb7u §2·§3): 위 `spec_id`는
   // quick_fix 행에서 admission 의미상 비어 있으므로, "이 bead에 발행된 spec이
   // 있는가"를 묻는 소비자가 그것을 읽으면 안 된다.
-  const published = resolveSpecEvidence(row).evidence === 'published';
+  const published = evidence.evidence === 'published';
   /** @type {RunnableItem} */
   const item = {
     bead_id,
     title: typeof row.title === 'string' ? row.title : '',
     route,
+    admitted,
+    spec_state,
+    has_description,
+    awaiting_user,
+    worker_ineligible,
     spec_id,
     published,
     scope_spec_id,
     plan_path: plan_path.length > 0 ? plan_path : null,
     spec_reviewer,
-    plan_state: is_quick_fix ? 'none' : planState(meta, route),
+    plan_state:
+      is_quick_fix || spec_state !== 'published'
+        ? 'none'
+        : planState(meta, route),
     blocked: blocked_by !== null,
     blocked_by: blocked_by || [],
     labels: workerLabels(row.labels),
@@ -935,6 +935,18 @@ export function createRunnableCache(options = {}) {
     return peekBucket(workspace, bucket, exclude_ids);
   }
 
+  /**
+   * Apply the legacy narrow runnable view without changing cached population.
+   *
+   * @param {RunnableItem[]} rows
+   * @param {boolean} include_unadmitted
+   */
+  function selectRunnable(rows, include_unadmitted) {
+    return include_unadmitted
+      ? rows
+      : rows.filter((item) => item.admitted === true);
+  }
+
   return {
     /**
      * Register the "new candidates landed" callback. The ws layer wires this to
@@ -974,10 +986,14 @@ export function createRunnableCache(options = {}) {
      *
      * @param {string} workspace
      * @param {Iterable<string>} [exclude_ids]
+     * @param {{ include_unadmitted?: boolean }} [options]
      * @returns {RunnableItem[]}
      */
-    runnableFor(workspace, exclude_ids) {
-      return readBucket(workspace, 'items', exclude_ids);
+    runnableFor(workspace, exclude_ids, { include_unadmitted = false } = {}) {
+      return selectRunnable(
+        readBucket(workspace, 'items', exclude_ids),
+        include_unadmitted
+      );
     },
 
     /**
@@ -1019,10 +1035,14 @@ export function createRunnableCache(options = {}) {
      *
      * @param {string} workspace
      * @param {Iterable<string>} [exclude_ids]
+     * @param {{ include_unadmitted?: boolean }} [options]
      * @returns {RunnableItem[]}
      */
-    runnablePeek(workspace, exclude_ids) {
-      return peekBucket(workspace, 'items', exclude_ids);
+    runnablePeek(workspace, exclude_ids, { include_unadmitted = false } = {}) {
+      return selectRunnable(
+        peekBucket(workspace, 'items', exclude_ids),
+        include_unadmitted
+      );
     },
 
     /**

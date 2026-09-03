@@ -3128,7 +3128,9 @@ describe('views/detail-panel [↴ 대기로] (UI-6g3t §6)', () => {
           description: '설명 본문',
           labels: [],
           spec_id: 'docs/specs/x.md',
-          metadata: { spec_review: RECEIPT },
+          // route는 자격 식의 첫 조건이다 (UI-ff10 §4.1): 미핀 행은 발행된 스펙이
+          // 있어도 서버 admission이 invalid_route로 거부하므로 배치 불가다.
+          metadata: { route: 'spec_backed', spec_review: RECEIPT },
           ...issue_patch
         }
       ])

@@ -38,7 +38,7 @@ import { createLaneDrag } from '../worker/lane-drag.js';
 import {
   CANDIDATE_FILTER_DEFAULT,
   CANDIDATE_SORT_OPTIONS,
-  SPEC_FILTER_OPTIONS,
+  READINESS_FILTER_OPTIONS,
   buildLanes
 } from '../worker/lane-model.js';
 import {
@@ -122,8 +122,10 @@ function loadCandidateFilter() {
         typeof parsed.show_blocked === 'boolean'
           ? parsed.show_blocked
           : CANDIDATE_FILTER_DEFAULT.show_blocked,
-      spec: SPEC_FILTER_OPTIONS.some((o) => o.value === parsed.spec)
-        ? parsed.spec
+      readiness: READINESS_FILTER_OPTIONS.some(
+        (o) => o.value === parsed.readiness
+      )
+        ? parsed.readiness
         : 'all'
     };
   } catch {
@@ -140,7 +142,7 @@ function saveCandidateFilter(filter) {
       MONITOR_CANDIDATE_FILTER_KEY,
       JSON.stringify({
         show_blocked: filter.show_blocked,
-        spec: filter.spec
+        readiness: filter.readiness
       })
     );
   } catch {
@@ -1631,26 +1633,30 @@ export function createMonitorView(mount_element, options) {
           ? ` ${lanes.runnable_hidden.blocked}`
           : ''}
       </label>
-      <div class="worker-filter__spec" role="group" aria-label="spec 필터">
-        ${SPEC_FILTER_OPTIONS.map(
+      <div
+        class="worker-filter__readiness"
+        role="group"
+        aria-label="준비도 필터"
+      >
+        ${READINESS_FILTER_OPTIONS.map(
           (o) =>
             html`<button
               type="button"
-              class="mon-filter__spec worker-filter__chip${candidate_filter.spec ===
+              class="mon-filter__readiness worker-filter__chip${candidate_filter.readiness ===
               o.value
                 ? ' is-active'
                 : ''}"
-              data-spec=${o.value}
-              aria-pressed=${candidate_filter.spec === o.value
+              data-readiness=${o.value}
+              aria-pressed=${candidate_filter.readiness === o.value
                 ? 'true'
                 : 'false'}
             >
               ${o.label}
             </button>`
         )}
-        ${lanes.runnable_hidden.spec > 0
+        ${lanes.runnable_hidden.readiness > 0
           ? html`<span class="worker-filter__hidden"
-              >숨김 ${lanes.runnable_hidden.spec}</span
+              >숨김 ${lanes.runnable_hidden.readiness}</span
             >`
           : ''}
       </div>
@@ -2770,14 +2776,16 @@ export function createMonitorView(mount_element, options) {
       return;
     }
 
-    const spec_chip = /** @type {HTMLElement|null} */ (
-      target.closest('.mon-filter__spec')
+    const readiness_chip = /** @type {HTMLElement|null} */ (
+      target.closest('.mon-filter__readiness')
     );
-    if (spec_chip) {
+    if (readiness_chip) {
       ev.preventDefault();
       candidate_filter = {
         ...candidate_filter,
-        spec: /** @type {any} */ (spec_chip.getAttribute('data-spec') || 'all')
+        readiness: /** @type {any} */ (
+          readiness_chip.getAttribute('data-readiness') || 'all'
+        )
       };
       saveCandidateFilter(candidate_filter);
       doRender();

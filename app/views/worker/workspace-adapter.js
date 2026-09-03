@@ -481,6 +481,13 @@ export function createWorkspaceAdapter(options = {}) {
         // 자격·사유는 관측 행을 싣는 이 어댑터만 실어 보낸다 (§4.1). 자격
         // 판정 자체의 소유자는 `placement.js` 하나다 (UI-6g3t §6.1).
         eligible: placement.placeable,
+        // 준비 필요 판정 칩의 재료 (UI-ff10 §6.1). 이미 만든 `placement`를 그대로
+        // 실어 보낸다 — 카드가 `reason` 문자열을 되읽어 판정을 재구성하면 사유
+        // 문구가 바뀌는 순간 칩이 조용히 어긋난다.
+        route_ok: placement.route_ok,
+        awaiting_user: placement.awaiting_user,
+        missing_description: placement.missing_description,
+        placement_spec: placement.spec,
         reason: parts.join(' · '),
         worker_ineligible,
         session_preferred: session_preferred_reason.length > 0,

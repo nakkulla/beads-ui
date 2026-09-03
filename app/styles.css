@@ -5976,7 +5976,7 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
-.worker-filter__spec {
+.worker-filter__readiness {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-4);
@@ -6601,6 +6601,12 @@ html[data-theme='dark'] {
 
 .worker-card__reason--danger {
   color: var(--accent-danger);
+}
+
+/* Blocked and readiness-failed candidates share one dimming class. A row that
+   has both facts still receives one opacity operation (UI-ff10 §6.3). */
+.worker-card--blocked {
+  opacity: 0.65;
 }
 
 /* worker-ineligible 후보 (UI-8881 §카드 표현): 관측은 되지만 워커가 실행할 수

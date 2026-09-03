@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0033 | [후보 레인은 admission 통과 집합이 아니라 관측 집합이다](0033-candidate-lane-is-observation-set-not-admission-set.md) | 2026-09-03 | 후보 레인은 Worker가 지금 집을 수 있는 집합이 아니라 미착수 이슈의 관측 집합이고, 실행 안전은 서버 admission이 지킨다 |
 | 0032 | [실행 프리셋은 레인 무관 프로파일이고 워크스페이스가 일반·quick_fix 두 레인에 각각 적용한다](0032-execution-preset-is-lane-neutral-applied-per-lane.md) | 2026-09-03 | 실행 프리셋은 레인 무관 18키 프로파일이며 워크스페이스는 그것을 일반 레인과 quick_fix 레인에 각각 교체 방식으로 적용하고, quick_fix 레인의 durable 값은 큐 `quick_fix_orchestration_*`와 kv `quick_fix_impl_*`다 |
 | 0031 | [impl_review 신선도는 ancestry로 판정하고 영수증 보류의 출구는 head당 1회 리뷰 lineage와 [리뷰 후 머지]다](0031-impl-review-ancestry-and-hold-exit.md) | 2026-09-03 | impl_review 영수증은 관측된 head와 같거나 그 조상이면 유효하고 head 이동만으로는 재리뷰가 걸리지 않으며 resolver 커밋에도 예외가 없다. 영수증이 없거나 조상이 아니면 머지는 terminal 실패가 아니라 보류이고, 그 출구는 ADR 0019의 head당 1회 자동 리뷰 lineage와 [리뷰 후 머지] 클릭이며 사람 클릭만이 유일한 출구는 아니다. |
 | 0026 | [워크스페이스 투영 경로는 동기 자식 프로세스를 띄우지 않는다](0026-projection-path-spawns-no-sync-child-process.md) | 2026-09-03 | 워크스페이스 투영은 warm이 채운 불변 키 캐시와 세대 컨텍스트만 읽어 동기 자식 프로세스를 띄우지 않고, 미스는 미판정으로 그린다 |

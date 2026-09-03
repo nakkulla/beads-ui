@@ -66,6 +66,8 @@ import {
   workerQueueSubscriberTotal
 } from './worker-handlers.js';
 
+/** @typedef {{ include_unadmitted?: boolean }} RunnableReadOptions */
+
 /**
  * Coalescing window for recomputation. Every workspace's queue events land on
  * this one aggregation, so a burst — a dispatch that touches two repos, a
@@ -349,7 +351,7 @@ function withRunnableScope(root_dir, runnable) {
  *   listWorkspaces?: () => Array<{ path: string }>,
  *   listHidden?: () => string[],
  *   snapshotFor?: (workspace_key: string) => Record<string, unknown>,
- *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
+ *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>, options?: RunnableReadOptions) => Array<Record<string, unknown>>,
  *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>
  * }} [options] - Test seams; each defaults to the live server source.
  * @returns {Array<Record<string, unknown>>}
@@ -361,8 +363,11 @@ export function buildMonitorPipeline(options = {}) {
       decorateQueue(key, getWorkerRuntime().queueStore.snapshot(key)));
   const runnableFor =
     options.runnableFor ||
-    ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
-      getWorkerRuntime().runnableCache.runnableFor(key, exclude_ids));
+    ((
+      /** @type {string} */ key,
+      /** @type {Set<string>} */ exclude_ids,
+      /** @type {RunnableReadOptions} */ query = {}
+    ) => getWorkerRuntime().runnableCache.runnableFor(key, exclude_ids, query));
   const sessionActiveFor =
     options.sessionActiveFor ||
     ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
@@ -389,7 +394,10 @@ export function buildMonitorPipeline(options = {}) {
     /** @type {Array<Record<string, unknown>>} */
     let runnable = [];
     try {
-      runnable = runnableFor(root_dir, lanedBeadIds(projected)) || [];
+      runnable =
+        runnableFor(root_dir, lanedBeadIds(projected), {
+          include_unadmitted: true
+        }) || [];
     } catch (err) {
       log('monitor: runnable lookup failed for %s: %o', root_dir, err);
       runnable = [];
@@ -433,7 +441,7 @@ export function buildMonitorPipeline(options = {}) {
  *
  * @param {string} root_dir
  * @param {Record<string, any>} queue - RAW queue snapshot.
- * @param {(workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>} runnableFor
+ * @param {(workspace_key: string, exclude_ids: Set<string>, options?: RunnableReadOptions) => Array<Record<string, unknown>>} runnableFor
  * @param {(workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>} sessionActiveFor
  * @returns {{ running: number, pr_wait: number, queue: number, runnable: number, session_active: number }}
  */
@@ -504,7 +512,10 @@ function laneCountsFor(root_dir, queue, runnableFor, sessionActiveFor) {
   // remaining rows are exactly the candidates no earlier lane already drew.
   let runnable = 0;
   try {
-    const rows = runnableFor(root_dir, lanedBeadIds(queue)) || [];
+    const rows =
+      runnableFor(root_dir, lanedBeadIds(queue), {
+        include_unadmitted: true
+      }) || [];
     for (const row of rows) {
       const bead_id = /** @type {any} */ (row)?.bead_id;
       if (typeof bead_id !== 'string' || bead_id.length === 0) {
@@ -542,7 +553,7 @@ function laneCountsFor(root_dir, queue, runnableFor, sessionActiveFor) {
  *   runnerCatalog?: () => Record<string, unknown>,
  *   issuePrefixFor?: (workspace_key: string) => string|null,
  *   sessionDefaultsFor?: (workspace_key: string) => { values: Record<string, string>, warnings: string[] },
- *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
+ *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>, options?: RunnableReadOptions) => Array<Record<string, unknown>>,
  *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>
  * }} [options] - Test seams; each defaults to the live server source.
  * @returns {Array<Record<string, unknown>>}
@@ -557,8 +568,11 @@ export function buildMonitorWorkspacesState(options = {}) {
     options.sessionDefaultsFor || cachedSessionDefaultsFor;
   const runnableFor =
     options.runnableFor ||
-    ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
-      getWorkerRuntime().runnableCache.runnableFor(key, exclude_ids));
+    ((
+      /** @type {string} */ key,
+      /** @type {Set<string>} */ exclude_ids,
+      /** @type {RunnableReadOptions} */ query = {}
+    ) => getWorkerRuntime().runnableCache.runnableFor(key, exclude_ids, query));
   const sessionActiveFor =
     options.sessionActiveFor ||
     ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
