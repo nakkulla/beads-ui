@@ -131,6 +131,113 @@ describe('normalizeSessionDefaults quick_fix profile', () => {
   });
 });
 
+describe('normalizeSessionDefaults base_sync_accept_local_commits', () => {
+  test('keeps a JSON boolean true without warning', () => {
+    const layer = normalize({
+      schema: 1,
+      base_sync_accept_local_commits: true
+    });
+
+    expect(layer).toEqual({
+      values: { base_sync_accept_local_commits: true },
+      warnings: []
+    });
+  });
+
+  test('keeps a JSON boolean false, which the consumer reads as off', () => {
+    const layer = normalize({ base_sync_accept_local_commits: false });
+
+    expect(layer.values).toEqual({ base_sync_accept_local_commits: false });
+    expect(layer.warnings).toEqual([]);
+  });
+
+  test('no longer reports the contract key as unknown', () => {
+    const layer = normalize({ base_sync_accept_local_commits: true });
+
+    expect(layer.warnings).not.toContain(
+      'unknown_key:base_sync_accept_local_commits'
+    );
+  });
+
+  test('drops the string "true" with the ordinary invalid_value warning', () => {
+    const layer = normalize({ base_sync_accept_local_commits: 'true' });
+
+    expect(layer.values).toEqual({});
+    expect(layer.warnings).toEqual([
+      'invalid_value:base_sync_accept_local_commits'
+    ]);
+  });
+
+  test('drops a non-boolean like 1 the same way', () => {
+    const layer = normalize({ base_sync_accept_local_commits: 1 });
+
+    expect(layer.values).toEqual({});
+    expect(layer.warnings).toEqual([
+      'invalid_value:base_sync_accept_local_commits'
+    ]);
+  });
+
+  test('keeps the enum and format keys alongside it on their own rules', () => {
+    const layer = normalize({
+      base_sync_accept_local_commits: true,
+      bdui_url: 'http://host:3000',
+      workflow_mode: 'fast_track'
+    });
+
+    expect(layer.values).toEqual({
+      base_sync_accept_local_commits: true,
+      bdui_url: 'http://host:3000',
+      workflow_mode: 'fast_track'
+    });
+    expect(layer.warnings).toEqual([]);
+  });
+
+  test('refuses a boolean on an enum key, which stays string-typed', () => {
+    const layer = normalize({ workflow_mode: true });
+
+    expect(layer.values).toEqual({});
+    expect(layer.warnings).toEqual(['invalid_value:workflow_mode']);
+  });
+});
+
+describe('validateSessionDefaultsPatch base_sync_accept_local_commits', () => {
+  test('accepts the boolean the toggle sends when it is on', () => {
+    const result = validate({ base_sync_accept_local_commits: true });
+
+    expect(result).toEqual({
+      ok: true,
+      patch: { base_sync_accept_local_commits: true }
+    });
+  });
+
+  test('accepts an explicit false, which means the same as absence', () => {
+    const result = validate({ base_sync_accept_local_commits: false });
+
+    expect(result).toEqual({
+      ok: true,
+      patch: { base_sync_accept_local_commits: false }
+    });
+  });
+
+  test('reads null as the deletion request the off position sends', () => {
+    const result = validate({ base_sync_accept_local_commits: null });
+
+    expect(result).toEqual({
+      ok: true,
+      patch: { base_sync_accept_local_commits: null }
+    });
+  });
+
+  test('refuses a string, which the bool contract has no room for', () => {
+    const result = validate({ base_sync_accept_local_commits: 'true' });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'invalid value for base_sync_accept_local_commits: true'
+    });
+  });
+});
+
 describe('validateSessionDefaultsPatch bdui_url', () => {
   test('accepts a well-formed origin', () => {
     const result = validate({ bdui_url: 'http://100.64.0.1:3000' });

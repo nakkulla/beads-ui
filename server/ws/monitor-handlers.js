@@ -127,7 +127,7 @@ const SESSION_DEFAULTS_RETRY_MS = 60_000;
  * cold or expired entry ships the empty default and the fill's completion
  * schedules the push that carries the real one.
  *
- * @type {Map<string, { values: Record<string, string>, warnings: string[], expires_at: number, in_flight: boolean }>}
+ * @type {Map<string, { values: Record<string, string|boolean>, warnings: string[], expires_at: number, in_flight: boolean }>}
  */
 const session_defaults_cache = new Map();
 
@@ -136,7 +136,7 @@ const session_defaults_cache = new Map();
  * A miss is the empty layer, which is exactly what an absent kv key means.
  *
  * @param {string} root_dir
- * @returns {{ values: Record<string, string>, warnings: string[] }}
+ * @returns {{ values: Record<string, string|boolean>, warnings: string[] }}
  */
 function cachedSessionDefaultsFor(root_dir) {
   const hit = session_defaults_cache.get(path.resolve(root_dir));
@@ -552,7 +552,7 @@ function laneCountsFor(root_dir, queue, runnableFor, sessionActiveFor) {
  *   snapshotFor?: (workspace_key: string) => Record<string, unknown>,
  *   runnerCatalog?: () => Record<string, unknown>,
  *   issuePrefixFor?: (workspace_key: string) => string|null,
- *   sessionDefaultsFor?: (workspace_key: string) => { values: Record<string, string>, warnings: string[] },
+ *   sessionDefaultsFor?: (workspace_key: string) => { values: Record<string, string|boolean>, warnings: string[] },
  *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>, options?: RunnableReadOptions) => Array<Record<string, unknown>>,
  *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>
  * }} [options] - Test seams; each defaults to the live server source.
@@ -624,7 +624,7 @@ export function buildMonitorWorkspacesState(options = {}) {
     } catch {
       issue_prefix = null;
     }
-    /** @type {{ values: Record<string, string>, warnings: string[] }} */
+    /** @type {{ values: Record<string, string|boolean>, warnings: string[] }} */
     let session_defaults = { values: {}, warnings: [] };
     try {
       const read = sessionDefaultsFor(root_dir);

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   BEAD_APPLY_KEYS,
+  BOOLEAN_DRAFT_ON,
   IMPL_DISPATCHES,
   IMPL_PRESET_KEYS,
   ORCHESTRATION_KEYS,
@@ -11,6 +12,7 @@ import {
   REVIEW_EFFORTS,
   REVIEW_SPEEDS,
   WORKSPACE_KV_KEYS,
+  adoptSessionDefaultValues,
   buildExecutionOptionView,
   buildOrchestrationPatch,
   buildPresetDiff,
@@ -119,15 +121,16 @@ describe('session key lists', () => {
     ).toBe(false);
   });
 
-  test('drops impl_dispatch from the twenty workspace kv keys', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(20);
+  test('drops impl_dispatch from the twenty-one workspace kv keys', () => {
+    expect(WORKSPACE_KV_KEYS).toHaveLength(21);
 
     expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
   });
 
   test('mirrors the quick_fix kv block after the per-bead keys', () => {
-    expect(WORKSPACE_KV_KEYS.slice(-6)).toEqual([
+    expect(WORKSPACE_KV_KEYS.slice(-7)).toEqual([
       ...QUICK_FIX_KV_KEYS,
+      'base_sync_accept_local_commits',
       'bdui_url'
     ]);
     for (const key of QUICK_FIX_KV_KEYS) {
@@ -135,6 +138,8 @@ describe('session key lists', () => {
       expect(PRESET_KV_KEYS).not.toContain(key);
     }
     expect(IMPL_PRESET_KEYS).not.toContain('bdui_url');
+    expect(IMPL_PRESET_KEYS).not.toContain('base_sync_accept_local_commits');
+    expect(PRESET_KV_KEYS).not.toContain('base_sync_accept_local_commits');
   });
 
   test('maps exactly eight preset fields onto the quick_fix lane', () => {
@@ -460,7 +465,11 @@ describe('buildPresetDiff', () => {
       'orchestration_effort',
       'orchestration_speed'
     ]);
-    expect(diff.ignored_keys).toEqual([...QUICK_FIX_KV_KEYS, 'bdui_url']);
+    expect(diff.ignored_keys).toEqual([
+      ...QUICK_FIX_KV_KEYS,
+      'base_sync_accept_local_commits',
+      'bdui_url'
+    ]);
   });
 
   test('returns impl_dispatch as ignored rather than comparing it', () => {
@@ -763,6 +772,65 @@ describe('buildSessionDefaultsPatch', () => {
     );
 
     expect(patch).toEqual({ bdui_url: null });
+  });
+
+  test('sends the checked bool key as a JSON boolean, not the draft marker', () => {
+    const patch = buildSessionDefaultsPatch(
+      {},
+      { base_sync_accept_local_commits: BOOLEAN_DRAFT_ON }
+    );
+
+    expect(patch).toEqual({ base_sync_accept_local_commits: true });
+  });
+
+  test('sends an unchecked bool key as the null deletion request', () => {
+    const patch = buildSessionDefaultsPatch(
+      { base_sync_accept_local_commits: BOOLEAN_DRAFT_ON },
+      {}
+    );
+
+    expect(patch).toEqual({ base_sync_accept_local_commits: null });
+  });
+
+  test('sends nothing while the bool key is unchanged', () => {
+    const patch = buildSessionDefaultsPatch(
+      { base_sync_accept_local_commits: BOOLEAN_DRAFT_ON },
+      { base_sync_accept_local_commits: BOOLEAN_DRAFT_ON }
+    );
+
+    expect(patch).toEqual({});
+  });
+});
+
+describe('adoptSessionDefaultValues', () => {
+  test('turns a stored true into the draft marker the checkbox reads', () => {
+    const values = adoptSessionDefaultValues({
+      base_sync_accept_local_commits: true,
+      workflow_mode: 'fast_track'
+    });
+
+    expect(values).toEqual({
+      base_sync_accept_local_commits: BOOLEAN_DRAFT_ON,
+      workflow_mode: 'fast_track'
+    });
+  });
+
+  test('drops a stored false, which means the same as absence', () => {
+    const values = adoptSessionDefaultValues({
+      base_sync_accept_local_commits: false
+    });
+
+    expect(values).toEqual({});
+  });
+
+  test('drops any non-string value on a non-bool key', () => {
+    const values = adoptSessionDefaultValues({ workflow_mode: 3 });
+
+    expect(values).toEqual({});
+  });
+
+  test('reads a missing map as the empty layer', () => {
+    expect(adoptSessionDefaultValues(null)).toEqual({});
   });
 });
 

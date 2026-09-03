@@ -48,18 +48,68 @@ export const QUICK_FIX_KV_KEYS = [
 ];
 
 /**
- * The twenty keys `bd kv workflow_session_defaults` may STORE, in the contract's
- * own order. `impl_dispatch` is absent by contract
+ * The twenty-one keys `bd kv workflow_session_defaults` may STORE, in the
+ * contract's own order. `impl_dispatch` is absent by contract
  * (`write_rule: user_write_only`): a workspace-global dispatch would decide for
  * every later bead, so the session-defaults group offers no such row.
- * The quick_fix profile and `bdui_url` are kv-only keys — none has a per-bead
- * layer, so no preset and no pin can carry them.
+ * The quick_fix profile, `base_sync_accept_local_commits`, and `bdui_url` are
+ * kv-only keys — none has a per-bead layer, so no preset and no pin can carry
+ * them.
  */
 export const WORKSPACE_KV_KEYS = [
   ...BEAD_APPLY_KEYS.filter((key) => key !== 'impl_dispatch'),
   ...QUICK_FIX_KV_KEYS,
+  'base_sync_accept_local_commits',
   'bdui_url'
 ];
+
+/**
+ * Workspace kv keys the contract types `type: bool` (`workflow-state.yaml
+ * key_scoped`): the STORED value is a JSON boolean, and `false` means exactly
+ * what absence means to the consumer.
+ *
+ * The dialog's draft is a flat `Record<string, string>` that every enum row
+ * reads, so a boolean is kept out of it: {@link adoptSessionDefaultValues}
+ * turns a stored `true` into {@link BOOLEAN_DRAFT_ON} on the way in and
+ * {@link buildSessionDefaultsPatch} turns it back into a real boolean on the
+ * way out. The server enforces the JSON type in `server/session-defaults.js`.
+ */
+export const SESSION_DEFAULT_BOOLEAN_KEYS = ['base_sync_accept_local_commits'];
+
+/** The draft marker standing in for a stored `true` on a bool key. */
+export const BOOLEAN_DRAFT_ON = 'true';
+
+/**
+ * Adopt one server `values` map as the dialog's draft and baseline: a bool key
+ * becomes the {@link BOOLEAN_DRAFT_ON} marker when stored `true` and drops when
+ * stored `false`, and every other key keeps its string value.
+ *
+ * Dropping a stored `false` is what keeps the diff honest: the off position
+ * sends the deletion request, so a baseline that remembered `false` would
+ * re-send it on the next unrelated edit.
+ *
+ * @param {unknown} values - A `get`/`set` reply's `values`, or nothing.
+ * @returns {Record<string, string>}
+ */
+export function adoptSessionDefaultValues(values) {
+  /** @type {Record<string, string>} */
+  const adopted = {};
+  if (!isRecord(values)) {
+    return adopted;
+  }
+  for (const [key, value] of Object.entries(values)) {
+    if (SESSION_DEFAULT_BOOLEAN_KEYS.includes(key)) {
+      if (value === true) {
+        adopted[key] = BOOLEAN_DRAFT_ON;
+      }
+      continue;
+    }
+    if (typeof value === 'string') {
+      adopted[key] = value;
+    }
+  }
+  return adopted;
+}
 
 /**
  * True for an absolute `http`/`https` origin written exactly as `URL`
@@ -574,17 +624,25 @@ export function buildExecutionOptionView(
  * value here, never a deletion: it must be able to override a `fast_track`
  * workspace default when pinned, and to BE the workspace default itself.
  *
+ * A `type: bool` key leaves the draft's marker representation here: checked
+ * sends the JSON boolean the contract stores, unchecked sends the deletion
+ * rather than a stored `false`, which the consumer reads identically.
+ *
  * @param {Record<string, string>} baseline
  * @param {Record<string, string>} draft
- * @returns {Record<string, string|null>}
+ * @returns {Record<string, string|boolean|null>}
  */
 export function buildSessionDefaultsPatch(baseline, draft) {
-  /** @type {Record<string, string|null>} */
+  /** @type {Record<string, string|boolean|null>} */
   const patch = {};
   for (const key of WORKSPACE_KV_KEYS) {
     const before = baseline?.[key];
     const after = draft?.[key];
     if (before === after) {
+      continue;
+    }
+    if (SESSION_DEFAULT_BOOLEAN_KEYS.includes(key)) {
+      patch[key] = after === BOOLEAN_DRAFT_ON ? true : null;
       continue;
     }
     patch[key] = typeof after === 'string' && after.length > 0 ? after : null;

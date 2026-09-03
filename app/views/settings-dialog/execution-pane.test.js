@@ -183,6 +183,55 @@ describe('createExecutionPane unbound (root_dir null)', () => {
     ]);
   });
 
+  test('sends the base-sync toggle as the JSON boolean the contract stores', async () => {
+    const { root, pane, calls } = mount();
+    await pane.load();
+
+    const box = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="base_sync_accept_local_commits"]')
+    );
+    box.checked = true;
+    box.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'set-session-defaults')).toEqual([
+      { values: { base_sync_accept_local_commits: true } }
+    ]);
+  });
+
+  test('shows a stored true as checked and sends null when it is cleared', async () => {
+    const { root, pane, calls } = mount({
+      values: { base_sync_accept_local_commits: true }
+    });
+    await pane.load();
+
+    const box = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="base_sync_accept_local_commits"]')
+    );
+    expect(box.checked).toBe(true);
+
+    box.checked = false;
+    box.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'set-session-defaults')).toEqual([
+      { values: { base_sync_accept_local_commits: null } }
+    ]);
+  });
+
+  test('leaves the base-sync toggle unchecked for a stored false', async () => {
+    const { root, pane } = mount({
+      values: { base_sync_accept_local_commits: false }
+    });
+    await pane.load();
+
+    const box = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="base_sync_accept_local_commits"]')
+    );
+
+    expect(box.checked).toBe(false);
+  });
+
   test('sends an orchestration edit with the queue revision only', async () => {
     const { root, pane, calls } = mount();
     await pane.load();

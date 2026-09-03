@@ -87,7 +87,7 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
   });
 
   test('drops impl_dispatch from the workspace kv list', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(20);
+    expect(WORKSPACE_KV_KEYS).toHaveLength(21);
 
     expect(WORKSPACE_KV_KEYS).toEqual([
       'workflow_mode',
@@ -109,6 +109,7 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
       'quick_fix_impl_model',
       'quick_fix_impl_effort',
       'quick_fix_impl_speed',
+      'base_sync_accept_local_commits',
       'bdui_url'
     ]);
   });
@@ -117,12 +118,23 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     expect(WORKSPACE_KV_KEYS.at(-1)).toBe('bdui_url');
   });
 
-  test('exceeds the per-bead list by the route profile and bdui_url', () => {
+  test('exceeds the per-bead list by the route profile and the kv-only keys', () => {
     const extra = WORKSPACE_KV_KEYS.filter(
       (key) => !BEAD_APPLY_KEYS.includes(key)
     );
 
-    expect(extra).toEqual([...QUICK_FIX_KV_KEYS, 'bdui_url']);
+    expect(extra).toEqual([
+      ...QUICK_FIX_KV_KEYS,
+      'base_sync_accept_local_commits',
+      'bdui_url'
+    ]);
+  });
+
+  test('keeps base_sync_accept_local_commits off every per-bead surface', () => {
+    expect(BEAD_APPLY_KEYS).not.toContain('base_sync_accept_local_commits');
+    expect(IMPL_PRESET_KEYS).not.toContain('base_sync_accept_local_commits');
+    expect(EXEC_SETTING_KEYS).not.toContain('base_sync_accept_local_commits');
+    expect(PRESET_KV_KEYS).not.toContain('base_sync_accept_local_commits');
   });
 
   test('keeps bdui_url off every per-bead surface (metadata_key forbidden)', () => {
@@ -141,6 +153,17 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
 
     expect(WORKSPACE_KV_KEYS).toContain('bdui_url');
     expect(Object.keys(session_enums)).not.toContain('bdui_url');
+  });
+
+  test('gives the bool key no enum entry either, since it is typed bool', () => {
+    const session_enums = sessionDefaultEnums(
+      resolveCatalog({ warn: () => {} })
+    );
+
+    expect(WORKSPACE_KV_KEYS).toContain('base_sync_accept_local_commits');
+    expect(Object.keys(session_enums)).not.toContain(
+      'base_sync_accept_local_commits'
+    );
   });
 
   test('keeps every quick_fix kv key out of the preset-carried kv list', () => {

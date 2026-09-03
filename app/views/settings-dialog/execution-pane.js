@@ -33,6 +33,7 @@ import { modelRunnerOf } from '../detail-panel/exec-settings.js';
 import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
 import {
   AUTO_LITERAL,
+  BOOLEAN_DRAFT_ON,
   IMPL_DISPATCHES,
   IMPL_PRESET_KEYS,
   IMPL_RUNTIMES,
@@ -44,6 +45,7 @@ import {
   REVIEW_SPEEDS,
   REVIEW_STEP_MODELS,
   WORKFLOW_MODES,
+  adoptSessionDefaultValues,
   buildExecutionOptionView,
   buildOrchestrationPatch,
   buildPresetDiff,
@@ -316,7 +318,7 @@ export function createExecutionPane(mount_element, binding) {
     doRender();
     try {
       const res = await send('get-session-defaults', { ...rootPayload() });
-      session_baseline = isRecord(res?.values) ? { ...res.values } : {};
+      session_baseline = adoptSessionDefaultValues(res?.values);
       session_draft = { ...session_baseline };
       session_text_draft = {};
       session_text_invalid = {};
@@ -343,7 +345,7 @@ export function createExecutionPane(mount_element, binding) {
         values: patch,
         ...rootPayload()
       });
-      session_baseline = isRecord(res?.values) ? { ...res.values } : {};
+      session_baseline = adoptSessionDefaultValues(res?.values);
       session_draft = { ...session_baseline };
       // `session_text_draft` deliberately survives: this save may belong to an
       // unrelated key, and the text box's own commit already cleared its entry
@@ -897,7 +899,7 @@ export function createExecutionPane(mount_element, binding) {
    * @param {any} res
    */
   function adoptPresetApply(res) {
-    session_baseline = isRecord(res.values) ? { ...res.values } : {};
+    session_baseline = adoptSessionDefaultValues(res.values);
     session_draft = { ...session_baseline };
     session_warnings = Array.isArray(res.warnings) ? res.warnings : [];
     if (isRecord(res.queue)) {
@@ -1236,6 +1238,42 @@ export function createExecutionPane(mount_element, binding) {
         <span class="settings-dialog__hint" data-key-hint=${key}
           >${invalid ? format_hint : hint}</span
         >
+      </span>
+    </div>`;
+  }
+
+  /**
+   * One `type: bool` session key as a checkbox. The draft holds the marker
+   * string, so the row reuses `onSessionChange` unchanged: checking writes the
+   * marker and unchecking drops the key, which `buildSessionDefaultsPatch`
+   * turns into the JSON boolean and the deletion request respectively.
+   *
+   * @param {string} key
+   * @param {string} label - The row's short category, left of the box.
+   * @param {string} check_label - What the checkbox itself promises to do.
+   * @param {string} hint
+   * @returns {TemplateResult}
+   */
+  function checkRow(key, label, check_label, hint) {
+    return html`<div class="settings-dialog__row">
+      <span class="settings-dialog__row-label">${label}</span>
+      <span class="settings-dialog__controls">
+        <label class="settings-dialog__check">
+          <input
+            type="checkbox"
+            data-key=${key}
+            .checked=${session_draft[key] === BOOLEAN_DRAFT_ON}
+            @change=${(/** @type {Event} */ ev) =>
+              onSessionChange(
+                key,
+                /** @type {HTMLInputElement} */ (ev.target).checked
+                  ? BOOLEAN_DRAFT_ON
+                  : UNSET
+              )}
+          />
+          ${check_label}
+        </label>
+        <span class="settings-dialog__hint" data-key-hint=${key}>${hint}</span>
       </span>
     </div>`;
   }
@@ -1888,6 +1926,12 @@ export function createExecutionPane(mount_element, binding) {
                 '세션이 Worker 레인 배치를 물어볼 때 쓰는 주소입니다',
                 'http:// 또는 https:// 로 시작하는 주소만 저장됩니다 (경로 없이)',
                 isHttpOriginValue
+              )}
+              ${checkRow(
+                'base_sync_accept_local_commits',
+                'base 동기화',
+                '로컬 base 사용자 커밋 자동 rebase+push',
+                '꺼두면 로컬 base 체크아웃의 사용자 커밋은 그대로 남습니다'
               )}
             </div>
 

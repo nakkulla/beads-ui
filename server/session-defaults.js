@@ -2,7 +2,7 @@
  * Workspace-global SESSION defaults — the `bd kv` layer between a Bead's own
  * metadata pins and the harness defaults (spec §A).
  *
- * beads-ui is a CONSUMER of this contract: the key name, schema number, the 20
+ * beads-ui is a CONSUMER of this contract: the key name, schema number, the 21
  * allowed keys, and the `invalid_value: ignore_key_and_warn` / `absent:
  * skip_layer` rules are owned by dotfiles `workflow-state.yaml
  * workspace_kv_defaults`. Nothing here may widen that vocabulary, and no
@@ -12,9 +12,10 @@
  * `write_rule: user_write_only`, so a workspace-global copy of it would pin a
  * dispatch nobody chose for the bead it lands on. A value left behind in an
  * older kv object drops through the ordinary `unknown_key:` warning.
- * The quick_fix profile and `bdui_url` run the other way: all are kv-only keys
- * with no bead-metadata layer, and `bdui_url` carries the extra `enum: none`
- * typing that makes it the one format-judged value here.
+ * The quick_fix profile, `base_sync_accept_local_commits`, and `bdui_url` run
+ * the other way: all are kv-only keys with no bead-metadata layer, and the last
+ * two carry the typings — `type: bool` and `enum: none` — that make them the
+ * two values judged here rather than against an enum.
  *
  * @import { ResolvedCatalog } from './worker/runner-catalog.js'
  * @typedef {(value: string) => boolean} SessionDefaultFormat
@@ -80,15 +81,34 @@ const SESSION_DEFAULT_FORMATS = {
 };
 
 /**
- * Judge one session-default value: by format when the contract gives the key no
- * enum, otherwise against the key's enum.
+ * Session-default keys the contract types `type: bool` — their kv value is a
+ * JSON boolean, never the string `'true'`. `metadata_key: forbidden` and
+ * `precedence: [workspace_kv]` make them kv-only: no bead pin and no current
+ * user layer can carry one, so this file is the only place their type is
+ * judged.
+ *
+ * `base_sync_accept_local_commits` is consumed by the dotfiles local base-sync
+ * tail; absence and `false` mean the same thing to it, which is why the dialog
+ * may store either for the off position.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const SESSION_DEFAULT_BOOLEAN_KEYS = ['base_sync_accept_local_commits'];
+
+/**
+ * Judge one session-default value: by JSON type for a `type: bool` key, by
+ * format when the contract gives the key no enum, otherwise against the key's
+ * enum.
  *
  * @param {string} key
  * @param {unknown} value
  * @param {Record<string, ReadonlyArray<string>>} enums
- * @returns {value is string}
+ * @returns {value is string|boolean}
  */
 function isValidSessionDefaultValue(key, value, enums) {
+  if (SESSION_DEFAULT_BOOLEAN_KEYS.includes(key)) {
+    return typeof value === 'boolean';
+  }
   if (typeof value !== 'string') {
     return false;
   }
@@ -102,17 +122,17 @@ function isValidSessionDefaultValue(key, value, enums) {
 /**
  * Read the durable kv object into the usable session-default layer.
  *
- * A key outside the contract's 20, or one whose value leaves its enum (or its
- * format, for the keys the contract gives no enum), is DROPPED with a warning
- * rather than failing the whole layer: the workspace default is not an explicit
- * pin, so it fails quiet (spec §A).
+ * A key outside the contract's 21, or one whose value leaves its enum (or its
+ * format or JSON type, for the keys the contract gives no enum), is DROPPED
+ * with a warning rather than failing the whole layer: the workspace default is
+ * not an explicit pin, so it fails quiet (spec §A).
  *
  * @param {unknown} raw - The decoded kv JSON object, or undefined when absent.
  * @param {{ catalog?: ResolvedCatalog }} [options]
- * @returns {{ values: Record<string, string>, warnings: string[] }}
+ * @returns {{ values: Record<string, string|boolean>, warnings: string[] }}
  */
 export function normalizeSessionDefaults(raw, options = {}) {
-  /** @type {Record<string, string>} */
+  /** @type {Record<string, string|boolean>} */
   const values = {};
   /** @type {string[]} */
   const warnings = [];
@@ -142,18 +162,20 @@ export function normalizeSessionDefaults(raw, options = {}) {
  * the read path this is STRICT: an explicit user edit that names an unknown key
  * or an illegal value is refused rather than silently dropped.
  *
- * A `null` value is the deletion request for that key.
+ * A `null` value is the deletion request for that key. So is `''`, which a
+ * `type: bool` key never sends: its off position is the deletion, and its
+ * `false` is an ordinary storable value meaning the same thing.
  *
  * @param {unknown} raw
  * @param {{ catalog?: ResolvedCatalog }} [options]
- * @returns {{ ok: true, patch: Record<string, string|null> }|{ ok: false, reason: string }}
+ * @returns {{ ok: true, patch: Record<string, string|boolean|null> }|{ ok: false, reason: string }}
  */
 export function validateSessionDefaultsPatch(raw, options = {}) {
   if (!isRecord(raw)) {
     return { ok: false, reason: 'values must be an object' };
   }
   const enums = sessionDefaultEnums(options.catalog);
-  /** @type {Record<string, string|null>} */
+  /** @type {Record<string, string|boolean|null>} */
   const patch = {};
   for (const [key, value] of Object.entries(raw)) {
     if (!WORKSPACE_KV_KEYS.includes(key)) {
@@ -181,7 +203,7 @@ export function validateSessionDefaultsPatch(raw, options = {}) {
  * (spec §C.2).
  *
  * @param {Record<string, unknown>|undefined} current
- * @param {Record<string, string|null>} patch
+ * @param {Record<string, string|boolean|null>} patch
  * @returns {Record<string, unknown>}
  */
 export function mergeSessionDefaults(current, patch) {

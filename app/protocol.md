@@ -162,7 +162,7 @@ or temporarily unreadable config is `null`.
 - `execution_defaults` is the same read-only projection the worker snapshot
   carries (see below), repeated here so a repo panel can resolve chips for a
   workspace it holds no worker subscription to.
-- `session_defaults: Record<string, string>` is that repo's
+- `session_defaults: Record<string, string|boolean>` is that repo's
   `bd kv workflow_session_defaults` layer, normalized by the same rules as
   `get-session-defaults`, with `session_defaults_warnings: string[]` carrying
   the dropped keys / unreadable-kv reasons. The read is ASYNC while this row is
@@ -854,9 +854,10 @@ The workspace-global execution layer lives in `bd kv workflow_session_defaults`
 `workflow.yaml workspace_kv_defaults`; this repo is a consumer).
 
 - `get-session-defaults` payload: `{ root_dir? }` — replies
-  `{ values: Record<string,string>, warnings: string[] }`. Read is fail-quiet:
-  an absent key or an out-of-vocabulary value yields an empty/partial layer plus
-  warnings rather than an error.
+  `{ values: Record<string,string|boolean>, warnings: string[] }`. Read is
+  fail-quiet: an absent key or an out-of-vocabulary value yields an
+  empty/partial layer plus warnings rather than an error. A value is a boolean
+  only for a key the contract types `type: bool`.
 - `set-session-defaults` payload: `{ values, root_dir? }` — STRICT: an unknown
   key or an illegal value is refused before bd is touched. `bd kv` has no CAS,
   so the write re-reads immediately beforehand, making it per-KEY

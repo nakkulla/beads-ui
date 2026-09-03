@@ -89,7 +89,7 @@ function writeKv(ws, target, key, value) {
  *
  * @param {WebSocket} ws
  * @param {{ root: string, explicit: boolean }} target
- * @returns {Promise<{ ok: true, values: Record<string, string>, warnings: string[], raw: Record<string, unknown>|undefined }|{ ok: false, error: string }>}
+ * @returns {Promise<{ ok: true, values: Record<string, string|boolean>, warnings: string[], raw: Record<string, unknown>|undefined }|{ ok: false, error: string }>}
  */
 async function readSessionDefaults(ws, target) {
   const read = await readKv(ws, target, SESSION_DEFAULTS_KV_KEY);
