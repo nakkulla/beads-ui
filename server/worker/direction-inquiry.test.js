@@ -38,9 +38,14 @@ const AWAITING = 'spec_review_stale:revise';
  * keyed by the tmux command; the two `list-panes` reads (liveness, then marker
  * confirmation) can be scripted independently.
  *
+ * `panes_seq` replaces the two-stage pair when a case needs more than two
+ * reads — the click path probes the marker itself before the launcher's own
+ * liveness read. The last entry repeats for any further `list-panes`.
+ *
  * @param {{
  *   panes?: string[][],
  *   panes_after?: string[][],
+ *   panes_seq?: string[][][],
  *   list_code?: number,
  *   new_session?: { code: number, stdout?: string, stderr?: string },
  *   new_window?: { code: number, stdout?: string, stderr?: string },
@@ -75,8 +80,12 @@ function makeTmux(script = {}) {
           stderr: 'no server running'
         };
       }
-      const rows =
-        listed === 1 ? (script.panes ?? []) : (script.panes_after ?? []);
+      const sequence = script.panes_seq;
+      const rows = sequence
+        ? (sequence[Math.min(listed, sequence.length) - 1] ?? [])
+        : listed === 1
+          ? (script.panes ?? [])
+          : (script.panes_after ?? []);
       return { code: 0, stdout: render(rows), stderr: '' };
     }
     if (args[0] === 'new-session') {
@@ -619,14 +628,75 @@ describe('direction-inquiry launch', () => {
 
   test('launches from a click while automatic inquiry is disabled', async () => {
     const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
+      panes_seq: [
+        [['bdui-inquiry', '%1', '', '0']],
+        [['bdui-inquiry', '%1', '', '0']],
+        [['bdui-inquiry', '%9', BEAD, '0']]
+      ]
     });
     const { inquiry } = makeInquiry({ tmux, enabled: false });
 
     const outcome = await inquiry.launchForClick(parkedInput());
 
     expect(outcome.session).toBe('launched');
+  });
+
+  test('points a click at the live inquiry pane it observed', async () => {
+    const tmux = makeTmux({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
+    const readIssue = vi.fn(async () => issue());
+    const { inquiry } = makeInquiry({ tmux, readIssue });
+
+    const outcome = await inquiry.launchForClick(parkedInput());
+
+    expect(outcome).toMatchObject({
+      session: 'already_running',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: BEAD
+    });
+    expect(readIssue).not.toHaveBeenCalled();
+  });
+
+  test('refuses a click when the pane marker cannot be read', async () => {
+    const tmux = makeTmux({ list_code: 1 });
+    const { inquiry } = makeInquiry({ tmux });
+
+    const outcome = await inquiry.launchForClick(parkedInput());
+
+    expect(outcome).toMatchObject({
+      session: 'not_launched',
+      reason: 'tmux_unavailable'
+    });
+  });
+
+  test('refuses a click while a disposal holds the bead with no pane yet', async () => {
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () => resolve(undefined);
+    });
+    const tmux = makeTmux({
+      panes_seq: [
+        [['bdui-inquiry', '%1', '', '0']],
+        [['bdui-inquiry', '%1', '', '0']],
+        [['bdui-inquiry', '%9', BEAD, '0']]
+      ]
+    });
+    const { inquiry } = makeInquiry({
+      tmux,
+      readIssue: async () => {
+        await gate;
+        return issue();
+      }
+    });
+
+    const automatic = inquiry.onParkedAttempt(parkedInput());
+    const outcome = await inquiry.launchForClick(parkedInput());
+    release();
+    await automatic;
+
+    expect(outcome).toMatchObject({
+      session: 'not_launched',
+      reason: 'inquiry_in_flight'
+    });
   });
 
   test('lists, creates the session, opens the window, then confirms the marker', async () => {

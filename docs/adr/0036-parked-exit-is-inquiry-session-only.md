@@ -59,8 +59,11 @@ verdict `success` ∧ bead status ∉ {resolved, closed} ∧ `pr_url` 없음 ∧
    그 어댑터·버튼·CSS·이벤트를 제거한다.
 4. **해제 전이 자동 재디스패치는 stale 두 값에만 걸린다.** 후보 판정은 파킹
    레코드의 `cause_detail.awaiting_user`로 하고, `impl_review_conflict:design`과 어휘
-   밖 값은 후보가 아니다. 그 값들은 문의 세션이 PR까지 가므로 Worker는 PR
-   관측(`resolved` + `pr_url`)으로만 정산한다. stale 경로의 "attempt당 1회" fence
+   밖 값은 후보가 아니다. `impl_review_conflict:design`은 그 문의 세션이 해제 뒤
+   구현을 finish까지 잇기 때문에 Worker가 PR 관측(`resolved` + `pr_url`)으로만
+   정산한다. 어휘 밖 값은 그 값을 정의한 계약이 없으므로 Worker가 해제·정산 규칙을
+   스스로 정하지 않는다 — 문의 세션은 답을 기록하고, 그 뒤 무엇이 정산인지는 그
+   값을 정의하는 계약이 소유한다. stale 경로의 "attempt당 1회" fence
    (`parked_resumed_at`)는 유지한다.
 
 ## Consequences

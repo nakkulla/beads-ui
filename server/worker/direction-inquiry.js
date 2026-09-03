@@ -733,6 +733,14 @@ export function createDirectionInquiry(deps) {
     /**
      * Launch from the parked tile without consulting `enabled`.
      *
+     * The liveness question is answered by the pane marker BEFORE any Bead or
+     * attempt read (spec §3.3: 중복 판정은 `INQUIRY_PANE_MARKER`만 본다). A `bd`
+     * that cannot be reached must not hide a session that is already up, and
+     * the module reservation is not that evidence — it is held while the
+     * prompt is still being built, and that disposal can still end in a
+     * refusal, so answering `already_running` from it would name a window
+     * nobody opened.
+     *
      * @param {{ workspace: string, bead_id: string, attempt_id: string, repo: string|null, awaiting_user: string|null }} input
      * @returns {Promise<InquiryOutcome>}
      */
@@ -746,15 +754,27 @@ export function createDirectionInquiry(deps) {
       if (bead_id.length === 0 || awaiting_user.length === 0) {
         return refusal('invalid_park');
       }
-      if (in_flight.has(bead_id)) {
-        const config = readInquiryConfig();
+      const listed = await launcher.listPanes(PANE_MARKER);
+      if (!listed.ok) {
+        return refusal('tmux_unavailable');
+      }
+      const live = listed.rows.find(
+        (row) => row.key === bead_id && row.dead === '0'
+      );
+      if (live) {
         return {
           ...refusal('already_running'),
           session: 'already_running',
           reason: null,
-          tmux_session: config.tmux_session,
+          tmux_session: live.session,
           tmux_window: bead_id
         };
+      }
+      if (in_flight.has(bead_id)) {
+        // A disposal is mid-flight and its pane has not appeared yet. Saying
+        // `already_running` would point at nothing; the honest answer lets the
+        // next click read the settled state.
+        return refusal('inquiry_in_flight');
       }
       in_flight.add(bead_id);
       try {
