@@ -393,6 +393,8 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
         orchestration_speed: null
       }
     });
+    expect(reply.payload).not.toHaveProperty('lane');
+    expect(reply.payload).not.toHaveProperty('skipped_keys');
     expect(fanoutWorkerQueue).toHaveBeenCalledWith(
       '/workspace',
       expect.objectContaining({
@@ -402,6 +404,48 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
         orchestration_speed: null
       })
     );
+  });
+
+  test('keeps an omitted lane byte-identical to explicit general', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, {
+      impl_runtime: 'codex',
+      orchestration_model: 'sol'
+    });
+    const kv_value = { schema: 1, impl_runtime: 'codex' };
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: true, value: kv_value });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    kvGetJsonAtRoot.mockResolvedValue({ ok: true, value: kv_value });
+    kvSetJsonAtRoot.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-absent-lane',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0
+      }
+    });
+    const absent_payload = sent[sent.length - 1].payload;
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-general-lane',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0,
+        lane: 'general',
+        root_dir: '/other-repo'
+      }
+    });
+    const general_payload = sent[sent.length - 1].payload;
+
+    expect(JSON.stringify(absent_payload)).toBe(
+      JSON.stringify(general_payload)
+    );
+    expect(absent_payload).not.toHaveProperty('lane');
   });
 
   test('clears a session key the preset does not carry', async () => {
@@ -528,6 +572,223 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
       schema: 1,
       impl_speed: 'fast'
     });
+  });
+
+  test('maps a quick_fix lane onto its disjoint kv and queue profiles', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, {
+      workflow_mode: 'fast_track',
+      spec_review_model: 'codex',
+      impl_dispatch: 'delegated',
+      impl_runtime: 'codex',
+      impl_model: 'sol',
+      impl_effort: 'auto',
+      impl_speed: 'fast',
+      orchestration_model: 'opus',
+      orchestration_effort: 'high',
+      orchestration_speed: 'default'
+    });
+    const readback = {
+      schema: 1,
+      impl_runtime: 'claude',
+      bdui_url: 'http://host:3000',
+      quick_fix_impl_dispatch: 'delegated',
+      quick_fix_impl_runtime: 'codex',
+      quick_fix_impl_model: 'sol',
+      quick_fix_impl_effort: 'auto',
+      quick_fix_impl_speed: 'fast'
+    };
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          schema: 1,
+          impl_runtime: 'claude',
+          bdui_url: 'http://host:3000',
+          quick_fix_impl_dispatch: 'main',
+          quick_fix_impl_model: 'terra'
+        }
+      })
+      .mockResolvedValueOnce({ ok: true, value: readback });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-quick-fix',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0,
+        lane: 'quick_fix'
+      }
+    });
+
+    expect(kvSetJsonInWorkspace.mock.calls[0][2]).toEqual(readback);
+    const reply = sent[sent.length - 1];
+    expect(reply.payload).toMatchObject({
+      lane: 'quick_fix',
+      skipped_keys: ['workflow_mode', 'spec_review_model'],
+      warnings: [],
+      queue_applied: true,
+      values: {
+        impl_runtime: 'claude',
+        quick_fix_impl_dispatch: 'delegated',
+        quick_fix_impl_runtime: 'codex',
+        quick_fix_impl_model: 'sol',
+        quick_fix_impl_effort: 'auto',
+        quick_fix_impl_speed: 'fast'
+      },
+      queue: {
+        revision: 1,
+        quick_fix_orchestration_model: 'opus',
+        quick_fix_orchestration_effort: 'high',
+        quick_fix_orchestration_speed: 'default'
+      }
+    });
+  });
+
+  test('unsets lane-incompatible and absent quick_fix values with warnings', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, {
+      impl_dispatch: 'delegated',
+      impl_runtime: 'inherit',
+      impl_model: 'auto',
+      impl_effort: 'auto'
+    });
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          schema: 1,
+          quick_fix_impl_runtime: 'claude',
+          quick_fix_impl_model: 'opus',
+          quick_fix_impl_speed: 'fast'
+        }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          schema: 1,
+          quick_fix_impl_dispatch: 'delegated',
+          quick_fix_impl_effort: 'auto'
+        }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-incompatible',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0,
+        lane: 'quick_fix'
+      }
+    });
+
+    expect(kvSetJsonInWorkspace.mock.calls[0][2]).toEqual({
+      schema: 1,
+      quick_fix_impl_dispatch: 'delegated',
+      quick_fix_impl_effort: 'auto'
+    });
+    expect(sent[sent.length - 1].payload).toMatchObject({
+      lane: 'quick_fix',
+      warnings: [
+        'lane_incompatible:quick_fix_impl_runtime',
+        'lane_incompatible:quick_fix_impl_model'
+      ],
+      skipped_keys: [],
+      queue_applied: true,
+      queue: {
+        quick_fix_orchestration_model: null,
+        quick_fix_orchestration_effort: null,
+        quick_fix_orchestration_speed: null
+      }
+    });
+  });
+
+  test('keeps a quick_fix kv apply when the queue revision conflicts', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, {
+      impl_model: 'sol',
+      orchestration_model: 'sol'
+    });
+    kvGetJsonInWorkspace.mockResolvedValue({
+      ok: true,
+      value: { schema: 1, quick_fix_impl_model: 'sol' }
+    });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const payload = {
+      preset_id,
+      expected_revision: 1,
+      expected_queue_revision: 0,
+      lane: 'quick_fix'
+    };
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-quick-first',
+      type: 'apply-impl-preset-global',
+      payload
+    });
+    fanoutWorkerQueue.mockClear();
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-quick-conflict',
+      type: 'apply-impl-preset-global',
+      payload
+    });
+
+    expect(sent[sent.length - 1].payload).toMatchObject({
+      lane: 'quick_fix',
+      queue_applied: false,
+      queue_conflict: true,
+      values: { quick_fix_impl_model: 'sol' },
+      queue: { revision: 1, quick_fix_orchestration_model: 'sol' }
+    });
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledTimes(2);
+    expect(fanoutWorkerQueue).not.toHaveBeenCalled();
+  });
+
+  test('rejects an unknown lane before touching kv', async () => {
+    const { ws, sent } = fakeWs();
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-unknown-lane',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id: 'preset',
+        expected_revision: 1,
+        expected_queue_revision: 0,
+        lane: 'review'
+      }
+    });
+
+    expect(sent[sent.length - 1].error.code).toBe('bad_request');
+    expect(kvGetJsonInWorkspace).not.toHaveBeenCalled();
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('returns the quick_fix lane on a preset revision conflict', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_model: 'sol' });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-quick-conflict',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 0,
+        expected_queue_revision: 0,
+        lane: 'quick_fix'
+      }
+    });
+
+    expect(sent[sent.length - 1].payload).toMatchObject({
+      applied: false,
+      conflict: true,
+      revision: 1,
+      lane: 'quick_fix'
+    });
+    expect(kvGetJsonInWorkspace).not.toHaveBeenCalled();
   });
 
   test('keeps the kv apply when the queue revision conflicts', async () => {

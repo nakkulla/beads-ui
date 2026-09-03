@@ -88,6 +88,49 @@ describe('normalizeSessionDefaults bdui_url', () => {
   });
 });
 
+describe('normalizeSessionDefaults quick_fix profile', () => {
+  test('keeps all five valid quick_fix values', () => {
+    const layer = normalize({
+      schema: 1,
+      quick_fix_impl_dispatch: 'delegated',
+      quick_fix_impl_runtime: 'codex',
+      quick_fix_impl_model: 'sol',
+      quick_fix_impl_effort: 'auto',
+      quick_fix_impl_speed: 'fast'
+    });
+
+    expect(layer).toEqual({
+      values: {
+        quick_fix_impl_dispatch: 'delegated',
+        quick_fix_impl_runtime: 'codex',
+        quick_fix_impl_model: 'sol',
+        quick_fix_impl_effort: 'auto',
+        quick_fix_impl_speed: 'fast'
+      },
+      warnings: []
+    });
+  });
+
+  test('drops invalid quick_fix values with per-key warnings', () => {
+    const layer = normalize({
+      quick_fix_impl_dispatch: 'later',
+      quick_fix_impl_runtime: 'inherit',
+      quick_fix_impl_model: 'auto',
+      quick_fix_impl_effort: 'impossible',
+      quick_fix_impl_speed: 'turbo'
+    });
+
+    expect(layer.values).toEqual({});
+    expect(layer.warnings).toEqual([
+      'invalid_value:quick_fix_impl_dispatch',
+      'invalid_value:quick_fix_impl_runtime',
+      'invalid_value:quick_fix_impl_model',
+      'invalid_value:quick_fix_impl_effort',
+      'invalid_value:quick_fix_impl_speed'
+    ]);
+  });
+});
+
 describe('validateSessionDefaultsPatch bdui_url', () => {
   test('accepts a well-formed origin', () => {
     const result = validate({ bdui_url: 'http://100.64.0.1:3000' });
@@ -119,6 +162,38 @@ describe('validateSessionDefaultsPatch bdui_url', () => {
     expect(result).toEqual({
       ok: false,
       reason: 'unknown session-default key: bdui_urls'
+    });
+  });
+});
+
+describe('validateSessionDefaultsPatch quick_fix profile', () => {
+  test('accepts valid values and unsets empty values', () => {
+    const result = validate({
+      quick_fix_impl_dispatch: 'main',
+      quick_fix_impl_runtime: 'claude',
+      quick_fix_impl_model: '',
+      quick_fix_impl_effort: 'high',
+      quick_fix_impl_speed: null
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      patch: {
+        quick_fix_impl_dispatch: 'main',
+        quick_fix_impl_runtime: 'claude',
+        quick_fix_impl_model: null,
+        quick_fix_impl_effort: 'high',
+        quick_fix_impl_speed: null
+      }
+    });
+  });
+
+  test('rejects inherit for the quick_fix workspace runtime', () => {
+    const result = validate({ quick_fix_impl_runtime: 'inherit' });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'invalid value for quick_fix_impl_runtime: inherit'
     });
   });
 });

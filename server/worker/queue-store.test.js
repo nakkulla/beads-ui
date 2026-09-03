@@ -1769,6 +1769,9 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
     expect(q.orchestration_model).toBe(null);
     expect(q.orchestration_effort).toBe(null);
     expect(q.orchestration_speed).toBe(null);
+    expect(q.quick_fix_orchestration_model).toBe(null);
+    expect(q.quick_fix_orchestration_effort).toBe(null);
+    expect(q.quick_fix_orchestration_speed).toBe(null);
     expect(Object.hasOwn(q, 'default_exec_preset_id')).toBe(false);
     expect(Object.hasOwn(q, 'exec_defaults')).toBe(false);
   });
@@ -1781,7 +1784,7 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
     expect(store.clearLegacyExecDefaults).toBeUndefined();
   });
 
-  test('setOrchestrationDefaults stores the three values directly under the CAS', () => {
+  test('setOrchestrationDefaults stores all six values directly under the CAS', () => {
     const store = createQueueStore();
 
     const r = store.setOrchestrationDefaults(WS, {
@@ -1789,7 +1792,10 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
       values: {
         orchestration_model: 'sonnet',
         orchestration_effort: 'high',
-        orchestration_speed: 'fast'
+        orchestration_speed: 'fast',
+        quick_fix_orchestration_model: 'sol',
+        quick_fix_orchestration_effort: 'xhigh',
+        quick_fix_orchestration_speed: 'default'
       }
     });
 
@@ -1797,6 +1803,9 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
     expect(r.queue.orchestration_model).toBe('sonnet');
     expect(r.queue.orchestration_effort).toBe('high');
     expect(r.queue.orchestration_speed).toBe('fast');
+    expect(r.queue.quick_fix_orchestration_model).toBe('sol');
+    expect(r.queue.quick_fix_orchestration_effort).toBe('xhigh');
+    expect(r.queue.quick_fix_orchestration_speed).toBe('default');
   });
 
   test('setOrchestrationDefaults clears a key given null', () => {
@@ -1812,6 +1821,32 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
     });
 
     expect(r.queue.orchestration_model).toBe(null);
+  });
+
+  test('setOrchestrationDefaults clears all six keys together', () => {
+    const store = createQueueStore();
+    const values = {
+      orchestration_model: 'sonnet',
+      orchestration_effort: 'high',
+      orchestration_speed: 'fast',
+      quick_fix_orchestration_model: 'sol',
+      quick_fix_orchestration_effort: 'xhigh',
+      quick_fix_orchestration_speed: 'default'
+    };
+    const rev = store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values
+    }).queue.revision;
+
+    const r = store.setOrchestrationDefaults(WS, {
+      expected_revision: rev,
+      values: Object.fromEntries(Object.keys(values).map((key) => [key, null]))
+    });
+
+    expect(r.ok).toBe(true);
+    for (const key of Object.keys(values)) {
+      expect(/** @type {any} */ (r.queue)[key]).toBe(null);
+    }
   });
 
   test('setOrchestrationDefaults rejects a stale revision without writing', () => {
@@ -1855,6 +1890,22 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
     expect(store.snapshot(WS).orchestration_model).toBe(null);
   });
 
+  test('setOrchestrationDefaults rejects an invalid quick_fix value without a partial write', () => {
+    const store = createQueueStore();
+
+    const r = store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: {
+        orchestration_model: 'sonnet',
+        quick_fix_orchestration_model: 'no-such-model'
+      }
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).orchestration_model).toBe(null);
+    expect(store.snapshot(WS).quick_fix_orchestration_model).toBe(null);
+  });
+
   test('orchestration defaults survive a reload', () => {
     const store = createQueueStore();
     store.setOrchestrationDefaults(WS, {
@@ -1879,6 +1930,20 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
     fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
 
     expect(createQueueStore().load(WS).orchestration_model).toBe(null);
+  });
+
+  test('loads absent quick_fix orchestration keys from an old file as null', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({ revision: 3, orchestration_model: 'sonnet' })
+    );
+
+    const queue = createQueueStore().load(WS);
+
+    expect(queue.quick_fix_orchestration_model).toBe(null);
+    expect(queue.quick_fix_orchestration_effort).toBe(null);
+    expect(queue.quick_fix_orchestration_speed).toBe(null);
   });
 });
 

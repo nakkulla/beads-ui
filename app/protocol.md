@@ -848,9 +848,19 @@ The workspace-global execution layer lives in `bd kv workflow_session_defaults`
   so the write re-reads immediately beforehand, making it per-KEY
   last-write-wins, and confirms with a readback.
 - `apply-impl-preset-global` payload:
-  `{ preset_id, expected_revision, expected_queue_revision, root_dir? }` —
-  replaces the kv keys a full-profile preset can carry and the queue's three
-  orchestration defaults.
+  `{ preset_id, expected_revision, expected_queue_revision, lane?, root_dir? }`.
+  `lane`은 `'general' | 'quick_fix'`이며 생략하면 `general`이다. 일반 레인은
+  프리셋이 담을 수 있는 kv 키와 큐의 일반 orchestration 3키를 교체하고, 생략한
+  요청의 응답에는 `lane`을 추가하지 않아 기존 응답 형식을 유지한다. quick*fix
+  레인은 같은 프리셋의 구현 5키와 orchestration 3키를 각각
+  `quick_fix_impl*_`·`quick*fix_orchestration*_`에 교체하며 응답에 `lane:
+  'quick_fix'`와 매핑되지 않은 프리셋 키 목록 `skipped_keys`를 돌려준다. quick_fix enum에 없는 값은 해당 키를 해제하고 `warnings`에 `lane_incompatible:<대상
+  키>`를 넣는다. 그 밖의 `lane`값은`bad_request`다.
+
+  신 클라이언트는 큐 스냅샷에 `quick_fix_orchestration_model` 키가 있을 때만
+  quick_fix 요청을 보낸다. 구 서버는 알 수 없는 `lane`을 일반 적용으로 처리할 수
+  있으므로, 이 capability 확인이 quick_fix 프리셋으로 일반 레인을 덮어쓰는 것을
+  막는다.
 
 `root_dir` is optional on all three (UI-eey2 §9.5). Absent means the
 connection's workspace; present means that validated registry workspace, and an

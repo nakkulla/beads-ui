@@ -35,16 +35,29 @@ export const BEAD_APPLY_KEYS = [
 ];
 
 /**
- * The sixteen keys `bd kv workflow_session_defaults` may STORE, in dialog
- * display order. `impl_dispatch` is absent by contract
+ * The route-scoped quick_fix kv profile. Each key overrides the same-name
+ * general key for a `route=quick_fix` Bead only, and an empty key falls through
+ * to that general key. Mirrors `server/worker/exec-enums.js QUICK_FIX_KV_KEYS`.
+ */
+export const QUICK_FIX_KV_KEYS = [
+  'quick_fix_impl_dispatch',
+  'quick_fix_impl_runtime',
+  'quick_fix_impl_model',
+  'quick_fix_impl_effort',
+  'quick_fix_impl_speed'
+];
+
+/**
+ * The twenty keys `bd kv workflow_session_defaults` may STORE, in the contract's
+ * own order. `impl_dispatch` is absent by contract
  * (`write_rule: user_write_only`): a workspace-global dispatch would decide for
  * every later bead, so the session-defaults group offers no such row.
- * `quick_fix_impl_model` and `bdui_url` are the two kv-only keys — neither has
- * a per-bead layer, so no preset and no pin can carry them.
+ * The quick_fix profile and `bdui_url` are kv-only keys — none has a per-bead
+ * layer, so no preset and no pin can carry them.
  */
 export const WORKSPACE_KV_KEYS = [
   ...BEAD_APPLY_KEYS.filter((key) => key !== 'impl_dispatch'),
-  'quick_fix_impl_model',
+  ...QUICK_FIX_KV_KEYS,
   'bdui_url'
 ];
 
@@ -80,18 +93,76 @@ export const ORCHESTRATION_KEYS = [
   'orchestration_speed'
 ];
 
+/** Route-scoped queue keys used only for quick_fix dispatches. */
+export const QUICK_FIX_ORCHESTRATION_KEYS = [
+  'quick_fix_orchestration_model',
+  'quick_fix_orchestration_effort',
+  'quick_fix_orchestration_speed'
+];
+
+/** Lane-neutral preset fields mapped onto quick_fix storage keys. */
+export const QUICK_FIX_LANE_MAP = Object.freeze({
+  orchestration_model: 'quick_fix_orchestration_model',
+  orchestration_effort: 'quick_fix_orchestration_effort',
+  orchestration_speed: 'quick_fix_orchestration_speed',
+  impl_dispatch: 'quick_fix_impl_dispatch',
+  impl_runtime: 'quick_fix_impl_runtime',
+  impl_model: 'quick_fix_impl_model',
+  impl_effort: 'quick_fix_impl_effort',
+  impl_speed: 'quick_fix_impl_speed'
+});
+
 /** The eighteen keys an execution preset carries. */
 export const IMPL_PRESET_KEYS = [...BEAD_APPLY_KEYS, ...ORCHESTRATION_KEYS];
 
 /**
  * The fourteen kv keys a preset actually CARRIES — the workspace kv list minus the
  * keys no preset can supply. Mirrors `server/worker/exec-enums.js
- * PRESET_KV_KEYS`, which is exactly the list a global apply REPLACES, so the
- * kv-only `quick_fix_impl_model` survives an apply instead of being cleared.
+ * PRESET_KV_KEYS`, which is exactly the list a general apply REPLACES, so the
+ * quick_fix kv profile survives instead of being cleared.
  */
 export const PRESET_KV_KEYS = WORKSPACE_KV_KEYS.filter((key) =>
   IMPL_PRESET_KEYS.includes(key)
 );
+
+/**
+ * Normalize one lane-neutral preset into a complete quick_fix replacement.
+ * Missing or lane-incompatible values become `null`; unmapped preset fields
+ * are reported instead of being applied.
+ *
+ * @param {Record<string, unknown>} settings
+ * @param {Record<string, ReadonlyArray<string>>} target_enums - Enum table
+ * keyed by quick_fix destination names.
+ * @returns {{ values: Record<string, string|null>, warnings: string[], skipped_keys: string[] }}
+ */
+export function normalizeQuickFixLanePreset(settings, target_enums) {
+  /** @type {Record<string, string|null>} */
+  const values = {};
+  /** @type {string[]} */
+  const warnings = [];
+  for (const [source_key, target_key] of Object.entries(QUICK_FIX_LANE_MAP)) {
+    const value = settings[source_key];
+    if (!Object.hasOwn(settings, source_key)) {
+      values[target_key] = null;
+      continue;
+    }
+    const allowed = target_enums[target_key];
+    if (
+      typeof value !== 'string' ||
+      !Array.isArray(allowed) ||
+      !allowed.includes(value)
+    ) {
+      values[target_key] = null;
+      warnings.push(`lane_incompatible:${target_key}`);
+      continue;
+    }
+    values[target_key] = value;
+  }
+  const skipped_keys = Object.keys(settings).filter(
+    (key) => !Object.hasOwn(QUICK_FIX_LANE_MAP, key)
+  );
+  return { values, warnings, skipped_keys };
+}
 
 /** 실행 방식: 위임(기존 runtime matrix) 또는 메인(컨트롤러 직접 구현). */
 export const IMPL_DISPATCHES = ['delegated', 'main'];
@@ -360,8 +431,8 @@ const PRESET_DIFF_KEYS = [...PRESET_KV_KEYS, ...ORCHESTRATION_KEYS];
 
 /**
  * Declared keys a preset may carry that a global apply does NOT write:
- * `impl_dispatch` is `user_write_only`, and `quick_fix_impl_model` / `bdui_url`
- * have no preset layer at all.
+ * `impl_dispatch` is `user_write_only`; quick_fix kv keys and `bdui_url` have
+ * no preset layer at all.
  */
 const PRESET_IGNORED_KEYS = [...IMPL_PRESET_KEYS, ...WORKSPACE_KV_KEYS].filter(
   (key, index, list) =>
