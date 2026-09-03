@@ -109,15 +109,24 @@ Worker 실행 설정은 route 구분 없는 단일 프로파일이다: 큐 저�
   `buildOrchestrationPatch`가 `QUICK_FIX_ORCHESTRATION_KEYS`까지 diff), 실행 방식(`quick_fix_impl_dispatch`),
   runtime·모델·effort·속도(kv 초안 → `buildSessionDefaultsPatch`). 기존 `구현` 그룹의 `quick_fix 구현 모델` 행은
   이 그룹으로 옮긴다.
-- 각 행의 미설정 라벨은 `기본값 사용 — <일반 프로파일의 유효값>`이다. 일반 유효값은 같은 화면의 일반 행 해석
-  결과(`resolveExecutionSettings`의 `global`에 세션 초안 + 큐 초안을 합친 것)에서 가져온다. dispatch 행만 일반
-  층이 없으므로 `기본값 사용 — 메인 (하네스)`이며, `quick_fix_impl_model`이 설정돼 있고 dispatch가 비어 있으면
-  `기본값 사용 — 위임 (모델 함의)`로 읽는다(dotfiles 스펙 §4.2 3열).
+- 각 행의 미설정 라벨은 `기본값 사용 — <그 행의 유효값>`이다. 유효값은 그 행을 **비운 초안 전체**(세션 초안 +
+  큐 초안, quick_fix 키 포함)를 `global`로, `route: 'quick_fix'`를 넣어 §6의 `resolveExecutionSettings`로 해석한
+  값이다 — 일반 행 해석 결과를 그대로 베끼지 않는다. 그래야 `quick_fix_impl_runtime`이 비고 `quick_fix_impl_model=sol`,
+  일반 `impl_runtime=claude`일 때 라벨이 selector와 같은 `codex (유도)`가 되고, provider가 맞지 않는 모델은
+  `(비호환)`으로 보인다. dispatch 행은 일반 층이 없으므로 `기본값 사용 — 메인 (하네스)`, 모델 함의가 서면
+  `기본값 사용 — 위임 (모델 함의)`다(dotfiles 스펙 §4.2 3열).
 - 그룹 hint: `비어 있는 값은 일반 프로파일로 떨어집니다. 이슈 핀이 있으면 핀이 우선합니다.`
 - 프리셋 컨트롤: 기존 `[적용]`을 `[일반에 적용]`으로 이름 바꾸고 `[quick_fix 레인에 적용]`을 옆에 둔다. 두 버튼은
   `.op-btn` 토큰이다. `현재 → 프리셋` diff 미리보기는 선택한 레인 기준으로 그린다 — quick_fix 레인은
-  `QUICK_FIX_LANE_MAP`의 8키만 비교하고, 프리셋에 없는 키는 `기본(해제 → 일반 프로파일)`로 표시한다. 레인 선택은
-  미리보기 위의 두 탭(일반 / quick_fix)이며 마지막 선택은 `localStorage`에 남긴다(없으면 일반).
+  `QUICK_FIX_LANE_MAP`의 8키만 비교하되 서버 §4와 같은 정규화를 먼저 적용해, 프리셋에 없는 키와 quick_fix enum에
+  없는 값(`impl_runtime=inherit`, `impl_model=auto`)은 모두 `기본(해제 → 일반 프로파일)`로 표시한다. 정규화 함수는
+  `session-model.js`에 하나 두고 서버 핸들러와 같은 표를 쓴다(두 테스트 파일에서 동일성 단언). 레인 선택은
+  미리보기 위의 두 탭(일반 / quick_fix)이며 다이얼로그 생명주기의 메모리 상태다 — 열 때마다 일반으로 시작하고
+  어디에도 저장하지 않는다.
+- 서버 capability: `[quick_fix 레인에 적용]`과 quick_fix 그룹 8행은 `worker-queue-snapshot`에
+  `quick_fix_orchestration_model` 키가 **존재**할 때만(값이 `null`이어도) 활성이다. 키가 없으면(구 서버) 버튼을
+  비활성으로 그리고 `서버가 quick_fix 레인을 지원하지 않습니다`를 title로 단다. 구 서버는 알 수 없는 `lane`을
+  무시하고 일반 레인에 적용하므로, capability 없이 보내면 일반 프로파일을 덮어쓴다 — 이 gating이 그것을 막는다.
 - 저장(`impl-preset-create/update`)은 현행대로 **일반** 행의 현재 값으로 프리셋을 만든다. quick_fix 행에서
   프리셋을 만드는 경로는 두지 않는다 — 프리셋은 레인 무관 프로파일이고, 필요하면 일반 행에 같은 값을 놓고
   저장한다.
@@ -141,8 +150,10 @@ Worker 실행 설정은 route 구분 없는 단일 프로파일이다: 큐 저�
 - kv 읽기: 계약 `invalid_value: ignore_key_and_warn`. `normalizeSessionDefaults`가 새 5키를 enum으로 판정하고 무효는
   경고로 떨어뜨린다.
 - 레인 적용의 큐 CAS 실패: kv는 적용된 채 `queue_applied:false`(현행 비원자성 원칙).
-- 서버가 구버전이라 응답에 `lane`이 없으면 클라이언트는 일반 레인 응답으로 취급하고 quick_fix 초안을 건드리지
-  않는다(fail-quiet).
+- 호환은 한 방향뿐이다: 구 클라이언트 → 신 서버는 `lane` 부재 = 일반이라 응답 바이트까지 현행과 같다. 신
+  클라이언트 → 구 서버는 §5의 capability gating으로 quick_fix 적용을 아예 보내지 않는다. 응답에 `lane`이 없는데
+  quick_fix 적용을 보낸 상황은 gating 위반이므로 클라이언트는 초안을 갱신하지 않고
+  `서버 응답에 lane이 없습니다 — 큐 스냅샷을 다시 받은 뒤 확인하세요`를 알린다(fail-quiet가 아니라 경고).
 
 ## 8. 테스트
 
@@ -155,7 +166,10 @@ Worker 실행 설정은 route 구분 없는 단일 프로파일이다: 큐 저�
   `skipped_keys`·CAS 실패 경로.
 - `execution-defaults.test.js`: dotfiles 스펙 §4.2 시나리오 표의 각 행을 `global` 입력으로 재현; route 없음은 현행
   스냅샷과 동일.
-- `execution-pane.test.js`: 그룹 8행 렌더, 미설정 라벨의 일반 유효값 반영, 두 적용 버튼 payload의 `lane`.
+- `execution-pane.test.js`: 그룹 8행 렌더, 미설정 라벨이 route=quick_fix 해석을 따름(runtime 유도·provider
+  mismatch 두 사례), 두 적용 버튼 payload의 `lane`, 스냅샷에 `quick_fix_orchestration_model` 키가 없으면 버튼
+  비활성, `lane` 없는 응답에 초안 미갱신+경고.
+- `session-model.test.js`: quick_fix 레인 diff 미리보기가 `inherit`·`auto`·부재 키를 모두 해제로 표시.
 - Pre-Handoff: `npm run tsc`, `npx vitest run --reporter=dot`, `npm run lint`, `npm run prettier:write`,
   `npm run build`. 배포 후 설정 다이얼로그 스크린샷과 quick_fix Bead 카드 스크린샷.
 
@@ -176,8 +190,10 @@ Worker 실행 설정은 route 구분 없는 단일 프로파일이다: 큐 저�
   알아야 한다). `summary`: "실행 프리셋은 레인 무관 18키 프로파일이며 워크스페이스는 그것을 일반 레인과 quick_fix
   레인에 각각 교체 방식으로 적용하고, quick_fix 레인의 durable 값은 큐 `quick_fix_orchestration_*`와 kv
   `quick_fix_impl_*`다" → ADR
-- 설정 다이얼로그의 그룹 위치·라벨 문구·레인 탭의 `localStorage` 기억 — 되돌리기 어려움: 불성립 / 맥락 없이
-  놀라움: 불성립 / 실제 트레이드오프: 불성립 → ADR 아님
+- 설정 다이얼로그의 그룹 위치·라벨 문구·레인 탭이 메모리 상태라는 것·capability gating 키의 선택 — 되돌리기
+  어려움: 불성립(전부 클라이언트 렌더 코드 안의 값이라 바꿔도 저장된 데이터·프로토콜·계약이 남지 않는다) /
+  맥락 없이 놀라움: 불성립(화면에서 보이는 그대로이고, gating은 protocol.md의 "키 부재는 구 서버" 관례를 따른다)
+  / 실제 트레이드오프: 불성립(대안이 있어도 비용·위험 차이가 없다) → ADR 아님
 
 ## 경계·후속
 
