@@ -1,7 +1,8 @@
 ---
 id: 23
 title: waiting 복귀 트리거는 cadence가 아니라 이벤트 구독이다
-status: accepted
+status: superseded
+superseded_by: 34
 date: 2026-09-03
 summary: "Worker의 waiting 복귀는 cadence가 아니라 이벤트 구독이다 — 같은 rig는 bd 변경 감시, foreign은 owner rig의 활동 버스가 요청 rig의 재스캔을 부르고, 재스캔은 워크스페이스당 leading+cover throttle 안에서 `bd ready` 한 번으로 판정한다"
 spec: docs/superpowers/specs/2026-09-02-worker-waiting-return-trigger-design.md
