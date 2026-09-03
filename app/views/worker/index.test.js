@@ -2150,6 +2150,72 @@ describe('views/worker', () => {
     expect(gate_text).toContain('⏳ 업무 사용 한도 — 그 계정 디스패치 보류');
   });
 
+  test('widens the usage-limit gate wording when the account is unresolved', () => {
+    const mount = mountAttemptTiles({
+      provider_hold: {
+        claude: {
+          since: 1,
+          generation: 1,
+          targets: [
+            {
+              kind: 'usage_limit',
+              model: 'opus',
+              account: null,
+              attempt_ids: ['held']
+            }
+          ]
+        }
+      }
+    });
+
+    const gate_text = mount
+      .querySelector('.worker-provider-gate')
+      ?.textContent?.replace(/\s+/g, ' ')
+      .trim();
+
+    expect(gate_text).toContain(
+      '⏳ claude 사용 한도 — 계정 미확인이라 러너 전체 디스패치 보류'
+    );
+  });
+
+  test('names every limited account on the usage-limit dispatch gate', () => {
+    const mount = mountAttemptTiles({
+      provider_hold: {
+        claude: {
+          since: 1,
+          generation: 1,
+          targets: [
+            {
+              kind: 'usage_limit',
+              model: 'opus',
+              account: 'one@example.com',
+              attempt_ids: ['held']
+            },
+            {
+              kind: 'usage_limit',
+              model: 'sonnet',
+              account: 'two@example.com',
+              attempt_ids: ['held']
+            }
+          ]
+        }
+      },
+      account_catalog: {
+        claude: [
+          { email: 'one@example.com', alias: '업무', status: 'ok', windows: [] }
+        ]
+      }
+    });
+
+    const gate_text = mount
+      .querySelector('.worker-provider-gate')
+      ?.textContent?.replace(/\s+/g, ' ')
+      .trim();
+
+    expect(gate_text).toContain('⏳ 업무, two@example.com 사용 한도');
+    expect(gate_text).toContain('그 계정들 디스패치 보류');
+  });
+
   test('omits a missing reset time from the usage-limit dispatch gate', () => {
     const mount = mountAttemptTiles({
       provider_hold: {
@@ -2257,6 +2323,55 @@ describe('views/worker', () => {
     expect(account.options[1].textContent).toContain('5시간 사용량 80% 초과');
     expect(account.options[2].disabled).toBe(true);
     expect(account.options[2].textContent).toContain('7일 사용량 미관측');
+  });
+
+  test('blocks confirmation until an unresolved account is chosen', () => {
+    const mount = mountAttemptTiles({
+      attempts: {
+        held: {
+          attempt_id: 'held',
+          bead_id: 'HELD',
+          status: 'paused',
+          cause: 'provider_outage:usage_limit',
+          runner: 'claude',
+          model: 'opus',
+          session_id: 'sid-held'
+        }
+      },
+      provider_hold: {
+        claude: {
+          since: 1,
+          generation: 1,
+          targets: [
+            {
+              kind: 'usage_limit',
+              model: 'opus',
+              account: null,
+              attempt_ids: ['held']
+            }
+          ]
+        }
+      },
+      account_catalog: {
+        claude: [
+          { email: 'one@example.com', alias: '업무', status: 'ok', windows: [] }
+        ]
+      }
+    });
+
+    mount
+      .querySelector('.rtile__resume-alternate')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const account = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.provider-resume-dialog__account')
+    );
+    const confirm = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.provider-resume-dialog__confirm')
+    );
+
+    expect(account.value).toBe('');
+    expect(account.options[0].textContent?.trim()).toBe('계정 선택');
+    expect(confirm.disabled).toBe(true);
   });
 
   test('sends a cross-runner override as fresh_current', async () => {

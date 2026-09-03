@@ -2095,6 +2095,58 @@ describe('worker 공급자 보류 타일', () => {
     expect(popover.textContent).toContain('/tmp/provider.log');
   });
 
+  test('names why a limit hold stayed on its own account', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        heldTile({
+          hold: {
+            kind: 'usage_limit',
+            detail: 'usage_limit',
+            auto_switch: 'none',
+            open: true
+          }
+        }),
+        5000
+      ),
+      mount
+    );
+
+    const popover = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__provider-hold-pop')
+    );
+
+    expect(popover.textContent).toContain(
+      '계정 전환 안 함 · 조건을 만족하는 다른 계정 없음'
+    );
+  });
+
+  test('names a disabled automatic account switch in the popover', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        heldTile({
+          hold: {
+            kind: 'usage_limit',
+            detail: 'usage_limit',
+            auto_switch: 'disabled',
+            open: true
+          }
+        }),
+        5000
+      ),
+      mount
+    );
+
+    const popover = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__provider-hold-pop')
+    );
+
+    expect(popover.textContent).toContain('계정 전환 안 함 · 자동 전환 꺼짐');
+  });
+
   test('omits unavailable hold rows from the popover', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 

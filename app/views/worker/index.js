@@ -2026,6 +2026,11 @@ export function createWorkerView(mount_element, options = {}) {
     if (!draft || !draft.runner || !draft.model) {
       return;
     }
+    // Without an account the payload carries none, and launch would resolve one
+    // of its own — a different pool than the dialog showed. Refuse instead.
+    if (draft.runner === 'claude' && !draft.account) {
+      return;
+    }
     /** @type {Record<string, string>} */
     const exec_override = {
       runner: draft.runner,
@@ -2104,6 +2109,9 @@ export function createWorkerView(mount_element, options = {}) {
           ? html`<label>
               계정
               <select class="provider-resume-dialog__account">
+                ${draft.account
+                  ? ''
+                  : html`<option value="" selected>계정 선택</option>`}
                 ${draft.account &&
                 !claude_accounts.some(
                   (/** @type {any} */ account) =>
@@ -2148,7 +2156,14 @@ export function createWorkerView(mount_element, options = {}) {
         <button type="button" class="provider-resume-dialog__cancel">
           취소
         </button>
-        <button type="button" class="provider-resume-dialog__confirm">
+        <button
+          type="button"
+          class="provider-resume-dialog__confirm"
+          ?disabled=${draft.runner === 'claude' && !draft.account}
+          title=${draft.runner === 'claude' && !draft.account
+            ? '계정을 먼저 고르세요'
+            : ''}
+        >
           이어하기
         </button>
       </div>
@@ -3712,25 +3727,43 @@ export function createWorkerView(mount_element, options = {}) {
         보류${next ? `, 다음 프로브 ${next}` : ''}
       </div>`;
     }
-    const usage = targets[0];
-    const account =
-      typeof usage.target?.account === 'string' ? usage.target.account : '';
+    // An unresolved account widens the gate to the whole runner (§6 F3), so the
+    // badge must not promise that only one account is blocked. Several limited
+    // accounts are named together for the same reason: naming only the first
+    // understates what is actually held.
     const catalog = Array.isArray(objectOf(q.account_catalog).claude)
       ? objectOf(q.account_catalog).claude
       : [];
-    const account_row = catalog.find(
-      (/** @type {any} */ row) => row?.email === account
+    const labelOf = (/** @type {string} */ email) => {
+      const row = catalog.find(
+        (/** @type {any} */ entry) => entry?.email === email
+      );
+      return row?.alias || email;
+    };
+    const runner_wide = targets.find(
+      (entry) => typeof entry.target?.account !== 'string'
     );
-    const account_label = account_row?.alias || account;
-    const reset =
-      typeof usage.target?.resets_at === 'number'
-        ? new Date(usage.target.resets_at).toLocaleTimeString('ko-KR', {
+    const reset_of = (/** @type {any} */ target) =>
+      typeof target?.resets_at === 'number'
+        ? new Date(target.resets_at).toLocaleTimeString('ko-KR', {
             hour: '2-digit',
             minute: '2-digit'
           })
         : '';
+    if (runner_wide) {
+      const reset = reset_of(runner_wide.target);
+      return html`<div class="worker-provider-gate" role="status">
+        ⏳ ${runner_wide.runner} 사용 한도 — 계정 미확인이라 러너 전체 디스패치
+        보류${reset ? `, 리셋 ${reset}` : ''}
+      </div>`;
+    }
+    const accounts = [
+      ...new Set(targets.map((entry) => labelOf(String(entry.target.account))))
+    ];
+    const reset = reset_of(targets[0].target);
     return html`<div class="worker-provider-gate" role="status">
-      ⏳${account_label ? ` ${account_label}` : ''} 사용 한도 — 그 계정 디스패치
+      ⏳ ${accounts.join(', ')} 사용 한도 —
+      ${accounts.length > 1 ? '그 계정들' : '그 계정'} 디스패치
       보류${reset ? `, 리셋 ${reset}` : ''}
     </div>`;
   }

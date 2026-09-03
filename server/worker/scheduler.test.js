@@ -1067,6 +1067,57 @@ describe('scheduler provider hold and recovery', () => {
     expect(listClaude).not.toHaveBeenCalled();
   });
 
+  test('never switches accounts when the held account is unresolved', async () => {
+    const listClaude = vi.fn(async () => ({
+      ok: true,
+      accounts: [
+        {
+          key: 'c1',
+          number: 1,
+          email: 'candidate-one@example.com',
+          status: 'ok',
+          windows: [{ key: '5h', pct: 10, resetsAt: null }]
+        }
+      ],
+      active_key: 'c1'
+    }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      accountCatalog: {
+        activeClaude: vi.fn(async () => ({
+          ok: false,
+          reason: 'claude_account_list_unavailable'
+        })),
+        listClaude
+      }
+    });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          is_error: true,
+          api_error_status: 429,
+          result: "You've hit your session limit"
+        }
+      ]
+    });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    const target = queue.provider_hold.claude.targets[0];
+
+    expect(target.account).toBe(null);
+    expect(target.auto_switch).toBe('none');
+    expect(queue.auto_resume_pending).toEqual([]);
+    expect(listClaude).not.toHaveBeenCalled();
+  });
+
   test('maps a bold explicit failure line to a hard-stop cause', async () => {
     const env = setup({
       config: { B1: {} },
@@ -12934,6 +12985,57 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     const q = env.store.snapshot(WS);
     expect(q.attempts['S1-1000-1'].status).toBe('stopped');
     expect(q.attempts['S1-1000-1'].base_drift).toBeNull();
+  });
+
+  test('settles a landed base ahead of a persisted provider outage', async () => {
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'S1', 'att-landed');
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        result: 'API Error: 529 Overloaded'
+      })}\n`
+    );
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      verifyOk: false,
+      sessionLog,
+      resolveBase: movedBase(),
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook: guardHookWith({ 'att-landed': [pushedToBase(LANDED)] }),
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-landed', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-landed',
+      patch: {
+        runner: 'claude',
+        model: 'opus',
+        status: 'running',
+        repo: '/repo',
+        pid: 4242,
+        started_at: 1000,
+        log_path,
+        base_oid: 'base-S1',
+        target_base: 'main',
+        workflow_mode_prior: null
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    const attempt = env.store.snapshot(WS).attempts['att-landed'];
+
+    expect(attempt.cause).toBe('base_landing_detected');
+    expect(env.store.snapshot(WS).provider_hold).toEqual({});
   });
 
   test('observes the base of a restart-restored paused attempt discarded by ■', async () => {

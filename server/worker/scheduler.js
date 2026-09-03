@@ -4364,8 +4364,15 @@ export function createScheduler(deps) {
     const usage_limit = outage.detail === 'usage_limit';
     const auto_switch_enabled =
       deps.store.snapshot(workspace).provider_auto_switch !== false;
+    // An unresolved account is fail-closed (§6 F3): the target neither probes
+    // nor auto-resumes, because nothing here knows which pool hit the limit,
+    // and switching away from an unknown account is an auto-resume. Its only
+    // exit is the manual continuation in §9.
     const switch_account =
-      usage_limit && attempt.runner === 'claude' && auto_switch_enabled
+      usage_limit &&
+      attempt.runner === 'claude' &&
+      auto_switch_enabled &&
+      classified.account !== null
         ? await selectProviderSwitchAccount(workspace, classified.account)
         : null;
     const saved = deps.store.holdProviderAttempt(workspace, {
@@ -4414,6 +4421,15 @@ export function createScheduler(deps) {
       at: now()
     });
     if (saved.entered) {
+      // The stored reason, not the pre-write guess: the store also decides
+      // `cap` and "the candidate is itself held", which this side cannot see.
+      const stored_switch = saved.queue?.provider_hold?.[
+        attempt.runner
+      ]?.targets?.find(
+        (/** @type {any} */ candidate) =>
+          candidate.kind === (usage_limit ? 'usage_limit' : 'outage') &&
+          candidate.account === classified.account
+      )?.auto_switch;
       notifyLifecycle('providerHoldEntered', {
         bead_id,
         runner: attempt.runner,
@@ -4422,6 +4438,7 @@ export function createScheduler(deps) {
         summary,
         account: classified.account,
         resets_at: outage.resets_at,
+        ...(stored_switch ? { auto_switch: stored_switch } : {}),
         repo: attempt.repo
       });
     }
@@ -5883,6 +5900,31 @@ export function createScheduler(deps) {
     }
     // Re-read AFTER the drain: the evidence may have been written by it.
     const guard_kill = /** @type {any} */ (guardKillOf(workspace, attempt_id));
+    // The restart-side settlement (UI-8mvc §3), ahead of every branch below for
+    // the reason it holds that place in `onSessionDone` too: a session that died
+    // on a blocker — or on a 529 — may still have pushed first, and then the
+    // landing is the honest cause. §12 asks the outage classifier to run before
+    // the PR OBSERVATION, not before this; hoisting it over the landing would
+    // hold an attempt whose work is already on base and auto-resume it into a
+    // repeat.
+    if (await settleBaseDrift(workspace, attempt_id)) {
+      claimed.add(bead_id);
+      try {
+        await failAttempt(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior,
+          'base_landing_detected',
+          { reason: 'base_landing_detected', command: null }
+        );
+      } finally {
+        claimed.delete(bead_id);
+      }
+      notifyChanged(workspace);
+      await tick(workspace);
+      return;
+    }
     if (guard_kill) {
       if (kind) {
         deps.store.updateAttempt(workspace, {
@@ -5943,28 +5985,6 @@ export function createScheduler(deps) {
         releaseDisposition(bead_id);
       }
       await holdAttempt(workspace, attempt_id, bead_id, prior, outage);
-      notifyChanged(workspace);
-      await tick(workspace);
-      return;
-    }
-    // The restart-side settlement (UI-8mvc §3). Provider evidence must be
-    // classified first (§12): a detached 529 is a hold even if the same session
-    // also moved the base. For every non-provider ending, this remains ahead of
-    // both special branches and the PR observation.
-    if (await settleBaseDrift(workspace, attempt_id)) {
-      claimed.add(bead_id);
-      try {
-        await failAttempt(
-          workspace,
-          attempt_id,
-          bead_id,
-          prior,
-          'base_landing_detected',
-          { reason: 'base_landing_detected', command: null }
-        );
-      } finally {
-        claimed.delete(bead_id);
-      }
       notifyChanged(workspace);
       await tick(workspace);
       return;

@@ -174,7 +174,7 @@ function headline(transition, bead_id, bead_title) {
  *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   awaitingUser: (input: { bead_id: string, title?: string|null, awaiting_user?: string|null, stale_kind?: string|null, session?: string|null, reason?: string|null, tmux_session?: string|null, tmux_window?: string|null, bridge_active?: boolean, repo?: string|null }) => Promise<void>,
- *   providerHoldEntered: (input: { bead_id: string, runner: string, kind: string, detail: string, summary: string, account?: string|null, resets_at?: number|null, repo?: string|null }) => Promise<void>,
+ *   providerHoldEntered: (input: { bead_id: string, runner: string, kind: string, detail: string, summary: string, account?: string|null, resets_at?: number|null, auto_switch?: 'none'|'cap'|'disabled'|null, repo?: string|null }) => Promise<void>,
  *   providerRecovered: (input: { bead_id: string, runner: string, duration_ms: number, resumed_beads?: string[], refusal?: string|null, switched_from?: string|null, switched_to?: string|null, repo?: string|null }) => Promise<void>,
  *   providerAutoResumeDisarmed: (input: { bead_id: string, runner: string, reason: string, repo?: string|null }) => Promise<void>,
  *   needsHuman: (input: NeedsHumanInput) => Promise<void>
@@ -489,6 +489,13 @@ export function createNotifier(deps) {
           lines.push(`계정: ${text(input.account) ?? 'unknown'}`);
           if (typeof input.resets_at === 'number') {
             lines.push(`리셋: ${new Date(input.resets_at).toISOString()}`);
+          }
+          // Why the limit stayed on this account (§8.3). `cap` is omitted: the
+          // disarmed notification already owns that sentence.
+          if (input.auto_switch === 'none') {
+            lines.push('계정 전환: 안 함 — 조건을 만족하는 다른 계정 없음');
+          } else if (input.auto_switch === 'disabled') {
+            lines.push('계정 전환: 안 함 — 자동 전환 꺼짐');
           }
         }
         const repo = repoLabel(input.repo);

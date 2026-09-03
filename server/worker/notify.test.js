@@ -759,6 +759,42 @@ describe('worker/notify provider transitions', () => {
     expect(messageOf(spawn.last())).toContain('리셋: 2026-09-03T09:00:00.000Z');
   });
 
+  test('names why a limit hold did not switch accounts', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.providerHoldEntered({
+      bead_id: 'UI-1',
+      runner: 'claude',
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      summary: 'session limit reached',
+      account: 'held@example.com',
+      auto_switch: 'disabled'
+    });
+
+    expect(messageOf(spawn.last())).toContain(
+      '계정 전환: 안 함 — 자동 전환 꺼짐'
+    );
+  });
+
+  test('omits the switch reason when the cap already reports it', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.providerHoldEntered({
+      bead_id: 'UI-1',
+      runner: 'claude',
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      summary: 'session limit reached',
+      account: 'held@example.com',
+      auto_switch: 'cap'
+    });
+
+    expect(messageOf(spawn.last())).not.toContain('계정 전환:');
+  });
+
   test('sends recovered beads and a resume refusal', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });

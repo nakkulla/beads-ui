@@ -152,6 +152,8 @@ import { logPathTemplate } from './log-path.js';
  * @property {string} [summary]
  * @property {{ model?: string, account?: string, account_alias?: string }} [target]
  * @property {'pending'|'disarmed'|`refused:${string}`} [auto_resume]
+ * @property {'none'|'cap'|'disabled'} [auto_switch] - Why the limit hold did not
+ * move to another account (§8.3). Absent when it did switch.
  * @property {number} [resets_at]
  * @property {number} [next_probe_at]
  * @property {string} [log_path]
@@ -608,6 +610,23 @@ function autoResumeText(value) {
 }
 
 /**
+ * Say why a limit hold stayed on its own account (§8.3). `cap` is already told
+ * by `auto_resume`, so only the two reasons nothing else reports are worded.
+ *
+ * @param {HoldTile['auto_switch']|undefined} value
+ * @returns {string}
+ */
+function autoSwitchText(value) {
+  if (value === 'none') {
+    return '계정 전환 안 함 · 조건을 만족하는 다른 계정 없음';
+  }
+  if (value === 'disabled') {
+    return '계정 전환 안 함 · 자동 전환 꺼짐';
+  }
+  return '';
+}
+
+/**
  * Provider-hold detail in the same decision-popover frame as failures.
  *
  * @param {HoldTile|null} hold
@@ -625,6 +644,7 @@ function providerHoldPopoverTemplate(hold) {
     .join(' · ');
   const reset = providerClock(hold.resets_at);
   const auto_resume = autoResumeText(hold.auto_resume);
+  const auto_switch = autoSwitchText(hold.auto_switch);
   return html`<div
     class="rtile__failure-pop rtile__provider-hold-pop"
     role="dialog"
@@ -660,6 +680,12 @@ function providerHoldPopoverTemplate(hold) {
         ? html`<div>
             <dt>자동 재개</dt>
             <dd>${auto_resume}</dd>
+          </div>`
+        : ''}
+      ${auto_switch
+        ? html`<div>
+            <dt>계정 전환</dt>
+            <dd>${auto_switch}</dd>
           </div>`
         : ''}
       ${hold.log_path

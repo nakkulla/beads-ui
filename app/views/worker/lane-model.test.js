@@ -1614,6 +1614,57 @@ describe('monitor 공급자 보류 attempt 투영', () => {
     });
   });
 
+  test('carries the account-switch refusal reason to the tile', () => {
+    const map = activeByBead(providerAttempt(), new Map(), {
+      provider_hold: {
+        claude: {
+          since: 1000,
+          generation: 1,
+          targets: [
+            {
+              kind: 'usage_limit',
+              model: 'opus-4.8',
+              account: 'one@example.com',
+              detail: 'usage_limit',
+              resets_at: null,
+              rearm_count: 0,
+              attempt_ids: ['t1'],
+              auto_switch: 'disabled'
+            }
+          ]
+        }
+      }
+    });
+
+    expect(map.get('A-1')?.hold?.auto_switch).toBe('disabled');
+  });
+
+  test('omits the cap reason the auto-resume verdict already reports', () => {
+    const map = activeByBead(providerAttempt(), new Map(), {
+      provider_hold: {
+        claude: {
+          since: 1000,
+          generation: 1,
+          targets: [
+            {
+              kind: 'usage_limit',
+              model: 'opus-4.8',
+              account: 'one@example.com',
+              detail: 'usage_limit',
+              resets_at: null,
+              rearm_count: 0,
+              attempt_ids: ['t1'],
+              auto_switch: 'cap'
+            }
+          ]
+        }
+      }
+    });
+
+    expect(map.get('A-1')?.hold?.auto_switch).toBe(undefined);
+    expect(map.get('A-1')?.hold?.auto_resume).toBe('disarmed');
+  });
+
   test('keeps the manual-action verdict after the recovered target is removed', () => {
     const attempts = providerAttempt();
     attempts.t1.auto_resume_kind = 'provider_outage';

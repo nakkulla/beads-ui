@@ -958,6 +958,11 @@ function providerHoldProjection(attempt, input) {
       : {}),
     ...(resets_at === null ? {} : { resets_at }),
     ...(auto_resume === null ? {} : { auto_resume }),
+    // `cap` is already what `auto_resume: 'disarmed'` says, so only the two
+    // reasons no other field reports reach the popover (§8.3).
+    ...(target?.auto_switch === 'none' || target?.auto_switch === 'disabled'
+      ? { auto_switch: target.auto_switch }
+      : {}),
     ...(next_probe_at === null ? {} : { next_probe_at }),
     ...(history.log_path ? { log_path: history.log_path } : {})
   };
