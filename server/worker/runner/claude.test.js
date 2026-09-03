@@ -830,8 +830,8 @@ describe('runner/claude hook suppression (UI-ljcu)', () => {
   });
 });
 
-describe('runner/claude print bg-wait ceiling (UI-q2fa)', () => {
-  test('spawns with CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 so a session outlives its last turn until background tasks finish', async () => {
+describe('runner/claude print bg-wait ceiling (UI-q2fa, UI-3wkt)', () => {
+  test('spawns with CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=7200000 so a live subagent holds the session at most the codex hard-timeout after its last completion', async () => {
     const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
 
     await spawnClaude(BEAD, WS, {}, { spawn_impl }).done;
@@ -839,7 +839,7 @@ describe('runner/claude print bg-wait ceiling (UI-q2fa)', () => {
     expect(
       spawn_impl.captured.calls[0].options.env
         .CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
-    ).toBe('0');
+    ).toBe('7200000');
   });
 
   test('a routing env overriding the ceiling wins', async () => {
@@ -851,14 +851,14 @@ describe('runner/claude print bg-wait ceiling (UI-q2fa)', () => {
       {},
       {
         spawn_impl,
-        routing_env: { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '600000' }
+        routing_env: { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' }
       }
     ).done;
 
     expect(
       spawn_impl.captured.calls[0].options.env
         .CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
-    ).toBe('600000');
+    ).toBe('0');
   });
 });
 

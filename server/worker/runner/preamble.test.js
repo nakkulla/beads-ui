@@ -148,7 +148,7 @@ describe('runner/preamble unattended framing (UI-rxp3 §1)', () => {
     expect(UNATTENDED_PREAMBLE).toContain(
       'foreground로 턴 안에서 완료까지 기다려라'
     );
-    expect(UNATTENDED_PREAMBLE).toContain('태스크 완료 알림');
+    expect(UNATTENDED_PREAMBLE).toContain('최대 2시간');
     expect(guardContractDirective()).not.toContain('백그라운드 태스크');
   });
 
