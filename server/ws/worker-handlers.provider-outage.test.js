@@ -10,7 +10,10 @@ import {
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { setConnWorkspace } from './context.js';
 import {
+  __refreshWorkerAccountCatalogForTest,
   __resetWorkerQueueForTest,
+  __setWorkerAccountCatalogForTest,
+  decorateQueue,
   handleSubscribeWorkerQueue,
   handleWorkerAttemptResume,
   handleWorkerProviderAutoSwitchToggle
@@ -96,6 +99,190 @@ describe('worker provider auto-switch handler', () => {
         })
       })
     );
+  });
+});
+
+describe('worker provider queue projection', () => {
+  test('refreshes Claude accounts after a queue subscription', async () => {
+    const socket = fakeSocket();
+    setConnWorkspace(socket, { root_dir: WS, db_path: '/tmp/db' });
+    __setWorkerAccountCatalogForTest({
+      listClaude: vi.fn(async () => ({
+        ok: true,
+        accounts: [
+          {
+            email: 'one@example.com',
+            alias: '업무',
+            status: 'ok',
+            windows: [{ key: '5h', pct: 20, resetsAt: null }]
+          }
+        ]
+      }))
+    });
+
+    handleSubscribeWorkerQueue(
+      socket,
+      /** @type {any} */ ({
+        id: 'subscribe-accounts',
+        type: 'subscribe-worker-queue',
+        payload: { id: 'client-accounts' }
+      })
+    );
+    await vi.waitFor(() => {
+      expect(
+        sent(socket).some(
+          (/** @type {any} */ message) =>
+            message.type === 'worker-queue-snapshot' &&
+            message.payload?.queue?.account_catalog?.claude?.[0]?.email ===
+              'one@example.com'
+        )
+      ).toBe(true);
+    });
+  });
+
+  test('adds the first outage probe time without changing durable state', () => {
+    const since = Date.now();
+    const raw = {
+      ...getWorkerRuntime().queueStore.snapshot(WS),
+      provider_hold: {
+        claude: {
+          since,
+          generation: 1,
+          targets: [
+            {
+              kind: 'outage',
+              model: 'opus',
+              account: null,
+              detail: 'overloaded_529',
+              last_error: 'API Error: 529',
+              resets_at: null,
+              rearm_count: 0,
+              attempt_ids: ['attempt-1']
+            }
+          ]
+        }
+      }
+    };
+
+    const projected = decorateQueue(WS, raw);
+
+    expect(
+      /** @type {any} */ (projected).provider_hold.claude.targets[0]
+        .next_probe_at
+    ).toBe(since + 60_000);
+    expect(raw.provider_hold.claude.targets[0]).not.toHaveProperty(
+      'next_probe_at'
+    );
+  });
+
+  test('omits an expired first-probe estimate', () => {
+    const raw = {
+      ...getWorkerRuntime().queueStore.snapshot(WS),
+      provider_hold: {
+        claude: {
+          since: Date.now() - 120_000,
+          generation: 1,
+          targets: [
+            {
+              kind: 'outage',
+              model: 'opus',
+              account: null,
+              detail: 'overloaded_529',
+              last_error: 'API Error: 529',
+              resets_at: null,
+              rearm_count: 0,
+              attempt_ids: ['attempt-1']
+            }
+          ]
+        }
+      }
+    };
+
+    const projected = decorateQueue(WS, raw);
+
+    expect(
+      /** @type {any} */ (projected).provider_hold.claude.targets[0]
+    ).not.toHaveProperty('next_probe_at');
+  });
+
+  test('adds the reset grace to a future usage-limit probe', () => {
+    const resets_at = Date.now() + 120_000;
+    const raw = {
+      ...getWorkerRuntime().queueStore.snapshot(WS),
+      provider_hold: {
+        claude: {
+          since: Date.now(),
+          generation: 1,
+          targets: [
+            {
+              kind: 'usage_limit',
+              model: 'opus',
+              account: 'one@example.com',
+              detail: 'usage_limit',
+              last_error: 'usage limit',
+              resets_at,
+              rearm_count: 0,
+              attempt_ids: ['attempt-1']
+            }
+          ]
+        }
+      }
+    };
+
+    const projected = decorateQueue(WS, raw);
+
+    expect(
+      /** @type {any} */ (projected).provider_hold.claude.targets[0]
+        .next_probe_at
+    ).toBe(resets_at + 60_000);
+  });
+
+  test('projects normalized Claude account rows from the account catalog', async () => {
+    __setWorkerAccountCatalogForTest({
+      listClaude: vi.fn(async () => ({
+        ok: true,
+        accounts: [
+          {
+            email: 'one@example.com',
+            alias: '업무',
+            status: 'ok',
+            windows: [{ key: '5h', pct: 20, resetsAt: null }],
+            ignored: 'private'
+          }
+        ]
+      }))
+    });
+
+    await __refreshWorkerAccountCatalogForTest();
+    const projected = decorateQueue(
+      WS,
+      getWorkerRuntime().queueStore.snapshot(WS)
+    );
+
+    expect(/** @type {any} */ (projected).account_catalog).toEqual({
+      claude: [
+        {
+          email: 'one@example.com',
+          alias: '업무',
+          status: 'ok',
+          windows: [{ key: '5h', pct: 20, resetsAt: null }]
+        }
+      ]
+    });
+  });
+
+  test('omits the account catalog when its source fails', async () => {
+    __setWorkerAccountCatalogForTest({
+      listClaude: vi.fn(async () => ({ ok: false, reason: 'unavailable' }))
+    });
+
+    await __refreshWorkerAccountCatalogForTest();
+    const projected = decorateQueue(
+      WS,
+      getWorkerRuntime().queueStore.snapshot(WS)
+    );
+
+    expect(projected).not.toHaveProperty('account_catalog');
   });
 });
 

@@ -65,6 +65,7 @@ function queueRow(patch = {}) {
     serial_lane_count: 1,
     auto_advance: false,
     auto_merge: false,
+    provider_auto_switch: true,
     runner_catalog: CATALOG,
     execution_defaults: EXECUTION_DEFAULTS,
     orchestration_model: null,
@@ -417,6 +418,12 @@ describe('createExecutionPane bound to another repo', () => {
     await settle();
     el(root, '[data-automation="auto_merge"]').click();
     await settle();
+    const provider_switch = /** @type {HTMLInputElement} */ (
+      el(root, '[data-provider-auto-switch]')
+    );
+    provider_switch.checked = false;
+    provider_switch.dispatchEvent(new Event('change'));
+    await settle();
     el(
       root,
       '[data-stepper="slots"] button[aria-label="동시 실행 증가"]'
@@ -432,6 +439,7 @@ describe('createExecutionPane bound to another repo', () => {
       'worker-queue-set-orchestration-defaults',
       'worker-automation-toggle',
       'worker-merge-auto-toggle',
+      'worker-provider-auto-switch-toggle',
       'worker-queue-set-slots',
       'worker-queue-set-serial-lane-count'
     ]) {
@@ -574,6 +582,49 @@ describe('createExecutionPane automation section', () => {
         '[data-stepper="serial-lane-count"] .settings-dialog__stepper-value'
       ).textContent
     ).toContain('3');
+  });
+
+  test('reads the provider auto-switch checkbox from the queue snapshot', async () => {
+    const { root, pane } = mount({
+      queue: queueRow({ provider_auto_switch: false })
+    });
+
+    await pane.load();
+
+    expect(
+      /** @type {HTMLInputElement} */ (el(root, '[data-provider-auto-switch]'))
+        .checked
+    ).toBe(false);
+  });
+
+  test('sends the provider auto-switch change through queue CAS', async () => {
+    const { root, pane, calls } = mount({
+      queue: queueRow({ provider_auto_switch: false }),
+      transport: async (/** @type {string} */ type) =>
+        type === 'worker-provider-auto-switch-toggle'
+          ? {
+              applied: true,
+              conflict: false,
+              queue: queueRow({ revision: 4, provider_auto_switch: true })
+            }
+          : { values: {}, warnings: [] }
+    });
+    await pane.load();
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, '[data-provider-auto-switch]')
+    );
+
+    input.checked = true;
+    input.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'worker-provider-auto-switch-toggle')).toEqual([
+      { on: true, expected_revision: 3 }
+    ]);
+    expect(
+      /** @type {HTMLInputElement} */ (el(root, '[data-provider-auto-switch]'))
+        .checked
+    ).toBe(true);
   });
 
   test('refuses to send a serial lane count past the contract bound', async () => {

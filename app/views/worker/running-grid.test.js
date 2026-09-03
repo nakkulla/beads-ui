@@ -4,7 +4,11 @@ import {
   formatAttemptOrchestrationChip,
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
-import { runningGridTemplate, runningTile } from './running-grid.js';
+import {
+  providerHoldBadgeText,
+  runningGridTemplate,
+  runningTile
+} from './running-grid.js';
 
 describe('worker failed running tile template', () => {
   beforeEach(() => {
@@ -1964,6 +1968,151 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
     expect(mount.querySelector('.rtile__held-badge')?.textContent).toBe(
       '↻ 재시도 대기'
     );
+  });
+});
+
+describe('worker 공급자 보류 타일', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Record<string, any>} [patch]
+   * @returns {any}
+   */
+  function heldTile(patch = {}) {
+    return {
+      bead_id: 'UI-provider',
+      attempt_id: 'attempt-provider',
+      title: 'provider-held work',
+      runner: 'claude',
+      model: 'opus-4.8',
+      started_at: 1000,
+      provider_hold: true,
+      status: 'provider_hold',
+      status_label: '공급자 보류',
+      hold: {
+        kind: 'outage',
+        detail: 'overloaded_529',
+        next_probe_at: 3000
+      },
+      discard: {
+        action: true,
+        enabled: true,
+        label: '폐기',
+        title: '폐기',
+        operation: null
+      },
+      ...patch
+    };
+  }
+
+  test('formats the outage badge with its next probe', () => {
+    const clock = new Date(3000).toLocaleTimeString('ko-KR', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    const text = providerHoldBadgeText({
+      kind: 'outage',
+      detail: 'overloaded_529',
+      next_probe_at: 3000
+    });
+
+    expect(text).toBe(`⚠️ 공급자 장애 · 다음 프로브 ${clock}`);
+  });
+
+  test('formats the usage badge with an account alias', () => {
+    const clock = new Date(4000).toLocaleTimeString('ko-KR', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    const text = providerHoldBadgeText({
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      resets_at: 4000,
+      target: { account: 'one@example.com', account_alias: '업무' }
+    });
+
+    expect(text).toBe(`⏳ 한도 대기 ${clock} · 업무`);
+  });
+
+  test('formats an unknown reset with the manual suffix', () => {
+    const text = providerHoldBadgeText({
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      auto_resume: 'disarmed'
+    });
+
+    expect(text).toBe('⏳ 한도 대기 · 리셋 미상 · 수동 조치');
+  });
+
+  test('renders the provider hold actions in the action foot', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningTile(heldTile(), 5000), mount);
+
+    expect(
+      Array.from(mount.querySelectorAll('.rtile__foot button')).map((button) =>
+        button.textContent?.trim()
+      )
+    ).toEqual(['↻ 이어하기', '⋯ 다른 방법으로', '폐기']);
+  });
+
+  test('renders hold detail with the non-failure heading and available rows', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        heldTile({
+          hold: {
+            kind: 'usage_limit',
+            detail: 'usage_limit',
+            summary: '사용 한도 도달',
+            message: 'API Error: limit reached',
+            target: { model: 'opus-4.8', account: 'one@example.com' },
+            resets_at: 4000,
+            auto_resume: 'refused:worktree_missing',
+            log_path: '/tmp/provider.log',
+            open: true
+          }
+        }),
+        5000
+      ),
+      mount
+    );
+
+    const popover = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__provider-hold-pop')
+    );
+
+    expect(popover.textContent).toContain('작업 실패 아님');
+    expect(popover.textContent).toContain('사용 한도 도달');
+    expect(popover.textContent).toContain('API Error: limit reached');
+    expect(popover.textContent).toContain('opus-4.8 · one@example.com');
+    expect(popover.textContent).toContain('자동 재개 거부 · worktree_missing');
+    expect(popover.textContent).toContain('/tmp/provider.log');
+  });
+
+  test('omits unavailable hold rows from the popover', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        heldTile({
+          hold: { kind: 'outage', detail: 'overloaded_529', open: true }
+        }),
+        5000
+      ),
+      mount
+    );
+
+    const terms = Array.from(mount.querySelectorAll('dt')).map(
+      (term) => term.textContent
+    );
+
+    expect(terms).toEqual([]);
   });
 });
 

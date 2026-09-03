@@ -1524,6 +1524,141 @@ describe('타임라인 투영 (record-timeline-retention §9)', () => {
   });
 });
 
+describe('monitor 공급자 보류 attempt 투영', () => {
+  /** @returns {Record<string, any>} */
+  function providerAttempt() {
+    return {
+      t1: {
+        attempt_id: 't1',
+        bead_id: 'A-1',
+        status: 'paused',
+        cause: 'provider_outage:usage_limit',
+        cause_detail: {
+          summary: 'Claude 한도 도달',
+          message: 'API Error: usage limit',
+          resets_at: 2000
+        },
+        runner: 'claude',
+        model: 'opus-4.8',
+        claude_account: 'one@example.com'
+      }
+    };
+  }
+
+  test('classifies a provider pause as the held leaf state', () => {
+    const map = activeByBead(providerAttempt(), new Map());
+
+    expect(map.get('A-1')?.run_state).toBe('provider_hold');
+  });
+
+  test('keeps a user pause in the ordinary paused loop', () => {
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'paused',
+          cause: null
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.run_state).toBe('paused');
+  });
+
+  test('projects the hold target and automatic recovery receipt', () => {
+    const map = activeByBead(providerAttempt(), new Map(), {
+      provider_hold: {
+        claude: {
+          since: 1000,
+          generation: 1,
+          targets: [
+            {
+              kind: 'usage_limit',
+              model: 'opus-4.8',
+              account: 'one@example.com',
+              detail: 'usage_limit',
+              resets_at: 2000,
+              next_probe_at: 3000,
+              rearm_count: 0,
+              attempt_ids: ['t1'],
+              auto_switch: 'none'
+            }
+          ]
+        }
+      },
+      auto_resume_pending: [
+        { attempt_id: 't1', generation: 1, kind: 'account_switch' }
+      ],
+      account_catalog: {
+        claude: [
+          { email: 'one@example.com', alias: '업무', status: 'ok', windows: [] }
+        ]
+      }
+    });
+
+    expect(map.get('A-1')?.hold).toMatchObject({
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      summary: 'Claude 한도 도달',
+      message: 'API Error: usage limit',
+      resets_at: 2000,
+      next_probe_at: 3000,
+      auto_resume: 'pending',
+      target: {
+        model: 'opus-4.8',
+        account: 'one@example.com',
+        account_alias: '업무'
+      }
+    });
+  });
+
+  test('keeps the manual-action verdict after the recovered target is removed', () => {
+    const attempts = providerAttempt();
+    attempts.t1.auto_resume_kind = 'provider_outage';
+
+    const map = activeByBead(attempts, new Map());
+
+    expect(map.get('A-1')?.hold?.auto_resume).toBe('disarmed');
+  });
+
+  test('carries workspace hold material into the running lane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: providerAttempt(),
+          provider_hold: {
+            claude: {
+              since: 1000,
+              generation: 1,
+              targets: [
+                {
+                  kind: 'usage_limit',
+                  model: 'opus-4.8',
+                  account: 'one@example.com',
+                  detail: 'usage_limit',
+                  resets_at: 2000,
+                  next_probe_at: 3000,
+                  rearm_count: 0,
+                  attempt_ids: ['t1'],
+                  auto_switch: 'cap'
+                }
+              ]
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0]).toMatchObject({
+      run_state: 'provider_hold',
+      hold: { auto_resume: 'disarmed' }
+    });
+  });
+});
+
 describe('monitor 대기 attempt 투영 (UI-5ym8 §3.1·§3.3·§6)', () => {
   test('projects a parked attempt as its own run state', () => {
     const map = activeByBead(

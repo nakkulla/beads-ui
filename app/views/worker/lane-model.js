@@ -141,7 +141,7 @@ const DONE_KIND_LABELS = {
  *   kind?: 'session',
  *   non_occupying?: boolean,
  *   attempt_id?: string|null,
- *   run_state?: 'running'|'paused'|'failed'|'parked'|'retry_wait'|'waiting',
+ *   run_state?: 'running'|'paused'|'failed'|'parked'|'retry_wait'|'waiting'|'provider_hold',
  *   can_pause?: boolean,
  *   can_resume?: boolean,
  *   started_at?: number|null,
@@ -156,6 +156,7 @@ const DONE_KIND_LABELS = {
  *   continuation_mode?: 'session'|'fresh'|null,
  *   continuation_mismatch?: any,
  *   failure?: import('./running-grid.js').FailureTile|null,
+ *   hold?: import('./running-grid.js').HoldTile|null,
  *   wait?: import('./running-grid.js').WaitTile|null,
  *   retry?: import('./running-grid.js').RetryTile|null,
  *   conflict_resolution?: boolean,
@@ -468,7 +469,7 @@ export function latestTerminalAttempt(attempts, bead_id) {
  *
  * @param {Record<string, any>} attempts
  * @param {Map<string, number>} done_at_by_bead
- * @param {{ discard_operations?: Record<string, any>, observations?: Record<string, any>, bead_timelines?: Record<string, any> }} [input]
+ * @param {{ discard_operations?: Record<string, any>, observations?: Record<string, any>, bead_timelines?: Record<string, any>, provider_hold?: Record<string, any>, auto_resume_pending?: any[], account_catalog?: Record<string, any> }} [input]
  * @returns {Map<string, any>}
  */
 export function activeByBead(attempts, done_at_by_bead, input = {}) {
@@ -482,6 +483,11 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
   for (const [bead_id, state] of winners) {
     const a = state.attempt;
     const run_state = state.run_state;
+    // A provider pause is a held-tile leaf, not a user pause. Let the dedicated
+    // fold below project its target, probe, and recovery facts.
+    if (isProviderHoldAttempt(a)) {
+      continue;
+    }
     const started_at = state.started_at;
     const has_session =
       typeof a.session_id === 'string' && a.session_id.length > 0;
@@ -543,6 +549,16 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
       attempt_id: a.attempt_id
     });
     const retry = retryProjection(a);
+    const hold =
+      held.run_state === 'provider_hold'
+        ? providerHoldProjection(a, {
+            provider_hold: input.provider_hold,
+            auto_resume_pending: input.auto_resume_pending,
+            account_catalog: input.account_catalog,
+            attempts,
+            history: input.bead_timelines?.[bead_id]
+          })
+        : null;
     map.set(bead_id, {
       ...liveAttemptFields(a, attempts, held.run_state),
       started_at: typeof a.started_at === 'number' ? a.started_at : null,
@@ -562,9 +578,12 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
       // 팝오버가 묻는 것 — 실패 코드·착지 단계·재개 행 — 중 이 결말이 답할 수
       // 있는 질문이 하나도 없고, 정산은 시작되지도 않았다.
       ...(held.run_state === 'waiting' ? { wait: waitProjection(a) } : {}),
+      ...(hold ? { hold } : {}),
       ...(retry ? { retry } : {}),
       can_pause: false,
-      can_resume: false
+      // The resume handler owns transcript fallback, so a provider-held
+      // attempt keeps its exit even when the old record has no session id.
+      can_resume: held.run_state === 'provider_hold'
     });
   }
   return map;
@@ -577,7 +596,7 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
  *
  * @param {any} a
  * @param {Record<string, any>} attempts
- * @param {'running'|'paused'|'failed'|'parked'|'retry_wait'|'waiting'} run_state
+ * @param {'running'|'paused'|'failed'|'parked'|'retry_wait'|'waiting'|'provider_hold'} run_state
  */
 function liveAttemptFields(a, attempts, run_state) {
   return {
@@ -758,6 +777,193 @@ function waitProjection(a) {
 }
 
 /**
+ * Whether a paused attempt is waiting on provider recovery rather than a user.
+ *
+ * @param {any} attempt
+ * @returns {boolean}
+ */
+function isProviderHoldAttempt(attempt) {
+  return (
+    attempt?.status === 'paused' &&
+    typeof attempt.cause === 'string' &&
+    attempt.cause.startsWith('provider_outage:')
+  );
+}
+
+/**
+ * Find the durable provider target bound to one attempt.
+ *
+ * @param {any} attempt
+ * @param {unknown} provider_hold
+ * @returns {any|null}
+ */
+function providerTargetOf(attempt, provider_hold) {
+  const runner = typeof attempt.runner === 'string' ? attempt.runner : '';
+  const hold = objectOf(provider_hold)[runner];
+  if (!hold || !Array.isArray(hold.targets)) {
+    return null;
+  }
+  return (
+    hold.targets.find(
+      (/** @type {any} */ target) =>
+        Array.isArray(target?.attempt_ids) &&
+        target.attempt_ids.includes(attempt.attempt_id)
+    ) || null
+  );
+}
+
+/**
+ * Resolve a Claude account alias without replacing its durable email identity.
+ *
+ * @param {string|null} account
+ * @param {unknown} account_catalog
+ * @returns {string|null}
+ */
+function accountAliasOf(account, account_catalog) {
+  if (account === null) {
+    return null;
+  }
+  const claude = objectOf(account_catalog).claude;
+  if (!Array.isArray(claude)) {
+    return null;
+  }
+  const row = claude.find(
+    (/** @type {any} */ candidate) => candidate?.email === account
+  );
+  return row && typeof row.alias === 'string' && row.alias.length > 0
+    ? row.alias
+    : null;
+}
+
+/**
+ * Whether this resume lineage already spent its one provider auto-resume.
+ *
+ * @param {any} attempt
+ * @param {Record<string, any>} attempts
+ * @returns {boolean}
+ */
+function providerAutoResumeCapped(attempt, attempts) {
+  let current = attempt;
+  /** @type {Set<string>} */
+  const seen = new Set();
+  while (current && !seen.has(current.attempt_id)) {
+    seen.add(current.attempt_id);
+    if (current.auto_resume_kind === 'provider_outage') {
+      return true;
+    }
+    current =
+      typeof current.resumed_from === 'string'
+        ? attempts[current.resumed_from]
+        : null;
+  }
+  return false;
+}
+
+/**
+ * Read where this hold stands with automatic recovery. A pending receipt wins
+ * because it is the live intent; a recorded refusal beats the cap because it
+ * says what actually happened to the one auto-resume this lineage had.
+ *
+ * @param {any} attempt
+ * @param {any} target
+ * @param {string} last_error
+ * @param {{ auto_resume_pending?: any[], attempts: Record<string, any> }} input
+ * @returns {'pending'|'disarmed'|`refused:${string}`|null}
+ */
+function providerAutoResumeState(attempt, target, last_error, input) {
+  const pending = Array.isArray(input.auto_resume_pending)
+    ? input.auto_resume_pending
+    : [];
+  if (
+    pending.some(
+      (/** @type {any} */ receipt) => receipt?.attempt_id === attempt.attempt_id
+    )
+  ) {
+    return 'pending';
+  }
+  const refused = attempt.auto_resume_refused;
+  if (typeof refused === 'string' && refused.length > 0) {
+    return `refused:${refused}`;
+  }
+  return last_error.startsWith('auto_resume_disarmed:') ||
+    target?.auto_switch === 'cap' ||
+    providerAutoResumeCapped(attempt, input.attempts)
+    ? 'disarmed'
+    : null;
+}
+
+/**
+ * Project one provider-held attempt from its attempt and queue gate records.
+ *
+ * @param {any} attempt
+ * @param {{ provider_hold?: Record<string, any>, auto_resume_pending?: any[], account_catalog?: Record<string, any>, attempts: Record<string, any>, history?: any }} input
+ * @returns {import('./running-grid.js').HoldTile}
+ */
+function providerHoldProjection(attempt, input) {
+  const detail = attempt.cause.slice('provider_outage:'.length);
+  const cause_detail =
+    attempt.cause_detail && typeof attempt.cause_detail === 'object'
+      ? attempt.cause_detail
+      : null;
+  const target = providerTargetOf(attempt, input.provider_hold);
+  const model =
+    typeof target?.model === 'string' && target.model.length > 0
+      ? target.model
+      : typeof attempt.model === 'string' && attempt.model.length > 0
+        ? attempt.model
+        : null;
+  const account =
+    typeof target?.account === 'string' && target.account.length > 0
+      ? target.account
+      : typeof attempt.claude_account === 'string' &&
+          attempt.claude_account.length > 0
+        ? attempt.claude_account
+        : null;
+  const last_error =
+    typeof target?.last_error === 'string' ? target.last_error : '';
+  const auto_resume = providerAutoResumeState(attempt, target, last_error, {
+    auto_resume_pending: input.auto_resume_pending,
+    attempts: input.attempts
+  });
+  const resets_at =
+    typeof target?.resets_at === 'number'
+      ? target.resets_at
+      : typeof cause_detail?.resets_at === 'number'
+        ? cause_detail.resets_at
+        : null;
+  const next_probe_at =
+    typeof target?.next_probe_at === 'number' ? target.next_probe_at : null;
+  const account_alias = accountAliasOf(account, input.account_catalog);
+  const history = timelineFields(input.history);
+  return {
+    kind:
+      target?.kind === 'usage_limit' || detail === 'usage_limit'
+        ? 'usage_limit'
+        : 'outage',
+    detail,
+    ...(typeof cause_detail?.message === 'string'
+      ? { message: cause_detail.message }
+      : {}),
+    ...(typeof cause_detail?.summary === 'string'
+      ? { summary: cause_detail.summary }
+      : {}),
+    ...(model || account
+      ? {
+          target: {
+            ...(model ? { model } : {}),
+            ...(account ? { account } : {}),
+            ...(account_alias ? { account_alias } : {})
+          }
+        }
+      : {}),
+    ...(resets_at === null ? {} : { resets_at }),
+    ...(auto_resume === null ? {} : { auto_resume }),
+    ...(next_probe_at === null ? {} : { next_probe_at }),
+    ...(history.log_path ? { log_path: history.log_path } : {})
+  };
+}
+
+/**
  * The backoff facts of one attempt (UI-5ym8 §6), or null when it carries none.
  * A record written before §6 has no `retry` key at all, so the 재시도 대기 badge
  * and the popover's 이력 row simply do not render.
@@ -811,10 +1017,16 @@ const HELD_STATUSES = new Set(['parked', 'retry_wait', 'waiting']);
  *
  * @param {Record<string, any>} attempts
  * @param {Map<string, number>} done_at_by_bead
- * @returns {Map<string, { attempt: any, run_state: 'parked'|'retry_wait'|'waiting' }>}
+ * @returns {Map<string, { attempt: any, run_state: 'parked'|'retry_wait'|'waiting'|'provider_hold' }>}
  */
 function heldAttemptStates(attempts, done_at_by_bead) {
   const values = /** @type {any[]} */ (Object.values(attempts || {}));
+  /** @type {Set<string>} */
+  const resumed_from_ids = new Set(
+    values
+      .map((attempt) => attempt?.resumed_from)
+      .filter((attempt_id) => typeof attempt_id === 'string')
+  );
   /** @type {Map<string, string>} */
   const last_impl_by_bead = new Map();
   for (const a of values) {
@@ -822,17 +1034,19 @@ function heldAttemptStates(attempts, done_at_by_bead) {
       last_impl_by_bead.set(a.bead_id, a.attempt_id);
     }
   }
-  /** @type {Map<string, { attempt: any, run_state: 'parked'|'retry_wait'|'waiting' }>} */
+  /** @type {Map<string, { attempt: any, run_state: 'parked'|'retry_wait'|'waiting'|'provider_hold' }>} */
   const held = new Map();
   for (const a of values) {
+    const provider_hold = isProviderHoldAttempt(a);
     if (
       !a ||
       typeof a.bead_id !== 'string' ||
       a.bead_id.length === 0 ||
       !isImplementationAttempt(a) ||
-      !HELD_STATUSES.has(a.status) ||
+      (!HELD_STATUSES.has(a.status) && !provider_hold) ||
       last_impl_by_bead.get(a.bead_id) !== a.attempt_id ||
-      typeof a.dismissed_at === 'number'
+      typeof a.dismissed_at === 'number' ||
+      (provider_hold && resumed_from_ids.has(a.attempt_id))
     ) {
       continue;
     }
@@ -845,7 +1059,10 @@ function heldAttemptStates(attempts, done_at_by_bead) {
     ) {
       continue;
     }
-    held.set(a.bead_id, { attempt: a, run_state: a.status });
+    held.set(a.bead_id, {
+      attempt: a,
+      run_state: provider_hold ? 'provider_hold' : a.status
+    });
   }
   return held;
 }
@@ -2379,7 +2596,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
     for (const [bead_id, live] of activeByBead(attempts, done_at_by_bead, {
       discard_operations,
       observations,
-      bead_timelines
+      bead_timelines,
+      provider_hold: objectOf(workspace.provider_hold),
+      auto_resume_pending: Array.isArray(workspace.auto_resume_pending)
+        ? workspace.auto_resume_pending
+        : [],
+      account_catalog: objectOf(workspace.account_catalog)
     })) {
       claimed.add(bead_id);
       // 실패 판정은 **attempt 스냅샷**의 `armed_by_lane`에 결속된다 (§5.5): 지금
@@ -2458,6 +2680,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         continuation_mode: live.continuation_mode,
         usage: live.usage,
         failure: live.failure || null,
+        hold: live.hold || null,
         // 선행 대기의 재료 (선행 대기 계층 §5.1). 실패와 별개 키이므로 타일이
         // 실패 팝오버를 얻지 않고, 없으면 held 본문이 그려지지 않는다.
         wait: live.wait || null,
@@ -2496,7 +2719,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
                   ? ['↻ 재시도 대기']
                   : live.run_state === 'waiting'
                     ? ['⛓ 선행 대기']
-                    : [],
+                    : live.run_state === 'provider_hold'
+                      ? ['공급자 보류']
+                      : [],
         // 경보는 실패의 것이다 (UI-5ym8 §2): 파킹도 backoff 대기도 큐를 세우지
         // 않으므로, 그것들을 붉게 물들이면 "타일이 서면 큐가 멈춘 것"이라는
         // 낡은 읽기를 다시 가르치게 된다.

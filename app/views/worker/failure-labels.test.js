@@ -118,6 +118,40 @@ describe('failureText', () => {
   test('renders nothing for an absent code', () => {
     expect(failureText(undefined)).toBe('');
   });
+
+  test('recognizes a provider outage before splitting its detail suffix', () => {
+    expect(failureText('provider_outage:overloaded_529')).toBe(
+      'Claude API 과부하(529)로 보류'
+    );
+  });
+
+  test('includes the known reset clock for an account usage hold', () => {
+    const resets_at = new Date(2026, 8, 3, 18, 0).getTime();
+
+    expect(failureText('provider_outage:usage_limit', { resets_at })).toBe(
+      `계정 사용 한도로 보류 — 리셋 ${new Date(resets_at).toLocaleTimeString(
+        'ko-KR',
+        { hour: '2-digit', minute: '2-digit' }
+      )}`
+    );
+  });
+
+  test('keeps an unregistered provider detail on the raw fallback', () => {
+    expect(failureText('provider_outage:future_detail')).toBe(
+      'provider_outage:future_detail'
+    );
+  });
+
+  test.each([
+    ['session_hard_stop:failure', '세션이 실패를 보고하고 종료'],
+    ['session_hard_stop:environment', '세션이 환경 오류를 보고하고 종료'],
+    [
+      'resume_failed:transcript_missing',
+      '이어하기 대상 세션 기록이 없음 — 새 세션으로 대체'
+    ]
+  ])('maps the exact composite cause %s', (code, label) => {
+    expect(failureText(code)).toBe(label);
+  });
 });
 
 describe('isKnownFailure', () => {

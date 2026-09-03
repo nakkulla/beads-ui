@@ -37,6 +37,9 @@ import {
   createDecorationContext,
   openDependentsWithOwners
 } from '../list-adapters.js';
+import { listAccounts as listClaudeAccounts } from '../routes/claude-usage.js';
+import { listAccounts as listCodexAccounts } from '../routes/codex-usage.js';
+import { createAccountCatalog } from '../worker/account-catalog.js';
 import {
   abandonWorkerDiscard,
   backupFreshWorkerStaleWork,
@@ -82,6 +85,7 @@ import {
   observedReviewReceiptState
 } from '../worker/merge-gate.js';
 import { sanitizeOutput } from '../worker/output-sanitize.js';
+import { OUTAGE_BACKOFF_MS } from '../worker/provider-health.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { placeBeadInQueue } from '../worker/queue-place.js';
 import {
@@ -197,6 +201,93 @@ function recordUserAction(workspace, bead_id, action, summary) {
  * @type {Map<string, Set<{ ws: WebSocket, client_id: string, last_body?: string }>>}
  */
 const SUBSCRIBERS = new Map();
+
+/** Build the production account source shared with launch-time resolution. */
+function defaultWorkerAccountCatalog() {
+  return createAccountCatalog({
+    listClaude: listClaudeAccounts,
+    listCodex: listCodexAccounts
+  });
+}
+
+/** Account source shared with launch-time account resolution. */
+let worker_account_catalog = defaultWorkerAccountCatalog();
+/** @type {Array<{ email: string, alias: string|null, status: string, windows: Array<Record<string, any>> }>|null} */
+let claude_account_catalog = null;
+/** @type {Promise<void>|null} */
+let account_catalog_refresh = null;
+let account_catalog_generation = 0;
+
+/**
+ * Refresh the async account source outside synchronous snapshot decoration.
+ *
+ * @returns {Promise<void>}
+ */
+async function refreshWorkerAccountCatalog() {
+  if (account_catalog_refresh) {
+    return account_catalog_refresh;
+  }
+  const generation = account_catalog_generation;
+  const pending = worker_account_catalog
+    .listClaude()
+    .then((listed) => {
+      if (generation !== account_catalog_generation) {
+        return;
+      }
+      if (!listed.ok) {
+        claude_account_catalog = null;
+        return;
+      }
+      claude_account_catalog = listed.accounts
+        .filter(
+          (account) =>
+            account &&
+            typeof account.email === 'string' &&
+            account.email.length > 0
+        )
+        .map((account) => {
+          const row = /** @type {any} */ (account);
+          return {
+            email: row.email,
+            alias:
+              typeof row.alias === 'string' && row.alias.length > 0
+                ? row.alias
+                : null,
+            status: typeof row.status === 'string' ? row.status : 'unknown',
+            windows: Array.isArray(row.windows) ? row.windows : []
+          };
+        });
+    })
+    .catch(() => {
+      if (generation === account_catalog_generation) {
+        claude_account_catalog = null;
+      }
+    })
+    .finally(() => {
+      if (account_catalog_refresh === pending) {
+        account_catalog_refresh = null;
+      }
+    });
+  account_catalog_refresh = pending;
+  return pending;
+}
+
+/**
+ * Test seam for the same account-catalog interface used in production.
+ *
+ * @param {{ listClaude: () => Promise<any> }} catalog
+ */
+export function __setWorkerAccountCatalogForTest(catalog) {
+  account_catalog_generation += 1;
+  worker_account_catalog = /** @type {any} */ (catalog);
+  claude_account_catalog = null;
+  account_catalog_refresh = null;
+}
+
+/** Test-only wait for one account-catalog refresh. */
+export async function __refreshWorkerAccountCatalogForTest() {
+  await refreshWorkerAccountCatalog();
+}
 
 /**
  * @typedef {Object} PublicStaleWorkSummary
@@ -2469,6 +2560,65 @@ function withSessionScope(rows, bead_scope) {
 }
 
 /**
+ * Add the next deterministic probe boundary to public provider targets.
+ *
+ * The health controller owns the timer. Its durable inputs are sufficient for
+ * usage-limit probes and the first outage probe; later outage backoff remains
+ * fail-quiet because its in-memory failure counter is not durable.
+ *
+ * @param {unknown} value
+ * @returns {Record<string, any>}
+ */
+function publicProviderHolds(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  /** @type {Record<string, any>} */
+  const holds = {};
+  for (const [runner, raw_hold] of Object.entries(value)) {
+    if (
+      !raw_hold ||
+      typeof raw_hold !== 'object' ||
+      Array.isArray(raw_hold) ||
+      typeof raw_hold.since !== 'number' ||
+      !Array.isArray(raw_hold.targets)
+    ) {
+      continue;
+    }
+    const targets = raw_hold.targets.map((/** @type {any} */ target) => {
+      if (!target || typeof target !== 'object' || Array.isArray(target)) {
+        return target;
+      }
+      /** @type {number|null} */
+      let next_probe_at = null;
+      const now = Date.now();
+      if (target.kind === 'usage_limit') {
+        if (
+          target.account !== null &&
+          Number(target.rearm_count) < 3 &&
+          Date.now() - raw_hold.since < 24 * 60 * 60 * 1000
+        ) {
+          const candidate =
+            typeof target.resets_at === 'number'
+              ? target.resets_at + 60_000
+              : raw_hold.since +
+                (Math.max(0, Number(target.rearm_count) || 0) + 1) * 900_000;
+          next_probe_at = candidate > now ? candidate : null;
+        }
+      } else if (target.kind === 'outage') {
+        const candidate = raw_hold.since + OUTAGE_BACKOFF_MS[0];
+        next_probe_at = candidate > now ? candidate : null;
+      }
+      return next_probe_at === null
+        ? { ...target }
+        : { ...target, next_probe_at };
+    });
+    holds[runner] = { ...raw_hold, targets };
+  }
+  return holds;
+}
+
+/**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
  *   - the pinned repository-operation declaration used by the merge gate,
  *   - `slots` (the live concurrency cap from the attachment), so the tab can
@@ -2564,6 +2714,7 @@ export function decorateQueue(workspace_key, raw_queue) {
   /** @type {Record<string, any>} */
   const queue = {
     ...public_queue,
+    provider_hold: publicProviderHolds(overlaid.provider_hold),
     queue: Array.isArray(overlaid.queue) ? overlaid.queue : [],
     pr_wait: Array.isArray(overlaid.pr_wait) ? overlaid.pr_wait : [],
     done: Array.isArray(public_queue.done) ? public_queue.done : [],
@@ -2641,6 +2792,9 @@ export function decorateQueue(workspace_key, raw_queue) {
     // meaning for either.
     manual_merge_continuation: MANUAL_MERGE_CONTINUATION,
     runner_catalog,
+    ...(claude_account_catalog
+      ? { account_catalog: { claude: claude_account_catalog } }
+      : {}),
     execution_defaults,
     // The workspace's declared base (UI-j6wa §3), non-persisted like every
     // other decoration here. Display only — nothing dispatches on it.
@@ -3602,6 +3756,10 @@ export function handleGetWorkerSystemPrompt(ws, req) {
  */
 export function __resetWorkerQueueForTest() {
   SUBSCRIBERS.clear();
+  account_catalog_generation += 1;
+  worker_account_catalog = defaultWorkerAccountCatalog();
+  claude_account_catalog = null;
+  account_catalog_refresh = null;
   for (const sub of SESSION_LOG_SUBS) {
     try {
       sub.off();
@@ -3670,6 +3828,13 @@ export function handleSubscribeWorkerQueue(ws, req) {
     })
     .catch((err) => {
       log('external PR refresh failed for %s: %o', key, err);
+    });
+  void refreshWorkerAccountCatalog()
+    .then(() => {
+      fanout(key, queueStore().snapshot(key));
+    })
+    .catch((err) => {
+      log('account catalog refresh failed for %s: %o', key, err);
     });
 }
 

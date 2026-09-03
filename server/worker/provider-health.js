@@ -329,6 +329,17 @@ export function createProviderHealth(deps) {
           ? USAGE_FALLBACK_MS
           : Math.max(0, target.resets_at + USAGE_RESET_GRACE_MS - now())
         : OUTAGE_BACKOFF_MS[Math.min(failures, OUTAGE_BACKOFF_MS.length - 1)];
+    // The held tile names the next probe clock, so the deadline is written
+    // before the timer is armed: a timer alone dies with the process and the
+    // badge would read `리셋 미상` after every restart.
+    deps.store.updateProviderTarget(workspace, {
+      runner,
+      generation,
+      kind: target.kind,
+      model: target.model,
+      account: target.account,
+      patch: { next_probe_at: now() + delay }
+    });
     const timer = setTimeoutImpl(() => {
       timers.delete(key);
       void runTarget(workspace, runner, generation, since, target, failures);
@@ -405,8 +416,9 @@ export function createProviderHealth(deps) {
         // was held on.
         const recovered_account =
           (recovered.pending || []).find(
-            (/** @type {{ attempt_id: string, account: string|null }} */ receipt) =>
-              receipt.attempt_id === recovered_attempt.attempt_id
+            (
+              /** @type {{ attempt_id: string, account: string|null }} */ receipt
+            ) => receipt.attempt_id === recovered_attempt.attempt_id
           )?.account ?? live_target.account;
         deps.timeline?.append({
           bead_id: recovered_attempt.bead_id,

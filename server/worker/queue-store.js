@@ -122,6 +122,9 @@
  * @property {string|null} cause - Failure cause shown by the decision tile.
  * @property {'provider_outage'|null} auto_resume_kind - Marks the one allowed
  * automatic continuation after a provider hold recovers.
+ * @property {string|null} auto_resume_refused - Why the recovery resume was
+ * turned away (`worktree_missing` and the like). Kept on the attempt because
+ * recovery deletes the target the receipt came from before the resume runs.
  * @property {{ reason?: string, command?: string|null, summary?: string|null, [k: string]: unknown }|null} cause_detail -
  * What the fail-closed path actually caught, when the cause alone cannot say
  * it (UI-2o4z §2): the caught `reason` plus the simple command it matched
@@ -560,6 +563,9 @@
  * @property {number} rearm_count
  * @property {string[]} attempt_ids
  * @property {'none'|'cap'|'disabled'|null} [auto_switch]
+ * @property {number|null} [next_probe_at] - When the prober next touches this
+ * target. Durable rather than timer-local because the held tile shows it: an
+ * in-memory deadline reads as absent for every viewer after a restart.
  */
 /**
  * @typedef {Object} ProviderHold
@@ -2788,6 +2794,11 @@ export function makeAttempt(fields) {
       fields.auto_resume_kind === 'provider_outage'
         ? fields.auto_resume_kind
         : null,
+    auto_resume_refused:
+      typeof fields.auto_resume_refused === 'string' &&
+      fields.auto_resume_refused.length > 0
+        ? fields.auto_resume_refused
+        : null,
     cause_detail: isRecord(fields.cause_detail)
       ? /** @type {Attempt['cause_detail']} */ (fields.cause_detail)
       : null,
@@ -3450,6 +3461,11 @@ function normalizeProviderTarget(value) {
       value.auto_switch === 'cap' ||
       value.auto_switch === 'disabled'
         ? value.auto_switch
+        : null,
+    next_probe_at:
+      typeof value.next_probe_at === 'number' &&
+      Number.isFinite(value.next_probe_at)
+        ? value.next_probe_at
         : null
   };
 }
@@ -6875,6 +6891,13 @@ export function createQueueStore(options = {}) {
           Number(input.patch.rearm_count) >= 0
         ) {
           target.rearm_count = Number(input.patch.rearm_count);
+        }
+        if (
+          input.patch.next_probe_at === null ||
+          (typeof input.patch.next_probe_at === 'number' &&
+            Number.isFinite(input.patch.next_probe_at))
+        ) {
+          target.next_probe_at = input.patch.next_probe_at;
         }
         return true;
       });

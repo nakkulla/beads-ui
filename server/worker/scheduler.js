@@ -8210,6 +8210,13 @@ export function createScheduler(deps) {
       } else if (prior) {
         const reason = result.reason || 'resume_refused';
         refusals.push(`${prior.bead_id}:${reason}`);
+        // The held tile reports the refusal, and recovery already removed the
+        // target this receipt came from, so the reason lives on the attempt —
+        // the only record that outlives the gate it was held by.
+        deps.store.updateAttempt(workspace, {
+          attempt_id: pending.attempt_id,
+          patch: { auto_resume_refused: reason }
+        });
         log(
           'provider auto resume refused for %s/%s: %s',
           prior.bead_id,

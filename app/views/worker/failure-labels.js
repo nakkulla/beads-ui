@@ -53,6 +53,67 @@ const FAILURE_CATEGORIES = {
   delivery_unproven: '착지 증거 부족'
 };
 
+/** Provider-hold detail → display sentence. */
+/** @type {Record<string, string>} */
+const PROVIDER_OUTAGE_SENTENCES = {
+  overloaded_529: 'Claude API 과부하(529)로 보류',
+  rate_limited_429: 'Claude API 요청 한도(429)로 보류'
+};
+
+/** Exact composite causes whose suffix alone loses the session outcome. */
+/** @type {Record<string, string>} */
+const EXACT_FAILURE_TEXT = {
+  'session_hard_stop:failure': '세션이 실패를 보고하고 종료',
+  'session_hard_stop:environment': '세션이 환경 오류를 보고하고 종료',
+  'resume_failed:transcript_missing':
+    '이어하기 대상 세션 기록이 없음 — 새 세션으로 대체'
+};
+
+/**
+ * Format an epoch as the local reset clock used by the Worker UI.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function resetClock(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '';
+  }
+  return new Date(value).toLocaleTimeString('ko-KR', {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+/**
+ * Resolve a registered `provider_outage:` detail before generic `:` splitting.
+ *
+ * @param {unknown} code
+ * @param {unknown} cause_detail
+ * @returns {string|null}
+ */
+function providerOutageText(code, cause_detail) {
+  if (typeof code !== 'string' || !code.startsWith('provider_outage:')) {
+    return null;
+  }
+  const detail = code.slice('provider_outage:'.length);
+  if (detail === 'usage_limit') {
+    const resets_at =
+      cause_detail && typeof cause_detail === 'object'
+        ? /** @type {any} */ (cause_detail).resets_at
+        : null;
+    const reset = resetClock(resets_at);
+    return reset
+      ? `계정 사용 한도로 보류 — 리셋 ${reset}`
+      : '계정 사용 한도로 보류';
+  }
+  if (Object.hasOwn(PROVIDER_OUTAGE_SENTENCES, detail)) {
+    return PROVIDER_OUTAGE_SENTENCES[detail];
+  }
+  const http_match = /^http_(5\d\d)$/.exec(detail);
+  return http_match ? `Claude API 오류(${http_match[1]})로 보류` : null;
+}
+
 /**
  * Split a possibly composite code (`verify_failed:gh_observation_failed`) into
  * its segments. A non-string or empty value yields no segments at all, which is
@@ -127,9 +188,17 @@ export function failureSentence(code) {
  * An empty/absent code renders nothing.
  *
  * @param {unknown} code
+ * @param {unknown} [cause_detail]
  * @returns {string}
  */
-export function failureText(code) {
+export function failureText(code, cause_detail) {
+  if (typeof code === 'string' && Object.hasOwn(EXACT_FAILURE_TEXT, code)) {
+    return EXACT_FAILURE_TEXT[code];
+  }
+  const provider_text = providerOutageText(code, cause_detail);
+  if (provider_text !== null) {
+    return provider_text;
+  }
   const category = mappedFailureCategory(code);
   const sentence = failureSentence(code);
   if (category && sentence) {
@@ -150,7 +219,12 @@ export function failureText(code) {
  * @returns {boolean}
  */
 export function isKnownFailure(code) {
-  return mappedFailureCategory(code) !== null || failureSentence(code) !== null;
+  return (
+    (typeof code === 'string' && Object.hasOwn(EXACT_FAILURE_TEXT, code)) ||
+    providerOutageText(code, null) !== null ||
+    mappedFailureCategory(code) !== null ||
+    failureSentence(code) !== null
+  );
 }
 
 /**
