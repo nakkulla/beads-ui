@@ -4841,6 +4841,52 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
     );
   });
 
+  test('prefers the quick_fix orchestration value on a quick_fix bead', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: { 'A-2': { metadata: { route: 'quick_fix' } } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {},
+          orchestration_model: 'sonnet',
+          quick_fix_orchestration_model: 'opus'
+        })
+      ]
+    );
+
+    expect(lanes.queue[0].exec_chips?.orchestration?.text).toBe(
+      'opus (quick_fix)'
+    );
+  });
+
+  test('leaves a general bead on the general orchestration value', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: { 'A-2': { metadata: { route: 'spec_backed' } } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {},
+          orchestration_model: 'sonnet',
+          quick_fix_orchestration_model: 'opus'
+        })
+      ]
+    );
+
+    expect(lanes.queue[0].exec_chips?.orchestration?.text).toBe('sonnet');
+  });
+
   test('resolves the running tile worker chip against the attempt runner', () => {
     const lanes = buildLanes(
       [

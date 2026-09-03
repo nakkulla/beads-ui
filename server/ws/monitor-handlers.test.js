@@ -946,6 +946,37 @@ describe('workspaces_state control fields (UI-eey2 §9.4)', () => {
       session_defaults_warnings: []
     });
   });
+
+  test('carries the quick_fix orchestration keys as the lane capability probe', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: { [WS_A]: snapshot() }
+    });
+
+    expect(out[0]).toHaveProperty('quick_fix_orchestration_model', null);
+    expect(out[0]).toHaveProperty('quick_fix_orchestration_effort', null);
+    expect(out[0]).toHaveProperty('quick_fix_orchestration_speed', null);
+  });
+
+  test('passes stored quick_fix orchestration values through unchanged', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: {
+        [WS_A]: snapshot({
+          orchestration_model: 'sol',
+          quick_fix_orchestration_model: 'opus',
+          quick_fix_orchestration_effort: 'low'
+        })
+      }
+    });
+
+    expect(out[0]).toMatchObject({
+      orchestration_model: 'sol',
+      quick_fix_orchestration_model: 'opus',
+      quick_fix_orchestration_effort: 'low',
+      quick_fix_orchestration_speed: null
+    });
+  });
 });
 
 describe('workspaces_state counts (UI-eey2 §9.4)', () => {

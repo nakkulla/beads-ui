@@ -635,6 +635,21 @@ describe('worker workspace adapter', () => {
     expect(row.execution_defaults).toEqual({ impl_runtime: 'claude' });
   });
 
+  test('carries both orchestration triples onto the workspace state row', () => {
+    const adapter = adapterOf({
+      stores: createTestIssueStores(),
+      queue: {
+        orchestration_model: 'sonnet',
+        quick_fix_orchestration_model: 'opus'
+      }
+    });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces_state[0];
+
+    expect(row.orchestration_model).toBe('sonnet');
+    expect(row.quick_fix_orchestration_model).toBe('opus');
+  });
+
   test('prefers the workspace declaration slot cap over the snapshot value', () => {
     const adapter = adapterOf({
       stores: createTestIssueStores(),
