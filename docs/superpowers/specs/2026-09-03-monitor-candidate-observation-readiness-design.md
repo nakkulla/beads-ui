@@ -2,7 +2,7 @@
 scope:
   - server/worker/runnable-cache.js
   - server/worker/admission.js
-  - server/worker/exec-enums.js
+  - server/worker/routes.js
   - server/ws/monitor-handlers.js
   - app/views/worker/lane-model.js
   - app/views/worker/placement.js
@@ -190,11 +190,18 @@ const eligible =
 route 집합은 지금 두 곳에 따로 적혀 있다 — `server/worker/admission.js:67`
 `ADMISSIBLE_ROUTES`와 `server/worker/runnable-cache.js:85` `RUNNABLE_ROUTES`이고,
 후자의 주석이 "same enum as `admission.js`"라고 손으로 묶어 둔 상태다. 이 스펙이
-세 번째 소비자(클라이언트 판정)를 만드므로, 정본을 이미 양쪽이 쓰는 얇은 enum
-모듈 `server/worker/exec-enums.js`로 올리고 세 소비자가 그것을 임포트한다.
+세 번째 소비자(클라이언트 판정)를 만드므로, 정본을 임포트가 하나도 없는 새 모듈
+`server/worker/routes.js`에 두고 세 소비자가 그것을 임포트한다.
 `placement.js`가 `server/spec-id.js`를 직접 임포트하는 것과 같은 경로이며,
 `runnable-cache.js` 전체를 프론트 번들에 끌어오지 않는다. 값은 바뀌지 않는다
 (`spec_backed`, `full_plan`, `quick_fix`).
+
+`server/worker/exec-enums.js`는 정본의 자리가 아니다. 이름은 enum 모듈이지만
+`server/config.js`와 `server/worker/runner/index.js`를 임포트해 `node:fs`·
+`node:path`·`node:events`까지 끌고 온다. 그 모듈에서 값 하나를 프론트로
+임포트하면 esbuild 브라우저 번들이 node builtin을 해결하지 못하고 실패한다
+(`--platform=browser` 프로브에서 오류 15건). 정본은 `server/spec-id.js`처럼
+임포트가 없는 모듈이어야 한다.
 
 ### 4.2 `placementTitle()`은 사유 넷을 구분한다 (교정)
 
@@ -362,9 +369,9 @@ Worker의 기존 키). 저장된 객체에 `readiness`가 없으면 기본값을
   route 미핀·본문 없는 `quick_fix`·`worker-ineligible` 행이 `include_unadmitted`
   에서만 실리고 각각 `admitted:false`와 기대한 `spec_state`/`has_description`을
   갖는다. 기본 호출의 목록이 변경 전과 동일하다(회귀 fence). phase child와
-  `status!=='open'`은 두 모드 모두에서 빠진다. `exec-enums.js`의 route enum과
-  `admission.js`·`runnable-cache.js`가 쓰는 값이 같다(기존 enum 동등성 테스트
-  관행을 따른다).
+  `status!=='open'`은 두 모드 모두에서 빠진다. `routes.js`의 route enum을
+  `admission.js`·`runnable-cache.js`·`placement.js`가 그대로 임포트해 값이 한
+  벌이다(기존 enum 동등성 테스트 관행을 따른다).
 - **파이프라인** — `server/ws/monitor-pipeline.test.js`: 모니터 투영과
   `laneCountsFor`가 확장 행을 포함하고, 준비 필요 후보만 있는 레포가
   `hasPipeline`을 통과한다.
@@ -391,7 +398,7 @@ Worker의 기존 키). 저장된 객체에 `readiness`가 없으면 기본값을
 
 1. 서버 — `qualify()` 분해, 사실 필드, `include_unadmitted` 진입, monitor 투영과
    레인 카운트 배선.
-2. 판정 — route enum 정본을 `exec-enums.js`로 올리고 세 소비자 재배선,
+2. 판정 — route enum 정본을 `routes.js`에 두고 세 소비자 재배선,
    `placementFromFacts` 도입과 `candidatePlacement`의 route 교정,
    `placementTitle()` 사유 분화, Monitor runnable 투영에서의 호출과 `draggable`
    판정.
