@@ -91,7 +91,7 @@ function queueRow(patch = {}) {
 }
 
 /**
- * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string>, transport?: any, presets?: any }} [options]
+ * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string|boolean>, transport?: any, presets?: any }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -215,6 +215,49 @@ describe('createExecutionPane unbound (root_dir null)', () => {
     await settle();
 
     expect(payloadsOf(calls, 'set-session-defaults')).toEqual([
+      { values: { base_sync_accept_local_commits: null } }
+    ]);
+  });
+
+  test('stores the last choice when a toggle is flipped back mid-save', async () => {
+    /** @type {Array<() => void>} */
+    const pending = [];
+    const { root, pane, calls } = mount({
+      transport: (/** @type {string} */ type, /** @type {any} */ payload) => {
+        if (type !== 'set-session-defaults') {
+          return { values: {}, warnings: [] };
+        }
+        const merged = { ...payload.values };
+        for (const [key, value] of Object.entries(merged)) {
+          if (value === null) {
+            delete merged[key];
+          }
+        }
+        return new Promise((resolve) =>
+          pending.push(() => resolve({ values: merged, warnings: [] }))
+        );
+      }
+    });
+    await pane.load();
+
+    const box = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="base_sync_accept_local_commits"]')
+    );
+    box.checked = true;
+    box.dispatchEvent(new Event('change'));
+    await settle();
+
+    // The first write is now in flight; flip back before it answers.
+    box.checked = false;
+    box.dispatchEvent(new Event('change'));
+    await settle();
+    pending.shift()?.();
+    await settle();
+    pending.shift()?.();
+    await settle();
+
+    expect(payloadsOf(calls, 'set-session-defaults')).toEqual([
+      { values: { base_sync_accept_local_commits: true } },
       { values: { base_sync_accept_local_commits: null } }
     ]);
   });

@@ -45,6 +45,7 @@ import {
   REVIEW_SPEEDS,
   REVIEW_STEP_MODELS,
   WORKFLOW_MODES,
+  WORKSPACE_KV_KEYS,
   adoptSessionDefaultValues,
   buildExecutionOptionView,
   buildOrchestrationPatch,
@@ -177,6 +178,16 @@ export function createExecutionPane(mount_element, binding) {
    * @type {Promise<void>}
    */
   let account_save_chain = Promise.resolve();
+  /**
+   * The same serialization for the session-defaults writes, and for the same
+   * two reasons. The second one bites hardest on a checkbox: check-then-uncheck
+   * while the first write is in flight would otherwise diff the second edit
+   * against a baseline that has not moved yet, send nothing, and then adopt the
+   * first response over the user's last choice.
+   *
+   * @type {Promise<void>}
+   */
+  let session_save_chain = Promise.resolve();
   /**
    * Accounts are MACHINE-local, so this list is independent of `root_dir` and
    * is read once per mounted pane rather than once per bound repo.
@@ -334,19 +345,60 @@ export function createExecutionPane(mount_element, binding) {
     }
   }
 
+  /**
+   * Adopt a fresh baseline without discarding an edit made while the write was
+   * in flight. A key still holding what that request carried takes the server's
+   * value; a key the user moved since keeps their newer choice, so the chained
+   * next save diffs it against the new baseline and actually sends it.
+   *
+   * Without this, check-then-uncheck on a boolean row ends up stored the wrong
+   * way round: the second edit diffs against a baseline the first write has not
+   * updated yet and sends nothing, and the arriving response then puts the
+   * first choice back.
+   *
+   * @param {Record<string, string>} sent - The draft as the request left.
+   * @param {Record<string, string>} baseline - The readback the reply carried.
+   * @returns {Record<string, string>}
+   */
+  function reconcileSessionDraft(sent, baseline) {
+    /** @type {Record<string, string>} */
+    const next = { ...baseline };
+    for (const key of WORKSPACE_KV_KEYS) {
+      const current = session_draft[key];
+      if (current === sent[key]) {
+        continue;
+      }
+      if (typeof current === 'string') {
+        next[key] = current;
+      } else {
+        delete next[key];
+      }
+    }
+    return next;
+  }
+
+  /**
+   * Queue one session-defaults save behind the ones already in flight, so a
+   * later edit always diffs against the baseline its predecessor established.
+   */
+  function queueSessionSave() {
+    session_save_chain = session_save_chain.then(() => saveSessionDefaults());
+  }
+
   /** Save the session-tab diff. On failure the draft is KEPT (spec §F). */
   async function saveSessionDefaults() {
     const patch = buildSessionDefaultsPatch(session_baseline, session_draft);
     if (Object.keys(patch).length === 0) {
       return;
     }
+    const sent = { ...session_draft };
     try {
       const res = await send('set-session-defaults', {
         values: patch,
         ...rootPayload()
       });
       session_baseline = adoptSessionDefaultValues(res?.values);
-      session_draft = { ...session_baseline };
+      session_draft = reconcileSessionDraft(sent, session_baseline);
       // `session_text_draft` deliberately survives: this save may belong to an
       // unrelated key, and the text box's own commit already cleared its entry
       // on the way in. Dropping it here would silently discard text the user
@@ -545,7 +597,7 @@ export function createExecutionPane(mount_element, binding) {
       session_draft[key] = value;
     }
     doRender();
-    void saveSessionDefaults();
+    queueSessionSave();
   }
 
   /**
@@ -587,7 +639,7 @@ export function createExecutionPane(mount_element, binding) {
       session_draft[key] = raw;
     }
     doRender();
-    void saveSessionDefaults();
+    queueSessionSave();
   }
 
   /**
@@ -643,7 +695,7 @@ export function createExecutionPane(mount_element, binding) {
     writeImplTargetKey('impl_model', narrowed.impl_model);
     writeImplTargetKey('impl_effort', narrowed.impl_effort);
     doRender();
-    void saveSessionDefaults();
+    queueSessionSave();
   }
 
   /** Save the orchestration diff under the queue CAS. */
