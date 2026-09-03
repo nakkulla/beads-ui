@@ -891,24 +891,29 @@ export function planDrop(drag, target, model) {
       source_lane !== undefined &&
       (target.kind !== 'chain' || target.lane_id !== source_lane_id)
     ) {
+      const remaining_entries = source_lane.entries.filter(
+        (entry) => entry.bead_id !== drag.bead_id
+      );
+      const leaving_entries =
+        source_lane.status === 'confirmed' && remaining_entries.length < 2
+          ? source_lane.entries
+          : source_lane.entries.filter(
+              (entry) => entry.bead_id === drag.bead_id
+            );
       // 멤버가 레인에서 빠지는 경로는 그 멤버의 disarm을 함께 낸다 (§5.3 (1)).
       disarm_ops.push(
         ...disarmOps(
           model,
           source_lane,
           /** @type {string} */ (source_lane_id),
-          source_lane.entries.filter((entry) => entry.bead_id === drag.bead_id)
+          leaving_entries
         )
       );
       lane_ops.push({
         type: 'monitor-lane-update',
         payload: {
           lane_id: /** @type {string} */ (source_lane_id),
-          entries: payloadEntries(
-            source_lane.entries.filter(
-              (entry) => entry.bead_id !== drag.bead_id
-            )
-          )
+          entries: payloadEntries(remaining_entries)
         }
       });
     }
@@ -954,19 +959,7 @@ export function planDrop(drag, target, model) {
       }
     }
   } else if (target.kind === 'chain') {
-    // draft 레인은 대기가 아니다 (§5.4) — candidate 원천도 적재하지 않는다.
-    const lane = /** @type {LaneState} */ (
-      model.cross_lanes.get(target.lane_id)
-    );
-    if (drag.kind === 'candidate' && lane.status === 'confirmed') {
-      queue_ops.push(
-        placeOp(
-          drag.bead_id,
-          drag.root_dir,
-          model.parallel_raw_length.get(drag.root_dir) ?? 0
-        )
-      );
-    }
+    // 레인 드롭은 적재하지 않는다. 큐 적재와 arm은 `▶ 진행`이 소유한다.
   } else {
     if (drag.kind === 'repo-serial' && drag.lane_id === target.lane_id) {
       // 자기 행 위에 놓기는 제자리다 (§5.2).

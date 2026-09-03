@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import {
   MESSAGE_TYPES,
@@ -145,5 +146,32 @@ describe('server/protocol', () => {
   test('exports protocol constants', () => {
     expect(Array.isArray(MESSAGE_TYPES)).toBe(true);
     expect(MESSAGE_TYPES.length).toBeGreaterThan(0);
+  });
+
+  test('registers the lane provenance and queue arm message types', () => {
+    expect(MESSAGE_TYPES).toEqual(
+      expect.arrayContaining([
+        'monitor-lane-provenance',
+        'worker-queue-arm',
+        'worker-queue-disarm'
+      ])
+    );
+  });
+
+  test('registers every client-sent server dispatch type', () => {
+    const connection_source = readFileSync('server/ws/connection.js', 'utf8');
+    const dispatch_types = [
+      ...connection_source.matchAll(/case '([a-z0-9-]+)':/g)
+    ]
+      .map((match) => match[1])
+      .filter((type) => type !== 'ping');
+    const missing_types = dispatch_types.filter(
+      (type) => !MESSAGE_TYPES.includes(/** @type {any} */ (type))
+    );
+
+    expect(
+      missing_types,
+      `MESSAGE_TYPES에 없는 서버 메시지 타입: ${missing_types.join(', ')}`
+    ).toEqual([]);
   });
 });

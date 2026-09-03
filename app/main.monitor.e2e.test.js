@@ -449,10 +449,9 @@ describe('monitor tab direct entry (UI-nprg)', () => {
 });
 
 describe('monitor 실행가능 → 연결 레인 드롭 (UI-j92s §5.5)', () => {
-  // 드롭 하나가 여러 op가 되면 순서가 계약이다: 레인 멤버십을 먼저 저장하고,
-  // 의존을 걸고, 그 다음 자기 레포 병렬 큐에 적재한다. 순서가 뒤집히면 적재된
-  // 행이 잠깐 선행 없이 출발할 수 있다.
-  test('sends the lane update, then dep-add, then worker-queue-place', async () => {
+  // 확정 레인 드롭은 멤버십과 의존만 저장한다. 큐 적재와 arm은 `▶ 진행`이
+  // 소유하므로 이 경로에서 `worker-queue-place`를 보내면 안 된다.
+  test('sends update, dep-add, and provenance without a queue op', async () => {
     const client = /** @type {any} */ (createWsClient());
     window.location.hash = '#/monitor';
     document.body.innerHTML = '<main id="app"></main>';
@@ -537,7 +536,7 @@ describe('monitor 실행가능 → 연결 레인 드롭 (UI-j92s §5.5)', () => 
         ._sent()
         .map((/** @type {any} */ m) => m.type)
         .filter((/** @type {string} */ t) => t !== 'subscribe-monitor-pipeline')
-    ).toEqual(['monitor-lane-update', 'dep-add', 'worker-queue-place']);
+    ).toEqual(['monitor-lane-update', 'dep-add', 'monitor-lane-provenance']);
     expect(client._sent()[0].payload).toEqual({
       lane_id: 'cl_1',
       entries: [

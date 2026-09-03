@@ -239,7 +239,7 @@ cross_lanes: { revision: number, lanes: Lane[] } | null   // null = 저장소 �
 | draft 레인에 드롭(원천 무관) | `update` (마커 위치에 삽입) | 원천이 confirmed 레인 행이면 그 레인의 이어 붙이기(`dep-remove`/`dep-add`)만; 그 밖에는 없음. candidate 원천도 적재하지 않는다 |
 | draft 안 재배열 / 행 `✕` | `update` | 없음 |
 | `확정` | `confirm` | 인접 쌍마다 `dep-add entries[i+1] ← entries[i]`(이미 있으면 생략; 임시 그래프 사이클 검사, 사이클이면 전체 거부하고 `confirm`도 보내지 않음) → 큐·실행중·PR 대기·완료 어디에도 없는 멤버를 레인 순서대로 각자 레포 병렬 큐 끝에 `place`; index는 `parallel_raw_length[root_dir] + 그 계획에서 앞서 잡은 같은 레포 place 수` |
-| confirmed 레인에 드롭 | `update` | 원천 `chain`이면 먼저 이어 붙이기 → 현행 삽입 규칙(`up`/`down`) → candidate 원천이면 자기 레포 병렬 끝 `place` |
+| confirmed 레인에 드롭 | `update` | 원천 `chain`이면 먼저 이어 붙이기 → 현행 삽입 규칙(`up`/`down`); candidate를 포함한 큐 op는 없음([2026-09-03 스펙](./2026-09-03-cross-lane-confirm-run-split-completion-design.md)) |
 | confirmed 안 재배열 | `update` | 이어 붙이기 → 삽입 규칙(현행; 같은 자리면 op 없음) |
 | confirmed 행 `✕` / 다른 대상으로 드래그 | `update`(제거) | 이어 붙이기 → 대상별 큐 op는 현행 표(candidate 대상 `remove`, parallel 대상 없음, repo-serial 대상 `place`) |
 | `repo-serial` 원천 → 어느 레인 | 거부 `Worker 탭 직렬 레인에서 먼저 빼 주세요`(현행) | — |

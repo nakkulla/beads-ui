@@ -306,7 +306,8 @@ push.
   creates no dependency and loads no queue.
 - `monitor-lane-update` → `{ lane_id, entries: Entry[], expected_revision }`;
   replies `{ lane_id, revision }`. Replaces membership AND order in one write —
-  insert, reorder and row-removal are the same op.
+  insert, reorder and row-removal are the same op. A `confirmed` lane returns to
+  `draft` when the replacement leaves fewer than two entries.
 - `monitor-lane-confirm` → `{ lane_id, expected_revision }`; replies
   `{ lane_id, revision }`. Flips `status` only; the adjacent `dep-add`s ride the
   client's existing `dep-add` path right after. Confirming loads NO queue

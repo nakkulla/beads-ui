@@ -207,9 +207,9 @@ const DONE_KIND_LABELS = {
  * "의존·겹침"이다 — 그 표가 `연결 레인 칩`을 이미 그 슬롯에 배정했고, 이 칩이
  * 답하는 질문도 "지금 갈 수 있나"다.
  *
- * `orphan`은 `armed_by_lane`이 스냅샷에 없는 레인을 가리키는 상태다. 스케줄러는
- * 계속 발차하므로 숨기지 않고 드러내며(fail-visible), 그 자리에서 해제할 수 있게
- * 칩이 해제 버튼을 함께 싣는다.
+ * `orphan`은 `armed_by_lane`이 스냅샷에 없거나 draft로 돌아간 레인을 가리키는
+ * 상태다. 스케줄러는 계속 발차하므로 숨기지 않고 드러내며(fail-visible), 그
+ * 자리에서 해제할 수 있게 칩이 해제 버튼을 함께 싣는다.
  *
  * @typedef {Object} ArmedLaneChip
  * @property {string} lane_id
@@ -4015,20 +4015,20 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 발차 칩 (§5.6). 자리는 카드 문법 §5.1 슬롯 4 "의존·겹침"이며, 재료가 없는
   // 카드에는 칩이 없다 (fail-quiet). 레인 번호는 스냅샷 순서에서 나오고, 그
   // 순서에 없는 lane id는 고아 arm이므로 숨기지 않고 드러낸다 (§5.3 (2)).
-  /** @type {Map<string, number>} */
-  const lane_number_of = new Map(
-    model.chain_lanes.map((lane) => [lane.lane_id, lane.number])
+  /** @type {Map<string, MonitorChainLane>} */
+  const lane_by_id = new Map(
+    model.chain_lanes.map((lane) => [lane.lane_id, lane])
   );
   for (const item of [...model.queue, ...model.running]) {
     const lane_id = armed_by_bead.get(item.id);
     if (typeof lane_id !== 'string' || lane_id.length === 0) {
       continue;
     }
-    const number = lane_number_of.get(lane_id);
+    const lane = lane_by_id.get(lane_id);
     item.armed_lane_chip =
-      number === undefined
+      lane === undefined || lane.status === 'draft'
         ? { lane_id, label: '▶ 진행 중 · 레인 없음', orphan: true }
-        : { lane_id, label: `▶ 연결 ${number}`, orphan: false };
+        : { lane_id, label: `▶ 연결 ${lane.number}`, orphan: false };
   }
 
   /** @type {LaneItem[]} */
