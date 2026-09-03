@@ -10,6 +10,17 @@ scope:
   - app/views/worker/index.js
   - app/views/monitor/index.js
   - app/utils/execution-defaults.js
+  - app/main.bundle.js
+  - app/main.bundle.js.map
+  - app/main.monitor.e2e.test.js
+  - server/ws/monitor-handlers.test.js
+  - server/worker/title-cache.test.js
+  - server/worker/scheduler.test.js
+  - app/views/worker/lane-model.test.js
+  - app/views/worker/lanes.test.js
+  - app/views/worker/index.test.js
+  - app/views/monitor/index.test.js
+  - server/worker/queue-store.test.js
   - docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md
 ---
 
@@ -56,11 +67,14 @@ scope:
 - 대기 행: `MonitorChainLaneRow`에는 route·실행 주체 필드가 없고, 그 근거는
   *"레인 순서가 곧 의존이므로 같은 사실을 두 번 말하지 않는다"*
   (`app/views/worker/lane-model.js:305`).
-- exec 칩 배분: *"`exec_chips`는 '무엇으로 돌아갈까'에 답하는 레인(후보·대기·
-  직렬)만 얻는다 — PR 대기·완료 행은 돌아갈 설정이 없다"*
-  (`app/views/worker/lane-model.js:3632`).
 
-셋 다 근거가 있는 결정이므로, 되돌리는 근거를 §2와 §7에 남긴다.
+두 결정은 근거가 있으므로 되돌리는 근거를 §2와 §7에 남긴다.
+
+세 번째 기록은 **되돌리지 않는다.** *"`exec_chips`는 '무엇으로 돌아갈까'에 답하는
+레인(후보·대기·직렬)만 얻는다 — PR 대기·완료 행은 돌아갈 설정이 없다"*
+(`app/views/worker/lane-model.js:3632`)는 그대로 성립한다. 완료 행이 얻는 것은
+"돌아갈 설정"이 아니라 그 완료를 만든 attempt의 기록이고, 재료도 경로도 다르다
+(§3.4).
 
 ### 1.3 레포 접기는 이미 있다 — 이 스펙의 대상이 아니다
 
@@ -95,14 +109,19 @@ scope:
 bead_overlay: { [bead_id]: { route?: string, metadata?: Record<string, string> } }
 ```
 
-- **대상 bead**: 레인 멤버(`queue` ∪ `serial_lanes[].entries` ∪ 실행중) ∪ `done`.
+- **대상 bead**: `route`는 레인 멤버(`queue` ∪ `serial_lanes[].entries` ∪
+  실행중) ∪ `done`. 실행 핀(`metadata`)은 **레인 멤버만** — 완료 행의 실행 주체는
+  핀이 아니라 attempt 기록에서 나오므로(§3.4) 완료 bead에 핀을 실을 이유가 없다.
   `runnable` 행은 자기 행이 이미 `workflow`를 싣고 오므로 오버레이가 필요 없다.
 - **재료 출처**: `titleCache`. `workflowFor()`가 이미 같은 id 집합을 받아 route를
-  주고(`server/worker/title-cache.js:569`), 실행 핀을 위해 같은 파일에
-  `execPinFor(workspace, ids)`를 더한다. 캐시 레코드는 이미 원본 issue의
-  `metadata`를 읽고 있으므로(`:246`) 새 bd 호출이 없다 — **ADR 0026(투영 경로는
-  동기 자식 프로세스를 띄우지 않는다)을 지킨다.** 레코드가 아직 안 내려온 bead는
-  결과에서 빠진다(캐시의 기존 부분성 계약 그대로).
+  준다(`server/worker/title-cache.js:569`). 실행 핀은 캐시 레코드에 **새 필드로
+  보존해야 한다** — `recordFromIssue()`는 원본 `metadata`를 읽지만
+  (`server/worker/title-cache.js:246`) 지금은 `plan_path` 등만 남기고 레코드에
+  보존하지 않는다. 그래서 `BeadRecord`에 허용 키만 담은 `exec_pin` 필드를 더하고
+  `execPinFor(workspace, ids)`가 그것을 투영한다. **이미 하고 있는 그 한 번의
+  읽기에서 값을 남길 뿐이므로 새 `bd` 호출이 없고, ADR 0026(투영 경로는 동기 자식
+  프로세스를 띄우지 않는다)을 지킨다** — 이것은 검증 항목이다(§5). 레코드가 아직
+  안 내려온 bead는 결과에서 빠진다(캐시의 기존 부분성 계약 그대로).
 - **`metadata`의 범위**: `EXECUTION_SETTING_KEYS`(`app/utils/execution-defaults.js:16`)에
   실린 키와 `impl_dispatch`만 남긴 subset이다. 전체 metadata를 부으면 페이로드가
   레포 수만큼 곱해지고, 칩 파생이 읽지 않는 값까지 나른다.
@@ -145,6 +164,10 @@ bead_overlay: { [bead_id]: { route?: string, metadata?: Record<string, string> }
 `refuseDispatch(workspace, bead_id, 'grace_period')`로 넘긴다.
 `added_at`은 큐 항목이 이미 갖고 있다(`server/worker/queue-store.js:24`).
 
+**이 스펙은 `added_at`을 쓰지 않는다 — 읽기만 한다.** 그 값의 기존 의미와 기존
+재기록 시점을 그대로 둔다는 뜻이다. 아래 **재배치**·**표시**·**건너뛰기** 문단이
+그 제약의 결과를 각각 명시한다.
+
 이는 `prerequisite_unmet`(ADR 0034)과 **같은 admission 메커니즘**이다 — 새 status
 어휘도 새 레인도 만들지 않고, `recordAdmission`이 쓰는 기존 레코드를 쓴다. 그래서
 두 탭의 행이 이미 admission을 읽고 있는 경로
@@ -153,8 +176,17 @@ bead_overlay: { [bead_id]: { route?: string, metadata?: Record<string, string> }
 
 **적용 범위(결정 2)**: 유예는 `tickPass`의 자동 dispatch 경로에만 선다.
 `▶ 진행`이 발차한 연결 레인, `[지금 재시도]`, 재시도 rung의 due dispatch는 유예를
-보지 않는다. 재정렬은 유예를 다시 시작시키지 않는다 — 기준은 `added_at` 하나이고,
-드래그는 그 값을 바꾸지 않는다.
+보지 않는다.
+
+**재배치는 유예를 다시 시작시킨다.** 이것은 선택이 아니라 `added_at`의 기존
+동작이다: `place()`는 새 항목을 `makeQueueEntry(bead_id, now())`로 만들고
+(`server/worker/queue-store.js:5491`), `applySerialGroup()`은 그룹을 다시 앉히며
+`const added_at = now()`로 전원을 재기록한다(`:5752`). 따라서 대기 레인 사이를
+옮기면 20초가 다시 시작된다. 그대로 둔다 — 방금 자리를 옮긴 항목에 다시 볼 틈을
+주는 것이 이 기능의 목적과 어긋나지 않고, 반대로 `added_at`의 의미를 "대기 진입
+시각"으로 좁히면 그 값을 읽는 다른 소비자(완료 이관·정리 판정)의 전제를 이
+스펙이 건드리게 된다. 같은 레인 안의 `↑ ↓` 재정렬은 항목을 다시 앉히지 않으므로
+유예도 건드리지 않는다. 이 갈림은 §5의 회귀 테스트가 고정한다.
 
 **깨우기**: tick이 이벤트 구동이라 유예가 끝나는 것을 깨울 것이 필요하다.
 `armRetryTimer()`(`server/worker/scheduler.js:10353`)와 **같은 모양**의
@@ -163,19 +195,31 @@ bead_overlay: { [bead_id]: { route?: string, metadata?: Record<string, string> }
 `added_at`에서 다시 무장한다. 새 폴링 cadence를 만들지 않으므로 ADR 0034의
 "복귀 트리거는 이벤트 구독" 근거를 유지한다.
 
-**표시(결정 3)**: admission 사유가 `grace_period`인 행은
-`⏳ <남은 초>초` 칩을 슬롯 4a(의존 — "지금 갈 수 있나")에 그린다. `⛔` 접두를
-쓰지 않는 것은 `prerequisite_unmet`과 같은 이유다 — 거절이 아니라 곧 풀리는
-진단이므로 danger 스타일을 타서는 안 된다. 남은 초는 클라이언트가
-`added_at + 20초 - now()`로 계산한다. 서버가 초를 실어 보내면 스냅샷마다 값이
-달라져 push 억제(`pushSnapshotIfChanged`)가 무력해진다.
+**표시(결정 3)**: 유예 칩의 판정은 **`added_at` 하나로 한다** —
+`added_at + QUEUE_GRACE_MS - now()`가 양수인 대기 행에만 `⏳ <남은 초>초`가
+슬롯 4a(의존 — "지금 갈 수 있나")에 선다. 0 이하면 칩도 버튼도 없다.
+
+`grace_period` admission 레코드를 **표시 조건으로 쓰지 않는** 이유가 이것이다:
+슬롯이 없어 tick이 다시 돌지 않으면 만료된 레코드가 남아 `0초`와 버튼이 계속
+서게 된다. 레코드는 서버가 왜 넘겼는지를 남기는 기록이고, 화면의 진실은 시각
+계산이다. `⛔` 접두를 쓰지 않는 것은 `prerequisite_unmet`과 같은 이유다 — 거절이
+아니라 곧 풀리는 진단이므로 danger 스타일을 타서는 안 된다. 남은 초를 서버가
+실어 보내지 않는 것은 스냅샷마다 값이 달라져 push 억제
+(`pushSnapshotIfChanged`)가 무력해지기 때문이다.
+
+**초 단위 갱신**: 남은 초가 흐르려면 1초마다 다시 그려야 한다. 모니터에는 그
+타이머가 이미 있다(`tick_timer`, `app/views/monitor/index.js:2958`). **Worker
+탭에는 없다** — `app/views/worker/index.js`에 `setInterval`이 하나도 없다. 유예
+행이 하나라도 보이는 동안에만 도는 1초 타이머를 Worker에 더하고, 유예 행이
+사라지면 해제한다. 상시 타이머를 만들지 않는다.
 
 **건너뛰기(결정 3)**: 유예 중인 행에만 `[지금 시작]`이 선다 — 슬롯 1 조작(행 1번
-줄 오른쪽 끝, `queueRowOps` 묶음), 공통 토큰 `.op-btn`. 클릭은 WS op
-`worker-queue-start-now`를 보내고, 서버는 그 항목의 `added_at`을
-`now() - QUEUE_GRACE_MS`로 내려 유예를 소진시킨 뒤 tick한다. 유예 상태가
-durable한 `added_at` 하나로만 표현되므로 이 조작도 durable하다 — 재시작해도
-다시 20초를 기다리지 않는다.
+줄 오른쪽 끝), 공통 토큰 `.op-btn`. 클릭은 WS op `worker-queue-start-now`를
+보내고, 서버는 그 bead를 **`▶ 진행`과 같은 명시적 실행 경로**로 즉시 dispatch
+한다. `added_at`을 과거로 내리지 않는다 — 그러면 이 기능이 durable 필드를
+조작하게 되고, 그 값을 읽는 다른 소비자에게 거짓 진입 시각을 남긴다. 결정 2가
+이미 명시적 실행 지시를 유예에서 뺐으므로 이 버튼은 새 권한이 아니라 그 경로의
+행 단위 진입점이다.
 
 ### 3.4 완료 행이 실행 사실을 말한다
 
@@ -183,22 +227,44 @@ durable한 `added_at` 하나로만 표현되므로 이 조작도 durable하다 �
 슬롯 5 줄이다. 그 줄 **앞쪽**에 route → 오케 → 워커 순으로 붙인다. 줄 수는 늘지
 않는다.
 
-**Worker 탭(2줄 행, `miniRow`의 `two_line`)**: `route_el`·`from_el`의
-`item.lane === 'done'` 제외를 걷는다. 완료 행의 2번째 줄이 슬롯 5 줄이므로 칩은
+**Worker 탭(2줄 행, `miniRow`의 `two_line`)**: `route_el`의
+`item.lane === 'done'` 제외만 걷는다. 완료 행의 2번째 줄이 슬롯 5 줄이므로 칩은
 그 줄에 선다.
 
-**재료**: `exec_chips` 배분에 `done`을 더한다(`lane-model.js:3632`). 완료 행의
-오케/워커가 답하는 질문은 "무엇으로 돌아갈까"가 아니라 **"무엇으로 돌았나"**이므로
-재료가 다를 수 있다. 이 스펙은 **핀 기준 하나로 통일한다**: 오버레이 metadata에서
-파생한 값, 즉 지금 후보·대기 행이 쓰는 것과 같은 식이다.
+**출처 칩(`from_el`)은 완료 행에서 계속 뺀다.** 사용자가 요청한 것은 route와 실행
+주체 둘뿐이고(결정 4), `← from`을 함께 되살리는 것은 승인된 의도가 요구하지 않는
+추가다. 그 칩을 뺀 원래 근거 — 좁은 화면에서 칩이 가져가는 가로가 그대로 제목이
+잃는 가로다(`app/views/worker/lanes.js:1775`) — 도 그대로 성립한다.
 
-- 근거: attempt 기록은 실행 중 타일이 이미 소유하고(`attemptExecChips`,
-  `lane-model.js:1412`), 완료 행이 실제로 답해야 하는 것은 "이 이슈가 어떤
-  설정으로 처리되는가"라는 사용자의 질문이다. 두 재료를 섞으면 같은 칩이 레인마다
-  다른 뜻을 갖는다.
-- 한계를 명시한다: 핀이 실행 이후에 바뀌면 완료 행의 칩은 그 새 핀을 말한다.
-  attempt가 실제로 기록한 값은 실행 영수증(`exec_receipt`)과 세션 이력이 소유하며,
-  완료 행의 `exec_receipt` 칩이 이미 같은 줄에서 그 질문에 답한다.
+**재료 — 핀이 아니라 attempt 기록이다.** 완료 행이 답하는 질문은 "무엇으로
+돌아갈까"가 아니라 **"무엇으로 돌았나"**이고, 핀 기준으로는 그 질문에 답할 수
+없다. 두 가지 사실이 그것을 막는다.
+
+1. **핀은 실행 이후에 바뀐다.** 핀을 읽으면 완료 행은 그 이슈가 실제로 무엇으로
+   돌았는지가 아니라 지금 무엇으로 돌 것인지를 말한다. 사용자의 요청 문장이
+   "어떤 오케랑 워커로 진행됐는지"이므로 이는 요구를 충족하지 못한다.
+2. **Worker 탭에는 완료 bead의 핀이 아예 없다.** `beadOverlay`는
+   `ready`/`blocked`/`in_progress`만 `add(issue, true)`로 부르고
+   `resolved`/`closed`는 `add(issue, false)`로 부른다
+   (`app/views/worker/workspace-adapter.js:569`·`:572`) — 완료 행에는 `metadata`도
+   `route`도 실리지 않는다. 핀 기준을 고르면 결정 5(두 탭이 같은 모양)를 Worker
+   탭에서 지킬 수 없다.
+
+따라서 재료를 이렇게 가른다.
+
+- **route**: 완료 bead의 `workflow`. Worker 탭은 이미 받고 있다 —
+  `beadWorkflowFor()`의 id 집합이 `laneBeadIds(queue, ['done'])`을 포함한다
+  (`server/ws/worker-handlers.js:1451`). 모니터는 §3.1이 같은 값을 싣는다.
+- **오케/워커**: 그 완료를 만든 **구현 attempt의 기록값** — `runner`·`model`·
+  `effort`. 실행 중 타일이 이미 같은 재료를 같은 함수로 쓴다(`attemptExecChips`,
+  `app/views/worker/lane-model.js:1412`). 완료 행이 참조할 attempt는 그 bead의
+  마지막 구현 attempt이고, 큐 스냅샷의 `attempts`가 두 탭 모두에 이미 실려 있다.
+- **재료가 없으면 그 칩만 생략한다**(fail-quiet). attempt 기록이 보존 기간을
+  넘겨 사라진 옛 완료 행은 route만 그린다. 틀린 칩보다 없는 칩이다.
+
+이 선택의 결과로 `exec_chips` 배분(`lane-model.js:3632`)의 문구는 그대로 산다 —
+완료 행은 "돌아갈 설정"을 얻지 않는다. 완료 행이 얻는 것은 attempt 파생 칩이고,
+같은 줄의 `exec_receipt` 칩과 같은 시제를 말한다.
 
 ### 3.5 대기 레인 세 종류 행이 같은 칩을 얻는다
 
@@ -206,10 +272,19 @@ durable한 `added_at` 하나로만 표현되므로 이 조작도 durable하다 �
   재료를 채우면 그대로 뜬다. 코드 변경 없음.
 - **직렬 행**: 병렬과 같다 — `lane.startsWith('s')`가 이미 exec 칩 배분에 있다.
 - **연결 레인 행**(`chainRow`): `MonitorChainLaneRow`에 `route` ·
-  `route_source` · `exec_chips` 세 필드를 더하고, `buildCrossLanes`가
-  오버레이에서 채운다. 뷰는 행의 위치 칩 옆에 route → 오케 → 워커를 그린다.
-  의존 칩(`⛓`·`← 선행`)을 뺀 근거는 그대로 유지한다 — 레인 순서가 곧 의존이라는
-  말은 **의존**에 대한 것이고, route와 실행 주체는 다른 질문에 답한다.
+  `route_source` · `exec_chips` · **`added_at`** 네 필드를 더하고,
+  `buildCrossLanes`가 오버레이와 큐 항목에서 채운다. 뷰는 행의 위치 칩 옆에
+  route → 오케 → 워커를 그린다. 의존 칩(`⛓`·`← 선행`)을 뺀 근거는 그대로
+  유지한다 — 레인 순서가 곧 의존이라는 말은 **의존**에 대한 것이고, route와 실행
+  주체는 다른 질문에 답한다.
+
+  **연결 레인 행도 유예 칩과 `[지금 시작]`을 갖는다.** 확정 레인 멤버는
+  `parallel_rows`에서 빠져(`app/views/worker/lane-model.js:4038`) `miniRow`가
+  아니라 `chainRow`로 그려지므로, §3.3의 유예 UI를 `queueRowOps`에만 두면 이 행
+  종류에서만 유예가 보이지 않는다. `chainRow`는 이미 자기 `✕`를 직접 그리므로
+  (UI-j92s §5.3) 같은 자리에 `[지금 시작]`을 더하고, `⏳` 칩은 위치 칩 옆에
+  둔다. 판정식은 병렬 행과 같은 `added_at + QUEUE_GRACE_MS - now()` 하나다.
+  큐 밖 행(`unplaced`)에는 `added_at`이 없으므로 칩도 버튼도 없다(fail-quiet).
 
 ## 4. 슬롯 표 개정 (ADR 0014 절차)
 
@@ -223,26 +298,43 @@ durable한 `added_at` 하나로만 표현되므로 이 조작도 durable하다 �
 2. **§5.1 슬롯 표에 두 항목을 더한다.** 슬롯 4a에 `⏳ <n>초`(유예), 슬롯 1
    조작에 `[지금 시작]`. 자리는 각각 `⛓ 선행 대기`·`↻ 이어하기`와 같은 판정으로
    정해진다 — 유예는 "지금 갈 수 있나", `[지금 시작]`은 "내가 여기서 무엇을 하나".
-3. **연결 레인 행이 슬롯 5를 갖는다**를 명시한다. 지금 표는 이 행을 다루지
-   않는다.
+3. **연결 레인 행이 슬롯 4a·5와 1번 조작을 갖는다**를 명시한다. 지금 표는 이
+   행을 다루지 않는다.
+
+이 스펙이 새로 다는 요소는 넷이고, 위 세 항목이 그 넷을 모두 덮는다: `⏳ <n>초`
+칩(4a) · `[지금 시작]` 버튼(1 조작) · 완료 행의 route·오케/워커 칩(5) · 연결 레인
+행의 route·오케/워커 칩(5). route 필터 칩(§3.2)은 카드 위가 아니라 레인 머리의
+필터 스트립에 서므로 슬롯 표의 대상이 아니다.
 
 `AGENTS.md`의 "워커·모니터 카드 배치 문법" 절은 스펙을 가리키기만 하므로 문장을
 고칠 필요가 없다.
 
 ## 5. 검증
 
-- `server/ws/monitor-handlers.test.js`: `bead_overlay`가 레인 멤버와 `done`에만
-  실리고, metadata가 실행 키 subset으로 잘리며, 캐시 미스 bead가 빠진다.
-- `server/worker/title-cache.test.js`: `execPinFor`의 부분성과 키 subset.
+- `server/ws/monitor-handlers.test.js`: `route`는 레인 멤버와 `done`에 실리고
+  실행 핀(`metadata`)은 **레인 멤버에만** 실리며, 그 핀이 실행 키 subset으로
+  잘리고, 캐시 미스 bead가 빠진다.
+- `server/worker/title-cache.test.js`: `execPinFor`의 부분성과 키 subset, 그리고
+  `exec_pin` 보존이 **`bd` 호출 수를 늘리지 않는다**는 것.
 - `server/worker/scheduler.test.js`: `added_at` 직후 tick이
   `grace_period`로 거절하고 20초 뒤 tick이 dispatch한다; `▶ 진행` 경로는 유예를
-  보지 않는다; `armGraceTimer`가 가장 이른 만료 하나에만 걸리고 멱등하다;
-  `worker-queue-start-now`가 유예를 소진시킨다.
+  보지 않는다; `armGraceTimer`가 가장 이른 만료 하나에만 걸리고 멱등하며 재시작
+  뒤 `added_at`에서 다시 무장한다; `worker-queue-start-now`가 명시적 실행 경로로
+  즉시 dispatch하고 `added_at`을 쓰지 않는다.
+- `server/worker/queue-store.test.js`: 대기 레인 사이 이동(`place`,
+  `applySerialGroup`)은 `added_at`을 재기록하고 같은 레인 `↑ ↓` 재정렬은
+  재기록하지 않는다 — §3.3이 기대는 기존 동작의 회귀 고정이다.
 - `app/views/worker/lane-model.test.js`: route 필터 네 값과 다중 선택,
-  `unset`이 파생 route를 잡는 것, `runnable_hidden.route` 집계, `done` 레인의
-  exec 칩 배분, 연결 레인 행의 세 새 필드.
-- `app/views/worker/lanes.test.js`: 완료 2줄·3줄 행의 칩, `⏳` 칩과
-  `[지금 시작]`의 슬롯 자리.
+  `unset`이 파생 route를 잡는 것, `runnable_hidden.route` 집계, 완료 행의
+  오케/워커가 **핀이 아니라 마지막 구현 attempt**에서 파생하는 것(그리고
+  `exec_chips` 배분에는 `done`이 여전히 없다는 것), 연결 레인 행의 네 새 필드.
+- `app/views/worker/lanes.test.js`: 완료 2줄·3줄 행의 칩(attempt 기록 파생,
+  기록 부재 시 route만), 실행 뒤 핀이 바뀌어도 완료 행 칩이 변하지 않는 것,
+  `⏳` 칩과 `[지금 시작]`의 슬롯 자리, 남은 초가 0 이하면 둘 다 서지 않는 것.
+- `app/views/monitor/index.test.js`: 확정 연결 레인 행이 `⏳` 칩과 `[지금 시작]`을
+  얻고, `unplaced` 행은 얻지 않는다.
+- `app/views/worker/index.test.js`: 유예 행이 보이는 동안에만 1초 타이머가 돌고
+  사라지면 해제된다.
 - `app/main.monitor.e2e.test.js`: 모니터 대기·완료 행에 오케/워커가 그려진다.
 - Pre-Handoff: `npm run tsc` · `npx vitest run --reporter=dot` · `npm run lint` ·
   `npm run prettier:write` · `npm run build`(번들·소스맵 포함, prettier 다음에).
@@ -257,8 +349,15 @@ durable한 `added_at` 하나로만 표현되므로 이 조작도 durable하다 �
   만들 뿐이다. 두 Bead가 같은 배선을 두 번 하지 않도록 UI-ys18을 이 Bead에
   `blocks`로 걸어 뒤에 세운다.
 - **유예 길이를 설정으로 열지 않는다**(결정 8). 20초 고정 상수다.
-- 결정: **완료 행의 오케/워커는 attempt 기록에서 파생하지 않는다** — 핀 기준
-  하나로 통일하고, 실행 시점의 사실은 같은 줄의 `exec_receipt`가 소유한다(§3.4).
+- 결정: **완료 행의 오케/워커는 핀에서 파생하지 않는다** — 그 완료를 만든
+  구현 attempt의 기록값에서 파생한다. 핀은 실행 이후에 바뀌고, Worker 탭에는
+  완료 bead의 핀이 애초에 실리지 않는다(§3.4).
+- 결정: **완료 행에 출처 칩(`← from`)은 되살리지 않는다** — 승인된 요청은 route와
+  실행 주체 둘뿐이고, 좁은 화면에서 칩이 가져가는 가로가 그대로 제목이 잃는
+  가로라는 원래 근거가 그대로 성립한다(§3.4).
+- 결정: **이 스펙은 `added_at`을 쓰지 않는다** — 읽기만 한다. 대기 레인 사이
+  이동이 그 값을 재기록해 유예가 다시 시작되는 것은 기존 동작이며 그대로 둔다.
+  `[지금 시작]`도 그 값을 조작하지 않고 명시적 실행 경로를 탄다(§3.3).
 - 결정: **route 필터는 흐림이 아니라 숨김이다** — 데크의 포커스 필터와 축이
   다르고, 같은 스트립의 `show_blocked`·`readiness`와 어긋나면 한 줄 안에서 두
   문법이 산다(§3.2).
@@ -283,8 +382,8 @@ durable한 `added_at` 하나로만 표현되므로 이 조작도 durable하다 �
 ### 후보 1 — 완료 행은 실행 사실을 말한다
 
 - **완료 레인 행은 슬롯 5 줄을 갖고 route·오케/워커를 싣는다.**
-  - **되돌리기 어려움: 성립.** 되돌리려면 두 탭의 완료 행 템플릿, exec 칩의 레인
-    배분, 카드 문법 스펙 §5.1·§6, 그리고 그 스펙을 가리키는 `AGENTS.md` 문장까지
+  - **되돌리기 어려움: 성립.** 되돌리려면 두 탭의 완료 행 템플릿, 완료 행이
+    마지막 구현 attempt에서 칩을 파생하는 경로, 그리고 카드 문법 스펙 §5.1·§6을
     함께 되돌려야 한다. 되돌린 뒤에도 사용자가 이미 읽던 사실이 화면에서
     사라지므로 코드 되돌림만으로 끝나지 않는다.
   - **맥락 없이는 놀라움: 성립.** 지금 코드는 반대를 명시적으로 적어 두었다 —
@@ -325,9 +424,14 @@ durable한 `added_at` 하나로만 표현되므로 이 조작도 durable하다 �
 ### 후보 3 — 대기 진입에 20초 유예를 둔다
 
 - **자동 dispatch는 큐 항목이 들어온 지 20초가 지나야 그 항목을 집는다.**
-  - **되돌리기 어려움: 불성립.** 상수 하나와 판정 한 줄, 타이머 하나로 닫혀
-    있고, 되돌려도 durable 상태가 남지 않는다 — 유예는 이미 있는 `added_at`으로만
-    표현되므로 이관할 데이터가 없다.
+  - **되돌리기 어려움: 불성립.** 되돌릴 표면은 상수 하나, `tickPass`의 판정 한
+    줄, 타이머 하나, WS op 하나, 그리고 두 탭의 칩·버튼이다. durable 잔재를
+    따로 따진다: 이 기능은 `added_at`을 **읽기만 하고 쓰지 않으며**(§3.3),
+    `[지금 시작]`도 그 값을 건드리지 않고 명시적 실행 경로를 탄다. 남는 durable
+    기록은 `grace_period` admission 레코드 하나인데, 그것은
+    `prerequisite_unmet`과 같은 자리에 같은 수명으로 살고 dispatch가 지운다 —
+    기능을 되돌리면 새로 쓰이지 않고 남은 것은 다음 dispatch에 지워진다. 표시도
+    레코드가 아니라 시각 계산에 걸려 있으므로(§3.3) 이관할 상태가 없다.
   - **맥락 없이는 놀라움: 성립.** 자동화를 켜 둔 사용자가 항목을 넣고 20초 동안
     아무 일도 일어나지 않는 것을 보면 고장으로 읽을 수 있다. 그래서 결정 3이
     남은 초와 `[지금 시작]`을 요구했다 — 놀라움을 화면이 직접 없앤다.
