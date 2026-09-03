@@ -174,14 +174,26 @@ issue)`에 넘긴다. 어느 단계든 throw나 `null`이면 `null`이다(fail-q
 `in_progress`·`resolved` 등 `open`이 아닌 status는 의존이 원인이 아니므로 현행 토큰이
 맞다(`notReadyReason` 주석의 의도 그대로).
 
-비용: 거부 1건당 `bd show` 1회 + foreign blocker당 `bd -C <root> show` 1회. `bd show`는
+비용: 거부 1건당 `bd show` 1회 + 같은 rig blocker당 `readStatus`(`bd show`) 1회 + foreign
+blocker당 `bd -C <root> show` 1회. `bd show`는
 `last-touched`를 써서 자기 감시를 울리지만 그 이벤트는 `rescanWaiting`(`bd ready` 1회,
 후보가 다시 not-ready)과 parked 스캔으로 끝나며 이 스펙 이전의 `runPass`가 이미 만드는
 이벤트와 같은 종류다. 새 루프는 없다 — 재스캔은 admission을 쓰지 않는다(§6.2).
 
 `recordSkipReason`의 시그니처는 `(workspace, bead_id, reason, stale_work, blockers)`가
 아니라 옵션 객체 하나를 더 받는 형태로 바꾼다: `(workspace, bead_id, reason, extra?: {
-stale_work?, blockers? })`. 기존 호출은 그대로 컴파일된다.
+stale_work?, blockers? })`. 현행 호출자 중 `refuseDispatch(workspace, bead_id, reason,
+stale_work)`는 `stale_work`를 네 번째 인자로 그대로 넘기고 있으므로 **`{ stale_work }`로
+감싸도록 함께 고친다** — 빠뜨리면 `worktree_stale_work` 진단(`stale_work` 요약·digest)이
+조용히 사라진다. 기존 stale-work admission 기록 테스트가 그 회귀를 잡는다(§12).
+
+**판정 대상은 모든 미해결 `blocks` 선행이다** — 같은 rig(`rig: null`, `readStatus`)와
+foreign(`rig` 있음, `queryForeignBlockerStatus`) 둘 다 `blockers`에 실린다.
+`unresolvedBlockersOf`가 그렇게 돌려주고, "무엇을 기다리나"라는 질문에 rig는 무관하다.
+foreign 여부는 §6.1의 외부 활동 매칭에서만 의미가 있다. 사용자 승인 문구(설계 제시 §1
+"미해결 선행이 있으면 `⛓ 선행 대기`, 선행이 없을 때만 `not_ready`")가 이 범위이며, §3-1의
+"foreign 의존의 존재에 건다"는 트리거 원천(연결 레인이 아니라 의존)을 말한 것이지 같은
+rig 선행을 제외한 것이 아니다.
 
 ### 5.3 지우는 시점
 
@@ -287,8 +299,15 @@ index 규칙은 현행(병렬 raw 길이 + 같은 레포 offset). 고정 행(실
 | 실행중·PR 대기·완료·외부·위치 미확인 | 유지 | 유지 |
 
 `⛓ 선행 대기`가 `🔒 대기`보다 앞서는 이유: 전자는 스케줄러가 증명한 진단이고 후자는
-표시 캐시의 추정이다. admission 자료는 `buildCrossLanes`가 이미 받는 workspace 스냅샷의
-`admission`에서 읽는다(재료 추가 없음). 병렬/직렬 구분은 §7 뒤에는 병렬뿐이므로 라벨에
+표시 캐시의 추정이다.
+
+**재료 배선.** `buildCrossLanes`는 지금 workspace 스냅샷도 `admission`도 받지 않는다 —
+`admission`은 `buildLanes` 안에서 workspace마다 읽는 지역값이다. 그래서 `buildLanes`가
+보이는 workspace 전부의 `admission`을 `Map<bead_id, AdmissionRecord>`로 모아
+`buildCrossLanes`에 인자 하나로 넘기고(`blocked_by_map`·`locations`와 같은 방식의
+cross-workspace 합집합), `chainRowLocation`이 그 맵을 읽는다. 새 프로토콜 필드는 없고
+`lane-model.js` 내부 배선뿐이다. 같은 bead가 두 workspace에 있을 수 없으므로 충돌
+규칙은 필요 없다. 병렬/직렬 구분은 §7 뒤에는 병렬뿐이므로 라벨에
 올리지 않는다(UI-jaua §8 결정 유지).
 
 ## 9. 범위 5 — `⚠ 의존 없음` 오탐과 `재적용` 조건
@@ -296,10 +315,14 @@ index 규칙은 현행(병렬 raw 길이 + 같은 레포 offset). 고정 행(실
 ### 9.1 `mismatch`
 
 ```
-mismatch = confirmed ∧ previous !== null
-         ∧ !rows[previous].done                       // 추가
-         ∧ !(blocked_by_map.get(bead_id) ?? []).includes(previous)
+previous_row = rows.length > 0 ? rows[rows.length - 1] : null   // 직전에 push한 행 객체
+mismatch = confirmed ∧ previous_row !== null
+         ∧ !previous_row.done                                     // 추가
+         ∧ !(blocked_by_map.get(bead_id) ?? []).includes(previous_row.id)
 ```
+
+`previous`는 지금 id 문자열이라 `rows[previous]`로는 접근할 수 없다 — 행 객체를 잡아 그
+`done`을 읽는다.
 
 바로 앞 멤버가 `완료`면 의존은 이미 이행된 것이고, 그 사실은 열린 blocker 목록에서
 읽을 수 없다. `blocked_by_map`에 키가 없는 경우의 현행 처리(어긋남으로 봄)는 그대로다 —
@@ -340,15 +363,17 @@ UI-jaua §6.1의 보류 판정이 `확정` 앞에서 그 미확정을 따로 막
 - `server/worker/queue-store.test.js`: `recordAdmission`이 유효한 `blockers`를 저장하고
   잘못된 원소는 필드를 버린다; 같은 reason·같은 blockers는 no-op; 로드 검증; `publicAdmissions`
   통과.
-- `server/worker/scheduler.test.js`: (a) not ready + open + 미해결 foreign blocker →
-  `prerequisite_unmet` + blockers; (b) blocker 없음/조회 실패/`in_progress` → 현행
-  `not_ready:<status>`; (c) `runWaitingRescan`이 admission 후보를 세고 ready 교집합에서
+- `server/worker/scheduler.test.js`: (a) not ready + open + 미해결 blocker(같은 rig·foreign
+  각 1건) → `prerequisite_unmet` + blockers; (b) blocker 없음/조회 실패/`in_progress` → 현행
+  `not_ready:<status>`; (a') `refuseDispatch` 경로의 `worktree_stale_work` 기록이 `stale_work`
+  요약을 그대로 싣는다(현행 회귀 테스트 유지); (c) `runWaitingRescan`이 admission 후보를 세고 ready 교집합에서
   `clearAdmission` 뒤 `tickPass`; (d) 후보가 admission뿐이고 not-ready면 아무것도 쓰지 않는다;
   (e) `spec_review_stale` 기록은 재스캔이 지우지 않는다.
 - `server/worker/attach.test.js`(또는 현행 위치): `holdsWaitingOn`이 admission blockers rig로
   참이 된다; 같은 rig(`rig: null`)만 있으면 거짓.
 - `app/views/monitor/drop-plan.test.js`: `planLaneConfirm`·`planLaneReapply`의 `queue_ops`가
-  빈 배열; dep op는 현행.
+  빈 배열; dep op는 현행. 확정·재적용의 placement를 기대하던 현행 drop-plan·Monitor index·
+  Monitor E2E 테스트의 기대값은 이 결정에 맞춰 갱신한다(구현 코드를 테스트에 맞추지 않는다).
 - `app/views/monitor/index.test.js`: `runLane`이 직렬 레인 행에 `worker-queue-place`
   `{lane:'parallel'}`를 보내고 이어서 arm; 병렬 행은 place하지 않는다.
 - `app/views/worker/lane-model.test.js`: `admissionBadge` `⛓ 선행 대기`; `blockedByFields`가
@@ -382,13 +407,19 @@ UI-jaua §6.1의 보류 판정이 `확정` 앞에서 그 미확정을 따로 막
   기록 shape와 재스캔 후보 집합이 스케줄러·attach·클라이언트 세 소비자에 걸친다. 맥락 없이
   놀라움: 상태 복사 토큰 대신 증명된 blockers를 쓰고 ready에서만 지우는 규칙은 코드만
   보면 이유가 없다. 실재한 대안: cadence 재도입·레포별 직렬 영역·연결 레인 전용 트리거.
+  tradeoff: 선택안은 거부 1건당 `bd show` 몇 회를 더 내는 대신 ADR 0023의 비용 상한(이벤트당
+  `bd ready` 1회, 무이벤트 0회)과 단일 판정자를 지킨다 — cadence는 상한을 깨고, 레포별
+  직렬 영역은 순서 정본을 셋으로 늘리며, 레인 전용 트리거는 레인 없는 의존을 버린다.
   `summary`: "Worker의 복귀 트리거는 이벤트 구독이며 재스캔 후보는 waiting attempt와
   `prerequisite_unmet` admission 큐 항목이다 — 판정은 요청 rig의 `bd ready` 한 번, 복귀는
   `tickPass`, not-ready에는 쓰지 않고 ready에서만 그 admission을 지운다" → ADR, supersede 0023
 - 연결 레인 `확정`은 의존만 쓰고 `▶ 진행`이 적재와 arm을 쓴다. 되돌리기 어려움: 확정 레인의
   큐 밖 멤버가 정상 상태가 되어 위치 칩·`재적용` 조건·진행 대상이 그 전제 위에 선다. 맥락
   없이 놀라움: `auto_advance` ON 레포에서 확정이 발차였던 과거를 모르면 분리 이유가 안
-  보인다. 실재한 대안: 큐에 넣되 보류 플래그로 후보에서 빼는 방식. `summary`: "연결 레인
+  보인다. 실재한 대안: 큐에 넣되 보류 플래그로 후보에서 빼는 방식. tradeoff: 선택안은
+  확정 뒤 멤버가 큐 순번을 미리 차지하지 못하는 대신 스케줄러에 새 후보 필터를 두지 않고
+  `arm`의 현행 의미(후보 확대)를 그대로 쓴다 — 보류 플래그는 순번을 지키지만 `auto_advance`
+  ON에서도 후보를 빼는 두 번째 축을 만들어 §5.2의 `armed_only` 규칙과 겹친다. `summary`: "연결 레인
   확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다 — 직렬 레인 멤버는 진행 시
   병렬 큐로 옮긴다" → ADR
 - `⚠ 의존 없음`은 앞 멤버가 완료면 판정하지 않는다. 오탐 정정이고 되돌릴 이유가 없으며
