@@ -53,6 +53,7 @@
  */
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { parseArtifactScope, parseNameOnlyLog } from './artifact-scope.js';
+import { WORKFLOW_ROUTES } from './routes.js';
 
 /**
  * Admission receipt: any reviewer token + EXACTLY 40 hex.
@@ -63,8 +64,7 @@ import { parseArtifactScope, parseNameOnlyLog } from './artifact-scope.js';
  */
 export const ADMISSION_RECEIPT_RE = /^[A-Za-z0-9_.:-]+@[0-9a-fA-F]{40}$/;
 
-/** @type {ReadonlyArray<'spec_backed'|'full_plan'|'quick_fix'>} */
-const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan', 'quick_fix'];
+export const ADMISSIBLE_ROUTES = WORKFLOW_ROUTES;
 const EXACT_SHA_RE = /^[0-9a-fA-F]{40}$/;
 const PLAN_APPROVAL_RE = /^user@([0-9a-fA-F]{40})$/;
 

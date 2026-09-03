@@ -274,6 +274,37 @@ describe('buildMonitorPipeline runnable lane (UI-qrfo §4)', () => {
     expect(out.map((w) => w.root_dir)).toEqual([WS_A]);
   });
 
+  test('requests expanded rows and keeps a readiness-only workspace', () => {
+    const readiness_row = {
+      ...candidate('A-draft'),
+      admitted: false,
+      spec_state: 'draft',
+      has_description: true,
+      awaiting_user: false,
+      worker_ineligible: false
+    };
+    const runnableFor = vi.fn(
+      (
+        /** @type {string} */ _key,
+        /** @type {Set<string>} */ _exclude_ids,
+        /** @type {{ include_unadmitted?: boolean }} */ query = {}
+      ) => (query.include_unadmitted === true ? [readiness_row] : [])
+    );
+
+    const out = buildMonitorPipeline({
+      listWorkspaces: () => [{ path: WS_A }],
+      listHidden: () => [],
+      snapshotFor: () => snapshot(),
+      runnableFor
+    });
+
+    expect(runnableFor).toHaveBeenCalledWith(WS_A, new Set(), {
+      include_unadmitted: true
+    });
+    expect(out[0].runnable).toEqual([readiness_row]);
+    expect(out.map((workspace) => workspace.root_dir)).toEqual([WS_A]);
+  });
+
   test('excludes a candidate that already sits in a lane', () => {
     const out = build({
       workspaces: [WS_A],
@@ -1031,6 +1062,35 @@ describe('workspaces_state counts (UI-eey2 §9.4)', () => {
       runnable: 0,
       session_active: 0
     });
+  });
+
+  test('counts expanded readiness rows as runnable', () => {
+    const readiness_row = {
+      ...candidate('A-draft'),
+      admitted: false,
+      spec_state: 'draft'
+    };
+    const runnableFor = vi.fn(
+      (
+        /** @type {string} */ _key,
+        /** @type {Set<string>} */ _exclude_ids,
+        /** @type {{ include_unadmitted?: boolean }} */ query = {}
+      ) => (query.include_unadmitted === true ? [readiness_row] : [])
+    );
+
+    const out = buildMonitorWorkspacesState({
+      listWorkspaces: () => [{ path: WS_A }],
+      listHidden: () => [],
+      snapshotFor: () => snapshot(),
+      issuePrefixFor: () => null,
+      sessionDefaultsFor: () => ({ values: {}, warnings: [] }),
+      runnableFor
+    });
+
+    expect(runnableFor).toHaveBeenCalledWith(WS_A, new Set(), {
+      include_unadmitted: true
+    });
+    expect(out[0]).toMatchObject({ counts: { runnable: 1 } });
   });
 
   test('counts a paused and an unhandled failed bead as running', () => {
