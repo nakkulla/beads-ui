@@ -1802,6 +1802,53 @@ describe('worker/attach waiting activity routing (UI-978d §4)', () => {
     expect(rescan).not.toHaveBeenCalled();
   });
 
+  /**
+   * Build one subscribed attachment holding a `prerequisite_unmet` admission
+   * and NO attempt — the queue-only shape UI-d3i1 §6.1 adds.
+   *
+   * @param {string|null} rig
+   */
+  function admissionActivityAttachment(rig) {
+    foreign_prefix_capture.value = 'OWNER';
+    const runtime = createWorkerRuntime();
+    runtime.queueStore.recordAdmission(WS, {
+      bead_id: 'UI-waiting',
+      reason: 'prerequisite_unmet',
+      blockers: [{ id: 'OWNER-1', rig, status: 'open' }]
+    });
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      watchBeads: vi.fn(() => ({ close: () => {} })),
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    const rescan = vi
+      .spyOn(att.scheduler, 'rescanWaiting')
+      .mockResolvedValue({ checked: 0, returned: 0 });
+    att.beadsChanges.start();
+    return { rescan };
+  }
+
+  test('rescans when an admission blocker names the moving rig', () => {
+    const owner_root = path.join(tmp_state, 'owner');
+    const { rescan } = admissionActivityAttachment('OWNER');
+
+    publishWorkspaceActivity(path.resolve(owner_root));
+
+    expect(rescan).toHaveBeenCalledWith(path.resolve(WS));
+  });
+
+  test('ignores an admission holding only same-rig blockers', () => {
+    const owner_root = path.join(tmp_state, 'owner');
+    const { rescan } = admissionActivityAttachment(null);
+
+    publishWorkspaceActivity(path.resolve(owner_root));
+
+    expect(rescan).not.toHaveBeenCalled();
+  });
+
   test('unsubscribes from activity on stop', () => {
     const owner_root = path.join(tmp_state, 'owner');
     const { att, rescan } = waitingActivityAttachment('OWNER');

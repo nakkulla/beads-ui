@@ -414,11 +414,18 @@
  * @property {StaleWorkIdentity} [identity]
  */
 /**
+ * @typedef {Object} AdmissionBlocker
+ * @property {string} id
+ * @property {string|null} rig
+ * @property {string} status
+ */
+/**
  * @typedef {Object} AdmissionRecord
  * @property {string} reason
  * @property {number} at
  * @property {true} [stale]
  * @property {StaleWorkAdmission} [stale_work]
+ * @property {AdmissionBlocker[]} [blockers]
  */
 /**
  * @typedef {Object} Queue
@@ -1723,6 +1730,40 @@ function normalizeStaleWork(value) {
     return { ...normalized, identity };
   }
   return normalized;
+}
+
+/**
+ * The unmet `blocks` prerequisites a `prerequisite_unmet` admission carries
+ * (UI-d3i1 §5.1), or null when the payload is not a well-formed list. A single
+ * malformed element drops the whole field: the diagnosis is the list, and a
+ * partial list would name the wrong thing to wait for.
+ *
+ * @param {unknown} value
+ * @returns {AdmissionBlocker[]|null}
+ */
+function normalizeAdmissionBlockers(value) {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  /** @type {AdmissionBlocker[]} */
+  const blockers = [];
+  for (const item of value) {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== 'string' ||
+      item.id.length === 0 ||
+      !(typeof item.rig === 'string' || item.rig === null) ||
+      typeof item.status !== 'string'
+    ) {
+      return null;
+    }
+    blockers.push({
+      id: item.id,
+      rig: /** @type {string|null} */ (item.rig),
+      status: item.status
+    });
+  }
+  return blockers;
 }
 
 /**
@@ -3756,6 +3797,10 @@ function normalizeQueue(raw) {
         const stale_work = normalizeStaleWork(value.stale_work);
         if (stale_work !== null) {
           q.admission[bead_id].stale_work = stale_work;
+        }
+        const blockers = normalizeAdmissionBlockers(value.blockers);
+        if (blockers !== null) {
+          q.admission[bead_id].blockers = blockers;
         }
       }
     }
@@ -8106,13 +8151,14 @@ export function createQueueStore(options = {}) {
      * same-record no-op guard, so a stale flag flipping is a real change.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, reason: string, stale?: boolean, stale_work?: unknown }} input
+     * @param {{ bead_id: string, reason: string, stale?: boolean, stale_work?: unknown, blockers?: unknown }} input
      * @returns {QueueOpResult}
      */
     recordAdmission(workspace, input) {
       const { bead_id, reason } = input;
       const stale = input.stale === true;
       const stale_work = normalizeStaleWork(input.stale_work);
+      const blockers = normalizeAdmissionBlockers(input.blockers);
       return applyUnconditional(workspace, (next) => {
         if (
           typeof bead_id !== 'string' ||
@@ -8128,7 +8174,8 @@ export function createQueueStore(options = {}) {
           prior.reason === reason &&
           (prior.stale === true) === stale &&
           JSON.stringify(prior.stale_work ?? null) ===
-            JSON.stringify(stale_work)
+            JSON.stringify(stale_work) &&
+          JSON.stringify(prior.blockers ?? null) === JSON.stringify(blockers)
         ) {
           return false;
         }
@@ -8136,7 +8183,8 @@ export function createQueueStore(options = {}) {
           reason,
           at: now(),
           ...(stale ? { stale: true } : {}),
-          ...(stale_work === null ? {} : { stale_work })
+          ...(stale_work === null ? {} : { stale_work }),
+          ...(blockers === null ? {} : { blockers })
         };
         return true;
       });

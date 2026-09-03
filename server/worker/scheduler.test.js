@@ -7392,6 +7392,109 @@ describe('scheduler silent-skip reasons', () => {
     );
   });
 
+  test('records prerequisite_unmet with the unmet blocker it proved', async () => {
+    const env = setup({
+      config: {
+        S1: {
+          ready: false,
+          status: 'open',
+          dependencies: [{ dependency_type: 'blocks', id: 'S9' }]
+        },
+        S9: { status: 'in_progress' }
+      },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const record = env.store.snapshot(WS).admission.S1;
+    expect([record.reason, record.blockers]).toEqual([
+      'prerequisite_unmet',
+      [{ id: 'S9', rig: null, status: 'in_progress' }]
+    ]);
+  });
+
+  test('records not_ready when every blocks edge is already closed', async () => {
+    const env = setup({
+      config: {
+        S1: {
+          ready: false,
+          status: 'open',
+          dependencies: [{ dependency_type: 'blocks', id: 'S9' }]
+        },
+        S9: { status: 'closed' }
+      },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe('not_ready:open');
+  });
+
+  test('records not_ready when a foreign blocker cannot be observed', async () => {
+    const env = setup({
+      config: {
+        S1: {
+          ready: false,
+          status: 'open',
+          dependencies: [
+            { dependency_type: 'blocks', id: 'Nosuchrig-1', external: true }
+          ]
+        }
+      },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe('not_ready:open');
+  });
+
+  test('records not_ready when the issue read throws', async () => {
+    const env = setup({
+      config: {
+        S1: {
+          ready: false,
+          status: 'open',
+          throwOnReadIssue: true,
+          dependencies: [{ dependency_type: 'blocks', id: 'S9' }]
+        },
+        S9: { status: 'open' }
+      },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe('not_ready:open');
+  });
+
+  test('records not_ready for an in_progress bead holding an open blocker', async () => {
+    const env = setup({
+      config: {
+        S1: {
+          ready: false,
+          status: 'in_progress',
+          dependencies: [{ dependency_type: 'blocks', id: 'S9' }]
+        },
+        S9: { status: 'open' }
+      },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'not_ready:in_progress'
+    );
+  });
+
   test('records bd_snapshot_failed when the scan snapshot throws', async () => {
     const env = setup({
       config: { S1: { throwOnSnapshotAt: 'all' } },
@@ -17261,6 +17364,88 @@ describe('scheduler waiting return rescan (UI-978d §4)', () => {
 
     expect(publishActivity).toHaveBeenCalledTimes(1);
     expect(publishActivity).toHaveBeenCalledWith(WS);
+  });
+
+  /**
+   * A queue-resident bead refused with `prerequisite_unmet` and NO attempt —
+   * the shape §6.2 widens the candidate set for (UI-d3i1).
+   *
+   * @param {string[]} [lane_ids]
+   */
+  function admissionRescanEnv(lane_ids = []) {
+    const config = { S1: { route: 'quick_fix', ready: false } };
+    const env = setup({ config, slots: 1 });
+    if (lane_ids.length > 0) {
+      env.store.place(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        bead_id: 'S1',
+        lane: lane_ids[0]
+      });
+      env.store.setAutoAdvance(WS, true);
+    } else {
+      seedQueue(env.store, ['S1']);
+    }
+    env.store.recordAdmission(WS, {
+      bead_id: 'S1',
+      reason: 'prerequisite_unmet',
+      blockers: [{ id: 'dotfiles-1', rig: 'dotfiles', status: 'open' }]
+    });
+    return { env, config };
+  }
+
+  test('counts a prerequisite_unmet queue entry as a candidate', async () => {
+    const { env } = admissionRescanEnv();
+
+    const result = await env.scheduler.rescanWaiting(WS);
+
+    expect(result).toEqual({ checked: 1, returned: 0 });
+  });
+
+  test('writes nothing when the admission candidate is still not ready', async () => {
+    const { env } = admissionRescanEnv();
+    const revision_before = env.store.snapshot(WS).revision;
+
+    await env.scheduler.rescanWaiting(WS);
+
+    expect(env.store.snapshot(WS).revision).toBe(revision_before);
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'prerequisite_unmet'
+    );
+  });
+
+  test('clears the prerequisite record once the bead is ready again', async () => {
+    const { env, config } = admissionRescanEnv();
+    config.S1.ready = true;
+
+    const result = await env.scheduler.rescanWaiting(WS);
+
+    expect(result).toEqual({ checked: 1, returned: 1 });
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+  });
+
+  test('counts a serial-lane member with the same record', async () => {
+    const { env } = admissionRescanEnv(['s1']);
+
+    const result = await env.scheduler.rescanWaiting(WS);
+
+    expect(result).toEqual({ checked: 1, returned: 0 });
+  });
+
+  test('leaves a spec_review_stale record for the person to dispose of', async () => {
+    const config = { S1: { route: 'quick_fix', ready: true } };
+    const env = setup({ config, slots: 0 });
+    seedQueue(env.store, ['S1']);
+    env.store.recordAdmission(WS, {
+      bead_id: 'S1',
+      reason: 'spec_review_stale',
+      stale: true
+    });
+
+    await env.scheduler.rescanWaiting(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'spec_review_stale'
+    );
   });
 
   test('fails quiet without a ready set reader', async () => {

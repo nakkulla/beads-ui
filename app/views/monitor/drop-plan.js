@@ -665,40 +665,6 @@ function disarmOps(model, lane, lane_id, leaving) {
 }
 
 /**
- * Load every member no queue holds onto its own repo's parallel tail (§5.4).
- * 큐·실행중·PR 대기·완료 어디에도 없는 멤버를 **레인 순서대로** 올리고, 같은
- * 레포에 여럿이면 계획 안에서 앞서 잡은 자리만큼 뒤로 민다 — 서버는 op를 하나씩
- * 받으므로 index가 겹치면 순서가 뒤집힌다.
- *
- * @param {DepPlanner} planner
- * @param {DropModel} model
- * @param {LaneEntry[]} entries
- * @param {QueueOp[]} queue_ops
- */
-function placeUnplacedMembers(planner, model, entries, queue_ops) {
-  /** @type {Map<string, number>} */
-  const taken = new Map();
-  for (const entry of entries) {
-    if (model.placed_members.has(entry.bead_id)) {
-      continue;
-    }
-    const root_dir = planner.ownerOf(entry.bead_id);
-    if (root_dir === null) {
-      return;
-    }
-    const offset = taken.get(root_dir) ?? 0;
-    queue_ops.push(
-      placeOp(
-        entry.bead_id,
-        root_dir,
-        (model.parallel_raw_length.get(root_dir) ?? 0) + offset
-      )
-    );
-    taken.set(root_dir, offset + 1);
-  }
-}
-
-/**
  * The entries a 레인 op carries. `dep_created_by_lane`은 서버가 소유하는 값이므로
  * (UI-jaua §7.1) 클라이언트는 멤버십과 순서만 보낸다 — 클라이언트가 실어 보낸
  * `true`를 서버가 믿으면 성공하지 않은 `dep-add`의 소유권을 기록하게 된다.
@@ -1033,9 +999,11 @@ export function planDrop(drag, target, model) {
 }
 
 /**
- * The `확정` button (§5.4 확정 행): 인접 dep를 만들고, 아직 어느 큐에도 없는
- * 멤버를 자기 레포 병렬 큐 끝에 올리고, 레인을 `confirmed`로 넘긴다. 사이클이면
- * **`confirm`도 보내지 않는다** — 의존 없는 확정 레인은 어긋남만 남긴다.
+ * The `확정` button (UI-d3i1 §7.1): 인접 dep를 만들고 레인을 `confirmed`로
+ * 넘긴다. 큐 적재는 하지 않는다 — `auto_advance` ON 레포에서는 병렬 큐 진입이
+ * 곧 발차라 확정이 출발이 되어 버리므로, 적재와 arm은 `▶ 진행`이 소유한다.
+ * 사이클이면 **`confirm`도 보내지 않는다** — 의존 없는 확정 레인은 어긋남만
+ * 남긴다.
  *
  * @param {string} lane_id
  * @param {DropModel} model
@@ -1060,9 +1028,6 @@ export function planLaneConfirm(lane_id, model) {
   /** @type {QueueOp[]} */
   const queue_ops = [];
   linkAdjacent(planner, entries, lane_id);
-  if (planner.state.refusal === null) {
-    placeUnplacedMembers(planner, model, entries, queue_ops);
-  }
   /** @type {LaneOp[]} */
   const lane_ops = sameEntries(entries, lane.entries)
     ? []
@@ -1080,8 +1045,9 @@ export function planLaneConfirm(lane_id, model) {
 }
 
 /**
- * The `재적용` button (§5.2): 확정 레인의 빠진 인접 dep를 다시 만들고 `미적재`
- * 멤버를 다시 올린다. 레인 자체는 바뀌지 않으므로 레인 op가 없다.
+ * The `재적용` button (UI-d3i1 §7.1): 확정 레인의 빠진 인접 dep를 다시 만드는
+ * 것만 한다. 큐 적재는 `▶ 진행`이 소유하므로 `queue_ops`는 비어 있고, 레인
+ * 자체는 바뀌지 않으므로 레인 op도 없다.
  *
  * @param {string} lane_id
  * @param {DropModel} model
@@ -1098,9 +1064,6 @@ export function planLaneReapply(lane_id, model) {
   /** @type {QueueOp[]} */
   const queue_ops = [];
   linkAdjacent(planner, entries, lane_id);
-  if (planner.state.refusal === null) {
-    placeUnplacedMembers(planner, model, entries, queue_ops);
-  }
   /** @type {LaneOp[]} */
   const lane_ops = sameEntries(entries, lane.entries)
     ? []

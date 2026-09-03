@@ -2118,13 +2118,16 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} bead_id
    * @param {string} reason
-   * @param {StaleWorkAdmission} [stale_work]
+   * @param {{ stale_work?: StaleWorkAdmission, blockers?: PrerequisiteBlocker[] }} [extra]
    */
-  function recordSkipReason(workspace, bead_id, reason, stale_work) {
+  function recordSkipReason(workspace, bead_id, reason, extra) {
+    const stale_work = extra?.stale_work;
+    const blockers = extra?.blockers;
     const result = deps.store.recordAdmission(workspace, {
       bead_id,
       reason,
-      ...(stale_work ? { stale_work } : {})
+      ...(stale_work ? { stale_work } : {}),
+      ...(blockers ? { blockers } : {})
     });
     if (result && result.ok) {
       notifyChanged(workspace);
@@ -2184,7 +2187,12 @@ export function createScheduler(deps) {
    * @param {StaleWorkAdmission} [stale_work]
    */
   function refuseDispatch(workspace, bead_id, reason, stale_work) {
-    recordSkipReason(workspace, bead_id, reason, stale_work);
+    recordSkipReason(
+      workspace,
+      bead_id,
+      reason,
+      stale_work ? { stale_work } : undefined
+    );
     claimed.delete(bead_id);
     dispatch_refused.add(bead_id);
     requestRescan();
@@ -5165,6 +5173,60 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The unmet `blocks` prerequisites of a queued bead the pass just refused
+   * (UI-d3i1 §5.2), or null when the refusal is not a dependency wait or the
+   * dependency graph could not be observed.
+   *
+   * Only an `open` bead is asked: `in_progress` / `resolved` mean a session's
+   * leftover claim or a settled bead, and `notReadyReason`'s status token is
+   * already the right diagnosis for those.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {BeadSnapshot} snap
+   * @returns {Promise<PrerequisiteBlocker[]|null>}
+   */
+  async function prerequisiteBlockersOf(workspace, bead_id, snap) {
+    if (snap.status !== 'open' || typeof deps.bd.readIssue !== 'function') {
+      return null;
+    }
+    /** @type {Record<string, any>} */
+    let issue;
+    try {
+      issue = await deps.bd.readIssue(bead_id);
+    } catch (err) {
+      log('admission issue read failed for %s: %o', bead_id, err);
+      return null;
+    }
+    if (!issue || typeof issue !== 'object') {
+      return null;
+    }
+    try {
+      return await unresolvedBlockersOf(workspace, issue);
+    } catch (err) {
+      log('admission blocker read failed for %s: %o', bead_id, err);
+      return null;
+    }
+  }
+
+  /**
+   * Record ONE not-ready refusal with the best diagnosis available: the proven
+   * unmet prerequisites when there are any, else the current status token.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {BeadSnapshot} snap
+   */
+  async function recordNotReady(workspace, bead_id, snap) {
+    const blockers = await prerequisiteBlockersOf(workspace, bead_id, snap);
+    if (blockers !== null && blockers.length > 0) {
+      recordSkipReason(workspace, bead_id, 'prerequisite_unmet', { blockers });
+      return;
+    }
+    recordSkipReason(workspace, bead_id, notReadyReason(snap));
+  }
+
+  /**
    * The four prerequisite-wait conditions, in order (waiting-tier spec §4.2),
    * or null when any of them fails to hold or cannot be observed.
    *
@@ -6537,7 +6599,7 @@ export function createScheduler(deps) {
       if (!snap.ready || snap.blocked) {
         reservation?.release();
         if (!dequeueIfClosed(workspace, bead_id, snap)) {
-          recordSkipReason(workspace, bead_id, notReadyReason(snap));
+          await recordNotReady(workspace, bead_id, snap);
         }
         claimed.delete(bead_id);
         return;
@@ -10062,7 +10124,29 @@ export function createScheduler(deps) {
       }
       candidates.add(record.bead_id);
     }
-    if (candidates.size === 0) {
+    // 큐·직렬 레인에 앉은 채 `prerequisite_unmet`으로 거부된 항목도 후보다
+    // (UI-d3i1 §6.2): 그 항목에는 attempt가 없으므로 위의 waiting 순회가
+    // 영영 보지 못한다. 직렬 레인의 head가 아닌 멤버도 넣는다 — 발차 규칙은
+    // `tickPass`가 그대로 소유하고 재스캔은 "다시 물을 가치가 있나"만 답한다.
+    /** @type {Set<string>} */
+    const admission_candidates = new Set();
+    const admission = /** @type {Record<string, any>} */ (q.admission || {});
+    for (const bead_id of lanes) {
+      if (
+        candidates.has(bead_id) ||
+        admission[bead_id]?.reason !== 'prerequisite_unmet' ||
+        claimed.has(bead_id) ||
+        active.has(bead_id) ||
+        paused.has(bead_id) ||
+        dispatch_refused.has(bead_id) ||
+        cleanup_pending.has(bead_id)
+      ) {
+        continue;
+      }
+      admission_candidates.add(bead_id);
+    }
+    const checked = candidates.size + admission_candidates.size;
+    if (checked === 0) {
       return { checked: 0, returned: 0 };
     }
     /** @type {Set<string>} */
@@ -10073,17 +10157,30 @@ export function createScheduler(deps) {
       log('waiting ready scan failed for %s: %o', workspace, err);
       return { checked: 0, returned: 0 };
     }
-    const returned = [...candidates].filter((bead_id) => ready.has(bead_id));
+    const returned = [...candidates, ...admission_candidates].filter(
+      (bead_id) => ready.has(bead_id)
+    );
     log(
       'waiting rescan checked %d candidate(s) for %s; %d ready',
-      candidates.size,
+      checked,
       workspace,
       returned.length
     );
     if (returned.length > 0) {
+      // 복귀가 확인된 선행 대기 기록만 지운다 (§5.3): 슬롯이 없어 이번 pass가
+      // 발차하지 못해도 닫힌 선행을 가리키는 뱃지가 남지 않게 한다. 사람의
+      // 처분을 기다리는 다른 reason은 건드리지 않는다.
+      for (const bead_id of returned) {
+        if (admission_candidates.has(bead_id)) {
+          const result = deps.store.clearAdmission(workspace, bead_id);
+          if (result && result.ok) {
+            notifyChanged(workspace);
+          }
+        }
+      }
       await tickPass(workspace);
     }
-    return { checked: candidates.size, returned: returned.length };
+    return { checked, returned: returned.length };
   }
 
   /**
@@ -10863,7 +10960,7 @@ export function createScheduler(deps) {
       }
       if (!snap.ready || snap.blocked) {
         if (!dequeueIfClosed(workspace, entry.bead_id, snap)) {
-          recordSkipReason(workspace, entry.bead_id, notReadyReason(snap));
+          await recordNotReady(workspace, entry.bead_id, snap);
         }
         continue;
       }

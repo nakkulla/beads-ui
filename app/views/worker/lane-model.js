@@ -1121,6 +1121,17 @@ function admissionBadge(admission, bead_id) {
     return '♻️ stale→재리뷰';
   }
   const reason = typeof record.reason === 'string' ? record.reason : '';
+  // 선행 대기는 스케줄러가 증명한 진단이지 상태 복사가 아니므로 (UI-d3i1 §5.4)
+  // `⛔` 접두를 쓰지 않는다 — 그래야 candidateCard의 danger 스타일을 타지 않고,
+  // 무엇을 기다리는지는 같은 record의 blockers가 슬롯 4a 칩으로 말한다.
+  // blockers가 없으면 근거가 없으므로 현행 문자열로 떨어진다 (fail-quiet).
+  if (
+    reason === 'prerequisite_unmet' &&
+    Array.isArray(record.blockers) &&
+    record.blockers.length > 0
+  ) {
+    return '⛓ 선행 대기';
+  }
   const sep = reason.indexOf(':');
   if (sep > 0 && sep < reason.length - 1) {
     return `⛔ ${reason.slice(0, sep)} (${reason.slice(sep + 1)})`;
@@ -1557,16 +1568,36 @@ function chainRowLocationLabel(bead_id, locations, states) {
  * 있지 않으면 아직 열린 blocker가 있다는 뜻이고, **키 자체가 없으면 모르는
  * 것**이므로 순번 없는 `대기`로 수렴한다 (fail-quiet).
  *
+ * 큐 안에서는 스케줄러가 증명한 `prerequisite_unmet` admission이 `🔒 대기`보다
+ * 앞선다 (UI-d3i1 §8): 전자는 판정이고 후자는 표시 캐시의 추정이다. 큐 밖
+ * confirmed 레인 멤버는 `▶ 진행`을 아직 누르지 않은 정상 상태이므로 어긋남처럼
+ * 읽히는 `미적재`가 아니라 `진행 대기`다.
+ *
  * @param {string} bead_id
  * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} locations
  * @param {Array<Record<string, any>>} states
  * @param {Map<string, string[]>} blocked_by_map
+ * @param {Map<string, Record<string, any>>} admission_by_bead
+ * @param {boolean} confirmed
  * @returns {{ label: string, title: string }}
  */
-function chainRowLocation(bead_id, locations, states, blocked_by_map) {
+function chainRowLocation(
+  bead_id,
+  locations,
+  states,
+  blocked_by_map,
+  admission_by_bead,
+  confirmed
+) {
   const location = locations.get(bead_id);
   if (!location) {
-    return { label: chainScopeLabel(bead_id, states), title: '' };
+    return {
+      label:
+        confirmed && classifyBlockerPrefix(bead_id, states) === 'internal'
+          ? '진행 대기'
+          : chainScopeLabel(bead_id, states),
+      title: ''
+    };
   }
   const queued =
     typeof location.position === 'number' &&
@@ -1574,8 +1605,18 @@ function chainRowLocation(bead_id, locations, states, blocked_by_map) {
   if (queued) {
     const blockers = blocked_by_map.get(bead_id);
     const lane_name = location.lane === 'parallel' ? '병렬' : location.lane;
+    const record = admission_by_bead.get(bead_id);
+    const proven =
+      !!record &&
+      record.reason === 'prerequisite_unmet' &&
+      Array.isArray(record.blockers) &&
+      record.blockers.length > 0;
     return {
-      label: blockers && blockers.length > 0 ? '🔒 대기' : '대기',
+      label: proven
+        ? '⛓ 선행 대기'
+        : blockers && blockers.length > 0
+          ? '🔒 대기'
+          : '대기',
       title: `${location.workspace_name || location.root_dir} ${lane_name} #${location.position}`
     };
   }
@@ -1710,6 +1751,9 @@ function laneRunState(lane_id, status, rows, all_done, unlaunched, axis) {
  * @param {Map<string, string>} title_by_bead
  * @param {Map<string, string>} name_by_root
  * @param {LaneRunAxis} axis
+ * @param {Map<string, Record<string, any>>} admission_by_bead - 보이는 workspace
+ * 전부의 admission 합집합 (UI-d3i1 §8). 같은 bead가 두 workspace에 설 수 없으므로
+ * 충돌 규칙이 필요 없다.
  * @returns {MonitorChainLane[]}
  */
 function buildCrossLanes(
@@ -1719,7 +1763,8 @@ function buildCrossLanes(
   states,
   title_by_bead,
   name_by_root,
-  axis
+  axis,
+  admission_by_bead
 ) {
   /** @type {MonitorChainLane[]} */
   const projected = [];
@@ -1757,13 +1802,19 @@ function buildCrossLanes(
         bead_id,
         locations,
         states,
-        blocked_by_map
+        blocked_by_map,
+        admission_by_bead,
+        status === 'confirmed'
       );
-      const previous = rows.length > 0 ? rows[rows.length - 1].id : null;
+      const previous_row = rows.length > 0 ? rows[rows.length - 1] : null;
+      // 바로 앞 멤버가 `완료`면 의존은 이미 이행된 것이고, 그 사실은 열린
+      // blocker 목록에서 읽을 수 없다 (UI-d3i1 §9.1) — 판정 재료가 이미 닫힌
+      // 사실이면 판정하지 않는다.
       const mismatch =
         status === 'confirmed' &&
-        previous !== null &&
-        !(blocked_by_map.get(bead_id) || []).includes(previous);
+        previous_row !== null &&
+        !previous_row.done &&
+        !(blocked_by_map.get(bead_id) || []).includes(previous_row.id);
       rows.push({
         id: bead_id,
         title: title_by_bead.get(bead_id) || bead_id,
@@ -1811,9 +1862,9 @@ function buildCrossLanes(
       rows,
       all_done,
       can_confirm: status === 'draft' && rows.length >= 2,
-      has_mismatch:
-        status === 'confirmed' &&
-        rows.some((row) => row.mismatch || row.unplaced),
+      // `unplaced`를 세지 않는다 (UI-d3i1 §9.2): §7 뒤에는 큐 밖이 정상 상태
+      // (`진행 대기`)이고 그 복구 조작은 `재적용`이 아니라 `▶ 진행`이다.
+      has_mismatch: status === 'confirmed' && rows.some((row) => row.mismatch),
       unlaunched,
       ...derived
     });
@@ -2316,6 +2367,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const overlay_by_key = new Map();
   /** @type {Map<string, string[]>} */
   const blocked_by_map = new Map();
+  // 연결 레인 행이 읽는 admission 합집합 (UI-d3i1 §8). `blocked_by_map`과 같은
+  // 방식의 cross-workspace 수집이고 새 프로토콜 필드는 없다.
+  /** @type {Map<string, Record<string, any>>} */
+  const admission_by_bead = new Map();
   // 후속 칩의 큐 장식 재료 (UI-8x90 §6.2). `bead_blocked_by`와 달리 빈 배열이
   // "없다"가 아니라 "보이는 스냅샷 안에는 없다"이므로, 부착은 후보 행의
   // `dependents_info`와의 합집합으로만 한다 (§4.4).
@@ -2361,6 +2416,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const times = objectOf(workspace.bead_times);
     const observations = objectOf(workspace.pr_observations);
     const admission = objectOf(workspace.admission);
+    for (const [bead_id, record] of Object.entries(admission)) {
+      if (record && typeof record === 'object') {
+        admission_by_bead.set(bead_id, record);
+      }
+    }
     const revise_parked = objectOf(workspace.revise_parked);
     const merge_state = objectOf(workspace.merge_queue_state);
     const cleanup_failed = objectOf(workspace.cleanup_failed);
@@ -2691,7 +2751,19 @@ export function buildLanes(workspaces, workspaces_state, options) {
      */
     const blockedByFields = (bead_id, wait) => {
       const decorated = decoratedBlockedBy(bead_id);
-      const waited = (wait?.blockers || []).map((blocker) => blocker.id);
+      const record = admission[bead_id];
+      // 선행 대기 admission의 blockers도 같은 재료다 (UI-d3i1 §5.4): attempt가
+      // 없는 큐 항목은 `wait`가 없고, 증명된 blocker는 그 record에만 있다.
+      const proven =
+        record &&
+        record.reason === 'prerequisite_unmet' &&
+        Array.isArray(record.blockers)
+          ? record.blockers
+          : [];
+      const waited = [
+        ...(wait?.blockers || []).map((blocker) => blocker.id),
+        ...proven.map((/** @type {any} */ blocker) => blocker.id)
+      ].filter((id) => typeof id === 'string' && id.length > 0);
       if (waited.length === 0) {
         return decorated;
       }
@@ -3152,7 +3224,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
             : 'notes의 REVISE finding을 스펙에 반영하는 처분 세션을 띄웁니다'
           : ''
       };
-      const decorated = decoratedBlockedBy(bead_id);
+      const decorated = blockedByFields(bead_id, null);
       if (Object.hasOwn(decorated, 'blocked_by')) {
         item.blocked_by = decorated.blocked_by;
       }
@@ -3891,7 +3963,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
     states,
     title_by_bead,
     name_by_root,
-    { armed_by_bead, failed_by_bead, disarmed_lanes }
+    { armed_by_bead, failed_by_bead, disarmed_lanes },
+    admission_by_bead
   );
 
   // 소속 칩은 실행가능 카드와 대기 행에만 붙는다 (§5.2a).

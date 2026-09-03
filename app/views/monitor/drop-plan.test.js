@@ -457,7 +457,7 @@ describe('planLaneConfirm — 확정 (UI-j92s §5.4)', () => {
     });
   });
 
-  test('places only the members no queue holds, in lane order', () => {
+  test('sends no queue op for the members no queue holds', () => {
     const model = dropModel({
       blocked_by_map: new Map([
         ['D-2', ['D-1']],
@@ -475,26 +475,11 @@ describe('planLaneConfirm — 확정 (UI-j92s §5.4)', () => {
 
     const plan = planLaneConfirm('cl_d', model);
 
-    expect('ops' in plan && plan.ops).toEqual([
-      {
-        type: 'worker-queue-place',
-        payload: { bead_id: 'D-1', index: 4 },
-        root_dir: WS_A
-      },
-      {
-        type: 'worker-queue-place',
-        payload: { bead_id: 'D-3', index: 5 },
-        root_dir: WS_A
-      }
-    ]);
+    expect('ops' in plan && plan.ops).toEqual([]);
   });
 
-  test('counts each repo tail separately when unplaced members span repos', () => {
+  test('still creates the adjacent dependencies while placing nothing', () => {
     const model = dropModel({
-      blocked_by_map: new Map([
-        ['D-2', ['D-1']],
-        ['D-3', ['D-2']]
-      ]),
       owner_of: new Map([
         ['D-1', WS_A],
         ['D-2', WS_B],
@@ -518,17 +503,9 @@ describe('planLaneConfirm — 확정 (UI-j92s §5.4)', () => {
 
     const plan = planLaneConfirm('cl_d', model);
 
-    expect(
-      'ops' in plan &&
-        plan.ops.map((op) => [
-          /** @type {any} */ (op).payload.bead_id,
-          /** @type {any} */ (op).payload.index,
-          op.root_dir
-        ])
-    ).toEqual([
-      ['D-1', 2, WS_A],
-      ['D-2', 5, WS_B],
-      ['D-3', 3, WS_A]
+    expect('ops' in plan && plan.ops.map((op) => op.type)).toEqual([
+      'dep-add',
+      'dep-add'
     ]);
   });
 
@@ -1048,7 +1025,7 @@ describe('planLaneRemove — 레인 삭제 (UI-j92s §5.1)', () => {
 });
 
 describe('planLaneReapply — 재적용 (UI-j92s §5.2)', () => {
-  test('adds the missing adjacent dependency and re-places the unplaced member', () => {
+  test('adds the missing adjacent dependency and places nothing', () => {
     const model = confirmedSourceModel({
       blocked_by_map: new Map([['X', ['P']]]),
       placed_members: new Set(['P', 'X'])
@@ -1059,12 +1036,7 @@ describe('planLaneReapply — 재적용 (UI-j92s §5.2)', () => {
     expect(plan).toEqual({
       lane_ops: [],
       ops: [
-        { type: 'dep-add', a: 'S', b: 'X', root_dir: WS_A, lane_id: 'cl_s' },
-        {
-          type: 'worker-queue-place',
-          payload: { bead_id: 'S', index: 3 },
-          root_dir: WS_A
-        }
+        { type: 'dep-add', a: 'S', b: 'X', root_dir: WS_A, lane_id: 'cl_s' }
       ],
       lane_op_index: 0
     });

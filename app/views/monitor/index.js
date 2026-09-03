@@ -2099,7 +2099,11 @@ export function createMonitorView(mount_element, options) {
     const taken = new Map();
     const members_by_root = laneMembersByRoot(lane);
     for (const row of lane.rows) {
-      if (!row.unplaced) {
+      // 적재 대상은 "병렬 큐에 없는 행"이다 (UI-d3i1 §7.2). `queue_index`는 병렬
+      // 큐 안일 때만 실리므로, 큐 밖 멤버와 직렬 레인 멤버가 함께 여기 온다 —
+      // 직렬 멤버에게도 같은 `worker-queue-place`를 보내면 서버가 원 레인에서
+      // 빼고 병렬에 넣는다. 고정 행(실행중·PR 대기·완료)은 대상이 아니다.
+      if (row.fixed || typeof row.queue_index === 'number') {
         continue;
       }
       const root_dir = lanes.owner_of[row.id] || row.root_dir;
