@@ -24,10 +24,11 @@ import {
   closedRangeSince,
   normalizeDoneRange
 } from '../../data/closed-range.js';
+import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { debug } from '../../utils/logging.js';
-import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
+import { runResumeFlow } from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { watchMobile } from '../../utils/viewport.js';
@@ -50,6 +51,7 @@ import {
   miniRow,
   nowPanel,
   paneTemplate,
+  queueRowOps,
   waitBody
 } from '../worker/lanes.js';
 import { runningTile } from '../worker/running-grid.js';
@@ -1029,51 +1031,6 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * The 대기 행 조작 묶음 (UI-5ksp §4.6). 행 밖 별도 줄이던 자리를 `miniRow`의
-   * `actions` 슬롯 — 행 1번 줄 오른쪽 끝 — 으로 옮겼다. `↑ ↓ ✕`는 드래그의
-   * coarse pointer 보완재라 표시 조건은 CSS가 소유한다. 의존성 편집은 여기
-   * 있던 ⛓이 아니라 이슈 상세 `의존성` 절이다 (UI-lx45 §5).
-   *
-   * @param {LaneItem} item
-   * @param {boolean} [nudgeable] - true for 병렬 행 only: 직렬 레인의 순서는
-   * 의존이 소유하므로 한 칸 위·아래로 미는 버튼이 없다.
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function rowActions(item, nudgeable = false) {
-    return html`<span class="worker-mini__rowops">
-      ${nudgeable
-        ? html`<button
-              type="button"
-              class="worker-mini__rowops-up"
-              data-bead-id=${item.id}
-              title="같은 레포 안에서 한 칸 위로"
-              aria-label="한 칸 위로"
-            >
-              ↑
-            </button>
-            <button
-              type="button"
-              class="worker-mini__rowops-down"
-              data-bead-id=${item.id}
-              title="같은 레포 안에서 한 칸 아래로"
-              aria-label="한 칸 아래로"
-            >
-              ↓
-            </button>
-            <button
-              type="button"
-              class="worker-mini__rowops-remove"
-              data-bead-id=${item.id}
-              title="대기에서 빼기"
-              aria-label="대기에서 빼기"
-            >
-              ✕
-            </button>`
-        : ''}
-    </span>`;
-  }
-
-  /**
    * One 병렬 영역 row (§4.1). Worker `miniRow` 그대로이고, 드래그 좌표만 바깥
    * shell이 싣는다.
    *
@@ -1090,7 +1047,9 @@ export function createMonitorView(mount_element, options) {
       data-row-index=${row_index}
       data-queue-index=${String(item.queue_index ?? 0)}
     >
-      ${miniRow(withOverlaps(item), { actions: rowActions(item, true) })}
+      ${miniRow(withOverlaps(item), {
+        actions: queueRowOps(item, { nudgeable: true })
+      })}
     </div>`;
   }
 
@@ -1312,7 +1271,7 @@ export function createMonitorView(mount_element, options) {
       data-row-index=${row_index}
       data-queue-index=${String(item.queue_index ?? 0)}
     >
-      ${miniRow(withOverlaps(item), { actions: rowActions(item) })}
+      ${miniRow(withOverlaps(item), { actions: queueRowOps(item) })}
     </div>`;
   }
 
@@ -2517,19 +2476,30 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('rtile__resume')) {
-      void requestResumeInstructions().then((instructions) => {
-        if (instructions === null) {
-          return;
-        }
-        return sendContinuationAction(
-          'worker-attempt-resume',
-          {
-            attempt_id,
-            ...(instructions !== '' ? { instructions } : {})
-          },
-          root_dir,
-          revision
-        );
+      // 이어하기 흐름은 `runResumeFlow`가 소유한다 (UI-6g3t §5.1) — 이 탭은 대상
+      // 문맥과 전송 하나만 넘기고, 그 대가로 여기에만 없던 거부 토스트를 얻는다.
+      // `sendCas`의 재시도를 끄는 이유는 유틸이 이미 충돌 1회 재시도의 소유자라,
+      // 켜 두면 한 충돌에 두 소유자가 각자 다시 보내기 때문이다. revision은 호출
+      // 시점에 채택된 큐에서 새로 읽는다.
+      void runResumeFlow({
+        context: {
+          bead_id,
+          kind:
+            button.dataset.resumeKind === 'settlement'
+              ? 'settlement'
+              : 'session',
+          tuple: item ? formatAttemptTuple(item) : ''
+        },
+        transport: (payload) =>
+          sendCas(
+            'worker-attempt-resume',
+            { attempt_id, ...payload },
+            root_dir,
+            exec_adopted.get(root_dir)?.revision ?? casOf(bead_id).revision,
+            false
+          )
+        // `adopt`는 넘기지 않는다 — `sendCas`가 응답의 큐를 `exec_adopted`에
+        // 이미 채택하고, 위 revision 읽기가 그 값을 본다.
       });
       return;
     }

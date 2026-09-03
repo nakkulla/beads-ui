@@ -10,6 +10,40 @@ import { describe, expect, test } from 'vitest';
  */
 const CSS = readFileSync(path.resolve(process.cwd(), 'app/styles.css'), 'utf8');
 
+/**
+ * Every `@media (any-pointer: coarse), (max-width: 640px)` block body, matched by
+ * counting braces rather than slicing to a later marker: the file carries more
+ * than one such query (UI-6g3t added the `.op-btn` sizing one ahead of the
+ * worker block), so an `indexOf`-to-marker slice reads a span that is not a
+ * media block at all.
+ *
+ * @returns {string[]}
+ */
+function coarsePointerBlocks() {
+  const query = '@media (any-pointer: coarse), (max-width: 640px)';
+  /** @type {string[]} */
+  const blocks = [];
+  let from = CSS.indexOf(query);
+  while (from >= 0) {
+    const open = CSS.indexOf('{', from);
+    let depth = 0;
+    let i = open;
+    for (; i < CSS.length; i++) {
+      if (CSS[i] === '{') {
+        depth += 1;
+      } else if (CSS[i] === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          break;
+        }
+      }
+    }
+    blocks.push(CSS.slice(open, i + 1));
+    from = CSS.indexOf(query, i);
+  }
+  return blocks;
+}
+
 describe('worker console styles', () => {
   const markerIndex = CSS.indexOf('/* ---------- Worker console');
   const workerBlock = markerIndex >= 0 ? CSS.slice(markerIndex) : '';
@@ -93,14 +127,13 @@ describe('worker console styles', () => {
   test('shows the queue placement button without a pointer media gate', () => {
     const baseRule =
       CSS.match(/(?:^|\n)\.worker-card__place\s*{([^}]*)}/)?.[1] || '';
-    const mediaStart = CSS.indexOf(
-      '@media (any-pointer: coarse), (max-width: 640px)'
-    );
-    const mediaEnd = CSS.indexOf('/* 클릭 어포던스', mediaStart);
-    const mediaBlock = CSS.slice(mediaStart, mediaEnd);
+    const coarse_blocks = coarsePointerBlocks();
 
     expect(baseRule).not.toContain('display: none');
-    expect(mediaBlock).not.toContain('.worker-card__place');
+    expect(coarse_blocks.length).toBeGreaterThan(0);
+    coarse_blocks.forEach((block) => {
+      expect(block).not.toContain('.worker-card__place');
+    });
   });
 
   // 저장소 작업 타임라인은 transcript drawer와 오버레이를 공유하지만 `.sv`가

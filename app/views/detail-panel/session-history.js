@@ -771,7 +771,7 @@ function sessionRefRow(view, handlers) {
     ${view.resume_command
       ? html`<button
           type="button"
-          class="detail-session__resume-cmd"
+          class="op-btn detail-session__resume-cmd"
           title=${view.resume_command}
           @click=${(/** @type {Event} */ ev) => {
             ev.stopPropagation();
@@ -868,7 +868,7 @@ export function sessionHistoryTemplate(
         : '이 세션을 같은 워크트리에서 이어서 진행';
     return html`<button
       type="button"
-      class="detail-session__resume"
+      class="op-btn detail-session__resume"
       data-attempt-id=${a.attempt_id}
       ?disabled=${!eligible}
       title=${title}

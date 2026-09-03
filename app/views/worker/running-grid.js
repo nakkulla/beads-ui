@@ -52,6 +52,8 @@ import { logPathTemplate } from './log-path.js';
  * @typedef {Object} RunningTile
  * @property {string} bead_id
  * @property {string} attempt_id
+ * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
+ * `false`인 타일만 `is-dimmed`로 흐려지고, 검색 중이 아니면 키가 없다.
  * @property {'session'} [kind] - 세션이 `in_progress`로 잡은 이슈의 타일
  * (UI-yrzu §6). attempt가 없으므로 운영 버튼·세션 드로어·위임 칩이 없고,
  * 경과는 bead의 `started_at`에서 온다. 생략(=Worker attempt 타일)이 기본이다.
@@ -929,7 +931,7 @@ function heldBodyTemplate(kind, held, discard_actions, dependency_chips = '') {
     return html`<div class="rtile__foot">
       <button
         type="button"
-        class="rtile__resume"
+        class="op-btn rtile__resume"
         title="같은 세션으로 이어서 진행"
         aria-label="이어하기"
       >
@@ -937,7 +939,7 @@ function heldBodyTemplate(kind, held, discard_actions, dependency_chips = '') {
       </button>
       <button
         type="button"
-        class="rtile__resume-alternate"
+        class="op-btn rtile__resume-alternate"
         title="러너·모델·계정을 바꾸거나 새 세션으로 이어갑니다"
         aria-label="다른 방법으로"
       >
@@ -1270,7 +1272,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ? ' rtile--retry-wait'
       : ''}${waiting ? ' rtile--waiting' : ''}${session
       ? ' rtile--session'
-      : ''}${provider_hold ? ' rtile--provider-hold' : ''}"
+      : ''}${provider_hold
+      ? ' rtile--provider-hold'
+      : ''}${tile.search_match === false ? ' is-dimmed' : ''}"
     data-bead-id=${tile.bead_id}
     data-attempt-id=${tile.attempt_id || ''}
   >
@@ -1298,7 +1302,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           : failed
             ? html`<button
                   type="button"
-                  class="rtile__resume"
+                  class="op-btn rtile__resume"
                   data-resume-kind=${resume_kind}
                   ?disabled=${failure?.resume_eligible === false}
                   title=${failure?.resume_eligible === false
@@ -1320,11 +1324,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 ${paused
                   ? html`<button
                       type="button"
-                      class="rtile__resume"
+                      class="op-btn rtile__resume"
                       title="같은 세션으로 이어서 재개"
                       aria-label="재개"
                     >
-                      ▶
+                      ▶ 재개
                     </button>`
                   : html`<button
                       type="button"

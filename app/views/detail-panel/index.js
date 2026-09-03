@@ -1,10 +1,10 @@
 import { html, render } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
+import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
-import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
-import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
+import { runResumeFlow } from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import {
@@ -17,6 +17,13 @@ import {
   depCandidates as depCandidatesOf,
   filterDepCandidates
 } from '../monitor/dep-candidates.js';
+import { placeMenuList } from '../worker/lanes.js';
+import {
+  candidatePlacement,
+  placeLaneLabel,
+  placeMenuLanes,
+  placementTitle
+} from '../worker/placement.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
 import { commentsTemplate } from './comments.js';
@@ -123,6 +130,11 @@ export function createDetailPanel(mount_element, options) {
   /** @type {string[]} */
   let skipped_orchestration_keys = [];
   let effective_expanded = false;
+  /**
+   * 레인 선택 메뉴가 열려 있는가 (UI-6g3t §6.2). 상세 패널은 한 번에 bead 하나만
+   * 보여 주므로 Worker 탭의 `place_menu_bead_id`와 달리 불린 하나면 된다.
+   */
+  let place_menu_open = false;
   /**
    * The workspace `bd kv` session defaults — the `전역` layer of the card. Read
    * once per opened issue; an unreadable layer stays empty and every key falls
@@ -882,11 +894,16 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
-   * Manually resume a failed/orphaned attempt (spec §1) under the queue
-   * mutations' CAS discipline: send the current queue revision and retry ONCE
-   * against the revision a conflict reply reports. The server validates (six
-   * §1.2 refusals), dispatches, and pushes a fresh queue snapshot that surfaces
-   * the new running attempt in the history list.
+   * Manually resume a failed/orphaned attempt (spec §1). The flow — 지시
+   * 다이얼로그, 충돌 1회 재시도, provider 경계, 거부 토스트 — 는
+   * `runResumeFlow`가 소유하고(UI-6g3t §5.1), 이 화면은 대상 문맥과 재시도 없는
+   * 전송 하나만 넘긴다. 전송마다 스토어의 revision을 새로 읽으므로, 충돌 응답의
+   * 큐를 `adopt`가 채택한 것이 곧 다음 전송의 `expected_revision`이다. 서버가
+   * 검증(§1.2의 여섯 거부)하고 디스패치하면 새 스냅샷이 이력 목록에 새 실행
+   * attempt를 세운다.
+   *
+   * 세션 이력 행의 버튼은 착지 정산과 무관하므로 `kind`는 항상 `'session'`이다
+   * (§5.4).
    *
    * @param {string} attempt_id
    */
@@ -894,54 +911,150 @@ export function createDetailPanel(mount_element, options) {
     if (!transport || !attempt_id) {
       return;
     }
-    const instructions = await requestResumeInstructions();
-    if (instructions === null) {
-      return;
-    }
+    const send = transport;
     /** @returns {number} */
     const revision = () => {
       const q = queueStore ? queueStore.get() : null;
       return q && typeof q.revision === 'number' ? q.revision : 0;
     };
-    /**
-     * @param {Record<string, unknown>} extra
-     * @param {number} [expected_revision]
-     */
-    const send = async (extra = {}, expected_revision = revision()) =>
-      /** @type {any} */ (
-        await transport('worker-attempt-resume', {
-          attempt_id,
-          expected_revision,
-          ...(instructions !== '' ? { instructions } : {}),
-          ...extra
-        })
-      );
+    const attempt = queueStore?.get()?.attempts?.[attempt_id] || null;
+    await runResumeFlow({
+      context: {
+        bead_id: attempt?.bead_id || current_id || '',
+        kind: 'session',
+        tuple: attempt ? formatAttemptTuple(attempt) : ''
+      },
+      transport: (payload) =>
+        /** @type {any} */ (
+          send('worker-attempt-resume', {
+            attempt_id,
+            expected_revision: revision(),
+            ...payload
+          })
+        ),
+      adopt: (response) => {
+        if (response?.queue && queueStore?.set) {
+          queueStore.set(response.queue);
+        }
+      }
+    });
+  }
+
+  /**
+   * `worker-queue-place` 하나로 이 이슈를 대기 큐에 넣는다 (UI-6g3t §6.4). 후보
+   * 카드와 같은 op를 같은 규율로 보낸다 — `root_dir`는 싣지 않고(상세 패널은
+   * 구독 중인 워크스페이스의 bead만 보이므로 서버가 세션의 선택을 쓴다), 병렬이면
+   * `lane`을 생략해 맨 뒤에 붙인다.
+   *
+   * 결과 처리는 `resumeAttempt`와 같다: 응답의 큐를 먼저 채택해야 재시도의
+   * `expected_revision`이 새 값이 되고, 충돌 재시도는 **정확히 한 번**이다.
+   * 입장 거부는 CAS 충돌이 아니라 `applied:false`로 온다 — admission은 서버가
+   * 그대로 소유하고, 이 경로는 진입점 하나를 더한 것뿐이다.
+   *
+   * @param {string} bead_id
+   * @param {'parallel'|'s1'|'s2'|'s3'|'s4'|'s5'} lane
+   */
+  async function placeInQueue(bead_id, lane) {
+    if (!transport || !bead_id) {
+      return;
+    }
+    const send = transport;
+    /** @returns {any} */
+    const payload = () => {
+      const q = queueStore ? queueStore.get() : null;
+      return {
+        bead_id,
+        ...(lane === 'parallel' ? {} : { lane }),
+        expected_revision: q && typeof q.revision === 'number' ? q.revision : 0
+      };
+    };
     /** @param {any} response */
     const adopt = (response) => {
       if (response?.queue && queueStore?.set) {
         queueStore.set(response.queue);
       }
     };
-    let res = await send();
+    let res = /** @type {any} */ (
+      await Promise.resolve(send('worker-queue-place', payload()))
+    );
     adopt(res);
     if (res && res.conflict) {
-      // The conflict reply carries the authoritative queue; retry once against
-      // its revision (the push may not have landed in the store yet).
-      const fresh =
-        res.queue && typeof res.queue.revision === 'number'
-          ? res.queue.revision
-          : revision();
-      res = await send({}, fresh);
+      res = /** @type {any} */ (
+        await Promise.resolve(send('worker-queue-place', payload()))
+      );
       adopt(res);
     }
-    res = await resolveContinuationMismatch(
-      res,
-      (continuation, decision_token) => send({ continuation, decision_token }),
-      { onResult: adopt, refresh: () => send() }
-    );
-    if (res && res.resumed === false && !res.conflict && res.reason) {
-      showToast(`이어하기 거부: ${res.reason}`, 'error', 2400);
+    doRender();
+    if (!res) {
+      return;
     }
+    if (res.applied === false && typeof res.admission_reason === 'string') {
+      showToast(`대기 적재 거부: ${res.admission_reason}`, 'error', 2400);
+      return;
+    }
+    if (res.reason === 'rejected') {
+      showToast('대기 적재 거부: rejected', 'error', 2400);
+      return;
+    }
+    if (res.applied === false) {
+      return;
+    }
+    // 자리는 응답이 준 큐가 말한다 — 보낸 레인이 아니라 채택된 스냅샷에서 다시
+    // 읽으므로, 서버가 다른 자리에 넣었어도 토스트가 사실을 말한다.
+    const location = res.queue
+      ? candidatePlacement({ id: bead_id }, res.queue).location
+      : null;
+    if (location && 'index' in location) {
+      showToast(
+        `${placeLaneLabel(location.lane)} 대기 #${location.index + 1}에 추가`,
+        'success',
+        2400
+      );
+    }
+  }
+
+  /**
+   * `place_menu_open`을 열거나 곧장 적재한다 (§6.2). 직렬 레인이 있으면 자리를
+   * 먼저 고르고, 병렬 하나뿐이면 한 번의 누름이 그대로 맨 뒤 적재다 — 후보
+   * 카드와 같은 규칙이다.
+   *
+   * @param {string} bead_id
+   * @param {import('../worker/lanes.js').PlaceMenuEntry[]|null} lanes
+   */
+  function onPlaceClick(bead_id, lanes) {
+    if (lanes) {
+      place_menu_open = true;
+      doRender();
+      return;
+    }
+    void placeInQueue(bead_id, 'parallel');
+  }
+
+  /**
+   * `placeMenuList` 목록 안의 클릭. 마크업을 후보 카드와 공유하므로 좌표도 같은
+   * `data-lane`에서 읽는다.
+   *
+   * @param {Event} event
+   * @param {string} bead_id
+   */
+  function onPlaceLaneClick(event, bead_id) {
+    const target = /** @type {HTMLElement|null} */ (event.target);
+    const row = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-card__place-lane') || null
+    );
+    const lane = row?.dataset.lane;
+    if (!lane) {
+      return;
+    }
+    if (lane !== 'parallel' && !/^s[1-5]$/.test(lane)) {
+      return;
+    }
+    place_menu_open = false;
+    doRender();
+    void placeInQueue(
+      bead_id,
+      /** @type {'parallel'|'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane)
+    );
   }
 
   /**
@@ -2521,6 +2634,14 @@ export function createDetailPanel(mount_element, options) {
         ? Math.max(0, Math.min(4, data.priority))
         : '';
     const description = data.description || '';
+    // 대기 배치 (§6.2·§6.3): 큐 스냅샷이 없으면(워커 큐를 구독하지 않는 화면)
+    // 그리지 않고, 닫힌 bead에도 그리지 않는다 — 넣을 자리가 없는 처분이다.
+    const queue_snapshot = queueStore ? queueStore.get() : null;
+    const placement =
+      queue_snapshot && status !== 'closed'
+        ? candidatePlacement({ ...data, id }, queue_snapshot)
+        : null;
+    const place_lanes = queue_snapshot ? placeMenuLanes(queue_snapshot) : null;
     const effective = {
       ...data,
       metadata: { ...(data.metadata || {}), ...exec_local }
@@ -2538,6 +2659,18 @@ export function createDetailPanel(mount_element, options) {
             >
               ${id}
             </button>
+            ${placement
+              ? html`<button
+                  type="button"
+                  class="op-btn op-btn--primary detail-overlay__place"
+                  data-bead-id=${id}
+                  ?disabled=${!placement.placeable}
+                  title=${placementTitle(placement)}
+                  @click=${() => onPlaceClick(id, place_lanes)}
+                >
+                  ↴ 대기로
+                </button>`
+              : ''}
             <button
               type="button"
               class="detail-overlay__close"
@@ -2547,6 +2680,28 @@ export function createDetailPanel(mount_element, options) {
               ✕
             </button>
           </div>
+          ${placement && place_menu_open && place_lanes
+            ? html`<div
+                class="place-menu detail-overlay__place-menu"
+                @click=${(/** @type {Event} */ event) =>
+                  onPlaceLaneClick(event, id)}
+              >
+                ${placeMenuList(place_lanes, id)}
+                <button
+                  type="button"
+                  class="op-btn op-btn--icon worker-card__place-cancel"
+                  data-bead-id=${id}
+                  title="레인 선택 취소"
+                  aria-label="레인 선택 취소"
+                  @click=${() => {
+                    place_menu_open = false;
+                    doRender();
+                  }}
+                >
+                  ✕
+                </button>
+              </div>`
+            : ''}
           ${titleTemplate(title, total_usage)}
           ${summaryHeaderTemplate(effective, {
             onChipToggle: (chip_key) =>
@@ -2647,6 +2802,7 @@ export function createDetailPanel(mount_element, options) {
     load(id) {
       if (id !== current_id) {
         exec_local = {};
+        place_menu_open = false;
         selected_preset_id = '';
         skipped_orchestration_keys = [];
         effective_expanded = false;
@@ -2676,6 +2832,7 @@ export function createDetailPanel(mount_element, options) {
       current_id = null;
       current = null;
       exec_local = {};
+      place_menu_open = false;
       selected_preset_id = '';
       applying_preset = false;
       skipped_orchestration_keys = [];

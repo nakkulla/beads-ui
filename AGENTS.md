@@ -65,7 +65,7 @@ Never update `CHANGES.md`.
 `plan_path`, `spec_review`/`impl_review`, `pr_url`, `blocked_reason` 등),
 Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles의
 `docs/contracts/workflow-contract.md`와 `docs/contracts/workflow-state.yaml`에
-있다. beads-ui는 그 계약의 **소비자**이며 정의자가 아니다.
+있다. beads-ui는 그 계약의 **소비자**이며 정의자가 아니다(ADR 0012).
 
 따라서 계약 표면을 바꾸는 변경(키 추가·의미 변경·라벨 폐기 등)은 beads-ui 코드만
 고쳐서는 안 되고, dotfiles 계약 문서와 이를 쓰는 스킬을 함께 정합해야 한다.
@@ -121,10 +121,16 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   상태를 쓰지 않는다 — 근거는
   `docs/superpowers/specs/2026-08-28-chip-grammar-unify-design.md`가 소유한다.
 - 새 라벨·칩·뱃지·버튼의 자리는 고르지 않는다. 그 요소가 답하는 질문으로 스펙
-  §5.1 슬롯 표가 정한다.
+  §5.1 슬롯 표가 정한다(ADR 0014).
 - 조작은 1번 줄 오른쪽 끝이거나 액션 foot이다. 그 사이에 칩을 끼우지 않는다 —
   칩이 끼면 조작이 다음 줄로 밀리고, 사용자가 버튼을 찾는 자리가 폭에 따라
   달라진다.
+- `↴ 대기로`·`✕ ↑ ↓`(대기 행)·`↻ 이어하기`/`▶ 재개` 계열 조작과 **새로 다는**
+  조작 버튼은 공통 토큰 `.op-btn`으로 만든다. 같은 묶음에 이미 있는 다른
+  버튼(`⏸`·`폐기`·`머지` 등)은 높이만 토큰에 맞추고 색·문구는 그대로다.
+  크기·테두리·글자 크기를 카드마다 고르지 않는다 — 적용 표와 근거는
+  `docs/superpowers/specs/2026-09-02-worker-operation-surface-unify-design.md`
+  §3.2가 소유한다.
 - 재료가 없는 줄은 그리지 않는다(fail-quiet). 판정은 그 줄의 재료 전부로 한다.
 - 슬롯 표로 배정되지 않는 요소를 달아야 한다면, 칩을 추가하기 전에 그 스펙을
   갱신해 슬롯을 먼저 정한다. 카드마다 자기 자리를 고르는 것이 통일 전 상태를
@@ -174,8 +180,8 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   배포까지 마쳐야 완료다. 머지 후 배포 operation이 terminal success에 도달하고
   프로세스 경로·포트·HTTP 응답 검증까지 통과한 다음에만 완료를 선언한다.
 - 배포 선언의 SoT은 핀된 base SHA에서 읽는 `repo-ops/config.toml`의
-  `[deploy]`다. 선언이 없으면 배포 단계를 생략하고, 선언이 있으나 해석할 수
-  없으면 fail-closed다.
+  `[deploy]`다(ADR 0010). 선언이 없으면 배포 단계를 생략하고, 선언이 있으나
+  해석할 수 없으면 fail-closed다.
 - 안정 런타임 소스는 공유 detached 워크트리 `.worktrees/.repo-ops-deploy`다.
   Worker와 세션 등 외부 executor는 `.worktrees/.repo-ops-deploy.lock`의 같은
   `fcntl.flock` 계약을 사용한다. 정렬 executor는 lock 안에서 target을 다시
@@ -191,9 +197,9 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   dotfiles `docs/contracts/workflow-contract.md`와
   `docs/contracts/workflow-state.yaml`에 따라 Worker가 소유한다.
   `[정리 재시도]`는 `cleanup_failed`가 기록된 행의 실패 재개 전용이다.
-- 실패 해결 사다리는 상시 단발 `script_retry` 하나뿐이다. 그 뒤로 post-merge
-  실패는 원인을 기록한 채 `needs_human`으로 종단하고 자동 AI 수리 세션
-  dispatch는 없다. 그 종단은 Discord 푸시로 자동 관측되고 재진입은
+- 실패 해결 사다리는 상시 단발 `script_retry` 하나뿐이다(ADR 0009). 그 뒤로
+  post-merge 실패는 원인을 기록한 채 `needs_human`으로 종단하고 자동 AI 수리
+  세션 dispatch는 없다. 그 종단은 Discord 푸시로 자동 관측되고 재진입은
   `[정리 재시도]`와 `[세션에서 해결]` 두 클릭뿐이다(ADR 0024). 사다리·자동 처리
   항목·자동으로 하지 않는 것의 정본은 dotfiles가 소유하고, 이 저장소가 읽는 것은
   핀된 사본 `generated/contracts/repo-operation-policy.json`이다 — 문장을 여기에
@@ -249,29 +255,26 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   (`scripts/ci-workflow-retired.test.js`). branch protection의 required check도
   0개다(`gh api repos/<owner>/<repo>/branches/main/protection` →
   `Branch not protected`).
-- **머지 자격 판정은 checks를 아예 보지 않는다.** 판정 입력은 네 가지뿐이다:
-  fresh PR/base/head identity, clean mergeability, current workflow review
-  영수증, 그리고 `repo-ops/config.toml`의 `[verify]` 영수증.
+- **머지 자격 판정은 checks를 아예 보지 않는다**(ADR 0003). 판정 입력은 다섯
+  가지뿐이다: fresh PR/base/head identity, clean mergeability, current workflow
+  review 영수증, 실행 영수증 backing(`receipt_state`), 그리고
+  `repo-ops/config.toml`의 `[verify]` 영수증.
 - review 영수증의 결속은 두 가지로 갈린다. `spec_review`는 스펙 문서 경로
   프로브가 판정하고, `impl_review`는 **exact head가 아니라 ancestry** 결속이다:
-  영수증 SHA가 관측된 head와 같거나 그 조상이면 유효하므로, base 동기화 머지나
-  큐가 소유한 base update로 head가 움직였다는 사실만으로는 재리뷰가 걸리지
-  않는다. 조상이 아니면(히스토리 재작성·브랜치 리셋) stale이고, ancestry probe
-  오류는 머지 게이트에서 fail-closed(stale 취급)·보드 표시에서만 fail-quiet다.
-  큐가 소유한 `resolver:` 충돌 해소 커밋도 다른 커밋과 똑같이 이 ancestry 규칙
-  하나로 판정한다 — 앞세우는 별도 필수조건은 없다. `resolver-self:`는 `carry:`와
-  함께 폐기된 영수증 형식이다(과거 기록만 읽는다).
-- `impl_review`가 없거나 조상이 아니면 머지 게이트 **보류**다. terminal 실패도
-  아니고 자동 재리뷰 dispatch도 아니다 — 큐는 리뷰어를 띄우지도 수리하지도
-  않는다. 유일한 출구는 `[리뷰 후 머지]` 클릭이며, `[머지]`와 같은 authority를
-  주고 기록된 세션을 resume해 리뷰 lineage만 수행시킨다. 머지는 그대로 큐가
-  소유한다.
-- 이 저장소는 `[verify]`를 선언한다(`repo-ops/script/verify` — `npm ci` 후
-  `npm run tsc`와 `npm test`). ancestry 결속이 통과시키는 "리뷰된 델타 + 움직인
-  base" 조합의 의미 충돌을 기계가 잡는 자리이며, base에 PR head를 squash-merge한
+  영수증 SHA가 관측된 head와 같거나 그 조상이면 유효하고, 조상이 아니면(히스토리
+  재작성·브랜치 리셋) stale이다(ADR 0031). ancestry probe 오류는 머지 게이트에서
+  fail-closed(stale 취급)·보드 표시에서만 fail-quiet다. 큐가 소유한 `resolver:`
+  충돌 해소 커밋도 다른 커밋과 똑같이 이 ancestry 규칙 하나로 판정한다.
+  `resolver-self:`는 `carry:`와 함께 폐기된 영수증 형식이다(과거 기록만 읽는다).
+- `impl_review`가 없거나 조상이 아니면 머지 게이트 **보류**다. terminal 실패가
+  아니다. 큐는 그 head에 같은 리뷰 lineage를 1회 자동 dispatch한다(ADR 0019). 그
+  1회가 소진되면 출구는 `[리뷰 후 머지]` 클릭이다 — 클릭은 `[머지]`와 같은
+  authority를 주고 새 lineage가 아니라 기록된 세션의 같은 lineage를 resume한다.
+  머지는 그대로 큐가 소유한다(ADR 0006).
+- 이 저장소는 `[verify]`를 선언한다(`repo-ops/script/verify` — ADR 인덱스·인용
+  검사와 `npm ci`, `npm run tsc`, `npm test`). base에 PR head를 squash-merge한
   일회용 candidate 체크아웃에서 돌기 때문에 tracked 파일을 쓰면 안 된다.
-- 따라서 `gh pr checks`를 기다리거나 폴링하지 마라. 빈 checks를 즉시 통과로
-  취급하던 예전 특례는, 판정에서 checks 자체가 사라지면서 함께 없어졌다.
+- 따라서 `gh pr checks`를 기다리거나 폴링하지 마라.
 - 머지 전 검증은 Pre‑Handoff Validation(lint/tsc/test/prettier/build)으로
   수행한다. `[verify]`는 그것을 대체하지 않는다 — 머지 후보의 base 조합을 머지
   직전에 다시 확인하는 별개의 안전망이다.

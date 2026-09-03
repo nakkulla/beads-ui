@@ -727,19 +727,24 @@ describe('workspace snapshot blocks indexes (UI-d13v §3.2)', () => {
       ['A', ['B']]
     ]);
     expect(result.ok && [...result.snapshot.blocks_in]).toEqual([['B', ['A']]]);
+    expect(result.ok && [...result.snapshot.edges_in]).toEqual([
+      ['B', [{ issue_id: 'A', type: 'blocks' }]]
+    ]);
   });
 
   test('derives the same indexes from legacy dependency edges', async () => {
     const edges = [
       { issue_id: 'A', depends_on_id: 'B', type: 'blocks' },
-      { issue_id: 'C', depends_on_id: 'B', type: 'blocks' }
+      { issue_id: 'C', depends_on_id: 'B', type: 'blocks' },
+      { issue_id: 'A', depends_on_id: 'C', type: 'related' },
+      { issue_id: 'C', depends_on_id: 'A', type: 'discovered-from' }
     ];
     const embedded_coordinator = createWorkspaceSnapshotCoordinator({
       runBdJsonProjected: createRunner(
         successfulGeneration([
-          { id: 'A', dependencies: [edges[0]] },
+          { id: 'A', dependencies: [edges[0], edges[2]] },
           { id: 'B' },
-          { id: 'C', dependencies: [edges[1]] }
+          { id: 'C', dependencies: [edges[1], edges[3]] }
         ])
       )
     });
@@ -760,6 +765,34 @@ describe('workspace snapshot blocks indexes (UI-d13v §3.2)', () => {
     expect(legacy.ok && [...legacy.snapshot.blocks_in]).toEqual(
       embedded.ok ? [...embedded.snapshot.blocks_in] : null
     );
+    expect(legacy.ok && [...legacy.snapshot.edges_in]).toEqual(
+      embedded.ok ? [...embedded.snapshot.edges_in] : null
+    );
+  });
+
+  test('normalizes the single-id dependency reply to bare edges', async () => {
+    const runBdJson = createRunner([
+      ...successfulGeneration([{ id: 'A' }]),
+      {
+        code: 0,
+        stdoutJson: [
+          { id: 'FOREIGN-1', title: 'foreign', dependency_type: 'blocks' }
+        ]
+      }
+    ]);
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: runBdJson,
+      dependency_mode: 'legacy-dependency-fallback'
+    });
+
+    const result = await coordinator.request('cold-subscribe');
+
+    expect(result.ok && result.snapshot.dependency_edges).toEqual([
+      { issue_id: 'A', depends_on_id: 'FOREIGN-1', type: 'blocks' }
+    ]);
+    expect(result.ok && [...result.snapshot.blocks_out]).toEqual([
+      ['A', ['FOREIGN-1']]
+    ]);
   });
 
   test('omits a waiter no snapshot row carries from blocks_in', async () => {
@@ -783,6 +816,7 @@ describe('workspace snapshot blocks indexes (UI-d13v §3.2)', () => {
     expect(result.ok && [...result.snapshot.blocks_out]).toEqual([
       ['OTHER-1', ['B']]
     ]);
+    expect(result.ok && [...result.snapshot.edges_in]).toEqual([]);
   });
 
   test('ignores an edge type other than blocks', async () => {
@@ -806,5 +840,9 @@ describe('workspace snapshot blocks indexes (UI-d13v §3.2)', () => {
 
     expect(result.ok && [...result.snapshot.blocks_out]).toEqual([]);
     expect(result.ok && [...result.snapshot.blocks_in]).toEqual([]);
+    expect(result.ok && [...result.snapshot.edges_in]).toEqual([
+      ['ROOT', [{ issue_id: 'A', type: 'discovered-from' }]],
+      ['B', [{ issue_id: 'A', type: 'related' }]]
+    ]);
   });
 });

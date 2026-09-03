@@ -20,8 +20,10 @@
  * question tools" reads as a rule to be weighed, while "there is nobody on the
  * other end" is a property of the room the session is standing in. The
  * background-task warning moved here from the guard contract for the same
- * reason — a headless process dying at turn end is a fact about unattended
- * execution, not a guard verdict.
+ * reason — the process dies at turn end when only background shells remain,
+ * while a live subagent holds it for at most the 2 h ceiling after the last
+ * completion notification. That is a fact about unattended execution, not a
+ * guard verdict.
  *
  * @type {string}
  */
@@ -32,8 +34,25 @@ export const UNATTENDED_PREAMBLE = [
   '',
   '- 사용자는 이 세션과 통신할 수 없다. 질문 도구는 응답자가 없어 영원히 대기한다.',
   '- hard-stop 조건은 `blocker` 줄을 출력한 뒤 비정상 종료로 표면화하라. 그것이 이 환경에서 사람에게 도달하는 유일한 경로다.',
-  '- headless 프로세스는 턴이 끝나는 즉시 종료된다. 대기 중인 백그라운드 태스크(예: 비동기 리뷰 브리지)는 함께 kill되고 결과는 유실된다. 결과가 필요한 태스크는 턴 안에서 완료까지 기다려라.',
+  '- headless 프로세스는 백그라운드 셸 태스크만 남기고 턴을 끝내면 그 즉시 종료되고 태스크는 kill되어 결과가 유실된다. 서브에이전트가 살아 있는 동안만 프로세스가 유지되며, 그것도 마지막 완료 알림 이후 최대 2시간이다. 결과가 필요한 위임 실행(예: codex 브리지)은 백그라운드 워치에 맡기지 말고 foreground로 턴 안에서 완료까지 기다려라.',
   '- 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키 — `impl_dispatch`, `impl_entry`, `plan_approval`, `workflow_mode_source=user` — 는 이 세션이 쓸 수 없다. Worker는 시도 시작 시 이 키들을 스냅샷하고, 시도 중 값이 바뀌면(부재→기록 포함) 머지 게이트가 영수증 위조로 fail-closed한다. 위임 기본 모델이 이 세션의 모델과 같다는 사실은 main 실행 근거가 아니다 — 실행 형태는 dotfiles workflow 계약의 selector가 정한다.'
+].join('\n');
+
+/**
+ * The fix-now directive (dotfiles fix-now-over-scope-fence §8.1): an approved
+ * spec's `scope:` and 경계/비목표 sections bound the DESIGN, not what the
+ * session is allowed to repair, so an adjacent item of the same defect class
+ * gets fixed here instead of split into a follow-up Bead.
+ *
+ * Kept out of `UNATTENDED_PREAMBLE` because that block is framed as
+ * environment fact (UI-rxp3) while this one states a contract rule.
+ *
+ * @type {string}
+ */
+export const FIX_NOW_DIRECTIVE = [
+  '## fix-now',
+  '',
+  '승인 스펙의 front-matter `scope:`와 `경계`/`비목표` 절은 설계 범위이지 fix-now 흡수의 금지 목록이 아니다. scope 안 변경과 같은 결함·드리프트 클래스의 닫힌 인접 항목은 dotfiles workflow 계약 Follow-ups (a)의 세 조건으로 이 세션에서 같이 고치고, 완료 보고서 `세션 중 흡수한 발견 항목`에 앵커와 함께 적어라. 후속 Bead로 넘기는 것은 gate가 거부한 항목뿐이다.'
 ].join('\n');
 
 /**
@@ -264,6 +283,7 @@ export function applyPreamble(base_prompt, options = {}) {
   if (options.fast_track) {
     parts.push(FAST_TRACK_DIRECTIVE);
   }
+  parts.push(FIX_NOW_DIRECTIVE);
   if (quickfix_lane) {
     parts.push(QUICKFIX_LANE_DIRECTIVE);
   } else if (pr_submit) {

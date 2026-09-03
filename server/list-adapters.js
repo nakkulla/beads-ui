@@ -12,7 +12,7 @@ import {
   prefixOfBeadId,
   visibleWorkspaceRoots
 } from './worker/foreign-blocker-status.js';
-import { enrichIssuesWorkflow } from './workflow-enrich.js';
+import { enrichIssuesWorkflow, warmWorkflowProbes } from './workflow-enrich.js';
 import {
   peekWorkspaceSnapshot,
   requestWorkspaceSnapshot
@@ -98,17 +98,6 @@ export function mapSubscriptionToBdArgs(spec) {
         '--limit',
         '1000'
       ];
-    }
-    case 'issue-detail': {
-      const p = spec.params || {};
-      const id = String(p.id || '').trim();
-      if (id.length === 0) {
-        throw badRequest('Missing param: params.id');
-      }
-      // `--include-dependents` carries the reverse-direction edges the detail
-      // panel renders read-only; without it `bd show` answers `dependencies`
-      // only.
-      return ['show', id, '--include-dependents', '--json'];
     }
     default: {
       throw badRequest(`Unknown subscription type: ${t}`);
@@ -218,8 +207,7 @@ export async function fetchListForSubscription(spec, options = {}) {
 }
 
 /**
- * Fetch one shared workspace generation and project it into a list view.
- * `issue-detail` deliberately remains on the direct `bd show` path.
+ * Fetch one shared workspace generation and project it into a subscription.
  *
  * @param {{ type: string, params?: Record<string, string | number | boolean> }} spec
  * @param {{ cwd?: string, snapshot_cause?: string }} options
@@ -233,17 +221,30 @@ async function fetchWorkspaceSnapshotProjection(spec, options) {
   if (!snapshot_result.ok) {
     return { ok: false, error: snapshot_result.error };
   }
-  if (snapshot_result.stale) {
+  let items = projectWorkspaceSnapshot(spec, snapshot_result.snapshot, options);
+  if (String(spec.type) === 'issue-detail' && items.length === 0) {
+    const id = String(spec.params?.id ?? '').trim();
     return {
-      ok: true,
-      items: projectWorkspaceSnapshot(spec, snapshot_result.snapshot, options),
-      stale: true
+      ok: false,
+      error: { code: 'not_found', message: `Issue not found: ${id}` }
     };
   }
-  return {
+  items = attachSnapshotProvenance(items, snapshot_result.snapshot);
+  if (String(spec.type) === 'issue-detail') {
+    items = hydrateIssueDetail(items, snapshot_result.snapshot);
+  }
+  const probes = await warmWorkflowProbes(
+    items,
+    options.cwd,
+    snapshot_result.snapshot
+  );
+  items = enrichIssuesWorkflow(/** @type {any} */ (items), options.cwd, probes);
+  /** @type {FetchListResultSuccess} */
+  const result = {
     ok: true,
-    items: projectWorkspaceSnapshot(spec, snapshot_result.snapshot, options)
+    items
   };
+  return snapshot_result.stale ? { ...result, stale: true } : result;
 }
 
 /**
@@ -303,13 +304,80 @@ function projectWorkspaceSnapshot(spec, snapshot, options) {
       );
       break;
     }
+    case 'issue-detail': {
+      const id = String(spec.params?.id ?? '').trim();
+      const issue = snapshot.id_index.get(id);
+      items = issue ? [issue] : [];
+      break;
+    }
     default: {
       return [];
     }
   }
-  items = applyClosedIssuesFilter(spec, items);
-  items = enrichIssuesWorkflow(/** @type {any} */ (items), options.cwd);
-  return attachSnapshotProvenance(items, snapshot);
+  return applyClosedIssuesFilter(spec, items);
+}
+
+/**
+ * Replace detail-only bare edges with the compact issue records the client reads.
+ *
+ * @param {NormalizedIssue[]} items
+ * @param {WorkspaceSnapshot} snapshot
+ * @returns {NormalizedIssue[]}
+ */
+function hydrateIssueDetail(items, snapshot) {
+  return items.map((issue) => {
+    const dependency_edges =
+      snapshot.command_mode === 'embedded-dependencies'
+        ? Array.isArray(issue.dependencies)
+          ? issue.dependencies
+          : []
+        : snapshot.dependency_edges.filter(
+            (edge) => nonEmptyStringId(edge.issue_id) === issue.id
+          );
+    const dependencies = dependency_edges.flatMap((edge) => {
+      if (!edge || typeof edge !== 'object') {
+        return [];
+      }
+      const record = /** @type {Record<string, unknown>} */ (edge);
+      const id = nonEmptyStringId(record.depends_on_id);
+      const dependency_type = nonEmptyStringId(record.type);
+      if (id === null || dependency_type === null) {
+        return [];
+      }
+      return [compactDependency(snapshot, id, dependency_type)];
+    });
+    const dependents = (snapshot.edges_in.get(issue.id) ?? [])
+      .map((edge) => compactDependency(snapshot, edge.issue_id, edge.type))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const detail_issue = { ...issue };
+    delete detail_issue.schema_version;
+    return { ...detail_issue, dependencies, dependents };
+  });
+}
+
+/**
+ * Hydrate one dependency edge from the generation's issue index.
+ *
+ * @param {WorkspaceSnapshot} snapshot
+ * @param {string} id
+ * @param {string} dependency_type
+ * @returns {{ id: string } & Record<string, unknown>}
+ */
+function compactDependency(snapshot, id, dependency_type) {
+  const issue = snapshot.id_index.get(id);
+  if (!issue) {
+    return { id, dependency_type, title: '' };
+  }
+  return {
+    id,
+    dependency_type,
+    title: issue.title,
+    status: issue.status,
+    issue_type: issue.issue_type,
+    priority: issue.priority,
+    created_at: issue.created_at,
+    updated_at: issue.updated_at
+  };
 }
 
 /**
@@ -764,7 +832,7 @@ function collectEmbeddedProvenance(items) {
  * @param {{ type: string }} spec
  */
 function isWorkspaceSnapshotListSpec(spec) {
-  return String(spec.type) !== 'issue-detail';
+  return Boolean(spec);
 }
 
 /**
@@ -934,11 +1002,7 @@ async function fetchListForSubscriptionRaw(spec, options = {}) {
   }
 
   try {
-    const is_detail = String(spec.type) === 'issue-detail';
-    const res = await runBdJsonProjected(is_detail ? 'show' : 'list', args, {
-      cwd: options.cwd,
-      ...(is_detail ? { expected_id: String(spec.params?.id ?? '') } : {})
-    });
+    const res = await runBdJsonProjected('list', args, { cwd: options.cwd });
     if (!res || res.ok !== true) {
       if (
         String(spec.type) === 'resolved-issues' &&
@@ -950,10 +1014,7 @@ async function fetchListForSubscriptionRaw(spec, options = {}) {
       log('bd failed for %o (args=%o) code=%s', spec, args, res?.error?.code);
       return bdCommandFailure(res);
     }
-    // `show` projects one issue; the list views project an array.
-    const raw = Array.isArray(res.data) ? res.data : [res.data];
-
-    const items = normalizeIssueList(raw);
+    const items = normalizeIssueList(res.data);
     return { ok: true, items };
   } catch (err) {
     log('bd invocation failed for %o (args=%o): %o', spec, args, err);

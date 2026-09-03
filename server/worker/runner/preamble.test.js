@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import * as preamble from './preamble.js';
 import {
   FAST_TRACK_DIRECTIVE,
+  FIX_NOW_DIRECTIVE,
   PR_SUBMIT_DIRECTIVE,
   QUICKFIX_LANE_DIRECTIVE,
   REVIEW_PREAMBLE,
@@ -47,6 +48,10 @@ const COMBINATIONS = [
       fast_track: true,
       target_base: 'main'
     }
+  },
+  {
+    name: 'quickfix_lane',
+    options: { quickfix_lane: true, target_base: 'main' }
   }
 ];
 
@@ -73,7 +78,7 @@ describe('runner/preamble channel split (UI-rxp3 §1)', () => {
     expect(applyPreamble(/** @type {any} */ (undefined)).task_prompt).toBe('');
   });
 
-  test('orders 무인 모드 → fast_track → 종점 → PR base → 가드 계약', () => {
+  test('orders 무인 모드 → fast_track → fix-now → 종점 → PR base → 가드 계약', () => {
     const out = applyPreamble('작업하라', {
       fast_track: true,
       target_base: 'ilsun/dev'
@@ -81,7 +86,8 @@ describe('runner/preamble channel split (UI-rxp3 §1)', () => {
     const idx = (/** @type {string} */ part) => out.indexOf(part);
 
     expect(idx(UNATTENDED_PREAMBLE)).toBeLessThan(idx(FAST_TRACK_DIRECTIVE));
-    expect(idx(FAST_TRACK_DIRECTIVE)).toBeLessThan(idx(PR_SUBMIT_DIRECTIVE));
+    expect(idx(FAST_TRACK_DIRECTIVE)).toBeLessThan(idx(FIX_NOW_DIRECTIVE));
+    expect(idx(FIX_NOW_DIRECTIVE)).toBeLessThan(idx(PR_SUBMIT_DIRECTIVE));
     expect(idx(PR_SUBMIT_DIRECTIVE)).toBeLessThan(idx('## PR base'));
     expect(idx('## PR base')).toBeLessThan(idx('## 가드 계약'));
   });
@@ -96,6 +102,37 @@ describe('runner/preamble channel split (UI-rxp3 §1)', () => {
   );
 });
 
+describe('runner/preamble fix-now directive', () => {
+  test('states the in-session adjacent-fix contract', () => {
+    expect(FIX_NOW_DIRECTIVE).toContain('금지 목록이 아니다');
+    expect(FIX_NOW_DIRECTIVE).toContain('결함·드리프트 클래스');
+    expect(FIX_NOW_DIRECTIVE).toContain('세션 중 흡수한 발견 항목');
+  });
+
+  test.each([
+    { name: 'default', options: {} },
+    { name: 'fast_track', options: { fast_track: true } },
+    {
+      name: 'quickfix_lane',
+      options: { quickfix_lane: true, target_base: 'main' }
+    },
+    {
+      name: 'disposition',
+      options: { pr_submit: false, disposition: true }
+    }
+  ])('injects fix-now into the $name writable shape', ({ options }) => {
+    const out = applyPreamble('작업하라', options).system_prompt;
+
+    expect(out).toContain(FIX_NOW_DIRECTIVE);
+  });
+
+  test('excludes fix-now from the read-only review shape', () => {
+    const out = applyPreamble('검토하라', { review: true }).system_prompt;
+
+    expect(out).not.toContain('## fix-now');
+  });
+});
+
 describe('runner/preamble unattended framing (UI-rxp3 §1)', () => {
   test('states the absence of a responder as an environment fact', () => {
     expect(UNATTENDED_PREAMBLE).toContain('사용자는 이 세션과 통신할 수 없다');
@@ -108,7 +145,10 @@ describe('runner/preamble unattended framing (UI-rxp3 §1)', () => {
   });
 
   test('carries the background-task warning the guard contract used to hold', () => {
-    expect(UNATTENDED_PREAMBLE).toContain('턴이 끝나는 즉시 종료된다');
+    expect(UNATTENDED_PREAMBLE).toContain(
+      'foreground로 턴 안에서 완료까지 기다려라'
+    );
+    expect(UNATTENDED_PREAMBLE).toContain('최대 2시간');
     expect(guardContractDirective()).not.toContain('백그라운드 태스크');
   });
 
