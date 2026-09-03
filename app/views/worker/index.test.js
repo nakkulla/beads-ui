@@ -397,12 +397,12 @@ function expandDoneLane() {
  * Preseed the candidate display filter (UI-ki09). blocked rows are hidden by
  * default, so a test about blocked candidates asks for them explicitly.
  *
- * @param {Partial<{ show_blocked: boolean, spec: 'all'|'with'|'without' }>} over
+ * @param {Partial<{ show_blocked: boolean, readiness: 'all'|'ready'|'not_ready' }>} over
  */
 function presetCandidateFilter(over) {
   window.localStorage.setItem(
     'beads-ui.worker.candidate-filter',
-    JSON.stringify({ show_blocked: false, spec: 'all', ...over })
+    JSON.stringify({ show_blocked: false, readiness: 'all', ...over })
   );
 }
 
@@ -6794,9 +6794,9 @@ describe('candidate display filter — view (UI-ki09)', () => {
    * @param {HTMLElement} mount
    * @param {string} value
    */
-  const clickSpecChip = (mount, value) => {
+  const clickReadinessChip = (mount, value) => {
     /** @type {HTMLElement} */ (
-      mount.querySelector(`.worker-filter__chip[data-spec="${value}"]`)
+      mount.querySelector(`.worker-filter__chip[data-readiness="${value}"]`)
     ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
   };
 
@@ -6837,26 +6837,26 @@ describe('candidate display filter — view (UI-ki09)', () => {
     expect(candIds(mount)).toContain('BL-1');
   });
 
-  test('filters to spec-less candidates when the spec 없음 chip is clicked', () => {
+  test('filters to candidates needing preparation', () => {
     const mount = mountCandidates();
 
-    clickSpecChip(mount, 'without');
+    clickReadinessChip(mount, 'not_ready');
 
     expect(candIds(mount)).toEqual(['RD-2']);
     expect(
       /** @type {HTMLElement} */ (
-        mount.querySelector('.worker-filter__chip[data-spec="without"]')
+        mount.querySelector('.worker-filter__chip[data-readiness="not_ready"]')
       ).classList.contains('is-active')
     ).toBe(true);
   });
 
-  test('reports the spec-filtered rows apart from the blocked ones', () => {
+  test('reports readiness-hidden rows apart from blocked rows', () => {
     const mount = mountCandidates();
 
-    clickSpecChip(mount, 'with');
+    clickReadinessChip(mount, 'ready');
 
-    // RD-2 is hidden by the spec chip; BL-1 by the blocked toggle. BL-1 passes
-    // the spec chip, so it counts on the toggle only.
+    // RD-2 is hidden by readiness; BL-1 by blocked. BL-1 is ready, so the
+    // blocked toggle alone counts it.
     expect(
       /** @type {HTMLElement} */ (mount.querySelector('.worker-filter__hidden'))
         .textContent
@@ -6870,7 +6870,7 @@ describe('candidate display filter — view (UI-ki09)', () => {
   test('stores the filter state as JSON on every change', () => {
     const mount = mountCandidates();
 
-    clickSpecChip(mount, 'with');
+    clickReadinessChip(mount, 'ready');
     const tgl = blockedToggle(mount);
     tgl.checked = true;
     tgl.dispatchEvent(new Event('change', { bubbles: true }));
@@ -6880,11 +6880,11 @@ describe('candidate display filter — view (UI-ki09)', () => {
         window.localStorage.getItem('beads-ui.worker.candidate-filter') ||
           'null'
       )
-    ).toEqual({ show_blocked: true, spec: 'with' });
+    ).toEqual({ show_blocked: true, readiness: 'ready' });
   });
 
   test('restores a stored filter when the view is created', () => {
-    presetCandidateFilter({ show_blocked: true, spec: 'with' });
+    presetCandidateFilter({ show_blocked: true, readiness: 'ready' });
 
     const mount = mountCandidates();
 
@@ -6904,16 +6904,16 @@ describe('candidate display filter — view (UI-ki09)', () => {
     expect(blockedToggle(mount).checked).toBe(false);
   });
 
-  test('falls back to the defaults on an out-of-vocabulary spec value', () => {
+  test('ignores a retired stored spec value and uses default readiness', () => {
     window.localStorage.setItem(
       'beads-ui.worker.candidate-filter',
-      JSON.stringify({ show_blocked: 'yes', spec: 'bogus' })
+      JSON.stringify({ show_blocked: true, spec: 'without' })
     );
 
     const mount = mountCandidates();
 
-    expect(candIds(mount)).toEqual(['RD-1', 'RD-2']);
-    expect(blockedToggle(mount).checked).toBe(false);
+    expect(candIds(mount).sort()).toEqual(['BL-1', 'RD-1', 'RD-2']);
+    expect(blockedToggle(mount).checked).toBe(true);
   });
 
   test('renders the filter strip on the candidate pane only', () => {
@@ -7714,8 +7714,8 @@ describe('worker-ineligible candidates (UI-8881)', () => {
     ).not.toBeNull();
   });
 
-  test('applies the spec filter to an ineligible candidate unchanged', () => {
-    presetCandidateFilter({ spec: 'without' });
+  test('puts an ineligible candidate in the preparation segment', () => {
+    presetCandidateFilter({ readiness: 'not_ready' });
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     createWorkerView(mount, {
@@ -7724,18 +7724,18 @@ describe('worker-ineligible candidates (UI-8881)', () => {
       transport: vi.fn()
     });
 
-    expect(candidateOrder(mount)).toEqual(['MID']);
+    expect(candidateOrder(mount)).toEqual(['INEL', 'MID']);
 
     document.body.innerHTML = '<div id="m2"></div>';
     const mount2 = /** @type {HTMLElement} */ (document.getElementById('m2'));
-    presetCandidateFilter({ spec: 'with' });
+    presetCandidateFilter({ readiness: 'ready' });
     createWorkerView(mount2, {
       issueStores: seedIneligible(),
       queueStore: createWorkerQueueStore(),
       transport: vi.fn()
     });
 
-    expect(candidateOrder(mount2).sort()).toEqual(['INEL', 'OK']);
+    expect(candidateOrder(mount2)).toEqual(['OK']);
   });
 
   test('sorts an ineligible row with the shared candidate comparators', () => {
@@ -8472,7 +8472,7 @@ describe('candidate queue button — [대기로 ↴] (UI-58y2)', () => {
   function mountWithBlocked(transport, queue_over = {}, gotoIssue) {
     window.localStorage.setItem(
       'beads-ui.worker.candidate-filter',
-      JSON.stringify({ show_blocked: true, spec: 'all' })
+      JSON.stringify({ show_blocked: true, readiness: 'all' })
     );
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();

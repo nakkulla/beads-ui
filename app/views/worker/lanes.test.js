@@ -15,6 +15,7 @@ import {
   formatClock,
   formatElapsed,
   judgementPopoverContent,
+  judgementPopoverOf,
   miniRow,
   nowPanel,
   paneTemplate,
@@ -4325,6 +4326,134 @@ describe('스펙 대기 칩 (UI-svh6 §4.3)', () => {
       !!card.querySelector('.worker-deps--primary .chip-popover'),
       !!card.querySelector('.worker-card__head .chip-popover')
     ]).toEqual([true, false]);
+  });
+});
+
+describe('준비 필요 판정 칩과 흐림 (UI-ff10 §6)', () => {
+  const BASE = {
+    queue_placeable: false,
+    route_ok: true,
+    awaiting_user: false,
+    missing_description: false,
+    placement_spec: /** @type {const} */ ('published')
+  };
+
+  /** @type {Array<[string, Partial<import('./lanes.js').MiniItem>, string]>} */
+  const CASES = [
+    [
+      '라우팅 필요',
+      { route_ok: false },
+      'route가 정해지지 않아 대기 큐에 넣을 수 없습니다'
+    ],
+    [
+      '본문 필요',
+      { missing_description: true, placement_spec: 'n/a' },
+      'description이 없어 대기 큐에 넣을 수 없습니다'
+    ],
+    [
+      '스펙 충돌',
+      { placement_spec: 'conflict' },
+      'spec 경로가 충돌해 대기 큐에 넣을 수 없습니다'
+    ],
+    [
+      '스펙 미발행',
+      { placement_spec: 'draft' },
+      'spec이 발행되지 않아 대기 큐에 넣을 수 없습니다'
+    ]
+  ];
+
+  test.each(CASES)(
+    'draws one %s chip with the placement title',
+    (label, over, title) => {
+      const card = renderCandidate({ ...BASE, ...over });
+      const chips = card.querySelectorAll('.worker-card__readiness');
+
+      expect(chips).toHaveLength(1);
+      expect(chips[0].textContent?.trim()).toBe(label);
+      expect(chips[0].getAttribute('title')).toBe(title);
+    }
+  );
+
+  test('uses the first matching readiness reason', () => {
+    const card = renderCandidate({
+      ...BASE,
+      route_ok: false,
+      worker_ineligible: true,
+      awaiting_user: true,
+      missing_description: true,
+      placement_spec: 'conflict'
+    });
+
+    expect(card.querySelectorAll('.worker-card__readiness')).toHaveLength(1);
+    expect(
+      card.querySelector('.worker-card__readiness')?.textContent?.trim()
+    ).toBe('라우팅 필요');
+  });
+
+  test.each([
+    ['worker-ineligible', { worker_ineligible: true }],
+    ['awaiting-user', { awaiting_user: true }]
+  ])('omits a new chip for %s', (_name, over) => {
+    const card = renderCandidate({ ...BASE, ...over });
+
+    expect(card.querySelector('.worker-card__readiness')).toBeNull();
+  });
+
+  test('keeps 스펙 대기 before the readiness chip in slot 4a', () => {
+    const card = renderCandidate({
+      ...BASE,
+      placement_spec: 'draft',
+      spec_after_blocker: true,
+      blocked_by: ['UI-b']
+    });
+    const primary = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-deps--primary')
+    );
+
+    expect(
+      Array.from(primary.children, (child) => child.textContent?.trim())
+    ).toEqual(['스펙 대기', '스펙 미발행']);
+  });
+
+  test('opens the readiness reason popup under slot 4a', () => {
+    const item = /** @type {any} */ ({
+      ...BASE,
+      id: 'UI-qf',
+      placement_spec: 'conflict'
+    });
+    const chip_popover = judgementPopoverOf(
+      item,
+      (/** @type {string} */ chip_key) => chip_key === 'readiness'
+    );
+
+    const card = renderCandidate({ ...item, chip_popover });
+
+    expect(
+      card
+        .querySelector('.worker-card__readiness')
+        ?.getAttribute('aria-expanded')
+    ).toBe('true');
+    expect(
+      card.querySelector('.worker-deps--primary .chip-popover__title')
+        ?.textContent
+    ).toBe('spec 경로가 충돌해 대기 큐에 넣을 수 없습니다');
+  });
+
+  test('uses one dimming class when blocked and not ready overlap', () => {
+    const card = renderCandidate({ ...BASE, blocked: true });
+
+    expect(card.classList.contains('worker-card--blocked')).toBe(true);
+    expect(
+      Array.from(card.classList).filter(
+        (name) => name === 'worker-card--blocked'
+      )
+    ).toHaveLength(1);
+  });
+
+  test('leaves a ready unblocked card undimmed', () => {
+    const card = renderCandidate({ ...BASE, queue_placeable: true });
+
+    expect(card.classList.contains('worker-card--blocked')).toBe(false);
   });
 });
 

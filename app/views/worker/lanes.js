@@ -959,6 +959,75 @@ export function specAfterBlockerChipTemplate(active, open = false) {
 }
 
 /**
+ * Select the first readiness judgment defined by UI-ff10 §6.1.
+ *
+ * @param {MiniItem} item
+ * @returns {{ label: string, title: string }|null}
+ */
+function readinessJudgement(item) {
+  if (!Object.hasOwn(item, 'route_ok') || item.queue_placeable === true) {
+    return null;
+  }
+  let label = '';
+  if (item.route_ok === false) {
+    label = '라우팅 필요';
+  }
+  if (
+    label.length === 0 &&
+    (item.worker_ineligible === true || item.awaiting_user === true)
+  ) {
+    return null;
+  }
+  if (label.length === 0 && item.missing_description === true) {
+    label = '본문 필요';
+  } else if (label.length === 0 && item.placement_spec === 'conflict') {
+    label = '스펙 충돌';
+  } else if (
+    label.length === 0 &&
+    Object.hasOwn(item, 'placement_spec') &&
+    item.placement_spec !== 'published'
+  ) {
+    label = '스펙 미발행';
+  }
+  if (label.length === 0) {
+    return null;
+  }
+  return {
+    label,
+    title: placementTitle({
+      placeable: false,
+      route_ok: item.route_ok,
+      worker_ineligible: item.worker_ineligible === true,
+      awaiting_user: item.awaiting_user === true,
+      missing_description: item.missing_description === true,
+      spec: item.placement_spec
+    })
+  };
+}
+
+/**
+ * Readiness judgment chip for slot 4a (UI-ff10 §6.1).
+ *
+ * @param {{ label: string, title: string }|null} judgement
+ * @param {boolean} open
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function readinessChipTemplate(judgement, open) {
+  if (!judgement) {
+    return '';
+  }
+  return html`<button
+    type="button"
+    class="ctl-chip ctl-chip--label judgement-chip worker-card__readiness"
+    data-chip-key="readiness"
+    aria-expanded=${open ? 'true' : 'false'}
+    title=${judgement.title}
+  >
+    ${judgement.label}
+  </button>`;
+}
+
+/**
  * The two lines of 슬롯 4 (UI-8x90 §4.1·§4.2). 상단은 "지금 갈 수 있나"를 바꾸는
  * 사실(`▶ 연결` 발차 · `⛓` 선행 · `→` 후속), 하단은 판단 재료(`🔓` 해제 ·
  * `⧉` 겹침 · `scope 없음`)다. 재료가 없는 줄은 그리지 않으며 두 줄은 서로를
@@ -1363,6 +1432,12 @@ export function priorityBadgeTemplate(priority) {
  * 있다 (UI-d13v §6). 배치 메뉴 열림·`[대기로 ↴]` 자격이 읽는 값이며, 예전에
  * `draggable`이 지던 자격을 그대로 물려받는다 — 드래그가 사라져도 무엇을 막는지는
  * 같아야 한다. 후보 카드 외의 행은 싣지 않는다.
+ * @property {boolean} [blocked] - Whether a dependency currently blocks it.
+ * @property {boolean} [route_ok] - Placement route validity, when facts exist.
+ * @property {boolean} [awaiting_user] - Placement waits for user input.
+ * @property {boolean} [missing_description] - quick_fix description is absent.
+ * @property {'published'|'draft'|'none'|'conflict'|'n/a'} [placement_spec] -
+ * Placement spec judgment, when facts exist.
  * @property {'candidate'|'queue'|'running'|'runnable'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5'} lane -
  * Owning lane. `running`/`runnable` exist only for the monitor tab, which mixes
  * every repo into five lanes (UI-qrfo §8); the Worker console never sets them.
@@ -2110,7 +2185,7 @@ const SESSION_PREFERRED_TOOLTIP = {
  * The 판정 칩 keys (UI-8x90 §4.5, UI-svh6 §4.3). `data-chip-key` carries them
  * into the DOM so one click handler per tab covers every surface.
  *
- * @typedef {'rec'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'} JudgementChipKey
+ * @typedef {'rec'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'|'readiness'} JudgementChipKey
  */
 
 /**
@@ -2173,6 +2248,16 @@ export function judgementPopoverContent(item, chip_key) {
       ]
     };
   }
+  if (chip_key === 'readiness') {
+    const judgement = readinessJudgement(item);
+    if (!judgement) {
+      return null;
+    }
+    return {
+      title: judgement.title,
+      lines: []
+    };
+  }
   if (chip_key === 'receipt') {
     const codes = receiptBadgeCodesOf(item);
     if (codes.length === 0) {
@@ -2216,7 +2301,8 @@ export const JUDGEMENT_CHIP_KEYS = [
   'session_preferred',
   'ineligible',
   'qfr',
-  'spec_after_blocker'
+  'spec_after_blocker',
+  'readiness'
 ];
 
 /**
@@ -2320,10 +2406,12 @@ export function candidateCard(item, place_menu = null, options = {}) {
   const workflow = item.workflow;
   const reason_parts =
     typeof item.reason === 'string' ? item.reason.split(' · ') : [];
-  const missing_description = reason_parts.includes('missing_description');
-  const awaiting_user = reason_parts.some((part) =>
-    part.startsWith(AWAITING_USER_REASON_PREFIX)
-  );
+  const missing_description =
+    item.missing_description === true ||
+    reason_parts.includes('missing_description');
+  const awaiting_user =
+    item.awaiting_user === true ||
+    reason_parts.some((part) => part.startsWith(AWAITING_USER_REASON_PREFIX));
   const danger =
     typeof item.reason === 'string' && item.reason.startsWith('⛔');
   // 슬롯 4a의 판정 칩 (UI-svh6 §4.3). 팝업은 그 칩이 선 줄 아래에 열리므로
@@ -2334,13 +2422,18 @@ export function candidateCard(item, place_menu = null, options = {}) {
     item.spec_after_blocker === true,
     spec_after_blocker_open
   );
+  const readiness_judgement = readinessJudgement(item);
+  const readiness_open = chipOpen(item, 'readiness');
+  const readiness_el = readinessChipTemplate(
+    readiness_judgement,
+    readiness_open
+  );
+  const slot4_el = html`${spec_after_blocker_el}${spec_after_blocker_open
+    ? judgementPopover(item)
+    : ''}${readiness_el}${readiness_open ? judgementPopover(item) : ''}`;
   const deps_el = dependencyChipsTemplate(
     item.dependency_chips,
-    spec_after_blocker_el === ''
-      ? ''
-      : html`${spec_after_blocker_el}${spec_after_blocker_open
-          ? judgementPopover(item)
-          : ''}`
+    spec_after_blocker_el === '' && readiness_el === '' ? '' : slot4_el
   );
   // 좌표 칩은 정체성 줄이 아니라 슬롯 5 줄이다 (UI-251y §2·§3.2): 헤더에 서면
   // 폭에 따라 조작 버튼을 다음 줄로 밀어내 사용자가 버튼을 찾는 자리가
@@ -2357,11 +2450,17 @@ export function candidateCard(item, place_menu = null, options = {}) {
     item.exec_chips &&
     (item.exec_chips.orchestration || item.exec_chips.worker)
   );
+  const blocked_or_not_ready =
+    item.blocked === true ||
+    item.queue_placeable === false ||
+    worker_ineligible;
   return html`<div
     class="worker-card${draggable
       ? ''
       : ' worker-card--static'}${worker_ineligible
       ? ' worker-card--ineligible'
+      : ''}${blocked_or_not_ready
+      ? ' worker-card--blocked'
       : ''}${item.search_match === false ? ' is-dimmed' : ''}"
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
@@ -2399,7 +2498,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
         item.rec,
         chipOpen(item, 'rec')
       )}${quickFixReviewChipTemplate(workflow, chipOpen(item, 'qfr'))}
-      ${spec_after_blocker_open ? '' : judgementPopover(item)}
+      ${spec_after_blocker_open || readiness_open ? '' : judgementPopover(item)}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow
@@ -2444,9 +2543,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
                 >`
               : ''}
             <!-- 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 후보 레인에서 대기로 가는
-                 유일한 경로다 (UI-d13v §6). 막는 것은 예전 드래그와 같다 — spec
-                 없는 후보만 막고, blocked-with-spec은 적재할 수 있다. 포인터
-                 종류로 감추지 않는다: 드래그라는 대체 경로가 없다. -->
+                 유일한 경로다 (UI-d13v §6). queue_placeable 하나가 준비도
+                 세그먼트와 같은 자격을 말하며, blocked 자체는 막지 않는다.
+                 포인터 종류로 감추지 않는다: 드래그라는 대체 경로가 없다. -->
             <button
               type="button"
               class="op-btn op-btn--primary worker-card__place"
@@ -2454,9 +2553,11 @@ export function candidateCard(item, place_menu = null, options = {}) {
               ?disabled=${!queue_placeable}
               title=${placementTitle({
                 placeable: queue_placeable,
+                route_ok: item.route_ok,
                 worker_ineligible,
                 awaiting_user,
-                missing_description
+                missing_description,
+                spec: item.placement_spec
               })}
             >
               ↴ 대기로

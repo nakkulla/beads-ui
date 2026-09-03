@@ -191,6 +191,34 @@ describe('worker workspace adapter', () => {
     expect(row.reason).toBe('spec 없음');
   });
 
+  test('carries the placement judgement material for the readiness chip', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      { id: 'DRAFT', title: 'draft', spec_id: 'SPEC-1', metadata: {} },
+      {
+        id: 'QF',
+        title: 'quick fix',
+        description: '',
+        metadata: { route: 'quick_fix' }
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const rows = adapter.read({ candidate_sort: SORT }).workspaces[0].runnable;
+
+    expect(rows[0]).toMatchObject({
+      route_ok: false,
+      awaiting_user: false,
+      missing_description: false,
+      placement_spec: 'draft'
+    });
+    expect(rows[1]).toMatchObject({
+      route_ok: true,
+      missing_description: true,
+      placement_spec: 'n/a'
+    });
+  });
+
   test('names an unreviewed spec as spec 미발행(draft)', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:ready', [

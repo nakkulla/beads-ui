@@ -66,7 +66,12 @@ import {
 import { failureSentence, failureText } from './failure-labels.js';
 import { createLaneCollapse } from './lane-collapse.js';
 import { createLaneDrag } from './lane-drag.js';
-import { baseException, buildLanes, resolvesConflict } from './lane-model.js';
+import {
+  READINESS_FILTER_OPTIONS,
+  baseException,
+  buildLanes,
+  resolvesConflict
+} from './lane-model.js';
 import {
   discardAbandonCompletionMessage,
   discardAbandonConfirmationMessage,
@@ -96,7 +101,7 @@ import { createTranscriptDrawer } from './transcript-drawer.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
 
 /**
- * @import { LaneItem, LaneModel, LaneQueueGroup } from './lane-model.js'
+ * @import { CandidateFilter, LaneItem, LaneModel, LaneQueueGroup } from './lane-model.js'
  */
 
 export { mergeStepView } from './merge-steps.js';
@@ -168,10 +173,6 @@ function objectOf(value) {
 const CANDIDATE_FILTER_KEY = 'beads-ui.worker.candidate-filter';
 
 /**
- * @typedef {{ show_blocked: boolean, spec: 'all'|'with'|'without' }} CandidateFilter
- */
-
-/**
  * blocked is hidden by DEFAULT: a blocked bead cannot run now, so it is noise in
  * a pane whose whole job is "what can I dispatch". It is hidden, never dropped —
  * the admission gate ignores blocked-ness, so pre-queuing a blocked bead that
@@ -179,7 +180,10 @@ const CANDIDATE_FILTER_KEY = 'beads-ui.worker.candidate-filter';
  *
  * @type {CandidateFilter}
  */
-const CANDIDATE_FILTER_DEFAULT = { show_blocked: false, spec: 'all' };
+const CANDIDATE_FILTER_DEFAULT = {
+  show_blocked: false,
+  readiness: 'all'
+};
 
 /**
  * Read the persisted filter. Anything unreadable (absent, malformed JSON, wrong
@@ -198,10 +202,11 @@ function loadCandidateFilter() {
     if (!parsed || typeof parsed !== 'object') {
       return { ...CANDIDATE_FILTER_DEFAULT };
     }
-    const spec = parsed.spec;
+    const readiness = parsed.readiness;
     return {
       show_blocked: parsed.show_blocked === true,
-      spec: spec === 'with' || spec === 'without' ? spec : 'all'
+      readiness:
+        readiness === 'ready' || readiness === 'not_ready' ? readiness : 'all'
     };
   } catch {
     return { ...CANDIDATE_FILTER_DEFAULT };
@@ -218,17 +223,6 @@ function saveCandidateFilter(filter) {
     /* ignore — a private-mode storage denial must not break the toggle */
   }
 }
-
-/**
- * spec filter chips, in render order.
- *
- * @type {Array<{ value: 'all'|'with'|'without', label: string }>}
- */
-const SPEC_FILTER_OPTIONS = [
-  { value: 'all', label: '전체' },
-  { value: 'with', label: 'spec 있음' },
-  { value: 'without', label: 'spec 없음' }
-];
 
 /**
  * Persisted period range for the 완료 lane (UI-d7pw §3.2). The Board's Closed
@@ -3941,24 +3935,30 @@ export function createWorkerView(mount_element, options = {}) {
         />
         🔒 blocked${hidden.blocked > 0 ? ` ${hidden.blocked}` : ''}
       </label>
-      <div class="worker-filter__spec" role="group" aria-label="spec 필터">
-        ${SPEC_FILTER_OPTIONS.map(
+      <div
+        class="worker-filter__readiness"
+        role="group"
+        aria-label="준비도 필터"
+      >
+        ${READINESS_FILTER_OPTIONS.map(
           (o) =>
             html`<button
               type="button"
-              class="worker-filter__chip${candidate_filter.spec === o.value
+              class="worker-filter__chip${candidate_filter.readiness === o.value
                 ? ' is-active'
                 : ''}"
-              data-spec=${o.value}
-              aria-pressed=${candidate_filter.spec === o.value
+              data-readiness=${o.value}
+              aria-pressed=${candidate_filter.readiness === o.value
                 ? 'true'
                 : 'false'}
             >
               ${o.label}
             </button>`
         )}
-        ${hidden.spec > 0
-          ? html`<span class="worker-filter__hidden">숨김 ${hidden.spec}</span>`
+        ${hidden.readiness > 0
+          ? html`<span class="worker-filter__hidden"
+              >숨김 ${hidden.readiness}</span
+            >`
           : ''}
       </div>
     </div>`;
@@ -5019,13 +5019,13 @@ export function createWorkerView(mount_element, options = {}) {
     }
     // Candidate filter chips live inside the pane; handle them before any row
     // handler so a click never falls through to the card default.
-    const spec_chip = /** @type {HTMLElement|null} */ (
+    const readiness_chip = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-filter__chip')
     );
-    if (spec_chip) {
-      const value = spec_chip.dataset.spec;
-      if (value === 'all' || value === 'with' || value === 'without') {
-        setCandidateFilter({ ...candidate_filter, spec: value });
+    if (readiness_chip) {
+      const value = readiness_chip.dataset.readiness;
+      if (value === 'all' || value === 'ready' || value === 'not_ready') {
+        setCandidateFilter({ ...candidate_filter, readiness: value });
       }
       return;
     }

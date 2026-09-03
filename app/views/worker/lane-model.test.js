@@ -181,17 +181,36 @@ describe('monitor 실행가능 repo sections (UI-eey2 §5)', () => {
   });
 });
 
-describe('monitor 실행가능 filter and sort (UI-eey2 §5)', () => {
+describe('monitor candidate readiness filter and sort (UI-ff10 §5·§7)', () => {
   const repo = workspace({
     runnable: [
       runnable('A-1', {
         blocked: true,
+        route: 'spec_backed',
+        spec_state: 'published',
+        has_description: false,
+        awaiting_user: false,
+        worker_ineligible: false,
         spec_id: 'docs/a.md',
         published: true,
         updated_at: 30
       }),
-      runnable('A-2', { spec_id: '', published: false, updated_at: 50 }),
+      runnable('A-2', {
+        route: 'spec_backed',
+        spec_state: 'draft',
+        has_description: false,
+        awaiting_user: false,
+        worker_ineligible: false,
+        spec_id: '',
+        published: false,
+        updated_at: 50
+      }),
       runnable('A-3', {
+        route: 'spec_backed',
+        spec_state: 'published',
+        has_description: false,
+        awaiting_user: false,
+        worker_ineligible: false,
         spec_id: 'docs/c.md',
         published: true,
         updated_at: 10
@@ -221,52 +240,63 @@ describe('monitor 실행가능 filter and sort (UI-eey2 §5)', () => {
     expect(lanes.runnable_hidden.blocked).toBe(1);
   });
 
-  test('filters on the runnable projection published field', () => {
-    const with_spec = buildLanes([repo], [state()], {
-      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, spec: 'with' }
+  test('partitions all three readiness segment values', () => {
+    const all = buildLanes([repo], [state()]);
+    const ready = buildLanes([repo], [state()], {
+      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, readiness: 'ready' }
     });
-    const without_spec = buildLanes([repo], [state()], {
-      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, spec: 'without' }
+    const not_ready = buildLanes([repo], [state()], {
+      candidate_filter: {
+        ...CANDIDATE_FILTER_DEFAULT,
+        readiness: 'not_ready'
+      }
     });
 
-    expect(with_spec.runnable.map((r) => r.id).sort()).toEqual(['A-1', 'A-3']);
-    expect(without_spec.runnable.map((r) => r.id)).toEqual(['A-2']);
-    expect(without_spec.runnable_hidden.spec).toBe(2);
+    expect(all.runnable.map((r) => r.id).sort()).toEqual(['A-1', 'A-2', 'A-3']);
+    expect(ready.runnable.map((r) => r.id).sort()).toEqual(['A-1', 'A-3']);
+    expect(not_ready.runnable.map((r) => r.id)).toEqual(['A-2']);
+    expect(not_ready.runnable_hidden.readiness).toBe(2);
   });
 
   test('counts a compound-filtered row once, in the blocked count', () => {
     const lanes = buildLanes([repo], [state()], {
-      candidate_filter: { show_blocked: false, spec: 'without' }
+      candidate_filter: { show_blocked: false, readiness: 'not_ready' }
     });
 
-    // A-1은 blocked이면서 spec도 있다 — Monitor는 앞 단계인 blocked가 가져간다.
+    // A-1은 blocked이면서 ready다 — Monitor는 앞 단계인 blocked가 가져간다.
     expect(lanes.runnable.map((r) => r.id)).toEqual(['A-2']);
-    expect(lanes.runnable_hidden).toEqual({ blocked: 1, spec: 1 });
+    expect(lanes.runnable_hidden).toEqual({ blocked: 1, readiness: 1 });
   });
 
   test('counts a compound-filtered row in neither control under per_control', () => {
     const lanes = buildLanes([repo], [state()], {
-      candidate_filter: { show_blocked: false, spec: 'without' },
+      candidate_filter: { show_blocked: false, readiness: 'not_ready' },
       candidate_hidden_counts: 'per_control'
     });
 
     // 한쪽만 풀어도 A-1은 그대로 숨는다 — 어느 배지도 그것을 세지 않는다.
     expect(lanes.runnable.map((r) => r.id)).toEqual(['A-2']);
-    expect(lanes.runnable_hidden).toEqual({ blocked: 0, spec: 1 });
+    expect(lanes.runnable_hidden).toEqual({ blocked: 0, readiness: 1 });
   });
 
   test('counts each control alone under per_control when only one filters', () => {
     const blocked_only = buildLanes([repo], [state()], {
-      candidate_filter: { show_blocked: false, spec: 'all' },
+      candidate_filter: { show_blocked: false, readiness: 'all' },
       candidate_hidden_counts: 'per_control'
     });
-    const spec_only = buildLanes([repo], [state()], {
-      candidate_filter: { show_blocked: true, spec: 'without' },
+    const readiness_only = buildLanes([repo], [state()], {
+      candidate_filter: { show_blocked: true, readiness: 'not_ready' },
       candidate_hidden_counts: 'per_control'
     });
 
-    expect(blocked_only.runnable_hidden).toEqual({ blocked: 1, spec: 0 });
-    expect(spec_only.runnable_hidden).toEqual({ blocked: 0, spec: 2 });
+    expect(blocked_only.runnable_hidden).toEqual({
+      blocked: 1,
+      readiness: 0
+    });
+    expect(readiness_only.runnable_hidden).toEqual({
+      blocked: 0,
+      readiness: 2
+    });
   });
 
   test('sorts published candidates first inside their repo section', () => {
@@ -281,38 +311,28 @@ describe('monitor 실행가능 filter and sort (UI-eey2 §5)', () => {
     ]);
   });
 
-  // 발행 판정은 서버 투영이 소유한다 (UI-vb7u §3): spec 경로만 있고 리뷰가
-  // 아직 없는 행은 `spec 없음` 쪽이며, 레인은 그것을 재계산하지 않는다.
-  test('treats an unpublished spec path as spec-less in the filter', () => {
-    const unpublished = workspace({
-      runnable: [
-        runnable('A-9', { spec_id: 'docs/awaiting.md', published: false })
-      ]
-    });
-
-    const with_spec = buildLanes([unpublished], [state()], {
-      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, spec: 'with' }
-    });
-    const without_spec = buildLanes([unpublished], [state()], {
-      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, spec: 'without' }
-    });
-
-    expect(with_spec.runnable.map((r) => r.id)).toEqual([]);
-    expect(without_spec.runnable.map((r) => r.id)).toEqual(['A-9']);
-  });
-
-  test('sorts an unpublished spec path after a published one', () => {
+  test('sorts ready before spec priority inside a repo', () => {
     const mixed = workspace({
       runnable: [
         runnable('A-8', {
+          route: 'quick_fix',
+          spec_state: 'n/a',
+          has_description: true,
+          awaiting_user: false,
+          worker_ineligible: false,
           spec_id: 'docs/awaiting.md',
           published: false,
-          updated_at: 90
+          updated_at: 10
         }),
         runnable('A-7', {
+          route: 'spec_backed',
+          spec_state: 'draft',
+          has_description: false,
+          awaiting_user: false,
+          worker_ineligible: false,
           spec_id: 'docs/published.md',
           published: true,
-          updated_at: 10
+          updated_at: 90
         })
       ]
     });
@@ -322,8 +342,8 @@ describe('monitor 실행가능 filter and sort (UI-eey2 §5)', () => {
     });
 
     expect(lanes.runnable_sections[0].items.map((r) => r.id)).toEqual([
-      'A-7',
-      'A-8'
+      'A-8',
+      'A-7'
     ]);
   });
 
@@ -5122,7 +5142,7 @@ describe('lane model as_given candidate order (UI-4tud §4.3)', () => {
       [state()],
       {
         candidate_sort: 'as_given',
-        candidate_filter: { show_blocked: false, spec: 'all' }
+        candidate_filter: { show_blocked: false, readiness: 'all' }
       }
     );
 

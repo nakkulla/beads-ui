@@ -90,20 +90,20 @@ export const CANDIDATE_SORT_OPTIONS = [
 ];
 
 /**
- * spec 유무 세그먼트 (UI-eey2 §5). 판정은 runnable 투영의 `published` 필드,
- * 즉 spec 경로 + 유효한 `spec_review` receipt다 (UI-vb7u §3). 경로만 있고
- * 리뷰가 아직 없는 행은 `spec 없음` 쪽에 선다.
+ * Candidate readiness segment shared by Worker and Monitor (UI-ff10 §5).
+ * `queue_placeable` is the only judgment input, so this control and the queue
+ * placement action always answer the same question.
  *
- * @type {ReadonlyArray<{ value: 'all'|'with'|'without', label: string }>}
+ * @type {ReadonlyArray<{ value: 'all'|'ready'|'not_ready', label: string }>}
  */
-export const SPEC_FILTER_OPTIONS = [
+export const READINESS_FILTER_OPTIONS = [
   { value: 'all', label: '전체' },
-  { value: 'with', label: 'spec 있음' },
-  { value: 'without', label: 'spec 없음' }
+  { value: 'ready', label: '착수 가능' },
+  { value: 'not_ready', label: '준비 필요' }
 ];
 
 /**
- * @typedef {{ show_blocked: boolean, spec: 'all'|'with'|'without' }} CandidateFilter
+ * @typedef {{ show_blocked: boolean, readiness: 'all'|'ready'|'not_ready' }} CandidateFilter
  */
 
 /**
@@ -114,7 +114,7 @@ export const SPEC_FILTER_OPTIONS = [
  */
 export const CANDIDATE_FILTER_DEFAULT = {
   show_blocked: true,
-  spec: 'all'
+  readiness: 'all'
 };
 
 /**
@@ -368,9 +368,9 @@ const DONE_KIND_LABELS = {
  * @property {LaneItem[]} runnable_all - Filter 이전의 실행가능 목록. 의존성
  * 패널의 후보 모집단은 여기서 나온다 (UI-j92s §6.1): 필터는 보기를 좁힐 뿐
  * 의존을 걸 수 있는 이슈를 줄이지 않는다.
- * @property {{ blocked: number, spec: number }} runnable_hidden - `blocked`는
- * `blocked` 토글이, `spec`은 spec 필터가 각각 걸러 낸 카드 수다. 필터 바가 이
- * 수를 자기 토글 옆에 적어 좁힌 대가를 드러낸다.
+ * @property {{ blocked: number, readiness: number }} runnable_hidden -
+ * `blocked`는 blocked 토글이, `readiness`는 준비도 필터가 각각 걸러 낸 카드
+ * 수다. 필터 바가 이 수를 자기 토글 옆에 적어 좁힌 대가를 드러낸다.
  * @property {MonitorRunnableSection[]} runnable_sections - `updated_flat`에서는
  * 빈 배열이다 (섹션 자체를 만들지 않는다).
  * @property {boolean} runnable_flat
@@ -3357,6 +3357,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
         Object.hasOwn(entry, 'has_description') &&
         Object.hasOwn(entry, 'awaiting_user') &&
         Object.hasOwn(entry, 'worker_ineligible');
+      // Monitor 행은 서버가 실어 온 사실로 판정을 만들고, 어댑터 행은 이미 만든
+      // 판정을 필드로 실어 온다 (§4). 어느 쪽도 `reason` 문자열을 되읽어 판정을
+      // 재구성하지 않는다 — 사유 문구가 바뀌면 조용히 어긋나는 두 번째 판정 벌이
+      // 생긴다.
       const placement = has_placement_facts
         ? placementFromFacts(
             {
@@ -3370,16 +3374,35 @@ export function buildLanes(workspaces, workspaces_state, options) {
           )
         : null;
       // 구 서버 행에는 새 사실 묶음이 없다. 그때만 기존 허용 폴백을 보존한다.
-      const eligible = placement
-        ? placement.placeable
-        : entry.eligible !== false;
+      const eligible = observation_row
+        ? entry.eligible !== false
+        : placement
+          ? placement.placeable
+          : true;
       const worker_ineligible = placement
         ? placement.worker_ineligible
         : entry.worker_ineligible === true;
       const queue_placeable = eligible && !worker_ineligible;
+      // 판정 칩 재료 (§6.1). Monitor는 방금 접은 판정에서, 어댑터 행은 실어 온
+      // 필드에서 온다. 어느 쪽도 없으면 키를 싣지 않아 칩이 서지 않는다.
+      const placement_chip_facts = placement
+        ? {
+            route_ok: placement.route_ok,
+            awaiting_user: placement.awaiting_user,
+            missing_description: placement.missing_description,
+            placement_spec: placement.spec
+          }
+        : Object.hasOwn(entry, 'route_ok')
+          ? {
+              route_ok: entry.route_ok === true,
+              awaiting_user: entry.awaiting_user === true,
+              missing_description: entry.missing_description === true,
+              placement_spec: entry.placement_spec
+            }
+          : null;
       /** @type {string[]} */
       const reason_parts = [];
-      if (placement && !placement.placeable) {
+      if (!observation_row && placement && !placement.placeable) {
         reason_parts.push(placementTitle(placement));
       }
       if (typeof entry.reason === 'string' && entry.reason.length > 0) {
@@ -3405,6 +3428,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         lane: 'runnable',
         draggable: !observation_row && queue_placeable,
         queue_placeable,
+        ...(placement_chip_facts || {}),
         ...(worker_ineligible ? { worker_ineligible: true } : {}),
         // 세션 권장 advisory (UI-49mc §3). 자격 판정에는 들어가지 않고, 재료를
         // 싣지 않는 서버 `runnable` 행에는 키 자체가 없다 (fail-quiet).
@@ -3735,7 +3759,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const model = {
     runnable,
     runnable_all: runnable,
-    runnable_hidden: { blocked: 0, spec: 0 },
+    runnable_hidden: { blocked: 0, readiness: 0 },
     runnable_sections: [],
     runnable_flat:
       candidate_sort === 'updated_flat' || candidate_sort === 'as_given',
@@ -3977,11 +4001,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const blockedPass = (item) =>
     candidate_filter.show_blocked || item.blocked !== true;
   /** @param {LaneItem} item */
-  const specPass = (item) =>
-    candidate_filter.spec === 'all' ||
-    (candidate_filter.spec === 'with'
-      ? item.published === true
-      : item.published !== true);
+  const readinessPass = (item) =>
+    candidate_filter.readiness === 'all' ||
+    (candidate_filter.readiness === 'ready'
+      ? item.queue_placeable === true
+      : item.queue_placeable !== true);
   if (hidden_counts === 'per_control') {
     // Worker 규칙 (UI-ki09 `applyCandidateFilter`): 한 조작이 감춘 수는 "그
     // 조작만 풀면 나타날 행"이다. 두 필터에 **모두** 걸린 행은 어느 수에도
@@ -3990,29 +4014,32 @@ export function buildLanes(workspaces, workspaces_state, options) {
     /** @type {LaneItem[]} */
     const kept = [];
     let hidden_blocked = 0;
-    let hidden_spec = 0;
+    let hidden_readiness = 0;
     for (const item of visible) {
       const by_blocked = blockedPass(item);
-      const by_spec = specPass(item);
-      if (by_blocked && by_spec) {
+      const by_readiness = readinessPass(item);
+      if (by_blocked && by_readiness) {
         kept.push(item);
-      } else if (!by_blocked && by_spec) {
+      } else if (!by_blocked && by_readiness) {
         hidden_blocked += 1;
-      } else if (by_blocked && !by_spec) {
-        hidden_spec += 1;
+      } else if (by_blocked && !by_readiness) {
+        hidden_readiness += 1;
       }
     }
     visible = kept;
-    model.runnable_hidden = { blocked: hidden_blocked, spec: hidden_spec };
+    model.runnable_hidden = {
+      blocked: hidden_blocked,
+      readiness: hidden_readiness
+    };
   } else {
     // Monitor 규칙: 두 필터를 차례로 적용하고 각 단계가 줄인 수를 센다 — 두
     // 필터에 모두 걸린 행은 앞 단계인 `blocked`가 가져간다.
     visible = visible.filter(blockedPass);
     const after_blocked = visible.length;
-    visible = visible.filter(specPass);
+    visible = visible.filter(readinessPass);
     model.runnable_hidden = {
       blocked: before - after_blocked,
-      spec: after_blocked - visible.length
+      readiness: after_blocked - visible.length
     };
   }
 
@@ -4028,12 +4055,18 @@ export function buildLanes(workspaces, workspaces_state, options) {
    * @param {LaneItem} a
    * @param {LaneItem} b
    */
-  const bySpecThenUpdated = (a, b) => {
+  const byReadinessSpecThenUpdated = (a, b) => {
+    const a_readiness = a.queue_placeable === true ? 0 : 1;
+    const b_readiness = b.queue_placeable === true ? 0 : 1;
+    if (a_readiness !== b_readiness) {
+      return a_readiness - b_readiness;
+    }
     const a_spec = a.published === true ? 0 : 1;
     const b_spec = b.published === true ? 0 : 1;
     return a_spec !== b_spec ? a_spec - b_spec : byUpdated(a, b);
   };
-  const within = candidate_sort === 'repo_spec' ? bySpecThenUpdated : byUpdated;
+  const within =
+    candidate_sort === 'repo_spec' ? byReadinessSpecThenUpdated : byUpdated;
 
   if (candidate_sort === 'as_given') {
     // 정렬을 이미 끝낸 호출자의 값 (§4.3): 순서를 다시 정하지 않고 섹션도
