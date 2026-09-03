@@ -20,8 +20,9 @@
  * question tools" reads as a rule to be weighed, while "there is nobody on the
  * other end" is a property of the room the session is standing in. The
  * background-task warning moved here from the guard contract for the same
- * reason — a headless process dying at turn end is a fact about unattended
- * execution, not a guard verdict.
+ * reason — the process outlives the last turn only until its background tasks
+ * finish, and only a task notification can wake it. That is a fact about
+ * unattended execution, not a guard verdict.
  *
  * @type {string}
  */
@@ -32,7 +33,7 @@ export const UNATTENDED_PREAMBLE = [
   '',
   '- 사용자는 이 세션과 통신할 수 없다. 질문 도구는 응답자가 없어 영원히 대기한다.',
   '- hard-stop 조건은 `blocker` 줄을 출력한 뒤 비정상 종료로 표면화하라. 그것이 이 환경에서 사람에게 도달하는 유일한 경로다.',
-  '- headless 프로세스는 턴이 끝나는 즉시 종료된다. 대기 중인 백그라운드 태스크(예: 비동기 리뷰 브리지)는 함께 kill되고 결과는 유실된다. 결과가 필요한 태스크는 턴 안에서 완료까지 기다려라.',
+  '- headless 프로세스는 마지막 턴이 끝난 뒤 남아 있는 백그라운드 태스크가 모두 끝날 때까지만 살아 있다가 종료된다. 태스크 완료 알림이 이 세션을 다시 깨우는 유일한 경로이며 그 밖의 입력은 오지 않는다. 결과가 필요한 위임 실행(예: codex 브리지)은 백그라운드 워치에 맡기지 말고 foreground로 턴 안에서 완료까지 기다려라.',
   '- 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키 — `impl_dispatch`, `impl_entry`, `plan_approval`, `workflow_mode_source=user` — 는 이 세션이 쓸 수 없다. Worker는 시도 시작 시 이 키들을 스냅샷하고, 시도 중 값이 바뀌면(부재→기록 포함) 머지 게이트가 영수증 위조로 fail-closed한다. 위임 기본 모델이 이 세션의 모델과 같다는 사실은 main 실행 근거가 아니다 — 실행 형태는 dotfiles workflow 계약의 selector가 정한다.'
 ].join('\n');
 

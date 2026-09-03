@@ -145,7 +145,10 @@ describe('runner/preamble unattended framing (UI-rxp3 §1)', () => {
   });
 
   test('carries the background-task warning the guard contract used to hold', () => {
-    expect(UNATTENDED_PREAMBLE).toContain('턴이 끝나는 즉시 종료된다');
+    expect(UNATTENDED_PREAMBLE).toContain(
+      'foreground로 턴 안에서 완료까지 기다려라'
+    );
+    expect(UNATTENDED_PREAMBLE).toContain('태스크 완료 알림');
     expect(guardContractDirective()).not.toContain('백그라운드 태스크');
   });
 

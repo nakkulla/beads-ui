@@ -830,6 +830,38 @@ describe('runner/claude hook suppression (UI-ljcu)', () => {
   });
 });
 
+describe('runner/claude print bg-wait ceiling (UI-q2fa)', () => {
+  test('spawns with CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 so a session outlives its last turn until background tasks finish', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+
+    await spawnClaude(BEAD, WS, {}, { spawn_impl }).done;
+
+    expect(
+      spawn_impl.captured.calls[0].options.env
+        .CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
+    ).toBe('0');
+  });
+
+  test('a routing env overriding the ceiling wins', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+
+    await spawnClaude(
+      BEAD,
+      WS,
+      {},
+      {
+        spawn_impl,
+        routing_env: { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '600000' }
+      }
+    ).done;
+
+    expect(
+      spawn_impl.captured.calls[0].options.env
+        .CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
+    ).toBe('600000');
+  });
+});
+
 describe('runner/claude resume argv (spec §1.4)', () => {
   test('resume_session_id adds --resume <id> ahead of the permission mode', async () => {
     const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });

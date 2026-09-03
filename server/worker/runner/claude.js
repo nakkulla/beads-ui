@@ -665,6 +665,12 @@ export function claudeSpec(options = {}) {
       // headless run would fire the Stop hook's "응답 완료" Discord notice on top
       // of the worker lane's own. `CLAUDE_HOOK_SUPPRESS` is the dotfiles-side
       // blanket switch; `routing_env` still wins if it names the same key.
+      // Claude print mode otherwise kills the process 600 s after the last turn
+      // while background tasks are still running (the default of
+      // `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`). A Worker session may leave a
+      // delegated run (Codex bridge, hard backstop 7200 s) in the background, so
+      // disable the ceiling here and let the session live until its tasks finish
+      // (UI-q2fa). `routing_env` still wins if it names the same key.
       //
       // `system_prompt`/`task_prompt` ride back out with the argv so the spawn
       // path records what was ACTUALLY sent (UI-rxp3 §3) — the recording reads
@@ -687,7 +693,11 @@ export function claudeSpec(options = {}) {
         args: claude_account
           ? ['run', claude_account, '--share-history', '--', ...args]
           : args,
-        env: { CLAUDE_HOOK_SUPPRESS: '1', ...routing_env },
+        env: {
+          CLAUDE_HOOK_SUPPRESS: '1',
+          CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
+          ...routing_env
+        },
         system_prompt,
         task_prompt
       };
