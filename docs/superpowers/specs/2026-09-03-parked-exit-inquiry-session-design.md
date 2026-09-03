@@ -12,6 +12,10 @@ scope:
   - app/views/worker/running-grid.js
   - app/views/worker/index.js
   - app/views/monitor/index.js
+  - app/styles.css
+  - docs/superpowers/specs/2026-08-28-worker-direction-inquiry-session-trigger-design.md
+  - docs/superpowers/specs/2026-08-28-worker-failure-tiers-queue-hold-design.md
+  - docs/superpowers/specs/2026-09-01-needs-human-notify-reentry-design.md
 ---
 
 # 파킹 출구 정합 — 모든 파킹에 문의 세션, 파킹 타일 [세션에서 해결], [재시도] 폐지
@@ -20,7 +24,7 @@ Bead: `UI-gjp2` · 2026-09-03 · 선행: `dotfiles-ukhs`(`blocks`)
 
 설계 정본: dotfiles
 `docs/superpowers/specs/2026-09-03-parking-contract-spec-deviation-and-inquiry-design.md`
-(`spec_review=self@899ac86ffc3c7bd33acd3e1c5c1d531884643206`) §1.1·§3. 파킹 사유의
+(`spec_review=self@21dedbb2ff3170b1f1a2d766d8f534e8dfb0c726`) §1.1·§3. 파킹 사유의
 범위, `awaiting_user` 값별 문의 절차, 프롬프트 원문, `park:` notes 줄, "구현 충돌 문의
 세션은 finish까지 잇는다"는 정본이 소유한다. 이 문서는 beads-ui의 트리거 조건·슬롯
 채우기·재디스패치 범위·타일 출구·클릭 배선을 정한다.
@@ -63,7 +67,10 @@ Bead: `UI-gjp2` · 2026-09-03 · 선행: `dotfiles-ukhs`(`blocks`)
   - `spec_review_stale:revise` · `plan_approval_stale:revise`: 현행 그대로
     (`parseStaleNotes`, `receiptKeyFor`, stale 프롬프트).
   - `impl_review_conflict:design`: §1.2의 슬롯으로 구현 충돌 프롬프트.
-  - 그 밖의 값: 세션 없이 알림만, `reason='unsupported_awaiting_user'`.
+  - 그 밖의 값(어휘 밖 문자열): 정본 §3.2의 **일반 파킹 블록**으로 문의 세션. 슬롯은
+    `원 영수증`(metadata `spec_review` → `plan_approval` → `없음`), `기록 세션`(§1.3),
+    `target_base 체크아웃`(attempt `repo`)이며 notes 파싱은 없다. 세션은 뜨고, 알림에
+    `generic` 분기임을 표기한다.
 - `enabled` config·tmux fail-closed·Bead당 live 세션 1개(`INQUIRY_PANE_MARKER`)·bridge
   heartbeat 판정·`in_flight` 가드는 값과 무관하게 같다.
 
@@ -74,7 +81,7 @@ Bead: `UI-gjp2` · 2026-09-03 · 선행: `dotfiles-ukhs`(`blocks`)
 | 슬롯 | 출처 | 부재 시 |
 | --- | --- | --- |
 | `원 영수증` | Bead metadata `spec_review` | `없음` 문자열 |
-| `충돌 대상`·`finding` | notes `park: impl_review_conflict:design — 대상: … — finding: …` 마지막 일치(`parseParkNotes`, `parseStaleNotes`와 같은 "마지막 줄 우선" 규칙) | 세션 없이 알림만, `reason='park_facts_missing'` |
+| `충돌 대상`·`finding` | notes `park: impl_review_conflict:design — 대상: … — finding: …` 마지막 일치(`parseParkNotes`, `parseStaleNotes`와 같은 "마지막 줄 우선" 규칙) | 세션 없이 알림만, `reason='park_facts_missing'` — 슬롯 없이 띄우면 세션이 무엇을 처분할지 모른다 |
 | `구현 워크트리` | 파킹한 attempt 레코드의 워크트리 경로(`.worktrees/<bead>` 규약, attempt `repo`+`bead_id`) | attempt 없음은 `bd_unavailable`류로 알림만 |
 | `기록 세션` | §1.3 | `없음` |
 
@@ -99,12 +106,21 @@ Bead: `UI-gjp2` · 2026-09-03 · 선행: `dotfiles-ukhs`(`blocks`)
 
 ### 1.4 프롬프트 상수
 
-`DIRECTION_INQUIRY_PROMPT`를 둘로 나눈다: `STALE_INQUIRY_PROMPT`(현행 바이트)와
-`IMPL_CONFLICT_INQUIRY_PROMPT`(정본 §3.2 블록의 바이트 복사). 단위 테스트는 각각의
-SHA-256을 dotfiles 블록 다이제스트로 고정한다 — 정본이 바뀌면 이 상수 갱신이 형제
-작업이라는 규칙은 UI-7uid 그대로다. `fillInquiryPrompt`는 값별로 슬롯 집합이 다르므로
-두 함수(`fillStalePrompt`·`fillImplConflictPrompt`)로 나누고, 치환은 현행처럼 한 번의
-정규식 패스로 한다(삽입된 값이 다시 스캔되지 않도록).
+`DIRECTION_INQUIRY_PROMPT`를 셋으로 나눈다. 각각 dotfiles의 fenced `text` 블록 하나를
+바이트 그대로 복사하고, 단위 테스트가 SHA-256으로 고정한다 — 정본이 바뀌면 이 상수
+갱신이 형제 작업이라는 규칙은 UI-7uid 그대로다.
+
+| 상수 | 정본 블록 | 다이제스트(작성 시점) |
+| --- | --- | --- |
+| `STALE_INQUIRY_PROMPT` | `references/execution.md` "Direction inquiry session" 첫 블록(현행 바이트) | 현행 `PROMPT_DIGEST` |
+| `IMPL_CONFLICT_INQUIRY_PROMPT` | 정본 스펙 `21dedbb2` §3.2 첫 블록(`Bead <bead-id>의 구현 게이트가 설계 갈래로…`, 절차·금지 포함) | `aeaa79c6c037cfed…` |
+| `GENERIC_INQUIRY_PROMPT` | 정본 스펙 `21dedbb2` §3.2 둘째 블록(`Bead <bead-id>가 awaiting_user=<값>으로…`) | `bebd5f2a6a08d960…` |
+
+정본이 이 블록들을 `execution.md`로 옮기면 상수는 그대로이고 테스트의 출처 주석만
+바뀐다. `fillInquiryPrompt`는 값별로 슬롯 집합이 다르므로 세 함수(`fillStalePrompt`·
+`fillImplConflictPrompt`·`fillGenericPrompt`)로 나누고, 치환은 현행처럼 한 번의 정규식
+패스로 한다(삽입된 값이 다시 스캔되지 않도록). fork 실패 사유 한 줄은 블록 첫 줄 뒤에
+덧붙이며 다이제스트 대상 밖이다(정본 §3.3).
 
 ## 2. 해제 전이 재디스패치 — stale 두 값에만
 
@@ -134,19 +150,31 @@ SHA-256을 dotfiles 블록 다이제스트로 고정한다 — 정본이 바뀌�
 - 폐기 실패가 겹친 파킹 타일은 지금처럼 `[폐기] → [폐기 포기] → [세션에서 해결]`
   순서다(ADR 0024). 파킹 자체의 `[세션에서 해결]`과 폐기 실패의 `[세션에서 해결]`은
   같은 버튼 하나이며, 핸들러가 §3.3의 컨텍스트 우선순위로 무엇을 띄울지 정한다.
-- 제거: ws op `worker-parked-retry`(`app/protocol.js` 상수, `server/ws/connection.js`
-  라우팅, `server/ws/worker-handlers.js`
-  `handleWorkerParkedRetry`), `scheduler.retryParked`, Worker 탭 `index.js`와 모니터
-  `index.js`의 `rtile__parked-retry` 클릭 분기, 이벤트 `[재시도] 클릭 · 파킹 해제`.
+- 제거 표면 전부: ws op `worker-parked-retry`(`app/protocol.js` 상수,
+  `server/ws/connection.js` 라우팅, `server/ws/worker-handlers.js`
+  `handleWorkerParkedRetry`와 그 import), 어댑터 `server/worker/attach.js`
+  `retryWorkerParkedAttempt`(export와 handlers 쪽 import), `scheduler.retryParked`(공개
+  API에서 제거, `resumeParkedAttempt`는 §2의 stale 전이 전용으로 남김), Worker 탭
+  `index.js`와 모니터 `index.js`의 `rtile__parked-retry` 클릭 분기, `app/styles.css`의
+  `.rtile__parked-retry`·`:hover` 선택자, 이벤트 `[재시도] 클릭 · 파킹 해제`. 테스트
+  `server/ws/worker-handlers.queue-hold.test.js`의 `worker-parked-retry (UI-5ym8 §3.1)`
+  describe 블록은 삭제하고, 그 파일에 "파킹 타일 클릭이 `worker-resolve-in-session`으로
+  간다"는 §3.3 케이스를 대신 둔다.
 
 ### 3.2 재료
 
-- `app/views/worker/index.js`의 `resolve_action` 판정에 네 번째 재료 "이 행의 최신
-  구현 attempt가 `parked`"를 더한다. `resolve_enabled`·`resolve_title`은 기존 3종과 같은
-  `resolve_pending` 규칙이고, title 문구는 파킹일 때
+- 재료 판정은 두 곳이다. PR 대기 행의 `resolve_action`(정리 실패·`needs_human`·폐기
+  실패)은 그대로 두고, **타일**의 판정 `discardResolveFields(bead_id, discard)`를
+  `tileResolveFields(bead_id, { discard, parked })`로 넓힌다: 폐기 실패(`discard.error`)
+  또는 파킹(`item.run_state === 'parked'`) 중 하나라도 있으면
+  `resolve_action:true`를 내고, `resolve_enabled`는 기존 `resolve_pending` 규칙,
+  `resolve_title`은 폐기 실패가 있으면 현행 문구, 파킹만이면
   `파킹을 사람이 이어받는 대화형 세션을 띄웁니다 — 살아 있는 문의 세션이 있으면 그 창을 가리킵니다`다.
-- 모니터 탭은 같은 `runningTile`을 그리므로 재료는 Monitor 어댑터가 같은 키로
-  싣는다(ADR 0014).
+  현재 파킹 타일은 `discardResolveFields`가 돌려준 필드만 받으므로, 이 helper를 넓히지
+  않으면 버튼이 그려지지 않는다.
+- Worker 탭 타일 어댑터(`index.js`의 running tile 투영, `parked:` 플래그를 만드는 그
+  자리)와 Monitor 어댑터가 같은 helper로 `resolve_action`·`resolve_enabled`·
+  `resolve_title` 세 키를 함께 싣는다(ADR 0014 — 같은 렌더러, 같은 재료).
 
 ### 3.3 핸들러 — `worker-resolve-in-session`의 파킹 분기
 
@@ -182,9 +210,14 @@ SHA-256을 dotfiles 블록 다이제스트로 고정한다 — 정본이 바뀌�
   `⏸️ 방향 질의`를 `⏸️ 파킹`으로 바꾸고 `파킹: <값>` 줄은 그대로다.
 - 본문에 세션 결과 한 줄을 싣는다: `launched · fork <sid 앞 8>` /
   `launched · fresh (<fallback_reason>)` / `already_running · <window>` /
-  `not_launched · <reason>`. `reason` 어휘에 `unsupported_awaiting_user`·
-  `park_facts_missing`·`attempt_transcript_missing`을 더한다.
+  `not_launched · <reason>`. `reason` 어휘에 `park_facts_missing`·
+  `attempt_transcript_missing`을 더하고, 분기 이름(`stale`/`impl_conflict`/`generic`)을
+  한 단어 더 싣는다.
 - §2의 stale 재디스패치 admission 거부는 같은 채널에 `재디스패치 거부 · <reason>` 한 줄.
+- 세션이 뜨지 않았을 때의 처분 안내 `처분: Worker 탭 fix/approve`(`notify.js`
+  `awaitingUser`)는 `처분: Worker 탭 [세션에서 해결] · [폐기]`로 바꾼다. `fix`/`approve`
+  클릭은 이 스펙이 없애지 않지만 파킹 타일의 1차 출구가 아니다. 테스트가 새 문구를
+  고정한다.
 
 ## 5. supersede 표기
 
@@ -197,8 +230,8 @@ SHA-256을 dotfiles 블록 다이제스트로 고정한다 — 정본이 바뀌�
 
 ## 6. 테스트 범위
 
-- `server/worker/direction-inquiry.test.js`: 값별 분기(stale 현행·impl 신규·unsupported
-  알림만), `parseParkNotes` 마지막 줄 우선, `park_facts_missing`, 두 프롬프트 다이제스트,
+- `server/worker/direction-inquiry.test.js`: 값별 분기(stale 현행·impl 신규·어휘 밖 값
+  generic), `parseParkNotes` 마지막 줄 우선, `park_facts_missing`, 세 프롬프트 다이제스트,
   fork 선택 3단(attempt session → session_ref → 없음)과 사유, `launchForClick`이
   `enabled=false`에서도 기동.
 - `server/worker/scheduler.test.js`: `fireDirectionInquiry`가 `spec_review_stale` 없이도
@@ -209,7 +242,10 @@ SHA-256을 dotfiles 블록 다이제스트로 고정한다 — 정본이 바뀌�
 - `app/views/worker/running-grid.test.js`·`index.test.js`·`app/views/monitor/index.test.js`:
   파킹 타일 액션 `[세션에서 해결]·[폐기]`, `rtile__parked-retry` 부재, `resolve_action`
   파킹 재료, 모니터 `rtile__resolve` 클릭 → `worker-resolve-in-session`.
-- `app/protocol.test.js`·`server/ws/worker-handlers.test.js`: `worker-parked-retry` 부재.
+- `app/protocol.test.js`·`server/ws/worker-handlers.queue-hold.test.js`·
+  `server/worker/attach.test.js`: `worker-parked-retry`·`retryWorkerParkedAttempt`
+  부재, 파킹 타일 클릭 → `worker-resolve-in-session`.
+- `server/worker/notify.test.js`: 파킹 알림의 세션 결과 줄과 새 처분 문구.
 - `app/main.monitor.e2e.test.js`: 파킹 타일 클릭 경로.
 - 번들: `npm run build` 후 `app/main.bundle.js`·`.map` 동봉(prettier → build 순).
 
@@ -251,10 +287,14 @@ ws op 제거를 사이에 두고 맞물려 있어 나누면 중간 상태가 죽
   - 실제 trade-off: 성립 — 문의 세션이 없는 호스트(브리지·tmux 없음)에서는 알림 뒤
     사람이 직접 세션을 여는 수밖에 없다 대 재시도 버튼이 주던 "일단 다시" 출구.
     UI-5ym8 §3.1의 `재시도`를 폐지한다.
-  - 관계: UI-5ym8·UI-7uid·UI-jw27 스펙 절을 §5대로 정정한다. ADR 0022→0024의 "재진입은
-    클릭" 계열과 정합하고 supersede 대상 ADR은 없다.
+  - 관계: ADR 0017("parked 재개는 사용자 클릭 또는 `awaiting_user` 소거 전이 관측뿐")의
+    두 재개 경로를 뒤집는다 — 클릭 `[재시도]`는 없어지고 소거 전이 재디스패치는 stale
+    두 값에 한정된다. 0017의 parked 분류(성공 종료 + 미resolved + PR 없음 + `awaiting_user`)
+    와 "자동 재디스패치 없음"은 그대로 승계한다. UI-5ym8·UI-7uid·UI-jw27 스펙 절을 §5대로
+    정정한다. ADR 0022→0024의 "재진입은 클릭" 계열과 정합한다.
   - `summary`: "Worker 파킹(`awaiting_user` 존재)의 출구는 값별 문의 세션의 자동 기동과
     파킹 타일 `[세션에서 해결]` 클릭뿐이고 새 attempt `[재시도]`는 없으며, `awaiting_user`
     해제 전이의 자동 재디스패치는 문의 세션이 구현을 착수하지 않는 stale 두 값에만
-    걸리고 구현 충돌 값은 PR 관측으로만 정산한다"
-    → ADR
+    걸리고 구현 충돌 값은 PR 관측으로만 정산한다 — parked 분류와 '자동 재디스패치
+    없음'은 0017에서 승계한다"
+    → ADR, supersede 0017
