@@ -743,14 +743,16 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * @param {'auto_advance'|'auto_merge'} key
+   * @param {'auto_advance'|'auto_merge'|'provider_auto_switch'} key
    * @param {boolean} on
    */
   async function onAutomationToggle(key, on) {
     const type =
       key === 'auto_advance'
         ? 'worker-automation-toggle'
-        : 'worker-merge-auto-toggle';
+        : key === 'auto_merge'
+          ? 'worker-merge-auto-toggle'
+          : 'worker-provider-auto-switch-toggle';
     try {
       await sendQueueCas(type, { on });
     } catch (err) {
@@ -1665,6 +1667,24 @@ export function createExecutionPane(mount_element, binding) {
               <div class="settings-dialog__group-title">실행 계정</div>
               ${accountRow('claude_account', 'Claude', 'claude')}
               ${accountRow('codex_account', 'Codex', 'codex')}
+              <div class="settings-dialog__row">
+                <span class="settings-dialog__row-label">한도 대응</span>
+                <span class="settings-dialog__controls">
+                  <label class="settings-dialog__check">
+                    <input
+                      type="checkbox"
+                      data-provider-auto-switch
+                      .checked=${queue?.provider_auto_switch !== false}
+                      @change=${(/** @type {Event} */ ev) =>
+                        onAutomationToggle(
+                          'provider_auto_switch',
+                          /** @type {HTMLInputElement} */ (ev.target).checked
+                        )}
+                    />
+                    한도 시 다른 계정으로 자동 이어하기
+                  </label>
+                </span>
+              </div>
             </div>
 
             <div class="settings-dialog__group">

@@ -40,6 +40,446 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = tmp_state;
 });
 
+describe('worker/queue-store provider hold', () => {
+  /**
+   * Add one provider-scoped attempt record.
+   *
+   * @param {any} queue_store
+   * @param {string} attempt_id
+   * @param {Partial<import('./queue-store.js').Attempt>} [patch]
+   */
+  function seedProviderAttempt(queue_store, attempt_id, patch = {}) {
+    queue_store.appendAttempt(WS, {
+      expected_revision: queue_store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id: attempt_id }
+    });
+    queue_store.updateAttempt(WS, {
+      attempt_id,
+      patch: {
+        runner: 'claude',
+        model: 'opus',
+        status: 'running',
+        ...patch
+      }
+    });
+  }
+
+  /**
+   * Hold one seeded attempt on a stable target.
+   *
+   * @param {ReturnType<typeof createQueueStore>} queue_store
+   * @param {string} attempt_id
+   */
+  function holdProviderAttempt(queue_store, attempt_id) {
+    const result = queue_store.holdProviderAttempt(WS, {
+      attempt_id,
+      patch: {
+        status: 'paused',
+        cause: 'provider_outage:overloaded_529',
+        cause_detail: {
+          kind: 'provider_outage',
+          message: 'API Error: 529 Overloaded',
+          summary: 'API Error: 529 Overloaded',
+          resets_at: null
+        },
+        finished_at: 1000
+      },
+      runner: 'claude',
+      target: {
+        kind: 'outage',
+        model: 'opus',
+        account: 'held@example.com',
+        detail: 'overloaded_529',
+        last_error: 'API Error: 529 Overloaded',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      }
+    });
+    if (!result.ok || typeof result.generation !== 'number') {
+      throw new Error('provider hold setup failed');
+    }
+    return { ...result, generation: result.generation };
+  }
+
+  test('persists the paused attempt and provider target in one revision', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-1');
+    const before = store.snapshot(WS).revision;
+
+    const result = holdProviderAttempt(store, 'att-1');
+
+    expect(result.queue.revision).toBe(before + 1);
+    expect(result.queue.attempts['att-1']).toMatchObject({
+      status: 'paused',
+      cause: 'provider_outage:overloaded_529',
+      cause_detail: {
+        kind: 'provider_outage',
+        message: 'API Error: 529 Overloaded',
+        summary: 'API Error: 529 Overloaded',
+        resets_at: null
+      }
+    });
+    expect(result.queue.provider_hold.claude.targets[0].attempt_ids).toEqual([
+      'att-1'
+    ]);
+  });
+
+  test('restores provider holds and cause details after a cold load', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-1');
+    holdProviderAttempt(store, 'att-1');
+
+    store.__clearCacheForTest();
+    const restored = store.snapshot(WS);
+
+    expect(restored.provider_hold.claude.targets[0]).toMatchObject({
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com'
+    });
+    expect(restored.attempts['att-1'].cause_detail).toMatchObject({
+      message: 'API Error: 529 Overloaded',
+      summary: 'API Error: 529 Overloaded',
+      resets_at: null
+    });
+  });
+
+  test('reads an absent auto-switch preference as enabled without resetting false', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({ revision: 1, provider_auto_switch: false })
+    );
+    const disabled = createQueueStore().snapshot(WS);
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify({ revision: 2 }));
+
+    const enabled = createQueueStore().snapshot(WS);
+
+    expect(disabled.provider_auto_switch).toBe(false);
+    expect(enabled.provider_auto_switch).toBe(true);
+  });
+
+  test('toggles the auto-switch preference with revision CAS', () => {
+    const store = createQueueStore();
+    const revision = store.snapshot(WS).revision;
+
+    const disabled = store.toggleProviderAutoSwitch(WS, {
+      expected_revision: revision,
+      on: false
+    });
+    const stale = store.toggleProviderAutoSwitch(WS, {
+      expected_revision: revision,
+      on: true
+    });
+
+    expect(disabled.ok).toBe(true);
+    expect(disabled.queue.provider_auto_switch).toBe(false);
+    expect(stale.conflict).toBe(true);
+    expect(stale.queue.provider_auto_switch).toBe(false);
+  });
+
+  test('records an account-switch receipt in the hold mutation', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-switch');
+    const before = store.snapshot(WS).revision;
+
+    const result = store.holdProviderAttempt(WS, {
+      attempt_id: 'att-switch',
+      patch: {
+        status: 'paused',
+        cause: 'provider_outage:usage_limit'
+      },
+      runner: 'claude',
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account: 'old@example.com',
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: 5000,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      auto_switch: {
+        enabled: true,
+        candidate_account: 'new@example.com'
+      }
+    });
+
+    expect(result.queue.revision).toBe(before + 1);
+    expect(result.queue.provider_hold.claude.targets[0].auto_switch).toBeNull();
+    expect(result.queue.auto_resume_pending).toEqual([
+      {
+        attempt_id: 'att-switch',
+        generation: result.generation,
+        account: 'new@example.com',
+        kind: 'account_switch'
+      }
+    ]);
+  });
+
+  test('records disabled when automatic account switching is off', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-disabled');
+
+    const result = store.holdProviderAttempt(WS, {
+      attempt_id: 'att-disabled',
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'claude',
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account: 'old@example.com',
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      auto_switch: { enabled: false, candidate_account: null }
+    });
+
+    expect(result.queue.provider_hold.claude.targets[0].auto_switch).toBe(
+      'disabled'
+    );
+    expect(result.queue.auto_resume_pending).toEqual([]);
+  });
+
+  test('honors a toggle disabled after candidate selection', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-toggle-race');
+    const revision = store.snapshot(WS).revision;
+    store.toggleProviderAutoSwitch(WS, {
+      expected_revision: revision,
+      on: false
+    });
+
+    const result = store.holdProviderAttempt(WS, {
+      attempt_id: 'att-toggle-race',
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'claude',
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account: 'old@example.com',
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      auto_switch: {
+        enabled: true,
+        candidate_account: 'new@example.com'
+      }
+    });
+
+    expect(result.queue.provider_hold.claude.targets[0].auto_switch).toBe(
+      'disabled'
+    );
+    expect(result.queue.auto_resume_pending).toEqual([]);
+  });
+
+  test('records none when no account-switch candidate exists', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-none');
+
+    const result = store.holdProviderAttempt(WS, {
+      attempt_id: 'att-none',
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'claude',
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account: 'old@example.com',
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      auto_switch: { enabled: true, candidate_account: null }
+    });
+
+    expect(result.queue.provider_hold.claude.targets[0].auto_switch).toBe(
+      'none'
+    );
+    expect(result.queue.auto_resume_pending).toEqual([]);
+  });
+
+  test('records cap when the lineage already auto-resumed', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-cap', {
+      auto_resume_kind: 'provider_outage'
+    });
+
+    const result = store.holdProviderAttempt(WS, {
+      attempt_id: 'att-cap',
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'claude',
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account: 'old@example.com',
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      auto_switch: {
+        enabled: true,
+        candidate_account: 'new@example.com'
+      }
+    });
+
+    expect(result.queue.provider_hold.claude.targets[0].auto_switch).toBe(
+      'cap'
+    );
+    expect(result.queue.auto_resume_pending).toEqual([]);
+  });
+
+  test('clears only runner-wide usage-limit targets for manual resume', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-global');
+    seedProviderAttempt(store, 'att-account');
+    seedProviderAttempt(store, 'att-unrelated');
+    /**
+     * @param {string} attempt_id
+     * @param {string|null} account
+     */
+    const targetInput = (attempt_id, account) => ({
+      attempt_id,
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'claude',
+      target: {
+        kind: /** @type {const} */ ('usage_limit'),
+        model: 'opus',
+        account,
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      }
+    });
+    store.holdProviderAttempt(WS, targetInput('att-global', null));
+    store.holdProviderAttempt(
+      WS,
+      targetInput('att-account', 'held@example.com')
+    );
+    store.holdProviderAttempt(WS, {
+      ...targetInput('att-unrelated', null),
+      target: {
+        ...targetInput('att-unrelated', null).target,
+        model: 'sonnet'
+      }
+    });
+
+    const result = store.clearManualProviderResumeTarget(WS, {
+      runner: 'claude',
+      attempt_id: 'att-global'
+    });
+
+    expect(result.queue.provider_hold.claude.targets).toHaveLength(2);
+    expect(result.queue.provider_hold.claude.targets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ account: 'held@example.com' }),
+        expect.objectContaining({ account: null, model: 'sonnet' })
+      ])
+    );
+  });
+
+  test('round-trips account-switch and resume-fallback attempt fields', () => {
+    const attempt = makeAttempt({
+      attempt_id: 'att-fields',
+      bead_id: 'UI-fields',
+      account_sources: { claude: 'outage_switch', codex: null },
+      account_switched_from: 'old@example.com',
+      resume_fallback: {
+        reason: 'transcript_missing',
+        session_id: 'session-1'
+      }
+    });
+
+    expect(attempt.account_sources).toEqual({
+      claude: 'outage_switch',
+      codex: null
+    });
+    expect(attempt.account_switched_from).toBe('old@example.com');
+    expect(attempt.resume_fallback).toEqual({
+      reason: 'transcript_missing',
+      session_id: 'session-1'
+    });
+  });
+
+  test('records recovery receipts before a target leaves the hold', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-1');
+    const held = holdProviderAttempt(store, 'att-1');
+
+    const recovered = store.recoverProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com'
+    });
+
+    expect(recovered.queue.provider_hold).toEqual({});
+    expect(recovered.queue.auto_resume_pending).toEqual([
+      {
+        attempt_id: 'att-1',
+        generation: held.generation,
+        account: 'held@example.com',
+        kind: 'provider_outage'
+      }
+    ]);
+  });
+
+  test('disarms a lineage that already consumed automatic recovery', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-1', {
+      auto_resume_kind: 'provider_outage'
+    });
+    const held = holdProviderAttempt(store, 'att-1');
+
+    const recovered = store.recoverProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com'
+    });
+
+    expect(recovered.disarmed_attempt_ids).toEqual(['att-1']);
+    expect(recovered.queue.auto_resume_pending).toEqual([]);
+    expect(recovered.queue.attempts['att-1'].status).toBe('paused');
+  });
+
+  test('discards a pending receipt superseded by a new generation', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-1');
+    const first = holdProviderAttempt(store, 'att-1');
+    store.recoverProviderTarget(WS, {
+      runner: 'claude',
+      generation: first.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com'
+    });
+    seedProviderAttempt(store, 'att-2');
+    const second = holdProviderAttempt(store, 'att-2');
+
+    const discarded = store.discardStaleAutoResumePending(WS);
+
+    expect(second.generation).toBeGreaterThan(first.generation);
+    expect(discarded.discarded_attempt_ids).toEqual(['att-1']);
+    expect(discarded.queue.auto_resume_pending).toEqual([]);
+  });
+});
+
 afterEach(() => {
   delete process.env.XDG_STATE_HOME;
   try {

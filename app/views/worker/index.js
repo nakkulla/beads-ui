@@ -1623,6 +1623,10 @@ export function createWorkerView(mount_element, options = {}) {
   let place_menu_bead_id = null;
   /** @type {string|null} */
   let open_failure_detail = null;
+  /** @type {string|null} */
+  let open_provider_hold_detail = null;
+  /** @type {{ attempt_id: string, original_runner: string, runner: string, model: string, account: string, fresh_current: boolean }|null} */
+  let provider_resume_draft = null;
   /**
    * 판정 칩 사유 팝업 (UI-8x90 §4.5·§5). 열림 키가 `bead_id + chip_key`라 카드가
    * 다시 그려져도 같은 칩 아래에 그대로 열려 있다.
@@ -1943,6 +1947,261 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Find the durable hold target that names one attempt.
+   *
+   * @param {string} attempt_id
+   * @returns {any|null}
+   */
+  function providerTargetForAttempt(attempt_id) {
+    for (const hold of Object.values(objectOf(currentQueue().provider_hold))) {
+      for (const target of Array.isArray(hold?.targets) ? hold.targets : []) {
+        if (
+          Array.isArray(target?.attempt_ids) &&
+          target.attempt_ids.includes(attempt_id)
+        ) {
+          return target;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Explain whether a Claude account meets the manual switch health threshold.
+   *
+   * @param {any} account
+   * @returns {{ eligible: boolean, reason: string }}
+   */
+  function providerAccountEligibility(account) {
+    if (account?.status !== 'ok') {
+      return {
+        eligible: false,
+        reason: `계정 상태 ${String(account?.status || '미상')}`
+      };
+    }
+    const windows = Array.isArray(account.windows) ? account.windows : [];
+    const five_hour = windows.find(
+      (/** @type {any} */ window) => window?.key === '5h'
+    );
+    const seven_day = windows.find(
+      (/** @type {any} */ window) => window?.key === '7d'
+    );
+    if (!five_hour || typeof five_hour.pct !== 'number') {
+      return { eligible: false, reason: '5시간 사용량 미관측' };
+    }
+    if (five_hour.pct > 80) {
+      return { eligible: false, reason: '5시간 사용량 80% 초과' };
+    }
+    if (seven_day) {
+      if (typeof seven_day.pct !== 'number') {
+        return { eligible: false, reason: '7일 사용량 미관측' };
+      }
+      if (seven_day.pct > 90) {
+        return { eligible: false, reason: '7일 사용량 90% 초과' };
+      }
+    }
+    return { eligible: true, reason: '' };
+  }
+
+  /**
+   * Open the provider recovery selector from the original attempt identity.
+   *
+   * @param {string} attempt_id
+   */
+  function openProviderResumeDialog(attempt_id) {
+    const attempt = objectOf(currentQueue().attempts)[attempt_id];
+    if (!attempt) {
+      return;
+    }
+    const catalog = objectOf(currentQueue().runner_catalog);
+    const runners = objectOf(catalog.runners);
+    const original_runner =
+      typeof attempt.runner === 'string' && runners[attempt.runner]
+        ? attempt.runner
+        : Object.keys(runners)[0] || '';
+    const runner_entry = objectOf(runners[original_runner]);
+    const models = objectOf(runner_entry.models);
+    const model =
+      typeof attempt.model === 'string' && models[attempt.model]
+        ? attempt.model
+        : typeof runner_entry.default_model === 'string'
+          ? runner_entry.default_model
+          : Object.keys(models)[0] || '';
+    const target = providerTargetForAttempt(attempt_id);
+    const account =
+      typeof attempt.claude_account === 'string'
+        ? attempt.claude_account
+        : typeof target?.account === 'string'
+          ? target.account
+          : '';
+    provider_resume_draft = {
+      attempt_id,
+      original_runner,
+      runner: original_runner,
+      model,
+      account,
+      fresh_current: false
+    };
+    doRender();
+  }
+
+  /** Close the provider recovery selector without resuming. */
+  function closeProviderResumeDialog() {
+    provider_resume_draft = null;
+    doRender();
+  }
+
+  /** Send the selected one-attempt override through the existing resume path. */
+  function confirmProviderResumeDialog() {
+    const draft = provider_resume_draft;
+    if (!draft || !draft.runner || !draft.model) {
+      return;
+    }
+    // Without an account the payload carries none, and launch would resolve one
+    // of its own — a different pool than the dialog showed. Refuse instead.
+    if (draft.runner === 'claude' && !draft.account) {
+      return;
+    }
+    /** @type {Record<string, string>} */
+    const exec_override = {
+      runner: draft.runner,
+      model: draft.model
+    };
+    if (draft.runner === 'claude' && draft.account) {
+      exec_override.claude_account = draft.account;
+    }
+    const fresh = draft.fresh_current || draft.runner !== draft.original_runner;
+    provider_resume_draft = null;
+    doRender();
+    void resumeAttempt(draft.attempt_id, 'session', {
+      exec_override,
+      ...(fresh ? { continuation: 'fresh_current', decision_token: {} } : {})
+    });
+  }
+
+  /**
+   * Render the alternate provider-resume selector from snapshot catalogs.
+   *
+   * @returns {import('lit-html').TemplateResult|''}
+   */
+  function providerResumeDialogTemplate() {
+    const draft = provider_resume_draft;
+    if (!draft) {
+      return '';
+    }
+    const runners = objectOf(objectOf(currentQueue().runner_catalog).runners);
+    const claude_accounts = Array.isArray(
+      objectOf(currentQueue().account_catalog).claude
+    )
+      ? objectOf(currentQueue().account_catalog).claude
+      : [];
+    const cross_runner = draft.runner !== draft.original_runner;
+    return html`<dialog
+      class="op-dialog provider-resume-dialog"
+      aria-label="다른 방법으로 이어하기"
+    >
+      <h2>다른 방법으로 이어하기</h2>
+      <div class="provider-resume-dialog__fields">
+        <label>
+          러너
+          <select class="provider-resume-dialog__runner">
+            ${Object.keys(runners).map(
+              (runner) =>
+                html`<option
+                  value=${runner}
+                  ?selected=${runner === draft.runner}
+                >
+                  ${runner}
+                </option>`
+            )}
+          </select>
+        </label>
+        <label>
+          모델
+          <select class="provider-resume-dialog__model">
+            ${Object.entries(runners).map(
+              ([runner, entry]) =>
+                html`<optgroup label=${runner}>
+                  ${Object.keys(objectOf(entry?.models)).map(
+                    (model) =>
+                      html`<option
+                        value=${JSON.stringify([runner, model])}
+                        ?selected=${runner === draft.runner &&
+                        model === draft.model}
+                      >
+                        ${model}
+                      </option>`
+                  )}
+                </optgroup>`
+            )}
+          </select>
+        </label>
+        ${draft.runner === 'claude'
+          ? html`<label>
+              계정
+              <select class="provider-resume-dialog__account">
+                ${draft.account
+                  ? ''
+                  : html`<option value="" selected>계정 선택</option>`}
+                ${draft.account &&
+                !claude_accounts.some(
+                  (/** @type {any} */ account) =>
+                    account?.email === draft.account
+                )
+                  ? html`<option value=${draft.account} selected>
+                      ${draft.account} (목록에 없음)
+                    </option>`
+                  : ''}
+                ${claude_accounts.map((/** @type {any} */ account) => {
+                  const eligibility = providerAccountEligibility(account);
+                  const label = account.alias || account.email;
+                  return html`<option
+                    value=${account.email}
+                    ?selected=${account.email === draft.account}
+                    ?disabled=${!eligibility.eligible}
+                    title=${eligibility.reason}
+                  >
+                    ${label}${eligibility.reason
+                      ? ` — ${eligibility.reason}`
+                      : ''}
+                  </option>`;
+                })}
+              </select>
+            </label>`
+          : ''}
+        <label class="provider-resume-dialog__fresh">
+          <input
+            type="checkbox"
+            class="provider-resume-dialog__fresh-input"
+            .checked=${draft.fresh_current}
+          />
+          새 세션으로
+        </label>
+      </div>
+      ${cross_runner || draft.fresh_current
+        ? html`<p class="provider-resume-dialog__notice">
+            이전 세션 맥락을 요약 인계합니다
+          </p>`
+        : ''}
+      <div class="op-dialog__actions provider-resume-dialog__actions">
+        <button type="button" class="op-btn provider-resume-dialog__cancel">
+          취소
+        </button>
+        <button
+          type="button"
+          class="op-btn op-btn--primary provider-resume-dialog__confirm"
+          ?disabled=${draft.runner === 'claude' && !draft.account}
+          title=${draft.runner === 'claude' && !draft.account
+            ? '계정을 먼저 고르세요'
+            : ''}
+        >
+          이어하기
+        </button>
+      </div>
+    </dialog>`;
+  }
+
+  /**
    * Build the open candidate menu for this render, if its bead is still shown.
    *
    * @param {any[]} candidates
@@ -2042,13 +2301,23 @@ export function createWorkerView(mount_element, options = {}) {
    *
    * @param {string} attempt_id
    * @param {'settlement'|'session'} [resume_kind]
+   * @param {Record<string, unknown>} [base_payload]
    */
-  async function resumeAttempt(attempt_id, resume_kind = 'session') {
+  async function resumeAttempt(
+    attempt_id,
+    resume_kind = 'session',
+    base_payload = {}
+  ) {
     if (!transport || !attempt_id) {
       return;
     }
     const send = transport;
     const attempt = currentQueue().attempts?.[attempt_id] || null;
+    // `base_payload` carries this call's one-attempt `exec_override` and forced
+    // continuation. It rides the flow's base payload so every send in the flow
+    // — first try, conflict retry, mismatch resend — keeps it, which is the
+    // division worker-operation-surface-unify §5.1 assigned: that spec owns the
+    // flow, this one owns the value.
     await runResumeFlow({
       context: {
         bead_id: attempt?.bead_id || '',
@@ -2060,6 +2329,7 @@ export function createWorkerView(mount_element, options = {}) {
           send('worker-attempt-resume', {
             attempt_id,
             expected_revision: currentRevision(),
+            ...base_payload,
             ...payload
           })
         ),
@@ -2992,6 +3262,13 @@ export function createWorkerView(mount_element, options = {}) {
             // 타일로 그려 시계와 세션 조작을 준다.
             waiting: item.run_state === 'waiting',
             wait: item.wait || null,
+            provider_hold: item.run_state === 'provider_hold',
+            hold: item.hold
+              ? {
+                  ...item.hold,
+                  open: open_provider_hold_detail === item.attempt_id
+                }
+              : null,
             status_label:
               item.run_state === 'failed'
                 ? item.status === 'orphaned'
@@ -3003,7 +3280,9 @@ export function createWorkerView(mount_element, options = {}) {
                     ? '재시도 대기'
                     : item.run_state === 'waiting'
                       ? '선행 대기'
-                      : undefined,
+                      : item.run_state === 'provider_hold'
+                        ? '공급자 보류'
+                        : undefined,
             can_pause: item.can_pause !== false,
             // 레포 배지는 한 레포 화면의 사실이 아니다 (모니터 타일만 그린다).
             workspace_name: '',
@@ -3408,6 +3687,78 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Project the provider dispatch gate into one header status line.
+   *
+   * @param {any} q
+   * @returns {import('lit-html').TemplateResult|''}
+   */
+  function providerGateBannerTemplate(q) {
+    /** @type {Array<{ runner: string, target: any }>} */
+    const targets = [];
+    for (const [runner, hold] of Object.entries(objectOf(q.provider_hold))) {
+      for (const target of Array.isArray(hold?.targets) ? hold.targets : []) {
+        targets.push({ runner, target });
+      }
+    }
+    if (targets.length === 0) {
+      return '';
+    }
+    const outage = targets.find((entry) => entry.target?.kind === 'outage');
+    if (outage) {
+      const next =
+        typeof outage.target.next_probe_at === 'number'
+          ? new Date(outage.target.next_probe_at).toLocaleTimeString('ko-KR', {
+              hour: '2-digit',
+              minute: '2-digit'
+            })
+          : '';
+      return html`<div class="worker-provider-gate" role="status">
+        ⚠️ ${outage.runner} 공급자 장애 — 신규 디스패치
+        보류${next ? `, 다음 프로브 ${next}` : ''}
+      </div>`;
+    }
+    // An unresolved account widens the gate to the whole runner (§6 F3), so the
+    // badge must not promise that only one account is blocked. Several limited
+    // accounts are named together for the same reason: naming only the first
+    // understates what is actually held.
+    const catalog = Array.isArray(objectOf(q.account_catalog).claude)
+      ? objectOf(q.account_catalog).claude
+      : [];
+    const labelOf = (/** @type {string} */ email) => {
+      const row = catalog.find(
+        (/** @type {any} */ entry) => entry?.email === email
+      );
+      return row?.alias || email;
+    };
+    const runner_wide = targets.find(
+      (entry) => typeof entry.target?.account !== 'string'
+    );
+    const reset_of = (/** @type {any} */ target) =>
+      typeof target?.resets_at === 'number'
+        ? new Date(target.resets_at).toLocaleTimeString('ko-KR', {
+            hour: '2-digit',
+            minute: '2-digit'
+          })
+        : '';
+    if (runner_wide) {
+      const reset = reset_of(runner_wide.target);
+      return html`<div class="worker-provider-gate" role="status">
+        ⏳ ${runner_wide.runner} 사용 한도 — 계정 미확인이라 러너 전체 디스패치
+        보류${reset ? `, 리셋 ${reset}` : ''}
+      </div>`;
+    }
+    const accounts = [
+      ...new Set(targets.map((entry) => labelOf(String(entry.target.account))))
+    ];
+    const reset = reset_of(targets[0].target);
+    return html`<div class="worker-provider-gate" role="status">
+      ⏳ ${accounts.join(', ')} 사용 한도 —
+      ${accounts.length > 1 ? '그 계정들' : '그 계정'} 디스패치
+      보류${reset ? `, 리셋 ${reset}` : ''}
+    </div>`;
+  }
+
+  /**
    * @param {LaneModel} m
    * @returns {import('lit-html').TemplateResult}
    */
@@ -3520,6 +3871,7 @@ export function createWorkerView(mount_element, options = {}) {
     // 이유는 개별 레포 작업보다 먼저 읽혀야 하고, 고정되는 것은 "항상 읽혀야
     // 하는 한 줄"뿐이어야 하므로 sticky 리본에는 넣지 않는다.
     const hold_banner = holdBannerTemplate(q);
+    const provider_gate = providerGateBannerTemplate(q);
     if (is_mobile) {
       // sticky 리본 (UI-58y2 §모바일 1)에는 두 자동화 토글과 세 카운트만 둔다.
       // 슬롯·⚙는 아래 조작 줄로 내리고 배너는 리본 밖에 남긴다 — 고정되는 것은
@@ -3535,7 +3887,7 @@ export function createWorkerView(mount_element, options = {}) {
           <div class="worker-ctrl__ops">${settings}${search}</div>
           <div class="worker-kpi">${base_chip}</div>
         </div>
-        ${hold_banner}${repo_operations}${repo_ops_settings.template()}`;
+        ${provider_gate}${hold_banner}${repo_operations}${repo_ops_settings.template()}`;
     }
     // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
     return html`<div class="worker-ctrl">
@@ -3567,7 +3919,7 @@ export function createWorkerView(mount_element, options = {}) {
           >
         </div>
       </div>
-      ${hold_banner}${repo_operations}${repo_ops_settings.template()}`;
+      ${provider_gate}${hold_banner}${repo_operations}${repo_ops_settings.template()}`;
   }
 
   /**
@@ -3955,12 +4307,30 @@ export function createWorkerView(mount_element, options = {}) {
       // 레인으로 다시 그리지 않는다 — 같은 bead가 두 곳에 보이는 것이 이
       // 화면에서 가장 비싼 오해다.
       return html`<div class="worker-lanes worker-lanes--mobile">
-        ${nowPanel({
-          live: runningLive(m),
-          running_body: running.length > 0 ? runningBody(m) : '',
-          pr_wait_rows: pr_wait.map((/** @type {any} */ it) => miniRow(it)),
-          count: running.length + pr_wait.length
-        })}
+          ${nowPanel({
+            live: runningLive(m),
+            running_body: running.length > 0 ? runningBody(m) : '',
+            pr_wait_rows: pr_wait.map((/** @type {any} */ it) => miniRow(it)),
+            count: running.length + pr_wait.length
+          })}
+          ${paneTemplate({
+            id: 'worker-pane-queue',
+            lane: 'queue',
+            title: '대기',
+            items: waiting,
+            count: waiting.length,
+            match_count: matchCountOf(waiting),
+            collapsible: true,
+            collapsed: collapse.isCollapsed('queue'),
+            preview: stripPreview(waiting),
+            body: waitBodyTemplate(m)
+          })}
+          ${candidate_pane} ${done_pane}
+        </div>
+        ${providerResumeDialogTemplate()}`;
+    }
+    return html`<div class="worker-lanes">
+        ${candidate_pane}
         ${paneTemplate({
           id: 'worker-pane-queue',
           lane: 'queue',
@@ -3970,53 +4340,37 @@ export function createWorkerView(mount_element, options = {}) {
           match_count: matchCountOf(waiting),
           collapsible: true,
           collapsed: collapse.isCollapsed('queue'),
-          preview: stripPreview(waiting),
           body: waitBodyTemplate(m)
         })}
-        ${candidate_pane} ${done_pane}
-      </div>`;
-    }
-    return html`<div class="worker-lanes">
-      ${candidate_pane}
-      ${paneTemplate({
-        id: 'worker-pane-queue',
-        lane: 'queue',
-        title: '대기',
-        items: waiting,
-        count: waiting.length,
-        match_count: matchCountOf(waiting),
-        collapsible: true,
-        collapsed: collapse.isCollapsed('queue'),
-        body: waitBodyTemplate(m)
-      })}
-      ${paneTemplate({
-        id: 'worker-pane-running',
-        lane: 'running',
-        title: '실행 중',
-        items: /** @type {any[]} */ (running),
-        match_count: matchCountOf(running),
-        // 슬롯 수는 제목이 아니라 탭 부가정보다 (§4.5) — 제목 어휘는 두 탭이
-        // 같고, 탭이 다른 것은 `header_control`이 싣는다.
-        header_control: html`<span class="worker-pane__meta"
-          >슬롯 ${group.slots}</span
-        >`,
-        live: runningLive(m),
-        collapsible: true,
-        collapsed: collapse.isCollapsed('running'),
-        body: runningBody(m)
-      })}
-      ${paneTemplate({
-        id: 'worker-pane-pr-wait',
-        lane: 'pr_wait',
-        title: 'PR 대기',
-        items: pr_wait,
-        match_count: matchCountOf(pr_wait),
-        empty: 'PR 대기 없음',
-        collapsible: true,
-        collapsed: collapse.isCollapsed('pr_wait')
-      })}
-      ${done_pane}
-    </div>`;
+        ${paneTemplate({
+          id: 'worker-pane-running',
+          lane: 'running',
+          title: '실행 중',
+          items: /** @type {any[]} */ (running),
+          match_count: matchCountOf(running),
+          // 슬롯 수는 제목이 아니라 탭 부가정보다 (§4.5) — 제목 어휘는 두 탭이
+          // 같고, 탭이 다른 것은 `header_control`이 싣는다.
+          header_control: html`<span class="worker-pane__meta"
+            >슬롯 ${group.slots}</span
+          >`,
+          live: runningLive(m),
+          collapsible: true,
+          collapsed: collapse.isCollapsed('running'),
+          body: runningBody(m)
+        })}
+        ${paneTemplate({
+          id: 'worker-pane-pr-wait',
+          lane: 'pr_wait',
+          title: 'PR 대기',
+          items: pr_wait,
+          match_count: matchCountOf(pr_wait),
+          empty: 'PR 대기 없음',
+          collapsible: true,
+          collapsed: collapse.isCollapsed('pr_wait')
+        })}
+        ${done_pane}
+      </div>
+      ${providerResumeDialogTemplate()}`;
   }
 
   /**
@@ -4045,6 +4399,16 @@ export function createWorkerView(mount_element, options = {}) {
     refreshOverlapFacts(m);
     render(topTemplate(m), top_el);
     render(lanesTemplate(m), lanes_el);
+    const provider_dialog = /** @type {HTMLDialogElement|null} */ (
+      lanes_el.querySelector('.provider-resume-dialog')
+    );
+    if (provider_dialog && !provider_dialog.open) {
+      if (typeof provider_dialog.showModal === 'function') {
+        provider_dialog.showModal();
+      } else {
+        provider_dialog.setAttribute('open', '');
+      }
+    }
   }
 
   /**
@@ -4136,10 +4500,72 @@ export function createWorkerView(mount_element, options = {}) {
    * @param {Event} ev
    */
   function onChange(ev) {
+    const event_target = /** @type {HTMLElement} */ (ev.target);
+    if (provider_resume_draft) {
+      const provider_runner = /** @type {HTMLSelectElement|null} */ (
+        event_target?.closest?.('.provider-resume-dialog__runner')
+      );
+      if (provider_runner) {
+        const runners = objectOf(
+          objectOf(currentQueue().runner_catalog).runners
+        );
+        const runner_entry = objectOf(runners[provider_runner.value]);
+        const models = Object.keys(objectOf(runner_entry.models));
+        provider_resume_draft = {
+          ...provider_resume_draft,
+          runner: provider_runner.value,
+          model:
+            typeof runner_entry.default_model === 'string'
+              ? runner_entry.default_model
+              : models[0] || ''
+        };
+        doRender();
+        return;
+      }
+      const provider_model = /** @type {HTMLSelectElement|null} */ (
+        event_target?.closest?.('.provider-resume-dialog__model')
+      );
+      if (provider_model) {
+        try {
+          const [runner, model] = JSON.parse(provider_model.value);
+          if (typeof runner === 'string' && typeof model === 'string') {
+            provider_resume_draft = {
+              ...provider_resume_draft,
+              runner,
+              model
+            };
+            doRender();
+          }
+        } catch {
+          /* stale catalog option — leave the draft unchanged */
+        }
+        return;
+      }
+      const provider_account = /** @type {HTMLSelectElement|null} */ (
+        event_target?.closest?.('.provider-resume-dialog__account')
+      );
+      if (provider_account) {
+        provider_resume_draft = {
+          ...provider_resume_draft,
+          account: provider_account.value
+        };
+        doRender();
+        return;
+      }
+      const provider_fresh = /** @type {HTMLInputElement|null} */ (
+        event_target?.closest?.('.provider-resume-dialog__fresh-input')
+      );
+      if (provider_fresh) {
+        provider_resume_draft = {
+          ...provider_resume_draft,
+          fresh_current: provider_fresh.checked
+        };
+        doRender();
+        return;
+      }
+    }
     const lane_count_select = /** @type {HTMLSelectElement|null} */ (
-      /** @type {HTMLElement} */ (ev.target)?.closest?.(
-        '.worker-serial-lane-count'
-      )
+      event_target?.closest?.('.worker-serial-lane-count')
     );
     if (lane_count_select) {
       const parsed = Number.parseInt(lane_count_select.value, 10);
@@ -4382,6 +4808,17 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function onClick(ev) {
     const target = /** @type {HTMLElement} */ (ev.target);
+    if (target?.closest?.('.provider-resume-dialog__cancel')) {
+      closeProviderResumeDialog();
+      return;
+    }
+    if (target?.closest?.('.provider-resume-dialog__confirm')) {
+      confirmProviderResumeDialog();
+      return;
+    }
+    if (target?.closest?.('.provider-resume-dialog')) {
+      return;
+    }
     if (target?.closest?.('.worker-mini__grip')) {
       return;
     }
@@ -4746,6 +5183,16 @@ export function createWorkerView(mount_element, options = {}) {
       doRender();
       return;
     }
+    const provider_hold_badge = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.rtile__provider-hold-badge')
+    );
+    if (provider_hold_badge) {
+      const attempt_id = provider_hold_badge.dataset.attemptId || '';
+      open_provider_hold_detail =
+        open_provider_hold_detail === attempt_id ? null : attempt_id;
+      doRender();
+      return;
+    }
     const attempt_copy = /** @type {HTMLElement|null} */ (
       target?.closest?.('.rtile__attempt-copy')
     );
@@ -4824,6 +5271,16 @@ export function createWorkerView(mount_element, options = {}) {
       const att = tile?.dataset?.attemptId;
       if (att) {
         void pauseAttempt(att);
+      }
+      return;
+    }
+    if (target?.closest?.('.rtile__resume-alternate')) {
+      const tile = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile')
+      );
+      const att = tile?.dataset?.attemptId;
+      if (att) {
+        openProviderResumeDialog(att);
       }
       return;
     }
@@ -5031,11 +5488,22 @@ export function createWorkerView(mount_element, options = {}) {
       target && typeof target.closest === 'function'
         ? (/** @type {string} */ selector) => target.closest(selector)
         : () => null;
+    let changed = false;
     if (
       open_failure_detail &&
       !closest('.rtile__failure-pop, .rtile__failure-badge')
     ) {
       open_failure_detail = null;
+      changed = true;
+    }
+    if (
+      open_provider_hold_detail &&
+      !closest('.rtile__provider-hold-pop, .rtile__provider-hold-badge')
+    ) {
+      open_provider_hold_detail = null;
+      changed = true;
+    }
+    if (changed) {
       doRender();
     }
   }
@@ -5044,10 +5512,19 @@ export function createWorkerView(mount_element, options = {}) {
    * @param {KeyboardEvent} ev
    */
   function onDocumentKeyDown(ev) {
-    if (ev.key !== 'Escape' || open_failure_detail === null) {
+    if (ev.key !== 'Escape') {
+      return;
+    }
+    if (
+      open_failure_detail === null &&
+      open_provider_hold_detail === null &&
+      provider_resume_draft === null
+    ) {
       return;
     }
     open_failure_detail = null;
+    open_provider_hold_detail = null;
+    provider_resume_draft = null;
     doRender();
   }
 

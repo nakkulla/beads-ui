@@ -52,6 +52,9 @@ const TITLE = {
   pr_wait: `${SENDER} 📬 PR 제출`,
   merged: `${SENDER} ✅ 머지 완료`,
   awaiting_user: `${SENDER} ⏸️ 방향 질의`,
+  provider_hold: `${SENDER} ⏳ 공급자 보류`,
+  provider_recovered: `${SENDER} ✅ 공급자 회복`,
+  provider_disarmed: `${SENDER} 🚨 자동 재개 중단`,
   // One transition for every user-initiated terminal failure (UI-jw27 §1). The
   // kinds are told apart by the body's `클래스:` line rather than by their own
   // titles: a push preview that says only which of five internal write paths
@@ -171,6 +174,9 @@ function headline(transition, bead_id, bead_title) {
  *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   awaitingUser: (input: { bead_id: string, title?: string|null, awaiting_user?: string|null, stale_kind?: string|null, session?: string|null, reason?: string|null, tmux_session?: string|null, tmux_window?: string|null, bridge_active?: boolean, repo?: string|null }) => Promise<void>,
+ *   providerHoldEntered: (input: { bead_id: string, runner: string, kind: string, detail: string, summary: string, account?: string|null, resets_at?: number|null, auto_switch?: 'none'|'cap'|'disabled'|null, repo?: string|null }) => Promise<void>,
+ *   providerRecovered: (input: { bead_id: string, runner: string, duration_ms: number, resumed_beads?: string[], refusal?: string|null, switched_from?: string|null, switched_to?: string|null, repo?: string|null }) => Promise<void>,
+ *   providerAutoResumeDisarmed: (input: { bead_id: string, runner: string, reason: string, repo?: string|null }) => Promise<void>,
  *   needsHuman: (input: NeedsHumanInput) => Promise<void>
  * }}
  */
@@ -464,6 +470,101 @@ export function createNotifier(deps) {
         send(cmd, lines.join('\n'));
       } catch (err) {
         log('awaitingUser failed: %o', err);
+      }
+    },
+
+    async providerHoldEntered(input) {
+      try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        const bead_title = await lookupTitle(input.bead_id);
+        const lines = [
+          headline(TITLE.provider_hold, input.bead_id, bead_title),
+          `공급자: ${input.runner} / ${input.kind} / ${input.detail}`,
+          `요약: ${input.summary}`
+        ];
+        if (input.kind === 'usage_limit') {
+          lines.push(`계정: ${text(input.account) ?? 'unknown'}`);
+          if (typeof input.resets_at === 'number') {
+            lines.push(`리셋: ${new Date(input.resets_at).toISOString()}`);
+          }
+          // Why the limit stayed on this account (§8.3). `cap` is omitted: the
+          // disarmed notification already owns that sentence.
+          if (input.auto_switch === 'none') {
+            lines.push('계정 전환: 안 함 — 조건을 만족하는 다른 계정 없음');
+          } else if (input.auto_switch === 'disabled') {
+            lines.push('계정 전환: 안 함 — 자동 전환 꺼짐');
+          }
+        }
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        send(cmd, lines.join('\n'));
+      } catch (err) {
+        log('providerHoldEntered failed: %o', err);
+      }
+    },
+
+    async providerRecovered(input) {
+      try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        const bead_title = await lookupTitle(input.bead_id);
+        const lines = [
+          headline(TITLE.provider_recovered, input.bead_id, bead_title),
+          `공급자: ${input.runner}`,
+          `보류: ${Math.max(0, Math.round(input.duration_ms / 1000))}초`
+        ];
+        const resumed = Array.isArray(input.resumed_beads)
+          ? input.resumed_beads.filter((value) => typeof value === 'string')
+          : [];
+        if (resumed.length > 0) {
+          lines.push(`자동 재개: ${resumed.join(', ')}`);
+        }
+        const refusal = text(input.refusal);
+        if (refusal) {
+          lines.push(`재개 거부: ${refusal}`);
+        }
+        if (text(input.switched_from) && text(input.switched_to)) {
+          lines.push(
+            `계정 전환: ${text(input.switched_from)} → ${text(input.switched_to)}`
+          );
+        }
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        send(cmd, lines.join('\n'));
+      } catch (err) {
+        log('providerRecovered failed: %o', err);
+      }
+    },
+
+    async providerAutoResumeDisarmed(input) {
+      try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        const bead_title = await lookupTitle(input.bead_id);
+        const lines = [
+          headline(TITLE.provider_disarmed, input.bead_id, bead_title),
+          `공급자: ${input.runner}`,
+          `사유: ${input.reason}`,
+          '다음: 수동 재개 필요'
+        ];
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        send(cmd, lines.join('\n'));
+      } catch (err) {
+        log('providerAutoResumeDisarmed failed: %o', err);
       }
     },
 

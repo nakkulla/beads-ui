@@ -102,6 +102,7 @@ import {
   handleWorkerMergeQueueRemove,
   handleWorkerParkedRetry,
   handleWorkerPrDiscard,
+  handleWorkerProviderAutoSwitchToggle,
   handleWorkerQueueArm,
   handleWorkerQueueDisarm,
   handleWorkerQueueHoldResume,
@@ -569,6 +570,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-automation-toggle':
       handleWorkerAutomationToggle(ws, req);
+      return;
+    case 'worker-provider-auto-switch-toggle':
+      handleWorkerProviderAutoSwitchToggle(ws, req);
       return;
     case 'worker-repo-ops-opt-out-toggle':
       handleWorkerRepoOpsOptOutToggle(ws, req);

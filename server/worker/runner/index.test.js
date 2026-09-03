@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { makeFixtureSpawn } from './fixture-spawn.js';
-import { RUNNERS, createRunner } from './index.js';
+import { RUNNERS, adapterSpec, createRunner } from './index.js';
 
 /**
  * @returns {string}
@@ -122,6 +122,33 @@ describe('runner/index registry (worker-multi-provider-runner §B)', () => {
 
     expect(runner.name).toBe('claude');
     expect(v.success).toBe(true);
+  });
+
+  test('exposes claude outage classification through the registry', () => {
+    const spec = adapterSpec('claude', { catalog: testCatalog() });
+    const raw = [
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        result: 'API Error: 529 Overloaded'
+      }
+    ];
+
+    const result = spec.classifyProviderOutage?.({ raw, stderr_tail: null });
+
+    expect(result?.detail).toBe('overloaded_529');
+  });
+
+  test('exposes the null codex outage hook through the registry', () => {
+    const spec = adapterSpec('codex', { catalog: testCatalog() });
+    const raw = [
+      { type: 'turn.failed', error: { message: 'API Error: 529 Overloaded' } }
+    ];
+
+    const result = spec.classifyProviderOutage?.({ raw, stderr_tail: null });
+
+    expect(result).toBeNull();
   });
 
   test('a full_plan bead spawns without a runner guard', async () => {

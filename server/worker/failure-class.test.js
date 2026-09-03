@@ -99,11 +99,25 @@ describe('worker failure classification table', () => {
 });
 
 describe('worker failure environment patterns', () => {
-  test('classifies an overloaded API error as env', () => {
+  test('leaves a provider HTTP error for the runner classifier', () => {
     const result = classifyFailure(
       input({
         cause: 'session_failed:is_error',
         verdict: { success: false, summary: 'API Error: 529 Overloaded' }
+      })
+    );
+
+    expect({ tier: result.tier, env_group: result.env_group }).toEqual({
+      tier: 'individual',
+      env_group: null
+    });
+  });
+
+  test('keeps a transport failure in the api environment group', () => {
+    const result = classifyFailure(
+      input({
+        cause: 'session_failed:is_error',
+        verdict: { success: false, summary: 'socket hang up' }
       })
     );
 
@@ -133,6 +147,75 @@ describe('worker failure environment patterns', () => {
 
   test('returns null for a non-string summary', () => {
     expect(matchEnvPattern(null)).toBeNull();
+  });
+});
+
+describe('worker session hard-stop classification', () => {
+  test('classifies a runtime environment hard-stop as env', () => {
+    const result = classifyFailure(
+      input({
+        cause: 'session_hard_stop:environment',
+        cause_detail: { summary: 'codex: command not found' }
+      })
+    );
+
+    expect({ tier: result.tier, env_group: result.env_group }).toEqual({
+      tier: 'env',
+      env_group: 'runtime'
+    });
+  });
+
+  test('classifies an unmatched environment hard-stop as individual', () => {
+    const result = classifyFailure(
+      input({
+        cause: 'session_hard_stop:environment',
+        cause_detail: { summary: 'workspace setup failed' }
+      })
+    );
+
+    expect({ tier: result.tier, env_group: result.env_group }).toEqual({
+      tier: 'individual',
+      env_group: null
+    });
+  });
+
+  test('separates api and runtime hard-stops in promotion keys', () => {
+    const api = classifyFailure(
+      input({
+        cause: 'session_hard_stop:environment',
+        cause_detail: { summary: 'socket hang up' }
+      })
+    );
+    const runtime = classifyFailure(
+      input({
+        cause: 'session_hard_stop:environment',
+        cause_detail: { summary: 'claude: command not found' }
+      })
+    );
+
+    const keys = [
+      causeKey(api.cause, api.env_group),
+      causeKey(runtime.cause, runtime.env_group)
+    ];
+
+    expect(keys).toEqual([
+      'session_hard_stop:environment:api',
+      'session_hard_stop:environment:runtime'
+    ]);
+  });
+
+  test('keeps a failure hard-stop individual despite a pattern match', () => {
+    const result = classifyFailure(
+      input({
+        cause: 'session_hard_stop:failure',
+        cause_detail: { summary: 'socket hang up' }
+      })
+    );
+
+    expect({ tier: result.tier, env_group: result.env_group }).toEqual({
+      tier: 'individual',
+      env_group: null
+    });
   });
 });
 

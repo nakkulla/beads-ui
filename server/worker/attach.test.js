@@ -15,6 +15,7 @@ import {
   createLiveBd,
   createWorkerAttachment,
   initWorkerRuntime,
+  resumeWorkerAttempt,
   retryWorkerCleanup,
   startWorkerRepoOperationDeployRun,
   stopWorkerAttempt,
@@ -366,6 +367,51 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(typeof att.completionIntent.stop).toBe('function');
     // The runtime running-count seam now reflects THIS scheduler.
     expect(runtime.status(WS).running_count).toBe(0);
+  });
+
+  test('starts persisted provider probes during attachment startup', async () => {
+    const providerHealth = {
+      start: vi.fn(async () => {}),
+      sync: vi.fn(),
+      stop: vi.fn(),
+      probeTarget: vi.fn()
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      providerHealth: /** @type {any} */ (providerHealth),
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => providerHealth.start.mock.calls.length === 1);
+
+    expect(providerHealth.start).toHaveBeenCalledWith(path.resolve(WS));
+  });
+
+  test('stops provider probes when attachments reset', () => {
+    const providerHealth = {
+      start: vi.fn(async () => {}),
+      sync: vi.fn(),
+      stop: vi.fn(),
+      probeTarget: vi.fn()
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      providerHealth: /** @type {any} */ (providerHealth),
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    __resetWorkerAttachmentsForTest();
+
+    expect(providerHealth.stop).toHaveBeenCalledWith(WS);
   });
 
   test('routes a bd issue-change event to the metadata re-check', async () => {
@@ -953,6 +999,32 @@ describe('worker/attach construction + live loop (F1)', () => {
 
   test('stopWorkerAttempt returns false when no attachment is registered', async () => {
     expect(await stopWorkerAttempt(WS, 'att-9')).toBe(false);
+  });
+
+  test('passes execution overrides through the resume attachment boundary', async () => {
+    const resume = vi.fn(async () => ({ ok: true, attempt_id: 'att-10' }));
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({ scheduler: { resume } })
+    );
+    const continuation = {
+      continuation: /** @type {const} */ ('auto'),
+      exec_override: {
+        runner: 'claude',
+        model: 'opus-4.8',
+        effort: 'xhigh',
+        claude_account: 'next@example.com'
+      }
+    };
+
+    const result = await resumeWorkerAttempt(WS, 'att-9', continuation);
+
+    expect(result).toEqual({ ok: true, attempt_id: 'att-10' });
+    expect(resume).toHaveBeenCalledWith(
+      path.resolve(WS),
+      'att-9',
+      continuation
+    );
   });
 
   test('startWorkerRepoOperationDeployRun delegates to the coordinator', async () => {

@@ -136,6 +136,7 @@ const DIRECT_CHILD_KILL_GRACE_MS = 1_000;
  * @property {(raw: any) => (string|null)} detectQuestion - Return a reason string when a raw line is an interactive request, else null.
  * @property {(raw: any) => (string|null)} [extractShellCommand] - Return the shell command of a Bash/exec tool_use, else null (feeds the merge guards).
  * @property {(raw: any) => (string|null)} [extractSessionId] - Return the runner's session identifier from a raw line, else null. The engine emits the FIRST non-null result once on the `session_id` event so the attempt record can persist it for `--resume`/transcript tracking (spec §2).
+ * @property {(ctx: { raw: any[], stderr_tail: string|null, finished_at?: number|null, account_row?: { status: string, windows: Array<{ pct: number, resetsAt: string|null }> }|null }) => ({ detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }|null)} [classifyProviderOutage] - Classify runner-specific provider failures without changing the terminal verdict. Optional so existing adapters remain valid.
  * @property {(ctx: { raw: any[], exit: number|null, blocked: boolean }) => { success: boolean, reason: string, summary: string|null }} verdict -
  * Judge the closed stream. `summary` is the session's own last sentence
  * (worker-failure-tiers §6) — the runner owns the extraction because only it

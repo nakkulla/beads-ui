@@ -76,6 +76,9 @@
  * launch, or null when the runner did not apply a Claude pin.
  * @property {string|null} codex_account - Codex account key applied to the
  * launch, or null when no Codex pin was applied.
+ * @property {{ claude: 'bead'|'workspace_default'|'outage_switch'|null, codex: 'bead'|'workspace_default'|null }|null} account_sources - Provenance of the applied account pins.
+ * @property {string|null} account_switched_from - Claude email replaced by an outage switch.
+ * @property {{ reason: 'transcript_missing', session_id: string }|null} resume_fallback - One-shot fresh substitute marker.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
  * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], pushed?: string[], artifact_pushed?: string[], inherited?: string[], skipped?: string, error?: string }|null} base_drift -
@@ -117,6 +120,11 @@
  * @property {string|null} target_base - Merge target base at dispatch.
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
  * @property {string|null} cause - Failure cause shown by the decision tile.
+ * @property {'provider_outage'|null} auto_resume_kind - Marks the one allowed
+ * automatic continuation after a provider hold recovers.
+ * @property {string|null} auto_resume_refused - Why the recovery resume was
+ * turned away (`worktree_missing` and the like). Kept on the attempt because
+ * recovery deletes the target the receipt came from before the resume runs.
  * @property {{ reason?: string, command?: string|null, summary?: string|null, [k: string]: unknown }|null} cause_detail -
  * What the fail-closed path actually caught, when the cause alone cannot say
  * it (UI-2o4z §2): the caught `reason` plus the simple command it matched
@@ -455,6 +463,9 @@
  * retry, which is what every legacy `queue.json` loads as.
  * @property {import('./queue-hold.js').HoldHistoryEntry[]} hold_history -
  * Recent env failures, pruned to the 30-minute cross-bead repetition window.
+ * @property {Record<string, ProviderHold>} provider_hold - Provider-health dispatch gates by runner.
+ * @property {boolean} provider_auto_switch - Durable automatic account-switch preference.
+ * @property {AutoResumePending[]} auto_resume_pending - Recovery receipts consumed only after the hold mutation is durable.
  * @property {Record<string, Attempt>} attempts - Attempt records by attempt_id.
  * @property {Record<string, AdmissionRecord>} admission -
  * Auto-run admission observations by bead_id (badge display). Cleared only on a
@@ -540,6 +551,34 @@
  * one-shot legacy-state migration stamp. Absent (null) on every queue written
  * before the RepoOperation runtime, which is exactly what makes the migration
  * run once and never again.
+ */
+/**
+ * @typedef {Object} ProviderTarget
+ * @property {'outage'|'usage_limit'} kind
+ * @property {string} model
+ * @property {string|null} account
+ * @property {string} detail
+ * @property {string} last_error
+ * @property {number|null} resets_at
+ * @property {number} rearm_count
+ * @property {string[]} attempt_ids
+ * @property {'none'|'cap'|'disabled'|null} [auto_switch]
+ * @property {number|null} [next_probe_at] - When the prober next touches this
+ * target. Durable rather than timer-local because the held tile shows it: an
+ * in-memory deadline reads as absent for every viewer after a restart.
+ */
+/**
+ * @typedef {Object} ProviderHold
+ * @property {number} since
+ * @property {number} generation
+ * @property {ProviderTarget[]} targets
+ */
+/**
+ * @typedef {Object} AutoResumePending
+ * @property {string} attempt_id
+ * @property {number} generation
+ * @property {string|null} account
+ * @property {'provider_outage'|'account_switch'} kind
  */
 /**
  * @typedef {Object} RepoOperationMigrationResult
@@ -1797,6 +1836,9 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'hold',
   'lineages',
   'hold_history',
+  'provider_hold',
+  'provider_auto_switch',
+  'auto_resume_pending',
   // Legacy-drop key: the merge-serial toggle retired by the serial-lane regime
   // (UI-04vo). Listed so it is DROPPED on load instead of round-tripping.
   'pr_wait_holds_slot',
@@ -1862,6 +1904,9 @@ function emptyQueue() {
     hold: null,
     lineages: [],
     hold_history: [],
+    provider_hold: {},
+    provider_auto_switch: true,
+    auto_resume_pending: [],
     orchestration_model: null,
     orchestration_effort: null,
     orchestration_speed: null,
@@ -2706,6 +2751,33 @@ export function makeAttempt(fields) {
       typeof fields.claude_account === 'string' ? fields.claude_account : null,
     codex_account:
       typeof fields.codex_account === 'string' ? fields.codex_account : null,
+    account_sources:
+      isRecord(fields.account_sources) &&
+      (fields.account_sources.claude === 'bead' ||
+        fields.account_sources.claude === 'workspace_default' ||
+        fields.account_sources.claude === 'outage_switch' ||
+        fields.account_sources.claude === null) &&
+      (fields.account_sources.codex === 'bead' ||
+        fields.account_sources.codex === 'workspace_default' ||
+        fields.account_sources.codex === null)
+        ? /** @type {Attempt['account_sources']} */ ({
+            claude: fields.account_sources.claude,
+            codex: fields.account_sources.codex
+          })
+        : null,
+    account_switched_from:
+      typeof fields.account_switched_from === 'string'
+        ? fields.account_switched_from
+        : null,
+    resume_fallback:
+      isRecord(fields.resume_fallback) &&
+      fields.resume_fallback.reason === 'transcript_missing' &&
+      typeof fields.resume_fallback.session_id === 'string'
+        ? {
+            reason: /** @type {const} */ ('transcript_missing'),
+            session_id: fields.resume_fallback.session_id
+          }
+        : null,
     exit: fields.exit ?? null,
     verify_result: fields.verify_result ?? null,
     base_drift: isRecord(fields.base_drift)
@@ -2718,6 +2790,15 @@ export function makeAttempt(fields) {
     merge_sha: fields.merge_sha ?? null,
     finished_at: fields.finished_at ?? null,
     cause: fields.cause ?? null,
+    auto_resume_kind:
+      fields.auto_resume_kind === 'provider_outage'
+        ? fields.auto_resume_kind
+        : null,
+    auto_resume_refused:
+      typeof fields.auto_resume_refused === 'string' &&
+      fields.auto_resume_refused.length > 0
+        ? fields.auto_resume_refused
+        : null,
     cause_detail: isRecord(fields.cause_detail)
       ? /** @type {Attempt['cause_detail']} */ (fields.cause_detail)
       : null,
@@ -3344,6 +3425,172 @@ function normalizeRepoOperationMigration(value) {
 }
 
 /**
+ * Preserve only provider targets whose dispatch identity is complete.
+ *
+ * @param {unknown} value
+ * @returns {ProviderTarget|null}
+ */
+function normalizeProviderTarget(value) {
+  if (
+    !isRecord(value) ||
+    (value.kind !== 'outage' && value.kind !== 'usage_limit') ||
+    typeof value.model !== 'string' ||
+    (value.account !== null && typeof value.account !== 'string')
+  ) {
+    return null;
+  }
+  return {
+    kind: value.kind,
+    model: value.model,
+    account: value.account,
+    detail: typeof value.detail === 'string' ? value.detail : '',
+    last_error: typeof value.last_error === 'string' ? value.last_error : '',
+    resets_at:
+      typeof value.resets_at === 'number' && Number.isFinite(value.resets_at)
+        ? value.resets_at
+        : null,
+    rearm_count:
+      Number.isInteger(value.rearm_count) && Number(value.rearm_count) >= 0
+        ? Number(value.rearm_count)
+        : 0,
+    attempt_ids: Array.isArray(value.attempt_ids)
+      ? [...new Set(value.attempt_ids.filter((id) => typeof id === 'string'))]
+      : [],
+    auto_switch:
+      value.auto_switch === 'none' ||
+      value.auto_switch === 'cap' ||
+      value.auto_switch === 'disabled'
+        ? value.auto_switch
+        : null,
+    next_probe_at:
+      typeof value.next_probe_at === 'number' &&
+      Number.isFinite(value.next_probe_at)
+        ? value.next_probe_at
+        : null
+  };
+}
+
+/**
+ * Normalize durable provider gates without clearing them on cold load.
+ *
+ * @param {unknown} value
+ * @returns {Record<string, ProviderHold>}
+ */
+function normalizeProviderHolds(value) {
+  /** @type {Record<string, ProviderHold>} */
+  const holds = {};
+  if (!isRecord(value)) {
+    return holds;
+  }
+  for (const [runner, raw_hold] of Object.entries(value)) {
+    if (
+      !isRecord(raw_hold) ||
+      typeof raw_hold.since !== 'number' ||
+      !Number.isFinite(raw_hold.since) ||
+      !Number.isInteger(raw_hold.generation) ||
+      Number(raw_hold.generation) < 1 ||
+      !Array.isArray(raw_hold.targets)
+    ) {
+      continue;
+    }
+    /** @type {ProviderTarget[]} */
+    const targets = [];
+    for (const raw_target of raw_hold.targets) {
+      const target = normalizeProviderTarget(raw_target);
+      if (!target) {
+        continue;
+      }
+      const existing = targets.find(
+        (candidate) =>
+          candidate.kind === target.kind &&
+          candidate.model === target.model &&
+          candidate.account === target.account
+      );
+      if (existing) {
+        existing.attempt_ids = [
+          ...new Set([...existing.attempt_ids, ...target.attempt_ids])
+        ];
+        existing.detail = target.detail;
+        existing.last_error = target.last_error;
+        existing.resets_at = target.resets_at;
+        existing.rearm_count = Math.max(
+          existing.rearm_count,
+          target.rearm_count
+        );
+        existing.auto_switch = target.auto_switch;
+      } else {
+        targets.push(target);
+      }
+    }
+    if (targets.length > 0) {
+      holds[runner] = {
+        since: raw_hold.since,
+        generation: Number(raw_hold.generation),
+        targets
+      };
+    }
+  }
+  return holds;
+}
+
+/**
+ * Normalize post-recovery receipts independently of the live provider target.
+ *
+ * @param {unknown} value
+ * @returns {AutoResumePending[]}
+ */
+function normalizeAutoResumePending(value) {
+  /** @type {AutoResumePending[]} */
+  const pending = [];
+  if (!Array.isArray(value)) {
+    return pending;
+  }
+  for (const entry of value) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.attempt_id !== 'string' ||
+      !Number.isInteger(entry.generation) ||
+      Number(entry.generation) < 1 ||
+      (entry.account !== null && typeof entry.account !== 'string') ||
+      (entry.kind !== 'provider_outage' && entry.kind !== 'account_switch')
+    ) {
+      continue;
+    }
+    if (
+      !pending.some((candidate) => candidate.attempt_id === entry.attempt_id)
+    ) {
+      pending.push({
+        attempt_id: entry.attempt_id,
+        generation: Number(entry.generation),
+        account: entry.account,
+        kind: entry.kind
+      });
+    }
+  }
+  return pending;
+}
+
+/**
+ * Report whether one attempt lineage already consumed its provider auto-resume.
+ *
+ * @param {Record<string, Attempt>} attempts
+ * @param {Attempt} attempt
+ */
+function providerAutoResumeCapped(attempts, attempt) {
+  /** @type {Attempt|null} */
+  let cursor = attempt;
+  const seen = new Set();
+  while (cursor && !seen.has(cursor.attempt_id)) {
+    seen.add(cursor.attempt_id);
+    if (cursor.auto_resume_kind === 'provider_outage') {
+      return true;
+    }
+    cursor = cursor.resumed_from ? attempts[cursor.resumed_from] || null : null;
+  }
+  return false;
+}
+
+/**
  * @param {unknown} raw
  * @returns {Queue}
  */
@@ -3362,6 +3609,9 @@ function normalizeQueue(raw) {
     typeof raw.revision === 'number' && Number.isFinite(raw.revision)
       ? Math.max(0, Math.floor(raw.revision))
       : 0;
+  q.provider_hold = normalizeProviderHolds(raw.provider_hold);
+  q.provider_auto_switch = raw.provider_auto_switch !== false;
+  q.auto_resume_pending = normalizeAutoResumePending(raw.auto_resume_pending);
   q.slots = normalizeSlots(raw.slots) ?? DEFAULT_SLOTS;
   // `pr_wait_holds_slot` has no destination field: the merge-serial toggle is
   // retired (UI-04vo §1) and the stored flag is DROPPED on load.
@@ -6220,6 +6470,20 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Toggle automatic Claude account switching with revision CAS.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, on: boolean }} input
+     * @returns {QueueOpResult}
+     */
+    toggleProviderAutoSwitch(workspace, input) {
+      return applyMutation(workspace, input.expected_revision, (next) => {
+        next.provider_auto_switch = input.on;
+        return true;
+      });
+    },
+
+    /**
      * Remove a bead from all placement lanes. CAS-guarded.
      *
      * @param {string} workspace
@@ -6458,6 +6722,348 @@ export function createQueueStore(options = {}) {
       });
       consumeTerminalReceipts(result, prepared.files, prepared.drain);
       return result;
+    },
+
+    /**
+     * Pause one attempt and register its provider target in the same write.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, patch: Partial<Attempt>, runner: string, target: ProviderTarget, auto_switch?: { enabled: boolean, candidate_account: string|null } }} input
+     * @returns {QueueOpResult & { entered?: boolean, generation?: number }}
+     */
+    holdProviderAttempt(workspace, input) {
+      const prepared = terminalReceiptPatch(
+        workspace,
+        input.attempt_id,
+        input.patch
+      );
+      let entered = false;
+      let generation = 0;
+      const result = applyUnconditional(workspace, (next) => {
+        const current = next.attempts[input.attempt_id];
+        const target = normalizeProviderTarget(input.target);
+        if (!current || !target || input.runner.length === 0) {
+          return false;
+        }
+        next.attempts[input.attempt_id] = makeAttempt({
+          ...current,
+          ...prepared.patch,
+          attempt_id: current.attempt_id,
+          bead_id: current.bead_id
+        });
+        let hold = next.provider_hold[input.runner];
+        if (!hold) {
+          let last_generation = 0;
+          for (const candidate of Object.values(next.provider_hold)) {
+            last_generation = Math.max(last_generation, candidate.generation);
+          }
+          for (const pending of next.auto_resume_pending) {
+            last_generation = Math.max(last_generation, pending.generation);
+          }
+          hold = {
+            since: now(),
+            generation: last_generation + 1,
+            targets: []
+          };
+          next.provider_hold[input.runner] = hold;
+        }
+        generation = hold.generation;
+        const existing = hold.targets.find(
+          (candidate) =>
+            candidate.kind === target.kind &&
+            candidate.model === target.model &&
+            candidate.account === target.account
+        );
+        /** @type {ProviderTarget} */
+        let stored_target;
+        if (existing) {
+          existing.detail = target.detail;
+          existing.last_error = target.last_error;
+          existing.resets_at = target.resets_at;
+          existing.rearm_count = Math.max(
+            existing.rearm_count,
+            target.rearm_count
+          );
+          if (!existing.attempt_ids.includes(input.attempt_id)) {
+            existing.attempt_ids.push(input.attempt_id);
+          }
+          stored_target = existing;
+        } else {
+          entered = true;
+          stored_target = {
+            ...target,
+            attempt_ids: [...new Set([...target.attempt_ids, input.attempt_id])]
+          };
+          hold.targets.push(stored_target);
+        }
+        if (target.kind === 'usage_limit' && input.auto_switch) {
+          const candidate_account = input.auto_switch.candidate_account;
+          const auto_switch_enabled =
+            input.auto_switch.enabled && next.provider_auto_switch !== false;
+          if (!auto_switch_enabled) {
+            stored_target.auto_switch = 'disabled';
+          } else if (!candidate_account) {
+            stored_target.auto_switch = 'none';
+          } else if (
+            providerAutoResumeCapped(
+              next.attempts,
+              next.attempts[input.attempt_id]
+            )
+          ) {
+            stored_target.auto_switch = 'cap';
+          } else {
+            const candidate_held = Object.values(next.provider_hold).some(
+              (candidate_hold) =>
+                candidate_hold.targets.some(
+                  (candidate_target) =>
+                    candidate_target.account === candidate_account
+                )
+            );
+            if (candidate_held) {
+              stored_target.auto_switch = 'none';
+            } else {
+              stored_target.auto_switch = null;
+              const receipt = {
+                attempt_id: input.attempt_id,
+                generation: hold.generation,
+                account: candidate_account,
+                kind: /** @type {const} */ ('account_switch')
+              };
+              if (
+                !next.auto_resume_pending.some(
+                  (candidate) => candidate.attempt_id === input.attempt_id
+                )
+              ) {
+                next.auto_resume_pending.push(receipt);
+              }
+            }
+          }
+        }
+        return true;
+      });
+      consumeTerminalReceipts(result, prepared.files, prepared.drain);
+      return result.ok ? { ...result, entered, generation } : result;
+    },
+
+    /**
+     * Change one provider target while preserving its identity binding.
+     *
+     * @param {string} workspace
+     * @param {{ runner: string, generation: number, kind: 'outage'|'usage_limit', model: string, account: string|null, patch: Partial<ProviderTarget> }} input
+     * @returns {QueueOpResult}
+     */
+    updateProviderTarget(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const hold = next.provider_hold[input.runner];
+        if (!hold || hold.generation !== input.generation) {
+          return false;
+        }
+        const target = hold.targets.find(
+          (candidate) =>
+            candidate.kind === input.kind &&
+            candidate.model === input.model &&
+            candidate.account === input.account
+        );
+        if (!target) {
+          return false;
+        }
+        if (
+          input.patch.kind === 'outage' ||
+          input.patch.kind === 'usage_limit'
+        ) {
+          target.kind = input.patch.kind;
+        }
+        if (typeof input.patch.detail === 'string') {
+          target.detail = input.patch.detail;
+        }
+        if (typeof input.patch.last_error === 'string') {
+          target.last_error = input.patch.last_error;
+        }
+        if (
+          input.patch.resets_at === null ||
+          (typeof input.patch.resets_at === 'number' &&
+            Number.isFinite(input.patch.resets_at))
+        ) {
+          target.resets_at = input.patch.resets_at;
+        }
+        if (
+          Number.isInteger(input.patch.rearm_count) &&
+          Number(input.patch.rearm_count) >= 0
+        ) {
+          target.rearm_count = Number(input.patch.rearm_count);
+        }
+        if (
+          input.patch.next_probe_at === null ||
+          (typeof input.patch.next_probe_at === 'number' &&
+            Number.isFinite(input.patch.next_probe_at))
+        ) {
+          target.next_probe_at = input.patch.next_probe_at;
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Remove one recovered target and prerecord every eligible resume.
+     *
+     * @param {string} workspace
+     * @param {{ runner: string, generation: number, kind: 'outage'|'usage_limit', model: string, account: string|null }} input
+     * @returns {QueueOpResult & { pending?: AutoResumePending[], disarmed_attempt_ids?: string[], recovered_attempt_ids?: string[] }}
+     */
+    recoverProviderTarget(workspace, input) {
+      /** @type {AutoResumePending[]} */
+      const pending = [];
+      /** @type {string[]} */
+      const disarmed_attempt_ids = [];
+      /** @type {string[]} */
+      const recovered_attempt_ids = [];
+      const result = applyUnconditional(workspace, (next) => {
+        const hold = next.provider_hold[input.runner];
+        if (!hold || hold.generation !== input.generation) {
+          return false;
+        }
+        const index = hold.targets.findIndex(
+          (candidate) =>
+            candidate.kind === input.kind &&
+            candidate.model === input.model &&
+            candidate.account === input.account
+        );
+        if (index < 0) {
+          return false;
+        }
+        const [target] = hold.targets.splice(index, 1);
+        if (hold.targets.length === 0) {
+          delete next.provider_hold[input.runner];
+        }
+        const resumed_ids = new Set(
+          Object.values(next.attempts)
+            .map((attempt) => attempt.resumed_from)
+            .filter((id) => typeof id === 'string')
+        );
+        for (const attempt_id of target.attempt_ids) {
+          const attempt = next.attempts[attempt_id];
+          if (
+            !attempt ||
+            attempt.status !== 'paused' ||
+            !attempt.cause?.startsWith('provider_outage:') ||
+            typeof attempt.dismissed_at === 'number' ||
+            resumed_ids.has(attempt_id) ||
+            Object.values(next.discard_operations).some(
+              (operation) =>
+                operation.attempt_id === attempt_id &&
+                discardOperationActive(operation)
+            )
+          ) {
+            continue;
+          }
+          recovered_attempt_ids.push(attempt_id);
+          if (providerAutoResumeCapped(next.attempts, attempt)) {
+            disarmed_attempt_ids.push(attempt_id);
+            continue;
+          }
+          const receipt = {
+            attempt_id,
+            generation: hold.generation,
+            account: target.account,
+            kind: /** @type {const} */ ('provider_outage')
+          };
+          if (
+            !next.auto_resume_pending.some(
+              (candidate) => candidate.attempt_id === attempt_id
+            )
+          ) {
+            next.auto_resume_pending.push(receipt);
+          }
+          pending.push(receipt);
+        }
+        return true;
+      });
+      return result.ok
+        ? { ...result, pending, disarmed_attempt_ids, recovered_attempt_ids }
+        : result;
+    },
+
+    /**
+     * Consume one durable resume receipt after its launch was attempted.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, generation: number }} input
+     * @returns {QueueOpResult}
+     */
+    consumeAutoResumePending(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const index = next.auto_resume_pending.findIndex(
+          (entry) =>
+            entry.attempt_id === input.attempt_id &&
+            entry.generation === input.generation
+        );
+        if (index < 0) {
+          return false;
+        }
+        next.auto_resume_pending.splice(index, 1);
+        return true;
+      });
+    },
+
+    /**
+     * Drop receipts superseded by a newer hold generation for their runner.
+     *
+     * @param {string} workspace
+     * @returns {QueueOpResult & { discarded_attempt_ids?: string[] }}
+     */
+    discardStaleAutoResumePending(workspace) {
+      /** @type {string[]} */
+      const discarded_attempt_ids = [];
+      const result = applyUnconditional(workspace, (next) => {
+        const before = next.auto_resume_pending.length;
+        next.auto_resume_pending = next.auto_resume_pending.filter((entry) => {
+          const runner = next.attempts[entry.attempt_id]?.runner;
+          const hold = runner ? next.provider_hold[runner] : null;
+          const keep = !hold || hold.generation === entry.generation;
+          if (!keep) {
+            discarded_attempt_ids.push(entry.attempt_id);
+          }
+          return keep;
+        });
+        return next.auto_resume_pending.length !== before;
+      });
+      if (!result.ok && discarded_attempt_ids.length === 0) {
+        return { ...result, discarded_attempt_ids: [] };
+      }
+      return { ...result, discarded_attempt_ids };
+    },
+
+    /**
+     * Clear only runner-wide usage-limit targets after a manual continuation.
+     *
+     * @param {string} workspace
+     * @param {{ runner: string, attempt_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    clearManualProviderResumeTarget(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const hold = next.provider_hold[input.runner];
+        if (!hold) {
+          return false;
+        }
+        const targets = hold.targets.filter(
+          (target) =>
+            !(
+              target.kind === 'usage_limit' &&
+              target.account === null &&
+              target.attempt_ids.includes(input.attempt_id)
+            )
+        );
+        if (targets.length === hold.targets.length) {
+          return false;
+        }
+        if (targets.length === 0) {
+          delete next.provider_hold[input.runner];
+        } else {
+          hold.targets = targets;
+        }
+        return true;
+      });
     },
 
     /**

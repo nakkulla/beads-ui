@@ -13,6 +13,42 @@ function catalogWith(claude_result, codex_result) {
 }
 
 describe('worker/account-catalog', () => {
+  test('lists Claude rows with usage fields intact', async () => {
+    const account = {
+      key: 'a@example.com',
+      number: 2,
+      email: 'a@example.com',
+      status: 'ok',
+      windows: [{ key: '5h', pct: 10, resetsAt: null }]
+    };
+    const catalog = catalogWith(
+      { ok: true, accounts: [account], active_key: account.key },
+      { ok: true, accounts: [], active_key: null }
+    );
+
+    const result = await catalog.listClaude();
+
+    expect(result).toEqual({
+      ok: true,
+      accounts: [account],
+      active_key: account.key
+    });
+  });
+
+  test('rejects an unavailable Claude account list', async () => {
+    const catalog = catalogWith(
+      { ok: false, error: 'offline' },
+      { ok: true, accounts: [], active_key: null }
+    );
+
+    const result = await catalog.listClaude();
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'claude_account_list_unavailable'
+    });
+  });
+
   test('resolves one Claude email', async () => {
     const account = { key: 'a@example.com', email: 'a@example.com' };
     const catalog = catalogWith(
@@ -65,6 +101,41 @@ describe('worker/account-catalog', () => {
     expect(result).toEqual({
       ok: false,
       reason: 'claude_account_list_unavailable'
+    });
+  });
+
+  test('reads the active Claude row with usage windows', async () => {
+    const account = {
+      key: 'active@example.com',
+      email: 'active@example.com',
+      status: 'ok',
+      windows: [{ pct: 90, resetsAt: '2026-09-04T11:00:00Z' }]
+    };
+    const catalog = catalogWith(
+      {
+        ok: true,
+        accounts: [account],
+        active_key: 'active@example.com'
+      },
+      { ok: true, accounts: [], active_key: null }
+    );
+
+    const result = await catalog.activeClaude();
+
+    expect(result).toEqual({ ok: true, account });
+  });
+
+  test('fails closed when the active Claude row is unavailable', async () => {
+    const catalog = catalogWith(
+      { ok: true, accounts: [], active_key: null },
+      { ok: true, accounts: [], active_key: null }
+    );
+
+    const result = await catalog.activeClaude();
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'claude_active_account_unavailable'
     });
   });
 

@@ -574,6 +574,24 @@ describe('runner/claude verdict summary (worker-failure-tiers §6)', () => {
   });
 });
 
+describe('runner/claude provider outage hook', () => {
+  test('delegates final result classification to the provider module', () => {
+    const spec = claudeSpec();
+    const raw = [
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        result: 'API Error: 529 Overloaded'
+      }
+    ];
+
+    const result = spec.classifyProviderOutage?.({ raw, stderr_tail: null });
+
+    expect(result?.detail).toBe('overloaded_529');
+  });
+});
+
 describe('runner/claude event normalization', () => {
   test('maps assistant tool_use to normalized tool events', async () => {
     const spawn_impl = makeFixtureSpawn({ file: TOOLS_FIXTURE, exit: 0 });

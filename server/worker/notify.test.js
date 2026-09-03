@@ -735,3 +735,96 @@ describe('worker/notify needs_human transition', () => {
     expect(log).toHaveBeenCalled();
   });
 });
+
+describe('worker/notify provider transitions', () => {
+  test('sends provider hold details and reset time', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.providerHoldEntered({
+      bead_id: 'UI-1',
+      runner: 'claude',
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      summary: 'session limit reached',
+      account: 'held@example.com',
+      resets_at: Date.parse('2026-09-03T09:00:00Z'),
+      repo: '/r/proj'
+    });
+
+    expect(messageOf(spawn.last())).toContain(
+      '공급자: claude / usage_limit / usage_limit'
+    );
+    expect(messageOf(spawn.last())).toContain('계정: held@example.com');
+    expect(messageOf(spawn.last())).toContain('리셋: 2026-09-03T09:00:00.000Z');
+  });
+
+  test('names why a limit hold did not switch accounts', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.providerHoldEntered({
+      bead_id: 'UI-1',
+      runner: 'claude',
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      summary: 'session limit reached',
+      account: 'held@example.com',
+      auto_switch: 'disabled'
+    });
+
+    expect(messageOf(spawn.last())).toContain(
+      '계정 전환: 안 함 — 자동 전환 꺼짐'
+    );
+  });
+
+  test('omits the switch reason when the cap already reports it', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.providerHoldEntered({
+      bead_id: 'UI-1',
+      runner: 'claude',
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      summary: 'session limit reached',
+      account: 'held@example.com',
+      auto_switch: 'cap'
+    });
+
+    expect(messageOf(spawn.last())).not.toContain('계정 전환:');
+  });
+
+  test('sends recovered beads and a resume refusal', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.providerRecovered({
+      bead_id: 'UI-1',
+      runner: 'claude',
+      duration_ms: 61_000,
+      resumed_beads: ['UI-1'],
+      refusal: 'UI-2:worktree_missing'
+    });
+
+    expect(messageOf(spawn.last())).toContain('보류: 61초');
+    expect(messageOf(spawn.last())).toContain('자동 재개: UI-1');
+    expect(messageOf(spawn.last())).toContain(
+      '재개 거부: UI-2:worktree_missing'
+    );
+  });
+
+  test('points a disarmed provider hold at manual resume', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.providerAutoResumeDisarmed({
+      bead_id: 'UI-1',
+      runner: 'claude',
+      reason: 'auto_resume_cap'
+    });
+
+    expect(messageOf(spawn.last())).toContain('사유: auto_resume_cap');
+    expect(messageOf(spawn.last())).toContain('다음: 수동 재개 필요');
+  });
+});

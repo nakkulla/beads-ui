@@ -20,7 +20,7 @@ import {
   quickFixSelfReviewBlock,
   withQuickFixSelfReview
 } from './scheduler.js';
-import { createSessionLog } from './session-log.js';
+import { createSessionLog, stderrPathOf } from './session-log.js';
 import {
   beadSessionLogPath,
   beadSessionStderrPath,
@@ -373,7 +373,7 @@ function makeFakeRunner() {
     factoryNames,
     /**
      * @param {string} bead_id
-     * @param {Partial<{ success: boolean, reason: string, exit: number | null, blocked: boolean, blocked_detail: { reason: string, command: string|null }|null, events: any[] }>} v
+     * @param {Partial<{ success: boolean, reason: string, exit: number | null, blocked: boolean, blocked_detail: { reason: string, command: string|null }|null, events: any[], raw: any[] }>} v
      */
     finish(bead_id, v) {
       const rec = byBead.get(bead_id);
@@ -387,7 +387,7 @@ function makeFakeRunner() {
         blocked: v.blocked ?? false,
         blocked_detail: v.blocked_detail ?? null,
         events: v.events ?? [],
-        raw: []
+        raw: v.raw ?? []
       });
     },
     settingsFor(/** @type {string} */ bead_id) {
@@ -636,7 +636,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number, publishActivity?: (workspace: string) => void, waitingRescan?: { cover_ms: number, max_wait_ms: number } }} opts
+ * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, providerHealth?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, resolveSessionFile?: (entry: any, options?: any) => any, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number, publishActivity?: (workspace: string) => void, waitingRescan?: { cover_ms: number, max_wait_ms: number } }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -723,6 +723,7 @@ function setup(opts) {
     store,
     makeRunner: opts.makeRunner || runner.factory,
     accountCatalog: opts.accountCatalog,
+    providerHealth: opts.providerHealth,
     // Absent by default: an unwired kv channel leaves the repo account layer
     // ABSENT, which is what every test that never stores a default expects.
     kvGet: opts.kvGet,
@@ -769,6 +770,9 @@ function setup(opts) {
     // undone rather than judging an attempt it could not observe.
     gitRun,
     fs: opts.fs || { existsSync: () => true },
+    resolveSessionFile:
+      opts.resolveSessionFile ||
+      (() => ({ locality: 'local', file: '/transcript', last_event_at: 1 })),
     notifyQueueChanged: opts.notifyQueueChanged,
     onCompletionAttemptSettled: opts.onCompletionAttemptSettled,
     reviewSession: opts.reviewSession,
@@ -785,6 +789,532 @@ function setup(opts) {
   });
   return { store, runner, bd, verify, worktree, scheduler, usage };
 }
+
+describe('scheduler provider hold and recovery', () => {
+  /**
+   * Persist one running attempt for a direct provider-store transition.
+   *
+   * @param {any} queue_store
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {Partial<import('./queue-store.js').Attempt>} [patch]
+   */
+  function seedProviderAttempt(queue_store, attempt_id, bead_id, patch = {}) {
+    queue_store.appendAttempt(WS, {
+      expected_revision: queue_store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id }
+    });
+    queue_store.updateAttempt(WS, {
+      attempt_id,
+      patch: {
+        runner: 'claude',
+        model: 'opus',
+        status: 'running',
+        repo: '/repo',
+        ...patch
+      }
+    });
+  }
+
+  /**
+   * Register one durable provider target through the atomic store seam.
+   *
+   * @param {ReturnType<typeof createQueueStore>} queue_store
+   * @param {string} attempt_id
+   * @param {'outage'|'usage_limit'} kind
+   * @param {string|null} account
+   */
+  function registerProviderHold(queue_store, attempt_id, kind, account) {
+    const result = queue_store.holdProviderAttempt(WS, {
+      attempt_id,
+      patch: {
+        status: 'paused',
+        cause: `provider_outage:${kind}`,
+        finished_at: 1000
+      },
+      runner: 'claude',
+      target: {
+        kind,
+        model: 'opus',
+        account,
+        detail: kind,
+        last_error: kind,
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      }
+    });
+    if (!result.ok || typeof result.generation !== 'number') {
+      throw new Error('provider hold setup failed');
+    }
+    return { ...result, generation: result.generation };
+  }
+
+  test('routes a live Claude outage to provider hold without queue failure state', async () => {
+    const providerHealth = { sync: vi.fn() };
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      verifyOk: false,
+      providerHealth
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          subtype: 'success',
+          is_error: true,
+          result: 'API Error: 529 Overloaded'
+        }
+      ]
+    });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    expect(queue.attempts['B1-1000-1']).toMatchObject({
+      status: 'paused',
+      cause: 'provider_outage:overloaded_529',
+      cause_detail: {
+        kind: 'provider_outage',
+        message: 'API Error: 529 Overloaded',
+        summary: 'API Error: 529 Overloaded',
+        resets_at: null
+      }
+    });
+    expect(queue.hold).toBeNull();
+    expect(queue.lineages).toEqual([]);
+    expect(queue.auto_advance).toBe(true);
+    expect(providerHealth.sync).toHaveBeenCalledWith(WS);
+  });
+
+  test('switches a usage-limited attempt to the lowest eligible account', async () => {
+    const append = vi.fn();
+    const providerRecovered = vi.fn();
+    const rows = [
+      {
+        key: 'old@example.com',
+        number: 1,
+        email: 'old@example.com',
+        status: 'ok',
+        windows: [{ key: '5h', pct: 100, resetsAt: null }]
+      },
+      {
+        key: 'no-five@example.com',
+        number: 2,
+        email: 'no-five@example.com',
+        status: 'ok',
+        windows: [{ key: '7d', pct: 0, resetsAt: null }]
+      },
+      {
+        key: 'held@example.com',
+        number: 3,
+        email: 'held@example.com',
+        status: 'ok',
+        windows: [{ key: '5h', pct: 1, resetsAt: null }]
+      },
+      {
+        key: 'late@example.com',
+        number: 4,
+        email: 'late@example.com',
+        status: 'ok',
+        windows: [
+          { key: '5h', pct: 5, resetsAt: null },
+          { key: '7d', pct: 91, resetsAt: null }
+        ]
+      },
+      {
+        key: 'candidate-two@example.com',
+        number: 9,
+        email: 'candidate-two@example.com',
+        status: 'ok',
+        windows: [{ key: '5h', pct: 20, resetsAt: null }]
+      },
+      {
+        key: 'candidate-one@example.com',
+        number: 5,
+        email: 'candidate-one@example.com',
+        status: 'ok',
+        windows: [{ key: '5h', pct: 70, resetsAt: null }]
+      }
+    ];
+    const accountCatalog = {
+      resolveClaude: vi.fn(async (email) => ({
+        ok: true,
+        account: rows.find((row) => row.email === email)
+      })),
+      readClaude: vi.fn(async (email) => ({
+        ok: true,
+        account: rows.find((row) => row.email === email)
+      })),
+      activeClaude: vi.fn(async () => ({ ok: true, account: rows[0] })),
+      listClaude: vi.fn(async () => ({
+        ok: true,
+        accounts: rows,
+        active_key: rows[0].key
+      }))
+    };
+    const env = setup({
+      config: { B1: { claude_account: 'old@example.com' } },
+      slots: 2,
+      accountCatalog,
+      resolveCswapPath: () => '/bin/cswap',
+      timeline: { append },
+      notify: { providerRecovered }
+    });
+    seedProviderAttempt(env.store, 'held-other', 'H1');
+    registerProviderHold(
+      env.store,
+      'held-other',
+      'usage_limit',
+      'held@example.com'
+    );
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('B1').emit('session_id', 'sid-limit');
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          is_error: true,
+          api_error_status: 429,
+          result: "You've hit your session limit"
+        }
+      ]
+    });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    const child = Object.values(queue.attempts).find(
+      (attempt) => attempt.resumed_from === 'B1-1000-1'
+    );
+    expect(child).toMatchObject({
+      claude_account: 'candidate-one@example.com',
+      account_sources: { claude: 'outage_switch', codex: null },
+      account_switched_from: 'old@example.com',
+      auto_resume_kind: 'provider_outage'
+    });
+    expect(queue.auto_resume_pending).toEqual([]);
+    expect(
+      queue.provider_hold.claude.targets.find(
+        (target) => target.account === 'old@example.com'
+      )
+    ).toBeDefined();
+    expect(providerRecovered).toHaveBeenCalledWith(
+      expect.objectContaining({
+        switched_from: 'old@example.com',
+        switched_to: 'candidate-one@example.com'
+      })
+    );
+    expect(append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'provider_recovered',
+        account: 'candidate-one@example.com'
+      })
+    );
+    expect(
+      env.bd.calls.filter(
+        (call) =>
+          typeof call.key === 'string' && EXEC_SETTING_KEYS.includes(call.key)
+      )
+    ).toEqual([]);
+  });
+
+  test('keeps the timer path when automatic account switching is disabled', async () => {
+    const listClaude = vi.fn(async () => ({ ok: true, accounts: [] }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      accountCatalog: {
+        activeClaude: vi.fn(async () => ({
+          ok: true,
+          account: { email: 'old@example.com', status: 'ok', windows: [] }
+        })),
+        listClaude
+      }
+    });
+    env.store.toggleProviderAutoSwitch(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      on: false
+    });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          is_error: true,
+          api_error_status: 429,
+          result: "You've hit your session limit"
+        }
+      ]
+    });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    expect(queue.provider_hold.claude.targets[0].auto_switch).toBe('disabled');
+    expect(queue.auto_resume_pending).toEqual([]);
+    expect(listClaude).not.toHaveBeenCalled();
+  });
+
+  test('never switches accounts when the held account is unresolved', async () => {
+    const listClaude = vi.fn(async () => ({
+      ok: true,
+      accounts: [
+        {
+          key: 'c1',
+          number: 1,
+          email: 'candidate-one@example.com',
+          status: 'ok',
+          windows: [{ key: '5h', pct: 10, resetsAt: null }]
+        }
+      ],
+      active_key: 'c1'
+    }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      accountCatalog: {
+        activeClaude: vi.fn(async () => ({
+          ok: false,
+          reason: 'claude_account_list_unavailable'
+        })),
+        listClaude
+      }
+    });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          is_error: true,
+          api_error_status: 429,
+          result: "You've hit your session limit"
+        }
+      ]
+    });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    const target = queue.provider_hold.claude.targets[0];
+
+    expect(target.account).toBe(null);
+    expect(target.auto_switch).toBe('none');
+    expect(queue.auto_resume_pending).toEqual([]);
+    expect(listClaude).not.toHaveBeenCalled();
+  });
+
+  test('maps a bold explicit failure line to a hard-stop cause', async () => {
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      verifyOk: false
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+    env.runner.finish('B1', {
+      success: true,
+      raw: [
+        {
+          type: 'result',
+          is_error: false,
+          result: '\n**실패 · 검증이 끝나지 않음**\n후속 설명'
+        }
+      ]
+    });
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+      cause: 'session_hard_stop:failure',
+      cause_detail: {
+        kind: 'session_hard_stop',
+        message: '실패 · 검증이 끝나지 않음',
+        summary: '실패 · 검증이 끝나지 않음'
+      }
+    });
+  });
+
+  test('lets a Codex candidate flow through a Claude outage gate', async () => {
+    const env = setup({
+      config: { C1: {}, X1: { model: 'sol' } },
+      slots: 2
+    });
+    seedProviderAttempt(env.store, 'held-1', 'H1');
+    registerProviderHold(env.store, 'held-1', 'outage', null);
+    seedQueue(env.store, ['C1', 'X1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['X1']);
+    expect(env.runner.factoryNames).toEqual(['codex']);
+    expect(env.store.snapshot(WS).queue.map((entry) => entry.bead_id)).toEqual([
+      'C1',
+      'X1'
+    ]);
+  });
+
+  test('blocks only the resolved account for a usage-limit target', async () => {
+    const accountCatalog = {
+      resolveClaude: vi.fn(async (email) => ({
+        ok: true,
+        account: { key: email, email }
+      })),
+      activeClaude: vi.fn(async () => ({
+        ok: true,
+        account: { key: 'held@example.com', email: 'held@example.com' }
+      }))
+    };
+    const env = setup({
+      config: {
+        C1: { claude_account: 'held@example.com' },
+        C2: { claude_account: 'other@example.com' }
+      },
+      slots: 2,
+      accountCatalog,
+      resolveCswapPath: () => '/bin/cswap'
+    });
+    seedProviderAttempt(env.store, 'held-1', 'H1');
+    registerProviderHold(
+      env.store,
+      'held-1',
+      'usage_limit',
+      'held@example.com'
+    );
+    seedQueue(env.store, ['C1', 'C2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['C2']);
+  });
+
+  test('fails closed when usage-limit account resolution is unavailable', async () => {
+    const env = setup({
+      config: { C1: {} },
+      slots: 1,
+      accountCatalog: {
+        activeClaude: vi.fn(async () => ({ ok: false, reason: 'offline' }))
+      }
+    });
+    seedProviderAttempt(env.store, 'held-1', 'H1');
+    registerProviderHold(
+      env.store,
+      'held-1',
+      'usage_limit',
+      'held@example.com'
+    );
+    seedQueue(env.store, ['C1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).attempts.C1).toBeUndefined();
+  });
+
+  test('reconciles a persisted 529 as provider hold before PR observation', async () => {
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'B1', 'att-1');
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        result: 'API Error: 529 Overloaded'
+      })}\n`
+    );
+    const env = setup({
+      config: { B1: {} },
+      verifyOk: false,
+      sessionLog,
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    seedProviderAttempt(env.store, 'att-1', 'B1', {
+      pid: 4242,
+      started_at: 1000,
+      log_path
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1']).toMatchObject({
+      status: 'paused',
+      cause: 'provider_outage:overloaded_529'
+    });
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('pins provider recovery to the prior runner model and effort', async () => {
+    const env = setup({
+      config: { B1: { model: 'sol', effort: 'xhigh' } },
+      slots: 1,
+      accountCatalog: {
+        resolveClaude: vi.fn(async (email) => ({
+          ok: true,
+          account: { email }
+        }))
+      }
+    });
+    const exec_values = /** @type {Record<string, string|null>} */ (
+      Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null]))
+    );
+    exec_values.orchestration_model = 'opus';
+    exec_values.orchestration_effort = 'high';
+    seedProviderAttempt(env.store, 'held-1', 'B1', {
+      effort: 'high',
+      speed: 'default',
+      session_id: 'session-1',
+      base_oid: 'base-B1',
+      target_base: 'main',
+      exec_values
+    });
+    const held = registerProviderHold(
+      env.store,
+      'held-1',
+      'outage',
+      'held@example.com'
+    );
+    env.store.recoverProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com'
+    });
+
+    const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+    const child = Object.values(env.store.snapshot(WS).attempts).find(
+      (attempt) => attempt.resumed_from === 'held-1'
+    );
+    expect(result.resumed_beads).toEqual(['B1']);
+    expect(child).toMatchObject({
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      auto_resume_kind: 'provider_outage'
+    });
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      model: 'opus',
+      effort: 'high'
+    });
+  });
+});
 
 /**
  * Seed the single waiting lane in order and arm auto_advance.
@@ -3470,6 +4000,317 @@ describe('scheduler resume (spec §1)', () => {
     expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
   });
 
+  test('clears only the runner-wide usage target after manual resume', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit()
+    });
+    seedAttempt(
+      env.store,
+      'manual-global',
+      resumablePrior({
+        status: 'paused',
+        cause: 'provider_outage:usage_limit'
+      })
+    );
+    seedAttempt(
+      env.store,
+      'manual-account',
+      resumablePrior({
+        bead_id: 'B2',
+        status: 'paused',
+        cause: 'provider_outage:usage_limit'
+      })
+    );
+    for (const [
+      attempt_id,
+      account
+    ] of /** @type {Array<[string, string|null]>} */ ([
+      ['manual-global', null],
+      ['manual-account', 'held@example.com']
+    ])) {
+      env.store.holdProviderAttempt(WS, {
+        attempt_id,
+        patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+        runner: 'claude',
+        target: {
+          kind: 'usage_limit',
+          model: 'opus',
+          account,
+          detail: 'usage_limit',
+          last_error: 'limit',
+          resets_at: null,
+          rearm_count: 0,
+          attempt_ids: []
+        }
+      });
+    }
+
+    const result = await env.scheduler.resume(WS, 'manual-global');
+
+    expect(result.ok).toBe(true);
+    expect(env.store.snapshot(WS).provider_hold.claude.targets).toMatchObject([
+      { kind: 'usage_limit', account: 'held@example.com' }
+    ]);
+  });
+
+  test('applies a same-runner override without dropping session continuation', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      accountCatalog: {
+        resolveClaude: vi.fn(async (email) => ({
+          ok: true,
+          account: { email }
+        }))
+      },
+      resolveCswapPath: () => '/opt/bin/cswap'
+    });
+    seedAttempt(env.store, 'override-same', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'override-same', {
+      exec_override: {
+        runner: 'claude',
+        model: 'opus-4.8',
+        effort: 'xhigh',
+        claude_account: 'next@example.com'
+      }
+    });
+
+    const settings = env.runner.settingsFor('B1');
+    const built = claudeSpec({
+      cswap_path: '/opt/bin/cswap',
+      catalog_entry: {
+        command: 'claude',
+        models: { 'opus-4.8': { id: 'claude-opus-4-8' } },
+        efforts: ['low', 'medium', 'high', 'xhigh']
+      }
+    }).buildArgv({ id: 'B1', prompt: 'continue' }, '/wt/B1', settings);
+    expect(result.ok).toBe(true);
+    expect(settings).toMatchObject({
+      model: 'opus-4.8',
+      effort: 'xhigh',
+      claude_account: 'next@example.com',
+      resume_session_id: 'sid-abc'
+    });
+    expect(built.command).toBe('/opt/bin/cswap');
+    expect(built.args.slice(0, 4)).toEqual([
+      'run',
+      'next@example.com',
+      '--share-history',
+      '--'
+    ]);
+    expect(built.args).toContain('sid-abc');
+    expect(built.args[built.args.indexOf('--model') + 1]).toBe(
+      'claude-opus-4-8'
+    );
+    expect(
+      env.bd.calls.filter(
+        (call) =>
+          typeof call.key === 'string' && EXEC_SETTING_KEYS.includes(call.key)
+      )
+    ).toEqual([]);
+  });
+
+  test.each([
+    [
+      'unknown model',
+      { runner: 'claude', model: 'missing', effort: 'high' },
+      true
+    ],
+    [
+      'unknown effort',
+      { runner: 'claude', model: 'opus', effort: 'ultra' },
+      true
+    ],
+    [
+      'Claude account on Codex',
+      {
+        runner: 'codex',
+        model: 'sol',
+        effort: 'xhigh',
+        claude_account: 'next@example.com'
+      },
+      true
+    ],
+    [
+      'unresolved Claude account',
+      {
+        runner: 'claude',
+        model: 'opus',
+        effort: 'high',
+        claude_account: 'missing@example.com'
+      },
+      false
+    ]
+  ])(
+    'rejects an invalid execution override: %s',
+    async (_name, override, account_ok) => {
+      const env = setup({
+        config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+        slots: 1,
+        gitRun: ownedWorktreeGit(),
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) =>
+            account_ok
+              ? { ok: true, account: { email } }
+              : { ok: false, reason: 'claude_account_unknown' }
+          )
+        }
+      });
+      seedAttempt(env.store, 'override-invalid', resumablePrior());
+
+      const result = await env.scheduler.resume(WS, 'override-invalid', {
+        exec_override: override
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'exec_override_invalid' });
+      expect(env.runner.spawnOrder).toEqual([]);
+      expect(
+        Object.values(env.store.snapshot(WS).attempts).filter(
+          (attempt) => attempt.resumed_from === 'override-invalid'
+        )
+      ).toEqual([]);
+    }
+  );
+
+  test('forces a cross-runner override fresh with a bounded context handoff', async () => {
+    const recent = `${'x'.repeat(5000)}-RECENT-END`;
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      sessionLog: {
+        attach: vi.fn(),
+        read: vi.fn(() => [
+          {
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: recent }] }
+          }
+        ])
+      }
+    });
+    seedAttempt(
+      env.store,
+      'override-cross',
+      resumablePrior({ cause: 'provider_outage:usage_limit' })
+    );
+
+    const result = await env.scheduler.resume(WS, 'override-cross', {
+      exec_override: { runner: 'codex', model: 'sol', effort: 'xhigh' }
+    });
+
+    const prompt = env.runner.spawnedBead('B1').prompt;
+    const handoff_start = prompt.indexOf(
+      '이 작업은 공급자 장애/한도로 중단된 claude 세션의 연속이다.'
+    );
+    expect(result.ok).toBe(true);
+    expect(env.runner.factoryNames.at(-1)).toBe('codex');
+    expect(env.runner.settingsFor('B1')).not.toHaveProperty(
+      'resume_session_id'
+    );
+    expect(prompt).toContain('-RECENT-END');
+    expect(prompt).toContain('`git status`');
+    expect(prompt).toContain('`git diff`');
+    expect(prompt.slice(handoff_start)).toHaveLength(4000);
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({
+      runner: 'codex',
+      model: 'sol',
+      effort: 'xhigh',
+      continuation_mode: 'fresh'
+    });
+  });
+
+  test('falls back fresh before launch when a Claude transcript is missing', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      resolveSessionFile: () => ({
+        locality: 'missing',
+        file: null,
+        last_event_at: null
+      }),
+      sessionLog: {
+        attach: vi.fn(),
+        read: vi.fn(() => [
+          {
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: '부분 구현 완료' }] }
+          }
+        ])
+      }
+    });
+    seedAttempt(env.store, 'missing-prelaunch', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'missing-prelaunch');
+
+    expect(result).toMatchObject({
+      ok: true,
+      fallback: 'transcript_missing'
+    });
+    expect(env.runner.settingsFor('B1')).not.toHaveProperty(
+      'resume_session_id'
+    );
+    expect(env.runner.spawnedBead('B1').prompt).toContain('부분 구현 완료');
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({
+      continuation_mode: 'fresh',
+      resume_fallback: {
+        reason: 'transcript_missing',
+        session_id: 'sid-abc'
+      }
+    });
+  });
+
+  test('replaces one missing resumed transcript after a no-result exit', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit()
+    });
+    seedAttempt(env.store, 'missing-after-launch', resumablePrior());
+    const resumed = await env.scheduler.resume(WS, 'missing-after-launch');
+    const failed_id = String(resumed.attempt_id);
+    const log_path = path.join(tmp_state, `${failed_id}.jsonl`);
+    env.store.updateAttempt(WS, {
+      attempt_id: failed_id,
+      patch: { log_path }
+    });
+    fs.writeFileSync(
+      stderrPathOf(log_path),
+      'No session found for session sid-abc'
+    );
+
+    env.runner.finish('B1', { success: false, reason: 'no_result' });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    const substitute = Object.values(queue.attempts).find(
+      (attempt) => attempt.resumed_from === failed_id
+    );
+    expect(queue.attempts[failed_id].cause).toBe(
+      'resume_failed:transcript_missing'
+    );
+    expect(substitute).toMatchObject({
+      status: 'running',
+      continuation_mode: 'fresh',
+      resumed_from: failed_id,
+      resume_fallback: {
+        reason: 'transcript_missing',
+        session_id: 'sid-abc'
+      }
+    });
+    expect(env.runner.settingsFor('B1')).not.toHaveProperty(
+      'resume_session_id'
+    );
+  });
+
   test('applies current snapshot pins on a prior_session relaunch', async () => {
     const deps = accountDeps();
     const env = setup({
@@ -3912,7 +4753,7 @@ describe('scheduler resume (spec §1)', () => {
     expect(env.runner.spawnOrder).toEqual([]);
   });
 
-  test('drops a stale explicit choice when drift removes the runner mismatch', async () => {
+  test('keeps an explicit fresh choice when drift removes the runner mismatch', async () => {
     const config = { B1: { model: 'sol', effort: 'high' } };
     const env = setup({ config, slots: 1 });
     seedAttempt(env.store, 'drift-same', resumablePrior());
@@ -3925,13 +4766,15 @@ describe('scheduler resume (spec §1)', () => {
     });
 
     expect(resumed.ok).toBe(true);
-    expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
+    expect(env.runner.settingsFor('B1')).not.toHaveProperty(
+      'resume_session_id'
+    );
     expect(
       env.store.snapshot(WS).attempts[String(resumed.attempt_id)]
     ).toMatchObject({
       runner: 'claude',
       model: 'opus',
-      continuation_mode: 'session'
+      continuation_mode: 'fresh'
     });
   });
 
@@ -5660,6 +6503,26 @@ describe('scheduler REVISE disposition dispatch (UI-hs11 §3.3)', () => {
 
 describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
   /**
+   * Write one runner stderr sidecar for a disposition attempt.
+   *
+   * @param {any} env
+   * @param {string} attempt_id
+   * @param {string} [message]
+   */
+  function writeResumeMissing(
+    env,
+    attempt_id,
+    message = 'No conversation found with session ID sid-park'
+  ) {
+    const log_path = path.join(tmp_state, `${attempt_id}.jsonl`);
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { log_path }
+    });
+    fs.writeFileSync(stderrPathOf(log_path), message);
+  }
+
+  /**
    * Dispatch a disposition session and hand back its child attempt id.
    *
    * @param {any} env
@@ -5695,6 +6558,54 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     });
     return /** @type {string} */ (res.attempt_id);
   }
+
+  test('holds an outage before the disposition verdict and redispatches repair on recovery', async () => {
+    const complete = vi.fn(async () => ({ ok: true }));
+    const release = vi.fn();
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      disposition: { complete, release }
+    });
+    const child = await dispatchDisposition(env);
+    env.runner.eventsFor('B1').emit('session_id', 'sid-1');
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          subtype: 'success',
+          is_error: true,
+          result: 'API Error: 529 Overloaded'
+        }
+      ]
+    });
+    await flush();
+
+    const held = env.store.snapshot(WS).provider_hold.claude;
+    expect(complete).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledWith('B1');
+    expect(env.store.snapshot(WS).attempts[child].status).toBe('paused');
+
+    env.store.recoverProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: null
+    });
+    await env.scheduler.consumeProviderAutoResume(WS);
+
+    const repair = Object.values(env.store.snapshot(WS).attempts).find(
+      (attempt) => attempt.resumed_from === child
+    );
+    expect(repair).toMatchObject({
+      disposition: 'revise_fix',
+      auto_resume_kind: 'provider_outage'
+    });
+  });
 
   test('bypasses the PR observation entirely', async () => {
     const complete = vi.fn(async () => ({ ok: true }));
@@ -5866,12 +6777,13 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     });
     const child = await dispatchDisposition(env);
     config.B1 = { model: 'sonnet', effort: 'high' };
+    writeResumeMissing(env, child);
 
     env.runner.finish('B1', { success: false, reason: 'no_result' });
     await flush();
 
     const q = env.store.snapshot(WS);
-    expect(q.attempts[child].cause).toBe('disposition_resume_failed:no_result');
+    expect(q.attempts[child].cause).toBe('resume_failed:transcript_missing');
     const substitute = Object.values(q.attempts).find(
       (/** @type {any} */ a) => a.resumed_from === child
     );
@@ -5879,9 +6791,13 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
       disposition: 'revise_fix',
       disposition_resume: false,
       status: 'running',
-      model: 'sonnet',
+      model: 'opus',
       effort: 'high',
-      continuation_mode: 'fresh'
+      continuation_mode: 'fresh',
+      resume_fallback: {
+        reason: 'transcript_missing',
+        session_id: 'sid-park'
+      }
     });
     expect(env.runner.cwdFor('B1')).toBe('/repo');
     expect(env.runner.settingsFor('B1')).not.toHaveProperty(
@@ -5892,7 +6808,7 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     expect(release).not.toHaveBeenCalled();
   });
 
-  test('persists action-required when a disposition substitute crosses runners', async () => {
+  test('pins a transcript substitute to the failed disposition runner', async () => {
     const release = vi.fn();
     const config = { B1: { model: 'opus', effort: 'high' } };
     const env = setup({
@@ -5902,28 +6818,23 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     });
     const child = await dispatchDisposition(env);
     config.B1 = { model: 'sol', effort: 'xhigh' };
+    writeResumeMissing(env, child);
 
     env.runner.finish('B1', { success: false, reason: 'no_result' });
     await flush();
 
     const q = env.store.snapshot(WS);
-    expect(q.attempts[child]).toMatchObject({
-      cause: 'disposition_resume_failed:no_result',
-      continuation_action: {
-        continuation: null,
-        mismatch: {
-          continuation_required: true,
-          prior: { runner: 'claude' },
-          current: { runner: 'codex' }
-        }
-      }
+    const substitute = Object.values(q.attempts).find(
+      (/** @type {any} */ attempt) => attempt.resumed_from === child
+    );
+    expect(q.attempts[child].cause).toBe('resume_failed:transcript_missing');
+    expect(substitute).toMatchObject({
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      continuation_mode: 'fresh'
     });
-    expect(
-      Object.values(q.attempts).some(
-        (/** @type {any} */ attempt) => attempt.resumed_from === child
-      )
-    ).toBe(false);
-    expect(release).toHaveBeenCalledWith('B1');
+    expect(release).not.toHaveBeenCalled();
   });
 
   test('a substitute session that fails again takes the ordinary failure path', async () => {
@@ -5933,7 +6844,8 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
       slots: 1,
       disposition: { complete: vi.fn(), release }
     });
-    await dispatchDisposition(env);
+    const child = await dispatchDisposition(env);
+    writeResumeMissing(env, child);
     env.runner.finish('B1', { success: false, reason: 'no_result' });
     await flush();
 
@@ -5949,6 +6861,31 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     );
     expect(substitute.cause).toBe('session_failed:subtype');
     expect(release).toHaveBeenCalledWith('B1');
+  });
+
+  test('does not treat a bare resume authentication message as transcript loss', async () => {
+    const env = setup({
+      config: {},
+      slots: 1,
+      disposition: { complete: vi.fn(), release: vi.fn() }
+    });
+    const child = await dispatchDisposition(env);
+    writeResumeMissing(
+      env,
+      child,
+      'Not authenticated. Sign in before using --resume.'
+    );
+
+    env.runner.finish('B1', { success: false, reason: 'no_result' });
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts[child].cause).toBe('session_failed:no_result');
+    expect(
+      Object.values(q.attempts).some(
+        (/** @type {any} */ attempt) => attempt.resumed_from === child
+      )
+    ).toBe(false);
   });
 
   test('guard-kill evidence outranks a restart-surviving disposition’s readback', async () => {
@@ -12048,6 +12985,57 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     const q = env.store.snapshot(WS);
     expect(q.attempts['S1-1000-1'].status).toBe('stopped');
     expect(q.attempts['S1-1000-1'].base_drift).toBeNull();
+  });
+
+  test('settles a landed base ahead of a persisted provider outage', async () => {
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'S1', 'att-landed');
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        result: 'API Error: 529 Overloaded'
+      })}\n`
+    );
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      verifyOk: false,
+      sessionLog,
+      resolveBase: movedBase(),
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook: guardHookWith({ 'att-landed': [pushedToBase(LANDED)] }),
+      probePid: () => ({ alive: false, started_at: null })
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-landed', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-landed',
+      patch: {
+        runner: 'claude',
+        model: 'opus',
+        status: 'running',
+        repo: '/repo',
+        pid: 4242,
+        started_at: 1000,
+        log_path,
+        base_oid: 'base-S1',
+        target_base: 'main',
+        workflow_mode_prior: null
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    const attempt = env.store.snapshot(WS).attempts['att-landed'];
+
+    expect(attempt.cause).toBe('base_landing_detected');
+    expect(env.store.snapshot(WS).provider_hold).toEqual({});
   });
 
   test('observes the base of a restart-restored paused attempt discarded by ■', async () => {
