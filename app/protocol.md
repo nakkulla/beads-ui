@@ -308,9 +308,10 @@ push.
   replies `{ lane_id, revision }`. Replaces membership AND order in one write —
   insert, reorder and row-removal are the same op.
 - `monitor-lane-confirm` → `{ lane_id, expected_revision }`; replies
-  `{ lane_id, revision }`. Flips `status` only; the adjacent `dep-add`s and the
-  queue placements ride the client's existing `dep-add` / `worker-queue-place`
-  paths right after.
+  `{ lane_id, revision }`. Flips `status` only; the adjacent `dep-add`s ride the
+  client's existing `dep-add` path right after. Confirming loads NO queue
+  (UI-d3i1 §7.1): on an `auto_advance`-ON repo a parallel-queue entry is a
+  launch, so placement and arming belong to `▶ 진행` alone.
 - `monitor-lane-remove` → `{ lane_id, expected_revision }`; replies
   `{ lane_id, revision }`. The `dep-remove`s for a confirmed lane are the
   client's and go BEFORE this op: once the lane is gone nobody can tell which
@@ -371,23 +372,29 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   from a subscription the server has not torn down yet; the rest is the full
   queue (`revision`, `auto_advance`, `slots`, `serial_lanes[]`,
   `serial_lane_count`, `queue[]`, `pr_wait[]`, `done[]`, `attempts`,
-  `admission`, `cleanup_failed`, `exec_defaults`) plus the server-decorated,
-  NON-persisted keys: `workspace_info: { slots, repo_ops }` — where `repo_ops`
-  additionally carries `repo_id`, the canonical repository path the registered
-  attachment resolved the declaration against, `null` where no attachment is
-  registered —, `runner_catalog`, `execution_defaults`, `pr_observations`
-  (per-`pr_wait` PR state + merge-gate verdict, memory cache only),
-  `bead_titles` (`Record<bead_id, title>` for the `queue`/`pr_wait`/`done`
-  beads, memory cache only), and `declared_base`. `bead_titles` is PARTIAL: only
-  titles already cached travel, a miss simply has no entry and arrives in a
-  later snapshot once the server's async lookup fills it. Consumers fail-quiet
-  on the whole key being absent (older server) and on a missing entry — both
-  fall back to displaying the bead id. `bead_labels` is likewise a non-persisted
-  partial `Record<bead_id, string[]>` for the same `queue`/`pr_wait`/`done`
-  beads. Its arrays are normalized from the same async `bd show` fill as titles
-  and times; no entry means label truth is unknown (not an empty array),
-  including when an older server omits the whole key. It is UI projection only
-  and never Worker scheduler authority.
+  `admission`, `cleanup_failed`, `exec_defaults`) — an `admission` record is
+  `{ reason, at, stale?, stale_work?, blockers? }`, where `blockers` is
+  `Array<{ id, rig: string|null, status }>` carried ONLY by the
+  `prerequisite_unmet` reason: the unmet `blocks` prerequisites the scheduler
+  proved, same-rig (`rig: null`) and foreign alike (UI-d3i1 §5.1). A malformed
+  list is dropped whole, and consumers fail-quiet on the key being absent (older
+  server) — plus the server-decorated, NON-persisted keys:
+  `workspace_info: { slots, repo_ops }` — where `repo_ops` additionally carries
+  `repo_id`, the canonical repository path the registered attachment resolved
+  the declaration against, `null` where no attachment is registered —,
+  `runner_catalog`, `execution_defaults`, `pr_observations` (per-`pr_wait` PR
+  state + merge-gate verdict, memory cache only), `bead_titles`
+  (`Record<bead_id, title>` for the `queue`/`pr_wait`/`done` beads, memory cache
+  only), and `declared_base`. `bead_titles` is PARTIAL: only titles already
+  cached travel, a miss simply has no entry and arrives in a later snapshot once
+  the server's async lookup fills it. Consumers fail-quiet on the whole key
+  being absent (older server) and on a missing entry — both fall back to
+  displaying the bead id. `bead_labels` is likewise a non-persisted partial
+  `Record<bead_id, string[]>` for the same `queue`/`pr_wait`/`done` beads. Its
+  arrays are normalized from the same async `bd show` fill as titles and times;
+  no entry means label truth is unknown (not an empty array), including when an
+  older server omits the whole key. It is UI projection only and never Worker
+  scheduler authority.
 - `bead_timelines: Record<bead_id, { events: TimelineEvent[], log_path: string|null, log_expired: boolean, log_unreadable?: boolean }>`
   (record-timeline-retention §9) is the 실패 팝오버·파킹 타일 material of the
   beads whose card actually shows a failure or a park — an attempt in
@@ -537,9 +544,10 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   dispatch candidate even while `auto_advance` is OFF; the global toggle keeps
   owning automatic candidacy, and the arm adds nothing else to the scan. Bead
   ids absent from this queue are ignored without error — one `▶ 진행` sends the
-  whole lane membership to every repo the lane spans. `lane_id` is NOT validated
-  against the lane store (server-global `cross-lanes.json` is not a workspace
-  input). A successful arm kicks the live dispatch loop (`tick`), like
+  whole lane membership to every repo the lane spans, after `▶ 진행` has placed
+  every non-parallel member into that repo's parallel queue. `lane_id` is NOT
+  validated against the lane store (server-global `cross-lanes.json` is not a
+  workspace input). A successful arm kicks the live dispatch loop (`tick`), like
   `worker-queue-place`.
 - `worker-queue-disarm` payload: `{ bead_ids?, lane_id?, expected_revision }` —
   clears `armed_by_lane` on the named rows, or on every row this workspace armed

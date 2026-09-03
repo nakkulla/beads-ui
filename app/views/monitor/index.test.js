@@ -2663,9 +2663,44 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
     ]);
   });
 
-  test('threads the revision through several queue ops of one repo', async () => {
+  test('threads the revision through several place ops of one repo', async () => {
     /** @type {number[]} */
     const revisions = [];
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-8', title: '앞', spec_id: 'docs/a.md' },
+            { bead_id: 'A-9', title: '뒤', spec_id: 'docs/b.md' }
+          ]
+        })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([
+        { entries: [{ bead_id: 'A-8' }, { bead_id: 'A-9' }] }
+      ]),
+      transport: async (type, payload) => {
+        if (type === 'worker-queue-place') {
+          revisions.push(payload.expected_revision);
+          return { applied: true, queue: { revision: 7 + revisions.length } };
+        }
+        return { applied: true, queue: { revision: 20 } };
+      }
+    });
+
+    view.load();
+    click(mount, '.mon2-clane__run');
+    await flushMicrotasks();
+
+    expect(sent.map((m) => m.type)).toEqual([
+      'worker-queue-place',
+      'worker-queue-place',
+      'worker-queue-arm'
+    ]);
+    expect(revisions).toEqual([1, 8]);
+  });
+
+  test('sends no queue op when a lane is confirmed', async () => {
     const { mount, view, sent } = setup({
       workspaces: [
         workspace({
@@ -2682,16 +2717,8 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
           entries: [{ bead_id: 'A-8' }, { bead_id: 'A-9' }]
         }
       ]),
-      transport: async (type, payload) => {
-        if (type === 'monitor-lane-confirm') {
-          return { revision: 2 };
-        }
-        if (type === 'worker-queue-place') {
-          revisions.push(payload.expected_revision);
-          return { applied: true, queue: { revision: 7 + revisions.length } };
-        }
-        return null;
-      }
+      transport: async (type) =>
+        type === 'monitor-lane-confirm' ? { revision: 2 } : null
     });
 
     view.load();
@@ -2701,12 +2728,9 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
     expect(sent.map((m) => m.type)).toEqual([
       'monitor-lane-confirm',
       'dep-add',
-      'worker-queue-place',
-      'worker-queue-place',
       // UI-jaua §7.1 2단계: 성공한 `dep-add`의 쌍만 `true`로 올린다.
       'monitor-lane-provenance'
     ]);
-    expect(revisions).toEqual([1, 8]);
   });
 
   test('leaves 재적용 as the recovery when a dep-add fails after the lane op', async () => {
@@ -2752,7 +2776,7 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
     ).toContain('bd: dep add refused');
   });
 
-  test('재적용 re-adds the missing dep and loads the unplaced member', async () => {
+  test('재적용 re-adds the missing dep without loading any queue', async () => {
     const { mount, view, sent } = setup({
       workspaces: [
         workspace({
@@ -2775,8 +2799,6 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
 
     expect(sent.map((m) => m.type)).toEqual([
       'dep-add',
-      'worker-queue-place',
-      'worker-queue-place',
       'monitor-lane-provenance'
     ]);
     expect(sent[0].payload).toEqual({ a: 'A-9', b: 'A-8', root_dir: WS_A });
@@ -2841,36 +2863,27 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
     const { mount, view, sent } = setup({
       workspaces: [
         workspace({
-          runnable: [
-            { bead_id: 'A-1', title: '첫', spec_id: 'docs/a.md' },
-            { bead_id: 'A-2', title: '둘', spec_id: 'docs/b.md' }
-          ]
+          queue: [{ bead_id: 'A-1' }],
+          runnable: [{ bead_id: 'A-9', title: 'cand' }]
         })
       ],
       workspaces_state: [state()],
-      cross_lanes: crossLanes([
-        {
-          status: 'draft',
-          entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }]
-        }
-      ]),
+      cross_lanes: crossLanes([{ entries: [{ bead_id: 'A-1' }] }]),
       transport: async (type) => {
-        if (type === 'monitor-lane-confirm') {
-          return { revision: 2 };
-        }
         if (type === 'worker-queue-place') {
           return [];
         }
-        return null;
+        return { applied: true, revision: 2, queue: { revision: 2 } };
       }
     });
 
     view.load();
-    click(mount, '.mon2-clane__confirm');
+    click(mount, '#monitor-runnable .worker-card__place');
+    click(mount, '.worker-card__place-lane[data-lane="lane:cl_1"]');
     await flushMicrotasks();
 
     expect(sent.map((m) => m.type)).toEqual([
-      'monitor-lane-confirm',
+      'monitor-lane-update',
       'dep-add',
       'worker-queue-place'
     ]);
@@ -2974,6 +2987,57 @@ describe('monitor 연결 레인 진행·정지 (UI-jaua §5.5·§9)', () => {
       // 앞 op의 응답 revision이 다음 op의 CAS 값이다 (UI-j92s §5.5 규약).
       expected_revision: 5
     });
+  });
+
+  test('moves a serial-lane member into the parallel queue before arming', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-2' }] }]
+        })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([
+        { entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+      ]),
+      transport: async () => ({ applied: true, queue: { revision: 5 } })
+    });
+
+    view.load();
+    click(mount, '.mon2-clane__run');
+    await flushMicrotasks();
+
+    expect(sent.map((m) => m.type)).toEqual([
+      'worker-queue-place',
+      'worker-queue-arm'
+    ]);
+    expect(sent[0].payload).toEqual({
+      bead_id: 'A-2',
+      lane: 'parallel',
+      index: 1,
+      root_dir: WS_A,
+      expected_revision: 1
+    });
+  });
+
+  test('sends no place op for a member already in the parallel queue', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({ queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([
+        { entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+      ]),
+      transport: async () => ({ applied: true, queue: { revision: 5 } })
+    });
+
+    view.load();
+    click(mount, '.mon2-clane__run');
+    await flushMicrotasks();
+
+    expect(sent.map((m) => m.type)).toEqual(['worker-queue-arm']);
   });
 
   test('arms each member repo once', async () => {

@@ -312,11 +312,18 @@ export async function __refreshWorkerAccountCatalogForTest() {
  * @property {boolean} can_recheck
  */
 /**
+ * @typedef {Object} PublicAdmissionBlocker
+ * @property {string} id
+ * @property {string|null} rig
+ * @property {string} status
+ */
+/**
  * @typedef {Object} PublicAdmission
  * @property {string} reason
  * @property {number} at
  * @property {true} [stale]
  * @property {PublicStaleWork} [stale_work]
+ * @property {PublicAdmissionBlocker[]} [blockers]
  */
 
 /**
@@ -520,7 +527,16 @@ function publicAdmissions(value) {
         ? /** @type {number} */ (admission.at)
         : 0,
       ...(admission.stale === true ? { stale: true } : {}),
-      ...(stale_work === null ? {} : { stale_work })
+      ...(stale_work === null ? {} : { stale_work }),
+      // 이미 store가 검증해 저장한 값이라 여기서는 통과시킨다 (UI-d3i1 §5.1) —
+      // stale_work와 달리 server-only authority 필드가 없다.
+      ...(Array.isArray(admission.blockers)
+        ? {
+            blockers: /** @type {PublicAdmissionBlocker[]} */ (
+              admission.blockers
+            )
+          }
+        : {})
     };
   }
   return projected;

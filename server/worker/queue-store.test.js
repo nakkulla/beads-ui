@@ -4281,6 +4281,92 @@ describe('worker/queue-store skip-reason recording', () => {
     ).toBe(true);
   });
 
+  test('stores a well-formed prerequisite blocker list', () => {
+    const store = createQueueStore();
+    const blockers = [
+      { id: 'UI-9', rig: null, status: 'open' },
+      { id: 'dotfiles-1', rig: 'dotfiles', status: 'in_progress' }
+    ];
+
+    store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'prerequisite_unmet',
+      blockers
+    });
+
+    expect(store.snapshot(WS).admission['UI-1'].blockers).toEqual(blockers);
+  });
+
+  test('drops the blocker field when one element is malformed', () => {
+    const store = createQueueStore();
+
+    store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'prerequisite_unmet',
+      blockers: [
+        { id: 'UI-9', rig: null, status: 'open' },
+        { id: '', rig: null, status: 'open' }
+      ]
+    });
+
+    const record = store.snapshot(WS).admission['UI-1'];
+    expect([record.reason, record.blockers]).toEqual([
+      'prerequisite_unmet',
+      undefined
+    ]);
+  });
+
+  test('no-ops an unchanged blocker list without bumping the revision', () => {
+    const store = createQueueStore();
+    const blockers = [{ id: 'UI-9', rig: null, status: 'open' }];
+    store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'prerequisite_unmet',
+      blockers
+    });
+    const before = store.snapshot(WS).revision;
+
+    const r = store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'prerequisite_unmet',
+      blockers: structuredClone(blockers)
+    });
+
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('applies a changed blocker status for the same reason', () => {
+    const store = createQueueStore();
+    store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'prerequisite_unmet',
+      blockers: [{ id: 'UI-9', rig: null, status: 'open' }]
+    });
+
+    const r = store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'prerequisite_unmet',
+      blockers: [{ id: 'UI-9', rig: null, status: 'in_progress' }]
+    });
+
+    expect(r.ok).toBe(true);
+  });
+
+  test('reloads a persisted blocker list', () => {
+    const store = createQueueStore();
+    const blockers = [{ id: 'dotfiles-1', rig: 'dotfiles', status: 'open' }];
+    store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'prerequisite_unmet',
+      blockers
+    });
+
+    const reloaded = createQueueStore().load(WS);
+
+    expect(reloaded.admission['UI-1'].blockers).toEqual(blockers);
+  });
+
   test('records a first reason and reports it as applied', () => {
     const store = createQueueStore();
     const before = store.snapshot(WS).revision;

@@ -44,6 +44,41 @@ describe('decorateQueue manual continuation capability (UI-58w8 §8)', () => {
   });
 });
 
+describe('decorateQueue prerequisite-wait admission (UI-d3i1 §5.1)', () => {
+  test('passes the proven blocker list through to the client', () => {
+    const blockers = [
+      { id: 'UI-9', rig: null, status: 'open' },
+      { id: 'dotfiles-1', rig: 'dotfiles', status: 'in_progress' }
+    ];
+
+    const out = /** @type {any} */ (
+      decorateQueue(
+        WS,
+        bareQueue({
+          admission: {
+            'UI-1': { reason: 'prerequisite_unmet', at: 1, blockers }
+          }
+        })
+      )
+    );
+
+    expect(out.admission['UI-1'].blockers).toEqual(blockers);
+  });
+
+  test('omits the blocker key when the record carries none', () => {
+    const out = /** @type {any} */ (
+      decorateQueue(
+        WS,
+        bareQueue({
+          admission: { 'UI-1': { reason: 'not_ready:open', at: 1 } }
+        })
+      )
+    );
+
+    expect(out.admission['UI-1']).not.toHaveProperty('blockers');
+  });
+});
+
 describe('decorateQueue stale-work residue capability', () => {
   test('projects branch residue without server-only identity', () => {
     const out = /** @type {any} */ (

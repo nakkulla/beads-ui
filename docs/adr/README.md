@@ -5,13 +5,14 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0035 | [연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다](0035-lane-confirm-writes-deps-only-run-places-and-arms.md) | 2026-09-03 | 연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다 — 직렬 레인 멤버는 진행 시 병렬 큐로 옮긴다 |
+| 0034 | [복귀 재스캔 후보는 waiting attempt와 prerequisite_unmet admission 큐 항목이다](0034-return-rescan-candidates-include-prerequisite-unmet-admission.md) | 2026-09-03 | Worker의 복귀 트리거는 이벤트 구독이며 재스캔 후보는 waiting attempt와 `prerequisite_unmet` admission 큐 항목이다 — 판정은 요청 rig의 `bd ready` 한 번, 복귀는 `tickPass`, not-ready에는 쓰지 않고 ready에서만 그 admission을 지운다 |
 | 0033 | [후보 레인은 admission 통과 집합이 아니라 관측 집합이다](0033-candidate-lane-is-observation-set-not-admission-set.md) | 2026-09-03 | 후보 레인은 Worker가 지금 집을 수 있는 집합이 아니라 미착수 이슈의 관측 집합이고, 실행 안전은 서버 admission이 지킨다 |
 | 0032 | [실행 프리셋은 레인 무관 프로파일이고 워크스페이스가 일반·quick_fix 두 레인에 각각 적용한다](0032-execution-preset-is-lane-neutral-applied-per-lane.md) | 2026-09-03 | 실행 프리셋은 레인 무관 18키 프로파일이며 워크스페이스는 그것을 일반 레인과 quick_fix 레인에 각각 교체 방식으로 적용하고, quick_fix 레인의 durable 값은 큐 `quick_fix_orchestration_*`와 kv `quick_fix_impl_*`다 |
 | 0031 | [impl_review 신선도는 ancestry로 판정하고 영수증 보류의 출구는 head당 1회 리뷰 lineage와 [리뷰 후 머지]다](0031-impl-review-ancestry-and-hold-exit.md) | 2026-09-03 | impl_review 영수증은 관측된 head와 같거나 그 조상이면 유효하고 head 이동만으로는 재리뷰가 걸리지 않으며 resolver 커밋에도 예외가 없다. 영수증이 없거나 조상이 아니면 머지는 terminal 실패가 아니라 보류이고, 그 출구는 ADR 0019의 head당 1회 자동 리뷰 lineage와 [리뷰 후 머지] 클릭이며 사람 클릭만이 유일한 출구는 아니다. |
 | 0026 | [워크스페이스 투영 경로는 동기 자식 프로세스를 띄우지 않는다](0026-projection-path-spawns-no-sync-child-process.md) | 2026-09-03 | 워크스페이스 투영은 warm이 채운 불변 키 캐시와 세대 컨텍스트만 읽어 동기 자식 프로세스를 띄우지 않고, 미스는 미판정으로 그린다 |
 | 0025 | [issue-detail은 워크스페이스 스냅샷 세대에서 투영한다](0025-issue-detail-projected-from-workspace-snapshot.md) | 2026-09-03 | issue-detail은 워크스페이스 스냅샷 세대에서 투영하며 dependents·provenance는 세대의 간선 인덱스로 만들고 상세 전용 bd read는 없다 |
 | 0024 | [폐기 실패의 출구는 셋이고 [폐기 포기]는 아카이브 단계 전용 terminal abandoned다](0024-discard-failure-exits-and-terminal-abandoned.md) | 2026-09-03 | 사용자 개시 작업 실패의 재진입은 자동 알림 뒤 사람 클릭뿐이라는 0022를 승계하되, 폐기 실패의 출구는 재클릭·[폐기 포기]·[세션에서 해결] 셋으로 닫힌다. [폐기 포기]는 아카이브 단계 실패에서만 runner를 되살리고 bead를 폐기 이전 자리로 돌려놓는 terminal `abandoned`이며, 뒤 phase의 실패와 소유권 판정 불능에서는 허용하지 않는다 |
-| 0023 | [waiting 복귀 트리거는 cadence가 아니라 이벤트 구독이다](0023-waiting-return-event-subscription-not-cadence.md) | 2026-09-03 | Worker의 waiting 복귀는 cadence가 아니라 이벤트 구독이다 — 같은 rig는 bd 변경 감시, foreign은 owner rig의 활동 버스가 요청 rig의 재스캔을 부르고, 재스캔은 워크스페이스당 leading+cover throttle 안에서 `bd ready` 한 번으로 판정한다 |
 | 0030 | [post-merge 잡은 RepoOperation kind job 봉투로 실행하고 원장은 queue.json 맵이다](0030-post-merge-job-repo-operation-envelope.md) | 2026-09-01 | post-merge 잡은 RepoOperation kind `job`으로 deploy 봉투를 재사용해 실행하고 적용 원장은 `queue.json`의 `<파일명>@<blob SHA>` 맵이다 |
 | 0029 | [살아 있는 queue.attempts는 bead 이력의 최신 접미라는 불변식으로 이관을 판정한다](0029-queue-attempts-suffix-invariant.md) | 2026-08-29 | 살아 있는 `queue.attempts`는 bead 이력의 최신 접미이며, 처리 완료 attempt는 같은 bead의 더 오래된 attempt가 전부 이관 가능할 때만 큐를 떠난다. "마지막 구현 attempt" 판정은 라이브 큐만 보고 합집합 조회를 쓰지 않는다. |
 | 0021 | [review_session의 생존·슬롯·정산 시작은 scheduler reconcile이, 결과 판정은 큐가 소유한다](0021-review-session-lifecycle-owned-by-scheduler-reconcile.md) | 2026-08-29 | review_session은 구현 attempt와 같은 reconcile pid probe로 생존·슬롯 점유·정산 시작을 판정하고 죽은 세션의 결과는 큐의 complete()가 영수증으로 판정하며 살아 있는 리뷰어를 죽이는 부팅 종료는 두지 않는다 |
@@ -42,3 +43,4 @@
 | 0004 | [impl_review 신선도를 exact-head 대신 ancestry로 판정](0004-impl-review-ancestry-freshness.md) | superseded | [0031](0031-impl-review-ancestry-and-hold-exit.md) |
 | 0005 | [자동 AI 수리 레인 폐기와 needs_human 종단](0005-no-auto-repair-lane.md) | superseded | [0022](0022-needs-human-auto-notify-click-driven-reentry.md) |
 | 0022 | [needs_human은 자동 알림으로 관측되고 재진입은 두 클릭뿐이다](0022-needs-human-auto-notify-click-driven-reentry.md) | superseded | [0024](0024-discard-failure-exits-and-terminal-abandoned.md) |
+| 0023 | [waiting 복귀 트리거는 cadence가 아니라 이벤트 구독이다](0023-waiting-return-event-subscription-not-cadence.md) | superseded | [0034](0034-return-rescan-candidates-include-prerequisite-unmet-admission.md) |

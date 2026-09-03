@@ -1683,6 +1683,30 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           return true;
         }
       }
+      // attempt가 없는 선행 대기 (UI-d3i1 §6.1): admission이 `prerequisite_unmet`
+      // 으로 기록한 foreign blocker의 rig가 방금 움직인 레포와 같으면 후보다.
+      // 같은 rig 선행(`rig === null`)은 자기 `fire()`가 이미 재스캔을 부른다.
+      for (const record of Object.values(queue.admission || {})) {
+        const admission = /** @type {any} */ (record);
+        if (
+          !admission ||
+          admission.reason !== 'prerequisite_unmet' ||
+          !Array.isArray(admission.blockers)
+        ) {
+          continue;
+        }
+        if (
+          admission.blockers.some(
+            (/** @type {any} */ blocker) =>
+              blocker &&
+              blocker.rig !== null &&
+              blocker.rig !== undefined &&
+              (prefix === null || blocker.rig === prefix)
+          )
+        ) {
+          return true;
+        }
+      }
       return false;
     }
 
