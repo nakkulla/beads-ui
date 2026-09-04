@@ -32,6 +32,7 @@ import { normalizeIssueList } from '../list-adapters.js';
 import { debug } from '../logging.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
+import { onWorkspaceActivity } from './workspace-activity.js';
 
 const log = debug('worker:foreign-blocker');
 
@@ -43,6 +44,7 @@ const ISSUE_PREFIX_RETRY_MS = 5_000;
  */
 const FOREIGN_STATUS_TTL_MS = 5 * 60_000;
 const FOREIGN_STATUS_RETRY_MS = 60_000;
+const FOREIGN_STATUS_ACTIVITY_MIN_MS = 10_000;
 
 /**
  * Process-local config projection per workspace. Successes stay cached; a
@@ -65,9 +67,12 @@ const issue_prefix_cache = new Map();
  * the moment a bead over here was released (UI-d13v §3.4); it stays null for
  * every other answer.
  *
- * @type {Map<string, { status: string|null, closed_at: number|null, until: number, in_flight: boolean, requesters: Set<string> }>}
+ * @type {Map<string, { bead_id: string, owner_root: string, status: string|null, closed_at: number|null, until: number, asked_at: number, in_flight: boolean, requesters: Set<string> }>}
  */
 const foreign_blocker_status_cache = new Map();
+
+/** @type {(() => void)|null} */
+let workspace_activity_unsubscribe = null;
 
 /**
  * Listeners woken when a cold lookup lands on something that can change a
@@ -227,6 +232,108 @@ export function prefixOfBeadId(bead_id) {
   return split_at > 0 ? bead_id.slice(0, split_at) : bead_id;
 }
 
+/** Wire the process-wide workspace activity subscription once, on first use. */
+function wireForeignBlockerActivity() {
+  if (workspace_activity_unsubscribe !== null) {
+    return;
+  }
+  workspace_activity_unsubscribe = onWorkspaceActivity((root) => {
+    refreshForeignBlockerStatusForOwner(root);
+  });
+}
+
+/**
+ * Start the shared asynchronous status lookup for one cache entry.
+ *
+ * @param {string} key
+ * @param {string} bead_id
+ * @param {string} owner_root
+ */
+function startLookup(key, bead_id, owner_root) {
+  const hit = foreign_blocker_status_cache.get(key);
+  const asked_at = Date.now();
+  foreign_blocker_status_cache.set(key, {
+    bead_id,
+    owner_root,
+    status: hit?.status ?? null,
+    closed_at: hit?.closed_at ?? null,
+    until: hit?.until ?? 0,
+    asked_at,
+    in_flight: true,
+    requesters: withRequester(hit?.requesters, undefined)
+  });
+  void runBdJsonProjected('show', ['show', bead_id, '--json'], {
+    cwd: owner_root,
+    expected_id: bead_id
+  })
+    .then((result) => {
+      const status =
+        result.ok === true &&
+        result.data &&
+        typeof (/** @type {any} */ (result.data).status) === 'string'
+          ? /** @type {any} */ (result.data).status
+          : null;
+      const current = foreign_blocker_status_cache.get(key);
+      const requesters = withRequester(current?.requesters, undefined);
+      foreign_blocker_status_cache.set(key, {
+        bead_id,
+        owner_root,
+        status,
+        closed_at: closedAtOfShow(result),
+        until:
+          Date.now() +
+          (status === null ? FOREIGN_STATUS_RETRY_MS : FOREIGN_STATUS_TTL_MS),
+        asked_at: current?.asked_at ?? asked_at,
+        in_flight: false,
+        // Cleared only once the waiters have actually been told. Any other
+        // answer leaves them for the attempt that eventually reads `closed`.
+        requesters: status === 'closed' ? new Set() : requesters
+      });
+      if (status === 'closed') {
+        notifyResolved(requesters);
+      }
+    })
+    .catch((err) => {
+      const current = foreign_blocker_status_cache.get(key);
+      foreign_blocker_status_cache.set(key, {
+        bead_id,
+        owner_root,
+        status: current?.status ?? null,
+        closed_at: current?.closed_at ?? null,
+        until: Date.now() + FOREIGN_STATUS_RETRY_MS,
+        asked_at: current?.asked_at ?? asked_at,
+        in_flight: false,
+        requesters: withRequester(current?.requesters, undefined)
+      });
+      log('foreign blocker lookup failed for %s: %o', bead_id, err);
+    });
+}
+
+/**
+ * Refresh non-final foreign blockers after activity in their owning workspace.
+ *
+ * @param {string} owner_root
+ */
+export function refreshForeignBlockerStatusForOwner(owner_root) {
+  const resolved_owner_root = path.resolve(owner_root);
+  const now = Date.now();
+  for (const [key, hit] of foreign_blocker_status_cache) {
+    if (hit.owner_root !== resolved_owner_root) {
+      continue;
+    }
+    if (hit.status === 'closed') {
+      continue;
+    }
+    if (hit.in_flight) {
+      continue;
+    }
+    if (now - hit.asked_at < FOREIGN_STATUS_ACTIVITY_MIN_MS) {
+      continue;
+    }
+    startLookup(key, hit.bead_id, hit.owner_root);
+  }
+}
+
 /**
  * Cached status of a foreign blocker, kicking one async `bd show` in the owning
  * rig when the cache is cold or expired. `null` until known.
@@ -237,7 +344,9 @@ export function prefixOfBeadId(bead_id) {
  * @returns {string|null}
  */
 export function foreignBlockerStatusFor(bead_id, owner_root, requester_root) {
-  const key = foreignStatusKey(bead_id, owner_root);
+  wireForeignBlockerActivity();
+  const resolved_owner_root = path.resolve(owner_root);
+  const key = foreignStatusKey(bead_id, resolved_owner_root);
   const hit = foreign_blocker_status_cache.get(key);
   const now = Date.now();
   if (hit && (hit.in_flight || hit.until > now)) {
@@ -251,58 +360,16 @@ export function foreignBlockerStatusFor(bead_id, owner_root, requester_root) {
     return hit.status;
   }
   foreign_blocker_status_cache.set(key, {
+    bead_id,
+    owner_root: resolved_owner_root,
     status: hit?.status ?? null,
     closed_at: hit?.closed_at ?? null,
     until: hit?.until ?? 0,
-    in_flight: true,
+    asked_at: hit?.asked_at ?? 0,
+    in_flight: false,
     requesters: withRequester(hit?.requesters, requester_root)
   });
-  void runBdJsonProjected('show', ['show', bead_id, '--json'], {
-    cwd: path.resolve(owner_root),
-    expected_id: bead_id
-  })
-    .then((result) => {
-      const status =
-        result.ok === true &&
-        result.data &&
-        typeof (/** @type {any} */ (result.data).status) === 'string'
-          ? /** @type {any} */ (result.data).status
-          : null;
-      const requesters = withRequester(
-        foreign_blocker_status_cache.get(key)?.requesters,
-        undefined
-      );
-      foreign_blocker_status_cache.set(key, {
-        status,
-        closed_at: closedAtOfShow(result),
-        until:
-          Date.now() +
-          (status === null ? FOREIGN_STATUS_RETRY_MS : FOREIGN_STATUS_TTL_MS),
-        in_flight: false,
-        // Cleared only once the waiters have been told. Any other answer leaves
-        // them in place: their chip is still standing, and the attempt that
-        // eventually reads `closed` is the one that owes them the wake-up.
-        requesters: status === 'closed' ? new Set() : requesters
-      });
-      // Only `closed` wakes anyone: every other answer is what the screen is
-      // already drawing.
-      if (status === 'closed') {
-        notifyResolved(requesters);
-      }
-    })
-    .catch((err) => {
-      foreign_blocker_status_cache.set(key, {
-        status: hit?.status ?? null,
-        closed_at: hit?.closed_at ?? null,
-        until: Date.now() + FOREIGN_STATUS_RETRY_MS,
-        in_flight: false,
-        requesters: withRequester(
-          foreign_blocker_status_cache.get(key)?.requesters,
-          undefined
-        )
-      });
-      log('foreign blocker lookup failed for %s: %o', bead_id, err);
-    });
+  startLookup(key, bead_id, resolved_owner_root);
   return hit?.status ?? null;
 }
 
@@ -518,6 +585,53 @@ export function visibleWorkspaceRoots(options = {}) {
 }
 
 /**
+ * Resolve blocker ids to visible owning roots from the prefix cache only.
+ * Cold prefixes are warmed for a later snapshot and omitted from this one.
+ *
+ * @param {Iterable<string>} ids
+ * @param {string} requester_root
+ * @returns {Record<string, string>}
+ */
+export function ownerRootsForBlockerIds(ids, requester_root) {
+  const requester = path.resolve(requester_root);
+  const roots = visibleWorkspaceRoots();
+  /** @type {Map<string, string>} */
+  const owner_by_prefix = new Map();
+  /** @type {string|null} */
+  let requester_prefix = null;
+  for (const root of roots) {
+    const prefix = cachedIssuePrefixFor(root);
+    if (prefix === null) {
+      prewarmIssuePrefix(root, requester);
+      continue;
+    }
+    if (root === requester) {
+      requester_prefix = prefix;
+      continue;
+    }
+    if (!owner_by_prefix.has(prefix)) {
+      owner_by_prefix.set(prefix, root);
+    }
+  }
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const id of ids) {
+    if (typeof id !== 'string' || id.length === 0) {
+      continue;
+    }
+    const prefix = prefixOfBeadId(id);
+    if (requester_prefix !== null && prefix === requester_prefix) {
+      continue;
+    }
+    const owner_root = owner_by_prefix.get(prefix);
+    if (owner_root) {
+      out[id] = owner_root;
+    }
+  }
+  return out;
+}
+
+/**
  * Drop CLOSED foreign blockers from a workspace's `bead_blocked_by` projection
  * (UI-eey2 §10). Same-rig blockers are left alone — the title cache already
  * excluded the closed ones from that source. Unknown status keeps the id
@@ -687,6 +801,10 @@ export function applyForeignBlockerCleanup(projected, root_dir, options = {}) {
  * Test-only: forget every cached prefix and foreign status.
  */
 export function __resetForeignBlockerCachesForTest() {
+  if (workspace_activity_unsubscribe !== null) {
+    workspace_activity_unsubscribe();
+    workspace_activity_unsubscribe = null;
+  }
   issue_prefix_cache.clear();
   foreign_blocker_status_cache.clear();
 }

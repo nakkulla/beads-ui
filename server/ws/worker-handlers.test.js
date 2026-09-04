@@ -3,8 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { runBdJsonProjected } from '../bd.js';
 import { registerWorkspace } from '../registry-watcher.js';
-import { __resetForeignBlockerCachesForTest } from '../worker/foreign-blocker-status.js';
+import {
+  __resetForeignBlockerCachesForTest,
+  cachedIssuePrefixFor,
+  prewarmIssuePrefix
+} from '../worker/foreign-blocker-status.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import {
   __resetScopeCacheForTest,
@@ -17,6 +22,12 @@ import {
   requestWorkspaceSnapshot
 } from '../workspace-snapshot-runtime.js';
 import { decorateQueue } from './worker-handlers.js';
+
+vi.mock('../bd.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return { ...actual, runBdJsonProjected: vi.fn() };
+});
 
 // Neither `workspace-snapshot-runtime.js` nor `foreign-blocker-status.js` is
 // module-mocked here: both sit in an import cycle with `list-adapters.js`, so a
@@ -127,6 +138,75 @@ function laneQueue() {
 }
 
 /**
+ * Fill both visible rigs' prefix caches.
+ */
+async function warmForeignPrefixes() {
+  registerWorkspace({
+    path: WS_PEER,
+    database: path.join(WS_PEER, '.beads/db')
+  });
+  vi.mocked(runBdJsonProjected).mockImplementation(
+    async (family, _args, options) =>
+      /** @type {any} */ (
+        family === 'config'
+          ? {
+              ok: true,
+              data: {
+                issue_prefix: options?.cwd === WS ? 'UI' : 'dotfiles'
+              }
+            }
+          : { ok: false }
+      )
+  );
+  prewarmIssuePrefix(WS);
+  prewarmIssuePrefix(WS_PEER);
+  await vi.waitFor(() => {
+    expect(cachedIssuePrefixFor(WS)).toBe('UI');
+    expect(cachedIssuePrefixFor(WS_PEER)).toBe('dotfiles');
+  });
+}
+
+/**
+ * Seed display-only title data so decoration needs no issue lookup.
+ *
+ * @param {string} bead_id
+ */
+function seedIssue(bead_id) {
+  getWorkerRuntime().titleCache.refreshFromIssue(WS, {
+    id: bead_id,
+    title: `${bead_id} title`,
+    dependencies: [],
+    metadata: {}
+  });
+}
+
+/**
+ * @param {Array<{ id: string }>} blockers
+ * @returns {Record<string, unknown>}
+ */
+function waitingQueue(blockers) {
+  return {
+    revision: 1,
+    auto_advance: false,
+    auto_merge: false,
+    queue: [],
+    serial_lanes: [],
+    pr_wait: [],
+    done: [],
+    attempts: {
+      'att-waiting': {
+        attempt_id: 'att-waiting',
+        bead_id: 'UI-20',
+        status: 'waiting',
+        cause_detail: { blockers }
+      }
+    },
+    admission: {},
+    exec_defaults: {}
+  };
+}
+
+/**
  * @param {Array<Record<string, unknown>>} rows
  */
 function mockRunnableRows(rows) {
@@ -154,6 +234,10 @@ beforeEach(() => {
   process.env.HOME = tmp_home;
   process.env.XDG_STATE_HOME = tmp_home;
   __resetForeignBlockerCachesForTest();
+  vi.mocked(runBdJsonProjected).mockReset();
+  vi.mocked(runBdJsonProjected).mockResolvedValue(
+    /** @type {any} */ ({ ok: false })
+  );
   getWorkerRuntime().titleCache.clear();
   registerWorkspace({ path: WS, database: path.join(WS, '.beads/db') });
   seedSnapshots({});
@@ -295,5 +379,63 @@ describe('decorateQueue bead_dependents (UI-8x90 §6.2)', () => {
         String(line).includes('bead dependents context failed')
       )
     ).toBe(true);
+  });
+});
+
+describe('decorateQueue persisted blocker owners (UI-yue8 §6.2)', () => {
+  test('carries a foreign blocker from a waiting attempt', async () => {
+    await warmForeignPrefixes();
+    seedIssue('UI-20');
+
+    const out = /** @type {any} */ (
+      decorateQueue(WS, waitingQueue([{ id: 'dotfiles-7' }]))
+    );
+
+    expect(out.blocker_workspaces).toEqual({ 'dotfiles-7': WS_PEER });
+  });
+
+  test('carries a foreign blocker from prerequisite_unmet admission', async () => {
+    await warmForeignPrefixes();
+    seedIssue('UI-20');
+    const queue = {
+      ...waitingQueue([]),
+      attempts: {},
+      queue: [{ bead_id: 'UI-20', added_at: 1 }],
+      admission: {
+        'UI-20': {
+          reason: 'prerequisite_unmet',
+          at: 1,
+          blockers: [{ id: 'dotfiles-8' }]
+        }
+      }
+    };
+
+    const out = /** @type {any} */ (decorateQueue(WS, queue));
+
+    expect(out.blocker_workspaces).toEqual({ 'dotfiles-8': WS_PEER });
+  });
+
+  test('omits same-rig and unowned blocker ids', async () => {
+    await warmForeignPrefixes();
+    seedIssue('UI-20');
+
+    const out = /** @type {any} */ (
+      decorateQueue(WS, waitingQueue([{ id: 'UI-9' }, { id: 'ext-1' }]))
+    );
+
+    expect(Object.hasOwn(out, 'blocker_workspaces')).toBe(false);
+  });
+
+  test('resolves persisted blocker owners without a bd call', async () => {
+    await warmForeignPrefixes();
+    seedIssue('UI-20');
+    vi.mocked(runBdJsonProjected).mockClear();
+
+    const out = /** @type {any} */ (
+      decorateQueue(WS, waitingQueue([{ id: 'dotfiles-9' }]))
+    );
+
+    expect(out.blocker_workspaces).toEqual({ 'dotfiles-9': WS_PEER });
+    expect(runBdJsonProjected).not.toHaveBeenCalled();
   });
 });

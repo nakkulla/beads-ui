@@ -10,11 +10,29 @@ import {
   prewarmIssuePrefix,
   queryForeignBlockerStatus
 } from './foreign-blocker-status.js';
+import {
+  onWorkspaceActivity,
+  publishWorkspaceActivity
+} from './workspace-activity.js';
 
 vi.mock('../bd.js', async (importOriginal) => {
   /** @type {any} */
   const actual = await importOriginal();
   return { ...actual, runBdJsonProjected: vi.fn() };
+});
+
+vi.mock('./workspace-activity.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    onWorkspaceActivity: vi.fn(
+      (/** @type {(root: string) => void} */ listener) => {
+        const unsubscribe = actual.onWorkspaceActivity(listener);
+        return vi.fn(unsubscribe);
+      }
+    )
+  };
 });
 
 const WS_A = '/repos/beads-ui';
@@ -448,6 +466,128 @@ describe('requester-aware wake-up (UI-u6zf §3.3)', () => {
     await vi.waitFor(() =>
       expect(seen).toEqual([[WS_A, '/repos/third'].sort()])
     );
+  });
+});
+
+describe('workspace activity refresh (UI-yue8 §7)', () => {
+  test('refreshes only entries owned by the published workspace', async () => {
+    const advance = advanceableClock();
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({ ok: true, data: { status: 'open' } })
+    );
+    foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A);
+    foreignBlockerStatusFor('third-1', '/repos/third', WS_A);
+    await vi.waitFor(() => {
+      expect(foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A)).toBe('open');
+      expect(foreignBlockerStatusFor('third-1', '/repos/third', WS_A)).toBe(
+        'open'
+      );
+    });
+    advance(10_000);
+    vi.mocked(runBdJsonProjected).mockClear();
+
+    publishWorkspaceActivity(WS_B);
+
+    await vi.waitFor(() => expect(runBdJsonProjected).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(runBdJsonProjected).mock.calls[0][1]).toEqual([
+      'show',
+      'dotfiles-1',
+      '--json'
+    ]);
+  });
+
+  test('notifies resolved requesters when an activity lookup lands closed', async () => {
+    const seen = captureResolved();
+    const advance = advanceableClock();
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({ ok: true, data: { status: 'open' } })
+    );
+    foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A);
+    await vi.waitFor(() =>
+      expect(foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A)).toBe('open')
+    );
+    advance(10_000);
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({ ok: true, data: { status: 'closed' } })
+    );
+
+    publishWorkspaceActivity(WS_B);
+
+    await vi.waitFor(() => expect(seen).toEqual([[WS_A]]));
+  });
+
+  test('skips an in-flight entry after workspace activity', () => {
+    const advance = advanceableClock();
+    vi.mocked(runBdJsonProjected).mockReturnValue(
+      /** @type {any} */ (new Promise(() => {}))
+    );
+    foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A);
+    advance(10_000);
+
+    publishWorkspaceActivity(WS_B);
+
+    expect(runBdJsonProjected).toHaveBeenCalledTimes(1);
+  });
+
+  test('skips a closed entry after workspace activity', async () => {
+    const advance = advanceableClock();
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({ ok: true, data: { status: 'closed' } })
+    );
+    foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A);
+    await vi.waitFor(() =>
+      expect(foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A)).toBe('closed')
+    );
+    advance(10_000);
+    vi.mocked(runBdJsonProjected).mockClear();
+
+    publishWorkspaceActivity(WS_B);
+
+    expect(runBdJsonProjected).not.toHaveBeenCalled();
+  });
+
+  test('skips an entry below the ten-second activity floor', async () => {
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({ ok: true, data: { status: 'open' } })
+    );
+    foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A);
+    await vi.waitFor(() =>
+      expect(foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A)).toBe('open')
+    );
+    vi.mocked(runBdJsonProjected).mockClear();
+
+    publishWorkspaceActivity(WS_B);
+
+    expect(runBdJsonProjected).not.toHaveBeenCalled();
+  });
+
+  test('makes no bd call for activity in a different workspace', async () => {
+    const advance = advanceableClock();
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({ ok: true, data: { status: 'open' } })
+    );
+    foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A);
+    await vi.waitFor(() =>
+      expect(foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A)).toBe('open')
+    );
+    advance(10_000);
+    vi.mocked(runBdJsonProjected).mockClear();
+
+    publishWorkspaceActivity('/repos/other');
+
+    expect(runBdJsonProjected).not.toHaveBeenCalled();
+  });
+
+  test('removes the module subscription on reset', () => {
+    vi.mocked(runBdJsonProjected).mockReturnValue(
+      /** @type {any} */ (new Promise(() => {}))
+    );
+    foreignBlockerStatusFor('dotfiles-1', WS_B, WS_A);
+    const unsubscribe = vi.mocked(onWorkspaceActivity).mock.results[0].value;
+
+    __resetForeignBlockerCachesForTest();
+
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 });
 
