@@ -3,6 +3,7 @@ scope:
   - server/worker/runner-catalog.js
   - server/worker/usage-pricing.js
   - server/worker/exec-enums.js
+  - server/worker/exec-preset-coordinator.js
   - server/worker/compare-projection.js
   - server/worker/bench-runs.js
   - server/worker/queue-store.js
@@ -24,6 +25,7 @@ scope:
   - app/views/compare/
   - app/views/detail-panel/session-history.js
   - app/views/detail-panel/comments.js
+  - app/protocol.js
   - app/protocol.md
 ---
 
@@ -278,9 +280,20 @@ Bead의 다른 attempt 행은 비운다.
   필터·프리셋 목록·카탈로그, 출력은 `{ rows, groups }`. 순수 함수와 파일 읽기를
   나눠 순수 부분을 단위 테스트한다.
 - ws는 요청·응답 한 쌍 `get-compare` → `compare-snapshot`
-  (`server/ws/compare-handlers.js`, `app/protocol.md`에 등록). 탭을 열 때와
-  필터를 바꿀 때 요청하고 `새로고침` 버튼을 둔다. 실시간 push는 하지 않는다 —
-  파일 수십 개를 Worker 갱신마다 다시 읽을 이유가 없다.
+  (`server/ws/compare-handlers.js`). 탭을 열 때와 필터를 바꿀 때 요청하고
+  `새로고침` 버튼을 둔다. 실시간 push는 하지 않는다 — 파일 수십 개를 Worker
+  갱신마다 다시 읽을 이유가 없다.
+- **새 ws op의 등록 자리는 셋이다.** 이 스펙이 더하는 op 전부 — `get-compare`,
+  `compare-snapshot`, §4.3의 `bench-run-create` — 에 같이 적용한다:
+  `app/protocol.js`의 `MessageType` 유니언, 같은 파일의 `MESSAGE_TYPES` 배열,
+  그리고 `app/protocol.md`의 payload 설명이다. 메시지 타입 집합의 정본은
+  `app/protocol.js`이며(`app/protocol.md` 머리말), `app/protocol.test.js`의
+  `registers every client-sent server dispatch type`이
+  `server/ws/connection.js`의 `case '<op>':` 전부를 그 배열과 대조하므로 등록이
+  빠지면 테스트가 실패한다(2026-09-03 `cross-lane-confirm-run-split-completion`
+  §1.3 재결정이 이 대조 테스트를 넣었다). 그 대조가 잡는 것은 클라이언트가 보내는
+  `get-compare`·`bench-run-create`이고, 응답 타입 `compare-snapshot`은 봉투
+  `type`의 `MessageType` 캐스트를 tsc가 잡는다.
 - 이슈 제목·유형·route·`review_stats`는 워크스페이스 스냅샷 투영에서
   가져온다(ADR 0025). 실행자는 §3.3대로 attempt 기록에서 읽는다. 스냅샷에 없는 Bead(닫힌 지 오래됨)는 ID만 보인다.
 
@@ -313,10 +326,17 @@ spec_backed는 스펙 영수증 복제와 PR 억제가 따로 필요하다.
 프리셋은 sparse(가진 키만)라 그대로 복사하면 나머지 축이 실행 시점의 전역
 기본값을 따라 셀마다 달라질 수 있다. 그래서 **생성 시점에 프리셋을 완전한 실행
 tuple로 해석해 핀한다**: `EXEC_SETTING_KEYS` 전부와 `impl_dispatch`를 프리셋 값
-> 워크스페이스 기본값(큐의 오케스트레이션 값, kv `workflow_session_defaults`)
-> harness 투영(`generated/contracts/execution-defaults.json`) 순으로 채운 뒤,
-그 전체를 모든 셀의 metadata에 쓴다. 같은 실험의 셀은 리뷰어 토글과 프리셋
-차이를 빼면 서로 같은 tuple이다.
+> 워크스페이스 **quick_fix 레인** 값(큐 `quick_fix_orchestration_*`, kv
+`quick_fix_impl_*`) > 워크스페이스 일반 값(큐 `orchestration_*`, kv
+`workflow_session_defaults`) > harness
+투영(`generated/contracts/execution-defaults.json`) 순으로 채운 뒤, 그 전체를
+모든 셀의 metadata에 쓴다. 클론은 언제나 `route=quick_fix`이고 quick_fix 레인은
+독립 프로파일이 아니라 같은 이름의 일반 키로 떨어지는 오버라이드 층이므로
+(ADR 0032), 이 사다리는 실제 dispatch가 읽는 것과 같아야 한다 — 해석 정본은
+`server/worker/exec-preset-coordinator.js`의
+`resolveForDispatch(workspace, { route: 'quick_fix', … })`이고 bench 해석은 그
+함수를 재사용한다. 같은 실험의 셀은 리뷰어 토글과 프리셋 차이를 빼면 서로 같은
+tuple이다.
 
 ### 4.3 클론 Bead
 
@@ -479,9 +499,12 @@ out_of_registry.known`에 라벨·키·형식(`bench_run`은 `^[A-Za-z0-9._-]+$`
   미기록, 리뷰어 tuple 포함), 프리셋 이름 대조, 검증 원천(머지 후보 `[verify]`
   영수증·`bench_verify`·미상 제외), `is_retry` 행 수, 중앙값·표본 수, `pass^k`,
   필터, 리뷰 열의 마지막 성공 attempt 귀속.
-- `bench-runs.test.js`: 완전 tuple 해석과 핀, 클론 본문 바이트 동일·영수증
+- `bench-runs.test.js`: 완전 tuple 해석과 핀(quick_fix 레인 값이 일반 값을
+  이기고 빈 quick_fix 키는 일반 값으로 떨어짐), 클론 본문 바이트 동일·영수증
   복사·리뷰어 덮어쓰기·`impl_dispatch=delegated`·`bench_base`, 생성 중 실패 시
   aborted, 매니페스트 불변(생성 뒤 쓰기 없음).
+- `protocol.test.js`: 새 op 셋이 `MESSAGE_TYPES`에 등록돼 `connection.js`
+  dispatch 대조를 통과(§3.5).
 - `quickfix-landing.test.js`·`scheduler.test.js`·`admission.test.js`: `bench:`
   kind, `landing=none` + run id 일치 시 PR·containment·배포 없는 `done_kind=bench`
   종결, 불일치 시 `premature_close`, `bench_base`에서 워크트리 자르기와
