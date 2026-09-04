@@ -5,6 +5,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createBeadTimeline } from './bead-timeline.js';
+import { writeBenchManifest } from './bench-runs.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { install as guardHookInstall } from './guard-hook.js';
 import { resolveExecSettings } from './policy.js';
@@ -18167,6 +18168,141 @@ describe('scheduler bench cells (preset-compare §4.4·§4.5·§4.6)', () => {
         (/** @type {any} */ call) => call.method === 'closeWithReason'
       )
     ).toEqual([]);
+  });
+
+  /**
+   * A landing dep that settles the cell AND closes its bead, which is what a
+   * bench session's own `bench:<run_id>` close looks like to the Worker.
+   *
+   * @param {{ close?: boolean }} [options]
+   */
+  function benchSweepLanding(options = {}) {
+    /** @type {any} */
+    let env = null;
+    const settle = vi.fn(async (/** @type {any} */ { attempt_id, bead_id }) => {
+      env.store.moveToDone(WS, {
+        bead_id,
+        attempt_id,
+        patch: { status: 'done', finished_at: 1000, done_kind: 'bench' }
+      });
+      if (options.close !== false) {
+        await env.bd.closeWithReason(bead_id, 'bench:bench-1');
+      }
+      return { ok: true };
+    });
+    return {
+      settle,
+      /** @param {any} value */
+      bind(value) {
+        env = value;
+      }
+    };
+  }
+
+  test('sweeps the run residue once the cell bead is closed', async () => {
+    writeBenchManifest(WS, {
+      run_id: 'bench-1',
+      cells: [{ preset_id: 'p1', k: 1, bead_id: 'S1' }]
+    });
+    const landing = benchSweepLanding();
+    const env = setup({
+      config: benchConfig(),
+      slots: 1,
+      gitRun: benchGit(),
+      quickfixLanding: { settle: landing.settle }
+    });
+    landing.bind(env);
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    // The dispatch pre-flight already observed the worktree once, so the SWEEP
+    // is the call that arrives after the session ends.
+    const before = env.worktree.removeIfDiscardable.mock.calls.length;
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(env.worktree.removeIfDiscardable.mock.calls.length).toBe(before + 1);
+  });
+
+  test('keeps the run residue while the cell bead is still open', async () => {
+    writeBenchManifest(WS, {
+      run_id: 'bench-1',
+      cells: [{ preset_id: 'p1', k: 1, bead_id: 'S1' }]
+    });
+    // The attempt ended but nothing closed the bead — the cell is still owed a
+    // run, so its worktree and branch must survive.
+    const landing = benchSweepLanding({ close: false });
+    const env = setup({
+      config: benchConfig(),
+      slots: 1,
+      gitRun: benchGit(),
+      quickfixLanding: { settle: landing.settle }
+    });
+    landing.bind(env);
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const before = env.worktree.removeIfDiscardable.mock.calls.length;
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(env.worktree.removeIfDiscardable.mock.calls.length).toBe(before);
+  });
+
+  test('scores and sweeps a bench cell recovered after a restart', async () => {
+    writeBenchManifest(WS, {
+      run_id: 'bench-1',
+      cells: [{ preset_id: 'p1', k: 1, bead_id: 'S1' }]
+    });
+    const landing = benchSweepLanding();
+    const runVerify = vi.fn(async () => ({ ok: true, reason: 'ok', exit: 0 }));
+    const env = setup({
+      config: benchConfig(),
+      slots: 1,
+      // The session's own process is gone: this is the restart case, which
+      // reaches settlement through `reconcile` and not through onSessionDone.
+      probePid: () => ({ alive: false, started_at: null }),
+      gitRun: benchGit({ head: 'd'.repeat(40) }),
+      resolveVerify: vi.fn(async () => ({
+        state: 'resolved',
+        value: { cmd: ['/repo/repo-ops/script/verify'], timeout_ms: 1000 }
+      })),
+      runVerify,
+      quickfixLanding: { settle: landing.settle }
+    });
+    landing.bind(env);
+    // What the prior process left behind: a `running` bench cell whose session
+    // already closed its own bead with `bench:<run_id>`.
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-bench', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-bench',
+      patch: /** @type {any} */ ({
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo',
+        target_base: BENCH_BASE,
+        quickfix_lane: true,
+        bench_run: 'bench-1',
+        bench_base: BENCH_BASE,
+        workflow_mode_prior: null
+      })
+    });
+    await env.bd.closeWithReason('S1', 'bench:bench-1');
+    const before = env.worktree.removeIfDiscardable.mock.calls.length;
+
+    await env.scheduler.reconcile(WS);
+    await flush();
+
+    expect(runVerify).toHaveBeenCalledWith(
+      expect.objectContaining({ sha: 'd'.repeat(40), bead_id: 'S1-bench' })
+    );
+    expect(env.worktree.removeIfDiscardable.mock.calls.length).toBe(before + 1);
   });
 
   test('fails a cell whose push record shows a base-destined push', async () => {

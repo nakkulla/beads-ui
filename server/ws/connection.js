@@ -7,7 +7,7 @@ import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { isRequest, makeError, makeOk } from '../../app/protocol.js';
 import { resolveWorkspaceDatabase } from '../db.js';
-import { handleBenchRunCreate, handleBenchRunList } from './bench-handlers.js';
+import { handleBenchRunCreate } from './bench-handlers.js';
 import { handleGetCompare } from './compare-handlers.js';
 import {
   detachConnectionFromAllRegistries,
@@ -700,9 +700,6 @@ export async function handleMessage(ws, data) {
       return;
     case 'bench-run-create':
       void handleBenchRunCreate(ws, req);
-      return;
-    case 'bench-run-list':
-      handleBenchRunList(ws, req);
       return;
     case 'unsubscribe-session-log':
       handleUnsubscribeSessionLog(ws, req);

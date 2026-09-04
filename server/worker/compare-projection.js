@@ -20,8 +20,18 @@ import path from 'node:path';
 import { projectAttemptUsage } from '../../app/utils/token-usage.js';
 import { parseExecReceipt, parseReviewStats } from '../workflow-enrich.js';
 import { peekWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
+import {
+  benchCellTerminal,
+  benchRunBeadIds,
+  listBenchManifests
+} from './bench-runs.js';
 import { visibleWorkspaceRoots } from './foreign-blocker-status.js';
 import { TERMINAL_ATTEMPT_STATUSES } from './queue-store.js';
+import {
+  effectiveVerifyPolicy,
+  repoOpsDisplayFor,
+  repoOpsVerifyReceiptState
+} from './repo-ops-display.js';
 import { runtimeCatalog } from './runner/index.js';
 import { getWorkerRuntime } from './runtime.js';
 import { beadsRootDir } from './state-paths.js';
@@ -76,6 +86,8 @@ const BENCH_LABEL = 'bench';
  * @property {string|null} issue_type
  * @property {string|null} route
  * @property {string[]} labels
+ * @property {string|null} [status] - The bead's own status; a bench cell is
+ * only finished once this reads `closed` (§4.6).
  * @property {{ round: number, blocking: number, minor: number, verdict: string, anchor: string }|null} impl_review_stats
  */
 
@@ -106,6 +118,9 @@ const BENCH_LABEL = 'bench';
  * @property {string|null} review_model
  * @property {string|null} review_effort
  * @property {string|null} review_speed
+ * @property {Record<string, any>} exec_values - The attempt's own pinned
+ * settings, kept out of {@link CompareSignature.key} but needed to answer
+ * "did this preset describe what ran" on the axes the key does not carry.
  * @property {string} key
  */
 
@@ -265,14 +280,27 @@ export function attemptSignature(attempt) {
     review_model,
     review_effort,
     review_speed,
+    exec_values,
     key
   };
 }
 
 /**
- * Does one stored preset describe this signature on EVERY key it declares
- * (§3.3)? A key the preset omits is not a disagreement — a preset that pins
- * nothing but the reviewer still names the reviewer it pinned.
+ * Does one stored preset describe what actually ran, on EVERY key it declares
+ * (§3.3)?
+ *
+ * "Every key" is literal. A preset is sparse, so the keys it omits say nothing
+ * — but a key it DOES declare and that cannot be checked against the attempt is
+ * not a match either, because naming the group after that preset would tell a
+ * reader the ignored setting was the one in force. So an unanswerable key is a
+ * refusal, and the group keeps its signature string.
+ *
+ * Three axes are answered by the EXECUTION rather than by the pin, which is the
+ * whole point of §3.3: `impl_dispatch`, `impl_model` and `impl_effort` are read
+ * off the preserved `exec_receipt`. A `main` executor therefore refuses a
+ * preset that declares `impl_model` or `impl_effort` — those describe a
+ * delegate that never ran. Every other declared key is compared against the
+ * attempt's own `exec_values` snapshot.
  *
  * @param {CompareSignature} signature
  * @param {{ settings?: Record<string, any> }} preset
@@ -288,32 +316,41 @@ export function presetMatchesSignature(signature, preset) {
     // be shown to be the one that ran it.
     return false;
   }
-  /** @type {Array<[string, string|null]>} */
-  const pairs = [
-    ['orchestration_model', signature.orch_model],
-    ['orchestration_effort', signature.orch_effort],
-    ['impl_review_model', signature.review_model],
-    ['impl_review_effort', signature.review_effort],
-    ['impl_review_speed', signature.review_speed]
-  ];
-  if (signature.impl_actor.kind === 'delegated') {
-    pairs.push(
-      ['impl_dispatch', 'delegated'],
-      ['impl_model', signature.impl_actor.model],
-      ['impl_effort', signature.impl_actor.effort]
-    );
-  } else {
-    // A `main` executor is only comparable on the dispatch axis: the preset's
-    // `impl_model` describes a delegate that never ran.
-    pairs.push(['impl_dispatch', 'main']);
+  const delegated = signature.impl_actor.kind === 'delegated';
+  /** @type {Record<string, string|null>} */
+  const executed = {
+    orchestration_model: signature.orch_model,
+    orchestration_effort: signature.orch_effort,
+    impl_review_model: signature.review_model,
+    impl_review_effort: signature.review_effort,
+    impl_review_speed: signature.review_speed,
+    impl_dispatch: delegated ? 'delegated' : 'main'
+  };
+  if (delegated) {
+    executed.impl_model = signature.impl_actor.model;
+    executed.impl_effort = signature.impl_actor.effort;
   }
+  const exec_values = isRecord(signature.exec_values)
+    ? signature.exec_values
+    : {};
   let declared = 0;
-  for (const [key, expected] of pairs) {
-    if (!Object.hasOwn(settings, key)) {
+  for (const key of Object.keys(settings)) {
+    const expected = str(settings[key]);
+    if (expected === null) {
+      // A preset entry with no readable value declares nothing.
       continue;
     }
     declared += 1;
-    if (str(settings[key]) !== expected) {
+    if (Object.hasOwn(executed, key)) {
+      if (executed[key] !== expected) {
+        return false;
+      }
+      continue;
+    }
+    if (!delegated && (key === 'impl_model' || key === 'impl_effort')) {
+      return false;
+    }
+    if (str(exec_values[key]) !== expected) {
       return false;
     }
   }
@@ -743,10 +780,42 @@ function compareGroups(left, right) {
 }
 
 /**
+ * @param {Array<Record<string, any>>} rows
+ */
+function sortedRows(rows) {
+  return [...rows].sort(
+    (left, right) =>
+      (right.finished_at ?? 0) - (left.finished_at ?? 0) ||
+      left.attempt_id.localeCompare(right.attempt_id)
+  );
+}
+
+/**
+ * Strip the parsed signature before a row goes on the wire: the wire carries
+ * the string the group is keyed by, and one shape on the wire is one thing to
+ * keep true.
+ *
+ * @param {Array<Record<string, any>>} rows
+ */
+function wireRows(rows) {
+  return rows.map((row) => {
+    const rest = { ...row };
+    delete rest.signature_parts;
+    return rest;
+  });
+}
+
+/**
  * The whole comparison model — pure (§3.5).
  *
+ * `bench_rows` is the experiment half and is deliberately NOT filtered: an
+ * experiment is chosen by name, and a person who picked one must not get an
+ * empty table because the main table's period or repository filter happened to
+ * be narrower (§4.7). It is the same row material either way — one projection,
+ * two selections of it, never a second ledger.
+ *
  * @param {{ workspaces: CompareWorkspaceInput[], presets?: Array<{ id?: string, name?: string, settings?: Record<string, any> }>, catalog?: ResolvedCatalog|null, filters?: unknown }} input
- * @returns {{ rows: Array<Record<string, any>>, groups: Array<Record<string, any>> }}
+ * @returns {{ rows: Array<Record<string, any>>, groups: Array<Record<string, any>>, bench_rows: Array<Record<string, any>> }}
  */
 export function buildCompareModel(input) {
   const filters = normalizeCompareFilters(input?.filters);
@@ -754,10 +823,15 @@ export function buildCompareModel(input) {
   const catalog = input?.catalog ?? null;
   /** @type {Array<Record<string, any>>} */
   const rows = [];
+  /** @type {Array<Record<string, any>>} */
+  const bench_rows = [];
   for (const workspace of Array.isArray(input?.workspaces)
     ? input.workspaces
     : []) {
     for (const row of workspaceRows(workspace, catalog)) {
+      if (row.is_bench) {
+        bench_rows.push(row);
+      }
       if (rowPassesFilters(row, filters)) {
         rows.push(row);
       }
@@ -788,14 +862,9 @@ export function buildCompareModel(input) {
   }
   groups.sort(compareGroups);
   return {
-    rows: rows.map((row) => {
-      // The parsed signature stays server-side: the wire carries the string the
-      // group is keyed by, and one shape on the wire is one thing to keep true.
-      const rest = { ...row };
-      delete rest.signature_parts;
-      return rest;
-    }),
-    groups
+    rows: wireRows(rows),
+    groups,
+    bench_rows: wireRows(sortedRows(bench_rows))
   };
 }
 
@@ -872,6 +941,7 @@ export function compareIssueIndex(root_dir, seams = {}) {
       issue_type: str(issue.issue_type),
       route: str(metadata.route),
       labels: stringList(issue.labels),
+      status: str(issue.status),
       impl_review_stats: parseReviewStats('impl', metadata.impl_review_stats)
     };
   }
@@ -880,10 +950,22 @@ export function compareIssueIndex(root_dir, seams = {}) {
 
 /**
  * The merge-candidate `[verify]` receipts of one workspace, keyed by bead
- * (§3.2). A pure read of the observation cache the PR poller owns.
+ * (§3.2). A pure read of the observation cache the PR poller owns — but NOT a
+ * pure read of `verify.ok`.
+ *
+ * The receipt is only evidence about the CURRENT candidate, so this reuses the
+ * merge gate's own binding rather than restating it: `repoOpsVerifyReceiptState`
+ * refuses a receipt that was produced at a different base than the declaration
+ * in force, and the head check below is the same `receipt.head_sha !==
+ * pr.head_sha` test `evaluateMergeGate` applies before it will call a receipt a
+ * pass. A workspace that declares no `[verify]` (or opted out of that lane)
+ * reports nothing at all, which the table reads as 미상.
+ *
+ * Anything not proven is simply absent: an unbound receipt must not be counted
+ * as either a pass or a failure.
  *
  * @param {string} root_dir
- * @param {{ prObservations?: any }} [seams]
+ * @param {{ prObservations?: any, queueStore?: any, verifyPolicy?: { declaration_state: 'present'|'absent'|'invalid', base_sha: string|null } }} [seams]
  * @returns {Record<string, { ok: boolean }|null>}
  */
 export function compareVerifyReceipts(root_dir, seams = {}) {
@@ -898,14 +980,156 @@ export function compareVerifyReceipts(root_dir, seams = {}) {
   } catch {
     return out;
   }
-  for (const [bead_id, entry] of Object.entries(observed || {})) {
-    const verify =
-      isRecord(entry) && isRecord(entry.verify) ? entry.verify : null;
-    if (verify && typeof verify.ok === 'boolean') {
-      out[bead_id] = { ok: verify.ok };
+  /** @type {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }} */
+  let policy;
+  if (seams.verifyPolicy) {
+    policy = seams.verifyPolicy;
+  } else {
+    /** @type {Record<string, unknown>} */
+    let queue = {};
+    try {
+      queue = (seams.queueStore || getWorkerRuntime().queueStore).snapshot(
+        root_dir
+      );
+    } catch {
+      queue = {};
+    }
+    try {
+      policy = effectiveVerifyPolicy(repoOpsDisplayFor(root_dir), queue);
+    } catch {
+      return out;
     }
   }
+  if (policy.declaration_state !== 'present') {
+    return out;
+  }
+  for (const [bead_id, entry] of Object.entries(observed || {})) {
+    const state = repoOpsVerifyReceiptState(
+      policy,
+      isRecord(entry) ? entry.verify : null
+    );
+    const receipt = isRecord(state.receipt) ? state.receipt : null;
+    if (receipt === null || typeof receipt.ok !== 'boolean') {
+      continue;
+    }
+    const head =
+      isRecord(entry) && isRecord(entry.pr) ? str(entry.pr.head_sha) : null;
+    if (head === null || str(receipt.head_sha) !== head) {
+      continue;
+    }
+    out[bead_id] = { ok: receipt.ok };
+  }
   return out;
+}
+
+/**
+ * Project one run manifest's cells from the clone beads' own attempt records
+ * (§4.7). The manifest is never rewritten, so this — not a stored result — is
+ * what "how far has the experiment got" means.
+ *
+ * Terminality is {@link benchCellTerminal}'s answer, the same one the
+ * scheduler's residue sweep asks: a cell is finished when its clone bead is
+ * closed AND no attempt of its lineage is resumable. A `parked` cell therefore
+ * reads as still running here exactly as it does there.
+ *
+ * @param {Record<string, any>} manifest
+ * @param {string} root_dir
+ * @param {{ queueStore?: any, issues?: Record<string, CompareIssueInput> }} [seams]
+ * @returns {Record<string, any>}
+ */
+export function projectBenchRun(manifest, root_dir, seams = {}) {
+  /** @type {any} */
+  let store = seams.queueStore ?? null;
+  if (store === null) {
+    try {
+      store = getWorkerRuntime().queueStore;
+    } catch {
+      store = null;
+    }
+  }
+  const issues = isRecord(seams.issues) ? seams.issues : {};
+  const cells = Array.isArray(manifest.cells) ? manifest.cells : [];
+  const projected = cells.map((/** @type {any} */ cell) => {
+    const bead_id = str(cell?.bead_id);
+    /** @type {Array<Record<string, any>>} */
+    let attempts = [];
+    if (
+      bead_id !== null &&
+      store &&
+      typeof store.readAttemptsForBead === 'function'
+    ) {
+      try {
+        attempts = store.readAttemptsForBead(root_dir, bead_id) || [];
+      } catch {
+        attempts = [];
+      }
+    }
+    const implementations = attempts.filter(
+      (attempt) => attempt?.kind !== 'review_session'
+    );
+    const last = implementations[implementations.length - 1] ?? null;
+    const status = last ? str(last.status) : null;
+    const issue =
+      bead_id !== null && isRecord(issues[bead_id]) ? issues[bead_id] : null;
+    return {
+      preset_id: str(cell?.preset_id),
+      k: typeof cell?.k === 'number' ? cell.k : null,
+      bead_id,
+      attempt_id: last ? str(last.attempt_id) : null,
+      status,
+      terminal: benchCellTerminal({
+        attempts,
+        bead_closed: issue ? str(issue.status) === 'closed' : false
+      }),
+      done_kind: last ? str(last.done_kind) : null,
+      bench_verify:
+        last && isRecord(last.bench_verify) ? last.bench_verify : null
+    };
+  });
+  return {
+    ...manifest,
+    root_dir,
+    cell_count: benchRunBeadIds(manifest).length,
+    terminal_count: projected.filter((cell) => cell.terminal).length,
+    cells: projected
+  };
+}
+
+/**
+ * Every visible workspace's run manifests, newest first (§4.7). Fail-quiet per
+ * workspace: a state directory that cannot be listed contributes nothing
+ * rather than emptying the list.
+ *
+ * @param {CompareWorkspaceInput[]} workspaces
+ * @param {{ queueStore?: any, list?: typeof listBenchManifests }} [seams]
+ * @returns {Array<Record<string, any>>}
+ */
+export function compareBenchRuns(workspaces, seams = {}) {
+  const list = seams.list || listBenchManifests;
+  /** @type {Array<Record<string, any>>} */
+  const runs = [];
+  for (const workspace of Array.isArray(workspaces) ? workspaces : []) {
+    /** @type {Array<Record<string, any>>} */
+    let manifests = [];
+    try {
+      manifests = list(workspace.root_dir);
+    } catch {
+      manifests = [];
+    }
+    for (const manifest of manifests) {
+      runs.push(
+        projectBenchRun(manifest, workspace.root_dir, {
+          ...(seams.queueStore ? { queueStore: seams.queueStore } : {}),
+          issues: isRecord(workspace.issues) ? workspace.issues : {}
+        })
+      );
+    }
+  }
+  runs.sort(
+    (left, right) =>
+      Number(right.created_at ?? 0) - Number(left.created_at ?? 0)
+  );
+  return runs;
 }
 
 /**
@@ -946,8 +1170,13 @@ export function collectCompareWorkspaces(seams = {}) {
 /**
  * The `compare-snapshot` payload: collect, then project.
  *
+ * The experiment list rides HERE rather than on an op of its own: §3.5
+ * enumerates the three ws ops this design adds, and the run manifests are read
+ * against the same rows in the same response — which also removes the second
+ * `get-compare` the client used to need for its experiment table.
+ *
  * @param {unknown} filters
- * @param {{ roots?: string[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, presets?: any[], catalog?: ResolvedCatalog|null }} [seams]
+ * @param {{ roots?: string[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, presets?: any[], catalog?: ResolvedCatalog|null, listRuns?: typeof listBenchManifests }} [seams]
  */
 export function compareSnapshot(filters, seams = {}) {
   /** @type {any[]} */
@@ -976,6 +1205,10 @@ export function compareSnapshot(filters, seams = {}) {
   const model = buildCompareModel({ workspaces, presets, catalog, filters });
   return {
     ...model,
+    runs: compareBenchRuns(workspaces, {
+      ...(seams.queueStore ? { queueStore: seams.queueStore } : {}),
+      ...(seams.listRuns ? { list: seams.listRuns } : {})
+    }),
     workspaces: workspaces.map((workspace) => ({
       root_dir: workspace.root_dir,
       name: workspace.name

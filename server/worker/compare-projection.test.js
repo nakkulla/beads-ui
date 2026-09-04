@@ -2,12 +2,15 @@ import { describe, expect, test } from 'vitest';
 import {
   attemptSignature,
   buildCompareModel,
+  compareBenchRuns,
+  compareVerifyReceipts,
   implActorOf,
   isRetryAttempt,
   medianOf,
   normalizeCompareFilters,
   passCaret,
   presetMatchesSignature,
+  projectBenchRun,
   signatureName
 } from './compare-projection.js';
 
@@ -51,7 +54,7 @@ function makeAttempt(overrides = {}) {
 
 /**
  * @param {Record<string, any>} [overrides]
- * @returns {Record<string, any>}
+ * @returns {any}
  */
 function makeIssue(overrides = {}) {
   return {
@@ -201,6 +204,255 @@ describe('worker/compare-projection preset naming', () => {
     const signature = attemptSignature(makeAttempt({ receipt_check: null }));
 
     expect(presetMatchesSignature(signature, preset)).toBe(false);
+  });
+});
+
+describe('worker/compare-projection preset naming — every declared key', () => {
+  test('refuses a preset that declares a key the attempt did not record', () => {
+    const signature = attemptSignature(makeAttempt());
+
+    expect(
+      presetMatchesSignature(signature, {
+        settings: {
+          impl_review_model: 'gpt-5.6-sol',
+          // Never pinned by this attempt, so it cannot be shown to have been in
+          // force; naming the group after this preset would say it was.
+          spec_review_model: 'fable'
+        }
+      })
+    ).toBe(false);
+  });
+
+  test('compares a declared key against the attempt exec_values snapshot', () => {
+    const signature = attemptSignature(
+      makeAttempt({
+        exec_values: {
+          impl_review_model: 'gpt-5.6-sol',
+          impl_review_effort: 'high',
+          impl_review_speed: 'default',
+          spec_review_model: 'fable'
+        }
+      })
+    );
+
+    expect(
+      presetMatchesSignature(signature, {
+        settings: { spec_review_model: 'fable' }
+      })
+    ).toBe(true);
+    expect(
+      presetMatchesSignature(signature, {
+        settings: { spec_review_model: 'codex' }
+      })
+    ).toBe(false);
+  });
+
+  test('refuses a delegate model declaration when main actually implemented', () => {
+    const signature = attemptSignature(
+      makeAttempt({
+        receipt_check: {
+          checks: { exec_receipt: { kind: 'main', actor: 'bead' } }
+        },
+        exec_values: { impl_model: 'gpt-5.6-sol' }
+      })
+    );
+
+    expect(
+      presetMatchesSignature(signature, {
+        settings: { impl_dispatch: 'main', impl_model: 'gpt-5.6-sol' }
+      })
+    ).toBe(false);
+  });
+});
+
+describe('worker/compare-projection merge-candidate verify receipts', () => {
+  /** @type {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }} */
+  const PRESENT = { declaration_state: 'present', base_sha: 'b'.repeat(40) };
+
+  /**
+   * @param {Record<string, any>} entry
+   * @param {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }} [policy]
+   */
+  function receipts(entry, policy = PRESENT) {
+    return compareVerifyReceipts('/repo', {
+      prObservations: { snapshot: () => ({ 'UI-1': entry }) },
+      verifyPolicy: policy
+    });
+  }
+
+  test('takes a receipt bound to the current base and head', () => {
+    expect(
+      receipts({
+        pr: { head_sha: 'c'.repeat(40) },
+        verify: {
+          ok: true,
+          effective_base_sha: 'b'.repeat(40),
+          head_sha: 'c'.repeat(40)
+        }
+      })
+    ).toEqual({ 'UI-1': { ok: true } });
+  });
+
+  test('drops a receipt produced at a different base', () => {
+    expect(
+      receipts({
+        pr: { head_sha: 'c'.repeat(40) },
+        verify: {
+          ok: true,
+          effective_base_sha: 'd'.repeat(40),
+          head_sha: 'c'.repeat(40)
+        }
+      })
+    ).toEqual({});
+  });
+
+  test('drops a receipt whose head is no longer the candidate head', () => {
+    expect(
+      receipts({
+        pr: { head_sha: 'e'.repeat(40) },
+        verify: {
+          ok: true,
+          effective_base_sha: 'b'.repeat(40),
+          head_sha: 'c'.repeat(40)
+        }
+      })
+    ).toEqual({});
+  });
+
+  test('reports nothing when the workspace declares no verify lane', () => {
+    expect(
+      receipts(
+        {
+          pr: { head_sha: 'c'.repeat(40) },
+          verify: {
+            ok: true,
+            effective_base_sha: 'b'.repeat(40),
+            head_sha: 'c'.repeat(40)
+          }
+        },
+        { declaration_state: 'absent', base_sha: null }
+      )
+    ).toEqual({});
+  });
+});
+
+describe('worker/compare-projection bench runs', () => {
+  const MANIFEST = {
+    run_id: 'bench-1',
+    source_bead_id: 'UI-src',
+    created_at: 10,
+    cells: [
+      { preset_id: 'p1', k: 1, bead_id: 'UI-c1' },
+      { preset_id: 'p1', k: 2, bead_id: 'UI-c2' }
+    ]
+  };
+
+  /**
+   * @param {Record<string, any[]>} rows
+   */
+  function fakeStore(rows) {
+    return {
+      /**
+       * @param {string} root_dir
+       * @param {string} bead_id
+       */
+      readAttemptsForBead(root_dir, bead_id) {
+        return rows[bead_id] ?? [];
+      }
+    };
+  }
+
+  test('counts only the cells whose bead is closed and whose lineage ended', () => {
+    const run = projectBenchRun(MANIFEST, '/repo', {
+      queueStore: fakeStore({
+        'UI-c1': [{ attempt_id: 'a1', status: 'done', done_kind: 'bench' }],
+        'UI-c2': [{ attempt_id: 'a2', status: 'running' }]
+      }),
+      issues: {
+        'UI-c1': makeIssue({ status: 'closed' }),
+        'UI-c2': makeIssue({ status: 'open' })
+      }
+    });
+
+    expect(run.cell_count).toBe(2);
+    expect(run.terminal_count).toBe(1);
+    expect(run.cells[0]).toMatchObject({
+      bead_id: 'UI-c1',
+      attempt_id: 'a1',
+      status: 'done',
+      terminal: true
+    });
+  });
+
+  test('reports a parked cell as still running even with a closed bead', () => {
+    const run = projectBenchRun(MANIFEST, '/repo', {
+      queueStore: fakeStore({
+        'UI-c1': [{ attempt_id: 'a1', status: 'parked' }]
+      }),
+      issues: { 'UI-c1': makeIssue({ status: 'closed' }) }
+    });
+
+    expect(run.cells[0].terminal).toBe(false);
+  });
+
+  test('ignores a review session when picking the cell attempt', () => {
+    const run = projectBenchRun(MANIFEST, '/repo', {
+      queueStore: fakeStore({
+        'UI-c1': [
+          { attempt_id: 'a1', status: 'done' },
+          { attempt_id: 'r1', status: 'done', kind: 'review_session' }
+        ]
+      })
+    });
+
+    expect(run.cells[0].attempt_id).toBe('a1');
+  });
+
+  test('carries the cell verify score and the manifest fields it was given', () => {
+    const run = projectBenchRun(MANIFEST, '/repo', {
+      queueStore: fakeStore({
+        'UI-c1': [
+          {
+            attempt_id: 'a1',
+            status: 'done',
+            bench_verify: { ok: false, exit: 1, duration_ms: 5, head_sha: 'a' }
+          }
+        ]
+      })
+    });
+
+    expect(run.cells[0].bench_verify).toEqual({
+      ok: false,
+      exit: 1,
+      duration_ms: 5,
+      head_sha: 'a'
+    });
+    expect(run.run_id).toBe('bench-1');
+    expect(run.root_dir).toBe('/repo');
+  });
+
+  test('lists every workspace manifest newest first', () => {
+    const runs = compareBenchRuns(
+      [makeWorkspace(), makeWorkspace({ root_dir: '/repo/two', name: 'two' })],
+      {
+        queueStore: fakeStore({}),
+        /**
+         * @param {string} root_dir
+         */
+        list: (root_dir) => [
+          {
+            ...MANIFEST,
+            run_id: `run-${root_dir}`,
+            created_at: root_dir.endsWith('two') ? 99 : 10
+          }
+        ]
+      }
+    );
+
+    expect(runs.map((run) => run.run_id)).toEqual([
+      'run-/repo/two',
+      'run-/repo/one'
+    ]);
   });
 });
 
@@ -506,6 +758,22 @@ describe('worker/compare-projection filters', () => {
         filters: { include_bench: true }
       }).rows
     ).toHaveLength(1);
+  });
+
+  test('carries bench rows regardless of the filters the main table used', () => {
+    const workspace = makeWorkspace({
+      attempts: [makeAttempt()],
+      issues: { 'UI-1': makeIssue({ labels: ['bench'] }) }
+    });
+
+    const model = buildCompareModel({
+      workspaces: [workspace],
+      filters: { root_dirs: ['/repo/elsewhere'], since: 9_000_000 }
+    });
+
+    expect(model.rows).toEqual([]);
+    expect(model.bench_rows).toHaveLength(1);
+    expect(model.bench_rows[0].bead_id).toBe('UI-1');
   });
 
   test('filters by workspace, issue type and route', () => {

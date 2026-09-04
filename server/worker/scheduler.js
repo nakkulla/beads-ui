@@ -60,7 +60,11 @@ import {
   normalizeWorkspaceAccounts
 } from '../workspace-accounts.js';
 import { observeBaseDrift } from './base-drift.js';
-import { benchRunBeadIds, readBenchManifest } from './bench-runs.js';
+import {
+  benchCellTerminal,
+  benchRunBeadIds,
+  readBenchManifest
+} from './bench-runs.js';
 import {
   observeClaudeEffort as defaultObserveClaudeEffort,
   observeClaudeSubagentEffort as defaultObserveClaudeSubagentEffort
@@ -5763,10 +5767,17 @@ export function createScheduler(deps) {
   /**
    * Sweep one run's residue once EVERY cell has terminated (§4.6).
    *
-   * "Terminated" is judged from the queue, not from the manifest: a cell is
-   * done when its bead holds no live attempt and no claim. A run with one cell
-   * still running keeps every worktree, because a half-swept run is harder to
-   * read than an unswept one.
+   * "Terminated" is {@link benchCellTerminal}'s answer, shared with the run
+   * projection so one cell cannot read as finished on the board and resumable
+   * here. It needs BOTH halves: the clone bead closed, and no attempt of the
+   * lineage in a resumable status. `parked`, `waiting`, `retry_wait` and
+   * `stopped` all release the bead for scheduling while the cell is still
+   * expected to come back — sweeping on that release would delete the worktree
+   * and branch the resume needs.
+   *
+   * A run with one such cell keeps EVERY worktree: a half-swept run is harder
+   * to read than an unswept one, and a status this loop cannot read is a
+   * reason to keep, never to remove.
    *
    * @param {string} workspace
    * @param {string} run_id
@@ -5785,14 +5796,21 @@ export function createScheduler(deps) {
       if (claimed.has(bead_id)) {
         return;
       }
-      const live = rows.some(
-        (attempt) =>
-          attempt?.bead_id === bead_id &&
-          (attempt.status === 'running' ||
-            attempt.status === 'pending' ||
-            attempt.status === 'retry_wait')
-      );
-      if (live) {
+      /** @type {string|null} */
+      let bead_status = null;
+      try {
+        bead_status = await deps.bd.readStatus(bead_id);
+      } catch (err) {
+        log('bench cell status read failed for %s: %o', bead_id, err);
+        return;
+      }
+      const terminal = benchCellTerminal({
+        attempts: rows.filter(
+          (/** @type {any} */ attempt) => attempt?.bead_id === bead_id
+        ),
+        bead_closed: bead_status === 'closed'
+      });
+      if (!terminal) {
         return;
       }
     }
@@ -6680,6 +6698,15 @@ export function createScheduler(deps) {
       return;
     }
     claimed.add(bead_id);
+    /**
+     * The bench run whose residue sweep this settlement earned, deferred to
+     * AFTER the claim is released: `sweepBenchRun` refuses to touch a run any
+     * of whose cells is still claimed, and this path holds the claim of the
+     * very cell that just finished.
+     *
+     * @type {string|null}
+     */
+    let sweep_run = null;
     try {
       if (quickfixLaneOf(workspace, attempt_id)) {
         deps.store.updateAttempt(workspace, {
@@ -6703,7 +6730,30 @@ export function createScheduler(deps) {
           notifyChanged(workspace);
           await tick(workspace);
         } else {
-          await settleQuickfixLanding(
+          // A RECOVERED bench cell joins the same verify → settle → sweep path
+          // its live sibling takes (§4.5-3·§4.6). Without this a restart would
+          // leave the cell unscored and the whole run unswept, which the
+          // comparison table reads as 미상 forever.
+          //
+          // The success test here is the clone bead reading `closed`: a bench
+          // session ends by closing its own bead with `bench:<run_id>`, and
+          // §4.5-3 forbids scoring a session that failed — a `[verify]` run on
+          // an abandoned tree measures the abandonment, not the preset. There
+          // is no verdict to consult on a restart, so this IS that fact.
+          const bench_run = benchRunOf(workspace, attempt_id);
+          let bench_succeeded = false;
+          if (bench_run !== null) {
+            try {
+              bench_succeeded =
+                (await deps.bd.readStatus(bead_id)) === 'closed';
+            } catch (err) {
+              log('bench recovery status read failed for %s: %o', bead_id, err);
+            }
+          }
+          if (bench_succeeded) {
+            await recordBenchVerify(workspace, attempt_id, bead_id, repo);
+          }
+          const settled = await settleQuickfixLanding(
             workspace,
             attempt_id,
             bead_id,
@@ -6711,6 +6761,9 @@ export function createScheduler(deps) {
             target_base,
             repo.length > 0
           );
+          if (bench_run !== null && settled.ok) {
+            sweep_run = bench_run;
+          }
         }
         return;
       }
@@ -6862,6 +6915,9 @@ export function createScheduler(deps) {
       // Never leak the claim: an unexpected throw here would otherwise fence
       // the bead out of every later dispatch for the life of the process.
       claimed.delete(bead_id);
+      if (sweep_run !== null) {
+        await sweepBenchRun(workspace, sweep_run);
+      }
     }
     notifyChanged(workspace);
     await tick(workspace);

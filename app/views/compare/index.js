@@ -8,10 +8,12 @@
  *
  * 표만 그린다: 정확도 대 비용 점 그래프는 §3.6이 범위 밖으로 뺐다.
  *
- * 탭 위쪽은 실험(§4.7)이다: `bench-run-list`가 주는 실험 목록과 `새 실험` 폼,
- * 그리고 고른 실험을 프리셋별로 묶어 §3과 같은 여섯 열로 보이는 표. 실험 표의
- * 재료는 같은 `get-compare` 스냅샷이며 `include_bench`만 켠다 — 결과 원장을 따로
- * 두지 않는다는 §4.7의 결정이 여기서도 그대로다.
+ * 탭 위쪽은 실험(§4.7)이다: `새 실험` 폼과 실험 목록, 그리고 고른 실험을
+ * 프리셋별로 묶어 §3과 같은 여섯 열로 보이는 표. 실험 목록 `runs`와 실험 셀 행
+ * `bench_rows`는 같은 `compare-snapshot` 응답에 함께 온다 — 이 스펙이 더하는 ws
+ * op은 §3.5가 셋으로 열거했고, 결과 원장을 따로 두지 않는다는 §4.7의 결정이
+ * 여기서도 그대로다. `bench_rows`는 서버가 필터와 무관하게 싣기 때문에 본 표의
+ * 기간·저장소 필터를 좁혀도 고른 실험의 셀이 사라지지 않는다.
  */
 import { html, render } from 'lit-html';
 import { CLOSED_RANGE_OPTIONS } from '../../data/closed-range.js';
@@ -89,23 +91,18 @@ export function createCompareView(root, options = {}) {
   let request_seq = 0;
 
   /**
-   * 실험(§4.7) 상태. 실험 표의 행 재료 `bench_rows`는 본 표와 같은
-   * `get-compare`지만 필터가 다르다 — 기간 전체·`include_bench` 켬이라, 본 표의
-   * 필터를 바꿔도 고른 실험의 셀이 사라지지 않는다.
+   * 실험(§4.7) 상태. `runs`와 `rows` 모두 같은 `compare-snapshot` 응답에서
+   * 온다 — 실험 표의 행 재료는 서버가 필터와 무관하게 싣는 `bench_rows`다.
    *
-   * @type {{ runs: Array<Record<string, any>>, error: string|null, loading: boolean, selected: string|null, rows: Array<Record<string, any>>, rows_error: string|null }}
+   * @type {{ runs: Array<Record<string, any>>, selected: string|null, rows: Array<Record<string, any>> }}
    */
   const bench = {
     runs: [],
-    error: null,
-    loading: false,
     selected: null,
-    rows: [],
-    rows_error: null
+    rows: []
   };
   /** @type {Set<string>} */
   const bench_expanded = new Set();
-  let bench_request_seq = 0;
 
   /**
    * The new-experiment form state. Only drawn while `open`.
@@ -125,8 +122,9 @@ export function createCompareView(root, options = {}) {
   };
 
   /**
-   * `get-compare` 한 번. 응답이 늦게 도착한 이전 요청은 버린다 — 필터를 빠르게
-   * 바꾸면 오래된 표가 새 표를 덮어쓸 수 있다.
+   * `get-compare` 한 번 — 본 표·실험 목록·실험 셀 행이 모두 이 응답 하나에
+   * 온다. 응답이 늦게 도착한 이전 요청은 버린다: 필터를 빠르게 바꾸면 오래된
+   * 표가 새 표를 덮어쓸 수 있다.
    */
   async function fetchSnapshot() {
     if (!transport) {
@@ -155,6 +153,17 @@ export function createCompareView(root, options = {}) {
           ? payload.workspaces
           : model.workspaces
       };
+      bench.runs = Array.isArray(payload?.runs) ? payload.runs : [];
+      bench.rows = Array.isArray(payload?.bench_rows) ? payload.bench_rows : [];
+      if (
+        bench.selected !== null &&
+        !bench.runs.some((run) => run.run_id === bench.selected)
+      ) {
+        bench.selected = null;
+      }
+      if (!form.open) {
+        form.reviewer = reviewerDefaults(bench.runs);
+      }
       loaded_once = true;
     } catch (err) {
       if (seq !== request_seq) {
@@ -170,91 +179,10 @@ export function createCompareView(root, options = {}) {
     }
   }
 
-  /** `bench-run-list` 한 번. 실패는 실험 자리에만 남고 본 표를 건드리지 않는다. */
-  async function fetchRuns() {
-    if (!transport) {
-      return;
-    }
-    bench.loading = true;
-    bench.error = null;
-    doRender();
-    try {
-      const reply = await transport('bench-run-list', {});
-      const payload = reply && reply.payload ? reply.payload : reply;
-      bench.runs = Array.isArray(payload?.runs) ? payload.runs : [];
-      if (
-        bench.selected !== null &&
-        !bench.runs.some((run) => run.run_id === bench.selected)
-      ) {
-        bench.selected = null;
-      }
-      if (!form.open) {
-        form.reviewer = reviewerDefaults(bench.runs);
-      }
-    } catch (err) {
-      log('bench-run-list failed: %o', err);
-      bench.error = benchErrorMessage(err);
-    } finally {
-      bench.loading = false;
-      doRender();
-    }
-  }
-
-  /**
-   * Read the row material of the selected experiment. An experiment lives in
-   * one workspace, so the read narrows to it, and the period is the whole
-   * history: a person who picked an experiment must not get an empty table
-   * because the main table's period filter is narrower.
-   *
-   * @param {Record<string, any>} run
-   */
-  async function fetchBenchRows(run) {
-    if (!transport) {
-      return;
-    }
-    const seq = (bench_request_seq += 1);
-    bench.rows_error = null;
-    try {
-      const reply = await transport('get-compare', {
-        range: 'all',
-        root_dirs: run.root_dir ? [run.root_dir] : [],
-        issue_types: [],
-        routes: [],
-        include_bench: true
-      });
-      if (seq !== bench_request_seq) {
-        return;
-      }
-      const payload = reply && reply.payload ? reply.payload : reply;
-      bench.rows = Array.isArray(payload?.rows) ? payload.rows : [];
-    } catch (err) {
-      if (seq !== bench_request_seq) {
-        return;
-      }
-      log('bench rows read failed: %o', err);
-      bench.rows = [];
-      bench.rows_error = benchErrorMessage(err);
-    } finally {
-      if (seq === bench_request_seq) {
-        doRender();
-      }
-    }
-  }
-
   /** @param {string} run_id */
   function selectRun(run_id) {
-    if (bench.selected === run_id) {
-      bench.selected = null;
-      doRender();
-      return;
-    }
-    bench.selected = run_id;
-    bench.rows = [];
+    bench.selected = bench.selected === run_id ? null : run_id;
     doRender();
-    const run = bench.runs.find((entry) => entry.run_id === run_id);
-    if (run) {
-      void fetchBenchRows(run);
-    }
   }
 
   /** Whether the payload is submittable — the server `bad_request` rules. */
@@ -294,8 +222,8 @@ export function createCompareView(root, options = {}) {
           : null;
       form.open = false;
       form.error = null;
-      await fetchRuns();
-      if (run_id !== null) {
+      await fetchSnapshot();
+      if (run_id !== null && bench.selected !== run_id) {
         selectRun(run_id);
       }
     } catch (err) {
@@ -658,18 +586,6 @@ export function createCompareView(root, options = {}) {
             >base ${String(run.base_sha || '').slice(0, 12)}</span
           >
         </div>
-        ${bench.rows_error !== null
-          ? html`<div class="cmp-error" role="alert">
-              <span>실험 결과를 읽지 못했습니다 — ${bench.rows_error}</span>
-              <button
-                type="button"
-                class="op-btn"
-                @click=${() => void fetchBenchRows(run)}
-              >
-                새로고침
-              </button>
-            </div>`
-          : null}
         ${groups.length === 0
           ? html`<div class="cmp-empty">셀이 없습니다</div>`
           : html`<table class="cmp-table cmp-table--bench">
@@ -906,21 +822,9 @@ export function createCompareView(root, options = {}) {
           </button>
         </div>
         ${form.open ? formTemplate() : null}
-        ${bench.error !== null
-          ? html`<div class="cmp-error" role="alert">
-              <span>실험 목록을 읽지 못했습니다 — ${bench.error}</span>
-              <button
-                type="button"
-                class="op-btn"
-                @click=${() => void fetchRuns()}
-              >
-                새로고침
-              </button>
-            </div>`
-          : null}
-        ${bench.runs.length === 0 && bench.error === null
+        ${bench.runs.length === 0
           ? html`<div class="cmp-empty">
-              ${bench.loading ? '읽는 중…' : '실험 없음'}
+              ${loading ? '읽는 중…' : '실험 없음'}
             </div>`
           : html`<div class="cmp-runs">
               ${bench.runs.map((run) => runRowTemplate(run))}
@@ -1006,17 +910,15 @@ export function createCompareView(root, options = {}) {
 
   return {
     /**
-     * Called when the tab opens. A table already read is left alone — the
-     * `새로고침` button is the re-read, not a tab switch.
+     * Called when the tab opens. One request answers both halves now, so the
+     * experiment list's own refresh cadence is what this follows.
      */
     load() {
-      if (!loaded_once && !loading) {
+      // 탭을 열 때마다 다시 읽는다: 같은 응답이 실험 목록도 싣고, 셀 상태는
+      // Worker 진행에 따라 바뀌므로 탭을 다시 여는 것이 진행 `3/9`를 새로 보는
+      // 자연스러운 계기다.
+      if (!loading) {
         void fetchSnapshot();
-      }
-      // 실험 목록은 매번 다시 읽는다: 셀 상태가 Worker 진행에 따라 바뀌므로
-      // 탭을 다시 여는 것이 진행 `3/9`를 새로 보는 자연스러운 계기다.
-      if (!bench.loading) {
-        void fetchRuns();
       }
     },
     /**
@@ -1030,10 +932,6 @@ export function createCompareView(root, options = {}) {
     /** Re-read the snapshot now, whatever the tab already holds. */
     refresh() {
       return fetchSnapshot();
-    },
-    /** Re-read the experiment list now (§4.7). */
-    refreshRuns() {
-      return fetchRuns();
     },
     destroy() {
       if (unsubscribe_presets) {

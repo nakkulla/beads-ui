@@ -1,16 +1,16 @@
 /**
- * Bench experiment channel (preset-compare §4.3·§4.7).
+ * Bench experiment creation (preset-compare §4.3·§4.4).
  *
- * Two request/response pairs and no push: `bench-run-create` builds one
- * experiment's clones and its manifest, `bench-run-list` returns the manifests
- * of the selected workspace with each cell's state PROJECTED from that clone's
- * own attempt records. There is no second result ledger, so the list is always
- * as fresh as the attempt history it reads and never has to be reconciled with
- * it.
+ * ONE request/response pair and no push: `bench-run-create` builds one
+ * experiment's clones, queues them, and writes its manifest. The experiment
+ * LIST is not a channel of its own — §3.5 enumerates the three ws ops this
+ * design adds, and the manifests ride the approved `compare-snapshot` response
+ * next to the rows they are read against (`compare-projection.js`).
  *
- * Creation is fail-closed as one unit: the base tip, the source's eligibility
- * and every clone must all succeed, or `bench-runs.js` closes whatever it made
- * with `bench:<run_id>:aborted` and no manifest is written.
+ * Creation is fail-closed as one unit: the base tip, the source's eligibility,
+ * every clone's tuple, and every clone's queue placement must all succeed, or
+ * `bench-runs.js` closes whatever it made with `bench:<run_id>:aborted` and no
+ * manifest is written.
  *
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
@@ -22,11 +22,11 @@ import { SESSION_DEFAULTS_KV_KEY } from '../session-defaults.js';
 import { createdIdOf } from '../worker/bd-metadata.js';
 import {
   BENCH_REVIEWER_KEYS,
-  benchRunBeadIds,
   createBenchRun,
-  listBenchManifests,
-  resolveBenchTuple
+  resolveBenchTuple,
+  validateBenchTuple
 } from '../worker/bench-runs.js';
+import { placeBeadInQueue } from '../worker/queue-place.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { resolveTargetBase } from '../worker/target-base.js';
 import {
@@ -36,16 +36,6 @@ import {
   runBdJsonProjectedInWorkspace
 } from './context.js';
 import { triggerMutationRefreshOnce } from './refresh.js';
-
-/** Terminal attempt statuses — a cell that reached one is no longer pending. */
-const TERMINAL_STATUSES = new Set([
-  'done',
-  'failed',
-  'orphaned',
-  'discarded',
-  'parked',
-  'stopped'
-]);
 
 /**
  * @param {unknown} value
@@ -243,7 +233,66 @@ function benchBd(ws, root_dir) {
       return res.code === 0
         ? { ok: true }
         : { ok: false, reason: 'clone_close_failed' };
+    },
+    /**
+     * The readback that turns an abort's close into a fact. An unreadable
+     * status answers `null`, which the abort reports as residue.
+     *
+     * @param {string} bead_id
+     * @returns {Promise<string|null>}
+     */
+    async readStatus(bead_id) {
+      const shown = await runBdJsonProjectedInWorkspace(
+        ws,
+        'show',
+        ['show', bead_id, '--json'],
+        { expected_id: bead_id, cwd: root_dir }
+      );
+      if (shown.ok !== true) {
+        return null;
+      }
+      const status = /** @type {any} */ (shown.data)?.status;
+      return typeof status === 'string' && status.length > 0 ? status : null;
     }
+  };
+}
+
+/**
+ * Put one clone into this workspace's parallel waiting lane through the shared
+ * `worker-queue-place` body (§4.4). The revision is re-read per cell because
+ * each successful placement bumps it, and an admission refusal is a placement
+ * failure here: a cell the lane refused would never run, and an experiment
+ * missing a cell is not the experiment that was asked for.
+ *
+ * @param {string} root_dir
+ * @param {string} bead_id
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
+ */
+async function placeBenchCell(root_dir, bead_id) {
+  /** @type {number} */
+  let revision;
+  try {
+    revision = getWorkerRuntime().queueStore.snapshot(root_dir).revision;
+  } catch (err) {
+    log('bench cell queue revision read failed for %s: %o', bead_id, err);
+    return { ok: false, reason: 'clone_place_failed' };
+  }
+  const outcome = await placeBeadInQueue(root_dir, {
+    bead_id,
+    expected_revision: revision
+  });
+  if (outcome.applied === true) {
+    return { ok: true };
+  }
+  if (typeof outcome.admission_reason === 'string') {
+    return {
+      ok: false,
+      reason: `clone_place_refused:${outcome.admission_reason}`
+    };
+  }
+  return {
+    ok: false,
+    reason: outcome.conflict ? 'clone_place_conflict' : 'clone_place_failed'
   };
 }
 
@@ -252,7 +301,7 @@ function benchBd(ws, root_dir) {
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
- * @param {{ resolveBase?: typeof resolveTargetBase, create?: typeof createBenchRun, now?: () => number }} [seams]
+ * @param {{ resolveBase?: typeof resolveTargetBase, create?: typeof createBenchRun, place?: (bead_id: string) => Promise<{ ok: boolean, reason?: string }>, now?: () => number }} [seams]
  */
 export async function handleBenchRunCreate(ws, req, seams = {}) {
   log('bench-run-create');
@@ -388,6 +437,19 @@ export async function handleBenchRunCreate(ws, req, seams = {}) {
       );
       return;
     }
+    // §6 fail-closed: the tuple that will actually be pinned — reviewer
+    // override included — has to be complete and in vocabulary before any bead
+    // is written.
+    const checked = validateBenchTuple({
+      ...tuple.values,
+      ...(reviewer ?? {})
+    });
+    if (!checked.ok) {
+      ws.send(
+        JSON.stringify(makeError(req, 'bench_tuple_unresolved', checked.reason))
+      );
+      return;
+    }
     presets.push({ id: preset.id, name: preset.name, tuple: tuple.values });
   }
 
@@ -406,6 +468,7 @@ export async function handleBenchRunCreate(ws, req, seams = {}) {
       reviewer_mode,
       reviewer,
       bd: benchBd(ws, root_dir),
+      place: seams.place || ((bead_id) => placeBenchCell(root_dir, bead_id)),
       ...(seams.now ? { now: seams.now } : {})
     });
   } catch (err) {
@@ -422,10 +485,14 @@ export async function handleBenchRunCreate(ws, req, seams = {}) {
     return;
   }
   if (result.ok !== true) {
+    // `residue` is the part the operator has to act on: those clones were
+    // created and could NOT be confirmed closed, so reporting them beside the
+    // cleaned-up ones is the difference between a tidy abort and a silent one.
     ws.send(
       JSON.stringify(
         makeError(req, 'bench_run_create_failed', result.reason, {
-          aborted: result.aborted
+          aborted: result.aborted,
+          residue: result.residue
         })
       )
     );
@@ -437,113 +504,4 @@ export async function handleBenchRunCreate(ws, req, seams = {}) {
   } catch {
     // ignore
   }
-}
-
-/**
- * Project one run's cells from the clone beads' attempt records (§4.7).
- *
- * @param {Record<string, any>} manifest
- * @param {string} root_dir
- * @param {{ queueStore?: any }} [seams]
- * @returns {Record<string, any>}
- */
-export function projectBenchRun(manifest, root_dir, seams = {}) {
-  /** @type {any} */
-  let store = seams.queueStore ?? null;
-  if (store === null) {
-    try {
-      store = getWorkerRuntime().queueStore;
-    } catch {
-      store = null;
-    }
-  }
-  const cells = Array.isArray(manifest.cells) ? manifest.cells : [];
-  const projected = cells.map((/** @type {any} */ cell) => {
-    /** @type {Array<Record<string, any>>} */
-    let attempts = [];
-    if (store && typeof store.readAttemptsForBead === 'function') {
-      try {
-        attempts = store.readAttemptsForBead(root_dir, cell.bead_id) || [];
-      } catch {
-        attempts = [];
-      }
-    }
-    const implementations = attempts.filter(
-      (attempt) => attempt?.kind !== 'review_session'
-    );
-    const last = implementations[implementations.length - 1] ?? null;
-    const status = last ? usableString(last.status) : null;
-    return {
-      preset_id: usableString(cell.preset_id),
-      k: typeof cell.k === 'number' ? cell.k : null,
-      bead_id: usableString(cell.bead_id),
-      attempt_id: last ? usableString(last.attempt_id) : null,
-      status,
-      terminal: status !== null && TERMINAL_STATUSES.has(status),
-      done_kind: last ? usableString(last.done_kind) : null,
-      bench_verify:
-        last && isRecord(last.bench_verify) ? last.bench_verify : null
-    };
-  });
-  return {
-    ...manifest,
-    root_dir,
-    cell_count: benchRunBeadIds(manifest).length,
-    terminal_count: projected.filter((cell) => cell.terminal).length,
-    cells: projected
-  };
-}
-
-/**
- * `bench-run-list` — the selected workspace's experiments, newest first.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- * @param {{ list?: typeof listBenchManifests, queueStore?: any }} [seams]
- */
-export function handleBenchRunList(ws, req, seams = {}) {
-  const payload = /** @type {Record<string, any>} */ (req.payload || {});
-  const root_dir = workspaceRootFor(ws, payload);
-  if (root_dir === null) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'root_dir must be the selected workspace')
-      )
-    );
-    return;
-  }
-  const list = seams.list || listBenchManifests;
-  /** @type {Record<string, any>[]} */
-  let runs;
-  try {
-    runs = list(root_dir).map((manifest) =>
-      projectBenchRun(
-        manifest,
-        root_dir,
-        seams.queueStore ? { queueStore: seams.queueStore } : {}
-      )
-    );
-  } catch (err) {
-    log('bench run list failed: %o', err);
-    ws.send(
-      JSON.stringify(
-        makeError(
-          req,
-          'bench_run_list_failed',
-          err instanceof Error ? err.message : String(err)
-        )
-      )
-    );
-    return;
-  }
-  ws.send(
-    JSON.stringify({
-      id: req.id,
-      ok: true,
-      type: /** @type {import('../../app/protocol.js').MessageType} */ (
-        'bench-runs-snapshot'
-      ),
-      payload: { root_dir, runs }
-    })
-  );
 }

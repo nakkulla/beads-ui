@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
+  benchAreaLabels,
+  benchCellTerminal,
   benchCloneFields,
   benchHarnessDefaults,
   benchRunBeadIds,
@@ -10,9 +12,38 @@ import {
   createBenchRun,
   listBenchManifests,
   readBenchManifest,
-  resolveBenchTuple
+  resolveBenchTuple,
+  validateBenchTuple
 } from './bench-runs.js';
+import { resolveCatalog } from './runner-catalog.js';
 import { benchManifestPath } from './state-paths.js';
+
+const CATALOG = resolveCatalog({ warn: () => {} });
+
+/**
+ * One COMPLETE execution tuple in the catalog's own vocabulary — what §4.2
+ * pins onto every cell, and what `createBenchRun` now refuses to run without.
+ *
+ * @type {Record<string, string>}
+ */
+const TUPLE = {
+  orchestration_model: 'opus',
+  orchestration_effort: 'high',
+  orchestration_speed: 'default',
+  spec_review_model: 'fable',
+  spec_review_effort: 'high',
+  spec_review_speed: 'default',
+  plan_review_model: 'fable',
+  plan_review_effort: 'high',
+  plan_review_speed: 'default',
+  impl_review_model: 'fable',
+  impl_review_effort: 'xhigh',
+  impl_review_speed: 'default',
+  impl_runtime: 'codex',
+  impl_model: 'sol',
+  impl_effort: 'high',
+  impl_dispatch: 'delegated'
+};
 
 const WS = '/tmp/example-workspace/project-a';
 const BASE = 'a'.repeat(40);
@@ -198,7 +229,7 @@ describe('benchCloneFields', () => {
       k: 2,
       run_id: 'bench-1',
       base_sha: BASE,
-      tuple: { impl_model: 'sol' }
+      tuple: { ...TUPLE }
     });
 
     expect(fields.description).toBe(SOURCE.description);
@@ -285,11 +316,12 @@ describe('benchSourceEligibility', () => {
 });
 
 /**
- * @param {{ fail_at?: number }} [options]
+ * @param {{ fail_at?: number, close_fails?: boolean, readback_status?: string|null }} [options]
  */
 function fakeBd(options = {}) {
   const calls = {
     /** @type {string[]} */ created: [],
+    /** @type {string[]} */ placed: [],
     /** @type {Array<{ bead_id: string, reason: string }>} */ closed: [],
     /** @type {Array<{ bead_id: string, values: Record<string, string> }>} */
     metadata: []
@@ -323,7 +355,14 @@ function fakeBd(options = {}) {
      */
     async closeWithReason(bead_id, reason) {
       calls.closed.push({ bead_id, reason });
-      return { ok: true };
+      return options.close_fails === true
+        ? { ok: false, reason: 'clone_close_failed' }
+        : { ok: true };
+    },
+    async readStatus() {
+      return options.readback_status === undefined
+        ? 'closed'
+        : options.readback_status;
     }
   };
 }
@@ -338,11 +377,19 @@ function runInput(bd, overrides = {}) {
     run_id: 'bench-run-1',
     base_sha: BASE,
     source: SOURCE,
-    presets: [{ id: 'p1', name: '클로드 라인', tuple: { impl_model: 'sol' } }],
+    presets: [{ id: 'p1', name: '클로드 라인', tuple: { ...TUPLE } }],
     repeats: 2,
     reviewer_mode: /** @type {const} */ ('preset'),
     reviewer: null,
     bd,
+    catalog: CATALOG,
+    /**
+     * @param {string} bead_id
+     */
+    place: async (bead_id) => {
+      bd.calls.placed.push(bead_id);
+      return { ok: true };
+    },
     now: () => 1700000000000,
     ...overrides
   };
@@ -368,9 +415,7 @@ describe('createBenchRun', () => {
       run_id: 'bench-run-1',
       source_bead_id: 'UI-src',
       base_sha: BASE,
-      presets: [
-        { id: 'p1', name: '클로드 라인', resolved_tuple: { impl_model: 'sol' } }
-      ],
+      presets: [{ id: 'p1', name: '클로드 라인', resolved_tuple: TUPLE }],
       repeats: 2,
       reviewer_mode: 'preset',
       reviewer: null,
@@ -404,7 +449,8 @@ describe('createBenchRun', () => {
     expect(result).toEqual({
       ok: false,
       reason: 'clone_create_failed',
-      aborted: ['UI-clone1']
+      aborted: ['UI-clone1'],
+      residue: []
     });
     expect(bd.calls.closed).toEqual([
       { bead_id: 'UI-clone1', reason: 'bench:bench-run-1:aborted' }
@@ -420,7 +466,8 @@ describe('createBenchRun', () => {
     expect(result).toEqual({
       ok: false,
       reason: 'base_tip_unreadable',
-      aborted: []
+      aborted: [],
+      residue: []
     });
     expect(bd.calls.created).toEqual([]);
   });
@@ -444,11 +491,232 @@ describe('createBenchRun', () => {
     expect(bd.calls.metadata[0].values).toMatchObject({
       route: 'quick_fix',
       impl_model: 'sol',
+      impl_runtime: 'codex',
       impl_dispatch: 'delegated',
       bench_run: 'bench-run-1',
       bench_base: BASE,
       landing: 'none'
     });
+  });
+});
+
+describe('createBenchRun queue placement', () => {
+  test('places every created clone into the queue before the manifest', async () => {
+    const bd = fakeBd();
+
+    const result = await createBenchRun(runInput(bd));
+
+    expect(result.ok).toBe(true);
+    expect(bd.calls.placed).toEqual(['UI-clone1', 'UI-clone2']);
+  });
+
+  test('aborts the experiment when one clone cannot be queued', async () => {
+    const bd = fakeBd();
+
+    const result = await createBenchRun(
+      runInput(bd, {
+        /**
+         * @param {string} bead_id
+         */
+        place: async (bead_id) =>
+          bead_id === 'UI-clone2'
+            ? { ok: false, reason: 'clone_place_refused:worker_ineligible' }
+            : { ok: true }
+      })
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'clone_place_refused:worker_ineligible',
+      aborted: ['UI-clone1', 'UI-clone2'],
+      residue: []
+    });
+    expect(readBenchManifest(WS, 'bench-run-1')).toBeNull();
+  });
+
+  test('refuses to create anything without a placement path', async () => {
+    const bd = fakeBd();
+
+    const result = await createBenchRun(runInput(bd, { place: undefined }));
+
+    expect(result.ok === false && result.reason).toBe(
+      'clone_place_unavailable'
+    );
+    expect(readBenchManifest(WS, 'bench-run-1')).toBeNull();
+  });
+});
+
+describe('createBenchRun abort readback', () => {
+  test('reports a clone whose close failed as uncleaned residue', async () => {
+    const bd = fakeBd({ fail_at: 2, close_fails: true });
+
+    const result = await createBenchRun(runInput(bd));
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'clone_create_failed',
+      aborted: [],
+      residue: ['UI-clone1']
+    });
+  });
+
+  test('reports a clone the readback does not show closed as residue', async () => {
+    const bd = fakeBd({ fail_at: 2, readback_status: 'open' });
+
+    const result = await createBenchRun(runInput(bd));
+
+    expect(result.ok === false && result.residue).toEqual(['UI-clone1']);
+    expect(result.ok === false && result.aborted).toEqual([]);
+  });
+});
+
+describe('createBenchRun tuple validation', () => {
+  test('refuses an incomplete tuple before any clone is created', async () => {
+    const bd = fakeBd();
+    const partial = { ...TUPLE };
+    delete partial.impl_effort;
+
+    const result = await createBenchRun(
+      runInput(bd, { presets: [{ id: 'p1', name: 'x', tuple: partial }] })
+    );
+
+    expect(result.ok === false && result.reason).toBe(
+      'bench_tuple_incomplete:impl_effort'
+    );
+    expect(bd.calls.created).toEqual([]);
+  });
+
+  test('refuses a fixed reviewer outside the contract enum', async () => {
+    const bd = fakeBd();
+
+    const result = await createBenchRun(
+      runInput(bd, {
+        reviewer_mode: 'fixed',
+        reviewer: {
+          impl_review_model: 'gpt',
+          impl_review_effort: 'xhigh',
+          impl_review_speed: 'default'
+        }
+      })
+    );
+
+    expect(result.ok === false && result.reason).toBe(
+      'bench_tuple_invalid:invalid_impl_review_model'
+    );
+    expect(bd.calls.created).toEqual([]);
+  });
+});
+
+describe('validateBenchTuple', () => {
+  test('accepts a complete tuple in the catalog vocabulary', () => {
+    expect(validateBenchTuple(TUPLE, { catalog: CATALOG })).toEqual({
+      ok: true
+    });
+  });
+
+  test('rejects a missing impl_dispatch', () => {
+    const partial = { ...TUPLE };
+    delete partial.impl_dispatch;
+
+    expect(validateBenchTuple(partial, { catalog: CATALOG })).toEqual({
+      ok: false,
+      reason: 'bench_tuple_incomplete:impl_dispatch'
+    });
+  });
+
+  test('rejects an impl_dispatch outside the contract enum', () => {
+    expect(
+      validateBenchTuple(
+        { ...TUPLE, impl_dispatch: 'auto' },
+        { catalog: CATALOG }
+      )
+    ).toEqual({ ok: false, reason: 'bench_tuple_invalid:impl_dispatch' });
+  });
+
+  test('rejects a reviewer effort outside the contract enum', () => {
+    expect(
+      validateBenchTuple(
+        { ...TUPLE, impl_review_effort: 'ultra' },
+        { catalog: CATALOG }
+      )
+    ).toEqual({
+      ok: false,
+      reason: 'bench_tuple_invalid:invalid_impl_review_effort'
+    });
+  });
+});
+
+describe('benchAreaLabels', () => {
+  test('keeps the area pointers', () => {
+    expect(benchAreaLabels(['frontend', 'backend'])).toEqual([
+      'frontend',
+      'backend'
+    ]);
+  });
+
+  test('drops the contract labels that would change how the clone runs', () => {
+    expect(
+      benchAreaLabels([
+        'frontend',
+        'worker-ineligible',
+        'session-preferred',
+        'spec-after-blocker',
+        'bench'
+      ])
+    ).toEqual(['frontend']);
+  });
+
+  test('drops the retired review mirror labels and their prefixes', () => {
+    expect(
+      benchAreaLabels([
+        'has:spec',
+        'pr',
+        'reviewed:impl',
+        'skipped:spec',
+        'frontend'
+      ])
+    ).toEqual(['frontend']);
+  });
+});
+
+describe('benchCellTerminal', () => {
+  test('reports a closed cell with only ended attempts as terminal', () => {
+    expect(
+      benchCellTerminal({
+        attempts: [{ status: 'done' }],
+        bead_closed: true
+      })
+    ).toBe(true);
+  });
+
+  test('refuses a cell whose bead is still open', () => {
+    expect(
+      benchCellTerminal({ attempts: [{ status: 'done' }], bead_closed: false })
+    ).toBe(false);
+  });
+
+  test('refuses a parked cell even when its bead reads closed', () => {
+    expect(
+      benchCellTerminal({
+        attempts: [{ status: 'failed' }, { status: 'parked' }],
+        bead_closed: true
+      })
+    ).toBe(false);
+  });
+
+  test('refuses a waiting cell even when its bead reads closed', () => {
+    expect(
+      benchCellTerminal({
+        attempts: [{ status: 'waiting' }],
+        bead_closed: true
+      })
+    ).toBe(false);
+  });
+
+  test('refuses a cell whose attempt status cannot be read', () => {
+    expect(
+      benchCellTerminal({ attempts: [{ status: null }], bead_closed: true })
+    ).toBe(false);
   });
 });
 

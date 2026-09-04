@@ -27,8 +27,20 @@
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { SESSION_PREFERRED_LABEL } from '../../app/utils/session-preferred.js';
+import { SPEC_AFTER_BLOCKER_LABEL } from '../../app/utils/spec-after-blocker.js';
+import { WORKER_INELIGIBLE_LABEL } from '../../app/utils/worker-eligibility.js';
+import {
+  RETIRED_MIRROR_LABELS,
+  RETIRED_MIRROR_LABEL_PREFIXES
+} from '../display-policy-store.js';
 import { debug } from '../logging.js';
-import { EXEC_SETTING_KEYS, QUICK_FIX_LANE_MAP } from './exec-enums.js';
+import {
+  EXEC_SETTING_KEYS,
+  IMPL_DISPATCHES,
+  QUICK_FIX_LANE_MAP,
+  validateExecSettings
+} from './exec-enums.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
 import { benchManifestPath, benchRunsDir } from './state-paths.js';
 
@@ -70,6 +82,34 @@ export const BENCH_REVIEWER_KEYS = [
 export const BENCH_TUPLE_KEYS = [...EXEC_SETTING_KEYS, 'impl_dispatch'];
 
 /**
+ * Labels a clone NEVER copies from its source. §4.3 copies 유형·우선순위·area
+ * labels, and this repository has no area-label registry — so the copy is
+ * defined by SUBTRACTION, and what it subtracts is the workflow contract's own
+ * vocabulary plus `bench` itself.
+ *
+ * The reason is behavioural, not cosmetic: `worker-ineligible` would keep the
+ * clone out of the very lane the experiment exists to measure,
+ * `spec-after-blocker` and `session-preferred` steer routing, and the retired
+ * mirror labels (`has:spec`, `pr`, `reviewed:*`, `skipped:*`) assert review
+ * state the clone has not earned. Every constant here is imported from the
+ * module that already owns it; nothing in this list is a new word.
+ *
+ * ONE list, read by {@link benchAreaLabels} alone.
+ *
+ * @type {ReadonlySet<string>}
+ */
+export const BENCH_LABEL_EXCLUSIONS = new Set([
+  WORKER_INELIGIBLE_LABEL,
+  SESSION_PREFERRED_LABEL,
+  SPEC_AFTER_BLOCKER_LABEL,
+  ...RETIRED_MIRROR_LABELS,
+  BENCH_LABEL
+]);
+
+/** @type {ReadonlyArray<string>} */
+export const BENCH_LABEL_EXCLUDED_PREFIXES = RETIRED_MIRROR_LABEL_PREFIXES;
+
+/**
  * The three orchestration keys `resolveForDispatch` already resolves. They are
  * taken from its answer rather than re-derived here so the pin and the dispatch
  * read the same ladder.
@@ -79,6 +119,55 @@ const ORCHESTRATION_TUPLE_KEYS = [
   'orchestration_effort',
   'orchestration_speed'
 ];
+
+/**
+ * Attempt statuses a bench cell can still come back from.
+ *
+ * Deliberately NOT `queue-store.js`'s `TERMINAL_ATTEMPT_STATUSES`: that set
+ * answers "has this attempt released its bead" for scheduling, and `parked`,
+ * `waiting`, `retry_wait` and `stopped` all release the bead while the CELL is
+ * still expected to produce a result. Reading them as an ending would let the
+ * run sweep delete the worktree and branch a resume needs.
+ *
+ * @type {ReadonlySet<string>}
+ */
+export const BENCH_CELL_RESUMABLE_STATUSES = new Set([
+  'pending',
+  'running',
+  'retry_wait',
+  'parked',
+  'waiting',
+  'stopped'
+]);
+
+/**
+ * Has one bench cell finished for good (§4.6)? The single owner of that
+ * question: the residue sweep and the run projection both ask it here, so a
+ * cell can never read as finished on one surface and resumable on the other.
+ *
+ * Two conditions, both required. The clone bead must be CLOSED — a session
+ * closes it with `bench:<run_id>` and the Worker closes a failed cell with
+ * `bench:<run_id>:failed`, so an open bead means the cell is still owed a run.
+ * And no attempt of the lineage may sit in a resumable status. An unknown
+ * status counts as resumable: cleanup is irreversible, so an unreadable row is
+ * a reason to keep the worktree, never a reason to remove it.
+ *
+ * @param {{ attempts?: Array<Record<string, any>>, bead_closed?: boolean }} cell
+ * @returns {boolean}
+ */
+export function benchCellTerminal(cell) {
+  if (cell?.bead_closed !== true) {
+    return false;
+  }
+  for (const attempt of Array.isArray(cell.attempts) ? cell.attempts : []) {
+    const status =
+      attempt && typeof attempt.status === 'string' ? attempt.status : null;
+    if (status === null || BENCH_CELL_RESUMABLE_STATUSES.has(status)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /**
  * @param {unknown} value
@@ -259,6 +348,69 @@ export function resolveBenchTuple(input) {
 }
 
 /**
+ * Validate one resolved tuple before any clone exists (§6 fail-closed).
+ *
+ * Completeness first: the whole point of §4.2's pin is that no axis is left to
+ * whatever the workspace default happens to be at dispatch time, so a missing
+ * key is a broken pin, not a smaller one. Then the values, through the SAME
+ * `validateExecSettings` every other write boundary uses — which is what checks
+ * the reviewer triple against `REVIEW_STEP_MODELS`/`REVIEW_EFFORTS`/
+ * `REVIEW_SPEEDS` and the implementation target against the catalog.
+ *
+ * @param {Record<string, unknown>} values - The tuple as it will be written,
+ * reviewer override included.
+ * @param {{ catalog?: any }} [options]
+ * @returns {{ ok: true }|{ ok: false, reason: string }}
+ */
+export function validateBenchTuple(values, options = {}) {
+  const tuple = isRecord(values) ? values : {};
+  for (const key of BENCH_TUPLE_KEYS) {
+    if (usableString(tuple[key]) === null) {
+      return { ok: false, reason: `bench_tuple_incomplete:${key}` };
+    }
+  }
+  if (!IMPL_DISPATCHES.includes(String(tuple.impl_dispatch))) {
+    return { ok: false, reason: 'bench_tuple_invalid:impl_dispatch' };
+  }
+  const checked = validateExecSettings(
+    tuple,
+    options.catalog ? { catalog: options.catalog } : {}
+  );
+  if (!checked.ok) {
+    return { ok: false, reason: `bench_tuple_invalid:${checked.reason}` };
+  }
+  return { ok: true };
+}
+
+/**
+ * The area labels one clone inherits: everything left after
+ * {@link BENCH_LABEL_EXCLUSIONS} and its prefixes are removed (§4.3).
+ *
+ * @param {unknown} labels
+ * @returns {string[]}
+ */
+export function benchAreaLabels(labels) {
+  if (!Array.isArray(labels)) {
+    return [];
+  }
+  /** @type {string[]} */
+  const out = [];
+  for (const entry of labels) {
+    const label = usableString(entry);
+    if (label === null || BENCH_LABEL_EXCLUSIONS.has(label)) {
+      continue;
+    }
+    if (
+      BENCH_LABEL_EXCLUDED_PREFIXES.some((prefix) => label.startsWith(prefix))
+    ) {
+      continue;
+    }
+    out.push(label);
+  }
+  return out;
+}
+
+/**
  * The clone bead one cell is created from (§4.3).
  *
  * The description is copied BYTE FOR BYTE: the quick_fix self-review receipt
@@ -279,11 +431,7 @@ export function resolveBenchTuple(input) {
  * @returns {{ title: string, description: string, issue_type: string|null, priority: number|null, labels: string[], metadata: Record<string, string> }}
  */
 export function benchCloneFields(input) {
-  const area_labels = Array.isArray(input.source.labels)
-    ? input.source.labels.filter(
-        (label) => typeof label === 'string' && label.length > 0
-      )
-    : [];
+  const area_labels = benchAreaLabels(input.source.labels);
   /** @type {Record<string, string>} */
   const metadata = {
     route: 'quick_fix',
@@ -445,12 +593,14 @@ export function benchRunBeadIds(manifest) {
 }
 
 /**
- * Create one bench run: every cell's clone, then the manifest (§4.3·§4.6).
+ * Create one bench run: every cell's clone AND its queue placement, then the
+ * manifest (§4.3·§4.4·§4.6).
  *
- * FAIL-CLOSED as a whole. The base tip is required up front, and a single
- * clone that cannot be completed aborts the experiment: every clone already
- * created is closed with `bench:<run_id>:aborted` and no manifest is written,
- * so a partially-created run can never be read as a run.
+ * FAIL-CLOSED as a whole. The base tip and a complete tuple are required up
+ * front, and a single clone that cannot be created, stamped or QUEUED aborts
+ * the experiment: every clone already created is closed with
+ * `bench:<run_id>:aborted` and no manifest is written, so a partially-created
+ * run can never be read as a run.
  *
  * `bd` is injected rather than imported so this module stays testable without a
  * database, and so the ws layer can bind the SAME workspace-scoped runner every
@@ -469,64 +619,114 @@ export function benchRunBeadIds(manifest) {
  *     create: (input: { title: string, description: string, issue_type: string|null, priority: number|null }) => Promise<{ ok: boolean, id?: string, reason?: string }>,
  *     setMetadata: (bead_id: string, values: Record<string, string>) => Promise<{ ok: boolean, reason?: string }>,
  *     addLabels: (bead_id: string, labels: string[]) => Promise<{ ok: boolean, reason?: string }>,
- *     closeWithReason: (bead_id: string, reason: string) => Promise<{ ok: boolean, reason?: string }>
+ *     closeWithReason: (bead_id: string, reason: string) => Promise<{ ok: boolean, reason?: string }>,
+ *     readStatus?: (bead_id: string) => Promise<string|null>
  *   },
+ *   place: (bead_id: string) => Promise<{ ok: boolean, reason?: string }>,
+ *   catalog?: any,
  *   now?: () => number,
  *   fs?: any
  * }} input
- * @returns {Promise<{ ok: true, manifest: Record<string, any> }|{ ok: false, reason: string, aborted: string[] }>}
+ * @returns {Promise<{ ok: true, manifest: Record<string, any> }|{ ok: false, reason: string, aborted: string[], residue: string[] }>}
  */
 export async function createBenchRun(input) {
   const now = input.now || (() => Date.now());
   const run_id = usableString(input.run_id);
   if (run_id === null || !BENCH_RUN_ID_RE.test(run_id)) {
-    return { ok: false, reason: 'invalid_run_id', aborted: [] };
+    return { ok: false, reason: 'invalid_run_id', aborted: [], residue: [] };
   }
   const base_sha = usableString(input.base_sha);
   if (base_sha === null || !FULL_SHA_RE.test(base_sha)) {
     // §6: without the base tip the experiment does not start. A cell cut from
     // "whatever the base is now" is not comparable with its siblings.
-    return { ok: false, reason: 'base_tip_unreadable', aborted: [] };
+    return {
+      ok: false,
+      reason: 'base_tip_unreadable',
+      aborted: [],
+      residue: []
+    };
   }
   const eligible = benchSourceEligibility(input.source);
   if (!eligible.ok) {
-    return { ok: false, reason: eligible.reason, aborted: [] };
+    return { ok: false, reason: eligible.reason, aborted: [], residue: [] };
   }
   const repeats =
     Number.isInteger(input.repeats) && input.repeats >= 1 && input.repeats <= 5
       ? input.repeats
       : 0;
   if (repeats === 0) {
-    return { ok: false, reason: 'invalid_repeats', aborted: [] };
+    return { ok: false, reason: 'invalid_repeats', aborted: [], residue: [] };
   }
   if (!Array.isArray(input.presets) || input.presets.length === 0) {
-    return { ok: false, reason: 'no_presets', aborted: [] };
+    return { ok: false, reason: 'no_presets', aborted: [], residue: [] };
   }
   const reviewer =
     input.reviewer_mode === 'fixed' && isRecord(input.reviewer)
       ? input.reviewer
       : null;
+  // §6 fail-closed, BEFORE the first clone exists: an incomplete or
+  // out-of-vocabulary tuple would otherwise be pinned onto every cell and read
+  // back later as a choice somebody made.
+  for (const preset of input.presets) {
+    const checked = validateBenchTuple(
+      { ...(isRecord(preset?.tuple) ? preset.tuple : {}), ...(reviewer ?? {}) },
+      input.catalog ? { catalog: input.catalog } : {}
+    );
+    if (!checked.ok) {
+      return {
+        ok: false,
+        reason: checked.reason,
+        aborted: [],
+        residue: []
+      };
+    }
+  }
 
   /** @type {Array<{ preset_id: string, k: number, bead_id: string }>} */
   const cells = [];
 
   /**
-   * Undo a partial creation (§4.6). Best-effort per bead: a clone that cannot
-   * be closed is still reported, because the manifest is never written and the
-   * operator has to know which beads were left behind.
+   * Undo a partial creation (§4.6). Each close is CONFIRMED by a status
+   * readback, and a clone whose close cannot be confirmed is reported as
+   * `residue` rather than counted as cleaned up: the manifest is never
+   * written, so an unclosed clone is a bead nobody owns and the operator is
+   * the only one who can retire it.
    *
    * @param {string} reason
-   * @returns {Promise<{ ok: false, reason: string, aborted: string[] }>}
+   * @returns {Promise<{ ok: false, reason: string, aborted: string[], residue: string[] }>}
    */
   const abort = async (reason) => {
+    /** @type {string[]} */
+    const aborted = [];
+    /** @type {string[]} */
+    const residue = [];
     for (const cell of cells) {
+      let closed = false;
       try {
-        await input.bd.closeWithReason(cell.bead_id, `bench:${run_id}:aborted`);
+        const result = await input.bd.closeWithReason(
+          cell.bead_id,
+          `bench:${run_id}:aborted`
+        );
+        closed = result?.ok === true;
       } catch (err) {
         log('bench abort close failed for %s: %o', cell.bead_id, err);
       }
+      if (closed) {
+        // The readback is what makes the close a fact. Without one the bd
+        // exit code is the only evidence, and this path exists precisely
+        // because writes were already failing.
+        closed = false;
+        if (typeof input.bd.readStatus === 'function') {
+          try {
+            closed = (await input.bd.readStatus(cell.bead_id)) === 'closed';
+          } catch (err) {
+            log('bench abort readback failed for %s: %o', cell.bead_id, err);
+          }
+        }
+      }
+      (closed ? aborted : residue).push(cell.bead_id);
     }
-    return { ok: false, reason, aborted: cells.map((cell) => cell.bead_id) };
+    return { ok: false, reason, aborted, residue };
   };
 
   for (const preset of input.presets) {
@@ -581,6 +781,25 @@ export async function createBenchRun(input) {
       }
       if (!stamped.ok) {
         return abort(stamped.reason || 'clone_metadata_failed');
+      }
+
+      // §4.4 first line: the clone goes into the parallel queue through the
+      // EXISTING lane placement path. Inside the creation unit and ahead of
+      // the manifest, so a cell that cannot be queued aborts the experiment
+      // instead of leaving a manifest whose cells will never run.
+      if (typeof input.place !== 'function') {
+        return abort('clone_place_unavailable');
+      }
+      /** @type {{ ok: boolean, reason?: string }} */
+      let placed;
+      try {
+        placed = await input.place(bead_id);
+      } catch (err) {
+        log('bench clone place threw for %s: %o', bead_id, err);
+        return abort('clone_place_failed');
+      }
+      if (!placed || placed.ok !== true) {
+        return abort(placed?.reason || 'clone_place_failed');
       }
     }
   }

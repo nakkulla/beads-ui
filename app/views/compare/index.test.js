@@ -67,30 +67,30 @@ function mountView(options = {}) {
   const calls = /** @type {Array<{ type: string, payload: any }>} */ ([]);
   const transport = vi.fn(async (type, payload) => {
     calls.push({ type, payload });
-    if (type === 'bench-run-list') {
-      return { payload: { root_dir: '/repo', runs: options.runs ?? [RUN] } };
-    }
     if (type === 'get-compare') {
+      const bench_rows = [
+        {
+          attempt_id: 'a1',
+          bead_id: 'UI-c1',
+          status: 'done',
+          verify: 'pass',
+          duration_ms: 1000
+        },
+        {
+          attempt_id: 'a2',
+          bead_id: 'UI-c2',
+          status: 'done',
+          verify: 'pass',
+          duration_ms: 3000
+        }
+      ];
       return {
         payload: {
-          rows: [
-            {
-              attempt_id: 'a1',
-              bead_id: 'UI-c1',
-              status: 'done',
-              verify: 'pass',
-              duration_ms: 1000
-            },
-            {
-              attempt_id: 'a2',
-              bead_id: 'UI-c2',
-              status: 'done',
-              verify: 'pass',
-              duration_ms: 3000
-            }
-          ],
+          rows: bench_rows,
           groups: [],
-          workspaces: []
+          workspaces: [],
+          runs: options.runs ?? [RUN],
+          bench_rows
         }
       };
     }
@@ -174,14 +174,35 @@ describe('compare view experiment list', () => {
     );
   });
 
-  test('shows a read failure with a retry button', async () => {
+  test('reads the experiment list from the one compare request', async () => {
+    const { view, calls } = mountView();
+
+    view.load();
+    await settle();
+
+    expect(calls.map((call) => call.type)).toEqual(['get-compare']);
+  });
+
+  test('keeps the experiment rows when the main filter narrows', async () => {
     const { root, view } = mountView();
+
+    view.load();
+    await settle();
+    /** @type {HTMLButtonElement} */ (root.querySelector('.cmp-run')).click();
+    await settle();
+
+    const table = /** @type {HTMLElement} */ (
+      root.querySelector('.cmp-table--bench')
+    );
+    expect(table.textContent).toContain('pass^2');
+  });
+
+  test('shows a read failure with a retry button', async () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
     const failing = createCompareView(root, {
-      transport: vi.fn(async (type) => {
-        if (type === 'bench-run-list') {
-          throw { code: 'bench_run_list_failed', message: 'boom' };
-        }
-        return { payload: { rows: [], groups: [], workspaces: [] } };
+      transport: vi.fn(async () => {
+        throw { code: 'compare_projection_failed', message: 'boom' };
       })
     });
 
@@ -189,9 +210,8 @@ describe('compare view experiment list', () => {
     await settle();
 
     expect(root.querySelector('.cmp-error')?.textContent).toContain(
-      '실험 목록'
+      '비교 데이터'
     );
-    view.destroy();
     failing.destroy();
   });
 });

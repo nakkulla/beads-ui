@@ -901,10 +901,10 @@ address one repo, and a successful write invalidates that repo's monitor
 - `get-compare` payload:
   `{ range?, root_dirs?, issue_types?, routes?, include_bench? }` — replies with
   an envelope of type `compare-snapshot` carrying
-  `{ rows, groups, workspaces }`. A request/response PAIR, not a subscription:
-  the answer is read from the per-bead attempt records of every visible
-  workspace, and nothing a Worker tick changes has to redraw a comparison table.
-  The tab asks on open, on a filter change, and on `새로고침`.
+  `{ rows, groups, workspaces, runs, bench_rows }`. A request/response PAIR, not
+  a subscription: the answer is read from the per-bead attempt records of every
+  visible workspace, and nothing a Worker tick changes has to redraw a
+  comparison table. The tab asks on open, on a filter change, and on `새로고침`.
 - Every filter is optional and an unreadable value means "no restriction",
   except `include_bench`, whose default EXCLUDES bench clone runs (§3.4) so a
   comparison of real work never silently absorbs synthetic ones. `range` is a
@@ -923,8 +923,23 @@ address one repo, and a successful write invalidates that repo's monitor
   position when the attempt preserved no `exec_receipt`. Medians carry their own
   `{ median, sample, total }` so a column can say `n=3/5`, and `success_rate` is
   taken over the judged rows only.
+- `runs[]` and `bench_rows[]` are the experiment half of the same answer (§4.7).
+  `runs` is every visible workspace's run manifests, newest first; `bench_rows`
+  is every bench clone row of every visible workspace, deliberately NOT narrowed
+  by the request's filters, so choosing an experiment can never show an empty
+  table because the main table's period was narrower. There is no second op and
+  no second call: §3.5 enumerates the three ops this design adds.
+- One `runs[]` entry is its immutable manifest (`run_id`, `source_bead_id`,
+  `base_sha`, `presets` with their `resolved_tuple`, `repeats`, `reviewer_mode`,
+  `reviewer`, `delegate_forced`, `created_at`) plus `root_dir`, `cell_count` /
+  `terminal_count` and a `cells[]` whose per-cell `status`, `attempt_id`,
+  `done_kind`, `bench_verify` and `terminal` are PROJECTED from that clone
+  bead's attempt records on every read. `terminal` is the shared §4.6 judgment:
+  the clone bead is closed AND no attempt sits in a resumable status. The
+  manifest itself is never rewritten, so there is no second result ledger to
+  keep in step with attempt history.
 
-## Bench experiment channel (preset-compare §4.3·§4.7)
+## Bench experiment creation (preset-compare §4.3)
 
 - `bench-run-create` payload:
   `{ source_id, preset_ids: string[], repeats: 1..5, reviewer_mode: 'fixed'|'preset', reviewer?, root_dir? }`
@@ -939,19 +954,17 @@ address one repo, and a successful write invalidates that repo's monitor
   connection did not select.
 - Creation is one fail-closed unit. The workspace base tip is read first
   (`bench_base_unreadable` when it cannot be), each preset is resolved into a
-  complete execution tuple (`bench_tuple_unresolved` when it cannot be), and a
-  clone that cannot be completed aborts the experiment: every clone already
-  created is closed with `bench:<run_id>:aborted`, no manifest is written, and
-  the error's `details.aborted` names those beads.
-- `bench-run-list` payload: `{ root_dir? }` — replies with an envelope of type
-  `bench-runs-snapshot` carrying `{ root_dir, runs }`, newest run first. A run
-  is its immutable manifest (`run_id`, `source_bead_id`, `base_sha`, `presets`
-  with their `resolved_tuple`, `repeats`, `reviewer_mode`, `reviewer`,
-  `delegate_forced`, `created_at`) plus `cell_count` / `terminal_count` and a
-  `cells[]` whose per-cell `status`, `attempt_id`, `done_kind` and
-  `bench_verify` are PROJECTED from that clone bead's attempt records on every
-  read. The manifest itself is never rewritten, so there is no second result
-  ledger to keep in step with attempt history.
+  complete execution tuple and checked for completeness and vocabulary
+  (`bench_tuple_unresolved` when it cannot be), and a clone that cannot be
+  created, stamped or QUEUED into the parallel lane aborts the experiment: every
+  clone already created is closed with `bench:<run_id>:aborted`, no manifest is
+  written, the error's `details.aborted` names the beads whose close was
+  confirmed by readback, and `details.residue` names the ones that could not be
+  confirmed and are left for the operator.
+- Each created clone is placed into the workspace's parallel waiting lane
+  through the same `worker-queue-place` body a person's click uses (§4.4), so an
+  admission refusal aborts the experiment rather than leaving a cell that will
+  never run.
 
 ## Removed (historical)
 
