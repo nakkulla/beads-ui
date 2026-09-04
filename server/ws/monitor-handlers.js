@@ -53,6 +53,7 @@ import { scopeCache } from '../worker/scope-cache.js';
 import { kvGetJsonAtRoot, log, pushSnapshotIfChanged } from './context.js';
 import {
   doneAtByBead,
+  laneBeadIds,
   lanedBeadIds,
   serialLaneBeadIds,
   sessionExcludedBeadIds
@@ -334,6 +335,98 @@ function withRunnableScope(root_dir, runnable) {
 }
 
 /**
+ * The process-wide bead cache this aggregation reads its execution material
+ * from, or null when the runtime cannot be reached — which the overlay treats
+ * as "ship nothing", exactly like a cold cache.
+ *
+ * The refill fanout is NOT wired here: `decorateQueue`, which this same loop
+ * calls for every workspace, already owns that wiring for the one shared
+ * instance, and a second registration would only duplicate the fanout.
+ *
+ * @returns {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null}
+ */
+function titleCacheHandle() {
+  try {
+    return getWorkerRuntime().titleCache || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The bead ids a LANE of this snapshot draws — `queue` ∪ the serial lanes ∪ the
+ * running attempts. `pr_wait` and `done` are deliberately out: those rows have
+ * no "무엇으로 돌아갈까" to answer (UI-q1tg §3.1).
+ *
+ * @param {Record<string, any>} snapshot
+ * @returns {Set<string>}
+ */
+function laneMemberIds(snapshot) {
+  const ids = laneBeadIds(snapshot, ['queue']);
+  for (const bead_id of serialLaneBeadIds(snapshot)) {
+    ids.add(bead_id);
+  }
+  for (const bead_id of activeBeadIds(
+    snapshot.attempts || {},
+    doneAtByBead(snapshot)
+  )) {
+    ids.add(bead_id);
+  }
+  return ids;
+}
+
+/**
+ * One workspace's bead execution material, in the SAME shape the Worker tab's
+ * client adapter produces (UI-q1tg §3.1):
+ * `{ [bead_id]: { route?: string, metadata?: Record<string, string> } }`.
+ *
+ * `route` covers the lane members ∪ `done`; the execution pin covers the lane
+ * members ONLY — a 완료 행 says what it RAN with, which comes from the attempt
+ * record (§3.4) and not from a pin that keeps moving after the run. `runnable`
+ * rows carry their own `workflow` already and need no overlay.
+ *
+ * Reads the warm cache alone, so this projection spawns no synchronous child
+ * process (ADR 0026), and is partial on the cache's existing contract: a bead
+ * whose record has not landed is absent and arrives on the snapshot the fill
+ * callback triggers.
+ *
+ * @param {string} root_dir
+ * @param {Record<string, any>} snapshot
+ * @param {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null} cache
+ * @returns {Record<string, { route?: string, metadata?: Record<string, string> }>}
+ */
+function beadOverlayFor(root_dir, snapshot, cache) {
+  /** @type {Record<string, { route?: string, metadata?: Record<string, string> }>} */
+  const overlay = {};
+  if (!cache) {
+    return overlay;
+  }
+  const lane_ids = [...laneMemberIds(snapshot)];
+  const ids = [...new Set([...lane_ids, ...laneBeadIds(snapshot, ['done'])])];
+  if (ids.length === 0) {
+    return overlay;
+  }
+  for (const [bead_id, workflow] of Object.entries(
+    cache.workflowFor(root_dir, ids)
+  )) {
+    const route = workflow ? workflow.route : null;
+    if (typeof route === 'string' && route.length > 0) {
+      overlay[bead_id] = { route };
+    }
+  }
+  if (lane_ids.length === 0) {
+    return overlay;
+  }
+  for (const [bead_id, pin] of Object.entries(
+    cache.execPinFor(root_dir, lane_ids)
+  )) {
+    const entry = overlay[bead_id] || (overlay[bead_id] = {});
+    entry.metadata = pin;
+  }
+  return overlay;
+}
+
+/**
  * Build the cross-workspace pipeline payload.
  *
  * Fail-quiet per workspace (UI-nprg §에러 처리): one repo whose snapshot,
@@ -352,7 +445,8 @@ function withRunnableScope(root_dir, runnable) {
  *   listHidden?: () => string[],
  *   snapshotFor?: (workspace_key: string) => Record<string, unknown>,
  *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>, options?: RunnableReadOptions) => Array<Record<string, unknown>>,
- *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>
+ *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
+ *   titleCache?: () => ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null
  * }} [options] - Test seams; each defaults to the live server source.
  * @returns {Array<Record<string, unknown>>}
  */
@@ -372,9 +466,11 @@ export function buildMonitorPipeline(options = {}) {
     options.sessionActiveFor ||
     ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
       getWorkerRuntime().runnableCache.sessionActiveFor(key, exclude_ids));
+  const titleCache = options.titleCache || titleCacheHandle;
 
   /** @type {Array<Record<string, unknown>>} */
   const out = [];
+  const cache = titleCache();
 
   for (const root_dir of visibleWorkspaceRoots(options)) {
     /** @type {Record<string, any>} */
@@ -418,6 +514,12 @@ export function buildMonitorPipeline(options = {}) {
       session_active = [];
     }
     projected.session_active = session_active;
+    try {
+      projected.bead_overlay = beadOverlayFor(root_dir, projected, cache);
+    } catch (err) {
+      log('monitor: bead overlay failed for %s: %o', root_dir, err);
+      projected.bead_overlay = {};
+    }
     if (!hasPipeline(projected)) {
       continue;
     }

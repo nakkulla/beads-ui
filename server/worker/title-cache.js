@@ -24,6 +24,7 @@
  * `bd show` between them.
  */
 import path from 'node:path';
+import { EXECUTION_SETTING_KEYS } from '../../app/utils/execution-defaults.js';
 import { workerLabels } from '../../app/utils/worker-eligibility.js';
 import { isBdProtocolFailure } from '../bd-json.js';
 import { runBdJsonProjected } from '../bd.js';
@@ -57,6 +58,38 @@ const NEGATIVE_TTL_MS = 60_000;
 const POSITIVE_TTL_MS = 5 * 60_000;
 
 /**
+ * The metadata keys an execution pin is allowed to carry (UI-q1tg §3.1): the
+ * workspace execution profile's keys plus `impl_dispatch`. A bead's metadata
+ * holds far more than that, and the monitor payload multiplies whatever is kept
+ * by the number of visible repos, so everything the chip derivation does not
+ * read is dropped at the record instead of on the wire.
+ *
+ * @type {Set<string>}
+ */
+const EXEC_PIN_KEYS = new Set([...EXECUTION_SETTING_KEYS, 'impl_dispatch']);
+
+/**
+ * The allow-listed execution pin of one issue's metadata. Non-string values are
+ * dropped too: the wire contract is `Record<string, string>` and the chip
+ * derivation compares against catalog ids, so a non-string here could only
+ * produce a wrong chip.
+ *
+ * @param {Record<string, unknown>} metadata
+ * @returns {Record<string, string>}
+ */
+function execPinFromMetadata(metadata) {
+  /** @type {Record<string, string>} */
+  const pin = {};
+  for (const key of EXEC_PIN_KEYS) {
+    const value = metadata[key];
+    if (typeof value === 'string' && value.length > 0) {
+      pin[key] = value;
+    }
+  }
+  return pin;
+}
+
+/**
  * One cached bead record.
  *
  * @typedef {Object} BeadRecord
@@ -77,6 +110,11 @@ const POSITIVE_TTL_MS = 5 * 60_000;
  * when it moves between the 후보 lane and a queue lane.
  * @property {string|null} plan_path - `metadata.plan_path`, when it is a
  * non-empty string.
+ * @property {Record<string, string>} exec_pin - The execution-setting subset of
+ * `metadata` (UI-q1tg §3.1), read off the SAME `bd show` payload the title
+ * arrives on so the monitor's overlay costs no extra process. Always an object:
+ * a bead that pins nothing has an EMPTY pin, which still means "resolve from the
+ * workspace defaults", not "unknown".
  * @property {string[]|null} description_scope - The `## scope` section of the
  * issue description (UI-f1qy §4.2), read off the SAME `bd show` payload so the
  * fallback declaration costs no extra process. `null` means the description
@@ -259,6 +297,7 @@ export function createTitleCache(options = {}) {
       workflow: workflowFromIssue(issue, workspace),
       scope_spec_id: spec.conflict ? '' : spec.path,
       plan_path: plan_path.length > 0 ? plan_path : null,
+      exec_pin: execPinFromMetadata(metadata),
       description_scope: parseDescriptionScope(
         raw_issue && raw_issue.description
       ),
@@ -568,6 +607,24 @@ export function createTitleCache(options = {}) {
      */
     workflowFor(workspace, ids) {
       return collect(workspace, ids, (rec) => rec.workflow);
+    },
+
+    /**
+     * Cache hits for `ids` as execution pins (UI-q1tg §3.1) — the allow-listed
+     * metadata subset the exec chips resolve against. Same partiality contract
+     * as the projections above: a bead whose record has not landed is ABSENT,
+     * which the client reads as 모름 and draws no chip for. An EMPTY object is
+     * a different answer — "this bead pins nothing" — so it is kept.
+     *
+     * Costs no `bd` process of its own: the value was preserved from the same
+     * `bd show` the title came on (ADR 0026).
+     *
+     * @param {string} workspace
+     * @param {string[]} ids
+     * @returns {Record<string, Record<string, string>>}
+     */
+    execPinFor(workspace, ids) {
+      return collect(workspace, ids, (rec) => rec.exec_pin);
     },
 
     /**
