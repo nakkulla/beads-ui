@@ -235,3 +235,18 @@ export function filterDepCandidates(candidates, query) {
       candidate.title.toLowerCase().includes(needle)
   );
 }
+
+/** 느슨한 Bead ID 형태: 공백 없는 `<prefix>-<suffix>` (UI-k9e9). */
+const BEAD_ID_SHAPE = /^\S+-\S+$/;
+
+/**
+ * The 후보 밖 ID 직접 입력 (UI-k9e9): 검색어가 Bead ID 형태인지만 본다. 존재
+ * 여부도 사이클도 여기서 판정하지 않는다 — 후보 그래프 밖 ID는 스냅샷에 없어
+ * 클라이언트가 알 수 없는 사실이고, bd가 거부하면 그 stderr가 토스트로 뜬다.
+ *
+ * @param {string} query
+ * @returns {boolean}
+ */
+export function isBeadIdLike(query) {
+  return BEAD_ID_SHAPE.test(query.trim());
+}

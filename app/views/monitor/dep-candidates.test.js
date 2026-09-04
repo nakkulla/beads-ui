@@ -2,7 +2,8 @@ import { describe, expect, test } from 'vitest';
 import {
   depCandidateModel,
   depCandidates,
-  filterDepCandidates
+  filterDepCandidates,
+  isBeadIdLike
 } from './dep-candidates.js';
 
 /**
@@ -401,5 +402,34 @@ describe('depCandidateModel — 후보 공급자 (UI-lx45 §3.1)', () => {
     const model = depCandidateModel(null, null);
 
     expect([model.issues, model.blocked_by_map.size]).toEqual([[], 0]);
+  });
+});
+
+describe('isBeadIdLike', () => {
+  test('accepts a prefix-suffix id of another rig', () => {
+    expect(isBeadIdLike('dotfiles-98gr')).toBe(true);
+  });
+
+  test('accepts an id padded with surrounding spaces', () => {
+    expect(isBeadIdLike('  UI-k9e9  ')).toBe(true);
+  });
+
+  test('rejects a query without a hyphen', () => {
+    expect(isBeadIdLike('k9e9')).toBe(false);
+  });
+
+  test('rejects a query with an empty side of the hyphen', () => {
+    expect([isBeadIdLike('UI-'), isBeadIdLike('-98gr')]).toEqual([
+      false,
+      false
+    ]);
+  });
+
+  test('rejects a multi word query', () => {
+    expect(isBeadIdLike('dep add UI-1')).toBe(false);
+  });
+
+  test('rejects an empty query', () => {
+    expect(isBeadIdLike('   ')).toBe(false);
   });
 });

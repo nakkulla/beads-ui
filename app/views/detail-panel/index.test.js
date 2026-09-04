@@ -2835,6 +2835,177 @@ describe('views/detail-panel 의존성 절 편집기 (UI-lx45 §4)', () => {
     expect(depCalls(transport)).toEqual([]);
   });
 
+  test('renders a direct add row for an id outside the candidate list', () => {
+    const { mount } = addPanel({});
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+
+    input.value = 'dotfiles-98gr';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const direct = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-dep-direct]')
+    );
+    expect([
+      direct.getAttribute('data-dep-cand'),
+      String(direct.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    ]).toEqual(['dotfiles-98gr', 'dotfiles-98gr 직접 추가']);
+  });
+
+  test('puts the direct add row after the matching candidates', () => {
+    const { mount } = depPanel(
+      { id: 'UI-1', title: 't', dependencies: [] },
+      {
+        depCandidates: () => ({
+          issues: [candIssue('UI-9', { title: 'waits on dotfiles-98gr' })],
+          blocked_by_map: new Map()
+        })
+      }
+    );
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+
+    input.value = 'dotfiles-98gr';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(
+      Array.from(mount.querySelectorAll('.detail-dep-add__cand')).map((el) =>
+        el.getAttribute('data-dep-cand')
+      )
+    ).toEqual(['UI-9', 'dotfiles-98gr']);
+  });
+
+  test('omits the direct add row when a candidate has that exact id', () => {
+    const { mount } = addPanel({});
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+
+    input.value = 'UI-2';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(mount.querySelector('[data-dep-direct]')).toBeNull();
+  });
+
+  test('omits the direct add row when the query is not id shaped', () => {
+    const { mount } = addPanel({});
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+
+    input.value = 'dotfiles';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect([
+      mount.querySelector('[data-dep-direct]'),
+      mount.textContent?.includes('후보 없음')
+    ]).toEqual([null, true]);
+  });
+
+  test('omits the direct add row for this issue and its blockers', () => {
+    const { mount } = depPanel(
+      {
+        id: 'UI-1',
+        title: 't',
+        dependencies: [{ id: 'dotfiles-98gr', dependency_type: 'blocks' }]
+      },
+      {
+        depCandidates: () => ({ issues: [], blocked_by_map: new Map() })
+      }
+    );
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+
+    input.value = 'dotfiles-98gr';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const blocker_row = mount.querySelector('[data-dep-direct]');
+    input.value = 'UI-1';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect([blocker_row, mount.querySelector('[data-dep-direct]')]).toEqual([
+      null,
+      null
+    ]);
+  });
+
+  test('sends dep-add for a clicked direct add row', async () => {
+    const transport = vi.fn(async () => ({ id: 'UI-1', title: 't' }));
+    const { mount } = addPanel({ transport });
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+    input.value = 'dotfiles-98gr';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('[data-dep-direct]')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('dep-add', {
+      a: 'UI-1',
+      b: 'dotfiles-98gr',
+      view_id: 'UI-1',
+      root_dir: WS_A
+    });
+  });
+
+  test('adds the typed id on Enter when no candidate matches', async () => {
+    const transport = vi.fn(async () => ({ id: 'UI-1', title: 't' }));
+    const { mount } = addPanel({ transport });
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+    input.value = 'dotfiles-98gr';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('dep-add', {
+      a: 'UI-1',
+      b: 'dotfiles-98gr',
+      view_id: 'UI-1',
+      root_dir: WS_A
+    });
+  });
+
+  test('prefers the only matching candidate over the direct add row on Enter', async () => {
+    const transport = vi.fn(async () => ({ id: 'UI-1', title: 't' }));
+    const { mount } = depPanel(
+      { id: 'UI-1', title: 't', dependencies: [] },
+      {
+        transport,
+        depCandidates: () => ({
+          issues: [candIssue('UI-9', { title: 'waits on dotfiles-98gr' })],
+          blocked_by_map: new Map()
+        })
+      }
+    );
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+    input.value = 'dotfiles-98gr';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    await Promise.resolve();
+
+    expect(depCalls(transport)).toEqual([
+      ['dep-add', { a: 'UI-1', b: 'UI-9', view_id: 'UI-1', root_dir: WS_A }]
+    ]);
+  });
+
   test('clears the query and closes the list on Escape', () => {
     const { mount } = addPanel({});
     const input = /** @type {HTMLInputElement} */ (
@@ -2908,7 +3079,36 @@ describe('views/detail-panel 의존성 절 편집기 (UI-lx45 §4)', () => {
 
     expect(onDepChanged).not.toHaveBeenCalled();
     expect(document.querySelector('.toast')?.textContent).toBe(
-      '의존 추가 실패'
+      '의존 추가 실패 — nope'
+    );
+  });
+
+  test('shows the bd rejection reason for a direct add row', async () => {
+    const transport = vi.fn(async (/** @type {string} */ type) => {
+      if (type !== 'dep-add') {
+        return [];
+      }
+      const err = /** @type {any} */ (
+        new Error('issue not found: dotfiles-98gr')
+      );
+      err.code = 'bd_error';
+      throw err;
+    });
+    const { mount } = addPanel({ transport });
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.detail-dep-add__input')
+    );
+    input.value = 'dotfiles-98gr';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('[data-dep-direct]')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '의존 추가 실패 — issue not found: dotfiles-98gr'
     );
   });
 

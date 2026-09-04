@@ -15,7 +15,8 @@ import { formatExecReceipt } from '../board/card.js';
 import { createChipPopover } from '../chip-popover.js';
 import {
   depCandidates as depCandidatesOf,
-  filterDepCandidates
+  filterDepCandidates,
+  isBeadIdLike
 } from '../monitor/dep-candidates.js';
 import {
   ORCHESTRATION_KEYS,
@@ -1617,9 +1618,28 @@ export function createDetailPanel(mount_element, options) {
         showToast('저장됐으나 확인 실패 — 곧 갱신됩니다', 'error');
         return { ok: false, saved: true };
       }
-      showToast(fail_message, 'error');
+      showToast(failToastText(fail_message, err), 'error');
       return false;
     }
+  }
+
+  /**
+   * The 실패 토스트 문구. 서버가 실은 사유(`bd_error`의 stderr 등)가 있으면
+   * 그대로 뒤에 붙인다 — 후보 밖 ID를 직접 걸 때 왜 거절됐는지는 bd만 알고
+   * 있고, 그 문장을 버리면 사용자에게 남는 정보가 없다 (UI-k9e9).
+   *
+   * @param {string} fail_message
+   * @param {unknown} err
+   * @returns {string}
+   */
+  function failToastText(fail_message, err) {
+    const detail =
+      err &&
+      typeof err === 'object' &&
+      typeof (/** @type {any} */ (err).message) === 'string'
+        ? /** @type {any} */ (err).message.trim()
+        : '';
+    return detail.length > 0 ? `${fail_message} — ${detail}` : fail_message;
   }
 
   /**
@@ -1978,7 +1998,37 @@ export function createDetailPanel(mount_element, options) {
     if (candidate.disabled) {
       return;
     }
-    void sendDepOp('dep-add', candidate.bead_id, '의존 추가 실패');
+    addDepId(candidate.bead_id);
+  }
+
+  /**
+   * @param {string} bead_id
+   */
+  function addDepId(bead_id) {
+    void sendDepOp('dep-add', bead_id, '의존 추가 실패');
+  }
+
+  /**
+   * The 직접 추가 행의 ID (UI-k9e9), 없으면 `null`. 후보 그래프는 보이는
+   * 워크스페이스의 레인 이슈뿐이라 다른 rig의 ID는 애초에 들어올 수 없다.
+   * 그러니 형태만 보고 제출 경로를 열고, 존재·사이클 판정은 bd에 맡긴다.
+   *
+   * @param {DepCandidate[]} shown - `filterDepCandidates`가 남긴 후보. 정확히
+   * 일치하는 항목이 있으면 그 행이 이미 같은 제출을 하므로 그리지 않는다.
+   * @param {string[]} blocker_ids - 이미 이 이슈를 막는 `blocks` 선행 ID.
+   * @returns {string|null}
+   */
+  function directDepId(shown, blocker_ids) {
+    const typed = dep_query.trim();
+    if (!isBeadIdLike(typed) || typed === current_id) {
+      return null;
+    }
+    if (blocker_ids.includes(typed)) {
+      return null;
+    }
+    return shown.some((candidate) => candidate.bead_id === typed)
+      ? null
+      : typed;
   }
 
   /**
@@ -2000,8 +2050,9 @@ export function createDetailPanel(mount_element, options) {
   /**
    * @param {KeyboardEvent} ev
    * @param {DepCandidate[]} shown
+   * @param {string|null} direct_id
    */
-  function onDepKeydown(ev, shown) {
+  function onDepKeydown(ev, shown, direct_id) {
     if (ev.key === 'Escape') {
       // 패널 자체의 Escape(닫기)보다 먼저 잡는다 — 라벨 입력과 같은 문법이다.
       ev.stopPropagation();
@@ -2012,16 +2063,21 @@ export function createDetailPanel(mount_element, options) {
     }
     if (ev.key === 'Enter') {
       ev.preventDefault();
+      // 후보 하나가 남았을 때의 자동완성 문법이 먼저다 — 부분 입력으로 좁힌
+      // 후보를 Enter로 넣던 경로가 직접 추가 때문에 바뀌면 안 된다.
       if (shown.length === 1 && !shown[0].disabled) {
         addDep(shown[0]);
+      } else if (direct_id !== null) {
+        addDepId(direct_id);
       }
     }
   }
 
   /**
    * @param {DepCandidate[]} shown
+   * @param {string|null} direct_id
    */
-  function depAddTemplate(shown) {
+  function depAddTemplate(shown, direct_id) {
     return html`<div class="detail-dep-add">
       <input
         class="detail-dep-add__input"
@@ -2030,11 +2086,12 @@ export function createDetailPanel(mount_element, options) {
         .value=${dep_query}
         @focus=${onDepFocus}
         @input=${onDepInput}
-        @keydown=${(/** @type {KeyboardEvent} */ ev) => onDepKeydown(ev, shown)}
+        @keydown=${(/** @type {KeyboardEvent} */ ev) =>
+          onDepKeydown(ev, shown, direct_id)}
       />
       ${dep_list_open || dep_query.length > 0
         ? html`<div class="detail-dep-add__list">
-            ${shown.length === 0
+            ${shown.length === 0 && direct_id === null
               ? html`<div class="detail-dep-add__empty">후보 없음</div>`
               : shown.map(
                   (candidate) =>
@@ -2057,6 +2114,18 @@ export function createDetailPanel(mount_element, options) {
                       >
                     </button>`
                 )}
+            ${direct_id === null
+              ? ''
+              : html`<button
+                  type="button"
+                  class="detail-dep-add__cand"
+                  data-dep-cand=${direct_id}
+                  data-dep-direct="1"
+                  @click=${() => addDepId(direct_id)}
+                >
+                  <span class="detail-dep-add__id">${direct_id}</span>
+                  <span class="detail-dep-add__title">직접 추가</span>
+                </button>`}
           </div>`
         : ''}
     </div>`;
@@ -2167,6 +2236,10 @@ export function createDetailPanel(mount_element, options) {
       model && current_id
         ? filterDepCandidates(depCandidatesOf(current_id, model), dep_query)
         : [];
+    const direct_id = directDepId(
+      shown,
+      chips.filter((chip) => chip.kind === 'pred').map((chip) => chip.id)
+    );
     return html`
       <div class="detail-section-label">의존성</div>
       ${chips.length === 0
@@ -2176,7 +2249,7 @@ export function createDetailPanel(mount_element, options) {
           </div>`}
       ${model === null
         ? html`<div class="detail-empty">후보를 불러올 수 없음</div>`
-        : depAddTemplate(shown)}
+        : depAddTemplate(shown, direct_id)}
     `;
   }
 
