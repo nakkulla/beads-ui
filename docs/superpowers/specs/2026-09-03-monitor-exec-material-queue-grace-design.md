@@ -1,5 +1,7 @@
 ---
 scope:
+  - app/protocol.js
+  - server/ws/connection.js
   - server/ws/monitor-handlers.js
   - server/worker/title-cache.js
   - server/worker/scheduler.js
@@ -21,6 +23,7 @@ scope:
   - app/views/worker/index.test.js
   - app/views/monitor/index.test.js
   - server/worker/queue-store.test.js
+  - app/protocol.test.js
   - docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md
 ---
 
@@ -33,7 +36,7 @@ scope:
 실려 있지 않다.
 
 1. 후보 레인을 route로 좁혀 볼 수 없다. 필터 스트립에는 `show_blocked`와
-   `readiness` 둘뿐이다(`app/views/monitor/index.js:1623`).
+   `readiness` 둘뿐이다(`app/views/monitor/index.js:1730`).
 2. 자동화가 켜진 레인에 이슈를 넣으면 곧바로 실행이 시작된다. 배치 직후
    `att.scheduler.tick(...)`이 불리고(`server/worker/attach.js:2538`) 그 tick이
    같은 항목을 집는다. 순서를 다시 보거나 빼려면 이미 늦다.
@@ -49,7 +52,7 @@ scope:
 쓴다 — 서버 집계 `buildMonitorPipeline()`(`server/ws/monitor-handlers.js:358`)이
 `decorateQueue()` 결과에 `runnable`·`session_active`만 얹어 보내므로
 `bead_overlay`가 없고, Worker 스냅샷이 싣는
-`bead_workflow`(`server/ws/worker-handlers.js:2860`)도 없다.
+`bead_workflow`(`server/ws/worker-handlers.js:2859`)도 없다.
 
 코드가 이미 그 결과를 적어 두었다: *"오버레이가 이 bead의 metadata를
 모르면(구독 열 밖·Monitor 스냅샷) 칩이 서지 않는다 — 틀린 칩보다 없는
@@ -80,7 +83,7 @@ scope:
 
 사용자의 다섯 번째 요청("모니터 후보 레인에서 레포 접기")은 이미 구현돼
 있다(`sectionHeader()`의 `▾`/`▸` 캐럿과 `sectionCollapsed()`,
-`app/views/monitor/index.js:781`·`:878`). 새로고침 뒤에도 복원된다.
+`app/views/monitor/index.js:860`·`:957`). 새로고침 뒤에도 복원된다.
 정렬이 `updated_flat`·`as_given`이면 `runnable_flat`이 서서 섹션 자체가 생기지
 않는데(`app/views/worker/lane-model.js:3844`), 사용자는 "있으면 괜찮다"고
 확정했으므로 이 스펙은 정렬과 섹션의 관계를 바꾸지 않는다.
@@ -148,7 +151,7 @@ bead_overlay: { [bead_id]: { route?: string, metadata?: Record<string, string> }
   잡히고, 그 반대도 성립한다.
 - **숨김이다.** `show_blocked`·`readiness`와 같은 문법이며, 모니터 머리말의
   "필터는 숨김이 아니라 흐림"은 **데크의 포커스 필터**를 말한 것이라
-  (`app/views/monitor/index.js:18`·`:1860`) 이 필터와 축이 다르다.
+  (`app/views/monitor/index.js:18`·`:1968`) 이 필터와 축이 다르다.
 - 판정은 `lane-model`이 소유한다. 두 탭이 같은 결과를 얻고, 숨긴 건수는
   `runnable_hidden`에 `route` 칸을 더해 기존 `숨김 n` 문구가 그대로 답한다.
 - 칩 묶음은 준비도 세그먼트 옆에 선다. 준비도는 단일 선택(`aria-pressed` 하나만
@@ -189,7 +192,7 @@ bead_overlay: { [bead_id]: { route?: string, metadata?: Record<string, string> }
 유예도 건드리지 않는다. 이 갈림은 §5의 회귀 테스트가 고정한다.
 
 **깨우기**: tick이 이벤트 구동이라 유예가 끝나는 것을 깨울 것이 필요하다.
-`armRetryTimer()`(`server/worker/scheduler.js:10353`)와 **같은 모양**의
+`armRetryTimer()`(`server/worker/scheduler.js:10356`)와 **같은 모양**의
 `armGraceTimer(workspace)`를 둔다: 워크스페이스에서 가장 이른 만료 시각 하나에만
 `setTimeout`을 걸고, 멱등하게 재무장하며, `unref()`하고, 재시작하면 durable한
 `added_at`에서 다시 무장한다. 새 폴링 cadence를 만들지 않으므로 ADR 0034의
@@ -208,7 +211,7 @@ bead_overlay: { [bead_id]: { route?: string, metadata?: Record<string, string> }
 (`pushSnapshotIfChanged`)가 무력해지기 때문이다.
 
 **초 단위 갱신**: 남은 초가 흐르려면 1초마다 다시 그려야 한다. 모니터에는 그
-타이머가 이미 있다(`tick_timer`, `app/views/monitor/index.js:2958`). **Worker
+타이머가 이미 있다(`tick_timer`, `app/views/monitor/index.js:3169`). **Worker
 탭에는 없다** — `app/views/worker/index.js`에 `setInterval`이 하나도 없다. 유예
 행이 하나라도 보이는 동안에만 도는 1초 타이머를 Worker에 더하고, 유예 행이
 사라지면 해제한다. 상시 타이머를 만들지 않는다.
@@ -220,6 +223,15 @@ bead_overlay: { [bead_id]: { route?: string, metadata?: Record<string, string> }
 조작하게 되고, 그 값을 읽는 다른 소비자에게 거짓 진입 시각을 남긴다. 결정 2가
 이미 명시적 실행 지시를 유예에서 뺐으므로 이 버튼은 새 권한이 아니라 그 경로의
 행 단위 진입점이다.
+
+**새 WS op는 세 자리를 모두 얻어야 한다.** `worker-queue-start-now`는
+`app/protocol.js`의 `MESSAGE_TYPES` 배열과 같은 파일의 `MessageType` union에
+등록되고, `server/ws/connection.js`의 dispatch에 `case`를 얻어야 서버 핸들러
+(`server/ws/worker-handlers.js`)에 닿는다. 셋 중 하나라도 빠지면 요청은 조용히
+버려진다 — `2026-09-03-cross-lane-confirm-run-split-completion-design.md`가
+`monitor-lane-provenance`·`worker-queue-arm`·`worker-queue-disarm` 세 건에서
+관측하고 닫은 결함이 정확히 그것이다. 그 스펙이 남긴 `app/protocol.test.js`의
+dispatch case 대조 테스트가 이 op에도 그대로 적용된다(§5).
 
 ### 3.4 완료 행이 실행 사실을 말한다
 
@@ -254,7 +266,7 @@ bead_overlay: { [bead_id]: { route?: string, metadata?: Record<string, string> }
 
 - **route**: 완료 bead의 `workflow`. Worker 탭은 이미 받고 있다 —
   `beadWorkflowFor()`의 id 집합이 `laneBeadIds(queue, ['done'])`을 포함한다
-  (`server/ws/worker-handlers.js:1451`). 모니터는 §3.1이 같은 값을 싣는다.
+  (`server/ws/worker-handlers.js:1450`). 모니터는 §3.1이 같은 값을 싣는다.
 - **오케/워커**: 그 완료를 만든 **구현 attempt의 기록값** — `runner`·`model`·
   `effort`. 실행 중 타일이 이미 같은 재료를 같은 함수로 쓴다(`attemptExecChips`,
   `app/views/worker/lane-model.js:1412`). 완료 행이 참조할 attempt는 그 bead의
@@ -335,6 +347,10 @@ bead_overlay: { [bead_id]: { route?: string, metadata?: Record<string, string> }
   얻고, `unplaced` 행은 얻지 않는다.
 - `app/views/worker/index.test.js`: 유예 행이 보이는 동안에만 1초 타이머가 돌고
   사라지면 해제된다.
+- `app/protocol.test.js`: `worker-queue-start-now`가 `MESSAGE_TYPES`에 있다.
+  기존 "registers every client-sent server dispatch type" 테스트가
+  `server/ws/connection.js`의 `case`와의 대조를 이미 맡고 있으므로 그 테스트는
+  손대지 않는다.
 - `app/main.monitor.e2e.test.js`: 모니터 대기·완료 행에 오케/워커가 그려진다.
 - Pre-Handoff: `npm run tsc` · `npx vitest run --reporter=dot` · `npm run lint` ·
   `npm run prettier:write` · `npm run build`(번들·소스맵 포함, prettier 다음에).
@@ -475,6 +491,12 @@ bead_overlay: { [bead_id]: { route?: string, metadata?: Record<string, string> }
   방향으로 결정한다 — 서버가 `bead_overlay` 자리에 재료를 실어 보낸다. 중복
   구현을 막기 위해 전송로는 이 스펙이 만들고(§3.1), `carried_to` 필드는
   UI-ys18이 그 위에 얻는다. 간선: `bd dep add UI-ys18 UI-q1tg --type blocks`.
+- **UI-91fl** (연결 레인 확정/진행 분리 완성, 2026-09-04 착지): 이 스펙보다 먼저
+  들어갔고 `server/ws/monitor-handlers.js`·`app/views/worker/lane-model.js`·
+  `app/views/monitor/index.js`를 공유한다. 결정 대상은 다르지만 두 가지가 이
+  스펙의 전제로 남는다 — 확정 레인 드롭이 더는 큐에 적재하지 않으므로 확정 레인
+  멤버는 `▶ 진행` 전까지 `unplaced`이고(§3.5의 fail-quiet가 그 상태를 덮는다),
+  새 WS op는 §3.3이 명시한 세 자리에 모두 등록해야 한다.
 - **UI-n28d** (프리셋 비교 탭): `server/worker/scheduler.js`·`server/worker/queue-store.js`
   경로만 겹치고 결정 대상이 다르다 — path-only 겹침이므로 순서는 Worker 큐의
   직렬 배치와 `blocks` 간선이 정한다.
