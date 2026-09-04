@@ -1748,7 +1748,7 @@ input.inline-edit {
   line-height: inherit;
   font: inherit;
   outline: 2px solid var(--control-border, var(--border));
-  outline-offset: var(--outline-offset);
+  outline-offset: var(--outline-offset-s);
 }
 input.inline-edit:focus {
   outline: 2px solid color-mix(in srgb, var(--link) 50%, transparent);
@@ -2902,9 +2902,10 @@ html[data-theme='dark'] {
   line-height: 1.2;
 }
 
-/* `--accent`는 이 저장소에 정의가 없어 `var(--accent)`가 무효값이 된다. 포커스
-   테두리를 그것에 맡기면 `outline: none`과 겹쳐 포커스 표시가 아예 사라지므로,
-   `.op-btn--primary`가 쓰는 정의된 토큰을 쓴다. */
+/* 포커스 테두리는 `outline: none`과 겹쳐 있어 이 한 줄이 유일한 포커스 표시다.
+   UI-6g3t 당시 `--accent`에 정의가 없어 무효값이 되던 것을 정의된 토큰으로
+   바꿨고(UI-fj0b가 그 정의를 채운 뒤에도 그대로 둔다), 값이 같은 계열이라
+   겉모습은 변하지 않는다. */
 .worker-search:focus {
   border-color: var(--stage-plan-on);
   outline: none;

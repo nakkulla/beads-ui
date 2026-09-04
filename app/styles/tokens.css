@@ -85,6 +85,10 @@
   --chip-blocked-foreign: #8f8ff0;
 
   /* --- recurring semantic accents --- */
+  /* 상호작용(hover/focus) 강조. 상태를 뜻하는 -success/-danger/-warn/-child 와
+     달리 "지금 이 조작을 건드리고 있다"만 말한다. 라이트 테마는 흰 배경 대비를
+     맞추려고 더 어두운 파랑으로 따로 오버라이드한다. */
+  --accent: #60a5fa;
   --accent-success: #5ad198;
   --accent-danger: #e8756a;
   --accent-warn: #e8b45a;
@@ -161,6 +165,9 @@
   --border-panel: #e2e7ef;
   --border-chip: #c9d2df;
   --border-empty-fill: #dfe5ee;
+
+  /* interaction accent (다크값 #60a5fa 는 흰 배경에서 대비 2.5:1 로 읽히지 않는다) */
+  --accent: #2563eb;
 
   /* text tiers */
   --text-title: #1a2233;

@@ -530,3 +530,81 @@ describe('worker console styles', () => {
     expect(valueRule).toContain('text-overflow: ellipsis');
   });
 });
+
+/**
+ * Guards UI-fj0b: a `var(--x)` whose custom property nobody defines makes the
+ * whole declaration invalid, so the hover/focus feedback it carries silently
+ * does nothing. `--accent` was dead that way for six rules plus the `.op-btn`
+ * token UI-6g3t introduced.
+ */
+describe('design token definitions', () => {
+  const TOKENS = readFileSync(
+    path.resolve(process.cwd(), 'app/styles/tokens.css'),
+    'utf8'
+  );
+  const BASE = readFileSync(
+    path.resolve(process.cwd(), 'app/styles/base.css'),
+    'utf8'
+  );
+
+  /** Custom properties stamped onto elements from JS, never declared in CSS. */
+  const RUNTIME_INJECTED = new Set(['--progress']);
+
+  /**
+   * The body of a top-level rule, matched by counting braces so a nested block
+   * (`@media`, `color-mix` has none, but `:root` may gain one) cannot truncate it.
+   *
+   * @param {string} css
+   * @param {string} selector
+   * @returns {string}
+   */
+  function ruleBody(css, selector) {
+    const at = css.indexOf(`${selector} {`);
+    if (at < 0) {
+      return '';
+    }
+    const open = css.indexOf('{', at);
+    let depth = 0;
+    for (let i = open; i < css.length; i++) {
+      if (css[i] === '{') {
+        depth += 1;
+      } else if (css[i] === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return css.slice(open + 1, i);
+        }
+      }
+    }
+    return '';
+  }
+
+  test('defines --accent for the dark default theme', () => {
+    const root = ruleBody(TOKENS, ':root');
+
+    expect(root).toMatch(/--accent:\s*#[0-9a-f]{6};/);
+  });
+
+  test('overrides --accent for the light theme', () => {
+    const light = ruleBody(TOKENS, ":root[data-theme='light']");
+
+    expect(light).toMatch(/--accent:\s*#[0-9a-f]{6};/);
+  });
+
+  test('leaves no var() reference without a definition or a fallback', () => {
+    const all_css = [BASE, TOKENS, CSS].join('\n');
+    /** @type {Set<string>} */
+    const defined = new Set();
+    for (const m of all_css.matchAll(/(--[a-z0-9-]+)\s*:/g)) {
+      defined.add(m[1]);
+    }
+    /** @type {string[]} */
+    const dangling = [];
+    for (const m of all_css.matchAll(/var\(\s*(--[a-z0-9-]+)\s*\)/g)) {
+      if (!defined.has(m[1]) && !RUNTIME_INJECTED.has(m[1])) {
+        dangling.push(m[1]);
+      }
+    }
+
+    expect([...new Set(dangling)]).toEqual([]);
+  });
+});
