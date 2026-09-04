@@ -109,7 +109,7 @@ import { runtimeCatalog } from '../worker/runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
 import { createTailReader } from '../worker/runner/tail-reader.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
-import { activeLaneLineages } from '../worker/scheduler.js';
+import { activeLaneLineages, requestStartNow } from '../worker/scheduler.js';
 import { scopeCache } from '../worker/scope-cache.js';
 import {
   beadOfTransferredAttempt,
@@ -4099,6 +4099,64 @@ export function handleWorkerQueueDisarm(ws, req) {
     lane_id: has_lane ? p.lane_id : undefined
   });
   replyMutation(ws, req, key, result);
+}
+
+/**
+ * Handle `worker-queue-start-now`. Payload: `{ bead_id }` (2026-09-03
+ * monitor-exec-material-queue-grace §3.3) — `[지금 시작]`은 대기 진입
+ * 유예(`QUEUE_GRACE_MS`)를 그 행 하나에 대해서만 걷고, `▶ 진행`이 미는 것과 같은
+ * dispatch 루프를 민다.
+ *
+ * `added_at`은 과거로 내리지 않는다: 그러면 이 기능이 durable 필드를 조작하게
+ * 되고, 그 값을 읽는 다른 소비자에게 거짓 진입 시각을 남긴다. 그래서 이 op은
+ * 큐를 전혀 쓰지 않고 CAS도 없다 — 되돌릴 durable 변경이 없다.
+ *
+ * 대기 레인에 없는 bead는 이유를 돌려준다. 유예는 대기 항목만 갖는 상태이므로
+ * 그 클릭을 조용히 버리면 `▶ 진행` 세 자리 결함과 같은 모양이 된다.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerQueueStartNow(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const snapshot = queueStore().snapshot(key);
+  const waiting = [
+    ...snapshot.queue,
+    ...(snapshot.serial_lanes || []).flatMap(
+      (/** @type {{ entries: Array<{ bead_id: string }> }} */ lane) =>
+        lane.entries
+    )
+  ].some((/** @type {{ bead_id: string }} */ entry) => {
+    return entry.bead_id === p.bead_id;
+  });
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        ok: waiting,
+        reason: waiting ? undefined : 'not_waiting',
+        queue: decorateQueue(key, snapshot)
+      })
+    )
+  );
+  if (!waiting) {
+    return;
+  }
+  requestStartNow(key, p.bead_id, Date.now());
+  Promise.resolve(tickWorkerQueue(key)).catch((err) => {
+    log('worker tick after start-now failed for %s: %o', key, err);
+  });
 }
 
 /**

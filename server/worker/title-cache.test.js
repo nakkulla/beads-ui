@@ -760,6 +760,86 @@ describe('worker title cache — workflow projection (UI-eey2 §9.2)', () => {
   });
 });
 
+describe('execution pin projection (UI-q1tg §3.1)', () => {
+  test('keeps only the execution setting keys of the metadata', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '핀 있는 이슈',
+      metadata: {
+        impl_runtime: 'codex',
+        impl_model: 'gpt-5',
+        impl_dispatch: 'worker',
+        orchestration_effort: 'high',
+        route: 'spec_backed',
+        plan_path: 'docs/plans/thing.md',
+        blocked_reason: '선행 대기'
+      }
+    });
+
+    const out = cache.execPinFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({
+      'UI-1': {
+        impl_runtime: 'codex',
+        impl_model: 'gpt-5',
+        impl_dispatch: 'worker',
+        orchestration_effort: 'high'
+      }
+    });
+  });
+
+  test('projects an empty pin for a bead that pins nothing', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '핀 없는 이슈',
+      metadata: { route: 'quick_fix' }
+    });
+
+    const out = cache.execPinFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({ 'UI-1': {} });
+  });
+
+  test('omits a bead whose record has not landed yet', async () => {
+    const bd = fakeBd({
+      'UI-1': { title: '첫 제목', metadata: { impl_model: 'opus' } }
+    });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      enrichWorkflow: () => null
+    });
+
+    cache.execPinFor('/ws', ['UI-1', 'UI-missing']);
+    await bd.settled();
+
+    expect(cache.execPinFor('/ws', ['UI-1', 'UI-missing'])).toEqual({
+      'UI-1': { impl_model: 'opus' }
+    });
+  });
+
+  test('preserves the pin without adding a bd call', async () => {
+    const bd = fakeBd({
+      'UI-1': { title: '첫 제목', metadata: { impl_runtime: 'claude' } }
+    });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      enrichWorkflow: () => null
+    });
+
+    cache.titlesFor('/ws', ['UI-1']);
+    await bd.settled();
+    cache.execPinFor('/ws', ['UI-1']);
+    await bd.settled();
+
+    expect(cache.execPinFor('/ws', ['UI-1'])).toEqual({
+      'UI-1': { impl_runtime: 'claude' }
+    });
+    expect(bd.runJson).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('scope artifacts projection (UI-qm12 §4.2)', () => {
   test('projects the native spec path as the only artifact', () => {
     const cache = createTitleCache({ enrichWorkflow: () => null });

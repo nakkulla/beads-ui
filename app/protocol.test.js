@@ -158,6 +158,10 @@ describe('server/protocol', () => {
     );
   });
 
+  test('registers the queue start-now message type', () => {
+    expect(MESSAGE_TYPES).toContain('worker-queue-start-now');
+  });
+
   test('registers every client-sent server dispatch type', () => {
     const connection_source = readFileSync('server/ws/connection.js', 'utf8');
     const dispatch_types = [

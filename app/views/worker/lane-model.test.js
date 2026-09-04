@@ -5,6 +5,7 @@ import {
   activeByBead,
   buildLanes,
   latestTerminalAttempt,
+  routeChipValue,
   validTime
 } from './lane-model.js';
 
@@ -260,42 +261,64 @@ describe('monitor candidate readiness filter and sort (UI-ff10 §5·§7)', () =>
 
   test('counts a compound-filtered row once, in the blocked count', () => {
     const lanes = buildLanes([repo], [state()], {
-      candidate_filter: { show_blocked: false, readiness: 'not_ready' }
+      candidate_filter: {
+        show_blocked: false,
+        readiness: 'not_ready',
+        routes: []
+      }
     });
 
     // A-1은 blocked이면서 ready다 — Monitor는 앞 단계인 blocked가 가져간다.
     expect(lanes.runnable.map((r) => r.id)).toEqual(['A-2']);
-    expect(lanes.runnable_hidden).toEqual({ blocked: 1, readiness: 1 });
+    expect(lanes.runnable_hidden).toEqual({
+      blocked: 1,
+      readiness: 1,
+      route: 0
+    });
   });
 
   test('counts a compound-filtered row in neither control under per_control', () => {
     const lanes = buildLanes([repo], [state()], {
-      candidate_filter: { show_blocked: false, readiness: 'not_ready' },
+      candidate_filter: {
+        show_blocked: false,
+        readiness: 'not_ready',
+        routes: []
+      },
       candidate_hidden_counts: 'per_control'
     });
 
     // 한쪽만 풀어도 A-1은 그대로 숨는다 — 어느 배지도 그것을 세지 않는다.
     expect(lanes.runnable.map((r) => r.id)).toEqual(['A-2']);
-    expect(lanes.runnable_hidden).toEqual({ blocked: 0, readiness: 1 });
+    expect(lanes.runnable_hidden).toEqual({
+      blocked: 0,
+      readiness: 1,
+      route: 0
+    });
   });
 
   test('counts each control alone under per_control when only one filters', () => {
     const blocked_only = buildLanes([repo], [state()], {
-      candidate_filter: { show_blocked: false, readiness: 'all' },
+      candidate_filter: { show_blocked: false, readiness: 'all', routes: [] },
       candidate_hidden_counts: 'per_control'
     });
     const readiness_only = buildLanes([repo], [state()], {
-      candidate_filter: { show_blocked: true, readiness: 'not_ready' },
+      candidate_filter: {
+        show_blocked: true,
+        readiness: 'not_ready',
+        routes: []
+      },
       candidate_hidden_counts: 'per_control'
     });
 
     expect(blocked_only.runnable_hidden).toEqual({
       blocked: 1,
-      readiness: 0
+      readiness: 0,
+      route: 0
     });
     expect(readiness_only.runnable_hidden).toEqual({
       blocked: 0,
-      readiness: 2
+      readiness: 2,
+      route: 0
     });
   });
 
@@ -2516,7 +2539,7 @@ describe('monitor 저장 연결 레인 투영 (UI-j92s §5.1·§5.2)', () => {
     ]);
   });
 
-  test('carries no route, overlap or predecessor material on a lane row', () => {
+  test('carries no overlap or predecessor material on a lane row', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -2543,8 +2566,10 @@ describe('monitor 저장 연결 레인 투영 (UI-j92s §5.1·§5.2)', () => {
 
     const row = lanes.chain_lanes[0].rows[1];
     expect(Object.keys(row).sort()).toEqual([
+      'added_at',
       'done',
       'draggable',
+      'exec_chips',
       'fixed',
       'id',
       'location_label',
@@ -2552,6 +2577,8 @@ describe('monitor 저장 연결 레인 투영 (UI-j92s §5.1·§5.2)', () => {
       'mismatch',
       'queue_index',
       'root_dir',
+      'route',
+      'route_source',
       'seq',
       'title',
       'unplaced',
@@ -5360,7 +5387,7 @@ describe('lane model as_given candidate order (UI-4tud §4.3)', () => {
       [state()],
       {
         candidate_sort: 'as_given',
-        candidate_filter: { show_blocked: false, readiness: 'all' }
+        candidate_filter: { show_blocked: false, readiness: 'all', routes: [] }
       }
     );
 
@@ -5616,5 +5643,335 @@ describe('워커 탭 검색 태깅 (UI-6g3t §7)', () => {
       plain.pr_wait.map((/** @type {any} */ i) => i.id),
       plain.done.map((/** @type {any} */ i) => i.id)
     ]);
+  });
+});
+
+describe('candidate route filter (UI-q1tg §3.2)', () => {
+  const repo = () =>
+    workspace({
+      runnable: [
+        runnable('A-1', { workflow: { route: 'quick_fix' } }),
+        runnable('A-2', { workflow: { route: 'spec_backed' } }),
+        runnable('A-3', { workflow: { route: 'full_plan' } }),
+        runnable('A-4', {
+          workflow: { route: 'quick_fix', route_source: 'derived' }
+        }),
+        runnable('A-5')
+      ]
+    });
+
+  /**
+   * @param {string[]} routes
+   * @param {'sequential'|'per_control'} [counts]
+   */
+  const filtered = (routes, counts = 'sequential') =>
+    buildLanes([repo()], [state()], {
+      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, routes },
+      candidate_hidden_counts: counts
+    });
+
+  test('shows every candidate when no route is selected', () => {
+    const lanes = filtered([]);
+
+    expect(lanes.runnable.map((r) => r.id).sort()).toEqual([
+      'A-1',
+      'A-2',
+      'A-3',
+      'A-4',
+      'A-5'
+    ]);
+  });
+
+  test('hides candidates outside the one selected route', () => {
+    const lanes = filtered(['quick_fix']);
+
+    expect(lanes.runnable.map((r) => r.id)).toEqual(['A-1']);
+  });
+
+  test('keeps candidates from every selected route', () => {
+    const lanes = filtered(['quick_fix', 'full_plan']);
+
+    expect(lanes.runnable.map((r) => r.id).sort()).toEqual(['A-1', 'A-3']);
+  });
+
+  test('catches a derived route with the unset value', () => {
+    const lanes = filtered(['unset']);
+
+    expect(lanes.runnable.map((r) => r.id).sort()).toEqual(['A-4', 'A-5']);
+  });
+
+  test('counts the rows the route filter alone hid', () => {
+    const lanes = filtered(['spec_backed']);
+
+    expect(lanes.runnable_hidden.route).toBe(4);
+  });
+
+  test('counts a route-hidden row per control under per_control', () => {
+    const lanes = filtered(['spec_backed'], 'per_control');
+
+    expect(lanes.runnable_hidden).toEqual({
+      blocked: 0,
+      readiness: 0,
+      route: 4
+    });
+  });
+
+  test('ignores an unknown stored route value', () => {
+    const lanes = filtered(['not_a_route']);
+
+    expect(lanes.runnable.map((r) => r.id).sort()).toEqual([
+      'A-1',
+      'A-2',
+      'A-3',
+      'A-4',
+      'A-5'
+    ]);
+  });
+});
+
+describe('완료 행 실행 사실 (UI-q1tg §3.4)', () => {
+  const IMPL_ATTEMPT = {
+    t1: {
+      attempt_id: 't1',
+      bead_id: 'A-1',
+      status: 'done',
+      finished_at: 20,
+      runner: 'codex',
+      model: 'sonnet'
+    }
+  };
+
+  test('derives the done row exec chips from the last implementation attempt', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 30 }],
+          attempts: IMPL_ATTEMPT
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].exec_chips?.orchestration?.text).toBe(
+      'codex · sonnet'
+    );
+  });
+
+  test('keeps the done row exec chips when the pin changes after the run', () => {
+    const done_row = (/** @type {Record<string, any>} */ overlay) =>
+      buildLanes(
+        [
+          workspace({
+            done: [{ bead_id: 'A-1', added_at: 30 }],
+            attempts: IMPL_ATTEMPT,
+            bead_overlay: overlay
+          })
+        ],
+        [
+          state({
+            execution_defaults: EXECUTION_DEFAULTS,
+            runner_catalog: { runtimes: {} },
+            session_defaults: {}
+          })
+        ]
+      ).done[0];
+
+    const before = done_row({});
+    const after = done_row({
+      'A-1': { metadata: { orchestration_model: 'opus' } }
+    });
+
+    expect(after.exec_chips?.orchestration?.text).toBe(
+      before.exec_chips?.orchestration?.text
+    );
+  });
+
+  test('draws no done row exec chips when the attempt record is gone', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 30 }],
+          bead_overlay: { 'A-1': { metadata: { orchestration_model: 'opus' } } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {}
+        })
+      ]
+    );
+
+    expect(lanes.done[0].exec_chips).toBeUndefined();
+  });
+
+  test('carries the done row route from the workflow projection', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 30 }],
+          bead_workflow: { 'A-1': { route: 'spec_backed' } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].workflow?.route).toBe('spec_backed');
+  });
+
+  test('carries the done row route from the monitor overlay', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 30 }],
+          bead_overlay: { 'A-1': { route: 'full_plan' } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].workflow?.route).toBe('full_plan');
+  });
+});
+
+describe('대기 진입 유예 재료 (UI-q1tg §3.3·§3.5)', () => {
+  test('carries the queue entry added_at onto a waiting row', () => {
+    const lanes = buildLanes(
+      [workspace({ queue: [{ bead_id: 'A-1', added_at: 1000 }] })],
+      [state()]
+    );
+
+    expect(lanes.queue[0].added_at).toBe(1000);
+  });
+
+  test('draws no admission badge for a grace refusal', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1', added_at: 1000 }],
+          admission: { 'A-1': { reason: 'grace_period' } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].reason).toBe('');
+  });
+
+  test('carries route, exec chips and added_at onto a chain lane row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1', added_at: 1000 }],
+          bead_workflow: { 'A-1': { route: 'spec_backed' } },
+          bead_overlay: { 'A-1': { metadata: {} } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {},
+          orchestration_model: 'sonnet'
+        })
+      ],
+      {
+        cross_lanes: crossLanes([
+          {
+            id: 'cl_1',
+            status: 'confirmed',
+            entries: [{ bead_id: 'A-1' }, { bead_id: 'A-9' }]
+          }
+        ])
+      }
+    );
+
+    const row = lanes.chain_lanes[0].rows[0];
+    expect([
+      row.route,
+      row.added_at,
+      row.exec_chips?.orchestration?.text
+    ]).toEqual(['spec_backed', 1000, 'sonnet']);
+  });
+
+  test('fills a waiting row route from the monitor overlay', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1', added_at: 1000 }],
+          bead_overlay: { 'A-1': { route: 'quick_fix' } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].workflow?.route).toBe('quick_fix');
+  });
+
+  test('classifies route the one way the chip and the filter share', () => {
+    const values = [
+      routeChipValue(null),
+      routeChipValue({ chips: {} }),
+      routeChipValue({
+        chips: { route: 'quick_fix', route_source: 'derived' }
+      }),
+      routeChipValue({
+        chips: { route: 'quick_fix', route_source: 'explicit' }
+      })
+    ];
+
+    expect(values).toEqual([null, 'unset', 'unset', 'quick_fix']);
+  });
+
+  test('carries exec chips onto a chain lane row still outside the queue', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-1')],
+          bead_overlay: { 'A-1': { route: 'spec_backed', metadata: {} } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {},
+          orchestration_model: 'sonnet'
+        })
+      ],
+      {
+        cross_lanes: crossLanes([
+          {
+            id: 'cl_1',
+            status: 'confirmed',
+            entries: [{ bead_id: 'A-1' }, { bead_id: 'A-9' }]
+          }
+        ])
+      }
+    );
+
+    const row = lanes.chain_lanes[0].rows[0];
+    expect([row.unplaced, row.exec_chips?.orchestration?.text]).toEqual([
+      true,
+      'sonnet'
+    ]);
+  });
+
+  test('leaves a chain lane row outside the queue without added_at', () => {
+    const lanes = buildLanes([workspace()], [state()], {
+      cross_lanes: crossLanes([
+        {
+          id: 'cl_1',
+          status: 'confirmed',
+          entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }]
+        }
+      ])
+    });
+
+    expect([
+      lanes.chain_lanes[0].rows[0].unplaced,
+      lanes.chain_lanes[0].rows[0].added_at
+    ]).toEqual([true, null]);
   });
 });

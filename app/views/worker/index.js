@@ -68,9 +68,12 @@ import { createLaneCollapse } from './lane-collapse.js';
 import { createLaneDrag } from './lane-drag.js';
 import {
   READINESS_FILTER_OPTIONS,
+  ROUTE_FILTER_OPTIONS,
   baseException,
   buildLanes,
-  resolvesConflict
+  normalizeRouteFilter,
+  resolvesConflict,
+  toggleRouteFilter
 } from './lane-model.js';
 import {
   discardAbandonCompletionMessage,
@@ -78,6 +81,7 @@ import {
   discardCompletionMessage,
   discardConfirmationMessage,
   discardProjection,
+  graceRemainingMs,
   judgementPopoverOf,
   miniRow,
   nowPanel,
@@ -191,8 +195,18 @@ const CANDIDATE_FILTER_KEY = 'beads-ui.worker.candidate-filter';
  */
 const CANDIDATE_FILTER_DEFAULT = {
   show_blocked: false,
-  readiness: 'all'
+  readiness: 'all',
+  // 빈 배열이 "전체"다 (UI-q1tg §3.2) — 저장값 없는 사용자는 지금 화면 그대로다.
+  routes: []
 };
+
+/**
+ * 유예 남은 초를 흘리는 재렌더 주기 (UI-q1tg §3.3). Monitor `TICK_MS`와 같은
+ * 1초이고, 이 탭에서는 유예 행이 보이는 동안에만 돈다.
+ *
+ * @type {number}
+ */
+const GRACE_TICK_MS = 1_000;
 
 /**
  * Read the persisted filter. Anything unreadable (absent, malformed JSON, wrong
@@ -215,7 +229,8 @@ function loadCandidateFilter() {
     return {
       show_blocked: parsed.show_blocked === true,
       readiness:
-        readiness === 'ready' || readiness === 'not_ready' ? readiness : 'all'
+        readiness === 'ready' || readiness === 'not_ready' ? readiness : 'all',
+      routes: normalizeRouteFilter(parsed.routes)
     };
   } catch {
     return { ...CANDIDATE_FILTER_DEFAULT };
@@ -1560,6 +1575,13 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {CandidateFilter}
    */
   let candidate_filter = loadCandidateFilter();
+  /**
+   * 유예 행이 보이는 동안에만 도는 1초 타이머 (UI-q1tg §3.3). `null`이 "지금
+   * 도는 것이 없다"이며, 상시 타이머는 만들지 않는다.
+   *
+   * @type {number|null}
+   */
+  let grace_timer = null;
   /** @type {string|null} Candidate whose queue-lane picker is open. */
   let place_menu_bead_id = null;
   /** @type {string|null} */
@@ -2213,6 +2235,34 @@ export function createWorkerView(mount_element, options = {}) {
         `${refusal}: ${
           res.reason === 'hold_changed'
             ? '큐 상태가 바뀌었습니다 — 다시 확인하세요'
+            : res.reason || ''
+        }`,
+        'error',
+        2800
+      );
+    }
+  }
+
+  /**
+   * `[지금 시작]` (UI-q1tg §3.3): 이 행 하나의 대기 진입 유예를 걷고 `▶ 진행`과
+   * 같은 명시적 실행 경로를 민다. CAS가 없다 — 서버가 `added_at`을 비롯한 큐를
+   * 전혀 쓰지 않으므로 되돌릴 durable 변경도, 경합할 revision도 없다.
+   *
+   * @param {string} bead_id
+   */
+  async function startNow(bead_id) {
+    if (!transport || !bead_id) {
+      return;
+    }
+    const res = /** @type {any} */ (
+      await transport('worker-queue-start-now', { bead_id })
+    );
+    adopt(res);
+    if (res && res.ok === false) {
+      showToast(
+        `지금 시작 거부: ${
+          res.reason === 'not_waiting'
+            ? '이 이슈는 더 이상 대기 레인에 없습니다'
             : res.reason || ''
         }`,
         'error',
@@ -3644,6 +3694,30 @@ export function createWorkerView(mount_element, options = {}) {
             >`
           : ''}
       </div>
+      <div class="worker-filter__routes" role="group" aria-label="route 필터">
+        ${ROUTE_FILTER_OPTIONS.map(
+          (o) =>
+            html`<button
+              type="button"
+              class="worker-filter__chip worker-filter__route${candidate_filter.routes.includes(
+                o.value
+              )
+                ? ' is-active'
+                : ''}"
+              data-route=${o.value}
+              aria-pressed=${candidate_filter.routes.includes(o.value)
+                ? 'true'
+                : 'false'}
+            >
+              ${o.label}
+            </button>`
+        )}
+        ${hidden.route > 0
+          ? html`<span class="worker-filter__hidden"
+              >숨김 ${hidden.route}</span
+            >`
+          : ''}
+      </div>
     </div>`;
   }
 
@@ -4091,8 +4165,44 @@ export function createWorkerView(mount_element, options = {}) {
     doRender();
   }
 
+  /**
+   * Run a one-second timer — 유예 행이 하나라도 보이는 동안에만 (UI-q1tg §3.3).
+   * Monitor에는 `tick_timer`가 이미 있지만 이 탭에는 없었다 — 남은 초가 흐르려면
+   * 1초마다 다시 그려야 한다. 유예 행이 사라지면 그 자리에서 해제하므로 상시
+   * 타이머가 되지 않는다.
+   *
+   * @param {LaneModel} m
+   */
+  function syncGraceTimer(m) {
+    const now = Date.now();
+    const has_grace = m.queue.some(
+      (item) => graceRemainingMs(item.added_at, now) > 0
+    );
+    if (!has_grace) {
+      stopGraceTimer();
+      return;
+    }
+    if (grace_timer === null) {
+      grace_timer = window.setInterval(() => {
+        try {
+          doRender();
+        } catch {
+          /* ignore — a render failure must not leave the timer wedged */
+        }
+      }, GRACE_TICK_MS);
+    }
+  }
+
+  function stopGraceTimer() {
+    if (grace_timer !== null) {
+      window.clearInterval(grace_timer);
+      grace_timer = null;
+    }
+  }
+
   function doRender() {
     const m = laneModel();
+    syncGraceTimer(m);
     refreshOverlapFacts(m);
     render(topTemplate(m), top_el);
     render(lanesTemplate(m), lanes_el);
@@ -4660,6 +4770,22 @@ export function createWorkerView(mount_element, options = {}) {
     }
     // Candidate filter chips live inside the pane; handle them before any row
     // handler so a click never falls through to the card default.
+    // route 칩이 준비도 칩보다 먼저다: 두 묶음이 같은 형태 토큰
+    // (`.worker-filter__chip`)을 쓰므로, 뒤에 두면 route 클릭이 준비도 분기에서
+    // 값 없이 삼켜진다.
+    const route_chip = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-filter__route')
+    );
+    if (route_chip) {
+      const value = route_chip.dataset.route || '';
+      if (value) {
+        setCandidateFilter({
+          ...candidate_filter,
+          routes: toggleRouteFilter(candidate_filter.routes, value)
+        });
+      }
+      return;
+    }
     const readiness_chip = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-filter__chip')
     );
@@ -4668,6 +4794,15 @@ export function createWorkerView(mount_element, options = {}) {
       if (value === 'all' || value === 'ready' || value === 'not_ready') {
         setCandidateFilter({ ...candidate_filter, readiness: value });
       }
+      return;
+    }
+    // `[지금 시작]`도 행 기본 동작보다 먼저다 — 누른 것은 행이 아니라 그 행의
+    // 유예를 걷는 버튼이다 (UI-q1tg §3.3).
+    const startNowBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('[data-action="queue-start-now"]')
+    );
+    if (startNowBtn) {
+      void startNow(startNowBtn.dataset.beadId || '');
       return;
     }
     // 대기 행의 `✕` (UI-d13v §6)도 행 기본 동작보다 먼저다 — 누른 것은 행이
@@ -5202,6 +5337,7 @@ export function createWorkerView(mount_element, options = {}) {
     },
     refreshSessionDefaults,
     destroy() {
+      stopGraceTimer();
       for (const off of unsubscribers.splice(0)) {
         try {
           off();

@@ -30,6 +30,7 @@ import {
 import { createQueueStore } from './queue-store.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createWorkerRuntime } from './runtime.js';
+import { requestStartNow } from './scheduler.js';
 import {
   queueFilePath,
   sessionLogPath,
@@ -965,6 +966,10 @@ describe('worker/attach construction + live loop (F1)', () => {
     __registerWorkerAttachmentForTest(WS, att);
 
     seedQueue(runtime.queueStore, 'S1');
+    // 이 테스트가 보는 것은 spawn/preamble 배선이지 대기 진입 유예(§3.3)가
+    // 아니다. `[지금 시작]`이 보내는 것과 같은 명시적 실행 지시로 유예를 걷어,
+    // 배치와 같은 순간의 tick이 예전처럼 dispatch에 닿게 한다.
+    requestStartNow(WS, 'S1', Date.now());
     // tickWorkerQueue is exactly what the worker-queue-toggle handler calls.
     await tickWorkerQueue(WS);
 

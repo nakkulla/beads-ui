@@ -4,6 +4,7 @@ import {
   __setScopeCacheForTest,
   createScopeCache
 } from '../worker/scope-cache.js';
+import { createTitleCache } from '../worker/title-cache.js';
 import { emitMonitorPipelineSnapshot } from './context.js';
 import {
   buildMonitorPipeline,
@@ -80,6 +81,31 @@ function sessionItem(bead_id) {
 }
 
 /**
+ * A bead cache warmed from `issues`, with the enrich stubbed to each issue's own
+ * `workflow` so a route lands without a git probe and `bd` is never reached.
+ *
+ * @param {string} root_dir
+ * @param {Array<Record<string, any>>} issues
+ */
+function warmCache(root_dir, issues) {
+  const cache = createTitleCache({
+    runJson: /** @type {any} */ (
+      async () => ({
+        ok: false,
+        error: { code: 'bd_exit_error', message: 'x' }
+      })
+    ),
+    enrichWorkflow: /** @type {any} */ (
+      (/** @type {any} */ issue) => issue.workflow || null
+    )
+  });
+  for (const issue of issues) {
+    cache.refreshFromIssue(root_dir, issue);
+  }
+  return cache;
+}
+
+/**
  * @param {{
  *   workspaces?: string[],
  *   hidden?: string[],
@@ -89,11 +115,15 @@ function sessionItem(bead_id) {
  *   sessionExcludes?: Record<string, Set<string>>,
  *   fail?: string[],
  *   runnableFails?: string[],
- *   sessionActiveFails?: string[]
+ *   sessionActiveFails?: string[],
+ *   titleCache?: any
  * }} input
  */
 function build(input) {
   return buildMonitorPipeline({
+    // 시드하지 않은 테스트는 차가운 캐시를 본다 — 프로세스 런타임을 건드리지
+    // 않도록 seam은 항상 넘긴다.
+    titleCache: () => input.titleCache || null,
     listWorkspaces: () => (input.workspaces || []).map((path) => ({ path })),
     listHidden: () => input.hidden || [],
     snapshotFor: (key) => {
@@ -774,6 +804,149 @@ describe('buildMonitorPipeline decorated contract (UI-nprg)', () => {
       'A-1': { created_at: 1, updated_at: 2 }
     });
     expect(out[0].workspace_info).toEqual({ slots: 2 });
+  });
+});
+
+/**
+ * The bead overlay of the first workspace in a pipeline result, typed for the
+ * assertions below (`out[0]` is an untyped `Record<string, unknown>`).
+ *
+ * @param {Array<Record<string, unknown>>} out
+ * @returns {Record<string, { route?: string, metadata?: Record<string, string> }>}
+ */
+function overlayOf(out) {
+  return /** @type {any} */ (out[0].bead_overlay);
+}
+
+describe('buildMonitorPipeline bead overlay (UI-q1tg §3.1)', () => {
+  test('carries the route of every lane member and done bead', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'A-q', added_at: NOW }],
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-s', added_at: NOW }] }
+          ],
+          attempts: {
+            'att-1': {
+              attempt_id: 'att-1',
+              bead_id: 'A-run',
+              status: 'running'
+            }
+          },
+          done: [{ bead_id: 'A-done', added_at: NOW }]
+        })
+      },
+      titleCache: warmCache(WS_A, [
+        { id: 'A-q', title: '대기', workflow: { route: 'quick_fix' } },
+        { id: 'A-s', title: '직렬', workflow: { route: 'spec_backed' } },
+        { id: 'A-run', title: '실행중', workflow: { route: 'full_plan' } },
+        { id: 'A-done', title: '완료', workflow: { route: 'spec_backed' } }
+      ])
+    });
+
+    expect(
+      Object.fromEntries(
+        Object.entries(overlayOf(out)).map(([id, entry]) => [id, entry.route])
+      )
+    ).toEqual({
+      'A-q': 'quick_fix',
+      'A-s': 'spec_backed',
+      'A-run': 'full_plan',
+      'A-done': 'spec_backed'
+    });
+  });
+
+  test('omits the execution pin from a done bead', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'A-q', added_at: NOW }],
+          done: [{ bead_id: 'A-done', added_at: NOW }]
+        })
+      },
+      titleCache: warmCache(WS_A, [
+        {
+          id: 'A-q',
+          title: '대기',
+          workflow: { route: 'quick_fix' },
+          metadata: { impl_runtime: 'codex' }
+        },
+        {
+          id: 'A-done',
+          title: '완료',
+          workflow: { route: 'quick_fix' },
+          metadata: { impl_runtime: 'claude' }
+        }
+      ])
+    });
+
+    expect(overlayOf(out)['A-done']).toEqual({ route: 'quick_fix' });
+    expect(overlayOf(out)['A-q'].metadata).toEqual({
+      impl_runtime: 'codex'
+    });
+  });
+
+  test('trims the execution pin to the execution setting keys', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ queue: [{ bead_id: 'A-q', added_at: NOW }] })
+      },
+      titleCache: warmCache(WS_A, [
+        {
+          id: 'A-q',
+          title: '대기',
+          workflow: { route: 'spec_backed' },
+          metadata: {
+            impl_runtime: 'codex',
+            impl_effort: 'high',
+            impl_dispatch: 'worker',
+            route: 'spec_backed',
+            spec_id: 'docs/specs/thing.md',
+            pr_url: 'https://example.test/pr/1'
+          }
+        }
+      ])
+    });
+
+    expect(overlayOf(out)['A-q'].metadata).toEqual({
+      impl_runtime: 'codex',
+      impl_effort: 'high',
+      impl_dispatch: 'worker'
+    });
+  });
+
+  test('omits a bead whose cache record has not landed', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          queue: [
+            { bead_id: 'A-warm', added_at: NOW },
+            { bead_id: 'A-cold', added_at: NOW }
+          ]
+        })
+      },
+      titleCache: warmCache(WS_A, [
+        { id: 'A-warm', title: '대기', workflow: { route: 'quick_fix' } }
+      ])
+    });
+
+    expect(Object.keys(overlayOf(out))).toEqual(['A-warm']);
+  });
+
+  test('ships an empty overlay when no cache is reachable', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ queue: [{ bead_id: 'A-q', added_at: NOW }] })
+      }
+    });
+
+    expect(overlayOf(out)).toEqual({});
   });
 });
 

@@ -117,6 +117,12 @@ const log = debug('worker:scheduler');
 
 const WAITING_RESCAN_COVER_MS = 2_000;
 const WAITING_RESCAN_MAX_WAIT_MS = 30_000;
+/**
+ * 대기 진입 유예 (2026-09-03 monitor-exec-material-queue-grace §3.3): 자동
+ * dispatch는 큐 항목이 대기 레인에 앉은 지 이만큼 지나야 그 항목을 집는다.
+ * 워크스페이스 실행 프로파일의 키가 아니라 고정 상수다(결정 8, ADR 0032).
+ */
+export const QUEUE_GRACE_MS = 20_000;
 const AUTO_SWITCH_5H_MAX_PCT = 80;
 const AUTO_SWITCH_7D_MAX_PCT = 90;
 const RESUME_HANDOFF_MAX_CHARS = 4_000;
@@ -742,6 +748,159 @@ function isArmedEntry(entry) {
   return (
     typeof entry.armed_by_lane === 'string' && entry.armed_by_lane.length > 0
   );
+}
+
+/**
+ * The beads a `[지금 시작]` click named, with the moment it was clicked (§3.3).
+ * In memory on purpose: this spec READS `added_at` and never writes it, so the
+ * skip leaves no durable residue, and a restart simply lets the grace stand
+ * again from that same durable value.
+ *
+ * The value is the click time rather than a bare membership flag because a row
+ * re-seated afterwards carries a NEWER `added_at` (`place` and
+ * `applySerialGroup` re-stamp it), and such a row must get the fresh grace
+ * instead of riding an older click.
+ *
+ * @type {Map<string, Map<string, number>>}
+ */
+const start_now_requests = new Map();
+
+/**
+ * Normalize a workspace the same way the attachment layer does, so a handler's
+ * key and the scheduler's `workspace` argument reach one entry.
+ *
+ * @param {string} workspace
+ */
+function startNowKey(workspace) {
+  return path.resolve(String(workspace || ''));
+}
+
+/**
+ * Record one explicit `[지금 시작]` run instruction (§3.3). The caller then
+ * kicks the same dispatch loop `▶ 진행` kicks; this call only lifts the queue
+ * grace for the row it names, which is what makes the button a row-level entry
+ * point of that path instead of a new authority.
+ *
+ * @param {string} workspace
+ * @param {string} bead_id
+ * @param {number} at - Epoch ms the instruction was given.
+ */
+export function requestStartNow(workspace, bead_id, at) {
+  const key = startNowKey(workspace);
+  let by_bead = start_now_requests.get(key);
+  if (!by_bead) {
+    /** @type {Map<string, number>} */
+    const fresh = new Map();
+    start_now_requests.set(key, fresh);
+    by_bead = fresh;
+  }
+  for (const [id, requested_at] of by_bead) {
+    if (requested_at + QUEUE_GRACE_MS < at) {
+      by_bead.delete(id);
+    }
+  }
+  by_bead.set(bead_id, at);
+}
+
+/**
+ * The click time of a live `[지금 시작]` request, or null. A request older than
+ * one whole grace can no longer exempt anything — the row it named either
+ * dispatched or outlived its own grace — so it is dropped on read.
+ *
+ * @param {string} workspace
+ * @param {string} bead_id
+ * @param {number} at
+ * @returns {number|null}
+ */
+function startNowRequestedAt(workspace, bead_id, at) {
+  const by_bead = start_now_requests.get(startNowKey(workspace));
+  if (!by_bead) {
+    return null;
+  }
+  const requested_at = by_bead.get(bead_id);
+  if (typeof requested_at !== 'number') {
+    return null;
+  }
+  if (requested_at + QUEUE_GRACE_MS < at) {
+    by_bead.delete(bead_id);
+    return null;
+  }
+  return requested_at;
+}
+
+/**
+ * Does a live `[지금 시작]` click name this waiting entry? Kept apart from
+ * {@link isExplicitRunEntry} because the two instructions do not reach the same
+ * lanes: `armed_by_lane` is a parallel-queue fact (UI-jaua §5.2) while this one
+ * names one row wherever it sits.
+ *
+ * @param {string} workspace
+ * @param {{ bead_id: string, added_at?: number }} entry
+ * @param {number} at - Epoch ms this pass reads as now.
+ */
+function isStartNowEntry(workspace, entry, at) {
+  const requested_at = startNowRequestedAt(workspace, entry.bead_id, at);
+  if (requested_at === null) {
+    return false;
+  }
+  const added_at = typeof entry.added_at === 'number' ? entry.added_at : 0;
+  return added_at <= requested_at;
+}
+
+/**
+ * Does this waiting entry carry an explicit run instruction? `▶ 진행` writes one
+ * durably (`armed_by_lane`) and `[지금 시작]` holds one in memory; decision 2 of
+ * §3.3 keeps both out of the grace, because deferring what the user just pressed
+ * reads as the click not having landed.
+ *
+ * @param {string} workspace
+ * @param {{ bead_id: string, added_at?: number, armed_by_lane?: string|null }} entry
+ * @param {number} at - Epoch ms this pass reads as now.
+ */
+function isExplicitRunEntry(workspace, entry, at) {
+  return isArmedEntry(entry) || isStartNowEntry(workspace, entry, at);
+}
+
+/**
+ * The serial lane heads a live `[지금 시작]` click named (§3.3 결정 2). The
+ * serial axis is what `auto_advance` owns, so an `armed_only` pass takes no serial
+ * head (UI-jaua §5.2) — but a row the user pressed is an explicit run instruction
+ * wherever it sits, and the WS op accepts serial rows, so refusing them here would
+ * make that reply say a run happened when none did.
+ *
+ * @param {{ serial_lanes?: Array<{ entries?: any[] }> }} q
+ * @param {string} workspace
+ * @param {number} at
+ * @returns {Set<string>}
+ */
+function startNowSerialHeads(q, workspace, at) {
+  /** @type {Set<string>} */
+  const named = new Set();
+  for (const lane of Array.isArray(q.serial_lanes) ? q.serial_lanes : []) {
+    const head = Array.isArray(lane.entries) ? lane.entries[0] : null;
+    if (head && isStartNowEntry(workspace, head, at)) {
+      named.add(head.bead_id);
+    }
+  }
+  return named;
+}
+
+/**
+ * How long this waiting entry still owes the queue grace, in ms (§3.3). Zero
+ * once the grace has elapsed, and zero for an entry carrying an explicit run
+ * instruction.
+ *
+ * @param {string} workspace
+ * @param {{ bead_id: string, added_at?: number, armed_by_lane?: string|null }} entry
+ * @param {number} at - Epoch ms this pass reads as now.
+ * @returns {number}
+ */
+function graceRemainingMs(workspace, entry, at) {
+  if (isExplicitRunEntry(workspace, entry, at)) {
+    return 0;
+  }
+  const added_at = typeof entry.added_at === 'number' ? entry.added_at : 0;
+  return Math.max(0, added_at + QUEUE_GRACE_MS - at);
 }
 
 /**
@@ -10303,6 +10462,9 @@ export function createScheduler(deps) {
         } while (rescan);
       } finally {
         draining = null;
+        // 유예로 넘어간 항목이 남았으면 그 만료 하나에 깨우기를 건다 (§3.3).
+        // 실패로 끝난 pass 뒤에도 걸어야 유예 항목이 잊히지 않는다.
+        armGraceTimer(workspace);
       }
     })();
     return draining;
@@ -10383,6 +10545,98 @@ export function createScheduler(deps) {
       timer.unref();
     }
     retry_timers.set(workspace, timer);
+  }
+
+  /**
+   * Live queue-grace timers, one per workspace (§3.3). In memory for the same
+   * reason the retry timers are: what the grace is derived from is durable
+   * (`added_at`), and the timer is only this process's way of waking up for it.
+   *
+   * @type {Map<string, ReturnType<typeof setTimeout>>}
+   */
+  const grace_timers = new Map();
+
+  /**
+   * @param {string} workspace
+   */
+  function clearGraceTimer(workspace) {
+    const timer = grace_timers.get(workspace);
+    if (timer) {
+      clearTimeout(timer);
+      grace_timers.delete(workspace);
+    }
+  }
+
+  /**
+   * The earliest moment a waiting entry of this workspace leaves its grace, or
+   * null when no entry is in one. A row carrying an explicit run instruction is
+   * not waiting on the grace, so it never owns this wake-up.
+   *
+   * @param {string} workspace
+   * @param {{ queue?: any[], serial_lanes?: Array<{ entries?: any[] }> }} q
+   * @param {number} at
+   * @returns {number|null}
+   */
+  function earliestGraceEnd(workspace, q, at) {
+    /** @type {number|null} */
+    let earliest = null;
+    /** @type {any[]} */
+    const entries = [
+      ...(Array.isArray(q.queue) ? q.queue : []),
+      ...(Array.isArray(q.serial_lanes) ? q.serial_lanes : []).flatMap(
+        (lane) => (Array.isArray(lane.entries) ? lane.entries : [])
+      )
+    ];
+    for (const entry of entries) {
+      const left = graceRemainingMs(workspace, entry, at);
+      if (left <= 0) {
+        continue;
+      }
+      const ends_at = at + left;
+      if (earliest === null || ends_at < earliest) {
+        earliest = ends_at;
+      }
+    }
+    return earliest;
+  }
+
+  /**
+   * Arm the wake-up for the EARLIEST grace end of this workspace (§3.3), shaped
+   * exactly like {@link armRetryTimer}: one `setTimeout` on one expiry,
+   * idempotent re-arming, `unref`ed, and re-armed from the durable `added_at`
+   * after a restart. No new polling cadence is added, so ADR 0034's
+   * "event-driven return trigger" holds.
+   *
+   * @param {string} workspace
+   */
+  function armGraceTimer(workspace) {
+    clearGraceTimer(workspace);
+    /** @type {any} */
+    let q;
+    try {
+      q = deps.store.snapshot(workspace);
+    } catch (err) {
+      log('grace timer arm failed for %s: %o', workspace, err);
+      return;
+    }
+    const at = now();
+    const earliest = earliestGraceEnd(workspace, q, at);
+    if (earliest === null) {
+      return;
+    }
+    const timer = setTimeout(
+      () => {
+        grace_timers.delete(workspace);
+        tick(workspace).catch((err) => {
+          log('grace dispatch failed for %s: %o', workspace, err);
+        });
+      },
+      Math.max(0, earliest - at)
+    );
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    grace_timers.set(workspace, timer);
   }
 
   /**
@@ -10855,8 +11109,19 @@ export function createScheduler(deps) {
     // a cross lane armed, which is the UI-jaua §5.2 exception verbatim; neither
     // implies the other, so `▶` no longer overrides a systemic stop and a
     // released hold no longer resumes a paused queue.
+    const at = now();
     const armed_only = q.auto_advance !== true || q.hold !== null;
-    if (armed_only && !q.queue.some(isArmedEntry)) {
+    // `[지금 시작]`은 직렬 레인 선두도 지목할 수 있으므로 이 문은 병렬 큐만 보면
+    // 안 된다 (§3.3 결정 2): 그러면 서버가 성공을 돌려주고도 아무것도 발차하지
+    // 않는다.
+    const start_now_serial_heads = startNowSerialHeads(q, workspace, at);
+    if (
+      armed_only &&
+      start_now_serial_heads.size === 0 &&
+      !q.queue.some((/** @type {any} */ entry) =>
+        isExplicitRunEntry(workspace, entry, at)
+      )
+    ) {
       return;
     }
     const paused_beads = leafPausedBeads(q);
@@ -10884,28 +11149,42 @@ export function createScheduler(deps) {
     // means — and an occupied lane contributes nothing until its lineage
     // merges, is cleaned up, or is discarded.
     const lane_occupancy = activeLaneLineages(q);
-    /** @type {Array<{ bead_id: string, serial_lane_id: string|null }>} */
+    /** @type {Array<{ bead_id: string, serial_lane_id: string|null, grace_left: number }>} */
     const candidates = q.queue
       .filter(
-        (/** @type {{ armed_by_lane?: string|null }} */ entry) =>
-          !armed_only || isArmedEntry(entry)
+        (
+          /** @type {{ bead_id: string, added_at?: number, armed_by_lane?: string|null }} */ entry
+        ) => !armed_only || isExplicitRunEntry(workspace, entry, at)
       )
-      .map((/** @type {{ bead_id: string }} */ entry) => ({
-        bead_id: entry.bead_id,
-        serial_lane_id: /** @type {string|null} */ (null)
-      }));
+      .map(
+        (
+          /** @type {{ bead_id: string, added_at?: number, armed_by_lane?: string|null }} */ entry
+        ) => ({
+          bead_id: entry.bead_id,
+          serial_lane_id: /** @type {string|null} */ (null),
+          grace_left: graceRemainingMs(workspace, entry, at)
+        })
+      );
     // A serial lane head is NEVER an armed-only candidate: the serial axis is
     // what `auto_advance` owns, and a cross-lane member sits in the parallel
-    // queue (UI-jaua §5.2).
-    for (const lane of armed_only ? [] : q.serial_lanes || []) {
+    // queue (UI-jaua §5.2). `[지금 시작]`이 그 행을 직접 지목한 경우만
+    // 예외다 (§3.3 결정 2) — 레인 arm은 여전히 이 축에 닿지 않는다.
+    for (const lane of q.serial_lanes || []) {
       const head = lane.entries[0];
       if (!head) {
+        continue;
+      }
+      if (armed_only && !start_now_serial_heads.has(head.bead_id)) {
         continue;
       }
       if (laneOccupiedByOther(lane_occupancy, lane.id, head.bead_id)) {
         continue;
       }
-      candidates.push({ bead_id: head.bead_id, serial_lane_id: lane.id });
+      candidates.push({
+        bead_id: head.bead_id,
+        serial_lane_id: lane.id,
+        grace_left: graceRemainingMs(workspace, head, at)
+      });
     }
     for (const entry of candidates) {
       if (free <= 0) {
@@ -10923,6 +11202,14 @@ export function createScheduler(deps) {
         paused_beads.has(entry.bead_id) ||
         active_beads.has(entry.bead_id)
       ) {
+        continue;
+      }
+      // 대기 진입 유예 (§3.3): 방금 앉은 항목은 자동 dispatch가 집지 않는다.
+      // 새 status 어휘도 새 레인도 없이 `prerequisite_unmet`과 같은 admission
+      // 레코드를 쓰므로, 이미 admission을 읽는 두 탭의 행이 그대로 그린다.
+      // 명시적 실행 지시는 `graceRemainingMs`가 0으로 만들어 이 문을 지난다.
+      if (entry.grace_left > 0) {
+        refuseDispatch(workspace, entry.bead_id, 'grace_period');
         continue;
       }
       // A bead whose last implementation attempt settled unhandled is not a
@@ -11391,6 +11678,9 @@ export function createScheduler(deps) {
     // the middle of a backoff must pick the wake-up back up, and an elapsed one
     // fires immediately.
     armRetryTimer(workspace);
+    // 같은 이유로 대기 진입 유예도 다시 무장한다: 판정 재료인 `added_at`은
+    // durable하고 타이머만 프로세스 것이다 (§3.3).
+    armGraceTimer(workspace);
   }
 
   /**

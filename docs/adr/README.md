@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0037 | [완료 레인 행은 슬롯 5 줄에서 실행 사실을 말한다](0037-done-lane-row-states-execution-facts.md) | 2026-09-04 | 완료 레인 행은 슬롯 5 줄을 갖고 route와 오케/워커를 실어 '무엇으로 돌았나'에 답한다 |
 | 0036 | [파킹의 출구는 문의 세션뿐이고 해제 전이 재디스패치는 stale 두 값에만 걸린다](0036-parked-exit-is-inquiry-session-only.md) | 2026-09-03 | Worker 파킹(`awaiting_user` 존재)의 출구는 값별 문의 세션의 자동 기동과 파킹 타일 `[세션에서 해결]` 클릭뿐이고 새 attempt `[재시도]`는 없으며, `awaiting_user` 해제 전이의 자동 재디스패치는 문의 세션이 구현을 착수하지 않는 stale 두 값에만 걸리고 구현 충돌 값은 PR 관측으로만 정산한다 — parked 분류와 '자동 재디스패치 없음'은 0017에서 승계한다 |
 | 0035 | [연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다](0035-lane-confirm-writes-deps-only-run-places-and-arms.md) | 2026-09-03 | 연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다 — 직렬 레인 멤버는 진행 시 병렬 큐로 옮긴다 |
 | 0034 | [복귀 재스캔 후보는 waiting attempt와 prerequisite_unmet admission 큐 항목이다](0034-return-rescan-candidates-include-prerequisite-unmet-admission.md) | 2026-09-03 | Worker의 복귀 트리거는 이벤트 구독이며 재스캔 후보는 waiting attempt와 `prerequisite_unmet` admission 큐 항목이다 — 판정은 요청 rig의 `bd ready` 한 번, 복귀는 `tickPass`, not-ready에는 쓰지 않고 ready에서만 그 admission을 지운다 |

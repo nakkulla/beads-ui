@@ -31,6 +31,7 @@ import {
 } from '../../utils/token-usage.js';
 import { stepperTemplate } from '../board/stepper.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
+import { QUEUE_GRACE_MS, routeChipValue } from './lane-model.js';
 import { logPathTemplate } from './log-path.js';
 import { placementTitle } from './placement.js';
 
@@ -1178,29 +1179,26 @@ export function crossLaneChipTemplate(chip) {
 }
 
 /**
- * The route 칩 하나 (UI-yrzu §7.1). 실행가능·대기·PR 대기·실행중 카드가 모두
- * 이 함수를 부르므로 route는 어디서나 같은 모양·같은 파생 규칙으로 읽힌다 —
- * 규칙이 카드마다 복제되면 한쪽은 반드시 낡는다. 재료가 없으면 빈 문자열이다
- * (fail-quiet).
+ * The route 칩 하나 (UI-yrzu §7.1). 실행가능·대기·PR 대기·실행중 카드와 완료
+ * 행(UI-q1tg §3.4)이 모두 이 함수를 부르므로 route는 어디서나 같은 모양·같은
+ * 파생 규칙으로 읽힌다 — 규칙이 카드마다 복제되면 한쪽은 반드시 낡는다. 재료가
+ * 없으면 빈 문자열이다 (fail-quiet).
  *
  * @param {MiniItem['workflow']} workflow
  * @returns {import('lit-html').TemplateResult|''}
  */
 export function routeChipTemplate(workflow) {
-  if (!workflow) {
+  // 판정은 route 필터와 공유한다 (UI-q1tg §3.2): `null`이면 재료가 안 온 것이라
+  // 그리지 않고, `unset`이면 재료는 왔는데 route가 없거나 파생이다.
+  const value = routeChipValue(workflow);
+  if (value === null) {
     return '';
   }
-  const chips = workflow.chips || {};
-  const route = chips.route || workflow.route;
-  const derived =
-    chips.route_source === 'derived' || workflow.route_source === 'derived';
-  if (!route) {
-    return '';
-  }
+  const derived = value === 'unset';
   return html`<span
     class="ctl-chip ctl-chip--route${derived ? ' is-derived' : ''}"
     title=${derived ? 'route 미핀 (metadata unset)' : 'route'}
-    >${derived ? 'unset' : route}</span
+    >${value}</span
   >`;
 }
 
@@ -1517,12 +1515,16 @@ export function priorityBadgeTemplate(priority) {
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4).
  * @property {number} [done_at] - 완료 레인 진입 시각 = 완료 시각 (UI-rkly §3).
+ * @property {number} [added_at] - 대기 레인 진입 시각 (UI-q1tg §3.3). 유예 칩과
+ * `[지금 시작]`의 유일한 판정 재료이고, 대기 행이 아니면 필드 자체가 없다.
  * @property {boolean} [ghost] - Serial-lane occupancy row (UI-04vo §4): the
  * lineage holding the lane, drawn dimmed and never draggable.
  * @property {number} [seq] - 1-based execution order number in a serial lane.
  * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} [exec_chips] -
  * 실행 설정 칩 (worker-card-exec-chips §2.2): 대기 행과 후보 카드가 "이 설정으로
- * 돌아간다"를 적재 전에 미리 보여 준다. 완료 행·PR 대기 행은 싣지 않는다.
+ * 돌아간다"를 적재 전에 미리 보여 준다. PR 대기 행은 싣지 않는다. 완료 행이 싣는
+ * 같은 이름의 칩은 시제가 다르다 (UI-q1tg §3.4) — "돌아갈 설정"이 아니라 그
+ * 완료를 만든 마지막 구현 attempt가 기록한 값이다.
  * @property {DependencyChips|null} [dependency_chips] - 슬롯 4 두 줄의 의존·
  * 정보 칩 (UI-eey2 §5.1, 두 줄은 UI-8x90 §4.1).
  * @property {{ lane_id: string, label: string }|null} [cross_lane_chip] -
@@ -1577,7 +1579,8 @@ export function priorityBadgeTemplate(priority) {
  */
 
 /**
- * The 완료 3줄 행 (UI-eey2 §8): 레포 배지 · ID · 완료 시각 / 제목 / 토큰 · 작업.
+ * The 완료 3줄 행 (UI-eey2 §8): 레포 배지 · ID · 완료 시각 / 제목 /
+ * route · 오케 · 워커 · 토큰 · 작업.
  *
  * A separate builder rather than a branch inside {@link miniRow}: the monitor's
  * done row is the only row that needs it, and rebuilding miniRow's ternary
@@ -1587,6 +1590,9 @@ export function priorityBadgeTemplate(priority) {
  * @returns {import('lit-html').TemplateResult}
  */
 function doneThreeLineRow(item) {
+  // 3번째 줄은 이미 usage/작업 시간을 싣는 슬롯 5 줄이다 — 그 앞쪽에 route →
+  // 오케 → 워커를 붙이므로 줄 수는 늘지 않는다 (UI-q1tg §3.4). 출처 칩은 계속
+  // 빠진다: 좁은 화면에서 칩이 가져가는 가로가 그대로 제목이 잃는 가로다.
   const badges = Array.isArray(item.badges) ? item.badges : [];
   const provider_badges = providerUsageBadges(item.usage);
   const usage_label = formatUsageTotalWithCost(item.usage);
@@ -1629,7 +1635,9 @@ function doneThreeLineRow(item) {
     </div>
     ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
     <div class="worker-mini__row3">
-      ${provider_badges.length > 0
+      ${routeChipTemplate(item.workflow)}${item.exec_chips
+        ? execChipsTemplate(item.exec_chips)
+        : ''}${provider_badges.length > 0
         ? provider_badges.map(
             (badge) =>
               html`<span class="worker-usage" title=${badge.tooltip}
@@ -1650,6 +1658,68 @@ function doneThreeLineRow(item) {
         : ''}
     </div>
   </div>`;
+}
+
+/**
+ * Remaining ms — 이 대기 행의 유예가 끝나기까지 (UI-q1tg §3.3). 판정 재료는 `added_at`
+ * 하나다 — `grace_period` admission 레코드를 쓰지 않는 이유는, 슬롯이 없어 tick이
+ * 다시 돌지 않으면 만료된 레코드가 남아 `0초`와 버튼이 계속 서기 때문이다.
+ * 레코드는 서버가 왜 넘겼는지의 기록이고 화면의 진실은 시각 계산이다. 재료가
+ * 없으면 0이다 (fail-quiet).
+ *
+ * @param {number|null|undefined} added_at
+ * @param {number} now
+ * @returns {number}
+ */
+export function graceRemainingMs(added_at, now) {
+  return typeof added_at === 'number' ? added_at + QUEUE_GRACE_MS - now : 0;
+}
+
+/**
+ * The 유예 칩 `⏳ <n>초` — 슬롯 4a다 (UI-q1tg §3.3, 카드 문법 §5.1 정정): 답하는
+ * 질문이 `⛓ 선행 대기`와 같은 "지금 갈 수 있나"다. `⛔` 접두를 쓰지 않는 것은
+ * `prerequisite_unmet`과 같은 이유다 — 거절이 아니라 곧 스스로 풀리는 진단이므로
+ * danger 스타일을 타서는 안 된다. 남은 초가 0 이하면 그리지 않는다.
+ *
+ * @param {number|null|undefined} added_at
+ * @param {number} [now]
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function graceChipTemplate(added_at, now = Date.now()) {
+  const remaining_ms = graceRemainingMs(added_at, now);
+  if (remaining_ms <= 0) {
+    return '';
+  }
+  return html`<span
+    class="worker-dep worker-dep--grace"
+    title="대기에 막 들어온 항목입니다 — 남은 시간 동안 자동 실행이 미뤄집니다"
+    >⏳ ${Math.ceil(remaining_ms / 1000)}초</span
+  >`;
+}
+
+/**
+ * `[지금 시작]` — 슬롯 1 조작이다 (UI-q1tg §3.3). 유예 중인 행에만 서고, 클릭은
+ * WS op `worker-queue-start-now`로 그 행 하나의 유예를 걷는다. 새 권한이 아니라
+ * `▶ 진행`과 같은 명시적 실행 경로의 행 단위 진입점이며, `added_at`을 과거로
+ * 내리지 않는다. 남은 초가 0 이하면 그리지 않는다 (fail-quiet).
+ *
+ * @param {{ id: string, added_at?: number }} item
+ * @param {number} [now]
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function startNowButtonTemplate(item, now = Date.now()) {
+  if (graceRemainingMs(item.added_at, now) <= 0) {
+    return '';
+  }
+  return html`<button
+    type="button"
+    class="op-btn worker-mini__start-now"
+    data-action="queue-start-now"
+    data-bead-id=${item.id}
+    title="대기 진입 유예를 이 항목에 대해서만 걷고 지금 실행합니다"
+  >
+    지금 시작
+  </button>`;
 }
 
 /**
@@ -1677,7 +1747,7 @@ export function queueRowOps(item, options = {}) {
     return undefined;
   }
   return html`<span class="worker-mini__rowops">
-    ${options.nudgeable === true
+    ${startNowButtonTemplate(item)}${options.nudgeable === true
       ? html`<button
             type="button"
             class="op-btn op-btn--icon worker-mini__rowops-up"
@@ -1769,9 +1839,9 @@ export function miniRow(item, options = {}) {
   const id_el = html`<span class="worker-mini__id" title="클릭하면 ID 복사"
     >${item.id}</span
   >`;
-  // route 칩은 좌표 칩 줄이 싣는다 (UI-251y §2) — 완료 행만 제외한다: 끝난
-  // 일의 route는 더 이상 어떤 결정도 바꾸지 않는다.
-  const route_el = item.lane === 'done' ? '' : routeChipTemplate(item.workflow);
+  // route 칩은 좌표 칩 줄이 싣는다 (UI-251y §2). 완료 행도 얻는다 (UI-q1tg
+  // §3.4): 끝난 일에 대해서도 사용자는 "무엇으로 돌았나"를 묻는다.
+  const route_el = routeChipTemplate(item.workflow);
   // 출처 칩도 완료 행에서는 빠진다 — route 칩과 같은 이유다. 끝난 일에서 남는
   // 질문은 "무엇이 끝났나"뿐이라 ID와 제목이면 충분하고, 좁은 화면에서 칩이
   // 가져가는 가로는 그대로 제목이 잃는 가로다.
@@ -1981,14 +2051,20 @@ export function miniRow(item, options = {}) {
           승인하고 진행
         </button>`
     : '';
-  // 실행 설정 칩은 대기 행만 얻는다 (§4): PR 대기 행은 이미 실행이 끝났고
-  // 완료 행은 2줄 변형이라 실을 자리가 없다.
+  // 실행 설정 칩은 대기 행과 완료 행이 얻는다: PR 대기 행만 빠진다 — 이미 실행이
+  // 끝났고 돌아갈 설정도 없다. 완료 행의 같은 칩은 시제가 다르다 (UI-q1tg §3.4):
+  // 그 완료를 만든 마지막 구현 attempt가 기록한 값이고, 자리는 2줄 변형의 2번째
+  // 줄(슬롯 5)이다.
   const has_exec_chips = !!(
     item.lane !== 'pr_wait' &&
-    !item.done &&
     item.exec_chips &&
     (item.exec_chips.orchestration || item.exec_chips.worker)
   );
+  const exec_chips_el = has_exec_chips
+    ? execChipsTemplate(item.exec_chips, {
+        pin: item.exec_chips_pinned === true
+      })
+    : '';
   // 슬롯 5 줄 (UI-251y §2·§3.5): 좌표 칩 → exec 칩 → usage 하나를 공유한다.
   // 판정은 그 줄의 재료 전부로 한다 — 좌표·exec만 세면 usage만 있는 행에서
   // 지금 보이는 정보가 사라진다. 재료가 하나도 없으면 줄 자체를 그리지 않는다
@@ -2019,16 +2095,17 @@ export function miniRow(item, options = {}) {
     usage_el ||
     log_path_el
       ? html`<div class="worker-chips">
-          ${repo_el}${cross_lane_el}${route_el}${from_el}${has_exec_chips
-            ? execChipsTemplate(item.exec_chips, {
-                pin: item.exec_chips_pinned === true
-              })
-            : ''}${rec_el}${receipt_badge_el}${usage_el}${log_path_el}${judgementPopover(
+          ${repo_el}${cross_lane_el}${route_el}${from_el}${exec_chips_el}${rec_el}${receipt_badge_el}${usage_el}${log_path_el}${judgementPopover(
             item
           )}
         </div>`
       : '';
-  const deps_el = dependencyChipsTemplate(item.dependency_chips);
+  // 유예 칩은 슬롯 4a다 (UI-q1tg §3.3) — `⛓` 선행 칩과 같은 질문에 답하므로 그
+  // 줄 안, 선행 칩 바로 뒤에 선다.
+  const deps_el = dependencyChipsTemplate(
+    item.dependency_chips,
+    graceChipTemplate(item.added_at)
+  );
   const receipt_el = discardReceiptTemplate(item);
   const actions_el = options.actions ? options.actions : '';
   const has_foot = !!(
@@ -2062,7 +2139,7 @@ export function miniRow(item, options = {}) {
           </div>
           ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
           <div class="worker-mini__row2">
-            ${usage_el}${done_at_label
+            ${route_el}${exec_chips_el}${usage_el}${done_at_label
               ? html`<span
                   class="worker-mini__done-at"
                   title=${`완료 ${formatTimestampLocal(item.done_at)}`}
