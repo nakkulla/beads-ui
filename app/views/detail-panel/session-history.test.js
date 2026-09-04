@@ -475,6 +475,32 @@ describe('session-history delegation monitors', () => {
       'unit1-codex-02 · thread shared-thread',
       'unit1-r1 · thread shared-thread · 이전 라운드 스레드 이어감'
     ]);
+    expect(
+      Array.from(host.querySelectorAll('.detail-session__leg-thread')).map(
+        (node) => node.textContent
+      )
+    ).toEqual(['shared-t', 'shared-t']);
+  });
+
+  test('renders the Codex thread id beside the launch id', () => {
+    const session = { ...monitor('done'), session_id: '01a062f19c4b4d0e' };
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [session]
+        }
+      ])
+    );
+
+    const thread = host.querySelector('.detail-session__leg-thread');
+
+    expect(host.querySelector('.detail-session__leg-sid')?.textContent).toBe(
+      'launch-done'
+    );
+    expect(thread?.textContent).toBe('01a062f1');
+    expect(thread?.getAttribute('title')).toBe('01a062f19c4b4d0e');
+    expect(thread?.classList).toContain('detail-session__sid');
   });
 
   test('renders monitored and static effort while omitting absent effort', () => {
@@ -562,6 +588,9 @@ describe('session-history delegation monitors', () => {
     expect(
       row?.querySelector('.detail-session__leg-sid')?.getAttribute('title')
     ).toBe('legacy-1 · thread legacy-session');
+    expect(row?.querySelector('.detail-session__leg-thread')?.textContent).toBe(
+      'legacy-s'
+    );
     expect(row?.querySelector('.detail-session__leg-glyph')).toBeNull();
   });
 
@@ -588,6 +617,7 @@ describe('session-history delegation monitors', () => {
 
     expect(id?.textContent).toBe('receipt-without-thread');
     expect(id?.getAttribute('title')).toBe('receipt-without-thread');
+    expect(host.querySelector('.detail-session__leg-thread')).toBeNull();
   });
 
   test('joins matching terminal usage into one monitored row', () => {
@@ -794,6 +824,20 @@ describe('session-history claude subagent rows (UI-2mpn §6.1)', () => {
     const sid = host.querySelector('.detail-session__leg-sid');
     expect(sid?.textContent).toBe('agt_9f3c');
     expect(sid?.getAttribute('title')).toBe('agt_9f3c21d4c0');
+  });
+
+  test('draws no thread chip on a Claude subagent row', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [subagent('done')],
+          usage_legs: [receipt()]
+        }
+      ])
+    );
+
+    expect(host.querySelector('.detail-session__leg-thread')).toBeNull();
   });
 
   test('falls back to the launch id tail while the subagent runs', () => {

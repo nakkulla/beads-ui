@@ -181,15 +181,16 @@ function shortModel(model) {
 }
 
 /**
- * The id a delegated row shows. Codex rows lead with the launch id while keeping
- * the thread id in the title. A Claude subagent's `agentId` only exists once it
- * finished, so a running row falls back to the tail of its launch id — the head
- * is the constant `toolu_01` prefix and would identify nothing.
+ * The id a delegated row shows. Codex rows lead with the launch id and carry the
+ * thread id as a second chip, because a tooltip is unreachable on a touch
+ * screen (UI-2g59). A Claude subagent's `agentId` only exists once it finished,
+ * so a running row falls back to the tail of its launch id — the head is the
+ * constant `toolu_01` prefix and would identify nothing.
  *
  * @param {{ provider: 'codex'|'claude', launch_id: string, session_id?: string|null }} session
  * @param {Record<string, any>|null} leg
  * @param {boolean} continued
- * @returns {{ text: string, title: string }}
+ * @returns {{ text: string, title: string, thread: { text: string, title: string }|null }}
  */
 function shortIdOf(session, leg, continued) {
   if (session.provider !== 'claude') {
@@ -199,13 +200,40 @@ function shortIdOf(session, leg, continued) {
     const continuation_title = continued ? ' · 이전 라운드 스레드 이어감' : '';
     return {
       text: `${continued ? '↩ ' : ''}${session.launch_id}`,
-      title: `${session.launch_id}${thread_title}${continuation_title}`
+      title: `${session.launch_id}${thread_title}${continuation_title}`,
+      thread: session.session_id
+        ? {
+            text: session.session_id.slice(0, 8),
+            title: session.session_id
+          }
+        : null
     };
   }
   const agent_id = leg && typeof leg.agent_id === 'string' ? leg.agent_id : '';
   return agent_id.length > 0
-    ? { text: agent_id.slice(0, 8), title: agent_id }
-    : { text: session.launch_id.slice(-8), title: session.launch_id };
+    ? { text: agent_id.slice(0, 8), title: agent_id, thread: null }
+    : {
+        text: session.launch_id.slice(-8),
+        title: session.launch_id,
+        thread: null
+      };
+}
+
+/**
+ * The thread chip that sits next to a Codex row's launch id. Missing thread id
+ * draws nothing rather than an empty chip (fail-quiet).
+ *
+ * @param {{ text: string, title: string }|null} thread
+ * @returns {TemplateResult|string}
+ */
+function threadChipTemplate(thread) {
+  return thread
+    ? html`<span
+        class="detail-session__leg-thread detail-session__sid"
+        title=${thread.title}
+        >${thread.text}</span
+      >`
+    : '';
 }
 
 /**
@@ -352,6 +380,7 @@ function staticLegTemplate(role, provider, leg, continued) {
       title=${short_id.title}
       >${short_id.text}</span
     >
+    ${threadChipTemplate(short_id.thread)}
     ${completedTime(leg.completed_at)
       ? html`<span class="detail-session__leg-time detail-session__time"
           >${completedTime(leg.completed_at)}</span
@@ -433,6 +462,7 @@ function monitoredLegTemplate(session, leg, attempt_id, handlers, continued) {
       title=${short_id.title}
       >${short_id.text}</span
     >
+    ${threadChipTemplate(short_id.thread)}
     ${time
       ? html`<span class="detail-session__leg-time detail-session__time"
           >${time}</span
