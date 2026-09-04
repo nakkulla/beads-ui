@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createDisplayPolicyStore } from '../data/display-policy-store.js';
 import {
+  benchPatchFor,
   createDisplaySettingsDialog,
   labelPatchFor,
   labelPillState
@@ -113,6 +114,24 @@ describe('labelPatchFor', () => {
     const patch = labelPatchFor('reviewed:spec', policy, true);
 
     expect(patch.visible_labels).toEqual(['reviewed:spec']);
+  });
+});
+
+describe('benchPatchFor', () => {
+  test('marks bench as included', () => {
+    expect(benchPatchFor(makePolicy(), true).visible_labels).toEqual(['bench']);
+  });
+
+  test('drops the inclusion entry when excluding', () => {
+    const policy = makePolicy({ visible_labels: ['bench', 'frontend'] });
+
+    expect(benchPatchFor(policy, false).visible_labels).toEqual(['frontend']);
+  });
+
+  test('is idempotent when the policy already agrees', () => {
+    const policy = makePolicy({ visible_labels: ['bench'] });
+
+    expect(benchPatchFor(policy, true).visible_labels).toEqual(['bench']);
   });
 });
 
@@ -413,5 +432,53 @@ describe('views/display-settings-dialog', () => {
     store.set(makePolicy({ revision: 1, hidden_labels: ['frontend'] }));
 
     expect(pill('frontend').dataset.state).toBe('hidden_exact');
+  });
+
+  test('shows the bench inclusion toggle off by default', () => {
+    store.set(makePolicy());
+
+    openDialog();
+
+    const toggle = /** @type {HTMLInputElement} */ (
+      document.querySelector('[data-list-toggle="bench"]')
+    );
+    expect(toggle.checked).toBe(false);
+  });
+
+  test('reads the bench toggle as on when the label is forced visible', () => {
+    store.set(makePolicy({ visible_labels: ['bench'] }));
+
+    openDialog();
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        document.querySelector('[data-list-toggle="bench"]')
+      ).checked
+    ).toBe(true);
+  });
+
+  test('includes bench through the existing policy path', async () => {
+    store.set(makePolicy());
+    const { transport } = openDialog();
+
+    /** @type {HTMLElement} */ (
+      document.querySelector('[data-list-toggle="bench"]')
+    ).click();
+    await Promise.resolve();
+
+    expect(transport.mock.calls[0][0]).toBe('display-policy-set');
+    expect(transport.mock.calls[0][1].policy.visible_labels).toEqual(['bench']);
+  });
+
+  test('excludes bench again on a second click', async () => {
+    store.set(makePolicy({ visible_labels: ['bench'] }));
+    const { transport } = openDialog();
+
+    /** @type {HTMLElement} */ (
+      document.querySelector('[data-list-toggle="bench"]')
+    ).click();
+    await Promise.resolve();
+
+    expect(transport.mock.calls[0][1].policy.visible_labels).toEqual([]);
   });
 });

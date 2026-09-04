@@ -2,6 +2,7 @@ import { render } from 'lit-html';
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { describe, expect, test } from 'vitest';
+import { resolveCatalog } from '../../../server/worker/runner-catalog.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
 import { sessionHistoryTemplate } from './session-history.js';
 
@@ -1374,5 +1375,69 @@ describe('세션 이력 행 조작 형태 (UI-6g3t §3.2)', () => {
     );
 
     expect(copy.classList.contains('op-btn')).toBe(true);
+  });
+});
+
+describe('session-history per-leg price (preset-compare §1.3)', () => {
+  const catalog = resolveCatalog({
+    overrides: {
+      codex: { models: { terra: { price: { input: 2, output: 10 } } } },
+      claude: { models: { opus: { price: { input: 3 } } } }
+    },
+    warn: () => {}
+  });
+
+  const ATTEMPT = {
+    attempt_id: 'outer',
+    bead_id: 'UI-1',
+    status: 'done',
+    runner: 'claude',
+    model: 'opus',
+    session_id: 'outer-session',
+    usage: { input_tokens: 1_000_000 },
+    usage_legs: [
+      {
+        receipt_id: 'impl-1',
+        provider: 'codex',
+        role: 'implementation',
+        model: 'gpt-5.6-terra',
+        session_id: 'implementation-thread',
+        usage: { input_tokens: 1_000_000, output_tokens: 0 }
+      },
+      {
+        receipt_id: 'review-1',
+        provider: 'codex',
+        role: 'review-consult',
+        model: 'gpt-5.6-luna',
+        session_id: 'review-thread',
+        usage: { input_tokens: 4, output_tokens: 1 }
+      }
+    ]
+  };
+
+  test('marks a computed leg price beside its token badge', () => {
+    const host = mount(sessionHistoryTemplate([ATTEMPT], {}, { catalog }, []));
+
+    const prices = Array.from(
+      host.querySelectorAll('.detail-session__price')
+    ).map((node) => node.textContent?.trim());
+
+    expect(prices).toContain('$2.00 계산');
+  });
+
+  test('names the leg the catalog cannot price', () => {
+    const host = mount(sessionHistoryTemplate([ATTEMPT], {}, { catalog }, []));
+
+    const prices = Array.from(
+      host.querySelectorAll('.detail-session__price')
+    ).map((node) => node.textContent?.trim());
+
+    expect(prices).toContain('단가 없음');
+  });
+
+  test('renders no price markers without a catalog', () => {
+    const host = mount(sessionHistoryTemplate([ATTEMPT], {}, {}, []));
+
+    expect(host.querySelectorAll('.detail-session__price')).toHaveLength(0);
   });
 });

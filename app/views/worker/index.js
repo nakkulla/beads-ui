@@ -3165,7 +3165,11 @@ export function createWorkerView(mount_element, options = {}) {
           item?.title || bead_titles[e.bead_id] || e.bead_id,
           pr_obs,
           cleanup_failed[e.bead_id] || null,
-          sumAttemptUsage(attempts, e.bead_id),
+          sumAttemptUsage(
+            attempts,
+            e.bead_id,
+            /** @type {any} */ (group).runner_catalog || null
+          ),
           // The server's own progress wins; the local pending only covers the
           // window before the first snapshot carrying it arrives.
           pr_activity[e.bead_id] ||

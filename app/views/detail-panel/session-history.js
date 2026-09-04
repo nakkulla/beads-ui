@@ -5,6 +5,8 @@ import {
 } from '../../utils/attempt-display.js';
 import { sessionRefKey, sessionRefLabel } from '../../utils/session-ref.js';
 import {
+  PRICE_BASIS_LABELS,
+  costTooltipLines,
   formatUsageTotal,
   projectAttemptUsage,
   providerUsageBadges
@@ -21,6 +23,43 @@ import {
 /**
  * @typedef {import('../../utils/token-usage.js').UsageRecord} UsageRecord
  */
+
+/**
+ * The price of ONE leg beside its token badge (preset-compare §1.3). Absent
+ * when the projection could price nothing at all, so an install that declares
+ * no unit price renders exactly the row it rendered before. `reported` carries
+ * no marker; `계산`·`추정`·`단가 없음` name where the other figures came from.
+ *
+ * @param {Record<string, any>|null|undefined} leg
+ * @returns {TemplateResult|''}
+ */
+function legPriceTemplate(leg) {
+  if (!leg || typeof leg.price_basis !== 'string') {
+    return '';
+  }
+  const basis = /** @type {keyof typeof PRICE_BASIS_LABELS} */ (
+    leg.price_basis
+  );
+  if (!(basis in PRICE_BASIS_LABELS)) {
+    return '';
+  }
+  const marker = PRICE_BASIS_LABELS[basis];
+  if (basis === 'none') {
+    return html`<span class="detail-session__price detail-session__price--none"
+      >${marker}</span
+    >`;
+  }
+  const lines = costTooltipLines({
+    total_cost_usd: leg.price_usd,
+    cost_estimated: basis === 'estimated'
+  });
+  if (lines.length === 0) {
+    return '';
+  }
+  return html`<span class="detail-session__price" title=${lines.join('\n')}
+    >${lines[0]}${marker ? ` ${marker}` : ''}</span
+  >`;
+}
 
 /**
  * The breakdown rows behind [τ 자세히] (UI-d7pw §2.2), in tally order. Cost is
@@ -390,7 +429,7 @@ function staticLegTemplate(role, provider, leg, continued) {
       ? html`<span class="detail-session__usage" title=${badge.tooltip}
           >${badge.label}</span
         >`
-      : ''}
+      : ''}${legPriceTemplate(leg)}
   </div>`;
 }
 
@@ -472,7 +511,7 @@ function monitoredLegTemplate(session, leg, attempt_id, handlers, continued) {
       ? html`<span class="detail-session__usage" title=${badge.tooltip}
           >${badge.label}</span
         >`
-      : ''}
+      : ''}${legPriceTemplate(terminal_leg)}
   </button>`;
 }
 
@@ -839,7 +878,7 @@ function sessionRefRow(view, handlers) {
  *
  * @param {SessionAttempt[]} [attempts]
  * @param {{ onOpen?: (attempt_id: string) => void, onOpenDelegation?: (attempt_id: string, launch_id: string) => void, onResume?: (attempt_id: string) => void, onToggleUsage?: (attempt_id: string) => void, onOpenSessionRef?: (view: SessionRefView) => void, onCopyResumeCommand?: (command: string) => void }} [handlers]
- * @param {{ total?: UsageRecord|import('../../utils/token-usage.js').UsageProjection|null, expanded?: Set<string> }} [usage_view]
+ * @param {{ total?: UsageRecord|import('../../utils/token-usage.js').UsageProjection|null, expanded?: Set<string>, catalog?: import('../../../server/worker/runner-catalog.js').ResolvedCatalog|null }} [usage_view]
  * @param {SessionRefView[]} [session_refs]
  * @returns {TemplateResult}
  */
@@ -861,6 +900,7 @@ export function sessionHistoryTemplate(
     sessionRefRow(view, handlers)
   );
   const expanded = usage_view.expanded || new Set();
+  const catalog = usage_view.catalog || null;
   if (list.length === 0 && ordered_views.length === 0) {
     return html`
       <div class="detail-section-label">세션 이력</div>
@@ -948,7 +988,7 @@ export function sessionHistoryTemplate(
    * @returns {TemplateResult|''}
    */
   const usageButton = (a) => {
-    const projection = outerProjection(projectAttemptUsage(a));
+    const projection = outerProjection(projectAttemptUsage(a, catalog));
     if (
       providerUsageBadges(projection).length === 0 &&
       !formatUsageTotal(a.usage)
@@ -979,7 +1019,7 @@ export function sessionHistoryTemplate(
     </div>
     <div class="detail-sessions" data-seam="session-history">
       ${session_rows}${list.map((a) => {
-        const projection = projectAttemptUsage(a);
+        const projection = projectAttemptUsage(a, catalog);
         const outer = outerProjection(projection);
         const outer_badges = providerUsageBadges(outer);
         return html`<div class="detail-session-row">

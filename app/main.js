@@ -22,6 +22,7 @@ import { createActivityIndicator } from './utils/activity-indicator.js';
 import { debug } from './utils/logging.js';
 import { showToast } from './utils/toast.js';
 import { createBoardView } from './views/board/index.js';
+import { createCompareView } from './views/compare/index.js';
 import { createDetailPanel } from './views/detail-panel/index.js';
 import { createMdViewer } from './views/detail-panel/md-viewer.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
@@ -235,6 +236,7 @@ export function bootstrap(root_element) {
     <section id="board-root" class="route board"></section>
     <section id="worker-root" class="route worker" hidden></section>
     <section id="monitor-root" class="route monitor" hidden></section>
+    <section id="compare-root" class="route compare" hidden></section>
     <section id="detail-panel" class="route detail" hidden></section>
   `;
   render(shell, root_element);
@@ -254,13 +256,21 @@ export function bootstrap(root_element) {
   /** @type {HTMLElement|null} */
   const monitor_root = document.getElementById('monitor-root');
   /** @type {HTMLElement|null} */
+  const compare_root = document.getElementById('compare-root');
+  /** @type {HTMLElement|null} */
   const detail_mount = document.getElementById('detail-panel');
 
   if (usage_mount) {
     createUsageMeter(usage_mount);
   }
 
-  if (board_root && worker_root && monitor_root && detail_mount) {
+  if (
+    board_root &&
+    worker_root &&
+    monitor_root &&
+    compare_root &&
+    detail_mount
+  ) {
     /** @type {HTMLElement|null} */
     const header_loading = document.getElementById('header-loading');
     const activity = createActivityIndicator(header_loading);
@@ -924,7 +934,7 @@ export function bootstrap(root_element) {
      * 탭을 옮겨도 후보가 비거나 낡지 않는다 — 채널을 끊어도 store는 비워지지
      * 않으므로, 술어가 갈리면 오래된 snapshot이 남는다.
      *
-     * @param {{ view: 'board'|'worker'|'monitor', selected_id: string | null }} state
+     * @param {{ view: 'board'|'worker'|'monitor'|'compare', selected_id: string | null }} state
      * @returns {boolean}
      */
     function pipelineChannelWanted(state) {
@@ -1372,15 +1382,16 @@ export function bootstrap(root_element) {
       client.onConnection(onConn);
     }
 
-    // Load last-view from storage (board/worker/monitor only).
-    /** @type {'board'|'worker'|'monitor'} */
+    // Load last-view from storage (board/worker/monitor/compare only).
+    /** @type {'board'|'worker'|'monitor'|'compare'} */
     let last_view = 'board';
     try {
       const raw_view = window.localStorage.getItem('beads-ui.view');
       if (
         raw_view === 'board' ||
         raw_view === 'worker' ||
-        raw_view === 'monitor'
+        raw_view === 'monitor' ||
+        raw_view === 'compare'
       ) {
         last_view = raw_view;
       }
@@ -1632,6 +1643,30 @@ export function bootstrap(root_element) {
       openDoc
     });
 
+    // 비교 탭 (네 번째 탭, preset-compare §3.1): 프리셋 저장소가 서버 전역이라
+    // Monitor와 같은 global 마운트 쪽이고, 요청·응답 한 쌍만 쓰므로 구독이 없다.
+    const compare_view = createCompareView(compare_root, {
+      transport,
+      gotoIssue: (id) => router.gotoIssue(id),
+      // 실험 폼의 프리셋 목록은 서버 전역 프리셋 저장소 그대로다 (§4.2).
+      execPresetStore: exec_preset_store,
+      // 원본 후보는 현재 저장소에 로드된 이슈들이다 — `bench-run-create`가
+      // 연결의 워크스페이스에만 쓰기 때문에 후보도 그 워크스페이스여야 한다.
+      sourceCandidates: () => {
+        /** @type {Map<string, any>} */
+        const seen = new Map();
+        for (const [client_id] of BOARD_SUBS) {
+          for (const issue of sub_issue_stores.snapshotFor(client_id) || []) {
+            const id = /** @type {any} */ (issue)?.id;
+            if (typeof id === 'string' && id.length > 0 && !seen.has(id)) {
+              seen.set(id, issue);
+            }
+          }
+        }
+        return Array.from(seen.values());
+      }
+    });
+
     // Shared detail overlay.
     const detail_panel = createDetailPanel(detail_mount, {
       issueStores: sub_issue_stores,
@@ -1743,14 +1778,19 @@ export function bootstrap(root_element) {
     /**
      * Manage route visibility and board subscriptions per view.
      *
-     * @param {{ selected_id: string | null, view: 'board'|'worker'|'monitor' }} s
+     * @param {{ selected_id: string | null, view: 'board'|'worker'|'monitor'|'compare' }} s
      */
     const onRouteChange = (s) => {
       board_root.hidden = s.view !== 'board';
       worker_root.hidden = s.view !== 'worker';
       monitor_root.hidden = s.view !== 'monitor';
+      compare_root.hidden = s.view !== 'compare';
       if (repo_scope_mount) {
-        repo_scope_mount.classList.toggle('is-quiet', s.view === 'monitor');
+        // 비교도 Monitor와 같이 저장소 전체를 보는 탭이라 레포 캡슐이 물러난다.
+        repo_scope_mount.classList.toggle(
+          'is-quiet',
+          s.view === 'monitor' || s.view === 'compare'
+        );
       }
       ensureBoardSubscriptions(s.view === 'board');
       ensureWorkerSubscriptions(s.view === 'worker');
@@ -1771,6 +1811,11 @@ export function bootstrap(root_element) {
         monitor_view.load();
       } else {
         monitor_view.pause();
+      }
+      if (s.view === 'compare') {
+        compare_view.load();
+      } else {
+        compare_view.pause();
       }
       window.localStorage.setItem('beads-ui.view', s.view);
     };

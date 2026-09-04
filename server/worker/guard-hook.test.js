@@ -443,6 +443,82 @@ describe('guard-hook record mode (worker-failure-tiers §5.1)', () => {
   });
 });
 
+describe('guard-hook deny mode (preset-compare §4.5-2)', () => {
+  /**
+   * @param {'guard'|'record'|'deny'} [mode]
+   * @returns {string}
+   */
+  function render(mode) {
+    return renderHookScript({
+      repo: '/repo',
+      target_base: 'main',
+      attempt_id: ATTEMPT,
+      push_log: '/state/pushes.jsonl',
+      mode
+    });
+  }
+
+  test('refuses every ref, not only the base one', () => {
+    const script = render('deny');
+
+    expect(script).toContain('must not push any ref');
+    expect(script).toContain('status=1');
+    // No `continue` for a non-base destination: the deny loop has one verdict.
+    expect(script).not.toContain('"$remote_ref" != "$guard_ref"');
+  });
+
+  test('records every refused ref in the shape the detection layer reads', () => {
+    const record_line =
+      'printf \'{"local_ref":"%s","local_oid":"%s","remote_ref":"%s","remote_oid":"%s"}\\n\'';
+
+    expect(render('deny')).toContain(record_line);
+    expect(render('deny').indexOf('guard_record "$local_ref"')).toBeLessThan(
+      render('deny').indexOf('must not push any ref')
+    );
+  });
+
+  test('omits the docs-only exemption a bench cell can never use', () => {
+    const script = render('deny');
+
+    expect(script).not.toContain('guard_docs_only');
+    expect(script).not.toContain('exempt":"docs_only');
+  });
+
+  test('keeps the repo identity gate, so a foreign push stays out of scope', () => {
+    expect(render('deny')).toContain('[ "$here" = "$mine" ] || exit 0');
+  });
+
+  test('install writes the deny script under the deny mode', () => {
+    install({
+      workspace: WS,
+      attempt_id: ATTEMPT,
+      repo: '/repo',
+      target_base: 'main',
+      mode: 'deny'
+    });
+
+    const script = fs.readFileSync(
+      path.join(guardHookDir(WS, ATTEMPT), 'pre-push'),
+      'utf8'
+    );
+
+    expect(script).toContain('# mode: deny');
+    expect(script).toContain('must not push any ref');
+  });
+
+  test('falls back to guard for an unknown mode', () => {
+    expect(
+      renderHookScript({
+        repo: '/repo',
+        target_base: 'main',
+        attempt_id: ATTEMPT,
+        push_log: '/state/pushes.jsonl',
+        mode: /** @type {any} */ ('bench')
+      })
+    ).toBe(render('guard'));
+  });
+});
+
 describe('guard-hook envFor', () => {
   test('returns the three GIT_CONFIG keys at index 0 with no inherited count', () => {
     const env = envFor({ workspace: WS, attempt_id: ATTEMPT }, { env: {} });

@@ -751,7 +751,7 @@ export function createBdMetadata(deps = {}) {
  * @param {unknown} stdout
  * @returns {string|null}
  */
-function createdIdOf(stdout) {
+export function createdIdOf(stdout) {
   if (typeof stdout !== 'string' || stdout.trim().length === 0) {
     return null;
   }

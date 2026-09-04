@@ -62,9 +62,19 @@ import { displayPolicyFilePath } from './worker/state-paths.js';
  * Retired display-only mirror labels. Their authority is bead metadata and the
  * card stepper already renders that readiness, so they are hidden by default
  * rather than deleted from existing beads.
+ *
+ * Exported because they are this repository's ONLY spelling of that workflow
+ * vocabulary, and a second copy would be a second vocabulary.
+ *
+ * @type {ReadonlyArray<string>}
  */
-const SEED_HIDDEN_LABELS = ['has:spec', 'pr'];
-const SEED_HIDDEN_PREFIXES = ['reviewed:', 'skipped:'];
+export const RETIRED_MIRROR_LABELS = ['has:spec', 'pr'];
+
+/** @type {ReadonlyArray<string>} */
+export const RETIRED_MIRROR_LABEL_PREFIXES = ['reviewed:', 'skipped:'];
+
+const SEED_HIDDEN_LABELS = [...RETIRED_MIRROR_LABELS];
+const SEED_HIDDEN_PREFIXES = [...RETIRED_MIRROR_LABEL_PREFIXES];
 
 /** @type {Array<keyof DisplayPolicyChips>} */
 const CHIP_KEYS = ['route', 'fast_track', 'pr', 'from', 'blocked', 'stepper'];

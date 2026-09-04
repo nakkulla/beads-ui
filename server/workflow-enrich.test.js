@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
+  REVIEW_STATS_KEYS,
   _clearStaleCache,
   classifyGlyph,
   computeStale,
@@ -16,6 +17,7 @@ import {
   parsePlannedExecution,
   parseReceipt,
   parseResolverReceipt,
+  parseReviewStats,
   warmWorkflowProbes
 } from './workflow-enrich.js';
 
@@ -2187,3 +2189,133 @@ describe(
     });
   }
 );
+
+const COMMIT_ANCHOR = 'a'.repeat(40);
+const DIGEST_ANCHOR = '9f8e7d6c5b4a';
+
+describe('parseReviewStats', () => {
+  test('parses a spec round bound to a commit sha', () => {
+    const stats = parseReviewStats('spec', `r2:b0/m3:APPROVE@${COMMIT_ANCHOR}`);
+
+    expect(stats).toEqual({
+      round: 2,
+      blocking: 0,
+      minor: 3,
+      verdict: 'APPROVE',
+      anchor: COMMIT_ANCHOR
+    });
+  });
+
+  test('parses an impl round with a REVISE verdict', () => {
+    const stats = parseReviewStats('impl', `r1:b2/m1:REVISE@${COMMIT_ANCHOR}`);
+
+    expect(stats).toEqual({
+      round: 1,
+      blocking: 2,
+      minor: 1,
+      verdict: 'REVISE',
+      anchor: COMMIT_ANCHOR
+    });
+  });
+
+  test('parses a plan round bound to a 12hex draft digest', () => {
+    const stats = parseReviewStats('plan', `r1:b0/m1:APPROVE@${DIGEST_ANCHOR}`);
+
+    expect(stats?.anchor).toBe(DIGEST_ANCHOR);
+  });
+
+  test('rejects a plan round carrying a commit-length anchor', () => {
+    const stats = parseReviewStats('plan', `r1:b0/m1:APPROVE@${COMMIT_ANCHOR}`);
+
+    expect(stats).toBe(null);
+  });
+
+  test('rejects a spec round carrying a digest-length anchor', () => {
+    const stats = parseReviewStats('spec', `r1:b0/m1:APPROVE@${DIGEST_ANCHOR}`);
+
+    expect(stats).toBe(null);
+  });
+
+  test('returns null for an unknown step', () => {
+    const stats = parseReviewStats(
+      /** @type {'spec'} */ ('quick_fix'),
+      `r1:b0/m0:APPROVE@${COMMIT_ANCHOR}`
+    );
+
+    expect(stats).toBe(null);
+  });
+
+  test.each([
+    ['an absent value', undefined],
+    ['a non-string value', 42],
+    ['an unknown verdict', `r1:b0/m0:MAYBE@${COMMIT_ANCHOR}`],
+    ['a missing round segment', `b0/m0:APPROVE@${COMMIT_ANCHOR}`],
+    ['a non-hex anchor', 'r1:b0/m0:APPROVE@zzzzzz'],
+    ['a missing anchor', 'r1:b0/m0:APPROVE'],
+    ['a swapped blocking/minor order', `r1:m0/b0:APPROVE@${COMMIT_ANCHOR}`],
+    ['trailing junk', `r1:b0/m0:APPROVE@${COMMIT_ANCHOR} x`]
+  ])('returns null for %s', (_label, value) => {
+    expect(parseReviewStats('impl', value)).toBe(null);
+  });
+
+  test('tolerates surrounding whitespace like the receipt parser', () => {
+    const stats = parseReviewStats(
+      'impl',
+      `  r3:b1/m0:REVISE@${COMMIT_ANCHOR}\n`
+    );
+
+    expect(stats?.round).toBe(3);
+  });
+});
+
+describe('enrichIssueWorkflow — review_stats', () => {
+  test('projects all three steps from the registry keys', () => {
+    const wf = enrichIssueWorkflow({
+      issue_type: 'task',
+      metadata: {
+        route: 'full_plan',
+        plan_path: 'docs/plan.md',
+        spec_review_stats: `r1:b0/m0:APPROVE@${COMMIT_ANCHOR}`,
+        impl_review_stats: `r2:b1/m4:REVISE@${'b'.repeat(40)}`,
+        plan_review_stats: `r1:b0/m2:APPROVE@${DIGEST_ANCHOR}`
+      }
+    });
+
+    expect(wf.review_stats.spec?.verdict).toBe('APPROVE');
+    expect(wf.review_stats.impl).toEqual({
+      round: 2,
+      blocking: 1,
+      minor: 4,
+      verdict: 'REVISE',
+      anchor: 'b'.repeat(40)
+    });
+    expect(wf.review_stats.plan?.minor).toBe(2);
+  });
+
+  test('yields null per step when the contract keys are absent', () => {
+    const wf = enrichIssueWorkflow({ issue_type: 'task', metadata: {} });
+
+    expect(wf.review_stats).toEqual({ spec: null, impl: null, plan: null });
+  });
+
+  test('drops only the malformed step and keeps the others', () => {
+    const wf = enrichIssueWorkflow({
+      issue_type: 'task',
+      metadata: {
+        spec_review_stats: 'garbage',
+        impl_review_stats: `r1:b0/m0:APPROVE@${COMMIT_ANCHOR}`
+      }
+    });
+
+    expect(wf.review_stats.spec).toBe(null);
+    expect(wf.review_stats.impl?.round).toBe(1);
+  });
+
+  test('names the three contract keys in the field registry', () => {
+    expect(REVIEW_STATS_KEYS).toEqual({
+      spec: { key: 'spec_review_stats', anchor_length: 40 },
+      impl: { key: 'impl_review_stats', anchor_length: 40 },
+      plan: { key: 'plan_review_stats', anchor_length: 12 }
+    });
+  });
+});

@@ -51,4 +51,38 @@ describe('router', () => {
     expect(parseView('')).toBe('board');
     expect(parseView('#/unknown')).toBe('board');
   });
+
+  test('parseView resolves the fourth tab compare', () => {
+    expect(parseView('#/compare')).toBe('compare');
+    expect(parseView('#/compare?issue=UI-1')).toBe('compare');
+  });
+
+  test('compare hash opens the detail overlay on the same issue parameter', () => {
+    document.body.innerHTML = '<div></div>';
+    const store = createStore();
+    const router = createHashRouter(store);
+    router.start();
+
+    window.location.hash = '#/compare?issue=UI-n28d';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+    expect(store.getState().view).toBe('compare');
+    expect(store.getState().selected_id).toBe('UI-n28d');
+
+    router.stop();
+  });
+
+  test('gotoIssue keeps the compare view in the canonical hash', () => {
+    document.body.innerHTML = '<div></div>';
+    const store = createStore();
+    const router = createHashRouter(store);
+    router.start();
+    window.location.hash = '#/compare';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+    router.gotoIssue('UI-77');
+
+    expect(window.location.hash).toBe('#/compare?issue=UI-77');
+    router.stop();
+  });
 });

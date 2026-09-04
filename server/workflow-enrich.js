@@ -43,6 +43,33 @@ const PLAN_REVIEW_RECEIPT_RE = /^(codex|fable|self|skipped)@([0-9a-fA-F]{12})$/;
 /** New native Plan Mode approval, bound to the saved plan commit. */
 const PLAN_APPROVAL_RECEIPT_RE = /^(user)@([0-9a-fA-F]{40})$/;
 const EXEC_RECEIPT_RE = /^(delegated|main):([^@\n]+)@([0-9a-fA-F]{40})$/;
+
+/**
+ * `<step>_review_stats` — `r<round>:b<blocking>/m<minor>:<verdict>@<anchor>`.
+ * The anchor width is checked per step by {@link parseReviewStats}, not here.
+ */
+const REVIEW_STATS_RE =
+  /^r([0-9]+):b([0-9]+)\/m([0-9]+):(APPROVE|REVISE)@([0-9a-fA-F]+)$/;
+
+/**
+ * The three review-stats metadata keys and the anchor width each one binds to,
+ * copied here as a code-level field registry (ADR 0012). dotfiles
+ * `docs/contracts/workflow-state.yaml` OWNS the keys and their format; beads-ui
+ * only consumes them, so a step missing from this map is not read at all and no
+ * key outside it is ever treated as review evidence.
+ *
+ * `spec` and `impl` bind to the 40hex commit sha their receipt binds to; `plan`
+ * binds to the 12hex digest of the draft bytes, because `plan_review` is bound
+ * to draft bytes rather than to a commit.
+ *
+ * @type {Readonly<Record<string, { key: string, anchor_length: number }>>}
+ */
+export const REVIEW_STATS_KEYS = Object.freeze({
+  spec: Object.freeze({ key: 'spec_review_stats', anchor_length: 40 }),
+  impl: Object.freeze({ key: 'impl_review_stats', anchor_length: 40 }),
+  plan: Object.freeze({ key: 'plan_review_stats', anchor_length: 12 })
+});
+
 const IMPL_ENTRY_RE = /^(user)@([0-9a-fA-F]{40})$/;
 
 /**
@@ -157,6 +184,67 @@ export function parseReceipt(value) {
   }
   const reviewer = m[1];
   return { reviewer, sha: m[2], is_skip: reviewer === 'skipped' };
+}
+
+/**
+ * @typedef {Object} ReviewStats
+ * @property {number} round - Rounds counted in this lineage until the verdict.
+ * @property {number} blocking - Blocking points raised in the last round.
+ * @property {number} minor - Minor points raised in the last round.
+ * @property {'APPROVE'|'REVISE'} verdict - The last round's verdict.
+ * @property {string} anchor - The value the stats bind to, exactly as written.
+ */
+
+/**
+ * Parse a `<step>_review_stats` value into its parts.
+ *
+ * The anchor length is what the step decides ({@link REVIEW_STATS_KEYS}). A
+ * value carrying the other step's anchor length is rejected rather than shown,
+ * because a stats line that survived a step mixup would point display at an
+ * anchor no receipt on this issue ever used.
+ *
+ * Display only: no freshness probe runs here and the anchor is never compared
+ * against a tip. Absent or malformed input yields `null` (fail-quiet).
+ *
+ * @param {'spec'|'impl'|'plan'} step
+ * @param {unknown} value
+ * @returns {ReviewStats | null}
+ */
+export function parseReviewStats(step, value) {
+  const entry = REVIEW_STATS_KEYS[step];
+  if (!entry || typeof value !== 'string') {
+    return null;
+  }
+  const match = REVIEW_STATS_RE.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+  if (match[5].length !== entry.anchor_length) {
+    return null;
+  }
+  return {
+    round: Number(match[1]),
+    blocking: Number(match[2]),
+    minor: Number(match[3]),
+    verdict: /** @type {'APPROVE'|'REVISE'} */ (match[4]),
+    anchor: match[5]
+  };
+}
+
+/**
+ * Project the three review-stats keys for one issue's metadata. Every step is
+ * present as a key so a consumer reads `null` rather than `undefined` for a
+ * review that never ran.
+ *
+ * @param {Record<string, any>} md
+ * @returns {{ spec: ReviewStats|null, impl: ReviewStats|null, plan: ReviewStats|null }}
+ */
+function reviewStats(md) {
+  return {
+    spec: parseReviewStats('spec', md[REVIEW_STATS_KEYS.spec.key]),
+    impl: parseReviewStats('impl', md[REVIEW_STATS_KEYS.impl.key]),
+    plan: parseReviewStats('plan', md[REVIEW_STATS_KEYS.plan.key])
+  };
 }
 
 /**
@@ -1627,6 +1715,10 @@ function mergeStage(md, status) {
  * @property {ExecReceipt|null} exec_receipt
  * @property {{ actor: string, sha: string }|null} impl_entry
  * @property {ResolverReceipt|null} resolver
+ * @property {{ spec: ReviewStats|null, impl: ReviewStats|null, plan: ReviewStats|null }} review_stats
+ * Structured review outcome per step, read from the contract's
+ * `<step>_review_stats` metadata. Display only — a step whose key is absent or
+ * malformed is `null` and draws nothing.
  * @property {{ state: 'reviewed'|'stale'|'unreviewed'|'unknown', missing: string[], digest: string|null }} [quick_fix_review]
  * The pinned quick_fix self-review projection's verdict for this issue. Absent
  * (key and all) whenever the judgement does not apply — `metadata.route` is not
@@ -1719,6 +1811,7 @@ export function enrichIssueWorkflow(
     exec_receipt,
     impl_entry,
     resolver,
+    review_stats: reviewStats(md),
     chips: {
       route,
       route_source,

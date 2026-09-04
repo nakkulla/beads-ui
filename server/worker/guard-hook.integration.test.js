@@ -450,6 +450,85 @@ describe('guard hook — record mode (worker-failure-tiers §5.1)', () => {
   });
 });
 
+describe('guard hook — deny mode (preset-compare §4.5-2)', () => {
+  /**
+   * Re-install this attempt's hook in deny mode. Same attempt id, so the
+   * `core.hooksPath` env the suite already exported keeps pointing at it and
+   * the push log is truncated back to empty.
+   */
+  function installDenyMode() {
+    const installed = install({
+      workspace: repo,
+      attempt_id: ATTEMPT,
+      repo,
+      target_base: BASE,
+      mode: 'deny'
+    });
+    expect(installed.ok).toBe(true);
+  }
+
+  /**
+   * @returns {Record<string, unknown>[]}
+   */
+  function entries() {
+    const read = readPushLog({ workspace: repo, attempt_id: ATTEMPT });
+    return read.ok ? read.entries : [];
+  }
+
+  test('refuses a base push and leaves the remote tip where it was', () => {
+    installDenyMode();
+    commit(repo, 'deny-mode-landing');
+    const before = remoteTip(origin, BASE);
+
+    const result = run('git', ['push', 'origin', `HEAD:${BASE}`], repo);
+
+    expect(result.code).not.toBe(0);
+    expect(remoteTip(origin, BASE)).toBe(before);
+  });
+
+  test('refuses a non-base branch push too', () => {
+    installDenyMode();
+    commit(worktree, 'deny-mode-feature');
+
+    const result = run(
+      'git',
+      ['push', 'origin', 'HEAD:refs/heads/UI-bench-cell'],
+      worktree
+    );
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('must not push any ref');
+  });
+
+  test('records the refused base push the invariant reads', () => {
+    installDenyMode();
+    commit(repo, 'deny-mode-record');
+    const local = git(['rev-parse', 'HEAD'], repo).trim();
+    const before = remoteTip(origin, BASE);
+
+    run('git', ['push', 'origin', `HEAD:${BASE}`], repo);
+
+    expect(entries()).toEqual([
+      {
+        local_ref: 'HEAD',
+        local_oid: local,
+        remote_ref: `refs/heads/${BASE}`,
+        remote_oid: before
+      }
+    ]);
+  });
+
+  test('records nothing for a push in another repository', () => {
+    installDenyMode();
+    commit(other, 'deny-mode-enclosed');
+
+    const result = run('git', ['push', 'origin', `HEAD:${BASE}`], other);
+
+    expect(result.code).toBe(0);
+    expect(entries()).toEqual([]);
+  });
+});
+
 describe('guard hook — docs-only base push exemption (UI-7ufi §2)', () => {
   /** Distinguishes the throwaway candidate worktrees within one test. */
   let candidate_seq = 0;

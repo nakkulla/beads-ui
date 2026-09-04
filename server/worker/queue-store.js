@@ -163,7 +163,18 @@
  * session summaries, same two providers. Legacy attempts normalize this
  * optional field to an empty list.
  * @property {string|null} done_kind - 무변경 종결의 종류 (`'refuted'`·
- * `'no_delta'`, quick_fix 착지가 씀); 그 밖의 값은 legacy 머지 축 기록.
+ * `'no_delta'`, quick_fix 착지가 씀) 또는 `'bench'`(preset-compare §4.5-1의
+ * `landing=none` 종결); 그 밖의 값은 legacy 머지 축 기록.
+ * @property {string|null} bench_run - The bench experiment run id this attempt
+ * belongs to (preset-compare §4). Snapshotted at dispatch from the clone bead's
+ * `bench_run` metadata so a settlement that never reads the bead again — the
+ * push invariant, the `:failed` close, the run's own cleanup — still knows
+ * which run owns this cell. Null for every ordinary attempt.
+ * @property {{ ok: boolean, exit: number|null, duration_ms: number, head_sha: string }|null} bench_verify -
+ * The repository `[verify]` score of one bench cell (§4.5-3), run in the same
+ * envelope as merge-candidate verification against the clone worktree's HEAD.
+ * Null when the repository declares no `[verify]`, when the session failed, and
+ * on every attempt recorded before this field existed.
  *
  * RETIRED merge-axis fields (worker-phase2 §2). New attempts never write them,
  * but attempt history is immutable (§9), so the shape is preserved so a legacy
@@ -229,11 +240,12 @@
  * observation, and the session uses it as the exemption basis for the three
  * base-push guard layers (pre-push hook install, base-drift observation, and
  * textual guard). Defaults false.
- * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null }|null} quickfix_landing -
+ * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|'bench_close'|null, head_sha: string|null, reason: string|null }|null} quickfix_landing -
  * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
  * before the first cleanup step) plus `no_change_close` for either kind of
  * contract no-change close (`refuted:`·`no-delta:`) settled without a delta
- * head, `head_sha` is the 40hex bound by
+ * head and `bench_close` for a `landing=none` bench cell, `head_sha` is the
+ * 40hex bound by
  * `impl_review` (null under `no_change_close`), and `reason` records a landing
  * failure. Its shape is directly
  * consumable by the existing `prWaitProgress` projection.
@@ -1788,9 +1800,13 @@ function normalizeSlots(value) {
  * kept here because the submit path must judge "is this bead free to move"
  * inside the same mutation that moves it.
  *
+ * Exported so a read-only projection asks THIS set rather than keeping a copy:
+ * a copy that drifted would silently drop whole attempts from what it shows,
+ * with no test able to see the difference.
+ *
  * @type {Set<string>}
  */
-const TERMINAL_ATTEMPT_STATUSES = new Set([
+export const TERMINAL_ATTEMPT_STATUSES = new Set([
   'done',
   'failed',
   'orphaned',
@@ -2735,6 +2751,41 @@ function normalizeDiscardOperations(raw) {
 }
 
 /**
+ * Normalize one bench cell's `[verify]` score (preset-compare §4.5-3).
+ *
+ * A record that cannot name the commit it ran on is DROPPED, for the same
+ * reason a verify result is only ever valid for its own SHA: a score with no
+ * head is a claim about nothing, and the comparison table would read it as a
+ * judged row.
+ *
+ * @param {unknown} value
+ * @returns {Attempt['bench_verify']}
+ */
+function normalizeBenchVerify(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.ok !== 'boolean' ||
+    typeof value.head_sha !== 'string' ||
+    value.head_sha.length === 0
+  ) {
+    return null;
+  }
+  return {
+    ok: value.ok,
+    exit:
+      typeof value.exit === 'number' && Number.isFinite(value.exit)
+        ? value.exit
+        : null,
+    duration_ms:
+      typeof value.duration_ms === 'number' &&
+      Number.isFinite(value.duration_ms)
+        ? value.duration_ms
+        : 0,
+    head_sha: value.head_sha
+  };
+}
+
+/**
  * Normalize the env retry ladder stamp (spec §6). A record that cannot name its
  * cause is DROPPED rather than kept: the ladder's whole identity is "this bead
  * keeps failing for THIS reason", and a nameless rung could never be matched to
@@ -2880,6 +2931,11 @@ export function makeAttempt(fields) {
     demoted_reason: fields.demoted_reason ?? null,
     release_rejected: fields.release_rejected ?? null,
     done_kind: fields.done_kind ?? null,
+    bench_run:
+      typeof fields.bench_run === 'string' && fields.bench_run.length > 0
+        ? fields.bench_run
+        : null,
+    bench_verify: normalizeBenchVerify(fields.bench_verify),
     verify_cmd_result: fields.verify_cmd_result ?? null,
     exec_default_preset_id: fields.exec_default_preset_id ?? null,
     exec_default_preset_revision:

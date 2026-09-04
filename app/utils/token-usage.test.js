@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'vitest';
+import { resolveCatalog } from '../../server/worker/runner-catalog.js';
 import {
+  formatCost,
   formatUsageTotal,
   formatUsageTotalWithCost,
   mergeUsageProjections,
+  providerUsageBadges,
   providerUsageTooltip,
   sumAttemptUsage,
   usageTooltip
@@ -200,7 +203,7 @@ describe('summed attempt usage (UI-d7pw §1)', () => {
     ).toBe(1);
   });
 
-  test('omits the cost when only some attempts reported one (UI-tq13 §7)', () => {
+  test('sums the priced attempts and counts the unpriced one (preset-compare §1.3)', () => {
     const attempts = {
       a1: {
         attempt_id: 'a1',
@@ -217,7 +220,8 @@ describe('summed attempt usage (UI-d7pw §1)', () => {
 
     const total = sumAttemptUsage(attempts, 'UI-1');
 
-    expect(total?.providers.claude).not.toHaveProperty('total_cost_usd');
+    expect(total?.providers.claude?.total_cost_usd).toBe(1);
+    expect(total?.providers.claude?.unpriced_leg_count).toBe(1);
     expect(total?.providers.claude?.breakdown.input_tokens).toBe(7);
   });
 
@@ -509,7 +513,7 @@ describe('provider and role usage projection (UI-orfj Phase 1)', () => {
     expect(projected?.roles).not.toHaveProperty('implementation');
   });
 
-  test('exposes Claude cost only when every summed Claude outer attempt reports it', () => {
+  test('reports a partial Claude cost beside the count of unpriced legs', () => {
     const attempts = {
       priced: {
         attempt_id: 'priced',
@@ -525,7 +529,8 @@ describe('provider and role usage projection (UI-orfj Phase 1)', () => {
 
     const projected = sumAttemptUsage(attempts, 'UI-1');
 
-    expect(projected?.providers.claude).not.toHaveProperty('total_cost_usd');
+    expect(projected?.providers.claude?.total_cost_usd).toBe(0.5);
+    expect(projected?.providers.claude?.unpriced_leg_count).toBe(1);
   });
 
   test('keeps explicit zero, replayed, and resumed outer attempts distinct from absent usage', () => {
@@ -928,6 +933,169 @@ describe('total-only legs inside an aggregate tooltip (UI-1vpv)', () => {
 
     expect(listedValues(tooltip).reduce((sum, value) => sum + value, 0)).toBe(
       merged?.providers.claude?.subtotal
+    );
+  });
+});
+
+describe('leg pricing and partial-cost display (preset-compare §1.3)', () => {
+  const catalog = resolveCatalog({
+    overrides: {
+      codex: { models: { sol: { price: { input: 2, output: 10 } } } },
+      claude: { models: { opus: { price: { input: 3 } } } }
+    },
+    warn: () => {}
+  });
+
+  const CODEX_ATTEMPT = {
+    a1: {
+      attempt_id: 'a1',
+      bead_id: 'UI-1',
+      runner: 'codex',
+      model: 'sol',
+      usage: { input_tokens: 1_000_000, output_tokens: 100_000 }
+    }
+  };
+
+  test('prices a Codex attempt the runner never costed', () => {
+    const projected = sumAttemptUsage(CODEX_ATTEMPT, 'UI-1', catalog);
+
+    expect(projected?.providers.codex?.total_cost_usd).toBe(3);
+    expect(projected?.providers.codex).not.toHaveProperty('unpriced_leg_count');
+  });
+
+  test('leaves a Codex attempt unpriced without a catalog', () => {
+    const projected = sumAttemptUsage(CODEX_ATTEMPT, 'UI-1');
+
+    expect(projected?.providers.codex).not.toHaveProperty('total_cost_usd');
+  });
+
+  test('names the unpriced leg count beside the partial sum', () => {
+    const label = formatCost({ total_cost_usd: 1.234, unpriced_leg_count: 2 });
+
+    expect(label).toBe('$1.23 (+2 leg 단가 없음)');
+  });
+
+  test('omits the suffix when every leg was priced', () => {
+    expect(formatCost({ total_cost_usd: 1.234 })).toBe('$1.23');
+  });
+
+  test('returns no cost text when no leg could be priced', () => {
+    expect(formatCost({ unpriced_leg_count: 3 })).toBe(null);
+  });
+
+  test('appends the unpriced count to the provider badge label', () => {
+    const attempts = {
+      a1: {
+        attempt_id: 'a1',
+        bead_id: 'UI-1',
+        runner: 'codex',
+        model: 'sol',
+        usage: { input_tokens: 1_000_000, output_tokens: 100_000 },
+        usage_legs: [
+          {
+            receipt_id: 'r1',
+            provider: 'codex',
+            role: 'implementation',
+            model: 'terra',
+            usage: { input_tokens: 500_000, output_tokens: 0 }
+          }
+        ]
+      }
+    };
+
+    const badges = providerUsageBadges(
+      sumAttemptUsage(attempts, 'UI-1', catalog)
+    );
+
+    expect(badges[0].label).toContain('$3.00 (+1 leg 단가 없음)');
+  });
+
+  test('notes the input-rate estimate in the tooltip', () => {
+    const attempts = {
+      a1: {
+        attempt_id: 'a1',
+        bead_id: 'UI-1',
+        runner: 'claude',
+        model: 'opus',
+        usage: { input_tokens: 1_000_000 },
+        usage_legs: [
+          {
+            receipt_id: 'r1',
+            provider: 'claude',
+            role: 'subagent',
+            model: 'opus',
+            usage: { total_tokens: 2_000_000 }
+          }
+        ]
+      }
+    };
+
+    const badges = providerUsageBadges(
+      sumAttemptUsage(attempts, 'UI-1', catalog)
+    );
+
+    expect(badges[0].label).toContain('$9.00');
+    expect(badges[0].tooltip).toContain(
+      '총량만 보고된 leg 포함 — 입력 단가로 추정'
+    );
+    expect(badges[0].tooltip).toContain('API 환산 단가 기준');
+  });
+
+  test('carries the unpriced count through a merge', () => {
+    const priced = sumAttemptUsage(CODEX_ATTEMPT, 'UI-1', catalog);
+    const unpriced = sumAttemptUsage(
+      {
+        a2: {
+          attempt_id: 'a2',
+          bead_id: 'UI-1',
+          runner: 'codex',
+          model: 'terra',
+          usage: { input_tokens: 1_000_000 }
+        }
+      },
+      'UI-1',
+      catalog
+    );
+
+    const merged = mergeUsageProjections([priced, unpriced]);
+
+    expect(formatCost(merged?.providers.codex)).toBe(
+      '$3.00 (+1 leg 단가 없음)'
+    );
+  });
+
+  test('marks each leg with the basis its price came from', () => {
+    const attempts = {
+      a1: {
+        attempt_id: 'a1',
+        bead_id: 'UI-1',
+        runner: 'codex',
+        model: 'sol',
+        usage: { input_tokens: 1_000_000, output_tokens: 0 },
+        usage_legs: [
+          {
+            receipt_id: 'r1',
+            provider: 'codex',
+            role: 'implementation',
+            model: 'terra',
+            usage: { input_tokens: 500_000 }
+          }
+        ]
+      }
+    };
+
+    const legs = sumAttemptUsage(attempts, 'UI-1', catalog)?.roles;
+
+    expect(legs?.orchestrator?.codex?.legs[0].price_basis).toBe('computed');
+    expect(legs?.orchestrator?.codex?.legs[0].price_usd).toBe(2);
+    expect(legs?.implementation?.codex?.legs[0].price_basis).toBe('none');
+  });
+
+  test('leaves the per-leg markers off when nothing could be priced', () => {
+    const legs = sumAttemptUsage(CODEX_ATTEMPT, 'UI-1')?.roles;
+
+    expect(legs?.orchestrator?.codex?.legs[0]).not.toHaveProperty(
+      'price_basis'
     );
   });
 });

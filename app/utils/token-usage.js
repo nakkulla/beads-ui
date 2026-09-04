@@ -11,6 +11,17 @@
  * This module lives in `app/utils` rather than `app/views/worker` because it
  * has two consumers: the worker lanes/tiles and the detail panel's session
  * history (UI-d7pw §1.3).
+ *
+ * Cost is priced per leg from the runner catalog (preset-compare §1.3), so a
+ * Codex leg no longer erases the whole attempt's price. The aggregate is the
+ * sum of the legs that HAVE a price plus a count of the ones that do not; a
+ * partial sum is never dressed up as a complete one.
+ */
+import { priceUsage } from '../../server/worker/usage-pricing.js';
+
+/**
+ * @import { ResolvedCatalog } from '../../server/worker/runner-catalog.js'
+ * @import { PriceBasis } from '../../server/worker/usage-pricing.js'
  */
 
 /**
@@ -30,15 +41,15 @@
  */
 
 /**
- * @typedef {{ provider: UsageProvider, role: UsageRole, attempt_id: string, receipt_id?: string, agent_type?: string, agent_id?: string, model?: string, effort?: string, session_id?: string, turn_id?: string, completed_at?: string|number, usage: UsageRecord, subtotal: number, replayed?: boolean }} UsageLeg
+ * @typedef {{ provider: UsageProvider, role: UsageRole, attempt_id: string, receipt_id?: string, agent_type?: string, agent_id?: string, model?: string, effort?: string, session_id?: string, turn_id?: string, completed_at?: string|number, usage: UsageRecord, subtotal: number, replayed?: boolean, price_usd?: number, price_basis?: PriceBasis }} UsageLeg
  */
 
 /**
- * @typedef {{ subtotal: number, breakdown: UsageRecord, total_only_subtotal?: number, replayed?: boolean, total_cost_usd?: number }} ProviderUsageSummary
+ * @typedef {{ subtotal: number, breakdown: UsageRecord, total_only_subtotal?: number, replayed?: boolean, total_cost_usd?: number, unpriced_leg_count?: number, cost_estimated?: boolean }} ProviderUsageSummary
  */
 
 /**
- * @typedef {{ subtotal: number, breakdown: UsageRecord, total_only_subtotal?: number, legs: UsageLeg[], replayed?: boolean }} RoleUsageSummary
+ * @typedef {{ subtotal: number, breakdown: UsageRecord, total_only_subtotal?: number, legs: UsageLeg[], replayed?: boolean, total_cost_usd?: number, unpriced_leg_count?: number, cost_estimated?: boolean }} RoleUsageSummary
  */
 
 /**
@@ -71,6 +82,79 @@ const TOTAL_ONLY_NOTE = '분해 없음 — 총량만 보고됨';
  * @type {string}
  */
 const TOTAL_ONLY_TERM = '분해 없는 leg';
+
+/**
+ * The tooltip line an aggregate carries once a total-only leg was priced at the
+ * input rate (preset-compare §1.3): that leg reported no breakdown, so its
+ * share of the figure is an estimate rather than a multiplication of counts.
+ *
+ * @type {string}
+ */
+const ESTIMATED_COST_NOTE = '총량만 보고된 leg 포함 — 입력 단가로 추정';
+
+/**
+ * The tooltip line every cost carries. A CLI-reported number is an API-rate
+ * conversion too, so the note is the same for `reported` and `computed` — the
+ * marginal cost of a subscription-run Codex is not what any of these say.
+ *
+ * @type {string}
+ */
+const API_RATE_NOTE = 'API 환산 단가 기준';
+
+/**
+ * The per-leg basis marker (preset-compare §1.3). `reported` is unmarked: a
+ * number the runner itself reported needs no qualifier.
+ *
+ * @type {Readonly<Record<PriceBasis, string>>}
+ */
+export const PRICE_BASIS_LABELS = {
+  reported: '',
+  computed: '계산',
+  estimated: '추정',
+  none: '단가 없음'
+};
+
+/**
+ * The cost text beside a token badge, or null when no leg of the summary could
+ * be priced at all. Unpriced legs are NAMED rather than dropped, because a sum
+ * that silently omits legs reads as the whole attempt's price.
+ *
+ * @param {{ total_cost_usd?: number, unpriced_leg_count?: number }|null|undefined} summary
+ * @returns {string|null}
+ */
+export function formatCost(summary) {
+  if (
+    !summary ||
+    typeof summary.total_cost_usd !== 'number' ||
+    !Number.isFinite(summary.total_cost_usd)
+  ) {
+    return null;
+  }
+  const unpriced = numeric(summary.unpriced_leg_count);
+  const amount = `$${summary.total_cost_usd.toFixed(2)}`;
+  return unpriced > 0 ? `${amount} (+${unpriced} leg 단가 없음)` : amount;
+}
+
+/**
+ * The tooltip lines behind a cost: the figure, the estimate caveat when one
+ * applies, and the rate note. Empty when there is no cost to explain.
+ *
+ * @param {{ total_cost_usd?: number, unpriced_leg_count?: number, cost_estimated?: boolean }|null|undefined} summary
+ * @returns {string[]}
+ */
+export function costTooltipLines(summary) {
+  const label = formatCost(summary);
+  if (!label || !summary) {
+    return [];
+  }
+  /** @type {string[]} */
+  const lines = [label];
+  if (summary.cost_estimated === true) {
+    lines.push(ESTIMATED_COST_NOTE);
+  }
+  lines.push(API_RATE_NOTE);
+  return lines;
+}
 
 /**
  * @param {unknown} value
@@ -289,7 +373,8 @@ export function providerUsageTooltip(provider, summary) {
     // not exist instead of being shown an invented one.
     const total_only_lines = [
       `총 ${summary.subtotal.toLocaleString('en-US')}`,
-      TOTAL_ONLY_NOTE
+      TOTAL_ONLY_NOTE,
+      ...costTooltipLines(summary)
     ];
     if (summary.replayed) {
       total_only_lines.push(REPLAYED_NOTE);
@@ -334,12 +419,7 @@ export function providerUsageTooltip(provider, summary) {
     `총 ${summary.subtotal.toLocaleString('en-US')}`,
     details.join(' · ')
   ];
-  if (
-    typeof summary.total_cost_usd === 'number' &&
-    Number.isFinite(summary.total_cost_usd)
-  ) {
-    lines.push(`$${summary.total_cost_usd.toFixed(2)}`);
-  }
+  lines.push(...costTooltipLines(summary));
   if (summary.replayed) {
     lines.push(REPLAYED_NOTE);
   }
@@ -369,13 +449,11 @@ export function providerUsageBadges(projection) {
     if (!summary) {
       continue;
     }
+    const cost = formatCost(summary);
     badges.push({
       provider,
       label: `${providerName(provider)} ${formatSubtotal(summary.subtotal)}${
-        typeof summary.total_cost_usd === 'number' &&
-        Number.isFinite(summary.total_cost_usd)
-          ? ` · $${summary.total_cost_usd.toFixed(2)}`
-          : ''
+        cost ? ` · ${cost}` : ''
       }`,
       tooltip: providerUsageTooltip(provider, summary)
     });
@@ -392,10 +470,10 @@ export function providerUsageBadges(projection) {
 export function mergeUsageProjections(projections) {
   /** @type {Partial<Record<UsageProvider, ProviderUsageSummary>>} */
   const providers = {};
-  /** @type {Record<UsageProvider, boolean>} */
-  const cost_complete = { claude: true, codex: false };
   /** @type {Record<UsageProvider, number>} */
   const costs = { claude: 0, codex: 0 };
+  /** @type {Record<UsageProvider, boolean>} */
+  const priced = { claude: false, codex: false };
   for (const projection of projections) {
     if (!projection || !projection.providers) {
       continue;
@@ -429,20 +507,30 @@ export function mergeUsageProjections(projections) {
       if (summary.replayed) {
         merged.replayed = true;
       }
-      if (provider === 'claude') {
-        if (
-          typeof summary.total_cost_usd === 'number' &&
-          Number.isFinite(summary.total_cost_usd)
-        ) {
-          costs.claude += summary.total_cost_usd;
-        } else {
-          cost_complete.claude = false;
+      // Both providers price now, and an incomplete sum no longer suppresses
+      // the figure: the unpriced legs travel with it as their own count.
+      if (
+        typeof summary.total_cost_usd === 'number' &&
+        Number.isFinite(summary.total_cost_usd)
+      ) {
+        costs[provider] += summary.total_cost_usd;
+        priced[provider] = true;
+        if (summary.cost_estimated === true) {
+          merged.cost_estimated = true;
         }
+      }
+      if (Number.isFinite(summary.unpriced_leg_count)) {
+        merged.unpriced_leg_count =
+          numeric(merged.unpriced_leg_count) +
+          numeric(summary.unpriced_leg_count);
       }
     }
   }
-  if (providers.claude && cost_complete.claude) {
-    providers.claude.total_cost_usd = costs.claude;
+  for (const provider of /** @type {UsageProvider[]} */ (['claude', 'codex'])) {
+    const merged = providers[provider];
+    if (merged && priced[provider]) {
+      merged.total_cost_usd = costs[provider];
+    }
   }
   if (Object.keys(providers).length === 0) {
     return null;
@@ -454,16 +542,51 @@ export function mergeUsageProjections(projections) {
  * Project one outer attempt with its durable nested legs for the detail view.
  *
  * @param {Record<string, any>|null|undefined} attempt
+ * @param {ResolvedCatalog|null} [catalog]
  * @returns {UsageProjection|null}
  */
-export function projectAttemptUsage(attempt) {
+export function projectAttemptUsage(attempt, catalog = null) {
   if (!attempt || typeof attempt !== 'object') {
     return null;
   }
   return sumAttemptUsage(
     { attempt: { ...attempt, bead_id: '__attempt__' } },
-    '__attempt__'
+    '__attempt__',
+    catalog
   );
+}
+
+/**
+ * Attach this leg's price and basis (§1.2). `price_basis` is set even for an
+ * unpriced leg, so a surface can say `단가 없음` beside the legs that DO have a
+ * price instead of leaving a silent gap.
+ *
+ * @param {UsageLeg} leg
+ * @param {ResolvedCatalog|null|undefined} catalog
+ */
+function applyLegPrice(leg, catalog) {
+  const price = priceUsage(leg.usage, leg.model, catalog);
+  leg.price_basis = price.basis;
+  if (price.usd !== null) {
+    leg.price_usd = price.usd;
+  }
+}
+
+/**
+ * Drop the per-leg markers when NOTHING in the projection could be priced.
+ * Marking every leg `단가 없음` on an install that declares no unit price at all
+ * would be noise about a feature that is simply not configured; the marker
+ * earns its place only where a priced sibling makes the omission meaningful.
+ *
+ * @param {UsageLeg[]} legs
+ */
+function stripUnpricedMarkers(legs) {
+  if (legs.some((leg) => leg.price_basis !== 'none')) {
+    return;
+  }
+  for (const leg of legs) {
+    delete leg.price_basis;
+  }
 }
 
 /**
@@ -475,7 +598,7 @@ function providerForRunner(runner) {
 }
 
 /**
- * @returns {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, outer_count: number, outer_cost: number, outer_cost_count: number }}
+ * @returns {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, cost_usd: number, priced_count: number, unpriced_count: number, estimated: boolean }}
  */
 function createAccumulator() {
   return {
@@ -484,18 +607,18 @@ function createAccumulator() {
     total_only: 0,
     legs: [],
     replayed: false,
-    outer_count: 0,
-    outer_cost: 0,
-    outer_cost_count: 0
+    cost_usd: 0,
+    priced_count: 0,
+    unpriced_count: 0,
+    estimated: false
   };
 }
 
 /**
- * @param {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, outer_count: number, outer_cost: number, outer_cost_count: number }} accumulator
+ * @param {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, cost_usd: number, priced_count: number, unpriced_count: number, estimated: boolean }} accumulator
  * @param {UsageLeg} leg
- * @param {boolean} is_outer
  */
-function addLeg(accumulator, leg, is_outer) {
+function addLeg(accumulator, leg) {
   accumulator.subtotal += leg.subtotal;
   if (isTotalOnly(leg.usage)) {
     // The leg raised the subtotal but contributes no field below, so remember
@@ -512,28 +635,38 @@ function addLeg(accumulator, leg, is_outer) {
   if (leg.replayed === true) {
     accumulator.replayed = true;
   }
-  if (is_outer) {
-    accumulator.outer_count += 1;
-    if (
-      typeof leg.usage.total_cost_usd === 'number' &&
-      Number.isFinite(leg.usage.total_cost_usd)
-    ) {
-      accumulator.outer_cost += leg.usage.total_cost_usd;
-      accumulator.outer_cost_count += 1;
-    }
+  // §1.3: a leg without a unit price is COUNTED, not skipped, so the aggregate
+  // can say how much of itself is missing instead of hiding it.
+  if (leg.price_basis === undefined || leg.price_basis === 'none') {
+    accumulator.unpriced_count += 1;
+    return;
+  }
+  accumulator.priced_count += 1;
+  accumulator.cost_usd += numeric(leg.price_usd);
+  if (leg.price_basis === 'estimated') {
+    accumulator.estimated = true;
   }
 }
 
 /**
- * @param {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, outer_count: number, outer_cost: number, outer_cost_count: number }} accumulator
+ * @param {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, cost_usd: number, priced_count: number, unpriced_count: number, estimated: boolean }} accumulator
  * @param {boolean} include_legs
  */
 function accumulatorSummary(accumulator, include_legs) {
-  /** @type {{ subtotal: number, breakdown: UsageRecord, total_only_subtotal?: number, legs?: UsageLeg[], replayed?: boolean, total_cost_usd?: number }} */
+  /** @type {{ subtotal: number, breakdown: UsageRecord, total_only_subtotal?: number, legs?: UsageLeg[], replayed?: boolean, total_cost_usd?: number, unpriced_leg_count?: number, cost_estimated?: boolean }} */
   const summary = {
     subtotal: accumulator.subtotal,
     breakdown: accumulator.breakdown
   };
+  if (accumulator.priced_count > 0) {
+    summary.total_cost_usd = accumulator.cost_usd;
+    if (accumulator.estimated) {
+      summary.cost_estimated = true;
+    }
+  }
+  if (accumulator.unpriced_count > 0) {
+    summary.unpriced_leg_count = accumulator.unpriced_count;
+  }
   if (accumulator.total_only > 0) {
     summary.total_only_subtotal = accumulator.total_only;
   }
@@ -632,9 +765,10 @@ export function usageTooltip(usage) {
 /**
  * @param {Record<string, any>} attempts
  * @param {string} bead_id
+ * @param {ResolvedCatalog|null} [catalog] - Without one, only a CLI-reported cost prices a leg.
  * @returns {UsageProjection|null}
  */
-export function sumAttemptUsage(attempts, bead_id) {
+export function sumAttemptUsage(attempts, bead_id, catalog = null) {
   /** @type {Record<UsageProvider, ReturnType<typeof createAccumulator>>} */
   const providers = {
     claude: createAccumulator(),
@@ -661,6 +795,8 @@ export function sumAttemptUsage(attempts, bead_id) {
   };
   /** @type {Set<string>} */
   const receipt_ids = new Set();
+  /** @type {UsageLeg[]} */
+  const priced_legs = [];
   for (const attempt of Object.values(attempts || {})) {
     if (!attempt || attempt.bead_id !== bead_id) {
       continue;
@@ -686,8 +822,10 @@ export function sumAttemptUsage(attempts, bead_id) {
       if (typeof attempt.session_id === 'string') {
         leg.session_id = attempt.session_id;
       }
-      addLeg(providers[provider], leg, true);
-      addLeg(roles.orchestrator[provider], leg, true);
+      applyLegPrice(leg, catalog);
+      priced_legs.push(leg);
+      addLeg(providers[provider], leg);
+      addLeg(roles.orchestrator[provider], leg);
     }
     const usage_legs = Array.isArray(attempt.usage_legs)
       ? attempt.usage_legs
@@ -759,10 +897,13 @@ export function sumAttemptUsage(attempts, bead_id) {
       if (usage.replayed === true) {
         leg.replayed = true;
       }
-      addLeg(providers[leg_provider], leg, false);
-      addLeg(roles[leg.role][leg_provider], leg, false);
+      applyLegPrice(leg, catalog);
+      priced_legs.push(leg);
+      addLeg(providers[leg_provider], leg);
+      addLeg(roles[leg.role][leg_provider], leg);
     }
   }
+  stripUnpricedMarkers(priced_legs);
   /** @type {Partial<Record<UsageProvider, ProviderUsageSummary>>} */
   const projected_providers = {};
   for (const provider of /** @type {UsageProvider[]} */ (['claude', 'codex'])) {
@@ -770,15 +911,7 @@ export function sumAttemptUsage(attempts, bead_id) {
     if (accumulator.legs.length === 0) {
       continue;
     }
-    const summary = accumulatorSummary(accumulator, false);
-    if (
-      provider === 'claude' &&
-      accumulator.outer_count > 0 &&
-      accumulator.outer_cost_count === accumulator.outer_count
-    ) {
-      summary.total_cost_usd = accumulator.outer_cost;
-    }
-    projected_providers[provider] = summary;
+    projected_providers[provider] = accumulatorSummary(accumulator, false);
   }
   if (Object.keys(projected_providers).length === 0) {
     return null;

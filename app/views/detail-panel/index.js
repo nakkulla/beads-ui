@@ -814,7 +814,11 @@ export function createDetailPanel(mount_element, options) {
     if (!current_id) {
       return null;
     }
-    return sumAttemptUsage(attemptRecordsForBead(), current_id);
+    return sumAttemptUsage(
+      attemptRecordsForBead(),
+      current_id,
+      runnerCatalog()
+    );
   }
 
   /**
@@ -2855,7 +2859,11 @@ export function createDetailPanel(mount_element, options) {
           ${sessionHistoryTemplate(
             attemptsForBead(),
             session_handlers,
-            { total: total_usage, expanded: usage_expanded },
+            {
+              total: total_usage,
+              expanded: usage_expanded,
+              catalog: runnerCatalog()
+            },
             session_refs
           )}
           ${workerTimelineTemplate(

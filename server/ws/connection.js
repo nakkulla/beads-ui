@@ -7,6 +7,8 @@ import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { isRequest, makeError, makeOk } from '../../app/protocol.js';
 import { resolveWorkspaceDatabase } from '../db.js';
+import { handleBenchRunCreate } from './bench-handlers.js';
+import { handleGetCompare } from './compare-handlers.js';
 import {
   detachConnectionFromAllRegistries,
   ensureSubs,
@@ -692,6 +694,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'get-worker-system-prompt':
       handleGetWorkerSystemPrompt(ws, req);
+      return;
+    case 'get-compare':
+      handleGetCompare(ws, req);
+      return;
+    case 'bench-run-create':
+      void handleBenchRunCreate(ws, req);
       return;
     case 'unsubscribe-session-log':
       handleUnsubscribeSessionLog(ws, req);

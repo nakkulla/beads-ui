@@ -6,6 +6,7 @@ import {
   rollupFor as computeRollup,
   parentIdOf
 } from '../../utils/child-rollup.js';
+import { hasBenchLabel, isBenchIncluded } from '../../utils/label-policy.js';
 import { debug } from '../../utils/logging.js';
 import { showToast } from '../../utils/toast.js';
 import { createReorderController } from '../reorder.js';
@@ -205,6 +206,11 @@ export function createBoardView(mount_element, options) {
    * label — and it deliberately ignores the display policy, so a label hidden
    * from the cards is still usable as a filter.
    *
+   * The ONE policy rule this list applies is the bench exclusion (§4.8): bench
+   * clones are synthetic runs of an existing issue, so the Board leaves them out
+   * until the display-settings toggle asks for them. Worker keeps showing them —
+   * it is the tab that runs them.
+   *
    * @param {IssueLite[]} items
    * @returns {IssueLite[]}
    */
@@ -213,7 +219,11 @@ export function createBoardView(mount_element, options) {
     const pri = filters.priority;
     const type = filters.type;
     const labels = filters.labels;
+    const bench_included = isBenchIncluded(currentPolicy());
     return items.filter((it) => {
+      if (!bench_included && hasBenchLabel(it)) {
+        return false;
+      }
       if (q) {
         const id = String(it.id || '').toLowerCase();
         const title = String(it.title || '').toLowerCase();

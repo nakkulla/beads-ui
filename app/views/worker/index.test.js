@@ -7019,7 +7019,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
       mount.querySelector('.rtile[data-bead-id="RD-1"] .worker-usage')
     );
     expect(el.getAttribute('title')).toBe(
-      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 239,430\n입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800\n$0.42'
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 239,430\n입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800\n$0.42\nAPI 환산 단가 기준'
     );
   });
 
@@ -7134,7 +7134,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     expect(el.textContent?.trim()).toBe('Claude τ 13.8k');
   });
 
-  test('omits the cost when only some summed attempts reported one (UI-tq13 §7)', () => {
+  test('names the unpriced leg beside a partial cost sum (preset-compare §1.3)', () => {
     const mount = renderQueue(
       queueOf({
         pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
@@ -7159,7 +7159,9 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     const el = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
     );
-    expect(el.textContent?.trim()).toBe('Claude τ 31.1k');
+    expect(el.textContent?.trim()).toBe(
+      'Claude τ 31.1k · $1.50 (+1 leg 단가 없음)'
+    );
   });
 
   test('sums every attempt usage on a pr_wait row (UI-d7pw §1)', () => {
@@ -9155,7 +9157,7 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
     ).toBe('오늘 완료 · 누적 Claude τ 2.0k · $3.75');
   });
 
-  test('omits the cost when one summed attempt reported none (UI-j6wa §2)', () => {
+  test('names the unpriced leg on the KPI chip (preset-compare §1.3)', () => {
     const mount = mountKpi({
       done: [
         { bead_id: 'RD-1', added_at: 1 },
@@ -9183,7 +9185,7 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
 
     expect(
       mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
-    ).toBe('오늘 완료 · 누적 Claude τ 2.0k');
+    ).toBe('오늘 완료 · 누적 Claude τ 2.0k · $1.50 (+1 leg 단가 없음)');
   });
 });
 
