@@ -918,7 +918,7 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     expect(el(mount, '.mon2-clane__reapply')).not.toBeNull();
   });
 
-  test('draws no route chip and no 선행 chip on a lane row', () => {
+  test('draws no 선행 chip and no overlap chip on a lane row', () => {
     const { mount, view } = setup({
       workspaces,
       workspaces_state,
@@ -927,6 +927,9 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
 
     view.load();
 
+    // 의존 칩만 빠진다 (UI-q1tg §3.5 정정): 레인 순서가 곧 의존이라는 근거는
+    // route·실행 주체에는 적용되지 않는다. 이 픽스처는 그 재료가 없어 route
+    // 칩도 서지 않는다 (fail-quiet).
     expect(el(mount, '.mon2-crow .ctl-chip--route')).toBeNull();
     expect(el(mount, '.mon2-crow .worker-dep--pred')).toBeNull();
     expect(el(mount, '.mon2-crow .worker-dep--overlap')).toBeNull();
@@ -4630,5 +4633,130 @@ describe('monitor PR 대기·완료 레인 겹침 칩 (UI-e9sg)', () => {
     expect(
       el(mount, '#monitor-done [data-bead-id="A-1"] .worker-dep--overlap')
     ).toBeNull();
+  });
+});
+
+describe('연결 레인 행의 실행 사실과 유예 (UI-q1tg §3.5)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * @param {number} [added_at] - 생략하면 그 멤버는 큐 밖(`unplaced`)이다.
+   * @returns {Record<string, any>[]}
+   */
+  function laneWorkspaces(added_at) {
+    return [
+      workspace({
+        queue:
+          typeof added_at === 'number' ? [{ bead_id: 'A-1', added_at }] : [],
+        // 모니터 채널은 `bead_workflow`를 싣지 않는다 — route의 유일한 재료가
+        // 집계 오버레이다 (UI-q1tg §3.1).
+        bead_overlay: { 'A-1': { route: 'spec_backed' } }
+      })
+    ];
+  }
+
+  const lane = () =>
+    crossLanes([
+      { status: 'confirmed', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+    ]);
+
+  test('draws the grace chip on a confirmed lane row inside its grace', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const { mount, view } = setup({
+      workspaces: laneWorkspaces(NOW - 5_000),
+      workspaces_state: [state()],
+      cross_lanes: lane()
+    });
+
+    view.load();
+
+    expect(
+      el(mount, '.mon2-crow[data-bead-id="A-1"] .worker-dep--grace')
+        ?.textContent
+    ).toContain('⏳ 15초');
+  });
+
+  test('draws the start-now button on a confirmed lane row inside its grace', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const { mount, view } = setup({
+      workspaces: laneWorkspaces(NOW - 5_000),
+      workspaces_state: [state()],
+      cross_lanes: lane()
+    });
+
+    view.load();
+
+    expect(
+      el(mount, '.mon2-crow[data-bead-id="A-1"] .worker-mini__start-now')
+        ?.textContent
+    ).toContain('지금 시작');
+  });
+
+  test('draws the route chip on a lane row from the overlay', () => {
+    const { mount, view } = setup({
+      workspaces: laneWorkspaces(NOW - 5_000),
+      workspaces_state: [state()],
+      cross_lanes: lane()
+    });
+
+    view.load();
+
+    expect(
+      el(mount, '.mon2-crow[data-bead-id="A-1"] .ctl-chip--route')?.textContent
+    ).toContain('spec_backed');
+  });
+
+  test('draws neither on an unplaced lane row', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const { mount, view } = setup({
+      workspaces: laneWorkspaces(),
+      workspaces_state: [state()],
+      cross_lanes: lane()
+    });
+
+    view.load();
+
+    expect([
+      el(mount, '.mon2-crow[data-bead-id="A-1"] .worker-dep--grace'),
+      el(mount, '.mon2-crow[data-bead-id="A-1"] .worker-mini__start-now')
+    ]).toEqual([null, null]);
+  });
+
+  test('draws neither once the grace has run out', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const { mount, view } = setup({
+      workspaces: laneWorkspaces(NOW - 20_000),
+      workspaces_state: [state()],
+      cross_lanes: lane()
+    });
+
+    view.load();
+
+    expect([
+      el(mount, '.mon2-crow[data-bead-id="A-1"] .worker-dep--grace'),
+      el(mount, '.mon2-crow[data-bead-id="A-1"] .worker-mini__start-now')
+    ]).toEqual([null, null]);
+  });
+
+  test('sends worker-queue-start-now with the row repo on a click', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const { mount, view, sent } = setup({
+      workspaces: laneWorkspaces(NOW - 5_000),
+      workspaces_state: [state()],
+      cross_lanes: lane()
+    });
+
+    view.load();
+    click(mount, '.mon2-crow[data-bead-id="A-1"] .worker-mini__start-now');
+    await flushMicrotasks();
+
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-start-now',
+        payload: { bead_id: 'A-1', root_dir: WS_A }
+      }
+    ]);
   });
 });

@@ -39,7 +39,10 @@ import {
   CANDIDATE_FILTER_DEFAULT,
   CANDIDATE_SORT_OPTIONS,
   READINESS_FILTER_OPTIONS,
-  buildLanes
+  ROUTE_FILTER_OPTIONS,
+  buildLanes,
+  normalizeRouteFilter,
+  toggleRouteFilter
 } from '../worker/lane-model.js';
 import {
   candidateCard,
@@ -47,11 +50,15 @@ import {
   discardAbandonConfirmationMessage,
   discardCompletionMessage,
   discardConfirmationMessage,
+  execChipsTemplate,
+  graceChipTemplate,
   judgementPopoverOf,
   miniRow,
   nowPanel,
   paneTemplate,
   queueRowOps,
+  routeChipTemplate,
+  startNowButtonTemplate,
   waitBody
 } from '../worker/lanes.js';
 import {
@@ -135,7 +142,8 @@ function loadCandidateFilter() {
         (o) => o.value === parsed.readiness
       )
         ? parsed.readiness
-        : 'all'
+        : 'all',
+      routes: normalizeRouteFilter(parsed.routes)
     };
   } catch {
     return { ...CANDIDATE_FILTER_DEFAULT };
@@ -151,7 +159,8 @@ function saveCandidateFilter(filter) {
       MONITOR_CANDIDATE_FILTER_KEY,
       JSON.stringify({
         show_blocked: filter.show_blocked,
-        readiness: filter.readiness
+        readiness: filter.readiness,
+        routes: filter.routes
       })
     );
   } catch {
@@ -1135,9 +1144,17 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * One 연결 레인 row (UI-j92s §5.2): 순번 · 레포 배지 · ID · 제목 한 줄 · 위치
-   * 칩 · 행 `✕`. route 칩·겹침 칩·`← 선행` 칩은 여기 없다 — 레인 순서가 곧
-   * 의존이므로 같은 사실을 두 번 말하지 않는다.
+   * One 연결 레인 row (UI-j92s §5.2): 순번 · 레포 배지 · ID · 제목 한 줄 ·
+   * 위치 칩 · route · 오케 · 워커 · `⏳` 유예 칩 · 행 조작(`[지금 시작]` · `✕`).
+   * 겹침 칩과 `← 선행` 칩은 여기 없다 — 레인 순서가 곧 의존이므로 같은 사실을
+   * 두 번 말하지 않는다.
+   *
+   * route와 실행 주체는 그 배제에 들어가지 않는다 (UI-q1tg §3.5): 위 근거는
+   * **의존** 축의 것이고 이 칩들은 다른 질문에 답한다. 유예 칩과 `[지금 시작]`도
+   * 같은 이유로 여기 선다 — 확정 레인 멤버는 `parallel_rows`에서 빠져 `miniRow`가
+   * 아니라 이 행으로 그려지므로, 조작을 `queueRowOps`에만 두면 이 행 종류에서만
+   * 유예가 보이지 않는다. 큐 밖 행(`unplaced`)은 `added_at`이 없어 둘 다 서지
+   * 않는다 (fail-quiet).
    *
    * 고정 행도 `✕`는 갖는다 (§5.3): 뺄 수는 있고, 그 앞에 넣을 수만 없다.
    *
@@ -1191,6 +1208,19 @@ export function createMonitorView(mount_element, options) {
       <span class="mon2-crow__where" title=${row.location_title}
         >${row.location_label}</span
       >
+      ${routeChipTemplate(
+        row.route
+          ? /** @type {any} */ ({
+              route: row.route,
+              route_source: row.route_source ?? undefined
+            })
+          : null
+      )}${row.exec_chips ? execChipsTemplate(row.exec_chips) : ''}
+      ${graceChipTemplate(row.added_at)}
+      ${startNowButtonTemplate({
+        id: row.id,
+        ...(typeof row.added_at === 'number' ? { added_at: row.added_at } : {})
+      })}
       <button
         type="button"
         class="mon2-crow__detach"
@@ -1767,6 +1797,30 @@ export function createMonitorView(mount_element, options) {
             >`
           : ''}
       </div>
+      <div class="worker-filter__routes" role="group" aria-label="route 필터">
+        ${ROUTE_FILTER_OPTIONS.map(
+          (o) =>
+            html`<button
+              type="button"
+              class="mon-filter__route worker-filter__chip${candidate_filter.routes.includes(
+                o.value
+              )
+                ? ' is-active'
+                : ''}"
+              data-route=${o.value}
+              aria-pressed=${candidate_filter.routes.includes(o.value)
+                ? 'true'
+                : 'false'}
+            >
+              ${o.label}
+            </button>`
+        )}
+        ${lanes.runnable_hidden.route > 0
+          ? html`<span class="worker-filter__hidden"
+              >숨김 ${lanes.runnable_hidden.route}</span
+            >`
+          : ''}
+      </div>
     </div>`;
   }
 
@@ -2292,6 +2346,39 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * `[지금 시작]` (UI-q1tg §3.3): 이 행 하나의 대기 진입 유예를 걷고 `▶ 진행`과
+   * 같은 명시적 실행 경로를 민다. CAS가 없다 — 서버가 `added_at`을 비롯한 큐를
+   * 전혀 쓰지 않으므로 되돌릴 durable 변경도, 경합할 revision도 없다.
+   *
+   * @param {string} bead_id
+   * @param {string} root_dir
+   */
+  async function startNow(bead_id, root_dir) {
+    if (!transport || !bead_id || root_dir.length === 0) {
+      doRender();
+      return;
+    }
+    const res = /** @type {any} */ (
+      await transport('worker-queue-start-now', { bead_id, root_dir })
+    );
+    if (res && res.queue) {
+      exec_adopted.set(root_dir, res.queue);
+    }
+    if (res && res.ok === false) {
+      showToast(
+        `지금 시작 거부: ${
+          res.reason === 'not_waiting'
+            ? '이 이슈는 더 이상 대기 레인에 없습니다'
+            : res.reason || ''
+        }`,
+        'error',
+        2800
+      );
+    }
+    doRender();
+  }
+
+  /**
    * Release ONE orphan arm from the row that reveals it (UI-jaua §5.3 (2)).
    * 레인은 사라졌는데 항목이 계속 발차되는 상태를 숨기지 않고 드러낸 다음, 같은
    * 자리에서 끄게 한다.
@@ -2558,6 +2645,10 @@ export function createMonitorView(mount_element, options) {
     }
     if (cls.contains('worker-mini__rowops-remove')) {
       void sendCas('worker-queue-remove', { bead_id }, root_dir, revision);
+      return;
+    }
+    if (cls.contains('worker-mini__start-now')) {
+      void startNow(bead_id, root_dir);
       return;
     }
     if (cls.contains('mon2-crow__detach')) {
@@ -2952,6 +3043,25 @@ export function createMonitorView(mount_element, options) {
     if (target.closest('.mon-merge-all')) {
       ev.preventDefault();
       void mergeQueueAddAll();
+      return;
+    }
+
+    // route 칩이 준비도 칩보다 먼저다: 두 묶음이 같은 형태 토큰을 공유하므로,
+    // 뒤에 두면 route 클릭이 준비도 분기에서 값 없이 삼켜진다.
+    const route_chip = /** @type {HTMLElement|null} */ (
+      target.closest('.mon-filter__route')
+    );
+    if (route_chip) {
+      ev.preventDefault();
+      candidate_filter = {
+        ...candidate_filter,
+        routes: toggleRouteFilter(
+          candidate_filter.routes,
+          route_chip.getAttribute('data-route') || ''
+        )
+      };
+      saveCandidateFilter(candidate_filter);
+      doRender();
       return;
     }
 

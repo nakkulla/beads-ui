@@ -1163,3 +1163,104 @@ describe('상세 의존성 칩의 타 레포 이동 (UI-lx45 §4.1)', () => {
     expect(window.location.hash).toBe('#/monitor?issue=UI-0');
   });
 });
+
+/**
+ * 모니터 대기·완료 행의 실행 사실 (UI-q1tg §3.1·§3.4). 집계 스냅샷이 `bead_overlay`를
+ * 실어 오면 두 탭이 같은 파생식으로 같은 칩을 그린다 — 대기 행은 오버레이의
+ * 핀에서, 완료 행은 그 완료를 만든 구현 attempt의 기록에서.
+ */
+const EXEC_DEFAULTS = {
+  supported: true,
+  schema_version: 1,
+  source_commit: 'abc',
+  digest: 'd',
+  session: { impl_runtime: 'claude' },
+  orchestration: {
+    runtime: 'claude',
+    model: 'sonnet',
+    model_id: 'claude-sonnet',
+    effort: null,
+    speed: null
+  }
+};
+
+describe('monitor 실행 재료 (UI-q1tg §3.1)', () => {
+  /**
+   * @returns {Promise<HTMLElement>}
+   */
+  async function mountPipeline() {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+    bootstrap(root);
+    await Promise.resolve();
+
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: [
+        {
+          root_dir: '/tmp/ws-a',
+          name: 'ws-a',
+          queue: [{ bead_id: 'UI-wait', added_at: Date.now() }],
+          pr_wait: [],
+          done: [{ bead_id: 'UI-done', added_at: Date.now() - 1_000 }],
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'UI-done',
+              status: 'done',
+              started_at: Date.now() - 60_000,
+              finished_at: Date.now() - 10_000,
+              runner: 'codex',
+              model: 'sonnet'
+            }
+          },
+          bead_overlay: {
+            'UI-wait': { route: 'spec_backed', metadata: {} }
+          },
+          bead_titles: { 'UI-wait': '대기', 'UI-done': '완료' },
+          pr_observations: {}
+        }
+      ],
+      workspaces_state: [
+        {
+          root_dir: '/tmp/ws-a',
+          name: 'ws-a',
+          auto_advance: false,
+          auto_merge: false,
+          slots: 2,
+          revision: 4,
+          orchestration_model: 'sonnet',
+          runner_catalog: { runtimes: {} },
+          session_defaults: {},
+          execution_defaults: EXEC_DEFAULTS
+        }
+      ]
+    });
+    await Promise.resolve();
+
+    return /** @type {HTMLElement} */ (document.getElementById('monitor-root'));
+  }
+
+  test('draws the orchestration chip on a monitor waiting row', async () => {
+    const monitor_root = await mountPipeline();
+
+    expect(
+      monitor_root.querySelector(
+        '#monitor-queue .worker-mini[data-bead-id="UI-wait"] .exec-chip--orch'
+      )?.textContent
+    ).toContain('sonnet');
+  });
+
+  test('draws the attempt orchestration chip on a monitor done row', async () => {
+    const monitor_root = await mountPipeline();
+
+    expect(
+      monitor_root.querySelector(
+        '#monitor-done .worker-mini[data-bead-id="UI-done"] .worker-mini__row3 .exec-chip--orch'
+      )?.textContent
+    ).toContain('codex · sonnet');
+  });
+});

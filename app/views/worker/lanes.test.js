@@ -1,5 +1,5 @@
 import { html, render } from 'lit-html';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   JUDGEMENT_CHIP_KEYS,
   candidateCard,
@@ -1736,8 +1736,27 @@ describe('exec chip placement', () => {
     );
   });
 
-  test('renders no exec chips on a done row', () => {
+  test('renders the exec chips on a two-line done row', () => {
     const row = renderRow({ exec_chips: /** @type {any} */ (CHIPS) });
+
+    expect(row.querySelectorAll('.worker-mini__row2 .exec-chip')).toHaveLength(
+      2
+    );
+  });
+
+  test('renders the exec chips on a three-line done row', () => {
+    const row = renderRow({
+      done_layout: 'three_line',
+      exec_chips: /** @type {any} */ (CHIPS)
+    });
+
+    expect(row.querySelectorAll('.worker-mini__row3 .exec-chip')).toHaveLength(
+      2
+    );
+  });
+
+  test('renders no exec chips on a done row with no attempt record', () => {
+    const row = renderRow({ done_layout: 'three_line' });
 
     expect(row.querySelector('.exec-chip')).toBeNull();
   });
@@ -2763,17 +2782,27 @@ describe('waiting row route chip (UI-yrzu §7.2)', () => {
     expect(row.querySelector('.ctl-chip--route')).toBeNull();
   });
 
-  test('draws no chip on a two-line done row', () => {
+  test('draws the chip on the slot 5 line of a two-line done row', () => {
     const row = renderRow({ workflow: /** @type {any} */ (WORKFLOW) });
 
-    expect(row.querySelector('.ctl-chip--route')).toBeNull();
+    expect(
+      row.querySelector('.worker-mini__row2 .ctl-chip--route')?.textContent
+    ).toBe('spec_backed');
   });
 
-  test('draws no chip on a three-line done row', () => {
+  test('draws the chip on the slot 5 line of a three-line done row', () => {
     const row = renderRow({
       done_layout: 'three_line',
       workflow: /** @type {any} */ (WORKFLOW)
     });
+
+    expect(
+      row.querySelector('.worker-mini__row3 .ctl-chip--route')?.textContent
+    ).toBe('spec_backed');
+  });
+
+  test('draws no chip on a done row whose workflow is missing', () => {
+    const row = renderRow({ done_layout: 'three_line' });
 
     expect(row.querySelector('.ctl-chip--route')).toBeNull();
   });
@@ -4697,5 +4726,109 @@ describe('queueRowOps (UI-6g3t §4)', () => {
     const ops = renderOps({ draggable: false });
 
     expect(ops).toBeNull();
+  });
+});
+
+describe('대기 진입 유예 (UI-q1tg §3.3)', () => {
+  const NOW = 1_700_000_000_000;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * @param {Partial<import('./lanes.js').MiniItem>} item
+   * @returns {HTMLElement}
+   */
+  function renderWaitingRow(item) {
+    render(
+      miniRow(
+        /** @type {any} */ ({
+          id: 'UI-g1',
+          title: '대기 행',
+          lane: 'queue',
+          done: false,
+          draggable: true,
+          ...item
+        }),
+        {
+          actions: queueRowOps(
+            /** @type {any} */ ({
+              id: 'UI-g1',
+              draggable: true,
+              ...item
+            })
+          )
+        }
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.worker-mini'));
+  }
+
+  test('draws the grace chip in the slot 4a line', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const row = renderWaitingRow({ added_at: NOW - 5_000 });
+
+    expect(
+      row.querySelector('.worker-deps--primary .worker-dep--grace')?.textContent
+    ).toContain('⏳ 15초');
+  });
+
+  test('draws the start-now button in the slot 1 조작 group', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const row = renderWaitingRow({ added_at: NOW - 5_000 });
+
+    expect(
+      row.querySelector('.worker-mini__line .worker-mini__rowops .op-btn')
+        ?.textContent
+    ).toContain('지금 시작');
+  });
+
+  test('keeps ✕ at the end of the 조작 group', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const row = renderWaitingRow({ added_at: NOW - 5_000 });
+
+    const glyphs = Array.from(
+      row.querySelectorAll('.worker-mini__rowops button')
+    ).map((button) => button.textContent?.trim());
+    expect(glyphs).toEqual(['지금 시작', '✕']);
+  });
+
+  test('draws neither chip nor button once the grace has run out', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const row = renderWaitingRow({ added_at: NOW - 20_000 });
+
+    expect([
+      row.querySelector('.worker-dep--grace'),
+      row.querySelector('.worker-mini__start-now')
+    ]).toEqual([null, null]);
+  });
+
+  test('draws neither chip nor button on a row with no added_at', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const row = renderWaitingRow({});
+
+    expect([
+      row.querySelector('.worker-dep--grace'),
+      row.querySelector('.worker-mini__start-now')
+    ]).toEqual([null, null]);
+  });
+
+  test('sends the bead id with the start-now click target', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const row = renderWaitingRow({ added_at: NOW - 1_000 });
+
+    expect(
+      row
+        .querySelector('[data-action="queue-start-now"]')
+        ?.getAttribute('data-bead-id')
+    ).toBe('UI-g1');
   });
 });

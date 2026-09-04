@@ -6889,7 +6889,7 @@ describe('candidate display filter — view (UI-ki09)', () => {
         window.localStorage.getItem('beads-ui.worker.candidate-filter') ||
           'null'
       )
-    ).toEqual({ show_blocked: true, readiness: 'ready' });
+    ).toEqual({ show_blocked: true, readiness: 'ready', routes: [] });
   });
 
   test('restores a stored filter when the view is created', () => {
@@ -15788,5 +15788,169 @@ describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
     );
 
     expect(JSON.stringify({ ...window.localStorage })).toBe(before);
+  });
+});
+
+describe('유예 행의 1초 타이머 (UI-q1tg §3.3)', () => {
+  const NOW = 1_700_000_000_000;
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * @param {number} added_at
+   * @returns {{ view: any, intervals: any[] }}
+   */
+  function mountWithGraceRow(added_at) {
+    const set_spy = vi.spyOn(window, 'setInterval');
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const view = createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    queueStore.set(queueOf({ queue: [{ bead_id: 'W-1', added_at }] }));
+    return {
+      view,
+      intervals: set_spy.mock.calls.filter((call) => call[1] === 1000)
+    };
+  }
+
+  test('starts a one-second timer while a grace row is visible', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const { view, intervals } = mountWithGraceRow(NOW - 5_000);
+    view.destroy();
+
+    expect(intervals).toHaveLength(1);
+  });
+
+  test('starts no timer when no row is inside its grace', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const { view, intervals } = mountWithGraceRow(NOW - 20_000);
+    view.destroy();
+
+    expect(intervals).toHaveLength(0);
+  });
+
+  test('clears the timer once the last grace row runs out', () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const clear_spy = vi.spyOn(window, 'clearInterval');
+
+    const { view, intervals } = mountWithGraceRow(NOW - 5_000);
+    now.mockReturnValue(NOW + 20_000);
+    /** @type {() => void} */ (intervals[0][0])();
+    view.destroy();
+
+    expect(clear_spy).toHaveBeenCalled();
+  });
+
+  test('clears the timer when the view is destroyed', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const clear_spy = vi.spyOn(window, 'clearInterval');
+
+    const { view } = mountWithGraceRow(NOW - 5_000);
+    view.destroy();
+
+    expect(clear_spy).toHaveBeenCalled();
+  });
+});
+
+describe('worker 후보 route 필터 (UI-q1tg §3.2)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  function mountCandidatePane() {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} value
+   */
+  function clickRouteChip(mount, value) {
+    /** @type {HTMLElement} */ (
+      mount.querySelector(`.worker-filter__route[data-route="${value}"]`)
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }
+
+  /** @param {HTMLElement} mount */
+  const candIds = (mount) =>
+    Array.from(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('#worker-pane-candidate')
+      ).querySelectorAll('.worker-card')
+    ).map((el) => /** @type {HTMLElement} */ (el).dataset.beadId);
+
+  test('narrows the candidates to the clicked route', () => {
+    const mount = mountCandidatePane();
+
+    clickRouteChip(mount, 'spec_backed');
+
+    expect(candIds(mount)).toEqual(['RD-1']);
+  });
+
+  test('marks the clicked route chip pressed', () => {
+    const mount = mountCandidatePane();
+
+    clickRouteChip(mount, 'spec_backed');
+
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('.worker-filter__route[data-route="spec_backed"]')
+      ).getAttribute('aria-pressed')
+    ).toBe('true');
+  });
+
+  test('restores every candidate when the last route chip is unclicked', () => {
+    const mount = mountCandidatePane();
+
+    clickRouteChip(mount, 'spec_backed');
+    clickRouteChip(mount, 'spec_backed');
+
+    expect(candIds(mount)).toEqual(['RD-1', 'RD-2']);
+  });
+
+  test('stores the selected routes alongside the other axes', () => {
+    const mount = mountCandidatePane();
+
+    clickRouteChip(mount, 'spec_backed');
+
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('beads-ui.worker.candidate-filter') ||
+          'null'
+      )
+    ).toEqual({
+      show_blocked: false,
+      readiness: 'all',
+      routes: ['spec_backed']
+    });
+  });
+
+  test('separates the route group from the readiness group', () => {
+    const mount = mountCandidatePane();
+
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('.worker-filter__routes')
+      ).getAttribute('aria-label')
+    ).toBe('route 필터');
   });
 });

@@ -78,6 +78,14 @@ import {
 export const MIN_SLOTS = 1;
 
 /**
+ * 대기 진입 유예의 길이. 서버 `QUEUE_GRACE_MS`(`server/worker/scheduler.js`)를
+ * 이름 그대로 비춘다 — 클라이언트는 `server/**`에서 import할 수 없다. 남은 초
+ * 표시는 이 상수와 큐 항목의 `added_at` 하나로만 판정하므로 (UI-q1tg §3.3), 두
+ * 값이 갈리면 화면의 초가 스케줄러의 유예보다 먼저 또는 나중에 끝난다.
+ */
+export const QUEUE_GRACE_MS = 20_000;
+
+/**
  * 실행가능 레인 정렬 (UI-eey2 §5). `updated_flat`만 섹션을 만들지 않는다 —
  * 레포 묶음이 방해될 때의 탈출구이므로, 묶음 자체가 없어야 한다.
  *
@@ -103,7 +111,64 @@ export const READINESS_FILTER_OPTIONS = [
 ];
 
 /**
- * @typedef {{ show_blocked: boolean, readiness: 'all'|'ready'|'not_ready' }} CandidateFilter
+ * 후보 route 필터의 네 값 (UI-q1tg §3.2). 준비도와 달리 **다중 선택**이고 빈
+ * 배열이 "전체"이므로, 저장값 없는 사용자는 지금 화면 그대로다.
+ *
+ * @type {ReadonlyArray<{ value: 'quick_fix'|'spec_backed'|'full_plan'|'unset', label: string }>}
+ */
+export const ROUTE_FILTER_OPTIONS = [
+  { value: 'quick_fix', label: 'quick_fix' },
+  { value: 'spec_backed', label: 'spec_backed' },
+  { value: 'full_plan', label: 'full_plan' },
+  { value: 'unset', label: 'unset' }
+];
+
+/**
+ * The stored route 필터, 계약 안의 값만 남겨 정규화한 것 (UI-q1tg §3.2).
+ * 배열이 아니거나 모르는 값이 섞이면 그것만 버린다 — 저장값 하나가 후보 레인을
+ * 통째로 비우는 실패 방향을 만들지 않는다. 중복도 접는다.
+ *
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+export function normalizeRouteFilter(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  /** @type {Set<string>} */
+  const allowed = new Set(ROUTE_FILTER_OPTIONS.map((option) => option.value));
+  /** @type {string[]} */
+  const routes = [];
+  for (const entry of value) {
+    if (
+      typeof entry === 'string' &&
+      allowed.has(entry) &&
+      !routes.includes(entry)
+    ) {
+      routes.push(entry);
+    }
+  }
+  return routes;
+}
+
+/**
+ * The route 필터 칩 하나를 켜고 끈 결과 (UI-q1tg §3.2). 다중 선택이므로 클릭은
+ * 교체가 아니라 토글이고, 마지막 하나를 끄면 빈 배열 = "전체"로 돌아간다. 두 탭이
+ * 이 함수 하나를 부르므로 같은 클릭이 같은 결과를 낸다.
+ *
+ * @param {string[]} routes
+ * @param {string} value
+ * @returns {string[]}
+ */
+export function toggleRouteFilter(routes, value) {
+  const current = normalizeRouteFilter(routes);
+  return current.includes(value)
+    ? current.filter((entry) => entry !== value)
+    : normalizeRouteFilter([...current, value]);
+}
+
+/**
+ * @typedef {{ show_blocked: boolean, readiness: 'all'|'ready'|'not_ready', routes: string[] }} CandidateFilter
  */
 
 /**
@@ -114,7 +179,10 @@ export const READINESS_FILTER_OPTIONS = [
  */
 export const CANDIDATE_FILTER_DEFAULT = {
   show_blocked: true,
-  readiness: 'all'
+  readiness: 'all',
+  // 빈 배열은 "전체"다 (§3.2): route 필터를 한 번도 만지지 않은 사용자에게 이
+  // 축은 아무것도 감추지 않는다.
+  routes: []
 };
 
 /**
@@ -164,6 +232,7 @@ const DONE_KIND_LABELS = {
  *   base_exception?: string|null,
  *   rollup?: import('../../utils/child-rollup.js').ChildRollup|null,
  *   landing?: { step: string, label: string, index: number, total: number, percent: number, active: boolean, failed: boolean },
+ *   added_at?: number,
  *   queue_position?: number,
  *   queue_index?: number,
  *   queue_length?: number,
@@ -303,8 +372,12 @@ const DONE_KIND_LABELS = {
  */
 
 /**
- * 저장 레인 한 줄의 투영 (UI-j92s §5.2). route 칩·겹침 칩·`← 선행` 칩은 이
- * 행에 없다 — 레인 순서가 곧 의존이므로 같은 사실을 두 번 말하지 않는다.
+ * 저장 레인 한 줄의 투영 (UI-j92s §5.2). 겹침 칩·`← 선행` 칩은 이 행에 없다 —
+ * 레인 순서가 곧 의존이므로 같은 사실을 두 번 말하지 않는다.
+ *
+ * **정정(UI-q1tg §3.5).** route와 실행 주체는 그 배제에 들어가지 않는다. 위
+ * 근거는 **의존** 축의 것이고, route·오케·워커는 다른 질문에 답하므로 같은
+ * 대기 레인의 병렬·직렬 행과 같은 칩을 얻는다.
  *
  * @typedef {Object} MonitorChainLaneRow
  * @property {string} id
@@ -329,6 +402,15 @@ const DONE_KIND_LABELS = {
  * @property {boolean} mismatch - `⚠ 의존 없음` (§5.2): confirmed 레인에서
  * 바로 앞 멤버가 이 행의 blocker가 아니다.
  * @property {number} [queue_index] - 병렬 큐 raw 좌표. 큐 밖 행에는 없다.
+ * @property {string|null} route - 이 멤버의 route (UI-q1tg §3.5). 오버레이나 그
+ * 행의 레인 투영이 아는 값이고, 모르면 `null`이라 칩이 서지 않는다.
+ * @property {string|null} route_source - `derived`면 route 칩이 `unset`을
+ * 그린다. 모르면 `null`이다.
+ * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} exec_chips
+ * - 그 멤버가 자기 레인에서 얻은 오케/워커 칩. 재료가 없으면 `null`이다.
+ * @property {number|null} added_at - 큐 항목의 대기 진입 시각. 유예 칩과
+ * `[지금 시작]`의 유일한 판정 재료이고, 큐 밖 행(`unplaced`)에는 없으므로
+ * `null`이다 (fail-quiet).
  */
 
 /**
@@ -368,9 +450,10 @@ const DONE_KIND_LABELS = {
  * @property {LaneItem[]} runnable_all - Filter 이전의 실행가능 목록. 의존성
  * 패널의 후보 모집단은 여기서 나온다 (UI-j92s §6.1): 필터는 보기를 좁힐 뿐
  * 의존을 걸 수 있는 이슈를 줄이지 않는다.
- * @property {{ blocked: number, readiness: number }} runnable_hidden -
- * `blocked`는 blocked 토글이, `readiness`는 준비도 필터가 각각 걸러 낸 카드
- * 수다. 필터 바가 이 수를 자기 토글 옆에 적어 좁힌 대가를 드러낸다.
+ * @property {{ blocked: number, readiness: number, route: number }} runnable_hidden -
+ * `blocked`는 blocked 토글이, `readiness`는 준비도 필터가, `route`는 route
+ * 필터가 각각 걸러 낸 카드 수다. 필터 바가 이 수를 자기 토글 옆에 적어 좁힌
+ * 대가를 드러낸다.
  * @property {MonitorRunnableSection[]} runnable_sections - `updated_flat`에서는
  * 빈 배열이다 (섹션 자체를 만들지 않는다).
  * @property {boolean} runnable_flat
@@ -1121,6 +1204,13 @@ function admissionBadge(admission, bead_id) {
     return '♻️ stale→재리뷰';
   }
   const reason = typeof record.reason === 'string' ? record.reason : '';
+  // 유예는 거절이 아니라 곧 스스로 풀리는 진단이므로 `⛔` danger 뱃지를 달지
+  // 않는다 (UI-q1tg §3.3). 표시는 남은 초를 세는 `⏳` 칩이 소유하고 그 판정은 이
+  // 레코드가 아니라 `added_at`이므로, 만료된 레코드가 남아도 행에 `0초`가 서지
+  // 않는다.
+  if (reason === 'grace_period') {
+    return '';
+  }
   // 선행 대기는 스케줄러가 증명한 진단이지 상태 복사가 아니므로 (UI-d3i1 §5.4)
   // `⛔` 접두를 쓰지 않는다 — 그래야 candidateCard의 danger 스타일을 타지 않고,
   // 무엇을 기다리는지는 같은 record의 blockers가 슬롯 4a 칩으로 말한다.
@@ -1438,6 +1528,57 @@ function attemptWorkerChip(state, overlay, controller_runtime) {
 }
 
 /**
+ * The 완료 행's 오케/워커 칩 (UI-q1tg §3.4). 재료는 그 완료를 만든 **마지막
+ * 구현 attempt가 기록한 값**이지 핀이 아니다: 핀은 실행 이후에 바뀌고, Worker
+ * 탭에는 완료 bead의 핀이 애초에 실리지 않는다. 실행 중 타일과 같은 재료·같은
+ * 함수를 쓰므로 두 행이 같은 시제를 말한다.
+ *
+ * attempt 기록이 없으면 `null`이고 그때 완료 행은 route만 그린다 — 틀린 칩보다
+ * 없는 칩이다 (fail-quiet).
+ *
+ * @param {Record<string, any>} state - The repo's `workspaces_state` row.
+ * @param {Record<string, any>|null|undefined} overlay - The bead's `bead_overlay` entry.
+ * @param {any} attempt - 그 bead의 마지막 구현 attempt.
+ * @returns {import('../../utils/exec-settings-chip.js').ExecChips|null}
+ */
+function attemptExecChips(state, overlay, attempt) {
+  if (!attempt) {
+    return null;
+  }
+  const orchestration = formatAttemptOrchestrationChip(attempt);
+  const worker = attemptWorkerChip(
+    state,
+    overlay,
+    typeof attempt.runner === 'string' ? attempt.runner : null
+  );
+  return orchestration || worker ? { orchestration, worker } : null;
+}
+
+/**
+ * The route 필터가 한 항목을 넣는 칸 (UI-q1tg §3.2). 판정은 route 칩이 `unset`을
+ * 그리는 판정과 **같은 것 하나**다 (`routeChipTemplate`, `./lanes.js`): route가
+ * 없거나 `route_source === 'derived'`면 `unset`이다. 칩이 `unset`이라고 말하는
+ * 행은 `unset` 필터로 잡히고 그 반대도 성립해야 하므로, 이 판정을 두 벌로 만들지
+ * 않는다.
+ *
+ * @param {LaneItem} item
+ * @returns {string}
+ */
+function routeFilterValueOf(item) {
+  const workflow = objectOf(item.workflow);
+  const chips = objectOf(workflow.chips);
+  const route =
+    typeof chips.route === 'string' && chips.route.length > 0
+      ? chips.route
+      : typeof workflow.route === 'string' && workflow.route.length > 0
+        ? workflow.route
+        : '';
+  const derived =
+    chips.route_source === 'derived' || workflow.route_source === 'derived';
+  return route.length === 0 || derived ? 'unset' : route;
+}
+
+/**
  * Whether this attempt is doing conflict-resolution work (UI-dxgz §1). The ▶
  * resume path mints its child with `conflict_resolution: false`, so the flag is
  * inherited through `resumed_from` — otherwise resuming a paused resolution
@@ -1746,6 +1887,16 @@ function laneRunState(lane_id, status, rows, all_done, unlaunched, axis) {
 }
 
 /**
+ * 연결 레인 행이 자기 멤버의 레인 행에서 그대로 받아 오는 재료 (UI-q1tg §3.5).
+ *
+ * @typedef {Object} ChainRowMaterial
+ * @property {string|null} route
+ * @property {string|null} route_source
+ * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} exec_chips
+ * @property {number|null} added_at
+ */
+
+/**
  * The 저장 연결 레인 투영 (UI-j92s §4.1·§5.1·§5.2·§5.3). 파생이 아니라 서버가
  * 보관한 멤버십이므로, 이 함수는 순서를 **계산하지 않고** 읽는다: `entries`
  * 순서가 곧 레인 순서이고 표시 번호는 배열 자리다.
@@ -1763,6 +1914,9 @@ function laneRunState(lane_id, status, rows, all_done, unlaunched, axis) {
  * @param {Map<string, Record<string, any>>} admission_by_bead - 보이는 workspace
  * 전부의 admission 합집합 (UI-d3i1 §8). 같은 bead가 두 workspace에 설 수 없으므로
  * 충돌 규칙이 필요 없다.
+ * @param {Map<string, ChainRowMaterial>} material_by_bead - 그 멤버가 자기 레인
+ * 행으로 이미 얻은 route·실행 칩·대기 진입 시각 (UI-q1tg §3.5). 파생을 여기서
+ * 다시 하지 않으므로 연결 레인 행과 병렬 행이 같은 칩을 말한다.
  * @returns {MonitorChainLane[]}
  */
 function buildCrossLanes(
@@ -1773,7 +1927,8 @@ function buildCrossLanes(
   title_by_bead,
   name_by_root,
   axis,
-  admission_by_bead
+  admission_by_bead,
+  material_by_bead
 ) {
   /** @type {MonitorChainLane[]} */
   const projected = [];
@@ -1824,9 +1979,14 @@ function buildCrossLanes(
         previous_row !== null &&
         !previous_row.done &&
         !(blocked_by_map.get(bead_id) || []).includes(previous_row.id);
+      const material = material_by_bead.get(bead_id) || null;
       rows.push({
         id: bead_id,
         title: title_by_bead.get(bead_id) || bead_id,
+        route: material ? material.route : null,
+        route_source: material ? material.route_source : null,
+        exec_chips: material ? material.exec_chips : null,
+        added_at: material ? material.added_at : null,
         root_dir: location ? location.root_dir : entry_root,
         workspace_name: location
           ? location.workspace_name
@@ -3212,6 +3372,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const item = {
         ...base(bead_id),
         lane,
+        // 유예 칩(`⏳`)과 `[지금 시작]`의 유일한 판정 재료 (UI-q1tg §3.3). 큐
+        // 항목이 이미 갖고 있는 값을 읽기만 하고, 없으면 필드 자체가 없다.
+        ...(typeof entry.added_at === 'number'
+          ? { added_at: entry.added_at }
+          : {}),
         // 대기 행의 route 칩 재료 (UI-yrzu §5·§7.2). 서버는 이미 대기 레인
         // 멤버에게 `bead_workflow`를 실어 준다 — 없으면 칩만 생략된다.
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
@@ -3580,10 +3745,24 @@ export function buildLanes(workspaces, workspaces_state, options) {
         terminal && typeof terminal.done_kind === 'string'
           ? terminal.done_kind
           : null;
+      // 완료 행의 오케/워커는 핀이 아니라 이 attempt의 기록에서 나온다
+      // (UI-q1tg §3.4). `exec_chips` 배분(아래 오버레이 루프)에 `done`이 없는
+      // 것과 어긋나지 않는다 — 완료 행이 얻는 것은 "돌아갈 설정"이 아니라 "무엇
+      // 으로 돌았나"이고, 재료도 경로도 다르다.
+      const done_exec_chips = attemptExecChips(
+        objectOf(state),
+        overlay_by_key.get(`${root_dir}\u0000${bead_id}`),
+        terminal
+      );
       done.push({
         ...base(bead_id),
         lane: 'done',
         done: true,
+        // 완료 행의 route 칩 재료 (UI-q1tg §3.4). Worker 채널은 완료 bead에도
+        // `bead_workflow`를 싣는다 — 모니터 채널은 오버레이가 route를 싣고,
+        // 아래 오버레이 루프가 그것을 이 자리에 채운다.
+        workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
+        ...(done_exec_chips ? { exec_chips: done_exec_chips } : {}),
         // 완료 3줄 행 (§8): 레포 배지가 붙으면 2줄 변형에서 제목이 먼저 잘린다.
         done_layout: 'three_line',
         usage: sumAttemptUsage(attempts, bead_id),
@@ -3660,6 +3839,20 @@ export function buildLanes(workspaces, workspaces_state, options) {
         overlay.carried_to.length > 0
       ) {
         item.carried_to = overlay.carried_to;
+      }
+      // 모니터 채널에는 `bead_workflow`가 없다 (UI-q1tg §3.1) — 완료 행 route의
+      // 유일한 재료가 오버레이다. Worker 채널은 이미 workflow를 실어 오므로 그
+      // 값이 있으면 덮어쓰지 않는다 (fail-quiet).
+      if (
+        item.lane === 'done' &&
+        !objectOf(item.workflow).route &&
+        typeof overlay.route === 'string' &&
+        overlay.route.length > 0
+      ) {
+        item.workflow = /** @type {any} */ ({
+          route: overlay.route,
+          chips: { route: overlay.route }
+        });
       }
       if (!Object.hasOwn(overlay, 'metadata')) {
         continue;
@@ -3840,7 +4033,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const model = {
     runnable,
     runnable_all: runnable,
-    runnable_hidden: { blocked: 0, readiness: 0 },
+    runnable_hidden: { blocked: 0, readiness: 0, route: 0 },
     runnable_sections: [],
     runnable_flat:
       candidate_sort === 'updated_flat' || candidate_sort === 'as_given',
@@ -3963,6 +4156,51 @@ export function buildLanes(workspaces, workspaces_state, options) {
 
   // 대기 레인 통합 투영 (UI-e6hw §4). 연결 레인이 먼저다 — 병렬 통합 큐의
   // 숨김 규칙이 confirmed 레인 멤버 집합에서 나온다 (UI-j92s §5.2a).
+  // 연결 레인 행의 route·오케/워커·유예 재료 (UI-q1tg §3.5). 파생은 이미 각
+  // 레인 행이 끝냈으므로 여기서는 옮겨 담기만 한다 — 같은 사실을 두 벌로 파생
+  // 하면 같은 bead가 두 자리에서 다른 칩을 말한다. `runnable` 행의 `exec_chips`
+  // 도 같은 뜻이므로(후보·대기·직렬이 한 파생식을 쓴다) 그대로 싣는다: 확정 레인
+  // 드롭이 더는 큐에 적재하지 않아 멤버는 `▶ 진행` 전까지 후보 행으로만 서고,
+  // 그 행을 빼면 같은 레인 안에서 적재 전후로 칩이 달라진다.
+  /** @type {Map<string, ChainRowMaterial>} */
+  const chain_material = new Map();
+  for (const item of [
+    ...model.queue,
+    ...model.running,
+    ...model.pr_wait,
+    ...model.done,
+    ...model.runnable
+  ]) {
+    if (chain_material.has(item.id)) {
+      continue;
+    }
+    const workflow = objectOf(item.workflow);
+    const chips = objectOf(workflow.chips);
+    const overlay = overlay_by_key.get(`${item.root_dir}\u0000${item.id}`);
+    const route =
+      (typeof chips.route === 'string' && chips.route.length > 0
+        ? chips.route
+        : typeof workflow.route === 'string' && workflow.route.length > 0
+          ? workflow.route
+          : overlay &&
+              typeof overlay.route === 'string' &&
+              overlay.route.length > 0
+            ? overlay.route
+            : null) || null;
+    const route_source =
+      typeof chips.route_source === 'string'
+        ? chips.route_source
+        : typeof workflow.route_source === 'string'
+          ? workflow.route_source
+          : null;
+    chain_material.set(item.id, {
+      route,
+      route_source,
+      exec_chips: item.exec_chips || null,
+      added_at: typeof item.added_at === 'number' ? item.added_at : null
+    });
+  }
+
   model.chain_lanes = buildCrossLanes(
     cross_lanes_input && Array.isArray(cross_lanes_input.lanes)
       ? cross_lanes_input.lanes
@@ -3973,7 +4211,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
     title_by_bead,
     name_by_root,
     { armed_by_bead, failed_by_bead, disarmed_lanes },
-    admission_by_bead
+    admission_by_bead,
+    chain_material
   );
 
   // 소속 칩은 실행가능 카드와 대기 행에만 붙는다 (§5.2a).
@@ -4088,6 +4327,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
     (candidate_filter.readiness === 'ready'
       ? item.queue_placeable === true
       : item.queue_placeable !== true);
+  // route 필터는 다중 선택이고 **숨김**이다 (UI-q1tg §3.2): 빈 배열이 "전체"라
+  // 저장값 없는 사용자에게는 아무 행도 사라지지 않는다. 정규화를 여기서도 거는
+  // 것은 모르는 값 하나가 후보 레인을 통째로 비우지 않게 하기 위해서다.
+  const filter_routes = normalizeRouteFilter(candidate_filter.routes);
+  /** @param {LaneItem} item */
+  const routePass = (item) =>
+    filter_routes.length === 0 ||
+    filter_routes.includes(routeFilterValueOf(item));
   if (hidden_counts === 'per_control') {
     // Worker 규칙 (UI-ki09 `applyCandidateFilter`): 한 조작이 감춘 수는 "그
     // 조작만 풀면 나타날 행"이다. 두 필터에 **모두** 걸린 행은 어느 수에도
@@ -4097,31 +4344,46 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const kept = [];
     let hidden_blocked = 0;
     let hidden_readiness = 0;
+    let hidden_route = 0;
     for (const item of visible) {
       const by_blocked = blockedPass(item);
       const by_readiness = readinessPass(item);
-      if (by_blocked && by_readiness) {
+      const by_route = routePass(item);
+      if (by_blocked && by_readiness && by_route) {
         kept.push(item);
-      } else if (!by_blocked && by_readiness) {
+        continue;
+      }
+      const hidden_by =
+        (by_blocked ? 0 : 1) + (by_readiness ? 0 : 1) + (by_route ? 0 : 1);
+      if (hidden_by > 1) {
+        continue;
+      }
+      if (!by_blocked) {
         hidden_blocked += 1;
-      } else if (by_blocked && !by_readiness) {
+      } else if (!by_readiness) {
         hidden_readiness += 1;
+      } else {
+        hidden_route += 1;
       }
     }
     visible = kept;
     model.runnable_hidden = {
       blocked: hidden_blocked,
-      readiness: hidden_readiness
+      readiness: hidden_readiness,
+      route: hidden_route
     };
   } else {
-    // Monitor 규칙: 두 필터를 차례로 적용하고 각 단계가 줄인 수를 센다 — 두
+    // Monitor 규칙: 세 필터를 차례로 적용하고 각 단계가 줄인 수를 센다 — 두
     // 필터에 모두 걸린 행은 앞 단계인 `blocked`가 가져간다.
     visible = visible.filter(blockedPass);
     const after_blocked = visible.length;
     visible = visible.filter(readinessPass);
+    const after_readiness = visible.length;
+    visible = visible.filter(routePass);
     model.runnable_hidden = {
       blocked: before - after_blocked,
-      readiness: after_blocked - visible.length
+      readiness: after_blocked - after_readiness,
+      route: after_readiness - visible.length
     };
   }
 

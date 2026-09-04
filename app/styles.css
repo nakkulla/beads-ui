@@ -5967,6 +5967,16 @@ html[data-theme='dark'] {
   margin-left: auto;
 }
 
+/* route 필터 묶음 (UI-q1tg §3.2): 준비도 묶음과 같은 치수로 선다 — 두 묶음이
+   같은 `.worker-filter__chip` 토큰을 쓰므로, 간격만 다르면 한 줄 안에서 두
+   문법이 사는 것으로 읽힌다. `margin-left`는 없다: 오른쪽 끝 자리는 앞의
+   준비도 묶음이 이미 가져갔고, 이 묶음은 그 옆에 붙는다. */
+.worker-filter__routes {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
 .worker-filter__chip {
   padding: 1px var(--sp-5);
   border: 1px solid var(--border-chip);
