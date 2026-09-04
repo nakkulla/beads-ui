@@ -524,7 +524,7 @@ describe('planLaneConfirm — 확정 (UI-j92s §5.4)', () => {
 });
 
 describe('planDrop — confirmed 대상 (UI-j92s §5.4)', () => {
-  test('appends a candidate to a confirmed lane and loads its own parallel tail', () => {
+  test('appends a candidate to a confirmed lane without loading its queue', () => {
     const model = confirmedTargetModel();
 
     const plan = planDrop(
@@ -554,11 +554,6 @@ describe('planDrop — confirmed 대상 (UI-j92s §5.4)', () => {
           b: 'C-2',
           root_dir: WS_A,
           lane_id: 'cl_c'
-        },
-        {
-          type: 'worker-queue-place',
-          payload: { bead_id: 'A-9', index: 2 },
-          root_dir: WS_A
         }
       ],
       lane_op_index: 0
@@ -675,6 +670,82 @@ describe('planDrop — confirmed 대상 (UI-j92s §5.4)', () => {
 });
 
 describe('planDrop — confirmed 행 ✕ 와 다른 대상 (UI-j92s §5.4)', () => {
+  test('disarms both repos when one of two confirmed members leaves', () => {
+    const model = dropModel({
+      blocked_by_map: new Map([['X', ['P']]]),
+      owner_of: new Map([
+        ['P', WS_A],
+        ['X', WS_B]
+      ]),
+      ...laneStore([
+        {
+          id: 'cl_s',
+          status: 'confirmed',
+          entries: [
+            ['P', WS_A],
+            ['X', WS_B]
+          ]
+        }
+      ])
+    });
+
+    const plan = planDrop(
+      {
+        kind: 'chain',
+        bead_id: 'X',
+        root_dir: WS_B,
+        lane_id: 'cl_s'
+      },
+      { kind: 'candidate' },
+      model
+    );
+
+    expect(
+      'ops' in plan
+        ? plan.ops.filter((op) => op.type === 'worker-queue-disarm')
+        : []
+    ).toEqual([
+      {
+        type: 'worker-queue-disarm',
+        payload: { bead_ids: ['P'], lane_id: 'cl_s' },
+        root_dir: WS_A
+      },
+      {
+        type: 'worker-queue-disarm',
+        payload: { bead_ids: ['X'], lane_id: 'cl_s' },
+        root_dir: WS_B
+      }
+    ]);
+  });
+
+  test('disarms only the departing member when two confirmed members remain', () => {
+    const model = confirmedSourceModel();
+
+    const plan = planDrop(
+      {
+        kind: 'chain',
+        bead_id: 'X',
+        root_dir: WS_A,
+        lane_id: 'cl_s',
+        queue_index: 1
+      },
+      { kind: 'parallel', marker_index: 0 },
+      model
+    );
+
+    expect(
+      'ops' in plan
+        ? plan.ops.filter((op) => op.type === 'worker-queue-disarm')
+        : []
+    ).toEqual([
+      {
+        type: 'worker-queue-disarm',
+        payload: { bead_ids: ['X'], lane_id: 'cl_s' },
+        root_dir: WS_A
+      }
+    ]);
+  });
+
   test('drops the row from its lane and unloads it on the candidate pane', () => {
     const model = confirmedSourceModel();
 

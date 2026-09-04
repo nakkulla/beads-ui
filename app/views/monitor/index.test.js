@@ -1786,7 +1786,7 @@ describe('views/monitor [대기로 ↴] lane menu (UI-e6hw §6)', () => {
     expect(sent.map((m) => m.type)).toEqual([
       'monitor-lane-update',
       'dep-add',
-      'worker-queue-place'
+      'monitor-lane-provenance'
     ]);
     expect(sent[0].payload).toEqual({
       lane_id: 'cl_1',
@@ -2313,7 +2313,7 @@ describe('views/monitor dependency editing (UI-2gi1 §6.5, UI-e6hw §5)', () => 
     expect(mount.querySelector('.worker-dep__remove')).toBeNull();
   });
 
-  test('sends one drop in the dep-remove → lane → dep-add → queue order', async () => {
+  test('sends one drop in the lane → dep-add → provenance order', async () => {
     const { mount, view, sent } = setup({
       cross_lanes: crossLanes([
         { entries: [{ bead_id: 'B-1', root_dir: WS_B }] }
@@ -2346,14 +2346,13 @@ describe('views/monitor dependency editing (UI-2gi1 §6.5, UI-e6hw §5)', () => 
     expect(sent.map((m) => m.type)).toEqual([
       'monitor-lane-update',
       'dep-add',
-      'worker-queue-place'
+      'monitor-lane-provenance'
     ]);
     expect(sent[1].payload).toEqual({ a: 'A-9', b: 'B-1', root_dir: WS_A });
     expect(sent[2].payload).toEqual({
-      bead_id: 'A-9',
-      index: 1,
-      root_dir: WS_A,
-      expected_revision: 1
+      lane_id: 'cl_1',
+      pairs: [{ bead_id: 'A-9', after: 'B-1', value: true }],
+      expected_revision: 2
     });
   });
 
@@ -2429,9 +2428,7 @@ describe('views/monitor dependency editing (UI-2gi1 §6.5, UI-e6hw §5)', () => 
     expect(sent).toEqual([]);
   });
 
-  test('stops the plan when the queue op is refused by admission', async () => {
-    // 입장 거부는 CAS 충돌이 아니라 `applied:false`로 온다 — 조용히 지나가면
-    // 앞선 의존 op만 남은 상태가 설명 없이 보인다 (§7).
+  test('skips queue admission when dropping into a confirmed lane', async () => {
     const { mount, view, sent } = setup({
       cross_lanes: crossLanes([
         { entries: [{ bead_id: 'B-1', root_dir: WS_B }] }
@@ -2468,13 +2465,13 @@ describe('views/monitor dependency editing (UI-2gi1 §6.5, UI-e6hw §5)', () => 
     expect(sent.map((m) => m.type)).toEqual([
       'monitor-lane-update',
       'dep-add',
-      'worker-queue-place'
+      'monitor-lane-provenance'
     ]);
     expect(
       Array.from(document.querySelectorAll('.toast')).map(
         (node) => node.textContent
       )
-    ).toContain('큐 적재 거부: no_spec');
+    ).not.toContain('큐 적재 거부: no_spec');
   });
 });
 
@@ -2869,9 +2866,7 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
     expect(sent.map((m) => m.type)).toEqual(['monitor-lane-remove']);
   });
 
-  // 전송 래퍼는 큐 op 오류를 `[]`로 삼킨다 (`app/main.js`). 그것을 성공으로
-  // 읽으면 앞 op가 실패했는데도 뒤 op가 나가 부분 상태가 남는다 (§5.5·§7).
-  test('stops the remaining queue ops when one comes back without a reply', async () => {
+  test('omits queue placement after a confirmed lane drop', async () => {
     const { mount, view, sent } = setup({
       workspaces: [
         workspace({
@@ -2897,7 +2892,7 @@ describe('monitor 레인 op 전송 순서와 충돌 재계획 (UI-j92s §5.5)', 
     expect(sent.map((m) => m.type)).toEqual([
       'monitor-lane-update',
       'dep-add',
-      'worker-queue-place'
+      'monitor-lane-provenance'
     ]);
   });
 
@@ -3050,6 +3045,26 @@ describe('monitor 연결 레인 진행·정지 (UI-jaua §5.5·§9)', () => {
     await flushMicrotasks();
 
     expect(sent.map((m) => m.type)).toEqual(['worker-queue-arm']);
+  });
+
+  test('arms a lane without a failure toast after success', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({ queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([
+        { entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+      ]),
+      transport: async () => ({ applied: true, queue: { revision: 5 } })
+    });
+
+    view.load();
+    click(mount, '.mon2-clane__run');
+    await flushMicrotasks();
+
+    expect(sent.map((m) => m.type)).toEqual(['worker-queue-arm']);
+    expect(document.querySelector('.toast')).toBeNull();
   });
 
   test('arms each member repo once', async () => {

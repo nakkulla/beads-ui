@@ -439,7 +439,7 @@ function chainSetup(over = {}) {
 }
 
 describe('계획 전송 (§5.5)', () => {
-  test('sends one plan in the 레인 op → dep-add → 큐 op order', async () => {
+  test('sends one plan in the 레인 op → dep-add → provenance order', async () => {
     const { dom, lanes } = chainSetup();
     /** @type {string[]} */
     const order = [];
@@ -473,7 +473,6 @@ describe('계획 전송 (§5.5)', () => {
     expect(order).toEqual([
       'monitor-lane-update',
       'dep-add',
-      'worker-queue-place',
       'monitor-lane-provenance'
     ]);
   });

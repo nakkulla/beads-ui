@@ -462,6 +462,141 @@ describe('monitor-lane-update (UI-j92s §4.3)', () => {
 
     expect(ws.reply().error.code).toEqual('bad_request');
   });
+
+  test('returns a confirmed lane with one member to draft', () => {
+    seed(1, [
+      lane({
+        status: 'confirmed',
+        entries: [entry('UI-1'), entry('UI-2', WS_B)]
+      })
+    ]);
+    const ws = fakeWs();
+
+    handleMonitorLaneUpdate(
+      /** @type {any} */ (ws),
+      request('monitor-lane-update', {
+        lane_id: 'cl_A',
+        entries: [entry('UI-1')],
+        expected_revision: 1
+      }),
+      seams()
+    );
+
+    expect(store.read()?.lanes[0].status).toEqual('draft');
+  });
+
+  test('returns a confirmed lane with no members to draft', () => {
+    seed(1, [
+      lane({
+        status: 'confirmed',
+        entries: [entry('UI-1'), entry('UI-2', WS_B)]
+      })
+    ]);
+    const ws = fakeWs();
+
+    handleMonitorLaneUpdate(
+      /** @type {any} */ (ws),
+      request('monitor-lane-update', {
+        lane_id: 'cl_A',
+        entries: [],
+        expected_revision: 1
+      }),
+      seams()
+    );
+
+    expect(store.read()?.lanes[0].status).toEqual('draft');
+  });
+
+  test('keeps a confirmed lane after reordering at least two members', () => {
+    seed(1, [
+      lane({
+        status: 'confirmed',
+        entries: [entry('UI-1'), entry('UI-2', WS_B)]
+      })
+    ]);
+    const ws = fakeWs();
+
+    handleMonitorLaneUpdate(
+      /** @type {any} */ (ws),
+      request('monitor-lane-update', {
+        lane_id: 'cl_A',
+        entries: [entry('UI-2', WS_B), entry('UI-1')],
+        expected_revision: 1
+      }),
+      seams()
+    );
+
+    expect(store.read()?.lanes[0].status).toEqual('confirmed');
+  });
+
+  test('refuses confirmation after a lane returns with one member', () => {
+    seed(1, [
+      lane({
+        status: 'confirmed',
+        entries: [entry('UI-1'), entry('UI-2', WS_B)]
+      })
+    ]);
+    const ws = fakeWs();
+
+    handleMonitorLaneUpdate(
+      /** @type {any} */ (ws),
+      request('monitor-lane-update', {
+        lane_id: 'cl_A',
+        entries: [entry('UI-1')],
+        expected_revision: 1
+      }),
+      seams()
+    );
+    handleMonitorLaneConfirm(
+      /** @type {any} */ (ws),
+      request('monitor-lane-confirm', {
+        lane_id: 'cl_A',
+        expected_revision: 2
+      }),
+      seams()
+    );
+
+    expect(ws.reply().error.code).toEqual('bad_request');
+  });
+
+  test('allows confirmation after a returned lane regains two members', () => {
+    seed(1, [
+      lane({
+        status: 'confirmed',
+        entries: [entry('UI-1'), entry('UI-2', WS_B)]
+      })
+    ]);
+    const ws = fakeWs();
+
+    handleMonitorLaneUpdate(
+      /** @type {any} */ (ws),
+      request('monitor-lane-update', {
+        lane_id: 'cl_A',
+        entries: [entry('UI-1')],
+        expected_revision: 1
+      }),
+      seams()
+    );
+    handleMonitorLaneUpdate(
+      /** @type {any} */ (ws),
+      request('monitor-lane-update', {
+        lane_id: 'cl_A',
+        entries: [entry('UI-1'), entry('UI-2', WS_B)],
+        expected_revision: 2
+      }),
+      seams()
+    );
+    handleMonitorLaneConfirm(
+      /** @type {any} */ (ws),
+      request('monitor-lane-confirm', {
+        lane_id: 'cl_A',
+        expected_revision: 3
+      }),
+      seams()
+    );
+
+    expect(store.read()?.lanes[0].status).toEqual('confirmed');
+  });
 });
 
 describe('monitor-lane-confirm (UI-j92s §4.3)', () => {

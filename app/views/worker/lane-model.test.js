@@ -2910,6 +2910,24 @@ describe('monitor 연결 레인 발차 축 (UI-jaua §5.5·§5.6)', () => {
     ]);
   });
 
+  test('reveals an arm that points at a draft lane as orphaned', () => {
+    const lanes = buildLanes(
+      [workspace({ queue: [{ bead_id: 'A-1', armed_by_lane: 'cl_1' }] })],
+      [state()],
+      {
+        cross_lanes: crossLanes([
+          { id: 'cl_1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+        ])
+      }
+    );
+
+    expect(lanes.parallel_rows[0].armed_lane_chip).toEqual({
+      lane_id: 'cl_1',
+      label: '▶ 진행 중 · 레인 없음',
+      orphan: true
+    });
+  });
+
   test('chips an armed running tile with its lane number', () => {
     const lanes = laneModel({
       queue: [{ bead_id: 'A-1', armed_by_lane: 'cl_1' }],

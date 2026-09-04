@@ -1659,6 +1659,9 @@ export function handleMonitorLaneUpdate(ws, req, options = {}) {
       return { ok: false, code: 'not_found', message: '레인이 없습니다' };
     }
     lane.entries = stampAdjacencyProvenance(lane.entries, entries);
+    if (lane.status === 'confirmed' && lane.entries.length < 2) {
+      lane.status = 'draft';
+    }
     return { ok: true };
   });
   if (!result.ok) {
