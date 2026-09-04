@@ -829,6 +829,25 @@ function startNowRequestedAt(workspace, bead_id, at) {
 }
 
 /**
+ * Does a live `[지금 시작]` click name this waiting entry? Kept apart from
+ * {@link isExplicitRunEntry} because the two instructions do not reach the same
+ * lanes: `armed_by_lane` is a parallel-queue fact (UI-jaua §5.2) while this one
+ * names one row wherever it sits.
+ *
+ * @param {string} workspace
+ * @param {{ bead_id: string, added_at?: number }} entry
+ * @param {number} at - Epoch ms this pass reads as now.
+ */
+function isStartNowEntry(workspace, entry, at) {
+  const requested_at = startNowRequestedAt(workspace, entry.bead_id, at);
+  if (requested_at === null) {
+    return false;
+  }
+  const added_at = typeof entry.added_at === 'number' ? entry.added_at : 0;
+  return added_at <= requested_at;
+}
+
+/**
  * Does this waiting entry carry an explicit run instruction? `▶ 진행` writes one
  * durably (`armed_by_lane`) and `[지금 시작]` holds one in memory; decision 2 of
  * §3.3 keeps both out of the grace, because deferring what the user just pressed
@@ -839,15 +858,31 @@ function startNowRequestedAt(workspace, bead_id, at) {
  * @param {number} at - Epoch ms this pass reads as now.
  */
 function isExplicitRunEntry(workspace, entry, at) {
-  if (isArmedEntry(entry)) {
-    return true;
+  return isArmedEntry(entry) || isStartNowEntry(workspace, entry, at);
+}
+
+/**
+ * The serial lane heads a live `[지금 시작]` click named (§3.3 결정 2). The
+ * serial axis is what `auto_advance` owns, so an `armed_only` pass takes no serial
+ * head (UI-jaua §5.2) — but a row the user pressed is an explicit run instruction
+ * wherever it sits, and the WS op accepts serial rows, so refusing them here would
+ * make that reply say a run happened when none did.
+ *
+ * @param {{ serial_lanes?: Array<{ entries?: any[] }> }} q
+ * @param {string} workspace
+ * @param {number} at
+ * @returns {Set<string>}
+ */
+function startNowSerialHeads(q, workspace, at) {
+  /** @type {Set<string>} */
+  const named = new Set();
+  for (const lane of Array.isArray(q.serial_lanes) ? q.serial_lanes : []) {
+    const head = Array.isArray(lane.entries) ? lane.entries[0] : null;
+    if (head && isStartNowEntry(workspace, head, at)) {
+      named.add(head.bead_id);
+    }
   }
-  const requested_at = startNowRequestedAt(workspace, entry.bead_id, at);
-  if (requested_at === null) {
-    return false;
-  }
-  const added_at = typeof entry.added_at === 'number' ? entry.added_at : 0;
-  return added_at <= requested_at;
+  return named;
 }
 
 /**
@@ -11076,8 +11111,13 @@ export function createScheduler(deps) {
     // released hold no longer resumes a paused queue.
     const at = now();
     const armed_only = q.auto_advance !== true || q.hold !== null;
+    // `[지금 시작]`은 직렬 레인 선두도 지목할 수 있으므로 이 문은 병렬 큐만 보면
+    // 안 된다 (§3.3 결정 2): 그러면 서버가 성공을 돌려주고도 아무것도 발차하지
+    // 않는다.
+    const start_now_serial_heads = startNowSerialHeads(q, workspace, at);
     if (
       armed_only &&
+      start_now_serial_heads.size === 0 &&
       !q.queue.some((/** @type {any} */ entry) =>
         isExplicitRunEntry(workspace, entry, at)
       )
@@ -11127,10 +11167,14 @@ export function createScheduler(deps) {
       );
     // A serial lane head is NEVER an armed-only candidate: the serial axis is
     // what `auto_advance` owns, and a cross-lane member sits in the parallel
-    // queue (UI-jaua §5.2).
-    for (const lane of armed_only ? [] : q.serial_lanes || []) {
+    // queue (UI-jaua §5.2). `[지금 시작]`이 그 행을 직접 지목한 경우만
+    // 예외다 (§3.3 결정 2) — 레인 arm은 여전히 이 축에 닿지 않는다.
+    for (const lane of q.serial_lanes || []) {
       const head = lane.entries[0];
       if (!head) {
+        continue;
+      }
+      if (armed_only && !start_now_serial_heads.has(head.bead_id)) {
         continue;
       }
       if (laneOccupiedByOther(lane_occupancy, lane.id, head.bead_id)) {

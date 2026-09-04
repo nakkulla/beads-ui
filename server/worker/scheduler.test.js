@@ -17763,6 +17763,21 @@ describe('대기 진입 유예 (§3.3)', () => {
     expect(env.store.snapshot(WS).queue[0].added_at).toBe(1000);
   });
 
+  test('runs a serial lane head `[지금 시작]` named while auto_advance is off', async () => {
+    const clock = { at: 1000 };
+    const env = graceEnv({ clock, config: { G9: {} } });
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'G9',
+      lane: 's1'
+    });
+
+    requestStartNow(WS, 'G9', clock.at);
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('G9')).toBe(true);
+  });
+
   test('wakes on the EARLIEST grace end alone', async () => {
     vi.useFakeTimers();
     const clock = { at: 1000 };

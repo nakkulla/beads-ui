@@ -31,7 +31,7 @@ import {
 } from '../../utils/token-usage.js';
 import { stepperTemplate } from '../board/stepper.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
-import { QUEUE_GRACE_MS } from './lane-model.js';
+import { QUEUE_GRACE_MS, routeChipValue } from './lane-model.js';
 import { logPathTemplate } from './log-path.js';
 import { placementTitle } from './placement.js';
 
@@ -1179,29 +1179,26 @@ export function crossLaneChipTemplate(chip) {
 }
 
 /**
- * The route 칩 하나 (UI-yrzu §7.1). 실행가능·대기·PR 대기·실행중 카드가 모두
- * 이 함수를 부르므로 route는 어디서나 같은 모양·같은 파생 규칙으로 읽힌다 —
- * 규칙이 카드마다 복제되면 한쪽은 반드시 낡는다. 재료가 없으면 빈 문자열이다
- * (fail-quiet).
+ * The route 칩 하나 (UI-yrzu §7.1). 실행가능·대기·PR 대기·실행중 카드와 완료
+ * 행(UI-q1tg §3.4)이 모두 이 함수를 부르므로 route는 어디서나 같은 모양·같은
+ * 파생 규칙으로 읽힌다 — 규칙이 카드마다 복제되면 한쪽은 반드시 낡는다. 재료가
+ * 없으면 빈 문자열이다 (fail-quiet).
  *
  * @param {MiniItem['workflow']} workflow
  * @returns {import('lit-html').TemplateResult|''}
  */
 export function routeChipTemplate(workflow) {
-  if (!workflow) {
+  // 판정은 route 필터와 공유한다 (UI-q1tg §3.2): `null`이면 재료가 안 온 것이라
+  // 그리지 않고, `unset`이면 재료는 왔는데 route가 없거나 파생이다.
+  const value = routeChipValue(workflow);
+  if (value === null) {
     return '';
   }
-  const chips = workflow.chips || {};
-  const route = chips.route || workflow.route;
-  const derived =
-    chips.route_source === 'derived' || workflow.route_source === 'derived';
-  if (!route) {
-    return '';
-  }
+  const derived = value === 'unset';
   return html`<span
     class="ctl-chip ctl-chip--route${derived ? ' is-derived' : ''}"
     title=${derived ? 'route 미핀 (metadata unset)' : 'route'}
-    >${derived ? 'unset' : route}</span
+    >${value}</span
   >`;
 }
 

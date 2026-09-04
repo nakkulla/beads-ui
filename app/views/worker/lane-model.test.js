@@ -5,6 +5,7 @@ import {
   activeByBead,
   buildLanes,
   latestTerminalAttempt,
+  routeChipValue,
   validTime
 } from './lane-model.js';
 
@@ -5892,6 +5893,35 @@ describe('대기 진입 유예 재료 (UI-q1tg §3.3·§3.5)', () => {
       row.added_at,
       row.exec_chips?.orchestration?.text
     ]).toEqual(['spec_backed', 1000, 'sonnet']);
+  });
+
+  test('fills a waiting row route from the monitor overlay', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1', added_at: 1000 }],
+          bead_overlay: { 'A-1': { route: 'quick_fix' } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].workflow?.route).toBe('quick_fix');
+  });
+
+  test('classifies route the one way the chip and the filter share', () => {
+    const values = [
+      routeChipValue(null),
+      routeChipValue({ chips: {} }),
+      routeChipValue({
+        chips: { route: 'quick_fix', route_source: 'derived' }
+      }),
+      routeChipValue({
+        chips: { route: 'quick_fix', route_source: 'explicit' }
+      })
+    ];
+
+    expect(values).toEqual([null, 'unset', 'unset', 'quick_fix']);
   });
 
   test('carries exec chips onto a chain lane row still outside the queue', () => {

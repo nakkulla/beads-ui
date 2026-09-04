@@ -1555,27 +1555,45 @@ function attemptExecChips(state, overlay, attempt) {
 }
 
 /**
- * The route 필터가 한 항목을 넣는 칸 (UI-q1tg §3.2). 판정은 route 칩이 `unset`을
- * 그리는 판정과 **같은 것 하나**다 (`routeChipTemplate`, `./lanes.js`): route가
- * 없거나 `route_source === 'derived'`면 `unset`이다. 칩이 `unset`이라고 말하는
- * 행은 `unset` 필터로 잡히고 그 반대도 성립해야 하므로, 이 판정을 두 벌로 만들지
- * 않는다.
+ * The one route 판정 both the route 칩과 route 필터가 쓴다 (UI-q1tg §3.2). 값이
+ * 두 벌이면 칩이 `unset`이라고 말하는 행이 `unset` 필터에 안 잡히는 상태가 생기
+ * 므로, 분류는 여기 하나다.
+ *
+ * - `null` — 재료가 아직 안 왔다. 칩은 그리지 않는다 (fail-quiet).
+ * - `'unset'` — 재료는 왔는데 route가 없거나 `route_source === 'derived'`다.
+ * - 그 밖 — 그 route 문자열 그대로다.
+ *
+ * @param {unknown} workflow
+ * @returns {string|null}
+ */
+export function routeChipValue(workflow) {
+  if (!workflow) {
+    return null;
+  }
+  const wf = objectOf(workflow);
+  const chips = objectOf(wf.chips);
+  const route =
+    typeof chips.route === 'string' && chips.route.length > 0
+      ? chips.route
+      : typeof wf.route === 'string' && wf.route.length > 0
+        ? wf.route
+        : '';
+  const derived =
+    chips.route_source === 'derived' || wf.route_source === 'derived';
+  return route.length === 0 || derived ? 'unset' : route;
+}
+
+/**
+ * The route 필터가 한 항목을 넣는 칸 (UI-q1tg §3.2). {@link routeChipValue}
+ * 하나로 판정하므로 칩과 필터가 같은 답을 낸다. 재료가 안 온 행만 `unset`으로
+ * 떨어뜨린다 — 칩은 그 행에 아무것도 그리지 않지만, 어느 칸에도 넣지 않으면
+ * 필터가 켜진 순간 그 행이 근거 없이 사라진다.
  *
  * @param {LaneItem} item
  * @returns {string}
  */
 function routeFilterValueOf(item) {
-  const workflow = objectOf(item.workflow);
-  const chips = objectOf(workflow.chips);
-  const route =
-    typeof chips.route === 'string' && chips.route.length > 0
-      ? chips.route
-      : typeof workflow.route === 'string' && workflow.route.length > 0
-        ? workflow.route
-        : '';
-  const derived =
-    chips.route_source === 'derived' || workflow.route_source === 'derived';
-  return route.length === 0 || derived ? 'unset' : route;
+  return routeChipValue(item.workflow) ?? 'unset';
 }
 
 /**
@@ -3840,18 +3858,24 @@ export function buildLanes(workspaces, workspaces_state, options) {
       ) {
         item.carried_to = overlay.carried_to;
       }
-      // 모니터 채널에는 `bead_workflow`가 없다 (UI-q1tg §3.1) — 완료 행 route의
-      // 유일한 재료가 오버레이다. Worker 채널은 이미 workflow를 실어 오므로 그
-      // 값이 있으면 덮어쓰지 않는다 (fail-quiet).
+      // 모니터 채널에는 `bead_workflow`가 없다 (UI-q1tg §3.1) — 대기·완료 행
+      // route의 유일한 재료가 오버레이다. 완료 행만이 아니라 route를 실어 보내는
+      // 모든 행에 채운다: §3.1이 레인 멤버에게도 route를 싣는 이유가 그 행의 칩
+      // 이므로, 완료 행만 읽으면 실은 값이 쓰이지 않는다. 이미 route를 아는
+      // 행(Worker 채널·후보 행)은 덮어쓰지 않고, 나머지 workflow 필드도 보존한다
+      // (fail-quiet).
+      const item_workflow = objectOf(item.workflow);
+      const item_chips = objectOf(item_workflow.chips);
       if (
-        item.lane === 'done' &&
-        !objectOf(item.workflow).route &&
+        !item_chips.route &&
+        !item_workflow.route &&
         typeof overlay.route === 'string' &&
         overlay.route.length > 0
       ) {
         item.workflow = /** @type {any} */ ({
+          ...item_workflow,
           route: overlay.route,
-          chips: { route: overlay.route }
+          chips: { ...item_chips, route: overlay.route }
         });
       }
       if (!Object.hasOwn(overlay, 'metadata')) {

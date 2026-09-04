@@ -2397,8 +2397,11 @@ describe('routeChipTemplate (UI-yrzu §7.1)', () => {
     expect(renderChip(null)).toBeNull();
   });
 
-  test('draws nothing when the workflow carries no route', () => {
-    expect(renderChip({ chips: {} })).toBeNull();
+  test('names an unset route when the workflow carries none', () => {
+    const chip = renderChip({ chips: {} });
+
+    expect(chip?.textContent).toBe('unset');
+    expect(chip?.getAttribute('title')).toBe('route 미핀 (metadata unset)');
   });
 
   test('names a pinned route with the plain route tooltip', () => {
