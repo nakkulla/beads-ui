@@ -705,6 +705,50 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     ).toEqual(['A-2']);
   });
 
+  test('shows stale occupied work as an admission row without a ghost', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          bead_titles: { 'A-1': '처분 대기 작업' },
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
+          lane_states: { s1: { occupied_by: ['A-1'], order: ['A-1'] } },
+          admission: {
+            'A-1': {
+              reason: 'worktree_stale_work',
+              stale_work: { action_id: 'stale-action' }
+            }
+          },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              serial_lane_id: 's1',
+              finished_at: 10,
+              dismissed_at: 20
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const row = mount.querySelector(
+      '.worker-wait__lane .mon2-item[data-bead-id="A-1"]:not(.mon2-item--ghost)'
+    );
+    expect({
+      row_text: row?.textContent || '',
+      ghost_count: mount.querySelectorAll(
+        '.worker-wait__lane .mon2-item--ghost[data-bead-id="A-1"]'
+      ).length
+    }).toEqual({
+      row_text: expect.stringContaining('⛔ worktree_stale_work'),
+      ghost_count: 0
+    });
+  });
+
   // 두 탭이 같은 조각(`queueRowOps`)을 쓰기 전에는 Monitor 직렬 행만 `nudgeable`
   // false로 묶음 전체가 비어 `✕`가 없었다 (UI-6g3t §4).
   test('stands the remove ✕ on a serial lane row too', () => {

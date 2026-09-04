@@ -132,6 +132,10 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   `docs/superpowers/specs/2026-09-02-worker-operation-surface-unify-design.md`
   §3.2가 소유한다.
 - 재료가 없는 줄은 그리지 않는다(fail-quiet). 판정은 그 줄의 재료 전부로 한다.
+- 타 레포 blocker 칩은 `<workspace>/<ID>`로 rig를 문자로 보이고 색은 그대로다.
+  사람의 처분을 기다리는 admission이 선 bead는 held 타일·점유 ghost가 아니라
+  대기 행이 대표한다 — 근거는
+  `docs/superpowers/specs/2026-09-04-waiting-tile-stale-disposition-reach-design.md`다.
 - 슬롯 표로 배정되지 않는 요소를 달아야 한다면, 칩을 추가하기 전에 그 스펙을
   갱신해 슬롯을 먼저 정한다. 카드마다 자기 자리를 고르는 것이 통일 전 상태를
   만든 원인이다.

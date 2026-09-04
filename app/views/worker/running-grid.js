@@ -1180,11 +1180,17 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           >${retryWaitBadgeText(tile.retry)}</span
         >`
       : waiting
-        ? html`<span
-            class="rtile__held-badge"
-            title="세션이 선행 미충족으로 착수를 거부했습니다 — 선행이 닫히면 저절로 다시 돕니다"
-            >⛓ 선행 대기</span
-          >`
+        ? tile.wait?.returning
+          ? html`<span
+              class="rtile__held-badge"
+              title="막고 있던 선행이 남지 않았습니다 — 다음 pass에서 후보로 돌아갑니다 (슬롯·레인 순서 대기)"
+              >⛓ 복귀 대기</span
+            >`
+          : html`<span
+              class="rtile__held-badge"
+              title="세션이 선행 미충족으로 착수를 거부했습니다 — 선행이 닫히면 저절로 다시 돕니다"
+              >⛓ 선행 대기</span
+            >`
         : provider_hold && hold
           ? html`<button
               type="button"
