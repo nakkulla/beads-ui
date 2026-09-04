@@ -2332,6 +2332,37 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
     ]);
   });
 
+  test('opens a foreign predecessor known only by the owner map', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: waitingOn(['B-1']),
+          bead_blocked_by: { 'A-1': ['B-1'] },
+          blocker_workspaces: { 'B-1': WS_B }
+        })
+      ],
+      [state()]
+    );
+
+    const chip = lanes.running[0].dependency_chips?.predecessors?.[0];
+    expect([chip?.openable, chip?.root_dir]).toEqual([true, WS_B]);
+  });
+
+  test('carries the card repo onto an unplaced same-repo resolved chip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: waitingOn(['A-X']),
+          bead_blocked_by: { 'A-1': [] }
+        })
+      ],
+      [state()]
+    );
+
+    const chip = lanes.running[0].dependency_chips?.released?.[0];
+    expect([chip?.openable, chip?.root_dir]).toEqual([true, WS_A]);
+  });
+
   test('keeps other held states despite a stale-work admission', () => {
     const attempts = {
       parked: {

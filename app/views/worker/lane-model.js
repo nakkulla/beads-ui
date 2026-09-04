@@ -2292,21 +2292,30 @@ function applyScopeOverlaps(
  * 조립하는 자리에서 붙는다. 그 자리에서는 타 레포 owner를 서버 `release_info`가
  * 이미 실어 왔으므로 사다리의 첫 칸만 비는 셈이다.
  *
+ * `owner_roots`는 서버 `blocker_workspaces`다 (UI-yue8 §6.2). 레인에 서 있지 않아
+ * `locations`가 모르는 타 레포 상대라도 서버가 owner를 증명했으면 그 칩은 열려야
+ * 한다 — 이름은 `<workspace>/<ID>`로 보이는데 클릭만 죽어 있으면 같은 사실을 두
+ * 어휘로 말하는 것이다.
+ *
  * @param {{ id: string, root_dir?: string }} card
  * @param {string} other_id
  * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} [locations]
+ * @param {Record<string, string>} [owner_roots]
  * @returns {{ openable?: true, root_dir?: string }}
  */
-function openTarget(card, other_id, locations) {
+function openTarget(card, other_id, locations, owner_roots) {
   const located = locations ? locations.get(other_id)?.root_dir : undefined;
+  const owned = owner_roots ? owner_roots[other_id] : undefined;
   const same_repo = !isForeignBlocker(card.id, other_id);
   const own = typeof card.root_dir === 'string' ? card.root_dir : '';
   const root_dir =
     typeof located === 'string' && located.length > 0
       ? located
-      : same_repo && own.length > 0
-        ? own
-        : '';
+      : typeof owned === 'string' && owned.length > 0
+        ? owned
+        : same_repo && own.length > 0
+          ? own
+          : '';
   if (root_dir.length > 0) {
     return { openable: true, root_dir };
   }
@@ -4231,24 +4240,30 @@ export function buildLanes(workspaces, workspaces_state, options) {
     // 모니터의 칩은 모두 누를 수 있다 (UI-u6zf §5.1): 모니터는 보이는 레포를
     // 모두 읽으므로 워커 탭과 달리 blocker의 위치를 언제나 안다. 그 클릭은
     // blocker 이슈로 이동하고(UI-lx45 §5), 타 레포면 `root_dir`이 전환 대상을
-    // 말한다 — 위치를 모르는 blocker만 그 값 없이 현재 레포로 열린다.
+    // 말한다 — 위치도 서버 owner 맵도 모르는 타 레포 blocker만 열리지 않는다.
+    const owner_roots = blocker_workspaces_by_root.get(item.root_dir) || {};
     /** @type {DependencyChip[]} */
     const predecessors = (item.blockers || []).map((blocker) => ({
       ...predecessorChip(item.id, blocker),
-      ...openTarget(item, blocker.id, locations)
+      ...openTarget(item, blocker.id, locations, owner_roots)
     }));
-    const owner_roots = blocker_workspaces_by_root.get(item.root_dir) || {};
+    // 해제 칩도 선행 칩과 같은 사다리로 연다 (UI-yue8 §8.4): 사다리 결과가 칩이
+    // 스스로 정한 `root_dir`을 덮으므로, 위치를 잃은 같은 레포 상대도 카드의
+    // 레포를 실어 다른 레포가 활성일 때 남의 이슈를 열지 않는다.
     const resolved = (
       resolved_blockers_by_key.get(`${item.root_dir}\u0000${item.id}`) || []
     ).map((blocker_id) => {
       const location = locations.get(blocker_id);
       const owner_root = location?.root_dir || owner_roots[blocker_id];
-      return resolvedBlockerChip(
-        item.id,
-        blocker_id,
-        location?.workspace_name || workspaceNameFromRoot(owner_root),
-        owner_root
-      );
+      return {
+        ...resolvedBlockerChip(
+          item.id,
+          blocker_id,
+          location?.workspace_name || workspaceNameFromRoot(owner_root),
+          owner_root
+        ),
+        ...openTarget(item, blocker_id, locations, owner_roots)
+      };
     });
     // 후속 칩도 같은 루프에서 붙는다 (UI-8x90 §4.4). 재료는 두 원천의
     // 합집합이다: 큐 장식 `bead_dependents`는 보이는 스냅샷 안의 것만 세고,
