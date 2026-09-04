@@ -277,6 +277,15 @@ describe('waiting row (UI-04vo 직렬 레인)', () => {
     expect(row.textContent).toContain('실패 · 점유 유지');
   });
 
+  test('drops stale-work actions with an empty action_id', () => {
+    const stale_work = staleWorkProjection({
+      reason: 'worktree_stale_work',
+      stale_work: { action_id: '' }
+    });
+
+    expect(stale_work).toBeNull();
+  });
+
   test('renders stale-work summary and only allowed recovery actions', () => {
     const stale_work = staleWorkProjection({
       reason: 'worktree_stale_work',

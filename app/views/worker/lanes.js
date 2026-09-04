@@ -722,6 +722,10 @@ export function staleWorkProjection(admission, locked = false) {
     return null;
   }
   const stale_work = /** @type {Record<string, unknown>} */ (record.stale_work);
+  const action_id = stale_work.action_id;
+  if (typeof action_id !== 'string' || action_id.length === 0) {
+    return null;
+  }
   const residue = stale_work.residue === 'branch' ? 'branch' : 'worktree';
   const state = stale_work.state === 'unique' ? 'unique' : 'unknown';
   const summary =
@@ -759,8 +763,7 @@ export function staleWorkProjection(admission, locked = false) {
             `branch ahead ${count('branch_ahead')}`,
             `HEAD ahead ${count('head_ahead')}`
           ].join(' · '),
-    action_id:
-      typeof stale_work.action_id === 'string' ? stale_work.action_id : '',
+    action_id,
     can_resume: stale_work.can_resume === true,
     can_continue: stale_work.can_continue === true,
     can_backup_fresh: stale_work.can_backup_fresh === true,
@@ -814,8 +817,7 @@ export function execChipsTemplate(chips, options = {}) {
  * only the projection knows the 위치 vocabulary; the template never invents it.
  * @property {string} [title] - Tooltip sentence.
  * @property {boolean} [foreign] - blocker가 이 이슈와 다른 레포의 rig에 있다.
- * 문구는 같고 색만 갈라진다 — 기다린다는 사실이 아니라 그것을 여기서 닫을 수
- * 없다는 사실만 다르기 때문이다.
+ * 라벨은 owner workspace 이름을 문자로 싣고 색도 갈라진다.
  * @property {string} [root_dir] - blocker를 소유한 workspace. 같은 레포면 생략.
  * @property {boolean} [openable] - 이 칩을 눌러 blocker 이슈를 열 수 있다.
  */

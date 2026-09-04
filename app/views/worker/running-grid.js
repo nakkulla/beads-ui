@@ -185,6 +185,7 @@ import { logPathTemplate } from './log-path.js';
  * @property {string|null} summary
  * @property {Array<{ id: string, rig: string|null, status: string }>} blockers
  * @property {number|null} since - 이 attempt가 대기로 마감된 시각.
+ * @property {boolean} [returning]
  */
 
 /**
