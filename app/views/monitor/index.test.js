@@ -2206,6 +2206,133 @@ describe('views/monitor running tile detail (UI-eey2 §7)', () => {
   });
 });
 
+describe('views/monitor 공급자 보류 타일 (UI-jr8v §10, UI-fdjk)', () => {
+  const HELD_ATTEMPT = {
+    attempt_id: 't1',
+    bead_id: 'A-1',
+    status: 'paused',
+    cause: 'provider_outage:overloaded_529',
+    cause_detail: { summary: 'Claude API 과부하', message: '529' },
+    runner: 'claude',
+    model: 'opus',
+    started_at: NOW - 100,
+    session_id: 's'
+  };
+
+  /**
+   * @param {Partial<Record<string, any>>} [patch]
+   * @returns {ReturnType<typeof setup>}
+   */
+  function held(patch = {}) {
+    return setup({
+      workspaces: [
+        workspace({
+          attempts: { t1: HELD_ATTEMPT },
+          runner_catalog: {
+            runners: {
+              claude: { default_model: 'opus', models: { opus: {} } },
+              codex: { default_model: 'sol', models: { sol: {} } }
+            }
+          },
+          ...patch
+        })
+      ],
+      workspaces_state: [state()],
+      ...(patch.transport ? { transport: patch.transport } : {})
+    });
+  }
+
+  test('draws the provider verdict badge instead of a running tile', () => {
+    const { mount, view } = held();
+
+    view.load();
+
+    const tile = el(mount, '#monitor-running .rtile[data-attempt-id="t1"]');
+    expect(tile.classList.contains('rtile--provider-hold')).toBe(true);
+    expect(tile.querySelector('.rtile__provider-hold-badge')).not.toBeNull();
+    expect(tile.querySelector('.rtile__pause')).toBeNull();
+  });
+
+  test('opens the non-failure popover from the verdict badge', () => {
+    const { mount, view } = held();
+
+    view.load();
+    click(mount, '.rtile__provider-hold-badge');
+
+    expect(
+      mount.querySelector('.rtile__provider-hold-pop')?.textContent
+    ).toContain('작업 실패 아님');
+  });
+
+  test('closes the popover on Escape', () => {
+    const { mount, view } = held();
+
+    view.load();
+    click(mount, '.rtile__provider-hold-badge');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(mount.querySelector('.rtile__provider-hold-pop')).toBeNull();
+  });
+
+  test('opens the alternate selector from the tile action foot', () => {
+    const { mount, view } = held();
+
+    view.load();
+    click(mount, '.rtile__resume-alternate');
+
+    const model = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.provider-resume-dialog__model')
+    );
+    expect(model.value).toBe(JSON.stringify(['claude', 'opus']));
+    expect(model.querySelectorAll('optgroup')).toHaveLength(2);
+  });
+
+  test('sends a cross-runner override as fresh_current with the tile repo', async () => {
+    const { mount, view, sent } = held({
+      transport: async () => ({ resumed: true })
+    });
+
+    view.load();
+    click(mount, '.rtile__resume-alternate');
+    const model = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.provider-resume-dialog__model')
+    );
+    model.value = JSON.stringify(['codex', 'sol']);
+    model.dispatchEvent(new Event('change', { bubbles: true }));
+    click(mount, '.provider-resume-dialog__confirm');
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await vi.waitFor(() =>
+      expect(
+        sent.filter((call) => call.type === 'worker-attempt-resume')
+      ).toHaveLength(1)
+    );
+
+    expect(
+      sent.find((call) => call.type === 'worker-attempt-resume')?.payload
+    ).toEqual({
+      attempt_id: 't1',
+      root_dir: WS_A,
+      expected_revision: 1,
+      exec_override: { runner: 'codex', model: 'sol' },
+      continuation: 'fresh_current',
+      decision_token: {}
+    });
+  });
+
+  test('closes the alternate selector without resuming on 취소', () => {
+    const { mount, view, sent } = held();
+
+    view.load();
+    click(mount, '.rtile__resume-alternate');
+    click(mount, '.provider-resume-dialog__cancel');
+
+    expect(mount.querySelector('.provider-resume-dialog')).toBeNull();
+    expect(sent).toEqual([]);
+  });
+});
+
 describe('views/monitor session drawer (UI-eey2 §7)', () => {
   test('subscribes to the session log of the tile repo', () => {
     const { mount, view, sent } = setup({

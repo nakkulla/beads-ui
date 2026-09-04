@@ -54,6 +54,13 @@ import {
   queueRowOps,
   waitBody
 } from '../worker/lanes.js';
+import {
+  providerResumeDialogTemplate,
+  providerResumeDraft,
+  providerResumeDraftChange,
+  providerResumeOverride,
+  showProviderResumeDialog
+} from '../worker/provider-resume-dialog.js';
 import { runningTile } from '../worker/running-grid.js';
 import { tileResolveFields } from '../worker/tile-resolve.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
@@ -73,6 +80,7 @@ import {
 /**
  * @import { CandidateFilter, MonitorChainLane, MonitorChainLaneRow, LaneItem, LaneModel, MonitorOccupant, LaneQueueGroup, MonitorSerialSublane } from '../worker/lane-model.js'
  * @import { DependencyChips } from '../worker/lanes.js'
+ * @import { ProviderResumeDraft } from '../worker/provider-resume-dialog.js'
  * @import { DropDrag, DropModel, DropPlan, DropTarget, LaneOp, Op } from './drop-plan.js'
  */
 
@@ -383,6 +391,21 @@ export function createMonitorView(mount_element, options) {
   /** @type {string|null} */
   let open_failure_detail = null;
   /**
+   * 공급자 보류 상세 팝오버가 열린 attempt (UI-jr8v §10). Worker 탭과 같은
+   * 열림 규칙이다 — 뱃지 클릭이 토글하고 바깥 클릭·Escape가 닫는다.
+   *
+   * @type {string|null}
+   */
+  let open_provider_hold_detail = null;
+  /**
+   * 열려 있는 `⋯ 다른 방법으로` 복구 선택기 (UI-jr8v §10). 모니터는 여러 레포를
+   * 한 화면에 모으므로 draft만으로는 어느 큐에 보낼지 알 수 없다 — 카드의
+   * `root_dir`을 함께 든다.
+   *
+   * @type {{ root_dir: string, bead_id: string, draft: ProviderResumeDraft }|null}
+   */
+  let provider_resume = null;
+  /**
    * 판정 칩 사유 팝업 (UI-8x90 §4.5·§5). 열림 키가 `bead_id + chip_key`라 카드가
    * 다시 그려져도 같은 칩 아래에 그대로 열려 있다.
    */
@@ -593,17 +616,33 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * The most current queue snapshot for one repo: 채택된 mutation 응답이 있으면
+   * 그것, 없으면 집계가 실어 온 워크스페이스. 레포마다 revision이 다르므로 이
+   * 좌표 없이 큐를 읽으면 항상 다른 레포의 사실을 본다.
+   *
+   * @param {string} root_dir
+   * @returns {Record<string, any>}
+   */
+  function queueOf(root_dir) {
+    const adopted = exec_adopted.get(root_dir);
+    if (adopted) {
+      return adopted;
+    }
+    const workspaces =
+      pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
+    return (
+      (Array.isArray(workspaces) ? workspaces : []).find(
+        (item) => item?.root_dir === root_dir
+      ) || {}
+    );
+  }
+
+  /**
    * @param {string} root_dir
    * @param {string} bead_id
    */
   function queuedContinuation(root_dir, bead_id) {
-    const adopted = exec_adopted.get(root_dir);
-    const workspaces =
-      pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
-    const workspace = (Array.isArray(workspaces) ? workspaces : []).find(
-      (item) => item?.root_dir === root_dir
-    );
-    const queue = adopted || workspace;
+    const queue = queueOf(root_dir);
     return queue?.merge_queue?.find(
       (/** @type {any} */ entry) => entry.bead_id === bead_id
     )?.continuation_action;
@@ -1518,6 +1557,16 @@ export function createMonitorView(mount_element, options) {
                 retry_wait: item.run_state === 'retry_wait',
                 waiting: item.run_state === 'waiting',
                 wait: item.wait || null,
+                // 공급자 보류도 같은 규칙이다 (UI-jr8v §10, ADR 0014): 투영이
+                // 이미 실어 온 두 값을 여기서 버리면 보류 attempt가 모니터에서만
+                // 실행 중 타일 — 도는 시계와 ⏸ — 로 보인다.
+                provider_hold: item.run_state === 'provider_hold',
+                hold: item.hold
+                  ? {
+                      ...item.hold,
+                      open: open_provider_hold_detail === item.attempt_id
+                    }
+                  : null,
                 retry: item.retry || null,
                 status: /** @type {any} */ (item.status),
                 status_label:
@@ -1529,7 +1578,9 @@ export function createMonitorView(mount_element, options) {
                         ? '재시도 대기'
                         : item.run_state === 'waiting'
                           ? '선행 대기'
-                          : undefined,
+                          : item.run_state === 'provider_hold'
+                            ? '공급자 보류'
+                            : undefined,
                 can_pause: item.can_pause !== false,
                 exec_chips: item.exec_chips || null,
                 usage: item.usage || null,
@@ -1652,7 +1703,11 @@ export function createMonitorView(mount_element, options) {
             })}
             ${mobile_metas.map((meta) => lanePane(meta))}
           </div>
-        </div>`;
+        </div>
+        ${providerResumeDialogTemplate(
+          provider_resume?.draft || null,
+          provider_resume ? queueOf(provider_resume.root_dir) : {}
+        )}`;
     }
     // 레인 host는 Worker 탭과 같다 (§4.1): 다섯 레인의 최소 폭 합이 창을 넘으면
     // 여기서 가로로 스크롤한다 — 라우트 셸은 `overflow: hidden`이라 host가 없으면
@@ -1662,7 +1717,11 @@ export function createMonitorView(mount_element, options) {
         <div class="worker-lanes mon2-lanes">
           ${MONITOR_LANES.map((meta) => lanePane(meta))}
         </div>
-      </div>`;
+      </div>
+      ${providerResumeDialogTemplate(
+        provider_resume?.draft || null,
+        provider_resume ? queueOf(provider_resume.root_dir) : {}
+      )}`;
   }
 
   /**
@@ -1834,6 +1893,7 @@ export function createMonitorView(mount_element, options) {
       }
     }
     render(monitorTemplate(now), console_el);
+    showProviderResumeDialog(console_el);
     ensureDeck()?.render();
     applyRepoAutomationTooltips();
     applyFocusClasses();
@@ -2409,6 +2469,76 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * Resume one attempt — 타일의 `↻ 이어하기` (UI-6g3t §5.1). 흐름 자체 — 지시
+   * 다이얼로그, 충돌 1회 재시도, continuation 경계, 거부 토스트 — 는
+   * `runResumeFlow`가 소유하고, 이 탭이 넘기는 것은 대상 문맥과 재시도 없는
+   * 전송 하나뿐이다. `sendCas`의 재시도를
+   * 끄는 이유는 유틸이 이미 충돌 1회 재시도의 소유자라, 켜 두면 한 충돌에 두
+   * 소유자가 각자 다시 보내기 때문이다. revision은 전송 시점에 채택된 큐에서
+   * 새로 읽는다.
+   *
+   * `base_payload`는 이 호출 한 번의 `exec_override`·강제 continuation을
+   * 싣는다 (UI-jr8v §10): 흐름의 base payload에 얹히므로 첫 전송·충돌 재전송·
+   * 불일치 재전송이 모두 같은 값을 유지한다.
+   *
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   * @param {string} root_dir
+   * @param {'session'|'settlement'} resume_kind
+   * @param {Record<string, unknown>} [base_payload]
+   */
+  function resumeAttempt(
+    bead_id,
+    attempt_id,
+    root_dir,
+    resume_kind,
+    base_payload = {}
+  ) {
+    const item = item_by_bead.get(bead_id) || null;
+    void runResumeFlow({
+      context: {
+        bead_id,
+        kind: resume_kind,
+        tuple: item ? formatAttemptTuple(item) : ''
+      },
+      transport: (payload) =>
+        sendCas(
+          'worker-attempt-resume',
+          { attempt_id, ...base_payload, ...payload },
+          root_dir,
+          exec_adopted.get(root_dir)?.revision ?? casOf(bead_id).revision,
+          false
+        )
+      // `adopt`는 넘기지 않는다 — `sendCas`가 응답의 큐를 `exec_adopted`에
+      // 이미 채택하고, 위 revision 읽기가 그 값을 본다.
+    });
+  }
+
+  /** Close the provider recovery selector without resuming. */
+  function closeProviderResumeDialog() {
+    provider_resume = null;
+    doRender();
+  }
+
+  /** Send the selected one-attempt override through the existing resume path. */
+  function confirmProviderResumeDialog() {
+    const open = provider_resume;
+    const override = open ? providerResumeOverride(open.draft) : null;
+    if (!open || !override) {
+      return;
+    }
+    provider_resume = null;
+    doRender();
+    resumeAttempt(
+      open.bead_id,
+      override.attempt_id,
+      open.root_dir,
+      'session',
+      override.payload
+    );
+  }
+
+  /**
    * @param {HTMLElement} button
    * @param {string} bead_id
    */
@@ -2468,6 +2598,12 @@ export function createMonitorView(mount_element, options) {
     if (cls.contains('rtile__failure-badge')) {
       open_failure_detail =
         open_failure_detail === attempt_id ? null : attempt_id;
+      doRender();
+      return;
+    }
+    if (cls.contains('rtile__provider-hold-badge')) {
+      open_provider_hold_detail =
+        open_provider_hold_detail === attempt_id ? null : attempt_id;
       doRender();
       return;
     }
@@ -2533,32 +2669,24 @@ export function createMonitorView(mount_element, options) {
       void send('worker-attempt-pause', { attempt_id }, root_dir);
       return;
     }
+    if (cls.contains('rtile__resume-alternate')) {
+      // 공급자 보류의 두 번째 출구 (UI-jr8v §10). 선택기는 Worker 탭과 같은
+      // 모듈이 그리므로, 이 탭이 하는 일은 어느 레포의 attempt인지를 실어 두는
+      // 것뿐이다.
+      const draft = providerResumeDraft(attempt_id, queueOf(root_dir));
+      if (draft) {
+        provider_resume = { root_dir, bead_id, draft };
+        doRender();
+      }
+      return;
+    }
     if (cls.contains('rtile__resume')) {
-      // 이어하기 흐름은 `runResumeFlow`가 소유한다 (UI-6g3t §5.1) — 이 탭은 대상
-      // 문맥과 전송 하나만 넘기고, 그 대가로 여기에만 없던 거부 토스트를 얻는다.
-      // `sendCas`의 재시도를 끄는 이유는 유틸이 이미 충돌 1회 재시도의 소유자라,
-      // 켜 두면 한 충돌에 두 소유자가 각자 다시 보내기 때문이다. revision은 호출
-      // 시점에 채택된 큐에서 새로 읽는다.
-      void runResumeFlow({
-        context: {
-          bead_id,
-          kind:
-            button.dataset.resumeKind === 'settlement'
-              ? 'settlement'
-              : 'session',
-          tuple: item ? formatAttemptTuple(item) : ''
-        },
-        transport: (payload) =>
-          sendCas(
-            'worker-attempt-resume',
-            { attempt_id, ...payload },
-            root_dir,
-            exec_adopted.get(root_dir)?.revision ?? casOf(bead_id).revision,
-            false
-          )
-        // `adopt`는 넘기지 않는다 — `sendCas`가 응답의 큐를 `exec_adopted`에
-        // 이미 채택하고, 위 revision 읽기가 그 값을 본다.
-      });
+      resumeAttempt(
+        bead_id,
+        attempt_id,
+        root_dir,
+        button.dataset.resumeKind === 'settlement' ? 'settlement' : 'session'
+      );
       return;
     }
     if (cls.contains('rtile__resolve')) {
@@ -2691,6 +2819,17 @@ export function createMonitorView(mount_element, options) {
     const after_drag = lane_drag.consumeClickSuppression();
     const target = /** @type {HTMLElement|null} */ (ev.target);
     if (!target || typeof target.closest !== 'function') {
+      return;
+    }
+    // 복구 선택기의 두 조작은 아래 `dialog` 가드보다 먼저 잡는다 — 가드가
+    // 먼저 걸리면 다이얼로그 안의 클릭이 전부 무시된다 (Worker `onClick`과 같은
+    // 순서).
+    if (target.closest('.provider-resume-dialog__cancel')) {
+      closeProviderResumeDialog();
+      return;
+    }
+    if (target.closest('.provider-resume-dialog__confirm')) {
+      confirmProviderResumeDialog();
       return;
     }
     if (target.closest('dialog') || target.closest('.worker-drawer-overlay')) {
@@ -2868,6 +3007,22 @@ export function createMonitorView(mount_element, options) {
     if (!target || typeof target.closest !== 'function') {
       return;
     }
+    if (provider_resume) {
+      const next = providerResumeDraftChange(
+        provider_resume.draft,
+        target,
+        queueOf(provider_resume.root_dir)
+      );
+      if (next) {
+        // 같은 참조는 "우리 이벤트지만 바뀐 것이 없다"는 뜻이다: 다시 그리면
+        // 낡은 옵션을 고른 select 표시가 draft 값으로 되돌아간다.
+        if (next !== provider_resume.draft) {
+          provider_resume = { ...provider_resume, draft: next };
+          doRender();
+        }
+        return;
+      }
+    }
     const blocked_toggle = /** @type {HTMLInputElement|null} */ (
       target.closest('.mon-filter__blocked')
     );
@@ -2925,11 +3080,22 @@ export function createMonitorView(mount_element, options) {
       target && typeof target.closest === 'function'
         ? (/** @type {string} */ selector) => target.closest(selector)
         : () => null;
+    let changed = false;
     if (
       open_failure_detail &&
       !closest('.rtile__failure-pop, .rtile__failure-badge')
     ) {
       open_failure_detail = null;
+      changed = true;
+    }
+    if (
+      open_provider_hold_detail &&
+      !closest('.rtile__provider-hold-pop, .rtile__provider-hold-badge')
+    ) {
+      open_provider_hold_detail = null;
+      changed = true;
+    }
+    if (changed) {
       doRender();
     }
   }
@@ -2938,10 +3104,19 @@ export function createMonitorView(mount_element, options) {
    * @param {KeyboardEvent} ev
    */
   function onDocumentKeyDown(ev) {
-    if (ev.key !== 'Escape' || open_failure_detail === null) {
+    if (ev.key !== 'Escape') {
+      return;
+    }
+    if (
+      open_failure_detail === null &&
+      open_provider_hold_detail === null &&
+      provider_resume === null
+    ) {
       return;
     }
     open_failure_detail = null;
+    open_provider_hold_detail = null;
+    provider_resume = null;
     doRender();
   }
 

@@ -91,6 +91,13 @@ import {
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
 import { placeMenuLanes } from './placement.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
+import {
+  providerResumeDialogTemplate,
+  providerResumeDraft,
+  providerResumeDraftChange,
+  providerResumeOverride,
+  showProviderResumeDialog
+} from './provider-resume-dialog.js';
 import { deriveWorkerBlockers } from './queue-blockers.js';
 import { deriveWorkerOverlaps } from './queue-overlaps.js';
 import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
@@ -103,6 +110,7 @@ import { createWorkspaceAdapter } from './workspace-adapter.js';
 
 /**
  * @import { CandidateFilter, LaneItem, LaneModel, LaneQueueGroup } from './lane-model.js'
+ * @import { ProviderResumeDraft } from './provider-resume-dialog.js'
  */
 
 export { mergeStepView } from './merge-steps.js';
@@ -1558,7 +1566,7 @@ export function createWorkerView(mount_element, options = {}) {
   let open_failure_detail = null;
   /** @type {string|null} */
   let open_provider_hold_detail = null;
-  /** @type {{ attempt_id: string, original_runner: string, runner: string, model: string, account: string, fresh_current: boolean }|null} */
+  /** @type {ProviderResumeDraft|null} */
   let provider_resume_draft = null;
   /**
    * 판정 칩 사유 팝업 (UI-8x90 §4.5·§5). 열림 키가 `bead_id + chip_key`라 카드가
@@ -1857,101 +1865,18 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Find the durable hold target that names one attempt.
-   *
-   * @param {string} attempt_id
-   * @returns {any|null}
-   */
-  function providerTargetForAttempt(attempt_id) {
-    for (const hold of Object.values(objectOf(currentQueue().provider_hold))) {
-      for (const target of Array.isArray(hold?.targets) ? hold.targets : []) {
-        if (
-          Array.isArray(target?.attempt_ids) &&
-          target.attempt_ids.includes(attempt_id)
-        ) {
-          return target;
-        }
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Explain whether a Claude account meets the manual switch health threshold.
-   *
-   * @param {any} account
-   * @returns {{ eligible: boolean, reason: string }}
-   */
-  function providerAccountEligibility(account) {
-    if (account?.status !== 'ok') {
-      return {
-        eligible: false,
-        reason: `계정 상태 ${String(account?.status || '미상')}`
-      };
-    }
-    const windows = Array.isArray(account.windows) ? account.windows : [];
-    const five_hour = windows.find(
-      (/** @type {any} */ window) => window?.key === '5h'
-    );
-    const seven_day = windows.find(
-      (/** @type {any} */ window) => window?.key === '7d'
-    );
-    if (!five_hour || typeof five_hour.pct !== 'number') {
-      return { eligible: false, reason: '5시간 사용량 미관측' };
-    }
-    if (five_hour.pct > 80) {
-      return { eligible: false, reason: '5시간 사용량 80% 초과' };
-    }
-    if (seven_day) {
-      if (typeof seven_day.pct !== 'number') {
-        return { eligible: false, reason: '7일 사용량 미관측' };
-      }
-      if (seven_day.pct > 90) {
-        return { eligible: false, reason: '7일 사용량 90% 초과' };
-      }
-    }
-    return { eligible: true, reason: '' };
-  }
-
-  /**
-   * Open the provider recovery selector from the original attempt identity.
+   * Open the provider recovery selector from the original attempt identity
+   * (UI-jr8v §10). 선택기 자체는 두 탭이 공유하는 `provider-resume-dialog.js`가
+   * 소유하고, 이 화면은 draft 하나만 들고 있다.
    *
    * @param {string} attempt_id
    */
   function openProviderResumeDialog(attempt_id) {
-    const attempt = objectOf(currentQueue().attempts)[attempt_id];
-    if (!attempt) {
+    const draft = providerResumeDraft(attempt_id, currentQueue());
+    if (!draft) {
       return;
     }
-    const catalog = objectOf(currentQueue().runner_catalog);
-    const runners = objectOf(catalog.runners);
-    const original_runner =
-      typeof attempt.runner === 'string' && runners[attempt.runner]
-        ? attempt.runner
-        : Object.keys(runners)[0] || '';
-    const runner_entry = objectOf(runners[original_runner]);
-    const models = objectOf(runner_entry.models);
-    const model =
-      typeof attempt.model === 'string' && models[attempt.model]
-        ? attempt.model
-        : typeof runner_entry.default_model === 'string'
-          ? runner_entry.default_model
-          : Object.keys(models)[0] || '';
-    const target = providerTargetForAttempt(attempt_id);
-    const account =
-      typeof attempt.claude_account === 'string'
-        ? attempt.claude_account
-        : typeof target?.account === 'string'
-          ? target.account
-          : '';
-    provider_resume_draft = {
-      attempt_id,
-      original_runner,
-      runner: original_runner,
-      model,
-      account,
-      fresh_current: false
-    };
+    provider_resume_draft = draft;
     doRender();
   }
 
@@ -1963,152 +1888,13 @@ export function createWorkerView(mount_element, options = {}) {
 
   /** Send the selected one-attempt override through the existing resume path. */
   function confirmProviderResumeDialog() {
-    const draft = provider_resume_draft;
-    if (!draft || !draft.runner || !draft.model) {
+    const override = providerResumeOverride(provider_resume_draft);
+    if (!override) {
       return;
     }
-    // Without an account the payload carries none, and launch would resolve one
-    // of its own — a different pool than the dialog showed. Refuse instead.
-    if (draft.runner === 'claude' && !draft.account) {
-      return;
-    }
-    /** @type {Record<string, string>} */
-    const exec_override = {
-      runner: draft.runner,
-      model: draft.model
-    };
-    if (draft.runner === 'claude' && draft.account) {
-      exec_override.claude_account = draft.account;
-    }
-    const fresh = draft.fresh_current || draft.runner !== draft.original_runner;
     provider_resume_draft = null;
     doRender();
-    void resumeAttempt(draft.attempt_id, 'session', {
-      exec_override,
-      ...(fresh ? { continuation: 'fresh_current', decision_token: {} } : {})
-    });
-  }
-
-  /**
-   * Render the alternate provider-resume selector from snapshot catalogs.
-   *
-   * @returns {import('lit-html').TemplateResult|''}
-   */
-  function providerResumeDialogTemplate() {
-    const draft = provider_resume_draft;
-    if (!draft) {
-      return '';
-    }
-    const runners = objectOf(objectOf(currentQueue().runner_catalog).runners);
-    const claude_accounts = Array.isArray(
-      objectOf(currentQueue().account_catalog).claude
-    )
-      ? objectOf(currentQueue().account_catalog).claude
-      : [];
-    const cross_runner = draft.runner !== draft.original_runner;
-    return html`<dialog
-      class="op-dialog provider-resume-dialog"
-      aria-label="다른 방법으로 이어하기"
-    >
-      <h2>다른 방법으로 이어하기</h2>
-      <div class="provider-resume-dialog__fields">
-        <label>
-          러너
-          <select class="provider-resume-dialog__runner">
-            ${Object.keys(runners).map(
-              (runner) =>
-                html`<option
-                  value=${runner}
-                  ?selected=${runner === draft.runner}
-                >
-                  ${runner}
-                </option>`
-            )}
-          </select>
-        </label>
-        <label>
-          모델
-          <select class="provider-resume-dialog__model">
-            ${Object.entries(runners).map(
-              ([runner, entry]) =>
-                html`<optgroup label=${runner}>
-                  ${Object.keys(objectOf(entry?.models)).map(
-                    (model) =>
-                      html`<option
-                        value=${JSON.stringify([runner, model])}
-                        ?selected=${runner === draft.runner &&
-                        model === draft.model}
-                      >
-                        ${model}
-                      </option>`
-                  )}
-                </optgroup>`
-            )}
-          </select>
-        </label>
-        ${draft.runner === 'claude'
-          ? html`<label>
-              계정
-              <select class="provider-resume-dialog__account">
-                ${draft.account
-                  ? ''
-                  : html`<option value="" selected>계정 선택</option>`}
-                ${draft.account &&
-                !claude_accounts.some(
-                  (/** @type {any} */ account) =>
-                    account?.email === draft.account
-                )
-                  ? html`<option value=${draft.account} selected>
-                      ${draft.account} (목록에 없음)
-                    </option>`
-                  : ''}
-                ${claude_accounts.map((/** @type {any} */ account) => {
-                  const eligibility = providerAccountEligibility(account);
-                  const label = account.alias || account.email;
-                  return html`<option
-                    value=${account.email}
-                    ?selected=${account.email === draft.account}
-                    ?disabled=${!eligibility.eligible}
-                    title=${eligibility.reason}
-                  >
-                    ${label}${eligibility.reason
-                      ? ` — ${eligibility.reason}`
-                      : ''}
-                  </option>`;
-                })}
-              </select>
-            </label>`
-          : ''}
-        <label class="provider-resume-dialog__fresh">
-          <input
-            type="checkbox"
-            class="provider-resume-dialog__fresh-input"
-            .checked=${draft.fresh_current}
-          />
-          새 세션으로
-        </label>
-      </div>
-      ${cross_runner || draft.fresh_current
-        ? html`<p class="provider-resume-dialog__notice">
-            이전 세션 맥락을 요약 인계합니다
-          </p>`
-        : ''}
-      <div class="op-dialog__actions provider-resume-dialog__actions">
-        <button type="button" class="op-btn provider-resume-dialog__cancel">
-          취소
-        </button>
-        <button
-          type="button"
-          class="op-btn op-btn--primary provider-resume-dialog__confirm"
-          ?disabled=${draft.runner === 'claude' && !draft.account}
-          title=${draft.runner === 'claude' && !draft.account
-            ? '계정을 먼저 고르세요'
-            : ''}
-        >
-          이어하기
-        </button>
-      </div>
-    </dialog>`;
+    void resumeAttempt(override.attempt_id, 'session', override.payload);
   }
 
   /**
@@ -4238,7 +4024,7 @@ export function createWorkerView(mount_element, options = {}) {
           })}
           ${candidate_pane} ${done_pane}
         </div>
-        ${providerResumeDialogTemplate()}`;
+        ${providerResumeDialogTemplate(provider_resume_draft, currentQueue())}`;
     }
     return html`<div class="worker-lanes">
         ${candidate_pane}
@@ -4281,7 +4067,7 @@ export function createWorkerView(mount_element, options = {}) {
         })}
         ${done_pane}
       </div>
-      ${providerResumeDialogTemplate()}`;
+      ${providerResumeDialogTemplate(provider_resume_draft, currentQueue())}`;
   }
 
   /**
@@ -4310,16 +4096,7 @@ export function createWorkerView(mount_element, options = {}) {
     refreshOverlapFacts(m);
     render(topTemplate(m), top_el);
     render(lanesTemplate(m), lanes_el);
-    const provider_dialog = /** @type {HTMLDialogElement|null} */ (
-      lanes_el.querySelector('.provider-resume-dialog')
-    );
-    if (provider_dialog && !provider_dialog.open) {
-      if (typeof provider_dialog.showModal === 'function') {
-        provider_dialog.showModal();
-      } else {
-        provider_dialog.setAttribute('open', '');
-      }
-    }
+    showProviderResumeDialog(lanes_el);
   }
 
   /**
@@ -4413,65 +4190,18 @@ export function createWorkerView(mount_element, options = {}) {
   function onChange(ev) {
     const event_target = /** @type {HTMLElement} */ (ev.target);
     if (provider_resume_draft) {
-      const provider_runner = /** @type {HTMLSelectElement|null} */ (
-        event_target?.closest?.('.provider-resume-dialog__runner')
+      const next = providerResumeDraftChange(
+        provider_resume_draft,
+        event_target,
+        currentQueue()
       );
-      if (provider_runner) {
-        const runners = objectOf(
-          objectOf(currentQueue().runner_catalog).runners
-        );
-        const runner_entry = objectOf(runners[provider_runner.value]);
-        const models = Object.keys(objectOf(runner_entry.models));
-        provider_resume_draft = {
-          ...provider_resume_draft,
-          runner: provider_runner.value,
-          model:
-            typeof runner_entry.default_model === 'string'
-              ? runner_entry.default_model
-              : models[0] || ''
-        };
-        doRender();
-        return;
-      }
-      const provider_model = /** @type {HTMLSelectElement|null} */ (
-        event_target?.closest?.('.provider-resume-dialog__model')
-      );
-      if (provider_model) {
-        try {
-          const [runner, model] = JSON.parse(provider_model.value);
-          if (typeof runner === 'string' && typeof model === 'string') {
-            provider_resume_draft = {
-              ...provider_resume_draft,
-              runner,
-              model
-            };
-            doRender();
-          }
-        } catch {
-          /* stale catalog option — leave the draft unchanged */
+      if (next) {
+        // 같은 참조는 "우리 이벤트지만 바뀐 것이 없다"는 뜻이다: 다시 그리면
+        // 낡은 옵션을 고른 select 표시가 draft 값으로 되돌아간다.
+        if (next !== provider_resume_draft) {
+          provider_resume_draft = next;
+          doRender();
         }
-        return;
-      }
-      const provider_account = /** @type {HTMLSelectElement|null} */ (
-        event_target?.closest?.('.provider-resume-dialog__account')
-      );
-      if (provider_account) {
-        provider_resume_draft = {
-          ...provider_resume_draft,
-          account: provider_account.value
-        };
-        doRender();
-        return;
-      }
-      const provider_fresh = /** @type {HTMLInputElement|null} */ (
-        event_target?.closest?.('.provider-resume-dialog__fresh-input')
-      );
-      if (provider_fresh) {
-        provider_resume_draft = {
-          ...provider_resume_draft,
-          fresh_current: provider_fresh.checked
-        };
-        doRender();
         return;
       }
     }
