@@ -74,3 +74,87 @@ export function parseReport(text) {
     body: lines.slice(body_start).join('\n').trim()
   };
 }
+
+/**
+ * @typedef {Object} ParsedReviewComment
+ * @property {'spec'|'impl'|'plan'} step - Review step the round belongs to.
+ * @property {number} round - Round number counted within this lineage.
+ * @property {'APPROVE'|'REVISE'} verdict - The round's verdict.
+ * @property {string} anchor - Value the round binds to, exactly as written.
+ * @property {number|null} points - Numbered points raised, `0` for an explicit
+ * 「지적 없음」 line, `null` when the body states neither.
+ * @property {string} body - Text below the header block, unmodified.
+ */
+
+/** First line of a review-result comment; the step and round ride in it. */
+const REVIEW_ANCHOR_RE = /^## 🔎 리뷰 결과 · (spec|impl|plan) · r([0-9]+)$/;
+
+const REVIEW_VERDICT_RE = /^VERDICT: (APPROVE|REVISE)$/;
+const REVIEW_ANCHOR_LINE_RE = /^anchor: ([0-9a-fA-F]+)$/;
+
+/** A numbered point line, whose text stays byte-for-byte as the reviewer wrote it. */
+const REVIEW_POINT_RE = /^[0-9]+\. /;
+
+/** The line a reviewer writes instead of points when there are none. */
+const REVIEW_NO_POINTS = '- 지적 없음';
+
+/**
+ * Anchor width each step binds to: `spec`/`impl` to a 40hex commit sha, `plan`
+ * to the 12hex digest of the draft bytes.
+ *
+ * @type {Record<string, number>}
+ */
+const REVIEW_ANCHOR_LENGTH = { spec: 40, impl: 40, plan: 12 };
+
+/**
+ * Recognize a comment body as one review round's result.
+ *
+ * Recognition takes the anchor, the verdict line and the anchor line TOGETHER,
+ * exactly as {@link parseReport} takes its anchor and meta line together: any
+ * one of them off returns `null` and the caller renders a plain comment. The
+ * anchor width is checked against the step, so a `plan` round carrying a commit
+ * sha is not recognized.
+ *
+ * @param {string} text
+ * @returns {ParsedReviewComment|null}
+ */
+export function parseReviewComment(text) {
+  if (typeof text !== 'string' || text.length === 0) {
+    return null;
+  }
+  const lines = text.split(/\r?\n/);
+  const head = REVIEW_ANCHOR_RE.exec(lines[0] || '');
+  if (!head) {
+    return null;
+  }
+  const verdict_match = REVIEW_VERDICT_RE.exec(lines[1] || '');
+  const anchor_match = REVIEW_ANCHOR_LINE_RE.exec(lines[2] || '');
+  if (!verdict_match || !anchor_match) {
+    return null;
+  }
+  const step = /** @type {'spec'|'impl'|'plan'} */ (head[1]);
+  const anchor = anchor_match[1];
+  if (anchor.length !== REVIEW_ANCHOR_LENGTH[step]) {
+    return null;
+  }
+
+  const rest = lines.slice(3);
+  let counted = 0;
+  let none_declared = false;
+  for (const line of rest) {
+    if (REVIEW_POINT_RE.test(line)) {
+      counted += 1;
+    } else if (line.trim() === REVIEW_NO_POINTS) {
+      none_declared = true;
+    }
+  }
+
+  return {
+    step,
+    round: Number(head[2]),
+    verdict: /** @type {'APPROVE'|'REVISE'} */ (verdict_match[1]),
+    anchor,
+    points: counted > 0 ? counted : none_declared ? 0 : null,
+    body: rest.join('\n').trim()
+  };
+}

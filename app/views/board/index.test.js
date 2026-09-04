@@ -102,6 +102,28 @@ function seedAll() {
   return stores;
 }
 
+/**
+ * @param {Partial<import('../../utils/label-policy.js').DisplayPolicy>} [overrides]
+ * @returns {import('../../utils/label-policy.js').DisplayPolicy}
+ */
+function makeBoardPolicy(overrides = {}) {
+  return {
+    revision: 0,
+    hidden_labels: [],
+    hidden_prefixes: [],
+    visible_labels: [],
+    chips: {
+      route: true,
+      fast_track: true,
+      pr: true,
+      from: true,
+      blocked: true,
+      stepper: true
+    },
+    ...overrides
+  };
+}
+
 describe('views/board', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
@@ -1612,5 +1634,91 @@ describe('views/board: stepper doc cells (UI-ajkn §5)', () => {
 
     expect(mount.querySelector('#ready-col .stp')).not.toBeNull();
     expect(mount.querySelector('#ready-col .seg--doc')).toBeNull();
+  });
+});
+
+describe('views/board: bench 숨김 (preset-compare §4.8)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any} stores
+   * @param {any[]} issues
+   */
+  function seedReady(stores, issues) {
+    stores.getStore('tab:board:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 2,
+      issues
+    });
+  }
+
+  const BENCH_CLONE = {
+    id: 'BN-1',
+    title: '[bench] ready one',
+    status: 'open',
+    labels: ['bench'],
+    updated_at: 1
+  };
+  const PLAIN = {
+    id: 'RD-1',
+    title: 'ready one',
+    status: 'open',
+    updated_at: 1
+  };
+
+  test('leaves bench clones out of the board by default', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = seedAll();
+    seedReady(stores, [PLAIN, BENCH_CLONE]);
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores,
+      displayPolicyStore: { get: () => makeBoardPolicy() }
+    });
+    await view.load();
+
+    expect(mount.querySelector('.board-card[data-issue-id="BN-1"]')).toBeNull();
+    expect(
+      mount.querySelector('.board-card[data-issue-id="RD-1"]')
+    ).not.toBeNull();
+  });
+
+  test('lists bench clones once the policy makes the label visible', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = seedAll();
+    seedReady(stores, [PLAIN, BENCH_CLONE]);
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores,
+      displayPolicyStore: {
+        get: () => makeBoardPolicy({ visible_labels: ['bench'] })
+      }
+    });
+    await view.load();
+
+    expect(
+      mount.querySelector('.board-card[data-issue-id="BN-1"]')
+    ).not.toBeNull();
+  });
+
+  test('hides bench clones when no policy snapshot has arrived', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = seedAll();
+    seedReady(stores, [PLAIN, BENCH_CLONE]);
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores,
+      displayPolicyStore: { get: () => null }
+    });
+    await view.load();
+
+    expect(mount.querySelector('.board-card[data-issue-id="BN-1"]')).toBeNull();
+    expect(
+      mount.querySelector('.board-card[data-issue-id="RD-1"]')
+    ).not.toBeNull();
   });
 });

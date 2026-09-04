@@ -469,6 +469,75 @@ describe('worker/runner-catalog global model-name uniqueness', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  test('merges a model price table from config', () => {
+    const warn = vi.fn();
+
+    const catalog = resolveCatalog({
+      overrides: {
+        codex: {
+          models: {
+            sol: {
+              price: {
+                input: 2.5,
+                output: 10,
+                cache_read: 0.25,
+                cache_write: 0
+              }
+            }
+          }
+        }
+      },
+      warn
+    });
+
+    expect(catalog.runners.codex.models.sol.price).toEqual({
+      input: 2.5,
+      output: 10,
+      cache_read: 0.25,
+      cache_write: 0
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test('drops only the malformed price fields and keeps the rest', () => {
+    const warn = vi.fn();
+
+    const catalog = resolveCatalog({
+      overrides: {
+        codex: {
+          models: {
+            sol: { price: { input: 2.5, output: '10', cache_read: -1 } }
+          }
+        }
+      },
+      warn
+    });
+
+    expect(catalog.runners.codex.models.sol.price).toEqual({ input: 2.5 });
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  test('leaves a model unpriced when price is not an object', () => {
+    const warn = vi.fn();
+
+    const catalog = resolveCatalog({
+      overrides: { codex: { models: { sol: { price: 2.5 } } } },
+      warn
+    });
+
+    expect(catalog.runners.codex.models.sol.price).toBe(undefined);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps a config price out of the builtin catalog copy', () => {
+    resolveCatalog({
+      overrides: { codex: { models: { sol: { price: { input: 2.5 } } } } },
+      warn: () => {}
+    });
+
+    expect(builtinCatalog().codex.models.sol.price).toBe(undefined);
+  });
+
   test('treats a same-runner builtin override as no collision', () => {
     const warn = vi.fn();
 

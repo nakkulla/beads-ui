@@ -68,6 +68,7 @@ afterEach(() => {
  *   timeline?: any,
  *   notifier?: { quickfixLanded: (input: any) => Promise<void> }|null,
  *   readMetadataThrows?: boolean,
+ *   benchPins?: Record<string, string>,
  *   foreign?: {
  *     pins: Record<string, string>,
  *     remotes?: Record<string, string>,
@@ -228,7 +229,13 @@ function makeLanding(options = {}) {
       if (key === 'impl_review') {
         return receipt ?? null;
       }
-      return options.foreign?.pins[key] ?? null;
+      if (
+        options.readMetadataThrows &&
+        (key === 'landing' || key === 'bench_run')
+      ) {
+        throw new Error('bd unreachable');
+      }
+      return options.benchPins?.[key] ?? options.foreign?.pins[key] ?? null;
     })
   };
   const gitRun = vi.fn(async (args, run_options) => {
@@ -1003,6 +1010,115 @@ test('records premature close without rewriting Bead status', async () => {
     step: null
   });
   expect(bd.setStatus).not.toHaveBeenCalled();
+});
+
+const BENCH_PINS = { landing: 'none', bench_run: 'bench-2026' };
+
+test('settles a landing=none bench close without PR, containment or deploy', async () => {
+  const { landing, store, worktree, repoOperations, bd } = makeLanding({
+    status: 'closed',
+    closeReason: 'bench:bench-2026',
+    benchPins: BENCH_PINS
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+  expect(store.moveToDone).toHaveBeenCalledWith(
+    WORKSPACE,
+    expect.objectContaining({
+      patch: expect.objectContaining({
+        done_kind: 'bench',
+        quickfix_landing: {
+          cursor: 'bench_close',
+          head_sha: null,
+          reason: null
+        }
+      })
+    })
+  );
+  expect(repoOperations.ensureDeploy).not.toHaveBeenCalled();
+  expect(worktree.removeIfDiscardable).not.toHaveBeenCalled();
+  expect(bd.setStatus).not.toHaveBeenCalled();
+});
+
+test('announces no landing for a bench close', async () => {
+  const notifier = { quickfixLanded: vi.fn(async () => {}) };
+  const { landing } = makeLanding({
+    status: 'closed',
+    closeReason: 'bench:bench-2026',
+    benchPins: BENCH_PINS,
+    notifier
+  });
+
+  await settle(landing);
+
+  expect(notifier.quickfixLanded).not.toHaveBeenCalled();
+});
+
+test("rejects a bench close whose run id is not this bead's run", async () => {
+  const { landing, store } = makeLanding({
+    status: 'closed',
+    closeReason: 'bench:other-run',
+    benchPins: BENCH_PINS
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: false, reason: 'premature_close', step: null });
+  expect(store.moveToDone).not.toHaveBeenCalled();
+});
+
+test('rejects a bench close on a bead that carries no landing=none', async () => {
+  const { landing } = makeLanding({
+    status: 'closed',
+    closeReason: 'bench:bench-2026',
+    benchPins: { bench_run: 'bench-2026' }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: false, reason: 'premature_close', step: null });
+});
+
+test('rejects a Worker-written failed tail as a session bench close', async () => {
+  const { landing } = makeLanding({
+    status: 'closed',
+    closeReason: 'bench:bench-2026:failed',
+    benchPins: BENCH_PINS
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: false, reason: 'premature_close', step: null });
+});
+
+test('reports an unreadable bench binding as a read failure, not a premature close', async () => {
+  const { landing } = makeLanding({
+    status: 'closed',
+    closeReason: 'bench:bench-2026',
+    benchPins: BENCH_PINS,
+    readMetadataThrows: true
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: false, reason: 'bd_read_failed', step: null });
+});
+
+test('records the bench close on the bead timeline', async () => {
+  const timeline = timelineRecorder();
+  const { landing } = makeLanding({
+    status: 'closed',
+    closeReason: 'bench:bench-2026',
+    benchPins: BENCH_PINS,
+    timeline
+  });
+
+  await settle(landing);
+
+  expect(timeline.events.map((event) => event.seq)).toEqual(['bench_close']);
+  expect(timeline.events[0].summary).toBe('착지 단계: bench 종결');
 });
 
 test('settles a refuted no-change close by removing residue only', async () => {

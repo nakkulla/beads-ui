@@ -25,11 +25,25 @@
  */
 
 /**
+ * Per-million-token unit prices. Every field is optional and there is no
+ * builtin default, so an absent field means "unknown", never free — only an
+ * explicit `0` is free (preset-compare §1.1).
+ *
+ * @typedef {{
+ *   input?: number,
+ *   output?: number,
+ *   cache_read?: number,
+ *   cache_write?: number
+ * }} ModelPrice
+ */
+
+/**
  * @typedef {{
  *   id: string,
  *   efforts?: string[],
  *   orchestration_efforts?: string[],
- *   speed_tiers?: string[]
+ *   speed_tiers?: string[],
+ *   price?: ModelPrice
  * }} CatalogModel
  * @typedef {{
  *   command: string,
@@ -190,6 +204,9 @@ function copyEntry(entry) {
     if (model.speed_tiers) {
       copy.speed_tiers = model.speed_tiers.slice();
     }
+    if (model.price) {
+      copy.price = { ...model.price };
+    }
     models[name] = copy;
   }
   /** @type {RunnerCatalogEntry} */
@@ -216,6 +233,49 @@ export function builtinCatalog() {
     out[name] = copyEntry(entry);
   }
   return out;
+}
+
+/**
+ * The unit-price fields a model may declare, in tooltip order.
+ *
+ * @type {ReadonlyArray<'input'|'output'|'cache_read'|'cache_write'>}
+ */
+const PRICE_FIELDS = ['input', 'output', 'cache_read', 'cache_write'];
+
+/**
+ * Merge a model's `price` table field by field. A field that is not a finite
+ * number >= 0 is dropped ALONE, so one typo cannot silently zero the rest; a
+ * `price` that is not an object at all leaves the model with no price.
+ *
+ * @param {CatalogModel} merged
+ * @param {string} runner_name
+ * @param {string} model_name
+ * @param {unknown} raw_price
+ * @param {(message: string) => void} warn
+ */
+function mergePrice(merged, runner_name, model_name, raw_price, warn) {
+  if (!isPlainObject(raw_price)) {
+    warn(
+      `config.toml [runner.${runner_name}.models.${model_name}] price 무시: 객체가 아닙니다.`
+    );
+    return;
+  }
+  /** @type {ModelPrice} */
+  const price = { ...(merged.price ?? {}) };
+  for (const field of PRICE_FIELDS) {
+    if (!hasOwn(raw_price, field)) {
+      continue;
+    }
+    const value = raw_price[field];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      price[field] = value;
+    } else {
+      warn(
+        `config.toml [runner.${runner_name}.models.${model_name}] price.${field} 무시: 0 이상의 유한한 숫자가 아닙니다.`
+      );
+    }
+  }
+  merged.price = price;
 }
 
 /**
@@ -254,7 +314,8 @@ function mergeModels(entry, runner_name, section, warn) {
             : {}),
           ...(existing.speed_tiers
             ? { speed_tiers: existing.speed_tiers.slice() }
-            : {})
+            : {}),
+          ...(existing.price ? { price: { ...existing.price } } : {})
         })
       : { id: model_name };
 
@@ -293,6 +354,9 @@ function mergeModels(entry, runner_name, section, warn) {
           `config.toml [runner.${runner_name}.models.${model_name}] speed_tiers 무시: default를 포함한 지원 speed 문자열 배열이 아닙니다.`
         );
       }
+    }
+    if (hasOwn(raw_model, 'price')) {
+      mergePrice(merged, runner_name, model_name, raw_model.price, warn);
     }
     entry.models[model_name] = merged;
   }

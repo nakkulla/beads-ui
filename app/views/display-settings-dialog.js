@@ -1,5 +1,9 @@
 import { html, render } from 'lit-html';
-import { isLabelVisible } from '../utils/label-policy.js';
+import {
+  BENCH_LABEL,
+  isBenchIncluded,
+  isLabelVisible
+} from '../utils/label-policy.js';
 import { showToast } from '../utils/toast.js';
 
 /**
@@ -100,6 +104,24 @@ export function labelPatchFor(label, policy, desired_visible) {
     visible_labels: policy.visible_labels.includes(label)
       ? policy.visible_labels
       : [...policy.visible_labels, label]
+  };
+}
+
+/**
+ * The policy patch that includes or excludes bench clones in the Board list
+ * (preset-compare §4.8). The decision rides `visible_labels`, the one existing
+ * field whose default is empty, so "include" is an explicit entry and the
+ * absence of one is the documented default. Idempotent, which is what makes the
+ * CAS replay safe.
+ *
+ * @param {DisplayPolicy} policy
+ * @param {boolean} desired_included - The end state the user asked for.
+ * @returns {{ visible_labels: string[] }}
+ */
+export function benchPatchFor(policy, desired_included) {
+  const without = policy.visible_labels.filter((it) => it !== BENCH_LABEL);
+  return {
+    visible_labels: desired_included ? [...without, BENCH_LABEL] : without
   };
 }
 
@@ -292,6 +314,43 @@ export function createDisplaySettingsDialog(mount_element, options) {
   }
 
   /**
+   * The bench inclusion toggle (preset-compare §4.8). It writes through the
+   * SAME policy path as a label pill — `visible_labels` carries the decision —
+   * so there is no second store and no new policy key for the Board to read.
+   *
+   * @param {DisplayPolicy} policy
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function listSection(policy) {
+    const included = isBenchIncluded(policy);
+    return html`
+      <section class="display-settings__section">
+        <h3 class="display-settings__heading">목록 표시</h3>
+        <p class="display-settings__hint">
+          bench 실험 클론은 Board 목록에서 기본 제외됩니다. Worker 탭은 실행
+          주체라 그대로 보입니다.
+        </p>
+        <div class="display-settings__toggles">
+          <label class="display-settings__toggle">
+            <input
+              type="checkbox"
+              data-list-toggle="bench"
+              .checked=${included}
+              @change=${() => {
+                // Capture the end state, not a toggle — a replayed toggle would
+                // flip back on a CAS retry.
+                const desired = !included;
+                void save((next) => benchPatchFor(next, desired));
+              }}
+            />
+            <span>bench 포함</span>
+          </label>
+        </div>
+      </section>
+    `;
+  }
+
+  /**
    * @param {DisplayPolicy} policy
    * @returns {import('lit-html').TemplateResult}
    */
@@ -336,7 +395,7 @@ export function createDisplaySettingsDialog(mount_element, options) {
           <div class="display-settings__body">
             ${policy
               ? html`${labelsSection(policy)} ${prefixesSection(policy)}
-                ${chipsSection(policy)}`
+                ${listSection(policy)} ${chipsSection(policy)}`
               : html`<div class="display-settings__empty">
                   표시 정책을 불러오는 중…
                 </div>`}

@@ -12,7 +12,7 @@ import { debug } from './utils/logging.js';
  */
 
 /**
- * @typedef {'board'|'worker'|'monitor'} ViewName
+ * @typedef {'board'|'worker'|'monitor'|'compare'} ViewName
  */
 
 /**

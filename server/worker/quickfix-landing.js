@@ -24,6 +24,13 @@
  * (`workflow-state.yaml no_change_close`), and the Worker then removes residue
  * only — no push containment, review receipt, deployment, or close.
  *
+ * A `landing=none` bench clone (preset-compare §4.5-1) is the third exception
+ * and is judged ahead of the other two: it closes with `bench:<run_id>` and a
+ * real worktree delta, which the no-change vocabulary cannot express, so the
+ * contract gives it its own `landing_none_close` block. The Worker does no
+ * containment, deployment, close or residue removal for it — a bench cell's
+ * residue belongs to its RUN, not to this attempt.
+ *
  * This module judges only what happens AFTER a session delivered. A session
  * that refused to start on an unmet prerequisite never reaches it: the
  * scheduler settles that attempt as `waiting` ahead of the call (2026-08-28
@@ -61,8 +68,44 @@ const LANDING_STEP_LABELS = Object.freeze({
   repo_operations: '배포 실행',
   branch_cleanup: '브랜치 정리',
   parent_close: 'bead close',
-  no_change_close: '무변경 close'
+  no_change_close: '무변경 close',
+  bench_close: 'bench 종결'
 });
+
+/**
+ * The `landing_none_close` session form, consumed verbatim from the dotfiles
+ * contract block of the same name (`close_reason.session_format`). It is NOT a
+ * no-change close: a bench clone leaves a real delta in its worktree, so
+ * {@link NO_CHANGE_CLOSE_REASON_RE} and its kind map stay untouched and this
+ * judgment sits in front of them.
+ *
+ * The Worker's own `:failed` / `:aborted` tails are deliberately absent here.
+ * Those are what the Worker WRITES on a cell it had to close itself; a bead
+ * carrying one was never settled by a session, so it must not read as a
+ * successful bench ending.
+ */
+const BENCH_CLOSE_REASON_RE = /^bench:[A-Za-z0-9._-]+$/;
+
+/**
+ * The run id a `bench:<run_id>` close declares, or null when the reason is not
+ * that form. A multi-line reason is null for the same reason the no-change
+ * judgment refuses one: the contract types both as `lines: single_line_only`.
+ *
+ * @param {unknown} close_reason
+ * @returns {string|null}
+ */
+function benchCloseRunId(close_reason) {
+  if (typeof close_reason !== 'string') {
+    return null;
+  }
+  if (/[\r\n]/.test(close_reason)) {
+    return null;
+  }
+  if (!BENCH_CLOSE_REASON_RE.test(close_reason)) {
+    return null;
+  }
+  return close_reason.slice('bench:'.length);
+}
 
 /**
  * Which of the contract's two no-change close kinds this `close_reason`
@@ -192,7 +235,7 @@ export function createQuickfixLanding(deps) {
    * Worker's own evidence-based resolve (§5.3) — must ride along with each
    * later write or the next one erases it.
    *
-   * @param {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null }} record
+   * @param {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|'bench_close'|null, head_sha: string|null, reason: string|null }} record
    * @param {LandingExtra} extra
    * @returns {Attempt['quickfix_landing']}
    */
@@ -217,7 +260,7 @@ export function createQuickfixLanding(deps) {
    * end a settlement that broke no invariant.
    *
    * @param {string} attempt_id
-   * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null} step
+   * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|'bench_close'|null} step
    * @param {string|null} reason - The failure token, or null for a step reached.
    */
   function recordLandingStep(attempt_id, step, reason) {
@@ -278,7 +321,7 @@ export function createQuickfixLanding(deps) {
   /**
    * @param {string} attempt_id
    * @param {QuickfixLandingReason|string} reason
-   * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null} step
+   * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|'bench_close'|null} step
    * @param {string|null} head_sha
    * @param {LandingExtra} [extra]
    * @returns {{ ok: false, reason: string, step: string|null }}
@@ -783,6 +826,74 @@ export function createQuickfixLanding(deps) {
   }
 
   /**
+   * The two bench facts a `bench:` close is judged against: the contract key
+   * `landing=none` and this bead's own `bench_run`.
+   *
+   * A failed READ is distinguished from an absent key, because an unreadable
+   * bead says nothing about whether the close was legitimate and must not be
+   * settled as a `premature_close`.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: true, landing_none: boolean, bench_run: string|null }|{ ok: false }>}
+   */
+  async function readBenchBinding(bead_id) {
+    try {
+      const landing = await deps.bd.readMetadata(bead_id, 'landing');
+      const bench_run = await deps.bd.readMetadata(bead_id, 'bench_run');
+      return {
+        ok: /** @type {const} */ (true),
+        landing_none: landing === 'none',
+        bench_run: typeof bench_run === 'string' ? bench_run : null
+      };
+    } catch (err) {
+      log('bench binding read failed for %s: %o', bead_id, err);
+      return { ok: /** @type {const} */ (false) };
+    }
+  }
+
+  /**
+   * Settle a `landing=none` bench close (preset-compare §4.5-1).
+   *
+   * The contract block `landing_none_close` makes this ending a SESSION write:
+   * the session ran the ordinary quick_fix lane through its implementation
+   * review, pushed nothing, and closed the bead with `bench:<run_id>`. So there
+   * is no base containment to prove, no deployment to run and no bead to close
+   * — the three steps the reviewed-landing path owes are all about a delta that
+   * reached the base, and this one never left the worktree.
+   *
+   * The worktree and the local branch are left in place on purpose: a cell's
+   * residue belongs to the RUN, and §4.6 removes it once every cell of that run
+   * has terminated. Removing it here would take the head the run's own
+   * verification scoring reads.
+   *
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: true }>}
+   */
+  async function settleBenchClose(attempt_id, bead_id) {
+    deps.store.moveToDone(workspace, {
+      bead_id,
+      attempt_id,
+      patch: {
+        status: 'done',
+        finished_at: now(),
+        done_kind: 'bench',
+        quickfix_landing: {
+          cursor: 'bench_close',
+          head_sha: null,
+          reason: null
+        }
+      }
+    });
+    recordLandingStep(attempt_id, 'bench_close', null);
+    notifyChanged(workspace);
+    // No `announceLanded`: the notifier's subject is a landing, and this cell
+    // deliberately landed nothing. Announcing it would put a measurement run in
+    // the same channel a user reads for "this change is now on the base".
+    return { ok: true };
+  }
+
+  /**
    * The durable landing cursor participates in resume judgment. A recorded
    * cleanup/close step can outlive its worktree, while the receipt must still
    * bind to the cursor's exact reviewed SHA. Only an unrecorded close is a
@@ -842,6 +953,28 @@ export function createQuickfixLanding(deps) {
       return { ok: true };
     }
     if (status === 'closed') {
+      // The `landing=none` judgment runs BEFORE the no-change one (§4.5-1): a
+      // bench clone closes with a delta in its worktree, so the no-change
+      // vocabulary cannot express it and the contract gives it its own block.
+      // BOTH halves must agree — the bead has to carry `landing=none` and the
+      // close reason's run id has to be the run this bead belongs to — because
+      // either alone would let a hand-typed `bench:` reason retire an ordinary
+      // quick_fix without landing it.
+      const bench_run_id = benchCloseRunId(issue.close_reason);
+      if (bench_run_id !== null) {
+        const bench = await readBenchBinding(bead_id);
+        if (
+          bench.ok &&
+          bench.landing_none &&
+          bench.bench_run === bench_run_id
+        ) {
+          return settleBenchClose(attempt_id, bead_id);
+        }
+        if (!bench.ok) {
+          return fail(attempt_id, 'bd_read_failed', null, null);
+        }
+        return fail(attempt_id, 'premature_close', null, null);
+      }
       const no_change_kind = noChangeCloseKind(issue.close_reason);
       if (no_change_kind === null) {
         return fail(attempt_id, 'premature_close', null, null);

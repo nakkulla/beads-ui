@@ -445,6 +445,15 @@ export function createLiveBd(config) {
         issue_type,
         quick_fix_review,
         session_ref,
+        // The bench experiment pins (preset-compare §4). They are Worker-owned
+        // metadata the contract only DECLARES (`out_of_registry.known`), so
+        // they are read here as plain strings and nothing else: the base pin
+        // decides where a cell's worktree is cut, the run id decides which hook
+        // mode it gets, and `landing` is what makes its `bench:` close a
+        // success instead of a `premature_close`.
+        bench_run: typeof md.bench_run === 'string' ? md.bench_run : null,
+        bench_base: typeof md.bench_base === 'string' ? md.bench_base : null,
+        landing: typeof md.landing === 'string' ? md.landing : null,
         ...awaiting_user_entry,
         deps: blocks_blockers,
         blocked_by: blocks_blockers
@@ -919,6 +928,14 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     worktree,
     verify,
     quickfixLanding,
+    // The repository `[verify]` lane, wired with the SAME resolution and runner
+    // the merge candidate uses (preset-compare §4.5-3). A bench cell's score has
+    // to be comparable with a merge-candidate receipt in the same table, so the
+    // two may not run through different envelopes.
+    resolveVerify: (/** @type {{ sha?: string|null }|undefined} */ pin) =>
+      resolveVerify(pin),
+    runVerify: (/** @type {any} */ input) =>
+      runVerifyAtSha({ ...input, worktree, git: gitRun }),
     sessionLog: runtime.sessionLog,
     usage: runtime.usageStore,
     delegation: runtime.delegationStore,

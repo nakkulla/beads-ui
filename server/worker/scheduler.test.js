@@ -552,6 +552,11 @@ function makeFakeBd(config) {
         issue_type: c.issue_type,
         quick_fix_review: c.quick_fix_review,
         session_ref: c.session_ref,
+        // The bench experiment pins (preset-compare §4). Absent for every
+        // ordinary bead, which is what keeps the lane inert by default.
+        bench_run: c.bench_run ?? null,
+        bench_base: c.bench_base ?? null,
+        landing: c.landing ?? null,
         deps: c.deps ?? []
       };
     },
@@ -663,12 +668,23 @@ function makeFakeBd(config) {
         dependencies: cfg.dependencies ?? [],
         ...(cfg.defer === undefined ? {} : { defer: cfg.defer })
       };
+    },
+    /**
+     * The reasoned close a bench cell's terminal failure spends
+     * (preset-compare §4.6).
+     *
+     * @param {string} bead_id
+     * @param {string} reason
+     */
+    async closeWithReason(bead_id, reason) {
+      calls.push({ method: 'closeWithReason', bead_id, value: reason });
+      statuses[bead_id] = 'closed';
     }
   };
 }
 
 /**
- * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, providerHealth?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, resolveSessionFile?: (entry: any, options?: any) => any, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number, publishActivity?: (workspace: string) => void, waitingRescan?: { cover_ms: number, max_wait_ms: number } }} opts
+ * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, resolveVerify?: any, runVerify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, providerHealth?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, resolveSessionFile?: (entry: any, options?: any) => any, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number, publishActivity?: (workspace: string) => void, waitingRescan?: { cover_ms: number, max_wait_ms: number } }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -797,6 +813,11 @@ function setup(opts) {
     // XDG_STATE_HOME this file arms. An override is only how a test drives an
     // install failure (UI-8mvc §2).
     guardHook: opts.guardHook,
+    // The repository `[verify]` lane a bench cell is scored with
+    // (preset-compare §4.5-3). Absent by default: a scheduler without it
+    // scores nothing, exactly like a repository that declares no `[verify]`.
+    resolveVerify: opts.resolveVerify,
+    runVerify: opts.runVerify,
     // The post-hoc base observation's two runners (UI-8mvc §3). Absent by
     // default: a scheduler built without them records the observation as
     // undone rather than judging an attempt it could not observe.
@@ -17827,5 +17848,367 @@ describe('대기 진입 유예 (§3.3)', () => {
     await vi.advanceTimersByTimeAsync(QUEUE_GRACE_MS);
 
     expect(env.scheduler.isRunning('G8')).toBe(true);
+  });
+});
+
+describe('scheduler bench cells (preset-compare §4.4·§4.5·§4.6)', () => {
+  const BENCH_BASE = 'b'.repeat(40);
+
+  /**
+   * A git runner that answers the bench base probe. `reachable: false` makes
+   * `cat-file -e` fail on both passes (the commit is nowhere), `ancestor:
+   * false` makes the containment question answer no.
+   *
+   * @param {{ reachable?: boolean, ancestor?: boolean, head?: string }} [options]
+   */
+  function benchGit(options = {}) {
+    return vi.fn(async (args, run_options = {}) => {
+      if (args.includes('--abbrev-ref')) {
+        return {
+          code: 0,
+          stdout: `${path.basename(run_options.cwd || '')}\n`,
+          stderr: ''
+        };
+      }
+      if (args[0] === 'cat-file') {
+        return {
+          code: options.reachable === false ? 1 : 0,
+          stdout: '',
+          stderr: ''
+        };
+      }
+      if (args[0] === 'merge-base') {
+        return {
+          code: options.ancestor === false ? 1 : 0,
+          stdout: '',
+          stderr: ''
+        };
+      }
+      if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+        return {
+          code: 0,
+          stdout: `${options.head ?? 'c'.repeat(40)}\n`,
+          stderr: ''
+        };
+      }
+      if (args[0] === 'ls-remote' || args[0] === 'fetch') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: '' };
+    });
+  }
+
+  /**
+   * One bench cell configured the way `bench-runs.js` creates it.
+   *
+   * @param {Record<string, any>} [extra]
+   */
+  function benchConfig(extra = {}) {
+    return {
+      S1: {
+        route: 'quick_fix',
+        bench_run: 'bench-1',
+        bench_base: BENCH_BASE,
+        landing: 'none',
+        ...extra
+      }
+    };
+  }
+
+  /** A landing dep that settles the cell exactly as a bench close does. */
+  function benchLanding() {
+    /** @type {any} */
+    let env = null;
+    const settle = vi.fn(async ({ attempt_id, bead_id }) => {
+      env.store.moveToDone(WS, {
+        bead_id,
+        attempt_id,
+        patch: { status: 'done', finished_at: 1000, done_kind: 'bench' }
+      });
+      return { ok: true };
+    });
+    return {
+      settle,
+      /** @param {any} value */
+      bind(value) {
+        env = value;
+      }
+    };
+  }
+
+  test('cuts the worktree from the run pinned base', async () => {
+    const env = setup({
+      config: benchConfig(),
+      slots: 1,
+      gitRun: benchGit(),
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.worktree.add).toHaveBeenCalledWith(
+      expect.objectContaining({ bead_id: 'S1', base: BENCH_BASE })
+    );
+  });
+
+  test('refuses the cell when the pinned base cannot be obtained', async () => {
+    const env = setup({
+      config: benchConfig(),
+      slots: 1,
+      gitRun: benchGit({ reachable: false })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).admission?.S1?.reason).toBe(
+      'bench_base_unreachable'
+    );
+  });
+
+  test('refuses the cell when the pinned base is not an ancestor of the base', async () => {
+    const env = setup({
+      config: benchConfig(),
+      slots: 1,
+      gitRun: benchGit({ ancestor: false })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).admission?.S1?.reason).toBe(
+      'bench_base_unreachable'
+    );
+  });
+
+  test('refuses a bench cell whose base pin is malformed', async () => {
+    const env = setup({
+      config: benchConfig({ bench_base: 'HEAD' }),
+      slots: 1,
+      gitRun: benchGit()
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission?.S1?.reason).toBe(
+      'bench_base_unreachable'
+    );
+  });
+
+  test('installs the deny-mode hook for a bench cell', async () => {
+    const env = setup({
+      config: benchConfig(),
+      slots: 1,
+      gitRun: benchGit(),
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const script = fs.readFileSync(
+      path.join(guardHookDir(WS, 'S1-1000-1'), 'pre-push'),
+      'utf8'
+    );
+    expect(script).toContain('# mode: deny');
+  });
+
+  test('keeps the record-mode hook for an ordinary quick_fix', async () => {
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      slots: 1,
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const script = fs.readFileSync(
+      path.join(guardHookDir(WS, 'S1-1000-1'), 'pre-push'),
+      'utf8'
+    );
+    expect(script).toContain('# mode: record');
+  });
+
+  test('snapshots the run id onto the attempt', async () => {
+    const env = setup({
+      config: benchConfig(),
+      slots: 1,
+      gitRun: benchGit(),
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].bench_run).toBe(
+      'bench-1'
+    );
+  });
+
+  test('scores a finished bench cell with the repository verify script', async () => {
+    const landing = benchLanding();
+    const runVerify = vi.fn(async () => ({ ok: true, reason: 'ok', exit: 0 }));
+    const env = setup({
+      config: benchConfig(),
+      slots: 1,
+      gitRun: benchGit({ head: 'd'.repeat(40) }),
+      resolveVerify: vi.fn(async () => ({
+        state: 'resolved',
+        value: { cmd: ['/repo/repo-ops/script/verify'], timeout_ms: 1000 }
+      })),
+      runVerify,
+      quickfixLanding: { settle: landing.settle }
+    });
+    landing.bind(env);
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(runVerify).toHaveBeenCalledWith(
+      expect.objectContaining({ sha: 'd'.repeat(40), bead_id: 'S1-bench' })
+    );
+    expect(
+      env.store.snapshot(WS).attempts['S1-1000-1'].bench_verify
+    ).toMatchObject({ ok: true, exit: 0, head_sha: 'd'.repeat(40) });
+  });
+
+  test('leaves bench_verify null when the repository declares no verify', async () => {
+    const landing = benchLanding();
+    const runVerify = vi.fn(async () => ({ ok: true, exit: 0 }));
+    const env = setup({
+      config: benchConfig(),
+      slots: 1,
+      gitRun: benchGit(),
+      resolveVerify: vi.fn(async () => ({ state: 'absent' })),
+      runVerify,
+      quickfixLanding: { settle: landing.settle }
+    });
+    landing.bind(env);
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(runVerify).not.toHaveBeenCalled();
+    expect(
+      env.store.snapshot(WS).attempts['S1-1000-1'].bench_verify
+    ).toBeNull();
+  });
+
+  test('does not score a cell whose session failed', async () => {
+    const runVerify = vi.fn(async () => ({ ok: true, exit: 0 }));
+    const env = setup({
+      config: benchConfig(),
+      slots: 1,
+      gitRun: benchGit(),
+      resolveVerify: vi.fn(async () => ({
+        state: 'resolved',
+        value: { cmd: ['/verify'], timeout_ms: 1000 }
+      })),
+      runVerify,
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: false, reason: 'is_error', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(runVerify).not.toHaveBeenCalled();
+  });
+
+  test('closes a terminally failed cell with the run failed reason', async () => {
+    const env = setup({
+      config: benchConfig(),
+      slots: 1,
+      gitRun: benchGit(),
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: false, reason: 'is_error', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.bd.calls).toContainEqual({
+      method: 'closeWithReason',
+      bead_id: 'S1',
+      value: 'bench:bench-1:failed'
+    });
+  });
+
+  test('leaves an ordinary quick_fix failure unclosed', async () => {
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      slots: 1,
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: false, reason: 'is_error', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(
+      env.bd.calls.filter(
+        (/** @type {any} */ call) => call.method === 'closeWithReason'
+      )
+    ).toEqual([]);
+  });
+
+  test('fails a cell whose push record shows a base-destined push', async () => {
+    const guardHook = {
+      install: vi.fn(() => ({ ok: true })),
+      envFor: vi.fn(() => ({})),
+      remove: vi.fn(() => true),
+      readPushLog: vi.fn(() => ({
+        ok: true,
+        entries: [
+          {
+            local_ref: 'HEAD',
+            local_oid: 'e'.repeat(40),
+            remote_ref: 'refs/heads/main',
+            remote_oid: 'f'.repeat(40)
+          }
+        ]
+      }))
+    };
+    const env = setup({
+      config: benchConfig(),
+      slots: 1,
+      gitRun: benchGit({ ancestor: true }),
+      guardHook,
+      // The base MOVED after the pin, which is what makes the push record
+      // worth reading at all (base-drift.js).
+      resolveBase: vi.fn(async () => ({
+        ok: true,
+        base: 'main',
+        base_oid: '9'.repeat(40)
+      })),
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    const attempt = env.store.snapshot(WS).attempts['S1-1000-1'];
+    expect(attempt.cause).toBe('bench_push_observed');
+    expect(attempt.status).toBe('failed');
   });
 });

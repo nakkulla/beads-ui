@@ -1,6 +1,6 @@
 import { html } from 'lit-html';
 import { renderMarkdown } from '../../utils/markdown.js';
-import { parseReport } from '../../utils/report-marker.js';
+import { parseReport, parseReviewComment } from '../../utils/report-marker.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
@@ -8,6 +8,10 @@ import { parseReport } from '../../utils/report-marker.js';
 
 /**
  * @typedef {import('../../utils/report-marker.js').ParsedReport} ParsedReport
+ */
+
+/**
+ * @typedef {import('../../utils/report-marker.js').ParsedReviewComment} ParsedReviewComment
  */
 
 /**
@@ -114,6 +118,87 @@ function reportTemplate(comment, report, handlers, open) {
   </div>`;
 }
 
+/** How far an anchor is shown before the rest moves into `title`. */
+const ANCHOR_PREVIEW = 12;
+
+/**
+ * The one line a review card has to read while collapsed: the verdict, plus how
+ * many points came with it when the round said so. A round that states neither
+ * numbered points nor 「지적 없음」 shows the verdict alone rather than a made-up
+ * zero.
+ *
+ * @param {ParsedReviewComment} review
+ * @returns {string}
+ */
+function reviewPoints(review) {
+  if (review.points === null) {
+    return '';
+  }
+  return review.points === 0 ? '지적 없음' : `지적 ${review.points}건`;
+}
+
+/**
+ * One review-round card. Same collapsed shape as the work report — the review
+ * result answers the same question at the same place in the list, so it reads
+ * as one kind of card, not two.
+ *
+ * No freshness judgement runs here (design §2.3): the anchor is shown as
+ * written and the receipt chips keep owning stale.
+ *
+ * @param {IssueComment} comment
+ * @param {ParsedReviewComment} review
+ * @param {CommentsHandlers} handlers
+ * @param {boolean} open
+ * @returns {TemplateResult}
+ */
+function reviewTemplate(comment, review, handlers, open) {
+  const anchor_label =
+    review.anchor.length > ANCHOR_PREVIEW
+      ? `${review.anchor.slice(0, ANCHOR_PREVIEW)}…`
+      : review.anchor;
+  const points = reviewPoints(review);
+  return html`<div class="detail-report detail-report--review">
+    <button
+      type="button"
+      class="detail-report__head"
+      data-comment-id=${comment.id}
+      aria-expanded=${open ? 'true' : 'false'}
+      @click=${() => handlers.onToggle && handlers.onToggle(comment.id)}
+    >
+      <span class="detail-report__tri">${open ? '▾' : '▸'}</span>
+      <span class="detail-report__glyph">🔎</span>
+      <span class="detail-report__meta">
+        <span class="detail-report__kind">리뷰 결과</span>
+        <span class="detail-report__lane"
+          >${review.step} · r${review.round}</span
+        >
+        <span class="detail-report__anchor" title=${review.anchor}
+          >${anchor_label}</span
+        >
+        <span class="detail-report__time"
+          >${shortStamp(comment.created_at)}</span
+        >
+      </span>
+      <span class="detail-report__concl">
+        <span
+          class="detail-report__verdict detail-report__verdict--${review.verdict ===
+          'APPROVE'
+            ? 'approve'
+            : 'revise'}"
+          >${review.verdict}</span
+        >${points
+          ? html`<span class="detail-report__points">${points}</span>`
+          : ''}
+      </span>
+    </button>
+    ${open && review.body.length > 0
+      ? html`<div class="detail-report__body">
+          ${renderMarkdown(review.body)}
+        </div>`
+      : ''}
+  </div>`;
+}
+
 /**
  * A human-written comment: no card and no collapse, but Markdown all the same —
  * leaving one side plain would split rendering inside a single list.
@@ -170,12 +255,16 @@ export function commentsTemplate(comments, handlers = {}, view = {}) {
         ? html`<div class="detail-empty" data-seam="comments">댓글 없음</div>`
         : html`<div class="detail-comments" data-seam="comments">
             ${sorted.map((c) => {
-              const report = parseReport(
-                typeof c.text === 'string' ? c.text : ''
-              );
-              return report
-                ? reportTemplate(c, report, handlers, expanded.has(c.id))
-                : plainCommentTemplate(c);
+              const text = typeof c.text === 'string' ? c.text : '';
+              const report = parseReport(text);
+              if (report) {
+                return reportTemplate(c, report, handlers, expanded.has(c.id));
+              }
+              const review = parseReviewComment(text);
+              if (review) {
+                return reviewTemplate(c, review, handlers, expanded.has(c.id));
+              }
+              return plainCommentTemplate(c);
             })}
           </div>`}
     <div class="detail-comment-compose">

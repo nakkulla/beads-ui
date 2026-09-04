@@ -86,3 +86,40 @@ export function isChipEnabled(policy, chip) {
   const value = policy && policy.chips ? policy.chips[chip] : undefined;
   return typeof value === 'boolean' ? value : true;
 }
+
+/**
+ * The label a bench experiment clone carries (preset-compare §4.3). Owned by
+ * beads-ui alone — the workflow contract only declares that ownership (§5.3).
+ */
+export const BENCH_LABEL = 'bench';
+
+/**
+ * Whether a bead is one of the bench clones the Board hides by default (§4.8).
+ *
+ * @param {unknown} issue
+ * @returns {boolean}
+ */
+export function hasBenchLabel(issue) {
+  const labels =
+    issue && typeof issue === 'object'
+      ? /** @type {any} */ (issue).labels
+      : null;
+  return stringList(labels).includes(BENCH_LABEL);
+}
+
+/**
+ * Whether the Board lists bench clones (§4.8). The flag is carried by the
+ * existing policy's `visible_labels`: an explicit decision to SHOW the `bench`
+ * label is the same decision as listing the beads that carry it, so the toggle
+ * needs no second storage path and no new policy key.
+ *
+ * The default — and an absent policy — is EXCLUDE. Unlike a label chip, a
+ * clone row that appears and then disappears would move every card below it,
+ * so the quiet state here is the one §4.8 declares.
+ *
+ * @param {DisplayPolicy | null | undefined} policy
+ * @returns {boolean}
+ */
+export function isBenchIncluded(policy) {
+  return !!policy && stringList(policy.visible_labels).includes(BENCH_LABEL);
+}

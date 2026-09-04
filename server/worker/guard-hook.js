@@ -245,6 +245,45 @@ exit $status
 `;
 
 /**
+ * The deny-mode ref loop (preset-compare §4.5-2): the same record, the same
+ * line shape, and a refusal for EVERY destination.
+ *
+ * A bench clone opens no PR, lands no base and deploys nothing, so no remote
+ * ref is a legitimate destination for it. The record still comes first, because
+ * the post-hoc `bench_push_observed` invariant is built on the same log the
+ * other two modes write.
+ *
+ * @type {string}
+ */
+const DENY_LOOP = `# 2) Record every ref of this push and REFUSE all of them (preset-compare §4.5).
+#    A bench clone never lands, so there is no destination it may reach; the
+#    base line gets no special case because none of the others are allowed
+#    either.
+status=0
+while read -r local_ref local_oid remote_ref remote_oid; do
+  [ -n "$remote_ref" ] || continue
+  guard_record "$local_ref" "$local_oid" "$remote_ref" "$remote_oid"
+  printf '%s\\n' "bdui guard: refusing push to $remote_ref in $mine — bench attempt $guard_attempt must not push any ref (local ref: $local_ref)" >&2
+  status=1
+done
+exit $status
+`;
+
+/**
+ * Narrow an untrusted `mode` to the three rendered scripts. Anything else —
+ * including an absent value — falls closed on `guard`, the refusing script.
+ *
+ * @param {unknown} mode
+ * @returns {'guard'|'record'|'deny'}
+ */
+function normalizeMode(mode) {
+  if (mode === 'record' || mode === 'deny') {
+    return mode;
+  }
+  return 'guard';
+}
+
+/**
  * Render the `/bin/sh` pre-push script for one attempt.
  *
  * Step 1 asks whether this push belongs to the attempt's repository, comparing
@@ -279,6 +318,14 @@ exit $status
  * line's verdict now belongs in its record, base lines are judged and then
  * recorded; every other line is recorded exactly as before.
  *
+ * DENY MODE (preset-compare §4.5-2) keeps the record and refuses every ref. It
+ * is the bench lane's hook: a clone bead is executed for measurement only, so
+ * a push of any kind — base, branch, tag — is out of scope by construction, and
+ * git refusing it is the same prevention layer ADR 0007 chose over a command
+ * string kill. The docs-only judgment is not rendered for it either: the
+ * exemption exists so an artifact publication can reach the BASE, and a bench
+ * clone publishes nothing.
+ *
  * RECORD MODE (worker-failure-tiers §5.1) keeps every one of those decisions
  * except the refusal. The quick_fix lane's whole errand IS the base push, so it
  * runs today with no hook at all and therefore leaves no evidence of what it
@@ -288,7 +335,7 @@ exit $status
  * the docs-only judgment is not rendered at all, because an exemption from a
  * refusal that cannot happen would only be dead code with a verdict.
  *
- * @param {{ repo: string, target_base: string, attempt_id: string, push_log: string, mode?: 'guard'|'record' }} input
+ * @param {{ repo: string, target_base: string, attempt_id: string, push_log: string, mode?: 'guard'|'record'|'deny' }} input
  * @returns {string}
  */
 export function renderHookScript(input) {
@@ -296,9 +343,10 @@ export function renderHookScript(input) {
   const ref_literal = shellLiteral(`refs/heads/${input.target_base}`);
   const attempt_literal = shellLiteral(input.attempt_id);
   const push_log_literal = shellLiteral(input.push_log);
-  const mode = input.mode === 'record' ? 'record' : 'guard';
-  const judgment_block = mode === 'record' ? '' : DOCS_ONLY_JUDGMENT;
-  const loop_block = mode === 'record' ? RECORD_LOOP : GUARD_LOOP;
+  const mode = normalizeMode(input.mode);
+  const judgment_block = mode === 'guard' ? DOCS_ONLY_JUDGMENT : '';
+  const loop_block =
+    mode === 'record' ? RECORD_LOOP : mode === 'deny' ? DENY_LOOP : GUARD_LOOP;
   return `#!/bin/sh
 # bdui worker base guard (UI-8mvc §2, UI-1xcd §4.1) — generated, do not edit.
 # attempt: ${input.attempt_id}
@@ -403,12 +451,13 @@ export function envFor(input, options = {}) {
  * from "this attempt predates the record" — so a failure to create it is a
  * dispatch refusal like any other, not a silent downgrade to guessing.
  *
- * `mode` picks which script is written (worker-failure-tiers §5.1). It is an
- * input rather than an option because it is a property of the ATTEMPT — the
- * quick_fix lane installs `record`, every other lane `guard` — and defaults to
- * `guard`, so an unset value fails closed on the refusing script.
+ * `mode` picks which script is written (worker-failure-tiers §5.1;
+ * preset-compare §4.5-2). It is an input rather than an option because it is a
+ * property of the ATTEMPT — a bench clone installs `deny`, the quick_fix lane
+ * `record`, every other lane `guard` — and defaults to `guard`, so an unset
+ * value fails closed on the refusing script.
  *
- * @param {{ workspace: string, attempt_id: string, repo: string, target_base: string, mode?: 'guard'|'record' }} input
+ * @param {{ workspace: string, attempt_id: string, repo: string, target_base: string, mode?: 'guard'|'record'|'deny' }} input
  * @param {{ fs?: typeof import('node:fs') }} [options]
  * @returns {{ ok: boolean, dir?: string, hook_path?: string, reason?: string }}
  */
@@ -439,7 +488,7 @@ export function install(input, options = {}) {
         target_base,
         attempt_id: input.attempt_id,
         push_log,
-        mode: input.mode === 'record' ? 'record' : 'guard'
+        mode: normalizeMode(input.mode)
       }),
       { mode: HOOK_MODE }
     );

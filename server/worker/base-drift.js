@@ -153,6 +153,18 @@ function basePushedOids(entries, base_ref) {
 }
 
 /**
+ * Whether this attempt is a bench experiment cell (preset-compare §4). The run
+ * id is snapshotted onto the attempt at dispatch, so the judgment never has to
+ * read the bead a settlement may already have closed.
+ *
+ * @param {{ bench_run?: string|null }} attempt
+ * @returns {boolean}
+ */
+function benchCell(attempt) {
+  return typeof attempt.bench_run === 'string' && attempt.bench_run.length > 0;
+}
+
+/**
  * Observe one finished attempt against the base it was dispatched from.
  *
  * Runs REGARDLESS of the session's own verdict: a session killed by SIGTERM may
@@ -160,7 +172,7 @@ function basePushedOids(entries, base_ref) {
  * the more honest failure cause than whatever the runner reported.
  *
  * @param {{
- *   attempt: { bead_id?: string, repo?: string|null, base_oid?: string|null, disposition?: string|null, quickfix_lane?: boolean },
+ *   attempt: { bead_id?: string, repo?: string|null, base_oid?: string|null, disposition?: string|null, quickfix_lane?: boolean, bench_run?: string|null },
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   git?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   readPushLog?: () => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string }
@@ -181,7 +193,13 @@ export async function observeBaseDrift(input) {
   }
   // Like disposition, this lane publishes the base as its job; reviewed direct
   // base landing is its expected terminal, not a violation.
-  if (attempt.quickfix_lane === true) {
+  //
+  // A BENCH cell is the one quick_fix attempt the exemption does not cover
+  // (preset-compare §4.5-2): it is dispatched for measurement, closes with
+  // `landing=none`, and pushes nothing at all — so its base push record is
+  // evidence again, and the exemption that exists because "this lane's errand
+  // IS the base push" has no errand to protect here.
+  if (attempt.quickfix_lane === true && !benchCell(attempt)) {
     return { violation: false, record: { skipped: 'quickfix_lane' } };
   }
   // An external-conflict dispatch pins no base_oid, so there is no anchor to

@@ -583,7 +583,7 @@ export function runningLaneBeadIds(queue) {
  *
  * @param {Record<string, any>} attempts
  * @param {Map<string, number>} done_at_by_bead
- * @param {{ discard_operations?: Record<string, any>, observations?: Record<string, any>, bead_timelines?: Record<string, any>, provider_hold?: Record<string, any>, auto_resume_pending?: any[], account_catalog?: Record<string, any>, admission?: Record<string, any> }} [input]
+ * @param {{ discard_operations?: Record<string, any>, observations?: Record<string, any>, bead_timelines?: Record<string, any>, provider_hold?: Record<string, any>, auto_resume_pending?: any[], account_catalog?: Record<string, any>, admission?: Record<string, any>, runner_catalog?: any }} [input]
  * @returns {Map<string, any>}
  */
 export function activeByBead(attempts, done_at_by_bead, input = {}) {
@@ -640,7 +640,7 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
           })
         : null;
     map.set(bead_id, {
-      ...liveAttemptFields(a, attempts, run_state),
+      ...liveAttemptFields(a, attempts, run_state, input.runner_catalog),
       started_at,
       ...(failure ? { failure } : {}),
       can_pause: run_state === 'running' && has_session,
@@ -680,7 +680,7 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
           })
         : null;
     map.set(bead_id, {
-      ...liveAttemptFields(a, attempts, held.run_state),
+      ...liveAttemptFields(a, attempts, held.run_state, input.runner_catalog),
       started_at: typeof a.started_at === 'number' ? a.started_at : null,
       ...(held.run_state === 'parked'
         ? {
@@ -717,8 +717,9 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
  * @param {any} a
  * @param {Record<string, any>} attempts
  * @param {'running'|'paused'|'failed'|'parked'|'retry_wait'|'waiting'|'provider_hold'} run_state
+ * @param {any} [runner_catalog] - Unit prices; without it only a reported cost prices a leg.
  */
-function liveAttemptFields(a, attempts, run_state) {
+function liveAttemptFields(a, attempts, run_state, runner_catalog = null) {
   return {
     attempt_id: typeof a.attempt_id === 'string' ? a.attempt_id : '',
     run_state,
@@ -738,7 +739,7 @@ function liveAttemptFields(a, attempts, run_state) {
         ? a.continuation_mode
         : null,
     status: typeof a.status === 'string' ? a.status : null,
-    usage: sumAttemptUsage(attempts, a.bead_id)
+    usage: sumAttemptUsage(attempts, a.bead_id, runner_catalog)
   };
 }
 
@@ -2654,6 +2655,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
           ? workspace.revision
           : 0;
     const attempts = objectOf(workspace.attempts);
+    // The repo's own unit prices (preset-compare §1.3). Config, not code, owns
+    // them, so two repos may price the same model differently.
+    const runner_catalog =
+      (state && /** @type {any} */ (state).runner_catalog) ||
+      /** @type {any} */ (workspace).runner_catalog ||
+      null;
     const titles = objectOf(workspace.bead_titles);
     for (const [bead_id, title] of Object.entries(titles)) {
       if (typeof title === 'string' && title.length > 0) {
@@ -3057,6 +3064,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ? workspace.auto_resume_pending
         : [],
       account_catalog: objectOf(workspace.account_catalog),
+      runner_catalog,
       admission
     })) {
       claimed.add(bead_id);
@@ -3385,7 +3393,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         pr_number: typeof pr.number === 'number' ? pr.number : null,
         pr_url: typeof pr.url === 'string' ? pr.url : undefined,
         external,
-        usage: sumAttemptUsage(attempts, bead_id),
+        usage: sumAttemptUsage(attempts, bead_id, runner_catalog),
         merge_step,
         badges: continuation_required
           ? ['이어하기 선택 필요']
@@ -3892,7 +3900,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...(done_exec_chips ? { exec_chips: done_exec_chips } : {}),
         // 완료 3줄 행 (§8): 레포 배지가 붙으면 2줄 변형에서 제목이 먼저 잘린다.
         done_layout: 'three_line',
-        usage: sumAttemptUsage(attempts, bead_id),
+        usage: sumAttemptUsage(attempts, bead_id, runner_catalog),
         work_ms: sumAttemptWorkMs(attempts, bead_id),
         done_at:
           typeof entry.added_at === 'number' ? entry.added_at : undefined,

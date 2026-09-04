@@ -407,6 +407,34 @@ function safeSegment(value, fallback) {
 }
 
 /**
+ * Absolute directory holding one workspace's bench experiment manifests
+ * (preset-compare §4.7).
+ *
+ * @param {string} workspace_root
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/bench`.
+ */
+export function benchRunsDir(workspace_root) {
+  return path.join(workspaceStateDir(workspace_root), 'bench');
+}
+
+/**
+ * Absolute path to ONE bench run's manifest — the immutable inputs of that
+ * experiment (§4.7). Written once at creation and never rewritten: a cell's
+ * state is projected from its clone bead's attempt records, so a second ledger
+ * here would only be one more thing to keep in sync.
+ *
+ * @param {string} workspace_root
+ * @param {string} run_id
+ * @returns {string} `.../bench/<run_id>.json`.
+ */
+export function benchManifestPath(workspace_root, run_id) {
+  return path.join(
+    benchRunsDir(workspace_root),
+    `${safeSegment(run_id, 'run')}.json`
+  );
+}
+
+/**
  * Absolute root of the per-bead record tree (record-timeline-retention §4).
  *
  * @param {string} workspace_root

@@ -206,3 +206,122 @@ describe('views/detail-panel/comments', () => {
     expect(lane?.getAttribute('title')).toContain('1785076768091-1');
   });
 });
+
+const REVIEW_ANCHOR = 'a'.repeat(40);
+
+const REVIEW_TEXT = [
+  '## 🔎 리뷰 결과 · impl · r2',
+  'VERDICT: REVISE',
+  `anchor: ${REVIEW_ANCHOR}`,
+  '',
+  '1. severity(blocking) | server/a.js:10 | 문제 | 최소 수정',
+  '2. minor | app/b.js:3 | 문제 | 최소 수정'
+].join('\n');
+
+const BROKEN_REVIEW_TEXT = [
+  '## 🔎 리뷰 결과 · impl · r2',
+  'VERDICT: 통과',
+  `anchor: ${REVIEW_ANCHOR}`
+].join('\n');
+
+/**
+ * @param {string} text
+ * @param {import('./comments.js').CommentsHandlers} [handlers]
+ * @param {import('./comments.js').CommentsView} [view]
+ * @returns {HTMLElement}
+ */
+function mountComment(text, handlers = {}, view = {}) {
+  return mount(
+    commentsTemplate(
+      [{ id: 'r1', author: 'agent', text, created_at: '2026-09-03T04:05:00Z' }],
+      handlers,
+      view
+    )
+  );
+}
+
+describe('views/detail-panel/comments — 리뷰 결과 카드', () => {
+  test('draws a review round as a collapsed card with its verdict', () => {
+    const host = mountComment(REVIEW_TEXT);
+
+    const card = host.querySelector('.detail-report--review');
+    expect(card?.querySelector('.detail-report__kind')?.textContent).toBe(
+      '리뷰 결과'
+    );
+    expect(card?.querySelector('.detail-report__lane')?.textContent).toBe(
+      'impl · r2'
+    );
+    expect(card?.querySelector('.detail-report__verdict')?.textContent).toBe(
+      'REVISE'
+    );
+    expect(card?.querySelector('.detail-report__body')).toBe(null);
+  });
+
+  test('shows the point count raised in the round', () => {
+    const host = mountComment(REVIEW_TEXT);
+
+    expect(host.querySelector('.detail-report__points')?.textContent).toContain(
+      '지적 2건'
+    );
+  });
+
+  test('marks an APPROVE verdict apart from a REVISE one', () => {
+    const approve = [
+      '## 🔎 리뷰 결과 · spec · r1',
+      'VERDICT: APPROVE',
+      `anchor: ${REVIEW_ANCHOR}`,
+      '',
+      '- 지적 없음'
+    ].join('\n');
+
+    const host = mountComment(approve);
+
+    expect(
+      host.querySelector('.detail-report__verdict--approve')?.textContent
+    ).toBe('APPROVE');
+    expect(host.querySelector('.detail-report__points')?.textContent).toContain(
+      '지적 없음'
+    );
+  });
+
+  test('shows the anchor as written without any freshness judgement', () => {
+    const host = mountComment(REVIEW_TEXT);
+
+    const anchor = host.querySelector('.detail-report__anchor');
+    expect(anchor?.getAttribute('title')).toBe(REVIEW_ANCHOR);
+    expect(host.textContent).not.toContain('stale');
+  });
+
+  test('reveals the round points when expanded', () => {
+    const host = mountComment(REVIEW_TEXT, {}, { expanded: new Set(['r1']) });
+
+    expect(host.querySelector('.detail-report__body')?.textContent).toContain(
+      'server/a.js:10'
+    );
+  });
+
+  test('calls onToggle with the comment id when the head is clicked', () => {
+    const onToggle = vi.fn();
+    const host = mountComment(REVIEW_TEXT, { onToggle });
+
+    /** @type {HTMLButtonElement|null} */ (
+      host.querySelector('.detail-report--review .detail-report__head')
+    )?.click();
+
+    expect(onToggle).toHaveBeenCalledWith('r1');
+  });
+
+  test('falls back to a plain comment when the header is off-contract', () => {
+    const host = mountComment(BROKEN_REVIEW_TEXT);
+
+    expect(host.querySelector('.detail-report--review')).toBe(null);
+    expect(host.querySelector('.detail-comment')).not.toBe(null);
+  });
+
+  test('keeps a work report on its own card, not the review one', () => {
+    const host = mountComment(REPORT_TEXT);
+
+    expect(host.querySelector('.detail-report')).not.toBe(null);
+    expect(host.querySelector('.detail-report--review')).toBe(null);
+  });
+});

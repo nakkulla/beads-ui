@@ -896,6 +896,63 @@ profile applied from another repo's panel split across two repos. All three now
 address one repo, and a successful write invalidates that repo's monitor
 `session_defaults` cache.
 
+## Preset comparison channel (preset-compare §3.5)
+
+- `get-compare` payload:
+  `{ range?, root_dirs?, issue_types?, routes?, include_bench? }` — replies with
+  an envelope of type `compare-snapshot` carrying
+  `{ rows, groups, workspaces }`. A request/response PAIR, not a subscription:
+  the answer is read from the per-bead attempt records of every visible
+  workspace, and nothing a Worker tick changes has to redraw a comparison table.
+  The tab asks on open, on a filter change, and on `새로고침`.
+- Every filter is optional and an unreadable value means "no restriction",
+  except `include_bench`, whose default EXCLUDES bench clone runs (§3.4) so a
+  comparison of real work never silently absorbs synthetic ones. `range` is a
+  `CLOSED_RANGE_OPTIONS` value and bounds the attempt's `finished_at`;
+  `root_dirs` are absolute registry paths.
+- One `rows[]` entry is ONE terminal implementation attempt (`kind` other than
+  `implementation` and a non-terminal status are both out) with the six columns
+  of §3.2 plus its `signature`. `verify` is `'pass' | 'fail' | null`, where
+  `null` is 미상 and is never counted as a success; `review` and a merge
+  candidate `[verify]` verdict are Bead-level and ride the bead's LAST
+  successful attempt alone.
+- One `groups[]` entry is one execution signature —
+  `<orch_model>/<orch_effort> → <impl_actor> · 리뷰 <model>/<effort>/<speed>` —
+  named after the first stored preset that matches it on every key that preset
+  declares, else the signature string. `name` is `미기록` in the implementer
+  position when the attempt preserved no `exec_receipt`. Medians carry their own
+  `{ median, sample, total }` so a column can say `n=3/5`, and `success_rate` is
+  taken over the judged rows only.
+
+## Bench experiment channel (preset-compare §4.3·§4.7)
+
+- `bench-run-create` payload:
+  `{ source_id, preset_ids: string[], repeats: 1..5, reviewer_mode: 'fixed'|'preset', reviewer?, root_dir? }`
+  — replies `ok` with `{ run }`, the run manifest that was just written. The
+  source must be a `route=quick_fix` bead carrying `quick_fix_review`; anything
+  else is refused rather than cloned (§4.1·§6). `reviewer_mode: 'fixed'`
+  requires `reviewer.impl_review_model` / `impl_review_effort` /
+  `impl_review_speed`, which overwrite that triple on every cell; `'preset'`
+  leaves each preset's own reviewer keys in place.
+- `root_dir` is optional and, when present, must be the connection's own
+  workspace: this op WRITES beads, so it may not be steered at a workspace the
+  connection did not select.
+- Creation is one fail-closed unit. The workspace base tip is read first
+  (`bench_base_unreadable` when it cannot be), each preset is resolved into a
+  complete execution tuple (`bench_tuple_unresolved` when it cannot be), and a
+  clone that cannot be completed aborts the experiment: every clone already
+  created is closed with `bench:<run_id>:aborted`, no manifest is written, and
+  the error's `details.aborted` names those beads.
+- `bench-run-list` payload: `{ root_dir? }` — replies with an envelope of type
+  `bench-runs-snapshot` carrying `{ root_dir, runs }`, newest run first. A run
+  is its immutable manifest (`run_id`, `source_bead_id`, `base_sha`, `presets`
+  with their `resolved_tuple`, `repeats`, `reviewer_mode`, `reviewer`,
+  `delegate_forced`, `created_at`) plus `cell_count` / `terminal_count` and a
+  `cells[]` whose per-cell `status`, `attempt_id`, `done_kind` and
+  `bench_verify` are PROJECTED from that clone bead's attempt records on every
+  read. The manifest itself is never rewritten, so there is no second result
+  ledger to keep in step with attempt history.
+
 ## Removed (historical)
 
 `list-issues`, `epic-status`, `list-ready`, `subscribe-updates` /
