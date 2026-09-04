@@ -27,6 +27,7 @@ import { formatTimestampLocal } from '../../utils/relative-time.js';
  * @typedef {Object} BlockerFact
  * @property {string} id
  * @property {string} location_label - The 위치 phrase alone, without a glyph.
+ * @property {string} [workspace_name] - foreign blocker owner의 화면 이름.
  */
 
 /**
@@ -37,14 +38,56 @@ import { formatTimestampLocal } from '../../utils/relative-time.js';
 const UNPLACED_LOCATION = '미적재';
 
 /**
+ * @param {string} glyph
+ * @param {string} id
+ * @param {boolean} foreign
+ * @param {string|undefined} workspace_name
+ */
+function blockerLabel(glyph, id, foreign, workspace_name) {
+  if (!foreign) {
+    return `${glyph} ${id}`;
+  }
+  const owner =
+    typeof workspace_name === 'string' && workspace_name.length > 0
+      ? workspace_name
+      : '외부';
+  return `${glyph} ${owner}/${id}`;
+}
+
+/**
+ * @param {string} label
+ * @param {string} sentence
+ * @param {boolean} foreign
+ */
+function blockerTitle(label, sentence, foreign) {
+  return `${label} — ${sentence}${
+    foreign ? ' · 다른 저장소의 이슈라 여기서 닫을 수 없다' : ''
+  }`;
+}
+
+/**
+ * @param {unknown} root_dir
+ * @returns {string|undefined}
+ */
+function workspaceNameFromRoot(root_dir) {
+  if (typeof root_dir !== 'string' || root_dir.length === 0) {
+    return undefined;
+  }
+  const trimmed = root_dir.replace(/\/+$/, '');
+  const cut = trimmed.lastIndexOf('/');
+  const name = trimmed.slice(cut + 1);
+  return name.length > 0 ? name : undefined;
+}
+
+/**
  * One blocked chip — Board 카드와 같은 한 벌이다 (`board/card.js`
  * `blockedChips`). 칩이 서 있다는 사실 자체가 "이 이슈는 저것 때문에 못
  * 나간다"이므로 방향어를 다시 적지 않고, blocker가 지금 어느 레인에 있는지는
  * 카드가 아니라 툴팁이 말한다 — 카드 위에서 `(실행가능)`은 이 이슈의 상태로
  * 오독됐다.
  *
- * 타 레포 blocker는 같은 문구에 색만 갈라진다 (`foreign`): 기다린다는 사실은
- * 같고, 그것이 이 레포 밖에 있어 여기서 닫을 수 없다는 것만 다르다.
+ * 타 레포 blocker는 owner workspace 이름을 ID 앞에 쓰고 `foreign` 색도
+ * 유지한다. owner를 모르면 `외부`로 접어 추론하지 않는다.
  *
  * @param {string} owner_id
  * @param {BlockerFact} blocker
@@ -52,10 +95,15 @@ const UNPLACED_LOCATION = '미적재';
  */
 export function predecessorChip(owner_id, blocker) {
   const foreign = isForeignBlocker(owner_id, blocker.id);
+  const label = blockerLabel('⛓', blocker.id, foreign, blocker.workspace_name);
   return {
     id: blocker.id,
-    label: `⛓ ${blocker.id}`,
-    title: `선행 — close될 때까지 출발하지 않는다 (${blocker.location_label})`,
+    label,
+    title: blockerTitle(
+      label,
+      `선행 — close될 때까지 출발하지 않는다 (${blocker.location_label})`,
+      foreign
+    ),
     ...(foreign ? { foreign: true } : {})
   };
 }
@@ -76,6 +124,7 @@ const RELEASED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
  * @property {number} closed_at
  * @property {string} [root_dir] - owner workspace. 같은 레포이거나 owner를
  * 모르면 없다.
+ * @property {string} [workspace_name] - foreign owner의 화면 이름.
  */
 
 /**
@@ -104,16 +153,59 @@ export function releasedChip(owner_id, released, now) {
   const foreign = isForeignBlocker(owner_id, released.id);
   const root_dir =
     typeof released.root_dir === 'string' ? released.root_dir : '';
+  const label = blockerLabel(
+    '🔓',
+    released.id,
+    foreign,
+    released.workspace_name
+  );
   /** @type {ReleasedChip} */
   const chip = {
     id: released.id,
-    label: `🔓 ${released.id}`,
-    title: `해제 — ${formatTimestampLocal(closed_at)}에 close되어 이 이슈가 풀렸다`,
+    label,
+    title: blockerTitle(
+      label,
+      `해제 — ${formatTimestampLocal(closed_at)}에 close되어 이 이슈가 풀렸다`,
+      foreign
+    ),
     ...(foreign ? { foreign: true } : {})
   };
   if (!foreign) {
     chip.openable = true;
   } else if (root_dir.length > 0) {
+    chip.openable = true;
+    chip.root_dir = root_dir;
+  }
+  return chip;
+}
+
+/**
+ * One resolved blocker chip. 서버가 현재 열린 선행 목록에서 빠졌다는 것만
+ * 말하고 close 시각은 주장하지 않으며, owner를 아는 foreign 칩만 열 수 있다.
+ *
+ * @param {string} owner_id
+ * @param {string} id
+ * @param {string} [workspace_name]
+ * @param {string} [root_dir]
+ * @returns {ReleasedChip}
+ */
+export function resolvedBlockerChip(owner_id, id, workspace_name, root_dir) {
+  const foreign = isForeignBlocker(owner_id, id);
+  const label = blockerLabel('🔓', id, foreign, workspace_name);
+  /** @type {ReleasedChip} */
+  const chip = {
+    id,
+    label,
+    title: blockerTitle(
+      label,
+      '해제 — 더 이상 이 이슈를 막지 않는다 · 복귀 대기',
+      foreign
+    ),
+    ...(foreign ? { foreign: true } : {})
+  };
+  if (!foreign) {
+    chip.openable = true;
+  } else if (typeof root_dir === 'string' && root_dir.length > 0) {
     chip.openable = true;
     chip.root_dir = root_dir;
   }
@@ -226,11 +318,13 @@ export function deriveWorkerBlockers(
       if (typeof blocker_id !== 'string' || blocker_id.length === 0) {
         continue;
       }
+      const owner_root = blocker_workspaces[blocker_id];
+      const workspace_name = workspaceNameFromRoot(owner_root);
       const chip = predecessorChip(bead_id, {
         id: blocker_id,
-        location_label: location_by_bead.get(blocker_id) || UNPLACED_LOCATION
+        location_label: location_by_bead.get(blocker_id) || UNPLACED_LOCATION,
+        ...(workspace_name ? { workspace_name } : {})
       });
-      const owner_root = blocker_workspaces[blocker_id];
       if (chip.foreign !== true) {
         chip.openable = true;
       } else if (typeof owner_root === 'string' && owner_root.length > 0) {

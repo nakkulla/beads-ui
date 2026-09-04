@@ -453,7 +453,7 @@ describe('views/worker', () => {
       cand.querySelector('.worker-card[data-bead-id="BL-1"]')
     );
     expect(bl1.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ DEP-9'
+      '⛓ 외부/DEP-9'
     );
     expect(bl1.querySelector('.worker-card__reason')).toBeNull();
 
@@ -583,7 +583,7 @@ describe('views/worker', () => {
     const chips = Array.from(card.querySelectorAll('.worker-dep--pred'))
       .map((el) => el.textContent || '')
       .join(' ');
-    expect(chips).toContain('⛓ DEP-7');
+    expect(chips).toContain('⛓ 외부/DEP-7');
     expect(chips).not.toContain('DEP-OLD');
   });
 
@@ -12262,6 +12262,207 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
     });
   }
 
+  /**
+   * @param {string} action_id
+   * @returns {Record<string, any>}
+   */
+  function staleAdmission(action_id) {
+    return {
+      reason: 'worktree_stale_work',
+      at: 1,
+      stale_work: {
+        state: 'unique',
+        cause: 'dirty_unique',
+        summary: {
+          staged_count: 1,
+          unstaged_count: 0,
+          untracked_count: 0,
+          branch_ahead: 0,
+          head_ahead: 0
+        },
+        action_id,
+        can_resume: false,
+        can_continue: true,
+        can_backup_fresh: true,
+        can_recheck: true
+      }
+    };
+  }
+
+  /**
+   * @param {Record<string, any>} patch
+   * @returns {{ mount: HTMLElement, transport: ReturnType<typeof vi.fn> }}
+   */
+  function mountStaleSerialPath(patch) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const transport = vi.fn(async () => ({
+      ok: true,
+      conflict: false,
+      queue: queueStore.get()
+    }));
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport
+    });
+    queueStore.set(laneQueue({ revision: 17, ...patch }));
+    return { mount, transport };
+  }
+
+  /**
+   * @returns {Record<string, any>}
+   */
+  function waitingStalePath() {
+    return {
+      attempts: {
+        x1: {
+          attempt_id: 'x1',
+          bead_id: 'X',
+          status: 'waiting',
+          serial_lane_id: 's1',
+          finished_at: 10,
+          cause: 'prerequisite_unmet',
+          cause_detail: {
+            summary: '선행 미충족으로 착수하지 않았습니다',
+            blockers: [{ id: 'A-9', rig: null, status: 'open' }]
+          }
+        }
+      },
+      admission: { X: staleAdmission('waiting-action') },
+      serial_lanes: [
+        { id: 's1', entries: [{ bead_id: 'X', added_at: 1 }] },
+        { id: 's2', entries: [] }
+      ],
+      lane_states: {
+        s1: {
+          occupied_by: [],
+          order: ['X'],
+          corrections: [],
+          cycle: false
+        },
+        s2: { occupied_by: [], order: [], corrections: [], cycle: false }
+      }
+    };
+  }
+
+  /**
+   * @returns {Record<string, any>}
+   */
+  function failedStalePath() {
+    return {
+      attempts: {
+        x1: {
+          attempt_id: 'x1',
+          bead_id: 'X',
+          status: 'failed',
+          serial_lane_id: 's1',
+          finished_at: 10,
+          dismissed_at: 20
+        }
+      },
+      admission: { X: staleAdmission('failed-action') },
+      serial_lanes: [
+        { id: 's1', entries: [{ bead_id: 'X', added_at: 1 }] },
+        { id: 's2', entries: [] }
+      ],
+      lane_states: {
+        s1: {
+          occupied_by: ['X'],
+          order: ['X'],
+          corrections: [],
+          cycle: false
+        },
+        s2: { occupied_by: [], order: [], corrections: [], cycle: false }
+      }
+    };
+  }
+
+  test('renders stale-work actions on a demoted waiting row', () => {
+    const { mount } = mountStaleSerialPath(waitingStalePath());
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-lane-s1 [data-bead-id="X"]')
+    );
+
+    expect(
+      Array.from(
+        row.querySelectorAll(
+          '.worker-mini__stale-continue, .worker-mini__stale-backup, .worker-mini__stale-recheck'
+        )
+      ).map((button) => button.getAttribute('data-action-id'))
+    ).toEqual(['waiting-action', 'waiting-action', 'waiting-action']);
+  });
+
+  test('sends the waiting-row continue action with identity and revision', async () => {
+    const { mount, transport } = mountStaleSerialPath(waitingStalePath());
+    const button = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini__stale-continue')
+    );
+
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-stale-work-continue', {
+      bead_id: 'X',
+      action_id: 'waiting-action',
+      expected_revision: 17
+    });
+  });
+
+  test('keeps the demoted waiting row undraggable', () => {
+    const { mount } = mountStaleSerialPath(waitingStalePath());
+
+    const row = mount.querySelector(
+      '#worker-pane-lane-s1 .worker-mini[data-bead-id="X"]'
+    );
+
+    expect(row?.getAttribute('draggable')).toBe('false');
+  });
+
+  test('renders stale-work actions instead of a ghost on a demoted failed row', () => {
+    const { mount } = mountStaleSerialPath(failedStalePath());
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-lane-s1 [data-bead-id="X"]')
+    );
+
+    expect(row.classList.contains('worker-mini--ghost')).toBe(false);
+    expect(
+      Array.from(
+        row.querySelectorAll(
+          '.worker-mini__stale-continue, .worker-mini__stale-backup, .worker-mini__stale-recheck'
+        )
+      ).map((button) => button.getAttribute('data-action-id'))
+    ).toEqual(['failed-action', 'failed-action', 'failed-action']);
+  });
+
+  test('sends the failed-row recheck action with identity and revision', async () => {
+    const { mount, transport } = mountStaleSerialPath(failedStalePath());
+    const button = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini__stale-recheck')
+    );
+
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-stale-work-recheck', {
+      bead_id: 'X',
+      action_id: 'failed-action',
+      expected_revision: 17
+    });
+  });
+
+  test('puts the held occupancy badge first on a demoted failed row', () => {
+    const { mount } = mountStaleSerialPath(failedStalePath());
+
+    const first_badge = mount.querySelector(
+      '#worker-pane-lane-s1 [data-bead-id="X"] .worker-mini__badge'
+    );
+
+    expect(first_badge?.textContent).toBe('실패 · 점유 유지');
+  });
+
   test('renders serial lane cards with rows and an empty drop target', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
@@ -13473,7 +13674,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.worker-mini[data-bead-id="W-1"]')
     );
     expect(row.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ UI-x'
+      '⛓ 외부/UI-x'
     );
   });
 
@@ -13485,7 +13686,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.worker-card[data-bead-id="BL-1"]')
     );
     expect(card.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ DEP-9'
+      '⛓ 외부/DEP-9'
     );
   });
 
@@ -13508,7 +13709,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.rtile[data-bead-id="SS-1"]')
     );
     expect(tile.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ UI-x'
+      '⛓ 외부/UI-x'
     );
   });
 
@@ -13537,7 +13738,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.worker-mini[data-bead-id="W-1"]')
     );
     expect(row.querySelector('.worker-dep--pred')?.getAttribute('title')).toBe(
-      '선행 — close될 때까지 출발하지 않는다 (#1)'
+      '⛓ W-0 — 선행 — close될 때까지 출발하지 않는다 (#1)'
     );
   });
 
@@ -13564,7 +13765,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.worker-mini[data-bead-id="W-1"]')
     );
     expect(row.querySelector('.worker-dep--pred')?.getAttribute('title')).toBe(
-      '선행 — close될 때까지 출발하지 않는다 (PR 대기)'
+      '⛓ W-0 — 선행 — close될 때까지 출발하지 않는다 (PR 대기)'
     );
   });
 
@@ -13580,7 +13781,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.worker-mini[data-bead-id="W-1"]')
     );
     expect(row.querySelector('.worker-dep--pred')?.getAttribute('title')).toBe(
-      '선행 — close될 때까지 출발하지 않는다 (미적재)'
+      '⛓ W-9 — 선행 — close될 때까지 출발하지 않는다 (미적재)'
     );
   });
 
@@ -13611,7 +13812,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.rtile[data-bead-id="W-1"]')
     );
     expect(tile.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ UI-x'
+      '⛓ 외부/UI-x'
     );
   });
 
@@ -13649,7 +13850,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       )
     );
     expect(row.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ UI-x'
+      '⛓ 외부/UI-x'
     );
     expect(row.querySelector('.worker-dep--overlap')?.textContent).toContain(
       'W-1'
@@ -13953,7 +14154,7 @@ describe('worker 탭 blocked 칩 열기 (UI-u6zf §5)', () => {
     expect(
       mount.querySelector('.worker-mini[data-bead-id="W-1"] .worker-dep--pred')
         ?.textContent
-    ).toContain('⛓ UI-x');
+    ).toContain('⛓ 외부/UI-x');
   });
 
   test('never opens the card own issue on a chip click', () => {

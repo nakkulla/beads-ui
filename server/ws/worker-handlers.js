@@ -77,7 +77,8 @@ import { discardOperationActive } from '../worker/discard-phase.js';
 import { projectExecutionDefaults } from '../worker/execution-defaults.js';
 import {
   applyForeignBlockerCleanup,
-  onForeignBlockerResolved
+  onForeignBlockerResolved,
+  ownerRootsForBlockerIds
 } from '../worker/foreign-blocker-status.js';
 import {
   evaluateMergeGate,
@@ -1321,6 +1322,75 @@ function cleanForeignBlockers(workspace_key, bead_blocked_by) {
     bead_blocked_by: projected.bead_blocked_by,
     blocker_workspaces: projected.blocker_workspaces || null
   };
+}
+
+/**
+ * Add valid blocker ids from one persisted blocker list.
+ *
+ * @param {Set<string>} ids
+ * @param {unknown} value
+ */
+function addBlockerIds(ids, value) {
+  if (!Array.isArray(value)) {
+    return;
+  }
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      continue;
+    }
+    const id = /** @type {Record<string, unknown>} */ (raw).id;
+    if (typeof id === 'string' && id.length > 0) {
+      ids.add(id);
+    }
+  }
+}
+
+/**
+ * Blocker ids whose chips can outlive the cleaned live-blocker projection.
+ *
+ * @param {Record<string, any>} queue
+ * @returns {Set<string>}
+ */
+function extraBlockerIds(queue) {
+  /** @type {Set<string>} */
+  const ids = new Set();
+  const attempts = queue.attempts;
+  if (attempts && typeof attempts === 'object' && !Array.isArray(attempts)) {
+    for (const raw of Object.values(attempts)) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        continue;
+      }
+      const attempt = /** @type {Record<string, unknown>} */ (raw);
+      if (attempt.status !== 'waiting') {
+        continue;
+      }
+      const cause_detail = attempt.cause_detail;
+      if (
+        !cause_detail ||
+        typeof cause_detail !== 'object' ||
+        Array.isArray(cause_detail)
+      ) {
+        continue;
+      }
+      addBlockerIds(
+        ids,
+        /** @type {Record<string, unknown>} */ (cause_detail).blockers
+      );
+    }
+  }
+  const admission = queue.admission;
+  if (admission && typeof admission === 'object' && !Array.isArray(admission)) {
+    for (const raw of Object.values(admission)) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        continue;
+      }
+      const entry = /** @type {Record<string, unknown>} */ (raw);
+      if (entry.reason === 'prerequisite_unmet') {
+        addBlockerIds(ids, entry.blockers);
+      }
+    }
+  }
+  return ids;
 }
 
 /**
@@ -2797,6 +2867,18 @@ export function decorateQueue(workspace_key, raw_queue) {
     beadBlockedByFor(workspace_key, queue)
   );
   const bead_blocked_by = cleaned.bead_blocked_by;
+  /** @type {Record<string, string>} */
+  const blocker_workspaces = { ...(cleaned.blocker_workspaces || {}) };
+  const extra_ids = extraBlockerIds(overlaid);
+  for (const id of Object.keys(blocker_workspaces)) {
+    extra_ids.delete(id);
+  }
+  if (extra_ids.size > 0) {
+    Object.assign(
+      blocker_workspaces,
+      ownerRootsForBlockerIds(extra_ids, workspace_key)
+    );
+  }
   const bead_scope = beadScopeFor(workspace_key, queue);
   const bead_dependents = beadDependentsFor(workspace_key, queue);
   return {
@@ -2872,12 +2954,12 @@ export function decorateQueue(workspace_key, raw_queue) {
     // wait-reason chip and lane topological corrections read from this, and
     // CLOSED cross-rig blockers are already gone from it (UI-u6zf §3.2).
     bead_blocked_by,
-    // Owning workspace of each SURVIVING cross-rig blocker (UI-u6zf §4), so a
-    // blocked chip can open the blocker in the rig that holds it. Its own key
-    // rather than a widened `bead_blocked_by`, on the same partiality contract
-    // as `bead_titles`/`bead_times`: a missing key is 모름, not "same repo".
-    ...(cleaned.blocker_workspaces
-      ? { blocker_workspaces: cleaned.blocker_workspaces }
+    // Owning workspace of live or persisted waiting cross-rig blockers, so an
+    // open or released chip can open the blocker in the rig that holds it. Its
+    // own key keeps the same partiality contract as `bead_titles`/`bead_times`:
+    // a missing key is 모름, not "same repo".
+    ...(Object.keys(blocker_workspaces).length > 0
+      ? { blocker_workspaces }
       : {}),
     // Per-serial-lane occupancy + topological correction, derived fresh from
     // this snapshot (UI-04vo §5). Never persisted.

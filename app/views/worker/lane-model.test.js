@@ -59,6 +59,19 @@ function runnable(id, patch = {}) {
 }
 
 /**
+ * @param {string} [action_id]
+ * @returns {Record<string, any>}
+ */
+function staleAdmission(action_id = 'stale-action') {
+  return {
+    'A-1': {
+      reason: 'worktree_stale_work',
+      stale_work: { action_id }
+    }
+  };
+}
+
+/**
  * Build the 스냅샷 최상위 `cross_lanes` (UI-j92s §4.4). `root_dir`을 생략하면
  * repo-a다.
  *
@@ -534,6 +547,123 @@ describe('monitor 대기 repo sections (UI-eey2 §6)', () => {
     ]);
   });
 
+  test('demotes a stale-work occupant ghost to its serial waiting row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_titles: { 'A-1': '점유 중인 작업' },
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
+          lane_states: { s1: { occupied_by: ['A-1'] } },
+          admission: staleAdmission(),
+          runnable: [runnable('A-1')],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              started_at: 10,
+              finished_at: 20,
+              dismissed_at: 30
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const serial = lanes.queue_groups[0].sublanes.serial[0];
+    expect({
+      running: lanes.running.map((item) => item.id),
+      items: serial.items.map((item) => item.id),
+      occupants: serial.occupants.map((item) => item.id),
+      badges: serial.items[0].badges,
+      runnable: lanes.runnable.map((item) => item.id),
+      copies: lanes.queue.filter((item) => item.id === 'A-1').length
+    }).toEqual({
+      running: [],
+      items: ['A-1'],
+      occupants: [],
+      badges: ['실패 · 점유 유지'],
+      runnable: [],
+      copies: 1
+    });
+  });
+
+  test('keeps an occupant ghost when stale-work action_id is empty', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
+          lane_states: { s1: { occupied_by: ['A-1'] } },
+          admission: staleAdmission(''),
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              dismissed_at: 30
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const serial = lanes.queue_groups[0].sublanes.serial[0];
+    expect([
+      serial.items.map((item) => item.id),
+      serial.occupants.map((item) => item.id)
+    ]).toEqual([[], ['A-1']]);
+  });
+
+  test('keeps an occupant ghost when stale_work is absent', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
+          lane_states: { s1: { occupied_by: ['A-1'] } },
+          admission: { 'A-1': { reason: 'worktree_stale_work' } },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              dismissed_at: 30
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const serial = lanes.queue_groups[0].sublanes.serial[0];
+    expect(serial.occupants.map((item) => item.id)).toEqual(['A-1']);
+  });
+
+  test('keeps an entry-less stale-work occupant as a ghost', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-2' }] }],
+          lane_states: { s1: { occupied_by: ['A-1'] } },
+          admission: staleAdmission(),
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              dismissed_at: 30
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const serial = lanes.queue_groups[0].sublanes.serial[0];
+    expect(serial.occupants.map((item) => item.id)).toEqual(['A-1']);
+  });
+
   test('omits the hint entirely when the only configured serial lane is empty', () => {
     const lanes = buildLanes(
       [workspace({ serial_lane_count: 1, queue: [{ bead_id: 'A-1' }] })],
@@ -591,7 +721,7 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
 
     const row = lanes.queue.find((r) => r.id === 'A-2');
     expect(row?.dependency_chips?.predecessors?.[0].title).toBe(
-      '선행 — close될 때까지 출발하지 않는다 (실행가능)'
+      '⛓ A-1 — 선행 — close될 때까지 출발하지 않는다 (실행가능)'
     );
   });
 
@@ -638,7 +768,7 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
     );
 
     const row = lanes.queue.find((r) => r.id === 'A-2');
-    expect(row?.dependency_chips?.predecessors?.[0].label).toBe('⛓ B-1');
+    expect(row?.dependency_chips?.predecessors?.[0].label).toBe('⛓ 외부/B-1');
   });
 
   test('draws no chip on the blocker card itself', () => {
@@ -754,7 +884,7 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
     );
 
     expect(lanes.pr_wait[0].dependency_chips?.predecessors?.[0].title).toBe(
-      '선행 — close될 때까지 출발하지 않는다 (repo-a · 병렬 #1)'
+      '⛓ A-9 — 선행 — close될 때까지 출발하지 않는다 (repo-a · 병렬 #1)'
     );
   });
 
@@ -1958,8 +2088,60 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
     };
   }
 
+  /**
+   * @param {string[]} blocker_ids
+   * @returns {Record<string, any>}
+   */
+  function waitingOn(blocker_ids) {
+    const attempts = waitingAttempt();
+    attempts.t1.cause_detail.blockers = blocker_ids.map((id) => ({
+      id,
+      rig: null,
+      status: 'open'
+    }));
+    return attempts;
+  }
+
   test('projects a waiting attempt as its own run state', () => {
     const map = activeByBead(waitingAttempt(), new Map());
+
+    expect(map.get('A-1')?.run_state).toBe('waiting');
+  });
+
+  test('demotes a stale-work waiting tile to its serial waiting row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
+          attempts: waitingAttempt(),
+          admission: staleAdmission(),
+          runnable: [runnable('A-1')]
+        })
+      ],
+      [state()]
+    );
+
+    const serial = lanes.queue_groups[0].sublanes.serial[0];
+    expect({
+      running: lanes.running.map((item) => item.id),
+      items: serial.items.map((item) => item.id),
+      runnable: lanes.runnable.map((item) => item.id),
+      copies: lanes.queue.filter((item) => item.id === 'A-1').length
+    }).toEqual({ running: [], items: ['A-1'], runnable: [], copies: 1 });
+  });
+
+  test('keeps a waiting tile when stale_work is absent', () => {
+    const map = activeByBead(waitingAttempt(), new Map(), {
+      admission: { 'A-1': { reason: 'worktree_stale_work' } }
+    });
+
+    expect(map.get('A-1')?.run_state).toBe('waiting');
+  });
+
+  test('keeps a waiting tile when stale-work action_id is empty', () => {
+    const map = activeByBead(waitingAttempt(), new Map(), {
+      admission: staleAdmission('')
+    });
 
     expect(map.get('A-1')?.run_state).toBe('waiting');
   });
@@ -1997,19 +2179,27 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
     expect(row?.alert).toBe(false);
   });
 
-  test('unions the proven blocker into the decorated blocker chips', () => {
+  test('moves a frozen blocker missing from the open set to released', () => {
     const lanes = buildLanes(
       [
         workspace({
-          attempts: waitingAttempt(),
-          bead_blocked_by: { 'A-1': ['A-9'] }
+          attempts: waitingOn(['A-X', 'A-Y']),
+          bead_blocked_by: { 'A-1': ['A-Y'] }
         })
       ],
       [state()]
     );
 
     const row = lanes.running.find((item) => item.id === 'A-1');
-    expect(row?.blocked_by).toEqual(['A-9', 'Analysis-2zly']);
+    expect({
+      open: row?.blocked_by,
+      released: row?.dependency_chips?.released?.map((chip) => chip.id),
+      returning: row?.wait?.returning
+    }).toEqual({
+      open: ['A-Y'],
+      released: ['A-X'],
+      returning: false
+    });
   });
 
   test('lists a proven blocker once when the decoration already carries it', () => {
@@ -2025,6 +2215,188 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
 
     const row = lanes.running.find((item) => item.id === 'A-1');
     expect(row?.blocked_by).toEqual(['Analysis-2zly']);
+  });
+
+  test('marks all frozen blockers released after their edges disappear', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: waitingOn(['A-X', 'A-Y']),
+          bead_blocked_by: { 'A-1': [] }
+        })
+      ],
+      [state()]
+    );
+
+    const row = lanes.running.find((item) => item.id === 'A-1');
+    expect({
+      open: row?.blocked_by,
+      released: row?.dependency_chips?.released?.map((chip) => chip.id),
+      returning: row?.wait?.returning
+    }).toEqual({ open: [], released: ['A-X', 'A-Y'], returning: true });
+  });
+
+  test('keeps every frozen blocker open when the current key is absent', () => {
+    const lanes = buildLanes(
+      [workspace({ attempts: waitingOn(['A-X', 'A-Y']) })],
+      [state()]
+    );
+
+    const row = lanes.running.find((item) => item.id === 'A-1');
+    expect({
+      open: row?.blocked_by,
+      released: row?.dependency_chips?.released,
+      returning: row?.wait?.returning
+    }).toEqual({ open: ['A-X', 'A-Y'], released: undefined, returning: false });
+  });
+
+  test('shows a newly added blocker without marking the bead returning', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: waitingOn(['A-X']),
+          bead_blocked_by: { 'A-1': ['A-Z'] }
+        })
+      ],
+      [state()]
+    );
+
+    const row = lanes.running.find((item) => item.id === 'A-1');
+    expect({
+      open: row?.blocked_by,
+      released: row?.dependency_chips?.released?.map((chip) => chip.id),
+      returning: row?.wait?.returning
+    }).toEqual({ open: ['A-Z'], released: ['A-X'], returning: false });
+  });
+
+  test('uses a visible blocker workspace name before its root basename', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: waitingOn(['B-1']),
+          bead_blocked_by: { 'A-1': ['B-1'] },
+          blocker_workspaces: { 'B-1': WS_B }
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: '표시-repo-b',
+          queue: [{ bead_id: 'B-1' }]
+        })
+      ],
+      [
+        state(),
+        state({ root_dir: WS_B, name: '표시-repo-b', issue_prefix: 'B' })
+      ]
+    );
+
+    const row = lanes.running.find((item) => item.id === 'A-1');
+    expect(row?.dependency_chips?.predecessors?.[0].label).toBe(
+      '⛓ 표시-repo-b/B-1'
+    );
+  });
+
+  test('falls back to a blocker owner root basename', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: waitingOn(['B-1']),
+          bead_blocked_by: { 'A-1': ['B-1'] },
+          blocker_workspaces: { 'B-1': WS_B }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].dependency_chips?.predecessors?.[0].label).toBe(
+      '⛓ repo-b/B-1'
+    );
+  });
+
+  test('carries a foreign owner onto a resolved blocker chip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: waitingOn(['B-1']),
+          bead_blocked_by: { 'A-1': [] },
+          blocker_workspaces: { 'B-1': WS_B }
+        })
+      ],
+      [state()]
+    );
+
+    const chip = lanes.running[0].dependency_chips?.released?.[0];
+    expect([chip?.label, chip?.openable, chip?.root_dir]).toEqual([
+      '🔓 repo-b/B-1',
+      true,
+      WS_B
+    ]);
+  });
+
+  test('opens a foreign predecessor known only by the owner map', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: waitingOn(['B-1']),
+          bead_blocked_by: { 'A-1': ['B-1'] },
+          blocker_workspaces: { 'B-1': WS_B }
+        })
+      ],
+      [state()]
+    );
+
+    const chip = lanes.running[0].dependency_chips?.predecessors?.[0];
+    expect([chip?.openable, chip?.root_dir]).toEqual([true, WS_B]);
+  });
+
+  test('carries the card repo onto an unplaced same-repo resolved chip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: waitingOn(['A-X']),
+          bead_blocked_by: { 'A-1': [] }
+        })
+      ],
+      [state()]
+    );
+
+    const chip = lanes.running[0].dependency_chips?.released?.[0];
+    expect([chip?.openable, chip?.root_dir]).toEqual([true, WS_A]);
+  });
+
+  test('keeps other held states despite a stale-work admission', () => {
+    const attempts = {
+      parked: {
+        attempt_id: 'parked',
+        bead_id: 'A-1',
+        status: 'parked',
+        cause: 'session_parked'
+      },
+      retry: {
+        attempt_id: 'retry',
+        bead_id: 'A-2',
+        status: 'retry_wait'
+      },
+      provider: {
+        attempt_id: 'provider',
+        bead_id: 'A-3',
+        status: 'paused',
+        cause: 'provider_outage:usage_limit'
+      }
+    };
+    const admission = Object.fromEntries(
+      ['A-1', 'A-2', 'A-3'].map((id) => [
+        id,
+        { reason: 'worktree_stale_work', stale_work: { action_id: id } }
+      ])
+    );
+
+    const map = activeByBead(attempts, new Map(), { admission });
+
+    expect(['A-1', 'A-2', 'A-3'].map((id) => map.get(id)?.run_state)).toEqual([
+      'parked',
+      'retry_wait',
+      'provider_hold'
+    ]);
   });
 });
 

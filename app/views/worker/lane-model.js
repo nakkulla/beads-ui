@@ -63,7 +63,8 @@ import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
 import {
   dependentsChip,
   predecessorChip,
-  releasedChip
+  releasedChip,
+  resolvedBlockerChip
 } from './queue-blockers.js';
 
 /**
@@ -582,7 +583,7 @@ export function runningLaneBeadIds(queue) {
  *
  * @param {Record<string, any>} attempts
  * @param {Map<string, number>} done_at_by_bead
- * @param {{ discard_operations?: Record<string, any>, observations?: Record<string, any>, bead_timelines?: Record<string, any>, provider_hold?: Record<string, any>, auto_resume_pending?: any[], account_catalog?: Record<string, any> }} [input]
+ * @param {{ discard_operations?: Record<string, any>, observations?: Record<string, any>, bead_timelines?: Record<string, any>, provider_hold?: Record<string, any>, auto_resume_pending?: any[], account_catalog?: Record<string, any>, admission?: Record<string, any> }} [input]
  * @returns {Map<string, any>}
  */
 export function activeByBead(attempts, done_at_by_bead, input = {}) {
@@ -655,6 +656,12 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
     // 같은 bead에 살아 있는 attempt가 이미 있으면 그것이 이긴다: 사람이 파킹을
     // 재시도해 새 세션이 도는 동안 옛 파킹 기록이 카드를 빼앗지 않는다.
     if (map.has(bead_id)) {
+      continue;
+    }
+    if (
+      held.run_state === 'waiting' &&
+      staleDisposition(input.admission, bead_id)
+    ) {
       continue;
     }
     const a = held.attempt;
@@ -1230,6 +1237,23 @@ function admissionBadge(admission, bead_id) {
 }
 
 /**
+ * Whether an admission can render its stale-work disposition on a waiting row.
+ *
+ * @param {unknown} admission
+ * @param {string} bead_id
+ * @returns {boolean}
+ */
+function staleDisposition(admission, bead_id) {
+  const record = objectOf(objectOf(admission)[bead_id]);
+  const stale_work = objectOf(record.stale_work);
+  return (
+    record.reason === 'worktree_stale_work' &&
+    typeof stale_work.action_id === 'string' &&
+    stale_work.action_id.length > 0
+  );
+}
+
+/**
  * @param {unknown} value
  * @returns {Record<string, any>}
  */
@@ -1237,6 +1261,20 @@ function objectOf(value) {
   return value && typeof value === 'object'
     ? /** @type {Record<string, any>} */ (value)
     : {};
+}
+
+/**
+ * @param {unknown} root_dir
+ * @returns {string|undefined}
+ */
+function workspaceNameFromRoot(root_dir) {
+  if (typeof root_dir !== 'string' || root_dir.length === 0) {
+    return undefined;
+  }
+  const trimmed = root_dir.replace(/\/+$/, '');
+  const cut = trimmed.lastIndexOf('/');
+  const name = trimmed.slice(cut + 1);
+  return name.length > 0 ? name : undefined;
 }
 
 /**
@@ -1360,7 +1398,16 @@ export function releasedChipsFor(bead_id, release_info, now) {
   /** @type {import('./lanes.js').ReleasedChip[]} */
   const chips = [];
   for (const entry of ordered) {
-    const chip = releasedChip(bead_id, entry, now);
+    const workspace_name =
+      typeof entry.workspace_name === 'string' &&
+      entry.workspace_name.length > 0
+        ? entry.workspace_name
+        : workspaceNameFromRoot(entry.root_dir);
+    const chip = releasedChip(
+      bead_id,
+      { ...entry, ...(workspace_name ? { workspace_name } : {}) },
+      now
+    );
     if (chip) {
       chips.push(chip);
     }
@@ -2245,21 +2292,30 @@ function applyScopeOverlaps(
  * 조립하는 자리에서 붙는다. 그 자리에서는 타 레포 owner를 서버 `release_info`가
  * 이미 실어 왔으므로 사다리의 첫 칸만 비는 셈이다.
  *
+ * `owner_roots`는 서버 `blocker_workspaces`다 (UI-yue8 §6.2). 레인에 서 있지 않아
+ * `locations`가 모르는 타 레포 상대라도 서버가 owner를 증명했으면 그 칩은 열려야
+ * 한다 — 이름은 `<workspace>/<ID>`로 보이는데 클릭만 죽어 있으면 같은 사실을 두
+ * 어휘로 말하는 것이다.
+ *
  * @param {{ id: string, root_dir?: string }} card
  * @param {string} other_id
  * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} [locations]
+ * @param {Record<string, string>} [owner_roots]
  * @returns {{ openable?: true, root_dir?: string }}
  */
-function openTarget(card, other_id, locations) {
+function openTarget(card, other_id, locations, owner_roots) {
   const located = locations ? locations.get(other_id)?.root_dir : undefined;
+  const owned = owner_roots ? owner_roots[other_id] : undefined;
   const same_repo = !isForeignBlocker(card.id, other_id);
   const own = typeof card.root_dir === 'string' ? card.root_dir : '';
   const root_dir =
     typeof located === 'string' && located.length > 0
       ? located
-      : same_repo && own.length > 0
-        ? own
-        : '';
+      : typeof owned === 'string' && owned.length > 0
+        ? owned
+        : same_repo && own.length > 0
+          ? own
+          : '';
   if (root_dir.length > 0) {
     return { openable: true, root_dir };
   }
@@ -2558,6 +2614,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 방식의 cross-workspace 수집이고 새 프로토콜 필드는 없다.
   /** @type {Map<string, Record<string, any>>} */
   const admission_by_bead = new Map();
+  /** @type {Map<string, Record<string, string>>} */
+  const blocker_workspaces_by_root = new Map();
+  /** @type {Map<string, string[]>} */
+  const resolved_blockers_by_key = new Map();
   // 후속 칩의 큐 장식 재료 (UI-8x90 §6.2). `bead_blocked_by`와 달리 빈 배열이
   // "없다"가 아니라 "보이는 스냅샷 안에는 없다"이므로, 부착은 후보 행의
   // `dependents_info`와의 합집합으로만 한다 (§4.4).
@@ -2603,6 +2663,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const times = objectOf(workspace.bead_times);
     const observations = objectOf(workspace.pr_observations);
     const admission = objectOf(workspace.admission);
+    const blocker_workspaces = objectOf(workspace.blocker_workspaces);
+    blocker_workspaces_by_root.set(root_dir, blocker_workspaces);
     for (const [bead_id, record] of Object.entries(admission)) {
       if (record && typeof record === 'object') {
         admission_by_bead.set(bead_id, record);
@@ -2928,13 +2990,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
     };
 
     /**
-     * Slot 4a's dependency-chip material, merged (선행 대기 계층 §5.1). 큐
-     * 장식이 아직 그 엣지를 싣지 않았어도 `waiting` attempt가 증명한 blocker는
-     * 칩이 되어야 하고, 둘이 같은 ID를 말하면 칩은 하나다.
+     * Slot 4's dependency-chip material (선행 대기 계층 §5.1). 현재 blocker
+     * 키가 있으면 그 목록이 열린 선행을 소유하고, attempt의 동결 목록에서 빠진
+     * ID는 해제 칩 재료로 따로 보존한다. 키가 없을 때만 동결 목록을 합친다.
      *
      * @param {string} bead_id
      * @param {import('./running-grid.js').WaitTile|null|undefined} wait
-     * @returns {{ blocked_by?: string[] }}
+     * @returns {{ blocked_by?: string[], wait?: import('./running-grid.js').WaitTile }}
      */
     const blockedByFields = (bead_id, wait) => {
       const decorated = decoratedBlockedBy(bead_id);
@@ -2947,12 +3009,28 @@ export function buildLanes(workspaces, workspaces_state, options) {
         Array.isArray(record.blockers)
           ? record.blockers
           : [];
+      const frozen = (wait?.blockers || [])
+        .map((blocker) => blocker.id)
+        .filter((id) => typeof id === 'string' && id.length > 0);
+      if (wait && Object.hasOwn(bead_blocked_by, bead_id)) {
+        const open = decorated.blocked_by || [];
+        const resolved = frozen.filter((id) => !open.includes(id));
+        if (resolved.length > 0) {
+          resolved_blockers_by_key.set(`${root_dir}\u0000${bead_id}`, resolved);
+        }
+        return {
+          blocked_by: open,
+          wait: { ...wait, returning: open.length === 0 }
+        };
+      }
       const waited = [
-        ...(wait?.blockers || []).map((blocker) => blocker.id),
+        ...frozen,
         ...proven.map((/** @type {any} */ blocker) => blocker.id)
       ].filter((id) => typeof id === 'string' && id.length > 0);
       if (waited.length === 0) {
-        return decorated;
+        return wait
+          ? { ...decorated, wait: { ...wait, returning: false } }
+          : decorated;
       }
       /** @type {string[]} */
       const merged = [...(decorated.blocked_by || [])];
@@ -2961,7 +3039,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
           merged.push(id);
         }
       }
-      return { blocked_by: merged };
+      return {
+        blocked_by: merged,
+        ...(wait ? { wait: { ...wait, returning: false } } : {})
+      };
     };
 
     /** @type {Set<string>} */
@@ -2975,7 +3056,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
       auto_resume_pending: Array.isArray(workspace.auto_resume_pending)
         ? workspace.auto_resume_pending
         : [],
-      account_catalog: objectOf(workspace.account_catalog)
+      account_catalog: objectOf(workspace.account_catalog),
+      admission
     })) {
       claimed.add(bead_id);
       // 실패 판정은 **attempt 스냅샷**의 `armed_by_lane`에 결속된다 (§5.5): 지금
@@ -3027,10 +3109,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
             repo_operations
           })
         : null;
+      const blocker_fields = blockedByFields(bead_id, live.wait);
       running.push({
         ...base(bead_id),
         lane: 'running',
-        ...blockedByFields(bead_id, live.wait),
+        ...blocker_fields,
         ...(serial_lane_by_bead.has(bead_id)
           ? { serial_lane_id: serial_lane_by_bead.get(bead_id) }
           : {}),
@@ -3057,7 +3140,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         hold: live.hold || null,
         // 선행 대기의 재료 (선행 대기 계층 §5.1). 실패와 별개 키이므로 타일이
         // 실패 팝오버를 얻지 않고, 없으면 held 본문이 그려지지 않는다.
-        wait: live.wait || null,
+        wait: blocker_fields.wait || live.wait || null,
         // backoff 사실은 실패와 별개 키다 (UI-5ym8 §6): `retry_wait` 타일의
         // 배지가 이것만으로 그려지고, `failed` 타일에서는 팝오버의 재시도 이력
         // 줄이 같은 값을 읽는다.
@@ -3499,17 +3582,41 @@ export function buildLanes(workspaces, workspaces_state, options) {
       // 점유는 그것을 해제로 읽지 않는다. `claimed`에는 넣어야 그 bead가 뒤의 후보 레인으로
       // 새어나가지 않는다.
       const ghost_ids = new Set(occupied_by);
+      /** @type {Set<string>} */
+      const demoted_occupants = new Set(
+        entries
+          .map((/** @type {any} */ entry) => entry?.bead_id)
+          .filter(
+            (/** @type {unknown} */ bead_id) =>
+              typeof bead_id === 'string' &&
+              ghost_ids.has(bead_id) &&
+              staleDisposition(admission, bead_id)
+          )
+      );
       /** @type {LaneItem[]} */
       const items = [];
       for (let i = 0; i < entries.length; i++) {
         const entry_bead_id = entries[i] && entries[i].bead_id;
-        if (typeof entry_bead_id === 'string' && ghost_ids.has(entry_bead_id)) {
+        if (
+          typeof entry_bead_id === 'string' &&
+          ghost_ids.has(entry_bead_id) &&
+          !demoted_occupants.has(entry_bead_id)
+        ) {
           claimed.add(entry_bead_id);
           continue;
         }
         const item = waitingItem(entries[i], id, i, entries.length);
         if (!item) {
           continue;
+        }
+        if (
+          typeof entry_bead_id === 'string' &&
+          demoted_occupants.has(entry_bead_id)
+        ) {
+          item.badges = [
+            occupantOf(entry_bead_id).badge,
+            ...(item.badges || [])
+          ];
         }
         items.push(item);
         queue.push(item);
@@ -3529,7 +3636,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
         items,
         raw_length: entries.length,
         occupied_by,
-        occupants: occupied_by.map((bead_id) => occupantOf(bead_id)),
+        occupants: occupied_by
+          .filter((bead_id) => !demoted_occupants.has(bead_id))
+          .map((bead_id) => occupantOf(bead_id)),
         corrections: Array.isArray(lane_state.corrections)
           ? lane_state.corrections.length
           : 0,
@@ -4103,9 +4212,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
       continue;
     }
     const current_location = locations.get(item.id);
-    item.blockers = (item.blocked_by || []).map((blocker_id) =>
-      describeBlocker(blocker_id, current_location, locations, states)
-    );
+    const owner_roots = blocker_workspaces_by_root.get(item.root_dir) || {};
+    item.blockers = (item.blocked_by || []).map((blocker_id) => {
+      const workspace_name =
+        locations.get(blocker_id)?.workspace_name ||
+        workspaceNameFromRoot(owner_roots[blocker_id]);
+      return {
+        ...describeBlocker(blocker_id, current_location, locations, states),
+        ...(workspace_name ? { workspace_name } : {})
+      };
+    });
   }
 
   // 카드는 blocked만 말한다: 역방향(후속) 칩은 걷어냈다 — 이미 출발한 이슈에게
@@ -4124,12 +4240,31 @@ export function buildLanes(workspaces, workspaces_state, options) {
     // 모니터의 칩은 모두 누를 수 있다 (UI-u6zf §5.1): 모니터는 보이는 레포를
     // 모두 읽으므로 워커 탭과 달리 blocker의 위치를 언제나 안다. 그 클릭은
     // blocker 이슈로 이동하고(UI-lx45 §5), 타 레포면 `root_dir`이 전환 대상을
-    // 말한다 — 위치를 모르는 blocker만 그 값 없이 현재 레포로 열린다.
+    // 말한다 — 위치도 서버 owner 맵도 모르는 타 레포 blocker만 열리지 않는다.
+    const owner_roots = blocker_workspaces_by_root.get(item.root_dir) || {};
     /** @type {DependencyChip[]} */
     const predecessors = (item.blockers || []).map((blocker) => ({
       ...predecessorChip(item.id, blocker),
-      ...openTarget(item, blocker.id, locations)
+      ...openTarget(item, blocker.id, locations, owner_roots)
     }));
+    // 해제 칩도 선행 칩과 같은 사다리로 연다 (UI-yue8 §8.4): 사다리 결과가 칩이
+    // 스스로 정한 `root_dir`을 덮으므로, 위치를 잃은 같은 레포 상대도 카드의
+    // 레포를 실어 다른 레포가 활성일 때 남의 이슈를 열지 않는다.
+    const resolved = (
+      resolved_blockers_by_key.get(`${item.root_dir}\u0000${item.id}`) || []
+    ).map((blocker_id) => {
+      const location = locations.get(blocker_id);
+      const owner_root = location?.root_dir || owner_roots[blocker_id];
+      return {
+        ...resolvedBlockerChip(
+          item.id,
+          blocker_id,
+          location?.workspace_name || workspaceNameFromRoot(owner_root),
+          owner_root
+        ),
+        ...openTarget(item, blocker_id, locations, owner_roots)
+      };
+    });
     // 후속 칩도 같은 루프에서 붙는다 (UI-8x90 §4.4). 재료는 두 원천의
     // 합집합이다: 큐 장식 `bead_dependents`는 보이는 스냅샷 안의 것만 세고,
     // 후보 행의 `dependents_info`는 그 행에만 실린다 — 어느 쪽의 빈 값도 다른
@@ -4144,7 +4279,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
         locations
       )
     );
-    if (predecessors.length === 0 && dependents.length === 0) {
+    if (
+      predecessors.length === 0 &&
+      resolved.length === 0 &&
+      dependents.length === 0
+    ) {
       continue;
     }
     // 후보 행이 이미 `released` 칩을 싣고 있을 수 있다 (UI-d13v §5.3) — 이 부착이
@@ -4153,6 +4292,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const chips = {
       ...(item.dependency_chips || {}),
       ...(predecessors.length > 0 ? { predecessors } : {}),
+      ...(resolved.length > 0 ? { released: resolved } : {}),
       ...(dependents.length > 0 ? { dependents } : {})
     };
     item.dependency_chips = chips;

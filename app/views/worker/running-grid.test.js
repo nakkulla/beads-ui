@@ -2222,6 +2222,23 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     expect(tile.classList.contains('rtile--failed')).toBe(false);
   });
 
+  test('badges a returning waiting attempt as 복귀 대기', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        waitTile({ wait: { ...waitTile().wait, returning: true } })
+      ]),
+      mount
+    );
+
+    const badge = mount.querySelector('.rtile__held-badge');
+    expect(badge?.textContent).toBe('⛓ 복귀 대기');
+    expect(badge?.getAttribute('title')).toBe(
+      '막고 있던 선행이 남지 않았습니다 — 다음 pass에서 후보로 돌아갑니다 (슬롯·레인 순서 대기)'
+    );
+  });
+
   test('labels the status instead of running a clock', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
@@ -2301,6 +2318,28 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
 
     expect(mount.querySelector('.worker-dep--pred')?.textContent).toContain(
       '⛓ Analysis-2zly'
+    );
+  });
+
+  test('draws the slot 4b released chip in the held body', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate(
+        [
+          waitTile({
+            dependency_chips: {
+              released: [{ id: 'Analysis-2zly', label: '🔓 Analysis-2zly' }]
+            }
+          })
+        ],
+        5000
+      ),
+      mount
+    );
+
+    expect(mount.querySelector('.worker-dep--released')?.textContent).toContain(
+      '🔓 Analysis-2zly'
     );
   });
 

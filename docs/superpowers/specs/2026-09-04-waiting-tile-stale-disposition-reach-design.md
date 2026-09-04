@@ -474,9 +474,9 @@ text-overflow: ellipsis; white-space: nowrap`을 더한다(인라인 요소라�
   읽으면 "waiting attempt가 있는데 왜 대기 행인가"를 설명할 근거가 어디에도 없다.
   **trade-off가 실재한다**: 대안(타일·ghost에 처분 카드 추가, `재개`의 dismiss
   시점 이동)은 각각 조작 표면 분산과 `dismissed_at` 단조 계약 파기를 대가로
-  같은 결과를 낸다 → ADR. `summary`: "처분 대기 admission이 선 bead는 held
+  같은 결과를 낸다. `summary`: "처분 대기 admission이 선 bead는 held
   타일·점유 ghost가 아니라 대기 행이 대표하고 stale-work 처분 조작은 대기 행에만
-  산다"
+  산다" → ADR
 - `dismissed_at`은 단조·UI hide 그대로 — 기존 계약의 재확인이지 새 결정이 아니다
   → ADR 아님.
 - foreign 칩 `<workspace>/<ID>` 표기와 `복귀 대기` 뱃지 — 표시 어휘이며 슬롯

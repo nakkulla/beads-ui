@@ -5,7 +5,8 @@ import {
   dependentsChip,
   deriveWorkerBlockers,
   predecessorChip,
-  releasedChip
+  releasedChip,
+  resolvedBlockerChip
 } from './queue-blockers.js';
 
 /**
@@ -39,7 +40,7 @@ describe('deriveWorkerBlockers (UI-anna §5.1)', () => {
     ]);
 
     expect(chips.get('A-2')?.[0].title).toBe(
-      '선행 — close될 때까지 출발하지 않는다 (실행중)'
+      '⛓ A-1 — 선행 — close될 때까지 출발하지 않는다 (실행중)'
     );
   });
 
@@ -49,7 +50,7 @@ describe('deriveWorkerBlockers (UI-anna §5.1)', () => {
     ]);
 
     expect(chips.get('A-2')?.[0].title).toBe(
-      '선행 — close될 때까지 출발하지 않는다 (미적재)'
+      '⛓ A-9 — 선행 — close될 때까지 출발하지 않는다 (미적재)'
     );
   });
 
@@ -57,6 +58,14 @@ describe('deriveWorkerBlockers (UI-anna §5.1)', () => {
     const chips = deriveWorkerBlockers(new Map([['A-2', ['B-1']]]), []);
 
     expect(chips.get('A-2')?.[0].foreign).toBe(true);
+  });
+
+  test('derives a foreign blocker workspace name from its owner root', () => {
+    const chips = deriveWorkerBlockers(new Map([['A-2', ['B-1']]]), [], {
+      'B-1': '/repos/repo-b/'
+    });
+
+    expect(chips.get('A-2')?.[0].label).toBe('⛓ repo-b/B-1');
   });
 
   test('leaves a same-rig blocker unmarked', () => {
@@ -229,7 +238,74 @@ describe('predecessorChip', () => {
       location_label: 'PR 대기'
     });
 
-    expect(chip.title).toBe('선행 — close될 때까지 출발하지 않는다 (PR 대기)');
+    expect(chip.title).toBe(
+      '⛓ A-1 — 선행 — close될 때까지 출발하지 않는다 (PR 대기)'
+    );
+  });
+
+  test('names a known foreign workspace on the label', () => {
+    const chip = predecessorChip('A-2', {
+      id: 'B-1',
+      location_label: '외부',
+      workspace_name: 'repo-b'
+    });
+
+    expect(chip.label).toBe('⛓ repo-b/B-1');
+  });
+
+  test('falls back to 외부 on an owner-unknown foreign label', () => {
+    const chip = predecessorChip('A-2', {
+      id: 'B-1',
+      location_label: '외부'
+    });
+
+    expect(chip.label).toBe('⛓ 외부/B-1');
+  });
+
+  test('prefixes a foreign tooltip with the full label and restriction', () => {
+    const chip = predecessorChip('A-2', {
+      id: 'B-1',
+      location_label: '외부',
+      workspace_name: 'repo-b'
+    });
+
+    expect(chip.title).toBe(
+      '⛓ repo-b/B-1 — 선행 — close될 때까지 출발하지 않는다 (외부) · 다른 저장소의 이슈라 여기서 닫을 수 없다'
+    );
+  });
+});
+
+describe('resolvedBlockerChip (UI-yue8 §6.1)', () => {
+  test('keeps a same-rig id on the label', () => {
+    const chip = resolvedBlockerChip('A-2', 'A-1');
+
+    expect(chip.label).toBe('🔓 A-1');
+  });
+
+  test('names a known foreign workspace on the label', () => {
+    const chip = resolvedBlockerChip('A-2', 'B-1', 'repo-b');
+
+    expect(chip.label).toBe('🔓 repo-b/B-1');
+  });
+
+  test('falls back to 외부 on an owner-unknown foreign label', () => {
+    const chip = resolvedBlockerChip('A-2', 'B-1');
+
+    expect(chip.label).toBe('🔓 외부/B-1');
+  });
+
+  test('prefixes the tooltip with the full label', () => {
+    const chip = resolvedBlockerChip('A-2', 'A-1');
+
+    expect(chip.title).toBe(
+      '🔓 A-1 — 해제 — 더 이상 이 이슈를 막지 않는다 · 복귀 대기'
+    );
+  });
+
+  test('opens a foreign release when its owner root is known', () => {
+    const chip = resolvedBlockerChip('A-2', 'B-1', 'repo-b', '/repos/repo-b');
+
+    expect([chip.openable, chip.root_dir]).toEqual([true, '/repos/repo-b']);
   });
 });
 
@@ -249,8 +325,24 @@ describe('releasedChip (UI-d13v §5.3)', () => {
     const chip = releasedChip('A-2', { id: 'A-1', closed_at }, NOW);
 
     expect(chip?.title).toBe(
-      `해제 — ${formatTimestampLocal(closed_at)}에 close되어 이 이슈가 풀렸다`
+      `🔓 A-1 — 해제 — ${formatTimestampLocal(closed_at)}에 close되어 이 이슈가 풀렸다`
     );
+  });
+
+  test('names a known foreign workspace on the label', () => {
+    const chip = releasedChip(
+      'A-2',
+      { id: 'B-9', closed_at: NOW, workspace_name: 'repo-b' },
+      NOW
+    );
+
+    expect(chip?.label).toBe('🔓 repo-b/B-9');
+  });
+
+  test('falls back to 외부 on an owner-unknown foreign label', () => {
+    const chip = releasedChip('A-2', { id: 'B-9', closed_at: NOW }, NOW);
+
+    expect(chip?.label).toBe('🔓 외부/B-9');
   });
 
   test('keeps a release from exactly seven days ago', () => {

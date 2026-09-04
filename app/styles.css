@@ -7498,20 +7498,28 @@ html[data-theme='dark'] {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
+  max-width: 22ch;
+  overflow: hidden;
   padding: 1px var(--sp-5);
   border: 1px solid var(--border-chip);
   border-radius: var(--r-5);
   font-size: var(--fs-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 열리는 칩 네 종은 같은 버튼이다 (UI-8x90 §4.2): 클릭 의미가 하나이므로
    브라우저 기본 버튼 모양만 지우고 칩의 치수·색은 종류 규칙이 그대로 쓴다. */
 .worker-dep__open {
+  min-width: 0;
+  overflow: hidden;
   background: transparent;
   color: inherit;
   font: inherit;
   font-size: var(--fs-caption);
   cursor: pointer;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* blocked 칩은 Board 카드(`.ctl-chip--blocked-dep`)와 같은 토큰을 쓴다 — 같은
