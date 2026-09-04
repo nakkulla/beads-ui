@@ -15,9 +15,11 @@ import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
 import { runSession } from './runner/session.js';
 import {
+  QUEUE_GRACE_MS,
   activeLaneLineages,
   createScheduler,
   quickFixSelfReviewBlock,
+  requestStartNow,
   withQuickFixSelfReview
 } from './scheduler.js';
 import { createSessionLog, stderrPathOf } from './session-log.js';
@@ -51,6 +53,19 @@ const WS = '/tmp/example-workspace/project-a';
 
 /** The dispatch head every resolution binding in this file is taken on. */
 const RESOLUTION_DISPATCH_HEAD = 'd'.repeat(40);
+
+/**
+ * The queue store this file's dispatch tests seed through. Its clock stamps
+ * `added_at` one whole `QUEUE_GRACE_MS` before epoch 0, so every seeded row has
+ * already waited out the 대기 진입 유예 (§3.3) at this file's scheduler clock —
+ * which is the state these tests have always observed. The grace itself belongs
+ * to the tests that seat a row at the scheduler's own `now`.
+ *
+ * @param {Parameters<typeof createQueueStore>[0]} [options]
+ */
+function makeQueueStore(options = {}) {
+  return createQueueStore({ now: () => -QUEUE_GRACE_MS, ...options });
+}
 
 /** @type {string} */
 let tmp_state;
@@ -657,7 +672,7 @@ function makeFakeBd(config) {
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
-    opts.store || createQueueStore()
+    opts.store || makeQueueStore()
   );
   const runner = makeFakeRunner();
   const bd = makeFakeBd(opts.config);
@@ -3300,7 +3315,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
   });
 
   test('refuses before metadata or runner launch when normal attempt prerecord fails', async () => {
-    const base_store = createQueueStore();
+    const base_store = makeQueueStore();
     const appendAttempt = vi.fn((workspace) => ({
       ok: false,
       conflict: false,
@@ -3945,7 +3960,7 @@ describe('scheduler resume (spec §1)', () => {
 
     const result = await env.scheduler.resume(WS, 'r1');
 
-    const cold = createQueueStore().snapshot(WS);
+    const cold = makeQueueStore().snapshot(WS);
     const child = Object.values(cold.attempts).find(
       (attempt) => attempt.resumed_from === 'r1'
     );
@@ -4466,7 +4481,7 @@ describe('scheduler resume (spec §1)', () => {
   });
 
   test('refuses before resume metadata or runner launch when child prerecord fails', async () => {
-    const base_store = createQueueStore();
+    const base_store = makeQueueStore();
     let deny_append = false;
     const store = {
       ...base_store,
@@ -4797,7 +4812,7 @@ describe('scheduler resume (spec §1)', () => {
   });
 
   test('binds the relaunch prerecord to the revalidated queue revision', async () => {
-    const store = createQueueStore();
+    const store = makeQueueStore();
     const guardHook = {
       install: vi.fn(() => {
         store.setAutoAdvance(WS, false);
@@ -5451,7 +5466,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
   });
 
   test('refuses before external metadata or runner launch when attempt prerecord fails', async () => {
-    const base_store = createQueueStore();
+    const base_store = makeQueueStore();
     const appendAttempt = vi.fn((workspace) => ({
       ok: false,
       conflict: false,
@@ -9634,7 +9649,7 @@ describe('scheduler already-finished verify verdict (UI-b8n8 §접근 B)', () =>
     // write, and the transfer writes an ending for any attempt it finds none
     // for (record-timeline-retention §5).
     const timeline = createBeadTimeline({ workspace_root: WS });
-    const store = createQueueStore({ timeline });
+    const store = makeQueueStore({ timeline });
     const env = setup({
       store,
       timeline,
@@ -11831,7 +11846,7 @@ describe('scheduler lane launch reservation releases (UI-nrut phase 1 → UI-04v
   }
 
   test('releases a normal queue reservation after an attempt prerecord abort', async () => {
-    const base_store = createQueueStore();
+    const base_store = makeQueueStore();
     const env = setup({
       store: rejectNextAppend(base_store),
       config: { B1: {}, S2: { labels: ['worker-serial'] } },
@@ -11926,7 +11941,7 @@ describe('scheduler lane launch reservation releases (UI-nrut phase 1 → UI-04v
   });
 
   test('releases an external-conflict reservation after a prerecord throw', async () => {
-    const base_store = createQueueStore();
+    const base_store = makeQueueStore();
     const env = setup({
       store: throwNextAppend(base_store),
       config: { B1: {}, S2: { labels: ['worker-serial'] } },
@@ -11948,7 +11963,7 @@ describe('scheduler lane launch reservation releases (UI-nrut phase 1 → UI-04v
   });
 
   test('releases an external-conflict reservation after an attempt prerecord abort', async () => {
-    const base_store = createQueueStore();
+    const base_store = makeQueueStore();
     const env = setup({
       store: rejectNextAppend(base_store),
       config: { B1: {}, S2: { labels: ['worker-serial'] } },
@@ -11970,7 +11985,7 @@ describe('scheduler lane launch reservation releases (UI-nrut phase 1 → UI-04v
   });
 
   test('releases a resume reservation after a child prerecord abort', async () => {
-    const base_store = createQueueStore();
+    const base_store = makeQueueStore();
     base_store.appendAttempt(WS, {
       expected_revision: base_store.snapshot(WS).revision,
       attempt: {
@@ -11999,7 +12014,7 @@ describe('scheduler lane launch reservation releases (UI-nrut phase 1 → UI-04v
   });
 
   test('releases a REVISE reservation after a child prerecord abort', async () => {
-    const base_store = createQueueStore();
+    const base_store = makeQueueStore();
     base_store.place(WS, {
       expected_revision: base_store.snapshot(WS).revision,
       bead_id: 'B1'
@@ -13744,7 +13759,7 @@ describe('scheduler records surviving guard warnings (UI-1xcd §1)', () => {
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
 
     expect(
-      createQueueStore().load(WS).attempts[attempt_id].guard_warnings
+      makeQueueStore().load(WS).attempts[attempt_id].guard_warnings
     ).toHaveLength(1);
   });
 });
@@ -14473,7 +14488,7 @@ describe('스케줄러 직렬 레인 뮤텍스 (UI-04vo seam B)', () => {
   });
 
   test('rebuilds lane occupancy from durable attempts after a restart', async () => {
-    const store = createQueueStore();
+    const store = makeQueueStore();
     const env = setup({
       config: { B: {}, P1: {} },
       store,
@@ -17672,5 +17687,130 @@ describe('scheduler abandoned discard release', () => {
     const second = env.scheduler.unfenceDiscardAttempt(attempt_id);
 
     expect([first, second]).toEqual([true, false]);
+  });
+});
+
+describe('대기 진입 유예 (§3.3)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * A scheduler and a store on ONE clock this test moves. The grace is judged
+   * across those two — the store stamps `added_at`, the scheduler compares it
+   * to its own `now` — so a shared clock is what makes the judgment observable.
+   *
+   * @param {{ clock: { at: number }, config?: Record<string, any>, slots?: number, publishActivity?: any }} opts
+   */
+  function graceEnv(opts) {
+    const now = () => opts.clock.at;
+    return setup({
+      store: makeQueueStore({ now }),
+      now,
+      config: opts.config || {},
+      slots: opts.slots ?? 2,
+      publishActivity: opts.publishActivity
+    });
+  }
+
+  test('refuses a bead the tick meets inside its grace', async () => {
+    const clock = { at: 1000 };
+    const env = graceEnv({ clock, config: { G1: {} } });
+    seedQueue(env.store, ['G1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.G1?.reason).toBe('grace_period');
+    expect(env.scheduler.isRunning('G1')).toBe(false);
+  });
+
+  test('dispatches the same bead one grace later', async () => {
+    const clock = { at: 1000 };
+    const env = graceEnv({ clock, config: { G2: {} } });
+    seedQueue(env.store, ['G2']);
+    await env.scheduler.tick(WS);
+
+    clock.at += QUEUE_GRACE_MS;
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('G2')).toBe(true);
+  });
+
+  test('runs a row `▶ 진행` armed without waiting out the grace', async () => {
+    const clock = { at: 1000 };
+    const env = graceEnv({ clock, config: { G3: {} } });
+    seedQueue(env.store, ['G3']);
+    env.store.arm(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_ids: ['G3'],
+      lane_id: 'cl_1'
+    });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('G3')).toBe(true);
+  });
+
+  test('runs a row `[지금 시작]` named without moving its added_at', async () => {
+    const clock = { at: 1000 };
+    const env = graceEnv({ clock, config: { G4: {} } });
+    seedQueue(env.store, ['G4']);
+
+    requestStartNow(WS, 'G4', clock.at);
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('G4')).toBe(true);
+    expect(env.store.snapshot(WS).queue[0].added_at).toBe(1000);
+  });
+
+  test('wakes on the EARLIEST grace end alone', async () => {
+    vi.useFakeTimers();
+    const clock = { at: 1000 };
+    const env = graceEnv({ clock, config: { G5: {}, G6: {} } });
+    seedQueue(env.store, ['G5']);
+    clock.at = 6000;
+    seedQueue(env.store, ['G6']);
+    await env.scheduler.tick(WS);
+
+    clock.at = 21000;
+    await vi.advanceTimersByTimeAsync(15000);
+
+    expect(env.scheduler.isRunning('G5')).toBe(true);
+    expect(env.scheduler.isRunning('G6')).toBe(false);
+  });
+
+  test('keeps ONE wake-up however many passes re-arm it', async () => {
+    vi.useFakeTimers();
+    const clock = { at: 1000 };
+    const publishActivity = vi.fn();
+    const env = graceEnv({ clock, config: { G7: {} }, publishActivity });
+    seedQueue(env.store, ['G7']);
+
+    await env.scheduler.tick(WS);
+    await env.scheduler.tick(WS);
+    await env.scheduler.tick(WS);
+    clock.at = 21000;
+    await vi.advanceTimersByTimeAsync(QUEUE_GRACE_MS);
+
+    // 세 번 무장했지만 깨우기는 하나다: 직접 부른 tick 3회 + 타이머 1회.
+    expect(publishActivity).toHaveBeenCalledTimes(4);
+    expect(env.scheduler.isRunning('G7')).toBe(true);
+  });
+
+  test('re-arms the wake-up from added_at after a restart', async () => {
+    vi.useFakeTimers();
+    const clock = { at: 1000 };
+    const now = () => clock.at;
+    const store = makeQueueStore({ now });
+    seedQueue(store, ['G8']);
+    // 이 프로세스는 tick을 한 번도 돌지 않았다: 무장의 재료는 durable `added_at`
+    // 하나다.
+    const env = setup({ store, now, config: { G8: {} }, slots: 1 });
+
+    await env.scheduler.recoverControls(WS);
+    clock.at = 21000;
+    await vi.advanceTimersByTimeAsync(QUEUE_GRACE_MS);
+
+    expect(env.scheduler.isRunning('G8')).toBe(true);
   });
 });

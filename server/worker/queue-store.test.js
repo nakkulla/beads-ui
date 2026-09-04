@@ -11760,3 +11760,76 @@ describe('worker/queue-store discard abandonment', () => {
     );
   });
 });
+
+describe('대기 레인 이동이 added_at을 다시 찍는다 (§3.3 회귀)', () => {
+  /**
+   * A store whose clock the test moves, so `added_at` can be read as a value
+   * this file chose rather than wall time.
+   *
+   * @param {{ at: number }} clock
+   */
+  function storeOn(clock) {
+    return createQueueStore({ now: () => clock.at });
+  }
+
+  test('re-stamps added_at when place moves a row to another waiting lane', () => {
+    const clock = { at: 1000 };
+    const store = storeOn(clock);
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'B1'
+    });
+
+    clock.at = 5000;
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'B1',
+      lane: 's1'
+    });
+
+    expect(store.snapshot(WS).serial_lanes[0].entries[0].added_at).toBe(5000);
+  });
+
+  test('re-stamps added_at when applySerialGroup re-seats a group', () => {
+    const clock = { at: 1000 };
+    const store = storeOn(clock);
+    let rev = store.snapshot(WS).revision;
+    for (const bead_id of ['B1', 'B2']) {
+      rev = store.place(WS, { expected_revision: rev, bead_id }).queue.revision;
+    }
+
+    clock.at = 5000;
+    store.applySerialGroup(WS, {
+      expected_revision: rev,
+      lane: 's1',
+      ordered_bead_ids: ['B1', 'B2']
+    });
+
+    expect(
+      store.snapshot(WS).serial_lanes[0].entries.map((e) => e.added_at)
+    ).toEqual([5000, 5000]);
+  });
+
+  test('keeps added_at when a row is reordered inside one lane', () => {
+    const clock = { at: 1000 };
+    const store = storeOn(clock);
+    let rev = store.snapshot(WS).revision;
+    for (const bead_id of ['B1', 'B2']) {
+      rev = store.place(WS, { expected_revision: rev, bead_id }).queue.revision;
+    }
+
+    clock.at = 5000;
+    store.reorder(WS, {
+      expected_revision: rev,
+      bead_id: 'B2',
+      to_index: 0
+    });
+
+    expect(
+      store.snapshot(WS).queue.map((entry) => [entry.bead_id, entry.added_at])
+    ).toEqual([
+      ['B2', 1000],
+      ['B1', 1000]
+    ]);
+  });
+});

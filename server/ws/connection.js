@@ -112,6 +112,7 @@ import {
   handleWorkerQueueSetOrchestrationDefaults,
   handleWorkerQueueSetSerialLaneCount,
   handleWorkerQueueSetSlots,
+  handleWorkerQueueStartNow,
   handleWorkerQueueToggle,
   handleWorkerRepoOperationDeployRun,
   handleWorkerRepoOperationDismiss,
@@ -563,6 +564,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-disarm':
       handleWorkerQueueDisarm(ws, req);
+      return;
+    case 'worker-queue-start-now':
+      handleWorkerQueueStartNow(ws, req);
       return;
     case 'worker-queue-toggle':
       handleWorkerQueueToggle(ws, req);

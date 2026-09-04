@@ -37,7 +37,7 @@ import { createQuickfixLanding } from '../worker/quickfix-landing.js';
 import { makeFixtureSpawn } from '../worker/runner/fixture-spawn.js';
 import { createRunner } from '../worker/runner/index.js';
 import { createWorkerRuntime } from '../worker/runtime.js';
-import { createScheduler } from '../worker/scheduler.js';
+import { QUEUE_GRACE_MS, createScheduler } from '../worker/scheduler.js';
 import { createVerifier } from '../worker/verify.js';
 
 // Waits on REAL child processes (git, node, python), so wall time here is
@@ -302,6 +302,11 @@ function buildSystem(opts) {
     remove: async () => ({ code: 0 })
   };
   const scheduler = createScheduler({
+    // 대기 진입 유예(§3.3)는 이 흐름의 축이 아니다. 배치와 같은 순간에 tick하는
+    // e2e가 20초를 실제로 기다릴 수는 없으므로, 스케줄러 시계를 유예만큼 앞세워
+    // 이미 유예가 끝난 대기 행으로 흐름을 본다. 유예 자체의 판정은
+    // `server/worker/scheduler.test.js`가 소유한다.
+    now: () => Date.now() + QUEUE_GRACE_MS,
     store: runtime.queueStore,
     execPresetCoordinator: runtime.execPresetCoordinator,
     // Real runner registry, but with the fixture-replaying fake spawn injected.
@@ -608,6 +613,11 @@ describe('worker e2e — worker-dispatched quick_fix lands without a PR', () => 
       }
     });
     const scheduler = createScheduler({
+      // 대기 진입 유예(§3.3)는 이 흐름의 축이 아니다. 배치와 같은 순간에 tick하는
+      // e2e가 20초를 실제로 기다릴 수는 없으므로, 스케줄러 시계를 유예만큼 앞세워
+      // 이미 유예가 끝난 대기 행으로 흐름을 본다. 유예 자체의 판정은
+      // `server/worker/scheduler.test.js`가 소유한다.
+      now: () => Date.now() + QUEUE_GRACE_MS,
       store: runtime.queueStore,
       execPresetCoordinator: runtime.execPresetCoordinator,
       makeRunner: (name) =>
@@ -1577,6 +1587,11 @@ describe('worker e2e — runtime seam reflects the live scheduler', () => {
     /** @type {Array<() => void>} */
     const finishers = [];
     const scheduler = createScheduler({
+      // 대기 진입 유예(§3.3)는 이 흐름의 축이 아니다. 배치와 같은 순간에 tick하는
+      // e2e가 20초를 실제로 기다릴 수는 없으므로, 스케줄러 시계를 유예만큼 앞세워
+      // 이미 유예가 끝난 대기 행으로 흐름을 본다. 유예 자체의 판정은
+      // `server/worker/scheduler.test.js`가 소유한다.
+      now: () => Date.now() + QUEUE_GRACE_MS,
       store: runtime.queueStore,
       execPresetCoordinator: runtime.execPresetCoordinator,
       makeRunner: () => ({
