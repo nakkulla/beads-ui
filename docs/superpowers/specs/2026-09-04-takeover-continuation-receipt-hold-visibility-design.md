@@ -7,7 +7,6 @@ scope:
   - server/worker/pr-actions.js
   - server/worker/repo-ops-display.js
   - server/routes/worker-queue.js
-  - app/views/worker/lane-model.js
   - app/views/worker/index.js
 ---
 
@@ -45,10 +44,12 @@ Worker가 무인 dispatch한 attempt `UI-91fl-1788427621125-2`(base `a6f2201`)�
 
 1. **승계 충돌.** 무인 attempt를 이어받은 대화형 세션이 계약이 요구하는
    `impl_entry`를 쓰는 순간, dispatch 시점에 얼어붙은 `receipt_baseline`과
-   어긋나 `approval_forged`가 된다. 키를 지우는 것도 같은 위반이라 Bead
-   metadata 편집으로는 해소되지 않는다.
+   어긋나 `approval_forged`가 된다. 검사는 이력 없이 현재 metadata와 baseline만
+   비교하므로 그 키를 다시 지우면 위반은 사라지지만, 그 편집을 할 자동 주체가
+   없고 사용자는 무엇을 지워야 하는지 알 수 없었다.
 2. **보류의 침묵.** 영수증 보류는 `metadata_watch`로 무기한 대기하는데 skip
-   기록·이벤트·배지·알림 어디에도 남지 않아 사용자가 멈춘 이유를 볼 수 없다.
+   기록·이벤트·알림 어디에도 남지 않고, 배지는 generic 「정정 대기」뿐이라
+   (사유 코드는 tooltip의 `원 사유:` 줄에만) 사용자가 멈춘 이유를 볼 수 없다.
 3. **원인 미기록.** needs_human을 남기는 일부 경로가 `failure_key`·`evidence`를
    넘기지 않고, `verify_config_invalid`를 만드는 두 지점(`verifyState()` 예외,
    `[머지]` 클릭 경로의 `ensureVerify` 실패)은 원인을 버린다.
@@ -76,9 +77,10 @@ Worker가 무인 dispatch한 attempt `UI-91fl-1788427621125-2`(base `a6f2201`)�
 `impl_entry`를 쓰지 않는다. `receipt_baseline` 불변식·위조 규칙·hold/badge 표·
 `[머지]` 클릭의 waive는 바꾸지 않는다.
 
-**D2. 영수증 보류를 해소 가능성으로 분류한다.** 해소 불가(`approval_forged`·
-`dispatch_forged`·`mode_authority_forged`)는 즉시 terminal needs_human이 되고
-사유는 `receipt_unresolvable:<code>`다. 게이트가 내는 이유 문자열은 불변이다.
+**D2. 영수증 보류를 해소 가능성으로 분류한다.** 자동 해소 주체가 없는 셋
+(`approval_forged`·`dispatch_forged`·`mode_authority_forged` — 사람의 baseline
+원상복원 편집으로만 풀린다)은 즉시 terminal needs_human이 되고 사유는
+`receipt_unresolvable:<code>`다. 게이트가 내는 이유 문자열은 불변이다.
 해소 가능(`unit_plan_mismatch`·`non_ancestor`·`ancestry_probe_error`·
 `probe_error`)은 지금처럼 `metadata_watch`로 두되 PR 대기 행에
 「영수증 대기 — <code>」 배지를 세운다.
@@ -139,6 +141,14 @@ forgery, deletion included". `impl_entry`·`plan_approval`의 어떤 이동이�
 `approval_forged`, `impl_dispatch`는 `dispatch_forged`,
 `workflow_mode_source`가 `user`가 되면 `mode_authority_forged`다(846-871).
 셋 다 `EXEC_RECEIPT_MERGE_GATE.hold`(`receipt-check.js:76-94`)에 든다.
+
+판정은 이력이 없다 — 현재 metadata와 baseline 스냅샷의 차만 본다. 그래서
+baseline에 없던 키를 지우거나 baseline 값을 정확히 되돌리면 위반은 사라진다
+("deletion included"는 baseline에 있던 키를 지우는 경우를 말한다). 즉 위조
+3종은 **사람의 metadata 편집으로 풀리는** 보류이지 영구 보류가 아니다. 다만
+그 편집을 하는 자동 주체가 없다: 무인 attempt는 baseline 키를 쓰지 못하고, 새
+커밋·새 영수증·probe 재관측은 baseline 차를 바꾸지 못한다. 이것이 §4의 분류
+근거다.
 
 ### 2.2 `[세션에서 해결]`은 attempt를 만들지 않는다
 
@@ -301,9 +311,11 @@ export const RECEIPT_HOLD_RESOLUTION = Object.freeze({
 });
 ```
 
-`unresolvable`은 baseline 대비 이동으로만 나며 삭제도 같은 위반이라 Bead
-metadata 편집으로 되돌릴 수 없는 셋이다(§2.1). `resolvable`은 새 커밋·새
-영수증·probe 재관측으로 관측이 바뀔 수 있는 셋이다.
+`unresolvable`은 baseline 대비 이동으로만 나는 셋이다 — 자동 주체가 바꿀 수
+있는 관측(새 커밋·새 영수증·probe 재관측)으로는 결코 풀리지 않고, 사람이
+baseline을 원상복원하는 metadata 편집으로만 풀린다(§2.1). 이름은 "자동으로는
+해소 불가"라는 뜻이다. `resolvable`은 새 커밋·새 영수증·probe 재관측으로
+관측이 바뀔 수 있는 셋이다.
 
 게이트 밖에서 오는 `probe_error`(metadata 미관측·검사기 예외)는
 `EXEC_RECEIPT_MERGE_GATE.hold`의 원소가 아니지만 이유 문자열
@@ -334,10 +346,33 @@ stage `'coordinator'`로 `terminalize`에 보내며 그때 `fact.failure_key`와
 `needsHuman(fact.reason)` 호출이 `fact.terminal === true`일 때 terminal 플래그를
 함께 넘기면 나머지 경로는 손대지 않는다.
 
+단, `needsHuman(reason, true)`는 `foldNeedsHumanReason`(`:381-388`)을 거치고
+그 함수는 `NEEDS_HUMAN_FAMILIES`(`:47-53`: `verify_red`·`cleanup_failed`·
+`retry_exhausted`·`conflict_unresolved`·`internal_record_failed`)에 없는
+토큰을 `internal_record_failed:<원문>`으로 접는다. 그대로 두면 저장 이유가
+`internal_record_failed:receipt_unresolvable:<code>`가 되어 D2와 형제 계약의
+`causes: [receipt_unresolvable]`에 어긋난다. 그러므로 `receipt_unresolvable`을
+`NEEDS_HUMAN_FAMILIES`에 family로 등록한다. fold는 family 접두를 그대로 두므로
+`receipt_unresolvable:<code>`는 멱등이다.
+
+**위반 detail의 전달.** production 경로는 detail을 버린다:
+`receiptGateState(result)`(`receipt-check.js:302-312`)는 `{ state, codes }`만
+돌려주고, `pr-actions.js`의 `receiptGateStateOf`(`:927-945`) →
+`readGateAuthority`(`:969-1008`) → 게이트 결과 `evidence`(`:1337-1369`, 지금은
+`verify`만)까지 `codes`만 흐른다. 그래서 다음을 더한다.
+
+- `receiptGateState`는 `details: string[]`을 함께 돌려준다 — `codes` 순서대로
+  각 blocking code의 첫 `violations[].detail`(없으면 빈 문자열). `state`가
+  `unbacked`가 아니면 `[]`다.
+- `readGateAuthority`의 `receipt_state`는 그 객체를 그대로 통과시키고(`waived`
+  분기도 `codes`·`details`를 보존), 게이트 결과 `evidence`에 `verify` 옆으로
+  `receipt: { codes, details }`를 싣는다(`receipt_state`가 `unbacked`일 때만).
+- `factFromGate`는 terminal fact의 `evidence`를 `gated.evidence.receipt.details[0]`
+  (`impl_entry (absent) -> user@…` 형태)로, 없으면 이유 문자열로 채운다.
+
 `factFromGate`가 만드는 terminal fact는 `failure_key`로
 `createCompletionFailureKey({ stage: 'merge_gate', reason, subject_sha,
-base_sha, evidence: { output_tail: detail } })`(`completion-intent.js:179`)를,
-`evidence`로 관측된 위반 detail 문자열(`impl_entry (absent) -> user@…` 형태)을
+base_sha, evidence: { output_tail: <그 detail> } })`(`completion-intent.js:179`)를
 싣는다. `announceNeedsHuman`은 `terminal.failure_key?.stage || terminal.stage`로
 알림 클래스를 찾으므로(§5.2) 이 `failure_key.stage`가 알림의 키다. 이유
 문자열은 `receipt_unresolvable:<code>`이고 **게이트가 만든
@@ -361,28 +396,38 @@ receipt tier를 waive하므로, 실측에서 3차 클릭이 뚫은 경로가 **1
 — 그 셋은 새 관측으로 실제로 풀리는 코드이고, 침묵이 문제였지 대기가 문제가
 아니었기 때문이다. 대기가 보이게 하는 것이 §5다.
 
+위조 3종에서 사람이 baseline을 원상복원하는 편집을 했다면 terminal이라
+`metadata_watch`가 다시 돌지 않으므로, 그 편집 뒤 출구는 같은 `[머지]`
+재클릭이다 — 그 클릭은 어차피 receipt tier를 waive하므로 편집 여부와 무관하게
+통과한다. 알림 `next_action`이 이 두 클릭을 말한다(§5.2).
+
 ## 5. 가시화 — 배지 슬롯과 알림 클래스
 
 ### 5.1 「영수증 대기」 배지
 
-재료는 이미 durable하다: `completion_intents[bead_id].auto_resolution`의
-`class === 'metadata_watch'`와 `origin_reason`이다. 새 필드를 만들지 않는다.
+재료는 이미 클라이언트에 도착해 있다. 서버는 raw `completion_intents`를
+지우고(`server/ws/worker-handlers.js:2775`) `completion_status[bead_id]`로
+투영하며, 그 안의 `phase`(`waiting_metadata`)와
+`auto_resolution.{class, origin_reason}`이 재료다. 새 필드를 만들지 않는다.
 
-`app/views/worker/lane-model.js:2556-2563`의 `autoSkipReason`은
-`auto_merge_skips[bead_id]`의 `head_sha`가 지금 관측된 head와 같을 때만 사유를
-돌려준다. 그 옆에 같은 모양의 파생 하나를 둔다: `metadataWatchReason(bead_id)`는
-intent의 `auto_resolution.class`가 `metadata_watch`이고 `origin_reason`이
-`receipt_unbacked:`로 시작할 때만 그 코드를 돌려주고 그 밖에는 `null`이다.
-PR 대기 행 item에 `receipt_wait: '<code>'`로 싣는다(재료가 없으면 필드를 넘기지
-않는다).
+그 재료를 이미 읽는 자리가 있다: `app/views/worker/index.js`의
+`autoResolutionBadge(completion)`(`:583-620`)는 `phase === 'waiting_metadata'`면
+generic 「정정 대기」(details: `원 사유: <origin_reason>`, 「메타데이터 정정이
+관측되면 자동 재개」)를 만들고, 그 배지는 `:884-888`에서 `queue_failure`·
+`auto_skip`보다 **먼저** 반환된다. 따라서 새 item 필드나 새 슬롯을 더하지 않고
+그 case 하나를 특수화한다: `waiting_metadata`이고 `origin_reason`이
+`receipt_unbacked:`로 시작하면 label 「영수증 대기 — <code>」, details
+`[원 사유: <origin_reason>, '새 커밋·새 영수증·재관측이 오면 자동 재개']`,
+`live: false`를 돌려준다. 그 밖의 `waiting_metadata`는 현행 「정정 대기」
+그대로다. `lane-model.js`는 손대지 않는다.
 
-`app/views/worker/index.js:1015-1020`의 「자동 제외 — …」 배지와 **같은 슬롯**
-이다. 판정 순서는 `queue_failure` → `auto_skip` → `receipt_wait`이며 문구는
-「영수증 대기 — <code>」, `title`은 원본 이유 문자열, `alert`는 쓰지 않는다 —
-아직 사람이 할 일이 없는 대기이기 때문이다. 이 배지는 Worker 탭 PR 대기
-행에 그린다. Monitor 탭 행은 `monitor-pipeline-snapshot` 투영에서 오고 그
-투영은 `completion_intents`를 싣지 않으므로(`자동 제외` 배지도 지금 Monitor에
-없다) 이 스펙은 Monitor 반영을 범위에 넣지 않는다 — 관찰 항목으로 남긴다.
+슬롯은 자동 해소 배지의 **기존 슬롯**이고 순서도 현행(`:884`가 `queue_failure`·
+`auto_skip`보다 앞)이라 ADR 0014의 슬롯 표를 바꾸지 않는다. `alert`는 쓰지
+않는다 — 아직 사람이 할 일이 없는 대기이기 때문이다. `title`은 details를 줄로
+이은 현행 규칙이다. 이 배지는 Worker 탭 PR 대기 행에 그린다. Monitor 탭 행은
+`monitor-pipeline-snapshot` 투영에서 오고 그 투영은 `completion_status`를 싣지
+않으므로(자동 해소 배지도 지금 Monitor에 없다) 이 스펙은 Monitor 반영을 범위에
+넣지 않는다 — 관찰 항목으로 남긴다.
 
 `mergeFailureText`(`app/views/worker/index.js:356-401`)는 바꾸지 않는다. 그
 함수의 `receipt_unbacked:` 분기는 「실행 영수증 자동 검증 불가(<code>) —
@@ -401,8 +446,10 @@ durable 제외 기록이고, 영수증 보류는 자동 머지 등록 이전 단
 (`:1487-1515`)은 `failure_key.stage`를 먼저 조회하므로 §4.2의 terminal fact가
 실은 `failure_key.stage === 'merge_gate'`가 그 키에 닿는다. 항목 추가로
 충분하다.
-`next_action` 문자열은 이 클래스에서 `'[머지] 재클릭 또는 [세션에서 해결]'`로
-낸다 — `[정리 재시도]`는 머지 이전 단계에 없는 버튼이다.
+`next_action`은 지금 모든 클래스에 `'[정리 재시도] 또는 [세션에서 해결]'`로
+고정돼 있다(`:1505`). 이 클래스에서는 `'[머지] 재클릭 또는 [세션에서 해결]'`로
+낸다 — `[정리 재시도]`는 머지 이전 단계에 없는 버튼이다. 나머지 클래스의
+문구는 그대로다.
 
 이 라벨 문자열의 정본은 dotfiles `failure_classes.receipt_hold.notify_label`이고
 이 저장소는 그 바이트를 복사한다(§3, D5). **dotfiles가 선행이다** — 클래스와
@@ -492,15 +539,14 @@ attempts: [{ attempt_id, bead_id, status, kind }]
 
 | 파일                                 | 무엇                                                            | 절             |
 | ------------------------------------ | --------------------------------------------------------------- | -------------- |
-| `server/worker/receipt-check.js`     | `RECEIPT_HOLD_RESOLUTION` 레지스트리                            | §4.1           |
-| `server/worker/completion-intent.js` | 해소 불가 terminal 분기·알림 클래스·원인 필드 둘                | §4.2·§5.2·§6.1 |
+| `server/worker/receipt-check.js`     | `RECEIPT_HOLD_RESOLUTION` 레지스트리·`receiptGateState`의 `details` | §4.1·§4.2      |
+| `server/worker/completion-intent.js` | 해소 불가 terminal 분기·`receipt_unresolvable` family·알림 클래스와 `next_action`·원인 필드 둘 | §4.2·§5.2·§6.1 |
 | `server/worker/merge-gate.js`        | `verify_config_invalid:<error>` 접미(영수증 이유 문자열은 불변) | §6.2           |
 | `server/worker/auto-merge.js`        | `verifyState` 예외 메시지를 `error`로 전달                      | §6.2           |
-| `server/worker/pr-actions.js`        | `ensureVerify` 실패 `code`를 `error`로 전달                     | §6.2           |
+| `server/worker/pr-actions.js`        | `ensureVerify` 실패 `code`를 `error`로 전달·`receipt_state` details 통과와 `evidence.receipt` | §4.2·§6.2      |
 | `server/worker/repo-ops-display.js`  | `repoOpsVerifyReceiptState`가 `error` 통과                      | §6.2           |
 | `server/routes/worker-queue.js`      | 응답 `attempts` 투영                                            | §7             |
-| `app/views/worker/lane-model.js`     | `metadataWatchReason` 파생·`receipt_wait`                       | §5.1           |
-| `app/views/worker/index.js`          | 「영수증 대기 — <code>」 배지                                   | §5.1           |
+| `app/views/worker/index.js`          | `autoResolutionBadge` 「영수증 대기 — <code>」 특수화           | §5.1           |
 
 빌드 산출물 `app/main.bundle.js`와 `.map`은 표시층 변경에 따라 함께 갱신된다.
 
@@ -513,10 +559,21 @@ attempts: [{ attempt_id, bead_id, status, kind }]
   - 코드별 분류 `test.each`: 위조 3종은 terminal, `unit_plan_mismatch`·
     `non_ancestor`·`ancestry_probe_error`·`probe_error`는 `metadata_watch`.
   - 해소 불가 terminal 경로: `terminal_reason.reason`이
-    `receipt_unresolvable:<code>`이고 `failure_key`·`evidence`가 채워지며
+    `receipt_unresolvable:<code>`(`internal_record_failed:` 접두 없음)이고
+    `failure_key`·`evidence`(`gated.evidence.receipt.details[0]`)가 채워지며
     게이트 이유 문자열 `receipt_unbacked:<code>`는 변하지 않는다.
+  - family: `NEEDS_HUMAN_FAMILIES`가 `receipt_unresolvable`을 담고
+    `foldNeedsHumanReason('receipt_unresolvable:approval_forged')`가 멱등이다.
   - 알림: 머지 게이트 stage의 terminal이 `announceNeedsHuman`을 태우고
-    `failure_class`가 「머지 게이트 보류」다. 나머지 stage는 현행대로 조용하다.
+    `failure_class`가 「머지 게이트 보류」, `next_action`이
+    `'[머지] 재클릭 또는 [세션에서 해결]'`이다. cleanup 계열 클래스의
+    `next_action`은 `'[정리 재시도] 또는 [세션에서 해결]'` 그대로이고 나머지
+    stage는 현행대로 조용하다.
+- `server/worker/receipt-check.test.js` — `receiptGateState`가 `unbacked`일 때
+  `details`를 `codes` 순서로 싣고 그 밖에는 `[]`다.
+- `server/worker/pr-actions.test.js` — production chain: `approval_forged`
+  violation(detail 포함)을 가진 receipt 결과가 `readGateAuthority`를 거쳐 게이트
+  결과 `evidence.receipt.details[0]`에 그 detail 문자열로 도착한다.
   - `evidence` 채움: `merge_subject_pin_failed`·`merge_prerecord_failed`가
     `failure_key`와 `evidence`를 싣는다(현행 픽스처
     `completion-intent.test.js:589-600`의 기대값 갱신).
@@ -533,11 +590,11 @@ attempts: [{ attempt_id, bead_id, status, kind }]
 - `server/routes/worker-queue.test.js` — 응답 `attempts`가 살아 있는 구현
   attempt만 담고 `external_conflict`와 review 세션을 제외하며, 기존 여섯 키가
   그대로다.
-- `app/views/worker/lane-model.test.js` — `metadata_watch`이고 `origin_reason`이
-  `receipt_unbacked:`인 intent만 `receipt_wait`를 만든다. 다른 class·다른
-  `origin_reason`·intent 부재는 필드가 없다.
-- `app/views/worker/index.test.js` — 배지 문구·`title`·판정 순서
-  (`queue_failure` → `auto_skip` → `receipt_wait`), `alert` 없음.
+- `app/views/worker/index.test.js` — `autoResolutionBadge`: `waiting_metadata`
+  이고 `origin_reason`이 `receipt_unbacked:<code>`면 label
+  「영수증 대기 — <code>」와 details 두 줄, `live: false`; 다른 `origin_reason`은
+  현행 「정정 대기」; `auto_resolution` 부재는 `null`. PR 대기 행 배지가 그
+  label을 `alert` 없이 그린다.
 - dotfiles(형제 Bead) — `check-workflow-contract.py` 체커와 그 계약 테스트.
 - 절차: `npm run tsc` · `npx vitest run --reporter=dot`(timeout 120s) ·
   `npm run lint` · `npm run prettier:write` → `npm run build`
@@ -545,13 +602,14 @@ attempts: [{ attempt_id, bead_id, status, kind }]
 
 ## 10. 구현 unit 후보
 
-- **unit1 — 보류의 분류와 종단.** §4 전부와 §5.2 알림 클래스. 한
-  레지스트리에서 갈라지는 판정이라 서버 안에서 쪼개지 않는다.
+- **unit1 — 보류의 분류와 종단.** §4 전부(레지스트리·family·detail 전달)와
+  §5.2 알림 클래스. 한 레지스트리에서 갈라지는 판정이라 서버 안에서 쪼개지
+  않는다.
 - **unit2 — 가시화와 기록.** §5.1 배지, §6 원인 필드·`verifyState` 오류, §7 큐
   GET 투영. unit1과 자료 의존이 없다.
 
 한 Bead 안의 두 unit이며 `unit_plan`으로 이름을 고정한다. 나누지 않고 단일
-unit으로 가도 무방하다 — 파일 아홉 개 규모다.
+unit으로 가도 무방하다 — 파일 여덟 개 규모다.
 
 ## 경계·후속
 
@@ -589,10 +647,9 @@ unit으로 가도 무방하다 — 파일 아홉 개 규모다.
   이전 단계의 보류이므로 durable 제외 기록의 뜻과 어긋난다.
 - 관찰: `verify_config_invalid`의 실제 원인은 실측에서 끝내 확정되지 않았다.
   §6.2는 다음 발생을 기록할 뿐 지난 건을 소급하지 않는다.
-- 관찰(scope 겹침): `app/views/worker/lane-model.js`와
-  `app/views/worker/index.js`는 여러 표시층 Bead가 공유하는 파일이다. 이 스펙은
-  배지 슬롯 한 자리만 더하고 기존 판정 순서를 바꾸지 않으므로 `blocks` 엣지를
-  걸지 않는다.
+- 관찰(scope 겹침): `app/views/worker/index.js`는 여러 표시층 Bead가 공유하는
+  파일이다. 이 스펙은 기존 자동 해소 배지의 case 하나만 특수화하고 슬롯·판정
+  순서를 바꾸지 않으므로 `blocks` 엣지를 걸지 않는다.
 
 ## 결정 (ADR 후보)
 
@@ -600,10 +657,11 @@ unit으로 가도 무방하다 — 파일 아홉 개 규모다.
   `[세션에서 해결]` 클릭뿐이고 새 attempt는 없다. §2.2의 "승계는 attempt를
   만들지 않는다"가 그 결정의 직접 귀결이며, 이 스펙은 출구를 늘리지 않는다.
 - 전제: ADR 0031 — 영수증이 없거나 조상이 아니면 머지는 terminal 실패가 아니라
-  보류다. 그 Decision의 대상은 `impl_review` 영수증이고 출구는 자동 리뷰
-  lineage와 `[리뷰 후 머지]`다. §4는 `exec_receipt`의 위조 3종 — 새 관측으로는
-  결코 풀리지 않아 그 결정이 전제한 "해소 경로"가 아예 없는 코드 — 만 종단으로
-  옮기므로 0031의 범위와 겹치지 않고 supersede 대상이 아니다.
+  보류다. 그 Decision의 대상은 `impl_review` 영수증이고 출구는 큐가 스스로 띄우는
+  자동 리뷰 lineage와 `[리뷰 후 머지]`다. §4는 `exec_receipt`의 위조 3종 — 큐가
+  스스로 띄울 자동 해소 주체가 없고 사람의 baseline 원상복원 편집으로만 풀리는
+  코드 — 만 종단으로 옮기므로 0031의 범위와 겹치지 않고 supersede 대상이
+  아니다.
 - 전제: ADR 0024 — 사용자 개시 실패의 재진입은 자동 알림 뒤 사람 클릭이다.
   §4.3과 §5.2는 새 출구를 만들지 않고 기존 두 클릭에 알림 하나를 붙인다.
 - 전제: ADR 0012 — beads-ui는 계약 파일을 런타임에 읽지 않고 필요한 subset만
@@ -614,36 +672,35 @@ unit으로 가도 무방하다 — 파일 아홉 개 규모다.
 - 전제: ADR 0029 — 살아 있는 `queue.attempts`는 bead 이력의 최신 접미이고
   "마지막 구현 attempt" 판정은 라이브 큐만 본다. §7의 투영이 그 규칙 위에 선다.
 
-- 영수증 보류는 해소 가능성으로 분류하고, 해소 불가는 즉시 terminal
-  needs_human으로 종단한다.
-  - 되돌리기 어렵다: 성립 — terminal은 durable 기록이고 알림이 나가며 사용자
+- 영수증 보류는 자동 해소 주체가 있는지로 분류하고, 없는 위조 3종은 즉시
+  terminal needs_human으로 종단한다.
+  - 되돌리기 어려움: 성립 — terminal은 durable 기록이고 알림이 나가며 사용자
     클릭이 뒤따르는 상태 전이다. 분류를 되돌려도 그 사이에 종단된 intent는
-    자동으로 대기로 돌아가지 않는다.
-  - 여러 표면에 걸친다: 성립 — 영수증 검사 레지스트리, completion 코디네이터의
-    실패 정책, 알림 클래스, PR 대기 행 배지, 그리고 dotfiles 계약의 알림 어휘가
-    한 판정에 묶인다.
-  - 앞으로의 판단 입력이 된다: 성립 — 새 hold 코드가 계약에 생길 때마다 "이
-    코드는 새 관측으로 풀리는가"를 먼저 묻게 되고, 그 답이 종단이냐 대기냐를
-    정한다.
+    자동으로 대기로 돌아가지 않고, 영수증 검사 레지스트리·completion 실패
+    정책·알림 클래스·배지·dotfiles 계약 어휘가 한 판정에 묶인다.
+  - 맥락 없이는 의외: 성립 — 위조 3종은 metadata 편집으로 풀리는데도 대기가
+    아니라 종단으로 보낸다. 근거는 그 편집을 할 자동 주체가 없어 대기가 곧
+    침묵이었다는 실측이다(2시간 무기록 대기).
+  - 실제 trade-off: 성립 — `metadata_watch` 유지+배지(사람이 편집하면 자동
+    재개되지만 알림이 없고 무엇을 편집할지 모른다) 대 terminal+알림+클릭(즉시
+    보이지만 편집 뒤에도 클릭이 필요하다). 후자를 택했다.
   - 세 조건이 모두 성립하므로 `summary` 초안을 단다.
-    `summary`: "머지 게이트의 영수증 보류는 새 관측으로 해소될 수 있는지로
-    나뉘고, 해소 불가 위조 3종은 대기 없이 terminal needs_human으로 종단해
-    알림과 두 클릭으로 넘긴다"
+    `summary`: "머지 게이트의 영수증 보류는 자동 해소 주체가 있는지로 나뉘고,
+    사람의 baseline 원상복원으로만 풀리는 위조 3종은 대기 없이 terminal
+    needs_human으로 종단해 알림과 두 클릭으로 넘긴다"
   - → ADR
 - Worker attempt를 이어받은 세션은 권한 키를 쓰지 않고 `fast_track`을 승계한다.
-  - 되돌리기 어렵다: 판단 대상 아님 — 이 저장소는 그 규칙을 소유하지 않는다.
-  - 여러 표면에 걸친다: 판단 대상 아님 — 계약 문장·상태 스키마·스킬 스크립트가
-    전부 dotfiles 안에 있다.
-  - 앞으로의 판단 입력이 된다: 판단 대상 아님 — 정본이 dotfiles에 있으므로
-    입력도 그쪽에서 나온다.
-  - 정본은 dotfiles 형제 스펙과 그 ADR이다. beads-ui 쪽에 남는 것은 §3의 소비
-    문장 하나와 이 포인터뿐이며(ADR 0012), 이 저장소는 그 결정으로 코드를 바꾸지
-    않는다. → ADR 아님
+  - 되돌리기 어려움·맥락 없이는 의외·실제 trade-off: 판단 대상 아님 — 이
+    저장소는 그 규칙을 소유하지 않는다. 계약 문장·상태 스키마·세션 절차가 전부
+    dotfiles 안에 있고, 정본은 dotfiles 형제 스펙(`dotfiles-xk12`)과 그 ADR이다.
+    beads-ui 쪽에 남는 것은 §3의 소비 문장 하나와 이 포인터뿐이며(ADR 0012), 이
+    저장소는 그 결정으로 코드를 바꾸지 않는다. → ADR 아님
 - 큐 GET이 살아 있는 구현 attempt 목록을 투영한다.
-  - 되돌리기 어렵다: 불성립 — 응답 키 하나이고 기존 여섯 키를 건드리지 않아
+  - 되돌리기 어려움: 불성립 — 응답 키 하나이고 기존 여섯 키를 건드리지 않아
     지우면 현행으로 돌아간다.
-  - 여러 표면에 걸친다: 불성립 — 라우트 하나와 그것을 읽는 dotfiles 스크립트
-    하나이며, 새 durable 필드도 새 판정도 없다.
-  - 앞으로의 판단 입력이 된다: 불성립 — 판정(어떤 status가 승계인가)은 D3대로
-    소비자가 갖고, 이 투영은 이미 있는 큐 사실을 그대로 옮긴다.
+  - 맥락 없이는 의외: 불성립 — 큐가 이미 갖고 있는 사실을 같은 GET에 그대로
+    옮긴 것이라 놀랄 사람이 없다.
+  - 실제 trade-off: 불성립 — 대안(별도 엔드포인트, status 필터)은 판정 집합을
+    소비자와 어긋나게 만들 뿐 실질적 갈래가 아니다. 판정은 D3대로 소비자가
+    갖는다.
   - → ADR 아님
