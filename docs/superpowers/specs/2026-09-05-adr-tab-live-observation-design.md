@@ -6,6 +6,8 @@ scope:
   - app/views/adr/
   - app/views/nav.js
   - app/router.js
+  - app/state.js
+  - app/protocol.js
   - app/main.js
   - app/styles.css
   - app/protocol.md
@@ -55,8 +57,10 @@ projectmgr 서비스로 상시 떠 있으므로 그 탭이 실시간 표면이 �
 - 서버의 동기 투영 경로는 자식 프로세스를 띄우지 않는다(ADR 0026). 이 탭의 계산은
   전부 비동기 warm이며 bd를 읽지 않는다 — ADR 0008(bd CLI shell-out 데이터 계층)과
   별개의 파일 읽기 계층이다.
-- 서버 셸은 `board|worker|monitor` 3탭이다(`app/router.js`·`app/views/nav.js`·
-  `app/main.js`의 view 유니온). Monitor 채널은 `subscribe-monitor-pipeline`으로
+- 셸은 `board|worker|monitor|compare` 4탭이다. 화면 종류의 정본은 `app/state.js`의
+  `ViewName`, WebSocket 메시지 종류의 정본은 `app/protocol.js`의 `MESSAGE_TYPES`이고,
+  `app/router.js`·`app/views/nav.js`(`NAV_VIEWS`)·`app/main.js`가 그것을 소비한다.
+  Monitor 채널은 `subscribe-monitor-pipeline`으로
   서버 전역 구독자 수에 따라 갱신 wiring을 올리고 내린다(`server/ws/monitor-handlers.js`).
 - 문서 링크는 `GET /api/doc?workspace=<abs>&path=<rel>`이 `docs/` 아래 마크다운만
   1 MiB까지 서빙한다(`server/routes/doc.js`).
@@ -143,7 +147,8 @@ projectmgr 서비스로 상시 떠 있으므로 그 탭이 실시간 표면이 �
 ## 6. 범위 2 — WS 채널 (`server/ws/adr-handlers.js`)
 
 - 신규 op `subscribe-adr` / `unsubscribe-adr`(응답 `ok`), 서버 push `adr-snapshot`.
-  `connection.js` 분기 두 개와 `app/protocol.md` 절 하나가 추가된다.
+  세 이름을 `app/protocol.js`의 `MESSAGE_TYPES`와 `MessageType` typedef에 더하고,
+  `connection.js` 분기 두 개와 `app/protocol.md` 절 하나를 추가한다.
 - 첫 구독자가 생기면 visible 워크스페이스마다 §5.3 watch를 올리고 `{ full: true }`로
   첫 계산을 시작한다. 계산 전에도 `computing: true`인 빈 스냅샷을 즉시 push한다.
   마지막 구독자가 빠지면 watch·타이머·캐시를 내린다(monitor 채널의 구독자 수
@@ -155,7 +160,7 @@ projectmgr 서비스로 상시 떠 있으므로 그 탭이 실시간 표면이 �
 AdrWorkspaceView = {
   root_dir, name,                      // name = path.basename(root_dir)
   computing: boolean, computed_at: number | null,
-  env_error: string | null,            // §8
+  env_errors: { index: string|null, citations: string|null, candidates: string|null }, // §8
   adr_dir_missing: boolean,
   current: AdrRecord[], history: AdrRecord[],
   frontmatter_errors: { file, error }[],
@@ -176,51 +181,66 @@ CheckerError = { kind, file, line: number|null, adr: number|null, detail }
 
 ## 7. 범위 3 — 프론트 탭 (`app/views/adr/`)
 
-- 라우터 view 유니온에 `'adr'`을 더한다(`#/adr`). `nav.js`에 네 번째 탭 `ADR`을
-  Monitor 탭 오른쪽에 둔다. `main.js`는 `adr_root.hidden = s.view !== 'adr'`로
-  마운트하고, 탭이 보일 때만 `subscribe-adr`, 벗어나면 `unsubscribe-adr`.
+- `app/state.js`의 `ViewName`에 `'adr'`을 더하고 `router.js`(`#/adr`)·`nav.js`
+  `NAV_VIEWS`가 그것을 따른다. 탭 순서는 기존 `compare`를 보존한 다섯 개
+  `board · worker · monitor · compare · adr`이며 `ADR` 탭은 맨 오른쪽이다. `main.js`는
+  `adr_root.hidden = s.view !== 'adr'`로 마운트하고, 탭이 보일 때만 `subscribe-adr`,
+  벗어나면 `unsubscribe-adr`.
 - 상단 툴바(목업 그대로): 저장소 필터 버튼(`전체` + 저장소 이름별, `aria-pressed`),
   검색 `input[type=search]`(번호·제목·summary·spec·bead 부분 일치), 정렬 토글
   `stale 우선`(기본 on: 신호가 하나라도 붙은 ADR 행이 위, 그 안에서는 번호
   내림차순). 다크·라이트는 앱의 기존 테마를 그대로 쓴다 — 탭 전용 테마 버튼은
   두지 않는다.
 - 저장소 섹션(`<section data-repo>`): 헤더 `h2 = name`과 카운트 칩 —
-  `현재 유효 N` · `인덱스 drift`(ok:false일 때만) · `인용 stale N` · `후보 미실체화 N`
-  (`adr_missing`+`supersede_unapplied`+`adr_status`) · `토큰 없음 N`(`token_missing`) ·
-  `이행 전 스펙 N`(`section_missing`, 관찰) · `교차 인용 N` · `계산 중`/`갱신 HH:MM:SS`.
-  0인 칩은 그리지 않는다.
+  `현재 유효 N` · `인덱스 drift`(ok:false일 때만) · `인용 stale N`(정본 kind
+  `missing`·`retired`만) · `후보 미실체화 N`(정본 kind `adr_missing`·`supersede_unapplied`만)
+  · `토큰 없음 N`(`token_missing`) · `이행 전 스펙 N`(`section_missing`, 관찰) ·
+  `기타 N`(`adr_status`와 두 체커의 미지 kind — 이름 붙은 카운트는 dotfiles 스펙 §7의
+  정의만 센다) · `교차 인용 N` · `계산 중`/`갱신 HH:MM:SS`. 0인 칩은 그리지 않는다.
   1. **현재 유효한 결정** 표: 번호 · 제목(파일 링크) · 날짜 · summary · spec(링크) ·
-     bead(`#/board?issue=<id>` 링크) · 신호 칩. 신호 칩은 그 ADR 번호에 붙는
+     bead(클릭은 Monitor 카드와 같은 경로 — 행의 `root_dir`가 현재 워크스페이스와
+     다르면 `switchWorkspace(root_dir)`를 먼저 끝낸 뒤 `gotoIssue(id)`, 같으면 바로
+     `gotoIssue`) · 신호 칩. 신호 칩은 그 ADR 번호에 붙는
      `citations_stale`(retired)·`candidates`(`adr` 필드 일치)·`frontmatter_errors`·
      `cross_citations`(이 ADR을 가리키는 상대 저장소 인용 수)에서 만든다.
   2. **이력**: 접기(`<details>`, 기본 접힘) 안에 번호 · 제목 · 상태 · 대체(`superseded_by`).
   3. **인덱스 drift**: `ok:false`일 때만 `detail` 한 줄.
   4. **지침 인용 stale**: 행 `file:line · ADR NNNN · kind · detail`, file은 문서 링크.
   5. **후보 미실체화·토큰 없는 후보 절**: 스펙별 그룹. 경고 kind(`adr_missing`·
-     `supersede_unapplied`·`adr_status`·`token_missing`·미지 kind)는 펼친 채,
+     `supersede_unapplied`·`token_missing`)와 `기타`(`adr_status`·미지 kind)는 펼친 채,
      `section_missing`만 있는 스펙은 `이행 전 스펙 N`으로 접힌 목록에 넣는다.
      `usage`는 그 스펙 행에 `환경` 표기.
   6. **교차 인용**: 행 `file:line → ADR <repo>/NNNN` + 상대 상태 칩(`accepted`는
      녹색, `superseded`·`deprecated`·`proposed`는 경고색, `target:null`은 회색
      `미확인`).
-  재료가 빈 절은 그리지 않는다. `env_error`가 있으면 3~6 대신 `환경 · <문장>` 한 줄.
-- 문서 링크는 `/api/doc?workspace=<root_dir>&path=<docs 상대경로>`를 새 탭으로 연다.
-  `AGENTS.md`·`CLAUDE.md`처럼 `docs/` 밖 파일은 링크 없이 문자만 보인다(`/api/doc`
-  범위를 넓히지 않는다).
+  재료가 빈 절은 그리지 않는다. `env_errors.index`·`.citations`·`.candidates`가
+  있으면 각각 3·4·5절만 `환경 · <문장>` 한 줄로 대체한다. 6절 교차 인용은 체커와
+  무관하게 항상 그린다.
+- 문서 링크는 기존 마크다운 뷰어를 연다: Monitor 카드와 같은 `openDoc(doc, root_dir)`
+  (`md-viewer.open`이 `/api/doc?workspace=<root_dir>&path=<docs 상대경로>`를 읽는다).
+  새 탭으로 원시 JSON을 열지 않는다. `AGENTS.md`·`CLAUDE.md`처럼 `docs/` 밖 파일은
+  링크 없이 문자만 보인다(`/api/doc` 범위를 넓히지 않는다).
 - 스타일은 `app/styles.css`에 `.adr-` 접두로 더하고 토큰은 Monitor 테마 변수를
   재사용한다. 모바일 폭에서는 표가 `overflow-x: auto` 컨테이너 안에서 스크롤한다.
 
 ## 8. 에러·경계
 
-- 환경 오류(`env_error`): `python3` 부재, 체커 파일 부재, spawn 실패, exit 2, 타임아웃.
-  문장은 `<체커 파일명>: <원인>`. 그 저장소의 §5.2 2~4단계 결과는 비우고 표·교차
-  인용은 그린다. 다음 지문 변경이나 poll에서 다시 시도한다.
-- 체커 stdout이 JSON이 아니면 그 체커만 `env_error`로 취급한다(다른 체커 결과는 유지).
+- 환경 오류(`env_errors`): `python3` 부재, 체커 파일 부재, spawn 실패, exit 2, 타임아웃,
+  비JSON stdout. 체커별로 따로 기록한다 — `index`(2단계)·`citations`(3단계)·
+  `candidates`(4단계 전체가 실패한 경우; 스펙 하나의 `usage`는 그 스펙 행 국소).
+  문장은 `<체커 파일명>: <원인>`. 실패한 체커의 결과만 비우고(`index_drift: null`,
+  `citations_stale: []`, `candidates: []`) 나머지 체커 결과·표·교차 인용은 그대로
+  싣는다.
+- 환경 오류가 하나라도 남은 저장소는 `retry_pending`이다: 다음 지문 변경뿐 아니라
+  다음 poll에서 지문이 같아도 `{ full: true }`로 한 번 다시 계산하고, 세 체커가 모두
+  성공하면 해제한다. 지문이 그대로라는 이유로 일시 실패가 영구히 남지 않는다.
 - `docs/superpowers/specs`가 없으면 `candidates: []`, 후보 절 생략.
 - 저장소 이름 충돌(같은 basename 두 개)은 첫 번째만 교차 인용 target 후보이고 둘째
   섹션 헤더에 `이름 중복` 표시.
 - fs.watch가 `EMFILE`·`ENOSPC`로 실패하면 poll만으로 동작하고 서버 로그에 한 번 남긴다.
-- 클라이언트 재연결 시 `subscribe-adr`를 다시 보내고 마지막 스냅샷을 즉시 받는다.
+- 클라이언트 재연결 시 `subscribe-adr`를 다시 보낸다. 다른 구독자가 남아 캐시가 살아
+  있으면 마지막 스냅샷을 즉시 받고, 마지막 해제로 캐시가 내려간 뒤라면 첫 구독과
+  같이 `computing: true` 빈 스냅샷 뒤 새 결과를 받는다.
 - 이 탭은 아무것도 쓰지 않는다 — bd·파일·kv 어디에도.
 
 ## 9. 문서 갱신
@@ -234,22 +254,22 @@ CheckerError = { kind, file, line: number|null, adr: number|null, detail }
 | 파일 | 고정하는 것 |
 | --- | --- |
 | `server/adr/adr-frontmatter.test.js` | 정상 파일·따옴표 값·` #` 주석·정수 리스트 `supersedes`·`superseded_by` 정수; 미허용 키·필수 키 부재·미지 status·파일명-`id` 불일치·frontmatter 없음이 오류; `readAdrDir`가 비-ADR 파일명을 건너뛴다 |
-| `server/adr/adr-signals.test.js` | 주입 spawn으로 세 체커 호출 인자(`cwd`, `--spec` 상대경로, `--json`)와 결과 조합; `plan.specs` 부분 재계산이 나머지 결과를 재사용하고 삭제 스펙을 버린다; 동시성 상한 4; exit 2·spawn 오류·비JSON·타임아웃 → `env_error`(다른 체커 결과 유지); `usage` kind는 스펙 행 국소; `docs/adr` 부재 → `adr_dir_missing`·spawn 0회; 교차 인용 추출 정규식·줄 번호 |
-| `server/adr/adr-watch.test.js` | 지문이 같으면 `onChange` 없음; 스펙만 변경 → `{full:false, specs}`; `docs/adr`/`AGENTS.md`/`docs/agents` 변경 → `{full:true}`; debounce 병합; poll 안전망; fs.watch 실패 시 poll 동작; 해제 시 타이머·watcher 정리 |
-| `server/ws/adr-handlers.test.js` | 첫 구독에 `computing:true` 즉시 push와 계산 시작; 마지막 해제에 watch 내림; visible 변경 반영; `cross_citations[].target` 결합(있음·번호 없음·저장소 없음)과 상대 저장소 갱신 시 재push; 재구독 시 캐시 즉시 push; 이 경로가 `bd`를 부르지 않는다 |
-| `app/router.test.js` | `#/adr` → view `'adr'`, 왕복 직렬화 |
-| `app/views/adr/index.test.js` | 저장소 필터·검색·`stale 우선` 정렬; 카운트 칩 0 생략; 신호 칩이 ADR 번호로 결합; `section_missing`만 있는 스펙이 접힌 목록으로; `env_error` 한 줄 대체; 교차 인용 상태 칩 세 색; 문서 링크 URL과 `docs/` 밖 파일 무링크 |
+| `server/adr/adr-signals.test.js` | 주입 spawn으로 세 체커 호출 인자(`cwd`, `--spec` 상대경로, `--json`)와 결과 조합; `plan.specs` 부분 재계산이 나머지 결과를 재사용하고 삭제 스펙을 버린다; 동시성 상한 4; exit 2·spawn 오류·비JSON·타임아웃 → 해당 체커의 `env_errors` 키만(다른 체커 결과 유지); `usage` kind는 스펙 행 국소; `docs/adr` 부재 → `adr_dir_missing`·spawn 0회; 교차 인용 추출 정규식·줄 번호 |
+| `server/adr/adr-watch.test.js` | 지문이 같으면 `onChange` 없음; 스펙만 변경 → `{full:false, specs}`; `docs/adr`/`AGENTS.md`/`docs/agents` 변경 → `{full:true}`; debounce 병합; poll 안전망; `retry_pending` 저장소는 지문이 같아도 다음 poll에서 한 번 재계산하고 성공 시 해제; fs.watch 실패 시 poll 동작; 해제 시 타이머·watcher 정리 |
+| `server/ws/adr-handlers.test.js` | 첫 구독에 `computing:true` 즉시 push와 계산 시작; 마지막 해제에 watch 내림; visible 변경 반영; `cross_citations[].target` 결합(있음·번호 없음·저장소 없음)과 상대 저장소 갱신 시 재push; 캐시가 살아 있는 재구독은 즉시 push, 내려간 뒤 재구독은 `computing:true` 후 새 결과; 이 경로가 `bd`를 부르지 않는다 |
+| `app/router.test.js` · `app/state.test.js` · `app/views/nav.test.js` | `#/adr` → view `'adr'`, 왕복 직렬화; `ViewName`에 `'adr'`; `NAV_VIEWS` 다섯 탭 순서(`compare` 보존) |
+| `app/views/adr/index.test.js` | 저장소 필터·검색·`stale 우선` 정렬; 카운트 칩 0 생략; 신호 칩이 ADR 번호로 결합; `section_missing`만 있는 스펙이 접힌 목록으로; 체커별 `env_errors` 한 줄 대체와 교차 인용 절 유지; `기타` 칩(`adr_status`·미지 kind); 교차 인용 상태 칩 세 색; 문서 링크가 `openDoc(doc, root_dir)`를 부르고 `docs/` 밖 파일은 무링크; bead 클릭이 다른 `root_dir`면 `switchWorkspace` 뒤 `gotoIssue` |
 | `app/main.*.test.js`(기존 view-sync 계열에 추가) | 탭 진입에 `subscribe-adr`, 이탈에 `unsubscribe-adr` |
-| `app/protocol.test.js` | 신규 op·push 이름이 문서와 일치 |
+| `app/protocol.test.js` | `MESSAGE_TYPES`에 `subscribe-adr`·`unsubscribe-adr`·`adr-snapshot`이 있고 문서와 일치 |
 | Pre-Handoff | `npm run tsc` · `npx vitest run --reporter=dot` · `npm run lint` · `npm run prettier:write` → `npm run build`(bundle·map 포함) |
-| 배포 후 | `bdui-shared restart` 뒤 tailnet IP `/healthz` SHA와 `#/adr`에서 beads-ui·dotfiles 두 섹션이 실제 파일 상태로 그려지는 스크린샷 |
+| 배포 후 | 머지 뒤 restart와 tailnet IP `/healthz`의 SHA·실행 경로 검증은 `repo-ops/config.toml` `[deploy]`(`repo-ops/script/deploy`)가 수행한다. `#/adr`에서 beads-ui·dotfiles 두 섹션이 라이트·다크로 실제 파일 상태를 그리는 화면 확인은 완료 보고서의 비차단 운영자 인계 항목(`- 관찰:` 잔여 행)이며 배포 성공 판정에 들어가지 않는다 |
 
 ## 11. 구현 unit 후보
 
 1. `server/adr/adr-frontmatter.js` + `adr-signals.js` + `adr-watch.js` — §5 전부와
    그 테스트.
-2. `server/ws/adr-handlers.js` + `connection.js` + `app/protocol.md` — §6·§9.
-3. `app/views/adr/index.js` + `router.js` + `nav.js` + `main.js` + `styles.css` — §7.
+2. `server/ws/adr-handlers.js` + `connection.js` + `app/protocol.js` + `app/protocol.md` — §6·§9.
+3. `app/views/adr/index.js` + `state.js` + `router.js` + `nav.js` + `main.js` + `styles.css` — §7.
 
 ## 12. 경계·후속
 
@@ -281,6 +301,14 @@ CheckerError = { kind, file, line: number|null, adr: number|null, detail }
   각각 정의 이중화와 내부 함수명 결합을 대가로 spawn을 없앤다. `summary`: "ADR 탭
   신호는 설치본 체커를 runtime spawn해 --json으로 소비하고 규칙을 JS로 복제하지
   않으며 현재 표만 JS frontmatter 리더가 읽는다" → ADR
-- ADR 채널이 bd 스냅샷 코디네이터와 별개이고 파일 지문 변경에만 재계산한다 — ADR
-  0026·0008의 적용이며 되돌리기 쉬운 구현 선택이다 → ADR 아님.
-- 네 번째 탭 `#/adr`과 툴바 배치 — 표시 어휘이며 목업이 정한 출발점이다 → ADR 아님.
+- ADR 채널이 bd 스냅샷 코디네이터와 별개이고 파일 지문 변경에만 재계산한다.
+  **되돌리기 쉽다**: 채널 하나와 watch 모듈 하나를 코디네이터 훅으로 바꾸는 국소
+  변경이고 페이로드는 그대로다. **맥락 없이도 의외가 아니다**: ADR 0026(동기 spawn
+  금지)·0008(bd 계층 고정)을 읽으면 파일 읽기 채널을 따로 두는 이유가 코드에서 바로
+  보인다. **trade-off가 실재하지 않는다**: 코디네이터에 얹는 대안은 bd 스냅샷 세대에
+  파일 신호를 묶어 얻는 것이 없고 잃는 것(bd 폴링마다 8초 재계산)만 있다 → ADR 아님.
+- 다섯 번째 탭 `#/adr`과 툴바 배치. **되돌리기 쉽다**: 탭 하나와 CSS 접두 하나를
+  지우면 끝이고 서버 계약이 바뀌지 않는다. **맥락 없이도 의외가 아니다**: 4탭 셸에
+  탭을 더하는 관례를 그대로 따르고 목업이 배치를 정했다. **trade-off가 실재하지
+  않는다**: Monitor 하위 화면으로 넣는 대안은 구독 수명과 필터 상태를 Monitor에
+  섞을 뿐 얻는 것이 없다 → ADR 아님.
