@@ -7,6 +7,11 @@ import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { isRequest, makeError, makeOk } from '../../app/protocol.js';
 import { resolveWorkspaceDatabase } from '../db.js';
+import {
+  detachAdr,
+  handleSubscribeAdr,
+  handleUnsubscribeAdr
+} from './adr-handlers.js';
 import { handleBenchRunCreate } from './bench-handlers.js';
 import { handleGetCompare } from './compare-handlers.js';
 import {
@@ -295,6 +300,7 @@ export function attachWsServer(http_server, options = {}) {
         detachConnectionFromAllRegistries(ws);
         detachWorkerQueue(ws);
         detachMonitorPipeline(ws);
+        detachAdr(ws);
         detachUiOrder(ws);
         detachDisplayPolicy(ws);
         detachImplPresets(ws);
@@ -515,6 +521,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'unsubscribe-monitor-pipeline':
       handleUnsubscribeMonitorPipeline(ws, req);
+      return;
+    case 'subscribe-adr':
+      handleSubscribeAdr(ws, req);
+      return;
+    case 'unsubscribe-adr':
+      handleUnsubscribeAdr(ws, req);
       return;
     case 'subscribe-impl-presets':
       handleSubscribeImplPresets(ws, req);

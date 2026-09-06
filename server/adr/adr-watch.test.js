@@ -292,3 +292,34 @@ describe('close', () => {
     expect(vi.getTimerCount()).toEqual(0);
   });
 });
+
+describe('trigger', () => {
+  test('dispatches a plan through the in-flight merge', async () => {
+    const root_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'adr-watch-'));
+    /** @type {AdrPlan[]} */
+    const plans = [];
+    /** @type {Array<() => void>} */
+    const releases = [];
+    const watch = createAdrWatch({
+      root_dir,
+      onChange: (plan) => {
+        plans.push(plan);
+        return new Promise((resolve) => {
+          releases.push(() => resolve(undefined));
+        });
+      },
+      poll_interval_ms: 60000
+    });
+
+    const first = watch.trigger({ full: false, specs: ['a'] });
+    const second = watch.trigger({ full: true });
+    await second;
+    releases[0]();
+    await vi.waitFor(() => expect(releases.length).toBe(2));
+    releases[1]();
+    await first;
+
+    expect(plans).toEqual([{ full: false, specs: ['a'] }, { full: true }]);
+    watch.close();
+  });
+});

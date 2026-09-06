@@ -162,6 +162,16 @@ describe('server/protocol', () => {
     expect(MESSAGE_TYPES).toContain('worker-queue-start-now');
   });
 
+  test('registers the ADR channel message types and documents them', () => {
+    const doc = readFileSync('app/protocol.md', 'utf8');
+    const adr_types = ['subscribe-adr', 'unsubscribe-adr', 'adr-snapshot'];
+
+    const undocumented = adr_types.filter((type) => !doc.includes(type));
+
+    expect(MESSAGE_TYPES).toEqual(expect.arrayContaining(adr_types));
+    expect(undocumented).toEqual([]);
+  });
+
   test('registers every client-sent server dispatch type', () => {
     const connection_source = readFileSync('server/ws/connection.js', 'utf8');
     const dispatch_types = [

@@ -33,6 +33,7 @@ const SPEC_PREFIX = 'docs/superpowers/specs/';
 /**
  * @typedef {Object} AdrWatch
  * @property {() => Promise<void>} refresh - Re-fingerprint now (test seam).
+ * @property {(plan: AdrPlan) => Promise<void>} trigger - Dispatch a plan through the same in-flight merge as a fingerprint change (first computation).
  * @property {(pending: boolean) => void} setRetryPending - Arm/disarm the retry.
  * @property {() => void} close - Drop watchers and timers.
  */
@@ -309,6 +310,7 @@ export function createAdrWatch(options) {
 
   return {
     refresh,
+    trigger: dispatch,
     /**
      * @param {boolean} pending - True while the workspace has an env error.
      */

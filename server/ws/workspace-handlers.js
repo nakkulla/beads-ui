@@ -8,6 +8,7 @@ import { runShell, stderrTail } from '../bd.js';
 import { resolveWorkspaceDatabase } from '../db.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
+import { notifyAdrVisibilityChanged } from './adr-handlers.js';
 import {
   ensureSubs,
   getConnWorkspace,
@@ -178,6 +179,8 @@ export function handleSetWorkspaceVisibility(ws, req) {
   // its external PRs are being polled at all.
   if (result.changed) {
     notifyMonitorVisibilityChanged();
+    // The ADR channel scopes to the same visible set (UI-8uz7 §6).
+    notifyAdrVisibilityChanged();
   }
 }
 
