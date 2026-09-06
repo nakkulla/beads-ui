@@ -21,6 +21,7 @@ import { createStore } from './state.js';
 import { createActivityIndicator } from './utils/activity-indicator.js';
 import { debug } from './utils/logging.js';
 import { showToast } from './utils/toast.js';
+import { ADR_SNAPSHOT_KEY, createAdrView } from './views/adr/index.js';
 import { createBoardView } from './views/board/index.js';
 import { createCompareView } from './views/compare/index.js';
 import { createDetailPanel } from './views/detail-panel/index.js';
@@ -218,6 +219,37 @@ function measureVerticalEdges(element) {
 }
 
 /**
+ * A minimal replace-only store for the ADR snapshot. The payload has no partial
+ * patches (`app/protocol.md`), so there is nothing for a dedicated data module
+ * to reconcile — subscribers just re-render the last push.
+ *
+ * @returns {{ get: () => ({ workspaces: any[] }|null), set: (value: { workspaces: any[] }) => void, subscribe: (fn: () => void) => () => void }}
+ */
+function createAdrStore() {
+  /** @type {{ workspaces: any[] }|null} */
+  let value = null;
+  /** @type {Set<() => void>} */
+  const listeners = new Set();
+  return {
+    get: () => value,
+    set(next) {
+      value = next;
+      for (const fn of listeners) {
+        try {
+          fn();
+        } catch {
+          // a broken subscriber must not stop the others
+        }
+      }
+    },
+    subscribe(fn) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    }
+  };
+}
+
+/**
  * Bootstrap the two-tab control-tower shell (Board / Worker) with a shared
  * detail overlay.
  *
@@ -237,6 +269,7 @@ export function bootstrap(root_element) {
     <section id="worker-root" class="route worker" hidden></section>
     <section id="monitor-root" class="route monitor" hidden></section>
     <section id="compare-root" class="route compare" hidden></section>
+    <section id="adr-root" class="route adr" hidden></section>
     <section id="detail-panel" class="route detail" hidden></section>
   `;
   render(shell, root_element);
@@ -258,6 +291,8 @@ export function bootstrap(root_element) {
   /** @type {HTMLElement|null} */
   const compare_root = document.getElementById('compare-root');
   /** @type {HTMLElement|null} */
+  const adr_root = document.getElementById('adr-root');
+  /** @type {HTMLElement|null} */
   const detail_mount = document.getElementById('detail-panel');
 
   if (usage_mount) {
@@ -269,6 +304,7 @@ export function bootstrap(root_element) {
     worker_root &&
     monitor_root &&
     compare_root &&
+    adr_root &&
     detail_mount
   ) {
     /** @type {HTMLElement|null} */
@@ -329,6 +365,7 @@ export function bootstrap(root_element) {
     const display_policy_store = createDisplayPolicyStore();
     const exec_preset_store = createExecPresetStore();
     const session_log_store = createSessionLogStore();
+    const adr_store = createAdrStore();
 
     client.on('impl-presets-snapshot', (payload) => {
       const snapshot = /** @type {any} */ (payload);
@@ -342,6 +379,16 @@ export function bootstrap(root_element) {
           presets: snapshot.presets
         });
       }
+    });
+
+    // ADR 채널(UI-8uz7 §6)의 push. 모니터 파이프라인과 같이 서버 전역이고 부분
+    // 패치가 없어서 스냅샷을 통째로 교체한다.
+    client.on('adr-snapshot', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (!p || !Array.isArray(p.workspaces)) {
+        return;
+      }
+      adr_store.set({ workspaces: p.workspaces });
     });
 
     // Route the aggregated monitor pipeline snapshot (UI-nprg) into its store.
@@ -612,6 +659,7 @@ export function bootstrap(root_element) {
       ensureBoardSubscriptions(state.view === 'board');
       ensureWorkerSubscriptions(state.view === 'worker');
       ensureMonitorPipelineChannel(pipelineChannelWanted(state));
+      ensureAdrChannel(state.view === 'adr');
       ensureWorkerQueueChannel(
         state.view === 'board' ||
           state.view === 'worker' ||
@@ -934,7 +982,7 @@ export function bootstrap(root_element) {
      * 탭을 옮겨도 후보가 비거나 낡지 않는다 — 채널을 끊어도 store는 비워지지
      * 않으므로, 술어가 갈리면 오래된 snapshot이 남는다.
      *
-     * @param {{ view: 'board'|'worker'|'monitor'|'compare', selected_id: string | null }} state
+     * @param {{ view: 'board'|'worker'|'monitor'|'compare'|'adr', selected_id: string | null }} state
      * @returns {boolean}
      */
     function pipelineChannelWanted(state) {
@@ -972,6 +1020,42 @@ export function bootstrap(root_element) {
       if (monitor_pipeline_unsub) {
         void monitor_pipeline_unsub().catch(() => {});
         monitor_pipeline_unsub = null;
+      }
+    }
+
+    // --- ADR channel lifecycle (UI-8uz7 §7) ---
+    /** @type {(() => Promise<unknown>) | null} */
+    let adr_unsub = null;
+
+    /**
+     * The ADR observation channel. Server-global like the monitor pipeline and
+     * only wanted while the tab is on screen: the server arms one fs watch per
+     * visible workspace for as long as a subscriber exists, so leaving the tab
+     * must release it.
+     *
+     * @param {boolean} active
+     */
+    function ensureAdrChannel(active) {
+      if (!active) {
+        clearAdrChannel();
+        return;
+      }
+      if (adr_unsub) {
+        return;
+      }
+      void tracked_send('subscribe-adr', { id: ADR_SNAPSHOT_KEY }).catch(
+        (err) => {
+          log('subscribe-adr failed: %o', err);
+        }
+      );
+      adr_unsub = () =>
+        tracked_send('unsubscribe-adr', { id: ADR_SNAPSHOT_KEY });
+    }
+
+    function clearAdrChannel() {
+      if (adr_unsub) {
+        void adr_unsub().catch(() => {});
+        adr_unsub = null;
       }
     }
 
@@ -1089,6 +1173,7 @@ export function bootstrap(root_element) {
       exec_preset_store.clear();
       worker_queue_unsub = null;
       monitor_pipeline_unsub = null;
+      adr_unsub = null;
       board_unsubs.clear();
       worker_unsubs.clear();
       sub_generation.board += 1;
@@ -1108,6 +1193,7 @@ export function bootstrap(root_element) {
       ensureBoardSubscriptions(state.view === 'board');
       ensureWorkerSubscriptions(state.view === 'worker');
       ensureMonitorPipelineChannel(pipelineChannelWanted(state));
+      ensureAdrChannel(state.view === 'adr');
       ensureWorkerQueueChannel(
         state.view === 'board' ||
           state.view === 'worker' ||
@@ -1382,8 +1468,8 @@ export function bootstrap(root_element) {
       client.onConnection(onConn);
     }
 
-    // Load last-view from storage (board/worker/monitor/compare only).
-    /** @type {'board'|'worker'|'monitor'|'compare'} */
+    // Load last-view from storage (board/worker/monitor/compare/adr only).
+    /** @type {'board'|'worker'|'monitor'|'compare'|'adr'} */
     let last_view = 'board';
     try {
       const raw_view = window.localStorage.getItem('beads-ui.view');
@@ -1391,7 +1477,8 @@ export function bootstrap(root_element) {
         raw_view === 'board' ||
         raw_view === 'worker' ||
         raw_view === 'monitor' ||
-        raw_view === 'compare'
+        raw_view === 'compare' ||
+        raw_view === 'adr'
       ) {
         last_view = raw_view;
       }
@@ -1667,6 +1754,16 @@ export function bootstrap(root_element) {
       }
     });
 
+    // ADR 탭 (다섯 번째 탭, UI-8uz7 §7): 저장소별 ADR 표와 신호를 그린다.
+    // 문서 링크·bead 클릭은 Monitor 카드와 같은 경로를 그대로 쓴다.
+    createAdrView(adr_root, {
+      adrStore: adr_store,
+      gotoIssue: (id) => router.gotoIssue(id),
+      getWorkspacePath: () => store.getState().workspace.current?.path,
+      switchWorkspace: (root_dir) => handleWorkspaceChange(root_dir),
+      openDoc
+    });
+
     // Shared detail overlay.
     const detail_panel = createDetailPanel(detail_mount, {
       issueStores: sub_issue_stores,
@@ -1778,23 +1875,25 @@ export function bootstrap(root_element) {
     /**
      * Manage route visibility and board subscriptions per view.
      *
-     * @param {{ selected_id: string | null, view: 'board'|'worker'|'monitor'|'compare' }} s
+     * @param {{ selected_id: string | null, view: 'board'|'worker'|'monitor'|'compare'|'adr' }} s
      */
     const onRouteChange = (s) => {
       board_root.hidden = s.view !== 'board';
       worker_root.hidden = s.view !== 'worker';
       monitor_root.hidden = s.view !== 'monitor';
       compare_root.hidden = s.view !== 'compare';
+      adr_root.hidden = s.view !== 'adr';
       if (repo_scope_mount) {
         // 비교도 Monitor와 같이 저장소 전체를 보는 탭이라 레포 캡슐이 물러난다.
         repo_scope_mount.classList.toggle(
           'is-quiet',
-          s.view === 'monitor' || s.view === 'compare'
+          s.view === 'monitor' || s.view === 'compare' || s.view === 'adr'
         );
       }
       ensureBoardSubscriptions(s.view === 'board');
       ensureWorkerSubscriptions(s.view === 'worker');
       ensureMonitorPipelineChannel(pipelineChannelWanted(s));
+      ensureAdrChannel(s.view === 'adr');
       ensureWorkerQueueChannel(
         s.view === 'board' ||
           s.view === 'worker' ||

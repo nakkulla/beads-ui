@@ -896,6 +896,61 @@ profile applied from another repo's panel split across two repos. All three now
 address one repo, and a successful write invalidates that repo's monitor
 `session_defaults` cache.
 
+## ADR channel (UI-8uz7 §6)
+
+`subscribe-adr` / `unsubscribe-adr` (reply `ok` with `{ id }`) open and close a
+SERVER-GLOBAL observation channel: like `subscribe-monitor-pipeline` it is not
+scoped to the connection's workspace, and it survives `set-workspace`. The
+server pushes `adr-snapshot` with `{ id, workspaces: AdrWorkspaceView[] }`,
+where `workspaces` is EVERY visible workspace in the same order the monitor
+uses. There are no partial patches — the client replaces its render.
+
+```
+AdrWorkspaceView = {
+  root_dir, name,                      // name = basename(root_dir)
+  name_duplicate: boolean,             // a repo of this name came first
+  computing: boolean, computed_at: number | null,
+  env_errors: { index: string|null, citations: string|null, candidates: string|null },
+  adr_dir_missing: boolean,
+  current: AdrRecord[], history: AdrRecord[],
+  frontmatter_errors: { file, error }[],
+  index_drift: { ok: boolean, detail: string | null } | null,
+  citations_stale: CheckerError[],
+  candidates: { spec, ok, errors: CheckerError[] }[],
+  cross_citations: { file, line, repo, adr, target: { root_dir, status } | null }[]
+}
+CheckerError = { kind, file, line: number|null, adr: number|null, detail }
+```
+
+- `env_errors` is PER CHECKER: a failed checker empties only its own result
+  (`index_drift: null`, `citations_stale: []`, `candidates: []`) and the table,
+  the other checkers' results, and `cross_citations` still ship. A spec's own
+  `usage` error is local to that spec's `candidates` row, not an `env_errors`.
+- `cross_citations[].target` is joined by the SERVER: the `ADR <repo>/NNNN`
+  citation resolves against the visible workspace whose `name` is `repo`, in its
+  `current ∪ history`. Unknown repo or unknown number is `null`. On a duplicate
+  basename the FIRST workspace is the target and every later one carries
+  `name_duplicate: true`.
+- Refresh is file-driven, never bd-driven: `fs.watch` on `docs/adr/`,
+  `AGENTS.md`, `CLAUDE.md`, `docs/agents/` and `docs/superpowers/specs/` plus a
+  fingerprint (`path\0mtimeMs\0size`) comparison, so an unchanged fingerprint
+  recomputes nothing. A spawn-free poll every 30 s is the safety net for missed
+  events. A workspace still holding an `env_errors` entry is `retry_pending` and
+  recomputes once on the next poll even when the fingerprint is unchanged, so a
+  transient checker failure cannot become permanent.
+- The channel pushes ALL workspaces whenever ONE finishes, because a repo's
+  fresh ADR list changes what other repos' `cross_citations[].target` say (join
+  only, no recompute on the other side).
+- The FIRST subscriber arms one watch per visible workspace, starts a full
+  computation each, and is pushed `computing: true` rows immediately.
+  `set-workspace-visibility` arms newly visible repos, drops hidden ones, and
+  pushes. The LAST unsubscribe (or socket close) drops every watch, timer, and
+  cached snapshot.
+- On reconnect the client re-sends `subscribe-adr`. If another subscriber kept
+  the cache alive it receives the last snapshot immediately; if the cache was
+  dropped it receives `computing: true` rows first and the results as they land.
+- This channel WRITES nothing — not bd, not files, not kv.
+
 ## Preset comparison channel (preset-compare §3.5)
 
 - `get-compare` payload:

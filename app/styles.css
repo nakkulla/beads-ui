@@ -10411,3 +10411,257 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   display: flex;
   gap: var(--sp-6);
 }
+
+/* ---------------------------------------------------------------------------
+   ADR 탭 (UI-8uz7 §7). 토큰은 Monitor 절과 같은 테마 변수를 그대로 재사용하므로
+   라이트·다크가 따로 갈리지 않는다 — 탭 전용 테마는 두지 않는다.
+   --------------------------------------------------------------------------- */
+
+.adr-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4) var(--sp-6);
+  margin-bottom: var(--sp-8);
+}
+
+.adr-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.adr-filter,
+.adr-sort {
+  padding: var(--sp-2) var(--sp-5);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-chip);
+  cursor: pointer;
+}
+
+.adr-filter[aria-pressed='true'],
+.adr-sort[aria-pressed='true'] {
+  border-color: var(--border-card);
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.adr-search {
+  flex: 1 1 220px;
+  min-width: 160px;
+  padding: var(--sp-2) var(--sp-5);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-caption);
+}
+
+.adr-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-10);
+}
+
+.adr-ws {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.adr-ws__hd {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-5);
+}
+
+.adr-ws__hd h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-body-sm);
+}
+
+.adr-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.adr-chip {
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+}
+
+.adr-count--drift,
+.adr-count--cite,
+.adr-count--cand,
+.adr-count--token,
+.adr-chip--signal,
+.adr-chip--dup,
+.adr-chip--env {
+  color: var(--accent-warn);
+  border-color: var(--accent-warn);
+}
+
+.adr-chip--cross.is-ok {
+  color: var(--accent-success);
+  border-color: var(--accent-success);
+}
+
+.adr-chip--cross.is-warn {
+  color: var(--accent-warn);
+  border-color: var(--accent-warn);
+}
+
+.adr-chip--cross.is-unknown {
+  color: var(--text-dim);
+}
+
+/* 좁은 폭에서는 표가 컨테이너 안에서 가로로 스크롤한다 — 셀을 접으면 번호와
+   신호가 서로 다른 줄로 흩어져 행을 못 읽는다. */
+.adr-tablewrap {
+  overflow-x: auto;
+}
+
+.adr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-caption);
+}
+
+.adr-table th {
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-card);
+  color: var(--text-dim);
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.adr-table td {
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border-chip);
+  color: var(--text-secondary);
+  vertical-align: top;
+}
+
+.adr-num,
+.adr-date {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.adr-summary {
+  min-width: 18rem;
+  color: var(--text-secondary);
+}
+
+.adr-signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  border-bottom: none;
+}
+
+.adr-doc--plain {
+  color: var(--text-muted);
+}
+
+.adr-doc--link,
+.adr-bead {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--link);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.adr-doc--link:hover,
+.adr-bead:hover {
+  text-decoration: underline;
+}
+
+.adr-history,
+.adr-pending {
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+.adr-history > summary,
+.adr-pending > summary {
+  cursor: pointer;
+}
+
+.adr-sec {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+}
+
+.adr-sec h3 {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+  font-weight: 400;
+}
+
+.adr-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.adr-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-4);
+  font-size: var(--fs-caption);
+  color: var(--text-secondary);
+}
+
+.adr-row__mid {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.adr-row__detail {
+  color: var(--text-dim);
+}
+
+.adr-candspec {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding-left: var(--sp-4);
+  border-left: 1px solid var(--border-chip);
+}
+
+.adr-candspec__hd {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+}
+
+.adr-env,
+.adr-drift {
+  margin: 0;
+  color: var(--accent-warn);
+  font-size: var(--fs-caption);
+}

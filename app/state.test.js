@@ -76,3 +76,13 @@ describe('state store', () => {
     expect(seen[0].workspace_config.default_workspace).toBe('/a');
   });
 });
+
+describe('state view name', () => {
+  test('accepts the adr view', () => {
+    const store = createStore();
+
+    store.setState({ view: 'adr' });
+
+    expect(store.getState().view).toBe('adr');
+  });
+});
