@@ -11,11 +11,11 @@ import { debug } from '../utils/logging.js';
  *
  * @type {ReadonlyArray<ViewName>}
  */
-const NAV_VIEWS = ['board', 'worker', 'monitor', 'compare'];
+const NAV_VIEWS = ['board', 'worker', 'monitor', 'compare', 'adr'];
 
 /**
  * Render the header navigation split by scope: the global mount gets the
- * cross-repo Monitor and 비교 links, the repo mount gets the Board / Worker
+ * cross-repo Monitor, 비교 and ADR links, the repo mount gets the Board / Worker
  * tabs that belong to the selected workspace. 비교 is global because the
  * presets it compares are a server-global store (preset-compare §3.1).
  *
@@ -77,6 +77,12 @@ export function createTopNav(mounts, store, router) {
             : ''}"
           @click=${onClick('compare')}
           >비교</a
+        >
+        <a
+          href="#/adr"
+          class="ctl-tab ctl-tab--adr ${active === 'adr' ? 'is-active' : ''}"
+          @click=${onClick('adr')}
+          >ADR</a
         >
       </div>
     `;

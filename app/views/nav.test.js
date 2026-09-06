@@ -42,7 +42,7 @@ describe('views/nav', () => {
     const links = global_mount.querySelectorAll('a.ctl-tab');
     links[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
-    expect(links.length).toBe(2);
+    expect(links.length).toBe(3);
     expect(links[0].classList.contains('ctl-tab--monitor')).toBe(true);
     expect(links[0].getAttribute('href')).toBe('#/monitor');
     expect(router.gotoView).toHaveBeenCalledWith('monitor');
@@ -94,6 +94,43 @@ describe('views/nav', () => {
       .dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(router.gotoView).toHaveBeenCalledWith('compare');
+  });
+
+  test('renders the fifth tab ADR rightmost on the global mount', async () => {
+    const { global_mount, repo_mount, store, router } = setup();
+
+    createTopNav(
+      { global_element: global_mount, repo_element: repo_mount },
+      /** @type {any} */ (store),
+      /** @type {any} */ (router)
+    );
+    const links = global_mount.querySelectorAll('a.ctl-tab');
+    const adr = links[links.length - 1];
+    adr.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(Array.from(links).map((a) => a.getAttribute('href'))).toEqual([
+      '#/monitor',
+      '#/compare',
+      '#/adr'
+    ]);
+    expect(adr.classList.contains('ctl-tab--adr')).toBe(true);
+    expect(adr.textContent?.trim()).toBe('ADR');
+    expect(router.gotoView).toHaveBeenCalledWith('adr');
+  });
+
+  test('marks only the ADR link active on the adr view', async () => {
+    const { global_mount, repo_mount, store, router } = setup();
+    store.set({ view: 'adr' });
+
+    createTopNav(
+      { global_element: global_mount, repo_element: repo_mount },
+      /** @type {any} */ (store),
+      /** @type {any} */ (router)
+    );
+
+    const active = global_mount.querySelectorAll('a.ctl-tab.is-active');
+    expect(active.length).toBe(1);
+    expect(active[0].getAttribute('href')).toBe('#/adr');
   });
 
   test('renders Board and Worker on the repo mount and routes between them', async () => {

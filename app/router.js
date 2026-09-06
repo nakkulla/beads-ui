@@ -2,7 +2,7 @@ import { issueHashFor } from './utils/issue-url.js';
 import { debug } from './utils/logging.js';
 
 /**
- * Hash-based router for the four-tab shell (board/worker/monitor/compare) and
+ * Hash-based router for the five-tab shell (board/worker/monitor/compare/adr) and
  * deep-linked issue ids. Legacy hashes (#/issues, #/epics, #/issue/<id>)
  * redirect to the canonical #/board form.
  */
@@ -31,12 +31,12 @@ export function parseHash(hash) {
 }
 
 /**
- * Parse the current view from hash. Only 'board', 'worker', 'monitor' and
- * 'compare' exist; every other hash (including legacy #/issues and #/epics)
- * resolves to 'board'.
+ * Parse the current view from hash. Only 'board', 'worker', 'monitor',
+ * 'compare' and 'adr' exist; every other hash (including legacy #/issues and
+ * #/epics) resolves to 'board'.
  *
  * @param {string} hash
- * @returns {'board'|'worker'|'monitor'|'compare'}
+ * @returns {'board'|'worker'|'monitor'|'compare'|'adr'}
  */
 export function parseView(hash) {
   const h = String(hash || '');
@@ -48,6 +48,9 @@ export function parseView(hash) {
   }
   if (/^#\/compare(\b|\/|$)/.test(h)) {
     return 'compare';
+  }
+  if (/^#\/adr(\b|\/|$)/.test(h)) {
+    return 'adr';
   }
   return 'board';
 }
@@ -104,7 +107,10 @@ export function createHashRouter(store) {
     gotoIssue(id) {
       const s = store.getState ? store.getState() : { view: 'board' };
       const view =
-        s.view === 'worker' || s.view === 'monitor' || s.view === 'compare'
+        s.view === 'worker' ||
+        s.view === 'monitor' ||
+        s.view === 'compare' ||
+        s.view === 'adr'
           ? s.view
           : 'board';
       const next = issueHashFor(view, id);
@@ -124,7 +130,7 @@ export function createHashRouter(store) {
     /**
      * Navigate to a top-level view.
      *
-     * @param {'board'|'worker'|'monitor'|'compare'} view
+     * @param {'board'|'worker'|'monitor'|'compare'|'adr'} view
      */
     gotoView(view) {
       const s = store.getState

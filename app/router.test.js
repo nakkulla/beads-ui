@@ -57,6 +57,30 @@ describe('router', () => {
     expect(parseView('#/compare?issue=UI-1')).toBe('compare');
   });
 
+  test('parseView resolves the fifth tab adr', () => {
+    expect(parseView('#/adr')).toBe('adr');
+    expect(parseView('#/adr?issue=UI-1')).toBe('adr');
+  });
+
+  test('gotoView and gotoIssue round trip the adr view through the hash', () => {
+    document.body.innerHTML = '<div></div>';
+    const store = createStore();
+    const router = createHashRouter(store);
+    router.start();
+
+    router.gotoView('adr');
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    expect(window.location.hash).toBe('#/adr');
+    expect(store.getState().view).toBe('adr');
+
+    router.gotoIssue('UI-8uz7');
+    expect(window.location.hash).toBe('#/adr?issue=UI-8uz7');
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    expect(parseView(window.location.hash)).toBe('adr');
+    expect(store.getState().selected_id).toBe('UI-8uz7');
+    router.stop();
+  });
+
   test('compare hash opens the detail overlay on the same issue parameter', () => {
     document.body.innerHTML = '<div></div>';
     const store = createStore();
