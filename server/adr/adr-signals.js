@@ -393,19 +393,34 @@ export function createAdrSignals(options = {}) {
           '--json'
         ]);
         if (result.code === 2) {
-          // A usage exit is local to the spec row, not a repo-wide env error.
+          // The checker honours `--json` on its own usage errors; that row is
+          // local to the spec. A bare exit 2 with no JSON is `python3` itself
+          // failing (checker file missing) — a repo-wide env error.
+          /** @type {{ ok: boolean, errors: CheckerError[] } | null} */
+          let usage = null;
+          try {
+            usage = parseCheckerJson(result.stdout);
+          } catch {
+            usage = null;
+          }
+          if (!usage) {
+            throw new Error(result.stderr.trim() || 'usage error (exit 2)');
+          }
           return {
             spec,
             ok: false,
-            errors: [
-              {
-                kind: 'usage',
-                file: spec,
-                line: null,
-                adr: null,
-                detail: result.stderr.trim() || 'usage error (exit 2)'
-              }
-            ]
+            errors:
+              usage.errors.length > 0
+                ? usage.errors
+                : [
+                    {
+                      kind: 'usage',
+                      file: spec,
+                      line: null,
+                      adr: null,
+                      detail: result.stderr.trim() || 'usage error (exit 2)'
+                    }
+                  ]
           };
         }
         const parsed = parseCheckerJson(result.stdout);

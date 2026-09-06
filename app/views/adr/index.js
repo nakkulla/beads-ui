@@ -52,6 +52,27 @@ const CANDIDATE_OTHER_KINDS = ['adr_status'];
  * @property {(doc: import('../board/stepper.js').StepperDoc, root_dir?: string) => void} [openDoc]
  */
 
+/** Every candidate kind the dotfiles §7 contract names. */
+const CANDIDATE_KNOWN_KINDS = [
+  ...CANDIDATE_UNRESOLVED_KINDS,
+  CANDIDATE_TOKEN_KIND,
+  CANDIDATE_PENDING_KIND,
+  CANDIDATE_ENV_KIND,
+  ...CANDIDATE_OTHER_KINDS
+];
+
+/**
+ * Chip text for a checker kind: contract kinds keep their name, anything else
+ * is `기타` — the registry is the consumer's copy of the vocabulary (ADR 0012)
+ * and an unknown token is drawn, not echoed.
+ *
+ * @param {string} kind
+ * @param {string[]} known
+ */
+function kindLabel(kind, known) {
+  return known.includes(kind) ? kind : '기타';
+}
+
 /**
  * `/api/doc`은 `docs/` 아래 마크다운만 서빙한다 — 그 밖의 인용 대상은 링크 없이
  * 문자만 보인다(§7, §12).
@@ -450,17 +471,21 @@ export function createAdrView(root, options = {}) {
         ${rows.map(
           (err) => html`
             <li class="adr-row">
-              ${docCell(
-                err.file,
-                ws.root_dir,
-                `${err.file}${err.line === null || err.line === undefined ? '' : `:${err.line}`}`
-              )}
+              ${err.file
+                ? docCell(
+                    err.file,
+                    ws.root_dir,
+                    `${err.file}${err.line === null || err.line === undefined ? '' : `:${err.line}`}`
+                  )
+                : html``}
               <span class="adr-row__mid"
                 >${err.adr === null || err.adr === undefined
                   ? ''
                   : `ADR ${err.adr}`}</span
               >
-              <span class="adr-chip adr-chip--kind">${err.kind}</span>
+              <span class="adr-chip adr-chip--kind"
+                >${kindLabel(err.kind, CITATION_NAMED_KINDS)}</span
+              >
               <span class="adr-row__detail">${err.detail || ''}</span>
             </li>
           `
@@ -517,7 +542,9 @@ export function createAdrView(root, options = {}) {
               ${row.errors.map(
                 (err) => html`
                   <li class="adr-row">
-                    <span class="adr-chip adr-chip--kind">${err.kind}</span>
+                    <span class="adr-chip adr-chip--kind"
+                      >${kindLabel(err.kind, CANDIDATE_KNOWN_KINDS)}</span
+                    >
                     <span class="adr-row__mid"
                       >${err.adr === null || err.adr === undefined
                         ? ''

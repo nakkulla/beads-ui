@@ -179,9 +179,8 @@ function optionalString(data, key) {
   if (value === undefined) {
     return null;
   }
-  if (typeof value === 'number') {
-    return String(value);
-  }
+  // Same verdict as `adr-index.py`: a bare number under a string key is a
+  // type error, not a string.
   if (typeof value !== 'string') {
     throw new Error(`key '${key}' must be a string`);
   }

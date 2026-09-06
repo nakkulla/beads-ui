@@ -168,6 +168,34 @@ describe('views/adr counts', () => {
     expect(texts(root, '.adr-counts .adr-chip')).toContain('기타 2');
   });
 
+  test('draws an unknown kind chip as 기타 and a file-less row without a link', () => {
+    const { root } = mount([
+      workspace({
+        citations_stale: [{ kind: 'unknown', detail: 'checker said no' }],
+        candidates: [
+          {
+            spec: 'docs/superpowers/specs/s.md',
+            ok: false,
+            errors: [
+              {
+                kind: 'brand_new',
+                file: 's.md',
+                line: 2,
+                adr: null,
+                detail: ''
+              }
+            ]
+          }
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-sec--cite .adr-chip--kind')).toEqual(['기타']);
+    expect(root.querySelectorAll('.adr-sec--cite .adr-doc').length).toBe(0);
+    expect(root.textContent).not.toContain('undefined');
+    expect(root.textContent).not.toContain('brand_new');
+  });
+
   test('shows 계산 중 while a repository is computing', () => {
     const { root } = mount([workspace({ computing: true })]);
 

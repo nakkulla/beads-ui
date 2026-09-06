@@ -384,6 +384,53 @@ describe('environment errors', () => {
   });
 });
 
+describe('candidate exit 2', () => {
+  test('keeps a JSON usage exit local to its spec row', async () => {
+    await writeAdr(12);
+    await writeFile('docs/superpowers/specs/a-design.md', 'x\n');
+    answer = async (args) => {
+      if (checkerOf(args) === 'candidates') {
+        return {
+          code: 2,
+          stdout: JSON.stringify({
+            ok: false,
+            errors: [{ kind: 'usage', detail: 'bad --spec' }]
+          }),
+          stderr: ''
+        };
+      }
+      return { code: 0, stdout: '{"ok":true,"errors":[]}', stderr: '' };
+    };
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.env_errors.candidates).toEqual(null);
+    expect(result.candidates[0].errors[0].kind).toEqual('usage');
+  });
+
+  test('records a bare exit 2 without JSON as the candidates env error', async () => {
+    await writeAdr(12);
+    await writeFile('docs/superpowers/specs/a-design.md', 'x\n');
+    answer = async (args) => {
+      if (checkerOf(args) === 'candidates') {
+        return {
+          code: 2,
+          stdout: '',
+          stderr: "python3: can't open file 'check-adr-candidates.py'\n"
+        };
+      }
+      return { code: 0, stdout: '{"ok":true,"errors":[]}', stderr: '' };
+    };
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.env_errors.candidates).toEqual(
+      "check-adr-candidates.py: python3: can't open file 'check-adr-candidates.py'"
+    );
+    expect(result.candidates).toEqual([]);
+  });
+});
+
 describe('boundaries', () => {
   test('skips every spawn when docs/adr is missing', async () => {
     await writeFile('docs/superpowers/specs/a-design.md', 'x\n');

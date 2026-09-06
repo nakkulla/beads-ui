@@ -134,6 +134,14 @@ describe('readAdrFile', () => {
     expect(result.ok).toEqual(false);
   });
 
+  test('rejects a bare number under a string key', () => {
+    const text = frontmatter({ ...VALID, summary: '20260905' });
+
+    const result = readAdrFile(text, '0012-some-decision.md');
+
+    expect(result.ok).toBe(false);
+  });
+
   test('rejects a file without frontmatter', () => {
     const result = readAdrFile('# just a heading\n', '0012-x.md');
 

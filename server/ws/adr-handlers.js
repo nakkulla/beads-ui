@@ -162,8 +162,11 @@ function buildViews() {
         };
       }
     );
+    // `retry_pending` is watch bookkeeping, not part of `AdrWorkspaceView`.
+    const { retry_pending: _retry_pending, ...view } = entry;
+    void _retry_pending;
     return {
-      ...entry,
+      ...view,
       name,
       name_duplicate: first_root_by_name.get(name) !== root_dir,
       cross_citations
@@ -187,10 +190,15 @@ function pushAll() {
 /**
  * Run one workspace computation and publish its result.
  *
+ * The watch armed when the computation starts is its owner: a result whose
+ * owner is no longer the armed watch is discarded, so an unsubscribe followed
+ * by a resubscribe never lets the stale pass overwrite the fresh one.
+ *
  * @param {string} root_dir
  * @param {AdrPlan} plan
  */
 async function recompute(root_dir, plan) {
+  const owner = WATCHES.get(root_dir);
   /** @type {AdrWorkspace} */
   let result;
   try {
@@ -200,9 +208,11 @@ async function recompute(root_dir, plan) {
     return;
   }
   const watch = WATCHES.get(root_dir);
-  if (!watch) {
-    // The workspace went hidden (or the last subscriber left) while the
-    // computation ran: its answer belongs to a scope that no longer exists.
+  if (!watch || watch !== owner) {
+    // The workspace went hidden, the last subscriber left, or the channel was
+    // re-armed while the computation ran: its answer belongs to a scope that
+    // no longer exists, and the re-armed watch already runs its own first
+    // full pass.
     return;
   }
   CACHE.set(root_dir, result);
@@ -283,6 +293,9 @@ function teardown() {
     stopWatch(root_dir);
   }
   CACHE.clear();
+  // A computation still running against the old computer keeps writing its
+  // candidate cache into an instance nobody reads again.
+  signals = null;
 }
 
 /**

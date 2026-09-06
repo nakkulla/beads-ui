@@ -431,6 +431,41 @@ describe('adr channel', () => {
     expect(lastSnapshot(again).workspaces[0].computing).toBe(false);
   });
 
+  test('discards a computation that outlives its watch after a re-subscribe', async () => {
+    const ws = fakeWs();
+    handleSubscribeAdr(/** @type {any} */ (ws), req('subscribe-adr'));
+    handleUnsubscribeAdr(/** @type {any} */ (ws), req('unsubscribe-adr'));
+    const again = fakeWs();
+    handleSubscribeAdr(/** @type {any} */ (again), req('subscribe-adr'));
+
+    // The first (orphaned) compute settles after the re-arm.
+    await resolveCompute(WS_A, { index_drift: { ok: false, detail: 'stale' } });
+
+    expect(lastSnapshot(again).workspaces[0].computing).toBe(true);
+
+    await resolveCompute(WS_A, { index_drift: { ok: true, detail: null } });
+
+    expect(lastSnapshot(again).workspaces[0].index_drift).toEqual({
+      ok: true,
+      detail: null
+    });
+  });
+
+  test('keeps retry_pending out of the pushed view', async () => {
+    const ws = fakeWs();
+    handleSubscribeAdr(/** @type {any} */ (ws), req('subscribe-adr'));
+    await resolveCompute(WS_A, {
+      env_errors: {
+        index: 'adr-index.py: boom',
+        citations: null,
+        candidates: null
+      },
+      retry_pending: true
+    });
+
+    expect(lastSnapshot(ws).workspaces[0]).not.toHaveProperty('retry_pending');
+  });
+
   test('never spawns a process', async () => {
     const ws = fakeWs();
     handleSubscribeAdr(/** @type {any} */ (ws), req('subscribe-adr'));
