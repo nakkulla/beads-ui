@@ -431,6 +431,21 @@ describe('runner/preamble guard contract severity tiers (UI-rxp3 §1)', () => {
     expect(contract).toContain('`status`·`rev-parse`');
     expect(contract).toContain('붙일 이유도 없다');
   });
+
+  // Spec §4: a prohibition named for one spelling only reads as notice that
+  // the other spelling is allowed, which is how a session invents a bypass.
+  test('names both relocation spellings and the exempt-free env prefix', () => {
+    expect(contract).toContain('`git --config-env=core.hooksPath=…`');
+    expect(contract).toContain('GIT_CONFIG_PARAMETERS');
+    expect(contract).toContain('면제가 없고');
+    expect(contract).toContain('`export`로 내보낸');
+  });
+
+  test('extends the one-shot exemption to both spellings', () => {
+    expect(contract).toContain(
+      '이 면제는 `-c` 와 `--config-env` 두 철자에 똑같이 적용된다'
+    );
+  });
 });
 
 describe('runner/preamble disposition guard variant (UI-rxp3 §1)', () => {
@@ -460,5 +475,16 @@ describe('runner/preamble disposition guard variant (UI-rxp3 §1)', () => {
   test('keeps the allowed tier it shares with every other session', () => {
     expect(contract).toContain('git merge origin/main');
     expect(contract).toContain('git config --get core.hooksPath');
+    expect(contract).toContain(
+      '이 면제는 `-c` 와 `--config-env` 두 철자에 똑같이 적용된다'
+    );
+  });
+
+  // Spec §4: the prohibitions widened by this spec sit in the kill tier the
+  // disposition variant drops, so reading them here would contradict the
+  // sentence telling it the hook judgment does not apply.
+  test('drops the widened prohibitions along with the rest of that tier', () => {
+    expect(contract).not.toContain('GIT_CONFIG_PARAMETERS');
+    expect(contract).not.toContain('export');
   });
 });

@@ -103,7 +103,7 @@ export function basePushRegex(target_base) {
  * @type {RegExp}
  */
 export const HOOK_BYPASS_STRICT_RE =
-  /git\s+push\b[\s\S]*?--no-verify\b|-c\s*core\.hookspath|core\.hookspath\s*=|\bGIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)\s*=/i;
+  /git\s+push\b[\s\S]*?--no-verify\b|-c\s*core\.hookspath|core\.hookspath\s*=|\bGIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)\s*=/i;
 
 /**
  * The hooks-path key inside one unparseable command's arguments. Whether naming
@@ -130,7 +130,7 @@ const HOOKS_PATH_FALLBACK_RE = /core\.hookspath/i;
  * @type {RegExp}
  */
 export const HOOK_BYPASS_RE =
-  /git\s+push\b[\s\S]*?--no-verify\b|-c\s*core\.hookspath|core\.hookspath\s*=|git\s+config\b[\s\S]*?core\.hookspath|\bGIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)\s*=/i;
+  /git\s+push\b[\s\S]*?--no-verify\b|-c\s*core\.hookspath|core\.hookspath\s*=|git\s+config\b[\s\S]*?core\.hookspath|\bGIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)\s*=/i;
 
 /**
  * Merging the base INTO the session's own branch (`git merge origin/main`).
@@ -374,9 +374,14 @@ const HOOKS_PATH_RE = /^core\.hookspath$/i;
  * The environment names that carry a whole config assignment into EVERY
  * repository the process touches, hooks path included (spec §2 measurement).
  *
+ * `GIT_CONFIG_PARAMETERS` is the same layer by another name: it is what git
+ * itself exports when passing `-c`/`--config-env` to a child, and a session
+ * writing it by hand reaches the attempt's hook exactly as `-c` does
+ * (2026-09-05 measurement, spec §2).
+ *
  * @type {RegExp}
  */
-const GIT_CONFIG_ENV_RE = /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/;
+const GIT_CONFIG_ENV_RE = /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)$/;
 
 /**
  * The two indexed halves of a `GIT_CONFIG_*` entry, capturing the index. Read
@@ -1635,6 +1640,15 @@ const CAT_FILE_DRIVER_OPTIONS = new Set(['--filters', '--textconv']);
 const CONFIG_ENV_PREFIX = '--config-env=';
 
 /**
+ * The shell builtins that make an assignment PERSIST beyond one command (spec
+ * §2.1). Their assignment is an argument rather than a prefix, so it survives
+ * `normalizeArgv` and has to be judged in argv position.
+ *
+ * @type {Set<string>}
+ */
+const EXPORT_BUILTINS = new Set(['export', 'declare', 'typeset']);
+
+/**
  * Does the assignment prefix carry the relocation and NOTHING else (spec §1.1,
  * conditions (b) and (c))? Every assignment has to be a `GIT_CONFIG_*` one and
  * every `GIT_CONFIG_KEY_n` has to name `core.hooksPath`: a single
@@ -1662,6 +1676,14 @@ function prefixIsHooksPathOnly(prefix) {
     }
     const { name, value } = splitAssignment(word);
     if (!GIT_CONFIG_ENV_RE.test(name)) {
+      return false;
+    }
+    if (name === 'GIT_CONFIG_PARAMETERS') {
+      // Spec §2: its value is git's sq-quote list (`'key'='value' 'k2'='v2'`),
+      // so proving `core.hooksPath` rides ALONE would need that parser. No
+      // observed case writes this variable by hand, so there is no false
+      // positive to pay for it — the fail-closed side of §1.1's "allow
+      // `core.hooksPath` only, refuse what cannot be proven".
       return false;
     }
     const key_match = GIT_CONFIG_KEY_RE.exec(name);
@@ -1733,14 +1755,23 @@ function exemptOneShot(prefix, inline_other_key, subcommand, args) {
  *      never running;
  *   2. `git config … core.hooksPath …` — relocates them persistently, UNLESS
  *      the operation only reads the key ({@link isConfigReadOnly}, UI-1xcd §2);
- *   3. a ONE-SHOT relocation — `git -c core.hooksPath=…`, or a
- *      `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` assignment prefix — which applies to
- *      that command and its children only. Its fact is collected and the verdict
- *      deferred to the command it decorates ({@link exemptOneShot}, spec §1): a
- *      relocation with no command at all persists in the process and is a kill,
- *      one ahead of a non-git command reaches a child git (measured) and is a
- *      kill, and one on a git command is a kill unless all of §1's four
- *      conditions hold.
+ *   3. a ONE-SHOT relocation — `git -c core.hooksPath=…`, its other spelling
+ *      `git --config-env=core.hooksPath=…`, or a
+ *      `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`/`PARAMETERS` assignment prefix —
+ *      which applies to that command and its children only. Its fact is
+ *      collected and the verdict deferred to the command it decorates
+ *      ({@link exemptOneShot}, spec §1): a relocation with no command at all
+ *      persists in the process and is a kill, one ahead of a non-git command
+ *      reaches a child git (measured) and is a kill, and one on a git command
+ *      is a kill unless all of §1's four conditions hold. A
+ *      `GIT_CONFIG_PARAMETERS` prefix has NO exemption whatever follows it
+ *      (spec §2), because its sq-quote value is not parsed.
+ *   4. an EXPORTED `GIT_CONFIG_*` assignment — `export`/`declare`/`typeset`
+ *      (spec §2.1). There the assignment is the builtin's ARGUMENT, not a
+ *      prefix, so `normalizeArgv` leaves it in argv and the shape used to slip
+ *      past arm 3 even though it is the most persistent one: it survives into
+ *      every later command. Like a bare assignment, the verdict is
+ *      key-agnostic; names outside {@link GIT_CONFIG_ENV_RE} pass.
  *
  * The relaxation stands on an ALLOW-list because `-c` is exported as
  * `GIT_CONFIG_PARAMETERS` and inherited by child git processes (measured), so a
@@ -1771,6 +1802,24 @@ function isHookBypass(argv, prefix) {
   if (argv.length === 0) {
     return false;
   }
+  // Compared EXACTLY, not by basename: a builtin is a bare word, and a program
+  // that merely happens to be called `./export` changes no shell environment.
+  if (EXPORT_BUILTINS.has(argv[0])) {
+    // Spec §2.1. Option flags (`declare -x`) and the assignment's VALUE are not
+    // read: an exported relocation persists for every later command, and that
+    // judgment has been key-agnostic since UI-iw28 §1. A relocation PREFIX
+    // ahead of the builtin is still the non-git shape below (condition (a)).
+    return (
+      env_relocation ||
+      argv
+        .slice(1)
+        .some(
+          (word) =>
+            ASSIGNMENT_RE.test(word) &&
+            GIT_CONFIG_ENV_RE.test(splitAssignment(word).name)
+        )
+    );
+  }
   if (basename(argv[0]).toLowerCase() !== 'git') {
     // `GIT_CONFIG_…=… go test ./...` — the child git inherits the assignment
     // (2026-08-06 incident), so condition (a) fails and the shape is a kill.
@@ -1797,15 +1846,16 @@ function isHookBypass(argv, prefix) {
     }
     if (override !== null) {
       if (!HOOKS_PATH_RE.test(configKeyOf(override))) {
-        // `--config-env` is read HERE and only here. It names a config key the
-        // same way `-c` does, so a key set through it is a program this command
-        // may run and that program inherits the relocation — condition (b) is
-        // stated over the relocation, not over one flag. It deliberately does
-        // NOT set `inline_relocation`: the approved change narrows the two
-        // relocation shapes, and letting a third shape RAISE a violation that
-        // did not exist before would widen the kill instead.
+        // A key that is not the hooks path is a program this command may run,
+        // and that program inherits the relocation — condition (b) is stated
+        // over the relocation, not over one flag.
         inline_other_key = true;
-      } else if (attached_c || separate_c) {
+      } else {
+        // Both spellings raise the SAME relocation (spec §1, reversing
+        // UI-iw28's implementation review): git hands `--config-env` to
+        // children through `GIT_CONFIG_PARAMETERS` exactly as it hands `-c`
+        // (measured), so the widened kill lands only where the `-c` twin was
+        // already a kill — §1's four conditions exempt the rest.
         inline_relocation = true;
       }
     }
