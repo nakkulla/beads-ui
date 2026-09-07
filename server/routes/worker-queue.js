@@ -11,6 +11,7 @@
  * @import { Queue } from '../worker/queue-store.js'
  */
 import path from 'node:path';
+import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
 import { placeBeadInQueue } from '../worker/queue-place.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
@@ -109,6 +110,42 @@ function projectRunning(queue) {
 }
 
 /**
+ * Every attempt the live queue still holds, so a session can tell whether it is
+ * taking over Worker-dispatched work before it resolves its own mode (spec §7).
+ *
+ * The selector is deliberately the SAME one `pr-actions.js` uses to find the
+ * attempt whose frozen `receipt_baseline` the merge gate compares against: a
+ * narrower set here would leave the session unwarned on exactly the statuses
+ * that still produce a forgery finding. Status is projected for the session's
+ * own message, not for the judgement (D3).
+ *
+ * @param {Queue} queue
+ * @returns {{ attempt_id: string, bead_id: string, status: string|null, kind: string|null }[]}
+ */
+function projectAttempts(queue) {
+  const attempts =
+    queue.attempts && typeof queue.attempts === 'object' ? queue.attempts : {};
+  /** @type {{ attempt_id: string, bead_id: string, status: string|null, kind: string|null }[]} */
+  const rows = [];
+  for (const attempt of Object.values(attempts)) {
+    if (
+      !attempt ||
+      /** @type {any} */ (attempt).external_conflict === true ||
+      !isImplementationAttempt(attempt)
+    ) {
+      continue;
+    }
+    rows.push({
+      attempt_id: attempt.attempt_id,
+      bead_id: attempt.bead_id,
+      status: attempt.status,
+      kind: /** @type {any} */ (attempt).kind ?? null
+    });
+  }
+  return rows;
+}
+
+/**
  * @param {Queue} queue
  * @returns {{ bead_id: string, serial_lane_id: string|null }[]}
  */
@@ -144,7 +181,8 @@ export function workerQueueGetHandler(req, res) {
     serial_lane_count: queue.serial_lane_count,
     lanes: projectLanes(queue),
     running: projectRunning(queue),
-    pr_wait: projectPrWait(queue)
+    pr_wait: projectPrWait(queue),
+    attempts: projectAttempts(queue)
   });
 }
 

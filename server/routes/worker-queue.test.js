@@ -189,6 +189,88 @@ test('projects the parallel lane ahead of the configured serial lanes', async ()
   ]);
 });
 
+test('projects live implementation attempts and nothing else', async () => {
+  seedQueueFile({
+    revision: 4,
+    serial_lane_count: 1,
+    attempts: {
+      a1: {
+        attempt_id: 'a1',
+        bead_id: 'UI-impl',
+        status: 'running',
+        serial_lane_id: null
+      },
+      a2: {
+        attempt_id: 'a2',
+        bead_id: 'UI-parked',
+        status: 'parked',
+        kind: 'implementation',
+        serial_lane_id: null
+      },
+      a3: {
+        attempt_id: 'a3',
+        bead_id: 'UI-review',
+        status: 'running',
+        kind: 'review_session',
+        serial_lane_id: null
+      },
+      a4: {
+        attempt_id: 'a4',
+        bead_id: 'UI-external',
+        status: 'running',
+        external_conflict: true,
+        serial_lane_id: null
+      }
+    }
+  });
+
+  const { body } = await getQueue(`root_dir=${encodeURIComponent(workspace)}`);
+
+  expect(body.attempts).toEqual([
+    {
+      attempt_id: 'a1',
+      bead_id: 'UI-impl',
+      status: 'running',
+      kind: 'implementation'
+    },
+    {
+      attempt_id: 'a2',
+      bead_id: 'UI-parked',
+      status: 'parked',
+      kind: 'implementation'
+    }
+  ]);
+});
+
+test('keeps the six existing GET keys unchanged alongside attempts', async () => {
+  seedQueueFile({
+    revision: 9,
+    serial_lane_count: 1,
+    queue: [{ bead_id: 'UI-par', added_at: 11 }],
+    serial_lanes: [{ id: 's1', entries: [] }],
+    attempts: {}
+  });
+
+  const { body } = await getQueue(`root_dir=${encodeURIComponent(workspace)}`);
+
+  expect(Object.keys(body).sort()).toEqual([
+    'attempts',
+    'lanes',
+    'ok',
+    'pr_wait',
+    'revision',
+    'running',
+    'serial_lane_count'
+  ]);
+  expect(body).toMatchObject({
+    ok: true,
+    revision: 9,
+    serial_lane_count: 1,
+    running: [],
+    pr_wait: []
+  });
+});
+
 test('projects one running row per bead from that bead last running attempt', async () => {
   seedQueueFile({
     revision: 3,

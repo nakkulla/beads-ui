@@ -260,6 +260,33 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
     expect(result.queued).toBe(0);
     expect(observed_state).toEqual({
       declaration_state: 'invalid',
+      base_sha: null,
+      error: 'unreadable'
+    });
+  });
+
+  test('carries no error when the declaration is invalid without throwing', () => {
+    const store = park(createQueueStore(), ['UI-1']);
+    /** @type {any} */
+    let observed_state = null;
+    const auto = createAutoMerge({
+      workspace: WS,
+      store,
+      verifyState: () => ({ declaration_state: 'invalid', base_sha: null }),
+      headSha: () => HEAD,
+      lane: () => [{ bead_id: 'UI-1', external: false }],
+      candidates: (_workspace, _queue, verify_state) => {
+        observed_state = verify_state;
+        return [];
+      },
+      notifyChanged: vi.fn(),
+      kick: vi.fn(async () => {})
+    });
+
+    auto.enroll();
+
+    expect(observed_state).toEqual({
+      declaration_state: 'invalid',
       base_sha: null
     });
   });

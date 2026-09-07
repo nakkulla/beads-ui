@@ -5774,3 +5774,114 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
     });
   });
 });
+
+describe('worker/pr-actions — 영수증 detail과 verify 원인 전달 (UI-jxs3 §4.2/§6.2)', () => {
+  /**
+   * A store whose implementation attempt froze a baseline with no
+   * `impl_entry`, so a bead that now carries one reads as `approval_forged`.
+   */
+  function forgedBaselineStore() {
+    const store = seedStore();
+    store.updateAttempt(WS, {
+      attempt_id: 'a1',
+      patch: {
+        receipt_baseline: {
+          exec_receipt: null,
+          impl_entry: null,
+          plan_approval: null,
+          workflow_mode_source: null,
+          impl_dispatch: null
+        }
+      }
+    });
+    return store;
+  }
+
+  test('carries the moved key from the receipt check to the gate evidence', async () => {
+    const env = makeActions({
+      store: forgedBaselineStore(),
+      details: [prOf({ head_sha: 'a'.repeat(40), base_ref: 'main' })],
+      bdMetadata: {
+        exec_receipt: `main:bead@${'a'.repeat(40)}`,
+        impl_dispatch: 'main',
+        impl_entry: `user@${'b'.repeat(40)}`
+      }
+    });
+
+    const result = await env.actions.completionGate(BEAD);
+
+    expect(result).toMatchObject({
+      ok: true,
+      verdict: { reason: 'receipt_unbacked:approval_forged' }
+    });
+    expect(result.evidence.receipt.codes).toEqual([
+      'approval_forged',
+      'dispatch_forged'
+    ]);
+    expect(result.evidence.receipt.details[0]).toContain('impl_entry');
+    expect(result.evidence.receipt.details[0]).toContain('user@');
+    expect(result.evidence.receipt.details[1]).toContain('impl_dispatch');
+  });
+
+  test('carries no receipt evidence when the receipt backing is clean', async () => {
+    const env = makeActions({
+      repoOperations: failedVerifyOperations(),
+      details: [prOf({ head_sha: 'a'.repeat(40), base_ref: 'main' })]
+    });
+
+    const result = await env.actions.completionGate(BEAD);
+
+    expect(result.evidence.receipt).toBeUndefined();
+  });
+
+  test('names the ensureVerify failure code in the gate reason', async () => {
+    const env = makeActions({
+      details: [prOf({ head_sha: 'a'.repeat(40), base_ref: 'main' })],
+      repoOperations: {
+        hasConfig: vi.fn(async () => ({
+          ok: true,
+          present: true,
+          verify_script_path: VERIFY_SCRIPT_PATH
+        })),
+        ensureVerify: vi.fn(async () => ({
+          ok: false,
+          code: 'verify_candidate_mismatch'
+        })),
+        waitForTerminal: vi.fn(),
+        verifyReceipt: vi.fn()
+      }
+    });
+
+    const result = await env.actions.completionGate(BEAD);
+
+    expect(result).toMatchObject({
+      ok: true,
+      verdict: {
+        enabled: false,
+        reason: 'verify_config_invalid:verify_candidate_mismatch'
+      }
+    });
+  });
+
+  test('falls back to operation_id_missing when ensureVerify reported no code', async () => {
+    const env = makeActions({
+      details: [prOf({ head_sha: 'a'.repeat(40), base_ref: 'main' })],
+      repoOperations: {
+        hasConfig: vi.fn(async () => ({
+          ok: true,
+          present: true,
+          verify_script_path: VERIFY_SCRIPT_PATH
+        })),
+        ensureVerify: vi.fn(async () => ({ ok: true })),
+        waitForTerminal: vi.fn(),
+        verifyReceipt: vi.fn()
+      }
+    });
+
+    const result = await env.actions.completionGate(BEAD);
+
+    expect(result.verdict.reason).toBe(
+      'verify_config_invalid:operation_id_missing'
+    );
+  });
+});

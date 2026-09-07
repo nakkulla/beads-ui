@@ -124,12 +124,18 @@ export function createAutoMerge(deps) {
     const snapshot = /** @type {any} */ (deps.store.snapshot(workspace));
     const rows = lane(workspace, snapshot);
     const overlaid = { ...snapshot, pr_wait: rows };
-    /** @type {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }} */
+    /** @type {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null, error?: string }} */
     let verify_policy = { declaration_state: 'invalid', base_sha: null };
     try {
       verify_policy = deps.verifyState();
-    } catch {
-      verify_policy = { declaration_state: 'invalid', base_sha: null };
+    } catch (err) {
+      // The thrown message is the only account of why the declaration is
+      // unreadable; dropping it made one live refusal unexplainable (spec §6.2).
+      verify_policy = {
+        declaration_state: 'invalid',
+        base_sha: null,
+        error: err instanceof Error ? err.message : String(err)
+      };
     }
     /** @type {Array<{ bead_id: string, external: boolean, head_sha: string, target_base?: string, completion?: { source_attempt_id: string, target_base: string, subject: any } }>} */
     const entries = [];
