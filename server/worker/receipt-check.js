@@ -93,6 +93,36 @@ export const EXEC_RECEIPT_MERGE_GATE = Object.freeze({
   ])
 });
 
+/**
+ * The `hold` grade split by WHO could ever lift the hold (spec §4.1).
+ *
+ * `unresolvable` names the three findings that come only from movement against
+ * the frozen `receipt_baseline`. No automatic observation — a new commit, a new
+ * receipt, a re-taken ancestry probe — can change that difference, so only a
+ * person restoring the baseline keys lifts it; the name means "not
+ * automatically resolvable", not "permanent". `resolvable` names the three a
+ * later observation really can flip.
+ *
+ * The two lists together are exactly {@link EXEC_RECEIPT_MERGE_GATE}`.hold`.
+ * `probe_error` is not a member of that grade at all, but it reaches consumers
+ * as the reason `receipt_unbacked:probe_error`, and they treat it as resolvable
+ * (spec §4.2).
+ *
+ * @type {Readonly<{ unresolvable: ReadonlyArray<string>, resolvable: ReadonlyArray<string> }>}
+ */
+export const RECEIPT_HOLD_RESOLUTION = Object.freeze({
+  unresolvable: Object.freeze([
+    'approval_forged',
+    'dispatch_forged',
+    'mode_authority_forged'
+  ]),
+  resolvable: Object.freeze([
+    'unit_plan_mismatch',
+    'non_ancestor',
+    'ancestry_probe_error'
+  ])
+});
+
 /** @type {ReadonlySet<string>} */
 const HOLD_CODES = new Set(EXEC_RECEIPT_MERGE_GATE.hold);
 
@@ -296,20 +326,31 @@ export function receiptDefaultsFrom(loaded) {
  * synchronous board projections. It is deliberately distinct from `ok`: a
  * surface with no authority must neither hold a merge nor clear one.
  *
+ * `details` carries the first `violations[].detail` for each blocking code, in
+ * the same order as `codes`, so a terminal record downstream can say WHICH key
+ * moved instead of only which code fired (spec §4.2). Only an `unbacked` state
+ * has details; every other state carries none.
+ *
  * @param {ReceiptCheckResult|null|undefined} result
- * @returns {{ state: 'ok'|'unbacked'|'probe_error'|'undecidable', codes: string[] }}
+ * @returns {{ state: 'ok'|'unbacked'|'probe_error'|'undecidable', codes: string[], details: string[] }}
  */
 export function receiptGateState(result) {
   if (!result || typeof result !== 'object') {
-    return { state: 'undecidable', codes: [] };
+    return { state: 'undecidable', codes: [], details: [] };
   }
   if (result.probe_error === true) {
-    return { state: 'probe_error', codes: [] };
+    return { state: 'probe_error', codes: [], details: [] };
   }
   const codes = blockingReceiptCodes(result);
-  return codes.length > 0
-    ? { state: 'unbacked', codes }
-    : { state: 'ok', codes: [] };
+  if (codes.length === 0) {
+    return { state: 'ok', codes: [], details: [] };
+  }
+  const violations = Array.isArray(result.violations) ? result.violations : [];
+  const details = codes.map((code) => {
+    const found = violations.find((violation) => violation?.code === code);
+    return str(found?.detail) ?? '';
+  });
+  return { state: 'unbacked', codes, details };
 }
 
 /**

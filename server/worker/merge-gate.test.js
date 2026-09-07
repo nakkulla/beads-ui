@@ -671,3 +671,49 @@ describe('worker/merge-gate — shared ancestry probe (UI-vzyh §2)', () => {
     expect(state).toBe('probe_error');
   });
 });
+
+describe('worker/merge-gate — hold reason strings and verify config cause', () => {
+  test.each([
+    'unit_plan_mismatch',
+    'approval_forged',
+    'dispatch_forged',
+    'mode_authority_forged',
+    'non_ancestor',
+    'ancestry_probe_error'
+  ])('keeps the receipt hold reason for %s unchanged', (code) => {
+    const gate = evaluateMergeGate(
+      entryOf(),
+      inputOf({
+        receipt_state: { state: 'unbacked', codes: [code], details: ['why'] }
+      })
+    );
+
+    expect(gate.reason).toBe(`receipt_unbacked:${code}`);
+  });
+
+  test('appends the declaration error to an invalid verify config', () => {
+    const gate = evaluateMergeGate(
+      entryOf(),
+      inputOf({
+        verify_receipt_state: {
+          declaration_state: 'invalid',
+          receipt: null,
+          error: 'verify_candidate_mismatch'
+        }
+      })
+    );
+
+    expect(gate.reason).toBe('verify_config_invalid:verify_candidate_mismatch');
+  });
+
+  test('keeps the bare reason when no error was carried', () => {
+    const gate = evaluateMergeGate(
+      entryOf(),
+      inputOf({
+        verify_receipt_state: { declaration_state: 'invalid', receipt: null }
+      })
+    );
+
+    expect(gate.reason).toBe('verify_config_invalid');
+  });
+});

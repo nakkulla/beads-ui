@@ -2543,13 +2543,14 @@ describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
 });
 
 describe('worker/completion-intent needs_human 5종 접기 (UI-5ym8 §7)', () => {
-  test('names exactly the five families', () => {
+  test('names exactly the six families', () => {
     expect(NEEDS_HUMAN_FAMILIES).toEqual([
       'verify_red',
       'cleanup_failed',
       'retry_exhausted',
       'conflict_unresolved',
-      'internal_record_failed'
+      'internal_record_failed',
+      'receipt_unresolvable'
     ]);
   });
 
@@ -2883,5 +2884,259 @@ describe('needs_human notification at terminalize (UI-jw27 §2)', () => {
       phase: 'needs_human',
       terminal_reason: { reason: 'cleanup_failed:script_failed' }
     });
+  });
+});
+
+describe('영수증 보류의 해소 가능성 분류 (UI-jxs3 §4)', () => {
+  /**
+   * A gate that refuses on one receipt hold code, with the violation detail the
+   * production chain now carries.
+   *
+   * @param {string} code
+   * @param {string} [detail]
+   */
+  function receiptHoldGate(code, detail = 'impl_entry (absent) -> user@abc') {
+    return redGate({
+      verdict: {
+        enabled: false,
+        tier: 'receipt',
+        reason: `receipt_unbacked:${code}`
+      },
+      evidence: { receipt: { codes: [code], details: [detail] } }
+    });
+  }
+
+  /**
+   * @param {string} code
+   * @param {string} [detail]
+   */
+  async function settleReceiptHold(code, detail) {
+    const store = seededCompletionStore();
+    const notify = {
+      sent: /** @type {any[]} */ ([]),
+      needsHuman: vi.fn(async (/** @type {any} */ input) => {
+        notify.sent.push(input);
+      })
+    };
+    const driver = actionDriver(store, {
+      bd: { comment: vi.fn(commentSpy()) },
+      notify,
+      prActions: {
+        completionGate: vi.fn(async () => receiptHoldGate(code, detail))
+      }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (!action) {
+      throw new Error('receipt hold action missing');
+    }
+    await driver.onAction('UI-root', action, current);
+    await driver.commentsIdle();
+
+    return {
+      fact,
+      notify,
+      intent: store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    };
+  }
+
+  test.each(['approval_forged', 'dispatch_forged', 'mode_authority_forged'])(
+    'terminalizes %s without waiting for an observation nobody makes',
+    async (code) => {
+      const settled = await settleReceiptHold(code);
+
+      expect(settled.intent.phase).toBe('needs_human');
+      expect(settled.intent.auto_resolution).toBeNull();
+      expect(settled.intent.terminal_reason?.reason).toBe(
+        `receipt_unresolvable:${code}`
+      );
+    }
+  );
+
+  test.each([
+    'unit_plan_mismatch',
+    'non_ancestor',
+    'ancestry_probe_error',
+    'probe_error'
+  ])('parks %s in the metadata watch as before', async (code) => {
+    const settled = await settleReceiptHold(code);
+
+    expect(settled.intent.phase).toBe('waiting_metadata');
+    expect(settled.intent.auto_resolution).toMatchObject({
+      class: 'metadata_watch',
+      origin_reason: `receipt_unbacked:${code}`
+    });
+  });
+
+  test('records the moved key as the terminal evidence and a bound failure key', async () => {
+    const settled = await settleReceiptHold(
+      'approval_forged',
+      'impl_entry (absent) -> user@deadbeef'
+    );
+
+    expect(settled.intent.terminal_reason).toMatchObject({
+      reason: 'receipt_unresolvable:approval_forged',
+      evidence: 'impl_entry (absent) -> user@deadbeef',
+      failure_key: {
+        stage: 'merge_gate',
+        reason: 'receipt_unbacked:approval_forged'
+      }
+    });
+  });
+
+  test('leaves the gate reason string untouched', async () => {
+    const settled = await settleReceiptHold('approval_forged');
+
+    expect(settled.fact.gated.verdict.reason).toBe(
+      'receipt_unbacked:approval_forged'
+    );
+  });
+
+  test('falls back to the reason when no violation detail travelled', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      bd: { comment: vi.fn(commentSpy()) },
+      prActions: {
+        completionGate: vi.fn(async () =>
+          redGate({
+            verdict: {
+              enabled: false,
+              tier: 'receipt',
+              reason: 'receipt_unbacked:dispatch_forged'
+            },
+            evidence: {}
+          })
+        )
+      }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    const fact = await driver.observe('UI-root', current);
+
+    expect(fact.evidence).toBe('receipt_unbacked:dispatch_forged');
+  });
+
+  test('announces the merge gate terminal with its own two exits', async () => {
+    const settled = await settleReceiptHold('approval_forged');
+
+    expect(settled.notify.sent).toEqual([
+      expect.objectContaining({
+        bead_id: 'UI-root',
+        failure_class: '머지 게이트 보류',
+        reason: 'receipt_unresolvable:approval_forged',
+        next_action: '[머지] 재클릭 또는 [세션에서 해결]'
+      })
+    ]);
+  });
+
+  test('sends nothing for a receipt hold that stayed resolvable', async () => {
+    const settled = await settleReceiptHold('non_ancestor');
+
+    expect(settled.notify.sent).toEqual([]);
+  });
+
+  test('registers receipt_unresolvable as its own needs_human family', () => {
+    expect(NEEDS_HUMAN_FAMILIES).toContain('receipt_unresolvable');
+  });
+
+  test('folds an already-familied receipt reason to itself', () => {
+    const once = foldNeedsHumanReason('receipt_unresolvable:approval_forged');
+
+    expect(once).toBe('receipt_unresolvable:approval_forged');
+    expect(foldNeedsHumanReason(once)).toBe(once);
+  });
+});
+
+describe('머지 기록 실패의 원인 필드 (UI-jxs3 §6.1)', () => {
+  /** A gate green enough to reach the merge_subject action. */
+  function greenGate() {
+    return redGate({
+      verdict: { enabled: true, tier: 'eligible', reason: null },
+      evidence: {}
+    });
+  }
+
+  /**
+   * @param {ReturnType<typeof seededCompletionStore>} store
+   * @param {Record<string, any>} patch
+   */
+  function storeWith(store, patch) {
+    return /** @type {any} */ (
+      new Proxy(store, {
+        get: (target, key) =>
+          Object.hasOwn(patch, key)
+            ? patch[/** @type {string} */ (key)]
+            : Reflect.get(target, key)
+      })
+    );
+  }
+
+  /**
+   * @param {Record<string, any>} patch
+   * @param {(intent: any) => any} [asAction] - Rewrites the intent handed to
+   * `onAction`, which is how the pin branch is reached: it runs only when the
+   * recorded subject differs from the one the gate just read.
+   */
+  async function settleMerge(patch, asAction = (value) => value) {
+    const store = seededCompletionStore();
+    const driver = actionDriver(storeWith(store, patch), {
+      bd: { comment: vi.fn(commentSpy()) },
+      prActions: { completionGate: vi.fn(async () => greenGate()) }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    const fact = await driver.observe('UI-root', current);
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: current,
+      fact
+    });
+    if (!action) {
+      throw new Error('merge action missing');
+    }
+    await driver.onAction('UI-root', action, asAction(current));
+    await driver.commentsIdle();
+
+    return store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+  }
+
+  test('carries the pin conflict as the failure evidence', async () => {
+    // The pin only runs when the gate read a subject the intent has not
+    // recorded yet, so this fixture moves the head.
+    const settled = await settleMerge(
+      { setCompletionSubject: () => ({ ok: false, conflict: true }) },
+      (current) => ({
+        ...current,
+        subject: { ...current.subject, head_sha: 'd'.repeat(40) }
+      })
+    );
+
+    expect(settled.terminal_reason).toMatchObject({
+      reason: 'internal_record_failed:merge_subject_pin_failed',
+      failure_key: { stage: 'merge_subject', reason: 'merge_ready' }
+    });
+    expect(settled.terminal_reason?.evidence).toContain(
+      'setCompletionSubject conflict=true'
+    );
+  });
+
+  test('carries the prerecord conflict as the failure evidence', async () => {
+    const settled = await settleMerge({
+      prepareCompletionOp: () => ({ ok: false, conflict: true })
+    });
+
+    expect(settled.terminal_reason).toMatchObject({
+      reason: 'internal_record_failed:merge_prerecord_failed',
+      failure_key: { stage: 'merge_subject' }
+    });
+    expect(settled.terminal_reason?.evidence).toContain(
+      'prepareCompletionOp conflict=true'
+    );
   });
 });

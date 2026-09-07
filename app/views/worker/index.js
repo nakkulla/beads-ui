@@ -606,7 +606,25 @@ export function autoResolutionBadge(completion) {
       ? `원 사유: ${resolution.origin_reason}`
       : '';
   switch (completion.phase) {
-    case 'waiting_metadata':
+    case 'waiting_metadata': {
+      // A receipt hold is a SPECIALIZATION of the metadata watch, not a new
+      // slot: the same badge answers "why is this row stopped", and the generic
+      // 「정정 대기」 hid the one thing a person needed — which receipt code
+      // (spec §5.1). No `alert`, because nothing is asked of them yet.
+      const receipt_code =
+        typeof resolution.origin_reason === 'string' &&
+        resolution.origin_reason.startsWith('receipt_unbacked:')
+          ? resolution.origin_reason.slice('receipt_unbacked:'.length)
+          : null;
+      if (receipt_code !== null) {
+        return {
+          label: `영수증 대기 — ${receipt_code}`,
+          details: [origin, '새 커밋·새 영수증·재관측이 오면 자동 재개'].filter(
+            Boolean
+          ),
+          live: false
+        };
+      }
       return {
         label: '정정 대기',
         details: [origin, '메타데이터 정정이 관측되면 자동 재개'].filter(
@@ -614,6 +632,7 @@ export function autoResolutionBadge(completion) {
         ),
         live: false
       };
+    }
     case 'retrying': {
       const attempts = Number.isInteger(resolution.attempts)
         ? Math.max(0, Number(resolution.attempts))

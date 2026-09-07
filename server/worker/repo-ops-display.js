@@ -151,13 +151,19 @@ export function effectiveVerifyPolicy(repo_ops, queue) {
  * A cached receipt can satisfy an advisory gate only at the exact base SHA
  * whose repo-ops declaration produced the current policy.
  *
- * @param {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }} policy
+ * @param {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null, error?: string }} policy
  * @param {any} receipt
- * @returns {{ declaration_state: 'present'|'absent'|'invalid', receipt: any|null }}
+ * @returns {{ declaration_state: 'present'|'absent'|'invalid', receipt: any|null, error?: string }}
  */
 export function repoOpsVerifyReceiptState(policy, receipt) {
   if (policy.declaration_state !== 'present') {
-    return { declaration_state: policy.declaration_state, receipt: null };
+    return {
+      declaration_state: policy.declaration_state,
+      receipt: null,
+      // Only when the producer said something: an absent key keeps the gate's
+      // current reason string exactly as it was (spec §6.2).
+      ...(typeof policy.error === 'string' ? { error: policy.error } : {})
+    };
   }
   const expected_base = policy.base_sha?.toLowerCase() || null;
   const receipt_base =

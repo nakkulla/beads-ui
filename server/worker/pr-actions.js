@@ -926,7 +926,7 @@ export function createPrActions(deps) {
    */
   async function receiptGateStateOf(metadata, bead_id, head_sha) {
     if (!metadata) {
-      return { state: 'probe_error', codes: [] };
+      return { state: 'probe_error', codes: [], details: [] };
     }
     const attempt = receiptAttemptFor(bead_id);
     try {
@@ -942,7 +942,7 @@ export function createPrActions(deps) {
       );
     } catch (err) {
       log('receipt check threw for %s: %o', bead_id, err);
-      return { state: 'probe_error', codes: [] };
+      return { state: 'probe_error', codes: [], details: [] };
     }
   }
 
@@ -970,7 +970,7 @@ export function createPrActions(deps) {
     if (typeof deps.bd.readIssue !== 'function') {
       return {
         review_receipt_state: 'invalid',
-        receipt_state: { state: 'probe_error', codes: [] },
+        receipt_state: { state: 'probe_error', codes: [], details: [] },
         authority_unreadable: true
       };
     }
@@ -982,7 +982,7 @@ export function createPrActions(deps) {
       log('review receipt read failed for %s: %o', bead_id, err);
       return {
         review_receipt_state: 'invalid',
-        receipt_state: { state: 'probe_error', codes: [] },
+        receipt_state: { state: 'probe_error', codes: [], details: [] },
         authority_unreadable: true
       };
     }
@@ -1003,7 +1003,11 @@ export function createPrActions(deps) {
       receipt_state:
         receipt_state.state !== 'ok' &&
         manualMergeAuthorityCovers(bead_id, head_sha)
-          ? { state: 'waived', codes: receipt_state.codes }
+          ? {
+              state: 'waived',
+              codes: receipt_state.codes,
+              details: receipt_state.details
+            }
           : receipt_state
     };
   }
@@ -1096,7 +1100,7 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {number} number
    * @param {import('./target-base.js').TargetBaseResult} [base_pin]
-   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict, target_base?: string, base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, verify_attempted?: boolean, authority_unreadable?: boolean }|{ error: string }>}
+   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict, target_base?: string, base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, verify_attempted?: boolean, authority_unreadable?: boolean, receipt_state?: import('./merge-gate.js').ReceiptGateState }|{ error: string }>}
    */
   async function gateNow(bead_id, number, base_pin) {
     const observed = await observeNow(bead_id, number);
@@ -1157,7 +1161,8 @@ export function createPrActions(deps) {
           repo_operations: true,
           verify_operation_id: null,
           verify_attempted: false,
-          authority_unreadable
+          authority_unreadable,
+          receipt_state
         };
       }
       const ensured = await repo_operations.ensureVerify({
@@ -1179,7 +1184,8 @@ export function createPrActions(deps) {
           repo_operations: true,
           verify_operation_id: null,
           verify_attempted: false,
-          authority_unreadable
+          authority_unreadable,
+          receipt_state
         };
       }
       if (!ensured.ok || typeof ensured.operation_id !== 'string') {
@@ -1192,7 +1198,11 @@ export function createPrActions(deps) {
               receipt_state,
               verify_receipt_state: {
                 declaration_state: 'invalid',
-                receipt: null
+                receipt: null,
+                // The coordinator can only reconstruct a cause it was handed;
+                // dropping this code is what left one live incident unexplained
+                // (spec §6.2).
+                error: ensured.code ?? 'operation_id_missing'
               }
             }
           ),
@@ -1204,7 +1214,8 @@ export function createPrActions(deps) {
               ? ensured.operation_id
               : null,
           verify_attempted: true,
-          authority_unreadable
+          authority_unreadable,
+          receipt_state
         };
       }
       const receipt =
@@ -1244,7 +1255,8 @@ export function createPrActions(deps) {
         repo_operations: true,
         verify_operation_id: ensured.operation_id,
         verify_attempted: true,
-        authority_unreadable
+        authority_unreadable,
+        receipt_state
       };
     }
     return {
@@ -1351,6 +1363,16 @@ export function createPrActions(deps) {
       },
       verdict: gated.verdict,
       evidence: {
+        // Which key moved, not only which code fired: the terminal record is
+        // the only place a person reads the cause from (spec §4.2).
+        ...(gated.receipt_state?.state === 'unbacked'
+          ? {
+              receipt: {
+                codes: gated.receipt_state.codes,
+                details: gated.receipt_state.details
+              }
+            }
+          : {}),
         ...(verify
           ? {
               verify: {

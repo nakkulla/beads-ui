@@ -19,6 +19,7 @@ import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
   COMPLETION_RETRY_MAX
 } from './queue-store.js';
+import { RECEIPT_HOLD_RESOLUTION } from './receipt-check.js';
 import { isCleanupResolutionFailure } from './resolution-ladder.js';
 
 const OUTPUT_TAIL_MAX = 4_000;
@@ -49,7 +50,12 @@ export const NEEDS_HUMAN_FAMILIES = Object.freeze([
   'cleanup_failed',
   'retry_exhausted',
   'conflict_unresolved',
-  'internal_record_failed'
+  'internal_record_failed',
+  // A receipt hold no automatic observation can lift (spec §4.2). It is a
+  // family rather than a detail of `internal_record_failed` because the record
+  // landed fine — what failed is the backing the contract demands — and the
+  // sibling contract's `causes` list names this token.
+  'receipt_unresolvable'
 ]);
 
 /**
@@ -350,7 +356,7 @@ export function classifyCompletionFailure(reason) {
  * @typedef {{ state: CompletionFactState, reason?: string }} CompletionFact
  */
 /**
- * @typedef {CompletionFact & { gated?: any, source?: string, failure_key?: any, evidence?: any, op_id?: string|null }} ObservedCompletionFact
+ * @typedef {CompletionFact & { gated?: any, source?: string, failure_key?: any, evidence?: any, op_id?: string|null, terminal?: boolean }} ObservedCompletionFact
  */
 /**
  * `terminal` marks a `needs_human` the KERNEL itself judged terminal (UI-8w4t
@@ -516,7 +522,10 @@ export function decideCompletionAction(input) {
     return { kind: 'resume_intent' };
   }
   if (fact.state === 'undecidable') {
-    return needsHuman(fact.reason || 'ownership_undecidable');
+    return needsHuman(
+      fact.reason || 'ownership_undecidable',
+      fact.terminal === true
+    );
   }
   if (fact.state === 'completed') {
     return { kind: 'complete' };
@@ -787,7 +796,10 @@ const NEEDS_HUMAN_NOTIFY_CLASSES = Object.freeze({
   post_merge_jobs: 'post-merge 잡 실패',
   repo_operations: '배포 실패',
   deploy: '배포 실패',
-  deployment_request: '배포 실패'
+  deployment_request: '배포 실패',
+  // Copied byte-for-byte from the contract's `failure_classes.receipt_hold`
+  // notify_label (spec §5.2, D5).
+  merge_gate: '머지 게이트 보류'
 });
 
 /**
@@ -1502,7 +1514,13 @@ export function createCompletionActionDriver(deps) {
           failure_class,
           reason: terminal.reason,
           reason_detail: summary,
-          next_action: '[정리 재시도] 또는 [세션에서 해결]',
+          // `[정리 재시도]` is a post-merge cleanup button that does not exist
+          // yet at the merge gate, so that class names the two exits it really
+          // has (spec §5.2).
+          next_action:
+            token === 'merge_gate'
+              ? '[머지] 재클릭 또는 [세션에서 해결]'
+              : '[정리 재시도] 또는 [세션에서 해결]',
           pr_url: intent?.subject?.pr_url ?? null,
           repo: deps.repo ?? null
         })
@@ -1748,6 +1766,32 @@ export function createCompletionActionDriver(deps) {
         op_id: operationIdFromLogPath(verify?.log_path),
         gated
       };
+    }
+    if (typeof reason === 'string' && reason.startsWith('receipt_unbacked:')) {
+      const code = reason.slice('receipt_unbacked:'.length);
+      if (RECEIPT_HOLD_RESOLUTION.unresolvable.includes(code)) {
+        // Nothing this server can observe later will change the baseline
+        // difference (spec §4.1), so waiting is silence rather than patience:
+        // the saga stops now, with the moved key as the evidence a person acts
+        // on. The gate's own `receipt_unbacked:<code>` string is untouched.
+        const detail = gated.evidence?.receipt?.details?.[0];
+        const evidence =
+          typeof detail === 'string' && detail.length > 0 ? detail : reason;
+        return {
+          state: 'undecidable',
+          reason: `receipt_unresolvable:${code}`,
+          terminal: true,
+          failure_key: createCompletionFailureKey({
+            stage: 'merge_gate',
+            reason,
+            subject_sha: gated.subject.head_sha,
+            base_sha: gated.base_sha,
+            evidence: { output_tail: evidence }
+          }),
+          evidence,
+          gated
+        };
+      }
     }
     if (
       reason === 'verify_missing' ||
@@ -2261,7 +2305,9 @@ export function createCompletionActionDriver(deps) {
           settleFailure(
             root_bead_id,
             'merge_subject_pin_failed',
-            'merge_subject'
+            'merge_subject',
+            mergeFailureKey(root_bead_id, intent, fact),
+            `setCompletionSubject conflict=${pinned.conflict === true} phase=${intent.phase} subject=${subject.head_sha}`
           );
           return;
         }
@@ -2296,7 +2342,8 @@ export function createCompletionActionDriver(deps) {
             root_bead_id,
             'merge_prerecord_failed',
             'merge_subject',
-            failure_key
+            failure_key,
+            `prepareCompletionOp conflict=${prepared.conflict === true} active_op=${current.active_op ?? null}`
           );
           return;
         }

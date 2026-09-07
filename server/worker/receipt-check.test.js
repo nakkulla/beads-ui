@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   EXEC_RECEIPT_MERGE_GATE,
   RECEIPT_BASELINE_KEYS,
+  RECEIPT_HOLD_RESOLUTION,
   badgeReceiptCodes,
   blockingReceiptCodes,
   checkReceipts,
@@ -734,14 +735,16 @@ describe('receipt-check projections', () => {
   test('holds the gate on a probe error', () => {
     expect(receiptGateState(receiptProbeError('bd_down'))).toEqual({
       state: 'probe_error',
-      codes: []
+      codes: [],
+      details: []
     });
   });
 
   test('creates no gate verdict without an observation', () => {
     expect(receiptGateState(null)).toEqual({
       state: 'undecidable',
-      codes: []
+      codes: [],
+      details: []
     });
   });
 
@@ -753,14 +756,19 @@ describe('receipt-check projections', () => {
 
     expect(receiptGateState(result)).toEqual({
       state: 'unbacked',
-      codes: ['unit_plan_mismatch']
+      codes: ['unit_plan_mismatch'],
+      details: ['single receipt for 1 planned units']
     });
   });
 
   test('clears the gate when only badge findings remain', async () => {
     const result = await run({ exec_receipt: `main:bead@${SHA}` });
 
-    expect(receiptGateState(result)).toEqual({ state: 'ok', codes: [] });
+    expect(receiptGateState(result)).toEqual({
+      state: 'ok',
+      codes: [],
+      details: []
+    });
   });
 
   test('clears the gate when only a verify_receipt finding remains', async () => {
@@ -859,5 +867,80 @@ describe('receipt-check projections', () => {
     });
 
     expect(lineage.supported).toBe(false);
+  });
+});
+
+describe('RECEIPT_HOLD_RESOLUTION', () => {
+  test('splits the hold grade into two disjoint subsets', () => {
+    const overlap = RECEIPT_HOLD_RESOLUTION.unresolvable.filter((code) =>
+      RECEIPT_HOLD_RESOLUTION.resolvable.includes(code)
+    );
+
+    expect(overlap).toEqual([]);
+  });
+
+  test('covers every hold code exactly once', () => {
+    const union = [
+      ...RECEIPT_HOLD_RESOLUTION.unresolvable,
+      ...RECEIPT_HOLD_RESOLUTION.resolvable
+    ];
+
+    expect(union.length).toBe(6);
+    expect([...union].sort()).toEqual([...EXEC_RECEIPT_MERGE_GATE.hold].sort());
+  });
+
+  test('names only baseline-movement codes unresolvable', () => {
+    expect([...RECEIPT_HOLD_RESOLUTION.unresolvable]).toEqual([
+      'approval_forged',
+      'dispatch_forged',
+      'mode_authority_forged'
+    ]);
+  });
+});
+
+describe('receiptGateState details', () => {
+  test('carries the first detail per blocking code in codes order', () => {
+    const result = {
+      ok: false,
+      probe_error: false,
+      checks: {},
+      violations: [
+        { code: 'approval_forged', detail: 'impl_entry (absent) -> user@x' },
+        { code: 'approval_forged', detail: 'second one is dropped' },
+        { code: 'non_ancestor', detail: 'sha not in head' }
+      ]
+    };
+
+    const state = receiptGateState(result);
+
+    expect(state.codes).toEqual(['approval_forged', 'non_ancestor']);
+    expect(state.details).toEqual([
+      'impl_entry (absent) -> user@x',
+      'sha not in head'
+    ]);
+  });
+
+  test('uses an empty string for a blocking code without a detail', () => {
+    const result = {
+      ok: false,
+      probe_error: false,
+      checks: {},
+      violations: [{ code: 'non_ancestor', detail: '' }]
+    };
+
+    const state = receiptGateState(result);
+
+    expect(state.details).toEqual(['']);
+  });
+
+  test.each([
+    ['ok', { ok: true, probe_error: false, checks: {}, violations: [] }],
+    ['probe_error', receiptProbeError('metadata_unavailable')],
+    ['undecidable', null]
+  ])('carries no details for a %s state', (expected_state, result) => {
+    const state = receiptGateState(/** @type {any} */ (result));
+
+    expect(state.state).toBe(expected_state);
+    expect(state.details).toEqual([]);
   });
 });

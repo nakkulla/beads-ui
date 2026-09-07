@@ -55,6 +55,8 @@
  * @property {'present'|'absent'|'invalid'} declaration_state
  * @property {VerifyObservation|null} receipt
  * @property {Record<string, string>|null} [expected_key]
+ * @property {string} [error] - Why the declaration could not be read, carried
+ * from the producer so the refusal names its own cause (spec §6.2).
  */
 
 /**
@@ -73,6 +75,8 @@
  * @typedef {Object} ReceiptGateState
  * @property {'ok'|'unbacked'|'probe_error'|'undecidable'|'waived'} state
  * @property {string[]} codes - Blocking violation codes, most relevant first.
+ * @property {string[]} [details] - The first violation detail per code, in the
+ * same order as `codes`.
  */
 
 /**
@@ -460,12 +464,16 @@ export function evaluateMergeGate(entry, input) {
 
   const verify_state = input.verify_receipt_state;
   if (verify_state.declaration_state === 'invalid') {
+    // The token before `':'` is what `classifyCompletionFailure` matches, so
+    // appending the cause changes what a person reads and nothing else.
     return verdict(
       false,
       'undecidable',
       GATE_BADGES.error,
       base_badge,
-      'verify_config_invalid'
+      typeof verify_state.error === 'string' && verify_state.error.length > 0
+        ? `verify_config_invalid:${verify_state.error}`
+        : 'verify_config_invalid'
     );
   }
   if (verify_state.declaration_state === 'absent') {

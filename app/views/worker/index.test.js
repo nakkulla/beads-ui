@@ -14398,7 +14398,7 @@ describe('worker view — 자동 해소 phase 배지 (UI-hk74 §9)', () => {
       prWaitQueue({
         completion_status: completionOf('waiting_metadata', {
           class: 'metadata_watch',
-          origin_reason: 'receipt_unbacked:unit_plan_mismatch',
+          origin_reason: 'spec_id_missing',
           attempts: 0,
           attempt_cap: 3,
           next_at: null,
@@ -14410,10 +14410,81 @@ describe('worker view — 자동 해소 phase 배지 (UI-hk74 §9)', () => {
     const badge = badgeWith(mount, '정정 대기');
 
     expect(badge).not.toBeUndefined();
+    expect(badge.title).toContain('원 사유: spec_id_missing');
+    expect(badge.title).toContain('메타데이터 정정이 관측되면 자동 재개');
+  });
+
+  test('badges a receipt hold 영수증 대기 with its code, without alert', () => {
+    const mount = render(
+      prWaitQueue({
+        completion_status: completionOf('waiting_metadata', {
+          class: 'metadata_watch',
+          origin_reason: 'receipt_unbacked:unit_plan_mismatch',
+          attempts: 0,
+          attempt_cap: 3,
+          next_at: null,
+          last_error: null
+        })
+      })
+    );
+
+    const badge = badgeWith(mount, '영수증 대기 — unit_plan_mismatch');
+
+    expect(badge).not.toBeUndefined();
+    expect(badge.classList.contains('worker-mini__badge--alert')).toBe(false);
     expect(badge.title).toContain(
       '원 사유: receipt_unbacked:unit_plan_mismatch'
     );
-    expect(badge.title).toContain('메타데이터 정정이 관측되면 자동 재개');
+    expect(badge.title).toContain('새 커밋·새 영수증·재관측이 오면 자동 재개');
+  });
+
+  test('returns the receipt wait label with two details and no live pulse', () => {
+    const result = autoResolutionBadge(
+      /** @type {any} */ ({
+        phase: 'waiting_metadata',
+        auto_resolution: {
+          class: 'metadata_watch',
+          origin_reason: 'receipt_unbacked:approval_forged',
+          attempts: 0,
+          next_at: null,
+          last_error: null
+        }
+      })
+    );
+
+    expect(result).toEqual({
+      label: '영수증 대기 — approval_forged',
+      details: [
+        '원 사유: receipt_unbacked:approval_forged',
+        '새 커밋·새 영수증·재관측이 오면 자동 재개'
+      ],
+      live: false
+    });
+  });
+
+  test('keeps 정정 대기 for a non-receipt origin reason', () => {
+    const result = autoResolutionBadge(
+      /** @type {any} */ ({
+        phase: 'waiting_metadata',
+        auto_resolution: {
+          class: 'metadata_watch',
+          origin_reason: 'review_receipt_missing',
+          attempts: 0,
+          next_at: null,
+          last_error: null
+        }
+      })
+    );
+
+    expect(result?.label).toBe('정정 대기');
+  });
+
+  test('returns null when the resolution record is absent', () => {
+    const result = autoResolutionBadge(
+      /** @type {any} */ ({ phase: 'waiting_metadata', auto_resolution: null })
+    );
+
+    expect(result).toBeNull();
   });
 
   test('badges a retrying row 재시도 n/3 with its next wake and last error', () => {
@@ -14520,7 +14591,7 @@ describe('worker view — 자동 해소 phase 배지 (UI-hk74 §9)', () => {
     expect(merge).toBeNull();
   });
 
-  test('prefers 정정 대기 over the receipt merge-failure text on the same row', () => {
+  test('prefers 영수증 대기 over the receipt merge-failure text on the same row', () => {
     const mount = render(
       prWaitQueue({
         merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
@@ -14543,12 +14614,14 @@ describe('worker view — 자동 해소 phase 배지 (UI-hk74 §9)', () => {
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
 
-    expect(badgeWith(mount, '정정 대기')).not.toBeUndefined();
+    expect(
+      badgeWith(mount, '영수증 대기 — unit_plan_mismatch')
+    ).not.toBeUndefined();
     expect(row.textContent).not.toContain('머지 실패');
     expect(row.textContent).not.toContain('영수증 확인 필요');
   });
 
-  test('prefers 정정 대기 over the recorded receipt warning', () => {
+  test('prefers 영수증 대기 over the recorded receipt warning', () => {
     const queue = prWaitQueue({
       completion_status: completionOf('waiting_metadata', {
         class: 'metadata_watch',
@@ -14565,7 +14638,9 @@ describe('worker view — 자동 해소 phase 배지 (UI-hk74 §9)', () => {
 
     const mount = render(queue);
 
-    expect(badgeWith(mount, '정정 대기')).not.toBeUndefined();
+    expect(
+      badgeWith(mount, '영수증 대기 — unit_plan_mismatch')
+    ).not.toBeUndefined();
     expect(
       /** @type {HTMLElement} */ (
         mount.querySelector('.worker-mini[data-bead-id="RD-1"]')

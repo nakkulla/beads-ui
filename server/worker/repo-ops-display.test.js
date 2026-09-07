@@ -6,6 +6,7 @@ import {
   recordRepoOpsResolution,
   refreshRepoOpsDisplay,
   repoOpsDisplayFor,
+  repoOpsVerifyReceiptState,
   repoOpsVerifyState
 } from './repo-ops-display.js';
 
@@ -271,5 +272,29 @@ describe('recordRepoOpsResolution', () => {
       script: 'repo-ops/script/verify',
       timeout_ms: 300_000
     });
+  });
+});
+
+describe('repoOpsVerifyReceiptState', () => {
+  test('passes an invalid policy error through', () => {
+    const state = repoOpsVerifyReceiptState(
+      { declaration_state: 'invalid', base_sha: null, error: 'unreadable' },
+      null
+    );
+
+    expect(state).toEqual({
+      declaration_state: 'invalid',
+      receipt: null,
+      error: 'unreadable'
+    });
+  });
+
+  test('omits the error key when the policy carried none', () => {
+    const state = repoOpsVerifyReceiptState(
+      { declaration_state: 'invalid', base_sha: null },
+      null
+    );
+
+    expect(state).toEqual({ declaration_state: 'invalid', receipt: null });
   });
 });
