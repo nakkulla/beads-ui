@@ -211,7 +211,7 @@ test('projects live implementation attempts and nothing else', async () => {
         attempt_id: 'a3',
         bead_id: 'UI-review',
         status: 'running',
-        kind: 'review',
+        kind: 'review_session',
         serial_lane_id: null
       },
       a4: {
