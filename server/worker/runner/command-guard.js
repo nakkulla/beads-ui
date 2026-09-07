@@ -1802,7 +1802,9 @@ function isHookBypass(argv, prefix) {
   if (argv.length === 0) {
     return false;
   }
-  if (EXPORT_BUILTINS.has(basename(argv[0]).toLowerCase())) {
+  // Compared EXACTLY, not by basename: a builtin is a bare word, and a program
+  // that merely happens to be called `./export` changes no shell environment.
+  if (EXPORT_BUILTINS.has(argv[0])) {
     // Spec §2.1. Option flags (`declare -x`) and the assignment's VALUE are not
     // read: an exported relocation persists for every later command, and that
     // judgment has been key-agnostic since UI-iw28 §1. A relocation PREFIX

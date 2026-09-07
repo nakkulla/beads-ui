@@ -1345,6 +1345,12 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
+  test('passes a path-qualified program merely named like the builtin', () => {
+    const cmd = './export GIT_CONFIG_COUNT=0';
+
+    expect(findMergeViolation(cmd, ON_MAIN)).toBeNull();
+  });
+
   // Control G — the export rule is bounded by the same name regex, so an
   // unrelated variable and the FILE-layer `GIT_CONFIG_GLOBAL` both pass.
   test('passes an export whose name is outside the relocation regex', () => {
