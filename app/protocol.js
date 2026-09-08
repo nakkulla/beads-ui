@@ -122,7 +122,7 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'worker-attempt-stop',
   // Manual resume (↻ / paused ▶) in the attempt's existing worktree; payload:
   // { attempt_id, expected_revision, continuation?, decision_token?, instructions?,
-  //   exec_override?: { runner?, model?, effort?, claude_account? } }
+  //   exec_override?: { runner?, model?, effort?, claude_account?, codex_account? } }
   // `continuation` is 'auto'|'prior_session'|'fresh_current'|'prior_attempt';
   // `prior_attempt` (UI-qce9 §5) reuses the recorded session AND the recorded
   // execution tuple/account, takes no decision_token and refuses exec_override.

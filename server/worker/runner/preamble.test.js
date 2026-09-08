@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import * as preamble from './preamble.js';
 import {
+  CLAUDE_LIFETIME_DIRECTIVE,
+  CODEX_LIFETIME_DIRECTIVE,
   FAST_TRACK_DIRECTIVE,
   FIX_NOW_DIRECTIVE,
   PR_SUBMIT_DIRECTIVE,
@@ -52,6 +54,10 @@ const COMBINATIONS = [
   {
     name: 'quickfix_lane',
     options: { quickfix_lane: true, target_base: 'main' }
+  },
+  {
+    name: 'codex runtime',
+    options: { runtime: 'codex', fast_track: true, target_base: 'main' }
   }
 ];
 
@@ -144,10 +150,15 @@ describe('runner/preamble unattended framing (UI-rxp3 §1)', () => {
     expect(UNATTENDED_PREAMBLE).toContain('비정상 종료');
   });
 
-  test('carries the background-task warning the guard contract used to hold', () => {
-    expect(UNATTENDED_PREAMBLE).toContain('implement-codex');
-    expect(UNATTENDED_PREAMBLE).toContain('최대 2시간');
+  test('carries the background-task warning in the claude lifetime block', () => {
+    expect(CLAUDE_LIFETIME_DIRECTIVE).toContain('implement-codex');
+    expect(CLAUDE_LIFETIME_DIRECTIVE).toContain('최대 2시간');
     expect(guardContractDirective()).not.toContain('백그라운드 태스크');
+  });
+
+  test('keeps the runtime-specific wait paragraph out of the shared block', () => {
+    expect(UNATTENDED_PREAMBLE).not.toContain('최대 2시간');
+    expect(UNATTENDED_PREAMBLE).not.toContain('spawn_agent');
   });
 
   test('names the user-only receipt keys the session cannot write', () => {
@@ -320,7 +331,11 @@ describe('runner/preamble existing channel regressions', () => {
         disposition: true
       })
     ).toEqual({
-      system_prompt: [UNATTENDED_PREAMBLE, REVIEW_PREAMBLE].join('\n\n'),
+      system_prompt: [
+        UNATTENDED_PREAMBLE,
+        CLAUDE_LIFETIME_DIRECTIVE,
+        REVIEW_PREAMBLE
+      ].join('\n\n'),
       task_prompt: '검토하라'
     });
   });
@@ -493,5 +508,55 @@ describe('runner/preamble disposition guard variant (UI-rxp3 §1)', () => {
   test('drops the widened prohibitions along with the rest of that tier', () => {
     expect(contract).not.toContain('GIT_CONFIG_PARAMETERS');
     expect(contract).not.toContain('export');
+  });
+});
+
+describe('runner/preamble runtime lifetime split (codex-orchestration-parity §3.2)', () => {
+  test('names only claude wait tools in the claude lifetime block', () => {
+    expect(CLAUDE_LIFETIME_DIRECTIVE).toContain('`Agent`');
+    expect(CLAUDE_LIFETIME_DIRECTIVE).toContain('`SendMessage`');
+    expect(CLAUDE_LIFETIME_DIRECTIVE).not.toContain('spawn_agent');
+  });
+
+  test('names only native codex wait tools in the codex lifetime block', () => {
+    expect(CODEX_LIFETIME_DIRECTIVE).toContain('spawn_agent');
+    expect(CODEX_LIFETIME_DIRECTIVE).toContain('wait_agent');
+    for (const claude_only of [
+      '`Agent`',
+      '`SendMessage`',
+      '최대 2시간',
+      '백그라운드 셸'
+    ]) {
+      expect(CODEX_LIFETIME_DIRECTIVE).not.toContain(claude_only);
+    }
+  });
+
+  test('refuses fire-and-forget completion in both lifetime blocks', () => {
+    for (const block of [CLAUDE_LIFETIME_DIRECTIVE, CODEX_LIFETIME_DIRECTIVE]) {
+      expect(block).toContain('구현 완료를 보고할 수 없다');
+    }
+  });
+
+  test('composes the codex lifetime block for a codex runtime', () => {
+    const out = applyPreamble('작업하라', { runtime: 'codex' }).system_prompt;
+
+    expect(out).toContain(CODEX_LIFETIME_DIRECTIVE);
+    expect(out).not.toContain(CLAUDE_LIFETIME_DIRECTIVE);
+  });
+
+  test('composes the claude lifetime block when no runtime is given', () => {
+    const out = applyPreamble('작업하라').system_prompt;
+
+    expect(out).toContain(CLAUDE_LIFETIME_DIRECTIVE);
+    expect(out).not.toContain(CODEX_LIFETIME_DIRECTIVE);
+  });
+
+  test('carries the runtime lifetime block into the review shape too', () => {
+    const out = applyPreamble('검토하라', {
+      runtime: 'codex',
+      review: true
+    }).system_prompt;
+
+    expect(out).toContain(CODEX_LIFETIME_DIRECTIVE);
   });
 });

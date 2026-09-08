@@ -27,6 +27,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete process.env.WORKFLOW_REPO_ROOT;
+  delete process.env.WORKFLOW_BEAD_ID;
   if (saved_collide === undefined) {
     delete process.env[COLLIDE];
   } else {
@@ -63,6 +65,34 @@ describe('runner/session spawn env inheritance (F2)', () => {
     const env = spawn_impl.captured.calls[0].options.env;
     expect(env.PATH).toBe(process.env.PATH);
     expect(env[COLLIDE]).toBe('from-process-env');
+  });
+
+  test('strips an inherited WORKFLOW_ locator from the child env', async () => {
+    process.env.WORKFLOW_REPO_ROOT = '/other/repo';
+    process.env.WORKFLOW_BEAD_ID = 'OTHER-1';
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()] });
+    const runner = createRunner('claude', { spawn_impl });
+
+    await runner.spawn({ id: 'UI-4' }, WS, {}).done;
+
+    const env = spawn_impl.captured.calls[0].options.env;
+    expect(env.WORKFLOW_REPO_ROOT).toBeUndefined();
+    expect(env.WORKFLOW_BEAD_ID).toBeUndefined();
+  });
+
+  test('carries the attempt locator pair over the inherited one', async () => {
+    process.env.WORKFLOW_REPO_ROOT = '/other/repo';
+    process.env.WORKFLOW_BEAD_ID = 'OTHER-1';
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()] });
+    const runner = createRunner('claude', { spawn_impl });
+
+    await runner.spawn({ id: 'UI-5' }, WS, {
+      env: { WORKFLOW_REPO_ROOT: '/repo', WORKFLOW_BEAD_ID: 'UI-5' }
+    }).done;
+
+    const env = spawn_impl.captured.calls[0].options.env;
+    expect(env.WORKFLOW_REPO_ROOT).toBe('/repo');
+    expect(env.WORKFLOW_BEAD_ID).toBe('UI-5');
   });
 
   test('passes an account-isolated CODEX_HOME to the child', async () => {

@@ -4,7 +4,7 @@
  * CLI (measured against codex 0.147.0):
  * `codex exec --json -m <full_id> [-c model_reasoning_effort=<effort>]
  * -c service_tier="default|fast"
- * --dangerously-bypass-approvals-and-sandbox --disable hooks "<prompt>"`, and on
+ * --dangerously-bypass-approvals-and-sandbox "<prompt>"`, and on
  * the resume branch `codex exec resume <thread_id> --json -m <full_id> …`. The
  * resume branch KEEPS `-m`: codex emits a model-mismatch warning item when a
  * resumed thread is reopened without one.
@@ -24,6 +24,7 @@
  * @import { RunnerCatalogEntry } from '../runner-catalog.js'
  */
 import { builtinCatalog } from '../runner-catalog.js';
+import { classifyProviderOutage } from './codex-outage.js';
 import { applyPreamble, defaultTaskPrompt } from './preamble.js';
 import { runSession } from './session.js';
 
@@ -391,18 +392,6 @@ function verdict(ctx) {
 }
 
 /**
- * Keep the runner-general outage seam explicit while codex patterns remain
- * outside this implementation unit (provider-outage-hold-resume §3.4).
- *
- * @param {{ raw: any[], stderr_tail: string|null }} _ctx
- * @returns {null}
- */
-function classifyProviderOutage(_ctx) {
-  void _ctx;
-  return null;
-}
-
-/**
  * Build the codex adapter spec. `catalog_entry` is the resolved catalog's codex
  * entry, so a `[runner.codex]` config override reaches the argv; absent one the
  * builtin entry stands and a zero-config install still dispatches.
@@ -453,9 +442,11 @@ export function codexSpec(catalog_entry, options = {}) {
         throw new Error(`unknown orchestration speed: ${String(speed)}`);
       }
       args.push('-c', `service_tier="${speed}"`);
-      // Unattended: no approval prompt can appear, and the user's codex hooks
-      // (features.hooks) stay off so a worker session fires none of them.
-      // A review-mode attempt gets codex's native read-only sandbox instead of
+      // Unattended: no approval prompt can appear. The user's codex hooks stay
+      // ENABLED since codex-orchestration-parity §3.1 — the workflow policy
+      // hooks are the dotfiles-owned check a Codex work session must run under,
+      // and a blanket `--disable hooks` turned every launch into an unchecked
+      // one. A review-mode attempt gets codex's native read-only sandbox instead of
       // the writable bypass (UI-58w8 §3) — the reviewer cannot mutate the
       // checkout even if its prompt contract were ignored.
       if (s.mode === 'review') {
@@ -463,8 +454,8 @@ export function codexSpec(catalog_entry, options = {}) {
       } else {
         args.push('--dangerously-bypass-approvals-and-sandbox');
       }
-      args.push('--disable', 'hooks');
       const { system_prompt, task_prompt } = applyPreamble(promptFor(bead), {
+        runtime: 'codex',
         review: s.mode === 'review',
         fast_track: !!s.fast_track,
         pr_submit: !s.disposition && !s.quickfix_lane,

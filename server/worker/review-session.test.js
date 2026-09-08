@@ -47,6 +47,29 @@ function plantClaudeTranscript(session_id) {
 }
 
 /**
+ * Plant one codex rollout under today's session directory, the shape
+ * `session-ref.js` scans for a non-UUIDv7 thread id.
+ *
+ * @param {string} session_id
+ */
+function plantCodexRollout(session_id) {
+  const now = new Date();
+  const dir = path.join(
+    tmp_home,
+    '.codex',
+    'sessions',
+    String(now.getFullYear()),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0')
+  );
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, `rollout-2026-09-08T00-00-00-${session_id}.jsonl`),
+    '{}\n'
+  );
+}
+
+/**
  * A store with `UI-1` sitting in `pr_wait`, ready for a merge click.
  */
 function prWaitStore() {
@@ -146,6 +169,7 @@ describe('review-session — session selection (UI-d7fy §5.2)', () => {
 
     expect(selected).toEqual({
       resume_session_id: 'sess-claude',
+      resume_runner: 'claude',
       session_source: 'resume',
       reason: null
     });
@@ -164,8 +188,9 @@ describe('review-session — session selection (UI-d7fy §5.2)', () => {
     });
   });
 
-  test('opens a replacement session when the last entry is codex', () => {
+  test('resumes the last entry as codex when it is a codex thread', () => {
     plantClaudeTranscript('sess-claude');
+    plantCodexRollout('sess-codex');
 
     const selected = selectReviewSession(
       {
@@ -174,10 +199,35 @@ describe('review-session — session selection (UI-d7fy §5.2)', () => {
       { home_dir: tmp_home }
     );
 
+    expect(selected).toEqual({
+      resume_session_id: 'sess-codex',
+      resume_runner: 'codex',
+      session_source: 'resume',
+      reason: null
+    });
+  });
+
+  test('keeps the source provider when the ref cannot be resumed', () => {
+    const selected = selectReviewSession(
+      { session_ref: `codex:sess-gone@${os.hostname()}` },
+      { home_dir: tmp_home }
+    );
+
     expect(selected).toMatchObject({
       resume_session_id: null,
+      resume_runner: 'codex',
       session_source: 'fresh',
-      reason: 'provider_mismatch'
+      reason: 'not_local'
+    });
+  });
+
+  test('reports no resume runner when there is no recorded session', () => {
+    const selected = selectReviewSession({}, { home_dir: tmp_home });
+
+    expect(selected).toMatchObject({
+      resume_session_id: null,
+      resume_runner: null,
+      session_source: 'fresh'
     });
   });
 

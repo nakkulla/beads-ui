@@ -19,6 +19,7 @@
  */
 import nodeFs from 'node:fs';
 import { debug } from '../logging.js';
+import { observeCodexChildren as defaultObserveCodexChildren } from './codex-children/reader.js';
 import { claudeSpec } from './runner/claude.js';
 import {
   findMergeViolation,
@@ -54,6 +55,12 @@ export const MONITOR_USAGE_FANOUT_MS = 3000;
  * @property {(pid: number, signal?: NodeJS.Signals|number) => void} [kill_impl]
  * @property {{ probe: (identity: { pid: number, pgid: number, started_at: number }) => { state: 'owned'|'gone'|'recycled'|'unknown', reason?: string }, signal: (identity: { pid: number, pgid: number, started_at: number }, signal: NodeJS.Signals|number) => { ok: boolean, state: 'owned'|'gone'|'recycled'|'unknown', reason?: string } }} [processController]
  * @property {(workspace: string) => void} [notifyChanged]
+ * @property {(input: { attempt: any, parent_terminated?: boolean }) => import('./codex-children/accumulate.js').CodexChildRow[]} [observeCodexChildren] -
+ * Codex NATIVE subagent observation (UI-mn5u §6.3), read from the rollout files
+ * Codex itself wrote. The monitor is the live half of that reader: it runs the
+ * SAME function the terminal settlement and a post-restart re-read run, on the
+ * monitor's own coalesced cadence, so the live rows and the settled rows can
+ * never disagree.
  * @property {import('./runner/session.js').AdapterSpec} [spec] - A FIXED adapter
  * for every attempt, overriding the per-attempt pick. Test seam only: a real
  * process monitors attempts of more than one runner at once.
@@ -79,11 +86,17 @@ export function createSessionMonitors(deps) {
   const fs = deps.fs || nodeFs;
 
   /**
-   * @type {Map<string, { workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, reader: ReturnType<typeof createTailReader> }>}
+   * @type {Map<string, { workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, reader: ReturnType<typeof createTailReader> }>}
    */
   const monitors = new Map();
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
   const usage_timers = new Map();
+  const observeChildren =
+    deps.observeCodexChildren || defaultObserveCodexChildren;
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  const child_timers = new Map();
+  /** @type {Map<string, string>} */
+  const child_identities = new Map();
 
   /**
    * The adapter that WROTE this attempt's log. Reading a codex log through the
@@ -150,6 +163,107 @@ export function createSessionMonitors(deps) {
       timer.unref();
     }
     usage_timers.set(workspace, timer);
+  }
+
+  /**
+   * The identity of one child observation, so a scan that learned nothing new
+   * costs no fanout and no republish.
+   *
+   * @param {import('./codex-children/accumulate.js').CodexChildRow[]} rows
+   * @returns {string}
+   */
+  function childIdentity(rows) {
+    return rows
+      .map(
+        (row) =>
+          `${row.thread_id}:${row.status}:${row.last_event_at || 0}:${
+            row.usage ? row.usage.total_tokens || 0 : ''
+          }`
+      )
+      .join('|');
+  }
+
+  /**
+   * Observe this codex attempt's native children and republish what changed.
+   *
+   * The rollout files are the only source (fixture notes §1: `codex exec --json`
+   * carries no child event at all), so this is a READ of files Codex wrote —
+   * no new daemon, no parallel observation store, and no cursor of its own. The
+   * republished record is source-tagged and fail-quiet: a drawer that does not
+   * know `codex_child` renders nothing rather than mis-reading it as jsonl.
+   *
+   * @param {{ workspace: string, attempt_id: string, codex: boolean }} entry
+   * @param {boolean} parent_terminated
+   */
+  function scanChildren(entry, parent_terminated) {
+    if (!entry.codex) {
+      return;
+    }
+    const { workspace, attempt_id } = entry;
+    const attempt = attemptOf(workspace, attempt_id);
+    if (!attempt) {
+      return;
+    }
+    /** @type {import('./codex-children/accumulate.js').CodexChildRow[]} */
+    let rows;
+    try {
+      rows = observeChildren({ attempt, parent_terminated });
+    } catch (err) {
+      log('native child observation failed for %s: %o', attempt_id, err);
+      return;
+    }
+    const key = keyOf(workspace, attempt_id);
+    const identity = childIdentity(rows);
+    if (identity === (child_identities.get(key) || '')) {
+      return;
+    }
+    child_identities.set(key, identity);
+    for (const row of rows) {
+      try {
+        deps.sessionLog.publish(workspace, attempt_id, {
+          kind: 'codex_child',
+          source: 'codex_rollout',
+          child: row
+        });
+      } catch (err) {
+        log('native child publish failed for %s: %o', attempt_id, err);
+      }
+    }
+    notifyChanged(workspace);
+  }
+
+  /**
+   * Observe this codex attempt's children on the monitor's OWN cadence, from
+   * the moment it starts until it stops.
+   *
+   * A parent's log lines are the wrong clock (§6.3): a parent that is waiting
+   * on `wait_agent` writes nothing for minutes while its children run, and a
+   * fresh launch may write nothing at all before the first child appears. The
+   * timer re-arms itself so the observation continues independently of the
+   * parent stream, and it is unref'd so it never holds the process open.
+   *
+   * @param {{ workspace: string, attempt_id: string, codex: boolean }} entry
+   */
+  function armChildScan(entry) {
+    if (!entry.codex) {
+      return;
+    }
+    const key = keyOf(entry.workspace, entry.attempt_id);
+    if (child_timers.has(key)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      child_timers.delete(key);
+      if (!monitors.has(key)) {
+        return;
+      }
+      scanChildren(entry, false);
+      armChildScan(entry);
+    }, MONITOR_USAGE_FANOUT_MS);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    child_timers.set(key, timer);
   }
 
   /**
@@ -375,7 +489,7 @@ export function createSessionMonitors(deps) {
    * Feed one tailed line through the drawer broker, the usage tally, and the
    * fail-closed guards — the live engine's `onLine` pipeline minus the verdict.
    *
-   * @param {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec }} entry
+   * @param {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec }} entry
    * @param {string} line
    */
   function handleLine(entry, line) {
@@ -513,10 +627,11 @@ export function createSessionMonitors(deps) {
       if (!pidStillOurs(attempt)) {
         return false;
       }
-      /** @type {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, reader: any }} */
+      /** @type {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, reader: any }} */
       const entry = {
         workspace,
         attempt_id,
+        codex: attempt.runner === 'codex',
         spec: specForAttempt(attempt),
         repo: typeof attempt.repo === 'string' ? attempt.repo : null,
         target_base:
@@ -558,6 +673,9 @@ export function createSessionMonitors(deps) {
       });
       monitors.set(key, entry);
       entry.reader.start();
+      // Independent of the parent stream, and for a NEW launch as much as a
+      // re-attach: the children are observed from files Codex writes itself.
+      armChildScan(entry);
       return true;
     },
 
@@ -587,6 +705,17 @@ export function createSessionMonitors(deps) {
       } catch {
         /* ignore */
       }
+      // The same drain contract the tail has: the settlement about to run reads
+      // the durable record, so the last native-child observation is taken here,
+      // with the parent already ending — a child with no terminal evidence is
+      // then `interrupted` rather than left `running` forever.
+      const child_timer = child_timers.get(key);
+      if (child_timer) {
+        clearTimeout(child_timer);
+        child_timers.delete(key);
+      }
+      scanChildren(entry, true);
+      child_identities.delete(key);
       return true;
     },
 
@@ -613,6 +742,11 @@ export function createSessionMonitors(deps) {
         clearTimeout(timer);
       }
       usage_timers.clear();
+      for (const timer of child_timers.values()) {
+        clearTimeout(timer);
+      }
+      child_timers.clear();
+      child_identities.clear();
     }
   };
 }

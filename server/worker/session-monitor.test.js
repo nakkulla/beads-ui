@@ -4,7 +4,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createQueueStore } from './queue-store.js';
 import { createSessionLog } from './session-log.js';
-import { createSessionMonitors } from './session-monitor.js';
+import {
+  MONITOR_USAGE_FANOUT_MS,
+  createSessionMonitors
+} from './session-monitor.js';
 import { beadSessionLogPath } from './state-paths.js';
 import { createUsageStore } from './usage-store.js';
 
@@ -104,7 +107,7 @@ function startAtBoundary(env, attempt) {
 }
 
 /**
- * @param {{ probe?: { alive: boolean, started_at: number|null }, usage?: boolean, processController?: any }} [options]
+ * @param {{ probe?: { alive: boolean, started_at: number|null }, usage?: boolean, processController?: any, observeCodexChildren?: any }} [options]
  */
 function setup(options = {}) {
   const store = createQueueStore();
@@ -121,6 +124,9 @@ function setup(options = {}) {
     kill_impl,
     processController: options.processController,
     notifyChanged,
+    ...(options.observeCodexChildren
+      ? { observeCodexChildren: options.observeCodexChildren }
+      : {}),
     now: () => 5000,
     poll_ms: 5
   });
@@ -649,5 +655,108 @@ describe('worker/session-monitor — attempt log_path (record-timeline-retention
 
     expect(pushed).toHaveLength(1);
     expect(pushed[0].event.message.content[0].text).toBe('after the move');
+  });
+});
+
+describe('worker/session-monitor native children (UI-mn5u §6.3)', () => {
+  /** @type {import('./codex-children/accumulate.js').CodexChildRow} */
+  const CHILD_ROW = {
+    thread_id: 'child-thread',
+    parent_thread_id: 'root-thread',
+    launch_id: 'call_1',
+    agent_path: '/root/note',
+    model: 'gpt-5.6-terra',
+    effort: 'low',
+    status: 'done',
+    started_at: 10,
+    completed_at: 20,
+    last_event_at: 20,
+    usage: { total_tokens: 42 }
+  };
+
+  test('republishes an observed native child as a source-tagged record', () => {
+    /** @type {any[]} */
+    const observed = [];
+    const observe = vi.fn((/** @type {any} */ input) => {
+      observed.push(input);
+      return [CHILD_ROW];
+    });
+    const env = setup({ observeCodexChildren: observe });
+    const attempt = seedRunningAttempt(env.store, {
+      runner: 'codex',
+      session_id: 'root-thread'
+    });
+    /** @type {any[]} */
+    const pushed = [];
+    env.session_log.subscribe((a) => pushed.push(a));
+
+    startAtBoundary(env, attempt);
+    env.monitors.stop(WS, 'att-1');
+
+    expect(observed[0].parent_terminated).toBe(true);
+    expect(pushed.map((entry) => entry.event.kind)).toContain('codex_child');
+    expect(
+      pushed.find((entry) => entry.event.kind === 'codex_child').event
+    ).toMatchObject({ source: 'codex_rollout', child: CHILD_ROW });
+  });
+
+  test('scans for children on its own cadence with no parent log line', async () => {
+    vi.useFakeTimers();
+    try {
+      const observe = vi.fn(() => [CHILD_ROW]);
+      const env = setup({ observeCodexChildren: observe });
+      const attempt = seedRunningAttempt(env.store, {
+        runner: 'codex',
+        session_id: 'root-thread'
+      });
+
+      sessionWrites(env.session_log, assistantText('부모 첫 줄'));
+
+      startAtBoundary(env, attempt);
+      await vi.advanceTimersByTimeAsync(MONITOR_USAGE_FANOUT_MS + 10);
+
+      expect(observe).toHaveBeenCalledWith(
+        expect.objectContaining({ parent_terminated: false })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('re-arms the child scan until the monitor stops', async () => {
+    vi.useFakeTimers();
+    try {
+      const observe = vi.fn(() => [CHILD_ROW]);
+      const env = setup({ observeCodexChildren: observe });
+      const attempt = seedRunningAttempt(env.store, {
+        runner: 'codex',
+        session_id: 'root-thread'
+      });
+
+      sessionWrites(env.session_log, assistantText('부모 첫 줄'));
+
+      startAtBoundary(env, attempt);
+      await vi.advanceTimersByTimeAsync(3 * MONITOR_USAGE_FANOUT_MS + 10);
+      const during = observe.mock.calls.length;
+      env.monitors.stop(WS, 'att-1');
+      const after_stop = observe.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(5 * MONITOR_USAGE_FANOUT_MS);
+
+      expect(during).toBeGreaterThan(1);
+      expect(observe.mock.calls.length).toBe(after_stop);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('observes no native children for a claude attempt', () => {
+    const observe = vi.fn(() => [CHILD_ROW]);
+    const env = setup({ observeCodexChildren: observe });
+    const attempt = seedRunningAttempt(env.store, { runner: 'claude' });
+
+    startAtBoundary(env, attempt);
+    env.monitors.stop(WS, 'att-1');
+
+    expect(observe).not.toHaveBeenCalled();
   });
 });

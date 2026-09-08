@@ -799,7 +799,11 @@ export function createDetailPanel(mount_element, options) {
         usage_legs: Array.isArray(a.usage_legs) ? a.usage_legs : [],
         delegation_sessions: Array.isArray(a.delegation_sessions)
           ? a.delegation_sessions
-          : []
+          : [],
+        // The server's own native-child observation (UI-mn5u §6.3). Dropping it
+        // here made the rows unreachable from the real panel path even though
+        // the snapshot carried them.
+        codex_children: Array.isArray(a.codex_children) ? a.codex_children : []
       }));
   }
 

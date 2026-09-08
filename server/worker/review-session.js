@@ -37,7 +37,7 @@
  * session's own `review` skill ladder; the server does not participate.
  */
 import { debug } from '../logging.js';
-import { qualifySessionFork } from './session-ref.js';
+import { qualifySessionFork, recordedSessionProvider } from './session-ref.js';
 
 const log = debug('worker:review-session');
 
@@ -76,25 +76,33 @@ export function isReviewAfterMergeReason(reason) {
 /**
  * Which session the click resumes, by the REVISE-parking `fix` rule (§5.2).
  *
- * The runner is pinned to `claude` rather than taken from the dispatch's own
- * resolution: `--resume` is a claude-transcript operation, so a codex-resolved
- * dispatch could not honour a claude ref, and a codex ref is explicitly a
- * fresh-session case in the contract.
+ * The recorded ref is qualified by its OWN provider rather than pinned to
+ * claude (codex-orchestration-parity §4.2): a resume is a transcript operation
+ * of whichever CLI wrote the transcript, so the selection returns
+ * `resume_runner` alongside the id and the dispatch runs THAT runner. A ref
+ * this machine cannot fork is still the ordinary fresh case, with its reason.
  *
  * @param {Record<string, unknown>|null|undefined} metadata - The Bead's metadata bag.
  * @param {{ home_dir?: string }} [options]
- * @returns {{ resume_session_id: string|null, session_source: 'resume'|'fresh', reason: string|null }}
+ * @returns {{ resume_session_id: string|null, resume_runner: 'claude'|'codex'|null, session_source: 'resume'|'fresh', reason: string|null }}
  */
 export function selectReviewSession(metadata, options = {}) {
-  const qualified = qualifySessionFork(metadata, 'claude', options);
+  const qualified = qualifySessionFork(metadata, null, options);
   return qualified.ok
     ? {
         resume_session_id: qualified.session_id,
+        resume_runner: qualified.provider,
         session_source: /** @type {const} */ ('resume'),
         reason: null
       }
     : {
+        // The SOURCE provider survives its own failure (§4.1): a fresh review
+        // of a codex-recorded bead still runs on codex, so the scheduler is
+        // told the provider even when the transcript is gone. Only a bead with
+        // no recorded session at all leaves this null and follows current
+        // execution settings.
         resume_session_id: null,
+        resume_runner: recordedSessionProvider(metadata),
         session_source: /** @type {const} */ ('fresh'),
         reason: qualified.reason
       };
@@ -168,7 +176,7 @@ function holdReasonFor(state) {
  *   workspace: string,
  *   store: any,
  *   bd: { readIssue: (bead_id: string) => Promise<Record<string, any>> },
- *   scheduler: { dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id: string|null, head_ref: string|null }) => Promise<{ ok: boolean, reason?: string }> },
+ *   scheduler: { dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id: string|null, resume_runner?: 'claude'|'codex'|null, head_ref: string|null }) => Promise<{ ok: boolean, reason?: string }> },
  *   observeReviewReceipt: (bead_id: string) => Promise<{ ok: true, head_sha: string, head_ref: string|null, state: string }|{ ok: false, reason: string }>,
  *   guardHook?: { readPushLog?: (input: { workspace: string, attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] }|{ ok: false, reason: string } },
  *   kick?: () => Promise<void>|void,
@@ -382,7 +390,7 @@ export function createReviewSession(deps) {
    * apart (결정 2). The hold stays, the claim is exhausted, and the button is
    * the exit.
    *
-   * @param {{ bead_id: string, attempt_id: string, trigger: 'click'|'auto', head_sha: string, head_ref: string|null, pr_url: string|null, reason: string, metadata: Record<string, any>, selection: { resume_session_id: string|null, session_source: 'resume'|'fresh' } }} input
+   * @param {{ bead_id: string, attempt_id: string, trigger: 'click'|'auto', head_sha: string, head_ref: string|null, pr_url: string|null, reason: string, metadata: Record<string, any>, selection: { resume_session_id: string|null, resume_runner?: 'claude'|'codex'|null, session_source: 'resume'|'fresh' } }} input
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
   async function launch(input) {
@@ -393,6 +401,7 @@ export function createReviewSession(deps) {
         bead_id: input.bead_id,
         attempt_id: input.attempt_id,
         resume_session_id: input.selection.resume_session_id,
+        resume_runner: input.selection.resume_runner ?? null,
         // The PR head branch, not just prompt text: a bead whose worktree
         // post-merge cleanup or a manual removal took away is restored from
         // this ref by the dispatch. Without it a recoverable worktree is a

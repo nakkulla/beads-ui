@@ -18,7 +18,8 @@ import { html } from 'lit-html';
  * transcript를 이을 수 없으므로 확인 payload가 `fresh_current`로 넘어간다.
  * @property {string} runner - 선택기에서 지금 고른 러너 (`claude`·`codex`).
  * @property {string} model - 그 러너의 카탈로그에서 고른 모델 id.
- * @property {string} account - 지금 고른 Claude 계정 (`claude` 러너만).
+ * @property {string} account - 지금 고른 계정. `claude`는 이메일,
+ * `codex`는 durable account key다 — 보류가 선 러너의 계정만 고른다.
  * @property {boolean} fresh_current - `true`면 transcript를 잇지 않고 새 세션으로
  * 출발한다.
  */
@@ -56,12 +57,44 @@ function providerTargetForAttempt(attempt_id, queue) {
 }
 
 /**
+ * The account rows the snapshot exposes for one runner. 러너를 모르는 스냅샷은
+ * 빈 목록이며, 그 러너의 계정 칸은 그리지 않는다(fail-quiet).
+ *
+ * @param {string} runner
+ * @param {Record<string, any>} queue
+ * @returns {any[]}
+ */
+function accountRowsFor(runner, queue) {
+  const account_catalog = objectOf(objectOf(queue).account_catalog);
+  const rows = account_catalog[runner];
+  return Array.isArray(rows) ? rows : [];
+}
+
+/**
+ * The value one account row is pinned by: Claude는 이메일, Codex는 계정 key.
+ *
+ * @param {string} runner
+ * @param {any} account
+ * @returns {string}
+ */
+function accountValueOf(runner, account) {
+  const value = runner === 'codex' ? account?.key : account?.email;
+  return typeof value === 'string' ? value : '';
+}
+
+/**
  * Explain whether a Claude account meets the manual switch health threshold.
  *
+ * @param {string} runner
  * @param {any} account
  * @returns {{ eligible: boolean, reason: string }}
  */
-function providerAccountEligibility(account) {
+function providerAccountEligibility(runner, account) {
+  if (runner !== 'claude') {
+    // Codex accounts carry no comparable 5h/7d health windows, so a codex row
+    // is offered as-is rather than judged by a Claude threshold.
+    return { eligible: true, reason: '' };
+  }
   if (account?.status !== 'ok') {
     return {
       eligible: false,
@@ -120,9 +153,13 @@ export function providerResumeDraft(attempt_id, queue) {
         ? runner_entry.default_model
         : Object.keys(models)[0] || '';
   const target = providerTargetForAttempt(attempt_id, objectOf(queue));
+  const recorded_account =
+    original_runner === 'codex'
+      ? attempt.codex_account
+      : attempt.claude_account;
   const account =
-    typeof attempt.claude_account === 'string'
-      ? attempt.claude_account
+    typeof recorded_account === 'string'
+      ? recorded_account
       : typeof target?.account === 'string'
         ? target.account
         : '';
@@ -161,6 +198,8 @@ export function providerResumeDraftChange(draft, event_target, queue) {
     return {
       ...draft,
       runner: runner_select.value,
+      // 러너가 바뀌면 계정 식별자의 종류가 달라지므로 고른 계정을 비운다.
+      account: runner_select.value === draft.runner ? draft.account : '',
       model:
         typeof runner_entry.default_model === 'string'
           ? runner_entry.default_model
@@ -174,7 +213,12 @@ export function providerResumeDraftChange(draft, event_target, queue) {
     try {
       const [runner, model] = JSON.parse(model_select.value);
       if (typeof runner === 'string' && typeof model === 'string') {
-        return { ...draft, runner, model };
+        return {
+          ...draft,
+          runner,
+          model,
+          account: runner === draft.runner ? draft.account : ''
+        };
       }
     } catch {
       /* stale catalog option — leave the draft unchanged */
@@ -200,6 +244,29 @@ export function providerResumeDraftChange(draft, event_target, queue) {
 }
 
 /**
+ * Whether this runner REQUIRES an account before confirming: `claude` 복구는
+ * 계정이 payload에서 빠지면 launch가 자기 풀에서 하나를 고르므로 화면이 보여 준
+ * 계정과 다른 계정으로 실행된다. `codex`는 pin이 없는 보류도 그대로 이어갈 수
+ * 있으므로 고르면 보내고, 비어 있으면 기존 해결 경로에 맡긴다.
+ *
+ * @param {string} runner
+ * @returns {boolean}
+ */
+function runnerNeedsAccount(runner) {
+  return runner === 'claude';
+}
+
+/**
+ * Whether this runner offers an account selector at all.
+ *
+ * @param {string} runner
+ * @returns {boolean}
+ */
+function runnerHasAccounts(runner) {
+  return runner === 'claude' || runner === 'codex';
+}
+
+/**
  * The one-attempt resume payload this draft confirms to, or `null` when the
  * draft is not complete enough to send. 계정 없는 `claude` 복구를 거절하는 이유:
  * payload에서 `claude_account`가 빠지면 launch가 자기 풀에서 하나를 고르므로
@@ -212,7 +279,7 @@ export function providerResumeOverride(draft) {
   if (!draft || !draft.runner || !draft.model) {
     return null;
   }
-  if (draft.runner === 'claude' && !draft.account) {
+  if (runnerNeedsAccount(draft.runner) && !draft.account) {
     return null;
   }
   /** @type {Record<string, string>} */
@@ -220,8 +287,12 @@ export function providerResumeOverride(draft) {
     runner: draft.runner,
     model: draft.model
   };
-  if (draft.runner === 'claude' && draft.account) {
-    exec_override.claude_account = draft.account;
+  if (draft.account) {
+    if (draft.runner === 'claude') {
+      exec_override.claude_account = draft.account;
+    } else if (draft.runner === 'codex') {
+      exec_override.codex_account = draft.account;
+    }
   }
   const fresh = draft.fresh_current || draft.runner !== draft.original_runner;
   return {
@@ -245,10 +316,7 @@ export function providerResumeDialogTemplate(draft, queue) {
     return '';
   }
   const runners = objectOf(objectOf(objectOf(queue).runner_catalog).runners);
-  const account_catalog = objectOf(objectOf(queue).account_catalog);
-  const claude_accounts = Array.isArray(account_catalog.claude)
-    ? account_catalog.claude
-    : [];
+  const accounts = accountRowsFor(draft.runner, queue);
   const cross_runner = draft.runner !== draft.original_runner;
   return html`<dialog
     class="op-dialog provider-resume-dialog"
@@ -287,7 +355,7 @@ export function providerResumeDialogTemplate(draft, queue) {
           )}
         </select>
       </label>
-      ${draft.runner === 'claude'
+      ${runnerHasAccounts(draft.runner)
         ? html`<label>
             계정
             <select class="provider-resume-dialog__account">
@@ -295,19 +363,24 @@ export function providerResumeDialogTemplate(draft, queue) {
                 ? ''
                 : html`<option value="" selected>계정 선택</option>`}
               ${draft.account &&
-              !claude_accounts.some(
-                (/** @type {any} */ account) => account?.email === draft.account
+              !accounts.some(
+                (/** @type {any} */ account) =>
+                  accountValueOf(draft.runner, account) === draft.account
               )
                 ? html`<option value=${draft.account} selected>
                     ${draft.account} (목록에 없음)
                   </option>`
                 : ''}
-              ${claude_accounts.map((/** @type {any} */ account) => {
-                const eligibility = providerAccountEligibility(account);
-                const label = account.alias || account.email;
+              ${accounts.map((/** @type {any} */ account) => {
+                const eligibility = providerAccountEligibility(
+                  draft.runner,
+                  account
+                );
+                const value = accountValueOf(draft.runner, account);
+                const label = account.alias || account.email || value;
                 return html`<option
-                  value=${account.email}
-                  ?selected=${account.email === draft.account}
+                  value=${value}
+                  ?selected=${value === draft.account}
                   ?disabled=${!eligibility.eligible}
                   title=${eligibility.reason}
                 >
@@ -340,8 +413,8 @@ export function providerResumeDialogTemplate(draft, queue) {
       <button
         type="button"
         class="op-btn op-btn--primary provider-resume-dialog__confirm"
-        ?disabled=${draft.runner === 'claude' && !draft.account}
-        title=${draft.runner === 'claude' && !draft.account
+        ?disabled=${runnerNeedsAccount(draft.runner) && !draft.account}
+        title=${runnerNeedsAccount(draft.runner) && !draft.account
           ? '계정을 먼저 고르세요'
           : ''}
       >

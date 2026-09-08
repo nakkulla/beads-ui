@@ -195,3 +195,16 @@ export async function prepareCodexAccountHome(input) {
     };
   }
 }
+
+/**
+ * The per-account `auth.json` path inside one codex root. Shared so the health
+ * probe reads the SAME file the launch mirror does — a probe on the default
+ * account would report on a pool nothing is held on.
+ *
+ * @param {string} codex_root
+ * @param {string} key
+ */
+export function codexAccountAuthFile(codex_root, key) {
+  const encoded_key = Buffer.from(key, 'utf8').toString('base64url');
+  return path.join(codex_root, 'accounts', `${encoded_key}.auth.json`);
+}

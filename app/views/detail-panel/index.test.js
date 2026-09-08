@@ -1234,6 +1234,50 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('renders a native codex child observed on the WS attempt (UI-mn5u §6.4)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: {
+          outer: {
+            attempt_id: 'outer',
+            bead_id: 'UI-1',
+            status: 'running',
+            runner: 'codex',
+            session_id: '01a07fdf-ee94-7ac3-8e6f-bc0910eee0af',
+            codex_children: [
+              {
+                thread_id: '01a07fe0-1e96-7443-b224-30d21a82419a',
+                parent_thread_id: '01a07fdf-ee94-7ac3-8e6f-bc0910eee0af',
+                launch_id: 'call_1',
+                agent_path: '/root/create_child_note',
+                model: 'gpt-5.6-terra',
+                effort: 'low',
+                status: 'done',
+                started_at: 1788851789000,
+                completed_at: 1788851826000,
+                last_event_at: 1788851826165,
+                usage: { input_tokens: 113441, total_tokens: 114343 }
+              }
+            ]
+          }
+        }
+      })
+    );
+    const panel = createDetailPanel(mount, { queueStore, onClose: vi.fn() });
+
+    panel.load('UI-1');
+
+    expect(mount.textContent).toContain('native child');
+    expect(mount.textContent).toContain('/root/create_child_note');
+    panel.destroy();
+  });
+
   test('passes delegation effort into the transcript drawer', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();

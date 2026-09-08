@@ -69,7 +69,10 @@ import {
   observeClaudeEffort as defaultObserveClaudeEffort,
   observeClaudeSubagentEffort as defaultObserveClaudeSubagentEffort
 } from './claude-effort-observer.js';
-import { prepareCodexAccountHome as defaultPrepareCodexAccountHome } from './codex-account-home.js';
+import {
+  codexAccountAuthFile,
+  prepareCodexAccountHome as defaultPrepareCodexAccountHome
+} from './codex-account-home.js';
 import { observeCodexEffort as defaultObserveCodexEffort } from './codex-effort-observer.js';
 import * as default_delegation_monitor from './delegation-monitor.js';
 import { discardOperationActive } from './discard-phase.js';
@@ -120,7 +123,10 @@ import {
   qualifySessionFork
 } from './session-ref.js';
 import { staleResidueIntact } from './stale-work.js';
-import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths.js';
+import {
+  codexSessionsRoot,
+  codexAccountHomeDir as defaultCodexAccountHomeDir
+} from './state-paths.js';
 import * as default_usage_receipts from './usage-receipts.js';
 import { publishWorkspaceActivity } from './workspace-activity.js';
 import { branchForBead } from './worktree.js';
@@ -1159,13 +1165,13 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   stopReviewSessionProcess: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string, options?: { require_durable?: boolean }) => Promise<{ ok: boolean, reason?: string }>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
- *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
- *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
+ *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, resume_runner?: 'claude'|'codex'|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   unfenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
@@ -1527,6 +1533,18 @@ export function createScheduler(deps) {
    * @returns {Promise<{ account: string|null, row: any|null }>}
    */
   async function providerAccountContext(attempt) {
+    // A codex hold is keyed on the account key the attempt actually launched
+    // on (codex-orchestration-parity §5.2); codex-auth exposes no per-account
+    // usage row, so the classifier gets no row rather than a claude-shaped one.
+    if (attempt.runner === 'codex') {
+      return {
+        account:
+          typeof attempt.codex_account === 'string'
+            ? attempt.codex_account
+            : null,
+        row: null
+      };
+    }
     if (attempt.runner !== 'claude' || !deps.accountCatalog) {
       return { account: null, row: null };
     }
@@ -1735,22 +1753,43 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Verify that one Claude session transcript still exists on this machine.
+   * Verify that one session transcript still exists on this machine, under the
+   * RECORDED provider (codex-orchestration-parity §4.1). Reading a codex thread
+   * with claude's locator was the old shape's blind spot: a codex resume could
+   * not fall back at all, and a fallback that changed provider is exactly what
+   * the spec forbids.
    *
+   * @param {'claude'|'codex'} provider
    * @param {string} session_id
+   * @param {{ codex_account?: string|null }|null} [attempt] - The record whose
+   * transcript this is. A codex attempt launched with an account wrote under
+   * that account's `CODEX_HOME` mirror, so the sessions root has to be the ONE
+   * the launch derived (§6.1) — probing the default home would report a live
+   * transcript as missing and turn a resume into a fresh session.
    */
-  function claudeTranscriptPresent(session_id) {
+  function transcriptPresent(provider, session_id, attempt = null) {
     const resolver = deps.resolveSessionFile || defaultResolveSessionFile;
+    const sessions_root =
+      provider === 'codex'
+        ? codexSessionsRoot({
+            codex_account: attempt?.codex_account ?? null,
+            ...(deps.homeDir ? { home_dir: deps.homeDir } : {})
+          })
+        : null;
     try {
       return (
         resolver(
           {
-            provider: 'claude',
+            provider,
             session_id,
             host: os.hostname(),
             index: 0
           },
-          { home_dir: deps.homeDir, hostname: os.hostname() }
+          {
+            home_dir: deps.homeDir,
+            hostname: os.hostname(),
+            ...(sessions_root ? { sessions_root } : {})
+          }
         ).locality === 'local'
       );
     } catch {
@@ -2888,14 +2927,7 @@ export function createScheduler(deps) {
         (typeof process_codex_root === 'string' && process_codex_root.length > 0
           ? process_codex_root
           : path.join(home_dir, '.codex'));
-      const encoded_key = Buffer.from(accounts.codex, 'utf8').toString(
-        'base64url'
-      );
-      const auth_file = path.join(
-        codex_root,
-        'accounts',
-        `${encoded_key}.auth.json`
-      );
+      const auth_file = codexAccountAuthFile(codex_root, accounts.codex);
       const account_home_dir = (
         deps.codexAccountHomeDir || defaultCodexAccountHomeDir
       )(accounts.codex);
@@ -8158,6 +8190,20 @@ export function createScheduler(deps) {
     // (worker-failure-tiers §5): it installs the RECORD-mode hook, whose whole
     // purpose is the push log the landing judgment reads — a hook that git is
     // never pointed at records nothing.
+    // The policy-hook locator pair (codex-orchestration-parity §3.1). Both keys
+    // or neither: a hook handed a repo root without a bead — or the reverse —
+    // would bind the call to a target this launch never resolved. The values
+    // are the ones this attempt already resolved, and `runner/session.js`
+    // strips any inherited `WORKFLOW_*` before layering these, so another
+    // session's value cannot pass through. They are a HINT for finding the target;
+    // no approval or review receipt is synthesized from them.
+    if (repo.length > 0 && bead_id.length > 0) {
+      settings.env = {
+        ...(settings.env || {}),
+        WORKFLOW_REPO_ROOT: repo,
+        WORKFLOW_BEAD_ID: bead_id
+      };
+    }
     if (receipt_dir !== null || monitor_dir !== null) {
       settings.env = {
         ...(settings.env || {}),
@@ -8731,7 +8777,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
@@ -8918,8 +8964,16 @@ export function createScheduler(deps) {
       );
       const switched_from =
         pending.kind === 'account_switch'
-          ? source_target?.account || prior?.claude_account || null
+          ? source_target?.account ||
+            (prior?.runner === 'codex'
+              ? prior?.codex_account
+              : prior?.claude_account) ||
+            null
           : null;
+      // §5.3 recovery resumes on the SAME provider with the approved account,
+      // so the override key follows the held attempt's runner.
+      const account_override_key =
+        prior?.runner === 'codex' ? 'codex_account' : 'claude_account';
       /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
       let result;
       if (!prior) {
@@ -8935,7 +8989,7 @@ export function createScheduler(deps) {
           auto_resume_kind: 'provider_outage',
           ...(pending.account !== null
             ? {
-                exec_override: { claude_account: pending.account },
+                exec_override: { [account_override_key]: pending.account },
                 ...(switched_from
                   ? { account_switched_from: switched_from }
                   : {})
@@ -8961,7 +9015,7 @@ export function createScheduler(deps) {
           auto_resume_kind: 'provider_outage',
           ...(pending.account !== null
             ? {
-                exec_override: { claude_account: pending.account },
+                exec_override: { [account_override_key]: pending.account },
                 ...(switched_from
                   ? { account_switched_from: switched_from }
                   : {})
@@ -9065,6 +9119,122 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The attempt that wrote one recorded session, newest first
+   * (codex-orchestration-parity §4.1).
+   *
+   * It is what a cross-provider resume reads its model/effort/account from:
+   * the current settings belong to another provider, and this record is the
+   * only observation of what THIS provider actually ran.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {'claude'|'codex'} runner
+   * @param {string|null} session_id - The thread to match, or null to take the
+   * newest attempt this provider ran for the bead (a fresh review still needs
+   * that provider's own tuple).
+   * @returns {any|null}
+   */
+  function priorAttemptForSession(workspace, bead_id, runner, session_id) {
+    /** @type {any} */
+    let q;
+    try {
+      q = deps.store.snapshot(workspace);
+    } catch {
+      return null;
+    }
+    /** @type {any} */
+    let latest = null;
+    for (const attempt of Object.values(q.attempts || {})) {
+      const record = /** @type {any} */ (attempt);
+      if (
+        record.bead_id === bead_id &&
+        record.runner === runner &&
+        (session_id === null || record.session_id === session_id) &&
+        (latest === null ||
+          (record.started_at || 0) >= (latest.started_at || 0))
+      ) {
+        latest = record;
+      }
+    }
+    return latest;
+  }
+
+  /**
+   * Whether the account a cross-provider resume would spend still resolves.
+   * An attempt that recorded none leaves the launch on whatever that provider
+   * is logged into, exactly as it did when it first ran; a recorded account the
+   * catalog no longer knows refuses rather than falling back to another one
+   * (§4.1).
+   *
+   * @param {'claude'|'codex'} runner
+   * @param {{ claude: string|null, codex: string|null }} accounts
+   * @returns {Promise<boolean>}
+   */
+  async function recordedAccountUsable(runner, accounts) {
+    const account = runner === 'codex' ? accounts.codex : accounts.claude;
+    if (typeof account !== 'string' || account.length === 0) {
+      return true;
+    }
+    if (runner === 'codex') {
+      if (typeof deps.accountCatalog?.resolveCodex !== 'function') {
+        return true;
+      }
+      try {
+        const resolved = await deps.accountCatalog.resolveCodex(account);
+        return resolved?.ok === true && resolved.account?.key === account;
+      } catch {
+        return false;
+      }
+    }
+    if (typeof deps.accountCatalog?.resolveClaude !== 'function') {
+      return true;
+    }
+    try {
+      const resolved = await deps.accountCatalog.resolveClaude(account);
+      return resolved?.ok === true && resolved.account?.email === account;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Whether an attempt's recorded model/effort still exist in the catalog for
+   * its own runner. A tuple that cannot be validated is refused through the
+   * ordinary continuation diagnostics rather than being replaced with the
+   * current provider's values (§4.1).
+   *
+   * @param {'claude'|'codex'} runner
+   * @param {any} attempt
+   * @returns {boolean}
+   */
+  function recordedTupleValid(runner, attempt) {
+    /** @type {any} */
+    let catalog;
+    try {
+      catalog = runtimeCatalog();
+    } catch {
+      return false;
+    }
+    const runner_entry = catalog.runners[runner];
+    if (!runner_entry) {
+      return false;
+    }
+    const model = typeof attempt.model === 'string' ? attempt.model : null;
+    const effort = typeof attempt.effort === 'string' ? attempt.effort : null;
+    if (model === null) {
+      return false;
+    }
+    const model_entry = runner_entry.models?.[model];
+    if (!model_entry) {
+      return false;
+    }
+    const efforts = model_entry.efforts ?? runner_entry.efforts;
+    return (
+      effort === null || (Array.isArray(efforts) && efforts.includes(effort))
+    );
+  }
+
+  /**
    * Whether the RECORDED runner and account of an attempt can still run here
    * (UI-qce9 §5.2). A recorded provider that this environment no longer offers,
    * or an account the catalog cannot resolve, refuses the resume — it never
@@ -9123,7 +9293,13 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'exec_override_invalid' };
     }
     const override = /** @type {Record<string, unknown>} */ (raw_override);
-    const allowed = new Set(['runner', 'model', 'effort', 'claude_account']);
+    const allowed = new Set([
+      'runner',
+      'model',
+      'effort',
+      'claude_account',
+      'codex_account'
+    ]);
     if (
       Object.keys(override).some((key) => !allowed.has(key)) ||
       Object.values(override).some(
@@ -9176,6 +9352,26 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'exec_override_invalid' };
       }
       accounts.claude = account.account.email;
+    }
+    if (typeof override.codex_account === 'string') {
+      const codex_account = override.codex_account.trim();
+      if (
+        runner !== 'codex' ||
+        !deps.accountCatalog ||
+        typeof deps.accountCatalog.resolveCodex !== 'function'
+      ) {
+        return { ok: false, reason: 'exec_override_invalid' };
+      }
+      let account;
+      try {
+        account = await deps.accountCatalog.resolveCodex(codex_account);
+      } catch {
+        return { ok: false, reason: 'exec_override_invalid' };
+      }
+      if (!account?.ok || account.account?.key !== codex_account) {
+        return { ok: false, reason: 'exec_override_invalid' };
+      }
+      accounts.codex = account.account.key;
     }
     return {
       ok: true,
@@ -9973,6 +10169,34 @@ export function createScheduler(deps) {
     const runner_name = use_prior
       ? /** @type {string} */ (prior_runner)
       : resolved.exec.runner;
+    // §4.1: continuing on the PRIOR provider must not spend the CURRENT
+    // provider's account. The recorded attempt names the account that provider
+    // ran under, and a recorded execution this environment can no longer offer
+    // refuses through the existing continuation diagnostics.
+    const cross_runner_resume = use_prior && runner_mismatch;
+    const launch_accounts = cross_runner_resume
+      ? {
+          claude: prior.claude_account ?? null,
+          codex: prior.codex_account ?? null
+        }
+      : resolved.accounts;
+    if (
+      cross_runner_resume &&
+      (!recordedTupleValid(
+        /** @type {'claude'|'codex'} */ (runner_name),
+        prior
+      ) ||
+        !(await recordedAccountUsable(
+          /** @type {'claude'|'codex'} */ (runner_name),
+          launch_accounts
+        )))
+    ) {
+      return {
+        ok: false,
+        reason: 'prior_session_unavailable',
+        continuation_mismatch: mismatch()
+      };
+    }
     const launch_model = use_prior
       ? (prior.model ?? null)
       : (resolved.exec.orchestration_model ?? null);
@@ -10026,9 +10250,9 @@ export function createScheduler(deps) {
         : null;
     if (
       continuation_mode === 'session' &&
-      runner_name === 'claude' &&
+      (runner_name === 'claude' || runner_name === 'codex') &&
       typeof prior.session_id === 'string' &&
-      !claudeTranscriptPresent(prior.session_id)
+      !transcriptPresent(runner_name, prior.session_id, prior)
     ) {
       // §5.3: `prior_attempt` never substitutes a fresh session — the refusal
       // is the answer, and the paused parent stays where the user left it.
@@ -10057,7 +10281,7 @@ export function createScheduler(deps) {
       launch_effort,
       launch_speed,
       exec_values,
-      accounts: resolved.accounts,
+      accounts: launch_accounts,
       account_sources: resolved.account_sources,
       account_switched_from:
         typeof options.account_switched_from === 'string'
@@ -10642,7 +10866,7 @@ export function createScheduler(deps) {
    * Cap-exempt like every other human-click dispatch.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviseFix(workspace, input) {
@@ -10728,7 +10952,7 @@ export function createScheduler(deps) {
    * the review lineage belongs in that session's own history.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, head_ref?: string|null }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, resume_runner?: 'claude'|'codex'|null, head_ref?: string|null }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviewSession(workspace, input) {
@@ -10820,16 +11044,73 @@ export function createScheduler(deps) {
       removeGuardHook(workspace, attempt_id);
       return refuseLaunch(exec.invalid_reason);
     }
-    // A `--resume` is a claude-transcript operation, so a resumed review runs
-    // on claude whatever the bead's execution defaults resolved to. Reviewer
-    // model/effort are NOT decided here at all (§5.2): the session's own
-    // `review` skill ladder owns that choice.
+    // A resume is a transcript operation of the CLI that wrote the transcript,
+    // so a resumed review runs on the runner the SELECTION validated
+    // (codex-orchestration-parity §4.2) — not on claude because an id happens
+    // to exist. An id without a validated runner is not resumable at all and
+    // falls back to the bead's own resolved runner with a fresh session.
+    // Reviewer model/effort are NOT decided here at all (§5.2): the session's
+    // own `review` skill ladder owns that choice.
+    const resume_runner =
+      input.resume_runner === 'claude' || input.resume_runner === 'codex'
+        ? input.resume_runner
+        : null;
     const resume_session_id =
       typeof input.resume_session_id === 'string' &&
-      input.resume_session_id.length > 0
+      input.resume_session_id.length > 0 &&
+      resume_runner !== null
         ? input.resume_session_id
         : null;
-    const runner_name = resume_session_id === null ? exec.runner : 'claude';
+    // A fresh review of a bead whose source is the OTHER provider still runs on
+    // that provider (§4.1): the selection reports it even when the transcript
+    // is gone, and only a bead with no recorded session at all follows current
+    // settings.
+    const runner_name =
+      resume_session_id !== null
+        ? resume_runner
+        : (resume_runner ?? exec.runner);
+    // §4.1: a resume runs the RECORDED provider, so it must not be handed the
+    // current provider's tuple — `-m opus` reaching codex is exactly the mix
+    // the spec forbids. The prior attempt that wrote this thread carries the
+    // tuple that provider actually ran, and a tuple the catalog cannot
+    // validate refuses the dispatch instead of being silently blended.
+    /** @type {{ model: string|null, effort: string|null, accounts: { claude: string|null, codex: string|null } }} */
+    let launch_tuple = {
+      model: exec.orchestration_model ?? null,
+      effort: exec.orchestration_effort ?? null,
+      accounts: resolved_exec.accounts
+    };
+    if (runner_name !== null && runner_name !== exec.runner) {
+      const source = priorAttemptForSession(
+        workspace,
+        bead_id,
+        runner_name,
+        resume_session_id
+      );
+      if (source !== null && !recordedTupleValid(runner_name, source)) {
+        // Recorded, but no longer a tuple this catalog can name: refused, not
+        // blended with the other provider's values.
+        removeGuardHook(workspace, attempt_id);
+        return refuseLaunch('prior_session_unavailable');
+      }
+      launch_tuple = {
+        // No attempt of this provider to read from — a session_ref written by
+        // a user session, say. §4.1's other admissible source then applies:
+        // the session itself restores its settings, so none are imposed.
+        model: source === null ? null : (source.model ?? null),
+        effort: source === null ? null : (source.effort ?? null),
+        accounts: {
+          claude:
+            runner_name === 'claude' && source !== null
+              ? (source.claude_account ?? null)
+              : resolved_exec.accounts.claude,
+          codex:
+            runner_name === 'codex' && source !== null
+              ? (source.codex_account ?? null)
+              : resolved_exec.accounts.codex
+        }
+      };
+    }
     claimed.add(bead_id);
     const started = deps.store.upsertReviewSessionAttempt(workspace, {
       attempt_id,
@@ -10855,10 +11136,10 @@ export function createScheduler(deps) {
       target_base: base,
       base_oid: null,
       runner_name,
-      model: exec.orchestration_model ?? null,
-      effort: exec.orchestration_effort ?? null,
+      model: launch_tuple.model,
+      effort: launch_tuple.effort,
       speed: exec.orchestration_speed ?? 'default',
-      accounts: resolved_exec.accounts,
+      accounts: launch_tuple.accounts,
       account_sources: resolved_exec.account_sources,
       prior_wf: null,
       stamped_keys: [],

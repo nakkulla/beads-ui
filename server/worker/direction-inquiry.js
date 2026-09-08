@@ -33,7 +33,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
-import { qualifySessionFork, resolveSessionFile } from './session-ref.js';
+import {
+  qualifySessionFork,
+  recordedSessionProvider,
+  resolveSessionFile
+} from './session-ref.js';
 // The tmux launch primitives moved out to be shared with the `[세션에서 해결]`
 // click (UI-jw27 §4). Nothing about this lane's behaviour moved with them: the
 // marker option, the prompt, and the launch reason all stay this module's.
@@ -52,7 +56,6 @@ const STALE_REASONS = new Set([
   'plan_approval_stale:revise'
 ]);
 const IMPL_CONFLICT_REASON = 'impl_review_conflict:design';
-const FORK_RUNNER = 'claude';
 
 /** The pane option that names the Bead an inquiry session belongs to. */
 const PANE_MARKER = INQUIRY_PANE_MARKER;
@@ -169,6 +172,9 @@ export const GENERIC_INQUIRY_PROMPT =
  * @property {'fork'|'fresh'} mode
  * @property {string|null} fallback_reason
  * @property {string|null} session_id
+ * @property {'claude'|'codex'} runner - The provider the window actually runs
+ * (codex-orchestration-parity §4.2). A fork keeps the chosen attempt's or the
+ * recorded ref's provider; a fresh session uses claude.
  * @property {string|null} command
  * @property {boolean} bridge_active
  * @property {string|null} tmux_session
@@ -354,6 +360,7 @@ function withFallbackReason(prompt, fallback_reason) {
  * @property {{ awaitingUser: (input: any) => Promise<void>|void }} notifier
  * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runTmux]
  * @property {() => string|null} [resolveClaude]
+ * @property {(runner: string) => string|null} [resolveRunner]
  * @property {(file_path: string) => { mtimeMs: number }} [statFile]
  * @property {() => number} [now]
  * @property {(...args: any[]) => void} [log]
@@ -372,6 +379,7 @@ export function createDirectionInquiry(deps) {
   const launcher = createTmuxLauncher({
     ...(deps.runTmux ? { runTmux: deps.runTmux } : {}),
     ...(deps.resolveClaude ? { resolveClaude: deps.resolveClaude } : {}),
+    ...(deps.resolveRunner ? { resolveRunner: deps.resolveRunner } : {}),
     ...(deps.statFile ? { statFile: deps.statFile } : {}),
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.heartbeatPath ? { heartbeatPath: deps.heartbeatPath } : {}),
@@ -434,22 +442,33 @@ export function createDirectionInquiry(deps) {
     let attempt_reason = null;
     const options = deps.sessionRefOptions || {};
     const hostname = options.hostname || os.hostname();
+    // The attempt's OWN runner, not a claude pin: a codex attempt's thread is
+    // forked by codex (§4.1). A record naming neither provider is not a
+    // transcript this server can locate at all.
+    const attempt_runner =
+      attempt?.runner === 'claude' || attempt?.runner === 'codex'
+        ? attempt.runner
+        : null;
     if (
-      attempt?.runner === FORK_RUNNER &&
+      attempt_runner !== null &&
       typeof attempt.session_id === 'string' &&
       attempt.session_id.length > 0
     ) {
       const located = resolveSessionFile(
         {
           index: 0,
-          provider: FORK_RUNNER,
+          provider: attempt_runner,
           session_id: attempt.session_id,
           host: hostname
         },
         options
       );
       if (located.locality === 'local') {
-        return { session_id: attempt.session_id, fallback_reason: null };
+        return {
+          session_id: attempt.session_id,
+          runner: attempt_runner,
+          fallback_reason: null
+        };
       }
       attempt_reason = 'attempt_transcript_missing';
     }
@@ -457,12 +476,26 @@ export function createDirectionInquiry(deps) {
       issue?.metadata && typeof issue.metadata === 'object'
         ? issue.metadata
         : {};
-    const qualified = qualifySessionFork(metadata, FORK_RUNNER, options);
+    const qualified = qualifySessionFork(metadata, null, options);
     if (qualified.ok) {
-      return { session_id: qualified.session_id, fallback_reason: null };
+      return {
+        session_id: qualified.session_id,
+        runner: qualified.provider,
+        fallback_reason: null
+      };
     }
+    // The SOURCE provider survives the failure (§4.1): the attempt's own runner
+    // first, then the recorded `session_ref`'s. A missing transcript makes the
+    // window FRESH, never a different CLI, and only a bead with no recorded
+    // source at all falls through to this lane's default tool.
     return {
       session_id: null,
+      runner:
+        // An attempt whose transcript went missing IS a source; an attempt that
+        // never recorded a session is not, and falls through to the ref.
+        (attempt_reason === null ? null : attempt_runner) ??
+        recordedSessionProvider(metadata) ??
+        /** @type {'claude'} */ ('claude'),
       fallback_reason: attempt_reason ?? qualified.reason
     };
   }
@@ -481,6 +514,7 @@ export function createDirectionInquiry(deps) {
       mode: 'fresh',
       fallback_reason: null,
       session_id: null,
+      runner: /** @type {'claude'} */ ('claude'),
       command: null,
       bridge_active: launcher.bridgeActive(),
       tmux_session: null,
@@ -492,7 +526,7 @@ export function createDirectionInquiry(deps) {
    * Map the shared launcher result to the click response contract.
    *
    * @param {any} outcome
-   * @param {{ session_id: string|null, fallback_reason: string|null }} fork
+   * @param {{ session_id: string|null, runner: 'claude'|'codex', fallback_reason: string|null }} fork
    * @param {{ tmux_session: string, bead_id: string }} place
    * @returns {InquiryOutcome}
    */
@@ -504,10 +538,13 @@ export function createDirectionInquiry(deps) {
       mode: fork.session_id === null ? 'fresh' : 'fork',
       fallback_reason: fork.fallback_reason,
       session_id: fork.session_id,
+      runner: fork.runner,
       command:
         fork.session_id === null
-          ? 'claude'
-          : `claude --resume ${shellQuote(fork.session_id)} --fork-session`,
+          ? fork.runner
+          : fork.runner === 'codex'
+            ? `codex fork ${shellQuote(fork.session_id)}`
+            : `claude --resume ${shellQuote(fork.session_id)} --fork-session`,
       bridge_active: launcher.bridgeActive(),
       tmux_session:
         outcome.session === 'not_launched' ? null : place.tmux_session,
@@ -653,17 +690,21 @@ export function createDirectionInquiry(deps) {
       };
     }
     const seeded = withFallbackReason(prompt, fork.fallback_reason);
+    // Codex's measured interactive fork form, passed as argv (§4.2).
     const command_args =
       fork.session_id === null
         ? [seeded]
-        : ['--resume', fork.session_id, '--fork-session', seeded];
+        : fork.runner === 'codex'
+          ? ['fork', fork.session_id, seeded]
+          : ['--resume', fork.session_id, '--fork-session', seeded];
     const launched = await launcher.launch({
       marker: PANE_MARKER,
       key: bead_id,
       tmux_session: config.tmux_session,
       window_name: bead_id,
       cwd: checkout,
-      commandArgs: command_args
+      commandArgs: command_args,
+      runner: fork.runner
     });
     return {
       outcome: inquiryOutcome(launched, fork, {

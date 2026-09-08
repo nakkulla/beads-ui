@@ -142,12 +142,14 @@ function firstLabel(host) {
 
 /**
  * Epoch ms a UUIDv7 encodes in its first 48 bits, or null for any other id
- * shape. Version nibble is the 15th character of the canonical form.
+ * shape. Version nibble is the 15th character of the canonical form. Exported
+ * because a codex thread id IS a v7 uuid, so its own value is what dates the
+ * rollout directory a native-child scan has to open (UI-mn5u §6.1).
  *
  * @param {string} session_id
  * @returns {number|null}
  */
-function uuidV7StartedAt(session_id) {
+export function uuidV7StartedAt(session_id) {
   if (session_id.length < 15 || session_id[14] !== '7') {
     return null;
   }
@@ -164,11 +166,14 @@ function uuidV7StartedAt(session_id) {
  * own shape carries no timestamp.
  *
  * @param {string} session_id
- * @param {{ fs: Pick<typeof fs, 'readdirSync'>, home_dir: string, now: () => number }} input
+ * @param {{ fs: Pick<typeof fs, 'readdirSync'>, home_dir: string, sessions_root?: string, now: () => number }} input
  * @returns {string|null}
  */
 function scanCodexRollout(session_id, input) {
-  const sessions_root = path.join(input.home_dir, '.codex', 'sessions');
+  const sessions_root =
+    typeof input.sessions_root === 'string' && input.sessions_root.length > 0
+      ? input.sessions_root
+      : path.join(input.home_dir, '.codex', 'sessions');
   const suffix = `-${session_id}.jsonl`;
   const base = input.now();
   for (let back = 0; back < CODEX_SCAN_DAYS; back += 1) {
@@ -197,7 +202,7 @@ function scanCodexRollout(session_id, input) {
  * Locate one item's transcript file on this machine.
  *
  * @param {SessionRefEntry} entry
- * @param {{ home_dir?: string, hostname?: string, fs?: Pick<typeof fs, 'readdirSync' | 'statSync'>, now?: () => number }} [options]
+ * @param {{ home_dir?: string, hostname?: string, sessions_root?: string, fs?: Pick<typeof fs, 'readdirSync' | 'statSync'>, now?: () => number }} [options]
  * @returns {SessionRefLocation}
  */
 export function resolveSessionFile(entry, options = {}) {
@@ -228,11 +233,20 @@ export function resolveSessionFile(entry, options = {}) {
   } else {
     const started_at = uuidV7StartedAt(entry.session_id);
     const now = options.now || (() => Date.now());
+    // The account-specific `CODEX_HOME` mirror the launch used, when the caller
+    // knows it: probing the default home for an account attempt reads another
+    // account's transcripts (codex-orchestration-parity §6.1).
+    const sessions_root =
+      typeof options.sessions_root === 'string' &&
+      options.sessions_root.length > 0
+        ? options.sessions_root
+        : undefined;
     file =
       started_at === null
         ? scanCodexRollout(entry.session_id, {
             fs: file_system,
             home_dir,
+            ...(sessions_root ? { sessions_root } : {}),
             now
           })
         : codexRolloutFilePath({
@@ -240,6 +254,7 @@ export function resolveSessionFile(entry, options = {}) {
             started_at,
             fs: file_system,
             home_dir,
+            ...(sessions_root ? { sessions_root } : {}),
             now
           });
   }
@@ -296,6 +311,26 @@ export function sessionResumeCommand(entry) {
  */
 
 /**
+ * The provider of the bead's CURRENT recorded session, whatever its transcript
+ * turns out to be (codex-orchestration-parity §4.1).
+ *
+ * A source that cannot be forked is still a source: the same-provider fresh
+ * fallback runs on THIS provider, so a missing transcript or a broken id never
+ * moves the work to the other CLI. `null` means no source at all, which is the
+ * only case that follows current execution settings.
+ *
+ * @param {Record<string, unknown>|null|undefined} metadata
+ * @returns {'claude'|'codex'|null}
+ */
+export function recordedSessionProvider(metadata) {
+  const entries = parseSessionRef(
+    metadata && typeof metadata === 'object' ? metadata.session_ref : null
+  );
+  const current = entries[entries.length - 1];
+  return current === undefined ? null : current.provider;
+}
+
+/**
  * Whether the bead's CURRENT `session_ref` item may be forked to open the first
  * EXTERNAL conflict-resolution session (UI-p206 §3).
  *
@@ -319,8 +354,12 @@ export function sessionResumeCommand(entry) {
  * one anyway.
  *
  * @param {Record<string, unknown>|null|undefined} metadata
- * @param {string} runner_name - The runner this dispatch resolved to
+ * @param {string|null} runner_name - The runner this dispatch resolved to
  * (`resolved.exec.runner`); a different CLI cannot fork this session at all.
+ * `null` means the CALLER follows the recorded provider instead of pinning one
+ * (codex-orchestration-parity §4.1) — the qualification then reports which
+ * provider it qualified, and the caller launches with that. The item grammar
+ * already admits only `claude`/`codex`, so no unknown runner can enter here.
  * @param {{ home_dir?: string, hostname?: string, fs?: Pick<typeof fs, 'readdirSync' | 'statSync'>, now?: () => number }} [options]
  * @returns {SessionForkQualification}
  */
@@ -338,7 +377,7 @@ export function qualifySessionFork(metadata, runner_name, options = {}) {
   ) {
     return { ok: false, reason: 'unsafe_session_id' };
   }
-  if (current.provider !== runner_name) {
+  if (runner_name !== null && current.provider !== runner_name) {
     return { ok: false, reason: 'provider_mismatch' };
   }
   // `local` already means the transcript file was found in this home (the

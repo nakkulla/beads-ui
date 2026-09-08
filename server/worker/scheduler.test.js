@@ -4588,6 +4588,68 @@ describe('scheduler resume (spec §1)', () => {
     }
   );
 
+  test('applies a codex account override validated by the codex catalog', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      accountCatalog: {
+        resolveCodex: vi.fn(async (key) => ({
+          ok: true,
+          account: { key, email: 'codex@example.com' }
+        }))
+      },
+      prepareCodexAccountHome: vi.fn(async ({ home_dir }) => ({
+        ok: true,
+        home_dir
+      })),
+      codexAccountHomeDir: vi.fn((key) => `/state/codex-homes/${key}`),
+      codexRoot: '/codex-root'
+    });
+    seedAttempt(env.store, 'override-codex', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'override-codex', {
+      exec_override: {
+        runner: 'codex',
+        model: 'sol',
+        effort: 'xhigh',
+        codex_account: 'acct-2'
+      }
+    });
+
+    const resumed = Object.values(env.store.snapshot(WS).attempts).find(
+      (attempt) => attempt.resumed_from === 'override-codex'
+    );
+    expect(result.ok).toBe(true);
+    expect(resumed?.codex_account).toEqual('acct-2');
+  });
+
+  test('rejects a codex account override the catalog does not know', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      accountCatalog: {
+        resolveCodex: vi.fn(async () => ({
+          ok: false,
+          reason: 'codex_account_unknown'
+        }))
+      }
+    });
+    seedAttempt(env.store, 'override-codex-bad', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'override-codex-bad', {
+      exec_override: {
+        runner: 'codex',
+        model: 'sol',
+        effort: 'xhigh',
+        codex_account: 'missing'
+      }
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'exec_override_invalid' });
+  });
+
   test('forces a cross-runner override fresh with a bounded context handoff', async () => {
     const recent = `${'x'.repeat(5000)}-RECENT-END`;
     const env = setup({
@@ -4677,6 +4739,71 @@ describe('scheduler resume (spec §1)', () => {
         reason: 'transcript_missing',
         session_id: 'sid-abc'
       }
+    });
+  });
+
+  test("probes the codex account's own sessions mirror for a transcript", async () => {
+    /** @type {any[]} */
+    const probes = [];
+    const env = setup({
+      config: { B1: { status: 'open', model: 'sol', effort: 'xhigh' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      resolveSessionFile: (entry, options) => {
+        probes.push({ entry, options });
+        return { locality: 'local', file: '/x.jsonl', last_event_at: 1 };
+      }
+    });
+    seedAttempt(
+      env.store,
+      'codex-account',
+      resumablePrior({
+        runner: 'codex',
+        model: 'sol',
+        effort: 'xhigh',
+        codex_account: 'work@example.com'
+      })
+    );
+
+    await env.scheduler.resume(WS, 'codex-account');
+
+    expect(probes.at(-1).options.sessions_root).toContain('codex-homes');
+  });
+
+  test('keeps the codex provider when a codex transcript is missing', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'sol', effort: 'xhigh' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      resolveSessionFile: () => ({
+        locality: 'missing',
+        file: null,
+        last_event_at: null
+      }),
+      sessionLog: {
+        attach: vi.fn(),
+        read: vi.fn(() => [
+          {
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: '부분 구현 완료' }] }
+          }
+        ])
+      }
+    });
+    seedAttempt(
+      env.store,
+      'codex-missing',
+      resumablePrior({ runner: 'codex', model: 'sol', effort: 'xhigh' })
+    );
+
+    const result = await env.scheduler.resume(WS, 'codex-missing');
+
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({
+      runner: 'codex',
+      continuation_mode: 'fresh',
+      resume_fallback: { reason: 'transcript_missing', session_id: 'sid-abc' }
     });
   });
 
@@ -5243,6 +5370,70 @@ describe('scheduler resume (spec §1)', () => {
     expect(env.store.snapshot(WS).attempts[String(res.attempt_id)].runner).toBe(
       'codex'
     );
+  });
+
+  test('keeps a recorded codex session when the current runner is claude', async () => {
+    const env = setup({ config: { B1: { model: 'opus' } }, slots: 1 });
+    const exec_values = /** @type {Record<string, string|null>} */ (
+      Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null]))
+    );
+    exec_values.orchestration_model = 'sol';
+    seedAttempt(
+      env.store,
+      'r3',
+      resumablePrior({ runner: 'codex', model: 'sol', exec_values })
+    );
+
+    const mismatch = await env.scheduler.resume(WS, 'r3');
+    const resumed = await env.scheduler.resume(WS, 'r3', {
+      continuation: 'prior_session',
+      decision_token: mismatch.continuation_mismatch.decision_token
+    });
+
+    expect(
+      env.store.snapshot(WS).attempts[String(resumed.attempt_id)].runner
+    ).toBe('codex');
+  });
+
+  test('spends the prior codex account when resuming across providers', async () => {
+    const env = setup({
+      config: { B1: { model: 'opus' } },
+      slots: 1,
+      accountCatalog: {
+        resolveCodex: async (/** @type {string} */ key) => ({
+          ok: true,
+          account: { key }
+        })
+      },
+      prepareCodexAccountHome: async (/** @type {any} */ input) => ({
+        ok: true,
+        home_dir: input.home_dir
+      })
+    });
+    const exec_values = /** @type {Record<string, string|null>} */ (
+      Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null]))
+    );
+    exec_values.orchestration_model = 'sol';
+    seedAttempt(
+      env.store,
+      'r9',
+      resumablePrior({
+        runner: 'codex',
+        model: 'sol',
+        exec_values,
+        codex_account: 'codex-key'
+      })
+    );
+
+    const mismatch = await env.scheduler.resume(WS, 'r9');
+    const resumed = await env.scheduler.resume(WS, 'r9', {
+      continuation: 'prior_session',
+      decision_token: mismatch.continuation_mismatch.decision_token
+    });
+
+    expect(
+      env.store.snapshot(WS).attempts[String(resumed.attempt_id)].codex_account
+    ).toBe('codex-key');
   });
 
   test('uses the current tuple after globals change; no worktree.add; resumed_from set', async () => {
@@ -6676,6 +6867,107 @@ describe('scheduler review-session dispatch (UI-d7fy §5)', () => {
       bead_id: 'B1',
       head_ref: 'B1'
     });
+  });
+
+  test('resumes a review on the recorded codex runner', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedPendingReviewSession(env.store);
+
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: 'codex-thread',
+      resume_runner: 'codex',
+      head_ref: 'B1'
+    });
+
+    expect(env.store.snapshot(WS).attempts['review:1'].runner).toBe('codex');
+  });
+
+  test('resumes a codex review with the prior codex tuple, not the current one', async () => {
+    const env = setup({ config: { B1: { model: 'opus' } }, slots: 1 });
+    seedPendingReviewSession(env.store);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'impl:1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'impl:1',
+      patch: {
+        status: 'done',
+        runner: 'codex',
+        model: 'sol',
+        effort: 'high',
+        session_id: 'codex-thread',
+        started_at: 10
+      }
+    });
+
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: 'codex-thread',
+      resume_runner: 'codex',
+      head_ref: 'B1'
+    });
+
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      model: 'sol',
+      effort: 'high'
+    });
+  });
+
+  test('imposes no model on a resume with no attempt tuple to read', async () => {
+    const env = setup({ config: { B1: { model: 'opus' } }, slots: 1 });
+    seedPendingReviewSession(env.store);
+
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: 'codex-thread',
+      resume_runner: 'codex',
+      head_ref: 'B1'
+    });
+
+    expect(env.runner.settingsFor('B1').model ?? null).toBeNull();
+  });
+
+  test('runs a fresh review on the recorded provider of the source', async () => {
+    const env = setup({ config: { B1: { model: 'opus' } }, slots: 1 });
+    seedPendingReviewSession(env.store);
+
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      resume_runner: 'codex',
+      head_ref: 'B1'
+    });
+
+    expect(env.store.snapshot(WS).attempts['review:1'].runner).toBe('codex');
+  });
+
+  test("keeps the bead's own runner when no resume runner is validated", async () => {
+    const env = setup({
+      config: { B1: { model: 'sol', effort: 'high' } },
+      slots: 1
+    });
+    seedPendingReviewSession(env.store);
+
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: 'orphan-id',
+      resume_runner: null,
+      head_ref: 'B1'
+    });
+
+    expect(env.store.snapshot(WS).attempts['review:1'].runner).toBe('codex');
   });
 
   test('keeps a review-session spawn failure out of the worker failure ladder', async () => {
@@ -12908,6 +13200,18 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
       )
     });
     expect(hookInstalled('S1-1000-1')).toBe(true);
+  });
+
+  test('carries the workflow locator pair into the launch env', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.settingsFor('S1').env).toMatchObject({
+      WORKFLOW_REPO_ROOT: '/repo',
+      WORKFLOW_BEAD_ID: 'S1'
+    });
   });
 
   test('continues the runner lifecycle when receipt inbox setup fails', async () => {

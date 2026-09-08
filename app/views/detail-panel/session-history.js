@@ -533,6 +533,189 @@ function sameDelegationIdentity(session, leg) {
 }
 
 /**
+ * What a native child's usage figure means (UI-mn5u §6.4). The parent's own
+ * total was measured to EXCLUDE it (fixture notes §3: root 57,181 vs child
+ * 114,343), and no evidence yet proves that holds for every version, so the
+ * figure is shown where it was observed and added nowhere.
+ *
+ * @type {string}
+ */
+const NATIVE_CHILD_USAGE_NOTE = '전체 합계에 별도 가산하지 않음';
+
+/**
+ * One Codex native child's usage in the display vocabulary. Only the keys the
+ * rollout actually reported survive: `cached_input_tokens` and
+ * `reasoning_output_tokens` are SUBSETS of the input/output figures, so they
+ * are carried for the breakdown and never counted a second time.
+ *
+ * A usage with a total and no breakdown, and one with a breakdown and no
+ * total, are DIFFERENT observations and are reported as such — an unobserved
+ * field is never printed as 0 (§6.4).
+ *
+ * @param {Record<string, any>|null|undefined} usage
+ * @returns {{ subtotal: number, breakdown: UsageRecord, lines: string[] }|null}
+ */
+function nativeChildUsage(usage) {
+  if (!usage || typeof usage !== 'object') {
+    return null;
+  }
+  /** @type {Record<string, number>} */
+  const breakdown = {};
+  /** @type {Array<[string, string, string]>} */
+  const mapping = [
+    ['input_tokens', 'input_tokens', '입력'],
+    ['output_tokens', 'output_tokens', '출력'],
+    ['cached_input_tokens', 'cache_read_input_tokens', '캐시읽기'],
+    ['cache_write_input_tokens', 'cache_creation_input_tokens', '캐시쓰기'],
+    ['reasoning_output_tokens', 'reasoning_output_tokens', '추론출력']
+  ];
+  /** @type {string[]} */
+  const details = [];
+  let summed = 0;
+  let observed = 0;
+  for (const [source_key, target_key, label] of mapping) {
+    const value = usage[source_key];
+    // §6.4: an unobserved field is ABSENT, never zero. Only what the rollout
+    // reported reaches the breakdown, the tooltip or the subtotal.
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      breakdown[target_key] = value;
+      details.push(`${label} ${value.toLocaleString('en-US')}`);
+      observed += 1;
+      if (target_key === 'input_tokens' || target_key === 'output_tokens') {
+        summed += value;
+      }
+    }
+  }
+  const raw_total = usage.total_tokens;
+  const total =
+    typeof raw_total === 'number' && Number.isFinite(raw_total)
+      ? raw_total
+      : null;
+  if (observed === 0) {
+    if (total === null) {
+      return null;
+    }
+    // TOTAL-ONLY: the figure exists but no breakdown does. Printing
+    // `입력 0 · 출력 0` beside it would state two contradictory things.
+    return {
+      subtotal: total,
+      breakdown: /** @type {UsageRecord} */ ({ total_tokens: total }),
+      lines: [`총 ${total.toLocaleString('en-US')}`, '세부 내역 미관측']
+    };
+  }
+  const lines = [...details];
+  if (total !== null) {
+    lines.unshift(`총 ${total.toLocaleString('en-US')}`);
+  }
+  return {
+    subtotal: total ?? summed,
+    breakdown: /** @type {UsageRecord} */ (breakdown),
+    lines
+  };
+}
+
+/**
+ * One native child row, rendered through the SAME leg grammar the external
+ * delegation rows use (§6.4: no new card line, no new chip slot). A static row
+ * rather than a button: a native child has no drawer of its own to open, and
+ * the external receipt validators stay untouched — this row is an internal
+ * observation, not a receipt.
+ *
+ * @param {Record<string, any>} child
+ * @returns {TemplateResult}
+ */
+function nativeChildTemplate(child) {
+  const usage = nativeChildUsage(child.usage);
+  const badges = usage
+    ? providerUsageBadges({
+        providers: {
+          codex: { subtotal: usage.subtotal, breakdown: usage.breakdown }
+        },
+        roles: {}
+      })
+    : [];
+  const badge = badges[0];
+  const status =
+    typeof child.status === 'string' && child.status in DELEGATION_STATUS_GLYPH
+      ? child.status
+      : 'running';
+  const thread_id = typeof child.thread_id === 'string' ? child.thread_id : '';
+  const time =
+    status === 'running'
+      ? shortTime(child.last_event_at)
+      : completedTime(child.completed_at);
+  const meta = [
+    'codex',
+    child.agent_path,
+    shortModel(child.model),
+    child.effort
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  return html`<div
+    class="detail-session__leg detail-session__usage-detail detail-session__leg--${status}"
+  >
+    <span class="detail-session__leg-glyph" aria-hidden="true"
+      >${DELEGATION_STATUS_GLYPH[status]}</span
+    >
+    <span class="detail-session__leg-role detail-session__usage-label"
+      >native child</span
+    >
+    <span class="detail-session__leg-meta detail-session__usage-value"
+      >${meta}</span
+    >
+    <span
+      class="detail-session__leg-sid detail-session__sid"
+      title=${child.launch_id || thread_id}
+      >${thread_id.slice(0, 8)}</span
+    >
+    ${time
+      ? html`<span class="detail-session__leg-time detail-session__time"
+          >${time}</span
+        >`
+      : ''}
+    ${badge && usage
+      ? html`<span
+          class="detail-session__usage"
+          title=${[...usage.lines, NATIVE_CHILD_USAGE_NOTE].join('\n')}
+          >${badge.label}</span
+        >`
+      : ''}
+  </div>`;
+}
+
+/**
+ * The attempt's native child rows, in observation order. Nothing is invented:
+ * an attempt with no observation renders none.
+ *
+ * @param {SessionAttempt} attempt
+ * @returns {TemplateResult[]}
+ */
+export function nativeChildLegs(attempt) {
+  const children = Array.isArray(attempt.codex_children)
+    ? attempt.codex_children
+    : [];
+  /** @type {Set<string>} */
+  const seen = new Set();
+  /** @type {TemplateResult[]} */
+  const rows = [];
+  for (const child of children) {
+    if (
+      !child ||
+      typeof child !== 'object' ||
+      typeof child.thread_id !== 'string' ||
+      child.thread_id.length === 0 ||
+      seen.has(child.thread_id)
+    ) {
+      continue;
+    }
+    seen.add(child.thread_id);
+    rows.push(nativeChildTemplate(child));
+  }
+  return rows;
+}
+
+/**
  * Merge live monitor rows with optional terminal usage receipts, then retain
  * usage-only and identity-conflict rows as static legacy rows.
  *
@@ -718,6 +901,10 @@ function usageDetail(usage, provider) {
  * stay absent.
  * @property {Array<Record<string, any>>} [delegation_sessions] - Durable/live
  * normalized delegation summaries, same two providers.
+ * @property {Array<Record<string, any>>} [codex_children] - Codex NATIVE
+ * subagent observations (UI-mn5u §6.4). Display-only: the usage shown on a
+ * child row is NOT part of this attempt's totals, and an absent field means the
+ * observation was never made, never that the children used nothing.
  * @property {string|null} [exec_default_preset_id] - Outer launch preset id.
  * @property {number|null} [exec_default_preset_revision] - Pinned preset revision.
  * @property {Record<string, string|null>|null} [exec_values] - Outer resolved values.
@@ -1069,7 +1256,7 @@ export function sessionHistoryTemplate(
           ${expanded.has(a.attempt_id) && a.usage
             ? usageDetail(a.usage, a.runner === 'codex' ? 'codex' : 'claude')
             : ''}
-          ${delegationLegs(a, projection, handlers)}
+          ${delegationLegs(a, projection, handlers)} ${nativeChildLegs(a)}
         </div>`;
       })}
     </div>

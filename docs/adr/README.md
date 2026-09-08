@@ -5,6 +5,8 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0047 | [Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다](0047-codex-native-child-internal-observation-not-summed.md) | 2026-09-08 | Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다 |
+| 0046 | [같은 작업의 세션 재개는 기록된 provider를 보존하고 provider 변경은 명시적 선택으로만 수행한다](0046-session-resume-preserves-recorded-provider.md) | 2026-09-08 | 같은 작업의 세션 재개는 기록된 provider를 보존하고 provider 변경은 명시적 선택으로만 수행한다 |
 | 0045 | [구현 세션의 지시 재시작은 durable pause 뒤 기록된 세션과 설정으로 재개하며 새 세션으로 대체하지 않는다](0045-instructions-restart-resumes-recorded-attempt-after-durable-pause.md) | 2026-09-08 | 구현 세션의 지시 재시작은 기존 durable pause 뒤 기록된 세션과 설정으로 재개하며, pause 뒤 연결 끊김은 paused로 남기고 transcript 부재 시 새 세션으로 대체하지 않는다 |
 | 0044 | [구독별 store는 revision을 수신하되 내용 변경만 통지하고 registry는 구독 출처를 전달한다](0044-subscription-store-notifies-content-change-with-source.md) | 2026-09-08 | 구독별 store는 revision을 수신하되 내용 변경만 통지하고 registry는 구독 출처를 전달하며 전체 issue push와 기존 순서·identity 규칙을 유지한다 |
 | 0043 | [워크스페이스와 후보 투영은 기존 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스를 띄우지 않는다](0043-candidate-projection-reads-async-probe-context-only.md) | 2026-09-08 | 워크스페이스와 후보 투영은 기존 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스를 띄우지 않으며 title-cache 예외는 유지한다 |

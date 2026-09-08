@@ -238,6 +238,34 @@ function createFileSource(input) {
 }
 
 /**
+ * The `WORKFLOW_*` locator keys the dotfiles policy hooks read to bind a
+ * session to its repo and Bead (codex-orchestration-parity §3.1). They are a
+ * per-attempt fact, so an inherited value from the Worker's OWN process env is
+ * another attempt's answer, not a default: it is stripped here, and the
+ * attempt's own pair is layered back on through `settings.env`.
+ *
+ * @type {RegExp}
+ */
+const WORKFLOW_ENV_RE = /^WORKFLOW_/;
+
+/**
+ * The parent environment a spawned session inherits, minus the locator keys
+ * above. Nothing else is filtered — PATH and the toolchain must reach the CLI.
+ *
+ * @returns {Record<string, string|undefined>}
+ */
+export function inheritedEnv() {
+  /** @type {Record<string, string|undefined>} */
+  const out = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!WORKFLOW_ENV_RE.test(key)) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/**
  * Open the session-log + stderr files the child will inherit as its stdout and
  * stderr. Both are append-mode so a resumed/relaunched write never truncates a
  * transcript. A failure to open EITHER closes whatever was opened and throws —
@@ -343,7 +371,11 @@ export function runSession(spec, bead, workspace, settings, deps) {
       // binary and toolchain; then layer the per-session settings env (the worker
       // token) and finally the adapter routing env, which WINS on any key collision
       // (e.g. ccx's ANTHROPIC_BASE_URL overriding an inherited value) (spec §5.4).
-      env: { ...process.env, ...(settings?.env || {}), ...(env || {}) }
+      env: {
+        ...inheritedEnv(),
+        ...(settings?.env || {}),
+        ...(env || {})
+      }
     });
   } finally {
     // The child owns its own copies now; leaving the server's open would leak
