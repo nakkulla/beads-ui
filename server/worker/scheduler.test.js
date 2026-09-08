@@ -17939,6 +17939,29 @@ describe('대기 진입 유예 (§3.3)', () => {
     expect(env.scheduler.isRunning('G7')).toBe(true);
   });
 
+  test('dispatches a bead whose grace expired mid-pass without an external tick', async () => {
+    const clock = { at: 1000 };
+    const env = graceEnv({ clock, config: { GA: {}, GB: {} } });
+    seedQueue(env.store, ['GA']);
+    clock.at = 9000;
+    seedQueue(env.store, ['GB']);
+    // GA's dispatch outlives GB's grace: its worktree add returns only after
+    // the clock has passed GB's grace end, the shape a slow spawn gives a pass.
+    const add = /** @type {any} */ (env.worktree.add.getMockImplementation());
+    env.worktree.add.mockImplementationOnce(
+      async (/** @type {any} */ input) => {
+        clock.at = 31000;
+        return add(input);
+      }
+    );
+
+    clock.at = 21000;
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('GA')).toBe(true);
+    expect(env.scheduler.isRunning('GB')).toBe(true);
+  });
+
   test('re-arms the wake-up from added_at after a restart', async () => {
     vi.useFakeTimers();
     const clock = { at: 1000 };

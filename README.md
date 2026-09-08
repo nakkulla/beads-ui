@@ -8,8 +8,7 @@
 <div align="center">
   <a href="https://www.npmjs.com/package/beads-ui"><img src="https://img.shields.io/npm/v/beads-ui.svg" alt="npm Version"></a>
   <a href="https://semver.org"><img src="https://img.shields.io/:semver-%E2%9C%93-blue.svg" alt="SemVer"></a>
-  <a href="https://github.com/mantoni/beads-ui/actions/worflows/ci.yml"><img src="https://github.com/mantoni/eslint_d.js/actions/workflows/ci.yml/badge.svg" alt="Build Status"></a>
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/npm/l/eslint_d.svg" alt="MIT License"></a>
+  <a href="https://github.com/mantoni/beads-ui/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
   <br>
   <br>
 </div>
@@ -26,10 +25,17 @@ A dark-first control tower with **two tabs** plus a shared detail panel:
   auto-advance with an editable concurrency cap (slots), live running-session
   tiles, and a failure banner. Completion is judged by the SERVER observing an
   open PR for the session's branch — never by the session's self-report — so a
-  finished bead lands in **PR 대기** with CI / local-verification / base badges.
-  Merging is always a human `[머지]` click, gated on a verification result bound
-  to the PR's current head SHA (a stale green never passes). `[폐기]` first
-  creates a verified recovery archive under
+  finished bead lands in **PR 대기** with local-verification / base badges.
+  Merge eligibility never consults GitHub checks: this repository runs no CI
+  workflow and the queue judges from PR/base/head identity, clean mergeability,
+  workflow review receipts, execution-receipt backing, and the repository's own
+  `[verify]` script. The queue owns the merge itself, so an automatic merge and
+  a human `[머지]` click converge on the same path. The implementation review
+  receipt binds by **ancestry** — a receipt SHA that is the observed head or an
+  ancestor of it stays valid, and only a rewritten or reset branch makes it
+  stale. `[verify]` is a separate pre-merge safety net run on a throwaway
+  candidate checkout, not a substitute for that receipt. `[폐기]` first creates
+  a verified recovery archive under
   `$XDG_STATE_HOME/bdui/<workspace>/discard-backups/<operation-id>`; an unmerged
   PR is then closed and its worktree/branch removed, while an already merged PR
   creates a human-merge-only revert PR. Keep the archive directory intact when
@@ -44,8 +50,9 @@ A dark-first control tower with **two tabs** plus a shared detail panel:
   open the session drawer: parsed assistant / tool / gate / phase lines with
   live-follow for a running attempt and the same viewer for a Done/Failed log.
 - 🗂️ **Detail panel** – id/title/deps/workflow, Artifacts (open the embedded
-  markdown viewer), the 5-key execution settings + `workflow_mode` editor, and
-  the session history.
+  markdown viewer), the execution settings editor (orchestration, implementation
+  runtime/model/effort, and per-stage spec/plan/impl review model·effort·speed,
+  plus the per-bead `workflow_mode`), and the session history.
 - 📺 **Live updates** – A single WebSocket per-subscription push protocol
   (`snapshot`/`upsert`/`delete`), plus a server-side periodic refresh
   (`poll_interval_seconds`, default 30, `0` = off) so writes from other machines
@@ -112,7 +119,11 @@ for the full design.
 - `HOST`: overrides the bind address (default `127.0.0.1`).
 - `PORT`: overrides the listen port (default `3000`).
 
-These can also be set via CLI options: `bdui start --host 0.0.0.0 --port 8080`
+These can also be set via CLI options:
+`bdui start --host 127.0.0.1 --port 8080`. To reach the UI from another device,
+bind the machine's real address on a trusted network (for example its Tailscale
+address) instead of `0.0.0.0` — there is no authentication, so the bind address
+is the access boundary.
 
 ## Platform notes
 
