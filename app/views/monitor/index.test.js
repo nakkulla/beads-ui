@@ -4829,3 +4829,79 @@ describe('연결 레인 행의 실행 사실과 유예 (UI-q1tg §3.5)', () => {
     ]);
   });
 });
+
+describe('views/monitor 숨김과 lifecycle (UI-hhn9 §6)', () => {
+  test('skips DOM render for a pipeline push while hidden and catches up on load', () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    /** @type {Array<() => void>} */
+    const listeners = [];
+    /** @type {{ current: any[] }} */
+    const state = {
+      current: [workspace({ runnable: [{ bead_id: 'A-1', title: '첫 행' }] })]
+    };
+    const pipelineStore = {
+      get() {
+        return state.current;
+      },
+      getWorkspacesState() {
+        return [];
+      },
+      crossLanes() {
+        return undefined;
+      },
+      /** @param {() => void} fn */
+      subscribe(fn) {
+        listeners.push(fn);
+        return () => {};
+      }
+    };
+    const view = createMonitorView(mount, {
+      gotoIssue: vi.fn(),
+      transport: vi.fn(),
+      router: { gotoView: vi.fn() },
+      pipelineStore: /** @type {any} */ (pipelineStore),
+      getWorkspacePath: () => WS_A,
+      switchWorkspace: vi.fn(() => Promise.resolve(null)),
+      confirm: vi.fn(() => true),
+      now: () => NOW
+    });
+    active_views.push(view);
+    view.load();
+    view.pause();
+    mount.hidden = true;
+
+    state.current = [
+      workspace({ runnable: [{ bead_id: 'A-2', title: '둘째 행' }] })
+    ];
+    for (const fn of listeners) {
+      fn();
+    }
+
+    expect(mount.textContent).not.toContain('둘째 행');
+
+    mount.hidden = false;
+    view.load();
+
+    expect(mount.textContent).toContain('둘째 행');
+    view.pause();
+  });
+
+  test('clear stops the display tick it started', () => {
+    vi.useFakeTimers();
+    try {
+      const { view } = setup({
+        workspaces: [workspace({ runnable: [{ bead_id: 'A-1', title: 't' }] })]
+      });
+      view.load();
+      const with_tick = vi.getTimerCount();
+
+      view.clear();
+
+      expect(with_tick).toBeGreaterThan(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

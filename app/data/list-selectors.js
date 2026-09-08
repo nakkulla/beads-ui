@@ -41,13 +41,28 @@ import {
  * sort unchanged. `subscribe` fans out on BOTH issue and order changes so an
  * order push re-renders every subscribed view without per-view wiring.
  *
- * @param {{ snapshotFor?: (client_id: string) => IssueLite[], subscribe?: (fn: () => void) => () => void }} [issue_stores]
+ * The issue-stores leg only forwards notifications whose subscription id this
+ * instance renders. That set is declared explicitly by `options.client_ids`
+ * (Board and Worker each own a fixed list of ids, and the Worker console
+ * subscribes for re-render without ever calling `selectBoardColumn`, so
+ * recording ids at call time would silently drop its updates). Omitting the
+ * option keeps the unfiltered legacy behaviour. UI-order notifications always
+ * pass through: an order change reorders every column regardless of source.
+ *
+ * @param {{ snapshotFor?: (client_id: string) => IssueLite[], subscribe?: (fn: (client_id: string) => void) => () => void }} [issue_stores]
  * @param {UiOrderStore} [ui_order_store]
+ * @param {{ client_ids?: readonly string[] }} [options]
  */
 export function createListSelectors(
   issue_stores = undefined,
-  ui_order_store = undefined
+  ui_order_store = undefined,
+  options = undefined
 ) {
+  /** @type {Set<string> | null} */
+  const owned_client_ids =
+    options && Array.isArray(options.client_ids)
+      ? new Set(options.client_ids)
+      : null;
   // Sorting comparators are centralized in app/data/sort.js
 
   /**
@@ -80,7 +95,7 @@ export function createListSelectors(
   function selectBoardColumn(client_id, mode, sort_mode) {
     const arr =
       issue_stores && issue_stores.snapshotFor
-        ? issue_stores.snapshotFor(client_id).slice()
+        ? issue_stores.snapshotFor(client_id)
         : [];
     if (mode === 'closed') {
       arr.sort(cmpClosedDesc);
@@ -114,8 +129,8 @@ export function createListSelectors(
   }
 
   /**
-   * Subscribe for re-render; triggers once per issues envelope and once per
-   * order snapshot.
+   * Subscribe for re-render; triggers once per owned issues content change and
+   * once per order snapshot.
    *
    * @param {() => void} fn
    * @returns {() => void}
@@ -124,7 +139,14 @@ export function createListSelectors(
     /** @type {Array<() => void>} */
     const offs = [];
     if (issue_stores && typeof issue_stores.subscribe === 'function') {
-      offs.push(issue_stores.subscribe(fn));
+      offs.push(
+        issue_stores.subscribe((client_id) => {
+          if (owned_client_ids && !owned_client_ids.has(client_id)) {
+            return;
+          }
+          fn();
+        })
+      );
     }
     if (ui_order_store && typeof ui_order_store.subscribe === 'function') {
       offs.push(ui_order_store.subscribe(fn));

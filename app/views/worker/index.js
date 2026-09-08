@@ -1564,11 +1564,25 @@ function prWaitRow(
 }
 
 /**
+ * The five subscription ids the Worker console renders (UI-hhn9 §5.1). Board
+ * or detail pushes must not re-render this tab.
+ *
+ * @type {readonly string[]}
+ */
+const WORKER_CLIENT_IDS = [
+  'tab:worker:ready',
+  'tab:worker:blocked',
+  'tab:worker:in-progress',
+  'tab:worker:resolved',
+  'tab:worker:closed'
+];
+
+/**
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
  * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../board/stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void }} [options]
- * @returns {{ load: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
+ * @returns {{ load: () => void, pause: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
   const {
@@ -1586,7 +1600,11 @@ export function createWorkerView(mount_element, options = {}) {
   // Worker 탭은 ui-order를 읽지 않는다 (UI-d13v §6): 후보 순서는 정렬 체인과
   // 그 뒤의 의존 인접화 패스가 정하고 (UI-q1y7 §2) 수동 rank는 Board 탭만 쓴다.
   // 그래서 selectors도 order 인자 없이 만든다.
-  const selectors = issueStores ? createListSelectors(issueStores) : null;
+  const selectors = issueStores
+    ? createListSelectors(issueStores, undefined, {
+        client_ids: WORKER_CLIENT_IDS
+      })
+    : null;
 
   /**
    * Candidate pane display filter (UI-ki09), restored at view creation.
@@ -4224,6 +4242,12 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   function doRender() {
+    if (mount_element.hidden) {
+      // 숨긴 탭은 목록 재조합도 DOM 렌더도 표시용 grace tick도 하지 않는다
+      // (UI-hhn9 §6). 구독의 데이터 처리는 호출 쪽에서 이미 끝났고, 재진입
+      // load()가 최신 상태를 그린다.
+      return;
+    }
     const m = laneModel();
     syncGraceTimer(m);
     refreshOverlapFacts(m);
@@ -5358,6 +5382,14 @@ export function createWorkerView(mount_element, options = {}) {
       adapter.ensureSessionDefaults();
       doRender();
     },
+    /**
+     * Pause the display timers when the route leaves this tab (UI-hhn9 §6).
+     * 구독·필터·drawer 상태는 그대로 두고 표시용 타이머만 끈다. 재진입 load()가
+     * 다시 그리며 타이머는 그때 한 번만 붙는다.
+     */
+    pause() {
+      stopGraceTimer();
+    },
     refreshSessionDefaults,
     destroy() {
       stopGraceTimer();
@@ -5373,6 +5405,14 @@ export function createWorkerView(mount_element, options = {}) {
       mount_element.removeEventListener(
         'change',
         /** @type {any} */ (onChange)
+      );
+      mount_element.removeEventListener(
+        'input',
+        /** @type {any} */ (onSearchInput)
+      );
+      mount_element.removeEventListener(
+        'keydown',
+        /** @type {any} */ (onSearchKeyDown)
       );
       adapter.destroy();
       try {

@@ -51,6 +51,9 @@ export function createSubscriptionIssueStore(id, options = {}) {
    * - Ignore messages with revision <= last_revision (except snapshot which resets first).
    * - Preserve object identity when updating an existing item by mutating
    *   fields in place rather than replacing the object reference.
+   * - A message that cannot change rendered content (an upsert the existing
+   *   item's newer `updated_at` rejects, a delete of an absent id) still
+   *   advances `last_revision`, but skips both the sort and the notify.
    *
    * @param {{ type: 'snapshot'|'upsert'|'delete', id: string, revision: number, issues?: any[], issue?: any, issue_id?: string }} msg
    */
@@ -85,10 +88,12 @@ export function createSubscriptionIssueStore(id, options = {}) {
     }
     if (msg.type === 'upsert') {
       const it = msg.issue;
+      let content_changed = false;
       if (it && typeof it.id === 'string' && it.id.length > 0) {
         const existing = items_by_id.get(it.id);
         if (!existing) {
           items_by_id.set(it.id, it);
+          content_changed = true;
         } else {
           // Guard with updated_at; prefer newer
           const prev_ts = Number.isFinite(existing.updated_at)
@@ -109,22 +114,25 @@ export function createSubscriptionIssueStore(id, options = {}) {
               // @ts-ignore - dynamic assignment
               existing[k] = v;
             }
+            content_changed = true;
           } else {
             // stale by timestamp; ignore
           }
         }
-        rebuildOrdered();
       }
       last_revision = rev;
-      emit();
+      if (content_changed) {
+        rebuildOrdered();
+        emit();
+      }
     } else if (msg.type === 'delete') {
       const rid = String(msg.issue_id || '');
-      if (rid) {
-        items_by_id.delete(rid);
-        rebuildOrdered();
-      }
+      const content_changed = rid ? items_by_id.delete(rid) : false;
       last_revision = rev;
-      emit();
+      if (content_changed) {
+        rebuildOrdered();
+        emit();
+      }
     }
   }
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { createListSelectors } from './list-selectors.js';
 import { createSubscriptionIssueStore } from './subscription-issue-store.js';
+import { createSubscriptionIssueStores } from './subscription-issue-stores.js';
 import { createUiOrderStore } from './ui-order-store.js';
 
 /**
@@ -9,7 +10,7 @@ import { createUiOrderStore } from './ui-order-store.js';
 function createTestIssueStores() {
   /** @type {Map<string, ReturnType<typeof createSubscriptionIssueStore>>} */
   const stores = new Map();
-  /** @type {Set<() => void>} */
+  /** @type {Set<(client_id: string) => void>} */
   const listeners = new Set();
 
   /**
@@ -24,7 +25,7 @@ function createTestIssueStores() {
       s.subscribe(() => {
         for (const fn of Array.from(listeners)) {
           try {
-            fn();
+            fn(id);
           } catch {
             // ignore
           }
@@ -40,10 +41,11 @@ function createTestIssueStores() {
      * @param {string} id
      */
     snapshotFor(id) {
-      return getStore(id).snapshot();
+      // The real registry hands the consumer its own copy (UI-hhn9 §5.3).
+      return getStore(id).snapshot().slice();
     },
     /**
-     * @param {() => void} fn
+     * @param {(client_id: string) => void} fn
      */
     subscribe(fn) {
       listeners.add(fn);
@@ -334,5 +336,98 @@ describe('list-selectors sort_mode (UX v3 spec §3)', () => {
       .selectBoardColumn('tab:board:closed', 'closed', 'created_asc')
       .map((x) => x.id);
     expect(ids).toEqual(['C2', 'C1']);
+  });
+  test('forwards only notifications from its own client ids', () => {
+    const stores = createSubscriptionIssueStores();
+    stores.register('tab:board:ready', { type: 'ready-issues' });
+    stores.register('tab:worker:ready', { type: 'ready-issues' });
+    const selectors = createListSelectors(stores, undefined, {
+      client_ids: ['tab:board:ready']
+    });
+    let hits = 0;
+    selectors.subscribe(() => {
+      hits += 1;
+    });
+
+    /** @type {any} */ (stores.getStore('tab:worker:ready')).applyPush({
+      type: 'snapshot',
+      id: 'tab:worker:ready',
+      revision: 1,
+      issues: [{ id: 'W1', created_at: 1, updated_at: 1, closed_at: null }]
+    });
+
+    expect(hits).toBe(0);
+
+    /** @type {any} */ (stores.getStore('tab:board:ready')).applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: [{ id: 'B1', created_at: 1, updated_at: 1, closed_at: null }]
+    });
+
+    expect(hits).toBe(1);
+  });
+
+  test('forwards ui-order notifications regardless of client ids', () => {
+    const stores = createSubscriptionIssueStores();
+    /** @type {Array<() => void>} */
+    const order_listeners = [];
+    const uiOrderStore = {
+      get: () => ({ revision: 1, order: {} }),
+      /** @param {() => void} fn */
+      subscribe(fn) {
+        order_listeners.push(fn);
+        return () => {};
+      }
+    };
+    const selectors = createListSelectors(
+      stores,
+      /** @type {any} */ (uiOrderStore),
+      { client_ids: ['tab:board:ready'] }
+    );
+    let hits = 0;
+    selectors.subscribe(() => {
+      hits += 1;
+    });
+
+    for (const fn of order_listeners) {
+      fn();
+    }
+
+    expect(hits).toBe(1);
+  });
+
+  test('sorting a column does not mutate the store array', () => {
+    const stores = createSubscriptionIssueStores();
+    stores.register('tab:board:ready', { type: 'ready-issues' });
+    /** @type {any} */ (stores.getStore('tab:board:ready')).applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: [
+        { id: 'A', priority: 1, created_at: 1_000, updated_at: 1 },
+        { id: 'B', priority: 1, created_at: 3_000, updated_at: 2 },
+        { id: 'C', priority: 1, created_at: 2_000, updated_at: 3 }
+      ]
+    });
+    const store_order = /** @type {any} */ (stores.getStore('tab:board:ready'))
+      .snapshot()
+      .map((/** @type {any} */ i) => i.id);
+    const selectors = createListSelectors(stores);
+
+    const first = selectors
+      .selectBoardColumn('tab:board:ready', 'ready', 'updated_desc')
+      .map((x) => x.id);
+    const second = selectors
+      .selectBoardColumn('tab:board:ready', 'ready', 'updated_desc')
+      .map((x) => x.id);
+
+    expect(first).toEqual(['C', 'B', 'A']);
+    expect(second).toEqual(first);
+    expect(
+      /** @type {any} */ (stores.getStore('tab:board:ready'))
+        .snapshot()
+        .map((/** @type {any} */ i) => i.id)
+    ).toEqual(store_order);
   });
 });

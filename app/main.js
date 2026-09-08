@@ -1905,6 +1905,8 @@ export function bootstrap(root_element) {
       }
       if (s.view === 'worker') {
         worker_view.load();
+      } else {
+        worker_view.pause();
       }
       if (s.view === 'monitor') {
         monitor_view.load();

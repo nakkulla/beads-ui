@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { RANK_STEP } from '../../data/sort.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
+import { createSubscriptionIssueStores } from '../../data/subscription-issue-stores.js';
 import { createUiOrderStore } from '../../data/ui-order-store.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import { createBoardView } from './index.js';
@@ -8,7 +9,7 @@ import { createBoardView } from './index.js';
 function createTestIssueStores() {
   /** @type {Map<string, any>} */
   const stores = new Map();
-  /** @type {Set<() => void>} */
+  /** @type {Set<(client_id: string) => void>} */
   const listeners = new Set();
   /**
    * @param {string} id
@@ -22,7 +23,7 @@ function createTestIssueStores() {
       s.subscribe(() => {
         for (const fn of Array.from(listeners)) {
           try {
-            fn();
+            fn(id);
           } catch {
             /* ignore */
           }
@@ -37,7 +38,7 @@ function createTestIssueStores() {
     snapshotFor(id) {
       return getStore(id).snapshot().slice();
     },
-    /** @param {() => void} fn */
+    /** @param {(client_id: string) => void} fn */
     subscribe(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);
@@ -1720,5 +1721,161 @@ describe('views/board: bench 숨김 (preset-compare §4.8)', () => {
     expect(
       mount.querySelector('.board-card[data-issue-id="RD-1"]')
     ).not.toBeNull();
+  });
+});
+
+describe('views/board 숨김과 구독 출처 (UI-hhn9 §5.1·§6)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * Wire the real chain: registry stores -> selectors -> board view. `reads`
+   * counts every snapshot read the view performs.
+   */
+  function setupRealChain() {
+    const registry = createSubscriptionIssueStores();
+    for (const id of [
+      'tab:board:ready',
+      'tab:board:blocked',
+      'tab:board:in-progress',
+      'tab:board:resolved',
+      'tab:board:deferred',
+      'tab:board:closed',
+      'tab:worker:ready'
+    ]) {
+      registry.register(id, { type: 'ready-issues' });
+    }
+    const reads = { count: 0 };
+    const issueStores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        reads.count += 1;
+        return registry.snapshotFor(id);
+      },
+      /** @param {(client_id: string) => void} fn */
+      subscribe(fn) {
+        return registry.subscribe(fn);
+      }
+    };
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: /** @type {any} */ (issueStores)
+    });
+    return { registry, reads, mount, view };
+  }
+
+  /**
+   * @param {any} registry
+   * @param {string} id
+   * @param {number} revision
+   * @param {any[]} issues
+   */
+  function push(registry, id, revision, issues) {
+    registry.getStore(id).applyPush({ type: 'snapshot', id, revision, issues });
+  }
+
+  test('ignores an unrelated subscription while hidden', () => {
+    const { registry, reads, mount, view } = setupRealChain();
+    void view.load();
+    mount.hidden = true;
+    reads.count = 0;
+
+    push(registry, 'tab:worker:ready', 1, [
+      { id: 'W-1', title: 'worker one', status: 'open', updated_at: 1 }
+    ]);
+
+    expect(reads.count).toBe(0);
+    expect(mount.textContent).not.toContain('worker one');
+  });
+
+  test('skips rendering its own push while hidden and shows it on re-entry', () => {
+    const { registry, reads, mount, view } = setupRealChain();
+    void view.load();
+    mount.hidden = true;
+    reads.count = 0;
+
+    push(registry, 'tab:board:ready', 1, [
+      { id: 'RD-9', title: 'ready nine', status: 'open', updated_at: 1 }
+    ]);
+
+    expect(reads.count).toBe(0);
+    expect(mount.textContent).not.toContain('ready nine');
+
+    mount.hidden = false;
+    void view.load();
+
+    expect(reads.count).toBeGreaterThan(0);
+    expect(mount.textContent).toContain('ready nine');
+  });
+
+  test('reacts to its own subscription while visible', () => {
+    const { registry, mount, view } = setupRealChain();
+    void view.load();
+
+    push(registry, 'tab:board:ready', 1, [
+      { id: 'RD-8', title: 'ready eight', status: 'open', updated_at: 1 }
+    ]);
+
+    expect(mount.textContent).toContain('ready eight');
+  });
+
+  test('reacts to a ui-order change while visible', () => {
+    const registry = createSubscriptionIssueStores();
+    registry.register('tab:board:ready', { type: 'ready-issues' });
+    const reads = { count: 0 };
+    const issueStores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        reads.count += 1;
+        return registry.snapshotFor(id);
+      },
+      /** @param {(client_id: string) => void} fn */
+      subscribe(fn) {
+        return registry.subscribe(fn);
+      }
+    };
+    const uiOrderStore = createUiOrderStore();
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: /** @type {any} */ (issueStores),
+      uiOrderStore
+    });
+    void view.load();
+    reads.count = 0;
+
+    uiOrderStore.set({ revision: 1, order: { 'RD-A': RANK_STEP } });
+
+    expect(reads.count).toBeGreaterThan(0);
+  });
+  test('keeps the search filter across hide and re-entry', () => {
+    const { registry, mount, view } = setupRealChain();
+    void view.load();
+    push(registry, 'tab:board:ready', 1, [
+      { id: 'RD-1', title: 'ready one', status: 'open', updated_at: 1 },
+      { id: 'RD-2', title: 'ready two', status: 'open', updated_at: 2 }
+    ]);
+    const search = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.board-filter__search')
+    );
+    search.value = 'ready two';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(mount.querySelectorAll('#ready-col .board-card').length).toBe(1);
+
+    mount.hidden = true;
+    push(registry, 'tab:board:ready', 2, [
+      { id: 'RD-1', title: 'ready one', status: 'open', updated_at: 1 },
+      { id: 'RD-2', title: 'ready two', status: 'open', updated_at: 3 },
+      { id: 'RD-3', title: 'ready three', status: 'open', updated_at: 4 }
+    ]);
+    mount.hidden = false;
+    void view.load();
+
+    expect(mount.querySelectorAll('#ready-col .board-card').length).toBe(1);
+    expect(mount.textContent).toContain('ready two');
+    expect(mount.textContent).not.toContain('ready three');
   });
 });

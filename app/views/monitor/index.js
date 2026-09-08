@@ -1929,6 +1929,12 @@ export function createMonitorView(mount_element, options) {
   }
 
   function doRender() {
+    if (mount_element.hidden) {
+      // 숨긴 탭은 pipeline·viewport·지연 callback 어느 쪽으로 들어와도 DOM을
+      // 다시 만들지 않는다 (UI-hhn9 §6). 데이터 처리는 호출 쪽에서 이미 끝났고,
+      // 재진입 load()가 최신 상태를 그린다.
+      return;
+    }
     const now = nowFn();
     lanes = projectLanes();
     render_drop_model = null;
@@ -3293,6 +3299,7 @@ export function createMonitorView(mount_element, options) {
     },
     clear() {
       stopTick();
+      clearCorrectionNotice();
       lane_drag.detach();
       if (unsubscribe_pipeline) {
         unsubscribe_pipeline();

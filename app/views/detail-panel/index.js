@@ -86,7 +86,7 @@ const PRIORITY_OPTIONS = [0, 1, 2, 3, 4];
 
 /**
  * @typedef {Object} DetailPanelOptions
- * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issueStores]
+ * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: (client_id: string) => void) => () => void }} [issueStores]
  * @property {(type: string, payload: unknown) => Promise<unknown>} [transport]
  * @property {{ get: () => any, set?: (queue: any) => void, subscribe?: (fn: () => void) => () => void }} [queueStore] - Client worker-queue store (source of a bead's attempts).
  * @property {{ get: () => any, set: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [execPresetStore]
@@ -1303,7 +1303,14 @@ export function createDetailPanel(mount_element, options) {
   /** @type {null | (() => void)} */
   let unsubscribe = null;
   if (issueStores && issueStores.subscribe) {
-    unsubscribe = issueStores.subscribe(() => refreshFromStore());
+    // 현재 상세 구독의 변경만 읽는다 (UI-hhn9 §5.1): 선택이 없거나 다른 목록의
+    // 알림이면 snapshot을 조회하지 않는다.
+    unsubscribe = issueStores.subscribe((client_id) => {
+      if (!current_id || client_id !== `detail:${current_id}`) {
+        return;
+      }
+      refreshFromStore();
+    });
   }
   /** @type {null | (() => void)} */
   let unsubscribe_queue = null;

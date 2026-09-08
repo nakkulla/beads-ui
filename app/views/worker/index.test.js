@@ -22,7 +22,7 @@ const RECEIPT = 'codex@' + 'a'.repeat(40);
 function createTestIssueStores() {
   /** @type {Map<string, any>} */
   const stores = new Map();
-  /** @type {Set<() => void>} */
+  /** @type {Set<(client_id: string) => void>} */
   const listeners = new Set();
   /** @param {string} id */
   function getStore(id) {
@@ -33,7 +33,7 @@ function createTestIssueStores() {
       s.subscribe(() => {
         for (const fn of Array.from(listeners)) {
           try {
-            fn();
+            fn(id);
           } catch {
             /* ignore */
           }
@@ -48,7 +48,7 @@ function createTestIssueStores() {
     snapshotFor(id) {
       return getStore(id).snapshot().slice();
     },
-    /** @param {() => void} fn */
+    /** @param {(client_id: string) => void} fn */
     subscribe(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);
@@ -16230,5 +16230,76 @@ describe('worker 후보 route 필터 (UI-q1tg §3.2)', () => {
         mount.querySelector('.worker-filter__routes')
       ).getAttribute('aria-label')
     ).toBe('route 필터');
+  });
+});
+
+describe('views/worker 숨김과 lifecycle (UI-hhn9 §6)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  test('skips DOM render while hidden but keeps the store change', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = createTestIssueStores();
+    const view = createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+    mount.hidden = true;
+
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'RD-9',
+        title: 'ready nine',
+        status: 'open',
+        priority: 1,
+        updated_at: 1
+      }
+    ]);
+
+    expect(mount.textContent).not.toContain('ready nine');
+
+    mount.hidden = false;
+    view.load();
+
+    expect(mount.textContent).toContain('ready nine');
+  });
+
+  test('repeated pause and load do not stack display timers', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+    const set_interval = vi.spyOn(window, 'setInterval');
+
+    view.pause();
+    view.load();
+    view.pause();
+    view.load();
+
+    expect(set_interval.mock.calls.length).toBeLessThanOrEqual(1);
+    set_interval.mockRestore();
+    view.destroy();
+  });
+
+  test('destroy removes the input and keydown listeners it registered', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const removed = vi.spyOn(mount, 'removeEventListener');
+    const view = createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    view.destroy();
+
+    const types = removed.mock.calls.map((call) => call[0]);
+    expect(types).toContain('input');
+    expect(types).toContain('keydown');
+    removed.mockRestore();
   });
 });

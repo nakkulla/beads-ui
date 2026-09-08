@@ -55,6 +55,110 @@ describe('views/detail-panel', () => {
     expect(mount.textContent).toContain('설명 본문');
   });
 
+  test('ignores a list subscription change with no selection (UI-hhn9 §5.1)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const registry = createSubscriptionIssueStores();
+    registry.register('tab:board:ready', { type: 'ready-issues' });
+    const reads = { count: 0 };
+    const issueStores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        reads.count += 1;
+        return registry.snapshotFor(id);
+      },
+      /** @param {(client_id: string) => void} fn */
+      subscribe(fn) {
+        return registry.subscribe(fn);
+      }
+    };
+    createDetailPanel(mount, {
+      issueStores: /** @type {any} */ (issueStores),
+      onClose: vi.fn()
+    });
+
+    registry.getStore('tab:board:ready')?.applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: /** @type {any} */ ([
+        { id: 'RD-1', title: 'ready one', updated_at: 1, created_at: 1 }
+      ])
+    });
+
+    expect(reads.count).toBe(0);
+  });
+
+  test('ignores another subscription while a detail is selected (UI-hhn9 §5.1)', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const registry = createSubscriptionIssueStores();
+    registry.register('detail:UI-1', {
+      type: 'issue-detail',
+      params: { id: 'UI-1' }
+    });
+    registry.register('tab:board:ready', { type: 'ready-issues' });
+    registry.getStore('detail:UI-1')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-1',
+      revision: 1,
+      issues: /** @type {any} */ ([
+        {
+          id: 'UI-1',
+          title: '인증 모듈',
+          status: 'in_progress',
+          updated_at: 1,
+          created_at: 1
+        }
+      ])
+    });
+    const reads = { count: 0 };
+    const issueStores = {
+      /** @param {string} id */
+      snapshotFor(id) {
+        reads.count += 1;
+        return registry.snapshotFor(id);
+      },
+      /** @param {(client_id: string) => void} fn */
+      subscribe(fn) {
+        return registry.subscribe(fn);
+      }
+    };
+    const panel = createDetailPanel(mount, {
+      issueStores: /** @type {any} */ (issueStores),
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+    reads.count = 0;
+
+    registry.getStore('tab:board:ready')?.applyPush({
+      type: 'snapshot',
+      id: 'tab:board:ready',
+      revision: 1,
+      issues: /** @type {any} */ ([
+        { id: 'RD-1', title: 'ready one', updated_at: 1, created_at: 1 }
+      ])
+    });
+
+    expect(reads.count).toBe(0);
+
+    registry.getStore('detail:UI-1')?.applyPush({
+      type: 'upsert',
+      id: 'detail:UI-1',
+      revision: 2,
+      issue: /** @type {any} */ ({
+        id: 'UI-1',
+        title: '인증 모듈 v2',
+        status: 'in_progress',
+        updated_at: 2,
+        created_at: 1
+      })
+    });
+
+    expect(reads.count).toBeGreaterThan(0);
+    expect(
+      mount.querySelector('.detail-overlay__title')?.textContent
+    ).toContain('인증 모듈 v2');
+  });
+
   test('close button and backdrop invoke onClose', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const onClose = vi.fn();

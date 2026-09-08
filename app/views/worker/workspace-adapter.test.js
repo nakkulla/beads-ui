@@ -20,7 +20,7 @@ const SORT = normalizeCandidateSort(null);
 function createTestIssueStores() {
   /** @type {Map<string, any>} */
   const stores = new Map();
-  /** @type {Set<() => void>} */
+  /** @type {Set<(client_id: string) => void>} */
   const listeners = new Set();
   /** @param {string} id */
   function getStore(id) {
@@ -30,7 +30,7 @@ function createTestIssueStores() {
       stores.set(id, s);
       s.subscribe(() => {
         for (const fn of Array.from(listeners)) {
-          fn();
+          fn(id);
         }
       });
     }
@@ -42,7 +42,7 @@ function createTestIssueStores() {
     snapshotFor(id) {
       return getStore(id).snapshot().slice();
     },
-    /** @param {() => void} fn */
+    /** @param {(client_id: string) => void} fn */
     subscribe(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);

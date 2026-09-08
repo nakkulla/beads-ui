@@ -33,7 +33,7 @@ import { filterBarTemplate } from './filter-bar.js';
 /**
  * @typedef {Object} BoardViewOptions
  * @property {(id: string) => void} gotoIssue
- * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issueStores]
+ * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: (client_id: string) => void) => () => void }} [issueStores]
  * @property {(type: string, payload: unknown) => Promise<any>} [transport]
  * @property {UiOrderStore} [uiOrderStore]
  * @property {DisplayPolicyStore} [displayPolicyStore]
@@ -52,6 +52,22 @@ import { filterBarTemplate } from './filter-bar.js';
  * parent-existence input) to the most recent closures.
  */
 const CLOSED_RENDER_CAP = 200;
+
+/**
+ * The six subscription ids this view renders (UI-hhn9 §5.1). The selectors leg
+ * ignores every other subscription's change, so a Worker or detail push no
+ * longer recomposes these columns.
+ *
+ * @type {readonly string[]}
+ */
+const BOARD_CLIENT_IDS = [
+  'tab:board:ready',
+  'tab:board:blocked',
+  'tab:board:in-progress',
+  'tab:board:resolved',
+  'tab:board:deferred',
+  'tab:board:closed'
+];
 
 /**
  * Map a droppable column id to its target status. The Blocked column is
@@ -135,7 +151,9 @@ export function createBoardView(mount_element, options) {
   const openDoc = options.openDoc;
   let closed_range = options.closedRange || DEFAULT_CLOSED_RANGE;
   const selectors = issueStores
-    ? createListSelectors(issueStores, uiOrderStore)
+    ? createListSelectors(issueStores, uiOrderStore, {
+        client_ids: BOARD_CLIENT_IDS
+      })
     : null;
   const reorder = createReorderController({ transport, uiOrderStore });
 
@@ -299,6 +317,11 @@ export function createBoardView(mount_element, options) {
    * parent card (unless a board-local filter is active).
    */
   function refreshFromStores() {
+    if (mount_element.hidden) {
+      // 숨긴 탭은 열 재조합도 렌더도 하지 않는다 (UI-hhn9 §6). 필터·정렬·접힘
+      // 상태는 그대로 남고, 라우트 재진입의 load()가 최신 store를 다시 읽는다.
+      return;
+    }
     try {
       if (selectors) {
         // Pass 1: the five render lists exactly as displayed. Closed is already
@@ -893,6 +916,9 @@ export function createBoardView(mount_element, options) {
   }
 
   function doRender() {
+    if (mount_element.hidden) {
+      return;
+    }
     render(template(), mount_element);
     postRenderEnhance();
   }
