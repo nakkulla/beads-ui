@@ -29,7 +29,7 @@ push‑only data flow used between the browser SPA and the local Node.js server.
         |                                                       +----+-----+
         |                                                            |
         |                                     watches                v
-        |------------------------------------ changes --------> [ SQLite DB ]
+        |------------------------------------ changes --------> [ .beads target ]
 ```
 
 ## Components and Responsibilities
@@ -37,8 +37,10 @@ push‑only data flow used between the browser SPA and the local Node.js server.
 - UI (app/)
   - `app/main.js`: bootstraps shell, creates store/router, wires WS client,
     refreshes on push
-  - Views: `app/views/list.js`, `app/views/detail.js` render issues and allow
-    edits
+  - Views: `app/views/board/` (columns, cards, stepper),
+    `app/views/detail-panel/` (shared detail panel and execution settings),
+    `app/views/worker/` (session queue console) and `app/views/monitor/`
+    (cross-workspace lanes) render issues and allow edits
   - Transport: `app/ws.js` persistent client with reconnect, correlation, and
     event dispatcher
   - Protocol: `app/protocol.js` shared message shapes, version, helpers, and
@@ -46,12 +48,14 @@ push‑only data flow used between the browser SPA and the local Node.js server.
 
 - Server (server/)
   - Web: `server/app.js` (Express app), `server/index.js` (startup and wiring)
-  - WebSocket: `server/ws.js` (attach server, parse, validate, dispatch
-    handlers, broadcast events)
-  - bd bridge: `server/bd.js` (spawn `bd`, inject `--db` consistently, JSON
-    helpers)
-  - DB resolution/watch: `server/db.js` (resolve active DB path),
-    `server/watcher.js` (schedule list refresh)
+  - WebSocket: `server/ws.js` (attach server) with the handler modules under
+    `server/ws/` (`index.js` dispatch, `subscription-handlers.js`,
+    `mutation-handlers.js`, `monitor-handlers.js`, `refresh.js`, and the shared
+    per-workspace snapshot state in `context.js`)
+  - bd bridge: `server/bd.js` (spawn `bd` with an args array, JSON helpers, and
+    `BEADS_DB` injected only when the workspace has its own SQLite file)
+  - DB resolution/watch: `server/db.js` (resolve the active workspace database
+    target), `server/watcher.js` (schedule list refresh)
   - Config: `server/config.js` (bind to `127.0.0.1`, default port 3000)
 
 ## Data Flow
@@ -110,10 +114,14 @@ Removed in v2:
 
 Rationale
 
+- All issue data is read through the `bd` CLI; the server has no database driver
+  of its own.
 - Use `--json` for read commands to ensure typed payloads.
 - Avoid shell invocation; pass args array to `spawn` to prevent injection.
-- Always inject a resolved `--db <path>` so watcher and CLI operate on the same
-  database.
+- Inject `BEADS_DB` only when the nearest workspace actually has a local SQLite
+  file, so a metadata-backed (Dolt) workspace keeps the CLI's own resolution.
+- Lists and details of one workspace are served from the same workspace
+  snapshot, and changes are pushed to every subscriber of that workspace.
 
 ## Issue Data Model (wire)
 
@@ -162,10 +170,13 @@ Notes
 
 ## Watcher Design
 
-- The server resolves the active beads SQLite DB path (see
+- The server resolves the active workspace database target — a SQLite file or,
+  for a metadata-backed workspace, the workspace `.beads` directory (see
   `docs/db-watching.md`).
-- File watcher schedules list refresh; the server publishes subscription
+- The file watcher schedules a list refresh; the server publishes subscription
   envelopes. UI re-renders from local per-subscription stores.
+- Central-server writes from other machines produce no local fs event, so the
+  periodic refresh (`poll_interval_seconds`) is the complementary path.
 
 ## Risks & Open Questions
 
