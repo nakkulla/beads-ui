@@ -1623,6 +1623,44 @@ describe('monitor attempt folding', () => {
     expect(map.get('A-1')?.attempt_id).toBe('t2');
   });
 
+  test('carries the server instructions_restart verdict onto the live tile', () => {
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'running',
+          started_at: 5,
+          session_id: 's',
+          instructions_restart: { eligible: false, reason: '이유' }
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.instructions_restart).toEqual({
+      eligible: false,
+      reason: '이유'
+    });
+  });
+
+  test('omits instructions_restart when the server sent none', () => {
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'running',
+          started_at: 5,
+          session_id: 's'
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')).not.toHaveProperty('instructions_restart');
+  });
+
   test('picks the newest ended attempt for the completion kind', () => {
     const attempt = latestTerminalAttempt(
       {

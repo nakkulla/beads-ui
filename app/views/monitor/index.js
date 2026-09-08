@@ -24,11 +24,17 @@ import {
   closedRangeSince,
   normalizeDoneRange
 } from '../../data/closed-range.js';
-import { formatAttemptTuple } from '../../utils/attempt-display.js';
+import {
+  formatAttemptTuple,
+  formatExecutionTuple
+} from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { debug } from '../../utils/logging.js';
-import { runResumeFlow } from '../../utils/resume-flow.js';
+import {
+  runRestartWithInstructionsFlow,
+  runResumeFlow
+} from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { watchMobile } from '../../utils/viewport.js';
@@ -1612,6 +1618,12 @@ export function createMonitorView(mount_element, options) {
                             ? '공급자 보류'
                             : undefined,
                 can_pause: item.can_pause !== false,
+                // 지시 재시작 자격도 같은 렌더러가 읽는 같은 사실이다
+                // (UI-qce9 §3.1, ADR 0014): 여기서 빠뜨리면 같은 attempt가
+                // Worker 탭에서만 버튼을 얻는다.
+                ...(item.instructions_restart
+                  ? { instructions_restart: item.instructions_restart }
+                  : {}),
                 exec_chips: item.exec_chips || null,
                 usage: item.usage || null,
                 chip_popover: popoverOf(item),
@@ -2610,6 +2622,45 @@ export function createMonitorView(mount_element, options) {
     });
   }
 
+  /**
+   * `지시와 함께 재시작` / `지시와 함께 이어하기` (UI-qce9 §3.2). Worker 탭과
+   * 같은 흐름 모듈을 쓰고, 이 탭이 넘기는 것은 어느 레포의 attempt인지와 그
+   * 레포의 전송뿐이다 (ADR 0014).
+   *
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   * @param {string} root_dir
+   * @param {'restart'|'resume_recorded'} kind
+   */
+  function restartAttemptWithInstructions(bead_id, attempt_id, root_dir, kind) {
+    const attempt = queueOf(root_dir)?.attempts?.[attempt_id] || null;
+    void runRestartWithInstructionsFlow({
+      context: {
+        bead_id,
+        kind,
+        attempt_id,
+        tuple: attempt ? formatExecutionTuple(attempt) : ''
+      },
+      pause: () =>
+        /** @type {any} */ (
+          send(
+            'worker-attempt-pause',
+            { attempt_id, require_durable: true },
+            root_dir
+          )
+        ),
+      resume: (payload) =>
+        sendCas(
+          'worker-attempt-resume',
+          { attempt_id, ...payload },
+          root_dir,
+          exec_adopted.get(root_dir)?.revision ?? casOf(bead_id).revision,
+          false
+        ),
+      snapshot: () => queueOf(root_dir)
+    });
+  }
+
   /** Close the provider recovery selector without resuming. */
   function closeProviderResumeDialog() {
     provider_resume = null;
@@ -2763,6 +2814,19 @@ export function createMonitorView(mount_element, options) {
         });
       }
       doRender();
+      return;
+    }
+    if (cls.contains('rtile__restart-instructions')) {
+      restartAttemptWithInstructions(bead_id, attempt_id, root_dir, 'restart');
+      return;
+    }
+    if (cls.contains('rtile__resume-instructions')) {
+      restartAttemptWithInstructions(
+        bead_id,
+        attempt_id,
+        root_dir,
+        'resume_recorded'
+      );
       return;
     }
     if (cls.contains('rtile__pause')) {

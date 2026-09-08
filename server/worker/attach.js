@@ -2751,16 +2751,23 @@ export function readBeadTimeline(workspace_root, bead_id, options = {}) {
  * Pause a running attempt (tile ⏸, worker-phase1 §2.1), IF an attachment is
  * registered. Inert (`{ ok: false, reason: 'no_attachment' }`) without one.
  *
+ * `require_durable` is the instructions-restart entry's request (UI-qce9 §4):
+ * confirmed termination and a settled parent, or a refusal — never the legacy
+ * signal-and-answer path.
+ *
  * @param {string} workspace_root
  * @param {string} attempt_id
+ * @param {{ require_durable?: boolean }} [options]
  * @returns {Promise<{ ok: boolean, reason?: string }>}
  */
-export async function pauseWorkerAttempt(workspace_root, attempt_id) {
+export async function pauseWorkerAttempt(workspace_root, attempt_id, options) {
   const att = ATTACHMENTS.get(keyFor(workspace_root));
   if (!att) {
     return { ok: false, reason: 'no_attachment' };
   }
-  return att.scheduler.pause(keyFor(workspace_root), attempt_id);
+  return att.scheduler.pause(keyFor(workspace_root), attempt_id, {
+    require_durable: options?.require_durable === true
+  });
 }
 
 /**
@@ -2770,7 +2777,7 @@ export async function pauseWorkerAttempt(workspace_root, attempt_id) {
  *
  * @param {string} workspace_root
  * @param {string} attempt_id
- * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string } }} [continuation]
+ * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string } }} [continuation]
  * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>}
  */
 export async function resumeWorkerAttempt(
@@ -3233,7 +3240,7 @@ export async function recheckWorkerStaleWork(workspace_root, input) {
  *
  * @param {string} workspace_root
  * @param {string} bead_id
- * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
+ * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }} [continuation]
  * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
  */
 export async function reviseFixWorkerBead(

@@ -81,6 +81,7 @@ import {
   onForeignBlockerResolved,
   ownerRootsForBlockerIds
 } from '../worker/foreign-blocker-status.js';
+import { instructionsRestartEligibility } from '../worker/instructions-restart.js';
 import {
   evaluateMergeGate,
   observedReviewReceiptState
@@ -2779,6 +2780,54 @@ function attemptsWithImplActor(attempts) {
 }
 
 /**
+ * The instructions-restart entry point's per-attempt verdict (UI-qce9 §5·§9.1),
+ * folded onto every `running` and `paused` attempt as a NON-persisted field.
+ *
+ * Computed from the UNTRIMMED record on purpose: the wire projection strips
+ * fields this judgment reads, and a client that recomputed it from the trimmed
+ * payload would disable the button on records the server would accept. The
+ * judgment itself is the same pure predicate the pause guard uses — one
+ * predicate, so the tooltip and the refusal cannot disagree.
+ *
+ * @param {Record<string, any>} projected - The attempts already on the wire.
+ * @param {unknown} raw_attempts - The untrimmed records they came from.
+ * @returns {Record<string, any>}
+ */
+function attemptsWithInstructionsRestart(projected, raw_attempts) {
+  const raw =
+    raw_attempts &&
+    typeof raw_attempts === 'object' &&
+    !Array.isArray(raw_attempts)
+      ? /** @type {Record<string, any>} */ (raw_attempts)
+      : {};
+  /** @type {Record<string, any>} */
+  const out = {};
+  for (const [attempt_id, attempt] of Object.entries(projected)) {
+    const record = raw[attempt_id] ?? attempt;
+    const status = record?.status;
+    if (status !== 'running' && status !== 'paused') {
+      out[attempt_id] = attempt;
+      continue;
+    }
+    const verdict = instructionsRestartEligibility(record);
+    if (verdict.code === 'not_implementation') {
+      // 스펙 §2: 리뷰·해소·처분·정리 행에는 버튼 자체를 두지 않는다. 이유를
+      // 붙이면 화면이 비활성 버튼을 그리므로 필드를 아예 싣지 않는다.
+      out[attempt_id] = attempt;
+      continue;
+    }
+    out[attempt_id] = {
+      ...attempt,
+      instructions_restart: {
+        eligible: verdict.eligible,
+        reason: verdict.reason
+      }
+    };
+  }
+  return out;
+}
+
+/**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
  *   - the pinned repository-operation declaration used by the merge gate,
  *   - `slots` (the live concurrency cap from the attachment), so the tab can
@@ -2979,7 +3028,10 @@ export function decorateQueue(workspace_key, raw_queue) {
     declared_base,
     // Attempts carry the LIVE usage tally while they run (UI-raqh §1); the
     // persisted `Attempt.usage` stands on its own once they end.
-    attempts: attemptsWithUsage(queue, workspace_key),
+    attempts: attemptsWithInstructionsRestart(
+      attemptsWithUsage(queue, workspace_key),
+      overlaid.attempts
+    ),
     // `repo_ops` is the pinned declaration consumed by verify and deploy, plus
     // the canonical `repo_id` the attachment resolves it against.
     workspace_info: {
@@ -4788,7 +4840,8 @@ export function handleWorkerQueueSetOrchestrationDefaults(ws, req) {
 }
 
 /**
- * Handle `worker-attempt-pause`. Payload: `{ attempt_id: string }`. Pauses (⏸)
+ * Handle `worker-attempt-pause`. Payload:
+ * `{ attempt_id: string, require_durable?: boolean }`. Pauses (⏸)
  * a running attempt: group-kill + attempt `paused` + workflow_mode/exec revert,
  * bead stays queued, and the freed slot advances the queue
  * (worker-phase1 §2.1). Refusals carry a `reason` (`not_running` /
@@ -4807,6 +4860,17 @@ export async function handleWorkerAttemptPause(ws, req) {
     );
     return;
   }
+  if (
+    p.require_durable !== undefined &&
+    typeof p.require_durable !== 'boolean'
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'require_durable must be a boolean')
+      )
+    );
+    return;
+  }
   const key = mutationWorkspaceOf(ws, req);
   if (key === null) {
     return;
@@ -4814,7 +4878,9 @@ export async function handleWorkerAttemptPause(ws, req) {
   /** @type {{ ok: boolean, reason?: string }} */
   let result = { ok: false, reason: 'no_attachment' };
   try {
-    result = await pauseWorkerAttempt(key, p.attempt_id);
+    result = await pauseWorkerAttempt(key, p.attempt_id, {
+      require_durable: p.require_durable === true
+    });
   } catch (err) {
     log('worker-attempt-pause failed for %s/%s: %o', key, p.attempt_id, err);
     result = { ok: false, reason: 'error' };
@@ -4886,7 +4952,8 @@ export async function handleWorkerAttemptResume(ws, req) {
     p.continuation != null &&
     p.continuation !== 'auto' &&
     p.continuation !== 'prior_session' &&
-    p.continuation !== 'fresh_current'
+    p.continuation !== 'fresh_current' &&
+    p.continuation !== 'prior_attempt'
   ) {
     ws.send(
       JSON.stringify(makeError(req, 'bad_request', 'invalid continuation'))
@@ -4903,6 +4970,21 @@ export async function handleWorkerAttemptResume(ws, req) {
     ws.send(
       JSON.stringify(
         makeError(req, 'bad_request', 'decision_token is required')
+      )
+    );
+    return;
+  }
+  // `prior_attempt` is a fixed policy, not a provider choice (UI-qce9 §5.2):
+  // it needs no pre-issued token, and an execution override is the one thing it
+  // cannot carry — the choice IS the recorded settings.
+  if (p.continuation === 'prior_attempt' && p.exec_override !== undefined) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'prior_attempt does not accept exec_override'
+        )
       )
     );
     return;

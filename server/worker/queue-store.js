@@ -215,6 +215,13 @@
  * @property {'session'|'fresh'|null} continuation_mode - Whether this child
  * reused the provider session or started a replacement session. Null keeps
  * legacy history neutral.
+ * @property {'prior_attempt'|null} continuation_choice - The resume MEANING the
+ * user chose for this child (UI-qce9 §5.3), not a work state: `prior_attempt`
+ * means "the recorded session and the recorded execution settings, or nothing".
+ * Its only consumers are this child's own resume-failure path and its automatic
+ * continuation, which must not substitute a fresh session or another account.
+ * Absent on every legacy record, which reads as `null` and keeps the ordinary
+ * resume behaviour.
  * @property {Record<string, string|null>|null} exec_restore_values - Raw bead
  * metadata observed immediately before this attempt overlaid exec stamps.
  * @property {string|null} workflow_mode_source_prior - `workflow_mode_source`
@@ -2972,6 +2979,10 @@ export function makeAttempt(fields) {
       fields.continuation_mode === 'session' ||
       fields.continuation_mode === 'fresh'
         ? fields.continuation_mode
+        : null,
+    continuation_choice:
+      fields.continuation_choice === 'prior_attempt'
+        ? fields.continuation_choice
         : null,
     continuation_action: isRecord(fields.continuation_action)
       ? clone(fields.continuation_action)
@@ -7322,11 +7333,15 @@ export function createQueueStore(options = {}) {
           reason = 'phase_mismatch';
           return false;
         }
+        // 부모 정산 체인이 TERM 유예 동안 이미 실패로 확정한 attempt는 덮어쓰지
+        // 않는다 (UI-qce9 F3): `base_landing_detected` 같은 안전 위반을 사용자
+        // pause 성공으로 지우면 안 된다. control은 그대로 `done`까지 전진한다.
+        const settled_failed = cur.status === 'failed';
         next.attempts[attempt_id] = makeAttempt({
           ...cur,
           ...(patch || {}),
-          status: 'paused',
-          cause: null,
+          status: settled_failed ? cur.status : 'paused',
+          cause: settled_failed ? cur.cause : null,
           finished_at,
           control: { ...cur.control, phase: 'done', last_error: null }
         });

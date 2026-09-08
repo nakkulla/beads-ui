@@ -53,3 +53,112 @@ export async function runResumeFlow(options) {
   }
   return res;
 }
+
+/**
+ * The instructions-restart flow (UI-qce9 §3.2): one dialog, two requests.
+ *
+ * The dialog stays open across both, because the answer that decides whether
+ * the user has to retype anything only arrives at the end. Ownership is the
+ * same split the ordinary resume uses — this module owns the ORDER (pause once,
+ * then resume with the recorded-execution choice) and the refusal text; the
+ * screens own the transports.
+ *
+ * Two rules the §6 table fixes, both about a LOST reply rather than a refused
+ * one. A lost pause reply is never resent: the flow reads the latest snapshot
+ * and, if the attempt is still running, says so and stops — a blind resend
+ * would signal a second time. A lost resume reply is answered by looking for
+ * the child that carries `resumed_from`, so an already-created child is
+ * reported instead of a second one being spawned.
+ *
+ * `kind: 'restart'` runs both halves; `resume_recorded` is the paused row's
+ * entry point and runs only the resume half.
+ *
+ * @param {{
+ *   context: { bead_id?: string, kind?: 'restart'|'resume_recorded', tuple?: string, attempt_id?: string },
+ *   pause: () => Promise<any>,
+ *   resume: (payload: Record<string, unknown>) => Promise<any>,
+ *   snapshot: () => any
+ * }} options
+ * @returns {Promise<string|null>} null = 사용자가 취소
+ */
+export async function runRestartWithInstructionsFlow(options) {
+  const { context, pause, resume, snapshot } = options;
+  const attempt_id = context?.attempt_id || '';
+  /** @param {any} queue */
+  const attemptOf = (queue) =>
+    (queue && queue.attempts && queue.attempts[attempt_id]) || null;
+  /** @param {any} queue */
+  const childExists = (queue) =>
+    Object.values(queue?.attempts || {}).some(
+      (/** @type {any} */ a) => a && a.resumed_from === attempt_id
+    );
+
+  // §3.2: 한 번 확인된 중단은 다시 보내지 않는다. 재개가 거부돼 사용자가 문장을
+  // 고쳐 다시 제출해도 두 번째 시그널을 보낼 이유가 없다.
+  let pause_confirmed = false;
+
+  return requestResumeInstructions(context, document, {
+    onSubmit: async (instructions) => {
+      if (context?.kind === 'restart' && !pause_confirmed) {
+        /** @type {any} */
+        let paused;
+        try {
+          paused = await pause();
+        } catch {
+          paused = null;
+        }
+        if (paused && paused.paused === true) {
+          pause_confirmed = true;
+        } else if (paused && paused.paused === false) {
+          return {
+            ok: false,
+            message: `재시작 거부: ${paused.reason || 'unknown'}`
+          };
+        } else {
+          // 유실된 응답 (§6). 전송 계층은 연결 오류를 `[]`로도 돌려주므로
+          // `paused === true`가 아닌 모든 값은 답이 아니다 — 재전송하지 않고
+          // 최신 스냅샷으로 실제 상태를 읽는다.
+          const attempt = attemptOf(snapshot());
+          if (attempt && attempt.status === 'paused') {
+            return {
+              ok: false,
+              message:
+                '중단은 완료됐지만 응답을 받지 못했습니다. paused 행의 [지시와 함께 이어하기]로 재개하세요.'
+            };
+          }
+          return {
+            ok: false,
+            message: '중단 응답을 받지 못했습니다. 최신 상태를 확인하세요.'
+          };
+        }
+      }
+      /** @type {Record<string, unknown>} */
+      const payload = { continuation: 'prior_attempt', instructions };
+      /** @type {any} */
+      let res;
+      try {
+        res = await resume({ ...payload });
+        if (res && res.conflict === true) {
+          res = await resume({ ...payload });
+        }
+      } catch {
+        res = null;
+      }
+      if (res && res.resumed === true) {
+        return { ok: true };
+      }
+      if (res && res.resumed === false) {
+        return {
+          ok: false,
+          message: `이어하기 거부: ${res.reason || 'unknown'}`
+        };
+      }
+      // 유실된 재개 응답: 자식이 이미 있으면 두 번째를 만들지 않는다 (§6).
+      if (childExists(snapshot())) {
+        showToast('이미 재개됨', 'info', 2400);
+        return { ok: true };
+      }
+      return { ok: false, message: '재개 응답을 받지 못했습니다.' };
+    }
+  });
+}

@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0045 | [구현 세션의 지시 재시작은 durable pause 뒤 기록된 세션과 설정으로 재개하며 새 세션으로 대체하지 않는다](0045-instructions-restart-resumes-recorded-attempt-after-durable-pause.md) | 2026-09-08 | 구현 세션의 지시 재시작은 기존 durable pause 뒤 기록된 세션과 설정으로 재개하며, pause 뒤 연결 끊김은 paused로 남기고 transcript 부재 시 새 세션으로 대체하지 않는다 |
 | 0044 | [구독별 store는 revision을 수신하되 내용 변경만 통지하고 registry는 구독 출처를 전달한다](0044-subscription-store-notifies-content-change-with-source.md) | 2026-09-08 | 구독별 store는 revision을 수신하되 내용 변경만 통지하고 registry는 구독 출처를 전달하며 전체 issue push와 기존 순서·identity 규칙을 유지한다 |
 | 0043 | [워크스페이스와 후보 투영은 기존 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스를 띄우지 않는다](0043-candidate-projection-reads-async-probe-context-only.md) | 2026-09-08 | 워크스페이스와 후보 투영은 기존 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스를 띄우지 않으며 title-cache 예외는 유지한다 |
 | 0042 | [quick_fix 재개는 실패 사유로 session과 settlement를 가르고 착지 정산 재실행 버튼은 정리 재시도로 부른다](0042-quickfix-resume-by-reason-settlement-button-is-cleanup-retry.md) | 2026-09-08 | quick_fix 재개는 실패 사유로 session과 settlement를 가르고, 같은 attempt의 착지 정산 재실행 버튼은 정리 재시도로 부른다 |
