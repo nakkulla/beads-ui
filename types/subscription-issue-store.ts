@@ -23,9 +23,10 @@ export interface SubscriptionIssueStore {
   readonly id: string;
 
   /**
-   * Subscribe to store changes. Listener is invoked after each applied message
-   * exactly once, regardless of how many items changed. Returns an unsubscribe
-   * function.
+   * Subscribe to store changes. Listener is invoked once when rendered content
+   * changes, regardless of how many items changed; a revision advance without a
+   * content change (a stale-by-timestamp upsert, a delete of an absent id) does
+   * not notify. Returns an unsubscribe function.
    */
   subscribe(listener: () => void): () => void;
 

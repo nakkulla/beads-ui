@@ -392,7 +392,7 @@ function laneMemberIds(snapshot) {
  * a lane (ADR 0041): it is the same read-only projection the lane members get.
  *
  * Reads the warm cache alone, so this projection spawns no synchronous child
- * process (ADR 0026), and is partial on the cache's existing contract: a bead
+ * process (ADR 0043), and is partial on the cache's existing contract: a bead
  * whose record has not landed is absent and arrives on the snapshot the fill
  * callback triggers.
  *

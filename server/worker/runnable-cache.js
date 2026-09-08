@@ -26,6 +26,7 @@
  */
 /**
  * @import { SessionRefView } from './session-ref.js'
+ * @import { WorkflowProbeContext } from '../workflow-enrich.js'
  */
 import path from 'node:path';
 import { buildCarryoverIndex } from '../../app/utils/carryover-index.js';
@@ -33,14 +34,14 @@ import {
   isWorkerIneligible,
   workerLabels
 } from '../../app/utils/worker-eligibility.js';
-import { isBdProtocolFailure } from '../bd-json.js';
 import { debug } from '../logging.js';
 import { resolveSpecEvidence, resolveSpecId } from '../spec-id.js';
 import {
   enrichIssueWorkflow,
   parsePlanApprovalReceipt,
   parsePlanReceipt,
-  parsePlanReviewReceipt
+  parsePlanReviewReceipt,
+  warmWorkflowProbes
 } from '../workflow-enrich.js';
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
@@ -379,11 +380,9 @@ function planState(meta, route) {
  *
  * @param {Record<string, unknown>} row
  * @param {string[]|null} blocked_by - Null means no `ready_explain` source.
- * @param {(issue: unknown) => Record<string, unknown>|null} [enrich] - Workflow
- * projection for the SAME row; defaults to no projection.
  * @returns {RunnableItem|null}
  */
-function qualify(row, blocked_by = null, enrich = undefined) {
+function qualify(row, blocked_by = null) {
   const bead_id = typeof row.id === 'string' ? row.id : '';
   if (bead_id.length === 0) {
     return null;
@@ -456,7 +455,7 @@ function qualify(row, blocked_by = null, enrich = undefined) {
     labels: workerLabels(row.labels),
     created_at: stampOf(row.created_at),
     updated_at: stampOf(row.updated_at),
-    workflow: enrich ? enrich(row) : null,
+    workflow: null,
     exec_pins: execPinsOf(meta),
     rec: recOf(meta)
   };
@@ -497,11 +496,9 @@ function sessionStamp(value) {
  *
  * @param {Record<string, unknown>} row
  * @param {string[]|null} blocked_by - Null means no `ready_explain` source.
- * @param {(issue: unknown) => Record<string, unknown>|null} [enrich] - Workflow
- * projection for the SAME row; defaults to no projection.
  * @returns {SessionActiveItem|null}
  */
-function qualifySession(row, blocked_by = null, enrich = undefined) {
+function qualifySession(row, blocked_by = null) {
   const bead_id = typeof row.id === 'string' ? row.id : '';
   if (bead_id.length === 0) {
     return null;
@@ -524,7 +521,7 @@ function qualifySession(row, blocked_by = null, enrich = undefined) {
     created_at: sessionStamp(row.created_at),
     updated_at: sessionStamp(row.updated_at),
     started_at: sessionStamp(row.started_at),
-    workflow: enrich ? enrich(row) : null,
+    workflow: null,
     blocked: blocked_by !== null,
     blocked_by: blocked_by || [],
     session_refs: sessionRefsOf(meta)
@@ -626,10 +623,9 @@ function embeddedBlockerIds(row) {
  *   now?: () => number,
  *   positive_ttl_ms?: number,
  *   negative_ttl_ms?: number,
- *   runJson?: (command_family: string, args: string[], options?: { cwd?: string }) => Promise<{ ok: boolean, data?: unknown }>,
- *   requestSnapshot?: (workspace: string, cause: string) => Promise<{ ok: boolean, stale?: boolean, snapshot?: { all?: unknown[], ready_explain?: { blocked?: unknown[] } } }>,
+ *   requestSnapshot?: (workspace: string, cause: string) => Promise<{ ok: boolean, stale?: boolean, snapshot?: { generation?: number, all?: unknown[], ready_explain?: { blocked?: unknown[] } } }>,
  *   subscriberCount?: () => number,
- *   enrichWorkflow?: (issue: unknown, workspace: string) => Record<string, unknown>|null
+ *   enrichWorkflow?: (issue: unknown, workspace: string, probes: WorkflowProbeContext|null) => Record<string, unknown>|null
  * }} [options]
  */
 export function createRunnableCache(options = {}) {
@@ -644,14 +640,15 @@ export function createRunnableCache(options = {}) {
       : NEGATIVE_TTL_MS;
   const enrichWorkflow =
     options.enrichWorkflow ||
-    ((/** @type {any} */ issue, /** @type {string} */ workspace) =>
-      enrichIssueWorkflow(issue, workspace));
+    ((
+      /** @type {any} */ issue,
+      /** @type {string} */ workspace,
+      /** @type {WorkflowProbeContext|null} */ probes
+    ) => enrichIssueWorkflow(issue, workspace, undefined, probes));
   const requestSnapshot =
     typeof options.requestSnapshot === 'function'
       ? options.requestSnapshot
-      : options.runJson
-        ? null
-        : requestWorkspaceSnapshot;
+      : requestWorkspaceSnapshot;
 
   /**
    * How many clients are watching the monitor. The LIVE wiring replaces this
@@ -701,20 +698,22 @@ export function createRunnableCache(options = {}) {
   }
 
   /**
-   * The workflow projector for one workspace. The `bd list` row already carries
-   * everything `enrichIssueWorkflow` reads, so the stepper costs NO extra bd
-   * call (UI-eey2 §9.1); the git probe rides the enrich module's own cache.
+   * The workflow projector for one workspace and ONE fill's probe context. The
+   * `bd list` row already carries everything `enrichIssueWorkflow` reads, so the
+   * stepper costs NO extra bd call (UI-eey2 §9.1), and the context passed here
+   * is the one this fill warmed (UI-hhn9 §4.1): no row re-reads HEAD, and a
+   * newer generation never swaps the context of a fill already running.
    * Fail-quiet per row: an enrich that throws leaves that one card with no
    * stepper instead of dropping it from the lane.
    *
-   * @param {string} workspace
+   * @param {string} root - Already-resolved workspace key.
+   * @param {WorkflowProbeContext} probes
    * @returns {(issue: unknown) => Record<string, unknown>|null}
    */
-  function enrichFor(workspace) {
-    const root = keyOf(workspace);
+  function enrichFor(root, probes) {
     return (issue) => {
       try {
-        return enrichWorkflow(issue, root) || null;
+        return enrichWorkflow(issue, root, probes) || null;
       } catch (err) {
         log('workflow enrich failed in %s: %o', root, err);
         return null;
@@ -723,72 +722,92 @@ export function createRunnableCache(options = {}) {
   }
 
   /**
-   * Read one workspace's open beads and keep the ones that qualify. Every
-   * failure mode — non-zero exit, unreadable payload, non-array rows — collapses
+   * The probe context a fill uses when the async warm produced none. Every git
+   * fact reads as undetermined, which is what §4.2 asks for: a probe failure
+   * leaves freshness undecided, and NEVER falls back to a synchronous `git`
+   * child process the way a `null` context would.
+   *
+   * @returns {WorkflowProbeContext}
+   */
+  function undecidedProbes() {
+    return {
+      head: null,
+      branch_tips: new Map(),
+      dirty_paths: new Set(),
+      checked_paths: new Set(),
+      undetermined: new Set()
+    };
+  }
+
+  /**
+   * Warm the shared git facts for one fill, fail-quiet.
+   *
+   * The mutable facts are warmed from `snapshot.all` through the generation
+   * context, the immutable cursors only for the rows that will be projected.
+   *
+   * @param {string} root
+   * @param {Array<Record<string, unknown>>} selected
+   * @param {{ generation?: number, all?: unknown[] }} snapshot
+   * @returns {Promise<WorkflowProbeContext>}
+   */
+  async function warmProbes(root, selected, snapshot) {
+    try {
+      const context = await warmWorkflowProbes(
+        /** @type {any} */ (selected),
+        root,
+        /** @type {any} */ (snapshot)
+      );
+      return context || undecidedProbes();
+    } catch (err) {
+      log('workflow probe warm failed in %s: %o', root, err);
+      return undecidedProbes();
+    }
+  }
+
+  /**
+   * Read one workspace's shared snapshot and keep the rows that qualify. Every
+   * failure mode — not ok, stale, unreadable payload, non-array rows — collapses
    * to null, because the caller treats them identically: negative-cache and move
    * on.
    *
-   * Both buckets come out of THIS ONE scan: the `--all` snapshot already holds
-   * every row, so the session bucket costs no extra `bd` process (UI-yrzu §4.1).
+   * Both buckets come out of THIS ONE snapshot: the `--all` generation already
+   * holds every row, so the session bucket costs no extra `bd` process
+   * (UI-yrzu §4.1).
    *
-   * @param {string} workspace
-   * @returns {Promise<{ items: RunnableItem[]|null, session_active: SessionActiveItem[], carried_to: Map<string, string[]>, protocol_failure: boolean }>}
+   * The rows are qualified FIRST without a workflow projection, so the async
+   * git warm runs once for exactly the rows the projection will cover, and the
+   * `workflow` field is filled afterwards from that one context (UI-hhn9 §4.1).
+   * The eligibility 판정 is never duplicated here — it stays `qualify`'s and
+   * `qualifySession`'s alone.
+   *
+   * @param {string} root - Already-resolved workspace key.
+   * @returns {Promise<{ items: RunnableItem[]|null, session_active: SessionActiveItem[], carried_to: Map<string, string[]> }>}
    */
-  async function fetchRunnable(workspace) {
-    let rows;
+  async function fetchRunnable(root) {
+    const result = await requestSnapshot(root, 'monitor-runnable');
+    const snapshot =
+      /** @type {{ generation?: number, all?: unknown[], ready_explain?: { blocked?: unknown[] } }|undefined} */ (
+        /** @type {any} */ (result).snapshot
+      );
+    const rows = Array.isArray(snapshot?.all) ? snapshot.all : null;
+    if (!result.ok || result.stale || !snapshot || !rows) {
+      return { items: null, session_active: [], carried_to: new Map() };
+    }
     /** @type {Map<string, string[]>|null} */
     let blockers_by_id = null;
-    if (requestSnapshot) {
-      const result = await requestSnapshot(workspace, 'monitor-runnable');
-      if (!result.ok || result.stale || !Array.isArray(result.snapshot?.all)) {
-        return {
-          items: null,
-          session_active: [],
-          carried_to: new Map(),
-          protocol_failure: false
-        };
-      }
-      rows = result.snapshot.all;
-      const blocked = result.snapshot.ready_explain?.blocked;
-      if (Array.isArray(blocked)) {
-        blockers_by_id = new Map();
-        for (const raw of blocked) {
-          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-            continue;
-          }
-          const row = /** @type {Record<string, unknown>} */ (raw);
-          const id = typeof row.id === 'string' ? row.id : String(row.id ?? '');
-          if (id.length > 0) {
-            blockers_by_id.set(id, blockerIds(row));
-          }
+    const blocked = snapshot.ready_explain?.blocked;
+    if (Array.isArray(blocked)) {
+      blockers_by_id = new Map();
+      for (const raw of blocked) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+          continue;
+        }
+        const row = /** @type {Record<string, unknown>} */ (raw);
+        const id = typeof row.id === 'string' ? row.id : String(row.id ?? '');
+        if (id.length > 0) {
+          blockers_by_id.set(id, blockerIds(row));
         }
       }
-    } else {
-      const result = await options.runJson?.(
-        'list',
-        ['list', '--status', 'open', '--limit', '1000', '--json'],
-        { cwd: workspace }
-      );
-      // A protocol failure is not "no runnable work": it is reported so the
-      // caller skips the negative cache entirely, because suppressing the retry
-      // would hide a compatibility break behind an empty queue.
-      if (!result || result.ok !== true) {
-        return {
-          items: null,
-          session_active: [],
-          carried_to: new Map(),
-          protocol_failure: isBdProtocolFailure(result)
-        };
-      }
-      rows = result.data;
-    }
-    if (!Array.isArray(rows)) {
-      return {
-        items: null,
-        session_active: [],
-        carried_to: new Map(),
-        protocol_failure: false
-      };
     }
     // 이월 색인은 후보 필터링 **전에** 전체 원본 rows에서 만든다 (UI-ys18 §3.2):
     // 이월 부모는 이미 닫혀 있어 후보가 되지 않고, 후속도 자격 판정에서 빠질 수
@@ -805,7 +824,8 @@ export function createRunnableCache(options = {}) {
     const items = [];
     /** @type {SessionActiveItem[]} */
     const session_active = [];
-    const enrich = enrichFor(workspace);
+    /** @type {Array<{ row: Record<string, unknown>, item: RunnableItem|SessionActiveItem }>} */
+    const projected = [];
     for (const raw of rows) {
       if (!raw || typeof raw !== 'object') {
         continue;
@@ -822,19 +842,32 @@ export function createRunnableCache(options = {}) {
           : explained.length > 0
             ? explained
             : embeddedBlockerIds(row);
-      const item = qualify(row, blocked_by, enrich);
+      const item = qualify(row, blocked_by);
       if (item) {
         items.push(item);
+        projected.push({ row, item });
         continue;
       }
       // The second bucket of the SAME pass: a row the runnable 판정 rejected is
       // still a fact about the repo when a session holds it (UI-yrzu §4.1).
-      const session_item = qualifySession(row, blocked_by, enrich);
+      const session_item = qualifySession(row, blocked_by);
       if (session_item) {
         session_active.push(session_item);
+        projected.push({ row, item: session_item });
       }
     }
-    return { items, session_active, carried_to, protocol_failure: false };
+    if (projected.length > 0) {
+      const probes = await warmProbes(
+        root,
+        projected.map((entry) => entry.row),
+        snapshot
+      );
+      const enrich = enrichFor(root, probes);
+      for (const entry of projected) {
+        entry.item.workflow = enrich(entry.row);
+      }
+    }
+    return { items, session_active, carried_to };
   }
 
   /**
@@ -865,7 +898,7 @@ export function createRunnableCache(options = {}) {
     const key = keyOf(workspace);
     const run = (async () => {
       try {
-        const fetched = await fetchRunnable(workspace);
+        const fetched = await fetchRunnable(key);
         if (fetched.items) {
           records.set(key, {
             items: fetched.items,
@@ -876,11 +909,7 @@ export function createRunnableCache(options = {}) {
           failed.delete(key);
           return true;
         }
-        // A protocol fault stays retryable: negative-caching it would report a
-        // compatibility break as an empty runnable queue for the whole TTL.
-        if (!fetched.protocol_failure) {
-          failed.set(key, now() + negative_ttl_ms);
-        }
+        failed.set(key, now() + negative_ttl_ms);
         log('runnable list unreadable for %s', key);
         return false;
       } catch (err) {
