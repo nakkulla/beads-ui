@@ -10,6 +10,26 @@ import {
 import { WORKFLOW_ROUTES } from './routes.js';
 import { RUNNABLE_ROUTES, createRunnableCache } from './runnable-cache.js';
 
+// The git warm is isolated here (spec §4.2): these are 자격 판정 tests, and the
+// real warm would spawn `git` per fill for a workspace that does not exist. The
+// core regression over the REAL warm lives in `runnable-cache.warm.test.js`.
+vi.mock('../workflow-enrich.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    warmWorkflowProbes: vi.fn(async () => ({
+      head: 'b'.repeat(40),
+      branch_tips: new Map(),
+      dirty_paths: new Set(),
+      checked_paths: new Set(),
+      undetermined: new Set()
+    }))
+  };
+});
+
+/** Monotonic snapshot generation so no two fills share a probe context. */
+let generation_seq = 0;
+
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
 
@@ -40,36 +60,6 @@ function row(patch = {}) {
 }
 
 /**
- * A `runBdJson` stub answering `bd list` per workspace. A workspace absent from
- * the map exits non-zero — the "cannot read this repo" failure the cache
- * negative-caches.
- *
- * @param {Record<string, Array<Record<string, any>>>} rows_by_workspace
- */
-function fakeBd(rows_by_workspace) {
-  return vi.fn(
-    async (
-      /** @type {string} */ _family,
-      /** @type {string[]} */ _args,
-      /** @type {any} */ options
-    ) => {
-      const rows = rows_by_workspace[String(options && options.cwd)];
-      if (!rows) {
-        return {
-          ok: false,
-          error: { code: 'bd_exit_error', message: 'not a workspace' }
-        };
-      }
-      return {
-        ok: true,
-        protocol: { format: 'bare', schema_version: null },
-        data: rows
-      };
-    }
-  );
-}
-
-/**
  * A `bd list --all --json` row a SESSION has claimed. Carries none of the
  * worker admission surfaces (`spec_review`, an admissible route) on purpose —
  * §3 says those never decide a session tile.
@@ -89,6 +79,23 @@ function sessionRow(patch = {}) {
 }
 
 /**
+ * The real snapshot envelope shape a fill consumes: an ok reply carrying one
+ * `generation` and its `all` rows (UI-hhn9 §4.2). Each call answers a FRESH
+ * generation so the module-level probe context of one test never satisfies the
+ * next one's warm.
+ *
+ * @param {Array<Record<string, any>>} rows
+ */
+function snapshotOk(rows) {
+  generation_seq += 1;
+  return {
+    ok: true,
+    stale: false,
+    snapshot: { generation: generation_seq, all: rows, ready_explain: {} }
+  };
+}
+
+/**
  * A `requestSnapshot` stub answering the shared `--all` generation per
  * workspace — the source BOTH buckets are projected from. A workspace absent
  * from the map answers not-ok, the "cannot read this repo" failure.
@@ -101,7 +108,7 @@ function fakeSnapshot(rows_by_workspace) {
     if (!rows) {
       return { ok: false };
     }
-    return { ok: true, stale: false, snapshot: { all: rows } };
+    return snapshotOk(rows);
   });
 }
 
@@ -181,7 +188,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
   // about the git probe the live enrich makes.
   test('lists an open bead whose spec review is pinned', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row()] }),
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row()] }),
       enrichWorkflow: () => ({ route: 'spec_backed' })
     });
 
@@ -222,7 +229,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('keeps an unpublished spec-backed row only in the expanded view', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [row({ metadata: { spec_review: '' } })]
       })
     });
@@ -242,7 +249,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('keeps an unpinned route only in the expanded view', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row({ metadata: { route: '' } })] })
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [row({ metadata: { route: '' } })]
+      })
     });
 
     const expanded = await warmExpanded(cache, WS_A);
@@ -258,7 +267,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('keeps a description-less quick fix only in the expanded view', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [row({ metadata: { route: 'quick_fix' } })]
       })
     });
@@ -278,7 +287,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('keeps a worker-ineligible row only in the expanded view', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [row({ labels: ['worker-ineligible', 'frontend'] })]
       })
     });
@@ -295,7 +304,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('keeps the default view equal to the legacy admitted population', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({ id: 'UI-ready' }),
           row({ id: 'UI-draft', metadata: { spec_review: '' } }),
@@ -325,7 +334,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('projects awaiting-user presence without changing legacy admission', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [row({ metadata: { awaiting_user: 'design' } })]
       })
     });
@@ -336,7 +345,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
   });
 
   test('projects published true for a spec_backed row with a valid receipt', async () => {
-    const cache = createRunnableCache({ runJson: fakeBd({ [WS_A]: [row()] }) });
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row()] })
+    });
 
     const out = await warm(cache, WS_A);
 
@@ -348,7 +359,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
   // `!!spec_id`로는 알 수 없다.
   test('projects published true for a quick_fix row that carries a published spec', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             description: '## scope\n- app/x.js\n',
@@ -367,7 +378,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('projects published false for a spec path with no valid receipt', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             description: '## scope\n- app/x.js\n',
@@ -471,7 +482,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('keeps the native spec_id when metadata.spec_id differs', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             spec_id: 'docs/specs/native.md',
@@ -488,7 +499,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('excludes a worker-ineligible bead from runnable candidates', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [row({ labels: ['worker-ineligible', 'frontend'] })]
       })
     });
@@ -500,12 +511,8 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('restores a runnable bead after the label is removed and cache refreshes', async () => {
     let labels = ['worker-ineligible'];
-    const runJson = vi.fn(async () => ({
-      ok: true,
-      protocol: { format: 'bare', schema_version: null },
-      data: [row({ labels })]
-    }));
-    const cache = createRunnableCache({ runJson });
+    const requestSnapshot = vi.fn(async () => snapshotOk([row({ labels })]));
+    const cache = createRunnableCache({ requestSnapshot });
     expect(await warm(cache, WS_A)).toEqual([]);
 
     labels = [];
@@ -519,7 +526,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('carries non-policy labels into the projection', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row({ labels: ['frontend'] })] })
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row({ labels: ['frontend'] })] })
     });
 
     const out = await warm(cache, WS_A);
@@ -529,7 +536,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('drops non-string label entries', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row({ labels: ['ok', 3, null] })] })
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [row({ labels: ['ok', 3, null] })]
+      })
     });
 
     const out = await warm(cache, WS_A);
@@ -539,7 +548,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('projects an empty label list when the row carries no labels array', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row({ labels: 'worker-ineligible' })] })
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [row({ labels: 'worker-ineligible' })]
+      })
     });
 
     const out = await warm(cache, WS_A);
@@ -549,7 +560,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('rejects a bead whose route is outside the admissible enum', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row({ metadata: { route: 'not-a-route' } })] })
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [row({ metadata: { route: 'not-a-route' } })]
+      })
     });
 
     const out = await warm(cache, WS_A);
@@ -559,7 +572,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('lists quick fixes with a description despite missing or conflicting spec surfaces', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             id: 'UI-missing-spec',
@@ -601,7 +614,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('rejects quick fixes with a missing or blank description', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             id: 'UI-no-description',
@@ -623,7 +636,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('rejects a bead with no spec_id', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row({ spec_id: '' })] })
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row({ spec_id: '' })] })
     });
 
     const out = await warm(cache, WS_A);
@@ -636,7 +649,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('rejects a spec_review that is not <reviewer>@<40hex>', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [row({ metadata: { spec_review: 'codex@abc123' } })]
       })
     });
@@ -651,7 +664,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('accepts a skipped receipt as explicit authority', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({ metadata: { spec_review: `skipped@${'b'.repeat(40)}` } })
         ]
@@ -665,7 +678,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('projects the reviewer token from the spec receipt', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({ metadata: { spec_review: `skipped@${'b'.repeat(40)}` } })
         ]
@@ -679,7 +692,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('projects an approved plan from the current approval receipt', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             metadata: {
@@ -699,7 +712,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('projects an authored plan from the current draft review receipt', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             metadata: {
@@ -719,7 +732,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('projects an approved plan from the legacy approval receipt', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             metadata: {
@@ -739,7 +752,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('projects an authored plan from the legacy draft review receipt', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             metadata: {
@@ -759,7 +772,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('projects no plan state without a plan path', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             metadata: {
@@ -778,7 +791,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('projects no plan state from malformed receipts', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             metadata: {
@@ -800,7 +813,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('rejects a phase child named by its parent edge', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row({ parent: 'UI-9' })] })
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row({ parent: 'UI-9' })] })
     });
 
     const out = await warm(cache, WS_A);
@@ -813,7 +826,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('rejects a phase child named by its dotted id', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row({ id: 'UI-1.2' })] })
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row({ id: 'UI-1.2' })] })
     });
 
     const out = await warm(cache, WS_A);
@@ -826,7 +839,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('rejects a non-open row from both runnable views', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row({ status: 'closed' })] })
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row({ status: 'closed' })] })
     });
 
     const out = await warm(cache, WS_A);
@@ -839,7 +852,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('excludes a bead the caller already has in a lane', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row(), row({ id: 'UI-2' })] })
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row(), row({ id: 'UI-2' })] })
     });
 
     const out = await warm(cache, WS_A, ['UI-1']);
@@ -848,7 +861,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
   });
 
   test('answers an empty list before the first fill lands', () => {
-    const cache = createRunnableCache({ runJson: fakeBd({ [WS_A]: [row()] }) });
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row()] })
+    });
 
     const out = cache.runnableFor(WS_A);
 
@@ -859,9 +874,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 describe('runnable cache TTL (UI-qrfo §4)', () => {
   test('re-reads once the success TTL expires', async () => {
     let clock = 0;
-    const runJson = fakeBd({ [WS_A]: [row()] });
+    const requestSnapshot = fakeSnapshot({ [WS_A]: [row()] });
     const cache = createRunnableCache({
-      runJson,
+      requestSnapshot,
       now: () => clock,
       positive_ttl_ms: 30_000
     });
@@ -871,14 +886,14 @@ describe('runnable cache TTL (UI-qrfo §4)', () => {
     cache.runnableFor(WS_A);
     await settle();
 
-    expect(runJson).toHaveBeenCalledTimes(2);
+    expect(requestSnapshot).toHaveBeenCalledTimes(2);
   });
 
   test('serves the cached list without re-reading inside the success TTL', async () => {
     let clock = 0;
-    const runJson = fakeBd({ [WS_A]: [row()] });
+    const requestSnapshot = fakeSnapshot({ [WS_A]: [row()] });
     const cache = createRunnableCache({
-      runJson,
+      requestSnapshot,
       now: () => clock,
       positive_ttl_ms: 30_000
     });
@@ -888,14 +903,14 @@ describe('runnable cache TTL (UI-qrfo §4)', () => {
     cache.runnableFor(WS_A);
     await settle();
 
-    expect(runJson).toHaveBeenCalledTimes(1);
+    expect(requestSnapshot).toHaveBeenCalledTimes(1);
   });
 
   test('suppresses a re-read inside the failure TTL', async () => {
     let clock = 0;
-    const runJson = fakeBd({});
+    const requestSnapshot = fakeSnapshot({});
     const cache = createRunnableCache({
-      runJson,
+      requestSnapshot,
       now: () => clock,
       negative_ttl_ms: 60_000
     });
@@ -905,14 +920,14 @@ describe('runnable cache TTL (UI-qrfo §4)', () => {
     cache.runnableFor(WS_A);
     await settle();
 
-    expect(runJson).toHaveBeenCalledTimes(1);
+    expect(requestSnapshot).toHaveBeenCalledTimes(1);
   });
 
   test('retries once the failure TTL expires', async () => {
     let clock = 0;
-    const runJson = fakeBd({});
+    const requestSnapshot = fakeSnapshot({});
     const cache = createRunnableCache({
-      runJson,
+      requestSnapshot,
       now: () => clock,
       negative_ttl_ms: 60_000
     });
@@ -922,23 +937,17 @@ describe('runnable cache TTL (UI-qrfo §4)', () => {
     cache.runnableFor(WS_A);
     await settle();
 
-    expect(runJson).toHaveBeenCalledTimes(2);
+    expect(requestSnapshot).toHaveBeenCalledTimes(2);
   });
 
   test('keeps the cached list when a refresh fails', async () => {
     let clock = 0;
     let readable = true;
-    const runJson = vi.fn(async () =>
-      readable
-        ? {
-            ok: true,
-            protocol: { format: 'bare', schema_version: null },
-            data: [row()]
-          }
-        : { ok: false, error: { code: 'bd_exit_error', message: 'bd boom' } }
+    const requestSnapshot = vi.fn(async () =>
+      readable ? snapshotOk([row()]) : { ok: false }
     );
     const cache = createRunnableCache({
-      runJson,
+      requestSnapshot,
       now: () => clock,
       positive_ttl_ms: 30_000
     });
@@ -957,7 +966,10 @@ describe('runnable cache invalidation (UI-qrfo §4)', () => {
   // `[]`를 답해 실행가능 레인이 push마다 깜빡인다.
   test('keeps serving the stale list while the changed workspace re-scans', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row()], [WS_B]: [row({ id: 'UI-2' })] })
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [row()],
+        [WS_B]: [row({ id: 'UI-2' })]
+      })
     });
     onQueueChanged((workspace) => cache.invalidate(workspace));
     await warm(cache, WS_A);
@@ -974,21 +986,23 @@ describe('runnable cache invalidation (UI-qrfo §4)', () => {
   });
 
   test('re-reads the invalidated workspace on the next read', async () => {
-    const runJson = fakeBd({ [WS_A]: [row()] });
-    const cache = createRunnableCache({ runJson });
+    const requestSnapshot = fakeSnapshot({ [WS_A]: [row()] });
+    const cache = createRunnableCache({ requestSnapshot });
     onQueueChanged((workspace) => cache.invalidate(workspace));
     await warm(cache, WS_A);
 
     emitQueueChanged(WS_A);
     await warm(cache, WS_A);
 
-    expect(runJson).toHaveBeenCalledTimes(2);
+    expect(requestSnapshot).toHaveBeenCalledTimes(2);
   });
 
   test('replaces the stale list once the re-scan lands', async () => {
     /** @type {Record<string, Array<Record<string, any>>>} */
     const rows_by_workspace = { [WS_A]: [row()] };
-    const cache = createRunnableCache({ runJson: fakeBd(rows_by_workspace) });
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot(rows_by_workspace)
+    });
     onQueueChanged((workspace) => cache.invalidate(workspace));
     await warm(cache, WS_A);
 
@@ -1002,30 +1016,36 @@ describe('runnable cache invalidation (UI-qrfo §4)', () => {
 
 describe('runnable cache subscriber gate (UI-qrfo §4)', () => {
   test('spawns no bd read while nobody watches the monitor', async () => {
-    const runJson = fakeBd({ [WS_A]: [row()] });
-    const cache = createRunnableCache({ runJson, subscriberCount: () => 0 });
+    const requestSnapshot = fakeSnapshot({ [WS_A]: [row()] });
+    const cache = createRunnableCache({
+      requestSnapshot,
+      subscriberCount: () => 0
+    });
 
     cache.runnableFor(WS_A);
     await settle();
 
-    expect(runJson).not.toHaveBeenCalled();
+    expect(requestSnapshot).not.toHaveBeenCalled();
   });
 
   test('spawns no bd read on an explicit refresh while nobody watches', async () => {
-    const runJson = fakeBd({ [WS_A]: [row()] });
-    const cache = createRunnableCache({ runJson, subscriberCount: () => 0 });
+    const requestSnapshot = fakeSnapshot({ [WS_A]: [row()] });
+    const cache = createRunnableCache({
+      requestSnapshot,
+      subscriberCount: () => 0
+    });
 
     cache.refresh(WS_A);
     await settle();
 
-    expect(runJson).not.toHaveBeenCalled();
+    expect(requestSnapshot).not.toHaveBeenCalled();
   });
 
   test('reads again once a subscriber arrives', async () => {
     let subscribers = 0;
-    const runJson = fakeBd({ [WS_A]: [row()] });
+    const requestSnapshot = fakeSnapshot({ [WS_A]: [row()] });
     const cache = createRunnableCache({
-      runJson,
+      requestSnapshot,
       subscriberCount: () => subscribers
     });
     cache.runnableFor(WS_A);
@@ -1041,7 +1061,9 @@ describe('runnable cache subscriber gate (UI-qrfo §4)', () => {
 describe('runnable cache fill notification (UI-qrfo §4)', () => {
   test('announces the filled workspace so the next push carries it', async () => {
     const filled = /** @type {string[]} */ ([]);
-    const cache = createRunnableCache({ runJson: fakeBd({ [WS_A]: [row()] }) });
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row()] })
+    });
     cache.setOnFilled((workspace) => filled.push(workspace));
 
     await warm(cache, WS_A);
@@ -1050,19 +1072,21 @@ describe('runnable cache fill notification (UI-qrfo §4)', () => {
   });
 
   test('collapses a burst of reads into one bd process', async () => {
-    const runJson = fakeBd({ [WS_A]: [row()] });
-    const cache = createRunnableCache({ runJson });
+    const requestSnapshot = fakeSnapshot({ [WS_A]: [row()] });
+    const cache = createRunnableCache({ requestSnapshot });
 
     cache.runnableFor(WS_A);
     cache.runnableFor(WS_A);
     cache.runnableFor(WS_A);
     await settle();
 
-    expect(runJson).toHaveBeenCalledTimes(1);
+    expect(requestSnapshot).toHaveBeenCalledTimes(1);
   });
 
   test('forgets every workspace on clear', async () => {
-    const cache = createRunnableCache({ runJson: fakeBd({ [WS_A]: [row()] }) });
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row()] })
+    });
     await warm(cache, WS_A);
 
     cache.clear();
@@ -1075,7 +1099,7 @@ describe('runnable cache workflow + exec_pins (UI-eey2 §9.1)', () => {
   test('projects the enrich result for the same bd list row', async () => {
     const enrichWorkflow = vi.fn(() => ({ route: 'full_plan', stages: {} }));
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row()] }),
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row()] }),
       enrichWorkflow: /** @type {any} */ (enrichWorkflow)
     });
 
@@ -1084,13 +1108,14 @@ describe('runnable cache workflow + exec_pins (UI-eey2 §9.1)', () => {
     expect(out[0].workflow).toEqual({ route: 'full_plan', stages: {} });
     expect(enrichWorkflow).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'UI-1' }),
-      WS_A
+      WS_A,
+      expect.objectContaining({ head: 'b'.repeat(40) })
     );
   });
 
   test('carries a null workflow when the enrich throws', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row()] }),
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row()] }),
       enrichWorkflow: () => {
         throw new Error('git probe failed');
       }
@@ -1104,7 +1129,7 @@ describe('runnable cache workflow + exec_pins (UI-eey2 §9.1)', () => {
 
   test('projects only the execution pins of the row metadata', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             metadata: {
@@ -1134,7 +1159,7 @@ describe('runnable cache workflow + exec_pins (UI-eey2 §9.1)', () => {
 describe('runnable cache rec projection (UI-sbum §2)', () => {
   test('projects the recommended keys under their original names', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             metadata: {
@@ -1159,7 +1184,7 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
 
   test('carries a null rec when no orchestration model is recommended', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [row({ metadata: { rec_impl_runtime: 'claude' } })]
       }),
       enrichWorkflow: () => null
@@ -1172,7 +1197,7 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
 
   test('carries a null rec when the recommended model is outside the enum', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [row({ metadata: { rec_orchestration_model: 'opus' } })]
       }),
       enrichWorkflow: () => null
@@ -1185,7 +1210,7 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
 
   test('drops a recommended runtime and reason tokens outside the enum', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             metadata: {
@@ -1209,7 +1234,7 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
 
   test('keeps every rec_* key out of exec_pins', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             metadata: {
@@ -1234,7 +1259,7 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
 
   test('carries the orchestration pins so the monitor can judge applied', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             metadata: {
@@ -1494,7 +1519,7 @@ describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
 describe('runnable plan_path projection (UI-qm12 §4.4)', () => {
   test('carries the pinned plan path so the artifact set matches a queued bead', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [row({ metadata: { plan_path: 'docs/plans/thing.md' } })]
       })
     });
@@ -1505,7 +1530,9 @@ describe('runnable plan_path projection (UI-qm12 §4.4)', () => {
   });
 
   test('projects no plan path when the metadata pins none', async () => {
-    const cache = createRunnableCache({ runJson: fakeBd({ [WS_A]: [row()] }) });
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row()] })
+    });
 
     const out = await warm(cache, WS_A);
 
@@ -1514,7 +1541,9 @@ describe('runnable plan_path projection (UI-qm12 §4.4)', () => {
 
   test('ignores a non-string plan path pin', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row({ metadata: { plan_path: 7 } })] })
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [row({ metadata: { plan_path: 7 } })]
+      })
     });
 
     const out = await warm(cache, WS_A);
@@ -1526,7 +1555,7 @@ describe('runnable plan_path projection (UI-qm12 §4.4)', () => {
 describe('runnable scope source (UI-f1qy §4.4)', () => {
   test('names the resolved artifact and carries no description scope', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             description: '## scope\n- app/views/',
@@ -1544,7 +1573,7 @@ describe('runnable scope source (UI-f1qy §4.4)', () => {
 
   test('carries the description declaration when no artifact resolves', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             id: 'UI-quick',
@@ -1564,7 +1593,7 @@ describe('runnable scope source (UI-f1qy §4.4)', () => {
 
   test('carries a null description scope when the section is absent', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             id: 'UI-quick',
@@ -1583,7 +1612,7 @@ describe('runnable scope source (UI-f1qy §4.4)', () => {
 
   test('names the artifact of a quick fix whose spec still resolves', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             id: 'UI-quick',
@@ -1606,7 +1635,7 @@ describe('runnable scope source (UI-f1qy §4.4)', () => {
 
   test('resolves scope from the native spec_id even when metadata.spec_id differs', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
             id: 'UI-quick',
@@ -1629,7 +1658,7 @@ describe('runnable scope source (UI-f1qy §4.4)', () => {
 
   test('leaves the admission spec_id untouched for both routes', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row(),
           row({
@@ -1653,7 +1682,9 @@ describe('runnable scope source (UI-f1qy §4.4)', () => {
 
 describe('runnablePeek (UI-f3ma)', () => {
   test('answers the warmed runnable bucket', async () => {
-    const cache = createRunnableCache({ runJson: fakeBd({ [WS_A]: [row()] }) });
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row()] })
+    });
     await warm(cache, WS_A);
 
     const out = cache.runnablePeek(WS_A);
@@ -1662,37 +1693,39 @@ describe('runnablePeek (UI-f3ma)', () => {
   });
 
   test('triggers no fill on a cold miss', async () => {
-    const runJson = fakeBd({ [WS_A]: [row()] });
-    const cache = createRunnableCache({ runJson });
+    const requestSnapshot = fakeSnapshot({ [WS_A]: [row()] });
+    const cache = createRunnableCache({ requestSnapshot });
 
     const out = cache.runnablePeek(WS_A);
     await settle();
 
     expect(out).toEqual([]);
-    expect(runJson).not.toHaveBeenCalled();
+    expect(requestSnapshot).not.toHaveBeenCalled();
   });
 
   test('triggers no refill once the record has expired', async () => {
     let clock = 1000;
-    const runJson = fakeBd({ [WS_A]: [row()] });
+    const requestSnapshot = fakeSnapshot({ [WS_A]: [row()] });
     const cache = createRunnableCache({
-      runJson,
+      requestSnapshot,
       now: () => clock,
       positive_ttl_ms: 10
     });
     await warm(cache, WS_A);
-    const calls_after_warm = runJson.mock.calls.length;
+    const calls_after_warm = requestSnapshot.mock.calls.length;
     clock += 1000;
 
     const out = cache.runnablePeek(WS_A);
     await settle();
 
     expect(out.map((item) => item.bead_id)).toEqual(['UI-1']);
-    expect(runJson.mock.calls.length).toBe(calls_after_warm);
+    expect(requestSnapshot.mock.calls.length).toBe(calls_after_warm);
   });
 
   test('drops the ids the caller already holds in a lane', async () => {
-    const cache = createRunnableCache({ runJson: fakeBd({ [WS_A]: [row()] }) });
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row()] })
+    });
     await warm(cache, WS_A);
 
     const out = cache.runnablePeek(WS_A, ['UI-1']);
@@ -1702,7 +1735,7 @@ describe('runnablePeek (UI-f3ma)', () => {
 
   test('reveals unadmitted rows only when explicitly requested', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({
+      requestSnapshot: fakeSnapshot({
         [WS_A]: [row({ metadata: { spec_review: '' } })]
       })
     });

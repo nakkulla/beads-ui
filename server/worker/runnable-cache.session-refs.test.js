@@ -21,6 +21,22 @@ vi.mock('./session-ref.js', async (importOriginal) => {
   };
 });
 
+// The git warm is isolated here: this file asserts the session_ref PROJECTION,
+// and the real warm would spawn `git` for a workspace that does not exist.
+vi.mock('../workflow-enrich.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    warmWorkflowProbes: vi.fn(async () => ({
+      head: null,
+      branch_tips: new Map(),
+      dirty_paths: new Set(),
+      checked_paths: new Set(),
+      undetermined: new Set()
+    }))
+  };
+});
+
 const { createRunnableCache } = await import('./runnable-cache.js');
 
 /**
@@ -33,7 +49,7 @@ function fakeSnapshot(rows) {
   return vi.fn(async () => ({
     ok: true,
     stale: false,
-    snapshot: { all: rows }
+    snapshot: { generation: 1, all: rows }
   }));
 }
 
