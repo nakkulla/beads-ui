@@ -142,12 +142,14 @@ function firstLabel(host) {
 
 /**
  * Epoch ms a UUIDv7 encodes in its first 48 bits, or null for any other id
- * shape. Version nibble is the 15th character of the canonical form.
+ * shape. Version nibble is the 15th character of the canonical form. Exported
+ * because a codex thread id IS a v7 uuid, so its own value is what dates the
+ * rollout directory a native-child scan has to open (UI-mn5u §6.1).
  *
  * @param {string} session_id
  * @returns {number|null}
  */
-function uuidV7StartedAt(session_id) {
+export function uuidV7StartedAt(session_id) {
   if (session_id.length < 15 || session_id[14] !== '7') {
     return null;
   }

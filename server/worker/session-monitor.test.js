@@ -104,7 +104,7 @@ function startAtBoundary(env, attempt) {
 }
 
 /**
- * @param {{ probe?: { alive: boolean, started_at: number|null }, usage?: boolean, processController?: any }} [options]
+ * @param {{ probe?: { alive: boolean, started_at: number|null }, usage?: boolean, processController?: any, observeCodexChildren?: any }} [options]
  */
 function setup(options = {}) {
   const store = createQueueStore();
@@ -121,6 +121,9 @@ function setup(options = {}) {
     kill_impl,
     processController: options.processController,
     notifyChanged,
+    ...(options.observeCodexChildren
+      ? { observeCodexChildren: options.observeCodexChildren }
+      : {}),
     now: () => 5000,
     poll_ms: 5
   });
@@ -649,5 +652,59 @@ describe('worker/session-monitor — attempt log_path (record-timeline-retention
 
     expect(pushed).toHaveLength(1);
     expect(pushed[0].event.message.content[0].text).toBe('after the move');
+  });
+});
+
+describe('worker/session-monitor native children (UI-mn5u §6.3)', () => {
+  /** @type {import('./codex-children/accumulate.js').CodexChildRow} */
+  const CHILD_ROW = {
+    thread_id: 'child-thread',
+    parent_thread_id: 'root-thread',
+    launch_id: 'call_1',
+    agent_path: '/root/note',
+    model: 'gpt-5.6-terra',
+    effort: 'low',
+    status: 'done',
+    started_at: 10,
+    completed_at: 20,
+    last_event_at: 20,
+    usage: { total_tokens: 42 }
+  };
+
+  test('republishes an observed native child as a source-tagged record', () => {
+    /** @type {any[]} */
+    const observed = [];
+    const observe = vi.fn((/** @type {any} */ input) => {
+      observed.push(input);
+      return [CHILD_ROW];
+    });
+    const env = setup({ observeCodexChildren: observe });
+    const attempt = seedRunningAttempt(env.store, {
+      runner: 'codex',
+      session_id: 'root-thread'
+    });
+    /** @type {any[]} */
+    const pushed = [];
+    env.session_log.subscribe((a) => pushed.push(a));
+
+    startAtBoundary(env, attempt);
+    env.monitors.stop(WS, 'att-1');
+
+    expect(observed[0].parent_terminated).toBe(true);
+    expect(pushed.map((entry) => entry.event.kind)).toContain('codex_child');
+    expect(
+      pushed.find((entry) => entry.event.kind === 'codex_child').event
+    ).toMatchObject({ source: 'codex_rollout', child: CHILD_ROW });
+  });
+
+  test('observes no native children for a claude attempt', () => {
+    const observe = vi.fn(() => [CHILD_ROW]);
+    const env = setup({ observeCodexChildren: observe });
+    const attempt = seedRunningAttempt(env.store, { runner: 'claude' });
+
+    startAtBoundary(env, attempt);
+    env.monitors.stop(WS, 'att-1');
+
+    expect(observe).not.toHaveBeenCalled();
   });
 });

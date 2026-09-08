@@ -1324,7 +1324,7 @@ describe('session-history 세션 행 (UI-4xzk §6.5)', () => {
                 </button>
                    
                 
-                
+                 
               </div>
           </div>
         "
@@ -1439,5 +1439,118 @@ describe('session-history per-leg price (preset-compare §1.3)', () => {
     const host = mount(sessionHistoryTemplate([ATTEMPT], {}, {}, []));
 
     expect(host.querySelectorAll('.detail-session__price')).toHaveLength(0);
+  });
+});
+
+describe('session-history native Codex children (UI-mn5u §6.4)', () => {
+  /** @type {any} */
+  const CHILD = {
+    thread_id: '01a07fe0-1e96-7443-b224-30d21a82419a',
+    parent_thread_id: '01a07fdf-ee94-7ac3-8e6f-bc0910eee0af',
+    launch_id: 'call_zQrh960DQ1iub7GdKSyWan48',
+    agent_path: '/root/create_child_note',
+    model: 'gpt-5.6-terra',
+    effort: 'low',
+    status: 'done',
+    started_at: 1788851789000,
+    completed_at: 1788851826000,
+    last_event_at: 1788851826165,
+    usage: {
+      input_tokens: 113441,
+      cached_input_tokens: 87040,
+      cache_write_input_tokens: 0,
+      output_tokens: 902,
+      reasoning_output_tokens: 276,
+      total_tokens: 114343
+    }
+  };
+
+  /**
+   * @param {any} [patch]
+   * @returns {any}
+   */
+  function codexAttempt(patch = {}) {
+    return {
+      attempt_id: 'outer',
+      bead_id: 'UI-1',
+      status: 'done',
+      runner: 'codex',
+      model: 'gpt-5.6-terra',
+      session_id: '01a07fdf-ee94-7ac3-8e6f-bc0910eee0af',
+      usage: { input_tokens: 56733, output_tokens: 448 },
+      ...patch
+    };
+  }
+
+  test('renders the provider, status, model and confirmed usage of a child', () => {
+    const host = mount(
+      sessionHistoryTemplate([codexAttempt({ codex_children: [CHILD] })])
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      host.querySelector('.detail-session__leg--done')
+    );
+    expect(row.textContent).toContain('native child');
+    expect(row.textContent).toContain('codex');
+    expect(row.textContent).toContain('gpt-5.6-terra');
+    expect(row.textContent).toContain('/root/create_child_note');
+  });
+
+  test('explains that child usage is not added to the total', () => {
+    const host = mount(
+      sessionHistoryTemplate([codexAttempt({ codex_children: [CHILD] })])
+    );
+
+    const badge = /** @type {HTMLElement} */ (
+      host
+        .querySelector('.detail-session__leg--done')
+        ?.querySelector('.detail-session__usage')
+    );
+    expect(badge.title).toContain('전체 합계에 별도 가산하지 않음');
+  });
+
+  test('renders an interrupted child without inventing a completion time', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        codexAttempt({
+          codex_children: [
+            { ...CHILD, status: 'interrupted', completed_at: null, usage: null }
+          ]
+        })
+      ])
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      host.querySelector('.detail-session__leg--interrupted')
+    );
+    expect(row.querySelector('.detail-session__usage')).toBeNull();
+    expect(row.querySelector('.detail-session__leg-time')).toBeNull();
+  });
+
+  test('renders no child row for an attempt that carries no observation', () => {
+    const host = mount(sessionHistoryTemplate([codexAttempt()]));
+
+    expect(host.textContent).not.toContain('native child');
+  });
+
+  test('leaves the attempt headline total unchanged by a child observation', () => {
+    const without = mount(sessionHistoryTemplate([codexAttempt()]));
+    const with_child = mount(
+      sessionHistoryTemplate([codexAttempt({ codex_children: [CHILD] })])
+    );
+
+    const totalOf = (/** @type {HTMLElement} */ host) =>
+      /** @type {HTMLElement} */ (host.querySelector('.detail-session__usage'))
+        .textContent;
+    expect(totalOf(with_child)).toEqual(totalOf(without));
+  });
+
+  test('adds nothing to the summed attempt usage', () => {
+    const summed = sumAttemptUsage(
+      [codexAttempt({ codex_children: [CHILD] })],
+      'UI-1'
+    );
+
+    expect(summed).toEqual(sumAttemptUsage([codexAttempt()], 'UI-1'));
   });
 });

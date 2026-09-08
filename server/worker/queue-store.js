@@ -162,6 +162,12 @@
  * @property {DelegationSession[]} delegation_sessions - Validated delegated
  * session summaries, same two providers. Legacy attempts normalize this
  * optional field to an empty list.
+ * @property {import('./codex-children/accumulate.js').CodexChildRow[]} codex_children - Normalized Codex NATIVE
+ * subagent observations (UI-mn5u §6.2). A UI-owned observation record: it is
+ * never workflow metadata, never an execution receipt, and never an input to a
+ * gate. Its usage is displayed per child and excluded from this attempt's
+ * totals. An attempt written before the field existed normalizes to an empty
+ * list, which reads as "not observed", never as zero.
  * @property {string|null} done_kind - 무변경 종결의 종류 (`'refuted'`·
  * `'no_delta'`, quick_fix 착지가 씀) 또는 `'bench'`(preset-compare §4.5-1의
  * `landing=none` 종결); 그 밖의 값은 legacy 머지 축 기록.
@@ -940,6 +946,8 @@ import nodeFs from 'node:fs';
 import path from 'node:path';
 import { debug } from '../logging.js';
 import { createUnhandledFailurePredicate } from './attempt-failure.js';
+import { normalizeCodexChildren } from './codex-children/normalize.js';
+import { observeCodexChildren } from './codex-children/reader.js';
 // The `needs_human` vocabulary is the KERNEL's (UI-5ym8 §7), so the store
 // consumes it rather than re-stating it. This is a module cycle —
 // `completion-intent.js` imports two constants back from here — and it is safe
@@ -2933,6 +2941,7 @@ export function makeAttempt(fields) {
     delegation_sessions: normalizeDelegationSessions(
       fields.delegation_sessions
     ),
+    codex_children: normalizeCodexChildren(fields.codex_children),
     merge_policy: fields.merge_policy ?? null,
     drift_policy: fields.drift_policy ?? null,
     demoted_reason: fields.demoted_reason ?? null,
@@ -5364,6 +5373,23 @@ export function createQueueStore(options = {}) {
     const live_delegations = delegation_store
       ? delegation_store.get(workspace, attempt_id)
       : { sessions: [], legs: [] };
+    // Codex native children have no inbox file and no live store: the rollout
+    // files Codex itself wrote ARE the durable evidence, and this is the one
+    // point where the observation is normalized onto the record (UI-mn5u §6.3).
+    // The same call serves the live overlay and a post-restart re-read, so the
+    // three results cannot disagree. `parent_terminated` is what turns a child
+    // with no terminal evidence into `interrupted` — an observation mark, not a
+    // claim that anything was killed.
+    /** @type {import('./codex-children/accumulate.js').CodexChildRow[]} */
+    let native_children = [];
+    try {
+      native_children = observeCodexChildren({
+        attempt: { ...current, ...patch },
+        parent_terminated: true
+      });
+    } catch {
+      // Terminal settlement still persists without optional child evidence.
+    }
     return {
       ...(delegation_store ? { drain: { workspace, attempt_id } } : {}),
       patch: {
@@ -5385,6 +5411,9 @@ export function createQueueStore(options = {}) {
         // its durable twin, so whatever survives here is strictly fresher —
         // which is what lets a legacy record without `effort` pick the value up
         // from a re-observed stream. Matches the terminal recovery path's order.
+        ...(native_children.length > 0
+          ? { codex_children: native_children }
+          : {}),
         delegation_sessions: finalizeDelegationSessions(
           [
             ...live_delegations.sessions,

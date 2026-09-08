@@ -551,6 +551,24 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
     `live`/`done`/`failed`. No total unit count exists in the durable
     vocabulary, so `label` names the ordinal only (`구현 unit 3 · codex`,
     `review-consult · codex`).
+- An attempt may carry
+  `codex_children: Array<{ thread_id, parent_thread_id, launch_id, agent_path, model, effort, status, started_at, completed_at, last_event_at, usage }>`
+  (UI-mn5u §6.2) — Codex NATIVE subagents observed from the rollout files Codex
+  wrote, since `codex exec --json` carries no child event at all. It is a
+  UI-owned OBSERVATION record: never workflow metadata, never an execution
+  receipt, never a gate input, and it is NOT the external
+  `delegation_sessions[]`/`usage_legs[]` receipt vocabulary — those validators
+  stay strict and unchanged. `status` is `running`/`done`/`failed`/
+  `interrupted`, where `interrupted` means the parent ended with no terminal
+  evidence for that child, not that anything was killed. `usage` carries only
+  the six Codex keys (`input_tokens`, `cached_input_tokens`,
+  `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`,
+  `total_tokens`) or null, is the LAST cumulative thread total rather than a sum
+  over turns, and is displayed on the child row only — the attempt's own totals,
+  headline and cost sums exclude it. A running attempt gets the field as a live
+  overlay; a settled one carries the normalized rows on its record. Consumers
+  fail-quiet on its absence: no field means "not observed", never zero.
+
 - `declared_base: string|null` — what this workspace DECLARES as its target base
   (`docs/agents/repo-ops.toml` top-level `base`), read from the declaration
   only. An absent file or absent key travels as `'main'`, matching the

@@ -69,6 +69,7 @@ import {
   workerSlots,
   workerWorktreeExists
 } from '../worker/attach.js';
+import { observeCodexChildren } from '../worker/codex-children/reader.js';
 import { implActorOf } from '../worker/compare-projection.js';
 import {
   normalizeDelegationSessions,
@@ -2202,6 +2203,22 @@ export function attemptsWithUsage(queue, workspace_key) {
         }
       } catch (err) {
         log('usage receipt overlay failed for %s: %o', attempt_id, err);
+      }
+      // Codex NATIVE children (UI-mn5u §6.3): the same reader the terminal
+      // settlement runs, over the rollout files Codex wrote. Live-only here —
+      // a settled attempt carries the normalized rows on its own record — and
+      // fail-quiet: an attempt with no readable rollout carries no key, and the
+      // detail panel then shows no child row rather than an observed zero.
+      try {
+        const codex_children = observeCodexChildren({
+          attempt: projected,
+          parent_terminated: false
+        });
+        if (codex_children.length > 0) {
+          projected = { ...projected, codex_children };
+        }
+      } catch (err) {
+        log('native child overlay failed for %s: %o', attempt_id, err);
       }
       const delegation_sessions = delegationSessionsForAttempt(
         workspace_key,

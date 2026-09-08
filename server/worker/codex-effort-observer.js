@@ -43,11 +43,17 @@ export function codexRolloutDateDirs(started_at, options = {}) {
 /**
  * Locate the rollout file for a session under the probed date directories.
  *
- * @param {{ session_id: string, started_at: number|null, fs: Pick<typeof fs, 'readdirSync'>, home_dir: string, now?: () => number }} input
+ * @param {{ session_id: string, started_at: number|null, fs: Pick<typeof fs, 'readdirSync'>, home_dir: string, sessions_root?: string, now?: () => number }} input - `sessions_root` names the sessions directory directly, which is what an
+ * attempt launched under a per-account `CODEX_HOME` needs: that mirror holds
+ * `sessions/` at its top level, not under `.codex/`, and probing the default
+ * home would read another account's transcripts.
  * @returns {string|null}
  */
 export function codexRolloutFilePath(input) {
-  const sessions_root = path.join(input.home_dir, '.codex', 'sessions');
+  const sessions_root =
+    typeof input.sessions_root === 'string' && input.sessions_root.length > 0
+      ? input.sessions_root
+      : path.join(input.home_dir, '.codex', 'sessions');
   const suffix = `-${input.session_id}.jsonl`;
   for (const date_dir of codexRolloutDateDirs(input.started_at, {
     now: input.now
