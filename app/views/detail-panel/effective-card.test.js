@@ -479,6 +479,50 @@ describe('detail summary header', () => {
     panel.destroy();
   });
 
+  test('names an incomplete plan review record in the gate title', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      workflow: {
+        route: 'full_plan',
+        stages: {
+          plan: {
+            fill: 'dim',
+            approval_state: 'missing',
+            review_state: 'incomplete'
+          }
+        }
+      }
+    });
+    await settle();
+
+    expect(
+      mount.querySelector('[data-gate="plan"]')?.getAttribute('title')
+    ).toBe('계획 리뷰 · 진행 중 · 검토 기록 불완전 — 앵커 불일치 · 승인 필요');
+    panel.destroy();
+  });
+
+  test('leaves a complete plan review record out of the gate title', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      workflow: {
+        route: 'full_plan',
+        stages: {
+          plan: {
+            fill: 'dim',
+            approval_state: 'missing',
+            review_state: 'review'
+          }
+        }
+      }
+    });
+    await settle();
+
+    expect(
+      mount.querySelector('[data-gate="plan"]')?.getAttribute('title')
+    ).toBe('계획 리뷰 · 진행 중 · 승인 필요');
+    panel.destroy();
+  });
+
   test('leaves a settled plan approval out of the gate title', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount, {

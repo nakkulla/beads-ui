@@ -23,13 +23,6 @@ const MONITOR_SCHEMAS = new Set([
 ]);
 const MONITOR_SCHEMA_V2 = 'codex-delegation-monitor-v2';
 
-/** The optional v2 detail keys an activity item may carry (dotfiles D4). */
-const ACTIVITY_DETAIL_KEYS = new Set([
-  'parsed_cmd',
-  'exit_code',
-  'changes',
-  'details_truncated'
-]);
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const TOP_LEVEL_KEYS = new Set([
@@ -179,21 +172,20 @@ function isRole(value) {
 }
 
 /**
- * Whether an object's keys are the required set plus any subset of the allowed
- * optional keys. v2 activity items are the only place optional keys exist; a v1
- * line is still judged with the exact-key rule.
+ * Whether a v2 activity item carries every required key.
+ *
+ * Additional keys are ALLOWED here: dotfiles D4 says an unknown optional detail
+ * is omitted while the coarse activity is kept, so an item the producer grew a
+ * field on must not take the whole event down. `sanitizeEvent` then emits the
+ * required keys plus the validated allowlisted details only, which is what
+ * keeps the unknown key from reaching a subscriber.
  *
  * @param {Record<string, unknown>} value
  * @param {Set<string>} required
- * @param {Set<string>} optional
  * @returns {boolean}
  */
-function hasKeysWithin(value, required, optional) {
-  const keys = Object.keys(value);
-  return (
-    [...required].every((key) => keys.includes(key)) &&
-    keys.every((key) => required.has(key) || optional.has(key))
-  );
+function hasRequiredKeys(value, required) {
+  return [...required].every((key) => key in value);
 }
 
 /**
@@ -204,7 +196,7 @@ function hasKeysWithin(value, required, optional) {
  */
 function hasActivityKeys(item, required, allow_details) {
   return allow_details
-    ? hasKeysWithin(item, required, ACTIVITY_DETAIL_KEYS)
+    ? hasRequiredKeys(item, required)
     : hasExactKeys(item, required);
 }
 
@@ -246,14 +238,16 @@ function isEvent(value, allow_details = false) {
       hasActivityKeys(item, STARTED_ACTIVITY_KEYS, allow_details) &&
       nonEmptyString(item.id) &&
       item.kind === 'activity' &&
-      ACTIVITIES.has(String(item.activity))
+      typeof item.activity === 'string' &&
+      ACTIVITIES.has(item.activity)
     );
   }
   if (item.kind === 'activity') {
     return (
       hasActivityKeys(item, COMPLETED_ACTIVITY_KEYS, allow_details) &&
       nonEmptyString(item.id) &&
-      ACTIVITIES.has(String(item.activity)) &&
+      typeof item.activity === 'string' &&
+      ACTIVITIES.has(item.activity) &&
       (item.status === 'completed' || item.status === 'failed')
     );
   }
@@ -268,10 +262,10 @@ function isEvent(value, allow_details = false) {
 }
 
 /**
- * Rewrite one v2 event with only the allowlisted optional activity details
- * (dotfiles D4). The coarse activity survives an invalid detail; the same
- * projection the drawer uses is applied here so the server and the browser
- * never disagree about what a line is allowed to say.
+ * Rewrite one v2 event as the required activity keys plus only the allowlisted
+ * optional details (dotfiles D4). The coarse activity survives an invalid or
+ * unknown detail; the same projection the drawer uses is applied here so the
+ * server and the browser never disagree about what a line is allowed to say.
  *
  * Returns the SAME object when nothing had to be dropped, which is what lets
  * the caller keep the original raw line untouched for a clean stream.
@@ -284,18 +278,20 @@ function sanitizeEvent(event) {
   if (!isRecord(item) || item.kind !== 'activity') {
     return event;
   }
-  const details = sanitizeMonitorDetails(item);
+  const completed = event.type === 'item.completed';
+  const required = completed ? COMPLETED_ACTIVITY_KEYS : STARTED_ACTIVITY_KEYS;
+  const details = sanitizeMonitorDetails(item, { completed });
   /** @type {Record<string, unknown>} */
   const next_item = {};
   for (const [key, value] of Object.entries(item)) {
-    if (!ACTIVITY_DETAIL_KEYS.has(key)) {
+    if (required.has(key)) {
       next_item[key] = value;
     }
   }
   Object.assign(next_item, details);
   const same =
-    Object.keys(next_item).length === Object.keys(item).length &&
-    Object.keys(item).every((key) => !ACTIVITY_DETAIL_KEYS.has(key));
+    Object.keys(item).length === required.size &&
+    Object.keys(details).length === 0;
   return same ? event : { ...event, item: next_item };
 }
 
@@ -312,7 +308,7 @@ function parseMonitorLine(raw) {
     return null;
   }
   if (
-    !MONITOR_SCHEMAS.has(String(raw.schema)) ||
+    !(typeof raw.schema === 'string' && MONITOR_SCHEMAS.has(raw.schema)) ||
     !nonEmptyString(raw.attempt_id) ||
     !nonEmptyString(raw.launch_id) ||
     raw.provider !== 'codex' ||

@@ -276,13 +276,22 @@ function sanitizeChangeEntry(entry) {
  * coarse activity survives; raw command, query, output, diff and MCP payloads
  * have no representation here at all, so nothing unknown can be expanded.
  *
+ * A detail is also gated by the activity kind and the event phase that can
+ * legitimately carry it: `parsed_cmd` belongs to `command_execution`, `changes`
+ * to `file_change`, and an `exit_code` exists only once a command has
+ * completed. Anything a producer attaches elsewhere (mcp_call, web_search,
+ * plan, or a started item) is dropped.
+ *
  * @param {Record<string, unknown>} item
+ * @param {{ completed?: boolean }} [phase] - Whether this is an `item.completed`.
  * @returns {MonitorDetails}
  */
-export function sanitizeMonitorDetails(item) {
+export function sanitizeMonitorDetails(item, phase = {}) {
   /** @type {MonitorDetails} */
   const out = {};
+  const completed = phase.completed === true;
   if (
+    item.activity === 'command_execution' &&
     Array.isArray(item.parsed_cmd) &&
     item.parsed_cmd.length <= MONITOR_DETAIL_MAX_ITEMS
   ) {
@@ -291,10 +300,16 @@ export function sanitizeMonitorDetails(item) {
       out.parsed_cmd = /** @type {ParsedCmdEntry[]} */ (entries);
     }
   }
-  if (typeof item.exit_code === 'number' && Number.isInteger(item.exit_code)) {
+  if (
+    item.activity === 'command_execution' &&
+    completed &&
+    typeof item.exit_code === 'number' &&
+    Number.isInteger(item.exit_code)
+  ) {
     out.exit_code = item.exit_code;
   }
   if (
+    item.activity === 'file_change' &&
     Array.isArray(item.changes) &&
     item.changes.length <= MONITOR_DETAIL_MAX_ITEMS
   ) {
@@ -303,7 +318,10 @@ export function sanitizeMonitorDetails(item) {
       out.changes = /** @type {MonitorChangeEntry[]} */ (entries);
     }
   }
-  if (typeof item.details_truncated === 'boolean') {
+  if (
+    typeof item.details_truncated === 'boolean' &&
+    (out.parsed_cmd !== undefined || out.changes !== undefined)
+  ) {
     out.details_truncated = item.details_truncated;
   }
   return out;
@@ -324,7 +342,7 @@ export function sanitizeMonitorDetails(item) {
  * @returns {string}
  */
 function delegationDetailText(item) {
-  const details = sanitizeMonitorDetails(item);
+  const details = sanitizeMonitorDetails(item, { completed: true });
   /** @type {string[]} */
   const parts = [];
   for (const entry of details.parsed_cmd || []) {

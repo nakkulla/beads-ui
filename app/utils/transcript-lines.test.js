@@ -719,6 +719,50 @@ describe('delegation monitor v2 details (UI-y9hl U1)', () => {
     expect(line.result).toBe('추가 app/a.js · …');
   });
 
+  test('drops file changes carried by a command_execution activity', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'command_execution',
+        status: 'completed',
+        changes: [{ path: 'app/a.js', kind: 'add' }]
+      })
+    );
+
+    expect(line.result).toBe('');
+  });
+
+  test('drops command details carried by an mcp_call activity', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'mcp_call',
+        status: 'completed',
+        parsed_cmd: [{ type: 'read', path: 'app/a.js' }],
+        exit_code: 0
+      })
+    );
+
+    expect(line.result).toBe('');
+  });
+
+  test('drops an exit code carried by a file_change activity', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'file_change',
+        status: 'completed',
+        changes: [{ path: 'app/a.js', kind: 'add' }],
+        exit_code: 0
+      })
+    );
+
+    expect(line.result).toBe('추가 app/a.js');
+  });
+
   test('never surfaces a raw command, query or output payload', () => {
     const line = monitorLineOf(
       monitorActivity({

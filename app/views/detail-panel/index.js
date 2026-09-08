@@ -2302,7 +2302,11 @@ export function createDetailPanel(mount_element, options) {
       ${wf.route === 'full_plan'
         ? html`<div class="detail-kv">
               <span class="detail-kv__k">plan_review</span>
-              <span class="detail-kv__v">${plan?.receipt || '없음'}</span>
+              <span class="detail-kv__v"
+                >${plan?.receipt || '없음'}${plan?.review_state === 'incomplete'
+                  ? ' · 불완전(앵커 불일치)'
+                  : ''}</span
+              >
             </div>
             <div class="detail-kv">
               <span class="detail-kv__k">plan_approval</span>

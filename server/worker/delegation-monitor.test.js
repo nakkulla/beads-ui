@@ -657,12 +657,11 @@ describe('delegation monitor v2 envelope (UI-y9hl U1)', () => {
     expect(read.sessions[0].session_id).toBe('thread-1');
   });
 
-  it('keeps allowlisted v2 details on the projected event', () => {
+  it('keeps allowlisted command details on the projected event', () => {
     const read = readV2(
       v2Item({
         parsed_cmd: [{ type: 'read', path: 'app/a.js', name: 'a.js' }],
         exit_code: 0,
-        changes: [{ path: 'app/b.js', kind: 'modify' }],
         details_truncated: false
       })
     );
@@ -670,9 +669,109 @@ describe('delegation monitor v2 envelope (UI-y9hl U1)', () => {
     expect(activityItem(read)).toMatchObject({
       parsed_cmd: [{ type: 'read', path: 'app/a.js', name: 'a.js' }],
       exit_code: 0,
-      changes: [{ path: 'app/b.js', kind: 'modify' }],
       details_truncated: false
     });
+  });
+
+  it('keeps changes only on a file_change activity', () => {
+    const read = readV2(
+      v2Item({
+        activity: 'file_change',
+        changes: [{ path: 'app/b.js', kind: 'modify' }]
+      })
+    );
+
+    expect(activityItem(read).changes).toEqual([
+      { path: 'app/b.js', kind: 'modify' }
+    ]);
+  });
+
+  it('drops changes carried by a command_execution activity', () => {
+    const read = readV2(
+      v2Item({ changes: [{ path: 'app/b.js', kind: 'modify' }] })
+    );
+
+    expect(activityItem(read).changes).toBe(undefined);
+  });
+
+  it('drops parsed_cmd carried by an mcp_call activity', () => {
+    const read = readV2(
+      v2Item({
+        activity: 'mcp_call',
+        parsed_cmd: [{ type: 'read', path: 'app/a.js' }],
+        exit_code: 0
+      })
+    );
+
+    expect(activityItem(read).parsed_cmd).toBe(undefined);
+    expect(activityItem(read).exit_code).toBe(undefined);
+  });
+
+  it('drops an exit code carried by a started item', () => {
+    writeStream('launch-v2', [
+      monitorLine(
+        'launch-v2',
+        { type: 'session.started' },
+        { schema: 'codex-delegation-monitor-v2' }
+      ),
+      monitorLine(
+        'launch-v2',
+        {
+          type: 'item.started',
+          item: {
+            id: 'i1',
+            kind: 'activity',
+            activity: 'command_execution',
+            exit_code: 0
+          }
+        },
+        { schema: 'codex-delegation-monitor-v2' }
+      )
+    ]);
+
+    const read = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID);
+
+    expect(activityItem(read).exit_code).toBe(undefined);
+    expect(activityItem(read).activity).toBe('command_execution');
+  });
+
+  it('drops details_truncated without a kept detail array', () => {
+    const read = readV2(v2Item({ details_truncated: true }));
+
+    expect(activityItem(read).details_truncated).toBe(undefined);
+  });
+
+  it('rejects an array-valued schema', () => {
+    writeStream('launch-v2', [
+      monitorLine(
+        'launch-v2',
+        { type: 'session.started' },
+        { schema: ['codex-delegation-monitor-v2'] }
+      )
+    ]);
+
+    const read = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID);
+
+    expect(read.streams).toEqual([]);
+    expect(read.warnings).toContain('identity_conflict');
+  });
+
+  it('rejects an array-valued activity', () => {
+    const read = readV2(v2Item({ activity: ['command_execution'] }));
+
+    expect(read.streams[0].events).toHaveLength(1);
+    expect(read.warnings).toContain('line_schema');
+  });
+
+  it('keeps a v2 item that carries an unknown extra key', () => {
+    const read = readV2(v2Item({ foo: 'bar' }));
+
+    expect(read.warnings).toEqual([]);
+    expect(activityItem(read)).toMatchObject({
+      activity: 'command_execution',
+      status: 'completed'
+    });
+    expect(activityItem(read).foo).toBe(undefined);
   });
 
   it('drops an escaping path while keeping the coarse activity', () => {
@@ -723,7 +822,7 @@ describe('delegation monitor v2 envelope (UI-y9hl U1)', () => {
     const read = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID);
 
     expect(JSON.stringify(read.streams)).not.toContain('SENTINEL');
-    expect(read.warnings).toContain('line_schema');
+    expect(read.warnings).toEqual([]);
   });
 
   it('rejects a v1 line that carries v2 optional details', () => {

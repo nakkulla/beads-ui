@@ -285,22 +285,32 @@ function isCount(value) {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
+/** Strict UTC ISO8601 with optional fractional seconds (dotfiles D6). */
+const UTC_ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
+
 /**
  * Parse a D6 UTC timestamp, rejecting a future or unparseable one.
+ *
+ * `Date.parse` alone is too permissive: it accepts a timezone-less value and
+ * silently rolls an impossible date such as `2026-02-30` forward. The shape is
+ * therefore matched first and the parse is confirmed by a round trip, so only a
+ * real instant the producer could have written survives.
  *
  * @param {unknown} value
  * @param {number} now
  * @returns {number|null}
  */
 function observedMs(value, now) {
-  if (typeof value !== 'string' || value.length === 0) {
+  if (typeof value !== 'string' || !UTC_ISO_RE.test(value)) {
     return null;
   }
   const at = Date.parse(value);
   if (Number.isNaN(at) || at > now) {
     return null;
   }
-  return at;
+  return new Date(at).toISOString().slice(0, 19) === value.slice(0, 19)
+    ? at
+    : null;
 }
 
 /**
@@ -333,8 +343,10 @@ export function projectRepoHealth(value, now) {
   }
   const stale = now - at > REPO_HEALTH_STALE_MS;
   const error_code =
-    status === 'error' && REPO_HEALTH_ERROR_CODES.has(String(record.error_code))
-      ? String(record.error_code)
+    status === 'error' &&
+    typeof record.error_code === 'string' &&
+    REPO_HEALTH_ERROR_CODES.has(record.error_code)
+      ? record.error_code
       : null;
   if (status === 'error' && error_code === null) {
     return { ...UNKNOWN_REPO_HEALTH };
@@ -345,7 +357,8 @@ export function projectRepoHealth(value, now) {
     state: stale ? 'stale' : status,
     observed_at: /** @type {string} */ (record.observed_at),
     last_success_at:
-      typeof record.last_success_at === 'string'
+      typeof record.last_success_at === 'string' &&
+      observedMs(record.last_success_at, now) !== null
         ? record.last_success_at
         : null,
     error_code,
@@ -357,7 +370,10 @@ export function projectRepoHealth(value, now) {
   }
   const classes_raw = record.classes;
   if (
-    !REPO_HEALTH_RELATIONS.has(String(record.head_relation)) ||
+    !(
+      typeof record.head_relation === 'string' &&
+      REPO_HEALTH_RELATIONS.has(record.head_relation)
+    ) ||
     !isCount(record.behind) ||
     !isCount(record.ahead) ||
     !classes_raw ||
@@ -377,7 +393,7 @@ export function projectRepoHealth(value, now) {
   }
   return {
     ...out,
-    head_relation: String(record.head_relation),
+    head_relation: record.head_relation,
     behind: record.behind,
     ahead: record.ahead,
     classes

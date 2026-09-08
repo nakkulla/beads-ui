@@ -2034,6 +2034,51 @@ describe('repo health kv projection (UI-y9hl U2)', () => {
     ).toBe('unknown');
   });
 
+  test('reads an array-valued head_relation or error_code as unknown', () => {
+    expect(
+      projectRepoHealth(healthRecord({ head_relation: ['equal'] }), NOW_MS)
+        .state
+    ).toBe('unknown');
+    expect(
+      projectRepoHealth(
+        healthRecord({
+          status: 'error',
+          error_code: ['judge_failed'],
+          classes: undefined
+        }),
+        NOW_MS
+      ).state
+    ).toBe('unknown');
+  });
+
+  test('reads a timezone-less observation as unknown', () => {
+    expect(
+      projectRepoHealth(
+        healthRecord({ observed_at: '2026-09-08T03:55:00.000' }),
+        NOW_MS
+      ).state
+    ).toBe('unknown');
+  });
+
+  test('reads an impossible calendar date as unknown', () => {
+    expect(
+      projectRepoHealth(
+        healthRecord({ observed_at: '2026-02-30T00:00:00Z' }),
+        NOW_MS
+      ).state
+    ).toBe('unknown');
+  });
+
+  test('drops a malformed last_success_at while keeping the observation', () => {
+    const health = projectRepoHealth(
+      healthRecord({ last_success_at: '2026-09-08 03:55:00' }),
+      NOW_MS
+    );
+
+    expect(health.state).toBe('ok');
+    expect(health.last_success_at).toBe(null);
+  });
+
   test('never carries a path, command or remote url', () => {
     const health = projectRepoHealth(
       healthRecord({
