@@ -1,0 +1,8 @@
+{"type": "thread.started", "thread_id": "01a07fdf-ee94-7ac3-8e6f-bc0910eee0af"}
+{"type": "turn.started"}
+{"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": "하위 에이전트 한 명에게만 파일 생성과 SHA-256 계산을 맡기고, 완료될 때까지 기다리겠습니다."}}
+{"type": "item.started", "item": {"id": "item_1", "type": "collab_tool_call", "tool": "wait", "sender_thread_id": "01a07fdf-ee94-7ac3-8e6f-bc0910eee0af", "receiver_thread_ids": [], "prompt": null, "agents_states": {}, "status": "in_progress"}}
+{"type": "item.completed", "item": {"id": "item_1", "type": "collab_tool_call", "tool": "wait", "sender_thread_id": "01a07fdf-ee94-7ac3-8e6f-bc0910eee0af", "receiver_thread_ids": [], "prompt": null, "agents_states": {}, "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_2", "type": "reasoning", "text": "**Reflecting on unauthorized actions**"}}
+{"type": "item.completed", "item": {"id": "item_3", "type": "agent_message", "text": "지침을 확인했습니다. 수행할 작업을 알려주세요."}}
+{"type": "turn.completed", "usage": {"input_tokens": 56733, "cached_input_tokens": 37376, "cache_write_input_tokens": 0, "output_tokens": 448, "reasoning_output_tokens": 146}}
