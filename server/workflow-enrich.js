@@ -59,16 +59,25 @@ const REVIEW_STATS_RE =
  * only consumes them, so a step missing from this map is not read at all and no
  * key outside it is ever treated as review evidence.
  *
- * `spec` and `impl` bind to the 40hex commit sha their receipt binds to; `plan`
- * binds to the 12hex digest of the draft bytes, because `plan_review` is bound
- * to draft bytes rather than to a commit.
+ * `spec` and `impl` bind to the 40hex commit sha their receipt binds to. `plan`
+ * binds to EITHER width: the historical 12hex digest of the draft bytes, or the
+ * 40hex commit of the published document the new D7 review record pairs with.
  *
- * @type {Readonly<Record<string, { key: string, anchor_length: number }>>}
+ * @type {Readonly<Record<string, { key: string, anchor_lengths: readonly number[] }>>}
  */
 export const REVIEW_STATS_KEYS = Object.freeze({
-  spec: Object.freeze({ key: 'spec_review_stats', anchor_length: 40 }),
-  impl: Object.freeze({ key: 'impl_review_stats', anchor_length: 40 }),
-  plan: Object.freeze({ key: 'plan_review_stats', anchor_length: 12 })
+  spec: Object.freeze({
+    key: 'spec_review_stats',
+    anchor_lengths: Object.freeze([40])
+  }),
+  impl: Object.freeze({
+    key: 'impl_review_stats',
+    anchor_lengths: Object.freeze([40])
+  }),
+  plan: Object.freeze({
+    key: 'plan_review_stats',
+    anchor_lengths: Object.freeze([12, 40])
+  })
 });
 
 const IMPL_ENTRY_RE = /^(user)@([0-9a-fA-F]{40})$/;
@@ -200,8 +209,9 @@ export function parseReceipt(value) {
 /**
  * Parse a `<step>_review_stats` value into its parts.
  *
- * The anchor length is what the step decides ({@link REVIEW_STATS_KEYS}). A
- * value carrying the other step's anchor length is rejected rather than shown,
+ * The allowed anchor lengths are what the step decides
+ * ({@link REVIEW_STATS_KEYS}). A value carrying another width is rejected
+ * rather than shown,
  * because a stats line that survived a step mixup would point display at an
  * anchor no receipt on this issue ever used.
  *
@@ -221,7 +231,7 @@ export function parseReviewStats(step, value) {
   if (!match) {
     return null;
   }
-  if (match[5].length !== entry.anchor_length) {
+  if (!entry.anchor_lengths.includes(match[5].length)) {
     return null;
   }
   return {
@@ -392,6 +402,50 @@ export function parsePlanReviewReceipt(value) {
     return null;
   }
   return { reviewer: m[1], sha: m[2], is_skip: m[1] === 'skipped' };
+}
+
+/**
+ * The PUBLISHED plan review record (dotfiles D7): `plan_review=<reviewer>@40hex`
+ * paired with `plan_review_stats` at the SAME anchor. The reviewer set is the
+ * canonical one `PLAN_REVIEW_RECEIPT_RE` already carries — the 40hex pair
+ * discriminates the record, it does not narrow who may review.
+ */
+const PLAN_REVIEW_COMMIT_RECEIPT_RE =
+  /^(codex|astra|fable|self|skipped)@([0-9a-fA-F]{40})$/;
+
+/**
+ * Classify `plan_review` against the D7 discrimination rule.
+ *
+ * `review` means the new published pair is complete and is a REVIEW — never an
+ * approval, so a fast_track `codex@40hex` pair can no longer be read as the
+ * legacy user-approval form. `incomplete` means the 40hex review and the 40hex
+ * stats disagree about the anchor: that record is shown as unfinished rather
+ * than falling back to the legacy approval reading. `none` leaves every legacy
+ * path — `user|triage|codex@40hex` approval, reviewer@12hex review, `plan_check`
+ * fallback — exactly as it was.
+ *
+ * @param {Record<string, any>} md
+ * @returns {{ kind: 'none'|'review'|'incomplete', receipt: ParsedReceipt|null }}
+ */
+export function classifyPlanReviewRecord(md) {
+  const raw = typeof md.plan_review === 'string' ? md.plan_review.trim() : '';
+  const match = PLAN_REVIEW_COMMIT_RECEIPT_RE.exec(raw);
+  if (!match) {
+    return { kind: 'none', receipt: null };
+  }
+  const stats = parseReviewStats('plan', md.plan_review_stats);
+  if (!stats || stats.anchor.length !== 40) {
+    return { kind: 'none', receipt: null };
+  }
+  /** @type {ParsedReceipt} */
+  const receipt = {
+    reviewer: match[1],
+    sha: match[2],
+    is_skip: match[1] === 'skipped'
+  };
+  return stats.anchor.toLowerCase() === match[2].toLowerCase()
+    ? { kind: 'review', receipt }
+    : { kind: 'incomplete', receipt };
 }
 
 /**
@@ -1445,6 +1499,9 @@ export function parsePrNumber(pr_url) {
  * @property {string | null} receipt - Raw receipt string (spec/plan/impl only).
  * @property {string | null} [approval_receipt] - Plan approval receipt only.
  * @property {'missing'|'fresh'|'stale'|'unknown'|'legacy'} [approval_state] - Plan approval state only.
+ * @property {'review'|'incomplete'|null} [review_state] - Whether the plan cell
+ * stands on a complete D7 review pair, or on one whose stats anchor disagrees
+ * with the review anchor (UI-y9hl U3). `null` on every legacy reading.
  * @property {StageDoc} [doc] - Openable document behind the cell (spec/plan only).
  */
 
@@ -1594,13 +1651,21 @@ function planStage(md, status, workspace_root, head, probes = null) {
   }
 
   const has_new_approval = Object.hasOwn(md, 'plan_approval');
-  const legacy_approval = has_new_approval
-    ? null
-    : parsePlanReceipt(md.plan_review);
+  // D7 discrimination runs FIRST: a complete or anchor-mismatched 40hex review
+  // pair is a review record, so the legacy approval reading of the same string
+  // never applies to it (UI-y9hl U3).
+  const plan_record = classifyPlanReviewRecord(md);
+  const legacy_approval =
+    has_new_approval || plan_record.kind !== 'none'
+      ? null
+      : parsePlanReceipt(md.plan_review);
 
   let review_raw = null;
   let review_receipt = null;
-  if (legacy_approval) {
+  if (plan_record.kind !== 'none') {
+    review_raw = typeof md.plan_review === 'string' ? md.plan_review : null;
+    review_receipt = plan_record.kind === 'review' ? plan_record.receipt : null;
+  } else if (legacy_approval) {
     review_raw = typeof md.plan_check === 'string' ? md.plan_check : null;
     review_receipt = parsePlanReviewReceipt(md.plan_check);
   } else if (Object.hasOwn(md, 'plan_review')) {
@@ -1661,6 +1726,7 @@ function planStage(md, status, workspace_root, head, probes = null) {
     ...makeStage(fill, classifyGlyph(review_receipt), stale, review_raw),
     approval_receipt: approval_raw,
     approval_state,
+    review_state: plan_record.kind === 'none' ? null : plan_record.kind,
     ...doc_part
   };
 }

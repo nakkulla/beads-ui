@@ -7,11 +7,22 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { sanitizeMonitorDetails } from '../../app/utils/transcript-lines.js';
 import { debug } from '../logging.js';
 import { delegationMonitorDir } from './state-paths.js';
 
 const log = debug('worker:delegation-monitor');
-const MONITOR_SCHEMA = 'codex-delegation-monitor-v1';
+/**
+ * Both producer envelope schemas (dotfiles D4). `-v2` adds OPTIONAL activity
+ * details and changes nothing about identity, ordering or terminal meaning, so
+ * a v1 file keeps parsing byte for byte as before.
+ */
+const MONITOR_SCHEMAS = new Set([
+  'codex-delegation-monitor-v1',
+  'codex-delegation-monitor-v2'
+]);
+const MONITOR_SCHEMA_V2 = 'codex-delegation-monitor-v2';
+
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const TOP_LEVEL_KEYS = new Set([
@@ -161,10 +172,40 @@ function isRole(value) {
 }
 
 /**
+ * Whether a v2 activity item carries every required key.
+ *
+ * Additional keys are ALLOWED here: dotfiles D4 says an unknown optional detail
+ * is omitted while the coarse activity is kept, so an item the producer grew a
+ * field on must not take the whole event down. `sanitizeEvent` then emits the
+ * required keys plus the validated allowlisted details only, which is what
+ * keeps the unknown key from reaching a subscriber.
+ *
+ * @param {Record<string, unknown>} value
+ * @param {Set<string>} required
+ * @returns {boolean}
+ */
+function hasRequiredKeys(value, required) {
+  return [...required].every((key) => key in value);
+}
+
+/**
+ * @param {Record<string, unknown>} item
+ * @param {Set<string>} required
+ * @param {boolean} allow_details
+ * @returns {boolean}
+ */
+function hasActivityKeys(item, required, allow_details) {
+  return allow_details
+    ? hasRequiredKeys(item, required)
+    : hasExactKeys(item, required);
+}
+
+/**
  * @param {unknown} value
+ * @param {boolean} [allow_details] - v2 optional activity details.
  * @returns {value is Record<string, unknown>}
  */
-function isEvent(value) {
+function isEvent(value, allow_details = false) {
   if (!isRecord(value) || !nonEmptyString(value.type)) {
     return false;
   }
@@ -194,17 +235,19 @@ function isEvent(value) {
   const item = value.item;
   if (value.type === 'item.started') {
     return (
-      hasExactKeys(item, STARTED_ACTIVITY_KEYS) &&
+      hasActivityKeys(item, STARTED_ACTIVITY_KEYS, allow_details) &&
       nonEmptyString(item.id) &&
       item.kind === 'activity' &&
-      ACTIVITIES.has(String(item.activity))
+      typeof item.activity === 'string' &&
+      ACTIVITIES.has(item.activity)
     );
   }
   if (item.kind === 'activity') {
     return (
-      hasExactKeys(item, COMPLETED_ACTIVITY_KEYS) &&
+      hasActivityKeys(item, COMPLETED_ACTIVITY_KEYS, allow_details) &&
       nonEmptyString(item.id) &&
-      ACTIVITIES.has(String(item.activity)) &&
+      typeof item.activity === 'string' &&
+      ACTIVITIES.has(item.activity) &&
       (item.status === 'completed' || item.status === 'failed')
     );
   }
@@ -216,6 +259,40 @@ function isEvent(value) {
     );
   }
   return false;
+}
+
+/**
+ * Rewrite one v2 event as the required activity keys plus only the allowlisted
+ * optional details (dotfiles D4). The coarse activity survives an invalid or
+ * unknown detail; the same projection the drawer uses is applied here so the
+ * server and the browser never disagree about what a line is allowed to say.
+ *
+ * Returns the SAME object when nothing had to be dropped, which is what lets
+ * the caller keep the original raw line untouched for a clean stream.
+ *
+ * @param {Record<string, unknown>} event
+ * @returns {Record<string, unknown>}
+ */
+function sanitizeEvent(event) {
+  const item = event.item;
+  if (!isRecord(item) || item.kind !== 'activity') {
+    return event;
+  }
+  const completed = event.type === 'item.completed';
+  const required = completed ? COMPLETED_ACTIVITY_KEYS : STARTED_ACTIVITY_KEYS;
+  const details = sanitizeMonitorDetails(item, { completed });
+  /** @type {Record<string, unknown>} */
+  const next_item = {};
+  for (const [key, value] of Object.entries(item)) {
+    if (required.has(key)) {
+      next_item[key] = value;
+    }
+  }
+  Object.assign(next_item, details);
+  const same =
+    Object.keys(item).length === required.size &&
+    Object.keys(details).length === 0;
+  return same ? event : { ...event, item: next_item };
 }
 
 /**
@@ -231,7 +308,7 @@ function parseMonitorLine(raw) {
     return null;
   }
   if (
-    raw.schema !== MONITOR_SCHEMA ||
+    !(typeof raw.schema === 'string' && MONITOR_SCHEMAS.has(raw.schema)) ||
     !nonEmptyString(raw.attempt_id) ||
     !nonEmptyString(raw.launch_id) ||
     raw.provider !== 'codex' ||
@@ -241,10 +318,12 @@ function parseMonitorLine(raw) {
     !nonEmptyString(raw.thread_id) ||
     (raw.turn_id !== null && !nonEmptyString(raw.turn_id)) ||
     !isUtcMillisecond(raw.recorded_at) ||
-    !isEvent(raw.event)
+    !isEvent(raw.event, raw.schema === MONITOR_SCHEMA_V2)
   ) {
     return null;
   }
+  const event =
+    raw.schema === MONITOR_SCHEMA_V2 ? sanitizeEvent(raw.event) : raw.event;
   return {
     role: raw.role,
     model: raw.model,
@@ -252,8 +331,11 @@ function parseMonitorLine(raw) {
     thread_id: raw.thread_id,
     turn_id: /** @type {string|null} */ (raw.turn_id),
     recorded_at: raw.recorded_at,
-    event: raw.event,
-    raw
+    event,
+    // The projected line carries the SANITIZED event, so an out-of-contract
+    // optional detail never reaches a subscriber even though the envelope was
+    // accepted (dotfiles D4).
+    raw: event === raw.event ? raw : { ...raw, event }
   };
 }
 
@@ -283,7 +365,7 @@ function hasRawIdentityConflict(raw, attempt_id, launch_id, identity, turn_id) {
     return false;
   }
   return (
-    raw.schema !== MONITOR_SCHEMA ||
+    raw.schema !== identity.raw.schema ||
     raw.role !== identity.role ||
     raw.model !== identity.model ||
     ('effort' in raw ? raw.effort : null) !== identity.effort ||

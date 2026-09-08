@@ -7,8 +7,11 @@ import {
 import { createTitleCache } from '../worker/title-cache.js';
 import { emitMonitorPipelineSnapshot } from './context.js';
 import {
+  __resetRepoHealthCacheForTest,
   buildMonitorPipeline,
-  buildMonitorWorkspacesState
+  buildMonitorWorkspacesState,
+  prewarmRepoHealth,
+  projectRepoHealth
 } from './monitor-handlers.js';
 
 const WS_A = '/tmp/example/repo-a';
@@ -1849,5 +1852,294 @@ describe('buildMonitorPipeline runnable description scope (UI-f1qy §4.4)', () =
     expect(/** @type {any[]} */ (out[0].runnable)[0].scope).toEqual([
       'server/worker/'
     ]);
+  });
+});
+
+describe('repo health kv projection (UI-y9hl U2)', () => {
+  const NOW_MS = Date.parse('2026-09-08T04:00:00.000Z');
+
+  /**
+   * A canonical `repo-health-v1` record (dotfiles D6).
+   *
+   * @param {Record<string, any>} [patch]
+   * @returns {Record<string, any>}
+   */
+  function healthRecord(patch = {}) {
+    return {
+      schema: 'repo-health-v1',
+      rig: 'beads-ui',
+      observed_at: '2026-09-08T03:55:00.000Z',
+      last_success_at: '2026-09-08T03:55:00.000Z',
+      status: 'ok',
+      base: 'main',
+      head_relation: 'equal',
+      behind: 0,
+      ahead: 0,
+      classes: {
+        disjoint: 0,
+        converged: 0,
+        conflict: 0,
+        staged: 0,
+        unmerged: 0
+      },
+      truncated: false,
+      ...patch
+    };
+  }
+
+  test('reads a current successful observation', () => {
+    const health = projectRepoHealth(
+      healthRecord({
+        head_relation: 'behind',
+        behind: 3,
+        classes: {
+          disjoint: 1,
+          converged: 0,
+          conflict: 2,
+          staged: 1,
+          unmerged: 0
+        }
+      }),
+      NOW_MS
+    );
+
+    expect(health).toMatchObject({
+      state: 'ok',
+      head_relation: 'behind',
+      behind: 3,
+      ahead: 0,
+      base: 'main',
+      truncated: false
+    });
+    expect(health.classes).toEqual({
+      disjoint: 1,
+      converged: 0,
+      conflict: 2,
+      staged: 1,
+      unmerged: 0
+    });
+  });
+
+  test('reads an ahead and a diverged relation', () => {
+    const ahead = projectRepoHealth(
+      healthRecord({ head_relation: 'ahead', ahead: 2 }),
+      NOW_MS
+    );
+    const diverged = projectRepoHealth(
+      healthRecord({ head_relation: 'diverged', behind: 4, ahead: 1 }),
+      NOW_MS
+    );
+
+    expect(ahead).toMatchObject({ state: 'ok', head_relation: 'ahead' });
+    expect(diverged).toMatchObject({
+      state: 'ok',
+      head_relation: 'diverged',
+      behind: 4,
+      ahead: 1
+    });
+  });
+
+  test('keeps truncated counts flagged rather than summed', () => {
+    const health = projectRepoHealth(
+      healthRecord({
+        truncated: true,
+        classes: {
+          disjoint: 21,
+          converged: 0,
+          conflict: 3,
+          staged: 20,
+          unmerged: 0
+        }
+      }),
+      NOW_MS
+    );
+
+    expect(health.truncated).toBe(true);
+    expect(health.classes?.staged).toBe(20);
+  });
+
+  test('reads a recent collection failure as an error', () => {
+    const health = projectRepoHealth(
+      healthRecord({
+        status: 'error',
+        error_code: 'fetch_failed',
+        head_relation: undefined,
+        behind: undefined,
+        ahead: undefined,
+        classes: undefined
+      }),
+      NOW_MS
+    );
+
+    expect(health).toMatchObject({
+      state: 'error',
+      error_code: 'fetch_failed',
+      head_relation: null
+    });
+  });
+
+  test('reads an observation older than 45 minutes as stale', () => {
+    const health = projectRepoHealth(
+      healthRecord({ observed_at: '2026-09-08T03:00:00.000Z' }),
+      NOW_MS
+    );
+
+    expect(health.state).toBe('stale');
+  });
+
+  test('keeps the last error visible on a stale record', () => {
+    const health = projectRepoHealth(
+      healthRecord({
+        observed_at: '2026-09-08T03:00:00.000Z',
+        status: 'error',
+        error_code: 'judge_failed',
+        classes: undefined
+      }),
+      NOW_MS
+    );
+
+    expect(health).toMatchObject({
+      state: 'stale',
+      error_code: 'judge_failed'
+    });
+  });
+
+  test('reads a future observation as unknown', () => {
+    const health = projectRepoHealth(
+      healthRecord({ observed_at: '2026-09-08T05:00:00.000Z' }),
+      NOW_MS
+    );
+
+    expect(health.state).toBe('unknown');
+  });
+
+  test('reads an unsupported schema, a missing key and a broken record as unknown', () => {
+    expect(projectRepoHealth(null, NOW_MS).state).toBe('unknown');
+    expect(
+      projectRepoHealth(healthRecord({ schema: 'repo-health-v2' }), NOW_MS)
+        .state
+    ).toBe('unknown');
+    expect(
+      projectRepoHealth(healthRecord({ head_relation: 'sideways' }), NOW_MS)
+        .state
+    ).toBe('unknown');
+    expect(projectRepoHealth(healthRecord({ behind: -1 }), NOW_MS).state).toBe(
+      'unknown'
+    );
+    expect(
+      projectRepoHealth(
+        healthRecord({ status: 'error', error_code: 'nope' }),
+        NOW_MS
+      ).state
+    ).toBe('unknown');
+  });
+
+  test('reads an array-valued head_relation or error_code as unknown', () => {
+    expect(
+      projectRepoHealth(healthRecord({ head_relation: ['equal'] }), NOW_MS)
+        .state
+    ).toBe('unknown');
+    expect(
+      projectRepoHealth(
+        healthRecord({
+          status: 'error',
+          error_code: ['judge_failed'],
+          classes: undefined
+        }),
+        NOW_MS
+      ).state
+    ).toBe('unknown');
+  });
+
+  test('reads a timezone-less observation as unknown', () => {
+    expect(
+      projectRepoHealth(
+        healthRecord({ observed_at: '2026-09-08T03:55:00.000' }),
+        NOW_MS
+      ).state
+    ).toBe('unknown');
+  });
+
+  test('reads an impossible calendar date as unknown', () => {
+    expect(
+      projectRepoHealth(
+        healthRecord({ observed_at: '2026-02-30T00:00:00Z' }),
+        NOW_MS
+      ).state
+    ).toBe('unknown');
+  });
+
+  test('drops a malformed last_success_at while keeping the observation', () => {
+    const health = projectRepoHealth(
+      healthRecord({ last_success_at: '2026-09-08 03:55:00' }),
+      NOW_MS
+    );
+
+    expect(health.state).toBe('ok');
+    expect(health.last_success_at).toBe(null);
+  });
+
+  test('never carries a path, command or remote url', () => {
+    const health = projectRepoHealth(
+      healthRecord({
+        paths: ['secret/a.js'],
+        remote: 'git@example.com:x/y.git',
+        stderr: 'SENTINEL'
+      }),
+      NOW_MS
+    );
+
+    expect(JSON.stringify(health)).not.toContain('SENTINEL');
+    expect(JSON.stringify(health)).not.toContain('example.com');
+  });
+
+  test('ships unknown from a cold cache and the real value once warm', async () => {
+    __resetRepoHealthCacheForTest();
+
+    const cold = buildMonitorWorkspacesState({
+      listWorkspaces: () => [{ path: WS_A }],
+      listHidden: () => [],
+      snapshotFor: () => snapshot(),
+      issuePrefixFor: () => null,
+      sessionDefaultsFor: () => ({ values: {}, warnings: [] }),
+      runnableFor: () => [],
+      sessionActiveFor: () => []
+    });
+    await prewarmRepoHealth(WS_A, {
+      kvGet: async () => ({ ok: true, value: healthRecord() })
+    });
+    const warm = buildMonitorWorkspacesState({
+      listWorkspaces: () => [{ path: WS_A }],
+      listHidden: () => [],
+      snapshotFor: () => snapshot(),
+      issuePrefixFor: () => null,
+      sessionDefaultsFor: () => ({ values: {}, warnings: [] }),
+      runnableFor: () => [],
+      sessionActiveFor: () => []
+    });
+
+    expect(/** @type {any} */ (cold[0].repo_health).state).toBe('unknown');
+    expect(/** @type {any} */ (warm[0].repo_health).base).toBe('main');
+    __resetRepoHealthCacheForTest();
+  });
+
+  test('ships unknown when the kv read fails', async () => {
+    __resetRepoHealthCacheForTest();
+
+    await prewarmRepoHealth(WS_A, {
+      kvGet: async () => ({ ok: false, error: 'bd kv get failed' })
+    });
+    const out = buildMonitorWorkspacesState({
+      listWorkspaces: () => [{ path: WS_A }],
+      listHidden: () => [],
+      snapshotFor: () => snapshot(),
+      issuePrefixFor: () => null,
+      sessionDefaultsFor: () => ({ values: {}, warnings: [] }),
+      runnableFor: () => [],
+      sessionActiveFor: () => []
+    });
+
+    expect(/** @type {any} */ (out[0].repo_health).state).toBe('unknown');
+    __resetRepoHealthCacheForTest();
   });
 });

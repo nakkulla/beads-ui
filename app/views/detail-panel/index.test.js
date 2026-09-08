@@ -352,6 +352,45 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('workflow detail marks an incomplete plan review record', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const review = 'codex@' + 'b'.repeat(12);
+    const { panel } = seedPanel(
+      mount,
+      {
+        ...baseIssue,
+        metadata: { route: 'full_plan', plan_review: review },
+        workflow: {
+          route: 'full_plan',
+          route_source: 'explicit',
+          stages: {
+            spec: { stale: false },
+            plan: {
+              receipt: review,
+              approval_receipt: null,
+              approval_state: 'missing',
+              review_state: 'incomplete',
+              stale: false
+            },
+            impl: { stale: false }
+          }
+        }
+      },
+      vi.fn()
+    );
+
+    const rows = Object.fromEntries(
+      Array.from(mount.querySelectorAll('.detail-kv')).map((row) => [
+        row.querySelector('.detail-kv__k')?.textContent?.trim(),
+        row.querySelector('.detail-kv__v')?.textContent?.trim()
+      ])
+    );
+    expect(rows.plan_review).toBe(`${review} · 불완전(앵커 불일치)`);
+    expect(rows.plan_approval).toBe('없음');
+
+    panel.destroy();
+  });
+
   test('workflow detail renders a derived route and its empty editor option as unset', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seedPanel(

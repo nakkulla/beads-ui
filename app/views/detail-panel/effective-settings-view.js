@@ -737,6 +737,12 @@ function gateReceipt(stage, metadata, stages) {
 }
 
 /**
+ * The plan gate's phrase for a D7 review pair whose stats anchor disagrees with
+ * the review anchor (UI-y9hl U3).
+ */
+const PLAN_REVIEW_INCOMPLETE_TEXT = '검토 기록 불완전 — 앵커 불일치';
+
+/**
  * The plan gate's approval phrase, or `''` for every other gate and for an
  * approval that is settled. Absent state stays silent — a contract key this
  * surface cannot observe is never reported as a problem.
@@ -750,7 +756,12 @@ function planApprovalText(stage, stages) {
     return '';
   }
   const state = stages.plan?.approval_state;
-  return typeof state === 'string' && Object.hasOwn(PLAN_APPROVAL_TEXT, state)
-    ? /** @type {Record<string, string>} */ (PLAN_APPROVAL_TEXT)[state]
-    : '';
+  const approval =
+    typeof state === 'string' && Object.hasOwn(PLAN_APPROVAL_TEXT, state)
+      ? /** @type {Record<string, string>} */ (PLAN_APPROVAL_TEXT)[state]
+      : '';
+  if (stages.plan?.review_state !== 'incomplete') {
+    return approval;
+  }
+  return [PLAN_REVIEW_INCOMPLETE_TEXT, approval].filter(Boolean).join(' · ');
 }

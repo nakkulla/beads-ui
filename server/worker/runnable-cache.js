@@ -37,6 +37,7 @@ import {
 import { debug } from '../logging.js';
 import { resolveSpecEvidence, resolveSpecId } from '../spec-id.js';
 import {
+  classifyPlanReviewRecord,
   enrichIssueWorkflow,
   parsePlanApprovalReceipt,
   parsePlanReceipt,
@@ -145,7 +146,7 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * off `description_scope`. Absent means 판정 불가 (not yet read, unreadable, or
  * no declaration at all), never "no scope".
  * @property {string} spec_reviewer - Reviewer token from `spec_review`.
- * @property {'approved'|'authored'|'none'} plan_state
+ * @property {'approved'|'authored'|'review_incomplete'|'none'} plan_state
  * @property {boolean} blocked - Membership in `ready_explain.blocked`.
  * @property {string[]} blocked_by - Direct `blocks` blocker ids.
  * @property {string[]} labels - Labels carried for display.
@@ -343,7 +344,7 @@ function isPhaseChild(row) {
  *
  * @param {Record<string, unknown>} meta
  * @param {string} route
- * @returns {'approved'|'authored'|'none'}
+ * @returns {'approved'|'authored'|'review_incomplete'|'none'}
  */
 function planState(meta, route) {
   if (route !== 'full_plan') {
@@ -356,14 +357,22 @@ function planState(meta, route) {
   }
 
   const has_new_approval = Object.hasOwn(meta, 'plan_approval');
-  const legacy_approval = has_new_approval
-    ? null
-    : parsePlanReceipt(meta.plan_review);
+  // Same D7 discrimination as `workflow-enrich.js` `planStage()` (UI-y9hl U3):
+  // a 40hex review pair is a review, so the legacy approval reading of the same
+  // `plan_review` string is skipped for it.
+  const plan_record = classifyPlanReviewRecord(meta);
+  const legacy_approval =
+    has_new_approval || plan_record.kind !== 'none'
+      ? null
+      : parsePlanReceipt(meta.plan_review);
   const approval = has_new_approval
     ? parsePlanApprovalReceipt(meta.plan_approval)
     : legacy_approval;
   if (approval) {
     return 'approved';
+  }
+  if (plan_record.kind !== 'none') {
+    return plan_record.kind === 'review' ? 'authored' : 'review_incomplete';
   }
 
   const review = legacy_approval

@@ -283,6 +283,52 @@ describe('views/board/stepper', () => {
     );
   });
 
+  test('plan aria-label names an incomplete review record', () => {
+    const incomplete = mountStepper(
+      wf(
+        {
+          spec: stage('full', 'review'),
+          plan: {
+            ...stage('dim', 'review'),
+            approval_receipt: null,
+            approval_state: 'missing',
+            review_state: 'incomplete'
+          },
+          impl: NONE,
+          pr: NONE,
+          merge: NONE
+        },
+        'full_plan'
+      ),
+      'in_progress'
+    );
+    expect(
+      incomplete.querySelector('.stp')?.getAttribute('aria-label')
+    ).toContain('plan 검토 완료 · 검토 기록 불완전 — 앵커 불일치 · 승인 필요');
+
+    const complete = mountStepper(
+      wf(
+        {
+          spec: stage('full', 'review'),
+          plan: {
+            ...stage('dim', 'review'),
+            approval_receipt: null,
+            approval_state: 'missing',
+            review_state: 'review'
+          },
+          impl: NONE,
+          pr: NONE,
+          merge: NONE
+        },
+        'full_plan'
+      ),
+      'in_progress'
+    );
+    expect(
+      complete.querySelector('.stp')?.getAttribute('aria-label')
+    ).not.toContain('검토 기록 불완전');
+  });
+
   test('plan aria-label treats an empty plan stage as unreached', () => {
     const m = mountStepper(
       wf(

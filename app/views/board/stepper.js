@@ -12,6 +12,9 @@ import { html } from 'lit-html';
  * @property {string | null} [receipt]
  * @property {string | null} [approval_receipt]
  * @property {'missing'|'fresh'|'stale'|'unknown'|'legacy'} [approval_state]
+ * @property {'review'|'incomplete'|null} [review_state] - Whether the plan cell
+ * stands on a complete D7 review pair, or on one whose stats anchor disagrees
+ * with the review anchor (UI-y9hl U3).
  * @property {StepperDoc} [doc]
  */
 
@@ -131,6 +134,13 @@ function stageStateText(stage) {
 }
 
 /**
+ * The plan cell's phrase for a D7 review pair whose stats anchor disagrees with
+ * the review anchor (UI-y9hl U3) — the record exists but is not readable as a
+ * complete one.
+ */
+const REVIEW_INCOMPLETE_TEXT = '검토 기록 불완전 — 앵커 불일치';
+
+/**
  * Accessible plan state keeps review evidence and native approval distinct
  * while the visual cell continues to reuse the existing glyph/fill vocabulary.
  *
@@ -138,8 +148,10 @@ function stageStateText(stage) {
  * @returns {string}
  */
 function planStageStateText(stage) {
+  const incomplete = !!stage && stage.review_state === 'incomplete';
   if (!stage || stage.fill === 'none' || !stage.approval_state) {
-    return stageStateText(stage);
+    const base = stageStateText(stage);
+    return incomplete ? `${base} · ${REVIEW_INCOMPLETE_TEXT}` : base;
   }
   /** @type {string[]} */
   const parts = [];
@@ -147,6 +159,9 @@ function planStageStateText(stage) {
     parts.push(STATE_TEXT.review);
   } else if (stage.glyph === 'skip') {
     parts.push(STATE_TEXT.skip);
+  }
+  if (incomplete) {
+    parts.push(REVIEW_INCOMPLETE_TEXT);
   }
   if (stage.approval_state === 'missing') {
     parts.push('승인 필요');
