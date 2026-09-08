@@ -225,9 +225,9 @@ workflow 어휘와 자격 판정은 dotfiles 계약의 소비 범위로 유지�
 실시간 밀리초 상한은 flaky한 필수 테스트로 고정하지 않고 재현 전후 관찰값으로 기록한다.
 
 최초 검사 전 해당 checkout의 Node와 `npm ls --depth=0`을 확인한다.
-`npm run tsc`, `npm run lint`, `npm run prettier:check`,
-`npx vitest run --reporter=dot`을 통과하고 전체 테스트는 120초 상한으로 실행한다.
-포맷 수정은 소유한 변경 파일에만 적용한다. `npm run build`로 bundle/map을 갱신하고
+`npm run tsc`, `npm run lint`, `npx vitest run --reporter=dot`을 통과하고 전체
+테스트는 120초 상한으로 실행한다. 구현 워크트리에서 `npm run prettier:write`를
+실행하고 그 변경이 소유한 경로에만 생기는지 확인한다. `npm run build`로 bundle/map을 갱신하고
 전체 변경 범위를 확인한다. 구현 착지 후 배포·실제 프로세스 경로·포트·HTTP 검증은
 저장소의 기존 마감 절차를 따른다. 이 스펙 작성 자체는 구현이나 배포가 아니다.
 
@@ -254,6 +254,6 @@ workflow 어휘와 자격 판정은 dotfiles 계약의 소비 범위로 유지�
 - 전제: ADR 0025 — 목록·상세의 공유 스냅샷 투영과 상세 전용 bd read 금지를 유지한다.
 - 전제: ADR 0026 — 기존 비동기 준비·불변 키 캐시·세대 컨텍스트를 재사용하며 후보 캐시의 동기 예외만 대체한다.
 - 전제: ADR 0014 — 공유 레인·카드 슬롯을 유지하며 표시 결과의 재설계를 하지 않는다.
-- 후보 투영도 기존 비동기 준비 컨텍스트만 읽는다: 되돌리기 어려움 예(호출·오류·캐시 계약을 함께 되돌려야 함), 맥락 없이 의외 예(동기 API지만 동기 조회 금지), 실질 대안 있음(행별 동기 조회 유지); `summary`: "워크스페이스와 후보 투영은 기존 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스를 띄우지 않으며 title-cache 예외는 유지한다" → ADR, supersede 0026
-- store는 revision 수신과 내용 변경 통지를 구분하고 registry는 출처를 전달한다: 되돌리기 어려움 예(store·타입·모든 구독 소비자의 동시 변경), 맥락 없이 의외 예(수신한 revision이 진전해도 listener가 호출되지 않음), 실질 대안 있음(메시지마다 전체 통지); `summary`: "구독별 store는 revision을 수신하되 내용 변경만 통지하고 registry는 구독 출처를 전달하며 전체 issue push와 기존 순서·identity 규칙을 유지한다" → ADR, supersede 0002
-- 기존 hidden·load·pause 사용과 중복 배열 복사 제거: 되돌리기 어려움 아니오, 맥락 없이 의외 아니오, 실질 대안 있음(구독 해제 또는 추가 캐시) → ADR 아님
+- 후보 투영도 기존 비동기 준비 컨텍스트만 읽는다: 되돌리기 어려움 예(호출·오류·캐시 계약을 함께 되돌려야 함), 맥락 없이 의외 예(동기 API지만 동기 조회 금지), 실질 대안 있음(행별 동기 조회 유지); ADR 0026을 supersede한다; `summary`: "워크스페이스와 후보 투영은 기존 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스를 띄우지 않으며 title-cache 예외는 유지한다" → ADR
+- store는 revision 수신과 내용 변경 통지를 구분하고 registry는 출처를 전달한다: 되돌리기 어려움 예(store·타입·모든 구독 소비자의 동시 변경), 맥락 없이 의외 예(수신한 revision이 진전해도 listener가 호출되지 않음), 실질 대안 있음(메시지마다 전체 통지); ADR 0002를 supersede한다; `summary`: "구독별 store는 revision을 수신하되 내용 변경만 통지하고 registry는 구독 출처를 전달하며 전체 issue push와 기존 순서·identity 규칙을 유지한다" → ADR
+- 기존 hidden·load·pause 사용과 중복 배열 복사 제거: 되돌리기 어려움 아니오(라우트가 이미 설정하는 `hidden`과 기존 lifecycle 함수만 쓰는 뷰 내부 변경이라 해당 분기 제거로 되돌린다), 맥락 없이 의외 아니오(숨긴 화면을 그리지 않고 같은 배열을 두 번 복사하지 않는 것은 기존 lifecycle 의도의 연장이다), 실질 대안 있음(구독 해제 또는 추가 캐시) → ADR 아님
