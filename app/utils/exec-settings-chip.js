@@ -235,3 +235,47 @@ export function formatWorkerChip(rows, controller_runtime) {
     ])
   };
 }
+
+/**
+ * `impl_actor` 하나로 서는 완료 행의 워커(구현 위임) 칩 (UI-ys18 §5.2). 재료는 그 완료를 만든 attempt가
+ * 보존한 영수증에서 서버가 해석한 `impl_actor` 하나뿐이다 — 현재 핀·전역
+ * 기본값·프리셋은 실행 뒤에도 계속 움직이므로 과거 실행 주체를 말할 수 없다.
+ *
+ * `delegated`는 기록된 모델과 effort를, `main`은 직접 구현 표현을 쓴다.
+ * `missing`과 필드 부재(옛 서버)는 `null`이고 그때 칩은 서지 않는다.
+ *
+ * @param {{ kind?: unknown, model?: unknown, effort?: unknown }|null|undefined} impl_actor
+ * @returns {ExecChip|null}
+ */
+export function formatImplActorChip(impl_actor) {
+  if (typeof impl_actor !== 'object' || impl_actor === null) {
+    return null;
+  }
+  if (impl_actor.kind === 'main') {
+    return {
+      text: '메인',
+      title: joinLines([
+        '워커(구현 위임) — 이 attempt의 보존 영수증에 기록된 실제 구현 주체',
+        '구현: 컨트롤러 직접(main)'
+      ])
+    };
+  }
+  if (impl_actor.kind !== 'delegated') {
+    return null;
+  }
+  const model = typeof impl_actor.model === 'string' ? impl_actor.model : null;
+  const effort =
+    typeof impl_actor.effort === 'string' ? impl_actor.effort : null;
+  const text = joinTokens([model, effort]);
+  if (text === '') {
+    return null;
+  }
+  return {
+    text,
+    title: joinLines([
+      '워커(구현 위임) — 이 attempt의 보존 영수증에 기록된 실제 구현 주체',
+      model === null ? null : `${SETTING_LABELS.impl_model}: ${model}`,
+      effort === null ? null : `${SETTING_LABELS.impl_effort}: ${effort}`
+    ])
+  };
+}

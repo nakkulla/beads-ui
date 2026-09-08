@@ -380,10 +380,16 @@ function laneMemberIds(snapshot) {
  * client adapter produces (UI-q1tg §3.1):
  * `{ [bead_id]: { route?: string, metadata?: Record<string, string> } }`.
  *
- * `route` covers the lane members ∪ `done`; the execution pin covers the lane
- * members ONLY — a 완료 행 says what it RAN with, which comes from the attempt
- * record (§3.4) and not from a pin that keeps moving after the run. `runnable`
- * rows carry their own `workflow` already and need no overlay.
+ * `route` covers the lane members ∪ `done` ∪ this root's visible cross-lane
+ * entries; the execution pin covers the lane members ∪ this root's NOT-done,
+ * NOT-running cross-lane entries (UI-ys18 §4.1) — a 완료 행 says what it RAN
+ * with, which comes from the attempt record (§3.4) and not from a pin that keeps
+ * moving after the run, while a 큐 밖 연결 레인 멤버 has no lane row to carry its
+ * 예정 설정. `carried_to` covers this root's `done` alone. `runnable` rows carry
+ * their own `workflow` already and need no overlay.
+ *
+ * Reading cross-lane ids here never places anything into `queue` and never arms
+ * a lane (ADR 0041): it is the same read-only projection the lane members get.
  *
  * Reads the warm cache alone, so this projection spawns no synchronous child
  * process (ADR 0026), and is partial on the cache's existing contract: a bead
@@ -393,16 +399,50 @@ function laneMemberIds(snapshot) {
  * @param {string} root_dir
  * @param {Record<string, any>} snapshot
  * @param {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null} cache
- * @returns {Record<string, { route?: string, metadata?: Record<string, string> }>}
+ * @param {string[]} [cross_lane_ids] - 이 root의 보이는 연결 레인 entry ID들.
+ * @param {((workspace_key: string, parent_ids: Iterable<string>) => Record<string, string[]>)|null} [carriedToFor]
+ * @returns {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[] }>}
  */
-function beadOverlayFor(root_dir, snapshot, cache) {
-  /** @type {Record<string, { route?: string, metadata?: Record<string, string> }>} */
+function beadOverlayFor(
+  root_dir,
+  snapshot,
+  cache,
+  cross_lane_ids = [],
+  carriedToFor = null
+) {
+  /** @type {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[] }>} */
   const overlay = {};
+  const done_ids = [...laneBeadIds(snapshot, ['done'])];
+  if (carriedToFor && done_ids.length > 0) {
+    try {
+      for (const [bead_id, carried_to] of Object.entries(
+        carriedToFor(root_dir, done_ids)
+      )) {
+        if (Array.isArray(carried_to) && carried_to.length > 0) {
+          (overlay[bead_id] || (overlay[bead_id] = {})).carried_to = carried_to;
+        }
+      }
+    } catch (err) {
+      log('monitor: carryover projection failed for %s: %o', root_dir, err);
+    }
+  }
   if (!cache) {
     return overlay;
   }
-  const lane_ids = [...laneMemberIds(snapshot)];
-  const ids = [...new Set([...lane_ids, ...laneBeadIds(snapshot, ['done'])])];
+  const lane_member_ids = laneMemberIds(snapshot);
+  const done_set = new Set(done_ids);
+  // 예정 실행 핀은 아직 돌지 않은 항목의 것이다: 이미 완료·실행 중인 연결 레인
+  // 멤버는 자기 레인 행의 기록값을 쓰므로 여기서 핀을 얹지 않는다.
+  const pin_ids = [
+    ...new Set([
+      ...lane_member_ids,
+      ...cross_lane_ids.filter(
+        (bead_id) => !done_set.has(bead_id) && !lane_member_ids.has(bead_id)
+      )
+    ])
+  ];
+  const lane_ids = [...lane_member_ids];
+  const ids = [...new Set([...lane_ids, ...done_ids, ...cross_lane_ids])];
   if (ids.length === 0) {
     return overlay;
   }
@@ -411,19 +451,52 @@ function beadOverlayFor(root_dir, snapshot, cache) {
   )) {
     const route = workflow ? workflow.route : null;
     if (typeof route === 'string' && route.length > 0) {
-      overlay[bead_id] = { route };
+      const entry = overlay[bead_id] || (overlay[bead_id] = {});
+      entry.route = route;
     }
   }
-  if (lane_ids.length === 0) {
+  if (pin_ids.length === 0) {
     return overlay;
   }
   for (const [bead_id, pin] of Object.entries(
-    cache.execPinFor(root_dir, lane_ids)
+    cache.execPinFor(root_dir, pin_ids)
   )) {
     const entry = overlay[bead_id] || (overlay[bead_id] = {});
     entry.metadata = pin;
   }
   return overlay;
+}
+
+/**
+ * `root_dir` → bead id 목록: 이 snapshot의 연결 레인 entries를 모은다
+ * (UI-ys18 §4.1). 최초 구독과 push가 읽은 **같은** 상태를 사용하므로 overlay와
+ * envelope의 연결 레인이 한 revision을 말한다.
+ *
+ * @param {CrossLanesState|null|undefined} cross_lanes
+ * @returns {Map<string, string[]>}
+ */
+function crossLaneIdsByRoot(cross_lanes) {
+  /** @type {Map<string, string[]>} */
+  const by_root = new Map();
+  const lanes = Array.isArray(cross_lanes?.lanes) ? cross_lanes.lanes : [];
+  for (const lane of lanes) {
+    const entries = Array.isArray(lane?.entries) ? lane.entries : [];
+    for (const entry of entries) {
+      const bead_id =
+        entry && typeof entry.bead_id === 'string' ? entry.bead_id : '';
+      const root_dir =
+        entry && typeof entry.root_dir === 'string' ? entry.root_dir : '';
+      if (bead_id.length === 0 || root_dir.length === 0) {
+        continue;
+      }
+      const list = by_root.get(root_dir) || [];
+      if (!list.includes(bead_id)) {
+        list.push(bead_id);
+      }
+      by_root.set(root_dir, list);
+    }
+  }
+  return by_root;
 }
 
 /**
@@ -446,8 +519,12 @@ function beadOverlayFor(root_dir, snapshot, cache) {
  *   snapshotFor?: (workspace_key: string) => Record<string, unknown>,
  *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>, options?: RunnableReadOptions) => Array<Record<string, unknown>>,
  *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
- *   titleCache?: () => ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null
- * }} [options] - Test seams; each defaults to the live server source.
+ *   titleCache?: () => ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null,
+ *   cross_lanes?: CrossLanesState|null,
+ *   carriedToFor?: (workspace_key: string, parent_ids: Iterable<string>) => Record<string, string[]>
+ * }} [options] - Test seams; each defaults to the live server source. The
+ * caller passes `cross_lanes` so the overlay and the envelope's 연결 레인 come
+ * from ONE read (UI-ys18 §4.1).
  * @returns {Array<Record<string, unknown>>}
  */
 export function buildMonitorPipeline(options = {}) {
@@ -467,6 +544,11 @@ export function buildMonitorPipeline(options = {}) {
     ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
       getWorkerRuntime().runnableCache.sessionActiveFor(key, exclude_ids));
   const titleCache = options.titleCache || titleCacheHandle;
+  const carriedToFor =
+    options.carriedToFor ||
+    ((/** @type {string} */ key, /** @type {Iterable<string>} */ parent_ids) =>
+      getWorkerRuntime().runnableCache.carriedToFor(key, parent_ids));
+  const cross_lane_ids_by_root = crossLaneIdsByRoot(options.cross_lanes);
 
   /** @type {Array<Record<string, unknown>>} */
   const out = [];
@@ -515,7 +597,13 @@ export function buildMonitorPipeline(options = {}) {
     }
     projected.session_active = session_active;
     try {
-      projected.bead_overlay = beadOverlayFor(root_dir, projected, cache);
+      projected.bead_overlay = beadOverlayFor(
+        root_dir,
+        projected,
+        cache,
+        cross_lane_ids_by_root.get(root_dir) || [],
+        carriedToFor
+      );
     } catch (err) {
       log('monitor: bead overlay failed for %s: %o', root_dir, err);
       projected.bead_overlay = {};
@@ -800,9 +888,12 @@ function pushNow() {
     return;
   }
   prewarmVisibleIssuePrefixes();
+  // 한 번만 읽는다 (UI-ys18 §4.1): overlay가 본 연결 레인과 envelope이 싣는
+  // 연결 레인이 같은 revision이어야 큐 밖 멤버의 칩이 그 레인 행과 맞는다.
+  const cross_lanes = safeCrossLanes();
   let workspaces = /** @type {Array<Record<string, unknown>>} */ ([]);
   try {
-    workspaces = buildMonitorPipeline();
+    workspaces = buildMonitorPipeline({ cross_lanes });
   } catch (err) {
     log('monitor: pipeline build failed: %o', err);
     return;
@@ -810,7 +901,7 @@ function pushNow() {
   const body_json = JSON.stringify({
     workspaces,
     workspaces_state: safeWorkspacesState(),
-    cross_lanes: safeCrossLanes()
+    cross_lanes
   });
   for (const sub of SUBSCRIBERS) {
     pushSnapshotIfChanged(sub, 'monitor-pipeline-snapshot', body_json);
@@ -1291,9 +1382,10 @@ export function handleSubscribeMonitorPipeline(ws, req) {
 
   prewarmVisibleIssuePrefixes();
 
+  const cross_lanes = safeCrossLanes();
   let workspaces = /** @type {Array<Record<string, unknown>>} */ ([]);
   try {
-    workspaces = buildMonitorPipeline();
+    workspaces = buildMonitorPipeline({ cross_lanes });
   } catch (err) {
     log('monitor: initial pipeline build failed: %o', err);
   }
@@ -1303,7 +1395,7 @@ export function handleSubscribeMonitorPipeline(ws, req) {
     JSON.stringify({
       workspaces,
       workspaces_state: safeWorkspacesState(),
-      cross_lanes: safeCrossLanes()
+      cross_lanes
     })
   );
   refreshExternalPrsForVisible();

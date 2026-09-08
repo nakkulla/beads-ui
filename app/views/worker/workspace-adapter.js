@@ -12,6 +12,7 @@
  */
 import { resolveSpecEvidence } from '../../../server/spec-id.js';
 import { createListSelectors } from '../../data/list-selectors.js';
+import { buildCarryoverIndex } from '../../utils/carryover-index.js';
 import { buildChildrenIndex, rollupFor } from '../../utils/child-rollup.js';
 import { debug } from '../../utils/logging.js';
 import { coerceTimestampMs } from '../../utils/relative-time.js';
@@ -145,51 +146,6 @@ function execPinsOf(metadata) {
     }
   }
   return pins;
-}
-
-/**
- * `carried_to` 이월 후속 색인 (UI-btj6 §3): 이월을 남긴 bead → 그 bead에서
- * 이월된 후속 ID들.
- *
- * 재료는 sweep의 이월 변환이 남긴 흔적 둘뿐이다 — 후속의 metadata `carried_from`과
- * 그 후속이 부모에 건 `blocks` 의존. 새 metadata 키를 만들지 않으므로 같은 꼴의
- * 흔적을 가진 과거 사례도 그대로 읽힌다. `blocks` 간선은 후보 행과 같은 사다리
- * ({@link blockerIdsOf})로 읽는다 — 의존 해석기가 세 벌이 되면 한 벌은 반드시
- * 낡는다.
- *
- * 입력은 아직 살아 있는 구독 열(Ready·Blocked·In-progress·Resolved)이다: 이미
- * 닫힌 후속은 그 집합에 없으므로 재료가 되지 않고, 부모 카드는 줄 자체를 잃는다
- * (fail-quiet).
- *
- * @param {any[]} issues
- * @returns {Map<string, string[]>}
- */
-function buildCarryoverIndex(issues) {
-  /** @type {Map<string, Set<string>>} */
-  const by_parent = new Map();
-  for (const issue of issues) {
-    if (!issue || typeof issue.id !== 'string' || issue.id.length === 0) {
-      continue;
-    }
-    const carried_from = objectOf(issue.metadata).carried_from;
-    if (typeof carried_from !== 'string' || carried_from.length === 0) {
-      continue;
-    }
-    for (const parent_id of blockerIdsOf(issue)) {
-      let successors = by_parent.get(parent_id);
-      if (!successors) {
-        successors = new Set();
-        by_parent.set(parent_id, successors);
-      }
-      successors.add(issue.id);
-    }
-  }
-  /** @type {Map<string, string[]>} */
-  const index = new Map();
-  for (const [parent_id, successors] of by_parent) {
-    index.set(parent_id, [...successors].sort());
-  }
-  return index;
 }
 
 /**

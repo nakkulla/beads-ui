@@ -107,6 +107,11 @@ fail-closed 규칙(비정상 exit는 throw)이다.
   후속 관계지만, 완료 카드에서는 "지금 갈 수 있나"라는 행동에 답하지 않는
   관계 정보이기 때문이다(행동을 바꾸는 쪽이 이긴다는 §5.1 판정 규칙).
 
+> 정정(UI-ys18). 같은 파생 규칙을 Worker 구독 집합과 Monitor의 기존 비동기 원본
+> 이슈 스캔에 함께 적용한다. 닫힌 부모를 향한 원본 blocks 간선도 관계 재료이며,
+> 현재 blocker 목록으로 대체하지 않는다. Monitor는 결과를 done 항목의
+> bead_overlay.carried_to로 전송하고 기존 4b 이월 칩을 사용한다.
+
 ## §4 수용 기준
 
 1. deferred 자식이 있는 부모의 sweep이 후속 생성(필수 승계 `plan_path`·

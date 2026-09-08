@@ -512,6 +512,17 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `supported:false` with nullable facts; it never changes dispatch or queue
   persistence. Consumers also accept this whole field being absent from an older
   server and show `기본값 확인 불가` instead of reconstructing defaults.
+- A TERMINAL attempt inside `attempts` may additionally carry the non-persisted
+  `impl_actor: { kind: 'delegated'|'main', model: string|null, effort: string|null, label: string }`
+  (UI-ys18 §5.1) — the actual implementer the attempt's own preserved
+  `exec_receipt` names, derived on the server by the preset-comparison parser
+  before the internal-field trimming removes `receipt_check`. It is a SNAPSHOT
+  of what RAN: a later pin, preset or global-default change never rewrites it,
+  and the wire never carries `receipt_check` itself. An unreadable, corrupt,
+  absent or disagreeing multi-unit receipt produces NO field at all, which is
+  the same thing an older server sends; consumers fail-quiet on the absence by
+  omitting the 완료 행's worker chip rather than falling back to current
+  settings.
 - A RUNNING attempt inside `attempts` additionally carries the non-persisted
   `last_event_at` (epoch ms) — when the server last saw a session-log line for
   that attempt (UI-53es §1). It is what the monitor row's live heartbeat reads;

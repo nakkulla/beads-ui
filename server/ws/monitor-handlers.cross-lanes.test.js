@@ -1003,6 +1003,20 @@ describe('cross_lanes snapshot projection (UI-j92s §4.4)', () => {
     });
   });
 
+  test('reads the stored lanes once for the overlay and the envelope', () => {
+    seed(4, [lane({ status: 'confirmed', entries: [entry('UI-1')] })]);
+    const read_spy = vi.spyOn(store, 'read');
+    const ws = fakeWs();
+
+    handleSubscribeMonitorPipeline(
+      /** @type {any} */ (ws),
+      request('subscribe-monitor-pipeline', { id: 'm1' })
+    );
+
+    expect(read_spy).toHaveBeenCalledTimes(1);
+    expect(ws.snapshots()[0].payload.cross_lanes.revision).toBe(4);
+  });
+
   test('defaults to null when the emitter is given no cross_lanes', () => {
     const ws = fakeWs();
 

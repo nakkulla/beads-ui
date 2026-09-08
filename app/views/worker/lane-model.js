@@ -26,6 +26,7 @@ import {
 import { isForeignBlocker } from '../../utils/blocker-scope.js';
 import {
   formatAttemptOrchestrationChip,
+  formatImplActorChip,
   formatOrchestrationChip,
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
@@ -1576,29 +1577,23 @@ function attemptWorkerChip(state, overlay, controller_runtime) {
 }
 
 /**
- * The 완료 행's 오케/워커 칩 (UI-q1tg §3.4). 재료는 그 완료를 만든 **마지막
- * 구현 attempt가 기록한 값**이지 핀이 아니다: 핀은 실행 이후에 바뀌고, Worker
- * 탭에는 완료 bead의 핀이 애초에 실리지 않는다. 실행 중 타일과 같은 재료·같은
- * 함수를 쓰므로 두 행이 같은 시제를 말한다.
+ * The 완료 행's 오케/워커 칩 (UI-q1tg §3.4, UI-ys18 §5.2). 재료는 그 완료를 만든
+ * **마지막 구현 attempt의 기록**이지 핀이 아니다: 핀은 실행 이후에 바뀌고,
+ * Worker 탭에는 완료 bead의 핀이 애초에 실리지 않는다.
  *
- * attempt 기록이 없으면 `null`이고 그때 완료 행은 route만 그린다 — 틀린 칩보다
- * 없는 칩이다 (fail-quiet).
+ * 오케는 그 attempt의 runner·model·effort·speed 기록이고, 워커는 서버가 보존
+ * 영수증에서 해석해 실어 준 `impl_actor` 하나다 — 현재 overlay metadata를
+ * 대체 재료로 쓰지 않는다. 재료가 없으면 그 칩만 서지 않는다 (fail-quiet).
  *
- * @param {Record<string, any>} state - The repo's `workspaces_state` row.
- * @param {Record<string, any>|null|undefined} overlay - The bead's `bead_overlay` entry.
  * @param {any} attempt - 그 bead의 마지막 구현 attempt.
  * @returns {import('../../utils/exec-settings-chip.js').ExecChips|null}
  */
-function attemptExecChips(state, overlay, attempt) {
+function attemptExecChips(attempt) {
   if (!attempt) {
     return null;
   }
   const orchestration = formatAttemptOrchestrationChip(attempt);
-  const worker = attemptWorkerChip(
-    state,
-    overlay,
-    typeof attempt.runner === 'string' ? attempt.runner : null
-  );
+  const worker = formatImplActorChip(attempt.impl_actor);
   return orchestration || worker ? { orchestration, worker } : null;
 }
 
@@ -3912,11 +3907,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       // (UI-q1tg §3.4). `exec_chips` 배분(아래 오버레이 루프)에 `done`이 없는
       // 것과 어긋나지 않는다 — 완료 행이 얻는 것은 "돌아갈 설정"이 아니라 "무엇
       // 으로 돌았나"이고, 재료도 경로도 다르다.
-      const done_exec_chips = attemptExecChips(
-        objectOf(state),
-        overlay_by_key.get(`${root_dir}\u0000${bead_id}`),
-        terminal
-      );
+      const done_exec_chips = attemptExecChips(terminal);
       done.push({
         ...base(bead_id),
         lane: 'done',
@@ -4399,6 +4390,50 @@ export function buildLanes(workspaces, workspaces_state, options) {
       exec_chips: item.exec_chips || null,
       added_at: typeof item.added_at === 'number' ? item.added_at : null
     });
+  }
+
+  // 어느 레인 행도 없는 연결 레인 entry의 빈자리 (UI-ys18 §4.2). 큐·실행·PR
+  // 대기·완료·후보 어디에도 서지 않은 멤버는 복사해 올 행이 없으므로, 그
+  // entry의 `(root_dir, bead_id)` overlay와 그 root의 설정으로 예정 칩만
+  // 만든다. 실제 실행·완료 행의 칩은 덮어쓰지 않고(위 루프가 먼저 담는다),
+  // `added_at`·유예·대기열 위치도 합성하지 않는다 — 이 항목은 계속 큐 밖이다.
+  for (const lane of cross_lanes_input && Array.isArray(cross_lanes_input.lanes)
+    ? cross_lanes_input.lanes
+    : []) {
+    for (const entry of Array.isArray(lane?.entries) ? lane.entries : []) {
+      const bead_id =
+        entry && typeof entry.bead_id === 'string' ? entry.bead_id : '';
+      const entry_root =
+        entry && typeof entry.root_dir === 'string' ? entry.root_dir : '';
+      if (bead_id.length === 0 || chain_material.has(bead_id)) {
+        continue;
+      }
+      // root가 다른 동일 ID는 서로의 설정을 쓰지 않는다: 조회 키가 두 값이다.
+      const overlay = overlay_by_key.get(`${entry_root}\u0000${bead_id}`);
+      if (!overlay) {
+        continue;
+      }
+      const route =
+        typeof overlay.route === 'string' && overlay.route.length > 0
+          ? overlay.route
+          : null;
+      const chips = Object.hasOwn(overlay, 'metadata')
+        ? overlayExecChips(
+            objectOf(state_by_root.get(entry_root)),
+            objectOf(overlay.metadata),
+            route
+          )
+        : null;
+      if (route === null && chips === null) {
+        continue;
+      }
+      chain_material.set(bead_id, {
+        route,
+        route_source: null,
+        exec_chips: chips,
+        added_at: null
+      });
+    }
   }
 
   model.chain_lanes = buildCrossLanes(

@@ -532,11 +532,13 @@ describe('worker workspace adapter', () => {
       {
         id: 'UI-s1',
         metadata: { carried_from: 'UI-p1.1' },
+        dependencies: [{ depends_on_id: 'UI-p1', type: 'blocks' }],
         blocked_info: { blockers: ['UI-p1'] }
       },
       {
         id: 'UI-s2',
         metadata: { carried_from: 'UI-p1.2' },
+        dependencies: [{ depends_on_id: 'UI-p1', type: 'blocks' }],
         blocked_info: { blockers: ['UI-p1'] }
       }
     ]);
@@ -565,12 +567,31 @@ describe('worker workspace adapter', () => {
     expect(overlay['UI-p1'].carried_to).toEqual(['UI-s1']);
   });
 
+  test('reads the raw blocks edge when blocked_info lists no blocker', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:blocked', [
+      {
+        id: 'UI-s1',
+        metadata: { carried_from: 'UI-p1.1' },
+        dependencies: [{ depends_on_id: 'UI-p1', type: 'blocks' }],
+        blocked_info: { blockers: [] }
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .bead_overlay;
+
+    expect(overlay['UI-p1'].carried_to).toEqual(['UI-s1']);
+  });
+
   test('omits a carryover successor that blocks on another bead', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:blocked', [
       {
         id: 'UI-s1',
         metadata: { carried_from: 'UI-p2.1' },
+        dependencies: [{ depends_on_id: 'UI-p2', type: 'blocks' }],
         blocked_info: { blockers: ['UI-p2'] }
       }
     ]);

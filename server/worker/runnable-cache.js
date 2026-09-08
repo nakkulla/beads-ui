@@ -28,6 +28,7 @@
  * @import { SessionRefView } from './session-ref.js'
  */
 import path from 'node:path';
+import { buildCarryoverIndex } from '../../app/utils/carryover-index.js';
 import {
   isWorkerIneligible,
   workerLabels
@@ -54,6 +55,20 @@ import { WORKFLOW_ROUTES } from './routes.js';
 import { sessionRefViews } from './session-ref.js';
 
 const log = debug('worker:runnable-cache');
+
+/**
+ * 이월 후속으로 셀 수 있는 상태 (UI-ys18 §3.1). Worker의 Ready·Blocked·
+ * In-progress·Resolved 열에 대응한다 — `closed`·`deferred` 후속은 더 이상 살아
+ * 있는 일이 아니므로 부모 카드에서 칩을 만들지 않는다.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const CARRYOVER_SUCCESSOR_STATUSES = new Set([
+  'open',
+  'blocked',
+  'in_progress',
+  'resolved'
+]);
 
 /**
  * How long a SUCCESSFUL scan stays fresh.
@@ -658,7 +673,7 @@ export function createRunnableCache(options = {}) {
    * `invalidate`/`refresh`/`clear` and the negative cache apply to both without
    * a second code path that could let the two lanes disagree about freshness.
    *
-   * @type {Map<string, { items: RunnableItem[], session_active: SessionActiveItem[], at: number }>}
+   * @type {Map<string, { items: RunnableItem[], session_active: SessionActiveItem[], carried_to: Map<string, string[]>, at: number }>}
    */
   const records = new Map();
   /** @type {Map<string, number>} */
@@ -717,7 +732,7 @@ export function createRunnableCache(options = {}) {
    * every row, so the session bucket costs no extra `bd` process (UI-yrzu §4.1).
    *
    * @param {string} workspace
-   * @returns {Promise<{ items: RunnableItem[]|null, session_active: SessionActiveItem[], protocol_failure: boolean }>}
+   * @returns {Promise<{ items: RunnableItem[]|null, session_active: SessionActiveItem[], carried_to: Map<string, string[]>, protocol_failure: boolean }>}
    */
   async function fetchRunnable(workspace) {
     let rows;
@@ -726,7 +741,12 @@ export function createRunnableCache(options = {}) {
     if (requestSnapshot) {
       const result = await requestSnapshot(workspace, 'monitor-runnable');
       if (!result.ok || result.stale || !Array.isArray(result.snapshot?.all)) {
-        return { items: null, session_active: [], protocol_failure: false };
+        return {
+          items: null,
+          session_active: [],
+          carried_to: new Map(),
+          protocol_failure: false
+        };
       }
       rows = result.snapshot.all;
       const blocked = result.snapshot.ready_explain?.blocked;
@@ -756,14 +776,31 @@ export function createRunnableCache(options = {}) {
         return {
           items: null,
           session_active: [],
+          carried_to: new Map(),
           protocol_failure: isBdProtocolFailure(result)
         };
       }
       rows = result.data;
     }
     if (!Array.isArray(rows)) {
-      return { items: null, session_active: [], protocol_failure: false };
+      return {
+        items: null,
+        session_active: [],
+        carried_to: new Map(),
+        protocol_failure: false
+      };
     }
+    // 이월 색인은 후보 필터링 **전에** 전체 원본 rows에서 만든다 (UI-ys18 §3.2):
+    // 이월 부모는 이미 닫혀 있어 후보가 되지 않고, 후속도 자격 판정에서 빠질 수
+    // 있으므로 필터 뒤 집합으로는 관계를 만들 수 없다.
+    const carried_to = buildCarryoverIndex(
+      rows.filter(
+        (/** @type {any} */ raw) =>
+          raw &&
+          typeof raw === 'object' &&
+          CARRYOVER_SUCCESSOR_STATUSES.has(String(raw.status ?? ''))
+      )
+    );
     /** @type {RunnableItem[]} */
     const items = [];
     /** @type {SessionActiveItem[]} */
@@ -797,7 +834,7 @@ export function createRunnableCache(options = {}) {
         session_active.push(session_item);
       }
     }
-    return { items, session_active, protocol_failure: false };
+    return { items, session_active, carried_to, protocol_failure: false };
   }
 
   /**
@@ -833,6 +870,7 @@ export function createRunnableCache(options = {}) {
           records.set(key, {
             items: fetched.items,
             session_active: fetched.session_active,
+            carried_to: fetched.carried_to,
             at: now()
           });
           failed.delete(key);
@@ -1043,6 +1081,33 @@ export function createRunnableCache(options = {}) {
         peekBucket(workspace, 'items', exclude_ids),
         include_unadmitted
       );
+    },
+
+    /**
+     * `carried_to` 색인의 읽기 전용 투영 (UI-ys18 §3.2): 요청한 done 부모 ID들에
+     * 대해서만 `{ [parent_id]: successor_ids }`를 답한다. 같은 스캔이 만든 색인을
+     * 좁혀 읽을 뿐이라 `bd` 호출도 타이머도 없고, cold·실패 캐시는 빈 객체다 —
+     * 기존 후보 캐시의 비동기 채움과 갱신 알림이 다음 snapshot을 보낸다.
+     *
+     * @param {string} workspace
+     * @param {Iterable<string>} parent_ids
+     * @returns {Record<string, string[]>}
+     */
+    carriedToFor(workspace, parent_ids) {
+      /** @type {Record<string, string[]>} */
+      const out = {};
+      const record = records.get(keyOf(workspace));
+      const index = record ? record.carried_to : null;
+      if (!index) {
+        return out;
+      }
+      for (const parent_id of parent_ids) {
+        const successors = index.get(parent_id);
+        if (successors && successors.length > 0) {
+          out[parent_id] = successors;
+        }
+      }
+      return out;
     },
 
     /**

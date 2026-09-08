@@ -6333,6 +6333,110 @@ describe('완료 행 실행 사실 (UI-q1tg §3.4)', () => {
     expect(lanes.done[0].exec_chips).toBeUndefined();
   });
 
+  test('derives the done worker chip from the attempt impl_actor', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 30 }],
+          attempts: {
+            t1: {
+              ...IMPL_ATTEMPT.t1,
+              impl_actor: {
+                kind: 'delegated',
+                model: 'gpt-5-codex',
+                effort: 'high',
+                label: 'gpt-5-codex/high'
+              }
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].exec_chips?.worker?.text).toBe('gpt-5-codex · high');
+  });
+
+  test('keeps the done worker chip when the current pin names another model', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 30 }],
+          attempts: {
+            t1: {
+              ...IMPL_ATTEMPT.t1,
+              impl_actor: {
+                kind: 'delegated',
+                model: 'gpt-5-codex',
+                effort: 'high',
+                label: 'gpt-5-codex/high'
+              }
+            }
+          },
+          bead_overlay: {
+            'A-1': { metadata: { impl_model: 'opus', impl_effort: 'low' } }
+          }
+        })
+      ],
+      [
+        state({
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {}
+        })
+      ]
+    );
+
+    expect(lanes.done[0].exec_chips?.worker?.text).toBe('gpt-5-codex · high');
+  });
+
+  test('shows the direct implementation as the main worker chip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 30 }],
+          attempts: {
+            t1: {
+              ...IMPL_ATTEMPT.t1,
+              impl_actor: {
+                kind: 'main',
+                model: null,
+                effort: null,
+                label: 'main'
+              }
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].exec_chips?.worker?.text).toBe('메인');
+  });
+
+  test('omits the done worker chip when the attempt carries no impl_actor', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 30 }],
+          attempts: IMPL_ATTEMPT,
+          bead_overlay: {
+            'A-1': { metadata: { impl_model: 'opus', impl_effort: 'low' } }
+          }
+        })
+      ],
+      [
+        state({
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {}
+        })
+      ]
+    );
+
+    expect(lanes.done[0].exec_chips?.worker).toBeNull();
+  });
+
   test('carries the done row route from the workflow projection', () => {
     const lanes = buildLanes(
       [
@@ -6483,6 +6587,124 @@ describe('대기 진입 유예 재료 (UI-q1tg §3.3·§3.5)', () => {
       true,
       'sonnet'
     ]);
+  });
+
+  test('fills a chain lane row that has no lane row from its overlay', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_overlay: {
+            'A-9': { route: 'spec_backed', metadata: {} }
+          }
+        })
+      ],
+      [
+        state({
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {},
+          orchestration_model: 'sonnet'
+        })
+      ],
+      {
+        cross_lanes: crossLanes([
+          { id: 'cl_1', status: 'confirmed', entries: [{ bead_id: 'A-9' }] }
+        ])
+      }
+    );
+
+    const row = lanes.chain_lanes[0].rows[0];
+    expect([
+      row.route,
+      row.exec_chips?.orchestration?.text,
+      row.added_at
+    ]).toEqual(['spec_backed', 'sonnet', null]);
+  });
+
+  test('never lends one root overlay to the same id under another root', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_overlay: { 'A-9': { route: 'spec_backed', metadata: {} } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {},
+          orchestration_model: 'sonnet'
+        })
+      ],
+      {
+        cross_lanes: crossLanes([
+          {
+            id: 'cl_1',
+            status: 'confirmed',
+            entries: [{ bead_id: 'A-9', root_dir: '/tmp/other-repo' }]
+          }
+        ])
+      }
+    );
+
+    const row = lanes.chain_lanes[0].rows[0];
+    expect([row.route, row.exec_chips]).toEqual([null, null]);
+  });
+
+  test('leaves a real lane row chips untouched by the overlay fill', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 30 }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'done',
+              finished_at: 20,
+              runner: 'codex',
+              model: 'opus'
+            }
+          },
+          bead_overlay: { 'A-1': { route: 'spec_backed', metadata: {} } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {},
+          orchestration_model: 'sonnet'
+        })
+      ],
+      {
+        cross_lanes: crossLanes([
+          { id: 'cl_1', status: 'confirmed', entries: [{ bead_id: 'A-1' }] }
+        ])
+      }
+    );
+
+    expect(lanes.chain_lanes[0].rows[0].exec_chips?.orchestration?.text).toBe(
+      'codex · opus'
+    );
+  });
+
+  test('places no overlay-only chain member into the queue lane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_overlay: { 'A-9': { route: 'spec_backed', metadata: {} } }
+        })
+      ],
+      [state()],
+      {
+        cross_lanes: crossLanes([
+          { id: 'cl_1', status: 'confirmed', entries: [{ bead_id: 'A-9' }] }
+        ])
+      }
+    );
+
+    expect(lanes.queue).toEqual([]);
   });
 
   test('leaves a chain lane row outside the queue without added_at', () => {

@@ -2148,6 +2148,42 @@ describe('worker lanes 이월 칩 (UI-btj6 §3)', () => {
     expect(row.querySelector('.worker-deps')).toBeNull();
   });
 
+  test('shows the same chips and carryover link on both done layouts', () => {
+    /** @type {Partial<import('./lanes.js').MiniItem>} */
+    const item = {
+      lane: 'done',
+      done: true,
+      carried_to: ['UI-s1'],
+      exec_chips: {
+        orchestration: { text: 'codex · sonnet', title: '오케' },
+        worker: { text: 'gpt-5-codex · high', title: '워커' }
+      }
+    };
+
+    const two_line = renderRow(item);
+    const three_line = renderRow({ ...item, done_layout: 'three_line' });
+
+    /**
+     * @param {HTMLElement} row
+     * @returns {string[]}
+     */
+    const texts = (row) => [
+      ...Array.from(
+        row.querySelectorAll('.exec-chip__v'),
+        (chip) => chip.textContent?.trim() || ''
+      ),
+      /** @type {HTMLElement} */ (
+        row.querySelector('.worker-deps--secondary .worker-dep__open')
+      ).dataset.depId || ''
+    ];
+    expect(texts(two_line)).toEqual([
+      'codex · sonnet',
+      'gpt-5-codex · high',
+      'UI-s1'
+    ]);
+    expect(texts(three_line)).toEqual(texts(two_line));
+  });
+
   test('draws the chips below the title and above the coordinate line', () => {
     const row = renderRow({
       lane: 'done',

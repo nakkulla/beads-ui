@@ -276,6 +276,32 @@ describe('trimQueueProjection field slimming', () => {
     }
   });
 
+  test('preserves the impl_actor display field of a terminal attempt', () => {
+    const raw = {
+      queue: [{ bead_id: 'UI-1', added_at: NOW }],
+      attempts: {
+        a1: attempt('a1', 'UI-1', {
+          ...INTERNAL,
+          impl_actor: {
+            kind: 'delegated',
+            model: 'gpt-5-codex',
+            effort: 'high',
+            label: 'gpt-5-codex/high'
+          }
+        })
+      }
+    };
+
+    const trimmed = trimQueueProjection(raw, raw, NOW);
+
+    expect(trimmed.attempts.a1.impl_actor).toEqual({
+      kind: 'delegated',
+      model: 'gpt-5-codex',
+      effort: 'high',
+      label: 'gpt-5-codex/high'
+    });
+  });
+
   test('keeps the usage and cause detail of a terminal attempt', () => {
     const raw = {
       queue: [{ bead_id: 'UI-1', added_at: NOW }],

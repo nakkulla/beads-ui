@@ -138,6 +138,13 @@ bead_overlay: { [bead_id]: { route?: string, metadata?: Record<string, string> }
 **fail-quiet**: 오버레이가 없거나 캐시가 차갑거나 `resolveExecutionSettings`가
 던지면 칩이 서지 않는다. 지금과 같은 화면이지 새 오류 표시가 아니다.
 
+> 정정(UI-ys18). route 대상은 기존 레인 멤버와 done에 더해 같은 snapshot의 연결
+> 레인 entries를 포함한다. 예정 실행 핀은 큐 밖 미완료·미실행 연결 레인 멤버에도
+> 전달한다. 완료 행은 현재 핀을 사용하지 않고 마지막 구현 attempt의 보존
+> 영수증에서 해석한 실제 구현 주체를 사용한다. 기존 레인 행이 없는 연결 레인
+> entry만 overlay로 예정 칩을 보충한다. 어느 경우도 큐 적재·arm을 발생시키지
+> 않는다.
+
 ### 3.2 후보 route 필터
 
 `CandidateFilter`에 `routes: string[]`을 더한다. 저장은 기존
@@ -278,6 +285,13 @@ dispatch case 대조 테스트가 이 op에도 그대로 적용된다(§5).
 완료 행은 "돌아갈 설정"을 얻지 않는다. 완료 행이 얻는 것은 attempt 파생 칩이고,
 같은 줄의 `exec_receipt` 칩과 같은 시제를 말한다.
 
+> 정정(UI-ys18). route 대상은 기존 레인 멤버와 done에 더해 같은 snapshot의 연결
+> 레인 entries를 포함한다. 예정 실행 핀은 큐 밖 미완료·미실행 연결 레인 멤버에도
+> 전달한다. 완료 행은 현재 핀을 사용하지 않고 마지막 구현 attempt의 보존
+> 영수증에서 해석한 실제 구현 주체를 사용한다. 기존 레인 행이 없는 연결 레인
+> entry만 overlay로 예정 칩을 보충한다. 어느 경우도 큐 적재·arm을 발생시키지
+> 않는다.
+
 ### 3.5 대기 레인 세 종류 행이 같은 칩을 얻는다
 
 - **병렬 행**(`parallelRow` → `miniRow`): 템플릿은 이미 칩을 그린다. §3.1이
@@ -297,6 +311,13 @@ dispatch case 대조 테스트가 이 op에도 그대로 적용된다(§5).
   (UI-j92s §5.3) 같은 자리에 `[지금 시작]`을 더하고, `⏳` 칩은 위치 칩 옆에
   둔다. 판정식은 병렬 행과 같은 `added_at + QUEUE_GRACE_MS - now()` 하나다.
   큐 밖 행(`unplaced`)에는 `added_at`이 없으므로 칩도 버튼도 없다(fail-quiet).
+
+> 정정(UI-ys18). route 대상은 기존 레인 멤버와 done에 더해 같은 snapshot의 연결
+> 레인 entries를 포함한다. 예정 실행 핀은 큐 밖 미완료·미실행 연결 레인 멤버에도
+> 전달한다. 완료 행은 현재 핀을 사용하지 않고 마지막 구현 attempt의 보존
+> 영수증에서 해석한 실제 구현 주체를 사용한다. 기존 레인 행이 없는 연결 레인
+> entry만 overlay로 예정 칩을 보충한다. 어느 경우도 큐 적재·arm을 발생시키지
+> 않는다.
 
 ## 4. 슬롯 표 개정 (ADR 0014 절차)
 
