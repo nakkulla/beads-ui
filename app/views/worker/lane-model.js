@@ -1958,6 +1958,17 @@ function laneRunState(lane_id, status, rows, all_done, unlaunched, axis) {
  */
 
 /**
+ * `chain_material`의 키 (UI-ys18 §4.2): root 하나에 bead 하나. Monitor는 여러
+ * workspace를 한 화면에 섞으므로 bead ID만으로는 자리가 유일하지 않다.
+ *
+ * @param {unknown} root_dir
+ * @param {string} bead_id
+ */
+function chainMaterialKey(root_dir, bead_id) {
+  return `${typeof root_dir === 'string' ? root_dir : ''}\u0000${bead_id}`;
+}
+
+/**
  * The 저장 연결 레인 투영 (UI-j92s §4.1·§5.1·§5.2·§5.3). 파생이 아니라 서버가
  * 보관한 멤버십이므로, 이 함수는 순서를 **계산하지 않고** 읽는다: `entries`
  * 순서가 곧 레인 순서이고 표시 번호는 배열 자리다.
@@ -1975,8 +1986,8 @@ function laneRunState(lane_id, status, rows, all_done, unlaunched, axis) {
  * @param {Map<string, Record<string, any>>} admission_by_bead - 보이는 workspace
  * 전부의 admission 합집합 (UI-d3i1 §8). 같은 bead가 두 workspace에 설 수 없으므로
  * 충돌 규칙이 필요 없다.
- * @param {Map<string, ChainRowMaterial>} material_by_bead - 그 멤버가 자기 레인
- * 행으로 이미 얻은 route·실행 칩·대기 진입 시각 (UI-q1tg §3.5). 파생을 여기서
+ * @param {Map<string, ChainRowMaterial>} material_by_bead - `(root_dir, bead_id)`
+ * 키({@link chainMaterialKey})로 그 멤버가 자기 레인 행으로 이미 얻은 route·실행 칩·대기 진입 시각 (UI-q1tg §3.5). 파생을 여기서
  * 다시 하지 않으므로 연결 레인 행과 병렬 행이 같은 칩을 말한다.
  * @returns {MonitorChainLane[]}
  */
@@ -2040,7 +2051,15 @@ function buildCrossLanes(
         previous_row !== null &&
         !previous_row.done &&
         !(blocked_by_map.get(bead_id) || []).includes(previous_row.id);
-      const material = material_by_bead.get(bead_id) || null;
+      // entry가 root를 말하면 그 root가 정본이다 — `locations`는 bead ID로만
+      // 찾으므로 다른 workspace의 같은 ID 행을 가리킬 수 있다 (UI-ys18 §4.2).
+      const material =
+        material_by_bead.get(
+          chainMaterialKey(
+            entry_root.length > 0 || !location ? entry_root : location.root_dir,
+            bead_id
+          )
+        ) || null;
       rows.push({
         id: bead_id,
         title: title_by_bead.get(bead_id) || bead_id,
@@ -4353,6 +4372,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 도 같은 뜻이므로(후보·대기·직렬이 한 파생식을 쓴다) 그대로 싣는다: 확정 레인
   // 드롭이 더는 큐에 적재하지 않아 멤버는 `▶ 진행` 전까지 후보 행으로만 서고,
   // 그 행을 빼면 같은 레인 안에서 적재 전후로 칩이 달라진다.
+  // 키는 `(root_dir, bead_id)`다 (UI-ys18 §4.2): 다른 workspace의 같은 ID
+  // 기존 행이 이 root의 큐 밖 멤버 자리를 가로채지 않는다.
   /** @type {Map<string, ChainRowMaterial>} */
   const chain_material = new Map();
   for (const item of [
@@ -4362,7 +4383,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
     ...model.done,
     ...model.runnable
   ]) {
-    if (chain_material.has(item.id)) {
+    const material_key = chainMaterialKey(item.root_dir, item.id);
+    if (chain_material.has(material_key)) {
       continue;
     }
     const workflow = objectOf(item.workflow);
@@ -4384,7 +4406,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         : typeof workflow.route_source === 'string'
           ? workflow.route_source
           : null;
-    chain_material.set(item.id, {
+    chain_material.set(material_key, {
       route,
       route_source,
       exec_chips: item.exec_chips || null,
@@ -4405,7 +4427,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
         entry && typeof entry.bead_id === 'string' ? entry.bead_id : '';
       const entry_root =
         entry && typeof entry.root_dir === 'string' ? entry.root_dir : '';
-      if (bead_id.length === 0 || chain_material.has(bead_id)) {
+      if (
+        bead_id.length === 0 ||
+        chain_material.has(chainMaterialKey(entry_root, bead_id))
+      ) {
         continue;
       }
       // root가 다른 동일 ID는 서로의 설정을 쓰지 않는다: 조회 키가 두 값이다.
@@ -4427,7 +4452,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       if (route === null && chips === null) {
         continue;
       }
-      chain_material.set(bead_id, {
+      chain_material.set(chainMaterialKey(entry_root, bead_id), {
         route,
         route_source: null,
         exec_chips: chips,

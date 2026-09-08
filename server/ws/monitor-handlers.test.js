@@ -1117,6 +1117,27 @@ describe('buildMonitorPipeline cross-lane overlay (UI-ys18 §4.1)', () => {
     expect(with_lane[0].counts).toEqual(without_lane[0].counts);
   });
 
+  test('keeps a workspace whose only pipeline member sits in a cross lane', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: { [WS_A]: snapshot() },
+      cross_lanes: crossLanes([{ bead_id: 'A-x', root_dir: WS_A }]),
+      titleCache: warmCache(WS_A, [
+        {
+          id: 'A-x',
+          title: '연결 레인',
+          workflow: { route: 'spec_backed' },
+          metadata: { impl_runtime: 'codex' }
+        }
+      ])
+    });
+
+    expect([out.map((w) => w.root_dir), overlayOf(out)['A-x']]).toEqual([
+      [WS_A],
+      { route: 'spec_backed', metadata: { impl_runtime: 'codex' } }
+    ]);
+  });
+
   test('exposes no hidden workspace through a cross-lane entry', () => {
     const out = build({
       workspaces: [WS_A, WS_B],

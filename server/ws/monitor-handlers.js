@@ -596,19 +596,23 @@ export function buildMonitorPipeline(options = {}) {
       session_active = [];
     }
     projected.session_active = session_active;
+    const cross_lane_ids = cross_lane_ids_by_root.get(root_dir) || [];
     try {
       projected.bead_overlay = beadOverlayFor(
         root_dir,
         projected,
         cache,
-        cross_lane_ids_by_root.get(root_dir) || [],
+        cross_lane_ids,
         carriedToFor
       );
     } catch (err) {
       log('monitor: bead overlay failed for %s: %o', root_dir, err);
       projected.bead_overlay = {};
     }
-    if (!hasPipeline(projected)) {
+    // 레인이 전부 비어도 이 root의 연결 레인 멤버가 있으면 보낸다 (UI-ys18
+    // §4.1): 큐 밖 멤버의 route·예정 칩 재료는 이 workspace의 `bead_overlay`
+    // 에만 실리므로, workspace를 빼면 그 칩이 영영 서지 않는다.
+    if (!hasPipeline(projected) && cross_lane_ids.length === 0) {
       continue;
     }
     out.push({

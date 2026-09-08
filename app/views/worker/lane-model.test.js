@@ -6651,6 +6651,50 @@ describe('대기 진입 유예 재료 (UI-q1tg §3.3·§3.5)', () => {
     expect([row.route, row.exec_chips]).toEqual([null, null]);
   });
 
+  test('fills an overlay-only member even when another root queues the same id', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-9', added_at: 10 }],
+          bead_overlay: { 'A-9': { route: 'quick_fix', metadata: {} } }
+        }),
+        workspace({
+          root_dir: '/tmp/other-repo',
+          name: 'other',
+          bead_overlay: { 'A-9': { route: 'spec_backed', metadata: {} } }
+        })
+      ],
+      [
+        state({
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {},
+          orchestration_model: 'sonnet'
+        }),
+        state({
+          root_dir: '/tmp/other-repo',
+          name: 'other',
+          execution_defaults: EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {},
+          orchestration_model: 'sonnet'
+        })
+      ],
+      {
+        cross_lanes: crossLanes([
+          {
+            id: 'cl_1',
+            status: 'confirmed',
+            entries: [{ bead_id: 'A-9', root_dir: '/tmp/other-repo' }]
+          }
+        ])
+      }
+    );
+
+    const row = lanes.chain_lanes[0].rows[0];
+    expect([row.route, row.added_at]).toEqual(['spec_backed', null]);
+  });
+
   test('leaves a real lane row chips untouched by the overlay fill', () => {
     const lanes = buildLanes(
       [
