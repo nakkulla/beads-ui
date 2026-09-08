@@ -84,6 +84,19 @@
   --chip-blocked-dep: #e8756a;
   --chip-blocked-foreign: #8f8ff0;
 
+  /* --- 작업 종류(route) 색 (UI-kyky §3.2) --- */
+  /* 중립 상태 카드의 옅은 배경과 route 칩이 같은 두 값을 읽는다. 분류는
+     `routeChipValue`의 네 결과 그대로이고, 재료가 없는 행은 속성 자체가 없어
+     이 토큰에 닿지 않는다. */
+  --route-spec_backed-bg: #122925;
+  --route-spec_backed-fg: #5eead4;
+  --route-quick_fix-bg: #172338;
+  --route-quick_fix-fg: #93c5fd;
+  --route-full_plan-bg: #251d38;
+  --route-full_plan-fg: #c4b5fd;
+  --route-unset-bg: #171c26;
+  --route-unset-fg: #a9b4c6;
+
   /* --- recurring semantic accents --- */
   /* 상호작용(hover/focus) 강조. 상태를 뜻하는 -success/-danger/-warn/-child 와
      달리 "지금 이 조작을 건드리고 있다"만 말한다. 라이트 테마는 흰 배경 대비를
@@ -146,9 +159,11 @@
 }
 
 /*
- * Light theme overrides (controller design-gap decisions §3). Stage `on`
- * hues and semantic accents keep their hue; only surfaces, borders, text
- * tiers, id-mono, and the 5 stage `dim` variants shift for light contrast.
+ * Light theme overrides (controller design-gap decisions §3, UI-kyky §3.2).
+ * Surfaces, borders, text tiers, id-mono and the 5 stage `dim` variants shift
+ * for light contrast. The 5 stage `on` values shift too — the earlier claim
+ * that they carried over unchanged was wrong, and left the stage text under
+ * 4.5:1 on every white-ish surface (UI-fj0b 관측). Only the hue is kept.
  */
 :root[data-theme='light'] {
   /* surfaces */
@@ -183,4 +198,21 @@
   --stage-impl-dim: #cdc2ee;
   --stage-pr-dim: #f2c3d8;
   --stage-merge-dim: #b9e6c8;
+
+  /* stage `on` variants: same hue, darkened for white-ish surfaces (§3.2) */
+  --stage-spec-on: #0f766e;
+  --stage-plan-on: #1d4ed8;
+  --stage-impl-on: #6d28d9;
+  --stage-pr-on: #be185d;
+  --stage-merge-on: #166534;
+
+  /* 작업 종류(route) 색 (§3.2) */
+  --route-spec_backed-bg: #e8f3f0;
+  --route-spec_backed-fg: #0f766e;
+  --route-quick_fix-bg: #edf2ff;
+  --route-quick_fix-fg: #1d4ed8;
+  --route-full_plan-bg: #f3edfb;
+  --route-full_plan-fg: #6d28d9;
+  --route-unset-bg: #f2f5f9;
+  --route-unset-fg: #47536a;
 }

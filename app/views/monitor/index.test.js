@@ -4485,6 +4485,61 @@ describe('모니터 모바일 관제 우선 배치 (UI-5ksp §4.7)', () => {
   });
 });
 
+describe('Monitor 외부 저장소 PR 표시 (UI-kyky §6.2)', () => {
+  test('draws the foreign target beside the PR link and refuses the merge', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [
+            {
+              bead_id: 'A-3',
+              added_at: 1,
+              external: true,
+              foreign: true,
+              repo_slug: 'other/repo',
+              pr_url: 'https://github.com/other/repo/pull/12',
+              pr_number: 12
+            }
+          ],
+          pr_observations: {
+            'A-3': {
+              pr: null,
+              gate: {
+                enabled: false,
+                tier: 'undecidable',
+                gate_badge: '관측 오류',
+                base_badge: '',
+                reason: 'pr_repo_foreign'
+              }
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const row = el(mount, '.worker-mini[data-bead-id="A-3"]');
+    const badge = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__foreign-pr')
+    );
+    expect(badge.textContent?.trim()).toBe('↗ other/repo');
+    expect(badge.title).toBe(
+      '다른 저장소의 PR입니다. 이 워크스페이스에서는 상태를 관측·머지·정리하지 않습니다.'
+    );
+    expect(row.querySelector('.worker-mini__pr')?.getAttribute('href')).toBe(
+      'https://github.com/other/repo/pull/12'
+    );
+    expect(row.textContent).toContain('외부 저장소 PR');
+    const merge = /** @type {HTMLButtonElement|null} */ (
+      row.querySelector('.worker-mini__merge')
+    );
+    expect(merge === null || merge.disabled).toBe(true);
+    expect(row.querySelector('.worker-mini__discard')).toBeNull();
+  });
+});
+
 describe('접힌 레인 띠 드롭·행 조작 드래그 가드 (UI-5ksp REVISE)', () => {
   /**
    * Fold one lane before mounting. 접힌 pane은 본문을 그리지 않으므로

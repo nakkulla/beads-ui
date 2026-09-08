@@ -6,7 +6,7 @@
  * decides the plan — spec-only edits recompute those specs, anything under
  * `docs/adr/`, `AGENTS.md`, `CLAUDE.md` or `docs/agents/` forces a full pass. A
  * poll safety net re-fingerprints on a timer and never spawns a process
- * (ADR 0042).
+ * (ADR 0043).
  *
  * In-flight ownership lives here: `onChange` is awaited, at most one call is
  * outstanding per repo, and plans arriving during that call are merged (`full`

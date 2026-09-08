@@ -11,6 +11,7 @@
  * (`worker-final.html`); one column on mobile.
  */
 import { html } from 'lit-html';
+import { ifDefined } from 'lit-html/directives/if-defined.js';
 import { formatContinuationLineage } from '../../utils/attempt-display.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
 import { formatRelativeTime } from '../../utils/relative-time.js';
@@ -29,6 +30,7 @@ import { childRollupTemplate } from '../child-rollup.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
 import {
   failureCategory,
+  failureNextAction,
   failureSentence,
   failureText
 } from './failure-labels.js';
@@ -39,6 +41,7 @@ import {
   execChipsTemplate,
   priorityBadgeTemplate,
   recChipTemplate,
+  routeCardTone,
   routeChipTemplate,
   timesMeta
 } from './lanes.js';
@@ -417,6 +420,61 @@ function historyTimeText(at) {
 }
 
 /**
+ * The label of the manual resume button one failed row draws (UI-kyky §4.3).
+ * `settlement` re-runs the same attempt's post-landing procedure with NO
+ * session; `session` continues the session that failed. The popover, the
+ * button, its `title` and its `aria-label` all read this one map, so the four
+ * cannot drift into naming the same click two ways.
+ *
+ * @type {Readonly<Record<'settlement'|'session', string>>}
+ */
+const RESUME_LABELS = Object.freeze({
+  settlement: '정리 재시도',
+  session: '이어하기'
+});
+
+/**
+ * The `다음` sentence of a failure popover (UI-kyky §4.2), or `''` when the
+ * failure code maps to no guidance at all — an unknown code omits the row
+ * rather than naming a button nobody verified is there (fail-quiet).
+ *
+ * The dictionary knows only the failure token. The three facts that finish the
+ * sentence are read HERE, where they are true: which resume the row asks for,
+ * whether that resume is currently offered, and whether this popover actually
+ * draws a `▤ 세션` control — the popover draws it exactly when the failure
+ * carries an `attempt_id`, so nothing else may be consulted.
+ *
+ * @param {FailureTile} failure
+ * @returns {string}
+ */
+function failureNextText(failure) {
+  const guidance = failureNextAction(failure.cause);
+  if (!guidance) {
+    return '';
+  }
+  const resume_kind = resumeKindOf(failure.quickfix_landing);
+  if (failure.resume_eligible !== false) {
+    return `${guidance} ${
+      resume_kind === 'settlement'
+        ? '아래 [정리 재시도]를 눌러 실패한 착지 후 절차를 다시 실행하세요.'
+        : '원인을 확인한 뒤 아래 [이어하기]로 같은 세션에서 작업을 계속하세요.'
+    }`;
+  }
+  const refusal =
+    typeof failure.resume_reason === 'string' &&
+    failure.resume_reason.length > 0
+      ? failure.resume_reason
+      : '';
+  if (failure.attempt_id) {
+    return [guidance, refusal, '세션 기록을 열어 원인을 확인하세요.']
+      .filter((part) => part.length > 0)
+      .join(' ');
+  }
+  // 재개도 세션 열기도 없다: 존재하는 사유만 남기고 없는 버튼을 이름하지 않는다.
+  return [guidance, refusal].filter((part) => part.length > 0).join(' ');
+}
+
+/**
  * Failure detail shown from the cause badge. Every row is conditional so an
  * older attempt record never produces placeholder facts.
  *
@@ -477,6 +535,10 @@ function failurePopoverTemplate(failure, now) {
   // 최근 이력 5줄 + 로그 경로 (§9). 보고 바로 아래에 붙는다 — 그 한 줄이
   // 무엇이 끝냈는지를 말하면 이 블록은 어떻게 거기까지 왔는지를 말한다.
   const history = historyBlockTemplate(failure);
+  // 원인 아래의 `다음` 행 (UI-kyky §4.2): 원인과 지금 가능한 조작을 함께 읽는다.
+  const next_text = failureNextText(failure);
+  const popover_resume_label =
+    RESUME_LABELS[resumeKindOf(failure.quickfix_landing)];
   return html`<div
     class="rtile__failure-pop"
     role="dialog"
@@ -499,6 +561,12 @@ function failurePopoverTemplate(failure, now) {
         ? html`<div>
             <dt>원인</dt>
             <dd>${cause_text}</dd>
+          </div>`
+        : ''}
+      ${next_text
+        ? html`<div>
+            <dt>다음</dt>
+            <dd>${next_text}</dd>
           </div>`
         : ''}
       ${retry_history
@@ -570,8 +638,8 @@ function failurePopoverTemplate(failure, now) {
         <dt>재개</dt>
         <dd>
           ${failure.resume_eligible
-            ? '이어하기 가능'
-            : failure.resume_reason || '이어하기 불가'}
+            ? `${popover_resume_label} 가능`
+            : failure.resume_reason || `${popover_resume_label} 불가`}
         </dd>
       </div>
     </dl>
@@ -587,7 +655,7 @@ function failurePopoverTemplate(failure, now) {
       : ''}
     ${failure.landed
       ? html`<p class="rtile__failure-landed">
-          이미 base에 착지됨 — 이어하기로 배포·정리를 재개
+          이미 base에 착지됨 — ${popover_resume_label}로 배포·정리를 재개
         </p>`
       : ''}
   </div>`;
@@ -1218,10 +1286,10 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // §3.3a). 보이는 문구만 바꾸면 보조기술과 툴팁이 계속 "같은 세션"이라고 잘못
   // 안내하므로 셋을 함께 분기한다.
   const resume_kind = resumeKindOf(failure?.quickfix_landing);
-  const resume_label = resume_kind === 'settlement' ? '정산 재개' : '이어하기';
+  const resume_label = RESUME_LABELS[resume_kind];
   const resume_title =
     resume_kind === 'settlement'
-      ? '착지 정산을 다시 실행'
+      ? '착지 후 정리 절차를 다시 실행 (세션을 열지 않습니다)'
       : '같은 세션으로 이어서 진행';
   // 실패한 폐기 작업의 두 번째 출구 (UI-jw27 §4). 폐기 실패는 실행 중·held·
   // 파킹 타일 어디서나 날 수 있으므로 상태 분기 밖에서 한 번만 만들고, 자리는
@@ -1274,6 +1342,10 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const discard_actions = abandon_button
     ? html`${discard_button}${abandon_button}`
     : discard_button;
+  // 작업 종류 분류 (UI-kyky §3.1). 실행 타일은 배경을 켜지 않는다 — '실행 중'
+  // 자체가 §3.1이 우선한다고 정한 상태 표현이라 이 그리드의 어떤 타일도 중립이
+  // 아니다. `data-route`는 칩과 같은 분류를 실어 두 표면이 어긋나지 않게 한다.
+  const route_tone = routeCardTone(tile.workflow, false);
   return html`<div
     class="rtile${sel ? ' rtile--sel' : ''}${paused
       ? ' rtile--paused'
@@ -1288,6 +1360,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       : ''}${tile.search_match === false ? ' is-dimmed' : ''}"
     data-bead-id=${tile.bead_id}
     data-attempt-id=${tile.attempt_id || ''}
+    data-route=${ifDefined(route_tone.route)}
   >
     <div class="rtile__hd">
       <span

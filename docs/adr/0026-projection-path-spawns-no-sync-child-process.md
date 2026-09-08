@@ -2,7 +2,7 @@
 id: 26
 title: 워크스페이스 투영 경로는 동기 자식 프로세스를 띄우지 않는다
 status: superseded
-superseded_by: 42
+superseded_by: 43
 date: 2026-09-03
 summary: '워크스페이스 투영은 warm이 채운 불변 키 캐시와 세대 컨텍스트만 읽어 동기 자식 프로세스를 띄우지 않고, 미스는 미판정으로 그린다'
 spec: docs/superpowers/specs/2026-09-02-issue-detail-snapshot-projection-design.md

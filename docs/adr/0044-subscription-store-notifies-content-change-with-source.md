@@ -1,5 +1,5 @@
 ---
-id: 43
+id: 44
 title: 구독별 store는 revision을 수신하되 내용 변경만 통지하고 registry는 구독 출처를 전달한다
 status: accepted
 date: 2026-09-08

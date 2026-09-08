@@ -262,6 +262,147 @@ describe('worker failed running tile template', () => {
     expect(popover.parentElement?.classList.contains('rtile')).toBe(true);
   });
 
+  /**
+   * Render one failure popover and return its text.
+   *
+   * @param {Partial<import('./running-grid.js').FailureTile>} patch
+   * @returns {string}
+   */
+  function failurePopoverText(patch) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        tileInput({
+          failed: true,
+          failure: failureInput({ open: true, ...patch })
+        }),
+        5000
+      ),
+      mount
+    );
+
+    return mount.querySelector('.rtile__failure-pop')?.textContent || '';
+  }
+
+  test('points a resumable settlement failure at the cleanup retry button', () => {
+    const text = failurePopoverText({
+      cause: 'verify_script_failure',
+      quickfix_lane: true,
+      quickfix_landing: { reason: 'containment_unobservable' }
+    });
+
+    expect(text).toContain('실패한 명령과 그 출력을 확인하고');
+    expect(text).toContain('아래 [정리 재시도]를 눌러');
+  });
+
+  test('points a resumable session failure at the continuation button', () => {
+    const text = failurePopoverText({
+      cause: 'base_fetch_failed',
+      quickfix_lane: true,
+      quickfix_landing: { reason: 'head_mismatch' }
+    });
+
+    expect(text).toContain('원격 연결과 관측 상태를 확인하는 것이 먼저입니다.');
+    expect(text).toContain('아래 [이어하기]로 같은 세션에서');
+  });
+
+  test('sends a refused resume to the session record instead of a button', () => {
+    const text = failurePopoverText({
+      cause: 'cleanup_failed',
+      resume_eligible: false,
+      resume_reason: '워크트리 없음'
+    });
+
+    expect(text).toContain('워크트리 없음');
+    expect(text).toContain('세션 기록을 열어 원인을 확인하세요.');
+    expect(text).not.toContain('[정리 재시도]');
+  });
+
+  test('names no button when neither resume nor a session record exists', () => {
+    const text = failurePopoverText({
+      cause: 'cleanup_failed',
+      attempt_id: undefined,
+      resume_eligible: false,
+      resume_reason: '기록 없음'
+    });
+
+    expect(text).toContain('기록 없음');
+    expect(text).not.toContain('세션 기록을 열어');
+    expect(text).not.toContain('[이어하기]');
+  });
+
+  test('omits the next row for an unmapped failure code', () => {
+    const text = failurePopoverText({ cause: 'surprise_new_token' });
+
+    expect(text).not.toContain('다음');
+  });
+
+  test('says the resume row and the landed line with the button name', () => {
+    const text = failurePopoverText({
+      cause: 'verify_red',
+      landed: true,
+      quickfix_lane: true,
+      quickfix_landing: { reason: 'containment_unobservable' }
+    });
+
+    expect(text).toContain('정리 재시도 가능');
+    expect(text).toContain(
+      '이미 base에 착지됨 — 정리 재시도로 배포·정리를 재개'
+    );
+  });
+
+  test('keeps a running tile on its execution expression without a route tint', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        tileInput({
+          workflow: /** @type {any} */ ({
+            chips: { route: 'spec_backed', route_source: 'explicit' }
+          })
+        }),
+        5000
+      ),
+      mount
+    );
+
+    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+    expect(tile.getAttribute('data-route')).toBe('spec_backed');
+    expect(tile.classList.contains('rtile--route-bg')).toBe(false);
+  });
+
+  test('leaves a failed tile on its own state expression', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        tileInput({
+          failed: true,
+          failure: failureInput(),
+          workflow: /** @type {any} */ ({
+            chips: { route: 'quick_fix', route_source: 'explicit' }
+          })
+        }),
+        5000
+      ),
+      mount
+    );
+
+    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+    expect(tile.classList.contains('rtile--failed')).toBe(true);
+    expect(tile.classList.contains('rtile--route-bg')).toBe(false);
+  });
+
+  test('draws no route attribute on a tile with no workflow', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningTile(tileInput({}), 5000), mount);
+
+    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+    expect(tile.hasAttribute('data-route')).toBe(false);
+  });
+
   test('renders the recorded attempt tuple as the orchestration chip', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const attempt = {
@@ -2639,9 +2780,11 @@ describe('worker failed tile resume button (UI-8h1x §3.3a)', () => {
   test('labels a settlement-natured failure as a settlement re-run', () => {
     const resume = renderResumeButton({ reason: 'containment_unobservable' });
 
-    expect(resume.textContent?.trim()).toBe('↻ 정산 재개');
-    expect(resume.getAttribute('aria-label')).toBe('정산 재개');
-    expect(resume.title).toBe('착지 정산을 다시 실행');
+    expect(resume.textContent?.trim()).toBe('↻ 정리 재시도');
+    expect(resume.getAttribute('aria-label')).toBe('정리 재시도');
+    expect(resume.title).toBe(
+      '착지 후 정리 절차를 다시 실행 (세션을 열지 않습니다)'
+    );
   });
 
   test('labels a session-natured failure as a session continuation', () => {
@@ -2657,8 +2800,8 @@ describe('worker failed tile resume button (UI-8h1x §3.3a)', () => {
       reason: 'remote_history_not_monotonic'
     });
 
-    expect(resume.textContent?.trim()).toBe('↻ 정산 재개');
-    expect(resume.getAttribute('aria-label')).toBe('정산 재개');
+    expect(resume.textContent?.trim()).toBe('↻ 정리 재시도');
+    expect(resume.getAttribute('aria-label')).toBe('정리 재시도');
   });
 
   test('carries the resume kind for the click delegation to read', () => {
@@ -2681,7 +2824,7 @@ describe('worker failed tile resume button (UI-8h1x §3.3a)', () => {
     });
 
     expect(resume.disabled).toBe(true);
-    expect(resume.title).toBe('정산 재개 불가');
+    expect(resume.title).toBe('정리 재시도 불가');
   });
 
   test('keeps a recorded refusal reason as the disabled title', () => {

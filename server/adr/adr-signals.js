@@ -4,7 +4,7 @@
  * Runs the three installed dotfiles checkers asynchronously and consumes their
  * `--json` output verbatim (ADR 0012: the vocabulary is a code registry, the
  * rules are not reimplemented in JS). Nothing here runs on a synchronous
- * projection path (ADR 0042) and nothing reads `bd`.
+ * projection path (ADR 0043) and nothing reads `bd`.
  *
  * @import { AdrRecord } from './adr-frontmatter.js'
  * @import { CheckerPaths } from './adr-registry.js'

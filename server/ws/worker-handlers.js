@@ -671,7 +671,7 @@ export function withExternalPrWait(workspace_key, queue) {
   );
   /** @type {Set<string>} */
   const emitted = new Set();
-  /** @type {Array<{ bead_id: string, added_at: number|null, external: true, wt_present: boolean }>} */
+  /** @type {Array<{ bead_id: string, added_at: number|null, external: true, wt_present: boolean, foreign?: boolean, repo_slug?: string, pr_url?: string, pr_number?: number }>} */
   const overlay = [];
   for (const row of rows) {
     if (durable.has(row.bead_id) || emitted.has(row.bead_id)) {
@@ -682,7 +682,24 @@ export function withExternalPrWait(workspace_key, queue) {
       bead_id: row.bead_id,
       added_at: row.added_at,
       external: true,
-      wt_present: externalWorktreePresent(workspace_key, row.bead_id)
+      wt_present: externalWorktreePresent(workspace_key, row.bead_id),
+      // The registry's own four PR facts (UI-kyky §6.1). `foreign` is what the
+      // screen needs to say this workspace neither observes nor merges the row,
+      // and `pr_url`/`pr_number` are the only honest reference such a row has —
+      // the PR poller reads foreign urls as `pr_repo_foreign` and records no
+      // observation at all. Each field travels ONLY when the registry actually
+      // holds it: an absent value stays absent rather than becoming a default
+      // the client would render as fact.
+      ...(row.foreign === true ? { foreign: true } : {}),
+      ...(typeof row.repo_slug === 'string' && row.repo_slug.length > 0
+        ? { repo_slug: row.repo_slug }
+        : {}),
+      ...(typeof row.pr_url === 'string' && row.pr_url.length > 0
+        ? { pr_url: row.pr_url }
+        : {}),
+      ...(typeof row.pr_number === 'number' && Number.isFinite(row.pr_number)
+        ? { pr_number: row.pr_number }
+        : {})
     });
   }
   for (const entry of merge_queue) {
@@ -697,6 +714,8 @@ export function withExternalPrWait(workspace_key, queue) {
     }
     emitted.add(bead_id);
     const granted_at = entry.authority && entry.authority.granted_at;
+    // NO PR fields here (§6.1): a merge-queue item carries no registry row, so
+    // inventing `foreign`/`repo_slug`/`pr_url` for it would be a guess.
     overlay.push({
       bead_id,
       // The queue item carries no `added_at` of its own; the authority's grant

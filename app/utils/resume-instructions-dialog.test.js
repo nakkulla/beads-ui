@@ -45,8 +45,10 @@ describe('requestResumeInstructions', () => {
 
     const dialog = document.querySelector('.resume-instructions-dialog');
 
-    expect(dialog?.querySelector('h2')?.textContent).toBe('착지 정산 재개');
-    expect(dialog?.querySelector('button')?.textContent).toBe('정산 재개');
+    expect(dialog?.querySelector('h2')?.textContent).toBe(
+      '착지 후 정리 재시도'
+    );
+    expect(dialog?.querySelector('button')?.textContent).toBe('정리 재시도');
   });
 
   test('titles the dialog and its confirm button for a session resume', () => {

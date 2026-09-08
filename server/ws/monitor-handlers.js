@@ -386,7 +386,7 @@ function laneMemberIds(snapshot) {
  * rows carry their own `workflow` already and need no overlay.
  *
  * Reads the warm cache alone, so this projection spawns no synchronous child
- * process (ADR 0042), and is partial on the cache's existing contract: a bead
+ * process (ADR 0043), and is partial on the cache's existing contract: a bead
  * whose record has not landed is absent and arrives on the snapshot the fill
  * callback triggers.
  *
