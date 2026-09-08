@@ -17,7 +17,6 @@ import { createHash } from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { runShell } from '../bd.js';
-import { repoOpsDeployWorktreeJournalPath } from './state-paths.js';
 
 /**
  * @typedef {(args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>} GitRunner
@@ -2007,20 +2006,19 @@ export function createWorktreeManager(deps) {
 /**
  * Create the permanent, detached deploy worktree manager. It intentionally
  * does not share the session-worktree namespace: the fixed path is protected
- * by a durable ownership journal as well as Git's own registration record.
+ * by Git's registration record, repository identity, and detached HEAD.
  *
  * Repo-operation serialization is CALLER-owned: the coordinator holds the
  * repo-operation lock across bind, align, spawn, and durable record. This
  * manager takes the topology lock around ref-changing fetches and worktree
  * creation.
  *
- * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs'), journalPath?: (workspace: string) => string, now?: () => number }} deps
+ * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs'), now?: () => number }} deps
  */
 export function createRepoOpsDeployWorktreeManager(deps) {
   const fs = deps.fs || nodeFs;
   /** @type {GitRunner} */
   const run = deps.run || ((args, options) => runShell('git', args, options));
-  const journalPath = deps.journalPath || repoOpsDeployWorktreeJournalPath;
   const now = deps.now || (() => Date.now());
 
   /**
@@ -2028,29 +2026,6 @@ export function createRepoOpsDeployWorktreeManager(deps) {
    */
   function pathFor(repo) {
     return path.resolve(repo, '.worktrees', '.repo-ops-deploy');
-  }
-
-  /**
-   * @param {string} file
-   * @param {unknown} value
-   */
-  function persistJournal(file, value) {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    const temp = `${file}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify(value));
-    fs.renameSync(temp, file);
-  }
-
-  /**
-   * @param {string} file
-   */
-  function readJournal(file) {
-    try {
-      const value = JSON.parse(fs.readFileSync(file, 'utf8'));
-      return value && typeof value === 'object' ? value : null;
-    } catch {
-      return null;
-    }
   }
 
   /**
@@ -2064,9 +2039,9 @@ export function createRepoOpsDeployWorktreeManager(deps) {
   }
 
   /**
-   * Prove that any state at the reserved deploy path belongs to this repository
-   * and to the durable ownership journal. Complete absence is a valid bootstrap
-   * state; partial or foreign evidence is not.
+   * Prove that the reserved deploy path is a registered detached worktree of
+   * this repository. Complete absence is a valid bootstrap state; partial or
+   * foreign Git evidence is not.
    *
    * @param {{ repo: string, workspace?: string }} input
    * @returns {Promise<{ ok: true, path: string, exists: boolean }|{ ok: false, code: 'repo_ops_worktree_unowned', path: string, exists: boolean }>}
@@ -2074,15 +2049,13 @@ export function createRepoOpsDeployWorktreeManager(deps) {
   async function inspectOwnership(input) {
     const repo = input.repo;
     const deploy_path = pathFor(repo);
-    const workspace = input.workspace || repo;
-    const journal = readJournal(journalPath(workspace));
     const list = await run(['worktree', 'list', '--porcelain', '-z'], {
       cwd: repo
     });
     const registered =
       list.code === 0 && registeredPaths(list.stdout).includes(deploy_path);
     const exists = fs.existsSync(deploy_path);
-    if (!exists && !registered && !journal) {
+    if (!exists && !registered) {
       return { ok: true, path: deploy_path, exists: false };
     }
     const common_repo = await run(
@@ -2097,20 +2070,12 @@ export function createRepoOpsDeployWorktreeManager(deps) {
     const head = exists
       ? await run(['symbolic-ref', '-q', 'HEAD'], { cwd: deploy_path })
       : { code: 1 };
-    const journal_owned =
-      journal && journal.repo === repo && journal.path === deploy_path;
     const common_equal =
       common_repo.code === 0 &&
       common_deploy.code === 0 &&
       path.resolve(repo, common_repo.stdout.trim()) ===
         path.resolve(deploy_path, common_deploy.stdout.trim());
-    if (
-      !exists ||
-      !registered ||
-      !journal_owned ||
-      !common_equal ||
-      head.code === 0
-    ) {
+    if (!exists || !registered || !common_equal || head.code === 0) {
       return {
         ok: false,
         code: 'repo_ops_worktree_unowned',
@@ -2182,11 +2147,9 @@ export function createRepoOpsDeployWorktreeManager(deps) {
   async function ensureAligned(input) {
     const repo = fs.realpathSync(path.resolve(input.repo));
     const deploy_path = pathFor(repo);
-    const workspace = input.workspace || repo;
     const target_sha = input.target_sha;
     {
-      const journal_file = journalPath(workspace);
-      const ownership = await inspectOwnership({ repo, workspace });
+      const ownership = await inspectOwnership({ repo });
       if (!ownership.ok) {
         return { ok: false, code: ownership.code };
       }
@@ -2197,9 +2160,9 @@ export function createRepoOpsDeployWorktreeManager(deps) {
             ['worktree', 'add', '--detach', deploy_path, target_sha],
             { cwd: repo }
           );
-          if (added.code !== 0)
+          if (added.code !== 0) {
             return { ok: false, code: 'repo_ops_worktree_create_failed' };
-          persistJournal(journal_file, { repo, path: deploy_path });
+          }
         } finally {
           release_topology();
         }

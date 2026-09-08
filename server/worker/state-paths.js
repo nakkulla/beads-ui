@@ -373,17 +373,6 @@ export function repoOperationLaunchMarkerPath(
 }
 
 /**
- * @param {string} workspace_root
- * @returns {string}
- */
-export function repoOpsDeployWorktreeJournalPath(workspace_root) {
-  return path.join(
-    workspaceStateDir(workspace_root),
-    'repo-ops-deploy-worktree.json'
-  );
-}
-
-/**
  * Sanitize one caller-supplied path segment for the bead-scoped record layout
  * (record-timeline-retention §4).
  *

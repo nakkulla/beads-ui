@@ -85,7 +85,7 @@ store API로 제공한다. process spawn 전에 durable `queued`/attempt prereco
 
 `server/worker/worktree.js`를 확장해 고정 경로 `.worktrees/.repo-ops-deploy`를
 관리한다. master spec §6.3의 소유권 증명(canonical path·`git worktree list`
-등록·`--git-common-dir` 일치·Worker journal identity·detached HEAD)을 전부
+등록·`--git-common-dir` 일치·detached HEAD)을 전부
 통과한 worktree만 bounded fetch(`FETCH_ATTEMPT_TIMEOUT_MS` 재사용, 완전 회수된
 pre-execution timeout 1회 retry)로 pin한 `origin/<base>` tip에 강제 정렬하거나
 recreate한다. 소유권이 모호한 경로는 삭제하지 않고 failure로 전환하며, 이미

@@ -4,7 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createLockManager } from './locks.js';
-import { repoOpsDeployWorktreeJournalPath } from './state-paths.js';
 import { createRepoOpsDeployWorktreeManager } from './worktree.js';
 
 // This file drives REAL child processes (git, a shell, node), so its wall time
@@ -246,28 +245,38 @@ describe('RepoOps deploy worktree', () => {
     });
   });
 
-  test('refuses a registered worktree whose ownership journal is missing', async () => {
+  test('reads a registered detached worktree created outside the Worker', async () => {
     const manager = createRepoOpsDeployWorktreeManager({
       locks: createLockManager()
     });
-    const created = await manager.ensure({
-      repo,
-      workspace: repo,
-      base: 'main'
-    });
-    expect(created.ok).toBe(true);
-    fs.rmSync(repoOpsDeployWorktreeJournalPath(repo));
+    const deploy_path = manager.pathFor(fs.realpathSync(repo));
+    const target_sha = git(['rev-parse', 'HEAD'], repo).trim();
+    git(['worktree', 'add', '--detach', deploy_path, target_sha], repo);
 
-    const result = await manager.ensure({
-      repo,
-      workspace: repo,
-      base: 'main'
-    });
+    const state = await manager.readState({ repo });
 
-    expect(result).toMatchObject({
-      ok: false,
-      code: 'repo_ops_worktree_unowned'
+    expect(state).toMatchObject({
+      ok: true,
+      path: deploy_path,
+      head: target_sha,
+      clean: true
     });
+  });
+
+  test('aligns a registered detached worktree created outside the Worker', async () => {
+    const manager = createRepoOpsDeployWorktreeManager({
+      locks: createLockManager()
+    });
+    const deploy_path = manager.pathFor(fs.realpathSync(repo));
+    git(['worktree', 'add', '--detach', deploy_path, 'HEAD'], repo);
+    fs.writeFileSync(path.join(repo, 'README'), 'new base\n');
+    git(['commit', '-am', 'advance base'], repo);
+    const target_sha = git(['rev-parse', 'HEAD'], repo).trim();
+
+    const result = await manager.ensureAligned({ repo, target_sha });
+
+    expect(result).toMatchObject({ ok: true, path: deploy_path, target_sha });
+    expect(git(['rev-parse', 'HEAD'], deploy_path).trim()).toBe(target_sha);
   });
 
   test('refuses a deploy worktree that left detached HEAD', async () => {

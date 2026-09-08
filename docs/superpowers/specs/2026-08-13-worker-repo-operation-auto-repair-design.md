@@ -310,8 +310,8 @@ git worktree add --detach .worktrees/.repo-ops-deploy <target_sha>
 2. `origin/<base>`를 bounded fetch하고 tip을 operation의 immutable target SHA로
    bind한다. operation subjects의 merged SHA가 모두 target의 ancestor인지 확인한다.
 3. canonical path equality, `git worktree list` registration, canonical repo와 같은
-   `--git-common-dir`, Worker journal의 repo/path identity, detached HEAD를 함께
-   확인한다.
+   `--git-common-dir`, detached HEAD를 함께 확인한다. 별도 Worker 소유권 파일은
+   읽거나 쓰지 않으며, 누가 생성했는지와 무관하게 이 Git 증거로 판정한다.
 4. 위 소유권이 전부 증명된 worktree만 target SHA로 강제 정렬하고 non-ignored
    residue를 회수하거나 안전하게 recreate한다. 소유권이 모호한 경로나 사람의
    파일은 삭제·reset하지 않는다.
@@ -438,7 +438,7 @@ absent면 가짜 provider pending/succeeded record 없이 바로 다음 cleanup 
 - owned verify temp candidate cleanup
 
 소유권 proof가 전부 맞는 worktree만 자동 정렬·recreate한다. path 충돌, common-dir
-mismatch, journal identity mismatch처럼 사람의 파일일 가능성이 있는 상태는 자동
+mismatch, attached HEAD처럼 사람의 파일일 가능성이 있는 상태는 자동
 삭제하지 않고 operation failure evidence와 repair session으로 넘긴다.
 
 이 목록은 runtime code의 hidden behavior가 아니다. dotfiles
@@ -745,8 +745,8 @@ specs/plans/receipts는 immutable evidence로 유지한다.
    - stale/dirty/behind user checkout과 무관하게 fetched `origin/<base>` tip을
      target으로 pin한다.
    - fetch timeout이 child process를 회수하고 한 번만 retry한다.
-   - `.worktrees/.repo-ops-deploy`가 registered worktree/common-dir/journal/detached
-     ownership proof를 모두 요구한다.
+   - `.worktrees/.repo-ops-deploy`가 registered worktree/common-dir/detached HEAD
+     증거를 모두 요구하며 별도 소유권 파일 없이 생성된 정상 worktree도 허용한다.
    - deploy branch를 만들지 않고 owned worktree만 exact target으로 정렬한다.
    - ownership mismatch와 이미 성공한 deploy SHA의 descendant가 아닌 remote
      tip(rewind)은 자동 삭제·deploy하지 않는다.
