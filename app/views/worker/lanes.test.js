@@ -442,6 +442,44 @@ describe('discovered-from chip', () => {
   });
 });
 
+describe('PR link (UI-kyky §6.1)', () => {
+  test('renders an https PR url as the link', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      pr_url: 'https://github.com/o/r/pull/12',
+      pr_number: 12
+    });
+
+    const link = row.querySelector('a.worker-mini__pr');
+
+    expect(link?.getAttribute('href')).toBe('https://github.com/o/r/pull/12');
+    expect(link?.textContent?.trim()).toBe('#12 ↗');
+  });
+
+  test('refuses a non-web scheme as a PR link', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      pr_url: 'javascript://host/o/r/pull/12',
+      pr_number: 12
+    });
+
+    expect(row.querySelector('a.worker-mini__pr')).toBeNull();
+  });
+
+  test('refuses a non-integer PR number as a PR link', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      pr_url: 'https://github.com/o/r/pull/12',
+      pr_number: 12.5
+    });
+
+    expect(row.querySelector('a.worker-mini__pr')).toBeNull();
+  });
+});
+
 describe('priority badge', () => {
   test('renders the priority badge on a waiting row', () => {
     const row = renderRow({

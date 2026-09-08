@@ -742,7 +742,7 @@ describe('design token definitions', () => {
     for (const route of ['spec_backed', 'quick_fix', 'full_plan', 'unset']) {
       expect(CSS).toContain(`.worker-card--route-bg[data-route='${route}']`);
       expect(CSS).toContain(`.worker-mini--route-bg[data-route='${route}']`);
-      expect(CSS).toContain(`.rtile--route-bg[data-route='${route}']`);
+      expect(CSS).not.toContain(`.rtile--route-bg[data-route='${route}']`);
       expect(CSS).toContain(`background: var(--route-${route}-bg);`);
     }
   });

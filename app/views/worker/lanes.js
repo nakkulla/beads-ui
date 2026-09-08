@@ -1403,6 +1403,31 @@ function receiptBadgeCodesOf(item) {
 }
 
 /**
+ * Whether a PR reference is safe to render as a link: an absolute `http(s)`
+ * URL and a positive integer number (UI-kyky §6.1). Both tabs build every PR
+ * link through {@link prLinkTemplate}, so this is the one boundary where an
+ * arbitrary-scheme string — the external-PR registry stores `metadata.pr_url`
+ * as bd holds it — is refused instead of landing in an `href`.
+ *
+ * @param {unknown} pr_url
+ * @param {unknown} pr_number
+ */
+function isWebPrLink(pr_url, pr_number) {
+  if (typeof pr_url !== 'string' || pr_url.length === 0) {
+    return false;
+  }
+  if (!Number.isInteger(pr_number) || /** @type {number} */ (pr_number) <= 0) {
+    return false;
+  }
+  try {
+    const protocol = new URL(pr_url).protocol;
+    return protocol === 'https:' || protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The PR 링크 하나 — `#<n> ↗`. PR 대기 행·카드형 행·완료 행이 모두 이것을
  * 부르므로, "이 bead가 어느 PR인가"는 어느 레인에서 읽어도 같은 모양이다
  * (스펙 §5.1 슬롯 1). 번호나 URL 중 하나라도 없으면 빈 문자열이다
@@ -1413,7 +1438,7 @@ function receiptBadgeCodesOf(item) {
  * @returns {import('lit-html').TemplateResult|''}
  */
 export function prLinkTemplate(pr_url, pr_number) {
-  if (!pr_url || typeof pr_number !== 'number') {
+  if (!isWebPrLink(pr_url, pr_number)) {
     return '';
   }
   return html`<a

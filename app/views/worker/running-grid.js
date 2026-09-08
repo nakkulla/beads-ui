@@ -1342,12 +1342,10 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const discard_actions = abandon_button
     ? html`${discard_button}${abandon_button}`
     : discard_button;
-  // 작업 종류 배경 (UI-kyky §3.1): 실패·held·선택·일시정지·세션 타일은 이미
-  // 자기 테두리·배경·링으로 상태를 말하므로 중립이 아니다.
-  const route_tone = routeCardTone(
-    tile.workflow,
-    !failed && !held && !sel && !paused && !session
-  );
+  // 작업 종류 분류 (UI-kyky §3.1). 실행 타일은 배경을 켜지 않는다 — '실행 중'
+  // 자체가 §3.1이 우선한다고 정한 상태 표현이라 이 그리드의 어떤 타일도 중립이
+  // 아니다. `data-route`는 칩과 같은 분류를 실어 두 표면이 어긋나지 않게 한다.
+  const route_tone = routeCardTone(tile.workflow, false);
   return html`<div
     class="rtile${sel ? ' rtile--sel' : ''}${paused
       ? ' rtile--paused'
@@ -1357,8 +1355,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ? ' rtile--retry-wait'
       : ''}${waiting ? ' rtile--waiting' : ''}${session
       ? ' rtile--session'
-      : ''}${provider_hold ? ' rtile--provider-hold' : ''}${route_tone.tinted
-      ? ' rtile--route-bg'
+      : ''}${provider_hold
+      ? ' rtile--provider-hold'
       : ''}${tile.search_match === false ? ' is-dimmed' : ''}"
     data-bead-id=${tile.bead_id}
     data-attempt-id=${tile.attempt_id || ''}

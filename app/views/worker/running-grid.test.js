@@ -352,7 +352,7 @@ describe('worker failed running tile template', () => {
     );
   });
 
-  test('tints a neutral running tile with its route classification', () => {
+  test('keeps a running tile on its execution expression without a route tint', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(
@@ -369,7 +369,7 @@ describe('worker failed running tile template', () => {
 
     const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
     expect(tile.getAttribute('data-route')).toBe('spec_backed');
-    expect(tile.classList.contains('rtile--route-bg')).toBe(true);
+    expect(tile.classList.contains('rtile--route-bg')).toBe(false);
   });
 
   test('leaves a failed tile on its own state expression', () => {
