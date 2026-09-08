@@ -8,6 +8,10 @@
         "model": "gpt-5.6-sol",
         "effort": "xhigh"
       },
+      "astra": {
+        "model": "gpt-6-astra",
+        "effort": "xhigh"
+      },
       "opus": {
         "model": "opus",
         "effort": "high"
