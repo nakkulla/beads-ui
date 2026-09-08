@@ -28,6 +28,25 @@ export function createAccountCatalog({ listClaude, listCodex }) {
     },
 
     /**
+     * Read every Codex account row the recovery selector may offer. Codex has
+     * no `activeCodex`/`readCodex` twin: codex-auth exposes the durable key and
+     * its usage windows, and nothing else this worker consumes.
+     *
+     * @returns {Promise<{ ok: true, accounts: Account[], active_key: string|null }|{ ok: false, reason: string }>}
+     */
+    async listCodex() {
+      const listed = await listCodex();
+      if (!listed.ok) {
+        return { ok: false, reason: 'codex_account_list_unavailable' };
+      }
+      return {
+        ok: true,
+        accounts: listed.accounts,
+        active_key: listed.active_key
+      };
+    },
+
+    /**
      * Read the active Claude row, including usage windows used by outage classification.
      *
      * @returns {Promise<{ ok: true, account: Account }|{ ok: false, reason: string }>}

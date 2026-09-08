@@ -4588,6 +4588,68 @@ describe('scheduler resume (spec §1)', () => {
     }
   );
 
+  test('applies a codex account override validated by the codex catalog', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      accountCatalog: {
+        resolveCodex: vi.fn(async (key) => ({
+          ok: true,
+          account: { key, email: 'codex@example.com' }
+        }))
+      },
+      prepareCodexAccountHome: vi.fn(async ({ home_dir }) => ({
+        ok: true,
+        home_dir
+      })),
+      codexAccountHomeDir: vi.fn((key) => `/state/codex-homes/${key}`),
+      codexRoot: '/codex-root'
+    });
+    seedAttempt(env.store, 'override-codex', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'override-codex', {
+      exec_override: {
+        runner: 'codex',
+        model: 'sol',
+        effort: 'xhigh',
+        codex_account: 'acct-2'
+      }
+    });
+
+    const resumed = Object.values(env.store.snapshot(WS).attempts).find(
+      (attempt) => attempt.resumed_from === 'override-codex'
+    );
+    expect(result.ok).toBe(true);
+    expect(resumed?.codex_account).toEqual('acct-2');
+  });
+
+  test('rejects a codex account override the catalog does not know', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      accountCatalog: {
+        resolveCodex: vi.fn(async () => ({
+          ok: false,
+          reason: 'codex_account_unknown'
+        }))
+      }
+    });
+    seedAttempt(env.store, 'override-codex-bad', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'override-codex-bad', {
+      exec_override: {
+        runner: 'codex',
+        model: 'sol',
+        effort: 'xhigh',
+        codex_account: 'missing'
+      }
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'exec_override_invalid' });
+  });
+
   test('forces a cross-runner override fresh with a bounded context handoff', async () => {
     const recent = `${'x'.repeat(5000)}-RECENT-END`;
     const env = setup({

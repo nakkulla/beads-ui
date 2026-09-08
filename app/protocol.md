@@ -704,10 +704,13 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   the parent's whole settlement chain finished. A non-boolean value is
   `bad_request`.
 - `worker-attempt-resume` payload:
-  `{ attempt_id, expected_revision, continuation?, decision_token?, instructions? }`
-  — ▶ on a paused/failed/orphaned attempt; cap-exempt (human-originated).
-  `instructions` is an optional 1..4000 character user instruction; blank after
-  trimming is treated as absent. `continuation` is `auto` | `prior_session` |
+  `{ attempt_id, expected_revision, continuation?, decision_token?, instructions?, exec_override? }`
+  — `exec_override` accepts `runner`, `model`, `effort`, `claude_account` and
+  `codex_account`; each account key is validated against its own catalog and is
+  only accepted for its own runner (codex-orchestration-parity §5.2). — ▶ on a
+  paused/failed/orphaned attempt; cap-exempt (human-originated). `instructions`
+  is an optional 1..4000 character user instruction; blank after trimming is
+  treated as absent. `continuation` is `auto` | `prior_session` |
   `fresh_current` | `prior_attempt`. `prior_attempt` (UI-qce9 §5) means "the
   recorded attempt's session AND its recorded execution settings": it needs NO
   `decision_token` (it is a fixed policy, not a provider choice), refuses

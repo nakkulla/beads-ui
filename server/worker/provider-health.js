@@ -4,8 +4,15 @@
  * @import { ChildProcess } from 'node:child_process'
  */
 import { spawn } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
+import {
+  codexAccountAuthFile,
+  prepareCodexAccountHome as defaultPrepareCodexAccountHome
+} from './codex-account-home.js';
 import { adapterSpec, runtimeCatalog } from './runner/index.js';
+import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths.js';
 
 const PROBE_TIMEOUT_MS = 120_000;
 const OUTAGE_BACKOFF_MS = Object.freeze([
@@ -63,6 +70,7 @@ function parseProbeOutput(output) {
  * @param {string} command
  * @param {string[]} args
  * @param {string} cwd
+ * @param {Record<string, string>} env
  * @param {(fn: () => void, delay: number) => any} set_timeout
  * @param {(handle: any) => void} clear_timeout
  * @returns {Promise<{ code: number|null, stdout: string, stderr: string }>}
@@ -72,6 +80,7 @@ function runProbeProcess(
   command,
   args,
   cwd,
+  env,
   set_timeout,
   clear_timeout
 ) {
@@ -81,7 +90,7 @@ function runProbeProcess(
     try {
       child = spawn_impl(command, args, {
         cwd,
-        env: process.env,
+        env: { ...process.env, ...env },
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true
@@ -131,6 +140,51 @@ function runProbeProcess(
 }
 
 /**
+ * Read one `codex exec --json` probe stdout as JSONL (codex-orchestration-parity
+ * §5.2). Claude's single-JSON `is_error` reading would call every healthy codex
+ * stream a failure, so the two decoders stay separate.
+ *
+ * `malformed` is true for any non-empty line that is not one JSON object: that
+ * is a probe that did not report, never evidence about the provider.
+ *
+ * @param {string} stdout
+ * @returns {{ completed: boolean, failed: boolean, malformed: boolean, events: any[] }}
+ */
+function decodeCodexProbe(stdout) {
+  /** @type {any[]} */
+  const events = [];
+  let completed = false;
+  let failed = false;
+  let malformed = false;
+  for (const line of String(stdout).split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    /** @type {any} */
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      malformed = true;
+      continue;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      malformed = true;
+      continue;
+    }
+    events.push(parsed);
+    if (parsed.type === 'turn.completed') {
+      completed = true;
+    }
+    if (parsed.type === 'turn.failed' || parsed.type === 'error') {
+      failed = true;
+    }
+  }
+  return { completed, failed, malformed, events };
+}
+
+/**
  * Create the workspace-independent provider health controller.
  *
  * @param {{
@@ -143,6 +197,10 @@ function runProbeProcess(
  *   repo?: string,
  *   spawnImpl?: (command: string, args: string[], options: any) => any,
  *   resolveCswapPath?: () => string|null,
+ *   prepareCodexAccountHome?: typeof defaultPrepareCodexAccountHome,
+ *   codexAccountHomeDir?: (key: string) => string,
+ *   codexRoot?: string,
+ *   homeDir?: string,
  *   catalog?: ReturnType<typeof runtimeCatalog>,
  *   now?: () => number,
  *   setTimeoutImpl?: (fn: () => void, delay: number) => any,
@@ -164,17 +222,62 @@ export function createProviderHealth(deps) {
   const active_workspaces = new Set();
 
   /**
-   * Resolve the probe command from the same catalog and account route as launch.
+   * Resolve the probe command, argv and env from the same catalog and account
+   * route as launch. Codex probes non-interactively in a read-only sandbox and
+   * carries the SAME per-account `CODEX_HOME` mirror a real launch prepares —
+   * probing the default home would report on a pool nothing is held on
+   * (codex-orchestration-parity §5.2). `--skip-git-repo-check` is required
+   * because a held workspace need not be a trusted git repo.
    *
    * @param {string} runner
    * @param {ProviderTarget} target
-   * @returns {{ command: string, args: string[] }|null}
+   * @returns {Promise<{ command: string, args: string[], env: Record<string, string> }|null>}
    */
-  function probeArgv(runner, target) {
+  async function probeArgv(runner, target) {
     const entry = catalog.runners[runner];
     const model = entry?.models?.[target.model];
     if (!entry || !model || typeof model.id !== 'string') {
       return null;
+    }
+    if (runner === 'codex') {
+      const args = [
+        'exec',
+        '--json',
+        '--sandbox',
+        'read-only',
+        '--skip-git-repo-check',
+        '-m',
+        model.id,
+        'ok'
+      ];
+      /** @type {Record<string, string>} */
+      const env = { CODEX_SILENT: '1' };
+      if (target.account !== null) {
+        const home_dir = deps.homeDir || os.homedir();
+        const process_codex_root = process.env.CODEX_HOME;
+        const codex_root =
+          deps.codexRoot ||
+          (typeof process_codex_root === 'string' &&
+          process_codex_root.length > 0
+            ? process_codex_root
+            : path.join(home_dir, '.codex'));
+        const account_home_dir = (
+          deps.codexAccountHomeDir || defaultCodexAccountHomeDir
+        )(target.account);
+        const prepared = await (
+          deps.prepareCodexAccountHome || defaultPrepareCodexAccountHome
+        )({
+          key: target.account,
+          auth_file: codexAccountAuthFile(codex_root, target.account),
+          codex_root,
+          home_dir: account_home_dir
+        });
+        if (!prepared.ok) {
+          return null;
+        }
+        env.CODEX_HOME = prepared.home_dir;
+      }
+      return { command: entry.command, args, env };
     }
     const args = ['-p', 'ok', '--model', model.id, '--output-format', 'json'];
     if (runner === 'claude' && target.account !== null) {
@@ -191,10 +294,11 @@ export function createProviderHealth(deps) {
           '--',
           entry.command,
           ...args
-        ]
+        ],
+        env: {}
       };
     }
-    return { command: entry.command, args };
+    return { command: entry.command, args, env: {} };
   }
 
   /**
@@ -206,7 +310,7 @@ export function createProviderHealth(deps) {
    * @returns {Promise<{ ok: boolean, outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }|null, error: string }>}
    */
   async function probeTarget(workspace, runner, target) {
-    const argv = probeArgv(runner, target);
+    const argv = await probeArgv(runner, target);
     if (!argv) {
       return { ok: false, outage: null, error: 'probe_route_unavailable' };
     }
@@ -215,14 +319,44 @@ export function createProviderHealth(deps) {
       argv.command,
       argv.args,
       workspace,
+      argv.env,
       setTimeoutImpl,
       clearTimeoutImpl
     );
+    const classifier = adapterSpec(runner, { catalog }).classifyProviderOutage;
+    if (runner === 'codex') {
+      const decoded = decodeCodexProbe(result.stdout);
+      if (decoded.completed && !decoded.failed && !decoded.malformed) {
+        return { ok: true, outage: null, error: '' };
+      }
+      if (!decoded.failed) {
+        // No terminal event, or output this decoder could not read: the probe
+        // itself failed. The hold stays and is retried, but nothing here is
+        // evidence of a provider outage.
+        return {
+          ok: false,
+          outage: null,
+          error: result.stderr.trim() || 'probe_decode_failed'
+        };
+      }
+      const outage = classifier
+        ? classifier({
+            raw: decoded.events,
+            stderr_tail: result.stderr,
+            finished_at: now(),
+            account_row: null
+          })
+        : null;
+      return {
+        ok: false,
+        outage,
+        error: outage?.message || result.stderr || 'probe_failed'
+      };
+    }
     const parsed = parseProbeOutput(result.stdout);
     if (result.code === 0 && parsed && parsed.is_error === false) {
       return { ok: true, outage: null, error: '' };
     }
-    const classifier = adapterSpec(runner, { catalog }).classifyProviderOutage;
     let account_row = null;
     if (runner === 'claude') {
       const account_result = target.account
@@ -551,6 +685,7 @@ export function createProviderHealth(deps) {
       }
     },
 
+    probeArgv,
     probeTarget
   };
 }

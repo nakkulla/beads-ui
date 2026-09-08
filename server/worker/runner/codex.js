@@ -24,6 +24,7 @@
  * @import { RunnerCatalogEntry } from '../runner-catalog.js'
  */
 import { builtinCatalog } from '../runner-catalog.js';
+import { classifyProviderOutage } from './codex-outage.js';
 import { applyPreamble, defaultTaskPrompt } from './preamble.js';
 import { runSession } from './session.js';
 
@@ -388,18 +389,6 @@ function verdict(ctx) {
     return { success: false, reason: 'turn_failed', summary };
   }
   return { success: true, reason: 'ok', summary };
-}
-
-/**
- * Keep the runner-general outage seam explicit while codex patterns remain
- * outside this implementation unit (provider-outage-hold-resume §3.4).
- *
- * @param {{ raw: any[], stderr_tail: string|null }} _ctx
- * @returns {null}
- */
-function classifyProviderOutage(_ctx) {
-  void _ctx;
-  return null;
 }
 
 /**

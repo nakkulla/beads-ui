@@ -140,6 +140,46 @@ describe('worker provider queue projection', () => {
     });
   });
 
+  test('projects Codex accounts by their durable key', async () => {
+    const socket = fakeSocket();
+    setConnWorkspace(socket, { root_dir: WS, db_path: '/tmp/db' });
+    __setWorkerAccountCatalogForTest({
+      listClaude: vi.fn(async () => ({ ok: false, reason: 'unavailable' })),
+      listCodex: vi.fn(async () => ({
+        ok: true,
+        accounts: [
+          {
+            key: 'acct-1',
+            email: 'one@example.com',
+            alias: '업무',
+            status: 'ok',
+            windows: []
+          }
+        ]
+      }))
+    });
+
+    handleSubscribeWorkerQueue(
+      socket,
+      /** @type {any} */ ({
+        id: 'subscribe-codex-accounts',
+        type: 'subscribe-worker-queue',
+        payload: { id: 'client-codex-accounts' }
+      })
+    );
+
+    await vi.waitFor(() => {
+      expect(
+        sent(socket).some(
+          (/** @type {any} */ message) =>
+            message.type === 'worker-queue-snapshot' &&
+            message.payload?.queue?.account_catalog?.codex?.[0]?.key ===
+              'acct-1'
+        )
+      ).toBe(true);
+    });
+  });
+
   test('adds the first outage probe time without changing durable state', () => {
     const since = Date.now();
     const raw = {
@@ -364,6 +404,44 @@ describe('worker attempt resume override handler', () => {
       resumed: true,
       new_attempt_id: 'attempt-2',
       fallback: 'transcript_missing'
+    });
+  });
+  test('forwards a trimmed codex account override', async () => {
+    const socket = fakeSocket();
+    const resume = vi.fn(async () => ({ ok: true, attempt_id: 'attempt-3' }));
+    setConnWorkspace(socket, { root_dir: WS, db_path: '/tmp/db' });
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({ scheduler: { resume } })
+    );
+    const revision = getWorkerRuntime().queueStore.snapshot(WS).revision;
+
+    await handleWorkerAttemptResume(
+      socket,
+      /** @type {any} */ ({
+        id: 'resume-codex-account',
+        type: 'worker-attempt-resume',
+        payload: {
+          attempt_id: 'attempt-1',
+          expected_revision: revision,
+          exec_override: {
+            runner: ' codex ',
+            model: ' sol ',
+            codex_account: ' acct-2 '
+          }
+        }
+      })
+    );
+
+    expect(resume).toHaveBeenCalledWith(WS, 'attempt-1', {
+      continuation: undefined,
+      decision_token: undefined,
+      instructions: undefined,
+      exec_override: {
+        runner: 'codex',
+        model: 'sol',
+        codex_account: 'acct-2'
+      }
     });
   });
 });

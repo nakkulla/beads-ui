@@ -2564,6 +2564,119 @@ describe('views/worker', () => {
     expect(confirm.disabled).toBe(true);
   });
 
+  test('lists codex accounts for a codex-held attempt', () => {
+    const mount = mountAttemptTiles({
+      attempts: {
+        held: {
+          attempt_id: 'held',
+          bead_id: 'HELD',
+          status: 'paused',
+          cause: 'provider_outage:usage_limit',
+          runner: 'codex',
+          model: 'sol',
+          codex_account: 'acct-1'
+        }
+      },
+      account_catalog: {
+        codex: [
+          {
+            key: 'acct-1',
+            email: 'one@example.com',
+            alias: '업무',
+            status: 'ok',
+            windows: []
+          },
+          {
+            key: 'acct-2',
+            email: 'two@example.com',
+            alias: null,
+            status: 'ok',
+            windows: []
+          }
+        ]
+      }
+    });
+
+    mount
+      .querySelector('.rtile__resume-alternate')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const account = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.provider-resume-dialog__account')
+    );
+
+    expect(account.value).toBe('acct-1');
+    expect(Array.from(account.options).map((option) => option.value)).toEqual([
+      'acct-1',
+      'acct-2'
+    ]);
+    expect(account.options[1].disabled).toBe(false);
+  });
+
+  test('sends the chosen codex account in the override', async () => {
+    const transport = vi.fn().mockResolvedValue({ resumed: true });
+    const mount = mountAttemptTiles(
+      {
+        revision: 9,
+        attempts: {
+          held: {
+            attempt_id: 'held',
+            bead_id: 'HELD',
+            status: 'paused',
+            cause: 'provider_outage:usage_limit',
+            runner: 'codex',
+            model: 'sol',
+            codex_account: 'acct-1',
+            session_id: 'sid-held'
+          }
+        },
+        account_catalog: {
+          codex: [
+            {
+              key: 'acct-1',
+              email: 'one@example.com',
+              alias: null,
+              status: 'ok',
+              windows: []
+            },
+            {
+              key: 'acct-2',
+              email: 'two@example.com',
+              alias: null,
+              status: 'ok',
+              windows: []
+            }
+          ]
+        }
+      },
+      transport
+    );
+    mount
+      .querySelector('.rtile__resume-alternate')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const account = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.provider-resume-dialog__account')
+    );
+    account.value = 'acct-2';
+    account.dispatchEvent(new Event('change', { bubbles: true }));
+    mount
+      .querySelector('.provider-resume-dialog__confirm')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
+      attempt_id: 'held',
+      expected_revision: 9,
+      exec_override: {
+        runner: 'codex',
+        model: 'sol',
+        codex_account: 'acct-2'
+      }
+    });
+  });
+
   test('sends a cross-runner override as fresh_current', async () => {
     const transport = vi.fn().mockResolvedValue({ resumed: true });
     const mount = mountAttemptTiles(

@@ -216,6 +216,8 @@ function defaultWorkerAccountCatalog() {
 let worker_account_catalog = defaultWorkerAccountCatalog();
 /** @type {Array<{ email: string, alias: string|null, status: string, windows: Array<Record<string, any>> }>|null} */
 let claude_account_catalog = null;
+/** @type {Array<{ key: string, email: string, alias: string|null, status: string, windows: Array<Record<string, any>> }>|null} */
+let codex_account_catalog = null;
 /** @type {Promise<void>|null} */
 let account_catalog_refresh = null;
 let account_catalog_generation = 0;
@@ -230,7 +232,7 @@ async function refreshWorkerAccountCatalog() {
     return account_catalog_refresh;
   }
   const generation = account_catalog_generation;
-  const pending = worker_account_catalog
+  const claude_pending = worker_account_catalog
     .listClaude()
     .then((listed) => {
       if (generation !== account_catalog_generation) {
@@ -264,7 +266,50 @@ async function refreshWorkerAccountCatalog() {
       if (generation === account_catalog_generation) {
         claude_account_catalog = null;
       }
-    })
+    });
+  // The codex list is read on the SAME refresh so the provider-resume selector
+  // can offer the held provider's accounts (codex-orchestration-parity §5.2).
+  // Its identity is the durable account KEY, which is what `codex_account`
+  // pins; the email is a label only.
+  const codex_pending =
+    typeof worker_account_catalog.listCodex === 'function'
+      ? worker_account_catalog
+          .listCodex()
+          .then((/** @type {any} */ listed) => {
+            if (generation !== account_catalog_generation) {
+              return;
+            }
+            if (!listed.ok) {
+              codex_account_catalog = null;
+              return;
+            }
+            codex_account_catalog = listed.accounts
+              .filter(
+                (/** @type {any} */ account) =>
+                  account && typeof account.key === 'string' && account.key
+              )
+              .map((/** @type {any} */ account) => ({
+                key: account.key,
+                email: typeof account.email === 'string' ? account.email : '',
+                alias:
+                  typeof account.alias === 'string' && account.alias.length > 0
+                    ? account.alias
+                    : null,
+                status:
+                  typeof account.status === 'string'
+                    ? account.status
+                    : 'unknown',
+                windows: Array.isArray(account.windows) ? account.windows : []
+              }));
+          })
+          .catch(() => {
+            if (generation === account_catalog_generation) {
+              codex_account_catalog = null;
+            }
+          })
+      : Promise.resolve();
+  const pending = Promise.all([claude_pending, codex_pending])
+    .then(() => undefined)
     .finally(() => {
       if (account_catalog_refresh === pending) {
         account_catalog_refresh = null;
@@ -277,12 +322,13 @@ async function refreshWorkerAccountCatalog() {
 /**
  * Test seam for the same account-catalog interface used in production.
  *
- * @param {{ listClaude: () => Promise<any> }} catalog
+ * @param {{ listClaude: () => Promise<any>, listCodex?: () => Promise<any> }} catalog
  */
 export function __setWorkerAccountCatalogForTest(catalog) {
   account_catalog_generation += 1;
   worker_account_catalog = /** @type {any} */ (catalog);
   claude_account_catalog = null;
+  codex_account_catalog = null;
   account_catalog_refresh = null;
 }
 
@@ -3019,8 +3065,15 @@ export function decorateQueue(workspace_key, raw_queue) {
     // meaning for either.
     manual_merge_continuation: MANUAL_MERGE_CONTINUATION,
     runner_catalog,
-    ...(claude_account_catalog
-      ? { account_catalog: { claude: claude_account_catalog } }
+    ...(claude_account_catalog || codex_account_catalog
+      ? {
+          account_catalog: {
+            ...(claude_account_catalog
+              ? { claude: claude_account_catalog }
+              : {}),
+            ...(codex_account_catalog ? { codex: codex_account_catalog } : {})
+          }
+        }
       : {}),
     execution_defaults,
     // The workspace's declared base (UI-j6wa §3), non-persisted like every
@@ -3989,6 +4042,7 @@ export function __resetWorkerQueueForTest() {
   account_catalog_generation += 1;
   worker_account_catalog = defaultWorkerAccountCatalog();
   claude_account_catalog = null;
+  codex_account_catalog = null;
   account_catalog_refresh = null;
   for (const sub of SESSION_LOG_SUBS) {
     try {
@@ -5014,10 +5068,16 @@ export async function handleWorkerAttemptResume(ws, req) {
     typeof p.instructions === 'string' && p.instructions.trim().length > 0
       ? p.instructions.trim()
       : undefined;
-  /** @type {{ runner?: string, model?: string, effort?: string, claude_account?: string }|undefined} */
+  /** @type {{ runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }|undefined} */
   let exec_override;
   if (p.exec_override !== undefined) {
-    const allowed = new Set(['runner', 'model', 'effort', 'claude_account']);
+    const allowed = new Set([
+      'runner',
+      'model',
+      'effort',
+      'claude_account',
+      'codex_account'
+    ]);
     if (
       !p.exec_override ||
       typeof p.exec_override !== 'object' ||
@@ -5047,7 +5107,9 @@ export async function handleWorkerAttemptResume(ws, req) {
       const value = p.exec_override[key_name];
       if (typeof value === 'string') {
         exec_override[
-          /** @type {'runner'|'model'|'effort'|'claude_account'} */ (key_name)
+          /** @type {'runner'|'model'|'effort'|'claude_account'|'codex_account'} */ (
+            key_name
+          )
         ] = value.trim();
       }
     }

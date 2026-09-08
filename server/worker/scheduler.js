@@ -69,7 +69,10 @@ import {
   observeClaudeEffort as defaultObserveClaudeEffort,
   observeClaudeSubagentEffort as defaultObserveClaudeSubagentEffort
 } from './claude-effort-observer.js';
-import { prepareCodexAccountHome as defaultPrepareCodexAccountHome } from './codex-account-home.js';
+import {
+  codexAccountAuthFile,
+  prepareCodexAccountHome as defaultPrepareCodexAccountHome
+} from './codex-account-home.js';
 import { observeCodexEffort as defaultObserveCodexEffort } from './codex-effort-observer.js';
 import * as default_delegation_monitor from './delegation-monitor.js';
 import { discardOperationActive } from './discard-phase.js';
@@ -1159,12 +1162,12 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   stopReviewSessionProcess: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string, options?: { require_durable?: boolean }) => Promise<{ ok: boolean, reason?: string }>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
- *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, resume_runner?: 'claude'|'codex'|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
@@ -1527,6 +1530,18 @@ export function createScheduler(deps) {
    * @returns {Promise<{ account: string|null, row: any|null }>}
    */
   async function providerAccountContext(attempt) {
+    // A codex hold is keyed on the account key the attempt actually launched
+    // on (codex-orchestration-parity §5.2); codex-auth exposes no per-account
+    // usage row, so the classifier gets no row rather than a claude-shaped one.
+    if (attempt.runner === 'codex') {
+      return {
+        account:
+          typeof attempt.codex_account === 'string'
+            ? attempt.codex_account
+            : null,
+        row: null
+      };
+    }
     if (attempt.runner !== 'claude' || !deps.accountCatalog) {
       return { account: null, row: null };
     }
@@ -2893,14 +2908,7 @@ export function createScheduler(deps) {
         (typeof process_codex_root === 'string' && process_codex_root.length > 0
           ? process_codex_root
           : path.join(home_dir, '.codex'));
-      const encoded_key = Buffer.from(accounts.codex, 'utf8').toString(
-        'base64url'
-      );
-      const auth_file = path.join(
-        codex_root,
-        'accounts',
-        `${encoded_key}.auth.json`
-      );
+      const auth_file = codexAccountAuthFile(codex_root, accounts.codex);
       const account_home_dir = (
         deps.codexAccountHomeDir || defaultCodexAccountHomeDir
       )(accounts.codex);
@@ -8750,7 +8758,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
@@ -8937,8 +8945,16 @@ export function createScheduler(deps) {
       );
       const switched_from =
         pending.kind === 'account_switch'
-          ? source_target?.account || prior?.claude_account || null
+          ? source_target?.account ||
+            (prior?.runner === 'codex'
+              ? prior?.codex_account
+              : prior?.claude_account) ||
+            null
           : null;
+      // §5.3 recovery resumes on the SAME provider with the approved account,
+      // so the override key follows the held attempt's runner.
+      const account_override_key =
+        prior?.runner === 'codex' ? 'codex_account' : 'claude_account';
       /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
       let result;
       if (!prior) {
@@ -8954,7 +8970,7 @@ export function createScheduler(deps) {
           auto_resume_kind: 'provider_outage',
           ...(pending.account !== null
             ? {
-                exec_override: { claude_account: pending.account },
+                exec_override: { [account_override_key]: pending.account },
                 ...(switched_from
                   ? { account_switched_from: switched_from }
                   : {})
@@ -8980,7 +8996,7 @@ export function createScheduler(deps) {
           auto_resume_kind: 'provider_outage',
           ...(pending.account !== null
             ? {
-                exec_override: { claude_account: pending.account },
+                exec_override: { [account_override_key]: pending.account },
                 ...(switched_from
                   ? { account_switched_from: switched_from }
                   : {})
@@ -9142,7 +9158,13 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'exec_override_invalid' };
     }
     const override = /** @type {Record<string, unknown>} */ (raw_override);
-    const allowed = new Set(['runner', 'model', 'effort', 'claude_account']);
+    const allowed = new Set([
+      'runner',
+      'model',
+      'effort',
+      'claude_account',
+      'codex_account'
+    ]);
     if (
       Object.keys(override).some((key) => !allowed.has(key)) ||
       Object.values(override).some(
@@ -9195,6 +9217,26 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'exec_override_invalid' };
       }
       accounts.claude = account.account.email;
+    }
+    if (typeof override.codex_account === 'string') {
+      const codex_account = override.codex_account.trim();
+      if (
+        runner !== 'codex' ||
+        !deps.accountCatalog ||
+        typeof deps.accountCatalog.resolveCodex !== 'function'
+      ) {
+        return { ok: false, reason: 'exec_override_invalid' };
+      }
+      let account;
+      try {
+        account = await deps.accountCatalog.resolveCodex(codex_account);
+      } catch {
+        return { ok: false, reason: 'exec_override_invalid' };
+      }
+      if (!account?.ok || account.account?.key !== codex_account) {
+        return { ok: false, reason: 'exec_override_invalid' };
+      }
+      accounts.codex = account.account.key;
     }
     return {
       ok: true,
@@ -10661,7 +10703,7 @@ export function createScheduler(deps) {
    * Cap-exempt like every other human-click dispatch.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviseFix(workspace, input) {
