@@ -1407,6 +1407,19 @@ export function createScheduler(deps) {
    */
   const dispatch_refused = new Set();
   /**
+   * Waiting entries the current drain refused for their queue grace (§3.3),
+   * keyed to the moment that grace ends. A grace can elapse while the drain is
+   * still busy with an earlier dispatch: the entry then stays behind the
+   * `dispatch_refused` fence for every rescan round, and the grace timer armed
+   * after the drain sees nothing left to wait for, so the entry would sit until
+   * an unrelated external tick. {@link liftElapsedGraceFences} is what lifts
+   * such a fence inside the drain. Cleared with `dispatch_refused` at every
+   * externally-initiated tick.
+   *
+   * @type {Map<string, number>}
+   */
+  const grace_refused = new Map();
+  /**
    * The in-flight dispatch drain, or `null` when no pass is running. Overlapping
    * passes are what let two sessions take the same bead: the scan spans awaits
    * (bd snapshot, admission), and a pass that starts inside that window sees a
@@ -10676,6 +10689,7 @@ export function createScheduler(deps) {
     publishActivity(workspace);
     gcUsageReceiptInboxes(workspace);
     dispatch_refused.clear();
+    grace_refused.clear();
     await tickPass(workspace);
   }
 
@@ -10878,6 +10892,26 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Lift the `dispatch_refused` fence of every grace-refused entry whose grace
+   * has elapsed during this drain (§3.3), and say whether another round is
+   * owed. Each entry leaves the map as it is lifted, so it is lifted at most
+   * once per drain: the round this requests cannot repeat on an entry the next
+   * round refuses for some other reason.
+   */
+  function liftElapsedGraceFences() {
+    const at = now();
+    let lifted = false;
+    for (const [bead_id, ends_at] of grace_refused) {
+      if (ends_at <= at) {
+        grace_refused.delete(bead_id);
+        dispatch_refused.delete(bead_id);
+        lifted = true;
+      }
+    }
+    return lifted;
+  }
+
+  /**
    * The coalesced dispatch drain — the entry every pass goes through.
    *
    * A caller awaits this as "slots refilled" (the stop/pause/cleanup paths
@@ -10899,10 +10933,12 @@ export function createScheduler(deps) {
     }
     draining = (async () => {
       try {
+        // 유예가 이 drain 도중에 끝난 항목은 펜스를 풀고 한 라운드를 더 돈다
+        // (§3.3): 그 항목의 만료는 drain 뒤의 타이머가 보지 못한다.
         do {
           rescan = false;
           await runPass(workspace);
-        } while (rescan);
+        } while (rescan || liftElapsedGraceFences());
       } finally {
         draining = null;
         // 유예로 넘어간 항목이 남았으면 그 만료 하나에 깨우기를 건다 (§3.3).
@@ -11654,6 +11690,7 @@ export function createScheduler(deps) {
       // 레코드를 쓰므로, 이미 admission을 읽는 두 탭의 행이 그대로 그린다.
       // 명시적 실행 지시는 `graceRemainingMs`가 0으로 만들어 이 문을 지난다.
       if (entry.grace_left > 0) {
+        grace_refused.set(entry.bead_id, at + entry.grace_left);
         refuseDispatch(workspace, entry.bead_id, 'grace_period');
         continue;
       }
