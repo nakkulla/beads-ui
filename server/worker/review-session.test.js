@@ -207,11 +207,22 @@ describe('review-session — session selection (UI-d7fy §5.2)', () => {
     });
   });
 
-  test('reports no resume runner when the ref cannot be resumed', () => {
+  test('keeps the source provider when the ref cannot be resumed', () => {
     const selected = selectReviewSession(
       { session_ref: `codex:sess-gone@${os.hostname()}` },
       { home_dir: tmp_home }
     );
+
+    expect(selected).toMatchObject({
+      resume_session_id: null,
+      resume_runner: 'codex',
+      session_source: 'fresh',
+      reason: 'not_local'
+    });
+  });
+
+  test('reports no resume runner when there is no recorded session', () => {
+    const selected = selectReviewSession({}, { home_dir: tmp_home });
 
     expect(selected).toMatchObject({
       resume_session_id: null,

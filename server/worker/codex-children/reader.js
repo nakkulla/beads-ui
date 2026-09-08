@@ -4,51 +4,75 @@
  * The root's own rollout names no child thread — the measured grammar
  * (`docs/superpowers/specs/assets/codex-native-child-fixture-notes.md` §2) gives
  * the root only an `agent_path` and a nickname — so a child file can only be
- * FOUND, never computed. The scan is therefore deliberately narrow: the one
- * directory the attempt's own root rollout sits in, only files written after
- * the attempt began, and only those whose `session_meta.parent_thread_id` chain
+ * FOUND, never computed. The scan is therefore deliberately narrow: the date
+ * directories this attempt was actually active in, only files written after the
+ * attempt began, and only those whose `session_meta.parent_thread_id` chain
  * reaches this attempt's root. A global sweep of `~/.codex/sessions` would
- * collect unrelated user transcripts, which §6.1 forbids.
+ * collect unrelated user transcripts, which §6.1 forbids — and the link test
+ * reads only each candidate's FIRST lines, so an unrelated transcript is
+ * neither fully parsed nor allowed to spend the child budget.
  *
  * @import { CodexChildRow } from './accumulate.js'
  */
 import node_fs from 'node:fs';
-import node_os from 'node:os';
 import path from 'node:path';
 import { debug } from '../../logging.js';
-import { codexRolloutFilePath } from '../codex-effort-observer.js';
+import {
+  codexRolloutDateDirs,
+  codexRolloutFilePath
+} from '../codex-effort-observer.js';
 import { uuidV7StartedAt } from '../session-ref.js';
-import { codexAccountHomeDir } from '../state-paths.js';
+import { codexSessionsRoot } from '../state-paths.js';
 import { accumulateCodexChildren } from './accumulate.js';
-import { parseRolloutText, rolloutThreadIdentity } from './rollout.js';
+import { parseRolloutText, rolloutHeadIdentity } from './rollout.js';
 
 const log = debug('worker:codex-children');
 
 /**
- * Upper bound on candidate files parsed in one scan. A day directory holds one
- * file per thread, and an attempt that spawned more children than this has
+ * Upper bound on LINKED transcripts parsed in one scan. A day directory holds
+ * one file per thread, and an attempt that spawned more children than this has
  * already told the reader that something other than a subagent tree is going
- * on, so the scan stops rather than reading an unbounded directory.
+ * on, so the scan stops rather than reading an unbounded directory. Unrelated
+ * files never count against it — that is the whole point of the head-only link
+ * test.
  *
  * @type {number}
  */
 export const MAX_CHILD_FILES = 64;
 
 /**
- * The sessions directory the attempt actually wrote to. An attempt launched
- * with a per-account `CODEX_HOME` mirror writes under that mirror; only an
- * attempt with no account falls back to the default home.
+ * Upper bound on candidate files whose HEAD is read for the link test. It
+ * bounds a directory that holds a whole day of unrelated user sessions.
+ *
+ * @type {number}
+ */
+export const MAX_CHILD_CANDIDATES = 512;
+
+/**
+ * Upper bound on date directories one attempt's activity window may span. A
+ * session that ran longer than this is not a subagent tree the display needs.
+ *
+ * @type {number}
+ */
+const MAX_WINDOW_DAYS = 14;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The sessions directory the attempt actually wrote to. Delegates to the ONE
+ * derivation every codex reader shares (§6.1), so an account attempt is never
+ * probed in the default home.
  *
  * @param {{ codex_account?: string|null }} attempt
- * @param {{ home_dir?: string }} [options]
+ * @param {{ home_dir?: string, env?: Record<string, string|undefined> }} [options]
  * @returns {string}
  */
 export function codexSessionsRootFor(attempt, options = {}) {
-  const key = attempt?.codex_account;
-  if (typeof key === 'string' && key.length > 0) {
-    return path.join(codexAccountHomeDir(key), 'sessions');
-  }
-  return path.join(options.home_dir || node_os.homedir(), '.codex', 'sessions');
+  return codexSessionsRoot({
+    codex_account: attempt?.codex_account ?? null,
+    ...(options.home_dir ? { home_dir: options.home_dir } : {}),
+    ...(options.env ? { env: options.env } : {})
+  });
 }
 
 /**
@@ -60,8 +84,39 @@ function finiteOrNull(value) {
 }
 
 /**
- * Read the root rollout and every rollout file in its directory whose parent
- * chain reaches the root, as records tagged with the thread that wrote them.
+ * Every date directory the attempt's activity window touches, nearest date
+ * first, deduplicated. A child spawned after midnight lands in the NEXT day's
+ * directory, which a single start-date probe never opens.
+ *
+ * @param {number|null} from - Epoch ms the window opens at.
+ * @param {number} to - Epoch ms the window closes at.
+ * @returns {string[]}
+ */
+function windowDateDirs(from, to) {
+  /** @type {string[]} */
+  const dirs = [];
+  /** @type {Set<string>} */
+  const seen = new Set();
+  const start = from === null ? to : Math.min(from, to);
+  const days = Math.min(
+    MAX_WINDOW_DAYS,
+    Math.max(0, Math.floor((to - start) / DAY_MS)) + 1
+  );
+  for (let day = 0; day < days; day += 1) {
+    for (const dir of codexRolloutDateDirs(start + day * DAY_MS)) {
+      if (!seen.has(dir)) {
+        seen.add(dir);
+        dirs.push(dir);
+      }
+    }
+  }
+  return dirs;
+}
+
+/**
+ * Read the root rollout and every rollout file in the attempt's activity window
+ * whose parent chain reaches the root, as records tagged with the thread that
+ * wrote them.
  *
  * Fail-quiet throughout: an unreadable directory, a missing root file or a
  * torn line yields fewer records, never a throw — a display observation must
@@ -71,6 +126,7 @@ function finiteOrNull(value) {
  *   root_thread_id: string,
  *   sessions_root: string,
  *   started_at?: number|null,
+ *   ended_at?: number|null,
  *   fs?: Pick<typeof node_fs, 'readdirSync'|'readFileSync'|'statSync'>,
  *   now?: () => number
  * }} input
@@ -78,6 +134,7 @@ function finiteOrNull(value) {
  */
 export function readCodexChildRecords(input) {
   const file_system = input.fs || node_fs;
+  const now = input.now || (() => Date.now());
   /** @type {Array<{ thread_id: string, ordinal: number, record: Record<string, unknown> }>} */
   const records = [];
   if (
@@ -86,14 +143,18 @@ export function readCodexChildRecords(input) {
   ) {
     return { root_file: null, files: [], records };
   }
-  const started_at =
-    finiteOrNull(input.started_at) ?? uuidV7StartedAt(input.root_thread_id);
+  const attempt_started_at = finiteOrNull(input.started_at);
+  // The rollout DIRECTORY is named by the thread's own creation date, which the
+  // v7 uuid states: an attempt that resumed that thread days later would look
+  // for the file under the resume date and never find it (§6.1).
+  const thread_started_at =
+    uuidV7StartedAt(input.root_thread_id) ?? attempt_started_at;
   /** @type {string|null} */
   let root_file = null;
   try {
     root_file = codexRolloutFilePath({
       session_id: input.root_thread_id,
-      started_at,
+      started_at: thread_started_at,
       fs: file_system,
       home_dir: '',
       sessions_root: input.sessions_root,
@@ -109,18 +170,19 @@ export function readCodexChildRecords(input) {
 
   /**
    * @param {string} file
-   * @returns {Array<{ ordinal: number, record: Record<string, unknown> }>}
+   * @returns {string|null}
    */
-  function recordsOf(file) {
+  function textOf(file) {
     try {
-      return parseRolloutText(file_system.readFileSync(file, 'utf8'));
+      return file_system.readFileSync(file, 'utf8');
     } catch (err) {
       log('rollout read failed for %s: %o', file, err);
-      return [];
+      return null;
     }
   }
 
-  for (const entry of recordsOf(root_file)) {
+  const root_text = textOf(root_file);
+  for (const entry of parseRolloutText(root_text ?? '')) {
     records.push({
       thread_id: input.root_thread_id,
       ordinal: entry.ordinal,
@@ -128,59 +190,69 @@ export function readCodexChildRecords(input) {
     });
   }
 
-  const dir = path.dirname(root_file);
-  /** @type {string[]} */
-  let names = [];
-  try {
-    names = file_system.readdirSync(dir);
-  } catch (err) {
-    log('rollout directory unreadable (%s): %o', dir, err);
-    return { root_file, files: [root_file], records };
+  // Children are created THROUGH the attempt's activity, so the window is the
+  // attempt's own — the root thread's directory alone misses a child spawned
+  // after midnight.
+  const window_start = attempt_started_at ?? thread_started_at;
+  const window_end = finiteOrNull(input.ended_at) ?? now();
+  /** @type {Set<string>} */
+  const dirs = new Set([path.dirname(root_file)]);
+  for (const date_dir of windowDateDirs(window_start, window_end)) {
+    dirs.add(path.join(input.sessions_root, date_dir));
   }
-  const floor = started_at;
+
+  const floor = window_start;
   /** @type {Array<{ file: string, mtime: number }>} */
   const candidates = [];
-  for (const name of names) {
-    if (!name.startsWith('rollout-') || !name.endsWith('.jsonl')) {
-      continue;
-    }
-    const file = path.join(dir, name);
-    if (file === root_file) {
-      continue;
-    }
-    /** @type {number} */
-    let mtime;
+  for (const dir of dirs) {
+    /** @type {string[]} */
+    let names = [];
     try {
-      mtime = file_system.statSync(file).mtimeMs;
-    } catch {
+      names = file_system.readdirSync(dir);
+    } catch (err) {
+      log('rollout directory unreadable (%s): %o', dir, err);
       continue;
     }
-    // Written before this attempt began ⇒ another root turn's transcript.
-    if (floor !== null && Number.isFinite(mtime) && mtime < floor) {
-      continue;
+    for (const name of names) {
+      if (!name.startsWith('rollout-') || !name.endsWith('.jsonl')) {
+        continue;
+      }
+      const file = path.join(dir, name);
+      if (file === root_file) {
+        continue;
+      }
+      /** @type {number} */
+      let mtime;
+      try {
+        mtime = file_system.statSync(file).mtimeMs;
+      } catch {
+        continue;
+      }
+      // Written before this attempt began ⇒ another root turn's transcript.
+      if (floor !== null && Number.isFinite(mtime) && mtime < floor) {
+        continue;
+      }
+      candidates.push({ file, mtime: Number.isFinite(mtime) ? mtime : 0 });
     }
-    candidates.push({ file, mtime: Number.isFinite(mtime) ? mtime : 0 });
   }
   candidates.sort((left, right) => left.mtime - right.mtime);
 
-  /** @type {Map<string, { parent_thread_id: string|null, entries: Array<{ ordinal: number, record: Record<string, unknown> }> }>} */
+  /** @type {Map<string, { parent_thread_id: string|null, file: string }>} */
   const by_thread = new Map();
-  for (const candidate of candidates.slice(0, MAX_CHILD_FILES)) {
-    const entries = recordsOf(candidate.file);
-    /** @type {ReturnType<typeof rolloutThreadIdentity>} */
-    let identity = null;
-    for (const entry of entries) {
-      identity = rolloutThreadIdentity(entry.record);
-      if (identity !== null) {
-        break;
-      }
+  for (const candidate of candidates.slice(0, MAX_CHILD_CANDIDATES)) {
+    const text = textOf(candidate.file);
+    if (text === null) {
+      continue;
     }
+    // HEAD ONLY: the link lives in `session_meta`, so an unrelated transcript
+    // costs a few lines and is never parsed further (§6.1).
+    const identity = rolloutHeadIdentity(text);
     if (identity === null || !identity.subagent) {
       continue;
     }
     by_thread.set(identity.thread_id, {
       parent_thread_id: identity.parent_thread_id,
-      entries
+      file: candidate.file
     });
   }
 
@@ -212,16 +284,20 @@ export function readCodexChildRecords(input) {
 
   /** @type {string[]} */
   const files = [root_file];
+  let linked = 0;
   for (const [thread_id, held] of by_thread) {
-    if (!reachesRoot(thread_id)) {
+    if (!reachesRoot(thread_id) || linked >= MAX_CHILD_FILES) {
       continue;
     }
-    for (const entry of held.entries) {
+    linked += 1;
+    files.push(held.file);
+    const text = textOf(held.file);
+    if (text === null) {
+      continue;
+    }
+    for (const entry of parseRolloutText(text)) {
       records.push({ thread_id, ordinal: entry.ordinal, record: entry.record });
     }
-  }
-  for (const candidate of candidates.slice(0, MAX_CHILD_FILES)) {
-    files.push(candidate.file);
   }
   return { root_file, files, records };
 }
@@ -266,6 +342,7 @@ export function observeCodexChildren(input) {
       root_thread_id,
       sessions_root,
       started_at: finiteOrNull(attempt.started_at),
+      ended_at: finiteOrNull(attempt.finished_at),
       fs: input.fs,
       now: input.now
     });

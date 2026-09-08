@@ -123,7 +123,10 @@ import {
   qualifySessionFork
 } from './session-ref.js';
 import { staleResidueIntact } from './stale-work.js';
-import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths.js';
+import {
+  codexSessionsRoot,
+  codexAccountHomeDir as defaultCodexAccountHomeDir
+} from './state-paths.js';
 import * as default_usage_receipts from './usage-receipts.js';
 import { publishWorkspaceActivity } from './workspace-activity.js';
 import { branchForBead } from './worktree.js';
@@ -1758,9 +1761,21 @@ export function createScheduler(deps) {
    *
    * @param {'claude'|'codex'} provider
    * @param {string} session_id
+   * @param {{ codex_account?: string|null }|null} [attempt] - The record whose
+   * transcript this is. A codex attempt launched with an account wrote under
+   * that account's `CODEX_HOME` mirror, so the sessions root has to be the ONE
+   * the launch derived (§6.1) — probing the default home would report a live
+   * transcript as missing and turn a resume into a fresh session.
    */
-  function transcriptPresent(provider, session_id) {
+  function transcriptPresent(provider, session_id, attempt = null) {
     const resolver = deps.resolveSessionFile || defaultResolveSessionFile;
+    const sessions_root =
+      provider === 'codex'
+        ? codexSessionsRoot({
+            codex_account: attempt?.codex_account ?? null,
+            ...(deps.homeDir ? { home_dir: deps.homeDir } : {})
+          })
+        : null;
     try {
       return (
         resolver(
@@ -1770,7 +1785,11 @@ export function createScheduler(deps) {
             host: os.hostname(),
             index: 0
           },
-          { home_dir: deps.homeDir, hostname: os.hostname() }
+          {
+            home_dir: deps.homeDir,
+            hostname: os.hostname(),
+            ...(sessions_root ? { sessions_root } : {})
+          }
         ).locality === 'local'
       );
     } catch {
@@ -9100,6 +9119,122 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The attempt that wrote one recorded session, newest first
+   * (codex-orchestration-parity §4.1).
+   *
+   * It is what a cross-provider resume reads its model/effort/account from:
+   * the current settings belong to another provider, and this record is the
+   * only observation of what THIS provider actually ran.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {'claude'|'codex'} runner
+   * @param {string|null} session_id - The thread to match, or null to take the
+   * newest attempt this provider ran for the bead (a fresh review still needs
+   * that provider's own tuple).
+   * @returns {any|null}
+   */
+  function priorAttemptForSession(workspace, bead_id, runner, session_id) {
+    /** @type {any} */
+    let q;
+    try {
+      q = deps.store.snapshot(workspace);
+    } catch {
+      return null;
+    }
+    /** @type {any} */
+    let latest = null;
+    for (const attempt of Object.values(q.attempts || {})) {
+      const record = /** @type {any} */ (attempt);
+      if (
+        record.bead_id === bead_id &&
+        record.runner === runner &&
+        (session_id === null || record.session_id === session_id) &&
+        (latest === null ||
+          (record.started_at || 0) >= (latest.started_at || 0))
+      ) {
+        latest = record;
+      }
+    }
+    return latest;
+  }
+
+  /**
+   * Whether the account a cross-provider resume would spend still resolves.
+   * An attempt that recorded none leaves the launch on whatever that provider
+   * is logged into, exactly as it did when it first ran; a recorded account the
+   * catalog no longer knows refuses rather than falling back to another one
+   * (§4.1).
+   *
+   * @param {'claude'|'codex'} runner
+   * @param {{ claude: string|null, codex: string|null }} accounts
+   * @returns {Promise<boolean>}
+   */
+  async function recordedAccountUsable(runner, accounts) {
+    const account = runner === 'codex' ? accounts.codex : accounts.claude;
+    if (typeof account !== 'string' || account.length === 0) {
+      return true;
+    }
+    if (runner === 'codex') {
+      if (typeof deps.accountCatalog?.resolveCodex !== 'function') {
+        return true;
+      }
+      try {
+        const resolved = await deps.accountCatalog.resolveCodex(account);
+        return resolved?.ok === true && resolved.account?.key === account;
+      } catch {
+        return false;
+      }
+    }
+    if (typeof deps.accountCatalog?.resolveClaude !== 'function') {
+      return true;
+    }
+    try {
+      const resolved = await deps.accountCatalog.resolveClaude(account);
+      return resolved?.ok === true && resolved.account?.email === account;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Whether an attempt's recorded model/effort still exist in the catalog for
+   * its own runner. A tuple that cannot be validated is refused through the
+   * ordinary continuation diagnostics rather than being replaced with the
+   * current provider's values (§4.1).
+   *
+   * @param {'claude'|'codex'} runner
+   * @param {any} attempt
+   * @returns {boolean}
+   */
+  function recordedTupleValid(runner, attempt) {
+    /** @type {any} */
+    let catalog;
+    try {
+      catalog = runtimeCatalog();
+    } catch {
+      return false;
+    }
+    const runner_entry = catalog.runners[runner];
+    if (!runner_entry) {
+      return false;
+    }
+    const model = typeof attempt.model === 'string' ? attempt.model : null;
+    const effort = typeof attempt.effort === 'string' ? attempt.effort : null;
+    if (model === null) {
+      return false;
+    }
+    const model_entry = runner_entry.models?.[model];
+    if (!model_entry) {
+      return false;
+    }
+    const efforts = model_entry.efforts ?? runner_entry.efforts;
+    return (
+      effort === null || (Array.isArray(efforts) && efforts.includes(effort))
+    );
+  }
+
+  /**
    * Whether the RECORDED runner and account of an attempt can still run here
    * (UI-qce9 §5.2). A recorded provider that this environment no longer offers,
    * or an account the catalog cannot resolve, refuses the resume — it never
@@ -10034,6 +10169,34 @@ export function createScheduler(deps) {
     const runner_name = use_prior
       ? /** @type {string} */ (prior_runner)
       : resolved.exec.runner;
+    // §4.1: continuing on the PRIOR provider must not spend the CURRENT
+    // provider's account. The recorded attempt names the account that provider
+    // ran under, and a recorded execution this environment can no longer offer
+    // refuses through the existing continuation diagnostics.
+    const cross_runner_resume = use_prior && runner_mismatch;
+    const launch_accounts = cross_runner_resume
+      ? {
+          claude: prior.claude_account ?? null,
+          codex: prior.codex_account ?? null
+        }
+      : resolved.accounts;
+    if (
+      cross_runner_resume &&
+      (!recordedTupleValid(
+        /** @type {'claude'|'codex'} */ (runner_name),
+        prior
+      ) ||
+        !(await recordedAccountUsable(
+          /** @type {'claude'|'codex'} */ (runner_name),
+          launch_accounts
+        )))
+    ) {
+      return {
+        ok: false,
+        reason: 'prior_session_unavailable',
+        continuation_mismatch: mismatch()
+      };
+    }
     const launch_model = use_prior
       ? (prior.model ?? null)
       : (resolved.exec.orchestration_model ?? null);
@@ -10089,7 +10252,7 @@ export function createScheduler(deps) {
       continuation_mode === 'session' &&
       (runner_name === 'claude' || runner_name === 'codex') &&
       typeof prior.session_id === 'string' &&
-      !transcriptPresent(runner_name, prior.session_id)
+      !transcriptPresent(runner_name, prior.session_id, prior)
     ) {
       // §5.3: `prior_attempt` never substitutes a fresh session — the refusal
       // is the answer, and the paused parent stays where the user left it.
@@ -10118,7 +10281,7 @@ export function createScheduler(deps) {
       launch_effort,
       launch_speed,
       exec_values,
-      accounts: resolved.accounts,
+      accounts: launch_accounts,
       account_sources: resolved.account_sources,
       account_switched_from:
         typeof options.account_switched_from === 'string'
@@ -10898,8 +11061,56 @@ export function createScheduler(deps) {
       resume_runner !== null
         ? input.resume_session_id
         : null;
+    // A fresh review of a bead whose source is the OTHER provider still runs on
+    // that provider (§4.1): the selection reports it even when the transcript
+    // is gone, and only a bead with no recorded session at all follows current
+    // settings.
     const runner_name =
-      resume_session_id === null ? exec.runner : resume_runner;
+      resume_session_id !== null
+        ? resume_runner
+        : (resume_runner ?? exec.runner);
+    // §4.1: a resume runs the RECORDED provider, so it must not be handed the
+    // current provider's tuple — `-m opus` reaching codex is exactly the mix
+    // the spec forbids. The prior attempt that wrote this thread carries the
+    // tuple that provider actually ran, and a tuple the catalog cannot
+    // validate refuses the dispatch instead of being silently blended.
+    /** @type {{ model: string|null, effort: string|null, accounts: { claude: string|null, codex: string|null } }} */
+    let launch_tuple = {
+      model: exec.orchestration_model ?? null,
+      effort: exec.orchestration_effort ?? null,
+      accounts: resolved_exec.accounts
+    };
+    if (runner_name !== null && runner_name !== exec.runner) {
+      const source = priorAttemptForSession(
+        workspace,
+        bead_id,
+        runner_name,
+        resume_session_id
+      );
+      if (source !== null && !recordedTupleValid(runner_name, source)) {
+        // Recorded, but no longer a tuple this catalog can name: refused, not
+        // blended with the other provider's values.
+        removeGuardHook(workspace, attempt_id);
+        return refuseLaunch('prior_session_unavailable');
+      }
+      launch_tuple = {
+        // No attempt of this provider to read from — a session_ref written by
+        // a user session, say. §4.1's other admissible source then applies:
+        // the session itself restores its settings, so none are imposed.
+        model: source === null ? null : (source.model ?? null),
+        effort: source === null ? null : (source.effort ?? null),
+        accounts: {
+          claude:
+            runner_name === 'claude' && source !== null
+              ? (source.claude_account ?? null)
+              : resolved_exec.accounts.claude,
+          codex:
+            runner_name === 'codex' && source !== null
+              ? (source.codex_account ?? null)
+              : resolved_exec.accounts.codex
+        }
+      };
+    }
     claimed.add(bead_id);
     const started = deps.store.upsertReviewSessionAttempt(workspace, {
       attempt_id,
@@ -10925,10 +11136,10 @@ export function createScheduler(deps) {
       target_base: base,
       base_oid: null,
       runner_name,
-      model: exec.orchestration_model ?? null,
-      effort: exec.orchestration_effort ?? null,
+      model: launch_tuple.model,
+      effort: launch_tuple.effort,
       speed: exec.orchestration_speed ?? 'default',
-      accounts: resolved_exec.accounts,
+      accounts: launch_tuple.accounts,
       account_sources: resolved_exec.account_sources,
       prior_wf: null,
       stamped_keys: [],

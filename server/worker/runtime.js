@@ -142,6 +142,20 @@ export function createWorkerRuntime() {
   // the reply on their own socket IS the report.
   const resolveSession = createResolveSession({
     getConfig,
+    // Only a bead with NO recorded session follows current settings (§4.1); a
+    // recorded source keeps its own provider even when it cannot be forked.
+    currentRunner: (workspace, issue) => {
+      try {
+        const resolved = execPresetCoordinator.resolveForDispatch(
+          workspace,
+          issue || {}
+        );
+        const runner = resolved.ok ? resolved.exec.runner : null;
+        return runner === 'claude' || runner === 'codex' ? runner : null;
+      } catch {
+        return null;
+      }
+    },
     bd: {
       readIssue: async (workspace, bead_id) => {
         const result = await runBdJsonProjected(

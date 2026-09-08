@@ -325,3 +325,56 @@ export function parseRolloutText(text) {
   }
   return out;
 }
+
+/**
+ * How many leading lines a link test may read. `session_meta` is ordinal 0 of
+ * every rollout the fixture measured; a small margin covers a writer that
+ * emits a banner line first.
+ *
+ * @type {number}
+ */
+const IDENTITY_HEAD_LINES = 4;
+
+/**
+ * The thread identity a rollout declares, from its FIRST lines only.
+ *
+ * Reading the whole file to answer "is this thread linked to my root?" is what
+ * let unrelated transcripts consume the reader's budget (§6.1): the answer sits
+ * in `session_meta`, so the body is parsed only once the link is established.
+ *
+ * @param {string} text
+ * @returns {ReturnType<typeof rolloutThreadIdentity>}
+ */
+export function rolloutHeadIdentity(text) {
+  if (typeof text !== 'string') {
+    return null;
+  }
+  let read = 0;
+  let cursor = 0;
+  while (read < IDENTITY_HEAD_LINES && cursor <= text.length) {
+    const next = text.indexOf('\n', cursor);
+    const line = (
+      next === -1 ? text.slice(cursor) : text.slice(cursor, next)
+    ).trim();
+    cursor = next === -1 ? text.length + 1 : next + 1;
+    if (line.length === 0) {
+      if (next === -1) {
+        break;
+      }
+      continue;
+    }
+    read += 1;
+    /** @type {unknown} */
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const identity = rolloutThreadIdentity(parsed);
+    if (identity !== null) {
+      return identity;
+    }
+  }
+  return null;
+}

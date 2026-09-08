@@ -33,7 +33,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
-import { qualifySessionFork, resolveSessionFile } from './session-ref.js';
+import {
+  qualifySessionFork,
+  recordedSessionProvider,
+  resolveSessionFile
+} from './session-ref.js';
 // The tmux launch primitives moved out to be shared with the `[세션에서 해결]`
 // click (UI-jw27 §4). Nothing about this lane's behaviour moved with them: the
 // marker option, the prompt, and the launch reason all stay this module's.
@@ -480,9 +484,18 @@ export function createDirectionInquiry(deps) {
         fallback_reason: null
       };
     }
+    // The SOURCE provider survives the failure (§4.1): the attempt's own runner
+    // first, then the recorded `session_ref`'s. A missing transcript makes the
+    // window FRESH, never a different CLI, and only a bead with no recorded
+    // source at all falls through to this lane's default tool.
     return {
       session_id: null,
-      runner: /** @type {'claude'} */ ('claude'),
+      runner:
+        // An attempt whose transcript went missing IS a source; an attempt that
+        // never recorded a session is not, and falls through to the ref.
+        (attempt_reason === null ? null : attempt_runner) ??
+        recordedSessionProvider(metadata) ??
+        /** @type {'claude'} */ ('claude'),
       fallback_reason: attempt_reason ?? qualified.reason
     };
   }

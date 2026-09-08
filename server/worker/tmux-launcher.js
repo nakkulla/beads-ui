@@ -143,6 +143,18 @@ export function defaultResolveRunner(runner) {
   } catch {
     command = runner;
   }
+  // A catalog command that already names a path is not a PATH lookup: joining
+  // it onto every PATH dir turned a perfectly good absolute `command` into
+  // `codex_not_found` (codex-orchestration-parity §4.2).
+  if (command.includes(path.sep)) {
+    const absolute = path.resolve(command);
+    try {
+      fs.accessSync(absolute, fs.constants.X_OK);
+      return absolute;
+    } catch {
+      return null;
+    }
+  }
   const raw = process.env.PATH;
   if (typeof raw !== 'string' || raw.length === 0) {
     return null;

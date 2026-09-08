@@ -1545,6 +1545,43 @@ describe('session-history native Codex children (UI-mn5u §6.4)', () => {
     expect(totalOf(with_child)).toEqual(totalOf(without));
   });
 
+  test('reports a total-only usage without inventing a breakdown', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        codexAttempt({
+          codex_children: [{ ...CHILD, usage: { total_tokens: 114343 } }]
+        })
+      ])
+    );
+
+    const badge = /** @type {HTMLElement} */ (
+      host
+        .querySelector('.detail-session__leg--done')
+        ?.querySelector('.detail-session__usage')
+    );
+    expect(badge.title).toContain('세부 내역 미관측');
+    expect(badge.title).not.toContain('입력 0');
+  });
+
+  test('omits an unobserved usage field instead of printing zero', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        codexAttempt({
+          codex_children: [{ ...CHILD, usage: { output_tokens: 902 } }]
+        })
+      ])
+    );
+
+    const badge = /** @type {HTMLElement} */ (
+      host
+        .querySelector('.detail-session__leg--done')
+        ?.querySelector('.detail-session__usage')
+    );
+    expect(badge.title).toContain('출력 902');
+    expect(badge.title).not.toContain('입력');
+    expect(badge.title).not.toContain('총 ');
+  });
+
   test('adds nothing to the summed attempt usage', () => {
     const summed = sumAttemptUsage(
       [codexAttempt({ codex_children: [CHILD] })],

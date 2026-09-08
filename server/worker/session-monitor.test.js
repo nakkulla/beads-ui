@@ -4,7 +4,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createQueueStore } from './queue-store.js';
 import { createSessionLog } from './session-log.js';
-import { createSessionMonitors } from './session-monitor.js';
+import {
+  MONITOR_USAGE_FANOUT_MS,
+  createSessionMonitors
+} from './session-monitor.js';
 import { beadSessionLogPath } from './state-paths.js';
 import { createUsageStore } from './usage-store.js';
 
@@ -695,6 +698,55 @@ describe('worker/session-monitor native children (UI-mn5u §6.3)', () => {
     expect(
       pushed.find((entry) => entry.event.kind === 'codex_child').event
     ).toMatchObject({ source: 'codex_rollout', child: CHILD_ROW });
+  });
+
+  test('scans for children on its own cadence with no parent log line', async () => {
+    vi.useFakeTimers();
+    try {
+      const observe = vi.fn(() => [CHILD_ROW]);
+      const env = setup({ observeCodexChildren: observe });
+      const attempt = seedRunningAttempt(env.store, {
+        runner: 'codex',
+        session_id: 'root-thread'
+      });
+
+      sessionWrites(env.session_log, assistantText('부모 첫 줄'));
+
+      startAtBoundary(env, attempt);
+      await vi.advanceTimersByTimeAsync(MONITOR_USAGE_FANOUT_MS + 10);
+
+      expect(observe).toHaveBeenCalledWith(
+        expect.objectContaining({ parent_terminated: false })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('re-arms the child scan until the monitor stops', async () => {
+    vi.useFakeTimers();
+    try {
+      const observe = vi.fn(() => [CHILD_ROW]);
+      const env = setup({ observeCodexChildren: observe });
+      const attempt = seedRunningAttempt(env.store, {
+        runner: 'codex',
+        session_id: 'root-thread'
+      });
+
+      sessionWrites(env.session_log, assistantText('부모 첫 줄'));
+
+      startAtBoundary(env, attempt);
+      await vi.advanceTimersByTimeAsync(3 * MONITOR_USAGE_FANOUT_MS + 10);
+      const during = observe.mock.calls.length;
+      env.monitors.stop(WS, 'att-1');
+      const after_stop = observe.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(5 * MONITOR_USAGE_FANOUT_MS);
+
+      expect(during).toBeGreaterThan(1);
+      expect(observe.mock.calls.length).toBe(after_stop);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('observes no native children for a claude attempt', () => {

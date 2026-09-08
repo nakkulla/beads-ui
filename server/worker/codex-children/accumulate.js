@@ -154,9 +154,27 @@ export function accumulateCodexChildren(input) {
     return false;
   }
 
-  /** @type {Array<{ launch_id: string|null, agent_key: string|null, agent_path: string|null, model: string|null, taken: boolean }>} */
-  const launches = [];
-  /** @type {Map<string, { row: CodexChildRow, usage_at: number|null, observed: number, terminal: boolean }>} */
+  /**
+   * Spawn launches, keyed by the thread that MADE them. A nested spawn is
+   * recorded in its own parent's rollout, so joining a child to a launch is a
+   * lookup in that child's DIRECT parent (§6.2) — a root-direct child and a
+   * nested one that share a name can no longer swap `launch_id` or `model`.
+   *
+   * @type {Map<string, Array<{ launch_id: string|null, agent_key: string|null, agent_path: string|null, model: string|null, taken: boolean }>>}
+   */
+  const launches_by_parent = new Map();
+  /**
+   * @param {string} thread_id
+   */
+  function launchesOf(thread_id) {
+    let held = launches_by_parent.get(thread_id);
+    if (!held) {
+      held = [];
+      launches_by_parent.set(thread_id, held);
+    }
+    return held;
+  }
+  /** @type {Map<string, { row: CodexChildRow, usage_at: number|null, observed: number, terminal: boolean, terminal_at: number|null, last_start_at: number|null }>} */
   const rows = new Map();
 
   for (const entry of input.records) {
@@ -174,35 +192,39 @@ export function accumulateCodexChildren(input) {
       (window_start === null || signal.at >= window_start) &&
       (window_end === null || signal.at <= window_end);
 
-    if (entry.thread_id === root_thread_id) {
-      if (signal.kind === 'spawn' && inside) {
-        launches.push({
+    // A spawn record belongs to the thread that WROTE it, root or child alike.
+    if (signal.kind === 'spawn' && inside) {
+      launchesOf(entry.thread_id).push({
+        launch_id: signal.launch_id ?? null,
+        agent_key: agentKeyOf(signal.agent_path ?? null),
+        agent_path: signal.agent_path ?? null,
+        model: signal.model ?? null,
+        taken: false
+      });
+    } else if (signal.kind === 'spawn_output' && inside) {
+      const key = agentKeyOf(signal.agent_path ?? null);
+      const held = launchesOf(entry.thread_id);
+      const match = held.find(
+        (launch) =>
+          launch.launch_id !== null &&
+          launch.launch_id === (signal.launch_id ?? null)
+      );
+      if (match) {
+        match.agent_key = match.agent_key ?? key;
+        // The OUTPUT states the full `/root/<task_name>` path; the call
+        // argument states only the task name.
+        match.agent_path = signal.agent_path ?? match.agent_path;
+      } else {
+        held.push({
           launch_id: signal.launch_id ?? null,
-          agent_key: agentKeyOf(signal.agent_path ?? null),
+          agent_key: key,
           agent_path: signal.agent_path ?? null,
-          model: signal.model ?? null,
+          model: null,
           taken: false
         });
-      } else if (signal.kind === 'spawn_output' && inside) {
-        const key = agentKeyOf(signal.agent_path ?? null);
-        const match = launches.find(
-          (launch) =>
-            launch.launch_id !== null &&
-            launch.launch_id === (signal.launch_id ?? null)
-        );
-        if (match) {
-          match.agent_key = match.agent_key ?? key;
-          match.agent_path = signal.agent_path ?? match.agent_path;
-        } else {
-          launches.push({
-            launch_id: signal.launch_id ?? null,
-            agent_key: key,
-            agent_path: signal.agent_path ?? null,
-            model: null,
-            taken: false
-          });
-        }
       }
+    }
+    if (entry.thread_id === root_thread_id) {
       continue;
     }
     if (!reachesRoot(entry.thread_id)) {
@@ -232,7 +254,9 @@ export function accumulateCodexChildren(input) {
         },
         usage_at: null,
         observed: 0,
-        terminal: false
+        terminal: false,
+        terminal_at: null,
+        last_start_at: null
       };
       rows.set(entry.thread_id, held);
     }
@@ -242,17 +266,43 @@ export function accumulateCodexChildren(input) {
       held.row.model = signal.model ?? held.row.model;
       held.row.effort = signal.effort ?? held.row.effort;
     } else if (signal.kind === 'started') {
-      held.row.started_at =
-        held.row.started_at ?? signal.event_at ?? signal.at ?? null;
-    } else if (signal.kind === 'completed') {
-      held.row.status = 'done';
-      held.row.completed_at =
-        signal.event_at ?? signal.at ?? held.row.completed_at;
+      const start_at = signal.event_at ?? signal.at ?? null;
+      // The FIRST start is the row's `started_at`: a child started again in the
+      // same attempt is the same row, not a second one (§6.2).
+      held.row.started_at = held.row.started_at ?? start_at;
+      // A start that is not provably older than the terminal already held is a
+      // RE-RUN: the row goes back to running and its completion is forgotten,
+      // so a stale `done` cannot outlive the work it belonged to.
+      if (
+        held.terminal &&
+        (start_at === null ||
+          held.terminal_at === null ||
+          start_at >= held.terminal_at)
+      ) {
+        held.terminal = false;
+        held.terminal_at = null;
+        held.row.status = 'running';
+        held.row.completed_at = null;
+      }
+      held.last_start_at = laterOf(held.last_start_at, start_at);
+    } else if (signal.kind === 'completed' || signal.kind === 'failed') {
+      const end_at =
+        (signal.kind === 'completed' ? signal.event_at : null) ??
+        signal.at ??
+        null;
+      // A terminal dated BEFORE the latest observed start is a reordered
+      // arrival from the previous run and never overwrites the newer state.
+      if (
+        held.last_start_at !== null &&
+        end_at !== null &&
+        end_at < held.last_start_at
+      ) {
+        continue;
+      }
+      held.row.status = signal.kind === 'completed' ? 'done' : 'failed';
+      held.row.completed_at = end_at ?? held.row.completed_at;
       held.terminal = true;
-    } else if (signal.kind === 'failed') {
-      held.row.status = 'failed';
-      held.row.completed_at = signal.at ?? held.row.completed_at;
-      held.terminal = true;
+      held.terminal_at = end_at ?? held.terminal_at;
     } else if (signal.kind === 'usage' && signal.usage) {
       // Cumulative thread totals: the LATEST observation replaces the earlier
       // one. A record dated before the one already held is a duplicate or a
@@ -283,14 +333,27 @@ export function accumulateCodexChildren(input) {
     out.push(held.row);
   }
 
-  const key_of = /** @param {CodexChildRow} row */ (row) =>
-    `${row.agent_path || ''}`;
   for (const row of [...out].sort(
     (left, right) => (left.started_at || 0) - (right.started_at || 0)
   )) {
-    const wanted = agentKeyOf(key_of(row));
+    // The join is (direct parent thread, full agent_path). Falling back to the
+    // last path segment alone let a nested child and a root-direct child of the
+    // same name take each other's launch (§6.2).
+    const held = launches_by_parent.get(row.parent_thread_id) || [];
+    const path_key = row.agent_path;
+    const name_key = agentKeyOf(row.agent_path);
     const match =
-      launches.find((launch) => !launch.taken && launch.agent_key === wanted) ||
+      held.find(
+        (launch) =>
+          !launch.taken &&
+          path_key !== null &&
+          launch.agent_path !== null &&
+          launch.agent_path === path_key
+      ) ||
+      held.find(
+        (launch) =>
+          !launch.taken && name_key !== null && launch.agent_key === name_key
+      ) ||
       null;
     if (match === null) {
       continue;

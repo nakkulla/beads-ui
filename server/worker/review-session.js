@@ -37,7 +37,7 @@
  * session's own `review` skill ladder; the server does not participate.
  */
 import { debug } from '../logging.js';
-import { qualifySessionFork } from './session-ref.js';
+import { qualifySessionFork, recordedSessionProvider } from './session-ref.js';
 
 const log = debug('worker:review-session');
 
@@ -96,8 +96,13 @@ export function selectReviewSession(metadata, options = {}) {
         reason: null
       }
     : {
+        // The SOURCE provider survives its own failure (§4.1): a fresh review
+        // of a codex-recorded bead still runs on codex, so the scheduler is
+        // told the provider even when the transcript is gone. Only a bead with
+        // no recorded session at all leaves this null and follows current
+        // execution settings.
         resume_session_id: null,
-        resume_runner: null,
+        resume_runner: recordedSessionProvider(metadata),
         session_source: /** @type {const} */ ('fresh'),
         reason: qualified.reason
       };

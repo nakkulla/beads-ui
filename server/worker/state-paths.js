@@ -563,3 +563,31 @@ export function recordMigrationMarkerPath(workspace_root) {
 export function retentionPolicyPath(workspace_root) {
   return path.join(workspaceStateDir(workspace_root), 'retention-policy.json');
 }
+
+/**
+ * The sessions directory a Codex launch actually writes its rollout files to.
+ *
+ * ONE derivation, shared by every reader (UI-mn5u §6.1): the launch exports
+ * `CODEX_HOME=<account home>` for an attempt with a `codex_account`, so its
+ * transcripts sit under that mirror's own `sessions/`. An attempt without an
+ * account inherits this process's `CODEX_HOME` when the operator set one, and
+ * only then falls back to the default home. Probing the default home for an
+ * account attempt reads ANOTHER account's transcripts, which is why the
+ * transcript-existence check, the native-child reader and the strict resume
+ * check all call this and never rebuild the path themselves.
+ *
+ * @param {{ codex_account?: string|null, home_dir?: string, env?: Record<string, string|undefined> }} [input]
+ * @returns {string}
+ */
+export function codexSessionsRoot(input = {}) {
+  const key = input.codex_account;
+  if (typeof key === 'string' && key.length > 0) {
+    return path.join(codexAccountHomeDir(key), 'sessions');
+  }
+  const env = input.env || process.env;
+  const codex_home = env.CODEX_HOME;
+  if (typeof codex_home === 'string' && codex_home.length > 0) {
+    return path.join(codex_home, 'sessions');
+  }
+  return path.join(input.home_dir || os.homedir(), '.codex', 'sessions');
+}

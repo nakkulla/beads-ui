@@ -26,7 +26,7 @@ import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
 import { discardOperationActive } from './discard-phase.js';
-import { qualifySessionFork } from './session-ref.js';
+import { qualifySessionFork, recordedSessionProvider } from './session-ref.js';
 import {
   RESOLVE_PANE_MARKER,
   createTmuxLauncher,
@@ -254,6 +254,11 @@ export function buildResolvePrompt(input) {
  * @property {(...args: any[]) => void} [log]
  * @property {string} [heartbeatPath]
  * @property {{ home_dir?: string, hostname?: string, fs?: any, now?: () => number }} [sessionRefOptions]
+ * @property {(workspace: string, issue: any) => 'claude'|'codex'|null} [currentRunner] -
+ * The provider CURRENT execution settings resolve to. Consulted ONLY when the
+ * bead names no session at all (codex-orchestration-parity §4.1): a recorded
+ * source that merely cannot be forked keeps its own provider, so a tool error
+ * never moves the work between CLIs.
  */
 
 /**
@@ -266,8 +271,9 @@ export function buildResolvePrompt(input) {
  * forked; null on a fork.
  * @property {string|null} session_id
  * @property {'claude'|'codex'} runner - The provider the window actually runs.
- * A fork keeps the RECORDED session's provider; a fresh session falls back to
- * claude, which is this lane's own interactive tool.
+ * A fork keeps the RECORDED session's provider, and so does the fresh fallback
+ * a missing or unusable transcript forces (§4.1). Only a bead with no recorded
+ * session at all follows current execution settings.
  * @property {string|null} command
  * @property {boolean} bridge_active
  * @property {string|null} tmux_session
@@ -328,6 +334,25 @@ export function createResolveSession(deps) {
    * @returns {Promise<{ session_id: string|null, runner: 'claude'|'codex', fallback_reason: string|null }>}
    */
   async function forkTarget(workspace, bead_id) {
+    /**
+     * The provider a launch with no usable source runs on: current execution
+     * settings when they resolve, and otherwise this lane's own default tool.
+     *
+     * @param {any} issue
+     * @returns {'claude'|'codex'}
+     */
+    function currentRunner(issue) {
+      if (typeof deps.currentRunner !== 'function') {
+        return 'claude';
+      }
+      try {
+        const runner = deps.currentRunner(workspace, issue);
+        return runner === 'codex' || runner === 'claude' ? runner : 'claude';
+      } catch (err) {
+        log('current runner resolution failed for %s: %o', bead_id, err);
+        return 'claude';
+      }
+    }
     /** @type {any} */
     let issue = null;
     try {
@@ -336,14 +361,14 @@ export function createResolveSession(deps) {
       log('bd read failed for %s: %o', bead_id, err);
       return {
         session_id: null,
-        runner: 'claude',
+        runner: currentRunner(null),
         fallback_reason: 'bd_unavailable'
       };
     }
     if (!issue || typeof issue !== 'object') {
       return {
         session_id: null,
-        runner: 'claude',
+        runner: currentRunner(null),
         fallback_reason: 'bd_unavailable'
       };
     }
@@ -362,8 +387,13 @@ export function createResolveSession(deps) {
           fallback_reason: null
         }
       : {
+          // The SOURCE provider survives its own failure (§4.1): a missing
+          // transcript or an unusable id makes the session fresh, never a
+          // different CLI. Only `no_session_ref` — no source at all — follows
+          // current settings.
           session_id: null,
-          runner: 'claude',
+          runner:
+            recordedSessionProvider(issue.metadata) ?? currentRunner(issue),
           fallback_reason: qualified.reason
         };
   }

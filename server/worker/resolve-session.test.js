@@ -119,7 +119,7 @@ const FAILURE = {
 };
 
 /**
- * @param {{ tmux?: ReturnType<typeof makeTmux>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null }} [input]
+ * @param {{ tmux?: ReturnType<typeof makeTmux>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null }} [input]
  */
 function makeLauncher(input = {}) {
   const tmux = input.tmux ?? makeTmux();
@@ -140,6 +140,7 @@ function makeLauncher(input = {}) {
           : null),
     statFile: () => ({ mtimeMs: 0 }),
     now: () => 0,
+    ...(input.currentRunner ? { currentRunner: input.currentRunner } : {}),
     sessionRefOptions: {
       home_dir: HOME,
       hostname: HOST,
@@ -475,6 +476,78 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       runner: outcome.runner,
       fallback_reason: outcome.fallback_reason
     }).toEqual({ mode: 'fork', runner: 'codex', fallback_reason: null });
+  });
+
+  test('keeps codex for a fresh session when the codex transcript is missing', async () => {
+    const { resolver } = makeLauncher({
+      metadata: { session_ref: `codex:${SESSION_ID}@${HOST}` },
+      present: false
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect({
+      mode: outcome.mode,
+      runner: outcome.runner,
+      fallback_reason: outcome.fallback_reason
+    }).toEqual({
+      mode: 'fresh',
+      runner: 'codex',
+      fallback_reason: 'not_local'
+    });
+  });
+
+  test('refuses an unsafe recorded id without retargeting to claude', async () => {
+    const { resolver } = makeLauncher({
+      metadata: { session_ref: `codex:-danger@${HOST}` },
+      codex: true
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect({
+      mode: outcome.mode,
+      runner: outcome.runner,
+      fallback_reason: outcome.fallback_reason
+    }).toEqual({
+      mode: 'fresh',
+      runner: 'codex',
+      fallback_reason: 'unsafe_session_id'
+    });
+  });
+
+  test('follows current execution settings when the bead names no session', async () => {
+    const { resolver } = makeLauncher({
+      metadata: {},
+      currentRunner: () => 'codex'
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect({
+      mode: outcome.mode,
+      runner: outcome.runner,
+      fallback_reason: outcome.fallback_reason
+    }).toEqual({
+      mode: 'fresh',
+      runner: 'codex',
+      fallback_reason: 'no_session_ref'
+    });
   });
 
   test('runs the measured codex interactive fork argv', async () => {

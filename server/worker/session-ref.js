@@ -166,11 +166,14 @@ export function uuidV7StartedAt(session_id) {
  * own shape carries no timestamp.
  *
  * @param {string} session_id
- * @param {{ fs: Pick<typeof fs, 'readdirSync'>, home_dir: string, now: () => number }} input
+ * @param {{ fs: Pick<typeof fs, 'readdirSync'>, home_dir: string, sessions_root?: string, now: () => number }} input
  * @returns {string|null}
  */
 function scanCodexRollout(session_id, input) {
-  const sessions_root = path.join(input.home_dir, '.codex', 'sessions');
+  const sessions_root =
+    typeof input.sessions_root === 'string' && input.sessions_root.length > 0
+      ? input.sessions_root
+      : path.join(input.home_dir, '.codex', 'sessions');
   const suffix = `-${session_id}.jsonl`;
   const base = input.now();
   for (let back = 0; back < CODEX_SCAN_DAYS; back += 1) {
@@ -199,7 +202,7 @@ function scanCodexRollout(session_id, input) {
  * Locate one item's transcript file on this machine.
  *
  * @param {SessionRefEntry} entry
- * @param {{ home_dir?: string, hostname?: string, fs?: Pick<typeof fs, 'readdirSync' | 'statSync'>, now?: () => number }} [options]
+ * @param {{ home_dir?: string, hostname?: string, sessions_root?: string, fs?: Pick<typeof fs, 'readdirSync' | 'statSync'>, now?: () => number }} [options]
  * @returns {SessionRefLocation}
  */
 export function resolveSessionFile(entry, options = {}) {
@@ -230,11 +233,20 @@ export function resolveSessionFile(entry, options = {}) {
   } else {
     const started_at = uuidV7StartedAt(entry.session_id);
     const now = options.now || (() => Date.now());
+    // The account-specific `CODEX_HOME` mirror the launch used, when the caller
+    // knows it: probing the default home for an account attempt reads another
+    // account's transcripts (codex-orchestration-parity §6.1).
+    const sessions_root =
+      typeof options.sessions_root === 'string' &&
+      options.sessions_root.length > 0
+        ? options.sessions_root
+        : undefined;
     file =
       started_at === null
         ? scanCodexRollout(entry.session_id, {
             fs: file_system,
             home_dir,
+            ...(sessions_root ? { sessions_root } : {}),
             now
           })
         : codexRolloutFilePath({
@@ -242,6 +254,7 @@ export function resolveSessionFile(entry, options = {}) {
             started_at,
             fs: file_system,
             home_dir,
+            ...(sessions_root ? { sessions_root } : {}),
             now
           });
   }
@@ -296,6 +309,26 @@ export function sessionResumeCommand(entry) {
  * @typedef {{ ok: true, provider: 'claude'|'codex', session_id: string }
  *   | { ok: false, reason: 'no_session_ref'|'unsafe_session_id'|'provider_mismatch'|'not_local' }} SessionForkQualification
  */
+
+/**
+ * The provider of the bead's CURRENT recorded session, whatever its transcript
+ * turns out to be (codex-orchestration-parity §4.1).
+ *
+ * A source that cannot be forked is still a source: the same-provider fresh
+ * fallback runs on THIS provider, so a missing transcript or a broken id never
+ * moves the work to the other CLI. `null` means no source at all, which is the
+ * only case that follows current execution settings.
+ *
+ * @param {Record<string, unknown>|null|undefined} metadata
+ * @returns {'claude'|'codex'|null}
+ */
+export function recordedSessionProvider(metadata) {
+  const entries = parseSessionRef(
+    metadata && typeof metadata === 'object' ? metadata.session_ref : null
+  );
+  const current = entries[entries.length - 1];
+  return current === undefined ? null : current.provider;
+}
 
 /**
  * Whether the bead's CURRENT `session_ref` item may be forked to open the first

@@ -727,6 +727,37 @@ describe('direction-inquiry launch', () => {
     );
   });
 
+  test('keeps the codex attempt provider when its transcript is missing', async () => {
+    const tmux = makeTmux({
+      panes: [['bdui-inquiry', '%1', '', '0']],
+      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
+    });
+    const { inquiry, awaitingUser } = makeInquiry({
+      tmux,
+      readAttempt: async () => ({
+        attempt_id: 'a1',
+        repo: '/repo',
+        runner: 'codex',
+        session_id: 'missing-thread'
+      }),
+      sessionRefOptions: {
+        home_dir: '/home',
+        hostname: 'host',
+        fs: sessionFs([])
+      }
+    });
+
+    await inquiry.onParkedAttempt(parkedInput());
+
+    expect(awaitingUser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'fresh',
+        runner: 'codex',
+        fallback_reason: 'attempt_transcript_missing'
+      })
+    );
+  });
+
   test('launches from a click while automatic inquiry is disabled', async () => {
     const tmux = makeTmux({
       panes_seq: [

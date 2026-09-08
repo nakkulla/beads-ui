@@ -548,8 +548,12 @@ const NATIVE_CHILD_USAGE_NOTE = '전체 합계에 별도 가산하지 않음';
  * `reasoning_output_tokens` are SUBSETS of the input/output figures, so they
  * are carried for the breakdown and never counted a second time.
  *
+ * A usage with a total and no breakdown, and one with a breakdown and no
+ * total, are DIFFERENT observations and are reported as such — an unobserved
+ * field is never printed as 0 (§6.4).
+ *
  * @param {Record<string, any>|null|undefined} usage
- * @returns {{ subtotal: number, breakdown: UsageRecord }|null}
+ * @returns {{ subtotal: number, breakdown: UsageRecord, lines: string[] }|null}
  */
 function nativeChildUsage(usage) {
   if (!usage || typeof usage !== 'object') {
@@ -557,32 +561,57 @@ function nativeChildUsage(usage) {
   }
   /** @type {Record<string, number>} */
   const breakdown = {};
-  /** @type {Array<[string, string]>} */
+  /** @type {Array<[string, string, string]>} */
   const mapping = [
-    ['input_tokens', 'input_tokens'],
-    ['output_tokens', 'output_tokens'],
-    ['cached_input_tokens', 'cache_read_input_tokens'],
-    ['cache_write_input_tokens', 'cache_creation_input_tokens'],
-    ['reasoning_output_tokens', 'reasoning_output_tokens']
+    ['input_tokens', 'input_tokens', '입력'],
+    ['output_tokens', 'output_tokens', '출력'],
+    ['cached_input_tokens', 'cache_read_input_tokens', '캐시읽기'],
+    ['cache_write_input_tokens', 'cache_creation_input_tokens', '캐시쓰기'],
+    ['reasoning_output_tokens', 'reasoning_output_tokens', '추론출력']
   ];
+  /** @type {string[]} */
+  const details = [];
+  let summed = 0;
   let observed = 0;
-  for (const [source_key, target_key] of mapping) {
+  for (const [source_key, target_key, label] of mapping) {
     const value = usage[source_key];
+    // §6.4: an unobserved field is ABSENT, never zero. Only what the rollout
+    // reported reaches the breakdown, the tooltip or the subtotal.
     if (typeof value === 'number' && Number.isFinite(value)) {
       breakdown[target_key] = value;
+      details.push(`${label} ${value.toLocaleString('en-US')}`);
       observed += 1;
+      if (target_key === 'input_tokens' || target_key === 'output_tokens') {
+        summed += value;
+      }
     }
   }
-  const total = usage.total_tokens;
-  const subtotal =
-    typeof total === 'number' && Number.isFinite(total)
-      ? total
-      : usageNumber(breakdown.input_tokens) +
-        usageNumber(breakdown.output_tokens);
-  if (observed === 0 && subtotal === 0) {
-    return null;
+  const raw_total = usage.total_tokens;
+  const total =
+    typeof raw_total === 'number' && Number.isFinite(raw_total)
+      ? raw_total
+      : null;
+  if (observed === 0) {
+    if (total === null) {
+      return null;
+    }
+    // TOTAL-ONLY: the figure exists but no breakdown does. Printing
+    // `입력 0 · 출력 0` beside it would state two contradictory things.
+    return {
+      subtotal: total,
+      breakdown: /** @type {UsageRecord} */ ({ total_tokens: total }),
+      lines: [`총 ${total.toLocaleString('en-US')}`, '세부 내역 미관측']
+    };
   }
-  return { subtotal, breakdown: /** @type {UsageRecord} */ (breakdown) };
+  const lines = [...details];
+  if (total !== null) {
+    lines.unshift(`총 ${total.toLocaleString('en-US')}`);
+  }
+  return {
+    subtotal: total ?? summed,
+    breakdown: /** @type {UsageRecord} */ (breakdown),
+    lines
+  };
 }
 
 /**
@@ -645,10 +674,10 @@ function nativeChildTemplate(child) {
           >${time}</span
         >`
       : ''}
-    ${badge
+    ${badge && usage
       ? html`<span
           class="detail-session__usage"
-          title=${`${badge.tooltip}\n${NATIVE_CHILD_USAGE_NOTE}`}
+          title=${[...usage.lines, NATIVE_CHILD_USAGE_NOTE].join('\n')}
           >${badge.label}</span
         >`
       : ''}

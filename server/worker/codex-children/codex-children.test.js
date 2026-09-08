@@ -243,6 +243,115 @@ describe('codex-children lifecycle (UI-mn5u §6.2)', () => {
     expect(rows[0].usage?.total_tokens).toBe(114343);
   });
 
+  test('returns a completed child to running when it starts again', () => {
+    const { root, child } = fixtureHalves();
+    const restart = clone(
+      child.find(
+        (/** @type {any} */ record) => record.payload?.type === 'task_started'
+      )
+    );
+    restart.timestamp = '2026-09-08T07:18:00.000Z';
+    restart.payload.started_at = Math.round(
+      Date.parse('2026-09-08T07:18:00.000Z') / 1000
+    );
+
+    const rows = accumulate([
+      ...tagged(ROOT_ID, root),
+      ...tagged(CHILD_ID, [...child, restart])
+    ]);
+
+    expect(rows[0].status).toBe('running');
+    expect(rows[0].completed_at).toBeNull();
+    expect(rows[0].started_at).toBe(1788851789000);
+  });
+
+  test('ignores a terminal event older than the latest start', () => {
+    const { root, child } = fixtureHalves();
+    const restart = clone(
+      child.find(
+        (/** @type {any} */ record) => record.payload?.type === 'task_started'
+      )
+    );
+    restart.timestamp = '2026-09-08T07:18:00.000Z';
+    restart.payload.started_at = Math.round(
+      Date.parse('2026-09-08T07:18:00.000Z') / 1000
+    );
+    const stale_complete = clone(
+      child.find(
+        (/** @type {any} */ record) => record.payload?.type === 'task_complete'
+      )
+    );
+
+    const rows = accumulate([
+      ...tagged(ROOT_ID, root),
+      ...tagged(CHILD_ID, [...child, restart, stale_complete])
+    ]);
+
+    expect(rows[0].status).toBe('running');
+  });
+
+  test('marks a re-running child interrupted when the parent ends', () => {
+    const { root, child } = fixtureHalves();
+    const restart = clone(
+      child.find(
+        (/** @type {any} */ record) => record.payload?.type === 'task_started'
+      )
+    );
+    restart.timestamp = '2026-09-08T07:18:00.000Z';
+    restart.payload.started_at = Math.round(
+      Date.parse('2026-09-08T07:18:00.000Z') / 1000
+    );
+
+    const rows = accumulate(
+      [...tagged(ROOT_ID, root), ...tagged(CHILD_ID, [...child, restart])],
+      { parent_terminated: true }
+    );
+
+    expect(rows[0].status).toBe('interrupted');
+  });
+
+  test('gives a nested and a root-direct child of the same name their own launch', () => {
+    const { root, child } = fixtureHalves();
+    const spawn_output = clone(
+      root.find(
+        (/** @type {any} */ record) =>
+          record.payload?.type === 'function_call_output' &&
+          typeof record.payload?.output === 'string' &&
+          record.payload.output.includes('create_child_note')
+      )
+    );
+    const spawn_call = clone(
+      root.find(
+        (/** @type {any} */ record) => record.payload?.name === 'spawn_agent'
+      )
+    );
+    spawn_call.payload.call_id = 'call_nested';
+    spawn_output.payload.call_id = 'call_nested';
+    spawn_output.payload.output = JSON.stringify({
+      task_name: '/root/create_child_note/create_child_note',
+      nickname: 'Nested'
+    });
+    const nested_id = '01a07fe0-4444-7443-b224-30d21a82419a';
+    const nested = rethread(child, {
+      thread_id: nested_id,
+      parent_thread_id: CHILD_ID,
+      agent_path: '/root/create_child_note/create_child_note',
+      depth: 2
+    });
+
+    const rows = accumulate([
+      ...tagged(ROOT_ID, root),
+      ...tagged(CHILD_ID, [...child, spawn_call, spawn_output]),
+      ...tagged(nested_id, nested)
+    ]);
+
+    const by_thread = Object.fromEntries(
+      rows.map((row) => [row.thread_id, row.launch_id])
+    );
+    expect(by_thread[nested_id]).toBe('call_nested');
+    expect(by_thread[CHILD_ID]).toBe('call_zQrh960DQ1iub7GdKSyWan48');
+  });
+
   test('marks a child with no terminal evidence interrupted when the parent ends', () => {
     const { root, child } = fixtureHalves();
     const unfinished = child.filter(
@@ -632,6 +741,91 @@ describe('codex-children reader (UI-mn5u §6.1)', () => {
         fs: /** @type {any} */ (sessions.fs)
       })
     );
+  });
+
+  test('finds the root by its own thread date when the attempt resumed later', () => {
+    const sessions = fakeSessions();
+    const resumed_at = ATTEMPT_STARTED_AT + 3 * 24 * 60 * 60 * 1000;
+
+    const rows = observeCodexChildren({
+      attempt: { ...ATTEMPT, started_at: resumed_at },
+      sessions_root: '/sessions',
+      fs: /** @type {any} */ (sessions.fs),
+      now: () => resumed_at
+    });
+
+    expect(rows.map((row) => row.thread_id)).toEqual([]);
+    expect(
+      readCodexChildRecords({
+        root_thread_id: ROOT_ID,
+        sessions_root: '/sessions',
+        started_at: resumed_at,
+        fs: /** @type {any} */ (sessions.fs),
+        now: () => resumed_at
+      }).root_file
+    ).toContain('2026/09/08');
+  });
+
+  test('scans the next date directory for a child created after midnight', () => {
+    const { child } = fixtureHalves();
+    const next_day = ATTEMPT_STARTED_AT + 20 * 60 * 60 * 1000;
+    const after_midnight = rethread(child, {
+      thread_id: '01a07fe0-7777-7443-b224-30d21a82419a',
+      parent_thread_id: ROOT_ID,
+      agent_path: '/root/late_child',
+      shift_ms: 20 * 60 * 60 * 1000
+    });
+    const sessions = fakeSessions({
+      extra: {
+        '/sessions/2026/09/09/rollout-2026-09-09T03-16-40-01a07fe0-7777-7443-b224-30d21a82419a.jsonl':
+          {
+            text: after_midnight
+              .map((/** @type {any} */ r) => JSON.stringify(r))
+              .join('\n'),
+            mtime: next_day
+          }
+      }
+    });
+
+    const rows = observeCodexChildren({
+      attempt: { ...ATTEMPT, finished_at: next_day + 60_000 },
+      sessions_root: '/sessions',
+      fs: /** @type {any} */ (sessions.fs),
+      now: () => next_day + 60_000
+    });
+
+    expect(rows.map((row) => row.thread_id)).toContain(
+      '01a07fe0-7777-7443-b224-30d21a82419a'
+    );
+  });
+
+  test('finds the linked child behind a directory full of unrelated files', () => {
+    const { child } = fixtureHalves();
+    /** @type {Record<string, { text: string, mtime: number }>} */
+    const extra = {};
+    for (let index = 0; index < 80; index += 1) {
+      const id = `01a07fe0-${String(1000 + index)}-7443-b224-30d21a82419a`;
+      extra[
+        `/sessions/2026/09/08/rollout-2026-09-08T07-16-3${index % 10}-${id}.jsonl`
+      ] = {
+        text: rethread(child, {
+          thread_id: id,
+          parent_thread_id: '01a07fdf-0000-7ac3-8e6f-bc0910eee0af'
+        })
+          .map((/** @type {any} */ r) => JSON.stringify(r))
+          .join('\n'),
+        mtime: ATTEMPT_STARTED_AT + 1000 + index
+      };
+    }
+    const sessions = fakeSessions({ extra });
+
+    const rows = observeCodexChildren({
+      attempt: ATTEMPT,
+      sessions_root: '/sessions',
+      fs: /** @type {any} */ (sessions.fs)
+    });
+
+    expect(rows.map((row) => row.thread_id)).toEqual([CHILD_ID]);
   });
 
   test('observes nothing when no rollout file can be read', () => {

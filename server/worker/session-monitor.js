@@ -233,9 +233,18 @@ export function createSessionMonitors(deps) {
   }
 
   /**
+   * Observe this codex attempt's children on the monitor's OWN cadence, from
+   * the moment it starts until it stops.
+   *
+   * A parent's log lines are the wrong clock (§6.3): a parent that is waiting
+   * on `wait_agent` writes nothing for minutes while its children run, and a
+   * fresh launch may write nothing at all before the first child appears. The
+   * timer re-arms itself so the observation continues independently of the
+   * parent stream, and it is unref'd so it never holds the process open.
+   *
    * @param {{ workspace: string, attempt_id: string, codex: boolean }} entry
    */
-  function scheduleChildScan(entry) {
+  function armChildScan(entry) {
     if (!entry.codex) {
       return;
     }
@@ -245,7 +254,11 @@ export function createSessionMonitors(deps) {
     }
     const timer = setTimeout(() => {
       child_timers.delete(key);
+      if (!monitors.has(key)) {
+        return;
+      }
       scanChildren(entry, false);
+      armChildScan(entry);
     }, MONITOR_USAGE_FANOUT_MS);
     if (typeof timer.unref === 'function') {
       timer.unref();
@@ -534,8 +547,6 @@ export function createSessionMonitors(deps) {
       }
     }
 
-    scheduleChildScan(entry);
-
     const question_reason = entry.spec.detectQuestion(obj);
     if (question_reason) {
       guardKill(entry, { reason: question_reason, command: null });
@@ -662,6 +673,9 @@ export function createSessionMonitors(deps) {
       });
       monitors.set(key, entry);
       entry.reader.start();
+      // Independent of the parent stream, and for a NEW launch as much as a
+      // re-attach: the children are observed from files Codex writes itself.
+      armChildScan(entry);
       return true;
     },
 
