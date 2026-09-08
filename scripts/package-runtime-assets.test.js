@@ -21,7 +21,14 @@ const REQUIRED_ENTRIES = [
   'app/main.bundle.js.map',
   'app/styles.css',
   'app/protocol.js',
-  'server/index.js'
+  'server/index.js',
+  // Read with fs at runtime (server/worker/*), invisible to the import walk.
+  'generated/contracts/execution-defaults.json',
+  'generated/contracts/execution-defaults.provenance.json',
+  'generated/contracts/quick-fix-handoff.json',
+  'generated/contracts/quick-fix-handoff.provenance.json',
+  'generated/contracts/repo-operation-policy.json',
+  'generated/contracts/repo-operation-policy.provenance.json'
 ];
 
 /**

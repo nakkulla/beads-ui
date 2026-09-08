@@ -28,14 +28,14 @@ A dark-first control tower with **two tabs** plus a shared detail panel:
   finished bead lands in **PR 대기** with local-verification / base badges.
   Merge eligibility never consults GitHub checks: this repository runs no CI
   workflow and the queue judges from PR/base/head identity, clean mergeability,
-  workflow review receipts, and the repository's own `[verify]` script. The
-  queue owns the merge itself, so an automatic merge and a human `[머지]` click
-  converge on the same path. The implementation review receipt binds by
-  **ancestry** — a receipt SHA that is the observed head or an ancestor of it
-  stays valid, and only a rewritten or reset branch makes it stale. `[verify]`
-  is a separate pre-merge safety net run on a throwaway candidate checkout, not
-  a substitute for that receipt. `[폐기]` first creates a verified recovery
-  archive under
+  workflow review receipts, execution-receipt backing, and the repository's own
+  `[verify]` script. The queue owns the merge itself, so an automatic merge and
+  a human `[머지]` click converge on the same path. The implementation review
+  receipt binds by **ancestry** — a receipt SHA that is the observed head or an
+  ancestor of it stays valid, and only a rewritten or reset branch makes it
+  stale. `[verify]` is a separate pre-merge safety net run on a throwaway
+  candidate checkout, not a substitute for that receipt. `[폐기]` first creates
+  a verified recovery archive under
   `$XDG_STATE_HOME/bdui/<workspace>/discard-backups/<operation-id>`; an unmerged
   PR is then closed and its worktree/branch removed, while an already merged PR
   creates a human-merge-only revert PR. Keep the archive directory intact when
