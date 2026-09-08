@@ -2236,6 +2236,9 @@ export function createMonitorView(mount_element, options) {
    * `auto_advance`는 건드리지 않는다 — 이 레인 멤버만 발차하는 별개의 축이다
    * (§3 사용자 결정 1).
    *
+   * **이미 놓인 자리는 보존한다** (UI-tjus §3.1): 병렬 큐나 직렬 레인에 이미
+   * 앉은 멤버는 옮기지 않고, 아직 어느 대기 영역에도 없는 멤버만 적재한다.
+   *
    * **적재가 arm보다 앞선다**: 큐에 없는 엔트리에는 `armed_by_lane`을 쓸 자리가
    * 없다. 적재 index 규칙은 `재적용`과 같다 (`placeUnplacedMembers`, §5.4) —
    * 자기 레포 병렬 큐 끝이고, 같은 레포에 여럿이면 이 실행에서 앞서 잡은 자리만큼
@@ -2261,11 +2264,11 @@ export function createMonitorView(mount_element, options) {
     const taken = new Map();
     const members_by_root = laneMembersByRoot(lane);
     for (const row of lane.rows) {
-      // 적재 대상은 "병렬 큐에 없는 행"이다 (UI-d3i1 §7.2). `queue_index`는 병렬
-      // 큐 안일 때만 실리므로, 큐 밖 멤버와 직렬 레인 멤버가 함께 여기 온다 —
-      // 직렬 멤버에게도 같은 `worker-queue-place`를 보내면 서버가 원 레인에서
-      // 빼고 병렬에 넣는다. 고정 행(실행중·PR 대기·완료)은 대상이 아니다.
-      if (row.fixed || typeof row.queue_index === 'number') {
+      // 적재 대상은 "아직 어느 대기 영역에도 없는 행"이다 (UI-tjus §3.1).
+      // 병렬·직렬 대기에 앉은 멤버는 레인 ID·순번·대기 진입 시각을 그대로
+      // 지킨다 — 진행이 쓰는 것은 위치가 아니라 실행 권한이고, 직렬 순서는
+      // 사용자가 고른 것이다. 고정 행(실행중·PR 대기·완료)도 대상이 아니다.
+      if (row.fixed || !row.unplaced) {
         continue;
       }
       const root_dir = lanes.owner_of[row.id] || row.root_dir;

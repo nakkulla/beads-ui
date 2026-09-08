@@ -4094,8 +4094,10 @@ export function handleWorkerQueueReorder(ws, req) {
 /**
  * Handle `worker-queue-arm`. Payload:
  * `{ bead_ids: string[], lane_id, expected_revision }` (UI-jaua §5.3) — arms
- * this workspace's parallel rows for a Monitor cross lane, so they dispatch
- * while the repo's own `auto_advance` stays OFF.
+ * this workspace's waiting rows — parallel and serial alike (UI-tjus §3.2) —
+ * for a Monitor cross lane, so they dispatch while the repo's own
+ * `auto_advance` stays OFF. A serial row keeps its lane and its position; only
+ * that lane's HEAD is ever a candidate, and the arm bypasses no other fence.
  *
  * `lane_id` is NOT checked against the lane store: `cross-lanes.json` is
  * server-global and a workspace handler must not depend on it (§5.3). Bead ids

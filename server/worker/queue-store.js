@@ -4019,6 +4019,23 @@ function waitingLaneEntries(q, lane) {
 }
 
 /**
+ * Both waiting areas of one queue as a single list (UI-tjus §3.2). The cross
+ * lane arm axis treats a parallel row and a serial row alike, so every sweep
+ * reads the union through this one function instead of restating it — a second
+ * copy would let `arm`, `disarm` and the cold load mean three different things
+ * by "an armable row". Entries are the LIVE objects, so callers mutate them.
+ *
+ * @param {Queue} q
+ * @returns {QueueEntry[]}
+ */
+function waitingAreaEntries(q) {
+  return [
+    ...q.queue,
+    ...(q.serial_lanes || []).flatMap((lane) => lane.entries)
+  ];
+}
+
+/**
  * Rebind a bead's lineage to the waiting lane it now sits in (UI-04vo §2).
  *
  * A bead stays in its lane for the whole life of its attempt, so occupancy and
@@ -4774,12 +4791,14 @@ export function createQueueStore(options = {}) {
     q.auto_advance = false;
     // Same reason, same place (UI-jaua §5.1): the server did not watch what
     // happened while it was down, so no cross lane keeps dispatching across a
-    // restart. Both lanes are swept — the `pr_wait` row carries the arm that
-    // the merge registration reads. The cleared ids are remembered in memory so
-    // the lane can say WHY it stopped instead of looking never-started.
+    // restart. Both waiting areas and `pr_wait` are swept (UI-tjus §3.2) — a
+    // serial row can carry an arm too, and the `pr_wait` row carries the arm
+    // that the merge registration reads. The cleared ids are remembered in
+    // memory so the lane can say WHY it stopped instead of looking
+    // never-started.
     /** @type {Set<string>} */
     const disarmed = new Set();
-    for (const entry of [...q.queue, ...q.pr_wait]) {
+    for (const entry of [...waitingAreaEntries(q), ...q.pr_wait]) {
       if (
         typeof entry.armed_by_lane === 'string' &&
         entry.armed_by_lane.length > 0
@@ -5586,10 +5605,12 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Arm parallel-queue rows for a cross lane (UI-jaua §5.1/§5.3). CAS-guarded
-     * like every other client op.
+     * Arm waiting rows for a cross lane (UI-jaua §5.1/§5.3, UI-tjus §3.2).
+     * CAS-guarded like every other client op. Parallel and serial rows are one
+     * arm axis — `▶ 진행` no longer moves a serial member out of the lane the
+     * user chose, so the arm has to reach it where it sits.
      *
-     * Bead ids that are not in this workspace's parallel queue are IGNORED, not
+     * Bead ids that are not in this workspace's waiting area are IGNORED, not
      * rejected: one `▶ 진행` fans out over the repos a lane spans, and each
      * repo's op names the whole membership. Rejecting here would make a lane
      * whose members are split across repos fail in every repo but one.
@@ -5620,13 +5641,15 @@ export function createQueueStore(options = {}) {
         bead_ids.filter((id) => typeof id === 'string' && id.length > 0)
       );
       const result = applyMutation(workspace, expected_revision, (next) => {
-        // Both lanes, symmetric with `disarm` — the arm rides the PR-wait
-        // transition (§5.1), so a member that was ALREADY waiting for its PR
-        // when the process restarted lives only there. Sweeping the parallel
-        // queue alone would clear the restart badge (below) while leaving that
-        // member unarmed forever, and its merge registration would never
-        // resume.
-        for (const entry of [...next.queue, ...next.pr_wait]) {
+        // Both waiting areas and `pr_wait`, symmetric with `disarm`. The
+        // serial rows are here because a lane member keeps the serial position
+        // the user gave it (UI-tjus §3.1), and `pr_wait` is here because the
+        // arm rides that transition (§5.1): a member that was ALREADY waiting
+        // for its PR when the process restarted lives only there. Sweeping the
+        // parallel queue alone would clear the restart badge (below) while
+        // leaving those members unarmed forever, and the PR-wait member's
+        // merge registration would never resume.
+        for (const entry of [...waitingAreaEntries(next), ...next.pr_wait]) {
           if (targets.has(entry.bead_id)) {
             entry.armed_by_lane = lane_id;
           }
@@ -5646,8 +5669,11 @@ export function createQueueStore(options = {}) {
     /**
      * Clear the cross-lane arm from rows of this workspace (UI-jaua §5.3).
      * CAS-guarded. `bead_ids` names the rows; `lane_id` alone clears every row
-     * armed to that lane here. Both lanes are swept, because the arm rides the
-     * `pr_wait` row too (§5.1). Attempt snapshots are history and stay.
+     * armed to that lane here. Both waiting areas are swept because both can
+     * carry an arm (UI-tjus §3.2), and `pr_wait` because the arm rides that
+     * transition (§5.1). Attempt snapshots are history and stay. A row's
+     * waiting POSITION is never touched — a stop revokes the authority it
+     * granted, not the seat the user chose.
      *
      * @param {string} workspace
      * @param {{ expected_revision: number, bead_ids?: string[], lane_id?: string }} input
@@ -5672,7 +5698,7 @@ export function createQueueStore(options = {}) {
           )
         : null;
       return applyMutation(workspace, expected_revision, (next) => {
-        for (const entry of [...next.queue, ...next.pr_wait]) {
+        for (const entry of [...waitingAreaEntries(next), ...next.pr_wait]) {
           const named = targets
             ? targets.has(entry.bead_id)
             : entry.armed_by_lane === lane_id;
@@ -5686,11 +5712,13 @@ export function createQueueStore(options = {}) {
 
     /**
      * Disarm ONE waiting row after its session failed (UI-jaua §5.5).
-     * Scheduler-owned (no CAS), and scoped to the parallel queue of THIS
+     * Scheduler-owned (no CAS), and scoped to the waiting area of THIS
      * workspace: the scheduler is a per-workspace writer, so it must not reach
      * across repos to the lane's other members. It does not need to — the bd
      * dependency gate already holds the followers back while the failed member
-     * stays open. No-op (no revision bump) when the row is not armed.
+     * stays open. The failed row is found in either waiting area (UI-tjus
+     * §3.2), and only that one row is cleared. No-op (no revision bump) when
+     * the row is not armed.
      *
      * @param {string} workspace
      * @param {{ bead_id: string }} input
@@ -5699,7 +5727,9 @@ export function createQueueStore(options = {}) {
     disarmEntry(workspace, input) {
       const { bead_id } = input;
       return applyUnconditional(workspace, (next) => {
-        const entry = next.queue.find((e) => e.bead_id === bead_id);
+        const entry = waitingAreaEntries(next).find(
+          (e) => e.bead_id === bead_id
+        );
         if (!entry || typeof entry.armed_by_lane !== 'string') {
           return false;
         }

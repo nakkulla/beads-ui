@@ -15539,6 +15539,30 @@ describe('scheduler 연결 레인 발차 축 (UI-jaua §5.2)', () => {
     });
   }
 
+  /**
+   * Seat beads in ONE serial lane and arm a subset for a cross lane, leaving
+   * `auto_advance` OFF — the state UI-tjus's `▶ 진행` produces for members the
+   * user seated serially, since the click no longer moves them.
+   *
+   * @param {any} store
+   * @param {string} lane
+   * @param {string[]} ids
+   * @param {string} lane_id
+   * @param {string[]} [armed] - Defaults to every seated id.
+   */
+  function seedArmedSerial(store, lane, ids, lane_id, armed) {
+    let rev = store.snapshot(WS).revision;
+    for (const id of ids) {
+      rev = store.place(WS, { expected_revision: rev, bead_id: id, lane }).queue
+        .revision;
+    }
+    store.arm(WS, {
+      expected_revision: rev,
+      bead_ids: armed || ids,
+      lane_id
+    });
+  }
+
   test('dispatches an armed entry while auto_advance is off', async () => {
     const env = setup({ config: { A1: {} }, slots: 2 });
     seedArmed(env.store, ['A1'], 'cl_1');
@@ -15573,7 +15597,7 @@ describe('scheduler 연결 레인 발차 축 (UI-jaua §5.2)', () => {
     expect(env.runner.spawnOrder).toEqual(['A1']);
   });
 
-  test('leaves serial lane heads out of the candidate set while auto_advance is off', async () => {
+  test('leaves an unarmed serial lane head out of the candidate set while auto_advance is off', async () => {
     const env = setup({ config: { A1: {}, S1: {} }, slots: 2 });
     seedArmed(env.store, ['A1'], 'cl_1');
     env.store.place(WS, {
@@ -15585,6 +15609,85 @@ describe('scheduler 연결 레인 발차 축 (UI-jaua §5.2)', () => {
     await env.scheduler.tick(WS);
 
     expect(env.runner.spawnOrder).toEqual(['A1']);
+  });
+
+  test('dispatches an armed serial lane head while auto_advance is off', async () => {
+    const env = setup({ config: { S1: {} }, slots: 2 });
+    seedArmedSerial(env.store, 's1', ['S1'], 'cl_1');
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+    expect(env.store.snapshot(WS).auto_advance).toBe(false);
+  });
+
+  test('leaves the head in place when only the member behind it is armed', async () => {
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
+    seedArmedSerial(env.store, 's1', ['S1', 'S2'], 'cl_1', ['S2']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(
+      env.store.snapshot(WS).serial_lanes[0].entries.map((e) => e.bead_id)
+    ).toEqual(['S1', 'S2']);
+  });
+
+  test('keeps an occupied serial lane out even when its head is armed', async () => {
+    const env = setup({ config: { S1: {} }, slots: 2 });
+    seedArmedSerial(env.store, 's1', ['S1'], 'cl_1');
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'occ-1',
+        bead_id: 'X1',
+        status: 'failed',
+        serial_lane_id: 's1'
+      }
+    });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('holds an armed serial head that bd reports not ready', async () => {
+    const env = setup({ config: { S1: { blocked: true } }, slots: 2 });
+    seedArmedSerial(env.store, 's1', ['S1'], 'cl_1');
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).admission.S1.reason).toMatch(/^not_ready:/);
+  });
+
+  test('snapshots the arming lane onto an attempt dispatched from a serial lane', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedArmedSerial(env.store, 's1', ['S1'], 'cl_1');
+
+    await env.scheduler.tick(WS);
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt).toMatchObject({
+      bead_id: 'S1',
+      serial_lane_id: 's1',
+      armed_by_lane: 'cl_1'
+    });
+  });
+
+  test('clears the arm of the failed serial row without moving it', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedArmedSerial(env.store, 's1', ['S1'], 'cl_1');
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    const entries = env.store.snapshot(WS).serial_lanes[0].entries;
+    expect(entries.map((e) => [e.bead_id, e.armed_by_lane])).toEqual([
+      ['S1', undefined]
+    ]);
   });
 
   test('keeps the auto_advance candidate set unchanged by arms', async () => {
