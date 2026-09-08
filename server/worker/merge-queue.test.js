@@ -417,6 +417,123 @@ describe('worker/merge-queue — sequencing', () => {
   });
 });
 
+describe('worker/merge-queue verification recovery', () => {
+  /**
+   * @param {string|null} [initial_operation]
+   */
+  function setupRecovery(initial_operation = null) {
+    const store = seed(['UI-1']);
+    let operation = initial_operation;
+    let changed = () => {};
+    const merge = vi.fn(async () => ({
+      ok: false,
+      action: 'verify_blocked',
+      reason: 'verify_config_invalid:verify_candidate_mismatch'
+    }));
+    const mq = driver(store, {
+      merge,
+      verifiedOperation: () => operation,
+      subscribeQueueChanged: (
+        /** @type {(workspace: string) => void} */ listener
+      ) => {
+        changed = () => listener(WS);
+        return () => {};
+      },
+      notifyChanged: () => changed()
+    });
+    return {
+      store,
+      mq,
+      merge,
+      /** @param {string|null} value */
+      observe(value) {
+        operation = value;
+        changed();
+      }
+    };
+  }
+
+  test('resumes a stopped queue when a new successful verification arrives', async () => {
+    const { mq, merge, observe, store } = setupRecovery();
+    mq.start();
+    await vi.waitFor(() => expect(mq.state().failures['UI-1']).toBeTruthy());
+    merge.mockImplementation(async () => {
+      landMerge(store, 'UI-1');
+      return { ok: true, action: 'merged', reason: '' };
+    });
+
+    observe('verified-new');
+    await vi.waitFor(() => expect(store.snapshot(WS).merge_queue).toEqual([]));
+
+    expect(merge).toHaveBeenCalledTimes(2);
+    mq.stop();
+  });
+
+  test('ignores unchanged successful and non-successful observations', async () => {
+    const { mq, merge, observe } = setupRecovery('verified-old');
+    mq.start();
+    await vi.waitFor(() => expect(mq.state().failures['UI-1']).toBeTruthy());
+
+    observe('verified-old');
+    observe(null);
+    observe('verified-old');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(merge).toHaveBeenCalledTimes(1);
+    mq.stop();
+  });
+
+  test('consumes a new successful verification once even if re-gating fails', async () => {
+    const { mq, merge, observe } = setupRecovery();
+    mq.start();
+    await vi.waitFor(() => expect(mq.state().failures['UI-1']).toBeTruthy());
+
+    observe('verified-new');
+    await vi.waitFor(() => expect(merge).toHaveBeenCalledTimes(2));
+    observe('verified-new');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(merge).toHaveBeenCalledTimes(2);
+    mq.stop();
+  });
+
+  test('consumes a successful verification arriving during the blocked turn', async () => {
+    const { mq, merge, observe, store } = setupRecovery();
+    merge.mockImplementationOnce(async () => {
+      observe('verified-new');
+      return {
+        ok: false,
+        action: 'verify_blocked',
+        reason: 'verify_candidate_mismatch'
+      };
+    });
+    merge.mockImplementation(async () => {
+      landMerge(store, 'UI-1');
+      return { ok: true, action: 'merged', reason: '' };
+    });
+
+    mq.start();
+    await vi.waitFor(() => expect(store.snapshot(WS).merge_queue).toEqual([]));
+
+    expect(merge).toHaveBeenCalledTimes(2);
+    mq.stop();
+  });
+
+  test('does not restore a cancelled queue item after verification succeeds', async () => {
+    const { mq, merge, observe, store } = setupRecovery();
+    mq.start();
+    await vi.waitFor(() => expect(mq.state().failures['UI-1']).toBeTruthy());
+    store.dequeueMerge(WS, 'UI-1');
+
+    observe('verified-new');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    mq.stop();
+  });
+});
+
 describe('worker/merge-queue — 스냅샷 fail-closed', () => {
   test('fails closed when the queue snapshot is unreadable', async () => {
     const store = seed(['UI-1']);

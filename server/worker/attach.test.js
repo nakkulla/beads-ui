@@ -28,6 +28,7 @@ import {
   install as installGuardHook
 } from './guard-hook.js';
 import { createQueueStore } from './queue-store.js';
+import { recordRepoOpsDisplay } from './repo-ops-display.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createWorkerRuntime } from './runtime.js';
 import { requestStartNow } from './scheduler.js';
@@ -3452,6 +3453,77 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
     // 연결을 빠뜨리면 모든 재충돌이 세션 라운드로 과금된다(UI-p49g §4.1).
     expect(typeof merge_queue_capture.deps.baseContained).toBe('function');
   });
+
+  test.each([
+    {
+      condition: 'current',
+      receipt_base: 'a',
+      receipt_head: 'b',
+      ok: true,
+      expected: 'verified-op'
+    },
+    {
+      condition: 'old base',
+      receipt_base: 'c',
+      receipt_head: 'b',
+      ok: true,
+      expected: null
+    },
+    {
+      condition: 'old head',
+      receipt_base: 'a',
+      receipt_head: 'c',
+      ok: true,
+      expected: null
+    },
+    {
+      condition: 'failed',
+      receipt_base: 'a',
+      receipt_head: 'b',
+      ok: false,
+      expected: null
+    }
+  ])(
+    'exposes a verification wake for $condition evidence',
+    ({ receipt_base, receipt_head, ok, expected }) => {
+      const runtime = createWorkerRuntime();
+      attachWithExternalRow(runtime, 'X1');
+      recordRepoOpsDisplay(WS, {
+        status: 'resolved',
+        source_path: 'repo-ops/config.toml',
+        base_ref: 'main',
+        base_sha: 'a'.repeat(40),
+        verify: { script: 'repo-ops/script/verify', timeout_ms: 1000 },
+        deploy: null,
+        error_code: null
+      });
+      runtime.prObservations.record(WS, 'X1', {
+        error: null,
+        pr: /** @type {any} */ ({
+          number: 9,
+          state: 'OPEN',
+          mergeable: 'MERGEABLE',
+          merge_state_status: 'CLEAN',
+          head_sha: 'b'.repeat(40),
+          base_ref: 'main'
+        }),
+        review_receipt: { state: 'current', head_sha: 'b'.repeat(40) }
+      });
+      runtime.prObservations.recordVerify(WS, 'X1', {
+        operation_id: 'verified-op',
+        effective_base_sha: receipt_base.repeat(40),
+        head_sha: receipt_head.repeat(40),
+        state: ok ? 'succeeded' : 'failed',
+        ok,
+        reason: ok ? 'succeeded' : 'failed',
+        at: 1
+      });
+
+      const operation = merge_queue_capture.deps.verifiedOperation('X1');
+
+      expect(operation).toBe(expected);
+    }
+  );
 
   test('gives the merge driver a registry-backed isExternalRow', async () => {
     const runtime = createWorkerRuntime();

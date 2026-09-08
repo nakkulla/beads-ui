@@ -3186,11 +3186,25 @@ function createVerifyCheckout(deps) {
         }
         return { ok: true, path: checkout_path, tree_sha: tree.stdout.trim() };
       }
-      const fetched = await deps.gitRun(
-        ['fetch', input.origin, `pull/${input.pr_number}/head`],
-        { cwd: input.repo, timeout_ms: 120_000 }
-      );
-      if (fetched.code !== 0) {
+      const commit = `${input.head_sha}^{commit}`;
+      let head = await deps.gitRun(['cat-file', '-e', commit], {
+        cwd: input.repo
+      });
+      if (head.code !== 0) {
+        const fetched = await deps.gitRun(
+          ['fetch', input.origin, `pull/${input.pr_number}/head`],
+          { cwd: input.repo, timeout_ms: 120_000 }
+        );
+        if (fetched.code !== 0) {
+          return { ok: false, code: 'verify_candidate_mismatch' };
+        }
+        head = await deps.gitRun(['cat-file', '-e', commit], {
+          cwd: input.repo
+        });
+      }
+      // Other gate/poller fetches can overwrite FETCH_HEAD. The observed commit
+      // is immutable; the merge path separately rechecks current head and base.
+      if (head.code !== 0) {
         return { ok: false, code: 'verify_candidate_mismatch' };
       }
       const remote = await deps.gitRun(
@@ -3203,15 +3217,6 @@ function createVerifyCheckout(deps) {
       if (
         remote.code !== 0 ||
         remote.stdout.trim().toLowerCase() !== input.base_sha.toLowerCase()
-      ) {
-        return { ok: false, code: 'verify_candidate_mismatch' };
-      }
-      const head = await deps.gitRun(['rev-parse', 'FETCH_HEAD^{commit}'], {
-        cwd: input.repo
-      });
-      if (
-        head.code !== 0 ||
-        head.stdout.trim().toLowerCase() !== input.head_sha.toLowerCase()
       ) {
         return { ok: false, code: 'verify_candidate_mismatch' };
       }

@@ -158,6 +158,7 @@ const MERGE_STEP_LABELS = Object.freeze({
  *   baseContained?: (bead_id: string, input: { base_ref: string, head_ref: string, head_sha: string }) => Promise<'contained'|'not_contained'|null>,
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
  *   headSha?: (bead_id: string) => string|null,
+ *   verifiedOperation?: (bead_id: string) => string|null,
  *   isExternalRow?: (bead_id: string) => boolean,
  *   conflictDispatchBlocked?: (queue_bead_id: string, subject_bead_id: string) => boolean,
  *   reviewDispatchBlocked?: (bead_id: string) => boolean,
@@ -237,6 +238,8 @@ export function createMergeQueue(deps) {
   let halted_on_snapshot = null;
   /** @type {{ queue_bead_id: string, subject_bead_id: string }|null} */
   let halted_on_conflict = null;
+  /** @type {{ bead_id: string, operation_id: string|null }|null} */
+  let halted_on_verify = null;
   let prepared = false;
   /** @type {string|null} */
   let active = null;
@@ -2131,6 +2134,7 @@ export function createMergeQueue(deps) {
       // §3.3): the resolver's own commit is judged by the same ancestry rule
       // as any other commit, so there is no queue-owned mutation voucher to
       // carry and no `resolver-self:` receipt to demand.
+      const verified_operation = verifiedOperation(bead_id);
       const result = await runLatestMerge(
         bead_id,
         bead_id,
@@ -2170,6 +2174,8 @@ export function createMergeQueue(deps) {
       if (action === 'verify_blocked') {
         fail(bead_id, result.reason || 'verify_failed');
         halted = true;
+        halted_on_verify = { bead_id, operation_id: verified_operation };
+        resumeVerified();
         notify();
         return;
       }
@@ -2397,6 +2403,35 @@ export function createMergeQueue(deps) {
   }
 
   /**
+   * @param {string} bead_id
+   * @returns {string|null}
+   */
+  function verifiedOperation(bead_id) {
+    try {
+      return deps.verifiedOperation?.(bead_id) ?? null;
+    } catch (err) {
+      log('merge queue verify observation failed for %s: %o', bead_id, err);
+      return null;
+    }
+  }
+
+  /** Resume only for new evidence, not every repeated poll or our own notify. */
+  function resumeVerified() {
+    if (!halted_on_verify) {
+      return;
+    }
+    const { bead_id, operation_id } = halted_on_verify;
+    if (queuedEntry(bead_id)) {
+      const current_operation = verifiedOperation(bead_id);
+      if (!current_operation || current_operation === operation_id) {
+        return;
+      }
+    }
+    halted_on_verify = null;
+    void requestDrain();
+  }
+
+  /**
    * Run requested passes serially. Each pass re-reads the durable head; a kick
    * arriving during an await sets the latch and is consumed only after the
    * current pass exits its halt condition.
@@ -2422,6 +2457,7 @@ export function createMergeQueue(deps) {
         halted_on_head = null;
         halted_on_completion = null;
         halted_on_snapshot = null;
+        halted_on_verify = null;
         // A queue resumed after a restart can hold EXTERNAL rows, and those
         // exist only in the in-memory registry the ws overlay reads — empty
         // until something scans bd. Without this, a restored external head
@@ -2483,6 +2519,9 @@ export function createMergeQueue(deps) {
             return;
           }
           wake();
+          if (!self_notifying) {
+            resumeVerified();
+          }
           // The PR poller emits this on every observation pass, so it is also
           // the arrival signal for the head SHA a halt was waiting on. An event
           // that changes nothing must not re-enter `merge()` on the same
@@ -2561,6 +2600,7 @@ export function createMergeQueue(deps) {
       drain_requested = false;
       halted_on_snapshot = null;
       halted_on_conflict = null;
+      halted_on_verify = null;
       if (unsubscribe) {
         try {
           unsubscribe();

@@ -64,6 +64,7 @@ import {
 } from './foreign-blocker-status.js';
 import { readPushLog } from './guard-hook.js';
 import { observedHeadSha } from './merge-candidates.js';
+import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
@@ -87,7 +88,8 @@ import { createRepoOperationCoordinator } from './repo-operation-coordinator.js'
 import { createRepoOperationMigration } from './repo-operation-migration.js';
 import {
   effectiveVerifyPolicy,
-  repoOpsDisplayFor
+  repoOpsDisplayFor,
+  repoOpsVerifyReceiptState
 } from './repo-ops-display.js';
 import { createRevertBuilder } from './revert-builder.js';
 import {
@@ -1531,6 +1533,35 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // read only — `observePr` returns `{state, error}` and cannot serve it.
       headSha: (/** @type {string} */ bead_id) =>
         observedHeadSha(keyFor(workspace_root), bead_id),
+      verifiedOperation: (/** @type {string} */ bead_id) => {
+        const workspace = keyFor(workspace_root);
+        const entry = runtime.prObservations.get(workspace, bead_id);
+        const receipt = entry?.verify;
+        if (
+          !receipt ||
+          receipt.state !== 'succeeded' ||
+          !receipt.operation_id
+        ) {
+          return null;
+        }
+        const policy = effectiveVerifyPolicy(
+          repoOpsDisplayFor(workspace),
+          runtime.queueStore.snapshot(workspace)
+        );
+        if (
+          policy.declaration_state !== 'present' ||
+          entry.pr?.state !== 'OPEN'
+        ) {
+          return null;
+        }
+        const gate = evaluateMergeGate(entry, {
+          review_receipt_state: observedReviewReceiptState(entry),
+          verify_receipt_state: repoOpsVerifyReceiptState(policy, receipt),
+          receipt_state: { state: 'undecidable', codes: [] }
+        });
+        // Advisory wake only: the existing merge path rechecks all authority.
+        return gate.enabled ? receipt.operation_id : null;
+      },
       // Whether the PR poller still OBSERVES this bead (UI-wwby §3). The driver
       // has no other route to the registry, and without it a halt on a head the
       // poller never looks at can never end.

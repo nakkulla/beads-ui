@@ -251,6 +251,48 @@ function verifyCandidate(overrides = {}) {
   };
 }
 
+describe('verify candidate pinned commits', () => {
+  test.each([
+    { present: true, fetched: true, expected: true },
+    { present: false, fetched: true, expected: true },
+    { present: false, fetched: false, expected: false }
+  ])(
+    'checks the pinned head with commit availability $present/$fetched',
+    async ({ present, fetched, expected }) => {
+      const policyGit = gitForVerify({ verify: true });
+      let head_present = present;
+      const gitRun = vi.fn(async (args) => {
+        if (args[0] === 'fetch') {
+          head_present = fetched;
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'cat-file' && args.at(-1) === `${HEAD}^{commit}`) {
+          return { code: head_present ? 0 : 1, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'rev-parse') {
+          // A concurrent base fetch overwrote FETCH_HEAD without changing the PR.
+          return { code: 0, stdout: BASE, stderr: '' };
+        }
+        if (args[0] === 'write-tree') {
+          return { code: 0, stdout: TREE, stderr: '' };
+        }
+        return policyGit(args);
+      });
+      const { coordinator } = coordinatorFor({ gitRun });
+
+      const result = await coordinator.ensureVerify(verifyCandidate());
+
+      expect(result.ok).toBe(expected);
+      expect(
+        gitRun.mock.calls.filter(([args]) => args[0] === 'fetch')
+      ).toHaveLength(present ? 0 : 1);
+      expect(
+        gitRun.mock.calls.some(([args]) => args.includes('FETCH_HEAD^{commit}'))
+      ).toBe(false);
+    }
+  );
+});
+
 /**
  * @param {object} request
  */
