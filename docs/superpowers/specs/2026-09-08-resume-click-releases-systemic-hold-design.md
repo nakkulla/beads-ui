@@ -2,8 +2,9 @@
 scope:
   - server/worker/scheduler.js
   - server/worker/scheduler.test.js
-  - server/worker/queue-hold.js
   - app/views/worker/index.js
+  - app/main.bundle.js
+  - app/main.bundle.js.map
 ---
 
 # ↻ 이어하기가 체계적 정지(systemic hold)의 재개를 포함한다
@@ -17,9 +18,10 @@ scope:
 
 큐를 세운 실패 attempt를 사람이 ↻ 이어하기로 다시 띄우면, 그 클릭이 상단
 "체계적 정지" 배너의 `재개`까지 포함한다. 같은 실패를 두고 같은 결정("봤다,
-계속해라")을 두 번 클릭하지 않는다. 배너와 `재개` 버튼은 없애지 않는다 — 큐를
-세운 attempt를 아무도 건드리지 않았거나 벽이 여러 bead에 걸린 경우(base 이동·gh
-미인증)의 유일한 큐 정지 표시이자 출구다.
+계속해라")을 두 번 클릭하지 않는다. 배너와 `재개` 버튼은 없애지 않는다 — §3.1의
+해제 조건이 충족되지 않는 동안(큐를 세운 attempt를 아무도 이어하지 않았거나, base
+이동·gh 미인증처럼 이어할 attempt가 원인이 아닌 정지)의 유일한 큐 정지 표시이자
+출구다.
 
 2026-09-08 대화에서 사용자가 결정한 것:
 
@@ -114,7 +116,8 @@ Worker 큐 hold를 다루지 않으므로 무관하다.
 ### 3.4 표면
 
 - 서버 스냅샷: `hold=null`이 되면 배너가 사라진다(`holdBannerTemplate`). 새 필드·
-  메시지·프로토콜 어휘는 없다.
+  메시지·프로토콜 어휘는 없다. `queue-hold.js` reducer는 읽기 참고 대상이고 바꾸지
+  않는다.
 - `app/views/worker/index.js` `holdBannerTemplate` JSDoc의 "체계적 정지는 자동
   출구가 없어 사람의 `재개`만이 유일한 길"을 "사람의 승인 한 번 — `재개` 또는 큐를
   세운 attempt(자손 포함)의 ↻"으로 고친다. 번들 재빌드가 따른다.
@@ -126,8 +129,9 @@ Worker 큐 hold를 다루지 않으므로 무관하다.
 - `holdStateOf` 읽기 실패: `resume()`은 자식 spawn 결과를 그대로 반환하고 hold는
   건드리지 않으며 로그 한 줄만 남긴다. 세션은 이미 떠 있으므로 실패를 세션 실패로
   바꾸지 않는다.
-- `applyQueueHold`가 no-op(hold가 그 사이 사라짐): effect가 비어 있으면 dismiss도
-  tick도 하지 않는다. 기존 `resumeQueueHold` 동작과 같다.
+- `applyQueueHold`가 no-op(hold가 그 사이 사라짐): `redispatch` 대상이 없으므로
+  dismiss할 attempt가 없고, 통지와 tick은 기존 `resumeQueueHold`와 같이 그대로
+  호출한다. 효과 유무로 호출 순서를 바꾸지 않는다.
 
 ## 4. 검토한 대안
 
