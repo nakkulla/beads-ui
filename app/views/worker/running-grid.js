@@ -499,14 +499,16 @@ function failurePopoverTemplate(failure, now) {
   // §5.3: 이 자식은 기록된 세션만 잇겠다는 선택으로 시작했으므로, 재개 실패에
   // '새 세션으로 대체'라는 기존 문장이 붙으면 안 된다 — 실제로 대체하지 않았다.
   // 사전 문구는 그 경우가 실제로 일어나는 기존 경로에 그대로 남는다.
-  const cause_text =
+  const kept_session_failure =
     failure.continuation_choice === 'prior_attempt' &&
     typeof failure.cause === 'string' &&
-    failure.cause.startsWith('resume_failed')
-      ? failure.cause === 'resume_failed:transcript_missing'
-        ? '이어갈 세션 기록이 없습니다. 새 세션을 자동으로 시작하지 않았습니다.'
-        : `${base_cause_text} 새 세션을 자동으로 시작하지 않았습니다.`
-      : base_cause_text;
+    (failure.cause.startsWith('resume_failed') ||
+      failure.cause.startsWith('session_failed'));
+  const cause_text = kept_session_failure
+    ? failure.cause === 'resume_failed:transcript_missing'
+      ? '이어갈 세션 기록이 없습니다. 새 세션을 자동으로 시작하지 않았습니다.'
+      : `${base_cause_text} 새 세션을 자동으로 시작하지 않았습니다.`
+    : base_cause_text;
   // 이 실패가 처음이 아니었다는 사실 (UI-5ym8 §8). 재시도 lineage는 같은 원인을
   // 몇 번 다시 시도했는지만 말한다 — 다른 원인이었다면 그 attempt는 이 lineage에
   // 속하지 않았을 것이므로, 문장은 "같은 오류"로 고정이다.

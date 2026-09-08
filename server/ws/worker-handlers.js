@@ -2810,6 +2810,12 @@ function attemptsWithInstructionsRestart(projected, raw_attempts) {
       continue;
     }
     const verdict = instructionsRestartEligibility(record);
+    if (verdict.code === 'not_implementation') {
+      // 스펙 §2: 리뷰·해소·처분·정리 행에는 버튼 자체를 두지 않는다. 이유를
+      // 붙이면 화면이 비활성 버튼을 그리므로 필드를 아예 싣지 않는다.
+      out[attempt_id] = attempt;
+      continue;
+    }
     out[attempt_id] = {
       ...attempt,
       instructions_restart: {

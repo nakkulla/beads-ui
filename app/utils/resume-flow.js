@@ -93,9 +93,13 @@ export async function runRestartWithInstructionsFlow(options) {
       (/** @type {any} */ a) => a && a.resumed_from === attempt_id
     );
 
+  // §3.2: 한 번 확인된 중단은 다시 보내지 않는다. 재개가 거부돼 사용자가 문장을
+  // 고쳐 다시 제출해도 두 번째 시그널을 보낼 이유가 없다.
+  let pause_confirmed = false;
+
   return requestResumeInstructions(context, document, {
     onSubmit: async (instructions) => {
-      if (context?.kind === 'restart') {
+      if (context?.kind === 'restart' && !pause_confirmed) {
         /** @type {any} */
         let paused;
         try {
@@ -103,18 +107,28 @@ export async function runRestartWithInstructionsFlow(options) {
         } catch {
           paused = null;
         }
-        if (!paused) {
-          const attempt = attemptOf(snapshot());
-          if (!attempt || attempt.status === 'running') {
-            return {
-              ok: false,
-              message: '중단 응답을 받지 못했습니다. 최신 상태를 확인하세요.'
-            };
-          }
-        } else if (paused.paused === false) {
+        if (paused && paused.paused === true) {
+          pause_confirmed = true;
+        } else if (paused && paused.paused === false) {
           return {
             ok: false,
             message: `재시작 거부: ${paused.reason || 'unknown'}`
+          };
+        } else {
+          // 유실된 응답 (§6). 전송 계층은 연결 오류를 `[]`로도 돌려주므로
+          // `paused === true`가 아닌 모든 값은 답이 아니다 — 재전송하지 않고
+          // 최신 스냅샷으로 실제 상태를 읽는다.
+          const attempt = attemptOf(snapshot());
+          if (attempt && attempt.status === 'paused') {
+            return {
+              ok: false,
+              message:
+                '중단은 완료됐지만 응답을 받지 못했습니다. paused 행의 [지시와 함께 이어하기]로 재개하세요.'
+            };
+          }
+          return {
+            ok: false,
+            message: '중단 응답을 받지 못했습니다. 최신 상태를 확인하세요.'
           };
         }
       }
@@ -124,26 +138,27 @@ export async function runRestartWithInstructionsFlow(options) {
       let res;
       try {
         res = await resume({ ...payload });
-        if (res && res.conflict) {
+        if (res && res.conflict === true) {
           res = await resume({ ...payload });
         }
       } catch {
         res = null;
       }
-      if (!res) {
-        if (childExists(snapshot())) {
-          showToast('이미 재개됨', 'info', 2400);
-          return { ok: true };
-        }
-        return { ok: false, message: '재개 응답을 받지 못했습니다.' };
+      if (res && res.resumed === true) {
+        return { ok: true };
       }
-      if (res.resumed === false) {
+      if (res && res.resumed === false) {
         return {
           ok: false,
           message: `이어하기 거부: ${res.reason || 'unknown'}`
         };
       }
-      return { ok: true };
+      // 유실된 재개 응답: 자식이 이미 있으면 두 번째를 만들지 않는다 (§6).
+      if (childExists(snapshot())) {
+        showToast('이미 재개됨', 'info', 2400);
+        return { ok: true };
+      }
+      return { ok: false, message: '재개 응답을 받지 못했습니다.' };
     }
   });
 }

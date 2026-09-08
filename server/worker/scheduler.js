@@ -93,7 +93,7 @@ import {
   activeAccountOf,
   instructionsRestartEligibility,
   processIdentityOf,
-  restartRecordEligibility
+  recordedExecutionEligibility
 } from './instructions-restart.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import {
@@ -8564,6 +8564,9 @@ export function createScheduler(deps) {
         await reportCompletionSettlement(workspace, attempt_id, verdict);
       } catch (err) {
         log('session settlement failed for %s: %o', attempt_id, err);
+        // 체인이 던지면 pause 대기자는 아무 표시 없이 성공을 읽는다 (UI-qce9 F4).
+        // 실패를 control에 남겨 `pauseWithSettlement`·재개 자격이 그것을 읽게 한다.
+        markSettlementFailed(workspace, attempt_id);
       }
       return verdict;
     });
@@ -8578,6 +8581,38 @@ export function createScheduler(deps) {
     startDelegationPolling(workspace, attempt_id);
     notifyChanged(workspace);
     return { ok: true };
+  }
+
+  /**
+   * Record a thrown settlement chain on the attempt's pause control (UI-qce9
+   * F4). `advanceAttemptControl` cannot be used: `done` has no outgoing
+   * transition, and the failure must be recorded whatever phase the record is
+   * in.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   */
+  function markSettlementFailed(workspace, attempt_id) {
+    try {
+      const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+      const control = attempt?.control;
+      if (!control || control.kind !== 'pause' || control.phase === 'failed') {
+        return;
+      }
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          control: {
+            ...control,
+            phase: 'failed',
+            last_error: 'settlement_failed'
+          }
+        }
+      });
+      notifyChanged(workspace);
+    } catch (err) {
+      log('settlement failure record failed for %s: %o', attempt_id, err);
+    }
   }
 
   /**
@@ -8704,11 +8739,18 @@ export function createScheduler(deps) {
     const prior = q.attempts ? q.attempts[attempt_id] : null;
 
     // not_failed: no such attempt, or not in a resumable state.
+    // `retry_wait`은 환경 사다리가 새 attempt를 기다리는 rung이라 일반 재개
+    // 대상이 아니다. 기록된 세션 승계를 선택한 계보의 자동 환경 재시도만이 그
+    // rung을 resume로 소비한다 (UI-qce9 F1).
+    const ladder_prior_attempt =
+      continuation.continuation === 'prior_attempt' &&
+      continuation.provider_auto_resume === true;
     if (
       !prior ||
       (prior.status !== 'failed' &&
         prior.status !== 'orphaned' &&
-        prior.status !== 'paused')
+        prior.status !== 'paused' &&
+        !(ladder_prior_attempt && prior.status === 'retry_wait'))
     ) {
       return { ok: false, reason: 'not_failed' };
     }
@@ -9716,7 +9758,7 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'bad_request' };
     }
     if (prior_attempt_choice) {
-      const record = restartRecordEligibility(prior);
+      const record = recordedExecutionEligibility(prior);
       const pause_settled =
         prior.status === 'paused' &&
         prior.control?.kind === 'pause' &&
@@ -11359,18 +11401,41 @@ export function createScheduler(deps) {
       // ready, bd snapshot failure, worktree residue, lane refusal), and
       // marking the lineage dispatched before that would burn the retry with
       // nothing to show for it — the ladder would silently stop climbing.
-      const before_attempt_id =
-        latestImplementationAttempt(q, bead_id)?.attempt_id ?? null;
+      const latest_attempt = latestImplementationAttempt(q, bead_id);
+      const before_attempt_id = latest_attempt?.attempt_id ?? null;
+      // 기록된 세션을 잇겠다는 사용자 선택은 환경 재시도 사다리에서도 유지된다
+      // (스펙 §5.3): 이 계보는 `dispatch`의 현재 설정 새 attempt가 아니라 기록된
+      // tuple을 승계하는 resume로만 다시 시작한다. resume가 거부하면 아래 "아무것도
+      // 띄우지 않음" 분기가 `retry_deferred`로 남기고, fresh로 흘러가지 않는다.
+      const keep_prior_attempt =
+        latest_attempt?.continuation_choice === 'prior_attempt' &&
+        before_attempt_id !== null;
       claimed.add(bead_id);
       try {
-        await dispatch(workspace, bead_id, null, {
-          retry: {
-            cause: lineage.cause,
-            attempts: lineage.attempts,
-            max: RETRY_MAX,
-            origin_attempt_id: lineage.origin_attempt_id
+        if (keep_prior_attempt) {
+          const resumed = await resume(workspace, before_attempt_id, {
+            continuation: 'prior_attempt',
+            provider_auto_resume: true,
+            preclaimed: true
+          });
+          if (!resumed.ok) {
+            claimed.delete(bead_id);
+            log(
+              'prior_attempt retry refused for %s: %s',
+              bead_id,
+              resumed.reason || 'unknown'
+            );
           }
-        });
+        } else {
+          await dispatch(workspace, bead_id, null, {
+            retry: {
+              cause: lineage.cause,
+              attempts: lineage.attempts,
+              max: RETRY_MAX,
+              origin_attempt_id: lineage.origin_attempt_id
+            }
+          });
+        }
       } catch (err) {
         claimed.delete(bead_id);
         log('retry dispatch failed for %s: %o', bead_id, err);
@@ -12134,6 +12199,15 @@ export function createScheduler(deps) {
         // the controller signals so onSessionDone cannot classify that
         // expected exit as a session failure while termination is in flight.
         stopped.add(attempt_id);
+        // 같은 이유로 체인 참조도 시그널 전에 잡는다 (UI-qce9 F5): `onSessionDone`이
+        // 먼저 끝나 `running` 항목이 사라지면 아래 등록 지점은 체인을 놓치고,
+        // 재개 진입이 아직 정산 중인 부모를 paused로 오인한다.
+        if (!paused_done.has(attempt_id)) {
+          const early_done = live_entry.settled;
+          paused_done.set(attempt_id, early_done);
+          const forgetEarlyDone = () => paused_done.delete(attempt_id);
+          early_done.then(forgetEarlyDone, forgetEarlyDone);
+        }
       }
       let terminated;
       try {
@@ -12196,10 +12270,12 @@ export function createScheduler(deps) {
     const entry = running.get(attempt_id);
     if (entry) {
       stopped.add(attempt_id);
-      const done = entry.settled;
-      paused_done.set(attempt_id, done);
-      const forgetDone = () => paused_done.delete(attempt_id);
-      done.then(forgetDone, forgetDone);
+      if (!paused_done.has(attempt_id)) {
+        const done = entry.settled;
+        paused_done.set(attempt_id, done);
+        const forgetDone = () => paused_done.delete(attempt_id);
+        done.then(forgetDone, forgetDone);
+      }
       running.delete(attempt_id);
       claimed.delete(entry.bead_id);
     }
@@ -12212,12 +12288,18 @@ export function createScheduler(deps) {
     if (!completed.ok) {
       return { ok: false, reason: 'control_persist_failed' };
     }
+    // 정산 체인이 이미 실패로 확정한 레코드는 `completeAttemptControl`이 보존한다
+    // (UI-qce9 F3). 그 결과를 다시 읽어 pause 성공으로 보고하지 않는다.
+    const latest = deps.store.snapshot(workspace).attempts?.[attempt_id];
     await revertStamps(workspace, attempt_id, {
       bead_id: attempt.bead_id,
       prior: attempt.workflow_mode_prior ?? null
     });
     notifyChanged(workspace);
     await tick(workspace);
+    if (latest?.status !== 'paused') {
+      return { ok: false, reason: latest?.cause || 'pause_not_confirmed' };
+    }
     return { ok: true };
   }
 

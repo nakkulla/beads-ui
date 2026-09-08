@@ -3,6 +3,7 @@ import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import {
   RESTART_INELIGIBLE_REASONS,
   instructionsRestartEligibility,
+  recordedExecutionEligibility,
   restartRecordEligibility
 } from './instructions-restart.js';
 
@@ -121,6 +122,14 @@ describe('instructions restart eligibility (UI-qce9 §2)', () => {
       code: 'no_process_identity',
       reason: '프로세스 신원이 기록되지 않아 재시작할 수 없습니다.'
     });
+  });
+
+  test('accepts a resume record without a process identity', () => {
+    const verdict = recordedExecutionEligibility(
+      runningAttempt({ process_identity: null, pid: null })
+    );
+
+    expect(verdict).toEqual({ eligible: true, code: null, reason: null });
   });
 
   test('refuses an incomplete execution record', () => {

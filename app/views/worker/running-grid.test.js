@@ -3098,6 +3098,36 @@ describe('지시 재시작 조작 (UI-qce9 §3.1)', () => {
       '이어갈 세션 기록이 없습니다. 새 세션을 자동으로 시작하지 않았습니다.'
     );
   });
+
+  test('says no fresh session was started for a prior_attempt session failure', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(
+        /** @type {any} */ (
+          tileInput({
+            failed: true,
+            failure: failureInput({
+              cause: 'session_failed:turn_failed',
+              continuation_choice: 'prior_attempt',
+              open: true
+            })
+          })
+        ),
+        5000,
+        null
+      ),
+      mount
+    );
+
+    const popover = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__failure-pop')
+    );
+
+    expect(popover.textContent).toContain(
+      '새 세션을 자동으로 시작하지 않았습니다.'
+    );
+    expect(popover.textContent).not.toContain('이어갈 세션 기록이 없습니다.');
+  });
 });
 
 // discard-abandon §3.1: 폐기 실패는 실행 중·실패·파킹 타일 어디서나 나므로,

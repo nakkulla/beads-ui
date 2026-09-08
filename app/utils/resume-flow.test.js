@@ -387,6 +387,68 @@ describe('runRestartWithInstructionsFlow (UI-qce9 §3.2)', () => {
     ).toBe('이어하기 거부: prior_session_unavailable');
   });
 
+  test('treats an empty-array pause reply on a paused attempt as a lost reply', async () => {
+    const pause = vi.fn(async () => []);
+    const resume = vi.fn();
+
+    runRestartWithInstructionsFlow({
+      context: { kind: 'restart', attempt_id: 'att-1' },
+      pause,
+      resume,
+      snapshot: () => ({ attempts: { 'att-1': { status: 'paused' } } })
+    });
+    submitRequiredInstructions('고쳐라');
+    await flush();
+
+    expect(pause).toHaveBeenCalledTimes(1);
+    expect(resume).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('.resume-instructions-dialog__error')?.textContent
+    ).toBe(
+      '중단은 완료됐지만 응답을 받지 못했습니다. paused 행의 [지시와 함께 이어하기]로 재개하세요.'
+    );
+  });
+
+  test('keeps the dialog open on an empty-array resume reply with no child', async () => {
+    const resume = vi.fn(async () => []);
+
+    runRestartWithInstructionsFlow({
+      context: { kind: 'resume_recorded', attempt_id: 'att-1' },
+      pause: vi.fn(),
+      resume,
+      snapshot: () => ({ attempts: {} })
+    });
+    submitRequiredInstructions('이어서');
+    await flush();
+
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(
+      document.querySelector('.resume-instructions-dialog__error')?.textContent
+    ).toBe('재개 응답을 받지 못했습니다.');
+  });
+
+  test('skips the pause on a resubmit after a confirmed pause', async () => {
+    const pause = vi.fn(async () => ({ paused: true, phase: 'done' }));
+    const resume = vi
+      .fn()
+      .mockResolvedValueOnce({ resumed: false, reason: 'worktree_missing' })
+      .mockResolvedValueOnce({ resumed: true });
+
+    const flow = runRestartWithInstructionsFlow({
+      context: { kind: 'restart', attempt_id: 'att-1' },
+      pause,
+      resume,
+      snapshot: () => ({ attempts: {} })
+    });
+    submitRequiredInstructions('고쳐라');
+    await flush();
+    submitRequiredInstructions('다시 고쳐라');
+    await flow;
+
+    expect(pause).toHaveBeenCalledTimes(1);
+    expect(resume).toHaveBeenCalledTimes(2);
+  });
+
   test('retries a revision conflict once', async () => {
     const resume = vi
       .fn()

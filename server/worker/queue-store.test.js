@@ -2219,6 +2219,42 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
     );
   });
 
+  test('keeps a settled failure when the pause completes (UI-qce9 §4)', () => {
+    const store = createQueueStore({ now: () => 100 });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1', status: 'running' }
+    });
+    store.requestAttemptControl(WS, { attempt_id: 'att-1', kind: 'pause' });
+    store.advanceAttemptControl(WS, {
+      attempt_id: 'att-1',
+      expected_phase: 'requested',
+      next_phase: 'signaled'
+    });
+    store.advanceAttemptControl(WS, {
+      attempt_id: 'att-1',
+      expected_phase: 'signaled',
+      next_phase: 'terminated'
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { status: 'failed', cause: 'base_landing_detected' }
+    });
+
+    const completed = store.completeAttemptControl(WS, {
+      attempt_id: 'att-1',
+      finished_at: 200,
+      patch: {}
+    });
+
+    expect(completed.ok).toBe(true);
+    expect(completed.queue.attempts['att-1']).toMatchObject({
+      status: 'failed',
+      cause: 'base_landing_detected',
+      control: { phase: 'done' }
+    });
+  });
+
   test('records a terminal control failure without changing attempt status', () => {
     const store = createQueueStore({ now: () => 100 });
     store.appendAttempt(WS, {

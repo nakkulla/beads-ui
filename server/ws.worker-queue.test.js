@@ -608,7 +608,12 @@ describe('ws worker-queue channel', () => {
             status: 'paused',
             control: { kind: 'pause', phase: 'done', requested_at: 1 }
           }),
-          gone: attempt({ attempt_id: 'gone', status: 'failed' })
+          gone: attempt({ attempt_id: 'gone', status: 'failed' }),
+          review: attempt({
+            attempt_id: 'review',
+            status: 'running',
+            kind: 'review'
+          })
         }
       })
     );
@@ -626,6 +631,8 @@ describe('ws worker-queue channel', () => {
       reason: null
     });
     expect(snapshot.attempts.gone).not.toHaveProperty('instructions_restart');
+    // 스펙 §2: 리뷰·해소·처분·정리 행에는 버튼 자리 자체가 없다.
+    expect(snapshot.attempts.review).not.toHaveProperty('instructions_restart');
   });
 
   test('worker-attempt-pause forwards require_durable and rejects a non-boolean', async () => {

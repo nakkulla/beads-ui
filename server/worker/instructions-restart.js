@@ -159,6 +159,26 @@ function refuse(code) {
  * @returns {RestartEligibility}
  */
 export function restartRecordEligibility(attempt) {
+  const recorded = recordedExecutionEligibility(attempt);
+  if (!recorded.eligible) {
+    return recorded;
+  }
+  if (processIdentityOf(attempt) === null) {
+    return refuse('no_process_identity');
+  }
+  return recorded;
+}
+
+/**
+ * The RESUME half of the record judgment (§5.2): what the recorded attempt
+ * must carry for its session and execution tuple to be reused verbatim. A
+ * process identity is not part of it — that is what a SIGNAL needs, and a
+ * resume targets a record whose process is already gone.
+ *
+ * @param {any} attempt
+ * @returns {RestartEligibility}
+ */
+export function recordedExecutionEligibility(attempt) {
   if (!isOrdinaryImplementationAttempt(attempt)) {
     return refuse('not_implementation');
   }
@@ -167,9 +187,6 @@ export function restartRecordEligibility(attempt) {
     attempt.session_id.length === 0
   ) {
     return refuse('no_session_id');
-  }
-  if (processIdentityOf(attempt) === null) {
-    return refuse('no_process_identity');
   }
   if (
     typeof attempt.runner !== 'string' ||

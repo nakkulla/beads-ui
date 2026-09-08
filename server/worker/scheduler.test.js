@@ -2234,6 +2234,160 @@ describe('instructions restart pause (UI-qce9 §4)', () => {
       control: { kind: 'pause', phase: 'done' }
     });
   });
+  test('refuses the pause when the settlement chain throws (UI-qce9 F4)', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () => resolve(undefined);
+    });
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    let armed = false;
+    const real_store = makeQueueStore();
+    // The chain's own write is the throw seam: `settleBaseDrift` swallows
+    // observation errors, so the defect has to be a store write inside the
+    // chain — which is what a real settlement failure looks like.
+    const store = /** @type {any} */ (
+      new Proxy(real_store, {
+        get(target, key) {
+          if (key === 'updateAttempt') {
+            return (/** @type {any} */ ws, /** @type {any} */ input) => {
+              if (armed && input?.patch && 'base_drift' in input.patch) {
+                throw new Error('store write failed');
+              }
+              return /** @type {any} */ (target).updateAttempt(ws, input);
+            };
+          }
+          return Reflect.get(target, key);
+        }
+      })
+    );
+    const processController = {
+      terminate: vi.fn(async () => {
+        env.runner.finish('S1', { success: false, reason: 'killed' });
+        await flush();
+        return { ok: true, state: /** @type {const} */ ('gone') };
+      }),
+      probe: vi.fn(() => ({ state: /** @type {const} */ ('gone') }))
+    };
+    env = setup({
+      config: { S1: {} },
+      slots: 1,
+      store,
+      processController,
+      resolveBase: vi.fn(async () => {
+        if (armed) {
+          await gate;
+        }
+        return {
+          ok: true,
+          base: 'main',
+          declared: false,
+          remote: 'origin',
+          remote_ref: 'refs/remotes/origin/main',
+          base_oid: 'b'.repeat(40),
+          local_only: false
+        };
+      })
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    makeRestartable(env.store, attempt_id);
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { repo: '/repo', base_oid: 'a'.repeat(40) }
+    });
+    armed = true;
+
+    const pending = env.scheduler.pause(WS, attempt_id, {
+      require_durable: true
+    });
+    await flush();
+    release();
+    const result = await pending;
+    await flush();
+
+    expect(result).toEqual({ ok: false, reason: 'settlement_failed' });
+    expect(env.store.snapshot(WS).attempts[attempt_id].control).toMatchObject({
+      kind: 'pause',
+      phase: 'failed'
+    });
+
+    const refused = await env.scheduler.resume(WS, attempt_id, {
+      continuation: 'prior_attempt'
+    });
+
+    expect(refused).toMatchObject({
+      ok: false,
+      reason: 'prior_session_unavailable'
+    });
+  });
+
+  test('holds the recorded resume while the completion settlement is still running', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () => resolve(undefined);
+    });
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    let armed = false;
+    const processController = {
+      terminate: vi.fn(async () => {
+        env.runner.finish('S1', { success: false, reason: 'killed' });
+        await flush();
+        return { ok: true, state: /** @type {const} */ ('gone') };
+      }),
+      probe: vi.fn(() => ({ state: /** @type {const} */ ('gone') }))
+    };
+    env = setup({
+      config: { S1: {} },
+      slots: 1,
+      processController,
+      // The LAST link of the chain, after `onSessionDone` already released the
+      // running entry: the pause must still have captured this promise.
+      onCompletionAttemptSettled: vi.fn(async () => {
+        if (armed) {
+          await gate;
+        }
+      })
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    makeRestartable(env.store, attempt_id);
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: {
+        completion_root_id: 'S1',
+        completion_op_id: 'op-1',
+        completion_failure_key: COMPLETION_FAILURE
+      }
+    });
+    armed = true;
+
+    const paused = await env.scheduler.pause(WS, attempt_id);
+    await flush();
+
+    const refused = await env.scheduler.resume(WS, attempt_id, {
+      continuation: 'prior_attempt'
+    });
+
+    expect(paused).toEqual({ ok: true });
+    expect(refused).toEqual({ ok: false, reason: 'bead_running' });
+
+    release();
+    await flush();
+    const after = await env.scheduler.resume(WS, attempt_id, {
+      continuation: 'prior_attempt'
+    });
+
+    expect(after.reason).not.toBe('bead_running');
+  });
+
   test('refuses the paused-row prior_attempt resume while the parent chain is still settling', async () => {
     /** @type {() => void} */
     let release = () => {};
@@ -13368,6 +13522,63 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     };
   }
 
+  test('does not let the pause overwrite a settled base landing (UI-qce9 F3)', async () => {
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    const processController = {
+      terminate: vi.fn(async () => {
+        env.runner.finish('S1', { success: false, reason: 'killed' });
+        await flush();
+        await flush();
+        return { ok: true, state: /** @type {const} */ ('gone') };
+      }),
+      probe: vi.fn(() => ({ state: /** @type {const} */ ('gone') }))
+    };
+    env = setup({
+      config: { S1: {} },
+      slots: 1,
+      processController,
+      resolveBase: movedBase(),
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook: guardHookWith({ 'S1-1000-1': [pushedToBase(LANDED)] })
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = 'S1-1000-1';
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: {
+        session_id: 'sid-1',
+        claude_account: 'recorded@example.com',
+        exec_values: Object.fromEntries(
+          EXEC_SETTING_KEYS.map((key) => [key, null])
+        ),
+        model: 'opus',
+        effort: 'high',
+        speed: 'default'
+      }
+    });
+
+    const result = await env.scheduler.pause(WS, attempt_id, {
+      require_durable: true
+    });
+    await flush();
+
+    const snap = env.store.snapshot(WS);
+    expect(result).toEqual({ ok: false, reason: 'base_landing_detected' });
+    expect(snap.attempts[attempt_id]).toMatchObject({
+      status: 'failed',
+      cause: 'base_landing_detected',
+      control: { kind: 'pause', phase: 'done' }
+    });
+    expect(
+      Object.values(snap.attempts).filter(
+        (/** @type {any} */ a) => a.resumed_from === attempt_id
+      )
+    ).toEqual([]);
+  });
+
   test('fails the attempt when its recorded base push is on the moved base', async () => {
     const env = setup({
       config: { S1: {} },
@@ -16593,6 +16804,142 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
       // The rung that opened the ladder is closed out, not left waiting.
       expect(snap.attempts[first].status).toBe('superseded');
       expect(snap.lineages[0].next_at).toBe(null);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * A git fake that answers the resume-side worktree-ownership probe for S1.
+   *
+   * @returns {any}
+   */
+  function ownedS1Git() {
+    return vi.fn(async (/** @type {string[]} */ args) => {
+      if (args.includes('--abbrev-ref')) {
+        return { code: 0, stdout: 'S1\n', stderr: '' };
+      }
+      if (String(args.at(-1)).includes('refs/heads/S1')) {
+        return { code: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: '' };
+    });
+  }
+
+  /**
+   * Everything §5.2 makes a `prior_attempt` child inherit, written onto the
+   * ladder's env-failed record.
+   *
+   * @param {any} store
+   * @param {string} attempt_id
+   */
+  function markPriorAttemptChild(store, attempt_id) {
+    store.updateAttempt(WS, {
+      attempt_id,
+      patch: {
+        continuation_choice: 'prior_attempt',
+        session_id: 'sid-abc',
+        process_identity: { pid: 4242, pgid: 4242, started_at: 1_000 },
+        claude_account: 'recorded@example.com',
+        runner: 'claude',
+        model: 'sonnet',
+        effort: 'low',
+        speed: 'default',
+        exec_values: Object.fromEntries(
+          EXEC_SETTING_KEYS.map((key) => [key, null])
+        )
+      }
+    });
+  }
+
+  test('relaunches a prior_attempt lineage through resume, not a fresh dispatch', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      let clock = 1000;
+      const env = setup({
+        config: { S1: { status: 'open' } },
+        slots: 1,
+        verify: ghDownVerifier(),
+        gitRun: ownedS1Git(),
+        now: () => clock,
+        ...accountDeps()
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const first = Object.keys(env.store.snapshot(WS).attempts)[0];
+      env.runner.finish('S1', { success: true });
+      await flush();
+      await flush();
+      markPriorAttemptChild(env.store, first);
+
+      clock = 1000 + RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
+
+      const snap = env.store.snapshot(WS);
+      const child = Object.values(snap.attempts).find(
+        (/** @type {any} */ a) => a.resumed_from === first
+      );
+      expect(/** @type {any} */ (child)).toMatchObject({
+        bead_id: 'S1',
+        status: 'running',
+        continuation_choice: 'prior_attempt',
+        continuation_mode: 'session',
+        model: 'sonnet',
+        effort: 'low',
+        claude_account: 'recorded@example.com'
+      });
+      expect(env.runner.settingsFor('S1')).toMatchObject({
+        resume_session_id: 'sid-abc',
+        claude_account: 'recorded@example.com'
+      });
+      expect(snap.lineages[0].next_at).toBe(null);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('defers a prior_attempt lineage when the resume is refused', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      let clock = 1000;
+      const env = setup({
+        config: { S1: { status: 'open' } },
+        slots: 1,
+        verify: ghDownVerifier(),
+        gitRun: ownedS1Git(),
+        now: () => clock,
+        resolveSessionFile: () => ({
+          locality: 'missing',
+          file: null,
+          last_event_at: null
+        }),
+        ...accountDeps()
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const first = Object.keys(env.store.snapshot(WS).attempts)[0];
+      env.runner.finish('S1', { success: true });
+      await flush();
+      await flush();
+      markPriorAttemptChild(env.store, first);
+
+      clock = 1000 + RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
+
+      const snap = env.store.snapshot(WS);
+      expect(env.runner.spawnOrder).toEqual(['S1']);
+      expect(
+        Object.values(snap.attempts).filter(
+          (/** @type {any} */ a) => a.resumed_from === first
+        )
+      ).toEqual([]);
+      expect(snap.lineages[0]).toMatchObject({
+        bead_id: 'S1',
+        attempts: 1,
+        next_at: clock + RETRY_DELAYS_MS[0]
+      });
     } finally {
       vi.useRealTimers();
     }

@@ -2162,14 +2162,19 @@ export function createWorkerView(mount_element, options = {}) {
         /** @type {any} */ (
           send('worker-attempt-pause', { attempt_id, require_durable: true })
         ),
-      resume: (payload) =>
-        /** @type {any} */ (
-          send('worker-attempt-resume', {
+      resume: async (payload) => {
+        // 충돌 응답이 싣고 온 최신 queue를 채택해야 재시도의
+        // `currentRevision()`이 신선하다 — 일반 이어하기의 `adopt`와 같은 규칙.
+        const res = /** @type {any} */ (
+          await send('worker-attempt-resume', {
             attempt_id,
             expected_revision: currentRevision(),
             ...payload
           })
-        ),
+        );
+        adopt(res);
+        return res;
+      },
       snapshot: () => currentQueue()
     });
   }

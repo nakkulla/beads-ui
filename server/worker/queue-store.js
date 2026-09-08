@@ -7333,11 +7333,15 @@ export function createQueueStore(options = {}) {
           reason = 'phase_mismatch';
           return false;
         }
+        // 부모 정산 체인이 TERM 유예 동안 이미 실패로 확정한 attempt는 덮어쓰지
+        // 않는다 (UI-qce9 F3): `base_landing_detected` 같은 안전 위반을 사용자
+        // pause 성공으로 지우면 안 된다. control은 그대로 `done`까지 전진한다.
+        const settled_failed = cur.status === 'failed';
         next.attempts[attempt_id] = makeAttempt({
           ...cur,
           ...(patch || {}),
-          status: 'paused',
-          cause: null,
+          status: settled_failed ? cur.status : 'paused',
+          cause: settled_failed ? cur.cause : null,
           finished_at,
           control: { ...cur.control, phase: 'done', last_error: null }
         });
