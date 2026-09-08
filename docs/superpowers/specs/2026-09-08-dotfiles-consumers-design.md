@@ -21,12 +21,12 @@ scope:
 
 - 통합 이슈: `UI-y9hl`. 사용자 승인으로 `UI-i36w`·`UI-61xi`의 미착수 범위를 흡수한다. 후자의 종료는 구현 완료를 뜻하지 않는다.
 - 모니터 v2, 저장소 건강 표시, 계획 검토 기록 호환을 한 저장소의 한 소비처 변경으로 처리한다. 별도 Phase·자식·기능별 이슈를 만들지 않는다.
-- 생산자·공유 형식의 설계 정본: dotfiles의 `docs/superpowers/specs/2026-09-08-dotfiles-backlog-implementation-design.md` D4·D6·D7. 이 문서는 그 형식을 바꾸지 않고 소비·표시·검증을 정의한다. 정식 검토·구현 전이다.
-- 관련 생산자 이슈: `dotfiles-4bxr`, `dotfiles-rat3`, `dotfiles-2y0o`. 세 생산자는 이 소비처의 배포 완료를 기다린다. 소비처는 이전 형식·값 부재와 호환되므로 생산자 구현 선행을 요구하지 않는다.
+- 생산자·공유 형식의 설계 정본: dotfiles의 `docs/superpowers/specs/2026-09-08-delegation-monitor-v2-repo-health-design.md`(D4·D6, dotfiles-4bxr)와 `docs/superpowers/specs/2026-09-08-plan-review-record-design.md`(D7, dotfiles-2y0o). 이 문서는 그 형식을 바꾸지 않고 소비·표시·검증을 정의한다. 정식 검토·구현 전이다.
+- 관련 생산자 이슈: `dotfiles-4bxr`(2026-09-08 사용자 승인으로 `dotfiles-rat3`를 흡수, rat3는 closed)와 `dotfiles-2y0o`(deferred). 두 생산자는 이 소비처의 배포 완료를 기다린다. 소비처는 이전 형식·값 부재와 호환되므로 생산자 구현 선행을 요구하지 않는다.
 
 ## 접근 비교
 
-같은 저장소의 parser·표시·검증을 한 번에 변경하고 배포하는 안을 채택한다. 기능마다 별도 이슈를 두는 안은 독립 배포가 가능하지만 세 번의 추적·검토·마감 비용이 든다. 생산자를 먼저 바꾸는 안은 현재 strict parser나 옛 승인 해석을 깨뜨리므로 채택하지 않는다. 통합으로 세 생산자가 모두 UI의 한 배포를 기다리게 되는 지연은 수용한다.
+같은 저장소의 parser·표시·검증을 한 번에 변경하고 배포하는 안을 채택한다. 기능마다 별도 이슈를 두는 안은 독립 배포가 가능하지만 세 번의 추적·검토·마감 비용이 든다. 생산자를 먼저 바꾸는 안은 현재 strict parser나 옛 승인 해석을 깨뜨리므로 채택하지 않는다. 통합으로 두 생산자가 모두 UI의 한 배포를 기다리게 되는 지연은 수용한다.
 
 ## U1. 위임 모니터 v2 읽기
 
@@ -85,15 +85,16 @@ npm run build
 
 한 PR의 검증·검토를 마친 뒤 기존 `repo-ops/config.toml`의 deploy 스크립트로 배포한다. 스크립트 terminal success, 실제 서비스 checkout SHA·HTTP 응답을 확인한다. live 서비스는 영구 deploy checkout을 사용하며 임시 개발 서버로 대신하지 않는다.
 
-소비처 세 부분이 모두 배포되고 이전 생산자에 대한 호환 검증이 끝나야 이 통합 이슈를 완료한다. 그 뒤 세 dotfiles 생산자가 진행할 수 있다. 새 데이터가 아직 없으면 U1은 v1, U2는 unknown, U3는 기존 기록을 표시하는 상태가 정상이다.
+소비처 세 부분이 모두 배포되고 이전 생산자에 대한 호환 검증이 끝나야 이 통합 이슈를 완료한다. 그 뒤 두 dotfiles 생산자가 진행할 수 있다. 새 데이터가 아직 없으면 U1은 v1, U2는 unknown, U3는 기존 기록을 표시하는 상태가 정상이다.
 
 ## 경계·후속
 
 | 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
 | --- | --- | --- | --- | --- | --- |
-| 형제 | dotfiles | user_request | 생산자·공유 계약은 dotfiles 통합 스펙이 소유하며 D4·D6·D7은 각각 기존 이슈로 추적한다 | UI-y9hl | dotfiles-4bxr |
+| 형제 | dotfiles | user_request | 위임 모니터 v2·저장소 건강 수집(D4·D6) 생산자와 공유 계약은 dotfiles 스펙이 소유한다 | UI-y9hl | dotfiles-4bxr |
+| 형제 | dotfiles | user_request | 계획 검토 기록(D7) 생산자는 별도 dotfiles 스펙·Bead가 소유하며 착수 보류 상태다 | UI-y9hl | dotfiles-2y0o |
 
-표의 dotfiles-4bxr는 같은 저장소의 통합 스펙을 가리키는 대표 링크다. 추가 생산자 dotfiles-rat3·dotfiles-2y0o도 같은 문서를 사용하고 동일한 UI-y9hl 선행 관계를 갖는다. 문서와 이슈를 더 만들지 않는다.
+두 생산자 모두 UI-y9hl 배포 뒤 구현에 진입한다(`blocks` 엣지는 dotfiles 쪽에 있다). dotfiles-rat3는 dotfiles-4bxr에 흡수돼 closed다. 문서와 이슈를 더 만들지 않는다.
 
 ## 결정 (ADR 후보)
 
