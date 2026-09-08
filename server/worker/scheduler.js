@@ -854,9 +854,10 @@ function startNowRequestedAt(workspace, bead_id, at) {
 
 /**
  * Does a live `[지금 시작]` click name this waiting entry? Kept apart from
- * {@link isExplicitRunEntry} because the two instructions do not reach the same
- * lanes: `armed_by_lane` is a parallel-queue fact (UI-jaua §5.2) while this one
- * names one row wherever it sits.
+ * {@link isExplicitRunEntry} because the two instructions differ in durability
+ * and origin: `armed_by_lane` is a stored cross-lane fact on the row (UI-jaua
+ * §5.2, UI-tjus §3.2) while this one is an in-memory click. Both now reach a
+ * row wherever it sits.
  *
  * @param {string} workspace
  * @param {{ bead_id: string, added_at?: number }} entry
@@ -886,23 +887,28 @@ function isExplicitRunEntry(workspace, entry, at) {
 }
 
 /**
- * The serial lane heads a live `[지금 시작]` click named (§3.3 결정 2). The
- * serial axis is what `auto_advance` owns, so an `armed_only` pass takes no serial
- * head (UI-jaua §5.2) — but a row the user pressed is an explicit run instruction
- * wherever it sits, and the WS op accepts serial rows, so refusing them here would
- * make that reply say a run happened when none did.
+ * The serial lane heads carrying an explicit run instruction — a cross lane's
+ * arm or a live `[지금 시작]` click (§3.3 결정 2, UI-tjus §3.2). Every OTHER
+ * serial head stays out of an `armed_only` pass: automatic serial candidacy is
+ * what `auto_advance` owns.
+ *
+ * HEAD ONLY. An armed member BEHIND the head is not named here — the exclusive
+ * chain in front of it is what its serial lane means, and letting an arm jump
+ * that chain would reorder the sequence the user chose. This set only WIDENS
+ * the candidate list; lane occupancy, readiness, slots and every other fence
+ * still run on the head it names.
  *
  * @param {{ serial_lanes?: Array<{ entries?: any[] }> }} q
  * @param {string} workspace
  * @param {number} at
  * @returns {Set<string>}
  */
-function startNowSerialHeads(q, workspace, at) {
+function explicitRunSerialHeads(q, workspace, at) {
   /** @type {Set<string>} */
   const named = new Set();
   for (const lane of Array.isArray(q.serial_lanes) ? q.serial_lanes : []) {
     const head = Array.isArray(lane.entries) ? lane.entries[0] : null;
-    if (head && isStartNowEntry(workspace, head, at)) {
+    if (head && isExplicitRunEntry(workspace, head, at)) {
       named.add(head.bead_id);
     }
   }
@@ -928,15 +934,21 @@ function graceRemainingMs(workspace, entry, at) {
 }
 
 /**
- * The cross lane a bead's parallel row is armed by, for the dispatch snapshot
- * (UI-jaua §5.1). Null when the row is unarmed or absent.
+ * The cross lane a bead's waiting row is armed by, for the dispatch snapshot
+ * (UI-jaua §5.1). Both waiting areas are read (UI-tjus §3.2): a serial member
+ * now dispatches from the lane the user placed it in, and the attempt has to
+ * record the arm that actually launched it so the failure path disarms that
+ * same row. Null when the row is unarmed or absent.
  *
- * @param {{ queue?: Array<{ bead_id: string, armed_by_lane?: string|null }> }} q
+ * @param {{ queue?: Array<{ bead_id: string, armed_by_lane?: string|null }>, serial_lanes?: Array<{ entries?: Array<{ bead_id: string, armed_by_lane?: string|null }> }> }} q
  * @param {string} bead_id
  * @returns {string|null}
  */
 function armedByLaneOf(q, bead_id) {
-  const entry = (q.queue || []).find((row) => row.bead_id === bead_id);
+  const entry = [
+    ...(q.queue || []),
+    ...(q.serial_lanes || []).flatMap((lane) => lane.entries || [])
+  ].find((row) => row.bead_id === bead_id);
   return entry && isArmedEntry(entry)
     ? /** @type {string} */ (entry.armed_by_lane)
     : null;
@@ -11531,9 +11543,10 @@ export function createScheduler(deps) {
   async function runPass(workspace) {
     let q = deps.store.snapshot(workspace);
     // UI-jaua §5.2: `auto_advance` OFF no longer stops the pass — it NARROWS
-    // the candidate set to the parallel rows a cross lane armed. With the
-    // toggle ON the set is unchanged, arm or no arm. With it OFF and nothing
-    // armed there is no candidate at all, which is the old bail-out verbatim.
+    // the candidate set to the waiting rows a cross lane armed — parallel rows
+    // and serial lane HEADS alike (UI-tjus §3.2). With the toggle ON the set is
+    // unchanged, arm or no arm. With it OFF and nothing armed there is no
+    // candidate at all, which is the old bail-out verbatim.
     // TWO independent narrowings, one candidate set (2026-08-28
     // worker-failure-tiers spec §4): the user's ⏸ (`auto_advance`) and the
     // failure-owned stop (`queue.hold`). Either one alone leaves only the rows
@@ -11542,13 +11555,13 @@ export function createScheduler(deps) {
     // released hold no longer resumes a paused queue.
     const at = now();
     const armed_only = q.auto_advance !== true || q.hold !== null;
-    // `[지금 시작]`은 직렬 레인 선두도 지목할 수 있으므로 이 문은 병렬 큐만 보면
-    // 안 된다 (§3.3 결정 2): 그러면 서버가 성공을 돌려주고도 아무것도 발차하지
-    // 않는다.
-    const start_now_serial_heads = startNowSerialHeads(q, workspace, at);
+    // 명시적 실행 지시는 직렬 레인 선두도 지목하므로 이 문은 병렬 큐만 보면 안
+    // 된다 (§3.3 결정 2, UI-tjus §3.2): 그러면 서버가 arm과 `[지금 시작]`에
+    // 성공을 돌려주고도 아무것도 발차하지 않는다.
+    const explicit_serial_heads = explicitRunSerialHeads(q, workspace, at);
     if (
       armed_only &&
-      start_now_serial_heads.size === 0 &&
+      explicit_serial_heads.size === 0 &&
       !q.queue.some((/** @type {any} */ entry) =>
         isExplicitRunEntry(workspace, entry, at)
       )
@@ -11596,16 +11609,17 @@ export function createScheduler(deps) {
           grace_left: graceRemainingMs(workspace, entry, at)
         })
       );
-    // A serial lane head is NEVER an armed-only candidate: the serial axis is
-    // what `auto_advance` owns, and a cross-lane member sits in the parallel
-    // queue (UI-jaua §5.2). `[지금 시작]`이 그 행을 직접 지목한 경우만
-    // 예외다 (§3.3 결정 2) — 레인 arm은 여전히 이 축에 닿지 않는다.
+    // armed_only 패스에서 직렬 선두는 명시적 실행 지시를 든 것만 후보다
+    // (UI-tjus §3.2): 연결 레인의 arm이나 `[지금 시작]`이 그 선두를 지목한
+    // 경우다. 그 밖의 선두는 여전히 `auto_advance`의 축에 남는다. 지시는 후보를
+    // 넓힐 뿐이어서 아래의 점유 검사도, 뒤따르는 준비·슬롯 검사도 그대로 걸린다
+    // — 뒤에 선 armed 멤버 때문에 앞의 unarmed 선두를 건너뛰는 일은 없다.
     for (const lane of q.serial_lanes || []) {
       const head = lane.entries[0];
       if (!head) {
         continue;
       }
-      if (armed_only && !start_now_serial_heads.has(head.bead_id)) {
+      if (armed_only && !explicit_serial_heads.has(head.bead_id)) {
         continue;
       }
       if (laneOccupiedByOther(lane_occupancy, lane.id, head.bead_id)) {

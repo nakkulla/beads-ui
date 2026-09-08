@@ -5,12 +5,12 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0041 | [연결 레인 확정은 의존만 쓰고 진행은 기존 병렬·직렬 위치를 보존하며 같은 진행 권한을 적용한다](0041-connected-run-preserves-waiting-lanes.md) | 2026-09-08 | 연결 레인 확정은 의존만 쓰고 진행은 기존 병렬·직렬 위치를 보존하며 같은 진행 권한을 적용한다 |
 | 0040 | [머지 게이트의 영수증 보류는 자동 해소 주체 유무로 나뉘고 위조 3종은 즉시 terminal needs_human이다](0040-receipt-hold-unresolvable-terminal-needs-human.md) | 2026-09-07 | 머지 게이트의 영수증 보류는 자동 해소 주체가 있는지로 나뉘고, 사람의 baseline 원상복원으로만 풀리는 위조 3종은 대기 없이 terminal needs_human으로 종단해 알림과 두 클릭으로 넘긴다 |
 | 0039 | [ADR 탭 신호는 설치본 체커를 runtime spawn해 --json으로 소비한다](0039-adr-tab-spawns-installed-checkers-json.md) | 2026-09-06 | ADR 탭 신호는 설치본 체커를 runtime spawn해 --json으로 소비하고 규칙을 JS로 복제하지 않으며 현재 표만 JS frontmatter 리더가 읽는다 |
 | 0038 | [처분 대기 admission이 화면 대표를 정한다 — 대기 행이 held 타일·점유 ghost를 이긴다](0038-stale-disposition-admission-elects-the-waiting-row.md) | 2026-09-04 | 처분 대기 admission이 선 bead는 held 타일·점유 ghost가 아니라 대기 행이 대표하고 stale-work 처분 조작은 대기 행에만 산다 |
 | 0037 | [완료 레인 행은 슬롯 5 줄에서 실행 사실을 말한다](0037-done-lane-row-states-execution-facts.md) | 2026-09-04 | 완료 레인 행은 슬롯 5 줄을 갖고 route와 오케/워커를 실어 '무엇으로 돌았나'에 답한다 |
 | 0036 | [파킹의 출구는 문의 세션뿐이고 해제 전이 재디스패치는 stale 두 값에만 걸린다](0036-parked-exit-is-inquiry-session-only.md) | 2026-09-03 | Worker 파킹(`awaiting_user` 존재)의 출구는 값별 문의 세션의 자동 기동과 파킹 타일 `[세션에서 해결]` 클릭뿐이고 새 attempt `[재시도]`는 없으며, `awaiting_user` 해제 전이의 자동 재디스패치는 문의 세션이 구현을 착수하지 않는 stale 두 값에만 걸리고 구현 충돌 값은 PR 관측으로만 정산한다 — parked 분류와 '자동 재디스패치 없음'은 0017에서 승계한다 |
-| 0035 | [연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다](0035-lane-confirm-writes-deps-only-run-places-and-arms.md) | 2026-09-03 | 연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다 — 직렬 레인 멤버는 진행 시 병렬 큐로 옮긴다 |
 | 0034 | [복귀 재스캔 후보는 waiting attempt와 prerequisite_unmet admission 큐 항목이다](0034-return-rescan-candidates-include-prerequisite-unmet-admission.md) | 2026-09-03 | Worker의 복귀 트리거는 이벤트 구독이며 재스캔 후보는 waiting attempt와 `prerequisite_unmet` admission 큐 항목이다 — 판정은 요청 rig의 `bd ready` 한 번, 복귀는 `tickPass`, not-ready에는 쓰지 않고 ready에서만 그 admission을 지운다 |
 | 0033 | [후보 레인은 admission 통과 집합이 아니라 관측 집합이다](0033-candidate-lane-is-observation-set-not-admission-set.md) | 2026-09-03 | 후보 레인은 Worker가 지금 집을 수 있는 집합이 아니라 미착수 이슈의 관측 집합이고, 실행 안전은 서버 admission이 지킨다 |
 | 0032 | [실행 프리셋은 레인 무관 프로파일이고 워크스페이스가 일반·quick_fix 두 레인에 각각 적용한다](0032-execution-preset-is-lane-neutral-applied-per-lane.md) | 2026-09-03 | 실행 프리셋은 레인 무관 18키 프로파일이며 워크스페이스는 그것을 일반 레인과 quick_fix 레인에 각각 교체 방식으로 적용하고, quick_fix 레인의 durable 값은 큐 `quick_fix_orchestration_*`와 kv `quick_fix_impl_*`다 |
@@ -49,3 +49,4 @@
 | 0017 | [awaiting_user를 남기고 정상 종료한 세션 결말은 parked이며 자동 재디스패치하지 않는다](0017-parked-session-outcome-no-auto-redispatch.md) | superseded | [0036](0036-parked-exit-is-inquiry-session-only.md) |
 | 0022 | [needs_human은 자동 알림으로 관측되고 재진입은 두 클릭뿐이다](0022-needs-human-auto-notify-click-driven-reentry.md) | superseded | [0024](0024-discard-failure-exits-and-terminal-abandoned.md) |
 | 0023 | [waiting 복귀 트리거는 cadence가 아니라 이벤트 구독이다](0023-waiting-return-event-subscription-not-cadence.md) | superseded | [0034](0034-return-rescan-candidates-include-prerequisite-unmet-admission.md) |
+| 0035 | [연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다](0035-lane-confirm-writes-deps-only-run-places-and-arms.md) | superseded | [0041](0041-connected-run-preserves-waiting-lanes.md) |

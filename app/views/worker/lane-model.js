@@ -1875,7 +1875,7 @@ function armedLaneOfAttempt(attempts, attempt_id) {
  *
  * @typedef {Object} LaneRunAxis
  * @property {Map<string, string>} armed_by_bead - bead_id → 그 엔트리의
- * `armed_by_lane` (병렬 대기·PR 대기 행).
+ * `armed_by_lane` (병렬·직렬 대기 행과 PR 대기 행).
  * @property {Map<string, string>} failed_by_bead - bead_id → 그 버드의 마지막
  * terminal 구현 attempt가 실어 온 `armed_by_lane`. 실패한 attempt만 들어온다.
  * @property {Set<string>} disarmed_lanes - 보이는 workspace들의
@@ -2833,10 +2833,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
       running: merge_queue.length > 0
     });
     const queue_lane = Array.isArray(workspace.queue) ? workspace.queue : [];
-    // arm은 병렬 대기 행에 쓰이고 PR 대기 행으로 옮겨 실린다 (§5.1) — 두 자리를
-    // 같이 읽어야 PR 대기에 닿은 멤버도 `▶ 진행 중`으로 남는다.
+    // arm은 병렬·직렬 두 대기 영역 모두에 쓰이고 (UI-tjus §3.2) PR 대기 행으로
+    // 옮겨 실린다 (§5.1) — 세 자리를 같이 읽어야 자기 직렬 자리를 지킨 멤버도,
+    // PR 대기에 닿은 멤버도 `▶ 진행 중`으로 남는다.
     for (const entry of [
       ...queue_lane,
+      ...(Array.isArray(workspace.serial_lanes)
+        ? workspace.serial_lanes
+        : []
+      ).flatMap((/** @type {any} */ lane) =>
+        Array.isArray(lane?.entries) ? lane.entries : []
+      ),
       ...(Array.isArray(workspace.pr_wait) ? workspace.pr_wait : [])
     ]) {
       if (

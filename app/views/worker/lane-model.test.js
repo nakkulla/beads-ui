@@ -3101,7 +3101,7 @@ describe('monitor 연결 레인 발차 축 (UI-jaua §5.5·§5.6)', () => {
    * One lane over one repo, the default fixture. 상태 파생만 보는 테스트가 매번
    * 같은 스냅샷을 다시 쓰지 않도록 여기서 한 번만 세운다.
    *
-   * @param {{ queue?: any[], pr_wait?: any[], attempts?: Record<string, any>, disarmed_on_load?: string[], done?: any[] }} patch
+   * @param {{ queue?: any[], pr_wait?: any[], serial_lanes?: any[], attempts?: Record<string, any>, disarmed_on_load?: string[], done?: any[] }} patch
    * @param {Array<{ bead_id: string }>} entries
    */
   function laneModel(
@@ -3221,6 +3221,28 @@ describe('monitor 연결 레인 발차 축 (UI-jaua §5.5·§5.6)', () => {
     });
 
     expect(lanes.chain_lanes[0].state).toBe('running');
+  });
+
+  test('reads the arm a serial lane row carries', () => {
+    const lanes = laneModel({
+      queue: [{ bead_id: 'A-2' }],
+      serial_lanes: [
+        { id: 's1', entries: [{ bead_id: 'A-1', armed_by_lane: 'cl_1' }] }
+      ]
+    });
+
+    expect(lanes.chain_lanes[0].state).toBe('running');
+  });
+
+  test('drops an armed serial member from the unlaunched list', () => {
+    const lanes = laneModel({
+      queue: [{ bead_id: 'A-2' }],
+      serial_lanes: [
+        { id: 's1', entries: [{ bead_id: 'A-1', armed_by_lane: 'cl_1' }] }
+      ]
+    });
+
+    expect(lanes.chain_lanes[0].unlaunched).toEqual(['A-2']);
   });
 
   test('keeps ▶ 이어서 진행 while an unlaunched member remains', () => {
@@ -3368,6 +3390,35 @@ describe('monitor 연결 레인 발차 축 (UI-jaua §5.5·§5.6)', () => {
     );
 
     expect(lanes.parallel_rows[0].armed_lane_chip).toBeUndefined();
+  });
+
+  test('chips an armed serial waiting row with its lane number', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-1', armed_by_lane: 'cl_1' }] }
+          ]
+        })
+      ],
+      [state()],
+      {
+        cross_lanes: crossLanes([
+          {
+            id: 'cl_1',
+            status: 'confirmed',
+            entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }]
+          }
+        ])
+      }
+    );
+
+    const serial = lanes.queue_groups[0].sublanes.serial[0];
+    expect(serial.items[0].armed_lane_chip).toEqual({
+      lane_id: 'cl_1',
+      label: '▶ 연결 1',
+      orphan: false
+    });
   });
 });
 

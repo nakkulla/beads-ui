@@ -8948,7 +8948,7 @@ describe('worker/queue-store — 연결 레인 arm 축 (UI-jaua §5.1)', () => {
     expect(result.queue.queue.map((e) => e.bead_id)).toEqual(['A']);
   });
 
-  test('leaves serial lane entries unarmed', () => {
+  test('arms a serial lane entry named by the request', () => {
     const store = createQueueStore();
     store.place(WS, { expected_revision: 0, bead_id: 'S', lane: 's1' });
 
@@ -8959,6 +8959,130 @@ describe('worker/queue-store — 연결 레인 arm 축 (UI-jaua §5.1)', () => {
     });
 
     expect(result.ok).toBe(true);
+    expect(result.queue.serial_lanes[0].entries[0].armed_by_lane).toBe('cl_1');
+  });
+
+  test('leaves the serial position untouched when it arms a row', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'S1', lane: 's1' });
+    store.place(WS, { expected_revision: 1, bead_id: 'S2', lane: 's1' });
+
+    const result = store.arm(WS, {
+      expected_revision: 2,
+      bead_ids: ['S2'],
+      lane_id: 'cl_1'
+    });
+
+    expect(result.queue.queue).toEqual([]);
+    expect(result.queue.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual([
+      'S1',
+      'S2'
+    ]);
+  });
+
+  test('disarms a serial lane entry when only the lane is named', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'S', lane: 's1' });
+    store.arm(WS, { expected_revision: 1, bead_ids: ['S'], lane_id: 'cl_1' });
+
+    const result = store.disarm(WS, { expected_revision: 2, lane_id: 'cl_1' });
+
+    expect(result.ok).toBe(true);
+    expect(
+      result.queue.serial_lanes[0].entries[0].armed_by_lane
+    ).toBeUndefined();
+  });
+
+  test('drops the failed serial row arm and keeps the row behind it armed', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'S1', lane: 's1' });
+    store.place(WS, { expected_revision: 1, bead_id: 'S2', lane: 's1' });
+    store.arm(WS, {
+      expected_revision: 2,
+      bead_ids: ['S1', 'S2'],
+      lane_id: 'cl_1'
+    });
+
+    const result = store.disarmEntry(WS, { bead_id: 'S1' });
+
+    expect(
+      result.queue.serial_lanes[0].entries.map((e) => e.armed_by_lane)
+    ).toEqual([undefined, 'cl_1']);
+  });
+
+  test('clears a serial lane arm at cold load and remembers the lane', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 5,
+        serial_lane_count: 1,
+        serial_lanes: [
+          {
+            id: 's1',
+            entries: [{ bead_id: 'S', added_at: 1, armed_by_lane: 'cl_3' }]
+          }
+        ]
+      })
+    );
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.serial_lanes[0].entries[0].armed_by_lane).toBeUndefined();
+    expect(loaded.disarmed_on_load).toEqual(['cl_3']);
+  });
+
+  test('keeps a serial arm through a reorder inside the lane', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'S1', lane: 's1' });
+    store.place(WS, { expected_revision: 1, bead_id: 'S2', lane: 's1' });
+    store.arm(WS, { expected_revision: 2, bead_ids: ['S2'], lane_id: 'cl_1' });
+
+    const result = store.reorder(WS, {
+      expected_revision: 3,
+      bead_id: 'S2',
+      lane: 's1',
+      to_index: 0
+    });
+
+    expect(
+      result.queue.serial_lanes[0].entries.map((e) => [
+        e.bead_id,
+        e.armed_by_lane
+      ])
+    ).toEqual([
+      ['S2', 'cl_1'],
+      ['S1', undefined]
+    ]);
+  });
+
+  test('keeps a serial arm when a shrinking lane returns the row to parallel', () => {
+    const store = createQueueStore();
+    store.setSerialLaneCount(WS, { expected_revision: 0, count: 2 });
+    store.place(WS, { expected_revision: 1, bead_id: 'S', lane: 's2' });
+    store.arm(WS, { expected_revision: 2, bead_ids: ['S'], lane_id: 'cl_1' });
+
+    const result = store.setSerialLaneCount(WS, {
+      expected_revision: 3,
+      count: 1
+    });
+
+    expect(result.queue.queue.map((e) => [e.bead_id, e.armed_by_lane])).toEqual(
+      [['S', 'cl_1']]
+    );
+  });
+
+  test('drops the arm when an explicit place reseats the row', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+    store.arm(WS, { expected_revision: 1, bead_ids: ['A'], lane_id: 'cl_1' });
+
+    const result = store.place(WS, {
+      expected_revision: 2,
+      bead_id: 'A',
+      lane: 's1'
+    });
+
     expect(
       result.queue.serial_lanes[0].entries[0].armed_by_lane
     ).toBeUndefined();

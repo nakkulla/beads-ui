@@ -1815,13 +1815,21 @@ describe('worker/attach waiting activity routing (UI-978d §4)', () => {
 
   /**
    * Build one subscribed attachment holding a `prerequisite_unmet` admission
-   * and NO attempt — the queue-only shape UI-d3i1 §6.1 adds.
+   * and NO attempt — the queue-only shape UI-d3i1 §6.1 adds. The bead is seated
+   * in `lane`, so the same fixture also witnesses that a prerequisite wait
+   * leaves the waiting position the user chose alone (UI-tjus §3.3).
    *
    * @param {string|null} rig
+   * @param {string} [lane] - `'parallel'` or a serial lane id.
    */
-  function admissionActivityAttachment(rig) {
+  function admissionActivityAttachment(rig, lane = 'parallel') {
     foreign_prefix_capture.value = 'OWNER';
     const runtime = createWorkerRuntime();
+    runtime.queueStore.place(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      bead_id: 'UI-waiting',
+      lane
+    });
     runtime.queueStore.recordAdmission(WS, {
       bead_id: 'UI-waiting',
       reason: 'prerequisite_unmet',
@@ -1839,7 +1847,7 @@ describe('worker/attach waiting activity routing (UI-978d §4)', () => {
       .spyOn(att.scheduler, 'rescanWaiting')
       .mockResolvedValue({ checked: 0, returned: 0 });
     att.beadsChanges.start();
-    return { rescan };
+    return { rescan, runtime };
   }
 
   test('rescans when an admission blocker names the moving rig', () => {
@@ -1849,6 +1857,39 @@ describe('worker/attach waiting activity routing (UI-978d §4)', () => {
     publishWorkspaceActivity(path.resolve(owner_root));
 
     expect(rescan).toHaveBeenCalledWith(path.resolve(WS));
+  });
+
+  test('rescans a serial-lane member waiting on a foreign prerequisite', () => {
+    const owner_root = path.join(tmp_state, 'owner');
+    const { rescan } = admissionActivityAttachment('OWNER', 's1');
+
+    publishWorkspaceActivity(path.resolve(owner_root));
+
+    expect(rescan).toHaveBeenCalledWith(path.resolve(WS));
+  });
+
+  test('leaves a serial waiting member in its own lane while the prerequisite stands', () => {
+    const owner_root = path.join(tmp_state, 'owner');
+    const { runtime } = admissionActivityAttachment('OWNER', 's1');
+
+    publishWorkspaceActivity(path.resolve(owner_root));
+
+    const queue = runtime.queueStore.snapshot(WS);
+    expect(queue.queue).toEqual([]);
+    expect(queue.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual([
+      'UI-waiting'
+    ]);
+  });
+
+  test('leaves a parallel waiting member at its own index while the prerequisite stands', () => {
+    const owner_root = path.join(tmp_state, 'owner');
+    const { runtime } = admissionActivityAttachment('OWNER');
+
+    publishWorkspaceActivity(path.resolve(owner_root));
+
+    const queue = runtime.queueStore.snapshot(WS);
+    expect(queue.queue.map((e) => e.bead_id)).toEqual(['UI-waiting']);
+    expect(queue.serial_lanes[0].entries).toEqual([]);
   });
 
   test('ignores an admission holding only same-rig blockers', () => {

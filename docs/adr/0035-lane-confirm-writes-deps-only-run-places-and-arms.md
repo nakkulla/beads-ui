@@ -1,7 +1,8 @@
 ---
 id: 35
 title: 연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다
-status: accepted
+status: superseded
+superseded_by: 41
 date: 2026-09-03
 summary: "연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다 — 직렬 레인 멤버는 진행 시 병렬 큐로 옮긴다"
 spec: docs/superpowers/specs/2026-09-03-cross-repo-queue-prerequisite-wait-design.md

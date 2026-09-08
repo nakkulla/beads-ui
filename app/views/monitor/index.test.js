@@ -3170,7 +3170,7 @@ describe('monitor 연결 레인 진행·정지 (UI-jaua §5.5·§9)', () => {
     });
   });
 
-  test('moves a serial-lane member into the parallel queue before arming', async () => {
+  test('sends no place op for a member already in a serial lane', async () => {
     const { mount, view, sent } = setup({
       workspaces: [
         workspace({
@@ -3189,12 +3189,37 @@ describe('monitor 연결 레인 진행·정지 (UI-jaua §5.5·§9)', () => {
     click(mount, '.mon2-clane__run');
     await flushMicrotasks();
 
+    expect(sent.map((m) => m.type)).toEqual(['worker-queue-arm']);
+  });
+
+  test('places only the member that sits in no waiting lane', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-2' }] }],
+          runnable: [{ bead_id: 'A-3', title: '미적재' }]
+        })
+      ],
+      workspaces_state: [state()],
+      cross_lanes: crossLanes([
+        {
+          entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }, { bead_id: 'A-3' }]
+        }
+      ]),
+      transport: async () => ({ applied: true, queue: { revision: 5 } })
+    });
+
+    view.load();
+    click(mount, '.mon2-clane__run');
+    await flushMicrotasks();
+
     expect(sent.map((m) => m.type)).toEqual([
       'worker-queue-place',
       'worker-queue-arm'
     ]);
     expect(sent[0].payload).toEqual({
-      bead_id: 'A-2',
+      bead_id: 'A-3',
       lane: 'parallel',
       index: 1,
       root_dir: WS_A,
