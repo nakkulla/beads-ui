@@ -9,6 +9,7 @@ scope:
   - app/utils/execution-defaults.js
   - app/utils/execution-defaults.test.js
   - generated/contracts/execution-defaults.json
+  - generated/contracts/execution-defaults.provenance.json
   - server/workflow-enrich.js
   - server/workflow-enrich.test.js
   - server/ws/exec-settings-mutation.test.js
@@ -56,7 +57,9 @@ preset의 실제 모델은 gpt-6-astra/xhigh다. 기본 리뷰어는 바꾸지 �
 ## 선행과 적용 순서
 
 UI-ulfb는 dotfiles-2lw8의 closed를 기다리는 foreign blocks 의존을 갖는다. 공통 계약
-배포 뒤 정본의 핀된 execution-defaults 사본을 저장소의 기존 동기화 절차로 갱신한다.
+배포 뒤 머지된 정본 커밋의 execution-defaults JSON 바이트를 그대로 복사한다. 짝 파일인
+execution-defaults.provenance.json의 source_commit·source_blob_sha·sha256·bytes도 같은
+핀 커밋과 사본에서 구해 함께 갱신한다. 별도 동기화 실행기는 만들지 않는다.
 구현·검증·PR 인도 뒤 머지하면 기존 repo-ops [deploy]가 공유 서버를 배포한다.
 완료 주장은 deploy terminal success와 merged SHA의 프로세스 경로·포트·HTTP 응답 확인을
 포함한다. 기존 UI-tjus 실행과 독립된 작업이며 그 레인 로직은 여기서 수정하지 않는다.
@@ -74,6 +77,8 @@ app/views/detail-panel/effective-card.test.js --reporter=dot`을 실행한다.
 - 이슈 상세와 설정 dialog가 두 Codex 옵션을 구분하고 codex의 기존 선택을 유지한다.
 - preset/effective 설정의 astra 실제 모델과 xhigh effort가 공통 사본과 일치한다.
   override와 기존 speed 규칙을 보존하며 없는 preset에 Sol fallback을 추가하지 않는다.
+- 갱신한 사본과 provenance를 실제 로더로 읽어 supported=true 및 source_commit의
+  핀 커밋 일치를 확인한다. 원본 blob과 사본 바이트·blob SHA·SHA-256·바이트 수가 같다.
 - 기존 Sol 영수증과 새 Astra 영수증이 같은 형식/freshness 규칙으로 해석된다.
 - 관련 설정·enum·유효값 focused 테스트를 실행한다. 구현 시작 전 node>=22와
   npm ls --depth=0 확인, npm run tsc, npx vitest run --reporter=dot(120초),
