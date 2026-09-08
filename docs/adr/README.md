@@ -5,6 +5,8 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0043 | [구독별 store는 revision을 수신하되 내용 변경만 통지하고 registry는 구독 출처를 전달한다](0043-subscription-store-notifies-content-change-with-source.md) | 2026-09-08 | 구독별 store는 revision을 수신하되 내용 변경만 통지하고 registry는 구독 출처를 전달하며 전체 issue push와 기존 순서·identity 규칙을 유지한다 |
+| 0042 | [워크스페이스와 후보 투영은 기존 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스를 띄우지 않는다](0042-candidate-projection-reads-async-probe-context-only.md) | 2026-09-08 | 워크스페이스와 후보 투영은 기존 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스를 띄우지 않으며 title-cache 예외는 유지한다 |
 | 0041 | [연결 레인 확정은 의존만 쓰고 진행은 기존 병렬·직렬 위치를 보존하며 같은 진행 권한을 적용한다](0041-connected-run-preserves-waiting-lanes.md) | 2026-09-08 | 연결 레인 확정은 의존만 쓰고 진행은 기존 병렬·직렬 위치를 보존하며 같은 진행 권한을 적용한다 |
 | 0040 | [머지 게이트의 영수증 보류는 자동 해소 주체 유무로 나뉘고 위조 3종은 즉시 terminal needs_human이다](0040-receipt-hold-unresolvable-terminal-needs-human.md) | 2026-09-07 | 머지 게이트의 영수증 보류는 자동 해소 주체가 있는지로 나뉘고, 사람의 baseline 원상복원으로만 풀리는 위조 3종은 대기 없이 terminal needs_human으로 종단해 알림과 두 클릭으로 넘긴다 |
 | 0039 | [ADR 탭 신호는 설치본 체커를 runtime spawn해 --json으로 소비한다](0039-adr-tab-spawns-installed-checkers-json.md) | 2026-09-06 | ADR 탭 신호는 설치본 체커를 runtime spawn해 --json으로 소비하고 규칙을 JS로 복제하지 않으며 현재 표만 JS frontmatter 리더가 읽는다 |
@@ -15,7 +17,6 @@
 | 0033 | [후보 레인은 admission 통과 집합이 아니라 관측 집합이다](0033-candidate-lane-is-observation-set-not-admission-set.md) | 2026-09-03 | 후보 레인은 Worker가 지금 집을 수 있는 집합이 아니라 미착수 이슈의 관측 집합이고, 실행 안전은 서버 admission이 지킨다 |
 | 0032 | [실행 프리셋은 레인 무관 프로파일이고 워크스페이스가 일반·quick_fix 두 레인에 각각 적용한다](0032-execution-preset-is-lane-neutral-applied-per-lane.md) | 2026-09-03 | 실행 프리셋은 레인 무관 18키 프로파일이며 워크스페이스는 그것을 일반 레인과 quick_fix 레인에 각각 교체 방식으로 적용하고, quick_fix 레인의 durable 값은 큐 `quick_fix_orchestration_*`와 kv `quick_fix_impl_*`다 |
 | 0031 | [impl_review 신선도는 ancestry로 판정하고 영수증 보류의 출구는 head당 1회 리뷰 lineage와 [리뷰 후 머지]다](0031-impl-review-ancestry-and-hold-exit.md) | 2026-09-03 | impl_review 영수증은 관측된 head와 같거나 그 조상이면 유효하고 head 이동만으로는 재리뷰가 걸리지 않으며 resolver 커밋에도 예외가 없다. 영수증이 없거나 조상이 아니면 머지는 terminal 실패가 아니라 보류이고, 그 출구는 ADR 0019의 head당 1회 자동 리뷰 lineage와 [리뷰 후 머지] 클릭이며 사람 클릭만이 유일한 출구는 아니다. |
-| 0026 | [워크스페이스 투영 경로는 동기 자식 프로세스를 띄우지 않는다](0026-projection-path-spawns-no-sync-child-process.md) | 2026-09-03 | 워크스페이스 투영은 warm이 채운 불변 키 캐시와 세대 컨텍스트만 읽어 동기 자식 프로세스를 띄우지 않고, 미스는 미판정으로 그린다 |
 | 0025 | [issue-detail은 워크스페이스 스냅샷 세대에서 투영한다](0025-issue-detail-projected-from-workspace-snapshot.md) | 2026-09-03 | issue-detail은 워크스페이스 스냅샷 세대에서 투영하며 dependents·provenance는 세대의 간선 인덱스로 만들고 상세 전용 bd read는 없다 |
 | 0024 | [폐기 실패의 출구는 셋이고 [폐기 포기]는 아카이브 단계 전용 terminal abandoned다](0024-discard-failure-exits-and-terminal-abandoned.md) | 2026-09-03 | 사용자 개시 작업 실패의 재진입은 자동 알림 뒤 사람 클릭뿐이라는 0022를 승계하되, 폐기 실패의 출구는 재클릭·[폐기 포기]·[세션에서 해결] 셋으로 닫힌다. [폐기 포기]는 아카이브 단계 실패에서만 runner를 되살리고 bead를 폐기 이전 자리로 돌려놓는 terminal `abandoned`이며, 뒤 phase의 실패와 소유권 판정 불능에서는 허용하지 않는다 |
 | 0030 | [post-merge 잡은 RepoOperation kind job 봉투로 실행하고 원장은 queue.json 맵이다](0030-post-merge-job-repo-operation-envelope.md) | 2026-09-01 | post-merge 잡은 RepoOperation kind `job`으로 deploy 봉투를 재사용해 실행하고 적용 원장은 `queue.json`의 `<파일명>@<blob SHA>` 맵이다 |
@@ -38,15 +39,16 @@
 | 0007 | [머지 금지 강제를 git 수준 예방과 사후 ref 불변식으로 이전](0007-git-level-merge-guard-enforcement.md) | 2026-07-30 | 머지 금지는 pre-push 훅 예방과 사후 ref 불변식이 강제하고 텍스트 판정은 추론성 판정을 경고로 강등하되 정확한 원격 변경 명령의 kill은 유지한다 |
 | 0006 | [세션은 PR 배달까지, 머지는 Worker 단일 큐가 소유](0006-worker-owned-merge-queue.md) | 2026-07-28 | PR로 랜딩하는 작업에서 세션은 PR 배달까지만 하고 머지는 Worker의 단일 순차 큐가 실행하며 완료는 MERGED 관측으로 판정한다 |
 | 0012 | [워크플로 계약은 코드 내 field registry로 복제해 소비한다](0012-workflow-contract-consumed-via-code-field-registry.md) | 2026-05-05 | beads-ui는 dotfiles 계약 파일을 런타임에 읽지 않고 필요한 subset만 코드의 field registry로 복제한 소비자다 |
-| 0002 | [Per‑Subscription Stores and Full‑Issue Push (Breaking)](0002-per-subscription-stores-and-full-issue-push.md) | 2025-10-26 | 구독 하나당 스토어 하나를 두고 서버는 id 전용 델타 대신 전체 issue 페이로드를 push한다 |
 
 ## 이력
 | # | 제목 | 상태 | 대체 |
 | --- | --- | --- | --- |
 | 0001 | [Push‑Only Lists (v2)](0001-push-only-lists.md) | superseded | [0002](0002-per-subscription-stores-and-full-issue-push.md) |
+| 0002 | [Per‑Subscription Stores and Full‑Issue Push (Breaking)](0002-per-subscription-stores-and-full-issue-push.md) | superseded | [0043](0043-subscription-store-notifies-content-change-with-source.md) |
 | 0004 | [impl_review 신선도를 exact-head 대신 ancestry로 판정](0004-impl-review-ancestry-freshness.md) | superseded | [0031](0031-impl-review-ancestry-and-hold-exit.md) |
 | 0005 | [자동 AI 수리 레인 폐기와 needs_human 종단](0005-no-auto-repair-lane.md) | superseded | [0022](0022-needs-human-auto-notify-click-driven-reentry.md) |
 | 0017 | [awaiting_user를 남기고 정상 종료한 세션 결말은 parked이며 자동 재디스패치하지 않는다](0017-parked-session-outcome-no-auto-redispatch.md) | superseded | [0036](0036-parked-exit-is-inquiry-session-only.md) |
 | 0022 | [needs_human은 자동 알림으로 관측되고 재진입은 두 클릭뿐이다](0022-needs-human-auto-notify-click-driven-reentry.md) | superseded | [0024](0024-discard-failure-exits-and-terminal-abandoned.md) |
 | 0023 | [waiting 복귀 트리거는 cadence가 아니라 이벤트 구독이다](0023-waiting-return-event-subscription-not-cadence.md) | superseded | [0034](0034-return-rescan-candidates-include-prerequisite-unmet-admission.md) |
+| 0026 | [워크스페이스 투영 경로는 동기 자식 프로세스를 띄우지 않는다](0026-projection-path-spawns-no-sync-child-process.md) | superseded | [0042](0042-candidate-projection-reads-async-probe-context-only.md) |
 | 0035 | [연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다](0035-lane-confirm-writes-deps-only-run-places-and-arms.md) | superseded | [0041](0041-connected-run-preserves-waiting-lanes.md) |

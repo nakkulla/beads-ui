@@ -1,7 +1,8 @@
 ---
 id: 2
 title: Per‑Subscription Stores and Full‑Issue Push (Breaking)
-status: accepted
+status: superseded
+superseded_by: 43
 date: 2025-10-26
 summary: '구독 하나당 스토어 하나를 두고 서버는 id 전용 델타 대신 전체 issue 페이로드를 push한다'
 supersedes: [1]

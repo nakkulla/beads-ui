@@ -617,7 +617,7 @@ export function createTitleCache(options = {}) {
      * a different answer — "this bead pins nothing" — so it is kept.
      *
      * Costs no `bd` process of its own: the value was preserved from the same
-     * `bd show` the title came on (ADR 0026).
+     * `bd show` the title came on (ADR 0042).
      *
      * @param {string} workspace
      * @param {string[]} ids
