@@ -396,6 +396,21 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   no entry means label truth is unknown (not an empty array), including when an
   older server omits the whole key. It is UI projection only and never Worker
   scheduler authority.
+- A `pr_wait` entry the server SYNTHESIZED for an external PR (UI-7agi §2) is
+  marked `external: true` and carries `wt_present: boolean`. When the row comes
+  from the external-PR registry it additionally carries that registry's own PR
+  facts as OPTIONAL fields (UI-kyky §6.1): `foreign?: true` — the url names a
+  repository other than this workspace's origin, so nothing here observes,
+  merges or cleans it up —, `repo_slug?: string` (`OWNER/REPO`),
+  `pr_url?: string` and `pr_number?: number`. Each travels only when the
+  registry holds it, so an absent field means "not known", never a default. A
+  row synthesized from `queue.merge_queue` alone carries NONE of the four: it
+  has no registry row behind it. Consumers must not re-derive `foreign` from
+  `repo_slug` — the origin comparison is the server's, and a foreign row's PR
+  link is built from these verified values because the poller records
+  `pr_repo_foreign` and never observes such a PR. Both the worker snapshot and
+  the monitor pipeline read the SAME `withExternalPrWait` result through
+  `decorateQueue`.
 - `bead_timelines: Record<bead_id, { events: TimelineEvent[], log_path: string|null, log_expired: boolean, log_unreadable?: boolean }>`
   (record-timeline-retention §9) is the 실패 팝오버·파킹 타일 material of the
   beads whose card actually shows a failure or a park — an attempt in

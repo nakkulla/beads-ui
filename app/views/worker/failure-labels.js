@@ -15,7 +15,10 @@
 // The cause sentences live in a dependency-free leaf (UI-8w4t §4) so the
 // server's completion failure comment can read the SAME map; this module pulls
 // lit-html through `lanes.js` and therefore cannot be the shared copy.
-import { FAILURE_SENTENCES } from '../../utils/failure-sentences.js';
+import {
+  FAILURE_NEXT_ACTIONS,
+  FAILURE_SENTENCES
+} from '../../utils/failure-sentences.js';
 import { formatElapsed } from './lanes.js';
 
 /**
@@ -177,6 +180,26 @@ export function failureSentence(code) {
   for (const segment of segmentsOf(code)) {
     if (Object.hasOwn(FAILURE_SENTENCES, segment)) {
       found = FAILURE_SENTENCES[segment];
+    }
+  }
+  return found;
+}
+
+/**
+ * The next-action guidance for a failure code (UI-kyky §4.2), or null when no
+ * segment maps to one. Same LAST-segment-wins precedence as
+ * {@link failureSentence}, so the cause and the guidance a popover shows are
+ * always read off the same segment of the same token.
+ *
+ * @param {unknown} code
+ * @returns {string|null}
+ */
+export function failureNextAction(code) {
+  /** @type {string|null} */
+  let found = null;
+  for (const segment of segmentsOf(code)) {
+    if (Object.hasOwn(FAILURE_NEXT_ACTIONS, segment)) {
+      found = FAILURE_NEXT_ACTIONS[segment];
     }
   }
   return found;

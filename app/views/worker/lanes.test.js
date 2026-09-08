@@ -442,6 +442,44 @@ describe('discovered-from chip', () => {
   });
 });
 
+describe('PR link (UI-kyky §6.1)', () => {
+  test('renders an https PR url as the link', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      pr_url: 'https://github.com/o/r/pull/12',
+      pr_number: 12
+    });
+
+    const link = row.querySelector('a.worker-mini__pr');
+
+    expect(link?.getAttribute('href')).toBe('https://github.com/o/r/pull/12');
+    expect(link?.textContent?.trim()).toBe('#12 ↗');
+  });
+
+  test('refuses a non-web scheme as a PR link', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      pr_url: 'javascript://host/o/r/pull/12',
+      pr_number: 12
+    });
+
+    expect(row.querySelector('a.worker-mini__pr')).toBeNull();
+  });
+
+  test('refuses a non-integer PR number as a PR link', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      pr_url: 'https://github.com/o/r/pull/12',
+      pr_number: 12.5
+    });
+
+    expect(row.querySelector('a.worker-mini__pr')).toBeNull();
+  });
+});
+
 describe('priority badge', () => {
   test('renders the priority badge on a waiting row', () => {
     const row = renderRow({
@@ -2438,6 +2476,100 @@ describe('routeChipTemplate (UI-yrzu §7.1)', () => {
 
     expect(chip?.textContent).toBe('unset');
     expect(chip?.classList.contains('is-derived')).toBe(true);
+  });
+
+  test('carries the classification as the color attribute', () => {
+    const chip = renderChip({
+      chips: { route: 'full_plan', route_source: 'explicit' }
+    });
+
+    expect(chip?.getAttribute('data-route')).toBe('full_plan');
+  });
+});
+
+describe('작업 종류 카드 색 (UI-kyky §3.1)', () => {
+  /**
+   * @param {string} route
+   * @returns {any}
+   */
+  function workflowOf(route) {
+    return { chips: { route, route_source: 'explicit' } };
+  }
+
+  test('tints a neutral queue row with its own classification', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      workflow: workflowOf('spec_backed')
+    });
+
+    expect(row.getAttribute('data-route')).toBe('spec_backed');
+    expect(row.classList.contains('worker-mini--route-bg')).toBe(true);
+  });
+
+  test('names a derived route as unset on the card too', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      workflow: /** @type {any} */ ({
+        chips: { route: 'quick_fix', route_source: 'derived' }
+      })
+    });
+
+    expect(row.getAttribute('data-route')).toBe('unset');
+  });
+
+  test('draws no color attribute without workflow material', () => {
+    const row = renderRow({ lane: 'queue', done: false, workflow: null });
+
+    expect(row.hasAttribute('data-route')).toBe(false);
+    expect(row.classList.contains('worker-mini--route-bg')).toBe(false);
+  });
+
+  test('leaves the external session row on its own state background', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      external: true,
+      workflow: workflowOf('quick_fix')
+    });
+
+    expect(row.classList.contains('worker-mini--external')).toBe(true);
+    expect(row.classList.contains('worker-mini--route-bg')).toBe(false);
+    expect(row.getAttribute('data-route')).toBe('quick_fix');
+  });
+
+  test('tints a done row and keeps its dimming class', () => {
+    const row = renderRow({ workflow: workflowOf('full_plan') });
+
+    expect(row.classList.contains('worker-mini--done')).toBe(true);
+    expect(row.classList.contains('worker-mini--route-bg')).toBe(true);
+  });
+
+  test('keeps the search-mismatch class alongside the tint', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      search_match: false,
+      workflow: workflowOf('unset')
+    });
+
+    expect(row.classList.contains('is-dimmed')).toBe(true);
+    expect(row.classList.contains('worker-mini--route-bg')).toBe(true);
+  });
+
+  test('tints a neutral candidate card', () => {
+    const card = renderCandidate({});
+
+    expect(card.getAttribute('data-route')).toBe('quick_fix');
+    expect(card.classList.contains('worker-card--route-bg')).toBe(true);
+  });
+
+  test('leaves a worker-ineligible candidate on its own background', () => {
+    const card = renderCandidate({ worker_ineligible: true });
+
+    expect(card.classList.contains('worker-card--ineligible')).toBe(true);
+    expect(card.classList.contains('worker-card--route-bg')).toBe(false);
   });
 });
 

@@ -944,6 +944,105 @@ describe('monitor PR 대기 — 정리 재시도 라벨 (UI-jw27 §3)', () => {
   });
 });
 
+describe('monitor PR 대기 — 외부 저장소 PR (UI-kyky §6)', () => {
+  const FOREIGN_GATE = {
+    enabled: false,
+    tier: 'undecidable',
+    gate_badge: '관측 오류',
+    base_badge: '',
+    reason: 'pr_repo_foreign'
+  };
+
+  /**
+   * @param {Record<string, unknown>} entry
+   * @returns {any}
+   */
+  function foreignLane(entry) {
+    return buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1', added_at: 1, external: true, ...entry }],
+          pr_observations: { 'A-1': { pr: null, gate: FOREIGN_GATE } }
+        })
+      ],
+      [state()]
+    ).pr_wait[0];
+  }
+
+  test('carries the foreign PR reference the registry verified', () => {
+    const row = foreignLane({
+      foreign: true,
+      repo_slug: 'other/repo',
+      pr_url: 'https://github.com/other/repo/pull/12',
+      pr_number: 12
+    });
+
+    expect(row.pr_url).toBe('https://github.com/other/repo/pull/12');
+    expect(row.pr_number).toBe(12);
+    expect(row.foreign_repo).toBe('other/repo');
+  });
+
+  test('says 외부 저장소 PR rather than an observation error', () => {
+    const row = foreignLane({
+      foreign: true,
+      repo_slug: 'other/repo',
+      pr_url: 'https://github.com/other/repo/pull/12',
+      pr_number: 12
+    });
+
+    expect(row.badges).toEqual(['외부 저장소 PR']);
+  });
+
+  test('never re-derives foreign from the repo slug alone', () => {
+    const row = foreignLane({
+      repo_slug: 'other/repo',
+      pr_url: 'https://github.com/other/repo/pull/12',
+      pr_number: 12
+    });
+
+    expect(row.foreign_repo).toBe(undefined);
+    expect(row.pr_url).toBe(undefined);
+  });
+
+  test('prefers the observed PR of a same-repo external row', () => {
+    const row = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1', added_at: 1, external: true }],
+          pr_observations: {
+            'A-1': {
+              pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
+              gate: {
+                enabled: true,
+                tier: 'eligible',
+                gate_badge: '머지 가능',
+                base_badge: '최신',
+                reason: null
+              }
+            }
+          }
+        })
+      ],
+      [state()]
+    ).pr_wait[0];
+
+    expect(row.pr_url).toBe('https://github.com/o/r/pull/7');
+    expect(row.foreign_repo).toBe(undefined);
+  });
+
+  test('leaves merge and discard refused on a foreign row', () => {
+    const row = foreignLane({
+      foreign: true,
+      repo_slug: 'other/repo',
+      pr_url: 'https://github.com/other/repo/pull/12',
+      pr_number: 12
+    });
+
+    expect(row.merge_enabled).toBe(false);
+    expect(row.discard?.action ?? false).toBe(false);
+  });
+});
+
 describe('monitor PR 대기 — 리뷰 판정 미결 (UI-32he, UI-qksl §4 1번이 넓힘)', () => {
   test('alerts on an undetermined review verdict without a gate badge', () => {
     const lanes = buildLanes(

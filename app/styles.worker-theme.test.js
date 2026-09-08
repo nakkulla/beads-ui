@@ -590,6 +590,163 @@ describe('design token definitions', () => {
     expect(light).toMatch(/--accent:\s*#[0-9a-f]{6};/);
   });
 
+  /**
+   * WCAG 2.x relative luminance of one `#rrggbb` string.
+   *
+   * @param {string} hex
+   * @returns {number}
+   */
+  function luminance(hex) {
+    const channels = [1, 3, 5]
+      .map((at) => parseInt(hex.slice(at, at + 2), 16) / 255)
+      .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  }
+
+  /**
+   * WCAG contrast ratio between two `#rrggbb` strings.
+   *
+   * @param {string} a
+   * @param {string} b
+   * @returns {number}
+   */
+  function contrast(a, b) {
+    const x = luminance(a);
+    const y = luminance(b);
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  }
+
+  /**
+   * One declared custom property's value inside a rule body.
+   *
+   * @param {string} body
+   * @param {string} name
+   * @returns {string}
+   */
+  function tokenValue(body, name) {
+    const m = body.match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6});`));
+    return m ? m[1].toLowerCase() : '';
+  }
+
+  const DARK = ruleBody(TOKENS, ':root');
+  const LIGHT = ruleBody(TOKENS, ":root[data-theme='light']");
+
+  test('defines both route tokens of every classification in the dark theme', () => {
+    const values = ['spec_backed', 'quick_fix', 'full_plan', 'unset'].flatMap(
+      (route) => [
+        tokenValue(DARK, `--route-${route}-bg`),
+        tokenValue(DARK, `--route-${route}-fg`)
+      ]
+    );
+
+    expect(values).toEqual([
+      '#122925',
+      '#5eead4',
+      '#172338',
+      '#93c5fd',
+      '#251d38',
+      '#c4b5fd',
+      '#171c26',
+      '#a9b4c6'
+    ]);
+  });
+
+  test('overrides every route token for the light theme', () => {
+    const values = ['spec_backed', 'quick_fix', 'full_plan', 'unset'].flatMap(
+      (route) => [
+        tokenValue(LIGHT, `--route-${route}-bg`),
+        tokenValue(LIGHT, `--route-${route}-fg`)
+      ]
+    );
+
+    expect(values).toEqual([
+      '#e8f3f0',
+      '#0f766e',
+      '#edf2ff',
+      '#1d4ed8',
+      '#f3edfb',
+      '#6d28d9',
+      '#f2f5f9',
+      '#47536a'
+    ]);
+  });
+
+  test('overrides all five stage on colors for the light theme', () => {
+    const values = ['spec', 'plan', 'impl', 'pr', 'merge'].map((stage) =>
+      tokenValue(LIGHT, `--stage-${stage}-on`)
+    );
+
+    expect(values).toEqual([
+      '#0f766e',
+      '#1d4ed8',
+      '#6d28d9',
+      '#be185d',
+      '#166534'
+    ]);
+  });
+
+  /** Every light surface the stage text and the route chip can sit on (§3.2). */
+  const LIGHT_BACKGROUNDS = [
+    '--bg-app',
+    '--bg-panel',
+    '--bg-card',
+    '--bg-candidate',
+    '--bg-drawer',
+    '--bg-tile-run',
+    '--bg-gate-pill',
+    '--route-spec_backed-bg',
+    '--route-quick_fix-bg',
+    '--route-full_plan-bg',
+    '--route-unset-bg'
+  ].map((name) => tokenValue(LIGHT, name));
+
+  test('reads every light stage on color at 4.5:1 or better', () => {
+    const worst = ['spec', 'plan', 'impl', 'pr', 'merge'].map((stage) => {
+      const fg = tokenValue(LIGHT, `--stage-${stage}-on`);
+      return Math.min(...LIGHT_BACKGROUNDS.map((bg) => contrast(fg, bg)));
+    });
+
+    expect(worst.every((ratio) => ratio >= 4.5)).toBe(true);
+  });
+
+  test('reads every light route chip color at 4.5:1 or better', () => {
+    const worst = ['spec_backed', 'quick_fix', 'full_plan', 'unset'].map(
+      (route) => {
+        const fg = tokenValue(LIGHT, `--route-${route}-fg`);
+        return Math.min(...LIGHT_BACKGROUNDS.map((bg) => contrast(fg, bg)));
+      }
+    );
+
+    expect(worst.every((ratio) => ratio >= 4.5)).toBe(true);
+  });
+
+  test('keeps the light focus accent above the 3:1 non-text threshold', () => {
+    const accent = tokenValue(LIGHT, '--accent');
+
+    const worst = Math.min(
+      ...LIGHT_BACKGROUNDS.map((bg) => contrast(accent, bg))
+    );
+
+    expect(worst).toBeGreaterThanOrEqual(3);
+  });
+
+  test('drops the opacity reduction from the derived route chip', () => {
+    const derived =
+      BASE.match(/\.ctl-chip--route\.is-derived\s*{([^}]*)}/)?.[1] || '';
+
+    expect(derived).toContain('border-style: dashed');
+    expect(derived).not.toContain('opacity');
+  });
+
+  test('paints the neutral card route background from the route tokens', () => {
+    for (const route of ['spec_backed', 'quick_fix', 'full_plan', 'unset']) {
+      expect(CSS).toContain(`.worker-card--route-bg[data-route='${route}']`);
+      expect(CSS).toContain(`.worker-mini--route-bg[data-route='${route}']`);
+      expect(CSS).not.toContain(`.rtile--route-bg[data-route='${route}']`);
+      expect(CSS).toContain(`background: var(--route-${route}-bg);`);
+    }
+  });
+
   test('leaves no var() reference without a definition or a fallback', () => {
     const all_css = [BASE, TOKENS, CSS].join('\n');
     /** @type {Set<string>} */

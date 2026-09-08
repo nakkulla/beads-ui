@@ -129,7 +129,7 @@ scope:
 | 후보 카드 foot | `↴ 대기로` | `op-btn op-btn--primary worker-card__place` | 문구가 `대기로 ↴`에서 아이콘 앞으로 바뀐다 |
 | 후보 카드 레인 메뉴 | `✕` | `op-btn op-btn--icon worker-card__place-cancel` | |
 | 대기 행 (Worker·Monitor) | `↑` `↓` `✕` | `op-btn op-btn--icon worker-mini__rowops-*` | §4 |
-| 실행 타일 헤더 | `↻ 이어하기` · `↻ 정산 재개` · `▶ 재개` | `op-btn rtile__resume` | `▶`에 라벨 `재개`가 붙는다 |
+| 실행 타일 헤더 | `↻ 이어하기` · `↻ 정리 재시도` · `▶ 재개` | `op-btn rtile__resume` | `▶`에 라벨 `재개`가 붙는다 |
 | 상세 세션 이력 행 | `↻ 이어하기` · 재개 명령 복사 | `op-btn detail-session__resume` · `op-btn detail-session__resume-cmd` | |
 
 같은 묶음의 이웃 — 실행 타일의 `⏸`·`▤ 세션`·`폐기`·`세션에서 해결`, 행·foot의
@@ -141,7 +141,7 @@ scope:
 
 ### 3.3 라벨 규칙
 
-- **아이콘 앞·글자 뒤**로 통일한다: `↴ 대기로`, `↻ 이어하기`, `↻ 정산 재개`,
+- **아이콘 앞·글자 뒤**로 통일한다: `↴ 대기로`, `↻ 이어하기`, `↻ 정리 재시도`,
   `▶ 재개`. 지금 이미 그 순서인 `▤ 세션`·`⏸ 자동 머지`와 같은 방향이다.
 - 아이콘만 허용되는 것은 범용 글리프 `✕ ↑ ↓ ⏸`뿐이고, 그때 `title`과
   `aria-label`이 필수다. `▶`는 `▤`·`⏸` 옆에서 홀로 서면 뜻이 갈리므로 라벨을
@@ -196,7 +196,7 @@ export async function runResumeFlow(options)
   decision_token }), { onResult: adopt, refresh: () => transport(base) })` →
   `res.resumed === false && !res.conflict && res.reason`이면 `showToast(`${라벨}
   거부: ${res.reason}`, 'error', 2400)`. 라벨은 `kind`가 정한다(`이어하기` /
-  `정산 재개`). mismatch 경로의 충돌은 `resolveContinuationMismatch`의 `refresh`
+  `정리 재시도`). mismatch 경로의 충돌은 `resolveContinuationMismatch`의 `refresh`
   루프가 이미 새 사실로 다이얼로그를 다시 여는 것으로 처리하므로, 유틸은 그
   안에서 별도 재시도를 하지 않는다.
 - **`transport`는 재시도 없는 전송 하나다.** 화면이 넘기는 `transport(payload)`는
@@ -216,11 +216,11 @@ export async function runResumeFlow(options)
 `requestResumeInstructions(context, doc)` 시그니처로 확장한다. `context`가 없으면
 지금 모양 그대로다(fail-quiet).
 
-- 제목: `kind === 'settlement'`면 「착지 정산 재개」, 아니면 「세션 이어하기」.
+- 제목: `kind === 'settlement'`면 「착지 후 정리 재시도」, 아니면 「세션 이어하기」.
 - 제목 아래 한 줄 `.resume-instructions-dialog__target`: `<bead_id> · <tuple>`.
   `tuple`은 호출 측이 `formatAttemptTuple(attempt)`로 만들어 넘기며, 없으면 ID만.
   실행 타일과 세션 이력 행 모두 attempt 레코드를 갖고 있다.
-- 확인 버튼 문구는 제목과 같은 분기(「이어하기」/「정산 재개」). textarea·
+- 확인 버튼 문구는 제목과 같은 분기(「이어하기」/「정리 재시도」). textarea·
   placeholder·Ctrl/⌘+Enter·취소는 그대로다.
 
 ### 5.3 두 다이얼로그의 형태
