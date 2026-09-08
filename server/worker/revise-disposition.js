@@ -102,7 +102,7 @@ export function dispositionNotes(input) {
  *     updateFields: (bead_id: string, input: { set?: Record<string, string>, unset?: string[], status?: string, append_notes?: string }) => Promise<void>
  *   },
  *   parked: ReturnType<typeof import('./revise-parked.js').createReviseParkedStore>,
- *   scheduler: { dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt: string|null, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }> },
+ *   scheduler: { dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt: string|null, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }> },
  *   locks: ReturnType<typeof import('./locks.js').createLockManager>,
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   notifyChanged?: (workspace: string) => void,
@@ -341,7 +341,7 @@ export function createReviseDisposition(deps) {
      * Dispatch the repair session behind [finding 수용·수정] (§3.3).
      *
      * @param {string} bead_id
-     * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
+     * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }} [continuation]
      * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
      */
     async fix(bead_id, continuation = {}) {

@@ -214,6 +214,7 @@ const DONE_KIND_LABELS = {
  *   attempt_id?: string|null,
  *   run_state?: 'running'|'paused'|'failed'|'parked'|'retry_wait'|'waiting'|'provider_hold',
  *   can_pause?: boolean,
+ *   instructions_restart?: { eligible: boolean, reason: string|null },
  *   can_resume?: boolean,
  *   started_at?: number|null,
  *   last_event_at?: number|null,
@@ -645,6 +646,12 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
       started_at,
       ...(failure ? { failure } : {}),
       can_pause: run_state === 'running' && has_session,
+      // 서버가 판정한 지시 재시작 자격 (UI-qce9 §5). 없으면 키 자체를 싣지
+      // 않는다 — 옛 서버 payload에서 버튼이 나타나지 않는 것이 맞다
+      // (fail-quiet).
+      ...(a.instructions_restart && typeof a.instructions_restart === 'object'
+        ? { instructions_restart: a.instructions_restart }
+        : {}),
       can_resume: resume_eligible
     });
   }
@@ -796,6 +803,12 @@ function failureProjection(a, ctx) {
     retry: retryProjection(a),
     resume_eligible: ctx.resume_eligible,
     resume_reason: ctx.resume_reason,
+    // 이 자식이 어떤 재개 의미로 시작됐는지 (UI-qce9 §5.3): 팝오버의 원인
+    // 문장이 '새 세션으로 대체'를 말해도 되는지가 여기서 갈린다. 그 선택이
+    // 없는 기록에는 키를 만들지 않는다 (fail-quiet).
+    ...(a.continuation_choice === 'prior_attempt'
+      ? { continuation_choice: 'prior_attempt' }
+      : {}),
     landed: quickFixLanded(a),
     confirmation: ctx.confirmation,
     ...timelineFields(ctx.history)
@@ -3153,6 +3166,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
         // 채워지지 않았으면 칩만 생략된다.
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
         can_pause: live.can_pause,
+        // 서버 판정 그대로 (UI-qce9 §5). 없으면 키를 만들지 않아 두 탭 모두
+        // 버튼을 그리지 않는다.
+        ...(live.instructions_restart
+          ? { instructions_restart: live.instructions_restart }
+          : {}),
         can_resume: live.can_resume,
         started_at: live.started_at,
         last_event_at: live.last_event_at,

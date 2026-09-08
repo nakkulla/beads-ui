@@ -2985,6 +2985,121 @@ describe('실행 타일 조작 형태 (UI-6g3t §3.2·§3.3)', () => {
     expect(pause.classList.contains('op-btn')).toBe(false);
   });
 });
+describe('지시 재시작 조작 (UI-qce9 §3.1)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Record<string, unknown>} [patch]
+   * @returns {HTMLElement}
+   */
+  function tileEl(patch = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(/** @type {any} */ (tileInput(patch)), 5000, null),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  test('renders no restart button without the server verdict', () => {
+    const tile = tileEl({});
+
+    expect(tile.querySelector('.rtile__restart-instructions')).toBeNull();
+  });
+
+  test('puts the restart button in the slot-1 action group before ⏸', () => {
+    const tile = tileEl({
+      instructions_restart: { eligible: true, reason: null }
+    });
+
+    const actions = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__hd-actions')
+    );
+    const buttons = Array.from(actions.querySelectorAll('button')).map(
+      (button) => button.className
+    );
+    const restart = /** @type {HTMLButtonElement} */ (
+      actions.querySelector('.rtile__restart-instructions')
+    );
+    expect(restart.textContent?.trim()).toBe('지시와 함께 재시작');
+    expect(restart.disabled).toBe(false);
+    expect(restart.classList.contains('op-btn')).toBe(true);
+    expect(buttons.indexOf('op-btn rtile__restart-instructions')).toBeLessThan(
+      buttons.indexOf('rtile__pause')
+    );
+  });
+
+  test('disables the restart button with the server reason as its tooltip', () => {
+    const tile = tileEl({
+      instructions_restart: {
+        eligible: false,
+        reason: '실행 계정이 기록되지 않아 같은 계정으로 재시작할 수 없습니다.'
+      }
+    });
+
+    const restart = /** @type {HTMLButtonElement} */ (
+      tile.querySelector('.rtile__restart-instructions')
+    );
+
+    expect(restart.disabled).toBe(true);
+    expect(restart.title).toBe(
+      '실행 계정이 기록되지 않아 같은 계정으로 재시작할 수 없습니다.'
+    );
+  });
+
+  test('offers 지시와 함께 이어하기 beside ▶ 재개 on a paused tile', () => {
+    const tile = tileEl({
+      paused: true,
+      instructions_restart: { eligible: true, reason: null }
+    });
+
+    const resume_instructions = /** @type {HTMLButtonElement} */ (
+      tile.querySelector('.rtile__resume-instructions')
+    );
+    const resume = /** @type {HTMLButtonElement} */ (
+      tile.querySelector('.rtile__resume')
+    );
+
+    expect(resume_instructions.textContent?.trim()).toBe(
+      '지시와 함께 이어하기'
+    );
+    expect(resume.title).toBe(
+      '같은 세션으로 이어서 재개 (현재 실행 설정을 적용할 수 있음)'
+    );
+  });
+
+  test('says no fresh session was started for a prior_attempt resume failure', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(
+        /** @type {any} */ (
+          tileInput({
+            failed: true,
+            failure: failureInput({
+              cause: 'resume_failed:transcript_missing',
+              continuation_choice: 'prior_attempt',
+              open: true
+            })
+          })
+        ),
+        5000,
+        null
+      ),
+      mount
+    );
+
+    const popover = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__failure-pop')
+    );
+
+    expect(popover.textContent).toContain(
+      '이어갈 세션 기록이 없습니다. 새 세션을 자동으로 시작하지 않았습니다.'
+    );
+  });
+});
+
 // discard-abandon §3.1: 폐기 실패는 실행 중·실패·파킹 타일 어디서나 나므로,
 // 그 출구도 대기 행뿐 아니라 타일에 있어야 한다. 없으면 실행 중이던 bead는
 // 어느 화면에서도 포기할 수 없다.

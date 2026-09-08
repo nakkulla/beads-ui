@@ -17,6 +17,30 @@ export function formatAttemptTuple(attempt) {
 }
 
 /**
+ * The FULL recorded execution tuple, for the one dialog that promises to reuse
+ * it verbatim (UI-qce9 §3.1): provider·model·effort·speed·계정 이름. `speed` is
+ * always shown here — unlike the card tuple, where only `Fast` is worth a chip —
+ * because "same settings" is exactly what the user is confirming. Only the
+ * account NAME travels; no token or credential is displayed.
+ *
+ * @param {{ runner?: unknown, model?: unknown, effort?: unknown, speed?: unknown, claude_account?: unknown, codex_account?: unknown }} attempt
+ * @returns {string}
+ */
+export function formatExecutionTuple(attempt) {
+  const account =
+    attempt.runner === 'codex' ? attempt.codex_account : attempt.claude_account;
+  return [
+    typeof attempt.runner === 'string' ? attempt.runner : null,
+    typeof attempt.model === 'string' ? attempt.model : null,
+    typeof attempt.effort === 'string' ? attempt.effort : null,
+    typeof attempt.speed === 'string' ? attempt.speed : 'default',
+    typeof account === 'string' && account.length > 0 ? account : null
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/**
  * Describe an attempt relation without treating legacy records as provider
  * session continuations.
  *

@@ -215,6 +215,13 @@
  * @property {'session'|'fresh'|null} continuation_mode - Whether this child
  * reused the provider session or started a replacement session. Null keeps
  * legacy history neutral.
+ * @property {'prior_attempt'|null} continuation_choice - The resume MEANING the
+ * user chose for this child (UI-qce9 §5.3), not a work state: `prior_attempt`
+ * means "the recorded session and the recorded execution settings, or nothing".
+ * Its only consumers are this child's own resume-failure path and its automatic
+ * continuation, which must not substitute a fresh session or another account.
+ * Absent on every legacy record, which reads as `null` and keeps the ordinary
+ * resume behaviour.
  * @property {Record<string, string|null>|null} exec_restore_values - Raw bead
  * metadata observed immediately before this attempt overlaid exec stamps.
  * @property {string|null} workflow_mode_source_prior - `workflow_mode_source`
@@ -2972,6 +2979,10 @@ export function makeAttempt(fields) {
       fields.continuation_mode === 'session' ||
       fields.continuation_mode === 'fresh'
         ? fields.continuation_mode
+        : null,
+    continuation_choice:
+      fields.continuation_choice === 'prior_attempt'
+        ? fields.continuation_choice
         : null,
     continuation_action: isRecord(fields.continuation_action)
       ? clone(fields.continuation_action)

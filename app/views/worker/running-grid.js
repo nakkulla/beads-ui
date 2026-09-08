@@ -104,6 +104,10 @@ import { logPathTemplate } from './log-path.js';
  * @property {boolean} [can_pause] - Running attempt whose session id is already
  * captured. Pausing before that would strand an unresumable attempt, so the ⏸
  * button renders disabled until it lands (§2.1).
+ * @property {{ eligible: boolean, reason: string|null }} [instructions_restart] -
+ * 서버가 판정한 지시 재시작 자격 (UI-qce9 §5). 키가 없으면 버튼을 그리지 않고,
+ * `eligible:false`면 비활성 버튼과 `reason` 툴팁이다 — 사실 자체는 참이므로
+ * 버튼을 지우지 않는다.
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4.1).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4.1).
  * @property {import('../../utils/child-rollup.js').ChildRollup|null} [rollup] -
@@ -214,6 +218,9 @@ import { logPathTemplate } from './log-path.js';
  * @property {{ cursor?: string|null, head_sha?: string|null, reason?: string|null }|null} quickfix_landing
  * @property {boolean} resume_eligible
  * @property {string|null} resume_reason
+ * @property {'prior_attempt'|null} [continuation_choice] - 이 자식이 시작된 재개
+ * 의미 (UI-qce9 §5.3). `prior_attempt`이면 재개 실패 문장이 '새 세션으로 대체'를
+ * 말하지 않는다 — 실제로 대체하지 않았기 때문이다.
  * @property {boolean} landed
  * @property {'merged'|'unmerged'} confirmation
  * @property {TimelineRow[]} [timeline] - 이 bead의 최근 이력, 최신순
@@ -486,9 +493,20 @@ function failurePopoverTemplate(failure, now) {
   if (!failure || failure.open !== true) {
     return '';
   }
-  const cause_text =
+  const base_cause_text =
     failureSentence(failure.cause) ||
     failureText(failure.cause, failure.cause_detail);
+  // §5.3: 이 자식은 기록된 세션만 잇겠다는 선택으로 시작했으므로, 재개 실패에
+  // '새 세션으로 대체'라는 기존 문장이 붙으면 안 된다 — 실제로 대체하지 않았다.
+  // 사전 문구는 그 경우가 실제로 일어나는 기존 경로에 그대로 남는다.
+  const cause_text =
+    failure.continuation_choice === 'prior_attempt' &&
+    typeof failure.cause === 'string' &&
+    failure.cause.startsWith('resume_failed')
+      ? failure.cause === 'resume_failed:transcript_missing'
+        ? '이어갈 세션 기록이 없습니다. 새 세션을 자동으로 시작하지 않았습니다.'
+        : `${base_cause_text} 새 세션을 자동으로 시작하지 않았습니다.`
+      : base_cause_text;
   // 이 실패가 처음이 아니었다는 사실 (UI-5ym8 §8). 재시도 lineage는 같은 원인을
   // 몇 번 다시 시도했는지만 말한다 — 다른 원인이었다면 그 attempt는 이 lineage에
   // 속하지 않았을 것이므로, 문장은 "같은 오류"로 고정이다.
@@ -1342,6 +1360,37 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const discard_actions = abandon_button
     ? html`${discard_button}${abandon_button}`
     : discard_button;
+  // 지시 재시작·지시 이어하기 (UI-qce9 §3.1). 자리는 슬롯 1 오른쪽 조작
+  // 묶음이고, `⏸`·`▶ 재개`와 같은 `.op-btn`이다 — 새 색도, 중간 칩 줄도 만들지
+  // 않는다. 서버가 자격을 싣지 않은 타일에는 버튼 자체가 없다 (fail-quiet).
+  const restart_entry = tile.instructions_restart || null;
+  const restart_eligible = restart_entry?.eligible === true;
+  const instructions_restart_button = restart_entry
+    ? html`<button
+        type="button"
+        class="op-btn rtile__restart-instructions"
+        ?disabled=${!restart_eligible}
+        title=${restart_eligible
+          ? '실행을 중단한 뒤 지시를 담아 같은 세션 기록으로 재시작'
+          : restart_entry.reason || '지시와 함께 재시작 불가'}
+        aria-label="지시와 함께 재시작"
+      >
+        지시와 함께 재시작
+      </button>`
+    : '';
+  const instructions_resume_button = restart_entry
+    ? html`<button
+        type="button"
+        class="op-btn rtile__resume-instructions"
+        ?disabled=${!restart_eligible}
+        title=${restart_eligible
+          ? '지시를 담아 같은 세션 기록과 실행 설정으로 이어하기'
+          : restart_entry.reason || '지시와 함께 이어하기 불가'}
+        aria-label="지시와 함께 이어하기"
+      >
+        지시와 함께 이어하기
+      </button>`
+    : '';
   // 작업 종류 분류 (UI-kyky §3.1). 실행 타일은 배경을 켜지 않는다 — '실행 중'
   // 자체가 §3.1이 우선한다고 정한 상태 표현이라 이 그리드의 어떤 타일도 중립이
   // 아니다. `data-route`는 칩과 같은 분류를 실어 두 표면이 어긋나지 않게 한다.
@@ -1406,25 +1455,25 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                   ▤ 세션
                 </button>
                 ${paused
-                  ? html`<button
-                      type="button"
-                      class="op-btn rtile__resume"
-                      title="같은 세션으로 이어서 재개"
-                      aria-label="재개"
-                    >
-                      ▶ 재개
-                    </button>`
-                  : html`<button
-                      type="button"
-                      class="rtile__pause"
-                      ?disabled=${tile.can_pause === false}
-                      title=${tile.can_pause === false
-                        ? '세션 ID 기록 전 — 일시정지 불가'
-                        : '일시정지 (같은 세션으로 재개 가능)'}
-                      aria-label="일시정지"
-                    >
-                      ⏸
-                    </button>`}
+                  ? html`${instructions_resume_button}<button
+                        type="button"
+                        class="op-btn rtile__resume"
+                        title="같은 세션으로 이어서 재개 (현재 실행 설정을 적용할 수 있음)"
+                        aria-label="재개"
+                      >
+                        ▶ 재개
+                      </button>`
+                  : html`${instructions_restart_button}<button
+                        type="button"
+                        class="rtile__pause"
+                        ?disabled=${tile.can_pause === false}
+                        title=${tile.can_pause === false
+                          ? '세션 ID 기록 전 — 일시정지 불가'
+                          : '일시정지 (같은 세션으로 재개 가능)'}
+                        aria-label="일시정지"
+                      >
+                        ⏸
+                      </button>`}
                 ${discard_actions}`}${parked ? '' : resolve_button}
       </div>
     </div>

@@ -10,6 +10,7 @@ import {
   __setUnattachedAdmissionCheckForTest,
   createWorkerAttachment
 } from './worker/attach.js';
+import { EXEC_SETTING_KEYS } from './worker/exec-enums.js';
 import {
   __resetRepoOpsDisplayForTest,
   recordRepoOpsDisplay
@@ -552,7 +553,9 @@ describe('ws worker-queue channel', () => {
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
 
     await send(sock, 'p1', 'worker-attempt-pause', { attempt_id: 'att-1' });
-    expect(pause).toHaveBeenCalledWith(process.cwd(), 'att-1');
+    expect(pause).toHaveBeenCalledWith(process.cwd(), 'att-1', {
+      require_durable: false
+    });
     const ok_reply = replyFor(sock, 'p1');
     expect(ok_reply.ok).toBe(true);
     expect(ok_reply.payload.paused).toBe(true);
@@ -564,6 +567,134 @@ describe('ws worker-queue channel', () => {
     expect(refused.payload.paused).toBe(false);
     expect(refused.payload.phase).toBe(null);
     expect(refused.payload.reason).toBe('no_session_id');
+  });
+
+  test('decorateQueue marks running and paused attempts with instructions_restart', () => {
+    const exec_values = Object.fromEntries(
+      EXEC_SETTING_KEYS.map((key) => [key, null])
+    );
+    /** @param {Record<string, unknown>} over */
+    const attempt = (over) => ({
+      bead_id: 'UI-1',
+      kind: 'implementation',
+      session_id: 'sid-1',
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      speed: 'default',
+      claude_account: 'a@example.com',
+      exec_values,
+      ...over
+    });
+
+    const snapshot = /** @type {any} */ (
+      decorateQueue('', {
+        revision: 1,
+        slots: 2,
+        queue: [],
+        pr_wait: [],
+        done: [],
+        cleanup_failed: {},
+        attempts: {
+          live: attempt({ attempt_id: 'live', status: 'running' }),
+          'no-account': attempt({
+            attempt_id: 'no-account',
+            status: 'running',
+            claude_account: null
+          }),
+          settled: attempt({
+            attempt_id: 'settled',
+            status: 'paused',
+            control: { kind: 'pause', phase: 'done', requested_at: 1 }
+          }),
+          gone: attempt({ attempt_id: 'gone', status: 'failed' })
+        }
+      })
+    );
+
+    expect(snapshot.attempts.live.instructions_restart).toEqual({
+      eligible: true,
+      reason: null
+    });
+    expect(snapshot.attempts['no-account'].instructions_restart).toEqual({
+      eligible: false,
+      reason: '실행 계정이 기록되지 않아 같은 계정으로 재시작할 수 없습니다.'
+    });
+    expect(snapshot.attempts.settled.instructions_restart).toEqual({
+      eligible: true,
+      reason: null
+    });
+    expect(snapshot.attempts.gone).not.toHaveProperty('instructions_restart');
+  });
+
+  test('worker-attempt-pause forwards require_durable and rejects a non-boolean', async () => {
+    const pause = vi.fn(async () => ({ ok: true }));
+    __registerWorkerAttachmentForTest(process.cwd(), {
+      // @ts-expect-error minimal fake attachment
+      scheduler: { tick: vi.fn(), stop: vi.fn(), pause }
+    });
+    const sock = fakeSocket();
+
+    await send(sock, 'p1', 'worker-attempt-pause', {
+      attempt_id: 'att-1',
+      require_durable: true
+    });
+    await send(sock, 'p2', 'worker-attempt-pause', {
+      attempt_id: 'att-1',
+      require_durable: 'yes'
+    });
+
+    expect(pause).toHaveBeenCalledTimes(1);
+    expect(pause).toHaveBeenCalledWith(process.cwd(), 'att-1', {
+      require_durable: true
+    });
+    expect(replyFor(sock, 'p2').error.code).toBe('bad_request');
+  });
+
+  test('worker-attempt-resume accepts prior_attempt without a decision token', async () => {
+    const resume = vi.fn(async () => ({ ok: true, attempt_id: 'att-2' }));
+    __registerWorkerAttachmentForTest(process.cwd(), {
+      // @ts-expect-error minimal fake attachment
+      scheduler: { tick: vi.fn(), stop: vi.fn(), resume }
+    });
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-attempt-resume', {
+      attempt_id: 'att-1',
+      expected_revision: 0,
+      continuation: 'prior_attempt',
+      instructions: '이어서 고쳐라'
+    });
+
+    expect(replyFor(sock, 'r1').payload).toMatchObject({ resumed: true });
+    expect(resume).toHaveBeenCalledWith(
+      process.cwd(),
+      'att-1',
+      expect.objectContaining({
+        continuation: 'prior_attempt',
+        instructions: '이어서 고쳐라'
+      })
+    );
+  });
+
+  test('worker-attempt-resume refuses prior_attempt carrying an exec_override', async () => {
+    const resume = vi.fn(async () => ({ ok: true }));
+    __registerWorkerAttachmentForTest(process.cwd(), {
+      // @ts-expect-error minimal fake attachment
+      scheduler: { tick: vi.fn(), stop: vi.fn(), resume }
+    });
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-attempt-resume', {
+      attempt_id: 'att-1',
+      expected_revision: 0,
+      continuation: 'prior_attempt',
+      exec_override: { model: 'opus' }
+    });
+
+    expect(replyFor(sock, 'r1').error.code).toBe('bad_request');
+    expect(resume).not.toHaveBeenCalled();
   });
 
   test('worker-attempt-resume preserves a structured runner mismatch', async () => {

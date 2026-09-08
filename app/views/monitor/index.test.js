@@ -1208,6 +1208,53 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     });
   });
 
+  test('restarts with instructions from the tile it was clicked on', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: NOW - 100,
+              session_id: 's',
+              instructions_restart: { eligible: true, reason: null }
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()],
+      transport: async () => ({ paused: true, resumed: true })
+    });
+
+    view.load();
+    click(mount, '.rtile__restart-instructions');
+    const textarea = /** @type {HTMLTextAreaElement} */ (
+      document.querySelector('.resume-instructions-dialog textarea')
+    );
+    textarea.value = '이어서 고쳐라';
+    textarea.dispatchEvent(new Event('input'));
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog .op-btn--primary')
+    ).click();
+    await vi.waitFor(() => expect(sent.length).toBe(2));
+
+    expect(sent[0]).toEqual({
+      type: 'worker-attempt-pause',
+      payload: { attempt_id: 't1', require_durable: true, root_dir: WS_A }
+    });
+    expect(sent[1]).toMatchObject({
+      type: 'worker-attempt-resume',
+      payload: {
+        attempt_id: 't1',
+        continuation: 'prior_attempt',
+        instructions: '이어서 고쳐라',
+        root_dir: WS_A
+      }
+    });
+  });
+
   test('re-reads the revision for each resume send and never retries twice', async () => {
     const attempt = {
       attempt_id: 't1',

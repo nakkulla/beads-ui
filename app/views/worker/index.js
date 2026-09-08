@@ -42,12 +42,18 @@ import {
 } from '../../data/closed-range.js';
 import { createListSelectors } from '../../data/list-selectors.js';
 import { isImplementationAttempt } from '../../utils/active-attempts.js';
-import { formatAttemptTuple } from '../../utils/attempt-display.js';
+import {
+  formatAttemptTuple,
+  formatExecutionTuple
+} from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { STALE_WORK_REFUSALS } from '../../utils/failure-sentences.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
-import { runResumeFlow } from '../../utils/resume-flow.js';
+import {
+  runRestartWithInstructionsFlow,
+  runResumeFlow
+} from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
@@ -2131,6 +2137,44 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * `지시와 함께 재시작` / `지시와 함께 이어하기` (UI-qce9 §3.2). 순서와 문구는
+   * 흐름 모듈이 소유하고, 이 화면이 넘기는 것은 두 전송과 최신 스냅샷 읽기다 —
+   * `expected_revision`은 전송 시점에 다시 읽으므로 중단 뒤의 resume가 중단이
+   * 만든 revision을 쓴다.
+   *
+   * @param {string} attempt_id
+   * @param {'restart'|'resume_recorded'} kind
+   */
+  async function restartAttemptWithInstructions(attempt_id, kind) {
+    if (!transport || !attempt_id) {
+      return;
+    }
+    const send = transport;
+    const attempt = currentQueue().attempts?.[attempt_id] || null;
+    await runRestartWithInstructionsFlow({
+      context: {
+        bead_id: attempt?.bead_id || '',
+        kind,
+        attempt_id,
+        tuple: attempt ? formatExecutionTuple(attempt) : ''
+      },
+      pause: () =>
+        /** @type {any} */ (
+          send('worker-attempt-pause', { attempt_id, require_durable: true })
+        ),
+      resume: (payload) =>
+        /** @type {any} */ (
+          send('worker-attempt-resume', {
+            attempt_id,
+            expected_revision: currentRevision(),
+            ...payload
+          })
+        ),
+      snapshot: () => currentQueue()
+    });
+  }
+
+  /**
    * Send one merge-queue mutation under the shared CAS discipline: retry ONCE
    * against the fresh revision on a conflict, adopting the authoritative queue
    * from each reply so the row's place in line renders without waiting for the
@@ -3092,6 +3136,11 @@ export function createWorkerView(mount_element, options = {}) {
                         ? '공급자 보류'
                         : undefined,
             can_pause: item.can_pause !== false,
+            // 지시 재시작 자격 (UI-qce9 §3.1): 서버 판정을 그대로 싣고, 없으면
+            // 키를 만들지 않아 버튼이 나지 않는다 (fail-quiet).
+            ...(item.instructions_restart
+              ? { instructions_restart: item.instructions_restart }
+              : {}),
             // 레포 배지는 한 레포 화면의 사실이 아니다 (모니터 타일만 그린다).
             workspace_name: '',
             dependency_chips: chipsWithOverlaps(item) || undefined,
@@ -5134,6 +5183,26 @@ export function createWorkerView(mount_element, options = {}) {
             : 'unmerged',
           tile_discard.dataset.operationId || null
         );
+      }
+      return;
+    }
+    if (target?.closest?.('.rtile__restart-instructions')) {
+      const tile = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile')
+      );
+      const att = tile?.dataset?.attemptId;
+      if (att) {
+        void restartAttemptWithInstructions(att, 'restart');
+      }
+      return;
+    }
+    if (target?.closest?.('.rtile__resume-instructions')) {
+      const tile = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile')
+      );
+      const att = tile?.dataset?.attemptId;
+      if (att) {
+        void restartAttemptWithInstructions(att, 'resume_recorded');
       }
       return;
     }

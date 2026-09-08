@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { requestResumeInstructions } from './resume-instructions-dialog.js';
 
 describe('requestResumeInstructions', () => {
@@ -93,5 +93,121 @@ describe('requestResumeInstructions', () => {
     expect(
       dialog?.querySelector('.resume-instructions-dialog__target')
     ).toBeNull();
+  });
+});
+
+describe('requestResumeInstructions restart context (UI-qce9 §3.1)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  test('titles the restart dialog and describes what it does', () => {
+    requestResumeInstructions({ bead_id: 'UI-1', kind: 'restart' });
+
+    const dialog = document.querySelector('.resume-instructions-dialog');
+    expect(dialog?.querySelector('h2')?.textContent).toBe('지시와 함께 재시작');
+    expect(
+      dialog?.querySelector('.resume-instructions-dialog__desc')?.textContent
+    ).toBe(
+      '실행을 중단한 뒤 같은 세션 기록과 실행 설정으로 이어갑니다. 실행 중인 도구는 중단될 수 있으며 작업 디렉터리는 보존됩니다.'
+    );
+    expect(dialog?.querySelector('.op-btn--primary')?.textContent).toBe(
+      '중단 후 재시작'
+    );
+  });
+
+  test('names the paused entry point 지시와 함께 이어하기', () => {
+    requestResumeInstructions({ bead_id: 'UI-1', kind: 'resume_recorded' });
+
+    const dialog = document.querySelector('.resume-instructions-dialog');
+    expect(dialog?.querySelector('h2')?.textContent).toBe(
+      '지시와 함께 이어하기'
+    );
+    expect(
+      dialog?.querySelector('.resume-instructions-dialog__desc')?.textContent
+    ).toBe(
+      '같은 세션 기록과 실행 설정으로 이어갑니다. 실행 중인 도구는 중단될 수 있으며 작업 디렉터리는 보존됩니다.'
+    );
+    expect(dialog?.querySelector('.op-btn--primary')?.textContent).toBe(
+      '이어하기'
+    );
+  });
+
+  test('disables confirm while the mandatory input is empty', () => {
+    requestResumeInstructions({ kind: 'restart' });
+
+    const confirm = /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog .op-btn--primary')
+    );
+    const textarea = /** @type {HTMLTextAreaElement} */ (
+      document.querySelector('.resume-instructions-dialog textarea')
+    );
+    expect(confirm.disabled).toBe(true);
+
+    textarea.value = '고쳐라';
+    textarea.dispatchEvent(new Event('input'));
+
+    expect(confirm.disabled).toBe(false);
+    expect(textarea.required).toBe(true);
+  });
+
+  test('shows the target tuple line for the restart dialog', () => {
+    requestResumeInstructions({
+      bead_id: 'UI-1',
+      kind: 'restart',
+      tuple: 'claude · opus · high · default · a@example.com'
+    });
+
+    expect(
+      document.querySelector('.resume-instructions-dialog__target')?.textContent
+    ).toBe('UI-1 · claude · opus · high · default · a@example.com');
+  });
+
+  test('keeps the typed text and shows the message when onSubmit refuses', async () => {
+    const onSubmit = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        message: '재시작 거부: bead_running'
+      })
+      .mockResolvedValueOnce({ ok: true });
+    const result = requestResumeInstructions({ kind: 'restart' }, document, {
+      onSubmit
+    });
+    const textarea = /** @type {HTMLTextAreaElement} */ (
+      document.querySelector('.resume-instructions-dialog textarea')
+    );
+    const confirm = /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog .op-btn--primary')
+    );
+    textarea.value = '테스트부터';
+    textarea.dispatchEvent(new Event('input'));
+
+    confirm.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(
+      document.querySelector('.resume-instructions-dialog__error')?.textContent
+    ).toBe('재시작 거부: bead_running');
+    expect(textarea.value).toBe('테스트부터');
+    expect(
+      document.querySelector('.resume-instructions-dialog')
+    ).not.toBeNull();
+
+    confirm.click();
+
+    await expect(result).resolves.toBe('테스트부터');
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not submit an empty mandatory input', () => {
+    const onSubmit = vi.fn(async () => ({ ok: true }));
+    requestResumeInstructions({ kind: 'restart' }, document, { onSubmit });
+
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog .op-btn--primary')
+    ).click();
+
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });

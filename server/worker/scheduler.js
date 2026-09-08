@@ -89,6 +89,12 @@ import {
   queryForeignBlockerStatus
 } from './foreign-blocker-status.js';
 import * as default_guard_hook from './guard-hook.js';
+import {
+  activeAccountOf,
+  instructionsRestartEligibility,
+  processIdentityOf,
+  restartRecordEligibility
+} from './instructions-restart.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import {
   DEFAULT_SLOTS,
@@ -1152,13 +1158,13 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   staleWorkRecheck: (workspace: string, input: { bead_id: string, action_id: string, expected_revision: number }) => Promise<{ ok: boolean, reason?: string, state?: string, conflict?: boolean }>,
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   stopReviewSessionProcess: (workspace: string, attempt_id: string) => Promise<boolean>,
- *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   pause: (workspace: string, attempt_id: string, options?: { require_durable?: boolean }) => Promise<{ ok: boolean, reason?: string }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
- *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
- *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
- *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
@@ -1338,7 +1344,12 @@ export function createScheduler(deps) {
   /**
    * Live sessions keyed by attempt_id.
    *
-   * @type {Map<string, { bead_id: string, repo: string, handle: RunnerHandle, prior: string|null }>}
+   * `settled` is the WHOLE termination chain (`handle.done` → `onSessionDone` →
+   * `reportCompletionSettlement`), not just the process exit (UI-qce9 §4): a
+   * durable pause that only waited for the process would let a late parent
+   * callback release the child's claim.
+   *
+   * @type {Map<string, { bead_id: string, repo: string, handle: RunnerHandle, prior: string|null, settled: Promise<any> }>}
    */
   const running = new Map();
   /** Beads currently claimed (dispatching or running) — prevents double launch. @type {Set<string>} */
@@ -4943,7 +4954,14 @@ export function createScheduler(deps) {
             prior,
             'resume_failed:transcript_missing'
           );
-          if (!fallback_used && source_session_id) {
+          // §5.3: a `prior_attempt` child records the failure and stops. The
+          // fresh substitute below is the ORDINARY resume's promise, and this
+          // child was launched on the opposite one.
+          if (
+            !fallback_used &&
+            source_session_id &&
+            failed_record.continuation_choice !== 'prior_attempt'
+          ) {
             await resume(workspace, attempt_id, {
               continuation: 'fresh_current',
               decision_token: {},
@@ -6227,6 +6245,11 @@ export function createScheduler(deps) {
    * @returns {Promise<boolean>} Whether a substitute session was launched.
    */
   async function retryDispositionFresh(workspace, attempt_id, bead_id, record) {
+    // §5.3: no fresh substitute for a record that carries the user's
+    // "recorded session only" choice, whichever lane it is in.
+    if (record?.continuation_choice === 'prior_attempt') {
+      return false;
+    }
     const restored = await restoreAttemptOverlayForRelaunch(
       bead_id,
       record.workflow_mode_prior ?? null,
@@ -8515,19 +8538,19 @@ export function createScheduler(deps) {
       }
       scheduleUsageFanout(workspace);
     });
-    running.set(attempt_id, { bead_id, repo, handle, prior: prior_wf });
-    startUsageReceiptPolling(workspace, attempt_id);
-    startDelegationPolling(workspace, attempt_id);
-    notifyChanged(workspace);
-
     // onSessionDone reads only repo + target_base off the snap, so a synthetic
     // snapshot carries everything the termination path needs (the independent
     // verify target) for both first dispatch and resume.
     const doneSnap = /** @type {BeadSnapshot} */ (
       /** @type {any} */ ({ repo, target_base })
     );
-    handle.done
-      .then(async (verdict) => {
+    // ONE settlement chain, held on the live entry (UI-qce9 §4). Everything
+    // that waits for this session — ⏸, ■, 폐기 — must wait for the same
+    // promise, because the parent's claim release and stamp restore happen
+    // INSIDE it and a waiter that stopped at `handle.done` would resume a
+    // child while the parent was still writing.
+    const settled = handle.done.then(async (verdict) => {
+      try {
         const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
         backfillObservedEffort(attempt?.session_id ?? null);
         await onSessionDone(
@@ -8539,10 +8562,21 @@ export function createScheduler(deps) {
           verdict
         );
         await reportCompletionSettlement(workspace, attempt_id, verdict);
-      })
-      .catch((err) => {
+      } catch (err) {
         log('session settlement failed for %s: %o', attempt_id, err);
-      });
+      }
+      return verdict;
+    });
+    running.set(attempt_id, {
+      bead_id,
+      repo,
+      handle,
+      prior: prior_wf,
+      settled
+    });
+    startUsageReceiptPolling(workspace, attempt_id);
+    startDelegationPolling(workspace, attempt_id);
+    notifyChanged(workspace);
     return { ok: true };
   }
 
@@ -8662,7 +8696,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
@@ -8727,6 +8761,16 @@ export function createScheduler(deps) {
       if (a && a.resumed_from === attempt_id) {
         return { ok: false, reason: 'already_resumed' };
       }
+    }
+    // §4·§6: the paused row's recorded-execution entry waits for the parent's
+    // WHOLE settlement chain, never for the process alone. While `paused_done`
+    // still holds that chain the parent may yet release claims and restore
+    // stamps, so a child created now would be settled by the wrong callback.
+    if (
+      continuation.continuation === 'prior_attempt' &&
+      (settling.has(attempt_id) || paused_done.has(attempt_id))
+    ) {
+      return { ok: false, reason: 'bead_running' };
     }
     if (quickfix_cleanup_resume) {
       if (settling.has(attempt_id)) {
@@ -8856,6 +8900,18 @@ export function createScheduler(deps) {
               }
             : {})
         });
+      } else if (prior.continuation_choice === 'prior_attempt') {
+        // §5.3: the automatic recovery keeps the recorded session, tuple and
+        // account. An account SWITCH is exactly what this choice forbids, so
+        // the switch is refused with its reason rather than performed.
+        result =
+          pending.account !== null && pending.account !== activeAccountOf(prior)
+            ? { ok: false, reason: 'prior_attempt_locked' }
+            : await resume(workspace, pending.attempt_id, {
+                continuation: 'prior_attempt',
+                provider_auto_resume: true,
+                auto_resume_kind: 'provider_outage'
+              });
       } else {
         result = await resume(workspace, pending.attempt_id, {
           continuation: 'auto',
@@ -8964,6 +9020,47 @@ export function createScheduler(deps) {
       `push 후 \`bd comment ${bead_id}\`로 해소 내역을 기록하라 — 충돌 난 파일과 각각을 어떤 방식으로(어느 쪽을 살렸는지, 어떻게 양쪽 의도를 합쳤는지) 해소했는지 간결히.`,
       'PR 머지는 절대 수행하지 마라 — 머지는 사람이 버튼으로 한다.'
     ].join(' ');
+  }
+
+  /**
+   * Whether the RECORDED runner and account of an attempt can still run here
+   * (UI-qce9 §5.2). A recorded provider that this environment no longer offers,
+   * or an account the catalog cannot resolve, refuses the resume — it never
+   * switches to another account or provider, which is the promise the choice
+   * exists to make.
+   *
+   * The codex account has no catalog to resolve against, so its recorded id is
+   * carried as-is; the runner check is what proves the provider itself.
+   *
+   * @param {any} prior
+   * @returns {Promise<boolean>}
+   */
+  async function priorExecutionUsable(prior) {
+    const runner = typeof prior.runner === 'string' ? prior.runner : '';
+    try {
+      if (!runtimeCatalog().runners[runner]) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+    const account = activeAccountOf(prior);
+    if (account === null) {
+      return false;
+    }
+    if (
+      runner !== 'claude' ||
+      !deps.accountCatalog ||
+      typeof deps.accountCatalog.resolveClaude !== 'function'
+    ) {
+      return true;
+    }
+    try {
+      const resolved = await deps.accountCatalog.resolveClaude(account);
+      return resolved?.ok === true && resolved.account?.email === account;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -9114,7 +9211,7 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} bead_id
    * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null} [resolution_wait]
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }} [continuation]
    * @param {string|null} [head_ref] - The PR head branch the caller OBSERVED.
    * A deleted worktree is restored from it rather than refused (UI-p49g §5.2).
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
@@ -9247,7 +9344,7 @@ export function createScheduler(deps) {
    * @param {string} [target_base] - The base branch the CLICK observed on the
    * PR (pr-actions §2); empty/absent falls back to `main`.
    * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null} [resolution_wait]
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }} [continuation]
    * @param {string|null} [head_ref] - The PR head branch the caller OBSERVED.
    * A deleted worktree is restored from it rather than refused (UI-p49g §5.2).
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
@@ -9610,6 +9707,30 @@ export function createScheduler(deps) {
     const prior_runner_available =
       recorded_prior_runner !== null && RUNNERS.includes(recorded_prior_runner);
     const provider_auto_resume = options.provider_auto_resume === true;
+    // `prior_attempt` (UI-qce9 §5): the recorded attempt's session AND its
+    // recorded execution tuple, verbatim. It reuses the provider auto-resume's
+    // record-derived tuple rather than resolving current settings, because
+    // "same settings" is the whole request.
+    const prior_attempt_choice = options.continuation === 'prior_attempt';
+    if (prior_attempt_choice && options.exec_override !== undefined) {
+      return { ok: false, reason: 'bad_request' };
+    }
+    if (prior_attempt_choice) {
+      const record = restartRecordEligibility(prior);
+      const pause_settled =
+        prior.status === 'paused' &&
+        prior.control?.kind === 'pause' &&
+        prior.control.phase === 'done';
+      // A provider auto-resume of a `prior_attempt` child continues the SAME
+      // choice from whatever resumable state the outage left it in (§5.3); a
+      // user restart is only ever the exit of a completed durable pause.
+      if (!record.eligible || (!provider_auto_resume && !pause_settled)) {
+        return { ok: false, reason: 'prior_session_unavailable' };
+      }
+      if (!(await priorExecutionUsable(prior))) {
+        return { ok: false, reason: 'prior_session_unavailable' };
+      }
+    }
     let bead_snapshot = options.bead_snapshot;
     if (!bead_snapshot) {
       try {
@@ -9618,34 +9739,35 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'bd_snapshot_failed' };
       }
     }
-    const base_resolved = provider_auto_resume
-      ? {
-          ok: /** @type {const} */ (true),
-          preset_id: prior.exec_default_preset_id ?? null,
-          preset_revision: prior.exec_default_preset_revision ?? null,
-          exec: {
-            ...(prior.exec_values || {}),
-            runner: recorded_prior_runner,
-            orchestration_model: prior.model ?? null,
-            orchestration_effort: prior.effort ?? null,
-            orchestration_speed: prior.speed ?? 'default',
-            stamped_keys: EXEC_SETTING_KEYS,
-            invalid_reason: null
-          },
-          accounts: {
-            claude: prior.claude_account ?? null,
-            codex: prior.codex_account ?? null
-          },
-          account_sources: prior.account_sources || {
-            claude: null,
-            codex: null
+    const base_resolved =
+      provider_auto_resume || prior_attempt_choice
+        ? {
+            ok: /** @type {const} */ (true),
+            preset_id: prior.exec_default_preset_id ?? null,
+            preset_revision: prior.exec_default_preset_revision ?? null,
+            exec: {
+              ...(prior.exec_values || {}),
+              runner: recorded_prior_runner,
+              orchestration_model: prior.model ?? null,
+              orchestration_effort: prior.effort ?? null,
+              orchestration_speed: prior.speed ?? 'default',
+              stamped_keys: EXEC_SETTING_KEYS,
+              invalid_reason: null
+            },
+            accounts: {
+              claude: prior.claude_account ?? null,
+              codex: prior.codex_account ?? null
+            },
+            account_sources: prior.account_sources || {
+              claude: null,
+              codex: null
+            }
           }
-        }
-      : resolveDispatchSettings(
-          workspace,
-          bead_snapshot,
-          await readWorkspaceAccountsLayer(workspace)
-        );
+        : resolveDispatchSettings(
+            workspace,
+            bead_snapshot,
+            await readWorkspaceAccountsLayer(workspace)
+          );
     if (!base_resolved.ok) {
       return { ok: false, reason: base_resolved.reason };
     }
@@ -9669,19 +9791,41 @@ export function createScheduler(deps) {
     const prior_runner = recorded_prior_runner ?? resolved.exec.runner;
     const requested_decision = options.continuation || 'auto';
     if (
-      !['auto', 'prior_session', 'fresh_current'].includes(requested_decision)
+      !['auto', 'prior_session', 'fresh_current', 'prior_attempt'].includes(
+        requested_decision
+      )
     ) {
       return { ok: false, reason: 'bad_request' };
     }
     const current_exec_values = execValuesFor(resolved.exec);
     const decision_token = {
       source_attempt_id: prior.attempt_id,
-      source_attempt_digest: continuationDigest({
-        runner: prior_runner,
-        session_id: prior.session_id ?? null,
-        exec_values: prior.exec_values ?? null,
-        resumed_from: prior.resumed_from ?? null
-      }),
+      source_attempt_digest: continuationDigest(
+        // `prior_attempt` promises the recorded TUPLE, not just the recorded
+        // session (§5.2), so its source digest binds every value the child
+        // inherits — a preset or account edit under the dialog is caught by the
+        // launch-time revalidation instead of silently changing what runs.
+        prior_attempt_choice
+          ? {
+              runner: prior_runner,
+              session_id: prior.session_id ?? null,
+              exec_values: prior.exec_values ?? null,
+              resumed_from: prior.resumed_from ?? null,
+              model: prior.model ?? null,
+              effort: prior.effort ?? null,
+              speed: prior.speed ?? 'default',
+              accounts: {
+                claude: prior.claude_account ?? null,
+                codex: prior.codex_account ?? null
+              }
+            }
+          : {
+              runner: prior_runner,
+              session_id: prior.session_id ?? null,
+              exec_values: prior.exec_values ?? null,
+              resumed_from: prior.resumed_from ?? null
+            }
+      ),
       observed_queue_revision: deps.store.snapshot(workspace).revision,
       preset_id: resolved.preset_id,
       preset_revision: resolved.preset_revision,
@@ -9701,13 +9845,15 @@ export function createScheduler(deps) {
     // A choice is meaningful only while the provider boundary still exists.
     // Drift back to the prior runner discards the stale choice and follows the
     // ordinary current-settings path without reopening a dialog.
-    const decision = override_cross_runner
-      ? 'fresh_current'
-      : requested_decision !== 'auto' && !runner_mismatch
-        ? explicit_fresh_current
-          ? 'fresh_current'
-          : 'auto'
-        : requested_decision;
+    const decision = prior_attempt_choice
+      ? 'prior_attempt'
+      : override_cross_runner
+        ? 'fresh_current'
+        : requested_decision !== 'auto' && !runner_mismatch
+          ? explicit_fresh_current
+            ? 'fresh_current'
+            : 'auto'
+          : requested_decision;
     const mismatch = () => ({
       reason: 'runner_mismatch',
       continuation_required: true,
@@ -9740,6 +9886,7 @@ export function createScheduler(deps) {
     }
     if (
       decision !== 'auto' &&
+      decision !== 'prior_attempt' &&
       !override_cross_runner &&
       !explicit_fresh_current &&
       !matchesDecisionToken(options.decision_token, decision_token)
@@ -9751,7 +9898,9 @@ export function createScheduler(deps) {
       };
     }
     const use_prior =
-      (decision === 'prior_session' || provider_auto_resume) &&
+      (decision === 'prior_session' ||
+        decision === 'prior_attempt' ||
+        provider_auto_resume) &&
       !override_result.applied;
     const internal_fresh_fallback =
       provider_auto_resume &&
@@ -9839,6 +9988,11 @@ export function createScheduler(deps) {
       typeof prior.session_id === 'string' &&
       !claudeTranscriptPresent(prior.session_id)
     ) {
+      // §5.3: `prior_attempt` never substitutes a fresh session — the refusal
+      // is the answer, and the paused parent stays where the user left it.
+      if (prior_attempt_choice) {
+        return { ok: false, reason: 'prior_session_unavailable' };
+      }
       continuation_mode = 'fresh';
       resume_fallback = {
         reason: 'transcript_missing',
@@ -9855,6 +10009,7 @@ export function createScheduler(deps) {
       ok: true,
       bead_snapshot,
       decision,
+      continuation_choice: prior_attempt_choice ? 'prior_attempt' : null,
       runner_name,
       launch_model,
       launch_effort,
@@ -10002,6 +10157,7 @@ export function createScheduler(deps) {
       preset_id,
       preset_revision,
       continuation_mode,
+      continuation_choice,
       resume_fallback,
       handoff_instructions
     } = continuation;
@@ -10078,6 +10234,10 @@ export function createScheduler(deps) {
       resumed_from: attempt_id,
       auto_resume_kind: options.auto_resume_kind ?? null,
       continuation_mode,
+      // The user's resume MEANING, carried onto the child (UI-qce9 §5.3) so the
+      // post-run failure path and the automatic continuation obey the same
+      // choice the launch did.
+      continuation_choice: continuation_choice ?? null,
       conflict_resolution: options.conflict_resolution,
       external_conflict:
         options.external_conflict === true || prior.external_conflict === true,
@@ -10440,7 +10600,7 @@ export function createScheduler(deps) {
    * Cap-exempt like every other human-click dispatch.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviseFix(workspace, input) {
@@ -11847,11 +12007,17 @@ export function createScheduler(deps) {
    * Ends with a `tick()` so the freed slot advances the queue (§2.1/§2.3) —
    * pausing one session must not stall the whole lane.
    *
+   * `options.require_durable` is the instructions-restart entry (UI-qce9 §4):
+   * eligibility and confirmed termination BEFORE any answer, never the legacy
+   * signal-and-report path below.
+   *
    * @param {string} workspace
    * @param {string} attempt_id
+   * @param {{ require_durable?: boolean }} [options]
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
-  async function pause(workspace, attempt_id) {
+  async function pause(workspace, attempt_id, options = {}) {
+    const require_durable = options?.require_durable === true;
     const snapshot = deps.store.snapshot(workspace);
     const attempt = snapshot.attempts?.[attempt_id];
     if (
@@ -11861,6 +12027,9 @@ export function createScheduler(deps) {
       })
     ) {
       return { ok: false, reason: 'discard_in_progress' };
+    }
+    if (require_durable) {
+      return pauseWithSettlement(workspace, attempt_id);
     }
     if (deps.processController) {
       return pauseDurably(workspace, attempt_id);
@@ -11875,8 +12044,9 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'no_session_id' };
     }
     // SIGTERM below does not wait for the exit, so a ■ arriving right after
-    // this pause must be able to wait for the same process (see `paused_done`).
-    const done = entry.handle.done;
+    // this pause must be able to wait for the same settlement (see
+    // `paused_done`) — the WHOLE chain, not just the process (UI-qce9 §4).
+    const done = entry.settled;
     paused_done.set(attempt_id, done);
     const forgetDone = () => {
       paused_done.delete(attempt_id);
@@ -11896,38 +12066,6 @@ export function createScheduler(deps) {
     notifyChanged(workspace);
     await tick(workspace);
     return { ok: true };
-  }
-
-  /**
-   * Resolve a verified identity from the durable record. Legacy attempts may
-   * infer `pgid = pid`, but the controller still has to prove every observed
-   * value before signaling.
-   *
-   * @param {any} attempt
-   * @returns {{ pid: number, pgid: number, started_at: number }|null}
-   */
-  function processIdentityOf(attempt) {
-    const identity = attempt?.process_identity;
-    if (
-      identity &&
-      Number.isInteger(identity.pid) &&
-      Number.isInteger(identity.pgid) &&
-      Number.isFinite(identity.started_at)
-    ) {
-      return identity;
-    }
-    if (
-      attempt &&
-      Number.isInteger(attempt.pid) &&
-      Number.isFinite(attempt.started_at)
-    ) {
-      return {
-        pid: attempt.pid,
-        pgid: attempt.pid,
-        started_at: attempt.started_at
-      };
-    }
-    return null;
   }
 
   /**
@@ -12058,7 +12196,7 @@ export function createScheduler(deps) {
     const entry = running.get(attempt_id);
     if (entry) {
       stopped.add(attempt_id);
-      const done = entry.handle.done;
+      const done = entry.settled;
       paused_done.set(attempt_id, done);
       const forgetDone = () => paused_done.delete(attempt_id);
       done.then(forgetDone, forgetDone);
@@ -12125,6 +12263,65 @@ export function createScheduler(deps) {
       notifyChanged(workspace);
     }
     return drivePauseControl(workspace, attempt_id);
+  }
+
+  /**
+   * The instructions-restart pause (UI-qce9 §4): the ordinary durable pause,
+   * plus the two things a restart needs before a child may exist — the §2
+   * eligibility of the record, checked BEFORE any signal, and the parent's
+   * WHOLE settlement chain, awaited before the answer.
+   *
+   * It owns no new state. The eligibility judgment is the shared pure
+   * predicate, the termination is `pauseDurably`/`drivePauseControl`, and the
+   * wait is the live entry's own settlement promise — captured before the
+   * signal because `drivePauseControl` removes the entry.
+   *
+   * Never auto-resumes: a chain that ends with the attempt in any other state
+   * returns the real reason and leaves the record alone.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function pauseWithSettlement(workspace, attempt_id) {
+    if (!deps.processController) {
+      return { ok: false, reason: 'process_controller_missing' };
+    }
+    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    if (!attempt || attempt.status !== 'running') {
+      return { ok: false, reason: 'not_running' };
+    }
+    if (!instructionsRestartEligibility(attempt).eligible) {
+      return { ok: false, reason: 'prior_session_unavailable' };
+    }
+    if (settling.has(attempt_id) || paused_done.has(attempt_id)) {
+      return { ok: false, reason: 'bead_running' };
+    }
+    const settled = running.get(attempt_id)?.settled ?? null;
+    const paused = await pauseDurably(workspace, attempt_id);
+    if (!paused.ok) {
+      return paused;
+    }
+    if (settled) {
+      try {
+        await settled;
+      } catch {
+        // The chain logs its own failures; what decides this answer is the
+        // record it left behind, read below.
+      }
+    }
+    const latest = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    if (
+      latest?.control?.kind === 'pause' &&
+      latest.control.phase === 'done' &&
+      latest.status === 'paused'
+    ) {
+      return { ok: true };
+    }
+    return {
+      ok: false,
+      reason: latest?.control?.last_error || 'pause_not_confirmed'
+    };
   }
 
   /**
@@ -12254,7 +12451,7 @@ export function createScheduler(deps) {
     const entry = running.get(attempt_id);
     if (entry) {
       stopped.add(attempt_id);
-      const done = entry.handle.done;
+      const done = entry.settled;
       paused_done.set(attempt_id, done);
       const forgetDone = () => paused_done.delete(attempt_id);
       done.then(forgetDone, forgetDone);
@@ -12334,7 +12531,7 @@ export function createScheduler(deps) {
       // after the killed process is gone, and a re-dispatch in that window
       // would race the teardown.
       cleanup_pending.add(entry.bead_id);
-      const done = entry.handle.done;
+      const done = entry.settled;
       teardownLiveSession(attempt_id, entry);
       deps.store.discardAttempt(workspace, {
         attempt_id,

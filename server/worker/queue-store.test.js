@@ -2567,6 +2567,40 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
     expect(restarted.load(WS).attempts['att-0'].exec_stamped_keys).toBe(null);
   });
 
+  test('continuation_choice survives a cold reload and rejects unknown values', () => {
+    const store = createQueueStore();
+    let rev = store.load(WS).revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: {
+        attempt_id: 'choice-1',
+        bead_id: 'UI-1',
+        continuation_choice: 'prior_attempt'
+      }
+    });
+    rev = store.snapshot(WS).revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: {
+        attempt_id: 'choice-2',
+        bead_id: 'UI-1',
+        continuation_choice: /** @type {any} */ ('something_else')
+      }
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'choice-legacy', bead_id: 'UI-1' }
+    });
+
+    const restarted = createQueueStore().load(WS);
+
+    expect(restarted.attempts['choice-1'].continuation_choice).toBe(
+      'prior_attempt'
+    );
+    expect(restarted.attempts['choice-2'].continuation_choice).toBe(null);
+    expect(restarted.attempts['choice-legacy'].continuation_choice).toBe(null);
+  });
+
   test('session_id survives updateAttempt and a cold reload (spec §2)', () => {
     const store = createQueueStore();
     let rev = store.place(WS, {

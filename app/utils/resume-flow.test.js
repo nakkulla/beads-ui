@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { runResumeFlow } from './resume-flow.js';
+import {
+  runRestartWithInstructionsFlow,
+  runResumeFlow
+} from './resume-flow.js';
 
 const DECISION_TOKEN = { source_attempt_id: 'a1', digest: 'one' };
 const MISMATCH = {
@@ -218,5 +221,187 @@ describe('runResumeFlow', () => {
     await flow;
 
     expect(document.querySelector('.toast')).toBeNull();
+  });
+});
+
+/**
+ * Answer a mandatory-input dialog: the confirm button is disabled until the
+ * textarea reports a value, so the input event is part of the interaction.
+ *
+ * @param {string} instructions
+ */
+function submitRequiredInstructions(instructions) {
+  const textarea = /** @type {HTMLTextAreaElement} */ (
+    document.querySelector('.resume-instructions-dialog textarea')
+  );
+  textarea.value = instructions;
+  textarea.dispatchEvent(new Event('input'));
+  /** @type {HTMLButtonElement} */ (
+    document.querySelector('.resume-instructions-dialog .op-btn--primary')
+  ).click();
+}
+
+describe('runRestartWithInstructionsFlow (UI-qce9 §3.2)', () => {
+  test('sends pause once and then resumes with the recorded-execution choice', async () => {
+    const pause = vi.fn(async () => ({ paused: true, phase: 'done' }));
+    const resume = vi.fn(async () => ({ resumed: true }));
+    const snapshot = vi.fn(() => ({ attempts: {} }));
+
+    const flow = runRestartWithInstructionsFlow({
+      context: { bead_id: 'A-1', kind: 'restart', attempt_id: 'att-1' },
+      pause,
+      resume,
+      snapshot
+    });
+    submitRequiredInstructions('테스트부터 고쳐라');
+    const result = await flow;
+
+    expect(pause).toHaveBeenCalledTimes(1);
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(resume).toHaveBeenCalledWith({
+      continuation: 'prior_attempt',
+      instructions: '테스트부터 고쳐라'
+    });
+    expect(result).toBe('테스트부터 고쳐라');
+  });
+
+  test('skips the pause half for a paused row', async () => {
+    const pause = vi.fn();
+    const resume = vi.fn(async () => ({ resumed: true }));
+
+    const flow = runRestartWithInstructionsFlow({
+      context: { kind: 'resume_recorded', attempt_id: 'att-1' },
+      pause,
+      resume,
+      snapshot: () => ({ attempts: {} })
+    });
+    submitRequiredInstructions('이어서');
+    await flow;
+
+    expect(pause).not.toHaveBeenCalled();
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  test('sends nothing when the dialog is cancelled', async () => {
+    const pause = vi.fn();
+    const resume = vi.fn();
+
+    const flow = runRestartWithInstructionsFlow({
+      context: { kind: 'restart', attempt_id: 'att-1' },
+      pause,
+      resume,
+      snapshot: () => ({ attempts: {} })
+    });
+    cancelInstructions();
+
+    await expect(flow).resolves.toBeNull();
+    expect(pause).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  test('keeps the dialog open with the reason when the pause is refused', async () => {
+    const pause = vi.fn(async () => ({
+      paused: false,
+      reason: 'bead_running'
+    }));
+    const resume = vi.fn();
+
+    runRestartWithInstructionsFlow({
+      context: { kind: 'restart', attempt_id: 'att-1' },
+      pause,
+      resume,
+      snapshot: () => ({ attempts: {} })
+    });
+    submitRequiredInstructions('고쳐라');
+    await flush();
+
+    expect(resume).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('.resume-instructions-dialog__error')?.textContent
+    ).toBe('재시작 거부: bead_running');
+    expect(
+      /** @type {HTMLTextAreaElement} */ (
+        document.querySelector('.resume-instructions-dialog textarea')
+      ).value
+    ).toBe('고쳐라');
+  });
+
+  test('does not resend a lost pause while the attempt still runs', async () => {
+    const pause = vi.fn(async () => {
+      throw new Error('socket closed');
+    });
+    const resume = vi.fn();
+
+    runRestartWithInstructionsFlow({
+      context: { kind: 'restart', attempt_id: 'att-1' },
+      pause,
+      resume,
+      snapshot: () => ({ attempts: { 'att-1': { status: 'running' } } })
+    });
+    submitRequiredInstructions('고쳐라');
+    await flush();
+
+    expect(pause).toHaveBeenCalledTimes(1);
+    expect(resume).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('.resume-instructions-dialog__error')?.textContent
+    ).toBe('중단 응답을 받지 못했습니다. 최신 상태를 확인하세요.');
+  });
+
+  test('reports an existing child instead of resuming twice on a lost reply', async () => {
+    const resume = vi.fn(async () => {
+      throw new Error('socket closed');
+    });
+
+    const flow = runRestartWithInstructionsFlow({
+      context: { kind: 'resume_recorded', attempt_id: 'att-1' },
+      pause: vi.fn(),
+      resume,
+      snapshot: () => ({
+        attempts: { 'att-2': { resumed_from: 'att-1', status: 'running' } }
+      })
+    });
+    submitRequiredInstructions('이어서');
+
+    await expect(flow).resolves.toBe('이어서');
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  test('surfaces a resume refusal without closing the dialog', async () => {
+    const resume = vi.fn(async () => ({
+      resumed: false,
+      reason: 'prior_session_unavailable'
+    }));
+
+    runRestartWithInstructionsFlow({
+      context: { kind: 'resume_recorded', attempt_id: 'att-1' },
+      pause: vi.fn(),
+      resume,
+      snapshot: () => ({ attempts: {} })
+    });
+    submitRequiredInstructions('이어서');
+    await flush();
+
+    expect(
+      document.querySelector('.resume-instructions-dialog__error')?.textContent
+    ).toBe('이어하기 거부: prior_session_unavailable');
+  });
+
+  test('retries a revision conflict once', async () => {
+    const resume = vi
+      .fn()
+      .mockResolvedValueOnce({ conflict: true })
+      .mockResolvedValueOnce({ resumed: true });
+
+    const flow = runRestartWithInstructionsFlow({
+      context: { kind: 'resume_recorded', attempt_id: 'att-1' },
+      pause: vi.fn(),
+      resume,
+      snapshot: () => ({ attempts: {} })
+    });
+    submitRequiredInstructions('이어서');
+    await flow;
+
+    expect(resume).toHaveBeenCalledTimes(2);
   });
 });

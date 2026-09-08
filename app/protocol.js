@@ -113,13 +113,19 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   // `{ bead_id }`. 대기 진입 유예(20초)를 그 행 하나에 대해서만 걷고 `▶ 진행`과
   // 같은 명시적 실행 경로로 dispatch한다. `added_at`은 건드리지 않는다.
   'worker-queue-start-now',
-  // Pause (⏸) a running attempt: resumable, bead stays queued
+  // Pause (⏸) a running attempt: resumable, bead stays queued. Payload:
+  // { attempt_id, require_durable? } — `require_durable: true` is the
+  // instructions-restart entry (UI-qce9 §4): confirmed termination plus the
+  // parent's settled chain, or a refusal.
   'worker-attempt-pause',
   // Retired legacy action; server returns action_retired without mutation.
   'worker-attempt-stop',
   // Manual resume (↻ / paused ▶) in the attempt's existing worktree; payload:
   // { attempt_id, expected_revision, continuation?, decision_token?, instructions?,
   //   exec_override?: { runner?, model?, effort?, claude_account? } }
+  // `continuation` is 'auto'|'prior_session'|'fresh_current'|'prior_attempt';
+  // `prior_attempt` (UI-qce9 §5) reuses the recorded session AND the recorded
+  // execution tuple/account, takes no decision_token and refuses exec_override.
   'worker-attempt-resume',
   // Human-authorized retry of the canonical post-merge cleanup action.
   'worker-cleanup-retry',

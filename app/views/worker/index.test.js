@@ -3245,6 +3245,63 @@ describe('views/worker', () => {
     });
   });
 
+  test('tile 지시와 함께 재시작 pauses durably then resumes with prior_attempt', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        revision: 7,
+        auto_advance: true,
+        queue: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          live: {
+            attempt_id: 'live',
+            bead_id: 'S1',
+            status: 'running',
+            session_id: 'sid-1',
+            started_at: Date.now(),
+            instructions_restart: { eligible: true, reason: null }
+          }
+        }
+      })
+    );
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(reply({ attempt_id: 'live', paused: true }))
+      .mockResolvedValueOnce(reply({ resumed: true }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        '.rtile[data-attempt-id="live"] .rtile__restart-instructions'
+      )
+    ).click();
+    const textarea = /** @type {HTMLTextAreaElement} */ (
+      document.querySelector('.resume-instructions-dialog textarea')
+    );
+    textarea.value = '테스트부터 고쳐라';
+    textarea.dispatchEvent(new Event('input'));
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog .op-btn--primary')
+    ).click();
+    await flush();
+
+    expect(transport).toHaveBeenNthCalledWith(1, 'worker-attempt-pause', {
+      attempt_id: 'live',
+      require_durable: true
+    });
+    expect(transport).toHaveBeenNthCalledWith(2, 'worker-attempt-resume', {
+      attempt_id: 'live',
+      expected_revision: 7,
+      continuation: 'prior_attempt',
+      instructions: '테스트부터 고쳐라'
+    });
+  });
+
   test('clicking a running tile [▤ 세션] opens the transcript drawer for its attempt', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();

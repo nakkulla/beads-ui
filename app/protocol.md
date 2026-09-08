@@ -523,6 +523,12 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   the same thing an older server sends; consumers fail-quiet on the absence by
   omitting the 완료 행's worker chip rather than falling back to current
   settings.
+- A `running` or `paused` attempt inside `attempts` carries the non-persisted
+  `instructions_restart` `{ eligible, reason }` (UI-qce9 §5): whether the
+  `지시와 함께 재시작` / `지시와 함께 이어하기` entry point is open for that
+  record, and the Korean sentence the disabled button shows when it is not. The
+  server computes it from the UNTRIMMED record with the same predicate the pause
+  guard uses; consumers fail-quiet on its absence by rendering no button.
 - A RUNNING attempt inside `attempts` additionally carries the non-persisted
   `last_event_at` (epoch ms) — when the server last saw a session-log line for
   that attempt (UI-53es §1). It is what the monitor row's live heartbeat reads;
@@ -687,15 +693,27 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   serial lane `{ occupied_by, order, corrections, cycle }` derived fresh on
   every snapshot from durable occupancy and blocks edges.
 - `worker-queue-remove` payload: `{ bead_id, expected_revision }`
-- `worker-attempt-pause` payload: `{ attempt_id }` — pauses (⏸) a running
-  attempt while preserving its resumable state. Reply
+- `worker-attempt-pause` payload: `{ attempt_id, require_durable? }` — pauses
+  (⏸) a running attempt while preserving its resumable state. Reply
   `{ attempt_id, paused, phase, reason }` exposes the durable control phase
-  (`done` when the pause has settled).
+  (`done` when the pause has settled). `require_durable: true` is the
+  instructions-restart entry (UI-qce9 §4): the server checks §2 eligibility
+  BEFORE signaling (a missing process controller refuses with
+  `process_controller_missing`, an ineligible record with
+  `prior_session_unavailable`), then answers only after the durable control AND
+  the parent's whole settlement chain finished. A non-boolean value is
+  `bad_request`.
 - `worker-attempt-resume` payload:
   `{ attempt_id, expected_revision, continuation?, decision_token?, instructions? }`
   — ▶ on a paused/failed/orphaned attempt; cap-exempt (human-originated).
   `instructions` is an optional 1..4000 character user instruction; blank after
-  trimming is treated as absent.
+  trimming is treated as absent. `continuation` is `auto` | `prior_session` |
+  `fresh_current` | `prior_attempt`. `prior_attempt` (UI-qce9 §5) means "the
+  recorded attempt's session AND its recorded execution settings": it needs NO
+  `decision_token` (it is a fixed policy, not a provider choice), refuses
+  `exec_override` with `bad_request`, never falls back to a fresh session when
+  the transcript is gone, and refuses with `prior_session_unavailable` when the
+  recorded runner/account cannot run here.
 - `worker-merge-queue-add` payload:
   `{ bead_id, expected_revision, continuation?, decision_token? }` — the
   `[머지]` click (UI-5v7d §3). It QUEUES rather than merges: the durable

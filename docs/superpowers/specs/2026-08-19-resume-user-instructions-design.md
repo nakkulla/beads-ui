@@ -147,3 +147,9 @@ SHA·프로세스 경로·포트·HTTP 응답 판독까지 그 operation의 term
 
 단일 unit으로 묶어도 충분한 크기이며, 분리 여부는 실행 진입 시 `unit_plan`
 기록으로 결정한다.
+
+**정정(UI-qce9).** 입력 지시는 기존 resume prompt에 전달하며 별도 Bead 지시 필드를
+만들지 않는다. 실행 중 지시 진입점은 durable pause를 먼저 완료한 뒤 prior_attempt
+선택으로 같은 기록과 실행 설정을 이어간다. 일반 이어하기의 auto·provider
+선택·fresh 동작은 그대로다. prior_attempt만 transcript 부재에서 자동 fresh를
+허용하지 않는다.
