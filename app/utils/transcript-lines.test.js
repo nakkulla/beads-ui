@@ -450,3 +450,288 @@ describe('사람 입력 턴 (UI-4xzk §5.3)', () => {
     expect(lines).toEqual([]);
   });
 });
+
+/**
+ * A canonical delegation-monitor activity envelope (dotfiles D4).
+ *
+ * @param {Record<string, unknown>} item
+ * @param {string} [schema]
+ * @returns {Record<string, unknown>}
+ */
+function monitorActivity(item, schema = 'codex-delegation-monitor-v2') {
+  return {
+    schema,
+    attempt_id: 'UI-y9hl-1',
+    launch_id: 'launch-1',
+    provider: 'codex',
+    role: 'implementation',
+    model: 'gpt-5.6-sol',
+    thread_id: 'thread-1',
+    turn_id: 'turn-1',
+    recorded_at: '2026-09-08T04:27:00.000Z',
+    event: { type: 'item.completed', item }
+  };
+}
+
+/**
+ * The single tool line one monitor envelope renders to.
+ *
+ * @param {Record<string, unknown>} raw
+ */
+function monitorLineOf(raw) {
+  const lines = parseTranscript([raw]);
+  expect(lines).toHaveLength(1);
+  return lines[0];
+}
+
+describe('delegation monitor v2 details (UI-y9hl U1)', () => {
+  test('renders a v1 activity with no detail text', () => {
+    const line = monitorLineOf(
+      monitorActivity(
+        {
+          id: 'i1',
+          kind: 'activity',
+          activity: 'command_execution',
+          status: 'completed'
+        },
+        'codex-delegation-monitor-v1'
+      )
+    );
+
+    expect(line).toEqual({
+      kind: 'tool',
+      tool: '명령 실행 · 완료',
+      icon: '✓',
+      expandable: false,
+      result: ''
+    });
+  });
+
+  test('appends command kind, relative path and exit code', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'command_execution',
+        status: 'completed',
+        parsed_cmd: [{ type: 'read', path: 'server/worker/attach.js' }],
+        exit_code: 0
+      })
+    );
+
+    expect(line.result).toBe('read server/worker/attach.js · exit 0');
+  });
+
+  test('keeps the structured name next to the path', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'command_execution',
+        status: 'completed',
+        parsed_cmd: [{ type: 'search', path: 'app', name: 'planStage' }]
+      })
+    );
+
+    expect(line.result).toBe('search app planStage');
+  });
+
+  test('renders file changes as kind and relative path', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'file_change',
+        status: 'completed',
+        changes: [
+          { path: 'app/a.js', kind: 'add' },
+          { path: 'app/b.js', kind: 'modify' },
+          { path: 'app/c.js', kind: 'delete' }
+        ]
+      })
+    );
+
+    expect(line.result).toBe('추가 app/a.js · 수정 app/b.js · 삭제 app/c.js');
+  });
+
+  test('renders a v2 activity carrying no optional detail as before', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'file_change',
+        status: 'failed'
+      })
+    );
+
+    expect(line).toEqual({
+      kind: 'tool',
+      tool: '파일 변경 · 실패',
+      icon: '✗',
+      expandable: false,
+      result: ''
+    });
+  });
+
+  test('drops a malformed exit code but keeps the command kind', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'command_execution',
+        status: 'completed',
+        parsed_cmd: [{ type: 'list_files' }],
+        exit_code: '0'
+      })
+    );
+
+    expect(line.result).toBe('list_files');
+  });
+
+  test('drops an out-of-allowlist command type entirely', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'command_execution',
+        status: 'completed',
+        parsed_cmd: [{ type: 'write' }]
+      })
+    );
+
+    expect(line.result).toBe('');
+  });
+
+  test('drops an unknown detail field without expanding it', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'command_execution',
+        status: 'completed',
+        parsed_cmd: [{ type: 'read', path: 'a.js', cmd: 'cat a.js' }]
+      })
+    );
+
+    expect(line.result).toBe('');
+  });
+
+  test('drops an escaping path but keeps the command kind', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'command_execution',
+        status: 'completed',
+        parsed_cmd: [{ type: 'read', path: '../secrets/id_rsa' }]
+      })
+    );
+
+    expect(line.result).toBe('read');
+  });
+
+  test('drops an absolute path', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'command_execution',
+        status: 'completed',
+        parsed_cmd: [{ type: 'read', path: '/etc/passwd' }]
+      })
+    );
+
+    expect(line.result).toBe('read');
+  });
+
+  test('drops a path carrying control characters', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'command_execution',
+        status: 'completed',
+        parsed_cmd: [{ type: 'read', path: 'app/a\u0001.js' }]
+      })
+    );
+
+    expect(line.result).toBe('read');
+  });
+
+  test('drops a path longer than 256 characters', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'command_execution',
+        status: 'completed',
+        parsed_cmd: [{ type: 'read', path: `${'a'.repeat(257)}.js` }]
+      })
+    );
+
+    expect(line.result).toBe('read');
+  });
+
+  test('drops a name longer than 128 characters', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'command_execution',
+        status: 'completed',
+        parsed_cmd: [{ type: 'search', name: 'n'.repeat(129) }]
+      })
+    );
+
+    expect(line.result).toBe('search');
+  });
+
+  test('drops a detail array longer than twenty items', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'file_change',
+        status: 'completed',
+        changes: Array.from({ length: 21 }, (_unused, index) => ({
+          path: `app/f${index}.js`,
+          kind: 'modify'
+        })),
+        details_truncated: true
+      })
+    );
+
+    expect(line.result).toBe('');
+  });
+
+  test('marks a truncated detail array with an ellipsis', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'file_change',
+        status: 'completed',
+        changes: [{ path: 'app/a.js', kind: 'add' }],
+        details_truncated: true
+      })
+    );
+
+    expect(line.result).toBe('추가 app/a.js · …');
+  });
+
+  test('never surfaces a raw command, query or output payload', () => {
+    const line = monitorLineOf(
+      monitorActivity({
+        id: 'i1',
+        kind: 'activity',
+        activity: 'command_execution',
+        status: 'completed',
+        parsed_cmd: [{ type: 'read', path: 'app/a.js' }],
+        cmd: 'curl -H "authorization: SENTINEL-TOKEN" https://x',
+        aggregated_output: 'SENTINEL-OUTPUT'
+      })
+    );
+
+    expect(JSON.stringify(line)).not.toContain('SENTINEL');
+  });
+});

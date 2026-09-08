@@ -205,6 +205,261 @@ function prewarmSessionDefaults(root_dir) {
 }
 
 /**
+ * The per-repo health record dotfiles writes (D6 `repo-health-v1`). Fixed key,
+ * read from the repo's own bd rig — the rig already separates repositories, so
+ * the key carries no rig name.
+ */
+const REPO_HEALTH_KV_KEY = 'repo_health';
+
+/**
+ * How old an observation may be before it is shown as stale.
+ *
+ * The collector runs every 15 minutes (dotfiles D6), so 45 minutes is three
+ * missed periods: long enough that one slow run is not called stale, short
+ * enough that a dead timer surfaces.
+ */
+const REPO_HEALTH_STALE_MS = 45 * 60_000;
+
+/** How long a successful `repo_health` read stays fresh in this process. */
+const REPO_HEALTH_TTL_MS = 5 * 60_000;
+
+/** How long a FAILED `repo_health` read is remembered before another try. */
+const REPO_HEALTH_RETRY_MS = 60_000;
+
+/** D6 `error_code` allowlist. */
+const REPO_HEALTH_ERROR_CODES = new Set([
+  'missing_checkout',
+  'invalid_target',
+  'fetch_failed',
+  'judge_failed',
+  'invalid_result'
+]);
+
+/** D6 `head_relation` allowlist. */
+const REPO_HEALTH_RELATIONS = new Set(['equal', 'behind', 'ahead', 'diverged']);
+
+/** D6 `classes` allowlist. Each class may overlap, so they are never summed. */
+const REPO_HEALTH_CLASSES = [
+  'disjoint',
+  'converged',
+  'conflict',
+  'staged',
+  'unmerged'
+];
+
+/**
+ * The allowlisted projection of one repo's health record.
+ *
+ * @typedef {Object} RepoHealthState
+ * @property {'ok'|'error'|'stale'|'unknown'} state
+ * @property {string|null} observed_at
+ * @property {string|null} last_success_at
+ * @property {string|null} error_code
+ * @property {string|null} base
+ * @property {string|null} head_relation
+ * @property {number|null} behind
+ * @property {number|null} ahead
+ * @property {Record<string, number>|null} classes
+ * @property {boolean} truncated
+ */
+
+/** The projection every unusable record collapses to. */
+const UNKNOWN_REPO_HEALTH = Object.freeze({
+  state: /** @type {const} */ ('unknown'),
+  observed_at: null,
+  last_success_at: null,
+  error_code: null,
+  base: null,
+  head_relation: null,
+  behind: null,
+  ahead: null,
+  classes: null,
+  truncated: false
+});
+
+/**
+ * @param {unknown} value
+ * @returns {value is number}
+ */
+function isCount(value) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * Parse a D6 UTC timestamp, rejecting a future or unparseable one.
+ *
+ * @param {unknown} value
+ * @param {number} now
+ * @returns {number|null}
+ */
+function observedMs(value, now) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return null;
+  }
+  const at = Date.parse(value);
+  if (Number.isNaN(at) || at > now) {
+    return null;
+  }
+  return at;
+}
+
+/**
+ * Project one raw `repo_health` kv value onto the display allowlist (D6).
+ *
+ * Everything outside the contract collapses to `unknown`: an absent key, a
+ * malformed record, an unsupported schema, a broken or future timestamp. A
+ * record older than {@link REPO_HEALTH_STALE_MS} is `stale` and keeps its last
+ * error rather than reading as currently healthy. No path, command, stderr or
+ * remote URL has a field here at all.
+ *
+ * @param {unknown} value
+ * @param {number} now
+ * @returns {RepoHealthState}
+ */
+export function projectRepoHealth(value, now) {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    /** @type {any} */ (value).schema !== 'repo-health-v1'
+  ) {
+    return { ...UNKNOWN_REPO_HEALTH };
+  }
+  const record = /** @type {Record<string, unknown>} */ (value);
+  const at = observedMs(record.observed_at, now);
+  const status = record.status;
+  if (at === null || (status !== 'ok' && status !== 'error')) {
+    return { ...UNKNOWN_REPO_HEALTH };
+  }
+  const stale = now - at > REPO_HEALTH_STALE_MS;
+  const error_code =
+    status === 'error' && REPO_HEALTH_ERROR_CODES.has(String(record.error_code))
+      ? String(record.error_code)
+      : null;
+  if (status === 'error' && error_code === null) {
+    return { ...UNKNOWN_REPO_HEALTH };
+  }
+  /** @type {RepoHealthState} */
+  const out = {
+    ...UNKNOWN_REPO_HEALTH,
+    state: stale ? 'stale' : status,
+    observed_at: /** @type {string} */ (record.observed_at),
+    last_success_at:
+      typeof record.last_success_at === 'string'
+        ? record.last_success_at
+        : null,
+    error_code,
+    base: typeof record.base === 'string' ? record.base : null,
+    truncated: record.truncated === true
+  };
+  if (status !== 'ok') {
+    return out;
+  }
+  const classes_raw = record.classes;
+  if (
+    !REPO_HEALTH_RELATIONS.has(String(record.head_relation)) ||
+    !isCount(record.behind) ||
+    !isCount(record.ahead) ||
+    !classes_raw ||
+    typeof classes_raw !== 'object' ||
+    Array.isArray(classes_raw)
+  ) {
+    return { ...UNKNOWN_REPO_HEALTH };
+  }
+  /** @type {Record<string, number>} */
+  const classes = {};
+  for (const name of REPO_HEALTH_CLASSES) {
+    const count = /** @type {Record<string, unknown>} */ (classes_raw)[name];
+    if (!isCount(count)) {
+      return { ...UNKNOWN_REPO_HEALTH };
+    }
+    classes[name] = count;
+  }
+  return {
+    ...out,
+    head_relation: String(record.head_relation),
+    behind: record.behind,
+    ahead: record.ahead,
+    classes
+  };
+}
+
+/**
+ * Process-local `repo_health` cache per workspace, holding the RAW record.
+ *
+ * Same async-prewarm boundary as {@link prewarmSessionDefaults} (ADR 0043): the
+ * read is `bd kv get` while `workspaces_state` is built synchronously, so a cold
+ * entry ships `unknown` and the fill schedules the push that carries the real
+ * value. The stored value is raw because staleness has to be re-derived on every
+ * build, not frozen at fill time.
+ *
+ * @type {Map<string, { value: unknown, expires_at: number, in_flight: boolean }>}
+ */
+const repo_health_cache = new Map();
+
+/**
+ * Synchronous cache-hit projection used by `buildMonitorWorkspacesState()`.
+ *
+ * @param {string} root_dir
+ * @returns {RepoHealthState}
+ */
+function cachedRepoHealthFor(root_dir) {
+  const hit = repo_health_cache.get(path.resolve(root_dir));
+  if (!hit || hit.expires_at <= Date.now()) {
+    return { ...UNKNOWN_REPO_HEALTH };
+  }
+  return projectRepoHealth(hit.value, Date.now());
+}
+
+/**
+ * Start at most one async `bd kv get repo_health` per workspace.
+ *
+ * @param {string} root_dir
+ * @param {{ kvGet?: typeof kvGetJsonAtRoot }} [options]
+ * @returns {Promise<void>}
+ */
+export async function prewarmRepoHealth(root_dir, options = {}) {
+  const key = path.resolve(root_dir);
+  const current = repo_health_cache.get(key);
+  if (
+    current?.in_flight === true ||
+    (current && current.expires_at > Date.now())
+  ) {
+    return;
+  }
+  const kvGet = options.kvGet || kvGetJsonAtRoot;
+  repo_health_cache.set(key, {
+    value: current?.value ?? null,
+    expires_at: current?.expires_at || 0,
+    in_flight: true
+  });
+  try {
+    const read = await kvGet(key, REPO_HEALTH_KV_KEY);
+    repo_health_cache.set(key, {
+      value: read.ok ? read.value : null,
+      expires_at:
+        Date.now() + (read.ok ? REPO_HEALTH_TTL_MS : REPO_HEALTH_RETRY_MS),
+      in_flight: false
+    });
+  } catch (err) {
+    repo_health_cache.set(key, {
+      value: null,
+      expires_at: Date.now() + REPO_HEALTH_RETRY_MS,
+      in_flight: false
+    });
+    log('monitor: repo health lookup failed for %s: %o', key, err);
+  }
+  schedulePush();
+}
+
+/**
+ * Drop every cached repo-health record. Test-only, like the prefix cache reset.
+ */
+export function __resetRepoHealthCacheForTest() {
+  repo_health_cache.clear();
+}
+
+/**
  * Drop one repo's cached session defaults and re-push (UI-eey2 §9.5).
  *
  * Called by `set-session-defaults` and `apply-impl-preset-global` on success:
@@ -228,6 +483,7 @@ function prewarmVisibleIssuePrefixes() {
   for (const root_dir of visibleWorkspaceRoots()) {
     prewarmIssuePrefix(root_dir);
     prewarmSessionDefaults(root_dir);
+    void prewarmRepoHealth(root_dir);
   }
 }
 
@@ -747,6 +1003,7 @@ function laneCountsFor(root_dir, queue, runnableFor, sessionActiveFor) {
  *   runnerCatalog?: () => Record<string, unknown>,
  *   issuePrefixFor?: (workspace_key: string) => string|null,
  *   sessionDefaultsFor?: (workspace_key: string) => { values: Record<string, string|boolean>, warnings: string[] },
+ *   repoHealthFor?: (workspace_key: string) => RepoHealthState,
  *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>, options?: RunnableReadOptions) => Array<Record<string, unknown>>,
  *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>
  * }} [options] - Test seams; each defaults to the live server source.
@@ -760,6 +1017,7 @@ export function buildMonitorWorkspacesState(options = {}) {
   const issuePrefixFor = options.issuePrefixFor || cachedIssuePrefixFor;
   const sessionDefaultsFor =
     options.sessionDefaultsFor || cachedSessionDefaultsFor;
+  const repoHealthFor = options.repoHealthFor || cachedRepoHealthFor;
   const runnableFor =
     options.runnableFor ||
     ((
@@ -829,10 +1087,20 @@ export function buildMonitorWorkspacesState(options = {}) {
     } catch {
       session_defaults = { values: {}, warnings: [] };
     }
+    /** @type {RepoHealthState} */
+    let repo_health;
+    try {
+      repo_health = repoHealthFor(root_dir) || { ...UNKNOWN_REPO_HEALTH };
+    } catch {
+      repo_health = { ...UNKNOWN_REPO_HEALTH };
+    }
     out.push({
       root_dir,
       name: path.basename(root_dir),
       issue_prefix,
+      // Cold/expired cache ships `unknown` and the fill re-pushes; see
+      // `prewarmRepoHealth` (UI-y9hl U2).
+      repo_health,
       auto_advance: queue.auto_advance === true,
       auto_merge: queue.auto_merge === true,
       slots: typeof queue.slots === 'number' ? queue.slots : 1,

@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import process from 'node:process';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createRepoDeck } from './deck.js';
 
@@ -694,5 +697,209 @@ describe('createRepoDeck 세션 counts (UI-yrzu §8)', () => {
     deck.render();
 
     expect(el(mount, '.mon2-deck__counts').textContent).not.toContain('세션');
+  });
+});
+
+describe('repo health header group (UI-y9hl U2)', () => {
+  /**
+   * A `repo_health` projection as `workspaces_state[]` carries it.
+   *
+   * @param {Record<string, any>} [patch]
+   * @returns {Record<string, any>}
+   */
+  function health(patch = {}) {
+    return {
+      state: 'ok',
+      observed_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+      last_success_at: null,
+      error_code: null,
+      base: 'main',
+      head_relation: 'equal',
+      behind: 0,
+      ahead: 0,
+      classes: {
+        disjoint: 0,
+        converged: 0,
+        conflict: 0,
+        staged: 0,
+        unmerged: 0
+      },
+      truncated: false,
+      ...patch
+    };
+  }
+
+  test('renders 미확인 when the record is unknown', () => {
+    const { mount, deck } = setup({
+      rows: [state({ repo_health: health({ state: 'unknown' }) })]
+    });
+    deck.render();
+
+    expect(el(mount, '.mon2-deck__health').textContent?.trim()).toBe('미확인');
+  });
+
+  test('renders 미확인 for a server that ships no repo_health field', () => {
+    const { mount, deck } = setup();
+    deck.render();
+
+    expect(el(mount, '.mon2-deck__health').textContent?.trim()).toBe('미확인');
+  });
+
+  test('names the relation and the observation age for a current record', () => {
+    const { mount, deck } = setup({ rows: [state({ repo_health: health() })] });
+    deck.render();
+
+    const text = el(mount, '.mon2-deck__health').textContent || '';
+    expect(text).toContain('동기');
+    expect(text).toContain('5분 전');
+  });
+
+  test('names behind and ahead counts', () => {
+    const { mount, deck } = setup({
+      rows: [
+        state({
+          repo_health: health({
+            head_relation: 'diverged',
+            behind: 3,
+            ahead: 2
+          })
+        })
+      ]
+    });
+    deck.render();
+
+    expect(el(mount, '.mon2-deck__health').textContent).toContain(
+      '갈라짐 -3 +2'
+    );
+  });
+
+  test('names conflict, staged and unmerged counts without summing them', () => {
+    const { mount, deck } = setup({
+      rows: [
+        state({
+          repo_health: health({
+            classes: {
+              disjoint: 4,
+              converged: 0,
+              conflict: 2,
+              staged: 1,
+              unmerged: 3
+            }
+          })
+        })
+      ]
+    });
+    deck.render();
+
+    const text = el(mount, '.mon2-deck__health').textContent || '';
+    expect(text).toContain('충돌 2');
+    expect(text).toContain('staged 1');
+    expect(text).toContain('unmerged 3');
+    expect(text).not.toContain('10');
+  });
+
+  test('marks truncated counts as at-least values', () => {
+    const { mount, deck } = setup({
+      rows: [
+        state({
+          repo_health: health({
+            truncated: true,
+            classes: {
+              disjoint: 0,
+              converged: 0,
+              conflict: 3,
+              staged: 0,
+              unmerged: 0
+            }
+          })
+        })
+      ]
+    });
+    deck.render();
+
+    expect(el(mount, '.mon2-deck__health').textContent).toContain('충돌 3+');
+  });
+
+  test('names a collection failure in user words', () => {
+    const { mount, deck } = setup({
+      rows: [
+        state({
+          repo_health: health({
+            state: 'error',
+            error_code: 'fetch_failed',
+            head_relation: null,
+            behind: null,
+            ahead: null,
+            classes: null
+          })
+        })
+      ]
+    });
+    deck.render();
+
+    expect(el(mount, '.mon2-deck__health').textContent).toContain(
+      '수집 실패 원격 갱신 실패'
+    );
+  });
+
+  test('marks a stale record and keeps its last error', () => {
+    const { mount, deck } = setup({
+      rows: [
+        state({
+          repo_health: health({
+            state: 'stale',
+            error_code: 'judge_failed',
+            observed_at: new Date(Date.now() - 90 * 60_000).toISOString(),
+            head_relation: null,
+            classes: null
+          })
+        })
+      ]
+    });
+    deck.render();
+
+    const text = el(mount, '.mon2-deck__health').textContent || '';
+    expect(text).toContain('오래된 관찰값');
+    expect(text).toContain('판정 실패');
+    expect(text).toContain('1시간 전');
+  });
+
+  test('adds no chip to the tile for a healthy repo', () => {
+    const bare = setup();
+    bare.deck.render();
+    const bare_chips = bare.mount.querySelectorAll('.mon2-deck__chip').length;
+
+    const { mount, deck } = setup({ rows: [state({ repo_health: health() })] });
+    deck.render();
+
+    expect(mount.querySelectorAll('.mon2-deck__chip')).toHaveLength(bare_chips);
+    expect(el(mount, '.mon2-deck__health').className).not.toContain(
+      'mon2-deck__chip'
+    );
+  });
+
+  test('keeps the repo operation area first and unshrinkable in the info row', () => {
+    const { mount, deck } = setup({ rows: [state({ repo_health: health() })] });
+    deck.render();
+    const css = readFileSync(
+      path.resolve(process.cwd(), 'app/styles.css'),
+      'utf8'
+    );
+
+    const children = Array.from(
+      el(mount, '.mon2-deck__tile-ft').children,
+      (node) => node.className.split(' ')[0]
+    );
+    const ops_rule = css.slice(css.indexOf('.mon2-deck__ops {'));
+    const row_rule = css.slice(css.indexOf('.mon2-deck__tile-ft {'));
+
+    expect(children[0]).toBe('mon2-deck__ops');
+    expect(children).toContain('mon2-deck__health');
+    expect(ops_rule.slice(0, ops_rule.indexOf('}'))).toContain(
+      'flex: 0 0 auto'
+    );
+    expect(row_rule.slice(0, row_rule.indexOf('}'))).toContain(
+      'flex-wrap: wrap'
+    );
   });
 });

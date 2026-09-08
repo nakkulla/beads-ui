@@ -432,6 +432,143 @@ export function createRepoDeck(mount_element, options) {
   }
 
   /**
+   * D6 `head_relation` in the words the header uses.
+   *
+   * @type {Record<string, string>}
+   */
+  const HEALTH_RELATION_LABELS = {
+    equal: '동기',
+    behind: '뒤처짐',
+    ahead: '앞섬',
+    diverged: '갈라짐'
+  };
+
+  /**
+   * D6 `error_code` in the words the header uses.
+   *
+   * @type {Record<string, string>}
+   */
+  const HEALTH_ERROR_LABELS = {
+    missing_checkout: '체크아웃 없음',
+    invalid_target: '기준 대상 확인 불가',
+    fetch_failed: '원격 갱신 실패',
+    judge_failed: '판정 실패',
+    invalid_result: '결과 형식 오류'
+  };
+
+  /** The dirty classes the header names, in the order it names them. */
+  const HEALTH_CLASS_LABELS = [
+    ['conflict', '충돌'],
+    ['staged', 'staged'],
+    ['unmerged', 'unmerged']
+  ];
+
+  /**
+   * One class count. A truncated record shows `3+` because the collector stopped
+   * counting, and the classes are NEVER summed — one path can sit in more than
+   * one class, so a total would name a file count that does not exist.
+   *
+   * @param {number} count
+   * @param {boolean} truncated
+   * @returns {string}
+   */
+  function healthCount(count, truncated) {
+    return truncated ? `${count}+` : String(count);
+  }
+
+  /**
+   * The observation age, in the coarsest unit that is still true.
+   *
+   * @param {string} observed_at
+   * @param {number} now
+   * @returns {string}
+   */
+  function healthAge(observed_at, now) {
+    const at = Date.parse(observed_at);
+    if (Number.isNaN(at)) {
+      return '';
+    }
+    const minutes = Math.max(0, Math.floor((now - at) / 60_000));
+    if (minutes < 60) {
+      return `${minutes}분 전`;
+    }
+    const hours = Math.floor(minutes / 60);
+    return hours < 24 ? `${hours}시간 전` : `${Math.floor(hours / 24)}일 전`;
+  }
+
+  /**
+   * The repo header's health group (UI-y9hl U2).
+   *
+   * dotfiles collects the record every 15 minutes and this only reads it — the
+   * deck runs no git command of its own. `unknown` renders a muted `미확인`
+   * rather than a guess, and an old record keeps its last error instead of
+   * reading as currently healthy.
+   *
+   * @param {any} row
+   * @returns {import('lit-html').TemplateResult|''}
+   */
+  function healthTemplate(row) {
+    const health = isRecord(row?.repo_health) ? row.repo_health : null;
+    const state = health ? health.state : 'unknown';
+    if (!health || state === 'unknown') {
+      return html`<span
+        class="mon2-deck__health is-unknown"
+        title="저장소 건강 기록이 없습니다"
+        >미확인</span
+      >`;
+    }
+    const age =
+      typeof health.observed_at === 'string'
+        ? healthAge(health.observed_at, Date.now())
+        : '';
+    /** @type {string[]} */
+    const parts = [];
+    if (state === 'error' || state === 'stale') {
+      const label = HEALTH_ERROR_LABELS[health.error_code];
+      if (label) {
+        parts.push(`수집 실패 ${label}`);
+      }
+    }
+    if (typeof health.head_relation === 'string') {
+      const relation = HEALTH_RELATION_LABELS[health.head_relation];
+      const drift = [
+        typeof health.behind === 'number' && health.behind > 0
+          ? `-${health.behind}`
+          : '',
+        typeof health.ahead === 'number' && health.ahead > 0
+          ? `+${health.ahead}`
+          : ''
+      ].filter((part) => part.length > 0);
+      parts.push([relation || health.head_relation, ...drift].join(' '));
+    }
+    const classes = isRecord(health.classes) ? health.classes : null;
+    if (classes) {
+      for (const [key, label] of HEALTH_CLASS_LABELS) {
+        const count = classes[key];
+        if (typeof count === 'number' && count > 0) {
+          parts.push(
+            `${label} ${healthCount(count, health.truncated === true)}`
+          );
+        }
+      }
+    }
+    if (state === 'stale') {
+      parts.push('오래된 관찰값');
+    }
+    if (age.length > 0) {
+      parts.push(age);
+    }
+    if (parts.length === 0) {
+      return '';
+    }
+    return html`<span
+      class=${`mon2-deck__health is-${state}`}
+      title=${`저장소 건강 — ${health.truncated === true ? '수치는 잘려 이상값입니다' : '15분마다 dotfiles가 기록합니다'}`}
+      >${parts.join(' · ')}</span
+    >`;
+  }
+
+  /**
    * The tile's count line. 0인 항목은 쓰지 않는다 — `대기 0 · PR 0`은 자리만
    * 차지하고 아무 사실도 더하지 않는다. 전부 0이면 줄 자체가 비고, 부하는
    * 첫 줄의 슬롯 레일이 이미 말한다.
@@ -492,7 +629,7 @@ export function createRepoDeck(mount_element, options) {
       <div class="mon2-deck__tile-ft">
         <div class="mon2-deck__ops">${switchesTemplate(row)}</div>
         <span class="mon2-deck__counts">${tileCounts(row)}</span>
-        ${chipsTemplate(row)}
+        ${healthTemplate(row)} ${chipsTemplate(row)}
       </div>
     </div>`;
   }

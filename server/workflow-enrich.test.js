@@ -2244,10 +2244,10 @@ describe('parseReviewStats', () => {
     expect(stats?.anchor).toBe(DIGEST_ANCHOR);
   });
 
-  test('rejects a plan round carrying a commit-length anchor', () => {
+  test('accepts a plan round carrying a commit-length anchor', () => {
     const stats = parseReviewStats('plan', `r1:b0/m1:APPROVE@${COMMIT_ANCHOR}`);
 
-    expect(stats).toBe(null);
+    expect(stats?.anchor).toBe(COMMIT_ANCHOR);
   });
 
   test('rejects a spec round carrying a digest-length anchor', () => {
@@ -2333,9 +2333,195 @@ describe('enrichIssueWorkflow — review_stats', () => {
 
   test('names the three contract keys in the field registry', () => {
     expect(REVIEW_STATS_KEYS).toEqual({
-      spec: { key: 'spec_review_stats', anchor_length: 40 },
-      impl: { key: 'impl_review_stats', anchor_length: 40 },
-      plan: { key: 'plan_review_stats', anchor_length: 12 }
+      spec: { key: 'spec_review_stats', anchor_lengths: [40] },
+      impl: { key: 'impl_review_stats', anchor_lengths: [40] },
+      plan: { key: 'plan_review_stats', anchor_lengths: [12, 40] }
     });
+  });
+});
+
+/**
+ * The D7 plan-review discrimination table (UI-y9hl U3). The SAME table is
+ * exercised against the other consumer in the sibling test file, so the two
+ * readers can never drift: `server/workflow-enrich.test.js` and
+ * `server/worker/runnable-cache.test.js`.
+ *
+ * `plan_state` is the runnable-cache projection, `review_state` the
+ * workflow-enrich stage flag, and `approved` says whether the record counts as
+ * a user approval at all.
+ *
+ * @type {Array<{ name: string, metadata: Record<string, string>, plan_state: string, review_state: 'review'|'incomplete'|null, approved: boolean }>}
+ */
+const PLAN_REVIEW_FIXTURES = [
+  {
+    name: 'legacy codex@40hex approval without stats',
+    metadata: { plan_review: `codex@${'a'.repeat(40)}` },
+    plan_state: 'approved',
+    review_state: null,
+    approved: true
+  },
+  {
+    name: 'legacy reviewer@12hex draft review',
+    metadata: { plan_review: `codex@${'b'.repeat(12)}` },
+    plan_state: 'authored',
+    review_state: null,
+    approved: false
+  },
+  {
+    name: 'legacy plan_check fallback beside a legacy approval',
+    metadata: {
+      plan_check: `fable@${'c'.repeat(12)}`,
+      plan_review: `codex@${'a'.repeat(40)}`
+    },
+    plan_state: 'approved',
+    review_state: null,
+    approved: true
+  },
+  {
+    name: 'legacy 12hex review with 12hex stats',
+    metadata: {
+      plan_review: `astra@${'b'.repeat(12)}`,
+      plan_review_stats: `r1:b0/m2:APPROVE@${'b'.repeat(12)}`
+    },
+    plan_state: 'authored',
+    review_state: null,
+    approved: false
+  },
+  {
+    name: 'new codex pair at the same anchor',
+    metadata: {
+      plan_review: `codex@${'a'.repeat(40)}`,
+      plan_review_stats: `r1:b0/m1:APPROVE@${'a'.repeat(40)}`
+    },
+    plan_state: 'authored',
+    review_state: 'review',
+    approved: false
+  },
+  {
+    name: 'new astra pair at the same anchor',
+    metadata: {
+      plan_review: `astra@${'a'.repeat(40)}`,
+      plan_review_stats: `r2:b0/m0:APPROVE@${'a'.repeat(40)}`
+    },
+    plan_state: 'authored',
+    review_state: 'review',
+    approved: false
+  },
+  {
+    name: 'new fable pair at the same anchor',
+    metadata: {
+      plan_review: `fable@${'a'.repeat(40)}`,
+      plan_review_stats: `r1:b1/m0:REVISE@${'a'.repeat(40)}`
+    },
+    plan_state: 'authored',
+    review_state: 'review',
+    approved: false
+  },
+  {
+    name: 'new self pair at the same anchor',
+    metadata: {
+      plan_review: `self@${'a'.repeat(40)}`,
+      plan_review_stats: `r1:b0/m0:APPROVE@${'a'.repeat(40)}`
+    },
+    plan_state: 'authored',
+    review_state: 'review',
+    approved: false
+  },
+  {
+    name: 'new skipped pair at the same anchor',
+    metadata: {
+      plan_review: `skipped@${'a'.repeat(40)}`,
+      plan_review_stats: `r1:b0/m0:APPROVE@${'a'.repeat(40)}`
+    },
+    plan_state: 'authored',
+    review_state: 'review',
+    approved: false
+  },
+  {
+    name: 'new astra pair whose stats anchor disagrees',
+    metadata: {
+      plan_review: `astra@${'a'.repeat(40)}`,
+      plan_review_stats: `r1:b0/m0:APPROVE@${'e'.repeat(40)}`
+    },
+    plan_state: 'review_incomplete',
+    review_state: 'incomplete',
+    approved: false
+  },
+  {
+    name: 'new codex pair beside an explicit user approval',
+    metadata: {
+      plan_review: `codex@${'a'.repeat(40)}`,
+      plan_review_stats: `r1:b0/m0:APPROVE@${'a'.repeat(40)}`,
+      plan_approval: `user@${'f'.repeat(40)}`
+    },
+    plan_state: 'approved',
+    review_state: 'review',
+    approved: true
+  }
+];
+
+describe('plan review record discrimination (UI-y9hl U3)', () => {
+  for (const fixture of PLAN_REVIEW_FIXTURES) {
+    test(`reads ${fixture.name}`, () => {
+      const dir = makeRepo();
+      writeFile(dir, 'docs/plan.md', '# plan\n');
+      commitAll(dir, 'add plan');
+
+      const wf = enrichIssueWorkflow(
+        {
+          status: 'in_progress',
+          metadata: {
+            route: 'full_plan',
+            plan_path: 'docs/plan.md',
+            ...fixture.metadata
+          }
+        },
+        dir
+      );
+
+      expect(wf.stages.plan?.review_state).toBe(fixture.review_state);
+      expect(wf.stages.plan?.approval_receipt === null).toBe(!fixture.approved);
+    });
+  }
+
+  test('shows a complete new pair as review evidence, never as approval', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    commitAll(dir, 'add plan');
+    const anchor = 'a'.repeat(40);
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: `codex@${anchor}`,
+          plan_review_stats: `r1:b0/m1:APPROVE@${anchor}`
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.plan).toMatchObject({
+      glyph: 'review',
+      receipt: `codex@${anchor}`,
+      approval_receipt: null,
+      approval_state: 'missing',
+      review_state: 'review'
+    });
+  });
+
+  test('parses plan review stats at either anchor width', () => {
+    const commit_anchor = 'a'.repeat(40);
+
+    const wide = parseReviewStats('plan', `r1:b0/m0:APPROVE@${commit_anchor}`);
+    const narrow = parseReviewStats(
+      'plan',
+      `r1:b0/m0:APPROVE@${'b'.repeat(12)}`
+    );
+
+    expect(wide?.anchor).toBe(commit_anchor);
+    expect(narrow?.anchor).toBe('b'.repeat(12));
   });
 });

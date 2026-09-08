@@ -7,11 +7,29 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { sanitizeMonitorDetails } from '../../app/utils/transcript-lines.js';
 import { debug } from '../logging.js';
 import { delegationMonitorDir } from './state-paths.js';
 
 const log = debug('worker:delegation-monitor');
-const MONITOR_SCHEMA = 'codex-delegation-monitor-v1';
+/**
+ * Both producer envelope schemas (dotfiles D4). `-v2` adds OPTIONAL activity
+ * details and changes nothing about identity, ordering or terminal meaning, so
+ * a v1 file keeps parsing byte for byte as before.
+ */
+const MONITOR_SCHEMAS = new Set([
+  'codex-delegation-monitor-v1',
+  'codex-delegation-monitor-v2'
+]);
+const MONITOR_SCHEMA_V2 = 'codex-delegation-monitor-v2';
+
+/** The optional v2 detail keys an activity item may carry (dotfiles D4). */
+const ACTIVITY_DETAIL_KEYS = new Set([
+  'parsed_cmd',
+  'exit_code',
+  'changes',
+  'details_truncated'
+]);
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const TOP_LEVEL_KEYS = new Set([
@@ -161,10 +179,41 @@ function isRole(value) {
 }
 
 /**
+ * Whether an object's keys are the required set plus any subset of the allowed
+ * optional keys. v2 activity items are the only place optional keys exist; a v1
+ * line is still judged with the exact-key rule.
+ *
+ * @param {Record<string, unknown>} value
+ * @param {Set<string>} required
+ * @param {Set<string>} optional
+ * @returns {boolean}
+ */
+function hasKeysWithin(value, required, optional) {
+  const keys = Object.keys(value);
+  return (
+    [...required].every((key) => keys.includes(key)) &&
+    keys.every((key) => required.has(key) || optional.has(key))
+  );
+}
+
+/**
+ * @param {Record<string, unknown>} item
+ * @param {Set<string>} required
+ * @param {boolean} allow_details
+ * @returns {boolean}
+ */
+function hasActivityKeys(item, required, allow_details) {
+  return allow_details
+    ? hasKeysWithin(item, required, ACTIVITY_DETAIL_KEYS)
+    : hasExactKeys(item, required);
+}
+
+/**
  * @param {unknown} value
+ * @param {boolean} [allow_details] - v2 optional activity details.
  * @returns {value is Record<string, unknown>}
  */
-function isEvent(value) {
+function isEvent(value, allow_details = false) {
   if (!isRecord(value) || !nonEmptyString(value.type)) {
     return false;
   }
@@ -194,7 +243,7 @@ function isEvent(value) {
   const item = value.item;
   if (value.type === 'item.started') {
     return (
-      hasExactKeys(item, STARTED_ACTIVITY_KEYS) &&
+      hasActivityKeys(item, STARTED_ACTIVITY_KEYS, allow_details) &&
       nonEmptyString(item.id) &&
       item.kind === 'activity' &&
       ACTIVITIES.has(String(item.activity))
@@ -202,7 +251,7 @@ function isEvent(value) {
   }
   if (item.kind === 'activity') {
     return (
-      hasExactKeys(item, COMPLETED_ACTIVITY_KEYS) &&
+      hasActivityKeys(item, COMPLETED_ACTIVITY_KEYS, allow_details) &&
       nonEmptyString(item.id) &&
       ACTIVITIES.has(String(item.activity)) &&
       (item.status === 'completed' || item.status === 'failed')
@@ -219,6 +268,38 @@ function isEvent(value) {
 }
 
 /**
+ * Rewrite one v2 event with only the allowlisted optional activity details
+ * (dotfiles D4). The coarse activity survives an invalid detail; the same
+ * projection the drawer uses is applied here so the server and the browser
+ * never disagree about what a line is allowed to say.
+ *
+ * Returns the SAME object when nothing had to be dropped, which is what lets
+ * the caller keep the original raw line untouched for a clean stream.
+ *
+ * @param {Record<string, unknown>} event
+ * @returns {Record<string, unknown>}
+ */
+function sanitizeEvent(event) {
+  const item = event.item;
+  if (!isRecord(item) || item.kind !== 'activity') {
+    return event;
+  }
+  const details = sanitizeMonitorDetails(item);
+  /** @type {Record<string, unknown>} */
+  const next_item = {};
+  for (const [key, value] of Object.entries(item)) {
+    if (!ACTIVITY_DETAIL_KEYS.has(key)) {
+      next_item[key] = value;
+    }
+  }
+  Object.assign(next_item, details);
+  const same =
+    Object.keys(next_item).length === Object.keys(item).length &&
+    Object.keys(item).every((key) => !ACTIVITY_DETAIL_KEYS.has(key));
+  return same ? event : { ...event, item: next_item };
+}
+
+/**
  * @param {unknown} raw
  * @returns {ParsedMonitorLine|null}
  */
@@ -231,7 +312,7 @@ function parseMonitorLine(raw) {
     return null;
   }
   if (
-    raw.schema !== MONITOR_SCHEMA ||
+    !MONITOR_SCHEMAS.has(String(raw.schema)) ||
     !nonEmptyString(raw.attempt_id) ||
     !nonEmptyString(raw.launch_id) ||
     raw.provider !== 'codex' ||
@@ -241,10 +322,12 @@ function parseMonitorLine(raw) {
     !nonEmptyString(raw.thread_id) ||
     (raw.turn_id !== null && !nonEmptyString(raw.turn_id)) ||
     !isUtcMillisecond(raw.recorded_at) ||
-    !isEvent(raw.event)
+    !isEvent(raw.event, raw.schema === MONITOR_SCHEMA_V2)
   ) {
     return null;
   }
+  const event =
+    raw.schema === MONITOR_SCHEMA_V2 ? sanitizeEvent(raw.event) : raw.event;
   return {
     role: raw.role,
     model: raw.model,
@@ -252,8 +335,11 @@ function parseMonitorLine(raw) {
     thread_id: raw.thread_id,
     turn_id: /** @type {string|null} */ (raw.turn_id),
     recorded_at: raw.recorded_at,
-    event: raw.event,
-    raw
+    event,
+    // The projected line carries the SANITIZED event, so an out-of-contract
+    // optional detail never reaches a subscriber even though the envelope was
+    // accepted (dotfiles D4).
+    raw: event === raw.event ? raw : { ...raw, event }
   };
 }
 
@@ -283,7 +369,7 @@ function hasRawIdentityConflict(raw, attempt_id, launch_id, identity, turn_id) {
     return false;
   }
   return (
-    raw.schema !== MONITOR_SCHEMA ||
+    raw.schema !== identity.raw.schema ||
     raw.role !== identity.role ||
     raw.model !== identity.model ||
     ('effort' in raw ? raw.effort : null) !== identity.effort ||

@@ -596,3 +596,186 @@ describe('claude subagent session summaries (UI-2mpn §5.3)', () => {
     expect(result).toEqual([subagent]);
   });
 });
+
+describe('delegation monitor v2 envelope (UI-y9hl U1)', () => {
+  /**
+   * A v2 activity item with whatever optional details the case needs.
+   *
+   * @param {Record<string, unknown>} details
+   * @returns {Record<string, unknown>}
+   */
+  function v2Item(details) {
+    return {
+      id: 'i1',
+      kind: 'activity',
+      activity: 'command_execution',
+      status: 'completed',
+      ...details
+    };
+  }
+
+  /**
+   * A two-line v2 stream: the mandatory opener plus one activity item.
+   *
+   * @param {Record<string, unknown>} item
+   * @returns {ReturnType<typeof readAttemptDelegationStreams>}
+   */
+  function readV2(item) {
+    writeStream('launch-v2', [
+      monitorLine(
+        'launch-v2',
+        { type: 'session.started' },
+        {
+          schema: 'codex-delegation-monitor-v2'
+        }
+      ),
+      monitorLine(
+        'launch-v2',
+        { type: 'item.completed', item },
+        { schema: 'codex-delegation-monitor-v2' }
+      )
+    ]);
+    return readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID);
+  }
+
+  /**
+   * The activity item of the single projected activity event.
+   *
+   * @param {ReturnType<typeof readAttemptDelegationStreams>} read
+   * @returns {Record<string, any>}
+   */
+  function activityItem(read) {
+    const events = read.streams[0].events;
+    const last = /** @type {any} */ (events[events.length - 1].event);
+    return last.event.item;
+  }
+
+  it('accepts a v2 stream and keeps the session identity', () => {
+    const read = readV2(v2Item({}));
+
+    expect(read.warnings).toEqual([]);
+    expect(read.sessions[0].session_id).toBe('thread-1');
+  });
+
+  it('keeps allowlisted v2 details on the projected event', () => {
+    const read = readV2(
+      v2Item({
+        parsed_cmd: [{ type: 'read', path: 'app/a.js', name: 'a.js' }],
+        exit_code: 0,
+        changes: [{ path: 'app/b.js', kind: 'modify' }],
+        details_truncated: false
+      })
+    );
+
+    expect(activityItem(read)).toMatchObject({
+      parsed_cmd: [{ type: 'read', path: 'app/a.js', name: 'a.js' }],
+      exit_code: 0,
+      changes: [{ path: 'app/b.js', kind: 'modify' }],
+      details_truncated: false
+    });
+  });
+
+  it('drops an escaping path while keeping the coarse activity', () => {
+    const read = readV2(
+      v2Item({ parsed_cmd: [{ type: 'read', path: '../etc/passwd' }] })
+    );
+
+    expect(activityItem(read)).toMatchObject({
+      activity: 'command_execution',
+      status: 'completed',
+      parsed_cmd: [{ type: 'read' }]
+    });
+    expect(activityItem(read).parsed_cmd[0].path).toBe(undefined);
+  });
+
+  it('drops a detail array longer than twenty items', () => {
+    const read = readV2(
+      v2Item({
+        changes: Array.from({ length: 21 }, (_unused, index) => ({
+          path: `app/f${index}.js`,
+          kind: 'add'
+        }))
+      })
+    );
+
+    expect(activityItem(read).changes).toBe(undefined);
+  });
+
+  it('never carries a raw command payload through the envelope', () => {
+    writeStream('launch-v2', [
+      monitorLine(
+        'launch-v2',
+        { type: 'session.started' },
+        {
+          schema: 'codex-delegation-monitor-v2'
+        }
+      ),
+      monitorLine(
+        'launch-v2',
+        {
+          type: 'item.completed',
+          item: v2Item({ cmd: 'echo SENTINEL-TOKEN' })
+        },
+        { schema: 'codex-delegation-monitor-v2' }
+      )
+    ]);
+
+    const read = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID);
+
+    expect(JSON.stringify(read.streams)).not.toContain('SENTINEL');
+    expect(read.warnings).toContain('line_schema');
+  });
+
+  it('rejects a v1 line that carries v2 optional details', () => {
+    writeStream('launch-v1', [
+      monitorLine('launch-v1', { type: 'session.started' }),
+      monitorLine('launch-v1', {
+        type: 'item.completed',
+        item: v2Item({ exit_code: 0 })
+      })
+    ]);
+
+    const read = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID);
+
+    expect(read.streams[0].events).toHaveLength(1);
+    expect(read.warnings).toContain('line_schema');
+  });
+
+  it('rejects a stream whose schema changes mid-file', () => {
+    writeStream('launch-mix', [
+      monitorLine('launch-mix', { type: 'session.started' }),
+      monitorLine(
+        'launch-mix',
+        { type: 'item.completed', item: v2Item({}) },
+        { schema: 'codex-delegation-monitor-v2' }
+      )
+    ]);
+
+    const read = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID);
+
+    expect(read.warnings).toContain('identity_conflict');
+    expect(read.streams).toEqual([]);
+  });
+
+  it('ignores a partial v2 tail line', () => {
+    const file = writeStream(
+      'launch-v2',
+      [
+        monitorLine(
+          'launch-v2',
+          { type: 'session.started' },
+          {
+            schema: 'codex-delegation-monitor-v2'
+          }
+        )
+      ],
+      { trailing_newline: true }
+    );
+    fs.appendFileSync(file, '{"schema":"codex-delegation-monitor-v2"');
+
+    const read = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID);
+
+    expect(read.warnings).toEqual([]);
+    expect(read.streams[0].events).toHaveLength(1);
+  });
+});

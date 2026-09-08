@@ -1965,3 +1965,147 @@ describe('carryover index projection (UI-ys18 §3.2)', () => {
     expect(cache.carriedToFor(WS_A, ['UI-p1'])).toEqual({});
   });
 });
+
+/**
+ * The D7 plan-review discrimination table (UI-y9hl U3). The SAME table is
+ * exercised against the other consumer in the sibling test file, so the two
+ * readers can never drift: `server/workflow-enrich.test.js` and
+ * `server/worker/runnable-cache.test.js`.
+ *
+ * `plan_state` is the runnable-cache projection, `review_state` the
+ * workflow-enrich stage flag, and `approved` says whether the record counts as
+ * a user approval at all.
+ *
+ * @type {Array<{ name: string, metadata: Record<string, string>, plan_state: string, review_state: 'review'|'incomplete'|null, approved: boolean }>}
+ */
+const PLAN_REVIEW_FIXTURES = [
+  {
+    name: 'legacy codex@40hex approval without stats',
+    metadata: { plan_review: `codex@${'a'.repeat(40)}` },
+    plan_state: 'approved',
+    review_state: null,
+    approved: true
+  },
+  {
+    name: 'legacy reviewer@12hex draft review',
+    metadata: { plan_review: `codex@${'b'.repeat(12)}` },
+    plan_state: 'authored',
+    review_state: null,
+    approved: false
+  },
+  {
+    name: 'legacy plan_check fallback beside a legacy approval',
+    metadata: {
+      plan_check: `fable@${'c'.repeat(12)}`,
+      plan_review: `codex@${'a'.repeat(40)}`
+    },
+    plan_state: 'approved',
+    review_state: null,
+    approved: true
+  },
+  {
+    name: 'legacy 12hex review with 12hex stats',
+    metadata: {
+      plan_review: `astra@${'b'.repeat(12)}`,
+      plan_review_stats: `r1:b0/m2:APPROVE@${'b'.repeat(12)}`
+    },
+    plan_state: 'authored',
+    review_state: null,
+    approved: false
+  },
+  {
+    name: 'new codex pair at the same anchor',
+    metadata: {
+      plan_review: `codex@${'a'.repeat(40)}`,
+      plan_review_stats: `r1:b0/m1:APPROVE@${'a'.repeat(40)}`
+    },
+    plan_state: 'authored',
+    review_state: 'review',
+    approved: false
+  },
+  {
+    name: 'new astra pair at the same anchor',
+    metadata: {
+      plan_review: `astra@${'a'.repeat(40)}`,
+      plan_review_stats: `r2:b0/m0:APPROVE@${'a'.repeat(40)}`
+    },
+    plan_state: 'authored',
+    review_state: 'review',
+    approved: false
+  },
+  {
+    name: 'new fable pair at the same anchor',
+    metadata: {
+      plan_review: `fable@${'a'.repeat(40)}`,
+      plan_review_stats: `r1:b1/m0:REVISE@${'a'.repeat(40)}`
+    },
+    plan_state: 'authored',
+    review_state: 'review',
+    approved: false
+  },
+  {
+    name: 'new self pair at the same anchor',
+    metadata: {
+      plan_review: `self@${'a'.repeat(40)}`,
+      plan_review_stats: `r1:b0/m0:APPROVE@${'a'.repeat(40)}`
+    },
+    plan_state: 'authored',
+    review_state: 'review',
+    approved: false
+  },
+  {
+    name: 'new skipped pair at the same anchor',
+    metadata: {
+      plan_review: `skipped@${'a'.repeat(40)}`,
+      plan_review_stats: `r1:b0/m0:APPROVE@${'a'.repeat(40)}`
+    },
+    plan_state: 'authored',
+    review_state: 'review',
+    approved: false
+  },
+  {
+    name: 'new astra pair whose stats anchor disagrees',
+    metadata: {
+      plan_review: `astra@${'a'.repeat(40)}`,
+      plan_review_stats: `r1:b0/m0:APPROVE@${'e'.repeat(40)}`
+    },
+    plan_state: 'review_incomplete',
+    review_state: 'incomplete',
+    approved: false
+  },
+  {
+    name: 'new codex pair beside an explicit user approval',
+    metadata: {
+      plan_review: `codex@${'a'.repeat(40)}`,
+      plan_review_stats: `r1:b0/m0:APPROVE@${'a'.repeat(40)}`,
+      plan_approval: `user@${'f'.repeat(40)}`
+    },
+    plan_state: 'approved',
+    review_state: 'review',
+    approved: true
+  }
+];
+
+describe('plan review record discrimination (UI-y9hl U3)', () => {
+  for (const fixture of PLAN_REVIEW_FIXTURES) {
+    test(`projects ${fixture.name}`, async () => {
+      const cache = createRunnableCache({
+        requestSnapshot: fakeSnapshot({
+          [WS_A]: [
+            row({
+              metadata: {
+                route: 'full_plan',
+                plan_path: 'docs/superpowers/plans/thing.md',
+                ...fixture.metadata
+              }
+            })
+          ]
+        })
+      });
+
+      const out = await warm(cache, WS_A);
+
+      expect(out[0].plan_state).toBe(fixture.plan_state);
+    });
+  }
+});

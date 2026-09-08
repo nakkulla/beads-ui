@@ -7021,6 +7021,25 @@ html[data-theme='dark'] {
   display: none;
 }
 
+/* 저장소 건강 (UI-y9hl U2): dotfiles가 기록한 관찰값 한 묶음. 정보 영역의
+   다른 사실들과 같은 줄에서 시작하고, 좁으면 통째로 다음 줄로 내려간다 —
+   조작(.mon2-deck__ops)은 축소되지 않으므로 자리가 밀리지 않는다. */
+.mon2-deck__health {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+.mon2-deck__health.is-error,
+.mon2-deck__health.is-stale {
+  color: var(--accent-warn);
+}
+
+.mon2-deck__health.is-unknown {
+  color: var(--text-dim);
+}
+
 /* 칩도 같은 줄에서 시작하되, 자리가 모자라면 통째로 다음 줄로 내려간다 —
    말줄임으로 잘린 모델 이름은 읽히지 않는다. */
 .mon2-deck__chips {

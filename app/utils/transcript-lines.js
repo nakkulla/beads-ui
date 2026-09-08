@@ -30,8 +30,10 @@
  *     `server/worker/session-ref-transcript.js` projects a codex rollout's
  *     `event_msg`/`user_message` onto, because the runner's own `--json` stream
  *     has no human-input item.
- *   - codex delegation monitor: `{schema:'codex-delegation-monitor-v1', event}`
- *     projected onto the same existing line kinds.
+ *   - codex delegation monitor: `{schema:'codex-delegation-monitor-v1'|'…-v2',
+ *     event}` projected onto the same existing line kinds. v2 items may carry
+ *     the allowlisted optional details `parsed_cmd`/`exit_code`/`changes`/
+ *     `details_truncated` (dotfiles D4).
  *
  * Line kinds (order-preserving): `assistant` · `thinking` · `tool` · `gate` ·
  * `phase` · `result` · `error` · `blocker` · `user`. Assistant text that matches a
@@ -99,6 +101,251 @@ const DELEGATION_ACTIVITY_LABELS = {
   web_search: '웹 검색',
   plan: '계획'
 };
+
+/**
+ * The delegation-monitor envelope schemas this consumer reads (dotfiles D4).
+ * `-v2` adds OPTIONAL activity details; `-v1` history keeps rendering exactly
+ * as before, so both schemas are accepted.
+ */
+const DELEGATION_MONITOR_SCHEMAS = new Set([
+  'codex-delegation-monitor-v1',
+  'codex-delegation-monitor-v2'
+]);
+
+/** v2 `parsed_cmd[].type` allowlist (dotfiles D4). */
+const PARSED_CMD_TYPES = new Set(['read', 'list_files', 'search', 'unknown']);
+
+/** v2 `changes[].kind` allowlist (dotfiles D4). */
+const CHANGE_KINDS = new Set(['add', 'modify', 'delete']);
+
+/** Producer cap on every v2 detail array (dotfiles D4). */
+const MONITOR_DETAIL_MAX_ITEMS = 20;
+
+/** Producer cap on a v2 `parsed_cmd[].name`. */
+const MONITOR_NAME_MAX_LENGTH = 128;
+
+/** Producer cap on any v2 relative path. */
+const MONITOR_PATH_MAX_LENGTH = 256;
+
+/** NUL and every other C0/C1 control character. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * One allowlisted v2 command detail.
+ *
+ * @typedef {Object} ParsedCmdEntry
+ * @property {string} type
+ * @property {string} [name]
+ * @property {string} [path]
+ */
+
+/**
+ * One allowlisted v2 file-change detail.
+ *
+ * @typedef {Object} MonitorChangeEntry
+ * @property {string} path
+ * @property {string} kind
+ */
+
+/**
+ * The allowlisted v2 detail projection of one activity item.
+ *
+ * @typedef {Object} MonitorDetails
+ * @property {ParsedCmdEntry[]} [parsed_cmd]
+ * @property {number} [exit_code]
+ * @property {MonitorChangeEntry[]} [changes]
+ * @property {boolean} [details_truncated]
+ */
+
+/**
+ * Korean labels for the file activity kinds a v2 `changes[]` entry carries.
+ *
+ * @type {Record<string, string>}
+ */
+const CHANGE_KIND_LABELS = { add: '추가', modify: '수정', delete: '삭제' };
+
+/**
+ * Whether a delegation-monitor envelope carries a schema this module reads.
+ *
+ * @param {unknown} schema
+ * @returns {boolean}
+ */
+export function isDelegationMonitorSchema(schema) {
+  return typeof schema === 'string' && DELEGATION_MONITOR_SCHEMAS.has(schema);
+}
+
+/**
+ * Whether every key of an object is drawn from an allowed set.
+ *
+ * @param {Record<string, unknown>} value
+ * @param {Set<string>} allowed
+ * @returns {boolean}
+ */
+function hasOnlyKeys(value, allowed) {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+/**
+ * Whether a v2 detail path is a safe workspace-relative path (dotfiles D4).
+ *
+ * The producer already relativizes against the task root, so an absolute value
+ * or one escaping with `..` means the record is not what the contract
+ * describes, and the path is dropped rather than shown.
+ *
+ * @param {unknown} value
+ * @returns {value is string}
+ */
+function isSafeRelativePath(value) {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > MONITOR_PATH_MAX_LENGTH ||
+    CONTROL_CHAR_RE.test(value) ||
+    value.startsWith('/') ||
+    value.startsWith('\\') ||
+    /^[A-Za-z]:[\\/]/.test(value)
+  ) {
+    return false;
+  }
+  return !value.split(/[\\/]/).includes('..');
+}
+
+/**
+ * One validated `parsed_cmd` entry, or `null` when the entry itself is not the
+ * shape the contract allows. An out-of-contract `name`/`path` drops only that
+ * field, because the command KIND is still a true coarse fact.
+ *
+ * @param {unknown} entry
+ * @returns {{ type: string, name?: string, path?: string }|null}
+ */
+function sanitizeParsedCmdEntry(entry) {
+  if (
+    !isObject(entry) ||
+    !hasOnlyKeys(entry, PARSED_CMD_KEYS) ||
+    typeof entry.type !== 'string' ||
+    !PARSED_CMD_TYPES.has(entry.type)
+  ) {
+    return null;
+  }
+  /** @type {{ type: string, name?: string, path?: string }} */
+  const out = { type: entry.type };
+  if (
+    typeof entry.name === 'string' &&
+    entry.name.length > 0 &&
+    entry.name.length <= MONITOR_NAME_MAX_LENGTH &&
+    !CONTROL_CHAR_RE.test(entry.name)
+  ) {
+    out.name = entry.name;
+  }
+  if (isSafeRelativePath(entry.path)) {
+    out.path = entry.path;
+  }
+  return out;
+}
+
+/** Allowed keys of one v2 `parsed_cmd[]` entry. */
+const PARSED_CMD_KEYS = new Set(['type', 'name', 'path']);
+
+/** Allowed keys of one v2 `changes[]` entry. */
+const CHANGE_KEYS = new Set(['path', 'kind']);
+
+/**
+ * One validated `changes` entry, or `null`. Unlike `parsed_cmd` the path is
+ * REQUIRED here: a bare `수정` names nothing.
+ *
+ * @param {unknown} entry
+ * @returns {{ path: string, kind: string }|null}
+ */
+function sanitizeChangeEntry(entry) {
+  if (
+    !isObject(entry) ||
+    !hasOnlyKeys(entry, CHANGE_KEYS) ||
+    typeof entry.kind !== 'string' ||
+    !CHANGE_KINDS.has(entry.kind) ||
+    !isSafeRelativePath(entry.path)
+  ) {
+    return null;
+  }
+  return { path: entry.path, kind: entry.kind };
+}
+
+/**
+ * Project the OPTIONAL v2 activity details of one item onto the allowlist
+ * (dotfiles D4). An invalid detail is dropped field by field while the valid
+ * coarse activity survives; raw command, query, output, diff and MCP payloads
+ * have no representation here at all, so nothing unknown can be expanded.
+ *
+ * @param {Record<string, unknown>} item
+ * @returns {MonitorDetails}
+ */
+export function sanitizeMonitorDetails(item) {
+  /** @type {MonitorDetails} */
+  const out = {};
+  if (
+    Array.isArray(item.parsed_cmd) &&
+    item.parsed_cmd.length <= MONITOR_DETAIL_MAX_ITEMS
+  ) {
+    const entries = item.parsed_cmd.map(sanitizeParsedCmdEntry);
+    if (entries.every((entry) => entry !== null)) {
+      out.parsed_cmd = /** @type {ParsedCmdEntry[]} */ (entries);
+    }
+  }
+  if (typeof item.exit_code === 'number' && Number.isInteger(item.exit_code)) {
+    out.exit_code = item.exit_code;
+  }
+  if (
+    Array.isArray(item.changes) &&
+    item.changes.length <= MONITOR_DETAIL_MAX_ITEMS
+  ) {
+    const entries = item.changes.map(sanitizeChangeEntry);
+    if (entries.every((entry) => entry !== null)) {
+      out.changes = /** @type {MonitorChangeEntry[]} */ (entries);
+    }
+  }
+  if (typeof item.details_truncated === 'boolean') {
+    out.details_truncated = item.details_truncated;
+  }
+  return out;
+}
+
+/**
+ * The one-line detail summary appended to a v2 activity line.
+ *
+ * Only allowlisted facts reach it: command kind plus its relative path and
+ * structured name, the real exit code on completion, and file add/modify/delete
+ * with a relative path. A truncated detail array ends with `…` rather than a
+ * count, because the omitted entries were never delivered.
+ *
+ * Only an `item.completed` event reaches this function, which is the only place
+ * the contract puts an exit code; a started item has no result to report.
+ *
+ * @param {Record<string, unknown>} item
+ * @returns {string}
+ */
+function delegationDetailText(item) {
+  const details = sanitizeMonitorDetails(item);
+  /** @type {string[]} */
+  const parts = [];
+  for (const entry of details.parsed_cmd || []) {
+    const tail = /** @type {string[]} */ (
+      [entry.path, entry.name].filter(
+        (part) => typeof part === 'string' && part.length > 0
+      )
+    );
+    parts.push([entry.type, ...tail].join(' '));
+  }
+  for (const change of details.changes || []) {
+    parts.push(`${CHANGE_KIND_LABELS[change.kind]} ${change.path}`);
+  }
+  if (details.details_truncated === true && parts.length > 0) {
+    parts.push('…');
+  }
+  if (typeof details.exit_code === 'number') {
+    parts.push(`exit ${details.exit_code}`);
+  }
+  return parts.join(' · ');
+}
 
 /**
  * Gate-receipt pattern: `✓ spec 게이트 — codex APPROVE · 14:03`.
@@ -578,7 +825,7 @@ function parseCodex(raw) {
  * @returns {DisplayLine[]}
  */
 function parseDelegationMonitor(raw) {
-  if (raw.schema !== 'codex-delegation-monitor-v1' || !isObject(raw.event)) {
+  if (!isDelegationMonitorSchema(raw.schema) || !isObject(raw.event)) {
     return [];
   }
   const event = raw.event;
@@ -633,7 +880,9 @@ function parseDelegationMonitor(raw) {
         tool: `${activity_label} · ${lifecycle}`,
         icon,
         expandable: false,
-        result: ''
+        // v2 details only (dotfiles D4). A v1 item carries none of these keys,
+        // so its line keeps the empty result it has always had.
+        result: delegationDetailText(item)
       }
     ];
   }
@@ -732,18 +981,14 @@ export function createTranscriptReducer(options = {}) {
       ) {
         return [];
       }
-      if (
-        raw.type === 'system' &&
-        raw.schema !== 'codex-delegation-monitor-v1'
-      ) {
+      if (raw.type === 'system' && !isDelegationMonitorSchema(raw.schema)) {
         return parseClaudeSystem(raw, state);
       }
-      const produced =
-        raw.schema === 'codex-delegation-monitor-v1'
-          ? parseDelegationMonitor(raw)
-          : isCodexShape(raw)
-            ? parseCodex(raw)
-            : parseClaude(raw, toolsById);
+      const produced = isDelegationMonitorSchema(raw.schema)
+        ? parseDelegationMonitor(raw)
+        : isCodexShape(raw)
+          ? parseCodex(raw)
+          : parseClaude(raw, toolsById);
       if (produced.length > 0) {
         // Anything the session actually did ends the current thinking burst;
         // the next `thinking_tokens` tick then opens a fresh progress line.

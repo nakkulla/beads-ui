@@ -62,10 +62,17 @@ vi.mock('./context.js', async (importOriginal) => {
   return {
     ...actual,
     /**
+     * Only the session-defaults key is counted: the monitor also warms the
+     * `repo_health` key on the same boundary (UI-y9hl U2), and that read is
+     * not what these cache assertions are about.
+     *
      * @param {string} root
+     * @param {string} key
      */
-    kvGetJsonAtRoot: (root) => {
-      kv_reads.push(root);
+    kvGetJsonAtRoot: (root, key) => {
+      if (key === 'workflow_session_defaults') {
+        kv_reads.push(root);
+      }
       return kv_answer(root);
     }
   };
