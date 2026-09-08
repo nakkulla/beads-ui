@@ -15,6 +15,7 @@ const PROJECTION = {
       default: 'codex',
       reviewers: {
         codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+        astra: { model: 'gpt-6-astra', effort: 'xhigh' },
         opus: { model: 'opus', effort: 'high' },
         fable: { model: 'fable', effort: 'high' }
       }
@@ -92,6 +93,31 @@ describe('resolveExecutionSettings', () => {
       source: 'base',
       display: 'high',
       full_value: 'high',
+      resolution: 'default'
+    });
+  });
+
+  test('resolves the Astra reviewer from the generated preset', () => {
+    const rows = resolveExecutionSettings({
+      pin: { spec_review_model: 'astra' },
+      execution_defaults: {
+        supported: true,
+        schema_version: EXECUTION_DEFAULTS.schema_version,
+        session: EXECUTION_DEFAULTS
+      }
+    });
+
+    expect(rows.spec_review_model).toMatchObject({
+      value: 'astra',
+      source: 'pin',
+      display: '6-astra',
+      full_value: 'gpt-6-astra',
+      resolution: 'explicit'
+    });
+    expect(rows.spec_review_effort).toMatchObject({
+      value: 'xhigh',
+      source: 'base',
+      full_value: 'xhigh',
       resolution: 'default'
     });
   });
@@ -600,15 +626,18 @@ describe('resolveExecutionSettings', () => {
       resolution: 'incompatible'
     });
   });
-  test('marks a reviewer token the projection does not define as incompatible', () => {
+  test('keeps Astra incompatible when its reviewer preset is absent', () => {
+    const projection = /** @type {any} */ (structuredClone(PROJECTION));
+    delete projection.session.review.reviewers.astra;
     const rows = resolveExecutionSettings({
-      pin: { spec_review_model: 'gemini' },
-      execution_defaults: PROJECTION
+      pin: { spec_review_model: 'astra' },
+      execution_defaults: projection
     });
 
     expect(rows.spec_review_model).toMatchObject({
-      value: 'gemini',
-      display: 'gemini (비호환)',
+      value: 'astra',
+      display: 'astra (비호환)',
+      full_value: 'astra',
       resolution: 'incompatible'
     });
   });
@@ -666,19 +695,46 @@ describe('unsetOptionLabel', () => {
 });
 
 describe('buildOptionView', () => {
-  test('labels each choice with what selecting it would resolve to', () => {
+  test('labels Codex reviewer choices without changing resolved model ids', () => {
     const view = buildOptionView({
       key: 'spec_review_model',
-      choices: ['codex', 'fable', 'self'],
+      choices: ['codex', 'astra', 'fable', 'self'],
       layer: 'pin',
       execution_defaults: PROJECTION
     });
 
     expect(view.options).toEqual([
-      { value: 'codex', label: '5.6-sol', full_value: 'gpt-5.6-sol' },
+      {
+        value: 'codex',
+        label: 'Codex · Sol',
+        full_value: 'gpt-5.6-sol'
+      },
+      {
+        value: 'astra',
+        label: 'Codex · Astra',
+        full_value: 'gpt-6-astra'
+      },
       { value: 'fable', label: 'fable', full_value: 'fable' },
       { value: 'self', label: 'self', full_value: 'self' }
     ]);
+  });
+
+  test('keeps a reviewer option incompatible when its preset is absent', () => {
+    const projection = /** @type {any} */ (structuredClone(PROJECTION));
+    delete projection.session.review.reviewers.astra;
+    const view = buildOptionView({
+      key: 'spec_review_model',
+      choices: ['codex', 'astra'],
+      layer: 'pin',
+      pin: { spec_review_model: 'astra' },
+      execution_defaults: projection
+    });
+
+    expect(view.options[1]).toEqual({
+      value: 'astra',
+      label: 'astra (비호환)',
+      full_value: 'astra'
+    });
   });
 
   test('keeps a stored value the choice list omits', () => {

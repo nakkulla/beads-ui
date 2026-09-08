@@ -94,6 +94,7 @@ function projectionFixture() {
         default: 'codex',
         reviewers: {
           codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+          astra: { model: 'gpt-6-astra', effort: 'xhigh' },
           opus: { model: 'opus', effort: 'high' },
           fable: { model: 'fable', effort: 'high' }
         }
@@ -362,6 +363,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     expect(optionValues(selectFor(mount, 'spec_review_model'))).toEqual([
       '',
       'codex',
+      'astra',
       'opus',
       'fable',
       'self',
@@ -370,6 +372,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     expect(optionValues(selectFor(mount, 'impl_review_model'))).toEqual([
       '',
       'codex',
+      'astra',
       'opus',
       'fable',
       'self',
@@ -378,9 +381,34 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     expect(optionValues(selectFor(mount, 'plan_review_model'))).toEqual([
       '',
       'codex',
+      'astra',
       'fable',
       'skip'
     ]);
+  });
+
+  test('labels both Codex reviewer options distinctly', () => {
+    const mount = mountTemplate();
+    const options = Array.from(selectFor(mount, 'spec_review_model').options);
+
+    expect(
+      options
+        .filter((option) => ['codex', 'astra'].includes(option.value))
+        .map((option) => [option.value, option.textContent?.trim()])
+    ).toEqual([
+      ['codex', 'Codex · Sol'],
+      ['astra', 'Codex · Astra']
+    ]);
+  });
+
+  test('keeps a saved codex reviewer selected as Codex Sol', () => {
+    const mount = mountTemplate({ spec_review_model: 'codex' });
+    const select = selectFor(mount, 'spec_review_model');
+
+    expect(select.value).toBe('codex');
+    expect(select.options[select.selectedIndex].textContent?.trim()).toBe(
+      'Codex · Sol'
+    );
   });
 
   test('every review effort selector offers the fixed four levels', () => {
@@ -630,6 +658,14 @@ describe('views/detail-panel/exec-settings catalog-driven selectors', () => {
     expect(selectFor(unavailable_mount, 'spec_review_speed').disabled).toBe(
       true
     );
+  });
+
+  test('does not borrow Sol speed tiers for Astra review', () => {
+    const mount = mountTemplate({ spec_review_model: 'astra' });
+    const speed = selectFor(mount, 'spec_review_speed');
+
+    expect(optionValues(speed)).toEqual(['']);
+    expect(speed.disabled).toBe(true);
   });
 
   test('keeps a stale speed value selected as incompatible', () => {

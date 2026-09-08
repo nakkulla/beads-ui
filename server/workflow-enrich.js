@@ -38,7 +38,8 @@ const RECEIPT_RE = /^([A-Za-z0-9_.:-]+)@([0-9a-fA-F]{7,40})$/;
 const PLAN_RECEIPT_RE = /^(user|triage|codex)@([0-9a-fA-F]{40})$/;
 
 /** New plan draft review evidence, bound to exact draft bytes. */
-const PLAN_REVIEW_RECEIPT_RE = /^(codex|fable|self|skipped)@([0-9a-fA-F]{12})$/;
+const PLAN_REVIEW_RECEIPT_RE =
+  /^(codex|astra|fable|self|skipped)@([0-9a-fA-F]{12})$/;
 
 /** New native Plan Mode approval, bound to the saved plan commit. */
 const PLAN_APPROVAL_RECEIPT_RE = /^(user)@([0-9a-fA-F]{40})$/;
@@ -120,6 +121,7 @@ export const DELEGATED_EFFORT_TOKENS = new Set([
  */
 const REVIEW_REVIEWER_TOKENS = new Set([
   'codex',
+  'astra',
   'opus',
   'fable',
   'self',

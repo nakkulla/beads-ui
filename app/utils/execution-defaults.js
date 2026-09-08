@@ -33,6 +33,16 @@ export const EXECUTION_SETTING_KEYS = [
   'quick_fix_orchestration_speed'
 ];
 
+/**
+ * Stable user-facing labels for the two Codex reviewer tokens.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const REVIEWER_OPTION_LABELS = Object.freeze({
+  codex: 'Codex · Sol',
+  astra: 'Codex · Astra'
+});
+
 const GENERAL_ORCHESTRATION_KEYS = [
   'orchestration_model',
   'orchestration_effort',
@@ -1117,7 +1127,13 @@ export function buildOptionView(input) {
       const row = resolveWith({ ...own_values, [input.key]: choice })[
         input.key
       ];
-      return { value: choice, label: row.display, full_value: row.full_value };
+      const option_label =
+        Object.values(REVIEW_PAIRS).includes(input.key) &&
+        row.resolution !== 'incompatible' &&
+        Object.hasOwn(REVIEWER_OPTION_LABELS, choice)
+          ? REVIEWER_OPTION_LABELS[choice]
+          : row.display;
+      return { value: choice, label: option_label, full_value: row.full_value };
     })
   };
 }

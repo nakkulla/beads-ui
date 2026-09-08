@@ -238,7 +238,7 @@ describe('createSettingsDialog session tab', () => {
     expect(select.title).toBe('gpt-5.6-sol');
     expect(select.parentElement?.textContent).toContain('기본');
     expect(select.options[1].value).toBe('codex');
-    expect(select.options[1].textContent).toContain('5.6-sol');
+    expect(select.options[1].textContent).toContain('Codex · Sol');
   });
 
   test('renders the kv parse-failure warning as a banner', async () => {

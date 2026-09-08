@@ -14,6 +14,7 @@ import {
   parseExecReceipt,
   parseImplEntry,
   parsePlanReceipt,
+  parsePlanReviewReceipt,
   parsePlannedExecution,
   parseReceipt,
   parseResolverReceipt,
@@ -871,7 +872,14 @@ describe('computeStale — impl_review (Bead branch tip)', () => {
 
 describe('classifyGlyph', PURE, () => {
   test('maps every contract reviewer token to review evidence', () => {
-    for (const reviewer of ['codex', 'opus', 'fable', 'self', 'triage']) {
+    for (const reviewer of [
+      'codex',
+      'astra',
+      'opus',
+      'fable',
+      'self',
+      'triage'
+    ]) {
       expect(classifyGlyph(parseReceipt(reviewer + '@' + 'a'.repeat(40)))).toBe(
         'review'
       );
@@ -907,6 +915,18 @@ describe('parsePlanReceipt', PURE, () => {
     expect(parsePlanReceipt('opus@' + 'a'.repeat(40))).toBeNull();
     expect(parsePlanReceipt('user@' + 'a'.repeat(12))).toBeNull();
     expect(parsePlanReceipt(undefined)).toBeNull();
+  });
+});
+
+describe('parsePlanReviewReceipt', PURE, () => {
+  test('parses an Astra review receipt with a 12-hex digest', () => {
+    const receipt = parsePlanReviewReceipt(`astra@${'b'.repeat(12)}`);
+
+    expect(receipt).toEqual({
+      reviewer: 'astra',
+      sha: 'b'.repeat(12),
+      is_skip: false
+    });
   });
 });
 

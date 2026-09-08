@@ -39,6 +39,7 @@ const EXECUTION_DEFAULTS = {
       default: 'codex',
       reviewers: {
         codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+        astra: { model: 'gpt-6-astra', effort: 'xhigh' },
         opus: { model: 'opus', effort: 'high' },
         fable: { model: 'fable', effort: 'high' }
       }
@@ -684,6 +685,25 @@ describe('effective-settings card', () => {
     panel.destroy();
   });
 
+  test('shows the Astra reviewer model and preset effort', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { spec_review_model: 'astra' }
+    });
+    await settle();
+    await openEffective(mount);
+
+    const model_row = rowOf(mount, 'spec_review_model');
+    const effort_row = rowOf(mount, 'spec_review_effort');
+
+    expect(model_row.textContent).toContain('6-astra');
+    expect(
+      model_row.querySelector('.detail-effective__v')?.getAttribute('title')
+    ).toBe('gpt-6-astra');
+    expect(effort_row.textContent).toContain('xhigh');
+    panel.destroy();
+  });
+
   test('marks self and skip review speeds not applicable and disables them', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount, {
@@ -1008,7 +1028,7 @@ describe('effective-settings card', () => {
     panel.destroy();
   });
 
-  test('renders editor options as actual model ids with the full id as title', async () => {
+  test('renders distinct Codex reviewer labels with full model ids as titles', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount);
     await settle();
@@ -1020,9 +1040,14 @@ describe('effective-settings card', () => {
     const codex = /** @type {HTMLOptionElement} */ (
       Array.from(select.options).find((option) => option.value === 'codex')
     );
+    const astra = /** @type {HTMLOptionElement} */ (
+      Array.from(select.options).find((option) => option.value === 'astra')
+    );
 
-    expect(codex.textContent?.trim()).toBe('5.6-sol');
+    expect(codex.textContent?.trim()).toBe('Codex · Sol');
     expect(codex.getAttribute('title')).toBe('gpt-5.6-sol');
+    expect(astra.textContent?.trim()).toBe('Codex · Astra');
+    expect(astra.getAttribute('title')).toBe('gpt-6-astra');
     panel.destroy();
   });
 

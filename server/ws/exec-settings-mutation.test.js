@@ -96,6 +96,12 @@ describe('buildExecSettingsArgs', () => {
     );
   });
 
+  test('set preserves the astra reviewer token', () => {
+    expect(buildExecSettingsArgs('UI-1', 'spec_review_model', 'astra')).toEqual(
+      ['update', 'UI-1', '--set-metadata', 'spec_review_model=astra']
+    );
+  });
+
   test('workflow_mode=standard produces --set-metadata so a bead overrides the kv default', () => {
     expect(buildExecSettingsArgs('UI-1', 'workflow_mode', 'standard')).toEqual([
       'update',
@@ -213,6 +219,34 @@ describe('handleUpdateExecSettings', () => {
       'plan_review_model=fable'
     ]);
   });
+
+  test.each([
+    ['spec_review_model', 'codex'],
+    ['spec_review_model', 'astra'],
+    ['impl_review_model', 'codex'],
+    ['impl_review_model', 'astra'],
+    ['plan_review_model', 'codex'],
+    ['plan_review_model', 'astra']
+  ])(
+    'writes %s=%s through the metadata mutation',
+    async (key, reviewer_model) => {
+      const { ws, sent } = fakeWs();
+
+      await handleUpdateExecSettings(ws, {
+        id: 'astra-reviewer',
+        type: 'update-exec-settings',
+        payload: { id: 'UI-1', key, value: reviewer_model }
+      });
+
+      expect(runBdInWorkspace).toHaveBeenCalledWith(ws, [
+        'update',
+        'UI-1',
+        '--set-metadata',
+        `${key}=${reviewer_model}`
+      ]);
+      expect(sent[0].ok).toBe(true);
+    }
+  );
 
   test.each([
     ['impl_runtime', 'codex'],
