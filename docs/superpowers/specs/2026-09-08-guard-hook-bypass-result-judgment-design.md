@@ -5,12 +5,19 @@ scope:
   - server/worker/runner/guard-mirror.js
   - server/worker/runner/guard-mirror.test.js
   - server/worker/runner/claude.js
+  - server/worker/runner/claude.test.js
   - server/worker/runner/codex.js
+  - server/worker/runner/codex.test.js
   - server/worker/runner/session.js
   - server/worker/runner/session.merge-guard.test.js
   - server/worker/session-monitor.js
   - server/worker/session-monitor.test.js
+  - server/worker/scheduler.js
+  - server/worker/scheduler.test.js
+  - server/worker/attach.js
+  - server/worker/attach.test.js
   - server/worker/queue-store.js
+  - server/worker/queue-store.test.js
   - server/worker/runner/preamble.js
   - server/worker/runner/preamble.test.js
   - server/worker/runner/__snapshots__/preamble.test.js.snap
@@ -26,6 +33,9 @@ scope:
   `2026-08-26-guard-one-shot-hooks-relocation-design.md`(UI-iw28),
   `2026-09-05-guard-config-env-relocation-design.md`. 이 스펙은 셋을 supersede하지 않는 addendum이다
   (§7).
+- 개정: r1 리뷰(astra, anchor 25a102cc) 지적 6건 반영 — §1 우선순위, §2 env 조립 위치, §2·§3 영구
+  저장 경로(`scheduler.js`), §3·§4 보류의 durable 인계와 재부착, Test scope의 RED/회귀 분리, ADR 후보
+  판정.
 
 ## 왜
 
@@ -79,6 +89,19 @@ observes as tool errors"). PreToolUse 훅이 `exit 2`로 거부하면 명령은 
 Codex runner는 `--disable hooks`로 기동한다(`codex.js:466`). 미러가 없으므로 Codex 세션에는
 "거부 층"이 존재하지 않는다. `item.completed`도 어댑터가 의도적으로 버린다(`codex.js:203`).
 
+### 사실 — 판정과 저장의 실제 위치
+
+- `isHookBypass`(`command-guard.js:1790-1887`)는 arm 3(1회성)을 arm 1(`push --no-verify`)·arm 2
+  (`config` 쓰기)보다 **먼저** 검사해 `true`를 돌려주고, `scanCommand`(L2196-2225)는 명령열의 **첫
+  위반**에서 검색을 끝낸다.
+- 자식의 최종 환경은 `session.js:346`에서 `{ ...process.env, ...settings.env, ...adapter.env }`로
+  조립된다. 어댑터 `buildArgv`가 돌려주는 `env`는 그 일부다.
+- attempt 레코드의 spawn 시점 기록은 `scheduler.js:8286-8322`가 쓴다(`system_prompt`/`task_prompt`를
+  runner의 spawn 결과에서 복사해 `store.updateAttempt`). live runner(`session.js`)는 store를 갖지 않고
+  이벤트·verdict(`blocked_detail`)로 돌려준다; monitor(`session-monitor.js`)는 store를 직접 쓴다.
+- Worker 재시작 뒤 `attach.js:1979-1997`은 usage replay를 끝낸 **로그 끝 boundary**에서 monitor를
+  시작한다. monitor `stop()`은 서버 종료에도 호출되므로 세션 종단과 같지 않다.
+
 ### 왜 프롬프트 계층만으로 끝내지 않는가
 
 UI-iw28 잔여 위험 4는 재관측 시 프롬프트 계층으로 다루라고 했고, dotfiles-5z28이 leaf-only 위임
@@ -89,10 +112,9 @@ ad-hoc 프롬프트를 썼고 접미가 없었다. 프롬프트 계층은 자문
 
 ## 무엇을
 
-### §1 판정 대상 — 1회성 재배치 팔만 "보류 가능"이다
+### §1 판정 대상 — 1회성 재배치 팔만 "보류 가능"이고, 즉시 종료가 항상 이긴다
 
-`isHookBypass`(`command-guard.js:1790-1887`)의 네 팔 중 **arm 3(1회성 재배치)** 만 보류 대상이다.
-UI-iw28의 분류를 그대로 쓴다:
+`isHookBypass`의 네 팔 중 **arm 3(1회성 재배치)** 만 보류 대상이다. UI-iw28의 분류를 그대로 쓴다:
 
 | 팔 | 형태 | 이 스펙 뒤 |
 | --- | --- | --- |
@@ -101,27 +123,43 @@ UI-iw28의 분류를 그대로 쓴다:
 | 3 | `git -c core.hooksPath=…`, `git --config-env=core.hooksPath=…`, `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`/`PARAMETERS` 접두 — 열거 면제(`exemptOneShot`)에 들지 않는 것 전부, git 아닌 명령 앞의 접두 포함 | **보류 가능**: §3 |
 | 4 | `export`/`declare`/`typeset`된 `GIT_CONFIG_*`, 명령 없는 bare 할당 | 현행 즉시 kill (지속 재배치) |
 
-`MergeViolation`에 필드를 하나 더한다: `deferrable: true`는 arm 3에서 난 위반에만 붙고 다른 팔과
-다른 `kind`에는 없다(`undefined`). `kind`/`reason`은 그대로 `hook_bypass`/`hook_bypass_blocked`다 —
-consumer의 실패 분류(`failure-class.js` `SYSTEMIC_BLOCKER_REASONS`)는 바뀌지 않는다. `isHookBypass`의
-boolean 반환은 유지하되 arm 3의 반환점이 그 사실을 함께 돌려주도록 내부 시그니처를 바꾼다
-(`{ bypass: true, one_shot: true }` 형태든 두 번째 함수든 구현 선택). 폴백 경로
-(`fallbackViolation`, 토큰화 실패)는 `deferrable`을 붙이지 않는다 — UI-1xcd §4 "폴백은 파싱
-경로보다 엄격하다"를 유지한다.
+`MergeViolation`에 필드를 하나 더한다: `deferrable: true`는 **그 호출(`findMergeViolation`에 들어온
+문자열 전체)에 즉시 종료 위반이 하나도 없고** 발견된 위반이 모두 arm 3일 때만 붙는다. 다른 팔·다른
+`kind`·폴백 경로(`fallbackViolation`, 토큰화 실패 — UI-1xcd §4 "폴백은 파싱 경로보다 엄격하다")에는
+없다(`undefined`). `kind`/`reason`은 그대로 `hook_bypass`/`hook_bypass_blocked`다 — consumer의 실패
+분류(`failure-class.js` `SYSTEMIC_BLOCKER_REASONS`)는 바뀌지 않는다.
 
-열거(`ONE_SHOT_SAFE_SUBCOMMANDS`)와 §1.1 순수성 조건은 손대지 않는다. 열거 안은 여전히 위반이
-아니고(UI-iw28 §2), 열거 밖은 위반이되 **실행됐을 때** kill이다.
+**우선순위 규칙(r1 지적 1).** 현행 코드는 arm 3에서 먼저 반환하고 첫 위반에서 검색을 끝내므로, 그대로
+두면 `git -c core.hooksPath=X push --no-verify`(한 명령에 arm 3 + arm 1)와 `git -c core.hooksPath=X
+diff; git config core.hooksPath Y`(arm 3 뒤에 arm 2)가 보류된다. 바꾼다:
+
+- `isHookBypass`는 한 단순 명령 안에서 arm 1·2·4를 **먼저** 판정하고, 그중 하나라도 성립하면
+  `{ bypass: true, one_shot: false }`를, 그렇지 않고 arm 3만 성립하면 `{ bypass: true, one_shot: true }`를
+  돌려준다(boolean 호출처는 `.bypass`를 읽는다).
+- `scanCommand`는 첫 위반에서 멈추지 않고 명령열(`parsed.commands`)과 중첩(`parsed.nested`)을 **끝까지**
+  훑어, 즉시 종료 위반(one_shot이 아닌 hook_bypass, `gh_pr_merge`)이 하나라도 있으면 그것을 돌려주고,
+  전부 arm 3일 때만 첫 arm 3 위반에 `deferrable: true`를 붙여 돌려준다. `warn` 종류(`git_push_base`,
+  `base_merge`)는 현행처럼 즉시 종료보다 뒤에, arm 3보다 앞에 온다 — `warn`은 실행되며 기록만 남고
+  `kill`을 막지 않으므로, arm 3과 `warn`이 함께 있으면 `warn`을 기록하고 arm 3은 보류한다(둘 다
+  소비자에게 전달: §3).
+- 열거(`ONE_SHOT_SAFE_SUBCOMMANDS`)와 §1.1 순수성 조건은 손대지 않는다. 열거 안은 여전히 위반이 아니고
+  (UI-iw28 §2), 열거 밖은 위반이되 **실행됐을 때** kill이다.
 
 ### §2 예방층 검증 — `guard_mirror`
 
 보류는 "이 세션에는 PreToolUse 미러가 실제로 걸려 있다"가 증명된 attempt에서만 한다. 검증은
-spawn 직전에 한 번, 자식이 받을 것과 같은 환경으로 한다.
+spawn 직전에 한 번, **자식이 실제로 받는 최종 환경 객체**로 한다.
 
 - 새 모듈 `server/worker/runner/guard-mirror.js`, 순수 함수
   `probeGuardMirror({ env, cwd, fs })` → `'verified' | 'absent'`.
+- **조립 위치(r1 지적 2).** 어댑터가 아니라 `session.js`가 부른다: `runSession`은 `session.js:346`의
+  spawn 직전에 `final_env = { ...process.env, ...(settings?.env || {}), ...(env || {}) }`를 한 번 만들고,
+  그 **같은 객체**를 `spawn`에 넘기고 `spec.probeGuardMirror ? spec.probeGuardMirror({ env: final_env,
+  cwd, fs }) : 'absent'`에 넘긴다. 어댑터 spec은 선택 메서드 `probeGuardMirror`를 노출한다 — claude spec은
+  `guard-mirror.js`의 함수를 그대로, codex spec은 노출하지 않는다(→ `'absent'`, `--disable hooks`).
+  두 갈래가 다른 환경을 볼 수 없게 하는 것이 이 배치의 목적이다.
 - 설정 파일: `env.CLAUDE_CONFIG_DIR`가 있으면 `<그 값>/settings.json`, 없으면
-  `<env.HOME>/.claude/settings.json`. `env`는 `buildArgv`가 자식에 넘기는 최종 env
-  (`routing_env` 병합 뒤)다.
+  `<env.HOME>/.claude/settings.json`. `env.HOME`이 없으면 `absent`.
 - `verified` 조건 전부:
   1. 파일이 읽히고 JSON 객체다.
   2. `hooks.PreToolUse[]` 중 `matcher`가 `Bash`를 덮는 항목이 있다 — 문자열을 `|`로 나눈 토큰 중
@@ -133,12 +171,13 @@ spawn 직전에 한 번, 자식이 받을 것과 같은 환경으로 한다.
   5. 같은 사용자 settings에, 그리고 attempt cwd의 `.claude/settings.json`·`.claude/settings.local.json`에
      `disableAllHooks: true`가 없다(파일 부재는 통과, 파싱 실패는 `absent`).
 - 어떤 예외든 `absent`. 로그 한 줄(`guard mirror probe failed: …`)만 남긴다.
-- 결과는 `buildArgv` 반환값에 `guard_mirror`로 실려 `session.js` spawn 기록(`system_prompt`가
-  기록되는 그 patch, L697-700)과 같은 자리에서 attempt 레코드 `guard_mirror`
-  (`'verified'|'absent'|null`, `queue-store.js` Attempt 필드·bound 함수 추가)로 durable하게 남는다.
-  live runner와 restart monitor(`specForAttempt`로 재부착)는 이 durable 값 하나를 읽는다 — 두
-  consumer가 다른 판정을 내리지 않게 하는 UI-iw28의 같은 규칙이다.
-- Codex 어댑터의 `buildArgv`는 항상 `guard_mirror: 'absent'`를 돌려준다(`--disable hooks`).
+- **영구 저장(r1 지적 3).** `runSession`의 spawn 결과(지금 `system_prompt`/`task_prompt`가 실리는 그
+  자리, `session.js:697-700`)에 `guard_mirror`를 싣고, `scheduler.js:8286-8322`의 spawn 기록 patch가
+  두 프롬프트 필드와 같은 방식으로 `guard_mirror`를 attempt 레코드에 복사한다. `queue-store.js`
+  Attempt에 `guard_mirror: 'verified'|'absent'|null` 필드와 bound 함수를 더한다(미기록 attempt는
+  `null` = 미검증). live runner는 자기 spawn 직전 값(`final_env` probe 결과)을, restart monitor는
+  attempt 레코드의 durable 값을 읽는다 — 같은 값이다. monitor의 `entry`는 `specForAttempt`와 함께
+  `attempt.guard_mirror`를 싣는다.
 - 결합은 파일명 하나(`destructive-guard-hook.sh`)뿐이다. dotfiles가 훅 파일명을 바꾸면 이 판정은
   `absent`로 떨어져 현행 즉시 kill로 돌아간다 — 미탐이 아니라 과잉 차단 방향이다.
 
@@ -150,29 +189,50 @@ spawn 직전에 한 번, 자식이 받을 것과 같은 환경으로 한다.
 - `extractShellCommand`(claude)가 명령과 함께 `tool_use.id`를 돌려주도록 반환을
   `{ command, id }`로 넓힌다(codex는 `item.id`; 지금은 소비처가 없지만 같은 모양). 기존 호출처는
   `.command`를 읽는다.
-- 보류 레코드는 per-stream `Map<tool_use_id, { violation, at }>` — live runner는 `onLine` 클로저,
-  monitor는 `entry`에 둔다. 스트림을 넘어 짝을 맞추지 않는다(`session-log.js`와 같은 이유).
+- **보류는 durable하다(r1 지적 4).** attempt 레코드에 `guard_pending: { tool_use_id, command, at,
+  log_offset }[]|null`을 더한다(`queue-store.js` 필드·bound 함수). `log_offset`은 그 `tool_use` 줄이
+  끝나는 로그 바이트 오프셋이다.
+  - monitor 경로: `handleLine`이 보류를 만들거나 지울 때 `store.updateAttempt`로 `guard_pending`을 갱신
+    한다(`guard_warnings`와 같은 방식).
+  - live runner 경로: `session.js`는 store가 없으므로 `{ kind: 'guard_pending', op: 'add'|'clear',
+    entry }` 이벤트를 emit하고, `scheduler.js`의 세션 이벤트 소비처가 `guard_pending`을 갱신한다.
+    실행 확정 kill은 `blocked_detail`에 `confirmed_by: 'tool_result'`를 싣고, `scheduler.js`가
+    `cause_detail`/`guard_kill`에 그 값을 그대로 복사한다 — live runner의 `guard_kill.confirmed_by`
+    저장 경로는 이 복사다.
+  - 메모리 Map은 durable 레코드의 캐시일 뿐이며, 스트림을 넘어 짝을 맞추지 않는다(`session-log.js`와
+    같은 이유).
 - 확정은 같은 스트림의 `user` 줄 `tool_result` 블록 중 `tool_use_id`가 일치하는 것에서 한다:
   - **거부**: `is_error === true` 이고 `content`(문자열이면 그대로, 배열이면 `text` 블록 연결)가
-    `PreToolUse:Bash hook error:`로 시작한다 → 명령은 실행되지 않았다. 보류를 지우고 **아무것도
-    기록하지 않는다** — UI-iw28 §2와 같은 처분이다. 어떤 훅이 거부했든 무관하다(dotfiles 훅의
-    `BLOCKED:` 문구에 결합하지 않는다).
+    `PreToolUse:Bash hook error:`로 시작한다 → 명령은 실행되지 않았다. 보류를 지우고(`guard_pending`
+    갱신 포함) **위반을 기록하지 않는다** — UI-iw28 §2와 같은 처분이다. 어떤 훅이 거부했든 무관하다
+    (dotfiles 훅의 `BLOCKED:` 문구에 결합하지 않는다).
   - **실행**: 그 밖의 모든 `tool_result`(성공, 명령 자체의 비영 exit, 훅 아닌 오류) → 명령은
     실행됐다. 보류를 지우고 현행 `guardKill`/`kill('SIGTERM')`을 같은 `reason`/`command`로 실행한다.
-    `cause_detail`은 현행과 같고, `guard_kill`에 `confirmed_by: 'tool_result'`를 더해 사후 진단이
-    "실행 확인 뒤 kill"임을 읽을 수 있게 한다.
+    `cause_detail`은 현행과 같고, `guard_kill`에 `confirmed_by: 'tool_result'`를 더한다.
+  - `tool_use_id`가 일치하지 않는 `tool_result`는 보류를 건드리지 않는다.
+- **재부착(r1 지적 4).** Worker 재시작 뒤 `attach.js`가 monitor를 시작할 때 attempt의
+  `guard_pending`이 비어 있지 않으면, monitor는 boundary에서 tail을 시작하기 **전에** 각 보류의
+  `log_offset`부터 boundary까지 기존 로그를 한 번 읽어 짝이 되는 `tool_result`를 찾는다(one-time
+  backfill). 찾으면 위 거부/실행 규칙으로 즉시 확정하고(실행이면 kill — 프로세스가 살아 있을 때만
+  신호, 죽었으면 §4), 못 찾으면 보류를 유지한 채 boundary부터 tail을 계속한다. usage replay와
+  backfill은 같은 boundary를 공유하므로 겹치지 않는다.
 - 보류 중 다른 위반은 독립적으로 현행대로 판정한다. 보류가 다른 판정을 막지 않는다.
 - 보류는 판정 **시점**만 옮긴다. `guardEffect` 표, `SYSTEMIC_BLOCKER_REASONS`, 배너 문장
   (`disabling the git hooks is never permitted: …`), 큐 hold 동작은 실행 확인 뒤 kill에 그대로
   적용된다.
 
-### §4 스트림이 끝나도 짝이 오지 않은 보류
+### §4 세션이 끝나도 짝이 오지 않은 보류 — 종단과 monitor 종료를 가른다
 
-세션이 `result`로 끝나거나 프로세스가 사라졌는데 보류가 남아 있으면 죽일 대상이 없다. kill하지
-않고 `guard_warnings`에 `{ reason: 'hook_bypass_unresolved', command, at }`를 남긴다 — 진단
-증거이지 실패 분류가 아니다(`failure-class.js`는 이 reason을 모르고, 알 필요도 없다: warnings는
-tier를 바꾸지 않는다). live runner는 verdict 산출 직전에, monitor는 `stop()`의 drain 뒤에
-남은 보류를 이렇게 정리한다.
+**세션 종단**은 스트림의 종단 `result` 줄을 읽었거나 프로세스가 사라졌음(`pidStillOurs`가
+거짓)이 확인된 때다. monitor `stop()`은 서버 종료에도 호출되므로 종단이 아니다(r1 지적 4).
+
+- 종단 시 보류가 남아 있으면 죽일 대상이 없다. kill하지 않고 `guard_warnings`에
+  `{ reason: 'hook_bypass_unresolved', command, at }`를 남기고 `guard_pending`을 비운다 — 진단 증거이지
+  실패 분류가 아니다(`failure-class.js`는 이 reason을 모르고, 알 필요도 없다: warnings는 tier를 바꾸지
+  않는다). live runner는 verdict 산출 직전에(`result` 줄을 읽은 뒤) 이벤트로, monitor는 종단을
+  확인한 drain 뒤에 store로 정리한다.
+- monitor `stop()`이 종단 없이 호출되면(서버 종료) 보류는 `guard_pending`에 그대로 남고, §3 재부착이
+  이어받는다.
 
 ### §5 Codex와 미검증 세션은 그대로다
 
@@ -200,27 +260,33 @@ Codex 세션(`guard_mirror: 'absent'`)과 검증에 실패한 Claude 세션은 �
 - UI-1xcd §4(폴백은 파싱 경로보다 엄격)는 §1 폴백 무보류로 유지된다.
 - ADR 0007 Decision 1(pre-push 훅 예방층)과 "정확히 식별되는 가드 무력화 명령의 kill 유지"는
   유지된다: kill은 여전히 일어나되 **실행 증거** 위에서 일어나고, 거부된 명령은 애초에 실행되지
-  않은 것이라 kill할 사건이 없다.
+  않은 것이라 kill할 사건이 없다. Consequences "추론만으로 세션을 죽이는 권한 배제"와도 같은
+  방향이다.
 
 ## Test scope
 
-| 파일 | RED→GREEN 시임 |
-| --- | --- |
-| `server/worker/runner/command-guard.test.js` | arm 3 위반(`git -c core.hooksPath=/dev/null diff`, `--config-env=`, `GIT_CONFIG_COUNT=… go test`)은 `deferrable: true`; arm 1·2·4(`push --no-verify`, `git config core.hooksPath X`, `export GIT_CONFIG_COUNT=…`, bare 할당)와 `gh_pr_merge`/`git_push_base`/`base_merge`는 `deferrable` 없음; 폴백 경로(토큰화 실패 입력)의 hook_bypass는 `deferrable` 없음; 열거 면제는 여전히 `null` |
-| `server/worker/runner/guard-mirror.test.js` (신설) | tmp HOME + settings 픽스처: 등록+실행비트 → `verified`; 파일 없음/JSON 아님/`matcher`에 `Bash` 없음/`Edit\|Write\|Bash` 있음(→ verified)/basename 다름/실행비트 없음/`disableAllHooks: true`(사용자·프로젝트·local 각각) → `absent`; `CLAUDE_CONFIG_DIR` 우선; `${HOME}`·`~` 치환 |
-| `server/worker/runner/claude.test.js`·`codex.test.js` | `buildArgv` 결과에 `guard_mirror`가 실린다(claude는 probe 주입값, codex는 항상 `absent`); `extractShellCommand`가 `{ command, id }` |
-| `server/worker/runner/session.merge-guard.test.js` | (a) verified + arm 3 `tool_use` 뒤 `is_error` PreToolUse `tool_result` → `kill_impl` 미호출, `verdict.blocked === false`, `guard_warnings` 비어 있음; (b) verified + 같은 `tool_use` 뒤 정상 `tool_result` → `kill_impl(-pid,'SIGTERM')`, `blocked_detail.reason === 'hook_bypass_blocked'`, `guard_kill.confirmed_by === 'tool_result'`; (c) `absent` + arm 3 → 즉시 kill(현행); (d) verified + arm 1 `push --no-verify` → 즉시 kill; (e) verified + 보류 뒤 `result`로 종료 → kill 없음, `guard_warnings[0].reason === 'hook_bypass_unresolved'`; (f) 다른 `tool_use_id`의 `tool_result`는 보류를 건드리지 않는다 |
-| `server/worker/session-monitor.test.js` | 같은 (a)(b)(c)(e)를 tail 경로로: attempt 레코드 `guard_mirror`를 픽스처에 넣고 `sessionWrites`로 두 줄을 이어 쓴 뒤 `stop()`; `guard_kill`/`guard_warnings` 스냅샷 단언 |
-| `server/worker/queue-store.test.js` | Attempt `guard_mirror` 필드 bound/기본값 `null`, `guard_kill.confirmed_by` 보존 |
-| `server/worker/runner/preamble.test.js` + snap | §6 문장 존재, 스냅샷 갱신 |
+RED→GREEN 시임(현행 코드에서 실제로 실패하는 조건)과 회귀 유지 검증(현행에서도 성립하며 변경 뒤에도
+성립해야 하는 조건)을 가른다(r1 지적 5). 회귀 유지 검증은 RED 증거가 아니다.
+
+| 파일 | RED→GREEN 시임 | 회귀 유지 검증 |
+| --- | --- | --- |
+| `server/worker/runner/command-guard.test.js` | arm 3 위반(`git -c core.hooksPath=/dev/null diff`, `--config-env=`, `GIT_CONFIG_COUNT=… go test`) 단독 호출은 `deferrable: true`; 한 명령의 복합 형태 `git -c core.hooksPath=X push --no-verify`는 `deferrable` 없음(arm 1 우선); 연속 명령 `git -c core.hooksPath=X diff; git config core.hooksPath Y`는 arm 2 위반을 돌려주고 `deferrable` 없음; `git -c core.hooksPath=X diff && gh pr merge …`는 `gh_pr_merge`; arm 3 + `git push origin HEAD:main`(warn)은 arm 3에 `deferrable`이 붙고 warn도 보고된다 | arm 1·2·4 단독과 `gh_pr_merge`/`git_push_base`/`base_merge`에 `deferrable` 없음; 폴백 경로 hook_bypass에 `deferrable` 없음; 열거 면제는 `null` |
+| `server/worker/runner/guard-mirror.test.js` (신설) | tmp HOME + settings 픽스처: 등록+실행비트 → `verified`; 파일 없음/JSON 아님/`matcher`에 `Bash` 없음/basename 다름/실행비트 없음/`disableAllHooks: true`(사용자·프로젝트·local 각각) → `absent`; `Edit\|Write\|Bash` matcher → `verified`; `CLAUDE_CONFIG_DIR` 우선; `${HOME}`·`~` 치환; `HOME` 없음 → `absent` | — |
+| `server/worker/runner/claude.test.js`·`codex.test.js` | claude spec이 `probeGuardMirror`를 노출하고 codex spec은 노출하지 않는다; `extractShellCommand`가 `{ command, id }` | 기존 `buildArgv` argv·프롬프트 조립 불변 |
+| `server/worker/runner/session.merge-guard.test.js` | (a) verified + arm 3 `tool_use` 뒤 `is_error` PreToolUse `tool_result` → `kill_impl` 미호출, `verdict.blocked === false`, `guard_pending` add/clear 이벤트 2건, `guard_warnings` 없음; (b) verified + 같은 `tool_use` 뒤 정상 `tool_result` → `kill_impl(-pid,'SIGTERM')`, `blocked_detail.reason === 'hook_bypass_blocked'`, `blocked_detail.confirmed_by === 'tool_result'`; (e) verified + 보류 뒤 `result`로 종단 → kill 없음, `hook_bypass_unresolved` warning 이벤트; (g) probe가 `final_env`(부모 env + `settings.env` + 어댑터 env, 어댑터 env 우선)를 받는다 — `settings.env.HOME`/어댑터 `CLAUDE_CONFIG_DIR`가 probe 입력에 그대로 보인다; (f) 다른 `tool_use_id`의 `tool_result` 뒤에도 보류가 남아 있다 | (c) `absent` + arm 3 → 즉시 kill; (d) verified + arm 1 → 즉시 kill |
+| `server/worker/session-monitor.test.js` | (a)(b)(e)를 tail 경로로(attempt `guard_mirror`/`guard_pending` 픽스처, `sessionWrites` 두 줄, `guard_kill.confirmed_by`); (h) 보류 add/clear가 `store` attempt `guard_pending`에 반영; (i) `stop()`(종단 없음) 뒤 `guard_pending` 유지·warning 없음; (j) 재부착: `guard_pending` 1건 + `log_offset`, boundary 전 로그에 짝 `tool_result`(거부) → 보류 해소·kill 없음 / (실행) → kill; 짝 없음 → 보류 유지 후 tail에서 확정 | (c) `absent`·`null` → 즉시 kill |
+| `server/worker/scheduler.test.js` | spawn 기록 patch가 `guard_mirror`를 복사; `guard_pending` 이벤트가 attempt에 반영; `blocked_detail.confirmed_by`가 `cause_detail`/`guard_kill`로 복사 | 프롬프트 두 필드 복사 불변 |
+| `server/worker/attach.test.js` | 재부착 시 `guard_pending`이 monitor `start` 옵션으로 전달되고 backfill 범위가 `log_offset..boundary` | 기존 boundary 인계 불변 |
+| `server/worker/queue-store.test.js` | Attempt `guard_mirror`·`guard_pending` 필드 bound/기본값 `null` | `guard_kill` 객체(추가 필드 포함) 그대로 보존 |
+| `server/worker/runner/preamble.test.js` + snap | §6 문장 존재, 스냅샷 갱신 | 나머지 지시문 불변 |
 
 ## 검증
 
 - `npm run tsc` exit 0; `npm run lint` exit 0.
-- `npx vitest run server/worker/runner/command-guard.test.js server/worker/runner/guard-mirror.test.js server/worker/runner/claude.test.js server/worker/runner/codex.test.js server/worker/runner/session.merge-guard.test.js server/worker/session-monitor.test.js server/worker/queue-store.test.js server/worker/runner/preamble.test.js --reporter=dot` (timeout 120초).
+- `npx vitest run server/worker/runner/command-guard.test.js server/worker/runner/guard-mirror.test.js server/worker/runner/claude.test.js server/worker/runner/codex.test.js server/worker/runner/session.merge-guard.test.js server/worker/session-monitor.test.js server/worker/scheduler.test.js server/worker/attach.test.js server/worker/queue-store.test.js server/worker/runner/preamble.test.js --reporter=dot` (timeout 120초).
 - `npx vitest run --reporter=dot` 전체(timeout 120초, AGENTS.md 교착 주의).
-- 실측 1건(구현 세션이 수행): 이 저장소 `.worktrees/<id>`에서 `probeGuardMirror`를 실제
-  `~/.claude/settings.json`에 대해 호출해 `verified`가 나오는지(dotfiles가 설치된 이 호스트) 확인하고
+- 실측 1건(구현 세션이 수행, 기계 판정): 이 저장소 `.worktrees/<id>`에서 `probeGuardMirror`를 실제
+  `process.env`(HOME 포함)에 대해 호출해 `verified`가 나오는지(dotfiles가 설치된 이 호스트) 확인하고
   결과를 완료 보고서에 적는다.
 
 ## 배포 처분
@@ -249,7 +315,11 @@ Codex 세션(`guard_mirror: 'absent'`)과 검증에 실패한 Claude 세션은 �
    넓힌다.
 5. **보류 중 세션이 다음 명령을 낸다.** 보류는 세션을 멈추지 않으므로 거부→재시도 사이에 다른
    명령이 흐른다. 그 명령들은 독립 판정이며, 실행 확인 뒤 kill은 최대 한 `tool_result` 지연만큼
-   늦다 — 실행 확인 시점에 이미 실행된 명령은 되돌리지 못한다. 이것이 §1이 arm 1을 제외한 이유다.
+   늦다 — 실행 확인 시점에 이미 실행된 명령은 되돌리지 못한다. 이것이 §1이 arm 1을 제외하고 즉시
+   종료 위반을 항상 우선하게 한 이유다.
+6. **재부착 backfill은 로그가 남아 있을 때만 성립한다.** 로그 회전·삭제로 `log_offset` 구간이 없으면
+   보류는 유지되고 이후 tail에서만 확정되므로, 그 사이 실행된 위반은 §4의 `hook_bypass_unresolved`로
+   끝난다 — 미탐이지만 세션이 이미 끝난 뒤의 진단 손실이며, 그 attempt의 push는 pre-push 훅이 막는다.
 
 ## 경계·후속
 
@@ -260,10 +330,11 @@ Codex 세션(`guard_mirror: 'absent'`)과 검증에 실패한 Claude 세션은 �
 
 ## 구현 unit 후보
 
-- `guard`: §1 `deferrable` + §2 `guard-mirror.js`·어댑터 `guard_mirror`·`queue-store` 필드 —
-  `command-guard.js`, `guard-mirror.js`, `claude.js`, `codex.js`, `queue-store.js` + 각 테스트.
-- `consume`: §3·§4 보류/확정을 `session.js`·`session-monitor.js`에, §6 프리앰블 — 두 소비처와
-  `preamble.js` + 테스트·스냅샷. `guard` 뒤에 온다.
+- `guard`: §1 `deferrable`·우선순위 + §2 `guard-mirror.js`·어댑터 `probeGuardMirror`·`queue-store` 필드
+  (`guard_mirror`, `guard_pending`) — `command-guard.js`, `guard-mirror.js`, `claude.js`, `codex.js`,
+  `queue-store.js` + 각 테스트.
+- `consume`: §2 spawn 조립·기록, §3·§4 보류/확정/재부착을 `session.js`·`scheduler.js`·`session-monitor.js`·
+  `attach.js`에, §6 프리앰블 — + 테스트·스냅샷. `guard` 뒤에 온다.
 
 ## 결정 (ADR 후보)
 
@@ -273,16 +344,18 @@ Codex 세션(`guard_mirror: 'absent'`)과 검증에 실패한 Claude 세션은 �
   arm 1(같은 명령 안의 비가역 원격 변경)은 텍스트 즉시 kill로 남긴다. supersede 대상이 아니다.
 - 예방층(PreToolUse 미러)이 검증된 Claude 세션에서 텍스트 가드는 1회성 hook 재배치를 `tool_use`
   출현이 아니라 `tool_result`의 실행 증거로 판정하고, 훅이 거부한 명령은 기록하지 않는다.
-  되돌리기 어려움: 낮다 — attempt 필드 하나와 보류 Map이며, 되돌리면 UI-iw28 시점 코드다. 맥락
-  없는 의외성: 있다 — 같은 한 줄이 Codex 세션에서는 즉시 kill이고 Claude 세션에서는 훅 거부 뒤
-  계속되는 것은 이 문서 없이는 설명되지 않는다. 실제 절충: 있다 — 예방층을 믿고 오탐을 없애는
-  것 대 텍스트 판정 단독 fail-closed; 잔여 위험 1이 그 값이다. 두 조건이 성립하므로 → ADR
-  `summary`: "예방층이 검증된 Claude 세션에서 텍스트 가드는 1회성 hook 재배치를 실행 증거로 판정하고 훅이 거부한 명령은 kill하지 않는다"
+  되돌리기 어려움: 아니다 — attempt 필드 둘(`guard_mirror`, `guard_pending`)과 보류 판정 분기이며,
+  되돌리면 UI-iw28 시점 코드로 돌아가고 durable 필드는 `null`로 남아 무해하다. 맥락 없는 의외성:
+  있다 — 같은 한 줄이 Codex 세션에서는 즉시 kill이고 Claude 세션에서는 훅 거부 뒤 계속되는 것은 이
+  문서 없이는 설명되지 않는다. 실제 절충: 있다 — 예방층을 믿고 오탐을 없애는 것 대 텍스트 판정
+  단독 fail-closed; 잔여 위험 1이 그 값이다. 세 조건 중 하나(되돌리기 어려움)가 성립하지 않으므로
+  → ADR 아님. 판정 근거는 이 스펙 §1–§4가 소유한다.
 - `git push --no-verify`는 검증 세션에서도 텍스트 즉시 kill로 남긴다.
-  되돌리기 어려움: 낮다. 맥락 없는 의외성: 아니다 — ADR 0007이 이미 이 명령을 유지 kill로
-  적었다. 실제 절충: 없다 — 미러가 같은 형태를 거부하므로 정상 경로에서 실행되지 않고, 남는
-  차이는 훅 fail-open 때뿐이다. → ADR 아님
+  되돌리기 어려움: 아니다 — `isHookBypass` arm 1 반환값의 `one_shot: false` 하나이며, 되돌리면 arm 1이
+  arm 3과 같은 보류 대상이 될 뿐 다른 코드가 바뀌지 않는다. 맥락 없는 의외성: 아니다 — ADR 0007이
+  이미 이 명령을 유지 kill로 적었다. 실제 절충: 없다 — 미러가 같은 형태를 거부하므로 정상 경로에서
+  실행되지 않고, 남는 차이는 훅 fail-open 때뿐이다. → ADR 아님
 - `guard_mirror` 검증은 settings 등록·실행비트·`disableAllHooks` 부재이며 파일명 하나에 결합한다.
-  되돌리기 어려움: 낮다 — 조건 목록. 맥락 없는 의외성: 아니다 — "훅이 걸려 있는가"의 가장
+  되돌리기 어려움: 아니다 — 조건 목록. 맥락 없는 의외성: 아니다 — "훅이 걸려 있는가"의 가장
   직접적인 증거다. 실제 절충: 있다 — 런타임 성공 증명(불가) 대 정적 등록 증명; 잔여 위험 1·3에
   적었다. 한 조건만 성립 → ADR 아님
