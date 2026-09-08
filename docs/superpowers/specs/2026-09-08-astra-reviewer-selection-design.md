@@ -84,7 +84,7 @@ app/views/detail-panel/effective-card.test.js --reporter=dot`을 실행한다.
 
 | 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
 |---|---|---|---|---|---|
-| 형제 | dotfiles/dotfiles | user_request | 공통 계약 정본과 설치본을 소유하는 별도 저장소 | 없음 | dotfiles-2lw8 |
+| 형제 | dotfiles | user_request | 공통 계약 정본과 설치본을 소유하는 별도 저장소 | 없음 | dotfiles-2lw8 |
 
 ## 결정 (ADR 후보)
 
