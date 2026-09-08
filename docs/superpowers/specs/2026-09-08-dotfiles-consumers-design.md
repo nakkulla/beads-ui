@@ -57,7 +57,7 @@ class별 수가 겹칠 수 있으므로 합산해 고유 dirty 파일 수로 부
 
 ## U3. 계획 검토 기록의 새 쌍과 과거 기록 구분
 
-`server/workflow-enrich.js`와 `server/worker/runnable-cache.js`에서 같은 판별 규칙을 적용한다. D7의 `plan_review=<reviewer>@40hex`와 **같은 앵커의** `plan_review_stats=...@40hex`가 유효한 쌍이면 새 검토 기록이다. 검토를 사용자 승인으로 승격하지 않는다.
+`server/workflow-enrich.js`와 `server/worker/runnable-cache.js`에서 같은 판별 규칙을 적용한다. D7의 `plan_review=<reviewer>@40hex`와 **같은 앵커의** `plan_review_stats=...@40hex`가 유효한 쌍이면 새 검토 기록이다. 검토를 사용자 승인으로 승격하지 않는다. reviewer 토큰은 기존 canonical 집합 `codex`·`astra`·`fable`·`self`·`skipped`(현재 `PLAN_REVIEW_RECEIPT_RE`와 같은 집합)를 그대로 보존하며, 40자리 쌍 판별이 토큰 집합을 좁히지 않는다.
 
 그 쌍이 없는 과거 `user|triage|codex@40hex`는 기존 legacy 승인 해석을 유지한다. 과거 reviewer@12hex와 12자리 통계, plan_check fallback도 유지한다. 새 40자리 통계가 존재하지만 앵커가 다르면 불완전 기록으로 표시하고 legacy 승인으로 재해석하지 않는다. `plan_approval`이 있는 경우 그 명시적인 사용자 승인 기록은 별도로 보존한다.
 
@@ -77,9 +77,10 @@ npm run build
 
 - U1: 기존 v1, v2 정상·missing·malformed optional·unknown 필드·상대 경로 탈출·과도한 항목, secret sentinel 비노출, partial tail와 identity 거절을 확인한다.
 - U2: unknown/current/error/stale·ahead/diverged·잘린 수치·미래 시각을 확인한다. cold cache에서도 snapshot이 즉시 반환되고 warm 이후 갱신되는지 검증한다.
-- U3: 옛 codex@40 승인, reviewer@12 검토, plan_check, 새 self/codex/fable/skipped 쌍, mismatch와 명시 승인 존재·부재를 같은 fixture로 두 소비처에 대조한다.
+- U3: 옛 codex@40 승인, reviewer@12 검토, plan_check, 새 codex/astra/fable/self/skipped 쌍(각 토큰의 동일 앵커 성공 사례와 `astra`의 앵커 불일치 사례 포함), mismatch와 명시 승인 존재·부재를 같은 fixture로 두 소비처에 대조한다.
 - 변경 파일만 저장소 formatter를 적용하고 frontend bundle과 map을 재생성한다. 무관한 파일을 일괄 포맷하지 않는다.
-- 작은 화면의 저장소 헤더와 실제 생산자 v2 JSONL 입력을 확인한다. 정적 타입·fixture 검사만으로 실제 연동 완료라고 주장하지 않는다.
+- U1 입력은 dotfiles D4 스펙의 v2 계약을 그대로 옮긴 canonical v2 fixture로 검증한다. 실제 생산자가 쓴 v2 JSONL의 종단 간 확인은 생산자 구현이 이 이슈의 배포 뒤에 진입하므로 `dotfiles-4bxr`의 수용 기준이 소유하며, 이 이슈의 완료 조건이 아니다.
+- U2 저장소 헤더의 좁은 폭 배치는 결정적 구조 검사로 고정한다: 정보 영역 컨테이너의 줄바꿈 허용(`flex-wrap`)과 저장소 조작 영역의 축소 금지·순서를 스타일시트와 렌더 결과에서 확인하는 테스트를 둔다. 실제 좁은 폭 스크린샷 확인은 배포 뒤 완료 보고서의 운영자 잔여 항목으로 기록하며 close 조건이 아니다.
 
 ## 배포와 완료
 
