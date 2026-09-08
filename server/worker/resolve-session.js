@@ -36,13 +36,37 @@ import {
 const default_log = debug('worker:resolve-session');
 
 /**
- * The only provider a recorded session may be forked from here. A `codex:`
- * item is a `provider_mismatch` rather than a `codex resume`: this lane's
- * prompt, its `--fork-session` flag and the bridge's relay are all Claude's.
+ * The interactive fork argv for one provider (codex-orchestration-parity §4.2).
  *
- * @type {string}
+ * The recorded session's OWN provider is what runs: forking a codex thread from
+ * a claude CLI is not a fallback, it is a different session. Codex's measured
+ * interactive form is `codex fork <SESSION_ID> [PROMPT]`, passed as argv and
+ * never re-evaluated by a shell.
+ *
+ * @param {'claude'|'codex'} runner
+ * @param {string} session_id
+ * @param {string} prompt
+ * @returns {string[]}
  */
-const FORK_RUNNER = 'claude';
+function forkArgs(runner, session_id, prompt) {
+  return runner === 'codex'
+    ? ['fork', session_id, prompt]
+    : ['--resume', session_id, '--fork-session', prompt];
+}
+
+/**
+ * The command line the reply reports for a fork, in the same provider's
+ * spelling.
+ *
+ * @param {'claude'|'codex'} runner
+ * @param {string} session_id
+ * @returns {string}
+ */
+function forkCommand(runner, session_id) {
+  return runner === 'codex'
+    ? `codex fork ${shellQuote(session_id)}`
+    : `claude --resume ${shellQuote(session_id)} --fork-session`;
+}
 
 /**
  * Completion-terminal stage → the failure CLASS a resolution prompt states.
@@ -224,6 +248,7 @@ export function buildResolvePrompt(input) {
  * @property {{ readIssue: (workspace: string, bead_id: string) => Promise<any> }} bd
  * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runTmux]
  * @property {() => string|null} [resolveClaude]
+ * @property {(runner: string) => string|null} [resolveRunner]
  * @property {(file_path: string) => { mtimeMs: number }} [statFile]
  * @property {() => number} [now]
  * @property {(...args: any[]) => void} [log]
@@ -240,6 +265,9 @@ export function buildResolvePrompt(input) {
  * @property {string|null} fallback_reason - Why the recorded session was not
  * forked; null on a fork.
  * @property {string|null} session_id
+ * @property {'claude'|'codex'} runner - The provider the window actually runs.
+ * A fork keeps the RECORDED session's provider; a fresh session falls back to
+ * claude, which is this lane's own interactive tool.
  * @property {string|null} command
  * @property {boolean} bridge_active
  * @property {string|null} tmux_session
@@ -256,6 +284,7 @@ export function createResolveSession(deps) {
   const launcher = createTmuxLauncher({
     ...(deps.runTmux ? { runTmux: deps.runTmux } : {}),
     ...(deps.resolveClaude ? { resolveClaude: deps.resolveClaude } : {}),
+    ...(deps.resolveRunner ? { resolveRunner: deps.resolveRunner } : {}),
     ...(deps.statFile ? { statFile: deps.statFile } : {}),
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.heartbeatPath ? { heartbeatPath: deps.heartbeatPath } : {}),
@@ -296,7 +325,7 @@ export function createResolveSession(deps) {
    *
    * @param {string} workspace
    * @param {string} bead_id
-   * @returns {Promise<{ session_id: string|null, fallback_reason: string|null }>}
+   * @returns {Promise<{ session_id: string|null, runner: 'claude'|'codex', fallback_reason: string|null }>}
    */
   async function forkTarget(workspace, bead_id) {
     /** @type {any} */
@@ -305,19 +334,38 @@ export function createResolveSession(deps) {
       issue = await deps.bd.readIssue(workspace, bead_id);
     } catch (err) {
       log('bd read failed for %s: %o', bead_id, err);
-      return { session_id: null, fallback_reason: 'bd_unavailable' };
+      return {
+        session_id: null,
+        runner: 'claude',
+        fallback_reason: 'bd_unavailable'
+      };
     }
     if (!issue || typeof issue !== 'object') {
-      return { session_id: null, fallback_reason: 'bd_unavailable' };
+      return {
+        session_id: null,
+        runner: 'claude',
+        fallback_reason: 'bd_unavailable'
+      };
     }
+    // `null` runner: the recorded provider decides, instead of a claude pin
+    // whose only effect was to report a perfectly forkable codex session as a
+    // `provider_mismatch` (§4.1).
     const qualified = qualifySessionFork(
       issue.metadata,
-      FORK_RUNNER,
+      null,
       deps.sessionRefOptions || {}
     );
     return qualified.ok
-      ? { session_id: qualified.session_id, fallback_reason: null }
-      : { session_id: null, fallback_reason: qualified.reason };
+      ? {
+          session_id: qualified.session_id,
+          runner: qualified.provider,
+          fallback_reason: null
+        }
+      : {
+          session_id: null,
+          runner: 'claude',
+          fallback_reason: qualified.reason
+        };
   }
 
   return {
@@ -332,7 +380,7 @@ export function createResolveSession(deps) {
         typeof input.repo === 'string' && input.repo.length > 0
           ? input.repo
           : input.workspace;
-      const { session_id, fallback_reason } = await forkTarget(
+      const { session_id, runner, fallback_reason } = await forkTarget(
         input.workspace,
         input.bead_id
       );
@@ -343,16 +391,15 @@ export function createResolveSession(deps) {
         fallback_reason
       });
       const command_args =
-        session_id === null
-          ? [prompt]
-          : ['--resume', session_id, '--fork-session', prompt];
+        session_id === null ? [prompt] : forkArgs(runner, session_id, prompt);
       const outcome = await launcher.launch({
         marker: RESOLVE_PANE_MARKER,
         key: input.bead_id,
         tmux_session: tmuxSessionName(),
         window_name: `resolve-${input.bead_id}`,
         cwd: checkout,
-        commandArgs: command_args
+        commandArgs: command_args,
+        runner
       });
       return {
         launched: outcome.session === 'launched',
@@ -361,10 +408,8 @@ export function createResolveSession(deps) {
         mode: session_id === null ? 'fresh' : 'fork',
         fallback_reason,
         session_id,
-        command:
-          session_id === null
-            ? 'claude'
-            : `claude --resume ${shellQuote(session_id)} --fork-session`,
+        runner,
+        command: session_id === null ? runner : forkCommand(runner, session_id),
         bridge_active: launcher.bridgeActive(),
         tmux_session:
           outcome.session === 'launched' ? outcome.tmux_session : null,

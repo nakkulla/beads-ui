@@ -463,9 +463,13 @@ export function resolveSessionToast(res) {
   if (res.launched !== true) {
     return `세션 기동 실패: ${res.reason || 'unknown'}`;
   }
+  // The runner is the RESULT's, never the current global setting: a fork keeps
+  // the recorded session's provider, so the person is about to work in whatever
+  // this line says (codex-orchestration-parity §4.2).
+  const runner = typeof res.runner === 'string' ? res.runner : 'claude';
   return res.mode === 'fork'
     ? null
-    : `새 세션으로 시작 (${res.fallback_reason || 'unknown'})`;
+    : `${runner} 새 세션으로 시작 (${res.fallback_reason || 'unknown'})`;
 }
 
 /**

@@ -1165,7 +1165,7 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
- *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
+ *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, resume_runner?: 'claude'|'codex'|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   unfenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
@@ -1735,17 +1735,22 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Verify that one Claude session transcript still exists on this machine.
+   * Verify that one session transcript still exists on this machine, under the
+   * RECORDED provider (codex-orchestration-parity §4.1). Reading a codex thread
+   * with claude's locator was the old shape's blind spot: a codex resume could
+   * not fall back at all, and a fallback that changed provider is exactly what
+   * the spec forbids.
    *
+   * @param {'claude'|'codex'} provider
    * @param {string} session_id
    */
-  function claudeTranscriptPresent(session_id) {
+  function transcriptPresent(provider, session_id) {
     const resolver = deps.resolveSessionFile || defaultResolveSessionFile;
     try {
       return (
         resolver(
           {
-            provider: 'claude',
+            provider,
             session_id,
             host: os.hostname(),
             index: 0
@@ -8158,6 +8163,20 @@ export function createScheduler(deps) {
     // (worker-failure-tiers §5): it installs the RECORD-mode hook, whose whole
     // purpose is the push log the landing judgment reads — a hook that git is
     // never pointed at records nothing.
+    // The policy-hook locator pair (codex-orchestration-parity §3.1). Both keys
+    // or neither: a hook handed a repo root without a bead — or the reverse —
+    // would bind the call to a target this launch never resolved. The values
+    // are the ones this attempt already resolved, and `runner/session.js`
+    // strips any inherited `WORKFLOW_*` before layering these, so another
+    // session's value cannot pass through. They are a HINT for finding the target;
+    // no approval or review receipt is synthesized from them.
+    if (repo.length > 0 && bead_id.length > 0) {
+      settings.env = {
+        ...(settings.env || {}),
+        WORKFLOW_REPO_ROOT: repo,
+        WORKFLOW_BEAD_ID: bead_id
+      };
+    }
     if (receipt_dir !== null || monitor_dir !== null) {
       settings.env = {
         ...(settings.env || {}),
@@ -10026,9 +10045,9 @@ export function createScheduler(deps) {
         : null;
     if (
       continuation_mode === 'session' &&
-      runner_name === 'claude' &&
+      (runner_name === 'claude' || runner_name === 'codex') &&
       typeof prior.session_id === 'string' &&
-      !claudeTranscriptPresent(prior.session_id)
+      !transcriptPresent(runner_name, prior.session_id)
     ) {
       // §5.3: `prior_attempt` never substitutes a fresh session — the refusal
       // is the answer, and the paused parent stays where the user left it.
@@ -10728,7 +10747,7 @@ export function createScheduler(deps) {
    * the review lineage belongs in that session's own history.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, head_ref?: string|null }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, resume_runner?: 'claude'|'codex'|null, head_ref?: string|null }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviewSession(workspace, input) {
@@ -10820,16 +10839,25 @@ export function createScheduler(deps) {
       removeGuardHook(workspace, attempt_id);
       return refuseLaunch(exec.invalid_reason);
     }
-    // A `--resume` is a claude-transcript operation, so a resumed review runs
-    // on claude whatever the bead's execution defaults resolved to. Reviewer
-    // model/effort are NOT decided here at all (§5.2): the session's own
-    // `review` skill ladder owns that choice.
+    // A resume is a transcript operation of the CLI that wrote the transcript,
+    // so a resumed review runs on the runner the SELECTION validated
+    // (codex-orchestration-parity §4.2) — not on claude because an id happens
+    // to exist. An id without a validated runner is not resumable at all and
+    // falls back to the bead's own resolved runner with a fresh session.
+    // Reviewer model/effort are NOT decided here at all (§5.2): the session's
+    // own `review` skill ladder owns that choice.
+    const resume_runner =
+      input.resume_runner === 'claude' || input.resume_runner === 'codex'
+        ? input.resume_runner
+        : null;
     const resume_session_id =
       typeof input.resume_session_id === 'string' &&
-      input.resume_session_id.length > 0
+      input.resume_session_id.length > 0 &&
+      resume_runner !== null
         ? input.resume_session_id
         : null;
-    const runner_name = resume_session_id === null ? exec.runner : 'claude';
+    const runner_name =
+      resume_session_id === null ? exec.runner : resume_runner;
     claimed.add(bead_id);
     const started = deps.store.upsertReviewSessionAttempt(workspace, {
       attempt_id,

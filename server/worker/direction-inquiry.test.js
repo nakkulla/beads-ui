@@ -113,22 +113,31 @@ const NOTES = [
  * Fake transcript filesystem for session fork selection.
  *
  * @param {string[]} session_ids
+ * @param {string[]} [codex_ids]
  */
-function sessionFs(session_ids) {
+function sessionFs(session_ids, codex_ids = []) {
   return {
     /** @param {string} file_path */
     readdirSync(file_path) {
       if (file_path === '/home/.claude/projects') {
         return ['project'];
       }
+      if (
+        codex_ids.length > 0 &&
+        file_path.startsWith('/home/.codex/sessions')
+      ) {
+        return codex_ids.map(
+          (session_id) => `rollout-2026-09-08T00-00-00-${session_id}.jsonl`
+        );
+      }
       throw new Error('ENOENT');
     },
     /** @param {string} file_path */
     statSync(file_path) {
       if (
-        session_ids.some((session_id) =>
-          file_path.endsWith(`/${session_id}.jsonl`)
-        )
+        session_ids
+          .concat(codex_ids)
+          .some((session_id) => file_path.endsWith(`${session_id}.jsonl`))
       ) {
         return { mtimeMs: 1 };
       }
@@ -163,6 +172,7 @@ function issue(over = {}) {
  *   readIssue?: any,
  *   statFile?: any,
  *   resolveClaude?: any,
+ *   resolveRunner?: any,
  *   readAttempt?: any,
  *   sessionRefOptions?: any,
  *   now?: () => number
@@ -170,6 +180,8 @@ function issue(over = {}) {
  */
 function makeInquiry(over = {}) {
   const tmux = over.tmux || makeTmux();
+  const resolveClaude =
+    over.resolveClaude || (() => '/opt/homebrew/bin/claude');
   const awaitingUser = vi.fn(async () => {});
   const inquiry = createDirectionInquiry({
     getConfig: () => ({
@@ -181,7 +193,15 @@ function makeInquiry(over = {}) {
     bd: { readIssue: over.readIssue || (async () => issue()) },
     notifier: { awaitingUser },
     runTmux: tmux.runTmux,
-    resolveClaude: over.resolveClaude || (() => '/opt/homebrew/bin/claude'),
+    resolveClaude,
+    resolveRunner:
+      over.resolveRunner ||
+      ((/** @type {string} */ runner) =>
+        runner === 'claude'
+          ? resolveClaude()
+          : runner === 'codex'
+            ? '/opt/homebrew/bin/codex'
+            : null),
     statFile: over.statFile || (() => ({ mtimeMs: 1000 })),
     now: over.now || (() => 2000),
     readAttempt:
@@ -567,6 +587,87 @@ describe('direction-inquiry launch', () => {
 
     const wrapper = tmux.calls.find((call) => call[0] === 'new-window')?.[12];
     expect(wrapper).toContain("'--resume' 'attempt-sid' '--fork-session'");
+  });
+
+  test('forks a codex attempt with the codex interactive argv', async () => {
+    const tmux = makeTmux({
+      panes: [['bdui-inquiry', '%1', '', '0']],
+      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
+    });
+    const { inquiry } = makeInquiry({
+      tmux,
+      readAttempt: async () => ({
+        attempt_id: 'a1',
+        repo: '/repo',
+        runner: 'codex',
+        session_id: 'codex-sid'
+      }),
+      sessionRefOptions: {
+        home_dir: '/home',
+        hostname: 'host',
+        fs: sessionFs([], ['codex-sid'])
+      }
+    });
+
+    await inquiry.onParkedAttempt(parkedInput());
+
+    const wrapper = tmux.calls.find((call) => call[0] === 'new-window')?.[12];
+    expect(wrapper).toContain("'/opt/homebrew/bin/codex' 'fork' 'codex-sid'");
+  });
+
+  test('reports the codex runner it actually launched', async () => {
+    const tmux = makeTmux({
+      panes: [['bdui-inquiry', '%1', '', '0']],
+      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
+    });
+    const { inquiry, awaitingUser } = makeInquiry({
+      tmux,
+      readAttempt: async () => ({
+        attempt_id: 'a1',
+        repo: '/repo',
+        runner: 'codex',
+        session_id: 'codex-sid'
+      }),
+      sessionRefOptions: {
+        home_dir: '/home',
+        hostname: 'host',
+        fs: sessionFs([], ['codex-sid'])
+      }
+    });
+
+    await inquiry.onParkedAttempt(parkedInput());
+
+    expect(awaitingUser).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'fork', runner: 'codex' })
+    );
+  });
+
+  test('notifies launch_failed:codex_not_found when codex is off PATH', async () => {
+    const tmux = makeTmux({
+      panes: [['bdui-inquiry', '%1', '', '0']]
+    });
+    const { inquiry, awaitingUser } = makeInquiry({
+      tmux,
+      readAttempt: async () => ({
+        attempt_id: 'a1',
+        repo: '/repo',
+        runner: 'codex',
+        session_id: 'codex-sid'
+      }),
+      sessionRefOptions: {
+        home_dir: '/home',
+        hostname: 'host',
+        fs: sessionFs([], ['codex-sid'])
+      },
+      resolveRunner: (/** @type {string} */ runner) =>
+        runner === 'claude' ? '/opt/homebrew/bin/claude' : null
+    });
+
+    await inquiry.onParkedAttempt(parkedInput());
+
+    expect(awaitingUser).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'launch_failed:codex_not_found' })
+    );
   });
 
   test('falls back to session_ref when the attempt cannot fork', async () => {

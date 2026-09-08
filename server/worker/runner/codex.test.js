@@ -194,14 +194,60 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
     );
   });
 
-  test('disables the hooks feature', () => {
+  test('leaves the hooks feature enabled on a work launch', () => {
     const spec = codexSpec();
 
     const built = spec.buildArgv(BEAD, WS, { model: 'sol' });
 
-    const i = built.args.indexOf('--disable');
-    expect(i).toBeGreaterThanOrEqual(0);
-    expect(built.args[i + 1]).toBe('hooks');
+    expect(built.args).not.toContain('--disable');
+  });
+
+  test('leaves the hooks feature enabled on a review launch', () => {
+    const spec = codexSpec();
+
+    const built = spec.buildArgv(BEAD, WS, { model: 'sol', mode: 'review' });
+
+    expect(built.args).not.toContain('--disable');
+  });
+
+  test('leaves the hooks feature enabled on a resume launch', () => {
+    const spec = codexSpec();
+
+    const built = spec.buildArgv(BEAD, WS, {
+      model: 'sol',
+      resume_session_id: 'thread-1'
+    });
+
+    expect(built.args).not.toContain('--disable');
+  });
+
+  test('leaves the hooks feature enabled on a fork launch', () => {
+    const spec = codexSpec();
+
+    const built = spec.buildArgv(BEAD, WS, {
+      model: 'sol',
+      resume_session_id: 'thread-1',
+      fork_session: true
+    });
+
+    expect(built.args).not.toContain('--disable');
+  });
+
+  test('keeps CODEX_SILENT on the launch env', () => {
+    const spec = codexSpec();
+
+    const built = spec.buildArgv(BEAD, WS, { model: 'sol' });
+
+    expect(built.env?.CODEX_SILENT).toBe('1');
+  });
+
+  test('tells a codex session to wait with the native tools only', () => {
+    const spec = codexSpec();
+
+    const built = spec.buildArgv(BEAD, WS, { model: 'sol' });
+
+    expect(built.system_prompt).toContain('wait_agent');
+    expect(built.system_prompt).not.toContain('`SendMessage`');
   });
 
   test('sends the contract and the task as one positional argument', () => {

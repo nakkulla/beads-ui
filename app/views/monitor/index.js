@@ -841,7 +841,7 @@ export function createMonitorView(mount_element, options) {
         showToast(`세션 기동 실패: ${res?.reason || 'unknown'}`, 'error');
       } else if (res.mode !== 'fork') {
         showToast(
-          `새 세션으로 시작 (${res.fallback_reason || 'unknown'})`,
+          `${typeof res.runner === 'string' ? res.runner : 'claude'} 새 세션으로 시작 (${res.fallback_reason || 'unknown'})`,
           'success'
         );
       }

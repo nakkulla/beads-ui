@@ -18,12 +18,12 @@
  *
  * Framed as an ENVIRONMENT FACT rather than a prohibition (UI-rxp3): "no
  * question tools" reads as a rule to be weighed, while "there is nobody on the
- * other end" is a property of the room the session is standing in. The
- * background-task warning moved here from the guard contract for the same
- * reason — the process dies at turn end when only background shells remain,
- * while a live subagent holds it for at most the 2 h ceiling after the last
- * completion notification. That is a fact about unattended execution, not a
- * guard verdict.
+ * other end" is a property of the room the session is standing in.
+ *
+ * What is NOT here since codex-orchestration-parity §3.2 is how a session waits
+ * for delegated work: that paragraph names TOOLS, and the tools differ by
+ * runtime. It lives in {@link CLAUDE_LIFETIME_DIRECTIVE} and
+ * {@link CODEX_LIFETIME_DIRECTIVE}, and exactly one of them is composed in.
  *
  * @type {string}
  */
@@ -34,8 +34,41 @@ export const UNATTENDED_PREAMBLE = [
   '',
   '- 사용자는 이 세션과 통신할 수 없다. 질문 도구는 응답자가 없어 영원히 대기한다.',
   '- hard-stop 조건은 `blocker` 줄을 출력한 뒤 비정상 종료로 표면화하라. 그것이 이 환경에서 사람에게 도달하는 유일한 경로다.',
-  '- headless 프로세스는 백그라운드 셸 태스크만 남기고 턴을 끝내면 그 즉시 종료되고 태스크는 kill되어 결과가 유실된다. 서브에이전트가 살아 있는 동안만 프로세스가 유지되며, 그것도 마지막 완료 알림 이후 최대 2시간이다. 위임 대기 규칙은 dotfiles `implement-codex` 스킬이 소유한다 — 모든 위임 dispatch는 새 `Agent` 호출이고 그것만 프로세스를 붙든다; `SendMessage` 재개·백그라운드 셸 워치는 붙들지 못한다.',
   '- 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키 — `impl_dispatch`, `impl_entry`, `plan_approval`, `workflow_mode_source=user` — 는 이 세션이 쓸 수 없다. Worker는 시도 시작 시 이 키들을 스냅샷하고, 시도 중 값이 바뀌면(부재→기록 포함) 머지 게이트가 영수증 위조로 fail-closed한다. 위임 기본 모델이 이 세션의 모델과 같다는 사실은 main 실행 근거가 아니다 — 실행 형태는 dotfiles workflow 계약의 selector가 정한다.'
+].join('\n');
+
+/**
+ * How a CLAUDE session holds its process while delegated work runs
+ * (codex-orchestration-parity §3.2). Verbatim the paragraph that used to sit in
+ * {@link UNATTENDED_PREAMBLE}: the process dies at turn end when only
+ * background shells remain, a live subagent holds it for at most the 2 h
+ * ceiling, and the Claude→Codex bridge lifetime rule is dotfiles-owned.
+ *
+ * @type {string}
+ */
+export const CLAUDE_LIFETIME_DIRECTIVE = [
+  '## 프로세스 수명과 위임 대기',
+  '',
+  '- headless 프로세스는 백그라운드 셸 태스크만 남기고 턴을 끝내면 그 즉시 종료되고 태스크는 kill되어 결과가 유실된다. 서브에이전트가 살아 있는 동안만 프로세스가 유지되며, 그것도 마지막 완료 알림 이후 최대 2시간이다. 위임 대기 규칙은 dotfiles `implement-codex` 스킬이 소유한다 — 모든 위임 dispatch는 새 `Agent` 호출이고 그것만 프로세스를 붙든다; `SendMessage` 재개·백그라운드 셸 워치는 붙들지 못한다.',
+  '- 위임을 던져 놓고 결과를 확인하지 않은 채 구현 완료를 보고할 수 없다.'
+].join('\n');
+
+/**
+ * How a CODEX session holds its process while delegated work runs
+ * (codex-orchestration-parity §3.2). It states codex's OWN tools —
+ * `spawn_agent` and the native wait tool — and deliberately names none of
+ * claude's: the `Agent`/`SendMessage` rules, the 2 h ceiling and the
+ * background-shell process-death semantics are properties of the claude
+ * transport (dotfiles ADR 0052), not of a native codex child.
+ *
+ * @type {string}
+ */
+export const CODEX_LIFETIME_DIRECTIVE = [
+  '## 프로세스 수명과 위임 대기',
+  '',
+  '- 하위 에이전트 위임은 native `spawn_agent`로 만들고, 기다리기는 native 대기 도구(`wait_agent`)로 한다.',
+  '- 위임한 자식의 종료와 결과를 확인한 뒤에 controller가 검증하고 종료한다.',
+  '- 위임을 던져 놓고 결과를 확인하지 않은 채 구현 완료를 보고할 수 없다.'
 ].join('\n');
 
 /**
@@ -263,23 +296,36 @@ export function defaultTaskPrompt(bead_id) {
  * must open a PR is exactly the session that must know which base to open it
  * against, so a shape that opens none is told no base either.
  *
+ * `runtime` selects the process-lifetime paragraph (§3.2): the two runtimes
+ * wait for delegated children through different tools, so each is told only its
+ * own. An absent value keeps claude's, which is what every pre-existing caller
+ * meant.
+ *
  * @param {string} base_prompt - The task prompt for the session.
- * @param {{ fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, quickfix_lane?: boolean, review?: boolean, target_base?: string|null }} [options]
+ * @param {{ runtime?: 'claude'|'codex', fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, quickfix_lane?: boolean, review?: boolean, target_base?: string|null }} [options]
  * @returns {{ system_prompt: string, task_prompt: string }}
  */
 export function applyPreamble(base_prompt, options = {}) {
+  const lifetime =
+    options.runtime === 'codex'
+      ? CODEX_LIFETIME_DIRECTIVE
+      : CLAUDE_LIFETIME_DIRECTIVE;
   if (options.review === true) {
     // Review mode is not a variation of the writable contract — it IS its own
-    // contract (UI-58w8 §3), so none of the writable directives apply.
+    // contract (UI-58w8 §3), so none of the writable directives apply. The
+    // lifetime paragraph is not a writable directive: a review session
+    // delegates too, and it must be told its OWN runtime's wait tools.
     return {
-      system_prompt: [UNATTENDED_PREAMBLE, REVIEW_PREAMBLE].join('\n\n'),
+      system_prompt: [UNATTENDED_PREAMBLE, lifetime, REVIEW_PREAMBLE].join(
+        '\n\n'
+      ),
       task_prompt: String(base_prompt ?? '')
     };
   }
   const pr_submit = options.pr_submit !== false;
   const disposition = options.disposition === true;
   const quickfix_lane = !disposition && options.quickfix_lane === true;
-  const parts = [UNATTENDED_PREAMBLE];
+  const parts = [UNATTENDED_PREAMBLE, lifetime];
   if (options.fast_track) {
     parts.push(FAST_TRACK_DIRECTIVE);
   }

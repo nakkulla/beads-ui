@@ -319,8 +319,12 @@ export function sessionResumeCommand(entry) {
  * one anyway.
  *
  * @param {Record<string, unknown>|null|undefined} metadata
- * @param {string} runner_name - The runner this dispatch resolved to
+ * @param {string|null} runner_name - The runner this dispatch resolved to
  * (`resolved.exec.runner`); a different CLI cannot fork this session at all.
+ * `null` means the CALLER follows the recorded provider instead of pinning one
+ * (codex-orchestration-parity §4.1) — the qualification then reports which
+ * provider it qualified, and the caller launches with that. The item grammar
+ * already admits only `claude`/`codex`, so no unknown runner can enter here.
  * @param {{ home_dir?: string, hostname?: string, fs?: Pick<typeof fs, 'readdirSync' | 'statSync'>, now?: () => number }} [options]
  * @returns {SessionForkQualification}
  */
@@ -338,7 +342,7 @@ export function qualifySessionFork(metadata, runner_name, options = {}) {
   ) {
     return { ok: false, reason: 'unsafe_session_id' };
   }
-  if (current.provider !== runner_name) {
+  if (runner_name !== null && current.provider !== runner_name) {
     return { ok: false, reason: 'provider_mismatch' };
   }
   // `local` already means the transcript file was found in this home (the

@@ -4680,6 +4680,43 @@ describe('scheduler resume (spec §1)', () => {
     });
   });
 
+  test('keeps the codex provider when a codex transcript is missing', async () => {
+    const env = setup({
+      config: { B1: { status: 'open', model: 'sol', effort: 'xhigh' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      resolveSessionFile: () => ({
+        locality: 'missing',
+        file: null,
+        last_event_at: null
+      }),
+      sessionLog: {
+        attach: vi.fn(),
+        read: vi.fn(() => [
+          {
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: '부분 구현 완료' }] }
+          }
+        ])
+      }
+    });
+    seedAttempt(
+      env.store,
+      'codex-missing',
+      resumablePrior({ runner: 'codex', model: 'sol', effort: 'xhigh' })
+    );
+
+    const result = await env.scheduler.resume(WS, 'codex-missing');
+
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({
+      runner: 'codex',
+      continuation_mode: 'fresh',
+      resume_fallback: { reason: 'transcript_missing', session_id: 'sid-abc' }
+    });
+  });
+
   test('replaces one missing resumed transcript after a no-result exit', async () => {
     const env = setup({
       config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
@@ -5243,6 +5280,29 @@ describe('scheduler resume (spec §1)', () => {
     expect(env.store.snapshot(WS).attempts[String(res.attempt_id)].runner).toBe(
       'codex'
     );
+  });
+
+  test('keeps a recorded codex session when the current runner is claude', async () => {
+    const env = setup({ config: { B1: { model: 'opus' } }, slots: 1 });
+    const exec_values = /** @type {Record<string, string|null>} */ (
+      Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null]))
+    );
+    exec_values.orchestration_model = 'sol';
+    seedAttempt(
+      env.store,
+      'r3',
+      resumablePrior({ runner: 'codex', model: 'sol', exec_values })
+    );
+
+    const mismatch = await env.scheduler.resume(WS, 'r3');
+    const resumed = await env.scheduler.resume(WS, 'r3', {
+      continuation: 'prior_session',
+      decision_token: mismatch.continuation_mismatch.decision_token
+    });
+
+    expect(
+      env.store.snapshot(WS).attempts[String(resumed.attempt_id)].runner
+    ).toBe('codex');
   });
 
   test('uses the current tuple after globals change; no worktree.add; resumed_from set', async () => {
@@ -6676,6 +6736,41 @@ describe('scheduler review-session dispatch (UI-d7fy §5)', () => {
       bead_id: 'B1',
       head_ref: 'B1'
     });
+  });
+
+  test('resumes a review on the recorded codex runner', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedPendingReviewSession(env.store);
+
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: 'codex-thread',
+      resume_runner: 'codex',
+      head_ref: 'B1'
+    });
+
+    expect(env.store.snapshot(WS).attempts['review:1'].runner).toBe('codex');
+  });
+
+  test("keeps the bead's own runner when no resume runner is validated", async () => {
+    const env = setup({
+      config: { B1: { model: 'sol', effort: 'high' } },
+      slots: 1
+    });
+    seedPendingReviewSession(env.store);
+
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: 'orphan-id',
+      resume_runner: null,
+      head_ref: 'B1'
+    });
+
+    expect(env.store.snapshot(WS).attempts['review:1'].runner).toBe('codex');
   });
 
   test('keeps a review-session spawn failure out of the worker failure ladder', async () => {
@@ -12908,6 +13003,18 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
       )
     });
     expect(hookInstalled('S1-1000-1')).toBe(true);
+  });
+
+  test('carries the workflow locator pair into the launch env', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.settingsFor('S1').env).toMatchObject({
+      WORKFLOW_REPO_ROOT: '/repo',
+      WORKFLOW_BEAD_ID: 'S1'
+    });
   });
 
   test('continues the runner lifecycle when receipt inbox setup fails', async () => {

@@ -6169,6 +6169,11 @@ export async function handleWorkerResolveInSession(ws, req) {
         command: result.command || null,
         bridge_active: result.bridge_active === true,
         session_id: result.session_id || null,
+        // The provider the window ACTUALLY runs (codex-orchestration-parity
+        // §4.2). Reported from the result rather than from the current global
+        // execution setting: a codex fork opened while the default reads
+        // claude is the interesting case, not the one to paper over.
+        runner: result.runner || null,
         tmux_session: result.tmux_session || null,
         tmux_window: result.tmux_window || null,
         failure_class: failure.failure_class,

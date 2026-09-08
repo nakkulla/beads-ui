@@ -29,6 +29,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { runShell } from '../bd.js';
 import { debug } from '../logging.js';
+import { ACTIVE_RUNNERS } from './runner-catalog.js';
+import { runtimeCatalog } from './runner/index.js';
 
 const default_log = debug('worker:tmux-launcher');
 
@@ -117,13 +119,30 @@ export function markerWrapper(input) {
 }
 
 /**
- * `claude`'s absolute path off the Worker's own PATH. Absolute on purpose: the
- * wrapper runs under `sh -c` inside a tmux pane whose PATH is the tmux server's
- * environment, not this process's.
+ * One runner's executable, as an absolute path off the Worker's own PATH.
+ * Absolute on purpose: the wrapper runs under `sh -c` inside a tmux pane whose
+ * PATH is the tmux server's environment, not this process's.
  *
+ * The COMMAND NAME comes from the runner catalog (codex-orchestration-parity
+ * §4.2), the same resolution the headless dispatch argv is built from, so a
+ * `[runner.codex] command` override reaches the interactive window too. An
+ * unknown runner resolves nothing — it is never substituted with claude.
+ *
+ * @param {string} runner
  * @returns {string|null}
  */
-export function defaultResolveClaude() {
+export function defaultResolveRunner(runner) {
+  if (!ACTIVE_RUNNERS.includes(runner)) {
+    return null;
+  }
+  /** @type {string} */
+  let command;
+  try {
+    const entry = runtimeCatalog().runners[runner];
+    command = typeof entry?.command === 'string' ? entry.command : runner;
+  } catch {
+    command = runner;
+  }
   const raw = process.env.PATH;
   if (typeof raw !== 'string' || raw.length === 0) {
     return null;
@@ -132,7 +151,7 @@ export function defaultResolveClaude() {
     if (dir.length === 0) {
       continue;
     }
-    const candidate = path.join(dir, 'claude');
+    const candidate = path.join(dir, command);
     try {
       fs.accessSync(candidate, fs.constants.X_OK);
       return candidate;
@@ -144,9 +163,21 @@ export function defaultResolveClaude() {
 }
 
 /**
+ * `claude`'s absolute path, kept as the zero-argument shape the existing
+ * `resolveClaude` dependency injection speaks.
+ *
+ * @returns {string|null}
+ */
+export function defaultResolveClaude() {
+  return defaultResolveRunner('claude');
+}
+
+/**
  * @typedef {Object} TmuxLauncherDeps
  * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runTmux]
- * @property {() => string|null} [resolveClaude]
+ * @property {() => string|null} [resolveClaude] - Legacy claude-only seam; it
+ * still answers for a claude launch when `resolveRunner` is absent.
+ * @property {(runner: string) => string|null} [resolveRunner]
  * @property {(file_path: string) => { mtimeMs: number }} [statFile]
  * @property {() => number} [now]
  * @property {(...args: any[]) => void} [log]
@@ -172,7 +203,14 @@ export function createTmuxLauncher(deps = {}) {
    */
   const in_flight = new Set();
   const now = deps.now || (() => Date.now());
-  const resolveClaude = deps.resolveClaude || defaultResolveClaude;
+  const injected_claude = deps.resolveClaude;
+  /** @type {(runner: string) => string|null} */
+  const resolveRunner =
+    deps.resolveRunner ||
+    ((/** @type {string} */ runner) =>
+      runner === 'claude' && injected_claude
+        ? injected_claude()
+        : defaultResolveRunner(runner));
   const statFile =
     deps.statFile || ((/** @type {string} */ p) => fs.statSync(p));
   const runTmux =
@@ -236,8 +274,9 @@ export function createTmuxLauncher(deps = {}) {
    * marked is a LAUNCH: the wrapper writes the marker before it execs, so the
    * mark is in flight, and the pane could not be running the CLI without it.
    *
-   * @param {{ marker: string, key: string, tmux_session: string, window_name: string, cwd: string, commandArgs: string[] }} input
-   * `commandArgs` are the arguments AFTER the resolved `claude` path.
+   * @param {{ marker: string, key: string, tmux_session: string, window_name: string, cwd: string, commandArgs: string[], runner?: string }} input
+   * `commandArgs` are the arguments AFTER the resolved executable, and `runner`
+   * names which executable that is (default `claude`).
    * @returns {Promise<LaunchOutcome>}
    */
   async function launch(input) {
@@ -258,7 +297,7 @@ export function createTmuxLauncher(deps = {}) {
   /**
    * The launch itself, run under the reservation above.
    *
-   * @param {{ marker: string, key: string, tmux_session: string, window_name: string, cwd: string, commandArgs: string[] }} input
+   * @param {{ marker: string, key: string, tmux_session: string, window_name: string, cwd: string, commandArgs: string[], runner?: string }} input
    * @returns {Promise<LaunchOutcome>}
    */
   async function launchLocked(input) {
@@ -270,11 +309,18 @@ export function createTmuxLauncher(deps = {}) {
     if (listed.rows.some((row) => row.key === input.key && row.dead === '0')) {
       return { session: 'already_running' };
     }
-    const claude = resolveClaude();
-    if (typeof claude !== 'string' || claude.length === 0) {
+    // An unknown runner is refused by its OWN name rather than run as claude
+    // (§4.2): substituting a provider would start a session on a transcript and
+    // an account the click never asked for.
+    const runner =
+      typeof input.runner === 'string' && input.runner.length > 0
+        ? input.runner
+        : 'claude';
+    const executable = resolveRunner(runner);
+    if (typeof executable !== 'string' || executable.length === 0) {
       return {
         session: 'not_launched',
-        reason: 'launch_failed:claude_not_found'
+        reason: `launch_failed:${runner}_not_found`
       };
     }
     if (!listed.rows.some((row) => row.session === input.tmux_session)) {
@@ -312,7 +358,7 @@ export function createTmuxLauncher(deps = {}) {
     const wrapper = markerWrapper({
       marker: input.marker,
       key: input.key,
-      argv: [claude, ...input.commandArgs]
+      argv: [executable, ...input.commandArgs]
     });
     /** @type {{ code: number, stdout: string }} */
     let opened;

@@ -75,25 +75,35 @@ function makeTmux(script = {}) {
   return { calls, runTmux, names: () => calls.map((c) => c[0]) };
 }
 
+const CODEX_ROLLOUT = `rollout-2026-09-08T00-00-00-${SESSION_ID}.jsonl`;
+
 /**
- * A file system that knows about exactly one Claude transcript.
+ * A file system that knows about exactly one Claude transcript, and — when
+ * `codex` is asked for — one codex rollout for the same id.
  *
- * @param {{ present?: boolean }} [options]
+ * @param {{ present?: boolean, codex?: boolean }} [options]
  */
 function makeFs(options = {}) {
   const dir = path.join(HOME, '.claude', 'projects', 'proj');
   const file = path.join(dir, `${SESSION_ID}.jsonl`);
+  const codex_root = path.join(HOME, '.codex', 'sessions');
   return {
     /** @param {string} p */
     readdirSync(p) {
       if (p === path.join(HOME, '.claude', 'projects')) {
         return ['proj'];
       }
+      if (options.codex === true && p.startsWith(codex_root)) {
+        return [CODEX_ROLLOUT];
+      }
       throw new Error(`ENOENT ${p}`);
     },
     /** @param {string} p */
     statSync(p) {
       if (options.present !== false && p === file) {
+        return { mtimeMs: 1_700_000_000_000 };
+      }
+      if (options.codex === true && path.basename(p) === CODEX_ROLLOUT) {
         return { mtimeMs: 1_700_000_000_000 };
       }
       throw new Error(`ENOENT ${p}`);
@@ -109,7 +119,7 @@ const FAILURE = {
 };
 
 /**
- * @param {{ tmux?: ReturnType<typeof makeTmux>, metadata?: any, present?: boolean, readIssue?: any }} [input]
+ * @param {{ tmux?: ReturnType<typeof makeTmux>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null }} [input]
  */
 function makeLauncher(input = {}) {
   const tmux = input.tmux ?? makeTmux();
@@ -122,12 +132,23 @@ function makeLauncher(input = {}) {
     },
     runTmux: tmux.runTmux,
     resolveClaude: () => '/usr/local/bin/claude',
+    resolveRunner:
+      input.resolveRunner ??
+      ((/** @type {string} */ runner) =>
+        runner === 'claude' || runner === 'codex'
+          ? `/usr/local/bin/${runner}`
+          : null),
     statFile: () => ({ mtimeMs: 0 }),
     now: () => 0,
     sessionRefOptions: {
       home_dir: HOME,
       hostname: HOST,
-      fs: /** @type {any} */ (makeFs({ present: input.present !== false }))
+      fs: /** @type {any} */ (
+        makeFs({
+          present: input.present !== false,
+          codex: input.codex === true
+        })
+      )
     }
   });
   return { tmux, resolver };
@@ -436,9 +457,10 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     ]);
   });
 
-  test('falls back with provider_mismatch on a codex session_ref', async () => {
+  test('forks a recorded codex session with codex', async () => {
     const { resolver } = makeLauncher({
-      metadata: { session_ref: `codex:${SESSION_ID}@${HOST}` }
+      metadata: { session_ref: `codex:${SESSION_ID}@${HOST}` },
+      codex: true
     });
 
     const outcome = await resolver.resolve({
@@ -448,7 +470,66 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       failure: FAILURE
     });
 
-    expect(outcome.fallback_reason).toBe('provider_mismatch');
+    expect({
+      mode: outcome.mode,
+      runner: outcome.runner,
+      fallback_reason: outcome.fallback_reason
+    }).toEqual({ mode: 'fork', runner: 'codex', fallback_reason: null });
+  });
+
+  test('runs the measured codex interactive fork argv', async () => {
+    const { tmux, resolver } = makeLauncher({
+      metadata: { session_ref: `codex:${SESSION_ID}@${HOST}` },
+      codex: true
+    });
+
+    await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    const wrapper = tmux.calls.find((c) => c[0] === 'new-window')?.at(-1) ?? '';
+    expect(wrapper).toContain(
+      `exec '/usr/local/bin/codex' 'fork' '${SESSION_ID}'`
+    );
+  });
+
+  test('keeps the claude fork argv for a recorded claude session', async () => {
+    const { tmux, resolver } = makeLauncher({
+      metadata: { session_ref: `claude:${SESSION_ID}@${HOST}` }
+    });
+
+    await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    const wrapper = tmux.calls.find((c) => c[0] === 'new-window')?.at(-1) ?? '';
+    expect(wrapper).toContain(
+      `exec '/usr/local/bin/claude' '--resume' '${SESSION_ID}' '--fork-session'`
+    );
+  });
+
+  test('reports codex_not_found when the codex executable is missing', async () => {
+    const { resolver } = makeLauncher({
+      metadata: { session_ref: `codex:${SESSION_ID}@${HOST}` },
+      codex: true,
+      resolveRunner: (runner) =>
+        runner === 'claude' ? '/usr/local/bin/claude' : null
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect(outcome.reason).toBe('launch_failed:codex_not_found');
   });
 
   test('names an unreadable bead as its own fallback reason', async () => {

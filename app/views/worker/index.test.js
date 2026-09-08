@@ -2646,6 +2646,7 @@ describe('views/worker', () => {
       launched: true,
       session: 'launched',
       mode: 'fresh',
+      runner: 'codex',
       fallback_reason: 'attempt_transcript_missing'
     });
     const mount = mountAttemptTiles(
@@ -2673,7 +2674,7 @@ describe('views/worker', () => {
       expected_revision: 1
     });
     expect(document.querySelector('.toast')?.textContent).toBe(
-      '새 세션으로 시작 (attempt_transcript_missing)'
+      'codex 새 세션으로 시작 (attempt_transcript_missing)'
     );
   });
 

@@ -647,6 +647,7 @@ export function claudeSpec(options = {}) {
       // The spec's fallback — re-prefixing the contract onto the task prompt on
       // the resume path only — is therefore not applied.
       const { system_prompt, task_prompt } = applyPreamble(promptFor(bead), {
+        runtime: 'claude',
         // Review mode swaps in the read-only review contract; claude has no
         // native read-only sandbox for a Bash-capable session, so the
         // contract plus the Worker's post-verdict drift checks are the
