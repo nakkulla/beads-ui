@@ -34,8 +34,8 @@ scope:
 # UI-mn5u — Codex 오케스트레이션 Worker 호환
 
 - 상태: 사용자 검토용 초안. 구현·게시·게이트 승인을 뜻하지 않는다.
-- 대응 이슈: UI-mn5u. 선행 이슈: dotfiles-fp2p.
-- 기준 코드: 43165e45c5f949a39d6a1e9d25249ea5ce9a4487. 최초 감사 ed3ce09185bcac1ee756c2fbacee8efeb0bea081 이후 이 스펙이 다루는 실행 코드 변경이 없음을 확인했다.
+- 대응 이슈: UI-mn5u. 선행 이슈: dotfiles-fp2p(정책 훅·지침 정본), UI-9xs2(native child fixture 확보), UI-qce9(`continuation_choice` 생산).
+- 기준 코드: 0d449e0c7b5826fbc65712489796d422c736e24b(2026-09-08 스펙 게이트 r2 시점 origin/main). 최초 감사 ed3ce09185bcac1ee756c2fbacee8efeb0bea081 이후 대상 경로에 7c48f73(UI-dqhw: Worker 안내·quick_fix 영수증의 현재 계약 정합 — preamble·scheduler 문구)과 7c35a07(#264: 연결 레인 진행 시 대기 위치 보존 — scheduler·queue-store)이 착지했다. 두 변경이 정한 안내 문구·영수증 의미·대기 위치 규칙은 보존 대상이며, 구현 진입 시 그 시점 HEAD에서 대상 경로의 추가 변경을 다시 대조하고 회귀 테스트에 포함한다.
 - 형제 스펙: dotfiles의 docs/superpowers/specs/2026-09-08-codex-workflow-policy-hooks-design.md.
 - 분할 근거: workflow 권한·지침·훅은 dotfiles가 소유하고, 이 저장소는 launch·복구·관측 소비자를 소유한다. dotfiles 정본의 검증·착지 후 이 구현에 진입한다.
 
@@ -109,6 +109,8 @@ dotfiles ADR 0052의 실제 Claude→Codex transport 규칙은 유지하며 적�
 | 사용자가 다른 provider 실행을 선택 | 기존 fresh_current·exec_override·decision token 절차를 거친다. |
 | provider/ID가 손상됐거나 실행 파일이 없음 | 기존 실패 응답으로 설명한다. 알 수 없는 runner를 Claude로 치환하는 fallback을 사용하지 않는다. |
 
+예외 — UI-qce9 `[지시와 함께 재시작]`이 만든 `continuation_choice='prior_attempt'` 자식(UI-qce9 §5.3)에는 위 same-provider fresh fallback을 적용하지 않는다. 그 자식은 기록된 세션의 엄격한 재개만 허용하고, transcript·thread 부재는 UI-qce9가 정한 `prior_session_unavailable` 거부와 실행 후 진단 반환으로 끝난다. same-provider fresh는 자동 복구와 일반 continuation에만 적용한다. 이 값은 UI-qce9가 만들고 이 스펙이 소비하므로 UI-qce9를 선행(`blocks`)으로 둔다.
+
 source 선택 우선순위는 각 경로의 기존 계보를 유지한다. 문의는 해당 attempt 기록을 먼저 보고 그다음 유효한 표시용 session_ref를 실행 위치 힌트로만 사용한다. 리뷰는 같은 review lineage의 기록을 먼저 사용한다. session_ref로 gate·ready·권한을 판정하지 않는다.
 
 이전에 시작된 작업을 자동으로 재개할 때 현재 다른 provider의 model·account 설정을 섞지 않는다. prior attempt의 해당 provider tuple 또는 native 세션이 복원하는 설정을 사용하고 명시적 사용자 override만 적용한다. 필요한 설정을 검증할 수 없다면 기존 continuation 진단으로 거절한다. provider를 바꿔 추측 실행하지 않는다.
@@ -144,6 +146,8 @@ Codex adapter가 기존 classifier 출력인 detail·message·scope(provider/acc
 
 기존 provider-health의 probe 경계에서 runner별 argv와 env를 만든다. Codex는 비대화형 read-only probe를 쓰고 CODEX_SILENT=1 및 실제 작업 launch와 같은 계정용 CODEX_HOME 준비 경로를 적용한다. 선택한 account와 다른 기본 계정으로 건강 상태를 검사하지 않는다.
 
+Codex probe의 출력은 `codex exec --json`의 JSONL이다. 기존 `parseProbeOutput`의 단일 JSON·`is_error === false` 판정을 Codex에 그대로 적용하지 않고 runner별 디코더를 둔다: 줄 단위로 JSON을 읽어 `turn.completed`가 관측되고 `turn.failed`·구조화된 `error` 이벤트가 없으면 성공(회복 → 기존 auto_resume 전이), `turn.failed` 또는 구조화된 `error`는 §5.1 분류기로 넘겨 장애 지속/일반 실패를 판정하고, terminal 이벤트 누락·손상 줄·비JSON 출력은 probe 실패로 다뤄 hold를 유지하되 provider 장애로 승격하지 않는다. Claude probe의 기존 판정은 바꾸지 않는다.
+
 scheduler의 providerAccountContext는 attempt.codex_account를 보존한다. account-catalog의 기존 Codex 해결 경로를 사용하며 Claude의 read/active API가 Codex에도 있다고 가정하지 않는다. probe 프로세스 입력은 기존 command·args에 env 전달을 더하는 정도로 좁힌다.
 
 사람의 계정 교체는 scheduler·WS의 exec_override 허용 키에 codex_account를 추가하고 기존 catalog 검증을 사용한다. 복구 화면은 선택된 provider에 맞는 계정 입력을 보여 준다. attempt에는 이미 있는 codex_account·account_sources·account_switched_from을 사용한다.
@@ -169,7 +173,7 @@ hold는 기존 runner별 키와 target account·next_probe_at·rearm_count를 �
 
 공식 [Hooks 문서](https://developers.openai.com/codex/hooks)의 SubagentStart/Stop은 parent session_id를 공유하며 parent thread ID를 직접 제공하지 않는다. Stop의 agent_transcript_path도 선택적이다. 이 훅만으로 부모·자식 관계와 usage를 추정하지 않는다.
 
-구현 첫 검증에서 설치된 CLI 버전의 전용 샘플로 rollout shape와 parent 연결을 고정한다. 형태가 다르거나 연결을 검증할 수 없으면 해당 관측을 생략한다. 전체 Worker를 막지는 않지만, 수용 fixture에서 자식 표시가 안 되면 이 기능의 검증 실패로 처리한다.
+입력 fixture는 선행 Bead UI-9xs2가 확보한다: 비식별 `server/worker/__fixtures__/codex-native-child.jsonl`(exec JSONL)과 `server/worker/__fixtures__/codex-native-child-rollout.jsonl`(rollout), 그리고 CLI 버전·root/child thread 연결 근거·usage 이벤트 위치를 적은 `docs/superpowers/specs/assets/codex-native-child-fixture-notes.md`. 이 절의 parser·정규화·재생 규칙과 §7의 child seam은 그 fixture와 노트의 이벤트 문법을 입력으로 삼으며, fixture가 확정되기 전에는 구현에 진입하지 않는다(`blocks`). 노트가 exec JSONL에 child 이벤트가 없다고 기록하면 rollout 파일만 원천으로 쓴다. 노트가 root↔child 연결을 어떤 이벤트로도 확인할 수 없다고 기록하면 §6은 구현하지 않고 그 사실을 완료 보고서에 남긴다 — 이 경우 자식 표시·사용량은 미관측으로 남으며 검증 실패가 아니다.
 
 ### 6.2 내부 관측 레코드
 
@@ -215,16 +219,25 @@ parent total이 child를 제외하며 자식끼리도 중복이 없다는 버전
 | interactive·review | resolve/inquiry/tmux/review에서 provider가 끝까지 보존됨. Codex interactive와 headless argv 구분. 알 수 없는 runner·unsafe ID·command missing에 자동 Claude 전환 없음. |
 | 설정·계정 | prior tuple과 현재 다른 provider 설정을 혼합하지 않음. codex_account override의 유효·무효 사례와 probe CODEX_HOME 일치. |
 | 장애 | 실제 구조화 fixture만 hold 생성. 본문 속 오류 문구·auth/local 실패는 provider hold 없음. timeout·backoff·usage 상한·manual/auto resume 회귀. |
-| child lifecycle | 둘 이상 자식·중첩 자식·반복 wait·send·순서가 뒤늦은 종료·부모 중단·재사용 child를 처리. collab 호출 completed만으로 done을 만들지 않음. |
-| child 재생 | live와 restart·terminal readback이 동일. 관계없는 rollout·이전 attempt child·손상 shape는 제외. 과거 attempt 필드 부재는 호환. |
-| child usage | 누적 교체·null 유지·cache/reasoning 중복 없음. native child 표시 후 headline/합계가 더 커지지 않음. 외부 receipt 검증은 그대로 엄격함. |
+| Codex probe 디코딩 | JSONL 정상(`turn.completed`)→회복·auto_resume 전이. `turn.failed`/구조화 error→분류기 경유 hold 유지. terminal 누락·손상 출력→probe 실패로 hold 유지·재시도. 현재 단일 JSON 가정이 정상 JSONL을 실패로 읽는 동작이 RED다. |
+| child lifecycle | UI-9xs2 fixture 기반: 둘 이상 자식·중첩 자식·반복 wait·send·순서가 뒤늦은 종료·부모 중단·재사용 child를 처리. collab 호출 completed만으로 done을 만들지 않음. |
+| child 재생 | UI-9xs2 fixture 기반: live와 restart·terminal readback이 동일. 관계없는 rollout·이전 attempt child·손상 shape는 제외. 과거 attempt 필드 부재는 호환. |
+| child usage | UI-9xs2 fixture 기반: 누적 교체·null 유지·cache/reasoning 중복 없음. native child 표시 후 headline/합계가 더 커지지 않음. 외부 receipt 검증은 그대로 엄격함. |
 | UI | 실제 runner·fallback 이유·계정 선택·native child가 기존 화면 슬롯에서 표시됨. Claude 기록·기존 bridge 표시 회귀 없음. |
 
-구현 계획은 위 seam에 필요한 RED→GREEN을 매핑한다. CLI/hook fixture는 전용 샘플 작업으로 만들며 사용자 세션 내용과 계정 비밀을 테스트에 복사하지 않는다.
+구현 계획은 위 seam에 필요한 RED→GREEN을 매핑한다. child 관련 fixture는 UI-9xs2 산출물을 쓰고, hook·probe fixture는 전용 샘플 작업으로 만들며 사용자 세션 내용과 계정 비밀을 테스트에 복사하지 않는다.
 
 구현 검증은 새 worktree의 Node engine·npm 의존 확인 후 tsc, 범위 테스트와 전체 vitest, lint, prettier, 프런트 변경 시 build까지다. 번들·소스맵을 함께 포함한다. 이 문서 초안 작성에는 런타임 테스트 통과를 주장하지 않는다.
 
-통합 검증에서는 임시 작업으로 정책 거절/허용, Codex 재개·계정 probe·하위 실행 표시를 확인한다. 머지 후에는 repo-ops 정본에 따른 배포 terminal success와 실제 프로세스 경로·SHA·포트·HTTP 응답까지 확인한다. 새 GitHub Actions나 checks 대기는 추가하지 않는다.
+통합 검증 순서(각 단계의 성공 판정과 중단 시 상태):
+
+1. 진입 조건 — dotfiles-fp2p(와 그 선행 dotfiles-s6n9), UI-9xs2, UI-qce9가 closed이고, 호스트에 trusted 정책 훅이 설치·신뢰돼 있음을 fp2p 완료 보고서의 검증 영수증과 로컬 Codex hook 상태 readback으로 확인한다. 미충족이면 진입하지 않는다(`blocks`).
+2. 워크트리 단위 검증 — 위 seam의 RED→GREEN, tsc·lint·전체 vitest·prettier·build.
+3. 머지 전 후보 통합 검증 — PR 워크트리에서 `BDUI_FRONTEND_MODE=live bdui start --host 127.0.0.1 --port 3001`로 리포 로컬 ad-hoc 서버를 띄우고, dotfiles-fp2p 스펙 §9의 임시 전용 저장소·테스트 Bead 절차로 (a) 정책 거절/허용 (b) Codex resume/fork의 provider 보존 (c) 계정 probe (d) native child 표시를 확인한다. 성공 판정은 각각 attempt 레코드·로그의 관측값(runner, thread_id, hold 상태, codex_children 행)이며, 완료 보고서 검증 결과에 명령과 증거 경로를 적는다. 실패하면 머지하지 않는다. 이 결과가 구현 게이트 패킷의 검증 증거다. ad-hoc 서버와 임시 저장소는 종료·삭제하고 공유 서비스는 건드리지 않는다.
+4. 머지·배포 — 기존 `[deploy]` 선언(재시작·SHA·포트·HTTP)만 실행한다.
+5. 머지 후 — 공유 Worker에 추가 필수 검증은 없다. 배포 뒤 첫 실제 Codex 오케스트레이션 실행의 관측(모니터·Discord)은 완료 보고서 잔여 관찰이며 close 조건이 아니다.
+
+중단 시: 3단계 실패는 워크트리와 임시 저장소에만 상태를 남기고 공유 서비스 변경이 없으므로 재시도 가능하다. 4단계는 deploy 스크립트의 자체 flock·HEAD 검증이 소유한다. 새 GitHub Actions나 checks 대기는 추가하지 않는다.
 
 ## 8. 구현 unit 후보와 순서
 
@@ -232,16 +245,16 @@ parent total이 child를 제외하며 자식끼리도 중복이 없다는 버전
 2. 공급자 장애·계정 probe·복구 화면: classifier, provider-health, account 전달, 기존 resume 경로.
 3. native child 관측·재생·표시: rollout parser, monitor/log, attempt 정규화, 상세 화면과 집계 제외.
 
-별도 저장소의 dotfiles-fp2p는 Phase 자식이 아니다. 위 후보의 최종 실행 경로·봉인 단위는 사용자 검토와 spec gate 후 workflow가 정하며 지금 자식 이슈나 실행 권한을 만들지 않는다.
+별도 저장소의 dotfiles-fp2p는 Phase 자식이 아니다. 위 후보의 최종 실행 경로·봉인 단위는 사용자 검토와 spec gate 후 workflow가 정하며 지금 자식 이슈나 실행 권한을 만들지 않는다. UI-9xs2는 fixture 확보 선행 Bead이지 Phase가 아니며, §6은 그 fixture 확정 뒤 같은 spec_backed 패킷의 unit 3으로 진행한다.
 
 ## 경계·후속
 
 | 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
 | --- | --- | --- | --- | --- | --- |
 | 형제 | dotfiles | user_request | 정책·설치 지침 정본을 별도 저장소에서 수정·검증 | 없음 | dotfiles-fp2p |
-| 형제 | beads-ui | awaited_by_consumer | 정본 transport·훅을 소비하며 Worker 동작·화면을 구현 | dotfiles-fp2p | UI-mn5u |
+| 형제 | beads-ui | awaited_by_consumer | 정본 transport·훅을 소비하며 Worker 동작·화면을 구현 | dotfiles-fp2p, UI-9xs2, UI-qce9 | UI-mn5u |
 
-두 스펙 모두 작성·게시한 뒤 첫 spec gate에 들어간다. blocks는 구현 진입만 제한한다. 외부 monitor v2의 dotfiles-4bxr와 native child의 내부 관측 레코드를 구분하며, 그 외부 producer 스키마 변경은 요구하지 않는다.
+두 스펙 모두 작성·게시한 뒤 첫 spec gate에 들어간다. blocks는 구현 진입만 제한한다. 같은 rig의 선행 UI-9xs2(native child fixture, 이 Bead에서 discovered-from)와 UI-qce9(`continuation_choice` 생산)는 형제가 아닌 선행이며 `blocks` 간선으로 기록했다. 외부 monitor v2의 dotfiles-4bxr와 native child의 내부 관측 레코드를 구분하며, 그 외부 producer 스키마 변경은 요구하지 않는다.
 
 ## 결정 (ADR 후보)
 
