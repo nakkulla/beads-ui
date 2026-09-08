@@ -43,6 +43,7 @@
         "haiku"
       ],
       "codex": {
+        "astra": "gpt-6-astra",
         "sol": "gpt-5.6-sol",
         "terra": "gpt-5.6-terra",
         "luna": "gpt-5.6-luna"
@@ -56,7 +57,7 @@
       "claude-native-agent": {
         "auto": "native-fixed-posture",
         "explicit": "unsupported",
-        "receipt": "native-fixed-posture"
+        "receipt": "default"
       },
       "implement-claude": {
         "auto": "claude-runner-model-default",
@@ -64,14 +65,65 @@
         "receipt": "actual-effort"
       },
       "codex-native-spawn": {
-        "auto": "provider-tier-or-runtime-model-default",
+        "auto": "orchestrator-or-runtime-model-default",
         "explicit": "catalog-validated",
         "receipt": "actual-effort"
       },
       "implement-codex": {
-        "auto": "provider-tier-or-runtime-model-default",
+        "auto": "orchestrator-or-runtime-model-default",
         "explicit": "catalog-validated",
         "receipt": "actual-effort"
+      }
+    },
+    "effort_catalog": {
+      "claude": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "codex": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    "runtime_transports": {
+      "codex": {
+        "codex": {
+          "dispatch": "codex-native-spawn",
+          "receipt": "spawn-agent"
+        },
+        "claude": {
+          "dispatch": "implement-claude",
+          "receipt": "implement-claude"
+        }
+      },
+      "claude": {
+        "claude": {
+          "dispatch": "claude-native-agent",
+          "receipt": "native-agent"
+        },
+        "codex": {
+          "dispatch": "implement-codex",
+          "receipt": "implement-codex"
+        }
+      }
+    },
+    "speeds": [
+      "default",
+      "fast"
+    ],
+    "speed_by_transport": {
+      "codex-native-spawn": {
+        "default": "omitted",
+        "fast": "priority"
+      },
+      "implement-codex": {
+        "default": "default",
+        "fast": "fast"
       }
     }
   }

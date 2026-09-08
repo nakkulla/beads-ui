@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import EXECUTION_DEFAULTS from '../../generated/contracts/execution-defaults.json' with { type: 'json' };
 import {
   buildOptionView,
   resolveExecutionSettings,
@@ -730,3 +731,22 @@ describe('buildOptionView', () => {
     expect(view.unset_label).toBe('기본값 사용 — opus (전역)');
   });
 });
+
+test.each(['codex-native-spawn', 'implement-codex'])(
+  'resolves the pinned %s auto effort as dynamic',
+  (transport) => {
+    const rows = resolveExecutionSettings({
+      execution_defaults: {
+        supported: true,
+        schema_version: EXECUTION_DEFAULTS.schema_version,
+        session: EXECUTION_DEFAULTS
+      },
+      transport
+    });
+
+    expect(rows.impl_effort).toMatchObject({
+      display: 'auto (실행 시 결정)',
+      resolution: 'dynamic'
+    });
+  }
+);

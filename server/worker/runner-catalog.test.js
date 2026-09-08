@@ -60,12 +60,13 @@ describe('worker/runner-catalog builtin defaults', () => {
     const { runners } = resolveCatalog();
 
     expect(runners.codex.command).toBe('codex');
+    expect(runners.codex.models.astra.id).toBe('gpt-6-astra');
     expect(runners.codex.models.sol.id).toBe('gpt-5.6-sol');
     expect(runners.codex.models.terra.id).toBe('gpt-5.6-terra');
     expect(runners.codex.models.luna.id).toBe('gpt-5.6-luna');
   });
 
-  test('gives luna the max effort the other codex models lack', () => {
+  test('gives luna max effort while sol stops at xhigh', () => {
     const catalog = resolveCatalog();
 
     expect(modelEfforts(catalog, 'luna')).toEqual([
@@ -129,6 +130,7 @@ describe('worker/runner-catalog builtin defaults', () => {
       sonnet: 'claude',
       haiku: 'claude',
       fable: 'claude',
+      astra: 'codex',
       sol: 'codex',
       terra: 'codex',
       luna: 'codex'
@@ -187,6 +189,7 @@ describe('worker/runner-catalog config overrides', () => {
       overrides: { codex: { models: { sol: { id: 'gpt-5.7-sol' } } } }
     });
 
+    expect(runners.codex.models.astra.id).toBe('gpt-6-astra');
     expect(runners.codex.models.sol.id).toBe('gpt-5.7-sol');
     expect(runners.codex.models.sol.efforts).toEqual([
       'low',
@@ -373,6 +376,7 @@ describe('worker/runner-catalog fail-quiet validation', () => {
       warn
     });
 
+    expect(runners.codex.models.astra.id).toBe('gpt-6-astra');
     expect(runners.codex.models.sol.id).toBe('gpt-5.6-sol');
     expect(warn).toHaveBeenCalledTimes(1);
   });
@@ -550,4 +554,26 @@ describe('worker/runner-catalog global model-name uniqueness', () => {
     expect(modelEfforts(catalog, 'opus')).toEqual(['max']);
     expect(warn).not.toHaveBeenCalled();
   });
+});
+
+test('exposes Astra implementation and orchestration capabilities', () => {
+  const catalog = resolveCatalog();
+
+  expect(modelRunner(catalog, 'astra')).toBe('codex');
+  expect(modelEfforts(catalog, 'astra')).toEqual([
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max'
+  ]);
+  expect(modelOrchestrationEfforts(catalog, 'astra')).toEqual([
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
+    'ultra'
+  ]);
+  expect(modelSpeedTiers(catalog, 'astra')).toEqual(['default', 'fast']);
 });

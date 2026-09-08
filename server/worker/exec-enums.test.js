@@ -614,3 +614,33 @@ describe('worker/exec-enums rec vocabularies (UI-sbum §2)', () => {
     }
   });
 });
+
+test.each(['astra', 'sol'])(
+  'accepts %s orchestration with a Codex implementation preset',
+  (orchestration_model) => {
+    const result = validateImplPresetSettings({
+      orchestration_model,
+      orchestration_effort: 'high',
+      orchestration_speed: 'default',
+      impl_dispatch: 'delegated',
+      impl_runtime: 'codex',
+      impl_model: 'astra',
+      impl_effort: 'max',
+      impl_speed: 'default',
+      impl_review_model: 'fable',
+      impl_review_effort: 'xhigh'
+    });
+
+    expect(result).toEqual({ ok: true });
+  }
+);
+
+test('rejects Astra implementation under the Claude runtime', () => {
+  const result = validateImplPresetSettings({
+    impl_dispatch: 'delegated',
+    impl_runtime: 'claude',
+    impl_model: 'astra'
+  });
+
+  expect(result.ok).toBe(false);
+});

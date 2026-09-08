@@ -80,6 +80,7 @@ const KNOWN_TRANSPORT_EFFORTS = new Set([
   'claude-runner-model-default',
   'catalog-validated',
   'provider-tier-or-runtime-model-default',
+  'orchestrator-or-runtime-model-default',
   'actual-effort'
 ]);
 

@@ -798,3 +798,18 @@ describe('runner/codex fixture replay through the session engine', () => {
     expect(spawn_impl.captured.calls[0].command).toBe('/opt/codex');
   });
 });
+
+test('launches Astra with its exact model ID and selected reasoning effort', () => {
+  const spec = codexSpec();
+
+  const built = spec.buildArgv(BEAD, WS, { model: 'astra', effort: 'high' });
+
+  expect(built.args.slice(0, 4)).toEqual([
+    'exec',
+    '--json',
+    '-m',
+    'gpt-6-astra'
+  ]);
+  expect(built.args).toContain('model_reasoning_effort=high');
+  expect(built.args).toContain('service_tier="default"');
+});

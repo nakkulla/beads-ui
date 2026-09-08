@@ -90,6 +90,19 @@ const BUILTIN = {
   codex: {
     command: 'codex',
     models: {
+      astra: {
+        id: 'gpt-6-astra',
+        efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        orchestration_efforts: [
+          'low',
+          'medium',
+          'high',
+          'xhigh',
+          'max',
+          'ultra'
+        ],
+        speed_tiers: ['default', 'fast']
+      },
       sol: {
         id: 'gpt-5.6-sol',
         efforts: ['low', 'medium', 'high', 'xhigh'],
