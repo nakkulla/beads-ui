@@ -111,6 +111,15 @@ admission `worktree_stale_work` + `action_id` 일치"뿐이고, `waiting`·dismi
 | D3 | foreign 칩 라벨은 `⛓ <workspace명>/<ID>`, owner를 모르면 `⛓ 외부/<ID>`. 대기 행·후보·타일의 같은 칩이 같은 문법(공유 `predecessorChip`) | 글리프만; 선행 대기 타일에서만 |
 | D4 | foreign 칩 클릭은 현행 유지 — owner를 알면 그 workspace 이슈 상세, 모르면 누를 수 없는 span + 툴팁 | 사유 팝업(열리는 칩이 판정 칩처럼 행동하는 예외) |
 
+**정정(UI-esse, 2026-09-08).** D3의 접두 표기는 폐기한다. foreign 판정 자체가
+ID 접두 불일치라 `⛓ <ID>`만으로 타 레포임이 드러나고, 접두와 워크스페이스명은
+대개 같아 `dotfiles/dotfiles-2lw8`은 같은 말을 두 번 하며, `외부/`는 아는
+사실이 아니라 모른다는 사실을 그려 fail-quiet와 어긋난다. 라벨은 foreign 여부와
+무관하게 `<글리프> <ID>` 하나이고, 타 레포 구분은 기존 색과 툴팁이 맡는다.
+owner를 아는 경우 워크스페이스명은 툴팁 문장(`다른 저장소(<workspace명>)의
+이슈라 여기서 닫을 수 없다`)으로 옮긴다. D4의 클릭 규칙과 §6.2의 owner 재료는
+그대로다 — 이름과 클릭 대상은 여전히 그 맵이 공급한다.
+
 ## 4. 설계 원칙
 
 - **한 bead는 한 자리.** 강등은 "타일 또는 ghost 대신 행"이지 "행도"가 아니다.
@@ -244,7 +253,7 @@ else:
 
 현행 `blocker_workspaces`는 **살아남은** foreign blocker만 담는다
 (`pruneClosedForeignBlockers`는 닫힌 항목에서 `return false`로 빠져나가며 그 키를
-쓰지 않는다). 그대로 두면 해제된 foreign 칩은 언제나 `외부/<ID>`이고 누를 수
+쓰지 않는다). 그대로 두면 해제된 foreign 칩은 언제나 owner 이름 없이 누를 수
 없어 D3·D4를 만족하지 못한다.
 
 `cleanForeignBlockers`(`worker-handlers.js:1310`) 뒤에 한 단계를 더한다.
@@ -263,7 +272,7 @@ blocker_workspaces ∪= ownerRootsForBlockerIds(extra_ids, workspace_key)
 `{id: owner_root}`를 돌려주며, prefix가 cold인 root는 `prewarmIssuePrefix`를 걸고
 이번 회차에서는 건너뛴다(다음 스냅샷이 채운다). **bd를 부르지 않는다** — 동기
 자식 프로세스를 띄우지 않는다는 ADR 0026을 그대로 지킨다. 같은 rig ID와 owner를
-못 찾은 ID는 결과에 없다(fail-quiet → `외부/<ID>`, 누를 수 없음).
+못 찾은 ID는 결과에 없다(fail-quiet → 툴팁에 이름 없음, 누를 수 없음).
 
 이 맵은 이름과 클릭 대상만 공급하고 상태를 말하지 않는다 — 해제 판정은 §6.1이
 소유한다.
@@ -323,22 +332,22 @@ refreshForeignBlockerStatusForOwner(root))`를 건다. attachment마다 구독�
 `predecessorChip(owner_id, blocker)`의 `blocker`에 선택 필드
 `workspace_name?: string`을 더한다.
 
-| 조건 | 라벨 |
-| --- | --- |
-| 같은 rig | `⛓ <ID>` (현행) |
-| foreign, `workspace_name` 있음 | `⛓ <workspace_name>/<ID>` |
-| foreign, 없음 | `⛓ 외부/<ID>` |
+| 조건 | 라벨 | 툴팁 꼬리 |
+| --- | --- | --- |
+| 같은 rig | `⛓ <ID>` (현행) | 없음 |
+| foreign, `workspace_name` 있음 | `⛓ <ID>` | ` · 다른 저장소(<workspace_name>)의 이슈라 여기서 닫을 수 없다` |
+| foreign, 없음 | `⛓ <ID>` | ` · 다른 저장소의 이슈라 여기서 닫을 수 없다` |
 
-툴팁은 `<라벨 전체> — <현행 문장>`으로 시작해 ellipsis로 잘린 라벨을 hover가
-복원한다. foreign이면 문장 뒤에 ` · 다른 저장소의 이슈라 여기서 닫을 수 없다`를
-붙인다. `resolvedBlockerChip`(§6.1)과 `releasedChip`도 같은 표를 따른다 — 같은
+(표는 UI-esse 정정 반영. 원안은 foreign 라벨에 `<workspace_name>/` 접두, 없으면
+`외부/`였다.) 툴팁은 `<라벨 전체> — <현행 문장>`으로 시작해 ellipsis로 잘린
+라벨을 hover가 복원한다. foreign이면 문장 뒤에 위 꼬리를 붙인다. `resolvedBlockerChip`(§6.1)과 `releasedChip`도 같은 표를 따른다 — 같은
 관계가 두 어휘로 읽히지 않게 한다. `dependentsChip`(`→`)은 후속이라 이 표 밖이다.
 
 ### 8.2 재료
 
 - Worker 탭 `deriveWorkerBlockers`: `blocker_workspaces[blocker_id]`가 있으면
   `path.basename` 상당(마지막 `/` 뒤)을 `workspace_name`으로 넘긴다. 없으면
-  생략(→ `외부`). 해제된 foreign 선행의 그 키는 §6.2가 채운다 — 살아남은
+  생략(→ 툴팁에 이름 없음). 해제된 foreign 선행의 그 키는 §6.2가 채운다 — 살아남은
   blocker만 담는 현행 맵으로는 해제 칩이 이름도 클릭도 갖지 못한다.
 - Monitor(lane-model `:3903`): `locations.get(id)?.workspace_name`, 없으면
   `workspace.blocker_workspaces?.[id]`의 basename, 둘 다 없으면 생략.
@@ -350,8 +359,9 @@ refreshForeignBlockerStatusForOwner(root))`를 건다. attachment마다 구독�
 `.worker-dep`(`styles.css:7487`)에 `max-width: 22ch; overflow: hidden;
 text-overflow: ellipsis; white-space: nowrap`을 더한다(인라인 요소라면
 `display: inline-block`도). 네 종 칩(`⛓`·`→`·`🔓`·`⧉`)이 같은 클래스라 같은
-상한을 받는다. `22ch`는 `⛓ microbiome_bile/Analysis-2zly`(31자)가 잘리고
-`⛓ PROSTATE-m67`(14자)이 온전한 값이다 — 잘림은 hover 툴팁이 복원한다.
+상한을 받는다. `22ch`는 원안 표기 `⛓ microbiome_bile/Analysis-2zly`(31자)가
+잘리고 `⛓ PROSTATE-m67`(14자)이 온전한 값이었다 — UI-esse 정정 뒤 라벨은 ID뿐이라
+상한은 긴 ID의 안전망으로만 남고, 잘림은 hover 툴팁이 복원한다.
 
 ### 8.4 클릭
 
@@ -400,7 +410,8 @@ text-overflow: ellipsis; white-space: nowrap`을 더한다(인라인 요소라�
    - 정산 뒤 새 blocker가 걸린 경우: `open`이 비지 않으므로 `returning=false`이고
      그 선행이 `⛓`로 선다. 해제 칩과 선행 칩은 한 카드에 함께 설 수 있다.
 5. foreign owner가 visible workspace에 없음(`no_rig`): 캐시 항목이 없으므로 §7
-   재조회 대상이 아니고, 서버 prune도 안 하므로 `⛓ 외부/<ID>`로 남는다.
+   재조회 대상이 아니고, 서버 prune도 안 하므로 이름 없이 누를 수 없는
+   `⛓ <ID>`로 남는다.
    `queryForeignBlockerStatus`의 `no_rig` fail-quiet와 같은 결과다.
 6. `resumeQueueHold`·`dismissAttempt`·`dismissed_at` 단조: 변경 없음.
 
@@ -418,9 +429,10 @@ text-overflow: ellipsis; white-space: nowrap`을 더한다(인라인 요소라�
   뱃지 `⛓ 복귀 대기`. 키 없음이면 `⛓ X`·`⛓ Y`, 뱃지 `⛓ 선행 대기`.
 - 신규 선행: blockers `[X]`, `bead_blocked_by[bead]=[Z]`(X는 해제, Z는 정산 뒤
   추가). 기대: `🔓 X`·`⛓ Z`, 뱃지 `⛓ 선행 대기`(`returning=false`).
-- foreign: owner `Analysis-2zly` → `blocker_workspaces` 있음 → `⛓
-  microbiome_bile/Analysis-2zly`; 없음 → `⛓ 외부/Analysis-2zly`. 해제된 같은
-  ID는 §6.2가 채운 owner로 `🔓 microbiome_bile/Analysis-2zly`(열림 가능).
+- foreign: owner `Analysis-2zly` → 라벨은 `blocker_workspaces` 유무와 무관하게
+  `⛓ Analysis-2zly`(UI-esse 정정). 있음 → 툴팁에 `다른 저장소(microbiome_bile)`;
+  없음 → `다른 저장소`. 해제된 같은 ID는 §6.2가 채운 owner로 `🔓 Analysis-2zly`
+  (열림 가능, 툴팁에 이름).
 
 ## 12. 검증 bundle
 
@@ -479,7 +491,7 @@ text-overflow: ellipsis; white-space: nowrap`을 더한다(인라인 요소라�
   산다" → ADR
 - `dismissed_at`은 단조·UI hide 그대로 — 기존 계약의 재확인이지 새 결정이 아니다
   → ADR 아님.
-- foreign 칩 `<workspace>/<ID>` 표기와 `복귀 대기` 뱃지 — 표시 어휘이며 슬롯
-  표가 소유한다 → ADR 아님.
+- foreign 칩 표기(원안 `<workspace>/<ID>`, UI-esse 정정으로 `<ID>` + 툴팁)와
+  `복귀 대기` 뱃지 — 표시 어휘이며 슬롯 표가 소유한다 → ADR 아님.
 - foreign 표시 캐시를 활동 버스에 거는 것 — ADR 0034의 적용이지 새 원칙이 아니다
   → ADR 아님.

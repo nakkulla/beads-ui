@@ -768,7 +768,7 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
     );
 
     const row = lanes.queue.find((r) => r.id === 'A-2');
-    expect(row?.dependency_chips?.predecessors?.[0].label).toBe('⛓ 외부/B-1');
+    expect(row?.dependency_chips?.predecessors?.[0].label).toBe('⛓ B-1');
   });
 
   test('draws no chip on the blocker card itself', () => {
@@ -2289,10 +2289,12 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
       ]
     );
 
-    const row = lanes.running.find((item) => item.id === 'A-1');
-    expect(row?.dependency_chips?.predecessors?.[0].label).toBe(
-      '⛓ 표시-repo-b/B-1'
-    );
+    const chip = lanes.running.find((item) => item.id === 'A-1')
+      ?.dependency_chips?.predecessors?.[0];
+    expect([chip?.label, chip?.title]).toEqual([
+      '⛓ B-1',
+      expect.stringContaining('다른 저장소(표시-repo-b)의 이슈')
+    ]);
   });
 
   test('falls back to a blocker owner root basename', () => {
@@ -2307,9 +2309,11 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
       [state()]
     );
 
-    expect(lanes.running[0].dependency_chips?.predecessors?.[0].label).toBe(
-      '⛓ repo-b/B-1'
-    );
+    const chip = lanes.running[0].dependency_chips?.predecessors?.[0];
+    expect([chip?.label, chip?.title]).toEqual([
+      '⛓ B-1',
+      expect.stringContaining('다른 저장소(repo-b)의 이슈')
+    ]);
   });
 
   test('carries a foreign owner onto a resolved blocker chip', () => {
@@ -2325,8 +2329,9 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
     );
 
     const chip = lanes.running[0].dependency_chips?.released?.[0];
-    expect([chip?.label, chip?.openable, chip?.root_dir]).toEqual([
-      '🔓 repo-b/B-1',
+    expect([chip?.label, chip?.title, chip?.openable, chip?.root_dir]).toEqual([
+      '🔓 B-1',
+      expect.stringContaining('다른 저장소(repo-b)의 이슈'),
       true,
       WS_B
     ]);

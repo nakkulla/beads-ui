@@ -453,7 +453,7 @@ describe('views/worker', () => {
       cand.querySelector('.worker-card[data-bead-id="BL-1"]')
     );
     expect(bl1.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ 외부/DEP-9'
+      '⛓ DEP-9'
     );
     expect(bl1.querySelector('.worker-card__reason')).toBeNull();
 
@@ -583,7 +583,7 @@ describe('views/worker', () => {
     const chips = Array.from(card.querySelectorAll('.worker-dep--pred'))
       .map((el) => el.textContent || '')
       .join(' ');
-    expect(chips).toContain('⛓ 외부/DEP-7');
+    expect(chips).toContain('⛓ DEP-7');
     expect(chips).not.toContain('DEP-OLD');
   });
 
@@ -13676,7 +13676,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.worker-mini[data-bead-id="W-1"]')
     );
     expect(row.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ 외부/UI-x'
+      '⛓ UI-x'
     );
   });
 
@@ -13688,7 +13688,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.worker-card[data-bead-id="BL-1"]')
     );
     expect(card.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ 외부/DEP-9'
+      '⛓ DEP-9'
     );
   });
 
@@ -13711,7 +13711,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.rtile[data-bead-id="SS-1"]')
     );
     expect(tile.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ 외부/UI-x'
+      '⛓ UI-x'
     );
   });
 
@@ -13814,7 +13814,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       mount.querySelector('.rtile[data-bead-id="W-1"]')
     );
     expect(tile.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ 외부/UI-x'
+      '⛓ UI-x'
     );
   });
 
@@ -13852,7 +13852,7 @@ describe('worker 탭 blocked 칩 (UI-anna §5)', () => {
       )
     );
     expect(row.querySelector('.worker-dep--pred')?.textContent).toContain(
-      '⛓ 외부/UI-x'
+      '⛓ UI-x'
     );
     expect(row.querySelector('.worker-dep--overlap')?.textContent).toContain(
       'W-1'
@@ -14156,7 +14156,7 @@ describe('worker 탭 blocked 칩 열기 (UI-u6zf §5)', () => {
     expect(
       mount.querySelector('.worker-mini[data-bead-id="W-1"] .worker-dep--pred')
         ?.textContent
-    ).toContain('⛓ 외부/UI-x');
+    ).toContain('⛓ UI-x');
   });
 
   test('never opens the card own issue on a chip click', () => {

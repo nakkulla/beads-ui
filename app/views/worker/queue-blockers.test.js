@@ -65,7 +65,11 @@ describe('deriveWorkerBlockers (UI-anna §5.1)', () => {
       'B-1': '/repos/repo-b/'
     });
 
-    expect(chips.get('A-2')?.[0].label).toBe('⛓ repo-b/B-1');
+    const chip = chips.get('A-2')?.[0];
+    expect([chip?.label, chip?.title]).toEqual([
+      '⛓ B-1',
+      expect.stringContaining('다른 저장소(repo-b)의 이슈')
+    ]);
   });
 
   test('leaves a same-rig blocker unmarked', () => {
@@ -243,26 +247,26 @@ describe('predecessorChip', () => {
     );
   });
 
-  test('names a known foreign workspace on the label', () => {
+  test('keeps a bare id on a known foreign workspace label', () => {
     const chip = predecessorChip('A-2', {
       id: 'B-1',
       location_label: '외부',
       workspace_name: 'repo-b'
     });
 
-    expect(chip.label).toBe('⛓ repo-b/B-1');
+    expect(chip.label).toBe('⛓ B-1');
   });
 
-  test('falls back to 외부 on an owner-unknown foreign label', () => {
+  test('keeps a bare id on an owner-unknown foreign label', () => {
     const chip = predecessorChip('A-2', {
       id: 'B-1',
       location_label: '외부'
     });
 
-    expect(chip.label).toBe('⛓ 외부/B-1');
+    expect(chip.label).toBe('⛓ B-1');
   });
 
-  test('prefixes a foreign tooltip with the full label and restriction', () => {
+  test('names the foreign workspace in the tooltip', () => {
     const chip = predecessorChip('A-2', {
       id: 'B-1',
       location_label: '외부',
@@ -270,7 +274,18 @@ describe('predecessorChip', () => {
     });
 
     expect(chip.title).toBe(
-      '⛓ repo-b/B-1 — 선행 — close될 때까지 출발하지 않는다 (외부) · 다른 저장소의 이슈라 여기서 닫을 수 없다'
+      '⛓ B-1 — 선행 — close될 때까지 출발하지 않는다 (외부) · 다른 저장소(repo-b)의 이슈라 여기서 닫을 수 없다'
+    );
+  });
+
+  test('keeps the foreign restriction without a workspace name', () => {
+    const chip = predecessorChip('A-2', {
+      id: 'B-1',
+      location_label: '외부'
+    });
+
+    expect(chip.title).toBe(
+      '⛓ B-1 — 선행 — close될 때까지 출발하지 않는다 (외부) · 다른 저장소의 이슈라 여기서 닫을 수 없다'
     );
   });
 });
@@ -282,16 +297,17 @@ describe('resolvedBlockerChip (UI-yue8 §6.1)', () => {
     expect(chip.label).toBe('🔓 A-1');
   });
 
-  test('names a known foreign workspace on the label', () => {
+  test('keeps a bare id on a known foreign workspace label', () => {
     const chip = resolvedBlockerChip('A-2', 'B-1', 'repo-b');
 
-    expect(chip.label).toBe('🔓 repo-b/B-1');
+    expect(chip.label).toBe('🔓 B-1');
+    expect(chip.title).toContain('다른 저장소(repo-b)의 이슈');
   });
 
-  test('falls back to 외부 on an owner-unknown foreign label', () => {
+  test('keeps a bare id on an owner-unknown foreign label', () => {
     const chip = resolvedBlockerChip('A-2', 'B-1');
 
-    expect(chip.label).toBe('🔓 외부/B-1');
+    expect(chip.label).toBe('🔓 B-1');
   });
 
   test('prefixes the tooltip with the full label', () => {
@@ -329,20 +345,21 @@ describe('releasedChip (UI-d13v §5.3)', () => {
     );
   });
 
-  test('names a known foreign workspace on the label', () => {
+  test('keeps a bare id on a known foreign workspace label', () => {
     const chip = releasedChip(
       'A-2',
       { id: 'B-9', closed_at: NOW, workspace_name: 'repo-b' },
       NOW
     );
 
-    expect(chip?.label).toBe('🔓 repo-b/B-9');
+    expect(chip?.label).toBe('🔓 B-9');
+    expect(chip?.title).toContain('다른 저장소(repo-b)의 이슈');
   });
 
-  test('falls back to 외부 on an owner-unknown foreign label', () => {
+  test('keeps a bare id on an owner-unknown foreign label', () => {
     const chip = releasedChip('A-2', { id: 'B-9', closed_at: NOW }, NOW);
 
-    expect(chip?.label).toBe('🔓 외부/B-9');
+    expect(chip?.label).toBe('🔓 B-9');
   });
 
   test('keeps a release from exactly seven days ago', () => {
