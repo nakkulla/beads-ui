@@ -40,7 +40,7 @@ v2의 `parsed_cmd`, `exit_code`, `changes`, `details_truncated`는 생산자 D4�
 
 ## U2. 저장소 건강 kv 읽기와 표시
 
-workspace별 `bd kv`의 고정 키 `repo_health`를 기존 비동기 warm/cache 경계에서 읽고 `workspaces_state`에 투영한다. 새 Git 호출, 동기 child process, UI 요청 중 blocking 조회는 추가하지 않는다. `found:false`, malformed JSON, 미지원 schema, 조회 실패는 usable value 없음으로 다룬다.
+workspace별 `bd kv`의 고정 키 `repo_health`를 기존 비동기 준비(warm) 컨텍스트·cache 경계(ADR 0043)에서 읽고 `workspaces_state`에 투영한다. 새 Git 호출, 동기 child process, UI 요청 중 blocking 조회는 추가하지 않는다. `found:false`, malformed JSON, 미지원 schema, 조회 실패는 usable value 없음으로 다룬다.
 
 D6의 `repo-health-v1` allowlist만 소비한다. 기본 수집 주기 15분, stale 기준 45분을 공유 계약과 맞춘다. 성공·실패·부재·오래됨을 구분한다.
 
@@ -100,7 +100,7 @@ npm run build
 ## 결정 (ADR 후보)
 
 - 전제: ADR 0012 — 계약 정의는 dotfiles, 이 저장소는 명시 registry 소비자다.
-- 전제: ADR 0026 — snapshot 투영은 비동기 warm 결과만 읽는다.
+- 전제: ADR 0043(0026 승계) — 워크스페이스·후보 투영은 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스를 띄우지 않는다. U2의 `repo_health` 읽기는 `warmWorkflowProbes`가 채우는 그 준비 컨텍스트 경계에 둔다.
 - 전제: ADR 0014 — 기존 카드 슬롯과 조작 배치를 유지하며 건강 표시는 저장소 헤더에 둔다.
 - 전제: ADR dotfiles/0033 — 다른 저장소의 공유 결정은 형제 스펙으로 함께 대조한다.
 - 없음 — 공유 형식 결정은 dotfiles 통합 스펙의 ADR 후보가 소유하며 소비처에서 같은 결정을 중복 기록하지 않는다.
