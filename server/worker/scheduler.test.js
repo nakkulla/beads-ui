@@ -14093,7 +14093,9 @@ describe('scheduler prompt recording (UI-rxp3 §3)', () => {
     expect(attempt.task_prompt).toBe('처분 프롬프트');
     expect(attempt.system_prompt).toBe(sent.system_prompt);
     // The disposition variant: no PR-submit directive, no base-push refusal.
-    expect(attempt.system_prompt).not.toContain('PR 제출까지 수행하고');
+    expect(attempt.system_prompt).not.toContain(
+      '저장소가 요구하는 검증과 리뷰'
+    );
     expect(attempt.system_prompt).toContain('REVISE 처분 세션');
   });
 

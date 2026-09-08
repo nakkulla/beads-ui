@@ -1006,7 +1006,7 @@ describe('runner/claude system-prompt channel (UI-rxp3 §2)', () => {
 
     expect(args.at(-1)).not.toContain('무인 모드');
     expect(args.at(-1)).not.toContain('가드 계약');
-    expect(args.at(-1)).not.toContain('PR 제출까지 수행하고');
+    expect(args.at(-1)).not.toContain('저장소가 요구하는 검증과 리뷰');
   });
 
   test('applies the same channel split on the resume branch', () => {
@@ -1065,7 +1065,7 @@ describe('runner/claude disposition argv (UI-hs11 §3.3)', () => {
       { fast_track: true, disposition: 'revise_fix' }
     );
 
-    expect(systemPromptOf(args)).not.toContain('PR 제출까지 수행하고');
+    expect(systemPromptOf(args)).not.toContain('저장소가 요구하는 검증과 리뷰');
     expect(args.at(-1)).toBe('처분하라');
   });
 
@@ -1076,7 +1076,7 @@ describe('runner/claude disposition argv (UI-hs11 §3.3)', () => {
       fast_track: true
     });
 
-    expect(systemPromptOf(args)).toContain('PR 제출까지 수행하고');
+    expect(systemPromptOf(args)).toContain('저장소가 요구하는 검증과 리뷰');
   });
 
   test('does not suppress PR delivery for retired cleanup diagnosis settings', () => {
@@ -1088,7 +1088,7 @@ describe('runner/claude disposition argv (UI-hs11 §3.3)', () => {
       { fast_track: true, cleanup_diagnosis: true }
     );
 
-    expect(systemPromptOf(args)).toContain('PR 제출까지 수행하고');
+    expect(systemPromptOf(args)).toContain('저장소가 요구하는 검증과 리뷰');
     expect(systemPromptOf(args)).toContain('base 로 향하는 `git push`');
     expect(systemPromptOf(args)).not.toContain('REVISE 처분 세션');
   });

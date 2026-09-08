@@ -72,14 +72,14 @@ export const FAST_TRACK_DIRECTIVE = [
 /**
  * The terminal directive, injected into every session that opens a PR
  * (worker-phase2 §1): the session delivers a PR and records `resolved`, but
- * never merges — the merge is a human click.
+ * never merges — the queue owns the merge.
  *
  * @type {string}
  */
 export const PR_SUBMIT_DIRECTIVE = [
   '## 종점',
   '',
-  'PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·bead `resolved`(pr_url metadata 포함) 기록까지 마친 뒤 종료하라. 머지는 사람의 클릭이다.'
+  '저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead `resolved`와 `pr_url`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.'
 ].join('\n');
 
 /**
@@ -94,10 +94,10 @@ export const QUICKFIX_LANE_DIRECTIVE = [
   '',
   '이 세션은 Worker가 dispatch한 quick_fix 레인이다. PR을 열지 않는다.',
   '',
-  '- 종점은 구현 → 세션 내 implementation review 1회(필수) → base ref 직접 push → push containment 확인 → completion report → bead `resolved` 기록 후 종료다.',
-  '- 리뷰 게이트를 `skip`으로 선택하지 마라. `skipped@` 영수증은 Worker landing에서 fail-closed다. `impl_review` 영수증은 실제로 push한 head SHA에 결속되어야 한다. push 후 head가 바뀌었으면 계약의 follow-up 규칙대로 영수증을 새 SHA로 갱신하라.',
+  '- 종점은 구현 → 계약에 따른 implementation review 게이트 1회 → base ref 직접 push → push containment 확인 → completion report → bead `resolved` 기록 후 종료다.',
+  '- 리뷰 선택은 정본 계약을 따른다. `skipped@`는 진행 권한이며 실제 리뷰 증거가 아니다. `impl_review` 영수증은 실제로 push한 head SHA에 결속되어야 한다. push 후 head가 바뀌었으면 계약의 follow-up 규칙대로 영수증을 새 SHA로 갱신하라.',
   '- 배포 실행·배포 증거·bead `closed`·worktree/브랜치 정리는 Worker가 소유한다. 수행하지 마라. worktree와 브랜치를 보존한 채 `resolved`에서 멈춰라.',
-  '- 이 레인의 canonical 문구는 dotfiles `docs/contracts/workflow.md`가 소유한다. 여기서 복제하지 말고 그 계약을 따르라.'
+  '- 이 레인의 canonical 문구는 dotfiles `docs/contracts/workflow-contract.md`가 소유한다. 여기서 복제하지 말고 그 계약을 따르라.'
 ].join('\n');
 
 /**
@@ -142,7 +142,7 @@ export function guardContractDirective(options = {}) {
       ? '  - 대안: 이 세션의 종점은 스펙 수정 커밋과 영수증 기록이다. 머지는 물론 PR도 이 세션의 일이 아니다.'
       : quickfix_lane
         ? '  - 대안: 이 세션의 종점은 리뷰드 base push와 bead `resolved` 기록이다. 머지 클릭도 PR도 이 세션의 일이 아니다.'
-        : '  - 대안: 이 세션의 종점은 PR 제출과 bead `resolved` 기록이다. 머지는 사람의 클릭이다.'
+        : '  - 대안: 이 세션의 종점은 PR 제출과 bead `resolved` 기록이다. 머지는 큐가 소유한다.'
   ];
   if (disposition) {
     lines.push(

@@ -23,7 +23,7 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
 
     const built = spec.buildArgv(BEAD, WS, { cleanup_diagnosis: true });
 
-    expect(built.system_prompt).toContain('PR 제출까지 수행하고');
+    expect(built.system_prompt).toContain('저장소가 요구하는 검증과 리뷰');
   });
 
   test('expands a catalog short name into the full model id', () => {
@@ -246,7 +246,7 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
       disposition: 'revise_fix'
     });
 
-    expect(built.system_prompt).not.toContain('PR 제출까지 수행하고');
+    expect(built.system_prompt).not.toContain('저장소가 요구하는 검증과 리뷰');
   });
 
   test('spawns with CODEX_SILENT=1', () => {

@@ -16,7 +16,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 ## 종점
 
-PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·bead \`resolved\`(pr_url metadata 포함) 기록까지 마친 뒤 종료하라. 머지는 사람의 클릭이다.
+저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead \`resolved\`와 \`pr_url\`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.
 
 ## PR base
 
@@ -29,7 +29,7 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 ### 즉시 종료 — 세션이 kill된다
 
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
-  - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 사람의 클릭이다.
+  - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 큐가 소유한다.
 - hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
 - **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
@@ -70,7 +70,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 ### 즉시 종료 — 세션이 kill된다
 
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
-  - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 사람의 클릭이다.
+  - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 큐가 소유한다.
 - hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
 - **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
@@ -266,7 +266,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 ## 종점
 
-PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·bead \`resolved\`(pr_url metadata 포함) 기록까지 마친 뒤 종료하라. 머지는 사람의 클릭이다.
+저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead \`resolved\`와 \`pr_url\`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.
 
 ## PR base
 
@@ -279,7 +279,7 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 ### 즉시 종료 — 세션이 kill된다
 
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
-  - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 사람의 클릭이다.
+  - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 큐가 소유한다.
 - hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
 - **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
@@ -319,7 +319,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 ## 종점
 
-PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·bead \`resolved\`(pr_url metadata 포함) 기록까지 마친 뒤 종료하라. 머지는 사람의 클릭이다.
+저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead \`resolved\`와 \`pr_url\`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.
 
 ## 가드 계약
 
@@ -328,7 +328,7 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 ### 즉시 종료 — 세션이 kill된다
 
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
-  - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 사람의 클릭이다.
+  - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 큐가 소유한다.
 - hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
 - **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
@@ -364,7 +364,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 ## 종점
 
-PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·bead \`resolved\`(pr_url metadata 포함) 기록까지 마친 뒤 종료하라. 머지는 사람의 클릭이다.
+저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead \`resolved\`와 \`pr_url\`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.
 
 ## 가드 계약
 
@@ -373,7 +373,7 @@ PR 제출까지 수행하고 절대 머지하지 말 것. PR 생성·CI 확인·
 ### 즉시 종료 — 세션이 kill된다
 
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
-  - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 사람의 클릭이다.
+  - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 큐가 소유한다.
 - hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
 - **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
@@ -411,10 +411,10 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 이 세션은 Worker가 dispatch한 quick_fix 레인이다. PR을 열지 않는다.
 
-- 종점은 구현 → 세션 내 implementation review 1회(필수) → base ref 직접 push → push containment 확인 → completion report → bead \`resolved\` 기록 후 종료다.
-- 리뷰 게이트를 \`skip\`으로 선택하지 마라. \`skipped@\` 영수증은 Worker landing에서 fail-closed다. \`impl_review\` 영수증은 실제로 push한 head SHA에 결속되어야 한다. push 후 head가 바뀌었으면 계약의 follow-up 규칙대로 영수증을 새 SHA로 갱신하라.
+- 종점은 구현 → 계약에 따른 implementation review 게이트 1회 → base ref 직접 push → push containment 확인 → completion report → bead \`resolved\` 기록 후 종료다.
+- 리뷰 선택은 정본 계약을 따른다. \`skipped@\`는 진행 권한이며 실제 리뷰 증거가 아니다. \`impl_review\` 영수증은 실제로 push한 head SHA에 결속되어야 한다. push 후 head가 바뀌었으면 계약의 follow-up 규칙대로 영수증을 새 SHA로 갱신하라.
 - 배포 실행·배포 증거·bead \`closed\`·worktree/브랜치 정리는 Worker가 소유한다. 수행하지 마라. worktree와 브랜치를 보존한 채 \`resolved\`에서 멈춰라.
-- 이 레인의 canonical 문구는 dotfiles \`docs/contracts/workflow.md\`가 소유한다. 여기서 복제하지 말고 그 계약을 따르라.
+- 이 레인의 canonical 문구는 dotfiles \`docs/contracts/workflow-contract.md\`가 소유한다. 여기서 복제하지 말고 그 계약을 따르라.
 
 ## 가드 계약
 

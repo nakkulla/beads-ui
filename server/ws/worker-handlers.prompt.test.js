@@ -341,7 +341,7 @@ describe('get-worker-system-prompt (UI-rxp3 §4)', () => {
       }).system_prompt
     );
     expect(payload.system_prompt).toContain('## fast_track');
-    expect(payload.system_prompt).toContain('PR 제출까지 수행하고');
+    expect(payload.system_prompt).toContain('저장소가 요구하는 검증과 리뷰');
   });
 
   test('labels the conditional variants with the condition that selects them', () => {
@@ -375,7 +375,9 @@ describe('get-worker-system-prompt (UI-rxp3 §4)', () => {
     const variant = lastPayload(sock).variants.find(
       (/** @type {any} */ v) => v.key === 'disposition'
     );
-    expect(variant.system_prompt).not.toContain('PR 제출까지 수행하고');
+    expect(variant.system_prompt).not.toContain(
+      '저장소가 요구하는 검증과 리뷰'
+    );
     expect(variant.system_prompt).toContain('REVISE 처분 세션');
   });
 });

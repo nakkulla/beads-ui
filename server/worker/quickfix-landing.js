@@ -189,18 +189,12 @@ function noChangeCloseKind(close_reason) {
  *   readPushLog?: (input: { attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string },
  *   timeline?: { append: (input: any) => unknown },
  *   notifier?: { quickfixLanded: (input: any) => Promise<void> }|null,
- *   accept_skipped_receipt?: boolean,
  *   notifyChanged?: (workspace: string) => void,
  *   now?: () => number
  * }} deps
  * `readPushLog` is the attempt's own pre-push record (`guard-hook.js`, record
  * mode) — the delivery evidence §5.3 judges. An absent dep reads exactly like
  * an absent log: unproven, never innocent.
- *
- * `accept_skipped_receipt` widens the receipt vocabulary to `skipped@<sha>`.
- * It defaults to false and stays false until the dotfiles contract Bead that
- * introduces that receipt form is closed (design §9); until then a `skipped`
- * reviewer is an invalid receipt, exactly as before.
  */
 export function createQuickfixLanding(deps) {
   const workspace = deps.workspace;
@@ -209,7 +203,6 @@ export function createQuickfixLanding(deps) {
   const notifier = deps.notifier || null;
   const notifyChanged = deps.notifyChanged || (() => {});
   const now = deps.now || (() => Date.now());
-  const accept_skipped_receipt = deps.accept_skipped_receipt === true;
 
   /**
    * Announce only a newly durable terminal success. The notifier is no-throw by
@@ -368,11 +361,7 @@ export function createQuickfixLanding(deps) {
       return { ok: false, reason: 'impl_review_missing' };
     }
     const separator = trimmed.lastIndexOf('@');
-    const reviewer = trimmed.slice(0, separator);
-    if (
-      !ADMISSION_RECEIPT_RE.test(trimmed) ||
-      (reviewer === 'skipped' && !accept_skipped_receipt)
-    ) {
+    if (!ADMISSION_RECEIPT_RE.test(trimmed)) {
       return { ok: false, reason: 'invalid_impl_review' };
     }
     return { ok: true, sha: trimmed.slice(separator + 1) };

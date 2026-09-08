@@ -178,8 +178,11 @@ describe('runner/preamble PR-submit directive (worker-phase2 §1)', () => {
   });
 
   test('states PR submission and forbids merging', () => {
-    expect(PR_SUBMIT_DIRECTIVE).toContain('PR 제출');
-    expect(PR_SUBMIT_DIRECTIVE).toContain('머지하지 말 것');
+    expect(PR_SUBMIT_DIRECTIVE).toContain('저장소가 요구하는 검증과 리뷰');
+    expect(PR_SUBMIT_DIRECTIVE).toContain('PR을 생성');
+    expect(PR_SUBMIT_DIRECTIVE).not.toContain('CI 확인');
+    expect(PR_SUBMIT_DIRECTIVE).toContain('머지는 큐가 소유한다');
+    expect(PR_SUBMIT_DIRECTIVE).toContain('세션에서 머지하지 마라');
   });
 
   test('no longer names the retired merge_policy key', () => {
@@ -225,14 +228,14 @@ describe('runner/preamble disposition sessions (UI-hs11 §3.3, UI-rxp3 §1)', ()
       disposition: true
     }).system_prompt;
 
-    expect(out).not.toContain('PR 제출까지 수행하고');
+    expect(out).not.toContain('저장소가 요구하는 검증과 리뷰');
     expect(out).toContain('## 무인 모드');
     expect(out).toContain('## 가드 계약');
   });
 
   test('keeps the PR-submit directive by default', () => {
     expect(applyPreamble('작업하라').system_prompt).toContain(
-      'PR 제출까지 수행하고'
+      '저장소가 요구하는 검증과 리뷰'
     );
   });
 
@@ -252,7 +255,7 @@ describe('runner/preamble disposition sessions (UI-hs11 §3.3, UI-rxp3 §1)', ()
       disposition: false
     }).system_prompt;
 
-    expect(out).not.toContain('PR 제출까지 수행하고');
+    expect(out).not.toContain('저장소가 요구하는 검증과 리뷰');
     expect(out).toContain(guardContractDirective({ disposition: false }));
     expect(out).not.toContain(guardContractDirective({ disposition: true }));
   });
@@ -272,15 +275,19 @@ describe('runner/preamble Worker-dispatched quick_fix lane', () => {
 
   test('states the reviewed push and Worker-owned tail', () => {
     expect(QUICKFIX_LANE_DIRECTIVE).toContain(
-      'implementation review 1회(필수)'
+      'implementation review 게이트 1회'
     );
     expect(QUICKFIX_LANE_DIRECTIVE).toContain('실제로 push한 head SHA');
+    expect(QUICKFIX_LANE_DIRECTIVE).toContain(
+      '진행 권한이며 실제 리뷰 증거가 아니다'
+    );
+    expect(QUICKFIX_LANE_DIRECTIVE).not.toContain('skip`으로 선택하지 마라');
     expect(QUICKFIX_LANE_DIRECTIVE).toContain('bead `resolved`');
     expect(QUICKFIX_LANE_DIRECTIVE).toContain(
       '배포 실행·배포 증거·bead `closed`·worktree/브랜치 정리는 Worker가 소유한다'
     );
     expect(QUICKFIX_LANE_DIRECTIVE).toContain(
-      'dotfiles `docs/contracts/workflow.md`'
+      'dotfiles `docs/contracts/workflow-contract.md`'
     );
   });
 
@@ -384,7 +391,7 @@ describe('runner/preamble guard contract severity tiers (UI-rxp3 §1)', () => {
   });
 
   test('pairs the merge prohibition with the session terminal it should reach', () => {
-    expect(contract).toContain('머지는 사람의 클릭이다');
+    expect(contract).toContain('머지는 큐가 소유한다');
   });
 
   test('pairs the base-push refusal with the feature-branch + PR alternative', () => {

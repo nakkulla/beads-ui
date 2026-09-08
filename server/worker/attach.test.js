@@ -979,7 +979,7 @@ describe('worker/attach construction + live loop (F1)', () => {
     // The always-on PR-submit directive reached the SYSTEM channel (UI-rxp3 §2)…
     const system_prompt =
       call.args[call.args.indexOf('--append-system-prompt') + 1];
-    expect(system_prompt).toContain('PR 제출까지 수행하고 절대 머지하지 말 것');
+    expect(system_prompt).toContain('저장소가 요구하는 검증과 리뷰');
     // … the positional argument carries the task and nothing else …
     expect(call.args[call.args.length - 1]).toBe(
       'Bead S1 작업을 계약 네이티브 흐름으로 완료하라.'

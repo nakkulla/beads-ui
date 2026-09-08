@@ -62,7 +62,6 @@ afterEach(() => {
  *   branchVerifyCode?: number,
  *   landingProgress?: { cursor: string, head_sha: string|null, reason: string|null },
  *   pushLog?: { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string } | null,
- *   acceptSkippedReceipt?: boolean,
  *   resolveWriteSticks?: boolean,
  *   readIssueThrows?: boolean,
  *   timeline?: any,
@@ -331,7 +330,6 @@ function makeLanding(options = {}) {
     worktree,
     repoOperations: options.repoOperations === false ? null : repoOperations,
     readPushLog,
-    accept_skipped_receipt: options.acceptSkippedReceipt === true,
     timeline: options.timeline,
     notifier: options.notifier,
     notifyChanged: () => calls.push('notify'),
@@ -537,18 +535,6 @@ test('parses valid review receipt and completes landing', async () => {
   expect(bd.readMetadata).toHaveBeenCalledWith(BEAD, 'impl_review');
 });
 
-test('rejects skipped review receipt', async () => {
-  const { landing } = makeLanding({ receipt: `skipped@${HEAD_SHA}` });
-
-  const result = await settle(landing);
-
-  expect(result).toEqual({
-    ok: false,
-    reason: 'invalid_impl_review',
-    step: null
-  });
-});
-
 test.each([
   ['short hex', `reviewer@${'a'.repeat(39)}`],
   ['non-hex', `reviewer@${'z'.repeat(40)}`],
@@ -607,10 +593,9 @@ test('records an impl_review read outage on the evidence path as bd_read_failed'
   expect(result).toEqual({ ok: false, reason: 'bd_read_failed', step: null });
 });
 
-test('accepts a skipped review receipt once the contract flag is on', async () => {
+test('accepts a skipped review receipt without a feature flag', async () => {
   const { landing } = makeLanding({
-    receipt: `skipped@${HEAD_SHA}`,
-    acceptSkippedReceipt: true
+    receipt: `skipped@${HEAD_SHA}`
   });
 
   const result = await settle(landing);
@@ -743,21 +728,24 @@ test('reports delivery unproven when the review receipt is absent', async () => 
   expect(bd.setStatus).not.toHaveBeenCalled();
 });
 
-test('reports delivery unproven when the receipt does not bind the pushed head', async () => {
-  const { landing, bd } = makeLanding({
-    status: 'in_progress',
-    receipt: `reviewer@${'b'.repeat(40)}`
-  });
+test.each(['reviewer', 'skipped'])(
+  'reports delivery unproven when the %s receipt does not bind the pushed head',
+  async (reviewer) => {
+    const { landing, bd } = makeLanding({
+      status: 'in_progress',
+      receipt: `${reviewer}@${'b'.repeat(40)}`
+    });
 
-  const result = await settle(landing);
+    const result = await settle(landing);
 
-  expect(result).toEqual({
-    ok: false,
-    reason: 'delivery_unproven:impl_review_sha_mismatch',
-    step: null
-  });
-  expect(bd.setStatus).not.toHaveBeenCalled();
-});
+    expect(result).toEqual({
+      ok: false,
+      reason: 'delivery_unproven:impl_review_sha_mismatch',
+      step: null
+    });
+    expect(bd.setStatus).not.toHaveBeenCalled();
+  }
+);
 
 test('binds the receipt to the LAST base push of the attempt', async () => {
   const { landing } = makeLanding({
@@ -786,27 +774,10 @@ test('binds the receipt to the LAST base push of the attempt', async () => {
   expect(result).toEqual({ ok: true });
 });
 
-test('rejects a skipped receipt on the evidence path while the flag is off', async () => {
+test('accepts a skipped receipt on the evidence path without a feature flag', async () => {
   const { landing, bd } = makeLanding({
     status: 'in_progress',
     receipt: `skipped@${HEAD_SHA}`
-  });
-
-  const result = await settle(landing);
-
-  expect(result).toEqual({
-    ok: false,
-    reason: 'invalid_impl_review',
-    step: null
-  });
-  expect(bd.setStatus).not.toHaveBeenCalled();
-});
-
-test('accepts a skipped receipt on the evidence path once the flag is on', async () => {
-  const { landing, bd } = makeLanding({
-    status: 'in_progress',
-    receipt: `skipped@${HEAD_SHA}`,
-    acceptSkippedReceipt: true
   });
 
   const result = await settle(landing);
