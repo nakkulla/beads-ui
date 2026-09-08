@@ -39,18 +39,40 @@ vi.mock('../workflow-enrich.js', async (importOriginal) => {
 
 const { createRunnableCache } = await import('./runnable-cache.js');
 
+/** Monotonic snapshot generation so no two fills share a probe context. */
+let generation_seq = 0;
+
+/**
+ * The ok snapshot envelope a fill consumes. `generation` is REQUIRED: the fill
+ * keys its probe context by it, so a fixture omitting it is not the real shape
+ * (UI-hhn9 §4.2).
+ *
+ * @typedef {{
+ *   ok: true,
+ *   stale: boolean,
+ *   snapshot: {
+ *     generation: number,
+ *     all: Array<Record<string, any>>,
+ *     ready_explain?: Record<string, any>
+ *   }
+ * }} SnapshotOkReply
+ */
+
 /**
  * A `requestSnapshot` stub answering the shared `--all` generation for one
- * workspace.
+ * workspace, in the real snapshot shape (UI-hhn9 §4.2).
  *
  * @param {Array<Record<string, any>>} rows
  */
 function fakeSnapshot(rows) {
-  return vi.fn(async () => ({
-    ok: true,
-    stale: false,
-    snapshot: { generation: 1, all: rows }
-  }));
+  return vi.fn(async () => {
+    generation_seq += 1;
+    return /** @type {SnapshotOkReply} */ ({
+      ok: true,
+      stale: false,
+      snapshot: { generation: generation_seq, all: rows, ready_explain: {} }
+    });
+  });
 }
 
 /**
@@ -74,10 +96,16 @@ function sessionRow(metadata) {
  */
 async function sessionBucket(rows) {
   const cache = createRunnableCache({ requestSnapshot: fakeSnapshot(rows) });
+  /** @type {(value: void) => void} */
+  let done = () => {};
+  const filled = new Promise((resolve) => {
+    done = resolve;
+  });
+  cache.setOnFilled(() => done());
+
   cache.sessionActiveFor(WS);
-  for (let i = 0; i < 10; i += 1) {
-    await Promise.resolve();
-  }
+  await filled;
+
   return cache.sessionActiveFor(WS);
 }
 

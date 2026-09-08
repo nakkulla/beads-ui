@@ -79,19 +79,42 @@ function sessionRow(patch = {}) {
 }
 
 /**
+ * The ok snapshot envelope a fill consumes. `generation` is REQUIRED: the fill
+ * keys its probe context by it, so a fixture omitting it is not the real shape
+ * (UI-hhn9 §4.2).
+ *
+ * @typedef {{
+ *   ok: true,
+ *   stale: boolean,
+ *   snapshot: {
+ *     generation: number,
+ *     all: Array<Record<string, any>>,
+ *     ready_explain?: Record<string, any>
+ *   }
+ * }} SnapshotOkReply
+ */
+
+/**
  * The real snapshot envelope shape a fill consumes: an ok reply carrying one
  * `generation` and its `all` rows (UI-hhn9 §4.2). Each call answers a FRESH
  * generation so the module-level probe context of one test never satisfies the
  * next one's warm.
  *
  * @param {Array<Record<string, any>>} rows
+ * @param {Partial<SnapshotOkReply['snapshot']>} [snapshot_patch]
+ * @returns {SnapshotOkReply}
  */
-function snapshotOk(rows) {
+function snapshotOk(rows, snapshot_patch = {}) {
   generation_seq += 1;
   return {
     ok: true,
     stale: false,
-    snapshot: { generation: generation_seq, all: rows, ready_explain: {} }
+    snapshot: {
+      generation: generation_seq,
+      all: rows,
+      ready_explain: {},
+      ...snapshot_patch
+    }
   };
 }
 
@@ -113,14 +136,69 @@ function fakeSnapshot(rows_by_workspace) {
 }
 
 /**
- * Let the fire-and-forget fill and its continuations run. The stub resolves
- * immediately, so a handful of microtask hops is the whole wait (same idiom as
- * `title-cache.test.js`).
+ * @typedef {ReturnType<typeof createRunnableCache>} RunnableCache
  */
-async function settle() {
-  for (let i = 0; i < 10; i += 1) {
-    await Promise.resolve();
+
+/**
+ * The fill-completion callback a test installed on a cache, so `settle` can
+ * compose with it instead of clobbering it.
+ *
+ * @type {WeakMap<object, ((workspace: string) => void)|null>}
+ */
+const on_filled_by_cache = new WeakMap();
+
+/**
+ * Install a fill-completion callback and remember it, so `settle` can chain to
+ * it while it observes the same signal.
+ *
+ * @param {RunnableCache} cache
+ * @param {(workspace: string) => void} fn
+ */
+function setOnFilled(cache, fn) {
+  on_filled_by_cache.set(cache, fn);
+  cache.setOnFilled(fn);
+}
+
+/**
+ * One macrotask turn, which drains the ENTIRE microtask queue behind it. The
+ * failure paths announce nothing (`startFill` only calls `announceFilled` on
+ * ok), so this is how a negative-cache write becomes observable — no fixed
+ * number of hops (§4.2).
+ */
+function macrotask() {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
+/**
+ * Wait for the fire-and-forget fill to complete: a successful fill resolves on
+ * the cache's own `setOnFilled` announcement, and a failed or suppressed one
+ * resolves on the drained macrotask turn (§4.2).
+ *
+ * @param {RunnableCache} [cache]
+ */
+async function settle(cache) {
+  if (!cache) {
+    await macrotask();
+    return;
   }
+  const previous = on_filled_by_cache.get(cache) ?? null;
+  /** @type {(value: void) => void} */
+  let done = () => {};
+  const filled = new Promise((resolve) => {
+    done = resolve;
+  });
+  cache.setOnFilled((workspace) => {
+    if (previous) {
+      previous(workspace);
+    }
+    done();
+  });
+
+  await Promise.race([filled, macrotask()]);
+
+  cache.setOnFilled(previous);
 }
 
 /**
@@ -132,7 +210,7 @@ async function settle() {
  */
 async function warm(cache, workspace, exclude_ids) {
   cache.runnableFor(workspace, exclude_ids);
-  await settle();
+  await settle(cache);
   return cache.runnableFor(workspace, exclude_ids);
 }
 
@@ -145,7 +223,7 @@ async function warm(cache, workspace, exclude_ids) {
  */
 async function warmExpanded(cache, workspace, exclude_ids) {
   cache.runnableFor(workspace, exclude_ids, { include_unadmitted: true });
-  await settle();
+  await settle(cache);
   return cache.runnableFor(workspace, exclude_ids, {
     include_unadmitted: true
   });
@@ -160,7 +238,7 @@ async function warmExpanded(cache, workspace, exclude_ids) {
  */
 async function warmSession(cache, workspace, exclude_ids) {
   cache.sessionActiveFor(workspace, exclude_ids);
-  await settle();
+  await settle(cache);
   return cache.sessionActiveFor(workspace, exclude_ids);
 }
 
@@ -170,11 +248,7 @@ beforeEach(() => {
 
 describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
   test('projects open runnable candidates from a shared workspace snapshot', async () => {
-    const requestSnapshot = vi.fn(async () => ({
-      ok: true,
-      stale: false,
-      snapshot: { all: [row()] }
-    }));
+    const requestSnapshot = vi.fn(async () => snapshotOk([row()]));
     const cache = createRunnableCache({ requestSnapshot });
 
     const out = await warm(cache, WS_A);
@@ -394,11 +468,8 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
   });
 
   test('projects blocked membership and direct blocker ids from ready explain', async () => {
-    const requestSnapshot = vi.fn(async () => ({
-      ok: true,
-      stale: false,
-      snapshot: {
-        all: [row()],
+    const requestSnapshot = vi.fn(async () =>
+      snapshotOk([row()], {
         ready_explain: {
           ready: [],
           blocked: [
@@ -408,8 +479,8 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
             }
           ]
         }
-      }
-    }));
+      })
+    );
     const cache = createRunnableCache({ requestSnapshot });
 
     const out = await warm(cache, WS_A);
@@ -423,11 +494,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
   });
 
   test('falls back to embedded blocks edges when the explain row carries no ids', async () => {
-    const requestSnapshot = vi.fn(async () => ({
-      ok: true,
-      stale: false,
-      snapshot: {
-        all: [
+    const requestSnapshot = vi.fn(async () =>
+      snapshotOk(
+        [
           row({
             dependencies: [
               { type: 'blocks', depends_on_id: 'UI-9' },
@@ -436,9 +505,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
             ]
           })
         ],
-        ready_explain: { ready: [], blocked: [{ id: 'UI-1' }] }
-      }
-    }));
+        { ready_explain: { ready: [], blocked: [{ id: 'UI-1' }] } }
+      )
+    );
     const cache = createRunnableCache({ requestSnapshot });
 
     const out = await warm(cache, WS_A);
@@ -450,16 +519,12 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
   });
 
   test('keeps a bead the explain source never blocked out of the fallback', async () => {
-    const requestSnapshot = vi.fn(async () => ({
-      ok: true,
-      stale: false,
-      snapshot: {
-        all: [
-          row({ dependencies: [{ type: 'blocks', depends_on_id: 'UI-9' }] })
-        ],
-        ready_explain: { ready: [{ id: 'UI-1' }], blocked: [] }
-      }
-    }));
+    const requestSnapshot = vi.fn(async () =>
+      snapshotOk(
+        [row({ dependencies: [{ type: 'blocks', depends_on_id: 'UI-9' }] })],
+        { ready_explain: { ready: [{ id: 'UI-1' }], blocked: [] } }
+      )
+    );
     const cache = createRunnableCache({ requestSnapshot });
 
     const out = await warm(cache, WS_A);
@@ -468,11 +533,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
   });
 
   test('fails quiet when ready explain is absent', async () => {
-    const requestSnapshot = vi.fn(async () => ({
-      ok: true,
-      stale: false,
-      snapshot: { all: [row()] }
-    }));
+    const requestSnapshot = vi.fn(async () =>
+      snapshotOk([row()], { ready_explain: undefined })
+    );
     const cache = createRunnableCache({ requestSnapshot });
 
     const out = await warm(cache, WS_A);
@@ -884,7 +947,7 @@ describe('runnable cache TTL (UI-qrfo §4)', () => {
 
     clock = 30_000;
     cache.runnableFor(WS_A);
-    await settle();
+    await settle(cache);
 
     expect(requestSnapshot).toHaveBeenCalledTimes(2);
   });
@@ -901,7 +964,7 @@ describe('runnable cache TTL (UI-qrfo §4)', () => {
 
     clock = 29_999;
     cache.runnableFor(WS_A);
-    await settle();
+    await settle(cache);
 
     expect(requestSnapshot).toHaveBeenCalledTimes(1);
   });
@@ -918,7 +981,7 @@ describe('runnable cache TTL (UI-qrfo §4)', () => {
 
     clock = 59_999;
     cache.runnableFor(WS_A);
-    await settle();
+    await settle(cache);
 
     expect(requestSnapshot).toHaveBeenCalledTimes(1);
   });
@@ -935,7 +998,7 @@ describe('runnable cache TTL (UI-qrfo §4)', () => {
 
     clock = 60_000;
     cache.runnableFor(WS_A);
-    await settle();
+    await settle(cache);
 
     expect(requestSnapshot).toHaveBeenCalledTimes(2);
   });
@@ -1023,7 +1086,7 @@ describe('runnable cache subscriber gate (UI-qrfo §4)', () => {
     });
 
     cache.runnableFor(WS_A);
-    await settle();
+    await settle(cache);
 
     expect(requestSnapshot).not.toHaveBeenCalled();
   });
@@ -1036,7 +1099,7 @@ describe('runnable cache subscriber gate (UI-qrfo §4)', () => {
     });
 
     cache.refresh(WS_A);
-    await settle();
+    await settle(cache);
 
     expect(requestSnapshot).not.toHaveBeenCalled();
   });
@@ -1049,7 +1112,7 @@ describe('runnable cache subscriber gate (UI-qrfo §4)', () => {
       subscriberCount: () => subscribers
     });
     cache.runnableFor(WS_A);
-    await settle();
+    await settle(cache);
 
     subscribers = 1;
     const out = await warm(cache, WS_A);
@@ -1064,7 +1127,7 @@ describe('runnable cache fill notification (UI-qrfo §4)', () => {
     const cache = createRunnableCache({
       requestSnapshot: fakeSnapshot({ [WS_A]: [row()] })
     });
-    cache.setOnFilled((workspace) => filled.push(workspace));
+    setOnFilled(cache, (workspace) => filled.push(workspace));
 
     await warm(cache, WS_A);
 
@@ -1078,7 +1141,7 @@ describe('runnable cache fill notification (UI-qrfo §4)', () => {
     cache.runnableFor(WS_A);
     cache.runnableFor(WS_A);
     cache.runnableFor(WS_A);
-    await settle();
+    await settle(cache);
 
     expect(requestSnapshot).toHaveBeenCalledTimes(1);
   });
@@ -1388,14 +1451,11 @@ describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
   });
 
   test('projects blocked membership onto a session bead', async () => {
-    const requestSnapshot = vi.fn(async () => ({
-      ok: true,
-      stale: false,
-      snapshot: {
-        all: [sessionRow()],
+    const requestSnapshot = vi.fn(async () =>
+      snapshotOk([sessionRow()], {
         ready_explain: { blocked: [{ id: 'UI-2', blocked_by: ['UI-5'] }] }
-      }
-    }));
+      })
+    );
     const cache = createRunnableCache({ requestSnapshot });
 
     const out = await warmSession(cache, WS_A);
@@ -1697,7 +1757,7 @@ describe('runnablePeek (UI-f3ma)', () => {
     const cache = createRunnableCache({ requestSnapshot });
 
     const out = cache.runnablePeek(WS_A);
-    await settle();
+    await settle(cache);
 
     expect(out).toEqual([]);
     expect(requestSnapshot).not.toHaveBeenCalled();
@@ -1716,7 +1776,7 @@ describe('runnablePeek (UI-f3ma)', () => {
     clock += 1000;
 
     const out = cache.runnablePeek(WS_A);
-    await settle();
+    await settle(cache);
 
     expect(out.map((item) => item.bead_id)).toEqual(['UI-1']);
     expect(requestSnapshot.mock.calls.length).toBe(calls_after_warm);

@@ -16267,23 +16267,54 @@ describe('views/worker 숨김과 lifecycle (UI-hhn9 §6)', () => {
     expect(mount.textContent).toContain('ready nine');
   });
 
+  // A grace row is the material the 1초 표시 타이머 needs, so an empty queue
+  // would leave `pause()` with nothing to stop (§6/§8).
   test('repeated pause and load do not stack display timers', () => {
+    const NOW = 1_700_000_000_000;
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const set_interval = vi.spyOn(window, 'setInterval');
+    const clear_interval = vi.spyOn(window, 'clearInterval');
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    /** The display timers started but not yet cleared. */
+    const activeTimers = () => {
+      const started = set_interval.mock.calls
+        .map((call, index) =>
+          call[1] === 1000 ? set_interval.mock.results[index].value : null
+        )
+        .filter((id) => id !== null);
+      const cleared = clear_interval.mock.calls.filter((call) =>
+        started.includes(call[0])
+      );
+      return started.length - cleared.length;
+    };
+
     const view = createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore: createWorkerQueueStore(),
+      issueStores: seedCandidates(),
+      queueStore,
       transport: vi.fn()
     });
-    const set_interval = vi.spyOn(window, 'setInterval');
+    queueStore.set(
+      queueOf({ queue: [{ bead_id: 'W-1', added_at: NOW - 5_000 }] })
+    );
+
+    expect(mount.hidden).toBe(false);
+    expect(activeTimers()).toBe(1);
+
+    view.pause();
+    expect(activeTimers()).toBe(0);
+
+    view.load();
+    expect(activeTimers()).toBe(1);
 
     view.pause();
     view.load();
-    view.pause();
-    view.load();
 
-    expect(set_interval.mock.calls.length).toBeLessThanOrEqual(1);
-    set_interval.mockRestore();
+    expect(activeTimers()).toBe(1);
     view.destroy();
+    set_interval.mockRestore();
+    clear_interval.mockRestore();
+    vi.restoreAllMocks();
   });
 
   test('destroy removes the input and keydown listeners it registered', () => {
