@@ -17,15 +17,21 @@ export function createSubscriptionIssueStores() {
   const stores_by_id = new Map();
   /** @type {Map<string, string>} */
   const key_by_id = new Map();
-  /** @type {Set<() => void>} */
+  /** @type {Set<(client_id: string) => void>} */
   const listeners = new Set();
   /** @type {Map<string, () => void>} */
   const store_unsubs = new Map();
 
-  function emit() {
+  /**
+   * Fan out one store's content change, naming the subscription it came from so
+   * consumers can ignore lists they do not render.
+   *
+   * @param {string} client_id
+   */
+  function emit(client_id) {
     for (const fn of Array.from(listeners)) {
       try {
-        fn();
+        fn(client_id);
       } catch {
         // ignore
       }
@@ -68,13 +74,13 @@ export function createSubscriptionIssueStores() {
       }
       const new_store = createSubscriptionIssueStore(client_id, options);
       stores_by_id.set(client_id, new_store);
-      const off_new = new_store.subscribe(() => emit());
+      const off_new = new_store.subscribe(() => emit(client_id));
       store_unsubs.set(client_id, off_new);
     } else if (!has_store) {
       const store = createSubscriptionIssueStore(client_id, options);
       stores_by_id.set(client_id, store);
       // Fan out per-store events to global subscribers
-      const off = store.subscribe(() => emit());
+      const off = store.subscribe(() => emit(client_id));
       store_unsubs.set(client_id, off);
     }
     key_by_id.set(client_id, next_key);
@@ -121,7 +127,10 @@ export function createSubscriptionIssueStores() {
       return s ? /** @type {IssueLite[]} */ (s.snapshot().slice()) : [];
     },
     /**
-     * @param {() => void} fn
+     * Subscribe to content changes of any registered store. The listener
+     * receives the client id of the subscription that changed.
+     *
+     * @param {(client_id: string) => void} fn
      */
     subscribe(fn) {
       listeners.add(fn);

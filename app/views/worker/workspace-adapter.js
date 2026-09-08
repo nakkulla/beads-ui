@@ -231,7 +231,18 @@ export function createWorkspaceAdapter(options = {}) {
     options;
   // Worker 탭은 ui-order를 읽지 않는다 (UI-d13v §6): 후보 순서는 정렬 체인이
   // 정하고 수동 rank는 Board 탭만 쓴다.
-  const selectors = issueStores ? createListSelectors(issueStores) : null;
+  // 이 어댑터가 그리는 다섯 열의 구독만 소비한다 (UI-hhn9 §5.1).
+  const selectors = issueStores
+    ? createListSelectors(issueStores, undefined, {
+        client_ids: [
+          READY_KEY,
+          BLOCKED_KEY,
+          IN_PROGRESS_KEY,
+          RESOLVED_KEY,
+          CLOSED_KEY
+        ]
+      })
+    : null;
   /**
    * Session-report presence keyed by workspace + immutable closed-issue
    * snapshot identity. A failed request stays failed until the issue store

@@ -162,6 +162,10 @@ Notes
 - Subsequent refresh runs emit `upsert`/`delete` events to all subscribers of
   the same subscription key on that connection.
 - Clients MUST apply envelopes in `revision` order and ignore stale revisions.
+- 클라이언트 store는 수신한 revision을 항상 전진시키되, 렌더링 내용이 바뀔 때만
+  listener를 호출한다 (UI-hhn9 §5.2): `updated_at`이 더 오래된 upsert와 store에
+  없는 id의 delete는 정렬도 통지도 하지 않는다. registry의 listener는 변경을 낸
+  구독 id를 인자로 받는다 (§5.1).
 
 ## Concurrency & Ordering Guarantees
 
