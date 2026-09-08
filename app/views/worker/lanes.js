@@ -1197,11 +1197,38 @@ export function routeChipTemplate(workflow) {
     return '';
   }
   const derived = value === 'unset';
+  // `data-route`는 칩의 색 토큰을 고르는 같은 분류다 (UI-kyky §3.2): 카드 배경과
+  // 칩이 한 판정에서 나오므로 두 표면이 다른 종류를 말할 수 없다.
   return html`<span
     class="ctl-chip ctl-chip--route${derived ? ' is-derived' : ''}"
+    data-route=${value}
     title=${derived ? 'route 미핀 (metadata unset)' : 'route'}
     >${value}</span
   >`;
+}
+
+/**
+ * The 작업 종류(route) 색 one card carries (UI-kyky §3.1). 후보·대기·PR 대기·실행·
+ * 완료 카드가 모두 이 함수 하나를 부르므로 세 공유 렌더러가 같은 분류를 같은
+ * 방식으로 싣는다 — 판정 자체는 route 칩·route 필터와 같은
+ * {@link routeChipValue}다.
+ *
+ * `tinted`가 배경을 켜는 유일한 조건이다: 실패·실행·머지·외부 세션·선택 같은
+ * 기존 상태 표현이 있는 카드는 호출 자리가 `neutral=false`를 넘기므로 배경
+ * 클래스 자체가 붙지 않는다 (§3.1 우선순위 1). 재료가 없으면 `route`가
+ * `undefined`라 색 속성도 없다 (fail-quiet).
+ *
+ * @param {MiniItem['workflow']} workflow
+ * @param {boolean} neutral - 이 카드에 기존 상태 표현(failed·merging·external
+ * 등)이 하나도 없는지. `false`면 배경을 켜지 않는다.
+ * @returns {{ route: string|undefined, tinted: boolean }}
+ */
+export function routeCardTone(workflow, neutral) {
+  const value = routeChipValue(workflow);
+  return {
+    route: value === null ? undefined : value,
+    tinted: value !== null && neutral === true
+  };
 }
 
 /**
@@ -1456,6 +1483,11 @@ export function priorityBadgeTemplate(priority) {
  * 않는다.
  * @property {number|null} [pr_number] - Observed PR number (`pr_wait` rows).
  * @property {string} [pr_url] - Observed PR URL; renders the `#N ↗` link.
+ * @property {string} [foreign_repo] - `OWNER/REPO` of a PR that lives in ANOTHER
+ * repository (UI-kyky §6.2). Only a row the server marked `foreign` carries it,
+ * and only when the slug is known — the badge says this workspace does not
+ * observe, merge or clean the PR up, so a guessed value would be a false
+ * promise. 같은 저장소의 `external` 행은 이 필드를 얻지 않는다.
  * @property {string|null} [completion_badge] - Root completion status badge.
  * @property {string} [completion_title] - Bounded completion evidence tooltip.
  * @property {string|null} [log_path] - 완료 실패가 남긴 로그 파일의 절대 경로
@@ -1852,6 +1884,16 @@ export function miniRow(item, options = {}) {
   const pri_el = priorityBadgeTemplate(item.priority);
   const title_el = html`<span class="worker-mini__title">${item.title}</span>`;
   const pr_el = prLinkTemplate(item.pr_url, item.pr_number);
+  // 외부 저장소 PR 대상 표시 (UI-kyky §6.2). 자리는 슬롯 1의 PR 링크 바로
+  // 옆이다 — 이 워크스페이스의 머지·정리 대상이 아니라는 사실이 행동을 바꾸므로
+  // 좌표 칩 줄로 보내지 않고, 조작 버튼 사이에도 넣지 않는다.
+  const foreign_repo_el = item.foreign_repo
+    ? html`<span
+        class="worker-mini__foreign-pr"
+        title="다른 저장소의 PR입니다. 이 워크스페이스에서는 상태를 관측·머지·정리하지 않습니다."
+        >↗ ${item.foreign_repo}</span
+      >`
+    : '';
   const badge_els = badges.map((b) =>
     b === item.live_badge
       ? // Live server activity (UI-raqh §3): neutral, never the warn colour —
@@ -2120,6 +2162,12 @@ export function miniRow(item, options = {}) {
     item.revise_action ||
     stale_work
   );
+  // 작업 종류 배경은 상태 표현이 없는 행에만 붙는다 (UI-kyky §3.1): 머지 진행·
+  // 외부 세션·ghost 행은 이미 자기 배경·테두리로 상태를 말한다.
+  const route_tone = routeCardTone(
+    item.workflow,
+    !merging && item.external !== true && item.ghost !== true
+  );
   return html`<div
     class="worker-mini${card ? ' worker-mini--card' : ''}${draggable
       ? ''
@@ -2129,15 +2177,18 @@ export function miniRow(item, options = {}) {
       ? ' worker-mini--merging'
       : ''}${merging?.failed ? ' worker-mini--merge-failed' : ''}${item.external
       ? ' worker-mini--external'
+      : ''}${route_tone.tinted
+      ? ' worker-mini--route-bg'
       : ''}${item.search_match === false ? ' is-dimmed' : ''}"
     style=${merging ? `--progress: ${merging.percent}%` : ''}
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
     data-lane=${item.lane}
+    data-route=${ifDefined(route_tone.route)}
   >
     ${two_line
       ? html`<div class="worker-mini__row1">
-            ${repo_el}${id_el}${pri_el}${from_el}${pr_el}${title_el}${actions_el}
+            ${repo_el}${id_el}${pri_el}${from_el}${pr_el}${foreign_repo_el}${title_el}${actions_el}
           </div>
           ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
           <div class="worker-mini__row2">
@@ -2161,7 +2212,7 @@ export function miniRow(item, options = {}) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${badge_els}${reason_el}${actions_el}
+              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${reason_el}${actions_el}
             </div>
             <div class="worker-mini__body">${title_el}${stale_details}</div>
             ${deps_el}${chips_el}${has_foot
@@ -2178,7 +2229,7 @@ export function miniRow(item, options = {}) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${badge_els}${reason_el}${merge_step_el}${merge_el}${cancel_el}${discard_actions_el}${actions_el}
+              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${foreign_repo_el}${badge_els}${reason_el}${merge_step_el}${merge_el}${cancel_el}${discard_actions_el}${actions_el}
             </div>
             ${deps_el}${chips_el}${receipt_el} ${timesMeta(item)}`}
   </div>`;
@@ -2532,6 +2583,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
   const blocked_or_not_ready =
     !worker_ineligible &&
     (item.blocked === true || item.queue_placeable === false);
+  // 작업 종류 배경 (UI-kyky §3.1). `worker-ineligible` 카드는 이미 자기 배경으로
+  // "지금은 못 간다"를 말하므로 중립이 아니다.
+  const route_tone = routeCardTone(workflow, !worker_ineligible);
   return html`<div
     class="worker-card${draggable
       ? ''
@@ -2539,10 +2593,13 @@ export function candidateCard(item, place_menu = null, options = {}) {
       ? ' worker-card--ineligible'
       : ''}${blocked_or_not_ready
       ? ' worker-card--blocked'
+      : ''}${route_tone.tinted
+      ? ' worker-card--route-bg'
       : ''}${item.search_match === false ? ' is-dimmed' : ''}"
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
     data-lane=${item.lane}
+    data-route=${ifDefined(route_tone.route)}
   >
     <div class="worker-card__head">
       ${draggable

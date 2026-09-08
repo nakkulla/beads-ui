@@ -45,6 +45,7 @@ import { isImplementationAttempt } from '../../utils/active-attempts.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
+import { STALE_WORK_REFUSALS } from '../../utils/failure-sentences.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { runResumeFlow } from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
@@ -1067,6 +1068,14 @@ export function prStatusBadge(input) {
   if (input.activity) {
     return badge('확인 중', { live: true });
   }
+  // 외부 저장소 PR은 관측 실패가 아니라 관측 대상이 아니다 (UI-kyky §6.2):
+  // 일반 `상태 확인 실패`는 고칠 것이 있다고 읽히지만 이 행에는 고칠 것이 없다.
+  if (input.gate?.reason === 'pr_repo_foreign') {
+    return badge('외부 저장소 PR', {
+      title:
+        '다른 저장소의 PR입니다. 이 워크스페이스에서는 상태를 관측·머지·정리하지 않습니다.'
+    });
+  }
   if (
     input.gate?.tier === 'undecidable' ||
     input.gate?.reason === 'mergeability_unknown'
@@ -1159,6 +1168,13 @@ export function prStatusBadge(input) {
  * @param {boolean} [resolve_pending] - 이 행의 `[세션에서 해결]` 클릭이 아직
  * 서버 응답을 기다리는 중인지 (UI-jw27 §4). 클라이언트만 아는 사실이라 스냅샷에
  * 없다 — 두 번째 클릭이 두 번째 창을 요청하지 않도록 버튼을 잠근다.
+ * @param {{ foreign?: boolean, repo_slug?: string, pr_url?: string, pr_number?: number }} [external_pr]
+ * The four PR facts the external-PR registry owns (UI-kyky §6.1), carried on the
+ * synthesized overlay row only. `foreign === true` means the url names ANOTHER
+ * repository, which this workspace never observes — so that row's PR link is
+ * built from these verified values instead of the (absent) observation, and a
+ * same-repo row keeps preferring what the poller observed. `repo_slug` alone
+ * never re-decides `foreign`.
  * @returns {any}
  */
 function prWaitRow(
@@ -1180,7 +1196,8 @@ function prWaitRow(
   progress_input = {},
   dependency_chips = null,
   review_session = { active: false, failure: null, origin: null },
-  resolve_pending = false
+  resolve_pending = false,
+  external_pr = {}
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const continuation_required =
@@ -1194,6 +1211,21 @@ function prWaitRow(
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
   const pr = obs && obs.pr ? obs.pr : null;
+  // `foreign`은 서버가 origin과 대조해 판정한 사실이다 — `repo_slug`를 보고 다시
+  // 판정하지 않는다 (UI-kyky §6.1).
+  const foreign_pr = external_pr.foreign === true;
+  const foreign_repo =
+    foreign_pr && typeof external_pr.repo_slug === 'string'
+      ? external_pr.repo_slug
+      : '';
+  const foreign_pr_url =
+    foreign_pr && typeof external_pr.pr_url === 'string'
+      ? external_pr.pr_url
+      : '';
+  const foreign_pr_number =
+    foreign_pr && typeof external_pr.pr_number === 'number'
+      ? external_pr.pr_number
+      : null;
   const resolution = resolutionView(
     merge_queue ? merge_queue.resolution : null
   );
@@ -1385,8 +1417,14 @@ function prWaitRow(
     // somewhere else, and the lane reads better when that is visible before the
     // 세션 badge is read.
     external,
-    pr_number: pr && typeof pr.number === 'number' ? pr.number : null,
-    pr_url: pr && typeof pr.url === 'string' ? pr.url : '',
+    // 외부 저장소 PR은 관측이 없으므로 (poller가 `pr_repo_foreign`으로 멈춘다)
+    // 검증된 등록부 값이 링크의 유일한 재료다 (UI-kyky §6.1). 같은 저장소 행은
+    // 기존 관측값이 그대로 우선한다.
+    pr_number:
+      foreign_pr_number ??
+      (pr && typeof pr.number === 'number' ? pr.number : null),
+    pr_url: foreign_pr_url || (pr && typeof pr.url === 'string' ? pr.url : ''),
+    ...(foreign_repo ? { foreign_repo } : {}),
     // miniRow already owns a one-badge tooltip seam under these legacy field
     // names. Reuse it for every resolved status so raw failure codes and hidden
     // lower-grade facts stay inspectable without another badge (UI-vkk8 §3).
@@ -2527,14 +2565,27 @@ export function createWorkerView(mount_element, options = {}) {
         })
       );
       adopt(res);
-      if (res?.conflict) {
+      // 스냅샷을 먼저 반영한 뒤 실제 사유를 사전에서 읽는다 (UI-kyky §5).
+      // conflict와 비충돌 `!ok`는 같은 사유에 같은 문장을 쓴다 — 같은 이유를 두
+      // 문장으로 말하면 사용자가 두 가지 일이 일어났다고 읽는다. 사전에 없는
+      // 사유는 기존 표시 그대로다: conflict는 일반 문구, 비충돌은 raw reason.
+      const reason =
+        typeof res?.reason === 'string' && res.reason.length > 0
+          ? res.reason
+          : '';
+      const refusal = Object.hasOwn(STALE_WORK_REFUSALS, reason)
+        ? STALE_WORK_REFUSALS[reason]
+        : '';
+      if (refusal.length > 0) {
+        showToast(refusal, 'error', 2800);
+      } else if (res?.conflict) {
         showToast(
           '이전 작업 상태가 바뀌었습니다. 최신 상태를 확인하세요.',
           'error',
           2800
         );
-      } else if (!res?.ok && res?.reason) {
-        showToast(`이전 작업 처리 거부: ${String(res.reason)}`, 'error', 2800);
+      } else if (!res?.ok && reason.length > 0) {
+        showToast(`이전 작업 처리 거부: ${reason}`, 'error', 2800);
       }
     } finally {
       stale_work_pending.delete(bead_id);
@@ -3242,7 +3293,19 @@ export function createWorkerView(mount_element, options = {}) {
           },
           item ? chipsWithOverlaps(item) : null,
           reviewSessionRowState(attempts, e.bead_id),
-          resolve_pending.has(e.bead_id)
+          resolve_pending.has(e.bead_id),
+          // 등록부가 소유한 네 필드 (UI-kyky §6.1). 합성 행에만 실리고, merge
+          // queue만으로 합성한 행에는 없다 — 없으면 없는 대로 넘긴다.
+          {
+            ...(e.foreign === true ? { foreign: true } : {}),
+            ...(typeof e.repo_slug === 'string'
+              ? { repo_slug: e.repo_slug }
+              : {}),
+            ...(typeof e.pr_url === 'string' ? { pr_url: e.pr_url } : {}),
+            ...(typeof e.pr_number === 'number'
+              ? { pr_number: e.pr_number }
+              : {})
+          }
         );
         return {
           ...row,

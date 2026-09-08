@@ -10,6 +10,12 @@ scope:
 
 Bead: UI-8h1x · 2026-08-28
 
+> **버튼 이름 정정(UI-kyky).** 아래 본문의 `정산 재개`·`착지 정산 재개`·
+> `착지 정산을 다시 실행`은 현재 이름이 아니다. 그 버튼은
+> `2026-09-08-worker-feedback-readability-design.md` §4.3에서 `정리 재시도`
+> (다이얼로그 제목 `착지 후 정리 재시도`, 거부 토스트 `정리 재시도 거부`)로
+> 바뀌었다. 재개 판정(`resumeKindOf`)·이벤트·서버 로직은 이 문서 그대로다.
+
 ## 1. 문제
 
 Worker가 디스패치한 quick_fix의 착지 정산(`createQuickfixLanding.settle`)이 실패하면

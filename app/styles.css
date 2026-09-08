@@ -6142,6 +6142,19 @@ html[data-theme='dark'] {
   text-decoration: underline;
 }
 
+/* 외부 저장소 PR 대상 표시 (UI-kyky §6.2). PR 링크 바로 옆, 같은 줄 안이다.
+   링크가 아니라 사실 표시라 밑줄도 커서 변화도 없다 — 이 워크스페이스에서 열
+   대상이 아니라는 것이 이 표시의 내용이다. */
+.worker-mini__foreign-pr {
+  max-width: 24ch;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .worker-mini__badge {
   min-width: 0;
   max-width: 100%;
@@ -7728,6 +7741,34 @@ html[data-theme='dark'] {
   flex: 0 0 auto;
   margin: 0;
   line-height: 1.35;
+}
+
+/* 작업 종류(route) 카드 배경 (UI-kyky §3.1). 배경 클래스는 렌더러가 중립 상태로
+   판정한 카드에만 붙으므로, 실패·실행·머지·외부 세션·선택·포커스의 기존 상태
+   표현과 겹치지 않는다 — 우선순위를 selector specificity로 다투지 않는다.
+   테두리·ring·드래그 표시·카드 높이는 건드리지 않고 배경 하나만 바꾼다. */
+.worker-card--route-bg[data-route='spec_backed'],
+.worker-mini--route-bg[data-route='spec_backed'],
+.rtile--route-bg[data-route='spec_backed'] {
+  background: var(--route-spec_backed-bg);
+}
+
+.worker-card--route-bg[data-route='quick_fix'],
+.worker-mini--route-bg[data-route='quick_fix'],
+.rtile--route-bg[data-route='quick_fix'] {
+  background: var(--route-quick_fix-bg);
+}
+
+.worker-card--route-bg[data-route='full_plan'],
+.worker-mini--route-bg[data-route='full_plan'],
+.rtile--route-bg[data-route='full_plan'] {
+  background: var(--route-full_plan-bg);
+}
+
+.worker-card--route-bg[data-route='unset'],
+.worker-mini--route-bg[data-route='unset'],
+.rtile--route-bg[data-route='unset'] {
+  background: var(--route-unset-bg);
 }
 
 /* 세션 정체 칩 (UI-4xzk §6.4). route 칩과 같은 톤의 중립 계열이고, 좁은 타일에서

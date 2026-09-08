@@ -188,7 +188,7 @@ describe('runResumeFlow', () => {
     );
   });
 
-  test('raises the 정산 재개 refusal toast for a settlement resume', async () => {
+  test('raises the 정리 재시도 refusal toast for a settlement resume', async () => {
     const transport = vi
       .fn()
       .mockResolvedValue({ resumed: false, reason: 'no_session_id' });
@@ -201,7 +201,7 @@ describe('runResumeFlow', () => {
     await flow;
 
     expect(document.querySelector('.toast')?.textContent).toBe(
-      '정산 재개 거부: no_session_id'
+      '정리 재시도 거부: no_session_id'
     );
   });
 

@@ -1011,6 +1011,195 @@ describe('views/worker', () => {
     });
   });
 
+  /**
+   * Click `기존 작업 이어가기` once against a canned reply and return the toast
+   * text (UI-kyky §5). The whole view is rebuilt per call so two reasons in one
+   * test cannot share a rendered row.
+   *
+   * @param {Record<string, unknown>} reply
+   * @returns {Promise<string>}
+   */
+  async function staleWorkRefusalToast(reply) {
+    document.querySelectorAll('.toast').forEach((el) => el.remove());
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    mount.innerHTML = '';
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        revision: 7,
+        queue: [{ bead_id: 'SQ-1', added_at: 0 }],
+        admission: {
+          'SQ-1': {
+            reason: 'worktree_stale_work',
+            at: 1,
+            stale_work: {
+              state: 'unique',
+              cause: 'dirty_unique',
+              summary: {
+                staged_count: 1,
+                unstaged_count: 0,
+                untracked_count: 0,
+                branch_ahead: 0,
+                head_ahead: 0
+              },
+              action_id: 'opaque-action',
+              can_resume: false,
+              can_continue: true,
+              can_backup_fresh: false,
+              can_recheck: false
+            }
+          }
+        },
+        workspace_info: { verify_cmd: null }
+      })
+    );
+    const transport = vi.fn(async () => ({
+      ...reply,
+      queue: reply.queue === undefined ? queueStore.get() : reply.queue
+    }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    mount
+      .querySelector(
+        '#worker-pane-queue .worker-mini[data-bead-id="SQ-1"] .worker-mini__stale-continue'
+      )
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    return Array.from(document.querySelectorAll('.toast'))
+      .map((el) => el.textContent || '')
+      .join(' | ');
+  }
+
+  test('says two different conflict reasons with two different sentences', async () => {
+    const remote = await staleWorkRefusalToast({
+      ok: false,
+      conflict: true,
+      reason: 'remote_branch_owner'
+    });
+    const running = await staleWorkRefusalToast({
+      ok: false,
+      conflict: true,
+      reason: 'bead_running'
+    });
+
+    expect(remote).toContain(
+      '원격 브랜치가 남아 있어 자동으로 처리할 수 없습니다.'
+    );
+    expect(running).toContain('이 이슈의 세션이 실행 중입니다.');
+    expect(remote).not.toBe(running);
+  });
+
+  test('names the observation failure of a remote ref conflict', async () => {
+    const toast = await staleWorkRefusalToast({
+      ok: false,
+      conflict: true,
+      reason: 'remote_ref_observe_failed'
+    });
+
+    expect(toast).toContain('원격 PR·브랜치 상태를 확인하지 못했습니다.');
+  });
+
+  test('uses the same sentence for a known non-conflict refusal', async () => {
+    const toast = await staleWorkRefusalToast({
+      ok: false,
+      conflict: false,
+      reason: 'discard_in_progress'
+    });
+
+    expect(toast).toContain('이 작업의 폐기가 진행 중입니다.');
+  });
+
+  test('keeps the generic sentence for an unknown conflict reason', async () => {
+    const toast = await staleWorkRefusalToast({
+      ok: false,
+      conflict: true,
+      reason: 'something_new'
+    });
+
+    expect(toast).toContain('이전 작업 상태가 바뀌었습니다.');
+  });
+
+  test('keeps the raw reason for an unknown non-conflict refusal', async () => {
+    const toast = await staleWorkRefusalToast({
+      ok: false,
+      conflict: false,
+      reason: 'something_new'
+    });
+
+    expect(toast).toContain('이전 작업 처리 거부: something_new');
+  });
+
+  test('applies the response snapshot without resending the action', async () => {
+    document.querySelectorAll('.toast').forEach((el) => el.remove());
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    mount.innerHTML = '';
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        revision: 7,
+        queue: [{ bead_id: 'SQ-1', added_at: 0 }],
+        admission: {
+          'SQ-1': {
+            reason: 'worktree_stale_work',
+            at: 1,
+            stale_work: {
+              state: 'unique',
+              cause: 'dirty_unique',
+              summary: {
+                staged_count: 1,
+                unstaged_count: 0,
+                untracked_count: 0,
+                branch_ahead: 0,
+                head_ahead: 0
+              },
+              action_id: 'opaque-action',
+              can_resume: false,
+              can_continue: true,
+              can_backup_fresh: false,
+              can_recheck: false
+            }
+          }
+        },
+        workspace_info: { verify_cmd: null }
+      })
+    );
+    const fresh = queueOf({
+      revision: 9,
+      queue: [{ bead_id: 'SQ-1', added_at: 0 }],
+      workspace_info: { verify_cmd: null }
+    });
+    const transport = vi.fn(async () => ({
+      ok: false,
+      conflict: true,
+      reason: 'revision_conflict',
+      queue: fresh
+    }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    mount
+      .querySelector(
+        '#worker-pane-queue .worker-mini[data-bead-id="SQ-1"] .worker-mini__stale-continue'
+      )
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(queueStore.get()?.revision).toBe(9);
+    expect(
+      Array.from(document.querySelectorAll('.toast')).map(
+        (el) => el.textContent || ''
+      )
+    ).toContainEqual(expect.stringContaining('작업 목록이 갱신되었습니다.'));
+  });
+
   test('keeps the legacy stale-work badge when optional projection is absent', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
@@ -10076,6 +10265,112 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
 
     expect(badgesOf(mount)).not.toContain('세션');
     expect(mount.querySelector('.worker-mini__title .muted')).toBe(null);
+  });
+
+  /**
+   * Mount a FOREIGN external PR row — one whose url names another repository,
+   * which this workspace never observes (UI-kyky §6).
+   *
+   * @param {Partial<Record<string, unknown>>} [over]
+   * @returns {HTMLElement}
+   */
+  function mountForeignRow(over = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [
+          {
+            bead_id: 'RD-1',
+            added_at: 1,
+            external: true,
+            wt_present: false,
+            foreign: true,
+            repo_slug: 'other/repo',
+            pr_url: 'https://github.com/other/repo/pull/12',
+            pr_number: 12,
+            ...over
+          }
+        ],
+        pr_observations: {
+          'RD-1': {
+            pr: null,
+            verify: null,
+            error: 'pr_repo_foreign',
+            observed_at: 1,
+            gate: {
+              enabled: false,
+              tier: 'undecidable',
+              gate_badge: '관측 오류',
+              base_badge: '',
+              reason: 'pr_repo_foreign'
+            }
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('links a foreign PR row to its own repository PR', () => {
+    const mount = mountForeignRow();
+
+    const link = /** @type {HTMLAnchorElement} */ (
+      mount.querySelector('.worker-mini__pr')
+    );
+    expect(link.getAttribute('href')).toBe(
+      'https://github.com/other/repo/pull/12'
+    );
+    expect(link.textContent?.trim()).toBe('#12 ↗');
+  });
+
+  test('marks the foreign target beside the PR link', () => {
+    const mount = mountForeignRow();
+
+    const badge = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini__foreign-pr')
+    );
+    expect(badge.textContent?.trim()).toBe('↗ other/repo');
+    expect(badge.title).toBe(
+      '다른 저장소의 PR입니다. 이 워크스페이스에서는 상태를 관측·머지·정리하지 않습니다.'
+    );
+  });
+
+  test('says 외부 저장소 PR instead of an observation failure', () => {
+    const mount = mountForeignRow();
+
+    expect(badgesOf(mount)).toContain('외부 저장소 PR');
+    expect(badgesOf(mount)).not.toContain('상태 확인 실패');
+  });
+
+  test('keeps merge and cleanup refused on a foreign row', () => {
+    const mount = mountForeignRow();
+
+    const merge = /** @type {HTMLButtonElement|null} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(merge === null || merge.disabled).toBe(true);
+    expect(mount.querySelector('.worker-mini__discard')).toBe(null);
+  });
+
+  test('never re-derives foreign from the repo slug alone', () => {
+    const mount = mountForeignRow({ foreign: false });
+
+    expect(mount.querySelector('.worker-mini__foreign-pr')).toBe(null);
+  });
+
+  test('leaves a same-repo external row without the foreign marker', () => {
+    const mount = mountRow(OPEN_GREEN);
+
+    expect(mount.querySelector('.worker-mini__foreign-pr')).toBe(null);
+    expect(mount.querySelector('.worker-mini__title .muted')?.textContent).toBe(
+      ' · 세션'
+    );
   });
 
   test('hides 폐기 on an external row', () => {

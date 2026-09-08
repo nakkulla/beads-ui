@@ -3340,6 +3340,20 @@ export function buildLanes(workspaces, workspaces_state, options) {
         !!continuation_action && continuation_action.continuation === null;
       const active = merge_state.active === bead_id;
       const external = entry.external === true;
+      // 등록부가 소유한 네 필드 (UI-kyky §6.1). Worker 탭과 같은
+      // `withExternalPrWait` 결과에서 오므로 두 탭이 같은 행을 같게 말한다.
+      // `foreign`은 서버 판정 그대로다 — `repo_slug`로 다시 판정하지 않는다.
+      const foreign_pr = entry.foreign === true;
+      const foreign_repo =
+        foreign_pr && typeof entry.repo_slug === 'string'
+          ? entry.repo_slug
+          : '';
+      const foreign_pr_url =
+        foreign_pr && typeof entry.pr_url === 'string' ? entry.pr_url : '';
+      const foreign_pr_number =
+        foreign_pr && typeof entry.pr_number === 'number'
+          ? entry.pr_number
+          : null;
       const cleanup = cleanup_failed[bead_id] || null;
       const activity = objectOf(pr_activity[bead_id]);
       const merge_step = prWaitProgress({
@@ -3397,9 +3411,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
           : {}),
         // 대기 행과 같은 route 칩 재료 (UI-yrzu §5·§7.2).
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
-        pr_number: typeof pr.number === 'number' ? pr.number : null,
-        pr_url: typeof pr.url === 'string' ? pr.url : undefined,
+        pr_number:
+          foreign_pr_number ??
+          (typeof pr.number === 'number' ? pr.number : null),
+        pr_url:
+          foreign_pr_url || (typeof pr.url === 'string' ? pr.url : undefined),
         external,
+        ...(foreign_repo ? { foreign_repo } : {}),
         usage: sumAttemptUsage(attempts, bead_id, runner_catalog),
         merge_step,
         badges: continuation_required
@@ -3412,10 +3430,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
                     ? `정리 멈춤 · ${cleanupStepLabel(cleanup.step)}`
                     : '정리 멈춤'
                 ]
-              : typeof gate?.gate_badge === 'string' &&
-                  gate.gate_badge.length > 0
-                ? [gate.gate_badge]
-                : [],
+              : gate?.reason === 'pr_repo_foreign'
+                ? // 관측 실패가 아니라 관측 대상이 아니다 (UI-kyky §6.2).
+                  ['외부 저장소 PR']
+                : typeof gate?.gate_badge === 'string' &&
+                    gate.gate_badge.length > 0
+                  ? [gate.gate_badge]
+                  : [],
         alert: merge_step
           ? merge_step.failed === true
           : !!cleanup || gate_alert,

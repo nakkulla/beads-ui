@@ -23,13 +23,13 @@ export function requestResumeInstructions(context, doc = document) {
     .filter((part) => typeof part === 'string' && part !== '')
     .join(' · ');
 
-  title.textContent = settlement ? '착지 정산 재개' : '세션 이어하기';
+  title.textContent = settlement ? '착지 후 정리 재시도' : '세션 이어하기';
   textarea.placeholder = '추가 지침 (선택) — 비워두면 기본 절차로 재개';
   textarea.maxLength = 4000;
   actions.className = 'op-dialog__actions resume-instructions-dialog__actions';
   resume.type = 'button';
   resume.className = 'op-btn op-btn--primary';
-  resume.textContent = settlement ? '정산 재개' : '이어하기';
+  resume.textContent = settlement ? '정리 재시도' : '이어하기';
   cancel.type = 'button';
   cancel.className = 'op-btn';
   cancel.textContent = '취소';

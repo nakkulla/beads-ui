@@ -1,7 +1,8 @@
 ---
 id: 18
 title: quick_fix 착지 재개는 정산 커서가 아니라 실패 사유로 판정한다
-status: accepted
+status: superseded
+superseded_by: 42
 date: 2026-08-28
 summary: '세션이 필요한 사유만 닫힌 목록으로 열거하고 나머지는 전부 같은 attempt의 정산을 다시 돌린다. 정산 계열 어휘는 coordinator가 만들어 열려 있고 settle은 멱등이라 기본값은 정산 쪽이 안전하다'
 spec: docs/superpowers/specs/2026-08-28-quickfix-settlement-resume-by-reason-design.md

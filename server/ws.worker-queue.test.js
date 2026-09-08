@@ -1254,9 +1254,55 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
         bead_id: 'UI-ext',
         added_at: expect.any(Number),
         external: true,
-        wt_present: false
+        wt_present: false,
+        repo_slug: 'o/r',
+        pr_url: 'https://github.com/o/r/pull/777',
+        pr_number: 777
       }
     ]);
+  });
+
+  test('carries the foreign verdict of an external row onto the snapshot', async () => {
+    getWorkerRuntime().externalPrs.replace(
+      '',
+      [
+        {
+          bead_id: 'UI-ext',
+          pr_url: 'https://github.com/other/repo/pull/12',
+          pr_number: 12
+        }
+      ],
+      { origin_slug: 'o/r' }
+    );
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshots(sock).at(-1).pr_wait[0]).toMatchObject({
+      foreign: true,
+      repo_slug: 'other/repo',
+      pr_url: 'https://github.com/other/repo/pull/12',
+      pr_number: 12
+    });
+  });
+
+  test('leaves a same-repo external row without a foreign flag', async () => {
+    getWorkerRuntime().externalPrs.replace(
+      '',
+      [
+        {
+          bead_id: 'UI-ext',
+          pr_url: 'https://github.com/o/r/pull/777',
+          pr_number: 777
+        }
+      ],
+      { origin_slug: 'o/r' }
+    );
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshots(sock).at(-1).pr_wait[0].foreign).toBeUndefined();
   });
 
   test('reports wt_present true when the delivering worktree is still there', async () => {

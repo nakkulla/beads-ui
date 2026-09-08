@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { MESSAGE_TYPES } from '../app/protocol.js';
 import { __resetWorkerAttachmentsForTest } from './worker/attach.js';
+import { getWorkerRuntime } from './worker/runtime.js';
 import {
   __resetRegistriesForTest,
   __resetWorkerQueueForTest,
@@ -200,5 +201,41 @@ describe('monitor pipeline done retention (UI-qbbg §4.6)', () => {
     const { workspaces } = buildBoth(raw);
 
     expect(workspaces.map((entry) => entry.root_dir)).toEqual([WS_RETENTION]);
+  });
+});
+
+describe('monitor pipeline external PR facts (UI-kyky §6.1)', () => {
+  const WS_FOREIGN = '/tmp/mon-foreign';
+
+  test('carries the same overlay fields the worker snapshot gets', () => {
+    getWorkerRuntime().externalPrs.replace(
+      WS_FOREIGN,
+      [
+        {
+          bead_id: 'UI-ext',
+          pr_url: 'https://github.com/other/repo/pull/12',
+          pr_number: 12
+        }
+      ],
+      { origin_slug: 'o/r' }
+    );
+    const raw = { revision: 1, queue: [], pr_wait: [], done: [], attempts: {} };
+
+    const workspaces = buildMonitorPipeline({
+      listWorkspaces: () => [{ path: WS_FOREIGN }],
+      listHidden: () => [],
+      runnableFor: () => [],
+      sessionActiveFor: () => [],
+      snapshotFor: (key) => decorateQueue(key, raw)
+    });
+
+    expect(/** @type {any} */ (workspaces[0]).pr_wait[0]).toMatchObject({
+      bead_id: 'UI-ext',
+      external: true,
+      foreign: true,
+      repo_slug: 'other/repo',
+      pr_url: 'https://github.com/other/repo/pull/12',
+      pr_number: 12
+    });
   });
 });

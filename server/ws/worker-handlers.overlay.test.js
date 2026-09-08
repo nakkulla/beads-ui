@@ -91,6 +91,58 @@ describe('withExternalPrWait overlay exclusion (UI-7agi §2, UI-m6bg)', () => {
   });
 });
 
+describe('withExternalPrWait PR facts (UI-kyky §6.1)', () => {
+  test('carries the four registry PR facts onto a synthesized row', () => {
+    external_rows = [{ ...externalRow('UI-1'), foreign: true }];
+
+    const out = withExternalPrWait(WS, { pr_wait: [] });
+
+    expect(/** @type {any[]} */ (out.pr_wait)[0]).toMatchObject({
+      foreign: true,
+      repo_slug: 'o/r',
+      pr_url: 'https://github.com/o/r/pull/7',
+      pr_number: 7
+    });
+  });
+
+  test('omits the foreign flag on a same-repo registry row', () => {
+    external_rows = [externalRow('UI-1')];
+
+    const out = withExternalPrWait(WS, { pr_wait: [] });
+
+    expect(/** @type {any[]} */ (out.pr_wait)[0].foreign).toBeUndefined();
+  });
+
+  test('invents no PR facts for a merge-queue-only row', () => {
+    external_rows = [];
+    wt_present_probe = true;
+
+    const out = withExternalPrWait(WS, {
+      pr_wait: [],
+      merge_queue: [{ bead_id: 'UI-1', authority: { granted_at: 700 } }]
+    });
+
+    expect(/** @type {any[]} */ (out.pr_wait)[0]).toEqual({
+      bead_id: 'UI-1',
+      added_at: 700,
+      external: true,
+      wt_present: true
+    });
+  });
+
+  test('omits a PR field the registry row does not hold', () => {
+    external_rows = [
+      { ...externalRow('UI-1'), repo_slug: null, pr_number: null }
+    ];
+
+    const out = withExternalPrWait(WS, { pr_wait: [] });
+
+    const row = /** @type {any} */ (out.pr_wait)[0];
+    expect(row.repo_slug).toBeUndefined();
+    expect(row.pr_number).toBeUndefined();
+  });
+});
+
 describe('withExternalPrWait merge_queue source (UI-17mj §2.1)', () => {
   // The scan excludes a bead the worker is running (UI-b8n8), so a
   // conflict-resolution session used to erase its own row from the lane.

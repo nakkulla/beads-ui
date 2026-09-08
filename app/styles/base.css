@@ -64,9 +64,29 @@ body {
   color: var(--chip-route);
   border-color: var(--border-route);
 }
-/* Derived (unpinned) route: inferred value, dimmed + `?` suffix (§6). */
+/* 작업 종류 색 (UI-kyky §3.2): 칩과 중립 카드 배경이 같은 두 토큰을 읽는다.
+   `data-route`는 `routeChipValue`의 네 결과 그대로이고, 재료가 없는 행은 속성
+   자체가 없어 위의 기본 색으로 남는다 (fail-quiet). */
+.ctl-chip--route[data-route='spec_backed'] {
+  background: var(--route-spec_backed-bg);
+  color: var(--route-spec_backed-fg);
+}
+.ctl-chip--route[data-route='quick_fix'] {
+  background: var(--route-quick_fix-bg);
+  color: var(--route-quick_fix-fg);
+}
+.ctl-chip--route[data-route='full_plan'] {
+  background: var(--route-full_plan-bg);
+  color: var(--route-full_plan-fg);
+}
+.ctl-chip--route[data-route='unset'] {
+  background: var(--route-unset-bg);
+  color: var(--route-unset-fg);
+}
+/* Derived (unpinned) route: 글자와 점선 테두리가 파생 상태를 말한다 (§6).
+   불투명도 감소는 UI-kyky §3.2에서 제거했다 — 토큰 표의 글자 대비를 그대로
+   유지해야 한다. */
 .ctl-chip--route.is-derived {
-  opacity: 0.55;
   border-style: dashed;
 }
 .ctl-chip--ft {
