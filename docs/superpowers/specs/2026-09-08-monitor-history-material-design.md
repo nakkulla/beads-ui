@@ -36,13 +36,17 @@ scope:
 
 - 상태: 사용자 검토용 초안. 2026-09-08 세 이슈의 스펙을 함께 작성하기로 한
   요청에 따른다.
-- 기준 코드: `ed3ce09185bcac1ee756c2fbacee8efeb0bea081`.
+- 기준 코드: `d5745f212eaac6053a27ac86d354750fb654a1c8` (재리뷰 정정으로 갱신,
+  이전 `ed3ce09185bcac1ee756c2fbacee8efeb0bea081`).
 - 소유: beads-ui, 기존 `route=spec_backed`, 하나의 구현·검증 단위.
 - 함께 작성하는 스펙:
   [UI-kyky](2026-09-08-worker-feedback-readability-design.md),
   [UI-qce9](2026-09-08-running-session-instructions-restart-design.md).
 - 작업 순서는 UI-kyky → UI-ys18 → UI-qce9다. 각 스펙은 독립적으로 검토할 수
   있으며, 이번 문서 작성은 추가 의존 간선을 만들지 않는다.
+- 흡수한 addendum: UI-q1tg가 남긴 "완료 행과 큐 밖 연결 레인 행의 워커 칩이 실행
+  핀 부재로 서지 않는다"는 §4(큐 밖 연결 레인의 예정 실행 핀)와 §5(완료 행의
+  보존 영수증 해석)가 대상 bead 집합과 재료 출처를 함께 정해 닫는다.
 
 ## 1. 문제와 근거
 
@@ -116,9 +120,11 @@ Worker 어댑터와 서버 캐시가 공유한다. 기존 순수 `blockerIdsOf`�
 
 새 서버 import의 설치본에서도 같은 경로가 해석되도록 `package.json`의 `files`에
 `app/utils/carryover-index.js`와 그 순수 의존성
-`app/views/worker/blocker-ids.js`를 명시적으로 포함한다. 두 파일 외 기존 패키지
-누락 정리는 UI-7732의 범위이며 이 스펙이 흡수하지 않는다. 이 추가는 UI-7732의
-미착지 결과를 소비하지 않으므로 새 의존 간선을 요구하지 않는다.
+`app/views/worker/blocker-ids.js`를 명시적으로 포함한다. 기존 패키지 누락 정리는
+UI-7732(`5b72124c5f0d6e8212aacab922ac12f9c95f69e6`, 기준 코드에 포함)가 이미
+마쳤고, 그 착지가 남긴 `scripts/package-runtime-assets.test.js`가 실제
+`npm pack --dry-run` 파일 집합 안에서 runtime 상대 import 그래프가 닫히는지
+검사하므로, 두 파일의 누락은 그 기존 검사가 잡는다.
 
 캐시에 `carriedToFor(workspace, parent_ids)`라는 읽기 전용 투영을 둔다. 이
 함수는 이미 만든 색인을 필요한 done ID로 좁혀 반환한다. cold·실패 캐시는 빈
@@ -272,10 +278,11 @@ ADR 0037의 ‘완료는 기록값’ 결정을 구현하므로 대체 ADR은 �
    번들 두 파일을 포함한다.
 8. 머지 후 공유 서비스에서 양쪽 탭의 이월·완료·연결 레인 표시를 확인한다. 배포
    절차와 완료 증거는 저장소 계약을 따른다.
-9. `carryover-index.test.js`에 `npm pack --dry-run --ignore-scripts --json`이
-   반환하는 실제 게시 파일 집합에 위 두 모듈이 포함되는 회귀 검사를 둔다. 두
-   경로의 포함과 순수 의존성의 모듈 해석을 확인하며 실제 tarball 생성·npm
-   게시·서버 기동은 하지 않는다.
+9. 새 서버 import 두 모듈의 게시 포함은 UI-7732가 착지한
+   `scripts/package-runtime-assets.test.js`(실제
+   `npm pack --dry-run --ignore-scripts --json` 파일 집합 위의 runtime import
+   해석 검사)가 회귀로 잡는다. 같은 검사를 `carryover-index.test.js`에 중복해서
+   두지 않으며, `package.json`의 `files` 추가 뒤 그 기존 검사가 통과해야 한다.
 
 ## 결정 (ADR 후보)
 
@@ -286,7 +293,8 @@ ADR 0037의 ‘완료는 기록값’ 결정을 구현하므로 대체 ADR은 �
   읽는다.
 - 전제: ADR 0029 — 마지막 구현 attempt의 판정에 이관 기록 합집합 조회를 추가하지
   않는다.
-- 전제: ADR 0035 — 연결 레인 멤버의 표시가 큐 적재나 arm으로 이어지지 않는다.
+- 전제: ADR 0041 — 연결 레인 확정은 의존만 쓰고 `▶ 진행`이 적재·arm하므로, 연결
+  레인 멤버의 표시가 큐 적재나 arm으로 이어지지 않는다(0035 승계).
 - 전제: ADR 0037 — 완료 실행 주체는 현재 핀이 아니라 그 완료를 만든 attempt의
   기록이다.
 - 이월 색인 공유와 연결 레인 ID 합집합: 되돌리기 어려움 불성립(기존 전달 경로의
