@@ -239,3 +239,43 @@ describe('monitor pipeline external PR facts (UI-kyky §6.1)', () => {
     });
   });
 });
+
+describe('monitor pipeline implementation actor (UI-ys18 §5.1)', () => {
+  const WS_ACTOR = '/tmp/mon-impl-actor';
+
+  test('carries the same decorated impl_actor the worker snapshot gets', () => {
+    const now = Date.now();
+    const raw = {
+      revision: 1,
+      queue: [],
+      pr_wait: [],
+      done: [{ bead_id: 'UI-done', added_at: now }],
+      attempts: {
+        'att-1': {
+          attempt_id: 'att-1',
+          bead_id: 'UI-done',
+          status: 'done',
+          finished_at: now,
+          receipt_check: {
+            checks: {
+              exec_receipt: `delegated:gpt-5-codex:high@${'a'.repeat(40)}`
+            }
+          }
+        }
+      }
+    };
+
+    const workspaces = buildMonitorPipeline({
+      listWorkspaces: () => [{ path: WS_ACTOR }],
+      listHidden: () => [],
+      runnableFor: () => [],
+      sessionActiveFor: () => [],
+      carriedToFor: () => ({}),
+      snapshotFor: (key) => decorateQueue(key, raw)
+    });
+
+    const attempts = /** @type {any} */ (workspaces[0]).attempts;
+    expect(attempts['att-1'].impl_actor.label).toBe('gpt-5-codex/high');
+    expect(attempts['att-1']).not.toHaveProperty('receipt_check');
+  });
+});

@@ -79,6 +79,8 @@
     "app/utils/quickfix-resume-kind.js",
     "app/utils/transcript-lines.js",
     "app/utils/execution-defaults.js",
+    "app/utils/carryover-index.js",
+    "app/views/worker/blocker-ids.js",
     "app/data/closed-range.js",
     "bin",
     "server",

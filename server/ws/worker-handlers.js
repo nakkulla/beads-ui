@@ -69,6 +69,7 @@ import {
   workerSlots,
   workerWorktreeExists
 } from '../worker/attach.js';
+import { implActorOf } from '../worker/compare-projection.js';
 import {
   normalizeDelegationSessions,
   readAttemptDelegationStreams
@@ -2723,6 +2724,61 @@ function publicProviderHolds(value) {
 }
 
 /**
+ * `impl_actor`를 붙인 종료 attempt 하나의 **복사본** (UI-ys18 §5.1).
+ *
+ * 해석 정본은 프리셋 비교 화면과 같은 순수 `implActorOf`다. 내부 필드 제거
+ * 전에 불려야 한다 — `receipt_check`가 사라진 뒤에 계산하면 언제나 `missing`이
+ * 된다. `missing`은 필드 자체를 만들지 않는다: 없는 chip이 틀린 chip보다 낫고,
+ * 옛 서버 payload와 같은 부재 호환 경로를 클라이언트가 그대로 쓴다.
+ *
+ * 살아 있는 실행(`running`)과 영속 원본은 건드리지 않는다.
+ *
+ * @param {any} attempt
+ * @returns {any}
+ */
+function withImplActor(attempt) {
+  if (
+    !attempt ||
+    typeof attempt !== 'object' ||
+    Array.isArray(attempt) ||
+    attempt.status === 'running'
+  ) {
+    return attempt;
+  }
+  /** @type {ReturnType<typeof implActorOf>|null} */
+  let actor = null;
+  try {
+    actor = implActorOf(attempt.receipt_check);
+  } catch {
+    return attempt;
+  }
+  if (!actor || actor.kind === 'missing') {
+    return attempt;
+  }
+  return { ...attempt, impl_actor: actor };
+}
+
+/**
+ * `attempts` 맵 전체에 같은 장식을 적용한 복사본 (UI-ys18 §5.1).
+ *
+ * @param {unknown} attempts
+ * @returns {Record<string, any>}
+ */
+function attemptsWithImplActor(attempts) {
+  /** @type {Record<string, any>} */
+  const out = {};
+  if (!attempts || typeof attempts !== 'object' || Array.isArray(attempts)) {
+    return out;
+  }
+  for (const [attempt_id, attempt] of Object.entries(
+    /** @type {Record<string, any>} */ (attempts)
+  )) {
+    out[attempt_id] = withImplActor(attempt);
+  }
+  return out;
+}
+
+/**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
  *   - the pinned repository-operation declaration used by the merge gate,
  *   - `slots` (the live concurrency cap from the attachment), so the tab can
@@ -2760,6 +2816,9 @@ export function decorateQueue(workspace_key, raw_queue) {
   const completion_status = completionStatusFor(workspace_key, overlaid);
   /** @type {Record<string, any>} */
   const public_queue = { ...overlaid };
+  // 실제 구현 주체는 내부 필드 제거 전에 파생한다 (UI-ys18 §5.1): trimming이
+  // `receipt_check`를 지운 뒤에는 어떤 종료 attempt도 `missing`으로만 읽힌다.
+  public_queue.attempts = attemptsWithImplActor(overlaid.attempts);
   // Push-projection retention (UI-qbbg §4.1), applied BEFORE every lane-based
   // decoration below so the operation cards, the title/time/label maps and the
   // client's own classifier all read the same trimmed projection. The judgment
@@ -2776,7 +2835,10 @@ export function decorateQueue(workspace_key, raw_queue) {
       // simply tops nothing up.
       {
         attemptsForBead: (bead_id) =>
-          transferredAttemptsFor(workspace_key, bead_id)
+          // 이관 보충 기록도 큐에 남은 종료 attempt와 같은 장식을 거친다
+          // (UI-ys18 §5.1) — 두 입력이 다른 답을 하면 같은 완료 행이 어느
+          // 파일에 기록이 남았는지에 따라 다른 칩을 말한다.
+          transferredAttemptsFor(workspace_key, bead_id).map(withImplActor)
       }
     );
     public_queue.done = trimmed.done;

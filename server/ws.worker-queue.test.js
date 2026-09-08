@@ -3354,6 +3354,227 @@ describe('ws worker-queue snapshot retention (UI-qbbg §4)', () => {
     ]);
   });
 
+  test('decorates a queue-resident terminal attempt with its impl_actor', () => {
+    const now = Date.now();
+    const raw = {
+      revision: 1,
+      queue: [],
+      pr_wait: [],
+      done: [{ bead_id: 'UI-fresh', added_at: now - 1 * DAY_MS }],
+      attempts: {
+        'att-fresh': {
+          attempt_id: 'att-fresh',
+          bead_id: 'UI-fresh',
+          status: 'done',
+          finished_at: now - 1 * DAY_MS,
+          receipt_check: {
+            checks: {
+              exec_receipt: {
+                kind: 'delegated',
+                actor: 'gpt-5-codex',
+                effort: 'high',
+                sha: 'a'.repeat(40)
+              }
+            }
+          }
+        }
+      }
+    };
+
+    const snapshot = /** @type {any} */ (decorateQueue(WS_RETENTION, raw));
+
+    expect(snapshot.attempts['att-fresh'].impl_actor).toEqual({
+      kind: 'delegated',
+      model: 'gpt-5-codex',
+      effort: 'high',
+      label: 'gpt-5-codex/high'
+    });
+    expect(snapshot.attempts['att-fresh']).not.toHaveProperty('receipt_check');
+    expect(raw.attempts['att-fresh']).not.toHaveProperty('impl_actor');
+  });
+
+  test('reads a legacy raw receipt string the same way', () => {
+    const now = Date.now();
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_RETENTION, {
+        revision: 1,
+        queue: [],
+        pr_wait: [],
+        done: [{ bead_id: 'UI-fresh', added_at: now - 1 * DAY_MS }],
+        attempts: {
+          'att-fresh': {
+            attempt_id: 'att-fresh',
+            bead_id: 'UI-fresh',
+            status: 'done',
+            finished_at: now - 1 * DAY_MS,
+            receipt_check: {
+              checks: {
+                exec_receipt: `delegated:gpt-5-codex:high@${'b'.repeat(40)}`
+              }
+            }
+          }
+        }
+      })
+    );
+
+    expect(snapshot.attempts['att-fresh'].impl_actor.label).toBe(
+      'gpt-5-codex/high'
+    );
+  });
+
+  test('marks a directly implemented attempt as main', () => {
+    const now = Date.now();
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_RETENTION, {
+        revision: 1,
+        queue: [],
+        pr_wait: [],
+        done: [{ bead_id: 'UI-fresh', added_at: now - 1 * DAY_MS }],
+        attempts: {
+          'att-fresh': {
+            attempt_id: 'att-fresh',
+            bead_id: 'UI-fresh',
+            status: 'done',
+            finished_at: now - 1 * DAY_MS,
+            receipt_check: {
+              checks: {
+                exec_receipt: `main:bead@${'c'.repeat(40)}`
+              }
+            }
+          }
+        }
+      })
+    );
+
+    expect(snapshot.attempts['att-fresh'].impl_actor.kind).toBe('main');
+  });
+
+  test('omits impl_actor when the units disagree about the implementer', () => {
+    const now = Date.now();
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_RETENTION, {
+        revision: 1,
+        queue: [],
+        pr_wait: [],
+        done: [{ bead_id: 'UI-fresh', added_at: now - 1 * DAY_MS }],
+        attempts: {
+          'att-fresh': {
+            attempt_id: 'att-fresh',
+            bead_id: 'UI-fresh',
+            status: 'done',
+            finished_at: now - 1 * DAY_MS,
+            receipt_check: {
+              checks: {
+                units: [
+                  `delegated:gpt-5-codex:high@${'d'.repeat(40)}`,
+                  `main:bead@${'e'.repeat(40)}`
+                ]
+              }
+            }
+          }
+        }
+      })
+    );
+
+    expect(snapshot.attempts['att-fresh']).not.toHaveProperty('impl_actor');
+  });
+
+  test('collapses agreeing units into one impl_actor', () => {
+    const now = Date.now();
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_RETENTION, {
+        revision: 1,
+        queue: [],
+        pr_wait: [],
+        done: [{ bead_id: 'UI-fresh', added_at: now - 1 * DAY_MS }],
+        attempts: {
+          'att-fresh': {
+            attempt_id: 'att-fresh',
+            bead_id: 'UI-fresh',
+            status: 'done',
+            finished_at: now - 1 * DAY_MS,
+            receipt_check: {
+              checks: {
+                units: [
+                  `delegated:gpt-5-codex:high@${'d'.repeat(40)}`,
+                  `delegated:gpt-5-codex:high@${'e'.repeat(40)}`
+                ]
+              }
+            }
+          }
+        }
+      })
+    );
+
+    expect(snapshot.attempts['att-fresh'].impl_actor.label).toBe(
+      'gpt-5-codex/high'
+    );
+  });
+
+  test('omits impl_actor when no receipt was preserved', () => {
+    const now = Date.now();
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_RETENTION, {
+        revision: 1,
+        queue: [],
+        pr_wait: [],
+        done: [{ bead_id: 'UI-fresh', added_at: now - 1 * DAY_MS }],
+        attempts: {
+          'att-fresh': {
+            attempt_id: 'att-fresh',
+            bead_id: 'UI-fresh',
+            status: 'done',
+            finished_at: now - 1 * DAY_MS
+          }
+        }
+      })
+    );
+
+    expect(snapshot.attempts['att-fresh']).not.toHaveProperty('impl_actor');
+  });
+
+  test('decorates a transferred attempt the retention callback tops up', () => {
+    const now = Date.now();
+    const record = {
+      attempt_id: 'att-transferred',
+      bead_id: 'UI-fresh',
+      status: 'done',
+      finished_at: now - 2 * DAY_MS,
+      receipt_check: {
+        checks: {
+          exec_receipt: `delegated:gpt-5-codex:high@${'f'.repeat(40)}`
+        }
+      }
+    };
+    const store = getWorkerRuntime().queueStore;
+    const spy = vi
+      .spyOn(store, 'readAttemptsForBead')
+      .mockImplementation(
+        (/** @type {string} */ _ws, /** @type {string} */ bead_id) =>
+          /** @type {any} */ (bead_id === 'UI-fresh' ? [record] : [])
+      );
+
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_RETENTION, {
+        revision: 1,
+        queue: [],
+        pr_wait: [],
+        done: [{ bead_id: 'UI-fresh', added_at: now - 1 * DAY_MS }],
+        attempts: {}
+      })
+    );
+
+    spy.mockRestore();
+    expect(snapshot.attempts['att-transferred'].impl_actor.label).toBe(
+      'gpt-5-codex/high'
+    );
+    expect(snapshot.attempts['att-transferred']).not.toHaveProperty(
+      'receipt_check'
+    );
+    expect(record).toHaveProperty('receipt_check');
+    expect(record).not.toHaveProperty('impl_actor');
+  });
+
   test('keeps an aged-out attempt out of the mutation reply queue', async () => {
     const store = getWorkerRuntime().queueStore;
     store.appendAttempt('', {

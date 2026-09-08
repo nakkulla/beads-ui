@@ -1810,3 +1810,158 @@ describe('runnablePeek (UI-f3ma)', () => {
     expect(expanded_out.map((item) => item.bead_id)).toEqual(['UI-1']);
   });
 });
+
+describe('carryover index projection (UI-ys18 §3.2)', () => {
+  /**
+   * A live carryover successor of `parent_id`, in the shape the shared
+   * workspace snapshot ships.
+   *
+   * @param {string} id
+   * @param {string} parent_id
+   * @param {Record<string, any>} [patch]
+   * @returns {Record<string, any>}
+   */
+  function successorRow(id, parent_id, patch = {}) {
+    return {
+      id,
+      title: '이월 후속',
+      status: 'open',
+      dependencies: [{ depends_on_id: parent_id, type: 'blocks' }],
+      ...patch,
+      metadata: {
+        carried_from: `${parent_id}.1`,
+        ...(patch.metadata || {})
+      }
+    };
+  }
+
+  test('answers an empty projection from a cold cache', () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [successorRow('UI-s1', 'UI-p1')]
+      })
+    });
+
+    const out = cache.carriedToFor(WS_A, ['UI-p1']);
+
+    expect(out).toEqual({});
+  });
+
+  test('fills the projection from the same scan the candidates come from', async () => {
+    const requestSnapshot = fakeSnapshot({
+      [WS_A]: [row(), successorRow('UI-s1', 'UI-p1')]
+    });
+    const cache = createRunnableCache({ requestSnapshot });
+
+    const items = await warm(cache, WS_A);
+
+    expect(items.map((item) => item.bead_id)).toEqual(['UI-1']);
+    expect(cache.carriedToFor(WS_A, ['UI-p1'])).toEqual({ 'UI-p1': ['UI-s1'] });
+    expect(requestSnapshot.mock.calls.length).toBe(1);
+  });
+
+  test('spawns no further scan when the projection is read repeatedly', async () => {
+    const requestSnapshot = fakeSnapshot({
+      [WS_A]: [successorRow('UI-s1', 'UI-p1')]
+    });
+    const cache = createRunnableCache({ requestSnapshot });
+    await warm(cache, WS_A);
+    const calls_after_warm = requestSnapshot.mock.calls.length;
+
+    cache.carriedToFor(WS_A, ['UI-p1']);
+    cache.carriedToFor(WS_A, ['UI-p1']);
+
+    expect(requestSnapshot.mock.calls.length).toBe(calls_after_warm);
+  });
+
+  test('indexes a successor whose carried_from names a phase child', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [
+          successorRow('UI-s1', 'UI-p1', {
+            metadata: { carried_from: 'UI-p1.4' }
+          })
+        ]
+      })
+    });
+    await warm(cache, WS_A);
+
+    const out = cache.carriedToFor(WS_A, ['UI-p1']);
+
+    expect(out).toEqual({ 'UI-p1': ['UI-s1'] });
+  });
+
+  test('indexes every live successor status the worker columns show', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [
+          successorRow('UI-s1', 'UI-p1', { status: 'blocked' }),
+          successorRow('UI-s2', 'UI-p1', { status: 'in_progress' }),
+          successorRow('UI-s3', 'UI-p1', { status: 'resolved' })
+        ]
+      })
+    });
+    await warm(cache, WS_A);
+
+    const out = cache.carriedToFor(WS_A, ['UI-p1']);
+
+    expect(out).toEqual({ 'UI-p1': ['UI-s1', 'UI-s2', 'UI-s3'] });
+  });
+
+  test('omits a closed or deferred successor', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [
+          successorRow('UI-s1', 'UI-p1', { status: 'closed' }),
+          successorRow('UI-s2', 'UI-p1', { status: 'deferred' })
+        ]
+      })
+    });
+    await warm(cache, WS_A);
+
+    const out = cache.carriedToFor(WS_A, ['UI-p1']);
+
+    expect(out).toEqual({});
+  });
+
+  test('narrows the projection to the requested parents', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [successorRow('UI-s1', 'UI-p1'), successorRow('UI-s2', 'UI-p2')]
+      })
+    });
+    await warm(cache, WS_A);
+
+    const out = cache.carriedToFor(WS_A, ['UI-p2']);
+
+    expect(out).toEqual({ 'UI-p2': ['UI-s2'] });
+  });
+
+  test('answers an empty projection for a failed scan', async () => {
+    const cache = createRunnableCache({ requestSnapshot: fakeSnapshot({}) });
+    await warm(cache, WS_A);
+
+    const out = cache.carriedToFor(WS_A, ['UI-p1']);
+
+    expect(out).toEqual({});
+  });
+
+  test('drops a successor the next scan no longer reports', async () => {
+    /** @type {Record<string, Array<Record<string, any>>>} */
+    const rows = { [WS_A]: [successorRow('UI-s1', 'UI-p1')] };
+    const cache = createRunnableCache({
+      requestSnapshot: vi.fn(async (/** @type {string} */ workspace) => ({
+        ok: true,
+        stale: false,
+        snapshot: { all: rows[workspace] || [] }
+      }))
+    });
+    await warm(cache, WS_A);
+    rows[WS_A] = [successorRow('UI-s1', 'UI-p1', { status: 'closed' })];
+
+    cache.refresh(WS_A);
+    await settle();
+
+    expect(cache.carriedToFor(WS_A, ['UI-p1'])).toEqual({});
+  });
+});
