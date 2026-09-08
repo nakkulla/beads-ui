@@ -226,8 +226,15 @@ export const IMPL_SPEEDS = ['default', 'fast'];
 /** Both `workflow_mode` values are storable — `standard` is a literal. */
 export const WORKFLOW_MODES = ['standard', 'fast_track'];
 
-export const REVIEW_STEP_MODELS = ['codex', 'opus', 'fable', 'self', 'skip'];
-export const PLAN_REVIEW_MODELS = ['codex', 'fable', 'skip'];
+export const REVIEW_STEP_MODELS = [
+  'codex',
+  'astra',
+  'opus',
+  'fable',
+  'self',
+  'skip'
+];
+export const PLAN_REVIEW_MODELS = ['codex', 'astra', 'fable', 'skip'];
 export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 export const REVIEW_SPEEDS = ['default', 'fast'];
 

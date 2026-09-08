@@ -1,5 +1,8 @@
 import { html } from 'lit-html';
-import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import {
+  REVIEWER_OPTION_LABELS,
+  resolveExecutionSettings
+} from '../../utils/execution-defaults.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
@@ -20,10 +23,17 @@ import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
  * review legs are dispatched by the session, and `self`/`skip` are verbs, not
  * models.
  */
-export const REVIEW_STEP_MODELS = ['codex', 'opus', 'fable', 'self', 'skip'];
+export const REVIEW_STEP_MODELS = [
+  'codex',
+  'astra',
+  'opus',
+  'fable',
+  'self',
+  'skip'
+];
 
 /** `plan_review_model` options — narrower by contract: no `self`, no `opus`. */
-export const PLAN_REVIEW_MODELS = ['codex', 'fable', 'skip'];
+export const PLAN_REVIEW_MODELS = ['codex', 'astra', 'fable', 'skip'];
 
 /** Effort vocabulary shared by all three review steps. */
 export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
@@ -248,10 +258,14 @@ export function modelGroups(runner_catalog, selected, runner_filter = null) {
  *
  * @param {ReadonlyArray<string>} values
  * @param {string} selected
+ * @param {Readonly<Record<string, string>>} [labels]
  * @returns {SelectGroup[]}
  */
-export function valueGroups(values, selected) {
-  const group = { label: null, options: values.map(plainOption) };
+export function valueGroups(values, selected, labels = {}) {
+  const group = {
+    label: null,
+    options: values.map((value) => ({ value, label: labels[value] ?? value }))
+  };
   return selected && !values.includes(selected)
     ? [incompatibleGroup(selected), group]
     : [group];
@@ -591,7 +605,11 @@ export function execSettingRows(input) {
       );
       disabled = requested_runtime === 'inherit' && impl_runtime === null;
     } else if (key === 'plan_review_model') {
-      groups = valueGroups(PLAN_REVIEW_MODELS, selected);
+      groups = valueGroups(
+        PLAN_REVIEW_MODELS,
+        selected,
+        REVIEWER_OPTION_LABELS
+      );
     } else if (Object.hasOwn(REVIEW_SPEED_PAIR, key)) {
       const model_key = REVIEW_SPEED_PAIR[key];
       const model_row = resolvedOf?.(model_key);
@@ -612,7 +630,11 @@ export function execSettingRows(input) {
         effectiveOf(REVIEW_EFFORT_PAIR[key])
       );
     } else {
-      groups = valueGroups(REVIEW_STEP_MODELS, selected);
+      groups = valueGroups(
+        REVIEW_STEP_MODELS,
+        selected,
+        REVIEWER_OPTION_LABELS
+      );
     }
     return {
       key,

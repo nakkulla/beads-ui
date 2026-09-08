@@ -8,7 +8,10 @@ import {
   isHttpOriginValue as clientIsHttpOriginValue,
   normalizeQuickFixLanePreset as clientNormalizeQuickFixLanePreset
 } from '../../app/views/settings-dialog/session-model.js';
-import { isHttpOriginValue } from '../session-defaults.js';
+import {
+  isHttpOriginValue,
+  validateSessionDefaultsPatch
+} from '../session-defaults.js';
 import * as enums from './exec-enums.js';
 import {
   ACCOUNT_KEYS,
@@ -213,6 +216,7 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
   test('exposes the step-review model vocabulary', () => {
     expect(REVIEW_STEP_MODELS).toEqual([
       'codex',
+      'astra',
       'opus',
       'fable',
       'self',
@@ -220,8 +224,8 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     ]);
   });
 
-  test('narrows plan_review to codex/fable/skip (no self, no opus)', () => {
-    expect(PLAN_REVIEW_MODELS).toEqual(['codex', 'fable', 'skip']);
+  test('narrows plan_review to codex/astra/fable/skip (no self, no opus)', () => {
+    expect(PLAN_REVIEW_MODELS).toEqual(['codex', 'astra', 'fable', 'skip']);
     expect(PLAN_REVIEW_MODELS).not.toContain('self');
     expect(PLAN_REVIEW_MODELS).not.toContain('opus');
   });
@@ -410,6 +414,53 @@ describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
     expect(IMPL_RUNTIMES).toEqual(['inherit', 'claude', 'codex']);
     expect(execSettingEnums().impl_runtime).toEqual(IMPL_RUNTIMES);
   });
+});
+
+describe('worker/exec-enums reviewer token validation', () => {
+  test.each(['codex', 'astra'])(
+    'accepts %s across bead review settings',
+    (reviewer_model) => {
+      const settings = {
+        spec_review_model: reviewer_model,
+        impl_review_model: reviewer_model,
+        plan_review_model: reviewer_model
+      };
+
+      const result = validateExecSettings(settings);
+
+      expect(result).toMatchObject({ ok: true });
+    }
+  );
+
+  test.each(['codex', 'astra'])(
+    'accepts %s across execution preset review settings',
+    (reviewer_model) => {
+      const settings = {
+        spec_review_model: reviewer_model,
+        impl_review_model: reviewer_model,
+        plan_review_model: reviewer_model
+      };
+
+      const result = validateImplPresetSettings(settings);
+
+      expect(result).toEqual({ ok: true });
+    }
+  );
+
+  test.each(['codex', 'astra'])(
+    'accepts %s across workspace review settings',
+    (reviewer_model) => {
+      const settings = {
+        spec_review_model: reviewer_model,
+        impl_review_model: reviewer_model,
+        plan_review_model: reviewer_model
+      };
+
+      const result = validateSessionDefaultsPatch(settings);
+
+      expect(result).toEqual({ ok: true, patch: settings });
+    }
+  );
 });
 
 describe('worker/exec-enums implementation target coherence', () => {

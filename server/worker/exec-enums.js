@@ -47,7 +47,14 @@ import { runtimeCatalog } from './runner/index.js';
  *
  * @type {ReadonlyArray<string>}
  */
-export const REVIEW_STEP_MODELS = ['codex', 'opus', 'fable', 'self', 'skip'];
+export const REVIEW_STEP_MODELS = [
+  'codex',
+  'astra',
+  'opus',
+  'fable',
+  'self',
+  'skip'
+];
 
 /**
  * `plan_review_model` options — narrower than the other two steps by contract:
@@ -55,7 +62,7 @@ export const REVIEW_STEP_MODELS = ['codex', 'opus', 'fable', 'self', 'skip'];
  *
  * @type {ReadonlyArray<string>}
  */
-export const PLAN_REVIEW_MODELS = ['codex', 'fable', 'skip'];
+export const PLAN_REVIEW_MODELS = ['codex', 'astra', 'fable', 'skip'];
 
 /**
  * Effort vocabulary for all three review steps. Fixed by the contract rather

@@ -5,12 +5,14 @@ import {
   IMPL_DISPATCHES,
   IMPL_PRESET_KEYS,
   ORCHESTRATION_KEYS,
+  PLAN_REVIEW_MODELS,
   PRESET_KV_KEYS,
   QUICK_FIX_KV_KEYS,
   QUICK_FIX_LANE_MAP,
   QUICK_FIX_ORCHESTRATION_KEYS,
   REVIEW_EFFORTS,
   REVIEW_SPEEDS,
+  REVIEW_STEP_MODELS,
   WORKSPACE_KV_KEYS,
   adoptSessionDefaultValues,
   buildExecutionOptionView,
@@ -36,6 +38,7 @@ const PROJECTION = {
       default: 'codex',
       reviewers: {
         codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+        astra: { model: 'gpt-6-astra', effort: 'xhigh' },
         fable: { model: 'fable', effort: 'high' }
       }
     },
@@ -626,6 +629,18 @@ describe('orchestrationModelOptions', () => {
 });
 
 describe('buildExecutionOptionView', () => {
+  test('offers Astra in both reviewer vocabularies', () => {
+    expect(REVIEW_STEP_MODELS).toEqual([
+      'codex',
+      'astra',
+      'opus',
+      'fable',
+      'self',
+      'skip'
+    ]);
+    expect(PLAN_REVIEW_MODELS).toEqual(['codex', 'astra', 'fable', 'skip']);
+  });
+
   test('keeps a stored token the narrowed choice list no longer offers', () => {
     const view = buildExecutionOptionView(
       'impl_model',
@@ -642,20 +657,34 @@ describe('buildExecutionOptionView', () => {
     });
   });
 
-  test('keeps stored tokens separate from concrete option labels', () => {
+  test('keeps saved codex selected through the distinct Codex labels', () => {
+    const draft = { spec_review_model: 'codex' };
     const view = buildExecutionOptionView(
       'spec_review_model',
-      ['codex', 'fable'],
-      {},
+      ['codex', 'astra', 'fable'],
+      draft,
       PROJECTION,
       CATALOG
     );
 
     expect(view.unset_label).toBe('기본값 사용 — 5.6-sol');
     expect(view.options).toEqual([
-      { value: 'codex', label: '5.6-sol', full_value: 'gpt-5.6-sol' },
+      {
+        value: 'codex',
+        label: 'Codex · Sol',
+        full_value: 'gpt-5.6-sol'
+      },
+      {
+        value: 'astra',
+        label: 'Codex · Astra',
+        full_value: 'gpt-6-astra'
+      },
       { value: 'fable', label: 'fable', full_value: 'fable' }
     ]);
+    expect(
+      view.options.find((option) => option.value === draft.spec_review_model)
+        ?.label
+    ).toBe('Codex · Sol');
   });
 
   test('recalculates dependent effort from the current reviewer draft', () => {
