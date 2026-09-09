@@ -43,8 +43,11 @@ Worker 탭 상단의 배너 세 종류 — 체계적 정지(`worker-hold--system
 - 공급자 게이트(outage·한도)에 막힌 대기 행에는 `[지금 시작]`을 둔다. 그 클릭은
   **이 행 하나**를 공급자 게이트를 무시하고 디스패치한다 — 2026-08-24 공급자
   스펙 §6의 "수동 이어하기는 게이트의 예외"와 같은 논리다. target 자체는
-  프로브가 판정한다(진짜 장애면 그 attempt가 다시 보류되며 target을 재등록한다).
-  `해제`(target 삭제, 사용자가 회복을 단언) 조작은 두지 않는다.
+  기존 해제 절차가 판정한다 — `outage`와 계정이 있는 `usage_limit`은 프로브,
+  `account:null`인 `usage_limit`은 프로브를 예약하지 않으므로(§6 F3,
+  `provider-health.js:439`) 묶인 attempt의 수동 이어하기가 지금처럼 그 target을
+  지운다(진짜 장애면 새 attempt가 다시 보류되며 target을 재등록한다). `해제`(target
+  삭제, 사용자가 회복을 단언) 조작은 두지 않는다.
 
 바꾸지 않는 것:
 
@@ -86,10 +89,13 @@ Worker 탭 상단의 배너 세 종류 — 체계적 정지(`worker-hold--system
   startNowButtonTemplate`은 `graceRemainingMs(added_at) <= 0`이면 `''`다.
   `requestStartNow`의 요청은 `QUEUE_GRACE_MS`(20초) 뒤 읽기 시점에 폐기된다
   (`scheduler.js:857`).
-- **환경 보류는 항상 타일이 있다.** `lineages`가 비면 hold가 풀리므로(ADR 0016
-  사다리), env hold가 서 있는 동안 `↻ 재시도 대기` 타일이 반드시 하나 이상 있다.
-  `running-grid.js:987`은 `지금 재시도`를 "큐 헤더의 조작"이라 명시해 타일에서
-  뺐다 — 헤더가 없어지면 그 자리가 타일 foot이다.
+- **환경 보류의 lineage는 두 상태다.** `lineages`가 비면 hold가 풀리므로(ADR
+  0016 사다리) env hold가 서 있는 동안 lineage는 반드시 하나 이상 있지만, 그
+  lineage가 **예약 대기**(`next_at` 있음, `↻ 재시도 대기` 타일)인지 **재시도 실행
+  중**(`next_at === null`, `queue-hold.js:277`; 타일은 실행 타일로 바뀐다,
+  `scheduler.js:7762`)인지는 갈린다. `running-grid.js:987`은 `지금 재시도`를 "큐
+  헤더의 조작"이라 명시해 타일에서 뺐다 — 헤더가 없어지면 그 자리는 **예약 대기
+  타일**의 foot이고, 실행 중에는 누를 재시도가 없다.
 - **대기 행의 러너는 화면이 이미 해석한다.** 슬롯 5 exec 칩
   (`exec-settings-chip.js formatOrchestrationChip`)이 `modelRunnerOf(runner_catalog,
   model)`로 모델→러너를 도출한다. 유예 칩 `⏳`는 admission 레코드가 아니라
@@ -135,10 +141,13 @@ gate?: {
   이미 대기 행으로 분류하는 것). 직렬 레인의 뒤 행은 제외한다 — 그 행의 "지금 갈
   수 있나"는 레인 순서가 답하고, 게이트 칩까지 얹으면 같은 사실이 레인 길이만큼
   반복된다. 연결 레인 행(`chainRow`)·후보 카드·PR 대기·완료 행은 대상이 아니다.
-- `armed_by_lane`이 있는 행은 제외한다 — 정지 중에도 디스패치되므로 막힌 행이
-  아니다(§2 `armed_only`).
-- `queue.hold`가 `systemic`/`env`면 남은 모든 대상 행에 `gate.kind`를 그 값으로
-  싣는다.
+- `queue.hold`가 `systemic`/`env`면 대상 행 가운데 `armed_by_lane`이 **없는** 행
+  전부에 `gate.kind`를 그 값으로 싣는다. arm된 행은 정지 중에도 디스패치되므로(§2
+  `armed_only`) 큐 게이트에 막힌 행이 아니다. 이 arm 제외는 **큐 게이트 판정에만**
+  적용한다 — 공급자 게이트는 arm 여부와 무관하게 launch 경로에서 판정되므로
+  (`scheduler.js:7396`) 아래 공급자 판정은 arm된 행에도 그대로 한다.
+- `env`의 `next_at`은 `lineages[].next_at` 중 유한한 값의 최솟값이고, 전부
+  `null`(재시도 실행 중, §2)이면 `null`이다.
 - `provider_hold`는 행의 **해석 러너**로 판정한다. 러너는 슬롯 5 exec 칩과 같은
   재료 — `pinnedExecChips`가 읽는 실행 값 행의 `orchestration_model` 해석값(핀 >
   큐 기본값) — 를 `modelRunnerOf(runner_catalog, model)`에 넣은 값이다.
@@ -174,7 +183,7 @@ gate?: {
 | kind | 문구 | 색 | 이유 |
 | --- | --- | --- | --- |
 | `systemic` | `⛔ 정지 · <failureText(hold.cause)>` | danger | 사람만 푼다 — 거절이다 |
-| `env` | `↻ 환경 보류 · 다음 HH:MM` | 중립 | 스스로 풀린다 — `⏳ 유예`가 danger를 타지 않는 것과 같은 이유 |
+| `env` | `↻ 환경 보류 · 다음 HH:MM` / `next_at` 없으면 `↻ 환경 보류 · 재시도 실행 중` | 중립 | 스스로 풀린다 — `⏳ 유예`가 danger를 타지 않는 것과 같은 이유 |
 | `provider_outage` | `⚠️ 공급자 장애 · 다음 프로브 HH:MM` | warn | held 타일 뱃지와 같은 문구 |
 | `provider_usage` | `⏳ 한도 대기 HH:MM · <alias\|email>` / `⏳ 한도 대기 · 리셋 미상` | 중립 | held 타일 뱃지와 같은 문구 |
 
@@ -190,11 +199,16 @@ gate?: {
   문장이 등록되지 않은 원인은 지금처럼 토큰이 보인다), `since` 시각.
 - `systemic`: `정지시킨 attempt <halted_by_attempt_id>`(없으면 생략), `bead
   <bead_ids>`. 마지막 줄 `출구: 이 행의 ▶ 재개(큐 전체) 또는 [지금 시작](이 행만)`.
-- `env`: lineage별 `<bead_id> · 재시도 n/3 · 다음 HH:MM`. 마지막 줄 `출구: 재시도
-  대기 타일의 ↻ 지금 재시도, 또는 [지금 시작](이 행만)`.
+- `env`: lineage별 `<bead_id> · 재시도 n/3 · 다음 HH:MM`(실행 중이면 `· 재시도
+  실행 중`). 마지막 줄은 재료로 갈린다 — `next_at`이 있으면 `출구: 재시도 대기
+  타일의 ↻ 지금 재시도, 또는 [지금 시작](이 행만)`, 전부 실행 중이면 `출구: [지금
+  시작](이 행만) — 재시도 결과를 기다리는 중`. 없는 타일의 버튼을 안내하지 않는다.
 - `provider_outage`·`provider_usage`: 모델·계정, `last_error` 원문, 다음
-  프로브/리셋, 자동 재개·자동 전환 상태(held 타일 팝오버가 쓰는 같은 텍스트 함수). 마지막 줄 `출구: [지금
-  시작](이 행만, 게이트 무시) — target은 프로브 성공 시 자동 해제`.
+  프로브/리셋, 자동 재개·자동 전환 상태(held 타일 팝오버가 쓰는 같은 텍스트 함수).
+  마지막 줄은 target의 해제 주체로 갈린다 — `outage`와 계정이 있는 `usage_limit`은
+  `출구: [지금 시작](이 행만, 게이트 무시) — target은 프로브 성공 시 자동 해제`,
+  `account:null`인 `usage_limit`은 `출구: [지금 시작](이 행만, 게이트 무시) — 이
+  target은 프로브가 없고, 묶인 attempt의 ↻ 이어하기가 지운다(§6 F3)`.
 
 `title` 툴팁은 유지한다. 두 탭에서 같은 팝업이다.
 
@@ -219,7 +233,9 @@ gate?: {
   재시도를 기다리지 않고 이 행을 밀겠다는 결정은 사용자의 것이다.
 - **`↻ 지금 재시도`** — `retry_wait` 타일의 foot(`heldFootTemplate`, kind
   `retry_wait`)에 `op-btn rtile__hold-retry`로 선다. 재료는 §3.1의 `hold_since`이며
-  없으면 그리지 않는다. 클릭은 기존 `worker-queue-hold-retry-now { since }`이고 —
+  없으면 그리지 않는다. 재시도가 실행 중인 lineage는 `retry_wait` 타일이 아니라
+  실행 타일이므로 이 버튼이 없다 — 그 사이 env hold의 조작 표면은 막힌 행의 `[지금
+  시작]`뿐이며 이는 의도된 결과다(누를 재시도가 없다). 클릭은 기존 `worker-queue-hold-retry-now { since }`이고 —
   예약된 재시도 **전부**를 지금 실행한다(`retry-now`의 기존 의미) — 여러 lineage
   타일에 같은 버튼이 서고 CAS가 중복을 막는다. foot은 이제 이 버튼이 재료이므로
   `폐기` 유무와 무관하게 그린다; `폐기`가 있으면 그 뒤다. env 대기 행에는 이
@@ -229,8 +245,13 @@ gate?: {
 
 ### 3.4 서버 — `[지금 시작]`의 공급자 게이트 우회 (`scheduler.js dispatch`)
 
-`dispatch()`의 `providerDispatchHeld` 판정 앞에서 `startNowRequestedAt(workspace,
-bead_id, now())`가 `null`이 아니면 게이트를 **건너뛴다**. 조건은 in-memory
+`dispatch()`의 `providerDispatchHeld` 판정 앞에서, **라이브 스냅샷의 현재 대기
+엔트리**(`queue[]` 또는 `serial_lanes[].entries[]`에서 이 bead의 항목)에
+`isStartNowEntry(workspace, entry, now())`(`scheduler.js:884`)가 참이면 게이트를
+**건너뛴다**. 요청 시각의 존재(`startNowRequestedAt !== null`)만 보지 않는다 —
+`isStartNowEntry`는 `entry.added_at <= requested_at`까지 판정하므로, 클릭 뒤 20초
+안에 재배치돼 `added_at`이 새로 찍힌 행에는 이전 클릭의 우회 권한이 남지 않는다
+(재배치 뒤 arm된 행이 옛 요청으로 게이트를 넘는 경합을 막는다). 조건은 그 in-memory
 `[지금 시작]` 요청 하나다:
 
 - `armed_by_lane`(`▶ 진행`)은 우회하지 않는다. durable하고 재시작을 넘어 살아
@@ -315,21 +336,27 @@ Monitor 대기 행에도 칩·`▶ 재개`·`[지금 시작]`이 자동으로 �
 
 ### Test scope
 
-RED → GREEN 시임. 기존 테스트 파일의 setup 패턴을 따른다.
+RED → GREEN 시임. 기존 테스트 파일의 setup 패턴을 따른다. **회귀**로 표시한 항목은
+변경 전에도 통과하는 대조 조건이라 RED 근거가 아니며, 짝이 되는 RED 시임과 같은
+테스트 블록에 결합해 변경이 그 경계를 넘지 않음을 고정한다.
 
 - `app/views/worker/lane-model.test.js`
   1. systemic hold + 병렬 대기 행 2 + 직렬 레인(대기 2행) → 병렬 2행과 직렬 첫
      행에 `gate.kind==='systemic'`·`since`, 직렬 둘째 행에는 `gate` 없음.
-  2. `armed_by_lane`이 있는 행은 `gate` 없음.
+  2. (회귀, 1과 같은 블록) `armed_by_lane`이 있는 행은 systemic hold에서 `gate`
+     없음 — 그러나 같은 행이 outage target의 러너면 `provider_outage` `gate`는
+     있다(RED: arm 제외가 공급자 판정을 삼키지 않는다).
   3. env hold + `lineages[{next_at}]` → `gate.kind==='env'`, `next_at`은 가장 이른
-     값; `retry_wait` 타일에 `hold_since`.
+     값; `retry_wait` 타일에 `hold_since`. 모든 lineage가 `next_at:null`이면
+     `gate.next_at===null`이고 라벨은 `재시도 실행 중`.
   4. `provider_hold.claude.targets=[outage]` + 행의 해석 모델이 claude 러너 →
      `provider_outage`·`next_at===next_probe_at`; 해석 모델이 codex 러너인 행에는
      없음; `runner_catalog` 부재면 없음.
   5. usage_limit `account:null` → 러너 전체 `provider_usage`; `account:'a@x'` +
      행 해석 계정 `'b@x'` → 없음; 같으면 있음; 계정 해석 불가 → 없음.
   6. hold와 provider_hold 동시 → `gate.kind`는 큐 게이트, `lines`에 공급자 줄 포함.
-  7. 게이트가 서 있고 대기 행이 없으면 어느 항목에도 `gate` 없음(그릴 곳 없음).
+  7. (회귀, 1과 같은 블록) 게이트가 서 있고 대기 행이 없으면 어느 항목에도 `gate`
+     없음(그릴 곳 없음).
 - `app/views/worker/lanes.test.js`
   8. `gate` 있는 행의 4a 첫 칩이 `.worker-dep--gate.judgement-chip[data-chip-key="gate"]`이고
      문구가 kind별 표와 일치; `gate` 없으면 칩 없음.
@@ -354,10 +381,16 @@ RED → GREEN 시임. 기존 테스트 파일의 setup 패턴을 따른다.
 - `server/worker/scheduler.test.js`
   18. `provider_hold` outage 중 `requestStartNow` → 그 bead가 dispatch되고 다른
      대기 bead는 그대로 남는다(`providerDispatchHeld` 우회는 요청 bead 한정).
-  19. `armed_by_lane`만 있는 행은 outage 중 dispatch되지 않는다.
-  20. `requestStartNow` 뒤 `QUEUE_GRACE_MS`가 지나면 우회하지 않는다.
-  21. 우회 디스패치가 다시 provider_outage로 끝나면 target에 attempt가 묶인다
-     (기존 `holdAttempt` 경로 회귀).
+  19. (회귀, 18과 같은 블록) `armed_by_lane`만 있는 행은 outage 중 dispatch되지
+     않는다.
+  20. (회귀, 18과 같은 블록) `requestStartNow` 뒤 `QUEUE_GRACE_MS`가 지나면
+     우회하지 않는다.
+  21. (회귀) 우회 디스패치가 다시 provider_outage로 끝나면 target에 attempt가
+     묶인다(기존 `holdAttempt` 경로).
+  22. `requestStartNow` 뒤 20초 안에 같은 bead를 재배치(`place`/`applySerialGroup`
+     → 새 `added_at`)하고 arm하면 outage 중 dispatch되지 않는다(`isStartNowEntry`의
+     `added_at <= requested_at` 판정; 요청 시각 존재만 보는 구현은 이 시임에서
+     실패한다).
 
 ### 절차
 
