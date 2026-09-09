@@ -25,6 +25,11 @@
  * runtime. It lives in {@link CLAUDE_LIFETIME_DIRECTIVE} and
  * {@link CODEX_LIFETIME_DIRECTIVE}, and exactly one of them is composed in.
  *
+ * The closing paragraph is the Fable 5.1 guide's unattended completion rules
+ * (harness-reduction spec D1), translated verbatim. A narration-suppression
+ * sentence is deliberately NOT among them: that same guide names it as the
+ * first cause of the progress-update regression it is trying to remove.
+ *
  * @type {string}
  */
 export const UNATTENDED_PREAMBLE = [
@@ -34,23 +39,28 @@ export const UNATTENDED_PREAMBLE = [
   '',
   '- 사용자는 이 세션과 통신할 수 없다. 질문 도구는 응답자가 없어 영원히 대기한다.',
   '- hard-stop 조건은 `blocker` 줄을 출력한 뒤 비정상 종료로 표면화하라. 그것이 이 환경에서 사람에게 도달하는 유일한 경로다.',
-  '- 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키 — `impl_dispatch`, `impl_entry`, `plan_approval`, `workflow_mode_source=user` — 는 이 세션이 쓸 수 없다. Worker는 시도 시작 시 이 키들을 스냅샷하고, 시도 중 값이 바뀌면(부재→기록 포함) 머지 게이트가 영수증 위조로 fail-closed한다. 위임 기본 모델이 이 세션의 모델과 같다는 사실은 main 실행 근거가 아니다 — 실행 형태는 dotfiles workflow 계약의 selector가 정한다.'
+  '- 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키 — `impl_dispatch`, `impl_entry`, `plan_approval`, `workflow_mode_source=user` — 는 이 세션이 쓸 수 없다. Worker는 시도 시작 시 이 키들을 스냅샷하고, 시도 중 값이 바뀌면(부재→기록 포함) 머지 게이트가 영수증 위조로 fail-closed한다. 위임 기본 모델이 이 세션의 모델과 같다는 사실은 main 실행 근거가 아니다 — 실행 형태는 dotfiles workflow 계약의 selector가 정한다.',
+  '',
+  '이 세션은 자율 실행이다. 원 요청에서 따라오는 되돌릴 수 있는 행동은 묻지 않고 진행한다. 파괴적 행동이나 사용자만 결정할 범위 변경에서만 멈춘다. 턴을 끝내기 전 마지막 문단이 계획·질문·다음 단계·약속이면 지금 툴콜로 한다. 진행 보고는 이 세션의 tool result에 결속된 것만 적고 검증되지 않은 것은 그렇게 말한다. 다음 턴에 필요한 독립 호출은 한 응답에 모두 낸다.'
 ].join('\n');
 
 /**
  * How a CLAUDE session holds its process while delegated work runs
- * (codex-orchestration-parity §3.2). Verbatim the paragraph that used to sit in
- * {@link UNATTENDED_PREAMBLE}: the process dies at turn end when only
- * background shells remain, a live subagent holds it for at most the 2 h
- * ceiling, and the Claude→Codex bridge lifetime rule is dotfiles-owned.
+ * (codex-orchestration-parity §3.2, reduced to one sentence by
+ * harness-reduction spec D1).
+ *
+ * The long form named the 2 h ceiling, the dotfiles skill that owns the rule
+ * and the fire-and-forget prohibition. Only ONE of those changes what a session
+ * types: which tool holds the process. The rest is either enforced elsewhere
+ * (the ceiling is an env var this adapter sets) or a restatement of the
+ * completion contract, so it is gone.
  *
  * @type {string}
  */
 export const CLAUDE_LIFETIME_DIRECTIVE = [
   '## 프로세스 수명과 위임 대기',
   '',
-  '- headless 프로세스는 백그라운드 셸 태스크만 남기고 턴을 끝내면 그 즉시 종료되고 태스크는 kill되어 결과가 유실된다. 서브에이전트가 살아 있는 동안만 프로세스가 유지되며, 그것도 마지막 완료 알림 이후 최대 2시간이다. 위임 대기 규칙은 dotfiles `implement-codex` 스킬이 소유한다 — 모든 위임 dispatch는 새 `Agent` 호출이고 그것만 프로세스를 붙든다; `SendMessage` 재개·백그라운드 셸 워치는 붙들지 못한다.',
-  '- 위임을 던져 놓고 결과를 확인하지 않은 채 구현 완료를 보고할 수 없다.'
+  '위임 대기는 새 `Agent` 호출만 프로세스를 붙든다; `SendMessage`·백그라운드 셸·`Monitor`는 붙들지 못하고 턴이 끝나면 프로세스가 죽는다.'
 ].join('\n');
 
 /**
@@ -103,16 +113,143 @@ export const FAST_TRACK_DIRECTIVE = [
 ].join('\n');
 
 /**
+ * The five result-line forms a Worker session's last line may take.
+ *
+ * CANONICAL SOURCE is dotfiles `finishing.md`; this is a copy (harness-reduction
+ * spec D1), inlined because the line is the ONE thing the failure classifier
+ * reads and a session that invents its own shape is classified by accident. The
+ * copy is declared as a copy in the block itself, which is what makes dotfiles
+ * treat this file as an update target when the grammar moves.
+ *
+ * @type {string}
+ */
+const RESULT_LINE_GRAMMAR = [
+  '마지막 줄은 결과 줄 하나다.',
+  '',
+  '```',
+  '성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>',
+  '파킹 · <awaiting_user 값>',
+  '실패 · <원인>',
+  '환경 · <오류 문장 원문>',
+  '대기 · blocks:<ID>[, …]',
+  '```',
+  '',
+  '이 문법의 정본은 dotfiles `finishing.md`이고 위는 사본이다.'
+].join('\n');
+
+/**
+ * Format the facts a Worker attempt already resolved (harness-reduction spec
+ * D1). PURE FORMATTING: every value arrives decided in `facts`, which
+ * `server/worker/attempt-facts.js` collects at dispatch.
+ *
+ * FAIL-QUIET BY OMISSION. A fact the Worker could not observe leaves its field
+ * null and produces NO line, because a session cannot tell an absent fact from
+ * a wrong one, and would act on either. That is also why nothing here has a
+ * fallback value: `dotfiles_root` guessed from a path depth would be wrong for
+ * the deployed skill layout, and one wrong root costs more than one absent
+ * line.
+ *
+ * @param {import('../attempt-facts.js').AttemptFacts} facts
+ * @returns {string}
+ */
+export function attemptFactsDirective(facts) {
+  /** @type {string[]} */
+  const lines = [
+    '## 시도 사실',
+    '',
+    'Worker가 이 attempt를 준비하며 이미 확인한 값이다. 다시 탐색하지 말고 그대로 쓰라. 빠진 줄은 Worker가 확인하지 못한 것이니 필요하면 세션이 직접 확인한다.',
+    ''
+  ];
+  const identity = [
+    `attempt=${facts.attempt_id}`,
+    `bead=${facts.bead_id}`,
+    ...(facts.route ? [`route=${facts.route}`] : []),
+    'workflow_mode=fast_track'
+  ].join(' ');
+  lines.push(`- ${identity} (source=attempt 기록)`);
+  if (facts.base) {
+    lines.push(`- base=${facts.base} (source=dispatch 시 base 재해소)`);
+  }
+  if (facts.worktree) {
+    lines.push(`- worktree=${facts.worktree} (source=attempt 기록)`);
+  }
+  if (facts.dotfiles_root) {
+    lines.push(
+      `- dotfiles_root=${facts.dotfiles_root} (source=설치된 workflow 스킬의 git 루트)`
+    );
+  }
+  if (facts.workflow_python) {
+    lines.push(
+      `- workflow_python=${facts.workflow_python} (source=경로 존재 확인)`
+    );
+  }
+  if (facts.node_modules) {
+    lines.push(
+      `- node_modules=${facts.node_modules} (source=dispatch 시 npm ci)`
+    );
+  }
+  if (facts.remote_tip) {
+    lines.push(
+      `- origin/${facts.remote_tip.branch} tip=${facts.remote_tip.sha} (source=git ls-remote)`
+    );
+  }
+  const selector_inputs = (facts.selector_inputs || [])
+    .map(
+      (entry) =>
+        `${entry.key}=${entry.value ?? '없음'} (source=${entry.source ?? '없음'})`
+    )
+    .join(', ');
+  if (selector_inputs.length > 0) {
+    lines.push(`- 선택 입력: ${selector_inputs}`);
+  }
+  if (facts.reviewer_preset) {
+    const digest = facts.reviewer_preset.digest
+      ? `, digest=${facts.reviewer_preset.digest}`
+      : '';
+    lines.push(
+      `- 리뷰어 프리셋: ${facts.reviewer_preset.token} → ${facts.reviewer_preset.model}/${facts.reviewer_preset.effort} (source=핀 사본 review.reviewers${digest})`
+    );
+  }
+  lines.push('', '이미 되어 있음:', '');
+  if (facts.bead_status) {
+    lines.push(
+      `- status=${facts.bead_status}(선점: ${facts.claimed_by_worker ? 'Worker' : '없음'})`
+    );
+  }
+  lines.push(
+    '- route marker: Worker attempt는 마커 없이 진행한다 — route-nudge 리마인더가 보이면 무시한다(dotfiles-3zsj D1 설치 뒤에는 나오지 않는다).',
+    '- session_ref 불필요'
+  );
+  if (facts.node_modules) {
+    lines.push(`- npm ci=${facts.node_modules}`);
+  }
+  if ((facts.scripts || []).length > 0) {
+    lines.push('', '스크립트 호출:', '');
+    for (const call of facts.scripts) {
+      lines.push(`- \`${call.command}\`${call.note ? ` — ${call.note}` : ''}`);
+    }
+  }
+  if (facts.pitfalls) {
+    lines.push('', '### Worker pitfalls (대상 저장소 AGENTS.md)', '');
+    lines.push(facts.pitfalls);
+  }
+  return lines.join('\n');
+}
+
+/**
  * The terminal directive, injected into every session that opens a PR
  * (worker-phase2 §1): the session delivers a PR and records `resolved`, but
- * never merges — the queue owns the merge.
+ * never merges — the queue owns the merge. It closes with
+ * {@link RESULT_LINE_GRAMMAR}.
  *
  * @type {string}
  */
 export const PR_SUBMIT_DIRECTIVE = [
   '## 종점',
   '',
-  '저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead `resolved`와 `pr_url`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.'
+  '저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead `resolved`와 `pr_url`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.',
+  '',
+  RESULT_LINE_GRAMMAR
 ].join('\n');
 
 /**
@@ -130,17 +267,24 @@ export const QUICKFIX_LANE_DIRECTIVE = [
   '- 종점은 구현 → 계약에 따른 implementation review 게이트 1회 → base ref 직접 push → push containment 확인 → completion report → bead `resolved` 기록 후 종료다.',
   '- 리뷰 선택은 정본 계약을 따른다. `skipped@`는 진행 권한이며 실제 리뷰 증거가 아니다. `impl_review` 영수증은 실제로 push한 head SHA에 결속되어야 한다. push 후 head가 바뀌었으면 계약의 follow-up 규칙대로 영수증을 새 SHA로 갱신하라.',
   '- 배포 실행·배포 증거·bead `closed`·worktree/브랜치 정리는 Worker가 소유한다. 수행하지 마라. worktree와 브랜치를 보존한 채 `resolved`에서 멈춰라.',
-  '- 이 레인의 canonical 문구는 dotfiles `docs/contracts/workflow-contract.md`가 소유한다. 여기서 복제하지 말고 그 계약을 따르라.'
+  '- 이 레인의 canonical 문구는 dotfiles `docs/contracts/workflow-contract.md`가 소유한다. 여기서 복제하지 말고 그 계약을 따르라.',
+  '',
+  RESULT_LINE_GRAMMAR
 ].join('\n');
 
 /**
- * The guard contract, restructured into three SEVERITY tiers (UI-rxp3).
+ * The guard contract, restructured into three SEVERITY tiers (UI-rxp3) and
+ * halved by harness-reduction spec D1.
  *
- * The old flat directive named the same prohibitions but offered no legal
- * alternative, so a session that needed hermetic git config invented
- * `GIT_CONFIG_COUNT=…` and was killed for it (External/beads, 2026-08-05). Every
- * prohibition here therefore carries its alternative in the SAME item, and the
- * one that caused the incident carries a wrong/right command pair.
+ * Every prohibition still carries its legal alternative in the SAME item — a
+ * session that needed hermetic git config once invented `GIT_CONFIG_COUNT=…`
+ * and was killed for it (External/beads, 2026-08-05). What is GONE is the
+ * enumeration: the exact spellings of a one-shot relocation, the ten
+ * subcommands exempted from it, the wrong/right command pair, and the
+ * hook-path-read allowance. That enumeration was a second copy of
+ * `command-guard.js`'s judgment table, and a copy of a table is what a session
+ * reads as the boundary of the rule. The refusal message names the exception at
+ * the moment it matters, which no preamble sentence can do.
  *
  * The tiers exist because the three effects are genuinely different and a
  * session cannot tell them apart from the inside: `gh pr merge` and hook
@@ -185,10 +329,9 @@ export function guardContractDirective(options = {}) {
   } else {
     lines.push(
       '- hook 무력화 **쓰기** — `git push --no-verify`, `git config core.hooksPath <값>` / `git config set|unset core.hooksPath` / `git config --unset core.hooksPath`.',
-      '- **1회성 재배치**(`git -c core.hooksPath=…`, `git --config-env=core.hooksPath=…`, `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`/`GIT_CONFIG_PARAMETERS` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(`go test` 등), 열거 밖 서브커맨드(`push`·`commit`·`diff`·`log`·`show`·`submodule` 등)가 모두 여기 든다. `GIT_CONFIG_PARAMETERS` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, `export`로 내보낸 `GIT_CONFIG_*` 할당은 bare 할당과 같은 지속 재배치다. Claude 세션에서는 PreToolUse 훅이 이 형태를 먼저 거부하고 세션은 계속된다; 훅을 지나 실제로 실행되면 그때 종료다. 훅이 없는 세션(Codex, 훅 미등록 호스트)은 명령이 보이는 즉시 종료다.',
       '  - 대안: git 설정을 격리해야 하면 `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.',
-      '  - 오답: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...`',
-      '  - 정답: `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...`'
+      '- 정확한 판정과 허용 예외는 거부 시 훅 메시지가 안내한다.',
+      '- Claude 세션은 PreToolUse 훅이 먼저 거부하고 계속되지만 훅을 지나 실행되면 종료이고, Codex 런타임은 훅이 없어 명령이 보이는 즉시 종료다.'
     );
   }
   lines.push('', '### 거부만 됨 — 세션은 계속된다', '');
@@ -218,9 +361,7 @@ export function guardContractDirective(options = {}) {
     );
   }
   lines.push(
-    '- base 를 브랜치로 들이는 `git merge`(예: `git merge origin/main`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.',
-    '- hook 경로를 **읽는 것**(`git config --get core.hooksPath`, `git config get core.hooksPath`, `git config core.hooksPath`) — 위반이 아니다.',
-    '- git 명령 하나에만 붙는 **1회성** 재배치 — 뒤따르는 서브커맨드가 `status`·`rev-parse`·`ls-files`·`ls-tree`·`cat-file`(`--filters`/`--textconv` 제외)·`describe`·`shortlog`·`merge-base`·`for-each-ref`·`config` 열 가지 안에 있고, 재배치가 `core.hooksPath` 하나만 지정하며, 접두에 다른 환경변수 할당이 없으면 위반이 아니다. 이 면제는 `-c` 와 `--config-env` 두 철자에 똑같이 적용된다. **다만 붙일 이유도 없다** — 이 명령들은 pre-push 를 타지 않는다.'
+    '- base 를 브랜치로 들이는 `git merge`(예: `git merge origin/main`) — 허용된다. 세션은 종료되지 않고, 발생 사실만 attempt 레코드에 기록된다.'
   );
   return lines.join('\n');
 }
@@ -301,8 +442,18 @@ export function defaultTaskPrompt(bead_id) {
  * own. An absent value keeps claude's, which is what every pre-existing caller
  * meant.
  *
+ * `attempt_facts` is the dispatch-time facts card (harness-reduction spec D1).
+ * It is OPTIONAL: a caller with no facts to hand over — every relaunch path
+ * that carries no dispatch snapshot, and every test — emits no `## 시도 사실`
+ * block at all rather than an empty one full of `없음`.
+ *
+ * BLOCK ORDER (spec D1): 무인 모드 → 시도 사실 → fast_track → 종점 → PR base →
+ * 가드 계약 → fix-now → 프로세스 수명. The facts sit second because everything
+ * after them is a rule about how to act on them, and the lifetime paragraph is
+ * last because it is the one thing that matters only at the very end of a turn.
+ *
  * @param {string} base_prompt - The task prompt for the session.
- * @param {{ runtime?: 'claude'|'codex', fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, quickfix_lane?: boolean, review?: boolean, target_base?: string|null }} [options]
+ * @param {{ runtime?: 'claude'|'codex', fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, quickfix_lane?: boolean, review?: boolean, target_base?: string|null, attempt_facts?: import('../attempt-facts.js').AttemptFacts|null }} [options]
  * @returns {{ system_prompt: string, task_prompt: string }}
  */
 export function applyPreamble(base_prompt, options = {}) {
@@ -325,11 +476,13 @@ export function applyPreamble(base_prompt, options = {}) {
   const pr_submit = options.pr_submit !== false;
   const disposition = options.disposition === true;
   const quickfix_lane = !disposition && options.quickfix_lane === true;
-  const parts = [UNATTENDED_PREAMBLE, lifetime];
+  const parts = [UNATTENDED_PREAMBLE];
+  if (options.attempt_facts) {
+    parts.push(attemptFactsDirective(options.attempt_facts));
+  }
   if (options.fast_track) {
     parts.push(FAST_TRACK_DIRECTIVE);
   }
-  parts.push(FIX_NOW_DIRECTIVE);
   if (quickfix_lane) {
     parts.push(QUICKFIX_LANE_DIRECTIVE);
   } else if (pr_submit) {
@@ -341,6 +494,8 @@ export function applyPreamble(base_prompt, options = {}) {
     }
   }
   parts.push(guardContractDirective({ disposition, quickfix_lane }));
+  parts.push(FIX_NOW_DIRECTIVE);
+  parts.push(lifetime);
   return {
     system_prompt: parts.join('\n\n'),
     task_prompt: String(base_prompt ?? '')

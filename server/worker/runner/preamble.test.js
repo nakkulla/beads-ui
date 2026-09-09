@@ -15,8 +15,58 @@ import {
 } from './preamble.js';
 
 /**
+ * A complete facts card, as `attempt-facts.js` would collect one at dispatch.
+ * Every field is filled so a snapshot shows the whole grammar; the fail-quiet
+ * cases override individual fields with null.
+ *
+ * @param {Object} [over]
+ * @returns {any}
+ */
+function facts(over = {}) {
+  return {
+    attempt_id: 'att-1',
+    bead_id: 'UI-1',
+    route: 'spec_backed',
+    base: `origin/main@${'a'.repeat(40)}`,
+    worktree: '/repo/.worktrees/UI-1',
+    dotfiles_root: '/dotfiles',
+    workflow_python: '/dotfiles/.venv/bin/python',
+    node_modules: 'ok',
+    remote_tip: null,
+    selector_inputs: [
+      { key: 'impl_runtime', value: 'claude', source: 'bead' },
+      { key: 'impl_model', value: 'opus', source: 'workspace_kv' },
+      { key: 'impl_effort', value: null, source: null },
+      { key: 'impl_speed', value: null, source: null },
+      { key: 'impl_dispatch', value: null, source: null }
+    ],
+    reviewer_preset: {
+      token: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'xhigh',
+      digest: 'abc123'
+    },
+    bead_status: 'in_progress',
+    claimed_by_worker: true,
+    scripts: [
+      {
+        command: 'python3 /skills/impl-selector.py --controller-runtime claude',
+        note: '실행 형태 정본.'
+      },
+      {
+        command: 'python3 /skills/check-completion-report.py <경로>',
+        note: null
+      }
+    ],
+    pitfalls: '- zsh: 글롭은 따옴표\n- `set -o pipefail`',
+    ...over
+  };
+}
+
+/**
  * Every option combination the dispatch paths actually produce (UI-rxp3 Test
- * scope 1): fast_track × pr_submit/disposition × target_base presence. Frozen
+ * scope 1): fast_track × pr_submit/disposition × target_base presence, and
+ * since harness-reduction spec D1 the facts-bearing variants of each. Frozen
  * as golden snapshots so a wording drift has to be an explicit edit.
  *
  * @type {Array<{ name: string, options: any }>}
@@ -58,6 +108,49 @@ const COMBINATIONS = [
   {
     name: 'codex runtime',
     options: { runtime: 'codex', fast_track: true, target_base: 'main' }
+  },
+  {
+    name: 'facts + fast_track + base (the worker dispatch default)',
+    options: { fast_track: true, target_base: 'main', attempt_facts: facts() }
+  },
+  {
+    name: 'facts + codex runtime',
+    options: {
+      runtime: 'codex',
+      fast_track: true,
+      target_base: 'main',
+      attempt_facts: facts({
+        scripts: [
+          {
+            command:
+              'python3 /skills/impl-selector.py --controller-runtime codex',
+            note: null
+          }
+        ]
+      })
+    }
+  },
+  {
+    name: 'facts + disposition',
+    options: {
+      pr_submit: false,
+      disposition: true,
+      fast_track: true,
+      attempt_facts: facts()
+    }
+  },
+  {
+    name: 'facts + quickfix_lane',
+    options: {
+      quickfix_lane: true,
+      fast_track: true,
+      target_base: 'main',
+      attempt_facts: facts({ route: 'quick_fix' })
+    }
+  },
+  {
+    name: 'facts + review',
+    options: { review: true, attempt_facts: facts() }
   }
 ];
 
@@ -84,18 +177,21 @@ describe('runner/preamble channel split (UI-rxp3 §1)', () => {
     expect(applyPreamble(/** @type {any} */ (undefined)).task_prompt).toBe('');
   });
 
-  test('orders 무인 모드 → fast_track → fix-now → 종점 → PR base → 가드 계약', () => {
+  test('orders 무인 모드 → 시도 사실 → fast_track → 종점 → PR base → 가드 계약 → fix-now → 수명', () => {
     const out = applyPreamble('작업하라', {
       fast_track: true,
-      target_base: 'ilsun/dev'
+      target_base: 'ilsun/dev',
+      attempt_facts: facts()
     }).system_prompt;
     const idx = (/** @type {string} */ part) => out.indexOf(part);
 
-    expect(idx(UNATTENDED_PREAMBLE)).toBeLessThan(idx(FAST_TRACK_DIRECTIVE));
-    expect(idx(FAST_TRACK_DIRECTIVE)).toBeLessThan(idx(FIX_NOW_DIRECTIVE));
-    expect(idx(FIX_NOW_DIRECTIVE)).toBeLessThan(idx(PR_SUBMIT_DIRECTIVE));
+    expect(idx(UNATTENDED_PREAMBLE)).toBeLessThan(idx('## 시도 사실'));
+    expect(idx('## 시도 사실')).toBeLessThan(idx(FAST_TRACK_DIRECTIVE));
+    expect(idx(FAST_TRACK_DIRECTIVE)).toBeLessThan(idx(PR_SUBMIT_DIRECTIVE));
     expect(idx(PR_SUBMIT_DIRECTIVE)).toBeLessThan(idx('## PR base'));
     expect(idx('## PR base')).toBeLessThan(idx('## 가드 계약'));
+    expect(idx('## 가드 계약')).toBeLessThan(idx(FIX_NOW_DIRECTIVE));
+    expect(idx(FIX_NOW_DIRECTIVE)).toBeLessThan(idx(CLAUDE_LIFETIME_DIRECTIVE));
   });
 
   test.each(COMBINATIONS)(
@@ -150,10 +246,28 @@ describe('runner/preamble unattended framing (UI-rxp3 §1)', () => {
     expect(UNATTENDED_PREAMBLE).toContain('비정상 종료');
   });
 
-  test('carries the background-task warning in the claude lifetime block', () => {
-    expect(CLAUDE_LIFETIME_DIRECTIVE).toContain('implement-codex');
-    expect(CLAUDE_LIFETIME_DIRECTIVE).toContain('최대 2시간');
+  test('names the one tool that holds the claude process', () => {
+    expect(CLAUDE_LIFETIME_DIRECTIVE).toContain('새 `Agent` 호출만');
+    expect(CLAUDE_LIFETIME_DIRECTIVE).toContain(
+      '턴이 끝나면 프로세스가 죽는다'
+    );
     expect(guardContractDirective()).not.toContain('백그라운드 태스크');
+  });
+
+  test('drops the enumeration the lifetime block used to carry', () => {
+    expect(CLAUDE_LIFETIME_DIRECTIVE).not.toContain('implement-codex');
+    expect(CLAUDE_LIFETIME_DIRECTIVE).not.toContain('최대 2시간');
+  });
+
+  test('carries the Fable unattended completion rules', () => {
+    expect(UNATTENDED_PREAMBLE).toContain('이 세션은 자율 실행이다');
+    expect(UNATTENDED_PREAMBLE).toContain('지금 툴콜로 한다');
+    expect(UNATTENDED_PREAMBLE).toContain('한 응답에 모두 낸다');
+  });
+
+  test('adds no narration-suppression sentence', () => {
+    expect(UNATTENDED_PREAMBLE).not.toContain('나레이션');
+    expect(UNATTENDED_PREAMBLE).not.toContain('진행 상황을 적지 마라');
   });
 
   test('keeps the runtime-specific wait paragraph out of the shared block', () => {
@@ -394,15 +508,36 @@ describe('runner/preamble guard contract severity tiers (UI-rxp3 §1)', () => {
     expect(contract).toContain('gh pr merge');
     expect(contract).toContain('--no-verify');
     expect(contract).toContain('core.hooksPath');
-    expect(contract).toContain('GIT_CONFIG_COUNT');
   });
 
   test('pairs the hook-bypass prohibition with a legal isolation alternative', () => {
     expect(contract).toContain(
       'GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null'
     );
-    expect(contract).toContain('오답:');
-    expect(contract).toContain('정답:');
+  });
+
+  // Spec D1: the enumeration was a second copy of `command-guard.js`'s table,
+  // and a copy of a table reads as the boundary of the rule.
+  test('drops the relocation enumeration and the wrong/right pair', () => {
+    expect(contract).not.toContain('GIT_CONFIG_COUNT');
+    expect(contract).not.toContain('GIT_CONFIG_PARAMETERS');
+    expect(contract).not.toContain('오답:');
+    expect(contract).not.toContain('정답:');
+    expect(contract).not.toContain('`status`·`rev-parse`');
+    expect(contract).not.toContain('git config --get core.hooksPath');
+  });
+
+  test('points at the refusal message for the exact judgment', () => {
+    expect(contract).toContain('거부 시 훅 메시지가 안내한다');
+  });
+
+  test('splits the hook effect by runtime', () => {
+    expect(contract).toContain('Claude 세션은 PreToolUse 훅이 먼저 거부하고');
+    expect(contract).toContain('Codex 런타임은 훅이 없어');
+  });
+
+  test('stays under half the size the enumeration made it', () => {
+    expect(contract.length).toBeLessThan(1200);
   });
 
   test('pairs the merge prohibition with the session terminal it should reach', () => {
@@ -431,42 +566,12 @@ describe('runner/preamble guard contract severity tiers (UI-rxp3 §1)', () => {
     expect(contract).toContain('기록된다');
   });
 
-  test('names hook-path READING as no violation, unlike writing it', () => {
-    expect(contract).toContain('git config --get core.hooksPath');
-    expect(contract).toContain('위반이 아니다');
+  test('keeps naming the persistent-write spellings it kills on', () => {
     expect(contract).toContain('git config set|unset');
-  });
-
-  // UI-iw28 §5: enforcement stopped killing every one-shot relocation, so the
-  // notice must stop naming them unconditionally — a session told otherwise
-  // invents a workaround for a rule that is no longer there.
-  test('scopes the one-shot relocation kill to the command it decorates', () => {
-    expect(contract).toContain('**1회성 재배치**');
-    expect(contract).toContain('열거 밖인 것');
   });
 
   test('keeps the persistent config write in the kill tier', () => {
     expect(contract).toContain('git config core.hooksPath <값>');
-  });
-
-  test('names an enumerated one-shot relocation as no violation', () => {
-    expect(contract).toContain('`status`·`rev-parse`');
-    expect(contract).toContain('붙일 이유도 없다');
-  });
-
-  // Spec §4: a prohibition named for one spelling only reads as notice that
-  // the other spelling is allowed, which is how a session invents a bypass.
-  test('names both relocation spellings and the exempt-free env prefix', () => {
-    expect(contract).toContain('`git --config-env=core.hooksPath=…`');
-    expect(contract).toContain('GIT_CONFIG_PARAMETERS');
-    expect(contract).toContain('면제가 없고');
-    expect(contract).toContain('`export`로 내보낸');
-  });
-
-  test('extends the one-shot exemption to both spellings', () => {
-    expect(contract).toContain(
-      '이 면제는 `-c` 와 `--config-env` 두 철자에 똑같이 적용된다'
-    );
   });
 });
 
@@ -496,18 +601,11 @@ describe('runner/preamble disposition guard variant (UI-rxp3 §1)', () => {
 
   test('keeps the allowed tier it shares with every other session', () => {
     expect(contract).toContain('git merge origin/main');
-    expect(contract).toContain('git config --get core.hooksPath');
-    expect(contract).toContain(
-      '이 면제는 `-c` 와 `--config-env` 두 철자에 똑같이 적용된다'
-    );
   });
 
-  // Spec §4: the prohibitions widened by this spec sit in the kill tier the
-  // disposition variant drops, so reading them here would contradict the
-  // sentence telling it the hook judgment does not apply.
-  test('drops the widened prohibitions along with the rest of that tier', () => {
+  test('drops the hook-bypass tier along with its runtime split', () => {
     expect(contract).not.toContain('GIT_CONFIG_PARAMETERS');
-    expect(contract).not.toContain('export');
+    expect(contract).not.toContain('Codex 런타임은 훅이 없어');
   });
 });
 
@@ -531,10 +629,8 @@ describe('runner/preamble runtime lifetime split (codex-orchestration-parity §3
     }
   });
 
-  test('refuses fire-and-forget completion in both lifetime blocks', () => {
-    for (const block of [CLAUDE_LIFETIME_DIRECTIVE, CODEX_LIFETIME_DIRECTIVE]) {
-      expect(block).toContain('구현 완료를 보고할 수 없다');
-    }
+  test('refuses fire-and-forget completion in the codex lifetime block', () => {
+    expect(CODEX_LIFETIME_DIRECTIVE).toContain('구현 완료를 보고할 수 없다');
   });
 
   test('composes the codex lifetime block for a codex runtime', () => {
@@ -558,5 +654,196 @@ describe('runner/preamble runtime lifetime split (codex-orchestration-parity §3
     }).system_prompt;
 
     expect(out).toContain(CODEX_LIFETIME_DIRECTIVE);
+  });
+});
+
+describe('runner/preamble result line grammar (spec D1)', () => {
+  test('inlines the five result forms in the PR-submit terminal', () => {
+    for (const form of [
+      '성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>',
+      '파킹 · <awaiting_user 값>',
+      '실패 · <원인>',
+      '환경 · <오류 문장 원문>',
+      '대기 · blocks:<ID>[, …]'
+    ]) {
+      expect(PR_SUBMIT_DIRECTIVE).toContain(form);
+    }
+  });
+
+  test('inlines the same forms in the quick_fix terminal', () => {
+    expect(QUICKFIX_LANE_DIRECTIVE).toContain('실패 · <원인>');
+    expect(QUICKFIX_LANE_DIRECTIVE).toContain('환경 · <오류 문장 원문>');
+  });
+
+  test('declares the grammar a copy of the dotfiles canonical source', () => {
+    expect(PR_SUBMIT_DIRECTIVE).toContain(
+      '이 문법의 정본은 dotfiles `finishing.md`이고 위는 사본이다'
+    );
+  });
+});
+
+describe('runner/preamble attempt facts card (spec D1)', () => {
+  test('emits no facts block when the caller hands over no facts', () => {
+    const out = applyPreamble('작업하라', { fast_track: true }).system_prompt;
+
+    expect(out).not.toContain('## 시도 사실');
+  });
+
+  test('states the identity line with the recorded workflow mode', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts()
+    }).system_prompt;
+
+    expect(out).toContain(
+      '- attempt=att-1 bead=UI-1 route=spec_backed workflow_mode=fast_track (source=attempt 기록)'
+    );
+  });
+
+  test('omits the route token when the bead carries no route', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts({ route: null })
+    }).system_prompt;
+
+    expect(out).toContain('- attempt=att-1 bead=UI-1 workflow_mode=fast_track');
+    expect(out).not.toContain('route=');
+  });
+
+  test('omits the dotfiles_root line when it could not be resolved', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts({ dotfiles_root: null })
+    }).system_prompt;
+
+    expect(out).not.toContain('dotfiles_root=');
+    expect(out).toContain('## 시도 사실');
+  });
+
+  test('omits the workflow_python line when the venv is absent', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts({ workflow_python: null })
+    }).system_prompt;
+
+    expect(out).not.toContain('workflow_python=');
+  });
+
+  test('reports a skipped install on both the fact and the done list', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts({ node_modules: 'skipped' })
+    }).system_prompt;
+
+    expect(out).toContain('- node_modules=skipped (source=dispatch 시 npm ci)');
+    expect(out).toContain('- npm ci=skipped');
+  });
+
+  test('omits both install lines when nothing was installed', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts({ node_modules: null })
+    }).system_prompt;
+
+    expect(out).not.toContain('node_modules=');
+    expect(out).not.toContain('npm ci=');
+  });
+
+  test('omits the remote tip line on a first dispatch', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts()
+    }).system_prompt;
+
+    expect(out).not.toContain('tip=');
+  });
+
+  test('states the remote tip when a continuation observed one', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts({
+        remote_tip: { branch: 'UI-1', sha: 'b'.repeat(40) }
+      })
+    }).system_prompt;
+
+    expect(out).toContain(
+      `- origin/UI-1 tip=${'b'.repeat(40)} (source=git ls-remote)`
+    );
+  });
+
+  test('says 없음 rather than Worker when no claim was written', () => {
+    const claimed = applyPreamble('작업하라', {
+      attempt_facts: facts()
+    }).system_prompt;
+    const unclaimed = applyPreamble('작업하라', {
+      attempt_facts: facts({ claimed_by_worker: false })
+    }).system_prompt;
+
+    expect(claimed).toContain('- status=in_progress(선점: Worker)');
+    expect(unclaimed).toContain('- status=in_progress(선점: 없음)');
+  });
+
+  test('omits the status line when bd could not be read', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts({ bead_status: null })
+    }).system_prompt;
+
+    expect(out).not.toContain('- status=');
+    expect(out).toContain('- session_ref 불필요');
+  });
+
+  test('names every selector input with the layer that carries it', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts()
+    }).system_prompt;
+
+    expect(out).toContain(
+      '- 선택 입력: impl_runtime=claude (source=bead), impl_model=opus (source=workspace_kv), impl_effort=없음 (source=없음), impl_speed=없음 (source=없음), impl_dispatch=없음 (source=없음)'
+    );
+  });
+
+  test('names the reviewer preset with its pinned digest', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts()
+    }).system_prompt;
+
+    expect(out).toContain(
+      '- 리뷰어 프리셋: codex → gpt-5.6-sol/xhigh (source=핀 사본 review.reviewers, digest=abc123)'
+    );
+  });
+
+  test('omits the reviewer preset line when the pin could not be read', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts({ reviewer_preset: null })
+    }).system_prompt;
+
+    expect(out).not.toContain('리뷰어 프리셋');
+  });
+
+  test('omits the script section when no script file was installed', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts({ scripts: [] })
+    }).system_prompt;
+
+    expect(out).not.toContain('스크립트 호출');
+  });
+
+  test('carries the target repo pitfalls section verbatim', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts()
+    }).system_prompt;
+
+    expect(out).toContain('### Worker pitfalls (대상 저장소 AGENTS.md)');
+    expect(out).toContain('- zsh: 글롭은 따옴표');
+  });
+
+  test('omits the pitfalls section when the repo declares none', () => {
+    const out = applyPreamble('작업하라', {
+      attempt_facts: facts({ pitfalls: null })
+    }).system_prompt;
+
+    expect(out).not.toContain('Worker pitfalls');
+  });
+
+  test('keeps the facts card out of the read-only review shape', () => {
+    const out = applyPreamble('검토하라', {
+      review: true,
+      attempt_facts: facts()
+    }).system_prompt;
+
+    expect(out).not.toContain('## 시도 사실');
+    expect(out).toContain(REVIEW_PREAMBLE);
   });
 });

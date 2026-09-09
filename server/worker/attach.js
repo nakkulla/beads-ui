@@ -26,6 +26,7 @@
  * @import { BeadSnapshot } from './scheduler.js'
  */
 import { execFileSync, spawn } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import {
   isWorkerIneligible,
@@ -47,6 +48,7 @@ import { parsePrNumber } from '../workflow-enrich.js';
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { createAccountCatalog } from './account-catalog.js';
 import { validateAdmission } from './admission.js';
+import { resolveDotfilesRoot } from './attempt-facts.js';
 import { createAutoAdvanceRestoreController } from './auto-advance-restore.js';
 import { createAutoMerge } from './auto-merge.js';
 import { createBdMetadata } from './bd-metadata.js';
@@ -423,6 +425,14 @@ export function createLiveBd(config) {
           typeof md.impl_model === 'string' ? md.impl_model : undefined,
         impl_effort:
           typeof md.impl_effort === 'string' ? md.impl_effort : undefined,
+        // DISPLAY-ONLY pair (harness-reduction spec D1): `policy.js` resolves
+        // neither axis, so these two reach only the dispatch facts card, whose
+        // job is to stop a session searching `bd kv` for a value the Worker
+        // already read.
+        impl_speed:
+          typeof md.impl_speed === 'string' ? md.impl_speed : undefined,
+        impl_dispatch:
+          typeof md.impl_dispatch === 'string' ? md.impl_dispatch : undefined,
         workflow_mode:
           typeof md.workflow_mode === 'string' ? md.workflow_mode : null,
         // Read from the SAME issue observation as `workflow_mode` (UI-bu6d §5):
@@ -953,6 +963,14 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // layer back into unit-test-only code. The `gh` adapter is no longer part
     // of that judgment: a landing is proven by the attempt's own push record.
     gitRun,
+    // The dotfiles root for the dispatch facts card (harness-reduction spec
+    // D1). Resolved through the INSTALLED skill's git root rather than a
+    // path-depth guess, because the deployed layout
+    // (`dotfiles/.worktrees/.repo-ops-deploy/src/shared/skills/flow/workflow`)
+    // and a development checkout sit at different depths. Reading nothing from
+    // the repo keeps ADR 0012 intact — only its location is observed.
+    resolveDotfilesRoot: () =>
+      resolveDotfilesRoot({ run: baseGitRun, homeDir: os.homedir() }),
     notify,
     // The direction-conflict park trigger (UI-7uid §3.1). Process-wide, like
     // every other runtime singleton: its duplicate guard is a tmux pane marker,

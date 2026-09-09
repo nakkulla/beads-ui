@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test, vi } from 'vitest';
 import {
+  WORKER_SETTINGS_OVERRIDE,
   claudeSpec,
   liftDelegation,
   liftUsage,
@@ -1489,5 +1490,99 @@ describe('runner/claude guard seam (guard-hook-bypass-result-judgment §2/§3)',
     const spec = claudeSpec();
 
     expect(spec.probeGuardMirror).toBe(probeGuardMirror);
+  });
+});
+
+describe('runner/claude worker skill seal and read guard (spec D4)', () => {
+  test('carries the skillOverrides settings right after the permission mode', () => {
+    const spec = claudeSpec();
+
+    const built = spec.buildArgv(BEAD, WS, {});
+
+    const mode_idx = built.args.indexOf('bypassPermissions');
+    expect(built.args[mode_idx + 1]).toBe('--settings');
+    expect(JSON.parse(built.args[mode_idx + 2])).toEqual(
+      WORKER_SETTINGS_OVERRIDE
+    );
+  });
+
+  test('seals every prose-style skill as user-invocable-only', () => {
+    expect(WORKER_SETTINGS_OVERRIDE).toEqual({
+      skillOverrides: {
+        caveman: 'user-invocable-only',
+        humanizer: 'user-invocable-only',
+        deck: 'user-invocable-only',
+        storyboard: 'user-invocable-only',
+        design: 'user-invocable-only'
+      }
+    });
+  });
+
+  test('raises the read guard ceiling for the worker lane', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+
+    await spawnClaude(BEAD, WS, {}, { spawn_impl }).done;
+
+    expect(
+      spawn_impl.captured.calls[0].options.env.CLAUDE_READ_GUARD_MAX_BYTES
+    ).toBe('65536');
+  });
+
+  test('a routing env overriding the read guard wins', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+
+    await spawnClaude(
+      BEAD,
+      WS,
+      {},
+      { spawn_impl, routing_env: { CLAUDE_READ_GUARD_MAX_BYTES: '40000' } }
+    ).done;
+
+    expect(
+      spawn_impl.captured.calls[0].options.env.CLAUDE_READ_GUARD_MAX_BYTES
+    ).toBe('40000');
+  });
+});
+
+describe('runner/claude attempt facts delivery (spec D1)', () => {
+  test('names claude as the selector controller runtime', () => {
+    const spec = claudeSpec();
+
+    const built = spec.buildArgv(BEAD, WS, {
+      attempt_facts: {
+        attempt_id: 'att-1',
+        bead_id: 'UI-1',
+        route: 'spec_backed',
+        base: null,
+        worktree: null,
+        dotfiles_root: null,
+        workflow_python: null,
+        node_modules: null,
+        remote_tip: null,
+        selector_inputs: [],
+        reviewer_preset: null,
+        bead_status: null,
+        claimed_by_worker: false,
+        scripts: [
+          {
+            command:
+              'python3 /skills/impl-selector.py --controller-runtime claude --route spec_backed',
+            note: null
+          }
+        ],
+        pitfalls: null
+      }
+    });
+
+    expect(built.system_prompt).toContain('## 시도 사실');
+    expect(built.system_prompt).toContain('--controller-runtime claude');
+  });
+
+  test('emits no facts block when the launch carries none', () => {
+    const spec = claudeSpec();
+
+    const built = spec.buildArgv(BEAD, WS, {});
+
+    expect(built.system_prompt).not.toContain('## 시도 사실');
   });
 });

@@ -5,7 +5,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createLockManager } from './locks.js';
 import { createRecoveryArchive } from './recovery-archive.js';
-import { createWorktreeManager } from './worktree.js';
+import {
+  WORKTREE_INSTALL_TAIL_MAX_CHARS,
+  createWorktreeManager
+} from './worktree.js';
 
 // Waits on REAL child processes (git, node, python), so wall time here is
 // process startup under the load the parallel suite creates, not product work.
@@ -1822,5 +1825,101 @@ describe('worker/worktree restore (real git)', () => {
       reason: 'worktree_restore_branch_diverged'
     });
     expect(fs.existsSync(path.join(repo, '.worktrees', 'UI-1'))).toBe(false);
+  });
+});
+
+describe('worker/worktree dispatch-time dependency install (spec D3)', () => {
+  test('skips a checkout that carries no package-lock.json', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const created = await wt.add({ repo, bead_id: 'UI-1', base: headOf(repo) });
+
+    const result = await wt.installDependencies({ path: created.path });
+
+    expect(result).toBe('skipped');
+  });
+
+  test('runs npm ci in the worktree when a lock file is present', async () => {
+    /** @type {Array<{ args: string[], cwd: string|undefined }>} */
+    const calls = [];
+    const wt = createWorktreeManager({
+      locks: createLockManager(),
+      npm_runner: async (args, options) => {
+        calls.push({ args, cwd: options.cwd });
+        return { code: 0, stdout: 'added 1 package', stderr: '' };
+      }
+    });
+    fs.writeFileSync(path.join(repo, 'package-lock.json'), '{}\n');
+    git(['add', '.'], repo);
+    git(['commit', '-q', '-m', 'lock'], repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base: headOf(repo) });
+
+    const result = await wt.installDependencies({ path: created.path });
+
+    expect(result).toBe('ok');
+    expect(calls).toEqual([
+      {
+        args: ['ci', '--prefer-offline', '--no-audit', '--no-fund'],
+        cwd: created.path
+      }
+    ]);
+  });
+
+  test('reports a nonzero install as a failed tail', async () => {
+    const wt = createWorktreeManager({
+      locks: createLockManager(),
+      npm_runner: async () => ({
+        code: 1,
+        stdout: '',
+        stderr: 'npm ERR! code EUSAGE\nnpm ERR! lock file out of date'
+      })
+    });
+    fs.writeFileSync(path.join(repo, 'package-lock.json'), '{}\n');
+    git(['add', '.'], repo);
+    git(['commit', '-q', '-m', 'lock'], repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base: headOf(repo) });
+
+    const result = await wt.installDependencies({ path: created.path });
+
+    expect(result).toBe(
+      'failed:npm ERR! code EUSAGE npm ERR! lock file out of date'
+    );
+  });
+
+  test('reports a throwing installer as a failed tail instead of raising', async () => {
+    const wt = createWorktreeManager({
+      locks: createLockManager(),
+      npm_runner: async () => {
+        throw new Error('spawn npm ENOENT');
+      }
+    });
+    fs.writeFileSync(path.join(repo, 'package-lock.json'), '{}\n');
+    git(['add', '.'], repo);
+    git(['commit', '-q', '-m', 'lock'], repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base: headOf(repo) });
+
+    const result = await wt.installDependencies({ path: created.path });
+
+    expect(result).toBe('failed:spawn npm ENOENT');
+  });
+
+  test('caps a long failure tail at the record bound', async () => {
+    const wt = createWorktreeManager({
+      locks: createLockManager(),
+      npm_runner: async () => ({
+        code: 1,
+        stdout: '',
+        stderr: 'x'.repeat(WORKTREE_INSTALL_TAIL_MAX_CHARS + 120)
+      })
+    });
+    fs.writeFileSync(path.join(repo, 'package-lock.json'), '{}\n');
+    git(['add', '.'], repo);
+    git(['commit', '-q', '-m', 'lock'], repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base: headOf(repo) });
+
+    const result = await wt.installDependencies({ path: created.path });
+
+    expect(result.length).toBe(
+      'failed:'.length + WORKTREE_INSTALL_TAIL_MAX_CHARS
+    );
   });
 });

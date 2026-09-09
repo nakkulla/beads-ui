@@ -253,6 +253,21 @@
  * observation, and the session uses it as the exemption basis for the three
  * base-push guard layers (pre-push hook install, base-drift observation, and
  * textual guard). Defaults false.
+ * @property {'pending'|'written'|'released'|null} worker_claim - Whether the
+ * WORKER, rather than the session, wrote this bead's `in_progress` claim
+ * (2026-09-09 harness-reduction spec D2). `pending` is recorded with the
+ * pre-record, `written` after the `open`→`in_progress` write and its readback,
+ * `released` once the bead is back to `open`. Durable because the release is
+ * owed by whichever pass observes the attempt terminal — the settlement that
+ * took the claim, or a later `reconcile` after a restart — and neither can
+ * know it is owed without this field. Null on every legacy record and on an
+ * attempt whose bead was already claimed by somebody else.
+ * @property {'ok'|'skipped'|null|string} worktree_setup - Result of the
+ * dispatch-time dependency install in this attempt's fresh worktree (spec D3):
+ * `ok`, `skipped` (no lock file, or no installer wired), or
+ * `failed:<tail>`. Carried to the session in the `## 시도 사실` card so it does
+ * not re-discover an empty `node_modules` with an `npm ls` round trip. Null
+ * when the attempt adopted an existing worktree and nothing was installed.
  * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|'bench_close'|null, head_sha: string|null, reason: string|null }|null} quickfix_landing -
  * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
  * before the first cleanup step) plus `no_change_close` for either kind of
@@ -3049,6 +3064,19 @@ export function makeAttempt(fields) {
         : null,
     conflict_resolution: fields.conflict_resolution === true,
     quickfix_lane: fields.quickfix_lane === true,
+    worker_claim:
+      fields.worker_claim === 'pending' ||
+      fields.worker_claim === 'written' ||
+      fields.worker_claim === 'released'
+        ? fields.worker_claim
+        : null,
+    worktree_setup:
+      typeof fields.worktree_setup === 'string' &&
+      (fields.worktree_setup === 'ok' ||
+        fields.worktree_setup === 'skipped' ||
+        fields.worktree_setup.startsWith('failed:'))
+        ? fields.worktree_setup
+        : null,
     quickfix_landing: isRecord(fields.quickfix_landing)
       ? clone(fields.quickfix_landing)
       : null,

@@ -83,9 +83,17 @@ export const SUMMARY_MAX_CHARS = 200;
 export const UNKNOWN_CAUSE = 'unknown';
 
 /**
- * Environment failure patterns (spec §3.3). Per provider-outage-hold-resume
- * §4.1, `api` keeps transport faults only; provider HTTP/overload tokens belong
- * to the runner classifier. `runtime` covers a missing or unauthenticated CLI.
+ * Environment failure patterns (spec §3.3). `api` keeps transport faults only
+ * and `runtime` covers a missing or unauthenticated CLI.
+ *
+ * `provider_capacity` was added by the 2026-09-09 harness-reduction spec D5: a
+ * transient "at capacity"/529 refusal is not this bead's defect, and treating
+ * it as `individual` killed a session whose implementation, tests, ADR and push
+ * were already done (UI-hhju-1). It rides the same
+ * {@link RETRY_DELAYS_MS} ladder every other env group does. This is a
+ * DIFFERENT question from the provider-outage hold in `runner/`, which asks
+ * whether one account is unusable; two answers about the same text are
+ * intended, because holding the account and retrying the bead are both true.
  *
  * @type {ReadonlyArray<{ group: string, re: RegExp }>}
  */
@@ -97,6 +105,10 @@ export const ENV_ERROR_PATTERNS = Object.freeze([
   Object.freeze({
     group: 'runtime',
     re: /command not found|ENOENT|spawn .* ENOENT|login status|not authenticated/i
+  }),
+  Object.freeze({
+    group: 'provider_capacity',
+    re: /at capacity|overloaded|API Error: 529|unexpected status 5\d\d/i
   })
 ]);
 

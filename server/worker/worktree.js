@@ -81,6 +81,47 @@ export function branchForBead(bead_id) {
 }
 
 /**
+ * How long a dispatch-time dependency install may run before it is killed
+ * (spec D3). A cold `npm ci` on this repo takes well under a minute; the
+ * ceiling exists so a hung registry cannot hold a slot open forever.
+ */
+export const WORKTREE_INSTALL_TIMEOUT_MS = 300000;
+
+/** Longest install-failure tail carried on an attempt record (spec D3). */
+export const WORKTREE_INSTALL_TAIL_MAX_CHARS = 400;
+
+/**
+ * Collapse an installer's output into the one-line tail an attempt record and
+ * the session's facts card can carry.
+ *
+ * Newlines are collapsed because the value is rendered as a single
+ * `node_modules=` field: a multi-line value there would read as several facts.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function installTail(text) {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > WORKTREE_INSTALL_TAIL_MAX_CHARS
+    ? flat.slice(-WORKTREE_INSTALL_TAIL_MAX_CHARS)
+    : flat;
+}
+
+/**
+ * The tail of a nonzero `npm ci`. stderr first because npm announces its own
+ * errors there; stdout is the fallback for an installer that failed quietly.
+ *
+ * @param {{ code: number, stdout?: string, stderr?: string }} result
+ * @returns {string}
+ */
+function installFailureTail(result) {
+  const stderr = typeof result.stderr === 'string' ? result.stderr.trim() : '';
+  const stdout = typeof result.stdout === 'string' ? result.stdout.trim() : '';
+  const text = stderr.length > 0 ? stderr : stdout;
+  return text.length > 0 ? installTail(text) : `exit ${result.code}`;
+}
+
+/**
  * Parse a `rev-list --count` result. Anything that is not a plain integer —
  * including a nonzero exit — reads as "unobserved" rather than zero, so a
  * failed observation can never be mistaken for "no unique commits".
@@ -570,11 +611,15 @@ async function observeStatusDigest(run, fs, wt, identity) {
 /**
  * Create a worktree manager bound to a lock manager.
  *
- * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs'), createBranchArchive?: (input: { archive_id: string, repo: string, ref: string, base_oid: string, branch_head_sha: string }) => { ok: boolean, reason?: string }|Promise<{ ok: boolean, reason?: string }> }} deps
+ * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, npm_runner?: GitRunner, fs?: typeof import('node:fs'), createBranchArchive?: (input: { archive_id: string, repo: string, ref: string, base_oid: string, branch_head_sha: string }) => { ok: boolean, reason?: string }|Promise<{ ok: boolean, reason?: string }> }} deps
+ * `npm_runner` is the dependency installer {@link installDependencies} spawns
+ * (spec D3), injectable so a test can exercise the three outcomes without a
+ * registry.
  * @returns {{
  *   pathFor: (repo: string, bead_id: string) => string,
  *   exists: (repo: string, bead_id: string) => boolean,
  *   add: (input: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>,
+ *   installDependencies: (input: { path: string }) => Promise<'ok'|'skipped'|string>,
  *   restore: (input: { repo: string, bead_id: string, head_ref: string }) => Promise<{ ok: true, path: string }|{ ok: false, reason: string }>,
  *   remove: (input: { repo: string, bead_id: string }) => Promise<{ code: number, stderr: string }>,
  *   observeOwnedByBead: (input: { repo: string, bead_id: string }) => Promise<{ ok: boolean, present: boolean, path: string|null, branch: string|null, head_sha: string|null, reason: string|null }>,
@@ -589,6 +634,9 @@ export function createWorktreeManager(deps) {
   const locks = deps.locks;
   /** @type {GitRunner} */
   const run = deps.run || ((args, options) => runShell('git', args, options));
+  /** @type {GitRunner} */
+  const npmRun =
+    deps.npm_runner || ((args, options) => runShell('npm', args, options));
   const fs = deps.fs || nodeFs;
   const createBranchArchive = deps.createBranchArchive;
 
@@ -697,6 +745,54 @@ export function createWorktreeManager(deps) {
         };
       } finally {
         release();
+      }
+    },
+
+    /**
+     * Install the node dependencies of a FRESH worktree (2026-09-09
+     * harness-reduction spec D3).
+     *
+     * A `git worktree add` produces a checkout with no `node_modules`, and 31
+     * of 73 audited sessions spent an `npm ls` → `npm ci` round trip
+     * rediscovering that. The Worker knows it before the session starts, so it
+     * does the install and reports the one line the session needs.
+     *
+     * NEVER throws and never blocks a dispatch: the three outcomes are all
+     * answers, and a `failed:` one leaves the session exactly where it is
+     * today — free to install by itself.
+     *
+     * The topology lock is deliberately NOT taken. It serializes ref-mutating
+     * git commands, and `npm ci` touches no ref; holding it for up to
+     * {@link WORKTREE_INSTALL_TIMEOUT_MS} would stall every other slot's
+     * worktree add behind one install.
+     *
+     * @param {{ path: string }} input
+     * @returns {Promise<'ok'|'skipped'|string>} `ok`, `skipped` when the
+     * checkout carries no `package-lock.json`, else `failed:<tail>`.
+     */
+    async installDependencies(input) {
+      let has_lock = false;
+      try {
+        has_lock = fs.existsSync(path.join(input.path, 'package-lock.json'));
+      } catch {
+        // An unreadable path is not a lock file; skip rather than guess.
+        has_lock = false;
+      }
+      if (!has_lock) {
+        return 'skipped';
+      }
+      try {
+        const result = await npmRun(
+          ['ci', '--prefer-offline', '--no-audit', '--no-fund'],
+          { cwd: input.path, timeout_ms: WORKTREE_INSTALL_TIMEOUT_MS }
+        );
+        return result.code === 0
+          ? 'ok'
+          : `failed:${installFailureTail(result)}`;
+      } catch (err) {
+        return `failed:${installTail(
+          err instanceof Error ? err.message : String(err)
+        )}`;
       }
     },
 
