@@ -598,18 +598,46 @@ describe('cross citations', () => {
 });
 
 describe('legacy-only regression', () => {
-  test("orders this repository's own numeric ADRs plain number descending", async () => {
+  test('renders a numeric-only fixture directory exactly as before the string id change', async () => {
+    await writeAdr(30);
+    await writeFile(
+      'docs/adr/0024-newer-date.md',
+      '---\nid: 24\ntitle: t24\nstatus: accepted\ndate: 2026-09-03\nsummary: s24\nsupersedes: [9]\n---\n'
+    );
+    await writeFile(
+      'docs/adr/0009-old.md',
+      '---\nid: 9\ntitle: t9\nstatus: superseded\ndate: 2026-01-01\nsummary: s9\nsuperseded_by: 24\n---\n'
+    );
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.frontmatter_errors).toEqual([]);
+    expect(JSON.stringify(result.current)).toMatchInlineSnapshot(
+      `"[{"file":"0030-decision.md","id":30,"title":"t","status":"accepted","date":"2026-09-05","summary":"s","supersedes":[],"superseded_by":null,"superseded_by_note":null,"spec":null,"bead":null},{"file":"0024-newer-date.md","id":24,"title":"t24","status":"accepted","date":"2026-09-03","summary":"s24","supersedes":[9],"superseded_by":null,"superseded_by_note":null,"spec":null,"bead":null}]"`
+    );
+    expect(JSON.stringify(result.history)).toMatchInlineSnapshot(
+      `"[{"file":"0009-old.md","id":9,"title":"t9","status":"superseded","date":"2026-01-01","summary":"s9","supersedes":[],"superseded_by":24,"superseded_by_note":null,"spec":null,"bead":null}]"`
+    );
+  });
+
+  test("keeps every one of this repository's numeric ADRs in the pre-change order", async () => {
     const repo_root = process.cwd();
+    const adr_files = (
+      await fs.readdir(path.join(repo_root, 'docs/adr'))
+    ).filter((name) => /^\d{4}-.*\.md$/.test(name));
 
     const result = await signals().computeWorkspace(repo_root, { full: true });
 
-    const ids = [...result.current, ...result.history].map((a) => a.id);
-    expect(ids.every((id) => typeof id === 'number')).toEqual(true);
-    expect(result.current.map((a) => a.id)).toEqual(
-      [...result.current.map((a) => Number(a.id))].sort((a, b) => b - a)
+    const rows = [...result.current, ...result.history];
+    expect(result.frontmatter_errors).toEqual([]);
+    expect(rows.length).toEqual(adr_files.length);
+    expect(rows.every((a) => typeof a.id === 'number')).toEqual(true);
+    // The pre-change comparator was `b.id - a.id` on both lists.
+    expect(result.current).toEqual(
+      [...result.current].sort((a, b) => Number(b.id) - Number(a.id))
     );
-    expect(result.history.map((a) => a.id)).toEqual(
-      [...result.history.map((a) => Number(a.id))].sort((a, b) => b - a)
+    expect(result.history).toEqual(
+      [...result.history].sort((a, b) => Number(b.id) - Number(a.id))
     );
   });
 });

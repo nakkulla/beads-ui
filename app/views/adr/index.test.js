@@ -76,6 +76,19 @@ function texts(root, selector) {
   );
 }
 
+/**
+ * Rendered markup with lit's per-load random comment markers removed, so the
+ * snapshot holds the bytes a user sees and stays stable across runs.
+ *
+ * @param {HTMLElement} el
+ */
+function markup(el) {
+  return el.innerHTML
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 describe('views/adr toolbar', () => {
   test('filters the sections down to the pressed repository', () => {
     const { root } = mount([
@@ -501,6 +514,76 @@ describe('views/adr cross citations', () => {
       'is-unknown'
     ]);
     expect(chips[2].textContent?.trim()).toBe('미확인');
+  });
+
+  test('pads only a legacy number and shows a string identifier verbatim', () => {
+    const { root } = mount([
+      workspace({
+        cross_citations: [
+          {
+            file: 'docs/adr/0001-a.md',
+            line: 1,
+            repo: 'dotfiles',
+            adr: 45,
+            target: { root_dir: '/d', status: 'accepted' }
+          },
+          {
+            file: 'docs/adr/0002-b.md',
+            line: 2,
+            repo: 'dotfiles',
+            adr: 'a-1',
+            target: null
+          }
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-sec--cross .adr-row__mid')).toEqual([
+      '→ ADR dotfiles/0045',
+      '→ ADR dotfiles/a-1'
+    ]);
+  });
+});
+
+describe('views/adr legacy-only regression', () => {
+  test('renders a numeric-only workspace with the pre-change markup', () => {
+    const { root } = mount([
+      workspace({
+        current: [
+          adr(30, { date: '2026-09-01' }),
+          adr(24, { date: '2026-09-03', supersedes: [9] })
+        ],
+        history: [
+          adr(9, {
+            status: 'superseded',
+            date: '2026-01-01',
+            superseded_by: 24
+          })
+        ],
+        citations_stale: [
+          {
+            kind: 'retired',
+            file: 'AGENTS.md',
+            line: 4,
+            adr: 24,
+            detail: 'retired'
+          }
+        ]
+      })
+    ]);
+
+    const current = /** @type {HTMLElement} */ (
+      root.querySelector('.adr-table--current tbody')
+    );
+    const history = /** @type {HTMLElement} */ (
+      root.querySelector('.adr-history tbody')
+    );
+    expect(markup(current)).toMatchInlineSnapshot(
+      `"<tr data-adr="24"> <td class="adr-num">24</td> <td> <span class="adr-doc adr-doc--plain">결정 24</span> </td> <td class="adr-date">2026-09-03</td> <td class="adr-summary">summary 24</td> <td></td> <td> </td> <td class="adr-signals"> <span class="adr-chip adr-chip--signal">인용 stale 1</span> </td> </tr> <tr data-adr="30"> <td class="adr-num">30</td> <td> <span class="adr-doc adr-doc--plain">결정 30</span> </td> <td class="adr-date">2026-09-01</td> <td class="adr-summary">summary 30</td> <td></td> <td> </td> <td class="adr-signals"> </td> </tr>"`
+    );
+    expect(markup(history)).toMatchInlineSnapshot(
+      `"<tr data-adr="9"> <td class="adr-num">9</td> <td>결정 9</td> <td class="adr-status">superseded</td> <td class="adr-superseded"> → 24 </td> </tr>"`
+    );
   });
 });
 

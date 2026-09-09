@@ -48,6 +48,17 @@ function compareAdrDesc(a, b) {
   return String(a.id).localeCompare(String(b.id));
 }
 
+/**
+ * Cited identifier as the `ADR <repo>/<id>` syntax writes it: a legacy number
+ * padded to four digits, a string id verbatim.
+ *
+ * @param {number | string} id
+ * @returns {string}
+ */
+function formatCitedId(id) {
+  return typeof id === 'number' ? String(id).padStart(4, '0') : id;
+}
+
 /** `adr-cite-check.py`의 정본 kind — 이름 붙은 `인용 stale` 카운트가 세는 것. */
 const CITATION_NAMED_KINDS = ['missing', 'retired'];
 
@@ -618,7 +629,7 @@ export function createAdrView(root, options = {}) {
             <li class="adr-row">
               ${docCell(cite.file, ws.root_dir, `${cite.file}:${cite.line}`)}
               <span class="adr-row__mid"
-                >→ ADR ${cite.repo}/${String(cite.adr).padStart(4, '0')}</span
+                >→ ADR ${cite.repo}/${formatCitedId(cite.adr)}</span
               >
               <span class="adr-chip adr-chip--cross is-${chip.tone}"
                 >${chip.text}</span
