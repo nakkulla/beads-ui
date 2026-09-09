@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0048 | [Worker 체계적 정지의 해제는 사람의 승인 한 번이며 재개 버튼과 큐를 세운 attempt의 ↻ 이어하기가 같은 승인이다](0048-resume-click-releases-systemic-hold.md) | 2026-09-09 | Worker 체계적 정지의 해제는 사람의 승인 한 번이며, 재개 버튼과 큐를 세운 attempt(자손 포함)의 ↻ 이어하기가 같은 승인이다. 자동 재개는 정지를 풀지 않는다. |
 | 0047 | [Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다](0047-codex-native-child-internal-observation-not-summed.md) | 2026-09-08 | Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다 |
 | 0046 | [같은 작업의 세션 재개는 기록된 provider를 보존하고 provider 변경은 명시적 선택으로만 수행한다](0046-session-resume-preserves-recorded-provider.md) | 2026-09-08 | 같은 작업의 세션 재개는 기록된 provider를 보존하고 provider 변경은 명시적 선택으로만 수행한다 |
 | 0045 | [구현 세션의 지시 재시작은 durable pause 뒤 기록된 세션과 설정으로 재개하며 새 세션으로 대체하지 않는다](0045-instructions-restart-resumes-recorded-attempt-after-durable-pause.md) | 2026-09-08 | 구현 세션의 지시 재시작은 기존 durable pause 뒤 기록된 세션과 설정으로 재개하며, pause 뒤 연결 끊김은 paused로 남기고 transcript 부재 시 새 세션으로 대체하지 않는다 |
@@ -30,7 +31,6 @@
 | 0028 | [waiting은 선행 미충족 결말의 터미널 계층이고 복귀 fence는 bd ready 부재뿐이다](0028-waiting-terminal-outcome-auto-return.md) | 2026-08-28 | Worker의 waiting 계층은 선행 미충족으로 정상 종료한 attempt의 터미널 결말이며 실패도 파킹도 아니다 — fence는 bd ready 부재뿐이고 선행이 닫히면 보통 후보로 자동 dispatch된다 |
 | 0027 | [Worker 이력의 SoT는 bead별 events.jsonl 타임라인이고 queue.json은 상태 전용이다](0027-bead-timeline-history-sot.md) | 2026-08-28 | Worker의 실행·실패 이력은 bead별 append-only 타임라인이 소유하고, 상태 파일은 진행 중·미처리 것만 담는다. |
 | 0019 | [리뷰 영수증 보류는 큐가 head당 1회 리뷰 lineage를 자동 dispatch해 해소를 시도한다](0019-auto-review-dispatch-once-per-head.md) | 2026-08-28 | 영수증 부재·stale 보류는 큐가 head당 1회 같은 리뷰 lineage를 자동 dispatch하고 실패·소진 뒤에는 [리뷰 후 머지]가 같은 lineage를 resume하며 post-merge 자동 수리 금지(ADR 0005)와는 별개다 |
-| 0016 | [큐 정지 권한은 systemic 실패 계층만 갖는다](0016-queue-hold-only-on-systemic-failure.md) | 2026-08-28 | Worker 큐 정지는 다음 bead에도 재발할 체계적 실패에만 걸고, 개별 실패는 bead 단위로 기록하고 큐를 계속 돌린다. 환경성 실패는 보류→재시도→승격의 사다리를 탄다 |
 | 0014 | [레인과 카드는 단일 buildLanes 계약과 공유 슬롯 표로 조립한다](0014-single-build-lanes-contract-and-shared-slot-table.md) | 2026-08-27 | Worker와 Monitor는 워크스페이스 N개를 받는 하나의 buildLanes로 레인을 만들고 카드의 줄 순서와 새 요소의 자리는 공유 슬롯 표가 정한다 |
 | 0009 | [병렬성 분석 기능 전면 제거와 수동 배포 실행](0009-parallelism-analysis-removal.md) | 2026-08-27 | 병렬성 분석 기능은 코드·테스트·프로토콜까지 제거하고 수동 [배포 실행] 버튼만 두며 script_retry는 토글 없이 상시다 |
 | 0015 | [30분은 queue-yield deadline이고 충돌 해소 fence는 슬롯 기반이다](0015-queue-yield-deadline-and-slot-based-conflict-fence.md) | 2026-08-19 | 30분은 실패 타임아웃이 아니라 머지 큐 턴을 양보하는 시점이며 충돌 해소 디스패치는 수동 권한 면제와 슬롯 여유로 판정한다 |
@@ -50,6 +50,7 @@
 | 0002 | [Per‑Subscription Stores and Full‑Issue Push (Breaking)](0002-per-subscription-stores-and-full-issue-push.md) | superseded | [0044](0044-subscription-store-notifies-content-change-with-source.md) |
 | 0004 | [impl_review 신선도를 exact-head 대신 ancestry로 판정](0004-impl-review-ancestry-freshness.md) | superseded | [0031](0031-impl-review-ancestry-and-hold-exit.md) |
 | 0005 | [자동 AI 수리 레인 폐기와 needs_human 종단](0005-no-auto-repair-lane.md) | superseded | [0022](0022-needs-human-auto-notify-click-driven-reentry.md) |
+| 0016 | [큐 정지 권한은 systemic 실패 계층만 갖는다](0016-queue-hold-only-on-systemic-failure.md) | superseded | [0048](0048-resume-click-releases-systemic-hold.md) |
 | 0017 | [awaiting_user를 남기고 정상 종료한 세션 결말은 parked이며 자동 재디스패치하지 않는다](0017-parked-session-outcome-no-auto-redispatch.md) | superseded | [0036](0036-parked-exit-is-inquiry-session-only.md) |
 | 0018 | [quick_fix 착지 재개는 정산 커서가 아니라 실패 사유로 판정한다](0018-quickfix-landing-resume-judged-by-failure-reason.md) | superseded | [0042](0042-quickfix-resume-by-reason-settlement-button-is-cleanup-retry.md) |
 | 0022 | [needs_human은 자동 알림으로 관측되고 재진입은 두 클릭뿐이다](0022-needs-human-auto-notify-click-driven-reentry.md) | superseded | [0024](0024-discard-failure-exits-and-terminal-abandoned.md) |

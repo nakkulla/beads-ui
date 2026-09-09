@@ -1,7 +1,8 @@
 ---
 id: 16
 title: 큐 정지 권한은 systemic 실패 계층만 갖는다
-status: accepted
+status: superseded
+superseded_by: 48
 date: 2026-08-28
 summary: 'Worker 큐 정지는 다음 bead에도 재발할 체계적 실패에만 걸고, 개별 실패는 bead 단위로 기록하고 큐를 계속 돌린다. 환경성 실패는 보류→재시도→승격의 사다리를 탄다'
 spec: docs/superpowers/specs/2026-08-28-worker-failure-tiers-queue-hold-design.md
