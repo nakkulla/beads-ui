@@ -586,3 +586,213 @@ describe('runner/session blocked_detail', () => {
     expect(verdict.success).toBe(true);
   });
 });
+
+/**
+ * The deferred one-shot verdict (guard-hook-bypass-result-judgment §3/§4).
+ *
+ * A session whose spawn environment provably carries the PreToolUse mirror
+ * holds the arm 3 verdict until the paired `tool_result` says whether the
+ * command ran at all.
+ */
+const ONE_SHOT = 'git -c core.hooksPath=/dev/null diff --stat';
+
+/**
+ * A Bash tool_use line that carries its own id, which is what the deferral
+ * pairs on.
+ *
+ * @param {string} command
+ * @param {string} id
+ * @returns {string}
+ */
+function bashToolLineWithId(command, id) {
+  return JSON.stringify({
+    type: 'assistant',
+    message: {
+      content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }]
+    }
+  });
+}
+
+/**
+ * The `user` line a tool call's result arrives on.
+ *
+ * @param {string} tool_use_id
+ * @param {{ is_error?: boolean, content?: unknown }} result
+ * @returns {string}
+ */
+function toolResultLine(tool_use_id, result) {
+  return JSON.stringify({
+    type: 'user',
+    message: {
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id,
+          ...(result.is_error === true ? { is_error: true } : {}),
+          content: result.content ?? 'ok'
+        }
+      ]
+    }
+  });
+}
+
+const HOOK_REFUSAL = {
+  is_error: true,
+  content: 'PreToolUse:Bash hook error: [hook]: BLOCKED: …'
+};
+
+/**
+ * Replay a line list through a session whose mirror state is fixed.
+ *
+ * @param {string[]} lines
+ * @param {'verified'|'absent'} guard_mirror
+ */
+async function runLines(lines, guard_mirror) {
+  const spawn_impl = makeFixtureSpawn({ lines, pid: 5150 });
+  const kill_impl = vi.fn();
+  /** @type {any[]} */
+  const events = [];
+  const spec = { ...claudeSpec(), probeGuardMirror: () => guard_mirror };
+
+  const handle = runSession(
+    spec,
+    { id: 'UI-1' },
+    WS,
+    {},
+    {
+      spawn_impl,
+      kill_impl
+    }
+  );
+  handle.events.on('event', (ev) => events.push(ev));
+  const verdict = await handle.done;
+
+  return { verdict, kill_impl, events, handle };
+}
+
+describe('runner/session deferred hook-bypass verdict (§3)', () => {
+  test('does not kill when the mirror refused the command', async () => {
+    const { verdict, kill_impl, events } = await runLines(
+      [
+        bashToolLineWithId(ONE_SHOT, 'toolu_1'),
+        toolResultLine('toolu_1', HOOK_REFUSAL)
+      ],
+      'verified'
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+    expect(
+      events.filter((e) => e.kind === 'guard_pending').map((e) => e.op)
+    ).toEqual(['add', 'clear']);
+    expect(events.some((e) => e.guard_warning)).toBe(false);
+  });
+
+  test('kills once the tool_result proves the command ran', async () => {
+    const { verdict, kill_impl } = await runLines(
+      [
+        bashToolLineWithId(ONE_SHOT, 'toolu_1'),
+        toolResultLine('toolu_1', { content: '3 files changed' })
+      ],
+      'verified'
+    );
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(verdict.blocked_detail).toEqual({
+      reason: 'hook_bypass_blocked',
+      command: ONE_SHOT,
+      confirmed_by: 'tool_result'
+    });
+  });
+
+  test('reports the spawn env the probe was given', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [], pid: 5150 });
+    const probe = vi.fn(() => /** @type {const} */ ('absent'));
+    const spec = {
+      ...claudeSpec(),
+      buildArgv: () => ({
+        command: 'claude',
+        args: [],
+        env: { CLAUDE_CONFIG_DIR: '/adapter/config' }
+      }),
+      probeGuardMirror: probe
+    };
+
+    const handle = runSession(
+      spec,
+      { id: 'UI-1' },
+      WS,
+      { env: { HOME: '/settings/home' } },
+      { spawn_impl, kill_impl: vi.fn() }
+    );
+    await handle.done;
+
+    const input = /** @type {any} */ (probe).mock.calls[0][0];
+    expect(input.env.HOME).toBe('/settings/home');
+    expect(input.env.CLAUDE_CONFIG_DIR).toBe('/adapter/config');
+    expect(input.cwd).toBe(WS);
+    expect(handle.guard_mirror).toBe('absent');
+  });
+
+  test('keeps the deferral when another tool call reports back', async () => {
+    const { kill_impl, events } = await runLines(
+      [
+        bashToolLineWithId(ONE_SHOT, 'toolu_1'),
+        toolResultLine('toolu_other', { content: 'ok' })
+      ],
+      'verified'
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    // The `clear` is §4's end-of-session settlement, not a pairing.
+    expect(
+      events.filter((e) => e.kind === 'guard_pending').map((e) => e.op)
+    ).toEqual(['add', 'clear']);
+    expect(events.filter((e) => e.guard_warning).map((e) => e.reason)).toEqual([
+      'hook_bypass_unresolved'
+    ]);
+  });
+
+  test('warns instead of killing when the session ends still holding it', async () => {
+    const { verdict, kill_impl, events } = await runLines(
+      [
+        bashToolLineWithId(ONE_SHOT, 'toolu_1'),
+        JSON.stringify({ type: 'result', subtype: 'success', result: 'done' })
+      ],
+      'verified'
+    );
+
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+    expect(
+      events.filter((e) => e.guard_warning).map((e) => e.guard_warning)
+    ).toEqual([{ reason: 'hook_bypass_unresolved', command: ONE_SHOT }]);
+  });
+
+  test('kills a one-shot relocation at once on an unverified session', async () => {
+    const { verdict, kill_impl } = await runLines(
+      [bashToolLineWithId(ONE_SHOT, 'toolu_1')],
+      'absent'
+    );
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(verdict.blocked_detail).toEqual({
+      reason: 'hook_bypass_blocked',
+      command: ONE_SHOT
+    });
+  });
+
+  test('kills a `--no-verify` push at once even on a verified session', async () => {
+    const push = 'git push --no-verify origin UI-1';
+    const { verdict, kill_impl } = await runLines(
+      [bashToolLineWithId(push, 'toolu_1')],
+      'verified'
+    );
+
+    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(verdict.blocked_detail).toEqual({
+      reason: 'hook_bypass_blocked',
+      command: push
+    });
+  });
+});

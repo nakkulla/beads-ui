@@ -35,7 +35,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
   - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 큐가 소유한다.
 - hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
-- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다.
+- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다. Claude 세션에서는 PreToolUse 훅이 이 형태를 먼저 거부하고 세션은 계속된다; 훅을 지나 실제로 실행되면 그때 종료다. 훅이 없는 세션(Codex, 훅 미등록 호스트)은 명령이 보이는 즉시 종료다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
   - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
   - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`
@@ -93,7 +93,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
   - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 큐가 소유한다.
 - hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
-- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다.
+- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다. Claude 세션에서는 PreToolUse 훅이 이 형태를 먼저 거부하고 세션은 계속된다; 훅을 지나 실제로 실행되면 그때 종료다. 훅이 없는 세션(Codex, 훅 미등록 호스트)은 명령이 보이는 즉시 종료다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
   - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
   - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`
@@ -138,7 +138,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
   - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 큐가 소유한다.
 - hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
-- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다.
+- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다. Claude 세션에서는 PreToolUse 훅이 이 형태를 먼저 거부하고 세션은 계속된다; 훅을 지나 실제로 실행되면 그때 종료다. 훅이 없는 세션(Codex, 훅 미등록 호스트)은 명령이 보이는 즉시 종료다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
   - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
   - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`
@@ -367,7 +367,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
   - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 큐가 소유한다.
 - hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
-- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다.
+- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다. Claude 세션에서는 PreToolUse 훅이 이 형태를 먼저 거부하고 세션은 계속된다; 훅을 지나 실제로 실행되면 그때 종료다. 훅이 없는 세션(Codex, 훅 미등록 호스트)은 명령이 보이는 즉시 종료다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
   - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
   - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`
@@ -420,7 +420,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
   - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 큐가 소유한다.
 - hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
-- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다.
+- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다. Claude 세션에서는 PreToolUse 훅이 이 형태를 먼저 거부하고 세션은 계속된다; 훅을 지나 실제로 실행되면 그때 종료다. 훅이 없는 세션(Codex, 훅 미등록 호스트)은 명령이 보이는 즉시 종료다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
   - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
   - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`
@@ -469,7 +469,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
   - 대안: 이 세션의 종점은 PR 제출과 bead \`resolved\` 기록이다. 머지는 큐가 소유한다.
 - hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
-- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다.
+- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다. Claude 세션에서는 PreToolUse 훅이 이 형태를 먼저 거부하고 세션은 계속된다; 훅을 지나 실제로 실행되면 그때 종료다. 훅이 없는 세션(Codex, 훅 미등록 호스트)은 명령이 보이는 즉시 종료다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
   - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
   - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`
@@ -523,7 +523,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 - \`gh pr merge\` — argv만으로 판정되어 즉시 종료된다.
   - 대안: 이 세션의 종점은 리뷰드 base push와 bead \`resolved\` 기록이다. 머지 클릭도 PR도 이 세션의 일이 아니다.
 - hook 무력화 **쓰기** — \`git push --no-verify\`, \`git config core.hooksPath <값>\` / \`git config set|unset core.hooksPath\` / \`git config --unset core.hooksPath\`.
-- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다.
+- **1회성 재배치**(\`git -c core.hooksPath=…\`, \`git --config-env=core.hooksPath=…\`, \`GIT_CONFIG_COUNT\`/\`GIT_CONFIG_KEY_*\`/\`GIT_CONFIG_VALUE_*\`/\`GIT_CONFIG_PARAMETERS\` 접두) 중 뒤따르는 명령이 아래 「허용됨」의 열거 밖인 것 — 명령 없는 할당, git 이 아닌 명령(\`go test\` 등), 열거 밖 서브커맨드(\`push\`·\`commit\`·\`diff\`·\`log\`·\`show\`·\`submodule\` 등)가 모두 여기 든다. \`GIT_CONFIG_PARAMETERS\` 접두는 뒤따르는 명령이 무엇이든 면제가 없고, \`export\`로 내보낸 \`GIT_CONFIG_*\` 할당은 bare 할당과 같은 지속 재배치다. Claude 세션에서는 PreToolUse 훅이 이 형태를 먼저 거부하고 세션은 계속된다; 훅을 지나 실제로 실행되면 그때 종료다. 훅이 없는 세션(Codex, 훅 미등록 호스트)은 명령이 보이는 즉시 종료다.
   - 대안: git 설정을 격리해야 하면 \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null\`을 쓴다. 이 두 변수는 판정 대상이 아니고 hook 경로를 건드리지 않는다.
   - 오답: \`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="" go test ./...\`
   - 정답: \`GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null go test ./...\`

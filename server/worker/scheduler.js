@@ -339,8 +339,8 @@ const SESSION_EFFORT_RETRY_LIMIT = 3;
  * monitor's `guard_kill` evidence alike — reaches a durable record through
  * here, so the failure tile and the timeline quote the same sentence.
  *
- * @param {{ reason: string, command: string|null }|null|undefined} detail
- * @returns {{ reason: string, command: string|null, summary?: string }|undefined}
+ * @param {{ reason: string, command: string|null, confirmed_by?: 'tool_result' }|null|undefined} detail
+ * @returns {{ reason: string, command: string|null, summary?: string, confirmed_by?: 'tool_result' }|undefined}
  */
 function blockerCauseDetail(detail) {
   if (!detail || typeof detail.reason !== 'string') {
@@ -356,7 +356,13 @@ function blockerCauseDetail(detail) {
   return {
     reason: detail.reason,
     command,
-    ...(summary === null ? {} : { summary })
+    ...(summary === null ? {} : { summary }),
+    // Carried through from the live runner's deferred verdict
+    // (guard-hook-bypass-result-judgment §3): the kill happened on execution
+    // evidence, and the record says so.
+    ...(detail.confirmed_by === 'tool_result'
+      ? { confirmed_by: /** @type {const} */ ('tool_result') }
+      : {})
   };
 }
 
@@ -3469,6 +3475,76 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Mirror one deferred guard verdict onto the attempt record (§3).
+   *
+   * Read-modify-write off the store, like the warning accumulation above, so a
+   * restart reads the deferrals the dead process was holding and can pair them
+   * against the log it left behind. Never throws: a lost deferral degrades to
+   * the current immediate-kill contract, not to a broken session.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {'add'|'clear'} op
+   * @param {{ tool_use_id: string, command: string, at: number, log_offset: number|null }} entry
+   */
+  function recordGuardPending(workspace, attempt_id, op, entry) {
+    if (!entry || typeof entry.tool_use_id !== 'string') {
+      return;
+    }
+    try {
+      const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
+      const prior = Array.isArray(attempt?.guard_pending)
+        ? attempt.guard_pending
+        : [];
+      const next =
+        op === 'add'
+          ? [...prior, entry]
+          : prior.filter(
+              (/** @type {any} */ held) =>
+                held?.tool_use_id !== entry.tool_use_id
+            );
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: { guard_pending: next.length > 0 ? next : null }
+      });
+    } catch (err) {
+      log('guard-pending record failed for %s: %o', attempt_id, err);
+    }
+  }
+
+  /**
+   * Persist the `guard_kill` evidence of a live-runner kill that was confirmed
+   * by a `tool_result` (§3). The restart monitor writes its own evidence before
+   * signalling; the live path has no store, so this copy off the verdict is the
+   * one place `guard_kill.confirmed_by` is recorded for it.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {{ blocked?: boolean, blocked_detail?: { reason: string, command: string|null, confirmed_by?: 'tool_result' }|null }} verdict
+   */
+  function recordConfirmedGuardKill(workspace, attempt_id, verdict) {
+    const detail = verdict?.blocked ? verdict.blocked_detail : null;
+    if (!detail || detail.confirmed_by !== 'tool_result') {
+      return;
+    }
+    try {
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          guard_kill: {
+            reason: detail.reason,
+            command: detail.command ?? null,
+            at: now(),
+            confirmed_by: /** @type {const} */ ('tool_result')
+          }
+        }
+      });
+    } catch (err) {
+      log('guard-kill record failed for %s: %o', attempt_id, err);
+    }
+  }
+
+  /**
    * Drop an attempt's hook assets. Idempotent and never throwing, so every
    * early return between the install and the spawn — and every termination
    * path — can call it unconditionally, including for the disposition attempts
@@ -5011,6 +5087,7 @@ export function createScheduler(deps) {
           await tick(workspace);
           return;
         }
+        recordConfirmedGuardKill(workspace, attempt_id, verdict);
         await failAttempt(
           workspace,
           attempt_id,
@@ -8338,6 +8415,16 @@ export function createScheduler(deps) {
     if (typeof prompts.task_prompt === 'string') {
       prompt_patch.task_prompt = prompts.task_prompt;
     }
+    // The same lift, for the same reason (guard-hook-bypass-result-judgment
+    // §2): the probe ran on the environment this spawn actually used, and the
+    // restart monitor has to read that value rather than re-probe a server
+    // environment that is not the child's.
+    if (
+      handle.guard_mirror === 'verified' ||
+      handle.guard_mirror === 'absent'
+    ) {
+      prompt_patch.guard_mirror = handle.guard_mirror;
+    }
 
     // Fill the runtime snapshot now that the process exists (spec §5.2). The
     // durable fields (repo/base_oid/exec_stamped_keys) were pre-recorded above;
@@ -8572,6 +8659,11 @@ export function createScheduler(deps) {
           ev.guard_warning,
           typeof ev.message === 'string' ? ev.message : null
         );
+      }
+      // A deferred hook-bypass verdict's durable half (§3): the live runner has
+      // no store, so its add/clear transitions reach the attempt record here.
+      if (ev && ev.kind === 'guard_pending') {
+        recordGuardPending(workspace, attempt_id, ev.op, ev.entry);
       }
       const usage = ev && ev.usage;
       if (!usage_store || !usage) {

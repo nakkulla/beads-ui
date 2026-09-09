@@ -206,6 +206,17 @@ export const BASE_INTO_BRANCH_RE = /git\s+merge(?!-(?:base|tree|file)\b)/i;
  * The legacy machine-readable reason, kept for the attempt record and the
  * failure banner. NOT the effect's input.
  * @property {string} command - The simple command that matched.
+ * @property {true} [deferrable] - Set only on a ONE-SHOT hook relocation (arm 3)
+ * when the whole judged string held no immediate-kill violation
+ * (guard-hook-bypass-result-judgment §1). A consumer whose session has a
+ * verified PreToolUse mirror (`guard-mirror.js`) holds this verdict until the
+ * paired `tool_result` proves the command actually ran; every other consumer
+ * kills as before. Absent (undefined) on every other arm, kind, and on the
+ * fallback path, which stays stricter than the parsed one (UI-1xcd §4).
+ * @property {MergeViolation[]} [warnings] - The `warn` violations found in the
+ * SAME judged string as a deferred arm 3 (§1). They are carried alongside
+ * rather than replacing the returned violation, because a warning is recorded
+ * and the session runs on while the arm 3 verdict is the one being deferred.
  */
 
 /**
@@ -1783,9 +1794,14 @@ function exemptOneShot(prefix, inline_other_key, subcommand, args) {
  *
  * `git push -n` is `--dry-run`, not `--no-verify`: it pushes nothing.
  *
+ * ORDER (guard-hook-bypass-result-judgment §1): arms 1, 2 and 4 are judged
+ * BEFORE arm 3, so `git -c core.hooksPath=X push --no-verify` reports the
+ * persistent arm rather than the one-shot one. `one_shot` is what the caller
+ * turns into `deferrable`.
+ *
  * @param {string[]} argv - {@link normalizeArgv} output.
  * @param {string[]} prefix - The tokens `normalizeArgv` dropped ahead of it.
- * @returns {boolean}
+ * @returns {{ bypass: boolean, one_shot: boolean }}
  */
 function isHookBypass(argv, prefix) {
   const env_relocation = prefix.some(
@@ -1797,10 +1813,10 @@ function isHookBypass(argv, prefix) {
   // `GIT_CONFIG_COUNT=0` is a whole simple command with no argv at all, and
   // that shape is the persistent one — it stays in the shell process.
   if (env_relocation && argv.length === 0) {
-    return true;
+    return { bypass: true, one_shot: false };
   }
   if (argv.length === 0) {
-    return false;
+    return { bypass: false, one_shot: false };
   }
   // Compared EXACTLY, not by basename: a builtin is a bare word, and a program
   // that merely happens to be called `./export` changes no shell environment.
@@ -1809,7 +1825,7 @@ function isHookBypass(argv, prefix) {
     // read: an exported relocation persists for every later command, and that
     // judgment has been key-agnostic since UI-iw28 §1. A relocation PREFIX
     // ahead of the builtin is still the non-git shape below (condition (a)).
-    return (
+    const exported =
       env_relocation ||
       argv
         .slice(1)
@@ -1817,13 +1833,14 @@ function isHookBypass(argv, prefix) {
           (word) =>
             ASSIGNMENT_RE.test(word) &&
             GIT_CONFIG_ENV_RE.test(splitAssignment(word).name)
-        )
-    );
+        );
+    return { bypass: exported, one_shot: false };
   }
   if (basename(argv[0]).toLowerCase() !== 'git') {
     // `GIT_CONFIG_…=… go test ./...` — the child git inherits the assignment
     // (2026-08-06 incident), so condition (a) fails and the shape is a kill.
-    return env_relocation;
+    // A prefix ahead of a non-git command is arm 3 (§1 table row 3).
+    return { bypass: env_relocation, one_shot: env_relocation };
   }
   const rest = argv.slice(1);
   let i = 0;
@@ -1863,27 +1880,33 @@ function isHookBypass(argv, prefix) {
   }
   const subcommand = i < rest.length ? rest[i] : '';
   const args = rest.slice(i + 1);
-  if (
-    (env_relocation || inline_relocation) &&
-    !exemptOneShot(prefix, inline_other_key, subcommand, args)
-  ) {
-    return true;
-  }
+  // Arms 1 and 2 FIRST (§1): a command that carries both a one-shot relocation
+  // and an irreversible remote move is the persistent verdict, not the
+  // deferrable one.
   if (subcommand === 'push') {
     // Everything after `--` is a refspec, not an option.
     const options = args.slice(
       0,
       args.indexOf('--') >= 0 ? args.indexOf('--') : args.length
     );
-    return options.includes('--no-verify');
+    if (options.includes('--no-verify')) {
+      return { bypass: true, one_shot: false };
+    }
   }
-  if (subcommand === 'config') {
-    return (
-      args.some((token) => HOOKS_PATH_RE.test(configKeyOf(token))) &&
-      !isConfigReadOnly(args)
-    );
+  if (
+    subcommand === 'config' &&
+    args.some((token) => HOOKS_PATH_RE.test(configKeyOf(token))) &&
+    !isConfigReadOnly(args)
+  ) {
+    return { bypass: true, one_shot: false };
   }
-  return false;
+  if (
+    (env_relocation || inline_relocation) &&
+    !exemptOneShot(prefix, inline_other_key, subcommand, args)
+  ) {
+    return { bypass: true, one_shot: true };
+  }
+  return { bypass: false, one_shot: false };
 }
 
 /**
@@ -2110,11 +2133,17 @@ function checkSimpleCommand(cmd, ctx, depth, siblings, index) {
   // Checked FIRST, and before the empty-argv exit: a bare `GIT_CONFIG_COUNT=0`
   // is a whole simple command with no argv at all, and a bypass that also lands
   // on the base must take the stricter of the two effects.
-  if (!ctx.disposition && isHookBypass(argv, prefix)) {
+  const hook_bypass = isHookBypass(argv, prefix);
+  if (!ctx.disposition && hook_bypass.bypass) {
     return {
       kind: 'hook_bypass',
       reason: 'hook_bypass_blocked',
-      command: cmd.text
+      command: cmd.text,
+      // Arm 3 only. `scanCommand` may still strip it when the same string holds
+      // an immediate-kill violation somewhere else (§1).
+      ...(hook_bypass.one_shot
+        ? { deferrable: /** @type {true} */ (true) }
+        : {})
     };
   }
 
@@ -2207,25 +2236,69 @@ function scanCommand(src, ctx, depth) {
   if (!parsed) {
     return fallbackViolation(src, ctx);
   }
+  /** @type {MergeViolation|null} */
+  let deferrable = null;
+  /** @type {MergeViolation|null} */
+  let warned = null;
+  /** @type {MergeViolation[]} */
+  const warnings = [];
+
+  /**
+   * Fold one command's verdict into the scan. Returns the verdict when it is an
+   * immediate kill, which ends the scan (§1: immediate termination always
+   * wins); otherwise it is remembered and the scan continues to the end.
+   *
+   * @param {MergeViolation|null} violation
+   * @returns {MergeViolation|null}
+   */
+  function fold(violation) {
+    if (!violation) {
+      return null;
+    }
+    if (guardEffect(violation) === 'warn') {
+      if (!warned) {
+        warned = violation;
+      }
+      warnings.push(violation);
+      return null;
+    }
+    if (violation.deferrable === true) {
+      if (!deferrable) {
+        deferrable = violation;
+      }
+      // A nested scan may have carried warnings of its own alongside it.
+      for (const carried of violation.warnings || []) {
+        if (!warned) {
+          warned = carried;
+        }
+        warnings.push(carried);
+      }
+      return null;
+    }
+    return violation;
+  }
+
   for (let idx = 0; idx < parsed.commands.length; idx += 1) {
-    const violation = checkSimpleCommand(
-      parsed.commands[idx],
-      ctx,
-      depth,
-      parsed.commands,
-      idx
+    const kill = fold(
+      checkSimpleCommand(parsed.commands[idx], ctx, depth, parsed.commands, idx)
     );
-    if (violation) {
-      return violation;
+    if (kill) {
+      return kill;
     }
   }
   for (const inner_src of parsed.nested) {
-    const violation = scanCommand(inner_src, ctx, depth + 1);
-    if (violation) {
-      return violation;
+    const kill = fold(scanCommand(inner_src, ctx, depth + 1));
+    if (kill) {
+      return kill;
     }
   }
-  return null;
+  if (deferrable) {
+    // Both reach the consumer (§1): the warning is recorded as it is today and
+    // the arm 3 verdict is the one held for execution evidence.
+    const held = /** @type {MergeViolation} */ (deferrable);
+    return warnings.length > 0 ? { ...held, warnings: [...warnings] } : held;
+  }
+  return warned;
 }
 
 /**

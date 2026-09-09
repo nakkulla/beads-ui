@@ -19539,3 +19539,109 @@ describe('scheduler bench cells (preset-compare §4.4·§4.5·§4.6)', () => {
     expect(attempt.status).toBe('failed');
   });
 });
+
+describe('scheduler records the guard mirror and its deferrals (guard-hook-bypass-result-judgment §2/§3)', () => {
+  /**
+   * A runner whose spawn reports a mirror verdict, the way the live engine's
+   * spawn-time probe does.
+   *
+   * @param {'verified'|'absent'|undefined} guard_mirror
+   */
+  function makeMirrorRunner(guard_mirror) {
+    return () => ({
+      name: 'claude',
+      spawn: () => ({
+        pid: 9100,
+        process_identity: { pid: 9100, pgid: 9100, started_at: 1000 },
+        kill: vi.fn(),
+        events: new EventEmitter(),
+        done: new Promise(() => {}),
+        ...(guard_mirror === undefined ? {} : { guard_mirror }),
+        prompts: { system_prompt: 'sys', task_prompt: 'task' }
+      })
+    });
+  }
+
+  test('copies the spawn probe verdict onto the attempt', async () => {
+    const env = setup({
+      config: { A1: {} },
+      slots: 1,
+      makeRunner: makeMirrorRunner('verified')
+    });
+    seedQueue(env.store, ['A1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.guard_mirror).toBe('verified');
+    expect(attempt.system_prompt).toBe('sys');
+    expect(attempt.task_prompt).toBe('task');
+  });
+
+  test('leaves guard_mirror null when the runner reports none', async () => {
+    const env = setup({
+      config: { A1: {} },
+      slots: 1,
+      makeRunner: makeMirrorRunner(undefined)
+    });
+    seedQueue(env.store, ['A1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(Object.values(env.store.snapshot(WS).attempts)[0].guard_mirror).toBe(
+      null
+    );
+  });
+
+  test('mirrors a guard_pending add and clear onto the attempt', async () => {
+    const env = setup({ config: { A1: {} } });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('A1');
+    const entry = {
+      tool_use_id: 'toolu_1',
+      command: 'git -c core.hooksPath=/dev/null diff',
+      at: 1,
+      log_offset: 512
+    };
+
+    events.emit('event', { kind: 'guard_pending', op: 'add', entry });
+    const held = Object.values(env.store.snapshot(WS).attempts)[0]
+      .guard_pending;
+    events.emit('event', { kind: 'guard_pending', op: 'clear', entry });
+
+    expect(held).toEqual([entry]);
+    expect(
+      Object.values(env.store.snapshot(WS).attempts)[0].guard_pending
+    ).toBe(null);
+  });
+
+  test('copies confirmed_by onto cause_detail and guard_kill', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('S1', {
+      success: false,
+      reason: 'blocker',
+      exit: 143,
+      blocked: true,
+      blocked_detail: /** @type {any} */ ({
+        reason: 'hook_bypass_blocked',
+        command: 'git -c core.hooksPath=/dev/null diff',
+        confirmed_by: 'tool_result'
+      })
+    });
+    await flush();
+    await flush();
+
+    const a = env.store.snapshot(WS).attempts[attempt_id];
+    expect(a.cause_detail).toMatchObject({ confirmed_by: 'tool_result' });
+    expect(a.guard_kill).toMatchObject({
+      reason: 'hook_bypass_blocked',
+      command: 'git -c core.hooksPath=/dev/null diff',
+      confirmed_by: 'tool_result'
+    });
+  });
+});

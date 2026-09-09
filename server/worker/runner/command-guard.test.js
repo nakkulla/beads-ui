@@ -1796,3 +1796,129 @@ describe('command-guard permits reviewed quick_fix lane base pushes', () => {
     ).toBe('git_push_base');
   });
 });
+
+describe('command-guard deferrable one-shot relocation (§1)', () => {
+  test('marks a lone `-c core.hooksPath` relocation deferrable', () => {
+    const violation = findMergeViolation(
+      'git -c core.hooksPath=/dev/null diff --stat',
+      NORMAL
+    );
+
+    expect(violation?.kind).toBe('hook_bypass');
+    expect(violation?.deferrable).toBe(true);
+  });
+
+  test('marks a `--config-env` relocation deferrable', () => {
+    const violation = findMergeViolation(
+      'git --config-env=core.hooksPath=EMPTY log -1',
+      NORMAL
+    );
+
+    expect(violation?.deferrable).toBe(true);
+  });
+
+  test('marks an env relocation prefix on a non-git command deferrable', () => {
+    const violation = findMergeViolation(
+      `${'GIT_CONFIG'}_COUNT=1 ${'GIT_CONFIG'}_KEY_0=core.hooksPath ${'GIT_CONFIG'}_VALUE_0= go test ./...`,
+      NORMAL
+    );
+
+    expect(violation?.deferrable).toBe(true);
+  });
+
+  test('prefers arm 1 over the one-shot arm in one command', () => {
+    const violation = findMergeViolation(
+      'git -c core.hooksPath=/dev/null push --no-verify origin UI-1',
+      NORMAL
+    );
+
+    expect(violation?.kind).toBe('hook_bypass');
+    expect(violation?.deferrable).toBeUndefined();
+  });
+
+  test('returns the later config write instead of the earlier one-shot', () => {
+    const violation = findMergeViolation(
+      'git -c core.hooksPath=X diff; git config core.hooksPath Y',
+      NORMAL
+    );
+
+    expect(violation?.command).toBe('git config core.hooksPath Y');
+    expect(violation?.deferrable).toBeUndefined();
+  });
+
+  test('returns a later `gh pr merge` instead of the earlier one-shot', () => {
+    const violation = findMergeViolation(
+      'git -c core.hooksPath=X diff && gh pr merge 304 --squash',
+      NORMAL
+    );
+
+    expect(violation?.kind).toBe('gh_pr_merge');
+    expect(violation?.deferrable).toBeUndefined();
+  });
+
+  test('reports the base-push warning alongside a deferred one-shot', () => {
+    const violation = findMergeViolation(
+      'git -c core.hooksPath=X diff; git push origin HEAD:main',
+      ON_MAIN
+    );
+
+    expect(violation?.deferrable).toBe(true);
+    expect((violation?.warnings || []).map((w) => w.kind)).toEqual([
+      'git_push_base'
+    ]);
+  });
+});
+
+describe('command-guard non-deferrable arms stay immediate (§1 regression)', () => {
+  test('leaves a `--no-verify` push undeferred', () => {
+    expect(
+      findMergeViolation('git push --no-verify origin UI-1', NORMAL)?.deferrable
+    ).toBeUndefined();
+  });
+
+  test('leaves a persistent config write undeferred', () => {
+    expect(
+      findMergeViolation('git config core.hooksPath /tmp/x', NORMAL)?.deferrable
+    ).toBeUndefined();
+  });
+
+  test('leaves an exported env relocation undeferred', () => {
+    expect(
+      findMergeViolation(`export ${'GIT_CONFIG'}_COUNT=0`, NORMAL)?.deferrable
+    ).toBeUndefined();
+  });
+
+  test('leaves a bare env relocation undeferred', () => {
+    expect(
+      findMergeViolation(`${'GIT_CONFIG'}_COUNT=0`, NORMAL)?.deferrable
+    ).toBeUndefined();
+  });
+
+  test('leaves the landing kinds undeferred', () => {
+    expect(
+      findMergeViolation('gh pr merge 304 --squash', NORMAL)?.deferrable
+    ).toBeUndefined();
+    expect(
+      findMergeViolation('git push origin HEAD:main', ON_MAIN)?.deferrable
+    ).toBeUndefined();
+    expect(
+      findMergeViolation('git merge origin/main', NORMAL)?.deferrable
+    ).toBeUndefined();
+  });
+
+  test('leaves the unparseable fallback undeferred', () => {
+    const violation = findMergeViolation(
+      'f() { git -c core.hooksPath=/dev/null diff; }',
+      NORMAL
+    );
+
+    expect(violation?.kind).toBe('hook_bypass');
+    expect(violation?.deferrable).toBeUndefined();
+  });
+
+  test('keeps an exempt one-shot subcommand a non-violation', () => {
+    expect(
+      findMergeViolation('git -c core.hooksPath=/dev/null status', NORMAL)
+    ).toBe(null);
+  });
+});

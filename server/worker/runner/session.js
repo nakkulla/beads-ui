@@ -23,6 +23,7 @@
  * fake child and assert the group-kill call WITHOUT spawning a real CLI.
  *
  * @import { ChildProcessLike } from './fixture-spawn.js'
+ * @import { GuardPendingEntry } from './guard-mirror.js'
  */
 import { EventEmitter } from 'node:events';
 import nodeFs from 'node:fs';
@@ -33,6 +34,7 @@ import {
   guardEffect,
   guardWarningMessage
 } from './command-guard.js';
+import { resolveGuardPending } from './guard-mirror.js';
 import { createTailReader } from './tail-reader.js';
 
 const DIRECT_CHILD_TERM_GRACE_MS = 250;
@@ -91,6 +93,10 @@ const DIRECT_CHILD_KILL_GRACE_MS = 1_000;
  * @typedef {Object} BlockedDetail
  * @property {string} reason - The blocker reason (guard name / question kind).
  * @property {string|null} command - The simple command the guard matched.
+ * @property {'tool_result'} [confirmed_by] - Present when the kill was held
+ * until the paired `tool_result` proved the command actually ran
+ * (guard-hook-bypass-result-judgment §3). The scheduler copies it onto the
+ * durable `cause_detail`/`guard_kill`.
  */
 
 /**
@@ -106,6 +112,11 @@ const DIRECT_CHILD_KILL_GRACE_MS = 1_000;
  * @property {(signal?: NodeJS.Signals|number) => void} kill - Group-kill helper.
  * @property {EventEmitter} events - Emits 'event'(RunnerEvent), 'raw'(object), 'session_id'(string, once).
  * @property {Promise<RunnerVerdict>} done - Resolves with the terminal verdict.
+ * @property {'verified'|'absent'} guard_mirror - Whether this spawn's FINAL
+ * environment provably carries the PreToolUse(Bash) guard mirror
+ * (guard-hook-bypass-result-judgment §2). Probed once, on the same env object
+ * the child received, and recorded on the attempt so a restart monitor judges
+ * by the same value.
  * @property {{ system_prompt: string|null, task_prompt: string|null }} prompts -
  * What this spawn sent, lifted off the SAME `buildArgv` result the argv came
  * from (UI-rxp3 §3). Recording it from anywhere else would re-assemble the
@@ -134,7 +145,8 @@ const DIRECT_CHILD_KILL_GRACE_MS = 1_000;
  * unlike `liftUsage`: only a runner whose stream carries child sessions defines
  * it, and its absence is what makes the delegation pass a no-op for the others.
  * @property {(raw: any) => (string|null)} detectQuestion - Return a reason string when a raw line is an interactive request, else null.
- * @property {(raw: any) => (string|null)} [extractShellCommand] - Return the shell command of a Bash/exec tool_use, else null (feeds the merge guards).
+ * @property {(raw: any) => ({ command: string, id: string|null }|null)} [extractShellCommand] - Return the shell command of a Bash/exec tool_use with the tool call's own id, else null (feeds the merge guards and the deferred-verdict pairing).
+ * @property {(input: { env: Record<string, string|undefined>, cwd: string, fs: typeof import('node:fs') }) => ('verified'|'absent')} [probeGuardMirror] - Probe the spawn environment for a registered PreToolUse guard mirror (guard-hook-bypass-result-judgment §2). Absent member ⇒ `'absent'`, i.e. the current immediate kill.
  * @property {(raw: any) => (string|null)} [extractSessionId] - Return the runner's session identifier from a raw line, else null. The engine emits the FIRST non-null result once on the `session_id` event so the attempt record can persist it for `--resume`/transcript tracking (spec §2).
  * @property {(ctx: { raw: any[], stderr_tail: string|null, finished_at?: number|null, account_row?: { status: string, windows: Array<{ pct: number, resetsAt: string|null }> }|null }) => ({ detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }|null)} [classifyProviderOutage] - Classify runner-specific provider failures without changing the terminal verdict. Optional so existing adapters remain valid.
  * @property {(ctx: { raw: any[], exit: number|null, blocked: boolean }) => { success: boolean, reason: string, summary: string|null }} verdict -
@@ -163,7 +175,7 @@ const DIRECT_CHILD_KILL_GRACE_MS = 1_000;
  * @property {typeof import('node:fs')} [fs]
  * @property {number} [direct_child_term_grace_ms]
  * @property {number} [direct_child_kill_grace_ms]
- * @property {(input: { child: ChildProcessLike, log_path: string|null, fs: typeof import('node:fs'), onLine: (line: string) => void }) => LineSource} [makeLineSource] -
+ * @property {(input: { child: ChildProcessLike, log_path: string|null, fs: typeof import('node:fs'), onLine: (line: string, end_offset?: number) => void }) => LineSource} [makeLineSource] -
  * Line-source seam (UI-o2yt §5). Production leaves it unset: a `log_path` picks
  * the file tail reader and its absence picks the stdout reader. Tests inject
  * their own source to drive the engine without a file or a real child.
@@ -221,7 +233,7 @@ function createStdoutSource(input) {
  * Read lines off the session-log FILE the child writes through its inherited fd
  * (UI-o2yt §3.1).
  *
- * @param {{ file: string, fs: typeof import('node:fs'), onLine: (line: string) => void }} input
+ * @param {{ file: string, fs: typeof import('node:fs'), onLine: (line: string, end_offset?: number) => void }} input
  * @returns {LineSource}
  */
 function createFileSource(input) {
@@ -353,6 +365,24 @@ export function runSession(spec, bead, workspace, settings, deps) {
 
   const built = spec.buildArgv(bead, workspace, settings);
   const { command, args, env } = built;
+  // Assembled ONCE and handed to both the spawn and the mirror probe
+  // (guard-hook-bypass-result-judgment §2): a probe that read a differently
+  // built environment would be answering about a session that does not exist.
+  // Inherit the parent environment (PATH etc.) so the spawned CLI resolves its
+  // binary and toolchain; then layer the per-session settings env (the worker
+  // token) and finally the adapter routing env, which WINS on any key collision
+  // (e.g. ccx's ANTHROPIC_BASE_URL overriding an inherited value) (spec §5.4).
+  /** @type {Record<string, string|undefined>} */
+  const final_env = {
+    ...inheritedEnv(),
+    ...(settings?.env || {}),
+    ...(env || {})
+  };
+  /** @type {'verified'|'absent'} */
+  const guard_mirror =
+    typeof spec.probeGuardMirror === 'function'
+      ? spec.probeGuardMirror({ env: final_env, cwd: workspace, fs })
+      : 'absent';
   // Opened BEFORE the spawn so the fds exist to be inherited; an open failure
   // throws out of runSession, which the dispatcher records as a spawn failure.
   const fds = log_path ? openOutputFds(fs, log_path, stderr_path) : null;
@@ -367,15 +397,7 @@ export function runSession(spec, bead, workspace, settings, deps) {
       stdio: fds
         ? ['ignore', fds.out_fd, fds.err_fd ?? 'ignore']
         : ['ignore', 'pipe', 'pipe'],
-      // Inherit the parent environment (PATH etc.) so the spawned CLI resolves its
-      // binary and toolchain; then layer the per-session settings env (the worker
-      // token) and finally the adapter routing env, which WINS on any key collision
-      // (e.g. ccx's ANTHROPIC_BASE_URL overriding an inherited value) (spec §5.4).
-      env: {
-        ...inheritedEnv(),
-        ...(settings?.env || {}),
-        ...(env || {})
-      }
+      env: final_env
     });
   } finally {
     // The child owns its own copies now; leaving the server's open would leak
@@ -522,11 +544,86 @@ export function runSession(spec, bead, workspace, settings, deps) {
   const norm_events = [];
 
   /**
+   * Deferred arm 3 verdicts waiting for their `tool_result`
+   * (guard-hook-bypass-result-judgment §3). In memory only: the durable copy is
+   * the attempt record the scheduler keeps from the events below, and a
+   * deferral never pairs across streams.
+   *
+   * @type {GuardPendingEntry[]}
+   */
+  let guard_pending = [];
+
+  /**
+   * Announce one deferral transition to the scheduler, which mirrors it onto
+   * the attempt record (§3).
+   *
+   * @param {'add'|'clear'} op
+   * @param {GuardPendingEntry} entry
+   */
+  function emitGuardPending(op, entry) {
+    events.emit('event', { kind: 'guard_pending', op, entry, raw: null });
+  }
+
+  /**
+   * Emit one surviving guard verdict. `error` is the only enum member that
+   * carries a message without claiming the session stopped (`blocker` means
+   * fail-closed), and `reason` is what tells a consumer which guard spoke.
+   * `guard_warning` is what makes it durable: the scheduler recognizes the event
+   * by that key and appends it to the attempt record (UI-1xcd §1).
+   *
+   * @param {{ reason: string, command: string|null }} detail
+   * @param {string} message
+   * @param {unknown} raw
+   */
+  function emitGuardWarning(detail, message, raw) {
+    /** @type {RunnerEvent} */
+    const guard_warning = {
+      kind: 'error',
+      reason: detail.reason,
+      message,
+      guard_warning: { reason: detail.reason, command: detail.command },
+      raw
+    };
+    norm_events.push(guard_warning);
+    events.emit('event', guard_warning);
+  }
+
+  /**
+   * Record the blocker evidence and group-kill the session.
+   *
+   * @param {BlockedDetail} detail
+   * @param {unknown} raw
+   */
+  function guardKill(detail, raw) {
+    blocked = true;
+    blocked_detail = detail;
+    // One copy of the sentence, in `failure-class.js`, because the restart
+    // monitor's kill reaches the same durable record through the scheduler's
+    // `blockerCauseDetail` (spec §6 row 3).
+    const message = guardKillMessage({
+      reason: detail.reason,
+      command: detail.command
+    });
+    /** @type {RunnerEvent} */
+    const merge_blocker = {
+      kind: 'blocker',
+      reason: detail.reason,
+      message,
+      raw
+    };
+    norm_events.push(merge_blocker);
+    events.emit('event', merge_blocker);
+    kill('SIGTERM');
+  }
+
+  /**
    * Process one complete jsonl line.
    *
    * @param {string} line
+   * @param {number} [end_offset] - Byte offset just past this line, when the
+   * source is the session-log file.
    */
-  function onLine(line) {
+  function onLine(line, end_offset) {
     const trimmed = line.trim();
     if (trimmed.length === 0) {
       return;
@@ -576,56 +673,79 @@ export function runSession(spec, bead, workspace, settings, deps) {
     // (guard-enforcement-layer-replacement §4): a base push is judged from a
     // command string with no cwd in it, so it only warns and the session runs
     // on; the kinds decided by argv alone still fail closed.
+    // A deferred verdict's evidence line (§3), judged before the command
+    // extraction below because a `tool_result` carries no command of its own.
+    for (const resolution of resolveGuardPending(obj, guard_pending)) {
+      guard_pending = guard_pending.filter(
+        (entry) => entry !== resolution.entry
+      );
+      emitGuardPending('clear', resolution.entry);
+      if (!resolution.executed) {
+        // The mirror refused it: nothing ran, so there is no violation to
+        // record (§3, same disposition as UI-iw28 §2's exemption).
+        continue;
+      }
+      guardKill(
+        {
+          reason: 'hook_bypass_blocked',
+          command: resolution.entry.command,
+          confirmed_by: 'tool_result'
+        },
+        obj
+      );
+      return;
+    }
+
     if (typeof spec.extractShellCommand === 'function') {
-      const cmd = spec.extractShellCommand(obj);
-      const violation = cmd
-        ? findMergeViolation(cmd, {
+      const extracted = spec.extractShellCommand(obj);
+      const violation = extracted
+        ? findMergeViolation(extracted.command, {
             disposition,
             quickfix_lane,
             repo: guard_repo,
             target_base: guard_target_base
           })
         : null;
+      // A deferred arm 3 may travel with warnings found in the same string
+      // (§1): the warning is recorded and the session runs on either way.
+      for (const carried of violation?.warnings || []) {
+        emitGuardWarning(
+          { reason: carried.reason, command: carried.command },
+          guardWarningMessage(carried),
+          obj
+        );
+      }
       if (violation && guardEffect(violation) === 'warn') {
-        // `error` is the only enum member that carries a message without
-        // claiming the session stopped (`blocker` means fail-closed), and
-        // `reason` is what tells a consumer which guard spoke. `guard_warning`
-        // is what makes it durable: the scheduler recognizes the event by that
-        // key and appends it to the attempt record (UI-1xcd §1).
-        /** @type {RunnerEvent} */
-        const guard_warning = {
-          kind: 'error',
-          reason: violation.reason,
-          message: guardWarningMessage(violation),
-          guard_warning: {
-            reason: violation.reason,
-            command: violation.command
-          },
-          raw: obj
-        };
-        norm_events.push(guard_warning);
-        events.emit('event', guard_warning);
+        emitGuardWarning(
+          { reason: violation.reason, command: violation.command },
+          guardWarningMessage(violation),
+          obj
+        );
         // No `return`: the line is normalized like any other.
+      } else if (
+        violation &&
+        violation.deferrable === true &&
+        guard_mirror === 'verified' &&
+        extracted &&
+        typeof extracted.id === 'string'
+      ) {
+        // Held, not killed (§3): the PreToolUse mirror this session provably
+        // runs under refuses the shape first, so the verdict waits for the
+        // paired `tool_result` to say whether it ran at all.
+        /** @type {GuardPendingEntry} */
+        const entry = {
+          tool_use_id: extracted.id,
+          command: violation.command,
+          at: Date.now(),
+          log_offset: typeof end_offset === 'number' ? end_offset : null
+        };
+        guard_pending = [...guard_pending, entry];
+        emitGuardPending('add', entry);
       } else if (violation) {
-        blocked = true;
-        blocked_detail = {
-          reason: violation.reason,
-          command: violation.command
-        };
-        // One copy of the sentence, in `failure-class.js`, because the restart
-        // monitor's kill reaches the same durable record through the
-        // scheduler's `blockerCauseDetail` (spec §6 row 3).
-        const message = guardKillMessage(blocked_detail);
-        /** @type {RunnerEvent} */
-        const merge_blocker = {
-          kind: 'blocker',
-          reason: violation.reason,
-          message,
-          raw: obj
-        };
-        norm_events.push(merge_blocker);
-        events.emit('event', merge_blocker);
-        kill('SIGTERM');
+        guardKill(
+          { reason: violation.reason, command: violation.command },
+          obj
+        );
         return;
       }
     }
@@ -689,6 +809,17 @@ export function runSession(spec, bead, workspace, settings, deps) {
       } catch {
         /* ignore */
       }
+      // Session termination with a verdict still held (§4): there is nothing
+      // left to kill, so the deferral becomes diagnostic evidence instead.
+      for (const entry of guard_pending) {
+        emitGuardPending('clear', entry);
+        emitGuardWarning(
+          { reason: 'hook_bypass_unresolved', command: entry.command },
+          `hook bypass verdict unresolved at session end (no tool_result observed): ${entry.command}`,
+          null
+        );
+      }
+      guard_pending = [];
       const { success, reason, summary } = spec.verdict({
         raw: raw_events,
         exit,
@@ -725,6 +856,7 @@ export function runSession(spec, bead, workspace, settings, deps) {
     // What this spawn ACTUALLY sent, straight off the build that produced the
     // argv above (UI-rxp3 §3). An adapter that exposes neither yields null, and
     // the recording path writes nothing rather than a guess.
+    guard_mirror,
     prompts: {
       system_prompt:
         typeof built.system_prompt === 'string' ? built.system_prompt : null,

@@ -43,8 +43,11 @@ const OPEN_RETRY_LIMIT = 10;
 /**
  * @typedef {Object} TailReaderInput
  * @property {string} file - Absolute path of the file to follow.
- * @property {(line: string) => void} onLine - Called once per COMPLETE line, in
- * file order, without its trailing newline.
+ * @property {(line: string, end_offset: number) => void} onLine - Called once
+ * per COMPLETE line, in file order, without its trailing newline. `end_offset`
+ * is the byte offset just past that line, which a deferred guard verdict
+ * records so a re-attached monitor can re-read from exactly there
+ * (guard-hook-bypass-result-judgment §3).
  * @property {(err: unknown, kind: 'open'|'read') => void} [onError] - Called
  * when the reader gives up opening the file (`open`) or on a read fault
  * (`read`, retried on the next poll). Never throws into the caller.
@@ -78,6 +81,10 @@ export function createTailReader(input) {
   /** @type {number|null} */
   let fd = null;
   let offset = start_offset;
+  // Byte position just past the last COMPLETE line handed out. Kept apart from
+  // the read cursor because the decoder may hold a split multibyte tail that
+  // the string buffer cannot see; summing the emitted lines' own bytes is exact.
+  let line_end = start_offset;
   let buffer = '';
   let decoder = new StringDecoder('utf8');
   /** @type {import('node:fs').FSWatcher|null} */
@@ -115,10 +122,12 @@ export function createTailReader(input) {
   function emitBufferedLines() {
     let nl = buffer.indexOf('\n');
     while (nl >= 0) {
-      const line = buffer.slice(0, nl).replace(/\r$/, '');
+      const raw_line = buffer.slice(0, nl);
       buffer = buffer.slice(nl + 1);
+      line_end += Buffer.byteLength(raw_line, 'utf8') + 1;
+      const line = raw_line.replace(/\r$/, '');
       if (line.length > 0) {
-        onLine(line);
+        onLine(line, line_end);
       }
       nl = buffer.indexOf('\n');
     }
@@ -148,6 +157,7 @@ export function createTailReader(input) {
         // Truncated/replaced underneath us: re-read from the new start rather
         // than waiting for an EOF that already moved backwards.
         offset = Math.min(start_offset, size);
+        line_end = offset;
         buffer = '';
         decoder = new StringDecoder('utf8');
       }
@@ -219,7 +229,8 @@ export function createTailReader(input) {
     decoder = new StringDecoder('utf8');
     const line = rest.replace(/\r?\n$/, '').trim();
     if (line.length > 0) {
-      onLine(line);
+      line_end = offset;
+      onLine(line, offset);
     }
   }
 
