@@ -36,6 +36,9 @@ scope:
 - 개정: r1 리뷰(astra, anchor 25a102cc) 지적 6건 반영 — §1 우선순위, §2 env 조립 위치, §2·§3 영구
   저장 경로(`scheduler.js`), §3·§4 보류의 durable 인계와 재부착, Test scope의 RED/회귀 분리, ADR 후보
   판정.
+- 개정 r3: stale 재리뷰 정정(anchor bd788f19 → base 61954784, UI-mn5u·UI-5cf0 착지 반영) — Codex runner의
+  `--disable hooks` 제거 사실, `session.js` env 조립이 `inheritedEnv()`를 쓰는 사실, 줄 번호 갱신. 결정
+  불변.
 
 ## 왜
 
@@ -61,8 +64,8 @@ UI-iw28 §"효과는 이진이다"는 `warn`(실행됨·기록만)과 `kill`(SIG
 dotfiles PR #483(2026-09-04)이 `src/claude/hooks/destructive-guard-hook.sh`에 같은 네 형태의
 PreToolUse(Bash) 사전 차단을 넣었다. 목적은 정확히 "Worker kill을 PreToolUse 거부로 전환"이다.
 
-그런데 Worker 세션에서는 그 전환이 일어나지 않는다. `session-monitor.js` `handleLine`(L441-487)과
-`runner/session.js` `onLine`(L547-598)은 둘 다 스트림의 **`tool_use` 출현 줄**에서
+그런데 Worker 세션에서는 그 전환이 일어나지 않는다. `session-monitor.js` `handleLine`(L495-603)과
+`runner/session.js` `onLine`(L529-643)은 둘 다 스트림의 **`tool_use` 출현 줄**에서
 `extractShellCommand → findMergeViolation → guardKill`을 실행한다. PreToolUse 훅이 거부해도 그
 거부는 뒤따르는 `tool_result`에만 남고, Worker는 그 줄을 보기 전에 이미 죽였다. #483은 대화형
 세션에서만 성립한다 — 이 스펙을 쓰던 대화형 세션에서 위 코드 블록을 heredoc으로 파일에 쓰려던
@@ -72,7 +75,7 @@ Bash 호출이 같은 훅에 거부되었고, 세션은 계속되어 다른 도�
 ### 사실 — 스트림에 남는 거부의 모양
 
 Claude runner는 `--permission-mode bypassPermissions`로 기동하지만 사용자 `~/.claude/settings.json`의
-훅을 상속한다(`claude.js:665`, 헤더 주석 "permission_denials … hook/policy denials the session
+훅을 상속한다(`claude.js:636`, 헤더 주석 "permission_denials … hook/policy denials the session
 observes as tool errors"). PreToolUse 훅이 `exit 2`로 거부하면 명령은 실행되지 않고 스트림에는
 다음 `user` 줄이 남는다(이 세션 transcript에서 실측):
 
@@ -86,20 +89,23 @@ observes as tool errors"). PreToolUse 훅이 `exit 2`로 거부하면 명령은 
 `parent_tool_use_id`를 달고 흐르며 그 `tool_result`도 같은 파일에 남는다(muao 로그 L948·953).
 `session-log.js`는 이미 이 짝(`pending_commands`, L433-530)으로 bd write 완료를 관측한다.
 
-Codex runner는 `--disable hooks`로 기동한다(`codex.js:466`). 미러가 없으므로 Codex 세션에는
-"거부 층"이 존재하지 않는다. `item.completed`도 어댑터가 의도적으로 버린다(`codex.js:203`).
+Codex runner는 UI-mn5u(codex-orchestration-parity §3.1) 이후 사용자 codex 훅을 켠 채 기동한다
+(`codex.js:445-456`, `--disable hooks` 제거). 그 훅은 dotfiles가 소유하는 Codex 정책 경로이고, §2가
+검증하는 Claude PreToolUse(Bash) 거부 미러가 아니다 — 이 스펙은 Codex 세션에 "거부 층"이 있다고 보지
+않는다. `item.completed`도 어댑터가 의도적으로 버린다(`codex.js:193`).
 
 ### 사실 — 판정과 저장의 실제 위치
 
 - `isHookBypass`(`command-guard.js:1790-1887`)는 arm 3(1회성)을 arm 1(`push --no-verify`)·arm 2
   (`config` 쓰기)보다 **먼저** 검사해 `true`를 돌려주고, `scanCommand`(L2196-2225)는 명령열의 **첫
   위반**에서 검색을 끝낸다.
-- 자식의 최종 환경은 `session.js:346`에서 `{ ...process.env, ...settings.env, ...adapter.env }`로
-  조립된다. 어댑터 `buildArgv`가 돌려주는 `env`는 그 일부다.
-- attempt 레코드의 spawn 시점 기록은 `scheduler.js:8286-8322`가 쓴다(`system_prompt`/`task_prompt`를
+- 자식의 최종 환경은 `session.js:371-379`에서 `{ ...inheritedEnv(), ...settings.env, ...adapter.env }`로
+  조립된다(`inheritedEnv()`는 UI-mn5u §3.1이 `WORKFLOW_*` 키를 벗긴 부모 env다). 어댑터 `buildArgv`가
+  돌려주는 `env`는 그 일부다.
+- attempt 레코드의 spawn 시점 기록은 `scheduler.js:8334-8367`가 쓴다(`system_prompt`/`task_prompt`를
   runner의 spawn 결과에서 복사해 `store.updateAttempt`). live runner(`session.js`)는 store를 갖지 않고
   이벤트·verdict(`blocked_detail`)로 돌려준다; monitor(`session-monitor.js`)는 store를 직접 쓴다.
-- Worker 재시작 뒤 `attach.js:1979-1997`은 usage replay를 끝낸 **로그 끝 boundary**에서 monitor를
+- Worker 재시작 뒤 `attach.js:2027` 부근은 usage replay를 끝낸 **로그 끝 boundary**에서 monitor를
   시작한다. monitor `stop()`은 서버 종료에도 호출되므로 세션 종단과 같지 않다.
 
 ### 왜 프롬프트 계층만으로 끝내지 않는가
@@ -152,11 +158,11 @@ spawn 직전에 한 번, **자식이 실제로 받는 최종 환경 객체**로 
 
 - 새 모듈 `server/worker/runner/guard-mirror.js`, 순수 함수
   `probeGuardMirror({ env, cwd, fs })` → `'verified' | 'absent'`.
-- **조립 위치(r1 지적 2).** 어댑터가 아니라 `session.js`가 부른다: `runSession`은 `session.js:346`의
-  spawn 직전에 `final_env = { ...process.env, ...(settings?.env || {}), ...(env || {}) }`를 한 번 만들고,
+- **조립 위치(r1 지적 2).** 어댑터가 아니라 `session.js`가 부른다: `runSession`은 `session.js:371-379`의
+  spawn 직전에 `final_env = { ...inheritedEnv(), ...(settings?.env || {}), ...(env || {}) }`를 한 번 만들고,
   그 **같은 객체**를 `spawn`에 넘기고 `spec.probeGuardMirror ? spec.probeGuardMirror({ env: final_env,
   cwd, fs }) : 'absent'`에 넘긴다. 어댑터 spec은 선택 메서드 `probeGuardMirror`를 노출한다 — claude spec은
-  `guard-mirror.js`의 함수를 그대로, codex spec은 노출하지 않는다(→ `'absent'`, `--disable hooks`).
+  `guard-mirror.js`의 함수를 그대로, codex spec은 노출하지 않는다(→ `'absent'`; Codex 훅은 §5).
   두 갈래가 다른 환경을 볼 수 없게 하는 것이 이 배치의 목적이다.
 - 설정 파일: `env.CLAUDE_CONFIG_DIR`가 있으면 `<그 값>/settings.json`, 없으면
   `<env.HOME>/.claude/settings.json`. `env.HOME`이 없으면 `absent`.
@@ -172,7 +178,7 @@ spawn 직전에 한 번, **자식이 실제로 받는 최종 환경 객체**로 
      `disableAllHooks: true`가 없다(파일 부재는 통과, 파싱 실패는 `absent`).
 - 어떤 예외든 `absent`. 로그 한 줄(`guard mirror probe failed: …`)만 남긴다.
 - **영구 저장(r1 지적 3).** `runSession`의 spawn 결과(지금 `system_prompt`/`task_prompt`가 실리는 그
-  자리, `session.js:697-700`)에 `guard_mirror`를 싣고, `scheduler.js:8286-8322`의 spawn 기록 patch가
+  자리, `session.js:729-732`)에 `guard_mirror`를 싣고, `scheduler.js:8334-8367`의 spawn 기록 patch가
   두 프롬프트 필드와 같은 방식으로 `guard_mirror`를 attempt 레코드에 복사한다. `queue-store.js`
   Attempt에 `guard_mirror: 'verified'|'absent'|null` 필드와 bound 함수를 더한다(미기록 attempt는
   `null` = 미검증). live runner는 자기 spawn 직전 값(`final_env` probe 결과)을, restart monitor는
@@ -238,7 +244,8 @@ spawn 직전에 한 번, **자식이 실제로 받는 최종 환경 객체**로 
 
 Codex 세션(`guard_mirror: 'absent'`)과 검증에 실패한 Claude 세션은 §1의 `deferrable` 필드가
 붙어 있어도 §3에 들어가지 않는다 — 현행 `tool_use`/`item.started` 즉시 kill. 이 스펙은 Codex에
-미러를 만들지 않는다(codex는 `--disable hooks`이고 UI-58w8·UI-mn5u가 정한 Codex 정책 경로 밖이다).
+미러를 만들지 않는다. UI-mn5u 이후 켜진 codex 훅은 dotfiles Codex 정책 경로이며 UI-58w8·UI-mn5u가
+소유한다 — §2의 미러 검증 대상이 아니고, 그 훅이 Bash 명령을 거부하는지는 이 스펙이 판단하지 않는다.
 
 ### §6 프리앰블을 바뀐 계약에 맞춘다
 
