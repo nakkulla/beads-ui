@@ -289,7 +289,7 @@
  * be able to re-pair them: `log_offset` is where the `tool_use` line ended, and
  * the re-attached monitor backfills from there to the handoff boundary. Null
  * when nothing is held.
- * @property {{ reason: string, command: string|null, at: number }|null} guard_kill -
+ * @property {{ reason: string, command: string|null, at: number, confirmed_by?: 'tool_result' }|null} guard_kill -
  * The fail-closed evidence a DETACHED session monitor recorded before killing an
  * orphan session (UI-o2yt §3.3). A killed session leaves no verdict behind, so
  * the reconcile pass would judge it by `gh` alone and read an already-pushed PR

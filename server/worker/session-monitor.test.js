@@ -996,6 +996,36 @@ describe('worker/session-monitor re-attach backfill (§3)', () => {
     });
   });
 
+  test('ends an unpaired hold as a warning when the process is already gone', () => {
+    const env = setup({ probe: { alive: false, started_at: null } });
+    const attempt = seedHeldAttempt(env, assistantText('last words'));
+
+    const started = startAtReattach(env, attempt);
+
+    const record = env.store.snapshot(WS).attempts['att-1'];
+    expect(started).toBe(false);
+    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(record.guard_pending).toBe(null);
+    expect(record.guard_warnings).toEqual([
+      { reason: 'hook_bypass_unresolved', command: ONE_SHOT_CMD, at: 5000 }
+    ]);
+  });
+
+  test('settles a refusal the gone process had already logged', () => {
+    const env = setup({ probe: { alive: false, started_at: null } });
+    const attempt = seedHeldAttempt(
+      env,
+      toolResultLine('toolu_1', MIRROR_REFUSAL)
+    );
+
+    startAtReattach(env, attempt);
+
+    const record = env.store.snapshot(WS).attempts['att-1'];
+    expect(record.guard_pending).toBe(null);
+    expect(record.guard_warnings ?? null).toBe(null);
+    expect(record.guard_kill).toBe(null);
+  });
+
   test('keeps the verdict held and settles it from the tail', () => {
     const env = setup();
     const attempt = seedHeldAttempt(env, assistantText('still working'));

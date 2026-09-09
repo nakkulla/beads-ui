@@ -1921,4 +1921,35 @@ describe('command-guard non-deferrable arms stay immediate (§1 regression)', ()
       findMergeViolation('git -c core.hooksPath=/dev/null status', NORMAL)
     ).toBe(null);
   });
+
+  test('returns the merge behind a one-shot prefix on the same command', () => {
+    const violation = findMergeViolation(
+      `${'GIT_CONFIG'}_COUNT=0 gh pr merge 304 --squash`,
+      NORMAL
+    );
+
+    expect(violation?.kind).toBe('gh_pr_merge');
+    expect(violation?.deferrable).toBeUndefined();
+  });
+
+  test('returns the persistent arm inside a script behind a one-shot prefix', () => {
+    const violation = findMergeViolation(
+      `${'GIT_CONFIG'}_COUNT=0 bash -c 'git push --no-verify origin UI-1'`,
+      NORMAL
+    );
+
+    expect(violation?.kind).toBe('hook_bypass');
+    expect(violation?.command).toContain('--no-verify');
+    expect(violation?.deferrable).toBeUndefined();
+  });
+
+  test('carries a base-push warning from a script behind a one-shot prefix', () => {
+    const violation = findMergeViolation(
+      `${'GIT_CONFIG'}_COUNT=0 bash -c 'git push origin HEAD:main'`,
+      ON_MAIN
+    );
+
+    expect(violation?.deferrable).toBe(true);
+    expect(violation?.warnings?.map((w) => w.kind)).toEqual(['git_push_base']);
+  });
 });

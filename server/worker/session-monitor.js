@@ -595,6 +595,45 @@ export function createSessionMonitors(deps) {
   }
 
   /**
+   * Settle the verdicts a session left held when it died while the Worker was
+   * down (§3 re-attach, §4). No monitor is started for a dead process, so this
+   * is the only place those holds are ever read again: pair them against the
+   * whole log the process wrote, and end whatever stays unpaired as
+   * `hook_bypass_unresolved`. Nothing is signalled — there is no process.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   * @param {{ guard_pending?: import('./runner/guard-mirror.js').GuardPendingEntry[] }} options
+   */
+  function settleDeadPending(workspace, attempt, options) {
+    const held = Array.isArray(options.guard_pending)
+      ? options.guard_pending
+      : Array.isArray(attempt.guard_pending)
+        ? attempt.guard_pending
+        : [];
+    if (held.length === 0) {
+      return;
+    }
+    const entry = {
+      workspace,
+      attempt_id: attempt.attempt_id,
+      killed: false,
+      guard_pending: [...held],
+      terminated: true
+    };
+    const file = logFileOf(workspace, attempt);
+    /** @type {number} */
+    let size = 0;
+    try {
+      size = fs.statSync(file).size;
+    } catch (err) {
+      log('guard-pending settle stat failed for %s: %o', entry.attempt_id, err);
+    }
+    backfillGuardPending(entry, attempt, file, size);
+    settleGuardPending(entry);
+  }
+
+  /**
    * Fail-closed stop of an orphan session: record the blocker evidence FIRST,
    * then signal.
    *
@@ -836,6 +875,7 @@ export function createSessionMonitors(deps) {
         return false;
       }
       if (!pidStillOurs(attempt)) {
+        settleDeadPending(workspace, attempt, options);
         return false;
       }
       /** @type {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, guard_mirror: 'verified'|'absent'|null, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[], terminated: boolean, reader: any }} */

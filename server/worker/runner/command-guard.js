@@ -2134,30 +2134,68 @@ function checkSimpleCommand(cmd, ctx, depth, siblings, index) {
   // is a whole simple command with no argv at all, and a bypass that also lands
   // on the base must take the stricter of the two effects.
   const hook_bypass = isHookBypass(argv, prefix);
+  /**
+   * The arm 3 verdict of THIS simple command, held rather than returned: the
+   * rest of the command — a merge verb behind the prefix, or a script handed to
+   * an interpreter — may still carry an immediate-kill violation, and that one
+   * wins (§1). `scanCommand` applies the same rule across the command list.
+   *
+   * @type {MergeViolation|null}
+   */
+  let deferred = null;
   if (!ctx.disposition && hook_bypass.bypass) {
-    return {
+    /** @type {MergeViolation} */
+    const violation = {
       kind: 'hook_bypass',
       reason: 'hook_bypass_blocked',
-      command: cmd.text,
-      // Arm 3 only. `scanCommand` may still strip it when the same string holds
-      // an immediate-kill violation somewhere else (§1).
-      ...(hook_bypass.one_shot
-        ? { deferrable: /** @type {true} */ (true) }
-        : {})
+      command: cmd.text
     };
+    if (!hook_bypass.one_shot) {
+      return violation;
+    }
+    deferred = { ...violation, deferrable: true };
+  }
+
+  /**
+   * Decide what a later verdict of this same command means next to the held
+   * arm 3: with nothing held it is returned as before; a kill beats the hold; a
+   * warning or a nested arm 3 is folded into the hold and the scan goes on.
+   *
+   * @param {MergeViolation|null} violation
+   * @returns {MergeViolation|null} What to return now, or null to keep going.
+   */
+  function settle(violation) {
+    if (!violation) {
+      return null;
+    }
+    if (!deferred) {
+      return violation;
+    }
+    if (violation.deferrable === true) {
+      deferred = withWarnings(deferred, violation.warnings || []);
+      return null;
+    }
+    if (guardEffect(violation) === 'warn') {
+      deferred = withWarnings(deferred, [violation]);
+      return null;
+    }
+    return violation;
   }
 
   if (argv.length === 0) {
-    return null;
+    return deferred;
   }
   const name = basename(argv[0]).toLowerCase();
 
   if (isGhPrMerge(argv)) {
-    return {
+    const hit = settle({
       kind: 'gh_pr_merge',
       reason: 'merge_to_base_blocked',
       command: cmd.text
-    };
+    });
+    if (hit) {
+      return hit;
+    }
   }
 
   if (
@@ -2167,11 +2205,14 @@ function checkSimpleCommand(cmd, ctx, depth, siblings, index) {
     pushLandsOnBase(argv.slice(2), ctx.target_base) &&
     !isExemptCrossRepoPush(siblings, index, ctx)
   ) {
-    return {
+    const hit = settle({
       kind: 'git_push_base',
       reason: 'merge_to_base_blocked',
       command: cmd.text
-    };
+    });
+    if (hit) {
+      return hit;
+    }
   }
 
   if (
@@ -2180,41 +2221,58 @@ function checkSimpleCommand(cmd, ctx, depth, siblings, index) {
     /^merge(-|$)/.test(argv[1]) &&
     !['merge-base', 'merge-tree', 'merge-file'].includes(argv[1])
   ) {
-    return {
+    const hit = settle({
       kind: 'base_merge',
       reason: 'base_merge_blocked',
       command: cmd.text
-    };
+    });
+    if (hit) {
+      return hit;
+    }
   }
 
   if (name === 'eval' && argv.length > 1) {
     const joined = argv.slice(1).join(' ');
-    const inner = scanCommand(joined, ctx, depth + 1);
-    if (inner) {
-      return inner;
+    const hit = settle(scanCommand(joined, ctx, depth + 1));
+    if (hit) {
+      return hit;
     }
   }
 
   if (INTERPRETERS.has(name)) {
     for (let i = 1; i < argv.length; i += 1) {
       if (/^-[a-z]*c$/.test(argv[i]) && i + 1 < argv.length) {
-        const inner = scanCommand(argv[i + 1], ctx, depth + 1);
-        if (inner) {
-          return inner;
+        const hit = settle(scanCommand(argv[i + 1], ctx, depth + 1));
+        if (hit) {
+          return hit;
         }
         break;
       }
     }
     // A heredoc feeding an interpreter's stdin is a script, not data.
     for (const doc of cmd.heredocs) {
-      const inner = scanCommand(doc.body, ctx, depth + 1);
-      if (inner) {
-        return inner;
+      const hit = settle(scanCommand(doc.body, ctx, depth + 1));
+      if (hit) {
+        return hit;
       }
     }
   }
 
-  return null;
+  return deferred;
+}
+
+/**
+ * The held arm 3 verdict with more `warn` verdicts carried alongside it (§1).
+ *
+ * @param {MergeViolation} held
+ * @param {MergeViolation[]} more
+ * @returns {MergeViolation}
+ */
+function withWarnings(held, more) {
+  if (more.length === 0) {
+    return held;
+  }
+  return { ...held, warnings: [...(held.warnings || []), ...more] };
 }
 
 /**

@@ -7101,6 +7101,45 @@ describe('scheduler review-session dispatch (UI-d7fy §5)', () => {
     expect(env.store.snapshot(WS).attempts['review:1'].exit).toBe(0);
   });
 
+  test('records an execution-confirmed guard kill on a review session', async () => {
+    const complete = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      reviewSession: { complete }
+    });
+    seedPendingReviewSession(env.store);
+    await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null,
+      head_ref: 'B1'
+    });
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'blocker',
+      exit: 143,
+      blocked: true,
+      blocked_detail: /** @type {any} */ ({
+        reason: 'hook_bypass_blocked',
+        command: 'git -c core.hooksPath=/dev/null diff',
+        confirmed_by: 'tool_result'
+      })
+    });
+    await flush();
+    await flush();
+
+    expect(
+      env.store.snapshot(WS).attempts['review:1'].guard_kill
+    ).toMatchObject({
+      reason: 'hook_bypass_blocked',
+      command: 'git -c core.hooksPath=/dev/null diff',
+      confirmed_by: 'tool_result'
+    });
+  });
+
   test('refuses worktree_missing when the click named no head branch', async () => {
     const env = setup({ config: {}, slots: 1 });
     env.worktree.exists.mockReturnValue(false);
@@ -7849,6 +7888,48 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
       )
     ).toBe(false);
     expect(release).toHaveBeenCalledWith('B1');
+  });
+
+  test('keeps the monitor kill evidence confirmed_by on the settled cause_detail', async () => {
+    const env = setup({
+      config: {},
+      slots: 1,
+      probePid: () => ({ alive: false, started_at: null }),
+      sessionMonitors: { stop: vi.fn(() => true) }
+    });
+    let rev = env.store.snapshot(WS).revision;
+    rev = env.store.place(WS, { expected_revision: rev, bead_id: 'B1' }).queue
+      .revision;
+    env.store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'a1', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'a1',
+      patch: {
+        bead_id: 'B1',
+        status: 'running',
+        pid: 4242,
+        repo: '/repo',
+        target_base: 'main',
+        guard_kill: {
+          reason: 'hook_bypass_blocked',
+          command: 'git -c core.hooksPath=/dev/null diff',
+          at: 5,
+          confirmed_by: 'tool_result'
+        }
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+    await flush();
+
+    const a = env.store.snapshot(WS).attempts.a1;
+    expect(a.cause).toBe('loud_fail_blocker');
+    expect(a.cause_detail).toMatchObject({
+      reason: 'hook_bypass_blocked',
+      confirmed_by: 'tool_result'
+    });
   });
 
   test('judges a restart-surviving disposition by its own verdict, not by a PR', async () => {

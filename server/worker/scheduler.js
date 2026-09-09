@@ -4927,6 +4927,10 @@ export function createScheduler(deps) {
           log('review session completion failed for %s: %o', attempt_id, err);
         }
         if (settled === null || settled.reason !== 'binding_gone') {
+          // A review session runs under the same held-verdict path (§3), so
+          // its execution-confirmed kill is recorded here too — after the
+          // binding check, for the same reason the exit write is.
+          recordConfirmedGuardKill(workspace, attempt_id, verdict);
           deps.store.updateAttempt(workspace, {
             attempt_id,
             patch: { exit: verdict.exit, ...usagePatch(workspace, attempt_id) }
@@ -6683,7 +6687,10 @@ export function createScheduler(deps) {
             blocked: true,
             blocked_detail: {
               reason: guard_kill.reason,
-              command: guard_kill.command ?? null
+              command: guard_kill.command ?? null,
+              ...(guard_kill.confirmed_by === 'tool_result'
+                ? { confirmed_by: /** @type {const} */ ('tool_result') }
+                : {})
             },
             raw: []
           }),
@@ -6705,7 +6712,12 @@ export function createScheduler(deps) {
           'loud_fail_blocker',
           blockerCauseDetail({
             reason: guard_kill.reason,
-            command: guard_kill.command ?? null
+            command: guard_kill.command ?? null,
+            // The monitor's execution evidence (§3) survives into the final
+            // cause_detail this write produces.
+            ...(guard_kill.confirmed_by === 'tool_result'
+              ? { confirmed_by: /** @type {const} */ ('tool_result') }
+              : {})
           })
         );
       } finally {
@@ -6963,7 +6975,12 @@ export function createScheduler(deps) {
           'loud_fail_blocker',
           blockerCauseDetail({
             reason: guard_kill.reason,
-            command: guard_kill.command ?? null
+            command: guard_kill.command ?? null,
+            // The monitor's execution evidence (§3) survives into the final
+            // cause_detail this write produces.
+            ...(guard_kill.confirmed_by === 'tool_result'
+              ? { confirmed_by: /** @type {const} */ ('tool_result') }
+              : {})
           })
         );
       } else if (vr.ok) {
