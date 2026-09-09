@@ -39,6 +39,8 @@ scope:
 - 개정 r3: stale 재리뷰 정정(anchor bd788f19 → base 61954784, UI-mn5u·UI-5cf0 착지 반영) — Codex runner의
   `--disable hooks` 제거 사실, `session.js` env 조립이 `inheritedEnv()`를 쓰는 사실, 줄 번호 갱신. 결정
   불변.
+- 개정 r4: finish의 `check-adr-candidates.py`가 후보 1의 `→ ADR 아님` 뒤에 문장이 이어진다고
+  판정해(닫는 토큰은 항목 끝) 그 문장을 토큰 앞으로 옮겼다. 판정 내용 불변.
 
 ## 왜
 
@@ -355,8 +357,8 @@ RED→GREEN 시임(현행 코드에서 실제로 실패하는 조건)과 회귀 
   되돌리면 UI-iw28 시점 코드로 돌아가고 durable 필드는 `null`로 남아 무해하다. 맥락 없는 의외성:
   있다 — 같은 한 줄이 Codex 세션에서는 즉시 kill이고 Claude 세션에서는 훅 거부 뒤 계속되는 것은 이
   문서 없이는 설명되지 않는다. 실제 절충: 있다 — 예방층을 믿고 오탐을 없애는 것 대 텍스트 판정
-  단독 fail-closed; 잔여 위험 1이 그 값이다. 세 조건 중 하나(되돌리기 어려움)가 성립하지 않으므로
-  → ADR 아님. 판정 근거는 이 스펙 §1–§4가 소유한다.
+  단독 fail-closed; 잔여 위험 1이 그 값이다. 판정 근거는 이 스펙 §1–§4가 소유한다. 세 조건 중
+  하나(되돌리기 어려움)가 성립하지 않으므로 → ADR 아님
 - `git push --no-verify`는 검증 세션에서도 텍스트 즉시 kill로 남긴다.
   되돌리기 어려움: 아니다 — `isHookBypass` arm 1 반환값의 `one_shot: false` 하나이며, 되돌리면 arm 1이
   arm 3과 같은 보류 대상이 될 뿐 다른 코드가 바뀌지 않는다. 맥락 없는 의외성: 아니다 — ADR 0007이
