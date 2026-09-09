@@ -131,6 +131,9 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   크기·테두리·글자 크기를 카드마다 고르지 않는다 — 적용 표와 근거는
   `docs/superpowers/specs/2026-09-02-worker-operation-surface-unify-design.md`
   §3.2가 소유한다.
+- 큐 정지·공급자 보류는 상단 배너가 아니라 **막힌 대기 행**의 4a 게이트 칩과 1번
+  조작(`▶ 재개`·`[지금 시작]`)이다. 막힌 행이 없으면 그리지 않는다 — 근거는
+  `docs/superpowers/specs/2026-09-09-worker-gate-on-card-no-banner-design.md`.
 - 재료가 없는 줄은 그리지 않는다(fail-quiet). 판정은 그 줄의 재료 전부로 한다.
 - 타 레포 blocker 칩도 라벨은 `⛓ <ID>` 그대로다. 구분은 foreign 색과 툴팁이
   맡고, owner를 아는 경우 워크스페이스명은 툴팁에만 들어간다(UI-esse). 사람의

@@ -20034,3 +20034,150 @@ describe('↻ 이어하기가 체계적 정지를 함께 푼다 (UI-hhju §3.1)'
     });
   });
 });
+
+describe('공급자 게이트의 `[지금 시작]` 우회 (§3.4)', () => {
+  /**
+   * A scheduler and a store on ONE clock this test moves, as the grace tests
+   * use: the start-now request lives for `QUEUE_GRACE_MS` measured against the
+   * same `now` the store stamps `added_at` with.
+   *
+   * @param {{ clock: { at: number }, config: Record<string, any>, slots?: number }} opts
+   */
+  function gateEnv(opts) {
+    const now = () => opts.clock.at;
+    return setup({
+      store: makeQueueStore({ now }),
+      now,
+      config: opts.config,
+      slots: opts.slots ?? 2
+    });
+  }
+
+  /**
+   * Stand a runner-wide `outage` target, the shape §2 measured on
+   * microbiome_bile. A held attempt is what carries a target, so one is seeded
+   * alongside it.
+   *
+   * @param {any} store
+   */
+  function seedOutage(store) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'held-1', bead_id: 'HELD' }
+    });
+    store.holdProviderAttempt(WS, {
+      attempt_id: 'held-1',
+      patch: { status: 'paused', cause: 'provider_outage:outage' },
+      runner: 'claude',
+      target: {
+        kind: 'outage',
+        model: 'opus',
+        account: null,
+        detail: 'rate_limited_429',
+        last_error: 'Fable 5.1 requires usage credits',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: ['held-1']
+      }
+    });
+  }
+
+  test('dispatches only the bead a `[지금 시작]` click named during an outage', async () => {
+    const clock = { at: 1000 };
+    const env = gateEnv({ clock, config: { X1: {}, X3: {} } });
+    seedQueue(env.store, ['X1', 'X3']);
+    seedOutage(env.store);
+    clock.at += QUEUE_GRACE_MS;
+
+    requestStartNow(WS, 'X1', clock.at);
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('X1')).toBe(true);
+    expect(env.scheduler.isRunning('X3')).toBe(false);
+  });
+
+  test('holds a row carrying only `armed_by_lane` during an outage', async () => {
+    const clock = { at: 1000 };
+    const env = gateEnv({ clock, config: { X2: {} } });
+    seedQueue(env.store, ['X2']);
+    seedOutage(env.store);
+    env.store.arm(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_ids: ['X2'],
+      lane_id: 'cl_1'
+    });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('X2')).toBe(false);
+  });
+
+  test('holds the named bead again once its start-now request expires', async () => {
+    const clock = { at: 1000 };
+    const env = gateEnv({ clock, config: { X4: {} } });
+    seedQueue(env.store, ['X4']);
+    seedOutage(env.store);
+    requestStartNow(WS, 'X4', clock.at);
+
+    clock.at += QUEUE_GRACE_MS + 1;
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('X4')).toBe(false);
+  });
+
+  test('binds a bypassed attempt to the target when it meets the outage again', async () => {
+    const clock = { at: 1000 };
+    const env = gateEnv({ clock, config: { X5: {} }, slots: 1 });
+    seedQueue(env.store, ['X5']);
+    seedOutage(env.store);
+    requestStartNow(WS, 'X5', clock.at);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.values(env.store.snapshot(WS).attempts).find(
+      (/** @type {any} */ attempt) => attempt.bead_id === 'X5'
+    )?.attempt_id;
+
+    env.runner.finish('X5', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          subtype: 'success',
+          is_error: true,
+          result: 'API Error: 529 Overloaded'
+        }
+      ]
+    });
+    await flush();
+
+    const targets = env.store.snapshot(WS).provider_hold.claude.targets;
+    expect(
+      targets.some((/** @type {any} */ target) =>
+        target.attempt_ids.includes(attempt_id)
+      )
+    ).toBe(true);
+  });
+
+  test('withholds the bypass from a row re-seated after the click', async () => {
+    const clock = { at: 1000 };
+    const env = gateEnv({ clock, config: { X6: {} } });
+    seedQueue(env.store, ['X6']);
+    seedOutage(env.store);
+    requestStartNow(WS, 'X6', clock.at);
+
+    clock.at += 5000;
+    env.store.place(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'X6',
+      lane: 's1'
+    });
+    env.store.arm(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_ids: ['X6'],
+      lane_id: 'cl_1'
+    });
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('X6')).toBe(false);
+  });
+});

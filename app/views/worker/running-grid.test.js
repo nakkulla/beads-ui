@@ -4,11 +4,7 @@ import {
   formatAttemptOrchestrationChip,
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
-import {
-  providerHoldBadgeText,
-  runningGridTemplate,
-  runningTile
-} from './running-grid.js';
+import { runningGridTemplate, runningTile } from './running-grid.js';
 
 describe('worker failed running tile template', () => {
   beforeEach(() => {
@@ -2151,47 +2147,6 @@ describe('worker 공급자 보류 타일', () => {
     };
   }
 
-  test('formats the outage badge with its next probe', () => {
-    const clock = new Date(3000).toLocaleTimeString('ko-KR', {
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-
-    const text = providerHoldBadgeText({
-      kind: 'outage',
-      detail: 'overloaded_529',
-      next_probe_at: 3000
-    });
-
-    expect(text).toBe(`⚠️ 공급자 장애 · 다음 프로브 ${clock}`);
-  });
-
-  test('formats the usage badge with an account alias', () => {
-    const clock = new Date(4000).toLocaleTimeString('ko-KR', {
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-
-    const text = providerHoldBadgeText({
-      kind: 'usage_limit',
-      detail: 'usage_limit',
-      resets_at: 4000,
-      target: { account: 'one@example.com', account_alias: '업무' }
-    });
-
-    expect(text).toBe(`⏳ 한도 대기 ${clock} · 업무`);
-  });
-
-  test('formats an unknown reset with the manual suffix', () => {
-    const text = providerHoldBadgeText({
-      kind: 'usage_limit',
-      detail: 'usage_limit',
-      auto_resume: 'disarmed'
-    });
-
-    expect(text).toBe('⏳ 한도 대기 · 리셋 미상 · 수동 조치');
-  });
-
   test('renders the provider hold actions in the action foot', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
@@ -3282,5 +3237,80 @@ describe('worker running tile — [폐기 포기] (discard-abandon §3.1)', () =
         el.textContent?.trim()
       )
     ).toEqual(['백업 정리 재시도', '폐기 포기', '세션에서 해결']);
+  });
+});
+
+// `↻ 지금 재시도`는 큐 헤더가 없어진 뒤 예약된 재시도를 앞당기는 유일한 자리다
+// (UI-01wh §3.3). 재료는 서 있는 환경 보류의 `hold_since` 하나다.
+describe('retry_wait tile hold retry (UI-01wh §3.3)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Record<string, any>} [patch]
+   * @returns {HTMLElement}
+   */
+  function renderRetryTile(patch = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningGridTemplate([
+        /** @type {any} */ ({
+          bead_id: 'UI-r1',
+          attempt_id: 'attempt-r1',
+          title: '환경 장애 재시도 대기',
+          runner: 'codex',
+          model: 'sol',
+          started_at: 1000,
+          retry_wait: true,
+          status: 'retry_wait',
+          status_label: '재시도 대기',
+          retry: { cause: 'x', attempts: 2, max: 3, next_at: 5000 },
+          ...patch
+        })
+      ]),
+      mount
+    );
+    return mount;
+  }
+
+  test('draws ↻ 지금 재시도 with the hold since', () => {
+    const mount = renderRetryTile({ hold_since: 4242 });
+
+    const button = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile__foot .rtile__hold-retry')
+    );
+
+    expect([button.dataset.since, button.textContent?.trim()]).toEqual([
+      '4242',
+      '↻ 지금 재시도'
+    ]);
+  });
+
+  test('draws no retry button when no hold stands', () => {
+    const mount = renderRetryTile({});
+
+    expect(mount.querySelector('.rtile__hold-retry')).toBeNull();
+  });
+
+  test('puts ↻ 지금 재시도 after 폐기 when both stand', () => {
+    const mount = renderRetryTile({
+      hold_since: 4242,
+      discard: {
+        action: true,
+        enabled: true,
+        label: '폐기',
+        title: '백업 후 정리',
+        operation: null
+      }
+    });
+
+    const labels = Array.from(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('.rtile__foot')
+      ).querySelectorAll('button')
+    ).map((button) => button.textContent?.trim());
+
+    expect(labels).toEqual(['폐기', '↻ 지금 재시도']);
   });
 });

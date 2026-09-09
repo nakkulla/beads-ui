@@ -2172,96 +2172,44 @@ describe('views/worker', () => {
     ).toBeNull();
   });
 
-  // 큐 보류/정지 (UI-5ym8 §8). 사용자 ⏸와 다른 사실이므로 다른 자리·다른
-  // 메시지이고, 두 종류는 사람이 할 일이 달라 버튼도 다르다.
-  test('renders the environment hold with its earliest scheduled retry', () => {
-    const next_at = new Date(2026, 7, 28, 9, 40).getTime();
+  // 정지·보류는 이제 막힌 카드가 말한다 (UI-01wh §1): 상단 배너는 없고, 출구는
+  // 막힌 대기 행의 `▶ 재개`·`[지금 시작]`과 `retry_wait` 타일의 `↻ 지금 재시도`다.
+  const SYSTEMIC_HOLD = {
+    kind: 'systemic',
+    cause: 'loud_fail_blocker',
+    since: 77,
+    bead_ids: ['A-1'],
+    halted_by_attempt_id: 't9'
+  };
+
+  test('draws no hold or provider gate banner in the header', () => {
     const mount = mountAttemptTiles({
-      hold: {
-        kind: 'env',
-        cause: 'verify_failed:gh_observation_failed',
-        since: 1000,
-        bead_ids: ['A-1']
-      },
-      lineages: [
-        { bead_id: 'A-1', origin_attempt_id: 't1', cause: 'x', next_at: null },
-        { bead_id: 'A-2', origin_attempt_id: 't2', cause: 'x', next_at },
-        {
-          bead_id: 'A-3',
-          origin_attempt_id: 't3',
-          cause: 'x',
-          next_at: next_at + 60_000
+      hold: SYSTEMIC_HOLD,
+      queue: [{ bead_id: 'A-1', added_at: 1 }],
+      provider_hold: {
+        claude: {
+          since: 1,
+          generation: 1,
+          targets: [{ kind: 'outage', model: 'opus', account: null }]
         }
-      ]
-    });
-
-    const banner = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-hold--env')
-    );
-    expect(banner.querySelector('.worker-hold__text')?.textContent).toContain(
-      '환경 보류'
-    );
-    expect(banner.querySelector('.worker-hold__text')?.textContent).toContain(
-      `재시도 대기 · 다음 ${new Date(next_at).toLocaleTimeString('ko-KR', {
-        hour: '2-digit',
-        minute: '2-digit'
-      })}`
-    );
-    expect(banner.querySelector('.worker-hold__resume')).toBeNull();
-  });
-
-  test('sends the hold since when 지금 재시도 is clicked', async () => {
-    const transport = vi.fn().mockResolvedValue({ ok: true });
-    const mount = mountAttemptTiles(
-      {
-        hold: { kind: 'env', cause: 'verify_cmd_spawn_error', since: 4242 },
-        lineages: []
-      },
-      transport
-    );
-
-    mount
-      .querySelector('.worker-hold__retry')
-      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-queue-hold-retry-now', {
-      since: 4242
-    });
-  });
-
-  test('names the halted beads on a systemic hold', () => {
-    const mount = mountAttemptTiles({
-      hold: {
-        kind: 'systemic',
-        cause: 'base_landing_detected',
-        since: 1000,
-        bead_ids: ['A-1', 'A-2'],
-        halted_by_attempt_id: 't9'
       }
     });
 
-    const banner = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-hold--systemic')
-    );
-    expect(banner.querySelector('.worker-hold__text')?.textContent).toContain(
-      'bead A-1, A-2'
-    );
-    expect(banner.querySelector('.worker-hold__retry')).toBeNull();
+    expect([
+      mount.querySelector('.worker-hold'),
+      mount.querySelector('.worker-provider-gate')
+    ]).toEqual([null, null]);
   });
 
-  test('sends the hold since when 재개 is clicked', async () => {
+  test('sends the hold since when a blocked row 재개 is clicked', async () => {
     const transport = vi.fn().mockResolvedValue({ ok: true });
     const mount = mountAttemptTiles(
-      {
-        hold: { kind: 'systemic', cause: 'verify_red', since: 77 },
-        lineages: []
-      },
+      { hold: SYSTEMIC_HOLD, queue: [{ bead_id: 'A-1', added_at: 1 }] },
       transport
     );
 
     mount
-      .querySelector('.worker-hold__resume')
+      .querySelector('.worker-mini__hold-resume')
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await flush();
 
@@ -2270,163 +2218,98 @@ describe('views/worker', () => {
     });
   });
 
-  test('draws no hold banner when the queue carries none', () => {
-    const mount = mountAttemptTiles({});
+  test('reports a refused 재개 with the stale-hold toast', async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValue({ ok: false, reason: 'hold_changed' });
+    const mount = mountAttemptTiles(
+      { hold: SYSTEMIC_HOLD, queue: [{ bead_id: 'A-1', added_at: 1 }] },
+      transport
+    );
 
-    expect(mount.querySelector('.worker-hold')).toBeNull();
-  });
+    mount
+      .querySelector('.worker-mini__hold-resume')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
 
-  test('renders the provider outage dispatch gate in the Worker header', () => {
-    const next_probe_at = new Date(2026, 8, 3, 12, 30).getTime();
-    const mount = mountAttemptTiles({
-      provider_hold: {
-        claude: {
-          since: 1,
-          generation: 1,
-          targets: [
-            {
-              kind: 'outage',
-              model: 'opus',
-              account: null,
-              attempt_ids: ['held'],
-              next_probe_at
-            }
-          ]
-        }
-      }
-    });
-
-    const gate_text = mount
-      .querySelector('.worker-provider-gate')
-      ?.textContent?.replace(/\s+/g, ' ')
-      .trim();
-
-    expect(gate_text).toContain(
-      `⚠️ claude 공급자 장애 — 신규 디스패치 보류, 다음 프로브 ${new Date(
-        next_probe_at
-      ).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}`
+    expect(document.body.textContent).toContain(
+      '재개 거부: 큐 상태가 바뀌었습니다 — 다시 확인하세요'
     );
   });
 
-  test('renders the account alias on a usage-limit dispatch gate', () => {
-    const mount = mountAttemptTiles({
-      provider_hold: {
-        claude: {
-          since: 1,
-          generation: 1,
-          targets: [
-            {
-              kind: 'usage_limit',
-              model: 'opus',
-              account: 'one@example.com',
-              resets_at: 3000,
-              attempt_ids: ['held']
-            }
-          ]
+  test('sends the hold since when the retry_wait tile 지금 재시도 is clicked', async () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountAttemptTiles(
+      {
+        hold: { kind: 'env', cause: 'verify_cmd_spawn_error', since: 4242 },
+        lineages: [
+          {
+            bead_id: 'A-1',
+            origin_attempt_id: 't1',
+            cause: 'x',
+            next_at: 9000,
+            attempts: 1
+          }
+        ],
+        attempts: {
+          t1: {
+            attempt_id: 't1',
+            bead_id: 'A-1',
+            status: 'retry_wait',
+            started_at: 1,
+            retry: { cause: 'x', attempts: 1, max: 3, next_at: 9000 }
+          }
         }
       },
-      account_catalog: {
-        claude: [
-          { email: 'one@example.com', alias: '업무', status: 'ok', windows: [] }
-        ]
-      }
-    });
-
-    const gate_text = mount
-      .querySelector('.worker-provider-gate')
-      ?.textContent?.replace(/\s+/g, ' ')
-      .trim();
-
-    expect(gate_text).toContain('⏳ 업무 사용 한도 — 그 계정 디스패치 보류');
-  });
-
-  test('widens the usage-limit gate wording when the account is unresolved', () => {
-    const mount = mountAttemptTiles({
-      provider_hold: {
-        claude: {
-          since: 1,
-          generation: 1,
-          targets: [
-            {
-              kind: 'usage_limit',
-              model: 'opus',
-              account: null,
-              attempt_ids: ['held']
-            }
-          ]
-        }
-      }
-    });
-
-    const gate_text = mount
-      .querySelector('.worker-provider-gate')
-      ?.textContent?.replace(/\s+/g, ' ')
-      .trim();
-
-    expect(gate_text).toContain(
-      '⏳ claude 사용 한도 — 계정 미확인이라 러너 전체 디스패치 보류'
+      transport
     );
+
+    mount
+      .querySelector('.rtile__hold-retry')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-hold-retry-now', {
+      since: 4242
+    });
   });
 
-  test('names every limited account on the usage-limit dispatch gate', () => {
+  test('opens and closes the gate reason popup from the chip', () => {
     const mount = mountAttemptTiles({
-      provider_hold: {
-        claude: {
-          since: 1,
-          generation: 1,
-          targets: [
-            {
-              kind: 'usage_limit',
-              model: 'opus',
-              account: 'one@example.com',
-              attempt_ids: ['held']
-            },
-            {
-              kind: 'usage_limit',
-              model: 'sonnet',
-              account: 'two@example.com',
-              attempt_ids: ['held']
-            }
-          ]
-        }
-      },
-      account_catalog: {
-        claude: [
-          { email: 'one@example.com', alias: '업무', status: 'ok', windows: [] }
-        ]
-      }
+      hold: SYSTEMIC_HOLD,
+      queue: [{ bead_id: 'A-1', added_at: 1 }]
     });
+    const chip = () =>
+      /** @type {HTMLElement} */ (mount.querySelector('.worker-dep--gate'));
 
-    const gate_text = mount
-      .querySelector('.worker-provider-gate')
-      ?.textContent?.replace(/\s+/g, ' ')
-      .trim();
+    chip().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const opened = mount.querySelector('.chip-popover')?.textContent || '';
+    chip().dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
-    expect(gate_text).toContain('⏳ 업무, two@example.com 사용 한도');
-    expect(gate_text).toContain('그 계정들 디스패치 보류');
+    expect([
+      opened.includes('자동 디스패치가 막혀 있다'),
+      opened.includes(
+        '출구: 이 행의 ▶ 재개(큐 전체) 또는 [지금 시작](이 행만)'
+      ),
+      mount.querySelector('.chip-popover')
+    ]).toEqual([true, true, null]);
   });
 
-  test('omits a missing reset time from the usage-limit dispatch gate', () => {
-    const mount = mountAttemptTiles({
-      provider_hold: {
-        claude: {
-          since: 1,
-          generation: 1,
-          targets: [
-            {
-              kind: 'usage_limit',
-              model: 'opus',
-              account: 'one@example.com',
-              attempt_ids: ['held']
-            }
-          ]
-        }
-      }
-    });
+  test('starts a gated row now even after its grace has passed', async () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountAttemptTiles(
+      { hold: SYSTEMIC_HOLD, queue: [{ bead_id: 'A-1', added_at: 1 }] },
+      transport
+    );
 
-    expect(
-      mount.querySelector('.worker-provider-gate')?.textContent
-    ).not.toContain('리셋');
+    mount
+      .querySelector('[data-action="queue-start-now"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-start-now', {
+      bead_id: 'A-1'
+    });
   });
 
   test('opens the non-failure popover from the provider verdict badge', () => {

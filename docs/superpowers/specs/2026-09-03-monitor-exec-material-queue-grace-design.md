@@ -231,6 +231,11 @@ bead_overlay: { [bead_id]: { route?: string, metadata?: Record<string, string> }
 이미 명시적 실행 지시를 유예에서 뺐으므로 이 버튼은 새 권한이 아니라 그 경로의
 행 단위 진입점이다.
 
+**정정(UI-01wh)**: 표시 조건이 넓어졌다 — 유예 중인 행뿐 아니라 **게이트에 막힌
+행**(큐 정지·공급자 보류)에도 선다. 그 행에서 이 클릭은 그 행 하나에 대해 게이트를
+무시하는 명시적 디스패치이고, 근거는
+`2026-09-09-worker-gate-on-card-no-banner-design.md` §3.3이 소유한다.
+
 **새 WS op는 세 자리를 모두 얻어야 한다.** `worker-queue-start-now`는
 `app/protocol.js`의 `MESSAGE_TYPES` 배열과 같은 파일의 `MessageType` union에
 등록되고, `server/ws/connection.js`의 dispatch에 `case`를 얻어야 서버 핸들러

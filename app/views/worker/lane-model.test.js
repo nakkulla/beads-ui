@@ -6806,3 +6806,395 @@ describe('대기 진입 유예 재료 (UI-q1tg §3.3·§3.5)', () => {
     ]).toEqual([true, null]);
   });
 });
+
+// 게이트 투영 (UI-01wh §3.1). 막힌 대기 행이 정지·보류를 말하는 유일한 자리이므로
+// "어느 행이 막힌 행인가"의 판정이 이 블록의 주제다.
+describe('waiting row gate projection (UI-01wh §3.1)', () => {
+  const GATE_CATALOG = {
+    runners: {
+      claude: {
+        command: 'claude',
+        models: { sonnet: { id: 'claude-sonnet' } }
+      },
+      codex: { command: 'codex', models: { sol: { id: 'gpt-sol' } } }
+    }
+  };
+
+  /**
+   * @param {Partial<Record<string, any>>} [patch]
+   */
+  function gateState(patch = {}) {
+    return state({
+      execution_defaults: EXECUTION_DEFAULTS,
+      runner_catalog: GATE_CATALOG,
+      session_defaults: {},
+      ...patch
+    });
+  }
+
+  /**
+   * @param {string[]} ids
+   */
+  function overlays(ids) {
+    /** @type {Record<string, any>} */
+    const out = {};
+    for (const id of ids) {
+      out[id] = { metadata: {} };
+    }
+    return out;
+  }
+
+  const SYSTEMIC = {
+    kind: 'systemic',
+    cause: 'loud_fail_blocker',
+    since: 5000,
+    bead_ids: ['A-1'],
+    halted_by_attempt_id: 't9'
+  };
+
+  test('marks every parallel row and only the first serial row as gated', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          hold: SYSTEMIC,
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-3' }, { bead_id: 'A-4' }] }
+          ]
+        })
+      ],
+      [gateState()]
+    );
+
+    const by_id = new Map(lanes.queue.map((row) => [row.id, row.gate]));
+    expect([
+      by_id.get('A-1')?.kind,
+      by_id.get('A-1')?.since,
+      by_id.get('A-2')?.kind,
+      by_id.get('A-3')?.kind,
+      by_id.get('A-4')
+    ]).toEqual(['systemic', 5000, 'systemic', 'systemic', undefined]);
+  });
+
+  test('excludes an armed row from the queue gate but not from the provider gate', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          hold: SYSTEMIC,
+          queue: [{ bead_id: 'A-1', armed_by_lane: 'cl_1' }],
+          bead_overlay: overlays(['A-1']),
+          provider_hold: {
+            claude: {
+              since: 1,
+              generation: 1,
+              targets: [
+                {
+                  kind: 'outage',
+                  model: 'sonnet',
+                  account: null,
+                  next_probe_at: 9000
+                }
+              ]
+            }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect(lanes.queue[0].gate?.kind).toBe('provider_outage');
+  });
+
+  test('draws no gate anywhere when a hold stands with no waiting row', () => {
+    const lanes = buildLanes(
+      [workspace({ hold: SYSTEMIC, runnable: [runnable('A-9')] })],
+      [gateState()]
+    );
+
+    expect([
+      lanes.queue.length,
+      lanes.runnable.some((row) => row.gate !== undefined)
+    ]).toEqual([0, false]);
+  });
+
+  test('names the earliest scheduled retry on an environment hold', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          hold: { kind: 'env', cause: 'verify_cmd_spawn_error', since: 100 },
+          lineages: [
+            {
+              bead_id: 'A-8',
+              origin_attempt_id: 't1',
+              cause: 'x',
+              next_at: 8000,
+              attempts: 2
+            },
+            {
+              bead_id: 'A-9',
+              origin_attempt_id: 't2',
+              cause: 'x',
+              next_at: 4000,
+              attempts: 1
+            }
+          ],
+          queue: [{ bead_id: 'A-1' }]
+        })
+      ],
+      [gateState()]
+    );
+
+    expect([lanes.queue[0].gate?.kind, lanes.queue[0].gate?.next_at]).toEqual([
+      'env',
+      4000
+    ]);
+  });
+
+  test('says the retry is running when no lineage has a next_at', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          hold: { kind: 'env', cause: 'verify_cmd_spawn_error', since: 100 },
+          lineages: [
+            {
+              bead_id: 'A-9',
+              origin_attempt_id: 't2',
+              cause: 'x',
+              next_at: null,
+              attempts: 3
+            }
+          ],
+          queue: [{ bead_id: 'A-1' }]
+        })
+      ],
+      [gateState()]
+    );
+
+    expect([lanes.queue[0].gate?.label, lanes.queue[0].gate?.next_at]).toEqual([
+      '↻ 환경 보류 · 재시도 실행 중',
+      null
+    ]);
+  });
+
+  test('carries the standing environment hold onto the retry_wait tile', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          hold: { kind: 'env', cause: 'verify_cmd_spawn_error', since: 100 },
+          lineages: [
+            {
+              bead_id: 'A-1',
+              origin_attempt_id: 't1',
+              cause: 'x',
+              next_at: 8000,
+              attempts: 1
+            }
+          ],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'retry_wait',
+              started_at: 1,
+              retry: { cause: 'x', attempts: 1, max: 3, next_at: 8000 }
+            }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect(lanes.running[0].hold_since).toBe(100);
+  });
+
+  test('gates only the rows whose resolved runner carries the outage target', () => {
+    const outage_hold = {
+      claude: {
+        since: 1,
+        generation: 1,
+        targets: [
+          {
+            kind: 'outage',
+            model: 'sonnet',
+            account: null,
+            next_probe_at: 9000
+          }
+        ]
+      }
+    };
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          provider_hold: outage_hold,
+          bead_overlay: {
+            'A-1': { metadata: {} },
+            'A-2': { metadata: { orchestration_model: 'sol' } }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect([
+      lanes.queue[0].gate?.kind,
+      lanes.queue[0].gate?.next_at,
+      lanes.queue[1].gate
+    ]).toEqual(['provider_outage', 9000, undefined]);
+  });
+
+  test('draws no provider gate without a runner catalog to resolve', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_overlay: overlays(['A-1']),
+          provider_hold: {
+            claude: {
+              since: 1,
+              generation: 1,
+              targets: [{ kind: 'outage', model: 'sonnet', account: null }]
+            }
+          }
+        })
+      ],
+      [gateState({ runner_catalog: null })]
+    );
+
+    expect(lanes.queue[0].gate).toBeUndefined();
+  });
+
+  test('gates the whole runner on a usage_limit target with no account', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_overlay: overlays(['A-1']),
+          provider_hold: {
+            claude: {
+              since: 1,
+              generation: 1,
+              targets: [
+                {
+                  kind: 'usage_limit',
+                  model: 'sonnet',
+                  account: null,
+                  resets_at: 7000
+                }
+              ]
+            }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect([lanes.queue[0].gate?.kind, lanes.queue[0].gate?.next_at]).toEqual([
+      'provider_usage',
+      7000
+    ]);
+  });
+
+  test('gates a usage_limit account only on the row that resolves to it', () => {
+    const limit_hold = {
+      claude: {
+        since: 1,
+        generation: 1,
+        targets: [
+          {
+            kind: 'usage_limit',
+            model: 'sonnet',
+            account: 'a@example.com',
+            resets_at: 7000
+          }
+        ]
+      }
+    };
+    const account_catalog = {
+      claude: [
+        { email: 'a@example.com', alias: '업무', active: false },
+        { email: 'b@example.com', alias: '개인', active: true }
+      ]
+    };
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          provider_hold: limit_hold,
+          account_catalog,
+          bead_overlay: {
+            'A-1': { metadata: { claude_account: 'a@example.com' } },
+            'A-2': { metadata: { claude_account: 'b@example.com' } }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect([lanes.queue[0].gate?.kind, lanes.queue[1].gate]).toEqual([
+      'provider_usage',
+      undefined
+    ]);
+  });
+
+  test('draws no usage gate when the row account cannot be resolved', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_overlay: overlays(['A-1']),
+          provider_hold: {
+            claude: {
+              since: 1,
+              generation: 1,
+              targets: [
+                {
+                  kind: 'usage_limit',
+                  model: 'sonnet',
+                  account: 'a@example.com',
+                  resets_at: 7000
+                }
+              ]
+            }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect(lanes.queue[0].gate).toBeUndefined();
+  });
+
+  test('keeps the queue gate on the chip and appends the provider reason', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          hold: SYSTEMIC,
+          queue: [{ bead_id: 'A-1' }],
+          bead_overlay: overlays(['A-1']),
+          provider_hold: {
+            claude: {
+              since: 1,
+              generation: 1,
+              targets: [
+                {
+                  kind: 'outage',
+                  model: 'sonnet',
+                  account: null,
+                  next_probe_at: 9000
+                }
+              ]
+            }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    const gate = lanes.queue[0].gate;
+    expect([
+      gate?.kind,
+      gate?.lines.at(-1)?.startsWith('공급자: ⚠️ 공급자 장애')
+    ]).toEqual(['systemic', true]);
+  });
+});

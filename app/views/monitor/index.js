@@ -1604,6 +1604,11 @@ export function createMonitorView(mount_element, options) {
                     }
                   : null,
                 retry: item.retry || null,
+                // 환경 보류의 `↻ 지금 재시도` CAS 재료 (UI-01wh §3.3) — 같은
+                // 렌더러가 두 탭에서 같은 foot을 그린다.
+                ...(typeof item.hold_since === 'number'
+                  ? { hold_since: item.hold_since }
+                  : {}),
                 status: /** @type {any} */ (item.status),
                 status_label:
                   item.run_state === 'failed'
@@ -2367,6 +2372,65 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * The two 큐 정지 exits on the monitor: 막힌 대기 행의 `▶ 재개`와 `retry_wait` 타일의 `↻ 지금 재시도` (UI-01wh §3.3).
+   * 두 조작 모두 큐 전체를 움직이므로 CAS 재료는 그 hold의 `since`이고, Worker 탭과
+   * 달리 어느 저장소의 큐인지를 `root_dir`이 말한다 — `[지금 시작]`이 이미 그렇게
+   * 한다.
+   *
+   * @param {'worker-queue-hold-resume'|'worker-queue-hold-retry-now'} type
+   * @param {number} since
+   * @param {string} root_dir
+   * @param {string} refusal - 거부 응답을 알릴 때 쓰는 toast 앞머리.
+   */
+  async function sendHoldAction(type, since, root_dir, refusal) {
+    if (!transport || !Number.isFinite(since) || root_dir.length === 0) {
+      return;
+    }
+    const res = /** @type {any} */ (await transport(type, { since, root_dir }));
+    if (res && res.queue) {
+      exec_adopted.set(root_dir, res.queue);
+    }
+    if (res && res.ok === false) {
+      showToast(
+        `${refusal}: ${
+          res.reason === 'hold_changed'
+            ? '큐 상태가 바뀌었습니다 — 다시 확인하세요'
+            : res.reason || ''
+        }`,
+        'error',
+        2800
+      );
+    }
+    doRender();
+  }
+
+  /**
+   * @param {number} since
+   * @param {string} root_dir
+   */
+  async function resumeQueueHold(since, root_dir) {
+    await sendHoldAction(
+      'worker-queue-hold-resume',
+      since,
+      root_dir,
+      '재개 거부'
+    );
+  }
+
+  /**
+   * @param {number} since
+   * @param {string} root_dir
+   */
+  async function retryQueueHoldNow(since, root_dir) {
+    await sendHoldAction(
+      'worker-queue-hold-retry-now',
+      since,
+      root_dir,
+      '지금 재시도 거부'
+    );
+  }
+
+  /**
    * `[지금 시작]` (UI-q1tg §3.3): 이 행 하나의 대기 진입 유예를 걷고 `▶ 진행`과
    * 같은 명시적 실행 경로를 민다. CAS가 없다 — 서버가 `added_at`을 비롯한 큐를
    * 전혀 쓰지 않으므로 되돌릴 durable 변경도, 경합할 revision도 없다.
@@ -2709,6 +2773,17 @@ export function createMonitorView(mount_element, options) {
     }
     if (cls.contains('worker-mini__start-now')) {
       void startNow(bead_id, root_dir);
+      return;
+    }
+    if (cls.contains('worker-mini__hold-resume')) {
+      void resumeQueueHold(Number(button.getAttribute('data-since')), root_dir);
+      return;
+    }
+    if (cls.contains('rtile__hold-retry')) {
+      void retryQueueHoldNow(
+        Number(button.getAttribute('data-since')),
+        root_dir
+      );
       return;
     }
     if (cls.contains('mon2-crow__detach')) {

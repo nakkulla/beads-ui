@@ -5007,3 +5007,35 @@ describe('views/monitor 숨김과 lifecycle (UI-hhn9 §6)', () => {
     }
   });
 });
+
+// 막힌 대기 행의 `▶ 재개`는 두 탭이 같은 렌더러를 쓰므로 Monitor에도 선다
+// (UI-01wh §3.6). 다른 점은 어느 저장소의 큐인지를 `root_dir`이 말한다는 것뿐이다.
+describe('monitor blocked waiting row resume (UI-01wh §3.6)', () => {
+  test('sends the hold since with the row repo on a 재개 click', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          hold: {
+            kind: 'systemic',
+            cause: 'loud_fail_blocker',
+            since: 77,
+            bead_ids: ['A-1']
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.worker-mini[data-bead-id="A-1"] .worker-mini__hold-resume');
+    await flushMicrotasks();
+
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-hold-resume',
+        payload: { since: 77, root_dir: WS_A }
+      }
+    ]);
+  });
+});

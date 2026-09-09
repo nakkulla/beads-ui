@@ -585,6 +585,9 @@ id로 바뀐다 — `opus-4.8→claude-opus-4-8`, `opus-4.6→claude-opus-4-6` (
   때까지 남긴다. 단 hold가 서 있는 동안의
   이어하기 UI에는 게이트 배지(§10)로 장애 진행 중임이 함께 보인다 — 반복 클릭이
   attempt 기록만 쌓는 상황을 사용자가 인지한 채 선택하게 한다.
+  **정정(UI-01wh)**: 그 배지는 이제 Worker 헤더가 아니라 **막힌 대기 행의 4a 게이트
+  칩**이다 — 같은 문장이 `[지금 시작]` 바로 옆에 서므로 이 조항의 목적은 그 행에서
+  그대로 보존된다.
 - attempt 기록: 새 attempt의 `runner/model/effort/claude_account`는 override
   반영값으로 스탬프되어 usage·영수증 계보가 실제 실행과 일치한다.
 
@@ -640,6 +643,10 @@ id로 바뀐다 — `opus-4.8→claude-opus-4-8`, `opus-4.6→claude-opus-4-6` (
   `⚠️ <runner> 공급자 장애 — 신규 디스패치 보류, 다음 프로브 <t>`,
   `usage_limit`만이면 `⏳ <alias|email> 사용 한도 — 그 계정 디스패치 보류, 리셋 <t>`.
   hold 정보와 다음 프로브 시각은 큐 스냅샷에 동승시킨다.
+  **정정(UI-01wh)**: 헤더 배지는 제거됐다. 같은 사실은 그 게이트에 실제로 막힌
+  대기 행의 슬롯 4a 칩(`⚠️ 공급자 장애 · 다음 프로브 <t>` /
+  `⏳ 한도 대기 <t> · <alias|email>`)이 말하고, 막힌 행이 없으면 그리지 않는다 —
+  근거는 `2026-09-09-worker-gate-on-card-no-banner-design.md`다.
 
 ## §11 알림 (`server/worker/notify.js`)
 
