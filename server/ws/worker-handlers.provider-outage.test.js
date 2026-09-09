@@ -18,7 +18,8 @@ import {
   decorateQueue,
   handleSubscribeWorkerQueue,
   handleWorkerAttemptResume,
-  handleWorkerProviderLimitPolicySet
+  handleWorkerProviderLimitPolicySet,
+  handleWorkerProviderProbeNow
 } from './worker-handlers.js';
 
 const WS = '/tmp/provider-outage-handler-workspace';
@@ -620,5 +621,115 @@ describe('worker attempt resume override handler', () => {
         codex_account: 'acct-2'
       }
     });
+  });
+});
+
+describe('worker provider probe-now handler', () => {
+  /**
+   * Register one attachment whose provider hold and probe seam are fixed. The
+   * handler reads the hold for its CAS and delegates the firing decision.
+   *
+   * @param {number} since
+   * @param {{ armed: number, eligible: number }} outcome
+   */
+  function attach(since, outcome) {
+    const probeNow = vi.fn(() => outcome);
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({
+        runtime: {
+          queueStore: {
+            snapshot: () => ({
+              provider_hold: {
+                claude: {
+                  since,
+                  generation: 1,
+                  targets: [
+                    {
+                      kind: 'outage',
+                      model: 'opus',
+                      account: 'one@example.com'
+                    }
+                  ]
+                }
+              }
+            })
+          }
+        },
+        providerHealth: { probeNow }
+      })
+    );
+    return probeNow;
+  }
+
+  /**
+   * Send one probe-now request from a workspace-bound socket.
+   *
+   * @param {any} socket
+   * @param {any} payload
+   */
+  async function call(socket, payload) {
+    setConnWorkspace(socket, { root_dir: WS, db_path: '/tmp/db' });
+    await handleWorkerProviderProbeNow(
+      socket,
+      /** @type {any} */ ({
+        id: 'probe-1',
+        type: 'worker-provider-probe-now',
+        payload
+      })
+    );
+  }
+
+  // RED 12 (spec §5)
+  test('refuses a probe whose since no longer matches the hold', async () => {
+    const socket = fakeSocket();
+    const probeNow = attach(500, { armed: 1, eligible: 1 });
+
+    await call(socket, { runner: 'claude', since: 499 });
+
+    expect(sent(socket)[0].payload).toMatchObject({
+      ok: false,
+      reason: 'hold_changed'
+    });
+    expect(probeNow).not.toHaveBeenCalled();
+  });
+
+  // RED 13 (spec §5)
+  test('refuses a probe with no eligible target', async () => {
+    const socket = fakeSocket();
+    attach(500, { armed: 0, eligible: 0 });
+
+    await call(socket, { runner: 'claude', since: 500 });
+
+    expect(sent(socket)[0].payload).toMatchObject({
+      ok: false,
+      reason: 'probe_ineligible'
+    });
+  });
+
+  // RED 14 (spec §5)
+  test('refuses a probe whose targets are all already running', async () => {
+    const socket = fakeSocket();
+    attach(500, { armed: 0, eligible: 2 });
+
+    await call(socket, { runner: 'claude', since: 500 });
+
+    expect(sent(socket)[0].payload).toMatchObject({
+      ok: false,
+      reason: 'probe_in_flight'
+    });
+  });
+
+  // RED 15 (spec §5)
+  test('replies with the armed count and the decorated queue', async () => {
+    const socket = fakeSocket();
+    const probeNow = attach(500, { armed: 2, eligible: 2 });
+
+    await call(socket, { runner: 'claude', since: 500 });
+
+    const payload = sent(socket)[0].payload;
+    expect(probeNow).toHaveBeenCalledWith(WS, 'claude');
+    expect(payload).toMatchObject({ ok: true, armed: 2 });
+    expect(payload.queue).toMatchObject({ revision: expect.any(Number) });
   });
 });

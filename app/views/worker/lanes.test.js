@@ -4968,6 +4968,8 @@ describe('대기 진입 유예 (UI-q1tg §3.3)', () => {
         title: 'loud_fail_blocker',
         since: 5000,
         next_at: null,
+        runner: null,
+        probe_ready: false,
         lines: ['loud_fail_blocker']
       },
       dependency_chips: /** @type {any} */ ({

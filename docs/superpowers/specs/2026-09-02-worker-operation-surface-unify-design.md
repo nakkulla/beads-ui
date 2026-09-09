@@ -132,6 +132,7 @@ scope:
 | 실행 타일 헤더 | `↻ 이어하기` · `↻ 정리 재시도` · `▶ 재개` | `op-btn rtile__resume` | `▶`에 라벨 `재개`가 붙는다 |
 | 상세 세션 이력 행 | `↻ 이어하기` · 재개 명령 복사 | `op-btn detail-session__resume` · `op-btn detail-session__resume-cmd` | |
 | 대기 행 (Worker·Monitor) | `▶ 재개` | `op-btn worker-mini__hold-resume` | UI-01wh — 체계적 정지에 막힌 행에만; `[지금 시작]` 앞 |
+| 대기 행 (Worker·Monitor) | `↻ 지금 프로브` | `op-btn worker-mini__provider-probe` | UI-o5ll — 공급자 보류에 막힌 행에만; `▶ 재개`와 `[지금 시작]` 사이 |
 | `retry_wait` 타일 foot | `↻ 지금 재시도` | `op-btn rtile__hold-retry` | UI-01wh — 환경 보류가 서 있을 때만; `폐기`가 있으면 그 뒤 |
 
 같은 묶음의 이웃 — 실행 타일의 `⏸`·`▤ 세션`·`폐기`·`세션에서 해결`, 행·foot의

@@ -35,6 +35,10 @@
 없는 새 라벨·칩·버튼은 스펙을 먼저 갱신해 슬롯을 정한 뒤 단다(ADR 0014). 재료가
 없는 줄은 그리지 않는다(fail-quiet).
 
+- 공급자 보류의 해제는 프로브가 판정하고 `↻ 지금 프로브`는 그 판정을 앞당기는
+  조작이다 — 카드 위의 조작은 target을 지우지 않는다
+  (`2026-09-09-provider-outage-hold-release-design.md`).
+
 ## Unit Testing Standards
 
 - 한 테스트는 한 동작만; 이름은 능동 동사("should…" 금지); setup → execution →

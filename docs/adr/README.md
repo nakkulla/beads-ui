@@ -5,10 +5,10 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| UI-o5ll | [공급자 보류의 해제는 프로브만이 판정한다 — outage 프로브에는 상한이 없고 사람의 ↻ 지금 프로브는 그 판정을 앞당길 뿐 target을 지우지 않는다](UI-o5ll-provider-hold-release-is-probe-only-no-cap-manual-probe-now.md) | 2026-09-10 | 공급자 보류의 해제는 프로브만이 판정한다 — outage 프로브에는 상한이 없고 백오프 상한은 1시간이며, 사람의 `↻ 지금 프로브`는 그 판정을 앞당길 뿐 target을 지우지 않는다. 상한에 걸린 계정 한도 target도 그 조작으로 다시 프로브된다. |
 | 0052 | [Worker 한도 자동 전환은 사용자가 러너별로 고른 허용 계정 집합 안에서만 attempt 단위로 일어나고 자동 재개 cap을 소비하지 않는다](0052-usage-limit-switch-within-user-allow-list-per-attempt.md) | 2026-09-09 | Worker 한도 자동 전환은 사용자가 러너별로 고른 허용 계정 집합 안에서만 attempt 단위로 일어나고 자동 재개 cap을 소비하지 않으며, 선제 전환은 사용자 임계 이상의 상속 계정에만 적용되고 Bead pin은 덮지 않는다. |
 | 0051 | [프런트엔드 번들은 tracked 생성물이 아니고 배포·verify·패키징이 빌드한다](0051-frontend-bundle-untracked-built-by-deploy-verify-prepack.md) | 2026-09-09 | app/main.bundle.js와 소스맵은 tracked가 아니며 deploy·verify·prepack이 빌드한다; 정적 모드 서버는 번들 부재 시 빌드 안내로 종료하고 자동 빌드하지 않는다 |
 | 0050 | [Worker가 구현 attempt dispatch 시점에 in_progress를 선점하고 attempt 종료·재조정에서 되돌린다](0050-worker-dispatch-claims-in-progress.md) | 2026-09-09 | Worker는 구현 attempt를 dispatch할 때 durable attempt 기록 뒤 open인 Bead만 in_progress로 선점하고 worker_claim 전이를 attempt 기록에 남기며, 해제는 attempt 종료와 기존 reconcile 정산이 한다; session_ref는 쓰지 않고 resolved Bead를 다루는 경로는 제외한다 |
-| 0049 | [Worker 큐 정지·공급자 보류의 표시와 출구는 막힌 카드에 살고 상단 배너는 없다](0049-queue-gate-lives-on-blocked-card-no-banner.md) | 2026-09-09 | Worker 큐 정지와 공급자 보류의 표시·출구는 막힌 카드에 살고 상단 배너는 없다. 막힌 카드가 없으면 그리지 않으며, `재개`는 막힌 대기 행의 조작이고 `[지금 시작]`은 한 행의 명시적 디스패치로 공급자 게이트도 우회한다. 체계적 정지의 해제는 여전히 사람의 승인 한 번이며 자동 재개는 풀지 않는다. |
 | 0047 | [Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다](0047-codex-native-child-internal-observation-not-summed.md) | 2026-09-08 | Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다 |
 | 0046 | [같은 작업의 세션 재개는 기록된 provider를 보존하고 provider 변경은 명시적 선택으로만 수행한다](0046-session-resume-preserves-recorded-provider.md) | 2026-09-08 | 같은 작업의 세션 재개는 기록된 provider를 보존하고 provider 변경은 명시적 선택으로만 수행한다 |
 | 0045 | [구현 세션의 지시 재시작은 durable pause 뒤 기록된 세션과 설정으로 재개하며 새 세션으로 대체하지 않는다](0045-instructions-restart-resumes-recorded-attempt-after-durable-pause.md) | 2026-09-08 | 구현 세션의 지시 재시작은 기존 durable pause 뒤 기록된 세션과 설정으로 재개하며, pause 뒤 연결 끊김은 paused로 남기고 transcript 부재 시 새 세션으로 대체하지 않는다 |
@@ -61,3 +61,4 @@
 | 0026 | [워크스페이스 투영 경로는 동기 자식 프로세스를 띄우지 않는다](0026-projection-path-spawns-no-sync-child-process.md) | superseded | [0043](0043-candidate-projection-reads-async-probe-context-only.md) |
 | 0035 | [연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다](0035-lane-confirm-writes-deps-only-run-places-and-arms.md) | superseded | [0041](0041-connected-run-preserves-waiting-lanes.md) |
 | 0048 | [Worker 체계적 정지의 해제는 사람의 승인 한 번이며 재개 버튼과 큐를 세운 attempt의 ↻ 이어하기가 같은 승인이다](0048-resume-click-releases-systemic-hold.md) | superseded | [0049](0049-queue-gate-lives-on-blocked-card-no-banner.md) |
+| 0049 | [Worker 큐 정지·공급자 보류의 표시와 출구는 막힌 카드에 살고 상단 배너는 없다](0049-queue-gate-lives-on-blocked-card-no-banner.md) | superseded | [UI-o5ll](UI-o5ll-provider-hold-release-is-probe-only-no-cap-manual-probe-now.md) |

@@ -62,6 +62,7 @@ import {
   miniRow,
   nowPanel,
   paneTemplate,
+  providerProbeRefusalText,
   queueRowOps,
   routeChipTemplate,
   startNowButtonTemplate,
@@ -2405,6 +2406,44 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * `↻ 지금 프로브` (UI-o5ll §3.4): 그 러너의 공급자 회복 프로브를 지금
+   * 발화시킨다. 재료는 버튼이 실은 것이고 `root_dir`이 어느 저장소의 보류인지를
+   * 말한다 — 큐 정지의 `since`와 섞이지 않는다.
+   *
+   * @param {string} runner
+   * @param {number} since
+   * @param {string} root_dir
+   */
+  async function probeProviderNow(runner, since, root_dir) {
+    if (
+      !transport ||
+      runner.length === 0 ||
+      !Number.isFinite(since) ||
+      root_dir.length === 0
+    ) {
+      return;
+    }
+    const res = /** @type {any} */ (
+      await transport('worker-provider-probe-now', {
+        runner,
+        since,
+        root_dir
+      })
+    );
+    if (res && res.queue) {
+      exec_adopted.set(root_dir, res.queue);
+    }
+    if (res && res.ok === false) {
+      showToast(
+        `지금 프로브 거부: ${providerProbeRefusalText(res.reason)}`,
+        'error',
+        2800
+      );
+    }
+    doRender();
+  }
+
+  /**
    * @param {number} since
    * @param {string} root_dir
    */
@@ -2773,6 +2812,14 @@ export function createMonitorView(mount_element, options) {
     }
     if (cls.contains('worker-mini__start-now')) {
       void startNow(bead_id, root_dir);
+      return;
+    }
+    if (cls.contains('worker-mini__provider-probe')) {
+      void probeProviderNow(
+        button.getAttribute('data-runner') || '',
+        Number(button.getAttribute('data-since')),
+        root_dir
+      );
       return;
     }
     if (cls.contains('worker-mini__hold-resume')) {

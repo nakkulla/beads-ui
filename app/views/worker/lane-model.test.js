@@ -7043,6 +7043,67 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
     ]).toEqual(['provider_outage', 9000, undefined]);
   });
 
+  // RED 16 (spec §5)
+  test('carries the provider hold since and its resolved runner on the gate', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          provider_hold: {
+            claude: {
+              since: 4242,
+              generation: 1,
+              targets: [
+                {
+                  kind: 'outage',
+                  model: 'sonnet',
+                  account: null,
+                  next_probe_at: 9000
+                }
+              ]
+            }
+          },
+          bead_overlay: { 'A-1': { metadata: {} } }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect([lanes.queue[0].gate?.since, lanes.queue[0].gate?.runner]).toEqual([
+      4242,
+      'claude'
+    ]);
+  });
+
+  // RED 17 (spec §5)
+  test('marks a runner with a probeable target as probe ready', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          provider_hold: {
+            claude: {
+              since: 4242,
+              generation: 1,
+              targets: [
+                {
+                  kind: 'outage',
+                  model: 'sonnet',
+                  account: null,
+                  next_probe_at: 9000
+                }
+              ]
+            }
+          },
+          bead_overlay: { 'A-1': { metadata: {} } }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect(lanes.queue[0].gate?.probe_ready).toBe(true);
+  });
+
   test('draws no provider gate without a runner catalog to resolve', () => {
     const lanes = buildLanes(
       [

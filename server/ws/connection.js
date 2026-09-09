@@ -109,6 +109,7 @@ import {
   handleWorkerMergeQueueRemove,
   handleWorkerPrDiscard,
   handleWorkerProviderLimitPolicySet,
+  handleWorkerProviderProbeNow,
   handleWorkerQueueArm,
   handleWorkerQueueDisarm,
   handleWorkerQueueHoldResume,
@@ -604,6 +605,9 @@ export async function handleMessage(ws, data) {
     // UI-5ym8: protocol.js union updated by worker-ui unit
     case /** @type {any} */ ('worker-queue-hold-retry-now'):
       await handleWorkerQueueHoldRetryNow(ws, req);
+      return;
+    case 'worker-provider-probe-now':
+      await handleWorkerProviderProbeNow(ws, req);
       return;
     case 'worker-repo-operation-deploy-run':
       await handleWorkerRepoOperationDeployRun(ws, req);

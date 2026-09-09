@@ -628,16 +628,20 @@ describe('legacy-only regression', () => {
 
     const result = await signals().computeWorkspace(repo_root, { full: true });
 
-    const rows = [...result.current, ...result.history];
+    // Bead-id ADRs (`<bead-id>-slug.md`, ADR skill sequence) now live next to
+    // the numeric ones; this regression guards the NUMERIC rows only.
+    const numeric = (/** @type {any[]} */ rows) =>
+      rows.filter((a) => typeof a.id === 'number');
+    const current = numeric(result.current);
+    const history = numeric(result.history);
     expect(result.frontmatter_errors).toEqual([]);
-    expect(rows.length).toEqual(adr_files.length);
-    expect(rows.every((a) => typeof a.id === 'number')).toEqual(true);
+    expect(current.length + history.length).toEqual(adr_files.length);
     // The pre-change comparator was `b.id - a.id` on both lists.
-    expect(result.current).toEqual(
-      [...result.current].sort((a, b) => Number(b.id) - Number(a.id))
+    expect(current).toEqual(
+      [...current].sort((a, b) => Number(b.id) - Number(a.id))
     );
-    expect(result.history).toEqual(
-      [...result.history].sort((a, b) => Number(b.id) - Number(a.id))
+    expect(history).toEqual(
+      [...history].sort((a, b) => Number(b.id) - Number(a.id))
     );
   });
 });

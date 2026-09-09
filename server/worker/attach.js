@@ -2880,6 +2880,39 @@ export async function retryWorkerQueueHoldNow(workspace_root, input) {
 }
 
 /**
+ * Pull one runner's provider recovery probes forward (`↻ 지금 프로브`, release
+ * spec §3.3). `since` is a CAS on the hold the button was drawn against, but
+ * here it only filters a click from a stale screen — a probe removes nothing,
+ * so the same `since` twice is legal and the controller's in-flight set is what
+ * makes it a no-op. Nothing is awaited: the reply reports that probes were
+ * armed and the outcome flows through the existing recovery path.
+ *
+ * @param {string} workspace_root
+ * @param {{ runner: string, since: number }} input
+ * @returns {Promise<{ ok: boolean, reason?: string, armed?: number }>}
+ */
+export async function probeProviderNow(workspace_root, input) {
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  if (!att || !att.providerHealth) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  const hold =
+    att.runtime.queueStore.snapshot(key).provider_hold?.[input.runner];
+  if (!hold || hold.since !== input.since) {
+    return { ok: false, reason: 'hold_changed' };
+  }
+  const fired = att.providerHealth.probeNow(key, input.runner);
+  if (fired.eligible === 0) {
+    return { ok: false, reason: 'probe_ineligible' };
+  }
+  if (fired.armed === 0) {
+    return { ok: false, reason: 'probe_in_flight' };
+  }
+  return { ok: true, armed: fired.armed };
+}
+
+/**
  * Acknowledge one FAILED RepoOperation row (UI-q0uy §4.6-2). The row stays
  * failed and auditable; only the 해결 필요 tally and its action buttons drop it.
  *

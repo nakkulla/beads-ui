@@ -51,6 +51,7 @@ import {
   kickWorkerMergeQueue,
   observeWorkerPrs,
   pauseWorkerAttempt,
+  probeProviderNow,
   readBeadTimeline,
   recheckWorkerStaleWork,
   refreshWorkerExternalPrs,
@@ -4940,6 +4941,48 @@ export async function handleWorkerQueueHoldRetryNow(ws, req) {
 }
 
 /**
+ * Handle `worker-provider-probe-now`. Payload: `{ runner: string, since: number }`.
+ *
+ * The `↻ 지금 프로브` click on a row blocked by a provider hold (UI-o5ll §3.3).
+ * `since` filters a click from a screen that no longer matches the standing
+ * hold; it is NOT what makes the click idempotent, because a probe removes
+ * nothing. The controller's in-flight set owns that. The reply says only that
+ * probes were armed — the verdict arrives through the normal recovery path.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerProviderProbeNow(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (
+    typeof p.runner !== 'string' ||
+    p.runner.length === 0 ||
+    typeof p.since !== 'number' ||
+    !Number.isFinite(p.since)
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { runner, since }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  /** @type {{ ok: boolean, reason?: string, armed?: number }} */
+  let result;
+  try {
+    result = await probeProviderNow(key, { runner: p.runner, since: p.since });
+  } catch (err) {
+    log('provider probe-now failed for %s: %o', key, err);
+    result = { ok: false, reason: 'provider_probe_failed' };
+  }
+  replyQueueHold(ws, req, key, result);
+}
+
+/**
  * The shared reply of the three queue-hold clicks: the decorated queue rides
  * the reply so the clicking client re-renders off a readback, and the fanout
  * gives every OTHER subscriber the same one.
@@ -4947,7 +4990,7 @@ export async function handleWorkerQueueHoldRetryNow(ws, req) {
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  * @param {string} key
- * @param {{ ok: boolean, reason?: string }} result
+ * @param {{ ok: boolean, reason?: string, armed?: number }} result
  */
 function replyQueueHold(ws, req, key, result) {
   ws.send(
@@ -4955,6 +4998,8 @@ function replyQueueHold(ws, req, key, result) {
       makeOk(req, {
         ok: result.ok === true,
         reason: result.ok === true ? undefined : result.reason || 'refused',
+        // `↻ 지금 프로브`만 싣는 값이다 — 다른 두 조작에는 없으므로 undefined다.
+        ...(typeof result.armed === 'number' ? { armed: result.armed } : {}),
         queue: decorateQueue(key, queueStore().snapshot(key))
       })
     )
