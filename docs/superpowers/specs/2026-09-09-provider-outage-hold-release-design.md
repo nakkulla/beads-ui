@@ -113,7 +113,11 @@ if (capped) {
 곧장 `scheduleTarget(…, failures + 1)`로 떨어진다.
 
 ```js
-if (live_target.kind === 'outage' && result.outage?.detail === 'usage_limit') {
+if (
+  live_target.kind === 'outage' &&
+  live_target.account !== null &&
+  result.outage?.detail === 'usage_limit'
+) {
   deps.store.updateProviderTarget(workspace, {
     runner, generation,
     kind: live_target.kind, model: live_target.model, account: live_target.account,
@@ -134,8 +138,12 @@ if (live_target.kind === 'outage' && result.outage?.detail === 'usage_limit') {
   "프로브도 자동 재개도 하지 않는" fail-closed target이 되어 스스로를 막다른 길에
   넣는다. 따라서 `live_target.account === null`이면 강등하지 않고 outage로 남긴다.
 - **관측 가능한 효과**: 게이트 범위가 러너 전체에서 계정 단위로 좁아진다
-  (`scheduler.js:2857`의 outage 조기 반환을 더는 타지 않는다). 다른 계정으로 해석되는
-  후보가 흐르고 §8.3 자동 계정 전환 경로가 적용된다.
+  (`scheduler.js:2857`의 outage 조기 반환을 더는 타지 않는다). 그 결과 **다른 계정으로
+  해석되는 대기 후보의 디스패치가 허용된다** — 그것이 이 전이가 만드는 효과의 전부다.
+  §8.3의 자동 계정 전환은 여기서 일어나지 않는다: 그 선택은 보류 진입 시
+  `scheduler.js` `holdAttempt`가 `selectProviderSwitchAccount`로 한 번 하고
+  (`usage_limit && account !== null` 조건), target의 `kind`를 나중에 고치는 것은 그
+  경로를 다시 태우지 않는다.
 - `sync(workspace)`가 새 kind로 타이머를 다시 무장한다 — outage 백오프에서
   `usage_limit` 리셋 타이머로 갈아탄다.
 
@@ -156,6 +164,33 @@ if (live_target.kind === 'outage' && result.outage?.detail === 'usage_limit') {
 `failures` 카운터는 그 target의 현재 값을 유지한다. 사람이 눌렀다고 백오프가
 처음으로 돌아가면 반복 클릭이 프로브 폭주가 된다.
 
+**중복 실행 방지 — `since` CAS로는 막히지 않는다.** 프로브 요청은 `since`를 바꾸지도
+보류를 제거하지도 않으므로, 같은 `since`로 두 번째 클릭이 와도 CAS는 통과한다.
+`since` CAS의 몫은 **낡은 화면에서 온 요청을 거르는 것**뿐이다(이미 해소됐거나 세대가
+바뀐 보류). 동시 실행은 별도 장치가 막는다.
+
+`provider-health.js`에 모듈 스코프 `in_flight` Set을 둔다. 키는 기존
+`targetKey(workspace, runner, generation, target)`이다.
+
+- `runTarget`이 `probeTarget` await **전에** 키를 넣고 `finally`에서 뺀다.
+- `scheduleTarget`은 `timers.has(key) || in_flight.has(key)`일 때 무장하지 않는다.
+- `probeNow`는 `in_flight.has(key)`인 target을 건너뛰고, 실제로 발화시킨 수를
+  돌려준다.
+
+이 Set은 **기존 결함도 함께 닫는다.** 지금 타이머 콜백은 `runTarget`을 부르기
+**전에** `timers.delete(key)`를 하므로(`provider-health.js:478`) 프로브가 도는 120초
+동안 `timers`에 키가 없고, 그 사이 `sync()`가 같은 target에 두 번째 타이머를 무장할 수
+있다. `in_flight`는 자동 타이머 경로·`sync()`·수동 요청 셋이 공유하는 하나의 술어다.
+
+- **완료 후 재요청**: 프로브가 끝나고 target이 살아남았으면 키가 빠지므로 다음 클릭은
+  즉시 다시 찌른다. 의도된 의미다 — `failures`를 건드리지 않으므로 자동 백오프 일정은
+  그대로고, 사람이 누른 만큼만 추가로 찌른다.
+- **여러 행 동시 클릭**: 막힌 행마다 버튼이 서므로 두 행을 잇따라 누를 수 있다. 두
+  번째 요청은 `in_flight`에 흡수되어 no-op이 된다 — `▶ 재개`가 `since` CAS로 얻는
+  것과 같은 멱등성을 프로브는 이 Set으로 얻는다.
+- 발화 대상이 0이고 자격 있는 target이 있으면(전부 실행 중) `probe_in_flight`로
+  거부한다. 자격 있는 target 자체가 없으면 `probe_ineligible`이다.
+
 **`attach.js`에 `probeProviderNow(workspace_root, input)`를 export한다.**
 `retryWorkerQueueHoldNow`와 같은 모양이다:
 
@@ -163,7 +198,9 @@ if (live_target.kind === 'outage' && result.outage?.detail === 'usage_limit') {
 - `provider_hold[runner]`가 없거나 `since`가 다르면 `{ ok: false, reason: 'hold_changed' }`.
   `▶ 재개`·`↻ 지금 재시도`와 같은 CAS 의미론이고, 중복 클릭이 no-op이 된다.
 - 프로브 대상 target이 하나도 없으면 `{ ok: false, reason: 'probe_ineligible' }`.
-- 그 외에는 `att.providerHealth.probeNow(workspace, runner)`를 부르고 `{ ok: true }`.
+- 대상은 있으나 전부 실행 중이면 `{ ok: false, reason: 'probe_in_flight' }`.
+- 그 외에는 `att.providerHealth.probeNow(workspace, runner)`를 부르고
+  `{ ok: true, armed: <발화한 수> }`.
 
 프로브는 120초까지 걸리므로 **응답을 기다리지 않는다.** 핸들러는 무장 사실만 알리고
 결과는 기존 경로로 흐른다 — 성공이면 `recoverProviderTarget`과
@@ -214,7 +251,8 @@ gate?: {
 - 막힌 행 전부에 그린다. `▶ 재개`와 같은 근거다 — 같은 행동이고 `since` CAS가 두
   번째 클릭을 no-op으로 만든다. "첫 행에만" 같은 선택 규칙은 만들지 않는다.
 - 거부 toast: `hold_changed` → "공급자 상태가 바뀌었습니다 — 다시 확인하세요",
-  `probe_ineligible` → "지금 찌를 수 있는 대상이 없습니다". 후자는 버튼이 그려진
+  `probe_in_flight` → "프로브가 이미 돌고 있습니다",
+  `probe_ineligible` → "지금 찌를 수 있는 대상이 없습니다". 마지막 것은 버튼이 그려진
   뒤 대상이 사라진 경쟁 상태에서만 보인다 — `probe_ready`가 같은 술어로 미리
   거르므로 정상 경로에서는 나오지 않는다. 서버가 판정을 소유하고 화면은 힌트라는
   2026-09-09 §3.1의 fail-quiet 원칙과 같은 배치다.
@@ -267,40 +305,61 @@ gate?: {
 
 ### Test scope
 
+두 묶음으로 나눈다. **RED 경계**는 변경 전에 실제로 실패해야 하는 것이고,
+**보존 검증**은 지금도 통과하지만 이 변경이 깨뜨리기 쉬운 동작을 고정하는 것이다.
+보존 검증을 RED로 세면 vacuous RED가 되어 아무것도 증명하지 못한다.
+
+#### RED 경계
+
 `server/worker/provider-health.test.js`:
 
 1. `kind:'outage'` target이 `since`로부터 24시간을 넘겨도 `disarmTarget`이 불리지
    않고 프로브가 계속 무장된다.
-2. `kind:'usage_limit'` target은 24시간 상한에서 여전히 disarm되고
-   `providerAutoResumeDisarmed`가 1회 간다.
-3. `kind:'usage_limit'` target은 `rearm_count`가 3에 이르면 여전히 disarm된다.
-4. outage 프로브가 5회 실패한 뒤(`failures === 5`) 다음 지연이 3_600_000이다 —
+2. outage 프로브가 5회 실패한 뒤(`failures === 5`) 다음 지연이 3_600_000이다 —
    배열 마지막 원소가 상한이므로 이후 실패에서도 같은 값이다.
-5. `kind:'outage'` target의 프로브 실패 분류가 `usage_limit`이면 `kind`가
-   `usage_limit`으로 바뀌고 `resets_at`이 실린다.
-6. 같은 전이에서 `rearm_count`와 hold의 `since`가 보존된다.
-7. `account === null`인 outage target은 분류가 `usage_limit`이어도 강등되지 않는다.
-8. `probeNow`가 무장된 타이머를 지우고 대상 target 전부에 `runTarget`을 부른다.
-9. `probeNow`가 상한으로 disarm된 `usage_limit` target도 프로브한다.
-10. `probeNow`가 `account === null`인 `usage_limit` target은 건너뛴다.
-11. `probeNow` 뒤에도 그 target의 `failures` 카운터가 유지된다.
+3. `account`가 있는 `kind:'outage'` target의 프로브 실패 분류가 `usage_limit`이면
+   `kind`가 `usage_limit`으로 바뀌고 `resets_at`이 실린다.
+4. **같은 전이가 성립한 것을 확인한 뒤** `rearm_count`와 hold의 `since`가 보존된다
+   — 전이 성립(`kind === 'usage_limit'`)과 값 보존을 한 단언 묶음에서 함께 본다.
+   값 보존만 검사하면 재분류가 없어도 통과한다.
+5. `probeNow`가 무장된 타이머를 지우고 대상 target 전부에 `runTarget`을 부른다.
+6. `probeNow`가 상한으로 disarm되어 타이머가 없는 `usage_limit` target도
+   프로브한다.
+7. `probeNow`가 `account === null`인 `usage_limit` target은 건너뛴다.
+8. `probeNow` 뒤에도 그 target의 `failures` 카운터가 유지된다.
+9. `probeNow`가 `in_flight`인 target을 건너뛰고 발화 수에서 뺀다.
+10. 프로브가 도는 동안 `sync()`가 같은 target에 두 번째 타이머를 무장하지 않는다.
+11. 프로브가 끝난 뒤의 `probeNow`는 그 target을 다시 발화시킨다.
 
 `server/ws/worker-handlers.provider-outage.test.js`:
 
 12. `worker-provider-probe-now`가 `since` 불일치에 `hold_changed`로 거부한다.
-13. 프로브 대상이 없으면 `probe_ineligible`로 거부한다.
-14. 성공 응답에 디코레이트된 큐가 실린다.
+13. 자격 있는 대상이 없으면 `probe_ineligible`로 거부한다.
+14. 자격 있는 대상이 전부 실행 중이면 `probe_in_flight`로 거부한다.
+15. 성공 응답에 디코레이트된 큐와 `armed`가 실린다.
 
 `app/views/worker/lane-model.test.js`:
 
-15. provider 게이트 행의 `gate.since`가 `provider_hold[runner].since`이고
+16. provider 게이트 행의 `gate.since`가 `provider_hold[runner].since`이고
     `gate.runner`가 해석 러너다.
-16. 프로브 대상이 없는 러너의 행은 `gate.probe_ready`가 `false`다.
+17. 프로브 대상이 있는 러너의 행은 `gate.probe_ready`가 `true`다.
 
 `app/views/worker/index.test.js`:
 
-17. `↻ 지금 프로브` 클릭이 `worker-provider-probe-now { runner, since }`를 보낸다.
-18. `gate.probe_ready`가 `false`인 행에는 버튼이 없다.
+18. `↻ 지금 프로브` 클릭이 `worker-provider-probe-now { runner, since }`를 보낸다.
+19. `gate.probe_ready`가 `true`인 행에 버튼이 서고 `false`인 행에는 없다 — 한
+    테스트에서 양성·음성을 함께 본다. 음성만 보면 버튼이 아예 없어도 통과한다.
+
+#### 보존 검증 (변경 전에도 통과한다)
+
+`server/worker/provider-health.test.js`:
+
+20. `kind:'usage_limit'` target은 24시간 상한에서 여전히 disarm되고
+    `providerAutoResumeDisarmed`가 1회 간다.
+21. `kind:'usage_limit'` target은 `rearm_count`가 3에 이르면 여전히 disarm된다.
+22. `account === null`인 outage target은 분류가 `usage_limit`이어도 강등되지 않는다
+    — §3.2의 강등 금지 조건을 고정한다.
+23. 기존 `usage_limit` → `outage` 승격이 그대로 동작한다.
 
 ### 절차
 
@@ -309,7 +368,8 @@ gate?: {
 
 ### 인수 기준
 
-- 위 18건이 통과하고 네 명령이 exit 0.
+- RED 경계 19건과 보존 검증 4건이 통과하고 다섯 명령이 exit 0. RED 경계 19건은
+  구현 전 실패를 확인한 뒤 통과시킨다.
 - 관측된 교착 재현: `kind:'outage'`·`detail:'rate_limited_429'`·크레딧 소진 문구
   target을 심은 뒤 프로브 1회로 `usage_limit`·계정 단위 게이트로 내려가고, 같은
   러너의 다른 계정 후보가 디스패치된다.
@@ -352,8 +412,12 @@ gate?: {
 
 ## 결정 (ADR 후보)
 
-- 전제: ADR 0049 — 큐 정지·공급자 보류의 표시와 출구는 막힌 카드에 산다.
-  `↻ 지금 프로브`를 막힌 대기 행에 두는 것은 그 조항의 적용이지 새 규칙이 아니다.
+- 전제: ADR 0049 — 큐 정지·공급자 보류의 표시와 출구는 막힌 카드에 살고 상단
+  배너는 없다. `↻ 지금 프로브`를 막힌 대기 행의 1번 조작에 두는 것은 그 조항의
+  적용이다. 다만 같은 ADR의 "스케줄러의 정지 상태 모델, **프로브, 해제 절차**,
+  `resume()`의 해제 분기는 바꾸지 않는다" 조항은 이 스펙이 뒤집으므로 아래 후보 1이
+  supersede 대상으로 지명한다 — 카드 배치와 체계적 정지의 승인 규칙은 승계하고
+  프로브·해제 절차 조항만 교체한다.
 - 전제: ADR 0014 — 새 요소의 자리는 공유 슬롯 표가 정하고 슬롯 표를 먼저 갱신한다
   (§3.5).
 - **공급자 보류의 해제는 프로브만이 판정하고 그 프로브에는 상한을 두지 않는다.
@@ -365,9 +429,13 @@ gate?: {
   충족이므로 ADR로 남긴다. `summary`: "공급자 보류의 해제는 프로브만이 판정한다 —
   outage 프로브에는 상한이 없고 백오프 상한은 1시간이며, 사람의 `↻ 지금 프로브`는
   그 판정을 앞당길 뿐 target을 지우지 않는다. 상한에 걸린 계정 한도 target도 그
-  조작으로 다시 프로브된다." → ADR
+  조작으로 다시 프로브된다." → ADR, supersede 0049
 - 분류기의 판정이 바뀌면 서 있는 target의 `kind`가 따라간다 (`outage` ↔
-  `usage_limit` 양방향). 되돌리기 어려움: 낮음 / 맥락 없이 놀라움: 없음 — §7.4에
+  `usage_limit` 양방향). 되돌리기 어려움: 낮음 — 되돌릴 것은 `runTarget`의 강등 분기
+  하나이고, 그 분기는 `updateProviderTarget`으로 기존 `kind` 필드의 값만 바꾼다.
+  `provider_hold` 스키마에 필드를 더하지 않으므로 이미 저장된 큐가 남기는 잔여는
+  `kind` 값 하나뿐이고, 그 값은 분기를 지운 뒤에도 §7.4의 기존 `usage_limit` 경로가
+  그대로 처리한다 / 맥락 없이 놀라움: 없음 — §7.4에
   반대 방향 전이가 이미 있고 이것은 그 대칭이다 / 실제 트레이드오프: 약함 — 불허의
   이점이 상태 전이의 단순함뿐이다. 한 조건만 성립하므로 스펙 본문에 남긴다.
   → ADR 아님
