@@ -4079,21 +4079,24 @@ export function createScheduler(deps) {
    * Assemble one dispatch's `## 시도 사실` payload. Every read inside is
    * contained, so a failure omits a line and never touches the launch.
    *
-   * @param {{ workspace: string, attempt_id: string, bead_id: string, snap: BeadSnapshot, wt: { path: string, base_oid: string }, runner_name: string, quickfix_lane: boolean, base_remote: string|null, worktree_setup: string|null, claim: { claimed: boolean, status: string|null }, stale_context: any }} input
+   * @param {{ workspace: string, attempt_id: string, bead_id: string, snap: BeadSnapshot, wt: { path: string, base_oid: string }, runner_name: string, quickfix_lane: boolean, base_remote: string|null, worktree_setup: string|null, claim: { claimed: boolean, status: string|null }, continuation: boolean }} input
+   * `continuation` is true for every launch that may find the bead's branch
+   * already pushed — stale-work adoption, manual resume, conflict resolution —
+   * and is what turns the remote-tip observation on.
    * @returns {Promise<import('./attempt-facts.js').AttemptFacts|null>}
    */
   async function collectDispatchFacts(input) {
     try {
       const branch = branchForBead(input.bead_id);
       // A FIRST dispatch has published nothing, so its remote tip is
-      // meaningless; a stale-work continuation may be resuming work that was
-      // already pushed, which is exactly when the line earns its place.
-      const tip = input.stale_context
-        ? await observeRemoteBranchTip(
-            input.snap.repo,
-            input.base_remote ?? 'origin',
-            branch
-          )
+      // meaningless; a continuation — stale-work adoption, manual resume,
+      // conflict resolution — may be resuming work that was already pushed,
+      // which is exactly when the line earns its place. The tip is read from
+      // and reported under the SAME remote, so a `upstream` base never has its
+      // SHA presented as origin's.
+      const tip_remote = input.base_remote ?? 'origin';
+      const tip = input.continuation
+        ? await observeRemoteBranchTip(input.snap.repo, tip_remote, branch)
         : null;
       return await buildAttemptFacts(
         {
@@ -4108,7 +4111,8 @@ export function createScheduler(deps) {
             branch: input.snap.target_base || null,
             sha: input.wt.base_oid || null
           },
-          remote_tip: tip === null ? null : { branch, sha: tip },
+          remote_tip:
+            tip === null ? null : { remote: tip_remote, branch, sha: tip },
           node_modules: input.worktree_setup,
           bead_status: input.claim.status,
           claimed_by_worker: input.claim.claimed,
@@ -4125,6 +4129,49 @@ export function createScheduler(deps) {
       log('attempt facts collection failed for %s: %o', input.bead_id, err);
       return null;
     }
+  }
+
+  /**
+   * The facts card for a relaunch that did not come through `dispatch()` —
+   * manual resume, conflict resolution — assembled from the prior attempt's
+   * record and the current bead snapshot (spec D1). Everything a relaunch
+   * cannot know is left null and omitted: no install ran, the Worker wrote no
+   * claim, and the base remote is whatever the memoized resolver answers.
+   *
+   * @param {{ workspace: string, attempt_id: string, bead_id: string, snap: BeadSnapshot, wt_path: string, base_oid: string|null, runner_name: string, quickfix_lane: boolean }} input
+   * @returns {Promise<import('./attempt-facts.js').AttemptFacts|null>}
+   */
+  async function collectRelaunchFacts(input) {
+    /** @type {string|null} */
+    let base_remote = null;
+    if (typeof deps.resolveBase === 'function') {
+      try {
+        const resolved = await deps.resolveBase();
+        base_remote = resolved.ok ? (resolved.remote ?? null) : null;
+      } catch {
+        base_remote = null;
+      }
+    }
+    /** @type {string|null} */
+    let status = null;
+    try {
+      status = await deps.bd.readStatus(input.bead_id);
+    } catch {
+      status = null;
+    }
+    return collectDispatchFacts({
+      workspace: input.workspace,
+      attempt_id: input.attempt_id,
+      bead_id: input.bead_id,
+      snap: input.snap,
+      wt: { path: input.wt_path, base_oid: input.base_oid ?? '' },
+      runner_name: input.runner_name,
+      quickfix_lane: input.quickfix_lane,
+      base_remote,
+      worktree_setup: null,
+      claim: { claimed: false, status },
+      continuation: true
+    });
   }
 
   /**
@@ -4165,6 +4212,19 @@ export function createScheduler(deps) {
     }
     try {
       await deps.bd.setStatus(bead_id, 'in_progress');
+    } catch (err) {
+      log('dispatch claim write failed for %s: %o', bead_id, err);
+      return { claimed: false, status };
+    }
+    // The release DUTY is recorded the moment the write returned, before the
+    // readback: a write that succeeded and a readback that then failed still
+    // left the bead `in_progress`, and a record that said `pending` would let
+    // both the exit path and `reconcile` walk past that claim.
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { worker_claim: 'written' }
+    });
+    try {
       const readback = await deps.bd.readStatus(bead_id);
       if (readback !== 'in_progress') {
         log(
@@ -4176,13 +4236,11 @@ export function createScheduler(deps) {
       }
       status = readback;
     } catch (err) {
-      log('dispatch claim write failed for %s: %o', bead_id, err);
-      return { claimed: false, status };
+      // Unconfirmed, not unwritten: the facts card says nothing about the
+      // status, and the `written` record above keeps the release owed.
+      log('dispatch claim readback failed for %s: %o', bead_id, err);
+      return { claimed: false, status: null };
     }
-    deps.store.updateAttempt(workspace, {
-      attempt_id,
-      patch: { worker_claim: 'written' }
-    });
     return { claimed: true, status };
   }
 
@@ -7536,6 +7594,26 @@ export function createScheduler(deps) {
   const STALE_CLAIM_SETTLE_MAX = 20;
 
   /**
+   * Attempt statuses whose session is over and whose Worker-written claim is
+   * therefore owed back (spec D2). Everything except a live `running`
+   * session, an unspawned `pending`, and `done` — a delivered attempt's bead is
+   * `resolved` or beyond, and its status is the delivery's business.
+   *
+   * @type {ReadonlySet<string>}
+   */
+  const WORKER_CLAIM_RECLAIMABLE_STATUSES = new Set([
+    'failed',
+    'orphaned',
+    'stopped',
+    'parked',
+    'paused',
+    'retry_wait',
+    'waiting',
+    'superseded',
+    'discarded'
+  ]);
+
+  /**
    * Give back a WORKER-written `in_progress` whose release was missed
    * (harness-reduction spec D2).
    *
@@ -7561,7 +7639,11 @@ export function createScheduler(deps) {
     const live_beads = new Set();
     for (const [, attempt] of attempts) {
       const a = /** @type {any} */ (attempt);
-      if (a && (a.status === 'running' || a.status === 'retry_wait')) {
+      // Only a RUNNING attempt can still own the bead. A `retry_wait` rung has
+      // no session and waits for a new dispatch, which `bd ready` admits only
+      // once the bead is `open` again — so it is a release candidate, never a
+      // live owner.
+      if (a && a.status === 'running') {
         live_beads.add(a.bead_id);
       }
     }
@@ -7574,7 +7656,7 @@ export function createScheduler(deps) {
       if (!a || a.worker_claim !== 'written') {
         continue;
       }
-      if (a.status !== 'failed' && a.status !== 'orphaned') {
+      if (!WORKER_CLAIM_RECLAIMABLE_STATUSES.has(a.status)) {
         continue;
       }
       if (
@@ -8241,7 +8323,7 @@ export function createScheduler(deps) {
         base_remote,
         worktree_setup,
         claim,
-        stale_context
+        continuation: stale_context !== null && stale_context !== undefined
       });
       await launchSession({
         workspace,
@@ -9251,6 +9333,20 @@ export function createScheduler(deps) {
       );
     } catch {
       // Best-effort: the failed record already preserves the refusal.
+    }
+    // A claim the Worker wrote for this launch goes back with it (spec D2): a
+    // `spawn_failed` refusal lands on the env ladder as `retry_wait`, and the
+    // rung's re-dispatch is admitted only through `bd ready`, which never lists
+    // an `in_progress` bead. Judged off the record, so a review session or an
+    // attempt that observed somebody else's claim releases nothing.
+    const refused = deps.store.snapshot(input.workspace).attempts?.[
+      input.attempt_id
+    ];
+    if (refused && refused.worker_claim === 'written') {
+      await releaseBeadClaim(input.bead_id, {
+        workspace: input.workspace,
+        attempt_id: input.attempt_id
+      });
     }
     claimed.delete(input.bead_id);
     notifyChanged(input.workspace);
@@ -10559,6 +10655,26 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'workflow_mode_record_failed' };
     }
 
+    const conflict_wt_path =
+      typeof deps.worktree.pathFor === 'function'
+        ? deps.worktree.pathFor(repo, bead_id)
+        : '';
+    // The conflict session gets the same facts card a resume does (spec D1):
+    // its branch is by definition already pushed, so the remote-tip line is
+    // exactly the fact it needs first.
+    const conflict_facts =
+      conflict_wt_path.length > 0
+        ? await collectRelaunchFacts({
+            workspace,
+            attempt_id,
+            bead_id,
+            snap,
+            wt_path: conflict_wt_path,
+            base_oid: null,
+            runner_name,
+            quickfix_lane: false
+          })
+        : null;
     const launched = await launchSession({
       workspace,
       attempt_id,
@@ -10574,10 +10690,8 @@ export function createScheduler(deps) {
       account_sources: resolved_exec.account_sources,
       prior_wf: prior,
       stamped_keys,
-      wt_path:
-        typeof deps.worktree.pathFor === 'function'
-          ? deps.worktree.pathFor(repo, bead_id)
-          : '',
+      wt_path: conflict_wt_path,
+      attempt_facts: conflict_facts,
       launch_kind: 'conflict',
       // A FORK of the bead's own interactive session when one qualified, else
       // the fresh session this path has always opened. The two values move
@@ -11373,6 +11487,25 @@ export function createScheduler(deps) {
         }
       }
     }
+    // The facts card for a RESUME or CONFLICT relaunch (spec D1): the same
+    // card a first dispatch carries, minus what this path never did — no
+    // install, no Worker claim — and plus the one line only a continuation can
+    // use, the bead branch's remote tip. A disposition session repairs a spec,
+    // not an implementation, so the implementation script lines would mislead
+    // it; it keeps no card.
+    const relaunch_facts =
+      options.disposition || wt_path.length === 0
+        ? null
+        : await collectRelaunchFacts({
+            workspace,
+            attempt_id: new_attempt_id,
+            bead_id,
+            snap: bead_snapshot,
+            wt_path,
+            base_oid: prior.base_oid ?? null,
+            runner_name,
+            quickfix_lane
+          });
     /** @type {any} */
     const launch_input = {
       workspace,
@@ -11390,6 +11523,7 @@ export function createScheduler(deps) {
       prior_wf,
       stamped_keys,
       wt_path,
+      attempt_facts: relaunch_facts,
       launch_kind: options.disposition
         ? 'disposition'
         : options.conflict_resolution

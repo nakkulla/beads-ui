@@ -190,7 +190,7 @@ export function attemptFactsDirective(facts) {
   }
   if (facts.remote_tip) {
     lines.push(
-      `- origin/${facts.remote_tip.branch} tip=${facts.remote_tip.sha} (source=git ls-remote)`
+      `- ${facts.remote_tip.remote}/${facts.remote_tip.branch} tip=${facts.remote_tip.sha} (source=git ls-remote ${facts.remote_tip.remote})`
     );
   }
   const selector_inputs = (facts.selector_inputs || [])

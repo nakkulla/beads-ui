@@ -48,7 +48,8 @@ import path from 'node:path';
  * @property {string|null} dotfiles_root
  * @property {string|null} workflow_python
  * @property {string|null} node_modules - The D3 install result.
- * @property {{ branch: string, sha: string }|null} remote_tip
+ * @property {{ remote: string, branch: string, sha: string }|null} remote_tip -
+ * The bead branch's tip on the remote it was actually read from.
  * @property {SelectorInput[]} selector_inputs
  * @property {{ token: string, model: string, effort: string, digest: string|null }|null} reviewer_preset
  * @property {string|null} bead_status
@@ -253,21 +254,28 @@ export function buildScriptCalls(input, deps) {
       return false;
     }
   };
+  /**
+   * The shell-safe spelling of an installed script path.
+   *
+   * @param {string} name
+   * @returns {string}
+   */
+  const script = (name) => shellQuote(path.join(dir, name));
   if (installed('stale-rereview-inputs.py')) {
     calls.push({
-      command: `python3 ${path.join(dir, 'stale-rereview-inputs.py')} ${input.bead_id} --json`,
+      command: `python3 ${script('stale-rereview-inputs.py')} ${input.bead_id} --json`,
       note: '출력에 `verdict_draft`가 있으면 그 값으로 staleness 레인을 끝낸다 — 스스로 판정을 다시 만들지 않는다.'
     });
   }
   if (installed('impl-selector.py') && input.route && input.worktree) {
     calls.push({
-      command: `python3 ${path.join(dir, 'impl-selector.py')} --controller-runtime ${input.controller_runtime} --route ${input.route} --bead ${input.bead_id} --repo ${input.worktree} --json`,
+      command: `python3 ${script('impl-selector.py')} --controller-runtime ${input.controller_runtime} --route ${input.route} --bead ${input.bead_id} --repo ${shellQuote(input.worktree)} --json`,
       note: '이 attempt의 실행 형태 정본. 카드의 `선택 입력`은 이 selector가 읽을 입력이지 그 판정이 아니다.'
     });
   }
   if (installed('check-completion-report.py')) {
     calls.push({
-      command: `python3 ${path.join(dir, 'check-completion-report.py')} <보고서 경로>`,
+      command: `python3 ${script('check-completion-report.py')} <보고서 경로>`,
       note: null
     });
     let text = '';
@@ -281,7 +289,7 @@ export function buildScriptCalls(input, deps) {
     }
     if (text.includes('--template')) {
       calls.push({
-        command: `python3 ${path.join(dir, 'check-completion-report.py')} --template --lane worker --identifier ${input.attempt_id}`,
+        command: `python3 ${script('check-completion-report.py')} --template --lane worker --identifier ${input.attempt_id}`,
         note: null
       });
     }
@@ -294,12 +302,31 @@ export function buildScriptCalls(input, deps) {
   ) {
     const remote = input.remote ?? 'origin';
     const pinned = input.base_sha ?? '<pinned base sha>';
+    // `--message` takes the commit message TEXT itself — the installed script
+    // reads no file behind it.
     calls.push({
-      command: `python3 ${path.join(dir, 'land-quick-fix.py')} --repo ${input.worktree} --remote ${remote} --base ${input.branch} --pinned-base ${pinned} --message <메시지 파일> --path <경로>`,
+      command: `python3 ${script('land-quick-fix.py')} --repo ${shellQuote(input.worktree)} --remote ${remote} --base ${input.branch} --pinned-base ${pinned} --message '<커밋 메시지>' --path <경로>`,
       note: null
     });
   }
   return calls;
+}
+
+/**
+ * Quote one argument for a POSIX shell only when it needs it. A path made of
+ * the usual safe characters stays bare so the card reads as a command a person
+ * would type; anything else (a space, a quote, a glob) is single-quoted with
+ * embedded single quotes escaped, which is the one form every POSIX shell
+ * reads literally.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+export function shellQuote(value) {
+  if (/^[A-Za-z0-9_\-./:@=+,]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
@@ -316,7 +343,7 @@ export function buildScriptCalls(input, deps) {
  *   controller_runtime: string,
  *   quickfix_lane: boolean,
  *   base: { remote: string|null, branch: string|null, sha: string|null },
- *   remote_tip: { branch: string, sha: string }|null,
+ *   remote_tip: { remote: string, branch: string, sha: string }|null,
  *   node_modules: string|null,
  *   bead_status: string|null,
  *   claimed_by_worker: boolean,

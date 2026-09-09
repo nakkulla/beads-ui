@@ -754,12 +754,12 @@ describe('runner/preamble attempt facts card (spec D1)', () => {
   test('states the remote tip when a continuation observed one', () => {
     const out = applyPreamble('작업하라', {
       attempt_facts: facts({
-        remote_tip: { branch: 'UI-1', sha: 'b'.repeat(40) }
+        remote_tip: { remote: 'upstream', branch: 'UI-1', sha: 'b'.repeat(40) }
       })
     }).system_prompt;
 
     expect(out).toContain(
-      `- origin/UI-1 tip=${'b'.repeat(40)} (source=git ls-remote)`
+      `- upstream/UI-1 tip=${'b'.repeat(40)} (source=git ls-remote upstream)`
     );
   });
 

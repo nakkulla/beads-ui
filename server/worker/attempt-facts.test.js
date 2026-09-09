@@ -7,6 +7,7 @@ import {
   resolveDotfilesRoot,
   resolveReviewerPreset,
   resolveSelectorInputs,
+  shellQuote,
   workflowScriptDir
 } from './attempt-facts.js';
 
@@ -319,7 +320,48 @@ describe('worker/attempt-facts script calls (spec D1)', () => {
 
     expect(lane).toHaveLength(1);
     expect(lane[0].command).toContain('--remote origin --base main');
+    expect(lane[0].command).toContain("--message '<커밋 메시지>'");
     expect(ordinary).toEqual([]);
+  });
+
+  test('quotes a worktree path that carries a space', () => {
+    const calls = buildScriptCalls(
+      {
+        attempt_id: 'att-1',
+        bead_id: 'UI-1',
+        route: 'spec_backed',
+        worktree: '/Users/me/My Repo/.worktrees/UI-1',
+        controller_runtime: 'claude',
+        quickfix_lane: false,
+        remote: 'origin',
+        branch: 'main',
+        base_sha: null
+      },
+      {
+        script_dir: SCRIPTS,
+        fs: fakeFs({ [path.join(SCRIPTS, 'impl-selector.py')]: '' })
+      }
+    );
+
+    expect(calls[0].command).toContain(
+      "--repo '/Users/me/My Repo/.worktrees/UI-1' --json"
+    );
+  });
+});
+
+describe('worker/attempt-facts shell quoting (spec D1)', () => {
+  test('leaves a plain path bare', () => {
+    expect(shellQuote('/home/tester/.claude/skills/x.py')).toBe(
+      '/home/tester/.claude/skills/x.py'
+    );
+  });
+
+  test('single-quotes a value with a space', () => {
+    expect(shellQuote('/a b/c')).toBe("'/a b/c'");
+  });
+
+  test('escapes an embedded single quote', () => {
+    expect(shellQuote("it's")).toBe("'it'\\''s'");
   });
 });
 

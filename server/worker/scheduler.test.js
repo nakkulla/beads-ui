@@ -20289,7 +20289,7 @@ describe('worker 하네스 축소 (2026-09-09 spec D1·D2·D3·D5b)', () => {
       expect(attempt.worker_claim).toBe('pending');
     });
 
-    test('writes no claim when the readback does not echo in_progress', async () => {
+    test('keeps the release duty when the readback does not echo in_progress', async () => {
       const env = setup({
         config: { S1: { status: 'open', readStatusStuck: true } },
         slots: 1
@@ -20298,7 +20298,10 @@ describe('worker 하네스 축소 (2026-09-09 spec D1·D2·D3·D5b)', () => {
 
       await env.scheduler.tick(WS);
 
-      expect(newestAttempt(env.store, 'S1').worker_claim).toBe('pending');
+      // The write went through, so the duty to give it back is recorded even
+      // though the readback could not confirm it.
+      expect(env.bd.statuses.S1).toBe('in_progress');
+      expect(newestAttempt(env.store, 'S1').worker_claim).toBe('written');
     });
 
     test('writes no claim when the attempt prerecord fails', async () => {
@@ -20354,6 +20357,113 @@ describe('worker 하네스 축소 (2026-09-09 spec D1·D2·D3·D5b)', () => {
       expect(attempt.cause).toBe('workflow_mode_record_failed');
       expect(env.bd.statuses.S1).toBe('open');
       expect(attempt.worker_claim).toBe('released');
+    });
+
+    test('keeps the release duty when the claim readback throws', async () => {
+      const env = setup({
+        config: { S1: { status: 'open', ready_follows_status: true } },
+        slots: 1
+      });
+      const setStatus = env.bd.setStatus;
+      const readStatus = env.bd.readStatus;
+      let throw_next_read = false;
+      env.bd.setStatus = async (
+        /** @type {string} */ bead_id,
+        /** @type {string} */ status
+      ) => {
+        await setStatus(bead_id, status);
+        throw_next_read = status === 'in_progress';
+      };
+      env.bd.readStatus = async (/** @type {string} */ bead_id) => {
+        if (throw_next_read) {
+          throw_next_read = false;
+          throw new Error('bd show failed');
+        }
+        return readStatus(bead_id);
+      };
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.bd.statuses.S1).toBe('in_progress');
+      expect(newestAttempt(env.store, 'S1').worker_claim).toBe('written');
+    });
+
+    test('releases the claim when the spawn throws', async () => {
+      const env = setup({
+        config: { S1: { status: 'open', ready_follows_status: true } },
+        slots: 1,
+        makeRunner: () => ({
+          name: 'claude',
+          spawn() {
+            throw new Error('spawn failed');
+          }
+        })
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const attempt = newestAttempt(env.store, 'S1');
+      expect(attempt.cause).toBe('spawn_failed');
+      expect(env.bd.statuses.S1).toBe('open');
+      expect(attempt.worker_claim).toBe('released');
+    });
+
+    test('reconcile settles a retry_wait rung whose claim was missed', async () => {
+      const env = setup({
+        config: { S1: { status: 'in_progress' } },
+        slots: 1
+      });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: { attempt_id: 'rung-1', bead_id: 'S1' }
+      });
+      env.store.updateAttempt(WS, {
+        attempt_id: 'rung-1',
+        patch: {
+          status: 'retry_wait',
+          repo: '/repo',
+          runner: 'claude',
+          worker_claim: 'written',
+          finished_at: 900
+        }
+      });
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.bd.statuses.S1).toBe('open');
+      expect(env.store.snapshot(WS).attempts['rung-1'].worker_claim).toBe(
+        'released'
+      );
+    });
+
+    test('reconcile settles a stopped attempt whose claim was missed', async () => {
+      const env = setup({
+        config: { S1: { status: 'in_progress' } },
+        slots: 1
+      });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: { attempt_id: 'stop-1', bead_id: 'S1' }
+      });
+      env.store.updateAttempt(WS, {
+        attempt_id: 'stop-1',
+        patch: {
+          status: 'stopped',
+          repo: '/repo',
+          runner: 'claude',
+          worker_claim: 'written',
+          finished_at: 900
+        }
+      });
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.bd.statuses.S1).toBe('open');
+      expect(env.store.snapshot(WS).attempts['stop-1'].worker_claim).toBe(
+        'released'
+      );
     });
 
     test('reconcile settles a written claim whose release was missed', async () => {
@@ -20439,7 +20549,13 @@ describe('worker 하네스 축소 (2026-09-09 spec D1·D2·D3·D5b)', () => {
       });
       env.store.updateAttempt(WS, {
         attempt_id: 'live-3',
-        patch: { status: 'retry_wait', repo: '/repo', runner: 'claude' }
+        patch: {
+          status: 'running',
+          pid: 4242,
+          started_at: 1000,
+          repo: '/repo',
+          runner: 'claude'
+        }
       });
 
       await env.scheduler.reconcile(WS);
@@ -20542,6 +20658,44 @@ describe('worker 하네스 축소 (2026-09-09 spec D1·D2·D3·D5b)', () => {
       expect(newestAttempt(env.store, 'S1').system_prompt).toContain(
         '- status=in_progress(선점: 없음)'
       );
+    });
+
+    test('delivers the facts card on a manual resume without install lines', async () => {
+      const recorder = makeRecordingRunner();
+      const env = setup({
+        config: { S1: { status: 'open' } },
+        slots: 1,
+        makeRunner: recorder.factory,
+        homeDir: '/home/nobody'
+      });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: { attempt_id: 'prior-1', bead_id: 'S1' }
+      });
+      env.store.updateAttempt(WS, {
+        attempt_id: 'prior-1',
+        patch: {
+          status: 'failed',
+          repo: '/repo',
+          target_base: 'main',
+          base_oid: 'base-S1',
+          runner: 'claude',
+          model: 'opus',
+          effort: 'high',
+          session_id: 'sid-abc',
+          workflow_mode_prior: null,
+          cause: 'session_failed:is_error'
+        }
+      });
+
+      const res = await env.scheduler.resume(WS, 'prior-1');
+
+      expect(res.ok).toBe(true);
+      const prompt = newestAttempt(env.store, 'S1').system_prompt;
+      expect(prompt).toContain('## 시도 사실');
+      expect(prompt).toContain('bead=S1');
+      expect(prompt).toContain('- status=open(선점: 없음)');
+      expect(prompt).not.toContain('- node_modules=');
     });
 
     test('omits the dotfiles lines when no resolver is wired', async () => {
