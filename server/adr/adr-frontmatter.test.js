@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { readAdrDir, readAdrFile } from './adr-frontmatter.js';
+import { compareAdrDesc, readAdrDir, readAdrFile } from './adr-frontmatter.js';
 
 /**
  * @param {Record<string, string>} keys
@@ -142,6 +142,69 @@ describe('readAdrFile', () => {
     expect(result.ok).toBe(false);
   });
 
+  test('reads a string-id ADR file', () => {
+    const text = frontmatter({ ...VALID, id: 'dotfiles-60u8' });
+
+    const result = readAdrFile(text, 'dotfiles-60u8-identifier.md');
+
+    expect(result.ok && result.adr.id).toEqual('dotfiles-60u8');
+  });
+
+  test('reads a sequence-suffixed string-id ADR file', () => {
+    const text = frontmatter({ ...VALID, id: 'dotfiles-60u8-2' });
+
+    const result = readAdrFile(text, 'dotfiles-60u8-2-second.md');
+
+    expect(result.ok && result.adr.id).toEqual('dotfiles-60u8-2');
+  });
+
+  test('keeps a legacy id a number', () => {
+    const text = frontmatter({ ...VALID, id: '45' });
+
+    const result = readAdrFile(text, '0045-x.md');
+
+    expect(result.ok && typeof result.adr.id).toEqual('number');
+  });
+
+  test('matches a leading-zero file name prefix against a bare id', () => {
+    const text = frontmatter({ ...VALID, id: '45' });
+
+    const result = readAdrFile(text, '0045-x.md');
+
+    expect(result.ok).toEqual(true);
+  });
+
+  test('parses supersedes mixing an integer and a quoted string id', () => {
+    const text = frontmatter({ ...VALID, supersedes: '[45, "dotfiles-60u8"]' });
+
+    const result = readAdrFile(text, '0012-x.md');
+
+    expect(result.ok && result.adr.supersedes).toEqual([45, 'dotfiles-60u8']);
+  });
+
+  test('parses superseded_by as a string id', () => {
+    const text = frontmatter({
+      ...VALID,
+      status: 'superseded',
+      superseded_by: '"dotfiles-60u8"'
+    });
+
+    const result = readAdrFile(text, '0012-x.md');
+
+    expect(result.ok && result.adr.superseded_by).toEqual('dotfiles-60u8');
+  });
+
+  test('rejects a string id that breaks the identifier grammar', () => {
+    const text = frontmatter({ ...VALID, id: '"not an id"' });
+
+    const result = readAdrFile(text, '0012-x.md');
+
+    expect(result).toEqual({
+      ok: false,
+      error: "key 'id' must be an integer or ADR identifier"
+    });
+  });
+
   test('rejects a file without frontmatter', () => {
     const result = readAdrFile('# just a heading\n', '0012-x.md');
 
@@ -201,9 +264,75 @@ describe('readAdrDir', () => {
     ]);
   });
 
+  test('lists legacy and string-id files from one directory', async () => {
+    await fs.writeFile(
+      path.join(dir, '0045-legacy.md'),
+      frontmatter({ ...VALID, id: '45' })
+    );
+    await fs.writeFile(
+      path.join(dir, 'dotfiles-60u8-first.md'),
+      frontmatter({ ...VALID, id: 'dotfiles-60u8' })
+    );
+    await fs.writeFile(
+      path.join(dir, 'dotfiles-60u8-2-second.md'),
+      frontmatter({ ...VALID, id: 'dotfiles-60u8-2' })
+    );
+
+    const result = await readAdrDir(dir);
+
+    expect(result.adrs.map((a) => a.id)).toEqual([
+      45,
+      'dotfiles-60u8-2',
+      'dotfiles-60u8'
+    ]);
+    expect(result.errors).toEqual([]);
+  });
+
   test('returns an empty result for a missing directory', async () => {
     const result = await readAdrDir(path.join(dir, 'nope'));
 
     expect(result).toEqual({ adrs: [], errors: [] });
+  });
+});
+
+describe('compareAdrDesc', () => {
+  /**
+   * @param {number|string} id
+   * @param {string} date
+   */
+  function row(id, date) {
+    return /** @type {any} */ ({ id, date });
+  }
+
+  test('orders legacy numbers ahead of every string id', () => {
+    const rows = [row('dotfiles-60u8', '2026-09-09'), row(3, '2026-01-01')];
+
+    rows.sort(compareAdrDesc);
+
+    expect(rows.map((r) => r.id)).toEqual([3, 'dotfiles-60u8']);
+  });
+
+  test('orders legacy numbers descending', () => {
+    const rows = [row(3, '2026-01-01'), row(31, '2026-01-01')];
+
+    rows.sort(compareAdrDesc);
+
+    expect(rows.map((r) => r.id)).toEqual([31, 3]);
+  });
+
+  test('orders string ids by date descending', () => {
+    const rows = [row('a-1', '2026-09-01'), row('b-2', '2026-09-09')];
+
+    rows.sort(compareAdrDesc);
+
+    expect(rows.map((r) => r.id)).toEqual(['b-2', 'a-1']);
+  });
+
+  test('breaks a string id date tie by the id text ascending', () => {
+    const rows = [row('b-2', '2026-09-09'), row('a-1', '2026-09-09')];
+
+    rows.sort(compareAdrDesc);
+
+    expect(rows.map((r) => r.id)).toEqual(['a-1', 'b-2']);
   });
 });

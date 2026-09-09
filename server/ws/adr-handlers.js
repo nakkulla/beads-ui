@@ -98,13 +98,13 @@ function computingPlaceholder(root_dir) {
 }
 
 /**
- * Resolve the ADR numbers a workspace snapshot knows about.
+ * Resolve the ADR identifiers a workspace snapshot knows about.
  *
  * @param {AdrWorkspace} entry
- * @returns {Map<number, string>} ADR id to status.
+ * @returns {Map<number | string, string>} ADR id to status.
  */
 function statusById(entry) {
-  /** @type {Map<number, string>} */
+  /** @type {Map<number | string, string>} */
   const out = new Map();
   for (const adr of [...entry.current, ...entry.history]) {
     if (!out.has(adr.id)) {
@@ -139,7 +139,7 @@ function buildViews() {
     }
   }
 
-  /** @type {Map<string, Map<number, string>>} */
+  /** @type {Map<string, Map<number | string, string>>} */
   const statuses = new Map();
   for (const [name, root_dir] of first_root_by_name) {
     const entry = CACHE.get(root_dir);

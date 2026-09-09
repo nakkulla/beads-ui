@@ -7,11 +7,11 @@ function settle() {
 }
 
 /**
- * @param {number} id
+ * @param {number | string} id
  * @param {Partial<Record<string, any>>} [extra]
  */
 function adr(id, extra = {}) {
-  const num = String(id).padStart(4, '0');
+  const num = typeof id === 'number' ? String(id).padStart(4, '0') : id;
   return {
     file: `${num}-decision.md`,
     id,
@@ -76,6 +76,19 @@ function texts(root, selector) {
   );
 }
 
+/**
+ * Rendered markup with lit's per-load random comment markers removed, so the
+ * snapshot holds the bytes a user sees and stays stable across runs.
+ *
+ * @param {HTMLElement} el
+ */
+function markup(el) {
+  return el.innerHTML
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 describe('views/adr toolbar', () => {
   test('filters the sections down to the pressed repository', () => {
     const { root } = mount([
@@ -133,6 +146,86 @@ describe('views/adr toolbar', () => {
     toggle.click();
 
     expect(texts(root, '.adr-table--current .adr-num')).toEqual(['9', '3']);
+  });
+
+  test('puts legacy numbers ahead of string ids in the current table', () => {
+    const { root } = mount([
+      workspace({
+        current: [
+          adr('dotfiles-60u8', { date: '2026-09-09' }),
+          adr('dotfiles-60u8-2', { date: '2026-09-10' }),
+          adr(45)
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-table--current .adr-num')).toEqual([
+      '45',
+      'dotfiles-60u8-2',
+      'dotfiles-60u8'
+    ]);
+  });
+
+  test('breaks a string id date tie by the id text ascending', () => {
+    const { root } = mount([
+      workspace({
+        current: [
+          adr('dotfiles-60u8-2', { date: '2026-09-09' }),
+          adr('dotfiles-60u8', { date: '2026-09-09' })
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-table--current .adr-num')).toEqual([
+      'dotfiles-60u8',
+      'dotfiles-60u8-2'
+    ]);
+  });
+
+  test('puts legacy numbers ahead of string ids in the history list', () => {
+    const { root } = mount([
+      workspace({
+        history: [
+          adr('dotfiles-60u8', { status: 'superseded', date: '2026-09-09' }),
+          adr(45, { status: 'superseded' })
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-table--history .adr-num')).toEqual([
+      '45',
+      'dotfiles-60u8'
+    ]);
+  });
+
+  test('keeps the stale 우선 toggle working across mixed identifiers', () => {
+    const { root } = mount([
+      workspace({
+        current: [adr(45), adr('dotfiles-60u8', { date: '2026-09-09' })],
+        citations_stale: [
+          {
+            kind: 'retired',
+            file: 'AGENTS.md',
+            line: 4,
+            adr: 'dotfiles-60u8',
+            detail: 'retired'
+          }
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-table--current .adr-num')).toEqual([
+      'dotfiles-60u8',
+      '45'
+    ]);
+
+    const toggle = /** @type {HTMLElement} */ (root.querySelector('.adr-sort'));
+    toggle.click();
+
+    expect(texts(root, '.adr-table--current .adr-num')).toEqual([
+      '45',
+      'dotfiles-60u8'
+    ]);
   });
 });
 
@@ -244,6 +337,24 @@ describe('views/adr signals', () => {
     expect(texts(/** @type {HTMLElement} */ (rows[1]), '.adr-chip')).toEqual(
       []
     );
+  });
+
+  test('shows a string ADR identifier on a citation error row', () => {
+    const { root } = mount([
+      workspace({
+        citations_stale: [
+          {
+            kind: 'retired',
+            file: 'AGENTS.md',
+            line: 3,
+            adr: 'dotfiles-60u8',
+            detail: 'x'
+          }
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-row__mid')).toEqual(['ADR dotfiles-60u8']);
   });
 });
 
@@ -403,6 +514,76 @@ describe('views/adr cross citations', () => {
       'is-unknown'
     ]);
     expect(chips[2].textContent?.trim()).toBe('미확인');
+  });
+
+  test('pads only a legacy number and shows a string identifier verbatim', () => {
+    const { root } = mount([
+      workspace({
+        cross_citations: [
+          {
+            file: 'docs/adr/0001-a.md',
+            line: 1,
+            repo: 'dotfiles',
+            adr: 45,
+            target: { root_dir: '/d', status: 'accepted' }
+          },
+          {
+            file: 'docs/adr/0002-b.md',
+            line: 2,
+            repo: 'dotfiles',
+            adr: 'a-1',
+            target: null
+          }
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-sec--cross .adr-row__mid')).toEqual([
+      '→ ADR dotfiles/0045',
+      '→ ADR dotfiles/a-1'
+    ]);
+  });
+});
+
+describe('views/adr legacy-only regression', () => {
+  test('renders a numeric-only workspace with the pre-change markup', () => {
+    const { root } = mount([
+      workspace({
+        current: [
+          adr(30, { date: '2026-09-01' }),
+          adr(24, { date: '2026-09-03', supersedes: [9] })
+        ],
+        history: [
+          adr(9, {
+            status: 'superseded',
+            date: '2026-01-01',
+            superseded_by: 24
+          })
+        ],
+        citations_stale: [
+          {
+            kind: 'retired',
+            file: 'AGENTS.md',
+            line: 4,
+            adr: 24,
+            detail: 'retired'
+          }
+        ]
+      })
+    ]);
+
+    const current = /** @type {HTMLElement} */ (
+      root.querySelector('.adr-table--current tbody')
+    );
+    const history = /** @type {HTMLElement} */ (
+      root.querySelector('.adr-history tbody')
+    );
+    expect(markup(current)).toMatchInlineSnapshot(
+      `"<tr data-adr="24"> <td class="adr-num">24</td> <td> <span class="adr-doc adr-doc--plain">결정 24</span> </td> <td class="adr-date">2026-09-03</td> <td class="adr-summary">summary 24</td> <td></td> <td> </td> <td class="adr-signals"> <span class="adr-chip adr-chip--signal">인용 stale 1</span> </td> </tr> <tr data-adr="30"> <td class="adr-num">30</td> <td> <span class="adr-doc adr-doc--plain">결정 30</span> </td> <td class="adr-date">2026-09-01</td> <td class="adr-summary">summary 30</td> <td></td> <td> </td> <td class="adr-signals"> </td> </tr>"`
+    );
+    expect(markup(history)).toMatchInlineSnapshot(
+      `"<tr data-adr="9"> <td class="adr-num">9</td> <td>결정 9</td> <td class="adr-status">superseded</td> <td class="adr-superseded"> → 24 </td> </tr>"`
+    );
   });
 });
 

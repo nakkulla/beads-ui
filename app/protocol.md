@@ -989,7 +989,7 @@ AdrWorkspaceView = {
   candidates: { spec, ok, errors: CheckerError[] }[],
   cross_citations: { file, line, repo, adr, target: { root_dir, status } | null }[]
 }
-CheckerError = { kind, file, line: number|null, adr: number|null, detail }
+CheckerError = { kind, file, line: number|null, adr: number|string|null, detail }
 ```
 
 - `env_errors` is PER CHECKER: a failed checker empties only its own result

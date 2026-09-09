@@ -85,6 +85,28 @@ async function writeAdr(id, body = '') {
 }
 
 /**
+ * @param {string} id
+ * @param {string} date
+ * @param {string} [body]
+ */
+async function writeStringIdAdr(id, date, body = '') {
+  await writeFile(
+    `docs/adr/${id}-decision.md`,
+    [
+      '---',
+      `id: ${id}`,
+      'title: t',
+      'status: accepted',
+      `date: ${date}`,
+      'summary: s',
+      '---',
+      body,
+      ''
+    ].join('\n')
+  );
+}
+
+/**
  * @param {Object} [options]
  * @param {number} [options.concurrency]
  */
@@ -204,6 +226,67 @@ describe('computeWorkspace checker invocation', () => {
         detail: 'deprecated'
       }
     ]);
+  });
+
+  test('lists legacy and string-id ADRs in one current table', async () => {
+    await writeAdr(45);
+    await writeStringIdAdr('dotfiles-60u8', '2026-09-09');
+    await writeStringIdAdr('dotfiles-60u8-2', '2026-09-10');
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.current.map((a) => a.id)).toEqual([
+      45,
+      'dotfiles-60u8-2',
+      'dotfiles-60u8'
+    ]);
+  });
+
+  test('keeps a legacy id a number in the current table', async () => {
+    await writeAdr(45);
+    await writeStringIdAdr('dotfiles-60u8', '2026-09-09');
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(typeof result.current[0].id).toEqual('number');
+  });
+
+  test('preserves a string adr on a citation error', async () => {
+    await writeAdr(12);
+    answer = async (args) => {
+      if (checkerOf(args) === 'citations') {
+        return jsonOut({
+          ok: false,
+          errors: [{ kind: 'retired', adr: 'dotfiles-60u8' }]
+        });
+      }
+      return jsonOut({ ok: true, errors: [] });
+    };
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.citations_stale[0].adr).toEqual('dotfiles-60u8');
+  });
+
+  test('preserves a string adr on a candidate error', async () => {
+    await writeAdr(12);
+    await writeFile('docs/superpowers/specs/a-design.md', 'x\n');
+    answer = async (args) => {
+      if (checkerOf(args) === 'candidates') {
+        return jsonOut({
+          ok: false,
+          errors: [{ kind: 'adr_missing', adr: 'dotfiles-60u8' }]
+        });
+      }
+      if (checkerOf(args) === 'citations') {
+        return jsonOut({ ok: true, errors: [] });
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.candidates[0].errors[0].adr).toEqual('dotfiles-60u8');
   });
 
   test('caps concurrent spawns at four', async () => {
@@ -487,6 +570,21 @@ describe('cross citations', () => {
     ]);
   });
 
+  test('extracts a string ADR identifier from a cross citation', async () => {
+    await writeAdr(12, 'see ADR dotfiles/dotfiles-60u8 for context');
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.cross_citations).toEqual([
+      {
+        file: 'docs/adr/0012-decision.md',
+        line: 8,
+        repo: 'dotfiles',
+        adr: 'dotfiles-60u8'
+      }
+    ]);
+  });
+
   test('ignores mentions that do not match the citation syntax', async () => {
     await writeAdr(
       12,
@@ -496,5 +594,50 @@ describe('cross citations', () => {
     const result = await signals().computeWorkspace(root_dir, { full: true });
 
     expect(result.cross_citations).toEqual([]);
+  });
+});
+
+describe('legacy-only regression', () => {
+  test('renders a numeric-only fixture directory exactly as before the string id change', async () => {
+    await writeAdr(30);
+    await writeFile(
+      'docs/adr/0024-newer-date.md',
+      '---\nid: 24\ntitle: t24\nstatus: accepted\ndate: 2026-09-03\nsummary: s24\nsupersedes: [9]\n---\n'
+    );
+    await writeFile(
+      'docs/adr/0009-old.md',
+      '---\nid: 9\ntitle: t9\nstatus: superseded\ndate: 2026-01-01\nsummary: s9\nsuperseded_by: 24\n---\n'
+    );
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.frontmatter_errors).toEqual([]);
+    expect(JSON.stringify(result.current)).toMatchInlineSnapshot(
+      `"[{"file":"0030-decision.md","id":30,"title":"t","status":"accepted","date":"2026-09-05","summary":"s","supersedes":[],"superseded_by":null,"superseded_by_note":null,"spec":null,"bead":null},{"file":"0024-newer-date.md","id":24,"title":"t24","status":"accepted","date":"2026-09-03","summary":"s24","supersedes":[9],"superseded_by":null,"superseded_by_note":null,"spec":null,"bead":null}]"`
+    );
+    expect(JSON.stringify(result.history)).toMatchInlineSnapshot(
+      `"[{"file":"0009-old.md","id":9,"title":"t9","status":"superseded","date":"2026-01-01","summary":"s9","supersedes":[],"superseded_by":24,"superseded_by_note":null,"spec":null,"bead":null}]"`
+    );
+  });
+
+  test("keeps every one of this repository's numeric ADRs in the pre-change order", async () => {
+    const repo_root = process.cwd();
+    const adr_files = (
+      await fs.readdir(path.join(repo_root, 'docs/adr'))
+    ).filter((name) => /^\d{4}-.*\.md$/.test(name));
+
+    const result = await signals().computeWorkspace(repo_root, { full: true });
+
+    const rows = [...result.current, ...result.history];
+    expect(result.frontmatter_errors).toEqual([]);
+    expect(rows.length).toEqual(adr_files.length);
+    expect(rows.every((a) => typeof a.id === 'number')).toEqual(true);
+    // The pre-change comparator was `b.id - a.id` on both lists.
+    expect(result.current).toEqual(
+      [...result.current].sort((a, b) => Number(b.id) - Number(a.id))
+    );
+    expect(result.history).toEqual(
+      [...result.history].sort((a, b) => Number(b.id) - Number(a.id))
+    );
   });
 });

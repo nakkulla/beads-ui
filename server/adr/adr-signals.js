@@ -12,12 +12,13 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { readAdrDir } from './adr-frontmatter.js';
+import { compareAdrDesc, readAdrDir } from './adr-frontmatter.js';
 import {
   ADR_DIR_REL,
   CROSS_CITATION_RE,
   SPEC_DIR_REL,
-  defaultCheckerPaths
+  defaultCheckerPaths,
+  normalizeAdrId
 } from './adr-registry.js';
 
 /**
@@ -42,7 +43,7 @@ import {
  * @property {string} kind - Contract kind, or an unknown one kept verbatim.
  * @property {string} [file] - Offending file, when the checker reports one.
  * @property {number | null} [line] - Offending line, when reported.
- * @property {number | null} [adr] - ADR number, when reported.
+ * @property {number | string | null} [adr] - ADR identifier, when reported.
  * @property {string} [detail] - Free-form cause.
  */
 
@@ -58,7 +59,7 @@ import {
  * @property {string} file - Repo-relative citing file.
  * @property {number} line - 1-based line number.
  * @property {string} repo - Cited repository name.
- * @property {number} adr - Cited ADR number.
+ * @property {number | string} adr - Cited ADR identifier.
  */
 
 /**
@@ -75,13 +76,13 @@ import {
  * @property {false} computing - Always false on a finished result.
  * @property {EnvErrors} env_errors - Per-checker environment failures.
  * @property {boolean} adr_dir_missing - True when `docs/adr` is absent.
- * @property {AdrRecord[]} current - `accepted` ADRs, id descending.
- * @property {AdrRecord[]} history - All other ADRs, id descending.
+ * @property {AdrRecord[]} current - `accepted` ADRs, in `compareAdrDesc` order.
+ * @property {AdrRecord[]} history - All other ADRs, in `compareAdrDesc` order.
  * @property {{ file: string, error: string }[]} frontmatter_errors - Reader failures.
  * @property {{ ok: boolean, detail: string | null } | null} index_drift - Index verdict.
  * @property {CheckerError[]} citations_stale - Guidance citation errors.
  * @property {CandidateResult[]} candidates - Per-spec candidate results.
- * @property {CrossCitation[]} cross_citations - `ADR <repo>/NNNN` mentions.
+ * @property {CrossCitation[]} cross_citations - `ADR <repo>/<id>` mentions.
  * @property {boolean} retry_pending - True while any env error remains.
  */
 
@@ -168,11 +169,15 @@ function normalizeCheckerErrors(value) {
       continue;
     }
     const record = /** @type {Record<string, unknown>} */ (entry);
+    const adr_value = record.adr;
     errors.push({
       kind: typeof record.kind === 'string' ? record.kind : 'unknown',
       file: typeof record.file === 'string' ? record.file : undefined,
       line: typeof record.line === 'number' ? record.line : null,
-      adr: typeof record.adr === 'number' ? record.adr : null,
+      adr:
+        typeof adr_value === 'number' || typeof adr_value === 'string'
+          ? adr_value
+          : null,
       detail: typeof record.detail === 'string' ? record.detail : undefined
     });
   }
@@ -484,7 +489,7 @@ export function createAdrSignals(options = {}) {
             file,
             line: i + 1,
             repo: match[1],
-            adr: Number(match[2])
+            adr: normalizeAdrId(match[2])
           });
         }
       }
@@ -527,7 +532,7 @@ export function createAdrSignals(options = {}) {
     }
 
     const { adrs, errors: frontmatter_errors } = await readAdrDir(adr_dir);
-    const by_id_desc = [...adrs].sort((a, b) => b.id - a.id);
+    const by_id_desc = [...adrs].sort(compareAdrDesc);
     const current = by_id_desc.filter((adr) => adr.status === 'accepted');
     const history = by_id_desc.filter((adr) => adr.status !== 'accepted');
 
