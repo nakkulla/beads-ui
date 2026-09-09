@@ -19831,6 +19831,54 @@ describe('↻ 이어하기가 체계적 정지를 함께 푼다 (UI-hhju §3.1)'
     expect(env.store.snapshot(WS).hold).toBe(null);
   });
 
+  test('keeps the hold when the halting attempt record is missing', async () => {
+    const base_store = makeQueueStore();
+    /** @type {string|null} */
+    let hidden = null;
+    const store = {
+      ...base_store,
+      /** @param {string} workspace */
+      snapshot(workspace) {
+        const snap = base_store.snapshot(workspace);
+        if (hidden === null) {
+          return snap;
+        }
+        const attempts = { ...snap.attempts };
+        delete attempts[hidden];
+        return { ...snap, attempts };
+      }
+    };
+    const env = setup({ config: { S1: {} }, slots: 1, store });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const halting = await failAndHalt(env, 'S1');
+    const first_child = String(
+      (await env.scheduler.resume(WS, halting)).attempt_id
+    );
+    env.runner.eventsFor('S1').emit('session_id', 'sid-child');
+    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+    base_store.applyQueueHold(WS, {
+      event: {
+        kind: 'systemic_failure',
+        bead_id: 'S1',
+        attempt_id: halting,
+        cause: 'loud_fail_blocker',
+        at: 1000
+      },
+      now: 1000
+    });
+    // The child still points at the halting attempt, but the record itself
+    // has left the live map — a broken lineage (spec §3.1 condition 4).
+    hidden = halting;
+
+    const result = await env.scheduler.resume(WS, first_child);
+
+    expect(result.ok).toBe(true);
+    expect(base_store.snapshot(WS).hold).toMatchObject({ kind: 'systemic' });
+  });
+
   test('keeps the hold when another bead is resumed', async () => {
     const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
     seedQueue(env.store, ['S1', 'S2']);

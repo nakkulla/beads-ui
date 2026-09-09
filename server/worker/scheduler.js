@@ -9122,14 +9122,20 @@ export function createScheduler(deps) {
     let cursor = attempts[attempt_id];
     while (cursor && typeof cursor.resumed_from === 'string') {
       const parent_id = cursor.resumed_from;
-      if (parent_id === halted_by_attempt_id) {
-        return true;
-      }
       if (visited.has(parent_id)) {
         return false;
       }
       visited.add(parent_id);
       cursor = attempts[parent_id];
+      // The record itself is the evidence, not the pointer: a parent that left
+      // the live map (transferred, pruned) is a broken lineage even when the
+      // id matches, so the walk ends before the comparison.
+      if (!cursor) {
+        return false;
+      }
+      if (parent_id === halted_by_attempt_id) {
+        return true;
+      }
     }
     return false;
   }
