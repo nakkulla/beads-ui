@@ -8,6 +8,7 @@ import {
   spawnClaude
 } from './claude.js';
 import { makeFixtureSpawn } from './fixture-spawn.js';
+import { probeGuardMirror } from './guard-mirror.js';
 import { defaultTaskPrompt } from './preamble.js';
 
 const SUCCESS_FIXTURE = fileURLToPath(
@@ -1445,5 +1446,48 @@ describe('runner/claude liftUsage subagent exclusion (UI-2mpn §2.3)', () => {
       'msg_parent_3',
       'msg_parent_4'
     ]);
+  });
+});
+
+describe('runner/claude guard seam (guard-hook-bypass-result-judgment §2/§3)', () => {
+  test('returns the command with the tool call id', () => {
+    const spec = claudeSpec();
+
+    expect(
+      spec.extractShellCommand?.({
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_01',
+              name: 'Bash',
+              input: { command: 'git status' }
+            }
+          ]
+        }
+      })
+    ).toEqual({ command: 'git status', id: 'toolu_01' });
+  });
+
+  test('returns a null id for a tool_use that carries none', () => {
+    const spec = claudeSpec();
+
+    expect(
+      spec.extractShellCommand?.({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', name: 'Bash', input: { command: 'ls' } }
+          ]
+        }
+      })
+    ).toEqual({ command: 'ls', id: null });
+  });
+
+  test('exposes the guard mirror probe', () => {
+    const spec = claudeSpec();
+
+    expect(spec.probeGuardMirror).toBe(probeGuardMirror);
   });
 });

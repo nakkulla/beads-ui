@@ -2025,7 +2025,13 @@ function recoverRunningAttempts(att, key) {
         });
       }
       att.sessionMonitors.start(key, a, {
-        start_offset: boundary ?? 0
+        start_offset: boundary ?? 0,
+        // The verdicts the dead process was holding
+        // (guard-hook-bypass-result-judgment §3). The monitor re-pairs them
+        // against `log_offset..boundary` once before tailing from boundary.
+        ...(Array.isArray(a.guard_pending) && a.guard_pending.length > 0
+          ? { guard_pending: a.guard_pending }
+          : {})
       });
     }
   } catch (err) {

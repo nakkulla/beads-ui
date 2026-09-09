@@ -15,6 +15,7 @@
  */
 import { resolveCswapPath } from '../../routes/claude-usage.js';
 import { builtinCatalog } from '../runner-catalog.js';
+import { probeGuardMirror } from './guard-mirror.js';
 import { applyPreamble, defaultTaskPrompt } from './preamble.js';
 import { classifyProviderOutage } from './provider-outage.js';
 import { runSession } from './session.js';
@@ -474,8 +475,13 @@ function detectQuestion(raw) {
  * Extract the shell command from a claude Bash/Shell tool_use, else null. Feeds
  * the session engine's two fail-closed merge guards (worker-phase2 §1).
  *
+ * The `tool_use.id` rides along because a deferred verdict
+ * (guard-hook-bypass-result-judgment §3) is confirmed by the `tool_result`
+ * block that carries the SAME id: without it the pairing would have to be
+ * guessed from order.
+ *
  * @param {any} raw
- * @returns {string|null}
+ * @returns {{ command: string, id: string|null }|null}
  */
 function extractShellCommand(raw) {
   if (!raw || typeof raw !== 'object' || raw.type !== 'assistant') {
@@ -494,7 +500,10 @@ function extractShellCommand(raw) {
       c.input &&
       typeof c.input.command === 'string'
     ) {
-      return c.input.command;
+      return {
+        command: c.input.command,
+        id: typeof c.id === 'string' && c.id.length > 0 ? c.id : null
+      };
     }
   }
   return null;
@@ -718,6 +727,10 @@ export function claudeSpec(options = {}) {
     liftDelegation,
     detectQuestion,
     extractShellCommand,
+    // Claude-only (guard-hook-bypass-result-judgment §2): the codex spec omits
+    // it, which is what makes a codex session read as `absent` and keep the
+    // current immediate kill.
+    probeGuardMirror,
     extractSessionId,
     classifyProviderOutage,
     verdict

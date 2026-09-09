@@ -249,8 +249,12 @@ function detectQuestion(raw) {
  * engine's merge guards off the SAME line `normalize` emits its tool event from,
  * so the guard and the visible tool event can never disagree about what ran.
  *
+ * The item id rides along in the same shape claude's extraction uses
+ * (guard-hook-bypass-result-judgment §3), even though no codex consumer pairs
+ * on it: one return shape keeps the engine free of a per-adapter branch.
+ *
  * @param {any} raw
- * @returns {string|null}
+ * @returns {{ command: string, id: string|null }|null}
  */
 function extractShellCommand(raw) {
   if (!raw || typeof raw !== 'object' || raw.type !== 'item.started') {
@@ -263,7 +267,10 @@ function extractShellCommand(raw) {
     typeof item.command === 'string' &&
     item.command.length > 0
   ) {
-    return item.command;
+    return {
+      command: item.command,
+      id: typeof item.id === 'string' && item.id.length > 0 ? item.id : null
+    };
   }
   return null;
 }

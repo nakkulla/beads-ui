@@ -4182,3 +4182,67 @@ describe('worker/attach title-cache readback wiring (UI-eey2 §9.2)', () => {
     );
   });
 });
+
+describe('worker/attach hands held guard verdicts to the monitor (guard-hook-bypass-result-judgment §3)', () => {
+  /**
+   * Start a runtime whose one running attempt already holds a verdict, and
+   * report the options the monitor was started with.
+   *
+   * @param {any[]|null} guard_pending
+   */
+  async function startWith(guard_pending) {
+    const runtime = createWorkerRuntime();
+    seedDetachedAttempt(runtime.queueStore, 'att-1', 'UI-1');
+    runtime.queueStore.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: /** @type {any} */ ({
+        guard_mirror: 'verified',
+        ...(guard_pending === null ? {} : { guard_pending })
+      })
+    });
+    const sessionMonitors = {
+      start: vi.fn(() => true),
+      stop: vi.fn(),
+      stopAll: vi.fn()
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      sessionMonitors,
+      probePid: () => ({ alive: true, started_at: 1000 })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+    await waitFor(() => sessionMonitors.start.mock.calls.length > 0);
+
+    return /** @type {any} */ (sessionMonitors.start.mock.calls[0])[2];
+  }
+
+  test('passes the attempt guard_pending as a monitor start option', async () => {
+    const pending = [
+      {
+        tool_use_id: 'toolu_1',
+        command: 'git -c core.hooksPath=/dev/null diff',
+        at: 1,
+        log_offset: 512
+      }
+    ];
+
+    const options = await startWith(pending);
+
+    expect(options.guard_pending).toEqual(pending);
+    // The backfill range ends where the tail begins: one boundary, no overlap.
+    expect(typeof options.start_offset).toBe('number');
+  });
+
+  test('omits the option when the attempt holds nothing', async () => {
+    const options = await startWith(null);
+
+    expect(options.guard_pending).toBeUndefined();
+    expect(typeof options.start_offset).toBe('number');
+  });
+});

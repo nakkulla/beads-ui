@@ -276,7 +276,20 @@
  * compatibility.
  * @property {string|null} cleanup_diagnosis_result_path - Historical result
  * path retained for round-trip compatibility.
- * @property {{ reason: string, command: string|null, at: number }|null} guard_kill -
+ * @property {'verified'|'absent'|null} guard_mirror - Whether this attempt's
+ * spawn environment provably carried the PreToolUse(Bash) guard mirror
+ * (guard-hook-bypass-result-judgment §2). Probed once at spawn on the FINAL
+ * child environment and recorded here so a restart monitor judges by the same
+ * value instead of re-probing the server's own environment. `null` on every
+ * attempt recorded before the field existed, and read as unverified — i.e. the
+ * current immediate kill.
+ * @property {{ tool_use_id: string, command: string, at: number, log_offset: number|null }[]|null} guard_pending -
+ * One-shot hook-relocation verdicts held until the paired `tool_result` says
+ * whether the command actually ran (§3). Durable because a Worker restart must
+ * be able to re-pair them: `log_offset` is where the `tool_use` line ended, and
+ * the re-attached monitor backfills from there to the handoff boundary. Null
+ * when nothing is held.
+ * @property {{ reason: string, command: string|null, at: number, confirmed_by?: 'tool_result' }|null} guard_kill -
  * The fail-closed evidence a DETACHED session monitor recorded before killing an
  * orphan session (UI-o2yt §3.3). A killed session leaves no verdict behind, so
  * the reconcile pass would judge it by `gh` alone and read an already-pushed PR
@@ -2596,6 +2609,38 @@ function boundGuardWarnings(raw) {
 }
 
 /**
+ * Normalize a held-verdict list onto its bounded shape, on the same terms as
+ * {@link boundGuardWarnings}: a session that keeps deferring must not grow
+ * `queue.json` without limit, and a malformed entry is dropped rather than
+ * carried into the pairing.
+ *
+ * @param {unknown[]} raw
+ * @returns {{ tool_use_id: string, command: string, at: number, log_offset: number|null }[]}
+ */
+function boundGuardPending(raw) {
+  /** @type {{ tool_use_id: string, command: string, at: number, log_offset: number|null }[]} */
+  const out = [];
+  for (const entry of raw) {
+    if (out.length >= GUARD_WARNINGS_CAP) {
+      break;
+    }
+    if (!isRecord(entry) || typeof entry.tool_use_id !== 'string') {
+      continue;
+    }
+    out.push({
+      tool_use_id: entry.tool_use_id,
+      command:
+        typeof entry.command === 'string'
+          ? entry.command.slice(0, GUARD_WARNING_COMMAND_MAX)
+          : '',
+      at: typeof entry.at === 'number' ? entry.at : 0,
+      log_offset: typeof entry.log_offset === 'number' ? entry.log_offset : null
+    });
+  }
+  return out;
+}
+
+/**
  * @param {unknown} value
  * @returns {{ pid: number, pgid: number, started_at: number }|null}
  */
@@ -3013,6 +3058,15 @@ export function makeAttempt(fields) {
       typeof fields.cleanup_diagnosis_result_path === 'string'
         ? fields.cleanup_diagnosis_result_path
         : null,
+    guard_mirror:
+      fields.guard_mirror === 'verified' || fields.guard_mirror === 'absent'
+        ? fields.guard_mirror
+        : null,
+    guard_pending: Array.isArray(fields.guard_pending)
+      ? /** @type {Attempt['guard_pending']} */ (
+          boundGuardPending(fields.guard_pending)
+        )
+      : null,
     guard_kill: isRecord(fields.guard_kill)
       ? /** @type {Attempt['guard_kill']} */ (fields.guard_kill)
       : null,

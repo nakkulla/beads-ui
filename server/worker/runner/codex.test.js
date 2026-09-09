@@ -575,7 +575,13 @@ describe('runner/codex shell command extraction (merge guard seam)', () => {
         type: 'item.started',
         item: { id: 'i', type: 'command_execution', command: 'git push' }
       })
-    ).toBe('git push');
+    ).toEqual({ command: 'git push', id: 'i' });
+  });
+
+  test('exposes no guard mirror probe, so a codex session never defers', () => {
+    const spec = codexSpec();
+
+    expect(spec.probeGuardMirror).toBeUndefined();
   });
 
   test('returns null for the completed twin so the guard judges once', () => {

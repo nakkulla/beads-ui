@@ -26,6 +26,7 @@ import {
   guardEffect,
   guardWarningMessage
 } from './runner/command-guard.js';
+import { resolveGuardPending } from './runner/guard-mirror.js';
 import { adapterSpec } from './runner/index.js';
 import { createTailReader } from './runner/tail-reader.js';
 import { PID_START_TOLERANCE_MS } from './scheduler.js';
@@ -86,7 +87,7 @@ export function createSessionMonitors(deps) {
   const fs = deps.fs || nodeFs;
 
   /**
-   * @type {Map<string, { workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, reader: ReturnType<typeof createTailReader> }>}
+   * @type {Map<string, { workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, guard_mirror: 'verified'|'absent'|null, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[], terminated: boolean, reader: ReturnType<typeof createTailReader> }>}
    */
   const monitors = new Map();
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
@@ -415,6 +416,224 @@ export function createSessionMonitors(deps) {
   }
 
   /**
+   * Record one surviving guard verdict on both consumers: the durable attempt
+   * record (UI-1xcd §1) and the drawer broker.
+   *
+   * The DURABLE one is the point: the broker publish only reaches a drawer that
+   * happens to be open, so the attempt record is what makes the warning outlive
+   * the session. The published shape matches session.js's `guard_warning` event
+   * (kind='error', matching `reason`) so the two paths carry one semantic
+   * contract; fail-quiet for any renderer that does not recognize it.
+   *
+   * @param {{ workspace: string, attempt_id: string }} entry
+   * @param {import('./runner/command-guard.js').MergeViolation} violation
+   * @param {any} obj - The raw line the verdict came from.
+   */
+  function recordGuardWarning(entry, violation, obj) {
+    guardWarn(entry, {
+      reason: violation.reason,
+      command: violation.command
+    });
+    try {
+      deps.sessionLog.publish(entry.workspace, entry.attempt_id, {
+        kind: 'error',
+        reason: violation.reason,
+        message: guardWarningMessage(violation),
+        guard_warning: {
+          reason: violation.reason,
+          command: violation.command
+        },
+        raw: obj
+      });
+    } catch (err) {
+      log('guard-warning publish failed for %s: %o', entry.attempt_id, err);
+    }
+  }
+
+  /**
+   * Persist the monitor's held verdicts (§3). The in-memory list is the cache;
+   * the attempt record is what a restart reads.
+   *
+   * @param {{ workspace: string, attempt_id: string, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[] }} entry
+   */
+  function persistGuardPending(entry) {
+    try {
+      deps.store.updateAttempt(entry.workspace, {
+        attempt_id: entry.attempt_id,
+        patch: {
+          guard_pending:
+            entry.guard_pending.length > 0 ? [...entry.guard_pending] : null
+        }
+      });
+    } catch (err) {
+      log('guard-pending record failed for %s: %o', entry.attempt_id, err);
+    }
+  }
+
+  /**
+   * Hold one arm 3 verdict until its `tool_result` arrives (§3).
+   *
+   * @param {{ workspace: string, attempt_id: string, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[] }} entry
+   * @param {import('./runner/guard-mirror.js').GuardPendingEntry} pending
+   */
+  function addGuardPending(entry, pending) {
+    entry.guard_pending = [...entry.guard_pending, pending];
+    persistGuardPending(entry);
+  }
+
+  /**
+   * Release one held verdict, whichever way it was settled (§3).
+   *
+   * @param {{ workspace: string, attempt_id: string, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[] }} entry
+   * @param {import('./runner/guard-mirror.js').GuardPendingEntry} pending
+   */
+  function clearGuardPending(entry, pending) {
+    entry.guard_pending = entry.guard_pending.filter(
+      (held) => held.tool_use_id !== pending.tool_use_id
+    );
+    persistGuardPending(entry);
+  }
+
+  /**
+   * Settle the verdicts a terminated session left held (§4).
+   *
+   * A session that ENDED with verdicts still held has nothing left to kill.
+   * The deferrals become `hook_bypass_unresolved` warnings — diagnostic
+   * evidence, not a failure class. A `stop()` without termination (server
+   * shutdown) keeps them, and the re-attach picks them up.
+   *
+   * @param {{ workspace: string, attempt_id: string, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[], terminated: boolean }} entry
+   */
+  function settleGuardPending(entry) {
+    if (entry.guard_pending.length === 0) {
+      return;
+    }
+    const attempt = attemptOf(entry.workspace, entry.attempt_id);
+    if (!entry.terminated && pidStillOurs(attempt)) {
+      return;
+    }
+    for (const held of entry.guard_pending) {
+      guardWarn(entry, {
+        reason: 'hook_bypass_unresolved',
+        command: held.command
+      });
+    }
+    entry.guard_pending = [];
+    persistGuardPending(entry);
+  }
+
+  /**
+   * Re-pair the verdicts a dead process left held against the log it already
+   * wrote (§3 re-attach). Reads only the bytes between the earliest held
+   * `log_offset` and the handoff boundary the tail starts at, so the two
+   * readers never see the same line twice, and pairs nothing else — the usage
+   * and drawer replay own that range.
+   *
+   * @param {{ workspace: string, attempt_id: string, killed: boolean, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[] }} entry
+   * @param {any} attempt
+   * @param {string} file
+   * @param {number} boundary
+   */
+  function backfillGuardPending(entry, attempt, file, boundary) {
+    const offsets = entry.guard_pending.map((held) =>
+      typeof held.log_offset === 'number' ? held.log_offset : 0
+    );
+    const from = Math.max(0, Math.min(...offsets));
+    if (!(boundary > from)) {
+      return;
+    }
+    /** @type {string} */
+    let text;
+    try {
+      const fd = fs.openSync(file, 'r');
+      try {
+        const buf = Buffer.allocUnsafe(boundary - from);
+        const read = fs.readSync(fd, buf, 0, boundary - from, from);
+        text = buf.subarray(0, Math.max(read, 0)).toString('utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch (err) {
+      // A rotated or deleted range leaves the verdicts held; the tail may still
+      // settle them, and §4 ends them as `hook_bypass_unresolved` otherwise.
+      log(
+        'guard-pending backfill read failed for %s: %o',
+        entry.attempt_id,
+        err
+      );
+      return;
+    }
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0 || entry.guard_pending.length === 0) {
+        continue;
+      }
+      /** @type {any} */
+      let obj;
+      try {
+        obj = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      for (const resolution of resolveGuardPending(obj, entry.guard_pending)) {
+        clearGuardPending(entry, resolution.entry);
+        if (!resolution.executed) {
+          continue;
+        }
+        // Signal only while the process is still ours; a session that already
+        // ended is §4's case, settled at stop().
+        if (pidStillOurs(attempt)) {
+          guardKill(entry, {
+            reason: 'hook_bypass_blocked',
+            command: resolution.entry.command,
+            confirmed_by: 'tool_result'
+          });
+          return;
+        }
+      }
+    }
+  }
+
+  /**
+   * Settle the verdicts a session left held when it died while the Worker was
+   * down (§3 re-attach, §4). No monitor is started for a dead process, so this
+   * is the only place those holds are ever read again: pair them against the
+   * whole log the process wrote, and end whatever stays unpaired as
+   * `hook_bypass_unresolved`. Nothing is signalled — there is no process.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   * @param {{ guard_pending?: import('./runner/guard-mirror.js').GuardPendingEntry[] }} options
+   */
+  function settleDeadPending(workspace, attempt, options) {
+    const held = Array.isArray(options.guard_pending)
+      ? options.guard_pending
+      : Array.isArray(attempt.guard_pending)
+        ? attempt.guard_pending
+        : [];
+    if (held.length === 0) {
+      return;
+    }
+    const entry = {
+      workspace,
+      attempt_id: attempt.attempt_id,
+      killed: false,
+      guard_pending: [...held],
+      terminated: true
+    };
+    const file = logFileOf(workspace, attempt);
+    /** @type {number} */
+    let size = 0;
+    try {
+      size = fs.statSync(file).size;
+    } catch (err) {
+      log('guard-pending settle stat failed for %s: %o', entry.attempt_id, err);
+    }
+    backfillGuardPending(entry, attempt, file, size);
+    settleGuardPending(entry);
+  }
+
+  /**
    * Fail-closed stop of an orphan session: record the blocker evidence FIRST,
    * then signal.
    *
@@ -425,7 +644,7 @@ export function createSessionMonitors(deps) {
    * fail it anyway, so it must exist before the process can die.
    *
    * @param {{ workspace: string, attempt_id: string, killed: boolean }} entry
-   * @param {{ reason: string, command: string|null }} detail
+   * @param {{ reason: string, command: string|null, confirmed_by?: 'tool_result' }} detail
    */
   function guardKill(entry, detail) {
     if (entry.killed) {
@@ -439,9 +658,20 @@ export function createSessionMonitors(deps) {
           guard_kill: {
             reason: detail.reason,
             command: detail.command,
-            at: now()
+            at: now(),
+            // Present only for a verdict that waited for execution evidence
+            // (guard-hook-bypass-result-judgment §3).
+            ...(detail.confirmed_by === 'tool_result'
+              ? { confirmed_by: /** @type {const} */ ('tool_result') }
+              : {})
           },
-          cause_detail: { reason: detail.reason, command: detail.command }
+          cause_detail: {
+            reason: detail.reason,
+            command: detail.command,
+            ...(detail.confirmed_by === 'tool_result'
+              ? { confirmed_by: /** @type {const} */ ('tool_result') }
+              : {})
+          }
         }
       });
     } catch (err) {
@@ -489,10 +719,12 @@ export function createSessionMonitors(deps) {
    * Feed one tailed line through the drawer broker, the usage tally, and the
    * fail-closed guards — the live engine's `onLine` pipeline minus the verdict.
    *
-   * @param {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec }} entry
+   * @param {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, guard_mirror: 'verified'|'absent'|null, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[], terminated: boolean }} entry
    * @param {string} line
+   * @param {number} [end_offset] - Byte offset just past this line, recorded
+   * with a held verdict so a later re-attach can backfill from it (§3).
    */
-  function handleLine(entry, line) {
+  function handleLine(entry, line, end_offset) {
     const trimmed = line.trim();
     if (trimmed.length === 0) {
       return;
@@ -552,10 +784,32 @@ export function createSessionMonitors(deps) {
       guardKill(entry, { reason: question_reason, command: null });
       return;
     }
+    // The terminal line of the stream: §4's session termination, and the only
+    // thing that turns a still-held verdict into a warning rather than a kill.
+    if (obj && obj.type === 'result') {
+      entry.terminated = true;
+    }
+
+    // A held verdict's evidence line (§3), judged before the extraction below
+    // because a `tool_result` line carries no command of its own.
+    for (const resolution of resolveGuardPending(obj, entry.guard_pending)) {
+      clearGuardPending(entry, resolution.entry);
+      if (!resolution.executed) {
+        // The mirror refused it — nothing ran, so nothing is recorded.
+        continue;
+      }
+      guardKill(entry, {
+        reason: 'hook_bypass_blocked',
+        command: resolution.entry.command,
+        confirmed_by: 'tool_result'
+      });
+      return;
+    }
+
     if (typeof entry.spec.extractShellCommand === 'function') {
-      const cmd = entry.spec.extractShellCommand(obj);
-      const violation = cmd
-        ? findMergeViolation(cmd, {
+      const extracted = entry.spec.extractShellCommand(obj);
+      const violation = extracted
+        ? findMergeViolation(extracted.command, {
             disposition: entry.disposition,
             quickfix_lane: entry.quickfix_lane,
             repo: entry.repo,
@@ -565,34 +819,27 @@ export function createSessionMonitors(deps) {
       // guardEffect() is the SAME function the live runner (session.js) judges
       // by, so a restart cannot demote a kill to a warning or the reverse
       // (guard-enforcement-layer-replacement §Phase 2).
+      // A deferred arm 3 may travel with warnings from the same string (§1).
+      for (const carried of violation?.warnings || []) {
+        recordGuardWarning(entry, carried, obj);
+      }
       if (violation && guardEffect(violation) === 'warn') {
-        // Two consumers, and the DURABLE one is the point (UI-1xcd §1): the
-        // broker publish only reaches a drawer that happens to be open, so the
-        // attempt record is what makes the warning outlive the session.
-        guardWarn(entry, {
-          reason: violation.reason,
-          command: violation.command
+        recordGuardWarning(entry, violation, obj);
+      } else if (
+        violation &&
+        violation.deferrable === true &&
+        entry.guard_mirror === 'verified' &&
+        extracted &&
+        typeof extracted.id === 'string'
+      ) {
+        // Held, not killed (§3): this session provably runs under the
+        // PreToolUse mirror, which refuses the shape before it can run.
+        addGuardPending(entry, {
+          tool_use_id: extracted.id,
+          command: violation.command,
+          at: now(),
+          log_offset: typeof end_offset === 'number' ? end_offset : null
         });
-        // Same RunnerEvent shape as session.js's guard_warning (kind='error',
-        // matching `reason`) so the two paths carry one semantic contract even
-        // though they reach the drawer through different channels; fail-quiet
-        // for any renderer that does not recognize it (kind='error' is unused
-        // by the adapters' own `type` vocabulary, so nothing mis-renders it as
-        // jsonl).
-        try {
-          deps.sessionLog.publish(entry.workspace, entry.attempt_id, {
-            kind: 'error',
-            reason: violation.reason,
-            message: guardWarningMessage(violation),
-            guard_warning: {
-              reason: violation.reason,
-              command: violation.command
-            },
-            raw: obj
-          });
-        } catch (err) {
-          log('guard-warning publish failed for %s: %o', attempt_id, err);
-        }
       } else if (violation) {
         guardKill(entry, {
           reason: violation.reason,
@@ -610,9 +857,12 @@ export function createSessionMonitors(deps) {
      *
      * @param {string} workspace
      * @param {any} attempt
-     * @param {{ start_offset?: number }} [options] - Byte offset to resume the
-     * log at: the line boundary the startup usage replay consumed up to, so
-     * the two readers split the file with no gap and no overlap.
+     * @param {{ start_offset?: number, guard_pending?: import('./runner/guard-mirror.js').GuardPendingEntry[] }} [options]
+     * `start_offset` is the byte offset to resume the log at: the line boundary
+     * the startup usage replay consumed up to, so the two readers split the
+     * file with no gap and no overlap. `guard_pending` is the attempt's held
+     * hook-bypass verdicts (§3), re-paired against the range before that
+     * boundary once, then carried by the tail.
      * @returns {boolean}
      */
     start(workspace, attempt, options = {}) {
@@ -625,9 +875,10 @@ export function createSessionMonitors(deps) {
         return false;
       }
       if (!pidStillOurs(attempt)) {
+        settleDeadPending(workspace, attempt, options);
         return false;
       }
-      /** @type {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, reader: any }} */
+      /** @type {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, guard_mirror: 'verified'|'absent'|null, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[], terminated: boolean, reader: any }} */
       const entry = {
         workspace,
         attempt_id,
@@ -648,14 +899,40 @@ export function createSessionMonitors(deps) {
         // Same durable boolean normalization session.js applies to the
         // quick_fix lane before command-guard judgment.
         quickfix_lane: attempt.quickfix_lane === true,
+        // The spawn-time probe's durable value (§2). Never re-probed here: the
+        // server's own environment is not the child's.
+        guard_mirror:
+          attempt.guard_mirror === 'verified' ||
+          attempt.guard_mirror === 'absent'
+            ? attempt.guard_mirror
+            : null,
+        // The caller's list is the attach path's explicit hand-off; the record
+        // is the same fact, and reading it here keeps any other start path from
+        // silently dropping a held verdict.
+        guard_pending: Array.isArray(options.guard_pending)
+          ? [...options.guard_pending]
+          : Array.isArray(attempt.guard_pending)
+            ? [...attempt.guard_pending]
+            : [],
+        terminated: false,
         killed: false,
         reader: null
       };
+      const log_file = logFileOf(workspace, attempt);
+      if (entry.guard_pending.length > 0) {
+        // Before the tail, and over the range the tail will NOT read (§3).
+        backfillGuardPending(
+          entry,
+          attempt,
+          log_file,
+          typeof options.start_offset === 'number' ? options.start_offset : 0
+        );
+      }
       entry.reader = createTailReader({
         // Opened ONCE, by name, and then read through that fd — which is why
         // §4 may move a settled log with an atomic `rename` and the tail
         // continues on the same inode.
-        file: logFileOf(workspace, attempt),
+        file: log_file,
         fs,
         poll_ms: deps.poll_ms,
         // Reattach at the handoff boundary: the past belongs to the drawer
@@ -663,7 +940,7 @@ export function createSessionMonitors(deps) {
         // it — including the remainder of a line that was half-written at the
         // moment of reattach, which it reads and completes normally.
         start_offset: options.start_offset,
-        onLine: (l) => handleLine(entry, l),
+        onLine: (l, end_offset) => handleLine(entry, l, end_offset),
         onError: (err, kind) => {
           log('tail %s error for %s: %o', kind, attempt_id, err);
           if (kind === 'open') {
@@ -716,6 +993,7 @@ export function createSessionMonitors(deps) {
       }
       scanChildren(entry, true);
       child_identities.delete(key);
+      settleGuardPending(entry);
       return true;
     },
 

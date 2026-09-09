@@ -760,3 +760,286 @@ describe('worker/session-monitor native children (UI-mn5u §6.3)', () => {
     expect(observe).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The deferred one-shot verdict on the tail path
+ * (guard-hook-bypass-result-judgment §3/§4). The monitor holds the same verdict
+ * the live runner does, writes it to the attempt record, and settles it against
+ * the paired `tool_result` — including the one written before a restart.
+ */
+const ONE_SHOT_CMD = 'git -c core.hooksPath=/dev/null diff --stat';
+
+/**
+ * A Bash tool_use line carrying the id a deferral pairs on.
+ *
+ * @param {string} command
+ * @param {string} id
+ * @returns {string}
+ */
+function bashLineWithId(command, id) {
+  return `${JSON.stringify({
+    type: 'assistant',
+    message: {
+      id: 'm9',
+      content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }]
+    }
+  })}\n`;
+}
+
+/**
+ * @param {string} tool_use_id
+ * @param {{ is_error?: boolean, content?: unknown }} result
+ * @returns {string}
+ */
+function toolResultLine(tool_use_id, result) {
+  return `${JSON.stringify({
+    type: 'user',
+    message: {
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id,
+          ...(result.is_error === true ? { is_error: true } : {}),
+          content: result.content ?? 'ok'
+        }
+      ]
+    }
+  })}\n`;
+}
+
+const MIRROR_REFUSAL = {
+  is_error: true,
+  content: 'PreToolUse:Bash hook error: [hook]: BLOCKED: …'
+};
+
+describe('worker/session-monitor deferred hook-bypass verdict (§3)', () => {
+  test('does not kill when the mirror refused the command', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store, { guard_mirror: 'verified' });
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLineWithId(ONE_SHOT_CMD, 'toolu_1'));
+    sessionWrites(env.session_log, toolResultLine('toolu_1', MIRROR_REFUSAL));
+    env.monitors.stop(WS, 'att-1');
+
+    const record = env.store.snapshot(WS).attempts['att-1'];
+    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(record.guard_kill).toBe(null);
+    expect(record.guard_pending).toBe(null);
+    expect(record.guard_warnings).toBe(null);
+  });
+
+  test('kills once the tool_result proves the command ran', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store, { guard_mirror: 'verified' });
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLineWithId(ONE_SHOT_CMD, 'toolu_1'));
+    sessionWrites(
+      env.session_log,
+      toolResultLine('toolu_1', { content: '3 files changed' })
+    );
+    env.monitors.stop(WS, 'att-1');
+
+    const record = env.store.snapshot(WS).attempts['att-1'];
+    expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
+    expect(record.guard_kill).toMatchObject({
+      reason: 'hook_bypass_blocked',
+      command: ONE_SHOT_CMD,
+      confirmed_by: 'tool_result'
+    });
+    expect(record.cause_detail).toMatchObject({ confirmed_by: 'tool_result' });
+  });
+
+  test('records the held verdict on the attempt while it waits', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store, { guard_mirror: 'verified' });
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLineWithId(ONE_SHOT_CMD, 'toolu_1'));
+    env.monitors.stop(WS, 'att-1');
+
+    expect(
+      env.store.snapshot(WS).attempts['att-1'].guard_pending
+    ).toMatchObject([{ tool_use_id: 'toolu_1', command: ONE_SHOT_CMD }]);
+  });
+
+  test('keeps the held verdict across a stop with no termination', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store, { guard_mirror: 'verified' });
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLineWithId(ONE_SHOT_CMD, 'toolu_1'));
+    env.monitors.stop(WS, 'att-1');
+
+    const record = env.store.snapshot(WS).attempts['att-1'];
+    expect((record.guard_pending || []).length).toBe(1);
+    expect(record.guard_warnings).toBe(null);
+  });
+
+  test('turns a still-held verdict into a warning when the session ends', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store, { guard_mirror: 'verified' });
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLineWithId(ONE_SHOT_CMD, 'toolu_1'));
+    sessionWrites(
+      env.session_log,
+      `${JSON.stringify({ type: 'result', subtype: 'success' })}\n`
+    );
+    env.monitors.stop(WS, 'att-1');
+
+    const record = env.store.snapshot(WS).attempts['att-1'];
+    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(record.guard_pending).toBe(null);
+    expect(record.guard_warnings).toEqual([
+      {
+        reason: 'hook_bypass_unresolved',
+        command: ONE_SHOT_CMD,
+        at: 5000
+      }
+    ]);
+  });
+
+  test('kills a one-shot relocation at once on an unverified attempt', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store, { guard_mirror: 'absent' });
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLineWithId(ONE_SHOT_CMD, 'toolu_1'));
+    env.monitors.stop(WS, 'att-1');
+
+    expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
+  });
+
+  test('kills a one-shot relocation at once on an unrecorded mirror', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store);
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLineWithId(ONE_SHOT_CMD, 'toolu_1'));
+    env.monitors.stop(WS, 'att-1');
+
+    expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
+  });
+});
+
+describe('worker/session-monitor re-attach backfill (§3)', () => {
+  /**
+   * Start the monitor the way `attach.js` does after a restart: at the usage
+   * replay's boundary, with the attempt's held verdicts handed over.
+   *
+   * @param {any} env
+   * @param {any} attempt
+   */
+  function startAtReattach(env, attempt) {
+    return env.monitors.start(WS, attempt, {
+      start_offset: env.session_log.lineBoundaryOf(WS, 'att-1') ?? 0,
+      guard_pending: attempt.guard_pending
+    });
+  }
+
+  /**
+   * Seed the record a restart finds: one held verdict whose `tool_use` line is
+   * already in the log, plus whatever the prior process wrote after it.
+   *
+   * @param {any} env
+   * @param {string} tail_line
+   */
+  function seedHeldAttempt(env, tail_line) {
+    sessionWrites(env.session_log, bashLineWithId(ONE_SHOT_CMD, 'toolu_1'));
+    const log_offset = fs.statSync(env.session_log.pathFor(WS, 'att-1')).size;
+    sessionWrites(env.session_log, tail_line);
+    const attempt = seedRunningAttempt(env.store, {
+      guard_mirror: 'verified',
+      guard_pending: [
+        {
+          tool_use_id: 'toolu_1',
+          command: ONE_SHOT_CMD,
+          at: 1,
+          log_offset
+        }
+      ]
+    });
+    return attempt;
+  }
+
+  test('settles a refusal written before the handoff boundary', () => {
+    const env = setup();
+    const attempt = seedHeldAttempt(
+      env,
+      toolResultLine('toolu_1', MIRROR_REFUSAL)
+    );
+
+    startAtReattach(env, attempt);
+    env.monitors.stop(WS, 'att-1');
+
+    const record = env.store.snapshot(WS).attempts['att-1'];
+    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(record.guard_pending).toBe(null);
+    expect(record.guard_kill).toBe(null);
+  });
+
+  test('kills on an execution written before the handoff boundary', () => {
+    const env = setup();
+    const attempt = seedHeldAttempt(
+      env,
+      toolResultLine('toolu_1', { content: 'ok' })
+    );
+
+    startAtReattach(env, attempt);
+    env.monitors.stop(WS, 'att-1');
+
+    expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
+    expect(env.store.snapshot(WS).attempts['att-1'].guard_kill).toMatchObject({
+      confirmed_by: 'tool_result'
+    });
+  });
+
+  test('ends an unpaired hold as a warning when the process is already gone', () => {
+    const env = setup({ probe: { alive: false, started_at: null } });
+    const attempt = seedHeldAttempt(env, assistantText('last words'));
+
+    const started = startAtReattach(env, attempt);
+
+    const record = env.store.snapshot(WS).attempts['att-1'];
+    expect(started).toBe(false);
+    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(record.guard_pending).toBe(null);
+    expect(record.guard_warnings).toEqual([
+      { reason: 'hook_bypass_unresolved', command: ONE_SHOT_CMD, at: 5000 }
+    ]);
+  });
+
+  test('settles a refusal the gone process had already logged', () => {
+    const env = setup({ probe: { alive: false, started_at: null } });
+    const attempt = seedHeldAttempt(
+      env,
+      toolResultLine('toolu_1', MIRROR_REFUSAL)
+    );
+
+    startAtReattach(env, attempt);
+
+    const record = env.store.snapshot(WS).attempts['att-1'];
+    expect(record.guard_pending).toBe(null);
+    expect(record.guard_warnings ?? null).toBe(null);
+    expect(record.guard_kill).toBe(null);
+  });
+
+  test('keeps the verdict held and settles it from the tail', () => {
+    const env = setup();
+    const attempt = seedHeldAttempt(env, assistantText('still working'));
+
+    startAtReattach(env, attempt);
+    expect(
+      (env.store.snapshot(WS).attempts['att-1'].guard_pending || []).length
+    ).toBe(1);
+    sessionWrites(
+      env.session_log,
+      toolResultLine('toolu_1', { content: 'ok' })
+    );
+    env.monitors.stop(WS, 'att-1');
+
+    expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
+  });
+});

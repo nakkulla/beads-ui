@@ -12027,3 +12027,106 @@ describe('대기 레인 이동이 added_at을 다시 찍는다 (§3.3 회귀)', 
     ]);
   });
 });
+
+describe('queue-store guard mirror fields (guard-hook-bypass-result-judgment §2/§3)', () => {
+  /**
+   * Append one attempt and hand back the store plus its record.
+   */
+  function seed() {
+    const store = createQueueStore();
+    const rev = store.place(WS, { expected_revision: 0, bead_id: 'UI-1' }).queue
+      .revision;
+    const appended = store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    return { store, attempt: appended.queue.attempts['att-1'] };
+  }
+
+  test('defaults both fields to null', () => {
+    const { attempt } = seed();
+
+    expect(attempt.guard_mirror).toBeNull();
+    expect(attempt.guard_pending).toBeNull();
+  });
+
+  test('keeps guard_mirror across updateAttempt and a cold reload', () => {
+    const { store } = seed();
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { guard_mirror: 'verified' }
+    });
+
+    expect(updated.queue.attempts['att-1'].guard_mirror).toBe('verified');
+    expect(createQueueStore().load(WS).attempts['att-1'].guard_mirror).toBe(
+      'verified'
+    );
+  });
+
+  test('drops an unknown guard_mirror value onto null', () => {
+    const { store } = seed();
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: /** @type {any} */ ({ guard_mirror: 'maybe' })
+    });
+
+    expect(updated.queue.attempts['att-1'].guard_mirror).toBeNull();
+  });
+
+  test('keeps guard_pending across updateAttempt and a cold reload', () => {
+    const { store } = seed();
+    const pending = [
+      {
+        tool_use_id: 'toolu_1',
+        command: 'git -c core.hooksPath=/dev/null diff',
+        at: 1_700_000_000_000,
+        log_offset: 4096
+      }
+    ];
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { guard_pending: pending }
+    });
+
+    expect(updated.queue.attempts['att-1'].guard_pending).toEqual(pending);
+    expect(createQueueStore().load(WS).attempts['att-1'].guard_pending).toEqual(
+      pending
+    );
+  });
+
+  test('drops a guard_pending entry with no tool_use_id', () => {
+    const { store } = seed();
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: /** @type {any} */ ({
+        guard_pending: [{ command: 'git status', at: 1, log_offset: null }]
+      })
+    });
+
+    expect(updated.queue.attempts['att-1'].guard_pending).toEqual([]);
+  });
+
+  test('preserves a guard_kill object that carries confirmed_by', () => {
+    const { store } = seed();
+    const guard_kill = {
+      reason: 'hook_bypass_blocked',
+      command: 'git -c core.hooksPath=/dev/null diff',
+      at: 1_700_000_000_000,
+      confirmed_by: 'tool_result'
+    };
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: /** @type {any} */ ({ guard_kill })
+    });
+
+    expect(updated.queue.attempts['att-1'].guard_kill).toEqual(guard_kill);
+    expect(createQueueStore().load(WS).attempts['att-1'].guard_kill).toEqual(
+      guard_kill
+    );
+  });
+});

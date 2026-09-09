@@ -225,4 +225,27 @@ describe('runner/tail-reader', () => {
 
     expect(lines).toEqual(['{"t":"한"}']);
   });
+
+  test('reports each line end as the exact byte offset past its newline', () => {
+    /** @type {number[]} */
+    const ends = [];
+    const tail = createTailReader({
+      file,
+      onLine: (_l, end_offset) => ends.push(end_offset),
+      poll_ms: 5
+    });
+    tail.start();
+
+    const first = Buffer.from('{"t":"한"}\n', 'utf8');
+    const second = Buffer.from('{"u":"글"}\n', 'utf8');
+    // The first read ends INSIDE the second line's multibyte character, so the
+    // decoder is holding bytes the string buffer cannot account for.
+    fs.appendFileSync(file, Buffer.concat([first, second.subarray(0, 8)]));
+    tail.pump();
+    fs.appendFileSync(file, second.subarray(8));
+    tail.pump();
+    tail.stop();
+
+    expect(ends).toEqual([first.length, first.length + second.length]);
+  });
 });
