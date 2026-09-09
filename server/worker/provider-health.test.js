@@ -91,24 +91,40 @@ function makeSpawn(output, code) {
 }
 
 /**
+ * Return a fake spawn whose child never terminates, so the probe stays in
+ * flight for the whole test.
+ */
+function makeHangingSpawn() {
+  return vi.fn(() => {
+    const child = /** @type {any} */ (new EventEmitter());
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    return child;
+  });
+}
+
+/**
  * Seed one durable target and return its generation.
  *
  * @param {ReturnType<typeof createQueueStore>} store
  * @param {'outage'|'usage_limit'} kind
  * @param {string|null} account
- * @param {Partial<{ resets_at: number|null, rearm_count: number }>} [patch]
+ * @param {Partial<{ resets_at: number|null, rearm_count: number, attempt_id: string, model: string }>} [patch]
  */
 function seedHold(store, kind, account, patch = {}) {
+  const attempt_id = patch.attempt_id ?? 'att-1';
+  const model = patch.model ?? 'opus';
   store.appendAttempt(WS, {
     expected_revision: store.snapshot(WS).revision,
-    attempt: { attempt_id: 'att-1', bead_id: 'B1' }
+    attempt: { attempt_id, bead_id: `B${attempt_id.slice(4)}` }
   });
   store.updateAttempt(WS, {
-    attempt_id: 'att-1',
-    patch: { runner: 'claude', model: 'opus', status: 'running' }
+    attempt_id,
+    patch: { runner: 'claude', model, status: 'running' }
   });
   return store.holdProviderAttempt(WS, {
-    attempt_id: 'att-1',
+    attempt_id,
     patch: {
       status: 'paused',
       cause: `provider_outage:${kind}`,
@@ -117,7 +133,7 @@ function seedHold(store, kind, account, patch = {}) {
     runner: 'claude',
     target: {
       kind,
-      model: 'opus',
+      model,
       account,
       detail: kind,
       last_error: kind,
@@ -165,12 +181,15 @@ function setup(store, timers, spawnImpl, overrides = {}) {
     spawnImpl,
     resolveCswapPath: () => '/bin/cswap',
     catalog: {
-      model_index: { opus: 'claude' },
+      model_index: { opus: 'claude', sonnet: 'claude' },
       runners: {
         claude: {
           command: 'claude',
           efforts: [],
-          models: { opus: { id: 'claude-opus-4-8' } }
+          models: {
+            opus: { id: 'claude-opus-4-8' },
+            sonnet: { id: 'claude-sonnet-4-8' }
+          }
         }
       }
     },
@@ -220,7 +239,8 @@ describe('provider health probe', () => {
     );
   });
 
-  test('advances the outage backoff and caps at fifteen minutes', async () => {
+  // RED 2 (spec §5)
+  test('advances the outage backoff and caps at one hour', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
     const spawnImpl = makeSpawn(
@@ -238,7 +258,7 @@ describe('provider health probe', () => {
       await flush();
     }
 
-    expect(observed).toEqual([...OUTAGE_BACKOFF_MS, 900_000]);
+    expect(observed).toEqual([...OUTAGE_BACKOFF_MS, 3_600_000]);
   });
 
   test('persists recovery before consuming resumes and opening the gate', async () => {
@@ -327,6 +347,7 @@ describe('provider health probe', () => {
     expect(timers.next()?.delay).toBe(900_000);
   });
 
+  // 보존 23 (spec §5)
   test('reclassifies a non-limit usage probe failure as outage', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
@@ -348,7 +369,8 @@ describe('provider health probe', () => {
     expect(target.attempt_ids).toEqual(['att-1']);
   });
 
-  test('leaves a capped usage target and sends one disarmed notification', async () => {
+  // 보존 21 (spec §5)
+  test('leaves a rearm-capped usage target and sends one disarmed notification', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
     const env = setup(
@@ -369,14 +391,36 @@ describe('provider health probe', () => {
     expect(env.notify.providerAutoResumeDisarmed).toHaveBeenCalledTimes(1);
   });
 
-  test('leaves an aged outage target and sends one disarmed notification', async () => {
+  // RED 1 (spec §5)
+  test('keeps arming an outage probe past the twenty-four hour mark', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn(
+      { type: 'result', is_error: true, result: 'API Error: 529 Overloaded' },
+      1
+    );
+    const env = setup(store, timers, spawnImpl, {
+      now: () => NOW + 25 * 60 * 60 * 1000
+    });
+    seedHold(store, 'outage', null);
+
+    await env.health.start(WS);
+    await flush();
+
+    expect(timers.next()).toBeDefined();
+    expect(env.notify.providerAutoResumeDisarmed).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).provider_hold.claude.targets).toHaveLength(1);
+  });
+
+  // 보존 20 (spec §5)
+  test('leaves an aged usage-limit target and sends one disarmed notification', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
     const spawnImpl = makeSpawn({ is_error: false, result: 'ok' }, 0);
     const env = setup(store, timers, spawnImpl, {
       now: () => NOW + 24 * 60 * 60 * 1000
     });
-    seedHold(store, 'outage', null);
+    seedHold(store, 'usage_limit', 'held@example.com');
 
     await env.health.start(WS);
     await flush();
@@ -390,7 +434,7 @@ describe('provider health probe', () => {
     );
   });
 
-  test('keeps probing an outage target that has not reached the age cap', async () => {
+  test('keeps probing a young outage target', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
     const spawnImpl = makeSpawn(
@@ -422,5 +466,243 @@ describe('provider health probe', () => {
     expect(spawnImpl).not.toHaveBeenCalled();
     expect(env.onPending).toHaveBeenCalledTimes(1);
     expect(store.snapshot(WS).provider_hold.claude.targets).toHaveLength(1);
+  });
+
+  // RED 3 (spec §5)
+  test('demotes an accounted outage target whose probe reads as a usage limit', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn(
+      {
+        type: 'result',
+        is_error: true,
+        api_error_status: 429,
+        result: "You've hit your session limit · resets 6pm (Asia/Seoul)"
+      },
+      1
+    );
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'outage', 'held@example.com');
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    const target = store.snapshot(WS).provider_hold.claude.targets[0];
+    expect(target.kind).toBe('usage_limit');
+    expect(target.resets_at).toBe(Date.parse('2026-09-03T09:00:00Z'));
+  });
+
+  // RED 4 (spec §5)
+  test('carries the rearm count and hold since through that demotion', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn(
+      {
+        type: 'result',
+        is_error: true,
+        api_error_status: 429,
+        result: "You've hit your session limit · resets 6pm (Asia/Seoul)"
+      },
+      1
+    );
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'outage', 'held@example.com', { rearm_count: 2 });
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    const hold = store.snapshot(WS).provider_hold.claude;
+    expect(hold.targets[0].kind).toBe('usage_limit');
+    expect(hold.targets[0].rearm_count).toBe(2);
+    expect(hold.since).toBe(NOW);
+  });
+
+  // impl review r1 — 재분류로 게이트가 계정 단위로 좁아진 즉시 다른 계정의
+  // 대기 행이 흘러야 하므로 스케줄러 tick이 한 번 돈다.
+  test('ticks the scheduler once the demotion has narrowed the gate', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn(
+      {
+        type: 'result',
+        is_error: true,
+        api_error_status: 429,
+        result: "You've hit your session limit · resets 6pm (Asia/Seoul)"
+      },
+      1
+    );
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'outage', 'held@example.com');
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect(store.snapshot(WS).provider_hold.claude.targets[0].kind).toBe(
+      'usage_limit'
+    );
+    expect(env.tick).toHaveBeenCalledWith(WS);
+  });
+
+  // 보존 22 (spec §5)
+  test('keeps an unaccounted outage target on the outage path', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn(
+      {
+        type: 'result',
+        is_error: true,
+        api_error_status: 429,
+        result: "You've hit your session limit · resets 6pm (Asia/Seoul)"
+      },
+      1
+    );
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'outage', null);
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect(store.snapshot(WS).provider_hold.claude.targets[0].kind).toBe(
+      'outage'
+    );
+  });
+
+  // RED 5 (spec §5)
+  test('probes every eligible target now and clears their armed timers', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn(
+      { type: 'result', is_error: true, result: 'API Error: 529 Overloaded' },
+      1
+    );
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'outage', null);
+    seedHold(store, 'outage', 'held@example.com', {
+      attempt_id: 'att-2',
+      model: 'sonnet'
+    });
+    await env.health.start(WS);
+    const armed_before = timers.entries.length;
+
+    const result = env.health.probeNow(WS, 'claude');
+    await flush();
+
+    expect(result.armed).toBe(2);
+    expect(
+      timers.entries.slice(0, armed_before).every((entry) => entry.cleared)
+    ).toBe(true);
+    expect(spawnImpl).toHaveBeenCalledTimes(2);
+  });
+
+  // RED 6 (spec §5)
+  test('probes a capped usage-limit target that has no timer left', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn({ is_error: false, result: 'ok' }, 0);
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'usage_limit', 'held@example.com', { rearm_count: 3 });
+    await env.health.start(WS);
+    await flush();
+
+    const result = env.health.probeNow(WS, 'claude');
+    await flush();
+
+    expect(timers.next()).toBeUndefined();
+    expect(result.armed).toBe(1);
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+
+  // RED 7 (spec §5)
+  test('skips an unaccounted usage-limit target on a manual probe', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn({ is_error: false, result: 'ok' }, 0);
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'usage_limit', null);
+    await env.health.start(WS);
+
+    const result = env.health.probeNow(WS, 'claude');
+    await flush();
+
+    expect(result).toEqual({ armed: 0, eligible: 0 });
+    expect(spawnImpl).not.toHaveBeenCalled();
+  });
+
+  // RED 8 (spec §5)
+  test('keeps the outage failure count across a manual probe', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn(
+      { type: 'result', is_error: true, result: 'API Error: 529 Overloaded' },
+      1
+    );
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'outage', null);
+    await env.health.start(WS);
+    timers.fireNext();
+    await flush();
+    timers.fireNext();
+    await flush();
+
+    env.health.probeNow(WS, 'claude');
+    await flush();
+
+    expect(timers.next()?.delay).toBe(480_000);
+  });
+
+  // RED 9 (spec §5)
+  test('counts an in-flight target as eligible but does not fire it twice', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeHangingSpawn();
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'outage', null);
+    await env.health.start(WS);
+
+    const first = env.health.probeNow(WS, 'claude');
+    const second = env.health.probeNow(WS, 'claude');
+
+    expect([first.armed, second.armed, second.eligible]).toEqual([1, 0, 1]);
+  });
+
+  // RED 10 (spec §5)
+  test('arms no second timer while a probe is still running', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeHangingSpawn();
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'outage', null);
+    await env.health.start(WS);
+    timers.fireNext();
+    const armed_before = timers.entries.length;
+
+    env.health.sync(WS);
+
+    expect(timers.entries.length).toBe(armed_before);
+  });
+
+  // RED 11 (spec §5)
+  test('fires the same target again once its probe has finished', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn(
+      { type: 'result', is_error: true, result: 'API Error: 529 Overloaded' },
+      1
+    );
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'outage', null);
+    await env.health.start(WS);
+    env.health.probeNow(WS, 'claude');
+    await flush();
+
+    const again = env.health.probeNow(WS, 'claude');
+    await flush();
+
+    expect(again.armed).toBe(1);
+    expect(spawnImpl).toHaveBeenCalledTimes(2);
   });
 });

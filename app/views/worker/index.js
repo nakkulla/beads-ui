@@ -93,6 +93,7 @@ import {
   miniRow,
   nowPanel,
   paneTemplate,
+  providerProbeRefusalText,
   queueRowOps,
   repoOpsStripTemplate,
   reviewSessionRowState,
@@ -2365,6 +2366,33 @@ export function createWorkerView(mount_element, options = {}) {
             ? '큐 상태가 바뀌었습니다 — 다시 확인하세요'
             : res.reason || ''
         }`,
+        'error',
+        2800
+      );
+    }
+  }
+
+  /**
+   * `↻ 지금 프로브` (UI-o5ll §3.4): 그 러너의 공급자 회복 프로브를 지금
+   * 발화시킨다. 재료는 버튼이 그려진 게이트의 것을 그대로 쓴다 —
+   * `sendHoldAction`이 읽는 `queue.hold`는 큐 정지의 것이고 공급자 보류는 러너별
+   * 레코드라 `since`가 다르기 때문이다. 응답은 무장 사실만 말하고 판정은 다음
+   * 스냅샷으로 온다.
+   *
+   * @param {string} runner
+   * @param {number} since
+   */
+  async function probeProviderNow(runner, since) {
+    if (!transport || runner.length === 0 || !Number.isFinite(since)) {
+      return;
+    }
+    const res = /** @type {any} */ (
+      await transport('worker-provider-probe-now', { runner, since })
+    );
+    adopt(res);
+    if (res && res.ok === false) {
+      showToast(
+        `지금 프로브 거부: ${providerProbeRefusalText(res.reason)}`,
         'error',
         2800
       );
@@ -4687,6 +4715,18 @@ export function createWorkerView(mount_element, options = {}) {
     // 같은 `since` CAS를 쓰므로 라우팅만 옮겼다.
     if (target?.closest?.('[data-action="queue-hold-resume"]')) {
       void sendHoldAction('worker-queue-hold-resume', '재개 거부');
+      return;
+    }
+    // `↻ 지금 프로브`도 같은 자리의 출구다 (UI-o5ll §3.4). 재료는 버튼이 실은
+    // `data-runner`/`data-since`이고 큐 정지의 `since`와 섞이지 않는다.
+    const probe = /** @type {HTMLElement|null} */ (
+      target?.closest?.('[data-action="provider-probe-now"]')
+    );
+    if (probe) {
+      void probeProviderNow(
+        probe.dataset.runner || '',
+        Number(probe.dataset.since)
+      );
       return;
     }
     if (target?.closest?.('.rtile__hold-retry')) {

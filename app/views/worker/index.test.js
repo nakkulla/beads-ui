@@ -2218,6 +2218,126 @@ describe('views/worker', () => {
     });
   });
 
+  /**
+   * Mount with two waiting rows whose resolved runners differ: `P-1` takes the
+   * repo default (claude) and `P-2` names a codex model. The provider gate is
+   * per runner, so this is what lets one row be probe ready and the other not.
+   *
+   * @param {any} over
+   * @param {any} [transport]
+   */
+  function mountProviderGated(over, transport = vi.fn()) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = createTestIssueStores();
+    const now = Date.now();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'P-1',
+        title: 'claude row',
+        status: 'open',
+        priority: 1,
+        updated_at: now,
+        metadata: {}
+      },
+      {
+        id: 'P-2',
+        title: 'codex row',
+        status: 'open',
+        priority: 2,
+        updated_at: now,
+        metadata: { orchestration_model: 'sol' }
+      }
+    ]);
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        execution_defaults: {
+          supported: true,
+          schema_version: 1,
+          source_commit: 'abc',
+          digest: 'd',
+          session: { impl_runtime: 'claude' },
+          orchestration: {
+            runtime: 'claude',
+            model: 'sonnet',
+            model_id: 'claude-sonnet',
+            effort: null,
+            speed: null
+          }
+        },
+        ...over
+      })
+    );
+    createWorkerView(mount, { issueStores: stores, queueStore, transport });
+    return mount;
+  }
+
+  const CLAUDE_OUTAGE_HOLD = {
+    claude: {
+      since: 4242,
+      generation: 1,
+      targets: [
+        { kind: 'outage', model: 'sonnet', account: null, next_probe_at: 9000 }
+      ]
+    }
+  };
+
+  // RED 18 (spec §5)
+  test('sends the runner and hold since when 지금 프로브 is clicked', async () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountProviderGated(
+      {
+        queue: [{ bead_id: 'P-1', added_at: 1 }],
+        provider_hold: CLAUDE_OUTAGE_HOLD
+      },
+      transport
+    );
+
+    mount
+      .querySelector('.worker-mini__provider-probe')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-provider-probe-now', {
+      runner: 'claude',
+      since: 4242
+    });
+  });
+
+  // RED 19 (spec §5)
+  test('draws 지금 프로브 only on a probe-ready row', () => {
+    const mount = mountProviderGated({
+      queue: [
+        { bead_id: 'P-1', added_at: 1 },
+        { bead_id: 'P-2', added_at: 2 }
+      ],
+      provider_hold: {
+        ...CLAUDE_OUTAGE_HOLD,
+        codex: {
+          since: 8484,
+          generation: 2,
+          targets: [
+            {
+              kind: 'usage_limit',
+              model: 'sol',
+              account: null,
+              resets_at: null
+            }
+          ]
+        }
+      }
+    });
+
+    expect([
+      mount.querySelector(
+        '.worker-mini[data-bead-id="P-1"] .worker-mini__provider-probe'
+      ),
+      mount.querySelector(
+        '.worker-mini[data-bead-id="P-2"] .worker-mini__provider-probe'
+      )
+    ]).toEqual([expect.any(HTMLElement), null]);
+  });
+
   test('reports a refused 재개 with the stale-hold toast', async () => {
     const transport = vi
       .fn()

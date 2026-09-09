@@ -1858,6 +1858,59 @@ export function holdResumeButtonTemplate(item) {
 }
 
 /**
+ * `↻ 지금 프로브` 거부 사유의 한 줄 (UI-o5ll §3.4) — Worker·Monitor 두 탭이 같은
+ * 문구를 쓴다. 모르는 토큰은 raw로 흘려보낸다.
+ *
+ * @param {unknown} reason
+ * @returns {string}
+ */
+export function providerProbeRefusalText(reason) {
+  if (reason === 'hold_changed') {
+    return '공급자 상태가 바뀌었습니다 — 다시 확인하세요';
+  }
+  if (reason === 'probe_in_flight') {
+    return '프로브가 이미 돌고 있습니다';
+  }
+  if (reason === 'probe_ineligible') {
+    return '지금 찌를 수 있는 대상이 없습니다';
+  }
+  return typeof reason === 'string' ? reason : '';
+}
+
+/**
+ * `↻ 지금 프로브` — 공급자 보류에 막힌 대기 행의 조작 (UI-o5ll §3.4). 클릭은
+ * 그 러너의 회복 프로브를 지금 발화시키고 target은 지우지 않는다 — 판정자는
+ * 여전히 프로브다. 재료(`since`·`runner`·`probe_ready`)가 하나라도 없으면 그리지
+ * 않는다 (fail-quiet). 막힌 행 전부에 그린다 — `▶ 재개`와 같은 근거이고 중복
+ * 클릭은 서버의 in-flight 술어가 흡수한다.
+ *
+ * @param {{ gate?: import('./lane-model.js').LaneGate }} item
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function providerProbeButtonTemplate(item) {
+  const gate = item.gate;
+  if (
+    !gate ||
+    (gate.kind !== 'provider_outage' && gate.kind !== 'provider_usage') ||
+    typeof gate.since !== 'number' ||
+    typeof gate.runner !== 'string' ||
+    gate.probe_ready !== true
+  ) {
+    return '';
+  }
+  return html`<button
+    type="button"
+    class="op-btn worker-mini__provider-probe"
+    data-action="provider-probe-now"
+    data-since=${gate.since}
+    data-runner=${gate.runner}
+    title="공급자 회복 프로브를 지금 실행합니다 (러너 전체) — 통과하면 보류가 풀립니다"
+  >
+    ↻ 지금 프로브
+  </button>`;
+}
+
+/**
  * The 대기 행 조작 묶음 — 행 1번 줄 끝의 조작 슬롯이다 (UI-6g3t §4). Worker
  * `queueRowActions`와 Monitor `rowActions`가 같은 조각을 따로 들고 있어 두 탭의
  * 조작 밀도가 갈렸다 — Monitor 직렬 행에는 `✕`가 아예 없었다. 여기 하나로 합친다.
@@ -1883,9 +1936,9 @@ export function queueRowOps(item, options = {}) {
   }
   // 순서는 넓은 것(큐 전체) → 좁은 것(이 행) → 자리 조작 → 빼기다 (UI-01wh §3.3).
   return html`<span class="worker-mini__rowops">
-    ${holdResumeButtonTemplate(item)}${startNowButtonTemplate(
+    ${holdResumeButtonTemplate(item)}${providerProbeButtonTemplate(
       item
-    )}${options.nudgeable === true
+    )}${startNowButtonTemplate(item)}${options.nudgeable === true
       ? html`<button
             type="button"
             class="op-btn op-btn--icon worker-mini__rowops-up"

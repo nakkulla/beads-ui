@@ -16,7 +16,7 @@ import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths
 
 const PROBE_TIMEOUT_MS = 120_000;
 const OUTAGE_BACKOFF_MS = Object.freeze([
-  60_000, 120_000, 240_000, 480_000, 900_000
+  60_000, 120_000, 240_000, 480_000, 900_000, 3_600_000
 ]);
 const USAGE_FALLBACK_MS = 900_000;
 const USAGE_RESET_GRACE_MS = 60_000;
@@ -218,6 +218,12 @@ export function createProviderHealth(deps) {
   const clearTimeoutImpl = deps.clearTimeoutImpl || clearTimeout;
   /** @type {Map<string, { timer: any, failures: number }> } */
   const timers = new Map();
+  // The one predicate the timer path, `sync()` and the manual `↻ 지금 프로브`
+  // share: a target whose probe is running now is neither re-armed nor fired a
+  // second time. The timer callback drops its key BEFORE the probe starts, so
+  // `timers` alone cannot answer this (release spec §3.3).
+  /** @type {Set<string>} */
+  const in_flight = new Set();
   /** @type {Set<string>} */
   const active_workspaces = new Set();
 
@@ -440,14 +446,17 @@ export function createProviderHealth(deps) {
       return;
     }
     const key = targetKey(workspace, runner, generation, target);
-    if (timers.has(key)) {
+    if (timers.has(key) || in_flight.has(key)) {
       return;
     }
-    // The rearm cap counts durable usage-limit re-arms, which an outage never
-    // records; the age cap is what stops an outage target from probing forever.
+    // Both caps are usage-limit only (release spec §3.1): an outage probe has
+    // no cap, because the probe is the ONLY judge of recovery and stopping it
+    // walls the runner off forever. UI-k96h's age cap on outage is withdrawn.
     const rearm_capped =
       target.kind === 'usage_limit' && target.rearm_count >= USAGE_REARM_CAP;
-    if (rearm_capped || now() - since >= HOLD_AGE_CAP_MS) {
+    const age_capped =
+      target.kind === 'usage_limit' && now() - since >= HOLD_AGE_CAP_MS;
+    if (rearm_capped || age_capped) {
       void disarmTarget(
         workspace,
         runner,
@@ -515,7 +524,15 @@ export function createProviderHealth(deps) {
       sync(workspace);
       return;
     }
-    const result = await probeTarget(workspace, runner, live_target);
+    const probe_key = targetKey(workspace, runner, generation, target);
+    in_flight.add(probe_key);
+    /** @type {Awaited<ReturnType<typeof probeTarget>>} */
+    let result;
+    try {
+      result = await probeTarget(workspace, runner, live_target);
+    } finally {
+      in_flight.delete(probe_key);
+    }
     if (result.ok) {
       const recovered = deps.store.recoverProviderTarget(workspace, {
         runner,
@@ -575,6 +592,37 @@ export function createProviderHealth(deps) {
       sync(workspace);
       return;
     }
+    // The mirror of the usage-limit promotion below (release spec §3.2): when
+    // the classifier now reads a standing outage as a usage limit, the target
+    // follows it down to an account-scoped gate. `rearm_count` and the hold's
+    // `since` are untouched — the 24h clock still runs from first hold. An
+    // `account === null` target is NOT demoted: it would become a target that
+    // neither probes nor auto-resumes (outage spec §6 F3).
+    if (
+      live_target.kind === 'outage' &&
+      live_target.account !== null &&
+      result.outage?.detail === 'usage_limit'
+    ) {
+      deps.store.updateProviderTarget(workspace, {
+        runner,
+        generation,
+        kind: live_target.kind,
+        model: live_target.model,
+        account: live_target.account,
+        patch: {
+          kind: 'usage_limit',
+          resets_at: result.outage.resets_at,
+          last_error: result.error
+        }
+      });
+      // The gate just narrowed from the whole runner to one account, so the
+      // waiting rows another account can serve are dispatchable NOW. Nothing
+      // else re-selects them in an unattended Worker — the same reason the
+      // recovery path above ticks before it re-syncs (impl review r1).
+      await deps.tick(workspace);
+      sync(workspace);
+      return;
+    }
     if (live_target.kind === 'usage_limit') {
       if (result.outage?.detail === 'usage_limit') {
         deps.store.updateProviderTarget(workspace, {
@@ -610,6 +658,56 @@ export function createProviderHealth(deps) {
       live_target,
       failures + 1
     );
+  }
+
+  /**
+   * Pull one runner's recovery probes forward to now (`↻ 지금 프로브`, release
+   * spec §3.3). Every eligible target of that runner is fired immediately, its
+   * armed timer dropped first; a target whose probe is already running is
+   * skipped. A target capped out of automatic probing still fires — the cap
+   * stops the schedule, not a person's request. `failures` is carried over so
+   * repeated clicks cannot reset the backoff into a probe storm.
+   *
+   * Nothing is awaited: a probe runs up to 120s and the caller only learns that
+   * it was armed. The outcome flows through the existing recovery path.
+   *
+   * @param {string} workspace
+   * @param {string} runner
+   * @returns {{ armed: number, eligible: number }}
+   */
+  function probeNow(workspace, runner) {
+    const hold = deps.store.snapshot(workspace).provider_hold[runner];
+    if (!hold) {
+      return { armed: 0, eligible: 0 };
+    }
+    let armed = 0;
+    let eligible = 0;
+    for (const target of hold.targets) {
+      if (target.kind === 'usage_limit' && target.account === null) {
+        continue;
+      }
+      eligible += 1;
+      const key = targetKey(workspace, runner, hold.generation, target);
+      if (in_flight.has(key)) {
+        continue;
+      }
+      const entry = timers.get(key);
+      const failures = entry?.failures || 0;
+      if (entry) {
+        clearTimeoutImpl(entry.timer);
+        timers.delete(key);
+      }
+      armed += 1;
+      void runTarget(
+        workspace,
+        runner,
+        hold.generation,
+        hold.since,
+        target,
+        failures
+      );
+    }
+    return { armed, eligible };
   }
 
   /**
@@ -685,6 +783,7 @@ export function createProviderHealth(deps) {
       }
     },
 
+    probeNow,
     probeArgv,
     probeTarget
   };

@@ -1144,10 +1144,14 @@ function retryProjection(attempt) {
  * 이 행을 막고 있는가 — systemic·env는 큐 정지, provider_* 둘은 공급자 보류다.
  * @property {string} label - 슬롯 4a 칩에 그대로 그려지는 한 줄.
  * @property {string} title - hover 툴팁이자 사유 팝업 본문의 첫 줄.
- * @property {number|null} since - `queue.hold.since` 그대로 — `▶ 재개` 클릭이
- * 보내는 CAS 값이고, 공급자 게이트에는 없어 null이다.
+ * @property {number|null} since - systemic·env는 `queue.hold.since`, provider는
+ * `provider_hold[runner].since`다 — `▶ 재개`와 `↻ 지금 프로브`가 보내는 CAS 값.
  * @property {number|null} next_at - env는 가장 이른 재시도, outage는 다음 프로브,
  * usage는 리셋 시각. 재료가 없으면 null이다.
+ * @property {string|null} runner - provider 게이트일 때 그 보류의 러너 이름이고
+ * `↻ 지금 프로브`의 op 인자다. 큐 게이트에는 없어 null이다.
+ * @property {boolean} probe_ready - provider 게이트에 프로브 대상 target이 하나
+ * 이상 있는가 (UI-o5ll §3.4) — 서버의 `probe_ineligible`과 같은 술어다.
  * @property {string[]} lines - `chip-popover`가 그대로 그리는 문장들이고 마지막
  * 항목은 언제나 출구 안내다.
  */
@@ -1189,6 +1193,8 @@ function queueHoldGate(hold, lineages) {
       title: cause,
       since,
       next_at: null,
+      runner: null,
+      probe_ready: false,
       lines: [
         ...head,
         ...(halted_by ? [`정지시킨 attempt ${halted_by}`] : []),
@@ -1215,6 +1221,8 @@ function queueHoldGate(hold, lineages) {
     title: cause,
     since,
     next_at,
+    runner: null,
+    probe_ready: false,
     lines: [
       ...head,
       ...rows
@@ -1318,7 +1326,18 @@ function providerGate(runner, account, provider_hold, account_catalog) {
     label,
     // 툴팁과 팝업 첫 줄은 같은 문장이다 (§3.2) — 칩 문구가 그 원인 문장이다.
     title: label,
-    since: null,
+    since: typeof entry.since === 'number' ? entry.since : null,
+    runner,
+    // 서버가 프로브를 예약하지 않는 target(`usage_limit` && `account === null`,
+    // 공급자 스펙 §6 F3)뿐이면 누를 수 없는 버튼이므로 false다.
+    probe_ready: targets.some(
+      (/** @type {any} */ candidate) =>
+        candidate &&
+        !(
+          candidate.kind === 'usage_limit' &&
+          typeof candidate.account !== 'string'
+        )
+    ),
     next_at: outage
       ? typeof target.next_probe_at === 'number'
         ? target.next_probe_at

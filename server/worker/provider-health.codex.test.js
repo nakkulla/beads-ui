@@ -355,7 +355,11 @@ describe('codex hold lifecycle', () => {
       await flush();
     }
 
-    expect(observed).toEqual([...OUTAGE_BACKOFF_MS, 900_000]);
+    // 배열 마지막 원소(1시간)가 상한이다 (release spec §3.1).
+    expect(observed).toEqual([
+      ...OUTAGE_BACKOFF_MS,
+      OUTAGE_BACKOFF_MS[OUTAGE_BACKOFF_MS.length - 1]
+    ]);
   });
 
   test('recovers the held codex target on a completed probe turn', async () => {

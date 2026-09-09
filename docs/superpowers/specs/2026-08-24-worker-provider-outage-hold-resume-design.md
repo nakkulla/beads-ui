@@ -389,6 +389,12 @@ target 실패로 계속 보류. 프로브 출력에 §3 분류기를 다시 적�
 
 60초 → 2분 → 4분 → 8분 → 15분(상한 고정), 회복까지 무제한.
 
+**정정(UI-o5ll).** 무제한 프로브는 그대로 유효하다
+(`2026-09-09-provider-outage-hold-release-design.md` §3.1). 백오프는 60초 → 2분
+→ 4분 → 8분 → 15분 → **1시간**(상한 고정)이 되고, UI-k96h가 outage target에도
+적용한 24시간 상한은 철회한다 — 두 상한(`rearm_count` 3회·24시간)은 §7.4의
+`usage_limit` 전용이다.
+
 ### §7.4 `usage_limit` target의 스케줄 — 리셋 시각 타이머 (rev2)
 
 한도는 시각으로 풀리므로 백오프가 아니라 타이머다. 리셋 전 프로브는 429를 즉시
@@ -403,6 +409,14 @@ target 실패로 계속 보류. 프로브 출력에 §3 분류기를 다시 적�
   프로브를 멈추고 `notifyLifecycle('providerAutoResumeDisarmed', …)`를 보낸다
   (§8.1의 소진과 같은 알림·같은 뱃지). target은 남는다 — 게이트는 계속 서 있고
   출구는 §9 수동 이어하기다.
+
+**정정(UI-o5ll).** 상한에 걸려 자동 프로브가 멎은 target의 출구는 "§9 수동
+이어하기"가 아니라 `↻ 지금 프로브`다
+(`2026-09-09-provider-outage-hold-release-design.md` §3.3). §9 이어하기는 그
+attempt를 게이트 밖으로 내보낼 뿐 target을 판정하지 않으므로 출구가 아니었다.
+반대 방향 전이도 생겼다 — `account`가 있는 `outage` target의 프로브 분류가
+`usage_limit`이면 그 target은 계정 단위 게이트로 강등된다(같은 항목의 kind만
+바뀌고 `rearm_count`와 hold의 `since`는 보존된다).
 
 ### §7.5 회복 시 (target 단위, 재시작 안전 순서 — codex spec 리뷰 F4)
 
@@ -588,6 +602,10 @@ id로 바뀐다 — `opus-4.8→claude-opus-4-8`, `opus-4.6→claude-opus-4-6` (
   **정정(UI-01wh)**: 그 배지는 이제 Worker 헤더가 아니라 **막힌 대기 행의 4a 게이트
   칩**이다 — 같은 문장이 `[지금 시작]` 바로 옆에 서므로 이 조항의 목적은 그 행에서
   그대로 보존된다.
+  **정정(UI-o5ll)**: `account`가 있는 target을 프로브가 판정한다는 규칙은
+  유지되고, 사람은 그 프로브를 막힌 행의 `↻ 지금 프로브`로 당길 수 있다
+  (`2026-09-09-provider-outage-hold-release-design.md` §3.3) — 그 조작도 target을
+  지우지 않는다.
 - attempt 기록: 새 attempt의 `runner/model/effort/claude_account`는 override
   반영값으로 스탬프되어 usage·영수증 계보가 실제 실행과 일치한다.
 
