@@ -369,6 +369,46 @@ describe('provider health probe', () => {
     expect(env.notify.providerAutoResumeDisarmed).toHaveBeenCalledTimes(1);
   });
 
+  test('leaves an aged outage target and sends one disarmed notification', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn({ is_error: false, result: 'ok' }, 0);
+    const env = setup(store, timers, spawnImpl, {
+      now: () => NOW + 24 * 60 * 60 * 1000
+    });
+    seedHold(store, 'outage', null);
+
+    await env.health.start(WS);
+    await flush();
+
+    expect(timers.next()).toBeUndefined();
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).provider_hold.claude.targets).toHaveLength(1);
+    expect(env.notify.providerAutoResumeDisarmed).toHaveBeenCalledTimes(1);
+    expect(env.notify.providerAutoResumeDisarmed).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'hold_age_cap' })
+    );
+  });
+
+  test('keeps probing an outage target that has not reached the age cap', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn(
+      { type: 'result', is_error: true, result: 'API Error: 529 Overloaded' },
+      1
+    );
+    const env = setup(store, timers, spawnImpl, {
+      now: () => NOW + 23 * 60 * 60 * 1000
+    });
+    seedHold(store, 'outage', null);
+
+    await env.health.start(WS);
+    await flush();
+
+    expect(timers.next()).toBeDefined();
+    expect(env.notify.providerAutoResumeDisarmed).not.toHaveBeenCalled();
+  });
+
   test('does not probe or recover an unscoped usage-limit target', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();

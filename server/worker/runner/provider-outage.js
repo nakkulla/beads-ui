@@ -9,7 +9,7 @@ import { errorDetail } from '../error-detail.js';
 
 /** @type {RegExp} */
 export const LIMIT_RE =
-  /\bhit your (?:session|usage|weekly|daily|monthly)?\s*limit\b|\busage limit\b|\blimit reached\b|\bout of (?:extra )?usage\b/i;
+  /\bhit your (?:session|usage|weekly|daily|monthly)?\s*limit\b|\busage limit\b|\blimit reached\b|\bout of (?:extra )?usage\b|\brequires usage credits\b/i;
 
 /** @type {RegExp} */
 const API_529_RE = /\bAPI Error: 529\b/i;

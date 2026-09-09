@@ -124,6 +124,39 @@ describe('runner/provider-outage result classification', () => {
     });
   });
 
+  test('classifies a credit-exhausted 429 as account usage', () => {
+    const raw = [
+      resultEvent({
+        terminal_reason: 'api_error',
+        api_error_status: 429,
+        result:
+          'Fable 5.1 requires usage credits. Switch to another model, or manage usage credits in Console.'
+      })
+    ];
+
+    const result = classifyProviderOutage({ raw, stderr_tail: null });
+
+    expect({ detail: result?.detail, scope: result?.scope }).toEqual({
+      detail: 'usage_limit',
+      scope: 'account'
+    });
+  });
+
+  test('classifies a legacy credit-exhausted 429 line as account usage', () => {
+    const raw = [
+      resultEvent({
+        result: 'API Error: 429 Fable 5.1 requires usage credits.'
+      })
+    ];
+
+    const result = classifyProviderOutage({ raw, stderr_tail: null });
+
+    expect({ detail: result?.detail, scope: result?.scope }).toEqual({
+      detail: 'usage_limit',
+      scope: 'account'
+    });
+  });
+
   test('classifies a general structured 429 as rate limited', () => {
     const raw = [
       resultEvent({

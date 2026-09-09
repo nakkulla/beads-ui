@@ -443,17 +443,17 @@ export function createProviderHealth(deps) {
     if (timers.has(key)) {
       return;
     }
-    if (
-      target.kind === 'usage_limit' &&
-      (target.rearm_count >= USAGE_REARM_CAP ||
-        now() - since >= HOLD_AGE_CAP_MS)
-    ) {
+    // The rearm cap counts durable usage-limit re-arms, which an outage never
+    // records; the age cap is what stops an outage target from probing forever.
+    const rearm_capped =
+      target.kind === 'usage_limit' && target.rearm_count >= USAGE_REARM_CAP;
+    if (rearm_capped || now() - since >= HOLD_AGE_CAP_MS) {
       void disarmTarget(
         workspace,
         runner,
         generation,
         target,
-        target.rearm_count >= USAGE_REARM_CAP ? 'rearm_cap' : 'hold_age_cap'
+        rearm_capped ? 'rearm_cap' : 'hold_age_cap'
       );
       return;
     }
