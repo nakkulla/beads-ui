@@ -1708,9 +1708,10 @@ describe('scheduler provider hold and recovery', () => {
    *
    * @param {any} config
    * @param {any} [extra]
+   * @param {(() => void)|null} [onList] - Runs inside `listClaude`, false-free.
    * @returns {any}
    */
-  function preemptEnv(config, extra = {}) {
+  function preemptEnv(config, extra = {}, onList = null) {
     return setup({
       config,
       slots: 1,
@@ -1725,7 +1726,12 @@ describe('scheduler provider hold and recovery', () => {
             ok: true,
             account: claudeCatalog().accounts[0]
           })),
-          listClaude: vi.fn(async () => claudeCatalog())
+          listClaude: vi.fn(async () => {
+            if (onList) {
+              onList();
+            }
+            return claudeCatalog();
+          })
         }
       }),
       ...extra
@@ -1751,13 +1757,63 @@ describe('scheduler provider hold and recovery', () => {
     expect(append).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'account_preempt',
+        attempt_id: 'B1-1000-1',
         summary: 'claude 선제 전환 hot@example.com → cool@example.com (5h 85%)'
       })
     );
   });
 
+  // RED 14 (재확인, spec §3.3)
+  test('drops the preemptive switch when the candidate leaves the allow list mid-lookup', async () => {
+    /** @type {any} */
+    let env;
+    env = preemptEnv({ B1: {} }, {}, () => {
+      allowSwitchAccounts(env.store, 'claude', [], { preempt_pct: 80 });
+    });
+    allowSwitchAccounts(env.store, 'claude', ['cool@example.com'], {
+      preempt_pct: 80
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = env.store.snapshot(WS).attempts['B1-1000-1'];
+    expect(attempt).toMatchObject({
+      claude_account: null,
+      account_sources: { claude: null, codex: null }
+    });
+    expect(attempt.account_switched_from ?? null).toBeNull();
+  });
+
+  // RED 14 (재확인, spec §3.3)
+  test('drops the preemptive switch when the mode turns to wait mid-lookup', async () => {
+    /** @type {any} */
+    let env;
+    env = preemptEnv({ B1: {} }, {}, () => {
+      env.store.setProviderLimitPolicy(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        runner: 'claude',
+        patch: { mode: 'wait' }
+      });
+    });
+    allowSwitchAccounts(env.store, 'claude', ['cool@example.com'], {
+      preempt_pct: 80
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = env.store.snapshot(WS).attempts['B1-1000-1'];
+    expect(attempt).toMatchObject({
+      claude_account: null,
+      account_sources: { claude: null, codex: null }
+    });
+    expect(attempt.account_switched_from ?? null).toBeNull();
+  });
+
   // RED 15 (spec §5)
   test('gates the preemptively switched account, not the one it left', async () => {
+    const blocked_append = vi.fn();
     const switched = preemptEnv({ B1: {} });
     allowSwitchAccounts(switched.store, 'claude', ['cool@example.com'], {
       preempt_pct: 80
@@ -1770,7 +1826,10 @@ describe('scheduler provider hold and recovery', () => {
       'hot@example.com'
     );
     seedQueue(switched.store, ['B1']);
-    const blocked = preemptEnv({ B1: {} });
+    const blocked = preemptEnv(
+      { B1: {} },
+      { timeline: { append: blocked_append } }
+    );
     allowSwitchAccounts(blocked.store, 'claude', ['cool@example.com'], {
       preempt_pct: 80
     });
@@ -1783,6 +1842,9 @@ describe('scheduler provider hold and recovery', () => {
 
     expect(switched.runner.spawnOrder).toEqual(['B1']);
     expect(blocked.runner.spawnOrder).toEqual([]);
+    expect(blocked_append).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'account_preempt' })
+    );
   });
 
   // 보존 검증 30 (spec §5)

@@ -2971,6 +2971,18 @@ export function createScheduler(deps) {
     if (candidate === null) {
       return null;
     }
+    // The catalog read above is async, so the policy this decision started from
+    // may already be stale: re-read it and drop the switch unless the STORED
+    // policy still asks for exactly this move (spec §3.3).
+    const fresh = providerLimitPolicyOf(workspace, runner);
+    if (
+      fresh.mode !== 'switch' ||
+      fresh.preempt_pct === null ||
+      crossed.pct < fresh.preempt_pct ||
+      !fresh.accounts.includes(candidate)
+    ) {
+      return null;
+    }
     resolved.accounts[runner] = candidate;
     resolved.account_sources = {
       ...resolved.account_sources,
@@ -7946,15 +7958,9 @@ export function createScheduler(deps) {
         runner_name,
         resolved_exec
       );
-      if (preempt) {
-        appendTimeline({
-          bead_id,
-          kind: 'account_preempt',
-          seq: now(),
-          summary: `${runner_name} 선제 전환 ${preempt.from} → ${preempt.to} (${preempt.window} ${preempt.pct}%)`,
-          at: now()
-        });
-      }
+      // The timeline entry belongs to the LAUNCH, not to this decision: a row
+      // the gate below turns away is rescheduled, and recording here would
+      // append one unexecuted switch per scheduling pass.
       if (
         !start_now_bypass &&
         (await providerDispatchHeld(
@@ -8485,7 +8491,7 @@ export function createScheduler(deps) {
         speed: exec.orchestration_speed ?? 'default',
         accounts: resolved_exec.accounts,
         account_sources: resolved_exec.account_sources,
-        ...(preempt ? { account_switched_from: preempt.from } : {}),
+        ...(preempt ? { preempt } : {}),
         quickfix_lane,
         prior_wf: prior,
         stamped_keys,
@@ -8821,7 +8827,7 @@ export function createScheduler(deps) {
    *   speed: string,
    *   accounts: { claude: string|null, codex: string|null },
    *   account_sources?: AccountSources,
-   *   account_switched_from?: string,
+   *   preempt?: { from: string, to: string, window: string, pct: number },
    *   prior_wf: string|null,
    *   stamped_keys: string[],
    *   wt_path: string,
@@ -9113,9 +9119,7 @@ export function createScheduler(deps) {
         claude_account: account_settings.claude_account,
         codex_account: account_settings.codex_account,
         account_sources,
-        ...(typeof input.account_switched_from === 'string'
-          ? { account_switched_from: input.account_switched_from }
-          : {}),
+        ...(input.preempt ? { account_switched_from: input.preempt.from } : {}),
         ...prompt_patch
       }
     });
@@ -9156,6 +9160,19 @@ export function createScheduler(deps) {
         ? { log_path: settings.log_path }
         : {})
     });
+
+    // Recorded HERE rather than where the candidate is picked, so the history
+    // holds only switches a launch actually spent (spec §3.3). One per attempt,
+    // like `dispatched` above.
+    if (input.preempt) {
+      appendTimeline({
+        bead_id,
+        attempt_id,
+        kind: 'account_preempt',
+        seq: 'preempt',
+        summary: `${runner_name} 선제 전환 ${input.preempt.from} → ${input.preempt.to} (${input.preempt.window} ${input.preempt.pct}%)`
+      });
+    }
 
     deps.store.clearAdmission(workspace, bead_id);
     deps.sessionLog.attach(workspace, attempt_id, handle.events);

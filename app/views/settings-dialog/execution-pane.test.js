@@ -1408,6 +1408,74 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
     ]);
   });
 
+  // RED 23 (동시) — 응답 전 두 번째 해제는 첫 결과를 되돌리지 않는다 (§3.5).
+  test('serializes two unchecks so the second extends the first', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    /** @type {Array<(value: any) => void>} */
+    const deferred = [];
+    const { root, pane, calls } = mount({
+      queue: queueRow({
+        provider_limit_policy: {
+          claude: {
+            mode: 'switch',
+            accounts: ['active@example.com', 'repo@example.com'],
+            preempt_pct: null
+          },
+          codex: { mode: 'switch', accounts: [], preempt_pct: null }
+        }
+      }),
+      transport: (/** @type {string} */ type) => {
+        if (type !== 'worker-provider-limit-policy-set') {
+          return Promise.resolve({ ok: true });
+        }
+        return new Promise((resolve) => {
+          deferred.push(resolve);
+        });
+      }
+    });
+    await pane.load();
+
+    const first = /** @type {HTMLInputElement} */ (
+      el(
+        root,
+        '[data-limit-runner="claude"][data-limit-account="active@example.com"]'
+      )
+    );
+    first.checked = false;
+    first.dispatchEvent(new Event('change'));
+    await settle();
+    const second = /** @type {HTMLInputElement} */ (
+      el(
+        root,
+        '[data-limit-runner="claude"][data-limit-account="repo@example.com"]'
+      )
+    );
+    second.checked = false;
+    second.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([
+      {
+        runner: 'claude',
+        patch: { accounts: ['repo@example.com'] },
+        expected_revision: 3
+      }
+    ]);
+
+    deferred[0]({ ok: true });
+    await settle();
+    await settle();
+
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([
+      {
+        runner: 'claude',
+        patch: { accounts: ['repo@example.com'] },
+        expected_revision: 3
+      },
+      { runner: 'claude', patch: { accounts: [] }, expected_revision: 3 }
+    ]);
+  });
+
   // RED 24 — 체크 해제는 끔이고, 숫자 입력은 정수 임계다 (§3.5).
   test('turns preemptive switching off with a null threshold', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });

@@ -196,6 +196,27 @@ export function createExecutionPane(mount_element, binding) {
    */
   let session_save_chain = Promise.resolve();
   /**
+   * The allow list a runner's unanswered save is carrying. The stored value is
+   * a whole set, and {@link sendQueueCas} re-sends its payload on a revision
+   * conflict, so two clicks computed from the SAME queue snapshot would make
+   * the second one put the first one's account back. Reading the pending list
+   * instead makes the second click extend the first, and rendering it keeps the
+   * box on the user's newest choice.
+   *
+   * @type {{ claude: string[]|null, codex: string[]|null }}
+   */
+  let limit_accounts_pending = { claude: null, codex: null };
+  /**
+   * One save chain per runner, so a mode/threshold write cannot overtake the
+   * allow-list write it was clicked after.
+   *
+   * @type {{ claude: Promise<void>, codex: Promise<void> }}
+   */
+  let limit_save_chain = {
+    claude: Promise.resolve(),
+    codex: Promise.resolve()
+  };
+  /**
    * Accounts are MACHINE-local, so this list is independent of `root_dir` and
    * is read once per mounted pane rather than once per bound repo.
    *
@@ -866,7 +887,7 @@ export function createExecutionPane(mount_element, binding) {
     const pct = raw?.preempt_pct;
     return {
       mode: raw?.mode === 'wait' ? 'wait' : 'switch',
-      accounts,
+      accounts: limit_accounts_pending[runner] ?? accounts,
       preempt_pct:
         typeof pct === 'number' &&
         Number.isInteger(pct) &&
@@ -896,6 +917,23 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
+   * Queue one runner's policy save behind the ones already in flight, so the
+   * server sees the clicks in the order the user made them.
+   *
+   * @param {'claude'|'codex'} runner
+   * @param {Record<string, unknown>} patch
+   * @param {(() => void)|null} [settled] - Runs after the save, false-free.
+   */
+  function queueLimitSave(runner, patch, settled = null) {
+    limit_save_chain[runner] = limit_save_chain[runner].then(async () => {
+      await saveLimitPolicy(runner, patch);
+      if (settled) {
+        settled();
+      }
+    });
+  }
+
+  /**
    * @param {'claude'|'codex'} runner
    * @param {'wait'|'switch'} mode
    */
@@ -903,7 +941,7 @@ export function createExecutionPane(mount_element, binding) {
     if (limitPolicyOf(runner).mode === mode) {
       return;
     }
-    void saveLimitPolicy(runner, { mode });
+    queueLimitSave(runner, { mode });
   }
 
   /**
@@ -921,7 +959,17 @@ export function createExecutionPane(mount_element, binding) {
         ? current
         : [...current, account_key]
       : current.filter((key) => key !== account_key);
-    void saveLimitPolicy(runner, { accounts: next });
+    if (next === current) {
+      return;
+    }
+    limit_accounts_pending[runner] = next;
+    queueLimitSave(runner, { accounts: next }, () => {
+      // A newer click has already replaced the overlay; leaving it alone keeps
+      // the box on that choice until its own save settles.
+      if (limit_accounts_pending[runner] === next) {
+        limit_accounts_pending[runner] = null;
+      }
+    });
   }
 
   /**
@@ -930,10 +978,10 @@ export function createExecutionPane(mount_element, binding) {
    */
   function onLimitPreemptToggle(runner, on) {
     if (!on) {
-      void saveLimitPolicy(runner, { preempt_pct: null });
+      queueLimitSave(runner, { preempt_pct: null });
       return;
     }
-    void saveLimitPolicy(runner, {
+    queueLimitSave(runner, {
       preempt_pct: limitPolicyOf(runner).preempt_pct ?? DEFAULT_PREEMPT_PCT
     });
   }
@@ -954,7 +1002,7 @@ export function createExecutionPane(mount_element, binding) {
     if (limitPolicyOf(runner).preempt_pct === value) {
       return;
     }
-    void saveLimitPolicy(runner, { preempt_pct: value });
+    queueLimitSave(runner, { preempt_pct: value });
   }
 
   /**
