@@ -103,8 +103,10 @@ provider_limit_policy: {
   `provider_auto_switch`에서 파생한다 — `false`면 두 러너 `mode:'wait'`, 아니면
   기본값. 있으면 러너별로 정규화한다: `mode`가 enum 밖이면 `'switch'`, `accounts`는
   공백 없는 1–256자 문자열만 남기고 중복 제거, `preempt_pct`는 1–99 정수 외
-  `null`. `provider_auto_switch`는 파생에만 읽고 더는 쓰지 않으며
-  `KNOWN_QUEUE_FIELDS`에서 뺀다.
+  `null`. `provider_auto_switch`는 파생에만 읽는다: `normalizeQueue`는 목록 밖 키를
+  그대로 복사하므로(`queue-store.js:3818`) 이 키는 `KNOWN_QUEUE_FIELDS`에 폐기 키로
+  남기되 `emptyQueue`·정규화 출력에서 만들지 않는다 — 이관 뒤 `serializable()`
+  결과와 저장 파일에 옛 키가 없어야 한다.
 - **왜 kv가 아니라 큐인가**: hold 진입 판정은 mutation 안의 동기 읽기여야 한다(§8.3
   codex 리뷰 F4). kv는 런치 결정마다 `bd kv get`이 하나 더 붙고 CAS가 없다. 기존
   토글이 이미 큐 durable이라 소유자도 바뀌지 않는다.
@@ -149,7 +151,7 @@ const switch_account =
 |---|---|---|
 | 1 | `policy.mode !== 'switch'` | `'disabled'` |
 | 2 | `policy.accounts.length === 0` | `'unconfigured'` (신설) |
-| 3 | 후보 없음 | `'none'` |
+| 3 | 후보 없음, 또는 후보가 mutation 시점의 `policy.accounts`에 없음 | `'none'` |
 | 4 | 후보가 이미 다른 target의 계정 | `'none'` |
 | 5 | 성공 | `null` + `auto_resume_pending { kind:'account_switch', account }` |
 
@@ -157,15 +159,25 @@ const switch_account =
 `'cap'`은 저장 어휘에서 읽기만 남긴다(과거 큐 파일 정규화, 알림·팝오버는 계속
 빈 문자열).
 
+3행의 재확인이 필요한 이유: 후보는 mutation 밖에서 비동기 카탈로그 조회로 골랐고,
+그 사이 사용자가 허용 목록에서 그 계정을 뺄 수 있다. 저장 단계가 목록 길이만 보면
+제외된 계정으로 전환된다. 그래서 스토어는 `policy.accounts.includes(candidate)`를
+같은 mutation 안에서 다시 본다.
+
 `consumeProviderAutoResume`: `pending.kind === 'account_switch'`인 세 분기는
 `auto_resume_kind:'account_switch'`를 스탬프한다. `providerAutoResumeCapped`는
 바꾸지 않는다 — `'provider_outage'`만 세므로 전환 자식은 cap을 소비하지 않고, 그
 자식이 뒤에 리셋으로 회복되면 §8.1대로 1회 자동 재개된다. `Attempt.auto_resume_kind`
 typedef와 정규화(`queue-store.js:2976`)의 허용값에 `'account_switch'`를 더한다.
 
-전환 연쇄의 상한은 허용 집합이다: 전환된 자식이 다시 한도에 걸리면 그 계정은
-target이 되어 후보에서 빠지고, 후보는 항상 현재 계정과 다르므로 같은 계정으로
-되돌아가지 않는다. 허용 집합이 전부 target이면 `'none'`으로 타이머 경로다.
+전환 연쇄의 경계: 전환된 자식이 다시 한도에 걸리면 그 계정은 target이 되어
+**보류 중인 동안** 후보에서 빠지고, 후보는 항상 현재 계정과 다르다. 그러나
+`recoverProviderTarget`(`queue-store.js:7206`)이 회복한 계정의 target을 지우므로
+A→B 뒤 A가 리셋으로 회복하면 B→A가 다시 가능하다 — 허용 집합의 크기가 계보 전체의
+전환 횟수를 제한하지는 않는다. 한 시점에 보류 중인 계정으로는 돌아가지 않고, 허용
+집합이 전부 보류 중이면 `'none'`으로 타이머 경로라는 것이 이 설계가 보장하는
+전부다. 무한 왕복은 각 전환이 실제 한도 보류를 전제하고 한도는 창 리셋 시각으로만
+풀리므로 리셋 주기보다 빠를 수 없다.
 
 `account_sources` 스탬프(`scheduler.js:10820`): `account_switched_from`이 있으면
 **그 러너 키**에 `'outage_switch'`를 찍는다(codex면 `codex`). `AccountSources`
@@ -176,7 +188,9 @@ typedef의 codex 쪽에 `'outage_switch'`를 더하고 `account_switched_from`�
 `listCodex()`의 `active_key`를 계정으로 쓴다(claude의 `activeClaude()`와 같은
 규칙). 이래야 활성 로그인으로 뜬 codex attempt의 한도가 `account:null` fail-closed
 target이 아니라 계정 단위 target이 되어 전환·프로브 대상이 된다. `row`는 계속
-`null`이다(codex-auth는 행별 usage를 주지 않는다는 기존 주석 유지).
+`null`이다 — `codex-usage.js:173`이 계정별 창을 읽어 `listCodex()`가 전달하지만
+현재 codex 분류기(`classifyProviderOutage`)는 계정 행을 소비하지 않으며, 이번
+변경은 그 동작을 유지한다(기존 주석의 "행별 usage 없음" 문구는 이 사실로 고친다).
 
 ### 3.3 선제 전환 — 디스패치 시점, 상속된 계정에만
 
@@ -198,8 +212,10 @@ target이 아니라 계정 단위 target이 되어 전환·프로브 대상이 �
 - 적용: `resolved_exec.accounts[runner] = candidate`,
   `account_sources[runner] = 'preempt_switch'`(신설 소스값). attempt 기록에
   `account_switched_from: current`를 싣는다(기존 필드 재사용). 그 다음
-  `providerDispatchHeld`가 **바뀐 계정**으로 게이트를 본다 — 후보 규칙이 held
-  계정을 이미 뺐으므로 통과한다.
+  `providerDispatchHeld`가 **바뀐 계정**으로 게이트를 본다. 후보 규칙이 held
+  계정을 이미 뺐으므로 **계정이 확인된 `usage_limit` 보류**는 통과한다; outage
+  보류와 계정 미상(`account:null`) 한도 보류는 계정과 무관하게 러너 전체를 막는
+  기존 판정(`scheduler.js:2869`·`:2875`) 그대로이며 선제 전환이 그것을 넘지 않는다.
 - 기록: timeline에 `kind:'account_preempt'`, `summary: '<runner> 선제 전환 <from> →
   <to> (<창> <pct>%)'`. 푸시 알림은 보내지 않는다 — 임계를 넘긴 채로 있는 동안
   매 디스패치가 같은 결정을 내리므로 알림이 반복되고, 정보는 timeline과 attempt
@@ -307,42 +323,47 @@ target이 아니라 계정 단위 target이 되어 전환·프로브 대상이 �
     `preempt_pct` 이상이면 런치 계정이 허용 후보로 바뀌고 `account_sources`가
     `'preempt_switch'`, attempt에 `account_switched_from`이 실리며 timeline에
     `account_preempt`가 남는다.
-15. `source:'bead'`인 계정은 창이 임계 이상이어도 바뀌지 않는다.
-16. `preempt_pct:null`이면 창이 100%여도 바뀌지 않는다.
-17. 선제 전환으로 바뀐 계정으로 `providerDispatchHeld`가 판정된다 — 원 계정이 held
-    target이어도 디스패치된다.
+15. 선제 전환으로 바뀐 계정으로 `providerDispatchHeld`가 판정된다 — 원 계정이
+    계정 확인된 `usage_limit` target이어도 디스패치되고, 같은 테스트에서 outage
+    target이 서 있으면 여전히 막힌다는 음성도 본다.
+16. `holdProviderAttempt`가 후보 선정 뒤 허용 목록에서 빠진 계정을 `'none'`으로
+    거부하고 receipt를 만들지 않는다 — 허용 목록에 남아 있는 같은 조건에서는
+    receipt가 생긴다는 양성을 같은 테스트에서 본다.
 
 `server/ws/worker-handlers.provider-outage.test.js`:
 
-18. `worker-provider-limit-policy-set`이 공유 프로토콜에 선언되고
+17. `worker-provider-limit-policy-set`이 공유 프로토콜에 선언되고
     `worker-provider-auto-switch-toggle`은 없다.
-19. `runner` enum 밖, `mode` enum 밖, `preempt_pct` 범위 밖이 `bad_request`다.
-20. 성공 응답이 CAS를 지키고 `provider_limit_policy`가 실린 큐 스냅샷을 fanout한다.
+18. `runner` enum 밖, `mode` enum 밖, `preempt_pct` 범위 밖이 `bad_request`다.
+19. 성공 응답이 CAS를 지키고 `provider_limit_policy`가 실린 큐 스냅샷을 fanout한다.
 
 `server/worker/notify.test.js`:
 
-21. `'unconfigured'`가 `계정 전환: 안 함 — 전환 허용 계정 미지정`으로, `'disabled'`가
+20. `'unconfigured'`가 `계정 전환: 안 함 — 전환 허용 계정 미지정`으로, `'disabled'`가
     `기다림 모드` 문장으로 렌더된다.
 
 `app/views/worker/gate-labels.test.js`:
 
-22. `autoSwitchText('unconfigured')`와 `('disabled')`의 새 문장.
+21. `autoSwitchText('unconfigured')`와 `('disabled')`의 새 문장.
 
 `app/views/settings-dialog/execution-pane.test.js`:
 
-23. 모드 세그먼트 클릭이 `worker-provider-limit-policy-set { runner, patch:{mode} }`를
+22. 모드 세그먼트 클릭이 `worker-provider-limit-policy-set { runner, patch:{mode} }`를
     보낸다.
-24. 허용 계정 체크가 현재 집합에 key를 더하거나 빼서 `patch:{accounts}`로 보낸다.
-25. 선제 전환 체크 해제가 `patch:{preempt_pct:null}`, 입력 변경이 정수값을 보낸다.
-26. 목록에 없는 저장 key가 `(목록에 없음)` 체크 항목으로 남는다.
+23. 허용 계정 체크가 현재 집합에 key를 더하거나 빼서 `patch:{accounts}`로 보낸다.
+24. 선제 전환 체크 해제가 `patch:{preempt_pct:null}`, 입력 변경이 정수값을 보낸다.
+25. 목록에 없는 저장 key가 `(목록에 없음)` 체크 항목으로 남는다.
 
 #### 보존 검증 (변경 전에도 통과한다)
 
-27. `provider_outage` pending 소비는 여전히 `auto_resume_kind:'provider_outage'`를
+26. `provider_outage` pending 소비는 여전히 `auto_resume_kind:'provider_outage'`를
     스탬프하고 §8.1 cap에 걸린다.
-28. `classified.account === null`인 한도 hold는 여전히 전환하지 않는다.
-29. 후보가 이미 다른 target의 계정이면 여전히 `'none'`이다.
-30. `[지금 시작]` bypass는 선제 전환·게이트와 무관하게 그 행을 디스패치한다.
+27. `classified.account === null`인 한도 hold는 여전히 전환하지 않는다.
+28. 후보가 이미 다른 target의 계정이면 여전히 `'none'`이다.
+29. `[지금 시작]` bypass는 선제 전환·게이트와 무관하게 그 행을 디스패치한다.
+30. `source:'bead'`인 계정은 창이 임계 이상이어도 바뀌지 않는다(현재는 선제 전환이
+    없어 통과하며, 구현 뒤에도 pin 보호를 고정한다).
+31. `preempt_pct:null`이면 창이 100%여도 바뀌지 않는다(같은 이유의 보존 항목).
 
 ### 절차
 
@@ -351,7 +372,7 @@ target이 아니라 계정 단위 target이 되어 전환·프로브 대상이 �
 
 ### 인수 기준
 
-- RED 26건과 보존 4건이 통과하고 다섯 명령이 exit 0. RED는 구현 전 실패를 확인한
+- RED 25건과 보존 6건이 통과하고 다섯 명령이 exit 0. RED는 구현 전 실패를 확인한
   뒤 통과시킨다.
 - 실기: 허용 집합에 Pro 계정을 빼고 Max 계정만 넣은 뒤 한도 문구를 심은 attempt가
   Max 계정으로 재개되고, 허용 집합을 비우면 `전환 허용 계정 미지정`으로 타이머
