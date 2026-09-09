@@ -19726,3 +19726,263 @@ describe('scheduler records the guard mirror and its deferrals (guard-hook-bypas
     });
   });
 });
+
+describe('↻ 이어하기가 체계적 정지를 함께 푼다 (UI-hhju §3.1)', () => {
+  /**
+   * The newest implementation attempt recorded for one bead — the id a tile's ↻
+   * would carry.
+   *
+   * @param {any} store
+   * @param {string} bead_id
+   * @returns {string}
+   */
+  function latestAttemptId(store, bead_id) {
+    const attempts = Object.values(store.snapshot(WS).attempts);
+    const mine = attempts.filter(
+      (/** @type {any} */ a) => a && a.bead_id === bead_id
+    );
+    return /** @type {any} */ (mine[mine.length - 1]).attempt_id;
+  }
+
+  /**
+   * Dispatch one bead, record its session, fail it, and stop the queue ON that
+   * attempt — the state a guard kill leaves behind.
+   *
+   * @param {ReturnType<typeof setup>} env
+   * @param {string} bead_id
+   * @returns {Promise<string>} The halting attempt id.
+   */
+  async function failAndHalt(env, bead_id) {
+    env.runner.eventsFor(bead_id).emit('session_id', `sid-${bead_id}`);
+    env.runner.finish(bead_id, { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+    const attempt_id = latestAttemptId(env.store, bead_id);
+    env.store.applyQueueHold(WS, {
+      event: {
+        kind: 'systemic_failure',
+        bead_id,
+        attempt_id,
+        cause: 'loud_fail_blocker',
+        at: 1000
+      },
+      now: 1000
+    });
+    return attempt_id;
+  }
+
+  test('resuming the halting attempt clears the systemic hold', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const halting = await failAndHalt(env, 'S1');
+
+    const result = await env.scheduler.resume(WS, halting);
+
+    const snap = env.store.snapshot(WS);
+    expect(result.ok).toBe(true);
+    expect(snap.hold).toBe(null);
+    expect(snap.lineages).toEqual([]);
+    expect(snap.attempts[String(result.attempt_id)]).toMatchObject({
+      status: 'running',
+      resumed_from: halting
+    });
+  });
+
+  test('leaves the halting attempt undismissed when its child took over', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const halting = await failAndHalt(env, 'S1');
+
+    await env.scheduler.resume(WS, halting);
+
+    expect(env.store.snapshot(WS).attempts[halting].dismissed_at).toBe(null);
+  });
+
+  test('resuming a descendant of the halting attempt clears the hold', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const halting = await failAndHalt(env, 'S1');
+    const first_child = String(
+      (await env.scheduler.resume(WS, halting)).attempt_id
+    );
+    // The hold is re-armed on the ORIGINAL attempt: a stop that predates this
+    // change and was already continued once.
+    env.runner.eventsFor('S1').emit('session_id', 'sid-child');
+    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+    env.store.applyQueueHold(WS, {
+      event: {
+        kind: 'systemic_failure',
+        bead_id: 'S1',
+        attempt_id: halting,
+        cause: 'loud_fail_blocker',
+        at: 1000
+      },
+      now: 1000
+    });
+
+    const result = await env.scheduler.resume(WS, first_child);
+
+    expect(result.ok).toBe(true);
+    expect(env.store.snapshot(WS).hold).toBe(null);
+  });
+
+  test('keeps the hold when another bead is resumed', async () => {
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
+    seedQueue(env.store, ['S1', 'S2']);
+    await env.scheduler.tick(WS);
+    await failAndHalt(env, 'S1');
+    env.runner.eventsFor('S2').emit('session_id', 'sid-S2');
+    env.runner.finish('S2', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+    const other = latestAttemptId(env.store, 'S2');
+
+    const result = await env.scheduler.resume(WS, other);
+
+    expect(result.ok).toBe(true);
+    expect(env.store.snapshot(WS).hold).toMatchObject({ kind: 'systemic' });
+  });
+
+  test('keeps the hold when a same-bead attempt outside the lineage is resumed', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const halting = await failAndHalt(env, 'S1');
+    const stranger = 'S1-stranger';
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: stranger, bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: stranger,
+      patch: {
+        status: 'failed',
+        session_id: 'sid-stranger',
+        repo: env.store.snapshot(WS).attempts[halting].repo,
+        runner: 'claude',
+        exec_values: env.store.snapshot(WS).attempts[halting].exec_values,
+        finished_at: 900
+      }
+    });
+
+    const result = await env.scheduler.resume(WS, stranger);
+
+    expect(result.ok).toBe(true);
+    expect(env.store.snapshot(WS).hold).toMatchObject({ kind: 'systemic' });
+  });
+
+  test('keeps the hold on an automatic provider resume', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const halting = await failAndHalt(env, 'S1');
+
+    const result = await env.scheduler.resume(WS, halting, {
+      continuation: 'auto',
+      provider_auto_resume: true,
+      auto_resume_kind: 'provider_outage'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.store.snapshot(WS).hold).toMatchObject({ kind: 'systemic' });
+  });
+
+  test('keeps the hold when the resumed session fails to spawn', async () => {
+    let spawns = 0;
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    env = setup({
+      config: { S1: {} },
+      slots: 1,
+      makeRunner: (/** @type {string} */ name) => {
+        const inner = env.runner.factory(name);
+        return {
+          name,
+          spawn: (/** @type {any[]} */ ...args) => {
+            spawns += 1;
+            if (spawns > 1) {
+              throw new Error('spawn failed');
+            }
+            return /** @type {any} */ (inner).spawn(...args);
+          }
+        };
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const halting = await failAndHalt(env, 'S1');
+
+    const result = await env.scheduler.resume(WS, halting);
+
+    expect(result.ok).toBe(false);
+    expect(env.store.snapshot(WS).hold).toMatchObject({ kind: 'systemic' });
+  });
+
+  test('redispatches another held bead after the lineage ↻', async () => {
+    const env = setup({
+      config: {
+        S1: { ready_follows_status: true },
+        S2: { ready_follows_status: true }
+      },
+      slots: 2
+    });
+    seedQueue(env.store, ['S1', 'S2']);
+    await env.scheduler.tick(WS);
+    const halting = await failAndHalt(env, 'S1');
+    env.runner.eventsFor('S2').emit('session_id', 'sid-S2');
+    env.runner.finish('S2', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+    const held = latestAttemptId(env.store, 'S2');
+    env.store.applyQueueHold(WS, {
+      event: {
+        kind: 'systemic_failure',
+        bead_id: 'S2',
+        attempt_id: held,
+        cause: 'loud_fail_blocker',
+        at: 1000
+      },
+      now: 1000
+    });
+
+    await env.scheduler.resume(WS, halting);
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.hold).toBe(null);
+    expect(snap.attempts[held].dismissed_at).toBe(1000);
+    expect(latestAttemptId(env.store, 'S2')).not.toBe(held);
+  });
+
+  test('keeps a legacy hold with no halting attempt recorded', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('S1').emit('session_id', 'sid-S1');
+    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+    const halting = latestAttemptId(env.store, 'S1');
+    env.store.applyQueueHold(WS, {
+      event: {
+        kind: 'systemic_failure',
+        bead_id: 'S1',
+        cause: 'loud_fail_blocker',
+        at: 1000
+      },
+      now: 1000
+    });
+
+    const result = await env.scheduler.resume(WS, halting);
+
+    expect(result.ok).toBe(true);
+    expect(env.store.snapshot(WS).hold).toMatchObject({
+      kind: 'systemic',
+      halted_by_attempt_id: null
+    });
+  });
+});
