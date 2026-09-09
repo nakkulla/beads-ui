@@ -153,9 +153,10 @@ if (
 ### 3.3 `↻ 지금 프로브` — 서버
 
 **`provider-health.js`에 `probeNow(workspace, runner)`를 export한다.** 그 러너의
-서 있는 target 가운데 프로브 대상인 것 전부에 대해, 무장된 타이머를 지우고
-`runTarget`을 지금 호출한다. 프로브 대상 판정은 §7.2와 같다 — `usage_limit`이면서
-`account === null`인 target만 제외한다(§6 F3, 어느 계정을 찔러야 회복 증거인지 모름).
+서 있는 target 가운데 프로브 대상이고 지금 실행 중이 아닌 것 전부에 대해, 무장된
+타이머를 지우고 `runTarget`을 지금 호출한다. 프로브 대상 판정은 §7.2와 같다 —
+`usage_limit`이면서 `account === null`인 target만 제외한다(§6 F3, 어느 계정을 찔러야
+회복 증거인지 모름). 실행 중 판정은 아래 `in_flight`가 소유한다.
 
 상한으로 disarm되어 타이머가 없는 `usage_limit` target도 `probeNow`는 발화시킨다.
 이것이 §7.4가 적었으나 §9.5가 닫아버린 출구를 실제로 여는 지점이다 — 상한은 자동
@@ -196,7 +197,9 @@ if (
 
 - `input`은 `{ runner: string, since: number }`.
 - `provider_hold[runner]`가 없거나 `since`가 다르면 `{ ok: false, reason: 'hold_changed' }`.
-  `▶ 재개`·`↻ 지금 재시도`와 같은 CAS 의미론이고, 중복 클릭이 no-op이 된다.
+  `▶ 재개`·`↻ 지금 재시도`와 같은 CAS 형태지만 **역할은 다르다**: 저 둘은 CAS가 곧
+  멱등성이고, 여기서는 낡은 화면에서 온 요청을 거를 뿐이다. 같은 `since`로 온 중복
+  클릭은 위의 `in_flight`가 막는다.
 - 프로브 대상 target이 하나도 없으면 `{ ok: false, reason: 'probe_ineligible' }`.
 - 대상은 있으나 전부 실행 중이면 `{ ok: false, reason: 'probe_in_flight' }`.
 - 그 외에는 `att.providerHealth.probeNow(workspace, runner)`를 부르고
