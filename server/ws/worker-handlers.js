@@ -132,11 +132,16 @@ import {
   normalizeUsageLegs,
   readAttemptUsageReceipts
 } from '../worker/usage-receipts.js';
+import {
+  WORKSPACE_ACCOUNTS_KV_KEY,
+  normalizeWorkspaceAccounts
+} from '../workspace-accounts.js';
 import { peekWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import {
   emitSessionLogAppend,
   emitSessionLogSnapshot,
   getConnWorkspace,
+  kvGetJsonAtRoot,
   log,
   pushSnapshotIfChanged,
   runBdJsonProjectedInWorkspace
@@ -345,6 +350,141 @@ export function __setWorkerAccountCatalogForTest(catalog) {
 /** Test-only wait for one account-catalog refresh. */
 export async function __refreshWorkerAccountCatalogForTest() {
   await refreshWorkerAccountCatalog();
+}
+
+/** How often one workspace's account defaults may be re-read (UI-j9zk). */
+const WORKSPACE_ACCOUNT_DEFAULTS_REREAD_MS = 60_000;
+
+/**
+ * The repo's DEFAULT exec accounts per workspace — the `bd kv` layer a launch
+ * reads between the issue pin and the machine's active login (`scheduler.js
+ * effectiveAccount`, source `workspace_default`). The waiting row's provider
+ * gate resolved only the pin and the active login (UI-01wh §3.1), so a repo
+ * whose default differs from the current login drew the limit chip against an
+ * account no launch would have spent.
+ *
+ * Cached because decoration is SYNCHRONOUS while `bd kv get` is not — the same
+ * split the title cache lives with, and filled the same way: the projection
+ * itself triggers the read and the fill re-pushes the snapshot. A cold entry
+ * ships nothing, which is exactly what "this repo declares no default" means,
+ * and a value stands until a later read replaces it — the interval below rate-
+ * limits re-reads rather than expiring a value, so a repo default that changes
+ * under an open screen is picked up without a resubscribe.
+ *
+ * @type {Map<string, { values: Record<string, string>, read_at: number, in_flight: boolean }>}
+ */
+const workspace_account_defaults_cache = new Map();
+
+/** The `bd kv` read, behind a seam so tests never spawn bd. */
+let workspace_accounts_reader = defaultWorkspaceAccountsReader();
+
+/** Build the production reader for the workspace account-default kv key. */
+function defaultWorkspaceAccountsReader() {
+  return (/** @type {string} */ root_dir) =>
+    kvGetJsonAtRoot(root_dir, WORKSPACE_ACCOUNTS_KV_KEY);
+}
+
+/**
+ * Synchronous cache-hit projection, which also owns the read trigger.
+ *
+ * The trigger sits HERE rather than on the queue subscription because both the
+ * Worker channel and the monitor aggregation reach a workspace only through
+ * {@link decorateQueue} (`monitor-handlers.js buildMonitorPipeline` calls it
+ * for every visible workspace). A subscription-only trigger left every repo the
+ * user never opened in the Worker tab permanently cold, and never re-read the
+ * value under an open screen.
+ *
+ * @param {string} workspace_key
+ * @returns {Record<string, string>}
+ */
+function workspaceAccountDefaultsFor(workspace_key) {
+  const hit = workspace_account_defaults_cache.get(workspace_key);
+  if (
+    !hit ||
+    (hit.in_flight !== true &&
+      Date.now() - hit.read_at >= WORKSPACE_ACCOUNT_DEFAULTS_REREAD_MS)
+  ) {
+    // Re-entrancy is bounded: the fanout below re-enters this function, and by
+    // then the entry is either in flight or freshly read, so neither branch
+    // triggers a second read.
+    void refreshWorkspaceAccountDefaults(workspace_key)
+      .then((refreshed) => {
+        if (refreshed) {
+          fanout(workspace_key, queueStore().snapshot(workspace_key));
+        }
+      })
+      .catch((err) => {
+        log(
+          'workspace account defaults refresh failed for %s: %o',
+          workspace_key,
+          err
+        );
+      });
+  }
+  return hit?.values || {};
+}
+
+/**
+ * Start at most one `bd kv get` per workspace, and report whether the read ran
+ * so the caller can decide to fan a fresh snapshot out.
+ *
+ * @param {string} workspace_key
+ * @returns {Promise<boolean>}
+ */
+async function refreshWorkspaceAccountDefaults(workspace_key) {
+  const current = workspace_account_defaults_cache.get(workspace_key);
+  if (
+    current?.in_flight === true ||
+    (current &&
+      Date.now() - current.read_at < WORKSPACE_ACCOUNT_DEFAULTS_REREAD_MS)
+  ) {
+    return false;
+  }
+  workspace_account_defaults_cache.set(workspace_key, {
+    values: current?.values || {},
+    read_at: current?.read_at || 0,
+    in_flight: true
+  });
+  /** @type {Record<string, string>} */
+  let values = {};
+  try {
+    const layer = normalizeWorkspaceAccounts(
+      await workspace_accounts_reader(workspace_key)
+    );
+    // `unusable` is NOT "no default" — it is "nobody can read the default", and
+    // `workspace-accounts.js` §5.2 keeps that distinction because it decides
+    // which account's tokens a launch spends. That refusal stays the
+    // scheduler's; the screen's own disposition for both states is the same
+    // fail-quiet one, so the layer simply does not travel.
+    values = layer.state === 'usable' ? layer.values : {};
+  } catch {
+    values = {};
+  }
+  workspace_account_defaults_cache.set(workspace_key, {
+    values,
+    read_at: Date.now(),
+    in_flight: false
+  });
+  return true;
+}
+
+/**
+ * Test seam for the workspace account-default kv read.
+ *
+ * @param {((root_dir: string) => Promise<any>)|null} reader
+ */
+export function __setWorkspaceAccountsReaderForTest(reader) {
+  workspace_account_defaults_cache.clear();
+  workspace_accounts_reader = reader || defaultWorkspaceAccountsReader();
+}
+
+/**
+ * Test-only wait for one workspace account-default refresh.
+ *
+ * @param {string} workspace_key
+ */
+export async function __refreshWorkspaceAccountDefaultsForTest(workspace_key) {
+  await refreshWorkspaceAccountDefaults(workspace_key);
 }
 
 /**
@@ -3051,6 +3191,8 @@ export function decorateQueue(workspace_key, raw_queue) {
   } catch {
     runner_catalog = null;
   }
+  const workspace_account_default_values =
+    workspaceAccountDefaultsFor(workspace_key);
   let execution_defaults;
   try {
     execution_defaults = projectExecutionDefaults(runner_catalog);
@@ -3102,6 +3244,14 @@ export function decorateQueue(workspace_key, raw_queue) {
         }
       : {}),
     execution_defaults,
+    // The repo's default exec accounts (UI-j9zk), non-persisted and PARTIAL:
+    // the key is absent until the async kv read lands, and absent again when
+    // the repo declares none or the layer is unreadable. Consumers fail-quiet
+    // on absence and fall back to the active login, which is what the waiting
+    // row's gate did before this layer existed.
+    ...(Object.keys(workspace_account_default_values).length > 0
+      ? { workspace_account_defaults: workspace_account_default_values }
+      : {}),
     // The workspace's declared base (UI-j6wa §3), non-persisted like every
     // other decoration here. Display only — nothing dispatches on it.
     declared_base,
@@ -4070,6 +4220,8 @@ export function __resetWorkerQueueForTest() {
   claude_account_catalog = null;
   codex_account_catalog = null;
   account_catalog_refresh = null;
+  workspace_accounts_reader = defaultWorkspaceAccountsReader();
+  workspace_account_defaults_cache.clear();
   for (const sub of SESSION_LOG_SUBS) {
     try {
       sub.off();

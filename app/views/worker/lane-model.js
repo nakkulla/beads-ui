@@ -1341,19 +1341,37 @@ function providerGate(runner, account, provider_hold, account_catalog) {
 }
 
 /**
- * The account this row would launch on: its own pin first, then the machine's
- * active login for that runner. `null` when neither says anything — the caller
- * then draws no usage-limit gate (fail-quiet).
+ * The account this row would launch on: its own pin first, then the repo's
+ * default account, then the machine's active login for that runner. `null` when
+ * none of the three says anything — the caller then draws no usage-limit gate
+ * (fail-quiet).
+ *
+ * The middle layer is the one the server reads at launch
+ * (`scheduler.js effectiveAccount`, `workspace_default`), so leaving it out
+ * drew the limit chip against an account the launch would never have spent.
  *
  * @param {Record<string, any>} metadata
  * @param {string} runner
  * @param {Record<string, any>} account_catalog
+ * @param {Record<string, any>} [workspace_defaults]
  * @returns {string|null}
  */
-function resolvedAccountOf(metadata, runner, account_catalog) {
+function resolvedAccountOf(
+  metadata,
+  runner,
+  account_catalog,
+  workspace_defaults
+) {
   const pin = metadata[`${runner}_account`];
   if (typeof pin === 'string' && pin.length > 0) {
     return pin;
+  }
+  // 저장소 기본 계정은 핀과 같은 값 공간이다 (`workspace-accounts.js` — Claude는
+  // 이메일, Codex는 durable key). 서버가 못 읽었거나 선언이 없으면 이 층은
+  // 스냅샷에 실리지 않고, 판정은 예전처럼 활성 계정으로 떨어진다.
+  const workspace_default = objectOf(workspace_defaults)[`${runner}_account`];
+  if (typeof workspace_default === 'string' && workspace_default.length > 0) {
+    return workspace_default;
   }
   const rows = objectOf(account_catalog)[runner];
   if (!Array.isArray(rows)) {
@@ -2901,7 +2919,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 막힌 대기 행을 판정할 저장소별 재료 (UI-01wh §3.1). 행 투영이 끝난 뒤
   // 한 번에 얹는다 — 러너·계정 해석에 오버레이 metadata가 필요하고 그것은
   // 이 루프보다 뒤에서 채워진다.
-  /** @type {Map<string, { hold: any, lineages: any[], provider_hold: Record<string, any>, account_catalog: Record<string, any> }>} */
+  /** @type {Map<string, { hold: any, lineages: any[], provider_hold: Record<string, any>, account_catalog: Record<string, any>, workspace_account_defaults: Record<string, any> }>} */
   const gate_input_by_root = new Map();
   /** @type {Map<string, string>} */
   const failed_by_bead = new Map();
@@ -3114,7 +3132,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
           : null,
       lineages: Array.isArray(workspace.lineages) ? workspace.lineages : [],
       provider_hold: objectOf(workspace.provider_hold),
-      account_catalog: objectOf(workspace.account_catalog)
+      account_catalog: objectOf(workspace.account_catalog),
+      workspace_account_defaults: objectOf(workspace.workspace_account_defaults)
     });
     const queue_lane = Array.isArray(workspace.queue) ? workspace.queue : [];
     // arm은 병렬·직렬 두 대기 영역 모두에 쓰이고 (UI-tjus §3.2) PR 대기 행으로
@@ -4396,7 +4415,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ? null
         : providerGate(
             runner,
-            resolvedAccountOf(metadata, runner, gate_input.account_catalog),
+            resolvedAccountOf(
+              metadata,
+              runner,
+              gate_input.account_catalog,
+              gate_input.workspace_account_defaults
+            ),
             gate_input.provider_hold,
             gate_input.account_catalog
           );

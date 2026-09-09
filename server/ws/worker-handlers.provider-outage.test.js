@@ -11,8 +11,10 @@ import { getWorkerRuntime } from '../worker/runtime.js';
 import { setConnWorkspace } from './context.js';
 import {
   __refreshWorkerAccountCatalogForTest,
+  __refreshWorkspaceAccountDefaultsForTest,
   __resetWorkerQueueForTest,
   __setWorkerAccountCatalogForTest,
+  __setWorkspaceAccountsReaderForTest,
   decorateQueue,
   handleSubscribeWorkerQueue,
   handleWorkerAttemptResume,
@@ -222,6 +224,86 @@ describe('worker provider queue projection', () => {
         )
       ).toBe(true);
     });
+  });
+
+  test('carries both repo default accounts on the snapshot', async () => {
+    __setWorkspaceAccountsReaderForTest(async () => ({
+      ok: true,
+      value: {
+        schema: 1,
+        claude_account: 'repo@example.com',
+        codex_account: 'repo-codex-key'
+      }
+    }));
+
+    await __refreshWorkspaceAccountDefaultsForTest(WS);
+    const projected = decorateQueue(
+      WS,
+      getWorkerRuntime().queueStore.snapshot(WS)
+    );
+
+    expect(/** @type {any} */ (projected).workspace_account_defaults).toEqual({
+      claude_account: 'repo@example.com',
+      codex_account: 'repo-codex-key'
+    });
+  });
+
+  test('fills the repo default accounts from the projection itself', async () => {
+    __setWorkspaceAccountsReaderForTest(async () => ({
+      ok: true,
+      value: { schema: 1, claude_account: 'repo@example.com' }
+    }));
+
+    decorateQueue(WS, getWorkerRuntime().queueStore.snapshot(WS));
+
+    await vi.waitFor(() => {
+      expect(
+        /** @type {any} */ (
+          decorateQueue(WS, getWorkerRuntime().queueStore.snapshot(WS))
+        ).workspace_account_defaults
+      ).toEqual({ claude_account: 'repo@example.com' });
+    });
+  });
+
+  test('re-reads the repo defaults after the re-read interval', async () => {
+    let account = 'first@example.com';
+    __setWorkspaceAccountsReaderForTest(async () => ({
+      ok: true,
+      value: { schema: 1, claude_account: account }
+    }));
+    await __refreshWorkspaceAccountDefaultsForTest(WS);
+    account = 'second@example.com';
+
+    await __refreshWorkspaceAccountDefaultsForTest(WS);
+    const within_interval = /** @type {any} */ (
+      decorateQueue(WS, getWorkerRuntime().queueStore.snapshot(WS))
+    ).workspace_account_defaults;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+    await __refreshWorkspaceAccountDefaultsForTest(WS);
+    const after_interval = /** @type {any} */ (
+      decorateQueue(WS, getWorkerRuntime().queueStore.snapshot(WS))
+    ).workspace_account_defaults;
+    clock.mockRestore();
+
+    expect([within_interval, after_interval]).toEqual([
+      { claude_account: 'first@example.com' },
+      { claude_account: 'second@example.com' }
+    ]);
+  });
+
+  test('omits the repo default accounts when the layer is unreadable', async () => {
+    __setWorkspaceAccountsReaderForTest(async () => ({
+      ok: false,
+      error: 'bd kv get failed'
+    }));
+
+    await __refreshWorkspaceAccountDefaultsForTest(WS);
+    const projected = decorateQueue(
+      WS,
+      getWorkerRuntime().queueStore.snapshot(WS)
+    );
+
+    expect(projected).not.toHaveProperty('workspace_account_defaults');
   });
 
   test('adds the first outage probe time without changing durable state', () => {

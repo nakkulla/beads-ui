@@ -7137,6 +7137,44 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
     ]);
   });
 
+  test('resolves the row account from the workspace default before the active login', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_overlay: overlays(['A-1']),
+          workspace_account_defaults: { claude_account: 'repo@example.com' },
+          account_catalog: {
+            claude: [
+              { email: 'repo@example.com', alias: '저장소', active: false },
+              { email: 'active@example.com', alias: '로그인', active: true }
+            ]
+          },
+          provider_hold: {
+            claude: {
+              since: 1,
+              generation: 1,
+              targets: [
+                {
+                  kind: 'usage_limit',
+                  model: 'sonnet',
+                  account: 'repo@example.com',
+                  resets_at: 7000
+                }
+              ]
+            }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect([lanes.queue[0].gate?.kind, lanes.queue[0].gate?.next_at]).toEqual([
+      'provider_usage',
+      7000
+    ]);
+  });
+
   test('draws no usage gate when the row account cannot be resolved', () => {
     const lanes = buildLanes(
       [
