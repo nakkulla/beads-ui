@@ -17,3 +17,7 @@ tsconfig.tsbuildinfo
 
 # Brainstorming skill session scratch (mockups, pids, tokens)
 .superpowers/
+
+# Frontend build output — deploy, verify and prepack build it (UI-47y7)
+app/main.bundle.js
+app/main.bundle.js.map

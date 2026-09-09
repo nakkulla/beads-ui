@@ -52,7 +52,8 @@ beforeAll(() => {
     XDG_STATE_HOME: process.env.XDG_STATE_HOME,
     XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
     PORT: process.env.PORT,
-    BDUI_CONFIG_PATH: process.env.BDUI_CONFIG_PATH
+    BDUI_CONFIG_PATH: process.env.BDUI_CONFIG_PATH,
+    BDUI_FRONTEND_MODE: process.env.BDUI_FRONTEND_MODE
   };
 
   tmp_runtime_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-it-'));
@@ -71,6 +72,9 @@ beforeAll(() => {
   const config_path = path.join(tmp_runtime_dir, 'config.toml');
   fs.writeFileSync(config_path, '# bdui integration test config (no auth)\n');
   process.env.BDUI_CONFIG_PATH = config_path;
+  // The frontend bundle is an untracked build output (UI-47y7) and static mode
+  // refuses to start without it, so the spawned daemon bundles on demand.
+  process.env.BDUI_FRONTEND_MODE = 'live';
   vi.spyOn(console, 'log').mockImplementation(() => {});
 });
 
@@ -112,6 +116,12 @@ afterAll(() => {
     delete process.env.BDUI_CONFIG_PATH;
   } else {
     process.env.BDUI_CONFIG_PATH = prev_env.BDUI_CONFIG_PATH;
+  }
+
+  if (prev_env.BDUI_FRONTEND_MODE === undefined) {
+    delete process.env.BDUI_FRONTEND_MODE;
+  } else {
+    process.env.BDUI_FRONTEND_MODE = prev_env.BDUI_FRONTEND_MODE;
   }
 
   try {

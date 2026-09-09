@@ -17,8 +17,6 @@ const RUNTIME_JS_ROOTS = ['server/', 'bin/', 'app/'];
 const REQUIRED_ENTRIES = [
   'bin/bdui.js',
   'app/index.html',
-  'app/main.bundle.js',
-  'app/main.bundle.js.map',
   'app/styles.css',
   'app/protocol.js',
   'server/index.js',
@@ -30,6 +28,14 @@ const REQUIRED_ENTRIES = [
   'generated/contracts/repo-operation-policy.json',
   'generated/contracts/repo-operation-policy.provenance.json'
 ];
+
+/**
+ * Build outputs `prepack` creates, which `package.json#files` declares but this
+ * check's `--ignore-scripts` pack never produces. They are untracked
+ * (UI-47y7), so a fresh checkout may not have them on disk at all: assert the
+ * DECLARATION for these two and exclude them from the on-disk pack set.
+ */
+const PREPACK_OUTPUTS = ['app/main.bundle.js', 'app/main.bundle.js.map'];
 
 /**
  * Collect the paths `npm pack` would actually publish.
@@ -193,6 +199,16 @@ describe('published package file set', () => {
     });
   });
 
+  test('declares the prepack build outputs it cannot pack here', () => {
+    const declared = JSON.parse(
+      readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')
+    ).files;
+
+    expect(
+      PREPACK_OUTPUTS.filter((entry) => !declared.includes(entry))
+    ).toEqual([]);
+  });
+
   test('publishes every local asset app/index.html links to', () => {
     const html = readFileSync(path.join(REPO_ROOT, 'app/index.html'), 'utf8');
 
@@ -202,7 +218,9 @@ describe('published package file set', () => {
           ? path.posix.join('app', reference.slice(1))
           : resolveSpecifier('app/index.html', reference)
       )
-      .filter((target) => !PUBLISHED.has(target));
+      .filter(
+        (target) => !PUBLISHED.has(target) && !PREPACK_OUTPUTS.includes(target)
+      );
 
     expect(missing).toEqual([]);
   });

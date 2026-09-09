@@ -60,6 +60,23 @@ test('keeps symlinked dependencies relative to the checkout in source maps', asy
   );
 });
 
+test('writes exactly the bundle and its source map', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-build-'));
+  temporary_roots.push(root);
+  const app_dir = path.join(root, 'app');
+  fs.mkdirSync(app_dir);
+  fs.writeFileSync(path.join(app_dir, 'main.js'), 'console.log(1);\n');
+  const outfile = path.join(app_dir, 'main.bundle.js');
+
+  await build(createBuildOptions(path.join(app_dir, 'main.js'), outfile));
+
+  expect(fs.readdirSync(app_dir).sort()).toEqual([
+    'main.bundle.js',
+    'main.bundle.js.map',
+    'main.js'
+  ]);
+});
+
 test('collapses upward node_modules prefixes so the map does not depend on build depth', () => {
   const text =
     '{"sources": ["data/a.js", "../../../../node_modules/ms/index.js", "../node_modules/debug/src/common.js"]}';

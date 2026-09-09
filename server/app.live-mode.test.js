@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import { createServer } from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
 import { createApp } from './app.js';
 
 /**
@@ -35,9 +36,44 @@ async function close(server) {
   });
 }
 
-describe('createApp live frontend mode', () => {
-  const app_dir = path.resolve('app');
+/** @type {string[]} */
+const temporary_roots = [];
 
+/**
+ * A self-contained `app_dir`: the real `index.html` (the bootstrap assertions
+ * read it) plus a bundle fixture of our own, so no test here depends on a
+ * committed `app/main.bundle.js` — it is an untracked build output (UI-47y7).
+ *
+ * @param {{ bundle?: boolean }} [options]
+ * @returns {string} absolute path of the temporary app dir
+ */
+function appDir(options = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-app-dir-'));
+  temporary_roots.push(root);
+  fs.copyFileSync(
+    path.resolve('app', 'index.html'),
+    path.join(root, 'index.html')
+  );
+  fs.writeFileSync(
+    path.join(root, 'main.js'),
+    "export const MARKER = 'on-demand-marker';\n"
+  );
+  if (options.bundle !== false) {
+    fs.writeFileSync(
+      path.join(root, 'main.bundle.js'),
+      "export const MARKER = 'static-marker';\n"
+    );
+  }
+  return root;
+}
+
+afterEach(() => {
+  for (const root of temporary_roots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+describe('createApp frontend bundle modes', () => {
   /**
    * @param {Partial<{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', workspace_config: { default_workspace: string | null } }>} [overrides]
    * @returns {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', workspace_config: { default_workspace: string | null } }}
@@ -46,7 +82,7 @@ describe('createApp live frontend mode', () => {
     return {
       host: '127.0.0.1',
       port: 3000,
-      app_dir,
+      app_dir: appDir(),
       root_dir: process.cwd(),
       frontend_mode: 'static',
       workspace_config: { default_workspace: null },
@@ -54,19 +90,7 @@ describe('createApp live frontend mode', () => {
     };
   }
 
-  beforeEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  test('serves on-demand bundle when frontend_mode is live even if bundle file exists', async () => {
-    vi.spyOn(fs, 'statSync').mockReturnValue(
-      /** @type {import('node:fs').Stats} */ ({ isFile: () => true })
-    );
-
+  test('serves an on-demand bundle in live mode even when the bundle file exists', async () => {
     const app = createApp(makeConfig({ frontend_mode: 'live' }));
     const server = createServer(app);
     let response;
@@ -85,24 +109,55 @@ describe('createApp live frontend mode', () => {
     expect(response.headers.get('content-type')).toContain(
       'application/javascript'
     );
-    expect(text).toContain('createHashRouter');
+    expect(text).toContain('on-demand-marker');
   });
 
-  test('uses static bundle when frontend_mode is static and bundle file exists', async () => {
+  test('serves the built bundle in static mode', async () => {
     const app = createApp(makeConfig({ frontend_mode: 'static' }));
     const server = createServer(app);
     let response;
+    let text;
 
     try {
       const address = await listen(server);
       response = await fetch(`http://127.0.0.1:${address.port}/main.bundle.js`);
-      await response.arrayBuffer();
+      text = await response.text();
     } finally {
       await close(server);
     }
 
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).not.toBe('no-store');
+    expect(text).toContain('static-marker');
+  });
+
+  test('refuses to start in static mode without a built bundle', () => {
+    const config = makeConfig({
+      frontend_mode: 'static',
+      app_dir: appDir({ bundle: false })
+    });
+
+    expect(() => createApp(config)).toThrow(/npm run build/);
+  });
+
+  test('starts without a built bundle in live mode', async () => {
+    const app = createApp(
+      makeConfig({ frontend_mode: 'live', app_dir: appDir({ bundle: false }) })
+    );
+    const server = createServer(app);
+    let response;
+    let text;
+
+    try {
+      const address = await listen(server);
+      response = await fetch(`http://127.0.0.1:${address.port}/main.bundle.js`);
+      text = await response.text();
+    } finally {
+      await close(server);
+    }
+
+    expect(response.status).toBe(200);
+    expect(text).toContain('on-demand-marker');
   });
 
   test('serves bootstrapped root html and config endpoint', async () => {

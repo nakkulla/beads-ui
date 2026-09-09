@@ -3,6 +3,10 @@ import path from 'node:path';
 import { expect, test } from 'vitest';
 
 /**
+ * Active sources under a root. `main.bundle.js` is an untracked build output
+ * (UI-47y7) — it may be absent, and when present it is not a source, so the
+ * name is skipped either way.
+ *
  * @param {string} root
  * @returns {string[]}
  */

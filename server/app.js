@@ -142,13 +142,20 @@ export function createApp(config) {
   });
 
   const use_live_bundle = config.frontend_mode === 'live';
-  const bundle_missing = use_live_bundle
-    ? false
-    : !fs.statSync(path.resolve(config.app_dir, 'main.bundle.js'), {
-        throwIfNoEntry: false
-      });
+  // The bundle is an untracked build output (UI-47y7), so static mode refuses
+  // to start rather than spawning a build from inside the server process.
+  if (
+    !use_live_bundle &&
+    !fs.statSync(path.resolve(config.app_dir, 'main.bundle.js'), {
+      throwIfNoEntry: false
+    })
+  ) {
+    throw new Error(
+      'frontend bundle missing: app/main.bundle.js — run `npm run build` first or start with BDUI_FRONTEND_MODE=live'
+    );
+  }
 
-  if (use_live_bundle || bundle_missing) {
+  if (use_live_bundle) {
     /**
      * On-demand bundle for the browser using esbuild.
      *

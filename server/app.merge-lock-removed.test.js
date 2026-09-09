@@ -21,7 +21,8 @@ async function statusFor(route, init) {
     port: 0,
     app_dir: path.resolve('app'),
     root_dir: process.cwd(),
-    frontend_mode: 'static'
+    // live mode keeps this test independent of the untracked bundle (UI-47y7)
+    frontend_mode: 'live'
   });
   const server = createServer(app);
   // Bind the loopback address the fetch below targets: a wildcard bind can be
