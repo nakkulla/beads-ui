@@ -3514,8 +3514,8 @@ export function createWorkerView(mount_element, options = {}) {
    *
    * 두 종류는 사람이 할 일이 다르다. **환경 보류**는 자동 재시도가 이미
    * 예약돼 있어 아무것도 하지 않아도 풀리므로 회색이고, 버튼은 그 시각을 앞당길
-   * 뿐이다. **체계적 정지**는 자동 출구가 없어 사람의 `재개`만이 유일한 길이라
-   * 경고색이다.
+   * 뿐이다. **체계적 정지**는 자동 출구가 없어 사람의 승인 한 번 — `재개` 또는
+   * 큐를 세운 attempt(자손 포함)의 ↻ 이어하기 — 이 유일한 길이라 경고색이다.
    *
    * @param {any} q - 현재 `worker-queue-snapshot` 값.
    * @returns {import('lit-html').TemplateResult|''}

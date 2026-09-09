@@ -9047,8 +9047,97 @@ export function createScheduler(deps) {
       if (cleared && cleared.ok) {
         notifyChanged(workspace);
       }
+      await releaseSystemicHoldForResume(workspace, attempt_id, continuation);
     }
     return result;
+  }
+
+  /**
+   * One human approval lifts a systemic stop, and the ↻ of the attempt that
+   * halted the queue IS that approval (2026-09-08 resume-click spec §3.1) —
+   * the user does not click the same decision twice. Judged only AFTER the
+   * child spawned, so a refused spawn leaves the stop standing.
+   *
+   * The unit is the halting attempt and its `resumed_from` descendants: another
+   * bead's ↻, a non-lineage attempt of the same bead, and provider auto resume
+   * all leave the stop to the `재개` button. A pre-field legacy stop with no
+   * `halted_by_attempt_id` is unattributable, so it stays too (fail-quiet).
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id - The resumed (prior) attempt.
+   * @param {{ provider_auto_resume?: boolean }} continuation
+   */
+  async function releaseSystemicHoldForResume(
+    workspace,
+    attempt_id,
+    continuation
+  ) {
+    if (continuation.provider_auto_resume === true) {
+      return;
+    }
+    /** @type {import('./queue-hold.js').QueueHoldState} */
+    let state;
+    try {
+      state = holdStateOf(workspace);
+    } catch (err) {
+      log('systemic hold read failed on resume of %s: %o', attempt_id, err);
+      return;
+    }
+    const hold = state.hold;
+    if (hold === null || hold.kind !== 'systemic') {
+      return;
+    }
+    const halted_by = hold.halted_by_attempt_id;
+    if (typeof halted_by !== 'string' || halted_by.length === 0) {
+      return;
+    }
+    if (!resumeReachesHaltingAttempt(workspace, attempt_id, halted_by)) {
+      return;
+    }
+    // No `hold.since` CAS: the authority is the attempt lineage, not the stop
+    // the click was drawn against, and the snapshot was re-read just above.
+    await releaseQueueHold(workspace, now());
+  }
+
+  /**
+   * Walk `resumed_from` upward from `attempt_id` inside the queue's attempts
+   * map, looking for `halted_by_attempt_id`. A visited set breaks a cycle, and
+   * a missing parent record ends the walk as "not reached".
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} halted_by_attempt_id
+   */
+  function resumeReachesHaltingAttempt(
+    workspace,
+    attempt_id,
+    halted_by_attempt_id
+  ) {
+    if (attempt_id === halted_by_attempt_id) {
+      return true;
+    }
+    const attempts = deps.store.snapshot(workspace).attempts || {};
+    /** @type {Set<string>} */
+    const visited = new Set([attempt_id]);
+    let cursor = attempts[attempt_id];
+    while (cursor && typeof cursor.resumed_from === 'string') {
+      const parent_id = cursor.resumed_from;
+      if (visited.has(parent_id)) {
+        return false;
+      }
+      visited.add(parent_id);
+      cursor = attempts[parent_id];
+      // The record itself is the evidence, not the pointer: a parent that left
+      // the live map (transferred, pruned) is a broken lineage even when the
+      // id matches, so the walk ends before the comparison.
+      if (!cursor) {
+        return false;
+      }
+      if (parent_id === halted_by_attempt_id) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -12083,28 +12172,15 @@ export function createScheduler(deps) {
   }
 
   /**
-   * `재개` on a systemic stop (ws `worker-queue-hold-resume`, spec §3.4).
-   *
-   * CAS on `hold.since`: the button was drawn against ONE stop, and a stop that
-   * moved underneath it is a different one — clearing it would silently
-   * acknowledge a wall the user never saw.
+   * Lift a queue stop and let the held beads move again — the shared body of
+   * BOTH human approvals of the same stop (2026-09-08 resume-click spec §3.2):
+   * the `재개` button and the ↻ of the attempt that halted the queue. The
+   * caller owns its own authority check; this helper only performs the release.
    *
    * @param {string} workspace
-   * @param {{ since?: number|null }} input
-   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   * @param {number} at
    */
-  async function resumeQueueHold(workspace, input) {
-    /** @type {import('./queue-hold.js').QueueHoldState} */
-    let state;
-    try {
-      state = holdStateOf(workspace);
-    } catch {
-      return { ok: false, reason: 'queue_unreadable' };
-    }
-    if (state.hold === null || state.hold.since !== input.since) {
-      return { ok: false, reason: 'hold_changed' };
-    }
-    const at = now();
+  async function releaseQueueHold(workspace, at) {
     const applied = deps.store.applyQueueHold(workspace, {
       event: { kind: 'resume', at },
       now: at
@@ -12137,6 +12213,31 @@ export function createScheduler(deps) {
     }
     notifyChanged(workspace);
     await tick(workspace);
+  }
+
+  /**
+   * `재개` on a systemic stop (ws `worker-queue-hold-resume`, spec §3.4).
+   *
+   * CAS on `hold.since`: the button was drawn against ONE stop, and a stop that
+   * moved underneath it is a different one — clearing it would silently
+   * acknowledge a wall the user never saw.
+   *
+   * @param {string} workspace
+   * @param {{ since?: number|null }} input
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function resumeQueueHold(workspace, input) {
+    /** @type {import('./queue-hold.js').QueueHoldState} */
+    let state;
+    try {
+      state = holdStateOf(workspace);
+    } catch {
+      return { ok: false, reason: 'queue_unreadable' };
+    }
+    if (state.hold === null || state.hold.since !== input.since) {
+      return { ok: false, reason: 'hold_changed' };
+    }
+    await releaseQueueHold(workspace, now());
     return { ok: true };
   }
 
