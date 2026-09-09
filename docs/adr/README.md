@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0052 | [Worker 한도 자동 전환은 사용자가 러너별로 고른 허용 계정 집합 안에서만 attempt 단위로 일어나고 자동 재개 cap을 소비하지 않는다](0052-usage-limit-switch-within-user-allow-list-per-attempt.md) | 2026-09-09 | Worker 한도 자동 전환은 사용자가 러너별로 고른 허용 계정 집합 안에서만 attempt 단위로 일어나고 자동 재개 cap을 소비하지 않으며, 선제 전환은 사용자 임계 이상의 상속 계정에만 적용되고 Bead pin은 덮지 않는다. |
 | 0051 | [프런트엔드 번들은 tracked 생성물이 아니고 배포·verify·패키징이 빌드한다](0051-frontend-bundle-untracked-built-by-deploy-verify-prepack.md) | 2026-09-09 | app/main.bundle.js와 소스맵은 tracked가 아니며 deploy·verify·prepack이 빌드한다; 정적 모드 서버는 번들 부재 시 빌드 안내로 종료하고 자동 빌드하지 않는다 |
 | 0050 | [Worker가 구현 attempt dispatch 시점에 in_progress를 선점하고 attempt 종료·재조정에서 되돌린다](0050-worker-dispatch-claims-in-progress.md) | 2026-09-09 | Worker는 구현 attempt를 dispatch할 때 durable attempt 기록 뒤 open인 Bead만 in_progress로 선점하고 worker_claim 전이를 attempt 기록에 남기며, 해제는 attempt 종료와 기존 reconcile 정산이 한다; session_ref는 쓰지 않고 resolved Bead를 다루는 경로는 제외한다 |
 | 0049 | [Worker 큐 정지·공급자 보류의 표시와 출구는 막힌 카드에 살고 상단 배너는 없다](0049-queue-gate-lives-on-blocked-card-no-banner.md) | 2026-09-09 | Worker 큐 정지와 공급자 보류의 표시·출구는 막힌 카드에 살고 상단 배너는 없다. 막힌 카드가 없으면 그리지 않으며, `재개`는 막힌 대기 행의 조작이고 `[지금 시작]`은 한 행의 명시적 디스패치로 공급자 게이트도 우회한다. 체계적 정지의 해제는 여전히 사람의 승인 한 번이며 자동 재개는 풀지 않는다. |
