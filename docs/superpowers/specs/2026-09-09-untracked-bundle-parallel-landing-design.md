@@ -5,6 +5,11 @@ scope:
   - .gitignore
   - scripts/build-frontend.js
   - repo-ops/script/verify
+  - repo-ops/script/verify.test.js
+  - scripts/build-frontend.test.js
+  - server/app.live-mode.test.js
+  - server/worker/repair-lane-retirement.test.js
+  - server/worker/verify-authority-retirement.test.js
   - repo-ops/script/deploy
   - server/app.js
   - server/config.js
@@ -16,7 +21,7 @@ scope:
 # 커밋된 번들이 병렬 착지 충돌을 만든다 — 생성물을 tracked에서 빼고 배포·verify가 빌드한다
 
 - Bead: `UI-47y7` (`route=spec_backed`, 사용자 요청 2026-09-09; 워커 하네스 감사 `UI-cvwo`의 형제).
-- 상태: 사용자 승인 전 초안.
+- 상태: 사용자 승인(2026-09-09) 뒤 spec_review r1(astra) REVISE 4건 반영본 — 전환 테스트(D6), UI-cvwo 선행 `blocks`, 삭제 채택 절차, verify·build 테스트 범위.
 - 근거: 병렬 Worker attempt가 각자 `app/main.bundle.js`·`.map`을 커밋해 PR이 열리자마자 CONFLICTING이 되고, 충돌 해소 세션이 재빌드·전체 재검증을 반복한다 — UI-hhn9(≈7턴), UI-rj02(20턴), UI-6g3t(25턴), UI-s582(충돌 3파일 중 2개가 번들), UI-jr8v-4, UI-b93d, UI-i60a-2, UI-iv7l. `repo-ops/script/deploy:99`는 이미 `npm ci && npm run build`를 실행하므로 배포는 커밋된 번들을 쓰지 않는다. `package.json`의 `prepack`도 `npm run build`라 npm 패키지에는 번들이 항상 들어간다.
 
 ## 목표와 비목표
@@ -35,37 +40,39 @@ scope:
 
 D1. `git rm --cached app/main.bundle.js app/main.bundle.js.map`, `.gitignore`에 두 경로 추가. `package.json#files`의 두 항목은 유지한다(`prepack`이 만든 파일이 패키지에 들어간다).
 
-D2. `repo-ops/script/verify`에 `npm run build || fail`을 `npm run tsc` 뒤에 더한다. 번들이 untracked이므로 candidate 체크아웃의 tracked-clean 규약을 어기지 않는다(`scripts/build-frontend.js`가 두 파일 외에 tracked 파일을 쓰지 않음을 테스트로 고정). 배포 스크립트는 변경 없음.
+D2. `repo-ops/script/verify`에 `npm run build || fail`을 `npm run tsc` 뒤·`npm test` 앞에 더한다. 번들이 untracked이므로 candidate 체크아웃의 tracked-clean 규약을 어기지 않는다. `repo-ops/script/verify.test.js:114,123`의 "runs install, type check and tests in order"·"never builds"는 "npm ci → tsc → build → test 순서, build 실패는 suite를 돌리지 않고 실패 전파, tracked 파일 불변"으로 바꾸고, `scripts/build-frontend.test.js`에 출력이 정확히 두 경로임을 고정한다. 배포 스크립트는 변경 없음(이미 빌드하고 종료 검사는 `--ignored`를 쓰지 않아 ignored 번들과 양립).
 
 D3. 정적 모드 서버(`server/app.js`, `BDUI_FRONTEND_MODE` 기본)는 시작 시 `app/main.bundle.js`가 없으면 명확한 오류로 종료한다: "번들이 없다 — `npm run build`를 먼저 실행하거나 `BDUI_FRONTEND_MODE=live`로 시작하라". 자동 빌드는 하지 않는다(서버 프로세스가 빌드 도구를 spawn하는 책임을 갖지 않게). `bdui-shared`는 배포 워크트리에서 뜨고 배포가 빌드하므로 영향이 없다.
 
-D4. `AGENTS.md` Pre-Handoff의 "갱신된 `app/main.bundle.js`/`.map`을 포함한다" 문장을 "번들은 tracked가 아니다; 로컬 정적 모드 확인이 필요하면 `npm run build`"로 바꾼다(`UI-cvwo` D7의 축약 본문 위에 적용). Post-Merge 절의 live 모드 안내는 그대로다.
+D4. `AGENTS.md` Pre-Handoff의 번들 문장은 이 스펙이 최종 소유한다. 이 Bead는 `UI-cvwo`에 `blocks`로 막혀 그 뒤에 착지하며, `UI-cvwo` D7의 축약 본문에 있는 "`npm run build`를 prettier 뒤에 실행하고 갱신된 `app/main.bundle.js`/`.map`을 포함한다(순서가 반대면 소스맵이 낡아 배포 tracked-clean 검사가 실패한다)" 문장을 "번들은 tracked가 아니다(`.gitignore`); 로컬 정적 모드 확인이 필요하면 `npm run build`"로 대체한다 — 소스맵 순서 함정은 번들이 untracked가 되면 사라진다. `## Worker pitfalls`의 "`app/main.bundle.js`는 grep에서 제외" 줄은 그대로다. Post-Merge 절의 live 모드 안내는 그대로다.
 
-D5. 기존 PR·워크트리에 남은 번들 커밋은 이번 변경 머지 뒤 base 동기화 시 자연히 충돌한다 — 해소는 "번들 파일을 삭제 상태로 채택"이며 `UI-cvwo` D6 재개 문장의 ff 확인이 그 경로를 안내한다. 별도 마이그레이션 스크립트는 만들지 않는다.
+D5. 기존 PR·워크트리에 남은 번들 커밋은 이번 변경 머지 뒤 base 동기화(`git merge origin/main`)에서 modify/delete 충돌이 된다. 해소 절차를 여기서 정한다: 워크트리에서 `git rm -q -- app/main.bundle.js app/main.bundle.js.map`으로 삭제 상태를 채택하고 병합 커밋을 만든다(`.gitignore`는 base 쪽이 이미 담고 있다). 이 절차는 AGENTS.md `## Worker pitfalls`에 한 줄로 둔다. `UI-cvwo` D6의 `--ff-only` 확인은 갈라진 이력을 다루지 않으므로 의존하지 않는다. 별도 마이그레이션 스크립트는 만들지 않는다.
+
+D6. 전환 — 첫 착지의 `[verify]`는 변경 전 base SHA의 스크립트를 실행하므로(ADR 0010) D2의 빌드가 아직 돌지 않고 candidate에는 번들이 없다. 따라서 이 PR의 테스트는 커밋된 번들에 의존하면 안 된다: `server/app.live-mode.test.js`는 임시 `app_dir`에 자체 번들 fixture를 써서 정적 모드 응답을 검증하고 번들 부재 사례는 D3의 시작 실패로 검증한다; `server/worker/repair-lane-retirement.test.js:310 BUILD_OUTPUTS`와 `server/worker/verify-authority-retirement.test.js:19`의 번들 가정을 untracked 전제로 고친다. 회귀 사례: 변경 전 `verify`(npm ci → tsc → test)가 번들 없는 candidate에서 통과한다.
 
 ## 경계·후속
 
 | 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
 | --- | --- | --- | --- | --- | --- |
-| 형제 | beads-ui | user_request | 독립 착지 가능한 검증 묶음 — Worker 러너·프리앰블 변경과 별도 검토 | 없음 | UI-cvwo |
+| 형제 | beads-ui | user_request | 독립 착지 가능한 검증 묶음 — Worker 러너·프리앰블 변경과 별도 검토; 이 Bead의 선행(UI-47y7 blocked_by UI-cvwo: AGENTS.md 번들 문장의 최종 소유자를 확정) | 없음 | UI-cvwo |
 | 형제 | dotfiles | user_request | 다른 저장소 — ADR 식별자 규칙 | 없음 | dotfiles-60u8 |
 
-- 관찰: `UI-cvwo`와 `AGENTS.md` 같은 문단을 만진다(D4) — 머지 순서는 큐가 정하고 뒤에 착지하는 쪽이 base 동기화에서 문장을 맞춘다.
+- 관찰: `UI-01wh`와 `AGENTS.md`·번들 scope 겹침 — 결정 충돌 없음(카드 문단·빌드 산출물).
 
 ## Test scope
 
 ```bash
-npx vitest run --reporter=dot server/app.live-mode.test.js server/config.test.js server/worker/repo-ops-deploy-script.integration.test.js
+npx vitest run --reporter=dot server/app.live-mode.test.js server/config.test.js repo-ops/script/verify.test.js scripts/build-frontend.test.js server/worker/repair-lane-retirement.test.js server/worker/verify-authority-retirement.test.js server/worker/repo-ops-deploy-script.integration.test.js
 node scripts/build-frontend.js && git status --porcelain   # 두 번들 파일 외 변경 없음(빈 출력)
 npm run tsc && npm run lint
 npx vitest run --reporter=dot
 ```
 
-회귀 사례: 번들 부재 + 정적 모드 → 시작 실패 메시지; 번들 부재 + live 모드 → 정상; `build-frontend.js` 실행 뒤 `git status --porcelain`이 빈 출력(ignored); `repo-ops/script/verify`가 빌드를 포함하고 통합 테스트가 통과. 실제 확인: 머지·배포 뒤 `bdui-shared`가 배포 워크트리에서 뜨고 HTTP 응답이 정상, 그 뒤 첫 병렬 PR 두 건이 번들로 충돌하지 않음을 관측한다.
+회귀 사례: 번들 부재 + 정적 모드 → 시작 실패 메시지; 번들 부재 + live 모드 → 정상; `build-frontend.js` 실행 뒤 `git status --porcelain`이 빈 출력(ignored)이고 출력이 두 경로뿐; `verify.test.js`의 순서·빌드 실패 전파·tracked 불변; D6 전환 사례(변경 전 verify가 번들 없는 candidate에서 통과). 실제 확인: 머지·배포 뒤 `bdui-shared`가 배포 워크트리에서 뜨고 HTTP 응답이 정상, 그 뒤 첫 병렬 PR 두 건이 번들로 충돌하지 않음을 관측한다.
 
 ## 실행·인도
 
-한 저장소·한 Bead·한 패킷의 `spec_backed`. PR 하나로 `resolved` 인도. 머지 뒤 `[deploy]`가 빌드·재시작하고 프로세스 경로·포트·HTTP 응답을 확인한다.
+한 저장소·한 Bead·한 패킷의 `spec_backed`, 구현 진입은 `UI-cvwo` 착지 뒤(`blocks`). PR 하나로 `resolved` 인도. 머지 뒤 `[deploy]`가 빌드·재시작하고 프로세스 경로·포트·HTTP 응답을 확인한다.
 
 ## 결정 (ADR 후보)
 
