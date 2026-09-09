@@ -379,7 +379,7 @@ dotfiles Worker 탭: 배너 없음, 대기 행 없음이면 아무 표시 없음
 ## 6. 비목표
 
 - 공급자 outage 분류(`requires usage credits` → `usage_limit`)와 outage target의
-  재무장·나이 상한 — §8 형제 quick_fix.
+  재무장·나이 상한 — 별도 quick_fix UI-k96h(§8).
 - `queue.hold`·`provider_hold` 상태 모델, 프로브, 해제 절차, ADR 0048 승인 규칙의
   변경. 결정: `resume()`의 해제 분기와 `resumeQueueHold`는 바꾸지 않는다 —
   이 스펙은 표시와 조작의 자리다.
@@ -398,10 +398,15 @@ dotfiles Worker 탭: 배너 없음, 대기 행 없음이면 아무 표시 없음
 
 ## 8. 경계·후속
 
-| 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
-| --- | --- | --- | --- | --- | --- |
-| 형제 | beads-ui | defect | different_route — quick_fix: `provider-outage.js LIMIT_RE`가 `requires usage credits`를 못 잡아 모델 크레딧 소진이 러너 전체 `rate_limited_429` outage로 분류되고, outage target에는 `usage_limit`의 재무장·24h 상한이 없어 프로브가 무한 재시도한다. 분류를 `usage_limit`(계정 한정)로 넓히고 outage에도 상한을 둔다 | 없음 | UI-k96h |
+이 설계의 형제 스펙은 없다 — 한 저장소·한 route·한 구현 단위다.
 
+- 관찰: `provider-outage.js LIMIT_RE`가 `requires usage credits`를 못 잡아 모델
+  크레딧 소진이 러너 전체 `rate_limited_429` outage로 분류되고, outage target에는
+  `usage_limit`의 재무장·24h 상한이 없어 프로브가 무한 재시도한다(§2). 결함이며
+  이 설계의 전제가 아니다 — route가 다른 별도 quick_fix **UI-k96h**(이 Bead에서
+  `discovered-from`, 라우터가 등록)가 소유한다. 이 스펙은 그 수정 유무와 무관하게
+  성립한다: 게이트가 서 있는 동안의 표시와 출구를 정할 뿐 게이트가 언제 풀리는지는
+  정하지 않는다.
 - 관찰: `failureText`에 `loud_fail_blocker`·`hook_bypass_blocked` 문장이 없어 칩과
   팝업에 토큰이 그대로 보인다 — 어휘 등록은 실패 문장 소유 스펙의 것이며 이
   설계의 표시 규칙(모르는 토큰은 raw)은 그대로 성립한다.
