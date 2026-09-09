@@ -85,6 +85,28 @@ async function writeAdr(id, body = '') {
 }
 
 /**
+ * @param {string} id
+ * @param {string} date
+ * @param {string} [body]
+ */
+async function writeStringIdAdr(id, date, body = '') {
+  await writeFile(
+    `docs/adr/${id}-decision.md`,
+    [
+      '---',
+      `id: ${id}`,
+      'title: t',
+      'status: accepted',
+      `date: ${date}`,
+      'summary: s',
+      '---',
+      body,
+      ''
+    ].join('\n')
+  );
+}
+
+/**
  * @param {Object} [options]
  * @param {number} [options.concurrency]
  */
@@ -204,6 +226,67 @@ describe('computeWorkspace checker invocation', () => {
         detail: 'deprecated'
       }
     ]);
+  });
+
+  test('lists legacy and string-id ADRs in one current table', async () => {
+    await writeAdr(45);
+    await writeStringIdAdr('dotfiles-60u8', '2026-09-09');
+    await writeStringIdAdr('dotfiles-60u8-2', '2026-09-10');
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.current.map((a) => a.id)).toEqual([
+      45,
+      'dotfiles-60u8-2',
+      'dotfiles-60u8'
+    ]);
+  });
+
+  test('keeps a legacy id a number in the current table', async () => {
+    await writeAdr(45);
+    await writeStringIdAdr('dotfiles-60u8', '2026-09-09');
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(typeof result.current[0].id).toEqual('number');
+  });
+
+  test('preserves a string adr on a citation error', async () => {
+    await writeAdr(12);
+    answer = async (args) => {
+      if (checkerOf(args) === 'citations') {
+        return jsonOut({
+          ok: false,
+          errors: [{ kind: 'retired', adr: 'dotfiles-60u8' }]
+        });
+      }
+      return jsonOut({ ok: true, errors: [] });
+    };
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.citations_stale[0].adr).toEqual('dotfiles-60u8');
+  });
+
+  test('preserves a string adr on a candidate error', async () => {
+    await writeAdr(12);
+    await writeFile('docs/superpowers/specs/a-design.md', 'x\n');
+    answer = async (args) => {
+      if (checkerOf(args) === 'candidates') {
+        return jsonOut({
+          ok: false,
+          errors: [{ kind: 'adr_missing', adr: 'dotfiles-60u8' }]
+        });
+      }
+      if (checkerOf(args) === 'citations') {
+        return jsonOut({ ok: true, errors: [] });
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.candidates[0].errors[0].adr).toEqual('dotfiles-60u8');
   });
 
   test('caps concurrent spawns at four', async () => {
@@ -487,6 +570,21 @@ describe('cross citations', () => {
     ]);
   });
 
+  test('extracts a string ADR identifier from a cross citation', async () => {
+    await writeAdr(12, 'see ADR dotfiles/dotfiles-60u8 for context');
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.cross_citations).toEqual([
+      {
+        file: 'docs/adr/0012-decision.md',
+        line: 8,
+        repo: 'dotfiles',
+        adr: 'dotfiles-60u8'
+      }
+    ]);
+  });
+
   test('ignores mentions that do not match the citation syntax', async () => {
     await writeAdr(
       12,
@@ -496,5 +594,22 @@ describe('cross citations', () => {
     const result = await signals().computeWorkspace(root_dir, { full: true });
 
     expect(result.cross_citations).toEqual([]);
+  });
+});
+
+describe('legacy-only regression', () => {
+  test("orders this repository's own numeric ADRs plain number descending", async () => {
+    const repo_root = process.cwd();
+
+    const result = await signals().computeWorkspace(repo_root, { full: true });
+
+    const ids = [...result.current, ...result.history].map((a) => a.id);
+    expect(ids.every((id) => typeof id === 'number')).toEqual(true);
+    expect(result.current.map((a) => a.id)).toEqual(
+      [...result.current.map((a) => Number(a.id))].sort((a, b) => b - a)
+    );
+    expect(result.history.map((a) => a.id)).toEqual(
+      [...result.history.map((a) => Number(a.id))].sort((a, b) => b - a)
+    );
   });
 });

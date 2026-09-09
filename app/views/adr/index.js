@@ -19,6 +19,35 @@ import { debug } from '../../utils/logging.js';
  */
 export const ADR_SNAPSHOT_KEY = 'adr:snapshot';
 
+/**
+ * ADR 현재표·이력의 행 순서(UI-rsjb D3). legacy 번호 id는 지금처럼 번호 내림차순으로
+ * 앞에 서고, 문자열 id는 그 뒤에서 `date` 내림차순·같은 날은 id 문자열 오름차순으로
+ * 잇는다. id 종류로 먼저 갈라 `NaN` 비교를 막는다. 서버
+ * `server/adr/adr-frontmatter.js compareAdrDesc`와 같은 규칙이며, app 번들은
+ * browser 타깃이라 node 내장 모듈을 끌고 오는 그 모듈을 import할 수 없어 여기서
+ * 같은 논리를 둔다.
+ *
+ * @param {AdrRecord} a
+ * @param {AdrRecord} b
+ * @returns {number}
+ */
+function compareAdrDesc(a, b) {
+  const a_numeric = typeof a.id === 'number';
+  const b_numeric = typeof b.id === 'number';
+  if (a_numeric !== b_numeric) {
+    return a_numeric ? -1 : 1;
+  }
+  if (a_numeric && b_numeric) {
+    return Number(b.id) - Number(a.id);
+  }
+  const a_date = a.date || '';
+  const b_date = b.date || '';
+  if (a_date !== b_date) {
+    return a_date < b_date ? 1 : -1;
+  }
+  return String(a.id).localeCompare(String(b.id));
+}
+
 /** `adr-cite-check.py`의 정본 kind — 이름 붙은 `인용 stale` 카운트가 세는 것. */
 const CITATION_NAMED_KINDS = ['missing', 'retired'];
 
@@ -38,9 +67,9 @@ const CANDIDATE_ENV_KIND = 'usage';
 const CANDIDATE_OTHER_KINDS = ['adr_status'];
 
 /**
- * @typedef {{ kind: string, file: string, line: number|null, adr: number|null, detail: string }} CheckerError
- * @typedef {{ file: string, id: number, title: string, status: string, date: string, summary: string, supersedes: number[], superseded_by: number|null, superseded_by_note: string|null, spec: string|null, bead: string|null }} AdrRecord
- * @typedef {{ root_dir: string, name: string, name_duplicate?: boolean, computing?: boolean, computed_at?: number|null, env_errors?: { index: string|null, citations: string|null, candidates: string|null }, adr_dir_missing?: boolean, current?: AdrRecord[], history?: AdrRecord[], frontmatter_errors?: Array<{ file: string, error: string }>, index_drift?: { ok: boolean, detail: string|null }|null, citations_stale?: CheckerError[], candidates?: Array<{ spec: string, ok: boolean, errors: CheckerError[] }>, cross_citations?: Array<{ file: string, line: number, repo: string, adr: number, target: { root_dir: string, status: string }|null }> }} AdrWorkspaceView
+ * @typedef {{ kind: string, file: string, line: number|null, adr: number|string|null, detail: string }} CheckerError
+ * @typedef {{ file: string, id: number|string, title: string, status: string, date: string, summary: string, supersedes: (number|string)[], superseded_by: number|string|null, superseded_by_note: string|null, spec: string|null, bead: string|null }} AdrRecord
+ * @typedef {{ root_dir: string, name: string, name_duplicate?: boolean, computing?: boolean, computed_at?: number|null, env_errors?: { index: string|null, citations: string|null, candidates: string|null }, adr_dir_missing?: boolean, current?: AdrRecord[], history?: AdrRecord[], frontmatter_errors?: Array<{ file: string, error: string }>, index_drift?: { ok: boolean, detail: string|null }|null, citations_stale?: CheckerError[], candidates?: Array<{ spec: string, ok: boolean, errors: CheckerError[] }>, cross_citations?: Array<{ file: string, line: number, repo: string, adr: number|string, target: { root_dir: string, status: string }|null }> }} AdrWorkspaceView
  */
 
 /**
@@ -333,7 +362,7 @@ export function createAdrView(root, options = {}) {
           return b_stale - a_stale;
         }
       }
-      return b.adr.id - a.adr.id;
+      return compareAdrDesc(a.adr, b.adr);
     });
     return html`
       <div class="adr-tablewrap">
@@ -392,7 +421,7 @@ export function createAdrView(root, options = {}) {
     const rows = (ws.history || [])
       .filter((adr) => matchesQuery(adr, query))
       .slice()
-      .sort((a, b) => b.id - a.id);
+      .sort(compareAdrDesc);
     if (rows.length === 0) {
       return html``;
     }

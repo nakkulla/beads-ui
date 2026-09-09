@@ -7,11 +7,11 @@ function settle() {
 }
 
 /**
- * @param {number} id
+ * @param {number | string} id
  * @param {Partial<Record<string, any>>} [extra]
  */
 function adr(id, extra = {}) {
-  const num = String(id).padStart(4, '0');
+  const num = typeof id === 'number' ? String(id).padStart(4, '0') : id;
   return {
     file: `${num}-decision.md`,
     id,
@@ -134,6 +134,86 @@ describe('views/adr toolbar', () => {
 
     expect(texts(root, '.adr-table--current .adr-num')).toEqual(['9', '3']);
   });
+
+  test('puts legacy numbers ahead of string ids in the current table', () => {
+    const { root } = mount([
+      workspace({
+        current: [
+          adr('dotfiles-60u8', { date: '2026-09-09' }),
+          adr('dotfiles-60u8-2', { date: '2026-09-10' }),
+          adr(45)
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-table--current .adr-num')).toEqual([
+      '45',
+      'dotfiles-60u8-2',
+      'dotfiles-60u8'
+    ]);
+  });
+
+  test('breaks a string id date tie by the id text ascending', () => {
+    const { root } = mount([
+      workspace({
+        current: [
+          adr('dotfiles-60u8-2', { date: '2026-09-09' }),
+          adr('dotfiles-60u8', { date: '2026-09-09' })
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-table--current .adr-num')).toEqual([
+      'dotfiles-60u8',
+      'dotfiles-60u8-2'
+    ]);
+  });
+
+  test('puts legacy numbers ahead of string ids in the history list', () => {
+    const { root } = mount([
+      workspace({
+        history: [
+          adr('dotfiles-60u8', { status: 'superseded', date: '2026-09-09' }),
+          adr(45, { status: 'superseded' })
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-table--history .adr-num')).toEqual([
+      '45',
+      'dotfiles-60u8'
+    ]);
+  });
+
+  test('keeps the stale 우선 toggle working across mixed identifiers', () => {
+    const { root } = mount([
+      workspace({
+        current: [adr(45), adr('dotfiles-60u8', { date: '2026-09-09' })],
+        citations_stale: [
+          {
+            kind: 'retired',
+            file: 'AGENTS.md',
+            line: 4,
+            adr: 'dotfiles-60u8',
+            detail: 'retired'
+          }
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-table--current .adr-num')).toEqual([
+      'dotfiles-60u8',
+      '45'
+    ]);
+
+    const toggle = /** @type {HTMLElement} */ (root.querySelector('.adr-sort'));
+    toggle.click();
+
+    expect(texts(root, '.adr-table--current .adr-num')).toEqual([
+      '45',
+      'dotfiles-60u8'
+    ]);
+  });
 });
 
 describe('views/adr counts', () => {
@@ -244,6 +324,24 @@ describe('views/adr signals', () => {
     expect(texts(/** @type {HTMLElement} */ (rows[1]), '.adr-chip')).toEqual(
       []
     );
+  });
+
+  test('shows a string ADR identifier on a citation error row', () => {
+    const { root } = mount([
+      workspace({
+        citations_stale: [
+          {
+            kind: 'retired',
+            file: 'AGENTS.md',
+            line: 3,
+            adr: 'dotfiles-60u8',
+            detail: 'x'
+          }
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-row__mid')).toEqual(['ADR dotfiles-60u8']);
   });
 });
 

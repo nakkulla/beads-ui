@@ -161,12 +161,15 @@ function req(type, payload) {
 }
 
 /**
- * @param {number} id
+ * @param {number | string} id
  * @param {string} status
  */
 function adr(id, status) {
   return {
-    file: `docs/adr/${String(id).padStart(4, '0')}-x.md`,
+    file:
+      typeof id === 'number'
+        ? `docs/adr/${String(id).padStart(4, '0')}-x.md`
+        : `docs/adr/${id}-x.md`,
     id,
     title: 'X',
     status,
@@ -321,6 +324,28 @@ describe('adr channel', () => {
       ]
     });
     await resolveCompute(WS_B, { current: [adr(12, 'accepted')] });
+
+    expect(lastSnapshot(ws).workspaces[0].cross_citations[0].target).toEqual({
+      root_dir: WS_B,
+      status: 'accepted'
+    });
+  });
+
+  test('joins a cross citation carrying a string ADR identifier', async () => {
+    const ws = fakeWs();
+    handleSubscribeAdr(/** @type {any} */ (ws), req('subscribe-adr'));
+
+    await resolveCompute(WS_A, {
+      cross_citations: [
+        {
+          file: 'docs/adr/0001-x.md',
+          line: 3,
+          repo: 'repo-b',
+          adr: 'dotfiles-60u8'
+        }
+      ]
+    });
+    await resolveCompute(WS_B, { current: [adr('dotfiles-60u8', 'accepted')] });
 
     expect(lastSnapshot(ws).workspaces[0].cross_citations[0].target).toEqual({
       root_dir: WS_B,

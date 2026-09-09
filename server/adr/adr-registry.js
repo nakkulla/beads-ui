@@ -22,10 +22,10 @@ export const OPTIONAL_ADR_KEYS = [
   'bead'
 ];
 
-/** Keys whose value must parse as an integer. */
+/** Keys whose value must parse as an ADR identifier (integer or string). */
 export const INTEGER_ADR_KEYS = ['id', 'superseded_by'];
 
-/** Keys whose value must parse as a list of integers. */
+/** Keys whose value must parse as a list of ADR identifiers. */
 export const INTEGER_LIST_ADR_KEYS = ['supersedes'];
 
 /** ADR status vocabulary. */
@@ -49,15 +49,39 @@ export const CANDIDATE_ERROR_KINDS = [
   'usage'
 ];
 
-/** ADR file name pattern: `NNNN-<slug>.md`. */
-export const ADR_FILE_NAME_RE = /^(\d{4})-.*\.md$/;
+/**
+ * ADR identifier grammar (dotfiles-60u8 D1): the legacy four-digit number
+ * `NNNN`, or a Bead-derived string `<bead-id>[-n]`. Both forms live side by
+ * side in one `docs/adr` directory.
+ */
+export const ADR_STRING_ID_RE = /^[A-Za-z][A-Za-z0-9]*-[a-z0-9]+(?:-\d+)?$/;
+
+/** ADR file name pattern: `NNNN-<slug>.md` or `<bead-id>[-n]-<slug>.md`. */
+export const ADR_FILE_NAME_RE =
+  /^((?:\d{4})|(?:[A-Za-z][A-Za-z0-9]*-[a-z0-9]+(?:-\d+)?))-.*\.md$/;
 
 /**
- * Cross-repository citation syntax `ADR <repo>/NNNN`. Same expression the
- * dotfiles cite checker uses; that checker does not verify these, so this tab
- * extracts them itself (spec §5.2 step 5).
+ * Cross-repository citation syntax `ADR <repo>/<id>`, where `<id>` is either
+ * identifier form. Same expression the dotfiles cite checker uses; that checker
+ * does not verify these, so this tab extracts them itself (spec §5.2 step 5).
  */
-export const CROSS_CITATION_RE = /\bADR ([a-z][a-z0-9-]*)\/(\d{4})\b/;
+export const CROSS_CITATION_RE =
+  /\bADR ([a-z][a-z0-9-]*)\/((?:\d{4})|(?:[A-Za-z][A-Za-z0-9]*-[a-z0-9]+(?:-\d+)?))\b/;
+
+/** Purely numeric identifier text, including a leading-zero legacy number. */
+const NUMERIC_ADR_ID_RE = /^-?\d+$/;
+
+/**
+ * Normalize one identifier's text form. Numeric text (`45`, `0045`) becomes a
+ * `number` so legacy value types and the file-name-to-`id` binding stay what
+ * they are today; anything else is kept verbatim as a string.
+ *
+ * @param {string} text - Identifier as written in a file name or frontmatter.
+ * @returns {number | string}
+ */
+export function normalizeAdrId(text) {
+  return NUMERIC_ADR_ID_RE.test(text) ? Number(text) : text;
+}
 
 /** ADR directory, relative to a workspace root. */
 export const ADR_DIR_REL = 'docs/adr';
