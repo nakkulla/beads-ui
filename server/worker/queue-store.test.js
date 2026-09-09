@@ -65,6 +65,20 @@ describe('worker/queue-store provider hold', () => {
   }
 
   /**
+   * Allow one account set to receive a claude switch (spec §3.1 policy).
+   *
+   * @param {any} queue_store
+   * @param {string[]} accounts
+   */
+  function allowSwitchAccounts(queue_store, accounts) {
+    queue_store.setProviderLimitPolicy(WS, {
+      expected_revision: queue_store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: { mode: 'switch', accounts }
+    });
+  }
+
+  /**
    * Hold one seeded attempt on a stable target.
    *
    * @param {ReturnType<typeof createQueueStore>} queue_store
@@ -145,43 +159,90 @@ describe('worker/queue-store provider hold', () => {
     });
   });
 
-  test('reads an absent auto-switch preference as enabled without resetting false', () => {
+  // RED 1 (spec §5)
+  test('migrates a disabled legacy auto-switch flag to both wait modes', () => {
     fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
     fs.writeFileSync(
       queueFilePath(WS),
       JSON.stringify({ revision: 1, provider_auto_switch: false })
     );
-    const disabled = createQueueStore().snapshot(WS);
-    fs.writeFileSync(queueFilePath(WS), JSON.stringify({ revision: 2 }));
 
-    const enabled = createQueueStore().snapshot(WS);
+    const loaded = createQueueStore().snapshot(WS);
 
-    expect(disabled.provider_auto_switch).toBe(false);
-    expect(enabled.provider_auto_switch).toBe(true);
+    expect(loaded.provider_limit_policy.claude.mode).toBe('wait');
+    expect(loaded.provider_limit_policy.codex.mode).toBe('wait');
   });
 
-  test('toggles the auto-switch preference with revision CAS', () => {
+  // RED 2 (spec §5)
+  test('loads a legacy queue without the flag as the switch default', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify({ revision: 2 }));
+
+    const loaded = createQueueStore().snapshot(WS);
+
+    expect(loaded.provider_limit_policy).toEqual({
+      claude: { mode: 'switch', accounts: [], preempt_pct: null },
+      codex: { mode: 'switch', accounts: [], preempt_pct: null }
+    });
+    expect(
+      /** @type {Record<string, unknown>} */ (loaded).provider_auto_switch
+    ).toBeUndefined();
+  });
+
+  // RED 3 (spec §5)
+  test('merges one runner policy patch under revision CAS', () => {
     const store = createQueueStore();
     const revision = store.snapshot(WS).revision;
 
-    const disabled = store.toggleProviderAutoSwitch(WS, {
+    const applied = store.setProviderLimitPolicy(WS, {
       expected_revision: revision,
-      on: false
+      runner: 'codex',
+      patch: { mode: 'wait', accounts: ['codex-a'] }
     });
-    const stale = store.toggleProviderAutoSwitch(WS, {
+    const stale = store.setProviderLimitPolicy(WS, {
       expected_revision: revision,
-      on: true
+      runner: 'codex',
+      patch: { mode: 'switch' }
     });
 
-    expect(disabled.ok).toBe(true);
-    expect(disabled.queue.provider_auto_switch).toBe(false);
+    expect(applied.queue.provider_limit_policy.codex).toEqual({
+      mode: 'wait',
+      accounts: ['codex-a'],
+      preempt_pct: null
+    });
+    expect(applied.queue.provider_limit_policy.claude).toEqual({
+      mode: 'switch',
+      accounts: [],
+      preempt_pct: null
+    });
     expect(stale.conflict).toBe(true);
-    expect(stale.queue.provider_auto_switch).toBe(false);
+    expect(stale.queue.provider_limit_policy.codex.mode).toBe('wait');
+  });
+
+  // RED 4 (spec §5)
+  test('normalizes duplicate accounts and an out-of-range threshold', () => {
+    const store = createQueueStore();
+
+    const applied = store.setProviderLimitPolicy(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: {
+        accounts: ['a@example.com', 'a@example.com', 'bad key', ''],
+        preempt_pct: 140
+      }
+    });
+
+    expect(applied.queue.provider_limit_policy.claude).toEqual({
+      mode: 'switch',
+      accounts: ['a@example.com'],
+      preempt_pct: null
+    });
   });
 
   test('records an account-switch receipt in the hold mutation', () => {
     const store = createQueueStore();
     seedProviderAttempt(store, 'att-switch');
+    allowSwitchAccounts(store, ['new@example.com']);
     const before = store.snapshot(WS).revision;
 
     const result = store.holdProviderAttempt(WS, {
@@ -201,10 +262,7 @@ describe('worker/queue-store provider hold', () => {
         rearm_count: 0,
         attempt_ids: []
       },
-      auto_switch: {
-        enabled: true,
-        candidate_account: 'new@example.com'
-      }
+      auto_switch: { candidate_account: 'new@example.com' }
     });
 
     expect(result.queue.revision).toBe(before + 1);
@@ -219,9 +277,15 @@ describe('worker/queue-store provider hold', () => {
     ]);
   });
 
-  test('records disabled when automatic account switching is off', () => {
+  // RED 5 (spec §5)
+  test('records disabled when the runner is in wait mode', () => {
     const store = createQueueStore();
     seedProviderAttempt(store, 'att-disabled');
+    store.setProviderLimitPolicy(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: { mode: 'wait', accounts: ['new@example.com'] }
+    });
 
     const result = store.holdProviderAttempt(WS, {
       attempt_id: 'att-disabled',
@@ -237,7 +301,7 @@ describe('worker/queue-store provider hold', () => {
         rearm_count: 0,
         attempt_ids: []
       },
-      auto_switch: { enabled: false, candidate_account: null }
+      auto_switch: { candidate_account: 'new@example.com' }
     });
 
     expect(result.queue.provider_hold.claude.targets[0].auto_switch).toBe(
@@ -246,14 +310,38 @@ describe('worker/queue-store provider hold', () => {
     expect(result.queue.auto_resume_pending).toEqual([]);
   });
 
-  test('honors a toggle disabled after candidate selection', () => {
+  // RED 6 (spec §5)
+  test('records unconfigured when no account is allowed to receive a switch', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-unconfigured');
+
+    const result = store.holdProviderAttempt(WS, {
+      attempt_id: 'att-unconfigured',
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'claude',
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account: 'old@example.com',
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      auto_switch: { candidate_account: 'new@example.com' }
+    });
+
+    expect(result.queue.provider_hold.claude.targets[0].auto_switch).toBe(
+      'unconfigured'
+    );
+    expect(result.queue.auto_resume_pending).toEqual([]);
+  });
+
+  test('rejects a candidate dropped from the allowed set after selection', () => {
     const store = createQueueStore();
     seedProviderAttempt(store, 'att-toggle-race');
-    const revision = store.snapshot(WS).revision;
-    store.toggleProviderAutoSwitch(WS, {
-      expected_revision: revision,
-      on: false
-    });
+    allowSwitchAccounts(store, ['other@example.com']);
 
     const result = store.holdProviderAttempt(WS, {
       attempt_id: 'att-toggle-race',
@@ -269,21 +357,20 @@ describe('worker/queue-store provider hold', () => {
         rearm_count: 0,
         attempt_ids: []
       },
-      auto_switch: {
-        enabled: true,
-        candidate_account: 'new@example.com'
-      }
+      auto_switch: { candidate_account: 'new@example.com' }
     });
 
     expect(result.queue.provider_hold.claude.targets[0].auto_switch).toBe(
-      'disabled'
+      'none'
     );
     expect(result.queue.auto_resume_pending).toEqual([]);
   });
 
+  // 보존 검증 28 (spec §5)
   test('records none when no account-switch candidate exists', () => {
     const store = createQueueStore();
     seedProviderAttempt(store, 'att-none');
+    allowSwitchAccounts(store, ['new@example.com']);
 
     const result = store.holdProviderAttempt(WS, {
       attempt_id: 'att-none',
@@ -299,7 +386,7 @@ describe('worker/queue-store provider hold', () => {
         rearm_count: 0,
         attempt_ids: []
       },
-      auto_switch: { enabled: true, candidate_account: null }
+      auto_switch: { candidate_account: null }
     });
 
     expect(result.queue.provider_hold.claude.targets[0].auto_switch).toBe(
@@ -308,11 +395,13 @@ describe('worker/queue-store provider hold', () => {
     expect(result.queue.auto_resume_pending).toEqual([]);
   });
 
-  test('records cap when the lineage already auto-resumed', () => {
+  // RED 7 (spec §5)
+  test('still switches a lineage that already consumed its reset resume', () => {
     const store = createQueueStore();
     seedProviderAttempt(store, 'att-cap', {
       auto_resume_kind: 'provider_outage'
     });
+    allowSwitchAccounts(store, ['new@example.com']);
 
     const result = store.holdProviderAttempt(WS, {
       attempt_id: 'att-cap',
@@ -328,16 +417,59 @@ describe('worker/queue-store provider hold', () => {
         rearm_count: 0,
         attempt_ids: []
       },
-      auto_switch: {
-        enabled: true,
-        candidate_account: 'new@example.com'
-      }
+      auto_switch: { candidate_account: 'new@example.com' }
     });
 
-    expect(result.queue.provider_hold.claude.targets[0].auto_switch).toBe(
-      'cap'
-    );
-    expect(result.queue.auto_resume_pending).toEqual([]);
+    expect(result.queue.provider_hold.claude.targets[0].auto_switch).toBeNull();
+    expect(result.queue.auto_resume_pending).toEqual([
+      {
+        attempt_id: 'att-cap',
+        generation: result.generation,
+        account: 'new@example.com',
+        kind: 'account_switch'
+      }
+    ]);
+  });
+
+  // RED 8 (spec §5)
+  test('preserves an account-switch resume marker through normalization', () => {
+    const attempt = makeAttempt({
+      attempt_id: 'att-kind',
+      bead_id: 'UI-kind',
+      auto_resume_kind: 'account_switch'
+    });
+
+    expect(attempt.auto_resume_kind).toBe('account_switch');
+  });
+
+  // RED 9 (spec §5)
+  test('leaves the reset-resume cap unspent for an account-switch lineage', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-switch-child', {
+      auto_resume_kind: 'account_switch'
+    });
+    const held = holdProviderAttempt(store, 'att-switch-child');
+
+    const recovered = store.recoverProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com'
+    });
+
+    expect(
+      store.snapshot(WS).attempts['att-switch-child'].auto_resume_kind
+    ).toBe('account_switch');
+    expect(recovered.disarmed_attempt_ids).toEqual([]);
+    expect(recovered.queue.auto_resume_pending).toEqual([
+      {
+        attempt_id: 'att-switch-child',
+        generation: held.generation,
+        account: 'held@example.com',
+        kind: 'provider_outage'
+      }
+    ]);
   });
 
   test('clears only runner-wide usage-limit targets for manual resume', () => {

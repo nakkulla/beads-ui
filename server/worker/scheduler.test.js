@@ -962,7 +962,7 @@ describe('scheduler provider hold and recovery', () => {
         number: 2,
         email: 'no-five@example.com',
         status: 'ok',
-        windows: [{ key: '7d', pct: 0, resetsAt: null }]
+        windows: [{ key: '7d', pct: 95, resetsAt: null }]
       },
       {
         key: 'held@example.com',
@@ -1020,6 +1020,11 @@ describe('scheduler provider hold and recovery', () => {
       timeline: { append },
       notify: { providerRecovered }
     });
+    allowSwitchAccounts(
+      env.store,
+      'claude',
+      rows.map((row) => row.key)
+    );
     seedProviderAttempt(env.store, 'held-other', 'H1');
     registerProviderHold(
       env.store,
@@ -1053,7 +1058,7 @@ describe('scheduler provider hold and recovery', () => {
       claude_account: 'candidate-one@example.com',
       account_sources: { claude: 'outage_switch', codex: null },
       account_switched_from: 'old@example.com',
-      auto_resume_kind: 'provider_outage'
+      auto_resume_kind: 'account_switch'
     });
     expect(queue.auto_resume_pending).toEqual([]);
     expect(
@@ -1081,7 +1086,8 @@ describe('scheduler provider hold and recovery', () => {
     ).toEqual([]);
   });
 
-  test('keeps the timer path when automatic account switching is disabled', async () => {
+  // RED 5 companion at the scheduler seam (spec §5)
+  test('keeps the timer path when the runner waits out its limit', async () => {
     const listClaude = vi.fn(async () => ({ ok: true, accounts: [] }));
     const env = setup({
       config: { B1: {} },
@@ -1094,9 +1100,10 @@ describe('scheduler provider hold and recovery', () => {
         listClaude
       }
     });
-    env.store.toggleProviderAutoSwitch(WS, {
+    env.store.setProviderLimitPolicy(WS, {
       expected_revision: env.store.snapshot(WS).revision,
-      on: false
+      runner: 'claude',
+      patch: { mode: 'wait', accounts: ['candidate@example.com'] }
     });
     seedQueue(env.store, ['B1']);
     await env.scheduler.tick(WS);
@@ -1121,6 +1128,7 @@ describe('scheduler provider hold and recovery', () => {
     expect(listClaude).not.toHaveBeenCalled();
   });
 
+  // 보존 검증 27 (spec §5)
   test('never switches accounts when the held account is unresolved', async () => {
     const listClaude = vi.fn(async () => ({
       ok: true,
@@ -1146,6 +1154,7 @@ describe('scheduler provider hold and recovery', () => {
         listClaude
       }
     });
+    allowSwitchAccounts(env.store, 'claude', ['candidate-one@example.com']);
     seedQueue(env.store, ['B1']);
     await env.scheduler.tick(WS);
 
@@ -1311,6 +1320,499 @@ describe('scheduler provider hold and recovery', () => {
       cause: 'provider_outage:overloaded_529'
     });
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Allow one runner to switch onto a given account set (spec §3.1).
+   *
+   * @param {any} queue_store
+   * @param {'claude'|'codex'} runner
+   * @param {string[]} accounts
+   * @param {{ preempt_pct?: number|null }} [options]
+   */
+  function allowSwitchAccounts(queue_store, runner, accounts, options = {}) {
+    queue_store.setProviderLimitPolicy(WS, {
+      expected_revision: queue_store.snapshot(WS).revision,
+      runner,
+      patch: {
+        mode: 'switch',
+        accounts,
+        preempt_pct: options.preempt_pct ?? null
+      }
+    });
+  }
+
+  /**
+   * The recorded exec tuple a provider resume revalidates against.
+   *
+   * @returns {Record<string, string|null>}
+   */
+  function resumableExecValues() {
+    const values = /** @type {Record<string, string|null>} */ (
+      Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null]))
+    );
+    values.orchestration_model = 'opus';
+    values.orchestration_effort = 'high';
+    return values;
+  }
+
+  /**
+   * One codex error envelope naming the account plan quota.
+   *
+   * @returns {any[]}
+   */
+  function codexUsageLimitEvents() {
+    const envelope = JSON.stringify({
+      type: 'error',
+      status: 429,
+      error: {
+        type: 'usage_limit_reached',
+        message: 'You have hit your usage limit for this plan.'
+      }
+    });
+    return [
+      { type: 'error', message: envelope },
+      { type: 'turn.failed', error: { message: envelope } }
+    ];
+  }
+
+  /**
+   * Two codex catalog rows: the active one is hot, the allowed one is idle.
+   *
+   * @returns {any}
+   */
+  function codexCatalog() {
+    return {
+      ok: true,
+      active_key: 'codex-hot',
+      accounts: [
+        {
+          key: 'codex-hot',
+          email: 'hot@example.com',
+          status: 'ok',
+          windows: [{ key: '5h', pct: 100, resetsAt: null }]
+        },
+        {
+          key: 'codex-cool',
+          email: 'cool@example.com',
+          status: 'ok',
+          windows: [{ key: '5h', pct: 5, resetsAt: null }]
+        }
+      ]
+    };
+  }
+
+  // RED 10 (spec §5)
+  test('offers only the accounts the user allows as switch candidates', async () => {
+    const rows = [
+      {
+        key: 'old@example.com',
+        number: 1,
+        email: 'old@example.com',
+        status: 'ok',
+        windows: [{ key: '5h', pct: 100, resetsAt: null }]
+      },
+      {
+        key: 'forbidden@example.com',
+        number: 2,
+        email: 'forbidden@example.com',
+        status: 'ok',
+        windows: [{ key: '5h', pct: 1, resetsAt: null }]
+      },
+      {
+        key: 'allowed@example.com',
+        number: 3,
+        email: 'allowed@example.com',
+        status: 'ok',
+        windows: [{ key: '5h', pct: 60, resetsAt: null }]
+      }
+    ];
+    const env = setup({
+      config: { B1: { claude_account: 'old@example.com' } },
+      slots: 1,
+      ...accountDeps({
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: rows.find((row) => row.email === email)
+          })),
+          readClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: rows.find((row) => row.email === email)
+          })),
+          activeClaude: vi.fn(async () => ({ ok: true, account: rows[0] })),
+          listClaude: vi.fn(async () => ({
+            ok: true,
+            accounts: rows,
+            active_key: 'old@example.com'
+          }))
+        }
+      })
+    });
+    allowSwitchAccounts(env.store, 'claude', ['allowed@example.com']);
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('B1').emit('session_id', 'sid-limit');
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          is_error: true,
+          api_error_status: 429,
+          result: "You've hit your session limit"
+        }
+      ]
+    });
+    await flush();
+
+    const child = Object.values(env.store.snapshot(WS).attempts).find(
+      (attempt) => attempt.resumed_from === 'B1-1000-1'
+    );
+    expect(child?.claude_account).toBe('allowed@example.com');
+  });
+
+  // RED 11 (spec §5)
+  test('switches a codex usage limit onto an allowed codex account', async () => {
+    const env = setup({
+      config: { X1: { model: 'sol', effort: 'xhigh' } },
+      slots: 1,
+      ...accountDeps({
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: { key: email, email }
+          })),
+          resolveCodex: vi.fn(async (key) => ({
+            ok: true,
+            account: { key, email: `${key}@example.com` }
+          })),
+          listCodex: vi.fn(async () => codexCatalog())
+        }
+      })
+    });
+    allowSwitchAccounts(env.store, 'codex', ['codex-cool']);
+    seedQueue(env.store, ['X1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('X1').emit('session_id', 'sid-codex');
+
+    env.runner.finish('X1', {
+      success: false,
+      reason: 'is_error',
+      raw: codexUsageLimitEvents()
+    });
+    await flush();
+
+    const child = Object.values(env.store.snapshot(WS).attempts).find(
+      (attempt) => attempt.resumed_from === 'X1-1000-1'
+    );
+    expect(child).toMatchObject({
+      codex_account: 'codex-cool',
+      account_sources: { claude: null, codex: 'outage_switch' },
+      account_switched_from: 'codex-hot'
+    });
+  });
+
+  // RED 12 (spec §5)
+  test('stamps an account-switch child apart from a reset resume', async () => {
+    const env = setup({
+      config: { B1: {} },
+      slots: 1,
+      ...accountDeps()
+    });
+    allowSwitchAccounts(env.store, 'claude', ['new@example.com']);
+    seedProviderAttempt(env.store, 'held-1', 'B1', {
+      effort: 'high',
+      speed: 'default',
+      session_id: 'session-1',
+      base_oid: 'base-B1',
+      target_base: 'main',
+      claude_account: 'old@example.com',
+      exec_values: resumableExecValues()
+    });
+    env.store.holdProviderAttempt(WS, {
+      attempt_id: 'held-1',
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'claude',
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account: 'old@example.com',
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      auto_switch: { candidate_account: 'new@example.com' }
+    });
+
+    await env.scheduler.consumeProviderAutoResume(WS);
+
+    const child = Object.values(env.store.snapshot(WS).attempts).find(
+      (attempt) => attempt.resumed_from === 'held-1'
+    );
+    expect(child?.auto_resume_kind).toBe('account_switch');
+  });
+
+  // 보존 검증 26 (spec §5)
+  test('keeps the reset resume stamped as a provider outage', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1, ...accountDeps() });
+    seedProviderAttempt(env.store, 'held-1', 'B1', {
+      effort: 'high',
+      speed: 'default',
+      session_id: 'session-1',
+      base_oid: 'base-B1',
+      target_base: 'main',
+      exec_values: resumableExecValues()
+    });
+    const held = registerProviderHold(
+      env.store,
+      'held-1',
+      'outage',
+      'held@example.com'
+    );
+    env.store.recoverProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com'
+    });
+
+    await env.scheduler.consumeProviderAutoResume(WS);
+
+    const child = Object.values(env.store.snapshot(WS).attempts).find(
+      (attempt) => attempt.resumed_from === 'held-1'
+    );
+    expect(child?.auto_resume_kind).toBe('provider_outage');
+  });
+
+  // RED 13 (spec §5)
+  test('keys a codex limit on the active catalog account when none was pinned', async () => {
+    const env = setup({
+      config: { X1: { model: 'sol', effort: 'xhigh' } },
+      slots: 1,
+      ...accountDeps({
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: { key: email, email }
+          })),
+          resolveCodex: vi.fn(async (key) => ({
+            ok: true,
+            account: { key, email: `${key}@example.com` }
+          })),
+          listCodex: vi.fn(async () => codexCatalog())
+        }
+      })
+    });
+    seedQueue(env.store, ['X1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('X1', {
+      success: false,
+      reason: 'is_error',
+      raw: codexUsageLimitEvents()
+    });
+    await flush();
+
+    expect(env.store.snapshot(WS).provider_hold.codex.targets[0]).toMatchObject(
+      {
+        kind: 'usage_limit',
+        account: 'codex-hot'
+      }
+    );
+  });
+
+  // RED 16 (spec §5)
+  test('refuses a candidate the user dropped between selection and the write', () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedProviderAttempt(env.store, 'held-1', 'B1');
+    seedProviderAttempt(env.store, 'held-2', 'B2');
+    allowSwitchAccounts(env.store, 'claude', ['kept@example.com']);
+    /**
+     * @param {string} attempt_id
+     * @param {string} candidate
+     */
+    const hold = (attempt_id, candidate) =>
+      env.store.holdProviderAttempt(WS, {
+        attempt_id,
+        patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+        runner: 'claude',
+        target: {
+          kind: /** @type {const} */ ('usage_limit'),
+          model: attempt_id,
+          account: `${attempt_id}@example.com`,
+          detail: 'usage_limit',
+          last_error: 'limit',
+          resets_at: null,
+          rearm_count: 0,
+          attempt_ids: []
+        },
+        auto_switch: { candidate_account: candidate }
+      });
+
+    const dropped = hold('held-1', 'dropped@example.com');
+    const kept = hold('held-2', 'kept@example.com');
+
+    const targets = kept.queue.provider_hold.claude.targets;
+    expect(
+      targets.find((target) => target.model === 'held-1')?.auto_switch
+    ).toBe('none');
+    expect(
+      targets.find((target) => target.model === 'held-2')?.auto_switch
+    ).toBeNull();
+    expect(dropped.queue.auto_resume_pending).toEqual([]);
+    expect(kept.queue.auto_resume_pending).toEqual([
+      expect.objectContaining({
+        attempt_id: 'held-2',
+        account: 'kept@example.com',
+        kind: 'account_switch'
+      })
+    ]);
+  });
+
+  /**
+   * Two claude catalog rows: the active login is hot, the allowed one is idle.
+   *
+   * @returns {any}
+   */
+  function claudeCatalog() {
+    return {
+      ok: true,
+      active_key: 'hot@example.com',
+      accounts: [
+        {
+          key: 'hot@example.com',
+          number: 1,
+          email: 'hot@example.com',
+          status: 'ok',
+          windows: [{ key: '5h', pct: 85, resetsAt: null }]
+        },
+        {
+          key: 'cool@example.com',
+          number: 2,
+          email: 'cool@example.com',
+          status: 'ok',
+          windows: [{ key: '5h', pct: 5, resetsAt: null }]
+        }
+      ]
+    };
+  }
+
+  /**
+   * Build a scheduler whose claude catalog is the two-row preempt fixture.
+   *
+   * @param {any} config
+   * @param {any} [extra]
+   * @returns {any}
+   */
+  function preemptEnv(config, extra = {}) {
+    return setup({
+      config,
+      slots: 1,
+      ...accountDeps({
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: { key: email, email }
+          })),
+          resolveCodex: vi.fn(async (key) => ({ ok: true, account: { key } })),
+          activeClaude: vi.fn(async () => ({
+            ok: true,
+            account: claudeCatalog().accounts[0]
+          })),
+          listClaude: vi.fn(async () => claudeCatalog())
+        }
+      }),
+      ...extra
+    });
+  }
+
+  // RED 14 (spec §5)
+  test('moves an inherited account off a window past the preempt threshold', async () => {
+    const append = vi.fn();
+    const env = preemptEnv({ B1: {} }, { timeline: { append } });
+    allowSwitchAccounts(env.store, 'claude', ['cool@example.com'], {
+      preempt_pct: 80
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+      claude_account: 'cool@example.com',
+      account_sources: { claude: 'preempt_switch', codex: null },
+      account_switched_from: 'hot@example.com'
+    });
+    expect(append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'account_preempt',
+        summary: 'claude 선제 전환 hot@example.com → cool@example.com (5h 85%)'
+      })
+    );
+  });
+
+  // RED 15 (spec §5)
+  test('gates the preemptively switched account, not the one it left', async () => {
+    const switched = preemptEnv({ B1: {} });
+    allowSwitchAccounts(switched.store, 'claude', ['cool@example.com'], {
+      preempt_pct: 80
+    });
+    seedProviderAttempt(switched.store, 'held-1', 'H1');
+    registerProviderHold(
+      switched.store,
+      'held-1',
+      'usage_limit',
+      'hot@example.com'
+    );
+    seedQueue(switched.store, ['B1']);
+    const blocked = preemptEnv({ B1: {} });
+    allowSwitchAccounts(blocked.store, 'claude', ['cool@example.com'], {
+      preempt_pct: 80
+    });
+    seedProviderAttempt(blocked.store, 'held-1', 'H1');
+    registerProviderHold(blocked.store, 'held-1', 'outage', null);
+    seedQueue(blocked.store, ['B1']);
+
+    await switched.scheduler.tick(WS);
+    await blocked.scheduler.tick(WS);
+
+    expect(switched.runner.spawnOrder).toEqual(['B1']);
+    expect(blocked.runner.spawnOrder).toEqual([]);
+  });
+
+  // 보존 검증 30 (spec §5)
+  test('leaves a bead-pinned account on its own hot window', async () => {
+    const env = preemptEnv({ B1: { claude_account: 'hot@example.com' } });
+    allowSwitchAccounts(env.store, 'claude', ['cool@example.com'], {
+      preempt_pct: 80
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+      claude_account: 'hot@example.com',
+      account_sources: { claude: 'bead', codex: null }
+    });
+  });
+
+  // 보존 검증 31 (spec §5)
+  test('leaves every account alone while no preempt threshold is set', async () => {
+    const env = preemptEnv({ B1: {} });
+    allowSwitchAccounts(env.store, 'claude', ['cool@example.com']);
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+      claude_account: null,
+      account_sources: { claude: null, codex: null }
+    });
   });
 
   test('pins provider recovery to the prior runner model and effort', async () => {

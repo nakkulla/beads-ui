@@ -853,7 +853,8 @@ describe('worker/notify provider transitions', () => {
     expect(messageOf(spawn.last())).toContain('리셋: 2026-09-03T09:00:00.000Z');
   });
 
-  test('names why a limit hold did not switch accounts', async () => {
+  // RED 20 (spec §5)
+  test('names the wait mode as why a limit hold stayed put', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
@@ -867,8 +868,26 @@ describe('worker/notify provider transitions', () => {
       auto_switch: 'disabled'
     });
 
+    expect(messageOf(spawn.last())).toContain('계정 전환: 안 함 — 기다림 모드');
+  });
+
+  // RED 20 (spec §5)
+  test('names an empty allowed set as why a limit hold stayed put', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.providerHoldEntered({
+      bead_id: 'UI-1',
+      runner: 'claude',
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      summary: 'session limit reached',
+      account: 'held@example.com',
+      auto_switch: 'unconfigured'
+    });
+
     expect(messageOf(spawn.last())).toContain(
-      '계정 전환: 안 함 — 자동 전환 꺼짐'
+      '계정 전환: 안 함 — 전환 허용 계정 미지정'
     );
   });
 

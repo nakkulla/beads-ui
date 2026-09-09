@@ -579,7 +579,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * not one of §5.2's four `unusable` cases, and no repo default can be stored
  * without it either.
  * @property {(runner_name: string) => { name: string, spawn: (bead: any, workspace: string, settings: any) => RunnerHandle }} makeRunner
- * @property {{ resolveClaude: (email: string) => Promise<any>, resolveCodex: (key: string) => Promise<any>, readClaude?: (email: string) => Promise<any>, activeClaude?: () => Promise<any>, listClaude?: () => Promise<any> }} [accountCatalog]
+ * @property {{ resolveClaude: (email: string) => Promise<any>, resolveCodex: (key: string) => Promise<any>, readClaude?: (email: string) => Promise<any>, activeClaude?: () => Promise<any>, listClaude?: () => Promise<any>, listCodex?: () => Promise<any> }} [accountCatalog]
  * @property {() => string|null} [resolveCswapPath]
  * @property {typeof defaultPrepareCodexAccountHome} [prepareCodexAccountHome]
  * @property {(key: string) => string} [codexAccountHomeDir]
@@ -1103,7 +1103,7 @@ export function laneOccupiedByOther(occupancy, lane_id, lineage_id) {
  * `accounts`, and the same account spends the same tokens whether an issue pin
  * or a repo default named it.
  *
- * @typedef {{ claude: 'bead'|'workspace_default'|'outage_switch'|null, codex: 'bead'|'workspace_default'|null }} AccountSources
+ * @typedef {{ claude: import('./queue-store.js').AccountSourceValue, codex: import('./queue-store.js').AccountSourceValue }} AccountSources
  */
 
 /**
@@ -1206,12 +1206,12 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   stopReviewSessionProcess: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string, options?: { require_durable?: boolean }) => Promise<{ ok: boolean, reason?: string }>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
- *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, resume_runner?: 'claude'|'codex'|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
@@ -1575,16 +1575,26 @@ export function createScheduler(deps) {
    */
   async function providerAccountContext(attempt) {
     // A codex hold is keyed on the account key the attempt actually launched
-    // on (codex-orchestration-parity §5.2); codex-auth exposes no per-account
-    // usage row, so the classifier gets no row rather than a claude-shaped one.
+    // on (codex-orchestration-parity §5.2); an attempt that launched on the
+    // active login carries no key, so the catalog's `active_key` fills it the
+    // way `activeClaude()` does for claude (spec §3.2) — otherwise the target
+    // is `account:null` and fails closed out of every switch and probe. The
+    // row stays null: the codex classifier consumes no account row.
     if (attempt.runner === 'codex') {
-      return {
-        account:
-          typeof attempt.codex_account === 'string'
-            ? attempt.codex_account
-            : null,
-        row: null
-      };
+      if (typeof attempt.codex_account === 'string') {
+        return { account: attempt.codex_account, row: null };
+      }
+      if (typeof deps.accountCatalog?.listCodex === 'function') {
+        try {
+          const listed = await deps.accountCatalog.listCodex();
+          if (listed?.ok && typeof listed.active_key === 'string') {
+            return { account: listed.active_key, row: null };
+          }
+        } catch {
+          // Catalog failure stays fail-closed as account:null.
+        }
+      }
+      return { account: null, row: null };
     }
     if (attempt.runner !== 'claude' || !deps.accountCatalog) {
       return { account: null, row: null };
@@ -1614,22 +1624,33 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Choose the lowest-usage healthy Claude account allowed for one hold.
+   * Choose the lowest-usage healthy account the user allows for one runner.
    *
    * @param {string} workspace
+   * @param {string} runner
    * @param {string|null} current_account
+   * @param {string[]} allowed
    * @returns {Promise<string|null>}
    */
-  async function selectProviderSwitchAccount(workspace, current_account) {
-    if (
-      !deps.accountCatalog ||
-      typeof deps.accountCatalog.listClaude !== 'function'
-    ) {
+  async function selectProviderSwitchAccount(
+    workspace,
+    runner,
+    current_account,
+    allowed
+  ) {
+    const list =
+      runner === 'codex'
+        ? deps.accountCatalog?.listCodex
+        : deps.accountCatalog?.listClaude;
+    if (!deps.accountCatalog || typeof list !== 'function') {
+      return null;
+    }
+    if (!Array.isArray(allowed) || allowed.length === 0) {
       return null;
     }
     let listed;
     try {
-      listed = await deps.accountCatalog.listClaude();
+      listed = await list.call(deps.accountCatalog);
     } catch {
       return null;
     }
@@ -1651,50 +1672,60 @@ export function createScheduler(deps) {
         .filter((/** @type {any} */ account) => {
           if (
             account?.status !== 'ok' ||
-            typeof account.email !== 'string' ||
-            account.email === current_account ||
-            held_accounts.has(account.email)
+            typeof account.key !== 'string' ||
+            !allowed.includes(account.key) ||
+            account.key === current_account ||
+            held_accounts.has(account.key)
           ) {
             return false;
           }
           const windows = Array.isArray(account.windows) ? account.windows : [];
-          const five_hour = windows.find(
-            (/** @type {any} */ window) => window?.key === '5h'
-          );
-          const seven_day = windows.find(
-            (/** @type {any} */ window) => window?.key === '7d'
-          );
-          return (
-            typeof five_hour?.pct === 'number' &&
-            five_hour.pct <= AUTO_SWITCH_5H_MAX_PCT &&
-            (seven_day === undefined ||
-              (typeof seven_day.pct === 'number' &&
-                seven_day.pct <= AUTO_SWITCH_7D_MAX_PCT))
-          );
+          if (windows.length === 0) {
+            return false;
+          }
+          // The receiving account must be healthy in EVERY window it reports.
+          // A codex window key derived from minutes is not `5h`, so it reads
+          // through the "every other window" rule rather than dropping out.
+          return windows.every((/** @type {any} */ window) => {
+            if (typeof window?.pct !== 'number') {
+              return false;
+            }
+            return window.key === '5h'
+              ? window.pct <= AUTO_SWITCH_5H_MAX_PCT
+              : window.pct <= AUTO_SWITCH_7D_MAX_PCT;
+          });
         })
         .sort((/** @type {any} */ left, /** @type {any} */ right) => {
-          const left_seven = left.windows?.find(
-            (/** @type {any} */ window) => window?.key === '7d'
-          )?.pct;
-          const right_seven = right.windows?.find(
-            (/** @type {any} */ window) => window?.key === '7d'
-          )?.pct;
-          const by_usage =
-            (typeof left_seven === 'number' ? left_seven : 0) -
-            (typeof right_seven === 'number' ? right_seven : 0);
+          const by_usage = longWindowLoad(left) - longWindowLoad(right);
           if (by_usage !== 0) {
             return by_usage;
           }
-          return (
-            (typeof left.number === 'number'
-              ? left.number
-              : Number.MAX_SAFE_INTEGER) -
-            (typeof right.number === 'number'
-              ? right.number
-              : Number.MAX_SAFE_INTEGER)
-          );
-        })[0]?.email || null
+          if (
+            typeof left.number === 'number' &&
+            typeof right.number === 'number'
+          ) {
+            return left.number - right.number;
+          }
+          return String(left.key).localeCompare(String(right.key));
+        })[0]?.key || null
     );
+  }
+
+  /**
+   * The heaviest non-`5h` window of one catalog row, or 0 when it has none.
+   *
+   * @param {any} account
+   * @returns {number}
+   */
+  function longWindowLoad(account) {
+    const windows = Array.isArray(account?.windows) ? account.windows : [];
+    let load = 0;
+    for (const window of windows) {
+      if (window?.key !== '5h' && typeof window?.pct === 'number') {
+        load = Math.max(load, window.pct);
+      }
+    }
+    return load;
   }
 
   /**
@@ -2848,6 +2879,109 @@ export function createScheduler(deps) {
     } catch {
       return { ok: false, reason: 'default_exec_preset_resolution_failed' };
     }
+  }
+
+  /**
+   * Read one runner's durable usage-limit policy from the queue snapshot.
+   *
+   * @param {string} workspace
+   * @param {string} runner
+   * @returns {import('./queue-store.js').ProviderLimitPolicy}
+   */
+  function providerLimitPolicyOf(workspace, runner) {
+    const stored = /** @type {any} */ (deps.store.snapshot(workspace))
+      .provider_limit_policy?.[runner];
+    return stored && typeof stored === 'object'
+      ? {
+          mode: stored.mode === 'wait' ? 'wait' : 'switch',
+          accounts: Array.isArray(stored.accounts) ? stored.accounts : [],
+          preempt_pct:
+            typeof stored.preempt_pct === 'number' ? stored.preempt_pct : null
+        }
+      : { mode: 'switch', accounts: [], preempt_pct: null };
+  }
+
+  /**
+   * Move an INHERITED launch account off a window that already crossed the
+   * user's threshold, before the limit itself arrives (spec §3.3). A bead pin
+   * is never touched, and no candidate is a no-op rather than a refusal.
+   *
+   * @param {string} workspace
+   * @param {string} runner
+   * @param {{ accounts: { claude: string|null, codex: string|null }, account_sources: AccountSources }} resolved
+   * @returns {Promise<{ from: string, to: string, window: string, pct: number }|null>}
+   */
+  async function applyPreemptSwitch(workspace, runner, resolved) {
+    if (runner !== 'claude' && runner !== 'codex') {
+      return null;
+    }
+    const policy = providerLimitPolicyOf(workspace, runner);
+    if (
+      policy.mode !== 'switch' ||
+      policy.preempt_pct === null ||
+      policy.accounts.length === 0
+    ) {
+      return null;
+    }
+    const source = resolved.account_sources[runner];
+    if (source !== null && source !== 'workspace_default') {
+      return null;
+    }
+    const list =
+      runner === 'codex'
+        ? deps.accountCatalog?.listCodex
+        : deps.accountCatalog?.listClaude;
+    if (typeof list !== 'function') {
+      return null;
+    }
+    /** @type {any} */
+    let listed;
+    try {
+      listed = await list.call(deps.accountCatalog);
+    } catch {
+      return null;
+    }
+    if (!listed?.ok || !Array.isArray(listed.accounts)) {
+      return null;
+    }
+    const current =
+      resolved.accounts[runner] ??
+      (typeof listed.active_key === 'string' ? listed.active_key : null);
+    if (current === null) {
+      return null;
+    }
+    const row = listed.accounts.find(
+      (/** @type {any} */ account) => account?.key === current
+    );
+    const windows = Array.isArray(row?.windows) ? row.windows : [];
+    const crossed = windows.find(
+      (/** @type {any} */ window) =>
+        typeof window?.pct === 'number' &&
+        window.pct >= /** @type {number} */ (policy.preempt_pct)
+    );
+    if (!crossed) {
+      return null;
+    }
+    const candidate = await selectProviderSwitchAccount(
+      workspace,
+      runner,
+      current,
+      policy.accounts
+    );
+    if (candidate === null) {
+      return null;
+    }
+    resolved.accounts[runner] = candidate;
+    resolved.account_sources = {
+      ...resolved.account_sources,
+      [runner]: 'preempt_switch'
+    };
+    return {
+      from: current,
+      to: candidate,
+      window: typeof crossed.key === 'string' ? crossed.key : 'usage',
+      pct: crossed.pct
+    };
   }
 
   /**
@@ -5003,18 +5137,19 @@ export function createScheduler(deps) {
       200
     );
     const usage_limit = outage.detail === 'usage_limit';
-    const auto_switch_enabled =
-      deps.store.snapshot(workspace).provider_auto_switch !== false;
+    const policy = providerLimitPolicyOf(workspace, attempt.runner);
     // An unresolved account is fail-closed (§6 F3): the target neither probes
     // nor auto-resumes, because nothing here knows which pool hit the limit,
     // and switching away from an unknown account is an auto-resume. Its only
     // exit is the manual continuation in §9.
     const switch_account =
-      usage_limit &&
-      attempt.runner === 'claude' &&
-      auto_switch_enabled &&
-      classified.account !== null
-        ? await selectProviderSwitchAccount(workspace, classified.account)
+      usage_limit && policy.mode === 'switch' && classified.account !== null
+        ? await selectProviderSwitchAccount(
+            workspace,
+            attempt.runner,
+            classified.account,
+            policy.accounts
+          )
         : null;
     const saved = deps.store.holdProviderAttempt(workspace, {
       attempt_id,
@@ -5042,12 +5177,7 @@ export function createScheduler(deps) {
         attempt_ids: [attempt_id]
       },
       ...(usage_limit
-        ? {
-            auto_switch: {
-              enabled: auto_switch_enabled,
-              candidate_account: switch_account
-            }
-          }
+        ? { auto_switch: { candidate_account: switch_account } }
         : {})
     });
     if (!saved.ok) {
@@ -7809,6 +7939,22 @@ export function createScheduler(deps) {
       const start_now_bypass =
         waiting_entry !== null &&
         isStartNowEntry(workspace, waiting_entry, now());
+      // Preemptive switch runs BEFORE the gate so the gate judges the account
+      // this launch will actually spend (spec §3.3).
+      const preempt = await applyPreemptSwitch(
+        workspace,
+        runner_name,
+        resolved_exec
+      );
+      if (preempt) {
+        appendTimeline({
+          bead_id,
+          kind: 'account_preempt',
+          seq: now(),
+          summary: `${runner_name} 선제 전환 ${preempt.from} → ${preempt.to} (${preempt.window} ${preempt.pct}%)`,
+          at: now()
+        });
+      }
       if (
         !start_now_bypass &&
         (await providerDispatchHeld(
@@ -8339,6 +8485,7 @@ export function createScheduler(deps) {
         speed: exec.orchestration_speed ?? 'default',
         accounts: resolved_exec.accounts,
         account_sources: resolved_exec.account_sources,
+        ...(preempt ? { account_switched_from: preempt.from } : {}),
         quickfix_lane,
         prior_wf: prior,
         stamped_keys,
@@ -8674,6 +8821,7 @@ export function createScheduler(deps) {
    *   speed: string,
    *   accounts: { claude: string|null, codex: string|null },
    *   account_sources?: AccountSources,
+   *   account_switched_from?: string,
    *   prior_wf: string|null,
    *   stamped_keys: string[],
    *   wt_path: string,
@@ -8965,6 +9113,9 @@ export function createScheduler(deps) {
         claude_account: account_settings.claude_account,
         codex_account: account_settings.codex_account,
         account_sources,
+        ...(typeof input.account_switched_from === 'string'
+          ? { account_switched_from: input.account_switched_from }
+          : {}),
         ...prompt_patch
       }
     });
@@ -9467,7 +9618,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
@@ -9753,6 +9904,14 @@ export function createScheduler(deps) {
               : prior?.claude_account) ||
             null
           : null;
+      // A switch child does NOT consume the §8.1 automatic-resume cap
+      // (spec §3.2 decision 5): the cap counts reset resumes only, so the two
+      // continuations are stamped apart.
+      /** @type {'provider_outage'|'account_switch'} */
+      const resume_kind =
+        pending.kind === 'account_switch'
+          ? 'account_switch'
+          : 'provider_outage';
       // §5.3 recovery resumes on the SAME provider with the approved account,
       // so the override key follows the held attempt's runner.
       const account_override_key =
@@ -9769,7 +9928,7 @@ export function createScheduler(deps) {
           prior_receipt: prior.disposition_receipt ?? null,
           continuation: 'auto',
           provider_auto_resume: true,
-          auto_resume_kind: 'provider_outage',
+          auto_resume_kind: resume_kind,
           ...(pending.account !== null
             ? {
                 exec_override: { [account_override_key]: pending.account },
@@ -9789,13 +9948,13 @@ export function createScheduler(deps) {
             : await resume(workspace, pending.attempt_id, {
                 continuation: 'prior_attempt',
                 provider_auto_resume: true,
-                auto_resume_kind: 'provider_outage'
+                auto_resume_kind: resume_kind
               });
       } else {
         result = await resume(workspace, pending.attempt_id, {
           continuation: 'auto',
           provider_auto_resume: true,
-          auto_resume_kind: 'provider_outage',
+          auto_resume_kind: resume_kind,
           ...(pending.account !== null
             ? {
                 exec_override: { [account_override_key]: pending.account },
@@ -10822,9 +10981,11 @@ export function createScheduler(deps) {
     }
     const resolved = override_result.resolved;
     if (typeof options.account_switched_from === 'string') {
+      // The switched runner's OWN key, so a codex switch no longer rewrites the
+      // claude provenance (spec §3.2).
       resolved.account_sources = {
         ...resolved.account_sources,
-        claude: 'outage_switch'
+        [resolved.exec.runner === 'codex' ? 'codex' : 'claude']: 'outage_switch'
       };
     }
     const prior_runner = recorded_prior_runner ?? resolved.exec.runner;
@@ -11687,7 +11848,7 @@ export function createScheduler(deps) {
    * Cap-exempt like every other human-click dispatch.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviseFix(workspace, input) {
