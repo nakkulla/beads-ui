@@ -148,8 +148,8 @@ Worker 큐 hold를 다루지 않으므로 무관하다.
 
 ## 5. 검증과 인수 기준
 
-`server/worker/scheduler.test.js`, 기존 `resumeQueueHold` 테스트(17143행 부근)의
-setup·`seedQueue`·`env.runner.finish` 패턴을 따른다. systemic hold 시드는 11090행
+`server/worker/scheduler.test.js`, 기존 `resumeQueueHold` 테스트(17509행 부근)의
+setup·`seedQueue`·`env.runner.finish` 패턴을 따른다. systemic hold 시드는 11454행
 부근의 `loud_fail_blocker`/`merge_to_base_blocked` 경로 또는
 `store.applyQueueHold({event:{kind:'systemic_failure', …}})`를 쓴다.
 
