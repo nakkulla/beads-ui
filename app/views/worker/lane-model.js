@@ -18,6 +18,7 @@
  * 레포 섹션은 **`workspaces_state`를 돌며** 만든다: 큐가 빈 레포에도 후보가
  * 있으면 드롭 타깃이 필요하고 (§6), 순서는 데크 순서와 같아야 한다.
  */
+import { RETRY_MAX } from '../../../server/worker/failure-class.js';
 import {
   activeAttemptStates,
   isImplementationAttempt,
@@ -28,7 +29,8 @@ import {
   formatAttemptOrchestrationChip,
   formatImplActorChip,
   formatOrchestrationChip,
-  formatWorkerChip
+  formatWorkerChip,
+  resolvedRunnerOf
 } from '../../utils/exec-settings-chip.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
@@ -50,6 +52,12 @@ import {
   detectSerialLaneHeadCycles,
   serialCycleKey
 } from '../monitor/blockers.js';
+import { failureText } from './failure-labels.js';
+import {
+  autoSwitchText,
+  providerClock,
+  providerHoldBadgeText
+} from './gate-labels.js';
 import {
   discardProjection,
   quickFixLanded,
@@ -231,6 +239,7 @@ const DONE_KIND_LABELS = {
  *   hold?: import('./running-grid.js').HoldTile|null,
  *   wait?: import('./running-grid.js').WaitTile|null,
  *   retry?: import('./running-grid.js').RetryTile|null,
+ *   hold_since?: number,
  *   conflict_resolution?: boolean,
  *   base_exception?: string|null,
  *   rollup?: import('../../utils/child-rollup.js').ChildRollup|null,
@@ -1125,6 +1134,240 @@ function retryProjection(attempt) {
     max: typeof retry.max === 'number' ? retry.max : 0,
     next_at: typeof retry.next_at === 'number' ? retry.next_at : null
   };
+}
+
+/**
+ * The waiting row's 게이트 재료 (UI-01wh §3.1) — 표시 전용 파생값.
+ *
+ * @typedef {Object} LaneGate
+ * @property {'systemic'|'env'|'provider_outage'|'provider_usage'} kind - 무엇이
+ * 이 행을 막고 있는가 — systemic·env는 큐 정지, provider_* 둘은 공급자 보류다.
+ * @property {string} label - 슬롯 4a 칩에 그대로 그려지는 한 줄.
+ * @property {string} title - hover 툴팁이자 사유 팝업 본문의 첫 줄.
+ * @property {number|null} since - `queue.hold.since` 그대로 — `▶ 재개` 클릭이
+ * 보내는 CAS 값이고, 공급자 게이트에는 없어 null이다.
+ * @property {number|null} next_at - env는 가장 이른 재시도, outage는 다음 프로브,
+ * usage는 리셋 시각. 재료가 없으면 null이다.
+ * @property {string[]} lines - `chip-popover`가 그대로 그리는 문장들이고 마지막
+ * 항목은 언제나 출구 안내다.
+ */
+
+/** 환경 실패 사다리의 재시도 상한 (`failure-class.js`) — 팝업의 `n/3` 분모다. */
+const GATE_RETRY_MAX = RETRY_MAX;
+
+/**
+ * The queue-wide hold gate (`systemic`/`env`) of one repo, or `null` when no
+ * hold stands. 문구는 실패 어휘(`failureText`)를 그대로 쓰고, 모르는 원인 토큰은
+ * raw로 흘려보낸다 — 침묵보다 낫다.
+ *
+ * @param {any} hold - 스냅샷이 실어 온 정지 레코드이고 서 있지 않으면 null이다.
+ * @param {any[]} lineages - 환경 실패 사다리가 예약한 재시도 계보들, `next_at`이
+ * 전부 null이면 재시도가 실행 중이다.
+ * @returns {LaneGate|null}
+ */
+function queueHoldGate(hold, lineages) {
+  if (!hold || (hold.kind !== 'env' && hold.kind !== 'systemic')) {
+    return null;
+  }
+  const cause = failureText(hold.cause) || String(hold.cause || '');
+  const since = typeof hold.since === 'number' ? hold.since : null;
+  const since_clock = providerClock(since);
+  /** @type {string[]} */
+  const head = [cause, ...(since_clock ? [`시작 ${since_clock}`] : [])];
+  if (hold.kind === 'systemic') {
+    const bead_ids = (Array.isArray(hold.bead_ids) ? hold.bead_ids : []).filter(
+      (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+    );
+    const halted_by =
+      typeof hold.halted_by_attempt_id === 'string' &&
+      hold.halted_by_attempt_id.length > 0
+        ? hold.halted_by_attempt_id
+        : null;
+    return {
+      kind: 'systemic',
+      label: `⛔ 정지 · ${cause}`,
+      title: cause,
+      since,
+      next_at: null,
+      lines: [
+        ...head,
+        ...(halted_by ? [`정지시킨 attempt ${halted_by}`] : []),
+        ...(bead_ids.length > 0 ? [`bead ${bead_ids.join(', ')}`] : []),
+        '출구: 이 행의 ▶ 재개(큐 전체) 또는 [지금 시작](이 행만)'
+      ]
+    };
+  }
+  const rows = Array.isArray(lineages) ? lineages : [];
+  const scheduled = rows
+    .map((/** @type {any} */ row) => (row ? row.next_at : null))
+    .filter(
+      (/** @type {unknown} */ at) =>
+        typeof at === 'number' && Number.isFinite(at)
+    )
+    .sort((/** @type {number} */ a, /** @type {number} */ b) => a - b);
+  const next_at = scheduled.length > 0 ? scheduled[0] : null;
+  const next_clock = providerClock(next_at);
+  return {
+    kind: 'env',
+    label: next_clock
+      ? `↻ 환경 보류 · 다음 ${next_clock}`
+      : '↻ 환경 보류 · 재시도 실행 중',
+    title: cause,
+    since,
+    next_at,
+    lines: [
+      ...head,
+      ...rows
+        .filter(
+          (/** @type {any} */ row) => row && typeof row.bead_id === 'string'
+        )
+        .map((/** @type {any} */ row) => {
+          const attempts =
+            typeof row.attempts === 'number' ? row.attempts : GATE_RETRY_MAX;
+          const clock = providerClock(row.next_at);
+          return `${row.bead_id} · 재시도 ${attempts}/${GATE_RETRY_MAX} · ${
+            clock ? `다음 ${clock}` : '재시도 실행 중'
+          }`;
+        }),
+      next_at === null
+        ? '출구: [지금 시작](이 행만) — 재시도 결과를 기다리는 중'
+        : '출구: 재시도 대기 타일의 ↻ 지금 재시도, 또는 [지금 시작](이 행만)'
+    ]
+  };
+}
+
+/**
+ * The provider gate standing against ONE row's resolved runner and account
+ * (§3.1). `outage` blocks the whole runner; `usage_limit` is per account, and
+ * an unresolvable account draws nothing — the server's admission is the truth
+ * and this chip only states it in advance, so it may only err by saying less.
+ *
+ * @param {string|null} runner - 이 행이 launch될 러너 이름, 못 도출하면 null.
+ * @param {string|null} account - 이 행이 쓸 계정 email, 모르면 null.
+ * @param {Record<string, any>} provider_hold
+ * @param {Record<string, any>} account_catalog
+ * @returns {LaneGate|null}
+ */
+function providerGate(runner, account, provider_hold, account_catalog) {
+  if (runner === null) {
+    return null;
+  }
+  const entry = objectOf(objectOf(provider_hold)[runner]);
+  const targets = Array.isArray(entry.targets) ? entry.targets : [];
+  const outage = targets.find(
+    (/** @type {any} */ target) => target && target.kind === 'outage'
+  );
+  const usage = outage
+    ? null
+    : targets.find(
+        (/** @type {any} */ target) =>
+          target &&
+          target.kind === 'usage_limit' &&
+          (typeof target.account !== 'string' ||
+            (account !== null && target.account === account))
+      );
+  const target = outage || usage || null;
+  if (!target) {
+    return null;
+  }
+  const target_account =
+    typeof target.account === 'string' ? target.account : null;
+  const alias = accountAliasOf(target_account, account_catalog);
+  const tile = {
+    kind: outage ? 'outage' : 'usage_limit',
+    ...(typeof target.resets_at === 'number'
+      ? { resets_at: target.resets_at }
+      : {}),
+    ...(typeof target.next_probe_at === 'number'
+      ? { next_probe_at: target.next_probe_at }
+      : {}),
+    target: {
+      ...(typeof target.model === 'string' ? { model: target.model } : {}),
+      ...(target_account ? { account: target_account } : {}),
+      ...(alias ? { account_alias: alias } : {})
+    },
+    ...(typeof target.auto_switch === 'string'
+      ? { auto_switch: target.auto_switch }
+      : {})
+  };
+  const label = providerHoldBadgeText(
+    /** @type {import('./running-grid.js').HoldTile} */ (
+      /** @type {unknown} */ (tile)
+    )
+  );
+  const who = [target.model, alias || target_account]
+    .filter((value) => typeof value === 'string' && value.length > 0)
+    .join(' · ');
+  const last_error =
+    typeof target.last_error === 'string' && target.last_error.length > 0
+      ? target.last_error
+      : typeof target.detail === 'string' && target.detail.length > 0
+        ? target.detail
+        : null;
+  const when = outage
+    ? providerClock(target.next_probe_at)
+    : providerClock(target.resets_at);
+  const auto_switch = autoSwitchText(target.auto_switch);
+  // 보류가 선 시각은 러너 단위 레코드의 것이다 — target별 시각은 따로 없다.
+  const since_clock = providerClock(entry.since);
+  // `account:null`인 usage_limit은 프로브를 예약하지 않으므로 (공급자 스펙 §6 F3)
+  // 자동 해제가 없다 — 출구 문장이 그 사실 하나로 갈린다.
+  const probeless = !outage && target_account === null;
+  return {
+    kind: outage ? 'provider_outage' : 'provider_usage',
+    label,
+    // 툴팁과 팝업 첫 줄은 같은 문장이다 (§3.2) — 칩 문구가 그 원인 문장이다.
+    title: label,
+    since: null,
+    next_at: outage
+      ? typeof target.next_probe_at === 'number'
+        ? target.next_probe_at
+        : null
+      : typeof target.resets_at === 'number'
+        ? target.resets_at
+        : null,
+    lines: [
+      label,
+      ...(since_clock ? [`시작 ${since_clock}`] : []),
+      ...(who ? [who] : []),
+      ...(last_error ? [last_error] : []),
+      ...(when ? [`${outage ? '다음 프로브' : '리셋'} ${when}`] : []),
+      ...(auto_switch ? [auto_switch] : []),
+      probeless
+        ? '출구: [지금 시작](이 행만, 게이트 무시) — 이 target은 프로브가 없고, 묶인 attempt의 ↻ 이어하기가 지운다(§6 F3)'
+        : '출구: [지금 시작](이 행만, 게이트 무시) — target은 프로브 성공 시 자동 해제'
+    ]
+  };
+}
+
+/**
+ * The account this row would launch on: its own pin first, then the machine's
+ * active login for that runner. `null` when neither says anything — the caller
+ * then draws no usage-limit gate (fail-quiet).
+ *
+ * @param {Record<string, any>} metadata
+ * @param {string} runner
+ * @param {Record<string, any>} account_catalog
+ * @returns {string|null}
+ */
+function resolvedAccountOf(metadata, runner, account_catalog) {
+  const pin = metadata[`${runner}_account`];
+  if (typeof pin === 'string' && pin.length > 0) {
+    return pin;
+  }
+  const rows = objectOf(account_catalog)[runner];
+  if (!Array.isArray(rows)) {
+    return null;
+  }
+  // 스냅샷의 계정 행은 `active`로 지금 로그인된 계정을 표시한다 (worker-handlers
+  // 가 `active_key`로 찍는다). 핀이 없는 launch가 쓰는 계정이 그것이다. 계정의
+  // 정체성은 target과 같은 값이어야 한다 — Claude는 이메일, Codex는 durable key.
+  const active = rows.find((/** @type {any} */ row) => row?.active === true);
+  if (!active) {
+    return null;
+  }
+  const identity = runner === 'codex' ? active.key : active.email;
+  return typeof identity === 'string' && identity.length > 0 ? identity : null;
 }
 
 /**
@@ -2655,6 +2898,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 보이는 workspace 전부에서 모은다.
   /** @type {Map<string, string>} */
   const armed_by_bead = new Map();
+  // 막힌 대기 행을 판정할 저장소별 재료 (UI-01wh §3.1). 행 투영이 끝난 뒤
+  // 한 번에 얹는다 — 러너·계정 해석에 오버레이 metadata가 필요하고 그것은
+  // 이 루프보다 뒤에서 채워진다.
+  /** @type {Map<string, { hold: any, lineages: any[], provider_hold: Record<string, any>, account_catalog: Record<string, any> }>} */
+  const gate_input_by_root = new Map();
   /** @type {Map<string, string>} */
   const failed_by_bead = new Map();
   /** @type {Set<string>} */
@@ -2858,6 +3106,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
             typeof id === 'string' && autoSkipReason(id) !== null
         ),
       running: merge_queue.length > 0
+    });
+    gate_input_by_root.set(root_dir, {
+      hold:
+        workspace.hold && typeof workspace.hold === 'object'
+          ? workspace.hold
+          : null,
+      lineages: Array.isArray(workspace.lineages) ? workspace.lineages : [],
+      provider_hold: objectOf(workspace.provider_hold),
+      account_catalog: objectOf(workspace.account_catalog)
     });
     const queue_lane = Array.isArray(workspace.queue) ? workspace.queue : [];
     // arm은 병렬·직렬 두 대기 영역 모두에 쓰이고 (UI-tjus §3.2) PR 대기 행으로
@@ -3192,6 +3449,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
         // 배지가 이것만으로 그려지고, `failed` 타일에서는 팝오버의 재시도 이력
         // 줄이 같은 값을 읽는다.
         retry: live.retry || null,
+        // 환경 보류가 서 있는 동안의 `retry_wait` 타일에만 실리는 CAS 재료
+        // (UI-01wh §3.1) — foot의 `↻ 지금 재시도`가 이 값을 그대로 보낸다.
+        // hold가 없거나 다른 종류면 키 자체가 없고 버튼도 서지 않는다.
+        ...(live.run_state === 'retry_wait' &&
+        workspace.hold &&
+        workspace.hold.kind === 'env' &&
+        typeof workspace.hold.since === 'number'
+          ? { hold_since: workspace.hold.since }
+          : {}),
         exec_chips: {
           orchestration: formatAttemptOrchestrationChip(live),
           // worker 칩은 그 attempt가 기록한 runner를 controller로 삼아 푼다
@@ -4075,6 +4341,77 @@ export function buildLanes(workspaces, workspaces_state, options) {
           item.exec_chips = chips;
         }
       }
+    }
+  }
+
+  // 게이트 투영 (UI-01wh §3.1). 행 투영과 오버레이가 모두 끝난 뒤에 한 번 돈다:
+  // 공급자 판정은 행의 **해석 러너**를 쓰고 그 재료가 오버레이 metadata이기
+  // 때문이다. 대상은 병렬 큐의 모든 행과 직렬 레인의 첫 대기 행뿐이다 — 직렬
+  // 뒤 행의 "지금 갈 수 있나"는 레인 순서가 답하고, 게이트 칩을 얹으면 같은
+  // 사실이 레인 길이만큼 반복된다.
+  /** @type {Set<string>} */
+  const serial_head_seen = new Set();
+  for (const item of queue) {
+    const gate_input = gate_input_by_root.get(item.root_dir);
+    if (!gate_input) {
+      continue;
+    }
+    if (item.lane !== 'queue') {
+      const lane_key = `${item.root_dir}\u0000${item.lane}`;
+      if (serial_head_seen.has(lane_key)) {
+        continue;
+      }
+      serial_head_seen.add(lane_key);
+    }
+    // arm 제외는 **큐 게이트 판정에만** 적용한다 (§3.1): arm된 행은 정지 중에도
+    // 디스패치되지만, 공급자 게이트는 launch 경로에서 arm과 무관하게 선다.
+    const armed = armed_by_bead.has(item.id);
+    const queue_gate = armed
+      ? null
+      : queueHoldGate(gate_input.hold, gate_input.lineages);
+    const state = objectOf(state_by_root.get(item.root_dir));
+    const overlay = overlay_by_key.get(`${item.root_dir}\u0000${item.id}`);
+    // 공급자 판정은 이 bead의 metadata를 **관측한** 뒤에만 한다 — exec 칩과
+    // 같은 조건이다. 오버레이가 아직 없거나 metadata 키가 없으면 "핀 없음"이
+    // 아니라 "모름"이고, 그때 기본 모델로 판정하면 codex 핀 행에 claude 장애
+    // 칩과 우회 버튼이 잠깐 서는 오판이 난다. 큐 게이트 판정은 metadata를
+    // 읽지 않으므로 그대로 한다.
+    const metadata_observed = !!overlay && Object.hasOwn(overlay, 'metadata');
+    const metadata = objectOf(overlay && overlay.metadata);
+    const rows = metadata_observed
+      ? execRows(
+          state,
+          metadata,
+          typeof overlay.route === 'string' && overlay.route.length > 0
+            ? overlay.route
+            : objectOf(item.workflow).route,
+          null
+        )
+      : null;
+    const runner = rows
+      ? resolvedRunnerOf(rows, state.runner_catalog ?? null)
+      : null;
+    const provider_gate =
+      runner === null
+        ? null
+        : providerGate(
+            runner,
+            resolvedAccountOf(metadata, runner, gate_input.account_catalog),
+            gate_input.provider_hold,
+            gate_input.account_catalog
+          );
+    // 둘 다 서면 칩은 큐 게이트 하나이고 공급자 사유는 그 팝업의 마지막 줄로
+    // 붙는다 (공급자 스펙 §6 "둘 다 서 있으면 둘 다 막는다") — 칩은 행당 하나다.
+    const gate = queue_gate
+      ? provider_gate
+        ? {
+            ...queue_gate,
+            lines: [...queue_gate.lines, `공급자: ${provider_gate.label}`]
+          }
+        : queue_gate
+      : provider_gate;
+    if (gate) {
+      item.gate = gate;
     }
   }
 

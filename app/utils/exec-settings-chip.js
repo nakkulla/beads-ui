@@ -102,6 +102,27 @@ export function formatAttemptOrchestrationChip(attempt) {
 }
 
 /**
+ * Which runner these resolved rows would launch on: `modelRunnerOf` applied to
+ * the resolved `orchestration_model`. The slot-5 exec chip and the waiting
+ * row's gate judgment (UI-01wh §3.1) must not derive it twice, or a row could
+ * name one runner in its chip and be judged against another.
+ *
+ * `null` when the rows say nothing about the model or the catalog does not
+ * place it — the caller then draws nothing (fail-quiet).
+ *
+ * @param {Record<string, ExecutionValue>|null|undefined} rows
+ * @param {any} runner_catalog
+ * @returns {string|null}
+ */
+export function resolvedRunnerOf(rows, runner_catalog) {
+  const model = rowOf(rows, 'orchestration_model');
+  if (model === null || model.resolution === 'unavailable') {
+    return null;
+  }
+  return modelRunnerOf(runner_catalog, model.value ?? '');
+}
+
+/**
  * The waiting row / candidate card orchestration chip: what the bead WOULD run
  * with, resolved from pin over queue defaults. The runner is derived from the
  * model token because the resolver stores no runner of its own.
@@ -118,7 +139,7 @@ export function formatOrchestrationChip(rows, runner_catalog) {
   const effort = rowOf(rows, 'orchestration_effort');
   const speed = rowOf(rows, 'orchestration_speed');
   const text = joinTokens([
-    modelRunnerOf(runner_catalog, model.value ?? ''),
+    resolvedRunnerOf(rows, runner_catalog),
     model.display,
     effort !== null && effort.value !== null ? effort.display : null,
     speed !== null && speed.value === 'fast' ? 'Fast' : null

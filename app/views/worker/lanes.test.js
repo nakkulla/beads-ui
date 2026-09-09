@@ -1,5 +1,6 @@
 import { html, render } from 'lit-html';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { providerHoldBadgeText } from './gate-labels.js';
 import {
   JUDGEMENT_CHIP_KEYS,
   candidateCard,
@@ -4956,6 +4957,40 @@ describe('대기 진입 유예 (UI-q1tg §3.3)', () => {
     ).toContain('⏳ 15초');
   });
 
+  test('orders the 의존 line 게이트 → 발차 → 선행 → 후속 → 유예', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const row = renderWaitingRow({
+      added_at: NOW - 5_000,
+      gate: {
+        kind: 'systemic',
+        label: '⛔ 정지 · loud_fail_blocker',
+        title: 'loud_fail_blocker',
+        since: 5000,
+        next_at: null,
+        lines: ['loud_fail_blocker']
+      },
+      dependency_chips: /** @type {any} */ ({
+        dependents: [{ id: 'UI-s', label: '→ UI-s' }],
+        predecessors: [{ id: 'UI-p', label: '⛓ UI-p' }],
+        armed_lane: { lane_id: 'cl_1', label: '▶ 연결 1', orphan: false }
+      })
+    });
+
+    const line = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-deps--primary')
+    );
+    expect(
+      Array.from(line.children, (chip) => chip.className.split(' ')[1])
+    ).toEqual([
+      'worker-dep--gate',
+      'worker-dep--armed',
+      'worker-dep--pred',
+      'worker-dep--dependents',
+      'worker-dep--grace'
+    ]);
+  });
+
   test('draws the start-now button in the slot 1 조작 group', () => {
     vi.spyOn(Date, 'now').mockReturnValue(NOW);
 
@@ -5010,5 +5045,185 @@ describe('대기 진입 유예 (UI-q1tg §3.3)', () => {
         .querySelector('[data-action="queue-start-now"]')
         ?.getAttribute('data-bead-id')
     ).toBe('UI-g1');
+  });
+});
+
+// 게이트 칩과 게이트 조작 (UI-01wh §3.2·§3.3). 막힌 대기 행이 정지·보류를 말하는
+// 유일한 자리이므로 칩의 자리(4a 맨 앞)와 조작의 순서가 이 블록의 주제다.
+describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
+  /**
+   * @param {Partial<import('./lane-model.js').LaneGate>} [patch]
+   * @returns {any}
+   */
+  function gate(patch = {}) {
+    return {
+      kind: 'systemic',
+      label: '⛔ 정지 · loud_fail_blocker',
+      title: 'loud_fail_blocker',
+      since: 5000,
+      next_at: null,
+      lines: ['loud_fail_blocker', '출구: 이 행의 ▶ 재개(큐 전체)'],
+      ...patch
+    };
+  }
+
+  /**
+   * @param {any} item
+   * @returns {HTMLElement|null}
+   */
+  function renderQueueRow(item) {
+    render(
+      miniRow(
+        /** @type {any} */ ({
+          id: 'UI-q1',
+          title: '대기 행',
+          draggable: true,
+          lane: 'queue',
+          ...item
+        })
+      ),
+      mount
+    );
+    return mount.querySelector('.worker-mini');
+  }
+
+  /**
+   * @param {any} item
+   * @returns {HTMLElement|null}
+   */
+  function renderOps(item) {
+    render(
+      html`<div>
+        ${queueRowOps(
+          /** @type {any} */ ({ id: 'UI-q1', draggable: true, ...item })
+        )}
+      </div>`,
+      mount
+    );
+    return mount.querySelector('.worker-mini__rowops');
+  }
+
+  test('puts the gate chip first on the slot-4a line', () => {
+    const row = renderQueueRow({ gate: gate(), added_at: Date.now() });
+
+    const first = /** @type {HTMLElement} */ (
+      /** @type {HTMLElement} */ (row).querySelector('.worker-deps--primary')
+        ?.firstElementChild
+    );
+
+    expect([first.className, first.getAttribute('data-chip-key')]).toEqual([
+      'worker-dep worker-dep--gate worker-dep--gate-systemic judgement-chip',
+      'gate'
+    ]);
+  });
+
+  test('draws no gate chip on a row that carries no gate', () => {
+    const row = renderQueueRow({});
+
+    expect(
+      /** @type {HTMLElement} */ (row).querySelector('.worker-dep--gate')
+    ).toBeNull();
+  });
+
+  test('draws each gate kind with its own text and colour variant', () => {
+    const kinds = [
+      gate(),
+      gate({ kind: 'env', label: '↻ 환경 보류 · 다음 09:40' }),
+      gate({
+        kind: 'provider_outage',
+        label: '⚠️ 공급자 장애 · 다음 프로브 12:30'
+      }),
+      gate({ kind: 'provider_usage', label: '⏳ 한도 대기 13:00 · 업무' })
+    ].map((value) => {
+      const row = renderQueueRow({ gate: value });
+      const chip = /** @type {HTMLElement} */ (
+        /** @type {HTMLElement} */ (row).querySelector('.worker-dep--gate')
+      );
+      return [
+        chip.className.includes(`worker-dep--gate-${value.kind}`),
+        chip.textContent?.trim()
+      ];
+    });
+
+    expect(kinds).toEqual([
+      [true, '⛔ 정지 · loud_fail_blocker'],
+      [true, '↻ 환경 보류 · 다음 09:40'],
+      [true, '⚠️ 공급자 장애 · 다음 프로브 12:30'],
+      [true, '⏳ 한도 대기 13:00 · 업무']
+    ]);
+  });
+
+  test('reads the provider gate label from the same function as the tile badge', () => {
+    const label = providerHoldBadgeText(
+      /** @type {any} */ ({ kind: 'outage', next_probe_at: 1_800_000_000_000 })
+    );
+    const row = renderQueueRow({
+      gate: gate({ kind: 'provider_outage', label })
+    });
+
+    expect(
+      /** @type {HTMLElement} */ (row)
+        .querySelector('.worker-dep--gate')
+        ?.textContent?.trim()
+    ).toBe(label);
+  });
+
+  test('orders the systemic row operations as ▶ 재개 지금 시작 ✕', () => {
+    const ops = renderOps({ gate: gate() });
+
+    const labels = Array.from(
+      /** @type {HTMLElement} */ (ops).querySelectorAll('button')
+    ).map((button) => button.textContent?.trim());
+
+    expect(labels).toEqual(['▶ 재개', '지금 시작', '✕']);
+  });
+
+  test('carries the hold since on ▶ 재개', () => {
+    const ops = renderOps({ gate: gate() });
+
+    const resume = /** @type {HTMLElement} */ (
+      /** @type {HTMLElement} */ (ops).querySelector(
+        '.worker-mini__hold-resume'
+      )
+    );
+
+    expect([resume.dataset.action, resume.dataset.since]).toEqual([
+      'queue-hold-resume',
+      '5000'
+    ]);
+  });
+
+  test('draws 지금 시작 but no ▶ 재개 on a provider gate outside the grace', () => {
+    const ops = renderOps({
+      gate: gate({ kind: 'provider_outage', since: null })
+    });
+
+    const labels = Array.from(
+      /** @type {HTMLElement} */ (ops).querySelectorAll('button')
+    ).map((button) => button.textContent?.trim());
+
+    expect(labels).toEqual(['지금 시작', '✕']);
+  });
+
+  test('draws neither gate operation on an ungated row past its grace', () => {
+    const ops = renderOps({ added_at: 1 });
+
+    const labels = Array.from(
+      /** @type {HTMLElement} */ (ops).querySelectorAll('button')
+    ).map((button) => button.textContent?.trim());
+
+    expect(labels).toEqual(['✕']);
+  });
+
+  test('makes the gate popup content from the gate lines', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({ id: 'UI-q1', gate: gate() }),
+      'gate'
+    );
+
+    expect(content).toEqual({
+      title: '자동 디스패치가 막혀 있다',
+      lines: ['loud_fail_blocker', '출구: 이 행의 ▶ 재개(큐 전체)']
+    });
   });
 });

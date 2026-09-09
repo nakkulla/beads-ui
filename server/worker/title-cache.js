@@ -32,6 +32,7 @@ import { debug } from '../logging.js';
 import { resolveSpecId } from '../spec-id.js';
 import { enrichIssueWorkflow } from '../workflow-enrich.js';
 import { parseDescriptionScope } from './artifact-scope.js';
+import { ACCOUNT_KEYS } from './exec-enums.js';
 
 const log = debug('worker:title-cache');
 
@@ -59,14 +60,20 @@ const POSITIVE_TTL_MS = 5 * 60_000;
 
 /**
  * The metadata keys an execution pin is allowed to carry (UI-q1tg §3.1): the
- * workspace execution profile's keys plus `impl_dispatch`. A bead's metadata
- * holds far more than that, and the monitor payload multiplies whatever is kept
- * by the number of visible repos, so everything the chip derivation does not
- * read is dropped at the record instead of on the wire.
+ * workspace execution profile's keys, `impl_dispatch`, and the two account pins
+ * — the same set Worker's `runnable-cache.js EXEC_PIN_KEYS` keeps, so a waiting
+ * row's usage-limit gate (UI-01wh §3.1) resolves the same account on both tabs.
+ * A bead's metadata holds far more than that, and the monitor payload
+ * multiplies whatever is kept by the number of visible repos, so everything the
+ * chip derivation does not read is dropped at the record instead of on the wire.
  *
  * @type {Set<string>}
  */
-const EXEC_PIN_KEYS = new Set([...EXECUTION_SETTING_KEYS, 'impl_dispatch']);
+const EXEC_PIN_KEYS = new Set([
+  ...EXECUTION_SETTING_KEYS,
+  'impl_dispatch',
+  ...ACCOUNT_KEYS
+]);
 
 /**
  * The allow-listed execution pin of one issue's metadata. Non-string values are

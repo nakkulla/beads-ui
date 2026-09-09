@@ -1,7 +1,8 @@
 ---
 id: 48
 title: Worker 체계적 정지의 해제는 사람의 승인 한 번이며 재개 버튼과 큐를 세운 attempt의 ↻ 이어하기가 같은 승인이다
-status: accepted
+status: superseded
+superseded_by: 49
 date: 2026-09-09
 summary: "Worker 체계적 정지의 해제는 사람의 승인 한 번이며, 재개 버튼과 큐를 세운 attempt(자손 포함)의 ↻ 이어하기가 같은 승인이다. 자동 재개는 정지를 풀지 않는다."
 supersedes: [16]

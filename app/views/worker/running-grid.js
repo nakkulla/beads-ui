@@ -35,6 +35,12 @@ import {
   failureText
 } from './failure-labels.js';
 import {
+  autoResumeText,
+  autoSwitchText,
+  providerClock,
+  providerHoldBadgeText
+} from './gate-labels.js';
+import {
   crossLaneChipTemplate,
   dependencyChipsTemplate,
   discardReceiptTemplate,
@@ -98,6 +104,9 @@ import { logPathTemplate } from './log-path.js';
  * @property {RetryTile|null} [retry] - backoff 사실 (§6). `retry_wait` 타일의
  * 배지 재료이며, 없으면 배지가 그려지지 않는다 (fail-quiet).
  * @property {HoldTile|null} [hold] - 슬롯 1 판정과 상세 팝오버에만 쓰는 hold 재료.
+ * @property {number} [hold_since] - 서 있는 환경 보류의 `since` (UI-01wh §3.1).
+ * `retry_wait` 타일 foot의 `↻ 지금 재시도`가 쓰는 CAS 재료이고, 보류가 없으면
+ * 키 자체가 없어 버튼이 서지 않는다 (fail-quiet).
  * @property {'running'|'paused'|'failed'|'orphaned'|'parked'|'retry_wait'|'waiting'|'provider_hold'} [status] - Raw
  * attempt status, used to distinguish failure from orphan interruption.
  * @property {string} [status_label] - Terminal status label for a failed tile.
@@ -305,45 +314,6 @@ function retryWaitBadgeText(retry) {
         })}`
       : '';
   return `↻ 재시도 대기${count}${next}`;
-}
-
-/**
- * Format a provider timestamp as the local clock.
- *
- * @param {unknown} value
- * @returns {string}
- */
-function providerClock(value) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return '';
-  }
-  return new Date(value).toLocaleTimeString('ko-KR', {
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-}
-
-/**
- * Compose the exclusive slot-1 provider-hold verdict badge.
- *
- * @param {HoldTile|null|undefined} hold
- * @returns {string}
- */
-export function providerHoldBadgeText(hold) {
-  if (!hold) {
-    return '';
-  }
-  const manual = hold.auto_resume === 'disarmed' ? ' · 수동 조치' : '';
-  if (hold.kind === 'usage_limit') {
-    const reset = providerClock(hold.resets_at);
-    if (!reset) {
-      return `⏳ 한도 대기 · 리셋 미상${manual}`;
-    }
-    const account = hold.target?.account_alias || hold.target?.account || '';
-    return `⏳ 한도 대기 ${reset}${account ? ` · ${account}` : ''}${manual}`;
-  }
-  const next = providerClock(hold.next_probe_at);
-  return `⚠️ 공급자 장애${next ? ` · 다음 프로브 ${next}` : ''}${manual}`;
 }
 
 /**
@@ -682,42 +652,6 @@ function failurePopoverTemplate(failure, now) {
 }
 
 /**
- * Explain the automatic recovery receipt without inventing absent state.
- *
- * @param {HoldTile['auto_resume']|undefined} value
- * @returns {string}
- */
-function autoResumeText(value) {
-  if (value === 'pending') {
-    return '회복 후 자동 재개 대기';
-  }
-  if (value === 'disarmed') {
-    return '자동 재개 소진 · 수동 조치 필요';
-  }
-  if (typeof value === 'string' && value.startsWith('refused:')) {
-    return `자동 재개 거부 · ${value.slice('refused:'.length)}`;
-  }
-  return '';
-}
-
-/**
- * Say why a limit hold stayed on its own account (§8.3). `cap` is already told
- * by `auto_resume`, so only the two reasons nothing else reports are worded.
- *
- * @param {HoldTile['auto_switch']|undefined} value
- * @returns {string}
- */
-function autoSwitchText(value) {
-  if (value === 'none') {
-    return '계정 전환 안 함 · 조건을 만족하는 다른 계정 없음';
-  }
-  if (value === 'disabled') {
-    return '계정 전환 안 함 · 자동 전환 꺼짐';
-  }
-  return '';
-}
-
-/**
  * Provider-hold detail in the same decision-popover frame as failures.
  *
  * @param {HoldTile|null} hold
@@ -1016,6 +950,9 @@ function sessionOpenButton(current) {
  * @param {import('lit-html').TemplateResult|''} [resolve_action] - parked 출구.
  * @param {boolean} [discard_failed] - `true`면 같은 실패를 다루는 폐기 조작을
  * 문의 세션 조작보다 먼저 그린다.
+ * @param {number} [hold_since] - 서 있는 환경 보류의 `since` (UI-01wh §3.3).
+ * `retry_wait` 타일 foot의 `↻ 지금 재시도`가 이 CAS 재료로 서고, 없으면 그
+ * 버튼이 없다 (fail-quiet).
  * @returns {import('lit-html').TemplateResult|''}
  */
 function heldBodyTemplate(
@@ -1024,7 +961,8 @@ function heldBodyTemplate(
   discard_actions,
   dependency_chips = '',
   resolve_action = '',
-  discard_failed = false
+  discard_failed = false,
+  hold_since = undefined
 ) {
   if (kind === 'provider_hold') {
     return html`<div class="rtile__foot">
@@ -1049,12 +987,25 @@ function heldBodyTemplate(
   }
   if (kind === 'retry_wait') {
     // 스펙 §5.1: 뱃지 `↻ 재시도 대기 n/3 · HH:MM`이 이미 상태를 말하므로 본문은
-    // 비운다 (fail-quiet). foot에는 `폐기` 하나뿐이고, 투영이 그 버튼을 주지
-    // 않으면 재료 없는 줄이므로 foot 자체를 그리지 않는다.
-    if (!discard_actions) {
+    // 비운다 (fail-quiet). foot의 재료는 `폐기`와, 환경 보류가 서 있을 때의
+    // `↻ 지금 재시도`(UI-01wh §3.3) 둘이다 — 큐 헤더가 없어졌으므로 예약된
+    // 재시도를 앞당기는 조작의 자리가 이 타일이다. 둘 다 없으면 foot을 그리지
+    // 않는다.
+    const retry_now =
+      typeof hold_since === 'number'
+        ? html`<button
+            type="button"
+            class="op-btn rtile__hold-retry"
+            data-since=${hold_since}
+            title="예약된 재시도를 지금 실행합니다"
+          >
+            ↻ 지금 재시도
+          </button>`
+        : '';
+    if (!discard_actions && !retry_now) {
       return '';
     }
-    return html`<div class="rtile__foot">${discard_actions}</div>`;
+    return html`<div class="rtile__foot">${discard_actions}${retry_now}</div>`;
   }
   const summary = summaryText(held?.summary);
   if (kind === 'waiting') {
@@ -1493,7 +1444,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           discard_actions,
           waiting ? monitor_deps : '',
           parked ? resolve_button : '',
-          parked && !!tile.discard?.error
+          parked && !!tile.discard?.error,
+          tile.hold_since
         )
       : failed
         ? ''

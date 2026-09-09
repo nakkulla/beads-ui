@@ -3493,69 +3493,6 @@ html[data-theme='dark'] {
 /* ==== 저장소 작업 상태 스트립 (UI-q0uy §4.1) ====
    기존 `<details>` 패널은 실패 1건에 전체를 강제로 펼쳐 화면을 덮었다. 접힌
    상태에서 사실을 다 말하는 한 줄 버튼으로 바꾸고, 부르는 일은 배지에 맡긴다. */
-/* 큐 보류/정지 배너 (UI-5ym8 §8). 두 종류의 색이 다른 것은 장식이 아니다:
-   환경 보류는 가만히 둬도 재시도가 풀어 주므로 회색이고, 체계적 정지는 사람의
-   [재개]만이 출구이므로 경고색이다. */
-.worker-hold {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-10);
-  flex-wrap: wrap;
-  width: 100%;
-  padding: var(--sp-6) var(--sp-10);
-  border: 1px solid var(--border-panel);
-  border-radius: var(--r-8);
-  background: var(--bg-panel);
-  color: var(--text-secondary);
-  font-size: var(--fs-body-sm);
-}
-
-.worker-hold--systemic {
-  border-color: var(--border-warn);
-  background: color-mix(in srgb, var(--accent-warn) 8%, transparent);
-  color: var(--accent-warn);
-}
-
-.worker-hold__text {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.worker-hold__retry,
-.worker-hold__resume {
-  flex: 0 0 auto;
-  padding: 2px var(--sp-6);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-3);
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: var(--fs-small);
-  line-height: 1.2;
-  cursor: pointer;
-}
-
-.worker-hold__resume {
-  border-color: var(--border-warn);
-}
-
-.worker-hold__retry:hover,
-.worker-hold__resume:hover {
-  border-color: currentcolor;
-}
-
-.worker-provider-gate {
-  width: 100%;
-  padding: var(--sp-6) var(--sp-10);
-  border: 1px solid var(--border-warn);
-  border-radius: var(--r-8);
-  background: color-mix(in srgb, var(--accent-warn) 8%, transparent);
-  color: var(--accent-warn);
-  font-size: var(--fs-body-sm);
-  overflow-wrap: anywhere;
-}
-
 .worker-repo-strip {
   display: flex;
   align-items: center;
@@ -7639,6 +7576,20 @@ html[data-theme='dark'] {
   font: inherit;
   font-size: var(--fs-caption);
   cursor: pointer;
+}
+
+/* 게이트 칩 (UI-01wh §3.2). 두 변형만 색을 갈라 든다: 체계적 정지는 사람의
+   `▶ 재개`만이 출구라 danger, 공급자 장애는 프로브가 풀어 주므로 warn이다.
+   `env`·`usage`는 스스로 풀리는 진단이라 `.worker-dep` 기본색 그대로다 —
+   `⏳ 유예` 칩이 danger를 타지 않는 것과 같은 이유다. */
+.worker-dep--gate-systemic {
+  border-color: var(--accent-danger);
+  color: var(--accent-danger);
+}
+
+.worker-dep--gate-provider_outage {
+  border-color: var(--border-warn);
+  color: var(--accent-warn);
 }
 
 /* 판정 불가 — 색으로 경고하지 않는다. 겹치지 않는다는 뜻이 아니라 모른다는 뜻이다. */

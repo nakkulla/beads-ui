@@ -1041,17 +1041,28 @@ function readinessChipTemplate(judgement, open) {
  *
  * @param {DependencyChips|null|undefined} chips
  * @param {import('lit-html').TemplateResult|''} [after_predecessors] - `⛓` 칩
- * 바로 뒤에 서는 조각 (UI-svh6 §4.3). 칩 하나를 위해 이 템플릿이 `MiniItem`을
- * 통째로 읽게 만들지 않으려고 호출 자리가 만들어 넘긴다. 값이 있으면 상단 줄은
- * 선행 칩이 없어도 선다.
+ * 바로 뒤에 서는 조각 — 후보 카드의 `스펙 대기`·준비 판정 칩 (UI-svh6 §4.3).
+ * 칩 하나를 위해 이 템플릿이 `MiniItem`을 통째로 읽게 만들지 않으려고 호출
+ * 자리가 만들어 넘긴다. 값이 있으면 상단 줄은 선행 칩이 없어도 선다.
+ * @param {import('lit-html').TemplateResult|''} [leading] - 의존 줄의 **맨 앞**에
+ * 서는 조각 — 게이트 칩 (UI-01wh §3.2). "왜 못 가나"의 가장 바깥 사정이라 발차
+ * 칩보다도 먼저다. 값이 있으면 역시 상단 줄이 선다.
+ * @param {import('lit-html').TemplateResult|''} [trailing] - 의존 줄의 **끝**에
+ * 서는 조각 — 유예 `⏳` (UI-01wh §3.2 순서: 게이트 → 발차 → 선행 → 후속 → 유예).
+ * 값이 있으면 역시 상단 줄이 선다.
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function dependencyChipsTemplate(chips, after_predecessors = '') {
+export function dependencyChipsTemplate(
+  chips,
+  after_predecessors = '',
+  leading = '',
+  trailing = ''
+) {
   if (!chips) {
-    return after_predecessors === ''
+    return after_predecessors === '' && leading === '' && trailing === ''
       ? ''
       : html`<div class="worker-deps worker-deps--primary">
-          ${after_predecessors}
+          ${leading}${after_predecessors}${trailing}
         </div>`;
   }
   // 각 묶음 안은 ID 사전순이다 (UI-8x90 §4.1). 투영이 실어 주는 순서는 서버
@@ -1068,7 +1079,9 @@ export function dependencyChipsTemplate(chips, after_predecessors = '') {
     !!armed_lane ||
     predecessors.length > 0 ||
     dependents.length > 0 ||
-    after_predecessors !== '';
+    after_predecessors !== '' ||
+    leading !== '' ||
+    trailing !== '';
   const has_secondary =
     released.length > 0 || overlaps.length > 0 || scope_missing;
   if (!has_primary && !has_secondary) {
@@ -1076,7 +1089,7 @@ export function dependencyChipsTemplate(chips, after_predecessors = '') {
   }
   return html`${has_primary
     ? html`<div class="worker-deps worker-deps--primary">
-        ${armed_lane
+        ${leading}${armed_lane
           ? html`<span
               class=${`worker-dep worker-dep--armed${armed_lane.orphan ? ' worker-dep--armed-orphan' : ''}`}
               title=${armed_lane.orphan
@@ -1096,7 +1109,7 @@ export function dependencyChipsTemplate(chips, after_predecessors = '') {
           openableChipTemplate(chip, 'pred')
         )}${after_predecessors}${dependents.map((chip) =>
           openableChipTemplate(chip, 'dependents')
-        )}
+        )}${trailing}
       </div>`
     : ''}${has_secondary
     ? html`<div class="worker-deps worker-deps--secondary">
@@ -1576,6 +1589,9 @@ export function priorityBadgeTemplate(priority) {
  * @property {number} [done_at] - 완료 레인 진입 시각 = 완료 시각 (UI-rkly §3).
  * @property {number} [added_at] - 대기 레인 진입 시각 (UI-q1tg §3.3). 유예 칩과
  * `[지금 시작]`의 유일한 판정 재료이고, 대기 행이 아니면 필드 자체가 없다.
+ * @property {import('./lane-model.js').LaneGate} [gate] - 이 행의 자동 디스패치를
+ * 막고 있는 게이트 (UI-01wh §3.1). 슬롯 4a 게이트 칩과 `▶ 재개`·`[지금 시작]`의
+ * 유일한 재료이고, 막혀 있지 않으면 필드 자체가 없다 (fail-quiet).
  * @property {boolean} [ghost] - Serial-lane occupancy row (UI-04vo §4): the
  * lineage holding the lane, drawn dimmed and never draggable.
  * @property {number} [seq] - 1-based execution order number in a serial lane.
@@ -1735,6 +1751,34 @@ export function graceRemainingMs(added_at, now) {
 }
 
 /**
+ * The 게이트 칩 — 슬롯 4a 판정 칩 (UI-01wh §3.2). 줄 맨 앞에 선다: "왜 못 가나"의
+ * 가장 바깥 사정이 큐 전체의 사정이기 때문이다. 클릭은 사유 팝업이고 칩은 상태를
+ * 쓰지 않는다 (칩 문법 §4.5). 재료가 없으면 그리지 않는다 (fail-quiet).
+ *
+ * @param {import('./lane-model.js').LaneGate|null|undefined} gate - 이 행을 막고
+ * 있는 게이트 투영, 막혀 있지 않으면 null.
+ * @param {string} bead_id - 이 행의 이슈 ID. 팝업 열림 키의 한 축이고 클릭
+ * 핸들러가 `closest('[data-bead-id]')`로 읽는 좌표다.
+ * @param {boolean} open
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function gateChipTemplate(gate, bead_id, open) {
+  if (!gate) {
+    return '';
+  }
+  return html`<button
+    type="button"
+    class="worker-dep worker-dep--gate worker-dep--gate-${gate.kind} judgement-chip"
+    data-chip-key="gate"
+    data-bead-id=${bead_id}
+    aria-expanded=${open ? 'true' : 'false'}
+    title=${gate.title}
+  >
+    ${gate.label}
+  </button>`;
+}
+
+/**
  * The 유예 칩 `⏳ <n>초` — 슬롯 4a다 (UI-q1tg §3.3, 카드 문법 §5.1 정정): 답하는
  * 질문이 `⛓ 선행 대기`와 같은 "지금 갈 수 있나"다. `⛔` 접두를 쓰지 않는 것은
  * `prerequisite_unmet`과 같은 이유다 — 거절이 아니라 곧 스스로 풀리는 진단이므로
@@ -1757,17 +1801,22 @@ export function graceChipTemplate(added_at, now = Date.now()) {
 }
 
 /**
- * `[지금 시작]` — 슬롯 1 조작이다 (UI-q1tg §3.3). 유예 중인 행에만 서고, 클릭은
- * WS op `worker-queue-start-now`로 그 행 하나의 유예를 걷는다. 새 권한이 아니라
+ * `[지금 시작]` — 슬롯 1 조작이다 (UI-q1tg §3.3). 클릭은 WS op
+ * `worker-queue-start-now`로 그 행 하나의 유예를 걷는다. 새 권한이 아니라
  * `▶ 진행`과 같은 명시적 실행 경로의 행 단위 진입점이며, `added_at`을 과거로
- * 내리지 않는다. 남은 초가 0 이하면 그리지 않는다 (fail-quiet).
+ * 내리지 않는다.
  *
- * @param {{ id: string, added_at?: number }} item
+ * 서는 조건은 둘이다 (UI-01wh §3.3): 유예 중이거나, 게이트에 막혀 있거나.
+ * 게이트로 설 때는 이 행 하나가 큐 정지·공급자 보류를 무시하고 지금 도는
+ * 결정이므로 title이 그것을 말한다. 둘 다 아니면 그리지 않는다 (fail-quiet).
+ *
+ * @param {{ id: string, added_at?: number, gate?: import('./lane-model.js').LaneGate }} item
  * @param {number} [now]
  * @returns {import('lit-html').TemplateResult|''}
  */
 export function startNowButtonTemplate(item, now = Date.now()) {
-  if (graceRemainingMs(item.added_at, now) <= 0) {
+  const gated = !!item.gate;
+  if (graceRemainingMs(item.added_at, now) <= 0 && !gated) {
     return '';
   }
   return html`<button
@@ -1775,9 +1824,36 @@ export function startNowButtonTemplate(item, now = Date.now()) {
     class="op-btn worker-mini__start-now"
     data-action="queue-start-now"
     data-bead-id=${item.id}
-    title="대기 진입 유예를 이 항목에 대해서만 걷고 지금 실행합니다"
+    title=${gated
+      ? '큐 정지·공급자 보류를 이 행에 대해서만 무시하고 지금 실행합니다'
+      : '대기 진입 유예를 이 항목에 대해서만 걷고 지금 실행합니다'}
   >
     지금 시작
+  </button>`;
+}
+
+/**
+ * `▶ 재개` — 체계적 정지에 막힌 대기 행의 슬롯 1 조작 (UI-01wh §3.3). 클릭은
+ * 배너가 하던 것과 같은 큐 전체 해제(`worker-queue-hold-resume`)이고 CAS 재료는
+ * 그 hold의 `since`다. 막힌 행 전부에 그린다 — 같은 행동이고 `since` CAS가 두
+ * 번째 클릭을 no-op으로 만든다 (ADR 0048 §3.3).
+ *
+ * @param {{ gate?: import('./lane-model.js').LaneGate }} item
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function holdResumeButtonTemplate(item) {
+  const gate = item.gate;
+  if (!gate || gate.kind !== 'systemic' || typeof gate.since !== 'number') {
+    return '';
+  }
+  return html`<button
+    type="button"
+    class="op-btn worker-mini__hold-resume"
+    data-action="queue-hold-resume"
+    data-since=${gate.since}
+    title="정지를 풀고 멈춰 있던 bead를 다시 디스패치합니다 (큐 전체)"
+  >
+    ▶ 재개
   </button>`;
 }
 
@@ -1805,8 +1881,11 @@ export function queueRowOps(item, options = {}) {
   if (item.draggable !== true || item.done === true) {
     return undefined;
   }
+  // 순서는 넓은 것(큐 전체) → 좁은 것(이 행) → 자리 조작 → 빼기다 (UI-01wh §3.3).
   return html`<span class="worker-mini__rowops">
-    ${startNowButtonTemplate(item)}${options.nudgeable === true
+    ${holdResumeButtonTemplate(item)}${startNowButtonTemplate(
+      item
+    )}${options.nudgeable === true
       ? html`<button
             type="button"
             class="op-btn op-btn--icon worker-mini__rowops-up"
@@ -2142,6 +2221,11 @@ export function miniRow(item, options = {}) {
   // 영수증 회계 잔여도 슬롯 5다 (UI-h6t1 §4.1): 같은 줄의 `exec_receipt`·실패
   // 로그 경로와 짝이라 "그 실행이 어디서 무엇으로 일어났고 그 기록이 얼마나
   // 성립하는지"를 한 줄이 답한다.
+  // 게이트 칩은 4a 줄 맨 앞이다 (UI-01wh §3.2) — 유예 칩과 같은 질문에 답하지만
+  // 가장 바깥 사정이므로 먼저 선다. 팝업은 그 칩이 선 줄이 싣는다 (UI-8x90 §5).
+  const gate_open = chipOpen(item, 'gate');
+  const gate_el = gateChipTemplate(item.gate, item.id, gate_open);
+  const grace_el = graceChipTemplate(item.added_at);
   const receipt_badge_el = receiptBadgeChipTemplate(
     item,
     chipOpen(item, 'receipt')
@@ -2164,16 +2248,21 @@ export function miniRow(item, options = {}) {
     usage_el ||
     log_path_el
       ? html`<div class="worker-chips">
-          ${repo_el}${cross_lane_el}${route_el}${from_el}${exec_chips_el}${rec_el}${receipt_badge_el}${usage_el}${log_path_el}${judgementPopover(
-            item
-          )}
+          ${repo_el}${cross_lane_el}${route_el}${from_el}${exec_chips_el}${rec_el}${receipt_badge_el}${usage_el}${log_path_el}${gate_open
+            ? ''
+            : judgementPopover(item)}
         </div>`
       : '';
   // 유예 칩은 슬롯 4a다 (UI-q1tg §3.3) — `⛓` 선행 칩과 같은 질문에 답하므로 그
-  // 줄 안, 선행 칩 바로 뒤에 선다.
+  // 줄 안에 서고, 자리는 줄의 끝이다 (§3.2 순서: 게이트 → 발차 → 선행 → 후속 →
+  // 유예). 게이트 칩은 같은 줄의 맨 앞이고 그 팝업은 칩 바로 뒤에 붙는다.
   const deps_el = dependencyChipsTemplate(
     item.dependency_chips,
-    graceChipTemplate(item.added_at)
+    '',
+    gate_el === ''
+      ? ''
+      : html`${gate_el}${gate_open ? judgementPopover(item) : ''}`,
+    grace_el
   );
   const receipt_el = discardReceiptTemplate(item);
   const actions_el = options.actions ? options.actions : '';
@@ -2403,6 +2492,13 @@ export function judgementPopoverContent(item, chip_key) {
       ]
     };
   }
+  if (chip_key === 'gate') {
+    const gate = item.gate;
+    if (!gate) {
+      return null;
+    }
+    return { title: '자동 디스패치가 막혀 있다', lines: gate.lines };
+  }
   if (chip_key === 'readiness') {
     const judgement = readinessJudgement(item);
     if (!judgement) {
@@ -2444,13 +2540,15 @@ export function judgementPopoverContent(item, chip_key) {
 }
 
 /**
- * The keys, in the order a card would read them (UI-8x90 §4.5) — 머리줄 넷이
- * 먼저고 슬롯 4a의 `스펙 대기`가 그 아래다. 한 카드에 두 팝업이 동시에 열리지
+ * The keys, in the order a card would read them (UI-8x90 §4.5) — 4a의 게이트
+ * 칩이 맨 앞(가장 바깥 사정), 그 뒤가 머리줄 넷이고 슬롯 4a의 `스펙 대기`가
+ * 그 아래다. 한 카드에 두 팝업이 동시에 열리지
  * 않으므로 첫 열림 하나만 찾으면 된다.
  *
  * @type {ReadonlyArray<string>}
  */
 export const JUDGEMENT_CHIP_KEYS = [
+  'gate',
   'rec',
   'receipt',
   'session_preferred',

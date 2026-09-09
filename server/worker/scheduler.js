@@ -952,6 +952,32 @@ function graceRemainingMs(workspace, entry, at) {
 }
 
 /**
+ * A bead's current waiting row in a snapshot, from EITHER waiting area — the
+ * parallel queue or a serial lane (UI-tjus §3.2). Null when the bead is not
+ * waiting. The row itself is what dispatch-time judgments read, because
+ * `added_at` and `armed_by_lane` live on it and a re-seat replaces them.
+ *
+ * @param {{ queue?: Array<{ bead_id: string }>, serial_lanes?: Array<{ entries?: Array<{ bead_id: string }> }> }} q
+ * @param {string} bead_id
+ * @returns {{ bead_id: string, added_at?: number, armed_by_lane?: string|null }|null}
+ */
+function waitingEntryOf(q, bead_id) {
+  for (const row of q.queue || []) {
+    if (row.bead_id === bead_id) {
+      return row;
+    }
+  }
+  for (const lane of q.serial_lanes || []) {
+    for (const row of lane.entries || []) {
+      if (row.bead_id === bead_id) {
+        return row;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * The cross lane a bead's waiting row is armed by, for the dispatch snapshot
  * (UI-jaua §5.1). Both waiting areas are read (UI-tjus §3.2): a serial member
  * now dispatches from the lane the user placed it in, and the attempt has to
@@ -963,10 +989,7 @@ function graceRemainingMs(workspace, entry, at) {
  * @returns {string|null}
  */
 function armedByLaneOf(q, bead_id) {
-  const entry = [
-    ...(q.queue || []),
-    ...(q.serial_lanes || []).flatMap((lane) => lane.entries || [])
-  ].find((row) => row.bead_id === bead_id);
+  const entry = waitingEntryOf(q, bead_id);
   return entry && isArmedEntry(entry)
     ? /** @type {string} */ (entry.armed_by_lane)
     : null;
@@ -7392,12 +7415,25 @@ export function createScheduler(deps) {
       // codex without anyone setting a runner key (§C-2).
       const runner_name = exec.runner;
 
+      // §3.4: a live `[지금 시작]` click skips the provider gate FOR THIS ROW
+      // alone, the same exception manual resume already is. The judgment reads
+      // the waiting row itself rather than the bare request time, because
+      // {@link isStartNowEntry} also requires `added_at <= requested_at`: a row
+      // re-seated after the click carries a newer `added_at` and must not
+      // inherit that click's bypass. `armed_by_lane` deliberately does NOT
+      // bypass — it is durable and replays across a restart, so it cannot mean
+      // "push this row past a gate standing right now".
+      const waiting_entry = waitingEntryOf(dispatch_snapshot, bead_id);
+      const start_now_bypass =
+        waiting_entry !== null &&
+        isStartNowEntry(workspace, waiting_entry, now());
       if (
-        await providerDispatchHeld(
+        !start_now_bypass &&
+        (await providerDispatchHeld(
           workspace,
           runner_name,
           resolved_exec.accounts
-        )
+        ))
       ) {
         reservation.release();
         claimed.delete(bead_id);
