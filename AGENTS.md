@@ -50,9 +50,8 @@
 - `npm run tsc`, `npm run lint`, `npx prettier --write <변경 파일>`,
   `npx vitest run --reporter=dot`(timeout 120초; fork-pool이 드물게 교착하면
   죽이고 재실행; `| tail`로 진행을 가리지 않는다).
-- 프런트엔드 소스 수정 후 `npm run build`를 prettier **뒤에** 실행하고 갱신된
-  `app/main.bundle.js`/`.map`을 포함한다(순서가 반대면 소스맵이 낡아 배포
-  tracked-clean 검사가 실패한다).
+- 번들은 tracked가 아니다(`.gitignore`); 로컬 정적 모드 확인이 필요하면
+  `npm run build`.
 
 ## Worker pitfalls
 
@@ -65,6 +64,9 @@
 - 큰 파일은 `Read`를 offset/limit 400~800줄로 나눠 읽고, 편집은 `Edit`로
   한다(heredoc 치환 편집 금지).
 - vitest 출력은 ANSI 색을 포함한다 — 개수를 셀 때 `--reporter=dot`과 `grep -a`.
+- base 동기화(`git merge origin/main`)에서 번들의 modify/delete 충돌이 나면
+  `git rm -q -- app/main.bundle.js app/main.bundle.js.map`으로 삭제를 채택하고
+  병합 커밋을 만든다.
 
 ## Post-Merge Runtime Validation
 

@@ -39,10 +39,19 @@ const config = getConfig();
 let runtime_identity = null;
 // No auth (spec §8): the server binds to the trusted tailnet interface, and the
 // WS Origin allowlist remains the browser-CSRF boundary. No token gate.
-const app = createApp({
-  ...config,
-  runtime_identity: () => runtime_identity
-});
+/** @type {import('express').Express} */
+let app;
+try {
+  app = createApp({
+    ...config,
+    runtime_identity: () => runtime_identity
+  });
+} catch (err) {
+  // A missing bundle is an operator mistake, not a defect: print the one line
+  // that says what to run instead of a stack trace.
+  console.error(String(err instanceof Error ? err.message : err));
+  process.exit(1);
+}
 const server = createServer(app);
 const log = debug('server');
 const configured_workspaces = discoverWorkspaces({

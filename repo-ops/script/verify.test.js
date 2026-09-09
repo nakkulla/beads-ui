@@ -110,22 +110,77 @@ function calls(env) {
   return fs.readFileSync(env.log, 'utf8').trim().split('\n').filter(Boolean);
 }
 
+/**
+ * Commit the fixture's files so `git status --porcelain` can report a write to
+ * a tracked path afterwards. The coordinator compares tree objects; this is the
+ * same observation with a `git` command.
+ *
+ * @param {string} repo
+ */
+function commitAll(repo) {
+  spawnSync('git', ['add', '-A'], { cwd: repo });
+  spawnSync(
+    'git',
+    [
+      '-c',
+      'user.email=verify@example.invalid',
+      '-c',
+      'user.name=verify test',
+      'commit',
+      '-q',
+      '-m',
+      'candidate base'
+    ],
+    { cwd: repo }
+  );
+}
+
+/**
+ * @param {string} repo
+ * @returns {string} porcelain status text, empty when nothing changed
+ */
+function porcelain(repo) {
+  return spawnSync('git', ['status', '--porcelain'], {
+    cwd: repo,
+    encoding: 'utf8'
+  }).stdout.trim();
+}
+
 describe('repo-ops/script/verify', () => {
-  test('runs install, type check and tests in order', () => {
+  test('runs install, type check, build and tests in order', () => {
     const env = fixture();
 
     const result = run(env);
 
     expect(result.status).toBe(0);
-    expect(calls(env)).toEqual(['npm ci', 'npm run tsc', 'npm test']);
+    expect(calls(env)).toEqual([
+      'npm ci',
+      'npm run tsc',
+      'npm run build',
+      'npm test'
+    ]);
   });
 
-  test('never builds — the candidate tree must stay untouched', () => {
+  test('propagates a red build without running the suite', () => {
+    const env = fixture({
+      npm_body: 'if [ "$1" = run ] && [ "$2" = build ]; then exit 2; fi'
+    });
+
+    const result = run(env);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('npm run build failed');
+    expect(calls(env)).toEqual(['npm ci', 'npm run tsc', 'npm run build']);
+  });
+
+  test('leaves the candidate tracked tree untouched', () => {
     const env = fixture();
+    commitAll(env.repo);
 
-    run(env);
+    const result = run(env);
 
-    expect(calls(env).some((line) => line.includes('build'))).toBe(false);
+    expect(result.status).toBe(0);
+    expect(porcelain(env.repo)).toBe('');
   });
 
   test('fails on a red type check without running the suite', () => {

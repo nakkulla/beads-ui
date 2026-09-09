@@ -55,7 +55,8 @@ async function getHealthz(probes) {
     port: 0,
     app_dir: path.resolve('app'),
     root_dir: process.cwd(),
-    frontend_mode: 'static',
+    // live mode keeps this test independent of the untracked bundle (UI-47y7)
+    frontend_mode: 'live',
     health_probes: {
       bd_probe: () => probes.bd ?? true,
       db_probe: () => probes.db ?? true,

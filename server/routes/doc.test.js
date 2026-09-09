@@ -47,7 +47,8 @@ async function requestDoc(query) {
     port: 0,
     app_dir: path.resolve('app'),
     root_dir: workspace,
-    frontend_mode: 'static'
+    // live mode keeps this test independent of the untracked bundle (UI-47y7)
+    frontend_mode: 'live'
   });
   const server = createServer(app);
   // Bind the loopback address the fetch below targets (see

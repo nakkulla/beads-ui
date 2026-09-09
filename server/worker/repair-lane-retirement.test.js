@@ -302,10 +302,10 @@ const GREP_ALLOWLIST = [
 ];
 
 /**
- * Build outputs, not sources. The bundle is regenerated from `app/` on every
- * build, so scanning it would report the same offender twice and, worse, make
- * a stale bundle look like a source regression. The build's own grep is the
- * check that it carries no retired identifier.
+ * Build outputs, not sources. The bundle is untracked (UI-47y7), so a checkout
+ * may not have it at all; when it is present, scanning it would report the same
+ * offender twice and, worse, make a stale bundle look like a source regression.
+ * Either way this gate skips these paths.
  */
 const BUILD_OUTPUTS = ['app/main.bundle.js', 'app/main.bundle.js.map'];
 

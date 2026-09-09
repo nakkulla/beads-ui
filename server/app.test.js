@@ -59,6 +59,18 @@ async function fetchJsonFromApp(app, pathname) {
   }
 }
 
+/**
+ * Keep these wiring tests independent of the untracked frontend bundle: static
+ * mode refuses to start without `app/main.bundle.js` (UI-47y7), and nothing
+ * here is about how the bundle is served.
+ *
+ * @param {ReturnType<typeof getConfig>} config
+ * @returns {ReturnType<typeof getConfig>}
+ */
+function liveConfig(config) {
+  return { ...config, frontend_mode: 'live' };
+}
+
 afterEach(() => {
   delete process.env.BDUI_CONFIG_PATH;
 });
@@ -67,7 +79,7 @@ describe('server app wiring (no listen)', () => {
   test('createApp returns an express-like app', () => {
     process.env.BDUI_CONFIG_PATH = missingConfigPath();
     const config = getConfig();
-    const app = createApp(config);
+    const app = createApp(liveConfig(config));
     expect(isFunction(app.get)).toBe(true);
     expect(isFunction(app.use)).toBe(true);
   });
@@ -75,7 +87,7 @@ describe('server app wiring (no listen)', () => {
   test('omits label policy from the bootstrap config', async () => {
     process.env.BDUI_CONFIG_PATH = missingConfigPath();
     const config = getConfig();
-    const app = createApp(config);
+    const app = createApp(liveConfig(config));
 
     const body = await fetchJsonFromApp(app, '/api/config');
 
@@ -86,7 +98,7 @@ describe('server app wiring (no listen)', () => {
     process.env.BDUI_CONFIG_PATH = missingConfigPath();
     const config = getConfig();
     const app = createApp({
-      ...config,
+      ...liveConfig(config),
       workspace_config: { ...config.workspace_config, default_workspace: '/w' }
     });
 

@@ -31,10 +31,11 @@ cwd="$(pwd -P)"
 # object before and after, and any write settles the operation as
 # `verify_candidate_mismatch` instead of a verdict.
 #
-# The bundle is ADR index/citation checks + npm ci + tsc + test. lint, prettier
-# and build are already forced by Pre-Handoff Validation before the PR exists,
-# and `npm run build` would rewrite the tracked frontend bundle, which is
-# exactly the write this checkout forbids.
+# The bundle is ADR index/citation checks + npm ci + tsc + build + test. lint
+# and prettier are already forced by Pre-Handoff Validation before the PR
+# exists. The frontend bundle is NOT tracked (`.gitignore`), so `npm run build`
+# writes only ignored files and leaves the candidate's tracked tree identical —
+# and it is what proves the PR still bundles, since no committed bundle does.
 #
 # The ADR index is generated and can drift silently; a retired ADR can also
 # leave a stale `(ADR NNNN)` pointer in AGENTS.md. Catch both before merge,
@@ -44,6 +45,7 @@ python3 "$HOME/.claude/skills/adr/scripts/adr-cite-check.py" --repo "$repo_root"
 
 npm ci || fail "npm ci failed"
 npm run tsc || fail "npm run tsc failed"
+npm run build || fail "npm run build failed"
 npm test || fail "npm test failed"
 
 printf 'repo-ops verify ok: base=%s target=%s\n' "$REPO_OPS_TARGET_BASE" "$REPO_OPS_TARGET_SHA"
