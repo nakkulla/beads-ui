@@ -170,8 +170,9 @@ import { logPathTemplate } from './log-path.js';
  * @property {string} [summary]
  * @property {{ model?: string, account?: string, account_alias?: string }} [target]
  * @property {'pending'|'disarmed'|`refused:${string}`} [auto_resume]
- * @property {'none'|'cap'|'disabled'} [auto_switch] - Why the limit hold did not
- * move to another account (§8.3). Absent when it did switch.
+ * @property {'none'|'cap'|'unconfigured'|'disabled'} [auto_switch] - Why the
+ * limit hold did not move to another account (UI-13o1 §3.4). Absent when it did
+ * switch; `cap` is retired vocabulary that old queue files may still carry.
  * @property {number} [resets_at]
  * @property {number} [next_probe_at]
  * @property {string} [log_path]

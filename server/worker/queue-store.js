@@ -76,8 +76,8 @@
  * launch, or null when the runner did not apply a Claude pin.
  * @property {string|null} codex_account - Codex account key applied to the
  * launch, or null when no Codex pin was applied.
- * @property {{ claude: 'bead'|'workspace_default'|'outage_switch'|null, codex: 'bead'|'workspace_default'|null }|null} account_sources - Provenance of the applied account pins.
- * @property {string|null} account_switched_from - Claude email replaced by an outage switch.
+ * @property {{ claude: AccountSourceValue, codex: AccountSourceValue }|null} account_sources - Provenance of the applied account pins.
+ * @property {string|null} account_switched_from - Account key replaced by an outage or preemptive switch.
  * @property {{ reason: 'transcript_missing', session_id: string }|null} resume_fallback - One-shot fresh substitute marker.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
@@ -120,8 +120,10 @@
  * @property {string|null} target_base - Merge target base at dispatch.
  * @property {number|null} finished_at - Epoch ms the attempt terminated.
  * @property {string|null} cause - Failure cause shown by the decision tile.
- * @property {'provider_outage'|null} auto_resume_kind - Marks the one allowed
- * automatic continuation after a provider hold recovers.
+ * @property {'provider_outage'|'account_switch'|null} auto_resume_kind - Marks
+ * how an attempt was continued after a provider hold: `provider_outage` is the
+ * one capped automatic reset resume, `account_switch` is a limit switch child
+ * and does not consume that cap.
  * @property {string|null} auto_resume_refused - Why the recovery resume was
  * turned away (`worktree_missing` and the like). Kept on the attempt because
  * recovery deletes the target the receipt came from before the resume runs.
@@ -530,7 +532,9 @@
  * @property {import('./queue-hold.js').HoldHistoryEntry[]} hold_history -
  * Recent env failures, pruned to the 30-minute cross-bead repetition window.
  * @property {Record<string, ProviderHold>} provider_hold - Provider-health dispatch gates by runner.
- * @property {boolean} provider_auto_switch - Durable automatic account-switch preference.
+ * @property {{ claude: ProviderLimitPolicy, codex: ProviderLimitPolicy }} provider_limit_policy -
+ * Durable per-runner usage-limit policy (2026-09-09 usage-limit-account-switch
+ * spec §3.1). Replaces the retired `provider_auto_switch` boolean.
  * @property {AutoResumePending[]} auto_resume_pending - Recovery receipts consumed only after the hold mutation is durable.
  * @property {Record<string, Attempt>} attempts - Attempt records by attempt_id.
  * @property {Record<string, AdmissionRecord>} admission -
@@ -619,6 +623,15 @@
  * run once and never again.
  */
 /**
+ * @typedef {'bead'|'workspace_default'|'outage_switch'|'preempt_switch'|null} AccountSourceValue
+ */
+/**
+ * @typedef {Object} ProviderLimitPolicy
+ * @property {'wait'|'switch'} mode - What a usage limit does on this runner.
+ * @property {string[]} accounts - Catalog keys the user allows a switch TO.
+ * @property {number|null} preempt_pct - Preemptive switch threshold, or null.
+ */
+/**
  * @typedef {Object} ProviderTarget
  * @property {'outage'|'usage_limit'} kind
  * @property {string} model
@@ -628,7 +641,7 @@
  * @property {number|null} resets_at
  * @property {number} rearm_count
  * @property {string[]} attempt_ids
- * @property {'none'|'cap'|'disabled'|null} [auto_switch]
+ * @property {'none'|'cap'|'unconfigured'|'disabled'|null} [auto_switch]
  * @property {number|null} [next_probe_at] - When the prober next touches this
  * target. Durable rather than timer-local because the held tile shows it: an
  * in-memory deadline reads as absent for every viewer after a restart.
@@ -1947,7 +1960,11 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'lineages',
   'hold_history',
   'provider_hold',
+  // Legacy-drop key: the boolean the per-runner `provider_limit_policy`
+  // replaced. Listed so it is read for migration and then DROPPED on load
+  // instead of round-tripping as opaque data (spec §3.1).
   'provider_auto_switch',
+  'provider_limit_policy',
   'auto_resume_pending',
   // Legacy-drop key: the merge-serial toggle retired by the serial-lane regime
   // (UI-04vo). Listed so it is DROPPED on load instead of round-tripping.
@@ -2018,7 +2035,7 @@ function emptyQueue() {
     lineages: [],
     hold_history: [],
     provider_hold: {},
-    provider_auto_switch: true,
+    provider_limit_policy: emptyProviderLimitPolicy(),
     auto_resume_pending: [],
     orchestration_model: null,
     orchestration_effort: null,
@@ -2936,13 +2953,8 @@ export function makeAttempt(fields) {
       typeof fields.codex_account === 'string' ? fields.codex_account : null,
     account_sources:
       isRecord(fields.account_sources) &&
-      (fields.account_sources.claude === 'bead' ||
-        fields.account_sources.claude === 'workspace_default' ||
-        fields.account_sources.claude === 'outage_switch' ||
-        fields.account_sources.claude === null) &&
-      (fields.account_sources.codex === 'bead' ||
-        fields.account_sources.codex === 'workspace_default' ||
-        fields.account_sources.codex === null)
+      isAccountSourceValue(fields.account_sources.claude) &&
+      isAccountSourceValue(fields.account_sources.codex)
         ? /** @type {Attempt['account_sources']} */ ({
             claude: fields.account_sources.claude,
             codex: fields.account_sources.codex
@@ -2974,7 +2986,8 @@ export function makeAttempt(fields) {
     finished_at: fields.finished_at ?? null,
     cause: fields.cause ?? null,
     auto_resume_kind:
-      fields.auto_resume_kind === 'provider_outage'
+      fields.auto_resume_kind === 'provider_outage' ||
+      fields.auto_resume_kind === 'account_switch'
         ? fields.auto_resume_kind
         : null,
     auto_resume_refused:
@@ -3639,6 +3652,107 @@ function normalizeRepoOperationMigration(value) {
   };
 }
 
+/** Account-source values one attempt record may carry. */
+const ACCOUNT_SOURCE_VALUES = new Set([
+  'bead',
+  'workspace_default',
+  'outage_switch',
+  'preempt_switch'
+]);
+
+/**
+ * Report whether one stored value is a known account-source marker.
+ *
+ * @param {unknown} value
+ * @returns {value is AccountSourceValue}
+ */
+function isAccountSourceValue(value) {
+  return (
+    value === null || ACCOUNT_SOURCE_VALUES.has(/** @type {any} */ (value))
+  );
+}
+
+/**
+ * Build the per-runner default: switching is on, but the allowed set is empty,
+ * so nothing switches until the user picks accounts (spec §3.1 decision 1).
+ *
+ * @returns {ProviderLimitPolicy}
+ */
+function defaultProviderLimitPolicy() {
+  return { mode: 'switch', accounts: [], preempt_pct: null };
+}
+
+/**
+ * @returns {{ claude: ProviderLimitPolicy, codex: ProviderLimitPolicy }}
+ */
+function emptyProviderLimitPolicy() {
+  return {
+    claude: defaultProviderLimitPolicy(),
+    codex: defaultProviderLimitPolicy()
+  };
+}
+
+/**
+ * Normalize one runner's stored policy, dropping values outside the contract.
+ *
+ * @param {unknown} value
+ * @returns {ProviderLimitPolicy}
+ */
+function normalizeProviderLimitPolicyEntry(value) {
+  if (!isRecord(value)) {
+    return defaultProviderLimitPolicy();
+  }
+  /** @type {string[]} */
+  const accounts = [];
+  if (Array.isArray(value.accounts)) {
+    for (const entry of value.accounts) {
+      if (
+        typeof entry === 'string' &&
+        entry.length > 0 &&
+        entry.length <= 256 &&
+        !/\s/.test(entry) &&
+        !accounts.includes(entry)
+      ) {
+        accounts.push(entry);
+      }
+    }
+  }
+  return {
+    mode: value.mode === 'wait' ? 'wait' : 'switch',
+    accounts,
+    preempt_pct:
+      typeof value.preempt_pct === 'number' &&
+      Number.isInteger(value.preempt_pct) &&
+      value.preempt_pct >= 1 &&
+      value.preempt_pct <= 99
+        ? value.preempt_pct
+        : null
+  };
+}
+
+/**
+ * Load the per-runner limit policy, deriving it once from the retired
+ * `provider_auto_switch` boolean when a legacy queue file has no policy.
+ *
+ * @param {unknown} value
+ * @param {unknown} legacy_auto_switch
+ * @returns {{ claude: ProviderLimitPolicy, codex: ProviderLimitPolicy }}
+ */
+function normalizeProviderLimitPolicy(value, legacy_auto_switch) {
+  if (!isRecord(value)) {
+    const policy = emptyProviderLimitPolicy();
+    if (legacy_auto_switch === false) {
+      policy.claude.mode = 'wait';
+      policy.codex.mode = 'wait';
+    }
+    return policy;
+  }
+  return {
+    claude: normalizeProviderLimitPolicyEntry(value.claude),
+    codex: normalizeProviderLimitPolicyEntry(value.codex)
+  };
+}
+
 /**
  * Preserve only provider targets whose dispatch identity is complete.
  *
@@ -3674,6 +3788,7 @@ function normalizeProviderTarget(value) {
     auto_switch:
       value.auto_switch === 'none' ||
       value.auto_switch === 'cap' ||
+      value.auto_switch === 'unconfigured' ||
       value.auto_switch === 'disabled'
         ? value.auto_switch
         : null,
@@ -3825,7 +3940,10 @@ function normalizeQueue(raw) {
       ? Math.max(0, Math.floor(raw.revision))
       : 0;
   q.provider_hold = normalizeProviderHolds(raw.provider_hold);
-  q.provider_auto_switch = raw.provider_auto_switch !== false;
+  q.provider_limit_policy = normalizeProviderLimitPolicy(
+    raw.provider_limit_policy,
+    raw.provider_auto_switch
+  );
   q.auto_resume_pending = normalizeAutoResumePending(raw.auto_resume_pending);
   q.slots = normalizeSlots(raw.slots) ?? DEFAULT_SLOTS;
   // `pr_wait_holds_slot` has no destination field: the merge-serial toggle is
@@ -6742,15 +6860,31 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Toggle automatic Claude account switching with revision CAS.
+     * Merge one runner's usage-limit policy patch with revision CAS.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, on: boolean }} input
+     * @param {{ expected_revision: number, runner: string, patch: { mode?: 'wait'|'switch', accounts?: string[], preempt_pct?: number|null } }} input
      * @returns {QueueOpResult}
      */
-    toggleProviderAutoSwitch(workspace, input) {
+    setProviderLimitPolicy(workspace, input) {
       return applyMutation(workspace, input.expected_revision, (next) => {
-        next.provider_auto_switch = input.on;
+        if (input.runner !== 'claude' && input.runner !== 'codex') {
+          return false;
+        }
+        const current =
+          next.provider_limit_policy?.[input.runner] ??
+          defaultProviderLimitPolicy();
+        const patch = input.patch || {};
+        next.provider_limit_policy = {
+          ...emptyProviderLimitPolicy(),
+          ...next.provider_limit_policy,
+          [input.runner]: normalizeProviderLimitPolicyEntry({
+            mode: patch.mode ?? current.mode,
+            accounts: patch.accounts ?? current.accounts,
+            preempt_pct:
+              'preempt_pct' in patch ? patch.preempt_pct : current.preempt_pct
+          })
+        };
         return true;
       });
     },
@@ -7000,7 +7134,7 @@ export function createQueueStore(options = {}) {
      * Pause one attempt and register its provider target in the same write.
      *
      * @param {string} workspace
-     * @param {{ attempt_id: string, patch: Partial<Attempt>, runner: string, target: ProviderTarget, auto_switch?: { enabled: boolean, candidate_account: string|null } }} input
+     * @param {{ attempt_id: string, patch: Partial<Attempt>, runner: string, target: ProviderTarget, auto_switch?: { candidate_account: string|null } }} input
      * @returns {QueueOpResult & { entered?: boolean, generation?: number }}
      */
     holdProviderAttempt(workspace, input) {
@@ -7070,19 +7204,23 @@ export function createQueueStore(options = {}) {
         }
         if (target.kind === 'usage_limit' && input.auto_switch) {
           const candidate_account = input.auto_switch.candidate_account;
-          const auto_switch_enabled =
-            input.auto_switch.enabled && next.provider_auto_switch !== false;
-          if (!auto_switch_enabled) {
+          const policy =
+            (input.runner === 'claude' || input.runner === 'codex'
+              ? next.provider_limit_policy?.[input.runner]
+              : null) ?? defaultProviderLimitPolicy();
+          // The candidate was chosen OUTSIDE this mutation against an async
+          // catalog read, so the allowed set is re-read here: a user who
+          // unchecked that account meanwhile must not be switched onto
+          // (spec §3.2 row 3).
+          if (policy.mode !== 'switch') {
             stored_target.auto_switch = 'disabled';
-          } else if (!candidate_account) {
-            stored_target.auto_switch = 'none';
+          } else if (policy.accounts.length === 0) {
+            stored_target.auto_switch = 'unconfigured';
           } else if (
-            providerAutoResumeCapped(
-              next.attempts,
-              next.attempts[input.attempt_id]
-            )
+            !candidate_account ||
+            !policy.accounts.includes(candidate_account)
           ) {
-            stored_target.auto_switch = 'cap';
+            stored_target.auto_switch = 'none';
           } else {
             const candidate_held = Object.values(next.provider_hold).some(
               (candidate_hold) =>

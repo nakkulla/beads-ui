@@ -108,7 +108,7 @@ import {
   handleWorkerMergeQueueAddAll,
   handleWorkerMergeQueueRemove,
   handleWorkerPrDiscard,
-  handleWorkerProviderAutoSwitchToggle,
+  handleWorkerProviderLimitPolicySet,
   handleWorkerQueueArm,
   handleWorkerQueueDisarm,
   handleWorkerQueueHoldResume,
@@ -588,8 +588,8 @@ export async function handleMessage(ws, data) {
     case 'worker-automation-toggle':
       handleWorkerAutomationToggle(ws, req);
       return;
-    case 'worker-provider-auto-switch-toggle':
-      handleWorkerProviderAutoSwitchToggle(ws, req);
+    case 'worker-provider-limit-policy-set':
+      handleWorkerProviderLimitPolicySet(ws, req);
       return;
     case 'worker-repo-ops-opt-out-toggle':
       handleWorkerRepoOpsOptOutToggle(ws, req);

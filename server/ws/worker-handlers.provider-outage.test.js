@@ -18,7 +18,7 @@ import {
   decorateQueue,
   handleSubscribeWorkerQueue,
   handleWorkerAttemptResume,
-  handleWorkerProviderAutoSwitchToggle
+  handleWorkerProviderLimitPolicySet
 } from './worker-handlers.js';
 
 const WS = '/tmp/provider-outage-handler-workspace';
@@ -58,12 +58,46 @@ afterEach(() => {
   fs.rmSync(tmp_state, { recursive: true, force: true });
 });
 
-describe('worker provider auto-switch handler', () => {
-  test('declares the auto-switch message in the shared protocol', () => {
-    expect(MESSAGE_TYPES).toContain('worker-provider-auto-switch-toggle');
+describe('worker provider limit policy handler', () => {
+  // RED 17 (spec §5)
+  test('declares the policy message in the shared protocol', () => {
+    expect(MESSAGE_TYPES).toContain('worker-provider-limit-policy-set');
+    expect(MESSAGE_TYPES).not.toContain('worker-provider-auto-switch-toggle');
   });
 
-  test('toggles with CAS and fans a queue snapshot', () => {
+  // RED 18 (spec §5)
+  test('refuses a runner, mode or threshold outside the contract', () => {
+    const caller = fakeSocket();
+    setConnWorkspace(caller, { root_dir: WS, db_path: '/tmp/db' });
+    /**
+     * @param {any} payload
+     */
+    const call = (payload) => {
+      handleWorkerProviderLimitPolicySet(
+        caller,
+        /** @type {any} */ ({
+          id: 'policy-bad',
+          type: 'worker-provider-limit-policy-set',
+          payload
+        })
+      );
+    };
+
+    call({ runner: 'gemini', patch: {}, expected_revision: 0 });
+    call({ runner: 'claude', patch: { mode: 'pause' }, expected_revision: 0 });
+    call({
+      runner: 'claude',
+      patch: { preempt_pct: 0 },
+      expected_revision: 0
+    });
+
+    expect(
+      sent(caller).map((/** @type {any} */ envelope) => envelope.error?.code)
+    ).toEqual(['bad_request', 'bad_request', 'bad_request']);
+  });
+
+  // RED 19 (spec §5)
+  test('writes with CAS and fans the policy out in a queue snapshot', () => {
     const subscriber = fakeSocket();
     const caller = fakeSocket();
     setConnWorkspace(subscriber, { root_dir: WS, db_path: '/tmp/db' });
@@ -79,25 +113,41 @@ describe('worker provider auto-switch handler', () => {
     subscriber.send.mockClear();
     const revision = getWorkerRuntime().queueStore.snapshot(WS).revision;
 
-    handleWorkerProviderAutoSwitchToggle(
+    handleWorkerProviderLimitPolicySet(
       caller,
       /** @type {any} */ ({
-        id: 'toggle-1',
-        type: 'worker-provider-auto-switch-toggle',
-        payload: { on: false, expected_revision: revision }
+        id: 'policy-1',
+        type: 'worker-provider-limit-policy-set',
+        payload: {
+          runner: 'claude',
+          patch: { mode: 'wait', accounts: ['a@example.com'], preempt_pct: 80 },
+          expected_revision: revision
+        }
       })
     );
 
+    const expected_policy = {
+      mode: 'wait',
+      accounts: ['a@example.com'],
+      preempt_pct: 80
+    };
     expect(sent(caller)[0].payload).toMatchObject({
       applied: true,
       conflict: false,
-      queue: { provider_auto_switch: false }
+      queue: {
+        revision: revision + 1,
+        provider_limit_policy: { claude: expected_policy }
+      }
     });
     expect(sent(subscriber)).toContainEqual(
       expect.objectContaining({
         type: 'worker-queue-snapshot',
         payload: expect.objectContaining({
-          queue: expect.objectContaining({ provider_auto_switch: false })
+          queue: expect.objectContaining({
+            provider_limit_policy: expect.objectContaining({
+              claude: expected_policy
+            })
+          })
         })
       })
     );

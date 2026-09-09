@@ -2216,9 +2216,7 @@ describe('worker 공급자 보류 타일', () => {
       mount.querySelector('.rtile__provider-hold-pop')
     );
 
-    expect(popover.textContent).toContain(
-      '계정 전환 안 함 · 조건을 만족하는 다른 계정 없음'
-    );
+    expect(popover.textContent).toContain('허용 계정 중 사용 가능한 계정 없음');
   });
 
   test('names a disabled automatic account switch in the popover', () => {
@@ -2243,7 +2241,7 @@ describe('worker 공급자 보류 타일', () => {
       mount.querySelector('.rtile__provider-hold-pop')
     );
 
-    expect(popover.textContent).toContain('계정 전환 안 함 · 자동 전환 꺼짐');
+    expect(popover.textContent).toContain('계정 전환 안 함 · 기다림 모드');
   });
 
   test('omits unavailable hold rows from the popover', () => {

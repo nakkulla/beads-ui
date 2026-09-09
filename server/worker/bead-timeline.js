@@ -53,6 +53,7 @@ export const TIMELINE_KINDS = Object.freeze(
     'queue_resume',
     'provider_hold',
     'provider_recovered',
+    'account_preempt',
     'landing_step',
     'merge_step',
     'operation_failed',

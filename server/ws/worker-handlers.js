@@ -4703,29 +4703,73 @@ export function handleWorkerAutomationToggle(ws, req) {
 }
 
 /**
- * Handle `worker-provider-auto-switch-toggle`.
- * Payload: `{ on: boolean, expected_revision }`.
+ * Handle `worker-provider-limit-policy-set`. Payload:
+ * `{ runner: 'claude'|'codex', patch: { mode?, accounts?, preempt_pct? }, expected_revision }`.
+ *
+ * Strict on every field (spec §3.1): a malformed patch is a `bad_request`
+ * rather than a silently normalized write, because the stored set decides
+ * which paid account the Worker spends next.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export function handleWorkerProviderAutoSwitchToggle(ws, req) {
+export function handleWorkerProviderLimitPolicySet(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.on !== 'boolean') {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { on: boolean }')
+  const patch = p.patch;
+  /**
+   * @param {string} message
+   */
+  const refuse = (message) => {
+    ws.send(JSON.stringify(makeError(req, 'bad_request', message)));
+  };
+  if (p.runner !== 'claude' && p.runner !== 'codex') {
+    refuse("payload requires { runner: 'claude'|'codex' }");
+    return;
+  }
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+    refuse('payload requires { patch: object }');
+    return;
+  }
+  if ('mode' in patch && patch.mode !== 'wait' && patch.mode !== 'switch') {
+    refuse("mode must be 'wait' or 'switch'");
+    return;
+  }
+  if ('accounts' in patch) {
+    if (
+      !Array.isArray(patch.accounts) ||
+      patch.accounts.some(
+        (/** @type {unknown} */ entry) =>
+          typeof entry !== 'string' ||
+          entry.length === 0 ||
+          entry.length > 256 ||
+          /\s/.test(entry)
       )
-    );
+    ) {
+      refuse('accounts must be an array of account keys');
+      return;
+    }
+  }
+  if (
+    'preempt_pct' in patch &&
+    patch.preempt_pct !== null &&
+    !(
+      typeof patch.preempt_pct === 'number' &&
+      Number.isInteger(patch.preempt_pct) &&
+      patch.preempt_pct >= 1 &&
+      patch.preempt_pct <= 99
+    )
+  ) {
+    refuse('preempt_pct must be null or an integer 1-99');
     return;
   }
   const key = mutationWorkspaceOf(ws, req);
   if (key === null) {
     return;
   }
-  const result = queueStore().toggleProviderAutoSwitch(key, {
+  const result = queueStore().setProviderLimitPolicy(key, {
     expected_revision: revisionOf(p),
-    on: p.on
+    runner: p.runner,
+    patch
   });
   replyMutation(ws, req, key, result);
 }

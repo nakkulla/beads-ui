@@ -176,7 +176,7 @@ function headline(transition, bead_id, bead_title) {
  *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   quickfixLanded: (input: { bead_id: string, title?: string|null, head_sha?: string|null, close_kind?: string|null, repo?: string|null }) => Promise<void>,
  *   awaitingUser: (input: { bead_id: string, title?: string|null, awaiting_user?: string|null, stale_kind?: string|null, branch?: string|null, session?: string|null, reason?: string|null, mode?: string|null, fallback_reason?: string|null, session_id?: string|null, tmux_session?: string|null, tmux_window?: string|null, redispatch_refusal?: string|null, bridge_active?: boolean, repo?: string|null }) => Promise<void>,
- *   providerHoldEntered: (input: { bead_id: string, runner: string, kind: string, detail: string, summary: string, account?: string|null, resets_at?: number|null, auto_switch?: 'none'|'cap'|'disabled'|null, repo?: string|null }) => Promise<void>,
+ *   providerHoldEntered: (input: { bead_id: string, runner: string, kind: string, detail: string, summary: string, account?: string|null, resets_at?: number|null, auto_switch?: 'none'|'cap'|'unconfigured'|'disabled'|null, repo?: string|null }) => Promise<void>,
  *   providerRecovered: (input: { bead_id: string, runner: string, duration_ms: number, resumed_beads?: string[], refusal?: string|null, switched_from?: string|null, switched_to?: string|null, repo?: string|null }) => Promise<void>,
  *   providerAutoResumeDisarmed: (input: { bead_id: string, runner: string, reason: string, repo?: string|null }) => Promise<void>,
  *   needsHuman: (input: NeedsHumanInput) => Promise<void>
@@ -507,9 +507,11 @@ export function createNotifier(deps) {
           // Why the limit stayed on this account (§8.3). `cap` is omitted: the
           // disarmed notification already owns that sentence.
           if (input.auto_switch === 'none') {
-            lines.push('계정 전환: 안 함 — 조건을 만족하는 다른 계정 없음');
+            lines.push('계정 전환: 안 함 — 허용 계정 중 사용 가능한 계정 없음');
+          } else if (input.auto_switch === 'unconfigured') {
+            lines.push('계정 전환: 안 함 — 전환 허용 계정 미지정');
           } else if (input.auto_switch === 'disabled') {
-            lines.push('계정 전환: 안 함 — 자동 전환 꺼짐');
+            lines.push('계정 전환: 안 함 — 기다림 모드');
           }
         }
         const repo = repoLabel(input.repo);
