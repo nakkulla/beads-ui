@@ -215,9 +215,9 @@ function defaultWorkerAccountCatalog() {
 
 /** Account source shared with launch-time account resolution. */
 let worker_account_catalog = defaultWorkerAccountCatalog();
-/** @type {Array<{ email: string, alias: string|null, status: string, windows: Array<Record<string, any>> }>|null} */
+/** @type {Array<{ email: string, alias: string|null, status: string, windows: Array<Record<string, any>>, active: boolean }>|null} */
 let claude_account_catalog = null;
-/** @type {Array<{ key: string, email: string, alias: string|null, status: string, windows: Array<Record<string, any>> }>|null} */
+/** @type {Array<{ key: string, email: string, alias: string|null, status: string, windows: Array<Record<string, any>>, active: boolean }>|null} */
 let codex_account_catalog = null;
 /** @type {Promise<void>|null} */
 let account_catalog_refresh = null;
@@ -259,7 +259,13 @@ async function refreshWorkerAccountCatalog() {
                 ? row.alias
                 : null,
             status: typeof row.status === 'string' ? row.status : 'unknown',
-            windows: Array.isArray(row.windows) ? row.windows : []
+            windows: Array.isArray(row.windows) ? row.windows : [],
+            // 지금 로그인된 계정 — 핀 없는 launch가 실제로 쓰는 계정이다. 대기
+            // 행의 공급자 게이트 판정(UI-01wh §3.1)이 이 한 비트로 계정 한도
+            // target과 행을 맞춘다. `active_key`를 모르면 어느 행도 active가 아니다.
+            active:
+              typeof listed.active_key === 'string' &&
+              row.key === listed.active_key
           };
         });
     })
@@ -300,7 +306,10 @@ async function refreshWorkerAccountCatalog() {
                   typeof account.status === 'string'
                     ? account.status
                     : 'unknown',
-                windows: Array.isArray(account.windows) ? account.windows : []
+                windows: Array.isArray(account.windows) ? account.windows : [],
+                active:
+                  typeof listed.active_key === 'string' &&
+                  account.key === listed.active_key
               }));
           })
           .catch(() => {

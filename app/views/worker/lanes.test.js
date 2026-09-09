@@ -4957,6 +4957,40 @@ describe('대기 진입 유예 (UI-q1tg §3.3)', () => {
     ).toContain('⏳ 15초');
   });
 
+  test('orders the 의존 line 게이트 → 발차 → 선행 → 후속 → 유예', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const row = renderWaitingRow({
+      added_at: NOW - 5_000,
+      gate: {
+        kind: 'systemic',
+        label: '⛔ 정지 · loud_fail_blocker',
+        title: 'loud_fail_blocker',
+        since: 5000,
+        next_at: null,
+        lines: ['loud_fail_blocker']
+      },
+      dependency_chips: /** @type {any} */ ({
+        dependents: [{ id: 'UI-s', label: '→ UI-s' }],
+        predecessors: [{ id: 'UI-p', label: '⛓ UI-p' }],
+        armed_lane: { lane_id: 'cl_1', label: '▶ 연결 1', orphan: false }
+      })
+    });
+
+    const line = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-deps--primary')
+    );
+    expect(
+      Array.from(line.children, (chip) => chip.className.split(' ')[1])
+    ).toEqual([
+      'worker-dep--gate',
+      'worker-dep--armed',
+      'worker-dep--pred',
+      'worker-dep--dependents',
+      'worker-dep--grace'
+    ]);
+  });
+
   test('draws the start-now button in the slot 1 조작 group', () => {
     vi.spyOn(Date, 'now').mockReturnValue(NOW);
 

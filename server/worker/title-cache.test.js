@@ -789,6 +789,25 @@ describe('execution pin projection (UI-q1tg §3.1)', () => {
     });
   });
 
+  test('keeps the account pins in the projection (UI-01wh §3.1)', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '계정 핀 이슈',
+      metadata: {
+        claude_account: 'one@example.com',
+        codex_account: 'acct-1',
+        route: 'spec_backed'
+      }
+    });
+
+    const out = cache.execPinFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({
+      'UI-1': { claude_account: 'one@example.com', codex_account: 'acct-1' }
+    });
+  });
+
   test('projects an empty pin for a bead that pins nothing', () => {
     const cache = createTitleCache({ enrichWorkflow: () => null });
     cache.refreshFromIssue('/ws', {

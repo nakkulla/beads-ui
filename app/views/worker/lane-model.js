@@ -1308,12 +1308,15 @@ function providerGate(runner, account, provider_hold, account_catalog) {
     ? providerClock(target.next_probe_at)
     : providerClock(target.resets_at);
   const auto_switch = autoSwitchText(target.auto_switch);
+  // 보류가 선 시각은 러너 단위 레코드의 것이다 — target별 시각은 따로 없다.
+  const since_clock = providerClock(entry.since);
   // `account:null`인 usage_limit은 프로브를 예약하지 않으므로 (공급자 스펙 §6 F3)
   // 자동 해제가 없다 — 출구 문장이 그 사실 하나로 갈린다.
   const probeless = !outage && target_account === null;
   return {
     kind: outage ? 'provider_outage' : 'provider_usage',
     label,
+    // 툴팁과 팝업 첫 줄은 같은 문장이다 (§3.2) — 칩 문구가 그 원인 문장이다.
     title: label,
     since: null,
     next_at: outage
@@ -1324,6 +1327,8 @@ function providerGate(runner, account, provider_hold, account_catalog) {
         ? target.resets_at
         : null,
     lines: [
+      label,
+      ...(since_clock ? [`시작 ${since_clock}`] : []),
       ...(who ? [who] : []),
       ...(last_error ? [last_error] : []),
       ...(when ? [`${outage ? '다음 프로브' : '리셋'} ${when}`] : []),
@@ -1354,8 +1359,15 @@ function resolvedAccountOf(metadata, runner, account_catalog) {
   if (!Array.isArray(rows)) {
     return null;
   }
+  // 스냅샷의 계정 행은 `active`로 지금 로그인된 계정을 표시한다 (worker-handlers
+  // 가 `active_key`로 찍는다). 핀이 없는 launch가 쓰는 계정이 그것이다. 계정의
+  // 정체성은 target과 같은 값이어야 한다 — Claude는 이메일, Codex는 durable key.
   const active = rows.find((/** @type {any} */ row) => row?.active === true);
-  return active && typeof active.email === 'string' ? active.email : null;
+  if (!active) {
+    return null;
+  }
+  const identity = runner === 'codex' ? active.key : active.email;
+  return typeof identity === 'string' && identity.length > 0 ? identity : null;
 }
 
 /**
@@ -4359,15 +4371,23 @@ export function buildLanes(workspaces, workspaces_state, options) {
       : queueHoldGate(gate_input.hold, gate_input.lineages);
     const state = objectOf(state_by_root.get(item.root_dir));
     const overlay = overlay_by_key.get(`${item.root_dir}\u0000${item.id}`);
+    // 공급자 판정은 이 bead의 metadata를 **관측한** 뒤에만 한다 — exec 칩과
+    // 같은 조건이다. 오버레이가 아직 없거나 metadata 키가 없으면 "핀 없음"이
+    // 아니라 "모름"이고, 그때 기본 모델로 판정하면 codex 핀 행에 claude 장애
+    // 칩과 우회 버튼이 잠깐 서는 오판이 난다. 큐 게이트 판정은 metadata를
+    // 읽지 않으므로 그대로 한다.
+    const metadata_observed = !!overlay && Object.hasOwn(overlay, 'metadata');
     const metadata = objectOf(overlay && overlay.metadata);
-    const rows = execRows(
-      state,
-      metadata,
-      overlay && typeof overlay.route === 'string' && overlay.route.length > 0
-        ? overlay.route
-        : objectOf(item.workflow).route,
-      null
-    );
+    const rows = metadata_observed
+      ? execRows(
+          state,
+          metadata,
+          typeof overlay.route === 'string' && overlay.route.length > 0
+            ? overlay.route
+            : objectOf(item.workflow).route,
+          null
+        )
+      : null;
     const runner = rows
       ? resolvedRunnerOf(rows, state.runner_catalog ?? null)
       : null;

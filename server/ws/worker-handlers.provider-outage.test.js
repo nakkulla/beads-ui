@@ -140,6 +140,50 @@ describe('worker provider queue projection', () => {
     });
   });
 
+  test('marks the logged-in account row active from the catalog key', async () => {
+    const socket = fakeSocket();
+    setConnWorkspace(socket, { root_dir: WS, db_path: '/tmp/db' });
+    __setWorkerAccountCatalogForTest({
+      listClaude: vi.fn(async () => ({
+        ok: true,
+        active_key: 'k-two',
+        accounts: [
+          { key: 'k-one', email: 'one@example.com', status: 'ok', windows: [] },
+          { key: 'k-two', email: 'two@example.com', status: 'ok', windows: [] }
+        ]
+      }))
+    });
+
+    handleSubscribeWorkerQueue(
+      socket,
+      /** @type {any} */ ({
+        id: 'subscribe-active-account',
+        type: 'subscribe-worker-queue',
+        payload: { id: 'client-active-account' }
+      })
+    );
+
+    await vi.waitFor(() => {
+      const rows = sent(socket)
+        .filter(
+          (/** @type {any} */ message) =>
+            message.type === 'worker-queue-snapshot' &&
+            Array.isArray(message.payload?.queue?.account_catalog?.claude)
+        )
+        .map(
+          (/** @type {any} */ message) =>
+            message.payload.queue.account_catalog.claude
+        )
+        .at(-1);
+      expect(
+        rows?.map((/** @type {any} */ row) => [row.email, row.active])
+      ).toEqual([
+        ['one@example.com', false],
+        ['two@example.com', true]
+      ]);
+    });
+  });
+
   test('projects Codex accounts by their durable key', async () => {
     const socket = fakeSocket();
     setConnWorkspace(socket, { root_dir: WS, db_path: '/tmp/db' });
@@ -305,7 +349,8 @@ describe('worker provider queue projection', () => {
           email: 'one@example.com',
           alias: '업무',
           status: 'ok',
-          windows: [{ key: '5h', pct: 20, resetsAt: null }]
+          windows: [{ key: '5h', pct: 20, resetsAt: null }],
+          active: false
         }
       ]
     });

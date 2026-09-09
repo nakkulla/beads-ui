@@ -1041,17 +1041,28 @@ function readinessChipTemplate(judgement, open) {
  *
  * @param {DependencyChips|null|undefined} chips
  * @param {import('lit-html').TemplateResult|''} [after_predecessors] - `⛓` 칩
- * 바로 뒤에 서는 조각 (UI-svh6 §4.3). 칩 하나를 위해 이 템플릿이 `MiniItem`을
- * 통째로 읽게 만들지 않으려고 호출 자리가 만들어 넘긴다. 값이 있으면 상단 줄은
- * 선행 칩이 없어도 선다.
+ * 바로 뒤에 서는 조각 — 후보 카드의 `스펙 대기`·준비 판정 칩 (UI-svh6 §4.3).
+ * 칩 하나를 위해 이 템플릿이 `MiniItem`을 통째로 읽게 만들지 않으려고 호출
+ * 자리가 만들어 넘긴다. 값이 있으면 상단 줄은 선행 칩이 없어도 선다.
+ * @param {import('lit-html').TemplateResult|''} [leading] - 의존 줄의 **맨 앞**에
+ * 서는 조각 — 게이트 칩 (UI-01wh §3.2). "왜 못 가나"의 가장 바깥 사정이라 발차
+ * 칩보다도 먼저다. 값이 있으면 역시 상단 줄이 선다.
+ * @param {import('lit-html').TemplateResult|''} [trailing] - 의존 줄의 **끝**에
+ * 서는 조각 — 유예 `⏳` (UI-01wh §3.2 순서: 게이트 → 발차 → 선행 → 후속 → 유예).
+ * 값이 있으면 역시 상단 줄이 선다.
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function dependencyChipsTemplate(chips, after_predecessors = '') {
+export function dependencyChipsTemplate(
+  chips,
+  after_predecessors = '',
+  leading = '',
+  trailing = ''
+) {
   if (!chips) {
-    return after_predecessors === ''
+    return after_predecessors === '' && leading === '' && trailing === ''
       ? ''
       : html`<div class="worker-deps worker-deps--primary">
-          ${after_predecessors}
+          ${leading}${after_predecessors}${trailing}
         </div>`;
   }
   // 각 묶음 안은 ID 사전순이다 (UI-8x90 §4.1). 투영이 실어 주는 순서는 서버
@@ -1068,7 +1079,9 @@ export function dependencyChipsTemplate(chips, after_predecessors = '') {
     !!armed_lane ||
     predecessors.length > 0 ||
     dependents.length > 0 ||
-    after_predecessors !== '';
+    after_predecessors !== '' ||
+    leading !== '' ||
+    trailing !== '';
   const has_secondary =
     released.length > 0 || overlaps.length > 0 || scope_missing;
   if (!has_primary && !has_secondary) {
@@ -1076,7 +1089,7 @@ export function dependencyChipsTemplate(chips, after_predecessors = '') {
   }
   return html`${has_primary
     ? html`<div class="worker-deps worker-deps--primary">
-        ${armed_lane
+        ${leading}${armed_lane
           ? html`<span
               class=${`worker-dep worker-dep--armed${armed_lane.orphan ? ' worker-dep--armed-orphan' : ''}`}
               title=${armed_lane.orphan
@@ -1096,7 +1109,7 @@ export function dependencyChipsTemplate(chips, after_predecessors = '') {
           openableChipTemplate(chip, 'pred')
         )}${after_predecessors}${dependents.map((chip) =>
           openableChipTemplate(chip, 'dependents')
-        )}
+        )}${trailing}
       </div>`
     : ''}${has_secondary
     ? html`<div class="worker-deps worker-deps--secondary">
@@ -2241,12 +2254,15 @@ export function miniRow(item, options = {}) {
         </div>`
       : '';
   // 유예 칩은 슬롯 4a다 (UI-q1tg §3.3) — `⛓` 선행 칩과 같은 질문에 답하므로 그
-  // 줄 안, 선행 칩 바로 뒤에 선다.
+  // 줄 안에 서고, 자리는 줄의 끝이다 (§3.2 순서: 게이트 → 발차 → 선행 → 후속 →
+  // 유예). 게이트 칩은 같은 줄의 맨 앞이고 그 팝업은 칩 바로 뒤에 붙는다.
   const deps_el = dependencyChipsTemplate(
     item.dependency_chips,
-    gate_el === '' && grace_el === ''
+    '',
+    gate_el === ''
       ? ''
-      : html`${gate_el}${gate_open ? judgementPopover(item) : ''}${grace_el}`
+      : html`${gate_el}${gate_open ? judgementPopover(item) : ''}`,
+    grace_el
   );
   const receipt_el = discardReceiptTemplate(item);
   const actions_el = options.actions ? options.actions : '';

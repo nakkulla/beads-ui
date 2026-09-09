@@ -7197,4 +7197,119 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
       gate?.lines.at(-1)?.startsWith('공급자: ⚠️ 공급자 장애')
     ]).toEqual(['systemic', true]);
   });
+
+  test('skips the provider judgment until the row metadata was observed', () => {
+    const outage_hold = {
+      claude: {
+        since: 1,
+        generation: 1,
+        targets: [
+          {
+            kind: 'outage',
+            model: 'sonnet',
+            account: null,
+            next_probe_at: 9000
+          }
+        ]
+      }
+    };
+
+    const lanes = buildLanes(
+      [
+        workspace({
+          hold: SYSTEMIC,
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          provider_hold: outage_hold,
+          // A-1: 오버레이 없음, A-2: 오버레이는 있으나 metadata 키 없음
+          bead_overlay: { 'A-2': { route: 'spec_backed' } }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect(
+      lanes.queue.map((item) => [
+        item.gate?.kind,
+        item.gate?.lines.some((line) => line.startsWith('공급자:')) === true
+      ])
+    ).toEqual([
+      ['systemic', false],
+      ['systemic', false]
+    ]);
+  });
+
+  test('opens the provider popup with the chip sentence and the hold start', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_overlay: overlays(['A-1']),
+          provider_hold: {
+            claude: {
+              since: 1_800_000_000_000,
+              generation: 1,
+              targets: [
+                {
+                  kind: 'outage',
+                  model: 'sonnet',
+                  account: null,
+                  next_probe_at: 9000
+                }
+              ]
+            }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    const gate = lanes.queue[0].gate;
+    expect([
+      gate?.lines[0] === gate?.title,
+      gate?.lines[0] === gate?.label,
+      gate?.lines[1]?.startsWith('시작 ')
+    ]).toEqual([true, true, true]);
+  });
+
+  test('resolves a codex row account by the active durable key', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          account_catalog: {
+            codex: [
+              { key: 'acct-1', email: 'one@example.com', active: true },
+              { key: 'acct-2', email: 'two@example.com', active: false }
+            ]
+          },
+          provider_hold: {
+            codex: {
+              since: 1,
+              generation: 1,
+              targets: [
+                {
+                  kind: 'usage_limit',
+                  model: 'sol',
+                  account: 'acct-1',
+                  resets_at: 7000
+                }
+              ]
+            }
+          },
+          bead_overlay: {
+            'A-1': { metadata: { orchestration_model: 'sol' } },
+            'A-2': {
+              metadata: { orchestration_model: 'sol', codex_account: 'acct-2' }
+            }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect([lanes.queue[0].gate?.kind, lanes.queue[1].gate]).toEqual([
+      'provider_usage',
+      undefined
+    ]);
+  });
 });
