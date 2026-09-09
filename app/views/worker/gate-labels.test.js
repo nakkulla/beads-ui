@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { providerHoldBadgeText } from './gate-labels.js';
+import { autoSwitchText, providerHoldBadgeText } from './gate-labels.js';
 
 // 타일 뱃지와 대기 행의 게이트 칩이 같은 문자열을 내야 하므로 문구는 여기 하나다
 // (UI-01wh §3.2). 원래 running-grid.test.js가 들고 있던 검증을 그대로 옮겼다.
@@ -43,5 +43,32 @@ describe('provider hold badge text (UI-01wh §3.2)', () => {
     });
 
     expect(text).toBe('⏳ 한도 대기 · 리셋 미상 · 수동 조치');
+  });
+});
+
+// 한도 보류가 왜 계정을 바꾸지 않았는지는 정책 어휘로 읽힌다 (UI-13o1 §3.4, RED 21).
+describe('auto switch reason text (UI-13o1 §3.4)', () => {
+  test('words the wait mode as a mode choice, not a broken switch', () => {
+    const text = autoSwitchText('disabled');
+
+    expect(text).toBe('계정 전환 안 함 · 기다림 모드');
+  });
+
+  test('words an empty allow list as a missing configuration', () => {
+    const text = autoSwitchText('unconfigured');
+
+    expect(text).toBe('계정 전환 안 함 · 전환 허용 계정 미지정');
+  });
+
+  test('scopes the no-candidate sentence to the allow list', () => {
+    const text = autoSwitchText('none');
+
+    expect(text).toBe('허용 계정 중 사용 가능한 계정 없음');
+  });
+
+  test('says nothing for the retired cap reason', () => {
+    const text = autoSwitchText('cap');
+
+    expect(text).toBe('');
   });
 });

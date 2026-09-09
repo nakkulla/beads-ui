@@ -77,7 +77,10 @@ function queueRow(patch = {}) {
     serial_lane_count: 1,
     auto_advance: false,
     auto_merge: false,
-    provider_auto_switch: true,
+    provider_limit_policy: {
+      claude: { mode: 'switch', accounts: [], preempt_pct: null },
+      codex: { mode: 'switch', accounts: [], preempt_pct: null }
+    },
     runner_catalog: CATALOG,
     execution_defaults: EXECUTION_DEFAULTS,
     orchestration_model: null,
@@ -724,11 +727,10 @@ describe('createExecutionPane bound to another repo', () => {
     await settle();
     el(root, '[data-automation="auto_merge"]').click();
     await settle();
-    const provider_switch = /** @type {HTMLInputElement} */ (
-      el(root, '[data-provider-auto-switch]')
-    );
-    provider_switch.checked = false;
-    provider_switch.dispatchEvent(new Event('change'));
+    el(
+      root,
+      '[data-limit-mode-runner="claude"] button[data-limit-mode="wait"]'
+    ).click();
     await settle();
     el(
       root,
@@ -745,7 +747,7 @@ describe('createExecutionPane bound to another repo', () => {
       'worker-queue-set-orchestration-defaults',
       'worker-automation-toggle',
       'worker-merge-auto-toggle',
-      'worker-provider-auto-switch-toggle',
+      'worker-provider-limit-policy-set',
       'worker-queue-set-slots',
       'worker-queue-set-serial-lane-count'
     ]) {
@@ -890,47 +892,51 @@ describe('createExecutionPane automation section', () => {
     ).toContain('3');
   });
 
-  test('reads the provider auto-switch checkbox from the queue snapshot', async () => {
+  test('reads each runner limit mode from the queue snapshot', async () => {
     const { root, pane } = mount({
-      queue: queueRow({ provider_auto_switch: false })
+      queue: queueRow({
+        provider_limit_policy: {
+          claude: { mode: 'wait', accounts: [], preempt_pct: null },
+          codex: { mode: 'switch', accounts: [], preempt_pct: null }
+        }
+      })
     });
 
     await pane.load();
 
     expect(
-      /** @type {HTMLInputElement} */ (el(root, '[data-provider-auto-switch]'))
-        .checked
-    ).toBe(false);
+      el(
+        root,
+        '[data-limit-mode-runner="claude"] button[data-limit-mode="wait"]'
+      ).getAttribute('aria-pressed')
+    ).toBe('true');
+    expect(
+      el(
+        root,
+        '[data-limit-mode-runner="codex"] button[data-limit-mode="switch"]'
+      ).getAttribute('aria-pressed')
+    ).toBe('true');
   });
 
-  test('sends the provider auto-switch change through queue CAS', async () => {
+  // RED 22 — 모드 세그먼트는 러너별 patch 하나만 보낸다 (UI-13o1 §3.5).
+  test('sends a mode segment click as a per-runner policy patch', async () => {
     const { root, pane, calls } = mount({
-      queue: queueRow({ provider_auto_switch: false }),
       transport: async (/** @type {string} */ type) =>
-        type === 'worker-provider-auto-switch-toggle'
-          ? {
-              applied: true,
-              conflict: false,
-              queue: queueRow({ revision: 4, provider_auto_switch: true })
-            }
+        type === 'worker-provider-limit-policy-set'
+          ? { applied: true, conflict: false, queue: queueRow({ revision: 4 }) }
           : { values: {}, warnings: [] }
     });
     await pane.load();
-    const input = /** @type {HTMLInputElement} */ (
-      el(root, '[data-provider-auto-switch]')
-    );
 
-    input.checked = true;
-    input.dispatchEvent(new Event('change'));
+    el(
+      root,
+      '[data-limit-mode-runner="codex"] button[data-limit-mode="wait"]'
+    ).click();
     await settle();
 
-    expect(payloadsOf(calls, 'worker-provider-auto-switch-toggle')).toEqual([
-      { on: true, expected_revision: 3 }
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([
+      { runner: 'codex', patch: { mode: 'wait' }, expected_revision: 3 }
     ]);
-    expect(
-      /** @type {HTMLInputElement} */ (el(root, '[data-provider-auto-switch]'))
-        .checked
-    ).toBe(true);
   });
 
   test('refuses to send a serial lane count past the contract bound', async () => {
@@ -1328,5 +1334,161 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
     await settle();
 
     expect(accountSelect(root, 'codex_account').value).toBe('codex-key');
+  });
+
+  // RED 23 — 체크는 현재 집합을 읽어 key를 더하거나 뺀 배열을 보낸다 (§3.5).
+  test('adds a checked account to the stored allow list', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane, calls } = mount({
+      queue: queueRow({
+        provider_limit_policy: {
+          claude: {
+            mode: 'switch',
+            accounts: ['active@example.com'],
+            preempt_pct: null
+          },
+          codex: { mode: 'switch', accounts: [], preempt_pct: null }
+        }
+      })
+    });
+    await pane.load();
+
+    const box = /** @type {HTMLInputElement} */ (
+      el(
+        root,
+        '[data-limit-runner="claude"][data-limit-account="repo@example.com"]'
+      )
+    );
+    box.checked = true;
+    box.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([
+      {
+        runner: 'claude',
+        patch: { accounts: ['active@example.com', 'repo@example.com'] },
+        expected_revision: 3
+      }
+    ]);
+  });
+
+  // RED 23 (음성) — 체크 해제는 같은 집합에서 그 key만 뺀다 (§3.5).
+  test('drops an unchecked account from the stored allow list', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane, calls } = mount({
+      queue: queueRow({
+        provider_limit_policy: {
+          claude: {
+            mode: 'switch',
+            accounts: ['active@example.com', 'repo@example.com'],
+            preempt_pct: null
+          },
+          codex: { mode: 'switch', accounts: [], preempt_pct: null }
+        }
+      })
+    });
+    await pane.load();
+
+    const box = /** @type {HTMLInputElement} */ (
+      el(
+        root,
+        '[data-limit-runner="claude"][data-limit-account="active@example.com"]'
+      )
+    );
+    box.checked = false;
+    box.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([
+      {
+        runner: 'claude',
+        patch: { accounts: ['repo@example.com'] },
+        expected_revision: 3
+      }
+    ]);
+  });
+
+  // RED 24 — 체크 해제는 끔이고, 숫자 입력은 정수 임계다 (§3.5).
+  test('turns preemptive switching off with a null threshold', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane, calls } = mount({
+      queue: queueRow({
+        provider_limit_policy: {
+          claude: { mode: 'switch', accounts: [], preempt_pct: 80 },
+          codex: { mode: 'switch', accounts: [], preempt_pct: null }
+        }
+      })
+    });
+    await pane.load();
+
+    const box = /** @type {HTMLInputElement} */ (
+      el(root, '[data-limit-preempt="claude"]')
+    );
+    box.checked = false;
+    box.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([
+      {
+        runner: 'claude',
+        patch: { preempt_pct: null },
+        expected_revision: 3
+      }
+    ]);
+  });
+
+  // RED 24 — 입력 변경은 정수 임계를 보낸다 (§3.5).
+  test('sends the typed threshold as an integer', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane, calls } = mount({
+      queue: queueRow({
+        provider_limit_policy: {
+          claude: { mode: 'switch', accounts: [], preempt_pct: 80 },
+          codex: { mode: 'switch', accounts: [], preempt_pct: null }
+        }
+      })
+    });
+    await pane.load();
+
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, '[data-limit-preempt-pct="claude"]')
+    );
+    input.value = '45';
+    input.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([
+      { runner: 'claude', patch: { preempt_pct: 45 }, expected_revision: 3 }
+    ]);
+  });
+
+  // RED 25 — 목록에 없는 저장 key도 선택을 잃지 않는다 (§3.5, §6.1 규칙 재사용).
+  test('keeps a stored key the catalog does not carry as a checked item', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane } = mount({
+      queue: queueRow({
+        provider_limit_policy: {
+          claude: {
+            mode: 'switch',
+            accounts: ['gone@example.com'],
+            preempt_pct: null
+          },
+          codex: { mode: 'switch', accounts: [], preempt_pct: null }
+        }
+      })
+    });
+
+    await pane.load();
+
+    const box = /** @type {HTMLInputElement} */ (
+      el(
+        root,
+        '[data-limit-runner="claude"][data-limit-account="gone@example.com"]'
+      )
+    );
+    expect(box.checked).toBe(true);
+    expect(box.closest('label')?.textContent?.trim()).toBe(
+      'gone@example.com (목록에 없음)'
+    );
   });
 });

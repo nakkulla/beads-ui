@@ -72,18 +72,24 @@ export function autoResumeText(value) {
 }
 
 /**
- * Say why a limit hold stayed on its own account (§8.3). `cap` is already told
- * by `auto_resume`, so only the two reasons nothing else reports are worded.
+ * Say why a limit hold stayed on its own account (UI-13o1 §3.4). The candidate
+ * set is the user's per-runner allow list, so `none` says the list ran out
+ * rather than the machine did. `cap` is retired vocabulary kept readable for
+ * old queue files: the receipt no longer stores it, and `auto_resume` already
+ * says what it used to say.
  *
  * @param {HoldTile['auto_switch']|undefined} value
  * @returns {string}
  */
 export function autoSwitchText(value) {
   if (value === 'none') {
-    return '계정 전환 안 함 · 조건을 만족하는 다른 계정 없음';
+    return '허용 계정 중 사용 가능한 계정 없음';
+  }
+  if (value === 'unconfigured') {
+    return '계정 전환 안 함 · 전환 허용 계정 미지정';
   }
   if (value === 'disabled') {
-    return '계정 전환 안 함 · 자동 전환 꺼짐';
+    return '계정 전환 안 함 · 기다림 모드';
   }
   return '';
 }
