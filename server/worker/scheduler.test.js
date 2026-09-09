@@ -5283,6 +5283,7 @@ describe('scheduler resume (spec §1)', () => {
     expect(env.runner.spawnedBead('B1').prompt).toBe(
       [
         '이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead B1).',
+        '이전 attempt f1는 verify_failed:base_not_ancestor로 끝났다(exec_receipt=없음, impl_review=없음). `git fetch origin B1` 뒤 `git log HEAD..origin/B1 --oneline`으로 원격이 앞서 있으면 `git merge --ff-only`로 맞춘 뒤 남은 단계만 한다. `workflow_mode=fast_track`은 이미 기록됐다.',
         '같은 워크트리에서 세션을 이어 진행한다. 먼저 워크트리·bead 상태·PR/머지 현황을 직접 점검해 어디까지 진행됐는지 확인하라.',
         '이미 끝난 단계는 반복하지 말고, 남은 계약 단계만 마무리한 뒤 종료하라.'
       ].join(' ')
@@ -5300,7 +5301,7 @@ describe('scheduler resume (spec §1)', () => {
     expect(result.ok).toBe(true);
     expect(env.runner.spawnedBead('B1').prompt).toBe(
       [
-        '이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead B1). 같은 워크트리에서 세션을 이어 진행한다. 먼저 워크트리·bead 상태·PR/머지 현황을 직접 점검해 어디까지 진행됐는지 확인하라. 이미 끝난 단계는 반복하지 말고, 남은 계약 단계만 마무리한 뒤 종료하라.',
+        '이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead B1). 이전 attempt f1는 verify_failed:base_not_ancestor로 끝났다(exec_receipt=없음, impl_review=없음). `git fetch origin B1` 뒤 `git log HEAD..origin/B1 --oneline`으로 원격이 앞서 있으면 `git merge --ff-only`로 맞춘 뒤 남은 단계만 한다. `workflow_mode=fast_track`은 이미 기록됐다. 같은 워크트리에서 세션을 이어 진행한다. 먼저 워크트리·bead 상태·PR/머지 현황을 직접 점검해 어디까지 진행됐는지 확인하라. 이미 끝난 단계는 반복하지 말고, 남은 계약 단계만 마무리한 뒤 종료하라.',
         '사용자가 이번 재개에 추가 지침을 남겼다. 아래 지침이 위 기본 절차와 충돌하면 지침을 우선하라.\n실패 로그를 먼저 확인하라.'
       ].join('\n\n')
     );
@@ -20179,5 +20180,751 @@ describe('공급자 게이트의 `[지금 시작]` 우회 (§3.4)', () => {
     await env.scheduler.tick(WS);
 
     expect(env.scheduler.isRunning('X6')).toBe(false);
+  });
+});
+
+describe('worker 하네스 축소 (2026-09-09 spec D1·D2·D3·D5b)', () => {
+  /**
+   * A runner that spawns the REAL claude engine over a capturing fake spawn, so
+   * the recorded `system_prompt` is the one an actual launch would carry.
+   */
+  function makeRecordingRunner() {
+    /** @type {Array<{ args: string[] }>} */
+    const calls = [];
+    const spawn_impl = (
+      /** @type {string} */ _command,
+      /** @type {string[]} */ args
+    ) => {
+      calls.push({ args });
+      const child = new EventEmitter();
+      /** @type {any} */ (child).pid = 7777;
+      /** @type {any} */ (child).kill = () => {};
+      /** @type {any} */ (child).stdout = new PassThrough();
+      return /** @type {any} */ (child);
+    };
+    const factory = () => ({
+      name: 'claude',
+      spawn: (
+        /** @type {any} */ bead,
+        /** @type {string} */ ws,
+        /** @type {any} */ settings
+      ) => runSession(claudeSpec(), bead, ws, settings, { spawn_impl })
+    });
+    return { factory, calls };
+  }
+
+  /**
+   * The newest attempt recorded for a bead.
+   *
+   * @param {any} store
+   * @param {string} bead_id
+   * @returns {any}
+   */
+  function newestAttempt(store, bead_id) {
+    const attempts = Object.values(store.snapshot(WS).attempts).filter(
+      (/** @type {any} */ a) => a.bead_id === bead_id
+    );
+    return attempts[attempts.length - 1];
+  }
+
+  /**
+   * A verifier whose PR observation always fails, the env tier's simplest
+   * trigger.
+   *
+   * @returns {any}
+   */
+  function ghDown() {
+    return {
+      verifyPrSubmitted: vi.fn(async () => ({
+        ok: false,
+        reason: 'gh_observation_failed',
+        pr_url: null
+      }))
+    };
+  }
+
+  describe('D2 dispatch 선점', () => {
+    test('claims an open bead and records the written transition', async () => {
+      const env = setup({
+        config: { S1: { status: 'open', ready_follows_status: true } },
+        slots: 1
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.bd.statuses.S1).toBe('in_progress');
+      expect(newestAttempt(env.store, 'S1').worker_claim).toBe('written');
+    });
+
+    test('writes no claim when the bead is not open', async () => {
+      const env = setup({
+        config: { S1: { status: 'in_progress' } },
+        slots: 1
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(
+        env.bd.calls.filter(
+          (/** @type {any} */ c) =>
+            c.method === 'setStatus' && c.value === 'in_progress'
+        )
+      ).toEqual([]);
+      expect(newestAttempt(env.store, 'S1').worker_claim).toBe('pending');
+    });
+
+    test('continues the dispatch when the claim write throws', async () => {
+      const env = setup({
+        config: { S1: { status: 'open', throwOnSetStatus: true } },
+        slots: 1
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const attempt = newestAttempt(env.store, 'S1');
+      expect(attempt.status).toBe('running');
+      expect(attempt.worker_claim).toBe('pending');
+    });
+
+    test('keeps the release duty when the readback does not echo in_progress', async () => {
+      const env = setup({
+        config: { S1: { status: 'open', readStatusStuck: true } },
+        slots: 1
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      // The write went through, so the duty to give it back is recorded even
+      // though the readback could not confirm it.
+      expect(env.bd.statuses.S1).toBe('in_progress');
+      expect(newestAttempt(env.store, 'S1').worker_claim).toBe('written');
+    });
+
+    test('writes no claim when the attempt prerecord fails', async () => {
+      const base_store = makeQueueStore();
+      const appendAttempt = vi.fn((/** @type {string} */ workspace) => ({
+        ok: false,
+        conflict: false,
+        queue: base_store.snapshot(workspace)
+      }));
+      const env = setup({
+        store: { ...base_store, appendAttempt },
+        config: { S1: { status: 'open' } },
+        slots: 1
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(
+        env.bd.calls.some((/** @type {any} */ c) => c.method === 'setStatus')
+      ).toBe(false);
+      expect(env.bd.statuses.S1).toBe('open');
+    });
+
+    test('releases the claim on the attempt record when the attempt fails', async () => {
+      const env = setup({
+        config: { S1: { status: 'open', ready_follows_status: true } },
+        slots: 1
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+
+      env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
+      await flush();
+      await flush();
+
+      expect(env.bd.statuses.S1).toBe('open');
+      expect(newestAttempt(env.store, 'S1').worker_claim).toBe('released');
+    });
+
+    test('releases the claim when the workflow_mode stamp fails after it', async () => {
+      const env = setup({
+        config: {
+          S1: { status: 'open', ready_follows_status: true, throwOnSet: true }
+        },
+        slots: 1
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const attempt = newestAttempt(env.store, 'S1');
+      expect(attempt.cause).toBe('workflow_mode_record_failed');
+      expect(env.bd.statuses.S1).toBe('open');
+      expect(attempt.worker_claim).toBe('released');
+    });
+
+    test('keeps the release duty when the claim readback throws', async () => {
+      const env = setup({
+        config: { S1: { status: 'open', ready_follows_status: true } },
+        slots: 1
+      });
+      const setStatus = env.bd.setStatus;
+      const readStatus = env.bd.readStatus;
+      let throw_next_read = false;
+      env.bd.setStatus = async (
+        /** @type {string} */ bead_id,
+        /** @type {string} */ status
+      ) => {
+        await setStatus(bead_id, status);
+        throw_next_read = status === 'in_progress';
+      };
+      env.bd.readStatus = async (/** @type {string} */ bead_id) => {
+        if (throw_next_read) {
+          throw_next_read = false;
+          throw new Error('bd show failed');
+        }
+        return readStatus(bead_id);
+      };
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.bd.statuses.S1).toBe('in_progress');
+      expect(newestAttempt(env.store, 'S1').worker_claim).toBe('written');
+    });
+
+    test('releases the claim when the spawn throws', async () => {
+      const env = setup({
+        config: { S1: { status: 'open', ready_follows_status: true } },
+        slots: 1,
+        makeRunner: () => ({
+          name: 'claude',
+          spawn() {
+            throw new Error('spawn failed');
+          }
+        })
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const attempt = newestAttempt(env.store, 'S1');
+      expect(attempt.cause).toBe('spawn_failed');
+      expect(env.bd.statuses.S1).toBe('open');
+      expect(attempt.worker_claim).toBe('released');
+    });
+
+    test('reconcile settles a retry_wait rung whose claim was missed', async () => {
+      const env = setup({
+        config: { S1: { status: 'in_progress' } },
+        slots: 1
+      });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: { attempt_id: 'rung-1', bead_id: 'S1' }
+      });
+      env.store.updateAttempt(WS, {
+        attempt_id: 'rung-1',
+        patch: {
+          status: 'retry_wait',
+          repo: '/repo',
+          runner: 'claude',
+          worker_claim: 'written',
+          finished_at: 900
+        }
+      });
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.bd.statuses.S1).toBe('open');
+      expect(env.store.snapshot(WS).attempts['rung-1'].worker_claim).toBe(
+        'released'
+      );
+    });
+
+    test('reconcile settles a stopped attempt whose claim was missed', async () => {
+      const env = setup({
+        config: { S1: { status: 'in_progress' } },
+        slots: 1
+      });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: { attempt_id: 'stop-1', bead_id: 'S1' }
+      });
+      env.store.updateAttempt(WS, {
+        attempt_id: 'stop-1',
+        patch: {
+          status: 'stopped',
+          repo: '/repo',
+          runner: 'claude',
+          worker_claim: 'written',
+          finished_at: 900
+        }
+      });
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.bd.statuses.S1).toBe('open');
+      expect(env.store.snapshot(WS).attempts['stop-1'].worker_claim).toBe(
+        'released'
+      );
+    });
+
+    test('reconcile settles a written claim whose release was missed', async () => {
+      const env = setup({
+        config: { S1: { status: 'in_progress' } },
+        slots: 1
+      });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: { attempt_id: 'dead-1', bead_id: 'S1' }
+      });
+      env.store.updateAttempt(WS, {
+        attempt_id: 'dead-1',
+        patch: {
+          status: 'failed',
+          repo: '/repo',
+          runner: 'claude',
+          worker_claim: 'written',
+          finished_at: 900
+        }
+      });
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.bd.statuses.S1).toBe('open');
+      expect(env.store.snapshot(WS).attempts['dead-1'].worker_claim).toBe(
+        'released'
+      );
+    });
+
+    test('reconcile leaves a delivered bead claimed', async () => {
+      const env = setup({
+        config: { S1: { status: 'in_progress', metadata: { pr_url: 'u' } } },
+        slots: 1
+      });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: { attempt_id: 'dead-2', bead_id: 'S1' }
+      });
+      env.store.updateAttempt(WS, {
+        attempt_id: 'dead-2',
+        patch: {
+          status: 'failed',
+          repo: '/repo',
+          runner: 'claude',
+          worker_claim: 'written',
+          finished_at: 900
+        }
+      });
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.bd.statuses.S1).toBe('in_progress');
+      expect(env.store.snapshot(WS).attempts['dead-2'].worker_claim).toBe(
+        'written'
+      );
+    });
+
+    test('reconcile leaves a claim alone while a sibling still runs', async () => {
+      const env = setup({
+        config: { S1: { status: 'in_progress' } },
+        slots: 1
+      });
+      let rev = env.store.snapshot(WS).revision;
+      env.store.appendAttempt(WS, {
+        expected_revision: rev,
+        attempt: { attempt_id: 'dead-3', bead_id: 'S1' }
+      });
+      rev = env.store.snapshot(WS).revision;
+      env.store.appendAttempt(WS, {
+        expected_revision: rev,
+        attempt: { attempt_id: 'live-3', bead_id: 'S1' }
+      });
+      env.store.updateAttempt(WS, {
+        attempt_id: 'dead-3',
+        patch: {
+          status: 'failed',
+          repo: '/repo',
+          runner: 'claude',
+          worker_claim: 'written',
+          finished_at: 900
+        }
+      });
+      env.store.updateAttempt(WS, {
+        attempt_id: 'live-3',
+        patch: {
+          status: 'running',
+          pid: 4242,
+          started_at: 1000,
+          repo: '/repo',
+          runner: 'claude'
+        }
+      });
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.bd.statuses.S1).toBe('in_progress');
+    });
+  });
+
+  describe('D3 워크트리 의존성 설치', () => {
+    test('installs into the fresh worktree and records ok', async () => {
+      const env = setup({ config: { S1: { status: 'open' } }, slots: 1 });
+      const installDependencies = vi.fn(async () => 'ok');
+      /** @type {any} */ (env.worktree).installDependencies =
+        installDependencies;
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(installDependencies).toHaveBeenCalledWith({ path: '/wt/S1' });
+      expect(newestAttempt(env.store, 'S1').worktree_setup).toBe('ok');
+    });
+
+    test('records a failed install and still dispatches', async () => {
+      const env = setup({ config: { S1: { status: 'open' } }, slots: 1 });
+      /** @type {any} */ (env.worktree).installDependencies = vi.fn(
+        async () => 'failed:npm ERR! code EUSAGE'
+      );
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const attempt = newestAttempt(env.store, 'S1');
+      expect(attempt.status).toBe('running');
+      expect(attempt.worktree_setup).toBe('failed:npm ERR! code EUSAGE');
+    });
+
+    test('records skipped when no installer is wired', async () => {
+      const env = setup({ config: { S1: { status: 'open' } }, slots: 1 });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(newestAttempt(env.store, 'S1').worktree_setup).toBe('skipped');
+    });
+
+    test('records skipped when the installer throws', async () => {
+      const env = setup({ config: { S1: { status: 'open' } }, slots: 1 });
+      /** @type {any} */ (env.worktree).installDependencies = vi.fn(
+        async () => {
+          throw new Error('spawn npm ENOENT');
+        }
+      );
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const attempt = newestAttempt(env.store, 'S1');
+      expect(attempt.status).toBe('running');
+      expect(attempt.worktree_setup).toBe('skipped');
+    });
+  });
+
+  describe('D1 시도 사실 카드', () => {
+    test('delivers the facts card in the dispatched system prompt', async () => {
+      const recorder = makeRecordingRunner();
+      const env = setup({
+        config: { S1: { status: 'open', ready_follows_status: true } },
+        slots: 1,
+        makeRunner: recorder.factory,
+        homeDir: '/home/nobody'
+      });
+      /** @type {any} */ (env.worktree).installDependencies = vi.fn(
+        async () => 'ok'
+      );
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const prompt = newestAttempt(env.store, 'S1').system_prompt;
+      expect(prompt).toContain('## 시도 사실');
+      expect(prompt).toContain('bead=S1');
+      expect(prompt).toContain('workflow_mode=fast_track');
+      expect(prompt).toContain('worktree=/wt/S1');
+      expect(prompt).toContain('- node_modules=ok');
+      expect(prompt).toContain('- status=in_progress(선점: Worker)');
+    });
+
+    test('states 없음 for a claim the Worker did not write', async () => {
+      const recorder = makeRecordingRunner();
+      const env = setup({
+        config: { S1: { status: 'in_progress' } },
+        slots: 1,
+        makeRunner: recorder.factory,
+        homeDir: '/home/nobody'
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(newestAttempt(env.store, 'S1').system_prompt).toContain(
+        '- status=in_progress(선점: 없음)'
+      );
+    });
+
+    test('delivers the facts card on a manual resume without install lines', async () => {
+      const recorder = makeRecordingRunner();
+      const env = setup({
+        config: { S1: { status: 'open' } },
+        slots: 1,
+        makeRunner: recorder.factory,
+        homeDir: '/home/nobody'
+      });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: { attempt_id: 'prior-1', bead_id: 'S1' }
+      });
+      env.store.updateAttempt(WS, {
+        attempt_id: 'prior-1',
+        patch: {
+          status: 'failed',
+          repo: '/repo',
+          target_base: 'main',
+          base_oid: 'base-S1',
+          runner: 'claude',
+          model: 'opus',
+          effort: 'high',
+          session_id: 'sid-abc',
+          workflow_mode_prior: null,
+          cause: 'session_failed:is_error'
+        }
+      });
+
+      const res = await env.scheduler.resume(WS, 'prior-1');
+
+      expect(res.ok).toBe(true);
+      const prompt = newestAttempt(env.store, 'S1').system_prompt;
+      expect(prompt).toContain('## 시도 사실');
+      expect(prompt).toContain('bead=S1');
+      expect(prompt).toContain('- status=open(선점: 없음)');
+      expect(prompt).not.toContain('- node_modules=');
+    });
+
+    test('omits the dotfiles lines when no resolver is wired', async () => {
+      const recorder = makeRecordingRunner();
+      const env = setup({
+        config: { S1: { status: 'open' } },
+        slots: 1,
+        makeRunner: recorder.factory,
+        homeDir: '/home/nobody'
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const prompt = newestAttempt(env.store, 'S1').system_prompt;
+      expect(prompt).not.toContain('dotfiles_root=');
+      expect(prompt).not.toContain('workflow_python=');
+    });
+
+    test('names the selector inputs the bead and the workspace kv carry', async () => {
+      const recorder = makeRecordingRunner();
+      const env = setup({
+        config: { S1: { status: 'open', impl_model: 'sol' } },
+        slots: 1,
+        makeRunner: recorder.factory,
+        homeDir: '/home/nobody',
+        kvGet: vi.fn(
+          async (/** @type {string} */ _ws, /** @type {string} */ key) =>
+            key === 'workflow_session_defaults'
+              ? { ok: true, value: { impl_speed: 'fast' } }
+              : { ok: true, value: undefined }
+        )
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const prompt = newestAttempt(env.store, 'S1').system_prompt;
+      expect(prompt).toContain('impl_model=sol (source=bead)');
+      expect(prompt).toContain('impl_speed=fast (source=workspace_kv)');
+      expect(prompt).toContain('impl_dispatch=없음 (source=없음)');
+    });
+  });
+
+  describe('D5b 용량 실패 뒤 재개', () => {
+    /**
+     * Everything a recorded-session continuation needs on the ladder's
+     * env-failed record, WITHOUT the user's `prior_attempt` choice — the
+     * preserved work is what elects the resume here.
+     *
+     * @param {any} store
+     * @param {string} attempt_id
+     * @param {Partial<import('./queue-store.js').Attempt>} [patch]
+     */
+    function markResumableRecord(store, attempt_id, patch = {}) {
+      store.updateAttempt(WS, {
+        attempt_id,
+        patch: {
+          session_id: 'sid-abc',
+          process_identity: { pid: 4242, pgid: 4242, started_at: 1_000 },
+          claude_account: 'recorded@example.com',
+          runner: 'claude',
+          model: 'sonnet',
+          effort: 'low',
+          speed: 'default',
+          exec_values: Object.fromEntries(
+            EXEC_SETTING_KEYS.map((key) => [key, null])
+          ),
+          ...patch
+        }
+      });
+    }
+
+    test('resumes the attempt whose worktree still holds commits', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout'] });
+      try {
+        let clock = 1000;
+        const env = setup({
+          config: { S1: { status: 'open' } },
+          slots: 1,
+          verify: ghDown(),
+          now: () => clock,
+          ...accountDeps()
+        });
+        seedQueue(env.store, ['S1']);
+        await env.scheduler.tick(WS);
+        const first = Object.keys(env.store.snapshot(WS).attempts)[0];
+        env.runner.finish('S1', { success: true });
+        await flush();
+        await flush();
+        markResumableRecord(env.store, first, { head_oid: 'head-S1' });
+
+        clock = 1000 + RETRY_DELAYS_MS[0];
+        await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+        await flush();
+
+        const child = Object.values(env.store.snapshot(WS).attempts).find(
+          (/** @type {any} */ a) => a.resumed_from === first
+        );
+        expect(/** @type {any} */ (child)).toMatchObject({
+          bead_id: 'S1',
+          status: 'running',
+          continuation_choice: 'prior_attempt'
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('resumes on a worktree observation that reports commits ahead', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout'] });
+      try {
+        let clock = 1000;
+        const env = setup({
+          config: { S1: { status: 'open' } },
+          slots: 1,
+          verify: ghDown(),
+          now: () => clock,
+          ...accountDeps()
+        });
+        seedQueue(env.store, ['S1']);
+        await env.scheduler.tick(WS);
+        const first = Object.keys(env.store.snapshot(WS).attempts)[0];
+        env.runner.finish('S1', { success: true });
+        await flush();
+        await flush();
+        markResumableRecord(env.store, first);
+        /** @type {any} */ (env.worktree).removeIfDiscardable = vi.fn(
+          async () => ({
+            ok: true,
+            removed: false,
+            reason: null,
+            summary: {
+              staged_count: 0,
+              unstaged_count: 0,
+              untracked_count: 0,
+              branch_ahead: 2,
+              head_ahead: 2
+            }
+          })
+        );
+
+        clock = 1000 + RETRY_DELAYS_MS[0];
+        await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+        await flush();
+
+        const child = Object.values(env.store.snapshot(WS).attempts).find(
+          (/** @type {any} */ a) => a.resumed_from === first
+        );
+        expect(/** @type {any} */ (child)).toBeTruthy();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('keeps the fresh dispatch when nothing was preserved', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout'] });
+      try {
+        let clock = 1000;
+        const env = setup({
+          config: { S1: { status: 'open' } },
+          slots: 1,
+          verify: ghDown(),
+          now: () => clock,
+          ...accountDeps()
+        });
+        seedQueue(env.store, ['S1']);
+        await env.scheduler.tick(WS);
+        const first = Object.keys(env.store.snapshot(WS).attempts)[0];
+        env.runner.finish('S1', { success: true });
+        await flush();
+        await flush();
+        markResumableRecord(env.store, first);
+
+        clock = 1000 + RETRY_DELAYS_MS[0];
+        await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+        await flush();
+
+        const snap = env.store.snapshot(WS);
+        const resumed = Object.values(snap.attempts).find(
+          (/** @type {any} */ a) => a.resumed_from === first
+        );
+        const fresh = Object.values(snap.attempts).find(
+          (/** @type {any} */ a) =>
+            a.attempt_id !== first && a.resumed_from == null
+        );
+        expect(resumed).toBeUndefined();
+        expect(/** @type {any} */ (fresh)).toMatchObject({
+          bead_id: 'S1',
+          status: 'running'
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('leaves an attempt with no recorded session on the fresh path', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout'] });
+      try {
+        let clock = 1000;
+        const env = setup({
+          config: { S1: { status: 'open' } },
+          slots: 1,
+          verify: ghDown(),
+          now: () => clock,
+          ...accountDeps()
+        });
+        seedQueue(env.store, ['S1']);
+        await env.scheduler.tick(WS);
+        const first = Object.keys(env.store.snapshot(WS).attempts)[0];
+        env.runner.finish('S1', { success: true });
+        await flush();
+        await flush();
+        env.store.updateAttempt(WS, {
+          attempt_id: first,
+          patch: { head_oid: 'head-S1' }
+        });
+
+        clock = 1000 + RETRY_DELAYS_MS[0];
+        await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+        await flush();
+
+        const resumed = Object.values(env.store.snapshot(WS).attempts).find(
+          (/** @type {any} */ a) => a.resumed_from === first
+        );
+        expect(resumed).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| 0050 | [Worker가 구현 attempt dispatch 시점에 in_progress를 선점하고 attempt 종료·재조정에서 되돌린다](0050-worker-dispatch-claims-in-progress.md) | 2026-09-09 | Worker는 구현 attempt를 dispatch할 때 durable attempt 기록 뒤 open인 Bead만 in_progress로 선점하고 worker_claim 전이를 attempt 기록에 남기며, 해제는 attempt 종료와 기존 reconcile 정산이 한다; session_ref는 쓰지 않고 resolved Bead를 다루는 경로는 제외한다 |
 | 0049 | [Worker 큐 정지·공급자 보류의 표시와 출구는 막힌 카드에 살고 상단 배너는 없다](0049-queue-gate-lives-on-blocked-card-no-banner.md) | 2026-09-09 | Worker 큐 정지와 공급자 보류의 표시·출구는 막힌 카드에 살고 상단 배너는 없다. 막힌 카드가 없으면 그리지 않으며, `재개`는 막힌 대기 행의 조작이고 `[지금 시작]`은 한 행의 명시적 디스패치로 공급자 게이트도 우회한다. 체계적 정지의 해제는 여전히 사람의 승인 한 번이며 자동 재개는 풀지 않는다. |
 | 0047 | [Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다](0047-codex-native-child-internal-observation-not-summed.md) | 2026-09-08 | Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다 |
 | 0046 | [같은 작업의 세션 재개는 기록된 provider를 보존하고 provider 변경은 명시적 선택으로만 수행한다](0046-session-resume-preserves-recorded-provider.md) | 2026-09-08 | 같은 작업의 세션 재개는 기록된 provider를 보존하고 provider 변경은 명시적 선택으로만 수행한다 |

@@ -29,6 +29,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.WORKFLOW_REPO_ROOT;
   delete process.env.WORKFLOW_BEAD_ID;
+  delete process.env.CLAUDE_READ_GUARD_MAX_BYTES;
   if (saved_collide === undefined) {
     delete process.env[COLLIDE];
   } else {
@@ -93,6 +94,29 @@ describe('runner/session spawn env inheritance (F2)', () => {
     const env = spawn_impl.captured.calls[0].options.env;
     expect(env.WORKFLOW_REPO_ROOT).toBe('/repo');
     expect(env.WORKFLOW_BEAD_ID).toBe('UI-5');
+  });
+
+  test('carries the worker read-guard ceiling into the child env', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()] });
+    const runner = createRunner('claude', { spawn_impl });
+
+    await runner.spawn({ id: 'UI-6' }, WS, {}).done;
+
+    const env = spawn_impl.captured.calls[0].options.env;
+    expect(env.CLAUDE_READ_GUARD_MAX_BYTES).toBe('65536');
+    expect(env.CLAUDE_HOOK_SUPPRESS).toBe('1');
+  });
+
+  test('lets the adapter env win over an inherited read-guard value', async () => {
+    process.env.CLAUDE_READ_GUARD_MAX_BYTES = '40000';
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()] });
+    const runner = createRunner('claude', { spawn_impl });
+
+    await runner.spawn({ id: 'UI-7' }, WS, {}).done;
+
+    expect(
+      spawn_impl.captured.calls[0].options.env.CLAUDE_READ_GUARD_MAX_BYTES
+    ).toBe('65536');
   });
 
   test('passes an account-isolated CODEX_HOME to the child', async () => {

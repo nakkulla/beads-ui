@@ -468,7 +468,11 @@ export function codexSpec(catalog_entry, options = {}) {
         pr_submit: !s.disposition && !s.quickfix_lane,
         disposition: !!s.disposition,
         quickfix_lane: !!s.quickfix_lane,
-        target_base: typeof s.target_base === 'string' ? s.target_base : null
+        target_base: typeof s.target_base === 'string' ? s.target_base : null,
+        // The dispatch-time facts card (harness-reduction spec D1). The SAME
+        // card the claude adapter delivers, so `--controller-runtime` inside it
+        // names this attempt's runner rather than a hardcoded default.
+        attempt_facts: s.attempt_facts ?? null
       });
       // codex has no `--append-system-prompt` equivalent, so the two channels
       // collapse into the one positional prompt. The pair still rides back out

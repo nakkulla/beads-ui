@@ -2603,6 +2603,74 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
     expect(restarted.load(WS).attempts['att-0'].exec_stamped_keys).toBe(null);
   });
 
+  test('worker_claim and worktree_setup survive append update and reload', () => {
+    const store = createQueueStore();
+    const rev = store.load(WS).revision;
+
+    const appended = store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: {
+        attempt_id: 'claim-1',
+        bead_id: 'UI-1',
+        worker_claim: 'pending',
+        worktree_setup: 'ok'
+      }
+    });
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'claim-1',
+      patch: { worker_claim: 'written' }
+    });
+    const reloaded = createQueueStore().load(WS).attempts['claim-1'];
+
+    expect(appended.queue.attempts['claim-1']).toMatchObject({
+      worker_claim: 'pending',
+      worktree_setup: 'ok'
+    });
+    expect(updated.queue.attempts['claim-1'].worker_claim).toBe('written');
+    expect(reloaded).toMatchObject({
+      worker_claim: 'written',
+      worktree_setup: 'ok'
+    });
+  });
+
+  test('keeps a failed install tail on worktree_setup', () => {
+    const store = createQueueStore();
+    const rev = store.load(WS).revision;
+
+    const appended = store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: {
+        attempt_id: 'setup-1',
+        bead_id: 'UI-1',
+        worktree_setup: 'failed:npm ERR! code EUSAGE'
+      }
+    });
+
+    expect(appended.queue.attempts['setup-1'].worktree_setup).toBe(
+      'failed:npm ERR! code EUSAGE'
+    );
+  });
+
+  test('rejects an unknown worker_claim or worktree_setup value', () => {
+    const store = createQueueStore();
+    const rev = store.load(WS).revision;
+
+    const appended = store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: {
+        attempt_id: 'claim-2',
+        bead_id: 'UI-1',
+        worker_claim: /** @type {any} */ ('claimed'),
+        worktree_setup: /** @type {any} */ ('installing')
+      }
+    });
+
+    expect(appended.queue.attempts['claim-2']).toMatchObject({
+      worker_claim: null,
+      worktree_setup: null
+    });
+  });
+
   test('continuation_choice survives a cold reload and rejects unknown values', () => {
     const store = createQueueStore();
     let rev = store.load(WS).revision;

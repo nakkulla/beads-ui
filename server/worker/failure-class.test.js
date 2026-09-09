@@ -99,7 +99,7 @@ describe('worker failure classification table', () => {
 });
 
 describe('worker failure environment patterns', () => {
-  test('leaves a provider HTTP error for the runner classifier', () => {
+  test('classifies a provider HTTP 529 as provider_capacity', () => {
     const result = classifyFailure(
       input({
         cause: 'session_failed:is_error',
@@ -108,9 +108,68 @@ describe('worker failure environment patterns', () => {
     );
 
     expect({ tier: result.tier, env_group: result.env_group }).toEqual({
+      tier: 'env',
+      env_group: 'provider_capacity'
+    });
+  });
+
+  test('classifies the codex at-capacity summary as an env retry', () => {
+    const result = classifyFailure(
+      input({
+        cause: 'session_failed:is_error',
+        verdict: {
+          success: false,
+          summary:
+            '세션 실패 — 환경 · codex turn failed: Selected model is at capacity'
+        }
+      })
+    );
+
+    expect({ tier: result.tier, env_group: result.env_group }).toEqual({
+      tier: 'env',
+      env_group: 'provider_capacity'
+    });
+  });
+
+  test('classifies an overloaded_error token as provider_capacity', () => {
+    expect(matchEnvPattern('overloaded_error')).toEqual('provider_capacity');
+  });
+
+  test('classifies an unexpected 503 status as provider_capacity', () => {
+    expect(matchEnvPattern('stream error: unexpected status 503')).toEqual(
+      'provider_capacity'
+    );
+  });
+
+  test('keeps a test-failure report individual', () => {
+    const result = classifyFailure(
+      input({
+        cause: 'session_failed:is_error',
+        verdict: {
+          success: false,
+          summary:
+            '실패 · scheduler.test.js 3건 실패 — 선점 전이가 기록되지 않음'
+        }
+      })
+    );
+
+    expect({ tier: result.tier, env_group: result.env_group }).toEqual({
       tier: 'individual',
       env_group: null
     });
+  });
+
+  test('gives a capacity retry its own promotion key', () => {
+    const capacity = classifyFailure(
+      input({
+        cause: 'session_failed:is_error',
+        verdict: { success: false, summary: 'Selected model is at capacity' }
+      })
+    );
+
+    expect(causeKey(capacity.cause, capacity.env_group)).toEqual(
+      'session_failed:is_error:provider_capacity'
+    );
   });
 
   test('keeps a transport failure in the api environment group', () => {

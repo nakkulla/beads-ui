@@ -30,6 +30,36 @@ import { runSession } from './session.js';
 const QUESTION_TOOL_RE = /ask.?user.?question|^ask_?user|elicit/i;
 
 /**
+ * The prose-style skills a Worker session may not pick up on its own
+ * (harness-reduction spec D4). `user-invocable-only` keeps each reachable by
+ * explicit name and stops the model selecting one from trigger words.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const WORKER_SEALED_SKILLS = Object.freeze([
+  'caveman',
+  'humanizer',
+  'deck',
+  'storyboard',
+  'design'
+]);
+
+/**
+ * The `--settings` payload every Worker claude launch carries. Frozen and
+ * exported so the argv test compares the STRUCTURE rather than re-typing the
+ * JSON, which is how the two would drift.
+ *
+ * @type {{ skillOverrides: Record<string, string> }}
+ */
+export const WORKER_SETTINGS_OVERRIDE = Object.freeze({
+  skillOverrides: Object.freeze(
+    Object.fromEntries(
+      WORKER_SEALED_SKILLS.map((name) => [name, 'user-invocable-only'])
+    )
+  )
+});
+
+/**
  * Expand a catalog short name (`opus-4.6`) into the CLI model id
  * (`claude-opus-4-6`). A name the catalog does not know passes through
  * verbatim — the catalog is the curated list, not an allowlist.
@@ -643,6 +673,16 @@ export function claudeSpec(options = {}) {
         args.push('--effort', String(s.effort));
       }
       args.push('--permission-mode', 'bypassPermissions');
+      // Seal the PROSE-STYLE skills for the Worker lane (harness-reduction
+      // spec D4). 12 of 73 audited sessions loaded `caveman` — a joke style
+      // skill — because its trigger words appear in ordinary implementation
+      // talk, and a session that rewrites its own output in caveman speech
+      // produces a completion report no checker can read. `user-invocable-only`
+      // is the same lever dotfiles' `base.json` already uses, so a person can
+      // still call one by name; the model just cannot pick one up on its own.
+      // A plugin skill (`frontend-design:frontend-design`) is out of
+      // `skillOverrides`' reach and stays an observation.
+      args.push('--settings', JSON.stringify(WORKER_SETTINGS_OVERRIDE));
       // The two channels (UI-rxp3 §2): the session-constant contract goes to
       // `--append-system-prompt`, and only the task stays positional. The
       // resume branch above takes the same path deliberately — a `--resume`
@@ -668,7 +708,11 @@ export function claudeSpec(options = {}) {
         quickfix_lane: !!s.quickfix_lane,
         // The base the session must open its PR against
         // (worker-base-scope-alignment §4).
-        target_base: typeof s.target_base === 'string' ? s.target_base : null
+        target_base: typeof s.target_base === 'string' ? s.target_base : null,
+        // The dispatch-time facts card (harness-reduction spec D1). Absent on
+        // every launch path that carries no dispatch snapshot, which emits no
+        // block rather than a card of `없음`.
+        attempt_facts: s.attempt_facts ?? null
       });
       args.push('--append-system-prompt', system_prompt);
       args.push(task_prompt);
@@ -709,6 +753,13 @@ export function claudeSpec(options = {}) {
         env: {
           CLAUDE_HOOK_SUPPRESS: '1',
           CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '7200000',
+          // Raise the read guard for the Worker lane only (spec D4). The
+          // interactive default (40,000 B) refused `scheduler.js` outright, and
+          // two sessions answered that with 15 `sed` invocations and a heredoc
+          // rewrite that corrupted the file (UI-hhn9, UI-dqg9). 64 KiB lets a
+          // large source file be READ, which is the cheaper of the two
+          // failures. Delegated subagents inherit the same value.
+          CLAUDE_READ_GUARD_MAX_BYTES: '65536',
           ...routing_env
         },
         system_prompt,

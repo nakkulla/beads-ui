@@ -59,6 +59,7 @@ import {
   WORKSPACE_ACCOUNTS_KV_KEY,
   normalizeWorkspaceAccounts
 } from '../workspace-accounts.js';
+import { buildAttemptFacts } from './attempt-facts.js';
 import { observeBaseDrift } from './base-drift.js';
 import {
   benchCellTerminal,
@@ -512,6 +513,12 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {string} [impl_runtime] - impl_runtime (per-bead exec setting).
  * @property {string} [impl_model] - impl_model (per-bead exec setting).
  * @property {string} [impl_effort] - impl_effort (per-bead exec setting).
+ * @property {string} [impl_speed] - impl_speed. Read for the facts card's
+ * `선택 입력` line only (harness-reduction spec D1): `policy.js` resolves no
+ * such axis, so this snapshot field is DISPLAY, never a launch input.
+ * @property {string} [impl_dispatch] - impl_dispatch, under the same
+ * display-only rule. It is a user-write-only key the session may not write, and
+ * the card states its value so a session stops looking for it.
  * @property {string|null} [workflow_mode] - Current workflow_mode metadata.
  * @property {string|null} [workflow_mode_source] - Current workflow_mode_source
  * metadata, read from the same issue observation as `workflow_mode`.
@@ -578,6 +585,11 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {(key: string) => string} [codexAccountHomeDir]
  * @property {string} [codexRoot]
  * @property {string} [homeDir]
+ * @property {() => Promise<string|null>} [resolveDotfilesRoot]
+ * The dotfiles repository root, for the dispatch facts card (harness-reduction
+ * spec D1). Optional and fail-quiet: an unwired resolver omits the
+ * `dotfiles_root` line, which is what every hermetic test wants — the value is
+ * a property of the machine, not of the queue.
  * @property {{
  *   snapshotBead: (bead_id: string) => Promise<BeadSnapshot>,
  *   setMetadata: (bead_id: string, key: string, value: string) => Promise<void>,
@@ -599,7 +611,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * `readyBeadIds` is optional for the same compatibility reason. Without the
  * workspace-wide ready reader, waiting return scans fail quiet and ordinary
  * scheduler behavior stays unchanged.
- * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, withTopologyLock?: <T>(repo: string, fn: () => Promise<T>) => Promise<T>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean, restore?: (i: { repo: string, bead_id: string, head_ref: string }) => Promise<{ ok: boolean, reason?: string }> }} worktree
+ * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, installDependencies?: (i: { path: string }) => Promise<string>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, withTopologyLock?: <T>(repo: string, fn: () => Promise<T>) => Promise<T>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean, restore?: (i: { repo: string, bead_id: string, head_ref: string }) => Promise<{ ok: boolean, reason?: string }> }} worktree
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean, bead_status?: string|null, awaiting_user?: string|null }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
@@ -4004,6 +4016,235 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The remote tip of a bead's own branch, for the facts card's
+   * `origin/<branch> tip=<sha>` line (spec D1). Fail-quiet: an unwired git
+   * runner, a nonzero exit or an absent branch all yield null and omit the
+   * line, because a continuation told the wrong tip would merge the wrong
+   * thing.
+   *
+   * @param {string} repo
+   * @param {string} remote
+   * @param {string} branch
+   * @returns {Promise<string|null>}
+   */
+  async function observeRemoteBranchTip(repo, remote, branch) {
+    if (
+      typeof deps.gitRun !== 'function' ||
+      typeof repo !== 'string' ||
+      repo.length === 0 ||
+      branch.length === 0
+    ) {
+      return null;
+    }
+    try {
+      const result = await deps.gitRun(
+        ['ls-remote', '--heads', remote, branch],
+        {
+          cwd: repo
+        }
+      );
+      if (result.code !== 0) {
+        return null;
+      }
+      const match = /([0-9a-f]{40})/.exec(result.stdout);
+      return match ? match[1] : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The workspace-global session defaults (`bd kv workflow_session_defaults`),
+   * read fail-quiet for the facts card's `선택 입력` line (spec D1). It is the
+   * SECOND layer the dotfiles selector reads after Bead metadata, so a card
+   * that omitted it would send a session looking for the very value it already
+   * has.
+   *
+   * @param {string} workspace
+   * @returns {Promise<Record<string, unknown>|null>}
+   */
+  async function readSessionDefaultsLayer(workspace) {
+    if (typeof deps.kvGet !== 'function') {
+      return null;
+    }
+    try {
+      const result = await deps.kvGet(workspace, 'workflow_session_defaults');
+      return result?.ok === true && result.value ? result.value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Assemble one dispatch's `## 시도 사실` payload. Every read inside is
+   * contained, so a failure omits a line and never touches the launch.
+   *
+   * @param {{ workspace: string, attempt_id: string, bead_id: string, snap: BeadSnapshot, wt: { path: string, base_oid: string }, runner_name: string, quickfix_lane: boolean, base_remote: string|null, worktree_setup: string|null, claim: { claimed: boolean, status: string|null }, continuation: boolean }} input
+   * `continuation` is true for every launch that may find the bead's branch
+   * already pushed — stale-work adoption, manual resume, conflict resolution —
+   * and is what turns the remote-tip observation on.
+   * @returns {Promise<import('./attempt-facts.js').AttemptFacts|null>}
+   */
+  async function collectDispatchFacts(input) {
+    try {
+      const branch = branchForBead(input.bead_id);
+      // A FIRST dispatch has published nothing, so its remote tip is
+      // meaningless; a continuation — stale-work adoption, manual resume,
+      // conflict resolution — may be resuming work that was already pushed,
+      // which is exactly when the line earns its place. The tip is read from
+      // and reported under the SAME remote, so a `upstream` base never has its
+      // SHA presented as origin's.
+      const tip_remote = input.base_remote ?? 'origin';
+      const tip = input.continuation
+        ? await observeRemoteBranchTip(input.snap.repo, tip_remote, branch)
+        : null;
+      return await buildAttemptFacts(
+        {
+          attempt_id: input.attempt_id,
+          bead_id: input.bead_id,
+          route: input.snap.route ?? null,
+          worktree: input.wt.path,
+          controller_runtime: input.runner_name,
+          quickfix_lane: input.quickfix_lane,
+          base: {
+            remote: input.base_remote,
+            branch: input.snap.target_base || null,
+            sha: input.wt.base_oid || null
+          },
+          remote_tip:
+            tip === null ? null : { remote: tip_remote, branch, sha: tip },
+          node_modules: input.worktree_setup,
+          bead_status: input.claim.status,
+          claimed_by_worker: input.claim.claimed,
+          bead_values: input.snap,
+          kv_values: await readSessionDefaultsLayer(input.workspace)
+        },
+        {
+          homeDir: deps.homeDir || os.homedir(),
+          resolveDotfilesRoot: deps.resolveDotfilesRoot,
+          loadDefaults: loadExecutionDefaults
+        }
+      );
+    } catch (err) {
+      log('attempt facts collection failed for %s: %o', input.bead_id, err);
+      return null;
+    }
+  }
+
+  /**
+   * The facts card for a relaunch that did not come through `dispatch()` —
+   * manual resume, conflict resolution — assembled from the prior attempt's
+   * record and the current bead snapshot (spec D1). Everything a relaunch
+   * cannot know is left null and omitted: no install ran, the Worker wrote no
+   * claim, and the base remote is whatever the memoized resolver answers.
+   *
+   * @param {{ workspace: string, attempt_id: string, bead_id: string, snap: BeadSnapshot, wt_path: string, base_oid: string|null, runner_name: string, quickfix_lane: boolean }} input
+   * @returns {Promise<import('./attempt-facts.js').AttemptFacts|null>}
+   */
+  async function collectRelaunchFacts(input) {
+    /** @type {string|null} */
+    let base_remote = null;
+    if (typeof deps.resolveBase === 'function') {
+      try {
+        const resolved = await deps.resolveBase();
+        base_remote = resolved.ok ? (resolved.remote ?? null) : null;
+      } catch {
+        base_remote = null;
+      }
+    }
+    /** @type {string|null} */
+    let status = null;
+    try {
+      status = await deps.bd.readStatus(input.bead_id);
+    } catch {
+      status = null;
+    }
+    return collectDispatchFacts({
+      workspace: input.workspace,
+      attempt_id: input.attempt_id,
+      bead_id: input.bead_id,
+      snap: input.snap,
+      wt: { path: input.wt_path, base_oid: input.base_oid ?? '' },
+      runner_name: input.runner_name,
+      quickfix_lane: input.quickfix_lane,
+      base_remote,
+      worktree_setup: null,
+      claim: { claimed: false, status },
+      continuation: true
+    });
+  }
+
+  /**
+   * Take the bead's `in_progress` claim for an implementation dispatch
+   * (harness-reduction spec D2).
+   *
+   * The workflow contract says a session claims the bead when it enters
+   * implementation; the Worker's dispatch IS that entry, and 15 audited
+   * sessions spent their first turns being refused by the impl-gate hook's
+   * `status ≠ in_progress` check — one of them for nine turns on a
+   * misdiagnosis. Writing it here removes the round trip without changing what
+   * the check means.
+   *
+   * FAIL-QUIET AND NARROW. Only an exactly-`open` bead is claimed: any other
+   * status belongs to somebody else's transition, and `resolved`→`in_progress`
+   * would break the delivery lifecycle outright. A bd failure writes nothing
+   * and lets the dispatch continue — the session then claims itself, exactly as
+   * it does today. `session_ref` is NOT written: the contract forbids a Worker
+   * runner from recording one.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   * @returns {Promise<{ claimed: boolean, status: string|null }>} The observed
+   * status, so the facts card can state it without a second `bd` read.
+   */
+  async function claimBeadForDispatch(workspace, bead_id, attempt_id) {
+    /** @type {string|null} */
+    let status = null;
+    try {
+      status = await deps.bd.readStatus(bead_id);
+    } catch (err) {
+      log('dispatch claim status read failed for %s: %o', bead_id, err);
+      return { claimed: false, status: null };
+    }
+    if (status !== 'open') {
+      return { claimed: false, status };
+    }
+    try {
+      await deps.bd.setStatus(bead_id, 'in_progress');
+    } catch (err) {
+      log('dispatch claim write failed for %s: %o', bead_id, err);
+      return { claimed: false, status };
+    }
+    // The release DUTY is recorded the moment the write returned, before the
+    // readback: a write that succeeded and a readback that then failed still
+    // left the bead `in_progress`, and a record that said `pending` would let
+    // both the exit path and `reconcile` walk past that claim.
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { worker_claim: 'written' }
+    });
+    try {
+      const readback = await deps.bd.readStatus(bead_id);
+      if (readback !== 'in_progress') {
+        log(
+          'dispatch claim readback mismatch for %s: expected in_progress, got %o',
+          bead_id,
+          readback
+        );
+        return { claimed: false, status: readback };
+      }
+      status = readback;
+    } catch (err) {
+      // Unconfirmed, not unwritten: the facts card says nothing about the
+      // status, and the `written` record above keeps the release owed.
+      log('dispatch claim readback failed for %s: %o', bead_id, err);
+      return { claimed: false, status: null };
+    }
+    return { claimed: true, status };
+  }
+
+  /**
    * Give back a claim the session held when it ended WITHOUT closing the bead.
    * Only `in_progress` is reopened — that is the state a session takes and
    * never gave back, and it hides the bead from `bd ready`, so every later tick
@@ -4013,9 +4254,14 @@ export function createScheduler(deps) {
    * Best-effort like the workflow_mode revert: a bd failure is logged and never
    * escapes the termination path, which is already halted anyway.
    *
+   * `attempt` is optional (spec D2) and only marks the WORKER's own claim
+   * released. A caller that does not know which attempt held the claim keeps
+   * the old one-argument shape, and `reconcile` settles whatever it left.
+   *
    * @param {string} bead_id
+   * @param {{ workspace: string, attempt_id: string }} [attempt]
    */
-  async function releaseBeadClaim(bead_id) {
+  async function releaseBeadClaim(bead_id, attempt) {
     try {
       if ((await deps.bd.readStatus(bead_id)) !== 'in_progress') {
         return;
@@ -4028,10 +4274,36 @@ export function createScheduler(deps) {
           bead_id,
           readback
         );
+        return;
       }
+      markWorkerClaimReleased(attempt);
     } catch (err) {
       log('bead claim release failed for %s: %o', bead_id, err);
     }
+  }
+
+  /**
+   * Move a `written` worker claim to `released` on the attempt that took it
+   * (spec D2). A record that never carried the Worker's own claim is left
+   * alone: the field says who wrote the `in_progress`, and a session's own
+   * claim is not this engine's to describe.
+   *
+   * @param {{ workspace: string, attempt_id: string }|null|undefined} attempt
+   */
+  function markWorkerClaimReleased(attempt) {
+    if (!attempt) {
+      return;
+    }
+    const record = deps.store.snapshot(attempt.workspace).attempts?.[
+      attempt.attempt_id
+    ];
+    if (!record || record.worker_claim !== 'written') {
+      return;
+    }
+    deps.store.updateAttempt(attempt.workspace, {
+      attempt_id: attempt.attempt_id,
+      patch: { worker_claim: 'released' }
+    });
   }
 
   /**
@@ -4698,7 +4970,7 @@ export function createScheduler(deps) {
     // The bead goes back to `open` on EVERY tier, including `parked`: the whole
     // point of a park is that the USER's own session picks the bead up, and it
     // cannot while the worker still holds the claim (spec §3.1).
-    await releaseBeadClaim(bead_id);
+    await releaseBeadClaim(bead_id, { workspace, attempt_id });
     // A bench cell has no user to pick it up: the run owns it, so its terminal
     // failure closes the clone and offers the run its residue sweep
     // (preset-compare §4.6). Inert for every other attempt.
@@ -4825,7 +5097,7 @@ export function createScheduler(deps) {
       execStampedKeysOf(workspace, attempt_id),
       execRestoreValuesOf(workspace, attempt_id)
     );
-    await releaseBeadClaim(bead_id);
+    await releaseBeadClaim(bead_id, { workspace, attempt_id });
     const pending_switch = saved.queue?.auto_resume_pending?.some(
       (/** @type {any} */ entry) =>
         entry.attempt_id === attempt_id && entry.kind === 'account_switch'
@@ -5661,7 +5933,7 @@ export function createScheduler(deps) {
       return null;
     }
 
-    await releaseBeadClaim(bead_id);
+    await releaseBeadClaim(bead_id, { workspace, attempt_id });
     /** @type {BeadSnapshot} */
     let snap;
     try {
@@ -6317,7 +6589,7 @@ export function createScheduler(deps) {
     );
     // The disposition writes `open` itself; this only covers a session that
     // claimed the bead `in_progress` and ended without giving it back.
-    await releaseBeadClaim(bead_id);
+    await releaseBeadClaim(bead_id, { workspace, attempt_id });
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: { status: 'done', finished_at: now() }
@@ -7312,8 +7584,118 @@ export function createScheduler(deps) {
           await disposeDeadAttempt(workspace, d.attempt_id, current);
         }
       }
+      await settleStaleWorkerClaims(workspace);
     } finally {
       reconciling.delete(workspace);
+    }
+  }
+
+  /** Worker claims one reconcile pass may settle, so a cold start is bounded. */
+  const STALE_CLAIM_SETTLE_MAX = 20;
+
+  /**
+   * Attempt statuses whose session is over and whose Worker-written claim is
+   * therefore owed back (spec D2). Everything except a live `running`
+   * session, an unspawned `pending`, and `done` — a delivered attempt's bead is
+   * `resolved` or beyond, and its status is the delivery's business.
+   *
+   * @type {ReadonlySet<string>}
+   */
+  const WORKER_CLAIM_RECLAIMABLE_STATUSES = new Set([
+    'failed',
+    'orphaned',
+    'stopped',
+    'parked',
+    'paused',
+    'retry_wait',
+    'waiting',
+    'superseded',
+    'discarded'
+  ]);
+
+  /**
+   * Give back a WORKER-written `in_progress` whose release was missed
+   * (harness-reduction spec D2).
+   *
+   * The claim's ordinary release rides {@link releaseBeadClaim} on the
+   * termination path. That path can be skipped exactly once: the process dies
+   * between the claim write and the spawn, or `bd` is unreachable at the moment
+   * the attempt ends. Either leaves a bead invisible to `bd ready` with nothing
+   * on screen saying why, which is the failure mode the field exists to close.
+   *
+   * NARROW BY CONSTRUCTION — five conditions, all of them evidence rather than
+   * inference: this attempt wrote the claim, it is terminal, no live sibling of
+   * the same bead could still own it, the bead is STILL `in_progress`, and it
+   * carries no `pr_url` (a delivered bead's status is the delivery's business,
+   * not this pass's). A bead with no attempt record is never scanned — there
+   * would be no ownership evidence to stand on.
+   *
+   * @param {string} workspace
+   */
+  async function settleStaleWorkerClaims(workspace) {
+    const q = deps.store.snapshot(workspace);
+    const attempts = Object.entries(q.attempts || {});
+    /** @type {Set<string>} */
+    const live_beads = new Set();
+    for (const [, attempt] of attempts) {
+      const a = /** @type {any} */ (attempt);
+      // Only a RUNNING attempt can still own the bead. A `retry_wait` rung has
+      // no session and waits for a new dispatch, which `bd ready` admits only
+      // once the bead is `open` again — so it is a release candidate, never a
+      // live owner.
+      if (a && a.status === 'running') {
+        live_beads.add(a.bead_id);
+      }
+    }
+    let settled = 0;
+    for (const [attempt_id, attempt] of attempts) {
+      if (settled >= STALE_CLAIM_SETTLE_MAX) {
+        return;
+      }
+      const a = /** @type {any} */ (attempt);
+      if (!a || a.worker_claim !== 'written') {
+        continue;
+      }
+      if (!WORKER_CLAIM_RECLAIMABLE_STATUSES.has(a.status)) {
+        continue;
+      }
+      if (
+        live_beads.has(a.bead_id) ||
+        claimed.has(a.bead_id) ||
+        running.has(attempt_id) ||
+        settling.has(attempt_id) ||
+        discardActive(q, { bead_id: a.bead_id, attempt_id })
+      ) {
+        continue;
+      }
+      settled += 1;
+      try {
+        if ((await deps.bd.readStatus(a.bead_id)) !== 'in_progress') {
+          // Somebody already moved it; the record is simply stale.
+          markWorkerClaimReleased({ workspace, attempt_id });
+          continue;
+        }
+        if (typeof deps.bd.readMetadata === 'function') {
+          const pr_url = await deps.bd.readMetadata(a.bead_id, 'pr_url');
+          if (typeof pr_url === 'string' && pr_url.length > 0) {
+            continue;
+          }
+        }
+        await deps.bd.setStatus(a.bead_id, 'open');
+        const readback = await deps.bd.readStatus(a.bead_id);
+        if (readback !== 'open') {
+          log(
+            'stale worker claim release readback mismatch for %s: got %o',
+            a.bead_id,
+            readback
+          );
+          continue;
+        }
+        markWorkerClaimReleased({ workspace, attempt_id });
+        notifyChanged(workspace);
+      } catch (err) {
+        log('stale worker claim release failed for %s: %o', a.bead_id, err);
+      }
     }
   }
 
@@ -7449,6 +7831,12 @@ export function createScheduler(deps) {
       // must come from a base read now. An unresolved declaration refuses HERE,
       // before any worktree is touched: there is nothing to cut from, and the
       // dispatch order puts the cut ahead of the admission re-check.
+      // Kept beside the resolution rather than re-derived: the facts card names
+      // the base as `<remote>/<branch>@<sha>` (spec D1), and a local-only repo
+      // resolves no remote at all, which must print as the bare branch instead
+      // of an invented `origin/`.
+      /** @type {string|null} */
+      let base_remote = null;
       if (typeof deps.resolveBase === 'function') {
         /** @type {import('./target-base.js').TargetBaseResult} */
         let resolved;
@@ -7466,6 +7854,7 @@ export function createScheduler(deps) {
           );
           return;
         }
+        base_remote = resolved.remote ?? null;
         snap = {
           ...snap,
           target_base: resolved.base,
@@ -7684,6 +8073,33 @@ export function createScheduler(deps) {
         return;
       }
 
+      // DEPENDENCY INSTALL for a FRESH worktree (harness-reduction spec D3).
+      // `git worktree add` produces a checkout with no `node_modules`, and 31
+      // of 73 audited sessions spent an `npm ls` → `npm ci` round trip
+      // rediscovering that. A stale-work adoption is skipped: that worktree is
+      // the previous attempt's, already installed, and re-running the installer
+      // over a session's own tree is a change it did not ask for.
+      //
+      // NEVER a refusal. The three results are all answers, and a `failed:` one
+      // leaves the session exactly where it is today — the facts card says so
+      // and the session installs by itself.
+      /** @type {string|null} */
+      let worktree_setup = null;
+      if (!stale_context) {
+        if (typeof deps.worktree.installDependencies === 'function') {
+          try {
+            worktree_setup = await deps.worktree.installDependencies({
+              path: wt.path
+            });
+          } catch (err) {
+            log('worktree dependency install threw for %s: %o', bead_id, err);
+            worktree_setup = 'skipped';
+          }
+        } else {
+          worktree_setup = 'skipped';
+        }
+      }
+
       // Admission re-check against the PINNED base_oid — the tick scan validated
       // against a moving base tip, so a base advance between scan and worktree
       // creation (TOCTOU) is caught here, fail-closed.
@@ -7761,6 +8177,11 @@ export function createScheduler(deps) {
           exec_restore_values,
           spec_review_stale: !!adm.stale,
           quickfix_lane,
+          // The claim transition starts at `pending` (spec D2): the write is
+          // attempted only AFTER this record lands, so the release duty exists
+          // from the record's birth even if the process dies between the two.
+          worker_claim: 'pending',
+          ...(worktree_setup !== null ? { worktree_setup } : {}),
           // Snapshotted like `quickfix_lane` and for the same reason: every
           // later settlement — the push invariant, the `:failed` close, the
           // run's own residue sweep — has to know which run owns this cell
@@ -7805,6 +8226,13 @@ export function createScheduler(deps) {
         });
       }
       reservation.handoff();
+
+      // WORKER-SIDE CLAIM (harness-reduction spec D2). A stale-work
+      // continuation keeps today's behaviour: its bead was claimed by the
+      // attempt whose worktree this is.
+      const claim = stale_context
+        ? { claimed: false, status: snap.status ?? null }
+        : await claimBeadForDispatch(workspace, bead_id, attempt_id);
 
       // Record + readback workflow_mode=fast_track (double-delivered with prompt).
       // The set AND its confirming readback are contained: a bd failure or a
@@ -7854,6 +8282,14 @@ export function createScheduler(deps) {
         } catch {
           // Best-effort: bd may be down; the failed record already reflects it.
         }
+        // The Worker's own claim (spec D2) goes back with the mode: this path
+        // never reaches `failAttempt`, and a claim left behind here would
+        // hide the bead from `bd ready` until `reconcile` settled it. Only a
+        // claim THIS attempt wrote is released — an `in_progress` the Worker
+        // merely observed belongs to somebody else's transition.
+        if (claim.claimed) {
+          await releaseBeadClaim(bead_id, { workspace, attempt_id });
+        }
         removeGuardHook(workspace, attempt_id);
         claimed.delete(bead_id);
         notifyChanged(workspace);
@@ -7873,6 +8309,22 @@ export function createScheduler(deps) {
         }),
         snap.quick_fix_review
       );
+      // The facts card (spec D1), collected AFTER the workflow_mode stamp so
+      // its `workflow_mode=fast_track` line is a recorded fact rather than an
+      // intention. `null` on any collection failure, which emits no block.
+      const attempt_facts = await collectDispatchFacts({
+        workspace,
+        attempt_id,
+        bead_id,
+        snap,
+        wt,
+        runner_name,
+        quickfix_lane,
+        base_remote,
+        worktree_setup,
+        claim,
+        continuation: stale_context !== null && stale_context !== undefined
+      });
       await launchSession({
         workspace,
         attempt_id,
@@ -7881,6 +8333,7 @@ export function createScheduler(deps) {
         target_base: snap.target_base,
         base_oid: wt.base_oid,
         runner_name,
+        attempt_facts,
         model: exec.orchestration_model ?? null,
         effort: exec.orchestration_effort ?? null,
         speed: exec.orchestration_speed ?? 'default',
@@ -8231,8 +8684,12 @@ export function createScheduler(deps) {
    *   fork_session?: boolean,
    *   verify_worktree?: boolean,
    *   disposition?: string|null,
-   *   quickfix_lane?: boolean
+   *   quickfix_lane?: boolean,
+   *   attempt_facts?: import('./attempt-facts.js').AttemptFacts|null
    * }} input
+   * `attempt_facts` is the dispatch-time facts card (spec D1). Only the
+   * ordinary dispatch collects one; every relaunch path leaves it absent, and
+   * the preamble then emits no `## 시도 사실` block rather than a card of `없음`.
    * @returns {Promise<{ ok: boolean, reason?: string }>} Whether the session
    * actually started. A spawn abort is REPORTED rather than swallowed: the
    * relaunch callers hand their verdict to a click that would otherwise be told
@@ -8305,7 +8762,11 @@ export function createScheduler(deps) {
       target_base,
       base_oid: base_oid ?? null,
       disposition: input.disposition ?? null,
-      quickfix_lane: input.quickfix_lane === true
+      quickfix_lane: input.quickfix_lane === true,
+      // The facts card rides the SAME settings object every other
+      // session-constant does, so both adapters read one field and neither can
+      // deliver a card the other does not (spec D1).
+      attempt_facts: input.attempt_facts ?? null
     };
     // Hand the session the hook that was installed BEFORE any state change
     // (UI-8mvc §2). Delivery creates nothing, which is why it belongs here even
@@ -8873,6 +9334,20 @@ export function createScheduler(deps) {
     } catch {
       // Best-effort: the failed record already preserves the refusal.
     }
+    // A claim the Worker wrote for this launch goes back with it (spec D2): a
+    // `spawn_failed` refusal lands on the env ladder as `retry_wait`, and the
+    // rung's re-dispatch is admitted only through `bd ready`, which never lists
+    // an `in_progress` bead. Judged off the record, so a review session or an
+    // attempt that observed somebody else's claim releases nothing.
+    const refused = deps.store.snapshot(input.workspace).attempts?.[
+      input.attempt_id
+    ];
+    if (refused && refused.worker_claim === 'written') {
+      await releaseBeadClaim(input.bead_id, {
+        workspace: input.workspace,
+        attempt_id: input.attempt_id
+      });
+    }
     claimed.delete(input.bead_id);
     notifyChanged(input.workspace);
   }
@@ -8888,20 +9363,90 @@ export function createScheduler(deps) {
    * announced as a failure — telling the session it failed is exactly the
    * dishonesty this phase removes from the UI.
    *
+   * `facts` adds what the Worker ALREADY knows about the ancestor
+   * (harness-reduction spec D6): its id and cause, its two receipts, and the
+   * one git sequence that answers "did the prior attempt push?". Without them
+   * "직접 점검하라" sends a fresh session hunting for facts the queue holds, and
+   * the audited resumes spent their first turns doing exactly that. Absent
+   * facts leave the sentence out entirely.
+   *
    * @param {string} bead_id
    * @param {string|null} prior_status
+   * @param {{ prior_attempt_id: string, cause: string, exec_receipt: string|null, impl_review: string|null, remote: string, branch: string }|null} [facts]
    * @returns {string}
    */
-  function resumePrompt(bead_id, prior_status) {
+  function resumePrompt(bead_id, prior_status, facts = null) {
     const opening =
       prior_status === 'paused'
         ? `이전 무인 세션이 사용자 요청으로 일시정지되었다(bead ${bead_id}).`
         : `이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead ${bead_id}).`;
+    const ancestor = facts
+      ? [
+          `이전 attempt ${facts.prior_attempt_id}는 ${facts.cause}로 끝났다(exec_receipt=${facts.exec_receipt ?? '없음'}, impl_review=${facts.impl_review ?? '없음'}).`,
+          `\`git fetch ${facts.remote} ${facts.branch}\` 뒤 \`git log HEAD..${facts.remote}/${facts.branch} --oneline\`으로 원격이 앞서 있으면 \`git merge --ff-only\`로 맞춘 뒤 남은 단계만 한다.`,
+          '`workflow_mode=fast_track`은 이미 기록됐다.'
+        ]
+      : [];
     return [
       opening,
+      ...ancestor,
       '같은 워크트리에서 세션을 이어 진행한다. 먼저 워크트리·bead 상태·PR/머지 현황을 직접 점검해 어디까지 진행됐는지 확인하라.',
       '이미 끝난 단계는 반복하지 말고, 남은 계약 단계만 마무리한 뒤 종료하라.'
     ].join(' ');
+  }
+
+  /**
+   * Fill {@link resumePrompt}'s ancestor sentence from the prior attempt record
+   * plus the bead's two receipt keys (spec D6). A bd failure yields `없음` for
+   * that key rather than dropping the sentence: the git sequence is useful
+   * regardless of whether a receipt could be read.
+   *
+   * @param {any} prior - The prior attempt record.
+   * @param {string} bead_id
+   * @returns {Promise<{ prior_attempt_id: string, cause: string, exec_receipt: string|null, impl_review: string|null, remote: string, branch: string }|null>}
+   */
+  async function resumeAncestorFacts(prior, bead_id) {
+    if (!prior || typeof prior.attempt_id !== 'string') {
+      return null;
+    }
+    /**
+     * One metadata key, or null when bd cannot answer.
+     *
+     * @param {string} key
+     * @returns {Promise<string|null>}
+     */
+    const readKey = async (key) => {
+      if (typeof deps.bd.readMetadata !== 'function') {
+        return null;
+      }
+      try {
+        const value = await deps.bd.readMetadata(bead_id, key);
+        return typeof value === 'string' && value.length > 0 ? value : null;
+      } catch {
+        return null;
+      }
+    };
+    /** @type {string|null} */
+    let remote = null;
+    if (typeof deps.resolveBase === 'function') {
+      try {
+        const resolved = await deps.resolveBase();
+        remote = resolved.ok ? resolved.remote : null;
+      } catch {
+        remote = null;
+      }
+    }
+    return {
+      prior_attempt_id: prior.attempt_id,
+      cause:
+        typeof prior.cause === 'string' && prior.cause.length > 0
+          ? prior.cause
+          : (prior.status ?? 'unknown'),
+      exec_receipt: await readKey('exec_receipt'),
+      impl_review: await readKey('impl_review'),
+      remote: remote ?? 'origin',
+      branch: branchForBead(bead_id)
+    };
   }
 
   /**
@@ -9047,7 +9592,11 @@ export function createScheduler(deps) {
       recordSkipReason(workspace, bead_id, reason);
       return { ok: false, reason };
     }
-    const default_prompt = resumePrompt(bead_id, prior.status ?? null);
+    const default_prompt = resumePrompt(
+      bead_id,
+      prior.status ?? null,
+      await resumeAncestorFacts(prior, bead_id)
+    );
     const prompt =
       typeof continuation.instructions === 'string' &&
       continuation.instructions.length > 0
@@ -10106,6 +10655,26 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'workflow_mode_record_failed' };
     }
 
+    const conflict_wt_path =
+      typeof deps.worktree.pathFor === 'function'
+        ? deps.worktree.pathFor(repo, bead_id)
+        : '';
+    // The conflict session gets the same facts card a resume does (spec D1):
+    // its branch is by definition already pushed, so the remote-tip line is
+    // exactly the fact it needs first.
+    const conflict_facts =
+      conflict_wt_path.length > 0
+        ? await collectRelaunchFacts({
+            workspace,
+            attempt_id,
+            bead_id,
+            snap,
+            wt_path: conflict_wt_path,
+            base_oid: null,
+            runner_name,
+            quickfix_lane: false
+          })
+        : null;
     const launched = await launchSession({
       workspace,
       attempt_id,
@@ -10121,10 +10690,8 @@ export function createScheduler(deps) {
       account_sources: resolved_exec.account_sources,
       prior_wf: prior,
       stamped_keys,
-      wt_path:
-        typeof deps.worktree.pathFor === 'function'
-          ? deps.worktree.pathFor(repo, bead_id)
-          : '',
+      wt_path: conflict_wt_path,
+      attempt_facts: conflict_facts,
       launch_kind: 'conflict',
       // A FORK of the bead's own interactive session when one qualified, else
       // the fresh session this path has always opened. The two values move
@@ -10920,6 +11487,25 @@ export function createScheduler(deps) {
         }
       }
     }
+    // The facts card for a RESUME or CONFLICT relaunch (spec D1): the same
+    // card a first dispatch carries, minus what this path never did — no
+    // install, no Worker claim — and plus the one line only a continuation can
+    // use, the bead branch's remote tip. A disposition session repairs a spec,
+    // not an implementation, so the implementation script lines would mislead
+    // it; it keeps no card.
+    const relaunch_facts =
+      options.disposition || wt_path.length === 0
+        ? null
+        : await collectRelaunchFacts({
+            workspace,
+            attempt_id: new_attempt_id,
+            bead_id,
+            snap: bead_snapshot,
+            wt_path,
+            base_oid: prior.base_oid ?? null,
+            runner_name,
+            quickfix_lane
+          });
     /** @type {any} */
     const launch_input = {
       workspace,
@@ -10937,6 +11523,7 @@ export function createScheduler(deps) {
       prior_wf,
       stamped_keys,
       wt_path,
+      attempt_facts: relaunch_facts,
       launch_kind: options.disposition
         ? 'disposition'
         : options.conflict_resolution
@@ -11922,9 +12509,18 @@ export function createScheduler(deps) {
       // (스펙 §5.3): 이 계보는 `dispatch`의 현재 설정 새 attempt가 아니라 기록된
       // tuple을 승계하는 resume로만 다시 시작한다. resume가 거부하면 아래 "아무것도
       // 띄우지 않음" 분기가 `retry_deferred`로 남기고, fresh로 흘러가지 않는다.
+      //
+      // PRESERVED WORK is the second reason to resume rather than re-dispatch
+      // (harness-reduction spec D5b). A fresh dispatch is REFUSED by its own
+      // worktree residue check when commits remain (`worktree_stale_work`), so
+      // an attempt that finished implementation, tests and a push and then died
+      // on a provider capacity error could only ever be deferred — one audited
+      // lineage burned $7 and 15 minutes that way. Where the work still exists,
+      // the ladder resumes the attempt that made it.
       const keep_prior_attempt =
-        latest_attempt?.continuation_choice === 'prior_attempt' &&
-        before_attempt_id !== null;
+        before_attempt_id !== null &&
+        (latest_attempt?.continuation_choice === 'prior_attempt' ||
+          (await attemptHasPreservedWork(latest_attempt)));
       claimed.add(bead_id);
       try {
         if (keep_prior_attempt) {
@@ -11978,6 +12574,77 @@ export function createScheduler(deps) {
     if (dispatched) {
       notifyChanged(workspace);
     }
+  }
+
+  /**
+   * Whether an attempt left work a fresh dispatch would strand (spec D5b).
+   *
+   * Three independent kinds of evidence, in ascending cost: the recorded head
+   * already differs from the base, the worktree observation still reports
+   * commits ahead, or the bead's branch exists on the remote. Any one of them
+   * means the next attempt has to CONTINUE rather than start over.
+   *
+   * FAIL-QUIET TO FALSE. An unobservable worktree yields the ladder's existing
+   * fresh dispatch, which is where every lineage was before this rung existed;
+   * a false positive would resume an attempt with nothing to resume.
+   *
+   * @param {any} attempt - The lineage's latest implementation attempt.
+   * @returns {Promise<boolean>}
+   */
+  async function attemptHasPreservedWork(attempt) {
+    if (
+      !attempt ||
+      typeof attempt.session_id !== 'string' ||
+      attempt.session_id.length === 0
+    ) {
+      // No recorded session ⇒ nothing to continue INTO, whatever the worktree
+      // holds. That case is the fresh dispatch's, and refusing it here is what
+      // keeps `resume`'s `no_session_id` off the ladder.
+      return false;
+    }
+    const repo = typeof attempt.repo === 'string' ? attempt.repo : '';
+    const bead_id = typeof attempt.bead_id === 'string' ? attempt.bead_id : '';
+    if (repo.length === 0 || bead_id.length === 0) {
+      return false;
+    }
+    const base =
+      typeof attempt.base_oid === 'string' && attempt.base_oid.length > 0
+        ? attempt.base_oid
+        : null;
+    if (
+      typeof attempt.head_oid === 'string' &&
+      attempt.head_oid.length > 0 &&
+      attempt.head_oid !== base
+    ) {
+      return true;
+    }
+    if (
+      base !== null &&
+      typeof deps.worktree.removeIfDiscardable === 'function'
+    ) {
+      try {
+        // `preserve: true` makes this an OBSERVATION: the manager returns the
+        // snapshot without removing the worktree or archiving its branch.
+        const observed = await deps.worktree.removeIfDiscardable({
+          repo,
+          bead_id,
+          base,
+          preserve: true
+        });
+        if (
+          observed?.summary &&
+          (observed.summary.head_ahead > 0 || observed.summary.branch_ahead > 0)
+        ) {
+          return true;
+        }
+      } catch {
+        // Unobservable is not evidence; fall through to the remote probe.
+      }
+    }
+    return (
+      (await observeRemoteBranchTip(repo, 'origin', branchForBead(bead_id))) !==
+      null
+    );
   }
 
   /**
@@ -13155,7 +13822,7 @@ export function createScheduler(deps) {
       await revertStamps(workspace, attempt_id, entry);
       // The bead already left the lane above, so the reopen cannot re-dispatch
       // it here; leaving the claim would silently skip it on a later re-queue.
-      await releaseBeadClaim(entry.bead_id);
+      await releaseBeadClaim(entry.bead_id, { workspace, attempt_id });
       // SIGTERM does not wait for the exit, so the residue check rides on the
       // handle's own `done` — checking now could clear a worktree the dying
       // process is still writing to. It is deliberately NOT awaited: stop()
@@ -13234,7 +13901,7 @@ export function createScheduler(deps) {
     if (!pending_done) {
       removeGuardHook(workspace, attempt_id);
     }
-    await releaseBeadClaim(rec.bead_id);
+    await releaseBeadClaim(rec.bead_id, { workspace, attempt_id });
     if (pending_done) {
       // Detached exactly like the live path: stop() must answer its ws caller
       // even when the paused process ignores the signal.

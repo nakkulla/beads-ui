@@ -270,10 +270,18 @@ describe('repo-ops/config.toml verify declaration', () => {
     });
   });
 
-  test('states the eligibility rule the declaration now completes', () => {
+  // The eligibility RULE moved out of `AGENTS.md` with the 2026-09-09
+  // harness-reduction spec D7: restating the merge gate's five inputs and the
+  // `impl_review` ancestry bind here made a second copy of a dotfiles-owned
+  // judgment, and a session that read the copy read it as the rule. What the
+  // project file still owes a session is the one BEHAVIOUR the rule implies —
+  // do not wait on checks — plus the pointer to the ADR that decided it.
+  test('states the check-free behaviour the declaration implies', () => {
     const agents = fs.readFileSync(path.join(REPO_ROOT, 'AGENTS.md'), 'utf8');
 
     expect(agents).not.toContain('저장소는 `[verify]`를 선언하지 않는다');
-    expect(agents).toContain('ancestry');
+    expect(agents).toContain('`gh pr checks`를 호출하지 않는다');
+    expect(agents).toContain('ADR 0003');
+    expect(agents).toContain('repo-ops/script/verify');
   });
 });
