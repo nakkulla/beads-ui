@@ -313,7 +313,11 @@ session key의 우선순위는 `pin > global > harness`, Worker key는
 - `auto`는 `auto (실행 시 결정)`으로 표시한다. provider tier 또는 runtime model
   default를 실행 전에 숫자 effort로 추측하지 않는다.
 - `impl_dispatch=main`이면 위임 대상·모델·effort·speed를 실행값으로 주장하지 않는다.
-  요약은 `메인`, 하위 행은 비활성 `해당 없음`으로 표시한다.
+  해석 결과의 `not_applicable` 의미는 유지하되, 이슈별 설정에서는 요약을 `메인`으로
+  표시하고 위임 대상·모델·effort·speed 행을 숨긴다. 기본값·전역값·핀을 해석한 실제
+  실행 방식으로 판정하며 숨긴 행은 요약 개수에서 제외한다. 표시 전환은 저장값을
+  삭제하지 않고, `delegated`로 돌아오면 기존 값을 다시 표시한다. 구현 speed 행은
+  기존 카탈로그 기반 `speedVisible` 판정으로 지원되는 경우에만 표시한다.
 - `impl_runtime=inherit`이고 controller runtime을 알 수 없으면
   `inherit (실행 시 결정)`으로 표시한다.
 

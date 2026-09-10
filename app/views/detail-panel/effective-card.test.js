@@ -809,21 +809,171 @@ describe('effective-settings card', () => {
     panel.destroy();
   });
 
-  test('shows quick_fix base execution as main with delegated settings disabled', async () => {
+  test.each([
+    ['route default', { route: 'quick_fix' }, {}],
+    ['issue model pin alone', { route: 'quick_fix', impl_model: 'sol' }, {}],
+    [
+      'explicit main over a model pin',
+      { route: 'quick_fix', impl_dispatch: 'main', impl_model: 'sol' },
+      {}
+    ],
+    [
+      'workspace main',
+      { route: 'quick_fix' },
+      { quick_fix_impl_dispatch: 'main' }
+    ]
+  ])(
+    'hides delegated settings for %s',
+    async (_name, metadata, session_defaults) => {
+      const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+      const { panel } = seed(mount, { metadata, session_defaults });
+      await settle();
+      await openEffective(mount);
+
+      expect(rowOf(mount, 'impl_dispatch').textContent).toContain('메인');
+      for (const key of [
+        'impl_runtime',
+        'impl_model',
+        'impl_effort',
+        'impl_speed'
+      ]) {
+        expect(rowOf(mount, key)).toBeNull();
+      }
+      panel.destroy();
+    }
+  );
+
+  test.each([
+    ['explicit delegation', { impl_dispatch: 'delegated' }, {}],
+    ['workspace model', {}, { quick_fix_impl_model: 'sol' }]
+  ])(
+    'shows delegated settings for %s',
+    async (_name, metadata, session_defaults) => {
+      const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+      const { panel } = seed(mount, {
+        metadata: { route: 'quick_fix', ...metadata },
+        session_defaults
+      });
+      await settle();
+
+      await openEffective(mount);
+
+      for (const key of ['impl_runtime', 'impl_model', 'impl_effort']) {
+        expect(rowOf(mount, key)).not.toBeNull();
+        expect(
+          /** @type {HTMLSelectElement} */ (
+            rowOf(mount, key).querySelector('select')
+          ).disabled
+        ).toBe(false);
+      }
+      panel.destroy();
+    }
+  );
+
+  test.each([
+    ['codex', 'sol', true],
+    ['claude', 'opus', false],
+    ['auto', 'sol', true],
+    ['auto', 'auto', false]
+  ])(
+    'shows implementation speed for %s/%s only when supported',
+    async (runtime, model, visible) => {
+      const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+      const { panel } = seed(mount, {
+        metadata: {
+          route: 'quick_fix',
+          impl_dispatch: 'delegated',
+          impl_runtime: runtime,
+          impl_model: model
+        }
+      });
+      await settle();
+
+      await openEffective(mount);
+
+      expect(rowOf(mount, 'impl_speed') !== null).toBe(visible);
+      panel.destroy();
+    }
+  );
+
+  test('restores delegated values after switching through main without clearing them', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const { panel } = seed(mount, { metadata: { route: 'quick_fix' } });
+    const metadata = {
+      route: 'quick_fix',
+      impl_dispatch: 'delegated',
+      impl_runtime: 'codex',
+      impl_model: 'sol',
+      impl_effort: 'medium',
+      impl_speed: 'fast'
+    };
+    const transport = vi.fn(
+      async (/** @type {string} */ type, /** @type {any} */ payload) => {
+        if (type === 'get-session-defaults') {
+          return { values: {}, warnings: [] };
+        }
+        if (type === 'update-exec-settings') {
+          return {
+            ...BASE_ISSUE,
+            metadata: { ...metadata, [payload.key]: payload.value }
+          };
+        }
+        return [];
+      }
+    );
+    const { panel } = seed(mount, { metadata, transport });
     await settle();
     await openEffective(mount);
+    transport.mockClear();
 
-    expect(rowOf(mount, 'impl_dispatch').textContent).toContain('메인');
-    for (const key of [
-      'impl_runtime',
-      'impl_model',
-      'impl_effort',
-      'impl_speed'
-    ]) {
-      expect(rowOf(mount, key).textContent).toContain('해당 없음');
+    for (const dispatch of ['main', 'delegated']) {
+      const select = /** @type {HTMLSelectElement} */ (
+        mount.querySelector('[data-edit-key="impl_dispatch"]')
+      );
+      select.value = dispatch;
+      select.dispatchEvent(new Event('change'));
+      await settle();
+
+      for (const key of [
+        'impl_runtime',
+        'impl_model',
+        'impl_effort',
+        'impl_speed'
+      ]) {
+        if (dispatch === 'main') {
+          expect(rowOf(mount, key)).toBeNull();
+        } else {
+          expect(
+            /** @type {HTMLSelectElement} */ (
+              rowOf(mount, key).querySelector('select')
+            ).value
+          ).toBe(metadata[/** @type {keyof typeof metadata} */ (key)]);
+        }
+      }
     }
+
+    expect(transport.mock.calls).toEqual(
+      ['main', 'delegated'].map((value) => [
+        'update-exec-settings',
+        { id: 'UI-1', key: 'impl_dispatch', value }
+      ])
+    );
+    panel.destroy();
+  });
+
+  test('excludes hidden delegated settings from collapsed counts', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { route: 'quick_fix', impl_dispatch: 'main', impl_model: 'sol' }
+    });
+
+    await settle();
+
+    expect(
+      mount.querySelector('.detail-effective__count--pin')?.textContent
+    ).toBe('핀 1');
+    expect(
+      mount.querySelector('.detail-effective__count--base')?.textContent
+    ).toBe('기본 7');
     panel.destroy();
   });
 

@@ -206,7 +206,7 @@ describe('effective-settings card route visibility', () => {
 
     expect(counts?.textContent).toContain('핀 0');
     expect(counts?.textContent).toContain('전역 0');
-    expect(counts?.textContent).toContain('기본 12');
+    expect(counts?.textContent).toContain('기본 11');
   });
 
   test('restores hidden pins when the route changes without editing metadata', () => {

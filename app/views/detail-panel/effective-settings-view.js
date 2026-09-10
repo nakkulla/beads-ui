@@ -33,7 +33,8 @@ import {
   WORKFLOW_MODES,
   implEffortOptions,
   implModelOptions,
-  orchestrationModelOptions
+  orchestrationModelOptions,
+  speedVisible
 } from '../settings-dialog/session-model.js';
 import { judgementPopoverContent } from '../worker/lanes.js';
 import {
@@ -306,7 +307,7 @@ export function effectiveSettingsCardTemplate(model, handlers) {
     })
   }));
   const all_keys = groups.flatMap((group) => group.keys);
-  const rows = effectiveRows(
+  const resolved_rows = effectiveRows(
     all_keys,
     model.metadata,
     model.workspace_values,
@@ -314,8 +315,29 @@ export function effectiveSettingsCardTemplate(model, handlers) {
     model.catalog,
     model.controller_runtime || null
   );
+  /** @type {Record<string, EffectiveRow>} */
+  const resolved = Object.fromEntries(
+    resolved_rows.map((row) => [row.key, row])
+  );
+  const rows = resolved_rows.filter((row) => {
+    if (
+      ['impl_runtime', 'impl_model', 'impl_effort', 'impl_speed'].includes(
+        row.key
+      ) &&
+      resolved.impl_dispatch.value === 'main'
+    ) {
+      return false;
+    }
+    if (row.key === 'impl_speed') {
+      return speedVisible(model.catalog, {
+        runtime: resolved.impl_runtime.value,
+        model: resolved.impl_model.value
+      });
+    }
+    return true;
+  });
   const counts = layerSummary(
-    all_keys,
+    rows.map((row) => row.key),
     model.metadata,
     model.workspace_values,
     model.execution_defaults,
@@ -481,7 +503,7 @@ export function summaryLine(effective) {
     parts.push(`위임${target}`);
   }
   for (const key of ['impl_model', 'impl_effort', 'impl_speed']) {
-    if (effective[key]?.resolution !== 'not_applicable') {
+    if (effective[key] && effective[key].resolution !== 'not_applicable') {
       parts.push(effective[key]?.display || '기본값 확인 불가');
     }
   }
