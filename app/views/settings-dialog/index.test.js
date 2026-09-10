@@ -28,7 +28,8 @@ const CATALOG = {
         sol: {
           id: 'gpt-5.6-sol',
           efforts: ['medium'],
-          orchestration_efforts: ['medium', 'ultra']
+          orchestration_efforts: ['medium', 'ultra'],
+          speed_tiers: ['default', 'fast']
         }
       }
     }
@@ -149,7 +150,7 @@ beforeEach(() => {
 });
 
 describe('createSettingsDialog tabs', () => {
-  test('renders the two rail tabs in contract order', async () => {
+  test('renders the four rail tabs in contract order', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
@@ -158,21 +159,39 @@ describe('createSettingsDialog tabs', () => {
       tab.getAttribute('data-tab')
     );
 
-    expect(tabs).toEqual(['execution', 'display']);
-    expect(SETTINGS_TABS.map((tab) => tab.label)).toEqual(['실행', '표시']);
+    expect(tabs).toEqual(['worker', 'session', 'account', 'display']);
+    expect(SETTINGS_TABS.map((tab) => tab.label)).toEqual([
+      '워커',
+      '세션',
+      '계정',
+      '표시'
+    ]);
   });
 
-  test('opens on the 실행 tab', async () => {
+  test('opens on the 워커 tab', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
 
     const selected = root.querySelector('[role="tab"][aria-selected="true"]');
 
-    expect(selected?.getAttribute('data-tab')).toBe('execution');
+    expect(selected?.getAttribute('data-tab')).toBe('worker');
   });
 
-  test('switches the active pane on a tab click', async () => {
+  test('opens directly on the 계정 tab when asked', async () => {
+    const { root, dialog } = mount();
+    dialog.open('account');
+    await settle();
+
+    expect(root.querySelector('#settings-pane-account')).not.toBe(null);
+    expect(
+      root
+        .querySelector('[role="tab"][aria-selected="true"]')
+        ?.getAttribute('data-tab')
+    ).toBe('account');
+  });
+
+  test('renders only the active tab', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
@@ -181,26 +200,19 @@ describe('createSettingsDialog tabs', () => {
       root.querySelector('[data-tab="display"]')
     ).click();
 
-    expect(
-      root
-        .querySelector('#settings-pane-display')
-        ?.classList.contains('settings-dialog__pane--active')
-    ).toBe(true);
-    expect(
-      root
-        .querySelector('#settings-pane-execution')
-        ?.classList.contains('settings-dialog__pane--active')
-    ).toBe(false);
+    expect(root.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
+    expect(root.querySelector('#settings-pane-display')).not.toBe(null);
+    expect(root.querySelector('#settings-pane-worker')).toBe(null);
   });
 
-  test('renders the execution groups in the approved order', async () => {
+  test('renders the worker groups in the approved order', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
 
     const groups = Array.from(
       root.querySelectorAll(
-        '#settings-pane-execution .settings-dialog__preset-bar, #settings-pane-execution .settings-dialog__group'
+        '#settings-pane-worker .settings-dialog__preset-bar, #settings-pane-worker .settings-dialog__group'
       )
     ).map((element) =>
       element.classList.contains('settings-dialog__preset-bar')
@@ -213,12 +225,9 @@ describe('createSettingsDialog tabs', () => {
     expect(groups).toEqual([
       '프리셋',
       '오케스트레이션',
-      '실행 계정',
-      '워크플로우',
-      '리뷰 게이트',
       '구현',
-      'quick_fix 레인',
-      '자동화',
+      '리뷰 게이트',
+      'quick_fix',
       '워커 시스템 프롬프트'
     ]);
   });
@@ -280,7 +289,7 @@ describe('createSettingsDialog session tab', () => {
 
   test('writes workflow_mode=standard as a literal rather than a deletion', async () => {
     const { root, dialog, transport } = mount();
-    dialog.open();
+    dialog.open('session');
     await settle();
 
     /** @type {HTMLButtonElement} */ (
@@ -334,7 +343,9 @@ describe('createSettingsDialog session tab', () => {
   });
 
   test('offers the quick_fix implementation model without the auto literal', async () => {
-    const { root, dialog } = mount();
+    const { root, dialog } = mount({
+      values: { quick_fix_impl_dispatch: 'delegated' }
+    });
     dialog.open();
     await settle();
 
@@ -349,6 +360,7 @@ describe('createSettingsDialog session tab', () => {
 
   test('stops quoting the workspace orchestration model in the quick_fix unset label', async () => {
     const { root, dialog } = mount({
+      values: { quick_fix_impl_dispatch: 'delegated' },
       queue: {
         revision: 3,
         slots: 2,
@@ -461,14 +473,14 @@ describe('createSettingsDialog session tab', () => {
     await settle();
 
     const select = /** @type {HTMLSelectElement} */ (
-      root.querySelector('select[data-key="impl_speed"]')
+      root.querySelector('select[data-key="impl_runtime"]')
     );
-    select.value = 'fast';
+    select.value = 'codex';
     select.dispatchEvent(new Event('change'));
     await settle();
 
     expect(notify).toHaveBeenCalled();
-    expect(dialog.sessionDraft()).toEqual({ impl_speed: 'fast' });
+    expect(dialog.sessionDraft()).toEqual({ impl_runtime: 'codex' });
   });
 });
 
@@ -504,7 +516,7 @@ describe('createSettingsDialog execution tab orchestration', () => {
     dialog.open();
     await settle();
     const warning = root.querySelector(
-      '#settings-pane-execution [data-execution-defaults-warning]'
+      '#settings-pane-worker [data-execution-defaults-warning]'
     );
     const select = /** @type {HTMLSelectElement} */ (
       root.querySelector('select[data-key="orchestration_model"]')
@@ -520,12 +532,12 @@ describe('createSettingsDialog execution tab orchestration', () => {
     );
   });
 
-  test('filters the model list by the UI-only runtime choice', async () => {
+  test('narrows the model list to the chosen orchestration runtime', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
     const filter = /** @type {HTMLSelectElement} */ (
-      root.querySelector('select[data-key="orchestration_runtime_filter"]')
+      root.querySelector('select[data-key="orchestration_runtime"]')
     );
     filter.value = 'codex';
     filter.dispatchEvent(new Event('change'));
@@ -554,7 +566,7 @@ describe('createSettingsDialog execution tab orchestration', () => {
     dialog.open();
     await settle();
     const filter = /** @type {HTMLSelectElement} */ (
-      root.querySelector('select[data-key="orchestration_runtime_filter"]')
+      root.querySelector('select[data-key="orchestration_runtime"]')
     );
     filter.value = 'codex';
     filter.dispatchEvent(new Event('change'));
@@ -583,7 +595,7 @@ describe('createSettingsDialog execution tab orchestration', () => {
     dialog.open();
     await settle();
     const filter = /** @type {HTMLSelectElement} */ (
-      root.querySelector('select[data-key="orchestration_runtime_filter"]')
+      root.querySelector('select[data-key="orchestration_runtime"]')
     );
     filter.value = 'codex';
     filter.dispatchEvent(new Event('change'));
@@ -615,7 +627,7 @@ describe('createSettingsDialog execution tab orchestration', () => {
     dialog.open();
     await settle();
     const filter = /** @type {HTMLSelectElement} */ (
-      root.querySelector('select[data-key="orchestration_runtime_filter"]')
+      root.querySelector('select[data-key="orchestration_runtime"]')
     );
     filter.value = 'claude';
     filter.dispatchEvent(new Event('change'));
@@ -632,31 +644,18 @@ describe('createSettingsDialog execution tab orchestration', () => {
     });
   });
 
-  test('stores nothing when the runtime filter returns to 전체', async () => {
-    const { root, dialog, transport } = mount({
-      queue: {
-        revision: 3,
-        slots: 2,
-        runner_catalog: CATALOG,
-        execution_defaults: EXECUTION_DEFAULTS,
-        orchestration_model: 'opus',
-        orchestration_effort: 'ultra',
-        orchestration_speed: null
-      }
-    });
+  test('offers no 전체 option on the orchestration runtime row', async () => {
+    const { root, dialog } = mount();
     dialog.open();
     await settle();
-    const filter = /** @type {HTMLSelectElement} */ (
-      root.querySelector('select[data-key="orchestration_runtime_filter"]')
-    );
-    filter.value = '';
-    filter.dispatchEvent(new Event('change'));
-    await settle();
 
-    expect(transport).not.toHaveBeenCalledWith(
-      'worker-queue-set-orchestration-defaults',
-      expect.anything()
-    );
+    const options = Array.from(
+      /** @type {HTMLSelectElement} */ (
+        root.querySelector('select[data-key="orchestration_runtime"]')
+      ).options
+    ).map((option) => option.value);
+
+    expect(options).toEqual(['claude', 'codex']);
   });
 
   test('stores an orchestration edit under the queue revision', async () => {
@@ -681,12 +680,18 @@ describe('createSettingsDialog execution tab orchestration', () => {
     dialog.open();
     await settle();
 
-    const toggles = Array.from(
-      root.querySelectorAll('#settings-pane-execution [data-automation]')
-    ).map((button) => button.getAttribute('data-automation'));
-
-    expect(toggles).toEqual(['auto_advance', 'auto_merge']);
+    expect(
+      root.querySelector('#settings-pane-worker [data-quick-fix-group]')
+    ).not.toBe(null);
     expect(transport).toHaveBeenCalledWith('get-session-defaults', {});
+  });
+
+  test('leaves the automation rows out of the worker tab', async () => {
+    const { root, dialog } = mount();
+    dialog.open();
+    await settle();
+
+    expect(root.querySelector('[data-automation]')).toBe(null);
   });
 
   test('offers session and orchestration keys on the execution tab', async () => {
@@ -694,7 +699,7 @@ describe('createSettingsDialog execution tab orchestration', () => {
     dialog.open();
     await settle();
     const keys = Array.from(
-      root.querySelectorAll('#settings-pane-execution select[data-key]')
+      root.querySelectorAll('#settings-pane-worker select[data-key]')
     ).map((select) => select.getAttribute('data-key'));
 
     expect(keys).toContain('orchestration_model');
@@ -734,7 +739,7 @@ describe('createSettingsDialog implementation presets', () => {
 
   test('renders no diff preview while no preset is selected', async () => {
     const { root, dialog } = mount({ presets: PRESETS });
-    dialog.open('execution');
+    dialog.open();
     await settle();
 
     expect(root.querySelector('[data-preset-diff]')).toBe(null);
@@ -754,7 +759,7 @@ describe('createSettingsDialog implementation presets', () => {
       presets: PRESETS,
       values: { impl_runtime: 'claude', impl_speed: 'fast' }
     });
-    dialog.open('execution');
+    dialog.open();
     await settle();
 
     const select = /** @type {HTMLSelectElement} */ (
@@ -782,7 +787,7 @@ describe('createSettingsDialog implementation presets', () => {
     );
     expect(
       root.querySelector('[data-preset-apply-global]')?.textContent?.trim()
-    ).toBe('일반에 적용');
+    ).toBe('적용');
     dialog.destroy();
   });
 
@@ -791,7 +796,7 @@ describe('createSettingsDialog implementation presets', () => {
       presets: PRESETS,
       values: { impl_runtime: 'codex', impl_model: 'sol' }
     });
-    dialog.open('execution');
+    dialog.open();
     await settle();
 
     const select = /** @type {HTMLSelectElement} */ (
@@ -840,7 +845,7 @@ describe('createSettingsDialog implementation presets', () => {
         orchestration_speed: 'fast'
       }
     });
-    dialog.open('execution');
+    dialog.open();
     await settle();
 
     const name = /** @type {HTMLInputElement} */ (
@@ -894,12 +899,20 @@ describe('createSettingsDialog implementation presets', () => {
         orchestration_speed: null
       }
     });
-    dialog.open('execution');
+    dialog.open();
     await settle();
 
+    const runtime = /** @type {HTMLSelectElement} */ (
+      root.querySelector(
+        '#settings-pane-worker [data-key="orchestration_runtime"]'
+      )
+    );
+    runtime.value = 'codex';
+    runtime.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
     const model_select = /** @type {HTMLSelectElement} */ (
       root.querySelector(
-        '#settings-pane-execution [data-key="orchestration_model"]'
+        '#settings-pane-worker [data-key="orchestration_model"]'
       )
     );
     model_select.value = 'sol';
@@ -933,7 +946,7 @@ describe('createSettingsDialog implementation presets', () => {
       return { values: {}, warnings: [] };
     });
     const { root, dialog } = mount({ transport, presets: PRESETS });
-    dialog.open('execution');
+    dialog.open();
     await settle();
 
     const select = /** @type {HTMLSelectElement} */ (
@@ -968,7 +981,7 @@ describe('createSettingsDialog implementation presets', () => {
       return { values: {}, warnings: [] };
     });
     const { root, dialog } = mount({ transport, presets: PRESETS });
-    dialog.open('execution');
+    dialog.open();
     await settle();
 
     const select = /** @type {HTMLSelectElement} */ (
@@ -1014,7 +1027,7 @@ describe('createSettingsDialog implementation presets', () => {
       return {};
     });
     const { root, dialog } = mount({ transport, presets: PRESETS });
-    dialog.open('execution');
+    dialog.open();
     await settle();
 
     const select = /** @type {HTMLSelectElement} */ (
@@ -1070,7 +1083,7 @@ describe('createSettingsDialog implementation presets', () => {
       return {};
     });
     const { root, dialog, notify } = mount({ transport, presets: PRESETS });
-    dialog.open('execution');
+    dialog.open();
     await settle();
 
     const select = /** @type {HTMLSelectElement} */ (

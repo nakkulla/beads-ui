@@ -34,7 +34,10 @@ import {
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
 import { modelRunnerOf } from '../detail-panel/exec-settings.js';
-import { createExecutionPane } from '../settings-dialog/execution-pane.js';
+import {
+  createExecutionPane,
+  paneSectionSegmentTemplate
+} from '../settings-dialog/execution-pane.js';
 import { iconGear, iconMerge, iconPause, iconPlay } from './icons.js';
 import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
 
@@ -163,12 +166,16 @@ export function createRepoDeck(mount_element, options) {
   panel_head.className = 'mon2-deck__panel-hd';
   const panel_title = document.createElement('span');
   panel_title.className = 'mon2-deck__panel-title';
+  // 패널 머리의 `[워커|세션|계정]` 세그먼트. 템플릿은 execution-pane이 export하고
+  // 이 자리는 lit 호스트로만 쓴다 — 다이얼로그 레일과 두 벌이 되지 않게 한다.
+  const panel_seg = document.createElement('span');
+  panel_seg.className = 'mon2-deck__panel-seg';
   const panel_close = document.createElement('button');
   panel_close.type = 'button';
   panel_close.className = 'mon2-deck__panel-close';
   panel_close.setAttribute('aria-label', '실행 설정 닫기');
   panel_close.textContent = '✕';
-  panel_head.append(panel_title, panel_close);
+  panel_head.append(panel_title, panel_seg, panel_close);
   const panel_body = document.createElement('div');
   panel_body.className = 'mon2-deck__panel-body';
   panel_el.append(panel_head, panel_body);
@@ -180,6 +187,8 @@ export function createRepoDeck(mount_element, options) {
   let panel_root = null;
   /** @type {ReturnType<typeof createExecutionPane>|null} */
   let pane = null;
+  /** 패널이 지금 그리는 pane 구역 (`worker` start). */
+  let panel_section = 'worker';
   /** mutation 응답이 실어 온 권위 있는 queue (레포별). */
   /** @type {Map<string, any>} */
   const adopted = new Map();
@@ -293,7 +302,9 @@ export function createRepoDeck(mount_element, options) {
     destroyPane();
     panel_root = root_dir;
     const row = rowOf(root_dir);
-    panel_title.textContent = `${row?.name || root_dir} 실행 설정 · Worker 탭 ⚙ 실행 탭과 같은 저장소`;
+    panel_title.textContent = `${row?.name || root_dir} 실행 설정`;
+    panel_section = 'worker';
+    renderPanelSegment();
     panel_el.hidden = false;
     pane = createExecutionPane(panel_body, {
       root_dir,
@@ -315,6 +326,23 @@ export function createRepoDeck(mount_element, options) {
     pane = null;
   }
 
+  /** Draw the panel's section segment against the section now on screen. */
+  function renderPanelSegment() {
+    render(
+      paneSectionSegmentTemplate(panel_section, selectPanelSection),
+      panel_seg
+    );
+  }
+
+  /**
+   * @param {string} section - One of the pane's own section ids.
+   */
+  function selectPanelSection(section) {
+    panel_section = section;
+    renderPanelSegment();
+    pane?.render(section);
+  }
+
   /**
    * @param {boolean} [silent] - `true`면 다시 그리지 않는다 (렌더 안에서 부를 때).
    */
@@ -323,6 +351,7 @@ export function createRepoDeck(mount_element, options) {
     panel_root = null;
     panel_el.hidden = true;
     panel_title.textContent = '';
+    render(html``, panel_seg);
     if (silent !== true) {
       doRender();
     }

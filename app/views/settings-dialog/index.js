@@ -2,11 +2,16 @@
  * The unified settings dialog — the ONE entry point behind the nav-bar ⚙
  * (spec §D).
  *
- * The `실행` tab is NOT built here: it is `createExecutionPane`, mounted into
- * this dialog's tab body and into the monitor deck's per-repo `⚙` panel from
- * the same module (UI-eey2 §4.4). This dialog binds it to the CONNECTED
+ * The `워커`·`세션`·`계정` tabs are NOT built here: they are the three sections
+ * of `createExecutionPane`, which this dialog mounts ONCE and asks for one
+ * section at a time (`render(section)`). The monitor deck's per-repo `⚙` panel
+ * mounts the same module (UI-eey2 §4.4). This dialog binds it to the CONNECTED
  * workspace (`root_dir: null`), so its wire format is unchanged.
  * - `표시` edits the per-workspace label/chip display policy.
+ *
+ * Only the ACTIVE tab is in the DOM (UI-7yh2 §3.1); the pane's own host element
+ * moves between the execution tabs' bodies so the state machine survives a tab
+ * switch.
  *
  * @typedef {import('lit-html').TemplateResult} TemplateResult
  * @typedef {import('../../utils/label-policy.js').DisplayPolicy} DisplayPolicy
@@ -18,9 +23,30 @@ import { createExecutionPane } from './execution-pane.js';
 
 /** The rail's tabs, in display order. */
 export const SETTINGS_TABS = [
-  { id: 'execution', label: '실행', glyph: '◆' },
+  { id: 'worker', label: '워커', glyph: '◆' },
+  { id: 'session', label: '세션', glyph: '◇' },
+  { id: 'account', label: '계정', glyph: '◎' },
   { id: 'display', label: '표시', glyph: '◫' }
 ];
+
+/** Tabs the shared execution pane draws, by its own section ids. */
+const EXECUTION_TABS = ['worker', 'session', 'account'];
+
+/** Per-tab pane heading and one-line subtitle. */
+const TAB_COPY = {
+  worker: {
+    title: '워커 설정',
+    sub: 'Worker와 대화형 세션이 함께 쓰는 실행 프로파일입니다.'
+  },
+  session: {
+    title: '세션 설정',
+    sub: '대화형 세션만 읽는 값입니다.'
+  },
+  account: {
+    title: '계정 설정',
+    sub: '이 저장소의 실행 계정과 한도 대응 정책입니다.'
+  }
+};
 
 /**
  * Create the unified settings dialog (native `<dialog>`).
@@ -51,12 +77,20 @@ export function createSettingsDialog(mount_element, options) {
   dialog.setAttribute('aria-label', '설정');
   mount_element.appendChild(dialog);
 
-  let active_tab = 'execution';
+  let active_tab = 'worker';
   let is_open = false;
   let prefix_draft = '';
 
   /** @type {ReturnType<typeof createExecutionPane>|null} */
   let execution_pane = null;
+
+  /**
+   * The pane's own host, created once and re-parented into whichever execution
+   * tab is active. lit never owns this element, so moving it keeps the pane's
+   * DOM and its state machine intact across a tab switch.
+   */
+  const pane_host = document.createElement('div');
+  pane_host.className = 'settings-dialog__pane-host';
 
   /**
    * Attach the shared `실행` pane to the tab body once the dialog's own render
@@ -67,13 +101,7 @@ export function createSettingsDialog(mount_element, options) {
     if (execution_pane) {
       return execution_pane;
     }
-    const host = /** @type {HTMLElement|null} */ (
-      dialog.querySelector('[data-pane="execution"]')
-    );
-    if (!host) {
-      return null;
-    }
-    execution_pane = createExecutionPane(host, {
+    execution_pane = createExecutionPane(pane_host, {
       root_dir: null,
       queue: () => options.queueStore?.get() ?? null,
       transport,
@@ -85,24 +113,47 @@ export function createSettingsDialog(mount_element, options) {
   }
 
   /**
+   * The active execution tab's pane. The body is an empty slot: the pane's own
+   * host is appended into it after the render (`mountExecutionHost`).
+   *
    * @returns {TemplateResult}
    */
   function executionPaneSection() {
+    const copy = /** @type {any} */ (TAB_COPY)[active_tab];
     return html`
       <section
-        class=${`settings-dialog__pane${active_tab === 'execution' ? ' settings-dialog__pane--active' : ''}`}
+        class="settings-dialog__pane settings-dialog__pane--active"
         role="tabpanel"
-        id="settings-pane-execution"
-        aria-label="실행 설정"
+        id=${`settings-pane-${active_tab}`}
+        aria-label=${copy.title}
       >
-        <header class="settings-dialog__pane-head"><h2>실행 설정</h2></header>
-        <p class="settings-dialog__pane-sub">
-          세션 기본값과 Worker 오케스트레이션을 한곳에서 편집합니다. 저장소와
-          저장 경로는 설정 그룹별로 유지됩니다.
-        </p>
+        <header class="settings-dialog__pane-head">
+          <h2>${copy.title}</h2>
+        </header>
+        <p class="settings-dialog__pane-sub">${copy.sub}</p>
         <div class="settings-dialog__pane-body" data-pane="execution"></div>
       </section>
     `;
+  }
+
+  /**
+   * Move the pane's host into the active tab's body and ask the pane for that
+   * tab's section. A no-op when the display tab is active.
+   */
+  function mountExecutionHost() {
+    if (!EXECUTION_TABS.includes(active_tab)) {
+      return;
+    }
+    const slot = /** @type {HTMLElement|null} */ (
+      dialog.querySelector('[data-pane="execution"]')
+    );
+    if (!slot) {
+      return;
+    }
+    if (pane_host.parentElement !== slot) {
+      slot.appendChild(pane_host);
+    }
+    ensureExecutionPane()?.render(active_tab);
   }
 
   /**
@@ -112,7 +163,7 @@ export function createSettingsDialog(mount_element, options) {
     const policy = policyStore.get();
     return html`
       <section
-        class=${`settings-dialog__pane${active_tab === 'display' ? ' settings-dialog__pane--active' : ''}`}
+        class="settings-dialog__pane settings-dialog__pane--active"
         role="tabpanel"
         id="settings-pane-display"
         aria-label="표시 설정"
@@ -259,13 +310,13 @@ export function createSettingsDialog(mount_element, options) {
             </button>
           </nav>
           <div class="settings-dialog__panes">
-            ${executionPaneSection()} ${displayPane()}
+            ${active_tab === 'display' ? displayPane() : executionPaneSection()}
           </div>
         </div>
       `,
       dialog
     );
-    ensureExecutionPane();
+    mountExecutionHost();
   }
 
   /** @param {string} tab_id */
@@ -308,13 +359,21 @@ export function createSettingsDialog(mount_element, options) {
     });
   }
 
-  function open(tab_id = 'execution') {
+  /**
+   * Open the dialog on one rail tab. An id the rail does not carry opens the
+   * default `워커` tab rather than an empty pane.
+   *
+   * @param {string} [tab_id]
+   */
+  function open(tab_id = 'worker') {
     if (is_open) {
       return;
     }
     is_open = true;
     options.onOpenChange?.(true);
-    active_tab = tab_id;
+    active_tab = SETTINGS_TABS.some((tab) => tab.id === tab_id)
+      ? tab_id
+      : 'worker';
     prefix_draft = '';
     doRender();
     if (typeof dialog.showModal === 'function') {

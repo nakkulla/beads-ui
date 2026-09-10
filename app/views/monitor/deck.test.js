@@ -577,8 +577,39 @@ describe('createRepoDeck settings panel (§4.4)', () => {
     expect(el(mount, '.mon2-deck__panel-title').textContent).toContain(
       'repo-b 실행 설정'
     );
-    expect(el(mount, '.mon2-deck__panel-body [data-automation]')).toBeTruthy();
+    expect(
+      el(mount, '.mon2-deck__panel-body [data-quick-fix-group]')
+    ).toBeTruthy();
     expect(calls).toContainEqual(['get-session-defaults', { root_dir: WS_B }]);
+  });
+
+  test('opens the panel on the 워커 section', async () => {
+    const { mount, deck } = twoActive();
+
+    deck.render();
+    click(mount, `.mon2-deck__tile[data-root-dir="${WS_B}"] .mon2-deck__gear`);
+    await settle();
+
+    expect(
+      el(mount, '[data-pane-section="worker"]').getAttribute('aria-pressed')
+    ).toBe('true');
+  });
+
+  test('switches the panel body when a section button is clicked', async () => {
+    const { mount, deck } = twoActive();
+
+    deck.render();
+    click(mount, `.mon2-deck__tile[data-root-dir="${WS_B}"] .mon2-deck__gear`);
+    await settle();
+    click(mount, '[data-pane-section="account"]');
+    await settle();
+
+    expect(
+      el(mount, '.mon2-deck__panel-body [data-exec-accounts-group]')
+    ).toBeTruthy();
+    expect(
+      mount.querySelector('.mon2-deck__panel-body [data-quick-fix-group]')
+    ).toBe(null);
   });
 
   test('replaces the pane when another repo gear is clicked', async () => {

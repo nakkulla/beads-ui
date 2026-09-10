@@ -7059,6 +7059,10 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
+.mon2-deck__panel-seg {
+  flex: 0 0 auto;
+}
+
 .mon2-deck__panel-close {
   flex: 0 0 auto;
   border: none;
