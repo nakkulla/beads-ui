@@ -81,13 +81,29 @@ export const WORKER_PITFALLS_HEADING = '## Worker pitfalls';
 export const ABSENT_VALUE = '없음';
 
 /**
+ * Absolute path of the installed `workflow` skill for one runner. Both
+ * runtimes install the same skill from the same dotfiles checkout, so the
+ * Codex runner reads its own `~/.codex/skills/workflow` (UI-wi12) instead of
+ * depending on a Claude install that a Codex-only host does not have.
+ *
+ * @param {string} home_dir
+ * @param {string} [runner] - `claude` (default) or `codex`.
+ * @returns {string}
+ */
+export function workflowSkillRoot(home_dir, runner) {
+  const runtime_dir = runner === 'codex' ? '.codex' : '.claude';
+  return path.join(home_dir, runtime_dir, 'skills', 'workflow');
+}
+
+/**
  * Absolute path of the installed `workflow` skill's script directory.
  *
  * @param {string} home_dir
+ * @param {string} [runner] - `claude` (default) or `codex`.
  * @returns {string}
  */
-export function workflowScriptDir(home_dir) {
-  return path.join(home_dir, '.claude', 'skills', 'workflow', 'scripts');
+export function workflowScriptDir(home_dir, runner) {
+  return path.join(workflowSkillRoot(home_dir, runner), 'scripts');
 }
 
 /**
@@ -99,17 +115,26 @@ export function workflowScriptDir(home_dir) {
  * depth differs from a development checkout's. `git rev-parse --show-toplevel`
  * from the realpath answers for both.
  *
- * @param {{ run: FactsGitRunner, fs?: { realpathSync: (p: string) => string }, homeDir: string }} deps
+ * The runner's own skill install is tried first; the other runtime's install is
+ * the fallback, because both link to the same checkout (UI-wi12).
+ *
+ * @param {{ run: FactsGitRunner, fs?: { realpathSync: (p: string) => string }, homeDir: string, runner?: string }} deps
  * @returns {Promise<string|null>} null on any failure — the line is then omitted.
  */
 export async function resolveDotfilesRoot(deps) {
   const fs = deps.fs || nodeFs;
-  let real;
-  try {
-    real = fs.realpathSync(
-      path.join(deps.homeDir, '.claude', 'skills', 'workflow')
-    );
-  } catch {
+  const primary = deps.runner === 'codex' ? 'codex' : 'claude';
+  const fallback = primary === 'codex' ? 'claude' : 'codex';
+  let real = null;
+  for (const runner of [primary, fallback]) {
+    try {
+      real = fs.realpathSync(workflowSkillRoot(deps.homeDir, runner));
+      break;
+    } catch {
+      real = null;
+    }
+  }
+  if (real === null) {
     return null;
   }
   try {
@@ -350,7 +375,7 @@ export function shellQuote(value) {
  *   bead_values: Record<string, unknown>|null,
  *   kv_values: Record<string, unknown>|null
  * }} input
- * @param {{ fs?: any, homeDir: string, resolveDotfilesRoot?: () => Promise<string|null>, loadDefaults?: () => any }} deps
+ * @param {{ fs?: any, homeDir: string, resolveDotfilesRoot?: (runner?: string) => Promise<string|null>, loadDefaults?: () => any }} deps
  * @returns {Promise<AttemptFacts>}
  */
 export async function buildAttemptFacts(input, deps) {
@@ -359,7 +384,7 @@ export async function buildAttemptFacts(input, deps) {
   let dotfiles_root = null;
   if (typeof deps.resolveDotfilesRoot === 'function') {
     try {
-      dotfiles_root = await deps.resolveDotfilesRoot();
+      dotfiles_root = await deps.resolveDotfilesRoot(input.controller_runtime);
     } catch {
       dotfiles_root = null;
     }
@@ -433,7 +458,10 @@ export async function buildAttemptFacts(input, deps) {
         branch: input.base.branch,
         base_sha: input.base.sha
       },
-      { script_dir: workflowScriptDir(deps.homeDir), fs }
+      {
+        script_dir: workflowScriptDir(deps.homeDir, input.controller_runtime),
+        fs
+      }
     ),
     pitfalls
   };

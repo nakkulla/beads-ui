@@ -243,6 +243,7 @@ describe('runner/preamble unattended framing (UI-rxp3 §1)', () => {
 
   test('keeps the blocker + abnormal-exit instruction', () => {
     expect(UNATTENDED_PREAMBLE).toContain('`blocker`');
+    expect(UNATTENDED_PREAMBLE).toContain('단계마다 요약 메시지를 쓰지 않는다');
     expect(UNATTENDED_PREAMBLE).toContain('비정상 종료');
   });
 
@@ -715,6 +716,7 @@ describe('runner/preamble attempt facts card (spec D1)', () => {
 
     expect(out).not.toContain('dotfiles_root=');
     expect(out).toContain('## 시도 사실');
+    expect(out).toContain('수집 위임(subagent wave) 없이');
   });
 
   test('omits the workflow_python line when the venv is absent', () => {

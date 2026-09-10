@@ -186,6 +186,33 @@ describe('worker/attempt-facts dotfiles root (spec D1)', () => {
     ]);
   });
 
+  test('reads the codex install first for a codex runner and falls back to claude', async () => {
+    /** @type {string[]} */
+    const asked = [];
+    const root = await resolveDotfilesRoot({
+      homeDir: HOME,
+      runner: 'codex',
+      fs: {
+        realpathSync: (p) => {
+          asked.push(p);
+          if (p.includes('/.codex/')) throw new Error('ENOENT');
+          return '/dotfiles/.worktrees/deploy/src/skills/workflow';
+        }
+      },
+      run: async () => ({
+        code: 0,
+        stdout: '/dotfiles/.worktrees/deploy\n',
+        stderr: ''
+      })
+    });
+
+    expect(root).toBe('/dotfiles/.worktrees/deploy');
+    expect(asked).toEqual([
+      path.join(HOME, '.codex', 'skills', 'workflow'),
+      path.join(HOME, '.claude', 'skills', 'workflow')
+    ]);
+  });
+
   test('returns null when the skill link cannot be resolved', async () => {
     const root = await resolveDotfilesRoot({
       homeDir: HOME,
@@ -208,6 +235,17 @@ describe('worker/attempt-facts dotfiles root (spec D1)', () => {
     });
 
     expect(root).toBeNull();
+  });
+});
+
+describe('worker/attempt-facts skill paths (UI-wi12)', () => {
+  test("resolves the script dir under the runner's own runtime home", () => {
+    expect(workflowScriptDir(HOME)).toBe(
+      path.join(HOME, '.claude', 'skills', 'workflow', 'scripts')
+    );
+    expect(workflowScriptDir(HOME, 'codex')).toBe(
+      path.join(HOME, '.codex', 'skills', 'workflow', 'scripts')
+    );
   });
 });
 

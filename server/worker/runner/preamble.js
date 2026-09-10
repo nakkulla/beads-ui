@@ -39,6 +39,7 @@ export const UNATTENDED_PREAMBLE = [
   '',
   '- 사용자는 이 세션과 통신할 수 없다. 질문 도구는 응답자가 없어 영원히 대기한다.',
   '- hard-stop 조건은 `blocker` 줄을 출력한 뒤 비정상 종료로 표면화하라. 그것이 이 환경에서 사람에게 도달하는 유일한 경로다.',
+  '- 중간 진행 메시지를 읽는 사람도 없다. 보고는 계약이 정한 경계(`blocker`, 리뷰 판정, 완료 보고)에서만 내고, 단계마다 요약 메시지를 쓰지 않는다.',
   '- 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키 — `impl_dispatch`, `impl_entry`, `plan_approval`, `workflow_mode_source=user` — 는 이 세션이 쓸 수 없다. Worker는 시도 시작 시 이 키들을 스냅샷하고, 시도 중 값이 바뀌면(부재→기록 포함) 머지 게이트가 영수증 위조로 fail-closed한다. 위임 기본 모델이 이 세션의 모델과 같다는 사실은 main 실행 근거가 아니다 — 실행 형태는 dotfiles workflow 계약의 selector가 정한다.',
   '',
   '이 세션은 자율 실행이다. 원 요청에서 따라오는 되돌릴 수 있는 행동은 묻지 않고 진행한다. 파괴적 행동이나 사용자만 결정할 범위 변경에서만 멈춘다. 턴을 끝내기 전 마지막 문단이 계획·질문·다음 단계·약속이면 지금 툴콜로 한다. 진행 보고는 이 세션의 tool result에 결속된 것만 적고 검증되지 않은 것은 그렇게 말한다. 다음 턴에 필요한 독립 호출은 한 응답에 모두 낸다.'
@@ -158,6 +159,7 @@ export function attemptFactsDirective(facts) {
     '## 시도 사실',
     '',
     'Worker가 이 attempt를 준비하며 이미 확인한 값이다. 다시 탐색하지 말고 그대로 쓰라. 빠진 줄은 Worker가 확인하지 못한 것이니 필요하면 세션이 직접 확인한다.',
+    'Bead 본문 `## scope`가 표면을 열거한 attempt는 수집 위임(subagent wave) 없이 그 경로를 직접 읽고 시작한다.',
     ''
   ];
   const identity = [
