@@ -272,6 +272,7 @@ function rowTemplate(row, view) {
  *
  * @param {{
  *   metadata: Record<string, unknown>,
+ *   route?: string|null,
  *   workspace_values: Record<string, unknown>,
  *   catalog: any,
  *   execution_defaults: Record<string, any>|null,
@@ -291,7 +292,20 @@ function rowTemplate(row, view) {
  * @returns {TemplateResult}
  */
 export function effectiveSettingsCardTemplate(model, handlers) {
-  const all_keys = EFFECTIVE_GROUPS.flatMap((group) => group.keys);
+  const gates = routeGates(model.route || model.metadata?.route);
+  const groups = EFFECTIVE_GROUPS.map((group) => ({
+    ...group,
+    keys: group.keys.filter((key) => {
+      if (key.startsWith('spec_review_')) {
+        return gates.some((gate) => gate.id === 'spec');
+      }
+      if (key.startsWith('plan_review_')) {
+        return gates.some((gate) => gate.id === 'plan');
+      }
+      return true;
+    })
+  }));
+  const all_keys = groups.flatMap((group) => group.keys);
   const rows = effectiveRows(
     all_keys,
     model.metadata,
@@ -407,7 +421,7 @@ export function effectiveSettingsCardTemplate(model, handlers) {
     </summary>
     ${model.expanded
       ? html`<div class="detail-effective__body">
-          ${EFFECTIVE_GROUPS.map(
+          ${groups.map(
             (group) => html`
               <div class="detail-effective__subhead">${group.label}</div>
               ${rows
@@ -632,7 +646,7 @@ export function summaryHeaderTemplate(data, handlers = {}) {
 
 /**
  * The gates one route actually walks. An unknown or absent route falls back to
- * the full set, so a display surface never hides a gate on a guess.
+ * the spec-backed set, matching the server's default route.
  *
  * @param {unknown} route
  */

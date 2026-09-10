@@ -653,6 +653,20 @@ describe('detail summary header', () => {
 });
 
 describe('effective-settings card', () => {
+  test('uses the server-derived route to show plan review settings', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { plan_path: 'docs/plans/task.md' },
+      workflow: { route: 'full_plan' }
+    });
+    await settle();
+
+    await openEffective(mount);
+
+    expect(rowOf(mount, 'plan_review_model')).not.toBeNull();
+    panel.destroy();
+  });
+
   test('renders native disclosure closed with actual defaults and all source counts', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount);
@@ -671,7 +685,7 @@ describe('effective-settings card', () => {
     expect(summary.textContent).toContain('5.6-sol');
     expect(summary.textContent).toContain('핀 0');
     expect(summary.textContent).toContain('전역 0');
-    expect(summary.textContent).toContain('기본 18');
+    expect(summary.textContent).toContain('기본 15');
     expect(
       summary.querySelector('.detail-effective__summary')?.getAttribute('title')
     ).toContain('gpt-5.6-sol');
@@ -775,7 +789,11 @@ describe('effective-settings card', () => {
   test('shows Standard as applicable for opus and fable review speeds', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount, {
-      metadata: { spec_review_model: 'opus', plan_review_model: 'fable' }
+      metadata: {
+        route: 'full_plan',
+        spec_review_model: 'opus',
+        plan_review_model: 'fable'
+      }
     });
     await settle();
     await openEffective(mount);
@@ -923,6 +941,7 @@ describe('effective-settings card', () => {
           issue: {
             ...BASE_ISSUE,
             metadata: {
+              route: 'full_plan',
               workflow_mode: 'fast_track',
               spec_review_model: 'codex',
               spec_review_effort: 'xhigh',

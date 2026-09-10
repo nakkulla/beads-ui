@@ -2806,6 +2806,7 @@ export function createDetailPanel(mount_element, options) {
           ${effectiveSettingsCardTemplate(
             {
               metadata: effective.metadata,
+              route: effective.workflow?.route,
               workspace_values: execDefaults(),
               catalog: runnerCatalog(),
               execution_defaults: executionDefaults(),

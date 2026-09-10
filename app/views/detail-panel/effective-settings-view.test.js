@@ -171,6 +171,65 @@ function renderCard(model_overrides = {}, handler_overrides = {}) {
   return mount;
 }
 
+describe('effective-settings card route visibility', () => {
+  test.each([
+    ['quick_fix', ['impl']],
+    ['spec_backed', ['spec', 'impl']],
+    ['full_plan', ['spec', 'plan', 'impl']],
+    [undefined, ['spec', 'impl']],
+    ['unknown', ['spec', 'impl']]
+  ])('shows only applicable review settings for %s', (route, reviews) => {
+    const mount = renderCard({ metadata: { route } });
+
+    const keys = Array.from(
+      mount.querySelectorAll('.detail-effective__row[data-key]'),
+      (row) => row.getAttribute('data-key')
+    );
+
+    expect(keys.filter((key) => key?.includes('_review_'))).toEqual(
+      /** @type {string[]} */ (reviews).flatMap((step) =>
+        ['model', 'effort', 'speed'].map((axis) => `${step}_review_${axis}`)
+      )
+    );
+    expect(keys).toContain('impl_model');
+    expect(keys).toContain('orchestration_model');
+  });
+
+  test('excludes hidden pins and global values from collapsed counts', () => {
+    const mount = renderCard({
+      expanded: false,
+      metadata: { route: 'quick_fix', spec_review_model: 'opus' },
+      workspace_values: { plan_review_model: 'fable' }
+    });
+
+    const counts = mount.querySelector('.detail-effective__counts');
+
+    expect(counts?.textContent).toContain('핀 0');
+    expect(counts?.textContent).toContain('전역 0');
+    expect(counts?.textContent).toContain('기본 12');
+  });
+
+  test('restores hidden pins when the route changes without editing metadata', () => {
+    const metadata = { spec_review_model: 'opus', plan_review_model: 'fable' };
+    const onEdit = vi.fn();
+    renderCard({ metadata, route: 'quick_fix' }, { onEdit });
+
+    const mount = renderCard({ metadata, route: 'full_plan' }, { onEdit });
+
+    expect(
+      mount.querySelector('[data-edit-key="plan_review_model"]')
+    ).toHaveProperty('value', 'fable');
+    expect(
+      mount.querySelector('[data-edit-key="spec_review_model"]')
+    ).toHaveProperty('value', 'opus');
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(metadata).toEqual({
+      spec_review_model: 'opus',
+      plan_review_model: 'fable'
+    });
+  });
+});
+
 describe('effective-settings card preset head (UI-7yh2 §3.7-3.9)', () => {
   test('places the preset select inside the card head', () => {
     const mount = renderCard();
