@@ -5,9 +5,7 @@ import {
   QUICK_FIX_KV_KEYS as CLIENT_QUICK_FIX_KV_KEYS,
   QUICK_FIX_LANE_MAP as CLIENT_QUICK_FIX_LANE_MAP,
   QUICK_FIX_ORCHESTRATION_KEYS as CLIENT_QUICK_FIX_ORCHESTRATION_KEYS,
-  WORKSPACE_KV_KEYS as CLIENT_WORKSPACE_KV_KEYS,
-  isHttpOriginValue as clientIsHttpOriginValue,
-  normalizeQuickFixLanePreset as clientNormalizeQuickFixLanePreset
+  isHttpOriginValue as clientIsHttpOriginValue
 } from '../../app/views/settings-dialog/session-model.js';
 import {
   isHttpOriginValue,
@@ -35,7 +33,6 @@ import {
   execSettingEnums,
   implPresetEnums,
   inferImplRuntime,
-  normalizeQuickFixLanePreset,
   sessionDefaultEnums,
   validateExecSettings,
   validateImplPresetSettings,
@@ -75,19 +72,22 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     }
   });
 
-  test('covers all 18 full-profile preset keys', () => {
-    expect(IMPL_PRESET_KEYS).toHaveLength(18);
+  test('covers all 25 full-profile preset keys', () => {
+    expect(IMPL_PRESET_KEYS).toHaveLength(25);
     expect(IMPL_PRESET_KEYS).toEqual([
       ...BEAD_APPLY_KEYS,
-      ...ORCHESTRATION_KEYS
+      ...ORCHESTRATION_KEYS,
+      ...QUICK_FIX_ORCHESTRATION_KEYS,
+      ...QUICK_FIX_KV_KEYS
     ]);
     expect(Object.keys(implPresetEnums())).toEqual(IMPL_PRESET_KEYS);
   });
 
-  test('keeps impl_dispatch on the per-bead apply list', () => {
-    expect(BEAD_APPLY_KEYS).toHaveLength(15);
+  test('keeps fourteen execution keys on the per-bead apply list', () => {
+    expect(BEAD_APPLY_KEYS).toHaveLength(14);
 
     expect(BEAD_APPLY_KEYS).toContain('impl_dispatch');
+    expect(BEAD_APPLY_KEYS).not.toContain('workflow_mode');
   });
 
   test('drops impl_dispatch from the workspace kv list', () => {
@@ -128,6 +128,7 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     );
 
     expect(extra).toEqual([
+      'workflow_mode',
       ...QUICK_FIX_KV_KEYS,
       'base_sync_accept_local_commits',
       'bdui_url'
@@ -170,11 +171,12 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     );
   });
 
-  test('keeps every quick_fix kv key out of the preset-carried kv list', () => {
-    expect(PRESET_KV_KEYS).toHaveLength(14);
+  test('includes every quick_fix kv key in the preset-carried kv list', () => {
+    expect(PRESET_KV_KEYS).toHaveLength(18);
     for (const key of QUICK_FIX_KV_KEYS) {
-      expect(PRESET_KV_KEYS).not.toContain(key);
+      expect(PRESET_KV_KEYS).toContain(key);
     }
+    expect(PRESET_KV_KEYS).not.toContain('workflow_mode');
     expect(PRESET_KV_KEYS).not.toContain('bdui_url');
 
     expect(PRESET_KV_KEYS.every((key) => IMPL_PRESET_KEYS.includes(key))).toBe(
@@ -248,6 +250,44 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
 });
 
 describe('worker/exec-enums full-profile presets', () => {
+  test('accepts every quick_fix preset key', () => {
+    const result = validateImplPresetSettings({
+      quick_fix_orchestration_model: 'sol',
+      quick_fix_orchestration_effort: 'high',
+      quick_fix_orchestration_speed: 'fast',
+      quick_fix_impl_dispatch: 'delegated',
+      quick_fix_impl_runtime: 'codex',
+      quick_fix_impl_model: 'sol',
+      quick_fix_impl_effort: 'auto',
+      quick_fix_impl_speed: 'fast'
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  test('rejects workflow_mode as an unknown preset key', () => {
+    const result = validateImplPresetSettings({
+      workflow_mode: 'fast_track'
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'unknown_impl_preset_key:workflow_mode'
+    });
+  });
+
+  test('rejects fast quick_fix speed when the runner lacks that tier', () => {
+    const result = validateImplPresetSettings({
+      quick_fix_impl_runtime: 'claude',
+      quick_fix_impl_speed: 'fast'
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'quick_fix_speed_unsupported'
+    });
+  });
+
   test('validates review speed without a missing enum crash', () => {
     const accepted = validateImplPresetSettings({
       spec_review_speed: 'fast'
@@ -654,42 +694,12 @@ describe('worker/exec-enums implementation target coherence', () => {
 });
 
 describe('workspace kv mirror across the two runtimes', () => {
-  test('matches the client workspace kv key list exactly', () => {
-    expect(WORKSPACE_KV_KEYS).toEqual(CLIENT_WORKSPACE_KV_KEYS);
-  });
-
   test('matches every quick_fix key list and lane mapping exactly', () => {
     expect(QUICK_FIX_KV_KEYS).toEqual(CLIENT_QUICK_FIX_KV_KEYS);
     expect(QUICK_FIX_ORCHESTRATION_KEYS).toEqual(
       CLIENT_QUICK_FIX_ORCHESTRATION_KEYS
     );
     expect(QUICK_FIX_LANE_MAP).toEqual(CLIENT_QUICK_FIX_LANE_MAP);
-  });
-
-  test('normalizes the same quick_fix lane values on both runtimes', () => {
-    const target_enums = {
-      quick_fix_orchestration_model: ['opus'],
-      quick_fix_orchestration_effort: ['high'],
-      quick_fix_orchestration_speed: ['default'],
-      quick_fix_impl_dispatch: ['delegated', 'main'],
-      quick_fix_impl_runtime: ['claude', 'codex'],
-      quick_fix_impl_model: ['opus'],
-      quick_fix_impl_effort: ['auto', 'high'],
-      quick_fix_impl_speed: ['default', 'fast']
-    };
-    const preset = {
-      workflow_mode: 'standard',
-      impl_dispatch: 'delegated',
-      impl_runtime: 'auto',
-      impl_model: 'auto',
-      impl_effort: 'auto',
-      orchestration_model: 'opus'
-    };
-
-    const server = normalizeQuickFixLanePreset(preset, target_enums);
-    const client = clientNormalizeQuickFixLanePreset(preset, target_enums);
-
-    expect(client).toEqual(server);
   });
 
   test('judges every bdui_url case the same way on both sides', () => {

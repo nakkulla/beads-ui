@@ -25,6 +25,7 @@ import {
   benchRunBeadIds,
   listBenchManifests
 } from './bench-runs.js';
+import { QUICK_FIX_LANE_MAP } from './exec-enums.js';
 import { visibleWorkspaceRoots } from './foreign-blocker-status.js';
 import { TERMINAL_ATTEMPT_STATUSES } from './queue-store.js';
 import {
@@ -118,6 +119,7 @@ const BENCH_LABEL = 'bench';
  * @property {string|null} review_model
  * @property {string|null} review_effort
  * @property {string|null} review_speed
+ * @property {string|null} route
  * @property {Record<string, any>} exec_values - The attempt's own pinned
  * settings, kept out of {@link CompareSignature.key} but needed to answer
  * "did this preset describe what ran" on the axes the key does not carry.
@@ -269,6 +271,10 @@ export function attemptSignature(attempt) {
   const review_model = str(exec_values.impl_review_model);
   const review_effort = str(exec_values.impl_review_effort);
   const review_speed = str(exec_values.impl_review_speed);
+  const route =
+    str(exec_values.route) ??
+    str(attempt.route) ??
+    str(attempt.bead_snapshot?.route);
   const key =
     `${orch_model ?? UNRECORDED}/${orch_effort ?? UNRECORDED}` +
     ` → ${impl_actor.label}` +
@@ -280,6 +286,7 @@ export function attemptSignature(attempt) {
     review_model,
     review_effort,
     review_speed,
+    route,
     exec_values,
     key
   };
@@ -334,8 +341,21 @@ export function presetMatchesSignature(signature, preset) {
     ? signature.exec_values
     : {};
   let declared = 0;
-  for (const key of Object.keys(settings)) {
-    const expected = str(settings[key]);
+  const canonical_keys = new Set(
+    Object.keys(settings).filter((key) => !key.startsWith('quick_fix_'))
+  );
+  for (const [key, lane_key] of Object.entries(QUICK_FIX_LANE_MAP)) {
+    if (Object.hasOwn(settings, lane_key)) {
+      canonical_keys.add(key);
+    }
+  }
+  for (const key of canonical_keys) {
+    const lane_key = QUICK_FIX_LANE_MAP[key];
+    const expected = str(
+      signature.route === 'quick_fix' && lane_key
+        ? (settings[lane_key] ?? settings[key])
+        : settings[key]
+    );
     if (expected === null) {
       // A preset entry with no readable value declares nothing.
       continue;
@@ -573,7 +593,10 @@ function workspaceRows(workspace, catalog) {
       : null;
     const started_at = num(attempt.started_at);
     const finished_at = num(attempt.finished_at);
-    const signature = attemptSignature(attempt);
+    const signature = attemptSignature({
+      ...attempt,
+      route: issue ? issue.route : attempt.route
+    });
     const bench_verify = isRecord(attempt.bench_verify)
       ? attempt.bench_verify
       : null;

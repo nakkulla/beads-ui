@@ -153,6 +153,21 @@ describe('resolveBenchTuple', () => {
     expect(resolved.ok && resolved.values.impl_model).toBe('sonnet');
   });
 
+  test('prefers the preset quick_fix value over the quick_fix workspace value', () => {
+    const resolved = resolveBenchTuple({
+      coordinator: fakeCoordinator(),
+      workspace: WS,
+      preset_settings: {
+        impl_model: 'opus',
+        quick_fix_impl_model: 'sol'
+      },
+      kv_values: { quick_fix_impl_model: 'terra' },
+      harness: HARNESS
+    });
+
+    expect(resolved.ok && resolved.values.impl_model).toBe('sol');
+  });
+
   test('falls back to the harness value when no layer names the key', () => {
     const resolved = resolveBenchTuple({
       coordinator: fakeCoordinator(),

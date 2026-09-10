@@ -58,7 +58,7 @@ function isRecord(value) {
 }
 
 /**
- * A preset is legacy only while it carries a key outside the 15-key
+ * A preset is legacy only while it carries a key outside the 25-key
  * full-profile vocabulary.
  *
  * @param {ExecPreset} preset
@@ -84,7 +84,7 @@ function reseedCompleted(state) {
 }
 
 /**
- * Project a legacy preset onto the current 15-key vocabulary.
+ * Project a legacy preset onto the current 25-key vocabulary.
  *
  * @param {Record<string, string>} settings
  * @returns {Record<string, string>}
@@ -121,7 +121,7 @@ export function createExecPresetCoordinator(options) {
   const warn = options.warn ?? console.warn;
 
   /**
-   * Every applicable preset. A preset with a key outside the current 15-key
+   * Every applicable preset. A preset with a key outside the current 25-key
    * vocabulary stays hidden.
    */
   function snapshot() {
