@@ -50,7 +50,7 @@ scope:
   `session-model.js:166`)이고 quick_fix 키를 갖지 않는다. `quick_fix 레인에 적용`은 같은 18키를
   `QUICK_FIX_LANE_MAP`(8키)으로 옮겨 적용하고 리뷰 3×3·`workflow_mode`를 `skipped_keys`로 돌려준다
   (ADR UI-s8qn, 2026-09-10 착지). 저장은 일반 행의 값만 담는다.
-- 오늘 교체된 5개 프리셋(`scripts/lib/exec-presets-plan.mjs` `TARGET_PRESETS`)은 11키만 갖고
+- 오늘 교체된 5개 프리셋(`scripts/lib/exec-presets-plan.js:19` `TARGET_PRESETS`)은 11키만 갖고
   `workflow_mode`·`impl_dispatch`·`impl_speed`·`orchestration_speed`를 이미 비워 둔다.
 - 이슈별 프리셋 컨트롤(`실행 프리셋` select + `이 이슈에 적용`)은 상세 패널 유효 실행 설정 카드의 **바닥**
   `.detail-effective__foot`(`app/views/detail-panel/effective-settings-view.js:394-429`)에 있다.
@@ -100,26 +100,36 @@ dotfiles 계약 키 추가·삭제.
    포함)을 담는다. 비어 있는 quick_fix 행은 키 부재로 저장된다. 오늘의 5개 프리셋은 quick_fix 키가 없으므로
    적용하면 quick_fix 레인이 일반 프로파일로 폴스루한다 — 지금 kv 상태와 같다(UI-s8qn §3.8은 `impl_model=auto`만
    해제하고 `quick_fix_impl_runtime=codex`를 남겼는데, 그 값은 이번 적용에서 unset되어 폴스루 값 `codex`와 같은
-   유효값을 낸다). ADR UI-s8qn의 "레인 무관 프리셋·두 레인 적용" 조항을 뒤집으므로 supersede한다.
+   유효값을 낸다). 구 서버 capability gating은 승계한다: 큐 스냅샷에
+   `quick_fix_orchestration_model` 키가 없으면(구 서버) `적용` 버튼을 비활성으로 그리고 title
+   `서버가 quick_fix 값을 받지 않습니다`를 단다 — 구 서버는 `lane` 없는 요청을 일반 레인 적용으로 처리해 quick_fix 값을
+   조용히 버리므로 그 요청을 보내지 않는다. ADR UI-s8qn의 "레인 무관 프리셋·두 레인 적용" 조항을 뒤집으므로
+   supersede한다.
 7. **`workflow_mode`는 프리셋에서 빠지고 `세션` 탭에 산다.** 저장된 사용자 프리셋에 `workflow_mode`가 남아
    있으면 코디네이터의 legacy 필터(`isLegacyPreset`, `exec-preset-coordinator.js:67-71`)가 프리셋을 통째로
    숨기고 `resolvePresetForApply`(`exec-preset-handlers.js:284-312`)가 적용을 거절하므로, 프리셋 저장소가
    **디스크에서 읽을 때** 그 한 키만 떼어낸다(`exec-preset-store.js` 로드 정규화; 다른 미지 키는 현행 legacy
    처리 그대로). 쓰기는 현행 `settingEnums` 검사가 거절한다. 이슈별 적용(`apply-impl-preset`)이 핀으로 쓰는
-   `BEAD_APPLY_KEYS`도 `workflow_mode`를 뺀 14키다 — 이슈의 모드는 프리셋이 정할 값이 아니다.
-8. **이슈별 적용은 이슈의 route를 본다.** `route=quick_fix` 이슈에 프리셋을 적용하면 프리셋의
-   `quick_fix_impl_dispatch/runtime/model/effort/speed` 5키를 `impl_*`로 역매핑해 핀으로 쓰고, 프리셋에 그 키가
-   없으면 일반 키 값을 쓴다(워크스페이스 폴스루와 같은 규칙). 오케스트레이션 키는 현행대로 핀하지 않는다
-   (`skipped_orchestration_keys`). 그 외 route는 현행대로 일반 키다.
+   `BEAD_APPLY_KEYS`도 `workflow_mode`를 뺀 14키다 — 이슈의 모드는 프리셋이 정할 값이 아니다. kv 저장 허용 목록
+   `WORKSPACE_KV_KEYS`(서버 `exec-enums.js:226`, 클라이언트 `session-model.js:59`)는 `BEAD_APPLY_KEYS`에서
+   파생되므로 두 곳 모두 `workflow_mode`를 명시적으로 넣어 세션 탭의 읽기·쓰기가 그대로 통하게 한다(21키 유지).
+8. **이슈별 적용은 이슈의 route를 본다.** `route=quick_fix` 이슈에 프리셋을 적용하면 핀 값은 워크스페이스
+   해석기(`execution-defaults.js:543-627`)와 같은 순서로 정한다: `impl_dispatch` = `quick_fix_impl_dispatch` ??
+   `impl_dispatch`; `impl_model` = `quick_fix_impl_model` ?? `impl_model`; `impl_runtime` =
+   `quick_fix_impl_runtime` ?? (exact `quick_fix_impl_model`이 있으면 그 모델의 러너, `deriveModelRuntime`) ??
+   `impl_runtime`; `impl_effort`·`impl_speed`도 quick_fix 키 ?? 일반 키. 모델 유도가 일반 `impl_runtime`보다
+   앞서므로 `impl_runtime=claude` + `quick_fix_impl_model=sol` + quick_fix 런타임 부재는 `codex/sol`로 핀된다.
+   만든 핀은 `validateImplSettings`를 통과해야 하고, 실패하면 `impl_preset_incompatible:<reason>`으로 거절한다.
+   오케스트레이션 키는 현행대로 핀하지 않는다(`skipped_orchestration_keys`). 그 외 route는 현행대로 일반 키다.
 9. **이슈별 프리셋 컨트롤은 유효 실행 설정 카드의 머리로 올린다.** 카드 제목 줄 오른쪽에 `[프리셋 ▾] [이 이슈에
    적용]`을 두고 `.detail-effective__foot`은 없앤다. hint `세션 키 14개를 핀으로 기록`은 select의 `title`로
    옮긴다. 카드는 ADR 0014 슬롯 표의 대상(워커·모니터 카드)이 아니다.
 10. **`세션` 탭 = 워크플로우 모드 + 고급.** `모드` 세그먼트(`기본/standard/fast_track`) 아래 한 줄
     `Worker는 항상 fast_track으로 돕니다. 이 값은 대화형 세션의 기본입니다.` 그 밑 `고급` 그룹에 `beads-ui 주소`
-    (`bdui_url`)와 `base 동기화`(`base_sync_accept_local_commits`)를 둔다. `beads-ui 주소` 행에는
-    `현재 주소 사용` 버튼을 더해 `location.origin`을 채운다 — 이 값은 대화형 세션이 구현 진입 질문의 세 번째 답
+    (`bdui_url`)와 `base 동기화`(`base_sync_accept_local_commits`)를 둔다. `beads-ui 주소` 행의 hint는
+    이 값이 무엇인지 말한다 — 이 값은 대화형 세션이 구현 진입 질문의 세 번째 답
     `Worker 레인에 배치`를 내기 위해 Worker 큐를 probe하는 주소이고, 워크스페이스마다 한 번 채우면 바뀌지 않는다.
-    두 키는 dotfiles 소유 kv 어휘(ADR 0013)라 이름·의미는 그대로다.
+    입력 방식·검증은 현행 `textRow`다(자동 채움 버튼은 두지 않는다). 두 키는 dotfiles 소유 kv 어휘(ADR 0013)라 이름·의미는 그대로다.
 11. **`계정` 탭 = 실행 계정 + 한도 대응.** `실행 계정` 그룹(Claude·Codex select)과 러너별 `한도 대응` 그룹
     (기다림/자동 전환, 전환 허용 계정, 선제 전환)을 현행 `accountRow`·`limitPolicyBlock` 그대로 옮긴다.
 12. **자동화 그룹은 설정에서 뺀다.** `auto_advance`·`auto_merge`·`slots`·`serial_lane_count`의 편집면은 Worker
@@ -154,7 +164,7 @@ dotfiles 계약 키 추가·삭제.
 └──────────────┴──────────────────────────────────────────────────────────┘
 ```
 
-`세션` 탭: `워크플로우` 그룹(모드 세그먼트 + 설명 한 줄) → `고급` 그룹(`beads-ui 주소` + `현재 주소 사용`,
+`세션` 탭: `워크플로우` 그룹(모드 세그먼트 + 설명 한 줄) → `고급` 그룹(`beads-ui 주소`,
 `base 동기화` 체크). `계정` 탭: `실행 계정` 그룹 → `Claude 한도 대응` → `Codex 한도 대응`. `표시` 탭: 현행.
 
 모니터 덱 `⚙` 패널(`deck.js:287-311` `openPanel`): 패널 제목은 `<저장소명> 실행 설정`으로 줄이고 그 오른쪽에
@@ -179,19 +189,26 @@ dotfiles 계약 키 추가·삭제.
   더한다.
 - `apply-impl-preset`(이슈별): 핀 키를 `BEAD_APPLY_KEYS` 14키로 줄이고, 이슈 `metadata.route=quick_fix`면 결정 8의
   역매핑을 적용한다. 응답·핀 기록 형식은 현행.
-- `QUICK_FIX_LANE_MAP`은 결정 8의 역매핑과 `bench-runs.js resolveBenchTuple`(`:337-345`)의 폴백 층으로만
-  남는다. 이름은 그대로 둔다(bench 소비자가 있어 이름 변경은 이득 없이 diff만 키운다).
-- 비교 탭 `compare-projection.js presetMatchesSignature`(`:309-358`)는 프리셋의 모든 키를 서명과 대조하므로
-  `quick_fix_*` 키가 있는 프리셋은 어느 서명 그룹의 이름도 되지 못한다(attempt `exec_values`에 그 키가 없다).
-  대조 대상을 `IMPL_PRESET_KEYS` 중 `quick_fix_*`가 아닌 키로 제한한다 — bench attempt는 일반 route로 돌므로
-  quick_fix 값은 실행되지 않은 축이다. 서명 `key`(`:272-275`)와 옛 run 스냅샷 표시(UI-s8qn §3.6)는 그대로다.
+- `QUICK_FIX_LANE_MAP`은 그대로 남고 소비자는 셋이다: 결정 8의 이슈별 역매핑, `exec-preset-coordinator.js
+  resolveForDispatch`(`:161-174`, quick_fix route의 오케스트레이션 해석), `bench-runs.js resolveBenchTuple`
+  (`:337-345`). 이름은 바꾸지 않는다.
+- bench는 `route:'quick_fix'`로 돈다(`bench-runs.js:309` `resolveForDispatch` 호출, `:437` `benchCloneFields`).
+  `resolveBenchTuple`의 세션 키 선택을 `preset[lane_key] ?? preset[key] ?? kv[lane_key] ?? kv[key] ?? harness[key]`로
+  바꿔 프리셋의 quick_fix 키가 kv보다 먼저 읽히게 한다. 오케스트레이션 3키는 `resolveForDispatch`에 넘기는 bead
+  스냅샷에 프리셋의 `quick_fix_orchestration_*`(없으면 일반 값)를 실어 같은 순서를 지킨다.
+- 비교 탭 `compare-projection.js presetMatchesSignature`(`:309-358`)는 프리셋의 모든 키를 서명과 대조한다.
+  `quick_fix_*` 키는 직접 대조하지 않고 attempt의 route로 **route 유효값**을 만들어 대조한다: attempt route가
+  `quick_fix`(bench clone 포함)면 각 canonical 키의 기대값은 `settings[lane_key] ?? settings[key]`, 그 외 route면
+  `settings[key]`. 기대값이 없는 키는 선언하지 않은 것으로 센다. attempt route는 `exec_values`·bead 스냅샷의
+  `route`에서 읽고, 없으면 일반 route로 본다. 서명 `key`(`:272-275`)와 옛 run 스냅샷 표시(UI-s8qn §3.6)는
+  그대로다.
 - `app/protocol.md`: `apply-impl-preset-global`·`apply-impl-preset`·`impl-preset-create/update` 항목 갱신.
 
 ## 6. 구현 unit 후보
 
 1. `preset-schema-and-apply` — `exec-enums.js`(enum·검증), `exec-preset-store.js`(읽기 정규화),
    `exec-preset-coordinator.js`(단일 적용·호환 판정·이슈별 역매핑), `server/ws/exec-preset-handlers.js`,
-   `compare-projection.js`(서명 대조 키 제한), `protocol.md`, 서버 테스트.
+   `compare-projection.js`(route 유효값 대조), `bench-runs.js`(프리셋 quick_fix 키 우선), `protocol.md`, 서버 테스트.
 2. `pane-sections` — `session-model.js`(25키·14키 상수, `speedVisible`·orchestration narrow),
    `execution-pane.js`(`render(section)`·조건부 행·자동화 제거·프리셋 바 단일 적용·저장 범위),
    `settings-dialog/index.js`(4탭 레일), `monitor/deck.js`(세그먼트), 스타일, 클라이언트 테스트.
@@ -201,16 +218,24 @@ dotfiles 계약 키 추가·삭제.
 
 ## 7. Test scope
 
-- `exec-enums.test.js`: 프리셋 enum이 quick_fix 8키를 받고 `workflow_mode`를 거절한다;
-  `quick_fix_impl_speed=fast` + `quick_fix_impl_runtime=claude`가 거절된다.
+- `exec-enums.test.js`: 프리셋 enum이 quick_fix 8키를 **받는다**(현재는 `unknown_impl_preset_key`로 거절 →
+  RED); `workflow_mode`는 `unknown_impl_preset_key:workflow_mode`로 거절된다(현재는 통과 → RED);
+  `quick_fix_impl_speed=fast` + `quick_fix_impl_runtime=claude`는 새 사유 `quick_fix_speed_unsupported`로
+  거절된다(사유 문자열 단언); `WORKSPACE_KV_KEYS`가 `workflow_mode`를 포함한다(회귀 방지).
 - `exec-preset-store.test.js`: 저장된 `workflow_mode`가 로드에서 떨어지고 그 프리셋이 legacy로 숨지 않는다.
-- `compare-projection.test.js`: `quick_fix_*` 키를 가진 프리셋이 일반 키만으로 서명 그룹의 이름이 된다.
+- `compare-projection.test.js`: quick_fix route attempt는 프리셋의 `quick_fix_impl_model`로, 일반 route attempt는
+  `impl_model`로 이름이 붙고, quick_fix 키가 없으면 일반 값이 기대값이다.
+- `bench-runs.test.js`: 프리셋 `quick_fix_impl_model`이 kv `quick_fix_impl_model`보다 먼저 tuple에 든다.
 - `exec-preset-coordinator.test.js`: 단일 적용이 kv 18키·큐 6키를 교체하고 프리셋에 없는 quick_fix 키를 unset한다;
-  `lane` payload는 `bad_request`; quick_fix route 이슈 적용이 역매핑·폴스루로 핀을 만든다; `compatible:false`에
+  `lane` payload는 `bad_request`; quick_fix route 이슈 적용이 결정 8의 순서로 핀을 만든다(`impl_runtime=claude` +
+  `quick_fix_impl_model=sol` → `codex/sol`); 비정합 핀은 `impl_preset_incompatible`; `compatible:false`에
   quick_fix 불일치 사유가 든다.
-- `session-model.test.js`: `IMPL_PRESET_KEYS` 25·`BEAD_APPLY_KEYS` 14; `speedVisible`이 카탈로그 `speed_tiers`로
-  판정한다(claude 숨김·codex 표시·`auto`+exact codex 모델 표시·`auto`+`auto` 숨김·리뷰 `astra` 표시·`self` 숨김);
-  오케스트레이션 런타임 narrow가 다른 러너의 모델을 비운다; 서버 `IMPL_PRESET_KEYS`와 동일성.
+- `session-defaults` 저장 경로(`server/session-defaults.test.js` 또는 `exec-settings-mutation.test.js`):
+  `set-session-defaults`로 `workflow_mode`를 쓰고 readback한다(세션 탭 저장·재조회).
+- `session-model.test.js`: `IMPL_PRESET_KEYS` 25·`BEAD_APPLY_KEYS` 14·`WORKSPACE_KV_KEYS` 21(회귀);
+  `speedVisible`이 카탈로그 `speed_tiers`로 판정한다(claude 숨김·codex 표시·`auto`+exact codex 모델 표시·
+  `auto`+`auto` 숨김·리뷰 `astra` 표시·`self` 숨김); 오케스트레이션 런타임 옵션에 `전체`가 없고 초기값이 저장된
+  모델의 러너다(새 동작); 서버 `IMPL_PRESET_KEYS`와 동일성(회귀).
 - `execution-pane.test.js`: `render('worker')`에 자동화 행·모드·주소·계정이 없다; `render('session')`·
   `render('account')` 내용; 실행 방식 `main` 해석 시 quick_fix 위임 4행 부재, `delegated`면 존재; 속도 행 조건;
   `적용` 한 번이 새 payload(`lane` 없음)를 보낸다; 저장 payload에 quick_fix 행 값이 든다; 레인 탭·두 버튼 부재.
@@ -232,7 +257,7 @@ dotfiles 계약 키 추가·삭제.
 - 관찰: Worker 툴바의 동시 실행·직렬 레인 컨트롤 자체의 재배치는 요청 없음 — 이번엔 설정 쪽 중복만 없앤다.
 - 관찰: 오케스트레이션 `런타임`이 큐에 저장되지 않는 UI 상태라는 점은 그대로다(저장 키는 `orchestration_model`뿐).
 - 관찰: `bdui_url`을 서버가 자동으로 채우는 안은 채택하지 않았다 — 다른 호스트를 가리키는 사용자 값을 덮을 수
-  있고, ADR 0013의 kv 소유권을 서버 쪽 writer로 넓힌다. `현재 주소 사용` 버튼이 같은 편의를 준다.
+  있고, ADR 0013의 kv 소유권을 서버 쪽 writer로 넓힌다.
 
 ## 결정 (ADR 후보)
 
@@ -250,7 +275,9 @@ dotfiles 계약 키 추가·삭제.
   `summary`: "실행 프리셋은 quick_fix 오케스트레이션·구현 키를 함께 담는 25키 워크스페이스 프로파일이고 적용 한
   번이 kv·큐의 일반·quick_fix 키를 교체하며 프리셋에 없는 quick_fix 키는 unset되어 일반 프로파일로 폴스루한다;
   workflow_mode는 프리셋과 이슈 핀 밖의 세션 기본값이고 이슈별 적용은 route=quick_fix면 quick_fix 값을 역매핑해
-  핀한다" → ADR, supersede UI-s8qn
+  핀한다; auto|claude|codex 어휘·auto의 provider 비유도·inherit 비호환·구 서버 probe 부재·quick_fix 키의 일반 키
+  폴스루·kv 먼저 큐 나중의 비원자성·quick_fix_orchestration_model 키 존재의 capability gating은 UI-s8qn에서
+  승계한다" → ADR, supersede UI-s8qn
 - 속도 행·quick_fix 위임 행의 조건부 표시, 탭 분리, 자동화 그룹 제거, 컨트롤 위치 — 되돌리기 어려움: 불성립
   (클라이언트 렌더 코드 안의 값; 저장 데이터·프로토콜이 남지 않는다) / 맥락 없이 놀라움: 불성립(화면에 보이는
   그대로이고 카탈로그·해석 결과를 따른다) / 실제 트레이드오프: 불성립 → ADR 아님
