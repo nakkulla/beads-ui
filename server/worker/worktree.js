@@ -191,12 +191,13 @@ function parseWorktreeRecords(stdout) {
  * worktree, so nothing reaches the comparison that would need the resolved form.
  *
  * @param {string} repo
+ * @param {typeof import('node:fs')} [fs]
  * @returns {string}
  */
-function resolvedWorktreeContainer(repo) {
+function resolvedWorktreeContainer(repo, fs = nodeFs) {
   const container = path.join(repo, '.worktrees');
   try {
-    return nodeFs.realpathSync(container);
+    return fs.realpathSync(container);
   } catch {
     return container;
   }
@@ -2175,18 +2176,6 @@ export function createRepoOpsDeployWorktreeManager(deps) {
   }
 
   /**
-   * @param {string} candidate
-   * @returns {string}
-   */
-  function existingRealpath(candidate) {
-    try {
-      return fs.realpathSync(candidate);
-    } catch {
-      return path.resolve(candidate);
-    }
-  }
-
-  /**
    * Prove that the reserved deploy path is a registered detached worktree of
    * this repository. Complete absence is a valid bootstrap state; partial or
    * foreign Git evidence is not.
@@ -2200,13 +2189,12 @@ export function createRepoOpsDeployWorktreeManager(deps) {
     const list = await run(['worktree', 'list', '--porcelain', '-z'], {
       cwd: repo
     });
-    const deploy_realpath = existingRealpath(deploy_path);
+    const registered_path = path.join(
+      resolvedWorktreeContainer(repo, fs),
+      '.repo-ops-deploy'
+    );
     const registered =
-      list.code === 0 &&
-      registeredPaths(list.stdout).some(
-        (registered_path) =>
-          existingRealpath(registered_path) === deploy_realpath
-      );
+      list.code === 0 && registeredPaths(list.stdout).includes(registered_path);
     const exists = fs.existsSync(deploy_path);
     if (!exists && !registered) {
       return { ok: true, path: deploy_path, exists: false };

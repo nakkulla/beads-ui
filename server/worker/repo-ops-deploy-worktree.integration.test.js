@@ -289,6 +289,38 @@ describe('RepoOps deploy worktree', () => {
     );
   });
 
+  test('refuses a final-path alias to another registered worktree without cleaning it', async () => {
+    const manager = createRepoOpsDeployWorktreeManager({
+      locks: createLockManager()
+    });
+    const external = path.join(root, 'external-worktree');
+    const deploy_path = path.join(repo, '.worktrees', '.repo-ops-deploy');
+    git(['worktree', 'add', '--detach', external, 'HEAD'], repo);
+    const external_head = git(['rev-parse', 'HEAD'], external).trim();
+    fs.writeFileSync(path.join(external, 'README'), 'tracked work\n');
+    fs.writeFileSync(path.join(external, 'untracked'), 'untracked work\n');
+    fs.mkdirSync(path.dirname(deploy_path), { recursive: true });
+    fs.symlinkSync(external, deploy_path, 'dir');
+
+    const result = await manager.ensureAligned({
+      repo,
+      workspace: repo,
+      target_sha: git(['rev-parse', 'HEAD'], repo).trim()
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'repo_ops_worktree_unowned'
+    });
+    expect(git(['rev-parse', 'HEAD'], external).trim()).toBe(external_head);
+    expect(fs.readFileSync(path.join(external, 'README'), 'utf8')).toBe(
+      'tracked work\n'
+    );
+    expect(fs.readFileSync(path.join(external, 'untracked'), 'utf8')).toBe(
+      'untracked work\n'
+    );
+  });
+
   test('rejects a foreign clean checkout as deploy state', async () => {
     const manager = createRepoOpsDeployWorktreeManager({
       locks: createLockManager()
