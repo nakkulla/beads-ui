@@ -218,7 +218,7 @@ export function normalizeQuickFixLanePreset(settings, target_enums) {
 export const IMPL_DISPATCHES = ['delegated', 'main'];
 
 /** Which runtime the delegated implementation leg runs on. */
-export const IMPL_RUNTIMES = ['inherit', 'claude', 'codex'];
+export const IMPL_RUNTIMES = ['auto', 'claude', 'codex'];
 
 /** Service tier for the implementation leg; `fast` is Codex-only. */
 export const IMPL_SPEEDS = ['default', 'fast'];
@@ -287,8 +287,8 @@ export function isDelegationDisabled(draft) {
 
 /**
  * Model options for the implementation target, narrowed by 위임 대상.
- * `inherit` cannot know the controller's provider from the client, so it offers
- * every model; the server still refuses an incoherent pair on write.
+ * `auto` derives no provider, so it offers every model; the exact model token is
+ * what decides the provider, and the server still refuses an incoherent pair.
  *
  * @param {any} catalog
  * @param {string|undefined} runtime
@@ -297,7 +297,7 @@ export function isDelegationDisabled(draft) {
 export function implModelOptions(catalog, runtime) {
   const pairs = runnerModels(catalog);
   const selected =
-    runtime && runtime !== 'inherit'
+    runtime && runtime !== AUTO_LITERAL
       ? pairs.filter(([runner]) => runner === runtime)
       : pairs;
   return [AUTO_LITERAL, ...selected.flatMap(([, models]) => models)];
@@ -324,7 +324,7 @@ function effortUnion(catalog, runtime, model, vocabularyOf) {
     if (!isRecord(entry) || !isRecord(entry.models)) {
       continue;
     }
-    if (runtime && runtime !== 'inherit' && runner !== runtime) {
+    if (runtime && runtime !== AUTO_LITERAL && runner !== runtime) {
       continue;
     }
     for (const [model_name, model_entry] of Object.entries(entry.models)) {
@@ -415,26 +415,39 @@ export function orchestrationModelOptions(catalog, runtime) {
  * Unlike the detail panel's `normalizeImplTarget`, an UNKNOWN effective runtime
  * changes nothing: this layer is the workspace default, where a model without a
  * runtime is legal by contract (the kv model's runtime is DERIVED from the
- * catalog), so an unresolvable `inherit` is "cannot judge", not "illegal".
+ * catalog), so an unjudgeable target is "cannot judge", not "illegal". `auto`
+ * derives no provider either — only an exact model token does, so `auto` narrows
+ * effort to that model's list and narrows nothing at all while the model is
+ * `auto`.
  *
  * @param {{ impl_runtime?: string, impl_model?: string, impl_effort?: string }} target
  * @param {any} catalog
- * @param {string|null} controller_runtime - The controller's runtime an
- * `inherit` target would adopt, or `null` when this context cannot know it.
  * @returns {{ impl_runtime: string|undefined, impl_model: string|undefined, impl_effort: string|undefined }}
  */
-export function narrowImplTarget(target, catalog, controller_runtime) {
+export function narrowImplTarget(target, catalog) {
   const narrowed = {
     impl_runtime: target?.impl_runtime,
     impl_model: target?.impl_model,
     impl_effort: target?.impl_effort
   };
+  if (narrowed.impl_runtime === AUTO_LITERAL) {
+    if (!narrowed.impl_model || narrowed.impl_model === AUTO_LITERAL) {
+      return narrowed;
+    }
+    if (
+      narrowed.impl_effort &&
+      !implEffortOptions(catalog, AUTO_LITERAL, narrowed.impl_model).includes(
+        narrowed.impl_effort
+      )
+    ) {
+      narrowed.impl_effort = undefined;
+    }
+    return narrowed;
+  }
   const effective_runtime =
     narrowed.impl_runtime === 'claude' || narrowed.impl_runtime === 'codex'
       ? narrowed.impl_runtime
-      : narrowed.impl_runtime === 'inherit'
-        ? controller_runtime
-        : null;
+      : null;
   if (!effective_runtime) {
     return narrowed;
   }

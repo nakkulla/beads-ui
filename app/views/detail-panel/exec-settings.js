@@ -1,8 +1,10 @@
 import { html } from 'lit-html';
 import {
+  IMPL_RUNTIME_OPTION_LABELS,
   REVIEWER_OPTION_LABELS,
   resolveExecutionSettings
 } from '../../utils/execution-defaults.js';
+import { IMPL_RUNTIMES } from '../settings-dialog/session-model.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
@@ -472,42 +474,33 @@ export function runtimeEffortUnion(runner_catalog, runtime) {
 
 /**
  * Normalize the three coupled implementation settings after an editor change.
- * An inherited runtime has the resolved orchestration provider when known;
- * therefore an exact model survives an `inherit` change exactly when that
- * provider owns it. A model left on auto still constrains effort to the
- * provider-wide union.
+ * `auto` derives no provider — the exact model token is what names one — so an
+ * exact model of EITHER provider survives it and only effort narrows, to that
+ * model's own list. A concrete runtime still drops a model it cannot run, and a
+ * model left on auto constrains effort to the provider-wide union.
  *
  * @param {{ impl_runtime: string, impl_model: string, impl_effort: string }} target
  * @param {any} runner_catalog
- * @param {string|null} controller_runtime - `null` means an inherited runtime
- * has no known controller provider in this editing context.
  * @returns {{ impl_runtime: string, impl_model: string, impl_effort: string }}
  */
-export function normalizeImplTarget(
-  target,
-  runner_catalog,
-  controller_runtime
-) {
+export function normalizeImplTarget(target, runner_catalog) {
   const normalized = {
     impl_runtime: target.impl_runtime || '',
     impl_model: target.impl_model || '',
     impl_effort: target.impl_effort || ''
   };
   const effective_runtime =
-    normalized.impl_runtime === 'inherit'
-      ? controller_runtime
-      : normalized.impl_runtime === 'claude' ||
-          normalized.impl_runtime === 'codex'
-        ? normalized.impl_runtime
-        : null;
-  if (normalized.impl_runtime === 'inherit' && !effective_runtime) {
-    normalized.impl_model = '';
-    normalized.impl_effort = '';
-    return normalized;
-  }
+    normalized.impl_runtime === 'claude' || normalized.impl_runtime === 'codex'
+      ? normalized.impl_runtime
+      : null;
   const model_runtime = modelRunnerOf(runner_catalog, normalized.impl_model);
+  // Only an explicit `auto` runtime keeps an exact model of either provider; a
+  // cleared runtime still drops the linked exact values, as it always did, so
+  // the server's `impl_runtime_required` cannot be reached from this surface.
+  const keeps_any_provider = normalized.impl_runtime === 'auto';
   if (
     normalized.impl_model &&
+    !keeps_any_provider &&
     (!effective_runtime || model_runtime !== effective_runtime)
   ) {
     normalized.impl_model = '';
@@ -516,7 +509,9 @@ export function normalizeImplTarget(
   }
   const allowed_efforts = normalized.impl_model
     ? effortsForModel(runner_catalog, normalized.impl_model)
-    : runtimeEffortUnion(runner_catalog, effective_runtime);
+    : effective_runtime
+      ? runtimeEffortUnion(runner_catalog, effective_runtime)
+      : catalogEffortUnion(runner_catalog);
   if (
     normalized.impl_effort &&
     allowed_efforts.length > 0 &&
@@ -543,30 +538,19 @@ export function normalizeImplTarget(
  *   selectedOf: (key: string) => string,
  *   effectiveOf: (key: string) => string,
  *   resolvedOf?: (key: string) => { resolution?: string, full_value?: string|null }|undefined,
- *   runner_catalog: any,
- *   controller_runtime?: string|null
+ *   runner_catalog: any
  * }} input
  * @returns {ExecRow[]}
  */
 export function execSettingRows(input) {
-  const {
-    selectedOf,
-    effectiveOf,
-    resolvedOf,
-    runner_catalog,
-    controller_runtime
-  } = input;
+  const { selectedOf, effectiveOf, resolvedOf, runner_catalog } = input;
   const orchestration_model = effectiveOf('orchestration_model');
   const impl_model = effectiveOf('impl_model');
   const requested_runtime = effectiveOf('impl_runtime');
   const impl_runtime =
     requested_runtime === 'claude' || requested_runtime === 'codex'
       ? requested_runtime
-      : requested_runtime === 'inherit'
-        ? controller_runtime === undefined
-          ? modelRunnerOf(runner_catalog, orchestration_model)
-          : controller_runtime
-        : null;
+      : null;
 
   return EXEC_KEYS.map((key) => {
     const selected = selectedOf(key);
@@ -576,14 +560,15 @@ export function execSettingRows(input) {
     if (key === 'orchestration_model') {
       groups = modelGroups(runner_catalog, selected);
     } else if (key === 'impl_runtime') {
-      groups = valueGroups(['inherit', 'claude', 'codex'], selected);
+      groups = valueGroups(IMPL_RUNTIMES, selected, IMPL_RUNTIME_OPTION_LABELS);
     } else if (key === 'impl_model') {
       groups = impl_runtime
         ? modelGroups(runner_catalog, selected, impl_runtime)
-        : selected
-          ? [incompatibleGroup(selected)]
-          : [];
-      disabled = requested_runtime === 'inherit' && impl_runtime === null;
+        : requested_runtime === 'auto' || requested_runtime === ''
+          ? modelGroups(runner_catalog, selected)
+          : selected
+            ? [incompatibleGroup(selected)]
+            : [];
     } else if (key === 'orchestration_effort') {
       groups = valueGroups(
         orchestrationEffortsForModel(runner_catalog, orchestration_model),
@@ -596,14 +581,13 @@ export function execSettingRows(input) {
       );
     } else if (key === 'impl_effort') {
       groups = valueGroups(
-        impl_model
+        impl_model && impl_model !== 'auto'
           ? effortsForModel(runner_catalog, impl_model)
           : impl_runtime
             ? runtimeEffortUnion(runner_catalog, impl_runtime)
             : catalogEffortUnion(runner_catalog),
         selected
       );
-      disabled = requested_runtime === 'inherit' && impl_runtime === null;
     } else if (key === 'plan_review_model') {
       groups = valueGroups(
         PLAN_REVIEW_MODELS,

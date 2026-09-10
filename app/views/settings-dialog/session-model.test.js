@@ -222,8 +222,8 @@ describe('implModelOptions', () => {
     ]);
   });
 
-  test('offers every catalog model when the target is inherit', () => {
-    expect(implModelOptions(CATALOG, 'inherit')).toEqual([
+  test('offers every catalog model when the target is auto', () => {
+    expect(implModelOptions(CATALOG, 'auto')).toEqual([
       'auto',
       'opus',
       'haiku',
@@ -271,6 +271,24 @@ describe('implEffortOptions', () => {
       'low'
     ]);
   });
+
+  test('unions both providers under auto while the model is unset', () => {
+    expect(implEffortOptions(CATALOG, 'auto', undefined)).toEqual([
+      'auto',
+      'low',
+      'high',
+      'medium',
+      'xhigh'
+    ]);
+  });
+
+  test('narrows to the exact model under auto', () => {
+    expect(implEffortOptions(CATALOG, 'auto', 'opus')).toEqual([
+      'auto',
+      'low',
+      'high'
+    ]);
+  });
 });
 
 describe('orchestrationEffortOptions', () => {
@@ -303,8 +321,7 @@ describe('narrowImplTarget', () => {
   test('drops a model and effort the new delegation target cannot run', () => {
     const narrowed = narrowImplTarget(
       { impl_runtime: 'claude', impl_model: 'sol', impl_effort: 'medium' },
-      CATALOG,
-      null
+      CATALOG
     );
 
     expect(narrowed).toEqual({
@@ -317,8 +334,7 @@ describe('narrowImplTarget', () => {
   test('keeps 자동 on both dependent keys', () => {
     const narrowed = narrowImplTarget(
       { impl_runtime: 'codex', impl_model: 'auto', impl_effort: 'auto' },
-      CATALOG,
-      null
+      CATALOG
     );
 
     expect(narrowed).toEqual({
@@ -331,8 +347,7 @@ describe('narrowImplTarget', () => {
   test('changes nothing while no runtime is set', () => {
     const narrowed = narrowImplTarget(
       { impl_model: 'sol', impl_effort: 'medium' },
-      CATALOG,
-      null
+      CATALOG
     );
 
     expect(narrowed).toEqual({
@@ -342,31 +357,45 @@ describe('narrowImplTarget', () => {
     });
   });
 
-  test('keeps an inherited target whose controller runtime is unknown', () => {
+  test('keeps an exact model of either provider under auto', () => {
     const narrowed = narrowImplTarget(
-      { impl_runtime: 'inherit', impl_model: 'sol' },
-      CATALOG,
-      null
+      { impl_runtime: 'auto', impl_model: 'sol' },
+      CATALOG
     );
 
     expect(narrowed.impl_model).toBe('sol');
   });
 
-  test('drops a model the inherited controller runtime cannot run', () => {
+  test('drops an effort the exact model under auto cannot run', () => {
     const narrowed = narrowImplTarget(
-      { impl_runtime: 'inherit', impl_model: 'sol' },
-      CATALOG,
-      'claude'
+      { impl_runtime: 'auto', impl_model: 'opus', impl_effort: 'max' },
+      CATALOG
     );
 
-    expect(narrowed.impl_model).toBe(undefined);
+    expect(narrowed).toEqual({
+      impl_runtime: 'auto',
+      impl_model: 'opus',
+      impl_effort: undefined
+    });
+  });
+
+  test('narrows nothing under auto while the model is auto', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'auto', impl_model: 'auto', impl_effort: 'max' },
+      CATALOG
+    );
+
+    expect(narrowed).toEqual({
+      impl_runtime: 'auto',
+      impl_model: 'auto',
+      impl_effort: 'max'
+    });
   });
 
   test('drops an effort outside the surviving model union', () => {
     const narrowed = narrowImplTarget(
       { impl_runtime: 'codex', impl_model: 'sol', impl_effort: 'high' },
-      CATALOG,
-      null
+      CATALOG
     );
 
     expect(narrowed).toEqual({
@@ -379,8 +408,7 @@ describe('narrowImplTarget', () => {
   test('keeps a runner-level effort the model itself does not declare', () => {
     const narrowed = narrowImplTarget(
       { impl_runtime: 'claude', impl_model: 'opus', impl_effort: 'high' },
-      RUNNER_LEVEL_CATALOG,
-      null
+      RUNNER_LEVEL_CATALOG
     );
 
     expect(narrowed).toEqual({
@@ -540,10 +568,10 @@ describe('normalizeQuickFixLanePreset', () => {
     expect(normalized.skipped_keys).toEqual(['workflow_mode']);
   });
 
-  test('unsets inherit, model auto, and every absent source key', () => {
+  test('unsets auto runtime, model auto, and every absent source key', () => {
     const normalized = normalizeQuickFixLanePreset(
       {
-        impl_runtime: 'inherit',
+        impl_runtime: 'auto',
         impl_model: 'auto',
         impl_effort: 'auto'
       },
@@ -569,7 +597,7 @@ describe('normalizeQuickFixLanePreset', () => {
 });
 
 describe('buildQuickFixPresetDiff', () => {
-  test('previews inherit auto and absent keys as general-profile fallthrough', () => {
+  test('previews auto runtime, auto model and absent keys as general-profile fallthrough', () => {
     const target_enums = {
       quick_fix_orchestration_model: ['opus', 'sol'],
       quick_fix_orchestration_effort: ['high'],
@@ -591,7 +619,7 @@ describe('buildQuickFixPresetDiff', () => {
     const diff = buildQuickFixPresetDiff(
       current,
       {
-        impl_runtime: 'inherit',
+        impl_runtime: 'auto',
         impl_model: 'auto',
         impl_effort: 'auto'
       },

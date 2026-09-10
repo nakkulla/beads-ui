@@ -317,8 +317,10 @@ function validateExecSetting(key, value) {
   // An EXACT implementation target is coupled: a model only has meaning with
   // its runtime and a legal effort, so both setting and CLEARING one leg must
   // go through the atomic group write — clearing `impl_runtime` alone would
-  // orphan an exact model. `auto` is outside that coupling: it names a selector
-  // STATE rather than a catalog model or effort, so it is an ordinary literal.
+  // orphan an exact model. `auto` on `impl_model`/`impl_effort` is outside that
+  // coupling: it names a selector STATE rather than a catalog model or effort,
+  // so it is an ordinary literal. `impl_runtime` is not exempt even at `auto` —
+  // the provider axis moves only through the atomic `update-impl-target` write.
   if (
     LINKED_IMPL_KEYS.includes(key) &&
     !(value === AUTO_LITERAL && key !== 'impl_runtime')
@@ -339,9 +341,11 @@ function validateExecSetting(key, value) {
 const LINKED_IMPL_KEYS = ['impl_runtime', 'impl_model', 'impl_effort'];
 
 /**
- * Drop the `auto` literals before a catalog coherence check. `auto` is the
- * selector's model/auto · effort/auto state; feeding it to
- * {@link validateImplSettings} would read as an unknown model.
+ * Drop the `auto` literals of `impl_model`/`impl_effort` before a catalog
+ * coherence check — there `auto` is the selector's model/auto · effort/auto
+ * state and feeding it to {@link validateImplSettings} would read as an unknown
+ * model. `impl_runtime='auto'` is KEPT: it is a legal runtime value the
+ * validator needs in order to check an exact model and its effort.
  *
  * @param {Record<string, string>} target
  * @returns {Record<string, string>}
@@ -350,9 +354,13 @@ function exactImplValues(target) {
   /** @type {Record<string, string>} */
   const exact = {};
   for (const [key, value] of Object.entries(target)) {
-    if (value && value !== AUTO_LITERAL) {
-      exact[key] = value;
+    if (!value) {
+      continue;
     }
+    if (value === AUTO_LITERAL && key !== 'impl_runtime') {
+      continue;
+    }
+    exact[key] = value;
   }
   return exact;
 }

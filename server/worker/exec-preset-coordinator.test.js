@@ -248,7 +248,7 @@ describe('exec-preset-coordinator implementation presets', () => {
             name: '자동',
             settings: {
               impl_dispatch: 'delegated',
-              impl_runtime: 'inherit',
+              impl_runtime: 'auto',
               impl_model: 'auto',
               impl_effort: 'auto'
             },
@@ -259,6 +259,34 @@ describe('exec-preset-coordinator implementation presets', () => {
     });
 
     expect(fixture.coordinator.snapshot().presets[0].compatible).toBe(true);
+  });
+
+  test('exposes a stored inherit runtime as incompatible rather than migrating it', () => {
+    const fixture = createFixture({
+      preset: {
+        revision: 1,
+        presets: [
+          {
+            id: 'impl-legacy',
+            name: '레거시 inherit',
+            settings: {
+              impl_dispatch: 'delegated',
+              impl_runtime: 'inherit',
+              impl_model: 'auto',
+              impl_effort: 'auto'
+            },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const snapshot = fixture.coordinator.snapshot();
+
+    expect(snapshot.presets[0].compatible).toBe(false);
+    expect(snapshot.presets[0].incompatibility_reason).toBe(
+      'invalid_impl_runtime'
+    );
   });
 });
 

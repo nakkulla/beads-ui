@@ -43,6 +43,16 @@ export const REVIEWER_OPTION_LABELS = Object.freeze({
   astra: 'Codex · Astra'
 });
 
+/**
+ * Option labels for `impl_runtime`. Only `auto` needs one — it is a state, not a
+ * provider, so the label says the controller decides at run time; `claude` and
+ * `codex` read as themselves.
+ */
+/** @type {Readonly<Record<string, string>>} */
+export const IMPL_RUNTIME_OPTION_LABELS = Object.freeze({
+  auto: 'auto (실행 시 결정)'
+});
+
 const GENERAL_ORCHESTRATION_KEYS = [
   'orchestration_model',
   'orchestration_effort',
@@ -535,16 +545,14 @@ export function resolveExecutionSettings(input) {
       const quick_fix_runtime = usableString(
         global_values.quick_fix_impl_runtime
       );
-      const upper_runtime = pinned_runtime || quick_fix_runtime;
-      const effective_upper_runtime =
-        upper_runtime === 'inherit'
-          ? usableString(input.controller_runtime)
-          : upper_runtime;
+      const stored_upper_runtime = pinned_runtime || quick_fix_runtime;
+      // `auto` names no provider, so it constrains nothing here.
+      const upper_runtime =
+        stored_upper_runtime === 'auto' ? null : stored_upper_runtime;
       quick_fix_model_accepted =
         quick_fix_model !== null &&
         quick_fix_derived.runtime !== null &&
-        (upper_runtime === null ||
-          effective_upper_runtime === quick_fix_derived.runtime);
+        (upper_runtime === null || upper_runtime === quick_fix_derived.runtime);
 
       const pinned_dispatch = usableString(pin.impl_dispatch);
       const quick_fix_dispatch = usableString(
@@ -709,17 +717,13 @@ export function resolveExecutionSettings(input) {
         rows.impl_dispatch.display = '위임';
       }
     }
-    if (rows.impl_runtime.value === 'inherit') {
-      rows.impl_runtime.display = input.controller_runtime
-        ? `inherit (${input.controller_runtime})`
-        : 'inherit (실행 시 결정)';
+    if (rows.impl_runtime.value === 'auto') {
+      rows.impl_runtime.display = IMPL_RUNTIME_OPTION_LABELS.auto;
       rows.impl_runtime.resolution = 'dynamic';
     }
     if (rows.impl_model.value !== null) {
       const runtime =
-        rows.impl_runtime.value === 'inherit'
-          ? usableString(input.controller_runtime)
-          : rows.impl_runtime.value;
+        rows.impl_runtime.value === 'auto' ? null : rows.impl_runtime.value;
       const offered = runtime
         ? runtimeModelTokens(runtime, session, runner_catalog)
         : [];
@@ -899,10 +903,8 @@ export function resolveExecutionSettings(input) {
       if (rows.impl_dispatch.value === 'delegated') {
         rows.impl_dispatch.display = '위임';
       }
-      if (rows.impl_runtime.value === 'inherit') {
-        rows.impl_runtime.display = input.controller_runtime
-          ? `inherit (${input.controller_runtime})`
-          : 'inherit (실행 시 결정)';
+      if (rows.impl_runtime.value === 'auto') {
+        rows.impl_runtime.display = IMPL_RUNTIME_OPTION_LABELS.auto;
         rows.impl_runtime.resolution = 'dynamic';
       }
       if (rows.impl_effort.value === 'auto') {
@@ -1127,12 +1129,19 @@ export function buildOptionView(input) {
       const row = resolveWith({ ...own_values, [input.key]: choice })[
         input.key
       ];
-      const option_label =
+      let option_label = row.display;
+      if (
         Object.values(REVIEW_PAIRS).includes(input.key) &&
         row.resolution !== 'incompatible' &&
         Object.hasOwn(REVIEWER_OPTION_LABELS, choice)
-          ? REVIEWER_OPTION_LABELS[choice]
-          : row.display;
+      ) {
+        option_label = REVIEWER_OPTION_LABELS[choice];
+      } else if (
+        input.key === 'impl_runtime' &&
+        Object.hasOwn(IMPL_RUNTIME_OPTION_LABELS, choice)
+      ) {
+        option_label = IMPL_RUNTIME_OPTION_LABELS[choice];
+      }
       return { value: choice, label: option_label, full_value: row.full_value };
     })
   };

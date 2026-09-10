@@ -26,10 +26,8 @@
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
-import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
 import { claudeLabel, codexLabel } from '../detail-panel/exec-accounts.js';
-import { modelRunnerOf } from '../detail-panel/exec-settings.js';
 import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
 import {
   AUTO_LITERAL,
@@ -671,23 +669,6 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * The runtime an `inherit` delegation would adopt: the runner behind the
-   * effective orchestration model, or `null` when neither the draft nor the
-   * projection names one.
-   *
-   * @returns {string|null}
-   */
-  function controllerRuntime() {
-    const chosen = currentOrchestrationValues().orchestration_model;
-    const resolved = resolveExecutionSettings({
-      global: { orchestration_model: chosen ?? undefined },
-      execution_defaults: executionProjection(),
-      runner_catalog: runnerCatalog()
-    }).orchestration_model.value;
-    return resolved ? modelRunnerOf(runnerCatalog(), resolved) : null;
-  }
-
-  /**
    * @param {string} key
    * @param {string|undefined} value
    */
@@ -716,8 +697,7 @@ export function createExecutionPane(mount_element, binding) {
         impl_model: key === 'impl_model' ? next : session_draft.impl_model,
         impl_effort: key === 'impl_effort' ? next : session_draft.impl_effort
       },
-      runnerCatalog(),
-      controllerRuntime()
+      runnerCatalog()
     );
     writeImplTargetKey('impl_runtime', narrowed.impl_runtime);
     writeImplTargetKey('impl_model', narrowed.impl_model);

@@ -1,7 +1,8 @@
 ---
 id: 32
 title: 실행 프리셋은 레인 무관 프로파일이고 워크스페이스가 일반·quick_fix 두 레인에 각각 적용한다
-status: accepted
+status: superseded
+superseded_by: UI-s8qn
 date: 2026-09-03
 summary: '실행 프리셋은 레인 무관 18키 프로파일이며 워크스페이스는 그것을 일반 레인과 quick_fix 레인에 각각 교체 방식으로 적용하고, quick_fix 레인의 durable 값은 큐 `quick_fix_orchestration_*`와 kv `quick_fix_impl_*`다'
 spec: docs/superpowers/specs/2026-09-03-quick-fix-lane-profile-consumer-design.md

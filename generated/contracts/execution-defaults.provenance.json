@@ -1,8 +1,8 @@
 {
   "source_repo": "dotfiles",
   "source_path": "generated/contracts/execution-defaults.json",
-  "source_commit": "9cffafde2521715fcc4cac5b128c9d0ce0719cbb",
-  "source_blob_sha": "f4efc4353d489787e722f5610e3ffe673aa9bd04",
-  "sha256": "31e0b8427c51bf93ef40514144ba4d9edd34cb7bf56271599d92cc6f44d9b755",
+  "source_commit": "6d50d5193b3f4f5d5f69d0b3c4f23c6dd91956d6",
+  "source_blob_sha": "a50f950c18535ef62a97a5a344dc6988357b7be0",
+  "sha256": "8dcfe7a93c8c3ed562bb689ed53c7adc4c00267a2caa705b5a42632f13fda853",
   "bytes": 2910
 }

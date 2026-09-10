@@ -280,16 +280,38 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.invalid_reason).toBe('illegal_impl_effort');
   });
 
-  test('explicit inherit resolves an exact model against the controller runtime', () => {
+  test('keeps an explicit auto runtime as a fact without inferring a provider', () => {
     const r = resolveExecSettings({
-      bead: { impl_runtime: 'inherit', impl_model: 'terra' },
+      bead: { impl_runtime: 'auto', impl_model: 'terra' },
       defaults: { orchestration_model: 'sol' }
     });
 
-    expect(r.impl_runtime).toBe('inherit');
+    expect(r.impl_runtime).toBe('auto');
+    expect(r.impl_runtime_inferred).toBe(false);
     expect(r.impl_model).toBe('terra');
     expect(r.invalid_reason).toBe(undefined);
     expect(r.stamped_keys).toEqual([]);
+  });
+
+  test('resolves a stored auto/auto/auto bead as a valid auto runtime', () => {
+    const r = resolveExecSettings({
+      bead: { impl_runtime: 'auto', impl_model: 'auto', impl_effort: 'auto' },
+      defaults: {}
+    });
+
+    expect(r.impl_runtime).toBe('auto');
+    expect(r.impl_runtime_inferred).toBe(false);
+    expect(r.invalid_reason).toBe(undefined);
+  });
+
+  test('keeps a model-only bead on the legacy provider inference', () => {
+    const r = resolveExecSettings({
+      bead: { impl_model: 'terra' },
+      defaults: {}
+    });
+
+    expect(r.impl_runtime).toBe('codex');
+    expect(r.impl_runtime_inferred).toBe(true);
   });
 
   test('rejects mismatched or unknown implementation targets instead of silently falling through', () => {

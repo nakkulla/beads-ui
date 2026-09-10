@@ -1,4 +1,5 @@
 import nodeCrypto from 'node:crypto';
+import nodeFs from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import {
   EXECUTION_DEFAULTS_PATH,
@@ -154,5 +155,39 @@ describe('projectExecutionDefaults', () => {
     expect(projection.session?.implementation.default.model_id).toBe(
       'gpt-5.6-sol'
     );
+  });
+});
+
+describe('pinned dotfiles projection', () => {
+  test('matches the recorded provenance digest, size and blob sha', () => {
+    const bytes = nodeFs.readFileSync(EXECUTION_DEFAULTS_PATH);
+    const provenance = JSON.parse(
+      String(nodeFs.readFileSync(EXECUTION_DEFAULTS_PROVENANCE_PATH, 'utf8'))
+    );
+
+    const digest = nodeCrypto.createHash('sha256').update(bytes).digest('hex');
+    const blob_sha = nodeCrypto
+      .createHash('sha1')
+      .update(Buffer.from(`blob ${bytes.length}\0`, 'utf8'))
+      .update(bytes)
+      .digest('hex');
+
+    expect(provenance.sha256).toBe(digest);
+    expect(provenance.bytes).toBe(bytes.length);
+    expect(provenance.source_blob_sha).toBe(blob_sha);
+  });
+
+  test('projects astra as the default reviewer of every review step', () => {
+    const loaded = loadExecutionDefaults({
+      fs: {
+        /** @param {string} path */
+        readFileSync: (path) => nodeFs.readFileSync(path)
+      }
+    });
+
+    expect(loaded.supported).toBe(true);
+    expect(loaded.session?.review.default).toBe('astra');
+    expect(loaded.session?.plan_review.standard_recommended).toBe('astra');
+    expect(loaded.session?.plan_review.fast_track_default).toBe('astra');
   });
 });

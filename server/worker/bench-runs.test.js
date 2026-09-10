@@ -205,7 +205,7 @@ describe('benchHarnessDefaults', () => {
     const harness = benchHarnessDefaults();
 
     expect(harness.impl_runtime).toBe('codex');
-    expect(harness.impl_review_model).toBe('codex');
+    expect(harness.impl_review_model).toBe('astra');
     expect(harness.impl_dispatch).toBe('main');
   });
 });

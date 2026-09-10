@@ -716,6 +716,20 @@ describe('views/detail-panel/exec-settings catalog-driven selectors', () => {
     ]);
   });
 
+  test('impl_effort keeps the catalog union under an auto runtime and auto model', () => {
+    const mount = mountTemplate({ impl_runtime: 'auto', impl_model: 'auto' });
+
+    // Both providers' lists, not one runner's: `xhigh`/`max` come from claude.
+    expect(optionValues(selectFor(mount, 'impl_effort'))).toEqual([
+      '',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max'
+    ]);
+  });
+
   test('a stored value outside the current vocabulary shows as (비호환)', () => {
     const mount = mountTemplate({ orchestration_effort: 'max' });
 
@@ -847,26 +861,28 @@ describe('views/detail-panel/exec-settings implementation runtime target', () =>
     ]);
   });
 
-  test('inherits the orchestration provider when runtime is inherit', () => {
+  test('offers both providers and stays enabled when runtime is auto', () => {
     const mount = mountTemplate({
-      impl_runtime: 'inherit',
+      impl_runtime: 'auto',
       orchestration_model: 'opus'
     });
 
-    expect(optionGroups(selectFor(mount, 'impl_model'))).toEqual([
-      { label: 'claude', values: ['opus', 'sonnet', 'haiku', 'fable'] }
+    const model = selectFor(mount, 'impl_model');
+    expect(model.disabled).toBe(false);
+    expect(optionGroups(model)).toEqual([
+      { label: 'claude', values: ['opus', 'sonnet', 'haiku', 'fable'] },
+      { label: 'codex', values: ['sol', 'terra', 'luna'] }
     ]);
   });
 
-  test('permits only auto when inherit cannot resolve an orchestration provider', () => {
-    const mount = mountTemplate({
-      impl_runtime: 'inherit',
-      orchestration_model: 'unknown'
-    });
+  test('labels the auto delegation target as decided at run time', () => {
+    const mount = mountTemplate({ impl_runtime: 'auto' });
 
-    const model = selectFor(mount, 'impl_model');
-    expect(model.disabled).toBe(true);
-    expect(optionValues(model)).toEqual(['']);
+    const runtime = selectFor(mount, 'impl_runtime');
+    const auto_option = Array.from(runtime.options).find(
+      (option) => option.value === 'auto'
+    );
+    expect(auto_option?.textContent?.trim()).toBe('auto (실행 시 결정)');
   });
 
   test('preserves an unknown stored implementation model as incompatible', () => {
@@ -888,8 +904,7 @@ describe('views/detail-panel/exec-settings implementation runtime target', () =>
           impl_model: 'terra',
           impl_effort: 'high'
         },
-        catalogFixture(),
-        'codex'
+        catalogFixture()
       )
     ).toEqual({
       impl_runtime: 'claude',
@@ -898,37 +913,52 @@ describe('views/detail-panel/exec-settings implementation runtime target', () =>
     });
   });
 
-  test('keeps an inherited exact model when orchestration resolves its provider', () => {
+  test('keeps an exact model of either provider under auto', () => {
     expect(
       normalizeImplTarget(
         {
-          impl_runtime: 'inherit',
+          impl_runtime: 'auto',
           impl_model: 'terra',
           impl_effort: 'high'
         },
-        catalogFixture(),
-        'codex'
+        catalogFixture()
       )
     ).toEqual({
-      impl_runtime: 'inherit',
+      impl_runtime: 'auto',
       impl_model: 'terra',
       impl_effort: 'high'
     });
   });
 
-  test('resets auto-model effort when an inherited provider is unknown', () => {
+  test('clears nothing under auto while the model is auto', () => {
     expect(
       normalizeImplTarget(
         {
-          impl_runtime: 'inherit',
+          impl_runtime: 'auto',
           impl_model: '',
           impl_effort: 'high'
         },
-        catalogFixture(),
-        null
+        catalogFixture()
       )
     ).toEqual({
-      impl_runtime: 'inherit',
+      impl_runtime: 'auto',
+      impl_model: '',
+      impl_effort: 'high'
+    });
+  });
+
+  test('drops an exact model when the runtime is cleared to the default', () => {
+    expect(
+      normalizeImplTarget(
+        {
+          impl_runtime: '',
+          impl_model: 'opus',
+          impl_effort: 'high'
+        },
+        catalogFixture()
+      )
+    ).toEqual({
+      impl_runtime: '',
       impl_model: '',
       impl_effort: ''
     });
@@ -942,8 +972,7 @@ describe('views/detail-panel/exec-settings implementation runtime target', () =>
           impl_model: '',
           impl_effort: 'max'
         },
-        catalogFixture(),
-        'claude'
+        catalogFixture()
       )
     ).toEqual({
       impl_runtime: 'claude',
