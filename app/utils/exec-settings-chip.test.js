@@ -201,23 +201,15 @@ describe('formatWorkerChip', () => {
     expect(chip?.text).toBe('메인');
   });
 
-  test('names the controller runtime an inherited runtime resolves to', () => {
+  test('leaves an auto runtime unqualified by any controller runtime', () => {
     const rows = resolve({
-      pin: { impl_runtime: 'inherit' },
+      pin: { impl_runtime: 'auto' },
       controller_runtime: 'claude'
     });
 
     const chip = formatWorkerChip(rows, 'claude');
 
-    expect(chip?.text).toBe('inherit→claude · sol (비호환) · auto');
-  });
-
-  test('leaves a bare inherit alone when no controller runtime is known', () => {
-    const rows = resolve({ pin: { impl_runtime: 'inherit' } });
-
-    const chip = formatWorkerChip(rows, null);
-
-    expect(chip?.text).toBe('inherit · 5.6-sol · auto');
+    expect(chip?.text).toBe('auto · 5.6-sol · auto');
   });
 
   test('shortens the auto effort the resolver spells out', () => {

@@ -924,6 +924,10 @@ The workspace-global execution layer lives in `bd kv workflow_session_defaults`
 (key name, allowed keys, and the drop-and-warn rules are owned by dotfiles
 `workflow.yaml workspace_kv_defaults`; this repo is a consumer).
 
+`impl_runtime` is `auto | claude | codex`, where `auto` means the controller
+picks the provider per delegated unit at run time and beads-ui derives no
+provider from it — only an exact `impl_model` token names one.
+
 - `get-session-defaults` payload: `{ root_dir? }` — replies
   `{ values: Record<string,string|boolean>, warnings: string[] }`. Read is
   fail-quiet: an absent key or an out-of-vocabulary value yields an
@@ -947,9 +951,10 @@ The workspace-global execution layer lives in `bd kv workflow_session_defaults`
   / `quick_fix_orchestration_speed`. Its response adds `lane: 'quick_fix'` and
   `skipped_keys: string[]` — the preset keys the lane has no destination for
   (the three review triples and `workflow_mode`). A value outside the quick_fix
-  key's enum (`impl_runtime: 'inherit'`, `impl_model: 'auto'`) unsets that key
-  and adds `lane_incompatible:<destination key>` to `warnings`. Any other `lane`
-  value is `bad_request`.
+  key's enum (`impl_runtime: 'auto'`, `impl_model: 'auto'`) unsets that key and
+  adds `lane_incompatible:<destination key>` to `warnings` — the quick_fix
+  runtime enum is `claude | codex`, so `auto` has no destination there. Any
+  other `lane` value is `bad_request`.
 
   A new client sends a quick_fix apply only when the queue snapshot HAS the
   `quick_fix_orchestration_model` key — the key's presence, not its value, is

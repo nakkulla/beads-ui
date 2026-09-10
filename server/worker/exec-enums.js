@@ -76,8 +76,14 @@ export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 /** Speed vocabulary shared by all three review steps. */
 export const REVIEW_SPEEDS = ['default', 'fast'];
 
-/** Implementation runtime choices from the workflow contract. */
-export const IMPL_RUNTIMES = ['inherit', 'claude', 'codex'];
+/**
+ * Implementation runtime choices from the workflow contract. `auto` is the
+ * selector state "the controller picks a provider per delegated unit at run
+ * time" — beads-ui never derives a provider from it (dotfiles-nv53).
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const IMPL_RUNTIMES = ['auto', 'claude', 'codex'];
 
 /**
  * `impl_dispatch` — whether the controller delegates the implementation leg or
@@ -444,7 +450,7 @@ export const EXEC_SETTING_KEYS = [
 
 /**
  * Return the provider inferred from a known legacy model-only setting. An
- * explicit runtime, including `inherit`, always wins and disables inference.
+ * explicit runtime, including `auto`, always wins and disables inference.
  *
  * @param {{ impl_runtime?: unknown, impl_model?: unknown }} settings
  * @param {ResolvedCatalog} [catalog]
@@ -485,10 +491,14 @@ function runtimeEfforts(catalog, runtime) {
 /**
  * Validate linked implementation runtime/model/effort values at server write
  * boundaries. Legacy readers may infer a missing runtime; active writers may
- * not store an exact model without its matching runtime.
+ * not store an exact model without its matching runtime. `auto` derives no
+ * provider, so `provider_model_mismatch` cannot arise under it and a
+ * model-less `auto` checks effort against the whole catalog union.
  *
  * @param {{ orchestration_model?: unknown, impl_runtime?: unknown, impl_model?: unknown, impl_effort?: unknown }} settings
- * @param {{ catalog?: ResolvedCatalog, active_writer?: boolean, controller_runtime?: string }} [options]
+ * @param {{ catalog?: ResolvedCatalog, active_writer?: boolean, controller_runtime?: string }} [options] - `controller_runtime`
+ * is accepted for call-site compatibility and unused: no runtime value resolves
+ * against the controller since `inherit` was retired.
  * @returns {{ ok: true, impl_runtime: string|undefined, inferred: boolean }|{ ok: false, reason: string }}
  */
 export function validateImplSettings(settings, options = {}) {
@@ -523,12 +533,11 @@ export function validateImplSettings(settings, options = {}) {
 
   const inferred = requested_runtime === undefined && model_runtime !== null;
   const runtime = requested_runtime ?? model_runtime ?? undefined;
-  const controller_runtime =
-    options.controller_runtime ??
-    modelRunner(catalog, settings?.orchestration_model) ??
-    undefined;
+  // Under `auto` the model token alone decides the provider (the dotfiles
+  // selector's rule), so an exact model resolves the effective runtime and a
+  // model-less `auto` resolves nothing — the controller is irrelevant.
   const effective_runtime =
-    runtime === 'inherit' ? controller_runtime : runtime;
+    runtime === AUTO_LITERAL ? (model_runtime ?? undefined) : runtime;
 
   if (
     model_runtime &&
@@ -536,9 +545,6 @@ export function validateImplSettings(settings, options = {}) {
     model_runtime !== effective_runtime
   ) {
     return { ok: false, reason: 'provider_model_mismatch' };
-  }
-  if (model_runtime && runtime === 'inherit' && !effective_runtime) {
-    return { ok: false, reason: 'controller_runtime_required' };
   }
 
   if (effort !== undefined) {

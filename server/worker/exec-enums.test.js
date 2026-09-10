@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { REC_REASONS } from '../../app/utils/rec-settings.js';
 import {
+  IMPL_RUNTIMES as CLIENT_IMPL_RUNTIMES,
   QUICK_FIX_KV_KEYS as CLIENT_QUICK_FIX_KV_KEYS,
   QUICK_FIX_LANE_MAP as CLIENT_QUICK_FIX_LANE_MAP,
   QUICK_FIX_ORCHESTRATION_KEYS as CLIENT_QUICK_FIX_ORCHESTRATION_KEYS,
@@ -312,7 +313,7 @@ describe('worker/exec-enums full-profile presets', () => {
     const auto = validateImplPresetSettings(
       {
         impl_dispatch: 'delegated',
-        impl_runtime: 'inherit',
+        impl_runtime: 'auto',
         impl_model: 'auto',
         impl_effort: 'auto'
       },
@@ -411,8 +412,12 @@ describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
   });
 
   test('exposes the implementation runtime contract enum', () => {
-    expect(IMPL_RUNTIMES).toEqual(['inherit', 'claude', 'codex']);
+    expect(IMPL_RUNTIMES).toEqual(['auto', 'claude', 'codex']);
     expect(execSettingEnums().impl_runtime).toEqual(IMPL_RUNTIMES);
+  });
+
+  test('mirrors the client implementation runtime enum exactly', () => {
+    expect(IMPL_RUNTIMES).toEqual(CLIENT_IMPL_RUNTIMES);
   });
 });
 
@@ -503,10 +508,7 @@ describe('worker/exec-enums implementation target coherence', () => {
       undefined
     );
     expect(
-      inferImplRuntime(
-        { impl_runtime: 'inherit', impl_model: 'terra' },
-        catalog
-      )
+      inferImplRuntime({ impl_runtime: 'auto', impl_model: 'terra' }, catalog)
     ).toBe(undefined);
   });
 
@@ -550,25 +552,93 @@ describe('worker/exec-enums implementation target coherence', () => {
     ).toMatchObject({ ok: false, reason: 'illegal_impl_effort' });
   });
 
-  test('resolves inherit against the controller provider', () => {
+  test('keeps auto as the runtime when no exact model is chosen', () => {
     const catalog = resolveCatalog({ warn: () => {} });
 
-    expect(
-      validateImplSettings(
-        {
-          orchestration_model: 'sol',
-          impl_runtime: 'inherit',
-          impl_model: 'terra'
-        },
-        { catalog, active_writer: true }
-      )
-    ).toMatchObject({ ok: true, impl_runtime: 'inherit' });
-    expect(
-      validateImplSettings(
-        { impl_runtime: 'inherit', impl_model: 'terra' },
-        { catalog, active_writer: true, controller_runtime: 'claude' }
-      )
-    ).toMatchObject({ ok: false, reason: 'provider_model_mismatch' });
+    const result = validateImplSettings(
+      { impl_runtime: 'auto' },
+      { catalog, active_writer: true }
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      impl_runtime: 'auto',
+      inferred: false
+    });
+  });
+
+  test('checks the effort of an auto runtime against the exact model', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const accepted = validateImplSettings(
+      { impl_runtime: 'auto', impl_model: 'opus', impl_effort: 'xhigh' },
+      { catalog, active_writer: true }
+    );
+    const rejected = validateImplSettings(
+      { impl_runtime: 'auto', impl_model: 'opus', impl_effort: 'max' },
+      { catalog, active_writer: true }
+    );
+
+    expect(accepted).toMatchObject({ ok: true, impl_runtime: 'auto' });
+    expect(rejected).toMatchObject({
+      ok: false,
+      reason: 'illegal_impl_effort'
+    });
+  });
+
+  test('accepts a model-less auto effort from the whole catalog union', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const result = validateImplSettings(
+      { impl_runtime: 'auto', impl_effort: 'max' },
+      { catalog, active_writer: true }
+    );
+
+    expect(result).toMatchObject({ ok: true, impl_runtime: 'auto' });
+  });
+
+  test('ignores the controller provider when the runtime is auto', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const result = validateImplSettings(
+      {
+        orchestration_model: 'opus',
+        impl_runtime: 'auto',
+        impl_model: 'sol',
+        impl_effort: 'high'
+      },
+      { catalog, active_writer: true, controller_runtime: 'claude' }
+    );
+
+    expect(result).toMatchObject({ ok: true, impl_runtime: 'auto' });
+  });
+
+  test('rejects the retired inherit runtime', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const result = validateImplSettings(
+      { impl_runtime: 'inherit', impl_model: 'terra' },
+      { catalog, active_writer: true }
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'invalid_impl_runtime' });
+  });
+
+  test('never answers with the retired controller_runtime_required reason', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const reasons = [
+      { impl_runtime: 'auto', impl_model: 'terra' },
+      { impl_runtime: 'auto', impl_model: 'opus' },
+      { impl_runtime: 'auto' }
+    ].map(
+      (settings) =>
+        /** @type {{ reason?: string }} */ (
+          validateImplSettings(settings, { catalog, active_writer: true })
+        ).reason
+    );
+
+    expect(reasons).toEqual([undefined, undefined, undefined]);
   });
 });
 
@@ -599,7 +669,7 @@ describe('workspace kv mirror across the two runtimes', () => {
     const preset = {
       workflow_mode: 'standard',
       impl_dispatch: 'delegated',
-      impl_runtime: 'inherit',
+      impl_runtime: 'auto',
       impl_model: 'auto',
       impl_effort: 'auto',
       orchestration_model: 'opus'

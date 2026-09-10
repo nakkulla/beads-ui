@@ -451,7 +451,8 @@ describe('handleUpdateImplTarget', () => {
 
   test.each([
     [{ impl_runtime: 'codex', impl_model: 'auto', impl_effort: 'auto' }],
-    [{ impl_runtime: 'inherit', impl_model: 'auto', impl_effort: 'high' }]
+    [{ impl_runtime: 'auto', impl_model: 'auto', impl_effort: 'auto' }],
+    [{ impl_runtime: 'auto', impl_model: 'auto', impl_effort: 'high' }]
   ])('accepts an auto implementation target %o', async (payload) => {
     const { ws, sent } = fakeWs();
 
@@ -487,42 +488,45 @@ describe('handleUpdateImplTarget', () => {
     expect(sent[0].error.code).toBe('bad_request');
   });
 
-  test('allows an inherited exact model when the supplied orchestration provider matches', async () => {
+  test('stores an auto runtime with an exact model of either provider', async () => {
     const { ws, sent } = fakeWs();
+    const payload = {
+      impl_runtime: 'auto',
+      impl_model: 'sol',
+      impl_effort: 'high'
+    };
 
     await handleUpdateImplTarget(ws, {
-      id: 'target-inherit',
+      id: 'target-auto-exact',
       type: 'update-impl-target',
-      payload: {
-        id: 'UI-1',
-        impl_runtime: 'inherit',
-        impl_model: 'terra',
-        impl_effort: 'high',
-        orchestration_runtime: 'codex'
-      }
+      payload: { id: 'UI-1', ...payload, orchestration_runtime: 'claude' }
     });
 
     expect(runBdInWorkspace).toHaveBeenCalledOnce();
+    expect(runBdInWorkspace).toHaveBeenCalledWith(
+      ws,
+      buildImplTargetArgs('UI-1', payload)
+    );
     expect(sent[0].ok).toBe(true);
   });
 
-  test('rejects an inherited exact model when the supplied orchestration provider differs', async () => {
+  test('rejects an auto runtime whose effort the exact model does not accept', async () => {
     const { ws, sent } = fakeWs();
 
     await handleUpdateImplTarget(ws, {
-      id: 'target-inherit-mismatch',
+      id: 'target-auto-effort',
       type: 'update-impl-target',
       payload: {
         id: 'UI-1',
-        impl_runtime: 'inherit',
-        impl_model: 'terra',
-        impl_effort: 'high',
-        orchestration_runtime: 'claude'
+        impl_runtime: 'auto',
+        impl_model: 'opus',
+        impl_effort: 'max'
       }
     });
 
     expect(runBdInWorkspace).not.toHaveBeenCalled();
-    expect(sent[0].error.message).toContain('provider_model_mismatch');
+    expect(sent[0].error.code).toBe('bad_request');
+    expect(sent[0].error.message).toContain('illegal_impl_effort');
   });
 
   test.each([

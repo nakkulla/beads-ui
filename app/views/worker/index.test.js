@@ -13402,7 +13402,7 @@ describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', ()
       implementation: {
         default: {
           dispatch: 'delegated',
-          runtime: 'inherit',
+          runtime: 'auto',
           model: 'auto',
           effort: 'auto',
           speed: 'default'
@@ -13613,10 +13613,10 @@ describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', ()
       )
     );
     expect(chip.querySelector('.exec-chip__v')?.textContent).toBe(
-      'inherit→claude · auto · auto'
+      'auto · auto · auto'
     );
     expect(chip.getAttribute('title')).toContain(
-      '위임 대상: inherit (claude) (기본)'
+      '위임 대상: auto (실행 시 결정) (기본)'
     );
     expect(chip.getAttribute('title')).not.toContain('(전역)');
   });

@@ -1158,7 +1158,7 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
-   * The provider an inherited implementation target resolves to on this exact
+   * The provider the orchestration leg resolves to on this exact
    * screen. This follows the same value resolution as the selects: optimistic
    * local edit, bead metadata, selected compatible workspace preset, then the
    * orchestration fallback.
@@ -1534,8 +1534,7 @@ export function createDetailPanel(mount_element, options) {
       /** @type {{ impl_runtime: string, impl_model: string, impl_effort: string }} */ (
         target
       ),
-      runnerCatalog(),
-      effectiveOrchestrationRuntime()
+      runnerCatalog()
     );
     /** @type {Record<string, string|undefined>} */
     const previous = {};

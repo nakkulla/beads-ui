@@ -2,7 +2,7 @@
   "schema_version": 1,
   "workflow_mode_default": "standard",
   "review": {
-    "default": "codex",
+    "default": "astra",
     "reviewers": {
       "codex": {
         "model": "gpt-5.6-sol",
@@ -23,8 +23,8 @@
     }
   },
   "plan_review": {
-    "standard_recommended": "codex",
-    "fast_track_default": "codex"
+    "standard_recommended": "astra",
+    "fast_track_default": "astra"
   },
   "implementation": {
     "default": {

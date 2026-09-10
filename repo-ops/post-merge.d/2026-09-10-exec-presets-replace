@@ -1,0 +1,9 @@
+#!/bin/sh
+# UI-s8qn §3.9 — one-shot post-merge job: replace the 13 live execution presets
+# with the 5 targets and apply 최고효율 to both rigs' kv/queue defaults.
+# The child env carries only PATH, HOME and the REPO_OPS_* variables; cwd is
+# the repo-ops worktree, so the script is addressed from REPO_OPS_REPO_ROOT.
+set -eu
+exec </dev/null
+cd "$REPO_OPS_REPO_ROOT"
+exec node scripts/exec-presets-replace.js --apply

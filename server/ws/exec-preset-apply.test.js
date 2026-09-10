@@ -246,7 +246,7 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
     const preset_id = seedPreset(ws, sent, {
       spec_review_speed: 'fast',
       impl_dispatch: 'delegated',
-      impl_runtime: 'inherit'
+      impl_runtime: 'auto'
     });
     runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
     runBdJsonProjectedInWorkspace.mockResolvedValue({
@@ -272,7 +272,7 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
       buildApplyImplPresetArgs('UI-1', {
         spec_review_speed: 'fast',
         impl_dispatch: 'delegated',
-        impl_runtime: 'inherit'
+        impl_runtime: 'auto'
       })
     );
     const reply = sent[sent.length - 1];
@@ -651,7 +651,7 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(ws, sent, {
       impl_dispatch: 'delegated',
-      impl_runtime: 'inherit',
+      impl_runtime: 'auto',
       impl_model: 'auto',
       impl_effort: 'auto'
     });

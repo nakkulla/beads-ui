@@ -187,9 +187,9 @@ describe('resolveExecutionSettings', () => {
     expect(rows.impl_model.display).toBe('해당 없음');
   });
 
-  test('marks self skip main and unresolved inherit as not applicable or dynamic', () => {
+  test('marks self skip main and an auto runtime as not applicable or dynamic', () => {
     const self_rows = resolveExecutionSettings({
-      pin: { spec_review_model: 'self', impl_runtime: 'inherit' },
+      pin: { spec_review_model: 'self', impl_runtime: 'auto' },
       execution_defaults: PROJECTION
     });
     const main_rows = resolveExecutionSettings({
@@ -201,7 +201,7 @@ describe('resolveExecutionSettings', () => {
       display: '해당 없음',
       resolution: 'not_applicable'
     });
-    expect(self_rows.impl_runtime.display).toBe('inherit (실행 시 결정)');
+    expect(self_rows.impl_runtime.display).toBe('auto (실행 시 결정)');
     expect(main_rows.impl_dispatch.display).toBe('메인');
     expect(main_rows.impl_model.display).toBe('해당 없음');
   });
