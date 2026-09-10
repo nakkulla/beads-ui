@@ -354,6 +354,56 @@ export function effectiveSettingsCardTemplate(model, handlers) {
         >
       </span>
       <span class="detail-effective__chev">▸</span>
+      <span
+        class="detail-effective__preset"
+        @click=${(/** @type {Event} */ event) => event.stopPropagation()}
+      >
+        <select
+          data-impl-preset-select
+          aria-label="실행 프리셋"
+          title="세션 키 14개를 핀으로 기록"
+          .value=${live(model.preset_id)}
+          ?disabled=${model.preset_busy}
+          @click=${(/** @type {Event} */ event) => event.stopPropagation()}
+          @keydown=${(/** @type {Event} */ event) => event.stopPropagation()}
+          @change=${(/** @type {Event} */ ev) => {
+            ev.stopPropagation();
+            handlers.onPresetSelect(
+              String(/** @type {HTMLSelectElement} */ (ev.target).value)
+            );
+          }}
+        >
+          <option value="" ?selected=${model.preset_id === ''}>
+            실행 프리셋…
+          </option>
+          ${model.presets.map(
+            (preset) =>
+              html`<option
+                value=${preset.id}
+                ?selected=${preset.id === model.preset_id}
+              >
+                ${preset.name}${preset.compatible === false ? ' (비호환)' : ''}
+              </option>`
+          )}
+        </select>
+        <button
+          type="button"
+          data-apply-impl-preset
+          ?disabled=${model.preset_id.length === 0 || model.preset_busy}
+          @click=${(/** @type {Event} */ event) => {
+            event.stopPropagation();
+            handlers.onPresetApply();
+          }}
+          @keydown=${(/** @type {Event} */ event) => event.stopPropagation()}
+        >
+          이 이슈에 적용
+        </button>
+        ${(model.skipped_orchestration_keys || []).length > 0
+          ? html`<span class="detail-effective__hint" data-preset-skip-notice
+              >오케스트레이션 3키는 Bead에 핀할 수 없어 건너뜀</span
+            >`
+          : ''}
+      </span>
     </summary>
     ${model.expanded
       ? html`<div class="detail-effective__body">
@@ -391,51 +441,6 @@ export function effectiveSettingsCardTemplate(model, handlers) {
                 })}
             `
           )}
-          <div class="detail-effective__foot">
-            <select
-              data-impl-preset-select
-              aria-label="실행 프리셋"
-              .value=${live(model.preset_id)}
-              ?disabled=${model.preset_busy}
-              @change=${(/** @type {Event} */ ev) =>
-                handlers.onPresetSelect(
-                  String(/** @type {HTMLSelectElement} */ (ev.target).value)
-                )}
-            >
-              <option value="" ?selected=${model.preset_id === ''}>
-                실행 프리셋…
-              </option>
-              ${model.presets.map(
-                (preset) =>
-                  html`<option
-                    value=${preset.id}
-                    ?selected=${preset.id === model.preset_id}
-                  >
-                    ${preset.name}${preset.compatible === false
-                      ? ' (비호환)'
-                      : ''}
-                  </option>`
-              )}
-            </select>
-            <button
-              type="button"
-              data-apply-impl-preset
-              ?disabled=${model.preset_id.length === 0 || model.preset_busy}
-              @click=${handlers.onPresetApply}
-            >
-              이 이슈에 적용
-            </button>
-            <span class="detail-effective__hint"
-              >세션 키 15개를 핀으로 기록</span
-            >
-            ${(model.skipped_orchestration_keys || []).length > 0
-              ? html`<span
-                  class="detail-effective__hint"
-                  data-preset-skip-notice
-                  >오케스트레이션 3키는 Bead에 핀할 수 없어 건너뜀</span
-                >`
-              : ''}
-          </div>
         </div>`
       : ''}
   </details>`;

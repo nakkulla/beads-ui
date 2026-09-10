@@ -75,8 +75,9 @@ function normalizeState(raw) {
   if (!Array.isArray(raw.presets)) {
     return state;
   }
-  // Load keeps every string setting, including one outside the current
-  // vocabulary: the write path is what enforces the 15 keys, and the
+  // Load keeps every string setting except the retired preset-only
+  // `workflow_mode`, including one outside the current
+  // vocabulary: the write path is what enforces the 25 keys, and the
   // coordinator needs an unknown key to survive to classify its preset as
   // legacy and hide it. Stripping here would delete the only evidence and
   // re-expose the preset with truncated settings.
@@ -93,7 +94,7 @@ function normalizeState(raw) {
     const settings = {};
     if (isRecord(entry.settings)) {
       for (const [key, value] of Object.entries(entry.settings)) {
-        if (typeof value === 'string') {
+        if (key !== 'workflow_mode' && typeof value === 'string') {
           settings[key] = value;
         }
       }

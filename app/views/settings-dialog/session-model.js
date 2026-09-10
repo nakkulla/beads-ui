@@ -12,12 +12,12 @@
 import { buildOptionView } from '../../utils/execution-defaults.js';
 
 /**
- * The fifteen session keys a PER-BEAD write may carry — the per-bead preset
+ * The fourteen session keys a PER-BEAD write may carry — the per-bead preset
  * apply and the detail panel's individual edits. Mirrors
- * `server/worker/exec-enums.js BEAD_APPLY_KEYS`.
+ * `server/worker/exec-enums.js BEAD_APPLY_KEYS`. `workflow_mode` is NOT one of
+ * them: a bead's mode is not a value a preset decides (UI-7yh2 §3.7).
  */
 export const BEAD_APPLY_KEYS = [
-  'workflow_mode',
   'spec_review_model',
   'spec_review_effort',
   'spec_review_speed',
@@ -57,6 +57,7 @@ export const QUICK_FIX_KV_KEYS = [
  * them.
  */
 export const WORKSPACE_KV_KEYS = [
+  'workflow_mode',
   ...BEAD_APPLY_KEYS.filter((key) => key !== 'impl_dispatch'),
   ...QUICK_FIX_KV_KEYS,
   'base_sync_accept_local_commits',
@@ -162,57 +163,26 @@ export const QUICK_FIX_LANE_MAP = Object.freeze({
   impl_speed: 'quick_fix_impl_speed'
 });
 
-/** The eighteen keys an execution preset carries. */
-export const IMPL_PRESET_KEYS = [...BEAD_APPLY_KEYS, ...ORCHESTRATION_KEYS];
+/**
+ * The twenty-five keys an execution preset carries: the per-bead values plus
+ * the general and quick_fix workspace profiles, in the same order as
+ * `server/worker/exec-enums.js IMPL_PRESET_KEYS`.
+ */
+export const IMPL_PRESET_KEYS = [
+  ...BEAD_APPLY_KEYS,
+  ...ORCHESTRATION_KEYS,
+  ...QUICK_FIX_ORCHESTRATION_KEYS,
+  ...QUICK_FIX_KV_KEYS
+];
 
 /**
- * The fourteen kv keys a preset actually CARRIES — the workspace kv list minus the
- * keys no preset can supply. Mirrors `server/worker/exec-enums.js
- * PRESET_KV_KEYS`, which is exactly the list a general apply REPLACES, so the
- * quick_fix kv profile survives instead of being cleared.
+ * The eighteen kv keys a preset actually CARRIES — the workspace kv list minus
+ * the keys no preset can supply. Mirrors `server/worker/exec-enums.js
+ * PRESET_KV_KEYS`, which is exactly the list one apply REPLACES.
  */
 export const PRESET_KV_KEYS = WORKSPACE_KV_KEYS.filter((key) =>
   IMPL_PRESET_KEYS.includes(key)
 );
-
-/**
- * Normalize one lane-neutral preset into a complete quick_fix replacement.
- * Missing or lane-incompatible values become `null`; unmapped preset fields
- * are reported instead of being applied.
- *
- * @param {Record<string, unknown>} settings
- * @param {Record<string, ReadonlyArray<string>>} target_enums - Enum table
- * keyed by quick_fix destination names.
- * @returns {{ values: Record<string, string|null>, warnings: string[], skipped_keys: string[] }}
- */
-export function normalizeQuickFixLanePreset(settings, target_enums) {
-  /** @type {Record<string, string|null>} */
-  const values = {};
-  /** @type {string[]} */
-  const warnings = [];
-  for (const [source_key, target_key] of Object.entries(QUICK_FIX_LANE_MAP)) {
-    const value = settings[source_key];
-    if (!Object.hasOwn(settings, source_key)) {
-      values[target_key] = null;
-      continue;
-    }
-    const allowed = target_enums[target_key];
-    if (
-      typeof value !== 'string' ||
-      !Array.isArray(allowed) ||
-      !allowed.includes(value)
-    ) {
-      values[target_key] = null;
-      warnings.push(`lane_incompatible:${target_key}`);
-      continue;
-    }
-    values[target_key] = value;
-  }
-  const skipped_keys = Object.keys(settings).filter(
-    (key) => !Object.hasOwn(QUICK_FIX_LANE_MAP, key)
-  );
-  return { values, warnings, skipped_keys };
-}
 
 /** 실행 방식: 위임(기존 runtime matrix) 또는 메인(컨트롤러 직접 구현). */
 export const IMPL_DISPATCHES = ['delegated', 'main'];
@@ -471,13 +441,143 @@ export function narrowImplTarget(target, catalog) {
 }
 
 /**
- * Korean labels for the seventeen keys a preset diff can name — the same
- * vocabulary the dialog's own rows use.
+ * Speed tiers one catalog runner offers, unioned over its models. A model that
+ * declares no `speed_tiers` counts as Standard only — the same conservative
+ * default the server catalog applies (`modelSpeedTiers`).
+ *
+ * @param {any} catalog
+ * @param {string} runtime
+ * @returns {string[]}
+ */
+function runnerSpeedTiers(catalog, runtime) {
+  const entry =
+    isRecord(catalog) && isRecord(catalog.runners)
+      ? catalog.runners[runtime]
+      : null;
+  if (!isRecord(entry) || !isRecord(entry.models)) {
+    return [];
+  }
+  /** @type {string[]} */
+  const tiers = [];
+  for (const model_entry of Object.values(entry.models)) {
+    const declared =
+      isRecord(model_entry) && Array.isArray(model_entry.speed_tiers)
+        ? model_entry.speed_tiers
+        : ['default'];
+    for (const tier of declared) {
+      if (typeof tier === 'string' && !tiers.includes(tier)) {
+        tiers.push(tier);
+      }
+    }
+  }
+  return tiers;
+}
+
+/**
+ * The runner a row's stored values name: an explicit runtime when it is
+ * concrete, otherwise the runner owning the exact model token (matched on the
+ * catalog's model NAME or its `id`, the same derivation `deriveModelRuntime`
+ * uses). `auto` names no provider, so it derives nothing.
+ *
+ * @param {any} catalog
+ * @param {{ runtime?: string|null, model?: string|null }} row
+ * @returns {string|null}
+ */
+export function rowRunner(catalog, row) {
+  const runtime = row?.runtime;
+  if (
+    typeof runtime === 'string' &&
+    runtime.length > 0 &&
+    runtime !== AUTO_LITERAL
+  ) {
+    return runtime;
+  }
+  const model = row?.model;
+  if (
+    typeof model !== 'string' ||
+    model.length === 0 ||
+    model === AUTO_LITERAL
+  ) {
+    return null;
+  }
+  for (const [runner, entry] of Object.entries(
+    isRecord(catalog) && isRecord(catalog.runners) ? catalog.runners : {}
+  )) {
+    if (!isRecord(entry) || !isRecord(entry.models)) {
+      continue;
+    }
+    for (const [name, model_entry] of Object.entries(entry.models)) {
+      if (
+        name === model ||
+        (isRecord(model_entry) && model_entry.id === model)
+      ) {
+        return runner;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a `속도` row belongs on screen. The catalog decides: a row is drawn
+ * only when its effective runner publishes two or more `speed_tiers`, so no
+ * runner name is written into this rule (UI-7yh2 §3.4). A row whose runner
+ * cannot be derived is hidden rather than guessed.
+ *
+ * @param {any} catalog
+ * @param {{ runtime?: string|null, model?: string|null }} row
+ * @returns {boolean}
+ */
+export function speedVisible(catalog, row) {
+  const runner = rowRunner(catalog, row);
+  if (runner === null) {
+    return false;
+  }
+  return runnerSpeedTiers(catalog, runner).length >= 2;
+}
+
+/**
+ * The orchestration runtime choices, in catalog order. There is no `전체`
+ * option: the row picks ONE provider and the model list follows it.
+ *
+ * @param {any} catalog
+ * @returns {string[]}
+ */
+export function orchestrationRuntimeOptions(catalog) {
+  return runnerModels(catalog).map(([runner]) => runner);
+}
+
+/**
+ * The runtime the orchestration row starts on: the runner of the STORED
+ * orchestration model, or of the projection's default model while nothing is
+ * stored. An undecidable catalog yields the first offered runner, and an empty
+ * catalog `null`.
+ *
+ * @param {any} catalog
+ * @param {string|null|undefined} model - Stored `orchestration_model`.
+ * @param {string|null|undefined} fallback_model - The projection default model.
+ * @returns {string|null}
+ */
+export function orchestrationRuntimeInitial(catalog, model, fallback_model) {
+  const stored = rowRunner(catalog, { model: model ?? null });
+  if (stored !== null) {
+    return stored;
+  }
+  const projected = rowRunner(catalog, { model: fallback_model ?? null });
+  if (projected !== null) {
+    return projected;
+  }
+  return orchestrationRuntimeOptions(catalog)[0] ?? null;
+}
+
+/**
+ * Korean labels for every key a preset diff can name — the same vocabulary the
+ * dialog's own rows use. The quick_fix half keeps its prefix so a diff row is
+ * never mistaken for the general profile's row of the same name.
  *
  * @type {Record<string, string>}
  */
 export const PRESET_DIFF_LABELS = {
-  workflow_mode: '워크플로 모드',
   spec_review_model: '스펙 리뷰어',
   spec_review_effort: '스펙 리뷰 effort',
   spec_review_speed: '스펙 리뷰 속도',
@@ -493,28 +593,28 @@ export const PRESET_DIFF_LABELS = {
   impl_speed: '구현 속도',
   orchestration_model: '워커 모델',
   orchestration_effort: '워커 effort',
-  orchestration_speed: '워커 속도'
+  orchestration_speed: '워커 속도',
+  quick_fix_orchestration_model: 'quick_fix 워커 모델',
+  quick_fix_orchestration_effort: 'quick_fix 워커 effort',
+  quick_fix_orchestration_speed: 'quick_fix 워커 속도',
+  quick_fix_impl_dispatch: 'quick_fix 실행 방식',
+  quick_fix_impl_runtime: 'quick_fix 위임 대상',
+  quick_fix_impl_model: 'quick_fix 구현 모델',
+  quick_fix_impl_effort: 'quick_fix 구현 effort',
+  quick_fix_impl_speed: 'quick_fix 구현 속도'
 };
 
-/** @type {Record<string, string>} */
-const QUICK_FIX_DIFF_LABELS = {
-  quick_fix_orchestration_model: '오케스트레이션 모델',
-  quick_fix_orchestration_effort: '오케스트레이션 effort',
-  quick_fix_orchestration_speed: '오케스트레이션 속도',
-  quick_fix_impl_dispatch: '실행 방식',
-  quick_fix_impl_runtime: '위임 대상',
-  quick_fix_impl_model: '모델',
-  quick_fix_impl_effort: 'effort',
-  quick_fix_impl_speed: '속도'
-};
-
-/** Exactly the keys a global preset apply replaces, in declaration order. */
-const PRESET_DIFF_KEYS = [...PRESET_KV_KEYS, ...ORCHESTRATION_KEYS];
+/** Exactly the keys one preset apply replaces, in declaration order. */
+const PRESET_DIFF_KEYS = [
+  ...PRESET_KV_KEYS,
+  ...ORCHESTRATION_KEYS,
+  ...QUICK_FIX_ORCHESTRATION_KEYS
+];
 
 /**
- * Declared keys a preset may carry that a global apply does NOT write:
- * `impl_dispatch` is `user_write_only`; quick_fix kv keys and `bdui_url` have
- * no preset layer at all.
+ * Declared keys a preset may carry that one apply does NOT write:
+ * `impl_dispatch` is `user_write_only`, and `workflow_mode`/`bdui_url` have no
+ * preset layer at all.
  */
 const PRESET_IGNORED_KEYS = [...IMPL_PRESET_KEYS, ...WORKSPACE_KV_KEYS].filter(
   (key, index, list) =>
@@ -522,7 +622,7 @@ const PRESET_IGNORED_KEYS = [...IMPL_PRESET_KEYS, ...WORKSPACE_KV_KEYS].filter(
 );
 
 /**
- * Preview what applying a preset globally would change, key by key.
+ * Preview what applying a preset would change, key by key.
  *
  * The comparison set is the one the SERVER replaces, not the workspace kv list:
  * a key the apply preserves must never be previewed as cleared.
@@ -562,41 +662,6 @@ export function buildPresetDiff(current, preset) {
     }
   }
   return { rows, ignored_keys };
-}
-
-/**
- * Preview one lane-neutral preset as a complete quick_fix replacement.
- * Server normalization owns the meaning: absent and incompatible values both
- * become `null`, which the pane renders as fallthrough to the general profile.
- *
- * @param {Record<string, string|null>} current
- * @param {Record<string, unknown>} preset
- * @param {Record<string, ReadonlyArray<string>>} target_enums
- * @returns {{ rows: PresetDiffRow[], ignored_keys: string[] }}
- */
-export function buildQuickFixPresetDiff(current, preset, target_enums) {
-  const before_values = isRecord(current) ? current : {};
-  const normalized = normalizeQuickFixLanePreset(
-    isRecord(preset) ? preset : {},
-    target_enums
-  );
-  /** @type {PresetDiffRow[]} */
-  const rows = [];
-  for (const target_key of Object.values(QUICK_FIX_LANE_MAP)) {
-    const before = before_values[target_key] ?? null;
-    const after = normalized.values[target_key] ?? null;
-    if (before === after) {
-      continue;
-    }
-    rows.push({
-      key: target_key,
-      label: QUICK_FIX_DIFF_LABELS[target_key] || target_key,
-      before,
-      after,
-      kind: before === null ? 'added' : after === null ? 'removed' : 'changed'
-    });
-  }
-  return { rows, ignored_keys: normalized.skipped_keys };
 }
 
 /**

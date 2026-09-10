@@ -309,9 +309,18 @@ export function resolveBenchTuple(input) {
       route: 'quick_fix',
       // `resolveExecSettings` reads the orchestration axis under the bead
       // snapshot's own field names, not the metadata ones.
-      model: usableString(preset.orchestration_model) ?? undefined,
-      effort: usableString(preset.orchestration_effort) ?? undefined,
-      orchestration_speed: usableString(preset.orchestration_speed) ?? undefined
+      model:
+        usableString(preset.quick_fix_orchestration_model) ??
+        usableString(preset.orchestration_model) ??
+        undefined,
+      effort:
+        usableString(preset.quick_fix_orchestration_effort) ??
+        usableString(preset.orchestration_effort) ??
+        undefined,
+      orchestration_speed:
+        usableString(preset.quick_fix_orchestration_speed) ??
+        usableString(preset.orchestration_speed) ??
+        undefined
     });
   } catch (err) {
     log('bench tuple orchestration resolution threw: %o', err);
@@ -336,6 +345,7 @@ export function resolveBenchTuple(input) {
     }
     const lane_key = QUICK_FIX_LANE_MAP[key];
     const picked =
+      (lane_key ? usableString(preset[lane_key]) : null) ??
       usableString(preset[key]) ??
       (lane_key ? usableString(kv[lane_key]) : null) ??
       usableString(kv[key]) ??

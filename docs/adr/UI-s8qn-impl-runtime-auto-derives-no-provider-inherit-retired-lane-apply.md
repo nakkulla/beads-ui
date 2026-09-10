@@ -1,7 +1,8 @@
 ---
 id: UI-s8qn
 title: impl_runtime은 auto|claude|codex이고 auto는 provider를 유도하지 않으며 inherit은 이관 없이 제거된다 — 레인 무관 프리셋·두 레인 적용은 0032를 승계한다
-status: accepted
+status: superseded
+superseded_by: UI-7yh2
 date: 2026-09-10
 summary: "impl_runtime은 auto|claude|codex이고 auto는 실행 시 총괄이 provider를 정하는 상태라 beads-ui 서버·클라이언트는 provider를 유도하지 않으며 exact 모델 토큰만 provider를 정한다; inherit은 이관 없이 제거되어 저장된 값은 compatible:false로 드러나 어느 레인에도 적용되지 않고 구 서버 capability probe는 두지 않는다; 레인 무관 18키 프리셋·두 레인 교체 적용·QUICK_FIX_LANE_MAP·lane_incompatible/skipped_keys 정규화·quick_fix 키의 일반 키 폴스루·kv 먼저 큐 나중의 비원자성·quick_fix_orchestration_model 키 존재의 capability gating은 0032를 승계한다"
 supersedes: [32]

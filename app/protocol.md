@@ -937,30 +937,32 @@ provider from it — only an exact `impl_model` token names one.
   key or an illegal value is refused before bd is touched. `bd kv` has no CAS,
   so the write re-reads immediately beforehand, making it per-KEY
   last-write-wins, and confirms with a readback.
+- `impl-preset-create` payload: `{ expected_revision, name, settings }`;
+  `impl-preset-update` adds `id`. `settings` is a sparse 25-key profile: the 14
+  per-Bead execution keys, the three general orchestration keys, the five
+  `quick_fix_impl_*` keys, and the three `quick_fix_orchestration_*` keys.
+  `workflow_mode` is not a preset key. Both mutations validate enum membership
+  and the general and quick_fix runtime/model/effort triples; `fast` quick_fix
+  implementation speed requires a runner whose catalog exposes that speed tier.
+- `apply-impl-preset` payload: `{ id, preset_id, expected_revision }`. It
+  replaces the issue's 14 per-Bead keys and never pins either orchestration
+  triple. For a `route=quick_fix` issue, each implementation axis uses its
+  `quick_fix_*` preset value before the general value; an exact quick_fix model
+  derives its runtime before the general runtime fallback. An incompatible
+  projected pin is `impl_preset_incompatible` and no metadata is written.
 - `apply-impl-preset-global` payload:
-  `{ preset_id, expected_revision, expected_queue_revision, lane?, root_dir? }`.
-  `lane` is `'general' | 'quick_fix'` and an absent value is `general`. The
-  general lane replaces the kv keys a preset can carry plus the queue's three
-  general orchestration values, and a request that omits `lane` gets back the
-  existing response shape with no `lane` field added.
-
-  The quick_fix lane moves the same preset's five implementation keys onto
-  `quick_fix_impl_dispatch` / `quick_fix_impl_runtime` / `quick_fix_impl_model`
-  / `quick_fix_impl_effort` / `quick_fix_impl_speed` and its three orchestration
-  values onto `quick_fix_orchestration_model` / `quick_fix_orchestration_effort`
-  / `quick_fix_orchestration_speed`. Its response adds `lane: 'quick_fix'` and
-  `skipped_keys: string[]` — the preset keys the lane has no destination for
-  (the three review triples and `workflow_mode`). A value outside the quick_fix
-  key's enum (`impl_runtime: 'auto'`, `impl_model: 'auto'`) unsets that key and
-  adds `lane_incompatible:<destination key>` to `warnings` — the quick_fix
-  runtime enum is `claude | codex`, so `auto` has no destination there. Any
-  other `lane` value is `bad_request`.
+  `{ preset_id, expected_revision, expected_queue_revision, root_dir? }`. A
+  `lane` field is `bad_request`. One apply replaces all 18 preset-carried kv
+  keys and all six general/quick_fix orchestration queue keys; a key absent from
+  the sparse preset is unset, so the quick_fix layer falls through to the
+  general profile. The kv write and readback happen before the queue CAS and
+  remain non-atomic. The response is
+  `{ applied, conflict, revision, values, warnings, queue_applied, queue_conflict, queue }`.
 
   A new client sends a quick_fix apply only when the queue snapshot HAS the
   `quick_fix_orchestration_model` key — the key's presence, not its value, is
-  the capability probe. An old server ignores the unknown `lane` and applies to
-  the general lane, so without that probe a quick_fix preset would overwrite the
-  general profile.
+  the capability probe. Without it, the client does not send the combined apply
+  request to an older server.
 
 `root_dir` is optional on all three (UI-eey2 §9.5). Absent means the
 connection's workspace; present means that validated registry workspace, and an

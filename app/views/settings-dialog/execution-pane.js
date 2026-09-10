@@ -3,10 +3,13 @@
  * surfaces can mount the SAME code (UI-eey2 §4.4): the dialog's `실행` tab and
  * the monitor deck's per-repo `⚙` panel.
  *
- * The pane owns the tab's whole state machine — session-defaults draft over a
- * server baseline, the UI-only orchestration runtime filter, the orchestration
- * draft over the queue snapshot, execution presets, and the automation section
- * (자동화 · 머지 · 동시 실행 · 직렬 레인).
+ * The pane owns one state machine — session-defaults draft over a server
+ * baseline, the UI-only orchestration runtime selection, the orchestration
+ * draft over the queue snapshot, and execution presets — and draws ONE of its
+ * three sections at a time through `render(section)`: `worker` (the execution
+ * profile), `session` (what an interactive session reads), `account` (this
+ * repo's execution accounts and limit policy). The automation switches are NOT
+ * here: the Worker toolbar is their one editing surface (UI-7yh2 §3.12).
  *
  * `binding.root_dir` is the ONE axis that separates the two mounts:
  * - `null` — the connected workspace. Every payload is EXACTLY what the dialog
@@ -26,6 +29,7 @@
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
+import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
 import { claudeLabel, codexLabel } from '../detail-panel/exec-accounts.js';
 import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
@@ -48,14 +52,16 @@ import {
   buildExecutionOptionView,
   buildOrchestrationPatch,
   buildPresetDiff,
-  buildQuickFixPresetDiff,
   buildSessionDefaultsPatch,
   implEffortOptions,
   implModelOptions,
   isHttpOriginValue,
   narrowImplTarget,
   orchestrationEffortOptions,
-  orchestrationModelOptions
+  orchestrationModelOptions,
+  orchestrationRuntimeInitial,
+  orchestrationRuntimeOptions,
+  speedVisible
 } from './session-model.js';
 
 /** The `(기본)` sentinel a select uses for "no explicit value". */
@@ -67,18 +73,62 @@ const IMPL_TARGET_KEYS = ['impl_runtime', 'impl_model', 'impl_effort'];
 /** A workspace quick_fix runtime is concrete; `inherit` has no controller yet. */
 const QUICK_FIX_IMPL_RUNTIMES = ['claude', 'codex'];
 
+/** Preset keys the QUEUE stores; the rest of the preset lives in workspace kv. */
+const QUEUE_PRESET_KEYS = [
+  ...ORCHESTRATION_KEYS,
+  ...QUICK_FIX_ORCHESTRATION_KEYS
+];
+
+/** The 속도 keys stored on the QUEUE rather than in workspace kv. */
+const QUEUE_SPEED_KEYS = [
+  'orchestration_speed',
+  'quick_fix_orchestration_speed'
+];
+
 /** The two repo-scoped account keys the `실행 계정` section edits. */
 const ACCOUNT_ROW_KEYS = ['claude_account', 'codex_account'];
 
 /**
- * Upper bound on a repo's serial lane count, mirroring the Worker console's own
- * bound (`app/views/worker/index.js`). The server rejects an out-of-range value
- * rather than clamping it, so the stepper carries the bound.
+ * The three sections one mounted pane can draw, in rail and segment order. The
+ * dialog's rail and the monitor panel's segment both name these ids.
+ *
+ * @type {ReadonlyArray<{ id: string, label: string }>}
  */
-const SERIAL_LANE_MAX = 5;
+export const PANE_SECTIONS = [
+  { id: 'worker', label: '워커' },
+  { id: 'session', label: '세션' },
+  { id: 'account', label: '계정' }
+];
 
-/** Lower bound on both steppers; the server rejects 0. */
-const MIN_COUNT = 1;
+/**
+ * The `[워커|세션|계정]` segment both mounts draw, so the section chooser is
+ * written once. The monitor panel renders it in its own head; the dialog rail
+ * uses its tab buttons instead and never calls this.
+ *
+ * @param {string} active - The section id currently drawn.
+ * @param {(section: string) => void} onSelect
+ * @returns {TemplateResult}
+ */
+export function paneSectionSegmentTemplate(active, onSelect) {
+  return html`<span
+    class="settings-dialog__seg"
+    role="group"
+    aria-label="실행 설정 구역"
+    data-pane-sections
+  >
+    ${PANE_SECTIONS.map(
+      (section) =>
+        html`<button
+          type="button"
+          data-pane-section=${section.id}
+          aria-pressed=${String(active === section.id)}
+          @click=${() => onSelect(section.id)}
+        >
+          ${section.label}
+        </button>`
+    )}
+  </span>`;
+}
 
 /**
  * Threshold the preemptive-switch row offers when the user turns it on without
@@ -223,16 +273,19 @@ export function createExecutionPane(mount_element, binding) {
   let account_catalog = { claude: null, codex: null };
   let account_catalog_loaded = false;
 
-  /** UI-only Worker runtime filter; never stored. */
-  /** @type {string|null} */
-  let worker_runtime_filter = null;
+  /**
+   * The orchestration provider the model list is narrowed to. UI-only: the
+   * queue stores `orchestration_model` alone. `null` means "not chosen yet",
+   * and the row then shows the runner the STORED model belongs to.
+   *
+   * @type {string|null}
+   */
+  let orchestration_runtime = null;
   /** @type {Record<string, string|null>} */
   let worker_draft = {};
 
   /** @type {string} */
   let preset_choice = '';
-  /** @type {'general'|'quick_fix'} */
-  let preset_lane = 'general';
   /** Draft name for saving the current execution settings as a preset. */
   let preset_name_draft = '';
 
@@ -243,6 +296,9 @@ export function createExecutionPane(mount_element, binding) {
   let prompt_error = false;
   /** @type {any} */
   let prompt_data = null;
+
+  /** Which of {@link PANE_SECTIONS} this mount currently draws. */
+  let active_section = 'worker';
 
   let destroyed = false;
 
@@ -266,7 +322,14 @@ export function createExecutionPane(mount_element, binding) {
       : null;
   }
 
-  /** @returns {boolean} */
+  /**
+   * Whether the server takes quick_fix values at all. An old server silently
+   * applies a preset to the general lane only, so the `적용` button refuses to
+   * send rather than dropping the quick_fix half (UI-7yh2 §3.6). A false value
+   * is a capability probe, false by absence.
+   *
+   * @returns {boolean}
+   */
   function supportsQuickFixLane() {
     const queue = queueOf();
     return Boolean(
@@ -622,8 +685,12 @@ export function createExecutionPane(mount_element, binding) {
     } else {
       session_draft[key] = value;
     }
+    const pruned = pruneHiddenSpeeds();
     doRender();
     queueSessionSave();
+    if (pruned.queue) {
+      void saveOrchestration();
+    }
   }
 
   /**
@@ -702,6 +769,7 @@ export function createExecutionPane(mount_element, binding) {
     writeImplTargetKey('impl_runtime', narrowed.impl_runtime);
     writeImplTargetKey('impl_model', narrowed.impl_model);
     writeImplTargetKey('impl_effort', narrowed.impl_effort);
+    pruneHiddenSpeeds();
     doRender();
     queueSessionSave();
   }
@@ -755,29 +823,30 @@ export function createExecutionPane(mount_element, binding) {
    */
   function onWorkerChange(key, value) {
     worker_draft[key] = value === UNSET ? null : value;
+    const pruned = pruneHiddenSpeeds();
     doRender();
     void saveOrchestration();
+    if (pruned.session) {
+      queueSessionSave();
+    }
   }
 
   /**
-   * Narrow the UI-only runtime filter, clearing the stored orchestration values
-   * the new filter can no longer offer. Returning to `전체` narrows nothing, and
-   * an unset model stays unset — its default belongs to the projection, not to
-   * this layer.
+   * Pick the orchestration provider, then drop the stored model and effort that
+   * provider cannot run — the same narrow-then-save one edit does in
+   * {@link onImplTargetChange}. An unset model stays unset: its default belongs
+   * to the projection, not to this layer.
    *
-   * @param {string|null} filter
+   * @param {string} runtime
    */
-  function onWorkerRuntimeFilterChange(filter) {
-    worker_runtime_filter = filter;
-    if (!filter) {
-      doRender();
-      return;
-    }
+  function onOrchestrationRuntimeChange(runtime) {
+    orchestration_runtime = runtime;
     const catalog = runnerCatalog();
     const current = currentOrchestrationValues();
     let model = current.orchestration_model;
-    if (model && !orchestrationModelOptions(catalog, filter).includes(model)) {
+    if (model && !orchestrationModelOptions(catalog, runtime).includes(model)) {
       worker_draft.orchestration_model = null;
+      worker_draft.orchestration_effort = null;
       model = null;
     }
     const effort = current.orchestration_effort;
@@ -785,63 +854,18 @@ export function createExecutionPane(mount_element, binding) {
       effort &&
       !orchestrationEffortOptions(
         catalog,
-        filter,
+        runtime,
         model || AUTO_LITERAL
       ).includes(effort)
     ) {
       worker_draft.orchestration_effort = null;
     }
+    const pruned = pruneHiddenSpeeds();
     doRender();
     void saveOrchestration();
-  }
-
-  /** @param {number} slots */
-  async function onSlotsChange(slots) {
-    if (!queueOf() || slots < MIN_COUNT) {
-      return;
+    if (pruned.session) {
+      queueSessionSave();
     }
-    try {
-      await sendQueueCas('worker-queue-set-slots', { slots });
-    } catch (err) {
-      notify(
-        `slots 저장 실패: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-    doRender();
-  }
-
-  /** @param {number} count */
-  async function onSerialLaneCountChange(count) {
-    if (!queueOf() || count < MIN_COUNT || count > SERIAL_LANE_MAX) {
-      return;
-    }
-    try {
-      await sendQueueCas('worker-queue-set-serial-lane-count', { count });
-    } catch (err) {
-      notify(
-        `직렬 레인 저장 실패: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-    doRender();
-  }
-
-  /**
-   * @param {'auto_advance'|'auto_merge'} key
-   * @param {boolean} on
-   */
-  async function onAutomationToggle(key, on) {
-    const type =
-      key === 'auto_advance'
-        ? 'worker-automation-toggle'
-        : 'worker-merge-auto-toggle';
-    try {
-      await sendQueueCas(type, { on });
-    } catch (err) {
-      notify(
-        `자동화 설정 저장 실패: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-    doRender();
   }
 
   /**
@@ -986,6 +1010,145 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
+   * The provider the orchestration rows are narrowed to: the user's pick, or —
+   * before they touch the row — the runner of the stored model, falling back to
+   * the projection's default orchestration model.
+   *
+   * @returns {string|null}
+   */
+  function orchestrationRuntime() {
+    if (orchestration_runtime !== null) {
+      return orchestration_runtime;
+    }
+    const projection = executionProjection();
+    const projected =
+      projection && isRecord(projection.orchestration)
+        ? projection.orchestration.model
+        : null;
+    return orchestrationRuntimeInitial(
+      runnerCatalog(),
+      currentOrchestrationValues().orchestration_model,
+      typeof projected === 'string' ? projected : null
+    );
+  }
+
+  /**
+   * The catalog token a review gate's reviewer stands for. A reviewer name the
+   * projection maps to a model id resolves through that map, so the row's
+   * provider is the one that will actually run it. `self`, `skip`, and an unset
+   * gate name no runner at all.
+   *
+   * @param {string|undefined} reviewer
+   * @returns {string|null}
+   */
+  function reviewerModelToken(reviewer) {
+    if (
+      typeof reviewer !== 'string' ||
+      reviewer.length === 0 ||
+      reviewer === 'self' ||
+      reviewer === 'skip'
+    ) {
+      return null;
+    }
+    const projection = executionProjection();
+    const reviewers = projection?.session?.review?.reviewers;
+    const mapped =
+      isRecord(reviewers) && isRecord(reviewers[reviewer])
+        ? reviewers[reviewer].model
+        : null;
+    return typeof mapped === 'string' && mapped.length > 0 ? mapped : reviewer;
+  }
+
+  /**
+   * Which `속도` rows the catalog admits right now, keyed by their stored key.
+   * The template and {@link pruneHiddenSpeeds} read the SAME map, so a hidden
+   * row and a cleared value can never disagree.
+   *
+   * @returns {Record<string, boolean>}
+   */
+  function speedVisibility() {
+    const catalog = runnerCatalog();
+    const orchestration = currentOrchestrationValues();
+    const worker_runtime = orchestrationRuntime();
+    const quick_fix_orchestration_model =
+      orchestration.quick_fix_orchestration_model;
+    return {
+      orchestration_speed: speedVisible(catalog, { runtime: worker_runtime }),
+      spec_review_speed: speedVisible(catalog, {
+        model: reviewerModelToken(session_draft.spec_review_model)
+      }),
+      plan_review_speed: speedVisible(catalog, {
+        model: reviewerModelToken(session_draft.plan_review_model)
+      }),
+      impl_review_speed: speedVisible(catalog, {
+        model: reviewerModelToken(session_draft.impl_review_model)
+      }),
+      impl_speed: speedVisible(catalog, {
+        runtime: session_draft.impl_runtime,
+        model: session_draft.impl_model
+      }),
+      // An unset quick_fix orchestration model falls through to the general
+      // profile, so the row follows the general provider until it names one.
+      quick_fix_orchestration_speed: quick_fix_orchestration_model
+        ? speedVisible(catalog, { model: quick_fix_orchestration_model })
+        : speedVisible(catalog, { runtime: worker_runtime }),
+      quick_fix_impl_speed: speedVisible(catalog, {
+        runtime: session_draft.quick_fix_impl_runtime,
+        model: session_draft.quick_fix_impl_model
+      })
+    };
+  }
+
+  /**
+   * Clear every stored 속도 whose row just disappeared, so a runner that cannot
+   * take `fast` never keeps one behind an invisible row (UI-7yh2 §3.4). The
+   * caller saves: the return says which store moved.
+   *
+   * @returns {{ session: boolean, queue: boolean }}
+   */
+  function pruneHiddenSpeeds() {
+    const visibility = speedVisibility();
+    const orchestration = currentOrchestrationValues();
+    let session_changed = false;
+    let queue_changed = false;
+    for (const [key, visible] of Object.entries(visibility)) {
+      if (visible) {
+        continue;
+      }
+      if (QUEUE_SPEED_KEYS.includes(key)) {
+        if (typeof orchestration[key] === 'string') {
+          worker_draft[key] = null;
+          queue_changed = true;
+        }
+        continue;
+      }
+      if (typeof session_draft[key] === 'string') {
+        delete session_draft[key];
+        session_changed = true;
+      }
+    }
+    return { session: session_changed, queue: queue_changed };
+  }
+
+  /**
+   * The `실행 방식` a quick_fix Bead would actually run under, resolved through
+   * the shared resolver with no pin — the workspace layer alone. `delegated` is
+   * what puts the delegation rows on screen (UI-7yh2 §3.5).
+   *
+   * @returns {boolean}
+   */
+  function quickFixDelegated() {
+    const rows = resolveExecutionSettings({
+      pin: null,
+      global: { ...session_draft },
+      execution_defaults: executionProjection(),
+      runner_catalog: runnerCatalog(),
+      route: 'quick_fix'
+    });
+    return rows.impl_dispatch?.value === 'delegated';
+  }
+
+  /**
    * Current explicit execution values as preset settings — what the pane shows,
    * not what the stores hold. Orchestration reads the same draft-over-queue
    * overlay the rows render, so a value whose queue save failed is still the
@@ -998,7 +1161,7 @@ export function createExecutionPane(mount_element, binding) {
     const settings = {};
     const orchestration = currentOrchestrationValues();
     for (const key of IMPL_PRESET_KEYS) {
-      const value = ORCHESTRATION_KEYS.includes(key)
+      const value = QUEUE_PRESET_KEYS.includes(key)
         ? orchestration[key]
         : session_draft[key];
       if (typeof value === 'string' && value.length > 0) {
@@ -1104,23 +1267,22 @@ export function createExecutionPane(mount_element, binding) {
     if (isRecord(res.queue)) {
       binding.onQueueAdopt?.(res.queue);
       worker_draft = {};
+      orchestration_runtime = null;
     }
   }
 
   /**
-   * Apply the chosen execution preset to one workspace lane.
-   *
-   * @param {'general'|'quick_fix'} lane
+   * Apply the chosen execution preset to this workspace. ONE request replaces
+   * both the general and the quick_fix halves (UI-7yh2 §3.6), so there is no
+   * lane in the payload and none in the response.
    */
-  async function onApplyPresetGlobally(lane) {
+  async function onApplyPresetGlobally() {
     const state = presetState();
     const queue = queueOf();
-    if (
-      !state ||
-      !queue ||
-      preset_choice.length === 0 ||
-      (lane === 'quick_fix' && !supportsQuickFixLane())
-    ) {
+    if (!state || !queue || preset_choice.length === 0) {
+      return;
+    }
+    if (!supportsQuickFixLane()) {
       return;
     }
     /** @param {number} queue_revision */
@@ -1128,7 +1290,6 @@ export function createExecutionPane(mount_element, binding) {
       preset_id: preset_choice,
       expected_revision: state.revision,
       expected_queue_revision: queue_revision,
-      ...(lane === 'quick_fix' ? { lane: 'quick_fix' } : {}),
       ...rootPayload()
     });
     try {
@@ -1136,13 +1297,6 @@ export function createExecutionPane(mount_element, binding) {
         'apply-impl-preset-global',
         payloadFor(queue.revision)
       );
-      if (lane === 'quick_fix' && res && res.lane !== 'quick_fix') {
-        notify(
-          '서버 응답에 lane이 없습니다 — 큐 스냅샷을 다시 받은 뒤 확인하세요'
-        );
-        doRender();
-        return;
-      }
       if (res && res.applied) {
         adoptPresetApply(res);
       }
@@ -1155,13 +1309,6 @@ export function createExecutionPane(mount_element, binding) {
             ? res.queue.revision
             : (queueOf()?.revision ?? queue.revision);
         res = await send('apply-impl-preset-global', payloadFor(fresh));
-        if (lane === 'quick_fix' && res && res.lane !== 'quick_fix') {
-          notify(
-            '서버 응답에 lane이 없습니다 — 큐 스냅샷을 다시 받은 뒤 확인하세요'
-          );
-          doRender();
-          return;
-        }
         if (res && res.applied) {
           adoptPresetApply(res);
         }
@@ -1731,6 +1878,7 @@ export function createExecutionPane(mount_element, binding) {
    * @param {ReadonlyArray<string>} model_choices
    * @param {string} effort_key
    * @param {string} speed_key
+   * @param {boolean} speed_visible - `false` drops the 속도 control entirely.
    * @returns {TemplateResult}
    */
   function gateRow(
@@ -1739,7 +1887,8 @@ export function createExecutionPane(mount_element, binding) {
     model_key,
     model_choices,
     effort_key,
-    speed_key
+    speed_key,
+    speed_visible
   ) {
     return html`<div class="settings-dialog__row">
       <span class="settings-dialog__row-label">
@@ -1766,90 +1915,29 @@ export function createExecutionPane(mount_element, binding) {
           session_draft,
           false
         )}
-        ${selectControl(
-          speed_key,
-          `${label} 속도`,
-          REVIEW_SPEEDS,
-          onSessionChange,
-          session_draft,
-          false
-        )}
+        ${speed_visible
+          ? selectControl(
+              speed_key,
+              `${label} 속도`,
+              REVIEW_SPEEDS,
+              onSessionChange,
+              session_draft,
+              false
+            )
+          : ''}
       </span>
     </div>`;
   }
 
   /**
-   * One automation on/off row (§4.4). The button carries the state so a reader
-   * never has to infer it from a checkbox's rendering.
-   *
-   * @param {'auto_advance'|'auto_merge'} key
-   * @param {string} label
-   * @param {string} hint
-   * @param {boolean} on
-   * @returns {TemplateResult}
-   */
-  function toggleRow(key, label, hint, on) {
-    return html`<div class="settings-dialog__row">
-      <span class="settings-dialog__row-label">${label}</span>
-      <span class="settings-dialog__controls">
-        <button
-          type="button"
-          class=${`settings-dialog__toggle${on ? ' is-on' : ''}`}
-          data-automation=${key}
-          aria-pressed=${on ? 'true' : 'false'}
-          aria-label=${label}
-          @click=${() => onAutomationToggle(key, !on)}
-        >
-          ${on ? '켜짐' : '꺼짐'}
-        </button>
-        <span class="settings-dialog__hint">${hint}</span>
-      </span>
-    </div>`;
-  }
-
-  /**
-   * One `− n +` stepper row.
-   *
-   * @param {string} seam
-   * @param {string} label
-   * @param {number} value
-   * @param {(next: number) => void} onChange
-   * @returns {TemplateResult}
-   */
-  function stepperRow(seam, label, value, onChange) {
-    return html`<div class="settings-dialog__row">
-      <span class="settings-dialog__row-label">${label}</span>
-      <span class="settings-dialog__controls">
-        <span class="settings-dialog__stepper" data-stepper=${seam}>
-          <button
-            type="button"
-            aria-label=${`${label} 감소`}
-            @click=${() => onChange(value - 1)}
-          >
-            −
-          </button>
-          <span class="settings-dialog__stepper-value">${value}</span>
-          <button
-            type="button"
-            aria-label=${`${label} 증가`}
-            @click=${() => onChange(value + 1)}
-          >
-            +
-          </button>
-        </span>
-      </span>
-    </div>`;
-  }
-
-  /**
-   * The `현재 → 프리셋` preview for the selected preset. A global apply REPLACES
-   * the compared keys, so a key the preset omits reads as `기본(해제)`.
+   * The `현재 → 프리셋` preview for the selected preset — only the keys that
+   * change. One apply REPLACES the compared keys, so a key the preset omits
+   * reads as `기본(해제)`.
    *
    * @param {{ rows: import('./session-model.js').PresetDiffRow[], ignored_keys: string[] }} diff
-   * @param {'general'|'quick_fix'} lane
    * @returns {TemplateResult}
    */
-  function presetDiffTemplate(diff, lane) {
+  function presetDiffTemplate(diff) {
     return html`<div class="settings-dialog__preset-diff" data-preset-diff>
       <div class="settings-dialog__preset-diff-head">
         ${diff.rows.length > 0
@@ -1869,18 +1957,14 @@ export function createExecutionPane(mount_element, binding) {
             <span class="settings-dialog__preset-diff-arrow">→</span>
             <span
               class="settings-dialog__preset-diff-value settings-dialog__preset-diff-after"
-              >${row.after ??
-              (lane === 'quick_fix'
-                ? '기본(해제 → 일반 프로파일)'
-                : '기본(해제)')}</span
+              >${row.after ?? '기본(해제)'}</span
             >
           </div>`
       )}
       ${diff.ignored_keys.length > 0
         ? html`<div class="settings-dialog__preset-diff-note">
-            ${diff.ignored_keys.join(', ')}은(는)
-            ${lane === 'quick_fix' ? 'quick_fix 레인' : '전역'} 적용이 쓰지 않는
-            키라 무시됩니다
+            ${diff.ignored_keys.join(', ')}은(는) 적용이 쓰지 않는 키라
+            무시됩니다
           </div>`
         : ''}
     </div>`;
@@ -1904,574 +1988,559 @@ export function createExecutionPane(mount_element, binding) {
     return current;
   }
 
-  /** @returns {Record<string, string|null>} */
-  function currentQuickFixValues() {
-    const orchestration = currentOrchestrationValues();
-    /** @type {Record<string, string|null>} */
-    const values = {};
-    for (const key of QUICK_FIX_ORCHESTRATION_KEYS) {
-      values[key] = orchestration[key] ?? null;
+  /** @returns {TemplateResult|''} */
+  function sessionWarningBanner() {
+    if (session_warnings.length === 0) {
+      return '';
     }
-    for (const key of [
-      'quick_fix_impl_dispatch',
-      'quick_fix_impl_runtime',
-      'quick_fix_impl_model',
-      'quick_fix_impl_effort',
-      'quick_fix_impl_speed'
-    ]) {
-      values[key] = session_draft[key] ?? null;
+    return html`<div class="settings-dialog__banner" role="alert">
+      워크스페이스 기본값을 일부 읽지 못했습니다 —
+      ${session_warnings.join(', ')}
+    </div>`;
+  }
+
+  /** @returns {TemplateResult|''} */
+  function projectionBanner() {
+    if (executionProjection()?.supported === true) {
+      return '';
     }
-    return values;
+    return html`<div
+      class="settings-dialog__banner settings-dialog__banner--projection"
+      data-execution-defaults-warning
+      role="alert"
+    >
+      실행 기본값 projection을 확인할 수 없습니다 — 기본값 확인 불가
+    </div>`;
+  }
+
+  /** @returns {TemplateResult|''} */
+  function accountBanner() {
+    const text = accountBannerText();
+    if (!text) {
+      return '';
+    }
+    return html`<div
+      class="settings-dialog__banner"
+      data-account-warning
+      role="alert"
+    >
+      ${text}
+    </div>`;
   }
 
   /**
+   * The Worker tab's one bold element: preset select · `적용` · name · save ·
+   * delete on one line, with the changed-keys preview under it.
+   *
    * @returns {TemplateResult}
    */
-  function paneTemplate() {
+  function presetStripTemplate() {
+    const state = presetState();
+    const selected_preset = preset_choice
+      ? (state?.presets || []).find(
+          (/** @type {any} */ preset) => preset.id === preset_choice
+        )
+      : null;
+    const preset_diff = selected_preset
+      ? buildPresetDiff(
+          executionDraftSettings(),
+          isRecord(selected_preset.settings) ? selected_preset.settings : {}
+        )
+      : null;
+    const quick_fix_supported = supportsQuickFixLane();
+    const apply_title = quick_fix_supported
+      ? ''
+      : '서버가 quick_fix 값을 받지 않습니다';
+    return html`
+      <div class="settings-dialog__preset-bar">
+        <select
+          aria-label="실행 프리셋"
+          .value=${live(preset_choice)}
+          @change=${(/** @type {Event} */ ev) => {
+            preset_choice = String(
+              /** @type {HTMLSelectElement} */ (ev.target).value
+            );
+            doRender();
+          }}
+        >
+          <option value="" ?selected=${preset_choice === ''}>
+            실행 프리셋…
+          </option>
+          ${(state?.presets || []).map(
+            (preset) =>
+              html`<option
+                value=${preset.id}
+                ?selected=${preset.id === preset_choice}
+              >
+                ${preset.name}
+              </option>`
+          )}
+        </select>
+        <button
+          type="button"
+          class="settings-dialog__btn settings-dialog__btn--primary op-btn"
+          data-preset-apply-global
+          title=${apply_title}
+          ?disabled=${!quick_fix_supported ||
+          !preset_diff ||
+          preset_diff.rows.length === 0}
+          @click=${() => onApplyPresetGlobally()}
+        >
+          적용
+        </button>
+        <input
+          type="text"
+          class="settings-dialog__preset-name"
+          placeholder=${preset_choice ? '이름 (비우면 유지)' : '새 프리셋 이름'}
+          aria-label="프리셋 이름"
+          .value=${live(preset_name_draft)}
+          @input=${(/** @type {Event} */ ev) => {
+            preset_name_draft = String(
+              /** @type {HTMLInputElement} */ (ev.target).value
+            );
+          }}
+        />
+        <button
+          type="button"
+          class="settings-dialog__btn"
+          data-preset-save
+          title=${preset_choice
+            ? '현재 화면의 실행 설정을 이 프리셋에 저장합니다 (프리셋 → 설정 방향이 아님)'
+            : '현재 화면의 실행 설정을 새 프리셋으로 저장합니다'}
+          @click=${onSavePreset}
+        >
+          ${preset_choice ? '현재 설정으로 덮어쓰기' : '새 프리셋 저장'}
+        </button>
+        <button
+          type="button"
+          class="settings-dialog__btn"
+          data-preset-delete
+          ?disabled=${preset_choice.length === 0}
+          @click=${onDeletePreset}
+        >
+          삭제
+        </button>
+      </div>
+      ${preset_diff ? presetDiffTemplate(preset_diff) : ''}
+    `;
+  }
+
+  /**
+   * @param {Record<string, boolean>} visibility
+   * @returns {TemplateResult}
+   */
+  function orchestrationGroup(visibility) {
+    const catalog = runnerCatalog();
+    const orchestration = currentOrchestrationValues();
+    const runtime = orchestrationRuntime();
+    const models = orchestrationModelOptions(catalog, runtime);
+    const efforts = orchestrationEffortOptions(
+      catalog,
+      runtime,
+      orchestration.orchestration_model || AUTO_LITERAL
+    ).filter((effort) => effort !== AUTO_LITERAL);
+    return html`<div class="settings-dialog__group">
+      <div class="settings-dialog__group-title">오케스트레이션</div>
+      <div class="settings-dialog__row">
+        <span class="settings-dialog__row-label">런타임</span>
+        <span class="settings-dialog__controls">
+          <select
+            aria-label="런타임"
+            data-key="orchestration_runtime"
+            .value=${live(runtime || UNSET)}
+            @change=${(/** @type {Event} */ ev) =>
+              onOrchestrationRuntimeChange(
+                String(/** @type {HTMLSelectElement} */ (ev.target).value)
+              )}
+          >
+            ${orchestrationRuntimeOptions(catalog).map(
+              (option) =>
+                html`<option value=${option} ?selected=${option === runtime}>
+                  ${option}
+                </option>`
+            )}
+          </select>
+          <span class="settings-dialog__hint">이 provider의 모델만 냅니다</span>
+        </span>
+      </div>
+      ${selectRow(
+        'orchestration_model',
+        '모델',
+        models,
+        onWorkerChange,
+        orchestration
+      )}
+      ${selectRow(
+        'orchestration_effort',
+        'effort',
+        efforts,
+        onWorkerChange,
+        orchestration
+      )}
+      ${visibility.orchestration_speed
+        ? selectRow(
+            'orchestration_speed',
+            '속도',
+            IMPL_SPEEDS,
+            onWorkerChange,
+            orchestration
+          )
+        : ''}
+    </div>`;
+  }
+
+  /**
+   * @param {Record<string, boolean>} visibility
+   * @returns {TemplateResult}
+   */
+  function implGroup(visibility) {
     const catalog = runnerCatalog();
     // No 실행 방식 row here: `impl_dispatch` is user_write_only per bead and has
     // no workspace-global storage (UI-bu6d §6), so this layer can never disable
     // the delegation rows and never offers the choice that would.
     const runtime = session_draft.impl_runtime;
     const model = session_draft.impl_model;
-    const state = presetState();
-    const queue = queueOf();
+    return html`<div class="settings-dialog__group">
+      <div class="settings-dialog__group-title">
+        구현
+        <span class="settings-dialog__hint"
+          >이슈 핀이 있으면 핀이 우선합니다</span
+        >
+      </div>
+      ${selectRow(
+        'impl_runtime',
+        '위임 대상',
+        IMPL_RUNTIMES,
+        onSessionChange,
+        session_draft
+      )}
+      ${selectRow(
+        'impl_model',
+        '모델',
+        implModelOptions(catalog, runtime),
+        onSessionChange,
+        session_draft
+      )}
+      ${selectRow(
+        'impl_effort',
+        'effort',
+        implEffortOptions(catalog, runtime, model),
+        onSessionChange,
+        session_draft
+      )}
+      ${visibility.impl_speed
+        ? selectRow(
+            'impl_speed',
+            '속도',
+            IMPL_SPEEDS,
+            onSessionChange,
+            session_draft
+          )
+        : ''}
+    </div>`;
+  }
+
+  /**
+   * @param {Record<string, boolean>} visibility
+   * @returns {TemplateResult}
+   */
+  function reviewGatesGroup(visibility) {
+    return html`<div class="settings-dialog__group">
+      <div class="settings-dialog__group-title">
+        리뷰 게이트
+        <span class="settings-dialog__hint">모델 · effort · 속도</span>
+      </div>
+      ${gateRow(
+        '사양 리뷰',
+        'spec',
+        'spec_review_model',
+        REVIEW_STEP_MODELS,
+        'spec_review_effort',
+        'spec_review_speed',
+        visibility.spec_review_speed
+      )}
+      ${gateRow(
+        '계획 리뷰',
+        'plan',
+        'plan_review_model',
+        PLAN_REVIEW_MODELS,
+        'plan_review_effort',
+        'plan_review_speed',
+        visibility.plan_review_speed
+      )}
+      ${gateRow(
+        '구현 리뷰',
+        'impl',
+        'impl_review_model',
+        REVIEW_STEP_MODELS,
+        'impl_review_effort',
+        'impl_review_speed',
+        visibility.impl_review_speed
+      )}
+    </div>`;
+  }
+
+  /**
+   * The quick_fix profile. The delegation rows exist only while the resolved
+   * `실행 방식` is `delegated`; on `main` they are absent from the template, not
+   * hidden, and the values they would edit stay stored (UI-7yh2 §3.5).
+   *
+   * @param {Record<string, boolean>} visibility
+   * @returns {TemplateResult}
+   */
+  function quickFixGroup(visibility) {
+    const catalog = runnerCatalog();
     const orchestration = currentOrchestrationValues();
-    const orchestration_models = orchestrationModelOptions(
-      catalog,
-      worker_runtime_filter
-    );
-    // Every catalog token, runtime-independent: the delegation runtime is DERIVED
-    // from this key's model, so the 위임 대상 row must not narrow it. `auto` is
-    // out of the contract's vocabulary here.
-    const quick_fix_models = implModelOptions(catalog, undefined).filter(
-      (token) => token !== AUTO_LITERAL
-    );
-    const quick_fix_impl_efforts = implEffortOptions(
-      catalog,
-      undefined,
-      undefined
-    );
-    const orchestration_efforts = orchestrationEffortOptions(
-      catalog,
-      worker_runtime_filter,
-      orchestration.orchestration_model || AUTO_LITERAL
-    ).filter((effort) => effort !== AUTO_LITERAL);
-    const selected_preset = preset_choice
-      ? (state?.presets || []).find(
-          (/** @type {any} */ preset) => preset.id === preset_choice
-        )
-      : null;
-    const general_preset_diff = selected_preset
-      ? buildPresetDiff(
-          executionDraftSettings(),
-          isRecord(selected_preset.settings) ? selected_preset.settings : {}
-        )
-      : null;
-    const quick_fix_target_enums = {
-      quick_fix_orchestration_model: orchestrationModelOptions(catalog, null),
-      quick_fix_orchestration_effort: orchestrationEffortOptions(
-        catalog,
-        null,
-        null
-      ).filter((effort) => effort !== AUTO_LITERAL),
-      quick_fix_orchestration_speed: IMPL_SPEEDS,
-      quick_fix_impl_dispatch: IMPL_DISPATCHES,
-      quick_fix_impl_runtime: QUICK_FIX_IMPL_RUNTIMES,
-      quick_fix_impl_model: quick_fix_models,
-      quick_fix_impl_effort: quick_fix_impl_efforts,
-      quick_fix_impl_speed: IMPL_SPEEDS
-    };
-    const quick_fix_preset_diff = selected_preset
-      ? buildQuickFixPresetDiff(
-          currentQuickFixValues(),
-          isRecord(selected_preset.settings) ? selected_preset.settings : {},
-          quick_fix_target_enums
-        )
-      : null;
-    const preset_diff =
-      preset_lane === 'quick_fix' ? quick_fix_preset_diff : general_preset_diff;
     const quick_fix_supported = supportsQuickFixLane();
-    const quick_fix_disabled_title = quick_fix_supported
+    const disabled_title = quick_fix_supported
       ? null
       : '서버가 quick_fix 레인을 지원하지 않습니다';
-    const quick_fix_resolution = { ...session_draft, ...orchestration };
-    const slots =
-      queue && typeof queue.slots === 'number' ? queue.slots : MIN_COUNT + 1;
-    const serial_lane_count =
-      queue && typeof queue.serial_lane_count === 'number'
-        ? queue.serial_lane_count
-        : MIN_COUNT;
-    const projection_available = executionProjection()?.supported === true;
-    const account_banner = accountBannerText();
+    const resolution = { ...session_draft, ...orchestration };
+    // Every catalog token, runtime-independent: the delegation runtime is
+    // DERIVED from this key's model, so the 위임 대상 row must not narrow it.
+    const models = implModelOptions(catalog, undefined).filter(
+      (token) => token !== AUTO_LITERAL
+    );
+    const efforts = implEffortOptions(catalog, undefined, undefined);
+    const orchestration_efforts = orchestrationEffortOptions(
+      catalog,
+      null,
+      null
+    ).filter((effort) => effort !== AUTO_LITERAL);
+    const delegated = quickFixDelegated();
+    /**
+     * @param {string} key
+     * @param {string} label
+     * @param {ReadonlyArray<string>} choices
+     * @param {(key: string, value: string) => void} onChange
+     * @param {Record<string, string|null|undefined>} source
+     * @returns {TemplateResult}
+     */
+    const quickFixRow = (key, label, choices, onChange, source) =>
+      selectRow(
+        key,
+        label,
+        choices,
+        onChange,
+        source,
+        !quick_fix_supported,
+        resolution,
+        'quick_fix',
+        disabled_title
+      );
+    return html`<div
+      class="settings-dialog__group"
+      data-quick-fix-group
+      title=${disabled_title || ''}
+    >
+      <div class="settings-dialog__group-title">
+        quick_fix
+        <span class="settings-dialog__hint"
+          >${'비어 있는 값은 일반 프로파일로 떨어집니다. 이슈 핀이 있으면 핀이 우선합니다.'}</span
+        >
+      </div>
+      ${quickFixRow(
+        'quick_fix_orchestration_model',
+        '오케스트레이션 모델',
+        orchestrationModelOptions(catalog, null),
+        onWorkerChange,
+        orchestration
+      )}
+      ${quickFixRow(
+        'quick_fix_orchestration_effort',
+        '오케스트레이션 effort',
+        orchestration_efforts,
+        onWorkerChange,
+        orchestration
+      )}
+      ${visibility.quick_fix_orchestration_speed
+        ? quickFixRow(
+            'quick_fix_orchestration_speed',
+            '오케스트레이션 속도',
+            IMPL_SPEEDS,
+            onWorkerChange,
+            orchestration
+          )
+        : ''}
+      ${quickFixRow(
+        'quick_fix_impl_dispatch',
+        '실행 방식',
+        IMPL_DISPATCHES,
+        onSessionChange,
+        session_draft
+      )}
+      ${delegated
+        ? html`
+            ${quickFixRow(
+              'quick_fix_impl_runtime',
+              '위임 대상',
+              QUICK_FIX_IMPL_RUNTIMES,
+              onSessionChange,
+              session_draft
+            )}
+            ${quickFixRow(
+              'quick_fix_impl_model',
+              '모델',
+              models,
+              onSessionChange,
+              session_draft
+            )}
+            ${quickFixRow(
+              'quick_fix_impl_effort',
+              'effort',
+              efforts,
+              onSessionChange,
+              session_draft
+            )}
+            ${visibility.quick_fix_impl_speed
+              ? quickFixRow(
+                  'quick_fix_impl_speed',
+                  '속도',
+                  IMPL_SPEEDS,
+                  onSessionChange,
+                  session_draft
+                )
+              : ''}
+          `
+        : html`<div class="settings-dialog__row" data-quick-fix-main-hint>
+            <span class="settings-dialog__row-label"></span>
+            <span class="settings-dialog__controls">
+              <span class="settings-dialog__hint"
+                >메인 세션이 직접 구현합니다</span
+              >
+            </span>
+          </div>`}
+    </div>`;
+  }
+
+  /**
+   * The execution profile the Worker and an interactive session share.
+   *
+   * @returns {TemplateResult}
+   */
+  function workerSection() {
+    if (session_loading) {
+      return html`<div class="settings-dialog__empty">불러오는 중…</div>`;
+    }
+    const visibility = speedVisibility();
+    return html`
+      ${sessionWarningBanner()} ${projectionBanner()} ${presetStripTemplate()}
+      ${orchestrationGroup(visibility)} ${implGroup(visibility)}
+      ${reviewGatesGroup(visibility)} ${quickFixGroup(visibility)}
+      ${systemPromptSection()}
+    `;
+  }
+
+  /**
+   * What only an INTERACTIVE session reads: the Worker always runs
+   * `fast_track`, so the mode row is not part of the execution profile.
+   *
+   * @returns {TemplateResult}
+   */
+  function sessionSection() {
+    if (session_loading) {
+      return html`<div class="settings-dialog__empty">불러오는 중…</div>`;
+    }
     const workflow_view = buildExecutionOptionView(
       'workflow_mode',
       WORKFLOW_MODES,
       session_draft,
       executionProjection(),
-      catalog
+      runnerCatalog()
     );
     return html`
-      ${session_warnings.length > 0
-        ? html`<div class="settings-dialog__banner" role="alert">
-            워크스페이스 기본값을 일부 읽지 못했습니다 —
-            ${session_warnings.join(', ')}
-          </div>`
-        : ''}
-      ${account_banner
-        ? html`<div
-            class="settings-dialog__banner"
-            data-account-warning
-            role="alert"
-          >
-            ${account_banner}
-          </div>`
-        : ''}
-      ${!projection_available
-        ? html`<div
-            class="settings-dialog__banner settings-dialog__banner--projection"
-            data-execution-defaults-warning
-            role="alert"
-          >
-            실행 기본값 projection을 확인할 수 없습니다 — 기본값 확인 불가
-          </div>`
-        : ''}
-      ${session_loading
-        ? html`<div class="settings-dialog__empty">불러오는 중…</div>`
-        : html`
-            <div class="settings-dialog__preset-bar">
-              <select
-                aria-label="실행 프리셋"
-                .value=${live(preset_choice)}
-                @change=${(/** @type {Event} */ ev) => {
-                  preset_choice = String(
-                    /** @type {HTMLSelectElement} */ (ev.target).value
-                  );
-                  doRender();
-                }}
-              >
-                <option value="" ?selected=${preset_choice === ''}>
-                  실행 프리셋…
-                </option>
-                ${(state?.presets || []).map(
-                  (preset) =>
-                    html`<option
-                      value=${preset.id}
-                      ?selected=${preset.id === preset_choice}
-                    >
-                      ${preset.name}
-                    </option>`
-                )}
-              </select>
+      ${sessionWarningBanner()}
+      <div class="settings-dialog__group" data-session-workflow-group>
+        <div class="settings-dialog__group-title">워크플로우</div>
+        <div class="settings-dialog__row">
+          <span class="settings-dialog__row-label">모드</span>
+          <span class="settings-dialog__controls">
+            <span class="settings-dialog__seg" role="group">
               <button
                 type="button"
-                class="settings-dialog__btn settings-dialog__btn--primary op-btn"
-                data-preset-apply-global
-                data-preset-apply-general
-                ?disabled=${!general_preset_diff ||
-                general_preset_diff.rows.length === 0}
-                @click=${() => onApplyPresetGlobally('general')}
+                data-mode=${UNSET}
+                aria-pressed=${String(!session_draft.workflow_mode)}
+                @click=${() => onSessionChange('workflow_mode', UNSET)}
               >
-                일반에 적용
+                ${workflow_view.unset_label}
               </button>
-              <button
-                type="button"
-                class="settings-dialog__btn op-btn"
-                data-preset-apply-quick-fix
-                title=${quick_fix_disabled_title || ''}
-                ?disabled=${!quick_fix_supported ||
-                !quick_fix_preset_diff ||
-                quick_fix_preset_diff.rows.length === 0}
-                @click=${() => onApplyPresetGlobally('quick_fix')}
-              >
-                quick_fix 레인에 적용
-              </button>
-              <input
-                type="text"
-                class="settings-dialog__preset-name"
-                placeholder=${preset_choice
-                  ? '이름 (비우면 유지)'
-                  : '새 프리셋 이름'}
-                aria-label="프리셋 이름"
-                .value=${live(preset_name_draft)}
-                @input=${(/** @type {Event} */ ev) => {
-                  preset_name_draft = String(
-                    /** @type {HTMLInputElement} */ (ev.target).value
-                  );
-                }}
-              />
-              <button
-                type="button"
-                class="settings-dialog__btn"
-                data-preset-save
-                title=${preset_choice
-                  ? '현재 화면의 실행 설정을 이 프리셋에 저장합니다 (프리셋 → 설정 방향이 아님)'
-                  : '현재 화면의 실행 설정을 새 프리셋으로 저장합니다'}
-                @click=${onSavePreset}
-              >
-                ${preset_choice ? '현재 설정으로 덮어쓰기' : '새 프리셋 저장'}
-              </button>
-              <button
-                type="button"
-                class="settings-dialog__btn"
-                data-preset-delete
-                ?disabled=${preset_choice.length === 0}
-                @click=${onDeletePreset}
-              >
-                삭제
-              </button>
-            </div>
-            <div
-              class="settings-dialog__seg"
-              role="group"
-              aria-label="프리셋 적용 레인"
-              data-preset-lane-tabs
-            >
-              <button
-                type="button"
-                data-preset-lane="general"
-                aria-pressed=${String(preset_lane === 'general')}
-                @click=${() => {
-                  preset_lane = 'general';
-                  doRender();
-                }}
-              >
-                일반
-              </button>
-              <button
-                type="button"
-                data-preset-lane="quick_fix"
-                aria-pressed=${String(preset_lane === 'quick_fix')}
-                @click=${() => {
-                  preset_lane = 'quick_fix';
-                  doRender();
-                }}
-              >
-                quick_fix
-              </button>
-            </div>
-            ${preset_diff ? presetDiffTemplate(preset_diff, preset_lane) : ''}
-
-            <div class="settings-dialog__group">
-              <div class="settings-dialog__group-title">오케스트레이션</div>
-              <div class="settings-dialog__row">
-                <span class="settings-dialog__row-label">런타임</span>
-                <span class="settings-dialog__controls">
-                  <select
-                    aria-label="런타임"
-                    data-key="orchestration_runtime_filter"
-                    .value=${live(worker_runtime_filter || UNSET)}
-                    @change=${(/** @type {Event} */ ev) => {
-                      const next = String(
-                        /** @type {HTMLSelectElement} */ (ev.target).value
-                      );
-                      onWorkerRuntimeFilterChange(next === UNSET ? null : next);
-                    }}
+              ${!session_draft.workflow_mode
+                ? html`<span class="settings-dialog__source-badge">기본</span>`
+                : ''}
+              ${WORKFLOW_MODES.map(
+                (mode) =>
+                  html`<button
+                    type="button"
+                    data-mode=${mode}
+                    aria-pressed=${String(session_draft.workflow_mode === mode)}
+                    @click=${() => onSessionChange('workflow_mode', mode)}
                   >
-                    <option value=${UNSET} ?selected=${!worker_runtime_filter}>
-                      전체
-                    </option>
-                    <option
-                      value="claude"
-                      ?selected=${worker_runtime_filter === 'claude'}
-                    >
-                      claude
-                    </option>
-                    <option
-                      value="codex"
-                      ?selected=${worker_runtime_filter === 'codex'}
-                    >
-                      codex
-                    </option>
-                  </select>
-                  <span class="settings-dialog__hint"
-                    >모델 목록을 좁힙니다</span
-                  >
-                </span>
-              </div>
-              ${selectRow(
-                'orchestration_model',
-                '모델',
-                orchestration_models,
-                onWorkerChange,
-                orchestration
+                    ${mode}
+                  </button>`
               )}
-              ${selectRow(
-                'orchestration_effort',
-                'effort',
-                orchestration_efforts,
-                onWorkerChange,
-                orchestration
-              )}
-              ${selectRow(
-                'orchestration_speed',
-                '속도',
-                IMPL_SPEEDS,
-                onWorkerChange,
-                orchestration
-              )}
-            </div>
-
-            <div class="settings-dialog__group" data-exec-accounts-group>
-              <div class="settings-dialog__group-title">실행 계정</div>
-              ${accountRow('claude_account', 'Claude', 'claude')}
-              ${accountRow('codex_account', 'Codex', 'codex')}
-              ${limitPolicyBlock('claude', 'Claude')}
-              ${limitPolicyBlock('codex', 'Codex')}
-            </div>
-
-            <div class="settings-dialog__group">
-              <div class="settings-dialog__group-title">워크플로우</div>
-              <div class="settings-dialog__row">
-                <span class="settings-dialog__row-label">모드</span>
-                <span class="settings-dialog__controls">
-                  <span class="settings-dialog__seg" role="group">
-                    <button
-                      type="button"
-                      data-mode=${UNSET}
-                      aria-pressed=${String(!session_draft.workflow_mode)}
-                      @click=${() => onSessionChange('workflow_mode', UNSET)}
-                    >
-                      ${workflow_view.unset_label}
-                    </button>
-                    ${!session_draft.workflow_mode
-                      ? html`<span class="settings-dialog__source-badge"
-                          >기본</span
-                        >`
-                      : ''}
-                    ${WORKFLOW_MODES.map(
-                      (mode) =>
-                        html`<button
-                          type="button"
-                          data-mode=${mode}
-                          aria-pressed=${String(
-                            session_draft.workflow_mode === mode
-                          )}
-                          @click=${() => onSessionChange('workflow_mode', mode)}
-                        >
-                          ${mode}
-                        </button>`
-                    )}
-                  </span>
-                </span>
-              </div>
-              ${textRow(
-                'bdui_url',
-                'beads-ui 주소',
-                'http://호스트:3000',
-                '세션이 Worker 레인 배치를 물어볼 때 쓰는 주소입니다',
-                'http:// 또는 https:// 로 시작하는 주소만 저장됩니다 (경로 없이)',
-                isHttpOriginValue
-              )}
-              ${checkRow(
-                'base_sync_accept_local_commits',
-                'base 동기화',
-                '로컬 base 사용자 커밋 자동 rebase+push',
-                '꺼두면 로컬 base 체크아웃의 사용자 커밋은 그대로 남습니다'
-              )}
-            </div>
-
-            <div class="settings-dialog__group">
-              <div class="settings-dialog__group-title">
-                리뷰 게이트
-                <span class="settings-dialog__hint">모델 · effort · 속도</span>
-              </div>
-              ${gateRow(
-                '사양 리뷰',
-                'spec',
-                'spec_review_model',
-                REVIEW_STEP_MODELS,
-                'spec_review_effort',
-                'spec_review_speed'
-              )}
-              ${gateRow(
-                '계획 리뷰',
-                'plan',
-                'plan_review_model',
-                PLAN_REVIEW_MODELS,
-                'plan_review_effort',
-                'plan_review_speed'
-              )}
-              ${gateRow(
-                '구현 리뷰',
-                'impl',
-                'impl_review_model',
-                REVIEW_STEP_MODELS,
-                'impl_review_effort',
-                'impl_review_speed'
-              )}
-            </div>
-
-            <div class="settings-dialog__group">
-              <div class="settings-dialog__group-title">
-                구현
-                <span class="settings-dialog__hint"
-                  >이슈 핀이 있으면 핀이 우선합니다</span
-                >
-              </div>
-              ${selectRow(
-                'impl_runtime',
-                '위임 대상',
-                IMPL_RUNTIMES,
-                onSessionChange,
-                session_draft
-              )}
-              ${selectRow(
-                'impl_model',
-                '모델',
-                implModelOptions(catalog, runtime),
-                onSessionChange,
-                session_draft
-              )}
-              ${selectRow(
-                'impl_effort',
-                'effort',
-                implEffortOptions(catalog, runtime, model),
-                onSessionChange,
-                session_draft
-              )}
-              ${selectRow(
-                'impl_speed',
-                '속도',
-                IMPL_SPEEDS,
-                onSessionChange,
-                session_draft
-              )}
-            </div>
-
-            <div
-              class="settings-dialog__group"
-              data-quick-fix-group
-              title=${quick_fix_disabled_title || ''}
+            </span>
+          </span>
+        </div>
+        <div class="settings-dialog__row" data-workflow-mode-hint>
+          <span class="settings-dialog__row-label"></span>
+          <span class="settings-dialog__controls">
+            <span class="settings-dialog__hint"
+              >Worker는 항상 fast_track으로 돕니다. 이 값은 대화형 세션의
+              기본입니다.</span
             >
-              <div class="settings-dialog__group-title">
-                quick_fix 레인
-                <span class="settings-dialog__hint"
-                  >${'비어 있는 값은 일반 프로파일로 떨어집니다. 이슈 핀이 있으면 핀이 우선합니다.'}</span
-                >
-              </div>
-              ${selectRow(
-                'quick_fix_orchestration_model',
-                '오케스트레이션 모델',
-                quick_fix_target_enums.quick_fix_orchestration_model,
-                onWorkerChange,
-                orchestration,
-                !quick_fix_supported,
-                quick_fix_resolution,
-                'quick_fix',
-                quick_fix_disabled_title
-              )}
-              ${selectRow(
-                'quick_fix_orchestration_effort',
-                '오케스트레이션 effort',
-                quick_fix_target_enums.quick_fix_orchestration_effort,
-                onWorkerChange,
-                orchestration,
-                !quick_fix_supported,
-                quick_fix_resolution,
-                'quick_fix',
-                quick_fix_disabled_title
-              )}
-              ${selectRow(
-                'quick_fix_orchestration_speed',
-                '오케스트레이션 속도',
-                IMPL_SPEEDS,
-                onWorkerChange,
-                orchestration,
-                !quick_fix_supported,
-                quick_fix_resolution,
-                'quick_fix',
-                quick_fix_disabled_title
-              )}
-              ${selectRow(
-                'quick_fix_impl_dispatch',
-                '실행 방식',
-                IMPL_DISPATCHES,
-                onSessionChange,
-                session_draft,
-                !quick_fix_supported,
-                quick_fix_resolution,
-                'quick_fix',
-                quick_fix_disabled_title
-              )}
-              ${selectRow(
-                'quick_fix_impl_runtime',
-                '위임 대상',
-                QUICK_FIX_IMPL_RUNTIMES,
-                onSessionChange,
-                session_draft,
-                !quick_fix_supported,
-                quick_fix_resolution,
-                'quick_fix',
-                quick_fix_disabled_title
-              )}
-              ${selectRow(
-                'quick_fix_impl_model',
-                '모델',
-                quick_fix_models,
-                onSessionChange,
-                session_draft,
-                !quick_fix_supported,
-                quick_fix_resolution,
-                'quick_fix',
-                quick_fix_disabled_title
-              )}
-              ${selectRow(
-                'quick_fix_impl_effort',
-                'effort',
-                quick_fix_impl_efforts,
-                onSessionChange,
-                session_draft,
-                !quick_fix_supported,
-                quick_fix_resolution,
-                'quick_fix',
-                quick_fix_disabled_title
-              )}
-              ${selectRow(
-                'quick_fix_impl_speed',
-                '속도',
-                IMPL_SPEEDS,
-                onSessionChange,
-                session_draft,
-                !quick_fix_supported,
-                quick_fix_resolution,
-                'quick_fix',
-                quick_fix_disabled_title
-              )}
-            </div>
-
-            <div class="settings-dialog__group">
-              <div class="settings-dialog__group-title">
-                자동화
-                <span class="settings-dialog__hint"
-                  >이 레포의 워커 큐가 스스로 진행하는 범위</span
-                >
-              </div>
-              ${toggleRow(
-                'auto_advance',
-                '자동화',
-                '슬롯이 비면 대기 앞 행이 출발합니다',
-                queue?.auto_advance === true
-              )}
-              ${toggleRow(
-                'auto_merge',
-                '머지',
-                '자격이 생기는 PR을 계속 머지합니다',
-                queue?.auto_merge === true
-              )}
-              ${stepperRow('slots', '동시 실행', slots, (next) =>
-                onSlotsChange(next)
-              )}
-              ${stepperRow(
-                'serial-lane-count',
-                '직렬 레인',
-                serial_lane_count,
-                (next) => onSerialLaneCountChange(next)
-              )}
-            </div>
-            ${systemPromptSection()}
-          `}
+          </span>
+        </div>
+      </div>
+      <div class="settings-dialog__group" data-session-advanced-group>
+        <div class="settings-dialog__group-title">고급</div>
+        ${textRow(
+          'bdui_url',
+          'beads-ui 주소',
+          'http://호스트:3000',
+          '대화형 세션이 `Worker 레인에 배치` 답을 내려고 Worker 큐를 probe하는 주소입니다 — 워크스페이스마다 한 번만 채웁니다',
+          'http:// 또는 https:// 로 시작하는 주소만 저장됩니다 (경로 없이)',
+          isHttpOriginValue
+        )}
+        ${checkRow(
+          'base_sync_accept_local_commits',
+          'base 동기화',
+          '로컬 base 사용자 커밋 자동 rebase+push',
+          '꺼두면 로컬 base 체크아웃의 사용자 커밋은 그대로 남습니다'
+        )}
+      </div>
     `;
+  }
+
+  /**
+   * This repo's execution accounts and per-runner limit policy. Neither is part
+   * of an execution preset, so neither belongs on the Worker tab.
+   *
+   * @returns {TemplateResult}
+   */
+  function accountSection() {
+    return html`
+      ${accountBanner()}
+      <div class="settings-dialog__group" data-exec-accounts-group>
+        <div class="settings-dialog__group-title">실행 계정</div>
+        ${accountRow('claude_account', 'Claude', 'claude')}
+        ${accountRow('codex_account', 'Codex', 'codex')}
+        ${limitPolicyBlock('claude', 'Claude')}
+        ${limitPolicyBlock('codex', 'Codex')}
+      </div>
+    `;
+  }
+
+  /**
+   * @returns {TemplateResult}
+   */
+  function paneTemplate() {
+    if (active_section === 'session') {
+      return sessionSection();
+    }
+    if (active_section === 'account') {
+      return accountSection();
+    }
+    return workerSection();
   }
 
   function doRender() {
@@ -2485,7 +2554,7 @@ export function createExecutionPane(mount_element, binding) {
     /** Reset the per-open drafts and read the bound repo's kv layers. */
     load() {
       worker_draft = {};
-      preset_lane = 'general';
+      orchestration_runtime = null;
       session_text_draft = {};
       session_text_invalid = {};
       /** @type {Promise<void>[]} */
@@ -2495,7 +2564,21 @@ export function createExecutionPane(mount_element, binding) {
       }
       return Promise.all(pending).then(() => undefined);
     },
-    render: doRender,
+    /**
+     * Draw one of {@link PANE_SECTIONS}. Called with nothing it redraws
+     * whatever section is on screen, which is what a store fanout wants.
+     *
+     * @param {string} [section]
+     */
+    render(section) {
+      if (
+        typeof section === 'string' &&
+        PANE_SECTIONS.some((entry) => entry.id === section)
+      ) {
+        active_section = section;
+      }
+      doRender();
+    },
     /** Test/inspection seam: the draft this pane would save. */
     sessionDraft: () => ({ ...session_draft }),
     destroy() {

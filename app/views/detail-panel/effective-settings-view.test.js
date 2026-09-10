@@ -8,7 +8,10 @@
  */
 import { render } from 'lit-html';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { summaryHeaderTemplate } from './effective-settings-view.js';
+import {
+  effectiveSettingsCardTemplate,
+  summaryHeaderTemplate
+} from './effective-settings-view.js';
 
 const REC_META = {
   rec_orchestration_model: 'fable',
@@ -130,5 +133,97 @@ describe('detail header 복잡 chip (UI-8x90 §5.1)', () => {
     const mount = renderHeader({ rec_impl_runtime: 'claude' });
 
     expect(recChip(mount)).toBe(null);
+  });
+});
+
+/**
+ * @param {Partial<Parameters<typeof effectiveSettingsCardTemplate>[0]>} [model_overrides]
+ * @param {Partial<Parameters<typeof effectiveSettingsCardTemplate>[1]>} [handler_overrides]
+ * @returns {HTMLElement}
+ */
+function renderCard(model_overrides = {}, handler_overrides = {}) {
+  const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+  render(
+    effectiveSettingsCardTemplate(
+      /** @type {any} */ ({
+        metadata: {},
+        workspace_values: {},
+        catalog: null,
+        execution_defaults: null,
+        controller_runtime: null,
+        expanded: true,
+        presets: [{ id: 'p1', name: '메인 구현', compatible: true }],
+        preset_id: '',
+        preset_busy: false,
+        skipped_orchestration_keys: [],
+        ...model_overrides
+      }),
+      /** @type {any} */ ({
+        onToggle: vi.fn(),
+        onEdit: vi.fn(),
+        onPresetSelect: vi.fn(),
+        onPresetApply: vi.fn(),
+        ...handler_overrides
+      })
+    ),
+    mount
+  );
+  return mount;
+}
+
+describe('effective-settings card preset head (UI-7yh2 §3.7-3.9)', () => {
+  test('places the preset select inside the card head', () => {
+    const mount = renderCard();
+
+    const head = mount.querySelector('.detail-effective__head');
+
+    expect(head?.querySelector('[data-impl-preset-select]')).not.toBe(null);
+  });
+
+  test('places the preset apply button inside the card head', () => {
+    const mount = renderCard();
+
+    const head = mount.querySelector('.detail-effective__head');
+
+    expect(head?.querySelector('[data-apply-impl-preset]')).not.toBe(null);
+  });
+
+  test('renders no foot element', () => {
+    const mount = renderCard();
+
+    expect(mount.querySelector('.detail-effective__foot')).toBe(null);
+  });
+
+  test('carries the corrected fourteen-key count as the select title', () => {
+    const mount = renderCard();
+
+    const select = mount.querySelector('[data-impl-preset-select]');
+
+    expect(select?.getAttribute('title')).toBe('세션 키 14개를 핀으로 기록');
+  });
+
+  test('does not toggle the details when the preset select changes', () => {
+    const onToggle = vi.fn();
+    const mount = renderCard({}, { onToggle });
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-impl-preset-select]')
+    );
+    select.value = 'p1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(onToggle).not.toHaveBeenCalled();
+  });
+
+  test('does not toggle the details when the apply button is clicked', () => {
+    const onToggle = vi.fn();
+    const mount = renderCard({ preset_id: 'p1' }, { onToggle });
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-apply-impl-preset]')
+    );
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(onToggle).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { IMPL_PRESET_KEYS as SERVER_IMPL_PRESET_KEYS } from '../../../server/worker/exec-enums.js';
 import {
   BEAD_APPLY_KEYS,
   BOOLEAN_DRAFT_ON,
@@ -18,16 +19,17 @@ import {
   buildExecutionOptionView,
   buildOrchestrationPatch,
   buildPresetDiff,
-  buildQuickFixPresetDiff,
   buildSessionDefaultsPatch,
   implEffortOptions,
   implModelOptions,
   isDelegationDisabled,
   isHttpOriginValue,
   narrowImplTarget,
-  normalizeQuickFixLanePreset,
   orchestrationEffortOptions,
-  orchestrationModelOptions
+  orchestrationModelOptions,
+  orchestrationRuntimeInitial,
+  orchestrationRuntimeOptions,
+  speedVisible
 } from './session-model.js';
 
 const PROJECTION = {
@@ -114,14 +116,96 @@ const ORCHESTRATION_CATALOG = {
   }
 };
 
+/** The catalog shape the speed rule reads: only codex publishes a second tier. */
+const SPEED_CATALOG = {
+  runners: {
+    claude: {
+      models: { opus: { id: 'opus' }, fable: { id: 'fable' } }
+    },
+    codex: {
+      models: {
+        sol: { id: 'gpt-5.6-sol', speed_tiers: ['default', 'fast'] },
+        astra: { id: 'gpt-6-astra', speed_tiers: ['default', 'fast'] }
+      }
+    }
+  }
+};
+
+describe('speedVisible', () => {
+  test('hides the row for a runtime whose runner offers one tier', () => {
+    expect(speedVisible(SPEED_CATALOG, { runtime: 'claude' })).toBe(false);
+  });
+
+  test('shows the row for a runtime whose runner offers two tiers', () => {
+    expect(speedVisible(SPEED_CATALOG, { runtime: 'codex' })).toBe(true);
+  });
+
+  test('derives the runner from an exact model while the runtime is auto', () => {
+    expect(speedVisible(SPEED_CATALOG, { runtime: 'auto', model: 'sol' })).toBe(
+      true
+    );
+  });
+
+  test('hides the row when neither runtime nor model names a provider', () => {
+    expect(
+      speedVisible(SPEED_CATALOG, { runtime: 'auto', model: 'auto' })
+    ).toBe(false);
+  });
+
+  test('shows the row for a review model that belongs to codex', () => {
+    expect(speedVisible(SPEED_CATALOG, { model: 'astra' })).toBe(true);
+  });
+
+  test('hides the row for a review gate answered by self', () => {
+    expect(speedVisible(SPEED_CATALOG, { model: null })).toBe(false);
+  });
+
+  test('resolves a reviewer model id to its catalog runner', () => {
+    expect(speedVisible(SPEED_CATALOG, { model: 'gpt-5.6-sol' })).toBe(true);
+  });
+});
+
+describe('orchestration runtime row', () => {
+  test('offers every catalog runner and no 전체 option', () => {
+    expect(orchestrationRuntimeOptions(SPEED_CATALOG)).toEqual([
+      'claude',
+      'codex'
+    ]);
+  });
+
+  test('starts on the runner of the stored orchestration model', () => {
+    expect(orchestrationRuntimeInitial(SPEED_CATALOG, 'sol', 'opus')).toBe(
+      'codex'
+    );
+  });
+
+  test('falls back to the projection default model runner when unset', () => {
+    expect(orchestrationRuntimeInitial(SPEED_CATALOG, null, 'opus')).toBe(
+      'claude'
+    );
+  });
+
+  test('names no runtime for an empty catalog', () => {
+    expect(orchestrationRuntimeInitial({}, null, null)).toBe(null);
+  });
+});
+
 describe('session key lists', () => {
-  test('names the fifteen per-bead keys and no orchestration key', () => {
-    expect(BEAD_APPLY_KEYS).toHaveLength(15);
+  test('names the fourteen per-bead keys and no orchestration key', () => {
+    expect(BEAD_APPLY_KEYS).toHaveLength(14);
     expect(BEAD_APPLY_KEYS).toContain('impl_dispatch');
     expect(BEAD_APPLY_KEYS).toContain('impl_speed');
     expect(
       BEAD_APPLY_KEYS.some((key) => key.startsWith('orchestration_'))
     ).toBe(false);
+  });
+
+  test('keeps workflow_mode out of the per-bead keys', () => {
+    expect(BEAD_APPLY_KEYS).not.toContain('workflow_mode');
+  });
+
+  test('names workflow_mode explicitly in the workspace kv keys', () => {
+    expect(WORKSPACE_KV_KEYS[0]).toBe('workflow_mode');
   });
 
   test('drops impl_dispatch from the twenty-one workspace kv keys', () => {
@@ -137,8 +221,8 @@ describe('session key lists', () => {
       'bdui_url'
     ]);
     for (const key of QUICK_FIX_KV_KEYS) {
-      expect(IMPL_PRESET_KEYS).not.toContain(key);
-      expect(PRESET_KV_KEYS).not.toContain(key);
+      expect(IMPL_PRESET_KEYS).toContain(key);
+      expect(PRESET_KV_KEYS).toContain(key);
     }
     expect(IMPL_PRESET_KEYS).not.toContain('bdui_url');
     expect(IMPL_PRESET_KEYS).not.toContain('base_sync_accept_local_commits');
@@ -163,9 +247,8 @@ describe('session key lists', () => {
     });
   });
 
-  test('names the fourteen kv keys a global preset apply replaces', () => {
+  test('names the eighteen kv keys one preset apply replaces', () => {
     expect(PRESET_KV_KEYS).toEqual([
-      'workflow_mode',
       'spec_review_model',
       'spec_review_effort',
       'spec_review_speed',
@@ -178,7 +261,8 @@ describe('session key lists', () => {
       'impl_runtime',
       'impl_model',
       'impl_effort',
-      'impl_speed'
+      'impl_speed',
+      ...QUICK_FIX_KV_KEYS
     ]);
   });
 
@@ -186,12 +270,18 @@ describe('session key lists', () => {
     expect(IMPL_DISPATCHES).toEqual(['delegated', 'main']);
   });
 
-  test('mirrors all eighteen execution preset keys', () => {
+  test('mirrors all twenty-five execution preset keys', () => {
     expect(IMPL_PRESET_KEYS).toEqual([
       ...BEAD_APPLY_KEYS,
-      ...ORCHESTRATION_KEYS
+      ...ORCHESTRATION_KEYS,
+      ...QUICK_FIX_ORCHESTRATION_KEYS,
+      ...QUICK_FIX_KV_KEYS
     ]);
-    expect(IMPL_PRESET_KEYS).toHaveLength(18);
+    expect(IMPL_PRESET_KEYS).toHaveLength(25);
+  });
+
+  test('matches the server preset key list exactly', () => {
+    expect(IMPL_PRESET_KEYS).toEqual([...SERVER_IMPL_PRESET_KEYS]);
   });
 
   test('offers the fixed review speed vocabulary', () => {
@@ -462,23 +552,25 @@ describe('buildPresetDiff', () => {
     );
 
     expect(diff.rows.map((row) => row.key)).toEqual([
-      'workflow_mode',
       'impl_model',
       'orchestration_model'
     ]);
   });
 
-  test('compares exactly the seventeen keys a global apply writes', () => {
+  test('compares exactly the twenty-four keys one apply writes', () => {
     const every_key = Object.fromEntries(
-      [...PRESET_KV_KEYS, ...ORCHESTRATION_KEYS, ...WORKSPACE_KV_KEYS].map(
-        (key) => [key, 'x']
-      )
+      [
+        ...PRESET_KV_KEYS,
+        ...ORCHESTRATION_KEYS,
+        ...QUICK_FIX_ORCHESTRATION_KEYS,
+        ...WORKSPACE_KV_KEYS,
+        'impl_dispatch'
+      ].map((key) => [key, 'x'])
     );
 
     const diff = buildPresetDiff({}, every_key);
 
     expect(diff.rows.map((row) => row.key)).toEqual([
-      'workflow_mode',
       'spec_review_model',
       'spec_review_effort',
       'spec_review_speed',
@@ -492,12 +584,15 @@ describe('buildPresetDiff', () => {
       'impl_model',
       'impl_effort',
       'impl_speed',
+      ...QUICK_FIX_KV_KEYS,
       'orchestration_model',
       'orchestration_effort',
-      'orchestration_speed'
+      'orchestration_speed',
+      ...QUICK_FIX_ORCHESTRATION_KEYS
     ]);
     expect(diff.ignored_keys).toEqual([
-      ...QUICK_FIX_KV_KEYS,
+      'impl_dispatch',
+      'workflow_mode',
       'base_sync_accept_local_commits',
       'bdui_url'
     ]);
@@ -510,131 +605,22 @@ describe('buildPresetDiff', () => {
     expect(diff.ignored_keys).toEqual(['impl_dispatch']);
   });
 
-  test('never previews the kv-only quick_fix model as cleared', () => {
+  test('previews a quick_fix model the preset omits as cleared', () => {
     const diff = buildPresetDiff(
       { quick_fix_impl_model: 'sol' },
       { impl_runtime: 'codex' }
     );
 
-    expect(diff.rows.map((row) => row.key)).toEqual(['impl_runtime']);
+    expect(diff.rows.map((row) => row.key)).toEqual([
+      'impl_runtime',
+      'quick_fix_impl_model'
+    ]);
   });
 
   test('returns no rows for an empty preset against empty settings', () => {
     const diff = buildPresetDiff({}, {});
 
     expect(diff).toEqual({ rows: [], ignored_keys: [] });
-  });
-});
-
-describe('normalizeQuickFixLanePreset', () => {
-  const TARGET_ENUMS = {
-    quick_fix_orchestration_model: ['opus', 'sol'],
-    quick_fix_orchestration_effort: ['high', 'xhigh'],
-    quick_fix_orchestration_speed: ['default', 'fast'],
-    quick_fix_impl_dispatch: ['delegated', 'main'],
-    quick_fix_impl_runtime: ['claude', 'codex'],
-    quick_fix_impl_model: ['opus', 'sol'],
-    quick_fix_impl_effort: ['auto', 'high'],
-    quick_fix_impl_speed: ['default', 'fast']
-  };
-
-  test('maps compatible values and reports unmapped preset fields', () => {
-    const normalized = normalizeQuickFixLanePreset(
-      {
-        workflow_mode: 'fast_track',
-        impl_dispatch: 'delegated',
-        impl_runtime: 'codex',
-        impl_model: 'sol',
-        impl_effort: 'high',
-        impl_speed: 'fast',
-        orchestration_model: 'opus',
-        orchestration_effort: 'xhigh',
-        orchestration_speed: 'default'
-      },
-      TARGET_ENUMS
-    );
-
-    expect(normalized.values).toEqual({
-      quick_fix_orchestration_model: 'opus',
-      quick_fix_orchestration_effort: 'xhigh',
-      quick_fix_orchestration_speed: 'default',
-      quick_fix_impl_dispatch: 'delegated',
-      quick_fix_impl_runtime: 'codex',
-      quick_fix_impl_model: 'sol',
-      quick_fix_impl_effort: 'high',
-      quick_fix_impl_speed: 'fast'
-    });
-    expect(normalized.warnings).toEqual([]);
-    expect(normalized.skipped_keys).toEqual(['workflow_mode']);
-  });
-
-  test('unsets auto runtime, model auto, and every absent source key', () => {
-    const normalized = normalizeQuickFixLanePreset(
-      {
-        impl_runtime: 'auto',
-        impl_model: 'auto',
-        impl_effort: 'auto'
-      },
-      TARGET_ENUMS
-    );
-
-    expect(normalized.values).toEqual({
-      quick_fix_orchestration_model: null,
-      quick_fix_orchestration_effort: null,
-      quick_fix_orchestration_speed: null,
-      quick_fix_impl_dispatch: null,
-      quick_fix_impl_runtime: null,
-      quick_fix_impl_model: null,
-      quick_fix_impl_effort: 'auto',
-      quick_fix_impl_speed: null
-    });
-    expect(normalized.warnings).toEqual([
-      'lane_incompatible:quick_fix_impl_runtime',
-      'lane_incompatible:quick_fix_impl_model'
-    ]);
-    expect(normalized.skipped_keys).toEqual([]);
-  });
-});
-
-describe('buildQuickFixPresetDiff', () => {
-  test('previews auto runtime, auto model and absent keys as general-profile fallthrough', () => {
-    const target_enums = {
-      quick_fix_orchestration_model: ['opus', 'sol'],
-      quick_fix_orchestration_effort: ['high'],
-      quick_fix_orchestration_speed: ['default', 'fast'],
-      quick_fix_impl_dispatch: ['delegated', 'main'],
-      quick_fix_impl_runtime: ['claude', 'codex'],
-      quick_fix_impl_model: ['opus', 'sol'],
-      quick_fix_impl_effort: ['auto', 'high'],
-      quick_fix_impl_speed: ['default', 'fast']
-    };
-    const current = {
-      quick_fix_orchestration_model: 'opus',
-      quick_fix_impl_dispatch: 'delegated',
-      quick_fix_impl_runtime: 'codex',
-      quick_fix_impl_model: 'sol',
-      quick_fix_impl_speed: 'fast'
-    };
-
-    const diff = buildQuickFixPresetDiff(
-      current,
-      {
-        impl_runtime: 'auto',
-        impl_model: 'auto',
-        impl_effort: 'auto'
-      },
-      target_enums
-    );
-
-    expect(diff.rows).toMatchObject([
-      { key: 'quick_fix_orchestration_model', after: null },
-      { key: 'quick_fix_impl_dispatch', after: null },
-      { key: 'quick_fix_impl_runtime', after: null },
-      { key: 'quick_fix_impl_model', after: null },
-      { key: 'quick_fix_impl_effort', after: 'auto' },
-      { key: 'quick_fix_impl_speed', after: null }
-    ]);
-    expect(diff.ignored_keys).toEqual([]);
   });
 });
 

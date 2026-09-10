@@ -140,16 +140,15 @@ describe('exec-preset-coordinator implementation presets', () => {
     ]);
   });
 
-  test('keeps an 18-key profile and hides a preset with an outside key', () => {
+  test('keeps a 25-key profile and hides a preset with an outside key', () => {
     const presetStore = {
       snapshot: () => ({
         revision: 2,
         presets: [
           {
-            id: 'profile-18',
+            id: 'profile-25',
             name: '전체 프로필',
             settings: {
-              workflow_mode: 'standard',
               spec_review_model: 'codex',
               spec_review_effort: 'high',
               spec_review_speed: 'fast',
@@ -166,7 +165,15 @@ describe('exec-preset-coordinator implementation presets', () => {
               impl_speed: 'fast',
               orchestration_model: 'opus',
               orchestration_effort: 'high',
-              orchestration_speed: 'default'
+              orchestration_speed: 'default',
+              quick_fix_orchestration_model: 'sol',
+              quick_fix_orchestration_effort: 'high',
+              quick_fix_orchestration_speed: 'fast',
+              quick_fix_impl_dispatch: 'delegated',
+              quick_fix_impl_runtime: 'codex',
+              quick_fix_impl_model: 'sol',
+              quick_fix_impl_effort: 'high',
+              quick_fix_impl_speed: 'fast'
             },
             origin: { kind: /** @type {'user'} */ ('user') }
           },
@@ -186,7 +193,7 @@ describe('exec-preset-coordinator implementation presets', () => {
 
     const snapshot = coordinator.snapshot();
 
-    expect(snapshot.presets.map((preset) => preset.id)).toEqual(['profile-18']);
+    expect(snapshot.presets.map((preset) => preset.id)).toEqual(['profile-25']);
   });
 
   test('hides a preset whose outside key survived a real store load', () => {
@@ -287,6 +294,56 @@ describe('exec-preset-coordinator implementation presets', () => {
     expect(snapshot.presets[0].incompatibility_reason).toBe(
       'invalid_impl_runtime'
     );
+  });
+
+  test('reports a quick_fix implementation mismatch', () => {
+    const fixture = createFixture({
+      preset: {
+        revision: 1,
+        presets: [
+          {
+            id: 'quick-fix-incompatible',
+            name: '잘못된 quick_fix',
+            settings: {
+              quick_fix_impl_runtime: 'claude',
+              quick_fix_impl_model: 'sol'
+            },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const snapshot = fixture.coordinator.snapshot();
+
+    expect(snapshot.presets[0].compatible).toBe(false);
+    expect(snapshot.presets[0].incompatibility_reason).toBe(
+      'quick_fix_provider_model_mismatch'
+    );
+  });
+
+  test('keeps a loaded preset visible after workflow_mode is stripped', () => {
+    const fixture = createFixture({
+      preset: {
+        revision: 1,
+        presets: [
+          {
+            id: 'workflow-mode',
+            name: '이전 프리셋',
+            settings: {
+              workflow_mode: 'fast_track',
+              impl_runtime: 'codex'
+            },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const snapshot = fixture.coordinator.snapshot();
+
+    expect(snapshot.presets).toHaveLength(1);
+    expect(snapshot.presets[0].settings).toEqual({ impl_runtime: 'codex' });
   });
 });
 

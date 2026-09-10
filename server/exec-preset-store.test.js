@@ -63,6 +63,32 @@ describe('exec-preset-store defaults', () => {
     });
   });
 
+  test('drops workflow_mode while loading a stored preset', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(
+      file_path,
+      JSON.stringify({
+        revision: 1,
+        presets: [
+          {
+            id: 'preset-1',
+            name: '세션 모드 포함',
+            settings: {
+              workflow_mode: 'fast_track',
+              impl_runtime: 'codex'
+            }
+          }
+        ]
+      })
+    );
+
+    const store = createExecPresetStore({ filePath: file_path });
+
+    expect(store.snapshot().presets[0].settings).toEqual({
+      impl_runtime: 'codex'
+    });
+  });
+
   test('persists a normalized legacy entry once', () => {
     const file_path = path.join(tmp_dir, 'exec-presets.json');
     fs.writeFileSync(
@@ -218,7 +244,6 @@ describe('exec-preset-store CRUD', () => {
       expected_revision: 0,
       name: '빠른 코덱스',
       settings: {
-        workflow_mode: 'fast_track',
         impl_runtime: 'codex',
         orchestration_model: 'sol',
         orchestration_effort: 'xhigh',
@@ -229,7 +254,6 @@ describe('exec-preset-store CRUD', () => {
 
     expect(created.applied).toBe(true);
     expect(restarted.snapshot().presets[0].settings).toEqual({
-      workflow_mode: 'fast_track',
       impl_runtime: 'codex',
       orchestration_model: 'sol',
       orchestration_effort: 'xhigh',

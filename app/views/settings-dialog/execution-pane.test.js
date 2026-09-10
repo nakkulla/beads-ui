@@ -11,7 +11,8 @@ const CATALOG = {
         sol: {
           id: 'gpt-5.6-sol',
           efforts: ['medium'],
-          orchestration_efforts: ['medium', 'ultra']
+          orchestration_efforts: ['medium', 'ultra'],
+          speed_tiers: ['default', 'fast']
         }
       }
     }
@@ -94,7 +95,7 @@ function queueRow(patch = {}) {
 }
 
 /**
- * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string|boolean>, transport?: any, presets?: any }} [options]
+ * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string|boolean>, transport?: any, presets?: any, section?: string }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -122,6 +123,9 @@ function mount(options = {}) {
       queue_state = queue;
     }
   });
+  if (options.section) {
+    pane.render(options.section);
+  }
   return {
     root,
     pane,
@@ -187,7 +191,7 @@ describe('createExecutionPane unbound (root_dir null)', () => {
   });
 
   test('sends the base-sync toggle as the JSON boolean the contract stores', async () => {
-    const { root, pane, calls } = mount();
+    const { root, pane, calls } = mount({ section: 'session' });
     await pane.load();
 
     const box = /** @type {HTMLInputElement} */ (
@@ -204,6 +208,7 @@ describe('createExecutionPane unbound (root_dir null)', () => {
 
   test('shows a stored true as checked and sends null when it is cleared', async () => {
     const { root, pane, calls } = mount({
+      section: 'session',
       values: { base_sync_accept_local_commits: true }
     });
     await pane.load();
@@ -226,6 +231,7 @@ describe('createExecutionPane unbound (root_dir null)', () => {
     /** @type {Array<() => void>} */
     const pending = [];
     const { root, pane, calls } = mount({
+      section: 'session',
       transport: (/** @type {string} */ type, /** @type {any} */ payload) => {
         if (type !== 'set-session-defaults') {
           return { values: {}, warnings: [] };
@@ -267,6 +273,7 @@ describe('createExecutionPane unbound (root_dir null)', () => {
 
   test('leaves the base-sync toggle unchecked for a stored false', async () => {
     const { root, pane } = mount({
+      section: 'session',
       values: { base_sync_accept_local_commits: false }
     });
     await pane.load();
@@ -298,6 +305,7 @@ describe('createExecutionPane unbound (root_dir null)', () => {
 
   test('does not retry a conflicted queue op for the connected workspace', async () => {
     const { root, pane, calls } = mount({
+      section: 'account',
       transport: async (/** @type {string} */ type) =>
         type === 'get-session-defaults'
           ? { values: {}, warnings: [] }
@@ -305,42 +313,93 @@ describe('createExecutionPane unbound (root_dir null)', () => {
     });
     await pane.load();
 
-    el(root, '[data-automation="auto_advance"]').click();
+    el(
+      root,
+      '[data-limit-mode-runner="claude"] button[data-limit-mode="wait"]'
+    ).click();
     await settle();
 
-    expect(payloadsOf(calls, 'worker-automation-toggle')).toHaveLength(1);
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toHaveLength(
+      1
+    );
   });
 });
 
-describe('createExecutionPane quick_fix lane', () => {
-  test('renders eight enabled rows after the general implementation group', async () => {
+describe('createExecutionPane quick_fix group', () => {
+  test('draws the orchestration rows and the dispatch row on main', async () => {
     const { root, pane } = mount();
 
     await pane.load();
 
     const group = el(root, '[data-quick-fix-group]');
     const rows = Array.from(group.querySelectorAll('select[data-key]'));
+
     expect(rows.map((row) => row.getAttribute('data-key'))).toEqual([
       'quick_fix_orchestration_model',
       'quick_fix_orchestration_effort',
-      'quick_fix_orchestration_speed',
+      'quick_fix_impl_dispatch'
+    ]);
+  });
+
+  test('names the main-session hint instead of the delegation rows', async () => {
+    const { root, pane } = mount();
+
+    await pane.load();
+
+    expect(el(root, '[data-quick-fix-main-hint]').textContent).toContain(
+      '메인 세션이 직접 구현합니다'
+    );
+  });
+
+  test('draws the four delegation rows once the dispatch resolves delegated', async () => {
+    const { root, pane } = mount({
+      values: {
+        quick_fix_impl_dispatch: 'delegated',
+        quick_fix_impl_runtime: 'codex'
+      }
+    });
+
+    await pane.load();
+
+    const rows = Array.from(
+      el(root, '[data-quick-fix-group]').querySelectorAll('select[data-key]')
+    );
+
+    expect(rows.map((row) => row.getAttribute('data-key'))).toEqual([
+      'quick_fix_orchestration_model',
+      'quick_fix_orchestration_effort',
       'quick_fix_impl_dispatch',
       'quick_fix_impl_runtime',
       'quick_fix_impl_model',
       'quick_fix_impl_effort',
       'quick_fix_impl_speed'
     ]);
+  });
+
+  test('hides the quick_fix delegation speed row for a claude runtime', async () => {
+    const { root, pane } = mount({
+      values: {
+        quick_fix_impl_dispatch: 'delegated',
+        quick_fix_impl_runtime: 'claude'
+      }
+    });
+
+    await pane.load();
+
     expect(
-      rows.every((row) => !(/** @type {HTMLSelectElement} */ (row).disabled))
-    ).toBe(true);
-    expect(group.textContent).toContain(
-      '비어 있는 값은 일반 프로파일로 떨어집니다. 이슈 핀이 있으면 핀이 우선합니다.'
-    );
+      el(root, '[data-quick-fix-group]').querySelector(
+        'select[data-key="quick_fix_impl_speed"]'
+      )
+    ).toBe(null);
   });
 
   test('derives the unset quick_fix runtime from its model before general runtime', async () => {
     const { root, pane } = mount({
-      values: { impl_runtime: 'claude', quick_fix_impl_model: 'sol' }
+      values: {
+        impl_runtime: 'claude',
+        quick_fix_impl_dispatch: 'delegated',
+        quick_fix_impl_model: 'sol'
+      }
     });
 
     await pane.load();
@@ -371,27 +430,32 @@ describe('createExecutionPane quick_fix lane', () => {
       '기본값 사용 — sol (비호환)'
     );
   });
+});
 
-  test('sends no lane for general apply and quick_fix for lane apply', async () => {
+describe('createExecutionPane preset strip', () => {
+  test('offers one 적용 button and no lane tabs', async () => {
+    const { root, pane } = mount({ presets: PRESETS });
+
+    await pane.load();
+
+    expect(root.querySelectorAll('[data-preset-apply-global]')).toHaveLength(1);
+    expect(root.querySelector('[data-preset-lane-tabs]')).toBe(null);
+    expect(root.querySelector('[data-preset-apply-quick-fix]')).toBe(null);
+  });
+
+  test('sends one apply payload without a lane', async () => {
     const { root, pane, calls } = mount({
       presets: PRESETS,
-      transport: async (
-        /** @type {string} */ type,
-        /** @type {any} */ payload
-      ) => {
-        if (type === 'get-session-defaults') {
-          return { values: {}, warnings: [] };
-        }
+      transport: async (/** @type {string} */ type) => {
         if (type === 'apply-impl-preset-global') {
           return {
             applied: true,
-            lane: payload.lane,
             values: {},
             warnings: [],
             queue_applied: true
           };
         }
-        return {};
+        return { values: {}, warnings: [] };
       }
     });
     await pane.load();
@@ -401,119 +465,320 @@ describe('createExecutionPane quick_fix lane', () => {
     preset.value = 'p1';
     preset.dispatchEvent(new Event('change'));
 
-    el(root, '[data-preset-apply-general]').click();
-    await settle();
-    el(root, '[data-preset-apply-quick-fix]').click();
+    el(root, '[data-preset-apply-global]').click();
     await settle();
 
     expect(payloadsOf(calls, 'apply-impl-preset-global')).toEqual([
-      {
-        preset_id: 'p1',
-        expected_revision: 4,
-        expected_queue_revision: 3
+      { preset_id: 'p1', expected_revision: 4, expected_queue_revision: 3 }
+    ]);
+  });
+
+  test('refuses to apply against a server that takes no quick_fix values', async () => {
+    const old_queue = queueRow();
+    Reflect.deleteProperty(old_queue, 'quick_fix_orchestration_model');
+    const { root, pane } = mount({ queue: old_queue, presets: PRESETS });
+    await pane.load();
+    const preset = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    preset.value = 'p1';
+    preset.dispatchEvent(new Event('change'));
+
+    const apply = /** @type {HTMLButtonElement} */ (
+      el(root, '[data-preset-apply-global]')
+    );
+
+    expect(apply.disabled).toBe(true);
+    expect(apply.title).toBe('서버가 quick_fix 값을 받지 않습니다');
+  });
+
+  test('captures the quick_fix rows when the current settings are saved', async () => {
+    const { root, pane, calls } = mount({
+      queue: queueRow({ quick_fix_orchestration_model: 'opus' }),
+      values: {
+        quick_fix_impl_dispatch: 'delegated',
+        quick_fix_impl_runtime: 'codex'
       },
+      transport: async (/** @type {string} */ type) => {
+        if (type === 'get-session-defaults') {
+          return {
+            values: {
+              quick_fix_impl_dispatch: 'delegated',
+              quick_fix_impl_runtime: 'codex'
+            },
+            warnings: []
+          };
+        }
+        return { applied: true, presets: [] };
+      }
+    });
+    await pane.load();
+    const name = /** @type {HTMLInputElement} */ (
+      el(root, '[aria-label="프리셋 이름"]')
+    );
+    name.value = '빠른 수정';
+    name.dispatchEvent(new Event('input'));
+
+    el(root, '[data-preset-save]').click();
+    await settle();
+
+    expect(payloadsOf(calls, 'impl-preset-create')[0].settings).toEqual({
+      quick_fix_orchestration_model: 'opus',
+      quick_fix_impl_dispatch: 'delegated',
+      quick_fix_impl_runtime: 'codex'
+    });
+  });
+
+  test('previews a key the preset omits as cleared', async () => {
+    const { root, pane } = mount({
+      queue: queueRow({ quick_fix_orchestration_model: 'opus' }),
+      presets: {
+        revision: 4,
+        presets: [{ id: 'p1', name: '자동', settings: { impl_model: 'sol' } }]
+      }
+    });
+    await pane.load();
+    const preset = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    preset.value = 'p1';
+    preset.dispatchEvent(new Event('change'));
+
+    expect(el(root, '[data-preset-diff]').textContent).toContain('기본(해제)');
+  });
+
+  test('re-derives the runtime selection from an adopted codex preset', async () => {
+    const adopted_queue = queueRow({
+      revision: 4,
+      orchestration_model: 'sol',
+      orchestration_speed: 'fast'
+    });
+    const { root, pane, calls } = mount({
+      queue: queueRow({ orchestration_model: 'opus' }),
+      presets: PRESETS,
+      transport: async (/** @type {string} */ type) => {
+        if (type === 'apply-impl-preset-global') {
+          return {
+            applied: true,
+            values: {},
+            warnings: [],
+            queue: adopted_queue
+          };
+        }
+        return { values: {}, warnings: [] };
+      }
+    });
+    await pane.load();
+    const preset = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    preset.value = 'p1';
+    preset.dispatchEvent(new Event('change'));
+
+    el(root, '[data-preset-apply-global]').click();
+    await settle();
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        el(root, 'select[data-key="orchestration_runtime"]')
+      ).value
+    ).toBe('codex');
+    expect(
+      root.querySelector('select[data-key="orchestration_speed"]')
+    ).not.toBe(null);
+
+    pane.render('session');
+    el(root, 'button[data-mode="fast_track"]').click();
+    await settle();
+
+    expect(
+      payloadsOf(calls, 'worker-queue-set-orchestration-defaults').some(
+        (payload) => payload.values?.orchestration_speed === null
+      )
+    ).toBe(false);
+  });
+});
+
+describe('createExecutionPane 속도 rows', () => {
+  test('hides the orchestration speed row while the runtime is claude', async () => {
+    const { root, pane } = mount({
+      queue: queueRow({ orchestration_model: 'opus' })
+    });
+
+    await pane.load();
+
+    expect(root.querySelector('select[data-key="orchestration_speed"]')).toBe(
+      null
+    );
+  });
+
+  test('draws the orchestration speed row while the runtime is codex', async () => {
+    const { root, pane } = mount({
+      queue: queueRow({ orchestration_model: 'sol' })
+    });
+
+    await pane.load();
+
+    expect(
+      root.querySelector('select[data-key="orchestration_speed"]')
+    ).not.toBe(null);
+  });
+
+  test('clears the effort along with the model on a runtime switch that drops it', async () => {
+    const { root, pane, calls } = mount({
+      queue: queueRow({
+        orchestration_model: 'opus',
+        orchestration_effort: 'high'
+      })
+    });
+    await pane.load();
+
+    const runtime = /** @type {HTMLSelectElement} */ (
+      el(root, 'select[data-key="orchestration_runtime"]')
+    );
+    runtime.value = 'codex';
+    runtime.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(
+      payloadsOf(calls, 'worker-queue-set-orchestration-defaults')
+    ).toEqual([
       {
-        preset_id: 'p1',
-        expected_revision: 4,
-        expected_queue_revision: 3,
-        lane: 'quick_fix'
+        values: { orchestration_model: null, orchestration_effort: null },
+        expected_revision: 3
       }
     ]);
   });
 
-  test('disables quick_fix controls when the snapshot lacks the capability key', async () => {
-    const old_queue = queueRow();
-    Reflect.deleteProperty(old_queue, 'quick_fix_orchestration_model');
-    const { root, pane } = mount({ queue: old_queue, presets: PRESETS });
+  test('offers the orchestration runtime without a 전체 option', async () => {
+    const { root, pane } = mount();
 
     await pane.load();
 
-    const apply = /** @type {HTMLButtonElement} */ (
-      el(root, '[data-preset-apply-quick-fix]')
+    const runtime = /** @type {HTMLSelectElement} */ (
+      el(root, 'select[data-key="orchestration_runtime"]')
     );
-    const rows = Array.from(
-      el(root, '[data-quick-fix-group]').querySelectorAll('select[data-key]')
-    );
-    expect(apply.disabled).toBe(true);
-    expect(apply.title).toBe('서버가 quick_fix 레인을 지원하지 않습니다');
-    expect(
-      rows.every((row) => /** @type {HTMLSelectElement} */ (row).disabled)
-    ).toBe(true);
+
+    expect(Array.from(runtime.options).map((option) => option.value)).toEqual([
+      'claude',
+      'codex'
+    ]);
   });
 
-  test('keeps drafts and warns when a quick_fix response omits lane', async () => {
-    const { root, pane, notify } = mount({
-      values: { quick_fix_impl_runtime: 'claude' },
-      presets: PRESETS,
-      transport: async (/** @type {string} */ type) => {
-        if (type === 'get-session-defaults') {
-          return {
-            values: { quick_fix_impl_runtime: 'claude' },
-            warnings: []
-          };
-        }
-        if (type === 'apply-impl-preset-global') {
-          return {
-            applied: true,
-            values: { quick_fix_impl_runtime: 'codex' },
-            warnings: [],
-            queue_applied: true
-          };
-        }
-        return {};
-      }
+  test('starts the orchestration runtime on the stored model runner', async () => {
+    const { root, pane } = mount({
+      queue: queueRow({ orchestration_model: 'sol' })
+    });
+
+    await pane.load();
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        el(root, 'select[data-key="orchestration_runtime"]')
+      ).value
+    ).toBe('codex');
+  });
+
+  test('clears the stored speed when its row disappears', async () => {
+    const { root, pane, calls } = mount({
+      values: { impl_runtime: 'codex', impl_speed: 'fast' }
     });
     await pane.load();
-    const preset = /** @type {HTMLSelectElement} */ (
-      el(root, '[aria-label="실행 프리셋"]')
-    );
-    preset.value = 'p1';
-    preset.dispatchEvent(new Event('change'));
 
-    el(root, '[data-preset-apply-quick-fix]').click();
+    const runtime = /** @type {HTMLSelectElement} */ (
+      el(root, 'select[data-key="impl_runtime"]')
+    );
+    runtime.value = 'claude';
+    runtime.dispatchEvent(new Event('change'));
     await settle();
 
-    expect(pane.sessionDraft()).toEqual({ quick_fix_impl_runtime: 'claude' });
-    expect(notify).toHaveBeenCalledWith(
-      '서버 응답에 lane이 없습니다 — 큐 스냅샷을 다시 받은 뒤 확인하세요'
+    expect(payloadsOf(calls, 'set-session-defaults')).toEqual([
+      { values: { impl_runtime: 'claude', impl_speed: null } }
+    ]);
+  });
+
+  test('hides a review gate speed row answered by self', async () => {
+    const { root, pane } = mount({ values: { spec_review_model: 'self' } });
+
+    await pane.load();
+
+    expect(root.querySelector('select[data-key="spec_review_speed"]')).toBe(
+      null
     );
   });
 
-  test('previews incompatible and absent quick_fix values as general fallthrough', async () => {
-    const { root, pane } = mount({
-      queue: queueRow({ quick_fix_orchestration_model: 'opus' }),
-      values: {
-        quick_fix_impl_runtime: 'codex',
-        quick_fix_impl_model: 'sol'
-      },
-      presets: {
-        revision: 4,
-        presets: [
-          {
-            id: 'p1',
-            name: '자동',
-            settings: { impl_runtime: 'inherit', impl_model: 'auto' }
-          }
-        ]
-      }
-    });
-    await pane.load();
-    const preset = /** @type {HTMLSelectElement} */ (
-      el(root, '[aria-label="실행 프리셋"]')
-    );
-    preset.value = 'p1';
-    preset.dispatchEvent(new Event('change'));
-    el(root, '[data-preset-lane="quick_fix"]').click();
+  test('draws a review gate speed row for a codex reviewer', async () => {
+    const { root, pane } = mount({ values: { spec_review_model: 'codex' } });
 
-    expect(el(root, '[data-preset-diff]').textContent).toContain(
-      '기본(해제 → 일반 프로파일)'
+    await pane.load();
+
+    expect(root.querySelector('select[data-key="spec_review_speed"]')).not.toBe(
+      null
     );
+  });
+});
+
+describe('createExecutionPane sections', () => {
+  test('leaves the automation rows out of every section', async () => {
+    const { root, pane } = mount();
+
+    await pane.load();
+
+    expect(root.querySelector('[data-automation]')).toBe(null);
+    expect(root.querySelector('[data-stepper]')).toBe(null);
+  });
+
+  test('leaves the mode, address and accounts off the worker section', async () => {
+    const { root, pane } = mount();
+
+    await pane.load();
+
+    expect(root.querySelector('[data-mode]')).toBe(null);
+    expect(root.querySelector('input[data-key="bdui_url"]')).toBe(null);
+    expect(root.querySelector('[data-exec-accounts-group]')).toBe(null);
+  });
+
+  test('draws the mode segment and the advanced group on the session section', async () => {
+    const { root, pane } = mount({ section: 'session' });
+
+    await pane.load();
+
+    expect(root.querySelector('[data-session-workflow-group]')).not.toBe(null);
+    expect(root.querySelector('input[data-key="bdui_url"]')).not.toBe(null);
+    expect(
+      root.querySelector('input[data-key="base_sync_accept_local_commits"]')
+    ).not.toBe(null);
+  });
+
+  test('names the Worker fast_track hint under the mode segment', async () => {
+    const { root, pane } = mount({ section: 'session' });
+
+    await pane.load();
+
+    expect(el(root, '[data-workflow-mode-hint]').textContent).toContain(
+      'Worker는 항상 fast_track으로 돕니다'
+    );
+  });
+
+  test('draws the accounts and limit policy on the account section', async () => {
+    const { root, pane } = mount({ section: 'account' });
+
+    await pane.load();
+
+    expect(root.querySelector('[data-exec-accounts-group]')).not.toBe(null);
+    expect(root.querySelector('[data-limit-mode-runner="claude"]')).not.toBe(
+      null
+    );
+    expect(root.querySelector('[data-quick-fix-group]')).toBe(null);
   });
 });
 
 describe('createExecutionPane bdui_url row', () => {
   test('renders the stored origin in a text box, not a select', async () => {
-    const { root, pane } = mount({ values: { bdui_url: 'http://host:3000' } });
+    const { root, pane } = mount({
+      section: 'session',
+      values: { bdui_url: 'http://host:3000' }
+    });
 
     await pane.load();
 
@@ -525,7 +790,7 @@ describe('createExecutionPane bdui_url row', () => {
   });
 
   test('saves a well-formed origin through the session-defaults op', async () => {
-    const { root, pane, calls } = mount();
+    const { root, pane, calls } = mount({ section: 'session' });
     await pane.load();
 
     const input = /** @type {HTMLInputElement} */ (
@@ -541,7 +806,7 @@ describe('createExecutionPane bdui_url row', () => {
   });
 
   test('trims the typed value before judging and saving it', async () => {
-    const { root, pane, calls } = mount();
+    const { root, pane, calls } = mount({ section: 'session' });
     await pane.load();
 
     const input = /** @type {HTMLInputElement} */ (
@@ -557,7 +822,7 @@ describe('createExecutionPane bdui_url row', () => {
   });
 
   test('refuses to save a malformed origin and marks the box invalid', async () => {
-    const { root, pane, calls } = mount();
+    const { root, pane, calls } = mount({ section: 'session' });
     await pane.load();
 
     const input = /** @type {HTMLInputElement} */ (
@@ -574,7 +839,7 @@ describe('createExecutionPane bdui_url row', () => {
   });
 
   test('keeps an unrelated edit saveable while the box holds invalid text', async () => {
-    const { root, pane, calls } = mount();
+    const { root, pane, calls } = mount({ section: 'session' });
     await pane.load();
 
     const input = /** @type {HTMLInputElement} */ (
@@ -583,20 +848,20 @@ describe('createExecutionPane bdui_url row', () => {
     input.value = 'host:3000';
     input.dispatchEvent(new Event('change'));
     await settle();
-    const select = /** @type {HTMLSelectElement} */ (
-      el(root, 'select[data-key="impl_speed"]')
+    const box = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="base_sync_accept_local_commits"]')
     );
-    select.value = 'fast';
-    select.dispatchEvent(new Event('change'));
+    box.checked = true;
+    box.dispatchEvent(new Event('change'));
     await settle();
 
     expect(payloadsOf(calls, 'set-session-defaults')).toEqual([
-      { values: { impl_speed: 'fast' } }
+      { values: { base_sync_accept_local_commits: true } }
     ]);
   });
 
   test('keeps mid-typed text when an unrelated re-render lands', async () => {
-    const { root, pane, calls } = mount();
+    const { root, pane, calls } = mount({ section: 'session' });
     await pane.load();
 
     const input = /** @type {HTMLInputElement} */ (
@@ -614,7 +879,7 @@ describe('createExecutionPane bdui_url row', () => {
   });
 
   test('leaves the box unmarked while the typed text is still incomplete', async () => {
-    const { root, pane } = mount();
+    const { root, pane } = mount({ section: 'session' });
     await pane.load();
 
     const input = /** @type {HTMLInputElement} */ (
@@ -630,7 +895,7 @@ describe('createExecutionPane bdui_url row', () => {
   });
 
   test('clears the invalid mark once the user resumes editing', async () => {
-    const { root, pane } = mount();
+    const { root, pane } = mount({ section: 'session' });
     await pane.load();
 
     const input = /** @type {HTMLInputElement} */ (
@@ -652,7 +917,7 @@ describe('createExecutionPane bdui_url row', () => {
   });
 
   test('keeps the invalid text on screen after an unrelated save succeeds', async () => {
-    const { root, pane } = mount();
+    const { root, pane } = mount({ section: 'session' });
     await pane.load();
 
     const input = /** @type {HTMLInputElement} */ (
@@ -661,11 +926,11 @@ describe('createExecutionPane bdui_url row', () => {
     input.value = 'host:3000';
     input.dispatchEvent(new Event('change'));
     await settle();
-    const select = /** @type {HTMLSelectElement} */ (
-      el(root, 'select[data-key="impl_speed"]')
+    const box = /** @type {HTMLInputElement} */ (
+      el(root, 'input[data-key="base_sync_accept_local_commits"]')
     );
-    select.value = 'fast';
-    select.dispatchEvent(new Event('change'));
+    box.checked = true;
+    box.dispatchEvent(new Event('change'));
     await settle();
 
     expect(
@@ -676,6 +941,7 @@ describe('createExecutionPane bdui_url row', () => {
 
   test('sends an emptied box as the null deletion request', async () => {
     const { root, pane, calls } = mount({
+      section: 'session',
       values: { bdui_url: 'http://host:3000' }
     });
     await pane.load();
@@ -695,7 +961,10 @@ describe('createExecutionPane bdui_url row', () => {
 
 describe('createExecutionPane bound to another repo', () => {
   test('carries root_dir on both session-defaults ops', async () => {
-    const { root, pane, calls } = mount({ root_dir: REPO_B });
+    const { root, pane, calls } = mount({
+      root_dir: REPO_B,
+      values: { impl_runtime: 'codex' }
+    });
     await pane.load();
 
     const select = /** @type {HTMLSelectElement} */ (
@@ -723,33 +992,16 @@ describe('createExecutionPane bound to another repo', () => {
     model.value = 'opus';
     model.dispatchEvent(new Event('change'));
     await settle();
-    el(root, '[data-automation="auto_advance"]').click();
-    await settle();
-    el(root, '[data-automation="auto_merge"]').click();
-    await settle();
+    pane.render('account');
     el(
       root,
       '[data-limit-mode-runner="claude"] button[data-limit-mode="wait"]'
     ).click();
     await settle();
-    el(
-      root,
-      '[data-stepper="slots"] button[aria-label="동시 실행 증가"]'
-    ).click();
-    await settle();
-    el(
-      root,
-      '[data-stepper="serial-lane-count"] button[aria-label="직렬 레인 증가"]'
-    ).click();
-    await settle();
 
     for (const type of [
       'worker-queue-set-orchestration-defaults',
-      'worker-automation-toggle',
-      'worker-merge-auto-toggle',
-      'worker-provider-limit-policy-set',
-      'worker-queue-set-slots',
-      'worker-queue-set-serial-lane-count'
+      'worker-provider-limit-policy-set'
     ]) {
       const payloads = payloadsOf(calls, type);
       expect(payloads).toHaveLength(1);
@@ -796,8 +1048,9 @@ describe('createExecutionPane bound to another repo', () => {
     let seen = 0;
     const { root, pane, calls } = mount({
       root_dir: REPO_B,
+      section: 'account',
       transport: async (/** @type {string} */ type) => {
-        if (type !== 'worker-automation-toggle') {
+        if (type !== 'worker-provider-limit-policy-set') {
           return { values: {}, warnings: [] };
         }
         seen += 1;
@@ -808,12 +1061,25 @@ describe('createExecutionPane bound to another repo', () => {
     });
     await pane.load();
 
-    el(root, '[data-automation="auto_advance"]').click();
+    el(
+      root,
+      '[data-limit-mode-runner="claude"] button[data-limit-mode="wait"]'
+    ).click();
     await settle();
 
-    expect(payloadsOf(calls, 'worker-automation-toggle')).toEqual([
-      { on: true, root_dir: REPO_B, expected_revision: 3 },
-      { on: true, root_dir: REPO_B, expected_revision: 11 }
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([
+      {
+        runner: 'claude',
+        patch: { mode: 'wait' },
+        root_dir: REPO_B,
+        expected_revision: 3
+      },
+      {
+        runner: 'claude',
+        patch: { mode: 'wait' },
+        root_dir: REPO_B,
+        expected_revision: 11
+      }
     ]);
   });
 
@@ -857,43 +1123,10 @@ describe('createExecutionPane bound to another repo', () => {
   });
 });
 
-describe('createExecutionPane automation section', () => {
-  test('renders each switch from the bound queue snapshot', async () => {
-    const { root, pane } = mount({
-      queue: queueRow({ auto_advance: true })
-    });
-
-    await pane.load();
-
-    expect(
-      el(root, '[data-automation="auto_advance"]').getAttribute('aria-pressed')
-    ).toBe('true');
-    expect(
-      el(root, '[data-automation="auto_merge"]').getAttribute('aria-pressed')
-    ).toBe('false');
-  });
-
-  test('renders the concurrency and serial-lane counts of that repo', async () => {
-    const { root, pane } = mount({
-      queue: queueRow({ slots: 4, serial_lane_count: 3 })
-    });
-
-    await pane.load();
-
-    expect(
-      el(root, '[data-stepper="slots"] .settings-dialog__stepper-value')
-        .textContent
-    ).toContain('4');
-    expect(
-      el(
-        root,
-        '[data-stepper="serial-lane-count"] .settings-dialog__stepper-value'
-      ).textContent
-    ).toContain('3');
-  });
-
+describe('createExecutionPane limit policy section', () => {
   test('reads each runner limit mode from the queue snapshot', async () => {
     const { root, pane } = mount({
+      section: 'account',
       queue: queueRow({
         provider_limit_policy: {
           claude: { mode: 'wait', accounts: [], preempt_pct: null },
@@ -921,6 +1154,7 @@ describe('createExecutionPane automation section', () => {
   // RED 22 — 모드 세그먼트는 러너별 patch 하나만 보낸다 (UI-13o1 §3.5).
   test('sends a mode segment click as a per-runner policy patch', async () => {
     const { root, pane, calls } = mount({
+      section: 'account',
       transport: async (/** @type {string} */ type) =>
         type === 'worker-provider-limit-policy-set'
           ? { applied: true, conflict: false, queue: queueRow({ revision: 4 }) }
@@ -938,34 +1172,6 @@ describe('createExecutionPane automation section', () => {
       { runner: 'codex', patch: { mode: 'wait' }, expected_revision: 3 }
     ]);
   });
-
-  test('refuses to send a serial lane count past the contract bound', async () => {
-    const { root, pane, calls } = mount({
-      queue: queueRow({ serial_lane_count: 5 })
-    });
-    await pane.load();
-
-    el(
-      root,
-      '[data-stepper="serial-lane-count"] button[aria-label="직렬 레인 증가"]'
-    ).click();
-    await settle();
-
-    expect(payloadsOf(calls, 'worker-queue-set-serial-lane-count')).toEqual([]);
-  });
-
-  test('refuses to send a slots value below the contract bound', async () => {
-    const { root, pane, calls } = mount({ queue: queueRow({ slots: 1 }) });
-    await pane.load();
-
-    el(
-      root,
-      '[data-stepper="slots"] button[aria-label="동시 실행 감소"]'
-    ).click();
-    await settle();
-
-    expect(payloadsOf(calls, 'worker-queue-set-slots')).toEqual([]);
-  });
 });
 
 describe('createExecutionPane lifecycle', () => {
@@ -981,14 +1187,14 @@ describe('createExecutionPane lifecycle', () => {
     await pane.load();
 
     const select = /** @type {HTMLSelectElement} */ (
-      el(root, 'select[data-key="impl_speed"]')
+      el(root, 'select[data-key="impl_runtime"]')
     );
-    select.value = 'fast';
+    select.value = 'codex';
     select.dispatchEvent(new Event('change'));
     await settle();
 
     expect(notify).toHaveBeenCalled();
-    expect(pane.sessionDraft()).toEqual({ impl_speed: 'fast' });
+    expect(pane.sessionDraft()).toEqual({ impl_runtime: 'codex' });
   });
 
   test('destroy empties the host and stops rendering into it', async () => {
@@ -1002,15 +1208,18 @@ describe('createExecutionPane lifecycle', () => {
   });
 
   test('destroy leaves no listener that a later click could still reach', async () => {
-    const { root, pane, calls } = mount();
+    const { root, pane, calls } = mount({ section: 'account' });
     await pane.load();
-    const toggle = el(root, '[data-automation="auto_advance"]');
+    const button = el(
+      root,
+      '[data-limit-mode-runner="claude"] button[data-limit-mode="wait"]'
+    );
 
     pane.destroy();
-    toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await settle();
 
-    expect(payloadsOf(calls, 'worker-automation-toggle')).toEqual([]);
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([]);
   });
 });
 
@@ -1091,7 +1300,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
 
   test('renders both provider selects in their own group', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
-    const { root, pane } = mount();
+    const { root, pane } = mount({ section: 'account' });
 
     await pane.load();
 
@@ -1108,7 +1317,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
   });
 
   test('reads the layer without a root_dir key when unbound', async () => {
-    const { pane, calls } = mount();
+    const { pane, calls } = mount({ section: 'account' });
 
     await pane.load();
 
@@ -1117,7 +1326,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
 
   test('sends set-workspace-accounts on a change', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
-    const { root, pane, calls } = mount();
+    const { root, pane, calls } = mount({ section: 'account' });
     await pane.load();
 
     const select = accountSelect(root, 'claude_account');
@@ -1133,6 +1342,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
   test('sends a deletion when the inherit option is chosen', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
     const { root, pane, calls } = mount({
+      section: 'account',
       transport: async (/** @type {string} */ type) =>
         type === 'get-workspace-accounts'
           ? {
@@ -1156,7 +1366,10 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
 
   test('carries root_dir on a bound pane', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
-    const { root, pane, calls } = mount({ root_dir: REPO_B });
+    const { root, pane, calls } = mount({
+      section: 'account',
+      root_dir: REPO_B
+    });
     await pane.load();
 
     const select = accountSelect(root, 'codex_account');
@@ -1175,6 +1388,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
   test('hints an unreadable list and keeps the stored value selectable', async () => {
     stubAccountFetch({ claude: null, codex: null });
     const { root, pane } = mount({
+      section: 'account',
       transport: async () => ({
         state: 'usable',
         values: { claude_account: 'repo@example.com' },
@@ -1196,6 +1410,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
   test('banners an unusable layer as a blocked dispatch', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
     const { root, pane } = mount({
+      section: 'account',
       transport: async () => ({
         state: 'unusable',
         values: {},
@@ -1213,6 +1428,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
   test('banners an unknown key without claiming a blocked dispatch', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
     const { root, pane } = mount({
+      section: 'account',
       transport: async () => ({
         state: 'usable',
         values: {},
@@ -1229,7 +1445,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
 
   test('shows no banner for a clean layer', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
-    const { root, pane } = mount();
+    const { root, pane } = mount({ section: 'account' });
 
     await pane.load();
 
@@ -1239,6 +1455,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
   test('keeps the user edit and notifies when a save fails', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
     const { root, pane, notify } = mount({
+      section: 'account',
       transport: async (/** @type {string} */ type) => {
         if (type === 'set-workspace-accounts') {
           throw new Error('kv_write_failed');
@@ -1266,6 +1483,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
     /** @type {Array<() => void>} */
     const pending = [];
     const { root, pane, calls } = mount({
+      section: 'account',
       transport: async (/** @type {string} */ type) => {
         if (type !== 'set-workspace-accounts') {
           return { state: 'absent', values: {}, warnings: [] };
@@ -1308,6 +1526,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
     /** @type {Array<() => void>} */
     const pending = [];
     const { root, pane } = mount({
+      section: 'account',
       transport: async (/** @type {string} */ type) => {
         if (type !== 'set-workspace-accounts') {
           return { state: 'absent', values: {}, warnings: [] };
@@ -1340,6 +1559,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
   test('adds a checked account to the stored allow list', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
     const { root, pane, calls } = mount({
+      section: 'account',
       queue: queueRow({
         provider_limit_policy: {
           claude: {
@@ -1376,6 +1596,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
   test('drops an unchecked account from the stored allow list', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
     const { root, pane, calls } = mount({
+      section: 'account',
       queue: queueRow({
         provider_limit_policy: {
           claude: {
@@ -1414,6 +1635,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
     /** @type {Array<(value: any) => void>} */
     const deferred = [];
     const { root, pane, calls } = mount({
+      section: 'account',
       queue: queueRow({
         provider_limit_policy: {
           claude: {
@@ -1480,6 +1702,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
   test('turns preemptive switching off with a null threshold', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
     const { root, pane, calls } = mount({
+      section: 'account',
       queue: queueRow({
         provider_limit_policy: {
           claude: { mode: 'switch', accounts: [], preempt_pct: 80 },
@@ -1509,6 +1732,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
   test('sends the typed threshold as an integer', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
     const { root, pane, calls } = mount({
+      section: 'account',
       queue: queueRow({
         provider_limit_policy: {
           claude: { mode: 'switch', accounts: [], preempt_pct: 80 },
@@ -1534,6 +1758,7 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
   test('keeps a stored key the catalog does not carry as a checked item', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
     const { root, pane } = mount({
+      section: 'account',
       queue: queueRow({
         provider_limit_policy: {
           claude: {

@@ -205,6 +205,48 @@ describe('worker/compare-projection preset naming', () => {
 
     expect(presetMatchesSignature(signature, preset)).toBe(false);
   });
+
+  test('matches a quick_fix attempt against quick_fix preset values', () => {
+    const signature = attemptSignature(
+      makeAttempt({ exec_values: { route: 'quick_fix' } })
+    );
+
+    expect(
+      presetMatchesSignature(signature, {
+        settings: {
+          impl_model: 'terra',
+          quick_fix_impl_model: 'gpt-5.6-sol'
+        }
+      })
+    ).toBe(true);
+  });
+
+  test('matches a general attempt against general preset values', () => {
+    const signature = attemptSignature(
+      makeAttempt({ exec_values: { route: 'spec_backed' } })
+    );
+
+    expect(
+      presetMatchesSignature(signature, {
+        settings: {
+          impl_model: 'gpt-5.6-sol',
+          quick_fix_impl_model: 'terra'
+        }
+      })
+    ).toBe(true);
+  });
+
+  test('falls back to the general preset value on quick_fix attempts', () => {
+    const signature = attemptSignature(
+      makeAttempt({ exec_values: { route: 'quick_fix' } })
+    );
+
+    expect(
+      presetMatchesSignature(signature, {
+        settings: { impl_model: 'gpt-5.6-sol' }
+      })
+    ).toBe(true);
+  });
 });
 
 describe('worker/compare-projection preset naming — every declared key', () => {

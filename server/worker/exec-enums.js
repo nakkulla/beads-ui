@@ -36,7 +36,8 @@ import {
   catalogOrchestrationEfforts,
   catalogSpeedTiers,
   modelEfforts,
-  modelRunner
+  modelRunner,
+  modelSpeedTiers
 } from './runner-catalog.js';
 import { runtimeCatalog } from './runner/index.js';
 
@@ -119,7 +120,7 @@ export const WORKFLOW_MODES = ['standard', 'fast_track'];
 export const AUTO_LITERAL = 'auto';
 
 /**
- * The 15 session keys a PER-BEAD write may carry: a preset applied to one bead
+ * The 14 session keys a PER-BEAD write may carry: a preset applied to one bead
  * and the detail panel's individual edits. `impl_dispatch` belongs here and
  * nowhere else on the session axis — the contract makes it
  * `write_rule: user_write_only`, and both of these surfaces ARE the user
@@ -128,7 +129,6 @@ export const AUTO_LITERAL = 'auto';
  * @type {ReadonlyArray<string>}
  */
 export const BEAD_APPLY_KEYS = [
-  'workflow_mode',
   'spec_review_model',
   'spec_review_effort',
   'spec_review_speed',
@@ -224,6 +224,7 @@ export const QUICK_FIX_KV_KEYS = [
  * @type {ReadonlyArray<string>}
  */
 export const WORKSPACE_KV_KEYS = [
+  'workflow_mode',
   ...BEAD_APPLY_KEYS.filter((key) => key !== 'impl_dispatch'),
   ...QUICK_FIX_KV_KEYS,
   'base_sync_accept_local_commits',
@@ -249,8 +250,7 @@ export const QUICK_FIX_ORCHESTRATION_KEYS = [
 ];
 
 /**
- * Map one lane-neutral preset field onto the quick_fix storage profile.
- * Unmapped review and workflow fields are deliberately skipped.
+ * Map one canonical preset field onto the quick_fix storage profile.
  *
  * @type {Readonly<Record<string, string>>}
  */
@@ -266,18 +266,21 @@ export const QUICK_FIX_LANE_MAP = Object.freeze({
 });
 
 /**
- * The 18 sparse keys a full-profile execution preset may carry: all session
- * defaults plus the workspace queue's orchestration defaults.
+ * The 25 sparse keys a full-profile execution preset may carry: the per-Bead
+ * values plus the general and quick_fix workspace profiles.
  *
  * @type {ReadonlyArray<string>}
  */
-export const IMPL_PRESET_KEYS = [...BEAD_APPLY_KEYS, ...ORCHESTRATION_KEYS];
+export const IMPL_PRESET_KEYS = [
+  ...BEAD_APPLY_KEYS,
+  ...ORCHESTRATION_KEYS,
+  ...QUICK_FIX_ORCHESTRATION_KEYS,
+  ...QUICK_FIX_KV_KEYS
+];
 
 /**
- * The 14 kv keys a full-profile preset actually CARRIES — the workspace kv list
- * minus the keys no preset can supply. Preset application replaces exactly this
- * list, so the quick_fix profile survives a general apply instead of being
- * cleared by a profile that was never able to name it.
+ * The 18 kv keys a full-profile preset carries. Preset application replaces
+ * every general and quick_fix member in this list.
  *
  * @type {ReadonlyArray<string>}
  */
@@ -323,45 +326,6 @@ export function sessionDefaultEnums(catalog = runtimeCatalog()) {
 }
 
 /**
- * Normalize one lane-neutral preset into a complete quick_fix replacement.
- * Missing or lane-incompatible values become `null`; unmapped preset fields
- * are reported instead of being applied.
- *
- * @param {Record<string, unknown>} settings
- * @param {Record<string, ReadonlyArray<string>>} target_enums - Enum table
- * keyed by quick_fix destination names.
- * @returns {{ values: Record<string, string|null>, warnings: string[], skipped_keys: string[] }}
- */
-export function normalizeQuickFixLanePreset(settings, target_enums) {
-  /** @type {Record<string, string|null>} */
-  const values = {};
-  /** @type {string[]} */
-  const warnings = [];
-  for (const [source_key, target_key] of Object.entries(QUICK_FIX_LANE_MAP)) {
-    const value = settings[source_key];
-    if (!Object.hasOwn(settings, source_key)) {
-      values[target_key] = null;
-      continue;
-    }
-    const allowed = target_enums[target_key];
-    if (
-      typeof value !== 'string' ||
-      !Array.isArray(allowed) ||
-      !allowed.includes(value)
-    ) {
-      values[target_key] = null;
-      warnings.push(`lane_incompatible:${target_key}`);
-      continue;
-    }
-    values[target_key] = value;
-  }
-  const skipped_keys = Object.keys(settings).filter(
-    (key) => !Object.hasOwn(QUICK_FIX_LANE_MAP, key)
-  );
-  return { values, warnings, skipped_keys };
-}
-
-/**
  * Allowed values per full-profile preset key. Session keys reuse the session
  * table; orchestration keys reuse the queue-facing execution table.
  *
@@ -374,12 +338,50 @@ export function implPresetEnums(catalog = runtimeCatalog()) {
   /** @type {Record<string, ReadonlyArray<string>>} */
   const narrowed = {};
   for (const key of IMPL_PRESET_KEYS) {
-    const source = ORCHESTRATION_KEYS.includes(key)
-      ? exec_enums
-      : session_enums;
-    narrowed[key] = source[key];
+    if (ORCHESTRATION_KEYS.includes(key)) {
+      narrowed[key] = exec_enums[key];
+      continue;
+    }
+    if (QUICK_FIX_ORCHESTRATION_KEYS.includes(key)) {
+      const source_key = Object.entries(QUICK_FIX_LANE_MAP).find(
+        ([, target_key]) => target_key === key
+      )?.[0];
+      narrowed[key] = source_key ? exec_enums[source_key] : [];
+      continue;
+    }
+    narrowed[key] = session_enums[key];
   }
   return narrowed;
+}
+
+/**
+ * Whether one runner exposes a requested speed through any catalog model.
+ *
+ * @param {ResolvedCatalog} catalog
+ * @param {unknown} runtime
+ * @param {string} speed
+ * @returns {boolean}
+ */
+function runnerSupportsSpeed(catalog, runtime, speed) {
+  if (typeof runtime !== 'string' || !catalog.runners[runtime]) {
+    return false;
+  }
+  return Object.keys(catalog.runners[runtime].models).some((model) =>
+    modelSpeedTiers(catalog, model).includes(speed)
+  );
+}
+
+/**
+ * Translate canonical implementation validation reasons to quick_fix names.
+ *
+ * @param {string} reason
+ * @returns {string}
+ */
+function quickFixReason(reason) {
+  if (reason === 'provider_model_mismatch') {
+    return 'quick_fix_provider_model_mismatch';
+  }
+  return reason.replace('impl_', 'quick_fix_impl_');
 }
 
 /**
@@ -406,22 +408,69 @@ export function validateImplPresetSettings(settings, options = {}) {
       return { ok: false, reason: `invalid_${key}` };
     }
   }
-  if (settings.impl_dispatch === 'main') {
-    return { ok: true };
-  }
-  /** @type {Record<string, unknown>} */
-  const coherence_input = {};
-  for (const key of ['impl_runtime', 'impl_model', 'impl_effort']) {
-    const value = settings[key];
-    if (typeof value === 'string' && value !== AUTO_LITERAL) {
-      coherence_input[key] = value;
+  if (settings.impl_dispatch !== 'main') {
+    /** @type {Record<string, unknown>} */
+    const coherence_input = {};
+    for (const key of ['impl_runtime', 'impl_model', 'impl_effort']) {
+      const value = settings[key];
+      if (typeof value === 'string' && value !== AUTO_LITERAL) {
+        coherence_input[key] = value;
+      }
+    }
+    const coherence = validateImplSettings(coherence_input, {
+      catalog,
+      active_writer: false
+    });
+    if (!coherence.ok) {
+      return { ok: false, reason: coherence.reason };
     }
   }
-  const coherence = validateImplSettings(coherence_input, {
-    catalog,
-    active_writer: false
-  });
-  return coherence.ok ? { ok: true } : { ok: false, reason: coherence.reason };
+
+  /** @type {Record<string, unknown>} */
+  const quick_fix_input = {};
+  for (const key of ['impl_runtime', 'impl_model', 'impl_effort']) {
+    const value = settings[`quick_fix_${key}`];
+    if (typeof value === 'string' && value !== AUTO_LITERAL) {
+      quick_fix_input[key] = value;
+    }
+  }
+  if (settings.quick_fix_impl_dispatch !== 'main') {
+    const coherence = validateImplSettings(quick_fix_input, {
+      catalog,
+      active_writer: false
+    });
+    if (!coherence.ok) {
+      return { ok: false, reason: quickFixReason(coherence.reason) };
+    }
+  }
+
+  if (settings.quick_fix_impl_speed === 'fast') {
+    const concrete_impl_runtime =
+      typeof settings.impl_runtime === 'string' &&
+      settings.impl_runtime !== AUTO_LITERAL
+        ? settings.impl_runtime
+        : undefined;
+    const runtime =
+      quick_fix_input.impl_runtime ??
+      modelRunner(catalog, quick_fix_input.impl_model) ??
+      concrete_impl_runtime ??
+      modelRunner(catalog, settings.impl_model);
+    if (!runnerSupportsSpeed(catalog, runtime, 'fast')) {
+      return { ok: false, reason: 'quick_fix_speed_unsupported' };
+    }
+  }
+
+  if (settings.quick_fix_orchestration_speed === 'fast') {
+    const effective_model =
+      settings.quick_fix_orchestration_model ?? settings.orchestration_model;
+    if (typeof effective_model === 'string') {
+      const runtime = modelRunner(catalog, effective_model);
+      if (!runnerSupportsSpeed(catalog, runtime, 'fast')) {
+        return { ok: false, reason: 'quick_fix_speed_unsupported' };
+      }
+    }
+  }
+  return { ok: true };
 }
 
 /**

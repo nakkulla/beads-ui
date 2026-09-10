@@ -2,9 +2,8 @@
  * Server-global IMPLEMENTATION-preset WebSocket channel (spec §C.6).
  *
  * A preset carries the full execution profile and has exactly two apply paths:
- * its 15 Bead-pin-compatible session keys go onto ONE Bead's metadata, while a
- * global apply replaces those session keys in `bd kv` and the three
- * orchestration keys in the workspace queue.
+ * its 14 Bead-pin-compatible session keys go onto ONE Bead's metadata, while a
+ * global apply replaces the general and quick_fix workspace profiles.
  * The retired 12-key family — `exec-preset-*`, `apply-exec-preset`,
  * `worker-queue-set-default-exec-preset` — is gone from the protocol, so a
  * client still sending one gets `unknown_type` rather than a silent no-op.
@@ -22,14 +21,12 @@ import {
   BEAD_APPLY_KEYS,
   ORCHESTRATION_KEYS,
   PRESET_KV_KEYS,
-  QUICK_FIX_KV_KEYS,
   QUICK_FIX_LANE_MAP,
   QUICK_FIX_ORCHESTRATION_KEYS,
-  execSettingEnums,
   implPresetEnums,
-  normalizeQuickFixLanePreset,
-  sessionDefaultEnums,
-  validateImplPresetSettings
+  inferImplRuntime,
+  validateImplPresetSettings,
+  validateImplSettings
 } from '../worker/exec-enums.js';
 import {
   __resetWorkerRuntimeForTest,
@@ -87,24 +84,6 @@ export function buildApplyImplPresetArgs(issue_id, settings) {
     }
   }
   return args;
-}
-
-/**
- * Resolve every quick_fix destination enum from its canonical general source.
- *
- * @returns {Record<string, ReadonlyArray<string>>}
- */
-function quickFixLaneEnums() {
-  const session_enums = sessionDefaultEnums();
-  const exec_enums = execSettingEnums();
-  /** @type {Record<string, ReadonlyArray<string>>} */
-  const target_enums = {};
-  for (const [source_key, target_key] of Object.entries(QUICK_FIX_LANE_MAP)) {
-    target_enums[target_key] = ORCHESTRATION_KEYS.includes(source_key)
-      ? exec_enums[source_key]
-      : session_enums[target_key];
-  }
-  return target_enums;
 }
 
 /**
@@ -248,16 +227,9 @@ export function handleImplPresetDelete(ws, req) {
  * @param {RequestEnvelope} req
  * @param {unknown} preset_id
  * @param {unknown} expected_revision
- * @param {'quick_fix'|undefined} [response_lane]
  * @returns {{ ok: true, preset: any, revision: number }|{ ok: false }}
  */
-function resolvePresetForApply(
-  ws,
-  req,
-  preset_id,
-  expected_revision,
-  response_lane
-) {
+function resolvePresetForApply(ws, req, preset_id, expected_revision) {
   const snapshot = coordinator().snapshot();
   if (expected_revision !== snapshot.revision) {
     const response = {
@@ -266,9 +238,6 @@ function resolvePresetForApply(
       revision: snapshot.revision,
       presets: snapshot.presets
     };
-    if (response_lane) {
-      Object.assign(response, { lane: response_lane });
-    }
     ws.send(JSON.stringify(makeOk(req, response)));
     return { ok: false };
   }
@@ -314,7 +283,60 @@ function resolvePresetForApply(
 }
 
 /**
- * Apply path 1 — pin one preset's 15 session keys onto ONE Bead's metadata.
+ * Project a preset into the canonical per-Bead keys for one issue route.
+ *
+ * @param {Record<string, string>} settings
+ * @param {unknown} route
+ * @returns {{ ok: true, settings: Record<string, string> }|{ ok: false, reason: string }}
+ */
+function presetSettingsForIssue(settings, route) {
+  /** @type {Record<string, string>} */
+  const projected = {};
+  for (const key of BEAD_APPLY_KEYS) {
+    if (typeof settings[key] === 'string') {
+      projected[key] = settings[key];
+    }
+  }
+  if (route !== 'quick_fix') {
+    return { ok: true, settings: projected };
+  }
+
+  for (const key of [
+    'impl_dispatch',
+    'impl_model',
+    'impl_effort',
+    'impl_speed'
+  ]) {
+    const lane_value = settings[QUICK_FIX_LANE_MAP[key]];
+    if (typeof lane_value === 'string') {
+      projected[key] = lane_value;
+    }
+  }
+  const lane_runtime = settings.quick_fix_impl_runtime;
+  const lane_model = settings.quick_fix_impl_model;
+  const derived_runtime =
+    typeof lane_model === 'string'
+      ? inferImplRuntime({ impl_model: lane_model })
+      : undefined;
+  const runtime =
+    (typeof lane_runtime === 'string' ? lane_runtime : undefined) ??
+    derived_runtime ??
+    settings.impl_runtime;
+  if (typeof runtime === 'string') {
+    projected.impl_runtime = runtime;
+  } else {
+    delete projected.impl_runtime;
+  }
+
+  const coherence = validateImplSettings(projected);
+  if (!coherence.ok) {
+    return { ok: false, reason: coherence.reason };
+  }
+  return { ok: true, settings: projected };
+}
+
+/**
+ * Apply path 1 — pin one preset's 14 session keys onto ONE Bead's metadata.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -347,11 +369,52 @@ export async function handleApplyImplPreset(ws, req) {
     return;
   }
 
+  let current;
+  try {
+    current = await runBdJsonProjectedInWorkspace(
+      ws,
+      'show',
+      ['show', id, '--json'],
+      { expected_id: id }
+    );
+  } catch (err) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_read_failed',
+          err instanceof Error ? err.message : String(err)
+        )
+      )
+    );
+    return;
+  }
+  if (current.ok !== true) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bd_read_failed', current.error.message))
+    );
+    return;
+  }
+  const route = current.data?.metadata?.route;
+  const projected = presetSettingsForIssue(resolved.preset.settings, route);
+  if (!projected.ok) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'impl_preset_incompatible',
+          `Implementation preset value is incompatible: ${projected.reason}`
+        )
+      )
+    );
+    return;
+  }
+
   let updated;
   try {
     updated = await runBdInWorkspace(
       ws,
-      buildApplyImplPresetArgs(id, resolved.preset.settings)
+      buildApplyImplPresetArgs(id, projected.settings)
     );
   } catch (err) {
     ws.send(
@@ -419,7 +482,10 @@ export async function handleApplyImplPreset(ws, req) {
         conflict: false,
         revision: resolved.revision,
         issue: shown.data,
-        skipped_orchestration_keys: ORCHESTRATION_KEYS
+        skipped_orchestration_keys: [
+          ...ORCHESTRATION_KEYS,
+          ...QUICK_FIX_ORCHESTRATION_KEYS
+        ]
       })
     )
   );
@@ -454,23 +520,14 @@ export async function handleApplyImplPresetGlobal(ws, req) {
     );
     return;
   }
-  if (
-    payload.lane !== undefined &&
-    payload.lane !== 'general' &&
-    payload.lane !== 'quick_fix'
-  ) {
+  if (payload.lane !== undefined) {
     ws.send(
       JSON.stringify(
-        makeError(
-          req,
-          'bad_request',
-          'payload.lane must be general or quick_fix'
-        )
+        makeError(req, 'bad_request', 'payload.lane is not supported')
       )
     );
     return;
   }
-  const quick_fix = payload.lane === 'quick_fix';
   const workspace_key = targetWorkspaceOf(ws, req.payload);
   if (workspace_key === null) {
     ws.send(
@@ -484,19 +541,10 @@ export async function handleApplyImplPresetGlobal(ws, req) {
     );
     return;
   }
-  const resolved = resolvePresetForApply(
-    ws,
-    req,
-    preset_id,
-    expected_revision,
-    quick_fix ? 'quick_fix' : undefined
-  );
+  const resolved = resolvePresetForApply(ws, req, preset_id, expected_revision);
   if (!resolved.ok) {
     return;
   }
-  const lane_profile = quick_fix
-    ? normalizeQuickFixLanePreset(resolved.preset.settings, quickFixLaneEnums())
-    : null;
 
   // The kv side now follows `root_dir` too (UI-eey2 §9.5). Before this, a
   // profile applied from another repo's panel wrote that repo's QUEUE but the
@@ -529,20 +577,12 @@ export async function handleApplyImplPresetGlobal(ws, req) {
     );
     return;
   }
-  // General and quick_fix profiles replace disjoint key sets. This keeps an
-  // apply in either lane from clearing the other lane's durable values.
   /** @type {Record<string, string|null>} */
   const patch = {};
-  if (lane_profile) {
-    for (const key of QUICK_FIX_KV_KEYS) {
-      patch[key] = lane_profile.values[key];
-    }
-  } else {
-    for (const key of PRESET_KV_KEYS) {
-      patch[key] = Object.hasOwn(resolved.preset.settings, key)
-        ? resolved.preset.settings[key]
-        : null;
-    }
+  for (const key of PRESET_KV_KEYS) {
+    patch[key] = Object.hasOwn(resolved.preset.settings, key)
+      ? resolved.preset.settings[key]
+      : null;
   }
   const written = await writeKv(
     SESSION_DEFAULTS_KV_KEY,
@@ -595,16 +635,10 @@ export async function handleApplyImplPresetGlobal(ws, req) {
 
   /** @type {Record<string, string|null>} */
   const orchestration_values = {};
-  if (lane_profile) {
-    for (const key of QUICK_FIX_ORCHESTRATION_KEYS) {
-      orchestration_values[key] = lane_profile.values[key];
-    }
-  } else {
-    for (const key of ORCHESTRATION_KEYS) {
-      orchestration_values[key] = Object.hasOwn(resolved.preset.settings, key)
-        ? resolved.preset.settings[key]
-        : null;
-    }
+  for (const key of [...ORCHESTRATION_KEYS, ...QUICK_FIX_ORCHESTRATION_KEYS]) {
+    orchestration_values[key] = Object.hasOwn(resolved.preset.settings, key)
+      ? resolved.preset.settings[key]
+      : null;
   }
   /** @type {import('../worker/queue-store.js').QueueOpResult} */
   let queue_result;
@@ -620,19 +654,11 @@ export async function handleApplyImplPresetGlobal(ws, req) {
       conflict: false,
       revision: resolved.revision,
       values: confirmed.values,
-      warnings: lane_profile
-        ? [...confirmed.warnings, ...lane_profile.warnings]
-        : confirmed.warnings,
+      warnings: confirmed.warnings,
       queue_applied: false,
       queue_conflict: false,
       queue: decorateQueue(workspace_key, queue)
     };
-    if (lane_profile) {
-      Object.assign(response, {
-        lane: 'quick_fix',
-        skipped_keys: lane_profile.skipped_keys
-      });
-    }
     ws.send(JSON.stringify(makeOk(req, response)));
     return;
   }
@@ -641,19 +667,11 @@ export async function handleApplyImplPresetGlobal(ws, req) {
     conflict: false,
     revision: resolved.revision,
     values: confirmed.values,
-    warnings: lane_profile
-      ? [...confirmed.warnings, ...lane_profile.warnings]
-      : confirmed.warnings,
+    warnings: confirmed.warnings,
     queue_applied: queue_result.ok,
     queue_conflict: queue_result.conflict,
     queue: decorateQueue(workspace_key, queue_result.queue)
   };
-  if (lane_profile) {
-    Object.assign(response, {
-      lane: 'quick_fix',
-      skipped_keys: lane_profile.skipped_keys
-    });
-  }
   ws.send(JSON.stringify(makeOk(req, response)));
   if (queue_result.ok) {
     fanoutWorkerQueue(workspace_key, queue_result.queue);
