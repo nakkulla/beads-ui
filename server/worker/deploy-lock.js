@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { prepareWorktreeContainer } from './worktree-container.js';
 
 const HOLDER_SOURCE = String.raw`
 import fcntl
@@ -31,7 +32,7 @@ export async function acquireDeployLock(input) {
       '.worktrees',
       '.repo-ops-deploy.lock'
     );
-    fs_impl.mkdirSync(path.dirname(lock_path), { recursive: true });
+    prepareWorktreeContainer(input.repo, fs_impl);
     const timeout_ms = Math.max(1, Math.floor(input.timeout_ms));
 
     return await new Promise((resolve) => {

@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { runShell } from '../bd.js';
+import { prepareWorktreeContainer } from './worktree-container.js';
 
 /**
  * @typedef {(args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>} GitRunner
@@ -755,6 +756,7 @@ export function createWorktreeManager(deps) {
     async add(input) {
       const release = await locks.topologyLock(input.repo);
       try {
+        prepareWorktreeContainer(input.repo, fs);
         const wt = pathFor(input.repo, input.bead_id);
         const branch = branchForBead(input.bead_id);
         const added = await run(
@@ -855,6 +857,14 @@ export function createWorktreeManager(deps) {
           return {
             ok: /** @type {const} */ (false),
             reason: 'worktree_restore_branch_mismatch'
+          };
+        }
+        try {
+          prepareWorktreeContainer(input.repo, fs);
+        } catch {
+          return {
+            ok: /** @type {const} */ (false),
+            reason: 'worktree_restore_failed'
           };
         }
         const wt = pathFor(input.repo, input.bead_id);
@@ -2064,6 +2074,7 @@ export function createWorktreeManager(deps) {
     async addDetached(input) {
       const release = await locks.topologyLock(input.repo);
       try {
+        prepareWorktreeContainer(input.repo, fs);
         const wt = detachedPathFor(input.repo, input.name);
         /**
          * A reclaim step never decides the outcome — only the `add` below does,
@@ -2164,6 +2175,18 @@ export function createRepoOpsDeployWorktreeManager(deps) {
   }
 
   /**
+   * @param {string} candidate
+   * @returns {string}
+   */
+  function existingRealpath(candidate) {
+    try {
+      return fs.realpathSync(candidate);
+    } catch {
+      return path.resolve(candidate);
+    }
+  }
+
+  /**
    * Prove that the reserved deploy path is a registered detached worktree of
    * this repository. Complete absence is a valid bootstrap state; partial or
    * foreign Git evidence is not.
@@ -2177,8 +2200,13 @@ export function createRepoOpsDeployWorktreeManager(deps) {
     const list = await run(['worktree', 'list', '--porcelain', '-z'], {
       cwd: repo
     });
+    const deploy_realpath = existingRealpath(deploy_path);
     const registered =
-      list.code === 0 && registeredPaths(list.stdout).includes(deploy_path);
+      list.code === 0 &&
+      registeredPaths(list.stdout).some(
+        (registered_path) =>
+          existingRealpath(registered_path) === deploy_realpath
+      );
     const exists = fs.existsSync(deploy_path);
     if (!exists && !registered) {
       return { ok: true, path: deploy_path, exists: false };
@@ -2281,6 +2309,11 @@ export function createRepoOpsDeployWorktreeManager(deps) {
       if (!ownership.exists) {
         const release_topology = await deps.locks.topologyLock(repo);
         try {
+          try {
+            prepareWorktreeContainer(repo, fs);
+          } catch {
+            return { ok: false, code: 'repo_ops_worktree_create_failed' };
+          }
           const added = await run(
             ['worktree', 'add', '--detach', deploy_path, target_sha],
             { cwd: repo }

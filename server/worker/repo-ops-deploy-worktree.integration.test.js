@@ -25,6 +25,17 @@ function git(args, cwd) {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
 }
 
+/**
+ * @param {string} cwd
+ * @returns {string[]}
+ */
+function registeredWorktreePaths(cwd) {
+  return git(['worktree', 'list', '--porcelain', '-z'], cwd)
+    .split('\0')
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => path.resolve(line.slice('worktree '.length)));
+}
+
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-wt-'));
   process.env.XDG_STATE_HOME = path.join(root, 'state');
@@ -80,6 +91,72 @@ describe('RepoOps deploy worktree', () => {
       path: result.path,
       target_sha: result.target_sha
     });
+  });
+
+  test('creates and reuses the registered deploy worktree in prepared nosync', async () => {
+    const nosync = path.join(repo, '.worktrees.nosync');
+    fs.mkdirSync(nosync);
+    const manager = createRepoOpsDeployWorktreeManager({
+      locks: createLockManager()
+    });
+
+    const created = await manager.ensure({
+      repo,
+      workspace: repo,
+      base: 'main'
+    });
+
+    expect(created.ok).toBe(true);
+    if (!created.ok || typeof created.path !== 'string') {
+      return;
+    }
+    expect(fs.readlinkSync(path.join(repo, '.worktrees'))).toBe(
+      '.worktrees.nosync'
+    );
+    expect(fs.realpathSync(created.path)).toBe(
+      path.join(fs.realpathSync(nosync), '.repo-ops-deploy')
+    );
+    expect(registeredWorktreePaths(repo)).toContain(
+      path.join(fs.realpathSync(nosync), '.repo-ops-deploy')
+    );
+
+    const reused = await manager.ensure({
+      repo,
+      workspace: repo,
+      base: 'main'
+    });
+
+    expect(reused).toMatchObject({
+      ok: true,
+      path: created.path,
+      target_sha: created.target_sha
+    });
+  });
+
+  test('preserves an invalid container before deploy worktree creation', async () => {
+    const container = path.join(repo, '.worktrees');
+    fs.mkdirSync(path.join(repo, '.worktrees.nosync'));
+    fs.mkdirSync(container);
+    fs.writeFileSync(path.join(container, 'keep'), 'human data\n');
+    const registrations = registeredWorktreePaths(repo);
+    const manager = createRepoOpsDeployWorktreeManager({
+      locks: createLockManager()
+    });
+
+    const result = await manager.ensureAligned({
+      repo,
+      workspace: repo,
+      target_sha: git(['rev-parse', 'HEAD'], repo).trim()
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'repo_ops_worktree_create_failed'
+    });
+    expect(fs.readFileSync(path.join(container, 'keep'), 'utf8')).toBe(
+      'human data\n'
+    );
+    expect(registeredWorktreePaths(repo)).toEqual(registrations);
   });
 
   test('retries exactly once only after a reclaimed fetch timeout', async () => {
