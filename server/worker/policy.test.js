@@ -293,6 +293,17 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.stamped_keys).toEqual([]);
   });
 
+  test('resolves a stored auto/auto/auto bead as a valid auto runtime', () => {
+    const r = resolveExecSettings({
+      bead: { impl_runtime: 'auto', impl_model: 'auto', impl_effort: 'auto' },
+      defaults: {}
+    });
+
+    expect(r.impl_runtime).toBe('auto');
+    expect(r.impl_runtime_inferred).toBe(false);
+    expect(r.invalid_reason).toBe(undefined);
+  });
+
   test('keeps a model-only bead on the legacy provider inference', () => {
     const r = resolveExecSettings({
       bead: { impl_model: 'terra' },

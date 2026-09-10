@@ -19,7 +19,8 @@ import {
   KV_DEFAULT_PRESET_NAME,
   LEGACY_PRESET_IDS,
   TARGET_PRESETS,
-  planPresetReplacement
+  planPresetReplacement,
+  settingsEqual
 } from './lib/exec-presets-plan.js';
 
 const CLIENT_ID = 'exec-presets-replace';
@@ -124,7 +125,7 @@ class WsClient {
     this.seq = 0;
     /** @type {Map<string, { resolve: (value: any) => void, reject: (err: Error) => void }>} */
     this.pending = new Map();
-    /** @type {Map<string, (payload: any) => void>} */
+    /** @type {Map<string, { accept: (payload: any) => boolean, resolve: (payload: any) => void }>} */
     this.event_waiters = new Map();
     /** @type {WebSocket|null} */
     this.socket = null;
@@ -182,9 +183,9 @@ class WsClient {
       return;
     }
     const waiter = this.event_waiters.get(message.type);
-    if (waiter) {
+    if (waiter && waiter.accept(message.payload)) {
       this.event_waiters.delete(message.type);
-      waiter(message.payload);
+      waiter.resolve(message.payload);
     }
   }
 
@@ -223,17 +224,22 @@ class WsClient {
    * request that triggers the push, since the server sends both in one turn.
    *
    * @param {string} type - Envelope type of the awaited server push.
+   * @param {(payload: any) => boolean} [accept] - Optional filter; a push it
+   * rejects is ignored and the waiter stays armed.
    * @returns {Promise<any>}
    */
-  nextEvent(type) {
+  nextEvent(type, accept = () => true) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.event_waiters.delete(type);
         reject(new JobError('ws_event_timeout', type));
       }, REQUEST_TIMEOUT_MS);
-      this.event_waiters.set(type, (payload) => {
-        clearTimeout(timer);
-        resolve(payload);
+      this.event_waiters.set(type, {
+        accept,
+        resolve: (payload) => {
+          clearTimeout(timer);
+          resolve(payload);
+        }
       });
     });
   }
@@ -269,8 +275,16 @@ async function readPresetSnapshot(client) {
  * @returns {Promise<any>}
  */
 async function readQueueSnapshot(client, root_dir) {
+  // Drop the previous workspace's subscription first so a later push from
+  // that queue cannot be mistaken for this one; the snapshot's `root_dir` is
+  // then checked against the requested workspace as well.
+  await client.request('unsubscribe-worker-queue', { id: CLIENT_ID });
   await client.request('set-workspace', { path: root_dir });
-  const pushed = client.nextEvent('worker-queue-snapshot');
+  const pushed = client.nextEvent(
+    'worker-queue-snapshot',
+    /** @param {any} payload - Pushed queue snapshot. */
+    (payload) => payload?.root_dir === root_dir
+  );
   await client.request('subscribe-worker-queue', { id: CLIENT_ID });
   const payload = await pushed;
   return payload.queue;
@@ -324,8 +338,10 @@ async function executePlan(client, plan, revision) {
 }
 
 /**
- * Confirm the five targets exist and are compatible, and that no legacy id
- * survives (spec §4.4).
+ * Confirm the five targets exist with EXACTLY their settings and are
+ * compatible, and that no legacy id survives (spec §4.4). A same-name preset
+ * whose settings drifted between the last write and this read is a mismatch,
+ * not a success — the caller re-plans on it.
  *
  * @param {{ revision: number, presets: any[] }} snapshot - Post-write snapshot.
  * @returns {Map<string, string>} Target name to its live preset id.
@@ -335,7 +351,10 @@ function verifyPresets(snapshot) {
   const by_name = new Map();
   for (const target of TARGET_PRESETS) {
     const live = snapshot.presets.find(
-      (preset) => preset.name === target.name && preset.compatible === true
+      (preset) =>
+        preset.name === target.name &&
+        preset.compatible === true &&
+        settingsEqual(target.settings, preset.settings || {})
     );
     if (!live) {
       throw new JobError('preset_readback_missing', target.name);
@@ -481,19 +500,22 @@ function readKvDefaults(root_dir) {
  *
  * @param {string} root_dir - Workspace root.
  * @param {any} queue - The queue snapshot from the last apply reply.
+ * @param {unknown} bdui_url_before - The kv `bdui_url` read before the apply.
  * @returns {{ kv: Record<string, unknown>, queue: Record<string, unknown> }}
  */
-function verifyReadback(root_dir, queue) {
+function verifyReadback(root_dir, queue, bdui_url_before) {
   const kv = readKvDefaults(root_dir);
   for (const [key, expected] of Object.entries(EXPECTED_KV)) {
     if (kv[key] !== expected) {
       throw new JobError('readback_mismatch', `${root_dir} ${key}`);
     }
   }
-  if (Object.hasOwn(kv, 'quick_fix_impl_model') && kv.quick_fix_impl_model) {
+  // The lane-incompatible key must be truly ABSENT, not merely empty.
+  if (Object.hasOwn(kv, 'quick_fix_impl_model')) {
     throw new JobError('readback_mismatch', `${root_dir} quick_fix_impl_model`);
   }
-  if (typeof kv.bdui_url !== 'string' || kv.bdui_url.length === 0) {
+  // Preservation is proved against the value read BEFORE the apply.
+  if (kv.bdui_url !== bdui_url_before) {
     throw new JobError('readback_mismatch', `${root_dir} bdui_url`);
   }
   const exec_defaults = queue.exec_defaults || {};
@@ -527,6 +549,17 @@ async function replacePresets(client) {
       TARGET_PRESETS,
       LEGACY_PRESET_IDS
     );
+    // A preserved same-name preset would collide with the create that follows
+    // it; fail before any delete so nothing is half-replaced.
+    const collision = plan.preserve.find((kept) =>
+      plan.create.some((target) => target.name === kept.name)
+    );
+    if (collision) {
+      throw new JobError(
+        'preset_name_conflict',
+        `${collision.id} ${collision.name}`
+      );
+    }
     const result = await executePlan(client, plan, snapshot.revision);
     if (result.conflict) {
       continue;
@@ -548,7 +581,7 @@ async function replacePresets(client) {
  * @param {WsClient} client - Connected client.
  * @param {Map<string, string>} preset_ids - Target name to live preset id.
  * @param {number} preset_revision - Preset revision after replacement.
- * @returns {Promise<{ applied: Record<string, any>, readback: Record<string, any> }>}
+ * @returns {Promise<{ preset_conflict: boolean, applied: Record<string, any>, readback: Record<string, any> }>}
  */
 async function applyDefaults(client, preset_ids, preset_revision) {
   const listed = await client.request('list-workspaces', {});
@@ -565,6 +598,7 @@ async function applyDefaults(client, preset_ids, preset_revision) {
     const lanes = {};
     /** @type {any} */
     let last_queue = null;
+    const bdui_url_before = readKvDefaults(root_dir).bdui_url;
     for (const lane of /** @type {const} */ (['general', 'quick_fix'])) {
       const result = await applyLane(
         client,
@@ -574,15 +608,46 @@ async function applyDefaults(client, preset_ids, preset_revision) {
         lane
       );
       if (result.preset_conflict) {
-        throw new JobError('preset_replace_conflict', `apply ${root_dir}`);
+        // A preset revision moved under us: hand control back to the caller,
+        // which re-plans from a fresh snapshot (spec §4.5 → §4.3).
+        return { preset_conflict: true, applied, readback };
       }
       lanes[lane] = true;
       last_queue = result.queue;
     }
     applied[root_dir] = lanes;
-    readback[root_dir] = verifyReadback(root_dir, last_queue);
+    readback[root_dir] = verifyReadback(root_dir, last_queue, bdui_url_before);
   }
-  return { applied, readback };
+  return { preset_conflict: false, applied, readback };
+}
+
+/**
+ * Judge whether both rigs already carry the 최고효율 profile in kv and queue,
+ * without writing anything. Used on a rerun whose preset plan is empty so the
+ * idempotent path really performs no write (spec §4.2).
+ *
+ * @param {WsClient} client - Connected client.
+ * @returns {Promise<Record<string, any>|null>} Per-root readback when
+ * everything matches, `null` when any key differs.
+ */
+async function readDefaultsIfSettled(client) {
+  const listed = await client.request('list-workspaces', {});
+  const roots = selectWorkspaceRoots(listed);
+  /** @type {Record<string, any>} */
+  const readback = {};
+  for (const root_dir of roots) {
+    const queue = await readQueueSnapshot(client, root_dir);
+    try {
+      const kv = readKvDefaults(root_dir);
+      readback[root_dir] = verifyReadback(root_dir, queue, kv.bdui_url);
+    } catch (err) {
+      if (err instanceof JobError && err.code === 'readback_mismatch') {
+        return null;
+      }
+      throw err;
+    }
+  }
+  return readback;
 }
 
 /**
@@ -614,24 +679,40 @@ async function main() {
       );
       return;
     }
-    const replaced = await replacePresets(client);
-    const preset_ids = verifyPresets(replaced.snapshot);
-    const defaults = await applyDefaults(
-      client,
-      preset_ids,
-      replaced.revision_after
-    );
-    process.stdout.write(
-      `${JSON.stringify({
-        revision_before: replaced.revision_before,
-        revision_after: replaced.revision_after,
-        kept: replaced.plan.keep,
-        deleted: replaced.plan.delete,
-        created: replaced.plan.create.map((target) => target.name),
-        preserved: replaced.plan.preserve,
-        applied: defaults.applied,
-        readback: defaults.readback
-      })}\n`
+    // One re-plan loop covers both conflict sources — a preset revision that
+    // moves during the replace (§4.3) and one that moves during the kv apply
+    // (§4.5) — under the same bound.
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+      const replaced = await replacePresets(client);
+      const preset_ids = verifyPresets(replaced.snapshot);
+      const no_preset_change =
+        replaced.plan.delete.length === 0 && replaced.plan.create.length === 0;
+      const settled = no_preset_change
+        ? await readDefaultsIfSettled(client)
+        : null;
+      const defaults = settled
+        ? { preset_conflict: false, applied: {}, readback: settled }
+        : await applyDefaults(client, preset_ids, replaced.revision_after);
+      if (defaults.preset_conflict) {
+        continue;
+      }
+      process.stdout.write(
+        `${JSON.stringify({
+          revision_before: replaced.revision_before,
+          revision_after: replaced.revision_after,
+          kept: replaced.plan.keep,
+          deleted: replaced.plan.delete,
+          created: replaced.plan.create.map((target) => target.name),
+          preserved: replaced.plan.preserve,
+          applied: defaults.applied,
+          readback: defaults.readback
+        })}\n`
+      );
+      return;
+    }
+    throw new JobError(
+      'preset_replace_conflict',
+      `after ${MAX_ATTEMPTS} tries`
     );
   } finally {
     client.close();

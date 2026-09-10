@@ -716,6 +716,20 @@ describe('views/detail-panel/exec-settings catalog-driven selectors', () => {
     ]);
   });
 
+  test('impl_effort keeps the catalog union under an auto runtime and auto model', () => {
+    const mount = mountTemplate({ impl_runtime: 'auto', impl_model: 'auto' });
+
+    // Both providers' lists, not one runner's: `xhigh`/`max` come from claude.
+    expect(optionValues(selectFor(mount, 'impl_effort'))).toEqual([
+      '',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max'
+    ]);
+  });
+
   test('a stored value outside the current vocabulary shows as (비호환)', () => {
     const mount = mountTemplate({ orchestration_effort: 'max' });
 
@@ -930,6 +944,23 @@ describe('views/detail-panel/exec-settings implementation runtime target', () =>
       impl_runtime: 'auto',
       impl_model: '',
       impl_effort: 'high'
+    });
+  });
+
+  test('drops an exact model when the runtime is cleared to the default', () => {
+    expect(
+      normalizeImplTarget(
+        {
+          impl_runtime: '',
+          impl_model: 'opus',
+          impl_effort: 'high'
+        },
+        catalogFixture()
+      )
+    ).toEqual({
+      impl_runtime: '',
+      impl_model: '',
+      impl_effort: ''
     });
   });
 

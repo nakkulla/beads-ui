@@ -586,6 +586,17 @@ describe('worker/exec-enums implementation target coherence', () => {
     });
   });
 
+  test('validates the literal auto model and effort as an unspecified target', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const result = validateImplSettings(
+      { impl_runtime: 'auto', impl_model: 'auto', impl_effort: 'auto' },
+      { catalog, active_writer: false }
+    );
+
+    expect(result).toEqual({ ok: true, impl_runtime: 'auto', inferred: false });
+  });
+
   test('accepts a model-less auto effort from the whole catalog union', () => {
     const catalog = resolveCatalog({ warn: () => {} });
 

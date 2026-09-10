@@ -505,8 +505,14 @@ export function validateImplSettings(settings, options = {}) {
   const catalog = options.catalog ?? runtimeCatalog();
   const active_writer = options.active_writer ?? true;
   const requested_runtime = settings?.impl_runtime;
-  const model = settings?.impl_model;
-  const effort = settings?.impl_effort;
+  // `auto` on the model/effort axes is the selector's "unspecified" state, not
+  // a catalog token: a stored `{auto, auto, auto}` Bead must validate as a
+  // model-less `auto` runtime rather than as an unknown model. The runtime
+  // axis keeps its literal — `auto` is a legal runtime value.
+  const model =
+    settings?.impl_model === AUTO_LITERAL ? undefined : settings?.impl_model;
+  const effort =
+    settings?.impl_effort === AUTO_LITERAL ? undefined : settings?.impl_effort;
 
   if (
     requested_runtime !== undefined &&

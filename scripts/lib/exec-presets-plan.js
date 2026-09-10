@@ -138,7 +138,7 @@ export const LEGACY_PRESET_IDS = Object.freeze([
  * @param {Record<string, unknown>} right - The other settings object.
  * @returns {boolean}
  */
-function settingsEqual(left, right) {
+export function settingsEqual(left, right) {
   const left_keys = Object.keys(left);
   const right_keys = Object.keys(right);
   if (left_keys.length !== right_keys.length) {

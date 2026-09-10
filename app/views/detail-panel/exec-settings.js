@@ -494,10 +494,14 @@ export function normalizeImplTarget(target, runner_catalog) {
       ? normalized.impl_runtime
       : null;
   const model_runtime = modelRunnerOf(runner_catalog, normalized.impl_model);
+  // Only an explicit `auto` runtime keeps an exact model of either provider; a
+  // cleared runtime still drops the linked exact values, as it always did, so
+  // the server's `impl_runtime_required` cannot be reached from this surface.
+  const keeps_any_provider = normalized.impl_runtime === 'auto';
   if (
     normalized.impl_model &&
-    effective_runtime &&
-    model_runtime !== effective_runtime
+    !keeps_any_provider &&
+    (!effective_runtime || model_runtime !== effective_runtime)
   ) {
     normalized.impl_model = '';
     normalized.impl_effort = '';
@@ -577,7 +581,7 @@ export function execSettingRows(input) {
       );
     } else if (key === 'impl_effort') {
       groups = valueGroups(
-        impl_model
+        impl_model && impl_model !== 'auto'
           ? effortsForModel(runner_catalog, impl_model)
           : impl_runtime
             ? runtimeEffortUnion(runner_catalog, impl_runtime)
