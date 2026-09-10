@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { activeAttemptStates, activeBeadIds } from './active-attempts.js';
+import {
+  activeAttemptStates,
+  activeBeadIds,
+  latestImplementationAttempts
+} from './active-attempts.js';
 
 /**
  * @param {Array<Record<string, any>>} rows
@@ -15,6 +19,75 @@ function attemptsOf(rows) {
 }
 
 describe('activeAttemptStates', () => {
+  test('lets a later pre-spawn failure supersede a started attempt', () => {
+    const attempts = attemptsOf([
+      {
+        attempt_id: 'new',
+        bead_id: 'UI-1',
+        status: 'failed',
+        started_at: null,
+        finished_at: 300
+      },
+      {
+        attempt_id: 'old',
+        bead_id: 'UI-1',
+        status: 'discarded',
+        started_at: 100,
+        finished_at: 200
+      }
+    ]);
+
+    const { winners } = activeAttemptStates(attempts, new Map());
+
+    expect(winners.get('UI-1')?.attempt.attempt_id).toBe('new');
+  });
+
+  test.each([false, true])(
+    'breaks equal-time ties by attempt id (reverse=%s)',
+    (reverse) => {
+      const rows = [
+        { attempt_id: 'a2', bead_id: 'UI-1', started_at: 100 },
+        { attempt_id: 'a1', bead_id: 'UI-1', started_at: 100 }
+      ];
+
+      const latest = latestImplementationAttempts(
+        attemptsOf(reverse ? rows.reverse() : rows)
+      );
+
+      expect(latest.get('UI-1').attempt_id).toBe('a2');
+    }
+  );
+
+  test.each([false, true])(
+    'keeps the latest failure after an older discard (reverse=%s)',
+    (reverse) => {
+      const rows = [
+        {
+          attempt_id: 'new',
+          bead_id: 'UI-1',
+          status: 'failed',
+          started_at: 200,
+          finished_at: 300
+        },
+        {
+          attempt_id: 'old',
+          bead_id: 'UI-1',
+          status: 'discarded',
+          started_at: 100,
+          finished_at: 150,
+          dismissed_at: 160
+        }
+      ];
+
+      const { winners } = activeAttemptStates(
+        attemptsOf(reverse ? rows.reverse() : rows),
+        new Map()
+      );
+
+      expect(winners.get('UI-1')?.attempt.attempt_id).toBe('new');
+    }
+  );
+
   test('admits a running attempt', () => {
     const attempts = attemptsOf([
       { attempt_id: 'a1', bead_id: 'UI-1', status: 'running' }

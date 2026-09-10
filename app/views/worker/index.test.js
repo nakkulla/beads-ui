@@ -4691,6 +4691,7 @@ describe('views/worker', () => {
             attempt_id: 'old_eligible',
             bead_id: 'B1',
             status: 'failed',
+            started_at: 100,
             repo: '/repo',
             cause: 'verify_failed:x',
             session_id: 'sid-old'
@@ -4699,6 +4700,7 @@ describe('views/worker', () => {
             attempt_id: 'latest_no_sid',
             bead_id: 'B1',
             status: 'failed',
+            started_at: 200,
             repo: '/repo',
             cause: 'verify_failed:y'
           }
@@ -13111,7 +13113,19 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
             attempt_id: 'x1',
             bead_id: 'X',
             status: 'failed',
-            serial_lane_id: 's1'
+            serial_lane_id: 's1',
+            started_at: 200,
+            finished_at: 300,
+            runner: 'codex',
+            session_id: 'session-new'
+          },
+          x0: {
+            attempt_id: 'x0',
+            bead_id: 'X',
+            status: 'discarded',
+            started_at: 100,
+            finished_at: 150,
+            dismissed_at: 160
           }
         },
         serial_lanes: [
@@ -13137,6 +13151,10 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
     expect(
       s1.querySelector('.worker-mini--ghost[data-bead-id="X"]')
     ).not.toBeNull();
+    const tile = mount.querySelector('.rtile[data-attempt-id="x1"]');
+    expect(tile).not.toBeNull();
+    expect(tile?.querySelector('.rtile__resume')).not.toBeNull();
+    expect(tile?.querySelector('.rtile__discard')).not.toBeNull();
   });
 
   test('draws a held bead once when it is still the lane head', () => {

@@ -41,6 +41,37 @@ export function isImplementationAttempt(attempt) {
 }
 
 /**
+ * Select each bead's latest implementation independently of snapshot key order.
+ *
+ * @param {Record<string, any>} attempts
+ * @returns {Map<string, any>}
+ */
+export function latestImplementationAttempts(attempts) {
+  /** @type {Map<string, any>} */
+  const latest = new Map();
+  for (const attempt of Object.values(attempts || {})) {
+    if (
+      !isImplementationAttempt(attempt) ||
+      typeof attempt.bead_id !== 'string'
+    ) {
+      continue;
+    }
+    const prior = latest.get(attempt.bead_id);
+    const at = attempt.started_at ?? attempt.finished_at ?? 0;
+    const prior_at = prior
+      ? (prior.started_at ?? prior.finished_at ?? 0)
+      : -Infinity;
+    if (
+      at > prior_at ||
+      (at === prior_at && String(attempt.attempt_id) > String(prior.attempt_id))
+    ) {
+      latest.set(attempt.bead_id, attempt);
+    }
+  }
+  return latest;
+}
+
+/**
  * @typedef {Object} ReviewSessionAttemptState
  * @property {any} attempt
  * @property {'click'|'auto'|null} origin
@@ -108,19 +139,13 @@ export function activeAttemptStates(attempts, done_at_by_bead) {
   const values = /** @type {any[]} */ (Object.values(attempts || {}));
   /** @type {Set<string>} */
   const resumed_from_ids = new Set();
-  /** @type {Map<string, string>} */
-  const last_attempt_by_bead = new Map();
+  const last_attempt_by_bead = latestImplementationAttempts(attempts);
   for (const a of values) {
     if (!a || typeof a.bead_id !== 'string') {
       continue;
     }
     if (typeof a.resumed_from === 'string' && a.resumed_from.length > 0) {
       resumed_from_ids.add(a.resumed_from);
-    }
-    // "이 bead의 마지막 시도"는 구현 시도들 사이에서만 뜻이 있다: 리뷰 세션이
-    // 뒤에 끼면 처리되지 않은 구현 실패가 조용히 마지막 자리를 잃는다.
-    if (isImplementationAttempt(a)) {
-      last_attempt_by_bead.set(a.bead_id, a.attempt_id);
     }
   }
 
@@ -147,7 +172,7 @@ export function activeAttemptStates(attempts, done_at_by_bead) {
         typeof a.finished_at === 'number' &&
         done_at >= a.finished_at;
       if (
-        last_attempt_by_bead.get(a.bead_id) === a.attempt_id &&
+        last_attempt_by_bead.get(a.bead_id) === a &&
         !resolved_by_done &&
         typeof a.dismissed_at !== 'number'
       ) {

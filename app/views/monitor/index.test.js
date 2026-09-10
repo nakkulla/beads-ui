@@ -705,6 +705,46 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     ).toEqual(['A-2']);
   });
 
+  test('keeps recovery actions beside occupancy after an older discarded attempt', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
+          lane_states: { s1: { occupied_by: ['A-1'] } },
+          attempts: {
+            new: {
+              attempt_id: 'new',
+              bead_id: 'A-1',
+              status: 'failed',
+              started_at: 200,
+              finished_at: 300,
+              runner: 'codex',
+              session_id: 'session-new'
+            },
+            old: {
+              attempt_id: 'old',
+              bead_id: 'A-1',
+              status: 'discarded',
+              started_at: 100,
+              finished_at: 150,
+              dismissed_at: 160
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(el(mount, '.mon2-item--ghost').textContent).toContain(
+      '실패 · 점유 유지'
+    );
+    const tile = el(mount, '.rtile[data-attempt-id="new"]');
+    expect(tile.querySelector('.rtile__resume')).not.toBeNull();
+    expect(tile.querySelector('.rtile__discard')).not.toBeNull();
+  });
+
   test('shows stale occupied work as an admission row without a ghost', () => {
     const { mount, view } = setup({
       workspaces: [

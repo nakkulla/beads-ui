@@ -22,6 +22,7 @@ import { RETRY_MAX } from '../../../server/worker/failure-class.js';
 import {
   activeAttemptStates,
   isImplementationAttempt,
+  latestImplementationAttempts,
   reviewSessionAttemptStates
 } from '../../utils/active-attempts.js';
 import { isForeignBlocker } from '../../utils/blocker-scope.js';
@@ -509,19 +510,8 @@ const DONE_KIND_LABELS = {
  * @returns {string|null}
  */
 export function lastImplementationStatus(attempts, bead_id) {
-  /** @type {string|null} */
-  let status = null;
-  for (const attempt of Object.values(attempts || {})) {
-    if (
-      !attempt ||
-      attempt.bead_id !== bead_id ||
-      !isImplementationAttempt(attempt)
-    ) {
-      continue;
-    }
-    status = typeof attempt.status === 'string' ? attempt.status : null;
-  }
-  return status;
+  const attempt = latestImplementationAttempts(attempts).get(bead_id);
+  return typeof attempt?.status === 'string' ? attempt.status : null;
 }
 
 /**

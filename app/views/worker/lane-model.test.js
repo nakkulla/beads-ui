@@ -4,6 +4,7 @@ import {
   MIN_SLOTS,
   activeByBead,
   buildLanes,
+  lastImplementationStatus,
   latestTerminalAttempt,
   routeChipValue,
   validTime
@@ -11,6 +12,34 @@ import {
 
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
+
+test.each([false, true])(
+  'reads the latest occupancy status regardless of snapshot order (reverse=%s)',
+  (reverse) => {
+    const rows = [
+      [
+        'new',
+        { attempt_id: 'new', bead_id: 'A-1', status: 'failed', started_at: 200 }
+      ],
+      [
+        'old',
+        {
+          attempt_id: 'old',
+          bead_id: 'A-1',
+          status: 'discarded',
+          started_at: 100
+        }
+      ]
+    ];
+
+    const status = lastImplementationStatus(
+      Object.fromEntries(reverse ? rows.reverse() : rows),
+      'A-1'
+    );
+
+    expect(status).toBe('failed');
+  }
+);
 
 /**
  * @param {Partial<Record<string, any>>} [patch]
