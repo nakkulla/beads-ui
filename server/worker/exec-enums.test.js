@@ -288,6 +288,28 @@ describe('worker/exec-enums full-profile presets', () => {
     });
   });
 
+  test('rejects fast quick_fix orchestration speed when the effective model lacks that tier', () => {
+    const result = validateImplPresetSettings({
+      quick_fix_orchestration_model: 'opus',
+      quick_fix_orchestration_speed: 'fast'
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'quick_fix_speed_unsupported'
+    });
+  });
+
+  test('accepts fast quick_fix impl speed inherited from a concrete general runtime', () => {
+    const result = validateImplPresetSettings({
+      impl_runtime: 'codex',
+      quick_fix_impl_dispatch: 'delegated',
+      quick_fix_impl_speed: 'fast'
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
   test('validates review speed without a missing enum crash', () => {
     const accepted = validateImplPresetSettings({
       spec_review_speed: 'fast'

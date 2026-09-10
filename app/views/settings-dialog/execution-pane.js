@@ -846,6 +846,7 @@ export function createExecutionPane(mount_element, binding) {
     let model = current.orchestration_model;
     if (model && !orchestrationModelOptions(catalog, runtime).includes(model)) {
       worker_draft.orchestration_model = null;
+      worker_draft.orchestration_effort = null;
       model = null;
     }
     const effort = current.orchestration_effort;
@@ -1266,6 +1267,7 @@ export function createExecutionPane(mount_element, binding) {
     if (isRecord(res.queue)) {
       binding.onQueueAdopt?.(res.queue);
       worker_draft = {};
+      orchestration_runtime = null;
     }
   }
 

@@ -445,11 +445,29 @@ export function validateImplPresetSettings(settings, options = {}) {
   }
 
   if (settings.quick_fix_impl_speed === 'fast') {
+    const concrete_impl_runtime =
+      typeof settings.impl_runtime === 'string' &&
+      settings.impl_runtime !== AUTO_LITERAL
+        ? settings.impl_runtime
+        : undefined;
     const runtime =
       quick_fix_input.impl_runtime ??
-      modelRunner(catalog, quick_fix_input.impl_model);
+      modelRunner(catalog, quick_fix_input.impl_model) ??
+      concrete_impl_runtime ??
+      modelRunner(catalog, settings.impl_model);
     if (!runnerSupportsSpeed(catalog, runtime, 'fast')) {
       return { ok: false, reason: 'quick_fix_speed_unsupported' };
+    }
+  }
+
+  if (settings.quick_fix_orchestration_speed === 'fast') {
+    const effective_model =
+      settings.quick_fix_orchestration_model ?? settings.orchestration_model;
+    if (typeof effective_model === 'string') {
+      const runtime = modelRunner(catalog, effective_model);
+      if (!runnerSupportsSpeed(catalog, runtime, 'fast')) {
+        return { ok: false, reason: 'quick_fix_speed_unsupported' };
+      }
     }
   }
   return { ok: true };

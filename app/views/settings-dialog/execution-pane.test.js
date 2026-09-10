@@ -546,6 +546,57 @@ describe('createExecutionPane preset strip', () => {
 
     expect(el(root, '[data-preset-diff]').textContent).toContain('기본(해제)');
   });
+
+  test('re-derives the runtime selection from an adopted codex preset', async () => {
+    const adopted_queue = queueRow({
+      revision: 4,
+      orchestration_model: 'sol',
+      orchestration_speed: 'fast'
+    });
+    const { root, pane, calls } = mount({
+      queue: queueRow({ orchestration_model: 'opus' }),
+      presets: PRESETS,
+      transport: async (/** @type {string} */ type) => {
+        if (type === 'apply-impl-preset-global') {
+          return {
+            applied: true,
+            values: {},
+            warnings: [],
+            queue: adopted_queue
+          };
+        }
+        return { values: {}, warnings: [] };
+      }
+    });
+    await pane.load();
+    const preset = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    preset.value = 'p1';
+    preset.dispatchEvent(new Event('change'));
+
+    el(root, '[data-preset-apply-global]').click();
+    await settle();
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        el(root, 'select[data-key="orchestration_runtime"]')
+      ).value
+    ).toBe('codex');
+    expect(
+      root.querySelector('select[data-key="orchestration_speed"]')
+    ).not.toBe(null);
+
+    pane.render('session');
+    el(root, 'button[data-mode="fast_track"]').click();
+    await settle();
+
+    expect(
+      payloadsOf(calls, 'worker-queue-set-orchestration-defaults').some(
+        (payload) => payload.values?.orchestration_speed === null
+      )
+    ).toBe(false);
+  });
 });
 
 describe('createExecutionPane 속도 rows', () => {
@@ -571,6 +622,32 @@ describe('createExecutionPane 속도 rows', () => {
     expect(
       root.querySelector('select[data-key="orchestration_speed"]')
     ).not.toBe(null);
+  });
+
+  test('clears the effort along with the model on a runtime switch that drops it', async () => {
+    const { root, pane, calls } = mount({
+      queue: queueRow({
+        orchestration_model: 'opus',
+        orchestration_effort: 'high'
+      })
+    });
+    await pane.load();
+
+    const runtime = /** @type {HTMLSelectElement} */ (
+      el(root, 'select[data-key="orchestration_runtime"]')
+    );
+    runtime.value = 'codex';
+    runtime.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(
+      payloadsOf(calls, 'worker-queue-set-orchestration-defaults')
+    ).toEqual([
+      {
+        values: { orchestration_model: null, orchestration_effort: null },
+        expected_revision: 3
+      }
+    ]);
   });
 
   test('offers the orchestration runtime without a 전체 option', async () => {

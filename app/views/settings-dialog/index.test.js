@@ -608,7 +608,7 @@ describe('createSettingsDialog execution tab orchestration', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0][1]).toEqual({
       expected_revision: 3,
-      values: { orchestration_model: null }
+      values: { orchestration_model: null, orchestration_effort: null }
     });
   });
 
