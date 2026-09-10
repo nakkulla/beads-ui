@@ -182,6 +182,26 @@ function parseWorktreeRecords(stdout) {
 }
 
 /**
+ * The worktree container of `repo` as `git worktree list` would name it — the
+ * realpath of `<repo>/.worktrees`, or the unresolved join when that path does
+ * not exist yet (UI-jss0).
+ *
+ * The fallback is not a silent degrade: a container git cannot resolve holds no
+ * worktree, so nothing reaches the comparison that would need the resolved form.
+ *
+ * @param {string} repo
+ * @returns {string}
+ */
+function resolvedWorktreeContainer(repo) {
+  const container = path.join(repo, '.worktrees');
+  try {
+    return nodeFs.realpathSync(container);
+  } catch {
+    return container;
+  }
+}
+
+/**
  * Whether `wt` is a worktree this worker owns and may force-remove (UI-u7hh
  * §1).
  *
@@ -198,13 +218,22 @@ function parseWorktreeRecords(stdout) {
  *    collision fallback `<bead-id>-<YYYYMMDD>` names worktree and branch
  *    alike, so this admits exactly the case UI-u7hh exists to fix.
  *
+ * The container is RESOLVED before the comparison (UI-jss0). `git worktree
+ * list` always reports a realpath, so a `.worktrees` that is itself a symlink —
+ * how an iCloud-synced vault keeps its worktrees out of the sync engine, in
+ * `.worktrees.nosync/` — made every one of its own worktrees read as foreign
+ * and stopped post-merge cleanup at the branch step. Resolving is not a wider
+ * boundary: the container's location is the repository owner's declaration, and
+ * both conditions above still decide membership against whatever it resolves
+ * to, so `.worktrees-backup/` stays refused.
+ *
  * @param {string} repo
  * @param {string} wt
  * @param {string} branch
  * @returns {boolean}
  */
 function isOwnedWorktree(repo, wt, branch) {
-  const rel = path.relative(path.join(repo, '.worktrees'), wt);
+  const rel = path.relative(resolvedWorktreeContainer(repo), wt);
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
     return false;
   }

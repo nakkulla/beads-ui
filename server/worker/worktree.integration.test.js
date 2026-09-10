@@ -1467,6 +1467,25 @@ describe('worker/worktree (real git)', () => {
     git(['branch', '-D', 'UI-1-20260804'], repo);
   });
 
+  test('removeByBranch clears a worktree under a symlinked .worktrees container', async () => {
+    const locks = createLockManager();
+    const wt = createWorktreeManager({ locks });
+    const base = headOf(repo);
+    // An iCloud-synced vault keeps worktrees in `.worktrees.nosync/` so the
+    // sync engine skips them, and links `.worktrees` at it to satisfy the
+    // harness naming rule. `git worktree list` reports the RESOLVED path, so a
+    // container compared without resolving reads as foreign.
+    fs.mkdirSync(path.join(repo, '.worktrees.nosync'));
+    fs.symlinkSync('.worktrees.nosync', path.join(repo, '.worktrees'));
+    const created = await wt.add({ repo, bead_id: 'UI-1', base });
+
+    const result = await wt.removeByBranch({ repo, branch: 'UI-1' });
+
+    expect(result).toEqual({ ok: true, removed: true, reason: null });
+    expect(fs.existsSync(created.path)).toBe(false);
+    git(['branch', '-D', 'UI-1'], repo);
+  });
+
   test('removeByBranch preserves a worktree at a different captured path', async () => {
     const wt = createWorktreeManager({ locks: createLockManager() });
     const created = await wt.add({
