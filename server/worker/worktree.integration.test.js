@@ -42,6 +42,20 @@ function headOf(cwd, rev = 'HEAD') {
 
 /**
  * @param {string} cwd
+ * @returns {string[]}
+ */
+function gitWorktreePaths(cwd) {
+  return execFileSync('git', ['worktree', 'list', '--porcelain', '-z'], {
+    cwd,
+    encoding: 'utf8'
+  })
+    .split('\0')
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => path.resolve(line.slice('worktree '.length)));
+}
+
+/**
+ * @param {string} cwd
  * @param {string} file
  * @param {string} message
  */
@@ -120,6 +134,81 @@ describe('worker/worktree (real git)', () => {
     expect(fs.existsSync(created.path)).toBe(false);
   });
 
+  test('add stores the first and recreated worktree in prepared nosync', async () => {
+    const nosync = path.join(repo, '.worktrees.nosync');
+    fs.mkdirSync(nosync);
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const head = headOf(repo);
+
+    const first = await wt.add({ repo, bead_id: 'UI-nosync', base: head });
+
+    expect(fs.readlinkSync(path.join(repo, '.worktrees'))).toBe(
+      '.worktrees.nosync'
+    );
+    expect(fs.realpathSync(first.path)).toBe(
+      path.join(fs.realpathSync(nosync), 'UI-nosync')
+    );
+    expect(gitWorktreePaths(repo)).toContain(
+      path.join(fs.realpathSync(nosync), 'UI-nosync')
+    );
+
+    const removed = await wt.remove({ repo, bead_id: 'UI-nosync' });
+    expect(removed.code).toBe(0);
+
+    const second = await wt.add({ repo, bead_id: 'UI-nosync', base: head });
+
+    expect(fs.realpathSync(second.path)).toBe(
+      path.join(fs.realpathSync(nosync), 'UI-nosync')
+    );
+    expect(gitWorktreePaths(repo)).toContain(
+      path.join(fs.realpathSync(nosync), 'UI-nosync')
+    );
+  });
+
+  test('add replaces an empty ordinary container before the first worktree', async () => {
+    const nosync = path.join(repo, '.worktrees.nosync');
+    fs.mkdirSync(nosync);
+    fs.mkdirSync(path.join(repo, '.worktrees'));
+    const wt = createWorktreeManager({ locks: createLockManager() });
+
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-empty',
+      base: headOf(repo)
+    });
+
+    expect(fs.realpathSync(created.path)).toBe(
+      path.join(fs.realpathSync(nosync), 'UI-empty')
+    );
+    expect(gitWorktreePaths(repo)).toContain(
+      path.join(fs.realpathSync(nosync), 'UI-empty')
+    );
+  });
+
+  test('add preserves a nonempty ordinary container when nosync is prepared', async () => {
+    const container = path.join(repo, '.worktrees');
+    fs.mkdirSync(path.join(repo, '.worktrees.nosync'));
+    fs.mkdirSync(container);
+    fs.writeFileSync(path.join(container, 'keep'), 'human data\n');
+    const wt = createWorktreeManager({ locks: createLockManager() });
+
+    await expect(
+      wt.add({ repo, bead_id: 'UI-blocked', base: headOf(repo) })
+    ).rejects.toThrow(container);
+
+    expect(fs.readFileSync(path.join(container, 'keep'), 'utf8')).toBe(
+      'human data\n'
+    );
+    expect(gitWorktreePaths(repo)).not.toContain(
+      path.join(container, 'UI-blocked')
+    );
+    expect(
+      spawnSync('git', ['show-ref', '--verify', 'refs/heads/UI-blocked'], {
+        cwd: repo
+      }).status
+    ).not.toBe(0);
+  });
+
   test('observes the exact worker-owned branch path and head for discard', async () => {
     const wt = createWorktreeManager({ locks: createLockManager() });
     const head = headOf(repo);
@@ -176,6 +265,47 @@ describe('worker/worktree (real git)', () => {
     const removed = await wt.removeDetached({ repo, name: 'verify-UI-1' });
     expect(removed.code).toBe(0);
     expect(fs.existsSync(created.path)).toBe(false);
+  });
+
+  test('addDetached stores the verify worktree in prepared nosync', async () => {
+    const nosync = path.join(repo, '.worktrees.nosync');
+    fs.mkdirSync(nosync);
+    const wt = createWorktreeManager({ locks: createLockManager() });
+
+    const created = await wt.addDetached({
+      repo,
+      name: 'verify-nosync',
+      sha: headOf(repo)
+    });
+
+    expect(fs.realpathSync(created.path)).toBe(
+      path.join(fs.realpathSync(nosync), '.verify', 'verify-nosync')
+    );
+    expect(gitWorktreePaths(repo)).toContain(
+      path.join(fs.realpathSync(nosync), '.verify', 'verify-nosync')
+    );
+  });
+
+  test('addDetached preserves residue when container preparation fails', async () => {
+    const detached = path.join(repo, '.worktrees', '.verify', 'verify-blocked');
+    fs.mkdirSync(path.join(repo, '.worktrees.nosync'));
+    fs.mkdirSync(detached, { recursive: true });
+    fs.writeFileSync(path.join(detached, 'keep'), 'worker residue\n');
+    const wt = createWorktreeManager({
+      locks: createLockManager()
+    });
+
+    await expect(
+      wt.addDetached({
+        repo,
+        name: 'verify-blocked',
+        sha: headOf(repo)
+      })
+    ).rejects.toThrow(path.join(repo, '.worktrees'));
+
+    expect(fs.readFileSync(path.join(detached, 'keep'), 'utf8')).toBe(
+      'worker residue\n'
+    );
   });
 
   test('addDetached reclaims a live worktree left under the same name', async () => {
@@ -1762,6 +1892,59 @@ describe('worker/worktree restore (real git)', () => {
       path: path.join(repo, '.worktrees', 'UI-1')
     });
     expect(headOf(path.join(repo, '.worktrees', 'UI-1'))).toBe(published);
+  });
+
+  test('restores the tracking branch in prepared nosync', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const published = publishHeadBranch();
+    const nosync = path.join(repo, '.worktrees.nosync');
+    fs.mkdirSync(nosync);
+
+    const restored = await wt.restore({
+      repo,
+      bead_id: 'UI-1',
+      head_ref: 'UI-1'
+    });
+
+    expect(restored).toEqual({
+      ok: true,
+      path: path.join(repo, '.worktrees', 'UI-1')
+    });
+    if (!restored.ok) {
+      return;
+    }
+    expect(fs.realpathSync(restored.path)).toBe(
+      path.join(fs.realpathSync(nosync), 'UI-1')
+    );
+    expect(headOf(restored.path)).toBe(published);
+    expect(gitWorktreePaths(repo)).toContain(
+      path.join(fs.realpathSync(nosync), 'UI-1')
+    );
+  });
+
+  test('restore preserves files and Git registrations when preparation fails', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    publishHeadBranch();
+    const container = path.join(repo, '.worktrees');
+    fs.mkdirSync(path.join(repo, '.worktrees.nosync'));
+    fs.mkdirSync(container);
+    fs.writeFileSync(path.join(container, 'keep'), 'human data\n');
+    const registrations = gitWorktreePaths(repo);
+
+    const restored = await wt.restore({
+      repo,
+      bead_id: 'UI-1',
+      head_ref: 'UI-1'
+    });
+
+    expect(restored).toEqual({
+      ok: false,
+      reason: 'worktree_restore_failed'
+    });
+    expect(fs.readFileSync(path.join(container, 'keep'), 'utf8')).toBe(
+      'human data\n'
+    );
+    expect(gitWorktreePaths(repo)).toEqual(registrations);
   });
 
   test('reuses the local head branch when its tip already matches origin', async () => {

@@ -39,6 +39,8 @@ afterEach(() => {
 
 describe('worker/deploy-lock', () => {
   test('waits for the current holder before acquiring', async () => {
+    const nosync = path.join(root, '.worktrees.nosync');
+    fs.mkdirSync(nosync);
     const first = await acquireDeployLock({
       repo: root,
       timeout_ms: ACQUIRE_BUDGET_MS
@@ -65,6 +67,12 @@ describe('worker/deploy-lock', () => {
     if (!second.ok) {
       throw new Error(second.code);
     }
+    expect(fs.readlinkSync(path.join(root, '.worktrees'))).toBe(
+      '.worktrees.nosync'
+    );
+    expect(fs.existsSync(path.join(nosync, '.repo-ops-deploy.lock'))).toBe(
+      true
+    );
     await second.release();
   });
 
@@ -159,6 +167,33 @@ describe('worker/deploy-lock', () => {
         ok: false,
         code: 'deploy_lock_unavailable'
       });
+    }
+  );
+
+  test(
+    'does not spawn a holder for an invalid prepared container',
+    PURE,
+    async () => {
+      const container = path.join(root, '.worktrees');
+      fs.mkdirSync(path.join(root, '.worktrees.nosync'));
+      fs.mkdirSync(container);
+      fs.writeFileSync(path.join(container, 'keep'), 'human data\n');
+      const spawn_holder = vi.fn();
+
+      const result = await acquireDeployLock({
+        repo: root,
+        timeout_ms: ACQUIRE_BUDGET_MS,
+        spawn: /** @type {any} */ (spawn_holder)
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        code: 'deploy_lock_unavailable'
+      });
+      expect(spawn_holder).not.toHaveBeenCalled();
+      expect(fs.readFileSync(path.join(container, 'keep'), 'utf8')).toBe(
+        'human data\n'
+      );
     }
   );
 });

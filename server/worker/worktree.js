@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { runShell } from '../bd.js';
+import { prepareWorktreeContainer } from './worktree-container.js';
 
 /**
  * @typedef {(args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>} GitRunner
@@ -190,12 +191,13 @@ function parseWorktreeRecords(stdout) {
  * worktree, so nothing reaches the comparison that would need the resolved form.
  *
  * @param {string} repo
+ * @param {typeof import('node:fs')} [fs]
  * @returns {string}
  */
-function resolvedWorktreeContainer(repo) {
+function resolvedWorktreeContainer(repo, fs = nodeFs) {
   const container = path.join(repo, '.worktrees');
   try {
-    return nodeFs.realpathSync(container);
+    return fs.realpathSync(container);
   } catch {
     return container;
   }
@@ -755,6 +757,7 @@ export function createWorktreeManager(deps) {
     async add(input) {
       const release = await locks.topologyLock(input.repo);
       try {
+        prepareWorktreeContainer(input.repo, fs);
         const wt = pathFor(input.repo, input.bead_id);
         const branch = branchForBead(input.bead_id);
         const added = await run(
@@ -855,6 +858,14 @@ export function createWorktreeManager(deps) {
           return {
             ok: /** @type {const} */ (false),
             reason: 'worktree_restore_branch_mismatch'
+          };
+        }
+        try {
+          prepareWorktreeContainer(input.repo, fs);
+        } catch {
+          return {
+            ok: /** @type {const} */ (false),
+            reason: 'worktree_restore_failed'
           };
         }
         const wt = pathFor(input.repo, input.bead_id);
@@ -2064,6 +2075,7 @@ export function createWorktreeManager(deps) {
     async addDetached(input) {
       const release = await locks.topologyLock(input.repo);
       try {
+        prepareWorktreeContainer(input.repo, fs);
         const wt = detachedPathFor(input.repo, input.name);
         /**
          * A reclaim step never decides the outcome — only the `add` below does,
@@ -2177,8 +2189,12 @@ export function createRepoOpsDeployWorktreeManager(deps) {
     const list = await run(['worktree', 'list', '--porcelain', '-z'], {
       cwd: repo
     });
+    const registered_path = path.join(
+      resolvedWorktreeContainer(repo, fs),
+      '.repo-ops-deploy'
+    );
     const registered =
-      list.code === 0 && registeredPaths(list.stdout).includes(deploy_path);
+      list.code === 0 && registeredPaths(list.stdout).includes(registered_path);
     const exists = fs.existsSync(deploy_path);
     if (!exists && !registered) {
       return { ok: true, path: deploy_path, exists: false };
@@ -2281,6 +2297,11 @@ export function createRepoOpsDeployWorktreeManager(deps) {
       if (!ownership.exists) {
         const release_topology = await deps.locks.topologyLock(repo);
         try {
+          try {
+            prepareWorktreeContainer(repo, fs);
+          } catch {
+            return { ok: false, code: 'repo_ops_worktree_create_failed' };
+          }
           const added = await run(
             ['worktree', 'add', '--detach', deploy_path, target_sha],
             { cwd: repo }
