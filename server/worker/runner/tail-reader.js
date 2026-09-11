@@ -169,6 +169,9 @@ export function createTailReader(input) {
           decoder = new StringDecoder('utf8');
           observed_tail = Buffer.alloc(0);
           onReset();
+          if (stopped) {
+            return;
+          }
           if (!openFile()) {
             return;
           }
@@ -194,6 +197,9 @@ export function createTailReader(input) {
         decoder = new StringDecoder('utf8');
         observed_tail = Buffer.alloc(0);
         onReset();
+        if (stopped) {
+          return;
+        }
       } else if (offset > 0 && observed_tail.length > 0) {
         const check = Buffer.allocUnsafe(observed_tail.length);
         const read = fs.readSync(
@@ -214,6 +220,9 @@ export function createTailReader(input) {
           observed_tail = Buffer.alloc(0);
           onReset();
         }
+      }
+      if (stopped) {
+        return;
       }
       while (offset < size) {
         const want = Math.min(READ_CHUNK_BYTES, size - offset);

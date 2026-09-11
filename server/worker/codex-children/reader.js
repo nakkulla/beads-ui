@@ -21,9 +21,12 @@ import {
   codexRolloutDateDirs,
   codexRolloutFilePath
 } from '../codex-effort-observer.js';
+import { createTailReader } from '../runner/tail-reader.js';
 import { uuidV7StartedAt } from '../session-ref.js';
+import { readSessionSnapshot } from '../session-ref.js';
 import { codexSessionsRoot } from '../state-paths.js';
 import { accumulateCodexChildren } from './accumulate.js';
+import { createCodexChildAccumulator } from './accumulate.js';
 import { parseRolloutText, rolloutHeadIdentity } from './rollout.js';
 
 const log = debug('worker:codex-children');
@@ -47,6 +50,263 @@ export const MAX_CHILD_FILES = 64;
  * @type {number}
  */
 export const MAX_CHILD_CANDIDATES = 512;
+
+/**
+ * Observe a proven root's linked child files incrementally.
+ *
+ * @param {{ root_thread_id: string, root_file: string, sessions_root?: string, started_at?: number|null, fs?: typeof node_fs, createReader?: typeof createTailReader, readSnapshot?: typeof readSessionSnapshot, onChange?: () => void, now?: () => number }} input
+ */
+export function createIncrementalCodexChildObserver(input) {
+  const file_system = input.fs || node_fs;
+  const make_reader = input.createReader || createTailReader;
+  const read_snapshot = input.readSnapshot || readSessionSnapshot;
+  const accumulator = createCodexChildAccumulator({
+    root_thread_id: input.root_thread_id,
+    attempt_started_at: input.started_at
+  });
+  const now = input.now || (() => Date.now());
+  const root_dir = path.dirname(input.root_file);
+  const dated_root = path.resolve(root_dir, '../../..');
+  const sessions_root =
+    input.sessions_root ||
+    (/^\d{4}\/\d{2}\/\d{2}$/.test(path.relative(dated_root, root_dir))
+      ? dated_root
+      : null);
+  let window_start = input.started_at ?? uuidV7StartedAt(input.root_thread_id);
+  /** @type {Map<string, { identity: NonNullable<ReturnType<typeof rolloutHeadIdentity>>, file: string }>} */
+  const candidates = new Map();
+  /** @type {Map<string, ReturnType<typeof createTailReader>>} */
+  const readers = new Map();
+  /** @type {Map<string, string>} */
+  const signatures = new Map();
+  /** @type {Map<string, string>} */
+  const thread_by_file = new Map();
+
+  /** @param {string} file */
+  function head(file) {
+    let fd;
+    try {
+      fd = file_system.openSync(file, 'r');
+      const buffer = Buffer.alloc(64 * 1024);
+      const size = file_system.readSync(fd, buffer, 0, buffer.length, 0);
+      return buffer.subarray(0, size).toString('utf8');
+    } catch {
+      return '';
+    } finally {
+      if (fd !== undefined) {
+        try {
+          file_system.closeSync(fd);
+        } catch {
+          // Discovery must remain fail-quiet for an unreadable candidate.
+        }
+      }
+    }
+  }
+
+  /** @param {string} thread_id */
+  function reachesRoot(thread_id) {
+    const seen = new Set();
+    let cursor = thread_id;
+    for (let hop = 0; hop < MAX_CHILD_FILES; hop += 1) {
+      if (seen.has(cursor)) {
+        return false;
+      }
+      seen.add(cursor);
+      const parent = candidates.get(cursor)?.identity.parent_thread_id ?? null;
+      if (parent === input.root_thread_id) {
+        return true;
+      }
+      if (!parent) {
+        return false;
+      }
+      cursor = parent;
+    }
+    return false;
+  }
+
+  /** @param {NonNullable<ReturnType<typeof rolloutHeadIdentity>>} identity */
+  function register(identity) {
+    accumulator.apply({
+      thread_id: identity.thread_id,
+      record: {
+        type: 'session_meta',
+        payload: {
+          id: identity.thread_id,
+          parent_thread_id: identity.parent_thread_id,
+          agent_path: identity.agent_path,
+          thread_source: 'subagent'
+        }
+      }
+    });
+  }
+
+  /** @param {string} thread_id */
+  function remove(thread_id) {
+    readers.get(thread_id)?.stop();
+    readers.delete(thread_id);
+    const candidate = candidates.get(thread_id);
+    if (candidate) {
+      signatures.delete(candidate.file);
+      thread_by_file.delete(candidate.file);
+    }
+    candidates.delete(thread_id);
+    accumulator.resetThread(thread_id);
+  }
+
+  function pruneDisconnected() {
+    for (const thread_id of readers.keys()) {
+      if (!reachesRoot(thread_id)) {
+        remove(thread_id);
+      }
+    }
+  }
+
+  /** @param {string} thread_id - Linked thread. @param {string} line - Complete JSONL line. */
+  function applyLine(thread_id, line) {
+    try {
+      accumulator.apply({ thread_id, record: JSON.parse(line) });
+    } catch {
+      // A damaged complete line contributes no child fact.
+    }
+  }
+
+  function scan() {
+    const dirs = new Set([root_dir]);
+    if (sessions_root) {
+      for (const date_dir of windowDateDirs(window_start, now())) {
+        dirs.add(path.join(sessions_root, date_dir));
+      }
+    }
+    let candidate_count = 0;
+    for (const dir of dirs) {
+      /** @type {string[]} */
+      let names = [];
+      try {
+        names = file_system.readdirSync(dir);
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        if (!name.startsWith('rollout-') || !name.endsWith('.jsonl')) {
+          continue;
+        }
+        const file = path.join(dir, name);
+        if (file === input.root_file) {
+          continue;
+        }
+        const known_thread = thread_by_file.get(file);
+        if (known_thread && readers.has(known_thread)) {
+          continue;
+        }
+        if (candidate_count >= MAX_CHILD_CANDIDATES) {
+          break;
+        }
+        candidate_count += 1;
+        let stat;
+        try {
+          stat = file_system.statSync(file);
+        } catch {
+          continue;
+        }
+        if (window_start !== null && stat.mtimeMs < window_start) {
+          continue;
+        }
+        const signature = `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+        if (signatures.get(file) === signature) {
+          continue;
+        }
+        const identity = rolloutHeadIdentity(head(file));
+        if (known_thread && identity?.thread_id !== known_thread) {
+          remove(known_thread);
+        }
+        signatures.set(file, signature);
+        if (!identity?.subagent) {
+          continue;
+        }
+        candidates.set(identity.thread_id, { identity, file });
+        thread_by_file.set(file, identity.thread_id);
+        register(identity);
+      }
+    }
+    pruneDisconnected();
+    for (const [thread_id, candidate] of candidates) {
+      if (readers.size >= MAX_CHILD_FILES) {
+        break;
+      }
+      if (readers.has(thread_id) || !reachesRoot(thread_id)) {
+        continue;
+      }
+      const snapshot = read_snapshot(candidate.file);
+      if (!snapshot) {
+        continue;
+      }
+      for (const line of snapshot.text.split(/\r?\n/)) {
+        if (line) {
+          applyLine(thread_id, line);
+        }
+      }
+      const reader = make_reader({
+        file: candidate.file,
+        start_offset: snapshot.boundary,
+        onLine(line) {
+          applyLine(thread_id, line);
+          input.onChange?.();
+        },
+        onReset() {
+          const replacement = rolloutHeadIdentity(head(candidate.file));
+          if (
+            !replacement?.subagent ||
+            replacement.thread_id !== thread_id ||
+            replacement.parent_thread_id !== candidate.identity.parent_thread_id
+          ) {
+            remove(thread_id);
+            pruneDisconnected();
+          } else {
+            accumulator.resetThread(thread_id);
+            register(replacement);
+          }
+          input.onChange?.();
+        }
+      });
+      readers.set(thread_id, reader);
+      reader.start();
+    }
+  }
+  return {
+    /** @param {Record<string, any>} record - Record emitted by the root rollout. */
+    applyRoot(record) {
+      if (window_start === null && typeof record.timestamp === 'string') {
+        const at = Date.parse(record.timestamp);
+        if (Number.isFinite(at)) {
+          window_start = at;
+        }
+      }
+      accumulator.apply({ thread_id: input.root_thread_id, record });
+    },
+    resetRoot() {
+      accumulator.resetThread(input.root_thread_id);
+    },
+    scan,
+    /** @param {boolean} [parent_terminated] */
+    snapshot(parent_terminated = false) {
+      return accumulator.snapshot(parent_terminated);
+    },
+    drain() {
+      for (const reader of readers.values()) {
+        reader.drain({ flush: false });
+      }
+    },
+    stop() {
+      for (const reader of readers.values()) {
+        reader.stop();
+      }
+      readers.clear();
+      candidates.clear();
+      signatures.clear();
+      thread_by_file.clear();
+    }
+  };
+}
 
 /**
  * Upper bound on date directories one attempt's activity window may span. A

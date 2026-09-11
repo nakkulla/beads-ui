@@ -3745,7 +3745,7 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
     ]);
   });
 
-  test('uses one authoritative Claude reported cost across result scopes', () => {
+  test('adds later live and external costs after a reported Claude scope', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -3766,14 +3766,37 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
                     role: 'orchestrator',
                     turn_id: 'm1',
                     model: 'claude-opus-4-8',
-                    usage: { input_tokens: 15, output_tokens: 3 }
+                    usage: { input_tokens: 15, output_tokens: 3 },
+                    cost_covered: true
                   },
                   {
                     provider: 'claude',
                     role: 'orchestrator',
                     turn_id: 'm2',
                     model: 'claude-opus-4-6',
-                    usage: { input_tokens: 9, output_tokens: 2 }
+                    usage: { input_tokens: 9, output_tokens: 2 },
+                    cost_covered: true
+                  },
+                  {
+                    provider: 'claude',
+                    role: 'orchestrator',
+                    turn_id: 'result:reported-cost',
+                    model: null,
+                    usage: { total_tokens: 0, total_cost_usd: 0.75 }
+                  },
+                  {
+                    provider: 'claude',
+                    role: 'orchestrator',
+                    turn_id: 'm3-live',
+                    model: 'claude-sonnet-4-6',
+                    usage: { input_tokens: 1_000_000 }
+                  },
+                  {
+                    provider: 'claude',
+                    role: 'subagent',
+                    receipt_id: 'external-child',
+                    model: 'claude-opus-4-8',
+                    usage: { total_tokens: 0, total_cost_usd: 0.5 }
                   }
                 ],
                 delegations: []
@@ -3782,13 +3805,38 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
           ]
         })
       ],
-      [state()]
+      [
+        state({
+          runner_catalog: {
+            model_index: {
+              opus: 'claude',
+              sonnet: 'claude',
+              'claude-opus-4-8': 'claude',
+              'claude-sonnet-4-6': 'claude'
+            },
+            runners: {
+              claude: {
+                models: {
+                  opus: {
+                    id: 'claude-opus-4-8',
+                    price: { input: 1, output: 2 }
+                  },
+                  sonnet: {
+                    id: 'claude-sonnet-4-6',
+                    price: { input: 3, output: 4 }
+                  }
+                }
+              }
+            }
+          }
+        })
+      ]
     );
 
     expect(
       /** @type {any} */ (lanes.running[0].usage).providers.claude
         .total_cost_usd
-    ).toBe(0.75);
+    ).toBe(4.25);
   });
 
   test('keeps native child usage outside the worker parent total', () => {

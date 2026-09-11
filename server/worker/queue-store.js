@@ -158,9 +158,12 @@
  * Null on an attempt whose runner reported none and on every record written
  * before the field existed — the display is fail-quiet, so a null simply
  * renders nothing.
- * @property {Array<{ provider?: string, role?: string, turn_id?: string, model?: string|null, usage: Record<string, number>, partial?: boolean }>} usage_segments -
+ * @property {Array<{ provider?: string, role?: string, turn_id?: string, model?: string|null, usage: Record<string, number>, partial?: boolean, cost_covered?: boolean }>} usage_segments -
  * Provider/model scopes retained when a cumulative conversation total spans
  * more than one priced model. Unknown residual scopes carry `partial: true`.
+ * A model segment covered by a valid reported-cost segment in the same
+ * terminal result group carries `cost_covered: true`: its tokens remain
+ * visible, but it contributes no duplicate priced/unpriced/estimated leg.
  * @property {UsageLeg[]} usage_legs - Completed nested provider usage receipts
  * (Codex delegation units and Claude subagents alike). Legacy attempts
  * normalize this optional field to an empty list.

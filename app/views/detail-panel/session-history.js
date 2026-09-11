@@ -640,6 +640,7 @@ function nativeChildTemplate(child, catalog) {
             ...(price && price.usd !== null
               ? { total_cost_usd: price.usd }
               : {}),
+            ...(price?.basis === 'estimated' ? { cost_estimated: true } : {}),
             ...(price?.basis === 'none' ? { unpriced_leg_count: 1 } : {})
           }
         },
@@ -647,6 +648,12 @@ function nativeChildTemplate(child, catalog) {
       })
     : [];
   const badge = badges[0];
+  const price_lines = price
+    ? costTooltipLines({
+        total_cost_usd: price.usd ?? undefined,
+        cost_estimated: price.basis === 'estimated'
+      })
+    : [];
   const status =
     typeof child.status === 'string' && child.status in DELEGATION_STATUS_GLYPH
       ? child.status
@@ -689,8 +696,12 @@ function nativeChildTemplate(child, catalog) {
     ${badge && usage
       ? html`<span
           class="detail-session__usage"
-          title=${[...usage.lines, NATIVE_CHILD_USAGE_NOTE].join('\n')}
-          >${badge.label}</span
+          title=${[
+            ...usage.lines,
+            ...price_lines.slice(1),
+            NATIVE_CHILD_USAGE_NOTE
+          ].join('\n')}
+          >${badge.label}${price?.basis === 'estimated' ? ' 추정' : ''}</span
         >`
       : ''}
   </div>`;

@@ -41,7 +41,7 @@ import { priceUsage } from '../../server/worker/usage-pricing.js';
  */
 
 /**
- * @typedef {{ provider: UsageProvider, role: UsageRole, attempt_id: string, receipt_id?: string, agent_type?: string, agent_id?: string, model?: string, effort?: string, session_id?: string, turn_id?: string, completed_at?: string|number, usage: UsageRecord, subtotal: number, replayed?: boolean, price_usd?: number, price_basis?: PriceBasis }} UsageLeg
+ * @typedef {{ provider: UsageProvider, role: UsageRole, attempt_id: string, receipt_id?: string, agent_type?: string, agent_id?: string, model?: string, effort?: string, session_id?: string, turn_id?: string, completed_at?: string|number, usage: UsageRecord, subtotal: number, replayed?: boolean, cost_covered?: boolean, price_usd?: number, price_basis?: PriceBasis }} UsageLeg
  */
 
 /**
@@ -645,6 +645,9 @@ function addLeg(accumulator, leg) {
   if (leg.replayed === true) {
     accumulator.replayed = true;
   }
+  if (leg.cost_covered === true) {
+    return;
+  }
   // §1.3: a leg without a unit price is COUNTED, not skipped, so the aggregate
   // can say how much of itself is missing instead of hiding it.
   if (leg.price_basis === undefined || leg.price_basis === 'none') {
@@ -814,6 +817,13 @@ export function sumAttemptUsage(attempts, bead_id, catalog = null) {
     const usage_segments = Array.isArray(attempt.usage_segments)
       ? attempt.usage_segments
       : [];
+    const has_reported_segment_cost = usage_segments.some(
+      /** @param {any} segment */
+      (segment) =>
+        typeof segment?.usage?.total_cost_usd === 'number' &&
+        Number.isFinite(segment.usage.total_cost_usd) &&
+        segment.usage.total_cost_usd >= 0
+    );
     const outer_usage = attempt.usage;
     if (usage_segments.length === 0 && hasReportedUsage(outer_usage)) {
       const provider = providerForRunner(attempt.runner);
@@ -860,7 +870,11 @@ export function sumAttemptUsage(attempts, bead_id, catalog = null) {
       if (typeof segment.turn_id === 'string') {
         leg.turn_id = segment.turn_id;
       }
-      applyLegPrice(leg, catalog);
+      if (segment.cost_covered === true && has_reported_segment_cost) {
+        leg.cost_covered = true;
+      } else {
+        applyLegPrice(leg, catalog);
+      }
       priced_legs.push(leg);
       addLeg(providers[provider], leg);
       addLeg(roles.orchestrator[provider], leg);

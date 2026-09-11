@@ -920,6 +920,10 @@ export function createRunnableCache(options = {}) {
         });
       }
     }
+    if (subscriberCount() <= 0) {
+      observation_store.clear();
+      return { items, session_active, carried_to };
+    }
     observation_store.reconcile(root, observation_targets);
     for (const item of session_active) {
       const observation = observation_store.get(root, item.bead_id);
@@ -959,6 +963,10 @@ export function createRunnableCache(options = {}) {
     const run = (async () => {
       try {
         const fetched = await fetchRunnable(key);
+        if (subscriberCount() <= 0) {
+          observation_store.clear();
+          return false;
+        }
         if (fetched.items) {
           records.set(key, {
             items: fetched.items,

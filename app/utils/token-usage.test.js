@@ -1028,6 +1028,62 @@ describe('leg pricing and partial-cost display (preset-compare §1.3)', () => {
     expect(projected?.providers.codex).not.toHaveProperty('total_cost_usd');
   });
 
+  test('adds live and external costs after one reported Claude result group', () => {
+    const catalog = resolveCatalog({
+      overrides: {
+        claude: {
+          models: {
+            opus: { price: { input: 1, output: 2 } },
+            sonnet: { price: { input: 3, output: 4 } }
+          }
+        }
+      },
+      warn: () => {}
+    });
+    const projected = sumAttemptUsage(
+      {
+        direct: {
+          attempt_id: 'direct',
+          bead_id: 'UI-1',
+          runner: 'claude',
+          usage_segments: [
+            {
+              model: 'opus',
+              turn_id: 'settled-message',
+              usage: { input_tokens: 1_000_000 },
+              cost_covered: true
+            },
+            {
+              turn_id: 'result:0:reported-cost',
+              usage: { total_tokens: 0, total_cost_usd: 1 }
+            },
+            {
+              model: 'sonnet',
+              turn_id: 'live-message',
+              usage: { input_tokens: 1_000_000 }
+            }
+          ],
+          usage_legs: [
+            {
+              receipt_id: 'external-child',
+              provider: 'claude',
+              role: 'subagent',
+              model: 'opus',
+              usage: { input_tokens: 1, total_cost_usd: 0.5 }
+            }
+          ]
+        }
+      },
+      'UI-1',
+      catalog
+    );
+
+    expect(projected?.providers.claude?.total_cost_usd).toBe(4.5);
+    expect(projected?.providers.claude).not.toHaveProperty(
+      'unpriced_leg_count'
+    );
+  });
+
   test('names the unpriced leg count beside the partial sum', () => {
     const label = formatCost({ total_cost_usd: 1.234, unpriced_leg_count: 2 });
 

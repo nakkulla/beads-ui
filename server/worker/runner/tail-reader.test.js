@@ -234,6 +234,25 @@ describe('runner/tail-reader', () => {
     expect(lines).toEqual(['{"a":1}', '{"b":1}', '{"b":2}']);
   });
 
+  test('stops before reading a replacement rejected by its owner', () => {
+    write('{"owned":1}\n');
+    /** @type {string[]} */
+    const lines = [];
+    const tail = createTailReader({
+      file,
+      onLine: (line) => lines.push(line),
+      onReset: () => tail.stop()
+    });
+    tail.start();
+    const replacement = path.join(dir, 'unrelated.jsonl');
+    fs.writeFileSync(replacement, '{"unrelated":1}\n');
+
+    fs.renameSync(replacement, file);
+    tail.pump();
+
+    expect(lines).toEqual(['{"owned":1}']);
+  });
+
   test('resets after an in-place truncate and larger rewrite between polls', () => {
     write('{"old":1}\n');
     /** @type {string[]} */

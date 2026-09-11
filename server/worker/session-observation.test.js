@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
+import { createIncrementalCodexChildObserver } from './codex-children/reader.js';
 import { createTailReader } from './runner/tail-reader.js';
 import { createSessionMonitors } from './session-monitor.js';
 import {
@@ -18,6 +19,58 @@ const FIXTURE = new URL(
 );
 
 describe('worker/session-observation', () => {
+  test('discovers incremental child files after midnight without rereading the root', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-child-midnight-'));
+    const root_dir = path.join(dir, '2026/09/10');
+    const child_dir = path.join(dir, '2026/09/11');
+    fs.mkdirSync(root_dir, { recursive: true });
+    fs.mkdirSync(child_dir, { recursive: true });
+    const root = path.join(root_dir, 'rollout-root.jsonl');
+    const child = path.join(child_dir, 'rollout-child.jsonl');
+    fs.writeFileSync(root, '');
+    const rows = [
+      {
+        type: 'session_meta',
+        payload: {
+          id: 'child',
+          parent_thread_id: 'root',
+          thread_source: 'subagent',
+          agent_path: '/root/child'
+        }
+      },
+      {
+        timestamp: '2026-09-11T00:01:00.000Z',
+        type: 'turn_context',
+        payload: { model: 'gpt-5.6-terra' }
+      }
+    ];
+    fs.writeFileSync(
+      child,
+      `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`
+    );
+    const readSnapshot = vi.fn(readSessionSnapshot);
+    const observer = createIncrementalCodexChildObserver({
+      root_thread_id: 'root',
+      root_file: root,
+      readSnapshot,
+      started_at: Date.parse('2026-09-10T23:59:00.000Z'),
+      now: () => Date.parse('2026-09-11T00:02:00.000Z')
+    });
+
+    try {
+      observer.scan();
+      observer.scan();
+
+      expect(observer.snapshot()).toMatchObject([
+        { thread_id: 'child', model: 'gpt-5.6-terra' }
+      ]);
+      expect(readSnapshot.mock.calls.map(([file]) => file)).toEqual([child]);
+    } finally {
+      observer.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('deduplicates Codex raw usage forms and keeps live cumulative values', () => {
     const text = fs
       .readFileSync(FIXTURE, 'utf8')
@@ -412,6 +465,154 @@ describe('worker/session-observation', () => {
     ).toBe(10);
   });
 
+  test('keeps sidechain-only Claude records out of root usage and model', () => {
+    const rows = [
+      {
+        type: 'assistant',
+        message: {
+          id: 'root',
+          model: 'claude-opus-4-8',
+          usage: { input_tokens: 10, output_tokens: 2 },
+          content: []
+        }
+      },
+      {
+        type: 'assistant',
+        isSidechain: true,
+        message: {
+          id: 'unattached-child',
+          model: 'claude-opus-4-6',
+          usage: { input_tokens: 90, output_tokens: 8 },
+          content: []
+        }
+      }
+    ];
+
+    const observed = foldSessionObservation(
+      'claude',
+      `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`,
+      { session_id: 'root' }
+    );
+
+    expect(observed.model).toBe('claude-opus-4-8');
+    expect(observed.usage).toMatchObject({
+      input_tokens: 10,
+      output_tokens: 2
+    });
+    expect(observed.usage_legs).toHaveLength(1);
+  });
+
+  test('tails linked Codex children once and shares their incremental readers', () => {
+    vi.useFakeTimers();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-child-tail-'));
+    const root = path.join(dir, 'rollout-root.jsonl');
+    const child = path.join(dir, 'rollout-child.jsonl');
+    const grandchild = path.join(dir, 'rollout-grandchild.jsonl');
+    const unrelated = path.join(dir, 'rollout-unrelated.jsonl');
+    /** @param {string} id - Thread. @param {string|null} [parent] - Parent thread. @param {string|null} [agent_path] - Agent path. */
+    const meta = (id, parent = null, agent_path = null) => ({
+      timestamp: '2026-09-11T00:00:00.000Z',
+      type: 'session_meta',
+      payload: {
+        id,
+        ...(parent
+          ? {
+              parent_thread_id: parent,
+              agent_path,
+              thread_source: 'subagent'
+            }
+          : {})
+      }
+    });
+    fs.writeFileSync(root, `${JSON.stringify(meta('root'))}\n`);
+    fs.writeFileSync(
+      child,
+      `${JSON.stringify(meta('child', 'root', '/root/child'))}\n${JSON.stringify({ timestamp: '2026-09-11T00:00:01.000Z', type: 'turn_context', payload: { model: 'gpt-5.6-terra', effort: 'medium' } })}\n`
+    );
+    fs.writeFileSync(
+      grandchild,
+      `${JSON.stringify(meta('grandchild', 'child', '/root/child/grand'))}\n${JSON.stringify({ timestamp: '2026-09-11T00:00:01.000Z', type: 'turn_context', payload: { model: 'gpt-5.6-luna', effort: 'low' } })}\n`
+    );
+    fs.writeFileSync(unrelated, `${JSON.stringify(meta('other'))}\n`);
+    const readers = new Map();
+    const readSnapshot = vi.fn(readSessionSnapshot);
+    const store = createSessionObservationStore({
+      readSnapshot,
+      createReader(input) {
+        const reader = {
+          start: vi.fn(),
+          stop: vi.fn(),
+          pump: vi.fn(),
+          drain: vi.fn(),
+          offset: vi.fn(() => 0)
+        };
+        readers.set(input.file, { input, reader });
+        return reader;
+      }
+    });
+
+    store.reconcile('/workspace', [
+      { bead_id: 'A', provider: 'codex', session_id: 'root', file: root },
+      { bead_id: 'B', provider: 'codex', session_id: 'root', file: root }
+    ]);
+    vi.advanceTimersByTime(6000);
+
+    expect(readSnapshot.mock.calls.map(([file]) => file).sort()).toEqual(
+      [root, child, grandchild].sort()
+    );
+    expect(readers.size).toBe(3);
+    readers.get(child).input.onLine(
+      JSON.stringify({
+        timestamp: '2026-09-11T00:00:02.000Z',
+        type: 'token_usage_record',
+        payload: { thread_token_usage: { input_tokens: 7, output_tokens: 2 } }
+      })
+    );
+    expect(store.get('/workspace', 'A')?.delegations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          thread_id: 'child',
+          usage: expect.objectContaining({ input_tokens: 7, output_tokens: 2 })
+        }),
+        expect.objectContaining({ thread_id: 'grandchild' })
+      ])
+    );
+    /** @type {any[]} */
+    const replacement_rows = [
+      meta('child', 'root', '/root/child'),
+      {
+        timestamp: '2026-09-11T00:00:03.000Z',
+        type: 'token_usage_record',
+        payload: { thread_token_usage: { input_tokens: 3, output_tokens: 1 } }
+      }
+    ];
+    fs.writeFileSync(
+      child,
+      `${replacement_rows.map((row) => JSON.stringify(row)).join('\n')}\n`
+    );
+    readers.get(child).input.onReset();
+    for (const row of replacement_rows) {
+      readers.get(child).input.onLine(JSON.stringify(row));
+    }
+    /** @param {any} row */
+    const is_child = (row) => row.thread_id === 'child';
+    expect(
+      store.get('/workspace', 'A')?.delegations.find(is_child)?.usage
+    ).toMatchObject({ input_tokens: 3, output_tokens: 1 });
+    expect(readSnapshot.mock.calls.map(([file]) => file).sort()).toEqual(
+      [root, child, grandchild].sort()
+    );
+
+    store.reconcile('/workspace', []);
+    expect(
+      [...readers.values()].every(
+        ({ reader }) => reader.stop.mock.calls.length === 1
+      )
+    ).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+    vi.useRealTimers();
+  });
+
   test('applies each direct record once and coalesces append notifications', () => {
     vi.useFakeTimers();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-incremental-'));
@@ -516,6 +717,15 @@ describe('worker/session-observation', () => {
         type: 'result',
         usage: { input_tokens: 9, output_tokens: 2 },
         total_cost_usd: 0.25
+      },
+      {
+        type: 'assistant',
+        message: {
+          id: 'm3',
+          model: 'claude-sonnet-4-6',
+          usage: { input_tokens: 5, output_tokens: 1 },
+          content: []
+        }
       }
     ];
 
@@ -526,8 +736,8 @@ describe('worker/session-observation', () => {
     );
 
     expect(observed.usage).toMatchObject({
-      input_tokens: 24,
-      output_tokens: 5,
+      input_tokens: 29,
+      output_tokens: 6,
       total_cost_usd: 0.75
     });
     expect(
@@ -541,6 +751,12 @@ describe('worker/session-observation', () => {
         String(leg.turn_id).endsWith('reported-cost')
       )
     ).toHaveLength(2);
+    expect(
+      observed.usage_legs.filter((leg) => leg.cost_covered === true)
+    ).toHaveLength(4);
+    expect(
+      observed.usage_legs.find((leg) => leg.turn_id === 'm3')
+    ).not.toHaveProperty('cost_covered');
   });
 
   test('actual monitor tails Worker root rollout and retains prepared segments', () => {

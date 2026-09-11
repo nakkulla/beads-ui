@@ -1451,6 +1451,31 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
 });
 
 describe('worker running tile route chip (UI-yrzu §7.2)', () => {
+  test('marks an estimated native child amount on the card row', () => {
+    const rendered = shape(
+      runningGridTemplate(
+        [
+          tileInput({
+            legs: [
+              {
+                label: 'native child',
+                state: 'done',
+                native: true,
+                usage: { total_tokens: 1_000_000 },
+                price_usd: 2,
+                price_basis: 'estimated'
+              }
+            ]
+          })
+        ],
+        5000,
+        null
+      )
+    );
+
+    expect(rendered).toContain('$2 추정');
+  });
+
   test('draws the route chip when the tile carries a workflow', () => {
     const tile = shape(
       runningTile(

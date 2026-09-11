@@ -891,7 +891,9 @@ function legUsageText(leg) {
       : formatUsageTotalWithCost(leg?.usage);
   const price =
     typeof leg?.price_usd === 'number' && Number.isFinite(leg.price_usd)
-      ? `$${leg.price_usd.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`
+      ? `$${leg.price_usd.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}${
+          leg.price_basis === 'estimated' ? ' 추정' : ''
+        }`
       : leg?.usage && leg?.price_basis === 'none'
         ? '단가 없음'
         : '';

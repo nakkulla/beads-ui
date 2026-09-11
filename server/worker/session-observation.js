@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   codexSessionsRootFor,
-  observeCodexChildren,
+  createIncrementalCodexChildObserver,
   readCodexChildRecords
 } from './codex-children/reader.js';
 import { normalizeCodexChildUsage } from './codex-children/rollout.js';
@@ -47,8 +47,9 @@ export function createWorkerSessionObservationStore(options = {}) {
 
      * @param {string} workspace - Workspace root containing the attempt.
      * @param {any} attempt - Codex attempt.
+     * @param {{ parent_terminated?: boolean }} [observation_options] - Terminal observation state.
      */
-    observe(workspace, attempt) {
+    observe(workspace, attempt, observation_options = {}) {
       if (
         attempt?.runner !== 'codex' ||
         typeof attempt.session_id !== 'string'
@@ -101,7 +102,15 @@ export function createWorkerSessionObservationStore(options = {}) {
           baseline,
           apply,
           boundary_unproven: false,
-          reader: null
+          reader: null,
+          children: createIncrementalCodexChildObserver({
+            root_thread_id: attempt.session_id,
+            root_file: file,
+            sessions_root,
+            started_at: attempt.started_at,
+            createReader: make_reader,
+            readSnapshot: read_snapshot
+          })
         };
         for (const line of snapshot.text.split(/\r?\n/)) {
           if (!line) {
@@ -111,6 +120,7 @@ export function createWorkerSessionObservationStore(options = {}) {
             const record = objectOf(JSON.parse(line));
             if (record) {
               apply(record);
+              held.children.applyRoot(record);
             }
           } catch {
             // Invalid complete records contribute no invented observation.
@@ -125,6 +135,7 @@ export function createWorkerSessionObservationStore(options = {}) {
               const record = objectOf(JSON.parse(line));
               if (record) {
                 apply(record);
+                held.children.applyRoot(record);
               }
             } catch {
               // Invalid complete records contribute no invented observation.
@@ -134,6 +145,7 @@ export function createWorkerSessionObservationStore(options = {}) {
             held.current = createCodexAccumulator();
             held.baseline = createCodexAccumulator();
             held.boundary_unproven = false;
+            held.children.resetRoot();
           }
         });
         held.reader.start();
@@ -141,6 +153,7 @@ export function createWorkerSessionObservationStore(options = {}) {
       } else {
         held.reader.pump?.();
       }
+      held.children.scan();
       const current = held.current.snapshot();
       /** @type {Map<string, Record<string, any>>} */
       const prior = new Map(
@@ -175,7 +188,14 @@ export function createWorkerSessionObservationStore(options = {}) {
       const usage = sumUsage(
         usage_segments.map((/** @type {any} */ leg) => leg.usage)
       );
-      const value = { ...(values.get(key) || {}), usage, usage_segments };
+      const value = {
+        ...(values.get(key) || {}),
+        usage,
+        usage_segments,
+        codex_children: held.children.snapshot(
+          observation_options.parent_terminated === true
+        )
+      };
       values.set(key, value);
       return value;
     },
@@ -183,6 +203,7 @@ export function createWorkerSessionObservationStore(options = {}) {
     drain(workspace, attempt_id) {
       const held = observers.get(keyOf(workspace, attempt_id));
       held?.reader.drain?.({ flush: false });
+      held?.children.drain();
     },
     /** @param {string} workspace - Workspace. @param {string} attempt_id - Attempt. */
     get(workspace, attempt_id) {
@@ -192,12 +213,14 @@ export function createWorkerSessionObservationStore(options = {}) {
     delete(workspace, attempt_id) {
       const key = keyOf(workspace, attempt_id);
       observers.get(key)?.reader.stop?.();
+      observers.get(key)?.children.stop();
       observers.delete(key);
       values.delete(key);
     },
     clear() {
       for (const held of observers.values()) {
         held.reader.stop?.();
+        held.children.stop();
       }
       observers.clear();
       values.clear();
@@ -599,18 +622,21 @@ function createObservationAccumulator(provider, context = {}, on_apply) {
         partial: true
       });
     }
-    if (
+    const has_reported_cost =
       typeof result_usage.total_cost_usd === 'number' &&
       Number.isFinite(result_usage.total_cost_usd) &&
-      result_usage.total_cost_usd >= 0
-    ) {
+      result_usage.total_cost_usd >= 0;
+    if (has_reported_cost) {
+      for (const leg of active) {
+        leg.cost_covered = true;
+      }
       active.push({
         provider: 'claude',
         role: 'orchestrator',
         attempt_id: `session:${context.session_id || 'unknown'}`,
         turn_id: `result:${result_index}:reported-cost`,
         model: null,
-        usage: { total_cost_usd: result_usage.total_cost_usd }
+        usage: { total_tokens: 0, total_cost_usd: result_usage.total_cost_usd }
       });
     }
     settled_legs.push(...active);
@@ -622,20 +648,24 @@ function createObservationAccumulator(provider, context = {}, on_apply) {
     /** @param {Record<string, any>} record */
     apply(record) {
       on_apply?.();
-      if (record.type === 'system' && record.subtype === 'init') {
+      const parent_id =
+        typeof record.parent_tool_use_id === 'string'
+          ? record.parent_tool_use_id
+          : null;
+      if (record.isSidechain === true && parent_id === null) {
+        return;
+      }
+      if (!parent_id && record.type === 'system' && record.subtype === 'init') {
         model = typeof record.model === 'string' ? record.model : model;
       }
       if (
+        !parent_id &&
         record.type === 'assistant' &&
         typeof record.message?.model === 'string'
       ) {
         model = record.message.model;
       }
       const usage = liftClaudeUsage(record);
-      const parent_id =
-        typeof record.parent_tool_use_id === 'string'
-          ? record.parent_tool_use_id
-          : null;
       if (usage?.kind === 'result' && !parent_id) {
         settleResult(usage.usage);
       } else if (parent_id) {
@@ -730,12 +760,13 @@ function createObservationAccumulator(provider, context = {}, on_apply) {
 }
 
 /**
- * @param {{ onChange?: (workspace: string, bead_id: string, observation: Record<string, any>) => void, onApply?: () => void, fanoutMs?: number, createReader?: typeof createTailReader, readSnapshot?: typeof readSessionSnapshot }} [options]
+ * @param {{ onChange?: (workspace: string, bead_id: string, observation: Record<string, any>) => void, onApply?: () => void, fanoutMs?: number, createReader?: typeof createTailReader, readSnapshot?: typeof readSessionSnapshot, fs?: typeof fs }} [options]
  */
 export function createSessionObservationStore(options = {}) {
   const make_reader = options.createReader || createTailReader;
   const read_snapshot = options.readSnapshot || readSessionSnapshot;
   const fanout_ms = options.fanoutMs ?? 3000;
+  const file_system = options.fs || fs;
   /** @type {Map<string, any>} */
   const entries = new Map();
   /** @type {Map<string, Record<string, any>>} */
@@ -800,6 +831,7 @@ export function createSessionObservationStore(options = {}) {
       const record = objectOf(JSON.parse(line));
       if (record) {
         entry.accumulator.apply(record);
+        entry.child_observer?.applyRoot(record);
       }
     } catch {
       // A damaged complete record contributes no invented observation.
@@ -811,10 +843,8 @@ export function createSessionObservationStore(options = {}) {
     if (entry.provider !== 'codex') {
       return;
     }
-    entry.delegations = observeCodexChildren({
-      attempt: { runner: 'codex', session_id: entry.session_id },
-      sessions_root: path.resolve(path.dirname(entry.file), '../../..')
-    });
+    entry.child_observer.scan();
+    entry.delegations = entry.child_observer.snapshot();
     publish(entry, false);
     schedulePublish(entry);
   }
@@ -822,6 +852,7 @@ export function createSessionObservationStore(options = {}) {
   /** @param {any} entry - Shared reader entry. */
   function stopEntry(entry) {
     entry.reader.stop();
+    entry.child_observer?.stop();
     if (entry.rescan_timer !== null) {
       clearInterval(entry.rescan_timer);
       entry.rescan_timer = null;
@@ -895,8 +926,23 @@ export function createSessionObservationStore(options = {}) {
             reader: null,
             rescan_timer: null,
             publish_timer: null,
+            child_observer: null,
             consumers: new Map()
           };
+          if (held.provider === 'codex') {
+            held.child_observer = createIncrementalCodexChildObserver({
+              root_thread_id: held.session_id,
+              root_file: held.file,
+              createReader: make_reader,
+              readSnapshot: read_snapshot,
+              fs: file_system,
+              onChange() {
+                held.delegations = held.child_observer.snapshot();
+                publish(held, false);
+                schedulePublish(held);
+              }
+            });
+          }
           for (const line of snapshot.text.split(/\r?\n/)) {
             if (line.length > 0) {
               applyLine(held, line);
@@ -912,7 +958,8 @@ export function createSessionObservationStore(options = {}) {
             },
             onReset: () => {
               held.accumulator.reset();
-              held.delegations = [];
+              held.child_observer?.resetRoot();
+              held.delegations = held.child_observer?.snapshot() || [];
               held.projection_json = null;
               publish(held, false);
               schedulePublish(held);

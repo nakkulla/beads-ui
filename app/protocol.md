@@ -563,10 +563,15 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
     durable vocabulary, so `label` names the ordinal only
     (`구현 unit 3 · codex`, `review-consult · codex`).
 - An attempt may carry
-  `usage_segments: Array<{ provider, role, turn_id, model, usage, partial? }>`.
+  `usage_segments: Array<{ provider, role, turn_id, model, usage, partial?, cost_covered? }>`.
   These model-scoped root ranges survive terminal persistence and replay;
   `partial:true` marks an observed range whose attempt boundary or model could
   not be proven, so pricing leaves it unpriced rather than assigning a default.
+  `cost_covered:true` is present only on model-scoped token segments whose same
+  terminal result group also carries a valid reported `total_cost_usd` segment.
+  Their token counts remain in totals and model detail, while pricing excludes
+  them from priced, estimated, and unpriced leg counts because that reported
+  amount already covers the group once.
 - An attempt may carry
   `codex_children: Array<{ thread_id, parent_thread_id, launch_id, agent_path, model, effort, status, started_at, completed_at, last_event_at, usage }>`
   (UI-mn5u §6.2) — Codex NATIVE subagents observed from the rollout files Codex

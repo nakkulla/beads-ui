@@ -1413,6 +1413,12 @@ describe('session-history per-leg price (preset-compare §1.3)', () => {
 });
 
 describe('session-history native Codex children (UI-mn5u §6.4)', () => {
+  const estimated_catalog = resolveCatalog({
+    overrides: {
+      codex: { models: { terra: { price: { input: 2 } } } }
+    },
+    warn: () => {}
+  });
   /** @type {any} */
   const CHILD = {
     thread_id: '01a07fe0-1e96-7443-b224-30d21a82419a',
@@ -1531,6 +1537,28 @@ describe('session-history native Codex children (UI-mn5u §6.4)', () => {
     );
     expect(badge.title).toContain('세부 내역 미관측');
     expect(badge.title).not.toContain('입력 0');
+  });
+
+  test('marks a total-only native child amount as estimated', () => {
+    const host = mount(
+      sessionHistoryTemplate(
+        [
+          codexAttempt({
+            codex_children: [{ ...CHILD, usage: { total_tokens: 1_000_000 } }]
+          })
+        ],
+        {},
+        { catalog: estimated_catalog }
+      )
+    );
+
+    const badge = /** @type {HTMLElement} */ (
+      host
+        .querySelector('.detail-session__leg--done')
+        ?.querySelector('.detail-session__usage')
+    );
+    expect(badge.textContent).toContain('추정');
+    expect(badge.title).toContain('추정');
   });
 
   test('omits an unobserved usage field instead of printing zero', () => {

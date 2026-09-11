@@ -818,7 +818,7 @@ function directSessionUsage(observation, catalog) {
   if (!observation || typeof observation !== 'object') {
     return null;
   }
-  const total = sumAttemptUsage(
+  return sumAttemptUsage(
     {
       direct: {
         attempt_id: `session:${observation.session_id || ''}`,
@@ -846,26 +846,6 @@ function directSessionUsage(observation, catalog) {
     '__direct__',
     catalog
   );
-  const reported_cost = observation.usage?.total_cost_usd;
-  if (
-    total &&
-    observation.provider === 'claude' &&
-    typeof reported_cost === 'number' &&
-    Number.isFinite(reported_cost) &&
-    reported_cost >= 0
-  ) {
-    const provider = total.providers?.claude;
-    const role = total.roles?.orchestrator?.claude;
-    if (provider) {
-      provider.total_cost_usd = reported_cost;
-      delete provider.cost_estimated;
-    }
-    if (role) {
-      role.total_cost_usd = reported_cost;
-      delete role.cost_estimated;
-    }
-  }
-  return total;
 }
 
 /**

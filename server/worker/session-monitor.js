@@ -206,18 +206,26 @@ export function createSessionMonitors(deps) {
     if (!attempt) {
       return;
     }
+    let prepared = null;
     try {
-      deps.workerSessionObservations?.observe(workspace, attempt);
+      prepared = deps.workerSessionObservations?.observe(workspace, attempt, {
+        parent_terminated
+      });
     } catch (err) {
       log('root usage observation failed for %s: %o', attempt_id, err);
     }
     /** @type {import('./codex-children/accumulate.js').CodexChildRow[]} */
-    let rows;
-    try {
-      rows = observeChildren({ attempt, parent_terminated });
-    } catch (err) {
-      log('native child observation failed for %s: %o', attempt_id, err);
-      return;
+    /** @type {import('./codex-children/accumulate.js').CodexChildRow[]|null} */
+    let rows = Array.isArray(prepared?.codex_children)
+      ? prepared.codex_children
+      : null;
+    if (rows === null) {
+      try {
+        rows = observeChildren({ attempt, parent_terminated });
+      } catch (err) {
+        log('native child observation failed for %s: %o', attempt_id, err);
+        return;
+      }
     }
     const key = keyOf(workspace, attempt_id);
     const prepared_usage = deps.workerSessionObservations?.get(
