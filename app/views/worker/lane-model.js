@@ -19,6 +19,7 @@
  * 있으면 드롭 타깃이 필요하고 (§6), 순서는 데크 순서와 같아야 한다.
  */
 import { RETRY_MAX } from '../../../server/worker/failure-class.js';
+import { priceUsage } from '../../../server/worker/usage-pricing.js';
 import {
   activeAttemptStates,
   isImplementationAttempt,
@@ -735,7 +736,7 @@ function liveAttemptFields(a, attempts, run_state, runner_catalog = null) {
       a.last_activity && typeof a.last_activity === 'object'
         ? a.last_activity
         : null,
-    legs: Array.isArray(a.legs) ? a.legs : [],
+    legs: observedLegs(a, runner_catalog),
     runner: typeof a.runner === 'string' ? a.runner : null,
     model: typeof a.model === 'string' ? a.model : null,
     effort: typeof a.effort === 'string' ? a.effort : null,
@@ -748,6 +749,123 @@ function liveAttemptFields(a, attempts, run_state, runner_catalog = null) {
     status: typeof a.status === 'string' ? a.status : null,
     usage: sumAttemptUsage(attempts, a.bead_id, runner_catalog)
   };
+}
+
+/**
+ * Merge external delegation rows with Codex native children and attach each
+ * row's own display price. Native values remain outside the parent usage
+ * projection by construction.
+ *
+ * @param {any} source - Attempt or direct-session observation.
+ * @param {any} catalog - Current runtime catalog.
+ */
+function observedLegs(source, catalog) {
+  /** @type {any[]} */
+  const rows = Array.isArray(source?.legs) ? source.legs.slice() : [];
+  for (const child of Array.isArray(source?.codex_children)
+    ? source.codex_children
+    : []) {
+    const name =
+      typeof child.agent_path === 'string'
+        ? child.agent_path.split('/').filter(Boolean).pop()
+        : null;
+    rows.push({
+      label: [name || 'native child', child.model].filter(Boolean).join(' · '),
+      state:
+        child.status === 'running'
+          ? 'live'
+          : child.status === 'done'
+            ? 'done'
+            : child.status === 'interrupted'
+              ? 'interrupted'
+              : 'failed',
+      model: child.model ?? null,
+      usage: child.usage ?? null,
+      native: true
+    });
+  }
+  return rows.map((/** @type {any} */ row) => {
+    if (!row?.usage) {
+      return row;
+    }
+    const normalized = {
+      input_tokens: row.usage.input_tokens,
+      cache_read_input_tokens:
+        row.usage.cache_read_input_tokens ?? row.usage.cached_input_tokens,
+      cache_creation_input_tokens:
+        row.usage.cache_creation_input_tokens ??
+        row.usage.cache_write_input_tokens,
+      output_tokens: row.usage.output_tokens,
+      reasoning_output_tokens: row.usage.reasoning_output_tokens,
+      total_tokens: row.usage.total_tokens,
+      total_cost_usd: row.usage.total_cost_usd
+    };
+    const price = priceUsage(normalized, row.model, catalog);
+    return {
+      ...row,
+      usage: normalized,
+      price_usd: price.usd,
+      price_basis: price.basis
+    };
+  });
+}
+
+/**
+ * @param {any} observation - Current direct-session observation.
+ * @param {any} catalog - Current runtime catalog.
+ */
+function directSessionUsage(observation, catalog) {
+  if (!observation || typeof observation !== 'object') {
+    return null;
+  }
+  const total = sumAttemptUsage(
+    {
+      direct: {
+        attempt_id: `session:${observation.session_id || ''}`,
+        bead_id: '__direct__',
+        runner: observation.provider,
+        model:
+          observation.provider === 'codex' &&
+          (!Array.isArray(observation.usage_legs) ||
+            observation.usage_legs.length === 0)
+            ? null
+            : observation.model,
+        usage: observation.usage,
+        usage_segments: Array.isArray(observation.usage_legs)
+          ? observation.usage_legs.filter(
+              (/** @type {any} */ leg) => leg.role === 'orchestrator'
+            )
+          : [],
+        usage_legs: Array.isArray(observation.usage_legs)
+          ? observation.usage_legs.filter(
+              (/** @type {any} */ leg) => leg.role !== 'orchestrator'
+            )
+          : []
+      }
+    },
+    '__direct__',
+    catalog
+  );
+  const reported_cost = observation.usage?.total_cost_usd;
+  if (
+    total &&
+    observation.provider === 'claude' &&
+    typeof reported_cost === 'number' &&
+    Number.isFinite(reported_cost) &&
+    reported_cost >= 0
+  ) {
+    const provider = total.providers?.claude;
+    const role = total.roles?.orchestrator?.claude;
+    if (provider) {
+      provider.total_cost_usd = reported_cost;
+      delete provider.cost_estimated;
+    }
+    if (role) {
+      role.total_cost_usd = reported_cost;
+      delete role.cost_estimated;
+    }
+  }
+  return total;
 }
 
 /**
@@ -3560,14 +3678,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
           a.last_activity && typeof a.last_activity === 'object'
             ? a.last_activity
             : null,
-        legs: Array.isArray(a.legs) ? a.legs : [],
+        legs: observedLegs(a, runner_catalog),
         runner: typeof a.runner === 'string' ? a.runner : null,
         model: typeof a.model === 'string' ? a.model : null,
         effort: typeof a.effort === 'string' ? a.effort : null,
         speed: typeof a.speed === 'string' ? a.speed : null,
         resumed_from: null,
         continuation_mode: null,
-        usage: a.usage && typeof a.usage === 'object' ? a.usage : null,
+        usage: sumAttemptUsage({ review: a }, a.bead_id, runner_catalog),
         exec_chips: {
           orchestration: formatAttemptOrchestrationChip(a),
           worker: null
@@ -3635,8 +3753,42 @@ export function buildLanes(workspaces, workspaces_state, options) {
         can_pause: false,
         can_resume: false,
         exec_chips: null,
-        usage: null,
-        legs: [],
+        usage: directSessionUsage(entry.session_observation, runner_catalog),
+        legs: observedLegs(
+          {
+            legs: Array.isArray(entry.session_observation?.delegations)
+              ? entry.session_observation.delegations.map(
+                  (/** @type {any} */ delegation) => ({
+                    label: [
+                      delegation.agent_type ||
+                        delegation.agent_path
+                          ?.split('/')
+                          .filter(Boolean)
+                          .pop() ||
+                        '위임',
+                      entry.session_observation.provider,
+                      delegation.model
+                    ]
+                      .filter(Boolean)
+                      .join(' · '),
+                    state:
+                      delegation.status === 'running'
+                        ? 'live'
+                        : delegation.status === 'done'
+                          ? 'done'
+                          : delegation.status === 'interrupted'
+                            ? 'interrupted'
+                            : 'failed',
+                    runtime: entry.session_observation.provider,
+                    model: delegation.model ?? null,
+                    usage: delegation.usage ?? null,
+                    native: entry.session_observation.provider === 'codex'
+                  })
+                )
+              : []
+          },
+          runner_catalog
+        ),
         last_activity: null,
         // 세션 정체·transcript 좌표 (UI-4xzk §6.4). 서버가 같은 스캔에서
         // 투영하며, 키가 없거나 전 항목이 malformed면 빈 배열이다.

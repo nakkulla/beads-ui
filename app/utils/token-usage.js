@@ -114,6 +114,14 @@ export const PRICE_BASIS_LABELS = {
   none: '단가 없음'
 };
 
+/** @param {number} usd - API-rate conversion in USD. */
+function formatUsd(usd) {
+  if (usd === 0 || Math.abs(usd) >= 0.01) {
+    return `$${usd.toFixed(2)}`;
+  }
+  return `$${usd.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`;
+}
+
 /**
  * The cost text beside a token badge, or null when no leg of the summary could
  * be priced at all. Unpriced legs are NAMED rather than dropped, because a sum
@@ -123,15 +131,17 @@ export const PRICE_BASIS_LABELS = {
  * @returns {string|null}
  */
 export function formatCost(summary) {
-  if (
-    !summary ||
-    typeof summary.total_cost_usd !== 'number' ||
-    !Number.isFinite(summary.total_cost_usd)
-  ) {
+  if (!summary) {
     return null;
   }
   const unpriced = numeric(summary.unpriced_leg_count);
-  const amount = `$${summary.total_cost_usd.toFixed(2)}`;
+  if (
+    typeof summary.total_cost_usd !== 'number' ||
+    !Number.isFinite(summary.total_cost_usd)
+  ) {
+    return unpriced > 0 ? '단가 없음' : null;
+  }
+  const amount = formatUsd(summary.total_cost_usd);
   return unpriced > 0 ? `${amount} (+${unpriced} leg 단가 없음)` : amount;
 }
 
@@ -723,7 +733,7 @@ export function formatUsageTotalWithCost(usage) {
   }
   const cost = usage?.total_cost_usd;
   return typeof cost === 'number' && Number.isFinite(cost)
-    ? `${label} · $${cost.toFixed(2)}`
+    ? `${label} · ${formatUsd(cost)}`
     : label;
 }
 
@@ -747,7 +757,7 @@ export function usageTooltip(usage) {
     typeof usage.total_cost_usd === 'number' &&
     Number.isFinite(usage.total_cost_usd)
   ) {
-    parts.push(`$${usage.total_cost_usd.toFixed(2)}`);
+    parts.push(formatUsd(usage.total_cost_usd));
   }
   // The headline first, then the breakdown that explains it (UI-tq13 §3): the
   // badge shows an abbreviated `14.1M`, and the reader who hovers is the one who
@@ -801,8 +811,11 @@ export function sumAttemptUsage(attempts, bead_id, catalog = null) {
     if (!attempt || attempt.bead_id !== bead_id) {
       continue;
     }
+    const usage_segments = Array.isArray(attempt.usage_segments)
+      ? attempt.usage_segments
+      : [];
     const outer_usage = attempt.usage;
-    if (hasReportedUsage(outer_usage)) {
+    if (usage_segments.length === 0 && hasReportedUsage(outer_usage)) {
       const provider = providerForRunner(attempt.runner);
       const usage = reportedUsage(outer_usage);
       /** @type {UsageLeg} */
@@ -821,6 +834,31 @@ export function sumAttemptUsage(attempts, bead_id, catalog = null) {
       }
       if (typeof attempt.session_id === 'string') {
         leg.session_id = attempt.session_id;
+      }
+      applyLegPrice(leg, catalog);
+      priced_legs.push(leg);
+      addLeg(providers[provider], leg);
+      addLeg(roles.orchestrator[provider], leg);
+    }
+    for (const segment of usage_segments) {
+      if (!segment || !hasReportedUsage(segment.usage)) {
+        continue;
+      }
+      const provider = providerForRunner(attempt.runner);
+      const usage = reportedUsage(segment.usage);
+      /** @type {UsageLeg} */
+      const leg = {
+        provider,
+        role: 'orchestrator',
+        attempt_id: String(attempt.attempt_id || ''),
+        usage,
+        subtotal: providerSubtotal(provider, usage)
+      };
+      if (segment.partial !== true && typeof segment.model === 'string') {
+        leg.model = segment.model;
+      }
+      if (typeof segment.turn_id === 'string') {
+        leg.turn_id = segment.turn_id;
       }
       applyLegPrice(leg, catalog);
       priced_legs.push(leg);

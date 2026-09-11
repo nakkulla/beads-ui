@@ -70,7 +70,6 @@ import {
   workerSlots,
   workerWorktreeExists
 } from '../worker/attach.js';
-import { observeCodexChildren } from '../worker/codex-children/reader.js';
 import { implActorOf } from '../worker/compare-projection.js';
 import {
   normalizeDelegationSessions,
@@ -2220,13 +2219,26 @@ function legLabelOf(role, runtime, ordinal, agent_type = null) {
  *
  * @param {any} attempt
  * @param {import('../worker/queue-store.js').DelegationSession[]} delegation_sessions
- * @returns {Array<{ role: string|null, runtime: string|null, model: string|null, agent_type?: string, state: 'live'|'done'|'failed', ordinal: number, label: string }>}
+ * @returns {Array<{ role: string|null, runtime: string|null, model: string|null, agent_type?: string, usage?: Record<string, number>, state: 'live'|'done'|'failed'|'interrupted', ordinal: number, label: string }>}
  */
 function attemptLegs(attempt, delegation_sessions) {
-  /** @type {Array<{ role: string|null, runtime: string|null, model: string|null, agent_type: string|null, state: 'live'|'done'|'failed' }>} */
+  /** @type {Array<{ role: string|null, runtime: string|null, model: string|null, agent_type: string|null, usage?: Record<string, number>, state: 'live'|'done'|'failed'|'interrupted' }>} */
   const rows = [];
   /** @type {Set<string>} */
   const seen = new Set();
+  const usage_legs = Array.isArray(attempt?.usage_legs)
+    ? attempt.usage_legs
+    : [];
+  /** @type {Map<string, any>} */
+  const usage_by_session = new Map();
+  for (const leg of usage_legs) {
+    if (leg && typeof leg === 'object') {
+      usage_by_session.set(
+        `${leg.session_id || ''}\u0000${leg.turn_id || ''}`,
+        leg
+      );
+    }
+  }
   const launches = [...delegation_sessions].sort(
     (a, b) => (a?.started_at || 0) - (b?.started_at || 0)
   );
@@ -2234,11 +2246,21 @@ function attemptLegs(attempt, delegation_sessions) {
     if (!session || typeof session !== 'object') {
       continue;
     }
-    seen.add(`${session.session_id || ''}\u0000${session.turn_id || ''}`);
+    const session_key = `${session.session_id || ''}\u0000${session.turn_id || ''}`;
+    const usage_leg = usage_by_session.get(session_key);
+    seen.add(session_key);
     rows.push({
       role: typeof session.role === 'string' ? session.role : null,
       runtime: typeof session.provider === 'string' ? session.provider : null,
-      model: typeof session.model === 'string' ? session.model : null,
+      model:
+        typeof usage_leg?.model === 'string'
+          ? usage_leg.model
+          : typeof session.model === 'string'
+            ? session.model
+            : null,
+      ...(usage_leg?.usage && typeof usage_leg.usage === 'object'
+        ? { usage: usage_leg.usage }
+        : {}),
       agent_type:
         typeof session.agent_type === 'string' ? session.agent_type : null,
       state:
@@ -2246,12 +2268,11 @@ function attemptLegs(attempt, delegation_sessions) {
           ? 'live'
           : session.status === 'done'
             ? 'done'
-            : 'failed'
+            : session.status === 'interrupted'
+              ? 'interrupted'
+              : 'failed'
     });
   }
-  const usage_legs = Array.isArray(attempt?.usage_legs)
-    ? attempt.usage_legs
-    : [];
   for (const leg of usage_legs) {
     if (!leg || typeof leg !== 'object') {
       continue;
@@ -2265,6 +2286,9 @@ function attemptLegs(attempt, delegation_sessions) {
       role: typeof leg.role === 'string' ? leg.role : null,
       runtime: typeof leg.provider === 'string' ? leg.provider : null,
       model: typeof leg.model === 'string' ? leg.model : null,
+      ...(leg.usage && typeof leg.usage === 'object'
+        ? { usage: leg.usage }
+        : {}),
       agent_type: typeof leg.agent_type === 'string' ? leg.agent_type : null,
       state: 'done'
     });
@@ -2282,7 +2306,9 @@ function attemptLegs(attempt, delegation_sessions) {
       ...rest,
       ...(agent_type === null ? {} : { agent_type }),
       ordinal,
-      label: legLabelOf(row.role, row.runtime, ordinal, agent_type)
+      label: `${legLabelOf(row.role, row.runtime, ordinal, agent_type)}${
+        row.model ? ` · ${row.model}` : ''
+      }`
     };
   });
 }
@@ -2305,13 +2331,17 @@ export function attemptsWithUsage(queue, workspace_key) {
   let store = null;
   /** @type {ReturnType<typeof import('../worker/session-log.js').createSessionLog>|null} */
   let session_log = null;
+  /** @type {ReturnType<typeof import('../worker/session-observation.js').createWorkerSessionObservationStore>|null} */
+  let observations = null;
   try {
     const runtime = getWorkerRuntime();
     store = runtime.usageStore;
     session_log = runtime.sessionLog;
+    observations = runtime.workerSessionObservations;
   } catch {
     store = null;
     session_log = null;
+    observations = null;
   }
   const delegation_store = delegationStoreOrNull();
   /** @type {Record<string, unknown>} */
@@ -2325,8 +2355,20 @@ export function attemptsWithUsage(queue, workspace_key) {
         : null;
     /** @type {any} */
     let projected = stripPrompts(attempt);
-    if (live) {
-      projected = { ...projected, usage: live };
+    const prepared = running
+      ? observations?.get(workspace_key, attempt_id)
+      : null;
+    if (prepared?.usage) {
+      projected = {
+        ...projected,
+        usage: prepared.usage,
+        usage_segments: prepared.usage_segments
+      };
+    } else if (live) {
+      projected = {
+        ...projected,
+        usage: live
+      };
     }
     if (running) {
       // Claude subagent receipts come off the in-memory delegation store, not
@@ -2359,16 +2401,12 @@ export function attemptsWithUsage(queue, workspace_key) {
       // a settled attempt carries the normalized rows on its own record — and
       // fail-quiet: an attempt with no readable rollout carries no key, and the
       // detail panel then shows no child row rather than an observed zero.
-      try {
-        const codex_children = observeCodexChildren({
-          attempt: projected,
-          parent_terminated: false
-        });
-        if (codex_children.length > 0) {
-          projected = { ...projected, codex_children };
-        }
-      } catch (err) {
-        log('native child overlay failed for %s: %o', attempt_id, err);
+      const prepared_children = prepared;
+      if (Array.isArray(prepared_children?.codex_children)) {
+        projected = {
+          ...projected,
+          codex_children: prepared_children.codex_children
+        };
       }
       const delegation_sessions = delegationSessionsForAttempt(
         workspace_key,
@@ -3423,6 +3461,7 @@ export function detachWorkerQueue(ws) {
       }
     }
   }
+  getWorkerRuntime().runnableCache.releaseObservationsIfIdle?.();
   detachSessionLog(ws);
 }
 
@@ -4323,6 +4362,7 @@ export function handleUnsubscribeWorkerQueue(ws, req) {
       }
     }
   }
+  getWorkerRuntime().runnableCache.releaseObservationsIfIdle?.();
   ws.send(
     JSON.stringify(makeOk(req, { id: client_id, unsubscribed: removed }))
   );

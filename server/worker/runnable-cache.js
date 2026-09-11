@@ -54,7 +54,12 @@ import {
   REC_VALUES
 } from './exec-enums.js';
 import { WORKFLOW_ROUTES } from './routes.js';
-import { sessionRefViews } from './session-ref.js';
+import { createSessionObservationStore } from './session-observation.js';
+import {
+  parseSessionRef,
+  resolveSessionFile,
+  sessionRefViews
+} from './session-ref.js';
 
 const log = debug('worker:runnable-cache');
 
@@ -211,6 +216,8 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * for display (UI-4xzk §4.1), read from THIS scan's row so the bucket still
  * costs no extra `bd` process. Empty when the key is absent, every item is
  * malformed, or the projection failed.
+ * @property {Record<string, unknown>} [session_observation] - Prepared local
+ * usage and delegation facts for the current reference.
  */
 
 /**
@@ -706,6 +713,20 @@ export function createRunnableCache(options = {}) {
     return path.resolve(String(workspace || ''));
   }
 
+  const observation_store = createSessionObservationStore({
+    onChange(workspace, bead_id, observation) {
+      const hit = records.get(keyOf(workspace));
+      const row = hit?.session_active.find(
+        (candidate) => candidate.bead_id === bead_id
+      );
+      if (!row) {
+        return;
+      }
+      row.session_observation = observation;
+      announceFilled(keyOf(workspace));
+    }
+  });
+
   /**
    * The workflow projector for one workspace and ONE fill's probe context. The
    * `bd list` row already carries everything `enrichIssueWorkflow` reads, so the
@@ -874,6 +895,36 @@ export function createRunnableCache(options = {}) {
       const enrich = enrichFor(root, probes);
       for (const entry of projected) {
         entry.item.workflow = enrich(entry.row);
+      }
+    }
+    /** @type {Array<{ bead_id: string, provider: 'claude'|'codex', session_id: string, file: string }>} */
+    const observation_targets = [];
+    for (const entry of projected) {
+      if (
+        !session_active.includes(/** @type {SessionActiveItem} */ (entry.item))
+      ) {
+        continue;
+      }
+      const refs = parseSessionRef(metadataOf(entry.row).session_ref);
+      const current = refs[refs.length - 1];
+      if (!current) {
+        continue;
+      }
+      const location = resolveSessionFile(current);
+      if (location.locality === 'local' && location.file) {
+        observation_targets.push({
+          bead_id: entry.item.bead_id,
+          provider: current.provider,
+          session_id: current.session_id,
+          file: location.file
+        });
+      }
+    }
+    observation_store.reconcile(root, observation_targets);
+    for (const item of session_active) {
+      const observation = observation_store.get(root, item.bead_id);
+      if (observation) {
+        item.session_observation = observation;
       }
     }
     return { items, session_active, carried_to };
@@ -1045,6 +1096,13 @@ export function createRunnableCache(options = {}) {
       subscriberCount = typeof fn === 'function' ? fn : () => 1;
     },
 
+    /** Stop local transcript readers once neither live card channel can use them. */
+    releaseObservationsIfIdle() {
+      if (subscriberCount() <= 0) {
+        observation_store.clear();
+      }
+    },
+
     /**
      * This workspace's runnable candidates, minus the ids the caller already has
      * in a lane. SYNCHRONOUS and side-effect-free from the caller's view: a cold
@@ -1190,6 +1248,7 @@ export function createRunnableCache(options = {}) {
      * instance, so clearing them here would silently kill the refill push.
      */
     clear() {
+      observation_store.clear();
       records.clear();
       failed.clear();
       in_flight.clear();

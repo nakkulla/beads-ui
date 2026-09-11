@@ -377,6 +377,34 @@ describe('runner/codex usage lift (UI-raqh §1 generalized)', () => {
     });
   });
 
+  test('lifts pre-terminal rollout usage as a replaceable turn value', () => {
+    const spec = codexSpec();
+
+    const lifted = spec.liftUsage({
+      type: 'token_usage_record',
+      payload: {
+        turn_id: 'turn-1',
+        turn_token_usage: {
+          input_tokens: 56733,
+          cached_input_tokens: 37376,
+          output_tokens: 448,
+          reasoning_output_tokens: 146
+        }
+      }
+    });
+
+    expect(lifted).toEqual({
+      kind: 'message',
+      usage: {
+        message_id: 'turn-1',
+        input_tokens: 56733,
+        cache_read_input_tokens: 37376,
+        output_tokens: 448,
+        reasoning_output_tokens: 146
+      }
+    });
+  });
+
   test('lifts the app-server reasoning output spelling', () => {
     const spec = codexSpec();
 

@@ -1,4 +1,5 @@
 import { html } from 'lit-html';
+import { priceUsage } from '../../../server/worker/usage-pricing.js';
 import {
   formatAttemptTuple,
   formatContinuationLineage
@@ -622,14 +623,25 @@ function nativeChildUsage(usage) {
  * observation, not a receipt.
  *
  * @param {Record<string, any>} child
+ * @param {import('../../../server/worker/runner-catalog.js').ResolvedCatalog|null} catalog
  * @returns {TemplateResult}
  */
-function nativeChildTemplate(child) {
+function nativeChildTemplate(child, catalog) {
   const usage = nativeChildUsage(child.usage);
+  const price = usage
+    ? priceUsage(usage.breakdown, child.model, catalog)
+    : null;
   const badges = usage
     ? providerUsageBadges({
         providers: {
-          codex: { subtotal: usage.subtotal, breakdown: usage.breakdown }
+          codex: {
+            subtotal: usage.subtotal,
+            breakdown: usage.breakdown,
+            ...(price && price.usd !== null
+              ? { total_cost_usd: price.usd }
+              : {}),
+            ...(price?.basis === 'none' ? { unpriced_leg_count: 1 } : {})
+          }
         },
         roles: {}
       })
@@ -689,9 +701,10 @@ function nativeChildTemplate(child) {
  * an attempt with no observation renders none.
  *
  * @param {SessionAttempt} attempt
+ * @param {import('../../../server/worker/runner-catalog.js').ResolvedCatalog|null} [catalog]
  * @returns {TemplateResult[]}
  */
-export function nativeChildLegs(attempt) {
+export function nativeChildLegs(attempt, catalog = null) {
   const children = Array.isArray(attempt.codex_children)
     ? attempt.codex_children
     : [];
@@ -710,7 +723,7 @@ export function nativeChildLegs(attempt) {
       continue;
     }
     seen.add(child.thread_id);
-    rows.push(nativeChildTemplate(child));
+    rows.push(nativeChildTemplate(child, catalog));
   }
   return rows;
 }
@@ -1256,7 +1269,10 @@ export function sessionHistoryTemplate(
           ${expanded.has(a.attempt_id) && a.usage
             ? usageDetail(a.usage, a.runner === 'codex' ? 'codex' : 'claude')
             : ''}
-          ${delegationLegs(a, projection, handlers)} ${nativeChildLegs(a)}
+          ${delegationLegs(a, projection, handlers)}${nativeChildLegs(
+            a,
+            catalog
+          )}
         </div>`;
       })}
     </div>

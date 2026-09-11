@@ -225,7 +225,7 @@ interactive SESSION holds: rows the shared `bd list --all` snapshot reports as
 `status: 'in_progress'` with no active worker attempt and no membership in
 `queue` ∪ serial lanes ∪ `pr_wait`. `done` membership does NOT remove a row — a
 bead a session reopened is being worked on now. Each row carries
-`{ bead_id, title, status: 'in_progress', route, spec_id, plan_path, labels, created_at, updated_at, started_at, workflow, blocked, blocked_by }`.
+`{ bead_id, title, status: 'in_progress', route, spec_id, plan_path, labels, created_at, updated_at, started_at, workflow, blocked, blocked_by, session_refs, session_observation? }`.
 `route` is `metadata.route` or `''` when unpinned, `spec_id` is `''` when absent
 or in conflict, and `workflow` / `blocked` / `blocked_by` follow the same rules
 as the runnable rows below. `plan_path` (UI-anna §3.1) is `metadata.plan_path`
@@ -257,6 +257,17 @@ receipt, phase-child parentage) are NOT applied: a session claims whatever issue
 it likes. The bucket rides the same scan, TTL and invalidation as `runnable`, so
 a session's `bd update` surfaces within one refresh tick rather than
 immediately.
+
+`session_observation` is present only for the current reference when its local
+transcript is readable. It carries
+`{ provider, session_id, observed_at, model, usage, usage_legs, delegations }`.
+`usage` is the current conversation's root usage, `usage_legs` preserves
+model/turn splits, unknown residual ranges (`partial:true`) and external child
+receipts, and `delegations` carries only observed identity, model, state,
+timestamps and per-child usage. Transcript text and paths never travel. Pricing
+is absent from this observation and is recomputed from the snapshot's current
+`runner_catalog`. Older servers and unreadable, remote or missing references
+omit the field; consumers draw no usage or delegation row in that case.
 
 `workspaces[].bead_blocked_by` is the worker snapshot's map with one more
 filter: a blocker id whose prefix belongs to ANOTHER visible workspace is looked
@@ -548,9 +559,14 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   - `legs: Array<{ role, runtime, model, state, ordinal, label }>` — the
     attempt's delegation legs, derived PURELY from the `delegation_sessions[]`
     launches and the `usage_legs[]` receipts it already carries. `state` is
-    `live`/`done`/`failed`. No total unit count exists in the durable
-    vocabulary, so `label` names the ordinal only (`구현 unit 3 · codex`,
-    `review-consult · codex`).
+    `live`/`done`/`failed`/`interrupted`. No total unit count exists in the
+    durable vocabulary, so `label` names the ordinal only
+    (`구현 unit 3 · codex`, `review-consult · codex`).
+- An attempt may carry
+  `usage_segments: Array<{ provider, role, turn_id, model, usage, partial? }>`.
+  These model-scoped root ranges survive terminal persistence and replay;
+  `partial:true` marks an observed range whose attempt boundary or model could
+  not be proven, so pricing leaves it unpriced rather than assigning a default.
 - An attempt may carry
   `codex_children: Array<{ thread_id, parent_thread_id, launch_id, agent_path, model, effort, status, started_at, completed_at, last_event_at, usage }>`
   (UI-mn5u §6.2) — Codex NATIVE subagents observed from the rollout files Codex

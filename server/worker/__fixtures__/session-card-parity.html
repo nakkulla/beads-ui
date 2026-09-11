@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ko" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>UI-42l2 카드 관측 fixture</title>
+    <link rel="stylesheet" href="/app/styles/tokens.css" />
+    <link rel="stylesheet" href="/app/styles/base.css" />
+    <link rel="stylesheet" href="/app/styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "lit-html": "/node_modules/lit-html/lit-html.js",
+          "lit-html/": "/node_modules/lit-html/"
+        }
+      }
+    </script>
+    <style>
+      body {
+        padding: 24px;
+        background: var(--bg, #111827);
+      }
+      main {
+        max-width: 920px;
+        margin: auto;
+      }
+      .fixture-controls {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      .worker-rungrid {
+        min-height: auto;
+        max-height: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="fixture-controls">
+        <button id="running" type="button">진행 상태</button>
+        <button id="finished" type="button">종료 상태</button>
+      </div>
+      <div id="fixture"></div>
+    </main>
+    <script type="module">
+      import { render } from 'lit-html';
+      import { buildLanes } from '/app/views/worker/lane-model.js';
+      import { runningGridTemplate } from '/app/views/worker/running-grid.js';
+      import { resolveCatalog } from '/server/worker/runner-catalog.js';
+
+      const catalog = resolveCatalog({
+        overrides: {
+          codex: {
+            models: {
+              sol: { price: { input: 10, cache_read: 1, output: 20 } },
+              terra: { price: { input: 8, cache_read: 0.8, output: 16 } }
+            }
+          }
+        }
+      });
+      let tick = 0;
+
+      function draw(finished) {
+        tick += 1;
+        const usage = {
+          input_tokens: 100 + tick * 10,
+          cache_read_input_tokens: 60,
+          output_tokens: 10 + tick
+        };
+        const child = {
+          thread_id: 'child-fixture',
+          agent_path: '/root/unit-01',
+          status: finished ? 'done' : 'running',
+          model: 'gpt-5.6-terra',
+          usage: { input_tokens: 2500 + tick * 100, output_tokens: 200 + tick }
+        };
+        const workspace = {
+          root_dir: '/fixture',
+          name: 'fixture',
+          revision: 1,
+          queue: [],
+          serial_lanes: [],
+          pr_wait: [{ bead_id: 'UI-review' }],
+          done: [],
+          runnable: [],
+          bead_titles: {
+            'UI-worker': 'Worker 카드',
+            'UI-review': '자동 리뷰 카드'
+          },
+          bead_workflow: {},
+          runner_catalog: catalog,
+          session_active: [
+            {
+              bead_id: 'UI-session',
+              title: '직접 세션 카드',
+              status: 'in_progress',
+              route: 'spec_backed',
+              labels: [],
+              started_at: Date.now() - 60_000,
+              updated_at: Date.now(),
+              session_observation: {
+                provider: 'codex',
+                session_id: 'fixture-session',
+                model: 'gpt-5.6-sol',
+                usage,
+                usage_legs: [
+                  {
+                    role: 'orchestrator',
+                    turn_id: 'turn-1',
+                    model: 'gpt-5.6-sol',
+                    usage
+                  }
+                ],
+                delegations: [child]
+              }
+            }
+          ],
+          attempts: {
+            worker: {
+              attempt_id: 'worker',
+              bead_id: 'UI-worker',
+              status: 'running',
+              runner: 'codex',
+              model: 'gpt-5.6-sol',
+              started_at: Date.now() - 60_000,
+              usage,
+              codex_children: [child],
+              legs: [
+                ...(finished
+                  ? [
+                      { label: 'review · claude-opus-4-8', state: 'failed' },
+                      { label: 'research · gpt-5.6-luna', state: 'interrupted' }
+                    ]
+                  : [])
+              ]
+            },
+            review: {
+              attempt_id: 'review',
+              bead_id: 'UI-review',
+              status: 'running',
+              kind: 'review_session',
+              origin: 'auto',
+              runner: 'codex',
+              model: 'gpt-5.6-sol',
+              started_at: Date.now() - 30_000,
+              usage,
+              codex_children: [child]
+            }
+          }
+        };
+        const lanes = buildLanes(
+          [workspace],
+          [{ root_dir: '/fixture', name: 'fixture', runner_catalog: catalog }]
+        );
+        render(
+          runningGridTemplate(lanes.running, Date.now(), null),
+          document.querySelector('#fixture')
+        );
+      }
+
+      document
+        .querySelector('#running')
+        .addEventListener('click', () => draw(false));
+      document
+        .querySelector('#finished')
+        .addEventListener('click', () => draw(true));
+      draw(false);
+    </script>
+  </body>
+</html>

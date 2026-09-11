@@ -13,6 +13,7 @@
  *
  * @import { ResolvedCatalog, ModelPrice } from './runner-catalog.js'
  */
+import { modelRunner } from './runner-catalog.js';
 
 /**
  * @typedef {'reported'|'computed'|'estimated'|'none'} PriceBasis
@@ -102,6 +103,30 @@ export function modelPrice(catalog, model) {
 }
 
 /**
+ * Provider for a priced model name or CLI id.
+ *
+ * @param {ResolvedCatalog|null|undefined} catalog
+ * @param {unknown} model
+ */
+function pricingRunner(catalog, model) {
+  if (!catalog || typeof model !== 'string') {
+    return null;
+  }
+  const by_name = modelRunner(catalog, model);
+  if (by_name) {
+    return by_name;
+  }
+  for (const [runner, entry] of Object.entries(catalog.runners)) {
+    for (const candidate of Object.values(entry.models)) {
+      if (candidate.id === model) {
+        return runner;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Price one usage record.
  *
  * Rules, in order (§1.2): a CLI-reported `total_cost_usd` wins; otherwise the
@@ -121,20 +146,44 @@ export function priceUsage(record, model, catalog) {
   if (!isPlainObject(record)) {
     return NO_PRICE;
   }
-  if (isFiniteNumber(record.total_cost_usd)) {
+  if (isFiniteNumber(record.total_cost_usd) && record.total_cost_usd >= 0) {
     return { usd: record.total_cost_usd, basis: 'reported' };
   }
   const price = modelPrice(catalog, model);
   if (!price) {
     return NO_PRICE;
   }
-  const has_breakdown = PRICED_FIELDS.some(([field]) =>
-    isFiniteNumber(record[field])
+  const has_breakdown = PRICED_FIELDS.some(
+    ([field]) => record[field] !== undefined
   );
   if (has_breakdown) {
+    const provider = pricingRunner(catalog, model);
+    const input = isFiniteNumber(record.input_tokens) ? record.input_tokens : 0;
+    const cache_read = isFiniteNumber(record.cache_read_input_tokens)
+      ? record.cache_read_input_tokens
+      : 0;
+    const cache_write = isFiniteNumber(record.cache_creation_input_tokens)
+      ? record.cache_creation_input_tokens
+      : 0;
+    const invalid = PRICED_FIELDS.some(
+      ([field]) =>
+        record[field] !== undefined &&
+        (!isFiniteNumber(record[field]) || record[field] < 0)
+    );
+    if (
+      invalid ||
+      (provider === 'codex' && (cache_read > input || cache_write > 0))
+    ) {
+      return NO_PRICE;
+    }
     let usd = 0;
     for (const [field, unit_key] of PRICED_FIELDS) {
-      const tokens = isFiniteNumber(record[field]) ? record[field] : 0;
+      let tokens = isFiniteNumber(record[field]) ? record[field] : 0;
+      // Codex reports cached input as a subset of input. Charge the remainder
+      // at the normal input rate and the cached subset once at cache-read rate.
+      if (provider === 'codex' && field === 'input_tokens') {
+        tokens -= cache_read;
+      }
       if (tokens <= 0) {
         continue;
       }
@@ -146,7 +195,10 @@ export function priceUsage(record, model, catalog) {
     }
     return { usd, basis: 'computed' };
   }
-  if (isFiniteNumber(record.total_tokens)) {
+  if (Object.prototype.hasOwnProperty.call(record, 'total_tokens')) {
+    if (!isFiniteNumber(record.total_tokens) || record.total_tokens < 0) {
+      return NO_PRICE;
+    }
     if (!isFiniteNumber(price.input)) {
       return NO_PRICE;
     }

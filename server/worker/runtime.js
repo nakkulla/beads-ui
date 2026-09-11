@@ -32,6 +32,7 @@ import { createResolveSession } from './resolve-session.js';
 import { createReviseParkedStore } from './revise-parked.js';
 import { createRunnableCache } from './runnable-cache.js';
 import { createSessionLog } from './session-log.js';
+import { createWorkerSessionObservationStore } from './session-observation.js';
 import { workspaceSlug, workspaceStateDir } from './state-paths.js';
 import { createTitleCache } from './title-cache.js';
 import { createUsageStore } from './usage-store.js';
@@ -45,6 +46,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createPrObservationStore>} prObservations
  * @property {ReturnType<typeof createExternalPrStore>} externalPrs
  * @property {ReturnType<typeof createUsageStore>} usageStore
+ * @property {ReturnType<typeof createWorkerSessionObservationStore>} workerSessionObservations
  * @property {ReturnType<typeof createDelegationStore>} delegationStore
  * @property {ReturnType<typeof createActivityStore>} activityStore
  * @property {ReturnType<typeof createTitleCache>} titleCache
@@ -93,6 +95,7 @@ export function createWorkerRuntime() {
   // exactly like the observation cache — both must share one instance. Also
   // never persisted: the durable copy lands on the attempt at termination.
   const usageStore = createUsageStore();
+  const workerSessionObservations = createWorkerSessionObservationStore();
   // Process-wide activity cache (UI-raqh §3/§4): the PR poller and the PR
   // actions WRITE what they are doing right now, the ws queue-snapshot
   // decoration READS it. Non-persistent — nothing is in flight after a restart.
@@ -233,6 +236,7 @@ export function createWorkerRuntime() {
     prObservations,
     externalPrs,
     usageStore,
+    workerSessionObservations,
     delegationStore,
     activityStore,
     titleCache,

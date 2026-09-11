@@ -1202,7 +1202,7 @@ describe('session tile (UI-yrzu §6)', () => {
     expect(tile.querySelector('.rtile__hd .rtile__repo')).toBeNull();
   });
 
-  test('renders neither delegation chips nor a token line', () => {
+  test('renders observed delegation and token facts for a session', () => {
     const tile = renderSession(
       {
         usage: /** @type {any} */ ({
@@ -1219,8 +1219,13 @@ describe('session tile (UI-yrzu §6)', () => {
       }
     );
 
-    expect(tile.querySelector('.rtile__legs')).toBeNull();
-    expect(tile.querySelector('.worker-usage')).toBeNull();
+    expect(tile.querySelector('.rtile__legs')?.textContent).toContain(
+      '위임 중 · 구현 unit · codex'
+    );
+    expect(tile.querySelector('.worker-usage')?.textContent).toContain('τ 15');
+    expect(tile.textContent).toContain('현재 대화 기준');
+    expect(tile.textContent).toContain('워크스페이스 합계 제외');
+    expect(tile.textContent).toContain('Standard · short context · 5분');
   });
 
   test('keeps the bead id and the detail click contract of every other tile', () => {
@@ -1304,7 +1309,8 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
       'ctl-chip ctl-chip--route',
       'exec-chip exec-chip--orch',
       'exec-chip exec-chip--worker',
-      'worker-usage'
+      'worker-usage',
+      'rtile__usage-scope'
     ]);
   });
 
@@ -1798,6 +1804,29 @@ describe('running grid reads the overlay material off the tile (UI-4tud §4.3)',
     );
 
     expect(grid).toContain('위임 중 · codex');
+  });
+
+  test('separates successful, failed and interrupted delegation details', () => {
+    const grid = shape(
+      runningGridTemplate(
+        [
+          tileInput({
+            legs: [
+              { label: 'ok', state: 'done' },
+              { label: 'bad', state: 'failed' },
+              { label: 'stopped', state: 'interrupted' }
+            ]
+          })
+        ],
+        5000,
+        null
+      )
+    );
+
+    expect(grid).toContain('위임 완료 1');
+    expect(grid).toContain('위임 실패 1');
+    expect(grid).toContain('위임 중단 1');
+    expect(grid).toContain('<details');
   });
 
   test('draws the dependency chips from the tile', () => {

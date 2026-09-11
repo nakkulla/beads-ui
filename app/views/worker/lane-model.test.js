@@ -3706,6 +3706,128 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
     expect(tile.alert).toBe(false);
   });
 
+  test('projects the current conversation usage and delegation facts', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          session_active: [
+            sessionActive('A-1', {
+              session_observation: {
+                provider: 'codex',
+                session_id: 'root',
+                model: 'gpt-5.6-sol',
+                usage: { input_tokens: 100, output_tokens: 10 },
+                usage_legs: [],
+                delegations: [
+                  {
+                    agent_path: '/root/implementation',
+                    model: 'gpt-5.6-terra',
+                    status: 'failed',
+                    usage: { input_tokens: 20, output_tokens: 2 }
+                  }
+                ]
+              }
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    const tile = lanes.running[0];
+    expect(/** @type {any} */ (tile.usage).providers.codex.subtotal).toBe(110);
+    expect(tile.legs).toMatchObject([
+      {
+        label: 'implementation · codex · gpt-5.6-terra',
+        state: 'failed',
+        native: true
+      }
+    ]);
+  });
+
+  test('uses one authoritative Claude reported cost across result scopes', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          session_active: [
+            sessionActive('A-1', {
+              session_observation: {
+                provider: 'claude',
+                session_id: 'root',
+                model: 'claude-opus-4-8',
+                usage: {
+                  input_tokens: 24,
+                  output_tokens: 5,
+                  total_cost_usd: 0.75
+                },
+                usage_legs: [
+                  {
+                    provider: 'claude',
+                    role: 'orchestrator',
+                    turn_id: 'm1',
+                    model: 'claude-opus-4-8',
+                    usage: { input_tokens: 15, output_tokens: 3 }
+                  },
+                  {
+                    provider: 'claude',
+                    role: 'orchestrator',
+                    turn_id: 'm2',
+                    model: 'claude-opus-4-6',
+                    usage: { input_tokens: 9, output_tokens: 2 }
+                  }
+                ],
+                delegations: []
+              }
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(
+      /** @type {any} */ (lanes.running[0].usage).providers.claude
+        .total_cost_usd
+    ).toBe(0.75);
+  });
+
+  test('keeps native child usage outside the worker parent total', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              runner: 'codex',
+              model: 'gpt-5.6-sol',
+              usage: { input_tokens: 100, output_tokens: 10 },
+              codex_children: [
+                {
+                  thread_id: 'child',
+                  agent_path: '/root/unit',
+                  model: 'gpt-5.6-terra',
+                  status: 'done',
+                  usage: { input_tokens: 50, output_tokens: 5 }
+                }
+              ]
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const tile = lanes.running[0];
+    expect(/** @type {any} */ (tile.usage).providers.codex.subtotal).toBe(110);
+    expect(/** @type {any} */ (tile.legs)[0]).toMatchObject({
+      label: 'unit · gpt-5.6-terra',
+      state: 'done',
+      native: true
+    });
+  });
+
   test('orders every session tile after the worker tiles by newest update', () => {
     const lanes = buildLanes(
       [
@@ -4707,7 +4829,10 @@ describe('lane model worker group values (UI-4tud §4.3)', () => {
     );
 
     expect(lanes.queue_groups[0].token_total).toEqual([
-      expect.objectContaining({ provider: 'claude', label: 'Claude τ 30' })
+      expect.objectContaining({
+        provider: 'claude',
+        label: 'Claude τ 30 · 단가 없음'
+      })
     ]);
   });
 

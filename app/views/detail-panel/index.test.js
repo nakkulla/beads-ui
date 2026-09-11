@@ -1358,7 +1358,10 @@ describe('views/detail-panel', () => {
       mount.querySelectorAll('.detail-title-row .detail-usage-total')
     ).map((badge) => badge.textContent?.trim());
 
-    expect(badges).toEqual(['Claude τ 15', 'Codex τ 6']);
+    expect(badges).toEqual([
+      'Claude τ 15 · 단가 없음',
+      'Codex τ 6 · 단가 없음'
+    ]);
 
     panel.destroy();
   });

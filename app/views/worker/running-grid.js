@@ -152,7 +152,7 @@ import { logPathTemplate } from './log-path.js';
  * @property {{ at?: number|null, kind?: string, text?: string, tool?: string }|null} [last_activity] -
  * 이 attempt의 마지막 비-thinking 전사 한 줄 (UI-4tud §4.3). 타일이 직접 싣는다 —
  * 조립이 타일 밖 `Map`으로 같은 재료를 두 번 나르지 않는다.
- * @property {Array<{ label: string, state: 'live'|'done'|'failed', agent_type?: string|null }>} [legs] -
+ * @property {Array<{ label: string, state: 'live'|'done'|'failed'|'interrupted', agent_type?: string|null, model?: string|null, usage?: Record<string, number>|null, price_usd?: number|null, price_basis?: string, native?: boolean }>} [legs] -
  * 위임 leg. 끝난 것은 접혀 한 칩이 된다.
  * @property {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null} [chip_popover] -
  * 이 타일에서 열려 있는 판정 칩 사유 팝업 (UI-8x90 §4.5). 슬롯 5 줄이 싣는다.
@@ -732,7 +732,7 @@ function providerHoldPopoverTemplate(hold) {
  * @property {'s1'|'s2'|'s3'|'s4'|'s5'} [serial_lane_id] - Serial lane chip.
  * @property {{ at?: number|null, kind?: string, text?: string, tool?: string }|null} [last_activity] -
  * The attempt's last non-thinking transcript line (§9.3).
- * @property {Array<{ label: string, state: 'live'|'done'|'failed', agent_type?: string|null }>} [legs] -
+ * @property {Array<{ label: string, state: 'live'|'done'|'failed'|'interrupted', agent_type?: string|null, model?: string|null, usage?: Record<string, number>|null, price_usd?: number|null, price_basis?: string, native?: boolean }>} [legs] -
  * Delegation legs; only the unfinished ones are spelled out.
  * @property {{ lane_id: string, label: string }|null} [cross_lane_chip] -
  * `연결 n` 소속 칩 (UI-8x90 §4.1): 슬롯 5 좌표 칩이므로 직렬 레인 칩 다음이다.
@@ -808,11 +808,7 @@ function monitorTileBody(monitor, now, paused, session = null) {
     activity && typeof activity.text === 'string' ? activity.text : '';
   const activity_at =
     activity && typeof activity.at === 'number' ? activity.at : null;
-  // 세션 타일에는 위임 leg가 없다 (UI-yrzu §6) — attempt가 없으므로 그릴
-  // 근거가 없다. Worker 타일은 전달자 leg만 걸러 낸다.
-  const legs = (
-    session || !Array.isArray(monitor.legs) ? [] : monitor.legs
-  ).filter(
+  const legs = (Array.isArray(monitor.legs) ? monitor.legs : []).filter(
     (leg) =>
       leg &&
       !(
@@ -821,7 +817,11 @@ function monitorTileBody(monitor, now, paused, session = null) {
       )
   );
   const live_legs = legs.filter((leg) => leg && leg.state === 'live');
-  const ended_legs = legs.filter((leg) => leg && leg.state !== 'live');
+  const done_legs = legs.filter((leg) => leg && leg.state === 'done');
+  const failed_legs = legs.filter((leg) => leg && leg.state === 'failed');
+  const interrupted_legs = legs.filter(
+    (leg) => leg && leg.state === 'interrupted'
+  );
   const session_event_age =
     session && typeof session.last_event_at === 'number'
       ? formatRelativeTime(session.last_event_at, now)
@@ -851,26 +851,74 @@ function monitorTileBody(monitor, now, paused, session = null) {
           <span class="rtile__activity-dot" aria-hidden="true"></span>
           <span class="rtile__activity-text">${session_activity}</span>
         </div>`
-      : ''}${live_legs.length > 0 || ended_legs.length > 0
+      : ''}${legs.length > 0
     ? html`<div class="rtile__legs">
         ${live_legs.map(
           (leg) =>
             html`<span
               class="rtile__leg rtile__leg--live"
               title="이 세션이 띄운 서브에이전트/Codex 세션이 실행 중입니다"
-              >위임 중 · ${leg.label}</span
+              >위임 중 · ${leg.label}${legUsageText(leg)}</span
             >`
-        )}${ended_legs.length > 0
-          ? html`<span
-              class="rtile__leg rtile__leg--done"
-              title=${`완료된 위임: ${ended_legs
-                .map((leg) => leg.label)
-                .join(', ')}`}
-              >위임 완료 ${ended_legs.length}</span
-            >`
-          : ''}
+        )}${delegationGroup('완료', 'done', done_legs)}${delegationGroup(
+          '실패',
+          'failed',
+          failed_legs
+        )}${delegationGroup('중단', 'interrupted', interrupted_legs)}
       </div>`
     : ''}`;
+}
+
+/** @param {any} leg - One visible delegation. */
+function legUsageText(leg) {
+  const codex_total =
+    (leg?.native || leg?.runtime === 'codex') && leg?.usage
+      ? Number.isFinite(leg.usage.total_tokens)
+        ? leg.usage.total_tokens
+        : Number.isFinite(leg.usage.input_tokens) ||
+            Number.isFinite(leg.usage.output_tokens)
+          ? (Number.isFinite(leg.usage.input_tokens)
+              ? leg.usage.input_tokens
+              : 0) +
+            (Number.isFinite(leg.usage.output_tokens)
+              ? leg.usage.output_tokens
+              : 0)
+          : null
+      : null;
+  const tokens =
+    codex_total !== null
+      ? `τ ${codex_total.toLocaleString('en-US')}`
+      : formatUsageTotalWithCost(leg?.usage);
+  const price =
+    typeof leg?.price_usd === 'number' && Number.isFinite(leg.price_usd)
+      ? `$${leg.price_usd.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`
+      : leg?.usage && leg?.price_basis === 'none'
+        ? '단가 없음'
+        : '';
+  const facts = [tokens, price].filter(Boolean);
+  return facts.length > 0 ? ` · ${facts.join(' · ')}` : '';
+}
+
+/**
+ * @param {string} label - Korean terminal label.
+ * @param {string} state - CSS state.
+ * @param {any[]} legs - Delegations in the terminal group.
+ */
+function delegationGroup(label, state, legs) {
+  if (legs.length === 0) {
+    return '';
+  }
+  return html`<details class="rtile__delegation-group">
+    <summary
+      class=${`rtile__leg rtile__leg--${state}`}
+      title=${`${label}된 위임: ${legs.map((leg) => leg.label).join(', ')}`}
+    >
+      위임 ${label} ${legs.length}
+    </summary>
+    <ul class="rtile__delegation-details">
+      ${legs.map((leg) => html`<li>${leg.label}${legUsageText(leg)}</li>`)}
+    </ul>
+  </details>`;
 }
 
 /**
@@ -1049,6 +1097,10 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 세션이 잡은 이슈 (UI-yrzu §6): attempt가 없으므로 운영할 것도 열 로그도
   // 없다. 껍데기와 클릭 계약은 Worker 타일과 같다 — 같은 사실은 같은 모양.
   const session = tile.kind === 'session';
+  const direct_session = session && !tile.attempt_id;
+  const has_native_usage = Array.isArray(tile.legs)
+    ? tile.legs.some((leg) => leg?.native === true && leg.usage)
+    : false;
   // 계약 값의 마지막 유효 항목이 현재 세션이다 (UI-4xzk §3.1). 없으면 이 타일은
   // 자기 정체를 모르므로 UI-yrzu §6 그대로 그린다 (fail-quiet).
   const session_current =
@@ -1183,9 +1235,39 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     route_chip ||
     session_ref_chip ||
     session_receipt_chip ||
-    rec_chip
+    rec_chip ||
+    provider_badges.length > 0 ||
+    usage_label
       ? html`<div class="rtile__meta">
-          ${monitor_chips}${cross_lane_chip}${route_chip}${session_ref_chip}${session_receipt_chip}${rec_chip}${chip_popover}
+          ${monitor_chips}${cross_lane_chip}${route_chip}${session_ref_chip}${session_receipt_chip}${rec_chip}${provider_badges.length >
+          0
+            ? provider_badges.map(
+                (badge) =>
+                  html`<span class="worker-usage" title=${badge.tooltip}
+                    >${badge.label}</span
+                  >`
+              )
+            : usage_label
+              ? html`<span
+                  class="worker-usage"
+                  title=${usageTooltip(tile.usage)}
+                  >${usage_label}</span
+                >`
+              : ''}${chip_popover}
+          ${direct_session && tile.usage
+            ? html`<span class="rtile__usage-scope"
+                >현재 대화 기준 · 워크스페이스 합계 제외</span
+              >`
+            : ''}${has_native_usage
+            ? html`<span class="rtile__usage-scope"
+                >native child 비용 · 부모 합계 제외</span
+              >`
+            : ''}${tile.usage
+            ? html`<span class="rtile__usage-scope"
+                >USD 환산 · Standard · short context · 5분 cache write
+                기준</span
+              >`
+            : ''}
         </div>`
       : '';
   // 상태 뱃지는 슬롯 1이다 (UI-251y §3.1): 다른 카드가 이미 정체성 줄에서
@@ -1502,6 +1584,16 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                             >${usage_label}</span
                           >`
                         : ''}${chip_popover}
+                    ${has_native_usage
+                      ? html`<span class="rtile__usage-scope"
+                          >native child 비용 · 부모 합계 제외</span
+                        >`
+                      : ''}${tile.usage
+                      ? html`<span class="rtile__usage-scope"
+                          >USD 환산 · Standard · short context · 5분 cache write
+                          기준</span
+                        >`
+                      : ''}
                   </div>`
                 : ''}
             ${discardReceiptTemplate(tile)} ${times_el}

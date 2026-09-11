@@ -71,6 +71,16 @@ describe('views/worker usage formatting (UI-raqh §1)', () => {
     expect(label).toBe('τ 12.3k · $12.34');
   });
 
+  test('keeps a small non-zero API conversion visible', () => {
+    const label = formatUsageTotalWithCost({
+      input_tokens: 100,
+      output_tokens: 10,
+      total_cost_usd: 0.00066
+    });
+
+    expect(label).toBe('τ 110 · $0.00066');
+  });
+
   test('leaves the lane badge cost-free when none was reported', () => {
     const label = formatUsageTotalWithCost({
       input_tokens: 8420,
@@ -857,7 +867,7 @@ describe('total-only legs inside an aggregate tooltip (UI-1vpv)', () => {
     );
 
     expect(tooltip).toBe(
-      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성 + 분해 없는 leg\n총 1,000\n입력 10 · 출력 20 · 캐시읽기 30 · 캐시생성 40 · 분해 없는 leg 900'
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성 + 분해 없는 leg\n총 1,000\n입력 10 · 출력 20 · 캐시읽기 30 · 캐시생성 40 · 분해 없는 leg 900\n단가 없음\nAPI 환산 단가 기준'
     );
   });
 
@@ -885,7 +895,9 @@ describe('total-only legs inside an aggregate tooltip (UI-1vpv)', () => {
       /** @type {any} */ (projected?.providers.claude)
     );
 
-    expect(tooltip).toBe('총 900\n분해 없음 — 총량만 보고됨');
+    expect(tooltip).toBe(
+      '총 900\n분해 없음 — 총량만 보고됨\n단가 없음\nAPI 환산 단가 기준'
+    );
   });
 
   test('keeps the four-field aggregate tooltip unchanged', () => {
@@ -963,6 +975,53 @@ describe('leg pricing and partial-cost display (preset-compare §1.3)', () => {
     expect(projected?.providers.codex).not.toHaveProperty('unpriced_leg_count');
   });
 
+  test('prices conversation turns with each observed model', () => {
+    const segmented_catalog = resolveCatalog({
+      overrides: {
+        codex: {
+          models: {
+            sol: { price: { input: 10, output: 20, cache_read: 1 } },
+            terra: { price: { input: 2, output: 12, cache_read: 0.2 } }
+          }
+        }
+      },
+      warn: () => {}
+    });
+    const projected = sumAttemptUsage(
+      {
+        direct: {
+          attempt_id: 'direct',
+          bead_id: 'UI-1',
+          runner: 'codex',
+          usage_segments: [
+            {
+              model: 'sol',
+              turn_id: 't1',
+              usage: {
+                input_tokens: 100,
+                cache_read_input_tokens: 60,
+                output_tokens: 10
+              }
+            },
+            {
+              model: 'terra',
+              turn_id: 't2',
+              usage: { input_tokens: 50, output_tokens: 5 }
+            }
+          ]
+        }
+      },
+      'UI-1',
+      segmented_catalog
+    );
+
+    expect(projected?.providers.codex?.subtotal).toBe(165);
+    expect(projected?.providers.codex?.total_cost_usd).toBeCloseTo(
+      0.00066 + 0.00016,
+      10
+    );
+  });
+
   test('leaves a Codex attempt unpriced without a catalog', () => {
     const projected = sumAttemptUsage(CODEX_ATTEMPT, 'UI-1');
 
@@ -980,7 +1039,7 @@ describe('leg pricing and partial-cost display (preset-compare §1.3)', () => {
   });
 
   test('returns no cost text when no leg could be priced', () => {
-    expect(formatCost({ unpriced_leg_count: 3 })).toBe(null);
+    expect(formatCost({ unpriced_leg_count: 3 })).toBe('단가 없음');
   });
 
   test('appends the unpriced count to the provider badge label', () => {

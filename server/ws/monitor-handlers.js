@@ -1710,6 +1710,7 @@ export function handleUnsubscribeMonitorPipeline(ws, req) {
     }
   }
   stopDriverIfIdle();
+  runnableCache().releaseObservationsIfIdle?.();
   ws.send(
     JSON.stringify(makeOk(req, { id: client_id, unsubscribed: removed }))
   );
@@ -2346,6 +2347,7 @@ export function detachMonitorPipeline(ws) {
     }
   }
   stopDriverIfIdle();
+  runnableCache().releaseObservationsIfIdle?.();
 }
 
 /**
