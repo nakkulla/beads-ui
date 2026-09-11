@@ -3706,6 +3706,176 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
     expect(tile.alert).toBe(false);
   });
 
+  test('projects the current conversation usage and delegation facts', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          session_active: [
+            sessionActive('A-1', {
+              session_observation: {
+                provider: 'codex',
+                session_id: 'root',
+                model: 'gpt-5.6-sol',
+                usage: { input_tokens: 100, output_tokens: 10 },
+                usage_legs: [],
+                delegations: [
+                  {
+                    agent_path: '/root/implementation',
+                    model: 'gpt-5.6-terra',
+                    status: 'failed',
+                    usage: { input_tokens: 20, output_tokens: 2 }
+                  }
+                ]
+              }
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    const tile = lanes.running[0];
+    expect(/** @type {any} */ (tile.usage).providers.codex.subtotal).toBe(110);
+    expect(tile.legs).toMatchObject([
+      {
+        label: 'implementation · codex · gpt-5.6-terra',
+        state: 'failed',
+        native: true
+      }
+    ]);
+  });
+
+  test('adds later live and external costs after a reported Claude scope', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          session_active: [
+            sessionActive('A-1', {
+              session_observation: {
+                provider: 'claude',
+                session_id: 'root',
+                model: 'claude-opus-4-8',
+                usage: {
+                  input_tokens: 24,
+                  output_tokens: 5,
+                  total_cost_usd: 0.75
+                },
+                usage_legs: [
+                  {
+                    provider: 'claude',
+                    role: 'orchestrator',
+                    turn_id: 'm1',
+                    model: 'claude-opus-4-8',
+                    usage: { input_tokens: 15, output_tokens: 3 },
+                    cost_covered: true
+                  },
+                  {
+                    provider: 'claude',
+                    role: 'orchestrator',
+                    turn_id: 'm2',
+                    model: 'claude-opus-4-6',
+                    usage: { input_tokens: 9, output_tokens: 2 },
+                    cost_covered: true
+                  },
+                  {
+                    provider: 'claude',
+                    role: 'orchestrator',
+                    turn_id: 'result:reported-cost',
+                    model: null,
+                    usage: { total_tokens: 0, total_cost_usd: 0.75 }
+                  },
+                  {
+                    provider: 'claude',
+                    role: 'orchestrator',
+                    turn_id: 'm3-live',
+                    model: 'claude-sonnet-4-6',
+                    usage: { input_tokens: 1_000_000 }
+                  },
+                  {
+                    provider: 'claude',
+                    role: 'subagent',
+                    receipt_id: 'external-child',
+                    model: 'claude-opus-4-8',
+                    usage: { total_tokens: 0, total_cost_usd: 0.5 }
+                  }
+                ],
+                delegations: []
+              }
+            })
+          ]
+        })
+      ],
+      [
+        state({
+          runner_catalog: {
+            model_index: {
+              opus: 'claude',
+              sonnet: 'claude',
+              'claude-opus-4-8': 'claude',
+              'claude-sonnet-4-6': 'claude'
+            },
+            runners: {
+              claude: {
+                models: {
+                  opus: {
+                    id: 'claude-opus-4-8',
+                    price: { input: 1, output: 2 }
+                  },
+                  sonnet: {
+                    id: 'claude-sonnet-4-6',
+                    price: { input: 3, output: 4 }
+                  }
+                }
+              }
+            }
+          }
+        })
+      ]
+    );
+
+    expect(
+      /** @type {any} */ (lanes.running[0].usage).providers.claude
+        .total_cost_usd
+    ).toBe(4.25);
+  });
+
+  test('keeps native child usage outside the worker parent total', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              runner: 'codex',
+              model: 'gpt-5.6-sol',
+              usage: { input_tokens: 100, output_tokens: 10 },
+              codex_children: [
+                {
+                  thread_id: 'child',
+                  agent_path: '/root/unit',
+                  model: 'gpt-5.6-terra',
+                  status: 'done',
+                  usage: { input_tokens: 50, output_tokens: 5 }
+                }
+              ]
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const tile = lanes.running[0];
+    expect(/** @type {any} */ (tile.usage).providers.codex.subtotal).toBe(110);
+    expect(/** @type {any} */ (tile.legs)[0]).toMatchObject({
+      label: 'unit · gpt-5.6-terra',
+      state: 'done',
+      native: true
+    });
+  });
+
   test('orders every session tile after the worker tiles by newest update', () => {
     const lanes = buildLanes(
       [
@@ -4707,7 +4877,10 @@ describe('lane model worker group values (UI-4tud §4.3)', () => {
     );
 
     expect(lanes.queue_groups[0].token_total).toEqual([
-      expect.objectContaining({ provider: 'claude', label: 'Claude τ 30' })
+      expect.objectContaining({
+        provider: 'claude',
+        label: 'Claude τ 30 · 단가 없음'
+      })
     ]);
   });
 

@@ -58,6 +58,8 @@ const OPEN_RETRY_LIMIT = 10;
  * (UI-o2yt §3.3), so the bytes of a line that was half-written at reattach are
  * read normally and buffered — the line is then emitted exactly once, whole,
  * with no size cap and no multibyte cut.
+ * @property {() => void} [onReset] - Called before lines from a truncated or
+ * replaced pathname. Consumers reset cumulative projections at this boundary.
  */
 
 /**
@@ -71,6 +73,7 @@ export function createTailReader(input) {
   const file = input.file;
   const onLine = input.onLine;
   const onError = input.onError || (() => {});
+  const onReset = input.onReset || (() => {});
   const poll_ms =
     typeof input.poll_ms === 'number' ? input.poll_ms : TAIL_POLL_MS;
   const start_offset =
@@ -87,6 +90,7 @@ export function createTailReader(input) {
   let line_end = start_offset;
   let buffer = '';
   let decoder = new StringDecoder('utf8');
+  let observed_tail = Buffer.alloc(0);
   /** @type {import('node:fs').FSWatcher|null} */
   let watcher = null;
   /** @type {ReturnType<typeof setInterval>|null} */
@@ -145,6 +149,37 @@ export function createTailReader(input) {
     }
     pumping = true;
     try {
+      try {
+        const opened = fs.fstatSync(/** @type {number} */ (fd));
+        /** @type {ReturnType<typeof fs.statSync>|null} */
+        let named = null;
+        try {
+          named = fs.statSync(file);
+        } catch (err) {
+          if (/** @type {any} */ (err)?.code !== 'ENOENT') {
+            throw err;
+          }
+        }
+        if (named && (opened.dev !== named.dev || opened.ino !== named.ino)) {
+          fs.closeSync(/** @type {number} */ (fd));
+          fd = null;
+          offset = 0;
+          line_end = 0;
+          buffer = '';
+          decoder = new StringDecoder('utf8');
+          observed_tail = Buffer.alloc(0);
+          onReset();
+          if (stopped) {
+            return;
+          }
+          if (!openFile()) {
+            return;
+          }
+        }
+      } catch (err) {
+        onError(err, 'read');
+        return;
+      }
       /** @type {number} */
       let size;
       try {
@@ -156,10 +191,38 @@ export function createTailReader(input) {
       if (size < offset) {
         // Truncated/replaced underneath us: re-read from the new start rather
         // than waiting for an EOF that already moved backwards.
-        offset = Math.min(start_offset, size);
+        offset = 0;
         line_end = offset;
         buffer = '';
         decoder = new StringDecoder('utf8');
+        observed_tail = Buffer.alloc(0);
+        onReset();
+        if (stopped) {
+          return;
+        }
+      } else if (offset > 0 && observed_tail.length > 0) {
+        const check = Buffer.allocUnsafe(observed_tail.length);
+        const read = fs.readSync(
+          /** @type {number} */ (fd),
+          check,
+          0,
+          check.length,
+          offset - check.length
+        );
+        if (
+          read !== observed_tail.length ||
+          !check.subarray(0, read).equals(observed_tail)
+        ) {
+          offset = 0;
+          line_end = 0;
+          buffer = '';
+          decoder = new StringDecoder('utf8');
+          observed_tail = Buffer.alloc(0);
+          onReset();
+        }
+      }
+      if (stopped) {
+        return;
       }
       while (offset < size) {
         const want = Math.min(READ_CHUNK_BYTES, size - offset);
@@ -179,6 +242,17 @@ export function createTailReader(input) {
         offset += read;
         buffer += decoder.write(buf.subarray(0, read));
         emitBufferedLines();
+      }
+      const tail_size = Math.min(256, offset);
+      if (tail_size > 0) {
+        observed_tail = Buffer.allocUnsafe(tail_size);
+        fs.readSync(
+          /** @type {number} */ (fd),
+          observed_tail,
+          0,
+          tail_size,
+          offset - tail_size
+        );
       }
     } finally {
       pumping = false;

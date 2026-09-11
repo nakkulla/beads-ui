@@ -132,24 +132,34 @@ function resolveModelId(entry, model) {
 }
 
 /**
- * Lift the usage off ONE raw codex event. Only `turn.completed` carries any, and
- * it is the turn's authoritative total, so the lift is always `result`-kinded.
- * Fail-quiet like the claude adapter: a build that stops reporting usage must
- * degrade to "no badge", never to a throw.
+ * Lift usage from the public terminal event or a rollout usage record. A
+ * rollout record is keyed by turn and replaces the earlier cumulative value;
+ * `turn.completed` remains the authoritative result when the public stream
+ * supplies it. Fail-quiet when neither shape carries usable counters.
  *
  * @param {any} raw
  * @returns {{ kind: 'message'|'result', usage: Record<string, number|string> }|null}
  */
 export function liftUsage(raw) {
-  if (!raw || typeof raw !== 'object' || raw.type !== 'turn.completed') {
+  if (!raw || typeof raw !== 'object') {
     return null;
   }
-  const usage = raw.usage;
+  const payload =
+    raw.payload && typeof raw.payload === 'object' ? raw.payload : null;
+  const rollout = raw.type === 'token_usage_record' && payload;
+  const usage = rollout
+    ? payload.turn_token_usage || payload.usage
+    : raw.type === 'turn.completed'
+      ? raw.usage
+      : null;
   if (!usage || typeof usage !== 'object') {
     return null;
   }
   /** @type {Record<string, number|string>} */
   const out = {};
+  if (rollout && typeof payload.turn_id === 'string') {
+    out.message_id = payload.turn_id;
+  }
   for (const [source, target] of Object.entries(USAGE_MAP)) {
     const value = usage[source];
     if (typeof value === 'number' && Number.isFinite(value)) {
@@ -163,7 +173,11 @@ export function liftUsage(raw) {
       break;
     }
   }
-  return Object.keys(out).length > 0 ? { kind: 'result', usage: out } : null;
+  const has_number = Object.keys(out).some((key) => key !== 'message_id');
+  if (!has_number) {
+    return null;
+  }
+  return { kind: rollout ? 'message' : 'result', usage: out };
 }
 
 /**

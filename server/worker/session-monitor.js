@@ -48,6 +48,7 @@ export const MONITOR_USAGE_FANOUT_MS = 3000;
  * @property {any} store - Queue store (queue-store.js).
  * @property {{ pathFor: (workspace: string, attempt_id: string) => string, publish: (workspace: string, attempt_id: string, event: unknown, launch_id?: string) => void }} sessionLog
  * @property {ReturnType<typeof import('./usage-store.js').createUsageStore>} [usage]
+ * @property {ReturnType<typeof import('./session-observation.js').createWorkerSessionObservationStore>} [workerSessionObservations]
  * @property {ReturnType<typeof import('./delegation-store.js').createDelegationStore>} [delegation] -
  * Live Claude subagent tally (UI-2mpn §5.4), fed from the SAME lift the live
  * engine uses so a reattached monitor continues the state the dead process was
@@ -205,16 +206,38 @@ export function createSessionMonitors(deps) {
     if (!attempt) {
       return;
     }
-    /** @type {import('./codex-children/accumulate.js').CodexChildRow[]} */
-    let rows;
+    let prepared = null;
     try {
-      rows = observeChildren({ attempt, parent_terminated });
+      prepared = deps.workerSessionObservations?.observe(workspace, attempt, {
+        parent_terminated
+      });
     } catch (err) {
-      log('native child observation failed for %s: %o', attempt_id, err);
-      return;
+      log('root usage observation failed for %s: %o', attempt_id, err);
+    }
+    /** @type {import('./codex-children/accumulate.js').CodexChildRow[]} */
+    /** @type {import('./codex-children/accumulate.js').CodexChildRow[]|null} */
+    let rows = Array.isArray(prepared?.codex_children)
+      ? prepared.codex_children
+      : null;
+    if (rows === null) {
+      try {
+        rows = observeChildren({ attempt, parent_terminated });
+      } catch (err) {
+        log('native child observation failed for %s: %o', attempt_id, err);
+        return;
+      }
     }
     const key = keyOf(workspace, attempt_id);
-    const identity = childIdentity(rows);
+    const prepared_usage = deps.workerSessionObservations?.get(
+      workspace,
+      attempt_id
+    );
+    const identity = `${childIdentity(rows)}:${JSON.stringify(
+      prepared_usage?.usage_segments || []
+    )}`;
+    deps.workerSessionObservations?.set(workspace, attempt_id, {
+      codex_children: rows
+    });
     if (identity === (child_identities.get(key) || '')) {
       return;
     }
@@ -952,6 +975,17 @@ export function createSessionMonitors(deps) {
       entry.reader.start();
       // Independent of the parent stream, and for a NEW launch as much as a
       // re-attach: the children are observed from files Codex writes itself.
+      if (entry.codex) {
+        try {
+          deps.workerSessionObservations?.observe(workspace, attempt);
+        } catch (err) {
+          log(
+            'initial root usage observation failed for %s: %o',
+            attempt_id,
+            err
+          );
+        }
+      }
       armChildScan(entry);
       return true;
     },
@@ -972,6 +1006,15 @@ export function createSessionMonitors(deps) {
         return false;
       }
       monitors.delete(key);
+      try {
+        deps.workerSessionObservations?.drain(workspace, attempt_id);
+        const attempt = attemptOf(workspace, attempt_id);
+        if (attempt) {
+          deps.workerSessionObservations?.observe(workspace, attempt);
+        }
+      } catch (err) {
+        log('final root usage drain failed for %s: %o', attempt_id, err);
+      }
       try {
         entry.reader.drain();
       } catch (err) {

@@ -76,28 +76,12 @@ function laterOf(left, right) {
 }
 
 /**
- * Fold one attempt's rollout records into its child rows.
+ * Incrementally fold already-linked rollout records.
  *
- * @param {{
- *   root_thread_id: string,
- *   records: Array<{ thread_id: string, ordinal?: number, record: unknown }>,
- *   attempt_started_at?: number|null,
- *   attempt_ended_at?: number|null,
- *   parent_terminated?: boolean
- * }} input - `attempt_started_at`/`attempt_ended_at` are the attempt log
- * boundaries: activity outside them belongs to another root turn and never
- * becomes this attempt's row, which is what keeps a REUSED child thread from
- * being copied forward.
- * @returns {CodexChildRow[]}
+ * @param {{ root_thread_id: string, attempt_started_at?: number|null, attempt_ended_at?: number|null }} input
  */
-export function accumulateCodexChildren(input) {
-  const root_thread_id =
-    typeof input.root_thread_id === 'string' && input.root_thread_id.length > 0
-      ? input.root_thread_id
-      : null;
-  if (root_thread_id === null || !Array.isArray(input.records)) {
-    return [];
-  }
+export function createCodexChildAccumulator(input) {
+  const root_thread_id = input.root_thread_id;
   const window_start =
     typeof input.attempt_started_at === 'number' &&
     Number.isFinite(input.attempt_started_at)
@@ -108,64 +92,14 @@ export function accumulateCodexChildren(input) {
     Number.isFinite(input.attempt_ended_at)
       ? input.attempt_ended_at
       : null;
-
   /** @type {Map<string, { parent_thread_id: string|null, agent_path: string|null }>} */
   const identities = new Map();
-  for (const entry of input.records) {
-    if (!entry || typeof entry.thread_id !== 'string') {
-      continue;
-    }
-    const identity = rolloutThreadIdentity(entry.record);
-    if (identity === null || identity.thread_id !== entry.thread_id) {
-      continue;
-    }
-    identities.set(identity.thread_id, {
-      parent_thread_id: identity.parent_thread_id,
-      agent_path: identity.agent_path
-    });
-  }
-
-  /**
-   * Whether a thread's parent chain reaches the attempt's root. A thread whose
-   * chain runs out, loops, or ends at another root is NOT this attempt's child.
-   *
-   * @param {string} thread_id
-   * @returns {boolean}
-   */
-  function reachesRoot(thread_id) {
-    /** @type {Set<string>} */
-    const seen = new Set();
-    let cursor = thread_id;
-    for (let hop = 0; hop < MAX_CHAIN_DEPTH; hop += 1) {
-      if (seen.has(cursor)) {
-        return false;
-      }
-      seen.add(cursor);
-      const identity = identities.get(cursor);
-      const parent = identity ? identity.parent_thread_id : null;
-      if (parent === null) {
-        return false;
-      }
-      if (parent === root_thread_id) {
-        return true;
-      }
-      cursor = parent;
-    }
-    return false;
-  }
-
-  /**
-   * Spawn launches, keyed by the thread that MADE them. A nested spawn is
-   * recorded in its own parent's rollout, so joining a child to a launch is a
-   * lookup in that child's DIRECT parent (§6.2) — a root-direct child and a
-   * nested one that share a name can no longer swap `launch_id` or `model`.
-   *
-   * @type {Map<string, Array<{ launch_id: string|null, agent_key: string|null, agent_path: string|null, model: string|null, taken: boolean }>>}
-   */
+  /** @type {Map<string, Array<{ launch_id: string|null, agent_key: string|null, agent_path: string|null, model: string|null }>>} */
   const launches_by_parent = new Map();
-  /**
-   * @param {string} thread_id
-   */
+  /** @type {Map<string, { row: CodexChildRow, usage_at: number|null, observed: number, terminal: boolean, terminal_at: number|null, last_start_at: number|null }>} */
+  const rows = new Map();
+
+  /** @param {string} thread_id */
   function launchesOf(thread_id) {
     let held = launches_by_parent.get(thread_id);
     if (!held) {
@@ -174,76 +108,93 @@ export function accumulateCodexChildren(input) {
     }
     return held;
   }
-  /** @type {Map<string, { row: CodexChildRow, usage_at: number|null, observed: number, terminal: boolean, terminal_at: number|null, last_start_at: number|null }>} */
-  const rows = new Map();
 
-  for (const entry of input.records) {
-    if (!entry || typeof entry.thread_id !== 'string') {
-      continue;
+  /** @param {string} thread_id */
+  function reachesRoot(thread_id) {
+    const seen = new Set();
+    let cursor = thread_id;
+    for (let hop = 0; hop < MAX_CHAIN_DEPTH; hop += 1) {
+      if (seen.has(cursor)) {
+        return false;
+      }
+      seen.add(cursor);
+      const parent = identities.get(cursor)?.parent_thread_id ?? null;
+      if (parent === root_thread_id) {
+        return true;
+      }
+      if (parent === null) {
+        return false;
+      }
+      cursor = parent;
+    }
+    return false;
+  }
+
+  /** @param {{ thread_id: string, record: unknown }} entry */
+  function apply(entry) {
+    const identity = rolloutThreadIdentity(entry.record);
+    if (identity && identity.thread_id === entry.thread_id) {
+      identities.set(identity.thread_id, {
+        parent_thread_id: identity.parent_thread_id,
+        agent_path: identity.agent_path
+      });
     }
     const signal = /** @type {CodexChildSignal|null} */ (
       liftCodexChildSignal(entry.record)
     );
-    if (signal === null) {
-      continue;
+    if (!signal) {
+      return;
     }
     const inside =
       signal.at !== null &&
       (window_start === null || signal.at >= window_start) &&
       (window_end === null || signal.at <= window_end);
-
-    // A spawn record belongs to the thread that WROTE it, root or child alike.
     if (signal.kind === 'spawn' && inside) {
       launchesOf(entry.thread_id).push({
         launch_id: signal.launch_id ?? null,
         agent_key: agentKeyOf(signal.agent_path ?? null),
         agent_path: signal.agent_path ?? null,
-        model: signal.model ?? null,
-        taken: false
+        model: signal.model ?? null
       });
     } else if (signal.kind === 'spawn_output' && inside) {
-      const key = agentKeyOf(signal.agent_path ?? null);
-      const held = launchesOf(entry.thread_id);
-      const match = held.find(
+      const launches = launchesOf(entry.thread_id);
+      const match = launches.find(
         (launch) =>
           launch.launch_id !== null &&
           launch.launch_id === (signal.launch_id ?? null)
       );
       if (match) {
-        match.agent_key = match.agent_key ?? key;
-        // The OUTPUT states the full `/root/<task_name>` path; the call
-        // argument states only the task name.
+        match.agent_key =
+          match.agent_key ?? agentKeyOf(signal.agent_path ?? null);
         match.agent_path = signal.agent_path ?? match.agent_path;
       } else {
-        held.push({
+        launches.push({
           launch_id: signal.launch_id ?? null,
-          agent_key: key,
+          agent_key: agentKeyOf(signal.agent_path ?? null),
           agent_path: signal.agent_path ?? null,
-          model: null,
-          taken: false
+          model: null
         });
       }
     }
-    if (entry.thread_id === root_thread_id) {
-      continue;
+    if (
+      entry.thread_id === root_thread_id ||
+      !reachesRoot(entry.thread_id) ||
+      !inside
+    ) {
+      return;
     }
-    if (!reachesRoot(entry.thread_id)) {
-      continue;
+    const known = identities.get(entry.thread_id);
+    if (!known || typeof known.parent_thread_id !== 'string') {
+      return;
     }
-    if (!inside) {
-      continue;
-    }
-    const identity = identities.get(entry.thread_id);
     let held = rows.get(entry.thread_id);
     if (!held) {
       held = {
         row: {
           thread_id: entry.thread_id,
-          parent_thread_id: /** @type {string} */ (
-            identity ? identity.parent_thread_id : null
-          ),
+          parent_thread_id: known.parent_thread_id,
           launch_id: null,
-          agent_path: identity ? identity.agent_path : null,
+          agent_path: known.agent_path,
           model: null,
           effort: null,
           status: 'running',
@@ -266,110 +217,133 @@ export function accumulateCodexChildren(input) {
       held.row.model = signal.model ?? held.row.model;
       held.row.effort = signal.effort ?? held.row.effort;
     } else if (signal.kind === 'started') {
-      const start_at = signal.event_at ?? signal.at ?? null;
-      // The FIRST start is the row's `started_at`: a child started again in the
-      // same attempt is the same row, not a second one (§6.2).
-      held.row.started_at = held.row.started_at ?? start_at;
-      // A start that is not provably older than the terminal already held is a
-      // RE-RUN: the row goes back to running and its completion is forgotten,
-      // so a stale `done` cannot outlive the work it belonged to.
+      const at = signal.event_at ?? signal.at;
+      held.row.started_at = held.row.started_at ?? at;
       if (
         held.terminal &&
-        (start_at === null ||
-          held.terminal_at === null ||
-          start_at >= held.terminal_at)
+        (at === null || held.terminal_at === null || at >= held.terminal_at)
       ) {
         held.terminal = false;
         held.terminal_at = null;
         held.row.status = 'running';
         held.row.completed_at = null;
       }
-      held.last_start_at = laterOf(held.last_start_at, start_at);
+      held.last_start_at = laterOf(held.last_start_at, at);
     } else if (signal.kind === 'completed' || signal.kind === 'failed') {
-      const end_at =
-        (signal.kind === 'completed' ? signal.event_at : null) ??
-        signal.at ??
-        null;
-      // A terminal dated BEFORE the latest observed start is a reordered
-      // arrival from the previous run and never overwrites the newer state.
+      const at =
+        (signal.kind === 'completed' ? signal.event_at : null) ?? signal.at;
       if (
         held.last_start_at !== null &&
-        end_at !== null &&
-        end_at < held.last_start_at
+        at !== null &&
+        at < held.last_start_at
       ) {
-        continue;
+        return;
       }
       held.row.status = signal.kind === 'completed' ? 'done' : 'failed';
-      held.row.completed_at = end_at ?? held.row.completed_at;
+      held.row.completed_at = at ?? held.row.completed_at;
       held.terminal = true;
-      held.terminal_at = end_at ?? held.terminal_at;
-    } else if (signal.kind === 'usage' && signal.usage) {
-      // Cumulative thread totals: the LATEST observation replaces the earlier
-      // one. A record dated before the one already held is a duplicate or a
-      // reordered arrival and is dropped rather than added.
-      if (
-        held.usage_at === null ||
+      held.terminal_at = at ?? held.terminal_at;
+    } else if (
+      signal.kind === 'usage' &&
+      signal.usage &&
+      (held.usage_at === null ||
         signal.at === null ||
-        signal.at >= held.usage_at
-      ) {
-        held.row.usage = signal.usage;
-        held.usage_at = signal.at ?? held.usage_at;
+        signal.at >= held.usage_at)
+    ) {
+      held.row.usage = signal.usage;
+      held.usage_at = signal.at ?? held.usage_at;
+    }
+  }
+
+  /** @param {boolean} [parent_terminated] */
+  function snapshot(parent_terminated = false) {
+    /** @type {CodexChildRow[]} */
+    const out = [...rows.values()]
+      .filter((held) => reachesRoot(held.row.thread_id))
+      .map((held) => ({
+        ...held.row,
+        ...(!held.terminal && parent_terminated
+          ? { status: 'interrupted' }
+          : {})
+      }));
+    const taken = new Set();
+    for (const row of out.sort(
+      (left, right) => (left.started_at || 0) - (right.started_at || 0)
+    )) {
+      const launches = launches_by_parent.get(row.parent_thread_id) || [];
+      const name = agentKeyOf(row.agent_path);
+      const match =
+        launches.find(
+          (launch, index) =>
+            !taken.has(`${row.parent_thread_id}:${index}`) &&
+            row.agent_path !== null &&
+            launch.agent_path === row.agent_path
+        ) ||
+        launches.find(
+          (launch, index) =>
+            !taken.has(`${row.parent_thread_id}:${index}`) &&
+            name !== null &&
+            launch.agent_key === name
+        );
+      if (match) {
+        const index = launches.indexOf(match);
+        taken.add(`${row.parent_thread_id}:${index}`);
+        row.launch_id = match.launch_id;
+        row.model = row.model ?? match.model;
       }
     }
+    return out.sort((left, right) => {
+      const by_start = (left.started_at || 0) - (right.started_at || 0);
+      return by_start || left.thread_id.localeCompare(right.thread_id);
+    });
   }
+  return {
+    apply,
+    snapshot,
+    /** @param {string} thread_id - Transcript whose replacement invalidated prior observations. */
+    resetThread(thread_id) {
+      identities.delete(thread_id);
+      launches_by_parent.delete(thread_id);
+      rows.delete(thread_id);
+    }
+  };
+}
 
-  /** @type {CodexChildRow[]} */
-  const out = [];
-  for (const held of rows.values()) {
-    if (held.observed === 0 || typeof held.row.parent_thread_id !== 'string') {
-      continue;
-    }
-    if (!held.terminal && input.parent_terminated === true) {
-      // An observation mark (§6.2): the parent ended and this child produced
-      // no terminal evidence. It is not a claim that the child was killed, and
-      // it never becomes a success.
-      held.row.status = 'interrupted';
-    }
-    out.push(held.row);
+/**
+ * Fold one attempt's rollout records into its child rows.
+ *
+ * @param {{
+ *   root_thread_id: string,
+ *   records: Array<{ thread_id: string, ordinal?: number, record: unknown }>,
+ *   attempt_started_at?: number|null,
+ *   attempt_ended_at?: number|null,
+ *   parent_terminated?: boolean
+ * }} input - `attempt_started_at`/`attempt_ended_at` are the attempt log
+ * boundaries: activity outside them belongs to another root turn and never
+ * becomes this attempt's row, which is what keeps a REUSED child thread from
+ * being copied forward.
+ * @returns {CodexChildRow[]}
+ */
+export function accumulateCodexChildren(input) {
+  if (
+    typeof input.root_thread_id !== 'string' ||
+    input.root_thread_id.length === 0 ||
+    !Array.isArray(input.records)
+  ) {
+    return [];
   }
-
-  for (const row of [...out].sort(
-    (left, right) => (left.started_at || 0) - (right.started_at || 0)
-  )) {
-    // The join is (direct parent thread, full agent_path). Falling back to the
-    // last path segment alone let a nested child and a root-direct child of the
-    // same name take each other's launch (§6.2).
-    const held = launches_by_parent.get(row.parent_thread_id) || [];
-    const path_key = row.agent_path;
-    const name_key = agentKeyOf(row.agent_path);
-    const match =
-      held.find(
-        (launch) =>
-          !launch.taken &&
-          path_key !== null &&
-          launch.agent_path !== null &&
-          launch.agent_path === path_key
-      ) ||
-      held.find(
-        (launch) =>
-          !launch.taken && name_key !== null && launch.agent_key === name_key
-      ) ||
-      null;
-    if (match === null) {
-      continue;
+  const accumulator = createCodexChildAccumulator(input);
+  const records = input.records.filter(
+    (entry) => entry && typeof entry.thread_id === 'string'
+  );
+  // Register the full parent chain before replaying any nested child activity.
+  for (const entry of records) {
+    if (rolloutThreadIdentity(entry.record)) {
+      accumulator.apply(entry);
     }
-    match.taken = true;
-    row.launch_id = match.launch_id;
-    // The spawn argument's model is an OBSERVED value, used only where the
-    // child's own `turn_context` never named one.
-    row.model = row.model ?? match.model;
   }
-
-  out.sort((left, right) => {
-    const by_start = (left.started_at || 0) - (right.started_at || 0);
-    return by_start !== 0
-      ? by_start
-      : left.thread_id.localeCompare(right.thread_id);
-  });
-  return out;
+  for (const entry of records) {
+    accumulator.apply(entry);
+  }
+  return accumulator.snapshot(input.parent_terminated === true);
 }

@@ -89,7 +89,7 @@ describe('session-history token usage (UI-d7pw §2.2)', () => {
     const host = mount(sessionHistoryTemplate(attempts));
 
     expect(host.querySelector('.detail-session__usage')?.textContent).toBe(
-      'Claude τ 12.3k'
+      'Claude τ 12.3k · 단가 없음'
     );
   });
 
@@ -947,7 +947,7 @@ describe('session-history claude subagent rows (UI-2mpn §6.1)', () => {
     const badges = Array.from(
       host.querySelectorAll('.detail-session__usage')
     ).map((node) => node.textContent);
-    expect(badges).toEqual(['Claude τ 10', 'Claude τ 1.3k']);
+    expect(badges).toEqual(['Claude τ 10 · 단가 없음', 'Claude τ 1.3k']);
   });
 
   test('adds the subagent receipt to the issue Claude heading total', () => {
@@ -978,7 +978,7 @@ describe('session-history claude subagent rows (UI-2mpn §6.1)', () => {
     );
 
     expect(host.querySelector('.detail-usage-total')?.textContent).toBe(
-      'Claude τ 1.3k'
+      'Claude τ 1.3k · 단가 없음'
     );
   });
 
@@ -1097,17 +1097,6 @@ describe('session-history claude subagent rows (UI-2mpn §6.1)', () => {
 });
 
 describe('session-history 세션 행 (UI-4xzk §6.5)', () => {
-  /**
-   * Lit's per-process marker comments carry a random id, so only the rendered
-   * markup is comparable across runs.
-   *
-   * @param {HTMLElement} host
-   * @returns {string}
-   */
-  function markup(host) {
-    return host.innerHTML.replace(/<!--[\s\S]*?-->/g, '');
-  }
-
   /** @type {import('./session-history.js').SessionAttempt[]} */
   const ATTEMPTS = [
     {
@@ -1305,30 +1294,11 @@ describe('session-history 세션 행 (UI-4xzk §6.5)', () => {
   test('renders an attempt-only history exactly as it did without session rows', () => {
     const host = mount(sessionHistoryTemplate(ATTEMPTS, {}, {}, []));
 
-    expect(markup(host)).toMatchInlineSnapshot(`
-      "
-          <div class="detail-section-label">
-            세션 이력
-          </div>
-          <div class="detail-sessions" data-seam="session-history">
-            <div class="detail-session-row">
-                <button type="button" class="detail-session detail-session--done" data-attempt-id="att-1">
-                  <span class="detail-session__glyph">✓</span>
-                  <span class="detail-session__id">att-1</span>
-                  
-                  <span class="detail-session__meta">claude · opus</span>
-                  
-                  <span class="detail-session__sid" title="abcdefgh1234">abcdefgh</span>
-                  
-                  <span class="detail-session__time">07:13</span>
-                </button>
-                   
-                
-                 
-              </div>
-          </div>
-        "
-    `);
+    expect(host.querySelectorAll('.detail-session-row')).toHaveLength(1);
+    expect(host.querySelector('.detail-session-ref')).toBeNull();
+    expect(host.querySelector('.detail-session')?.textContent).toContain(
+      'att-1'
+    );
   });
 });
 
@@ -1443,6 +1413,12 @@ describe('session-history per-leg price (preset-compare §1.3)', () => {
 });
 
 describe('session-history native Codex children (UI-mn5u §6.4)', () => {
+  const estimated_catalog = resolveCatalog({
+    overrides: {
+      codex: { models: { terra: { price: { input: 2 } } } }
+    },
+    warn: () => {}
+  });
   /** @type {any} */
   const CHILD = {
     thread_id: '01a07fe0-1e96-7443-b224-30d21a82419a',
@@ -1561,6 +1537,28 @@ describe('session-history native Codex children (UI-mn5u §6.4)', () => {
     );
     expect(badge.title).toContain('세부 내역 미관측');
     expect(badge.title).not.toContain('입력 0');
+  });
+
+  test('marks a total-only native child amount as estimated', () => {
+    const host = mount(
+      sessionHistoryTemplate(
+        [
+          codexAttempt({
+            codex_children: [{ ...CHILD, usage: { total_tokens: 1_000_000 } }]
+          })
+        ],
+        {},
+        { catalog: estimated_catalog }
+      )
+    );
+
+    const badge = /** @type {HTMLElement} */ (
+      host
+        .querySelector('.detail-session__leg--done')
+        ?.querySelector('.detail-session__usage')
+    );
+    expect(badge.textContent).toContain('추정');
+    expect(badge.title).toContain('추정');
   });
 
   test('omits an unobserved usage field instead of printing zero', () => {

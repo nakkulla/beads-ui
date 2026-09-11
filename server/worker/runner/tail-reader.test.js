@@ -210,6 +210,71 @@ describe('runner/tail-reader', () => {
     expect(lines).toEqual(['{"a":1}', '{"a":2}', '{"b":1}']);
   });
 
+  test('reopens an atomically replaced file even when it is larger', () => {
+    write('{"a":1}\n');
+    /** @type {boolean[]} */
+    const resets = [];
+    /** @type {string[]} */
+    const lines = [];
+    const tail = createTailReader({
+      file,
+      poll_ms: 5,
+      onReset: () => resets.push(true),
+      onLine: (line) => lines.push(line)
+    });
+    tail.start();
+
+    const replacement = path.join(dir, 'replacement.jsonl');
+    fs.writeFileSync(replacement, '{"b":1}\n{"b":2}\n');
+    fs.renameSync(replacement, file);
+    tail.pump();
+    tail.stop();
+
+    expect(resets).toEqual([true]);
+    expect(lines).toEqual(['{"a":1}', '{"b":1}', '{"b":2}']);
+  });
+
+  test('stops before reading a replacement rejected by its owner', () => {
+    write('{"owned":1}\n');
+    /** @type {string[]} */
+    const lines = [];
+    const tail = createTailReader({
+      file,
+      onLine: (line) => lines.push(line),
+      onReset: () => tail.stop()
+    });
+    tail.start();
+    const replacement = path.join(dir, 'unrelated.jsonl');
+    fs.writeFileSync(replacement, '{"unrelated":1}\n');
+
+    fs.renameSync(replacement, file);
+    tail.pump();
+
+    expect(lines).toEqual(['{"owned":1}']);
+  });
+
+  test('resets after an in-place truncate and larger rewrite between polls', () => {
+    write('{"old":1}\n');
+    /** @type {string[]} */
+    const lines = [];
+    /** @type {boolean[]} */
+    const resets = [];
+    const tail = createTailReader({
+      file,
+      poll_ms: 5,
+      onReset: () => resets.push(true),
+      onLine: (line) => lines.push(line)
+    });
+    tail.start();
+
+    fs.writeFileSync(file, '{"replacement":1}\n{"replacement":2}\n');
+    tail.pump();
+    tail.stop();
+
+    expect(resets).toEqual([true]);
+    expect(lines.slice(1)).toEqual(['{"replacement":1}', '{"replacement":2}']);
+  });
+
   test('splits a multibyte character across two reads without corrupting it', () => {
     const { tail, lines } = reader();
     tail.start();

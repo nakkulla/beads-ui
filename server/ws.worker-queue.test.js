@@ -4205,7 +4205,7 @@ describe('ws worker-queue bead_workflow + running overlay (UI-eey2 §9.2/§9.3)'
         model: 'gpt-5.6-sol',
         state: 'live',
         ordinal: 1,
-        label: '구현 unit 1 · codex'
+        label: '구현 unit 1 · codex · gpt-5.6-sol'
       },
       {
         role: 'review-consult',
@@ -4213,7 +4213,7 @@ describe('ws worker-queue bead_workflow + running overlay (UI-eey2 §9.2/§9.3)'
         model: 'gpt-5.6-sol',
         state: 'done',
         ordinal: 1,
-        label: 'review-consult · codex'
+        label: 'review-consult · codex · gpt-5.6-sol'
       }
     ]);
     expect(snapshot.attempts['att-done']).not.toHaveProperty('last_activity');
@@ -4262,9 +4262,16 @@ describe('ws worker-queue bead_workflow + running overlay (UI-eey2 §9.2/§9.3)'
         role: 'implementation',
         runtime: 'codex',
         model: 'gpt-5.6-sol',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          reasoning_output_tokens: 0
+        },
         state: 'done',
         ordinal: 1,
-        label: '구현 unit 1 · codex'
+        label: '구현 unit 1 · codex · gpt-5.6-sol'
       }
     ]);
   });
@@ -4312,7 +4319,7 @@ describe('ws worker-queue bead_workflow + running overlay (UI-eey2 §9.2/§9.3)'
         agent_type: 'general-purpose',
         state: 'live',
         ordinal: 1,
-        label: 'general-purpose · claude'
+        label: 'general-purpose · claude · claude-sonnet-4-5-20250929'
       }
     ]);
   });

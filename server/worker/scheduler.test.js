@@ -685,7 +685,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, resolveVerify?: any, runVerify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, providerHealth?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, resolveSessionFile?: (entry: any, options?: any) => any, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number, publishActivity?: (workspace: string) => void, waitingRescan?: { cover_ms: number, max_wait_ms: number } }} opts
+ * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, resolveVerify?: any, runVerify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, providerHealth?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, workerSessionObservations?: any, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, resolveSessionFile?: (entry: any, options?: any) => any, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number, publishActivity?: (workspace: string) => void, waitingRescan?: { cover_ms: number, max_wait_ms: number } }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -787,6 +787,7 @@ function setup(opts) {
     quickfixLanding: opts.quickfixLanding,
     sessionLog,
     usage,
+    workerSessionObservations: opts.workerSessionObservations,
     usageReceipts: opts.usageReceipts,
     delegationMonitor: opts.delegationMonitor,
     delegation: opts.delegation,
@@ -13070,6 +13071,47 @@ describe('scheduler Codex effort observation (UI-vriu)', () => {
 });
 
 describe('scheduler token usage (UI-raqh §1)', () => {
+  test('persists prepared root model segments when the session ends', async () => {
+    const usage_segments = [
+      {
+        provider: 'codex',
+        role: 'orchestrator',
+        turn_id: 't1',
+        model: 'gpt-5.6-sol',
+        usage: { input_tokens: 100, output_tokens: 10 }
+      },
+      {
+        provider: 'codex',
+        role: 'orchestrator',
+        turn_id: 't2',
+        model: 'gpt-6-astra',
+        usage: { input_tokens: 50, output_tokens: 5 }
+      }
+    ];
+    const observations = {
+      get: vi.fn(() => ({
+        usage: { input_tokens: 150, output_tokens: 15 },
+        usage_segments
+      })),
+      delete: vi.fn()
+    };
+    const env = setup({
+      config: { A1: { runner: 'codex' } },
+      workerSessionObservations: observations
+    });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('A1', { success: true });
+    await flush();
+    await flush();
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.usage).toEqual({ input_tokens: 150, output_tokens: 15 });
+    expect(attempt.usage_segments).toEqual(usage_segments);
+    expect(observations.delete).toHaveBeenCalledTimes(1);
+  });
+
   test('persists the tallied usage onto the attempt when the session ends', async () => {
     const env = setup({ config: { A1: {} } });
     seedQueue(env.store, ['A1']);

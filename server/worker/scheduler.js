@@ -674,6 +674,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * dead attempt's monitor is stopped — draining its log to EOF — before the
  * disposition reads the guard evidence and lifts the terminal usage tally.
  * @property {ReturnType<typeof import('./usage-store.js').createUsageStore>} [usage]
+ * @property {ReturnType<typeof import('./session-observation.js').createWorkerSessionObservationStore>} [workerSessionObservations]
  * Live token-usage tally for running attempts (UI-raqh §1). Absent wiring
  * (older tests) simply means no usage is tallied or persisted.
  * @property {ReturnType<typeof import('./delegation-store.js').createDelegationStore>} [delegation] -
@@ -2426,10 +2427,22 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id
-   * @returns {{ usage?: any }}
+   * @returns {{ usage?: any, usage_segments?: any[] }}
    */
   function usagePatch(workspace, attempt_id) {
-    const usage = deps.usage ? deps.usage.get(workspace, attempt_id) : null;
+    const prepared = deps.workerSessionObservations?.get(workspace, attempt_id);
+    const usage =
+      prepared?.usage ??
+      (deps.usage ? deps.usage.get(workspace, attempt_id) : null);
+    let model = null;
+    let runner = null;
+    try {
+      const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+      model = typeof attempt?.model === 'string' ? attempt.model : null;
+      runner = typeof attempt?.runner === 'string' ? attempt.runner : null;
+    } catch {
+      // The usage itself can still settle without optional model scope.
+    }
     if (deps.usage) {
       deps.usage.clearAttempt(workspace, attempt_id);
     }
@@ -2441,7 +2454,29 @@ export function createScheduler(deps) {
     }
     clearUsageReceiptPolling(attempt_id);
     clearDelegationPolling(attempt_id);
-    return usage ? { usage } : {};
+    if (prepared) {
+      queueMicrotask(() =>
+        deps.workerSessionObservations?.delete(workspace, attempt_id)
+      );
+    }
+    if (usage && Array.isArray(prepared?.usage_segments)) {
+      return { usage, usage_segments: prepared.usage_segments };
+    }
+    return usage
+      ? {
+          usage,
+          usage_segments: [
+            {
+              provider: runner,
+              role: 'orchestrator',
+              turn_id: attempt_id,
+              model,
+              usage,
+              ...(usage.replayed === true ? { partial: true } : {})
+            }
+          ]
+        }
+      : {};
   }
 
   /**

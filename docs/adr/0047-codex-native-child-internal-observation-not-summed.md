@@ -1,11 +1,12 @@
 ---
 id: 47
 title: Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다
-status: accepted
+status: superseded
 date: 2026-09-08
 summary: "Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다"
 spec: docs/superpowers/specs/2026-09-08-codex-orchestration-parity-design.md
 bead: UI-mn5u
+superseded_by: UI-42l2
 ---
 
 # Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다

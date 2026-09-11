@@ -2,7 +2,25 @@ import { describe, expect, test, vi } from 'vitest';
 
 const WS = '/tmp/example/repo-session-refs';
 
-const state = vi.hoisted(() => ({ projection_throws: false }));
+const state = vi.hoisted(() => ({
+  projection_throws: false,
+  reconciles: 0,
+  clears: 0
+}));
+
+vi.mock('./session-observation.js', () => ({
+  createSessionObservationStore: () => ({
+    reconcile() {
+      state.reconciles += 1;
+    },
+    clear() {
+      state.clears += 1;
+    },
+    get() {
+      return null;
+    }
+  })
+}));
 
 vi.mock('./session-ref.js', async (importOriginal) => {
   const actual = /** @type {any} */ (await importOriginal());
@@ -110,6 +128,46 @@ async function sessionBucket(rows) {
 }
 
 describe('session_active[].session_refs (UI-4xzk §4.1)', () => {
+  test('does not reconnect observation after the final subscriber leaves', async () => {
+    let resolve_snapshot = () => {};
+    const requestSnapshot = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolve_snapshot = () =>
+            resolve({
+              ok: true,
+              stale: false,
+              snapshot: {
+                generation: 1,
+                all: [sessionRow({ route: 'quick_fix' })],
+                ready_explain: {}
+              }
+            });
+        })
+    );
+    let subscribers = 1;
+    const cache = createRunnableCache({
+      requestSnapshot,
+      subscriberCount: () => subscribers
+    });
+    state.reconciles = 0;
+    state.clears = 0;
+    cache.sessionActiveFor(WS);
+    subscribers = 0;
+    cache.releaseObservationsIfIdle();
+
+    resolve_snapshot();
+    for (let turn = 0; turn < 5; turn += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    expect(state.reconciles).toBe(0);
+    expect(state.clears).toBeGreaterThan(0);
+    subscribers = 1;
+    cache.sessionActiveFor(WS);
+    expect(requestSnapshot).toHaveBeenCalledTimes(2);
+  });
+
   test('projects the row metadata key without an extra bd call', async () => {
     const rows = [
       sessionRow({

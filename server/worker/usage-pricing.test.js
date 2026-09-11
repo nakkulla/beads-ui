@@ -22,6 +22,23 @@ const FULL_PRICE = {
 };
 
 describe('worker/usage-pricing priceUsage', () => {
+  test('prices observed counters when optional fields are absent', () => {
+    const catalog = catalogWithPrice({ input: 10, output: 20, cache_read: 1 });
+
+    const price = priceUsage(
+      {
+        input_tokens: 100,
+        output_tokens: 10,
+        cache_read_input_tokens: 60,
+        cache_creation_input_tokens: undefined
+      },
+      'sol',
+      catalog
+    );
+
+    expect(price.basis).toBe('computed');
+    expect(price.usd).toBeCloseTo(0.00066, 10);
+  });
   test('prefers the CLI-reported cost over the catalog', () => {
     const catalog = catalogWithPrice(FULL_PRICE);
 
@@ -40,21 +57,99 @@ describe('worker/usage-pricing priceUsage', () => {
     expect(price).toEqual({ usd: 1.5, basis: 'reported' });
   });
 
-  test('computes the breakdown at the per-million unit prices', () => {
+  test('leaves ambiguous Codex cache-write breakdown unpriced', () => {
     const catalog = catalogWithPrice(FULL_PRICE);
 
     const price = priceUsage(
       {
         input_tokens: 1_000_000,
         output_tokens: 500_000,
-        cache_read_input_tokens: 2_000_000,
+        cache_read_input_tokens: 500_000,
         cache_creation_input_tokens: 1_000_000
       },
       'sol',
       catalog
     );
 
-    expect(price).toEqual({ usd: 2.5 + 5 + 0.5 + 1, basis: 'computed' });
+    expect(price).toEqual({ usd: null, basis: 'none' });
+  });
+
+  test('charges Codex cached input once', () => {
+    const catalog = catalogWithPrice({
+      input: 10,
+      cache_read: 1,
+      output: 20
+    });
+
+    const price = priceUsage(
+      {
+        input_tokens: 100,
+        cache_read_input_tokens: 60,
+        output_tokens: 10
+      },
+      'sol',
+      catalog
+    );
+
+    expect(price.basis).toBe('computed');
+    expect(price.usd).toBeCloseTo(0.00066, 10);
+  });
+
+  test('keeps Claude cache counters additive', () => {
+    const catalog = resolveCatalog({
+      overrides: {
+        claude: {
+          models: {
+            'opus-4.6': {
+              price: { input: 10, cache_read: 1, output: 20 }
+            }
+          }
+        }
+      },
+      warn: () => {}
+    });
+
+    const price = priceUsage(
+      {
+        input_tokens: 100,
+        cache_read_input_tokens: 60,
+        output_tokens: 10
+      },
+      'opus-4.6',
+      catalog
+    );
+
+    expect(price).toEqual({ usd: 0.00126, basis: 'computed' });
+  });
+
+  test('rejects invalid Codex cache partitions', () => {
+    const catalog = catalogWithPrice(FULL_PRICE);
+
+    expect(
+      priceUsage(
+        { input_tokens: 10, cache_read_input_tokens: 11 },
+        'sol',
+        catalog
+      )
+    ).toEqual({ usd: null, basis: 'none' });
+    expect(priceUsage({ input_tokens: -1 }, 'sol', catalog)).toEqual({
+      usd: null,
+      basis: 'none'
+    });
+    expect(
+      priceUsage(
+        { input_tokens: 10, output_tokens: Number.NaN },
+        'sol',
+        catalog
+      )
+    ).toEqual({ usd: null, basis: 'none' });
+    expect(
+      priceUsage({ input_tokens: 10, output_tokens: -1 }, 'sol', catalog)
+    ).toEqual({ usd: null, basis: 'none' });
+    expect(priceUsage({ total_cost_usd: -1 }, 'sol', catalog)).toEqual({
+      usd: null,
+      basis: 'none'
+    });
   });
 
   test('ignores reasoning output, which output already counts', () => {
@@ -129,7 +224,7 @@ describe('worker/usage-pricing priceUsage', () => {
     expect(price).toEqual({ usd: 2.5, basis: 'computed' });
   });
 
-  test('treats an explicit zero unit price as free rather than unknown', () => {
+  test('does not price an unproven Codex cache-write partition', () => {
     const catalog = catalogWithPrice({ input: 2.5, cache_write: 0 });
 
     const price = priceUsage(
@@ -138,7 +233,7 @@ describe('worker/usage-pricing priceUsage', () => {
       catalog
     );
 
-    expect(price).toEqual({ usd: 2.5, basis: 'computed' });
+    expect(price).toEqual({ usd: null, basis: 'none' });
   });
 
   test('matches the model by its catalog name', () => {
@@ -153,12 +248,15 @@ describe('worker/usage-pricing priceUsage', () => {
     const catalog = catalogWithPrice(FULL_PRICE);
 
     const price = priceUsage(
-      { input_tokens: 1_000_000 },
+      {
+        input_tokens: 1_000_000,
+        cache_read_input_tokens: 500_000
+      },
       'gpt-5.6-sol',
       catalog
     );
 
-    expect(price).toEqual({ usd: 2.5, basis: 'computed' });
+    expect(price).toEqual({ usd: 1.375, basis: 'computed' });
   });
 
   test('returns none for a model the catalog knows without a price', () => {

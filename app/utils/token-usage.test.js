@@ -71,6 +71,16 @@ describe('views/worker usage formatting (UI-raqh §1)', () => {
     expect(label).toBe('τ 12.3k · $12.34');
   });
 
+  test('keeps a small non-zero API conversion visible', () => {
+    const label = formatUsageTotalWithCost({
+      input_tokens: 100,
+      output_tokens: 10,
+      total_cost_usd: 0.00066
+    });
+
+    expect(label).toBe('τ 110 · $0.00066');
+  });
+
   test('leaves the lane badge cost-free when none was reported', () => {
     const label = formatUsageTotalWithCost({
       input_tokens: 8420,
@@ -857,7 +867,7 @@ describe('total-only legs inside an aggregate tooltip (UI-1vpv)', () => {
     );
 
     expect(tooltip).toBe(
-      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성 + 분해 없는 leg\n총 1,000\n입력 10 · 출력 20 · 캐시읽기 30 · 캐시생성 40 · 분해 없는 leg 900'
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성 + 분해 없는 leg\n총 1,000\n입력 10 · 출력 20 · 캐시읽기 30 · 캐시생성 40 · 분해 없는 leg 900\n단가 없음\nAPI 환산 단가 기준'
     );
   });
 
@@ -885,7 +895,9 @@ describe('total-only legs inside an aggregate tooltip (UI-1vpv)', () => {
       /** @type {any} */ (projected?.providers.claude)
     );
 
-    expect(tooltip).toBe('총 900\n분해 없음 — 총량만 보고됨');
+    expect(tooltip).toBe(
+      '총 900\n분해 없음 — 총량만 보고됨\n단가 없음\nAPI 환산 단가 기준'
+    );
   });
 
   test('keeps the four-field aggregate tooltip unchanged', () => {
@@ -963,10 +975,113 @@ describe('leg pricing and partial-cost display (preset-compare §1.3)', () => {
     expect(projected?.providers.codex).not.toHaveProperty('unpriced_leg_count');
   });
 
+  test('prices conversation turns with each observed model', () => {
+    const segmented_catalog = resolveCatalog({
+      overrides: {
+        codex: {
+          models: {
+            sol: { price: { input: 10, output: 20, cache_read: 1 } },
+            terra: { price: { input: 2, output: 12, cache_read: 0.2 } }
+          }
+        }
+      },
+      warn: () => {}
+    });
+    const projected = sumAttemptUsage(
+      {
+        direct: {
+          attempt_id: 'direct',
+          bead_id: 'UI-1',
+          runner: 'codex',
+          usage_segments: [
+            {
+              model: 'sol',
+              turn_id: 't1',
+              usage: {
+                input_tokens: 100,
+                cache_read_input_tokens: 60,
+                output_tokens: 10
+              }
+            },
+            {
+              model: 'terra',
+              turn_id: 't2',
+              usage: { input_tokens: 50, output_tokens: 5 }
+            }
+          ]
+        }
+      },
+      'UI-1',
+      segmented_catalog
+    );
+
+    expect(projected?.providers.codex?.subtotal).toBe(165);
+    expect(projected?.providers.codex?.total_cost_usd).toBeCloseTo(
+      0.00066 + 0.00016,
+      10
+    );
+  });
+
   test('leaves a Codex attempt unpriced without a catalog', () => {
     const projected = sumAttemptUsage(CODEX_ATTEMPT, 'UI-1');
 
     expect(projected?.providers.codex).not.toHaveProperty('total_cost_usd');
+  });
+
+  test('adds live and external costs after one reported Claude result group', () => {
+    const catalog = resolveCatalog({
+      overrides: {
+        claude: {
+          models: {
+            opus: { price: { input: 1, output: 2 } },
+            sonnet: { price: { input: 3, output: 4 } }
+          }
+        }
+      },
+      warn: () => {}
+    });
+    const projected = sumAttemptUsage(
+      {
+        direct: {
+          attempt_id: 'direct',
+          bead_id: 'UI-1',
+          runner: 'claude',
+          usage_segments: [
+            {
+              model: 'opus',
+              turn_id: 'settled-message',
+              usage: { input_tokens: 1_000_000 },
+              cost_covered: true
+            },
+            {
+              turn_id: 'result:0:reported-cost',
+              usage: { total_tokens: 0, total_cost_usd: 1 }
+            },
+            {
+              model: 'sonnet',
+              turn_id: 'live-message',
+              usage: { input_tokens: 1_000_000 }
+            }
+          ],
+          usage_legs: [
+            {
+              receipt_id: 'external-child',
+              provider: 'claude',
+              role: 'subagent',
+              model: 'opus',
+              usage: { input_tokens: 1, total_cost_usd: 0.5 }
+            }
+          ]
+        }
+      },
+      'UI-1',
+      catalog
+    );
+
+    expect(projected?.providers.claude?.total_cost_usd).toBe(4.5);
+    expect(projected?.providers.claude).not.toHaveProperty(
+      'unpriced_leg_count'
+    );
   });
 
   test('names the unpriced leg count beside the partial sum', () => {
@@ -980,7 +1095,7 @@ describe('leg pricing and partial-cost display (preset-compare §1.3)', () => {
   });
 
   test('returns no cost text when no leg could be priced', () => {
-    expect(formatCost({ unpriced_leg_count: 3 })).toBe(null);
+    expect(formatCost({ unpriced_leg_count: 3 })).toBe('단가 없음');
   });
 
   test('appends the unpriced count to the provider badge label', () => {

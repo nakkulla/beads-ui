@@ -893,6 +893,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       store: runtime.queueStore,
       sessionLog: runtime.sessionLog,
       usage: runtime.usageStore,
+      workerSessionObservations: runtime.workerSessionObservations,
       delegation: runtime.delegationStore,
       probePid,
       kill_impl: options.kill_impl,
@@ -950,6 +951,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       runVerifyAtSha({ ...input, worktree, git: gitRun }),
     sessionLog: runtime.sessionLog,
     usage: runtime.usageStore,
+    workerSessionObservations: runtime.workerSessionObservations,
     delegation: runtime.delegationStore,
     admission,
     // Dispatch-time re-resolution (worker-base-scope-alignment §1): the cut and
