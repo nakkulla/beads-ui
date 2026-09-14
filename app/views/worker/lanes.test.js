@@ -608,48 +608,6 @@ describe('candidate card', () => {
     expect(card.querySelector('.worker-card__place-cancel')).not.toBeNull();
   });
 
-  test('groups the lane choices under their group headers', () => {
-    const card = renderCandidate(
-      { reason: '🔒 UI-blocker' },
-      {
-        bead_id: 'UI-qf',
-        lanes: [
-          { id: 'parallel', label: '병렬', count: 3 },
-          {
-            id: 'lane:cl_1',
-            label: '연결 1 (확정) 끝에',
-            count: 3,
-            group: '연결 레인'
-          },
-          { id: 'new-lane', label: '+ 새 연결 레인', group: '연결 레인' },
-          { id: 'serial:s1', label: '직렬 1', count: 2, group: 'beads-ui 직렬' }
-        ]
-      }
-    );
-
-    expect(
-      Array.from(card.querySelectorAll('.worker-card__place-group')).map(
-        (group) => group.textContent?.trim()
-      )
-    ).toEqual(['연결 레인', 'beads-ui 직렬']);
-  });
-
-  test('renders no group header for a menu without the 연결 레인 group', () => {
-    const card = renderCandidate(
-      { reason: '🔒 UI-blocker' },
-      {
-        bead_id: 'UI-qf',
-        lanes: [
-          { id: 'parallel', label: '병렬', count: 3 },
-          { id: 's1', label: '직렬 1', count: 0 }
-        ]
-      }
-    );
-
-    expect(card.querySelectorAll('.worker-card__place-group')).toHaveLength(0);
-    expect(card.querySelectorAll('.worker-card__place-lane')).toHaveLength(2);
-  });
-
   test('omits the count of an entry that has nothing to count', () => {
     const card = renderCandidate(
       { reason: '🔒 UI-blocker' },
@@ -660,30 +618,6 @@ describe('candidate card', () => {
     );
 
     expect(card.querySelector('.worker-card__place-count')).toBeNull();
-  });
-
-  test('disables a lane entry the store cannot serve', () => {
-    const card = renderCandidate(
-      { reason: '🔒 UI-blocker' },
-      {
-        bead_id: 'UI-qf',
-        lanes: [
-          {
-            id: 'lane:cl_1',
-            label: '연결 1 (확정) 끝에',
-            count: 1,
-            group: '연결 레인',
-            disabled: true
-          }
-        ]
-      }
-    );
-
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        card.querySelector('.worker-card__place-lane')
-      ).disabled
-    ).toBe(true);
   });
 
   test('keeps the closed card when the menu belongs to another candidate', () => {
@@ -3513,22 +3447,6 @@ describe('waitBody (UI-5ksp §4.2)', () => {
 
     expect(body.firstElementChild?.className).toBe('unreadable');
   });
-
-  test('draws the serial header control in the area header', () => {
-    const wait = renderWait({
-      serial: {
-        lanes: [],
-        collapsed: false,
-        header_control: html`<button class="mon2-newlane"></button>`
-      }
-    });
-
-    expect(
-      wait.querySelector(
-        '.worker-wait__area--serial .worker-wait__area-hd .mon2-newlane'
-      )
-    ).not.toBeNull();
-  });
 });
 
 describe('슬롯 4 두 줄 (UI-8x90 §4.1)', () => {
@@ -3579,20 +3497,6 @@ describe('슬롯 4 두 줄 (UI-8x90 §4.1)', () => {
 
     expect(kindsOf(lineOf(row, 'primary'))).toEqual(['worker-dep--pred']);
     expect(kindsOf(lineOf(row, 'secondary'))).toEqual(['worker-dep--released']);
-  });
-
-  test('orders the 의존 line 발차 → 선행 → 후속', () => {
-    const row = renderChips({
-      dependents: [{ id: 'UI-s', label: '→ UI-s' }],
-      predecessors: [{ id: 'UI-p', label: '⛓ UI-p' }],
-      armed_lane: { lane_id: 'cl_1', label: '▶ 연결 1', orphan: false }
-    });
-
-    expect(kindsOf(lineOf(row, 'primary'))).toEqual([
-      'worker-dep--armed',
-      'worker-dep--pred',
-      'worker-dep--dependents'
-    ]);
   });
 
   test('sorts each 묶음 by id', () => {
@@ -3664,22 +3568,6 @@ describe('슬롯 4 두 줄 (UI-8x90 §4.1)', () => {
     const row = renderChips({});
 
     expect(row.querySelector('.worker-deps')).toBeNull();
-  });
-
-  test('offers the release inside an orphan 발차 칩 (UI-jaua §5.3)', () => {
-    const row = renderChips({
-      armed_lane: {
-        lane_id: 'cl_gone',
-        label: '▶ 진행 중 · 레인 없음',
-        orphan: true
-      }
-    });
-
-    const chip = row.querySelector('.worker-dep--armed-orphan');
-    expect([
-      chip?.textContent?.includes('▶ 진행 중 · 레인 없음'),
-      chip?.querySelector('.mon2-arm__release')?.getAttribute('data-lane-id')
-    ]).toEqual([true, 'cl_gone']);
   });
 });
 
@@ -4701,49 +4589,6 @@ describe('준비 필요 판정 칩과 흐림 (UI-ff10 §6)', () => {
   });
 });
 
-describe('연결 n 소속 칩의 자리 (UI-8x90 §4.1)', () => {
-  test('draws it on the coordinate line after the repo badge', () => {
-    const row = renderRow({
-      lane: 'queue',
-      done: false,
-      workspace_name: 'repo-a',
-      cross_lane_chip: { lane_id: 'cl_1', label: '연결 1' }
-    });
-    const chips = /** @type {HTMLElement} */ (
-      row.querySelector('.worker-chips')
-    );
-
-    expect(
-      Array.from(chips.children, (chip) => chip.className.split(' ')[0])
-    ).toEqual(['worker-mini__repo', 'worker-dep']);
-    expect(chips.querySelector('.mon-lane__chip')?.textContent?.trim()).toBe(
-      '연결 1'
-    );
-  });
-
-  test('keeps it out of the 의존 slot', () => {
-    const row = renderRow({
-      lane: 'queue',
-      done: false,
-      cross_lane_chip: { lane_id: 'cl_1', label: '연결 1' }
-    });
-
-    expect(row.querySelector('.worker-deps')).toBeNull();
-  });
-
-  test('draws it on a candidate coordinate line too', () => {
-    const card = renderCandidate({
-      cross_lane_chip: { lane_id: 'cl_2', label: '연결 2 (draft)' }
-    });
-
-    expect(
-      card
-        .querySelector('.worker-chips .mon-lane__chip')
-        ?.getAttribute('data-lane-id')
-    ).toBe('cl_2');
-  });
-});
-
 describe('완료 실패 로그 경로 (UI-8w4t §4)', () => {
   test('renders the log path and its copy control on slot 5', () => {
     const row = renderRow({
@@ -4955,42 +4800,6 @@ describe('대기 진입 유예 (UI-q1tg §3.3)', () => {
     expect(
       row.querySelector('.worker-deps--primary .worker-dep--grace')?.textContent
     ).toContain('⏳ 15초');
-  });
-
-  test('orders the 의존 line 게이트 → 발차 → 선행 → 후속 → 유예', () => {
-    vi.spyOn(Date, 'now').mockReturnValue(NOW);
-
-    const row = renderWaitingRow({
-      added_at: NOW - 5_000,
-      gate: {
-        kind: 'systemic',
-        label: '⛔ 정지 · loud_fail_blocker',
-        title: 'loud_fail_blocker',
-        since: 5000,
-        next_at: null,
-        runner: null,
-        probe_ready: false,
-        lines: ['loud_fail_blocker']
-      },
-      dependency_chips: /** @type {any} */ ({
-        dependents: [{ id: 'UI-s', label: '→ UI-s' }],
-        predecessors: [{ id: 'UI-p', label: '⛓ UI-p' }],
-        armed_lane: { lane_id: 'cl_1', label: '▶ 연결 1', orphan: false }
-      })
-    });
-
-    const line = /** @type {HTMLElement} */ (
-      row.querySelector('.worker-deps--primary')
-    );
-    expect(
-      Array.from(line.children, (chip) => chip.className.split(' ')[1])
-    ).toEqual([
-      'worker-dep--gate',
-      'worker-dep--armed',
-      'worker-dep--pred',
-      'worker-dep--dependents',
-      'worker-dep--grace'
-    ]);
   });
 
   test('draws the start-now button in the slot 1 조작 group', () => {

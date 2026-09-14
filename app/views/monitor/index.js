@@ -56,16 +56,12 @@ import {
   discardAbandonConfirmationMessage,
   discardCompletionMessage,
   discardConfirmationMessage,
-  execChipsTemplate,
-  graceChipTemplate,
   judgementPopoverOf,
   miniRow,
   nowPanel,
   paneTemplate,
   providerProbeRefusalText,
   queueRowOps,
-  routeChipTemplate,
-  startNowButtonTemplate,
   waitBody
 } from '../worker/lanes.js';
 import {
@@ -79,27 +75,13 @@ import { runningTile } from '../worker/running-grid.js';
 import { tileResolveFields } from '../worker/tile-resolve.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
-import {
-  HOLD_CORRECTION,
-  describeLaneRemoval,
-  laneCorrectionStatus,
-  planDrop,
-  planLaneConfirm,
-  planLaneCorrection,
-  planLaneCreate,
-  planLaneReapply,
-  planLaneRemove
-} from './drop-plan.js';
 
 /**
- * @import { CandidateFilter, MonitorChainLane, MonitorChainLaneRow, LaneItem, LaneModel, MonitorOccupant, LaneQueueGroup, MonitorSerialSublane } from '../worker/lane-model.js'
+ * @import { CandidateFilter, LaneItem, LaneModel, MonitorOccupant, LaneQueueGroup, MonitorSerialSublane } from '../worker/lane-model.js'
  * @import { DependencyChips } from '../worker/lanes.js'
  * @import { ProviderResumeDraft } from '../worker/provider-resume-dialog.js'
- * @import { DropDrag, DropModel, DropPlan, DropTarget, LaneOp, Op } from './drop-plan.js'
+ * @import { DropDrag, DropTarget } from '../worker/lane-drag.js'
  */
-
-/** `의존에 맞춰 N건 자동 교정` 배지의 수명 (UI-jaua §6.3). */
-const CORRECTION_NOTICE_MS = 10000;
 
 /**
  * Persisted period range for the 완료 lane (UI-qrfo §7). Its OWN key, separate
@@ -288,7 +270,7 @@ const TICK_MS = 1_000;
 /**
  * @typedef {Object} MonitorViewOptions
  * @property {(id: string) => void} gotoIssue
- * @property {{ get: () => Array<Record<string, any>>|null, getWorkspacesState?: () => Array<Record<string, any>>, crossLanes?: () => { revision: number, lanes: Array<Record<string, any>> }|null|undefined, subscribe?: (fn: () => void) => () => void }} [pipelineStore]
+ * @property {{ get: () => Array<Record<string, any>>|null, getWorkspacesState?: () => Array<Record<string, any>>, subscribe?: (fn: () => void) => () => void }} [pipelineStore]
  * @property {any} [execPresetStore]
  * @property {any} [sessionLogStore] - 실행중 타일의 `▤ 세션` 드로어가 읽는 라인
  * 스토어 (Worker 탭과 같은 것).
@@ -335,19 +317,6 @@ const MONITOR_LANES = [
  * @type {ReadonlyArray<'queue'|'runnable'|'done'>}
  */
 const MOBILE_LANE_ORDER = ['queue', 'runnable', 'done'];
-
-/** 연결 레인 순번 ①…⑳ (UI-e6hw §4.2). */
-const CIRCLED_NUMERALS = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
-
-/**
- * @param {number} seq
- * @returns {string}
- */
-function circledSeq(seq) {
-  return seq >= 1 && seq <= CIRCLED_NUMERALS.length
-    ? CIRCLED_NUMERALS[seq - 1]
-    : `(${seq})`;
-}
 
 /**
  * Mount the monitor tab and keep it in sync with the aggregated pipeline store.
@@ -435,69 +404,6 @@ export function createMonitorView(mount_element, options) {
   let focus_root = null;
 
   /**
-   * 방금 순서를 옮긴 자동 교정의 표시 (UI-jaua §6.3). 사용자가 놓은 자리와 다른
-   * 곳에 카드가 앉은 이유를 화면이 말하는 자리이고, **다음 사용자 조작이나 10초
-   * 뒤** 사라진다 — 계속 서 있으면 어느 실행의 결과인지 알 수 없게 된다.
-   *
-   * @type {{ lane_id: string, corrected: number }|null}
-   */
-  let correction_notice = null;
-
-  /** @type {any} */
-  let correction_timer = null;
-
-  /**
-   * 이 렌더 한 번 동안만 사는 계획 모델 (§6.3 헤더 표시). 레인마다 다시 만들면
-   * 같은 스냅샷을 레인 수만큼 훑게 되므로, 렌더 시작에 비우고 처음 묻는 레인이
-   * 만든다.
-   *
-   * @type {DropModel|null}
-   */
-  let render_drop_model = null;
-
-  /**
-   * The 교정 상태 of ONE stored lane, for the header (UI-jaua §6.3). 계획을
-   * 세우지 않고 지금 상태만 묻는다.
-   *
-   * @param {string} lane_id
-   * @returns {import('./drop-plan.js').LaneCorrection|null}
-   */
-  function correctionOf(lane_id) {
-    if (render_drop_model === null) {
-      render_drop_model = dropModel();
-    }
-    return laneCorrectionStatus(lane_id, render_drop_model);
-  }
-
-  /**
-   * Raise the 교정 배지 and let it withdraw itself 10초 뒤 (§6.3).
-   *
-   * @param {string} lane_id
-   * @param {number} corrected
-   */
-  function noteCorrection(lane_id, corrected) {
-    clearCorrectionNotice();
-    if (corrected <= 0) {
-      return;
-    }
-    correction_notice = { lane_id, corrected };
-    correction_timer = setTimeout(() => {
-      correction_timer = null;
-      correction_notice = null;
-      doRender();
-    }, CORRECTION_NOTICE_MS);
-  }
-
-  /** Withdraw the 교정 배지: 다음 사용자 조작이 그것을 걷는다 (§6.3). */
-  function clearCorrectionNotice() {
-    if (correction_timer !== null) {
-      clearTimeout(correction_timer);
-      correction_timer = null;
-    }
-    correction_notice = null;
-  }
-
-  /**
    * @returns {string}
    */
   function doneRangeLabel() {
@@ -557,22 +463,13 @@ export function createMonitorView(mount_element, options) {
     }
   });
 
-  /**
-   * 드롭 식별자·계획 실행 컨트롤러 (UI-4tud §4.5). 두 탭이 같은 모듈을 쓰고,
-   * 모니터는 cross-repo 재료(`cross_lanes` 원본과 그 위의 재투영)만 넘긴다.
-   */
+  /** 드롭 식별자·계획 실행 컨트롤러 (UI-4tud §4.5). */
   const lane_drag = createLaneDrag({
     transport,
     console_el,
     getLanes: () => lanes,
     getWorkspaces: () =>
       pipelineStore && pipelineStore.get ? pipelineStore.get() : null,
-    getCrossLanes: currentCrossLanes,
-    reproject: (conflict) => ({
-      lanes: projectLanes(conflict),
-      raw_lanes: conflict
-    }),
-    onCorrection: noteCorrection,
     showToast,
     requestRender: () => doRender(),
     adoptQueue: (root_dir, queue) => {
@@ -584,7 +481,7 @@ export function createMonitorView(mount_element, options) {
     // 접힌 후보 띠에 대기 행을 떨어뜨리면 큐에서 뺀다 — Monitor의 기존 문법이다.
     candidate_drop: true
   });
-  const { applyDrop, dropModel, runPlanned, sendQueueCas } = lane_drag;
+  const { applyDrop } = lane_drag;
 
   /**
    * Send one workspace-scoped mutation under the CAS discipline.
@@ -912,29 +809,22 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * Merge the 겹침 파생값 into the dependency chips a card already carries
-   * (§5.3) — 칩 마크업은 한 벌이므로 전달 경로도 하나다. `cross_lane_chip`은
-   * 접지 않는다: 소속 칩은 슬롯 5 좌표라 다른 좌표 칩과 같이 항목 최상위
-   * 필드로 간다 (UI-8x90 §4.2).
+   * Merge the 겹침 파생값 into the dependency chips a card already carries.
    *
-   * @param {{ id: string, overlap_chips?: import('../worker/lane-model.js').OverlapChip[], scope_state?: 'declared'|'missing', cross_lane_chip?: import('../worker/lane-model.js').CrossLaneChip, armed_lane_chip?: import('../worker/lane-model.js').ArmedLaneChip, dependency_chips?: DependencyChips|null }} row
+   * @param {{ id: string, overlap_chips?: import('../worker/lane-model.js').OverlapChip[], scope_state?: 'declared'|'missing', dependency_chips?: DependencyChips|null }} row
    * @returns {DependencyChips|null}
    */
   function chipsWithOverlaps(row) {
     const base = row.dependency_chips || null;
     const overlaps = row.overlap_chips || [];
     const scope_missing = row.scope_state === 'missing';
-    const armed_lane = row.armed_lane_chip;
-    if (!base && overlaps.length === 0 && !scope_missing && !armed_lane) {
+    if (!base && overlaps.length === 0 && !scope_missing) {
       return null;
     }
     return {
       ...(base || {}),
       ...(overlaps.length > 0 ? { overlaps } : {}),
-      ...(scope_missing ? { scope_missing: true } : {}),
-      // 발차 칩 (UI-jaua §5.6). 고아 arm은 해제 버튼을 함께 싣는다 — 그 사실이
-      // 보이는 것과 그 자리에서 끌 수 있는 것이 §5.3 (2)가 요구하는 안전이다.
-      ...(armed_lane ? { armed_lane } : {})
+      ...(scope_missing ? { scope_missing: true } : {})
     };
   }
 
@@ -1022,8 +912,7 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * `[대기로 ↴]`가 제시하는 대상 (UI-j92s §6.4): 병렬 영역 · 연결 레인마다 끝 ·
-   * 새 연결 레인 · **자기 레포의** 직렬 레인. 세로 그룹 목록이고 각 항목은
+   * `[대기로 ↴]`가 제시하는 대상: 병렬 영역과 자기 레포의 직렬 레인.
    * §5.4의 candidate → 대상 규칙을 끝 삽입으로 실행한다. 좌표는 배열 인덱스가
    * 아니라 서버가 발급한 `lane_id`다 — 목록은 스냅샷마다 순서가 바뀔 수 있다.
    *
@@ -1040,29 +929,10 @@ export function createMonitorView(mount_element, options) {
     // 직렬 항목은 **설정된** 레인 수에서 온다 (§6): 비어 있어 pane이 접힌
     // 레인도 모바일에서는 유일한 적재 경로다.
     const serial = item.place_lanes || [];
-    const enabled = lanes.cross_lanes_revision !== null;
     /** @type {import('../worker/lanes.js').PlaceMenuEntry[]} */
     const entries = [
       { id: 'parallel', label: '병렬', count: item.place_index ?? 0 }
     ];
-    for (const lane of lanes.chain_lanes) {
-      entries.push({
-        id: `lane:${lane.lane_id}`,
-        label: `연결 ${lane.number} (${lane.draft ? 'draft' : '확정'}) 끝에`,
-        count: lane.rows.length,
-        group: '연결 레인',
-        disabled: !enabled
-      });
-    }
-    entries.push({
-      id: 'new-lane',
-      label: '+ 새 연결 레인',
-      group: '연결 레인',
-      disabled: !enabled,
-      title: enabled
-        ? '이 이슈만 든 draft 레인을 만듭니다'
-        : '연결 레인 저장소를 읽을 수 없습니다'
-    });
     for (const lane of serial) {
       entries.push({
         id: `serial:${lane.id}`,
@@ -1147,227 +1017,6 @@ export function createMonitorView(mount_element, options) {
       ${miniRow(withOverlaps(item), {
         actions: queueRowOps(item, { nudgeable: true })
       })}
-    </div>`;
-  }
-
-  /**
-   * One 연결 레인 row (UI-j92s §5.2): 순번 · 레포 배지 · ID · 제목 한 줄 ·
-   * 위치 칩 · route · 오케 · 워커 · `⏳` 유예 칩 · 행 조작(`[지금 시작]` · `✕`).
-   * 겹침 칩과 `← 선행` 칩은 여기 없다 — 레인 순서가 곧 의존이므로 같은 사실을
-   * 두 번 말하지 않는다.
-   *
-   * route와 실행 주체는 그 배제에 들어가지 않는다 (UI-q1tg §3.5): 위 근거는
-   * **의존** 축의 것이고 이 칩들은 다른 질문에 답한다. 유예 칩과 `[지금 시작]`도
-   * 같은 이유로 여기 선다 — 확정 레인 멤버는 `parallel_rows`에서 빠져 `miniRow`가
-   * 아니라 이 행으로 그려지므로, 조작을 `queueRowOps`에만 두면 이 행 종류에서만
-   * 유예가 보이지 않는다. 큐 밖 행(`unplaced`)은 `added_at`이 없어 둘 다 서지
-   * 않는다 (fail-quiet).
-   *
-   * 고정 행도 `✕`는 갖는다 (§5.3): 뺄 수는 있고, 그 앞에 넣을 수만 없다.
-   *
-   * 위치 칩은 "지금 막혀 있나"를 답한다 (UI-jaua §8) — 레포별 큐 순번은 툴팁으로
-   * 내려갔다. 레인 순번 `①②` 옆의 `#n`이 전역 실행 순서로 읽혔기 때문이다.
-   *
-   * @param {MonitorChainLane} lane
-   * @param {MonitorChainLaneRow} row
-   * @param {number} row_index
-   * @param {string[]} mismatched - 자동 교정이 움직일 수 없는데 의존과 어긋난 행
-   * (UI-jaua §6.3).
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function chainRow(lane, row, row_index, mismatched) {
-    return html`<div
-      class="mon2-crow${row.fixed ? ' mon2-crow--fixed' : ''}"
-      draggable=${row.draggable ? 'true' : 'false'}
-      data-bead-id=${row.id}
-      data-drag-kind="chain"
-      data-root-dir=${row.root_dir}
-      data-lane-id=${lane.lane_id}
-      data-row-index=${row_index}
-      data-queue-index=${typeof row.queue_index === 'number'
-        ? String(row.queue_index)
-        : ''}
-    >
-      <span class="mon2-crow__seq" aria-hidden="true"
-        >${circledSeq(row.seq)}</span
-      >
-      ${row.workspace_name
-        ? html`<span class="worker-mini__repo" title=${row.root_dir}
-            >${row.workspace_name}</span
-          >`
-        : ''}
-      <span class="worker-mini__id" title="클릭하면 ID 복사">${row.id}</span>
-      <span class="mon2-crow__title">${row.title}</span>
-      ${row.mismatch
-        ? html`<span
-            class="mon2-crow__mismatch"
-            title="레인 순서가 주장하는 선행이 bd 의존에 없습니다 — 재적용으로 복구합니다"
-            >⚠ 의존 없음</span
-          >`
-        : ''}
-      ${mismatched.includes(row.id)
-        ? html`<span
-            class="mon2-crow__mismatch"
-            title="이미 실행된 뒤 의존이 바뀌었습니다 — 이 행은 움직일 수 없어 교정하지 않습니다"
-            >⚠ 의존 순서와 다름</span
-          >`
-        : ''}
-      <span class="mon2-crow__where" title=${row.location_title}
-        >${row.location_label}</span
-      >
-      ${routeChipTemplate(
-        row.route
-          ? /** @type {any} */ ({
-              route: row.route,
-              route_source: row.route_source ?? undefined
-            })
-          : null
-      )}${row.exec_chips ? execChipsTemplate(row.exec_chips) : ''}
-      ${graceChipTemplate(row.added_at)}
-      ${startNowButtonTemplate({
-        id: row.id,
-        ...(typeof row.added_at === 'number' ? { added_at: row.added_at } : {})
-      })}
-      <button
-        type="button"
-        class="mon2-crow__detach"
-        data-bead-id=${row.id}
-        title="연결에서 빼고 앞뒤를 이어 붙입니다"
-        aria-label="연결에서 빼기"
-      >
-        ✕
-      </button>
-    </div>`;
-  }
-
-  /**
-   * One 연결 레인 pane (UI-j92s §5.1, 발차 축은 UI-jaua §5.5). 헤더 오른쪽이
-   * 레인의 생애를 말한다: draft는 `확정`이 dep·큐를 한 번에 내고, confirmed는
-   * `✕`가 그 dep를 함께 거둔다.
-   *
-   * 상태 배지와 조작은 **하나의 파생 상태**에서 나온다 (`lane.state`) — 두 곳에서
-   * 판정하면 배지와 버튼이 어긋난다. 미발차 멤버가 남아 있는 한 진행 재개 조작이
-   * 사라지지 않는 것이 §9 복구 경로의 성립 조건이다.
-   *
-   * 교정 표시(§6.3)는 지금 상태를 묻는 순수 함수에서 온다: 보류면 `확정`이
-   * 비활성이고 그 이유가 헤더에 서며(fail-visible), 사이클이면 자동 교정이
-   * 불가능하다는 사실만 남긴다.
-   *
-   * @param {MonitorChainLane} lane
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function chainLanePane(lane) {
-    const enabled = lanes.cross_lanes_revision !== null;
-    const correction = correctionOf(lane.lane_id);
-    const held = correction?.held === true;
-    const cycle = correction?.cycle === true;
-    const mismatched = correction ? correction.mismatched : [];
-    const corrected =
-      correction_notice && correction_notice.lane_id === lane.lane_id
-        ? correction_notice.corrected
-        : 0;
-    return html`<div class="mon2-clane" data-lane-id=${lane.lane_id}>
-      <header class="mon2-clane__hd">
-        <span class="mon2-clane__name">${lane.label}</span>
-        <span class="mon2-clane__count">${lane.rows.length}</span>
-        <span class="mon2-clane__badge mon2-clane__badge--${lane.state}"
-          >${lane.badge}</span
-        >
-        ${corrected > 0
-          ? html`<span
-              class="mon2-clane__corrected"
-              title="기존 blocks 의존이 드롭 순서를 이깁니다 — 그 순서로 다시 놓았습니다"
-              >의존에 맞춰 ${corrected}건 자동 교정</span
-            >`
-          : ''}
-        ${cycle
-          ? html`<span
-              class="mon2-clane__cycle"
-              title="멤버들의 blocks 의존이 순환합니다 — 어느 순서도 의존을 만족시키지 못합니다"
-              >⛔ 의존 사이클 — 자동 교정 불가</span
-            >`
-          : ''}
-        ${held
-          ? html`<span
-              class="mon2-clane__hold"
-              title="멤버 한 명의 의존 자료가 이 스냅샷에 아직 없습니다 — 다음 스냅샷이 채우면 교정합니다"
-              >${HOLD_CORRECTION}</span
-            >`
-          : ''}
-        ${lane.draft
-          ? html`<button
-              type="button"
-              class="mon2-clane__confirm"
-              data-lane-id=${lane.lane_id}
-              ?disabled=${!enabled || !lane.can_confirm || held}
-              title=${held
-                ? HOLD_CORRECTION
-                : lane.can_confirm
-                  ? '인접 의존을 걸고 미적재 멤버를 각자 레포 병렬 큐 끝에 올립니다'
-                  : '멤버가 2개 이상이어야 확정할 수 있습니다'}
-            >
-              확정
-            </button>`
-          : ''}
-        ${lane.run_label !== null
-          ? html`<button
-              type="button"
-              class="mon2-clane__run"
-              data-lane-id=${lane.lane_id}
-              ?disabled=${!enabled}
-              title="이 레인 멤버만 발차합니다 — 레포 자동 진행은 켜지 않습니다"
-            >
-              ${lane.run_label}
-            </button>`
-          : ''}
-        ${lane.state === 'confirmed' && lane.has_mismatch
-          ? html`<button
-              type="button"
-              class="mon2-clane__reapply"
-              data-lane-id=${lane.lane_id}
-              ?disabled=${!enabled}
-              title="빠진 인접 의존을 다시 걸고 미적재 멤버를 다시 올립니다"
-            >
-              재적용
-            </button>`
-          : ''}
-        ${lane.can_stop
-          ? html`<button
-              type="button"
-              class="mon2-clane__stop"
-              data-lane-id=${lane.lane_id}
-              ?disabled=${!enabled}
-              title="남은 멤버의 발차만 멈춥니다 — 도는 세션과 머지 큐 항목은 끝까지 갑니다"
-            >
-              ⏸ 정지
-            </button>`
-          : ''}
-        <button
-          type="button"
-          class="mon2-clane__remove"
-          data-lane-id=${lane.lane_id}
-          ?disabled=${!enabled}
-          title=${lane.draft
-            ? '이 draft 레인을 지웁니다'
-            : '이 레인과 레인이 만든 의존을 함께 지웁니다'}
-          aria-label="연결 레인 삭제"
-        >
-          ✕
-        </button>
-      </header>
-      <div
-        class="mon2-clane__body"
-        data-drop="chain"
-        data-lane-id=${lane.lane_id}
-      >
-        ${lane.rows.length === 0
-          ? html`<div class="mon2-clane__hint">
-              여기로 끌어다 놓으면 연결이 시작됩니다
-            </div>`
-          : lane.rows.map((row, index) =>
-              chainRow(lane, row, index, mismatched)
-            )}
-      </div>
     </div>`;
   }
 
@@ -1492,18 +1141,13 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * The 대기 lane body (§4, 공유 본문은 UI-5ksp §4.2): 병렬 영역 하나 + 직렬
+   * Render 대기 lane body (§4, 공유 본문은 UI-5ksp §4.2): 병렬 영역 하나 + 직렬
    * 영역 하나. 레포 섹션은 없다 — 카드가 자기 레포를 이미 알고 있으므로 레포는
-   * 좌표가 아니라 배지다. 구조는 두 탭이 공유하는 `waitBody`가 소유하고, 여기서는
-   * cross-repo 재료(연결 레인 pane·`+ 연결 레인`·읽기 실패 안내)만 슬롯으로 넘긴다.
+   * 좌표가 아니라 배지다. 구조는 두 탭이 공유하는 `waitBody`가 소유한다.
    *
    * @returns {import('lit-html').TemplateResult}
    */
   function waitBodyTemplate() {
-    const enabled = lanes.cross_lanes_revision !== null;
-    const has_blank_lane = lanes.chain_lanes.some(
-      (lane) => lane.draft && lane.rows.length === 0
-    );
     return waitBody({
       parallel: {
         rows: lanes.parallel_rows.map((item, index) =>
@@ -1526,26 +1170,7 @@ export function createMonitorView(mount_element, options) {
           }))
         ),
         collapsed: collapse.isAreaCollapsed('serial'),
-        extra_panes: lanes.chain_lanes.map((lane) => chainLanePane(lane)),
-        header_control: html`<button
-          type="button"
-          class="mon2-newlane"
-          ?disabled=${has_blank_lane || !enabled}
-          title=${!enabled
-            ? '연결 레인 저장소를 읽을 수 없습니다'
-            : has_blank_lane
-              ? '빈 연결 레인이 이미 있습니다'
-              : '빈 연결 레인을 하나 만듭니다'}
-        >
-          + 연결 레인
-        </button>`,
-        ...(lanes.cross_lanes_unreadable
-          ? {
-              notice: html`<div class="mon2-clane__unreadable">
-                연결 레인 저장소를 읽을 수 없음
-              </div>`
-            }
-          : {})
+        extra_panes: []
       }
     });
   }
@@ -1656,7 +1281,6 @@ export function createMonitorView(mount_element, options) {
                   repo: item.workspace_name,
                   root_dir: item.root_dir,
                   serial_lane_id: item.serial_lane_id,
-                  cross_lane_chip: item.cross_lane_chip || null,
                   last_activity: item.last_activity || null,
                   legs: /** @type {any} */ (item.legs || []),
                   dependency_chips: chipsWithOverlaps(item)
@@ -1696,12 +1320,7 @@ export function createMonitorView(mount_element, options) {
               ? runnableBody()
               : undefined
           : meta.lane === 'queue'
-            ? // 연결 레인 저장소를 읽을 수 없다는 사실은 대기가 비어 있어도
-              // 말해야 한다 — 본문을 아예 그리지 않으면 그 안내가 사라진다.
-              lanes.queue_groups.length > 0 ||
-              lanes.chain_lanes.length > 0 ||
-              lanes.parallel_rows.length > 0 ||
-              lanes.cross_lanes_unreadable
+            ? lanes.queue_groups.length > 0 || lanes.parallel_rows.length > 0
               ? waitBodyTemplate()
               : undefined
             : meta.lane === 'running'
@@ -1911,28 +1530,15 @@ export function createMonitorView(mount_element, options) {
   /**
    * Project ONE snapshot into the monitor model (§4.4).
    *
-   * `cross_lanes_override`를 주면 그 레인으로 투영한다 — 레인 op 충돌 응답이
-   * 실어 온 최신 레인 위에서 계획을 다시 세우는 자리이고, 그때 화면을 다시
-   * 그릴 필요는 없다 (§5.5). 키가 없는 구서버 스냅샷은 `cross_lanes` 키를 아예
-   * 싣지 않는다: `undefined`를 실으면 투영이 그것을 `null`(저장소 읽기 실패)로
-   * 읽어 없는 기능을 고장으로 그린다 (§4.4).
-   *
-   * @param {{ revision: number, lanes: Array<Record<string, any>> }|null} [cross_lanes_override]
    * @returns {LaneModel}
    */
-  function projectLanes(cross_lanes_override) {
+  function projectLanes() {
     const workspaces =
       pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
     const workspaces_state =
       pipelineStore && pipelineStore.getWorkspacesState
         ? pipelineStore.getWorkspacesState()
         : [];
-    const cross_lanes =
-      cross_lanes_override === undefined
-        ? pipelineStore && pipelineStore.crossLanes
-          ? pipelineStore.crossLanes()
-          : undefined
-        : cross_lanes_override;
     /** @type {Record<string, any>} */
     const options = {
       done_since: closedRangeSince(done_range, nowFn()),
@@ -1940,9 +1546,6 @@ export function createMonitorView(mount_element, options) {
       candidate_filter,
       candidate_sort
     };
-    if (cross_lanes !== undefined) {
-      options.cross_lanes = cross_lanes;
-    }
     return buildLanes(workspaces, workspaces_state, options);
   }
 
@@ -1955,7 +1558,6 @@ export function createMonitorView(mount_element, options) {
     }
     const now = nowFn();
     lanes = projectLanes();
-    render_drop_model = null;
     item_by_bead = new Map();
     for (const item of [
       ...lanes.runnable,
@@ -2069,15 +1671,6 @@ export function createMonitorView(mount_element, options) {
         focus_root !== null && !!item && item.root_dir === focus_root
       );
     }
-    // 연결 레인 행은 집계에 없는 노드까지 그리므로 자기 레포를 스스로 싣는다.
-    for (const row of Array.from(
-      console_el.querySelectorAll('.mon2-crow[data-root-dir]')
-    )) {
-      row.classList.toggle(
-        'is-focus',
-        focus_root !== null && row.getAttribute('data-root-dir') === focus_root
-      );
-    }
   }
 
   /**
@@ -2152,224 +1745,6 @@ export function createMonitorView(mount_element, options) {
       root_dir: item ? item.root_dir : '',
       revision: item ? item.expected_revision : 0
     };
-  }
-
-  /**
-   * Re-run the §6 자동 교정 when a `dep-add` changed a pair of members of the
-   * SAME 연결 레인 (§6.2) — 레포 직렬 레인이 UI-2gi1 §6.5에서 쓰는 재교정
-   * 트리거와 같은 성질이다. 방금 만든 엣지는 아직 스냅샷에 없으므로 델타로
-   * 얹어 넘긴다. 이제 유일한 호출자는 이슈 상세의 의존성 편집기라서 반환
-   * 객체의 public 메서드로 선다 (UI-lx45 §5).
-   *
-   * @param {'dep-add'|'dep-remove'} type
-   * @param {string} a
-   * @param {string} b
-   */
-  async function recorrectSharedLane(type, a, b) {
-    if (type !== 'dep-add') {
-      return;
-    }
-    const lane = lanes.chain_lanes.find((entry) =>
-      entry.rows.some((row) => row.id === a)
-    );
-    if (!lane || !lane.rows.some((row) => row.id === b)) {
-      return;
-    }
-    await runPlanned((model) => planLaneCorrection(lane.lane_id, model), '', [
-      { type, a, b }
-    ]);
-  }
-
-  /**
-   * The snapshot's raw `cross_lanes`, or `null` (구서버·저장소 읽기 실패).
-   *
-   * @returns {{ revision: number, lanes: Array<Record<string, any>> }|null}
-   */
-  function currentCrossLanes() {
-    const value =
-      pipelineStore && pipelineStore.crossLanes
-        ? pipelineStore.crossLanes()
-        : null;
-    return value ?? null;
-  }
-
-  /**
-   * The lane pane's buttons (§5.1·§5.2, 발차 축은 UI-jaua §5.5). 계획은 전부
-   * `drop-plan`이 소유하고 여기서는 어느 계획인지와 확인 한 번만 고른다. 발차
-   * 축만 예외다 — `진행`·`정지`는 레인도 의존도 바꾸지 않고 큐 op만 내므로 계획
-   * 값이 없다.
-   *
-   * @param {'confirm'|'reapply'|'remove'|'create'|'run'|'stop'} kind
-   * @param {string} lane_id
-   */
-  async function runLaneAction(kind, lane_id) {
-    if (kind === 'run') {
-      await runLane(lane_id);
-      return;
-    }
-    if (kind === 'stop') {
-      await stopLane(lane_id);
-      return;
-    }
-    if (kind === 'create') {
-      await runPlanned((model) => planLaneCreate(null, model), '');
-      return;
-    }
-    if (kind === 'remove') {
-      // 문장은 계획이 소유한다 (UI-jaua §7.3): 어느 의존이 지워지고 어느 것이
-      // 남는지를 실제 provenance에서 읽어 그대로 보인다. draft는 만든 dep가
-      // 없으므로 `null`이고 확인 없이 즉시 지운다 (§5.1).
-      const message = describeLaneRemoval(lane_id, dropModel());
-      if (message !== null && !confirmFn(message)) {
-        return;
-      }
-      await runPlanned((model) => planLaneRemove(lane_id, model), '');
-      return;
-    }
-    await runPlanned(
-      (model) =>
-        kind === 'confirm'
-          ? planLaneConfirm(lane_id, model)
-          : planLaneReapply(lane_id, model),
-      ''
-    );
-  }
-
-  /**
-   * Group this lane's members by repo (UI-jaua §5.5). 좌표는 위치가 우선이고
-   * (`owner_of`), 어느 레인에도 없는 멤버는 저장 entry가 실어 온 레포다.
-   *
-   * @param {MonitorChainLane} lane
-   * @returns {Map<string, string[]>}
-   */
-  function laneMembersByRoot(lane) {
-    /** @type {Map<string, string[]>} */
-    const by_root = new Map();
-    for (const row of lane.rows) {
-      const root_dir = lanes.owner_of[row.id] || row.root_dir;
-      if (typeof root_dir !== 'string' || root_dir.length === 0) {
-        continue;
-      }
-      by_root.set(root_dir, [...(by_root.get(root_dir) || []), row.id]);
-    }
-    return by_root;
-  }
-
-  /**
-   * `▶ 진행` / `▶ 이어서 진행` / `▶ 다시 진행` (UI-jaua §5.5). 레포
-   * `auto_advance`는 건드리지 않는다 — 이 레인 멤버만 발차하는 별개의 축이다
-   * (§3 사용자 결정 1).
-   *
-   * **이미 놓인 자리는 보존한다** (UI-tjus §3.1): 병렬 큐나 직렬 레인에 이미
-   * 앉은 멤버는 옮기지 않고, 아직 어느 대기 영역에도 없는 멤버만 적재한다.
-   *
-   * **적재가 arm보다 앞선다**: 큐에 없는 엔트리에는 `armed_by_lane`을 쓸 자리가
-   * 없다. 적재 index 규칙은 `재적용`과 같다 (`placeUnplacedMembers`, §5.4) —
-   * 자기 레포 병렬 큐 끝이고, 같은 레포에 여럿이면 이 실행에서 앞서 잡은 자리만큼
-   * 뒤로 민다.
-   *
-   * 트랜잭션은 없다 (§9): 일부 레포에서 실패하면 거기서 멈추고 토스트로 알리며,
-   * 성공한 레포의 arm은 유지된다. 다음 스냅샷에서 레인은 `▶ 진행 중`이지만
-   * 미발차 멤버가 남아 있으므로 `▶ 이어서 진행`이 그대로 서 있고, 그 재클릭이
-   * 복구 경로다.
-   *
-   * @param {string} lane_id
-   */
-  async function runLane(lane_id) {
-    const lane = lanes.chain_lanes.find((entry) => entry.lane_id === lane_id);
-    if (!lane || lanes.cross_lanes_revision === null) {
-      doRender();
-      return;
-    }
-    clearCorrectionNotice();
-    /** @type {Map<string, number>} */
-    const revisions = new Map();
-    /** @type {Map<string, number>} */
-    const taken = new Map();
-    const members_by_root = laneMembersByRoot(lane);
-    for (const row of lane.rows) {
-      // 적재 대상은 "아직 어느 대기 영역에도 없는 행"이다 (UI-tjus §3.1).
-      // 병렬·직렬 대기에 앉은 멤버는 레인 ID·순번·대기 진입 시각을 그대로
-      // 지킨다 — 진행이 쓰는 것은 위치가 아니라 실행 권한이고, 직렬 순서는
-      // 사용자가 고른 것이다. 고정 행(실행중·PR 대기·완료)도 대상이 아니다.
-      if (row.fixed || !row.unplaced) {
-        continue;
-      }
-      const root_dir = lanes.owner_of[row.id] || row.root_dir;
-      if (typeof root_dir !== 'string' || root_dir.length === 0) {
-        showToast(`${row.id}의 레포를 알 수 없어 적재할 수 없습니다`, 'error');
-        doRender();
-        return;
-      }
-      const offset = taken.get(root_dir) ?? 0;
-      const next = await sendQueueCas(
-        'worker-queue-place',
-        {
-          bead_id: row.id,
-          lane: 'parallel',
-          index: (lanes.parallel_raw_length[root_dir] ?? 0) + offset
-        },
-        root_dir,
-        revisions,
-        { bead_id: row.id }
-      );
-      if (next === null) {
-        doRender();
-        return;
-      }
-      taken.set(root_dir, offset + 1);
-    }
-    for (const [root_dir, bead_ids] of members_by_root) {
-      // 큐에 없는 id는 서버가 조용히 무시한다 (§5.3) — 한 번의 `▶ 진행`이 레인
-      // 멤버십 전체를 그 레인이 걸친 레포마다 보내기 때문이다.
-      const next = await sendQueueCas(
-        'worker-queue-arm',
-        { bead_ids, lane_id },
-        root_dir,
-        revisions,
-        { bead_id: bead_ids[0] }
-      );
-      if (next === null) {
-        showToast(
-          '일부 레포에서 진행을 켜지 못했습니다 — [▶ 이어서 진행]으로 다시 시도하세요',
-          'error'
-        );
-        doRender();
-        return;
-      }
-    }
-    doRender();
-  }
-
-  /**
-   * `⏸ 정지` (UI-jaua §5.5): 멤버 레포마다 그 레인의 arm을 해제한다. **이미
-   * 실행 중인 세션은 끝까지 가고**, 머지 큐에 이미 등록된 항목도 그대로 진행한다
-   * — 발급된 권한을 회수하지 않는 현행 계약이며, 이 조작은 후보를 줄일 뿐이다.
-   *
-   * @param {string} lane_id
-   */
-  async function stopLane(lane_id) {
-    const lane = lanes.chain_lanes.find((entry) => entry.lane_id === lane_id);
-    if (!lane || lanes.cross_lanes_revision === null) {
-      doRender();
-      return;
-    }
-    clearCorrectionNotice();
-    /** @type {Map<string, number>} */
-    const revisions = new Map();
-    for (const [root_dir, bead_ids] of laneMembersByRoot(lane)) {
-      const next = await sendQueueCas(
-        'worker-queue-disarm',
-        { lane_id },
-        root_dir,
-        revisions,
-        { bead_id: bead_ids[0] }
-      );
-      if (next === null) {
-        break;
-      }
-    }
-    doRender();
   }
 
   /**
@@ -2503,30 +1878,6 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * Release ONE orphan arm from the row that reveals it (UI-jaua §5.3 (2)).
-   * 레인은 사라졌는데 항목이 계속 발차되는 상태를 숨기지 않고 드러낸 다음, 같은
-   * 자리에서 끄게 한다.
-   *
-   * @param {string} bead_id
-   * @param {string} lane_id
-   */
-  async function releaseArm(bead_id, lane_id) {
-    const { root_dir, revision } = casOf(bead_id);
-    if (root_dir.length === 0) {
-      doRender();
-      return;
-    }
-    await sendQueueCas(
-      'worker-queue-disarm',
-      { bead_ids: [bead_id], lane_id },
-      root_dir,
-      new Map([[root_dir, revision]]),
-      { bead_id }
-    );
-    doRender();
-  }
-
-  /**
    * `[대기로 ↴]` 메뉴 한 항목 (§6): candidate → 대상 규칙을 끝 삽입으로 실행.
    *
    * @param {string} bead_id
@@ -2540,40 +1891,6 @@ export function createMonitorView(mount_element, options) {
     }
     /** @type {DropDrag} */
     const drag = { kind: 'candidate', bead_id, root_dir: item.root_dir };
-    if (choice === 'new-lane') {
-      // `+ 새 연결 레인`은 seed 하나만 든 draft를 만든다 (§5.4) — dep도 큐도
-      // 만들지 않으므로 두 번째 멤버가 들어올 때까지 아무 실행 진실도 바뀌지 않는다.
-      await runPlanned(
-        (model) => planLaneCreate({ bead_id, root_dir: item.root_dir }, model),
-        bead_id
-      );
-      return;
-    }
-    if (choice.startsWith('lane:')) {
-      const lane_id = choice.slice('lane:'.length);
-      const lane = lanes.chain_lanes.find((entry) => entry.lane_id === lane_id);
-      if (!lane) {
-        doRender();
-        return;
-      }
-      // `연결 n 끝에`는 좌표가 아니라 **끝**이라는 뜻이다 (§5.4). 충돌 재계획은
-      // 최신 `cross_lanes` 위에서 다시 서므로 끝 인덱스도 그때 다시 센다.
-      await runPlanned(
-        (model) =>
-          planDrop(
-            drag,
-            {
-              kind: 'chain',
-              lane_id,
-              marker_index: (model.cross_lanes.get(lane_id)?.entries ?? [])
-                .length
-            },
-            model
-          ),
-        bead_id
-      );
-      return;
-    }
     if (choice.startsWith('serial:')) {
       const lane_id = choice.slice('serial:'.length);
       const lane = (item.place_lanes || []).find(
@@ -2633,34 +1950,6 @@ export function createMonitorView(mount_element, options) {
       },
       { kind: 'parallel', marker_index }
     );
-  }
-
-  /**
-   * A 연결 레인 row's mobile `✕` (§6) = 이어 붙이기(chain → parallel
-   * 규칙).
-   *
-   * @param {string} bead_id
-   */
-  async function detachChainRow(bead_id) {
-    for (const lane of lanes.chain_lanes) {
-      const row = lane.rows.find((entry) => entry.id === bead_id);
-      if (!row) {
-        continue;
-      }
-      await applyDrop(
-        {
-          kind: 'chain',
-          bead_id,
-          root_dir: row.root_dir,
-          lane_id: lane.lane_id,
-          ...(typeof row.queue_index === 'number'
-            ? { queue_index: row.queue_index }
-            : {})
-        },
-        { kind: 'parallel', marker_index: lanes.parallel_rows.length }
-      );
-      return;
-    }
   }
 
   // --- 클릭 위임 ---
@@ -2833,10 +2122,6 @@ export function createMonitorView(mount_element, options) {
       );
       return;
     }
-    if (cls.contains('mon2-crow__detach')) {
-      void detachChainRow(bead_id);
-      return;
-    }
     if (cls.contains('worker-dep__open')) {
       // 열리는 칩 네 종 (`⛓`·`→`·`🔓`·`⧉`) 모두 그 이슈로 이동한다 (UI-8x90
       // §4.3, Worker `openBlocker`와 같은 순서). 편집은 도착한 이슈의 상세
@@ -2845,18 +2130,6 @@ export function createMonitorView(mount_element, options) {
         button.getAttribute('data-dep-id') || '',
         button.getAttribute('data-root-dir') || ''
       );
-      return;
-    }
-    if (cls.contains('mon2-arm__release')) {
-      void releaseArm(bead_id, button.getAttribute('data-lane-id') || '');
-      return;
-    }
-    if (cls.contains('mon-lane__chip')) {
-      const lane_id = button.getAttribute('data-lane-id') || '';
-      const pane = console_el.querySelector(
-        `.mon2-clane[data-lane-id="${lane_id}"]`
-      );
-      pane?.scrollIntoView({ block: 'nearest' });
       return;
     }
     if (cls.contains('judgement-chip')) {
@@ -3132,7 +2405,7 @@ export function createMonitorView(mount_element, options) {
     if (id_el) {
       ev.preventDefault();
       const owner = /** @type {HTMLElement|null} */ (
-        target.closest('.mon2-item, .rtile, .mon2-crow, .worker-mini')
+        target.closest('.mon2-item, .rtile, .worker-mini')
       );
       const id =
         owner?.getAttribute('data-bead-id') || id_el.textContent?.trim() || '';
@@ -3205,36 +2478,6 @@ export function createMonitorView(mount_element, options) {
       return;
     }
 
-    if (target.closest('.mon2-newlane')) {
-      ev.preventDefault();
-      void runLaneAction('create', '');
-      return;
-    }
-
-    const lane_button = /** @type {HTMLElement|null} */ (
-      target.closest(
-        '.mon2-clane__confirm, .mon2-clane__reapply, .mon2-clane__remove, .mon2-clane__run, .mon2-clane__stop'
-      )
-    );
-    if (lane_button) {
-      ev.preventDefault();
-      const lane_id = lane_button.getAttribute('data-lane-id') || '';
-      const cls = lane_button.classList;
-      void runLaneAction(
-        cls.contains('mon2-clane__confirm')
-          ? 'confirm'
-          : cls.contains('mon2-clane__reapply')
-            ? 'reapply'
-            : cls.contains('mon2-clane__run')
-              ? 'run'
-              : cls.contains('mon2-clane__stop')
-                ? 'stop'
-                : 'remove',
-        lane_id
-      );
-      return;
-    }
-
     if (target.closest('.mon-merge-all')) {
       ev.preventDefault();
       void mergeQueueAddAll();
@@ -3277,9 +2520,7 @@ export function createMonitorView(mount_element, options) {
     }
 
     const row = /** @type {HTMLElement|null} */ (
-      target.closest(
-        '.mon2-item, .rtile, .mon2-crow, .worker-mini, .worker-card'
-      )
+      target.closest('.mon2-item, .rtile, .worker-mini, .worker-card')
     );
     if (!row) {
       return;
@@ -3296,7 +2537,6 @@ export function createMonitorView(mount_element, options) {
     }
     if (bead_id && !after_drag) {
       ev.preventDefault();
-      // 연결 레인 행은 집계에 없는 노드까지 그리므로 자기 레포를 스스로 싣는다.
       openRow(
         bead_id,
         row.getAttribute('data-root-dir') || casOf(bead_id).root_dir
@@ -3466,7 +2706,6 @@ export function createMonitorView(mount_element, options) {
   }
 
   return {
-    recorrectSharedLane,
     load() {
       log('load');
       doRender();
@@ -3485,7 +2724,6 @@ export function createMonitorView(mount_element, options) {
     },
     clear() {
       stopTick();
-      clearCorrectionNotice();
       lane_drag.detach();
       if (unsubscribe_pipeline) {
         unsubscribe_pipeline();

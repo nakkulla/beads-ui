@@ -14,7 +14,6 @@
  *
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
- * @import { CrossLane, CrossLaneEntry, CrossLanesState } from '../worker/cross-lanes-store.js'
  */
 import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
@@ -24,7 +23,6 @@ import {
 } from '../../app/utils/active-attempts.js';
 import { getConfig } from '../config.js';
 import { createPoller } from '../poller.js';
-import { getAvailableWorkspaces } from '../registry-watcher.js';
 import {
   SESSION_DEFAULTS_KV_KEY,
   normalizeSessionDefaults
@@ -37,7 +35,6 @@ import {
   tickWorkerQueue,
   workerMergeQueueState
 } from '../worker/attach.js';
-import { sharedCrossLanesStore } from '../worker/cross-lanes-store.js';
 import { projectExecutionDefaults } from '../worker/execution-defaults.js';
 import {
   __resetForeignBlockerCachesForTest,
@@ -652,12 +649,8 @@ function laneMemberIds(snapshot) {
  * client adapter produces (UI-q1tg §3.1):
  * `{ [bead_id]: { route?: string, metadata?: Record<string, string> } }`.
  *
- * `route` covers the lane members ∪ `done` ∪ this root's visible cross-lane
- * entries; the execution pin covers the lane members ∪ this root's NOT-done,
- * NOT-running cross-lane entries (UI-ys18 §4.1) — a 완료 행 says what it RAN
- * with, which comes from the attempt record (§3.4) and not from a pin that keeps
- * moving after the run, while a 큐 밖 연결 레인 멤버 has no lane row to carry its
- * 예정 설정. `carried_to` covers this root's `done` alone. `runnable` rows carry
+ * `route` and execution pins cover lane members, while `carried_to` covers this
+ * root's `done` alone. `runnable` rows carry
  * their own `workflow` already and need no overlay.
  *
  * Reading cross-lane ids here never places anything into `queue` and never arms
@@ -671,17 +664,10 @@ function laneMemberIds(snapshot) {
  * @param {string} root_dir
  * @param {Record<string, any>} snapshot
  * @param {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null} cache
- * @param {string[]} [cross_lane_ids] - 이 root의 보이는 연결 레인 entry ID들.
  * @param {((workspace_key: string, parent_ids: Iterable<string>) => Record<string, string[]>)|null} [carriedToFor]
  * @returns {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[] }>}
  */
-function beadOverlayFor(
-  root_dir,
-  snapshot,
-  cache,
-  cross_lane_ids = [],
-  carriedToFor = null
-) {
+function beadOverlayFor(root_dir, snapshot, cache, carriedToFor = null) {
   /** @type {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[] }>} */
   const overlay = {};
   const done_ids = [...laneBeadIds(snapshot, ['done'])];
@@ -703,18 +689,11 @@ function beadOverlayFor(
   }
   const lane_member_ids = laneMemberIds(snapshot);
   const done_set = new Set(done_ids);
-  // 예정 실행 핀은 아직 돌지 않은 항목의 것이다: 이미 완료·실행 중인 연결 레인
-  // 멤버는 자기 레인 행의 기록값을 쓰므로 여기서 핀을 얹지 않는다.
-  const pin_ids = [
-    ...new Set([
-      ...lane_member_ids,
-      ...cross_lane_ids.filter(
-        (bead_id) => !done_set.has(bead_id) && !lane_member_ids.has(bead_id)
-      )
-    ])
-  ];
+  const pin_ids = [...lane_member_ids].filter(
+    (bead_id) => !done_set.has(bead_id)
+  );
   const lane_ids = [...lane_member_ids];
-  const ids = [...new Set([...lane_ids, ...done_ids, ...cross_lane_ids])];
+  const ids = [...new Set([...lane_ids, ...done_ids])];
   if (ids.length === 0) {
     return overlay;
   }
@@ -740,38 +719,6 @@ function beadOverlayFor(
 }
 
 /**
- * `root_dir` → bead id 목록: 이 snapshot의 연결 레인 entries를 모은다
- * (UI-ys18 §4.1). 최초 구독과 push가 읽은 **같은** 상태를 사용하므로 overlay와
- * envelope의 연결 레인이 한 revision을 말한다.
- *
- * @param {CrossLanesState|null|undefined} cross_lanes
- * @returns {Map<string, string[]>}
- */
-function crossLaneIdsByRoot(cross_lanes) {
-  /** @type {Map<string, string[]>} */
-  const by_root = new Map();
-  const lanes = Array.isArray(cross_lanes?.lanes) ? cross_lanes.lanes : [];
-  for (const lane of lanes) {
-    const entries = Array.isArray(lane?.entries) ? lane.entries : [];
-    for (const entry of entries) {
-      const bead_id =
-        entry && typeof entry.bead_id === 'string' ? entry.bead_id : '';
-      const root_dir =
-        entry && typeof entry.root_dir === 'string' ? entry.root_dir : '';
-      if (bead_id.length === 0 || root_dir.length === 0) {
-        continue;
-      }
-      const list = by_root.get(root_dir) || [];
-      if (!list.includes(bead_id)) {
-        list.push(bead_id);
-      }
-      by_root.set(root_dir, list);
-    }
-  }
-  return by_root;
-}
-
-/**
  * Build the cross-workspace pipeline payload.
  *
  * Fail-quiet per workspace (UI-nprg §에러 처리): one repo whose snapshot,
@@ -792,11 +739,8 @@ function crossLaneIdsByRoot(cross_lanes) {
  *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>, options?: RunnableReadOptions) => Array<Record<string, unknown>>,
  *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
  *   titleCache?: () => ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null,
- *   cross_lanes?: CrossLanesState|null,
  *   carriedToFor?: (workspace_key: string, parent_ids: Iterable<string>) => Record<string, string[]>
  * }} [options] - Test seams; each defaults to the live server source. The
- * caller passes `cross_lanes` so the overlay and the envelope's 연결 레인 come
- * from ONE read (UI-ys18 §4.1).
  * @returns {Array<Record<string, unknown>>}
  */
 export function buildMonitorPipeline(options = {}) {
@@ -820,7 +764,6 @@ export function buildMonitorPipeline(options = {}) {
     options.carriedToFor ||
     ((/** @type {string} */ key, /** @type {Iterable<string>} */ parent_ids) =>
       getWorkerRuntime().runnableCache.carriedToFor(key, parent_ids));
-  const cross_lane_ids_by_root = crossLaneIdsByRoot(options.cross_lanes);
 
   /** @type {Array<Record<string, unknown>>} */
   const out = [];
@@ -868,23 +811,18 @@ export function buildMonitorPipeline(options = {}) {
       session_active = [];
     }
     projected.session_active = session_active;
-    const cross_lane_ids = cross_lane_ids_by_root.get(root_dir) || [];
     try {
       projected.bead_overlay = beadOverlayFor(
         root_dir,
         projected,
         cache,
-        cross_lane_ids,
         carriedToFor
       );
     } catch (err) {
       log('monitor: bead overlay failed for %s: %o', root_dir, err);
       projected.bead_overlay = {};
     }
-    // 레인이 전부 비어도 이 root의 연결 레인 멤버가 있으면 보낸다 (UI-ys18
-    // §4.1): 큐 밖 멤버의 route·예정 칩 재료는 이 workspace의 `bead_overlay`
-    // 에만 실리므로, workspace를 빼면 그 칩이 영영 서지 않는다.
-    if (!hasPipeline(projected) && cross_lane_ids.length === 0) {
+    if (!hasPipeline(projected)) {
       continue;
     }
     out.push({
@@ -1176,20 +1114,16 @@ function pushNow() {
     return;
   }
   prewarmVisibleIssuePrefixes();
-  // 한 번만 읽는다 (UI-ys18 §4.1): overlay가 본 연결 레인과 envelope이 싣는
-  // 연결 레인이 같은 revision이어야 큐 밖 멤버의 칩이 그 레인 행과 맞는다.
-  const cross_lanes = safeCrossLanes();
   let workspaces = /** @type {Array<Record<string, unknown>>} */ ([]);
   try {
-    workspaces = buildMonitorPipeline({ cross_lanes });
+    workspaces = buildMonitorPipeline();
   } catch (err) {
     log('monitor: pipeline build failed: %o', err);
     return;
   }
   const body_json = JSON.stringify({
     workspaces,
-    workspaces_state: safeWorkspacesState(),
-    cross_lanes
+    workspaces_state: safeWorkspacesState()
   });
   for (const sub of SUBSCRIBERS) {
     pushSnapshotIfChanged(sub, 'monitor-pipeline-snapshot', body_json);
@@ -1209,24 +1143,6 @@ function safeWorkspacesState() {
   } catch (err) {
     log('monitor: workspace state build failed: %o', err);
     return [];
-  }
-}
-
-/**
- * The stored cross-lane state, or `null` when the store could not be read
- * (UI-j92s §4.4). Fail-quiet like the control-state build: a lane file nobody
- * can parse must degrade the 연결 레인 pane, not suppress the whole push. The
- * `null` is meaningful downstream — it disables the lane ops rather than
- * drawing an empty lane list over lanes that exist (§7).
- *
- * @returns {CrossLanesState|null}
- */
-function safeCrossLanes() {
-  try {
-    return sharedCrossLanesStore().read();
-  } catch (err) {
-    log('monitor: cross-lane state unreadable: %o', err);
-    return null;
   }
 }
 
@@ -1670,10 +1586,9 @@ export function handleSubscribeMonitorPipeline(ws, req) {
 
   prewarmVisibleIssuePrefixes();
 
-  const cross_lanes = safeCrossLanes();
   let workspaces = /** @type {Array<Record<string, unknown>>} */ ([]);
   try {
-    workspaces = buildMonitorPipeline({ cross_lanes });
+    workspaces = buildMonitorPipeline();
   } catch (err) {
     log('monitor: initial pipeline build failed: %o', err);
   }
@@ -1682,8 +1597,7 @@ export function handleSubscribeMonitorPipeline(ws, req) {
     'monitor-pipeline-snapshot',
     JSON.stringify({
       workspaces,
-      workspaces_state: safeWorkspacesState(),
-      cross_lanes
+      workspaces_state: safeWorkspacesState()
     })
   );
   refreshExternalPrsForVisible();
@@ -1854,485 +1768,6 @@ function reasonOf(result) {
     return 'conflict';
   }
   return result.reason || 'rejected';
-}
-
-/**
- * Every registered workspace root, resolved — hidden ones INCLUDED (§4.3). A
- * lane member in a repo the user hid is still a lane member and renders as an
- * `외부` row; refusing the write would let a visibility toggle silently break
- * lane editing.
- *
- * @param {{ listWorkspaces?: () => Array<{ path: string }> }} [options]
- * @returns {string[]}
- */
-function registeredWorkspaceRoots(options = {}) {
-  const listWorkspaces = options.listWorkspaces || getAvailableWorkspaces;
-  /** @type {string[]} */
-  const out = [];
-  try {
-    for (const workspace of listWorkspaces()) {
-      const raw = String(workspace?.path || '');
-      if (raw.length === 0) {
-        continue;
-      }
-      out.push(path.resolve(raw));
-    }
-  } catch (err) {
-    log('monitor: workspace list unreadable for lane op: %o', err);
-    return [];
-  }
-  return out;
-}
-
-/**
- * @param {unknown} value
- * @returns {number|null} The CAS revision, or null when it is not an integer.
- */
-function laneExpectedRevision(value) {
-  return Number.isInteger(value) ? Number(value) : null;
-}
-
-/**
- * Validate and normalize a request's `entries[]` into durable shape.
- *
- * The server checks FORMAT and workspace registration only. The fixed-row rules
- * (§5.3) are a client concern, and a closed or unknown bead never blocks a
- * write: right after a redeploy the caches are cold, and a server that guessed
- * "that bead does not exist" would corrupt a lane the user can still see.
- *
- * @param {unknown} raw
- * @param {() => string[]} listRegistered
- * @returns {{ ok: true, entries: CrossLaneEntry[] }|{ ok: false, message: string }}
- */
-function normalizeRequestEntries(raw, listRegistered) {
-  if (!Array.isArray(raw)) {
-    return { ok: false, message: 'entries must be an array' };
-  }
-  const registered = new Set(listRegistered());
-  /** @type {Set<string>} */
-  const seen = new Set();
-  /** @type {CrossLaneEntry[]} */
-  const entries = [];
-  for (const item of raw) {
-    const entry = /** @type {any} */ (item);
-    const bead_id =
-      entry && typeof entry.bead_id === 'string' ? entry.bead_id.trim() : '';
-    const raw_root =
-      entry && typeof entry.root_dir === 'string' ? entry.root_dir.trim() : '';
-    if (bead_id.length === 0 || raw_root.length === 0) {
-      return { ok: false, message: 'entry requires { bead_id, root_dir }' };
-    }
-    if (seen.has(bead_id)) {
-      return { ok: false, message: `duplicate bead_id: ${bead_id}` };
-    }
-    const root_dir = path.resolve(raw_root);
-    if (!registered.has(root_dir)) {
-      return { ok: false, message: `unregistered workspace: ${raw_root}` };
-    }
-    seen.add(bead_id);
-    entries.push({ bead_id, root_dir });
-  }
-  return { ok: true, entries };
-}
-
-/**
- * Stamp §7.1 stage-1 provenance on the entries a lane op is about to store.
- *
- * The rule is positional, not per-bead: an entry keeps its value only while the
- * member RIGHT BEFORE it is unchanged, because that is exactly what the flag
- * describes. Anything newly adjacent starts at `false` — the lane op is sent
- * BEFORE the `dep-add` it implies, so at this moment nobody knows whether that
- * dependency will be created. `monitor-lane-provenance` raises the pairs whose
- * `dep-add` actually succeeded.
- *
- * The server owns the value on purpose. A client-supplied `true` would let a
- * failed `dep-add` record ownership of a dependency the lane never made, and
- * that is the class of bug UI-jaua §1.3 is about.
- *
- * @param {CrossLaneEntry[]} previous - The lane's stored entries.
- * @param {CrossLaneEntry[]} next - The entries the request carries.
- * @returns {CrossLaneEntry[]}
- */
-function stampAdjacencyProvenance(previous, next) {
-  /** @type {Map<string, string|null>} */
-  const previous_before = new Map();
-  /** @type {Map<string, boolean|undefined>} */
-  const previous_value = new Map();
-  previous.forEach((entry, index) => {
-    previous_before.set(
-      entry.bead_id,
-      index > 0 ? previous[index - 1].bead_id : null
-    );
-    previous_value.set(entry.bead_id, entry.dep_created_by_lane);
-  });
-  return next.map((entry, index) => {
-    if (index === 0) {
-      return { bead_id: entry.bead_id, root_dir: entry.root_dir };
-    }
-    const unchanged =
-      previous_before.get(entry.bead_id) === next[index - 1].bead_id;
-    return {
-      bead_id: entry.bead_id,
-      root_dir: entry.root_dir,
-      dep_created_by_lane: unchanged
-        ? previous_value.get(entry.bead_id) === true
-        : false
-    };
-  });
-}
-
-/**
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- * @param {string} message
- */
-function sendLaneBadRequest(ws, req, message) {
-  ws.send(JSON.stringify(makeError(req, 'bad_request', message)));
-}
-
-/**
- * Reply to a rejected lane mutation.
- *
- * A `conflict` carries the whole current `cross_lanes` (§4.3): the client
- * re-plans the drag on the LATEST lanes — fixed rows, other lanes' membership,
- * the cycle check — instead of resending a plan built on entries that moved.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- * @param {{ code: string, message: string, state: CrossLanesState|null }} result
- */
-function sendLaneFailure(ws, req, result) {
-  const details =
-    result.code === 'conflict' && result.state
-      ? { cross_lanes: result.state }
-      : undefined;
-  ws.send(JSON.stringify(makeError(req, result.code, result.message, details)));
-}
-
-/**
- * The store every lane op mutates, and the push they schedule on success.
- *
- * @param {LaneOpOptions} options
- */
-function laneOpDeps(options) {
-  return {
-    store: (options.crossLanesStore || sharedCrossLanesStore)(),
-    listRegistered:
-      options.listRegistered || (() => registeredWorkspaceRoots(options)),
-    onApplied: options.onApplied || schedulePush
-  };
-}
-
-/**
- * Test seams for the lane ops; each defaults to the live server source.
- *
- * @typedef {Object} LaneOpOptions
- * @property {() => ReturnType<typeof sharedCrossLanesStore>} [crossLanesStore]
- * @property {() => Array<{ path: string }>} [listWorkspaces]
- * @property {() => string[]} [listRegistered]
- * @property {() => void} [onApplied]
- */
-
-/**
- * Handle `monitor-lane-create`. Payload:
- * `{ entries?: Entry[], expected_revision }` (UI-j92s §4.3).
- *
- * Appends a `draft` lane — empty (the `+ 연결 레인` button) or seeded with one
- * drop. A draft creates no dependency and loads no queue; `확정` does that.
- * A second EMPTY draft is refused (`conflict_empty_lane`) because the pane
- * offers exactly one place to drop into and two would be indistinguishable.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- * @param {LaneOpOptions} [options]
- */
-export function handleMonitorLaneCreate(ws, req, options = {}) {
-  const p = /** @type {any} */ (req.payload || {});
-  const expected_revision = laneExpectedRevision(p.expected_revision);
-  if (expected_revision === null) {
-    sendLaneBadRequest(
-      ws,
-      req,
-      'payload requires an integer expected_revision'
-    );
-    return;
-  }
-  const { store, listRegistered, onApplied } = laneOpDeps(options);
-  const normalized = normalizeRequestEntries(
-    p.entries === undefined ? [] : p.entries,
-    listRegistered
-  );
-  if (!normalized.ok) {
-    sendLaneBadRequest(ws, req, normalized.message);
-    return;
-  }
-  const seed = normalized.entries;
-  const result = store.mutate(expected_revision, (next, ctx) => {
-    if (
-      seed.length === 0 &&
-      next.lanes.some(
-        (lane) => lane.status === 'draft' && lane.entries.length === 0
-      )
-    ) {
-      return {
-        ok: false,
-        code: 'conflict_empty_lane',
-        message: '빈 연결 레인이 이미 있습니다'
-      };
-    }
-    /** @type {CrossLane} */
-    const lane = {
-      id: ctx.newLaneId(),
-      status: 'draft',
-      created_at: ctx.nowIso(),
-      entries: stampAdjacencyProvenance([], seed)
-    };
-    next.lanes.push(lane);
-    return { ok: true, value: lane.id };
-  });
-  if (!result.ok) {
-    sendLaneFailure(ws, req, result);
-    return;
-  }
-  ws.send(
-    JSON.stringify(
-      makeOk(req, {
-        lane_id: result.value,
-        revision: result.state.revision
-      })
-    )
-  );
-  onApplied();
-}
-
-/**
- * Handle `monitor-lane-update`. Payload:
- * `{ lane_id, entries: Entry[], expected_revision }` (UI-j92s §4.3).
- *
- * Replaces membership AND order in one write — insert, reorder and row-remove
- * are all the same op, so a drag never has to be expressed as two writes the
- * CAS could interleave.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- * @param {LaneOpOptions} [options]
- */
-export function handleMonitorLaneUpdate(ws, req, options = {}) {
-  const p = /** @type {any} */ (req.payload || {});
-  const lane_id = typeof p.lane_id === 'string' ? p.lane_id : '';
-  const expected_revision = laneExpectedRevision(p.expected_revision);
-  if (lane_id.length === 0 || expected_revision === null) {
-    sendLaneBadRequest(
-      ws,
-      req,
-      'payload requires { lane_id, entries, expected_revision }'
-    );
-    return;
-  }
-  const { store, listRegistered, onApplied } = laneOpDeps(options);
-  const normalized = normalizeRequestEntries(p.entries, listRegistered);
-  if (!normalized.ok) {
-    sendLaneBadRequest(ws, req, normalized.message);
-    return;
-  }
-  const entries = normalized.entries;
-  const result = store.mutate(expected_revision, (next) => {
-    const lane = next.lanes.find((candidate) => candidate.id === lane_id);
-    if (!lane) {
-      return { ok: false, code: 'not_found', message: '레인이 없습니다' };
-    }
-    lane.entries = stampAdjacencyProvenance(lane.entries, entries);
-    if (lane.status === 'confirmed' && lane.entries.length < 2) {
-      lane.status = 'draft';
-    }
-    return { ok: true };
-  });
-  if (!result.ok) {
-    sendLaneFailure(ws, req, result);
-    return;
-  }
-  ws.send(
-    JSON.stringify(makeOk(req, { lane_id, revision: result.state.revision }))
-  );
-  onApplied();
-}
-
-/**
- * Handle `monitor-lane-confirm`. Payload:
- * `{ lane_id, expected_revision }` (UI-j92s §4.3).
- *
- * Flips `status` only. The adjacent `dep-add`s and the queue placements ride
- * the client's existing op paths right after, so this handler never runs `bd`.
- * Fewer than two members is a `bad_request`: a one-member lane has no adjacent
- * pair to depend on, so there would be nothing to confirm.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- * @param {LaneOpOptions} [options]
- */
-export function handleMonitorLaneConfirm(ws, req, options = {}) {
-  const p = /** @type {any} */ (req.payload || {});
-  const lane_id = typeof p.lane_id === 'string' ? p.lane_id : '';
-  const expected_revision = laneExpectedRevision(p.expected_revision);
-  if (lane_id.length === 0 || expected_revision === null) {
-    sendLaneBadRequest(
-      ws,
-      req,
-      'payload requires { lane_id, expected_revision }'
-    );
-    return;
-  }
-  const { store, onApplied } = laneOpDeps(options);
-  const result = store.mutate(expected_revision, (next) => {
-    const lane = next.lanes.find((candidate) => candidate.id === lane_id);
-    if (!lane) {
-      return { ok: false, code: 'not_found', message: '레인이 없습니다' };
-    }
-    if (lane.entries.length < 2) {
-      return {
-        ok: false,
-        code: 'bad_request',
-        message: '확정하려면 멤버가 2개 이상이어야 합니다'
-      };
-    }
-    lane.status = 'confirmed';
-    return { ok: true };
-  });
-  if (!result.ok) {
-    sendLaneFailure(ws, req, result);
-    return;
-  }
-  ws.send(
-    JSON.stringify(makeOk(req, { lane_id, revision: result.state.revision }))
-  );
-  onApplied();
-}
-
-/**
- * Handle `monitor-lane-remove`. Payload:
- * `{ lane_id, expected_revision }` (UI-j92s §4.3).
- *
- * Drops the lane. The `dep-remove`s for a confirmed lane are the client's, and
- * it sends them BEFORE this op (§5.5) — once the lane is gone nobody can tell
- * which adjacent pairs it used to own.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- * @param {LaneOpOptions} [options]
- */
-export function handleMonitorLaneRemove(ws, req, options = {}) {
-  const p = /** @type {any} */ (req.payload || {});
-  const lane_id = typeof p.lane_id === 'string' ? p.lane_id : '';
-  const expected_revision = laneExpectedRevision(p.expected_revision);
-  if (lane_id.length === 0 || expected_revision === null) {
-    sendLaneBadRequest(
-      ws,
-      req,
-      'payload requires { lane_id, expected_revision }'
-    );
-    return;
-  }
-  const { store, onApplied } = laneOpDeps(options);
-  const result = store.mutate(expected_revision, (next) => {
-    const index = next.lanes.findIndex((candidate) => candidate.id === lane_id);
-    if (index < 0) {
-      return { ok: false, code: 'not_found', message: '레인이 없습니다' };
-    }
-    next.lanes.splice(index, 1);
-    return { ok: true };
-  });
-  if (!result.ok) {
-    sendLaneFailure(ws, req, result);
-    return;
-  }
-  ws.send(
-    JSON.stringify(makeOk(req, { lane_id, revision: result.state.revision }))
-  );
-  onApplied();
-}
-
-/**
- * Handle `monitor-lane-provenance`. Payload:
- * `{ lane_id, pairs: Array<{ bead_id, value: true }>, expected_revision }`
- * (UI-jaua §7.1 2단계).
- *
- * Raises `dep_created_by_lane` on the pairs whose `dep-add` SUCCEEDED —
- * `pairs[].bead_id` is the LATER member of the pair (`entries[i+1]`) and
- * `pairs[].after` the earlier one, because the flag describes the edge between
- * exactly those two.
- *
- * The claim is a PAIR, so the server checks the pair: a raise lands only when
- * `after` is still the entry right before `bead_id` in the stored lane. A bare
- * `bead_id` is refused. Without that check a reorder between the lane op and
- * this call would stamp lane ownership on an adjacency whose `dep-add` never
- * ran, and the lane `✕` would then delete a dependency the lane did not make —
- * the UI-jaua §1.3 accident, re-entered through the field that exists to
- * prevent it.
- *
- * Only `true` travels. Lowering a pair is the lane ops' job (a position whose
- * neighbour changed restarts at `false`), so a client can never use this op to
- * disown a dependency it did create. `entries[0]`, unknown bead ids, and pairs
- * that are no longer adjacent are fail-quiet: the newest lane may have moved
- * under the client, and those are exactly the pairs it must not write.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- * @param {LaneOpOptions} [options]
- */
-export function handleMonitorLaneProvenance(ws, req, options = {}) {
-  const p = /** @type {any} */ (req.payload || {});
-  const lane_id = typeof p.lane_id === 'string' ? p.lane_id : '';
-  const expected_revision = laneExpectedRevision(p.expected_revision);
-  if (
-    lane_id.length === 0 ||
-    expected_revision === null ||
-    !Array.isArray(p.pairs)
-  ) {
-    sendLaneBadRequest(
-      ws,
-      req,
-      'payload requires { lane_id, pairs, expected_revision }'
-    );
-    return;
-  }
-  /** @type {Map<string, string>} */
-  const raised = new Map();
-  for (const item of p.pairs) {
-    const pair = /** @type {any} */ (item);
-    if (
-      pair &&
-      typeof pair.bead_id === 'string' &&
-      typeof pair.after === 'string' &&
-      pair.after.trim().length > 0 &&
-      pair.value === true
-    ) {
-      raised.set(pair.bead_id.trim(), pair.after.trim());
-    }
-  }
-  const { store, onApplied } = laneOpDeps(options);
-  const result = store.mutate(expected_revision, (next) => {
-    const lane = next.lanes.find((candidate) => candidate.id === lane_id);
-    if (!lane) {
-      return { ok: false, code: 'not_found', message: '레인이 없습니다' };
-    }
-    lane.entries.forEach((entry, index) => {
-      if (
-        index > 0 &&
-        raised.get(entry.bead_id) === lane.entries[index - 1].bead_id
-      ) {
-        entry.dep_created_by_lane = true;
-      }
-    });
-    return { ok: true };
-  });
-  if (!result.ok) {
-    sendLaneFailure(ws, req, result);
-    return;
-  }
-  ws.send(
-    JSON.stringify(makeOk(req, { lane_id, revision: result.state.revision }))
-  );
-  onApplied();
 }
 
 /**

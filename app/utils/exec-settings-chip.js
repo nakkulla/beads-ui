@@ -258,6 +258,60 @@ export function formatWorkerChip(rows, controller_runtime) {
 }
 
 /**
+ * The implementation-review defaults a repository will use for its next gate.
+ *
+ * @param {Record<string, ExecutionValue>|null|undefined} rows
+ * @returns {ExecChip|null}
+ */
+export function formatImplReviewChip(rows) {
+  const model = rowOf(rows, 'impl_review_model');
+  if (model === null || EMPTY_RESOLUTIONS.has(model.resolution)) {
+    return null;
+  }
+  if (model.value === 'self') {
+    return {
+      text: '자체 검토',
+      title: joinLines([
+        '구현 리뷰 — 이 저장소의 다음 구현 리뷰 기본값',
+        layerLine('impl_review_model', model)
+      ])
+    };
+  }
+  if (model.value === 'skip') {
+    return {
+      text: '생략',
+      title: joinLines([
+        '구현 리뷰 — 이 저장소의 다음 구현 리뷰 기본값',
+        layerLine('impl_review_model', model)
+      ])
+    };
+  }
+  const effort = rowOf(rows, 'impl_review_effort');
+  const text = joinTokens([
+    model.display,
+    effort !== null &&
+    effort.value !== null &&
+    !EMPTY_RESOLUTIONS.has(effort.resolution)
+      ? effort.display
+      : null
+  ]);
+  if (text === '') {
+    return null;
+  }
+  return {
+    text,
+    title: joinLines([
+      '구현 리뷰 — 이 저장소의 다음 구현 리뷰 기본값',
+      layerLine('impl_review_model', model),
+      model.full_value && model.full_value !== model.display
+        ? `전체 모델명: ${model.full_value}`
+        : null,
+      layerLine('impl_review_effort', effort)
+    ])
+  };
+}
+
+/**
  * `impl_actor` 하나로 서는 완료 행의 워커(구현 위임) 칩 (UI-ys18 §5.2). 재료는 그 완료를 만든 attempt가
  * 보존한 영수증에서 서버가 해석한 `impl_actor` 하나뿐이다 — 현재 핀·전역
  * 기본값·프리셋은 실행 뒤에도 계속 움직이므로 과거 실행 주체를 말할 수 없다.

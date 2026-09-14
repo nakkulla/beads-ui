@@ -10,7 +10,29 @@
  * 그 목록 위의 필터일 뿐이다.
  */
 import { buildLanes } from '../worker/lane-model.js';
-import { isBlockedBy } from './drop-plan.js';
+
+/**
+ * @param {Map<string, string[]>} graph
+ * @param {string} node
+ * @param {string} ancestor
+ */
+function isBlockedBy(graph, node, ancestor) {
+  const seen = new Set([node]);
+  const stack = [node];
+  while (stack.length > 0) {
+    const current = /** @type {string} */ (stack.pop());
+    for (const blocker of graph.get(current) || []) {
+      if (blocker === ancestor) {
+        return true;
+      }
+      if (!seen.has(blocker)) {
+        seen.add(blocker);
+        stack.push(blocker);
+      }
+    }
+  }
+  return false;
+}
 
 /**
  * 후보 모집단 한 항목. `lane`은 모니터의 배타 레인 어휘 그대로다 — 같은 사실에

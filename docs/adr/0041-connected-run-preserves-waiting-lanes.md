@@ -1,7 +1,8 @@
 ---
 id: 41
 title: 연결 레인 확정은 의존만 쓰고 진행은 기존 병렬·직렬 위치를 보존하며 같은 진행 권한을 적용한다
-status: accepted
+status: superseded
+superseded_by: UI-wc67
 date: 2026-09-08
 summary: "연결 레인 확정은 의존만 쓰고 진행은 기존 병렬·직렬 위치를 보존하며 같은 진행 권한을 적용한다"
 supersedes: [35]

@@ -405,15 +405,7 @@ export function bootstrap(root_element) {
         // the ones with an empty pipeline, so it is kept ALONGSIDE the heavy
         // array rather than derived from it. A server that omits it leaves the
         // store's empty default in place.
-        //
-        // `cross_lanes` (UI-j92s §4.4) travels in the SAME envelope and is
-        // forwarded verbatim: the store owns the three-state distinction
-        // (키 없음 / null / 값) and the view reads it from there.
-        monitor_pipeline_store.set(
-          p.workspaces,
-          p.workspaces_state,
-          p.cross_lanes
-        );
+        monitor_pipeline_store.set(p.workspaces, p.workspaces_state);
       } catch {
         // ignore
       }
@@ -1244,8 +1236,13 @@ export function bootstrap(root_element) {
 
     /**
      * @param {string} workspace_path
+     * @param {() => boolean} [accept_response]
+     * @returns {Promise<boolean>}
      */
-    async function handleWorkspaceChange(workspace_path) {
+    async function handleWorkspaceChange(
+      workspace_path,
+      accept_response = () => true
+    ) {
       log('requesting workspace switch to %s', workspace_path);
       is_switching_workspace = true;
       try {
@@ -1253,7 +1250,13 @@ export function bootstrap(root_element) {
           path: workspace_path
         });
         log('workspace switch result: %o', result);
-        if (result && result.workspace) {
+        if (!accept_response()) {
+          return false;
+        }
+        if (
+          result?.workspace?.root_dir === workspace_path &&
+          typeof result.workspace.db_path === 'string'
+        ) {
           store.setState({
             workspace: {
               current: {
@@ -1271,13 +1274,46 @@ export function bootstrap(root_element) {
               2000
             );
           }
+          return true;
         }
+        return false;
       } catch (err) {
         log('workspace switch failed: %o', err);
         showToast('Failed to switch workspace', 'error', 3000);
         throw err;
       } finally {
         is_switching_workspace = false;
+      }
+    }
+
+    let workspace_picker_request = 0;
+    let workspace_picker_view_revision = 0;
+    /** @type {'board'|'worker'|'monitor'|'compare'|'adr'|null} */
+    let workspace_picker_observed_view = null;
+
+    /**
+     * Switch a project selected from Monitor and open that project's Worker.
+     *
+     * @param {string} workspace_path
+     */
+    async function handleWorkspacePickerChange(workspace_path) {
+      const request = ++workspace_picker_request;
+      const started_on_monitor = store.getState().view === 'monitor';
+      const view_revision = workspace_picker_view_revision;
+      const switched = await handleWorkspaceChange(
+        workspace_path,
+        () => request === workspace_picker_request
+      );
+      const state = store.getState();
+      if (
+        switched &&
+        started_on_monitor &&
+        request === workspace_picker_request &&
+        view_revision === workspace_picker_view_revision &&
+        state.view === 'monitor' &&
+        state.workspace.current?.path === workspace_path
+      ) {
+        router.gotoView('worker');
       }
     }
 
@@ -1490,6 +1526,13 @@ export function bootstrap(root_element) {
       config: readBootstrapConfig(),
       view: last_view
     });
+    workspace_picker_observed_view = store.getState().view;
+    store.subscribe((state) => {
+      if (state.view !== workspace_picker_observed_view) {
+        workspace_picker_observed_view = state.view;
+        workspace_picker_view_revision += 1;
+      }
+    });
 
     // Route worker-queue snapshots (unified push protocol; distinct top-level
     // event type) into the client-side queue store. Registered here rather than
@@ -1538,14 +1581,7 @@ export function bootstrap(root_element) {
       'apply-impl-preset',
       'apply-impl-preset-global',
       'get-session-defaults',
-      'set-session-defaults',
-      // 레인 op의 `conflict`는 최신 `cross_lanes`를 details에 싣고 오며, 뷰는
-      // 그것으로 계획 전체를 다시 세운다 (UI-j92s §5.5). `[]`로 삼키면 재계획
-      // 경로 자체가 사라진다.
-      'monitor-lane-create',
-      'monitor-lane-update',
-      'monitor-lane-confirm',
-      'monitor-lane-remove'
+      'set-session-defaults'
     ]);
 
     /**
@@ -1574,7 +1610,7 @@ export function bootstrap(root_element) {
       createWorkspacePicker(
         workspace_mount,
         store,
-        handleWorkspaceChange,
+        handleWorkspacePickerChange,
         handleWorkspaceGitPull,
         handleWorkspaceVisibilityChange
       );

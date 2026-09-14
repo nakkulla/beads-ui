@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| UI-wc67 | [연결 레인을 폐기하고 저장소별 대기열에서 확인된 선행 대기만 건너뛴다](UI-wc67-retire-connected-lanes-use-repository-queues.md) | 2026-09-15 | 연결 레인은 폐기하고 저장소별 병렬·직렬 대기열과 blocks 의존만 사용하며 직렬 레인은 확인된 선행 대기 항목을 건너뛰되 한 번에 하나만 실행한다 |
 | UI-j9j5 | [수정 잡의 원자적 예약과 실제 성공으로 원래 실패를 완료한다](UI-j9j5-post-merge-job-repair-succession.md) | 2026-09-15 | post-merge 잡은 기존 RepoOperation 봉투를 유지하고 명시적 수정 선언의 원자적 예약과 성공 승계로 원래 실패를 완료한다 |
 | UI-42l2-2 | [직접 세션 카드는 현재 참조 대화 전체 사용량을 표시하고 워크스페이스 합계에는 가산하지 않는다](UI-42l2-2-direct-session-current-conversation-usage.md) | 2026-09-11 | 직접 세션 카드의 사용량은 현재 참조 대화 전체이며 Bead별 비용으로 나누거나 워크스페이스 합계에 자동 가산하지 않는다 |
 | UI-42l2 | [Codex native child의 개별 사용량과 환산 비용은 카드에 표시하고 부모 합계에서는 제외한다](UI-42l2-codex-native-child-card-usage-not-summed.md) | 2026-09-11 | Codex native child의 개별 사용량과 환산 비용은 카드·상세에 표시하고 중복 여부가 미확인된 값은 부모 합계에 더하지 않는다 |
@@ -18,7 +19,6 @@
 | 0044 | [구독별 store는 revision을 수신하되 내용 변경만 통지하고 registry는 구독 출처를 전달한다](0044-subscription-store-notifies-content-change-with-source.md) | 2026-09-08 | 구독별 store는 revision을 수신하되 내용 변경만 통지하고 registry는 구독 출처를 전달하며 전체 issue push와 기존 순서·identity 규칙을 유지한다 |
 | 0043 | [워크스페이스와 후보 투영은 기존 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스를 띄우지 않는다](0043-candidate-projection-reads-async-probe-context-only.md) | 2026-09-08 | 워크스페이스와 후보 투영은 기존 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스를 띄우지 않으며 title-cache 예외는 유지한다 |
 | 0042 | [quick_fix 재개는 실패 사유로 session과 settlement를 가르고 착지 정산 재실행 버튼은 정리 재시도로 부른다](0042-quickfix-resume-by-reason-settlement-button-is-cleanup-retry.md) | 2026-09-08 | quick_fix 재개는 실패 사유로 session과 settlement를 가르고, 같은 attempt의 착지 정산 재실행 버튼은 정리 재시도로 부른다 |
-| 0041 | [연결 레인 확정은 의존만 쓰고 진행은 기존 병렬·직렬 위치를 보존하며 같은 진행 권한을 적용한다](0041-connected-run-preserves-waiting-lanes.md) | 2026-09-08 | 연결 레인 확정은 의존만 쓰고 진행은 기존 병렬·직렬 위치를 보존하며 같은 진행 권한을 적용한다 |
 | 0040 | [머지 게이트의 영수증 보류는 자동 해소 주체 유무로 나뉘고 위조 3종은 즉시 terminal needs_human이다](0040-receipt-hold-unresolvable-terminal-needs-human.md) | 2026-09-07 | 머지 게이트의 영수증 보류는 자동 해소 주체가 있는지로 나뉘고, 사람의 baseline 원상복원으로만 풀리는 위조 3종은 대기 없이 terminal needs_human으로 종단해 알림과 두 클릭으로 넘긴다 |
 | 0039 | [ADR 탭 신호는 설치본 체커를 runtime spawn해 --json으로 소비한다](0039-adr-tab-spawns-installed-checkers-json.md) | 2026-09-06 | ADR 탭 신호는 설치본 체커를 runtime spawn해 --json으로 소비하고 규칙을 JS로 복제하지 않으며 현재 표만 JS frontmatter 리더가 읽는다 |
 | 0038 | [처분 대기 admission이 화면 대표를 정한다 — 대기 행이 held 타일·점유 ghost를 이긴다](0038-stale-disposition-admission-elects-the-waiting-row.md) | 2026-09-04 | 처분 대기 admission이 선 bead는 held 타일·점유 ghost가 아니라 대기 행이 대표하고 stale-work 처분 조작은 대기 행에만 산다 |
@@ -63,6 +63,7 @@
 | 0030 | [post-merge 잡은 RepoOperation kind job 봉투로 실행하고 원장은 queue.json 맵이다](0030-post-merge-job-repo-operation-envelope.md) | superseded | [UI-j9j5](UI-j9j5-post-merge-job-repair-succession.md) |
 | 0032 | [실행 프리셋은 레인 무관 프로파일이고 워크스페이스가 일반·quick_fix 두 레인에 각각 적용한다](0032-execution-preset-is-lane-neutral-applied-per-lane.md) | superseded | [UI-s8qn](UI-s8qn-impl-runtime-auto-derives-no-provider-inherit-retired-lane-apply.md) |
 | 0035 | [연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다](0035-lane-confirm-writes-deps-only-run-places-and-arms.md) | superseded | [0041](0041-connected-run-preserves-waiting-lanes.md) |
+| 0041 | [연결 레인 확정은 의존만 쓰고 진행은 기존 병렬·직렬 위치를 보존하며 같은 진행 권한을 적용한다](0041-connected-run-preserves-waiting-lanes.md) | superseded | [UI-wc67](UI-wc67-retire-connected-lanes-use-repository-queues.md) |
 | 0047 | [Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다](0047-codex-native-child-internal-observation-not-summed.md) | superseded | [UI-42l2](UI-42l2-codex-native-child-card-usage-not-summed.md) |
 | 0048 | [Worker 체계적 정지의 해제는 사람의 승인 한 번이며 재개 버튼과 큐를 세운 attempt의 ↻ 이어하기가 같은 승인이다](0048-resume-click-releases-systemic-hold.md) | superseded | [0049](0049-queue-gate-lives-on-blocked-card-no-banner.md) |
 | 0049 | [Worker 큐 정지·공급자 보류의 표시와 출구는 막힌 카드에 살고 상단 배너는 없다](0049-queue-gate-lives-on-blocked-card-no-banner.md) | superseded | [UI-o5ll](UI-o5ll-provider-hold-release-is-probe-only-no-cap-manual-probe-now.md) |

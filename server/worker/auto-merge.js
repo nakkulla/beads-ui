@@ -202,82 +202,6 @@ export function createAutoMerge(deps) {
    *
    * @returns {{ applied: boolean, conflict: boolean, queued: number, queue: Queue }}
    */
-  function enrollArmed() {
-    const snapshot = /** @type {any} */ (deps.store.snapshot(workspace));
-    const pr_wait = Array.isArray(snapshot.pr_wait) ? snapshot.pr_wait : [];
-    const merge_queue = Array.isArray(snapshot.merge_queue)
-      ? snapshot.merge_queue
-      : [];
-    // Already carrying manual authority means the lane's ask is answered —
-    // by an earlier pass, by the user's own click, or by a promotion. An
-    // automatic or authority-less entry is still a candidate: registering it
-    // is what makes it survive `auto_merge` being switched off mid-lane.
-    /** @type {Set<string>} */
-    const held = new Set();
-    for (const entry of merge_queue) {
-      if (entry?.authority?.source === 'manual') {
-        held.add(entry.bead_id);
-      }
-    }
-    /** @type {Array<{ bead_id: string, external: boolean, head_sha: string, target_base: string|null, via: 'lane' }>} */
-    const entries = [];
-    for (const row of pr_wait) {
-      const bead_id = row?.bead_id;
-      if (typeof bead_id !== 'string' || bead_id.length === 0) {
-        continue;
-      }
-      const armed_by_lane = row.armed_by_lane;
-      if (typeof armed_by_lane !== 'string' || armed_by_lane.length === 0) {
-        continue;
-      }
-      if (held.has(bead_id)) {
-        continue;
-      }
-      const head_sha = headSha(bead_id);
-      if (!head_sha) {
-        // The module's first rule (see `enroll`): an authority granted on an
-        // unread head is a merge on stale evidence. The row keeps its arm and
-        // the next observation tries again.
-        continue;
-      }
-      entries.push({
-        bead_id,
-        external: row.external === true,
-        head_sha,
-        target_base: baseRef(bead_id),
-        via: 'lane'
-      });
-    }
-    if (entries.length === 0) {
-      return {
-        applied: false,
-        conflict: false,
-        queued: 0,
-        queue: /** @type {Queue} */ (snapshot)
-      };
-    }
-    const before = merge_queue.length;
-    // An unreadable base is refused by the store's own rule, which is the same
-    // rule the click path relies on — no second copy of it lives here.
-    const result = deps.store.enqueueMergeManual(workspace, {
-      expected_revision: snapshot.revision,
-      entries
-    });
-    const after =
-      result.ok && Array.isArray(result.queue.merge_queue)
-        ? result.queue.merge_queue.length
-        : before;
-    if (result.ok) {
-      wake();
-    }
-    return {
-      applied: result.ok,
-      conflict: result.conflict,
-      queued: Math.max(0, after - before),
-      queue: result.queue
-    };
-  }
-
   /**
    * One coalesced automatic pass. A `queue-changed` that arrives while a scan
    * runs — including the one the scan itself emits — marks a single re-run
@@ -294,24 +218,14 @@ export function createAutoMerge(deps) {
         rescan = false;
         /** @type {any} */
         const q = deps.store.snapshot(workspace);
-        // BEFORE the toggle test (UI-jaua §5.4): a started cross lane must
-        // reach merge in a repo whose `auto_merge` is off, which is the whole
-        // point of registering it as item-level authority.
-        const armed = enrollArmed();
         if (q.auto_merge !== true) {
-          if (!armed.applied) {
-            return;
-          }
-          // A registration emitted the event this scan listens to; let the
-          // coalescing loop absorb it. The next pass finds the row already
-          // held by manual authority and applies nothing, which terminates.
-          continue;
+          return;
         }
         const result = enroll();
         // Nothing enrolled and nothing pruned means no mutation and no emit, so
         // the loop that fed this one is over — that is what actually terminates
         // the recursion (§4.3).
-        if (!result.applied && !armed.applied) {
+        if (!result.applied) {
           return;
         }
       } while (rescan && !stopped);
@@ -325,7 +239,6 @@ export function createAutoMerge(deps) {
 
   return {
     enroll,
-    enrollArmed,
     scan,
 
     start() {

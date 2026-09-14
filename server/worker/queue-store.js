@@ -31,12 +31,6 @@
  * @property {boolean} [external] - Durable external origin: a promoted
  * externally-merged row keeps this after the registry overlay yields, so
  * failure-resume eligibility ([정리]) still classifies it as external.
- * @property {string|null} [armed_by_lane] - Cross-lane id (`cl_*`) that armed
- * this row for dispatch (UI-jaua §5.1). Written on PARALLEL waiting rows and
- * carried onto the `pr_wait` row that replaces one; never on a serial-lane
- * row, because a cross-lane member is loaded into the parallel queue. Absent
- * means "this row is not part of a running cross lane", which is what every
- * legacy `queue.json` and every restart resolves to.
  */
 /**
  * @typedef {Object} SerialLane
@@ -62,10 +56,6 @@
  * @property {string|null} session_id - Runner session identifier (claude
  * `session_id` / codex `thread_id`) captured from the stream's first event for
  * `--resume`/transcript tracking; null until the runner emits it (spec §2).
- * @property {string|null} armed_by_lane - Cross-lane id this dispatch was
- * armed by (UI-jaua §5.1), snapshotted like `base_oid`/`runner`/`model`. The
- * `pr_wait` row is planted from it and the failure path is judged against it,
- * so it must survive queue mutations; `disarm` never clears an attempt.
  * @property {string|null} model - Model snapshot.
  * @property {string|null} effort - Effort snapshot.
  * @property {string|null} observed_effort - Effort observed after launch from
@@ -523,11 +513,6 @@
  * @property {QueueEntry[]} pr_wait - Beads whose PR the server OBSERVED open,
  * waiting for a human merge click (worker-phase2 §4).
  * @property {QueueEntry[]} done - Completed today.
- * @property {string[]} [disarmed_on_load] - TRANSIENT (UI-jaua §5.1): the
- * cross-lane ids whose arm this process's cold load cleared. Never persisted
- * and never in the cache — it is attached to exported snapshots only, because
- * the value is recomputed at every start. It is what separates "a restart
- * stopped this lane" from "this lane was never started".
  * @property {import('./queue-hold.js').QueueHold|null} hold - The queue's
  * FAILURE-owned stop (2026-08-28 worker-failure-tiers spec §4). `env` is an
  * unattended backoff hold, `systemic` is the stop only a user `재개` clears.
@@ -1992,8 +1977,8 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'parallel',
   'pr_wait',
   'done',
-  // Transient by contract (UI-jaua §5.1). Listed so a value that somehow
-  // reached disk is DROPPED on load instead of round-tripping as opaque data.
+  // Retired transient field. Listed only so legacy values are dropped rather
+  // than preserved as opaque top-level data.
   'disarmed_on_load',
   'attempts',
   'admission',
@@ -2532,7 +2517,7 @@ function normalizeEntry(entry) {
   if (!isRecord(entry) || typeof entry.bead_id !== 'string') {
     return null;
   }
-  return {
+  const normalized = {
     ...entry,
     bead_id: entry.bead_id,
     added_at: typeof entry.added_at === 'number' ? entry.added_at : 0,
@@ -2556,14 +2541,10 @@ function normalizeEntry(entry) {
       typeof entry.serial_lane_id === 'string' &&
       serialLaneIndex(entry.serial_lane_id) !== null
         ? entry.serial_lane_id
-        : undefined,
-    // A blank or non-string value is ABSENT, not an arm: the scheduler's whole
-    // test is "a non-empty lane id", so an empty string must never reach it.
-    armed_by_lane:
-      typeof entry.armed_by_lane === 'string' && entry.armed_by_lane.length > 0
-        ? entry.armed_by_lane
         : undefined
   };
+  Reflect.deleteProperty(normalized, 'armed_by_lane');
+  return normalized;
 }
 
 /**
@@ -2941,11 +2922,6 @@ export function makeAttempt(fields) {
     process_identity: normalizeProcessIdentity(fields.process_identity),
     control: normalizeAttemptControl(fields.control),
     runner: fields.runner ?? null,
-    armed_by_lane:
-      typeof fields.armed_by_lane === 'string' &&
-      fields.armed_by_lane.length > 0
-        ? fields.armed_by_lane
-        : null,
     session_id: fields.session_id ?? null,
     model: fields.model ?? null,
     effort: fields.effort ?? null,
@@ -4402,23 +4378,6 @@ function waitingLaneEntries(q, lane) {
 }
 
 /**
- * Both waiting areas of one queue as a single list (UI-tjus §3.2). The cross
- * lane arm axis treats a parallel row and a serial row alike, so every sweep
- * reads the union through this one function instead of restating it — a second
- * copy would let `arm`, `disarm` and the cold load mean three different things
- * by "an armable row". Entries are the LIVE objects, so callers mutate them.
- *
- * @param {Queue} q
- * @returns {QueueEntry[]}
- */
-function waitingAreaEntries(q) {
-  return [
-    ...q.queue,
-    ...(q.serial_lanes || []).flatMap((lane) => lane.entries)
-  ];
-}
-
-/**
  * Rebind a bead's lineage to the waiting lane it now sits in (UI-04vo §2).
  *
  * A bead stays in its lane for the whole life of its attempt, so occupancy and
@@ -5121,7 +5080,6 @@ export function createQueueStore(options = {}) {
    *
    * @type {Map<string, Set<string>>}
    */
-  const disarmed_on_load = new Map();
 
   /**
    * @param {string} workspace
@@ -5178,45 +5136,19 @@ export function createQueueStore(options = {}) {
     auto_advance_at_shutdown.set(key, persisted_auto_advance);
     // Restart safety defaults OFF; only the verified self-deploy path may restore it.
     q.auto_advance = false;
-    // Same reason, same place (UI-jaua §5.1): the server did not watch what
-    // happened while it was down, so no cross lane keeps dispatching across a
-    // restart. Both waiting areas and `pr_wait` are swept (UI-tjus §3.2) — a
-    // serial row can carry an arm too, and the `pr_wait` row carries the arm
-    // that the merge registration reads. The cleared ids are remembered in
-    // memory so the lane can say WHY it stopped instead of looking
-    // never-started.
-    /** @type {Set<string>} */
-    const disarmed = new Set();
-    for (const entry of [...waitingAreaEntries(q), ...q.pr_wait]) {
-      if (
-        typeof entry.armed_by_lane === 'string' &&
-        entry.armed_by_lane.length > 0
-      ) {
-        disarmed.add(entry.armed_by_lane);
-      }
-      delete entry.armed_by_lane;
-    }
-    disarmed_on_load.set(key, disarmed);
     cache.set(key, q);
     return q;
   }
 
   /**
-   * Clone a queue for a consumer OUTSIDE the store and attach the transient
-   * `disarmed_on_load` set (UI-jaua §5.1). Every exported snapshot goes through
-   * here; the cached queue never carries the field, so {@link persist} cannot
-   * write it.
+   * Clone a queue for a consumer outside the store.
    *
    * @param {string} workspace
    * @param {Queue} q
    * @returns {Queue}
    */
   function exportQueue(workspace, q) {
-    const out = clone(q);
-    out.disarmed_on_load = [
-      ...(disarmed_on_load.get(keyFor(workspace)) || new Set())
-    ];
-    return out;
+    return clone(q);
   }
 
   /**
@@ -6009,140 +5941,6 @@ export function createQueueStore(options = {}) {
         const [entry] = arr.splice(from, 1);
         arr.splice(clampIndex(to_index, arr.length), 0, entry);
         applyLaneBlocksOrder(next, lane, input.blocks_edges);
-        return true;
-      });
-    },
-
-    /**
-     * Arm waiting rows for a cross lane (UI-jaua §5.1/§5.3, UI-tjus §3.2).
-     * CAS-guarded like every other client op. Parallel and serial rows are one
-     * arm axis — `▶ 진행` no longer moves a serial member out of the lane the
-     * user chose, so the arm has to reach it where it sits.
-     *
-     * Bead ids that are not in this workspace's waiting area are IGNORED, not
-     * rejected: one `▶ 진행` fans out over the repos a lane spans, and each
-     * repo's op names the whole membership. Rejecting here would make a lane
-     * whose members are split across repos fail in every repo but one.
-     *
-     * The lane's existence is deliberately NOT validated — `cross-lanes.json`
-     * is server-global and this store is per-workspace (§5.3). A successful arm
-     * also drops the lane from {@link Queue.disarmed_on_load}: the user just
-     * answered the restart the flag was reporting.
-     *
-     * @param {string} workspace
-     * @param {{ expected_revision: number, bead_ids: string[], lane_id: string }} input
-     * @returns {QueueOpResult}
-     */
-    arm(workspace, input) {
-      const { expected_revision, bead_ids, lane_id } = input;
-      if (
-        typeof lane_id !== 'string' ||
-        lane_id.length === 0 ||
-        !Array.isArray(bead_ids)
-      ) {
-        return {
-          ok: false,
-          conflict: false,
-          queue: exportQueue(workspace, ensureLoaded(workspace))
-        };
-      }
-      const targets = new Set(
-        bead_ids.filter((id) => typeof id === 'string' && id.length > 0)
-      );
-      const result = applyMutation(workspace, expected_revision, (next) => {
-        // Both waiting areas and `pr_wait`, symmetric with `disarm`. The
-        // serial rows are here because a lane member keeps the serial position
-        // the user gave it (UI-tjus §3.1), and `pr_wait` is here because the
-        // arm rides that transition (§5.1): a member that was ALREADY waiting
-        // for its PR when the process restarted lives only there. Sweeping the
-        // parallel queue alone would clear the restart badge (below) while
-        // leaving those members unarmed forever, and the PR-wait member's
-        // merge registration would never resume.
-        for (const entry of [...waitingAreaEntries(next), ...next.pr_wait]) {
-          if (targets.has(entry.bead_id)) {
-            entry.armed_by_lane = lane_id;
-          }
-        }
-        return true;
-      });
-      if (result.ok) {
-        disarmed_on_load.get(keyFor(workspace))?.delete(lane_id);
-        return {
-          ...result,
-          queue: exportQueue(workspace, ensureLoaded(workspace))
-        };
-      }
-      return result;
-    },
-
-    /**
-     * Clear the cross-lane arm from rows of this workspace (UI-jaua §5.3).
-     * CAS-guarded. `bead_ids` names the rows; `lane_id` alone clears every row
-     * armed to that lane here. Both waiting areas are swept because both can
-     * carry an arm (UI-tjus §3.2), and `pr_wait` because the arm rides that
-     * transition (§5.1). Attempt snapshots are history and stay. A row's
-     * waiting POSITION is never touched — a stop revokes the authority it
-     * granted, not the seat the user chose.
-     *
-     * @param {string} workspace
-     * @param {{ expected_revision: number, bead_ids?: string[], lane_id?: string }} input
-     * @returns {QueueOpResult}
-     */
-    disarm(workspace, input) {
-      const { expected_revision, bead_ids, lane_id } = input;
-      const has_ids = Array.isArray(bead_ids);
-      const has_lane = typeof lane_id === 'string' && lane_id.length > 0;
-      if (!has_ids && !has_lane) {
-        return {
-          ok: false,
-          conflict: false,
-          queue: exportQueue(workspace, ensureLoaded(workspace))
-        };
-      }
-      const targets = has_ids
-        ? new Set(
-            /** @type {string[]} */ (bead_ids).filter(
-              (id) => typeof id === 'string' && id.length > 0
-            )
-          )
-        : null;
-      return applyMutation(workspace, expected_revision, (next) => {
-        for (const entry of [...waitingAreaEntries(next), ...next.pr_wait]) {
-          const named = targets
-            ? targets.has(entry.bead_id)
-            : entry.armed_by_lane === lane_id;
-          if (named) {
-            delete entry.armed_by_lane;
-          }
-        }
-        return true;
-      });
-    },
-
-    /**
-     * Disarm ONE waiting row after its session failed (UI-jaua §5.5).
-     * Scheduler-owned (no CAS), and scoped to the waiting area of THIS
-     * workspace: the scheduler is a per-workspace writer, so it must not reach
-     * across repos to the lane's other members. It does not need to — the bd
-     * dependency gate already holds the followers back while the failed member
-     * stays open. The failed row is found in either waiting area (UI-tjus
-     * §3.2), and only that one row is cleared. No-op (no revision bump) when
-     * the row is not armed.
-     *
-     * @param {string} workspace
-     * @param {{ bead_id: string }} input
-     * @returns {QueueOpResult}
-     */
-    disarmEntry(workspace, input) {
-      const { bead_id } = input;
-      return applyUnconditional(workspace, (next) => {
-        const entry = waitingAreaEntries(next).find(
-          (e) => e.bead_id === bead_id
-        );
-        if (!entry || typeof entry.armed_by_lane !== 'string') {
-          return false;
-        }
-        delete entry.armed_by_lane;
         return true;
       });
     },
@@ -8264,23 +8062,6 @@ export function createQueueStore(options = {}) {
         const serial_lane_id = next.attempts[attempt_id].serial_lane_id;
         if (serialLaneIndex(serial_lane_id) !== null) {
           entry.serial_lane_id = serial_lane_id;
-        }
-        // Re-plant the cross-lane arm from the ATTEMPT (UI-jaua §5.1): this
-        // transition replaces the parallel row, so the arm would otherwise
-        // vanish exactly when the merge registration needs to read it.
-        //
-        // EXCEPT for a lane this process's cold load disarmed (§5.4 재시작
-        // 복구). The attempt snapshot predates the restart, so re-planting it
-        // would restore an arm `load()` deliberately cleared and register a
-        // merge the restart was supposed to stop. The lane waits for the
-        // user's `▶ 진행`, which re-arms the row through {@link arm}.
-        const armed_by_lane = next.attempts[attempt_id].armed_by_lane;
-        if (
-          typeof armed_by_lane === 'string' &&
-          armed_by_lane.length > 0 &&
-          !disarmed_on_load.get(keyFor(workspace))?.has(armed_by_lane)
-        ) {
-          entry.armed_by_lane = armed_by_lane;
         }
         next.pr_wait.push(entry);
         return true;
