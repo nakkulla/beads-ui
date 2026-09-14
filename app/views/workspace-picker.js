@@ -1,4 +1,5 @@
 import { html, render } from 'lit-html';
+import { live } from 'lit-html/directives/live.js';
 import { debug } from '../utils/logging.js';
 
 /**
@@ -247,6 +248,7 @@ export function createWorkspacePicker(
     const available = s.workspace?.available || [];
     const hidden_set = new Set(s.workspace?.hidden || []);
     const current_path = current?.path || available[0]?.path || '';
+    const selecting_from_monitor = s.view === 'monitor';
 
     // Don't render if no workspaces available
     if (available.length === 0) {
@@ -261,7 +263,7 @@ export function createWorkspacePicker(
     );
 
     // Single visible workspace: show it as a simple label.
-    if (visible_list.length <= 1) {
+    if (visible_list.length <= 1 && !selecting_from_monitor) {
       const only = visible_list[0] || available[0];
       const name = getProjectName(only.path);
       return html`
@@ -287,14 +289,18 @@ export function createWorkspacePicker(
         <select
           class="workspace-picker__select"
           @change=${onChange}
+          .value=${live(selecting_from_monitor ? '' : current_path)}
           ?disabled=${is_switching || is_git_pulling}
           aria-label="Select project workspace"
         >
+          ${selecting_from_monitor
+            ? html`<option value="" selected disabled>프로젝트 선택</option>`
+            : ''}
           ${visible_list.map(
             (/** @type {WorkspaceInfo} */ ws) => html`
               <option
                 value="${ws.path}"
-                ?selected=${ws.path === current_path}
+                ?selected=${!selecting_from_monitor && ws.path === current_path}
                 title="${ws.path}"
               >
                 ${getProjectName(ws.path)}

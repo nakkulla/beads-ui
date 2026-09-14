@@ -1287,6 +1287,9 @@ export function bootstrap(root_element) {
     }
 
     let workspace_picker_request = 0;
+    let workspace_picker_view_revision = 0;
+    /** @type {'board'|'worker'|'monitor'|'compare'|'adr'|null} */
+    let workspace_picker_observed_view = null;
 
     /**
      * Switch a project selected from Monitor and open that project's Worker.
@@ -1296,6 +1299,7 @@ export function bootstrap(root_element) {
     async function handleWorkspacePickerChange(workspace_path) {
       const request = ++workspace_picker_request;
       const started_on_monitor = store.getState().view === 'monitor';
+      const view_revision = workspace_picker_view_revision;
       const switched = await handleWorkspaceChange(
         workspace_path,
         () => request === workspace_picker_request
@@ -1305,6 +1309,7 @@ export function bootstrap(root_element) {
         switched &&
         started_on_monitor &&
         request === workspace_picker_request &&
+        view_revision === workspace_picker_view_revision &&
         state.view === 'monitor' &&
         state.workspace.current?.path === workspace_path
       ) {
@@ -1520,6 +1525,13 @@ export function bootstrap(root_element) {
     const store = createStore({
       config: readBootstrapConfig(),
       view: last_view
+    });
+    workspace_picker_observed_view = store.getState().view;
+    store.subscribe((state) => {
+      if (state.view !== workspace_picker_observed_view) {
+        workspace_picker_observed_view = state.view;
+        workspace_picker_view_revision += 1;
+      }
     });
 
     // Route worker-queue snapshots (unified push protocol; distinct top-level

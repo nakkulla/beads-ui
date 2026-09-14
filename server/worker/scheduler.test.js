@@ -16423,6 +16423,29 @@ describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () =
     expect(env.store.snapshot(WS).admission.A?.reason).toBe('not_ready:open');
   });
 
+  test('does not bypass a prerequisite wait that also carries a defer', async () => {
+    const env = setup({
+      config: {
+        A: {
+          ready: false,
+          blocked: true,
+          status: 'open',
+          defer: 'tomorrow',
+          dependencies: [{ dependency_type: 'blocks', id: 'X' }]
+        },
+        X: { status: 'in_progress' },
+        B: {}
+      },
+      slots: 2
+    });
+    seedLanes(env.store, { s1: ['A', 'B'] });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).admission.A?.reason).toBe('not_ready:open');
+  });
+
   test('starts only the named serial target behind a proven prerequisite', async () => {
     const env = setup({
       config: {
@@ -16440,6 +16463,30 @@ describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () =
     });
     seedLanes(env.store, { s1: ['A', 'B'], parallel: ['C'] });
     env.store.setAutoAdvance(WS, false);
+    requestStartNow(WS, 'B', Date.now());
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['B']);
+  });
+
+  test('starts the later named target after an earlier named prerequisite wait', async () => {
+    const env = setup({
+      config: {
+        A: {
+          ready: false,
+          blocked: true,
+          status: 'open',
+          dependencies: [{ dependency_type: 'blocks', id: 'X' }]
+        },
+        X: { status: 'in_progress' },
+        B: {}
+      },
+      slots: 2
+    });
+    seedLanes(env.store, { s1: ['A', 'B'] });
+    env.store.setAutoAdvance(WS, false);
+    requestStartNow(WS, 'A', Date.now());
     requestStartNow(WS, 'B', Date.now());
 
     await env.scheduler.tick(WS);
@@ -16474,6 +16521,45 @@ describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () =
     const tick = env.scheduler.tick(WS);
     await vi.waitFor(() => expect(baseStarted).toBe(true));
     env.bd.statuses.X = 'closed';
+    finishBase({
+      ok: true,
+      base: 'main',
+      base_oid: 'a'.repeat(40),
+      remote: 'origin'
+    });
+    await tick;
+
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('stops a bypass when its prerequisite wait gains a defer during preparation', async () => {
+    /** @type {(value: any) => void} */
+    let finishBase = () => {};
+    let baseStarted = false;
+    /** @type {Record<string, any>} */
+    const config = {
+      A: {
+        ready: false,
+        blocked: true,
+        status: 'open',
+        dependencies: [{ dependency_type: 'blocks', id: 'X' }]
+      },
+      X: { status: 'in_progress' },
+      B: {}
+    };
+    const env = setup({
+      config,
+      slots: 2,
+      resolveBase: () => {
+        baseStarted = true;
+        return new Promise((resolve) => (finishBase = resolve));
+      }
+    });
+    seedLanes(env.store, { s1: ['A', 'B'] });
+
+    const tick = env.scheduler.tick(WS);
+    await vi.waitFor(() => expect(baseStarted).toBe(true));
+    config.A.defer = 'tomorrow';
     finishBase({
       ok: true,
       base: 'main',

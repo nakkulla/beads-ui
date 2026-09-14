@@ -5992,6 +5992,9 @@ export function createScheduler(deps) {
     if (!issue || typeof issue !== 'object') {
       return null;
     }
+    if (hasDeferReason(issue.defer)) {
+      return null;
+    }
     try {
       return await unresolvedBlockersOf(workspace, issue);
     } catch (err) {
@@ -13343,10 +13346,16 @@ export function createScheduler(deps) {
     const explicit_only = q.auto_advance !== true || q.hold !== null;
     const explicit_serial = new Map();
     for (const lane of q.serial_lanes || []) {
-      const index = lane.entries.findIndex(
-        (/** @type {{ bead_id: string, added_at?: number }} */ entry) =>
-          isStartNowEntry(workspace, entry, at)
-      );
+      let index = -1;
+      for (
+        let candidate_index = 0;
+        candidate_index < lane.entries.length;
+        candidate_index += 1
+      ) {
+        if (isStartNowEntry(workspace, lane.entries[candidate_index], at)) {
+          index = candidate_index;
+        }
+      }
       if (index >= 0) {
         explicit_serial.set(lane.id, index);
       }

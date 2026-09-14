@@ -202,6 +202,8 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     const select = /** @type {HTMLSelectElement} */ (
       document.querySelector('.workspace-picker__select')
     );
+    expect(select.value).toBe('');
+    select.value = '/tmp/ws-a';
     select.dispatchEvent(new Event('change', { bubbles: true }));
     await flush();
 
@@ -225,9 +227,11 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     bootstrap(/** @type {HTMLElement} */ (document.getElementById('app')));
     await flush();
 
-    /** @type {HTMLSelectElement} */ (
+    const select = /** @type {HTMLSelectElement} */ (
       document.querySelector('.workspace-picker__select')
-    ).dispatchEvent(new Event('change', { bubbles: true }));
+    );
+    select.value = '/tmp/ws-b';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
     await flush();
 
     expect(window.location.hash).toBe('#/monitor');
@@ -269,6 +273,46 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     await flush();
 
     expect(window.location.hash).toBe('#/board');
+  });
+
+  test('preserves Board then Monitor navigation while a picker switch is pending', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    client._reply('list-workspaces', {
+      workspaces: [
+        { path: '/tmp/ws-a', database: '/tmp/ws-a/.beads/a.db' },
+        { path: '/tmp/ws-b', database: '/tmp/ws-b/.beads/b.db' }
+      ],
+      current: { root_dir: '/tmp/ws-a', db_path: '/tmp/ws-a/.beads/a.db' },
+      hidden: []
+    });
+    /** @type {(value: any) => void} */
+    let finish = () => {};
+    client._reply(
+      'set-workspace',
+      () => new Promise((resolve) => (finish = resolve))
+    );
+    window.location.hash = '#/monitor';
+    document.body.innerHTML =
+      '<div id="workspace-picker"></div><main id="app"></main>';
+    bootstrap(/** @type {HTMLElement} */ (document.getElementById('app')));
+    await flush();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      document.querySelector('.workspace-picker__select')
+    );
+    select.value = '/tmp/ws-b';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    window.location.hash = '#/board';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    window.location.hash = '#/monitor';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    finish({
+      changed: true,
+      workspace: { root_dir: '/tmp/ws-b', db_path: '/tmp/ws-b/.beads/b.db' }
+    });
+    await flush();
+
+    expect(window.location.hash).toBe('#/monitor');
   });
 
   test('keeps the latest picker selection when replies arrive in reverse', async () => {
