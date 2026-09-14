@@ -157,9 +157,9 @@ PR #499를 재진입하여 사용자 요청 전체를 마무리한다.
 
 ## 경계·후속
 
-| 종류(형제\|발견) | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
+| 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
 | --- | --- | --- | --- | --- | --- |
-| 형제 | dotfiles/dotfiles | user_request | 정본 계약·감시 활성화 수정 잡·실제 복구는 별도 저장소의 독립 인도 단위 | UI-j9j5 | dotfiles-2mpr |
+| 형제 | dotfiles | user_request | 정본 계약·감시 활성화 수정 잡·실제 복구는 별도 저장소의 독립 인도 단위 | UI-j9j5 | dotfiles-2mpr |
 
 ## 결정 (ADR 후보)
 
