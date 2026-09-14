@@ -228,10 +228,10 @@ Analysis-hkit·dotfiles-oeo1도 동일 규칙으로 처리하며 ID 특례를 �
 
 ## 경계·후속
 
-| 종류(형제\|발견) | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
+| 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
 | --- | --- | --- | --- | --- | --- |
 | 형제 | dotfiles | user_request | 공통 계약·지침·발행기의 정본과 독립 배포 | dotfiles-oeo1 | dotfiles-9z2u |
-| 형제 | beads-ui/UI | awaited_by_consumer | Worker 실행·재개·표시와 공유 서비스 검증 | dotfiles-9z2u | UI-3vvi |
+| 형제 | beads-ui | awaited_by_consumer | Worker 실행·재개·표시와 공유 서비스 검증 | dotfiles-9z2u | UI-3vvi |
 
 UI-lmqu와 UI-b1ry의 종료·정리·숨김 조회 수정은 이미 반영되어 제외한다.
 UI-7341의 외부 계산 관측/표시는 그 소유자에 두고 관측 결과만 사용한다.
