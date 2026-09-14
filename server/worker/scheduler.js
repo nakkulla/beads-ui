@@ -624,7 +624,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * The merge-candidate verification runner. Bench scoring goes through the SAME
  * envelope so a cell's score and a PR's receipt mean the same thing in the
  * comparison table.
- * @property {{ settle: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<{ ok: boolean, reason?: string, step?: string|null, detail?: any }> }} [quickfixLanding]
+ * @property {{ settle: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<{ ok: boolean, reason?: string, step?: string|null, detail?: any }>, observeFailureFacts?: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<Record<string, unknown>> }} [quickfixLanding]
  * Worker-dispatched quick_fix landing settlement (design §6). An attachment
  * without this dep fails the landing attempt closed; it never falls back to PR
  * observation.
@@ -1948,6 +1948,13 @@ export function createScheduler(deps) {
       exit: null,
       blocked: false
     });
+    // A persisted stream can end mid-write when the server restarts. The
+    // adapters correctly call that live process result `no_result`, but after
+    // restart it is not proof that the process itself failed: retain the
+    // legacy PR/delivery observation path unless a terminal event survived.
+    if (judged.reason === 'no_result') {
+      return null;
+    }
     return /** @type {RunnerVerdict} */ ({
       ...judged,
       terminal_result: terminalResultOf(judged.summary),
@@ -5389,6 +5396,40 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Snapshot delivery evidence before a reported quick_fix failure tears down
+   * its hook record. The observer is deliberately non-settling: these facts
+   * explain what reached the remote while the session's failure still decides
+   * the attempt outcome.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @returns {Promise<Record<string, unknown>|null>}
+   */
+  async function reportedQuickfixFacts(workspace, attempt_id, bead_id) {
+    if (
+      !quickfixLaneOf(workspace, attempt_id) ||
+      typeof deps.quickfixLanding?.observeFailureFacts !== 'function'
+    ) {
+      return null;
+    }
+    try {
+      return await deps.quickfixLanding.observeFailureFacts({
+        attempt_id,
+        bead_id,
+        target_base: attemptBase(workspace, attempt_id)
+      });
+    } catch (err) {
+      log(
+        'quick_fix failure evidence observation failed for %s: %o',
+        attempt_id,
+        err
+      );
+      return { observation_error: 'failed' };
+    }
+  }
+
+  /**
    * Handle a finished session: SERVER-OBSERVED PR verdict → `pr_wait`, else the
    * failure path (auto_advance OFF + banner).
    *
@@ -5653,6 +5694,11 @@ export function createScheduler(deps) {
         verdict.terminal_result?.kind === 'failure' ||
         verdict.terminal_result?.kind === 'environment'
       ) {
+        const delivery_observation = await reportedQuickfixFacts(
+          workspace,
+          attempt_id,
+          bead_id
+        );
         await failAttempt(
           workspace,
           attempt_id,
@@ -5661,7 +5707,7 @@ export function createScheduler(deps) {
           verdict.terminal_result.kind === 'environment'
             ? 'session_hard_stop:environment'
             : 'session_failed:reported_failure',
-          undefined,
+          delivery_observation ? { delivery_observation } : undefined,
           { verdict }
         );
         notifyChanged(workspace);
@@ -7658,6 +7704,11 @@ export function createScheduler(deps) {
       persisted_verdict?.terminal_result?.kind === 'failure' ||
       persisted_verdict?.terminal_result?.kind === 'environment'
     ) {
+      const delivery_observation = await reportedQuickfixFacts(
+        workspace,
+        attempt_id,
+        bead_id
+      );
       await failAttempt(
         workspace,
         attempt_id,
@@ -7666,7 +7717,7 @@ export function createScheduler(deps) {
         persisted_verdict.terminal_result.kind === 'environment'
           ? 'session_hard_stop:environment'
           : 'session_failed:reported_failure',
-        undefined,
+        delivery_observation ? { delivery_observation } : undefined,
         { verdict: persisted_verdict }
       );
       notifyChanged(workspace);

@@ -186,7 +186,9 @@ function noChangeCloseKind(close_reason) {
  *   repoOperations: {
  *     hasConfig: (sha: string, options?: { current_target_base?: boolean }) => Promise<any>,
  *     ensureDeploy: (subject: any) => Promise<any>,
- *     waitForDeployTerminal: (operation_id: string, input: any) => Promise<any>
+ *     waitForDeployTerminal: (operation_id: string, input: any) => Promise<any>,
+ *     findExactDeployOperation?: (subject: any) => Promise<any>,
+ *     deploymentEvidence?: (operation_id: string, subject: any) => Promise<any>
  *   }|null,
  *   readPushLog?: (input: { attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string },
  *   timeline?: { append: (input: any) => unknown },
@@ -711,6 +713,206 @@ export function createQuickfixLanding(deps) {
   }
 
   /**
+   * Preserve delivery facts that already exist when the session itself reports
+   * a business failure. This is observation only: it neither resolves the
+   * Bead nor starts a deployment, so the reported failure remains authoritative
+   * while a push that already landed does not disappear with hook cleanup.
+   *
+   * @param {{ attempt_id: string, bead_id: string, target_base: string }} input
+   * @returns {Promise<Record<string, unknown>>}
+   */
+  async function observeFailureFacts(input) {
+    const { attempt_id, bead_id, target_base } = input;
+    const receipt = await readReceipt(bead_id);
+    const foreign_binding = await readForeignLanding(bead_id);
+    const landing_base =
+      foreign_binding.ok && foreign_binding.foreign
+        ? foreign_binding.foreign.base
+        : target_base;
+    let read;
+    try {
+      read = deps.readPushLog
+        ? deps.readPushLog({ attempt_id })
+        : { ok: /** @type {const} */ (false), reason: 'absent' };
+    } catch (err) {
+      log('quick_fix failure push observation failed for %s: %o', bead_id, err);
+      read = { ok: /** @type {const} */ (false), reason: 'read_failed' };
+    }
+    const pushes = read.ok
+      ? read.entries.filter(
+          (entry) => entry.remote_ref === `refs/heads/${landing_base}`
+        )
+      : [];
+    const raw_head = pushes.at(-1)?.local_oid;
+    const head_sha =
+      typeof raw_head === 'string' && /^[0-9a-f]{40}$/i.test(raw_head)
+        ? raw_head.toLowerCase()
+        : null;
+    /** @type {Record<string, unknown>} */
+    const facts = {
+      push: {
+        observed: head_sha !== null,
+        head_sha,
+        ...(head_sha === null
+          ? { reason: read.ok ? 'base_push_absent' : read.reason }
+          : {})
+      },
+      verification: receipt.ok
+        ? {
+            observed: true,
+            head_sha: receipt.sha,
+            matches_push:
+              head_sha !== null && receipt.sha.toLowerCase() === head_sha
+          }
+        : { observed: false, reason: receipt.reason },
+      remote: { state: 'unobserved', base_sha: null },
+      deployment: { state: 'unobserved' }
+    };
+    if (!foreign_binding.ok) {
+      facts.remote = { state: 'unobservable', reason: foreign_binding.reason };
+      return facts;
+    }
+    if (head_sha === null) {
+      return facts;
+    }
+
+    const foreign = foreign_binding.foreign;
+    let base;
+    let containment_cwd = repo;
+    if (foreign) {
+      const remote = await resolveForeignRemote(foreign);
+      if (!remote.ok) {
+        facts.remote = { state: 'unobservable', reason: remote.reason };
+        return facts;
+      }
+      base = await fetchForeignBase(foreign, remote.remote);
+      containment_cwd = foreign.path;
+    } else {
+      base = await fetchBase(target_base);
+    }
+    if (!base.ok) {
+      facts.remote = { state: 'unobservable', reason: 'fetch_failed' };
+      return facts;
+    }
+    let containment;
+    try {
+      containment = await deps.gitRun(
+        ['merge-base', '--is-ancestor', head_sha, base.sha],
+        { cwd: containment_cwd }
+      );
+    } catch (err) {
+      log(
+        'quick_fix failure containment observation failed for %s: %o',
+        bead_id,
+        err
+      );
+      containment = { code: 2 };
+    }
+    facts.remote = {
+      state:
+        containment.code === 0
+          ? 'contained'
+          : containment.code === 1
+            ? 'not_contained'
+            : 'unobservable',
+      base_sha: base.sha
+    };
+
+    if (foreign) {
+      const declared = await foreignDeclaresDeploy(foreign, head_sha);
+      facts.deployment = !declared.ok
+        ? { state: 'unobservable', reason: 'repo_ops_config_invalid' }
+        : declared.declared
+          ? { state: 'unsupported', reason: 'foreign_deploy_unsupported' }
+          : { state: 'not_required' };
+      return facts;
+    }
+    if (!repo_operations) {
+      facts.deployment = { state: 'unavailable' };
+      return facts;
+    }
+    let config;
+    try {
+      config = await repo_operations.hasConfig(head_sha, {
+        current_target_base: true
+      });
+    } catch (err) {
+      log(
+        'quick_fix failure config observation failed for %s: %o',
+        bead_id,
+        err
+      );
+      facts.deployment = {
+        state: 'unobservable',
+        reason: 'repo_ops_config_invalid'
+      };
+      return facts;
+    }
+    if (!config.ok) {
+      facts.deployment = {
+        state: 'unobservable',
+        reason: config.code || 'repo_ops_config_invalid'
+      };
+      return facts;
+    }
+    if (!config.present) {
+      facts.deployment = { state: 'not_required' };
+      return facts;
+    }
+    if (
+      typeof repo_operations.findExactDeployOperation !== 'function' ||
+      typeof repo_operations.deploymentEvidence !== 'function'
+    ) {
+      facts.deployment = {
+        state: 'unobservable',
+        reason: 'observation_unavailable'
+      };
+      return facts;
+    }
+    try {
+      const exact = await repo_operations.findExactDeployOperation({
+        target_base,
+        bead_id,
+        merged_sha: head_sha
+      });
+      if (!exact || typeof exact.operation_id !== 'string') {
+        facts.deployment = {
+          state: 'absent',
+          ...(exact?.code ? { reason: exact.code } : {})
+        };
+        return facts;
+      }
+      const evidence = await repo_operations.deploymentEvidence(
+        exact.operation_id,
+        { target_base, merged_sha: head_sha }
+      );
+      facts.deployment = {
+        state:
+          typeof evidence?.state === 'string' ? evidence.state : 'unobservable',
+        operation_id:
+          typeof evidence?.operation_id === 'string'
+            ? evidence.operation_id
+            : exact.operation_id,
+        ...(typeof evidence?.covered_operation_id === 'string'
+          ? { covered_operation_id: evidence.covered_operation_id }
+          : {}),
+        ...(evidence?.code ? { reason: evidence.code } : {})
+      };
+    } catch (err) {
+      log(
+        'quick_fix failure deploy observation failed for %s: %o',
+        bead_id,
+        err
+      );
+      facts.deployment = {
+        state: 'unobservable',
+        reason: 'observation_failed'
+      };
+    }
+    return facts;
+  }
+
+  /**
    * Close with confirming readback. A write that returned before readback
    * failure may have landed, so its caller restores `resolved` on failure.
    *
@@ -765,11 +967,7 @@ export function createQuickfixLanding(deps) {
     }
     let residue;
     try {
-      residue = await deps.worktree.removeIfDiscardable({
-        repo,
-        bead_id,
-        base: fetched.sha
-      });
+      residue = await cleanupBranch(bead_id, fetched.sha);
     } catch (err) {
       log(
         'quick_fix no-change residue removal failed for %s: %o',
@@ -791,9 +989,10 @@ export function createQuickfixLanding(deps) {
       );
       return fail(
         attempt_id,
-        'worktree_remove_failed',
+        residue.reason,
         'no_change_close',
-        null
+        null,
+        residue.detail ? { cleanup_detail: residue.detail } : undefined
       );
     }
     deps.store.moveToDone(workspace, {
@@ -1297,5 +1496,5 @@ export function createQuickfixLanding(deps) {
     return { ok: true };
   }
 
-  return { settle };
+  return { settle, observeFailureFacts };
 }

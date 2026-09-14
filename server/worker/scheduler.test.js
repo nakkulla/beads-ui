@@ -11701,6 +11701,116 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
   });
 
+  test('keeps an incomplete persisted stream on recovered PR observation', async () => {
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'UI-1', 'att-1');
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      `${JSON.stringify({ type: 'item.started', item: { type: 'command_execution' } })}\n`
+    );
+    const env = reconcileEnv(
+      { alive: false, started_at: null },
+      { 'UI-1': {} },
+      { sessionLog }
+    );
+    seedDetachedAttempt(env.store, { runner: 'codex', log_path });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.verify.verifyPrSubmitted).toHaveBeenCalledWith({
+      bead_id: 'UI-1',
+      repo: '/repo'
+    });
+    expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('done');
+  });
+
+  test('keeps an incomplete persisted quick_fix stream on delivery observation', async () => {
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'UI-1', 'att-1');
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      `${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'still working' } })}\n`
+    );
+    /** @type {ReturnType<typeof reconcileEnv>} */
+    let env;
+    const settle = vi.fn(async ({ attempt_id, bead_id }) => {
+      env.store.moveToDone(WS, {
+        attempt_id,
+        bead_id,
+        patch: { status: 'done', finished_at: 1000 }
+      });
+      return { ok: true };
+    });
+    env = reconcileEnv(
+      { alive: false, started_at: null },
+      { 'UI-1': { route: 'quick_fix', target_base: 'release' } },
+      { sessionLog, quickfixLanding: { settle } }
+    );
+    seedDetachedAttempt(env.store, {
+      runner: 'codex',
+      log_path,
+      quickfix_lane: true,
+      target_base: 'release'
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(settle).toHaveBeenCalledWith({
+      attempt_id: 'att-1',
+      bead_id: 'UI-1',
+      target_base: 'release'
+    });
+    expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('done');
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('preserves recovered quick_fix failure facts without settling delivery', async () => {
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'UI-1', 'att-1');
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      `${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '실패 · sync conflict' })}\n`
+    );
+    const settle = vi.fn(async () => ({ ok: true }));
+    const delivery_observation = {
+      push: { observed: true, head_sha: 'a'.repeat(40) },
+      remote: { state: 'contained', base_sha: 'b'.repeat(40) },
+      deployment: { state: 'not_required' }
+    };
+    const observeFailureFacts = vi.fn(async () => delivery_observation);
+    const env = reconcileEnv(
+      { alive: false, started_at: null },
+      { 'UI-1': { route: 'quick_fix', target_base: 'release' } },
+      {
+        sessionLog,
+        quickfixLanding: { settle, observeFailureFacts }
+      }
+    );
+    seedDetachedAttempt(env.store, {
+      runner: 'claude',
+      log_path,
+      quickfix_lane: true,
+      target_base: 'release'
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1']).toMatchObject({
+      status: 'failed',
+      cause: 'session_failed:reported_failure',
+      cause_detail: {
+        summary: '실패 · sync conflict',
+        delivery_observation
+      }
+    });
+    expect(observeFailureFacts).toHaveBeenCalledOnce();
+    expect(settle).not.toHaveBeenCalled();
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
   /**
    * Persist a `running` `review_session` exactly as a PRIOR process left it:
    * the durable record survived the restart, its in-memory handle and its bead
@@ -19578,7 +19688,17 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
       ok: false,
       reason: 'delivery_unproven:push_log_absent'
     }));
-    const env = setup({ config, slots: 1, quickfixLanding: { settle } });
+    const delivery_observation = {
+      push: { observed: true, head_sha: 'a'.repeat(40) },
+      remote: { state: 'contained', base_sha: 'b'.repeat(40) },
+      deployment: { state: 'succeeded', operation_id: 'deploy-1' }
+    };
+    const observeFailureFacts = vi.fn(async () => delivery_observation);
+    const env = setup({
+      config,
+      slots: 1,
+      quickfixLanding: { settle, observeFailureFacts }
+    });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
 
@@ -19596,7 +19716,15 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
     expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
       status: 'failed',
       cause: 'session_failed:reported_failure',
-      cause_detail: { summary: '실패 · 동기화 충돌' }
+      cause_detail: {
+        summary: '실패 · 동기화 충돌',
+        delivery_observation
+      }
+    });
+    expect(observeFailureFacts).toHaveBeenCalledWith({
+      attempt_id: 'S1-1000-1',
+      bead_id: 'S1',
+      target_base: 'release'
     });
   });
 
