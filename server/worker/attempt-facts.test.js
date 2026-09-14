@@ -10,6 +10,7 @@ import {
   shellQuote,
   workflowScriptDir
 } from './attempt-facts.js';
+import { applyPreamble } from './runner/preamble.js';
 
 const HOME = '/home/tester';
 const SCRIPTS = workflowScriptDir(HOME);
@@ -250,6 +251,34 @@ describe('worker/attempt-facts skill paths (UI-wi12)', () => {
 });
 
 describe('worker/attempt-facts script calls (spec D1)', () => {
+  test.each(/** @type {const} */ (['claude', 'codex']))(
+    'preserves the workflow judgment handoff in the %s preamble',
+    async (controller_runtime) => {
+      const script_dir = workflowScriptDir(HOME, controller_runtime);
+      const facts = await buildAttemptFacts(
+        factsInput({ controller_runtime }),
+        {
+          homeDir: HOME,
+          fs: fakeFs({
+            [path.join(script_dir, 'stale-rereview-inputs.py')]: ''
+          })
+        }
+      );
+
+      const { system_prompt } = applyPreamble('작업을 완료하라.', {
+        attempt_facts: facts,
+        runtime: controller_runtime
+      });
+
+      expect(system_prompt).toContain('stale-rereview-inputs.py');
+      expect(system_prompt).toContain('references/execution-spec-backed.md');
+      expect(system_prompt).toContain('Staleness re-review');
+      expect(system_prompt).toContain('needs_judgment');
+      expect(system_prompt).toContain('verdict_draft_blockers');
+      expect(system_prompt).not.toContain('스스로 판정을 다시 만들지 않는다');
+    }
+  );
+
   test('names the attempt runner as the selector controller runtime', () => {
     const calls = buildScriptCalls(
       {

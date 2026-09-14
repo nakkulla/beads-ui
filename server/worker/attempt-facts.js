@@ -289,7 +289,7 @@ export function buildScriptCalls(input, deps) {
   if (installed('stale-rereview-inputs.py')) {
     calls.push({
       command: `python3 ${script('stale-rereview-inputs.py')} ${input.bead_id} --json`,
-      note: '출력에 `verdict_draft`가 있으면 그 값으로 staleness 레인을 끝낸다 — 스스로 판정을 다시 만들지 않는다.'
+      note: '출력은 workflow `references/execution-spec-backed.md`의 `Staleness re-review` 절차를 따른다. `needs_judgment`는 최종 판정이 아니며 `verdict_draft_blockers`가 지정한 항목을 비교한 뒤 정본 절차로 분류·기록한다.'
     });
   }
   if (installed('impl-selector.py') && input.route && input.worktree) {
