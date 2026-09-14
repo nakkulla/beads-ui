@@ -11,6 +11,8 @@ const FIXTURE_DIR = path.join(
 );
 
 const FINISHED_AT = Date.parse('2026-09-08T09:00:00Z');
+const WORKSPACE_CREDITS_MESSAGE =
+  'Your workspace is out of credits. Ask your workspace owner to refill in order to continue.';
 
 /**
  * Read one captured `codex exec --json` stream as parsed events.
@@ -139,6 +141,93 @@ describe('codex provider outage classifier', () => {
     });
 
     expect(outage?.resets_at).toEqual(Date.parse('2026-09-08T12:00:00Z'));
+  });
+
+  test.each([
+    [
+      'turn.failed',
+      { type: 'turn.failed', error: { message: WORKSPACE_CREDITS_MESSAGE } }
+    ],
+    ['top-level error', { type: 'error', message: WORKSPACE_CREDITS_MESSAGE }]
+  ])(
+    'classifies workspace-credit exhaustion in %s as an account usage limit',
+    (_name, event) => {
+      const raw = [event];
+
+      const outage = classifyProviderOutage({ raw, finished_at: FINISHED_AT });
+
+      expect(outage).toEqual({
+        detail: 'usage_limit',
+        message: WORKSPACE_CREDITS_MESSAGE,
+        scope: 'account',
+        resets_at: null
+      });
+    }
+  );
+
+  test.each([
+    [
+      'agent message',
+      { type: 'agent_message', text: WORKSPACE_CREDITS_MESSAGE }
+    ],
+    [
+      'warning error item',
+      { type: 'error', message: WORKSPACE_CREDITS_MESSAGE }
+    ]
+  ])('ignores workspace-credit exhaustion quoted in an %s', (_name, item) => {
+    const raw = [
+      { type: 'item.completed', item },
+      { type: 'turn.completed', usage: { input_tokens: 1 } }
+    ];
+
+    const outage = classifyProviderOutage({ raw, finished_at: FINISHED_AT });
+
+    expect(outage).toBeNull();
+  });
+
+  test('ignores workspace-credit exhaustion in stderr without structured evidence', () => {
+    /** @type {any[]} */
+    const raw = [];
+
+    const outage = classifyProviderOutage({
+      raw,
+      stderr_tail: WORKSPACE_CREDITS_MESSAGE,
+      finished_at: FINISHED_AT
+    });
+
+    expect(outage).toBeNull();
+  });
+
+  test('ignores a structured failure that merely mentions credits', () => {
+    const raw = [
+      { type: 'error', message: 'Failed to fetch workspace credits.' }
+    ];
+
+    const outage = classifyProviderOutage({ raw, finished_at: FINISHED_AT });
+
+    expect(outage).toBeNull();
+  });
+
+  test.each([400, 401, 403])(
+    'preserves a %s envelope that quotes the workspace-credit message',
+    (status) => {
+      const raw = shapedEnvelope(status, WORKSPACE_CREDITS_MESSAGE);
+
+      const outage = classifyProviderOutage({ raw, finished_at: FINISHED_AT });
+
+      expect(outage).toBeNull();
+    }
+  );
+
+  test('preserves the first outage before a workspace-credit failure', () => {
+    const raw = [
+      ...shapedEnvelope(503, 'The service is temporarily unavailable.'),
+      { type: 'turn.failed', error: { message: WORKSPACE_CREDITS_MESSAGE } }
+    ];
+
+    const outage = classifyProviderOutage({ raw, finished_at: FINISHED_AT });
+
+    expect(outage).toMatchObject({ detail: 'http_503', scope: 'provider' });
   });
 
   test('leaves resets_at null when the payload carries none', () => {
