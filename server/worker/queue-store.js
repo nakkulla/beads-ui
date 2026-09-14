@@ -7197,17 +7197,9 @@ export function createQueueStore(options = {}) {
         ensureLoaded(workspace).attempts[attempt_id]?.status;
       const terminal =
         patch.status === 'paused' ||
-        patch.status === 'stopped' ||
-        patch.status === 'discarded' ||
-        patch.status === 'done' ||
-        patch.status === 'failed' ||
-        patch.status === 'orphaned' ||
+        TERMINAL_ATTEMPT_STATUSES.has(patch.status ?? '') ||
         current_status === 'paused' ||
-        current_status === 'stopped' ||
-        current_status === 'discarded' ||
-        current_status === 'done' ||
-        current_status === 'failed' ||
-        current_status === 'orphaned';
+        TERMINAL_ATTEMPT_STATUSES.has(current_status ?? '');
       const prepared = terminal
         ? terminalReceiptPatch(workspace, attempt_id, patch)
         : { patch, files: [], drain: undefined };

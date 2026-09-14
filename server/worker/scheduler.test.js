@@ -10,7 +10,7 @@ import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { install as guardHookInstall } from './guard-hook.js';
 import { resolveExecSettings } from './policy.js';
 import { RETRY_DELAYS_MS } from './queue-hold.js';
-import { createQueueStore } from './queue-store.js';
+import { TERMINAL_ATTEMPT_STATUSES, createQueueStore } from './queue-store.js';
 import { claudeSpec } from './runner/claude.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
@@ -17022,32 +17022,76 @@ describe('scheduler delegation monitor wiring', () => {
     ]);
   });
 
-  test('recovers terminal delegation summaries after restart', async () => {
+  test.each([...TERMINAL_ATTEMPT_STATUSES, 'paused'])(
+    'recovers delayed evidence once for a %s attempt after restart',
+    async (status) => {
+      const env = setup({ config: { S1: {} } });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'recovery-attempt',
+          bead_id: 'S1',
+          status: /** @type {import('./queue-store.js').Attempt['status']} */ (
+            status
+          )
+        }
+      });
+      writeDelegationStream('recovery-attempt', [
+        {
+          turn_id: null,
+          recorded_at: '2026-08-18T04:27:00.000Z',
+          event: { type: 'session.started' }
+        }
+      ]);
+      writeUsageReceipt('recovery-attempt', 'launch-1');
+
+      await env.scheduler.reconcile(WS);
+      const recovered_revision = env.store.snapshot(WS).revision;
+      await env.scheduler.reconcile(WS);
+
+      expect(
+        env.store.snapshot(WS).attempts['recovery-attempt'].delegation_sessions
+      ).toMatchObject([{ launch_id: 'launch-1', status: 'interrupted' }]);
+      expect(
+        env.store.snapshot(WS).attempts['recovery-attempt'].usage_legs
+      ).toHaveLength(1);
+      expect(
+        fs.existsSync(
+          path.join(
+            usageReceiptInboxDir(WS, 'recovery-attempt'),
+            'launch-1.json'
+          )
+        )
+      ).toBe(false);
+      expect(env.store.snapshot(WS).revision).toBe(recovered_revision);
+    }
+  );
+
+  test('preserves the placement revision after repeated waiting recovery', async () => {
     const env = setup({ config: { S1: {} } });
     env.store.appendAttempt(WS, {
       expected_revision: env.store.snapshot(WS).revision,
       attempt: {
-        attempt_id: 'paused-attempt',
+        attempt_id: 'waiting-attempt',
         bead_id: 'S1',
-        status: 'paused'
+        status: 'waiting'
       }
     });
-    writeDelegationStream('paused-attempt', [
-      {
-        turn_id: null,
-        recorded_at: '2026-08-18T04:27:00.000Z',
-        event: { type: 'session.started' }
-      }
+    writeUsageReceipt('waiting-attempt');
+    await env.scheduler.reconcile(WS);
+    const observed_revision = env.store.snapshot(WS).revision;
+
+    await env.scheduler.reconcile(WS);
+    const placement = env.store.place(WS, {
+      bead_id: 'S2',
+      lane: 's1',
+      expected_revision: observed_revision
+    });
+
+    expect(placement).toMatchObject({ ok: true, conflict: false });
+    expect(placement.queue.serial_lanes[0].entries).toMatchObject([
+      { bead_id: 'S2' }
     ]);
-
-    await env.scheduler.reconcile(WS);
-    const recovered_revision = env.store.snapshot(WS).revision;
-    await env.scheduler.reconcile(WS);
-
-    expect(
-      env.store.snapshot(WS).attempts['paused-attempt'].delegation_sessions
-    ).toMatchObject([{ launch_id: 'launch-1', status: 'interrupted' }]);
-    expect(env.store.snapshot(WS).revision).toBe(recovered_revision);
   });
 
   test('keeps delegation summary when a delayed receipt merges later', async () => {

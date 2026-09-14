@@ -10,6 +10,7 @@ import {
   GUARD_WARNINGS_CAP,
   GUARD_WARNING_COMMAND_MAX,
   LANE_RELEASING_ATTEMPT_STATUSES,
+  TERMINAL_ATTEMPT_STATUSES,
   createQueueStore,
   makeAttempt,
   orderLaneByBlocks,
@@ -3159,47 +3160,57 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
     ]);
   });
 
-  test('persists terminal receipt legs before consuming their files', () => {
-    const store = createQueueStore();
-    store.appendAttempt(WS, {
-      expected_revision: 0,
-      attempt: { attempt_id: 'receipt-attempt', bead_id: 'UI-receipt' }
-    });
-    const inbox = usageReceiptInboxDir(WS, 'receipt-attempt');
-    ensureUsageReceiptInbox(WS, 'receipt-attempt');
-    const receipt_file = path.join(inbox, 'launch-1.json');
-    fs.writeFileSync(
-      receipt_file,
-      JSON.stringify({
-        schema: 'codex-usage-receipt-v1',
-        receipt_id: 'launch-1',
+  test.each([...TERMINAL_ATTEMPT_STATUSES, 'paused', 'running'])(
+    'settles receipt evidence according to the %s transition',
+    (status) => {
+      const store = createQueueStore();
+      store.appendAttempt(WS, {
+        expected_revision: 0,
+        attempt: { attempt_id: 'receipt-attempt', bead_id: 'UI-receipt' }
+      });
+      const inbox = usageReceiptInboxDir(WS, 'receipt-attempt');
+      ensureUsageReceiptInbox(WS, 'receipt-attempt');
+      const receipt_file = path.join(inbox, 'launch-1.json');
+      fs.writeFileSync(
+        receipt_file,
+        JSON.stringify({
+          schema: 'codex-usage-receipt-v1',
+          receipt_id: 'launch-1',
+          attempt_id: 'receipt-attempt',
+          provider: 'codex',
+          role: 'implementation',
+          thread_id: 'thread-1',
+          turn_id: 'turn-1',
+          model: 'gpt-5.6-terra',
+          usage: {
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_output_tokens: 0
+          },
+          completed_at: '2026-08-11T12:34:56Z'
+        }),
+        { mode: 0o600 }
+      );
+
+      const result = store.updateAttempt(WS, {
         attempt_id: 'receipt-attempt',
-        provider: 'codex',
-        role: 'implementation',
-        thread_id: 'thread-1',
-        turn_id: 'turn-1',
-        model: 'gpt-5.6-terra',
-        usage: {
-          input_tokens: 1,
-          output_tokens: 2,
-          cache_read_input_tokens: 0,
-          cache_creation_input_tokens: 0,
-          reasoning_output_tokens: 0
-        },
-        completed_at: '2026-08-11T12:34:56Z'
-      }),
-      { mode: 0o600 }
-    );
+        patch: {
+          status: /** @type {import('./queue-store.js').Attempt['status']} */ (
+            status
+          )
+        }
+      });
 
-    const result = store.updateAttempt(WS, {
-      attempt_id: 'receipt-attempt',
-      patch: { status: 'done' }
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.queue.attempts['receipt-attempt'].usage_legs).toHaveLength(1);
-    expect(fs.existsSync(receipt_file)).toBe(false);
-  });
+      expect(result.ok).toBe(true);
+      const terminal = status !== 'running';
+      expect(
+        createQueueStore().load(WS).attempts['receipt-attempt'].usage_legs
+      ).toHaveLength(terminal ? 1 : 0);
+      expect(fs.existsSync(receipt_file)).toBe(!terminal);
+    }
+  );
 
   test('persists finalized delegation sessions without consuming monitor files', () => {
     const store = createQueueStore();
