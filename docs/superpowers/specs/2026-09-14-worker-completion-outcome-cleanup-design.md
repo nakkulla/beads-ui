@@ -174,10 +174,10 @@ PR의 원격 topic branch 정리는 기존 원격 소유권/포함 검증 경로
 
 ## 8. 경계·후속
 
-| 종류(형제\|발견) | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
+| 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
 | --- | --- | --- | --- | --- | --- |
-| 형제 | dotfiles / dotfiles | user_request | 공통 종료·표식·로컬 적용 계약의 정본 | 없음 | dotfiles-mub8 |
-| 형제 | Cortex / Cortex | user_request | 사용자 볼트 파일 반영과 의미 충돌 조정 | dotfiles-mub8 | Cortex-2nf |
+| 형제 | dotfiles | user_request | 공통 종료·표식·로컬 적용 계약의 정본 | 없음 | dotfiles-mub8 |
+| 형제 | Cortex | user_request | 사용자 볼트 파일 반영과 의미 충돌 조정 | dotfiles-mub8 | Cortex-2nf |
 
 Stop 알림, 공급자 장애 프로브, 승인·리뷰 위조 방지, 원격 merge/배포 안전성은 유지한다.
 연결 레인 제거 작업 UI-wc67의 선행 의존 계산은 바꾸지 않으며 선행 대기 회귀로 호환을 확인한다.
