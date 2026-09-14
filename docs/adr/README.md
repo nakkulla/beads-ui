@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| UI-j9j5 | [수정 잡의 원자적 예약과 실제 성공으로 원래 실패를 완료한다](UI-j9j5-post-merge-job-repair-succession.md) | 2026-09-15 | post-merge 잡은 기존 RepoOperation 봉투를 유지하고 명시적 수정 선언의 원자적 예약과 성공 승계로 원래 실패를 완료한다 |
 | UI-42l2-2 | [직접 세션 카드는 현재 참조 대화 전체 사용량을 표시하고 워크스페이스 합계에는 가산하지 않는다](UI-42l2-2-direct-session-current-conversation-usage.md) | 2026-09-11 | 직접 세션 카드의 사용량은 현재 참조 대화 전체이며 Bead별 비용으로 나누거나 워크스페이스 합계에 자동 가산하지 않는다 |
 | UI-42l2 | [Codex native child의 개별 사용량과 환산 비용은 카드에 표시하고 부모 합계에서는 제외한다](UI-42l2-codex-native-child-card-usage-not-summed.md) | 2026-09-11 | Codex native child의 개별 사용량과 환산 비용은 카드·상세에 표시하고 중복 여부가 미확인된 값은 부모 합계에 더하지 않는다 |
 | UI-o5ll | [공급자 보류의 해제는 프로브만이 판정한다 — outage 프로브에는 상한이 없고 사람의 ↻ 지금 프로브는 그 판정을 앞당길 뿐 target을 지우지 않는다](UI-o5ll-provider-hold-release-is-probe-only-no-cap-manual-probe-now.md) | 2026-09-10 | 공급자 보류의 해제는 프로브만이 판정한다 — outage 프로브에는 상한이 없고 백오프 상한은 1시간이며, 사람의 `↻ 지금 프로브`는 그 판정을 앞당길 뿐 target을 지우지 않는다. 상한에 걸린 계정 한도 target도 그 조작으로 다시 프로브된다. |
@@ -28,7 +29,6 @@
 | 0031 | [impl_review 신선도는 ancestry로 판정하고 영수증 보류의 출구는 head당 1회 리뷰 lineage와 [리뷰 후 머지]다](0031-impl-review-ancestry-and-hold-exit.md) | 2026-09-03 | impl_review 영수증은 관측된 head와 같거나 그 조상이면 유효하고 head 이동만으로는 재리뷰가 걸리지 않으며 resolver 커밋에도 예외가 없다. 영수증이 없거나 조상이 아니면 머지는 terminal 실패가 아니라 보류이고, 그 출구는 ADR 0019의 head당 1회 자동 리뷰 lineage와 [리뷰 후 머지] 클릭이며 사람 클릭만이 유일한 출구는 아니다. |
 | 0025 | [issue-detail은 워크스페이스 스냅샷 세대에서 투영한다](0025-issue-detail-projected-from-workspace-snapshot.md) | 2026-09-03 | issue-detail은 워크스페이스 스냅샷 세대에서 투영하며 dependents·provenance는 세대의 간선 인덱스로 만들고 상세 전용 bd read는 없다 |
 | 0024 | [폐기 실패의 출구는 셋이고 [폐기 포기]는 아카이브 단계 전용 terminal abandoned다](0024-discard-failure-exits-and-terminal-abandoned.md) | 2026-09-03 | 사용자 개시 작업 실패의 재진입은 자동 알림 뒤 사람 클릭뿐이라는 0022를 승계하되, 폐기 실패의 출구는 재클릭·[폐기 포기]·[세션에서 해결] 셋으로 닫힌다. [폐기 포기]는 아카이브 단계 실패에서만 runner를 되살리고 bead를 폐기 이전 자리로 돌려놓는 terminal `abandoned`이며, 뒤 phase의 실패와 소유권 판정 불능에서는 허용하지 않는다 |
-| 0030 | [post-merge 잡은 RepoOperation kind job 봉투로 실행하고 원장은 queue.json 맵이다](0030-post-merge-job-repo-operation-envelope.md) | 2026-09-01 | post-merge 잡은 RepoOperation kind `job`으로 deploy 봉투를 재사용해 실행하고 적용 원장은 `queue.json`의 `<파일명>@<blob SHA>` 맵이다 |
 | 0029 | [살아 있는 queue.attempts는 bead 이력의 최신 접미라는 불변식으로 이관을 판정한다](0029-queue-attempts-suffix-invariant.md) | 2026-08-29 | 살아 있는 `queue.attempts`는 bead 이력의 최신 접미이며, 처리 완료 attempt는 같은 bead의 더 오래된 attempt가 전부 이관 가능할 때만 큐를 떠난다. "마지막 구현 attempt" 판정은 라이브 큐만 보고 합집합 조회를 쓰지 않는다. |
 | 0021 | [review_session의 생존·슬롯·정산 시작은 scheduler reconcile이, 결과 판정은 큐가 소유한다](0021-review-session-lifecycle-owned-by-scheduler-reconcile.md) | 2026-08-29 | review_session은 구현 attempt와 같은 reconcile pid probe로 생존·슬롯 점유·정산 시작을 판정하고 죽은 세션의 결과는 큐의 complete()가 영수증으로 판정하며 살아 있는 리뷰어를 죽이는 부팅 종료는 두지 않는다 |
 | 0020 | [blocks 의존은 구현 실행 진입만 막고 spec·plan 작성은 blocked Bead에서도 진행한다](0020-blocks-edge-gates-implementation-entry-only.md) | 2026-08-29 | blocks 의존은 구현 진입(in_progress claim)만 막는다; 세션은 blocked Bead의 spec·plan을 쓰고 게이트 착지에서 끝나며, 선행 결과가 설계 전제인 경우만 spec-after-blocker 라벨로 spec을 미룬다 |
@@ -60,6 +60,7 @@
 | 0022 | [needs_human은 자동 알림으로 관측되고 재진입은 두 클릭뿐이다](0022-needs-human-auto-notify-click-driven-reentry.md) | superseded | [0024](0024-discard-failure-exits-and-terminal-abandoned.md) |
 | 0023 | [waiting 복귀 트리거는 cadence가 아니라 이벤트 구독이다](0023-waiting-return-event-subscription-not-cadence.md) | superseded | [0034](0034-return-rescan-candidates-include-prerequisite-unmet-admission.md) |
 | 0026 | [워크스페이스 투영 경로는 동기 자식 프로세스를 띄우지 않는다](0026-projection-path-spawns-no-sync-child-process.md) | superseded | [0043](0043-candidate-projection-reads-async-probe-context-only.md) |
+| 0030 | [post-merge 잡은 RepoOperation kind job 봉투로 실행하고 원장은 queue.json 맵이다](0030-post-merge-job-repo-operation-envelope.md) | superseded | [UI-j9j5](UI-j9j5-post-merge-job-repair-succession.md) |
 | 0032 | [실행 프리셋은 레인 무관 프로파일이고 워크스페이스가 일반·quick_fix 두 레인에 각각 적용한다](0032-execution-preset-is-lane-neutral-applied-per-lane.md) | superseded | [UI-s8qn](UI-s8qn-impl-runtime-auto-derives-no-provider-inherit-retired-lane-apply.md) |
 | 0035 | [연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다](0035-lane-confirm-writes-deps-only-run-places-and-arms.md) | superseded | [0041](0041-connected-run-preserves-waiting-lanes.md) |
 | 0047 | [Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다](0047-codex-native-child-internal-observation-not-summed.md) | superseded | [UI-42l2](UI-42l2-codex-native-child-card-usage-not-summed.md) |
