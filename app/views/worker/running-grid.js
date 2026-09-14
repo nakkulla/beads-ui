@@ -115,6 +115,8 @@ import { logPathTemplate } from './log-path.js';
  * @property {boolean} [can_pause] - Running attempt whose session id is already
  * captured. Pausing before that would strand an unresumable attempt, so the ⏸
  * button renders disabled until it lands (§2.1).
+ * @property {boolean} [can_resume] - A held attempt whose recorded session is
+ * available for the shared resume action.
  * @property {{ eligible: boolean, reason: string|null }} [instructions_restart] -
  * 서버가 판정한 지시 재시작 자격 (UI-qce9 §5). 키가 없으면 버튼을 그리지 않고,
  * `eligible:false`면 비활성 버튼과 `reason` 툴팁이다 — 사실 자체는 참이므로
@@ -205,6 +207,7 @@ import { logPathTemplate } from './log-path.js';
  * @property {Array<{ id: string, rig: string|null, status: string }>} blockers
  * @property {number|null} since - 이 attempt가 대기로 마감된 시각.
  * @property {boolean} [returning]
+ * @property {'base_moved'} [cause]
  */
 
 /**
@@ -1062,9 +1065,11 @@ function heldBodyTemplate(
   const summary = summaryText(held?.summary);
   if (kind === 'waiting') {
     return html`${summary
-        ? html`<p class="rtile__held-summary">${summary}</p>`
-        : ''}${dependency_chips}
-      <div class="rtile__foot">${discard_actions}</div>`;
+      ? html`<p class="rtile__held-summary">${summary}</p>`
+      : ''}${dependency_chips}
+    ${discard_actions
+      ? html`<div class="rtile__foot">${discard_actions}</div>`
+      : ''}`;
   }
   // 파킹 타일도 같은 블록을 싣는다 (§9): 팝오버가 없는 타일이므로 이력이
   // 보일 자리가 본문뿐이다.
@@ -1125,6 +1130,17 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     !parked &&
     !retry_wait &&
     !waiting;
+  const base_moved_resume_button =
+    waiting && tile.wait?.cause === 'base_moved' && tile.can_resume === true
+      ? html`<button
+          type="button"
+          class="op-btn rtile__resume"
+          title="보존한 후보를 같은 세션에서 최신 기준에 다시 반영합니다"
+          aria-label="이어하기"
+        >
+          ↻ 이어하기
+        </button>`
+      : '';
   const park = parked ? tile.failure || null : null;
   const wait = waiting ? tile.wait || null : null;
   const hold = provider_hold ? tile.hold || null : null;
@@ -1139,7 +1155,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           : retry_wait
             ? '재시도 대기'
             : waiting
-              ? '선행 대기'
+              ? wait?.cause === 'base_moved'
+                ? '반영 대기'
+                : '선행 대기'
               : provider_hold
                 ? '공급자 보류'
                 : tile.status === 'orphaned'
@@ -1305,17 +1323,23 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           >${retryWaitBadgeText(tile.retry)}</span
         >`
       : waiting
-        ? tile.wait?.returning
+        ? tile.wait?.cause === 'base_moved'
           ? html`<span
               class="rtile__held-badge"
-              title="막고 있던 선행이 남지 않았습니다 — 다음 pass에서 후보로 돌아갑니다 (슬롯·레인 순서 대기)"
-              >⛓ 복귀 대기</span
+              title="검증된 후보를 보존했습니다 — 같은 세션에서 최신 기준 반영을 이어갑니다"
+              >반영 대기</span
             >`
-          : html`<span
-              class="rtile__held-badge"
-              title="세션이 선행 미충족으로 착수를 거부했습니다 — 선행이 닫히면 저절로 다시 돕니다"
-              >⛓ 선행 대기</span
-            >`
+          : tile.wait?.returning
+            ? html`<span
+                class="rtile__held-badge"
+                title="막고 있던 선행이 남지 않았습니다 — 다음 pass에서 후보로 돌아갑니다 (슬롯·레인 순서 대기)"
+                >⛓ 복귀 대기</span
+              >`
+            : html`<span
+                class="rtile__held-badge"
+                title="세션이 선행 미충족으로 착수를 거부했습니다 — 선행이 닫히면 저절로 다시 돕니다"
+                >⛓ 선행 대기</span
+              >`
         : provider_hold && hold
           ? html`<button
               type="button"
@@ -1470,7 +1494,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
               >`
           : html`<span class="rtile__elapsed">${elapsed}</span>`}
         ${session || held
-          ? ''
+          ? base_moved_resume_button
           : failed
             ? html`<button
                   type="button"

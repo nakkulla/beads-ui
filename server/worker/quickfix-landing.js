@@ -156,7 +156,7 @@ function noChangeCloseKind(close_reason) {
  * one is `resolved_by`, which names the Worker's own evidence-based resolve
  * (§5.3) so a reader can tell it from a session's status write.
  *
- * @typedef {{ resolved_by: string }|null|undefined} LandingExtra
+ * @typedef {{ resolved_by?: string, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }|null|undefined} LandingExtra
  */
 
 /**
@@ -179,12 +179,16 @@ function noChangeCloseKind(close_reason) {
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   worktree: {
  *     removeIfDiscardable: (input: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
+ *     removeCompleted: (input: { repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null, worktree_removed?: boolean, branch_removed?: boolean }>,
+ *     pathFor: (repo: string, bead_id: string) => string,
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   repoOperations: {
  *     hasConfig: (sha: string, options?: { current_target_base?: boolean }) => Promise<any>,
  *     ensureDeploy: (subject: any) => Promise<any>,
- *     waitForDeployTerminal: (operation_id: string, input: any) => Promise<any>
+ *     waitForDeployTerminal: (operation_id: string, input: any) => Promise<any>,
+ *     findExactDeployOperation?: (subject: any) => Promise<any>,
+ *     deploymentEvidence?: (operation_id: string, subject: any) => Promise<any>
  *   }|null,
  *   readPushLog?: (input: { attempt_id: string }) => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string },
  *   timeline?: { append: (input: any) => unknown },
@@ -317,7 +321,7 @@ export function createQuickfixLanding(deps) {
    * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|'bench_close'|null} step
    * @param {string|null} head_sha
    * @param {LandingExtra} [extra]
-   * @returns {{ ok: false, reason: string, step: string|null }}
+   * @returns {{ ok: false, reason: string, step: string|null, detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }}
    */
   function fail(attempt_id, reason, step, head_sha, extra = null) {
     // Existing needs_human/attemptFailed lanes own failure notifications.
@@ -332,7 +336,12 @@ export function createQuickfixLanding(deps) {
     });
     recordLandingStep(attempt_id, step, reason);
     notifyChanged(workspace);
-    return { ok: false, reason, step };
+    return {
+      ok: false,
+      reason,
+      step,
+      ...(extra?.cleanup_detail ? { detail: extra.cleanup_detail } : {})
+    };
   }
 
   /**
@@ -651,7 +660,7 @@ export function createQuickfixLanding(deps) {
   }
 
   /**
-   * Remove the owned worktree, then its local branch. Base-direct push creates
+   * Remove the owned worktree and local branch as one proven manager action. Base-direct push creates
    * no remote topic branch, so this cleanup deliberately performs no remote
    * branch deletion.
    *
@@ -662,50 +671,245 @@ export function createQuickfixLanding(deps) {
    *
    * @param {string} bead_id
    * @param {string} base_sha
-   * @returns {Promise<{ ok: true }|{ ok: false, reason: QuickfixLandingReason }>}
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: QuickfixLandingReason, detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }>}
    */
   async function cleanupBranch(bead_id, base_sha) {
     const branch = branchForBead(bead_id);
     try {
-      const removed = await deps.worktree.removeIfDiscardable({
+      const head = await deps.gitRun(
+        ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
+        { cwd: repo }
+      );
+      if (head.code !== 0 && head.code !== 1) {
+        return { ok: false, reason: 'worktree_remove_failed' };
+      }
+      const removed = await deps.worktree.removeCompleted({
         repo,
-        bead_id,
-        base: base_sha
+        branch,
+        expected_path: deps.worktree.pathFor(repo, bead_id),
+        expected_head: head.code === 0 ? head.stdout.trim() : '0'.repeat(40),
+        delivered_sha: base_sha
       });
       if (!removed.ok) {
         log('quick_fix worktree preserved for %s: %s', bead_id, removed.reason);
-        return { ok: false, reason: 'worktree_remove_failed' };
+        return {
+          ok: false,
+          reason:
+            removed.reason === 'ref_delete_failed'
+              ? 'local_branch_delete_failed'
+              : 'worktree_remove_failed',
+          detail: {
+            manager_reason: removed.reason,
+            worktree_removed: removed.worktree_removed === true,
+            branch_removed: removed.branch_removed === true
+          }
+        };
       }
+      return { ok: true };
     } catch (err) {
       log('quick_fix worktree removal failed for %s: %o', bead_id, err);
       return { ok: false, reason: 'worktree_remove_failed' };
     }
+  }
 
+  /**
+   * Preserve delivery facts that already exist when the session itself reports
+   * a business failure. This is observation only: it neither resolves the
+   * Bead nor starts a deployment, so the reported failure remains authoritative
+   * while a push that already landed does not disappear with hook cleanup.
+   *
+   * @param {{ attempt_id: string, bead_id: string, target_base: string }} input
+   * @returns {Promise<Record<string, unknown>>}
+   */
+  async function observeFailureFacts(input) {
+    const { attempt_id, bead_id, target_base } = input;
+    const receipt = await readReceipt(bead_id);
+    const foreign_binding = await readForeignLanding(bead_id);
+    const landing_base =
+      foreign_binding.ok && foreign_binding.foreign
+        ? foreign_binding.foreign.base
+        : target_base;
+    let read;
     try {
-      return await deps.worktree.withTopologyLock(repo, async () => {
-        const deleted = await deps.gitRun(['branch', '-D', branch], {
-          cwd: repo
-        });
-        if (deleted.code !== 0) {
-          const still = await deps.gitRun(
-            ['rev-parse', '--verify', `refs/heads/${branch}`],
-            { cwd: repo }
-          );
-          if (still.code === 0) {
-            return {
-              ok: /** @type {const} */ (false),
-              reason: /** @type {QuickfixLandingReason} */ (
-                'local_branch_delete_failed'
-              )
-            };
+      read = deps.readPushLog
+        ? deps.readPushLog({ attempt_id })
+        : { ok: /** @type {const} */ (false), reason: 'absent' };
+    } catch (err) {
+      log('quick_fix failure push observation failed for %s: %o', bead_id, err);
+      read = { ok: /** @type {const} */ (false), reason: 'read_failed' };
+    }
+    const pushes = read.ok
+      ? read.entries.filter(
+          (entry) => entry.remote_ref === `refs/heads/${landing_base}`
+        )
+      : [];
+    const raw_head = pushes.at(-1)?.local_oid;
+    const head_sha =
+      typeof raw_head === 'string' && /^[0-9a-f]{40}$/i.test(raw_head)
+        ? raw_head.toLowerCase()
+        : null;
+    /** @type {Record<string, unknown>} */
+    const facts = {
+      push: {
+        observed: head_sha !== null,
+        head_sha,
+        ...(head_sha === null
+          ? { reason: read.ok ? 'base_push_absent' : read.reason }
+          : {})
+      },
+      verification: receipt.ok
+        ? {
+            observed: true,
+            head_sha: receipt.sha,
+            matches_push:
+              head_sha !== null && receipt.sha.toLowerCase() === head_sha
           }
-        }
-        return { ok: /** @type {const} */ (true) };
+        : { observed: false, reason: receipt.reason },
+      remote: { state: 'unobserved', base_sha: null },
+      deployment: { state: 'unobserved' }
+    };
+    if (!foreign_binding.ok) {
+      facts.remote = { state: 'unobservable', reason: foreign_binding.reason };
+      return facts;
+    }
+    if (head_sha === null) {
+      return facts;
+    }
+
+    const foreign = foreign_binding.foreign;
+    let base;
+    let containment_cwd = repo;
+    if (foreign) {
+      const remote = await resolveForeignRemote(foreign);
+      if (!remote.ok) {
+        facts.remote = { state: 'unobservable', reason: remote.reason };
+        return facts;
+      }
+      base = await fetchForeignBase(foreign, remote.remote);
+      containment_cwd = foreign.path;
+    } else {
+      base = await fetchBase(target_base);
+    }
+    if (!base.ok) {
+      facts.remote = { state: 'unobservable', reason: 'fetch_failed' };
+      return facts;
+    }
+    let containment;
+    try {
+      containment = await deps.gitRun(
+        ['merge-base', '--is-ancestor', head_sha, base.sha],
+        { cwd: containment_cwd }
+      );
+    } catch (err) {
+      log(
+        'quick_fix failure containment observation failed for %s: %o',
+        bead_id,
+        err
+      );
+      containment = { code: 2 };
+    }
+    facts.remote = {
+      state:
+        containment.code === 0
+          ? 'contained'
+          : containment.code === 1
+            ? 'not_contained'
+            : 'unobservable',
+      base_sha: base.sha
+    };
+
+    if (foreign) {
+      const declared = await foreignDeclaresDeploy(foreign, head_sha);
+      facts.deployment = !declared.ok
+        ? { state: 'unobservable', reason: 'repo_ops_config_invalid' }
+        : declared.declared
+          ? { state: 'unsupported', reason: 'foreign_deploy_unsupported' }
+          : { state: 'not_required' };
+      return facts;
+    }
+    if (!repo_operations) {
+      facts.deployment = { state: 'unavailable' };
+      return facts;
+    }
+    let config;
+    try {
+      config = await repo_operations.hasConfig(head_sha, {
+        current_target_base: true
       });
     } catch (err) {
-      log('quick_fix local branch deletion failed for %s: %o', bead_id, err);
-      return { ok: false, reason: 'local_branch_delete_failed' };
+      log(
+        'quick_fix failure config observation failed for %s: %o',
+        bead_id,
+        err
+      );
+      facts.deployment = {
+        state: 'unobservable',
+        reason: 'repo_ops_config_invalid'
+      };
+      return facts;
     }
+    if (!config.ok) {
+      facts.deployment = {
+        state: 'unobservable',
+        reason: config.code || 'repo_ops_config_invalid'
+      };
+      return facts;
+    }
+    if (!config.present) {
+      facts.deployment = { state: 'not_required' };
+      return facts;
+    }
+    if (
+      typeof repo_operations.findExactDeployOperation !== 'function' ||
+      typeof repo_operations.deploymentEvidence !== 'function'
+    ) {
+      facts.deployment = {
+        state: 'unobservable',
+        reason: 'observation_unavailable'
+      };
+      return facts;
+    }
+    try {
+      const exact = await repo_operations.findExactDeployOperation({
+        target_base,
+        bead_id,
+        merged_sha: head_sha
+      });
+      if (!exact || typeof exact.operation_id !== 'string') {
+        facts.deployment = {
+          state: 'absent',
+          ...(exact?.code ? { reason: exact.code } : {})
+        };
+        return facts;
+      }
+      const evidence = await repo_operations.deploymentEvidence(
+        exact.operation_id,
+        { target_base, merged_sha: head_sha }
+      );
+      facts.deployment = {
+        state:
+          typeof evidence?.state === 'string' ? evidence.state : 'unobservable',
+        operation_id:
+          typeof evidence?.operation_id === 'string'
+            ? evidence.operation_id
+            : exact.operation_id,
+        ...(typeof evidence?.covered_operation_id === 'string'
+          ? { covered_operation_id: evidence.covered_operation_id }
+          : {}),
+        ...(evidence?.code ? { reason: evidence.code } : {})
+      };
+    } catch (err) {
+      log(
+        'quick_fix failure deploy observation failed for %s: %o',
+        bead_id,
+        err
+      );
+      facts.deployment = {
+        state: 'unobservable',
+        reason: 'observation_failed'
+      };
+    }
+    return facts;
   }
 
   /**
@@ -763,11 +967,7 @@ export function createQuickfixLanding(deps) {
     }
     let residue;
     try {
-      residue = await deps.worktree.removeIfDiscardable({
-        repo,
-        bead_id,
-        base: fetched.sha
-      });
+      residue = await cleanupBranch(bead_id, fetched.sha);
     } catch (err) {
       log(
         'quick_fix no-change residue removal failed for %s: %o',
@@ -789,9 +989,10 @@ export function createQuickfixLanding(deps) {
       );
       return fail(
         attempt_id,
-        'worktree_remove_failed',
+        residue.reason,
         'no_change_close',
-        null
+        null,
+        residue.detail ? { cleanup_detail: residue.detail } : undefined
       );
     }
     deps.store.moveToDone(workspace, {
@@ -1257,7 +1458,9 @@ export function createQuickfixLanding(deps) {
         cleaned.reason,
         'branch_cleanup',
         head_sha,
-        landing_extra
+        cleaned.detail
+          ? { ...(landing_extra || {}), cleanup_detail: cleaned.detail }
+          : landing_extra
       );
     }
 
@@ -1293,5 +1496,5 @@ export function createQuickfixLanding(deps) {
     return { ok: true };
   }
 
-  return { settle };
+  return { settle, observeFailureFacts };
 }

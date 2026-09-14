@@ -50,6 +50,7 @@ const FAILURE_CATEGORIES = {
   // 투영을 얻지 않는다 — 그러나 attempt 이력과 로그 줄이 cause를 사람 말로
   // 바꿀 때 이 낱말을 읽는다.
   prerequisite_unmet: '선행 대기',
+  base_moved: '반영 대기',
   // 착지가 실패한 것이 아니라 착지를 증명할 push 기록·영수증이 모자란 것이다
   // (§5). 합성 코드에서는 앞선 `quickfix_landing_failed`가 먼저 잡히므로 이
   // 낱말은 토큰이 단독으로 올 때 쓰인다.

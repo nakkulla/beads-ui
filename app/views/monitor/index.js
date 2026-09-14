@@ -1246,11 +1246,14 @@ export function createMonitorView(mount_element, options) {
                       : item.run_state === 'retry_wait'
                         ? '재시도 대기'
                         : item.run_state === 'waiting'
-                          ? '선행 대기'
+                          ? item.wait?.cause === 'base_moved'
+                            ? '반영 대기'
+                            : '선행 대기'
                           : item.run_state === 'provider_hold'
                             ? '공급자 보류'
                             : undefined,
                 can_pause: item.can_pause !== false,
+                can_resume: item.can_resume,
                 // 지시 재시작 자격도 같은 렌더러가 읽는 같은 사실이다
                 // (UI-qce9 §3.1, ADR 0014): 여기서 빠뜨리면 같은 attempt가
                 // Worker 탭에서만 버튼을 얻는다.

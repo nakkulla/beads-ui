@@ -977,6 +977,55 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     });
   });
 
+  test('resumes a base-moved wait from the shared tile header', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'waiting',
+              cause: 'base_moved',
+              cause_detail: {
+                candidate_sha: 'a'.repeat(40),
+                base_sha: 'b'.repeat(40)
+              },
+              started_at: NOW - 100,
+              finished_at: NOW - 50,
+              session_id: 'session-base-moved'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()],
+      transport: async () => ({ resumed: true })
+    });
+
+    view.load();
+    const button = el(mount, '.rtile__resume');
+    expect(button.closest('.rtile__hd-actions')).not.toBeNull();
+    expect(button.closest('.rtile__foot')).toBeNull();
+    button.click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await vi.waitFor(() =>
+      expect(
+        sent.filter((call) => call.type === 'worker-attempt-resume')
+      ).toHaveLength(1)
+    );
+
+    expect(sent[0]).toMatchObject({
+      type: 'worker-attempt-resume',
+      payload: {
+        attempt_id: 't1',
+        root_dir: WS_A,
+        expected_revision: 1
+      }
+    });
+  });
+
   test('restarts with instructions from the tile it was clicked on', async () => {
     const { mount, view, sent } = setup({
       workspaces: [

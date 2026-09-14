@@ -57,7 +57,8 @@ afterEach(() => {
  *   evidence?: any,
  *   repoOperations?: boolean,
  *   removeResult?: { ok: boolean, removed: boolean, reason: string|null },
- *   discardResult?: { ok: boolean, removed: boolean, reason: string|null },
+ *   discardResult?: { ok: boolean, removed: boolean, reason: string|null, worktree_removed?: boolean, branch_removed?: boolean },
+ *   exactDeploy?: any,
  *   branchDeleteCode?: number,
  *   branchVerifyCode?: number,
  *   landingProgress?: { cursor: string, head_sha: string|null, reason: string|null },
@@ -298,6 +299,10 @@ function makeLanding(options = {}) {
       calls.push('worktree:removeIfDiscardable');
       return options.discardResult || { ok: true, removed: true, reason: null };
     }),
+    removeCompleted: vi.fn(async () => {
+      calls.push('worktree:removeCompleted');
+      return options.discardResult || { ok: true, removed: true, reason: null };
+    }),
     withTopologyLock: vi.fn(async (repo, fn) => {
       calls.push('topology:enter');
       try {
@@ -318,6 +323,14 @@ function makeLanding(options = {}) {
     }),
     waitForDeployTerminal: vi.fn(async () => {
       calls.push('repoOperations:waitForDeployTerminal');
+      return options.evidence || { state: 'succeeded' };
+    }),
+    findExactDeployOperation: vi.fn(async () => {
+      calls.push('repoOperations:findExactDeployOperation');
+      return options.exactDeploy ?? null;
+    }),
+    deploymentEvidence: vi.fn(async () => {
+      calls.push('repoOperations:deploymentEvidence');
       return options.evidence || { state: 'succeeded' };
     })
   };
@@ -933,9 +946,9 @@ test('cleans branch before closing parent', async () => {
   await settle(landing);
 
   expect(calls.indexOf('store:update:branch_cleanup:null')).toBeLessThan(
-    calls.indexOf('worktree:removeIfDiscardable')
+    calls.indexOf('worktree:removeCompleted')
   );
-  expect(calls.indexOf('worktree:removeIfDiscardable')).toBeLessThan(
+  expect(calls.indexOf('worktree:removeCompleted')).toBeLessThan(
     calls.indexOf('store:update:parent_close:null')
   );
   expect(calls.indexOf('store:update:parent_close:null')).toBeLessThan(
@@ -948,10 +961,12 @@ test('removes the owned worktree against the fetched base that contains the head
 
   await settle(landing);
 
-  expect(worktree.removeIfDiscardable).toHaveBeenCalledWith({
+  expect(worktree.removeCompleted).toHaveBeenCalledWith({
     repo: REPO,
-    bead_id: BEAD,
-    base: FETCHED_SHA
+    branch: BEAD,
+    expected_path: `${REPO}/.worktrees/${BEAD}`,
+    expected_head: '0'.repeat(40),
+    delivered_sha: FETCHED_SHA
   });
   expect(worktree.removeByBranch).not.toHaveBeenCalled();
 });
@@ -966,7 +981,12 @@ test('fails closed when the owned worktree holds unique work', async () => {
   expect(result).toEqual({
     ok: false,
     reason: 'worktree_remove_failed',
-    step: 'branch_cleanup'
+    step: 'branch_cleanup',
+    detail: {
+      manager_reason: 'unique',
+      worktree_removed: false,
+      branch_removed: false
+    }
   });
 });
 
@@ -1101,10 +1121,12 @@ test('settles a refuted no-change close by removing residue only', async () => {
   const result = await settle(landing);
 
   expect(result).toEqual({ ok: true });
-  expect(worktree.removeIfDiscardable).toHaveBeenCalledWith({
+  expect(worktree.removeCompleted).toHaveBeenCalledWith({
     repo: REPO,
-    bead_id: BEAD,
-    base: FETCHED_SHA
+    branch: BEAD,
+    expected_path: `${REPO}/.worktrees/${BEAD}`,
+    expected_head: '0'.repeat(40),
+    delivered_sha: FETCHED_SHA
   });
   expect(store.moveToDone).toHaveBeenCalledWith(
     WORKSPACE,
@@ -1123,6 +1145,7 @@ test('settles a refuted no-change close by removing residue only', async () => {
   expect(bd.setStatus).not.toHaveBeenCalled();
   expect(repoOperations.ensureDeploy).not.toHaveBeenCalled();
   expect(calls).not.toContain('worktree:removeByBranch');
+  expect(worktree.removeIfDiscardable).not.toHaveBeenCalled();
 });
 
 test('settles a no-delta no-change close without deploying or writing status', async () => {
@@ -1213,9 +1236,66 @@ test('preserves non-discardable residue on a refuted close', async () => {
   expect(result).toEqual({
     ok: false,
     reason: 'worktree_remove_failed',
-    step: 'no_change_close'
+    step: 'no_change_close',
+    detail: {
+      manager_reason: 'unique',
+      worktree_removed: false,
+      branch_removed: false
+    }
+  });
+  expect(store.updateAttempt).toHaveBeenLastCalledWith(WORKSPACE, {
+    attempt_id: ATTEMPT,
+    patch: {
+      quickfix_landing: {
+        cursor: 'no_change_close',
+        head_sha: null,
+        reason: 'worktree_remove_failed',
+        cleanup_detail: {
+          manager_reason: 'unique',
+          worktree_removed: false,
+          branch_removed: false
+        }
+      }
+    }
   });
   expect(store.moveToDone).not.toHaveBeenCalled();
+});
+
+test('preserves partial no-change cleanup progress when branch deletion fails', async () => {
+  const { landing, store } = makeLanding({
+    status: 'closed',
+    closeReason: 'no-delta: 이미 base에 반영됐다',
+    discardResult: {
+      ok: false,
+      removed: true,
+      reason: 'ref_delete_failed',
+      worktree_removed: true,
+      branch_removed: false
+    }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'local_branch_delete_failed',
+    step: 'no_change_close',
+    detail: {
+      manager_reason: 'ref_delete_failed',
+      worktree_removed: true,
+      branch_removed: false
+    }
+  });
+  expect(
+    store.updateAttempt.mock.calls.at(-1)?.[1].patch.quickfix_landing
+  ).toMatchObject({
+    reason: 'local_branch_delete_failed',
+    cleanup_detail: {
+      manager_reason: 'ref_delete_failed',
+      worktree_removed: true,
+      branch_removed: false
+    }
+  });
 });
 
 test('fails refuted close observably when base cannot be fetched', async () => {
@@ -1232,7 +1312,63 @@ test('fails refuted close observably when base cannot be fetched', async () => {
     reason: 'containment_unobservable',
     step: 'no_change_close'
   });
-  expect(worktree.removeIfDiscardable).not.toHaveBeenCalled();
+  expect(worktree.removeCompleted).not.toHaveBeenCalled();
+});
+
+test('observes landed failure facts without starting deployment or resolving', async () => {
+  const { landing, bd, repoOperations } = makeLanding({
+    config: { ok: true, present: true },
+    exactDeploy: { operation_id: 'deploy-1', timeout_ms: 500 },
+    evidence: { state: 'succeeded', operation_id: 'deploy-1' }
+  });
+
+  const facts = await landing.observeFailureFacts({
+    attempt_id: ATTEMPT,
+    bead_id: BEAD,
+    target_base: 'main'
+  });
+
+  expect(facts).toEqual({
+    push: { observed: true, head_sha: HEAD_SHA },
+    verification: {
+      observed: true,
+      head_sha: HEAD_SHA,
+      matches_push: true
+    },
+    remote: { state: 'contained', base_sha: FETCHED_SHA },
+    deployment: { state: 'succeeded', operation_id: 'deploy-1' }
+  });
+  expect(repoOperations.ensureDeploy).not.toHaveBeenCalled();
+  expect(repoOperations.findExactDeployOperation).toHaveBeenCalledWith({
+    target_base: 'main',
+    bead_id: BEAD,
+    merged_sha: HEAD_SHA
+  });
+  expect(bd.setStatus).not.toHaveBeenCalled();
+});
+
+test('preserves the covering deployment identity in reported failure facts', async () => {
+  const { landing } = makeLanding({
+    config: { ok: true, present: true },
+    exactDeploy: { operation_id: 'deploy-1', timeout_ms: 500 },
+    evidence: {
+      state: 'succeeded',
+      operation_id: 'deploy-covering',
+      covered_operation_id: 'deploy-1'
+    }
+  });
+
+  const facts = await landing.observeFailureFacts({
+    attempt_id: ATTEMPT,
+    bead_id: BEAD,
+    target_base: 'main'
+  });
+
+  expect(facts.deployment).toEqual({
+    state: 'succeeded',
+    operation_id: 'deploy-covering',
+    covered_operation_id: 'deploy-1'
+  });
 });
 
 test('resumes completed parent close without rewriting Bead status', async () => {
@@ -1271,10 +1407,12 @@ test('resumes branch cleanup without a worktree', async () => {
   expect(gitRun).not.toHaveBeenCalledWith(['rev-parse', 'HEAD'], {
     cwd: `${REPO}/.worktrees/${BEAD}`
   });
-  expect(worktree.removeIfDiscardable).toHaveBeenCalledWith({
+  expect(worktree.removeCompleted).toHaveBeenCalledWith({
     repo: REPO,
-    bead_id: BEAD,
-    base: FETCHED_SHA
+    branch: BEAD,
+    expected_path: `${REPO}/.worktrees/${BEAD}`,
+    expected_head: '0'.repeat(40),
+    delivered_sha: FETCHED_SHA
   });
 });
 
@@ -1348,7 +1486,7 @@ test('judges a foreign landing in the pinned checkout, not the rig', async () =>
   );
   expect(calls.some((call) => call.startsWith('git:merge-base'))).toBe(false);
   expect(calls).not.toContain('repoOperations:hasConfig');
-  expect(calls).toContain('worktree:removeIfDiscardable');
+  expect(calls).toContain('worktree:removeCompleted');
   expect(calls).toContain('bd:setStatus:closed');
 });
 

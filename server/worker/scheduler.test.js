@@ -406,7 +406,7 @@ function makeFakeRunner() {
     factoryNames,
     /**
      * @param {string} bead_id
-     * @param {Partial<{ success: boolean, reason: string, exit: number | null, blocked: boolean, blocked_detail: { reason: string, command: string|null }|null, events: any[], raw: any[] }>} v
+     * @param {Partial<{ success: boolean, reason: string, summary: string|null, terminal_result: any, exit: number | null, blocked: boolean, blocked_detail: { reason: string, command: string|null }|null, events: any[], raw: any[] }>} v
      */
     finish(bead_id, v) {
       const rec = byBead.get(bead_id);
@@ -416,6 +416,8 @@ function makeFakeRunner() {
       rec.resolve({
         success: v.success ?? true,
         reason: v.reason ?? 'ok',
+        summary: v.summary ?? null,
+        terminal_result: v.terminal_result ?? null,
         exit: v.exit ?? 0,
         blocked: v.blocked ?? false,
         blocked_detail: v.blocked_detail ?? null,
@@ -691,7 +693,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, resolveVerify?: any, runVerify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, providerHealth?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, workerSessionObservations?: any, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, resolveSessionFile?: (entry: any, options?: any) => any, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number, publishActivity?: (workspace: string) => void, waitingRescan?: { cover_ms: number, max_wait_ms: number } }} opts
+ * @param {{ config: Record<string, any>, reviewSession?: any, store?: any, slots?: number, verifyOk?: boolean, verify?: any, resolveVerify?: any, runVerify?: any, quickfixLanding?: any, worktree?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, providerHealth?: any, kvGet?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, directionInquiry?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, workerSessionObservations?: any, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, resolveSessionFile?: (entry: any, options?: any) => any, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any, timeline?: any, now?: () => number, publishActivity?: (workspace: string) => void, waitingRescan?: { cover_ms: number, max_wait_ms: number } }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -755,7 +757,8 @@ function setup(opts) {
     // that needs a refusal or an absent seam swaps or deletes it.
     restore: /** @type {any} */ (
       vi.fn(async () => ({ ok: true, path: '/wt/B1' }))
-    )
+    ),
+    ...opts.worktree
   };
   const sessionLog = opts.sessionLog || { attach: vi.fn() };
   const usage = opts.usage === null ? undefined : createUsageStore();
@@ -6117,6 +6120,7 @@ describe('scheduler resume (spec §1)', () => {
 
   test('rejects a decision token after an account pin changes', async () => {
     /** @type {any} */
+    /** @type {Record<string, any>} */
     const config = {
       B1: { model: 'sol', effort: 'high', codex_account: 'codex-one' }
     };
@@ -11639,6 +11643,174 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     ]);
   });
 
+  test.each([
+    ['실패 · sync conflict', 'session_failed:reported_failure'],
+    ['환경 · credentials unavailable', 'session_hard_stop:environment']
+  ])(
+    'recovers a marked %s result before PR observation',
+    async (summary, cause) => {
+      const sessionLog = createSessionLog();
+      const log_path = beadSessionLogPath(WS, 'UI-1', 'att-1');
+      fs.mkdirSync(path.dirname(log_path), { recursive: true });
+      fs.writeFileSync(
+        log_path,
+        `${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: summary })}\n`
+      );
+      const env = reconcileEnv(
+        { alive: false, started_at: null },
+        { 'UI-1': {} },
+        { sessionLog }
+      );
+      seedDetachedAttempt(env.store, { runner: 'claude', log_path });
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.store.snapshot(WS).attempts['att-1'].cause).toBe(cause);
+      expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    }
+  );
+
+  test('keeps a recovered turn.failed ahead of its marked summary', async () => {
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'UI-1', 'att-1');
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      [
+        {
+          type: 'item.completed',
+          item: { type: 'agent_message', text: '실패 · sync conflict' }
+        },
+        { type: 'turn.failed', error: { message: 'process failed' } }
+      ]
+        .map((line) => JSON.stringify(line))
+        .join('\n') + '\n'
+    );
+    const env = reconcileEnv(
+      { alive: false, started_at: null },
+      { 'UI-1': {} },
+      { sessionLog }
+    );
+    seedDetachedAttempt(env.store, { runner: 'codex', log_path });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1'].cause).toBe(
+      'session_failed:turn_failed'
+    );
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('keeps an incomplete persisted stream on recovered PR observation', async () => {
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'UI-1', 'att-1');
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      `${JSON.stringify({ type: 'item.started', item: { type: 'command_execution' } })}\n`
+    );
+    const env = reconcileEnv(
+      { alive: false, started_at: null },
+      { 'UI-1': {} },
+      { sessionLog }
+    );
+    seedDetachedAttempt(env.store, { runner: 'codex', log_path });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.verify.verifyPrSubmitted).toHaveBeenCalledWith({
+      bead_id: 'UI-1',
+      repo: '/repo'
+    });
+    expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('done');
+  });
+
+  test('keeps an incomplete persisted quick_fix stream on delivery observation', async () => {
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'UI-1', 'att-1');
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      `${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'still working' } })}\n`
+    );
+    /** @type {ReturnType<typeof reconcileEnv>} */
+    let env;
+    const settle = vi.fn(async ({ attempt_id, bead_id }) => {
+      env.store.moveToDone(WS, {
+        attempt_id,
+        bead_id,
+        patch: { status: 'done', finished_at: 1000 }
+      });
+      return { ok: true };
+    });
+    env = reconcileEnv(
+      { alive: false, started_at: null },
+      { 'UI-1': { route: 'quick_fix', target_base: 'release' } },
+      { sessionLog, quickfixLanding: { settle } }
+    );
+    seedDetachedAttempt(env.store, {
+      runner: 'codex',
+      log_path,
+      quickfix_lane: true,
+      target_base: 'release'
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(settle).toHaveBeenCalledWith({
+      attempt_id: 'att-1',
+      bead_id: 'UI-1',
+      target_base: 'release'
+    });
+    expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('done');
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('preserves recovered quick_fix failure facts without settling delivery', async () => {
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'UI-1', 'att-1');
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      `${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '실패 · sync conflict' })}\n`
+    );
+    const settle = vi.fn(async () => ({ ok: true }));
+    const delivery_observation = {
+      push: { observed: true, head_sha: 'a'.repeat(40) },
+      remote: { state: 'contained', base_sha: 'b'.repeat(40) },
+      deployment: { state: 'not_required' }
+    };
+    const observeFailureFacts = vi.fn(async () => delivery_observation);
+    const env = reconcileEnv(
+      { alive: false, started_at: null },
+      { 'UI-1': { route: 'quick_fix', target_base: 'release' } },
+      {
+        sessionLog,
+        quickfixLanding: { settle, observeFailureFacts }
+      }
+    );
+    seedDetachedAttempt(env.store, {
+      runner: 'claude',
+      log_path,
+      quickfix_lane: true,
+      target_base: 'release'
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-1']).toMatchObject({
+      status: 'failed',
+      cause: 'session_failed:reported_failure',
+      cause_detail: {
+        summary: '실패 · sync conflict',
+        delivery_observation
+      }
+    });
+    expect(observeFailureFacts).toHaveBeenCalledOnce();
+    expect(settle).not.toHaveBeenCalled();
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
   /**
    * Persist a `running` `review_session` exactly as a PRIOR process left it:
    * the durable record survived the restart, its in-memory handle and its bead
@@ -14685,6 +14857,277 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     expect(q.attempts['S1-1000-1'].status).toBe('done');
   });
 
+  test('preserves and resumes only a verified base-moved candidate', async () => {
+    const base_sha = 'a'.repeat(40);
+    const candidate_sha = 'd'.repeat(40);
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'cat-file') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'rev-parse') {
+        if (args.includes('--abbrev-ref')) {
+          return { code: 0, stdout: 'S1\n', stderr: '' };
+        }
+        return {
+          code: 0,
+          stdout: `${args[1] === `${candidate_sha}^` ? base_sha : candidate_sha}\n`,
+          stderr: ''
+        };
+      }
+      if (args[0] === 'merge-base') {
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      throw new Error(`unexpected git command: ${args.join(' ')}`);
+    });
+    /** @type {Record<string, any>} */
+    const config = {
+      S1: {
+        route: 'quick_fix',
+        status: 'open',
+        metadata: {
+          impl_review: `codex@${candidate_sha}`
+        }
+      }
+    };
+    const resolveBase = movedBase();
+    let observed_head = candidate_sha;
+    const env = setup({
+      config,
+      slots: 1,
+      resolveBase,
+      gitRun,
+      guardHook: guardHookWith(),
+      worktree: {
+        add: vi.fn(async () => ({
+          path: '/wt/S1',
+          branch: 'S1',
+          base_oid: base_sha
+        })),
+        observeOwnedByBead: vi.fn(async () => ({
+          ok: true,
+          present: true,
+          path: '/wt/S1',
+          branch: 'S1',
+          head_sha: observed_head
+        }))
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('S1').emit('session_id', 'sid-base-moved');
+    await flush();
+    config.S1.metadata.impl_dispatch = 'main';
+
+    env.runner.finish('S1', {
+      success: true,
+      summary: `대기 · base_moved:${candidate_sha}:${base_sha}`,
+      terminal_result: { kind: 'base_moved', candidate_sha, base_sha }
+    });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
+      status: 'waiting',
+      cause: 'base_moved',
+      cause_detail: { candidate_sha, base_sha },
+      quickfix_landing: {
+        cursor: null,
+        head_sha: candidate_sha,
+        reason: 'base_moved'
+      }
+    });
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+    expect(
+      env.store.snapshot(WS).attempts['S1-1000-1'].receipt_check?.violations
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'dispatch_forged' })
+      ])
+    );
+
+    delete config.S1.metadata.impl_review;
+    expect(await env.scheduler.resume(WS, 'S1-1000-1')).toEqual({
+      ok: false,
+      reason: 'preserved_candidate_invalid'
+    });
+    config.S1.metadata.impl_review = `delegated:sol:medium@${candidate_sha}`;
+    expect(await env.scheduler.resume(WS, 'S1-1000-1')).toEqual({
+      ok: false,
+      reason: 'preserved_candidate_invalid'
+    });
+    config.S1.metadata.impl_review = `skipped@${candidate_sha}`;
+    expect(await env.scheduler.resume(WS, 'S1-1000-1')).toEqual({
+      ok: false,
+      reason: 'preserved_candidate_invalid'
+    });
+    config.S1.metadata.impl_review = `codex@${candidate_sha}`;
+    observed_head = 'e'.repeat(40);
+    expect(await env.scheduler.resume(WS, 'S1-1000-1')).toEqual({
+      ok: false,
+      reason: 'preserved_candidate_invalid'
+    });
+    observed_head = candidate_sha;
+    resolveBase.mockRejectedValueOnce(new Error('remote unavailable'));
+    expect(await env.scheduler.resume(WS, 'S1-1000-1')).toEqual({
+      ok: false,
+      reason: 'preserved_candidate_invalid'
+    });
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+
+    const resumed = await env.scheduler.resume(WS, 'S1-1000-1');
+
+    expect(resumed.ok).toBe(true);
+    expect(env.runner.spawnOrder).toEqual(['S1', 'S1']);
+    expect(env.runner.settingsFor('S1').resume_session_id).toBe(
+      'sid-base-moved'
+    );
+  });
+
+  test('refuses base-moved waiting when candidate verification failed', async () => {
+    const base_sha = 'a'.repeat(40);
+    const candidate_sha = 'd'.repeat(40);
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'cat-file') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'rev-parse') {
+        return {
+          code: 0,
+          stdout: `${args[1] === `${candidate_sha}^` ? base_sha : candidate_sha}\n`,
+          stderr: ''
+        };
+      }
+      if (args[0] === 'merge-base') {
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      throw new Error(`unexpected git command: ${args.join(' ')}`);
+    });
+    const env = setup({
+      config: {
+        S1: {
+          route: 'quick_fix',
+          status: 'open',
+          metadata: {
+            impl_review: `codex@${candidate_sha}`,
+            verify_receipt: `repo-verify@${candidate_sha}:1`
+          }
+        }
+      },
+      slots: 1,
+      resolveBase: movedBase(),
+      gitRun,
+      guardHook: guardHookWith(),
+      worktree: {
+        add: vi.fn(async () => ({
+          path: '/wt/S1',
+          branch: 'S1',
+          base_oid: base_sha
+        })),
+        observeOwnedByBead: vi.fn(async () => ({
+          ok: true,
+          present: true,
+          path: '/wt/S1',
+          branch: 'S1',
+          head_sha: candidate_sha
+        }))
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', {
+      success: true,
+      summary: `대기 · base_moved:${candidate_sha}:${base_sha}`,
+      terminal_result: { kind: 'base_moved', candidate_sha, base_sha }
+    });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
+      status: 'failed',
+      cause: 'quickfix_landing_unavailable'
+    });
+  });
+
+  test('does not replace a base-moved resume when its transcript disappears at launch', async () => {
+    const base_sha = 'a'.repeat(40);
+    const candidate_sha = 'd'.repeat(40);
+    let transcript_reads = 0;
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'cat-file') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'rev-parse') {
+        if (args.includes('--abbrev-ref')) {
+          return { code: 0, stdout: 'S1\n', stderr: '' };
+        }
+        return {
+          code: 0,
+          stdout: `${args[1] === `${candidate_sha}^` ? base_sha : candidate_sha}\n`,
+          stderr: ''
+        };
+      }
+      if (args[0] === 'merge-base') {
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      throw new Error(`unexpected git command: ${args.join(' ')}`);
+    });
+    const env = setup({
+      config: {
+        S1: {
+          route: 'quick_fix',
+          status: 'open',
+          metadata: { impl_review: `codex@${candidate_sha}` }
+        }
+      },
+      slots: 1,
+      resolveBase: movedBase(),
+      resolveSessionFile: () => {
+        transcript_reads += 1;
+        return transcript_reads < 3
+          ? { locality: 'local', file: '/transcript', last_event_at: 1 }
+          : { locality: 'missing', file: null, last_event_at: null };
+      },
+      gitRun,
+      guardHook: guardHookWith(),
+      worktree: {
+        add: vi.fn(async () => ({
+          path: '/wt/S1',
+          branch: 'S1',
+          base_oid: base_sha
+        })),
+        observeOwnedByBead: vi.fn(async () => ({
+          ok: true,
+          present: true,
+          path: '/wt/S1',
+          branch: 'S1',
+          head_sha: candidate_sha
+        }))
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('S1').emit('session_id', 'sid-base-moved');
+    await flush();
+    env.runner.finish('S1', {
+      success: true,
+      summary: `대기 · base_moved:${candidate_sha}:${base_sha}`,
+      terminal_result: { kind: 'base_moved', candidate_sha, base_sha }
+    });
+    await flush();
+    await flush();
+
+    const resumed = await env.scheduler.resume(WS, 'S1-1000-1');
+
+    expect(resumed).toEqual({ ok: false, reason: 'prior_session_unavailable' });
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+    expect(
+      Object.values(env.store.snapshot(WS).attempts).filter(
+        (/** @type {any} */ attempt) => attempt.status === 'running'
+      )
+    ).toEqual([]);
+  });
+
   test('observes the base of a session that ended in failure', async () => {
     const env = setup({
       config: { S1: {} },
@@ -14845,6 +15288,87 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
 
     expect(attempt.cause).toBe('base_landing_detected');
     expect(env.store.snapshot(WS).provider_hold).toEqual({});
+  });
+
+  test('recovers a persisted base-moved result as a preserved wait', async () => {
+    const base_sha = 'a'.repeat(40);
+    const candidate_sha = 'd'.repeat(40);
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'S1', 'att-base-moved');
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      `${JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: `대기 · base_moved:${candidate_sha}:${base_sha}`
+      })}\n`
+    );
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'cat-file') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stdout: `${base_sha}\n`, stderr: '' };
+      }
+      if (args[0] === 'merge-base') {
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      throw new Error(`unexpected git command: ${args.join(' ')}`);
+    });
+    const env = setup({
+      config: {
+        S1: {
+          route: 'quick_fix',
+          status: 'open',
+          metadata: { impl_review: `codex@${candidate_sha}` }
+        }
+      },
+      sessionLog,
+      resolveBase: movedBase(),
+      gitRun,
+      guardHook: guardHookWith(),
+      probePid: () => ({ alive: false, started_at: null }),
+      worktree: {
+        observeOwnedByBead: vi.fn(async () => ({
+          ok: true,
+          present: true,
+          path: '/wt/S1',
+          branch: 'S1',
+          head_sha: candidate_sha
+        }))
+      }
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-base-moved', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-base-moved',
+      patch: {
+        runner: 'claude',
+        status: 'running',
+        repo: '/repo',
+        pid: 4242,
+        started_at: 1000,
+        log_path,
+        base_oid: base_sha,
+        target_base: 'main',
+        quickfix_lane: true,
+        workflow_mode_prior: null
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts['att-base-moved']).toMatchObject({
+      status: 'waiting',
+      cause: 'base_moved',
+      cause_detail: { candidate_sha, base_sha },
+      quickfix_landing: { head_sha: candidate_sha, reason: 'base_moved' }
+    });
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
   });
 
   test('observes the base of a restart-restored paused attempt discarded by ■', async () => {
@@ -19158,6 +19682,52 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
     );
   });
 
+  test('preserves a canonical business failure from a successful process', async () => {
+    const config = waitingConfig([]);
+    const settle = vi.fn(async () => ({
+      ok: false,
+      reason: 'delivery_unproven:push_log_absent'
+    }));
+    const delivery_observation = {
+      push: { observed: true, head_sha: 'a'.repeat(40) },
+      remote: { state: 'contained', base_sha: 'b'.repeat(40) },
+      deployment: { state: 'succeeded', operation_id: 'deploy-1' }
+    };
+    const observeFailureFacts = vi.fn(async () => delivery_observation);
+    const env = setup({
+      config,
+      slots: 1,
+      quickfixLanding: { settle, observeFailureFacts }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', {
+      success: true,
+      reason: 'ok',
+      summary: '실패 · 동기화 충돌',
+      terminal_result: { kind: 'failure' },
+      exit: 0
+    });
+    await flush();
+    await flush();
+
+    expect(settle).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
+      status: 'failed',
+      cause: 'session_failed:reported_failure',
+      cause_detail: {
+        summary: '실패 · 동기화 충돌',
+        delivery_observation
+      }
+    });
+    expect(observeFailureFacts).toHaveBeenCalledWith({
+      attempt_id: 'S1-1000-1',
+      bead_id: 'S1',
+      target_base: 'release'
+    });
+  });
+
   test('settles the ordinary way when a foreign blocker cannot be read', async () => {
     const config = waitingConfig([
       { dependency_type: 'blocks', id: 'Nosuchrig-1', external: true }
@@ -19423,6 +19993,27 @@ describe('scheduler waiting return rescan (UI-978d §4)', () => {
 
     expect(result).toEqual({ checked: 0, returned: 0 });
     expect(env.bd.readyCounts()).toBe(0);
+  });
+
+  test('does not redispatch a base-moved wait through bd ready', async () => {
+    const { env, config } = waitingRescanEnv();
+    config.S1.ready = true;
+    env.store.updateAttempt(WS, {
+      attempt_id: 'waiting-1',
+      patch: {
+        cause: 'base_moved',
+        cause_detail: {
+          candidate_sha: 'd'.repeat(40),
+          base_sha: 'a'.repeat(40)
+        }
+      }
+    });
+
+    const result = await env.scheduler.rescanWaiting(WS);
+
+    expect(result).toEqual({ checked: 0, returned: 0 });
+    expect(env.bd.readyCounts()).toBe(0);
+    expect(env.runner.spawnOrder).toEqual([]);
   });
 
   test('coalesces calls into one leading scan and one trailing cover', async () => {

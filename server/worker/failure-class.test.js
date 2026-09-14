@@ -577,6 +577,38 @@ describe('worker prerequisite wait classification', () => {
 
     expect(result.retry).toBeNull();
   });
+
+  test('classifies only a proven base move as waiting', () => {
+    const candidate_sha = 'd'.repeat(40);
+    const base_sha = 'a'.repeat(40);
+    const result = classifyFailure(
+      input({
+        cause: 'base_moved',
+        cause_detail: { candidate_sha, base_sha },
+        verdict: {
+          success: true,
+          summary: `대기 · base_moved:${candidate_sha}:${base_sha}`
+        },
+        bead_status: 'open',
+        pr_url: null,
+        tier_hint: 'waiting'
+      })
+    );
+
+    expect({
+      tier: result.tier,
+      cause: result.cause,
+      retry: result.retry
+    }).toEqual({ tier: 'waiting', cause: 'base_moved', retry: null });
+  });
+
+  test('does not infer a base-moved wait without preserved identities', () => {
+    const result = classifyFailure(
+      input({ cause: 'base_moved', tier_hint: 'waiting' })
+    );
+
+    expect(result.tier).toBe('individual');
+  });
 });
 
 describe('worker failure cause keys', () => {
@@ -600,6 +632,10 @@ describe('worker failure cause keys', () => {
 
   test('excludes a prerequisite wait from promotion comparison', () => {
     expect(causeKey('prerequisite_unmet')).toBeNull();
+  });
+
+  test('excludes a base-moved wait from promotion comparison', () => {
+    expect(causeKey('base_moved')).toBeNull();
   });
 });
 

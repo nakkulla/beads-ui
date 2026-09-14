@@ -2311,6 +2311,26 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
     expect(map.get('A-1')?.can_resume).toBe(false);
   });
 
+  test('projects a base-moved wait as a resumable preserved session', () => {
+    const map = activeByBead(
+      waitingAttempt({
+        cause: 'base_moved',
+        session_id: 'sid-base-moved',
+        cause_detail: {
+          candidate_sha: 'd'.repeat(40),
+          base_sha: 'a'.repeat(40)
+        }
+      }),
+      new Map()
+    );
+
+    expect(map.get('A-1')).toMatchObject({
+      run_state: 'waiting',
+      can_resume: true,
+      wait: { cause: 'base_moved', blockers: [] }
+    });
+  });
+
   test('badges a waiting bead without raising the failure alert', () => {
     const lanes = buildLanes(
       [workspace({ attempts: waitingAttempt() })],

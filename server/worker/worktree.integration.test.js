@@ -2124,4 +2124,389 @@ describe('worker/worktree dispatch-time dependency install (spec D3)', () => {
       'failed:'.length + WORKTREE_INSTALL_TAIL_MAX_CHARS
     );
   });
+
+  test('removeCompleted removes a delivered clean worktree and branch', async () => {
+    const real_locks = createLockManager();
+    const topologyLock = vi.fn((/** @type {string} */ root) =>
+      real_locks.topologyLock(root)
+    );
+    const wt = createWorktreeManager({ locks: { topologyLock } });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-complete',
+      base: headOf(repo)
+    });
+    commit(created.path, 'delivered.txt', 'delivered');
+    const branch_head = headOf(created.path);
+    git(['cherry-pick', branch_head], repo);
+    const delivered_sha = headOf(repo);
+    topologyLock.mockClear();
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: branch_head,
+      delivered_sha
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      worktree_removed: true,
+      branch_removed: true
+    });
+    expect(fs.existsSync(created.path)).toBe(false);
+    expect(() => headOf(repo, 'UI-complete')).toThrow();
+    expect(topologyLock).toHaveBeenCalledTimes(1);
+  });
+
+  test('removeCompleted preserves a branch changed at the final CAS', async () => {
+    let branch_head = '';
+    let delivered_sha = '';
+    let changed = false;
+    const run = async (
+      /** @type {string[]} */ args,
+      /** @type {{ cwd?: string }} */ options = {}
+    ) => {
+      if (args[0] === 'update-ref' && args[1] === '-d' && !changed) {
+        changed = true;
+        git(
+          ['update-ref', args[2], delivered_sha, branch_head],
+          /** @type {string} */ (options.cwd)
+        );
+      }
+      const result = spawnSync('git', args, {
+        cwd: options.cwd,
+        encoding: 'utf8'
+      });
+      return {
+        code: result.status ?? 1,
+        stdout: result.stdout || '',
+        stderr: result.stderr || ''
+      };
+    };
+    const wt = createWorktreeManager({
+      locks: createLockManager(),
+      run,
+      createBranchArchive: () => ({ ok: true })
+    });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-complete',
+      base: headOf(repo)
+    });
+    commit(created.path, 'delivered.txt', 'delivered');
+    branch_head = headOf(created.path);
+    fs.writeFileSync(path.join(repo, 'delivered.txt'), 'delivered\n');
+    git(['add', 'delivered.txt'], repo);
+    git(['commit', '-q', '-m', 'landed squash'], repo);
+    delivered_sha = headOf(repo);
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: branch_head,
+      delivered_sha
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'ref_delete_failed',
+      worktree_removed: true,
+      branch_removed: false
+    });
+    expect(fs.existsSync(created.path)).toBe(false);
+    expect(headOf(repo, 'UI-complete')).toBe(delivered_sha);
+  });
+
+  test('removeCompleted preserves status changed during its final recheck', async () => {
+    let status_reads = 0;
+    let worktree_path = '';
+    const run = async (
+      /** @type {string[]} */ args,
+      /** @type {{ cwd?: string }} */ options = {}
+    ) => {
+      if (args[0] === 'status') {
+        status_reads += 1;
+        if (status_reads === 2) {
+          fs.writeFileSync(path.join(worktree_path, 'late.txt'), 'late\n');
+        }
+      }
+      const result = spawnSync('git', args, {
+        cwd: options.cwd,
+        encoding: 'utf8'
+      });
+      return {
+        code: result.status ?? 1,
+        stdout: result.stdout || '',
+        stderr: result.stderr || ''
+      };
+    };
+    const wt = createWorktreeManager({ locks: createLockManager(), run });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    worktree_path = created.path;
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: base,
+      delivered_sha: base
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'identity_changed' });
+    expect(fs.readFileSync(path.join(created.path, 'late.txt'), 'utf8')).toBe(
+      'late\n'
+    );
+    expect(headOf(repo, 'UI-complete')).toBe(base);
+  });
+
+  test('removeCompleted accepts an already absent worktree and branch', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-absent',
+      expected_path: path.join(repo, '.worktrees', 'UI-absent'),
+      expected_head: headOf(repo),
+      delivered_sha: headOf(repo)
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      removed: false,
+      worktree_removed: false,
+      branch_removed: false
+    });
+  });
+
+  test('removeCompleted preserves an unregistered expected path', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const expected_path = path.join(repo, '.worktrees', 'UI-leftover');
+    fs.mkdirSync(expected_path, { recursive: true });
+    fs.writeFileSync(path.join(expected_path, 'unique.txt'), 'unique\n');
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-leftover',
+      expected_path,
+      expected_head: headOf(repo),
+      delivered_sha: headOf(repo)
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'path_present' });
+    expect(
+      fs.readFileSync(path.join(expected_path, 'unique.txt'), 'utf8')
+    ).toBe('unique\n');
+  });
+
+  test('removeCompleted preserves an expected path reassigned to another branch', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const expected_path = path.join(repo, '.worktrees', 'UI-reassigned');
+    fs.mkdirSync(path.dirname(expected_path), { recursive: true });
+    git(
+      ['worktree', 'add', '-q', '-b', 'foreign-owner', expected_path, 'HEAD'],
+      repo
+    );
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-reassigned',
+      expected_path,
+      expected_head: headOf(repo),
+      delivered_sha: headOf(repo)
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'ownership_changed' });
+    expect(headOf(expected_path)).toBe(headOf(repo));
+    expect(headOf(repo, 'foreign-owner')).toBe(headOf(repo));
+  });
+
+  test('removeCompleted directly removes dirty bytes already in the delivered tree', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    fs.writeFileSync(path.join(repo, 'README.md'), '# delivered\n');
+    git(['add', 'README.md'], repo);
+    git(['commit', '-q', '-m', 'delivered'], repo);
+    fs.writeFileSync(path.join(created.path, 'README.md'), '# delivered\n');
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: base,
+      delivered_sha: headOf(repo)
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fs.existsSync(created.path)).toBe(false);
+  });
+
+  test('removeCompleted preserves unique dirty and untracked contents', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    fs.writeFileSync(path.join(created.path, 'README.md'), '# unique\n');
+    fs.writeFileSync(path.join(created.path, 'unique.txt'), 'unique\n');
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: base,
+      delivered_sha: base
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'dirty_unique' });
+    expect(fs.existsSync(path.join(created.path, 'unique.txt'))).toBe(true);
+    expect(headOf(repo, 'UI-complete')).toBe(base);
+  });
+
+  test('removeCompleted preserves unique untracked contents by themselves', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    fs.writeFileSync(path.join(created.path, 'unique.txt'), 'unique\n');
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: base,
+      delivered_sha: base
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'untracked_present' });
+    expect(fs.existsSync(path.join(created.path, 'unique.txt'))).toBe(true);
+  });
+
+  test('removeCompleted preserves a branch whose expected SHA changed', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    commit(created.path, 'new.txt', 'new head');
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: base,
+      delivered_sha: base
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'identity_changed' });
+    expect(fs.existsSync(created.path)).toBe(true);
+  });
+
+  test('removeCompleted preserves a worktree at an unexpected owned path', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: path.join(repo, '.worktrees', 'different'),
+      expected_head: base,
+      delivered_sha: base
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'identity_changed' });
+    expect(fs.existsSync(created.path)).toBe(true);
+  });
+
+  test('removeCompleted archives squash history before deleting its branch', async () => {
+    const archive = createRecoveryArchive({ now: () => 9000 });
+    /** @type {string|null} */
+    let archive_path = null;
+    const wt = createWorktreeManager({
+      locks: createLockManager(),
+      createBranchArchive(input) {
+        const archived = archive.createBranch({ workspace: repo, ...input });
+        if (archived.ok) {
+          archive_path = archived.receipt.path;
+        }
+        return archived;
+      }
+    });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    commit(created.path, 'squashed.txt', 'squashed');
+    commit(repo, 'base-update.txt', 'base update');
+    git(['merge', '-q', '--no-edit', 'main'], created.path);
+    const merged_branch_head = headOf(created.path);
+    fs.writeFileSync(path.join(repo, 'squashed.txt'), 'squashed\n');
+    git(['add', 'squashed.txt'], repo);
+    git(['commit', '-q', '-m', 'squash delivery'], repo);
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: merged_branch_head,
+      delivered_sha: headOf(repo)
+    });
+
+    expect(result.ok).toBe(true);
+    if (archive_path === null) {
+      throw new Error('archive path was not recorded');
+    }
+    expect(fs.existsSync(path.join(archive_path, 'commits.bundle'))).toBe(true);
+  });
+
+  test('removeCompleted preserves a squash source with an undelivered mode', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    const branch_file = path.join(created.path, 'script.sh');
+    fs.writeFileSync(branch_file, 'echo delivered\n');
+    fs.chmodSync(branch_file, 0o755);
+    git(['add', 'script.sh'], created.path);
+    git(['commit', '-q', '-m', 'executable source'], created.path);
+    const branch_head = headOf(created.path);
+    fs.writeFileSync(path.join(repo, 'script.sh'), 'echo delivered\n');
+    fs.chmodSync(path.join(repo, 'script.sh'), 0o644);
+    git(['add', 'script.sh'], repo);
+    git(['commit', '-q', '-m', 'non-executable delivery'], repo);
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: branch_head,
+      delivered_sha: headOf(repo)
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'delivery_not_contained'
+    });
+    expect(fs.existsSync(created.path)).toBe(true);
+    expect(headOf(repo, 'UI-complete')).toBe(branch_head);
+  });
+
+  test('removeCompleted resumes after only the worktree was removed', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-complete', base });
+    await wt.remove({ repo, bead_id: 'UI-complete' });
+
+    const result = await wt.removeCompleted({
+      repo,
+      branch: 'UI-complete',
+      expected_path: created.path,
+      expected_head: base,
+      delivered_sha: base
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      worktree_removed: false,
+      branch_removed: true
+    });
+    expect(() => headOf(repo, 'UI-complete')).toThrow();
+  });
 });

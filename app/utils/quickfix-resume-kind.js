@@ -37,6 +37,7 @@ const SESSION_REASONS = Object.freeze(
     'invalid_impl_review',
     'premature_close',
     'head_mismatch',
+    'base_moved',
     'foreign_deploy_unsupported',
     'not_resolved'
   ])

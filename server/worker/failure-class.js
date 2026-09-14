@@ -165,7 +165,7 @@ const GROUP_KEYED_CAUSES = new Set([
  * A `prerequisite_unmet` ending is a terminal WAIT, not a failure: two of them
  * in a row say the blocker is still open, never that the environment is.
  */
-const NON_PROMOTING_CAUSES = new Set(['prerequisite_unmet']);
+const NON_PROMOTING_CAUSES = new Set(['prerequisite_unmet', 'base_moved']);
 
 /** Bead statuses that mean the work landed, so a successful end is not parked. */
 const SETTLED_BEAD_STATUSES = new Set(['resolved', 'closed']);
@@ -439,6 +439,22 @@ export function classifyFailure(input) {
       input.tier_hint === 'waiting' &&
       Array.isArray(detail?.blockers) &&
       detail.blockers.length > 0
+    ) {
+      return classification('waiting', raw_cause, summary, null);
+    }
+  }
+
+  if (raw_cause === 'base_moved') {
+    const detail =
+      /** @type {{ candidate_sha?: unknown, base_sha?: unknown } | null | undefined} */ (
+        input.cause_detail
+      );
+    if (
+      input.tier_hint === 'waiting' &&
+      typeof detail?.candidate_sha === 'string' &&
+      /^[0-9a-f]{40}$/i.test(detail.candidate_sha) &&
+      typeof detail.base_sha === 'string' &&
+      /^[0-9a-f]{40}$/i.test(detail.base_sha)
     ) {
       return classification('waiting', raw_cause, summary, null);
     }
