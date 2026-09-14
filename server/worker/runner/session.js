@@ -78,6 +78,9 @@ const DIRECT_CHILD_KILL_GRACE_MS = 1_000;
  * classifier reads to tell an environment outage from a bead-specific error,
  * and what the attempt tile shows; null when the stream carried none.
  * @property {number|null} exit - Process exit code.
+ * @property {{ kind: 'success'|'parked'|'failure'|'environment'|'waiting_blocks'|'base_moved', candidate_sha?: string, base_sha?: string }|null} terminal_result -
+ * The canonical business outcome declared by the first non-empty final line.
+ * Null preserves the legacy interpretation for unmarked summaries.
  * @property {boolean} blocked - True when fail-closed fired (question/approval).
  * @property {BlockedDetail|null} blocked_detail - What the fail-closed path
  * caught, for the attempt record + failure banner (UI-2o4z §2). Null when the
@@ -85,6 +88,50 @@ const DIRECT_CHILD_KILL_GRACE_MS = 1_000;
  * @property {RunnerEvent[]} events - Normalized event stream.
  * @property {unknown[]} raw - Raw parsed jsonl objects (for the session log).
  */
+
+/**
+ * Read only the canonical first-line terminal vocabulary. Callers already pass
+ * the first non-empty final line, but this function keeps the boundary exact
+ * for direct and legacy callers too.
+ *
+ * @param {unknown} summary
+ * @returns {RunnerVerdict['terminal_result']}
+ */
+export function terminalResultOf(summary) {
+  if (typeof summary !== 'string') {
+    return null;
+  }
+  const line = summary
+    .split(/\r?\n/)
+    .map((part) => part.trim())
+    .find((part) => part.length > 0);
+  if (!line) {
+    return null;
+  }
+  if (/^성공 · \S/.test(line)) {
+    return { kind: 'success' };
+  }
+  if (/^파킹 · \S/.test(line)) {
+    return { kind: 'parked' };
+  }
+  if (/^실패 · \S/.test(line)) {
+    return { kind: 'failure' };
+  }
+  if (/^환경 · \S/.test(line)) {
+    return { kind: 'environment' };
+  }
+  if (/^대기 · blocks:\S(?:.*\S)?$/.test(line)) {
+    return { kind: 'waiting_blocks' };
+  }
+  const moved = /^대기 · base_moved:([0-9a-f]{40}):([0-9a-f]{40})$/i.exec(line);
+  return moved
+    ? {
+        kind: 'base_moved',
+        candidate_sha: moved[1].toLowerCase(),
+        base_sha: moved[2].toLowerCase()
+      }
+    : null;
+}
 
 /**
  * The diagnosis of a fail-closed stop. A merge guard fills both fields; an
@@ -833,6 +880,7 @@ export function runSession(spec, bead, workspace, settings, deps) {
         // REASON, not what the session had last reported about itself.
         summary:
           typeof summary === 'string' && summary.length > 0 ? summary : null,
+        terminal_result: terminalResultOf(summary),
         exit,
         blocked,
         blocked_detail: blocked ? blocked_detail : null,

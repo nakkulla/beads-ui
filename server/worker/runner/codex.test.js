@@ -771,6 +771,37 @@ describe('runner/codex verdict summary (worker-failure-tiers §6)', () => {
 
     expect(v.summary).toBe('DONE');
   });
+
+  test('classifies a successful process by its canonical failure result', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }),
+        JSON.stringify(agentMessage('실패 · 동기화 충돌\n상세 설명')),
+        JSON.stringify({ type: 'turn.completed' })
+      ],
+      exit: 0
+    });
+
+    const v = await spawnCodex(BEAD, WS, { model: 'sol' }, { spawn_impl }).done;
+
+    expect(v.success).toBe(true);
+    expect(v.summary).toBe('실패 · 동기화 충돌');
+    expect(v.terminal_result).toEqual({ kind: 'failure' });
+  });
+
+  test('ignores terminal-looking prose after an unmarked first line', async () => {
+    const spawn_impl = makeFixtureSpawn({
+      lines: [
+        JSON.stringify(agentMessage('작업을 마쳤습니다\n실패 · 인용문')),
+        JSON.stringify({ type: 'turn.completed' })
+      ],
+      exit: 0
+    });
+
+    const v = await spawnCodex(BEAD, WS, { model: 'sol' }, { spawn_impl }).done;
+
+    expect(v.terminal_result).toBeNull();
+  });
 });
 
 describe('runner/codex fixture replay through the session engine', () => {

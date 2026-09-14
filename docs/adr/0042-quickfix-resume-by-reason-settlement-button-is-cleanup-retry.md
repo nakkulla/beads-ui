@@ -1,7 +1,8 @@
 ---
 id: 42
 title: quick_fix 재개는 실패 사유로 session과 settlement를 가르고 착지 정산 재실행 버튼은 정리 재시도로 부른다
-status: accepted
+status: superseded
+superseded_by: UI-lmqu-2
 date: 2026-09-08
 summary: 'quick_fix 재개는 실패 사유로 session과 settlement를 가르고, 같은 attempt의 착지 정산 재실행 버튼은 정리 재시도로 부른다'
 supersedes: [18]

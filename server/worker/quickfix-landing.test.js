@@ -298,6 +298,10 @@ function makeLanding(options = {}) {
       calls.push('worktree:removeIfDiscardable');
       return options.discardResult || { ok: true, removed: true, reason: null };
     }),
+    removeCompleted: vi.fn(async () => {
+      calls.push('worktree:removeCompleted');
+      return options.discardResult || { ok: true, removed: true, reason: null };
+    }),
     withTopologyLock: vi.fn(async (repo, fn) => {
       calls.push('topology:enter');
       try {
@@ -933,9 +937,9 @@ test('cleans branch before closing parent', async () => {
   await settle(landing);
 
   expect(calls.indexOf('store:update:branch_cleanup:null')).toBeLessThan(
-    calls.indexOf('worktree:removeIfDiscardable')
+    calls.indexOf('worktree:removeCompleted')
   );
-  expect(calls.indexOf('worktree:removeIfDiscardable')).toBeLessThan(
+  expect(calls.indexOf('worktree:removeCompleted')).toBeLessThan(
     calls.indexOf('store:update:parent_close:null')
   );
   expect(calls.indexOf('store:update:parent_close:null')).toBeLessThan(
@@ -948,10 +952,12 @@ test('removes the owned worktree against the fetched base that contains the head
 
   await settle(landing);
 
-  expect(worktree.removeIfDiscardable).toHaveBeenCalledWith({
+  expect(worktree.removeCompleted).toHaveBeenCalledWith({
     repo: REPO,
-    bead_id: BEAD,
-    base: FETCHED_SHA
+    branch: BEAD,
+    expected_path: `${REPO}/.worktrees/${BEAD}`,
+    expected_head: '0'.repeat(40),
+    delivered_sha: FETCHED_SHA
   });
   expect(worktree.removeByBranch).not.toHaveBeenCalled();
 });
@@ -966,7 +972,12 @@ test('fails closed when the owned worktree holds unique work', async () => {
   expect(result).toEqual({
     ok: false,
     reason: 'worktree_remove_failed',
-    step: 'branch_cleanup'
+    step: 'branch_cleanup',
+    detail: {
+      manager_reason: 'unique',
+      worktree_removed: false,
+      branch_removed: false
+    }
   });
 });
 
@@ -1271,10 +1282,12 @@ test('resumes branch cleanup without a worktree', async () => {
   expect(gitRun).not.toHaveBeenCalledWith(['rev-parse', 'HEAD'], {
     cwd: `${REPO}/.worktrees/${BEAD}`
   });
-  expect(worktree.removeIfDiscardable).toHaveBeenCalledWith({
+  expect(worktree.removeCompleted).toHaveBeenCalledWith({
     repo: REPO,
-    bead_id: BEAD,
-    base: FETCHED_SHA
+    branch: BEAD,
+    expected_path: `${REPO}/.worktrees/${BEAD}`,
+    expected_head: '0'.repeat(40),
+    delivered_sha: FETCHED_SHA
   });
 });
 
@@ -1348,7 +1361,7 @@ test('judges a foreign landing in the pinned checkout, not the rig', async () =>
   );
   expect(calls.some((call) => call.startsWith('git:merge-base'))).toBe(false);
   expect(calls).not.toContain('repoOperations:hasConfig');
-  expect(calls).toContain('worktree:removeIfDiscardable');
+  expect(calls).toContain('worktree:removeCompleted');
   expect(calls).toContain('bd:setStatus:closed');
 });
 

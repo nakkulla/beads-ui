@@ -96,10 +96,10 @@
  * failed/orphaned/paused/stopped/discarded/parked/retry_wait/superseded/waiting.
  * `parked` is a session that ended successfully while waiting on a user
  * decision (2026-08-28 worker-failure-tiers spec §3.1) — not a failure.
- * `waiting` is a session that refused to START because a prerequisite of this
- * bead is still open (2026-08-28 worker-prerequisite-wait-tier spec §4.4) —
- * also not a failure, and it needs no disposition: the bead returns as an
- * ordinary candidate the moment `bd ready` lists it again.
+ * `waiting` distinguishes two non-failure endings by `cause`: a
+ * `prerequisite_unmet` session returns as an ordinary candidate when `bd ready`
+ * lists it again, while `base_moved` preserves its candidate for an explicit
+ * same-session continuation.
  * `retry_wait` is an env failure whose backoff ladder still has a rung (§3.3),
  * and `superseded` is an earlier `retry_wait` record the retry replaced. `paused` is resumable; `stopped` is
  * legacy history; `discarded` is the unified archive-backed terminal action.
@@ -266,7 +266,7 @@
  * `failed:<tail>`. Carried to the session in the `## 시도 사실` card so it does
  * not re-discover an empty `node_modules` with an `npm ls` round trip. Null
  * when the attempt adopted an existing worktree and nothing was installed.
- * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|'bench_close'|null, head_sha: string|null, reason: string|null }|null} quickfix_landing -
+ * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|'bench_close'|null, head_sha: string|null, reason: string|null, resolved_by?: string, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }|null} quickfix_landing -
  * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
  * before the first cleanup step) plus `no_change_close` for either kind of
  * contract no-change close (`refuted:`·`no-delta:`) settled without a delta

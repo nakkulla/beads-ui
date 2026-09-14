@@ -147,7 +147,7 @@ function seedStore(options = {}) {
  *   afterMerge?: any,
  *   worktreeExists?: boolean,
  *   worktrees?: Record<string, string>,
- *   removeByBranchResult?: { ok: boolean, removed: boolean, reason: string|null },
+ *   removeByBranchResult?: { ok: boolean, removed: boolean, reason: string|null, worktree_removed?: boolean, branch_removed?: boolean },
  *   resolveConflictResult?: any,
  *   externalConflictResult?: any,
  *   activity?: any,
@@ -419,6 +419,10 @@ function makeActions(options = {}) {
   const branchHeld = (branch) => [...worktree_holds.values()].includes(branch);
 
   const worktree = {
+    pathFor: vi.fn(
+      (/** @type {string} */ repo, /** @type {string} */ name) =>
+        `${repo}/.worktrees/${name}`
+    ),
     remove: vi.fn(async (/** @type {{ bead_id: string }} */ input) => {
       calls.push('wt:remove');
       // Names the worktree, so it frees the branch only when that computed
@@ -439,6 +443,19 @@ function makeActions(options = {}) {
       }
       worktree_holds.delete(name);
       return { ok: true, removed: true, reason: null };
+    }),
+    removeCompleted: vi.fn(async (/** @type {{ branch: string }} */ input) => {
+      calls.push('wt:removeCompleted');
+      if (options.removeByBranchResult) {
+        return options.removeByBranchResult;
+      }
+      const name = [...worktree_holds.entries()].find(
+        ([, held]) => held === input.branch
+      )?.[0];
+      if (name !== undefined) {
+        worktree_holds.delete(name);
+      }
+      return { ok: true, removed: name !== undefined, reason: null };
     }),
     exists: vi.fn(() => options.worktreeExists === true),
     // The repo topology lock, recorded on the SAME ordered log as the git and
@@ -1665,7 +1682,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
       phase: 'completed',
       active_op: null
     });
-    expect(h.worktree.removeByBranch).toHaveBeenCalledTimes(1);
+    expect(h.worktree.removeCompleted).toHaveBeenCalledTimes(1);
     expect(h.bd.setStatus).toHaveBeenCalledWith(BEAD, 'closed');
   });
 });
@@ -1676,7 +1693,13 @@ describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
       // The local branch delete fails and the confirming `rev-parse --verify`
       // still finds the branch → the cleanup stops at `branch_cleanup`, which
       // in the contract-aligned order is one step BEFORE the parent close.
-      gitFail: (args) => args[0] === 'branch'
+      removeByBranchResult: {
+        ok: false,
+        removed: true,
+        reason: 'ref_delete_failed',
+        worktree_removed: true,
+        branch_removed: false
+      }
     });
     h.bd.readStatus.mockImplementation(async (/** @type {string} */ id) => {
       h.calls.push(`bd:readStatus:${id}`);
@@ -1693,7 +1716,9 @@ describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
     expect(requested).toMatchObject({ ok: false, action: 'merged' });
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       step: 'branch_cleanup',
-      reason: 'local_branch_delete_failed'
+      reason: 'local_branch_delete_failed',
+      detail:
+        'manager_reason=ref_delete_failed worktree_removed=true branch_removed=false'
     });
     // Nothing closed the parent, so there is nothing to restore — `resolved`
     // still holds by itself.
@@ -1727,7 +1752,7 @@ describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
       bd_restore: 'restore_failed'
     });
     // The parent close is LAST now, so the branch cleanup already ran.
-    expect(h.worktree.removeByBranch).toHaveBeenCalled();
+    expect(h.worktree.removeCompleted).toHaveBeenCalled();
   });
 
   test('does not touch bd when the cleanup stops BEFORE the parent close', async () => {
@@ -1853,10 +1878,13 @@ describe('post-merge cleanup — the worktree is FOUND, not named (UI-u7hh)', ()
 
     const r = await h.actions.merge(BEAD);
     expect(r).toMatchObject({ ok: true, reason: null });
-    expect(h.worktree.removeByBranch).toHaveBeenCalledWith({
-      repo: REPO,
-      branch: fallback
-    });
+    expect(h.worktree.removeCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repo: REPO,
+        branch: fallback,
+        expected_path: `${REPO}/.worktrees/${fallback}`
+      })
+    );
     expect(h.calls).toContain('git:push origin');
   });
 
@@ -1910,8 +1938,7 @@ describe('post-merge cleanup — ref operations hold the topology lock (§8)', (
       (c) =>
         c.startsWith('lock:') ||
         c === 'git:fetch --no-tags' ||
-        c === 'wt:removeByBranch' ||
-        c === 'git:branch -D' ||
+        c === 'wt:removeCompleted' ||
         c === 'git:push origin'
     );
     expect(ordered).toEqual([
@@ -1919,11 +1946,10 @@ describe('post-merge cleanup — ref operations hold the topology lock (§8)', (
       'lock:acquire',
       'git:fetch --no-tags',
       'lock:release',
-      // Branch cleanup: the worktree removal takes the same lock INSIDE the
-      // worktree manager, so it runs before this hold — nesting would deadlock.
-      'wt:removeByBranch',
+      // Local worktree and ref cleanup is one manager lock; the second visible
+      // hold here is only the existing remote branch ownership cleanup.
+      'wt:removeCompleted',
       'lock:acquire',
-      'git:branch -D',
       'git:push origin',
       'lock:release'
     ]);
@@ -1981,11 +2007,11 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
         (c) =>
           c === 'git:fetch --no-tags' ||
           c === 'bd:setStatus:UI-1:closed' ||
-          c === 'wt:removeByBranch'
+          c === 'wt:removeCompleted'
       )
     ).toEqual([
       'git:fetch --no-tags',
-      'wt:removeByBranch',
+      'wt:removeCompleted',
       'bd:setStatus:UI-1:closed'
     ]);
     expect(
@@ -3513,11 +3539,9 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     );
 
     await env.actions.merge(EXTERNAL_BEAD);
-    expect(env.git_argv).toContainEqual([
-      'branch',
-      '-D',
-      'feature/from-session'
-    ]);
+    expect(env.worktree.removeCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({ branch: 'feature/from-session' })
+    );
   });
 
   test('refuses [폐기] on an external row — it has no durable lane membership', async () => {
@@ -6129,7 +6153,13 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
   });
 
   test('announces a branch cleanup stop', async () => {
-    const h = makeActions({ gitFail: (args) => args[0] === 'branch' });
+    const h = makeActions({
+      removeByBranchResult: {
+        ok: false,
+        removed: false,
+        reason: 'ref_delete_failed'
+      }
+    });
 
     await h.actions.merge(BEAD);
 

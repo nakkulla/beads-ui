@@ -2422,6 +2422,56 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     );
   });
 
+  test('uses the existing badge and operation slots for a base-moved wait', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        waitTile({
+          status_label: '반영 대기',
+          wait: { summary: null, blockers: [], cause: 'base_moved' },
+          can_resume: true
+        })
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__held-badge')?.textContent).toBe(
+      '반영 대기'
+    );
+    expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe(
+      '반영 대기'
+    );
+    expect(mount.querySelectorAll('.rtile__resume')).toHaveLength(1);
+    expect(mount.querySelector('.rtile__resume')?.classList).toContain(
+      'op-btn'
+    );
+    expect(
+      mount.querySelector('.rtile__resume')?.closest('.rtile__hd-actions')
+    ).not.toBeNull();
+    expect(
+      mount.querySelector('.rtile__resume')?.closest('.rtile__foot')
+    ).toBeNull();
+    expect(mount.querySelector('.worker-deps')).toBeNull();
+  });
+
+  test('omits base-moved resume when no session is available', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        waitTile({
+          status_label: '반영 대기',
+          wait: { summary: null, blockers: [], cause: 'base_moved' },
+          can_resume: false
+        })
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__resume')).toBeNull();
+  });
+
   test('renders the session summary line', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 

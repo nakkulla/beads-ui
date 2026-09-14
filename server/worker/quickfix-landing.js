@@ -156,7 +156,7 @@ function noChangeCloseKind(close_reason) {
  * one is `resolved_by`, which names the Worker's own evidence-based resolve
  * (§5.3) so a reader can tell it from a session's status write.
  *
- * @typedef {{ resolved_by: string }|null|undefined} LandingExtra
+ * @typedef {{ resolved_by?: string, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }|null|undefined} LandingExtra
  */
 
 /**
@@ -179,6 +179,8 @@ function noChangeCloseKind(close_reason) {
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   worktree: {
  *     removeIfDiscardable: (input: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
+ *     removeCompleted: (input: { repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null, worktree_removed?: boolean, branch_removed?: boolean }>,
+ *     pathFor: (repo: string, bead_id: string) => string,
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   repoOperations: {
@@ -317,7 +319,7 @@ export function createQuickfixLanding(deps) {
    * @param {'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|'bench_close'|null} step
    * @param {string|null} head_sha
    * @param {LandingExtra} [extra]
-   * @returns {{ ok: false, reason: string, step: string|null }}
+   * @returns {{ ok: false, reason: string, step: string|null, detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }}
    */
   function fail(attempt_id, reason, step, head_sha, extra = null) {
     // Existing needs_human/attemptFailed lanes own failure notifications.
@@ -332,7 +334,12 @@ export function createQuickfixLanding(deps) {
     });
     recordLandingStep(attempt_id, step, reason);
     notifyChanged(workspace);
-    return { ok: false, reason, step };
+    return {
+      ok: false,
+      reason,
+      step,
+      ...(extra?.cleanup_detail ? { detail: extra.cleanup_detail } : {})
+    };
   }
 
   /**
@@ -651,7 +658,7 @@ export function createQuickfixLanding(deps) {
   }
 
   /**
-   * Remove the owned worktree, then its local branch. Base-direct push creates
+   * Remove the owned worktree and local branch as one proven manager action. Base-direct push creates
    * no remote topic branch, so this cleanup deliberately performs no remote
    * branch deletion.
    *
@@ -662,49 +669,44 @@ export function createQuickfixLanding(deps) {
    *
    * @param {string} bead_id
    * @param {string} base_sha
-   * @returns {Promise<{ ok: true }|{ ok: false, reason: QuickfixLandingReason }>}
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: QuickfixLandingReason, detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }>}
    */
   async function cleanupBranch(bead_id, base_sha) {
     const branch = branchForBead(bead_id);
     try {
-      const removed = await deps.worktree.removeIfDiscardable({
+      const head = await deps.gitRun(
+        ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
+        { cwd: repo }
+      );
+      if (head.code !== 0 && head.code !== 1) {
+        return { ok: false, reason: 'worktree_remove_failed' };
+      }
+      const removed = await deps.worktree.removeCompleted({
         repo,
-        bead_id,
-        base: base_sha
+        branch,
+        expected_path: deps.worktree.pathFor(repo, bead_id),
+        expected_head: head.code === 0 ? head.stdout.trim() : '0'.repeat(40),
+        delivered_sha: base_sha
       });
       if (!removed.ok) {
         log('quick_fix worktree preserved for %s: %s', bead_id, removed.reason);
-        return { ok: false, reason: 'worktree_remove_failed' };
+        return {
+          ok: false,
+          reason:
+            removed.reason === 'ref_delete_failed'
+              ? 'local_branch_delete_failed'
+              : 'worktree_remove_failed',
+          detail: {
+            manager_reason: removed.reason,
+            worktree_removed: removed.worktree_removed === true,
+            branch_removed: removed.branch_removed === true
+          }
+        };
       }
+      return { ok: true };
     } catch (err) {
       log('quick_fix worktree removal failed for %s: %o', bead_id, err);
       return { ok: false, reason: 'worktree_remove_failed' };
-    }
-
-    try {
-      return await deps.worktree.withTopologyLock(repo, async () => {
-        const deleted = await deps.gitRun(['branch', '-D', branch], {
-          cwd: repo
-        });
-        if (deleted.code !== 0) {
-          const still = await deps.gitRun(
-            ['rev-parse', '--verify', `refs/heads/${branch}`],
-            { cwd: repo }
-          );
-          if (still.code === 0) {
-            return {
-              ok: /** @type {const} */ (false),
-              reason: /** @type {QuickfixLandingReason} */ (
-                'local_branch_delete_failed'
-              )
-            };
-          }
-        }
-        return { ok: /** @type {const} */ (true) };
-      });
-    } catch (err) {
-      log('quick_fix local branch deletion failed for %s: %o', bead_id, err);
-      return { ok: false, reason: 'local_branch_delete_failed' };
     }
   }
 
@@ -1257,7 +1259,9 @@ export function createQuickfixLanding(deps) {
         cleaned.reason,
         'branch_cleanup',
         head_sha,
-        landing_extra
+        cleaned.detail
+          ? { ...(landing_extra || {}), cleanup_detail: cleaned.detail }
+          : landing_extra
       );
     }
 

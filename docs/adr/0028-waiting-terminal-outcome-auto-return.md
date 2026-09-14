@@ -1,7 +1,8 @@
 ---
 id: 28
 title: waiting은 선행 미충족 결말의 터미널 계층이고 복귀 fence는 bd ready 부재뿐이다
-status: accepted
+status: superseded
+superseded_by: UI-lmqu
 date: 2026-08-28
 summary: 'Worker의 waiting 계층은 선행 미충족으로 정상 종료한 attempt의 터미널 결말이며 실패도 파킹도 아니다 — fence는 bd ready 부재뿐이고 선행이 닫히면 보통 후보로 자동 dispatch된다'
 spec: docs/superpowers/specs/2026-08-28-worker-prerequisite-wait-tier-design.md

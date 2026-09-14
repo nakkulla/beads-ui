@@ -546,6 +546,8 @@ function authoritativeMergeSha(pr) {
  *   worktree: {
  *     remove: (input: { repo: string, bead_id: string }) => Promise<unknown>,
  *     removeByBranch: (input: { repo: string, branch: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
+ *     removeCompleted: (input: { repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null, worktree_removed?: boolean, branch_removed?: boolean }>,
+ *     pathFor: (repo: string, bead_id: string) => string,
  *     exists?: (repo: string, bead_id: string) => boolean,
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
@@ -1086,7 +1088,7 @@ export function createPrActions(deps) {
    * the click is not covered — the authority binds what the person saw.
    *
    * @param {string} bead_id
-   * @param {string} head_sha
+   * @param {string|null} head_sha
    */
   function manualMergeAuthorityCovers(bead_id, head_sha) {
     const q = deps.store.snapshot(workspace);
@@ -2189,6 +2191,76 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Normal post-merge cleanup uses the manager's single-lock content proof for
+   * the local worktree/ref, then keeps the existing remote ownership check.
+   * Explicit discard continues to use {@link cleanupBranches}.
+   *
+   * @param {string} bead_id
+   * @param {string|null} head_ref
+   * @param {string|null} head_sha
+   * @param {string} merge_sha
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string, detail?: string }>}
+   */
+  async function cleanupCompletedBranches(
+    bead_id,
+    head_ref,
+    head_sha,
+    merge_sha
+  ) {
+    const branch = headBranchFor(bead_id, head_ref);
+    let expected_head = head_sha;
+    if (
+      typeof expected_head !== 'string' ||
+      !/^[0-9a-f]{40,64}$/i.test(expected_head)
+    ) {
+      const observed = await deps.gitRun(
+        ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
+        { cwd: repo }
+      );
+      if (observed.code !== 0 && observed.code !== 1) {
+        return { ok: false, reason: 'worktree_remove_failed' };
+      }
+      expected_head =
+        observed.code === 0 ? observed.stdout.trim() : '0'.repeat(40);
+    }
+    const local = await deps.worktree.removeCompleted({
+      repo,
+      branch,
+      expected_path: deps.worktree.pathFor(repo, branch),
+      expected_head,
+      delivered_sha: merge_sha
+    });
+    if (!local.ok) {
+      return {
+        ok: false,
+        reason:
+          local.reason === 'ref_delete_failed'
+            ? 'local_branch_delete_failed'
+            : 'worktree_remove_failed',
+        detail: `manager_reason=${local.reason ?? 'unknown'} worktree_removed=${local.worktree_removed === true} branch_removed=${local.branch_removed === true}`
+      };
+    }
+    return deps.worktree.withTopologyLock(repo, async () => {
+      const remote = await deps.gitRun(['push', 'origin', '--delete', branch], {
+        cwd: repo
+      });
+      if (remote.code !== 0) {
+        const still = await deps.gitRun(
+          ['ls-remote', '--heads', 'origin', branch],
+          { cwd: repo }
+        );
+        if (still.code !== 0 || still.stdout.trim().length > 0) {
+          return {
+            ok: /** @type {const} */ (false),
+            reason: 'remote_branch_delete_failed'
+          };
+        }
+      }
+      return { ok: /** @type {const} */ (true) };
+    });
+  }
+
+  /**
    * Announce the merge that CLOSED the bead (UI-9rrk). One hook covers both
    * triggers because both converge on `runCleanup`. The notifier is optional
    * and no-throw by its own contract, so this can never turn a finished cleanup
@@ -2888,9 +2960,31 @@ export function createPrActions(deps) {
         cursor: 'branch_cleanup'
       });
       markStep(bead_id, 'branch_cleanup');
-      const branches = await cleanupBranches(bead_id, row.head_ref || null);
+      const facts = await cleanupFacts(bead_id);
+      const merge_sha = facts.merge_sha;
+      if (typeof merge_sha !== 'string') {
+        return failCleanup(
+          bead_id,
+          'branch_cleanup',
+          'cleanup_identity_unobserved',
+          null
+        );
+      }
+      const branches = await cleanupCompletedBranches(
+        bead_id,
+        row.head_ref || facts.head_ref,
+        facts.head_sha,
+        merge_sha
+      );
       if (!branches.ok) {
-        return failCleanup(bead_id, 'branch_cleanup', branches.reason, null);
+        return failCleanup(
+          bead_id,
+          'branch_cleanup',
+          branches.reason,
+          null,
+          false,
+          branches.detail
+        );
       }
     }
     deps.store.setCleanupCursor?.(workspace, {

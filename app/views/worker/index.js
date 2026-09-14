@@ -3155,7 +3155,9 @@ export function createWorkerView(mount_element, options = {}) {
                   : item.run_state === 'retry_wait'
                     ? '재시도 대기'
                     : item.run_state === 'waiting'
-                      ? '선행 대기'
+                      ? item.wait?.cause === 'base_moved'
+                        ? '반영 대기'
+                        : '선행 대기'
                       : item.run_state === 'provider_hold'
                         ? '공급자 보류'
                         : undefined,

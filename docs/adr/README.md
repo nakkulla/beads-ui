@@ -6,6 +6,8 @@
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
 | UI-wc67 | [연결 레인을 폐기하고 저장소별 대기열에서 확인된 선행 대기만 건너뛴다](UI-wc67-retire-connected-lanes-use-repository-queues.md) | 2026-09-15 | 연결 레인은 폐기하고 저장소별 병렬·직렬 대기열과 blocks 의존만 사용하며 직렬 레인은 확인된 선행 대기 항목을 건너뛰되 한 번에 하나만 실행한다 |
+| UI-lmqu-2 | [기준 이동은 보존 세션 이어하기이고 기계 정산은 정리 재시도다](UI-lmqu-2-base-moved-session-resume.md) | 2026-09-15 | quick_fix 재개는 종료 사유로 session과 settlement를 구분하며 base_moved는 보존 세션 이어하기이고 기계 정산은 정리 재시도다 |
+| UI-lmqu | [대기 사유에 따라 선행 자동 복귀와 보존 후보 이어하기를 구분한다](UI-lmqu-waiting-by-cause-preserved-candidate.md) | 2026-09-15 | waiting은 선행 대기와 기준 이동 대기를 구분하며 선행은 bd ready로 자동 복귀하고 기준 이동은 보존 후보를 기존 세션에서 이어간다 |
 | UI-j9j5 | [수정 잡의 원자적 예약과 실제 성공으로 원래 실패를 완료한다](UI-j9j5-post-merge-job-repair-succession.md) | 2026-09-15 | post-merge 잡은 기존 RepoOperation 봉투를 유지하고 명시적 수정 선언의 원자적 예약과 성공 승계로 원래 실패를 완료한다 |
 | UI-j10d | [완료 행은 실행 사실과 워커 생성 출처를 함께 표시한다](UI-j10d-done-row-worker-creation-provenance.md) | 2026-09-15 | 완료 행은 마지막 구현 실행 사실과 명시적 워커 생성 출처를 슬롯 5에 함께 표시한다 |
 | UI-42l2-2 | [직접 세션 카드는 현재 참조 대화 전체 사용량을 표시하고 워크스페이스 합계에는 가산하지 않는다](UI-42l2-2-direct-session-current-conversation-usage.md) | 2026-09-11 | 직접 세션 카드의 사용량은 현재 참조 대화 전체이며 Bead별 비용으로 나누거나 워크스페이스 합계에 자동 가산하지 않는다 |
@@ -19,7 +21,6 @@
 | 0045 | [구현 세션의 지시 재시작은 durable pause 뒤 기록된 세션과 설정으로 재개하며 새 세션으로 대체하지 않는다](0045-instructions-restart-resumes-recorded-attempt-after-durable-pause.md) | 2026-09-08 | 구현 세션의 지시 재시작은 기존 durable pause 뒤 기록된 세션과 설정으로 재개하며, pause 뒤 연결 끊김은 paused로 남기고 transcript 부재 시 새 세션으로 대체하지 않는다 |
 | 0044 | [구독별 store는 revision을 수신하되 내용 변경만 통지하고 registry는 구독 출처를 전달한다](0044-subscription-store-notifies-content-change-with-source.md) | 2026-09-08 | 구독별 store는 revision을 수신하되 내용 변경만 통지하고 registry는 구독 출처를 전달하며 전체 issue push와 기존 순서·identity 규칙을 유지한다 |
 | 0043 | [워크스페이스와 후보 투영은 기존 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스를 띄우지 않는다](0043-candidate-projection-reads-async-probe-context-only.md) | 2026-09-08 | 워크스페이스와 후보 투영은 기존 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스를 띄우지 않으며 title-cache 예외는 유지한다 |
-| 0042 | [quick_fix 재개는 실패 사유로 session과 settlement를 가르고 착지 정산 재실행 버튼은 정리 재시도로 부른다](0042-quickfix-resume-by-reason-settlement-button-is-cleanup-retry.md) | 2026-09-08 | quick_fix 재개는 실패 사유로 session과 settlement를 가르고, 같은 attempt의 착지 정산 재실행 버튼은 정리 재시도로 부른다 |
 | 0040 | [머지 게이트의 영수증 보류는 자동 해소 주체 유무로 나뉘고 위조 3종은 즉시 terminal needs_human이다](0040-receipt-hold-unresolvable-terminal-needs-human.md) | 2026-09-07 | 머지 게이트의 영수증 보류는 자동 해소 주체가 있는지로 나뉘고, 사람의 baseline 원상복원으로만 풀리는 위조 3종은 대기 없이 terminal needs_human으로 종단해 알림과 두 클릭으로 넘긴다 |
 | 0039 | [ADR 탭 신호는 설치본 체커를 runtime spawn해 --json으로 소비한다](0039-adr-tab-spawns-installed-checkers-json.md) | 2026-09-06 | ADR 탭 신호는 설치본 체커를 runtime spawn해 --json으로 소비하고 규칙을 JS로 복제하지 않으며 현재 표만 JS frontmatter 리더가 읽는다 |
 | 0038 | [처분 대기 admission이 화면 대표를 정한다 — 대기 행이 held 타일·점유 ghost를 이긴다](0038-stale-disposition-admission-elects-the-waiting-row.md) | 2026-09-04 | 처분 대기 admission이 선 bead는 held 타일·점유 ghost가 아니라 대기 행이 대표하고 stale-work 처분 조작은 대기 행에만 산다 |
@@ -32,7 +33,6 @@
 | 0029 | [살아 있는 queue.attempts는 bead 이력의 최신 접미라는 불변식으로 이관을 판정한다](0029-queue-attempts-suffix-invariant.md) | 2026-08-29 | 살아 있는 `queue.attempts`는 bead 이력의 최신 접미이며, 처리 완료 attempt는 같은 bead의 더 오래된 attempt가 전부 이관 가능할 때만 큐를 떠난다. "마지막 구현 attempt" 판정은 라이브 큐만 보고 합집합 조회를 쓰지 않는다. |
 | 0021 | [review_session의 생존·슬롯·정산 시작은 scheduler reconcile이, 결과 판정은 큐가 소유한다](0021-review-session-lifecycle-owned-by-scheduler-reconcile.md) | 2026-08-29 | review_session은 구현 attempt와 같은 reconcile pid probe로 생존·슬롯 점유·정산 시작을 판정하고 죽은 세션의 결과는 큐의 complete()가 영수증으로 판정하며 살아 있는 리뷰어를 죽이는 부팅 종료는 두지 않는다 |
 | 0020 | [blocks 의존은 구현 실행 진입만 막고 spec·plan 작성은 blocked Bead에서도 진행한다](0020-blocks-edge-gates-implementation-entry-only.md) | 2026-08-29 | blocks 의존은 구현 진입(in_progress claim)만 막는다; 세션은 blocked Bead의 spec·plan을 쓰고 게이트 착지에서 끝나며, 선행 결과가 설계 전제인 경우만 spec-after-blocker 라벨로 spec을 미룬다 |
-| 0028 | [waiting은 선행 미충족 결말의 터미널 계층이고 복귀 fence는 bd ready 부재뿐이다](0028-waiting-terminal-outcome-auto-return.md) | 2026-08-28 | Worker의 waiting 계층은 선행 미충족으로 정상 종료한 attempt의 터미널 결말이며 실패도 파킹도 아니다 — fence는 bd ready 부재뿐이고 선행이 닫히면 보통 후보로 자동 dispatch된다 |
 | 0027 | [Worker 이력의 SoT는 bead별 events.jsonl 타임라인이고 queue.json은 상태 전용이다](0027-bead-timeline-history-sot.md) | 2026-08-28 | Worker의 실행·실패 이력은 bead별 append-only 타임라인이 소유하고, 상태 파일은 진행 중·미처리 것만 담는다. |
 | 0019 | [리뷰 영수증 보류는 큐가 head당 1회 리뷰 lineage를 자동 dispatch해 해소를 시도한다](0019-auto-review-dispatch-once-per-head.md) | 2026-08-28 | 영수증 부재·stale 보류는 큐가 head당 1회 같은 리뷰 lineage를 자동 dispatch하고 실패·소진 뒤에는 [리뷰 후 머지]가 같은 lineage를 resume하며 post-merge 자동 수리 금지(ADR 0005)와는 별개다 |
 | 0014 | [레인과 카드는 단일 buildLanes 계약과 공유 슬롯 표로 조립한다](0014-single-build-lanes-contract-and-shared-slot-table.md) | 2026-08-27 | Worker와 Monitor는 워크스페이스 N개를 받는 하나의 buildLanes로 레인을 만들고 카드의 줄 순서와 새 요소의 자리는 공유 슬롯 표가 정한다 |
@@ -60,11 +60,13 @@
 | 0022 | [needs_human은 자동 알림으로 관측되고 재진입은 두 클릭뿐이다](0022-needs-human-auto-notify-click-driven-reentry.md) | superseded | [0024](0024-discard-failure-exits-and-terminal-abandoned.md) |
 | 0023 | [waiting 복귀 트리거는 cadence가 아니라 이벤트 구독이다](0023-waiting-return-event-subscription-not-cadence.md) | superseded | [0034](0034-return-rescan-candidates-include-prerequisite-unmet-admission.md) |
 | 0026 | [워크스페이스 투영 경로는 동기 자식 프로세스를 띄우지 않는다](0026-projection-path-spawns-no-sync-child-process.md) | superseded | [0043](0043-candidate-projection-reads-async-probe-context-only.md) |
+| 0028 | [waiting은 선행 미충족 결말의 터미널 계층이고 복귀 fence는 bd ready 부재뿐이다](0028-waiting-terminal-outcome-auto-return.md) | superseded | [UI-lmqu](UI-lmqu-waiting-by-cause-preserved-candidate.md) |
 | 0030 | [post-merge 잡은 RepoOperation kind job 봉투로 실행하고 원장은 queue.json 맵이다](0030-post-merge-job-repo-operation-envelope.md) | superseded | [UI-j9j5](UI-j9j5-post-merge-job-repair-succession.md) |
 | 0032 | [실행 프리셋은 레인 무관 프로파일이고 워크스페이스가 일반·quick_fix 두 레인에 각각 적용한다](0032-execution-preset-is-lane-neutral-applied-per-lane.md) | superseded | [UI-s8qn](UI-s8qn-impl-runtime-auto-derives-no-provider-inherit-retired-lane-apply.md) |
 | 0035 | [연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다](0035-lane-confirm-writes-deps-only-run-places-and-arms.md) | superseded | [0041](0041-connected-run-preserves-waiting-lanes.md) |
 | 0037 | [완료 레인 행은 슬롯 5 줄에서 실행 사실을 말한다](0037-done-lane-row-states-execution-facts.md) | superseded | [UI-j10d](UI-j10d-done-row-worker-creation-provenance.md) |
 | 0041 | [연결 레인 확정은 의존만 쓰고 진행은 기존 병렬·직렬 위치를 보존하며 같은 진행 권한을 적용한다](0041-connected-run-preserves-waiting-lanes.md) | superseded | [UI-wc67](UI-wc67-retire-connected-lanes-use-repository-queues.md) |
+| 0042 | [quick_fix 재개는 실패 사유로 session과 settlement를 가르고 착지 정산 재실행 버튼은 정리 재시도로 부른다](0042-quickfix-resume-by-reason-settlement-button-is-cleanup-retry.md) | superseded | [UI-lmqu-2](UI-lmqu-2-base-moved-session-resume.md) |
 | 0047 | [Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다](0047-codex-native-child-internal-observation-not-summed.md) | superseded | [UI-42l2](UI-42l2-codex-native-child-card-usage-not-summed.md) |
 | 0048 | [Worker 체계적 정지의 해제는 사람의 승인 한 번이며 재개 버튼과 큐를 세운 attempt의 ↻ 이어하기가 같은 승인이다](0048-resume-click-releases-systemic-hold.md) | superseded | [0049](0049-queue-gate-lives-on-blocked-card-no-banner.md) |
 | 0049 | [Worker 큐 정지·공급자 보류의 표시와 출구는 막힌 카드에 살고 상단 배너는 없다](0049-queue-gate-lives-on-blocked-card-no-banner.md) | superseded | [UI-o5ll](UI-o5ll-provider-hold-release-is-probe-only-no-cap-manual-probe-now.md) |

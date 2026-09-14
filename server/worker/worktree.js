@@ -655,6 +655,7 @@ async function observeStatusDigest(run, fs, wt, identity) {
  *   remove: (input: { repo: string, bead_id: string }) => Promise<{ code: number, stderr: string }>,
  *   observeOwnedByBead: (input: { repo: string, bead_id: string }) => Promise<{ ok: boolean, present: boolean, path: string|null, branch: string|null, head_sha: string|null, reason: string|null }>,
  *   removeByBranch: (input: { repo: string, branch: string, expected_path?: string|null, expected_head?: string|null, expected_base_oid?: string|null, expected_status_digest?: string|null }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
+ *   removeCompleted: (input: { repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null, worktree_removed: boolean, branch_removed: boolean }>,
  *   removeIfDiscardable: (input: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>,
  *   addDetached: (input: { repo: string, name: string, sha: string }) => Promise<{ path: string }>,
  *   removeDetached: (input: { repo: string, name: string }) => Promise<{ code: number, stderr: string }>,
@@ -1087,9 +1088,8 @@ export function createWorktreeManager(deps) {
         }
         const ref = `refs/heads/${input.branch}`;
         // Exact ref match, never a prefix: `UI-abc` must not claim `UI-abcd`.
-        const matches = parseWorktreeRecords(listed.stdout).filter(
-          (record) => record.branch === ref
-        );
+        const records = parseWorktreeRecords(listed.stdout);
+        const matches = records.filter((record) => record.branch === ref);
         // git itself forbids one branch in two worktrees, so 2+ is a parse
         // fault, not a state to act on.
         if (matches.length > 1) {
@@ -1181,6 +1181,331 @@ export function createWorktreeManager(deps) {
           return { ok: false, removed: false, reason: 'remove_failed' };
         }
         return { ok: true, removed: true, reason: null };
+      } finally {
+        release();
+      }
+    },
+
+    /**
+     * Remove a delivered worktree and its local branch under one topology
+     * lock. The delivered tree is the content authority: commit ancestry is a
+     * shortcut only, while squash/non-ancestor histories are compared path by
+     * path including modes and archived before their ref is deleted.
+     *
+     * @param {{ repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }} input
+     * @returns {Promise<{ ok: boolean, removed: boolean, reason: string|null, worktree_removed: boolean, branch_removed: boolean }>}
+     */
+    async removeCompleted(input) {
+      const release = await locks.topologyLock(input.repo);
+      let worktree_removed = false;
+      let branch_removed = false;
+      /**
+       * @param {boolean} ok
+       * @param {string|null} [reason]
+       */
+      const result = (ok, reason = null) => ({
+        ok,
+        removed: worktree_removed || branch_removed,
+        reason,
+        worktree_removed,
+        branch_removed
+      });
+      try {
+        if (
+          !/^[0-9a-f]{40,64}$/i.test(input.expected_head) ||
+          !/^[0-9a-f]{40,64}$/i.test(input.delivered_sha)
+        ) {
+          return result(false, 'identity_invalid');
+        }
+        const ref = `refs/heads/${input.branch}`;
+        const ref_format = await run(['check-ref-format', ref], {
+          cwd: input.repo
+        });
+        if (ref_format.code !== 0) {
+          return result(false, 'identity_invalid');
+        }
+        const delivered = await run(
+          ['rev-parse', '--verify', `${input.delivered_sha}^{commit}`],
+          { cwd: input.repo }
+        );
+        if (delivered.code !== 0) {
+          return result(false, 'delivered_unobservable');
+        }
+        const listed = await run(['worktree', 'list', '--porcelain', '-z'], {
+          cwd: input.repo
+        });
+        if (listed.code !== 0) {
+          return result(false, 'observe_failed');
+        }
+        const records = parseWorktreeRecords(listed.stdout);
+        const matches = records.filter((record) => record.branch === ref);
+        if (matches.length > 1) {
+          return result(false, 'observe_failed');
+        }
+        const branch_probe = await run(
+          ['rev-parse', '--verify', '--quiet', ref],
+          { cwd: input.repo }
+        );
+        if (branch_probe.code !== 0 && branch_probe.code !== 1) {
+          return result(false, 'observe_failed');
+        }
+        let expected_identity = path.resolve(input.expected_path);
+        if (fs.existsSync(input.expected_path)) {
+          try {
+            expected_identity = fs.realpathSync(input.expected_path);
+          } catch {
+            return result(false, 'observe_failed');
+          }
+        }
+        const expected_registration = records.find(
+          (record) => record.path === expected_identity
+        );
+        if (expected_registration && expected_registration.branch !== ref) {
+          return result(false, 'ownership_changed');
+        }
+        if (matches.length === 0 && branch_probe.code === 1) {
+          if (fs.existsSync(input.expected_path)) {
+            return result(false, 'path_present');
+          }
+          return result(true);
+        }
+        if (branch_probe.code !== 0) {
+          return result(false, 'ownership_changed');
+        }
+        const branch_head = branch_probe.stdout.trim();
+        if (branch_head.toLowerCase() !== input.expected_head.toLowerCase()) {
+          return result(false, 'identity_changed');
+        }
+        const wt = matches.length === 1 ? matches[0].path : null;
+        if (wt !== null) {
+          if (wt !== expected_identity) {
+            return result(false, 'identity_changed');
+          }
+          let repo_realpath = input.repo;
+          try {
+            repo_realpath = fs.realpathSync(input.repo);
+          } catch {
+            /* supplied root remains the ownership boundary */
+          }
+          if (
+            !isOwnedWorktree(repo_realpath, wt, input.branch) &&
+            !isOwnedWorktree(input.repo, wt, input.branch)
+          ) {
+            return result(false, 'foreign_worktree');
+          }
+          const wt_head = await run(['rev-parse', '--verify', 'HEAD'], {
+            cwd: wt
+          });
+          const symbolic = await run(
+            ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+            { cwd: wt }
+          );
+          if (
+            wt_head.code !== 0 ||
+            wt_head.stdout.trim().toLowerCase() !== branch_head.toLowerCase() ||
+            symbolic.code !== 0 ||
+            symbolic.stdout.trim() !== input.branch
+          ) {
+            return result(false, 'identity_changed');
+          }
+        } else if (fs.existsSync(input.expected_path)) {
+          return result(false, 'path_present');
+        }
+
+        const ancestor = await run(
+          ['merge-base', '--is-ancestor', branch_head, input.delivered_sha],
+          { cwd: input.repo }
+        );
+        if (ancestor.code !== 0 && ancestor.code !== 1) {
+          return result(false, 'observe_failed');
+        }
+        let archive_base = null;
+        if (ancestor.code === 1) {
+          const merge_base = await run(
+            ['merge-base', branch_head, input.delivered_sha],
+            { cwd: input.repo }
+          );
+          archive_base = merge_base.stdout.trim();
+          if (
+            merge_base.code !== 0 ||
+            !/^[0-9a-f]{40,64}$/i.test(archive_base)
+          ) {
+            return result(false, 'observe_failed');
+          }
+          const changed = await run(
+            [
+              'diff',
+              '--name-only',
+              '-z',
+              '--no-renames',
+              archive_base,
+              branch_head,
+              '--'
+            ],
+            { cwd: input.repo }
+          );
+          if (
+            changed.code !== 0 ||
+            (changed.stdout.length > 0 && !changed.stdout.endsWith('\0'))
+          ) {
+            return result(false, 'observe_failed');
+          }
+          for (const relative_path of changed.stdout
+            .split('\0')
+            .filter(Boolean)) {
+            const [branch_state, delivered_state] = await Promise.all([
+              treePathState(run, input.repo, branch_head, relative_path),
+              treePathState(run, input.repo, input.delivered_sha, relative_path)
+            ]);
+            if (!branch_state.ok || !delivered_state.ok) {
+              return result(false, 'observe_failed');
+            }
+            if (
+              branch_state.state?.mode === '160000' ||
+              delivered_state.state?.mode === '160000'
+            ) {
+              return result(false, 'unsupported_object');
+            }
+            if (!samePathState(branch_state.state, delivered_state.state)) {
+              return result(false, 'delivery_not_contained');
+            }
+          }
+        }
+
+        let status_digest = null;
+        if (wt !== null) {
+          const status = await observeStatusDigest(run, fs, wt, {
+            worktree_realpath: wt,
+            branch: input.branch,
+            head_sha: branch_head,
+            base_oid: input.delivered_sha
+          });
+          if (!status.ok || status.parsed.cause !== null) {
+            return result(false, status.parsed.cause || 'observe_failed');
+          }
+          status_digest = status.status_digest;
+          if (status.special_paths.length > 0) {
+            return result(false, 'special_file');
+          }
+          for (const relative_path of status.staged_paths) {
+            const [index_state, delivered_state] = await Promise.all([
+              indexPathState(run, wt, relative_path),
+              treePathState(run, wt, input.delivered_sha, relative_path)
+            ]);
+            if (!index_state.ok || !delivered_state.ok) {
+              return result(false, 'observe_failed');
+            }
+            if (!samePathState(index_state.state, delivered_state.state)) {
+              return result(false, 'dirty_unique');
+            }
+          }
+          for (const relative_path of [
+            ...new Set([...status.unstaged_paths, ...status.parsed.untracked])
+          ]) {
+            const [worktree_state, delivered_state] = await Promise.all([
+              worktreePathState(run, fs, wt, relative_path),
+              treePathState(run, wt, input.delivered_sha, relative_path)
+            ]);
+            if (!worktree_state.ok || !delivered_state.ok) {
+              return result(false, 'observe_failed');
+            }
+            if (
+              worktree_state.special ||
+              !samePathState(worktree_state.state, delivered_state.state)
+            ) {
+              return result(
+                false,
+                status.parsed.untracked.has(relative_path)
+                  ? 'untracked_present'
+                  : 'dirty_unique'
+              );
+            }
+          }
+        }
+
+        if (archive_base !== null) {
+          if (!createBranchArchive) {
+            return result(false, 'archive_unavailable');
+          }
+          let archived;
+          try {
+            archived = await createBranchArchive({
+              archive_id: `completed-${sha256(input.branch).slice(0, 12)}-${archive_base.slice(0, 12)}-${branch_head.slice(0, 12)}`,
+              repo: input.repo,
+              ref,
+              base_oid: archive_base,
+              branch_head_sha: branch_head
+            });
+          } catch {
+            archived = { ok: false, reason: 'archive_failed' };
+          }
+          if (!archived.ok) {
+            return result(false, 'archive_failed');
+          }
+        }
+
+        const ref_recheck = await run(['rev-parse', '--verify', ref], {
+          cwd: input.repo
+        });
+        if (
+          ref_recheck.code !== 0 ||
+          ref_recheck.stdout.trim().toLowerCase() !== branch_head.toLowerCase()
+        ) {
+          return result(false, 'identity_changed');
+        }
+        if (wt !== null && status_digest !== null) {
+          const [head_recheck, branch_recheck, recheck] = await Promise.all([
+            run(['rev-parse', '--verify', 'HEAD'], { cwd: wt }),
+            run(['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: wt }),
+            observeStatusDigest(run, fs, wt, {
+              worktree_realpath: wt,
+              branch: input.branch,
+              head_sha: branch_head,
+              base_oid: input.delivered_sha
+            })
+          ]);
+          if (
+            head_recheck.code !== 0 ||
+            head_recheck.stdout.trim().toLowerCase() !==
+              branch_head.toLowerCase() ||
+            branch_recheck.code !== 0 ||
+            branch_recheck.stdout.trim() !== input.branch ||
+            !recheck.ok ||
+            recheck.status_digest !== status_digest
+          ) {
+            return result(false, 'identity_changed');
+          }
+          const removed = await run(['worktree', 'remove', '--force', wt], {
+            cwd: input.repo
+          });
+          if (removed.code !== 0) {
+            return result(false, 'remove_failed');
+          }
+          worktree_removed = true;
+        }
+        const deleted = await run(['update-ref', '-d', ref, branch_head], {
+          cwd: input.repo
+        });
+        if (deleted.code !== 0) {
+          return result(false, 'ref_delete_failed');
+        }
+        branch_removed = true;
+        const [final_list, final_ref] = await Promise.all([
+          run(['worktree', 'list', '--porcelain', '-z'], { cwd: input.repo }),
+          run(['rev-parse', '--verify', '--quiet', ref], { cwd: input.repo })
+        ]);
+        if (
+          final_list.code !== 0 ||
+          parseWorktreeRecords(final_list.stdout).some(
+            (record) =>
+              record.branch === ref || record.path === expected_identity
+          ) ||
+          final_ref.code !== 1 ||
+          fs.existsSync(input.expected_path)
+        ) {
+          return result(false, 'post_remove_verify_failed');
+        }
+        return result(true);
       } finally {
         release();
       }

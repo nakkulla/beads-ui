@@ -596,7 +596,13 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
       can_pause: false,
       // The resume handler owns transcript fallback, so a provider-held
       // attempt keeps its exit even when the old record has no session id.
-      can_resume: held.run_state === 'provider_hold'
+      can_resume:
+        held.run_state === 'provider_hold' ||
+        (held.run_state === 'waiting' &&
+          a.cause === 'base_moved' &&
+          typeof a.session_id === 'string' &&
+          a.session_id.length > 0 &&
+          !resumed_from_ids.has(a.attempt_id))
     });
   }
   return map;
@@ -884,6 +890,7 @@ function waitProjection(a) {
     });
   }
   return {
+    ...(a.cause === 'base_moved' ? { cause: 'base_moved' } : {}),
     summary:
       cause_detail && typeof cause_detail.summary === 'string'
         ? cause_detail.summary

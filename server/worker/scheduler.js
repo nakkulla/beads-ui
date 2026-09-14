@@ -118,6 +118,7 @@ import {
 import { liftDelegation } from './runner/claude.js';
 import { RUNNERS, adapterSpec, runtimeCatalog } from './runner/index.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
+import { terminalResultOf } from './runner/session.js';
 import { stderrPathOf } from './session-log.js';
 import {
   resolveSessionFile as defaultResolveSessionFile,
@@ -611,7 +612,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * `readyBeadIds` is optional for the same compatibility reason. Without the
  * workspace-wide ready reader, waiting return scans fail quiet and ordinary
  * scheduler behavior stays unchanged.
- * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, installDependencies?: (i: { path: string }) => Promise<string>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, withTopologyLock?: <T>(repo: string, fn: () => Promise<T>) => Promise<T>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean, restore?: (i: { repo: string, bead_id: string, head_ref: string }) => Promise<{ ok: boolean, reason?: string }> }} worktree
+ * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, observeOwnedByBead?: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, present: boolean, path: string|null, branch: string|null, head_sha: string|null, reason: string|null }>, installDependencies?: (i: { path: string }) => Promise<string>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, withTopologyLock?: <T>(repo: string, fn: () => Promise<T>) => Promise<T>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean, restore?: (i: { repo: string, bead_id: string, head_ref: string }) => Promise<{ ok: boolean, reason?: string }> }} worktree
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean, bead_status?: string|null, awaiting_user?: string|null }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
@@ -623,7 +624,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * The merge-candidate verification runner. Bench scoring goes through the SAME
  * envelope so a cell's score and a PR's receipt mean the same thing in the
  * comparison table.
- * @property {{ settle: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<{ ok: boolean, reason?: string, step?: string|null }> }} [quickfixLanding]
+ * @property {{ settle: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<{ ok: boolean, reason?: string, step?: string|null, detail?: any }> }} [quickfixLanding]
  * Worker-dispatched quick_fix landing settlement (design §6). An attachment
  * without this dep fails the landing attempt closed; it never falls back to PR
  * observation.
@@ -1822,6 +1823,59 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Find the preserved-candidate wait that owns a continuation lineage.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   * @returns {{ attempt_id: string, attempt: any }|null}
+   */
+  function baseMovedLineage(workspace, attempt) {
+    const attempts = deps.store.snapshot(workspace).attempts || {};
+    let current = attempt;
+    const seen = new Set();
+    while (current && !seen.has(current.attempt_id)) {
+      seen.add(current.attempt_id);
+      if (
+        current.cause === 'base_moved' &&
+        current.quickfix_landing?.reason === 'base_moved'
+      ) {
+        return { attempt_id: current.attempt_id, attempt: current };
+      }
+      current = current.resumed_from ? attempts[current.resumed_from] : null;
+    }
+    return null;
+  }
+
+  /**
+   * Re-observe a preserved candidate at the last launch boundary.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   */
+  async function reproveBaseMovedLineage(workspace, attempt) {
+    const source = baseMovedLineage(workspace, attempt);
+    if (!source) {
+      return true;
+    }
+    const candidate_sha = source.attempt.quickfix_landing?.head_sha;
+    const base_sha = source.attempt.cause_detail?.base_sha;
+    if (typeof candidate_sha !== 'string' || typeof base_sha !== 'string') {
+      return false;
+    }
+    return (
+      (await proveBaseMovedWait(
+        workspace,
+        source.attempt_id,
+        source.attempt.bead_id,
+        /** @type {RunnerVerdict} */ ({
+          success: true,
+          terminal_result: { kind: 'base_moved', candidate_sha, base_sha }
+        })
+      )) !== null
+    );
+  }
+
+  /**
    * Read the bounded stderr sidecar associated with one attempt log.
    *
    * @param {string} workspace
@@ -1873,6 +1927,35 @@ export function createScheduler(deps) {
     return deps.sessionLog.read(workspace, attempt_id, {
       bead_id: attempt.bead_id,
       log_path
+    });
+  }
+
+  /**
+   * Rebuild the adapter-owned verdict from a detached session's persisted log.
+   * A missing log keeps the legacy observation path; a present log is judged
+   * by the same adapter and terminal-result parser as a live session.
+   *
+   * @param {any} attempt
+   * @param {unknown[]|null} raw
+   * @returns {RunnerVerdict|null}
+   */
+  function persistedRunnerVerdict(attempt, raw) {
+    if (raw === null) {
+      return null;
+    }
+    const judged = adapterSpec(attempt.runner).verdict({
+      raw,
+      exit: null,
+      blocked: false
+    });
+    return /** @type {RunnerVerdict} */ ({
+      ...judged,
+      terminal_result: terminalResultOf(judged.summary),
+      exit: null,
+      blocked: false,
+      blocked_detail: null,
+      events: [],
+      raw
     });
   }
 
@@ -4841,6 +4924,11 @@ export function createScheduler(deps) {
             cause_detail
           ).blockers
         : [];
+      const base_moved = classification.cause === 'base_moved';
+      const moved_detail =
+        /** @type {{ candidate_sha?: string, base_sha?: string }|null} */ (
+          cause_detail
+        );
       deps.store.updateAttempt(workspace, {
         attempt_id,
         patch: {
@@ -4849,8 +4937,23 @@ export function createScheduler(deps) {
           cause_detail: {
             summary: classification.summary,
             blockers,
-            bead_status: options.bead_status ?? null
+            bead_status: options.bead_status ?? null,
+            ...(base_moved
+              ? {
+                  candidate_sha: moved_detail?.candidate_sha,
+                  base_sha: moved_detail?.base_sha
+                }
+              : {})
           },
+          ...(base_moved
+            ? {
+                quickfix_landing: {
+                  cursor: null,
+                  head_sha: moved_detail?.candidate_sha ?? null,
+                  reason: 'base_moved'
+                }
+              }
+            : {}),
           finished_at: at
         }
       });
@@ -4870,9 +4973,9 @@ export function createScheduler(deps) {
         kind: 'session_ended',
         // One ending per attempt, so the id is fixed rather than sequenced.
         seq: 'waiting',
-        summary: `대기 · blocks:${blockers
-          .map((blocker) => blocker.id)
-          .join(', ')}`,
+        summary: base_moved
+          ? `대기 · base_moved:${moved_detail?.candidate_sha}:${moved_detail?.base_sha}`
+          : `대기 · blocks:${blockers.map((blocker) => blocker.id).join(', ')}`,
         at
       });
       return;
@@ -5481,6 +5584,8 @@ export function createScheduler(deps) {
             workspace,
             failed_record
           );
+          const strict_preserved =
+            baseMovedLineage(workspace, failed_record) !== null;
           await failAttempt(
             workspace,
             attempt_id,
@@ -5493,6 +5598,7 @@ export function createScheduler(deps) {
           // child was launched on the opposite one.
           if (
             !fallback_used &&
+            !strict_preserved &&
             source_session_id &&
             failed_record.continuation_choice !== 'prior_attempt'
           ) {
@@ -5535,12 +5641,39 @@ export function createScheduler(deps) {
         return;
       }
 
-      // The receipt observation, ahead of EVERY success branch (UI-bu6d §3).
-      // Both the external-PR resolution below and the quick-fix landing after
-      // it RETURN, and `main:quick_fix_default` is precisely the token a
-      // quick-fix attempt records — a check placed after the split would never
-      // see the attempts it exists for.
+      // Receipt drift is an independent authority observation. Take it before
+      // any business-result branch so a truthful failure or wait cannot hide a
+      // forged receipt change made during the same session.
       await recordReceiptCheck(workspace, attempt_id, bead_id);
+
+      // Process success and work completion are separate contracts. A
+      // canonical failure/environment line is the session's original outcome,
+      // so do not replace it with a later missing-PR or missing-push symptom.
+      if (
+        verdict.terminal_result?.kind === 'failure' ||
+        verdict.terminal_result?.kind === 'environment'
+      ) {
+        await failAttempt(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior,
+          verdict.terminal_result.kind === 'environment'
+            ? 'session_hard_stop:environment'
+            : 'session_failed:reported_failure',
+          undefined,
+          { verdict }
+        );
+        notifyChanged(workspace);
+        await tick(workspace);
+        return;
+      }
+
+      if (
+        await judgeBaseMovedWait(workspace, attempt_id, bead_id, prior, verdict)
+      ) {
+        return;
+      }
 
       // An EXTERNAL-PR resolution takes its own completion path (UI-w0hi §1):
       // the bead's lane membership belongs to the external overlay, so the
@@ -6227,6 +6360,165 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Prove the contract's preserved-candidate base-move ending. The final line
+   * supplies candidate/base identities only; every authority and containment
+   * fact is re-observed from the attempt's owned checkout and durable receipt.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {RunnerVerdict} verdict
+   * @returns {Promise<{ candidate_sha: string, base_sha: string, bead_status: string|null }|null>}
+   */
+  async function proveBaseMovedWait(workspace, attempt_id, bead_id, verdict) {
+    const terminal = verdict.terminal_result;
+    if (
+      verdict.success !== true ||
+      terminal?.kind !== 'base_moved' ||
+      typeof terminal.candidate_sha !== 'string' ||
+      typeof terminal.base_sha !== 'string' ||
+      typeof deps.worktree.observeOwnedByBead !== 'function' ||
+      typeof deps.gitRun !== 'function' ||
+      typeof deps.resolveBase !== 'function'
+    ) {
+      return null;
+    }
+    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    const repo = typeof attempt?.repo === 'string' ? attempt.repo : '';
+    if (repo.length === 0 || attempt?.quickfix_lane !== true) {
+      return null;
+    }
+    let owned;
+    try {
+      owned = await deps.worktree.observeOwnedByBead({ repo, bead_id });
+    } catch {
+      return null;
+    }
+    if (
+      !owned.ok ||
+      !owned.present ||
+      owned.branch !== branchForBead(bead_id) ||
+      owned.head_sha?.toLowerCase() !== terminal.candidate_sha
+    ) {
+      return null;
+    }
+    let observed_base;
+    try {
+      const resolved = await deps.resolveBase({ force: true });
+      observed_base = resolved.ok ? resolved.base_oid : null;
+    } catch {
+      return null;
+    }
+    if (
+      typeof observed_base !== 'string' ||
+      !/^[0-9a-f]{40,64}$/i.test(observed_base) ||
+      observed_base.toLowerCase() === terminal.base_sha
+    ) {
+      return null;
+    }
+    const [candidate, parent, remote_containment] = await Promise.all([
+      deps.gitRun(['cat-file', '-e', `${terminal.candidate_sha}^{commit}`], {
+        cwd: repo
+      }),
+      deps.gitRun(['rev-parse', `${terminal.candidate_sha}^`], { cwd: repo }),
+      deps.gitRun(
+        ['merge-base', '--is-ancestor', terminal.candidate_sha, observed_base],
+        { cwd: repo }
+      )
+    ]);
+    if (
+      candidate.code !== 0 ||
+      parent.code !== 0 ||
+      parent.stdout.trim().toLowerCase() !== terminal.base_sha ||
+      remote_containment.code !== 1
+    ) {
+      return null;
+    }
+    let receipt;
+    let verify_receipt;
+    let bead_status;
+    try {
+      [receipt, verify_receipt, bead_status] = await Promise.all([
+        deps.bd.readMetadata(bead_id, 'impl_review'),
+        deps.bd.readMetadata(bead_id, 'verify_receipt'),
+        deps.bd.readStatus(bead_id)
+      ]);
+    } catch {
+      return null;
+    }
+    const receipt_sha =
+      typeof receipt === 'string'
+        ? receipt.slice(receipt.lastIndexOf('@') + 1)
+        : '';
+    const reviewer =
+      typeof receipt === 'string'
+        ? receipt.slice(0, receipt.lastIndexOf('@')).toLowerCase()
+        : '';
+    if (
+      !/^[A-Za-z0-9._-]+@[0-9a-f]{40}$/i.test(
+        typeof receipt === 'string' ? receipt.trim() : ''
+      ) ||
+      reviewer === 'skipped' ||
+      receipt_sha.toLowerCase() !== terminal.candidate_sha ||
+      (typeof verify_receipt === 'string' &&
+        verify_receipt.trim().length > 0 &&
+        !new RegExp(`^[^@\\s]+@${terminal.candidate_sha}:0$`, 'i').test(
+          verify_receipt.trim()
+        )) ||
+      bead_status === 'resolved' ||
+      bead_status === 'closed'
+    ) {
+      return null;
+    }
+    return {
+      candidate_sha: terminal.candidate_sha,
+      base_sha: terminal.base_sha,
+      bead_status
+    };
+  }
+
+  /**
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {string|null} prior
+   * @param {RunnerVerdict} verdict
+   * @returns {Promise<boolean>}
+   */
+  async function judgeBaseMovedWait(
+    workspace,
+    attempt_id,
+    bead_id,
+    prior,
+    verdict
+  ) {
+    const proven = await proveBaseMovedWait(
+      workspace,
+      attempt_id,
+      bead_id,
+      verdict
+    );
+    if (proven === null) {
+      return false;
+    }
+    await failAttempt(
+      workspace,
+      attempt_id,
+      bead_id,
+      prior,
+      'base_moved',
+      {
+        candidate_sha: proven.candidate_sha,
+        base_sha: proven.base_sha
+      },
+      { verdict, bead_status: proven.bead_status, tier_hint: 'waiting' }
+    );
+    notifyChanged(workspace);
+    await tick(workspace);
+    return true;
+  }
+
+  /**
    * Settle an attempt whose session refused to start on an unmet prerequisite
    * (waiting-tier spec §4.1), ahead of the landing settlement on the quick_fix
    * lane and ahead of the `no_pr` failure on the PR lane (UI-8kvi).
@@ -6592,7 +6884,7 @@ export function createScheduler(deps) {
    * @param {string|null} prior
    * @param {string} target_base
    * @param {boolean} repo_known
-   * @returns {Promise<{ ok: true }|{ ok: false, reason: string, step?: string|null }>}
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string, step?: string|null, detail?: any }>}
    */
   async function settleQuickfixLanding(
     workspace,
@@ -6692,7 +6984,8 @@ export function createScheduler(deps) {
       attempt_id,
       bead_id,
       prior,
-      `quickfix_landing_failed:${reason}`
+      `quickfix_landing_failed:${reason}`,
+      result.detail
     );
     notifyChanged(workspace);
     await tick(workspace);
@@ -7284,6 +7577,7 @@ export function createScheduler(deps) {
       return;
     }
     const persisted_raw = persistedSessionRaw(workspace, attempt_id, attempt);
+    const persisted_verdict = persistedRunnerVerdict(attempt, persisted_raw);
     const outage =
       persisted_raw === null
         ? null
@@ -7327,12 +7621,12 @@ export function createScheduler(deps) {
                   command: guard_kill.command ?? null
                 }
               }
-            : {
+            : (persisted_verdict ?? {
                 success: true,
                 reason: 'reconciled',
                 exit: null,
                 blocked: false
-              }
+              })
         ),
         kind
       );
@@ -7345,6 +7639,52 @@ export function createScheduler(deps) {
     // lived only in `onSessionDone` would leave those attempts unobserved — and
     // leave a previous attempt's warning standing as if it still described them.
     await recordReceiptCheck(workspace, attempt_id, bead_id);
+
+    if (persisted_verdict && !persisted_verdict.success) {
+      await failAttempt(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        `session_failed:${persisted_verdict.reason}`,
+        undefined,
+        { verdict: persisted_verdict }
+      );
+      notifyChanged(workspace);
+      await tick(workspace);
+      return;
+    }
+    if (
+      persisted_verdict?.terminal_result?.kind === 'failure' ||
+      persisted_verdict?.terminal_result?.kind === 'environment'
+    ) {
+      await failAttempt(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        persisted_verdict.terminal_result.kind === 'environment'
+          ? 'session_hard_stop:environment'
+          : 'session_failed:reported_failure',
+        undefined,
+        { verdict: persisted_verdict }
+      );
+      notifyChanged(workspace);
+      await tick(workspace);
+      return;
+    }
+    if (
+      persisted_verdict &&
+      (await judgeBaseMovedWait(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        persisted_verdict
+      ))
+    ) {
+      return;
+    }
 
     if (external_conflict) {
       // An EXTERNAL resolution takes the same claim the ordinary arm does, for
@@ -9821,6 +10161,7 @@ export function createScheduler(deps) {
       (prior.status !== 'failed' &&
         prior.status !== 'orphaned' &&
         prior.status !== 'paused' &&
+        !(prior.status === 'waiting' && prior.cause === 'base_moved') &&
         !(ladder_prior_attempt && prior.status === 'retry_wait'))
     ) {
       return { ok: false, reason: 'not_failed' };
@@ -9836,6 +10177,42 @@ export function createScheduler(deps) {
     }
     const bead_id = prior.bead_id;
     const repo = typeof prior.repo === 'string' ? prior.repo : '';
+    const base_moved_resume =
+      prior.status === 'waiting' &&
+      prior.cause === 'base_moved' &&
+      prior.quickfix_lane === true &&
+      prior.quickfix_landing?.reason === 'base_moved';
+    if (base_moved_resume) {
+      const candidate_sha = prior.quickfix_landing?.head_sha;
+      const base_sha = prior.cause_detail?.base_sha;
+      if (
+        typeof prior.session_id !== 'string' ||
+        prior.session_id.length === 0 ||
+        typeof candidate_sha !== 'string' ||
+        typeof base_sha !== 'string' ||
+        continuation.continuation === 'fresh_current' ||
+        continuation.exec_override !== undefined ||
+        !transcriptPresent(prior.runner, prior.session_id, prior)
+      ) {
+        return { ok: false, reason: 'prior_session_unavailable' };
+      }
+      const preserved = await proveBaseMovedWait(
+        workspace,
+        attempt_id,
+        bead_id,
+        /** @type {RunnerVerdict} */ ({
+          success: true,
+          terminal_result: {
+            kind: 'base_moved',
+            candidate_sha,
+            base_sha
+          }
+        })
+      );
+      if (preserved === null) {
+        return { ok: false, reason: 'preserved_candidate_invalid' };
+      }
+    }
     // Which resume a failed quick_fix landing gets is decided by the FAILURE
     // REASON, never by the settlement cursor (UI-8h1x §3.2). The same cursor
     // carries opposite-natured failures — `base_containment` holds both
@@ -11089,6 +11466,7 @@ export function createScheduler(deps) {
     const prior_runner_available =
       recorded_prior_runner !== null && RUNNERS.includes(recorded_prior_runner);
     const provider_auto_resume = options.provider_auto_resume === true;
+    const strict_preserved = baseMovedLineage(workspace, prior) !== null;
     // `prior_attempt` (UI-qce9 §5): the recorded attempt's session AND its
     // recorded execution tuple, verbatim. It reuses the provider auto-resume's
     // record-derived tuple rather than resolving current settings, because
@@ -11402,7 +11780,7 @@ export function createScheduler(deps) {
     ) {
       // §5.3: `prior_attempt` never substitutes a fresh session — the refusal
       // is the answer, and the paused parent stays where the user left it.
-      if (prior_attempt_choice) {
+      if (prior_attempt_choice || strict_preserved) {
         return { ok: false, reason: 'prior_session_unavailable' };
       }
       continuation_mode = 'fresh';
@@ -11883,6 +12261,29 @@ export function createScheduler(deps) {
       disposition: options.disposition ?? null,
       quickfix_lane
     };
+    if (baseMovedLineage(workspace, prior)) {
+      if (
+        typeof resume_session_id !== 'string' ||
+        !transcriptPresent(runner_name, resume_session_id, prior)
+      ) {
+        await finalizeLaunchRefusal(
+          launch_input,
+          'prior_session_unavailable',
+          true
+        );
+        await reportCompletionSettlement(workspace, new_attempt_id, null);
+        return { ok: false, reason: 'prior_session_unavailable' };
+      }
+      if (!(await reproveBaseMovedLineage(workspace, prior))) {
+        await finalizeLaunchRefusal(
+          launch_input,
+          'preserved_candidate_invalid',
+          true
+        );
+        await reportCompletionSettlement(workspace, new_attempt_id, null);
+        return { ok: false, reason: 'preserved_candidate_invalid' };
+      }
+    }
     let launched = await launchSession(launch_input);
     if (!launched.ok && launched.reason === 'worktree_missing') {
       const decision = await missingRelaunchDecision(
@@ -12380,6 +12781,7 @@ export function createScheduler(deps) {
       const record = /** @type {any} */ (attempt);
       if (
         record.status !== 'waiting' ||
+        record.cause !== 'prerequisite_unmet' ||
         latestImplementationAttempt(q, record.bead_id)?.attempt_id !==
           record.attempt_id ||
         !lanes.has(record.bead_id) ||
@@ -13074,6 +13476,9 @@ export function createScheduler(deps) {
     }
     if (latest.status === 'retry_wait') {
       return 'retry_wait';
+    }
+    if (latest.status === 'waiting' && latest.cause === 'base_moved') {
+      return 'base_moved';
     }
     // `waiting` is deliberately absent (waiting-tier spec §4.5, D3): absence
     // from `bd ready` is that ending's fence, and it lifts itself the moment

@@ -345,6 +345,15 @@ function prActionsWorktree(runtime) {
   return {
     remove: async () => ({ code: 0 }),
     removeByBranch: async () => ({ ok: true, removed: false, reason: null }),
+    removeCompleted: async () => ({
+      ok: true,
+      removed: false,
+      reason: null,
+      worktree_removed: false,
+      branch_removed: false
+    }),
+    pathFor: (/** @type {string} */ repo, /** @type {string} */ bead_id) =>
+      path.join(repo, '.worktrees', bead_id),
     /**
      * @template T
      * @param {string} repo
@@ -557,6 +566,37 @@ describe('worker e2e — worker-dispatched quick_fix lands without a PR', () => 
           ok: removed.code === 0,
           removed: removed.code === 0,
           reason: removed.code === 0 ? null : removed.stderr.trim()
+        };
+      },
+      removeCompleted: async (/** @type {any} */ input) => {
+        const removed = await gitRun(
+          ['worktree', 'remove', '--force', worktree_path],
+          { cwd: repo_dir }
+        );
+        if (removed.code !== 0) {
+          return {
+            ok: false,
+            removed: false,
+            reason: 'remove_failed',
+            worktree_removed: false,
+            branch_removed: false
+          };
+        }
+        const deleted = await gitRun(
+          [
+            'update-ref',
+            '-d',
+            `refs/heads/${input.branch}`,
+            input.expected_head
+          ],
+          { cwd: input.repo }
+        );
+        return {
+          ok: deleted.code === 0,
+          removed: true,
+          reason: deleted.code === 0 ? null : 'ref_delete_failed',
+          worktree_removed: true,
+          branch_removed: deleted.code === 0
         };
       },
       /**

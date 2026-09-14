@@ -243,6 +243,8 @@ function fakeBd(config = {}) {
 }
 
 const fakeWorktree = {
+  pathFor: (/** @type {string} */ _repo, /** @type {string} */ bead_id) =>
+    `/wt/${bead_id}`,
   add: async (/** @type {{ bead_id: string }} */ { bead_id }) => ({
     path: `/wt/${bead_id}`,
     branch: bead_id,
@@ -250,6 +252,13 @@ const fakeWorktree = {
   }),
   remove: async () => ({ code: 0 }),
   removeByBranch: async () => ({ ok: true, removed: false, reason: null }),
+  removeCompleted: async () => ({
+    ok: true,
+    removed: false,
+    reason: null,
+    worktree_removed: false,
+    branch_removed: false
+  }),
   // The manager owns the repo topology lock and hands it to the modules that
   // run their own ref-mutating git commands, so the fake must offer it too.
   withTopologyLock: async (
