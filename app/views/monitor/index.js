@@ -270,7 +270,7 @@ const TICK_MS = 1_000;
 /**
  * @typedef {Object} MonitorViewOptions
  * @property {(id: string) => void} gotoIssue
- * @property {{ get: () => Array<Record<string, any>>|null, getWorkspacesState?: () => Array<Record<string, any>>, crossLanes?: () => { revision: number, lanes: Array<Record<string, any>> }|null|undefined, subscribe?: (fn: () => void) => () => void }} [pipelineStore]
+ * @property {{ get: () => Array<Record<string, any>>|null, getWorkspacesState?: () => Array<Record<string, any>>, subscribe?: (fn: () => void) => () => void }} [pipelineStore]
  * @property {any} [execPresetStore]
  * @property {any} [sessionLogStore] - 실행중 타일의 `▤ 세션` 드로어가 읽는 라인
  * 스토어 (Worker 탭과 같은 것).
