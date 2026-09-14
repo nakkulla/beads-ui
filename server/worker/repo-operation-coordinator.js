@@ -792,7 +792,7 @@ export function createRepoOperationCoordinator(deps) {
    * @param {string} workspace
    * @param {any} operation
    * @param {string} operation_id
-   * @param {{ exit_code: number|null, signal: string|null }} marker
+   * @param {{ exit_code: number|null, signal: string|null, started_at?: number, finished_at?: number }} marker
    */
   async function settleFromMarker(workspace, operation, operation_id, marker) {
     if (marker.exit_code === 0 && !marker.signal) {
@@ -845,7 +845,10 @@ export function createRepoOperationCoordinator(deps) {
         attempt_id: operation.attempt_id,
         exit_code: marker.exit_code,
         signal: marker.signal,
-        log_digest
+        log_digest,
+        ...(Number.isFinite(marker.finished_at)
+          ? { finished_at: Number(marker.finished_at) }
+          : {})
       });
       await sweepDescendantCoverage(workspace, operation_id);
       transition.reclaim(workspace, operation_id);
@@ -2937,7 +2940,40 @@ export function createRepoOperationCoordinator(deps) {
           operation.attempt_id
         );
         if (marker) {
-          await settleFromMarker(workspace, operation, operation_id, marker);
+          const launch_target =
+            typeof launch.target_sha === 'string' &&
+            /^[0-9a-f]{40}$/.test(launch.target_sha)
+              ? launch.target_sha
+              : null;
+          const target_matches =
+            launch_target !== null &&
+            (launch_target === operation.target_sha ||
+              (operation.kind === 'deploy' && operation.target_sha === null));
+          if (
+            typeof launch.log_path !== 'string' ||
+            launch.log_path.length === 0 ||
+            !target_matches ||
+            !Number.isFinite(marker.started_at) ||
+            !Number.isFinite(marker.finished_at) ||
+            marker.started_at !== launch.started_at ||
+            marker.finished_at < marker.started_at
+          ) {
+            continue;
+          }
+          const adopted = deps.store.startRepoOperation(workspace, {
+            operation_id,
+            attempt_id: operation.attempt_id,
+            process_identity: launch,
+            log_path: launch.log_path,
+            target_sha: launch_target,
+            started_at: marker.started_at
+          });
+          if (!adopted.ok) {
+            continue;
+          }
+          const refreshed =
+            deps.store.snapshot(workspace).repo_operations[operation_id];
+          await settleFromMarker(workspace, refreshed, operation_id, marker);
           continue;
         }
         const probe = runner.processController.probe(launch);
@@ -2955,7 +2991,7 @@ export function createRepoOperationCoordinator(deps) {
               ? {}
               : { target_sha: launch.target_sha })
           });
-        } else {
+        } else if (probe.state === 'gone' || probe.state === 'recycled') {
           await settleFailure(workspace, operation, operation_id, {
             code: 'interrupted',
             detail: 'launch_lost',

@@ -400,6 +400,34 @@ describe('trimQueueProjection repo operations', () => {
     expect(after_dismiss.repo_operations).not.toHaveProperty('op-red');
   });
 
+  test('keeps operations referenced by a post-merge repair ledger', () => {
+    const raw = {
+      attempts: {},
+      repo_operations: {
+        ...recentFillerOperations(),
+        'op-old': operation({ requested_at: 1 }),
+        'op-new': operation({ requested_at: 2 })
+      },
+      post_merge_jobs: {
+        old: {
+          operation_id: 'op-old',
+          repair: { key: 'new', operation_id: 'op-new' }
+        },
+        new: {
+          operation_id: 'op-new',
+          replaces: { key: 'old', operation_id: 'op-old' }
+        }
+      }
+    };
+
+    const trimmed = trimQueueProjection(raw, raw, NOW);
+
+    expect(trimmed.repo_operations).toMatchObject({
+      'op-old': expect.any(Object),
+      'op-new': expect.any(Object)
+    });
+  });
+
   test('keeps an operation a cleanup_failed bead is the subject of', () => {
     const raw = {
       cleanup_failed: { 'UI-stuck': { step: 'branch_cleanup' } },

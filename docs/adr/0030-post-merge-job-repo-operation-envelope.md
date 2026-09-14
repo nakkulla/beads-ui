@@ -1,7 +1,8 @@
 ---
 id: 30
 title: post-merge 잡은 RepoOperation kind job 봉투로 실행하고 원장은 queue.json 맵이다
-status: accepted
+status: superseded
+superseded_by: UI-j9j5
 date: 2026-09-01
 summary: 'post-merge 잡은 RepoOperation kind `job`으로 deploy 봉투를 재사용해 실행하고 적용 원장은 `queue.json`의 `<파일명>@<blob SHA>` 맵이다'
 spec: docs/superpowers/specs/2026-09-01-post-merge-job-runner-design.md

@@ -11229,8 +11229,9 @@ describe('worker/queue-store — post-merge job ledger (UI-i60a §3)', () => {
    *
    * @param {any} store
    * @param {string} operation_id
+   * @param {string} [blob]
    */
-  function prerecordJob(store, operation_id) {
+  function prerecordJob(store, operation_id, blob = '1'.repeat(40)) {
     store.ensureRepoOperation(WS, {
       operation_id,
       repo_id: WS,
@@ -11241,8 +11242,52 @@ describe('worker/queue-store — post-merge job ledger (UI-i60a §3)', () => {
       target_sha: 'a'.repeat(40),
       script_path: 'repo-ops/post-merge.d/10-reindex',
       script_mode: '100755',
-      script_blob_sha: '1'.repeat(40)
+      script_blob_sha: blob
     });
+  }
+
+  /**
+   * @param {any} store
+   * @param {{ success?: boolean }} [options]
+   */
+  function seedRepair(store, options = {}) {
+    const successor_key = `10-reindex@${'2'.repeat(40)}`;
+    prerecordJob(store, 'job-old');
+    const old = store.snapshot(WS).repo_operations['job-old'];
+    store.settleRepoOperation(WS, {
+      operation_id: 'job-old',
+      attempt_id: old.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-old',
+      repo_id: WS
+    });
+    prerecordJob(store, 'job-new', '2'.repeat(40));
+    store.recordPostMergeJobIntent(WS, {
+      key: successor_key,
+      operation_id: 'job-new',
+      repo_id: WS,
+      replaces: { key: JOB_KEY, operation_id: 'job-old' }
+    });
+    if (options.success) {
+      const fresh = store.snapshot(WS).repo_operations['job-new'];
+      store.startRepoOperation(WS, {
+        operation_id: 'job-new',
+        attempt_id: fresh.attempt_id,
+        process_identity: { pid: 2, pgid: 2, started_at: 2 },
+        log_path: '/tmp/job-new.log'
+      });
+      store.settleRepoOperation(WS, {
+        operation_id: 'job-new',
+        attempt_id: fresh.attempt_id,
+        exit_code: 0,
+        signal: null
+      });
+    }
+    return successor_key;
   }
 
   test('creates a kind job operation record', () => {
@@ -11426,6 +11471,300 @@ describe('worker/queue-store — post-merge job ledger (UI-i60a §3)', () => {
     );
   });
 
+  test('reserves a failed predecessor and corrective intent atomically', () => {
+    const store = createQueueStore();
+    const successor_key = `10-reindex@${'2'.repeat(40)}`;
+    prerecordJob(store, 'job-old');
+    const old = store.snapshot(WS).repo_operations['job-old'];
+    store.settleRepoOperation(WS, {
+      operation_id: 'job-old',
+      attempt_id: old.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-old',
+      repo_id: WS
+    });
+    prerecordJob(store, 'job-new', '2'.repeat(40));
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: successor_key,
+      operation_id: 'job-new',
+      repo_id: WS,
+      replaces: { key: JOB_KEY, operation_id: 'job-old' }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).post_merge_jobs).toMatchObject({
+      [JOB_KEY]: {
+        state: 'intent',
+        repair: { key: successor_key, operation_id: 'job-new' }
+      },
+      [successor_key]: {
+        state: 'intent',
+        replaces: { key: JOB_KEY, operation_id: 'job-old' }
+      }
+    });
+  });
+
+  test('settles corrective success without rewriting predecessor failure', () => {
+    const store = createQueueStore();
+    const successor_key = `10-reindex@${'2'.repeat(40)}`;
+    prerecordJob(store, 'job-old');
+    const old = store.snapshot(WS).repo_operations['job-old'];
+    store.settleRepoOperation(WS, {
+      operation_id: 'job-old',
+      attempt_id: old.attempt_id,
+      exit_code: 17,
+      signal: null
+    });
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-old',
+      repo_id: WS
+    });
+    prerecordJob(store, 'job-new', '2'.repeat(40));
+    store.recordPostMergeJobIntent(WS, {
+      key: successor_key,
+      operation_id: 'job-new',
+      repo_id: WS,
+      replaces: { key: JOB_KEY, operation_id: 'job-old' }
+    });
+    const fresh = store.snapshot(WS).repo_operations['job-new'];
+    store.startRepoOperation(WS, {
+      operation_id: 'job-new',
+      attempt_id: fresh.attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 2 },
+      log_path: '/tmp/job-new.log'
+    });
+    store.settleRepoOperation(WS, {
+      operation_id: 'job-new',
+      attempt_id: fresh.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+
+    const result = store.applyPostMergeJob(WS, {
+      key: successor_key,
+      operation_id: 'job-new',
+      replaces: { key: JOB_KEY, operation_id: 'job-old' }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).post_merge_jobs[JOB_KEY].state).toBe(
+      'superseded'
+    );
+    expect(store.snapshot(WS).repo_operations['job-old']).toMatchObject({
+      state: 'failed',
+      exit_code: 17,
+      superseded_by: 'job-new'
+    });
+  });
+
+  test.each([
+    ['omitted predecessor', undefined],
+    ['mismatched predecessor', { key: JOB_KEY, operation_id: 'job-other' }]
+  ])('refuses repair settlement with %s', (_label, replaces) => {
+    const store = createQueueStore();
+    const successor_key = seedRepair(store, { success: true });
+    const before = store.snapshot(WS).post_merge_jobs;
+
+    const result = store.applyPostMergeJob(WS, {
+      key: successor_key,
+      operation_id: 'job-new',
+      ...(replaces ? { replaces } : {})
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).post_merge_jobs).toEqual(before);
+  });
+
+  test('adopts the same completed succession idempotently', () => {
+    const store = createQueueStore();
+    const successor_key = seedRepair(store, { success: true });
+    const input = {
+      key: successor_key,
+      operation_id: 'job-new',
+      replaces: { key: JOB_KEY, operation_id: 'job-old' }
+    };
+    store.applyPostMergeJob(WS, input);
+    const settled = store.snapshot(WS).post_merge_jobs;
+
+    const result = store.applyPostMergeJob(WS, input);
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).post_merge_jobs).toEqual(settled);
+  });
+
+  test('round-trips a completed succession through disk', () => {
+    const store = createQueueStore();
+    const successor_key = seedRepair(store, { success: true });
+    store.applyPostMergeJob(WS, {
+      key: successor_key,
+      operation_id: 'job-new',
+      replaces: { key: JOB_KEY, operation_id: 'job-old' }
+    });
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(reloaded.post_merge_jobs).toMatchObject({
+      [JOB_KEY]: {
+        state: 'superseded',
+        repair: { key: successor_key, operation_id: 'job-new' }
+      },
+      [successor_key]: {
+        state: 'applied',
+        replaces: { key: JOB_KEY, operation_id: 'job-old' }
+      }
+    });
+  });
+
+  test('lets only one competing corrective reservation win', () => {
+    const store = createQueueStore();
+    seedRepair(store);
+    const winner = `10-reindex@${'2'.repeat(40)}`;
+    const loser = `10-reindex@${'3'.repeat(40)}`;
+    prerecordJob(store, 'job-other', '3'.repeat(40));
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: loser,
+      operation_id: 'job-other',
+      repo_id: WS,
+      replaces: { key: JOB_KEY, operation_id: 'job-old' }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).post_merge_jobs[JOB_KEY].repair).toMatchObject({
+      key: winner,
+      operation_id: 'job-new'
+    });
+    expect(store.snapshot(WS).post_merge_jobs[loser]).toBeUndefined();
+  });
+
+  test('rejects nested repair before changing either ledger link', () => {
+    const store = createQueueStore();
+    const middle_key = seedRepair(store);
+    const middle = store.snapshot(WS).repo_operations['job-new'];
+    store.settleRepoOperation(WS, {
+      operation_id: 'job-new',
+      attempt_id: middle.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    const newest_key = `10-reindex@${'3'.repeat(40)}`;
+    prerecordJob(store, 'job-newest', '3'.repeat(40));
+    const before = store.snapshot(WS).post_merge_jobs;
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: newest_key,
+      operation_id: 'job-newest',
+      repo_id: WS,
+      replaces: { key: middle_key, operation_id: 'job-new' }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).post_merge_jobs).toEqual(before);
+    expect(store.snapshot(WS).post_merge_jobs[newest_key]).toBeUndefined();
+  });
+
+  test('moves both corrective and predecessor pointers on corrective retry', () => {
+    const store = createQueueStore();
+    const successor_key = `10-reindex@${'2'.repeat(40)}`;
+    prerecordJob(store, 'job-old');
+    const old = store.snapshot(WS).repo_operations['job-old'];
+    store.settleRepoOperation(WS, {
+      operation_id: 'job-old',
+      attempt_id: old.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-old',
+      repo_id: WS
+    });
+    prerecordJob(store, 'job-repair-1', '2'.repeat(40));
+    store.recordPostMergeJobIntent(WS, {
+      key: successor_key,
+      operation_id: 'job-repair-1',
+      repo_id: WS,
+      replaces: { key: JOB_KEY, operation_id: 'job-old' }
+    });
+    const first = store.snapshot(WS).repo_operations['job-repair-1'];
+    store.settleRepoOperation(WS, {
+      operation_id: 'job-repair-1',
+      attempt_id: first.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    prerecordJob(store, 'job-repair-2', '2'.repeat(40));
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: successor_key,
+      operation_id: 'job-repair-2',
+      repo_id: WS,
+      expect_operation_id: 'job-repair-1',
+      supersede_operation_id: 'job-repair-1',
+      replaces: { key: JOB_KEY, operation_id: 'job-old' }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).post_merge_jobs[successor_key].operation_id).toBe(
+      'job-repair-2'
+    );
+    expect(store.snapshot(WS).post_merge_jobs[JOB_KEY].repair).toMatchObject({
+      operation_id: 'job-repair-2'
+    });
+    expect(
+      store.snapshot(WS).repo_operations['job-repair-1'].superseded_by
+    ).toBe('job-repair-2');
+  });
+
+  test('refuses an old-blob retry after a corrective reservation', () => {
+    const store = createQueueStore();
+    const successor_key = `10-reindex@${'2'.repeat(40)}`;
+    prerecordJob(store, 'job-old');
+    const old = store.snapshot(WS).repo_operations['job-old'];
+    store.settleRepoOperation(WS, {
+      operation_id: 'job-old',
+      attempt_id: old.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-old',
+      repo_id: WS
+    });
+    prerecordJob(store, 'job-repair', '2'.repeat(40));
+    store.recordPostMergeJobIntent(WS, {
+      key: successor_key,
+      operation_id: 'job-repair',
+      repo_id: WS,
+      replaces: { key: JOB_KEY, operation_id: 'job-old' }
+    });
+    prerecordJob(store, 'job-old-retry');
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-old-retry',
+      repo_id: WS,
+      expect_operation_id: 'job-old',
+      supersede_operation_id: 'job-old'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).post_merge_jobs[JOB_KEY]).toMatchObject({
+      operation_id: 'job-old',
+      repair: { key: successor_key, operation_id: 'job-repair' }
+    });
+    expect(store.snapshot(WS).repo_operations['job-old'].superseded_by).toBe(
+      null
+    );
+  });
+
   test('leaves the ledger pointer unchanged when the supersede is refused', () => {
     const store = createQueueStore();
     prerecordJob(store, 'job-1');
@@ -11528,6 +11867,116 @@ describe('worker/queue-store — post-merge job ledger (UI-i60a §3)', () => {
     const reloaded = createQueueStore().snapshot(WS);
 
     expect(reloaded.post_merge_jobs).toEqual({});
+  });
+
+  test('fails closed and preserves disk when a repair link is malformed', () => {
+    const store = createQueueStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-old',
+      repo_id: WS
+    });
+    const queue_path = queueFilePath(WS);
+    const stored = JSON.parse(fs.readFileSync(queue_path, 'utf8'));
+    stored.post_merge_jobs[JOB_KEY].repair = {
+      key: 'missing',
+      operation_id: 'job-new'
+    };
+    const original = JSON.stringify(stored);
+    fs.writeFileSync(queue_path, original);
+
+    expect(() => createQueueStore().snapshot(WS)).toThrow(
+      `post_merge_job_repair_malformed:${JOB_KEY}`
+    );
+    expect(fs.readFileSync(queue_path, 'utf8')).toBe(original);
+  });
+
+  test('fails closed on a damaged superseded row without a repair field', () => {
+    const store = createQueueStore();
+    store.recordPostMergeJobIntent(WS, {
+      key: JOB_KEY,
+      operation_id: 'job-old',
+      repo_id: WS
+    });
+    const queue_path = queueFilePath(WS);
+    const stored = JSON.parse(fs.readFileSync(queue_path, 'utf8'));
+    stored.post_merge_jobs[JOB_KEY] = { state: 'superseded' };
+    const original = JSON.stringify(stored);
+    fs.writeFileSync(queue_path, original);
+
+    expect(() => createQueueStore().snapshot(WS)).toThrow(
+      `post_merge_job_repair_malformed:${JOB_KEY}`
+    );
+    expect(fs.readFileSync(queue_path, 'utf8')).toBe(original);
+  });
+
+  test.each([
+    [
+      'script path',
+      (/** @type {any} */ operation) =>
+        (operation.script_path = 'repo-ops/post-merge.d/other')
+    ],
+    [
+      'success evidence',
+      (/** @type {any} */ operation) => (operation.exit_code = 9)
+    ],
+    [
+      'success signal',
+      (/** @type {any} */ operation) => (operation.signal = 'SIGTERM')
+    ],
+    [
+      'missing invocation evidence',
+      (/** @type {any} */ operation) => (operation.started_at = null)
+    ]
+  ])('fails closed on linked %s mismatch', (_label, damage) => {
+    const store = createQueueStore();
+    const successor_key = seedRepair(store, { success: true });
+    store.applyPostMergeJob(WS, {
+      key: successor_key,
+      operation_id: 'job-new',
+      replaces: { key: JOB_KEY, operation_id: 'job-old' }
+    });
+    const queue_path = queueFilePath(WS);
+    const stored = JSON.parse(fs.readFileSync(queue_path, 'utf8'));
+    damage(stored.repo_operations['job-new']);
+    const original = JSON.stringify(stored);
+    fs.writeFileSync(queue_path, original);
+
+    expect(() => createQueueStore().snapshot(WS)).toThrow(
+      'post_merge_job_repair_malformed:'
+    );
+    expect(fs.readFileSync(queue_path, 'utf8')).toBe(original);
+  });
+
+  test.each([
+    ['partial applied pair', (/** @type {any} */ stored) => void stored],
+    [
+      'failed successor evidence',
+      (/** @type {any} */ stored) => {
+        stored.repo_operations['job-new'].state = 'failed';
+        stored.repo_operations['job-new'].exit_code = 1;
+        stored.repo_operations['job-new'].failure = {
+          code: 'script_failed',
+          fingerprint: '',
+          detail: '',
+          interrupted: false
+        };
+      }
+    ]
+  ])('fails closed on %s', (_label, damage) => {
+    const store = createQueueStore();
+    const successor_key = seedRepair(store, { success: true });
+    const queue_path = queueFilePath(WS);
+    const stored = JSON.parse(fs.readFileSync(queue_path, 'utf8'));
+    stored.post_merge_jobs[successor_key].state = 'applied';
+    damage(stored);
+    const original = JSON.stringify(stored);
+    fs.writeFileSync(queue_path, original);
+
+    expect(() => createQueueStore().snapshot(WS)).toThrow(
+      'post_merge_job_repair_malformed:'
+    );
+    expect(fs.readFileSync(queue_path, 'utf8')).toBe(original);
   });
 });
 

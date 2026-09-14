@@ -673,7 +673,7 @@
  */
 /**
  * @typedef {Object} PostMergeJobRecord
- * @property {'intent'|'applied'} state - `intent` is written BEFORE the script
+ * @property {'intent'|'applied'|'superseded'} state - `intent` is written BEFORE the script
  * is spawned and `applied` only after terminal success plus the tracked-clean
  * readback, so an interruption is always readable as "outcome unknown" rather
  * than as a completed application.
@@ -682,6 +682,8 @@
  * that keeps the entry an `intent`.
  * @property {string} repo_id
  * @property {number} at
+ * @property {{ key: string, operation_id: string }|null} replaces
+ * @property {{ key: string, operation_id: string }|null} repair
  */
 /**
  * @typedef {Object} RepoOperation
@@ -3539,18 +3541,58 @@ function normalizeRepoOperation(value) {
   };
 }
 
+const POST_MERGE_JOB_PATH_PREFIX = 'repo-ops/post-merge.d/';
+
 /**
- * Normalize the post-merge job ledger (UI-i60a §3). A malformed entry is
- * DROPPED rather than kept as opaque data: the ledger's whole job is to answer
- * "has this exact file content already been applied", and an entry that cannot
- * name its state or the operation it points at can answer neither — keeping it
- * would either suppress a run forever or make an unreadable record look like
- * evidence.
+ * @param {string} key
+ * @param {RepoOperation|undefined} operation
+ * @param {string} repo_id
+ */
+function postMergeJobIdentity(key, operation, repo_id) {
+  const match = /^([^/@\\]+)@([0-9a-f]{40})$/.exec(key);
+  return (
+    match !== null &&
+    operation !== undefined &&
+    operation.repo_id === repo_id &&
+    operation.kind === 'job' &&
+    operation.script_path === `${POST_MERGE_JOB_PATH_PREFIX}${match[1]}` &&
+    operation.script_object_type === 'blob' &&
+    operation.script_blob_sha === match[2] &&
+    (operation.script_mode === '100644' ||
+      operation.script_mode === '100755') &&
+    isSha(operation.target_sha) &&
+    operation.effective_base_sha === operation.target_sha &&
+    typeof operation.target_base === 'string' &&
+    operation.target_base.length > 0 &&
+    operation.subjects.some(
+      (subject) => subject.merged_sha === operation.target_sha
+    )
+  );
+}
+
+/**
+ * @param {RepoOperation|undefined} operation
+ */
+function exactPostMergeJobSuccess(operation) {
+  return (
+    operation?.state === 'succeeded' &&
+    operation.exit_code === 0 &&
+    operation.signal === null &&
+    operation.failure === null &&
+    typeof operation.started_at === 'number' &&
+    typeof operation.finished_at === 'number'
+  );
+}
+
+/**
+ * Normalize the post-merge job ledger (UI-i60a §3). Legacy malformed entries
+ * are dropped, while recognized repair records fail closed.
  *
  * @param {unknown} raw
+ * @param {Record<string, RepoOperation>} operations
  * @returns {Record<string, PostMergeJobRecord>}
  */
-function normalizePostMergeJobs(raw) {
+function normalizePostMergeJobs(raw, operations) {
   /** @type {Record<string, PostMergeJobRecord>} */
   const out = {};
   if (!isRecord(raw)) {
@@ -3560,21 +3602,128 @@ function normalizePostMergeJobs(raw) {
     if (
       key.length === 0 ||
       !isRecord(value) ||
-      (value.state !== 'intent' && value.state !== 'applied') ||
+      (value.state !== 'intent' &&
+        value.state !== 'applied' &&
+        value.state !== 'superseded') ||
       typeof value.operation_id !== 'string' ||
       value.operation_id.length === 0 ||
       typeof value.repo_id !== 'string' ||
       value.repo_id.length === 0
     ) {
+      if (
+        isRecord(value) &&
+        (value.state === 'superseded' ||
+          'replaces' in value ||
+          'repair' in value)
+      ) {
+        throw new Error(`post_merge_job_repair_malformed:${key}`);
+      }
       continue;
+    }
+    /** @param {unknown} candidate */
+    const normalizeLink = (candidate) =>
+      isRecord(candidate) &&
+      typeof candidate.key === 'string' &&
+      candidate.key.length > 0 &&
+      typeof candidate.operation_id === 'string' &&
+      candidate.operation_id.length > 0
+        ? { key: candidate.key, operation_id: candidate.operation_id }
+        : null;
+    const replaces = normalizeLink(value.replaces);
+    const repair = normalizeLink(value.repair);
+    if (
+      (value.replaces !== undefined && value.replaces !== null && !replaces) ||
+      (value.repair !== undefined && value.repair !== null && !repair) ||
+      (value.state === 'superseded' && !repair) ||
+      replaces?.key === key ||
+      repair?.key === key
+    ) {
+      throw new Error(`post_merge_job_repair_malformed:${key}`);
     }
     out[key] = {
       state: value.state,
       operation_id: value.operation_id,
       repo_id: value.repo_id,
       at:
-        typeof value.at === 'number' && Number.isFinite(value.at) ? value.at : 0
+        typeof value.at === 'number' && Number.isFinite(value.at)
+          ? value.at
+          : 0,
+      replaces,
+      repair
     };
+  }
+  for (const [key, value] of Object.entries(out)) {
+    if (value.replaces) {
+      const previous = out[value.replaces.key];
+      const previous_operation = operations[value.replaces.operation_id];
+      const operation = operations[value.operation_id];
+      const previous_blob = value.replaces.key.slice(
+        value.replaces.key.lastIndexOf('@') + 1
+      );
+      const blob = key.slice(key.lastIndexOf('@') + 1);
+      if (
+        !previous ||
+        previous.repo_id !== value.repo_id ||
+        previous.operation_id !== value.replaces.operation_id ||
+        previous.repair?.key !== key ||
+        previous.repair.operation_id !== value.operation_id ||
+        !previous_operation ||
+        !operation ||
+        !postMergeJobIdentity(
+          value.replaces.key,
+          previous_operation,
+          value.repo_id
+        ) ||
+        !postMergeJobIdentity(key, operation, value.repo_id) ||
+        previous_operation.script_path !== operation.script_path ||
+        previous_operation.script_blob_sha !== previous_blob ||
+        operation.script_blob_sha !== blob ||
+        (value.state !== 'intent' && value.state !== 'applied') ||
+        (value.state === 'intent' && previous.state !== 'intent') ||
+        (value.state === 'applied' && previous.state !== 'superseded') ||
+        (value.state === 'applied' &&
+          (previous_operation.state !== 'failed' ||
+            previous_operation.superseded_by !== value.operation_id ||
+            !exactPostMergeJobSuccess(operation)))
+      ) {
+        throw new Error(`post_merge_job_repair_malformed:${key}`);
+      }
+    }
+    if (value.repair) {
+      const successor = out[value.repair.key];
+      if (
+        !successor ||
+        successor.repo_id !== value.repo_id ||
+        successor.operation_id !== value.repair.operation_id ||
+        successor.replaces?.key !== key ||
+        successor.replaces.operation_id !== value.operation_id
+      ) {
+        throw new Error(`post_merge_job_repair_malformed:${key}`);
+      }
+      if (
+        value.state === 'superseded' &&
+        (successor.state !== 'applied' ||
+          !exactPostMergeJobSuccess(operations[value.repair.operation_id]) ||
+          operations[value.operation_id]?.superseded_by !==
+            value.repair.operation_id)
+      ) {
+        throw new Error(`post_merge_job_repair_malformed:${key}`);
+      }
+      if (value.state !== 'intent' && value.state !== 'superseded') {
+        throw new Error(`post_merge_job_repair_malformed:${key}`);
+      }
+    }
+  }
+  for (const key of Object.keys(out)) {
+    const seen = new Set([key]);
+    let cursor = out[key];
+    while (cursor.repair) {
+      if (seen.has(cursor.repair.key)) {
+        throw new Error(`post_merge_job_repair_malformed:${key}`);
+      }
+      seen.add(cursor.repair.key);
+      cursor = out[cursor.repair.key];
+    }
   }
   return out;
 }
@@ -4175,7 +4324,10 @@ function normalizeQueue(raw) {
     Number.isInteger(raw.manual_deploy_seq) && Number(raw.manual_deploy_seq) > 0
       ? Number(raw.manual_deploy_seq)
       : 0;
-  q.post_merge_jobs = normalizePostMergeJobs(raw.post_merge_jobs);
+  q.post_merge_jobs = normalizePostMergeJobs(
+    raw.post_merge_jobs,
+    q.repo_operations
+  );
   q.repo_operation_migration = normalizeRepoOperationMigration(
     raw.repo_operation_migration
   );
@@ -4968,7 +5120,13 @@ export function createQueueStore(options = {}) {
       retirements = planRepairLaneRetirements(parsed);
       retired_kinds = planRetiredKindAttempts(parsed);
       q = normalizeQueue(parsed);
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.startsWith('post_merge_job_repair_malformed:')
+      ) {
+        throw error;
+      }
       q = emptyQueue();
       retirements = [];
       retired_kinds = [];
@@ -6175,7 +6333,7 @@ export function createQueueStore(options = {}) {
      * Bind a live detached process to the pre-recorded operation.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, attempt_id: string, process_identity: RepoOperation['process_identity'], log_path: string, target_sha?: string, target_tree?: string, deploy_worktree?: string }} input
+     * @param {{ operation_id: string, attempt_id: string, process_identity: RepoOperation['process_identity'], log_path: string, target_sha?: string, target_tree?: string, deploy_worktree?: string, started_at?: number }} input
      * @returns {QueueOpResult}
      */
     startRepoOperation(workspace, input) {
@@ -6191,7 +6349,11 @@ export function createQueueStore(options = {}) {
           return false;
         }
         operation.state = 'running';
-        operation.started_at = operation.started_at ?? now();
+        operation.started_at =
+          operation.started_at ??
+          (Number.isFinite(input.started_at)
+            ? Number(input.started_at)
+            : now());
         operation.process_identity = input.process_identity;
         operation.log_path = input.log_path;
         if (isSha(input.target_sha))
@@ -6325,7 +6487,7 @@ export function createQueueStore(options = {}) {
      * a previously terminal record.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure?: RepoOperation['failure'], log_digest?: string|null, retry_outcome?: 'not_applicable'|'consumed', retry_blocked_reason?: string|null, target_sha?: string, deploy_worktree?: string }} input
+     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure?: RepoOperation['failure'], log_digest?: string|null, retry_outcome?: 'not_applicable'|'consumed', retry_blocked_reason?: string|null, target_sha?: string, deploy_worktree?: string, finished_at?: number }} input
      * @returns {QueueOpResult}
      */
     settleRepoOperation(workspace, input) {
@@ -6341,7 +6503,9 @@ export function createQueueStore(options = {}) {
         operation.signal =
           typeof input.signal === 'string' ? input.signal : null;
         operation.log_digest = input.log_digest ?? operation.log_digest;
-        operation.finished_at = now();
+        operation.finished_at = Number.isFinite(input.finished_at)
+          ? Number(input.finished_at)
+          : now();
         operation.process_identity = null;
         // A settle that never went through `startRepoOperation` (the covered
         // shortcut) carries the SHA it proved on disk here; without it the
@@ -6572,7 +6736,7 @@ export function createQueueStore(options = {}) {
      * naming an operation the ledger never adopted.
      *
      * @param {string} workspace
-     * @param {{ key: string, operation_id: string, repo_id: string, expect_operation_id?: string, supersede_operation_id?: string }} input
+     * @param {{ key: string, operation_id: string, repo_id: string, expect_operation_id?: string, supersede_operation_id?: string, replaces?: { key: string, operation_id: string } }} input
      * @returns {QueueOpResult}
      */
     recordPostMergeJobIntent(workspace, input) {
@@ -6606,11 +6770,75 @@ export function createQueueStore(options = {}) {
           }
           superseded.superseded_by = input.operation_id;
         }
+        if (input.replaces !== undefined) {
+          const predecessor = next.post_merge_jobs[input.replaces.key];
+          const predecessor_operation =
+            next.repo_operations[input.replaces.operation_id];
+          const successor_operation = next.repo_operations[input.operation_id];
+          const predecessor_name = input.replaces.key.slice(
+            0,
+            input.replaces.key.lastIndexOf('@')
+          );
+          const predecessor_blob = input.replaces.key.slice(
+            input.replaces.key.lastIndexOf('@') + 1
+          );
+          const successor_name = input.key.slice(0, input.key.lastIndexOf('@'));
+          const successor_blob = input.key.slice(
+            input.key.lastIndexOf('@') + 1
+          );
+          if (
+            !predecessor ||
+            predecessor.state !== 'intent' ||
+            predecessor.operation_id !== input.replaces.operation_id ||
+            predecessor.repo_id !== input.repo_id ||
+            predecessor.replaces !== null ||
+            !predecessor_operation ||
+            !postMergeJobIdentity(
+              input.replaces.key,
+              predecessor_operation,
+              input.repo_id
+            ) ||
+            (predecessor_operation.superseded_by !== null &&
+              predecessor_operation.superseded_by !== input.operation_id) ||
+            predecessor_operation.state !== 'failed' ||
+            !successor_operation ||
+            !postMergeJobIdentity(
+              input.key,
+              successor_operation,
+              input.repo_id
+            ) ||
+            successor_operation.state !== 'queued' ||
+            predecessor_name.length === 0 ||
+            predecessor_name !== successor_name ||
+            predecessor_blob === successor_blob ||
+            predecessor_operation.script_blob_sha !== predecessor_blob ||
+            successor_operation.script_blob_sha !== successor_blob ||
+            predecessor_operation.script_path !==
+              successor_operation.script_path ||
+            (predecessor.repair &&
+              (predecessor.repair.key !== input.key ||
+                predecessor.repair.operation_id !==
+                  (input.expect_operation_id ?? input.operation_id))) ||
+            (existing?.replaces &&
+              (existing.replaces.key !== input.replaces.key ||
+                existing.replaces.operation_id !== input.replaces.operation_id))
+          ) {
+            return false;
+          }
+          predecessor.repair = {
+            key: input.key,
+            operation_id: input.operation_id
+          };
+        } else if (existing?.replaces || existing?.repair) {
+          return false;
+        }
         next.post_merge_jobs[input.key] = {
           state: 'intent',
           operation_id: input.operation_id,
           repo_id: input.repo_id,
-          at: now()
+          at: now(),
+          replaces: input.replaces ? { ...input.replaces } : null,
+          repair: null
         };
         return true;
       });
@@ -6622,7 +6850,7 @@ export function createQueueStore(options = {}) {
      * one must have swapped the pointer first.
      *
      * @param {string} workspace
-     * @param {{ key: string, operation_id: string }} input
+     * @param {{ key: string, operation_id: string, replaces?: { key: string, operation_id: string } }} input
      * @returns {QueueOpResult}
      */
     applyPostMergeJob(workspace, input) {
@@ -6632,7 +6860,70 @@ export function createQueueStore(options = {}) {
           return false;
         }
         if (existing.state === 'applied') {
+          if (input.replaces === undefined) {
+            return false;
+          }
+          const predecessor = next.post_merge_jobs[input.replaces.key];
+          const successor_operation = next.repo_operations[input.operation_id];
+          return (
+            predecessor?.state === 'superseded' &&
+            predecessor.repair?.key === input.key &&
+            predecessor.repair.operation_id === input.operation_id &&
+            existing.replaces?.operation_id === input.replaces.operation_id &&
+            predecessor.operation_id === input.replaces.operation_id &&
+            exactPostMergeJobSuccess(successor_operation) &&
+            postMergeJobIdentity(
+              input.key,
+              successor_operation,
+              existing.repo_id
+            )
+          );
+        }
+        if (
+          (existing.replaces || existing.repair) &&
+          input.replaces === undefined
+        ) {
           return false;
+        }
+        if (input.replaces !== undefined) {
+          const predecessor = next.post_merge_jobs[input.replaces.key];
+          const successor_operation = next.repo_operations[input.operation_id];
+          const predecessor_operation = predecessor
+            ? next.repo_operations[predecessor.operation_id]
+            : null;
+          if (
+            existing.state !== 'intent' ||
+            !existing.replaces ||
+            existing.replaces.key !== input.replaces.key ||
+            existing.replaces.operation_id !== input.replaces.operation_id ||
+            !predecessor ||
+            predecessor.state !== 'intent' ||
+            predecessor.repo_id !== existing.repo_id ||
+            predecessor.operation_id !== existing.replaces.operation_id ||
+            predecessor.operation_id !== input.replaces.operation_id ||
+            predecessor.repair?.key !== input.key ||
+            predecessor.repair.operation_id !== input.operation_id ||
+            !successor_operation ||
+            !exactPostMergeJobSuccess(successor_operation) ||
+            !postMergeJobIdentity(
+              input.key,
+              successor_operation,
+              existing.repo_id
+            ) ||
+            !predecessor_operation ||
+            !postMergeJobIdentity(
+              input.replaces.key,
+              predecessor_operation,
+              existing.repo_id
+            ) ||
+            predecessor_operation.script_path !==
+              successor_operation.script_path
+          ) {
+            return false;
+          }
+          predecessor.state = 'superseded';
+          predecessor.at = now();
+          predecessor_operation.superseded_by = input.operation_id;
         }
         existing.state = 'applied';
         existing.at = now();

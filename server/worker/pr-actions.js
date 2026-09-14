@@ -187,6 +187,7 @@ const POST_MERGE_JOB_DIR = 'repo-ops/post-merge.d';
  * @property {string} object_sha
  * @property {string} key - The ledger key `<filename>@<blob sha>`. Content
  * addressed, so editing the file yields a new key and exactly one new run.
+ * @property {{ key: string, operation_id?: string }|null} [replaces]
  */
 
 /**
@@ -229,6 +230,70 @@ function parsePostMergeJobEntries(stdout) {
     left.name < right.name ? -1 : left.name > right.name ? 1 : 0
   );
   return entries;
+}
+
+/**
+ * @param {PostMergeJobEntry} entry
+ * @param {string} source
+ * @returns {{ ok: true, replaces: { key: string }|null }|{ ok: false, reason: string }}
+ */
+function parsePostMergeJobReplacement(entry, source) {
+  const candidates = String(source)
+    .split(/\r?\n/)
+    .slice(0, 32)
+    .filter((line) => line.includes('repo-ops-replaces'));
+  if (candidates.length === 0) {
+    return { ok: true, replaces: null };
+  }
+  const match =
+    candidates.length === 1
+      ? /^# repo-ops-replaces: ([^@]+)@([0-9a-f]{40})$/.exec(candidates[0])
+      : null;
+  if (
+    !match ||
+    match[1] !== entry.name ||
+    match[1].includes('/') ||
+    match[1].includes('\\') ||
+    match[2] === entry.object_sha
+  ) {
+    return {
+      ok: false,
+      reason: `post_merge_job_replacement_invalid:${entry.name}`
+    };
+  }
+  return { ok: true, replaces: { key: `${match[1]}@${match[2]}` } };
+}
+
+/**
+ * @param {string} key
+ * @param {any} operation
+ * @param {string} repo_id
+ * @param {boolean} [success]
+ */
+function postMergeJobOperationMatches(
+  key,
+  operation,
+  repo_id,
+  success = false
+) {
+  const match = /^([^/@\\]+)@([0-9a-f]{40})$/.exec(key);
+  return (
+    match !== null &&
+    operation?.repo_id === repo_id &&
+    operation.kind === 'job' &&
+    operation.script_path === `${POST_MERGE_JOB_DIR}/${match[1]}` &&
+    operation.script_blob_sha === match[2] &&
+    (operation.script_mode === '100644' ||
+      operation.script_mode === '100755') &&
+    /^[0-9a-f]{40}$/.test(operation.target_sha) &&
+    (!success ||
+      (operation.state === 'succeeded' &&
+        operation.exit_code === 0 &&
+        operation.signal === null &&
+        operation.failure === null &&
+        typeof operation.started_at === 'number' &&
+        typeof operation.finished_at === 'number'))
+  );
 }
 
 /**
@@ -2304,6 +2369,27 @@ export function createPrActions(deps) {
           base_sync
         );
       }
+      const source = await deps.gitRun(['cat-file', 'blob', entry.object_sha], {
+        cwd: repo
+      });
+      if (source.code !== 0) {
+        return await failCleanup(
+          bead_id,
+          'post_merge_jobs',
+          `post_merge_job_unreadable:${entry.name}`,
+          base_sync
+        );
+      }
+      const declaration = parsePostMergeJobReplacement(entry, source.stdout);
+      if (!declaration.ok) {
+        return await failCleanup(
+          bead_id,
+          'post_merge_jobs',
+          declaration.reason,
+          base_sync
+        );
+      }
+      entry.replaces = declaration.replaces;
     }
     /** @type {any} */
     const operations = repo_operations;
@@ -2361,11 +2447,21 @@ export function createPrActions(deps) {
   async function settlePostMergeJobApplied(bead_id, entry, operation_id, ctx) {
     deps.store.applyPostMergeJob?.(workspace, {
       key: entry.key,
-      operation_id
+      operation_id,
+      ...(entry.replaces?.operation_id ? { replaces: entry.replaces } : {})
     });
-    const applied =
-      deps.store.snapshot(workspace).post_merge_jobs?.[entry.key] || null;
-    if (applied?.state !== 'applied') {
+    const snapshot = deps.store.snapshot(workspace);
+    const applied = snapshot.post_merge_jobs?.[entry.key] || null;
+    const predecessor = entry.replaces?.operation_id
+      ? snapshot.post_merge_jobs?.[entry.replaces.key] || null
+      : null;
+    if (
+      applied?.state !== 'applied' ||
+      (predecessor &&
+        (predecessor.state !== 'superseded' ||
+          predecessor.repair?.key !== entry.key ||
+          predecessor.repair.operation_id !== operation_id))
+    ) {
       return await failCleanup(
         bead_id,
         'post_merge_jobs',
@@ -2386,17 +2482,153 @@ export function createPrActions(deps) {
    */
   async function runOnePostMergeJob(bead_id, entry, ctx) {
     const operations = ctx.operations;
-    const ledger =
-      deps.store.snapshot(workspace).post_merge_jobs?.[entry.key] || null;
+    const snapshot = deps.store.snapshot(workspace);
+    const ledger = snapshot.post_merge_jobs?.[entry.key] || null;
+    const predecessor = entry.replaces
+      ? snapshot.post_merge_jobs?.[entry.replaces.key] || null
+      : null;
     /** @type {string|null} */
     let supersedes = null;
+    if (ledger?.state === 'superseded') {
+      const successor = snapshot.post_merge_jobs?.[ledger.repair?.key] || null;
+      const operation = snapshot.repo_operations?.[ledger.operation_id] || null;
+      const successor_operation =
+        snapshot.repo_operations?.[ledger.repair?.operation_id];
+      if (
+        successor?.state === 'applied' &&
+        successor.operation_id === ledger.repair?.operation_id &&
+        successor.replaces?.key === entry.key &&
+        successor.replaces?.operation_id === ledger.operation_id &&
+        operation?.superseded_by === ledger.repair?.operation_id &&
+        postMergeJobOperationMatches(
+          ledger.repair.key,
+          successor_operation,
+          repo,
+          true
+        )
+      ) {
+        return null;
+      }
+      return await failCleanup(
+        bead_id,
+        'post_merge_jobs',
+        `post_merge_job_succession_invalid:${entry.key}`,
+        ctx.base_sync
+      );
+    }
+    if (ledger?.repair) {
+      let judged;
+      try {
+        judged = await operations.reconcileJob(ledger.repair.operation_id);
+      } catch {
+        judged = { state: 'probe_error', code: 'probe_error' };
+      }
+      if (judged.state === 'succeeded') {
+        const successor = snapshot.post_merge_jobs?.[ledger.repair.key] || null;
+        if (!successor) {
+          return await failCleanup(
+            bead_id,
+            'post_merge_jobs',
+            `post_merge_job_succession_invalid:${entry.key}`,
+            ctx.base_sync
+          );
+        }
+        return await settlePostMergeJobApplied(
+          bead_id,
+          {
+            ...entry,
+            key: ledger.repair.key,
+            replaces: { key: entry.key, operation_id: ledger.operation_id }
+          },
+          ledger.repair.operation_id,
+          ctx
+        );
+      }
+      if (judged.state === 'running') {
+        return {
+          ok: true,
+          pending: true,
+          step: 'post_merge_jobs',
+          reason: null,
+          base_sync: ctx.base_sync
+        };
+      }
+      return await failCleanup(
+        bead_id,
+        'post_merge_jobs',
+        `post_merge_job_repair_failed:${ledger.repair.key}:${judged.code || 'unknown'}`,
+        ctx.base_sync,
+        undefined,
+        undefined,
+        undefined,
+        judged.log_path
+      );
+    }
+    let repair = null;
+    if (entry.replaces && predecessor?.state === 'intent') {
+      const predecessor_operation =
+        snapshot.repo_operations?.[predecessor.operation_id];
+      if (
+        predecessor.repo_id !== repo ||
+        !predecessor_operation ||
+        !postMergeJobOperationMatches(
+          entry.replaces.key,
+          predecessor_operation,
+          repo
+        )
+      ) {
+        return await failCleanup(
+          bead_id,
+          'post_merge_jobs',
+          `post_merge_job_replacement_ineligible:${entry.key}`,
+          ctx.base_sync
+        );
+      }
+      let judged;
+      try {
+        judged = await operations.reconcileJob(predecessor.operation_id);
+      } catch {
+        judged = { state: 'probe_error', code: 'probe_error' };
+      }
+      if (judged.state === 'succeeded') {
+        deps.store.applyPostMergeJob?.(workspace, {
+          key: entry.replaces.key,
+          operation_id: predecessor.operation_id
+        });
+      } else if (judged.state === 'running' || judged.state === 'unknown') {
+        return await failCleanup(
+          bead_id,
+          'post_merge_jobs',
+          `post_merge_job_replacement_ineligible:${entry.key}`,
+          ctx.base_sync
+        );
+      } else if (judged.state === 'failed') {
+        repair = {
+          key: entry.replaces.key,
+          operation_id: predecessor.operation_id
+        };
+        entry.replaces = { ...repair };
+      } else {
+        return await failCleanup(
+          bead_id,
+          'post_merge_jobs',
+          `post_merge_job_replacement_ineligible:${entry.key}`,
+          ctx.base_sync
+        );
+      }
+    }
     if (ledger) {
       if (ledger.state === 'applied') {
         return null;
       }
       // A terminal RepoOperation never reopens, so the record the intent names
       // is reconciled FIRST and its own evidence decides (§3 branches ①②③).
-      const judged = await operations.reconcileJob(ledger.operation_id);
+      let judged;
+      try {
+        judged = await operations.reconcileJob(ledger.operation_id);
+      } catch {
+        judged = { state: 'unknown', operation_id: ledger.operation_id };
+      }
       if (judged.state === 'succeeded') {
         return await settlePostMergeJobApplied(
           bead_id,
@@ -2466,6 +2698,7 @@ export function createPrActions(deps) {
       key: entry.key,
       operation_id: prepared.operation_id,
       repo_id: repo,
+      ...(repair === null ? {} : { replaces: repair }),
       ...(supersedes === null ? {} : { expect_operation_id: supersedes }),
       ...(supersedes === null || supersedes === prepared.operation_id
         ? {}

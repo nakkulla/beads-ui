@@ -4230,6 +4230,174 @@ describe('post-merge job operations (UI-i60a §2)', () => {
     });
   });
 
+  test('re-adopts queued job success with validated launch and marker times', async () => {
+    const log_path = path.join(root, 'job-recovered.log');
+    const { store, coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt(),
+      runner: {
+        start: vi.fn(),
+        readLaunchMarker: () => ({
+          pid: 7,
+          pgid: 7,
+          started_at: 11,
+          log_path,
+          target_sha: TARGET
+        }),
+        readMarker: () => ({
+          exit_code: 0,
+          signal: null,
+          started_at: 11,
+          finished_at: 22
+        }),
+        processController: { probe: () => ({ state: 'gone' }) }
+      }
+    });
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+
+    await coordinator.reconcile(root);
+
+    expect(
+      store.snapshot(root).repo_operations[prepared.operation_id]
+    ).toMatchObject({
+      state: 'succeeded',
+      started_at: 11,
+      finished_at: 22,
+      log_path,
+      target_sha: TARGET,
+      exit_code: 0
+    });
+  });
+
+  test('re-adopts queued automatic deploy success and binds its launch target', async () => {
+    const log_path = path.join(root, 'deploy-recovered.log');
+    const { store, coordinator } = coordinatorFor({
+      deployWorktree: {
+        ...worktreeAt(),
+        verifyCovered: vi.fn(async () => ({ ok: true }))
+      },
+      runner: {
+        start: vi.fn(),
+        readLaunchMarker: () => ({
+          pid: 8,
+          pgid: 8,
+          started_at: 31,
+          log_path,
+          target_sha: TARGET
+        }),
+        readMarker: () => ({
+          exit_code: 0,
+          signal: null,
+          started_at: 31,
+          finished_at: 42
+        }),
+        processController: { probe: () => ({ state: 'gone' }) }
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'deploy-crash-window',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-1', merged_sha: TARGET }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(
+      store.snapshot(root).repo_operations['deploy-crash-window']
+    ).toMatchObject({
+      state: 'succeeded',
+      target_sha: TARGET,
+      started_at: 31,
+      finished_at: 42,
+      log_path,
+      exit_code: 0
+    });
+  });
+
+  test('keeps a queued job with a mismatched launch target unadopted', async () => {
+    const { store, coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt(),
+      runner: {
+        start: vi.fn(),
+        readLaunchMarker: () => ({
+          pid: 7,
+          pgid: 7,
+          started_at: 11,
+          log_path: path.join(root, 'job-mismatch.log'),
+          target_sha: ADVANCED_HEAD
+        }),
+        readMarker: () => ({
+          exit_code: 0,
+          signal: null,
+          started_at: 11,
+          finished_at: 22
+        }),
+        processController: { probe: () => ({ state: 'gone' }) }
+      }
+    });
+    /** @type {any} */
+    const prepared = await coordinator.prepareJob(jobRequest());
+
+    await coordinator.reconcile(root);
+
+    expect(
+      store.snapshot(root).repo_operations[prepared.operation_id]
+    ).toMatchObject({ state: 'queued', target_sha: TARGET });
+  });
+
+  test('keeps unknown queued launch evidence from authorizing a corrective reservation', async () => {
+    const start = vi.fn();
+    const { store, coordinator } = coordinatorFor({
+      deployWorktree: worktreeAt(),
+      runner: {
+        start,
+        readLaunchMarker: () => ({
+          pid: 7,
+          pgid: 7,
+          started_at: 11,
+          log_path: path.join(root, 'job-unknown.log'),
+          target_sha: TARGET
+        }),
+        readMarker: () => null,
+        processController: { probe: () => ({ state: 'unknown' }) }
+      }
+    });
+    /** @type {any} */
+    const predecessor = await coordinator.prepareJob(jobRequest());
+    const predecessor_key = `10-reindex@${JOB_BLOB}`;
+    store.recordPostMergeJobIntent(root, {
+      key: predecessor_key,
+      operation_id: predecessor.operation_id,
+      repo_id: root
+    });
+
+    await coordinator.reconcile(root);
+    /** @type {any} */
+    const corrective = await coordinator.prepareJob(
+      jobRequest({ script_blob_sha: 'e'.repeat(40) })
+    );
+    const reserved = store.recordPostMergeJobIntent(root, {
+      key: `10-reindex@${'e'.repeat(40)}`,
+      operation_id: corrective.operation_id,
+      repo_id: root,
+      replaces: {
+        key: predecessor_key,
+        operation_id: predecessor.operation_id
+      }
+    });
+
+    expect(reserved.ok).toBe(false);
+    expect(start).not.toHaveBeenCalled();
+    expect(
+      store.snapshot(root).repo_operations[predecessor.operation_id]
+    ).toMatchObject({ state: 'queued', failure: null });
+  });
+
   test('names a job failure 잡 on the subject timeline', async () => {
     /** @type {any[]} */
     const appended = [];
