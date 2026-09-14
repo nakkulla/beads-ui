@@ -4,7 +4,8 @@
  * Only STRUCTURED evidence may create a hold: a `turn.failed` error message or
  * a top-level `{"type":"error"}` line whose message either parses as the JSON
  * envelope codex forwards from the API (`{"type":"error","status":<n>,…}`) or
- * carries codex's own transport line `unexpected status <NNN> <Reason>`. An
+ * carries codex's own transport line `unexpected status <NNN> <Reason>`, or
+ * reports that the workspace is out of credits. An
  * `agent_message` that merely quotes "429" is model text, never worker state,
  * and an `item.completed` error item is a warning the turn survived.
  *
@@ -22,6 +23,13 @@ import { errorDetail } from '../error-detail.js';
  * @type {RegExp}
  */
 const TRANSPORT_STATUS_RE = /\bunexpected status (\d{3})\b/i;
+
+/**
+ * Codex's observed workspace-credit failure, without an HTTP status or reset.
+ *
+ * @type {RegExp}
+ */
+const WORKSPACE_CREDITS_RE = /^\s*Your workspace is out of credits\.(?:\s|$)/i;
 
 /**
  * An `error.type` that names rate or usage limiting rather than a request
@@ -241,6 +249,14 @@ export function classifyProviderOutage(ctx) {
       ? ctx.finished_at
       : null;
   for (const message of structuredMessages(raw)) {
+    if (WORKSPACE_CREDITS_RE.test(message)) {
+      return {
+        detail: 'usage_limit',
+        message: errorDetail(message),
+        scope: 'account',
+        resets_at: null
+      };
+    }
     const envelope = envelopeOf(message);
     if (!envelope) {
       continue;
