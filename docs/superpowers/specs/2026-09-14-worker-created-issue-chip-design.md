@@ -123,7 +123,7 @@ ADR 0037의 “출처 칩은 되살리지 않는다” 조항은 이번 요청�
 
 ## 경계·후속
 
-| 종류(형제\|발견) | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
+| 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
 | --- | --- | --- | --- | --- | --- |
 | 형제 | dotfiles | user_request | 저장소 경계: 공유 계약과 세션 작성 절차의 정본 | 없음 | dotfiles-5xd1 |
 | 형제 | beads-ui | awaited_by_consumer | 저장소 경계: 정본 계약을 소비하는 Worker 작성자와 UI | dotfiles-5xd1 | UI-j10d |
