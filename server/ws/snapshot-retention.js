@@ -199,6 +199,18 @@ function retainedOperationIds(raw, retained_beads) {
   for (const [operation_id] of recent.slice(0, REPO_OPERATIONS_RECENT)) {
     ids.add(operation_id);
   }
+  for (const ledger of Object.values(asRecord(raw.post_merge_jobs))) {
+    const record = asRecord(ledger);
+    for (const operation_id of [
+      record.operation_id,
+      asRecord(record.replaces).operation_id,
+      asRecord(record.repair).operation_id
+    ]) {
+      if (typeof operation_id === 'string' && operation_id in operations) {
+        ids.add(operation_id);
+      }
+    }
+  }
   const cleanup_failed = asRecord(raw.cleanup_failed);
   for (const [operation_id, operation] of entries) {
     if (
