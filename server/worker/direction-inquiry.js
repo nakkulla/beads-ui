@@ -90,8 +90,9 @@ const PLAIN_ABSENT = '없음';
 
 /**
  * The first input of a direction inquiry session, quoted verbatim from dotfiles
- * `src/shared/skills/flow/workflow/references/execution.md` ("Direction inquiry
- * session", commit `b8e6decf`). This is the TEMPLATE: the five slots above are
+ * `src/shared/skills/flow/workflow/references/execution-common.md` ("Direction
+ * inquiry session", commit `88411f326f5620d47c4d5f672ba4135944d6145c`). This is
+ * the TEMPLATE: the five slots above are
  * filled per Bead and the rest belong to the session. beads-ui adds no
  * procedure and no prohibition of its own.
  *
@@ -106,13 +107,13 @@ export const STALE_INQUIRY_PROMPT =
     '- target_base 체크아웃: <path>',
     '',
     '절차',
-    '1. `stale-rereview-inputs.py <bead-id> --json` 출력과 notes의 `rereview:` 줄을 읽고 충돌을 한 문단으로 요약한다.',
+    '1. workflow의 `references/execution-spec-backed.md` `Staleness re-review`에 따라 재검토 입력을 파일에 저장하고 읽는다. 그 입력과 notes의 `rereview:` 줄로 충돌을 한 문단으로 요약한다.',
     '2. `AskUserQuestion`을 1회 부른다. 선택지는 `stale_kind`별 고정 2개 + 자유 입력이다.',
     '   - adr_conflict: "ADR <번호>에 맞춰 이 아티팩트 수정" / "이 아티팩트 방향 유지 — `결정 (ADR 후보)` 절에 ADR <번호> supersede 후보 추가"',
     '   - intent_conflict: "상대 spec(<Bead ID>)이 권위 — 이 아티팩트를 맞춰 수정" / "이 아티팩트가 권위 — `bd dep add <상대> <this> --json` 엣지를 쓰고 상대 notes에 `rereview: intent_conflict — 사용자 결정: <요약>` 줄을 남긴다". 상대가 Bead 없는 착지 spec이면 뒤 선택지는 "이 아티팩트가 권위 — supersede·정정 대상 spec 경로를 `경계·후속`에 관찰 줄로 기록"이다.',
     '   - 답이 중단·폐기류이면 아무것도 쓰지 않고 답 원문만 notes에 남긴 채 끝낸다. `awaiting_user`는 유지하고 close는 사람이 한다.',
     '3. 답에 따라 target_base 체크아웃에서 아티팩트를 고치고, full-artifact self-review(리뷰 스킬 `spec-gate-probes.md`의 scope overlap 프로브 포함)를 거쳐 `land-reviewed-artifact.py`로 발행한다.',
-    '   - spec: 한 `bd update`로 영수증 + notes 계보(질문 요약·사용자 답 원문·수정 SHA) + `awaiting_user` 해제를 쓰고 readback한다. 원 영수증이 리뷰된 것이면 `spec_review=self@<contained_sha>`, `skipped@`였으면 `skipped@<contained_sha>`다.',
+    '   - spec: 그 full-artifact self-review는 리뷰 라운드이므로 리뷰 스킬의 댓글-우선 순서대로 라운드 댓글과 `spec_review_stats`를 먼저 쓴 뒤, 한 `bd update`로 영수증 + notes 계보(질문 요약·사용자 답 원문·수정 SHA) + `awaiting_user` 해제를 쓰고 readback한다. 원 영수증이 리뷰된 것이면 `spec_review=self@<contained_sha>`, `skipped@`였으면 `skipped@<contained_sha>`다.',
     '   - plan: 방향성 충돌은 bounded correction이 아니므로 `plan_review`+`last_checked_sha`로 해제하지 않는다. 발행 뒤 plan-authoring authorize 흐름대로 승인 질문을 하고(2번째 `AskUserQuestion`), 그 답 턴에서 `plan_approval=user@<contained_sha>` + `awaiting_user` 해제를 같은 쓰기로 기록한다. 승인이 아니면 `awaiting_user`를 남기고 종료한다.',
     '4. 구현은 착수하지 않는다. Worker 일반 레인이 재디스패치한다.',
     '',

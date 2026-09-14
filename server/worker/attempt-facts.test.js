@@ -255,12 +255,17 @@ describe('worker/attempt-facts script calls (spec D1)', () => {
     'preserves the workflow judgment handoff in the %s preamble',
     async (controller_runtime) => {
       const script_dir = workflowScriptDir(HOME, controller_runtime);
+      const reference_path = path.join(
+        script_dir,
+        '../references/execution-spec-backed.md'
+      );
       const facts = await buildAttemptFacts(
         factsInput({ controller_runtime }),
         {
           homeDir: HOME,
           fs: fakeFs({
-            [path.join(script_dir, 'stale-rereview-inputs.py')]: ''
+            [path.join(script_dir, 'stale-rereview-inputs.py')]: '',
+            [reference_path]: ''
           })
         }
       );
@@ -270,14 +275,40 @@ describe('worker/attempt-facts script calls (spec D1)', () => {
         runtime: controller_runtime
       });
 
-      expect(system_prompt).toContain('stale-rereview-inputs.py');
-      expect(system_prompt).toContain('references/execution-spec-backed.md');
+      expect(facts.scripts[0].command).toBe(
+        `sed -n '/^## Staleness re-review$/,/^## Selector and dispatch$/p' ${reference_path}`
+      );
+      expect(system_prompt).toContain(reference_path);
+      expect(system_prompt).not.toContain('stale-rereview-inputs.py');
+      expect(system_prompt).toContain(
+        '입력 전체를 파일에 저장한 뒤 로컬에서 파싱'
+      );
       expect(system_prompt).toContain('Staleness re-review');
       expect(system_prompt).toContain('needs_judgment');
       expect(system_prompt).toContain('verdict_draft_blockers');
       expect(system_prompt).not.toContain('스스로 판정을 다시 만들지 않는다');
     }
   );
+
+  test.each([
+    'stale-rereview-inputs.py',
+    '../references/execution-spec-backed.md'
+  ])('omits stale guidance when only %s is installed', (installed_path) => {
+    const calls = buildScriptCalls(
+      {
+        ...factsInput(),
+        remote: 'origin',
+        branch: 'main',
+        base_sha: null
+      },
+      {
+        script_dir: SCRIPTS,
+        fs: fakeFs({ [path.join(SCRIPTS, installed_path)]: '' })
+      }
+    );
+
+    expect(calls).toEqual([]);
+  });
 
   test('names the attempt runner as the selector controller runtime', () => {
     const calls = buildScriptCalls(

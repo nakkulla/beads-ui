@@ -286,10 +286,11 @@ export function buildScriptCalls(input, deps) {
    * @returns {string}
    */
   const script = (name) => shellQuote(path.join(dir, name));
-  if (installed('stale-rereview-inputs.py')) {
+  const stale_reference = '../references/execution-spec-backed.md';
+  if (installed('stale-rereview-inputs.py') && installed(stale_reference)) {
     calls.push({
-      command: `python3 ${script('stale-rereview-inputs.py')} ${input.bead_id} --json`,
-      note: '출력은 workflow `references/execution-spec-backed.md`의 `Staleness re-review` 절차를 따른다. `needs_judgment`는 최종 판정이 아니며 `verdict_draft_blockers`가 지정한 항목을 비교한 뒤 정본 절차로 분류·기록한다.'
+      command: `sed -n '/^## Staleness re-review$/,/^## Selector and dispatch$/p' ${script(stale_reference)}`,
+      note: 'workflow `Staleness re-review` 절차를 읽고 재검토 입력 전체를 파일에 저장한 뒤 로컬에서 파싱한다. `needs_judgment`는 최종 판정이 아니며 `verdict_draft_blockers`가 지정한 항목을 비교한 뒤 정본 절차로 분류·기록한다.'
     });
   }
   if (installed('impl-selector.py') && input.route && input.worktree) {

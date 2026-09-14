@@ -16,15 +16,17 @@ import {
 } from './direction-inquiry.js';
 
 /**
- * The digest of the fenced `text` block under "Direction inquiry session" in
+ * Digests of the fenced `text` blocks under "Direction inquiry session" in
  * dotfiles `src/shared/skills/flow/workflow/references/execution.md` at commit
  * `b8e6decf`, taken over the block's inner content with a single trailing
- * newline. The two repositories are deliberately NOT compared at runtime (spec
+ * newline. The stale block follows `execution-common.md` at commit
+ * `88411f326f5620d47c4d5f672ba4135944d6145c`; the other blocks retain their pins.
+ * The two repositories are deliberately NOT compared at runtime (spec
  * §3.4): the Worker `[verify]` checkout has no dotfiles path, so a direct
  * cross-repo read would be an env-gated test that never actually runs.
  */
 const STALE_PROMPT_DIGEST =
-  '1f92114cece82e63940cac512e363bb79a5cfffea5e250b7a691eac3d1231fc3';
+  '4f951bb8971beefa272b5d55d8a5ef8b383f644ec4e397bc7e590bb91567055c';
 const IMPL_PROMPT_DIGEST =
   'aeaa79c6c037cfedee96a81ad0f0911afafe1e487882a0c57fc2756211539660';
 const GENERIC_PROMPT_DIGEST =
@@ -367,7 +369,12 @@ describe('direction-inquiry prompt filling', () => {
     expect(filled).toContain('- stale_kind: adr_conflict');
     expect(filled).toContain('- 충돌 요약: ADR 0012와 충돌');
     expect(filled).toContain('- target_base 체크아웃: /repo');
-    expect(filled).toContain('`stale-rereview-inputs.py UI-7uid --json`');
+    expect(filled).toContain('`references/execution-spec-backed.md`');
+    expect(filled).toContain('재검토 입력을 파일에 저장하고 읽는다');
+    expect(filled).toContain(
+      'notes의 `rereview:` 줄로 충돌을 한 문단으로 요약'
+    );
+    expect(filled).not.toContain('stale-rereview-inputs.py');
     expect(filled).not.toContain('<bead-id>');
     expect(filled).not.toContain('<path>');
   });
